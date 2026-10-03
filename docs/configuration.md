@@ -1,0 +1,135 @@
+# Configuration reference
+
+Symphony reads two files at startup:
+
+- **`WORKFLOW.md`**: YAML front matter for the runtime settings, plus a Markdown body that is the per-issue prompt
+  (a [Liquid](https://liquidjs.com/) template). Changes are picked up **while Symphony runs**: a file watch
+  plus a check on every poll tick.
+- **`.env`**: optional dotenv file with machine-specific values and secrets. By default it is the `.env` next to the
+  selected `WORKFLOW.md`; `--env-file <path>` picks another one. It is read **once at startup**, so restart after
+  editing it. Variables already set in the shell win over the file; Symphony logs the names (never the values) of
+  file entries that the shell overrides.
+
+## Environment references (`$NAME`, `${NAME:-default}`)
+
+A setting whose whole value is `$NAME` or `${NAME}` takes the value of that variable from the shell or `.env`.
+If the variable is unset or empty, the setting counts as **omitted** and its default applies. `${NAME:-default}`
+uses `default` instead in that case (`${NAME:-}` with an empty default also means omitted). Numbers and booleans may
+come from variables: `max_turns: ${SYMPHONY_MAX_TURNS:-10}`. This works for every setting except:
+
+- `hooks.*`: shell scripts; the shell expands `$NAME` itself when the hook runs.
+- `tracker.provider.*`: resolved by the tracker adapter, which also uses the same `$NAME` rules (see
+  [the adapter profile](adapters/github-project.md)). For `token`, an unset variable is a *missing secret* error.
+
+Path settings (`workspace.root`, `claude.executable`) additionally expand `$NAME` *inside* the value
+(`$HOME/ws`, where an unset variable is an error) and a leading `~`. Relative paths resolve against the directory
+that contains `WORKFLOW.md`.
+
+## Front matter
+
+Unknown top-level keys are ignored with a warning. A `codex` section is ignored with a warning: this implementation
+runs Claude Code and is configured through `claude`.
+
+### `tracker`
+
+| Key | Default | Notes |
+|---|---|---|
+| `kind` | (required) | `github_project` is the only supported adapter. |
+| `provider` | `{}` | Adapter settings, see [github-project.md](adapters/github-project.md). |
+| `active_states` | `[Todo, In Progress]` | Board statuses that get an agent. Compared case-insensitively. |
+| `terminal_states` | `[Done]` | Statuses that stop the agent **and delete the workspace**. |
+| `required_labels` | `[]` | An issue needs every listed label (case-insensitive) to be dispatched or keep running. |
+
+Statuses that are neither active nor terminal (for example `Human Review`) stop the agent and keep the workspace.
+
+### `polling`
+
+| Key | Default | Notes |
+|---|---|---|
+| `interval_ms` | `30000` | Poll cadence; a change applies to the next tick. |
+
+### `workspace`
+
+| Key | Default | Notes |
+|---|---|---|
+| `root` | `<system temp>/symphony_workspaces` | One directory per issue below it, named after the issue identifier (`owner_repo_12-<hash>`). Workspaces survive restarts and are reused for retries. |
+| `cleanup_terminal` | `true` | Delete an issue's workspace (after the `before_remove` hook) when it reaches a terminal state: at startup for all terminal issues, and within one poll interval for issues this process worked on, including ones already handed off (e.g. *In review* → merged → *Done*). `false` keeps them. |
+
+### `hooks`
+
+Shell scripts run with `bash -lc` in the issue workspace, in their own process group. They receive the
+orchestrator's environment **without** tracker credentials (`GITHUB_TOKEN`, `GH_TOKEN`, the variable named in
+`tracker.provider.token`, …), plus:
+
+| Variable | Value |
+|---|---|
+| `SYMPHONY_HOOK` | `after_create`, `before_run`, `after_run` or `before_remove` |
+| `SYMPHONY_ISSUE_ID` | Opaque issue id (GitHub project item id) |
+| `SYMPHONY_ISSUE_IDENTIFIER` | e.g. `cooolinho/trainingsstunden-portal#12` |
+| `SYMPHONY_ISSUE_URL`, `SYMPHONY_ISSUE_BRANCH` | Issue URL; linked branch, if any (may be empty) |
+| `SYMPHONY_ISSUE_REPOSITORY`, `SYMPHONY_ISSUE_NUMBER` | The issue's repository (`owner/name`) and number |
+| `SYMPHONY_WORKSPACE`, `SYMPHONY_WORKSPACE_KEY` | Workspace path and directory name |
+| `SYMPHONY_WORKFLOW_DIR` | Directory containing `WORKFLOW.md` |
+
+| Key | When | On failure |
+|---|---|---|
+| `after_create` | Only when the workspace directory is newly created | The half-created directory is deleted; the attempt fails and is retried. |
+| `before_run` | Before every agent attempt | The attempt fails and is retried. |
+| `after_run` | After every attempt (success, failure, cancellation) | Logged and ignored. |
+| `before_remove` | Before a workspace is deleted | Logged and ignored; the directory is still deleted. |
+| `timeout_ms` | Default `60000`; applies to every hook | A timed-out hook's whole process group is killed. |
+
+Hooks finish when their output pipes close, so redirect the output of background jobs (`cmd >/dev/null 2>&1 &`).
+
+### `agent`
+
+| Key | Default | Notes |
+|---|---|---|
+| `max_concurrent_agents` | `10` | `0` pauses new dispatches; running agents continue. |
+| `max_turns` | `20` | Turns per agent session; between turns Symphony re-reads the issue and stops if it left the active states. |
+| `max_continuations` | unlimited | After a session ends normally while the issue is still active, Symphony starts another one (a *continuation session*). With a limit, an issue that is still active after that many continuation sessions is **paused**: it stays claimed and nothing new starts. It resumes as soon as it changes on the tracker (status, comment, labels, edit), leaves the active states, or the limit is raised. `0` = pause right after the first session. |
+| `max_retry_backoff_ms` | `300000` | Cap for failure retries (10 s, 20 s, 40 s, …). |
+| `max_concurrent_agents_by_state` | `{}` | Per-status limits, e.g. `{ "In Progress": 1 }`. Invalid entries are ignored with a warning. |
+| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `turn_number`, `max_turns`). |
+
+### `claude`
+
+| Key | Default | Notes |
+|---|---|---|
+| `model` | Claude Code default | Alias (`opus`, `sonnet`) or full model id. |
+| `fallback_model` | none | Used when the primary model is overloaded. |
+| `effort` | Claude Code default | `low`, `medium`, `high`, `xhigh`, `max`. |
+| `permission_mode` | `auto` | `auto` (a classifier approves or blocks each action), `default`, `acceptEdits`, `dontAsk`, `plan`, `bypassPermissions`. See [agent-claude.md](agent-claude.md). |
+| `on_permission_request` | `deny` | Answer when Claude Code asks for approval: `deny` or `approve`. |
+| `allowed_tools` / `disallowed_tools` | `[]` | Claude Code permission rules, e.g. `"Bash(git push:*)"`. Tracker tools are always allowed; `AskUserQuestion` is always disallowed. |
+| `setting_sources` | `[project]` | Which Claude Code settings to load: `project` (the repository's `.claude/settings.json` and `CLAUDE.md`), `local`, `user` (your personal `~/.claude` settings, plugins and hooks). |
+| `sandbox` | none | Passed to Claude Code's sandbox settings (`enabled`, `network`, `filesystem`, …). |
+| `append_system_prompt` | none | Extra text appended to Claude Code's system prompt. |
+| `max_budget_usd` | none | Cost cap per agent session; the turn fails when it is exceeded. |
+| `persist_session` | `true` | Keep transcripts in `~/.claude/projects` so a session can be inspected with `claude --resume <id>`. |
+| `env` | `{}` | Extra environment variables for the agent process. |
+| `executable` | bundled CLI | Path to another Claude Code executable. |
+| `turn_timeout_ms` | `3600000` | A turn fails after this long **without any output** from the agent. |
+| `read_timeout_ms` | `30000` | Startup handshake timeout. |
+| `stall_timeout_ms` | `300000` | The orchestrator kills and retries a run without any agent event for this long; `<= 0` disables it. |
+
+### `server`
+
+| Key | Default | Notes |
+|---|---|---|
+| `port` | none | Starts the dashboard and JSON API. `0` picks a free port. `--port` overrides it. Restart to change it. |
+| `host` | `127.0.0.1` | Bind address. On a loopback address, requests with another `Host` header are rejected. |
+
+## Prompt template
+
+The Markdown body is rendered with strict Liquid: unknown variables and unknown filters fail the run attempt
+(which is then retried with backoff), so typos show up immediately. Available variables:
+
+- `issue`: `id`, `identifier`, `title`, `description`, `priority`, `state`, `branch_name`, `url`, `assignee_id`,
+  `labels` (lowercase list), `blocked_by` (list of `{id, identifier, state}`), `dispatchable`, `created_at`,
+  `updated_at` (ISO strings), `native_ref` (adapter data, for GitHub: `repository`, `number`, `issue_id`, `item_id`,
+  `parent` and `sub_issues` as `{identifier, title, state}`, …).
+- `attempt`: `null` on the first run of an issue, then `1`, `2`, … on continuation runs and retries.
+
+An empty body falls back to a minimal default prompt. `npm run dry-run` renders the prompt for the first eligible
+issue so you can check it without starting an agent.
