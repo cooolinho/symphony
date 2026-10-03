@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
+import { PricingStore } from '../src/costs/pricing.ts';
+import { HistoryLog, readHistory } from '../src/history/history.ts';
 import { Logger } from '../src/log.ts';
 import { failureBackoffMs, sortForDispatch } from '../src/orchestrator/eligibility.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
@@ -334,5 +336,58 @@ describe('workspace cleanup after release', () => {
     s.tracker.set('a', { state: 'Done' });
     await s.orchestrator.tickNow();
     await until(() => !fs.existsSync(workspace), 3_000, 'workspace removed');
+  });
+});
+
+describe('run history', () => {
+  it('logs run start and finish with tokens, model and cost to the repository log', async () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\nopus: { input: 4, output: 20 }\n');
+    const pricing = new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent());
+    const history = new HistoryLog(path.join(dir, 'repositories'), pricing, Logger.silent());
+    const runner = new FakeRunner((turn, params) => {
+      params.onEvent({
+        event: 'turn_completed', timestamp: new Date(), pid: 1, threadId: 'thread-9', turnId: '1', sessionId: 'thread-9-1', turnCount: 1,
+        usage: { inputTokens: 1_100_000, outputTokens: 100_000, totalTokens: 1_200_000 },
+        modelUsage: { 'claude-opus-5-5': { inputTokens: 1_000_000, outputTokens: 100_000, cacheReadTokens: 100_000, cacheWriteTokens: 0 } },
+        costUsd: 9.99,
+      });
+      s.tracker.set('a', { state: 'In review' });
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    });
+    const root = tempDir();
+    const tracker = new FakeTracker([makeIssue({ id: 'a' })]);
+    tracker.issueRepository = () => 'acme/app';
+    const s = {
+      tracker,
+      orchestrator: new Orchestrator({
+        workflow: new StaticWorkflow(makeWorkflow(baseFront(root, { claude: { model: 'opus' } }))),
+        runner,
+        logger: Logger.silent(),
+        env: {},
+        logDir: null,
+        timers: new ManualTimers(),
+        createAdapter: () => tracker,
+        pricing,
+        history,
+      }),
+    };
+    await s.orchestrator.tickNow();
+    await until(() => s.orchestrator.snapshot().retrying.length === 1, 3_000, 'run finished');
+
+    const entries = readHistory(history.dir, 'acme/app').entries;
+    assert.deepEqual(entries.map((e) => e.event), ['run_started', 'run_finished', 'model_usage']);
+    const finished = entries[1]?.fields ?? {};
+    assert.equal(finished.issue, 'acme/app#a');
+    assert.equal(finished.outcome, 'handed_off');
+    assert.equal(finished.state, 'In review');
+    assert.equal(finished.model, 'claude-opus-5-5');
+    assert.equal(finished.session, 'thread-9');
+    assert.equal(finished.total_tokens, '1200000');
+    // 1M input × $4 + 0.1M output × $20 + 0.1M cache reads × $0.40 (10% of input) = $6.04
+    assert.equal(finished.cost_usd, '6.04');
+    assert.equal(finished.claude_estimate_usd, '9.99');
+    assert.equal(s.orchestrator.snapshot().agent_totals.cost_usd, 6.04);
+    assert.equal(entries[0]?.fields.model, 'opus');
   });
 });

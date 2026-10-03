@@ -8,6 +8,7 @@ import { isLogLevel, type LogLevel } from './log.ts';
 import { dryRun, runService } from './service.ts';
 import { loadEnvFile, type LoadedEnvFile } from './util/env.ts';
 import { errorMessage } from './util/errors.ts';
+import { expandHome } from './util/paths.ts';
 
 const VERSION = '0.1.0';
 
@@ -21,8 +22,9 @@ Options:
                       workflow file, if present). Variables already set in the shell win.
   --port <n>          Serve the dashboard and JSON API on 127.0.0.1:<n> (0 = any free port).
                       Overrides server.port from WORKFLOW.md.
-  --log-dir <dir>     Session transcripts and state (default: $XDG_STATE_HOME/symphony
-                      or ~/.local/state/symphony).
+  --log-dir <dir>     Repository logs, session transcripts and state (default:
+                      $SYMPHONY_LOG_DIR, else $XDG_STATE_HOME/symphony or
+                      ~/.local/state/symphony).
   --log-file <path>   Also write structured logs to this file.
   --log-level <lvl>   debug | info | warn | error (default: info).
   --dry-run           Validate the workflow, list what would be dispatched, preview the
@@ -36,7 +38,8 @@ function fail(message: string, code = 2): never {
   process.exit(code);
 }
 
-function defaultLogDir(env: NodeJS.ProcessEnv): string {
+function defaultLogDir(env: NodeJS.ProcessEnv, workflowDir: string): string {
+  if (env.SYMPHONY_LOG_DIR && env.SYMPHONY_LOG_DIR.trim() !== '') return path.resolve(workflowDir, expandHome(env.SYMPHONY_LOG_DIR.trim()));
   const stateHome = env.XDG_STATE_HOME && env.XDG_STATE_HOME.trim() !== '' ? env.XDG_STATE_HOME : path.join(os.homedir(), '.local', 'state');
   return path.join(stateHome, 'symphony');
 }
@@ -100,7 +103,7 @@ async function main(): Promise<number> {
   return runService({
     workflowPath,
     port,
-    logDir: path.resolve(values['log-dir'] ?? defaultLogDir(env)),
+    logDir: path.resolve(values['log-dir'] ?? defaultLogDir(env, path.dirname(workflowPath))),
     logFile: values['log-file'] !== undefined ? path.resolve(values['log-file']) : null,
     logLevel,
     env,

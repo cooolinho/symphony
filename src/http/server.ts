@@ -1,9 +1,19 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import fs from 'node:fs';
+import type { PricingStore } from '../costs/pricing.ts';
+import { computeHistoryStats, readHistory, repositoryFileName } from '../history/history.ts';
 import type { Logger } from '../log.ts';
 import type { Orchestrator } from '../orchestrator/orchestrator.ts';
 import { errorMessage } from '../util/errors.ts';
 import { DASHBOARD_HTML } from './dashboard.ts';
+import { LOGS_HTML } from './logs-page.ts';
+
+/** Where the per-repository logs live and how to price them. */
+export interface HistorySource {
+  dir: string;
+  pricing: PricingStore;
+}
 
 export interface HttpServerHandle {
   host: string;
@@ -53,8 +63,10 @@ export function startHttpServer(options: {
   port: number;
   orchestrator: Orchestrator;
   logger: Logger;
+  history?: HistorySource | null;
 }): Promise<HttpServerHandle> {
   const { orchestrator, logger } = options;
+  const history = options.history ?? null;
   const loopbackBind = LOOPBACK_HOSTS.has(options.host);
 
   const route = (req: http.IncomingMessage, res: http.ServerResponse) => {
@@ -81,6 +93,52 @@ export function startHttpServer(options: {
     }
     if (pathname === '/api/v1/state') {
       allow(['GET'], () => sendJson(res, 200, orchestrator.snapshot()));
+      return;
+    }
+    if (pathname === '/logs') {
+      allow(['GET', 'HEAD'], () => {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(method === 'HEAD' ? undefined : LOGS_HTML);
+      });
+      return;
+    }
+    if (pathname === '/api/v1/history' || pathname === '/api/v1/history/raw') {
+      allow(['GET'], () => {
+        if (history === null) {
+          sendError(res, 404, 'history_disabled', 'the repository history is not enabled');
+          return;
+        }
+        const repoParam = new URL(req.url ?? '/', 'http://localhost').searchParams.get('repo');
+        const repo = repoParam === null || repoParam === '' ? null : repoParam;
+        if (pathname === '/api/v1/history/raw') {
+          if (repo === null) {
+            sendError(res, 400, 'bad_request', 'pass ?repo=owner/name');
+            return;
+          }
+          const file = readHistory(history.dir, repo).files[0]?.file ?? `${history.dir}/${repositoryFileName(repo)}`;
+          let text: string;
+          try {
+            text = fs.readFileSync(file, 'utf8');
+          } catch {
+            sendError(res, 404, 'not_found', `no log for ${repo}`);
+            return;
+          }
+          res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+          res.end(text);
+          return;
+        }
+        const { files, entries } = readHistory(history.dir, repo);
+        const all = repo === null ? files : readHistory(history.dir, null).files;
+        sendJson(res, 200, {
+          generated_at: new Date().toISOString(),
+          repo,
+          history_dir: history.dir,
+          pricing_file: history.pricing.path,
+          pricing_error: history.pricing.lastError,
+          repositories_available: all.map((f) => ({ repo: f.repo, file: f.file, bytes: f.bytes })),
+          ...computeHistoryStats(entries, history.pricing.current()),
+        });
+      });
       return;
     }
     if (pathname === '/api/v1/refresh') {

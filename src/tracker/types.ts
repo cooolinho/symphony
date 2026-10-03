@@ -85,6 +85,8 @@ export interface TrackerAdapter {
   agentToolSpecs(): AgentToolSpec[];
   /** Extra non-secret variables for workspace hooks (e.g. which repository to clone). */
   hookEnvironment?(issue: Issue): Record<string, string>;
+  /** Repository the issue belongs to (`owner/name`), used to group the run history. */
+  issueRepository?(issue: Issue): string | null;
 }
 
 export interface TrackerAdapterParams {

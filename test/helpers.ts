@@ -9,8 +9,16 @@ import type { EffectiveWorkflow, WorkflowLoadError } from '../src/workflow/store
 import { compilePrompt, DEFAULT_CONTINUATION_PROMPT } from '../src/workflow/template.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 
+const created: string[] = [];
+process.on('exit', () => {
+  for (const dir of created) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+/** A fresh temporary directory, removed when the test process exits. */
 export function tempDir(prefix = 'symphony-test-'): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  created.push(dir);
+  return dir;
 }
 
 export async function until(condition: () => boolean, timeoutMs = 3_000, what = 'condition'): Promise<void> {
@@ -75,6 +83,8 @@ export class FakeTracker implements TrackerAdapter {
   agentToolSpecs(): AgentToolSpec[] {
     return [];
   }
+
+  issueRepository?: (issue: Issue) => string | null;
 
   #maybeFail(): void {
     if (this.failNext !== null) {

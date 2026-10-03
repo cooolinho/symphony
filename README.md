@@ -42,6 +42,9 @@ Token stehen in der **`.env`**. Symphony ist eine Implementierung der
   Repository, Modell und Token. Eine Instanz kann mehrere Repositories bedienen.
 - **Beobachtbar:** Optionales Dashboard mit JSON-API, strukturierte Logs, ein Transkript pro Session, `--dry-run`
   zum Prüfen der Einrichtung.
+- **Logs und Kosten pro Repository:** Ein fortlaufendes Log hält fest, wann welches Issue bearbeitet wurde, mit
+  Tokens, Modell, geschätzten Kosten und Agentenzeit. Die Kosten berechnet Symphony mit deinen Preisen aus der
+  `model-costs.yml`. Eine Logs-Seite im Dashboard zeigt Statistiken, gesamt oder pro Repository.
 
 ## 🚀 Getting Started
 
@@ -134,6 +137,7 @@ SYMPHONY_CLEANUP_TERMINAL=true
 | `SYMPHONY_MAX_CONTINUATIONS` | *optional:* Wie viele weitere Sessions ein Issue bekommt, solange seine Karte aktiv bleibt. Danach **pausiert** Symphony das Issue, siehe [Fortsetzungen und Pausieren](#fortsetzungen-und-pausieren). Leer heißt unbegrenzt. |
 | `SYMPHONY_POLL_INTERVAL_MS` | *optional:* Wie oft das Board abgefragt wird, in Millisekunden. Standard 30000. |
 | `SYMPHONY_CLEANUP_TERMINAL` | *optional:* `true` (Standard) löscht den Workspace, sobald ein Issue in `Done` landet. Vorher läuft der `before_remove`-Hook, z. B. für eine Test-Datenbank. `false` behält die Workspaces. |
+| `SYMPHONY_LOG_DIR` | *optional:* Ordner für Repository-Logs und Session-Transkripte. Standard: `~/.local/state/symphony`. Ein relativer Pfad gilt ab dem Symphony-Ordner, z. B. `logs`. |
 
 Die `WORKFLOW.md` liest diese Werte über Verweise wie `$GITHUB_TOKEN` oder `${SYMPHONY_MAX_TURNS:-10}`. Die zweite
 Form hat einen Standardwert, falls die Variable fehlt oder leer ist. Variablen, die in deiner Shell bereits gesetzt
@@ -272,12 +276,16 @@ Fehlgeschlagene Läufe zählen hier nicht mit. Für sie gelten die Wiederholunge
 ### Dashboard und API
 
 Das Dashboard läuft nur, wenn `SYMPHONY_PORT` gesetzt ist oder du `npm start -- --port 4000` aufrufst. Es lauscht nur
-auf `127.0.0.1`. Es zeigt laufende Agenten mit Spalte, Phase, Turns, letzter Aktivität, Tokens und geschätzten
-Kosten, außerdem die Wiederholungs-Warteschlange und Probleme wie Konfigurations- oder GitHub-Fehler.
+auf `127.0.0.1`. Es zeigt laufende Agenten mit Spalte, Phase, Modell, Turns, letzter Aktivität, Tokens und geschätzten
+Kosten, außerdem die Wiederholungs-Warteschlange und Probleme wie Konfigurations- oder GitHub-Fehler. Der Button
+**Logs** im Header öffnet die [Logs-Seite](#logs-und-statistiken).
 
 | Endpunkt | Inhalt |
 |---|---|
 | `GET /` | Dashboard |
+| `GET /logs` | Logs-Seite mit Statistiken, gesamt oder mit `?repo=owner/name` für ein Repository |
+| `GET /api/v1/history` | dieselben Statistiken als JSON, optional mit `?repo=owner/name` |
+| `GET /api/v1/history/raw?repo=owner/name` | die `.log`-Datei eines Repositorys als Text |
 | `GET /api/v1/state` | Gesamtzustand als JSON: laufende Agenten, Warteschlange, Summen, Gesundheit |
 | `GET /api/v1/<identifier>` | Details zu einem Issue: Workspace, Versuche, letzte Ereignisse, letzter Fehler |
 | `POST /api/v1/refresh` | sofort abfragen und abgleichen |
@@ -293,9 +301,64 @@ curl -s -X POST http://127.0.0.1:4000/api/v1/refresh
 | Was | Wo |
 |---|---|
 | Laufende Logs (`key=value`) | Terminal (stderr). Zusätzlich in eine Datei mit `--log-file <pfad>`, ausführlicher mit `--log-level debug`. |
+| Log pro Repository: was wann bearbeitet wurde, mit Tokens, Modell, Kosten und Agentenzeit | `~/.local/state/symphony/repositories/<owner>_<repo>.log`, siehe [Logs und Statistiken](#logs-und-statistiken) |
 | Transkript jeder Session (alle Agenten-Nachrichten als JSON-Zeilen) | `~/.local/state/symphony/sessions/<workspace>/<zeit>.jsonl`. Einen anderen Ort wählst du mit `--log-dir <ordner>`. |
 | Claude-Code-Session ansehen | im Workspace `claude --resume <thread-id>`. Die ID steht im Log als `thread_id` und in der API (`/api/v1/<identifier>`). |
 | Workspaces | `~/symphony-workspaces/`. Sie werden bei `Done` gelöscht; andere kannst du gefahrlos von Hand löschen, wenn kein Agent darin läuft. |
+
+### Logs und Statistiken
+
+Für jedes Repository schreibt Symphony ein fortlaufendes Log, z. B.
+`~/.local/state/symphony/repositories/cooolinho_trainingsstunden-portal.log`. Den Ordner änderst du mit
+`SYMPHONY_LOG_DIR` in der `.env` oder mit `--log-dir`. Jede Zeile ist ein Ereignis im `key=value`-Format:
+
+```
+ts=2026-10-04T09:16:19.000Z event=run_started repo=cooolinho/trainingsstunden-portal issue=cooolinho/trainingsstunden-portal#5 run=8f3c2a1b9d0e title="Symphony-Testkette 3/3: …" state=Ready attempt=null model=opus
+ts=2026-10-04T09:17:00.000Z event=run_finished repo=cooolinho/trainingsstunden-portal issue=cooolinho/trainingsstunden-portal#5 run=8f3c2a1b9d0e … outcome=handed_off state="In review" turns=1 model=claude-opus-5-5 total_tokens=153200 cost_usd=0.1491 agent_seconds=41 repo_runs=4 repo_tokens=556200 repo_cost_usd=0.5262 repo_agent_seconds=246
+ts=2026-10-04T09:17:00.000Z event=model_usage repo=cooolinho/trainingsstunden-portal issue=cooolinho/trainingsstunden-portal#5 run=8f3c2a1b9d0e model=claude-opus-5-5 price=opus input_tokens=2800 output_tokens=1680 cache_read_tokens=123200 cache_write_tokens=12320 total_tokens=140000 cost_usd=0.1361
+```
+
+| Ereignis | Bedeutung |
+|---|---|
+| `run_started` | Ein Agent beginnt mit einem Issue: Zeitpunkt, Issue, Titel, Spalte, Versuch und gewünschtes Modell. |
+| `run_finished` | Ein Lauf endet. Erfasst werden das Ergebnis (`handed_off` = übergeben, `continuing` = noch aktiv, `failed`, `stopped`, `stalled`, `shutdown`) und die Spalte danach. Dazu kommen Turns, das meistgenutzte Modell, Tokens (Input, Output, Cache), geschätzte Kosten und Agentenzeit. Die Felder `repo_*` sind die laufenden Summen des Repositorys. |
+| `model_usage` | Tokens und Kosten eines Laufs pro Modell. Arbeitet Claude Code intern mit einem zweiten Modell, gibt es eine zweite Zeile. |
+| `issue_paused` | Ein Issue wurde nach seinen Fortsetzungs-Sessions pausiert. |
+| `workspace_removed` | Der Workspace eines Issues in `Done` wurde gelöscht. |
+
+Die **Logs-Seite** (`/logs`, Button *Logs* im Dashboard) wertet diese Dateien aus. Oben wählst du *Alle
+Repositories* oder ein einzelnes. Die Seite zeigt dann:
+
+- Kennzahlen: geschätzte Kosten, Tokens, Agentenzeit, Läufe und Issues,
+- Tabellen nach **Modell** (mit Kostenanteil), nach **Repository**, nach **Issue** (Läufe, letztes Ergebnis, erster
+  Start, letztes Ende) und nach **Tag**,
+- die letzten Log-Einträge und bei einem einzelnen Repository einen Link auf die rohe `.log`-Datei.
+
+### Kosten schätzen mit `model-costs.yml`
+
+Die Kosten berechnet Symphony aus den Tokens mit den Preisen in der `model-costs.yml` im Symphony-Ordner. Die Preise
+gelten in USD pro Million Tokens. Änderungen wirken ohne Neustart. Die Logs-Seite rechnet auch ältere Einträge mit
+den aktuellen Preisen neu.
+
+```yaml
+default:            # gilt für jedes Modell ohne passenden Eintrag
+  input: 5.00
+  output: 25.00
+
+opus:               # gilt für jede Modell-ID, die "opus" enthält, z. B. claude-opus-5-5
+  input: 4.00
+  output: 20.00
+  cache_read: 0.20  # optional; Standard: 10 % des Input-Preises (cache_write: 125 %)
+
+claude-opus-4-8:    # eine exakte Modell-ID hat Vorrang vor "opus"
+  input: 5.00
+  output: 25.00
+```
+
+Welche Zeile für ein Modell gilt, steht auf der Logs-Seite in der Spalte *Price entry*. Ist die Datei fehlerhaft,
+rechnet Symphony mit den letzten gültigen Preisen weiter und zeigt den Fehler im Dashboard. Fehlt sie ganz, gilt für
+alle Modelle ein eingebauter Standard von 5 $ / 25 $. Claude Codes eigene Schätzung steht zum Vergleich als
+`claude_estimate_usd` im Log.
 
 ### Mehrere Repositories
 
@@ -348,7 +411,8 @@ Die häufigsten Stellschrauben in der `WORKFLOW.md`. Alle Optionen beschreibt
 
 Jede Session startet mit rund 30.000 Tokens Kontext (System-Prompt und Tool-Beschreibungen von Claude Code). Ein
 minimaler Test-Turn mit `opus` kostete etwa 0,15 $. Echte Issues kosten je nach Umfang deutlich mehr. Das Dashboard
-zeigt Claude Codes Kostenschätzung pro Agent und insgesamt. Zum Begrenzen eignen sich:
+zeigt die geschätzten Kosten pro Agent und seit dem Start. Die Logs-Seite zeigt sie pro Repository, Modell, Issue und
+Tag. Geschätzt wird mit der [`model-costs.yml`](#kosten-schätzen-mit-model-costsyml). Zum Begrenzen eignen sich:
 
 - `claude.max_budget_usd` pro Session,
 - wenige parallele Agenten,
@@ -394,7 +458,8 @@ mit `max_concurrent_agents: 1` an.
 ```
 symphony/
 ├── WORKFLOW.md                 # Prompt und Einstellungen (wird live neu geladen)
-├── .env.example                # Vorlage für .env (Board, Repository, Modell, Token)
+├── model-costs.yml             # Modellpreise für die Kostenschätzung (wird live neu geladen)
+├── .env.example                # Vorlage für .env (Board, Repository, Modell, Token, Grenzen)
 ├── src/
 │   ├── cli.ts                  # Einstiegspunkt: Optionen, .env laden, Start
 │   ├── service.ts              # Start, Herunterfahren, Dry Run
@@ -404,7 +469,9 @@ symphony/
 │   ├── workspace/              # Workspaces pro Issue und Hooks
 │   ├── agent/                  # Claude-Code-Sessions über das Claude Agent SDK
 │   ├── orchestrator/           # Abfragen, Starten, Abgleichen, Wiederholungen
-│   ├── http/                   # Dashboard und JSON-API
+│   ├── history/                # Log pro Repository und Statistiken dazu
+│   ├── costs/                  # model-costs.yml lesen, Kosten berechnen
+│   ├── http/                   # Dashboard, Logs-Seite und JSON-API
 │   └── util/                   # Hilfsfunktionen (.env, Pfade, Fehler, …)
 ├── test/                       # Tests mit node:test
 └── docs/                       # Referenzdokumentation

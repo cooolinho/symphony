@@ -14,7 +14,8 @@ Agent SDK instead; the mapping of threads, turns, approvals, user input, timeout
   directly in the workspace, in its own process group.
 - `claude.read_timeout_ms` defaults to 30 s (spec: 5 s), because starting Claude Code includes loading settings and
   MCP servers.
-- The snapshot's token totals are named `agent_totals` (spec example: `codex_totals`) and include `cost_usd`.
+- The snapshot's token totals are named `agent_totals` (spec example: `codex_totals`) and include `cost_usd`
+  (estimated with `model-costs.yml`) and `claude_estimate_usd`.
 
 ## Implementation-defined behavior
 
@@ -49,6 +50,7 @@ Agent SDK instead; the mapping of threads, turns, approvals, user input, timeout
 |---|---|
 | HTTP server (13.7) | Implemented: `/`, `/api/v1/state`, `/api/v1/<identifier>`, `POST /api/v1/refresh` |
 | Provider-native agent tools (10.5) | Implemented for `github_project`: `get_issue`, `set_status`, `add_comment`, `open_pull_request` |
+| Repository history | Extension: one `key=value` log per repository with every run (tokens per model, cost, agent time), statistics at `/logs` and `/api/v1/history` |
 | SSH workers (Appendix A) | Not implemented |
 | Persisted retry queue | Not implemented (spec TODO); state is rebuilt from the tracker after a restart |
 

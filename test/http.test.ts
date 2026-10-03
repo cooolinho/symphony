@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { after, before, describe, it } from 'node:test';
+import fs from 'node:fs';
+import path from 'node:path';
+import { PricingStore } from '../src/costs/pricing.ts';
+import { HistoryLog } from '../src/history/history.ts';
 import { startHttpServer, type HttpServerHandle } from '../src/http/server.ts';
 import { Logger } from '../src/log.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
@@ -25,6 +29,16 @@ describe('http extension', () => {
   const timers = new ManualTimers();
 
   before(async () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
+    const pricing = new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent());
+    const historyLog = new HistoryLog(path.join(dir, 'repositories'), pricing, Logger.silent());
+    historyLog.runFinished({
+      repo: 'acme/app', issue: 'acme/app#1', title: 'First', run: 'r1', session: null, attempt: null, outcome: 'handed_off',
+      state: 'In review', reason: 'done', turns: 1, startedAt: new Date('2026-10-04T08:00:00Z'), finishedAt: new Date('2026-10-04T08:01:00Z'),
+      agentSeconds: 60, usage: { 'claude-opus-5-5': { inputTokens: 1000, outputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0 } }, claudeEstimateUsd: null,
+    });
+    historyLog.note('other/repo', 'workspace_removed', { issue: 'other/repo#2', state: 'Done' });
     const orchestrator = new Orchestrator({
       workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir()))),
       runner: new FakeRunner(),
@@ -34,7 +48,7 @@ describe('http extension', () => {
       timers,
       createAdapter: () => new FakeTracker(),
     });
-    server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent(), history: { dir: historyLog.dir, pricing } });
   });
 
   after(async () => {
@@ -50,8 +64,35 @@ describe('http extension', () => {
     assert.equal(state.status, 200);
     const body = JSON.parse(state.body);
     assert.deepEqual(Object.keys(body.counts), ['running', 'retrying', 'paused', 'claimed']);
-    assert.deepEqual(Object.keys(body.agent_totals), ['input_tokens', 'output_tokens', 'total_tokens', 'seconds_running', 'cost_usd']);
+    assert.deepEqual(Object.keys(body.agent_totals), ['input_tokens', 'output_tokens', 'total_tokens', 'seconds_running', 'cost_usd', 'claude_estimate_usd']);
     assert.ok(Array.isArray(body.running) && Array.isArray(body.retrying));
+  });
+
+  it('links the logs page from the dashboard and serves it', async () => {
+    assert.match((await request(server.port, 'GET', '/')).body, /href="\/logs"/);
+    const page = await request(server.port, 'GET', '/logs');
+    assert.equal(page.status, 200);
+    assert.match(page.body, /<title>Symphony logs<\/title>/);
+  });
+
+  it('serves history statistics for all repositories or one, and the raw log', async () => {
+    const all = JSON.parse((await request(server.port, 'GET', '/api/v1/history')).body);
+    assert.deepEqual(all.repositories_available.map((r: { repo: string }) => r.repo), ['acme/app', 'other/repo']);
+    assert.equal(all.totals.runs, 1);
+    assert.equal(all.totals.total_tokens, 1500);
+    assert.equal(all.totals.cost_usd, 0.0175);
+    assert.deepEqual(all.models.map((m: { model: string }) => m.model), ['claude-opus-5-5']);
+
+    const one = JSON.parse((await request(server.port, 'GET', '/api/v1/history?repo=other%2Frepo')).body);
+    assert.equal(one.repo, 'other/repo');
+    assert.equal(one.totals.runs, 0);
+    assert.equal(one.recent[0].event, 'workspace_removed');
+
+    const raw = await request(server.port, 'GET', '/api/v1/history/raw?repo=acme%2Fapp');
+    assert.equal(raw.status, 200);
+    assert.match(raw.headers['content-type'] ?? '', /text\/plain/);
+    assert.match(raw.body, /event=run_finished repo=acme\/app issue=acme\/app#1/);
+    assert.equal((await request(server.port, 'GET', '/api/v1/history/raw')).status, 400);
   });
 
   it('returns a JSON 404 for unknown issues and routes', async () => {

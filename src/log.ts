@@ -155,7 +155,8 @@ export function formatLine(at: Date, level: LogLevel, msg: string, fields: LogFi
   return line;
 }
 
-function formatValue(value: unknown): string {
+/** Formats one value for a `key=value` line: bare when safe, otherwise JSON-quoted. */
+export function formatValue(value: unknown): string {
   if (value === null) return 'null';
   if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return String(value);
   if (value instanceof Date) return value.toISOString();

@@ -1,7 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { childEnvironment } from '../agent/env.ts';
 import type { AgentEvent, AgentRunner, TokenUsage } from '../agent/types.ts';
+import { estimateCost, totalTokens, type ModelTokenUsage, type PricingStore } from '../costs/pricing.ts';
+import type { HistoryLog, RunOutcome } from '../history/history.ts';
 import type { Logger } from '../log.ts';
 import { getTrackerFactory } from '../tracker/registry.ts';
 import type { Issue, TrackerAdapter } from '../tracker/types.ts';
@@ -61,6 +64,10 @@ export interface OrchestratorDeps {
   clock?: Clock;
   timers?: Timers;
   createAdapter?: AdapterFactory;
+  /** model-costs.yml; without it costs fall back to Claude Code's own estimate. */
+  pricing?: PricingStore | null;
+  /** Per-repository run history; null disables it. */
+  history?: HistoryLog | null;
 }
 
 type StopKind = 'terminal' | 'inactive' | 'unroutable' | 'missing' | 'stalled' | 'shutdown';
@@ -75,6 +82,10 @@ interface StopRequest {
 interface RunningEntry {
   issueId: string;
   identifier: string;
+  /** Repository for the history log (`owner/name`, or `unknown`). */
+  repo: string;
+  /** Short id tying the history lines of one run together. */
+  runId: string;
   issue: Issue;
   attempt: number | null;
   startedAt: Date;
@@ -92,8 +103,11 @@ interface RunningEntry {
   lastMessage: string | null;
   tokens: TokenUsage;
   reported: TokenUsage;
+  /** Estimated cost with model-costs.yml (Claude Code's estimate when no price table is configured). */
   costUsd: number;
   reportedCostUsd: number;
+  claudeEstimateUsd: number;
+  modelUsage: Record<string, ModelTokenUsage>;
   controller: AbortController;
   stop: StopRequest | null;
   done: Promise<void>;
@@ -182,6 +196,18 @@ function usageDelta(next: TokenUsage, previous: TokenUsage): TokenUsage {
   };
 }
 
+function primaryModelOf(usage: Record<string, ModelTokenUsage>): string | null {
+  let best: string | null = null;
+  let most = -1;
+  for (const [model, tokens] of Object.entries(usage)) {
+    if (totalTokens(tokens) > most) {
+      best = model;
+      most = totalTokens(tokens);
+    }
+  }
+  return best;
+}
+
 function tokensJson(usage: TokenUsage) {
   return { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens, total_tokens: usage.totalTokens };
 }
@@ -207,7 +233,7 @@ export class Orchestrator {
   /** Issues whose workspace this process created or used; checked for terminal states after release. */
   #watched = new Map<string, string>();
   #cleanups = new Map<string, Promise<void>>();
-  #totals = { inputTokens: 0, outputTokens: 0, totalTokens: 0, endedSeconds: 0, costUsd: 0 };
+  #totals = { inputTokens: 0, outputTokens: 0, totalTokens: 0, endedSeconds: 0, costUsd: 0, claudeEstimateUsd: 0 };
   #rateLimits: unknown = null;
 
   #pollIntervalMs: number;
@@ -418,6 +444,8 @@ export class Orchestrator {
     const entry: RunningEntry = {
       issueId: issue.id,
       identifier: issue.identifier,
+      repo: adapter.issueRepository?.(issue) ?? 'unknown',
+      runId: randomUUID().replace(/-/g, '').slice(0, 12),
       issue,
       attempt,
       startedAt: this.#clock.now(),
@@ -437,6 +465,8 @@ export class Orchestrator {
       reported: ZERO_USAGE,
       costUsd: 0,
       reportedCostUsd: 0,
+      claudeEstimateUsd: 0,
+      modelUsage: {},
       controller,
       stop: null,
       done: Promise.resolve(),
@@ -452,6 +482,16 @@ export class Orchestrator {
       attempt,
       continuation: continuation ? record.continuations : undefined,
       title: truncate(issue.title, 120),
+    });
+    this.#deps.history?.runStarted({
+      repo: entry.repo,
+      issue: issue.identifier,
+      title: issue.title,
+      state: issue.state,
+      attempt,
+      model: workflow.config.claude.model,
+      run: entry.runId,
+      at: entry.startedAt,
     });
 
     const config = workflow.config;
@@ -509,7 +549,9 @@ export class Orchestrator {
   #onWorkerExit(entry: RunningEntry, outcome: WorkerOutcome): void {
     if (this.#running.get(entry.issueId) !== entry) return;
     this.#running.delete(entry.issueId);
-    this.#totals.endedSeconds += (this.#clock.monotonicMs() - entry.startedAtMs) / 1000;
+    const agentSeconds = (this.#clock.monotonicMs() - entry.startedAtMs) / 1000;
+    this.#totals.endedSeconds += agentSeconds;
+    this.#recordRun(entry, outcome, agentSeconds);
     const log = this.#issueLogger(entry.issue);
     const record = this.#records.get(entry.issueId);
     const nextAttempt = (entry.attempt ?? 0) + 1;
@@ -550,6 +592,53 @@ export class Orchestrator {
       this.#scheduleRetry(entry.issueId, nextAttempt, { ...retryInfo, kind: 'failure', error: `worker exited: ${error}` });
     }
     this.#notify();
+  }
+
+  /** Writes the finished run to the repository history. */
+  #recordRun(entry: RunningEntry, outcome: WorkerOutcome, agentSeconds: number): void {
+    const history = this.#deps.history;
+    if (history === null || history === undefined) return;
+    const config = this.#deps.workflow.current.config;
+    let result: RunOutcome;
+    let reason: string;
+    if (entry.stop !== null) {
+      result = entry.stop.kind === 'stalled' ? 'stalled' : entry.stop.kind === 'shutdown' ? 'shutdown' : 'stopped';
+      reason = entry.stop.reason;
+    } else if (outcome.kind === 'normal') {
+      result = isActiveState(entry.issue.state, config.tracker) ? 'continuing' : 'handed_off';
+      reason = outcome.reason;
+    } else if (outcome.kind === 'cancelled') {
+      result = 'stopped';
+      reason = outcome.message;
+    } else {
+      result = 'failed';
+      reason = `${outcome.code}: ${outcome.message}`;
+    }
+    history.runFinished({
+      repo: entry.repo,
+      issue: entry.identifier,
+      title: entry.issue.title,
+      run: entry.runId,
+      session: entry.threadId,
+      attempt: entry.attempt,
+      outcome: result,
+      state: entry.issue.state,
+      reason,
+      turns: entry.turnCount,
+      startedAt: entry.startedAt,
+      finishedAt: this.#clock.now(),
+      agentSeconds,
+      usage: entry.modelUsage,
+      claudeEstimateUsd: entry.claudeEstimateUsd > 0 ? entry.claudeEstimateUsd : null,
+    });
+  }
+
+  #repositoryOf(issue: Issue): string {
+    try {
+      return this.#adapterFor(this.#deps.workflow.current).issueRepository?.(issue) ?? 'unknown';
+    } catch {
+      return 'unknown';
+    }
   }
 
   // ---------------------------------------------------------------- retries
@@ -676,6 +765,13 @@ export class Orchestrator {
       pausedAt: this.#clock.now(),
     });
     this.#claimed.add(issue.id);
+    this.#deps.history?.note(this.#repositoryOf(issue), 'issue_paused', {
+      issue: issue.identifier,
+      title: issue.title,
+      state: issue.state,
+      continuations,
+      max_continuations: limit,
+    });
     this.#issueLogger(issue).warn(
       'issue paused: still active after its continuation sessions; change it on the board (status, comment, labels) to resume',
       { state: issue.state, continuations, max_continuations: limit },
@@ -807,9 +903,9 @@ export class Orchestrator {
     if (this.#cleanups.has(issue.id)) return;
     const cleanup = this.#workspaces(this.#deps.workflow.current)
       .remove(this.#hookIssue(issue))
-      .then(() => undefined)
-      .then(() => {
+      .then((removed) => {
         this.#watched.delete(issue.id);
+        if (removed) this.#deps.history?.note(this.#repositoryOf(issue), 'workspace_removed', { issue: issue.identifier, state: issue.state });
       })
       .catch((error: unknown) => {
         this.#issueLogger(issue).warn('workspace cleanup failed', { error: errorMessage(error) });
@@ -865,9 +961,16 @@ export class Orchestrator {
       entry.reported = event.usage;
     }
     if (event.costUsd !== undefined) {
-      this.#totals.costUsd += event.costUsd >= entry.reportedCostUsd ? event.costUsd - entry.reportedCostUsd : event.costUsd;
-      entry.costUsd = event.costUsd;
-      entry.reportedCostUsd = event.costUsd;
+      this.#totals.claudeEstimateUsd += Math.max(0, event.costUsd - entry.claudeEstimateUsd);
+      entry.claudeEstimateUsd = event.costUsd;
+    }
+    if (event.modelUsage !== undefined) entry.modelUsage = event.modelUsage;
+    if (event.modelUsage !== undefined || event.costUsd !== undefined) {
+      const pricing = this.#deps.pricing?.current();
+      const cost = pricing !== undefined ? estimateCost(pricing, entry.modelUsage) : entry.claudeEstimateUsd;
+      this.#totals.costUsd += cost >= entry.reportedCostUsd ? cost - entry.reportedCostUsd : cost;
+      entry.costUsd = cost;
+      entry.reportedCostUsd = cost;
     }
     if (event.rateLimits !== undefined) this.#rateLimits = event.rateLimits;
 
@@ -934,7 +1037,10 @@ export class Orchestrator {
       seconds_running: Math.round((now - entry.startedAtMs) / 100) / 10,
       workspace: entry.workspacePath,
       tokens: tokensJson(entry.tokens),
-      cost_usd: entry.costUsd,
+      model: primaryModelOf(entry.modelUsage),
+      cost_usd: Math.round(entry.costUsd * 10_000) / 10_000,
+      claude_estimate_usd: Math.round(entry.claudeEstimateUsd * 10_000) / 10_000,
+      repo: entry.repo,
       stopping: entry.stop?.reason ?? null,
     };
   }
@@ -982,6 +1088,7 @@ export class Orchestrator {
         total_tokens: this.#totals.totalTokens,
         seconds_running: Math.round((this.#totals.endedSeconds + activeSeconds) * 10) / 10,
         cost_usd: Math.round(this.#totals.costUsd * 10_000) / 10_000,
+        claude_estimate_usd: Math.round(this.#totals.claudeEstimateUsd * 10_000) / 10_000,
       },
       rate_limits: this.#rateLimits,
       health: {
@@ -1006,6 +1113,9 @@ export class Orchestrator {
         max_continuations: config.agent.maxContinuations,
         cleanup_terminal: config.workspace.cleanupTerminal,
         completed_count: this.#completed.size,
+        pricing_file: this.#deps.pricing?.path ?? null,
+        pricing_error: this.#deps.pricing?.lastError ?? null,
+        history_dir: this.#deps.history?.dir ?? null,
       },
     };
   }

@@ -200,6 +200,11 @@ export class GithubProjectAdapter implements TrackerAdapter {
     return createGithubTools(this);
   }
 
+  issueRepository(issue: Issue): string | null {
+    const repository = issue.native_ref?.provider === KIND ? issue.native_ref.repository : null;
+    return typeof repository === 'string' ? repository : null;
+  }
+
   /** Lets hooks clone the issue's own repository, so one board can span several repositories. */
   hookEnvironment(issue: Issue): Record<string, string> {
     const ref = issue.native_ref;

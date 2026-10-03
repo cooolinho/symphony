@@ -1,4 +1,7 @@
+import path from 'node:path';
 import { ClaudeAgentRunner } from './agent/claude.ts';
+import { PricingStore } from './costs/pricing.ts';
+import { HistoryLog } from './history/history.ts';
 import { killAllAgentProcessGroups } from './agent/spawn.ts';
 import { startHttpServer, type HttpServerHandle } from './http/server.ts';
 import { Logger, type LogLevel } from './log.ts';
@@ -52,7 +55,17 @@ export async function runService(options: ServiceOptions): Promise<number> {
     return 1;
   }
 
-  const orchestrator = new Orchestrator({ workflow: store, runner: new ClaudeAgentRunner(), logger, env, logDir: options.logDir });
+  const pricing = new PricingStore(path.join(store.current.config.workflowDir, 'model-costs.yml'), logger);
+  const history = new HistoryLog(path.join(options.logDir, 'repositories'), pricing, logger);
+  const orchestrator = new Orchestrator({
+    workflow: store,
+    runner: new ClaudeAgentRunner(),
+    logger,
+    env,
+    logDir: options.logDir,
+    pricing,
+    history,
+  });
   process.on('exit', killAllAgentProcessGroups);
   try {
     await orchestrator.start();
@@ -69,7 +82,7 @@ export async function runService(options: ServiceOptions): Promise<number> {
   const port = options.port ?? config.server.port;
   if (port !== null) {
     try {
-      http = await startHttpServer({ host: config.server.host, port, orchestrator, logger });
+      http = await startHttpServer({ host: config.server.host, port, orchestrator, logger, history: { dir: history.dir, pricing } });
       logger.info('dashboard listening', { url: http.url });
     } catch (error) {
       logger.error('dashboard failed to start; continuing without it', { error: errorMessage(error) });
@@ -83,6 +96,8 @@ export async function runService(options: ServiceOptions): Promise<number> {
     max_concurrent_agents: config.agent.maxConcurrentAgents,
     permission_mode: config.claude.permissionMode,
     log_dir: options.logDir,
+    repository_logs: history.dir,
+    model_costs: pricing.path,
   });
 
   await new Promise<void>((resolve) => {

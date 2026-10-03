@@ -1,0 +1,34 @@
+# Estimated model prices for the cost figures in the per-repository logs and the dashboard.
+# Changes apply without a restart.
+#
+# Prices are USD per million tokens. Each entry needs `input` and `output`; `cache_read` and
+# `cache_write` default to 10% and 125% of the input price.
+#
+# Keys are matched against the model id Claude Code reports (for example `claude-opus-5-5`):
+#   1. an exact id,             e.g. `claude-opus-4-8:`
+#   2. else the longest key contained in the id, e.g. `opus:` matches every Opus model
+#   3. else `default`
+# Add exact ids when you use older models with other prices.
+
+default:
+  input: 5.00
+  output: 25.00
+
+fable:
+  input: 10.00
+  output: 50.00
+  cache_read: 0.25
+
+opus:
+  input: 4.00
+  output: 20.00
+  cache_read: 0.20
+
+sonnet:
+  input: 2.00
+  output: 10.00
+  cache_read: 0.20
+
+haiku:
+  input: 1.00
+  output: 5.00

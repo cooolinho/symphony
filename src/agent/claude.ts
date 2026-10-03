@@ -16,6 +16,7 @@ import {
   type SDKSystemMessage,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
+import type { ModelTokenUsage } from '../costs/pricing.ts';
 import type { Issue, ToolResult } from '../tracker/types.ts';
 import { AsyncQueue, settledWithin, withTimeout } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
@@ -66,6 +67,20 @@ export function usageFromModelUsage(modelUsage: Record<string, ModelUsage> | und
     outputTokens += usage.outputTokens ?? 0;
   }
   return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
+}
+
+/** Per-model session totals from a result message, with uncached input and cache traffic apart. */
+export function modelUsageBreakdown(modelUsage: Record<string, ModelUsage> | undefined): Record<string, ModelTokenUsage> {
+  const breakdown: Record<string, ModelTokenUsage> = {};
+  for (const [model, usage] of Object.entries(modelUsage ?? {})) {
+    breakdown[model] = {
+      inputTokens: usage.inputTokens ?? 0,
+      outputTokens: usage.outputTokens ?? 0,
+      cacheReadTokens: usage.cacheReadInputTokens ?? 0,
+      cacheWriteTokens: usage.cacheCreationInputTokens ?? 0,
+    };
+  }
+  return breakdown;
 }
 
 function describeResult(result: SDKResultMessage): string {
@@ -404,6 +419,7 @@ class ClaudeSession implements AgentSession {
     this.#emit(succeeded ? 'turn_completed' : 'turn_failed', {
       message: succeeded ? `turn completed (${message.num_turns} model calls)` : describeResult(message),
       usage,
+      modelUsage: modelUsageBreakdown(message.modelUsage),
       costUsd: message.total_cost_usd,
       detail: { subtype: message.subtype, stop_reason: message.stop_reason, duration_ms: message.duration_ms },
     });

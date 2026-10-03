@@ -72,9 +72,12 @@ version), `startup_failed`, `turn_started`, `turn_completed`, `turn_failed`, `tu
 `agent_exited`, `notification`, `other_message`.
 
 Token usage comes from the `modelUsage` totals of each turn result, which are cumulative for the session (main
-loop, subagents and compaction). Input tokens include cache reads and cache writes. The orchestrator adds the
-difference to the previous total, so nothing is counted twice. Cost is Claude Code's estimate (`total_cost_usd`),
-which is cumulative as well. Rate-limit snapshots come from `rate_limit_event` messages (subscription logins).
+loop, subagents and compaction) and broken down per model. In the dashboard totals, input tokens include cache reads
+and cache writes; the repository logs keep the four counts apart. The orchestrator adds the difference to the
+previous total, so nothing is counted twice. Cost is estimated per model with `model-costs.yml` (see
+[configuration.md](configuration.md)); Claude Code's own estimate (`total_cost_usd`) is kept as
+`claude_estimate_usd` for comparison. Rate-limit snapshots come from `rate_limit_event` messages (subscription
+logins).
 
 Every raw SDK message is also written as JSON lines to `<log-dir>/sessions/<workspace-key>/<timestamp>.jsonl`.
 

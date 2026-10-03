@@ -120,6 +120,39 @@ Hooks finish when their output pipes close, so redirect the output of background
 | `port` | none | Starts the dashboard and JSON API. `0` picks a free port. `--port` overrides it. Restart to change it. |
 | `host` | `127.0.0.1` | Bind address. On a loopback address, requests with another `Host` header are rejected. |
 
+## `model-costs.yml`
+
+Prices for the cost estimates (dashboard, repository logs, logs page), next to `WORKFLOW.md`. Re-read when the file
+changes; an invalid edit keeps the previous prices and is reported on the dashboard.
+
+```yaml
+default: { input: 5.00, output: 25.00 }           # USD per million tokens
+opus:    { input: 4.00, output: 20.00, cache_read: 0.20 }
+claude-opus-4-8: { input: 5.00, output: 25.00 }
+```
+
+- Each entry needs `input` and `output`; `cache_read` defaults to 10% and `cache_write` to 125% of `input`.
+- A model id reported by Claude Code (e.g. `claude-opus-5-5`) uses the exact entry if there is one, else the longest
+  key contained in the id (`opus`), else `default`. Without the file, every model is priced at 5 / 25.
+- Cost = input × input price + output × output price + cache reads × cache_read + cache writes × cache_write.
+
+## Repository logs
+
+`<log-dir>/repositories/<owner>_<repo>.log` (log dir: `--log-dir`, else `SYMPHONY_LOG_DIR` resolved against the
+workflow directory, else `$XDG_STATE_HOME/symphony` or `~/.local/state/symphony`). One `key=value` line per event:
+
+| Event | Fields |
+|---|---|
+| `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested) |
+| `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `stopped`, `stalled`, `shutdown`), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `started_at`, running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` |
+| `model_usage` | `repo`, `issue`, `run`, `model`, `price` (matched entry), token counts, `cost_usd` |
+| `issue_paused` | `repo`, `issue`, `title`, `state`, `continuations`, `max_continuations` |
+| `workspace_removed` | `repo`, `issue`, `state` |
+
+`cost_usd` in a line uses the prices at the time it was written; the logs page and `/api/v1/history` recompute every
+cost from the logged tokens with the current `model-costs.yml`. `input_tokens` counts uncached input only;
+`total_tokens` is the sum of all four token counts.
+
 ## Prompt template
 
 The Markdown body is rendered with strict Liquid: unknown variables and unknown filters fail the run attempt

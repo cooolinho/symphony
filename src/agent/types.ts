@@ -1,3 +1,4 @@
+import type { ModelTokenUsage } from '../costs/pricing.ts';
 import type { Logger } from '../log.ts';
 import type { AgentToolContext, AgentToolSpec, Issue } from '../tracker/types.ts';
 import type { ClaudeConfig } from '../workflow/config.ts';
@@ -22,6 +23,8 @@ export interface AgentEvent {
   message?: string;
   /** Absolute totals for this session so far (not deltas). */
   usage?: TokenUsage;
+  /** Absolute per-model totals for this session so far, keyed by the model id Claude Code reports. */
+  modelUsage?: Record<string, ModelTokenUsage>;
   /** Absolute estimated cost for this session so far, in USD. */
   costUsd?: number;
   rateLimits?: unknown;
