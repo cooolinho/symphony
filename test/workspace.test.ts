@@ -6,7 +6,8 @@ import { childEnvironment } from '../src/agent/env.ts';
 import { Logger } from '../src/log.ts';
 import { SymphonyError } from '../src/util/errors.ts';
 import type { HooksConfig } from '../src/workflow/config.ts';
-import { WorkspaceManager, workspaceKey } from '../src/workspace/manager.ts';
+import { runProcess } from '../src/workspace/hooks.ts';
+import { WorkspaceManager, describeFailure, workspaceKey } from '../src/workspace/manager.ts';
 import { tempDir } from './helpers.ts';
 
 function hooks(overrides: Partial<HooksConfig> = {}): HooksConfig {
@@ -89,6 +90,24 @@ describe('workspace manager', () => {
     assert.equal(result?.ok, false);
     assert.equal(result?.timedOut, true);
     assert.ok(Date.now() - started < 5_000);
+  });
+
+  it('kills a process group when its abort signal fires', async () => {
+    const controller = new AbortController();
+    const started = Date.now();
+    setTimeout(() => controller.abort(), 100);
+    const result = await runProcess('bash', ['-c', 'sleep 30 & wait'], { cwd: tempDir(), env: process.env, timeoutMs: 30_000, signal: controller.signal });
+    assert.equal(result.ok, false);
+    assert.equal(result.timedOut, false);
+    assert.equal(result.error, 'aborted');
+    assert.equal(describeFailure(result), 'was aborted');
+    assert.ok(Date.now() - started < 5_000);
+  });
+
+  it('runs a command directly with its arguments', async () => {
+    const result = await runProcess('printf', ['%s|%s', 'a b', '$HOME'], { cwd: tempDir(), env: process.env, timeoutMs: 5_000 });
+    assert.equal(result.ok, true);
+    assert.equal(result.output, 'a b|$HOME');
   });
 
   it('ignores before_remove failures and still removes the workspace', async () => {

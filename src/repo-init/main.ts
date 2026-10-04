@@ -11,8 +11,9 @@ import { Terminal } from './terminal.ts';
 export const USAGE = `Usage: repo-init [options]
 
 Interactive setup for the repositories in GITHUB_REPOSITORY (owner/name, comma-separated;
-from the shell or the env file). Pick what to set up from a list, for example the standard
-"Model: …" labels that choose the Claude model per issue.
+from the shell or the env file). Pick what to set up from a list: the standard "Model: …"
+labels that choose the Claude model per issue, or an issue that adds Laravel Boost to
+Laravel apps without it.
 
 Options:
   --env-file <path>   Load variables from this dotenv file (default: .env next to
@@ -20,7 +21,7 @@ Options:
   -h, --help          Show this help.
 
 Needs GITHUB_TOKEN (or GH_TOKEN): a classic token with the "repo" scope, or a fine-grained
-token with "Issues: Read and write" on the repositories.
+token with "Issues: Read and write" and "Contents: Read" on the repositories.
 `;
 
 export interface RepoInitOptions {

@@ -1,0 +1,44 @@
+# `.claude/`: Symphonys Toolbox für alle Agenten
+
+Symphony lädt diesen Ordner als lokales Claude-Code-Plugin `symphony` in **jede** Agent-Session, egal zu welchem
+Repository das Issue gehört (`claude.plugins: [./.claude]` in der `WORKFLOW.md`). Was hier liegt, gilt also für alle
+Repositories, die Symphony bearbeitet.
+
+| Ordner | Inhalt | Aufruf im Agenten |
+|---|---|---|
+| `skills/<name>/SKILL.md` | Skills: Frontmatter mit `name` und `description`, darunter die Anleitung | `symphony:<name>` |
+| `agents/<name>.md` | Subagents | `symphony:<name>` |
+| `commands/<name>.md` | Slash-Commands (Altform, besser Skills) | `/symphony:<name>` |
+| `hooks/hooks.json` | Hooks; Skripte daneben, im JSON über `${CLAUDE_PLUGIN_ROOT}` referenziert | automatisch |
+| `.claude-plugin/plugin.json` | Plugin-Manifest (Name `symphony`) | – |
+
+Leere Ordner enthalten eine `.gitkeep`, damit Git sie behält.
+
+## Was gehört hierher, was ins Repository?
+
+Faustregel: Wissen gehört dorthin, wo es versioniert wird und wo es gilt.
+
+| Wissen | Ort |
+|---|---|
+| Framework-Wissen (Laravel, Livewire, Pest, Inertia …) | **Laravel Boost** im jeweiligen Repository. Symphony erzeugt Guidelines und Skills passend zur `composer.lock`. |
+| Domäne und Projekt („Rechnungen erstellen“, Mandanten-Scoping) | **Repository**: in Laravel-Projekten `.ai/skills/` und `.ai/guidelines/`, sonst `.claude/skills/` |
+| Projektregeln und Fallen | **Repository**: `.ai/rules/` (Boost-Tool `record-rule`, Skill `infer-conventions`) |
+| Arbeitsweise über alle Repositories (PR-Stil, Commits, Prüfen ohne UI, Übergabe ans Board) | **hier**, `skills/` |
+| Persönliche Vorlieben | `~/.claude/`, lädt Symphony nicht |
+
+Skills im Repository sehen auch du und deine Kollegen lokal, sie werden mit dem Code versioniert und im Pull Request
+geprüft. Hier landet nur, was ausschließlich für unbeaufsichtigte Symphony-Agenten gilt und in jedem Repository gleich
+ist.
+
+## Regeln für eigene Skills
+
+- Ein Skill, eine Aufgabe. Die `description` sagt genau, *wann* er greift: danach entscheidet Claude, ob er ihn lädt.
+- `SKILL.md` kurz halten, Details in Dateien daneben auslagern und darauf verweisen.
+- Skills sind eigenständig: Skripte und Referenzdateien liegen außerhalb des Workspaces. Gib sie relativ zur
+  `SKILL.md` an, Claude Code nennt dem Agenten beim Laden das Skill-Verzeichnis.
+- Keine Geheimnisse in Skills. Agenten können die Dateien lesen.
+- In Laravel-Repositories eigene Skills nach `.ai/skills/` legen, nicht nach `.claude/skills/`: Boost überschreibt
+  `.claude/skills` beim Generieren, `.ai/` ist agentenneutral (Claude Code, Cursor, Codex …). Ein gleichnamiger Skill in
+  `.ai/skills/` ersetzt den Boost-Skill.
+
+Wer an Symphony selbst mit Claude Code arbeitet, sieht die Skills aus `skills/` ebenfalls.

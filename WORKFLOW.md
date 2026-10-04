@@ -50,8 +50,20 @@ claude:
   on_permission_request: deny                # what to answer when it asks: nobody is watching
   allowed_tools:
     - "Bash(git push:*)"                     # pushing the issue branch is part of the workflow
+  plugins: [./.claude]                       # Symphony's toolbox: skills, subagents and hooks for every repository
+  skills: all                                # repository skills, Laravel Boost skills and symphony:* skills
   stall_timeout_ms: 600000
   # max_budget_usd: 5                        # optional cost cap per agent session
+
+laravel:
+  # Laravel apps (root or one level deep) that require laravel/boost get Boost's guidelines, skills and
+  # MCP server in every session; generated files stay out of commits. Apps without Boost: npm run repo-init.
+  boost: ${SYMPHONY_LARAVEL_BOOST:-auto}     # auto | off
+  php: ${SYMPHONY_PHP:-php}                  # PHP on this host, or a wrapper script (e.g. ./bin/php-in-docker)
+  composer: ${SYMPHONY_COMPOSER:-composer}
+  install_dependencies: true                 # composer install when vendor/ is missing or composer.lock changed
+  env:
+    APP_ENV: local                           # Boost only runs locally; a fresh clone has no .env
 
 server:
   port: $SYMPHONY_PORT                       # dashboard on 127.0.0.1; unset = no dashboard

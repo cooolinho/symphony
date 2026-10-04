@@ -1,5 +1,6 @@
 import type { GithubRestClient } from './github-rest.ts';
 import { labelsTask } from './labels.ts';
+import { laravelBoostTask } from './laravel-boost.ts';
 import type { Terminal } from './terminal.ts';
 
 /** What a setup task works with: the repositories the user picked, a GitHub client and the terminal. */
@@ -20,4 +21,4 @@ export interface InitTask {
 }
 
 /** The repo-init menu in display order. New setup steps are added here. */
-export const INIT_TASKS: readonly InitTask[] = [labelsTask];
+export const INIT_TASKS: readonly InitTask[] = [labelsTask, laravelBoostTask];

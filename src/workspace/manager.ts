@@ -182,6 +182,7 @@ export class WorkspaceManager {
 
 export function describeFailure(result: HookResult): string {
   if (result.timedOut) return `timed out after ${result.durationMs}ms`;
+  if (result.error === 'aborted') return 'was aborted';
   if (result.error !== null) return `could not start: ${result.error}`;
   const why = result.signal !== null ? `was killed by ${result.signal}` : `exited with code ${result.exitCode}`;
   const output = result.output.trim();

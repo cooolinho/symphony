@@ -107,7 +107,7 @@ function toCallToolResult(result: ToolResult): { content: Array<{ type: 'text'; 
   return { content: [{ type: 'text', text: JSON.stringify(payload ?? null, null, 2) }], isError: !result.ok };
 }
 
-function symphonyContext(issue: Issue, toolNames: string[], extra: string | null): string {
+function symphonyContext(issue: Issue, toolNames: string[], sections: string[], extra: string | null): string {
   const lines = [
     '# Symphony',
     `You are running unattended under the Symphony orchestrator, working on ${issue.identifier} in a dedicated ` +
@@ -117,6 +117,7 @@ function symphonyContext(issue: Issue, toolNames: string[], extra: string | null
   if (toolNames.length > 0) {
     lines.push(`Read and update the issue on the tracker with these tools: ${toolNames.join(', ')}.`);
   }
+  for (const section of sections) lines.push('', section);
   if (extra !== null) lines.push('', extra);
   return lines.join('\n');
 }
@@ -224,23 +225,28 @@ class ClaudeSession implements AgentSession {
   }
 
   #options(): Options {
-    const { config, issue, tools, env, cwd } = this.#params;
+    const { config, issue, tools, env, cwd, extensions } = this.#params;
     const toolNames = tools.map((spec) => `mcp__${TRACKER_SERVER}__${spec.name}`);
+    const extensionServers = Object.keys(extensions?.mcpServers ?? {});
+    if (extensionServers.includes(TRACKER_SERVER)) {
+      throw new SymphonyError('invalid_session_extensions', `MCP server name "${TRACKER_SERVER}" is reserved`);
+    }
     const options: Options = {
       cwd,
-      env: { ...env, ...config.env, CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP },
+      env: { ...env, ...extensions?.env, ...config.env, CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP },
       abortController: this.#abort,
       sessionId: this.threadId,
       title: truncate(`${issue.identifier}: ${issue.title}`, 200),
       permissionMode: config.permissionMode,
       canUseTool: this.#canUseTool,
-      allowedTools: [...config.allowedTools, ...toolNames],
+      // A bare server name allows every tool of that server.
+      allowedTools: [...config.allowedTools, ...toolNames, ...extensionServers.map((name) => `mcp__${name}`)],
       disallowedTools: [...new Set([...config.disallowedTools, ASK_USER_TOOL])],
       settingSources: config.settingSources,
       systemPrompt: {
         type: 'preset',
         preset: 'claude_code',
-        append: symphonyContext(issue, toolNames, config.appendSystemPrompt),
+        append: symphonyContext(issue, toolNames, extensions?.contextSections ?? [], config.appendSystemPrompt),
       },
       persistSession: config.persistSession,
       spawnClaudeCodeProcess: processGroupSpawner({
@@ -259,7 +265,15 @@ class ClaudeSession implements AgentSession {
     if (config.maxBudgetUsd !== null) options.maxBudgetUsd = config.maxBudgetUsd;
     if (config.sandbox !== null) options.sandbox = config.sandbox as SandboxSettings;
     if (config.executable !== null) options.pathToClaudeCodeExecutable = config.executable;
-    if (tools.length > 0) options.mcpServers = { [TRACKER_SERVER]: this.#trackerServer() };
+    if (config.plugins.length > 0) options.plugins = config.plugins.map((plugin) => ({ type: 'local' as const, path: plugin }));
+    if (config.skills !== null) options.skills = config.skills;
+    if ((extensions?.additionalDirectories.length ?? 0) > 0) options.additionalDirectories = extensions?.additionalDirectories;
+    const mcpServers: NonNullable<Options['mcpServers']> = {};
+    for (const [name, server] of Object.entries(extensions?.mcpServers ?? {})) {
+      mcpServers[name] = { type: 'stdio', command: server.command, args: server.args, ...(server.env ? { env: server.env } : {}) };
+    }
+    if (tools.length > 0) mcpServers[TRACKER_SERVER] = this.#trackerServer();
+    if (Object.keys(mcpServers).length > 0) options.mcpServers = mcpServers;
     return options;
   }
 
@@ -384,6 +398,18 @@ class ClaudeSession implements AgentSession {
     if (this.#params.tools.length > 0 && tracker?.status !== 'connected') {
       this.#params.logger.warn('tracker tools are not connected in the agent session', { status: tracker?.status ?? 'missing' });
     }
+    for (const name of Object.keys(this.#params.extensions?.mcpServers ?? {})) {
+      const server = message.mcp_servers.find((candidate) => candidate.name === name);
+      if (server?.status !== 'connected') {
+        this.#params.logger.warn('an MCP server Symphony added is not connected in the agent session', {
+          server: name,
+          status: server?.status ?? 'missing',
+        });
+      }
+    }
+    for (const failure of message.plugin_errors ?? []) {
+      this.#params.logger.warn('a Claude Code plugin did not load', { plugin: failure.plugin, type: failure.type, error: failure.message });
+    }
     this.#emit('session_configured', {
       message: `model ${message.model}, permission mode ${message.permissionMode}`,
       detail: {
@@ -391,6 +417,9 @@ class ClaudeSession implements AgentSession {
         permission_mode: message.permissionMode,
         claude_code_version: message.claude_code_version,
         api_key_source: message.apiKeySource,
+        mcp_servers: message.mcp_servers.map((server) => `${server.name}:${server.status}`),
+        plugins: (message.plugins ?? []).map((plugin) => plugin.name),
+        skills: message.skills?.length ?? 0,
       },
     });
   }

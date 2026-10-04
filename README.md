@@ -36,6 +36,11 @@ und Token stehen in der **`.env`**. Symphony ist eine Implementierung der
   blockiert Claude Codes `auto`-Modus.
 - **Modell pro Issue:** Ein Label wie `Model: sonnet` oder `Model: claude-opus-5-5` wählt das Modell für ein Issue.
   `npm run repo-init` legt die Labels `Model: opus`, `Model: sonnet` und `Model: haiku` in deinen Repositories an.
+- **Laravel Boost automatisch:** Erkennt Symphony im Workspace eine Laravel-App mit `laravel/boost`, bekommt der
+  Agent Boosts Guidelines, Skills und MCP-Server (Doku-Suche, Datenbankschema, Logs), passend zu den installierten
+  Paketversionen. Generierte Dateien landen nie im Pull Request.
+- **Skills für alle Repositories:** Der Ordner `.claude/` wird als Plugin `symphony` in jede Session geladen. Skills
+  der Repositories und von Boost kommen dazu.
 - **Tracker-Tools für den Agenten:** Status setzen, kommentieren, Pull Request öffnen. Der GitHub-Token bleibt
   dabei im Symphony-Prozess, der Agent sieht ihn nie.
 - **Robust:** Wiederholungen mit exponentiellem Backoff, Erkennung hängender Sessions. Ändert sich das Board während
@@ -58,6 +63,7 @@ und Token stehen in der **`.env`**. Symphony ist eine Implementierung der
 | **git** mit SSH-Zugriff auf GitHub (Symphony klont per SSH, der Agent pusht per SSH) | `ssh -T git@github.com` |
 | **Claude Code**, angemeldet. Alternativ ein `ANTHROPIC_API_KEY` | `claude` starten, ggf. `/login` |
 | **GitHub-Token** mit den Scopes `repo` und `project` | siehe Schritt 3 |
+| Nur für Laravel-Repositories: **PHP** und **Composer** in den Versionen der Projekte | `php --version`, `composer --version` |
 
 Das Claude Agent SDK bringt seine eigene Claude-Code-CLI mit. Es nutzt dieselbe Anmeldung wie dein installiertes
 `claude`.
@@ -165,7 +171,8 @@ npm run dry-run
 ```
 
 Der Dry Run lädt `WORKFLOW.md` und `.env`, prüft die Konfiguration, liest das Board und zeigt, was Symphony
-starten würde. Agenten startet er nicht. Beispiel:
+starten würde. Er prüft auch, ob `php` und `composer` für Laravel Boost laufen, und nennt für Issues mit bestehendem
+Workspace die erkannten Laravel-Apps. Agenten startet er nicht. Beispiel:
 
 ```
 Workflow:        /home/cooolinho/projects/symphony/WORKFLOW.md
@@ -173,8 +180,12 @@ Env file:        /home/cooolinho/projects/symphony/.env
 Tracker:         github_project
 Active states:   Ready, In progress
 …
+Plugins:         /home/cooolinho/projects/symphony/.claude; skills: all
+Laravel Boost:   auto, for Laravel apps that require laravel/boost; php (PHP 8.4.12), composer (Composer version 2.8.12 …)
+
 Candidates in active states: 3
   dispatch  cooolinho/trainingsstunden-portal#12  [Ready]  Abrechnung als CSV exportieren
+            ↳ Laravel app laravel/: Laravel Boost
   skip      cooolinho/trainingsstunden-portal#15  [Ready]  Export-Button im Dashboard
             ↳ blocked by cooolinho/trainingsstunden-portal#12
   skip      cooolinho/trainingsstunden-portal#16  [Ready]  Export-Funktion
@@ -207,7 +218,8 @@ du das Dashboard unter <http://127.0.0.1:4000/>.
 1. Symphony fragt das Board alle 30 Sekunden ab (`polling.interval_ms`). Kandidaten sind Issues in `Ready` oder
    `In progress`. Sie werden nach Priorität sortiert, dann nach Alter.
 2. Für das Issue entsteht `~/symphony-workspaces/<owner>_<repo>_<nr>-<hash>`. Der Hook `after_create` klont dort das
-   Repository des Issues. Vor jedem Lauf holt `before_run` den neuesten Stand (`git fetch`).
+   Repository des Issues. Vor jedem Lauf holt `before_run` den neuesten Stand (`git fetch`). Enthält der Klon eine
+   Laravel-App mit Laravel Boost, bereitet Symphony Boost vor (siehe [Laravel Boost](#laravel-boost)).
 3. Claude Code startet im Workspace und bekommt den Prompt aus der `WORKFLOW.md`. Der Agent:
    - liest `AGENTS.md`, `CLAUDE.md` und `README.md` des Repositories,
    - liest die Kommentare und verknüpften Pull Requests des Issues,
@@ -320,8 +332,9 @@ Issue das Modell aus dem Label:
 
 ### Repositories einrichten (repo-init)
 
-`repo-init` richtet die Repositories aus `GITHUB_REPOSITORY` interaktiv ein. Bisher gibt es einen Schritt, das Anlegen
-der Standard-Labels für die Modellwahl. Weitere Schritte kommen als Einträge in derselben Auswahlliste dazu.
+`repo-init` richtet die Repositories aus `GITHUB_REPOSITORY` interaktiv ein. Es gibt zwei Schritte: die
+Standard-Labels für die Modellwahl und ein Issue, das Laravel Boost einführt. Weitere Schritte kommen als Einträge in
+derselben Auswahlliste dazu.
 
 ```bash
 npm run repo-init                            # oder ./repo-init.ts
@@ -330,14 +343,20 @@ npm run repo-init -- --env-file .env.website # andere Env-Datei, wie bei npm sta
 
 1. Bei mehreren Repositories wählst du, welche eingerichtet werden. Enter heißt: alle.
 2. In der Auswahlliste wählst du den Schritt, z. B. `1) Standard labels`. `0` beendet das Script.
-3. Das Script zeigt pro Repository, welche Labels es anlegen (`+`) oder ändern (`~`) würde, und fragt vor jeder
-   Änderung nach. Bestehende Labels mit anderer Farbe oder Beschreibung oder archivierte Labels aktualisiert es nur,
-   wenn du zustimmst. Es löscht nichts. Ein zweiter Lauf meldet `All standard labels are up to date.`
+3. **Standard labels:** Das Script zeigt pro Repository, welche Labels es anlegen (`+`) oder ändern (`~`) würde,
+   und fragt vor jeder Änderung nach. Bestehende Labels mit anderer Farbe oder Beschreibung oder archivierte Labels
+   aktualisiert es nur, wenn du zustimmst. Es löscht nichts. Ein zweiter Lauf meldet
+   `All standard labels are up to date.`
+4. **Laravel Boost:** Das Script sucht auf dem Standard-Branch Laravel-Apps (Root oder eine Ebene tiefer). Pro
+   Repository meldet es `– no Laravel app`, `✓ Laravel Boost installed`, `= open issue #N` oder
+   `+ create issue "Laravel Boost einrichten"`. Nach deiner Bestätigung legt es das Issue an: Es beschreibt
+   `composer require laravel/boost --dev`, `boost:install`, die `.gitignore`-Einträge und den Ordner `.ai/`. Zieh das
+   Issue auf das Board, dann führt ein Agent Boost per Pull Request ein.
 
 Das Script nutzt `GITHUB_REPOSITORY` und `GITHUB_TOKEN` aus der `.env`. Ein klassischer Token braucht den Scope `repo`,
-den der Symphony-Token schon hat. Ein Fine-grained Token braucht *Issues: Read and write* für die Repositories. Die
-Standard-Labels stehen in `src/repo-init/labels.ts`, neue Einrichtungsschritte kommen in `src/repo-init/tasks.ts`
-dazu.
+den der Symphony-Token schon hat. Ein Fine-grained Token braucht *Issues: Read and write* und *Contents: Read* für
+die Repositories. Die Standard-Labels stehen in `src/repo-init/labels.ts`, der Boost-Schritt in
+`src/repo-init/laravel-boost.ts`, neue Einrichtungsschritte kommen in `src/repo-init/tasks.ts` dazu.
 
 ### Orchestrierung testen (E2E)
 
@@ -474,6 +493,8 @@ Die häufigsten Stellschrauben in der `WORKFLOW.md`. Alle Optionen beschreibt
 | `claude.max_budget_usd` | Kostenobergrenze pro Session |
 | `claude.effort` | Denkaufwand: `low` … `max` |
 | `claude.allowed_tools` | Aktionen, die immer erlaubt sind, z. B. `"Bash(npm test:*)"` |
+| `claude.plugins`, `claude.skills` | Plugin-Ordner für alle Sessions (Standard: `./.claude`) und welche Skills aktiv sind (`all`) |
+| `laravel.*` | Laravel Boost: `boost: auto` oder `off`, PHP- und Composer-Befehl, Umgebung (`APP_ENV: local`) |
 | `tracker.required_labels` | nur Issues mit diesen Labels bearbeiten, z. B. `[symphony]` |
 | `hooks.*` | Shell-Skripte rund um jeden Lauf, z. B. Abhängigkeiten installieren |
 | Text unterhalb der Front Matter | der Prompt, ein Liquid-Template mit `issue` und `attempt` |
@@ -502,6 +523,62 @@ Tag. Geschätzt wird mit der [`model-costs.yml`](#kosten-schätzen-mit-model-cos
 - wenige parallele Agenten,
 - `tracker.required_labels`, damit nur ausdrücklich markierte Issues bearbeitet werden.
 
+### Laravel Boost
+
+[Laravel Boost](https://laravel.com/docs/boost) gibt KI-Agenten Laravel-Wissen passend zu den installierten Paketen:
+**Guidelines** (immer geladen), **Skills** (bei Bedarf geladen, z. B. `pest-testing`, `livewire-development`) und
+einen **MCP-Server** mit Doku-Suche, Datenbankschema, Logs und Fehlern. Symphony nutzt Boost automatisch:
+
+1. Nach dem `before_run`-Hook sucht Symphony im Workspace Laravel-Apps: im Root oder eine Ebene tiefer, z. B.
+   `laravel/` im trainingsstunden-portal.
+2. Steht `laravel/boost` in der `composer.json`, installiert Symphony bei Bedarf die Abhängigkeiten
+   (`composer install`) und erzeugt Boosts Guidelines und Skills für Claude Code (`boost:install`).
+3. Die erzeugten Dateien trägt Symphony in `.git/info/exclude` ein. Versionierte Dateien, die Boost verändert hat,
+   setzt es zurück. So landet nichts davon im Pull Request.
+4. Die Session bekommt den MCP-Server `laravel-boost`, die Boost-Skills und Boosts Guidelines im System-Prompt.
+5. Neu erzeugt wird nur, wenn sich `composer.lock`, `.ai/` oder die Boost-Version ändern.
+
+Fehlt Boost in einem Laravel-Repository, legt `npm run repo-init` → *Laravel Boost* ein Issue an, das Boost per Pull
+Request einführt. Klappt etwas nicht (kein PHP, `composer install` scheitert), läuft die Session ohne Boost weiter.
+Die Warnung steht im Log. `npm run dry-run` zeigt, ob `php` und `composer` laufen.
+
+Voraussetzungen und Grenzen:
+
+- **PHP und Composer auf dem Host**, in den Versionen, die die Projekte verlangen. Eigene Pfade:
+  `SYMPHONY_PHP=/usr/bin/php8.4` in der `.env`. Soll PHP später in einem Container laufen, zeigt `laravel.php` auf ein
+  Wrapper-Script. Es bekommt den absoluten `artisan`-Pfad als erstes Argument und `SYMPHONY_WORKSPACE` in der
+  Umgebung.
+- **`APP_ENV=local`:** Boost läuft nur lokal. Symphony setzt die Variable für Composer, `artisan`, den MCP-Server und
+  den Agenten, weil ein frischer Klon keine `.env` hat. Weitere Variablen kommen unter `laravel.env` dazu, z. B.
+  `DB_CONNECTION: sqlite`, damit Boosts Datenbank-Tools nicht deine Entwicklungsdatenbank lesen.
+- **Committete Boost-Dateien:** Liegt `boost.json` im Repository, verwaltet das Repository Boost selbst. Symphony
+  erzeugt dann nichts und nutzt die committeten Dateien.
+- **Sail:** Erkennt Boost Laravel Sail, verweisen seine Guidelines auf `vendor/bin/sail`. Symphony warnt dann, weil es
+  PHP auf dem Host ausführt.
+
+### Skills: wo gehören sie hin?
+
+Faustregel: Wissen gehört dorthin, wo es versioniert wird und wo es gilt.
+
+| Wissen | Ort | Warum |
+|---|---|---|
+| Framework-Wissen (Laravel, Livewire, Pest, Inertia …) | **Laravel Boost** im jeweiligen Repository, von Symphony erzeugt | passt zu den Versionen in `composer.lock`; Kopien in Symphony würden veralten |
+| Domäne und Projekt („Rechnungen erstellen“, Mandanten-Scoping) | **Repository:** `.ai/skills/` und `.ai/guidelines/` (Laravel), sonst `.claude/skills/` | wird mit dem Code versioniert und im Pull Request geprüft; hilft auch dir lokal |
+| Projektregeln und Fallen | **Repository:** `.ai/rules/`, über Boosts Tool `record-rule` oder den Skill `infer-conventions` | wird nach Dateipfad geladen und gilt für alle |
+| Arbeitsweise über alle Repositories (PR-Stil, Commits, Prüfen ohne UI, Übergabe ans Board) | **Symphony:** `.claude/skills/` | gilt nur für Symphony-Agenten, in jedem Repository gleich |
+| Persönliche Vorlieben | `~/.claude/` | lädt Symphony bewusst nicht |
+
+Alles ins Symphony-Repository zu legen, wäre bequem, hat aber Nachteile. Diese Skills sähen nur Symphony-Agenten,
+nicht du lokal. Sie hingen nicht an der Code-Version des Repositories. Und Boost-Skills lassen sich nur im Repository
+überschreiben: Ein gleichnamiger Skill in `.ai/skills/` ersetzt den von Boost.
+
+In Laravel-Repositories gehören eigene Skills nach `.ai/skills/<name>/SKILL.md`, nicht nach `.claude/skills/`. Boost
+überschreibt `.claude/skills` beim Erzeugen, und `.ai/` funktioniert auch mit anderen Agenten (Cursor, Codex …).
+
+Symphonys `.claude/` hat die Ordner `skills/`, `agents/`, `commands/` und `hooks/` und wird über
+`claude.plugins: [./.claude]` geladen. Seine Skills heißen im Agenten `symphony:<name>`. Regeln für gute Skills stehen
+in [.claude/README.md](.claude/README.md).
+
 ### Repositories mit Docker-Setup (z. B. trainingsstunden-portal)
 
 Im Portal laufen PHP- und Artisan-Befehle laut `AGENTS.md` per `docker exec … portal`. Dieser Container bindet aber
@@ -517,7 +594,8 @@ Damit der Agent PHP-Tests selbst ausführen kann, braucht jeder Workspace einen 
 - `before_remove` räumt mit `docker compose … down -v` auf.
 
 Das ist bewusst noch nicht vorkonfiguriert, weil es Ressourcen und Ports pro Issue kostet. Am besten fängst du dafür
-mit `max_concurrent_agents: 1` an.
+mit `max_concurrent_agents: 1` an. Laravel Boost läuft bis dahin mit PHP auf dem Host (siehe [Laravel Boost](#laravel-boost)).
+Mit einem Stack pro Workspace kann `laravel.php` auf ein Wrapper-Script zeigen, das PHP in diesem Container ausführt.
 
 ### Fehlerbehebung
 
@@ -537,7 +615,11 @@ mit `max_concurrent_agents: 1` an.
 | Warnung `issue paused: still active after its continuation sessions` | Der Agent hat das Issue nach `SYMPHONY_MAX_CONTINUATIONS` Fortsetzungen nicht abgeschlossen. Lies den letzten Kommentar und das Transkript, dann schreib einen Hinweis ins Issue (das setzt es fort) oder verschieb die Karte. |
 | Warnung `model label ignored` | Ein Model-Label ist unbekannt (Tippfehler), oder das Issue hat mehrere Model-Labels mit verschiedenen Modellen. Symphony nutzt dann `CLAUDE_MODEL`. Label korrigieren, `npm run dry-run` zeigt das Ergebnis. |
 | Session scheitert gleich zu Beginn mit einem Modellfehler | Das Label nennt eine Version, die es nicht gibt, z. B. `Model: claude-opus-9-9`. Symphony wiederholt den Lauf mit Wartezeit. Label korrigieren. |
-| `repo-init` meldet `HTTP 404` oder `HTTP 403` | Das Repository in `GITHUB_REPOSITORY` ist falsch geschrieben, oder der Token darf keine Labels anlegen. Klassischer Token: Scope `repo`, Fine-grained Token: *Issues: Read and write*. |
+| `repo-init` meldet `HTTP 404` oder `HTTP 403` | Das Repository in `GITHUB_REPOSITORY` ist falsch geschrieben, oder der Token darf keine Labels oder Issues anlegen bzw. keine Dateien lesen. Klassischer Token: Scope `repo`, Fine-grained Token: *Issues: Read and write* und *Contents: Read*. |
+| Warnung `Laravel Boost skipped: composer install failed` | PHP- oder Erweiterungsversion passt nicht zu `composer.lock`, oder Composer erreicht Packagist nicht. Die Ausgabe steht im Log. Passendes PHP installieren und `SYMPHONY_PHP` setzen. |
+| Warnung `Laravel Boost skipped: boost:install failed` mit `Command "boost:install" is not defined` | Boost ist nicht aktiv, meist weil `APP_ENV` nicht `local` ist. `laravel.env` prüfen; `BOOST_ENABLED=false` in einer committeten Konfiguration schaltet Boost ganz ab. |
+| Warnung `an MCP server Symphony added is not connected` | `php artisan boost:mcp` startet nicht. Im Workspace `APP_ENV=local php artisan boost:mcp` von Hand ausführen und die Fehlermeldung lesen. |
+| Dry Run: `php (not found)` | PHP ist nicht installiert oder nicht im `PATH`. Laravel-Workspaces laufen dann ohne Boost. `SYMPHONY_PHP` auf den Pfad setzen. |
 | `candidate fetch failed … timed out` oder `HTTP 503` | GitHubs GraphQL-API ist kurzzeitig gestört. Lesende Abfragen wiederholt Symphony automatisch, sonst einfach den nächsten Tick abwarten. Laufende Agenten sind nicht betroffen. |
 
 ## 📁 Project Structure
@@ -545,9 +627,10 @@ mit `max_concurrent_agents: 1` an.
 ```
 symphony/
 ├── WORKFLOW.md                 # Prompt und Einstellungen (wird live neu geladen)
+├── .claude/                    # Toolbox für alle Sessions, geladen als Plugin "symphony" (skills, agents, commands, hooks)
 ├── model-costs.yml             # Modellpreise für die Kostenschätzung (wird live neu geladen)
 ├── .env.example                # Vorlage für .env (Board, Repository, Modell, Token, Grenzen)
-├── repo-init.ts                # interaktive Einrichtung der Repositories (z. B. Model-Labels)
+├── repo-init.ts                # interaktive Einrichtung der Repositories (Model-Labels, Laravel-Boost-Issue)
 ├── scripts/e2e/                # End-to-End-Test der Orchestrierung auf einem echten Board (npm run e2e)
 ├── src/
 │   ├── cli.ts                  # Einstiegspunkt: Optionen, .env laden, Start
@@ -557,11 +640,12 @@ symphony/
 │   ├── tracker/                # Tracker-Schnittstelle und GitHub-Projects-Adapter samt Agenten-Tools
 │   ├── workspace/              # Workspaces pro Issue und Hooks
 │   ├── agent/                  # Claude-Code-Sessions über das Claude Agent SDK, Modellwahl per Label
+│   ├── laravel/                # Laravel-Apps erkennen, Laravel Boost pro Workspace vorbereiten
 │   ├── orchestrator/           # Abfragen, Starten, Abgleichen, Wiederholungen
 │   ├── history/                # Log pro Repository und Statistiken dazu
 │   ├── costs/                  # model-costs.yml lesen, Kosten berechnen
 │   ├── http/                   # Dashboard, Logs-Seite und JSON-API
-│   ├── repo-init/              # repo-init: Auswahlliste, GitHub-REST-Client, Standard-Labels
+│   ├── repo-init/              # repo-init: Auswahlliste, GitHub-REST-Client, Standard-Labels, Boost-Issue
 │   └── util/                   # Hilfsfunktionen (.env, Pfade, Fehler, …)
 ├── test/                       # Tests mit node:test
 └── docs/                       # Referenzdokumentation
@@ -571,7 +655,7 @@ symphony/
 
 - [docs/configuration.md](docs/configuration.md): alle Optionen der `WORKFLOW.md`, `$VARIABLE`-Verweise, Hooks und Prompt-Variablen
 - [docs/adapters/github-project.md](docs/adapters/github-project.md): GitHub-Projects-Adapter, also Einstellungen, Normalisierung, Agenten-Tools und Fehler
-- [docs/agent-claude.md](docs/agent-claude.md): Ablauf der Claude-Code-Sessions, Berechtigungen, Zeitlimits und Kostenzählung
+- [docs/agent-claude.md](docs/agent-claude.md): Ablauf der Claude-Code-Sessions, Berechtigungen, Skills und Plugins, Laravel Boost, Zeitlimits und Kostenzählung
 - [docs/conformance.md](docs/conformance.md): Abweichungen von der Spezifikation und eigene Festlegungen
 - [docs/e2e.md](docs/e2e.md): End-to-End-Test der Orchestrierung, also Szenario, Ablauf, Prüfungen und Run-Verzeichnis
 
@@ -594,6 +678,8 @@ npm run e2e         # End-to-End-Test auf dem Test-Board (legt echte Issues an)
   [Projects über die API](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-api-to-manage-projects)
 - [GitHub Personal Access Tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
 - [LiquidJS](https://liquidjs.com/) (Template-Sprache des Prompts)
+- [Laravel Boost](https://laravel.com/docs/boost) und [Agent Skills](https://agentskills.io/what-are-skills)
+- [Claude-Code-Plugins](https://code.claude.com/docs/en/plugins) und [Skills](https://code.claude.com/docs/en/skills)
 
 ## 📄 License
 

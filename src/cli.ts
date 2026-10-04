@@ -27,8 +27,9 @@ Options:
                       ~/.local/state/symphony).
   --log-file <path>   Also write structured logs to this file.
   --log-level <lvl>   debug | info | warn | error (default: info).
-  --dry-run           Validate the workflow, list what would be dispatched, preview the
-                      first prompt, and exit without starting agents.
+  --dry-run           Validate the workflow, check php/composer for Laravel Boost, list
+                      what would be dispatched, preview the first prompt, and exit
+                      without starting agents.
   -h, --help          Show this help.
   -v, --version       Show the version.
 `;
