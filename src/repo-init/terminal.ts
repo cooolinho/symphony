@@ -10,9 +10,11 @@ export class Terminal {
   #output: NodeJS.WritableStream;
   #readline: readline.Interface;
   #lines: AsyncIterator<string>;
+  #yes: boolean;
 
-  constructor(input: NodeJS.ReadableStream, output: NodeJS.WritableStream) {
+  constructor(input: NodeJS.ReadableStream, output: NodeJS.WritableStream, options: { yes?: boolean } = {}) {
     this.#output = output;
+    this.#yes = options.yes === true;
     this.#readline = readline.createInterface({ input, terminal: false });
     // The iterator queues lines, so answers that arrive before their question (piped input) are not lost.
     this.#lines = this.#readline[Symbol.asyncIterator]();
@@ -35,6 +37,10 @@ export class Terminal {
 
   /** Yes/no question; Enter takes the default. Null once the input has ended. */
   async confirm(question: string, defaultYes: boolean): Promise<boolean | null> {
+    if (this.#yes) {
+      this.print(`${question} ${defaultYes ? '[Y/n]' : '[y/N]'} ${defaultYes ? 'y' : 'n'} (--yes)`);
+      return defaultYes;
+    }
     for (;;) {
       const answer = await this.ask(`${question} ${defaultYes ? '[Y/n]' : '[y/N]'}`);
       if (answer === null) return null;
@@ -63,6 +69,10 @@ export class Terminal {
   /** Numbered list; the answer is a list of numbers ("1,3"), Enter selects all. Null once the input has ended. */
   async chooseMany<T>(question: string, items: ReadonlyArray<MenuItem<T>>): Promise<T[] | null> {
     items.forEach((item, index) => this.print(`  ${index + 1}) ${item.label}`));
+    if (this.#yes) {
+      this.print(`${question} (Enter = all, or numbers like 1,2): all (--yes)`);
+      return items.map((item) => item.value);
+    }
     for (;;) {
       const answer = await this.ask(`${question} (Enter = all, or numbers like 1,2):`);
       if (answer === null) return null;
