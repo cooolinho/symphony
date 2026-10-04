@@ -40,6 +40,7 @@ Agent SDK instead; the mapping of threads, turns, approvals, user input, timeout
 | Tracker request retries | Read queries are retried after transient failures (`request_retries`); mutations are not |
 | `agent.max_continuations` | Extension: pauses an issue after N continuation sessions until it changes on the tracker (default: unlimited, as specified) |
 | `workspace.cleanup_terminal` | Extension: `false` keeps workspaces of terminal issues (default `true`, as specified) |
+| Model per issue | Extension: a `Model: <model>` issue label overrides `claude.model` for that issue's sessions; unknown or conflicting labels fall back to `claude.model` with a warning |
 | Terminal cleanup of released issues | Issues this process worked on stay watched after release; their workspace is deleted on the first tick that sees them terminal (the spec only requires startup, reconciliation and retry paths) |
 | HTTP server | Loopback by default; Host-header check against DNS rebinding; cross-origin `POST` rejected |
 | Logs | `key=value` lines on stderr (optional `--log-file`); per-session JSONL transcripts under the log directory |

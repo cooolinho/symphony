@@ -96,8 +96,8 @@ Hooks finish when their output pipes close, so redirect the output of background
 
 | Key | Default | Notes |
 |---|---|---|
-| `model` | Claude Code default | Alias (`opus`, `sonnet`) or full model id. |
-| `fallback_model` | none | Used when the primary model is overloaded. |
+| `model` | Claude Code default | Default model: alias (`opus`, `sonnet`, `haiku`) or full model id. A `Model: <model>` issue label overrides it for that issue, see [Model per issue](#model-per-issue). |
+| `fallback_model` | none | Used when the primary model is overloaded. Left out for a session whose model is the same (the Agent SDK refuses that combination). |
 | `effort` | Claude Code default | `low`, `medium`, `high`, `xhigh`, `max`. |
 | `permission_mode` | `auto` | `auto` (a classifier approves or blocks each action), `default`, `acceptEdits`, `dontAsk`, `plan`, `bypassPermissions`. See [agent-claude.md](agent-claude.md). |
 | `on_permission_request` | `deny` | Answer when Claude Code asks for approval: `deny` or `approve`. |
@@ -112,6 +112,29 @@ Hooks finish when their output pipes close, so redirect the output of background
 | `turn_timeout_ms` | `3600000` | A turn fails after this long **without any output** from the agent. |
 | `read_timeout_ms` | `30000` | Startup handshake timeout. |
 | `stall_timeout_ms` | `300000` | The orchestrator kills and retries a run without any agent event for this long; `<= 0` disables it. |
+
+### Model per issue
+
+An issue label `Model: <value>` picks the model for that issue's sessions; issues without one use `claude.model`.
+The prefix is matched case-insensitively and the space after the colon is optional. The value is lowercased and an
+optional `claude-` is removed, then:
+
+| Value | Model passed to Claude Code |
+|---|---|
+| `opus`, `sonnet`, `haiku` (also `claude-opus`, …) | the alias itself, i.e. the newest model of that family |
+| `<family>-<version>` with family `opus`, `sonnet`, `haiku` or `fable` (e.g. `sonnet-5-5`, `claude-opus-5-5`) | the full model id `claude-<family>-<version>` |
+| anything else | unknown |
+
+Unknown values, and several labels naming different models, are ignored: the session uses `claude.model` and Symphony
+logs `model label ignored` (the dry run shows the same). The model is chosen when a session is dispatched, so a label
+change applies from the next session (continuation or retry); a paused issue resumes with the new model. The choice
+appears in the `dispatching issue` log line (`model`, plus `model_label` when a label picked it) and as `model` of
+`run_started` in the repository log. The model Claude Code actually runs is logged with `session_configured`; the
+`model` of a running agent in `GET /api/v1/state` is the one that used the most tokens (until the first turn ends, the
+one the session started with).
+`npm run repo-init` creates the standard labels (`Model: opus`, `Model: claude-opus`, `Model: claude-opus-5-5`,
+`Model: sonnet`, `Model: claude-sonnet`, `Model: sonnet-5-5`, `Model: claude-sonnet-5-5`, `Model: haiku`) through the
+GitHub REST API.
 
 ### `server`
 
@@ -143,7 +166,7 @@ workflow directory, else `$XDG_STATE_HOME/symphony` or `~/.local/state/symphony`
 
 | Event | Fields |
 |---|---|
-| `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested) |
+| `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested: from a `Model: …` label, else `claude.model`) |
 | `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `stopped`, `stalled`, `shutdown`), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `started_at`, running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` |
 | `model_usage` | `repo`, `issue`, `run`, `model`, `price` (matched entry), token counts, `cost_usd` |
 | `issue_paused` | `repo`, `issue`, `title`, `state`, `continuations`, `max_continuations` |
@@ -163,6 +186,9 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
   `updated_at` (ISO strings), `native_ref` (adapter data, for GitHub: `repository`, `number`, `issue_id`, `item_id`,
   `parent` and `sub_issues` as `{identifier, title, state}`, …).
 - `attempt`: `null` on the first run of an issue, then `1`, `2`, … on continuation runs and retries.
+
+Besides the standard Liquid filters there is `without_model_labels`: `issue.labels | without_model_labels` drops the
+`Model: …` labels, which only pick the agent's model (see [Model per issue](#model-per-issue)).
 
 An empty body falls back to a minimal default prompt. `npm run dry-run` renders the prompt for the first eligible
 issue so you can check it without starting an agent.

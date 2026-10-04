@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { sessionClaudeConfig } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, AgentSession } from '../agent/types.ts';
 import type { Logger } from '../log.ts';
 import type { Issue, TrackerAdapter } from '../tracker/types.ts';
@@ -37,6 +38,8 @@ export interface WorkerParams {
   attempt: number | null;
   /** Workflow snapshot for this attempt: prompt, max_turns and agent settings stay fixed for the session. */
   workflow: EffectiveWorkflow;
+  /** Model for the session: from a "Model: <model>" label, else claude.model; null = Claude Code default. */
+  model: string | null;
   /** Adapter snapshot: the tools advertised to the session and the ones executed are the same. */
   adapter: TrackerAdapter;
   runner: AgentRunner;
@@ -114,7 +117,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     session = await params.runner.startSession({
       cwd: activeWorkspace.path,
       issue,
-      config: params.workflow.config.claude,
+      config: sessionClaudeConfig(params.workflow.config.claude, params.model),
       tools: params.adapter.agentToolSpecs(),
       toolContext: () => ({ issue }),
       env: params.childEnv,

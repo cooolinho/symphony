@@ -15,6 +15,7 @@ Claude Code CLI. The spec targets the Codex app-server; this section documents h
 | Continuation turn | Another user message on the same live session with the continuation prompt |
 | Startup handshake | `initializationResult()`, bounded by `claude.read_timeout_ms` |
 | Session title | `<identifier>: <title>` |
+| Model | `claude.model`, or the model a `Model: <model>` label on the issue names ([configuration](configuration.md#model-per-issue)); fixed for the session |
 
 Before launching, the runner checks that the working directory is an absolute, normalized path; the workspace
 manager has already checked that it lies inside the workspace root.

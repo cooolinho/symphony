@@ -13,6 +13,16 @@ export const GITHUB_SECRET_ENV = ['GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_ENTERPRISE
 const PROJECT_URL = /^https?:\/\/[^/]+\/(?:users|orgs)\/([^/\s]+)\/projects\/(\d+)\/?(?:[?#].*)?$/;
 const REPOSITORY = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
 
+/** True for an `owner/name` repository reference. */
+export function isRepositoryName(name: string): boolean {
+  return REPOSITORY.test(name);
+}
+
+/** Splits a comma or space separated repository list ("owner/a, owner/b") into its entries. */
+export function splitRepositoryList(text: string): string[] {
+  return text.split(/[\s,]+/).filter((entry) => entry !== '');
+}
+
 export interface GithubProjectSettings {
   owner: string;
   projectNumber: number;
@@ -68,10 +78,10 @@ export function parseSettings(provider: Record<string, unknown>, env: NodeJS.Pro
     const entries = Array.isArray(repos.value)
       ? repos.value.map((entry) => resolveEnvReference(entry, env))
       : typeof repos.value === 'string'
-        ? repos.value.split(/[\s,]+/)
+        ? splitRepositoryList(repos.value)
         : null;
     const names = entries?.filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '').map((e) => e.trim());
-    if (names === undefined || names.length === 0 || names.some((name) => !REPOSITORY.test(name))) {
+    if (names === undefined || names.length === 0 || names.some((name) => !isRepositoryName(name))) {
       errors.push(`${describe('repositories', repos.ref)} must be "owner/name" entries (comma-separated or a list)`);
     } else {
       repositories = new Set(names.map((name) => name.toLowerCase()));

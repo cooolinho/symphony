@@ -91,6 +91,28 @@ describe('dispatch ordering and eligibility', () => {
     assert.deepEqual(snapshot(s).running.map((r) => r.issue_id), ['high', 'low']);
   });
 
+  it('runs each issue on the model its "Model:" label names, else on claude.model', async () => {
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    const s = setup({
+      runner,
+      front: { claude: { model: 'opus', fallback_model: 'sonnet' } },
+      issues: [
+        makeIssue({ id: 'labeled', labels: ['bug', 'model: sonnet'] }),
+        makeIssue({ id: 'plain', labels: ['bug'] }),
+        makeIssue({ id: 'unknown', labels: ['model: gpt-4'] }),
+      ],
+    });
+    await s.orchestrator.tickNow();
+    await until(() => runner.sessions.length === 3, 3_000, 'three sessions');
+    const configs = Object.fromEntries(runner.sessions.map((session) => [session.params.issue.id, session.params.config]));
+    assert.deepEqual(
+      Object.fromEntries(Object.entries(configs).map(([id, config]) => [id, [config.model, config.fallbackModel]])),
+      { labeled: ['sonnet', null], plain: ['opus', 'sonnet'], unknown: ['opus', 'sonnet'] },
+    );
+    const models = Object.fromEntries(snapshot(s).running.map((row) => [row.issue_id, row.model]));
+    assert.deepEqual(models, { labeled: 'sonnet', plain: 'opus', unknown: 'opus' });
+  });
+
   it('honours per-state concurrency limits', async () => {
     const runner = new FakeRunner(() => new Promise(() => undefined));
     const s = setup({
@@ -389,5 +411,35 @@ describe('run history', () => {
     assert.equal(finished.claude_estimate_usd, '9.99');
     assert.equal(s.orchestrator.snapshot().agent_totals.cost_usd, 6.04);
     assert.equal(entries[0]?.fields.model, 'opus');
+  });
+
+  it('logs the model a "Model:" label picked when the run starts', async () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
+    const pricing = new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent());
+    const history = new HistoryLog(path.join(dir, 'repositories'), pricing, Logger.silent());
+    const tracker = new FakeTracker([makeIssue({ id: 'a', labels: ['bug', 'model: sonnet-5-5'] })]);
+    tracker.issueRepository = () => 'acme/app';
+    const runner = new FakeRunner((turn) => {
+      tracker.set('a', { state: 'In review' });
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    });
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir(), { claude: { model: 'opus' } }))),
+      runner,
+      logger: Logger.silent(),
+      env: {},
+      logDir: null,
+      timers: new ManualTimers(),
+      createAdapter: () => tracker,
+      pricing,
+      history,
+    });
+    await orchestrator.tickNow();
+    await until(() => orchestrator.snapshot().retrying.length === 1, 3_000, 'run finished');
+
+    const started = readHistory(history.dir, 'acme/app').entries.find((entry) => entry.event === 'run_started');
+    assert.equal(started?.fields.model, 'claude-sonnet-5-5');
+    assert.equal(runner.sessions[0]?.params.config.model, 'claude-sonnet-5-5');
   });
 });

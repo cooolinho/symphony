@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { childEnvironment } from '../agent/env.ts';
+import { chooseModel } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, TokenUsage } from '../agent/types.ts';
 import { estimateCost, totalTokens, type ModelTokenUsage, type PricingStore } from '../costs/pricing.ts';
 import type { HistoryLog, RunOutcome } from '../history/history.ts';
@@ -92,6 +93,8 @@ interface RunningEntry {
   startedAtMs: number;
   phase: RunPhase;
   workspacePath: string | null;
+  /** Model the agent session reported at startup (`session_configured`). */
+  model: string | null;
   sessionId: string | null;
   threadId: string | null;
   turnId: string | null;
@@ -452,6 +455,7 @@ export class Orchestrator {
       startedAtMs: this.#clock.monotonicMs(),
       phase: 'PreparingWorkspace',
       workspacePath: null,
+      model: null,
       sessionId: null,
       threadId: null,
       turnId: null,
@@ -477,10 +481,15 @@ export class Orchestrator {
     const record = this.#record(issue);
     record.runs++;
     if (continuation) record.continuations++;
+    // A "Model: <model>" label picks the model for this run; claude.model is the default.
+    const choice = chooseModel(issue.labels, workflow.config.claude.model);
+    if (choice.warning !== null) log.warn('model label ignored', { warning: choice.warning, model: choice.model ?? 'Claude Code default' });
     log.info('dispatching issue', {
       state: issue.state,
       attempt,
       continuation: continuation ? record.continuations : undefined,
+      model: choice.model ?? 'Claude Code default',
+      model_label: choice.label ?? undefined,
       title: truncate(issue.title, 120),
     });
     this.#deps.history?.runStarted({
@@ -489,7 +498,7 @@ export class Orchestrator {
       title: issue.title,
       state: issue.state,
       attempt,
-      model: workflow.config.claude.model,
+      model: choice.model,
       run: entry.runId,
       at: entry.startedAt,
     });
@@ -501,6 +510,7 @@ export class Orchestrator {
         issue,
         attempt,
         workflow,
+        model: choice.model,
         adapter,
         runner: this.#deps.runner,
         workspaces: this.#workspaces(workflow),
@@ -951,6 +961,7 @@ export class Orchestrator {
     if (event.sessionId !== null) entry.sessionId = event.sessionId;
     entry.turnCount = event.turnCount;
     if (event.message !== undefined && event.message !== '') entry.lastMessage = event.message;
+    if (event.event === 'session_configured' && typeof event.detail?.model === 'string') entry.model = event.detail.model;
 
     if (event.usage !== undefined) {
       const delta = usageDelta(event.usage, entry.reported);
@@ -1037,7 +1048,8 @@ export class Orchestrator {
       seconds_running: Math.round((now - entry.startedAtMs) / 100) / 10,
       workspace: entry.workspacePath,
       tokens: tokensJson(entry.tokens),
-      model: primaryModelOf(entry.modelUsage),
+      // The model that used the most tokens; until the first turn ends, the one the session started with.
+      model: primaryModelOf(entry.modelUsage) ?? entry.model,
       cost_usd: Math.round(entry.costUsd * 10_000) / 10_000,
       claude_estimate_usd: Math.round(entry.claudeEstimateUsd * 10_000) / 10_000,
       repo: entry.repo,

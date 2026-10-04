@@ -114,6 +114,7 @@ export class FakeRunner implements AgentRunner {
     const emit = (event: Partial<AgentEvent> & { event: string }) =>
       params.onEvent({ timestamp: new Date(), pid: 4242, threadId: 'thread-1', turnId: null, sessionId: null, turnCount: record.turns.length, ...event });
     emit({ event: 'session_started' });
+    emit({ event: 'session_configured', detail: { model: params.config.model ?? 'claude-code-default' } });
     return {
       threadId: 'thread-1',
       pid: 4242,

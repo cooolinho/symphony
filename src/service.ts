@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { ClaudeAgentRunner } from './agent/claude.ts';
+import { chooseModel } from './agent/model.ts';
 import { PricingStore } from './costs/pricing.ts';
 import { HistoryLog } from './history/history.ts';
 import { killAllAgentProcessGroups } from './agent/spawn.ts';
@@ -153,7 +154,7 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
     out(`Workspace root:  ${config.workspace.root}`);
     out(`Concurrency:     ${config.agent.maxConcurrentAgents} agents, ${config.agent.maxTurns} turns per session, poll every ${config.polling.intervalMs / 1000}s`);
     out(`Continuations:   ${config.agent.maxContinuations === null ? 'unlimited' : `${config.agent.maxContinuations} per issue, then pause`}; delete workspace on ${config.tracker.terminalStates.join('/')}: ${config.workspace.cleanupTerminal ? 'yes' : 'no'}`);
-    out(`Claude:          model ${config.claude.model ?? '(Claude Code default)'}, permission mode ${config.claude.permissionMode}, on_permission_request ${config.claude.onPermissionRequest}`);
+    out(`Claude:          model ${config.claude.model ?? '(Claude Code default)'} (default; a "Model: …" issue label overrides it), permission mode ${config.claude.permissionMode}, on_permission_request ${config.claude.onPermissionRequest}`);
     out();
 
     const errors = validateDispatch(store.current, null, options.env);
@@ -180,6 +181,9 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       if (reason === null && first === null) first = issue;
       out(`  ${reason === null ? 'dispatch' : 'skip    '}  ${issue.identifier}  [${issue.state}${issue.priority === null ? '' : `, p${issue.priority}`}]  ${truncate(issue.title, 70)}`);
       if (reason !== null) out(`            ↳ ${reason}`);
+      const choice = chooseModel(issue.labels, config.claude.model);
+      if (choice.warning !== null) out(`            ↳ model label ignored: ${choice.warning}; using ${choice.model ?? '(Claude Code default)'}`);
+      else if (choice.label !== null) out(`            ↳ model ${choice.model} (label "${choice.label}")`);
     }
 
     if (first !== null) {

@@ -1,4 +1,5 @@
 import { Liquid, type Template } from 'liquidjs';
+import { isModelLabel } from '../agent/model.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import type { Issue } from '../tracker/types.ts';
 
@@ -9,6 +10,11 @@ const engine = new Liquid({
   ownPropertyOnly: true,
   cache: false,
 });
+
+/** `issue.labels | without_model_labels`: the labels minus "Model: …" labels, which only pick the agent's model. */
+engine.registerFilter('without_model_labels', (labels: unknown) =>
+  Array.isArray(labels) ? labels.filter((label) => typeof label !== 'string' || !isModelLabel(label)) : labels,
+);
 
 /** Used when the WORKFLOW.md body is empty. */
 export const DEFAULT_PROMPT = `You are working on an issue from the configured tracker.

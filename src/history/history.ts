@@ -23,7 +23,7 @@ export interface RunStart {
   title: string;
   state: string;
   attempt: number | null;
-  /** Model requested in the workflow (claude.model), e.g. `opus`; null = Claude Code default. */
+  /** Model requested for the run: a "Model: <model>" issue label, else claude.model; null = Claude Code default. */
   model: string | null;
   run: string;
   at: Date;

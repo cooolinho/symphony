@@ -171,6 +171,26 @@ describe('prompt templates', () => {
     await assert.rejects(renderPrompt(unknownFilter, { issue, attempt: null }), { code });
   });
 
+  it('drops "Model: …" labels with the without_model_labels filter', async () => {
+    const template = compilePrompt('{{ issue.labels | without_model_labels | join: "," }}');
+    const labeled = issueTemplateValue(makeIssue({ id: '8', labels: ['bug', 'model: opus', 'ui'] }));
+    assert.equal(await renderPrompt(template, { issue: labeled, attempt: null }), 'bug,ui');
+  });
+
+  it('keeps model labels out of the shipped WORKFLOW.md prompt', async () => {
+    const { definition } = await loadWorkflowFile(path.resolve(import.meta.dirname, '../WORKFLOW.md'));
+    const template = compilePrompt(definition.promptTemplate);
+    const render = (labels: string[]) =>
+      renderPrompt(template, {
+        issue: issueTemplateValue(makeIssue({ id: '12', labels, native_ref: { number: 12, parent: null, sub_issues: [] } })),
+        attempt: null,
+      });
+    const mixed = await render(['bug', 'model: sonnet']);
+    assert.match(mixed, /^- Labels: bug$/m);
+    assert.doesNotMatch(mixed, /model: sonnet/);
+    assert.doesNotMatch(await render(['model: opus']), /Labels:/);
+  });
+
   it('reports parse errors when rendering', async () => {
     const broken = compilePrompt('{% if issue.title %}unclosed');
     assert.notEqual(broken.parseError, null);

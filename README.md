@@ -21,8 +21,8 @@ Backlog ──▶ Ready ──▶ In progress ──▶ In review ──▶ Done
                                         dich
 ```
 
-Was der Agent tun soll, steht in der **`WORKFLOW.md`** (Prompt und Einstellungen). Board, Repository, Modell und
-Token stehen in der **`.env`**. Symphony ist eine Implementierung der
+Was der Agent tun soll, steht in der **`WORKFLOW.md`** (Prompt und Einstellungen). Board, Repository, Standardmodell
+und Token stehen in der **`.env`**. Symphony ist eine Implementierung der
 [Symphony Service Specification](https://github.com/openai/symphony/blob/main/SPEC.md), die statt Codex
 **Claude Code** über das Claude Agent SDK nutzt.
 
@@ -34,6 +34,8 @@ Token stehen in der **`.env`**. Symphony ist eine Implementierung der
   wiederverwendet und gelöscht, sobald das Issue auf *Done* steht.
 - **Claude Code als Agent:** Mehrere Turns pro Session, Modell frei wählbar (z. B. `opus`). Riskante Aktionen
   blockiert Claude Codes `auto`-Modus.
+- **Modell pro Issue:** Ein Label wie `Model: sonnet` oder `Model: claude-opus-5-5` wählt das Modell für ein Issue.
+  `npm run repo-init` legt diese Labels in deinen Repositories an.
 - **Tracker-Tools für den Agenten:** Status setzen, kommentieren, Pull Request öffnen. Der GitHub-Token bleibt
   dabei im Symphony-Prozess, der Agent sieht ihn nie.
 - **Robust:** Wiederholungen mit exponentiellem Backoff, Erkennung hängender Sessions. Ändert sich das Board während
@@ -127,7 +129,7 @@ SYMPHONY_CLEANUP_TERMINAL=true
 |---|---|
 | `GITHUB_PROJECT_NUMBER` | Nummer des Boards. Die ganze Board-URL geht auch. |
 | `GITHUB_REPOSITORY` | `owner/name` des Repositories. Mehrere Repositories trennst du mit Kommas. Issues anderer Repositories auf dem Board werden ignoriert. |
-| `CLAUDE_MODEL` | Modell für Claude Code: Alias wie `opus` oder `sonnet`, oder eine volle Modell-ID. Leer heißt: Claude-Code-Standard. |
+| `CLAUDE_MODEL` | Standardmodell für Claude Code: Alias wie `opus` oder `sonnet`, oder eine volle Modell-ID. Leer heißt: Claude-Code-Standard. Ein Label `Model: …` am Issue hat Vorrang, siehe [Modell pro Issue wählen](#modell-pro-issue-wählen). |
 | `GITHUB_TOKEN` | Token aus Schritt 3. Er wird aus der Umgebung von Agenten und Hooks entfernt. |
 | `GITHUB_PROJECT_OWNER` | *optional:* Eigentümer des Boards, falls nicht der Repository-Eigentümer (z. B. eine Organisation) |
 | `SYMPHONY_PORT` | *optional:* Port für Dashboard und API, z. B. `4000` für `http://127.0.0.1:4000/` |
@@ -144,7 +146,19 @@ Form hat einen Standardwert, falls die Variable fehlt oder leer ist. Variablen, 
 sind, haben Vorrang vor der `.env`. Symphony meldet so einen Konflikt beim Start mit dem Variablennamen, nie mit dem
 Wert. Nach Änderungen an der `.env` musst du Symphony neu starten.
 
-### 5. Einrichtung prüfen (Dry Run)
+### 5. Labels anlegen (optional)
+
+Mit Labels wie `Model: sonnet` wählst du pro Issue das Modell, siehe [Modell pro Issue wählen](#modell-pro-issue-wählen).
+Das Script `repo-init` legt sie in den Repositories aus `GITHUB_REPOSITORY` an:
+
+```bash
+npm run repo-init
+```
+
+Es führt dich durch eine Auswahlliste, zeigt vor jeder Änderung, was es anlegen würde, und fragt nach. Mehr dazu unter
+[Repositories einrichten (repo-init)](#repositories-einrichten-repo-init).
+
+### 6. Einrichtung prüfen (Dry Run)
 
 ```bash
 npm run dry-run
@@ -172,7 +186,7 @@ Prompt preview for cooolinho/trainingsstunden-portal#12:
 
 Bei einem Fehler endet der Dry Run mit Exit-Code 1 und einer konkreten Meldung, z. B. einem fehlenden Token-Scope.
 
-### 6. Starten
+### 7. Starten
 
 ```bash
 npm start
@@ -273,6 +287,56 @@ bekommt ein Issue höchstens drei Sessions: die erste und zwei Fortsetzungen. Is
 
 Fehlgeschlagene Läufe zählen hier nicht mit. Für sie gelten die Wiederholungen mit Wartezeit von oben.
 
+### Modell pro Issue wählen
+
+Jede Session nutzt das Modell aus `CLAUDE_MODEL`, außer das Issue trägt ein Label `Model: …`. Dann gilt für dieses
+Issue das Modell aus dem Label:
+
+| Label | Modell für Claude Code |
+|---|---|
+| `Model: opus`, `Model: claude-opus` | `opus`, immer das neueste Opus-Modell |
+| `Model: claude-opus-5-5` | `claude-opus-5-5` |
+| `Model: sonnet`, `Model: claude-sonnet` | `sonnet`, immer das neueste Sonnet-Modell |
+| `Model: sonnet-5-5`, `Model: claude-sonnet-5-5` | `claude-sonnet-5-5` |
+| `Model: haiku` | `haiku`, immer das neueste Haiku-Modell |
+
+- Groß- und Kleinschreibung spielen keine Rolle. `claude-` davor ist optional, bei Werten mit Version ergänzt Symphony
+  es. So gehen auch Modelle, für die es kein Standard-Label gibt, z. B. `Model: claude-opus-4-8`.
+- Ohne Model-Label gilt `CLAUDE_MODEL`. Das gilt auch bei einem unbekannten Wert (z. B. `Model: gpt-4`) oder bei
+  mehreren Labels mit verschiedenen Modellen. Symphony schreibt dann die Warnung `model label ignored` ins Log und in
+  den Dry Run.
+- Das Modell gilt für eine ganze Session. Änderst du das Label, während ein Agent läuft, gilt das neue Modell ab der
+  nächsten Session, also der nächsten Fortsetzung oder Wiederholung. Ein pausiertes Issue läuft nach einer
+  Label-Änderung weiter, gleich mit dem neuen Modell. So versuchst du ein festgefahrenes Issue z. B. mit `Model: opus`
+  erneut.
+- Kontrolle: `npm run dry-run` zeigt pro Issue `↳ model … (label "…")`. Beim Start steht das Modell in der Logzeile
+  `dispatching issue` (`model=…`, bei einem Label auch `model_label=…`) und im Log des Repositorys bei `run_started`.
+  Das Dashboard zeigt in der Spalte *Model* das Modell, das Claude Code tatsächlich nutzt.
+- Im Prompt fehlen die Model-Labels in der Label-Liste des Agenten. Für seine Arbeit spielen sie keine Rolle.
+- Nicht verwechseln mit `claude.fallback_model` in der `WORKFLOW.md`: Das ist ein Ausweichmodell, falls das Modell
+  überlastet ist. Wählt ein Label genau dieses Modell, lässt Symphony das Ausweichmodell für diese Session weg.
+
+### Repositories einrichten (repo-init)
+
+`repo-init` richtet die Repositories aus `GITHUB_REPOSITORY` interaktiv ein. Bisher gibt es einen Schritt, das Anlegen
+der Standard-Labels für die Modellwahl. Weitere Schritte kommen als Einträge in derselben Auswahlliste dazu.
+
+```bash
+npm run repo-init                            # oder ./repo-init.ts
+npm run repo-init -- --env-file .env.website # andere Env-Datei, wie bei npm start
+```
+
+1. Bei mehreren Repositories wählst du, welche eingerichtet werden. Enter heißt: alle.
+2. In der Auswahlliste wählst du den Schritt, z. B. `1) Standard labels`. `0` beendet das Script.
+3. Das Script zeigt pro Repository, welche Labels es anlegen (`+`) oder ändern (`~`) würde, und fragt vor jeder
+   Änderung nach. Bestehende Labels mit anderer Farbe oder Beschreibung oder archivierte Labels aktualisiert es nur,
+   wenn du zustimmst. Es löscht nichts. Ein zweiter Lauf meldet `All standard labels are up to date.`
+
+Das Script nutzt `GITHUB_REPOSITORY` und `GITHUB_TOKEN` aus der `.env`. Ein klassischer Token braucht den Scope `repo`,
+den der Symphony-Token schon hat. Ein Fine-grained Token braucht *Issues: Read and write* für die Repositories. Die
+Standard-Labels stehen in `src/repo-init/labels.ts`, neue Einrichtungsschritte kommen in `src/repo-init/tasks.ts`
+dazu.
+
 ### Dashboard und API
 
 Das Dashboard läuft nur, wenn `SYMPHONY_PORT` gesetzt ist oder du `npm start -- --port 4000` aufrufst. Es lauscht nur
@@ -320,7 +384,7 @@ ts=2026-10-04T09:17:00.000Z event=model_usage repo=cooolinho/trainingsstunden-po
 
 | Ereignis | Bedeutung |
 |---|---|
-| `run_started` | Ein Agent beginnt mit einem Issue: Zeitpunkt, Issue, Titel, Spalte, Versuch und gewünschtes Modell. |
+| `run_started` | Ein Agent beginnt mit einem Issue: Zeitpunkt, Issue, Titel, Spalte, Versuch und gewünschtes Modell (aus dem Label `Model: …`, sonst `CLAUDE_MODEL`). |
 | `run_finished` | Ein Lauf endet. Erfasst werden das Ergebnis (`handed_off` = übergeben, `continuing` = noch aktiv, `failed`, `stopped`, `stalled`, `shutdown`) und die Spalte danach. Dazu kommen Turns, das meistgenutzte Modell, Tokens (Input, Output, Cache), geschätzte Kosten und Agentenzeit. Die Felder `repo_*` sind die laufenden Summen des Repositorys. |
 | `model_usage` | Tokens und Kosten eines Laufs pro Modell. Arbeitet Claude Code intern mit einem zweiten Modell, gibt es eine zweite Zeile. |
 | `issue_paused` | Ein Issue wurde nach seinen Fortsetzungs-Sessions pausiert. |
@@ -415,6 +479,7 @@ zeigt die geschätzten Kosten pro Agent und seit dem Start. Die Logs-Seite zeigt
 Tag. Geschätzt wird mit der [`model-costs.yml`](#kosten-schätzen-mit-model-costsyml). Zum Begrenzen eignen sich:
 
 - `claude.max_budget_usd` pro Session,
+- ein günstigeres Modell für einfache Issues per Label, z. B. `Model: sonnet` oder `Model: haiku`,
 - wenige parallele Agenten,
 - `tracker.required_labels`, damit nur ausdrücklich markierte Issues bearbeitet werden.
 
@@ -451,6 +516,9 @@ mit `max_concurrent_agents: 1` an.
 | `env file values ignored because the shell environment already sets them` | Die Variable ist auch in der Shell gesetzt, und die Shell gewinnt. `unset GITHUB_TOKEN` oder den Wert dort anpassen. |
 | `dispatch validation failed` | Ein Fehler in der `WORKFLOW.md` oder `.env`. Die genaue Meldung steht im Log bzw. im Dashboard. |
 | Warnung `issue paused: still active after its continuation sessions` | Der Agent hat das Issue nach `SYMPHONY_MAX_CONTINUATIONS` Fortsetzungen nicht abgeschlossen. Lies den letzten Kommentar und das Transkript, dann schreib einen Hinweis ins Issue (das setzt es fort) oder verschieb die Karte. |
+| Warnung `model label ignored` | Ein Model-Label ist unbekannt (Tippfehler), oder das Issue hat mehrere Model-Labels mit verschiedenen Modellen. Symphony nutzt dann `CLAUDE_MODEL`. Label korrigieren, `npm run dry-run` zeigt das Ergebnis. |
+| Session scheitert gleich zu Beginn mit einem Modellfehler | Das Label nennt eine Version, die es nicht gibt, z. B. `Model: claude-opus-9-9`. Symphony wiederholt den Lauf mit Wartezeit. Label korrigieren. |
+| `repo-init` meldet `HTTP 404` oder `HTTP 403` | Das Repository in `GITHUB_REPOSITORY` ist falsch geschrieben, oder der Token darf keine Labels anlegen. Klassischer Token: Scope `repo`, Fine-grained Token: *Issues: Read and write*. |
 | `candidate fetch failed … timed out` oder `HTTP 503` | GitHubs GraphQL-API ist kurzzeitig gestört. Lesende Abfragen wiederholt Symphony automatisch, sonst einfach den nächsten Tick abwarten. Laufende Agenten sind nicht betroffen. |
 
 ## 📁 Project Structure
@@ -460,6 +528,7 @@ symphony/
 ├── WORKFLOW.md                 # Prompt und Einstellungen (wird live neu geladen)
 ├── model-costs.yml             # Modellpreise für die Kostenschätzung (wird live neu geladen)
 ├── .env.example                # Vorlage für .env (Board, Repository, Modell, Token, Grenzen)
+├── repo-init.ts                # interaktive Einrichtung der Repositories (z. B. Model-Labels)
 ├── src/
 │   ├── cli.ts                  # Einstiegspunkt: Optionen, .env laden, Start
 │   ├── service.ts              # Start, Herunterfahren, Dry Run
@@ -467,11 +536,12 @@ symphony/
 │   ├── workflow/               # WORKFLOW.md laden, Konfiguration, Templates, Live-Reload, Prüfung
 │   ├── tracker/                # Tracker-Schnittstelle und GitHub-Projects-Adapter samt Agenten-Tools
 │   ├── workspace/              # Workspaces pro Issue und Hooks
-│   ├── agent/                  # Claude-Code-Sessions über das Claude Agent SDK
+│   ├── agent/                  # Claude-Code-Sessions über das Claude Agent SDK, Modellwahl per Label
 │   ├── orchestrator/           # Abfragen, Starten, Abgleichen, Wiederholungen
 │   ├── history/                # Log pro Repository und Statistiken dazu
 │   ├── costs/                  # model-costs.yml lesen, Kosten berechnen
 │   ├── http/                   # Dashboard, Logs-Seite und JSON-API
+│   ├── repo-init/              # repo-init: Auswahlliste, GitHub-REST-Client, Standard-Labels
 │   └── util/                   # Hilfsfunktionen (.env, Pfade, Fehler, …)
 ├── test/                       # Tests mit node:test
 └── docs/                       # Referenzdokumentation
