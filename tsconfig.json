@@ -15,5 +15,5 @@
     "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true
   },
-  "include": ["src", "test", "repo-init.ts"]
+  "include": ["src", "test", "scripts", "repo-init.ts"]
 }

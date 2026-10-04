@@ -15,6 +15,7 @@
     "start": "node src/cli.ts",
     "dry-run": "node src/cli.ts --dry-run",
     "repo-init": "node repo-init.ts",
+    "e2e": "node scripts/e2e/run.ts",
     "test": "node --test --test-concurrency=1 \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit -p .",
     "check": "npm run typecheck && npm test"

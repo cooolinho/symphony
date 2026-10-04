@@ -339,6 +339,23 @@ den der Symphony-Token schon hat. Ein Fine-grained Token braucht *Issues: Read a
 Standard-Labels stehen in `src/repo-init/labels.ts`, neue Einrichtungsschritte kommen in `src/repo-init/tasks.ts`
 dazu.
 
+### Orchestrierung testen (E2E)
+
+`npm run e2e` prüft die Orchestrierung auf einem echten Board. Das Script legt neun Test-Issues mit Abhängigkeiten
+an, alle mit `Model: sonnet`. Die Agenten kommentieren nur. Dann startet es eine eigene Symphony-Instanz und spielt
+den Reviewer: Issues in `In review` setzt es nach 60 s auf `Done` und schließt sie. Am Ende prüft es, dass nie mehr
+als `max_concurrent_agents` Agenten gleichzeitig liefen und dass kein Issue vor dem Schließen seiner Abhängigkeiten
+gestartet wurde.
+
+```bash
+npm run e2e                                  # nutzt WORKFLOW.md und .env, wie npm start
+node scripts/e2e/verify.ts logs/e2e/<zeit>   # einen Lauf später erneut prüfen
+```
+
+Nimm dafür ein eigenes Test-Repository mit eigenem Board: Die Issues sind echt, und jeder Lauf kostet Claude-Nutzung
+(etwa 0,50 USD). Das Script bricht ab, wenn auf dem Board schon Issues in aktiven Spalten stehen. Szenario,
+Optionen und Prüfungen beschreibt [docs/e2e.md](docs/e2e.md).
+
 ### Dashboard und API
 
 Das Dashboard läuft nur, wenn `SYMPHONY_PORT` gesetzt ist oder du `npm start -- --port 4000` aufrufst. Es lauscht nur
@@ -531,6 +548,7 @@ symphony/
 ├── model-costs.yml             # Modellpreise für die Kostenschätzung (wird live neu geladen)
 ├── .env.example                # Vorlage für .env (Board, Repository, Modell, Token, Grenzen)
 ├── repo-init.ts                # interaktive Einrichtung der Repositories (z. B. Model-Labels)
+├── scripts/e2e/                # End-to-End-Test der Orchestrierung auf einem echten Board (npm run e2e)
 ├── src/
 │   ├── cli.ts                  # Einstiegspunkt: Optionen, .env laden, Start
 │   ├── service.ts              # Start, Herunterfahren, Dry Run
@@ -555,6 +573,7 @@ symphony/
 - [docs/adapters/github-project.md](docs/adapters/github-project.md): GitHub-Projects-Adapter, also Einstellungen, Normalisierung, Agenten-Tools und Fehler
 - [docs/agent-claude.md](docs/agent-claude.md): Ablauf der Claude-Code-Sessions, Berechtigungen, Zeitlimits und Kostenzählung
 - [docs/conformance.md](docs/conformance.md): Abweichungen von der Spezifikation und eigene Festlegungen
+- [docs/e2e.md](docs/e2e.md): End-to-End-Test der Orchestrierung, also Szenario, Ablauf, Prüfungen und Run-Verzeichnis
 
 Für die Entwicklung:
 
@@ -562,6 +581,7 @@ Für die Entwicklung:
 npm test            # Tests
 npm run typecheck   # TypeScript-Prüfung
 npm run check       # beides
+npm run e2e         # End-to-End-Test auf dem Test-Board (legt echte Issues an)
 ```
 
 ## 🔗 References
