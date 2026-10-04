@@ -11,16 +11,20 @@ import { Terminal } from './terminal.ts';
 export const USAGE = `Usage: repo-init [options]
 
 Interactive setup for the repositories in GITHUB_REPOSITORY (owner/name, comma-separated;
-from the shell or the env file). Pick what to set up from a list, for example the standard
-"Model: …" labels that choose the Claude model per issue.
+from the shell or the env file). Pick what to set up from a list: the standard "Model: …"
+labels that choose the Claude model per issue, or an issue that adds Laravel Boost to
+Laravel apps without it.
 
 Options:
+  --all               Run all setup tasks without the selection menu.
+  --yes, -y           Confirm all prompts with the default answer (use with --all for
+                      fully non-interactive mode, e.g. in CI).
   --env-file <path>   Load variables from this dotenv file (default: .env next to
                       repo-init.ts, if present). Variables already set in the shell win.
   -h, --help          Show this help.
 
 Needs GITHUB_TOKEN (or GH_TOKEN): a classic token with the "repo" scope, or a fine-grained
-token with "Issues: Read and write" on the repositories.
+token with "Issues: Read and write" and "Contents: Read" on the repositories.
 `;
 
 export interface RepoInitOptions {
@@ -35,6 +39,13 @@ export interface RepoInitOptions {
   fetch?: typeof fetch;
 }
 
+export interface ParsedFlags {
+  all: boolean;
+  yes: boolean;
+  envFile?: string;
+  help: boolean;
+}
+
 /** Runs the interactive repository setup and returns the process exit code. */
 export async function runRepoInit(options: RepoInitOptions): Promise<number> {
   const fail = (message: string, code = 1): number => {
@@ -42,11 +53,16 @@ export async function runRepoInit(options: RepoInitOptions): Promise<number> {
     return code;
   };
 
-  let values: { 'env-file'?: string; help?: boolean };
+  let values: { 'env-file'?: string; help?: boolean; all?: boolean; yes?: boolean };
   try {
     ({ values } = parseArgs({
       args: options.argv,
-      options: { 'env-file': { type: 'string' }, help: { type: 'boolean', short: 'h' } },
+      options: {
+        'env-file': { type: 'string' },
+        help: { type: 'boolean', short: 'h' },
+        all: { type: 'boolean' },
+        yes: { type: 'boolean', short: 'y' },
+      },
     }));
   } catch (error) {
     return fail(`${errorMessage(error)}\n\n${USAGE}`, 2);
@@ -55,6 +71,8 @@ export async function runRepoInit(options: RepoInitOptions): Promise<number> {
     options.output.write(USAGE);
     return 0;
   }
+  const runAll = values.all === true;
+  const autoYes = values.yes === true;
 
   // Same rules as symphony itself: the env file fills in what the shell does not set.
   let envFile: LoadedEnvFile | null = null;
@@ -76,7 +94,7 @@ export async function runRepoInit(options: RepoInitOptions): Promise<number> {
   const tokenName = TOKEN_FALLBACK_ENV.find((name) => (env[name] ?? '') !== '');
   if (tokenName === undefined) return fail(`no GitHub token: set ${TOKEN_FALLBACK_ENV.join(' or ')} (classic token with the "repo" scope)`);
 
-  const terminal = new Terminal(options.input, options.output);
+  const terminal = new Terminal(options.input, options.output, { yes: autoYes });
   try {
     terminal.print('Symphony repo-init');
     terminal.print(`Env file:  ${envFile?.file ?? '(none)'}`);
@@ -96,13 +114,21 @@ export async function runRepoInit(options: RepoInitOptions): Promise<number> {
 
     const github = new GithubRestClient({ token: env[tokenName] as string, fetch: options.fetch });
     let ok = true;
-    for (;;) {
-      terminal.print();
-      terminal.print('What do you want to set up?');
-      const task = await terminal.choose('Choice', INIT_TASKS.map((entry) => ({ label: `${entry.title}: ${entry.summary}`, value: entry })));
-      if (task === null) break;
-      terminal.print();
-      if (!(await task.run({ repositories: selected, github, terminal }))) ok = false;
+    if (runAll) {
+      for (const task of INIT_TASKS) {
+        terminal.print();
+        terminal.print(`── ${task.title} ──`);
+        if (!(await task.run({ repositories: selected, github, terminal }))) ok = false;
+      }
+    } else {
+      for (;;) {
+        terminal.print();
+        terminal.print('What do you want to set up?');
+        const task = await terminal.choose('Choice', INIT_TASKS.map((entry) => ({ label: `${entry.title}: ${entry.summary}`, value: entry })));
+        if (task === null) break;
+        terminal.print();
+        if (!(await task.run({ repositories: selected, github, terminal }))) ok = false;
+      }
     }
     return ok ? 0 : 1;
   } finally {

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { sessionClaudeConfig } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, AgentSession } from '../agent/types.ts';
+import { prepareLaravelBoost } from '../laravel/boost.ts';
 import type { Logger } from '../log.ts';
 import type { Issue, TrackerAdapter } from '../tracker/types.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
@@ -112,6 +113,16 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     }
     if (signal.aborted) return await finish(cancelled());
 
+    // Laravel Boost for detected Laravel apps; problems only log warnings.
+    const extensions = await prepareLaravelBoost({
+      workspacePath: workspace.path,
+      config: params.workflow.config.laravel,
+      env: params.childEnv,
+      logger,
+      signal,
+    });
+    if (signal.aborted) return await finish(cancelled());
+
     setPhase('LaunchingAgentProcess');
     const activeWorkspace = workspace;
     session = await params.runner.startSession({
@@ -125,6 +136,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       signal,
       onEvent: callbacks.agentEvent,
       transcriptPath: transcriptPath(params.transcriptDir, activeWorkspace),
+      ...(extensions !== null ? { extensions } : {}),
     });
 
     for (let turn = 1; ; turn++) {

@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import type { Options, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { ClaudeAgentRunner, type QueryFn } from '../src/agent/claude.ts';
-import type { AgentEvent, StartSessionParams } from '../src/agent/types.ts';
+import type { AgentEvent, SessionExtensions, StartSessionParams } from '../src/agent/types.ts';
 import { Logger } from '../src/log.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 import type { AgentToolSpec } from '../src/tracker/types.ts';
@@ -82,7 +82,9 @@ const tool: AgentToolSpec = {
   execute: async () => ({ ok: true, data: {} }),
 };
 
-function params(overrides: { claude?: Record<string, unknown>; events?: AgentEvent[]; signal?: AbortSignal } = {}): StartSessionParams {
+function params(
+  overrides: { claude?: Record<string, unknown>; events?: AgentEvent[]; signal?: AbortSignal; extensions?: SessionExtensions; logger?: Logger } = {},
+): StartSessionParams {
   const config = resolveConfig({ claude: { model: 'opus', ...overrides.claude } }, { workflowPath: '/w/WORKFLOW.md', env: {}, trackerDefaults }).claude;
   const issue = makeIssue({ id: 'a' });
   return {
@@ -92,10 +94,11 @@ function params(overrides: { claude?: Record<string, unknown>; events?: AgentEve
     tools: [tool],
     toolContext: () => ({ issue }),
     env: { PATH: '/usr/bin' },
-    logger: Logger.silent(),
+    logger: overrides.logger ?? Logger.silent(),
     signal: overrides.signal ?? new AbortController().signal,
     onEvent: (event) => overrides.events?.push(event),
     transcriptPath: null,
+    ...(overrides.extensions ? { extensions: overrides.extensions } : {}),
   };
 }
 
@@ -133,6 +136,66 @@ describe('claude agent runner', () => {
     assert.ok(options.mcpServers?.tracker !== undefined);
     assert.equal(options.env?.PATH, '/usr/bin');
     assert.deepEqual(options.settingSources, ['project']);
+    assert.deepEqual(Object.keys(options.mcpServers ?? {}), ['tracker']);
+    assert.equal(options.plugins, undefined);
+    assert.equal(options.skills, undefined);
+    assert.equal(options.additionalDirectories, undefined);
+  });
+
+  it('adds workspace extensions, plugins and skills to the session', async () => {
+    const fake = fakeQuery((_prompt, _options, emit) => {
+      emit({
+        type: 'system',
+        subtype: 'init',
+        model: 'claude-opus-5-5',
+        permissionMode: 'auto',
+        claude_code_version: '3.0.0',
+        apiKeySource: 'none',
+        mcp_servers: [{ name: 'tracker', status: 'connected' }, { name: 'laravel-boost', status: 'failed' }],
+        plugins: [{ name: 'symphony', path: '/srv/.claude' }],
+        plugin_errors: [{ plugin: 'inline[1]', type: 'path-not-found', message: 'no such directory' }],
+        skills: ['pest-testing', 'symphony:handoff'],
+      });
+      emit(result(0.1, 10, 1));
+    });
+    const lines: string[] = [];
+    const logger = Logger.create({ sinks: [{ name: 'memory', write: (line) => lines.push(line) }], level: 'debug' });
+    const events: AgentEvent[] = [];
+    const extensions: SessionExtensions = {
+      mcpServers: { 'laravel-boost': { command: 'php', args: ['/ws/laravel/artisan', 'boost:mcp'], env: { APP_ENV: 'local' } } },
+      contextSections: ['# Laravel Boost\nUse search-docs.'],
+      additionalDirectories: ['/ws/laravel'],
+      env: { APP_ENV: 'local' },
+    };
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(
+      params({ claude: { plugins: ['/srv/.claude'], skills: 'all', append_system_prompt: 'Extra rules.' }, extensions, logger, events }),
+    );
+    await session.runTurn('go');
+    await session.stop();
+
+    const options = fake.options();
+    assert.deepEqual(options.mcpServers?.['laravel-boost'], { type: 'stdio', command: 'php', args: ['/ws/laravel/artisan', 'boost:mcp'], env: { APP_ENV: 'local' } });
+    assert.ok(options.mcpServers?.tracker !== undefined);
+    assert.ok(options.allowedTools?.includes('mcp__laravel-boost'));
+    assert.deepEqual(options.plugins, [{ type: 'local', path: '/srv/.claude' }]);
+    assert.equal(options.skills, 'all');
+    assert.deepEqual(options.additionalDirectories, ['/ws/laravel']);
+    assert.equal(options.env?.APP_ENV, 'local');
+    const append = (options.systemPrompt as { append?: string }).append ?? '';
+    assert.ok(append.indexOf('# Laravel Boost') > 0 && append.indexOf('# Laravel Boost') < append.indexOf('Extra rules.'));
+
+    assert.ok(lines.some((line) => line.includes('not connected') && line.includes('laravel-boost')));
+    assert.ok(lines.some((line) => line.includes('plugin did not load') && line.includes('path-not-found')));
+    const configured = events.find((event) => event.event === 'session_configured');
+    assert.deepEqual(configured?.detail?.mcp_servers, ['tracker:connected', 'laravel-boost:failed']);
+    assert.deepEqual(configured?.detail?.plugins, ['symphony']);
+    assert.equal(configured?.detail?.skills, 2);
+  });
+
+  it('refuses an extension server named like the tracker server', async () => {
+    const fake = fakeQuery(() => undefined);
+    const extensions: SessionExtensions = { mcpServers: { tracker: { command: 'x', args: [] } }, contextSections: [], additionalDirectories: [], env: {} };
+    await assert.rejects(new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ extensions })), { code: 'invalid_session_extensions' });
   });
 
   it('maps failed results to turn_failed', async () => {

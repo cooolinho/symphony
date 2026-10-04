@@ -252,6 +252,32 @@ describe('reconciliation', () => {
     await until(() => snapshot(s).retrying.length === 1, 3_000, 'stall retry');
     assert.match(snapshot(s).retrying[0]?.error ?? '', /stalled: no agent activity/);
   });
+
+  it('does not count workspace preparation as a stall', async () => {
+    const s = setup({
+      runner: hanging(),
+      front: {
+        claude: { stall_timeout_ms: 60_000 },
+        hooks: { before_run: 'while [ ! -f "$SYMPHONY_WORKSPACE/go" ]; do sleep 0.02; done' },
+      },
+      issues: [makeIssue({ id: 'a' })],
+    });
+    const workspace = path.join(fs.realpathSync(s.root), workspaceKey('acme/app#a'));
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running[0]?.phase === 'PreparingWorkspace' && fs.existsSync(workspace), 3_000, 'preparing');
+    s.clock.advance(120_000);
+    await s.orchestrator.tickNow();
+    assert.equal(snapshot(s).running[0]?.stopping, null);
+
+    fs.writeFileSync(path.join(workspace, 'go'), '');
+    await until(() => snapshot(s).running[0]?.phase === 'StreamingTurn', 3_000, 'streaming');
+    s.clock.advance(30_000);
+    await s.orchestrator.tickNow();
+    assert.equal(snapshot(s).running[0]?.stopping, null, 'stall time counts from the end of preparation');
+    s.clock.advance(31_000);
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'stall retry');
+  });
 });
 
 describe('observability', () => {

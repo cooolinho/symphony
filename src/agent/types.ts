@@ -52,6 +52,25 @@ export interface AgentSession {
   stop(): Promise<void>;
 }
 
+/** An MCP server the agent process starts over stdio. */
+export interface StdioServer {
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+}
+
+/** Per-workspace additions to a session, e.g. Laravel Boost for a detected Laravel app. */
+export interface SessionExtensions {
+  /** Extra MCP servers by name; their tools are always allowed. */
+  mcpServers: Record<string, StdioServer>;
+  /** Markdown sections appended to the system prompt, before claude.append_system_prompt. */
+  contextSections: string[];
+  /** Extra directories (absolute) the agent may use; Claude Code loads their .claude/skills at start. */
+  additionalDirectories: string[];
+  /** Variables added to the agent's environment. */
+  env: Record<string, string>;
+}
+
 export interface StartSessionParams {
   /** Absolute per-issue workspace path; the agent process runs here. */
   cwd: string;
@@ -67,6 +86,8 @@ export interface StartSessionParams {
   onEvent: (event: AgentEvent) => void;
   /** JSONL file receiving every raw agent message, or null. */
   transcriptPath: string | null;
+  /** Workspace-specific MCP servers, prompt context and directories (e.g. Laravel Boost). */
+  extensions?: SessionExtensions;
 }
 
 export interface AgentRunner {

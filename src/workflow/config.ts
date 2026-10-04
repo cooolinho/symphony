@@ -59,6 +59,28 @@ export interface ClaudeConfig {
   turnTimeoutMs: number;
   readTimeoutMs: number;
   stallTimeoutMs: number;
+  /** Local Claude Code plugin directories (absolute) loaded into every session. */
+  plugins: string[];
+  /** Skills to enable ('all' or names); null leaves Claude Code's default. */
+  skills: 'all' | string[] | null;
+}
+
+export type BoostMode = 'auto' | 'off';
+
+/** Laravel workspaces (the `laravel` section): Laravel Boost for detected Laravel apps. */
+export interface LaravelConfig {
+  /** auto: use Boost for Laravel apps that require laravel/boost; off: never. */
+  boost: BoostMode;
+  /** PHP command: a bare name is looked up on PATH, a value with a slash or `~` is a resolved path. */
+  php: string;
+  /** Composer command, resolved like `php`. */
+  composer: string;
+  /** Run `composer install` when vendor/ is missing or composer.lock changed since the last install. */
+  installDependencies: boolean;
+  /** Limit for each php or composer step. */
+  timeoutMs: number;
+  /** Environment for composer, artisan and the Boost MCP server, on top of the agent's environment. */
+  env: Record<string, string>;
 }
 
 export interface ServerConfig {
@@ -79,6 +101,7 @@ export interface ServiceConfig {
   hooks: HooksConfig;
   agent: AgentConfig;
   claude: ClaudeConfig;
+  laravel: LaravelConfig;
   server: ServerConfig;
   /** Non-fatal findings (ignored keys, ignored per-state limits) for operator logs. */
   warnings: string[];
@@ -112,7 +135,10 @@ export const DEFAULTS = {
 const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'];
 const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
-const KNOWN_TOP_LEVEL = new Set(['tracker', 'polling', 'workspace', 'hooks', 'agent', 'claude', 'server']);
+const KNOWN_TOP_LEVEL = new Set(['tracker', 'polling', 'workspace', 'hooks', 'agent', 'claude', 'laravel', 'server']);
+const BOOST_MODES: readonly BoostMode[] = ['auto', 'off'];
+/** Boost only registers its commands in the local environment (or with debug on); a fresh clone has no .env. */
+const LARAVEL_DEFAULT_ENV: Readonly<Record<string, string>> = { APP_ENV: 'local' };
 
 export function normalizeStateName(state: string): string {
   return state.trim().toLowerCase();
@@ -187,6 +213,21 @@ class Reader {
       return null;
     }
     return value as string[];
+  }
+
+  stringMap(obj: Record<string, unknown>, key: string, field: string): Record<string, string> {
+    const value = obj[key];
+    const result: Record<string, string> = {};
+    if (value === undefined || value === null) return result;
+    if (!isPlainObject(value)) {
+      this.errors.push(`${field} must be a map of names to strings`);
+      return result;
+    }
+    for (const [name, item] of Object.entries(value)) {
+      if (typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean') result[name] = String(item);
+      else this.errors.push(`${field}.${name} must be a string`);
+    }
+    return result;
   }
 
   oneOf<T extends string>(obj: Record<string, unknown>, key: string, field: string, allowed: readonly T[], fallback: T): T;
@@ -340,16 +381,21 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     if (isPlainObject(claudeRaw.sandbox)) sandbox = claudeRaw.sandbox;
     else reader.errors.push('claude.sandbox must be a map');
   }
-  const claudeEnv: Record<string, string> = {};
-  if (claudeRaw.env !== undefined && claudeRaw.env !== null) {
-    if (!isPlainObject(claudeRaw.env)) {
-      reader.errors.push('claude.env must be a map of names to strings');
-    } else {
-      for (const [name, value] of Object.entries(claudeRaw.env)) {
-        if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') claudeEnv[name] = String(value);
-        else reader.errors.push(`claude.env.${name} must be a string`);
-      }
+  const claudeEnv = reader.stringMap(claudeRaw, 'env', 'claude.env');
+  const plugins: string[] = [];
+  for (const entry of reader.stringList(claudeRaw, 'plugins', 'claude.plugins') ?? []) {
+    if (entry.trim() === '') continue;
+    try {
+      plugins.push(resolveConfigPath(entry.trim(), workflowDir, options.env, 'claude.plugins'));
+    } catch (error) {
+      reader.errors.push(errorMessage(error));
     }
+  }
+  let skills: 'all' | string[] | null = null;
+  if (claudeRaw.skills === 'all') skills = 'all';
+  else if (claudeRaw.skills !== undefined && claudeRaw.skills !== null) {
+    if (typeof claudeRaw.skills === 'string') reader.errors.push('claude.skills must be "all" or a list of skill names');
+    else skills = reader.stringList(claudeRaw, 'skills', 'claude.skills');
   }
   const settingSources = reader.stringList(claudeRaw, 'setting_sources', 'claude.setting_sources') ?? ['project'];
   for (const source of settingSources) {
@@ -376,6 +422,30 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     readTimeoutMs: reader.int(claudeRaw, 'read_timeout_ms', 'claude.read_timeout_ms', DEFAULTS.readTimeoutMs, 1),
     // <= 0 disables stall detection.
     stallTimeoutMs: reader.int(claudeRaw, 'stall_timeout_ms', 'claude.stall_timeout_ms', DEFAULTS.stallTimeoutMs, Number.MIN_SAFE_INTEGER),
+    plugins,
+    skills,
+  };
+
+  // laravel
+  const laravelRaw = reader.section(raw, 'laravel');
+  const command = (key: 'php' | 'composer'): string => {
+    const value = reader.string(laravelRaw, key, `laravel.${key}`)?.trim() || key;
+    // Bare names stay PATH lookups; only path-like values are resolved against the workflow directory.
+    if (!value.includes('/') && !value.startsWith('~')) return value;
+    try {
+      return resolveConfigPath(value, workflowDir, options.env, `laravel.${key}`);
+    } catch (error) {
+      reader.errors.push(errorMessage(error));
+      return key;
+    }
+  };
+  const laravel: LaravelConfig = {
+    boost: reader.oneOf(laravelRaw, 'boost', 'laravel.boost', BOOST_MODES, 'auto'),
+    php: command('php'),
+    composer: command('composer'),
+    installDependencies: reader.bool(laravelRaw, 'install_dependencies', 'laravel.install_dependencies', true),
+    timeoutMs: reader.int(laravelRaw, 'timeout_ms', 'laravel.timeout_ms', hooks.timeoutMs, 1),
+    env: { ...LARAVEL_DEFAULT_ENV, ...reader.stringMap(laravelRaw, 'env', 'laravel.env') },
   };
 
   // server (HTTP extension)
@@ -400,6 +470,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     hooks,
     agent,
     claude,
+    laravel,
     server,
     warnings: reader.warnings,
   };

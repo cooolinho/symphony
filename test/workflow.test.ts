@@ -9,7 +9,8 @@ import { SymphonyError } from '../src/util/errors.ts';
 import { loadEnvFile } from '../src/util/env.ts';
 import { DEFAULTS, resolveConfig } from '../src/workflow/config.ts';
 import { loadWorkflowFile, parseWorkflow } from '../src/workflow/loader.ts';
-import { WorkflowStore } from '../src/workflow/store.ts';
+import { type EffectiveWorkflow, WorkflowStore } from '../src/workflow/store.ts';
+import { validateDispatch } from '../src/workflow/validate.ts';
 import { compilePrompt, renderPrompt } from '../src/workflow/template.ts';
 import { makeIssue, tempDir } from './helpers.ts';
 import { issueTemplateValue } from '../src/workflow/template.ts';
@@ -152,6 +153,74 @@ describe('config layer', () => {
     const config = resolve({ codex: { command: 'codex app-server' }, extension_x: {} });
     assert.equal(config.warnings.length, 2);
   });
+
+  it('defaults the laravel section to Boost on auto with host php and composer', () => {
+    const config = resolve({ hooks: { timeout_ms: 90_000 } });
+    assert.deepEqual(config.laravel, {
+      boost: 'auto',
+      php: 'php',
+      composer: 'composer',
+      installDependencies: true,
+      timeoutMs: 90_000,
+      env: { APP_ENV: 'local' },
+    });
+    assert.deepEqual(config.claude.plugins, []);
+    assert.equal(config.claude.skills, null);
+    assert.deepEqual(config.warnings, []);
+  });
+
+  it('keeps bare laravel commands as PATH lookups and resolves path-like ones', () => {
+    const config = resolve(
+      {
+        laravel: {
+          boost: 'off',
+          php: './bin/php-in-docker',
+          composer: '${SYMPHONY_COMPOSER:-composer2}',
+          install_dependencies: false,
+          timeout_ms: 5000,
+          env: { DB_CONNECTION: 'sqlite', APP_DEBUG: true },
+        },
+      },
+      { HOME: '/home/me' },
+    );
+    assert.equal(config.laravel.boost, 'off');
+    assert.equal(config.laravel.php, '/srv/flows/bin/php-in-docker');
+    assert.equal(config.laravel.composer, 'composer2');
+    assert.equal(config.laravel.installDependencies, false);
+    assert.equal(config.laravel.timeoutMs, 5000);
+    assert.deepEqual(config.laravel.env, { APP_ENV: 'local', DB_CONNECTION: 'sqlite', APP_DEBUG: 'true' });
+    assert.equal(resolve({ laravel: { php: '~/bin/php' } }, { HOME: '/home/me' }).laravel.php, '/home/me/bin/php');
+    assert.equal(resolve({ laravel: { env: { APP_ENV: 'testing' } } }).laravel.env.APP_ENV, 'testing');
+  });
+
+  it('resolves claude.plugins against the workflow directory and parses claude.skills', () => {
+    const config = resolve({ claude: { plugins: ['./.claude', '/opt/plugins/x', ''], skills: 'all' } });
+    assert.deepEqual(config.claude.plugins, ['/srv/flows/.claude', '/opt/plugins/x']);
+    assert.equal(config.claude.skills, 'all');
+    assert.deepEqual(resolve({ claude: { skills: ['pest-testing'] } }).claude.skills, ['pest-testing']);
+  });
+
+  it('rejects invalid laravel and skills values', () => {
+    assert.throws(
+      () => resolve({ laravel: { boost: 'always', env: ['x'] }, claude: { skills: 'some' } }),
+      (error: unknown) =>
+        error instanceof SymphonyError &&
+        error.message.includes('laravel.boost') &&
+        error.message.includes('laravel.env') &&
+        error.message.includes('claude.skills'),
+    );
+  });
+
+  it('blocks dispatch when a claude.plugins entry is not a directory', () => {
+    const dir = tempDir();
+    fs.mkdirSync(path.join(dir, '.claude'));
+    const workflow = (plugins: string[]) =>
+      ({ config: resolve({ tracker: { kind: 'github_project' }, claude: { plugins } }, {}, dir) }) as unknown as EffectiveWorkflow;
+    const pluginErrors = (plugins: string[]) =>
+      validateDispatch(workflow(plugins), null, {}).filter((error) => error.includes('claude.plugins'));
+    assert.deepEqual(pluginErrors(['./.claude']), []);
+    assert.deepEqual(pluginErrors(['./missing']), [`claude.plugins entry ${path.join(dir, 'missing')} is not a directory`]);
+  });
 });
 
 describe('prompt templates', () => {
@@ -189,6 +258,19 @@ describe('prompt templates', () => {
     assert.match(mixed, /^- Labels: bug$/m);
     assert.doesNotMatch(mixed, /model: sonnet/);
     assert.doesNotMatch(await render(['model: opus']), /Labels:/);
+  });
+
+  it('loads the .claude toolbox as a plugin and Laravel Boost on auto in the shipped WORKFLOW.md', async () => {
+    const workflowPath = path.resolve(import.meta.dirname, '../WORKFLOW.md');
+    const { definition } = await loadWorkflowFile(workflowPath);
+    const config = resolveConfig(definition.config, { workflowPath, env: {}, trackerDefaults });
+    const toolbox = path.resolve(import.meta.dirname, '../.claude');
+    assert.deepEqual(config.claude.plugins, [toolbox]);
+    assert.equal(config.claude.skills, 'all');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(toolbox, '.claude-plugin', 'plugin.json'), 'utf8')).name, 'symphony');
+    for (const dir of ['skills', 'agents', 'commands', 'hooks']) assert.ok(fs.statSync(path.join(toolbox, dir)).isDirectory(), dir);
+    assert.deepEqual(config.laravel, { boost: 'auto', php: 'php', composer: 'composer', installDependencies: true, timeoutMs: 600_000, env: { APP_ENV: 'local' } });
+    assert.deepEqual(config.warnings, []);
   });
 
   it('reports parse errors when rendering', async () => {

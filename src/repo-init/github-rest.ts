@@ -6,7 +6,7 @@ export const GITHUB_API_VERSION = '2026-03-10';
 export const DEFAULT_REST_URL = 'https://api.github.com';
 const USER_AGENT = 'symphony-repo-init/0.1';
 const DEFAULT_TIMEOUT_MS = 30_000;
-/** Upper bound on label pages (100 labels each). */
+/** Upper bound on list pages (100 entries each). */
 const MAX_PAGES = 50;
 
 export interface GithubLabel {
@@ -30,6 +30,18 @@ export interface LabelUpdate {
   archived?: boolean;
 }
 
+export interface RepositoryTree {
+  /** Paths of the files (blobs), `/`-separated. */
+  paths: string[];
+  /** GitHub cut the listing short (very large repositories). */
+  truncated: boolean;
+}
+
+export interface GithubIssueRef {
+  number: number;
+  url: string;
+}
+
 /** A failed REST call; `status` is the HTTP status, or null for network errors and timeouts. */
 export class GithubRestError extends SymphonyError {
   readonly status: number | null;
@@ -48,7 +60,7 @@ export interface GithubRestOptions {
   fetch?: typeof fetch;
 }
 
-/** Minimal GitHub REST client for repository setup (labels for now). */
+/** Minimal GitHub REST client for repository setup: labels, repository contents and issues. */
 export class GithubRestClient {
   #token: string;
   #baseUrl: string;
@@ -64,19 +76,75 @@ export class GithubRestClient {
 
   /** Every label of the repository, archived ones included. */
   async listLabels(repository: string): Promise<GithubLabel[]> {
-    const labels: GithubLabel[] = [];
-    let url: string | null = `${this.#baseUrl}${repositoryPath(repository)}/labels?per_page=100`;
+    const labels = await this.#paginate(`${this.#baseUrl}${repositoryPath(repository)}/labels?per_page=100`, 'labels');
+    return labels.map(toLabel);
+  }
+
+  async getDefaultBranch(repository: string): Promise<string> {
+    const body = await readJson(await this.#send('GET', `${this.#baseUrl}${repositoryPath(repository)}`));
+    const branch = typeof body === 'object' && body !== null ? (body as Record<string, unknown>).default_branch : undefined;
+    if (typeof branch !== 'string') throw new GithubRestError('GitHub returned a repository without a default branch', null);
+    return branch;
+  }
+
+  /** File paths of a branch or commit, recursively. */
+  async getTree(repository: string, ref: string): Promise<RepositoryTree> {
+    const url = `${this.#baseUrl}${repositoryPath(repository)}/git/trees/${encodeURIComponent(ref)}?recursive=1`;
+    const body = (await readJson(await this.#send('GET', url))) as { tree?: unknown; truncated?: unknown } | null;
+    if (body === null || typeof body !== 'object' || !Array.isArray(body.tree)) throw new GithubRestError('GitHub returned an unexpected tree', null);
+    const paths = (body.tree as unknown[])
+      .map((entry) => (typeof entry === 'object' && entry !== null ? (entry as Record<string, unknown>) : {}))
+      .filter((entry) => entry.type === 'blob' && typeof entry.path === 'string')
+      .map((entry) => entry.path as string);
+    return { paths, truncated: body.truncated === true };
+  }
+
+  /** A text file's content at `ref`, or null if it does not exist. */
+  async getFileText(repository: string, filePath: string, ref: string): Promise<string | null> {
+    const encoded = filePath.split('/').map(encodeURIComponent).join('/');
+    const url = `${this.#baseUrl}${repositoryPath(repository)}/contents/${encoded}?ref=${encodeURIComponent(ref)}`;
+    let body: unknown;
+    try {
+      body = await readJson(await this.#send('GET', url));
+    } catch (error) {
+      if (error instanceof GithubRestError && error.status === 404) return null;
+      throw error;
+    }
+    const file = typeof body === 'object' && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+    if (file.type !== 'file' || typeof file.content !== 'string') throw new GithubRestError(`${filePath} is not a file`, null);
+    return Buffer.from(file.content, file.encoding === 'base64' ? 'base64' : 'utf8').toString('utf8');
+  }
+
+  /** An open issue (not a pull request) with exactly this title, or null. */
+  async findOpenIssue(repository: string, title: string): Promise<GithubIssueRef | null> {
+    const issues = await this.#paginate(`${this.#baseUrl}${repositoryPath(repository)}/issues?state=open&per_page=100`, 'issues');
+    for (const value of issues) {
+      const issue = typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+      if (issue.pull_request === undefined && issue.title === title) return toIssueRef(issue);
+    }
+    return null;
+  }
+
+  async createIssue(repository: string, issue: { title: string; body: string }): Promise<GithubIssueRef> {
+    const body = await readJson(await this.#send('POST', `${this.#baseUrl}${repositoryPath(repository)}/issues`, issue));
+    return toIssueRef(typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {});
+  }
+
+  /** Follows `rel="next"` links and concatenates the pages. */
+  async #paginate(firstUrl: string, what: string): Promise<unknown[]> {
+    const items: unknown[] = [];
+    let url: string | null = firstUrl;
     for (let page = 1; url !== null; page++) {
-      if (page > MAX_PAGES) throw new GithubRestError(`more than ${MAX_PAGES * 100} labels`, null);
+      if (page > MAX_PAGES) throw new GithubRestError(`more than ${MAX_PAGES * 100} ${what}`, null);
       const response = await this.#send('GET', url);
       const body = await readJson(response);
-      if (!Array.isArray(body)) throw new GithubRestError('GitHub returned an unexpected label list', response.status);
-      labels.push(...body.map(toLabel));
+      if (!Array.isArray(body)) throw new GithubRestError(`GitHub returned an unexpected ${what} list`, response.status);
+      items.push(...body);
       url = nextPage(response.headers.get('link'));
       // The token travels with every request, so only follow links to the same API.
       if (url !== null && !url.startsWith(`${this.#baseUrl}/`)) throw new GithubRestError(`unexpected pagination link ${url}`, null);
     }
-    return labels;
+    return items;
   }
 
   /** One label by name (case-insensitive on GitHub), or null if the repository has none. */
@@ -153,6 +221,11 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
+function toIssueRef(issue: Record<string, unknown>): GithubIssueRef {
+  if (typeof issue.number !== 'number' || typeof issue.html_url !== 'string') throw new GithubRestError('GitHub returned an issue without a number', null);
+  return { number: issue.number, url: issue.html_url };
+}
+
 function toLabel(value: unknown): GithubLabel {
   const label = typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
   if (typeof label.name !== 'string') throw new GithubRestError('GitHub returned a label without a name', null);
@@ -187,7 +260,7 @@ async function httpError(response: Response): Promise<GithubRestError> {
   }
   if (status === 403) {
     return new GithubRestError(
-      `GitHub denied access (HTTP 403: ${detail}); classic tokens need the "repo" scope, fine-grained tokens "Issues: Read and write"`,
+      `GitHub denied access (HTTP 403: ${detail}); classic tokens need the "repo" scope, fine-grained tokens "Issues: Read and write" and "Contents: Read"`,
       status,
     );
   }

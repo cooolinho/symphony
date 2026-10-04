@@ -6,6 +6,7 @@ import { PassThrough, Writable } from 'node:stream';
 import { describe, it } from 'node:test';
 import { GithubRestClient, GithubRestError, type GithubLabel, type NewLabel } from '../src/repo-init/github-rest.ts';
 import { STANDARD_LABELS, applyLabelChanges, planLabelChanges } from '../src/repo-init/labels.ts';
+import { BOOST_ISSUE_TITLE, boostIssueBody, planBoostSetup } from '../src/repo-init/laravel-boost.ts';
 import { runRepoInit } from '../src/repo-init/main.ts';
 import { tempDir } from './helpers.ts';
 
@@ -30,9 +31,19 @@ function standard(name: string): GithubLabel {
   return { ...standardSpec(name), archived_at: null };
 }
 
-/** In-memory GitHub REST API for repository labels. */
+interface FakeIssue {
+  number: number;
+  title: string;
+  body?: string;
+  html_url: string;
+  pull_request?: Json;
+}
+
+/** In-memory GitHub REST API for repository labels, files on the default branch "main", and issues. */
 class FakeRestGithub {
   repos = new Map<string, GithubLabel[]>();
+  files = new Map<string, Record<string, string>>();
+  issues = new Map<string, FakeIssue[]>();
   requests: Array<{ method: string; path: string; headers: Record<string, string>; body: Json | undefined }> = [];
   pageSize = 100;
   /** Canned replies keyed by "METHOD /path". */
@@ -53,6 +64,8 @@ class FakeRestGithub {
     this.requests.push({ method, path: `${url.pathname}${url.search}`, headers: { ...(init?.headers as Record<string, string>) }, body });
     const failure = this.failures.get(`${method} ${url.pathname}`);
     if (failure !== undefined) return json(failure.body, failure.status);
+    const contents = this.#contents(method, url, body);
+    if (contents !== null) return contents;
 
     const match = /^\/repos\/([^/]+)\/([^/]+)\/labels(?:\/([^/]+))?$/.exec(url.pathname);
     const labels = match === null ? undefined : this.repos.get(`${decodeURIComponent(match[1] ?? '')}/${decodeURIComponent(match[2] ?? '')}`);
@@ -89,6 +102,35 @@ class FakeRestGithub {
     }
     return json({ message: 'Not Found' }, 404);
   };
+
+  #contents(method: string, url: URL, body: Json | undefined): Response | null {
+    const match = /^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/.exec(url.pathname);
+    if (match === null) return null;
+    const repository = `${decodeURIComponent(match[1] ?? '')}/${decodeURIComponent(match[2] ?? '')}`;
+    const rest = match[3] ?? '';
+    const files = this.files.get(repository);
+    if (files === undefined || rest.startsWith('/labels')) return null;
+    if (method === 'GET' && rest === '') return json({ full_name: repository, default_branch: 'main' });
+    if (method === 'GET' && rest === '/git/trees/main') {
+      return json({ sha: 'x', truncated: false, tree: Object.keys(files).map((file) => ({ path: file, type: 'blob' })) });
+    }
+    if (method === 'GET' && rest.startsWith('/contents/')) {
+      const file = rest.slice('/contents/'.length).split('/').map(decodeURIComponent).join('/');
+      const content = files[file];
+      if (content === undefined || url.searchParams.get('ref') !== 'main') return json({ message: 'Not Found' }, 404);
+      return json({ type: 'file', encoding: 'base64', path: file, content: Buffer.from(content).toString('base64') });
+    }
+    const issues = this.issues.get(repository) ?? [];
+    this.issues.set(repository, issues);
+    if (method === 'GET' && rest === '/issues') return json(issues);
+    if (method === 'POST' && rest === '/issues' && body !== undefined) {
+      const number = issues.length + 1;
+      const issue = { number, title: String(body.title), body: String(body.body), html_url: `https://github.com/${repository}/issues/${number}` };
+      issues.push(issue);
+      return json(issue, 201);
+    }
+    return null;
+  }
 }
 
 /** Runs repo-init with the answers as piped input; returns the exit code and everything it printed. */
@@ -186,6 +228,63 @@ describe('repo-init GitHub REST client', () => {
   });
 });
 
+const LARAVEL_BOOST = JSON.stringify({ require: { 'laravel/framework': '^12.0' }, 'require-dev': { 'laravel/boost': '^2.0' } });
+const LARAVEL = JSON.stringify({ require: { 'laravel/framework': '^12.0' } });
+
+describe('repo-init Laravel Boost', () => {
+  it('plans per repository from the default branch: none, installed, open issue or create', async () => {
+    const github = new FakeRestGithub();
+    github.files.set('acme/site', { 'package.json': '{}', 'README.md': '' });
+    github.files.set('acme/shop', { artisan: '', 'composer.json': LARAVEL_BOOST });
+    github.files.set('acme/portal', { 'laravel/artisan': '', 'laravel/composer.json': LARAVEL, 'vendor/artisan': '', 'vendor/composer.json': LARAVEL });
+    github.files.set('acme/old', { artisan: '', 'composer.json': LARAVEL });
+    github.issues.set('acme/old', [
+      { number: 3, title: BOOST_ISSUE_TITLE, html_url: 'https://github.com/acme/old/pull/3', pull_request: {} },
+      { number: 4, title: BOOST_ISSUE_TITLE, html_url: 'https://github.com/acme/old/issues/4' },
+    ]);
+    const client = new GithubRestClient({ token: 't', fetch: github.fetch });
+    assert.deepEqual(await planBoostSetup(client, 'acme/site'), { kind: 'none', truncated: false });
+    assert.deepEqual(await planBoostSetup(client, 'acme/shop'), { kind: 'installed', apps: [{ dir: '', boost: true }] });
+    assert.deepEqual(await planBoostSetup(client, 'acme/portal'), { kind: 'create', apps: [{ dir: 'laravel', boost: false }], truncated: false });
+    assert.deepEqual(await planBoostSetup(client, 'acme/old'), {
+      kind: 'open',
+      apps: [{ dir: '', boost: false }],
+      issue: { number: 4, url: 'https://github.com/acme/old/issues/4' },
+    });
+  });
+
+  it('writes setup steps that work without a terminal and keep generated files out of git', () => {
+    const body = boostIssueBody([{ dir: 'laravel', boost: false }]);
+    assert.match(body, /Die Laravel-App in `laravel\/` hat Boost noch nicht\./);
+    assert.match(body, /composer require laravel\/boost --dev/);
+    assert.match(body, /APP_ENV=local php artisan boost:install --no-interaction --guidelines --skills --mcp/);
+    assert.match(body, /"agents": \["claude_code"\]/);
+    assert.match(body, /\/boost\.json\n {3}\/\.mcp\.json\n {3}\/\.claude\/skills\//);
+    assert.match(body, /\.ai\/guidelines\//);
+  });
+
+  it('creates the issue after confirmation and skips repositories that need none', async () => {
+    const env = { GITHUB_REPOSITORY: 'acme/portal,acme/shop', GITHUB_TOKEN: 't' };
+    const github = new FakeRestGithub();
+    github.files.set('acme/portal', { 'laravel/artisan': '', 'laravel/composer.json': LARAVEL });
+    github.files.set('acme/shop', { artisan: '', 'composer.json': LARAVEL_BOOST });
+    // all repositories, task 2, confirm, exit
+    const first = await run(['', '2', '', '0'], { github, env });
+    assert.equal(first.code, 0);
+    assert.match(first.text, /acme\/portal\n {2}\+ create issue "Laravel Boost einrichten" \(laravel\/ without Boost\)/);
+    assert.match(first.text, /acme\/shop\n {2}✓ Laravel Boost installed: \(root\) with Boost/);
+    assert.match(first.text, /✓ acme\/portal: issue #1 https:\/\/github\.com\/acme\/portal\/issues\/1/);
+    assert.match(first.text, /column Ready/);
+    assert.equal(github.issues.get('acme/portal')?.[0]?.title, BOOST_ISSUE_TITLE);
+    assert.equal(github.issues.get('acme/shop')?.length ?? 0, 0);
+
+    const second = await run(['', '2', '0'], { github, env });
+    assert.match(second.text, /= open issue #1 "Laravel Boost einrichten"/);
+    assert.match(second.text, /No issue needed\./);
+    assert.equal(github.issues.get('acme/portal')?.length, 1);
+  });
+});
+
 describe('repo-init', () => {
   it('creates the missing standard labels and, when asked to, updates differing ones', async () => {
     const env = { GITHUB_REPOSITORY: 'acme/app, acme/web', GITHUB_TOKEN: 'secret-token' };
@@ -223,7 +322,7 @@ describe('repo-init', () => {
     const result = await run(['7', '1', 'maybe', 'n'], { github });
     assert.equal(result.code, 0);
     assert.doesNotMatch(result.text, /Which repositories\?/);
-    assert.match(result.text, /Please enter a number from 0 to 1\./);
+    assert.match(result.text, /Please enter a number from 0 to 2\./);
     assert.match(result.text, /Please answer y or n\./);
     assert.match(result.text, /Cancelled; nothing changed\./);
     assert.equal(github.mutations().length, 0);

@@ -91,6 +91,8 @@ interface RunningEntry {
   attempt: number | null;
   startedAt: Date;
   startedAtMs: number;
+  /** When the run left PreparingWorkspace; stall detection counts from here until the first agent event. */
+  preparedAtMs: number | null;
   phase: RunPhase;
   workspacePath: string | null;
   /** Model the agent session reported at startup (`session_configured`). */
@@ -453,6 +455,7 @@ export class Orchestrator {
       attempt,
       startedAt: this.#clock.now(),
       startedAtMs: this.#clock.monotonicMs(),
+      preparedAtMs: null,
       phase: 'PreparingWorkspace',
       workspacePath: null,
       model: null,
@@ -524,6 +527,7 @@ export class Orchestrator {
         },
         callbacks: {
           phase: (phase) => {
+            if (entry.phase === 'PreparingWorkspace' && phase !== 'PreparingWorkspace') entry.preparedAtMs = this.#clock.monotonicMs();
             entry.phase = phase;
           },
           workspace: (workspace) => {
@@ -805,8 +809,9 @@ export class Orchestrator {
         }
         continue;
       }
-      if (stallMs <= 0) continue;
-      const elapsed = now - (entry.lastEventAtMs ?? entry.startedAtMs);
+      // Workspace preparation (hooks, composer, Boost) has its own timeouts and emits no agent events.
+      if (stallMs <= 0 || entry.phase === 'PreparingWorkspace') continue;
+      const elapsed = now - (entry.lastEventAtMs ?? entry.preparedAtMs ?? entry.startedAtMs);
       if (elapsed > stallMs) {
         this.#requestStop(entry, { kind: 'stalled', cleanupWorkspace: false, reason: `no agent activity for ${Math.round(elapsed / 1000)}s` });
       }

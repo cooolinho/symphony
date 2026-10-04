@@ -36,5 +36,15 @@ export function validateDispatch(
       errors.push(`claude.executable ${claude.executable} does not exist or is not executable`);
     }
   }
+  // A missing plugin directory would break every session start.
+  for (const plugin of claude.plugins) {
+    let isDirectory = false;
+    try {
+      isDirectory = fs.statSync(plugin).isDirectory();
+    } catch {
+      // reported below
+    }
+    if (!isDirectory) errors.push(`claude.plugins entry ${plugin} is not a directory`);
+  }
   return errors;
 }

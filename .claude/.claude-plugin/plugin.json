@@ -1,0 +1,5 @@
+{
+  "name": "symphony",
+  "version": "0.1.0",
+  "description": "Skills, subagents, commands and hooks Symphony loads into every agent session, whatever repository the issue belongs to."
+}

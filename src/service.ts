@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { ClaudeAgentRunner } from './agent/claude.ts';
 import { chooseModel } from './agent/model.ts';
@@ -5,6 +6,8 @@ import { PricingStore } from './costs/pricing.ts';
 import { HistoryLog } from './history/history.ts';
 import { killAllAgentProcessGroups } from './agent/spawn.ts';
 import { startHttpServer, type HttpServerHandle } from './http/server.ts';
+import { probeLaravelTools } from './laravel/boost.ts';
+import { detectLaravelApps } from './laravel/detect.ts';
 import { Logger, type LogLevel } from './log.ts';
 import { hasRequiredFields, hasRequiredLabels, isActiveState, sortForDispatch } from './orchestrator/eligibility.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
@@ -16,6 +19,7 @@ import { truncate } from './util/text.ts';
 import { WorkflowStore } from './workflow/store.ts';
 import { issueTemplateValue, renderPrompt } from './workflow/template.ts';
 import { validateDispatch } from './workflow/validate.ts';
+import { workspaceKey } from './workspace/manager.ts';
 
 export interface ServiceOptions {
   workflowPath: string;
@@ -138,6 +142,17 @@ function ineligibleReason(issue: Issue, store: WorkflowStore): string | null {
   return null;
 }
 
+/** Laravel apps in an issue's existing workspace (a new workspace is only cloned when the issue runs). */
+async function laravelLines(workspace: string): Promise<string[]> {
+  if (!fs.existsSync(workspace)) return [];
+  try {
+    const apps = await detectLaravelApps(workspace);
+    return apps.map((app) => `Laravel app ${app.dir === '' ? '(repository root)' : `${app.dir}/`}: ${app.boost ? 'Laravel Boost' : 'no laravel/boost in composer.json'}`);
+  } catch {
+    return [];
+  }
+}
+
 /** Validates the workflow, lists what would be dispatched and previews the first prompt. No agents run. */
 export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env' | 'envFile' | 'logLevel'>): Promise<number> {
   const logger = Logger.create({ level: options.logLevel });
@@ -155,6 +170,18 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
     out(`Concurrency:     ${config.agent.maxConcurrentAgents} agents, ${config.agent.maxTurns} turns per session, poll every ${config.polling.intervalMs / 1000}s`);
     out(`Continuations:   ${config.agent.maxContinuations === null ? 'unlimited' : `${config.agent.maxContinuations} per issue, then pause`}; delete workspace on ${config.tracker.terminalStates.join('/')}: ${config.workspace.cleanupTerminal ? 'yes' : 'no'}`);
     out(`Claude:          model ${config.claude.model ?? '(Claude Code default)'} (default; a "Model: …" issue label overrides it), permission mode ${config.claude.permissionMode}, on_permission_request ${config.claude.onPermissionRequest}`);
+    if (config.claude.plugins.length > 0 || config.claude.skills !== null) {
+      const skills = config.claude.skills === null ? 'Claude Code default' : config.claude.skills === 'all' ? 'all' : config.claude.skills.join(', ');
+      out(`Plugins:         ${config.claude.plugins.join(', ') || '(none)'}; skills: ${skills}`);
+    }
+    if (config.laravel.boost === 'off') {
+      out('Laravel Boost:   off');
+    } else {
+      const tools = await probeLaravelTools(config.laravel, options.env);
+      const describe = (command: string, version: string | null) => `${command} (${version ?? 'not found'})`;
+      out(`Laravel Boost:   auto, for Laravel apps that require laravel/boost; ${describe(config.laravel.php, tools.php)}, ${describe(config.laravel.composer, tools.composer)}`);
+      if (tools.php === null) out('                 ↳ php does not run: Laravel workspaces start without Boost');
+    }
     out();
 
     const errors = validateDispatch(store.current, null, options.env);
@@ -184,6 +211,7 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       const choice = chooseModel(issue.labels, config.claude.model);
       if (choice.warning !== null) out(`            ↳ model label ignored: ${choice.warning}; using ${choice.model ?? '(Claude Code default)'}`);
       else if (choice.label !== null) out(`            ↳ model ${choice.model} (label "${choice.label}")`);
+      for (const line of await laravelLines(path.join(config.workspace.root, workspaceKey(issue.identifier)))) out(`            ↳ ${line}`);
     }
 
     if (first !== null) {

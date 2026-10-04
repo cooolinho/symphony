@@ -41,6 +41,7 @@ Agent SDK instead; the mapping of threads, turns, approvals, user input, timeout
 | `agent.max_continuations` | Extension: pauses an issue after N continuation sessions until it changes on the tracker (default: unlimited, as specified) |
 | `workspace.cleanup_terminal` | Extension: `false` keeps workspaces of terminal issues (default `true`, as specified) |
 | Model per issue | Extension: a `Model: <model>` issue label overrides `claude.model` for that issue's sessions; unknown or conflicting labels fall back to `claude.model` with a warning |
+| Stall detection | Not applied while the run is in `PreparingWorkspace` (hooks, Composer, Laravel Boost have their own timeouts); afterwards counted from the end of preparation until the first agent event |
 | Terminal cleanup of released issues | Issues this process worked on stay watched after release; their workspace is deleted on the first tick that sees them terminal (the spec only requires startup, reconciliation and retry paths) |
 | HTTP server | Loopback by default; Host-header check against DNS rebinding; cross-origin `POST` rejected |
 | Logs | `key=value` lines on stderr (optional `--log-file`); per-session JSONL transcripts under the log directory |
@@ -51,6 +52,8 @@ Agent SDK instead; the mapping of threads, turns, approvals, user input, timeout
 |---|---|
 | HTTP server (13.7) | Implemented: `/`, `/api/v1/state`, `/api/v1/<identifier>`, `POST /api/v1/refresh` |
 | Provider-native agent tools (10.5) | Implemented for `github_project`: `get_issue`, `set_status`, `add_comment`, `open_pull_request` |
+| Laravel Boost (`laravel`) | Extension: for Laravel apps that require `laravel/boost`, Composer dependencies, Boost guidelines and skills are prepared before each session (kept out of git) and Boost's MCP server is added; never blocks a run |
+| Plugins and skills (`claude.plugins`, `claude.skills`) | Extension: local Claude Code plugins (Symphony's `.claude` toolbox) loaded into every session |
 | Repository history | Extension: one `key=value` log per repository with every run (tokens per model, cost, agent time), statistics at `/logs` and `/api/v1/history` |
 | SSH workers (Appendix A) | Not implemented |
 | Persisted retry queue | Not implemented (spec TODO); state is rebuilt from the tracker after a restart |

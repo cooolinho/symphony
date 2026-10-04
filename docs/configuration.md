@@ -21,7 +21,8 @@ come from variables: `max_turns: ${SYMPHONY_MAX_TURNS:-10}`. This works for ever
 - `tracker.provider.*`: resolved by the tracker adapter, which also uses the same `$NAME` rules (see
   [the adapter profile](adapters/github-project.md)). For `token`, an unset variable is a *missing secret* error.
 
-Path settings (`workspace.root`, `claude.executable`) additionally expand `$NAME` *inside* the value
+Path settings (`workspace.root`, `claude.executable`, `claude.plugins`, and `laravel.php` / `laravel.composer` when
+they contain a `/` or start with `~`) additionally expand `$NAME` *inside* the value
 (`$HOME/ws`, where an unset variable is an error) and a leading `~`. Relative paths resolve against the directory
 that contains `WORKFLOW.md`.
 
@@ -109,9 +110,29 @@ Hooks finish when their output pipes close, so redirect the output of background
 | `persist_session` | `true` | Keep transcripts in `~/.claude/projects` so a session can be inspected with `claude --resume <id>`. |
 | `env` | `{}` | Extra environment variables for the agent process. |
 | `executable` | bundled CLI | Path to another Claude Code executable. |
+| `plugins` | `[]` | Local Claude Code plugin directories loaded into every session (skills, subagents, commands, hooks), relative to `WORKFLOW.md`. The shipped `WORKFLOW.md` loads `./.claude`, Symphony's own toolbox; its skills are named `symphony:<skill>`. A missing directory blocks dispatch. |
+| `skills` | Claude Code default | `all` enables every discovered skill (the repository's, a plugin's, Laravel Boost's) and the Skill tool; a list enables only those names (`pest-testing`, `symphony:handoff`). |
 | `turn_timeout_ms` | `3600000` | A turn fails after this long **without any output** from the agent. |
 | `read_timeout_ms` | `30000` | Startup handshake timeout. |
 | `stall_timeout_ms` | `300000` | The orchestrator kills and retries a run without any agent event for this long; `<= 0` disables it. |
+
+### `laravel`
+
+Laravel Boost for Laravel apps in the workspace. After the `before_run` hook, Symphony looks for Laravel apps in the
+checkout (the root and one level deep: `artisan` plus a `composer.json` that requires `laravel/framework`). For each
+app that requires `laravel/boost`, it installs Composer dependencies if needed, generates Boost's guidelines and skills
+for Claude Code, keeps the generated files out of commits, and adds Boost's MCP server to the session. Apps without
+Boost only get a log line; `npm run repo-init` creates an issue that adds it. Details:
+[agent-claude.md](agent-claude.md#workspace-extensions-laravel-boost).
+
+| Key | Default | Notes |
+|---|---|---|
+| `boost` | `auto` | `auto`: use Boost where a Laravel app requires it. `off`: never. |
+| `php` | `php` | PHP command for `artisan`. A bare name is looked up on `PATH`; a value with `/` or `~` is a path, relative to `WORKFLOW.md`. A wrapper script (for example one that runs PHP in a per-workspace container) receives the absolute `artisan` path as its first argument and `SYMPHONY_WORKSPACE` in its environment. |
+| `composer` | `composer` | Composer command, resolved like `php`. |
+| `install_dependencies` | `true` | Run `composer install` when `vendor/` is missing or `composer.lock` changed since the last install. Off: apps without `vendor/` run without Boost. |
+| `env` | `{ APP_ENV: local }` | Environment for Composer, `artisan`, the Boost MCP server and the agent. Boost only registers its commands with `APP_ENV=local` (or `APP_DEBUG=true`), and a fresh clone has no `.env`. Entries are merged over the default, e.g. `{ DB_CONNECTION: sqlite }` keeps Boost's database tools away from a developer's database. |
+| `timeout_ms` | `hooks.timeout_ms` | Limit for each Composer or `artisan` step. |
 
 ### Model per issue
 
