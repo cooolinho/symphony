@@ -35,7 +35,7 @@ und Token stehen in der **`.env`**. Symphony ist eine Implementierung der
 - **Claude Code als Agent:** Mehrere Turns pro Session, Modell frei wählbar (z. B. `opus`). Riskante Aktionen
   blockiert Claude Codes `auto`-Modus.
 - **Modell pro Issue:** Ein Label wie `Model: sonnet` oder `Model: claude-opus-5-5` wählt das Modell für ein Issue.
-  `npm run repo-init` legt diese Labels in deinen Repositories an.
+  `npm run repo-init` legt die Labels `Model: opus`, `Model: sonnet` und `Model: haiku` in deinen Repositories an.
 - **Tracker-Tools für den Agenten:** Status setzen, kommentieren, Pull Request öffnen. Der GitHub-Token bleibt
   dabei im Symphony-Prozess, der Agent sieht ihn nie.
 - **Robust:** Wiederholungen mit exponentiellem Backoff, Erkennung hängender Sessions. Ändert sich das Board während
@@ -300,6 +300,8 @@ Issue das Modell aus dem Label:
 | `Model: sonnet-5-5`, `Model: claude-sonnet-5-5` | `claude-sonnet-5-5` |
 | `Model: haiku` | `haiku`, immer das neueste Haiku-Modell |
 
+- `repo-init` legt nur `Model: opus`, `Model: sonnet` und `Model: haiku` an. Die übrigen Labels aus der Tabelle legst
+  du bei Bedarf selbst in GitHub an.
 - Groß- und Kleinschreibung spielen keine Rolle. `claude-` davor ist optional, bei Werten mit Version ergänzt Symphony
   es. So gehen auch Modelle, für die es kein Standard-Label gibt, z. B. `Model: claude-opus-4-8`.
 - Ohne Model-Label gilt `CLAUDE_MODEL`. Das gilt auch bei einem unbekannten Wert (z. B. `Model: gpt-4`) oder bei

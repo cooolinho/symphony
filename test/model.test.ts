@@ -74,7 +74,7 @@ describe('model labels', () => {
   });
 
   it('only ships standard labels that resolve to a model', () => {
-    assert.equal(STANDARD_LABELS.length, 8);
+    assert.equal(STANDARD_LABELS.length, 3);
     for (const label of STANDARD_LABELS) {
       assert.ok(isModelLabel(label.name), label.name);
       const choice = chooseModel([label.name.toLowerCase()], null);

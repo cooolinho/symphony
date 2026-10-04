@@ -4,7 +4,7 @@ import { GithubRestError, type GithubLabel, type GithubRestClient, type LabelUpd
 import type { InitTask } from './tasks.ts';
 
 /** Values of the standard "Model: <value>" labels (README: "Modell pro Issue wählen"). */
-const MODEL_LABEL_VALUES = ['claude-opus', 'opus', 'claude-opus-5-5', 'claude-sonnet', 'claude-sonnet-5-5', 'sonnet', 'sonnet-5-5', 'haiku'];
+const MODEL_LABEL_VALUES = ['opus', 'sonnet', 'haiku'];
 const FAMILY_COLORS: Record<string, string> = { opus: '5319e7', sonnet: '1d76db', haiku: '0e8a16' };
 const DEFAULT_COLOR = 'ededed';
 

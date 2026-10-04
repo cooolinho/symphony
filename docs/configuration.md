@@ -132,9 +132,8 @@ appears in the `dispatching issue` log line (`model`, plus `model_label` when a 
 `run_started` in the repository log. The model Claude Code actually runs is logged with `session_configured`; the
 `model` of a running agent in `GET /api/v1/state` is the one that used the most tokens (until the first turn ends, the
 one the session started with).
-`npm run repo-init` creates the standard labels (`Model: opus`, `Model: claude-opus`, `Model: claude-opus-5-5`,
-`Model: sonnet`, `Model: claude-sonnet`, `Model: sonnet-5-5`, `Model: claude-sonnet-5-5`, `Model: haiku`) through the
-GitHub REST API.
+`npm run repo-init` creates the standard labels (`Model: opus`, `Model: sonnet`, `Model: haiku`) through the GitHub
+REST API. Other values such as `Model: claude-opus-5-5` work as labels too; create them by hand.
 
 ### `server`
 
