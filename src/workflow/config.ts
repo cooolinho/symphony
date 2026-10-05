@@ -60,6 +60,8 @@ export interface ClaudeConfig {
   allowedTools: string[];
   disallowedTools: string[];
   settingSources: SettingSource[];
+  /** Only MCP servers Symphony passes load (no repo .mcp.json, user/plugin servers or claude.ai connectors). */
+  strictMcpConfig: boolean;
   sandbox: Record<string, unknown> | null;
   executable: string | null;
   appendSystemPrompt: string | null;
@@ -427,6 +429,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     allowedTools: reader.stringList(claudeRaw, 'allowed_tools', 'claude.allowed_tools') ?? [],
     disallowedTools: reader.stringList(claudeRaw, 'disallowed_tools', 'claude.disallowed_tools') ?? [],
     settingSources: settingSources as SettingSource[],
+    strictMcpConfig: reader.bool(claudeRaw, 'strict_mcp_config', 'claude.strict_mcp_config', true),
     sandbox,
     executable,
     appendSystemPrompt: reader.script(claudeRaw, 'append_system_prompt', 'claude.append_system_prompt'),

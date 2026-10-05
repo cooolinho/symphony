@@ -118,6 +118,8 @@ interface RunningEntry {
   reportedCostUsd: number;
   claudeEstimateUsd: number;
   modelUsage: Record<string, ModelTokenUsage>;
+  /** MCP servers Symphony added that did not connect in the session. */
+  mcpUnavailable: string[];
   /** `tool_use` events per MCP server (`mcp__<server>__<tool>`); built-in tools are not counted. */
   mcpToolCalls: Record<string, number>;
   headSha: string | null;
@@ -537,6 +539,7 @@ export class Orchestrator {
       reportedCostUsd: 0,
       claudeEstimateUsd: 0,
       modelUsage: {},
+      mcpUnavailable: [],
       mcpToolCalls: {},
       headSha: null,
       branch: null,
@@ -613,6 +616,9 @@ export class Orchestrator {
           },
           issueRefreshed: (fresh) => {
             if (this.#running.get(entry.issueId) === entry) entry.issue = fresh;
+          },
+          mcpUnavailable: (servers) => {
+            entry.mcpUnavailable = servers;
           },
         },
       });
@@ -731,6 +737,7 @@ export class Orchestrator {
       agentSeconds,
       usage: entry.modelUsage,
       claudeEstimateUsd: entry.claudeEstimateUsd > 0 ? entry.claudeEstimateUsd : null,
+      mcpUnavailable: entry.mcpUnavailable,
       headSha: entry.headSha,
       branch: entry.branch,
       mcpToolCalls: entry.mcpToolCalls,

@@ -14,6 +14,9 @@ Agent SDK instead; the mapping of threads, turns, approvals, user input, timeout
   directly in the workspace, in its own process group.
 - `claude.read_timeout_ms` defaults to 30 s (spec: 5 s), because starting Claude Code includes loading settings and
   MCP servers.
+- Sessions use the SDK's strict MCP configuration by default (`claude.strict_mcp_config`): only MCP servers Symphony
+  passes load. Before turn 1 Symphony waits for `pending` servers it added (bounded by `claude.read_timeout_ms`) and
+  tells the agent about any that did not connect.
 - The snapshot's token totals are named `agent_totals` (spec example: `codex_totals`) and include `cost_usd`
   (estimated with `model-costs.yml`) and `claude_estimate_usd`.
 

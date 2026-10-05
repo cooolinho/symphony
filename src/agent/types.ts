@@ -46,6 +46,11 @@ export type TurnResult =
 export interface AgentSession {
   readonly threadId: string;
   readonly pid: number | null;
+  /**
+   * Final connection status (`connected`, `failed`, `needs-auth`, `disabled`, `pending`, `missing`) of each
+   * MCP server from SessionExtensions, settled before startSession resolves; undefined when none was added.
+   */
+  readonly mcpStatus?: Record<string, string>;
   /** Runs one turn on the live session; resolves (never rejects) when the turn ends. */
   runTurn(prompt: string): Promise<TurnResult>;
   /** Ends the session and its process tree. Safe to call more than once. */

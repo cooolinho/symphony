@@ -17,7 +17,7 @@ Claude Code CLI. The spec targets the Codex app-server; this section documents h
 | Session title | `<identifier>: <title>` |
 | Model | A `Model: <model>` label on the issue, else the role's `claude.model`, else `claude.model` ([configuration](configuration.md#model-per-issue)); fixed for the session |
 | Role | The [role](configuration.md#roles) of the issue's column at dispatch (`default` without roles); fixed for the run. Its `claude` overrides are merged into the session settings, `read_only` sets the policy below, `max_turns` limits the turns |
-| MCP servers | The in-process `tracker` server, plus workspace extensions such as Laravel Boost (below) |
+| MCP servers | The in-process `tracker` server, plus workspace extensions such as Laravel Boost (below); nothing else with `claude.strict_mcp_config` (default) |
 
 Before launching, the runner checks that the working directory is an absolute, normalized path; the workspace
 manager has already checked that it lies inside the workspace root.
@@ -41,6 +41,11 @@ Symphony runs agents **unattended**. Nobody watches a session, so every decision
 - **Settings:** only the repository's project settings are loaded by default (`setting_sources: [project]`). Your
   personal `~/.claude` settings, plugins and hooks are not. Plugins listed in `claude.plugins` (Symphony's own
   `.claude` toolbox in the shipped `WORKFLOW.md`) are loaded explicitly.
+- **MCP servers:** `claude.strict_mcp_config: true` (default) sets the SDK's `strictMcpConfig`, so only the servers
+  Symphony passes load. A repository's `.mcp.json` (which the `project` setting source would otherwise load without
+  approval), user settings, plugin-provided MCP servers (Symphony's `.claude` plugin ships none today; strict mode
+  would ignore them) and the logged-in account's claude.ai connectors (mail, drive, …) are ignored. The in-process
+  `tracker` server is passed explicitly and is not affected.
 - **Laravel Boost tools** (`mcp__laravel-boost__*`) are not allowed as a whole. Pre-approved are the tools that read
   the application: `application-info`, `browser-logs`, `database-connections`, `database-query` (Boost enforces
   read-only), `database-schema`, `get-absolute-url`, `last-error`, `read-log-entries`, plus `search-docs` (sends the
@@ -82,8 +87,21 @@ A session sees three kinds of skills:
 
 `claude.skills: all` enables all of them and the Skill tool. Plugin skills are namespaced, so they never collide with
 a repository's skills. The `session_configured` event lists the loaded plugins, the number of skills and the status of
-every MCP server; a plugin that fails to load and an extension MCP server that does not connect are logged as
-warnings.
+every MCP server; a plugin that fails to load is logged as a warning.
+
+### MCP server status
+
+Stdio servers such as Laravel Boost may still be `pending` after the handshake (Claude Code waits up to
+`MCP_TIMEOUT`, 30 s, for them). Before the first turn, Symphony polls `mcpServerStatus()` while any server it added is
+`pending`, until all settle, `claude.read_timeout_ms` elapses or the run is cancelled. Errors while polling are logged
+and never fail the run. The final statuses are exposed as `AgentSession.mcpStatus` and in `session_configured`
+(`mcp_status`). For every added server whose final status is not `connected` (`failed`, `needs-auth`, `disabled`,
+still `pending`, or `missing`):
+
+- a warning is logged;
+- the turn-1 prompt starts with ``MCP server `<name>` is unavailable (<status>); do not call its tools.``
+  (integration-specific hints stay in the integration's own prompt section);
+- the run's `run_finished` history line lists it in `mcp_unavailable`.
 
 ## Workspace extensions: Laravel Boost
 

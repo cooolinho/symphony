@@ -103,6 +103,8 @@ export type TurnScript = (turn: number, params: StartSessionParams) => Promise<T
 export class FakeRunner implements AgentRunner {
   sessions: Array<{ params: StartSessionParams; turns: string[]; stopped: boolean }> = [];
   startError: Error | null = null;
+  /** Final MCP server statuses the fake sessions report (AgentSession.mcpStatus). */
+  mcpStatus: Record<string, string> | undefined;
   script: TurnScript;
 
   constructor(script: TurnScript = (turn) => ({ ok: true, turnId: String(turn), resultText: 'done' })) {
@@ -120,6 +122,7 @@ export class FakeRunner implements AgentRunner {
     return {
       threadId: 'thread-1',
       pid: 4242,
+      ...(this.mcpStatus !== undefined ? { mcpStatus: this.mcpStatus } : {}),
       runTurn: async (prompt) => {
         record.turns.push(prompt);
         const turn = record.turns.length;

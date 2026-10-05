@@ -18,7 +18,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import type { ModelTokenUsage } from '../costs/pricing.ts';
 import type { Issue, ToolResult } from '../tracker/types.ts';
-import { AsyncQueue, settledWithin, withTimeout } from '../util/async.ts';
+import { AsyncQueue, settledWithin, sleep, withTimeout } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { oneLine, tail, truncate } from '../util/text.ts';
 import { forgetProcessGroup, killProcessGroup, processGroupSpawner } from './spawn.ts';
@@ -32,6 +32,7 @@ const ASK_USER_TOOL = 'AskUserQuestion';
 const STOP_GRACE_MS = 10_000;
 const STDERR_TAIL = 4_000;
 const CLIENT_APP = 'symphony/0.1.0';
+const MCP_STATUS_POLL_MS = 500;
 /**
  * Deny rules for a read-only session. Tool names as in the Agent SDK's permission rule validator
  * (`filePatternTools` in @anthropic-ai/claude-agent-sdk sdk.mjs; inputs FileEditInput, FileWriteInput and
@@ -147,6 +148,7 @@ class ClaudeSession implements AgentSession {
   #cancelReason: string | null = null;
   #initSeen = false;
   #stopped: Promise<void> | null = null;
+  #mcpStatus: Record<string, string> | undefined;
 
   constructor(params: StartSessionParams, queryFn: QueryFn) {
     this.#params = params;
@@ -155,6 +157,10 @@ class ClaudeSession implements AgentSession {
 
   get pid(): number | null {
     return this.#pid;
+  }
+
+  get mcpStatus(): Record<string, string> | undefined {
+    return this.#mcpStatus;
   }
 
   async start(): Promise<void> {
@@ -182,6 +188,7 @@ class ClaudeSession implements AgentSession {
       await this.stop();
       throw new SymphonyError(error instanceof SymphonyError ? error.code : 'startup_failed', message, { cause: error });
     }
+    await this.#settleMcpStatus(this.#query);
     this.#emit('session_started', { message: `Claude Code session ${this.threadId} started`, detail: { cwd } });
   }
 
@@ -258,6 +265,7 @@ class ClaudeSession implements AgentSession {
       allowedTools: [...new Set([...config.allowedTools, ...toolNames, ...extensionAllowed])],
       disallowedTools: [...new Set([...config.disallowedTools, ASK_USER_TOOL, ...extensionDenied, ...readOnlyDenied])],
       settingSources: config.settingSources,
+      strictMcpConfig: config.strictMcpConfig,
       systemPrompt: {
         type: 'preset',
         preset: 'claude_code',
@@ -413,15 +421,6 @@ class ClaudeSession implements AgentSession {
     if (this.#params.tools.length > 0 && tracker?.status !== 'connected') {
       this.#params.logger.warn('tracker tools are not connected in the agent session', { status: tracker?.status ?? 'missing' });
     }
-    for (const name of Object.keys(this.#params.extensions?.mcpServers ?? {})) {
-      const server = message.mcp_servers.find((candidate) => candidate.name === name);
-      if (server?.status !== 'connected') {
-        this.#params.logger.warn('an MCP server Symphony added is not connected in the agent session', {
-          server: name,
-          status: server?.status ?? 'missing',
-        });
-      }
-    }
     for (const failure of message.plugin_errors ?? []) {
       this.#params.logger.warn('a Claude Code plugin did not load', { plugin: failure.plugin, type: failure.type, error: failure.message });
     }
@@ -433,10 +432,52 @@ class ClaudeSession implements AgentSession {
         claude_code_version: message.claude_code_version,
         api_key_source: message.apiKeySource,
         mcp_servers: message.mcp_servers.map((server) => `${server.name}:${server.status}`),
+        ...(this.#mcpStatus !== undefined ? { mcp_status: this.#mcpStatus } : {}),
         plugins: (message.plugins ?? []).map((plugin) => plugin.name),
         skills: message.skills?.length ?? 0,
       },
     });
+  }
+
+  /**
+   * Waits until no MCP server Symphony added is `pending` (stdio servers may take up to MCP_TIMEOUT to
+   * connect), claude.read_timeout_ms elapses or the session is aborted. Records the final statuses and
+   * warns about servers that did not connect. Never throws.
+   */
+  async #settleMcpStatus(query: Query): Promise<void> {
+    const names = Object.keys(this.#params.extensions?.mcpServers ?? {});
+    if (names.length === 0) return;
+    const { logger, config } = this.#params;
+    const signal = this.#abort.signal;
+    const deadline = Date.now() + config.readTimeoutMs;
+    const statuses: Record<string, string> = Object.fromEntries(names.map((name) => [name, 'pending']));
+    try {
+      while (!signal.aborted) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        // Bounded by the deadline and the abort signal: null means no answer in time.
+        const answer = query.mcpServerStatus();
+        answer.catch(() => undefined);
+        const wait = new AbortController();
+        const reported = await Promise.race([
+          answer,
+          sleep(remaining, AbortSignal.any([signal, wait.signal])).then(() => null),
+        ]).finally(() => wait.abort());
+        if (reported === null) break;
+        for (const name of names) statuses[name] = reported.find((server) => server.name === name)?.status ?? 'missing';
+        if (!names.some((name) => statuses[name] === 'pending')) break;
+        await sleep(Math.min(MCP_STATUS_POLL_MS, deadline - Date.now()), signal);
+      }
+    } catch (error) {
+      if (!signal.aborted) logger.warn('cannot read the MCP server status of the agent session', { error: errorMessage(error) });
+    }
+    this.#mcpStatus = statuses;
+    if (signal.aborted) return;
+    for (const [name, status] of Object.entries(statuses)) {
+      if (status !== 'connected') {
+        logger.warn('an MCP server Symphony added is not connected in the agent session', { server: name, status });
+      }
+    }
   }
 
   #onAssistant(message: SDKAssistantMessage): void {

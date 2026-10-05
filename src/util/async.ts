@@ -77,3 +77,17 @@ export async function settledWithin(promise: Promise<unknown>, ms: number): Prom
     clearTimeout(timer);
   }
 }
+
+/** Resolves after `ms`, or as soon as the signal aborts. */
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted || ms <= 0) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+  });
+}

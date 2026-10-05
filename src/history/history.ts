@@ -56,6 +56,8 @@ export interface RunFinish {
   usage: Record<string, ModelTokenUsage>;
   /** Claude Code's own cost estimate, kept for comparison with model-costs.yml. */
   claudeEstimateUsd: number | null;
+  /** MCP servers Symphony added that did not connect in the session. */
+  mcpUnavailable?: string[];
   /** Final commit and branch of a git workspace; null when unknown. */
   headSha?: string | null;
   branch?: string | null;
@@ -192,6 +194,7 @@ export class HistoryLog {
       branch: finish.branch ?? undefined,
       mcp_tool_calls: formatToolCalls(finish.mcpToolCalls),
       started_at: finish.startedAt,
+      mcp_unavailable: finish.mcpUnavailable?.length ? finish.mcpUnavailable.join(',') : undefined,
       repo_runs: totals.runs,
       repo_tokens: totals.tokens,
       repo_cost_usd: round(totals.costUsd, 4),
