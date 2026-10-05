@@ -38,7 +38,10 @@ services:
       - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}
       - traefik.http.routers.symphony.rule=Host(`${SYMPHONY_DOMAIN:?SYMPHONY_DOMAIN is required (dashboard host name, e.g. symphony.example.com)}`)
       - traefik.http.routers.symphony.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}
-      - traefik.http.routers.symphony.tls=true
+      # TRAEFIK_TLS=false: plain HTTP, e.g. a LAN Traefik without certificates (with TRAEFIK_ENTRYPOINT=web).
+      # Traefik then ignores the whole tls.* block, the cert resolver included. A router with tls=true
+      # answers TLS connections only, so on an HTTP entrypoint it would return 404.
+      - traefik.http.routers.symphony.tls=${TRAEFIK_TLS:-true}
       - traefik.http.routers.symphony.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}
       - traefik.http.routers.symphony.middlewares=${SYMPHONY_TRAEFIK_MIDDLEWARES:-symphony-auth}
       - traefik.http.routers.symphony.service=symphony
