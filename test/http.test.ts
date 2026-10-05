@@ -150,6 +150,15 @@ describe('http extension', () => {
     assert.match(page.body, /id="timeline"/);
     assert.match(page.body, /'\/timeline\?after='/);
     assert.match(page.body, /'\/transcript\?run='/);
+    assert.match(page.body, /Waiting for limit/);
+    assert.match(page.body, /Session limit reached/);
+    assert.match(page.body, /Resets at/);
+    assert.match(page.body, /API \+ '\/retry'/);
+    assert.match(page.body, /Resume now/);
+    assert.match(page.body, /session_limit: \['⏳ Session limit', 'amber', 'session limit'\]/);
+    assert.match(page.body, /SESSION LIMIT · RETRY/);
+    assert.match(page.body, /WAITING FOR RESET/);
+    assert.match(page.body, /worker_restarted/);
     assert.equal((await request(server.port, 'HEAD', '/agent')).status, 200);
     const dashboard = (await request(server.port, 'GET', '/')).body;
     assert.match(dashboard, /'\/agent\?id=' \+ encodeURIComponent\(r\.issue_identifier\)/);

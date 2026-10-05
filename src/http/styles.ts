@@ -201,7 +201,7 @@ export const BASE_JS = `
   // Entries of the per-repository logs (/api/v1/history): one-line description and severity.
   const OUTCOMES = {
     handed_off: 'Handed off', continuing: 'Continuing', failed: 'Failed',
-    stopped: 'Stopped', stalled: 'Stalled', shutdown: 'Shutdown',
+    stopped: 'Stopped', stalled: 'Stalled', shutdown: 'Shutdown', session_limit: 'Session limit',
   };
   function describeLogEntry(entry) {
     switch (entry.event) {
@@ -215,6 +215,10 @@ export const BASE_JS = `
           (entry.outcome === 'failed' || entry.outcome === 'stalled' ? ' · ' + entry.reason : '');
       case 'issue_paused':
         return 'Paused after ' + entry.continuations + ' continuation session(s) in "' + entry.state + '"';
+      case 'session_limit_wait':
+        return 'Waiting for the session limit to reset · retry at ' + fmtTime(entry.retry_at);
+      case 'worker_restarted':
+        return 'Restarted by the operator' + (entry.previous ? ' (was ' + entry.previous + ')' : '');
       case 'workspace_removed':
         return 'Workspace removed ("' + entry.state + '")';
       default:
@@ -224,10 +228,10 @@ export const BASE_JS = `
   function logSeverity(entry) {
     if (entry.event === 'run_finished') {
       if (entry.outcome === 'failed' || entry.outcome === 'stalled') return 'error';
-      if (entry.outcome === 'stopped' || entry.outcome === 'shutdown') return 'warn';
+      if (entry.outcome === 'stopped' || entry.outcome === 'shutdown' || entry.outcome === 'session_limit') return 'warn';
       return 'ok';
     }
-    if (entry.event === 'issue_paused') return 'warn';
+    if (entry.event === 'issue_paused' || entry.event === 'session_limit_wait') return 'warn';
     return 'info';
   }
   const SEVERITY_TONE = { ok: 'green', info: 'cyan', warn: 'amber', error: 'red' };
