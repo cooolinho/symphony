@@ -203,7 +203,10 @@ Laravel Boost for Laravel apps in the workspace. After the `before_run` hook, Sy
 checkout (the root and one level deep: `artisan` plus a `composer.json` that requires `laravel/framework`). For each
 app that requires `laravel/boost`, it installs Composer dependencies if needed, generates Boost's guidelines and skills
 for Claude Code, keeps the generated files out of commits, and adds Boost's MCP server to the session. Apps without
-Boost only get a log line; `npm run repo-init` creates an issue that adds it. Details:
+Boost only get a log line; `npm run repo-init` creates an issue that adds it. One `integration_prepared` log line lists the
+versions from `composer.lock` and the Boost status (`ready`, `failed`, `skipped`, `absent`) of each app; the dry run shows
+the versions for existing workspaces. When Boost is `failed` or `skipped` for an app, the prompt says so and points the
+agent to `artisan` and `composer` in the shell. Details:
 [agent-claude.md](agent-claude.md#workspace-extensions-laravel-boost).
 
 | Key | Default | Notes |
@@ -348,7 +351,7 @@ workflow directory, else `$XDG_STATE_HOME/symphony` or `~/.local/state/symphony`
 
 | Event | Fields |
 |---|---|
-| `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested: from a `Model: …` label, else the role's model, else `claude.model`), `role` (`default` without roles) |
+| `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested: from a `Model: …` label, else the role's model, else `claude.model`), `role` (`default` without roles), `laravel` and `boost` (only for workspaces with [`laravel`](#laravel) apps: `<app dir>:<laravel/framework version from composer.lock, or unknown>` and the Boost status `ready`, `failed`, `skipped` or `absent`, e.g. `laravel=laravel/:v13.1.0 boost=ready`; several apps give comma-separated entries, each status prefixed by its directory) |
 | `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `stopped`, `stalled`, `shutdown`), `role` and `next_role` (only when the run handed off to another [role](#roles)), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `head_sha` and `branch` (final commit of a git workspace; omitted otherwise), `mcp_tool_calls` (`<server>:<n>,…` per MCP server; omitted when no MCP tool was used), `started_at`, `mcp_unavailable` (comma-separated MCP servers Symphony added that did not connect; only when there are any), running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` |
 | `model_usage` | `repo`, `issue`, `run`, `model`, `price` (matched entry), token counts, `cost_usd` |
 | `issue_paused` | `repo`, `issue`, `title`, `state`, `continuations`, `max_continuations` |

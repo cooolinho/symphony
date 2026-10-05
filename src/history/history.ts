@@ -33,6 +33,8 @@ export interface RunStart {
   role?: string;
   run: string;
   at: Date;
+  /** Extra fields from workspace integrations (e.g. `laravel`, `boost`), appended to the line. */
+  extra?: Record<string, string>;
 }
 
 export interface RunFinish {
@@ -152,6 +154,7 @@ export class HistoryLog {
       attempt: start.attempt,
       model: start.model ?? 'default',
       role: start.role ?? DEFAULT_ROLE,
+      ...start.extra,
     });
   }
 
