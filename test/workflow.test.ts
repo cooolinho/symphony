@@ -315,6 +315,7 @@ describe('prompt templates', () => {
       renderPrompt(template, {
         issue: issueTemplateValue(makeIssue({ id: '12', labels, native_ref: { number: 12, parent: null, sub_issues: [] } })),
         attempt: null,
+        role: 'default',
       });
     const mixed = await render(['bug', 'model: sonnet']);
     assert.match(mixed, /^- Labels: bug$/m);
