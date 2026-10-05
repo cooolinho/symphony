@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { sessionClaudeConfig } from '../agent/model.ts';
-import type { AgentEvent, AgentRunner, AgentSession } from '../agent/types.ts';
+import type { AgentEvent, AgentRunner, AgentSession, SessionLimitInfo } from '../agent/types.ts';
 import { prepareIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
@@ -32,7 +32,7 @@ export type RunPhase =
 
 export type WorkerOutcome =
   | { kind: 'normal'; turns: number; reason: string }
-  | { kind: 'failed'; code: string; message: string; phase: RunPhase }
+  | { kind: 'failed'; code: string; message: string; phase: RunPhase; sessionLimit?: SessionLimitInfo }
   | { kind: 'cancelled'; message: string };
 
 /** Final commit and branch of a git workspace. */
@@ -291,7 +291,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       setPhase('StreamingTurn');
       const result = await session.runTurn(prompt);
       if (signal.aborted) return await finish(cancelled());
-      if (!result.ok) return await finish({ kind: 'failed', code: result.code, message: result.message, phase });
+      if (!result.ok) return await finish({ kind: 'failed', code: result.code, message: result.message, phase, ...(result.sessionLimit ? { sessionLimit: result.sessionLimit } : {}) });
 
       let refreshed: Issue[];
       try {

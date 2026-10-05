@@ -400,6 +400,150 @@ describe('claude agent runner', () => {
     await session.stop();
   });
 
+  describe('session limit', () => {
+    const TEXT = "You've hit your session limit · resets 7:30pm (Europe/Berlin)";
+    const limitEvent = (overrides: Record<string, unknown> = {}) => ({
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'rejected', resetsAt: 1791221400, rateLimitType: 'five_hour', overageStatus: 'rejected', overageDisabledReason: 'out_of_credits', isUsingOverage: false, ...overrides },
+    });
+    const limitAssistant = (text = TEXT) => ({
+      type: 'assistant',
+      error: 'rate_limit',
+      message: { model: '<synthetic>', content: [{ type: 'text', text }] },
+    });
+    const limitResult = (overrides: Record<string, unknown> = {}) =>
+      result(0, 0, 0, { is_error: true, api_error_status: 429, terminal_reason: 'api_error', result: TEXT, ...overrides });
+
+    async function run(script: Script) {
+      const session = await new ClaudeAgentRunner({ query: fakeQuery(script).fn }).startSession(params());
+      const outcome = await session.runTurn('go');
+      await session.stop();
+      return outcome;
+    }
+
+    it('classifies the three real messages with the event reset', async () => {
+      const outcome = await run((_p, _o, emit) => {
+        emit(limitEvent());
+        emit(limitAssistant());
+        emit(limitResult());
+      });
+      assert.equal(outcome.ok, false);
+      if (outcome.ok) return;
+      assert.equal(outcome.code, 'session_limit');
+      assert.equal(outcome.message, `turn ended with an error: ${TEXT}`);
+      assert.deepEqual(outcome.sessionLimit, {
+        window: 'five_hour',
+        resetsAt: new Date('2026-10-05T17:30:00Z'),
+        source: 'event',
+        text: TEXT,
+        overageDisabledReason: 'out_of_credits',
+      });
+    });
+
+    it('classifies without the event, from the message text', async () => {
+      const outcome = await run((_p, _o, emit) => {
+        emit(limitAssistant());
+        emit(limitResult());
+      });
+      assert.equal(outcome.ok === false && outcome.code, 'session_limit');
+      const info = outcome.ok ? undefined : outcome.sessionLimit;
+      assert.equal(info?.source, 'message');
+      assert.equal(info?.window, 'five_hour');
+      assert.ok(info?.resetsAt instanceof Date);
+    });
+
+    it('leaves resetsAt null when the time is unreadable', async () => {
+      const text = "You've hit your session limit · resets soon";
+      const outcome = await run((_p, _o, emit) => {
+        emit(limitAssistant(text));
+        emit(limitResult({ result: text }));
+      });
+      assert.equal(outcome.ok === false && outcome.code, 'session_limit');
+      const info = outcome.ok ? undefined : outcome.sessionLimit;
+      assert.equal(info?.resetsAt, null);
+      assert.equal(info?.source, null);
+    });
+
+    it('falls back to the assistant text when the result text is empty', async () => {
+      const outcome = await run((_p, _o, emit) => {
+        emit(limitAssistant());
+        emit(limitResult({ result: '', api_error_status: null }));
+      });
+      assert.equal(outcome.ok === false && outcome.code, 'session_limit');
+      const info = outcome.ok ? undefined : outcome.sessionLimit;
+      assert.equal(info?.text, TEXT);
+      assert.equal(info?.window, 'five_hour');
+    });
+
+    it('keeps a bare 429 as turn_failed', async () => {
+      const outcome = await run((_p, _o, emit) => emit(limitResult({ result: 'Request rejected (429)' })));
+      assert.equal(outcome.ok === false && outcome.code, 'turn_failed');
+      assert.equal(outcome.ok === false && outcome.sessionLimit, undefined);
+    });
+
+    it('keeps an event followed by an unrelated failure as turn_failed', async () => {
+      const outcome = await run((_p, _o, emit) => {
+        emit(limitEvent());
+        emit(result(0, 0, 0, { subtype: 'error_during_execution', errors: ['tool crashed'] }));
+      });
+      assert.equal(outcome.ok === false && outcome.code, 'turn_failed');
+    });
+
+    it('classifies an event plus a 429 without limit text', async () => {
+      const outcome = await run((_p, _o, emit) => {
+        emit(limitEvent());
+        emit(limitResult({ result: 'Request rejected (429)' }));
+      });
+      assert.equal(outcome.ok === false && outcome.code, 'session_limit');
+    });
+
+    it('does not leak a stale event into later turns', async () => {
+      let turn = 0;
+      const fake = fakeQuery((_p, _o, emit) => {
+        turn += 1;
+        if (turn === 1) {
+          emit(limitEvent());
+          emit({ type: 'system', subtype: 'api_retry' });
+          emit(result(0, 0, 0));
+        } else {
+          emit(limitResult({ result: 'Request rejected (429)' }));
+        }
+      });
+      const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params());
+      assert.equal((await session.runTurn('one')).ok, true);
+      const second = await session.runTurn('two');
+      assert.equal(second.ok === false && second.code, 'turn_failed');
+      await session.stop();
+    });
+
+    it('ignores an event received between turns', async () => {
+      let emitter: Emit | undefined;
+      let turn = 0;
+      const fake = fakeQuery((_p, _o, emit) => {
+        emitter = emit;
+        turn += 1;
+        if (turn === 1) emit(result(0, 0, 0));
+        else emit(limitResult({ result: 'Request rejected (429)' }));
+      });
+      const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params());
+      assert.equal((await session.runTurn('one')).ok, true);
+      emitter?.(limitEvent());
+      emitter?.(limitAssistant());
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const second = await session.runTurn('two');
+      assert.equal(second.ok === false && second.code, 'turn_failed');
+      await session.stop();
+    });
+
+    it('ignores allowed_warning events', async () => {
+      const outcome = await run((_p, _o, emit) => {
+        emit(limitEvent({ status: 'allowed_warning' }));
+        emit(result(0, 0, 0));
+      });
+      assert.equal(outcome.ok, true);
+    });
+  });
+
   it('times out turns that go silent', async () => {
     const fake = fakeQuery(() => undefined);
     const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ claude: { turn_timeout_ms: 50 } }));
