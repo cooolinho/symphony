@@ -68,6 +68,7 @@ ${BASE_JS}
     table('running', [
       { label: 'Issue', render: (r) => { const s = el('span'); s.append(link(r.issue_identifier, r.issue_url), el('div', r.title, 'meta')); return s; } },
       { label: 'State', render: (r) => el('span', r.stopping ? 'stopping' : r.state, 'chip') },
+      { label: 'Role', render: (r) => r.role || '—' },
       { label: 'Phase', render: (r) => r.phase },
       { label: 'Model', render: (r) => r.model || '—' },
       { label: 'Turns', className: 'num', render: (r) => r.turn_count },

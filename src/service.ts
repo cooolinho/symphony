@@ -47,6 +47,11 @@ function logEnvFile(logger: Logger, envFile: LoadedEnvFile | null): void {
 }
 
 /** Runs until SIGINT/SIGTERM. Returns the process exit code. */
+/** Dry-run line naming the role and the model a candidate would run on (`default` when none is configured). */
+export function roleModelLine(role: string, model: string | null): string {
+  return `role ${role}, model ${model ?? 'default'}`;
+}
+
 export async function runService(options: ServiceOptions): Promise<number> {
   const logger = Logger.create({ level: options.logLevel, file: options.logFile });
   const { env } = options;
@@ -211,6 +216,7 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       if (reason !== null) out(`            ↳ ${reason}`);
       const role = roleFor(issue.state, config.roles);
       const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model);
+      out(`            ↳ ${roleModelLine(roleName(role), choice.model)}`);
       if (choice.warning !== null) out(`            ↳ model label ignored: ${choice.warning}; using ${choice.model ?? '(Claude Code default)'}`);
       else if (choice.label !== null) out(`            ↳ model ${choice.model} (label "${choice.label}")`);
       for (const line of await laravelLines(path.join(config.workspace.root, workspaceKey(issue.identifier)))) out(`            ↳ ${line}`);
