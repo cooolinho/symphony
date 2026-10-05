@@ -256,6 +256,43 @@ Was wichtig ist:
 - **`workspaces`:** lassen sich neu klonen, enthalten aber **unfertige Arbeit** (ungepushte Commits, Änderungen).
 - **`composer-cache`:** muss nicht gesichert werden.
 
+### Bestehende Historie auf den Server übertragen
+
+Startest du Symphony im Container, nachdem es schon lokal gelaufen ist, kannst du Log pro Repository
+(`repositories/`) und Transkripte (`sessions/`) aus `~/.local/state/symphony` in das Volume `state` des Servers
+übertragen. Das Skript läuft **lokal** und verbindet sich per SSH:
+
+```bash
+scripts/push-history.sh --dry-run   # zeigt nur, was passieren würde
+scripts/push-history.sh
+```
+
+Es stoppt den Container auf dem Server (`docker stop`), sichert den dortigen Stand als `~/symphony-state-backup-<zeit>.tgz`, **ersetzt**
+`repositories/` und `sessions/` komplett durch den lokalen Stand, vergleicht die Dateianzahl und startet den Container
+wieder (auch bei einem Fehler). Alles, was der Server-Container bisher aufgezeichnet hat, wird dabei überschrieben.
+Workspaces, Claude-Zustand und Composer-Cache werden nicht übertragen. Ein lokal laufendes Symphony muss vorher beendet
+sein.
+
+| Variable | Standard | Bedeutung |
+|---|---|---|
+| `SYMPHONY_CONTAINER` | `symphony` | Name des Containers auf dem Server (`docker ps -a`), bei Compose meist `<projekt>-symphony-1` |
+| `SYMPHONY_REMOTE` | `cooolinho@docker.lan` | SSH-Ziel |
+| `SYMPHONY_LOCAL_STATE` | `$SYMPHONY_LOG_DIR`, sonst `~/.local/state/symphony` | lokaler Log-Ordner |
+
+Die Variablen liest das Skript aus der Shell oder aus der `.env` im Repository-Ordner **auf dem Rechner, auf dem du es
+startest** (die Shell hat Vorrang), z. B. `SYMPHONY_CONTAINER=symphony-symphony-1`.
+
+Optionen: `--yes` (ohne Rückfrage), `--no-backup`, `--dry-run`. Das Skript nutzt eine SSH-Verbindung für alle Schritte, ein
+Passwort oder eine Passphrase wird also nur einmal abgefragt.
+
+Das Backup spielst du bei Bedarf so zurück (auf dem Server; Container vorher mit `docker stop <container>` stoppen und
+danach mit `docker start <container>` starten):
+
+```bash
+docker run --rm -i --volumes-from <container> --entrypoint bash "$(docker inspect -f '{{.Config.Image}}' <container>)" \
+  -c 'cd /home/symphony/.local/state/symphony && rm -rf repositories sessions && tar xzf -' < ~/symphony-state-backup-<zeit>.tgz
+```
+
 ### Ressourcen-Limits
 
 Als Richtwert braucht jeder parallele Agent (Claude Code, Composer, Tests) etwa 1 CPU und 2 GB RAM. Mit
