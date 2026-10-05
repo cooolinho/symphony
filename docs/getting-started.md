@@ -1,5 +1,8 @@
 # Getting Started
 
+> Symphony läuft auf einem Server in Docker hinter Traefik? Dann folge [docker.md](docker.md). Diese Anleitung gilt für
+> den Betrieb ohne Docker; Board und Token legst du in beiden Fällen so an wie hier.
+
 ## Voraussetzungen
 
 | Was | Prüfen mit |

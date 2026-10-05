@@ -74,7 +74,8 @@ npm start               # Symphony starten
 
 Dazwischen legst du ein GitHub Project Board mit den Spalten `Backlog`, `Ready`, `In progress`, `Agent review`,
 `Blocked`, `In review` und `Done` an. Die ausführliche Anleitung steht in
-[docs/getting-started.md](docs/getting-started.md).
+[docs/getting-started.md](docs/getting-started.md). Den Betrieb per Docker hinter Traefik beschreibt
+[docs/docker.md](docs/docker.md).
 
 ## 📋 Usage
 
@@ -98,6 +99,10 @@ symphony/
 ├── .claude/                    # Toolbox für alle Sessions, geladen als Plugin "symphony" (skills, agents, commands, hooks)
 ├── .github/workflows/          # CI (npm run check) und automatisches Mergen der Agenten-Pull-Requests
 ├── model-costs.yml             # Modellpreise für die Kostenschätzung (wird live neu geladen)
+├── Dockerfile                  # Image mit Node, PHP, Composer, git und SSH; läuft als Benutzer symphony
+├── docker-compose.yml          # Betrieb hinter Traefik: Labels, Volumes, Secret für den SSH-Key
+├── docker/                     # entrypoint.sh (Variablen prüfen, SSH-Key, git-Identität) und ssh_known_hosts
+├── .dockerignore               # hält .env, secrets/, Tests und Docs aus dem Build-Kontext
 ├── .env.example                # Vorlage für .env (Board, Repository, Modell, Token, Grenzen)
 ├── repo-init.ts                # interaktive Einrichtung der Repositories (Model-Labels, Laravel-Boost-Issue)
 ├── scripts/e2e/                # End-to-End-Test der Orchestrierung auf einem echten Board (npm run e2e)
@@ -126,6 +131,7 @@ symphony/
 Die zentrale Übersicht ist [docs/index.md](docs/index.md).
 
 - [docs/getting-started.md](docs/getting-started.md): Einrichtung Schritt für Schritt
+- [docs/docker.md](docs/docker.md): Betrieb mit Docker hinter Traefik, also Einrichtung, Update, Backup, Fehlerbilder und Sicherheit
 - [docs/usage.md](docs/usage.md): Betrieb, Konfiguration und Fehlerbehebung
 - [docs/configuration.md](docs/configuration.md): alle Optionen der `WORKFLOW.md`, `$VARIABLE`-Verweise, Hooks und Prompt-Variablen
 - [docs/adapters/github-project.md](docs/adapters/github-project.md): GitHub-Projects-Adapter, also Einstellungen, Normalisierung, Agenten-Tools und Fehler

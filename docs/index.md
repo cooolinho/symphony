@@ -6,6 +6,7 @@ Zentrale Übersicht über alle Dokumente zu Symphony. Einen Überblick über das
 ## Einstieg
 
 - [Getting Started](getting-started.md): Voraussetzungen, Installation, Board, Token, `.env`, Dry Run und Start
+- [Docker](docker.md): Betrieb per Docker Compose hinter Traefik: Einrichtung, Update, Backup, Fehlerbilder und Sicherheit
 - [Usage](usage.md): Ablauf eines Issues, Eingreifen im Betrieb, Modellwahl, `repo-init`, Dashboard und API, Logs und
   Kosten, mehrere Repositories, Laravel Boost, Sicherheit und Fehlerbehebung
 

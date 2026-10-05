@@ -515,7 +515,7 @@ Die häufigsten Stellschrauben in der `WORKFLOW.md`. Alle Optionen beschreibt
 - **Grenzen:** Der Agent läuft als dein Linux-Benutzer. Er könnte grundsätzlich Dateien lesen, die du lesen kannst,
   etwa die `.env`, sofern Klassifikator oder Sandbox es nicht verhindern. Issue-Texte sind fremde Eingaben. Bearbeite
   nur Boards, deren Issues du vertraust. Für mehr Isolation: `claude.sandbox` aktivieren oder Symphony unter einem
-  eigenen Benutzer, in einem Container oder einer VM betreiben. Details: [agent-claude.md](agent-claude.md).
+  eigenen Benutzer, in einem Container ([docker.md](docker.md)) oder einer VM betreiben. Details: [agent-claude.md](agent-claude.md).
 - **Dashboard:** Das Dashboard hat keine eigene Anmeldung. Eine Nicht-Loopback-Adresse (`SYMPHONY_HOST`, z. B.
   `0.0.0.0`) nur hinter einem Reverse-Proxy mit Anmeldung (BasicAuth, Forward-Auth) verwenden; Symphony warnt beim Start
   davor. `SYMPHONY_ALLOW_REMOTE_CONTROL=true` erlaubt dort den Neustart von Workern, mit Origin-Pflicht gegen CSRF.
