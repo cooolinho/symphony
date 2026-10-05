@@ -628,6 +628,7 @@ Mit einem Stack pro Workspace kann `laravel.php` auf ein Wrapper-Script zeigen, 
 symphony/
 ├── WORKFLOW.md                 # Prompt und Einstellungen (wird live neu geladen)
 ├── .claude/                    # Toolbox für alle Sessions, geladen als Plugin "symphony" (skills, agents, commands, hooks)
+├── .github/workflows/          # CI (npm run check) und automatisches Mergen der Agenten-Pull-Requests
 ├── model-costs.yml             # Modellpreise für die Kostenschätzung (wird live neu geladen)
 ├── .env.example                # Vorlage für .env (Board, Repository, Modell, Token, Grenzen)
 ├── repo-init.ts                # interaktive Einrichtung der Repositories (Model-Labels, Laravel-Boost-Issue)
@@ -667,6 +668,23 @@ npm run typecheck   # TypeScript-Prüfung
 npm run check       # beides
 npm run e2e         # End-to-End-Test auf dem Test-Board (legt echte Issues an)
 ```
+
+Die CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) führt `npm run check` mit Node 26 für jeden Pull Request
+und jeden Push auf `main` aus. Ist sie für einen Pull Request der Symphony-Agenten (Branch `symphony/*`) grün, mergt
+[.github/workflows/automerge.yml](.github/workflows/automerge.yml) ihn per Squash und löscht den Branch. Das schließt
+das Issue (`Closes #…`), und Symphony startet die Issues, die davon abhängen. Der Auto-Merge läuft immer in der
+Fassung von `main`: Ein Pull Request kann die Regeln für seinen eigenen Merge nicht ändern.
+
+Ein Pull Request bleibt für dich offen, wenn
+
+- er selbst oder ein Issue, das er schließt, das Label `manual-merge` hat,
+- er kein Issue schließt,
+- er `.github/`, `package.json` oder `package-lock.json` ändert (CI, Skripte, Abhängigkeiten) oder mehr als 100 Dateien,
+- die CI fehlschlägt oder GitHub den Merge ablehnt, etwa wegen Konflikten mit `main`.
+
+Solche Issues bleiben in `In review` stehen. Entfernst du `manual-merge` später wieder, starte den letzten
+„Auto-merge“-Lauf im Actions-Tab neu, oder merge selbst. Für Nacharbeiten kommentiere im Issue und schiebe es zurück
+nach `Ready`.
 
 ## 🔗 References
 

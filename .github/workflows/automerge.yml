@@ -1,0 +1,99 @@
+# Squash-merges a pull request from Symphony's agent branches (symphony/*) once the CI workflow has passed for its
+# latest commit. The merge closes the issue ("Closes #N"), so Symphony starts the issues that depend on it.
+#
+# This workflow always runs in the version on main (workflow_run), so a pull request cannot change the rules for
+# its own merge. A pull request stays open for a human when
+#   - it, or an issue it closes, has the label "manual-merge",
+#   - it closes no issue,
+#   - it changes .github/, package.json or package-lock.json (CI, scripts, dependencies) or more than 100 files,
+#   - it is a draft, or it has a newer commit than the one CI checked (that commit's run decides).
+name: Auto-merge
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  merge:
+    if: >-
+      github.event.workflow_run.event == 'pull_request'
+      && github.event.workflow_run.conclusion == 'success'
+      && startsWith(github.event.workflow_run.head_branch, 'symphony/')
+      && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # merge and delete the head branch
+      pull-requests: write
+      issues: read # labels of the issues the pull request closes
+    steps:
+      - name: Merge unless a human has to look
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_REF: ${{ github.event.workflow_run.head_branch }}
+          OPT_OUT_LABEL: manual-merge
+        run: |
+          set -euo pipefail
+          note() { echo "::notice::$1"; printf '%s\n' "$1" >> "$GITHUB_STEP_SUMMARY"; }
+
+          # The pull request as it is now: labels may have changed while CI ran.
+          # shellcheck disable=SC2016 # $owner, $name and $branch are GraphQL variables, not shell variables
+          data="$(gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -f branch="$HEAD_REF" -f query='
+            query($owner: String!, $name: String!, $branch: String!) {
+              repository(owner: $owner, name: $name) {
+                defaultBranchRef { name }
+                pullRequests(headRefName: $branch, states: OPEN, first: 10) {
+                  nodes {
+                    number title isDraft headRefOid baseRefName
+                    headRepository { nameWithOwner }
+                    labels(first: 50) { nodes { name } }
+                    closingIssuesReferences(first: 20) { nodes { number labels(first: 50) { nodes { name } } } }
+                    files(first: 100) { totalCount nodes { path } }
+                  }
+                }
+              }
+            }')"
+          result="$(jq -c --arg repo "$REPO" --arg sha "$HEAD_SHA" --arg label "$OPT_OUT_LABEL" '
+            def labelled: any(.labels.nodes[]; (.name | ascii_downcase) == ($label | ascii_downcase));
+            .data.repository as $r
+            | first($r.pullRequests.nodes[]
+                | select(.baseRefName == $r.defaultBranchRef.name and .headRepository.nameWithOwner == $repo)) // null
+            | if . == null then {reasons: ["there is no open pull request from this branch into the default branch"]}
+              else
+                ([.closingIssuesReferences.nodes[] | "#\(.number)"] | join(", ")) as $issues
+                | ([.files.nodes[].path
+                    | select(startswith(".github/") or . == "package.json" or . == "package-lock.json")]
+                   | join(", ")) as $guarded
+                | {number, title, issues: $issues, reasons: [
+                    (select(.headRefOid != $sha) | "it has a newer commit than the one CI checked"),
+                    (select(.isDraft) | "it is a draft"),
+                    (select($issues == "") | "it closes no issue (Closes #N)"),
+                    (select(labelled) | "it has the label \($label)"),
+                    (.closingIssuesReferences.nodes[] | select(labelled) | "issue #\(.number) has the label \($label)"),
+                    (select($guarded != "") | "it changes \($guarded)"),
+                    (select(.files.totalCount > 100) | "it changes more than 100 files")
+                  ]}
+              end' <<< "$data")"
+
+          number="$(jq -r '.number // empty' <<< "$result")"
+          reasons="$(jq -r '.reasons | join("; ")' <<< "$result")"
+          if [ -n "$reasons" ]; then
+            note "Not merged automatically${number:+ (pull request #$number)}: $reasons."
+            exit 0
+          fi
+
+          # Squash-merge exactly the commit CI checked. GitHub refuses when the branch has moved on or conflicts
+          # with main; the failed run then leaves the pull request to a human.
+          title="$(jq -r .title <<< "$result")"
+          issues="$(jq -r .issues <<< "$result")"
+          gh api -X PUT "repos/$REPO/pulls/$number/merge" \
+            -f merge_method=squash -f sha="$HEAD_SHA" -f commit_title="$title (#$number)" > /dev/null
+          note "Merged pull request #$number; closes $issues."
+          # The repository may already delete head branches on merge.
+          gh api -X DELETE "repos/$REPO/git/refs/heads/$HEAD_REF" > /dev/null 2>&1 || echo "Branch $HEAD_REF was already deleted."
