@@ -44,6 +44,12 @@ exists and that the status field is a single-select field (`invalid_tracker_conf
   asked for one fails, because omission would mean "no longer visible".
 - **Limits:** at most 500 pages (50,000 items) per poll. Each poll costs a few GraphQL rate-limit points.
 
+## Status options
+
+`statusOptions()` returns the names of the board's `Status` single-select options (from the cached project
+metadata, no extra request). The orchestrator uses it to check that every configured column exists on the board;
+see the board preflight in [configuration.md](../configuration.md#tracker).
+
 ## Normalization
 
 | Issue field | Source |

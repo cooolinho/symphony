@@ -225,6 +225,11 @@ describe('github_project adapter reads', () => {
     assert.equal(github.requests.length, 0);
   });
 
+  it('lists the status option names of the board', async () => {
+    const tracker = adapter(new FakeGithub());
+    assert.deepEqual(await tracker.statusOptions?.(), ['Todo', 'In Progress', 'Human Review', 'Done']);
+  });
+
   it('pages through the board, filters by state and scope, and keeps board order', async () => {
     const github = new FakeGithub().add(
       itemNode('A', { status: 'Todo', number: 1, labels: [' Bug ', 'bug', 'UI'] }),

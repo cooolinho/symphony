@@ -19,7 +19,7 @@ import { truncate } from './util/text.ts';
 import { roleFor, roleName } from './workflow/roles.ts';
 import { WorkflowStore } from './workflow/store.ts';
 import { issueTemplateValue, renderPrompt } from './workflow/template.ts';
-import { validateDispatch } from './workflow/validate.ts';
+import { unknownBoardColumns, validateDispatch } from './workflow/validate.ts';
 import { workspaceKey } from './workspace/manager.ts';
 
 export interface ServiceOptions {
@@ -206,6 +206,16 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       env: options.env,
       logger,
     });
+    if (adapter.statusOptions !== undefined) {
+      const unknown = unknownBoardColumns(config, await adapter.statusOptions());
+      if (unknown.length > 0) {
+        out('Board column check failed:');
+        for (const error of unknown) out(`  - ${error}`);
+        return 1;
+      }
+      out('Board columns:   all configured columns exist on the board');
+      out();
+    }
     const issues = sortForDispatch(await adapter.fetchIssuesByStates(config.tracker.activeStates));
     out(`Candidates in active states: ${issues.length}`);
     let first: Issue | null = null;

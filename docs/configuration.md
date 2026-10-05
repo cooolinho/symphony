@@ -43,6 +43,14 @@ runs Claude Code and is configured through `claude`.
 
 Statuses that are neither active nor terminal (for example `Human Review`) stop the agent and keep the workspace.
 
+**Board preflight.** Every column named in `tracker.active_states`, `tracker.terminal_states`, `roles.*.states`,
+`roles.*.may_move_to` and `checks.on_enter` must be a status option of the board (compared case-insensitively).
+An unknown column is a dispatch-validation error (`unknown board column "Agent Reviw" (valid: …)`): dispatch
+pauses while reconciliation continues, and the error clears on the first tick after `WORKFLOW.md` is fixed. The
+options are fetched once per workflow version; a failed fetch is reported as a tracker error (the check is skipped
+and retried on the next tick), not as a validation error. Adapters without `statusOptions` skip the check. The dry
+run prints the same check.
+
 ### `polling`
 
 | Key | Default | Notes |

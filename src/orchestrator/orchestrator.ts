@@ -16,7 +16,7 @@ import { WorkspaceManager, type HookIssue } from '../workspace/manager.ts';
 import type { ServiceConfig } from '../workflow/config.ts';
 import { roleFor, roleName } from '../workflow/roles.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../workflow/store.ts';
-import { validateDispatch } from '../workflow/validate.ts';
+import { unknownBoardColumns, validateDispatch } from '../workflow/validate.ts';
 import {
   CONTINUATION_DELAY_MS,
   failureBackoffMs,
@@ -282,6 +282,7 @@ export class Orchestrator {
   #dispatchErrors: string[] = [];
   #lastTrackerError: { at: Date; message: string } | null = null;
   #adapterCache: { version: number; adapter: TrackerAdapter } | null = null;
+  #statusOptionsCache: { version: number; options: string[] } | null = null;
   #listeners = new Set<() => void>();
 
   constructor(deps: OrchestratorDeps) {
@@ -296,6 +297,7 @@ export class Orchestrator {
   /** Startup validation (fails startup), terminal workspace cleanup, then an immediate first tick. */
   async start(): Promise<void> {
     const workflow = this.#deps.workflow.current;
+    await this.#loadStatusOptions(workflow);
     const errors = this.#validate(workflow);
     if (errors.length > 0) throw new SymphonyError('startup_validation_failed', errors.join('; '));
     this.#pollIntervalMs = workflow.config.polling.intervalMs;
@@ -375,6 +377,7 @@ export class Orchestrator {
 
       await this.#reconcile(workflow);
 
+      await this.#loadStatusOptions(workflow);
       const errors = this.#validate(workflow);
       if (errors.join('\n') !== this.#dispatchErrors.join('\n') && errors.length > 0) {
         this.#logger.error('dispatch validation failed; skipping dispatch until fixed', { errors: errors.join('; ') });
@@ -415,7 +418,30 @@ export class Orchestrator {
         errors.push(errorMessage(error));
       }
     }
+    if (this.#statusOptionsCache?.version === workflow.version) {
+      errors.push(...unknownBoardColumns(workflow.config, this.#statusOptionsCache.options));
+    }
     return errors;
+  }
+
+  /**
+   * Fetches the board's status options once per workflow version (adapters without `statusOptions` skip
+   * the check). A failure is a tracker error, not a validation error, and is retried on the next call.
+   */
+  async #loadStatusOptions(workflow: EffectiveWorkflow): Promise<void> {
+    if (this.#statusOptionsCache?.version === workflow.version) return;
+    let adapter: TrackerAdapter;
+    try {
+      adapter = this.#adapterFor(workflow);
+    } catch {
+      return; // reported by #validate
+    }
+    if (adapter.statusOptions === undefined) return;
+    try {
+      this.#statusOptionsCache = { version: workflow.version, options: await adapter.statusOptions() };
+    } catch (error) {
+      this.#trackerFailure('board status options fetch failed; skipping the column check', error);
+    }
   }
 
   /** One adapter per workflow version, so a reload never changes an in-flight session's tracker. */
@@ -814,6 +840,7 @@ export class Orchestrator {
       this.#pause(issue, continuations, limit);
       return;
     }
+    await this.#loadStatusOptions(workflow);
     const errors = this.#validate(workflow);
     if (errors.length > 0) {
       requeue(`dispatch validation failed: ${errors[0]}`);
