@@ -155,7 +155,7 @@ hooks already lack. Scripts are not `$VAR`-substituted by Symphony; the shell ex
 | `env` | `{}` | Extra environment variables for the agent process. |
 | `executable` | bundled CLI | Path to another Claude Code executable. |
 | `plugins` | `[]` | Local Claude Code plugin directories loaded into every session (skills, subagents, commands, hooks), relative to `WORKFLOW.md`. The shipped `WORKFLOW.md` loads `./.claude`, Symphony's own toolbox; its skills are named `symphony:<skill>`. A missing directory blocks dispatch. |
-| `skills` | Claude Code default | `all` enables every discovered skill (the repository's, a plugin's, Laravel Boost's) and the Skill tool; a list enables only those names (`pest-testing`, `symphony:handoff`). |
+| `skills` | Claude Code default | `all` enables every discovered skill (the repository's, a plugin's, Laravel Boost's) and the Skill tool; a list enables only those names (`testing-best-practices`, `symphony:handoff`). |
 | `turn_timeout_ms` | `3600000` | A turn fails after this long **without any output** from the agent. |
 | `read_timeout_ms` | `30000` | Startup handshake timeout. |
 | `stall_timeout_ms` | `300000` | The orchestrator kills and retries a run without any agent event for this long; `<= 0` disables it. |
@@ -175,7 +175,10 @@ Boost only get a log line; `npm run repo-init` creates an issue that adds it. De
 | `php` | `php` | PHP command for `artisan`. A bare name is looked up on `PATH`; a value with `/` or `~` is a path, relative to `WORKFLOW.md`. A wrapper script (for example one that runs PHP in a per-workspace container) receives the absolute `artisan` path as its first argument and `SYMPHONY_WORKSPACE` in its environment. |
 | `composer` | `composer` | Composer command, resolved like `php`. |
 | `install_dependencies` | `true` | Run `composer install` when `vendor/` is missing or `composer.lock` changed since the last install. Off: apps without `vendor/` run without Boost. |
-| `env` | `{ APP_ENV: local }` | Environment for Composer, `artisan`, the Boost MCP server and the agent. Boost only registers its commands with `APP_ENV=local` (or `APP_DEBUG=true`), and a fresh clone has no `.env`. Entries are merged over the default, e.g. `{ DB_CONNECTION: sqlite }` keeps Boost's database tools away from a developer's database. |
+| `env` | `{ APP_ENV: local }` | Environment for Symphony's Composer and `artisan` steps and the Boost MCP server, not for the agent's shell. Boost only registers its commands with `APP_ENV=local` (or `APP_DEBUG=true`), and a fresh clone has no `.env`. Entries are merged over the default. Database settings belong in the app's `.env` (see [Recipe: Laravel apps](#recipe-laravel-apps)), not here. |
+| `agent_env` | `{}` | Variables added to the agent's own environment in Boost sessions (its shell, tests, `artisan`). Keep it empty unless needed: an `APP_ENV` set here overrides PHPUnit's non-forced `APP_ENV=testing`, and `DB_*` values would send tests and `RefreshDatabase` to that database. |
+| `allow_tinker` | `false` | Allow Boost's `tinker` tool, which runs arbitrary PHP. Off: `tinker` is denied, even if the repository enables it (`boost.tinker_tool_enabled`). |
+| `deny_tools` | `[record-rule]` | Boost tools removed from the session. A listed tool is also dropped from the pre-approved ones, e.g. `[search-docs, record-rule]` keeps queries away from boost.laravel.com. `[]` allows `record-rule` (it writes `.ai/rules`) after the permission check. |
 | `timeout_ms` | `hooks.timeout_ms` | Limit for each Composer or `artisan` step. |
 
 ### `roles`

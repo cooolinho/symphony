@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import type { Options, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { ClaudeAgentRunner, type QueryFn } from '../src/agent/claude.ts';
+import { boostToolPolicy } from '../src/laravel/boost.ts';
 import type { AgentEvent, SessionExtensions, SessionPolicy, StartSessionParams } from '../src/agent/types.ts';
 import { Logger } from '../src/log.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
@@ -187,7 +188,7 @@ describe('claude agent runner', () => {
       mcpServers: { 'laravel-boost': { command: 'php', args: ['/ws/laravel/artisan', 'boost:mcp'], env: { APP_ENV: 'local' } } },
       contextSections: ['# Laravel Boost\nUse search-docs.'],
       additionalDirectories: ['/ws/laravel'],
-      env: { APP_ENV: 'local' },
+      env: { FOO: 'bar' },
     };
     const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(
       params({ claude: { plugins: ['/srv/.claude'], skills: 'all', append_system_prompt: 'Extra rules.' }, extensions, logger, events }),
@@ -202,7 +203,7 @@ describe('claude agent runner', () => {
     assert.deepEqual(options.plugins, [{ type: 'local', path: '/srv/.claude' }]);
     assert.equal(options.skills, 'all');
     assert.deepEqual(options.additionalDirectories, ['/ws/laravel']);
-    assert.equal(options.env?.APP_ENV, 'local');
+    assert.equal(options.env?.FOO, 'bar');
     const append = (options.systemPrompt as { append?: string }).append ?? '';
     assert.ok(append.indexOf('# Laravel Boost') > 0 && append.indexOf('# Laravel Boost') < append.indexOf('Extra rules.'));
 
@@ -249,6 +250,24 @@ describe('claude agent runner', () => {
     const options = await sessionOptions({ extensions: serverExtensions({ deny: ['x'] }) });
     assert.ok(options.disallowedTools?.includes('mcp__srv__x'));
     assert.ok(options.allowedTools?.includes('mcp__srv'));
+  });
+
+  it('maps the Laravel Boost tool policy into allowed and disallowed tools', async () => {
+    const laravel = resolveConfig({}, { workflowPath: '/w/WORKFLOW.md', env: {}, trackerDefaults }).laravel;
+    const policy = boostToolPolicy(laravel);
+    const extensions: SessionExtensions = {
+      mcpServers: { 'laravel-boost': { command: 'php', args: ['artisan', 'boost:mcp'], ...policy } },
+      contextSections: [],
+      additionalDirectories: [],
+      env: {},
+    };
+    const options = await sessionOptions({ extensions });
+    assert.ok(!options.allowedTools?.includes('mcp__laravel-boost'));
+    for (const tool of ['application-info', 'database-query', 'search-docs']) assert.ok(options.allowedTools?.includes(`mcp__laravel-boost__${tool}`), tool);
+    for (const tool of ['tinker', 'record-rule']) {
+      assert.ok(options.disallowedTools?.includes(`mcp__laravel-boost__${tool}`), tool);
+      assert.ok(!options.allowedTools?.includes(`mcp__laravel-boost__${tool}`), tool);
+    }
   });
 
   it('refuses an extension server named like the tracker server', async () => {

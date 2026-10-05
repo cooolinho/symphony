@@ -3,13 +3,24 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { prepareLaravelBoost, extractGuidelines } from '../src/laravel/boost.ts';
+import { boostToolPolicy, prepareLaravelBoost, extractGuidelines } from '../src/laravel/boost.ts';
 import { candidateAppDirs, classifyComposer, detectLaravelApps } from '../src/laravel/detect.ts';
 import { Logger, type LogSink } from '../src/log.ts';
 import type { LaravelConfig } from '../src/workflow/config.ts';
 import { tempDir } from './helpers.ts';
 
 const LARAVEL = JSON.stringify({ require: { php: '^8.3', 'laravel/framework': '^12.0' } });
+const BOOST_READ_TOOLS = [
+  'application-info',
+  'browser-logs',
+  'database-connections',
+  'database-query',
+  'database-schema',
+  'get-absolute-url',
+  'last-error',
+  'read-log-entries',
+  'search-docs',
+];
 const LARAVEL_BOOST = JSON.stringify({ require: { 'laravel/framework': '^12.0' }, 'require-dev': { 'laravel/boost': '^2.0' } });
 
 /**
@@ -31,10 +42,10 @@ if (command === 'boost:install') {
     ? current.replace(/<laravel-boost-guidelines>[\\s\\S]*<\\/laravel-boost-guidelines>/, block)
     : current + (current === '' ? '' : '\\n\\n') + block + '\\n';
   fs.writeFileSync(path.join(app, file), next);
-  fs.mkdirSync(path.join(app, '.claude/skills/pest-testing'), { recursive: true });
-  fs.writeFileSync(path.join(app, '.claude/skills/pest-testing/SKILL.md'), '---\\nname: pest-testing\\n---\\n');
+  fs.mkdirSync(path.join(app, '.claude/skills/testing-best-practices'), { recursive: true });
+  fs.writeFileSync(path.join(app, '.claude/skills/testing-best-practices/SKILL.md'), '---\\nname: testing-best-practices\\n---\\n');
   const config = JSON.parse(fs.readFileSync(path.join(app, 'boost.json'), 'utf8'));
-  config.skills = ['pest-testing'];
+  config.skills = ['testing-best-practices'];
   if (process.env.FAKE_SAIL) config.sail = true;
   fs.writeFileSync(path.join(app, 'boost.json'), JSON.stringify(config));
 }
@@ -87,7 +98,18 @@ function fixture(files: Record<string, string>): Fixture {
 }
 
 function laravelConfig(f: Fixture, overrides: Partial<LaravelConfig> = {}): LaravelConfig {
-  return { boost: 'auto', php: f.php, composer: f.composer, installDependencies: true, timeoutMs: 10_000, env: { APP_ENV: 'local' }, ...overrides };
+  return {
+    boost: 'auto',
+    php: f.php,
+    composer: f.composer,
+    installDependencies: true,
+    timeoutMs: 10_000,
+    env: { APP_ENV: 'local' },
+    agentEnv: {},
+    allowTinker: false,
+    denyTools: ['record-rule'],
+    ...overrides,
+  };
 }
 
 function prepare(f: Fixture, options: { config?: Partial<LaravelConfig>; env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {}) {
@@ -168,7 +190,7 @@ describe('Laravel Boost preparation', () => {
       ['php', path.join(f.repo, 'artisan'), 'boost:install', '--no-interaction', '--guidelines', '--skills', 'local'],
     ]);
     assert.equal(gitStatus(f), '');
-    assert.deepEqual(excludeBlock(f), ['/.claude/skills/pest-testing/SKILL.md', '/boost.json']);
+    assert.deepEqual(excludeBlock(f), ['/.claude/skills/testing-best-practices/SKILL.md', '/boost.json']);
     // The tracked CLAUDE.md is back to the committed version; the block moved into the prompt.
     assert.equal(fs.readFileSync(path.join(f.repo, 'CLAUDE.md'), 'utf8'), '# Team notes\n');
     const boostJson = JSON.parse(fs.readFileSync(path.join(f.repo, 'boost.json'), 'utf8'));
@@ -180,15 +202,49 @@ describe('Laravel Boost preparation', () => {
         command: f.php,
         args: [path.join(f.repo, 'artisan'), 'boost:mcp'],
         env: { APP_ENV: 'local', SYMPHONY_WORKSPACE: f.repo },
+        autoApprove: BOOST_READ_TOOLS,
+        deny: ['tinker', 'record-rule'],
       },
     });
     assert.deepEqual(extensions.additionalDirectories, []);
-    assert.deepEqual(extensions.env, { APP_ENV: 'local' });
+    assert.deepEqual(extensions.env, {}, 'laravel.env stays out of the agent shell');
     assert.equal(extensions.contextSections.length, 1);
     const section = extensions.contextSections[0] as string;
     assert.match(section, /Laravel application at the repository root/);
     assert.match(section, /mcp__laravel-boost__\*/);
+    assert.match(section, /Pre-approved tools: `application-info`, .*`search-docs`\./);
+    assert.match(section, /Not available in this session: `tinker`, `record-rule`\./);
+    assert.match(section, /skills for this app's packages are available: `testing-best-practices`\./);
+    assert.doesNotMatch(section, /pest-testing|read-only\)|\.ai\/rules|APP_ENV/);
     assert.match(section, /## Laravel Boost guidelines \(from CLAUDE\.md\)\n\n<laravel-boost-guidelines>\n# Boost guidelines/);
+  });
+
+  it('passes laravel.agent_env to the agent and keeps laravel.env for the MCP server', async () => {
+    const f = fixture({ artisan: '', 'composer.json': LARAVEL_BOOST });
+    const extensions = await prepare(f, { config: { env: { APP_ENV: 'local', DB_DATABASE: 'dev' }, agentEnv: { FOO: 'bar' } } });
+    assert.deepEqual(extensions?.env, { FOO: 'bar' });
+    assert.deepEqual(extensions?.mcpServers['laravel-boost']?.env, { APP_ENV: 'local', DB_DATABASE: 'dev', SYMPHONY_WORKSPACE: f.repo });
+  });
+
+  it('opens tinker, record-rule and search-docs only as configured', async () => {
+    const f = fixture({ artisan: '', 'composer.json': LARAVEL_BOOST });
+    const extensions = await prepare(f, { config: { allowTinker: true, denyTools: ['search-docs'] } });
+    const server = extensions?.mcpServers['laravel-boost'];
+    assert.deepEqual(server?.deny, ['search-docs']);
+    assert.deepEqual(server?.autoApprove, BOOST_READ_TOOLS.filter((tool) => tool !== 'search-docs'));
+    const section = extensions?.contextSections[0] as string;
+    assert.match(section, /record-rule.*\.ai\/rules/);
+    assert.doesNotMatch(section, /Use `search-docs`/);
+  });
+
+  it('derives the Boost tool policy from the config', () => {
+    const base = { allowTinker: false, denyTools: ['record-rule'] } as LaravelConfig;
+    assert.deepEqual(boostToolPolicy(base), { autoApprove: BOOST_READ_TOOLS, deny: ['tinker', 'record-rule'] });
+    assert.deepEqual(boostToolPolicy({ ...base, allowTinker: true }).deny, ['record-rule']);
+    const moved = boostToolPolicy({ ...base, denyTools: ['search-docs', 'record-rule'] });
+    assert.deepEqual(moved.deny, ['tinker', 'search-docs', 'record-rule']);
+    assert.ok(!moved.autoApprove.includes('search-docs'));
+    assert.deepEqual(boostToolPolicy({ ...base, allowTinker: true, denyTools: [] }), { autoApprove: BOOST_READ_TOOLS, deny: [] });
   });
 
   it('handles an app in a subdirectory and writes AGENTS.md when there is no CLAUDE.md', async () => {
@@ -196,7 +252,7 @@ describe('Laravel Boost preparation', () => {
     const extensions = await prepare(f);
     assert.ok(extensions !== null);
     assert.equal(gitStatus(f), '');
-    assert.deepEqual(excludeBlock(f), ['/laravel/.claude/skills/pest-testing/SKILL.md', '/laravel/AGENTS.md', '/laravel/boost.json']);
+    assert.deepEqual(excludeBlock(f), ['/laravel/.claude/skills/testing-best-practices/SKILL.md', '/laravel/AGENTS.md', '/laravel/boost.json']);
     assert.deepEqual(Object.keys(extensions.mcpServers), ['laravel-boost']);
     assert.deepEqual(extensions.mcpServers['laravel-boost']?.args, [path.join(f.repo, 'laravel', 'artisan'), 'boost:mcp']);
     assert.deepEqual(extensions.additionalDirectories, [path.join(f.repo, 'laravel')]);
@@ -243,6 +299,7 @@ describe('Laravel Boost preparation', () => {
       artisan: '',
       'composer.json': LARAVEL_BOOST,
       'boost.json': '{"agents":["claude_code"]}',
+      '.claude/skills/livewire-development/SKILL.md': '---\nname: livewire-development\n---\n',
       'CLAUDE.md': '# App\n\n<laravel-boost-guidelines>\ncommitted\n</laravel-boost-guidelines>\n',
     });
     const extensions = await prepare(f);
@@ -250,6 +307,7 @@ describe('Laravel Boost preparation', () => {
     assert.deepEqual(Object.keys(extensions?.mcpServers ?? {}), ['laravel-boost']);
     const section = extensions?.contextSections[0] as string;
     assert.match(section, /commits its Boost files/);
+    assert.match(section, /skills for this app's packages are available: `livewire-development`\./);
     assert.doesNotMatch(section, /committed\n<\/laravel-boost-guidelines>/, 'Claude Code loads the root CLAUDE.md itself');
     assert.equal(gitStatus(f), '');
   });

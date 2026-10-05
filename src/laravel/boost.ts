@@ -23,6 +23,23 @@ const GUIDELINES_PATTERN = /<laravel-boost-guidelines>[\s\S]*?<\/laravel-boost-g
 const INLINE_GUIDELINES_LIMIT = 48_000;
 const LOG_OUTPUT_LIMIT = 2_000;
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
+/**
+ * Boost tools that run without asking: they read the application, its logs and its database
+ * (database-query enforces read-only), or query Laravel's documentation service (search-docs).
+ * Tools added by later Boost versions are not listed on purpose: they fall through to the
+ * permission mode, which denies by default.
+ */
+const BOOST_READ_TOOLS: readonly string[] = [
+  'application-info',
+  'browser-logs',
+  'database-connections',
+  'database-query',
+  'database-schema',
+  'get-absolute-url',
+  'last-error',
+  'read-log-entries',
+  'search-docs',
+];
 
 export interface PrepareBoostParams {
   /** The repository checkout the agent works in. */
@@ -65,6 +82,8 @@ interface PreparedApp {
   /** The guideline file is the root CLAUDE.md with the block, which Claude Code loads by itself. */
   guidelinesLoaded: boolean;
   selfManaged: boolean;
+  /** Repository-relative files Symphony generated and keeps out of commits. */
+  excluded: string[];
 }
 
 /**
@@ -158,7 +177,7 @@ async function prepareApp(app: LaravelApp, git: Git, state: State, params: Prepa
     const found = await readGuidelines(app, git);
     state.apps[app.dir] = { fingerprint: 'self-managed', lockHash, excluded: [], ...found };
     log.info('Laravel Boost files are committed in the repository; using them as they are');
-    return { app, ...found, guidelinesLoaded: await loadedByClaude(app, found.guidelinesFile, found.guidelines), selfManaged };
+    return { app, ...found, guidelinesLoaded: await loadedByClaude(app, found.guidelinesFile, found.guidelines), selfManaged, excluded: [] };
   }
 
   const fingerprint = await computeFingerprint(app, lockHash, config.php);
@@ -170,6 +189,7 @@ async function prepareApp(app: LaravelApp, git: Git, state: State, params: Prepa
       guidelines: previous.guidelines,
       guidelinesLoaded: await loadedByClaude(app, previous.guidelinesFile, previous.guidelines),
       selfManaged,
+      excluded: previous.excluded,
     };
   }
 
@@ -187,6 +207,7 @@ async function prepareApp(app: LaravelApp, git: Git, state: State, params: Prepa
     guidelines: generated.guidelines,
     guidelinesLoaded: await loadedByClaude(app, generated.guidelinesFile, generated.guidelines),
     selfManaged,
+    excluded: generated.excluded,
   };
 }
 
@@ -261,8 +282,15 @@ async function generate(
   return { ok: true, excluded: present, guidelinesFile, guidelines };
 }
 
+/** The Boost tools that run without asking and the ones removed from the session. */
+export function boostToolPolicy(config: LaravelConfig): { autoApprove: string[]; deny: string[] } {
+  const deny = [...new Set([...(config.allowTinker ? [] : ['tinker']), ...config.denyTools])];
+  return { autoApprove: BOOST_READ_TOOLS.filter((tool) => !deny.includes(tool)), deny };
+}
+
 async function buildExtensions(prepared: PreparedApp[], git: Git, params: PrepareBoostParams): Promise<SessionExtensions> {
   const { config } = params;
+  const policy = boostToolPolicy(config);
   const mcpServers: Record<string, StdioServer> = {};
   const contextSections: string[] = [];
   const additionalDirectories: string[] = [];
@@ -273,28 +301,55 @@ async function buildExtensions(prepared: PreparedApp[], git: Git, params: Prepar
       command: config.php,
       args: [path.join(app.path, 'artisan'), 'boost:mcp'],
       env: { ...config.env, SYMPHONY_WORKSPACE: params.workspacePath },
+      autoApprove: [...policy.autoApprove],
+      deny: [...policy.deny],
     };
     if (app.dir !== '') additionalDirectories.push(app.path);
-    contextSections.push(await contextSection(entry, name, git, config));
+    contextSections.push(await contextSection(entry, name, git, config, policy));
   }
-  return { mcpServers, contextSections, additionalDirectories, env: { ...config.env } };
+  return { mcpServers, contextSections, additionalDirectories, env: { ...config.agentEnv } };
 }
 
-async function contextSection(entry: PreparedApp, server: string, git: Git, config: LaravelConfig): Promise<string> {
+/** Skill names of the app: generated `.claude/skills/<name>/` directories, or the committed ones. */
+async function skillNames(entry: PreparedApp, git: Git): Promise<string[]> {
+  const skillsDir = repoPath(git, path.join(entry.app.path, '.claude', 'skills'));
+  const prefix = skillsDir === '' ? '' : `${skillsDir}/`;
+  const files = entry.selfManaged ? (await listFiles(path.join(git.top, skillsDir))).map((file) => prefix + file.split(path.sep).join('/')) : entry.excluded;
+  const names = new Set<string>();
+  for (const file of files) {
+    if (!file.startsWith(prefix)) continue;
+    const parts = file.slice(prefix.length).split('/');
+    if (parts.length >= 2 && parts[0] !== '') names.add(parts[0] as string);
+  }
+  return [...names].sort();
+}
+
+async function contextSection(
+  entry: PreparedApp,
+  server: string,
+  git: Git,
+  config: LaravelConfig,
+  policy: { autoApprove: string[]; deny: string[] },
+): Promise<string> {
   const { app } = entry;
   const where = app.dir === '' ? 'the repository root' : `\`${app.dir}/\``;
-  const envList = Object.entries(config.env).map(([key, value]) => `${key}=${value}`).join(', ');
+  const list = (tools: string[]) => tools.map((tool) => `\`${tool}\``).join(', ');
   const lines = [
     `# Laravel Boost (${app.dir === '' ? 'repository root' : `${app.dir}/`})`,
     `This workspace contains a Laravel application at ${where} with Laravel Boost.`,
-    `- Run Artisan and Composer from that directory: \`${config.php} artisan …\`, \`${config.composer} …\`.` +
-      (envList === '' ? '' : ` Your environment sets ${envList}.`),
-    `- The \`${server}\` MCP server (tools \`mcp__${server}__*\`) inspects this application: application-info, ` +
-      'database-schema, database-query (read-only), last-error, read-log-entries, browser-logs, get-absolute-url, ' +
-      'search-docs. Use search-docs before writing code that depends on Laravel ecosystem APIs or versions.',
-    "- Boost's skills for this app's packages (for example pest-testing or livewire-development) are available; " +
-      'use the matching skill when the task touches its area.',
+    `- Run Artisan and Composer from that directory: \`${config.php} artisan …\`, \`${config.composer} …\`.`,
+    `- The \`${server}\` MCP server (tools \`mcp__${server}__*\`) inspects this application.` +
+      (policy.autoApprove.length === 0 ? '' : ` Pre-approved tools: ${list(policy.autoApprove)}.`) +
+      (policy.deny.length === 0 ? '' : ` Not available in this session: ${list(policy.deny)}.`) +
+      ' Other Boost tools need approval and are denied by default.',
   ];
+  if (policy.autoApprove.includes('search-docs')) {
+    lines.push('- Use `search-docs` before writing code that depends on Laravel ecosystem APIs or versions.');
+  }
+  const skills = await skillNames(entry, git);
+  if (skills.length > 0) {
+    lines.push(`- Boost's skills for this app's packages are available: ${list(skills)}. Use the matching skill when the task touches its area.`);
+  }
   if (entry.selfManaged) {
     lines.push('- This repository commits its Boost files. Regenerate them only if the issue asks for it.');
   } else {
@@ -303,7 +358,9 @@ async function contextSection(entry: PreparedApp, server: string, git: Git, conf
         'Do not edit or commit them. Project guidance belongs in `.ai/guidelines/`, project skills in `.ai/skills/`.',
     );
   }
-  lines.push('- If you record project rules with the `record-rule` tool, commit the `.ai/rules` changes with your work.');
+  if (!policy.deny.includes('record-rule')) {
+    lines.push('- If you record project rules with the `record-rule` tool, commit the `.ai/rules` changes with your work.');
+  }
 
   if (entry.guidelines !== null && !entry.guidelinesLoaded) {
     if (entry.guidelines.length <= INLINE_GUIDELINES_LIMIT) {
