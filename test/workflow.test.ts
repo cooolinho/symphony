@@ -80,6 +80,8 @@ describe('config layer', () => {
     assert.deepEqual(config.claude.settingSources, ['project']);
     assert.equal(config.workspace.root, path.join(os.tmpdir(), DEFAULTS.workspaceRootName));
     assert.equal(config.server.port, null);
+    assert.equal(config.server.host, '127.0.0.1');
+    assert.equal(config.server.allowRemoteControl, false);
   });
 
   it('uses the adapter-documented state defaults', () => {
@@ -117,6 +119,17 @@ describe('config layer', () => {
     assert.equal(resolve(front, { SYMPHONY_MAX_SESSION_LIMIT_RETRIES: '5' }).agent.maxSessionLimitRetries, 5);
     assert.equal(set.workspace.cleanupTerminal, false);
     assert.equal(set.polling.intervalMs, 30_000);
+  });
+
+  it('reads the server bind address and remote control from the environment', () => {
+    const front = { server: { host: '${SYMPHONY_HOST:-127.0.0.1}', allow_remote_control: '${SYMPHONY_ALLOW_REMOTE_CONTROL:-false}' } };
+    const defaults = resolve(front);
+    assert.equal(defaults.server.host, '127.0.0.1');
+    assert.equal(defaults.server.allowRemoteControl, false);
+    const set = resolve(front, { SYMPHONY_HOST: '0.0.0.0', SYMPHONY_ALLOW_REMOTE_CONTROL: 'true' });
+    assert.equal(set.server.host, '0.0.0.0');
+    assert.equal(set.server.allowRemoteControl, true);
+    assert.throws(() => resolve(front, { SYMPHONY_ALLOW_REMOTE_CONTROL: 'yes' }), /server\.allow_remote_control must be true or false/);
   });
 
   it('parses ${NAME:-default} written as plain YAML', () => {

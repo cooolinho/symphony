@@ -20,7 +20,8 @@ each in its own workspace. Defaults to ./WORKFLOW.md.
 Options:
   --env-file <path>   Load variables from this dotenv file (default: .env next to the
                       workflow file, if present). Variables already set in the shell win.
-  --port <n>          Serve the dashboard and JSON API on 127.0.0.1:<n> (0 = any free port).
+  --port <n>          Serve the dashboard and JSON API on port <n> (0 = any free port) of the
+                      bind address from server.host (default 127.0.0.1).
                       Overrides server.port from WORKFLOW.md.
   --log-dir <dir>     Repository logs, session transcripts and state (default:
                       $SYMPHONY_LOG_DIR, else $XDG_STATE_HOME/symphony or

@@ -42,6 +42,11 @@ const textParam = (params: URLSearchParams, name: string): string | null => {
 };
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
+
+/** True when a bind address only accepts local connections (and the server applies its loopback guards). */
+export function isLoopbackHost(host: string): boolean {
+  return LOOPBACK_HOSTS.has(host);
+}
 const API_PREFIX = '/api/v1/';
 
 function sendJson(res: http.ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
@@ -76,9 +81,13 @@ function sameHost(origin: string, hostHeader: string | undefined): boolean {
  * Observability/control surface (spec 13.7): `/` dashboard, `/agent?id=<identifier>` agent detail view,
  * `/logs` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
  * `/api/v1/state`, `/api/v1/<identifier>` with its `/timeline` and `/transcript`, `POST /api/v1/refresh`
- * and `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker; loopback binds only).
- * Read-only except refresh and retry. On a loopback bind, requests whose Host is
- * not a loopback name are rejected (DNS-rebinding guard), and cross-origin POSTs are refused.
+ * and `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker).
+ * Read-only except refresh and retry. On a loopback bind, requests whose Host is not a loopback name are
+ * rejected (DNS-rebinding guard), and cross-origin POSTs are refused. On any other bind the server has no
+ * login of its own and belongs behind an authenticating reverse proxy: retry is disabled unless
+ * `allowRemoteControl` is set, and then requires an Origin header naming this host (CSRF guard, since a
+ * proxy's BasicAuth credentials ride along with every browser request). `/api/v1/state` and
+ * `/api/v1/<identifier>` report `controls.retry` so the pages show the restart buttons only when allowed.
  */
 export function startHttpServer(options: {
   host: string;
@@ -86,10 +95,13 @@ export function startHttpServer(options: {
   orchestrator: Orchestrator;
   logger: Logger;
   history?: HistorySource | null;
+  /** Allow retry on a non-loopback bind (behind an authenticating reverse proxy). */
+  allowRemoteControl?: boolean;
 }): Promise<HttpServerHandle> {
   const { orchestrator, logger } = options;
   const history = options.history ?? null;
-  const loopbackBind = LOOPBACK_HOSTS.has(options.host);
+  const loopbackBind = isLoopbackHost(options.host);
+  const controls = { retry: loopbackBind || options.allowRemoteControl === true };
   // Analytics per filter, valid while the log files (append-only, so their sizes) and the price table are unchanged.
   const analyticsCache = new Map<string, { pricing: object; value: Analytics }>();
 
@@ -123,7 +135,7 @@ export function startHttpServer(options: {
       return;
     }
     if (pathname === '/api/v1/state') {
-      allow(['GET'], () => sendJson(res, 200, orchestrator.snapshot()));
+      allow(['GET'], () => sendJson(res, 200, { ...orchestrator.snapshot(), controls }));
       return;
     }
     if (pathname === '/logs') {
@@ -259,11 +271,20 @@ export function startHttpServer(options: {
     const sub = /^(.+)\/(timeline|transcript|retry)$/.exec(pathname.slice(API_PREFIX.length));
     if (pathname.startsWith(API_PREFIX) && sub !== null && sub[2] === 'retry') {
       allow(['POST'], () => {
-        if (!loopbackBind) {
-          sendError(res, 403, 'control_disabled', 'restart is only available when the server listens on a loopback address');
+        if (!controls.retry) {
+          sendError(
+            res,
+            403,
+            'control_disabled',
+            'restart is disabled on a non-loopback bind; set server.allow_remote_control (SYMPHONY_ALLOW_REMOTE_CONTROL=true) behind an authenticating proxy',
+          );
           return;
         }
         const origin = req.headers.origin;
+        if (origin === undefined && !loopbackBind) {
+          sendError(res, 403, 'forbidden_origin', 'restart requests need an Origin header naming this host (e.g. -H \'Origin: https://<domain>\')');
+          return;
+        }
         if (origin !== undefined && !sameHost(origin, req.headers.host)) {
           sendError(res, 403, 'forbidden_origin', 'cross-origin restart requests are not allowed');
           return;
@@ -364,7 +385,7 @@ export function startHttpServer(options: {
         }
         const detail = orchestrator.issueDetail(key);
         if (detail === null) sendError(res, 404, 'issue_not_found', `issue ${key} is not known to the running orchestrator`);
-        else sendJson(res, 200, detail);
+        else sendJson(res, 200, { ...detail, controls });
       });
       return;
     }

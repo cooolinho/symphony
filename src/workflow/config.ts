@@ -84,6 +84,8 @@ export interface ClaudeConfig {
 export interface ServerConfig {
   port: number | null;
   host: string;
+  /** Allow restarting workers (POST /api/v1/<identifier>/retry) on a non-loopback bind. */
+  allowRemoteControl: boolean;
 }
 
 export interface ServiceConfig {
@@ -458,6 +460,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
   const server: ServerConfig = {
     port: portValue === undefined || portValue === null ? null : reader.int(serverRaw, 'port', 'server.port', 0, 0),
     host: reader.string(serverRaw, 'host', 'server.host')?.trim() || DEFAULTS.serverHost,
+    allowRemoteControl: reader.bool(serverRaw, 'allow_remote_control', 'server.allow_remote_control', false),
   };
   if (server.port !== null && server.port > 65_535) reader.errors.push('server.port must be <= 65535');
 

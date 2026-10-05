@@ -359,7 +359,8 @@ REST API. Other values such as `Model: claude-opus-5-5` work as labels too; crea
 | Key | Default | Notes |
 |---|---|---|
 | `port` | none | Starts the dashboard and JSON API. `0` picks a free port. `--port` overrides it. Restart to change it. |
-| `host` | `127.0.0.1` | Bind address. On a loopback address, requests with another `Host` header are rejected. |
+| `host` | `127.0.0.1` | Bind address; the shipped `WORKFLOW.md` reads it from `SYMPHONY_HOST`. On a loopback address (`127.0.0.1`, `::1`, `localhost`), requests with another `Host` header are rejected. Any other address (e.g. `0.0.0.0` in a container) logs a warning at startup: Symphony has no login of its own, so put a reverse proxy with authentication (BasicAuth, forward auth) in front. Restart to change it. |
+| `allow_remote_control` | `false` | Allows restarting waiting or paused workers (`POST /api/v1/<identifier>/retry`, **Retry now** / **Resume now**) when `host` is not a loopback address; the shipped `WORKFLOW.md` reads it from `SYMPHONY_ALLOW_REMOTE_CONTROL`. On such a bind every restart request must carry an `Origin` header that matches its `Host` (CSRF guard, since the browser sends the proxy's credentials with every request); without it the API answers `403 forbidden_origin`. Has no effect on a loopback bind, where restart is always allowed. Only enable it behind an authenticating proxy. Restart to change it. |
 
 ## Complete example: roles, checks and Laravel
 

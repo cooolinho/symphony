@@ -5,7 +5,7 @@ import { chooseModel } from './agent/model.ts';
 import { PricingStore } from './costs/pricing.ts';
 import { HistoryLog } from './history/history.ts';
 import { killAllAgentProcessGroups } from './agent/spawn.ts';
-import { startHttpServer, type HttpServerHandle } from './http/server.ts';
+import { isLoopbackHost, startHttpServer, type HttpServerHandle } from './http/server.ts';
 import { defaultIntegrations } from './integrations/registry.ts';
 import type { WorkspaceIntegration } from './integrations/types.ts';
 import { Logger, type LogLevel } from './log.ts';
@@ -95,8 +95,15 @@ export async function runService(options: ServiceOptions): Promise<number> {
   const port = options.port ?? config.server.port;
   if (port !== null) {
     try {
-      http = await startHttpServer({ host: config.server.host, port, orchestrator, logger, history: { dir: history.dir, pricing } });
+      const { host, allowRemoteControl } = config.server;
+      http = await startHttpServer({ host, port, orchestrator, logger, history: { dir: history.dir, pricing }, allowRemoteControl });
       logger.info('dashboard listening', { url: http.url });
+      if (!isLoopbackHost(host)) {
+        logger.warn('dashboard listens on a non-loopback address; it has no login of its own, put an authenticating reverse proxy in front', {
+          host,
+          allow_remote_control: allowRemoteControl,
+        });
+      }
     } catch (error) {
       logger.error('dashboard failed to start; continuing without it', { error: errorMessage(error) });
     }

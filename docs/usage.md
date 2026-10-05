@@ -91,7 +91,7 @@ Zurück zum alten Verhalten kommst du, indem du `roles` und `checks` entfernst: 
 | Abbrechen und aufräumen | Issue nach `Done` schieben |
 | Alle neuen Starts pausieren | in der `WORKFLOW.md` `agent.max_concurrent_agents: 0` setzen. Laufende Agenten arbeiten weiter. |
 | Prompt oder Einstellungen ändern | `WORKFLOW.md` bearbeiten. Das gilt sofort für neue Sessions, ohne Neustart. |
-| Wartenden oder pausierten Worker sofort neu starten | im Dashboard (Warteschlange, Pausiert-Liste oder Agent-Seite) auf **Retry now** bzw. **Resume now** klicken, oder `curl -X POST http://127.0.0.1:4000/api/v1/<identifier>/retry` (den Identifier URL-kodiert, z. B. `cooolinho%2Ftrainingsstunden-portal%2312`). Das ist der Weg nach einem Session-Limit, wenn du Guthaben aufgeladen hast und nicht bis zum Reset warten willst. Es geht nur, solange der Server auf einer Loopback-Adresse lauscht, siehe [Dashboard und API](#dashboard-und-api). |
+| Wartenden oder pausierten Worker sofort neu starten | im Dashboard (Warteschlange, Pausiert-Liste oder Agent-Seite) auf **Retry now** bzw. **Resume now** klicken, oder `curl -X POST http://127.0.0.1:4000/api/v1/<identifier>/retry` (den Identifier URL-kodiert, z. B. `cooolinho%2Ftrainingsstunden-portal%2312`). Das ist der Weg nach einem Session-Limit, wenn du Guthaben aufgeladen hast und nicht bis zum Reset warten willst. Bei einer Nicht-Loopback-Adresse (`SYMPHONY_HOST`) geht es nur mit `SYMPHONY_ALLOW_REMOTE_CONTROL=true`; per `curl` über den Proxy dann `-H 'Origin: https://<domain>'` mitgeben, siehe [Dashboard und API](#dashboard-und-api). |
 | Sofort abfragen statt 30 s zu warten | im Dashboard auf **Poll now** klicken, oder `curl -X POST http://127.0.0.1:4000/api/v1/refresh` |
 
 Ist die `WORKFLOW.md` nach einer Änderung fehlerhaft, läuft Symphony mit der letzten gültigen Version weiter. Neue
@@ -293,8 +293,8 @@ Optionen und Prüfungen beschreibt [docs/e2e.md](e2e.md).
 
 ## Dashboard und API
 
-Das Dashboard läuft nur, wenn `SYMPHONY_PORT` gesetzt ist oder du `npm start -- --port 4000` aufrufst. Es lauscht nur
-auf `127.0.0.1`. Im Header stehen Systemstatus, Workflow-Version, Poll-Intervall und letzter Poll. Jeder laufende Agent
+Das Dashboard läuft nur, wenn `SYMPHONY_PORT` gesetzt ist oder du `npm start -- --port 4000` aufrufst. Es lauscht auf
+der Adresse aus `SYMPHONY_HOST`, standardmäßig nur auf `127.0.0.1`. Im Header stehen Systemstatus, Workflow-Version, Poll-Intervall und letzter Poll. Jeder laufende Agent
 erscheint als Karte mit Status, Issue, Repository, Spalte, Rolle, Modell, Phase, letzter Aktivität, Turns, Laufzeit,
 Tokens und geschätzten Kosten. Darunter folgen ein Aktivitäts-Stream (Änderungen zwischen den Abfragen, die letzten
 Ereignisse der Agenten und Einträge aus den Repository-Logs), die Wiederholungs-Warteschlange, pausierte Issues und
@@ -339,12 +339,12 @@ Woher die Daten kommen und wo die Grenzen liegen:
 | `GET /api/v1/history/analytics?from=&to=&repo=&model=&tz=` | serverseitig aggregierte Analysen für einen Zeitraum (`from` inklusive, `to` exklusive, ISO-Zeitpunkte, beide optional): Kennzahlen mit Vorperiode, Zeitreihen, Modelle, Repositories, Issues, Ergebnisse, Laufzeiten, Heatmap, Top-Läufe, Auffälligkeiten. `tz` (IANA-Zone) bestimmt Buckets, Wochentage und Stunden |
 | `GET /api/v1/history/entries?from=&to=&repo=&issue=&event=&result=&order=desc&limit=200` | Log-Einträge eines Zeitraums, gefiltert und sortiert (höchstens 1.000) |
 | `GET /api/v1/history/raw?repo=owner/name` | die `.log`-Datei eines Repositorys als Text |
-| `GET /api/v1/state` | Gesamtzustand als JSON: laufende Agenten (mit `role`), Warteschlange (`retrying[]` mit `kind` und, bei Session-Limits, `limit`), Summen, Gesundheit |
-| `GET /api/v1/<identifier>` | Details zu einem Issue: Titel, Rolle, Workspace, Versuche, Sessions (`sessions`), Tokens und Kosten pro Modell (`usage_by_model`), letzte Ereignisse, letzter Fehler, letzter Entry-Check (`last_check`) |
+| `GET /api/v1/state` | Gesamtzustand als JSON: laufende Agenten (mit `role`), Warteschlange (`retrying[]` mit `kind` und, bei Session-Limits, `limit`), Summen, Gesundheit, `controls.retry` (ob der Neustart erlaubt ist) |
+| `GET /api/v1/<identifier>` | Details zu einem Issue: Titel, Rolle, Workspace, Versuche, Sessions (`sessions`), Tokens und Kosten pro Modell (`usage_by_model`), letzte Ereignisse, letzter Fehler, letzter Entry-Check (`last_check`), `controls.retry` |
 | `GET /api/v1/<identifier>/timeline?after=<seq>` | Timeline des Issues: Lifecycle, Phasenwechsel und Agenten-Ereignisse mit fortlaufender `seq`; `after` liefert nur neuere |
 | `GET /api/v1/<identifier>/transcript?run=<run>&from=<offset>` | Transkript einer Session (ohne `run` die neueste), aufbereitet als Prompts, Modellaufrufe, Tool-Ergebnisse; ab Byte-Offset `from`, weiter mit `next_offset`. Mit `&format=raw` die JSONL-Datei |
 | `POST /api/v1/refresh` | sofort abfragen und abgleichen |
-| `POST /api/v1/<identifier>/retry` | einen wartenden (Wiederholungs-Warteschlange, auch Session-Limit) oder pausierten Worker sofort neu starten. Antwort `202` mit `queued`, `issue_identifier` und `previous` (`retrying` oder `paused`). Fehler: `404` (Issue unbekannt), `409` (`running`: läuft gerade; `not_waiting`: wartet auf nichts; `stopping`: Symphony fährt herunter), `403` (`control_disabled` bei einer Nicht-Loopback-Adresse, `forbidden_origin` bei Cross-Origin-Anfragen) |
+| `POST /api/v1/<identifier>/retry` | einen wartenden (Wiederholungs-Warteschlange, auch Session-Limit) oder pausierten Worker sofort neu starten. Antwort `202` mit `queued`, `issue_identifier` und `previous` (`retrying` oder `paused`). Fehler: `404` (Issue unbekannt), `409` (`running`: läuft gerade; `not_waiting`: wartet auf nichts; `stopping`: Symphony fährt herunter), `403` (`control_disabled` bei einer Nicht-Loopback-Adresse ohne `SYMPHONY_ALLOW_REMOTE_CONTROL=true`; `forbidden_origin` bei Cross-Origin-Anfragen und, bei einer Nicht-Loopback-Adresse, auch ohne `Origin`-Header) |
 
 ```bash
 curl -s http://127.0.0.1:4000/api/v1/state
@@ -353,8 +353,18 @@ curl -s -X POST http://127.0.0.1:4000/api/v1/refresh
 curl -s -X POST http://127.0.0.1:4000/api/v1/cooolinho%2Ftrainingsstunden-portal%2312/retry
 ```
 
-Der Neustart-Endpunkt und die Buttons **Retry now** und **Resume now** funktionieren nur, solange der Server auf einer
-Loopback-Adresse (`127.0.0.1`, `::1`, `localhost`) lauscht. Sonst antwortet die API mit `control_disabled`. Der Neustart
+Der Neustart-Endpunkt und die Buttons **Retry now** und **Resume now** funktionieren immer, solange der Server auf einer
+Loopback-Adresse (`127.0.0.1`, `::1`, `localhost`) lauscht. Bei einer anderen Adresse (`SYMPHONY_HOST=0.0.0.0`, etwa im
+Container hinter Traefik) antwortet die API mit `control_disabled`, und Dashboard und Agent-Seite zeigen statt der Buttons
+einen Hinweis. Mit `SYMPHONY_ALLOW_REMOTE_CONTROL=true` ist der Neustart auch dort möglich, aber nur mit einem
+`Origin`-Header, der zum `Host` passt (Schutz gegen CSRF, weil der Browser die Zugangsdaten des Proxys bei jeder Anfrage
+mitschickt). Der Browser setzt ihn selbst; per `curl` über den Proxy gibst du ihn mit:
+
+```bash
+curl -s -X POST -u <user> -H 'Origin: https://<domain>' https://<domain>/api/v1/cooolinho%2Ftrainingsstunden-portal%2312/retry
+```
+
+Ob der Neustart erlaubt ist, steht in `GET /api/v1/state` und `GET /api/v1/<identifier>` unter `controls.retry`. Der Neustart
 umgeht nur die Wartezeit: Ob das Issue wirklich startet, prüft Symphony wie bei jedem Retry erneut (aktive Spalte,
 Konfiguration, freier Slot).
 
@@ -506,6 +516,9 @@ Die häufigsten Stellschrauben in der `WORKFLOW.md`. Alle Optionen beschreibt
   etwa die `.env`, sofern Klassifikator oder Sandbox es nicht verhindern. Issue-Texte sind fremde Eingaben. Bearbeite
   nur Boards, deren Issues du vertraust. Für mehr Isolation: `claude.sandbox` aktivieren oder Symphony unter einem
   eigenen Benutzer, in einem Container oder einer VM betreiben. Details: [agent-claude.md](agent-claude.md).
+- **Dashboard:** Das Dashboard hat keine eigene Anmeldung. Eine Nicht-Loopback-Adresse (`SYMPHONY_HOST`, z. B.
+  `0.0.0.0`) nur hinter einem Reverse-Proxy mit Anmeldung (BasicAuth, Forward-Auth) verwenden; Symphony warnt beim Start
+  davor. `SYMPHONY_ALLOW_REMOTE_CONTROL=true` erlaubt dort den Neustart von Workern, mit Origin-Pflicht gegen CSRF.
 
 ## Kosten
 

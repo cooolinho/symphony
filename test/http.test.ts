@@ -327,6 +327,9 @@ describe('POST /api/v1/<identifier>/retry', () => {
       timers.fire(0);
       await until(() => orchestrator.snapshot().running.length === 1, 3_000, 'dispatched');
       assert.equal((await state()).running.length, 1);
+      assert.deepEqual((await state()).controls, { retry: true });
+      const detail = JSON.parse((await request(server.port, 'GET', `/api/v1/${encodeURIComponent('acme/app#a')}`)).body);
+      assert.deepEqual(detail.controls, { retry: true });
 
       const running = await request(server.port, 'POST', base);
       assert.equal(running.status, 409);
@@ -366,22 +369,73 @@ describe('POST /api/v1/<identifier>/retry', () => {
     }
   });
 
-  it('is disabled when the server is not bound to a loopback address', async () => {
-    let calls = 0;
+  const remoteOrchestrator = () => {
+    const counts = { restart: 0, refresh: 0 };
     const orchestrator = {
       restartWorker: async () => {
-        calls++;
+        counts.restart++;
         return { ok: true, issueIdentifier: 'acme/app#a', previous: 'retrying' };
       },
+      requestRefresh: () => {
+        counts.refresh++;
+        return { queued: true, coalesced: false };
+      },
       snapshot: () => ({}),
+      issueDetail: () => ({ issue_identifier: 'acme/app#a' }),
     } as unknown as Orchestrator;
+    return { orchestrator, counts };
+  };
+  const detailPath = `/api/v1/${encodeURIComponent('acme/app#a')}`;
+
+  it('is disabled on a non-loopback bind unless remote control is allowed', async () => {
+    const { orchestrator, counts } = remoteOrchestrator();
     const server = await startHttpServer({ host: '0.0.0.0', port: 0, orchestrator, logger: Logger.silent() });
     try {
-      const res = await request(server.port, 'POST', base);
+      const origin = `http://127.0.0.1:${server.port}`;
+      const res = await request(server.port, 'POST', base, { origin });
       assert.equal(res.status, 403);
-      assert.equal(JSON.parse(res.body).error.code, 'control_disabled');
-      assert.equal(calls, 0);
-      assert.equal((await request(server.port, 'GET', '/api/v1/state')).status, 200);
+      const error = JSON.parse(res.body).error;
+      assert.equal(error.code, 'control_disabled');
+      assert.match(error.message, /server\.allow_remote_control/);
+      assert.match(error.message, /SYMPHONY_ALLOW_REMOTE_CONTROL/);
+      assert.equal(counts.restart, 0);
+      const state = await request(server.port, 'GET', '/api/v1/state');
+      assert.equal(state.status, 200);
+      assert.deepEqual(JSON.parse(state.body).controls, { retry: false });
+      assert.deepEqual(JSON.parse((await request(server.port, 'GET', detailPath)).body).controls, { retry: false });
+      // Refresh is unchanged: allowed without an Origin, refused with a foreign one.
+      assert.equal((await request(server.port, 'POST', '/api/v1/refresh')).status, 202);
+      assert.equal((await request(server.port, 'POST', '/api/v1/refresh', { origin: 'https://evil.example' })).status, 403);
+      assert.equal(counts.refresh, 1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('requires a matching Origin when remote control is allowed on a non-loopback bind', async () => {
+    const { orchestrator, counts } = remoteOrchestrator();
+    const server = await startHttpServer({ host: '0.0.0.0', port: 0, orchestrator, logger: Logger.silent(), allowRemoteControl: true });
+    try {
+      const missing = await request(server.port, 'POST', base);
+      assert.equal(missing.status, 403);
+      assert.equal(JSON.parse(missing.body).error.code, 'forbidden_origin');
+      assert.match(JSON.parse(missing.body).error.message, /Origin/);
+      const foreign = await request(server.port, 'POST', base, { origin: 'https://evil.example' });
+      assert.equal(foreign.status, 403);
+      assert.equal(JSON.parse(foreign.body).error.code, 'forbidden_origin');
+      assert.equal(counts.restart, 0);
+
+      // Behind a proxy the browser sends the public origin and the proxy forwards the public Host.
+      const proxied = await request(server.port, 'POST', base, { host: 'symphony.example', origin: 'https://symphony.example' });
+      assert.equal(proxied.status, 202);
+      assert.equal(JSON.parse(proxied.body).issue_identifier, 'acme/app#a');
+      const direct = await request(server.port, 'POST', base, { origin: `http://127.0.0.1:${server.port}` });
+      assert.equal(direct.status, 202);
+      assert.equal(counts.restart, 2);
+
+      assert.deepEqual(JSON.parse((await request(server.port, 'GET', '/api/v1/state')).body).controls, { retry: true });
+      assert.deepEqual(JSON.parse((await request(server.port, 'GET', detailPath)).body).controls, { retry: true });
+      assert.equal((await request(server.port, 'POST', '/api/v1/refresh')).status, 202);
     } finally {
       await server.close();
     }

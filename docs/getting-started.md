@@ -100,6 +100,8 @@ SYMPHONY_CLEANUP_TERMINAL=true
 | `GITHUB_TOKEN` | Token aus Schritt 3. Er wird aus der Umgebung von Agenten und Hooks entfernt. |
 | `GITHUB_PROJECT_OWNER` | *optional:* Eigentümer des Boards, falls nicht der Repository-Eigentümer (z. B. eine Organisation) |
 | `SYMPHONY_PORT` | *optional:* Port für Dashboard und API, z. B. `4000` für `http://127.0.0.1:4000/` |
+| `SYMPHONY_HOST` | *optional:* Bind-Adresse des Dashboards. Standard `127.0.0.1`; `0.0.0.0` (etwa im Container) nur hinter einem Reverse-Proxy mit Anmeldung, siehe [Sicherheit](usage.md#sicherheit). |
+| `SYMPHONY_ALLOW_REMOTE_CONTROL` | *optional:* `true` erlaubt **Retry now** / **Resume now** auch bei einer Nicht-Loopback-Adresse, dann nur mit passendem `Origin`-Header. Standard `false`. |
 | `ANTHROPIC_API_KEY` | *optional:* Sonst nutzt Claude Code seine bestehende Anmeldung. |
 | `SYMPHONY_MAX_CONCURRENT_AGENTS` | *optional:* Wie viele Agenten gleichzeitig laufen. Standard 2, `0` pausiert alle neuen Starts. |
 | `SYMPHONY_MAX_TURNS` | *optional:* Turns pro Session, bevor Symphony den Stand neu bewertet. Standard 10. |
