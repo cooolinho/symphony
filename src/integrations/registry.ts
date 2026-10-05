@@ -37,6 +37,7 @@ export async function prepareIntegrations(
       }
     }
     any = true;
+    if (result.historyFields !== undefined) Object.assign((merged.historyFields ??= {}), result.historyFields);
     for (const [name, server] of Object.entries(result.mcpServers)) {
       if (Object.hasOwn(merged.mcpServers, name)) {
         ctx.logger.warn('duplicate MCP server name; skipping the later one', { integration: integration.id, server: name });

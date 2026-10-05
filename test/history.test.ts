@@ -104,6 +104,14 @@ describe('repository history', () => {
     assert.equal(started?.fields.role, 'reviewer');
   });
 
+  it('adds integration fields to run_started', () => {
+    const { log } = history();
+    log.runStarted({ repo: 'acme/app', issue: 'acme/app#1', title: 'T', state: 'Ready', attempt: null, model: null, run: 'r1', at: new Date('2026-10-04T08:00:00Z'), extra: { laravel: 'laravel/:v13.1.0', boost: 'ready' } });
+    const started = parseHistoryLine(fs.readFileSync(log.fileFor('acme/app'), 'utf8').trim());
+    assert.equal(started?.fields.laravel, 'laravel/:v13.1.0');
+    assert.equal(started?.fields.boost, 'ready');
+  });
+
   it('appends key=value lines per repository with running totals', () => {
     const { log } = history();
     log.runStarted({ repo: 'acme/app', issue: 'acme/app#1', title: 'Fix "quotes" and = signs', state: 'Ready', attempt: null, model: 'opus', run: 'r1', at: new Date('2026-10-04T08:00:00Z') });

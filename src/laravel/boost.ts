@@ -86,43 +86,87 @@ interface PreparedApp {
   excluded: string[];
 }
 
+/** Boost preparation of one app: ready, failed (a step errored), skipped (a precondition is missing) or absent (no laravel/boost). */
+export type BoostStatus = 'ready' | 'failed' | 'skipped' | 'absent';
+
+export interface AppBoostStatus {
+  app: LaravelApp;
+  status: BoostStatus;
+  /** Why Boost is not ready (failed, skipped); null otherwise. */
+  reason: string | null;
+}
+
+export interface BoostPreparation {
+  extensions: SessionExtensions | null;
+  /** Every Laravel app of the workspace, in detection order. */
+  apps: AppBoostStatus[];
+}
+
+/** An app whose Boost could not be prepared. */
+interface AppProblem {
+  status: 'failed' | 'skipped';
+  reason: string;
+}
+
 /**
  * Prepares Laravel Boost for every Laravel app in the workspace that requires laravel/boost:
  * installs Composer dependencies, generates Boost's guidelines and skills for Claude Code, keeps
  * the generated files out of commits, and returns the MCP servers and prompt context for the
- * session. Never throws: problems are logged and the session runs without (that part of) Boost.
+ * session plus the Boost status of each app. Never throws: problems are logged and the session
+ * runs without (that part of) Boost.
  */
-export async function prepareLaravelBoost(params: PrepareBoostParams): Promise<SessionExtensions | null> {
+export async function prepareLaravelBoost(params: PrepareBoostParams): Promise<BoostPreparation> {
   const { config, logger } = params;
-  if (config.boost === 'off') return null;
+  let statuses: AppBoostStatus[] = [];
   try {
     const apps = await detectLaravelApps(params.workspacePath);
+    statuses = apps.map((app) => ({ app, status: app.boost ? 'skipped' : 'absent', reason: app.boost ? 'not prepared' : null }));
+    const setStatus = (app: LaravelApp, status: BoostStatus, reason: string | null) => {
+      const entry = statuses.find((candidate) => candidate.app === app);
+      if (entry !== undefined) Object.assign(entry, { status, reason });
+    };
+    if (config.boost === 'off') {
+      for (const app of apps.filter((candidate) => candidate.boost)) setStatus(app, 'skipped', 'laravel.boost is off');
+      return { extensions: null, apps: statuses };
+    }
     for (const app of apps.filter((candidate) => !candidate.boost)) {
       logger.info('Laravel app without Laravel Boost; add it with "npm run repo-init" (Laravel Boost)', { app: appLabel(app) });
     }
     const boostApps = apps.filter((app) => app.boost);
-    if (boostApps.length === 0) return null;
+    if (boostApps.length === 0) return { extensions: null, apps: statuses };
 
     const git = await openGit(params.workspacePath, params.env);
     if (git === null) {
       logger.warn('Laravel Boost skipped: the workspace is not a git checkout, so generated files cannot be kept out of commits');
-      return null;
+      for (const app of boostApps) setStatus(app, 'skipped', 'the workspace is not a git checkout');
+      return { extensions: null, apps: statuses };
     }
     const state = await readState(git);
     const prepared: PreparedApp[] = [];
     for (const app of boostApps) {
-      if (params.signal.aborted) break;
+      if (params.signal.aborted) {
+        setStatus(app, 'skipped', 'the session was aborted');
+        continue;
+      }
       const result = await prepareApp(app, git, state, params);
-      if (result !== null) prepared.push(result);
+      if ('status' in result) {
+        setStatus(app, result.status, result.reason);
+      } else {
+        prepared.push(result);
+        setStatus(app, 'ready', null);
+      }
     }
     // Even after an abort: whatever Boost wrote must stay out of commits.
     await writeState(git, state);
     await writeExclude(git, Object.values(state.apps).flatMap((entry) => entry.excluded));
-    if (prepared.length === 0 || params.signal.aborted) return null;
-    return await buildExtensions(prepared, git, params);
+    if (prepared.length === 0 || params.signal.aborted) return { extensions: null, apps: statuses };
+    return { extensions: await buildExtensions(prepared, git, params), apps: statuses };
   } catch (error) {
     logger.warn('Laravel Boost preparation failed; the session runs without Boost', { error: errorMessage(error) });
-    return null;
+    return {
+      extensions: null,
+      apps: statuses.map((entry) => (entry.status === 'absent' ? entry : { ...entry, status: 'failed', reason: 'preparation error' })),
+    };
   }
 }
 
@@ -141,7 +185,7 @@ export async function probeLaravelTools(config: LaravelConfig, env: NodeJS.Proce
   return { php, composer };
 }
 
-async function prepareApp(app: LaravelApp, git: Git, state: State, params: PrepareBoostParams): Promise<PreparedApp | null> {
+async function prepareApp(app: LaravelApp, git: Git, state: State, params: PrepareBoostParams): Promise<PreparedApp | AppProblem> {
   const { config, logger } = params;
   const log = logger.child({ laravel_app: appLabel(app) });
   const relative = (name: string) => repoPath(git, path.join(app.path, name));
@@ -155,20 +199,20 @@ async function prepareApp(app: LaravelApp, git: Git, state: State, params: Prepa
     if (!config.installDependencies) {
       if (!vendorReady) {
         log.warn('Laravel Boost skipped: vendor/ is missing and laravel.install_dependencies is off');
-        return null;
+        return { status: 'skipped', reason: 'vendor/ is missing and laravel.install_dependencies is off' };
       }
     } else {
       log.info('installing Composer dependencies', { reason: vendorReady ? 'composer.lock changed' : 'vendor/ missing' });
       const install = await runStep(config.composer, ['install', '--no-interaction', '--no-progress'], app, params);
       if (!install.ok) {
         log.warn('Laravel Boost skipped: composer install failed', install.detail);
-        return null;
+        return { status: 'failed', reason: 'composer install failed' };
       }
     }
   }
   if (!(await exists(path.join(app.path, 'vendor', 'laravel', 'boost')))) {
     log.warn('Laravel Boost skipped: laravel/boost is required but not installed in vendor/');
-    return null;
+    return { status: 'skipped', reason: 'laravel/boost is not installed in vendor/' };
   }
 
   const selfManaged = await isTracked(git, relative('boost.json'));
@@ -197,7 +241,7 @@ async function prepareApp(app: LaravelApp, git: Git, state: State, params: Prepa
   if (!ok) {
     // Whatever it wrote stays excluded; the empty fingerprint retries on the next attempt.
     state.apps[app.dir] = { fingerprint: '', lockHash, ...generated };
-    return null;
+    return { status: 'failed', reason: 'boost:install failed' };
   }
   state.apps[app.dir] = { fingerprint, lockHash, ...generated };
   log.info('Laravel Boost guidelines and skills generated', { excluded_files: generated.excluded.length });

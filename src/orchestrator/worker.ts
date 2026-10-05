@@ -72,6 +72,8 @@ export interface WorkerCallbacks {
   issueRefreshed(issue: Issue): void;
   /** Names of the MCP servers Symphony added that did not connect (called once the session started). */
   mcpUnavailable(servers: string[]): void;
+  /** Extra `run_started` fields from the prepared integrations (called once, after the integrations ran). */
+  integrationsPrepared(historyFields: Record<string, string>): void;
   /** Final commit and branch of the workspace, reported once while the attempt finishes. */
   gitHead(head: GitHead): void;
 }
@@ -196,6 +198,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       logger,
       signal,
     });
+    callbacks.integrationsPrepared(extensions?.historyFields ?? {});
     if (signal.aborted) return await finish(cancelled());
 
     setPhase('LaunchingAgentProcess');

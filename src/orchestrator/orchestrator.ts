@@ -5,7 +5,7 @@ import { childEnvironment } from '../agent/env.ts';
 import { chooseModel } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, TokenUsage } from '../agent/types.ts';
 import { estimateCost, totalTokens, type ModelTokenUsage, type PricingStore } from '../costs/pricing.ts';
-import type { HistoryLog, RunOutcome } from '../history/history.ts';
+import type { HistoryLog, RunOutcome, RunStart } from '../history/history.ts';
 import { defaultIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
@@ -125,6 +125,8 @@ interface RunningEntry {
   modelUsage: Record<string, ModelTokenUsage>;
   /** MCP servers Symphony added that did not connect in the session. */
   mcpUnavailable: string[];
+  /** `run_started` line waiting for the integrations' fields; written once they ran, or when the run ends first. */
+  pendingStart: RunStart | null;
   /** `tool_use` events per MCP server (`mcp__<server>__<tool>`); built-in tools are not counted. */
   mcpToolCalls: Record<string, number>;
   headSha: string | null;
@@ -547,6 +549,7 @@ export class Orchestrator {
       claudeEstimateUsd: 0,
       modelUsage: {},
       mcpUnavailable: [],
+      pendingStart: null,
       mcpToolCalls: {},
       headSha: null,
       branch: null,
@@ -572,7 +575,7 @@ export class Orchestrator {
       model_label: choice.label ?? undefined,
       title: truncate(issue.title, 120),
     });
-    this.#deps.history?.runStarted({
+    entry.pendingStart = {
       repo: entry.repo,
       issue: issue.identifier,
       title: issue.title,
@@ -582,7 +585,7 @@ export class Orchestrator {
       role: entry.role,
       run: entry.runId,
       at: entry.startedAt,
-    });
+    };
 
     let worker: Promise<WorkerOutcome>;
     try {
@@ -626,12 +629,14 @@ export class Orchestrator {
           issueRefreshed: (fresh) => {
             if (this.#running.get(entry.issueId) === entry) entry.issue = fresh;
           },
+          integrationsPrepared: (fields) => this.#flushStart(entry, fields),
           mcpUnavailable: (servers) => {
             entry.mcpUnavailable = servers;
           },
         },
       });
     } catch (error) {
+      this.#flushStart(entry);
       this.#running.delete(issue.id);
       this.#scheduleRetry(issue.id, (attempt ?? 0) + 1, {
         identifier: issue.identifier,
@@ -700,8 +705,17 @@ export class Orchestrator {
     this.#notify();
   }
 
+  /** Writes the pending `run_started` line (once), with fields the integrations added. */
+  #flushStart(entry: RunningEntry, extra: Record<string, string> = {}): void {
+    const start = entry.pendingStart;
+    if (start === null) return;
+    entry.pendingStart = null;
+    this.#deps.history?.runStarted({ ...start, extra });
+  }
+
   /** Writes the finished run to the repository history. */
   #recordRun(entry: RunningEntry, outcome: WorkerOutcome, agentSeconds: number): void {
+    this.#flushStart(entry);
     const history = this.#deps.history;
     if (history === null || history === undefined) return;
     const config = this.#deps.workflow.current.config;
