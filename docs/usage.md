@@ -225,9 +225,13 @@ Optionen und Prüfungen beschreibt [docs/e2e.md](e2e.md).
 ## Dashboard und API
 
 Das Dashboard läuft nur, wenn `SYMPHONY_PORT` gesetzt ist oder du `npm start -- --port 4000` aufrufst. Es lauscht nur
-auf `127.0.0.1`. Es zeigt laufende Agenten mit Spalte, Rolle, Phase, Modell, Turns, letzter Aktivität, Tokens und geschätzten
-Kosten, außerdem die Wiederholungs-Warteschlange und Probleme wie Konfigurations- oder GitHub-Fehler. Der Button
-**Logs** im Header öffnet die [Logs-Seite](#logs-und-statistiken).
+auf `127.0.0.1`. Im Header stehen Systemstatus, Workflow-Version, Poll-Intervall und letzter Poll. Jeder laufende Agent
+erscheint als Karte mit Status, Issue, Repository, Spalte, Rolle, Modell, Phase, letzter Aktivität, Turns, Laufzeit,
+Tokens und geschätzten Kosten. Darunter folgen ein Aktivitäts-Stream (Änderungen zwischen den Abfragen, die letzten
+Ereignisse der Agenten und Einträge aus den Repository-Logs), die Wiederholungs-Warteschlange, pausierte Issues und
+Probleme wie Konfigurations- oder GitHub-Fehler. Der Button **Logs** öffnet die Log-Einträge in einer Seitenleiste mit
+Filtern nach Repository, Schweregrad und Text; von dort (oder per Mittelklick auf den Button) führt ein Link zur
+vollständigen [Logs-Seite](#logs-und-statistiken).
 
 | Endpunkt | Inhalt |
 |---|---|

@@ -59,7 +59,12 @@ describe('http extension', () => {
     const page = await request(server.port, 'GET', '/');
     assert.equal(page.status, 200);
     assert.match(page.body, /<title>Symphony<\/title>/);
-    assert.match(page.body, /label: 'Role', render: \(r\) => r\.role/);
+    assert.match(page.body, /AGENT ORCHESTRATOR/);
+    // Running agents render as cards that show role, model and phase.
+    assert.match(page.body, /setText\(refs\.role, r\.role/);
+    assert.match(page.body, /setText\(refs\.model, r\.model/);
+    assert.match(page.body, /setText\(refs\.phase, r\.phase/);
+    assert.match(page.body, /id="refresh"/);
 
     const state = await request(server.port, 'GET', '/api/v1/state');
     assert.equal(state.status, 200);
@@ -70,7 +75,11 @@ describe('http extension', () => {
   });
 
   it('links the logs page from the dashboard and serves it', async () => {
-    assert.match((await request(server.port, 'GET', '/')).body, /href="\/logs"/);
+    const dashboard = (await request(server.port, 'GET', '/')).body;
+    assert.match(dashboard, /href="\/logs"/);
+    // The Logs button opens a drawer fed by the history API; the link stays as a fallback.
+    assert.match(dashboard, /role="dialog"[^>]*aria-labelledby="logs-title"/);
+    assert.match(dashboard, /fetch\('\/api\/v1\/history'/);
     const page = await request(server.port, 'GET', '/logs');
     assert.equal(page.status, 200);
     assert.match(page.body, /<title>Symphony logs<\/title>/);
