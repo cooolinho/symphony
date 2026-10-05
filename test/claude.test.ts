@@ -9,6 +9,7 @@ import { Logger } from '../src/log.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 import type { AgentToolSpec } from '../src/tracker/types.ts';
 import { AsyncQueue } from '../src/util/async.ts';
+import type { LaravelConfig } from '../src/laravel/integration.ts';
 import { resolveConfig } from '../src/workflow/config.ts';
 import { makeIssue } from './helpers.ts';
 
@@ -253,7 +254,7 @@ describe('claude agent runner', () => {
   });
 
   it('maps the Laravel Boost tool policy into allowed and disallowed tools', async () => {
-    const laravel = resolveConfig({}, { workflowPath: '/w/WORKFLOW.md', env: {}, trackerDefaults }).laravel;
+    const laravel = resolveConfig({}, { workflowPath: '/w/WORKFLOW.md', env: {}, trackerDefaults }).integrations.laravel as LaravelConfig;
     const policy = boostToolPolicy(laravel);
     const extensions: SessionExtensions = {
       mcpServers: { 'laravel-boost': { command: 'php', args: ['artisan', 'boost:mcp'], ...policy } },

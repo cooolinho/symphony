@@ -6,6 +6,8 @@ import { chooseModel } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, TokenUsage } from '../agent/types.ts';
 import { estimateCost, totalTokens, type ModelTokenUsage, type PricingStore } from '../costs/pricing.ts';
 import type { HistoryLog, RunOutcome } from '../history/history.ts';
+import { defaultIntegrations } from '../integrations/registry.ts';
+import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
 import { getTrackerFactory } from '../tracker/registry.ts';
 import type { Issue, TrackerAdapter } from '../tracker/types.ts';
@@ -70,6 +72,8 @@ export interface OrchestratorDeps {
   pricing?: PricingStore | null;
   /** Per-repository run history; null disables it. */
   history?: HistoryLog | null;
+  /** Workspace integrations prepared before each session; defaults to the registry. */
+  integrations?: readonly WorkspaceIntegration[];
 }
 
 type StopKind = 'terminal' | 'inactive' | 'unroutable' | 'missing' | 'stalled' | 'shutdown';
@@ -584,6 +588,7 @@ export class Orchestrator {
         role,
         adapter,
         runner: this.#deps.runner,
+        integrations: this.#deps.integrations ?? defaultIntegrations(),
         workspaces: this.#workspaces(workflow),
         childEnv: this.#childEnv(config),
         logger: log,

@@ -7,7 +7,8 @@ import { Logger } from '../src/log.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 import { SymphonyError } from '../src/util/errors.ts';
 import { loadEnvFile } from '../src/util/env.ts';
-import { DEFAULTS, resolveConfig } from '../src/workflow/config.ts';
+import type { LaravelConfig } from '../src/laravel/integration.ts';
+import { DEFAULTS, resolveConfig, type ServiceConfig } from '../src/workflow/config.ts';
 import { roleFor } from '../src/workflow/roles.ts';
 import { loadWorkflowFile, parseWorkflow } from '../src/workflow/loader.ts';
 import { type EffectiveWorkflow, WorkflowStore } from '../src/workflow/store.ts';
@@ -18,6 +19,8 @@ import { issueTemplateValue } from '../src/workflow/template.ts';
 
 const resolve = (front: Record<string, unknown>, env: NodeJS.ProcessEnv = {}, dir = '/srv/flows') =>
   resolveConfig(front, { workflowPath: path.join(dir, 'WORKFLOW.md'), env, trackerDefaults });
+
+const laravelOf = (config: ServiceConfig) => config.integrations.laravel as LaravelConfig;
 
 function codeOf(fn: () => unknown): string | undefined {
   try {
@@ -185,7 +188,7 @@ describe('config layer', () => {
 
   it('defaults the laravel section to Boost on auto with host php and composer', () => {
     const config = resolve({ hooks: { timeout_ms: 90_000 } });
-    assert.deepEqual(config.laravel, {
+    assert.deepEqual(laravelOf(config), {
       boost: 'auto',
       php: 'php',
       composer: 'composer',
@@ -215,26 +218,26 @@ describe('config layer', () => {
       },
       { HOME: '/home/me' },
     );
-    assert.equal(config.laravel.boost, 'off');
-    assert.equal(config.laravel.php, '/srv/flows/bin/php-in-docker');
-    assert.equal(config.laravel.composer, 'composer2');
-    assert.equal(config.laravel.installDependencies, false);
-    assert.equal(config.laravel.timeoutMs, 5000);
-    assert.deepEqual(config.laravel.env, { APP_ENV: 'local', DB_CONNECTION: 'sqlite', APP_DEBUG: 'true' });
-    assert.equal(resolve({ laravel: { php: '~/bin/php' } }, { HOME: '/home/me' }).laravel.php, '/home/me/bin/php');
-    assert.equal(resolve({ laravel: { env: { APP_ENV: 'testing' } } }).laravel.env.APP_ENV, 'testing');
+    assert.equal(laravelOf(config).boost, 'off');
+    assert.equal(laravelOf(config).php, '/srv/flows/bin/php-in-docker');
+    assert.equal(laravelOf(config).composer, 'composer2');
+    assert.equal(laravelOf(config).installDependencies, false);
+    assert.equal(laravelOf(config).timeoutMs, 5000);
+    assert.deepEqual(laravelOf(config).env, { APP_ENV: 'local', DB_CONNECTION: 'sqlite', APP_DEBUG: 'true' });
+    assert.equal(laravelOf(resolve({ laravel: { php: '~/bin/php' } }, { HOME: '/home/me' })).php, '/home/me/bin/php');
+    assert.equal(laravelOf(resolve({ laravel: { env: { APP_ENV: 'testing' } } })).env.APP_ENV, 'testing');
   });
 
   it('reads the Laravel Boost agent env and tool settings', () => {
-    const defaults = resolve({}).laravel;
+    const defaults = laravelOf(resolve({}));
     assert.deepEqual(defaults.agentEnv, {});
     assert.equal(defaults.allowTinker, false);
     assert.deepEqual(defaults.denyTools, ['record-rule']);
-    const config = resolve({ laravel: { agent_env: { FOO: 'bar', N: 1 }, allow_tinker: true, deny_tools: ['search-docs', ' record-rule ', ''] } }).laravel;
+    const config = laravelOf(resolve({ laravel: { agent_env: { FOO: 'bar', N: 1 }, allow_tinker: true, deny_tools: ['search-docs', ' record-rule ', ''] } }));
     assert.deepEqual(config.agentEnv, { FOO: 'bar', N: '1' });
     assert.equal(config.allowTinker, true);
     assert.deepEqual(config.denyTools, ['search-docs', 'record-rule']);
-    assert.deepEqual(resolve({ laravel: { deny_tools: [] } }).laravel.denyTools, []);
+    assert.deepEqual(laravelOf(resolve({ laravel: { deny_tools: [] } })).denyTools, []);
   });
 
   it('resolves claude.plugins against the workflow directory and parses claude.skills', () => {
@@ -328,7 +331,7 @@ describe('prompt templates', () => {
     assert.equal(config.claude.skills, 'all');
     assert.equal(JSON.parse(fs.readFileSync(path.join(toolbox, '.claude-plugin', 'plugin.json'), 'utf8')).name, 'symphony');
     for (const dir of ['skills', 'agents', 'commands', 'hooks']) assert.ok(fs.statSync(path.join(toolbox, dir)).isDirectory(), dir);
-    assert.deepEqual(config.laravel, {
+    assert.deepEqual(laravelOf(config), {
       boost: 'auto',
       php: 'php',
       composer: 'composer',

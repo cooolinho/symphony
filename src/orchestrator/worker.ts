@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { sessionClaudeConfig } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, AgentSession } from '../agent/types.ts';
-import { prepareLaravelBoost } from '../laravel/boost.ts';
+import { prepareIntegrations } from '../integrations/registry.ts';
+import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
 import type { Issue, TrackerAdapter } from '../tracker/types.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
@@ -84,6 +85,8 @@ export interface WorkerParams {
   /** Adapter snapshot: the tools advertised to the session and the ones executed are the same. */
   adapter: TrackerAdapter;
   runner: AgentRunner;
+  /** Workspace integrations (e.g. Laravel Boost) prepared after before_run; their configs live in workflow.config.integrations. */
+  integrations: readonly WorkspaceIntegration[];
   workspaces: WorkspaceManager;
   /** Environment for the agent process (tracker secrets already removed). */
   childEnv: NodeJS.ProcessEnv;
@@ -174,10 +177,9 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     }
     if (signal.aborted) return await finish(cancelled());
 
-    // Laravel Boost for detected Laravel apps; problems only log warnings.
-    const extensions = await prepareLaravelBoost({
+    // Workspace integrations (e.g. Laravel Boost); problems only log warnings.
+    const extensions = await prepareIntegrations(params.integrations, params.workflow.config.integrations, {
       workspacePath: workspace.path,
-      config: params.workflow.config.laravel,
       env: params.childEnv,
       logger,
       signal,

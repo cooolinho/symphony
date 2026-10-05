@@ -170,6 +170,11 @@ hooks already lack. Scripts are not `$VAR`-substituted by Symphony; the shell ex
 
 ### `laravel`
 
+`laravel` is an *integration section*: it belongs to a workspace integration (`src/laravel/integration.ts`, registered
+in `src/integrations/registry.ts`), not to the core. Each registered integration resolves its own section; its errors
+join the other `invalid_config` errors (a reload with an invalid value keeps the last good version), and the result
+lands in `config.integrations.<id>`. Laravel is the only integration so far.
+
 Laravel Boost for Laravel apps in the workspace. After the `before_run` hook, Symphony looks for Laravel apps in the
 checkout (the root and one level deep: `artisan` plus a `composer.json` that requires `laravel/framework`). For each
 app that requires `laravel/boost`, it installs Composer dependencies if needed, generates Boost's guidelines and skills

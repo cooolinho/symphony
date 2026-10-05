@@ -1,6 +1,8 @@
 import os from 'node:os';
 import path from 'node:path';
 import type { EffortLevel, PermissionMode, SettingSource } from '@anthropic-ai/claude-agent-sdk';
+import { defaultIntegrations } from '../integrations/registry.ts';
+import type { WorkspaceIntegration } from '../integrations/types.ts';
 import { resolveEnvReference } from '../util/env.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { resolveConfigPath } from '../util/paths.ts';
@@ -75,30 +77,6 @@ export interface ClaudeConfig {
   skills: 'all' | string[] | null;
 }
 
-export type BoostMode = 'auto' | 'off';
-
-/** Laravel workspaces (the `laravel` section): Laravel Boost for detected Laravel apps. */
-export interface LaravelConfig {
-  /** auto: use Boost for Laravel apps that require laravel/boost; off: never. */
-  boost: BoostMode;
-  /** PHP command: a bare name is looked up on PATH, a value with a slash or `~` is a resolved path. */
-  php: string;
-  /** Composer command, resolved like `php`. */
-  composer: string;
-  /** Run `composer install` when vendor/ is missing or composer.lock changed since the last install. */
-  installDependencies: boolean;
-  /** Limit for each php or composer step. */
-  timeoutMs: number;
-  /** Environment for Symphony's composer and artisan steps and the Boost MCP server; not the agent's shell. */
-  env: Record<string, string>;
-  /** Variables added to the agent's own environment in Boost sessions. */
-  agentEnv: Record<string, string>;
-  /** Allow Boost's `tinker` tool (runs arbitrary PHP); denied by default. */
-  allowTinker: boolean;
-  /** Boost tools removed from the session (and from the pre-approved list). */
-  denyTools: string[];
-}
-
 export interface ServerConfig {
   port: number | null;
   host: string;
@@ -118,7 +96,8 @@ export interface ServiceConfig {
   checks: ChecksConfig;
   agent: AgentConfig;
   claude: ClaudeConfig;
-  laravel: LaravelConfig;
+  /** Resolved config of each workspace integration, keyed by integration id (e.g. `laravel`). */
+  integrations: Readonly<Record<string, unknown>>;
   /** Column-scoped roles; null without a `roles` section (one implicit `default` role). */
   roles: RoleConfig[] | null;
   server: ServerConfig;
@@ -136,6 +115,8 @@ export interface ResolveOptions {
   env: NodeJS.ProcessEnv;
   /** Adapter-documented state defaults for a tracker kind, if the kind is supported. */
   trackerDefaults: (kind: string) => TrackerDefaults | undefined;
+  /** Workspace integrations whose front matter sections are resolved too; defaults to the registry. */
+  integrations?: readonly WorkspaceIntegration[];
 }
 
 export const DEFAULTS = {
@@ -154,13 +135,9 @@ export const DEFAULTS = {
 const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'];
 const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
-const KNOWN_TOP_LEVEL = new Set(['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'laravel', 'roles', 'server']);
+const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'server'];
 const ROLE_KEYS = new Set(['states', 'read_only', 'may_move_to', 'max_turns', 'claude']);
 const ROLE_CLAUDE_KEYS = new Set(['model', 'effort', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'max_budget_usd']);
-const BOOST_MODES: readonly BoostMode[] = ['auto', 'off'];
-/** Boost only registers its commands in the local environment (or with debug on); a fresh clone has no .env. */
-const LARAVEL_DEFAULT_ENV: Readonly<Record<string, string>> = { APP_ENV: 'local' };
-const LARAVEL_DEFAULT_DENY_TOOLS: readonly string[] = ['record-rule'];
 
 export function normalizeStateName(state: string): string {
   return state.trim().toLowerCase();
@@ -275,11 +252,13 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
   const reader = new Reader();
   const workflowPath = path.resolve(options.workflowPath);
   const workflowDir = path.dirname(workflowPath);
+  const integrationList = options.integrations ?? defaultIntegrations();
+  const knownTopLevel = new Set([...CORE_TOP_LEVEL, ...integrationList.map((integration) => integration.configKey)]);
 
   for (const key of Object.keys(raw)) {
     if (key === 'codex') {
       reader.warnings.push('the codex section is ignored: this implementation runs Claude Code (configure the claude section)');
-    } else if (!KNOWN_TOP_LEVEL.has(key)) {
+    } else if (!knownTopLevel.has(key)) {
       reader.warnings.push(`unknown top-level key ${JSON.stringify(key)} ignored`);
     }
   }
@@ -441,7 +420,6 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     skills,
   };
 
-  // laravel
   // Only an explicit value is checked, so configs without a checks section are unaffected.
   if (checksRaw.timeout_ms !== undefined && checksRaw.timeout_ms !== null && checks.timeoutMs >= claude.turnTimeoutMs) {
     reader.errors.push(
@@ -449,31 +427,15 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     );
   }
 
-  const laravelRaw = reader.section(raw, 'laravel');
-  const command = (key: 'php' | 'composer'): string => {
-    const value = reader.string(laravelRaw, key, `laravel.${key}`)?.trim() || key;
-    // Bare names stay PATH lookups; only path-like values are resolved against the workflow directory.
-    if (!value.includes('/') && !value.startsWith('~')) return value;
-    try {
-      return resolveConfigPath(value, workflowDir, options.env, `laravel.${key}`);
-    } catch (error) {
-      reader.errors.push(errorMessage(error));
-      return key;
-    }
-  };
-  const laravel: LaravelConfig = {
-    boost: reader.oneOf(laravelRaw, 'boost', 'laravel.boost', BOOST_MODES, 'auto'),
-    php: command('php'),
-    composer: command('composer'),
-    installDependencies: reader.bool(laravelRaw, 'install_dependencies', 'laravel.install_dependencies', true),
-    timeoutMs: reader.int(laravelRaw, 'timeout_ms', 'laravel.timeout_ms', hooks.timeoutMs, 1),
-    env: { ...LARAVEL_DEFAULT_ENV, ...reader.stringMap(laravelRaw, 'env', 'laravel.env') },
-    agentEnv: reader.stringMap(laravelRaw, 'agent_env', 'laravel.agent_env'),
-    allowTinker: reader.bool(laravelRaw, 'allow_tinker', 'laravel.allow_tinker', false),
-    denyTools: reader.stringList(laravelRaw, 'deny_tools', 'laravel.deny_tools')?.map((tool) => tool.trim()).filter((tool) => tool !== '') ?? [
-      ...LARAVEL_DEFAULT_DENY_TOOLS,
-    ],
-  };
+  // workspace integrations (e.g. laravel)
+  const integrations: Record<string, unknown> = {};
+  for (const integration of integrationList) {
+    const section = reader.section(raw, integration.configKey);
+    const result = integration.resolveConfig(section, { workflowDir, env: options.env, hookTimeoutMs: hooks.timeoutMs });
+    reader.errors.push(...result.errors);
+    reader.warnings.push(...result.warnings);
+    integrations[integration.id] = result.config;
+  }
 
   // roles
   const roles = readRoles(reader, raw, activeStates);
@@ -506,7 +468,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     checks,
     agent,
     claude,
-    laravel,
+    integrations,
     roles,
     server,
     warnings: reader.warnings,

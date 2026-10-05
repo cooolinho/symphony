@@ -7,9 +7,9 @@ import type { SessionExtensions, StdioServer } from '../agent/types.ts';
 import type { Logger } from '../log.ts';
 import { errorMessage } from '../util/errors.ts';
 import { tail, truncate } from '../util/text.ts';
-import type { LaravelConfig } from '../workflow/config.ts';
 import { runProcess } from '../workspace/hooks.ts';
 import { detectLaravelApps, type LaravelApp } from './detect.ts';
+import type { LaravelConfig } from './integration.ts';
 
 const execFileAsync = promisify(execFile);
 

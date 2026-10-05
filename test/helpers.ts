@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AgentEvent, AgentRunner, AgentSession, StartSessionParams, TurnResult } from '../src/agent/types.ts';
 import type { Clock, Timers, WorkflowSource } from '../src/orchestrator/orchestrator.ts';
+import type { WorkspaceIntegration } from '../src/integrations/types.ts';
 import type { AgentToolSpec, Issue, TrackerAdapter } from '../src/tracker/types.ts';
 import { normalizeStateName, resolveConfig } from '../src/workflow/config.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../src/workflow/store.ts';
@@ -182,12 +183,16 @@ export class ManualClock implements Clock {
   }
 }
 
-export function makeWorkflow(front: Record<string, unknown>, options: { prompt?: string; dir?: string; env?: NodeJS.ProcessEnv } = {}): EffectiveWorkflow {
+export function makeWorkflow(
+  front: Record<string, unknown>,
+  options: { prompt?: string; dir?: string; env?: NodeJS.ProcessEnv; integrations?: readonly WorkspaceIntegration[] } = {},
+): EffectiveWorkflow {
   const dir = options.dir ?? tempDir();
   const config = resolveConfig(front, {
     workflowPath: path.join(dir, 'WORKFLOW.md'),
     env: options.env ?? {},
     trackerDefaults,
+    ...(options.integrations !== undefined ? { integrations: options.integrations } : {}),
   });
   return {
     definition: { config: front, promptTemplate: options.prompt ?? 'Work on {{ issue.identifier }}' },
