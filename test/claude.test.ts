@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import type { Options, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { ClaudeAgentRunner, type QueryFn } from '../src/agent/claude.ts';
-import type { AgentEvent, SessionExtensions, StartSessionParams } from '../src/agent/types.ts';
+import type { AgentEvent, SessionExtensions, SessionPolicy, StartSessionParams } from '../src/agent/types.ts';
 import { Logger } from '../src/log.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 import type { AgentToolSpec } from '../src/tracker/types.ts';
@@ -83,7 +83,14 @@ const tool: AgentToolSpec = {
 };
 
 function params(
-  overrides: { claude?: Record<string, unknown>; events?: AgentEvent[]; signal?: AbortSignal; extensions?: SessionExtensions; logger?: Logger } = {},
+  overrides: {
+    claude?: Record<string, unknown>;
+    events?: AgentEvent[];
+    signal?: AbortSignal;
+    extensions?: SessionExtensions;
+    logger?: Logger;
+    policy?: SessionPolicy;
+  } = {},
 ): StartSessionParams {
   const config = resolveConfig({ claude: { model: 'opus', ...overrides.claude } }, { workflowPath: '/w/WORKFLOW.md', env: {}, trackerDefaults }).claude;
   const issue = makeIssue({ id: 'a' });
@@ -99,7 +106,22 @@ function params(
     onEvent: (event) => overrides.events?.push(event),
     transcriptPath: null,
     ...(overrides.extensions ? { extensions: overrides.extensions } : {}),
+    ...(overrides.policy ? { policy: overrides.policy } : {}),
   };
+}
+
+const READ_ONLY_DENY = ['Edit', 'Write', 'NotebookEdit', 'Bash(git commit:*)', 'Bash(git push:*)'];
+
+/** Starts and stops a session, returning the SDK options it was built with. */
+async function sessionOptions(overrides: Parameters<typeof params>[0]): Promise<Options> {
+  const fake = fakeQuery(() => undefined);
+  const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params(overrides));
+  await session.stop();
+  return fake.options();
+}
+
+function serverExtensions(server: Partial<SessionExtensions['mcpServers'][string]>): SessionExtensions {
+  return { mcpServers: { srv: { command: 'srv', args: [], ...server } }, contextSections: [], additionalDirectories: [], env: {} };
 }
 
 describe('claude agent runner', () => {
@@ -123,7 +145,7 @@ describe('claude agent runner', () => {
       { inputTokens: 250, outputTokens: 40, totalTokens: 290 },
     ]);
     assert.equal(completed[1]?.sessionId, `${session.threadId}-2`);
-    assert.ok(events.some((e) => e.event === 'tool_use' && e.message === 'Bash: npm test'));
+    assert.ok(events.some((e) => e.event === 'tool_use' && e.message === 'Bash: npm test' && e.detail?.tool === 'Bash'));
     assert.equal(events[0]?.event, 'session_started');
 
     const options = fake.options();
@@ -190,6 +212,43 @@ describe('claude agent runner', () => {
     assert.deepEqual(configured?.detail?.mcp_servers, ['tracker:connected', 'laravel-boost:failed']);
     assert.deepEqual(configured?.detail?.plugins, ['symphony']);
     assert.equal(configured?.detail?.skills, 2);
+  });
+
+  it('keeps the default tool rules without a policy and with default servers', async () => {
+    const options = await sessionOptions({ extensions: serverExtensions({}) });
+    assert.deepEqual(options.allowedTools, ['mcp__tracker__get_issue', 'mcp__srv']);
+    assert.deepEqual(options.disallowedTools, ['AskUserQuestion']);
+    const notReadOnly = await sessionOptions({ policy: { readOnly: false } });
+    const noPolicy = await sessionOptions({});
+    assert.deepEqual(notReadOnly.allowedTools, noPolicy.allowedTools);
+    assert.deepEqual(notReadOnly.disallowedTools, noPolicy.disallowedTools);
+  });
+
+  it('adds the read-only deny rules', async () => {
+    const options = await sessionOptions({ policy: { readOnly: true } });
+    for (const rule of READ_ONLY_DENY) assert.ok(options.disallowedTools?.includes(rule), rule);
+    assert.ok(options.disallowedTools?.includes('AskUserQuestion'));
+  });
+
+  it('denies git push in a read-only session even when the workflow allows it', async () => {
+    const options = await sessionOptions({ claude: { allowed_tools: ['Bash(git push:*)'] }, policy: { readOnly: true } });
+    assert.ok(options.allowedTools?.includes('Bash(git push:*)'));
+    assert.ok(options.disallowedTools?.includes('Bash(git push:*)'));
+    assert.equal(new Set(options.disallowedTools).size, options.disallowedTools?.length);
+  });
+
+  it('pre-approves only the listed tools of an extension server', async () => {
+    const options = await sessionOptions({ extensions: serverExtensions({ autoApprove: ['a', 'b', 'a'] }) });
+    assert.ok(options.allowedTools?.includes('mcp__srv__a'));
+    assert.ok(options.allowedTools?.includes('mcp__srv__b'));
+    assert.ok(!options.allowedTools?.includes('mcp__srv'));
+    assert.equal(new Set(options.allowedTools).size, options.allowedTools?.length);
+  });
+
+  it('removes denied tools of an extension server', async () => {
+    const options = await sessionOptions({ extensions: serverExtensions({ deny: ['x'] }) });
+    assert.ok(options.disallowedTools?.includes('mcp__srv__x'));
+    assert.ok(options.allowedTools?.includes('mcp__srv'));
   });
 
   it('refuses an extension server named like the tracker server', async () => {

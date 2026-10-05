@@ -27,6 +27,7 @@ Agent SDK instead; the mapping of threads, turns, approvals, user input, timeout
 | Workspace key hash | First 16 hex characters (64 bits) of SHA-256 of the original identifier |
 | Non-directory at a workspace path | Fails the attempt (`workspace_path_conflict`); nothing is deleted |
 | Failed `after_create` | The half-created directory is deleted, so the next attempt starts clean |
+| Workspace lock | Extension: `<workspace root>/<key>.lock` (JSON: pid, hostname, instance id, timestamp), created with `wx` outside the clone before `ensure`; released when the attempt ends and deleted with the workspace. A live pid on this host or any other host counts as held and ends the attempt as `cancelled` (no hooks, no session; the next poll tick retries); a dead pid on this host is reclaimed. No locking across hosts beyond "held by another host". |
 | Hook shell | `bash -lc`, own process group, killed as a group on timeout |
 | Hook and agent environment | Tracker secrets and Claude Code nesting markers removed |
 | Empty prompt body | Minimal default prompt including identifier, title and description |
@@ -34,7 +35,7 @@ Agent SDK instead; the mapping of threads, turns, approvals, user input, timeout
 | `max_concurrent_agents: 0` | Allowed; pauses new dispatches |
 | Invalid workflow reload | Last good version keeps running (reconciliation, retries); new dispatches pause until the file is fixed |
 | Reconciliation stop | Cooperative: the worker is cancelled and keeps its claim until it has exited (after `after_run`); terminal issues are cleaned afterwards. A worker that ignores the stop for `2 × hooks.timeout_ms + 60 s` is abandoned. |
-| Retry dispatch | Also gated by dispatch preflight validation (a failing preflight requeues with backoff) |
+| Retry dispatch | Also gated by dispatch preflight validation (a failing preflight requeues with backoff). A retry that finds no free slot is requeued with its original kind and attempt after `polling.interval_ms`, not as a failure. |
 | `.env` | Optional dotenv file, read once at startup; the shell environment wins |
 | Whole-value references | `$NAME`, `${NAME}`, `${NAME:-default}` for every setting except hooks; unset without default means "omitted" |
 | Tracker request retries | Read queries are retried after transient failures (`request_retries`); mutations are not |

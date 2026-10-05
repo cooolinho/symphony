@@ -5,6 +5,8 @@ import { resolveEnvReference } from '../util/env.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { resolveConfigPath } from '../util/paths.ts';
 import { isPlainObject } from './loader.ts';
+import { Reader, parseInteger } from './reader.ts';
+import type { RoleClaudeOverrides, RoleConfig } from './roles.ts';
 
 export interface TrackerConfig {
   kind: string | null;
@@ -111,6 +113,8 @@ export interface ServiceConfig {
   agent: AgentConfig;
   claude: ClaudeConfig;
   laravel: LaravelConfig;
+  /** Column-scoped roles; null without a `roles` section (one implicit `default` role). */
+  roles: RoleConfig[] | null;
   server: ServerConfig;
   /** Non-fatal findings (ignored keys, ignored per-state limits) for operator logs. */
   warnings: string[];
@@ -144,7 +148,9 @@ export const DEFAULTS = {
 const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'];
 const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
-const KNOWN_TOP_LEVEL = new Set(['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'laravel', 'server']);
+const KNOWN_TOP_LEVEL = new Set(['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'laravel', 'roles', 'server']);
+const ROLE_KEYS = new Set(['states', 'read_only', 'may_move_to', 'max_turns', 'claude']);
+const ROLE_CLAUDE_KEYS = new Set(['model', 'effort', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'max_budget_usd']);
 const BOOST_MODES: readonly BoostMode[] = ['auto', 'off'];
 /** Boost only registers its commands in the local environment (or with debug on); a fresh clone has no .env. */
 const LARAVEL_DEFAULT_ENV: Readonly<Record<string, string>> = { APP_ENV: 'local' };
@@ -153,112 +159,82 @@ export function normalizeStateName(state: string): string {
   return state.trim().toLowerCase();
 }
 
-/** Collects every problem in one pass so an operator sees all of them at once. */
-class Reader {
-  errors: string[] = [];
-  warnings: string[] = [];
-
-  section(root: Record<string, unknown>, key: string): Record<string, unknown> {
-    const value = root[key];
-    if (value === undefined || value === null) return {};
+function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: string[]): RoleConfig[] | null {
+  if (raw.roles === undefined || raw.roles === null) return null;
+  if (!isPlainObject(raw.roles)) {
+    reader.errors.push('roles must be a map');
+    return null;
+  }
+  const roles: RoleConfig[] = [];
+  const owners = new Map<string, string>();
+  const active = new Set(activeStates.map(normalizeStateName));
+  for (const [name, value] of Object.entries(raw.roles)) {
+    const field = `roles.${name}`;
     if (!isPlainObject(value)) {
-      this.errors.push(`${key} must be a map`);
-      return {};
+      reader.errors.push(`${field} must be a map`);
+      continue;
     }
-    return value;
-  }
-
-  string(obj: Record<string, unknown>, key: string, field: string): string | null {
-    const value = obj[key];
-    if (value === undefined || value === null) return null;
-    if (typeof value !== 'string') {
-      this.errors.push(`${field} must be a string`);
-      return null;
+    for (const key of Object.keys(value)) {
+      if (!ROLE_KEYS.has(key)) reader.errors.push(`${field}.${key} is not a known key (allowed: ${[...ROLE_KEYS].join(', ')})`);
     }
-    return value;
-  }
-
-  script(obj: Record<string, unknown>, key: string, field: string): string | null {
-    const value = this.string(obj, key, field);
-    return value !== null && value.trim() !== '' ? value : null;
-  }
-
-  int(obj: Record<string, unknown>, key: string, field: string, fallback: number, min: number): number {
-    const value = obj[key];
-    if (value === undefined || value === null) return fallback;
-    const parsed = parseInteger(value);
-    if (parsed === null || parsed < min) {
-      this.errors.push(`${field} must be an integer >= ${min} (got ${JSON.stringify(value)})`);
-      return fallback;
+    const states: string[] = [];
+    const statesValue = reader.stringList(value, 'states', `${field}.states`);
+    if (statesValue === null && value.states === undefined) reader.errors.push(`${field}.states is required`);
+    for (const state of statesValue ?? []) {
+      const key = normalizeStateName(state);
+      if (key === '' || states.includes(key)) continue;
+      states.push(key);
+      if (!active.has(key)) reader.errors.push(`${field}.states: ${JSON.stringify(state)} is not in tracker.active_states`);
+      const owner = owners.get(key);
+      if (owner !== undefined) reader.errors.push(`state ${JSON.stringify(state)} belongs to more than one role (${owner}, ${name})`);
+      else owners.set(key, name);
     }
-    return parsed;
-  }
+    if (statesValue !== null && states.length === 0) reader.errors.push(`${field}.states must list at least one state`);
 
-  number(obj: Record<string, unknown>, key: string, field: string): number | null {
-    const value = obj[key];
-    if (value === undefined || value === null) return null;
-    const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN;
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-      this.errors.push(`${field} must be a positive number (got ${JSON.stringify(value)})`);
-      return null;
+    const mayMoveTo = reader.stringList(value, 'may_move_to', `${field}.may_move_to`);
+    const maxTurnsValue = value.max_turns;
+    const claudeRaw = value.claude;
+    let claude: RoleClaudeOverrides = {};
+    if (claudeRaw !== undefined && claudeRaw !== null) {
+      if (isPlainObject(claudeRaw)) claude = readRoleClaude(reader, claudeRaw, `${field}.claude`);
+      else reader.errors.push(`${field}.claude must be a map`);
     }
-    return parsed;
+    roles.push({
+      name,
+      states,
+      readOnly: reader.bool(value, 'read_only', `${field}.read_only`, false),
+      mayMoveTo: mayMoveTo === null ? null : mayMoveTo.map((entry) => entry.trim()).filter((entry) => entry !== ''),
+      maxTurns:
+        maxTurnsValue === undefined || maxTurnsValue === null
+          ? null
+          : reader.int(value, 'max_turns', `${field}.max_turns`, 0, 1) || null,
+      claude,
+    });
   }
-
-  bool(obj: Record<string, unknown>, key: string, field: string, fallback: boolean): boolean {
-    const value = obj[key];
-    if (value === undefined || value === null) return fallback;
-    if (value === true || value === 'true') return true;
-    if (value === false || value === 'false') return false;
-    this.errors.push(`${field} must be true or false`);
-    return fallback;
+  for (const state of activeStates) {
+    if (!owners.has(normalizeStateName(state))) reader.errors.push(`active state ${JSON.stringify(state)} has no role`);
   }
-
-  stringList(obj: Record<string, unknown>, key: string, field: string): string[] | null {
-    const value = obj[key];
-    if (value === undefined || value === null) return null;
-    if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
-      this.errors.push(`${field} must be a list of strings`);
-      return null;
-    }
-    return value as string[];
-  }
-
-  stringMap(obj: Record<string, unknown>, key: string, field: string): Record<string, string> {
-    const value = obj[key];
-    const result: Record<string, string> = {};
-    if (value === undefined || value === null) return result;
-    if (!isPlainObject(value)) {
-      this.errors.push(`${field} must be a map of names to strings`);
-      return result;
-    }
-    for (const [name, item] of Object.entries(value)) {
-      if (typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean') result[name] = String(item);
-      else this.errors.push(`${field}.${name} must be a string`);
-    }
-    return result;
-  }
-
-  oneOf<T extends string>(obj: Record<string, unknown>, key: string, field: string, allowed: readonly T[], fallback: T): T;
-  oneOf<T extends string>(obj: Record<string, unknown>, key: string, field: string, allowed: readonly T[], fallback: null): T | null;
-  oneOf<T extends string>(obj: Record<string, unknown>, key: string, field: string, allowed: readonly T[], fallback: T | null): T | null {
-    const value = this.string(obj, key, field);
-    if (value === null) return fallback;
-    if (!(allowed as readonly string[]).includes(value)) {
-      this.errors.push(`${field} must be one of ${allowed.join(', ')} (got ${JSON.stringify(value)})`);
-      return fallback;
-    }
-    return value as T;
-  }
+  return roles;
 }
 
-function parseInteger(value: unknown): number | null {
-  if (typeof value === 'number') return Number.isSafeInteger(value) ? value : null;
-  if (typeof value === 'string' && /^\s*-?\d+\s*$/.test(value)) {
-    const parsed = Number(value);
-    return Number.isSafeInteger(parsed) ? parsed : null;
+function readRoleClaude(reader: Reader, raw: Record<string, unknown>, field: string): RoleClaudeOverrides {
+  for (const key of Object.keys(raw)) {
+    if (!ROLE_CLAUDE_KEYS.has(key)) reader.errors.push(`${field}.${key} is not a known key (allowed: ${[...ROLE_CLAUDE_KEYS].join(', ')})`);
   }
-  return null;
+  const claude: RoleClaudeOverrides = {};
+  const model = reader.string(raw, 'model', `${field}.model`)?.trim();
+  if (model) claude.model = model;
+  const effort = reader.oneOf(raw, 'effort', `${field}.effort`, EFFORT_LEVELS, null);
+  if (effort !== null) claude.effort = effort;
+  const allowedTools = reader.stringList(raw, 'allowed_tools', `${field}.allowed_tools`);
+  if (allowedTools !== null) claude.allowedTools = allowedTools;
+  const disallowedTools = reader.stringList(raw, 'disallowed_tools', `${field}.disallowed_tools`);
+  if (disallowedTools !== null) claude.disallowedTools = disallowedTools;
+  const appendSystemPrompt = reader.script(raw, 'append_system_prompt', `${field}.append_system_prompt`);
+  if (appendSystemPrompt !== null) claude.appendSystemPrompt = appendSystemPrompt;
+  const maxBudgetUsd = reader.number(raw, 'max_budget_usd', `${field}.max_budget_usd`);
+  if (maxBudgetUsd !== null) claude.maxBudgetUsd = maxBudgetUsd;
+  return claude;
 }
 
 /**
@@ -487,6 +463,14 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     env: { ...LARAVEL_DEFAULT_ENV, ...reader.stringMap(laravelRaw, 'env', 'laravel.env') },
   };
 
+  // roles
+  const roles = readRoles(reader, raw, activeStates);
+  if (roles !== null && agent.maxContinuations === null) {
+    reader.warnings.push(
+      'roles is set while agent.max_continuations is unlimited: role switches count as continuations, so set a limit',
+    );
+  }
+
   // server (HTTP extension)
   const serverRaw = reader.section(raw, 'server');
   const portValue = serverRaw.port;
@@ -511,6 +495,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     agent,
     claude,
     laravel,
+    roles,
     server,
     warnings: reader.warnings,
   };

@@ -59,6 +59,7 @@ describe('http extension', () => {
     const page = await request(server.port, 'GET', '/');
     assert.equal(page.status, 200);
     assert.match(page.body, /<title>Symphony<\/title>/);
+    assert.match(page.body, /label: 'Role', render: \(r\) => r\.role/);
 
     const state = await request(server.port, 'GET', '/api/v1/state');
     assert.equal(state.status, 200);

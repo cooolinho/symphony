@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { chooseModel, isModelLabel, modelForLabelValue, sessionClaudeConfig } from '../src/agent/model.ts';
+import { roleModelLine } from '../src/service.ts';
 import { STANDARD_LABELS } from '../src/repo-init/labels.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 import { resolveConfig } from '../src/workflow/config.ts';
@@ -73,6 +74,34 @@ describe('model labels', () => {
     assert.equal(sessionClaudeConfig(claudeConfig({ model: 'opus' }), null).model, null);
   });
 
+  it('merges role overrides: effort and budget replace, tools and system prompt append', () => {
+    const base = claudeConfig({
+      effort: 'medium',
+      max_budget_usd: 5,
+      allowed_tools: ['Read'],
+      disallowed_tools: ['WebFetch'],
+      append_system_prompt: 'Base rules.',
+    });
+    const merged = sessionClaudeConfig(base, 'opus', {
+      model: 'haiku',
+      effort: 'high',
+      maxBudgetUsd: 1,
+      allowedTools: ['Grep'],
+      disallowedTools: ['Bash'],
+      appendSystemPrompt: 'Review only.',
+    });
+    assert.equal(merged.model, 'opus');
+    assert.equal(merged.effort, 'high');
+    assert.equal(merged.maxBudgetUsd, 1);
+    assert.deepEqual(merged.allowedTools, ['Read', 'Grep']);
+    assert.deepEqual(merged.disallowedTools, ['WebFetch', 'Bash']);
+    assert.equal(merged.appendSystemPrompt, 'Base rules.\n\nReview only.');
+
+    const untouched = sessionClaudeConfig(base, null, {});
+    assert.deepEqual([untouched.effort, untouched.maxBudgetUsd, untouched.appendSystemPrompt], ['medium', 5, 'Base rules.']);
+    assert.equal(sessionClaudeConfig(claudeConfig({}), null, { appendSystemPrompt: 'Only role.' }).appendSystemPrompt, 'Only role.');
+  });
+
   it('only ships standard labels that resolve to a model', () => {
     assert.equal(STANDARD_LABELS.length, 3);
     for (const label of STANDARD_LABELS) {
@@ -83,5 +112,12 @@ describe('model labels', () => {
       assert.ok(label.description.length <= 100, label.name);
       assert.match(label.color, /^[0-9a-f]{6}$/);
     }
+  });
+});
+
+describe('roleModelLine', () => {
+  it('names role and model, or default without a model', () => {
+    assert.equal(roleModelLine('reviewer', 'opus'), 'role reviewer, model opus');
+    assert.equal(roleModelLine('default', null), 'role default, model default');
   });
 });

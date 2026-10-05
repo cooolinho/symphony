@@ -1,0 +1,221 @@
+import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { describe, it } from 'node:test';
+import { tempDir } from './helpers.ts';
+
+const SCRIPT = path.resolve('checks/laravel.sh');
+
+/** Fake php: `-l` fails for files containing SYNTAX_ERROR, `artisan test` fails with FAKE_TEST_FAIL. */
+const FAKE_PHP = `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify(['php', ...args]) + '\\n');
+if (args[0] === '-l') {
+  if (fs.readFileSync(args[1], 'utf8').includes('SYNTAX_ERROR')) { console.log('Parse error in ' + args[1]); process.exit(255); }
+  process.exit(0);
+}
+if (args[1] === 'test' && process.env.FAKE_TEST_FAIL) { console.log('Tests: 1 failed'); process.exit(1); }
+`;
+
+/** Fake composer: lists the scripts of composer.json; running one logs it and fails with FAKE_FAIL=<name>. */
+const FAKE_COMPOSER = `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify(['composer', ...args]) + '\\n');
+const scripts = JSON.parse(fs.readFileSync('composer.json', 'utf8')).scripts || {};
+if (args[0] === 'run-script' && args[1] === '--list') {
+  for (const name of Object.keys(scripts)) console.log(name + '  description');
+  process.exit(0);
+}
+if (process.env.FAKE_FAIL === args[1]) { console.log(args[1] + ' broke'); process.exit(1); }
+`;
+
+const FAKE_TOOL = (name: string) => `#!${process.execPath}
+require('node:fs').appendFileSync(process.env.FAKE_LOG, JSON.stringify(['${name}', ...process.argv.slice(2)]) + '\\n');
+if (process.env.FAKE_FAIL === '${name}') { console.log('${name} broke'); process.exit(1); }
+`;
+
+interface Fixture {
+  repo: string;
+  origin: string;
+  log: string;
+  bin: string;
+}
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', ...args], { cwd, encoding: 'utf8' });
+}
+
+function write(root: string, name: string, content: string, mode?: number): void {
+  const file = path.join(root, name);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, content, mode === undefined ? undefined : { mode });
+}
+
+/** A Laravel-looking app on a pushed feature branch, with fake php/composer and vendor/bin tools. */
+function fixture(options: { scripts?: Record<string, string>; phpstan?: boolean; vendor?: boolean } = {}): Fixture {
+  const base = tempDir('symphony-checks-');
+  const origin = path.join(base, 'origin.git');
+  const seed = path.join(base, 'seed');
+  const repo = path.join(base, 'repo');
+  const bin = path.join(base, 'bin');
+  git(base, 'init', '-q', '--bare', '-b', 'main', origin);
+  fs.mkdirSync(seed);
+  git(seed, 'init', '-q', '-b', 'main');
+  write(seed, '.gitignore', 'vendor/\n');
+  write(seed, 'artisan', '<?php');
+  write(seed, 'app/Old.php', '<?php');
+  write(seed, 'composer.json', JSON.stringify({ scripts: options.scripts ?? {} }));
+  if (options.phpstan) write(seed, 'phpstan.neon', 'parameters: {}');
+  git(seed, 'add', '-A');
+  git(seed, 'commit', '-q', '-m', 'init');
+  git(seed, 'push', '-q', origin, 'main');
+  git(base, 'clone', '-q', origin, repo);
+  git(repo, 'checkout', '-q', '-b', 'feature');
+  write(repo, 'app/New.php', '<?php');
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', 'feature');
+  git(repo, 'push', '-q', '-u', 'origin', 'feature');
+
+  if (options.vendor !== false) {
+    write(repo, 'vendor/autoload.php', '<?php');
+    write(repo, 'vendor/bin/pint', FAKE_TOOL('pint'), 0o755);
+    write(repo, 'vendor/bin/phpstan', FAKE_TOOL('phpstan'), 0o755);
+  }
+  write(base, 'bin/php', FAKE_PHP, 0o755);
+  write(base, 'bin/composer', FAKE_COMPOSER, 0o755);
+  const log = path.join(base, 'calls.log');
+  fs.writeFileSync(log, '');
+  return { repo, origin, log, bin };
+}
+
+function run(f: Fixture, env: NodeJS.ProcessEnv = {}, cwd = f.repo) {
+  const result = spawnSync('bash', [SCRIPT], {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, ...env },
+  });
+  return { status: result.status, out: result.stdout + result.stderr };
+}
+
+function calls(f: Fixture): string[][] {
+  return fs.readFileSync(f.log, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as string[]);
+}
+
+describe('checks/laravel.sh', () => {
+  it('passes on a clean, pushed app with passing tools', () => {
+    const f = fixture({ phpstan: true });
+    const result = run(f);
+    assert.equal(result.status, 0, result.out);
+    const names = calls(f).map((c) => c.join(' '));
+    assert.ok(names.includes('php -l app/New.php'));
+    assert.ok(!names.includes('php -l app/Old.php'), 'only changed files are linted');
+    assert.ok(names.includes('pint --test app/New.php'));
+    assert.ok(names.includes('phpstan analyse --no-progress'));
+    assert.ok(names.includes('php artisan test'));
+  });
+
+  it('exits 0 with a message when there is no Laravel app', () => {
+    const f = fixture();
+    fs.rmSync(path.join(f.repo, 'artisan'));
+    const result = run(f);
+    assert.equal(result.status, 0);
+    assert.match(result.out, /no Laravel app; nothing to check/);
+  });
+
+  it('honors SYMPHONY_LARAVEL_APP_PATH', () => {
+    const f = fixture();
+    const result = run(f, { SYMPHONY_LARAVEL_APP_PATH: path.join(f.repo, 'missing') });
+    assert.equal(result.status, 2);
+    const empty = tempDir('symphony-checks-empty-');
+    assert.match(run(f, { SYMPHONY_LARAVEL_APP_PATH: empty }).out, /no Laravel app/);
+  });
+
+  it('exits 1 on a dirty tree and lists the changes', () => {
+    const f = fixture();
+    write(f.repo, 'app/Dirty.php', '<?php');
+    const result = run(f);
+    assert.equal(result.status, 1);
+    assert.match(result.out, /not clean/);
+    assert.match(result.out, /app\/Dirty\.php/);
+  });
+
+  it('exits 1 on an unpushed commit', () => {
+    const f = fixture();
+    write(f.repo, 'app/Local.php', '<?php');
+    git(f.repo, 'add', '-A');
+    git(f.repo, 'commit', '-q', '-m', 'local');
+    const result = run(f);
+    assert.equal(result.status, 1);
+    assert.match(result.out, /push the branch/);
+  });
+
+  it('exits 1 when the branch has no upstream', () => {
+    const f = fixture();
+    git(f.repo, 'checkout', '-q', '-b', 'other');
+    const result = run(f);
+    assert.equal(result.status, 1);
+    assert.match(result.out, /push the branch/);
+  });
+
+  it('exits 1 on a php -l failure', () => {
+    const f = fixture();
+    write(f.repo, 'app/Bad.php', '<?php SYNTAX_ERROR');
+    git(f.repo, 'add', '-A');
+    git(f.repo, 'commit', '-q', '-m', 'bad');
+    git(f.repo, 'push', '-q');
+    const result = run(f);
+    assert.equal(result.status, 1);
+    assert.match(result.out, /syntax errors/);
+    assert.match(result.out, /app\/Bad\.php/);
+  });
+
+  it('exits 1 with the output of failing tests', () => {
+    const f = fixture();
+    const result = run(f, { FAKE_TEST_FAIL: '1' });
+    assert.equal(result.status, 1);
+    assert.match(result.out, /php artisan test failed/);
+    assert.match(result.out, /1 failed/);
+  });
+
+  it('exits 1 on style and static analysis failures', () => {
+    const f = fixture({ phpstan: true });
+    assert.equal(run(f, { FAKE_FAIL: 'pint' }).status, 1);
+    assert.equal(run(f, { FAKE_FAIL: 'phpstan' }).status, 1);
+  });
+
+  it('exits 2 without vendor/', () => {
+    const f = fixture({ vendor: false });
+    const result = run(f);
+    assert.equal(result.status, 2);
+    assert.match(result.out, /vendor\//);
+  });
+
+  it('exits 2 when git fetch fails', () => {
+    const f = fixture();
+    fs.rmSync(f.origin, { recursive: true });
+    const result = run(f);
+    assert.equal(result.status, 2);
+    assert.match(result.out, /git fetch/);
+  });
+
+  it('exits 2 when phpstan is configured but missing', () => {
+    const f = fixture({ phpstan: true });
+    fs.rmSync(path.join(f.repo, 'vendor/bin/phpstan'));
+    assert.equal(run(f).status, 2);
+  });
+
+  it('prefers composer scripts over direct tools', () => {
+    const f = fixture({ phpstan: true, scripts: { lint: 'x', analyse: 'x', test: 'x' } });
+    const result = run(f);
+    assert.equal(result.status, 0, result.out);
+    const names = calls(f).map((c) => c.join(' '));
+    assert.ok(names.includes('composer run-script lint'));
+    assert.ok(names.includes('composer run-script analyse'));
+    assert.ok(names.includes('composer run-script test'));
+    assert.ok(!names.some((n) => n.startsWith('pint') || n.startsWith('phpstan') || n === 'php artisan test'));
+    assert.equal(run(f, { FAKE_FAIL: 'test' }).status, 1);
+  });
+});

@@ -1,5 +1,6 @@
 # Squash-merges a pull request from Symphony's agent branches (symphony/*) once the CI workflow has passed for its
-# latest commit. The merge closes the issue ("Closes #N"), so Symphony starts the issues that depend on it.
+# latest commit, then closes the issues it names with "Closes #N": GitHub does not do that when the Actions token
+# merges. Symphony then starts the issues that depend on them.
 #
 # This workflow always runs in the version on main (workflow_run), so a pull request cannot change the rules for
 # its own merge. A pull request stays open for a human when
@@ -29,7 +30,7 @@ jobs:
     permissions:
       contents: write # merge and delete the head branch
       pull-requests: write
-      issues: read # labels of the issues the pull request closes
+      issues: write # read their labels, close them after the merge
     steps:
       - name: Merge unless a human has to look
         env:
@@ -53,7 +54,9 @@ jobs:
                     number title isDraft headRefOid baseRefName
                     headRepository { nameWithOwner }
                     labels(first: 50) { nodes { name } }
-                    closingIssuesReferences(first: 20) { nodes { number labels(first: 50) { nodes { name } } } }
+                    closingIssuesReferences(first: 20) {
+                      nodes { number repository { nameWithOwner } labels(first: 50) { nodes { name } } }
+                    }
                     files(first: 100) { totalCount nodes { path } }
                   }
                 }
@@ -70,15 +73,17 @@ jobs:
                 | ([.files.nodes[].path
                     | select(startswith(".github/") or . == "package.json" or . == "package-lock.json")]
                    | join(", ")) as $guarded
-                | {number, title, issues: $issues, reasons: [
-                    (select(.headRefOid != $sha) | "it has a newer commit than the one CI checked"),
-                    (select(.isDraft) | "it is a draft"),
-                    (select($issues == "") | "it closes no issue (Closes #N)"),
-                    (select(labelled) | "it has the label \($label)"),
-                    (.closingIssuesReferences.nodes[] | select(labelled) | "issue #\(.number) has the label \($label)"),
-                    (select($guarded != "") | "it changes \($guarded)"),
-                    (select(.files.totalCount > 100) | "it changes more than 100 files")
-                  ]}
+                | {number, title,
+                   close: [.closingIssuesReferences.nodes[] | select(.repository.nameWithOwner == $repo) | .number],
+                   reasons: [
+                     (select(.headRefOid != $sha) | "it has a newer commit than the one CI checked"),
+                     (select(.isDraft) | "it is a draft"),
+                     (select($issues == "") | "it closes no issue (Closes #N)"),
+                     (select(labelled) | "it has the label \($label)"),
+                     (.closingIssuesReferences.nodes[] | select(labelled) | "issue #\(.number) has the label \($label)"),
+                     (select($guarded != "") | "it changes \($guarded)"),
+                     (select(.files.totalCount > 100) | "it changes more than 100 files")
+                   ]}
               end' <<< "$data")"
 
           number="$(jq -r '.number // empty' <<< "$result")"
@@ -91,9 +96,23 @@ jobs:
           # Squash-merge exactly the commit CI checked. GitHub refuses when the branch has moved on or conflicts
           # with main; the failed run then leaves the pull request to a human.
           title="$(jq -r .title <<< "$result")"
-          issues="$(jq -r .issues <<< "$result")"
           gh api -X PUT "repos/$REPO/pulls/$number/merge" \
             -f merge_method=squash -f sha="$HEAD_SHA" -f commit_title="$title (#$number)" > /dev/null
-          note "Merged pull request #$number; closes $issues."
+
+          # A merge by the Actions token does not trigger "Closes #N", so close the issues here.
+          closed=""
+          failed=""
+          for issue in $(jq -r '.close[]' <<< "$result"); do
+            if gh api -X PATCH "repos/$REPO/issues/$issue" -f state=closed -f state_reason=completed > /dev/null; then
+              closed="$closed #$issue"
+            else
+              failed="$failed #$issue"
+            fi
+          done
+          note "Merged pull request #$number; closed:${closed:- nothing}."
           # The repository may already delete head branches on merge.
           gh api -X DELETE "repos/$REPO/git/refs/heads/$HEAD_REF" > /dev/null 2>&1 || echo "Branch $HEAD_REF was already deleted."
+          if [ -n "$failed" ]; then
+            echo "::error::Merged pull request #$number but could not close:$failed. Close by hand."
+            exit 1
+          fi

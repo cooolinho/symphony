@@ -323,7 +323,7 @@ Issue das Modell aus dem Label:
   nächsten Session, also der nächsten Fortsetzung oder Wiederholung. Ein pausiertes Issue läuft nach einer
   Label-Änderung weiter, gleich mit dem neuen Modell. So versuchst du ein festgefahrenes Issue z. B. mit `Model: opus`
   erneut.
-- Kontrolle: `npm run dry-run` zeigt pro Issue `↳ model … (label "…")`. Beim Start steht das Modell in der Logzeile
+- Kontrolle: `npm run dry-run` zeigt pro Issue `↳ role …, model …` (ohne Rollen `default`) und bei einem Label `↳ model … (label "…")`. Beim Start steht das Modell in der Logzeile
   `dispatching issue` (`model=…`, bei einem Label auch `model_label=…`) und im Log des Repositorys bei `run_started`.
   Das Dashboard zeigt in der Spalte *Model* das Modell, das Claude Code tatsächlich nutzt.
 - Im Prompt fehlen die Model-Labels in der Label-Liste des Agenten. Für seine Arbeit spielen sie keine Rolle.
@@ -378,7 +378,7 @@ Optionen und Prüfungen beschreibt [docs/e2e.md](docs/e2e.md).
 ### Dashboard und API
 
 Das Dashboard läuft nur, wenn `SYMPHONY_PORT` gesetzt ist oder du `npm start -- --port 4000` aufrufst. Es lauscht nur
-auf `127.0.0.1`. Es zeigt laufende Agenten mit Spalte, Phase, Modell, Turns, letzter Aktivität, Tokens und geschätzten
+auf `127.0.0.1`. Es zeigt laufende Agenten mit Spalte, Rolle, Phase, Modell, Turns, letzter Aktivität, Tokens und geschätzten
 Kosten, außerdem die Wiederholungs-Warteschlange und Probleme wie Konfigurations- oder GitHub-Fehler. Der Button
 **Logs** im Header öffnet die [Logs-Seite](#logs-und-statistiken).
 
@@ -388,8 +388,8 @@ Kosten, außerdem die Wiederholungs-Warteschlange und Probleme wie Konfiguration
 | `GET /logs` | Logs-Seite mit Statistiken, gesamt oder mit `?repo=owner/name` für ein Repository |
 | `GET /api/v1/history` | dieselben Statistiken als JSON, optional mit `?repo=owner/name` |
 | `GET /api/v1/history/raw?repo=owner/name` | die `.log`-Datei eines Repositorys als Text |
-| `GET /api/v1/state` | Gesamtzustand als JSON: laufende Agenten, Warteschlange, Summen, Gesundheit |
-| `GET /api/v1/<identifier>` | Details zu einem Issue: Workspace, Versuche, letzte Ereignisse, letzter Fehler |
+| `GET /api/v1/state` | Gesamtzustand als JSON: laufende Agenten (mit `role`), Warteschlange, Summen, Gesundheit |
+| `GET /api/v1/<identifier>` | Details zu einem Issue: Rolle, Workspace, Versuche, letzte Ereignisse, letzter Fehler |
 | `POST /api/v1/refresh` | sofort abfragen und abgleichen |
 
 ```bash
@@ -478,6 +478,14 @@ alle Modelle ein eingebauter Standard von 5 $ / 25 $. Claude Codes eigene Schät
   Die Instanzen teilen sich `~/symphony-workspaces`. Ihre Ordnernamen kollidieren nicht, weil sie das Repository
   enthalten.
 
+- **Eine Instanz pro Board:** Zwei Instanzen auf demselben Board würden dasselbe Issue im selben Ordner bearbeiten
+  (parallele Git-Befehle, `composer install`, zwei Agenten auf einem Branch). Deshalb legt Symphony vor jedem Lauf
+  die Datei `~/symphony-workspaces/<Ordnername>.lock` an, neben dem Klon, sodass `git status` sauber bleibt. Hält eine
+  andere Instanz das Lock (laufender Prozess oder anderer Rechner), startet Symphony weder Hooks noch Agent, warnt im
+  Log mit pid und Host des Halters und versucht es im nächsten Poll erneut. Das Lock eines beendeten Prozesses auf
+  demselben Rechner übernimmt Symphony selbst. Beim Löschen des Workspaces verschwindet auch das Lock. Über mehrere
+  Rechner hinweg gibt es nur diese Sperre, keine verteilte Abstimmung.
+
 ### Konfiguration anpassen
 
 Die häufigsten Stellschrauben in der `WORKFLOW.md`. Alle Optionen beschreibt
@@ -537,6 +545,17 @@ einen **MCP-Server** mit Doku-Suche, Datenbankschema, Logs und Fehlern. Symphony
    setzt es zurück. So landet nichts davon im Pull Request.
 4. Die Session bekommt den MCP-Server `laravel-boost`, die Boost-Skills und Boosts Guidelines im System-Prompt.
 5. Neu erzeugt wird nur, wenn sich `composer.lock`, `.ai/` oder die Boost-Version ändern.
+
+Damit Artisan und Boost nie eine fremde Datenbank erreichen, legt `hooks/laravel-env.sh` im `after_create`-Hook für jede
+Laravel-App eine eigene `.env` mit eigener SQLite-Datenbank an (`database/symphony.sqlite`, `CACHE_STORE=file`,
+`BOOST_BROWSER_LOGS_WATCHER=false` u. a.). Eine vorhandene `.env` bleibt unangetastet, `.env` und die Datenbank landen in
+`.git/info/exclude`, falls die App sie nicht selbst ignoriert:
+
+```yaml
+after_create: |
+  git clone --quiet "git@github.com:${SYMPHONY_ISSUE_REPOSITORY}.git" .
+  bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-env.sh"
+```
 
 Fehlt Boost in einem Laravel-Repository, legt `npm run repo-init` → *Laravel Boost* ein Issue an, das Boost per Pull
 Request einführt. Klappt etwas nicht (kein PHP, `composer install` scheitert), läuft die Session ohne Boost weiter.
@@ -671,9 +690,11 @@ npm run e2e         # End-to-End-Test auf dem Test-Board (legt echte Issues an)
 
 Die CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) führt `npm run check` mit Node 26 für jeden Pull Request
 und jeden Push auf `main` aus. Ist sie für einen Pull Request der Symphony-Agenten (Branch `symphony/*`) grün, mergt
-[.github/workflows/automerge.yml](.github/workflows/automerge.yml) ihn per Squash und löscht den Branch. Das schließt
-das Issue (`Closes #…`), und Symphony startet die Issues, die davon abhängen. Der Auto-Merge läuft immer in der
-Fassung von `main`: Ein Pull Request kann die Regeln für seinen eigenen Merge nicht ändern.
+[.github/workflows/automerge.yml](.github/workflows/automerge.yml) ihn per Squash, schließt die Issues, die er mit
+`Closes #…` nennt, und löscht den Branch. Symphony startet dann die Issues, die davon abhängen. Das Schließen
+übernimmt der Workflow selbst, weil GitHub `Closes #…` bei Merges durch den Actions-Token nicht auswertet; mergst du
+selbst, schließt GitHub die Issues wie gewohnt. Der Auto-Merge läuft immer in der Fassung von `main`: Ein Pull
+Request kann die Regeln für seinen eigenen Merge nicht ändern.
 
 Ein Pull Request bleibt für dich offen, wenn
 

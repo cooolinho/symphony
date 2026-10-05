@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -31,17 +32,19 @@ interface Setup {
   workflow: StaticWorkflow;
 }
 
-function setup(options: { issues?: ReturnType<typeof makeIssue>[]; front?: Record<string, unknown>; runner?: FakeRunner } = {}): Setup {
+function setup(
+  options: { issues?: ReturnType<typeof makeIssue>[]; front?: Record<string, unknown>; runner?: FakeRunner; prompt?: string; logger?: Logger } = {},
+): Setup {
   const root = tempDir();
   const tracker = new FakeTracker(options.issues ?? []);
   const runner = options.runner ?? new FakeRunner();
   const timers = new ManualTimers();
   const clock = new ManualClock();
-  const workflow = new StaticWorkflow(makeWorkflow(baseFront(root, options.front)));
+  const workflow = new StaticWorkflow(makeWorkflow(baseFront(root, options.front), options.prompt !== undefined ? { prompt: options.prompt } : {}));
   const orchestrator = new Orchestrator({
     workflow,
     runner,
-    logger: Logger.silent(),
+    logger: options.logger ?? Logger.silent(),
     env: {},
     logDir: null,
     clock,
@@ -126,6 +129,92 @@ describe('dispatch ordering and eligibility', () => {
   });
 });
 
+describe('roles', () => {
+  const rolesFront = {
+    tracker: {
+      kind: 'github_project',
+      provider: { owner: 'acme', project_number: 1, token: 'test-token' },
+      active_states: ['Todo', 'Agent review'],
+    },
+    agent: { max_turns: 3, max_continuations: 5 },
+    claude: { model: 'sonnet', allowed_tools: ['Read'] },
+    roles: {
+      developer: { states: ['Todo'] },
+      reviewer: {
+        states: ['Agent review'],
+        read_only: true,
+        max_turns: 6,
+        claude: { model: 'opus', allowed_tools: ['Grep'], append_system_prompt: 'Review only.' },
+      },
+    },
+  };
+  const rolePrompt = 'Act as {{ role }} on {{ issue.identifier }}';
+
+  it('runs a role with its model, read-only policy, overrides and turn limit', async () => {
+    const s = setup({ front: rolesFront, prompt: rolePrompt, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'continuation retry');
+    const session = s.runner.sessions[0];
+    assert.equal(session?.params.config.model, 'opus');
+    assert.equal(session?.params.policy?.readOnly, true);
+    assert.deepEqual(session?.params.config.allowedTools, ['Read', 'Grep']);
+    assert.equal(session?.params.config.appendSystemPrompt, 'Review only.');
+    assert.equal(session?.turns.length, 6);
+    assert.equal(session?.turns[0], 'Act as reviewer on acme/app#r');
+  });
+
+  it('lets a "Model:" label override the role model', async () => {
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    const s = setup({
+      runner,
+      front: rolesFront,
+      prompt: rolePrompt,
+      issues: [makeIssue({ id: 'r', state: 'Agent review', labels: ['model: sonnet'] }), makeIssue({ id: 'd' })],
+    });
+    await s.orchestrator.tickNow();
+    await until(() => runner.sessions.length === 2, 3_000, 'two sessions');
+    const byId = Object.fromEntries(runner.sessions.map((session) => [session.params.issue.id, session]));
+    assert.equal(byId.r?.params.config.model, 'sonnet');
+    assert.equal(byId.r?.params.policy?.readOnly, true);
+    assert.equal(byId.d?.params.config.model, 'sonnet');
+    assert.equal(byId.d?.params.policy?.readOnly, false);
+    assert.deepEqual(byId.d?.params.config.allowedTools, ['Read']);
+    assert.equal(byId.d?.turns[0], 'Act as developer on acme/app#d');
+  });
+
+  it('shows the role of each run in the snapshot and the issue detail', async () => {
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    const s = setup({
+      runner,
+      front: rolesFront,
+      prompt: rolePrompt,
+      issues: [makeIssue({ id: 'r', state: 'Agent review' }), makeIssue({ id: 'd' })],
+    });
+    await s.orchestrator.tickNow();
+    await until(() => runner.sessions.length === 2, 3_000, 'two sessions');
+    const roles = Object.fromEntries(snapshot(s).running.map((row) => [row.issue_id, row.role]));
+    assert.deepEqual(roles, { r: 'reviewer', d: 'developer' });
+    const detail = s.orchestrator.issueDetail('acme/app#r');
+    assert.equal(detail?.role, 'reviewer');
+    assert.equal(detail?.running?.role, 'reviewer');
+  });
+
+  it('uses the implicit default role without roles and tags agent events with run_id and role', async () => {
+    const lines: string[] = [];
+    const logger = Logger.create({ sinks: [{ name: 'memory', write: (line) => lines.push(line) }], level: 'debug' });
+    const s = setup({ logger, prompt: rolePrompt, front: { agent: { max_turns: 2 } }, issues: [makeIssue({ id: 'a' })] });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'continuation retry');
+    const session = s.runner.sessions[0];
+    assert.equal(session?.turns[0], 'Act as default on acme/app#a');
+    assert.equal(session?.params.policy?.readOnly, false);
+    assert.equal(session?.turns.length, 2);
+    const event = lines.find((line) => line.includes('agent session_started'));
+    assert.match(event ?? '', /run_id=[0-9a-f]{12}/);
+    assert.match(event ?? '', /role=default/);
+  });
+});
+
 describe('worker lifecycle and retries', () => {
   it('runs turns while the issue stays active, then schedules a 1s continuation retry', async () => {
     const s = setup({ front: { agent: { max_turns: 3 } }, issues: [makeIssue({ id: 'a' })] });
@@ -174,7 +263,10 @@ describe('worker lifecycle and retries', () => {
   });
 
   it('requeues a retry when no slot is free', async () => {
-    const s = setup({ front: { agent: { max_concurrent_agents: 1 } }, issues: [makeIssue({ id: 'a', priority: 1 })] });
+    const s = setup({
+      front: { polling: { interval_ms: 7_000 }, agent: { max_concurrent_agents: 1 } },
+      issues: [makeIssue({ id: 'a', priority: 1 })],
+    });
     s.runner.script = (turn) => ({ ok: false, turnId: String(turn), code: 'turn_failed', message: 'boom' });
     await s.orchestrator.tickNow();
     await until(() => snapshot(s).retrying.length === 1, 3_000, 'retry');
@@ -186,7 +278,30 @@ describe('worker lifecycle and retries', () => {
     await until(() => snapshot(s).running.length === 1, 3_000, 'b running');
     s.timers.fire(10_000);
     await until(() => snapshot(s).retrying[0]?.error === 'no available orchestrator slots', 3_000, 'requeue');
-    assert.equal(snapshot(s).retrying[0]?.attempt, 2);
+    assert.equal(snapshot(s).retrying[0]?.attempt, 1);
+    assert.equal(snapshot(s).retrying[0]?.kind, 'failure');
+    assert.ok(s.timers.delays().includes(7_000));
+    assert.ok(!s.timers.delays().includes(20_000));
+  });
+
+  it('requeues a continuation with no free slot as a continuation after one poll interval', async () => {
+    const s = setup({
+      front: { polling: { interval_ms: 7_000 }, agent: { max_concurrent_agents: 1, max_turns: 1 } },
+      issues: [makeIssue({ id: 'a', priority: 1 })],
+    });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying[0]?.kind === 'continuation', 3_000, 'continuation retry');
+
+    s.runner.script = () => new Promise(() => undefined);
+    s.tracker.issues.set('b', makeIssue({ id: 'b', priority: 2 }));
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running.length === 1, 3_000, 'b running');
+    s.timers.fire(1_000);
+    await until(() => snapshot(s).retrying[0]?.error === 'no available orchestrator slots', 3_000, 'requeue');
+    const retry = snapshot(s).retrying[0];
+    assert.equal(retry?.kind, 'continuation');
+    assert.equal(retry?.attempt, 1);
+    assert.ok(s.timers.delays().includes(7_000));
   });
 
   it('releases the claim when a retried issue has disappeared', async () => {
@@ -387,6 +502,22 @@ describe('workspace cleanup after release', () => {
   });
 });
 
+describe('workspace lock', () => {
+  it('starts no hooks or session when another instance holds the workspace', async () => {
+    const s = setup({ issues: [makeIssue({ id: 'a' })] });
+    const root = fs.realpathSync(s.root);
+    fs.writeFileSync(
+      path.join(root, `${workspaceKey('acme/app#a')}.lock`),
+      JSON.stringify({ pid: process.pid, hostname: 'other-host', instance: 'foreign', acquiredAt: 'x' }),
+    );
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).counts.claimed === 0 && snapshot(s).counts.running === 0, 3_000, 'claim released');
+    assert.equal(s.runner.sessions.length, 0);
+    assert.ok(!fs.existsSync(path.join(root, workspaceKey('acme/app#a'))), 'no workspace created');
+    assert.equal(snapshot(s).retrying.length, 0);
+  });
+});
+
 describe('run history', () => {
   it('logs run start and finish with tokens, model and cost to the repository log', async () => {
     const dir = tempDir();
@@ -466,6 +597,69 @@ describe('run history', () => {
 
     const started = readHistory(history.dir, 'acme/app').entries.find((entry) => entry.event === 'run_started');
     assert.equal(started?.fields.model, 'claude-sonnet-5-5');
+    assert.equal(started?.fields.role, 'default');
     assert.equal(runner.sessions[0]?.params.config.model, 'claude-sonnet-5-5');
+  });
+
+  describe('final commit and MCP tool usage', () => {
+    const toolUse = (params: { onEvent: (event: never) => void }, tool: string) =>
+      (params.onEvent as (event: unknown) => void)({
+        event: 'tool_use', timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: 1, message: `${tool}: x`, detail: { tool },
+      });
+
+    async function run(initGit: boolean) {
+      const dir = tempDir();
+      fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
+      const pricing = new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent());
+      const history = new HistoryLog(path.join(dir, 'repositories'), pricing, Logger.silent());
+      const tracker = new FakeTracker([makeIssue({ id: 'a' })]);
+      tracker.issueRepository = () => 'acme/app';
+      const runner = new FakeRunner((turn, params) => {
+        if (initGit) {
+          const git = (...args: string[]) =>
+            execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=T', ...args], { cwd: params.cwd, encoding: 'utf8' });
+          git('init', '-q', '-b', 'feature');
+          git('commit', '-q', '--allow-empty', '-m', 'init');
+        }
+        toolUse(params, 'mcp__laravel-boost__database-schema');
+        toolUse(params, 'mcp__laravel-boost__database-schema');
+        toolUse(params, 'Bash');
+        toolUse(params, 'Edit');
+        tracker.set('a', { state: 'In review' });
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      });
+      const orchestrator = new Orchestrator({
+        workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir()))),
+        runner,
+        logger: Logger.silent(),
+        env: {},
+        logDir: null,
+        timers: new ManualTimers(),
+        createAdapter: () => tracker,
+        pricing,
+        history,
+      });
+      await orchestrator.tickNow();
+      await until(() => orchestrator.snapshot().retrying.length === 1, 3_000, 'run finished');
+      const finished = readHistory(history.dir, 'acme/app').entries.find((e) => e.event === 'run_finished');
+      return { fields: finished?.fields ?? {}, orchestrator, cwd: runner.sessions[0]?.params.cwd ?? '' };
+    }
+
+    it('records head_sha, branch and counts only MCP tools for a git workspace', async () => {
+      const { fields, orchestrator, cwd } = await run(true);
+      const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }).trim();
+      assert.equal(fields.head_sha, sha);
+      assert.equal(fields.branch, 'feature');
+      assert.equal(fields.mcp_tool_calls, 'laravel-boost:2');
+      const detail = orchestrator.issueDetail('a') as { run_trace: { head_sha: string; branch: string; mcp_tool_calls: Record<string, number> } };
+      assert.deepEqual(detail.run_trace, { head_sha: sha, branch: 'feature', mcp_tool_calls: { 'laravel-boost': 2 } });
+    });
+
+    it('omits head_sha and branch for a non-git workspace', async () => {
+      const { fields } = await run(false);
+      assert.equal('head_sha' in fields, false);
+      assert.equal('branch' in fields, false);
+      assert.equal(fields.mcp_tool_calls, 'laravel-boost:2');
+    });
   });
 });

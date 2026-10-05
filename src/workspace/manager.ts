@@ -6,6 +6,7 @@ import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { isStrictlyInside } from '../util/paths.ts';
 import { tail } from '../util/text.ts';
 import type { HooksConfig } from '../workflow/config.ts';
+import { acquireLock, type LockResult } from './lock.ts';
 import { runShellScript, type HookName, type HookResult } from './hooks.ts';
 
 export interface Workspace {
@@ -71,6 +72,12 @@ export class WorkspaceManager {
       throw new SymphonyError('invalid_workspace_path', `workspace path ${workspacePath} escapes the workspace root ${root}`);
     }
     return { root, key, path: workspacePath };
+  }
+
+  /** Takes the cross-instance lock `<root>/<key>.lock`, which lives outside the clone. */
+  async lock(identifier: string): Promise<LockResult> {
+    const target = await this.pathFor(identifier);
+    return acquireLock(`${target.path}.lock`);
   }
 
   /** Creates or reuses the issue workspace; runs after_create only when the directory is new. */
@@ -173,6 +180,7 @@ export class WorkspaceManager {
   /** Runs before_remove (failures ignored) and deletes the workspace if it exists. */
   async remove(issue: HookIssue): Promise<boolean> {
     const target = await this.pathFor(issue.identifier);
+    await fs.rm(`${target.path}.lock`, { force: true });
     let stat;
     try {
       stat = await fs.lstat(target.path);
