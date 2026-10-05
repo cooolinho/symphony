@@ -27,6 +27,7 @@ import {
   isActiveState,
   isRoutable,
   isTerminalState,
+  sessionLimitWaitMs,
   sortForDispatch,
   stateLimit,
 } from './eligibility.ts';
@@ -162,7 +163,7 @@ interface SessionLimitState {
   hits: number;
   /** agent.max_session_limit_retries when this entry was scheduled. */
   maxRetries: number;
-  /** Waiting for the reset instead of retrying (not yet: always false). */
+  /** Retries used up: the entry waits for the reset (`due_at` = reset + SESSION_LIMIT_RESET_BUFFER_MS). */
   waiting: boolean;
   overageDisabledReason: string | null;
   /** When the failure was observed. */
@@ -898,9 +899,11 @@ export class Orchestrator {
         const hits = ++record.sessionLimitHits;
         const config = this.#deps.workflow.current.config;
         const maxRetries = config.agent.maxSessionLimitRetries;
+        // An invalid reset time counts as unknown (and would break toISOString()).
+        const resetsAtDate = sessionLimit.resetsAt !== null && Number.isFinite(sessionLimit.resetsAt.getTime()) ? sessionLimit.resetsAt : null;
         const limit: SessionLimitState = {
           window: sessionLimit.window,
-          resetsAt: sessionLimit.resetsAt,
+          resetsAt: resetsAtDate,
           source: sessionLimit.source,
           text: sessionLimit.text,
           hits,
@@ -909,9 +912,47 @@ export class Orchestrator {
           overageDisabledReason: sessionLimit.overageDisabledReason,
           observedAt: this.#clock.now(),
         };
-        // Within the cap the backoff follows the session-limit count; beyond it (until the wait for the reset
-        // exists) the usual attempt-based backoff applies.
-        const delayMs = failureBackoffMs(hits <= maxRetries ? hits : nextAttempt, config.agent.maxRetryBackoffMs);
+        // Within the cap the backoff follows the session-limit count; beyond it the retry waits for the reset,
+        // or, without a usable reset time, the usual attempt-based backoff applies.
+        const now = this.#clock.now();
+        const waitMs = hits > maxRetries ? sessionLimitWaitMs(resetsAtDate, now) : null;
+        let delayMs: number;
+        if (waitMs !== null) {
+          limit.waiting = true;
+          delayMs = waitMs;
+          const retryAt = new Date(now.getTime() + waitMs).toISOString();
+          const resetsAt = resetsAtDate?.toISOString() ?? null;
+          log.warn('session limit: retries used up; waiting for the reset', { window: sessionLimit.window, resets_at: resetsAt, retry_at: retryAt, hits });
+          this.#trace(record, {
+            kind: 'lifecycle',
+            event: 'session_limit_wait',
+            level: 'warn',
+            message: `session limit: retries used up; waiting for the reset until ${retryAt}`,
+            run: entry.runId,
+            turn: null,
+            detail: { window: sessionLimit.window, resets_at: resetsAt, retry_at: retryAt, source: sessionLimit.source, hits, max_retries: maxRetries },
+          });
+          this.#deps.history?.note(entry.repo, 'session_limit_wait', {
+            issue: entry.identifier,
+            title: entry.issue.title,
+            state: entry.issue.state,
+            window: sessionLimit.window,
+            resets_at: resetsAt,
+            retry_at: retryAt,
+            hits,
+            max_retries: maxRetries,
+            source: sessionLimit.source,
+          });
+        } else {
+          if (hits > maxRetries) {
+            log.warn('session limit: reset time unknown; retrying with backoff', {
+              window: sessionLimit.window,
+              resets_at: resetsAtDate?.toISOString() ?? null,
+              hits,
+            });
+          }
+          delayMs = failureBackoffMs(hits <= maxRetries ? hits : nextAttempt, config.agent.maxRetryBackoffMs);
+        }
         this.#scheduleRetry(entry.issueId, nextAttempt, { ...retryInfo, kind: 'session_limit', error: `worker exited: ${error}`, limit }, delayMs);
       } else {
         this.#scheduleRetry(entry.issueId, nextAttempt, { ...retryInfo, kind: 'failure', error: `worker exited: ${error}` });
@@ -1039,7 +1080,9 @@ export class Orchestrator {
         message:
           info.kind === 'continuation'
             ? `continuation in ${Math.round(delay / 1000)}s`
-            : info.kind === 'session_limit' && info.limit !== null
+            : info.kind === 'session_limit' && info.limit?.waiting
+              ? `session limit: waiting for the reset, retry in ${Math.round(delay / 1000)}s`
+              : info.kind === 'session_limit' && info.limit !== null
               ? `session limit: retry ${info.limit.hits} of ${info.limit.maxRetries} in ${Math.round(delay / 1000)}s`
               : `retry ${attempt} in ${Math.round(delay / 1000)}s: ${info.error ?? 'unknown error'}`,
         run: null,
@@ -1080,13 +1123,15 @@ export class Orchestrator {
       return;
     }
     // A session-limit retry keeps its kind and limit; any other kind is requeued as a failure, as before.
+    // A woken waiting entry is past its reset: it now waits for a short backoff, not for the reset again.
+    const limit = retry.limit?.waiting ? { ...retry.limit, waiting: false } : retry.limit;
     const requeue = (error: string) =>
       this.#scheduleRetry(issueId, retry.attempt + 1, {
         identifier: retry.identifier,
         url: retry.url,
         kind: retry.kind === 'session_limit' ? 'session_limit' : 'failure',
         error,
-        limit: retry.limit,
+        limit,
       });
 
     const workflow = this.#deps.workflow.current;
@@ -1120,9 +1165,9 @@ export class Orchestrator {
       return;
     }
     const continuations = this.#records.get(issueId)?.continuations ?? 0;
-    const limit = config.agent.maxContinuations;
-    if (retry.kind === 'continuation' && limit !== null && continuations >= limit) {
-      this.#pause(issue, continuations, limit);
+    const maxContinuations = config.agent.maxContinuations;
+    if (retry.kind === 'continuation' && maxContinuations !== null && continuations >= maxContinuations) {
+      this.#pause(issue, continuations, maxContinuations);
       return;
     }
     await this.#loadStatusOptions(workflow);
@@ -1136,7 +1181,7 @@ export class Orchestrator {
       this.#scheduleRetry(
         issueId,
         retry.attempt,
-        { identifier: retry.identifier, url: retry.url, kind: retry.kind, error: 'no available orchestrator slots', limit: retry.limit },
+        { identifier: retry.identifier, url: retry.url, kind: retry.kind, error: 'no available orchestrator slots', limit },
         config.polling.intervalMs,
       );
       return;

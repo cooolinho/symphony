@@ -10,6 +10,22 @@ export function failureBackoffMs(attempt: number, maxBackoffMs: number): number 
   return Math.min(FAILURE_BASE_DELAY_MS * 2 ** exponent, maxBackoffMs);
 }
 
+/** Margin after a session limit's reset before the waiting retry runs. */
+export const SESSION_LIMIT_RESET_BUFFER_MS = 60_000;
+/** Reset times further ahead than this are not trusted (the longest window is weekly). */
+export const SESSION_LIMIT_MAX_WAIT_MS = 8 * 24 * 3600 * 1000;
+
+/**
+ * Delay until a session limit has reset, plus SESSION_LIMIT_RESET_BUFFER_MS; a reset in the past waits the buffer
+ * only. Null when the reset time is unknown, invalid or more than SESSION_LIMIT_MAX_WAIT_MS ahead.
+ */
+export function sessionLimitWaitMs(resetsAt: Date | null, now: Date): number | null {
+  if (resetsAt === null) return null;
+  const ahead = resetsAt.getTime() - now.getTime();
+  if (!Number.isFinite(ahead) || ahead > SESSION_LIMIT_MAX_WAIT_MS) return null;
+  return Math.max(ahead, 0) + SESSION_LIMIT_RESET_BUFFER_MS;
+}
+
 export function isTerminalState(state: string, tracker: Pick<TrackerConfig, 'terminalStates'>): boolean {
   const normalized = normalizeStateName(state);
   return tracker.terminalStates.some((s) => normalizeStateName(s) === normalized);

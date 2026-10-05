@@ -7,7 +7,7 @@ import { PricingStore } from '../src/costs/pricing.ts';
 import { HistoryLog, readHistory } from '../src/history/history.ts';
 import type { WorkspaceIntegration } from '../src/integrations/types.ts';
 import { Logger } from '../src/log.ts';
-import { failureBackoffMs, sortForDispatch } from '../src/orchestrator/eligibility.ts';
+import { SESSION_LIMIT_MAX_WAIT_MS, failureBackoffMs, sessionLimitWaitMs, sortForDispatch } from '../src/orchestrator/eligibility.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import type { ToolResult } from '../src/tracker/types.ts';
 import { workspaceKey } from '../src/workspace/manager.ts';
@@ -90,6 +90,18 @@ describe('dispatch ordering and eligibility', () => {
     assert.deepEqual([1, 2, 3, 4].map((a) => failureBackoffMs(a, 300_000)), [10_000, 20_000, 40_000, 80_000]);
     assert.equal(failureBackoffMs(10, 300_000), 300_000);
     assert.equal(failureBackoffMs(3, 15_000), 15_000);
+  });
+
+  it('computes the wait for a session limit reset plus a 60s buffer', () => {
+    const now = new Date('2026-10-03T12:00:00Z');
+    const at = (ms: number) => new Date(now.getTime() + ms);
+    assert.equal(sessionLimitWaitMs(at(2 * 3600_000), now), 2 * 3600_000 + 60_000);
+    assert.equal(sessionLimitWaitMs(at(-3600_000), now), 60_000);
+    assert.equal(sessionLimitWaitMs(now, now), 60_000);
+    assert.equal(sessionLimitWaitMs(at(SESSION_LIMIT_MAX_WAIT_MS), now), SESSION_LIMIT_MAX_WAIT_MS + 60_000);
+    assert.equal(sessionLimitWaitMs(at(SESSION_LIMIT_MAX_WAIT_MS + 1), now), null);
+    assert.equal(sessionLimitWaitMs(null, now), null);
+    assert.equal(sessionLimitWaitMs(new Date('nope'), now), null);
   });
 
   it('dispatches in priority order up to the concurrency limit, skipping ineligible issues', async () => {
@@ -607,8 +619,8 @@ describe('session limit retries', () => {
   type Mode = 'limit' | 'fail' | 'ok' | 'hang';
 
   /** A runner whose next sessions fail with a session limit, fail otherwise, end normally or hang until stopped. */
-  function limitSetup(options: { front?: Record<string, unknown>; history?: HistoryLog } = {}) {
-    const state: { mode: Mode } = { mode: 'limit' };
+  function limitSetup(options: { front?: Record<string, unknown>; history?: HistoryLog; logger?: Logger } = {}) {
+    const state: { mode: Mode; resetsAt: Date | null } = { mode: 'limit', resetsAt: RESETS_AT };
     const runner = new FakeRunner((turn, params) => {
       if (state.mode === 'limit') {
         return {
@@ -616,7 +628,7 @@ describe('session limit retries', () => {
           turnId: String(turn),
           code: 'session_limit',
           message: `turn ended with an error: ${TEXT}`,
-          sessionLimit: { window: 'five_hour', resetsAt: RESETS_AT, source: 'event', text: TEXT, overageDisabledReason: null },
+          sessionLimit: { window: 'five_hour', resetsAt: state.resetsAt, source: 'event', text: TEXT, overageDisabledReason: null },
         };
       }
       if (state.mode === 'fail') return { ok: false, turnId: String(turn), code: 'turn_failed', message: 'boom' };
@@ -637,8 +649,10 @@ describe('session limit retries', () => {
     await until(() => s.runner.sessions.length === sessions + 1 && snapshot(s).retrying.length === 1, 3_000, 'next retry');
   }
 
-  it('retries a session limit up to max_session_limit_retries times with the failure backoff, then as before', async () => {
-    const { s } = limitSetup();
+  it('retries a session limit up to max_session_limit_retries times with the failure backoff, then waits for the reset', async () => {
+    const { s, state } = limitSetup();
+    const resetsAt = new Date(s.clock.now().getTime() + 2 * 3600_000);
+    state.resetsAt = resetsAt;
     await s.orchestrator.tickNow();
     await until(() => snapshot(s).retrying.length === 1, 3_000, 'first retry');
     for (const [hits, delay] of [[1, 10_000], [2, 20_000], [3, 40_000]] as const) {
@@ -647,43 +661,83 @@ describe('session limit retries', () => {
       assert.equal(row?.attempt, hits);
       assert.equal(row?.limit?.hits, hits);
       assert.equal(row?.limit?.max_retries, 3);
+      assert.equal(row?.limit?.waiting, false);
       assert.deepEqual(s.timers.delays(), [delay]);
       await fireRetry(s, delay);
     }
-    // The fourth failure is beyond the cap: still a session_limit retry, with today's capped exponential backoff.
+    // The fourth failure is beyond the cap: the retry waits until the reset plus 60s.
+    const wait = 2 * 3600_000 + 60_000;
     const row = retry(s);
     assert.equal(row?.kind, 'session_limit');
     assert.equal(row?.attempt, 4);
-    assert.equal(row?.limit?.hits, 4);
-    assert.equal(row?.limit?.waiting, false);
-    assert.deepEqual(s.timers.delays(), [failureBackoffMs(4, 300_000)]);
+    assert.deepEqual(s.timers.delays(), [wait]);
+    assert.equal(row?.due_at, new Date(resetsAt.getTime() + 60_000).toISOString());
     assert.deepEqual(row?.limit, {
       window: 'five_hour',
-      resets_at: RESETS_AT.toISOString(),
+      resets_at: resetsAt.toISOString(),
       source: 'event',
       text: TEXT,
       hits: 4,
       max_retries: 3,
-      waiting: false,
+      waiting: true,
       overage_disabled_reason: null,
       observed_at: s.clock.now().toISOString(),
     });
     assert.match(row?.error ?? '', /^worker exited: session_limit: turn ended with an error: You've hit your session limit/);
 
+    // Polling does not start a session while the entry waits.
+    await s.orchestrator.tickNow();
+    await s.orchestrator.tickNow();
+    assert.equal(s.runner.sessions.length, 4);
+    assert.equal(snapshot(s).running.length, 0);
+
     const detail = s.orchestrator.issueDetail('acme/app#a');
     assert.match(detail?.last_error ?? '', /^session_limit: /);
     assert.equal(detail?.retry?.limit?.hits, 4);
-    const scheduled = s.orchestrator.issueTimeline('acme/app#a')?.events.filter((event) => event.event === 'retry_scheduled') ?? [];
+    const events = s.orchestrator.issueTimeline('acme/app#a')?.events ?? [];
+    const scheduled = events.filter((event) => event.event === 'retry_scheduled');
     assert.deepEqual(
       scheduled.map((event) => [event.level, event.message]),
       [
         ['warn', 'session limit: retry 1 of 3 in 10s'],
         ['warn', 'session limit: retry 2 of 3 in 20s'],
         ['warn', 'session limit: retry 3 of 3 in 40s'],
-        ['warn', 'session limit: retry 4 of 3 in 80s'],
+        ['warn', 'session limit: waiting for the reset, retry in 7260s'],
       ],
     );
     assert.equal((scheduled[0]?.detail?.limit as { text?: string } | null)?.text, TEXT);
+    const waitEvent = events.find((event) => event.event === 'session_limit_wait');
+    assert.equal(waitEvent?.level, 'warn');
+    assert.deepEqual(waitEvent?.detail, {
+      window: 'five_hour',
+      resets_at: resetsAt.toISOString(),
+      retry_at: new Date(resetsAt.getTime() + 60_000).toISOString(),
+      source: 'event',
+      hits: 4,
+      max_retries: 3,
+    });
+
+    // After the wait the next session starts; it fails with the limit again and waits again at once.
+    const nextReset = new Date(resetsAt.getTime() + 5 * 3600_000);
+    state.resetsAt = nextReset;
+    s.clock.advance(wait);
+    await fireRetry(s, wait);
+    assert.equal(retry(s)?.limit?.hits, 5);
+    assert.equal(retry(s)?.limit?.waiting, true);
+    assert.equal(retry(s)?.limit?.resets_at, nextReset.toISOString());
+    assert.deepEqual(s.timers.delays(), [nextReset.getTime() - s.clock.now().getTime() + 60_000]);
+
+    // A successful run after the wait starts the count again.
+    state.mode = 'ok';
+    const secondWait = s.timers.delays()[0] ?? 0;
+    s.clock.advance(secondWait);
+    await fireRetry(s, secondWait);
+    assert.equal(retry(s)?.kind, 'continuation');
+    state.mode = 'limit';
+    await fireRetry(s, 1_000);
+    assert.equal(retry(s)?.limit?.hits, 1);
+    assert.equal(retry(s)?.limit?.waiting, false);
+    assert.deepEqual(s.timers.delays(), [10_000]);
   });
 
   it('honours agent.max_session_limit_retries: 1', async () => {
@@ -692,11 +746,103 @@ describe('session limit retries', () => {
     await until(() => snapshot(s).retrying.length === 1, 3_000, 'first retry');
     assert.equal(retry(s)?.limit?.max_retries, 1);
     await fireRetry(s, 10_000);
-    // Beyond the cap the attempt drives the backoff, as for any failure.
     assert.equal(retry(s)?.limit?.hits, 2);
+    assert.equal(retry(s)?.limit?.waiting, true);
+    assert.deepEqual(s.timers.delays(), [RESETS_AT.getTime() - s.clock.now().getTime() + 60_000]);
+  });
+
+  it('waits for the reset after the first failure with agent.max_session_limit_retries: 0', async () => {
+    const { s } = limitSetup({ front: { agent: { max_turns: 1, max_session_limit_retries: 0 } } });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'first retry');
+    assert.equal(retry(s)?.limit?.hits, 1);
+    assert.equal(retry(s)?.limit?.max_retries, 0);
+    assert.equal(retry(s)?.limit?.waiting, true);
+    assert.deepEqual(s.timers.delays(), [RESETS_AT.getTime() - s.clock.now().getTime() + 60_000]);
+  });
+
+  it('waits exactly 60s when the reset time is in the past', async () => {
+    const { s, state } = limitSetup({ front: { agent: { max_turns: 1, max_session_limit_retries: 0 } } });
+    state.resetsAt = new Date(s.clock.now().getTime() - 3600_000);
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'first retry');
+    assert.equal(retry(s)?.limit?.waiting, true);
+    assert.deepEqual(s.timers.delays(), [60_000]);
+  });
+
+  for (const [name, resetsAt] of [
+    ['unknown', () => null],
+    ['invalid', () => new Date('not a date')],
+    ['more than 8 days ahead', (now: Date) => new Date(now.getTime() + 9 * 24 * 3600_000)],
+  ] as const) {
+    it(`keeps the capped backoff when the reset time is ${name}`, async () => {
+      const lines: string[] = [];
+      const logger = Logger.create({ sinks: [{ name: 'memory', write: (line) => lines.push(line) }], level: 'info' });
+      const { s, state } = limitSetup({ front: { agent: { max_turns: 1, max_session_limit_retries: 1 } }, logger });
+      state.resetsAt = resetsAt(s.clock.now());
+      await s.orchestrator.tickNow();
+      await until(() => snapshot(s).retrying.length === 1, 3_000, 'first retry');
+      assert.ok(!lines.some((line) => line.includes('reset time unknown')));
+      await fireRetry(s, 10_000);
+      // Beyond the cap the attempt drives the backoff, as for any failure.
+      assert.equal(retry(s)?.limit?.hits, 2);
+      assert.equal(retry(s)?.limit?.waiting, false);
+      assert.deepEqual(s.timers.delays(), [failureBackoffMs(2, 300_000)]);
+      assert.ok(lines.some((line) => line.includes('level=warn') && line.includes('session limit: reset time unknown; retrying with backoff')));
+      assert.equal(s.orchestrator.issueTimeline('acme/app#a')?.events.some((event) => event.event === 'session_limit_wait'), false);
+    });
+  }
+
+  it('applies a changed max_session_limit_retries to the next failure only', async () => {
+    const { s } = limitSetup({ front: { agent: { max_turns: 1, max_session_limit_retries: 1 } } });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'first retry');
+    s.workflow.current = makeWorkflow(baseFront(s.root, { agent: { max_turns: 1, max_session_limit_retries: 3 } }));
+    assert.equal(retry(s)?.limit?.max_retries, 1);
+    await fireRetry(s, 10_000);
+    assert.equal(retry(s)?.limit?.hits, 2);
+    assert.equal(retry(s)?.limit?.max_retries, 3);
+    assert.equal(retry(s)?.limit?.waiting, false);
+    assert.deepEqual(s.timers.delays(), [20_000]);
+  });
+
+  it('turns a woken waiting entry into a short backoff when it is requeued', async () => {
+    const { s } = limitSetup({ front: { agent: { max_turns: 1, max_session_limit_retries: 0 } } });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'wait');
+    const wait = s.timers.delays()[0] ?? 0;
+    assert.equal(retry(s)?.limit?.waiting, true);
+
+    s.clock.advance(wait);
+    s.tracker.failNext = new Error('network down');
+    s.timers.fire(wait);
+    await until(() => /retry refresh failed/.test(retry(s)?.error ?? ''), 3_000, 'refresh requeue');
+    assert.equal(retry(s)?.kind, 'session_limit');
+    assert.equal(retry(s)?.limit?.waiting, false);
     assert.deepEqual(s.timers.delays(), [failureBackoffMs(2, 300_000)]);
   });
 
+  it('writes the session_limit_wait history note', async () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
+    const pricing = new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent());
+    const history = new HistoryLog(path.join(dir, 'repositories'), pricing, Logger.silent());
+    const { s } = limitSetup({ history, front: { agent: { max_turns: 1, max_session_limit_retries: 0 } } });
+    s.tracker.issueRepository = () => 'acme/app';
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'wait');
+
+    const note = readHistory(history.dir, 'acme/app').entries.find((entry) => entry.event === 'session_limit_wait')?.fields ?? {};
+    assert.equal(note.issue, 'acme/app#a');
+    assert.equal(note.state, 'Todo');
+    assert.equal(note.window, 'five_hour');
+    assert.equal(note.resets_at, RESETS_AT.toISOString());
+    assert.equal(note.retry_at, new Date(RESETS_AT.getTime() + 60_000).toISOString());
+    assert.equal(note.hits, '1');
+    assert.equal(note.max_retries, '0');
+    assert.equal(note.source, 'event');
+    assert.ok(note.title);
+  });
   it('starts the count again after a normal run and after another failure', async () => {
     const { s, state } = limitSetup();
     await s.orchestrator.tickNow();

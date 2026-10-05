@@ -310,6 +310,7 @@ ts=2026-10-04T09:17:00.000Z event=model_usage repo=cooolinho/trainingsstunden-po
 | `run_finished` | Ein Lauf endet. Erfasst werden das Ergebnis (`handed_off` = übergeben, `continuing` = noch aktiv, `failed`, `stopped`, `stalled`, `shutdown`) und die Spalte danach. Dazu kommen Turns, das meistgenutzte Modell, Tokens (Input, Output, Cache), geschätzte Kosten und Agentenzeit. Die Felder `repo_*` sind die laufenden Summen des Repositorys. |
 | `model_usage` | Tokens und Kosten eines Laufs pro Modell. Arbeitet Claude Code intern mit einem zweiten Modell, gibt es eine zweite Zeile. |
 | `issue_paused` | Ein Issue wurde nach seinen Fortsetzungs-Sessions pausiert. |
+| `session_limit_wait` | Die Session-Limit-Retries sind aufgebraucht: Der Worker wartet bis zum Reset des Limits (`retry_at` = Reset + 1 Minute) und macht dann weiter. |
 | `workspace_removed` | Der Workspace eines Issues in `Done` wurde gelöscht. |
 
 Die **Statistik-Seite** (`/logs`, Button *Logs* im Dashboard) wertet diese Dateien aus. Oben steht ein globaler
