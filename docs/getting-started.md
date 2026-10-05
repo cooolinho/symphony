@@ -87,6 +87,7 @@ GITHUB_TOKEN=ghp_…
 SYMPHONY_MAX_CONCURRENT_AGENTS=1
 SYMPHONY_MAX_TURNS=5
 SYMPHONY_MAX_CONTINUATIONS=6
+SYMPHONY_MAX_SESSION_LIMIT_RETRIES=3
 SYMPHONY_POLL_INTERVAL_MS=30000
 SYMPHONY_CLEANUP_TERMINAL=true
 ```
@@ -103,6 +104,7 @@ SYMPHONY_CLEANUP_TERMINAL=true
 | `SYMPHONY_MAX_CONCURRENT_AGENTS` | *optional:* Wie viele Agenten gleichzeitig laufen. Standard 2, `0` pausiert alle neuen Starts. |
 | `SYMPHONY_MAX_TURNS` | *optional:* Turns pro Session, bevor Symphony den Stand neu bewertet. Standard 10. |
 | `SYMPHONY_MAX_CONTINUATIONS` | *optional:* Wie viele weitere Sessions ein Issue bekommt, solange seine Karte aktiv bleibt. Jeder Wechsel zwischen Developer und Reviewer zählt mit. Danach **pausiert** Symphony das Issue, siehe [Fortsetzungen und Pausieren](usage.md#fortsetzungen-und-pausieren). Standard 6, leer heißt unbegrenzt. |
+| `SYMPHONY_MAX_SESSION_LIMIT_RETRIES` | *optional:* Wie oft Symphony ein Issue nach dem ersten Session-Limit-Fehler erneut versucht, bevor der Worker auf das Reset wartet. Standard 3, `0` heißt: sofort warten. |
 | `SYMPHONY_POLL_INTERVAL_MS` | *optional:* Wie oft das Board abgefragt wird, in Millisekunden. Standard 30000. |
 | `SYMPHONY_CLEANUP_TERMINAL` | *optional:* `true` (Standard) löscht den Workspace, sobald ein Issue in `Done` landet. Vorher läuft der `before_remove`-Hook, z. B. für eine Test-Datenbank. `false` behält die Workspaces. |
 | `SYMPHONY_LOG_DIR` | *optional:* Ordner für Repository-Logs und Session-Transkripte. Standard: `~/.local/state/symphony`. Ein relativer Pfad gilt ab dem Symphony-Ordner, z. B. `logs`. |

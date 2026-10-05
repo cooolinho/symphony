@@ -218,6 +218,7 @@ write a `transition_denied` line.
 | `max_concurrent_agents` | `10` | `0` pauses new dispatches; running agents continue. |
 | `max_turns` | `20` | Turns per agent session; between turns Symphony re-reads the issue and stops if it left the active states or moved to a column served by another [role](#roles). |
 | `max_continuations` | unlimited | After a session ends normally while the issue is still active, Symphony starts another one (a *continuation session*). With a limit, an issue that is still active after that many continuation sessions is **paused**: it stays claimed and nothing new starts. It resumes as soon as it changes on the tracker (status, comment, labels, edit), leaves the active states, or the limit is raised. `0` = pause right after the first session. A switch to another [role](#roles) also ends the session and counts as a continuation. |
+| `max_session_limit_retries` | `3` | Retries per issue after the first session-limit failure, before the worker waits for the reset. `0` = wait right away. |
 | `max_retry_backoff_ms` | `300000` | Cap for failure retries (10 s, 20 s, 40 s, …). |
 | `max_concurrent_agents_by_state` | `{}` | Per-status limits, e.g. `{ "In Progress": 1 }`. Invalid entries are ignored with a warning. |
 | `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `turn_number`, `max_turns`). |

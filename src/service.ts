@@ -190,6 +190,7 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
     out(`Terminal states: ${config.tracker.terminalStates.join(', ')}`);
     out(`Workspace root:  ${config.workspace.root}`);
     out(`Concurrency:     ${config.agent.maxConcurrentAgents} agents, ${config.agent.maxTurns} turns per session, poll every ${config.polling.intervalMs / 1000}s`);
+    out(`Session limit:   ${config.agent.maxSessionLimitRetries} retries, then wait for the reset (0 = wait right away)`);
     out(`Continuations:   ${config.agent.maxContinuations === null ? 'unlimited' : `${config.agent.maxContinuations} per issue, then pause`}; delete workspace on ${config.tracker.terminalStates.join('/')}: ${config.workspace.cleanupTerminal ? 'yes' : 'no'}`);
     out(`Claude:          model ${config.claude.model ?? '(Claude Code default)'} (default; a "Model: …" issue label overrides it), permission mode ${config.claude.permissionMode}, on_permission_request ${config.claude.onPermissionRequest}`);
     if (config.claude.plugins.length > 0 || config.claude.skills !== null) {

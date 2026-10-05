@@ -705,6 +705,11 @@ describe('observability', () => {
     assert.equal(s.runner.sessions.length, 0);
     assert.match(snapshot(s).health.dispatch_errors.join(), /bad yaml/);
   });
+
+  it('exposes agent.max_session_limit_retries in the health snapshot', () => {
+    const s = setup({ front: { agent: { max_session_limit_retries: 5 } }, issues: [] });
+    assert.equal(snapshot(s).health.max_session_limit_retries, 5);
+  });
 });
 
 describe('execution timeline', () => {

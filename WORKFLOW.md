@@ -43,6 +43,8 @@ agent:
   # Sessions after the first while the card stays active; then the issue is paused until it
   # changes on the board. Role switches (developer <-> reviewer) count too, so keep a limit.
   max_continuations: ${SYMPHONY_MAX_CONTINUATIONS:-6}
+  # Retries per issue after the first session-limit failure, then wait for the reset (0 = wait right away).
+  max_session_limit_retries: ${SYMPHONY_MAX_SESSION_LIMIT_RETRIES:-3}
   max_concurrent_agents_by_state:
     "Agent review": 1                        # one review at a time
   max_retry_backoff_ms: 600000
