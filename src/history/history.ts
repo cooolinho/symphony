@@ -13,6 +13,7 @@ import {
 } from '../costs/pricing.ts';
 import { formatValue, type Logger } from '../log.ts';
 import { errorMessage } from '../util/errors.ts';
+import { DEFAULT_ROLE } from '../workflow/roles.ts';
 
 /** How a run ended: handed off (left the active states), continuing (still active), or stopped early. */
 export type RunOutcome = 'handed_off' | 'continuing' | 'failed' | 'stopped' | 'stalled' | 'shutdown';
@@ -23,8 +24,10 @@ export interface RunStart {
   title: string;
   state: string;
   attempt: number | null;
-  /** Model requested for the run: a "Model: <model>" issue label, else claude.model; null = Claude Code default. */
+  /** Model requested for the run: a "Model: <model>" issue label, else the role's model, else claude.model; null = Claude Code default. */
   model: string | null;
+  /** Role serving the issue's column; absent means the implicit `default` role. */
+  role?: string;
   run: string;
   at: Date;
 }
@@ -49,6 +52,11 @@ export interface RunFinish {
   claudeEstimateUsd: number | null;
   /** MCP servers Symphony added that did not connect in the session. */
   mcpUnavailable?: string[];
+  /** Final commit and branch of a git workspace; null when unknown. */
+  headSha?: string | null;
+  branch?: string | null;
+  /** `tool_use` events per MCP server. */
+  mcpToolCalls?: Record<string, number>;
 }
 
 interface RepoTotals {
@@ -137,6 +145,7 @@ export class HistoryLog {
       state: start.state,
       attempt: start.attempt,
       model: start.model ?? 'default',
+      role: start.role ?? DEFAULT_ROLE,
     });
   }
 
@@ -173,6 +182,9 @@ export class HistoryLog {
       cost_usd: round(cost, 4),
       claude_estimate_usd: finish.claudeEstimateUsd === null ? null : round(finish.claudeEstimateUsd, 4),
       agent_seconds: round(finish.agentSeconds, 1),
+      head_sha: finish.headSha ?? undefined,
+      branch: finish.branch ?? undefined,
+      mcp_tool_calls: formatToolCalls(finish.mcpToolCalls),
       started_at: finish.startedAt,
       mcp_unavailable: finish.mcpUnavailable?.length ? finish.mcpUnavailable.join(',') : undefined,
       repo_runs: totals.runs,
@@ -234,6 +246,11 @@ export class HistoryLog {
       this.#failing = true;
     }
   }
+}
+
+function formatToolCalls(calls: Record<string, number> | undefined): string | undefined {
+  const parts = Object.entries(calls ?? {}).map(([server, count]) => `${server}:${count}`);
+  return parts.length === 0 ? undefined : parts.join(',');
 }
 
 function readEntries(file: string): HistoryEntry[] {

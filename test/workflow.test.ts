@@ -233,6 +233,13 @@ describe('prompt templates', () => {
     assert.equal(await renderPrompt(template, { issue, attempt: 2 }), 'acme/app#7 bug retry 2');
   });
 
+  it('renders the role of the run', async () => {
+    const template = compilePrompt('{% if role == "reviewer" %}Review{% else %}Work{% endif %} as {{ role }}');
+    assert.equal(await renderPrompt(template, { issue, attempt: null, role: 'reviewer' }), 'Review as reviewer');
+    assert.equal(await renderPrompt(template, { issue, attempt: null, role: 'developer' }), 'Work as developer');
+    assert.equal(await renderPrompt(template, { issue, attempt: null, role: 'default' }), 'Work as default');
+  });
+
   it('fails on unknown variables and unknown filters', async () => {
     await assert.rejects(renderPrompt(compilePrompt('{{ issue.nope }}'), { issue, attempt: null }), { code: 'template_render_error' });
     await assert.rejects(renderPrompt(compilePrompt('{{ missing }}'), { issue, attempt: null }), { code: 'template_render_error' });

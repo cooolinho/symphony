@@ -14,6 +14,7 @@ import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { truncate } from '../util/text.ts';
 import { WorkspaceManager, type HookIssue } from '../workspace/manager.ts';
 import type { ServiceConfig } from '../workflow/config.ts';
+import { roleFor, roleName } from '../workflow/roles.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../workflow/store.ts';
 import { validateDispatch } from '../workflow/validate.ts';
 import {
@@ -87,6 +88,10 @@ interface RunningEntry {
   repo: string;
   /** Short id tying the history lines of one run together. */
   runId: string;
+  /** Role serving the issue's column at dispatch (`default` without a matching role); fixed for the run. */
+  role: string;
+  /** Logger for this run's agent events, tagged with `run_id` and `role`. */
+  runLog: Logger;
   issue: Issue;
   attempt: number | null;
   startedAt: Date;
@@ -115,6 +120,10 @@ interface RunningEntry {
   modelUsage: Record<string, ModelTokenUsage>;
   /** MCP servers Symphony added that did not connect in the session. */
   mcpUnavailable: string[];
+  /** `tool_use` events per MCP server (`mcp__<server>__<tool>`); built-in tools are not counted. */
+  mcpToolCalls: Record<string, number>;
+  headSha: string | null;
+  branch: string | null;
   controller: AbortController;
   stop: StopRequest | null;
   done: Promise<void>;
@@ -148,6 +157,28 @@ interface IssueRecord {
   continuations: number;
   lastError: string | null;
   recentEvents: RecentEvent[];
+  /** Commit, branch and MCP tool usage of the running or last run. */
+  lastRun: RunTrace | null;
+}
+
+interface RunTrace {
+  headSha: string | null;
+  branch: string | null;
+  mcpToolCalls: Record<string, number>;
+}
+
+/** `mcp__<server>__<tool>` → `<server>`; null for built-in tools. */
+function traceOf(entry: RunningEntry): RunTrace {
+  return { headSha: entry.headSha, branch: entry.branch, mcpToolCalls: { ...entry.mcpToolCalls } };
+}
+
+function traceJson(trace: RunTrace | null) {
+  return trace === null ? null : { head_sha: trace.headSha, branch: trace.branch, mcp_tool_calls: trace.mcpToolCalls };
+}
+
+function mcpServerOf(tool: string): string | null {
+  const match = /^mcp__(.+?)__/.exec(tool);
+  return match?.[1] ?? null;
 }
 
 /** An issue held back after agent.max_continuations: claimed, but not running or retrying. */
@@ -448,11 +479,17 @@ export class Orchestrator {
   #dispatch(issue: Issue, attempt: number | null, workflow: EffectiveWorkflow, adapter: TrackerAdapter, continuation = false): void {
     const log = this.#issueLogger(issue);
     const controller = new AbortController();
+    const config = workflow.config;
+    const role = roleFor(issue.state, config.roles);
+    const name = roleName(role);
+    const runId = randomUUID().replace(/-/g, '').slice(0, 12);
     const entry: RunningEntry = {
       issueId: issue.id,
       identifier: issue.identifier,
       repo: adapter.issueRepository?.(issue) ?? 'unknown',
-      runId: randomUUID().replace(/-/g, '').slice(0, 12),
+      runId,
+      role: name,
+      runLog: log.child({ run_id: runId, role: name }),
       issue,
       attempt,
       startedAt: this.#clock.now(),
@@ -477,6 +514,9 @@ export class Orchestrator {
       claudeEstimateUsd: 0,
       modelUsage: {},
       mcpUnavailable: [],
+      mcpToolCalls: {},
+      headSha: null,
+      branch: null,
       controller,
       stop: null,
       done: Promise.resolve(),
@@ -487,13 +527,14 @@ export class Orchestrator {
     const record = this.#record(issue);
     record.runs++;
     if (continuation) record.continuations++;
-    // A "Model: <model>" label picks the model for this run; claude.model is the default.
-    const choice = chooseModel(issue.labels, workflow.config.claude.model);
+    // A "Model: <model>" label picks the model for this run, else the role's claude.model, else claude.model.
+    const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model);
     if (choice.warning !== null) log.warn('model label ignored', { warning: choice.warning, model: choice.model ?? 'Claude Code default' });
     log.info('dispatching issue', {
       state: issue.state,
       attempt,
       continuation: continuation ? record.continuations : undefined,
+      role: entry.role,
       model: choice.model ?? 'Claude Code default',
       model_label: choice.label ?? undefined,
       title: truncate(issue.title, 120),
@@ -505,11 +546,11 @@ export class Orchestrator {
       state: issue.state,
       attempt,
       model: choice.model,
+      role: entry.role,
       run: entry.runId,
       at: entry.startedAt,
     });
 
-    const config = workflow.config;
     let worker: Promise<WorkerOutcome>;
     try {
       worker = runAgentAttempt({
@@ -517,6 +558,7 @@ export class Orchestrator {
         attempt,
         workflow,
         model: choice.model,
+        role,
         adapter,
         runner: this.#deps.runner,
         workspaces: this.#workspaces(workflow),
@@ -539,6 +581,10 @@ export class Orchestrator {
             this.#watched.set(issue.id, issue.identifier);
           },
           agentEvent: (event) => this.#onAgentEvent(entry, event),
+          gitHead: (head) => {
+            entry.headSha = head.headSha;
+            entry.branch = head.branch;
+          },
           issueRefreshed: (fresh) => {
             if (this.#running.get(entry.issueId) === entry) entry.issue = fresh;
           },
@@ -572,6 +618,8 @@ export class Orchestrator {
     const agentSeconds = (this.#clock.monotonicMs() - entry.startedAtMs) / 1000;
     this.#totals.endedSeconds += agentSeconds;
     this.#recordRun(entry, outcome, agentSeconds);
+    const finished = this.#records.get(entry.issueId);
+    if (finished) finished.lastRun = traceOf(entry);
     const log = this.#issueLogger(entry.issue);
     const record = this.#records.get(entry.issueId);
     const nextAttempt = (entry.attempt ?? 0) + 1;
@@ -651,6 +699,9 @@ export class Orchestrator {
       usage: entry.modelUsage,
       claudeEstimateUsd: entry.claudeEstimateUsd > 0 ? entry.claudeEstimateUsd : null,
       mcpUnavailable: entry.mcpUnavailable,
+      headSha: entry.headSha,
+      branch: entry.branch,
+      mcpToolCalls: entry.mcpToolCalls,
     });
   }
 
@@ -981,6 +1032,10 @@ export class Orchestrator {
     if (event.sessionId !== null) entry.sessionId = event.sessionId;
     entry.turnCount = event.turnCount;
     if (event.message !== undefined && event.message !== '') entry.lastMessage = event.message;
+    if (event.event === 'tool_use' && typeof event.detail?.tool === 'string') {
+      const server = mcpServerOf(event.detail.tool);
+      if (server !== null) entry.mcpToolCalls[server] = (entry.mcpToolCalls[server] ?? 0) + 1;
+    }
     if (event.event === 'session_configured' && typeof event.detail?.model === 'string') entry.model = event.detail.model;
 
     if (event.usage !== undefined) {
@@ -1013,7 +1068,7 @@ export class Orchestrator {
 
     const failedTool = event.event === 'tracker_tool' && event.detail?.ok === false;
     const level = WARNING_EVENTS.has(event.event) || failedTool ? 'warn' : LIFECYCLE_EVENTS.has(event.event) ? 'info' : 'debug';
-    this.#issueLogger(entry.issue).log(level, `agent ${event.event}`, {
+    entry.runLog.log(level, `agent ${event.event}`, {
       session_id: event.sessionId ?? event.threadId,
       thread_id: event.threadId,
       detail: event.message,
@@ -1026,7 +1081,7 @@ export class Orchestrator {
   #record(issue: Issue): IssueRecord {
     let record = this.#records.get(issue.id);
     if (record === undefined) {
-      record = { identifier: issue.identifier, url: issue.url, workspacePath: null, runs: 0, continuations: 0, lastError: null, recentEvents: [] };
+      record = { identifier: issue.identifier, url: issue.url, workspacePath: null, runs: 0, continuations: 0, lastError: null, recentEvents: [], lastRun: null };
       this.#records.set(issue.id, record);
     }
     record.identifier = issue.identifier;
@@ -1074,6 +1129,9 @@ export class Orchestrator {
       claude_estimate_usd: Math.round(entry.claudeEstimateUsd * 10_000) / 10_000,
       repo: entry.repo,
       stopping: entry.stop?.reason ?? null,
+      head_sha: entry.headSha,
+      branch: entry.branch,
+      mcp_tool_calls: entry.mcpToolCalls,
     };
   }
 
@@ -1179,6 +1237,7 @@ export class Orchestrator {
         restart_count: Math.max((record?.runs ?? 1) - 1, 0),
         current_retry_attempt: retry?.attempt ?? entry?.attempt ?? null,
       },
+      run_trace: entry !== undefined ? traceJson(traceOf(entry)) : traceJson(record?.lastRun ?? null),
       running: entry === undefined ? null : this.#runningRow(entry, now),
       retry: retry === undefined ? null : this.#retryRow(retry, now),
       paused: paused === undefined ? null : this.#pausedRow(paused),

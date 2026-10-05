@@ -478,6 +478,14 @@ alle Modelle ein eingebauter Standard von 5 $ / 25 $. Claude Codes eigene Schät
   Die Instanzen teilen sich `~/symphony-workspaces`. Ihre Ordnernamen kollidieren nicht, weil sie das Repository
   enthalten.
 
+- **Eine Instanz pro Board:** Zwei Instanzen auf demselben Board würden dasselbe Issue im selben Ordner bearbeiten
+  (parallele Git-Befehle, `composer install`, zwei Agenten auf einem Branch). Deshalb legt Symphony vor jedem Lauf
+  die Datei `~/symphony-workspaces/<Ordnername>.lock` an, neben dem Klon, sodass `git status` sauber bleibt. Hält eine
+  andere Instanz das Lock (laufender Prozess oder anderer Rechner), startet Symphony weder Hooks noch Agent, warnt im
+  Log mit pid und Host des Halters und versucht es im nächsten Poll erneut. Das Lock eines beendeten Prozesses auf
+  demselben Rechner übernimmt Symphony selbst. Beim Löschen des Workspaces verschwindet auch das Lock. Über mehrere
+  Rechner hinweg gibt es nur diese Sperre, keine verteilte Abstimmung.
+
 ### Konfiguration anpassen
 
 Die häufigsten Stellschrauben in der `WORKFLOW.md`. Alle Optionen beschreibt
@@ -537,6 +545,17 @@ einen **MCP-Server** mit Doku-Suche, Datenbankschema, Logs und Fehlern. Symphony
    setzt es zurück. So landet nichts davon im Pull Request.
 4. Die Session bekommt den MCP-Server `laravel-boost`, die Boost-Skills und Boosts Guidelines im System-Prompt.
 5. Neu erzeugt wird nur, wenn sich `composer.lock`, `.ai/` oder die Boost-Version ändern.
+
+Damit Artisan und Boost nie eine fremde Datenbank erreichen, legt `hooks/laravel-env.sh` im `after_create`-Hook für jede
+Laravel-App eine eigene `.env` mit eigener SQLite-Datenbank an (`database/symphony.sqlite`, `CACHE_STORE=file`,
+`BOOST_BROWSER_LOGS_WATCHER=false` u. a.). Eine vorhandene `.env` bleibt unangetastet, `.env` und die Datenbank landen in
+`.git/info/exclude`, falls die App sie nicht selbst ignoriert:
+
+```yaml
+after_create: |
+  git clone --quiet "git@github.com:${SYMPHONY_ISSUE_REPOSITORY}.git" .
+  bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-env.sh"
+```
 
 Fehlt Boost in einem Laravel-Repository, legt `npm run repo-init` → *Laravel Boost* ein Issue an, das Boost per Pull
 Request einführt. Klappt etwas nicht (kein PHP, `composer install` scheitert), läuft die Session ohne Boost weiter.

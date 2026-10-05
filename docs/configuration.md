@@ -80,6 +80,26 @@ orchestrator's environment **without** tracker credentials (`GITHUB_TOKEN`, `GH_
 | `before_remove` | Before a workspace is deleted | Logged and ignored; the directory is still deleted. |
 | `timeout_ms` | Default `60000`; applies to every hook | A timed-out hook's whole process group is killed. |
 
+#### Recipe: Laravel apps
+
+`hooks/laravel-env.sh` gives every Laravel app in the workspace (root or one level deep, without `vendor`,
+`node_modules` and dot-directories) its own `.env` and SQLite database, so artisan and Laravel Boost never reach a
+developer's or a shared database. It only acts on directories with `artisan` and `.env.example` but no `.env`, never
+overwrites or reads an existing `.env`, and prints nothing when there is no Laravel app.
+
+```yaml
+hooks:
+  after_create: |
+    git clone --quiet "git@github.com:${SYMPHONY_ISSUE_REPOSITORY}.git" .
+    bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-env.sh"
+```
+
+It copies `.env.example`, sets `APP_ENV=local`, `APP_DEBUG=true`, a fresh `APP_KEY`, `DB_CONNECTION=sqlite`, an absolute
+`DB_DATABASE=<app>/database/symphony.sqlite`, `CACHE_STORE=file`, `QUEUE_CONNECTION=sync`, `MAIL_MAILER=log` and
+`BOOST_BROWSER_LOGS_WATCHER=false` (each key exactly once, replaced in place), comments out `DB_HOST`, `DB_PORT`,
+`DB_USERNAME` and `DB_PASSWORD`, creates the SQLite file and adds `.env` and the file to `.git/info/exclude` if the app
+does not ignore them.
+
 Hooks finish when their output pipes close, so redirect the output of background jobs (`cmd >/dev/null 2>&1 &`).
 
 ### `agent`
@@ -91,13 +111,13 @@ Hooks finish when their output pipes close, so redirect the output of background
 | `max_continuations` | unlimited | After a session ends normally while the issue is still active, Symphony starts another one (a *continuation session*). With a limit, an issue that is still active after that many continuation sessions is **paused**: it stays claimed and nothing new starts. It resumes as soon as it changes on the tracker (status, comment, labels, edit), leaves the active states, or the limit is raised. `0` = pause right after the first session. |
 | `max_retry_backoff_ms` | `300000` | Cap for failure retries (10 s, 20 s, 40 s, …). |
 | `max_concurrent_agents_by_state` | `{}` | Per-status limits, e.g. `{ "In Progress": 1 }`. Invalid entries are ignored with a warning. |
-| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `turn_number`, `max_turns`). |
+| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `turn_number`, `max_turns`). |
 
 ### `claude`
 
 | Key | Default | Notes |
 |---|---|---|
-| `model` | Claude Code default | Default model: alias (`opus`, `sonnet`, `haiku`) or full model id. A `Model: <model>` issue label overrides it for that issue, see [Model per issue](#model-per-issue). |
+| `model` | Claude Code default | Default model: alias (`opus`, `sonnet`, `haiku`) or full model id. A role's `claude.model` and a `Model: <model>` issue label override it, see [Model per issue](#model-per-issue). |
 | `fallback_model` | none | Used when the primary model is overloaded. Left out for a session whose model is the same (the Agent SDK refuses that combination). |
 | `effort` | Claude Code default | `low`, `medium`, `high`, `xhigh`, `max`. |
 | `permission_mode` | `auto` | `auto` (a classifier approves or blocks each action), `default`, `acceptEdits`, `dontAsk`, `plan`, `bypassPermissions`. See [agent-claude.md](agent-claude.md). |
@@ -137,7 +157,21 @@ Boost only get a log line; `npm run repo-init` creates an issue that adds it. De
 
 ### `roles`
 
-Optional. Maps board columns to column-scoped agent roles. Without it, every active state is served by one implicit role named `default` and nothing changes. This section is parsed and validated only; dispatch does not use it yet.
+Optional. Maps board columns to column-scoped agent roles. Without it, every active state is served by one implicit role named `default` and nothing changes.
+
+When an issue is dispatched, the role serving its current column is resolved once and kept for the whole run (an
+issue in no role's column runs as `default`). The role decides:
+
+- **Model:** a `Model: …` issue label, else the role's `claude.model`, else `claude.model` (see [Model per issue](#model-per-issue)).
+- **Claude settings:** the role's `claude` block is merged over [`claude`](#claude): `effort` and `max_budget_usd`
+  replace the global value; `allowed_tools`, `disallowed_tools` and `append_system_prompt` are appended to it.
+- **Permissions:** `read_only: true` starts the session read-only ([agent-claude.md](agent-claude.md#permission-and-safety-posture)).
+- **Turns:** `max_turns` replaces `agent.max_turns` for the role's sessions.
+- **Prompt:** the role name is the template variable `role` (see [Prompt template](#prompt-template)).
+
+The role appears as `role` in the `dispatching issue` log line, in `run_started` of the repository log and on every
+agent event log line (together with `run_id`). A session does not yet end when the issue moves to another role's
+column; the next run picks up the new role.
 
 ```yaml
 roles:
@@ -164,7 +198,8 @@ Invalid configs fail with `invalid_config`, listing every problem: a state outsi
 
 ### Model per issue
 
-An issue label `Model: <value>` picks the model for that issue's sessions; issues without one use `claude.model`.
+An issue label `Model: <value>` picks the model for that issue's sessions; issues without one use the model of their
+[role](#roles) (`roles.<role>.claude.model`), else `claude.model`. Precedence: `Model:` label > role model > `claude.model`.
 The prefix is matched case-insensitively and the space after the colon is optional. The value is lowercased and an
 optional `claude-` is removed, then:
 
@@ -174,7 +209,7 @@ optional `claude-` is removed, then:
 | `<family>-<version>` with family `opus`, `sonnet`, `haiku` or `fable` (e.g. `sonnet-5-5`, `claude-opus-5-5`) | the full model id `claude-<family>-<version>` |
 | anything else | unknown |
 
-Unknown values, and several labels naming different models, are ignored: the session uses `claude.model` and Symphony
+Unknown values, and several labels naming different models, are ignored: the session uses the role model or `claude.model` and Symphony
 logs `model label ignored` (the dry run shows the same). The model is chosen when a session is dispatched, so a label
 change applies from the next session (continuation or retry); a paused issue resumes with the new model. The choice
 appears in the `dispatching issue` log line (`model`, plus `model_label` when a label picked it) and as `model` of
@@ -190,6 +225,30 @@ REST API. Other values such as `Model: claude-opus-5-5` work as labels too; crea
 |---|---|---|
 | `port` | none | Starts the dashboard and JSON API. `0` picks a free port. `--port` overrides it. Restart to change it. |
 | `host` | `127.0.0.1` | Bind address. On a loopback address, requests with another `Host` header are rejected. |
+
+## Check scripts (`checks/laravel.sh`)
+
+A deterministic quality gate that runs in the workspace (bash). It is not wired into the configuration yet; the
+transition guard will run it before an issue may enter `Agent review` and `In review`.
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Pass (also when there is no `artisan`: `no Laravel app; nothing to check`). |
+| `1` | The code must be fixed. The output goes to the agent: dirty tree, unpushed commits, `php -l` errors, or a failing lint, analysis or test step. |
+| other (`2`) | Environment problem: missing `php`/`git`, missing or broken `vendor/`, failing `git fetch`, unknown default branch, configured but missing PHPStan. The agent comments and moves the issue to `Blocked`. |
+
+The app directory is `$SYMPHONY_LARAVEL_APP_PATH` (default: the current directory). Steps, in order: clean tree, `git fetch`
+and everything pushed, `php -l` on PHP files changed against `origin/HEAD`, style, static analysis, tests.
+
+| Step | Composer script (preferred) | Fallback |
+|---|---|---|
+| Style | `lint` | `vendor/bin/pint --test <changed files>` if Pint exists |
+| Static analysis | `analyse` | `vendor/bin/phpstan analyse --no-progress` if `phpstan.neon[.dist]` exists |
+| Tests | `test` | `php artisan test` |
+
+Composer scripts are detected with `composer run-script --list --raw`, which lists exactly the scripts defined in
+`composer.json` (without Composer, none are used). The script never modifies tracked files, and prints only the tail
+(about 4000 characters) of a failing step, since the guard forwards at most 6000 characters.
 
 ## `model-costs.yml`
 
@@ -214,8 +273,8 @@ workflow directory, else `$XDG_STATE_HOME/symphony` or `~/.local/state/symphony`
 
 | Event | Fields |
 |---|---|
-| `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested: from a `Model: …` label, else `claude.model`) |
-| `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `stopped`, `stalled`, `shutdown`), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `started_at`, `mcp_unavailable` (comma-separated MCP servers Symphony added that did not connect; only when there are any), running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` |
+| `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested: from a `Model: …` label, else the role's model, else `claude.model`), `role` (`default` without roles) |
+| `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `stopped`, `stalled`, `shutdown`), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `head_sha` and `branch` (final commit of a git workspace; omitted otherwise), `mcp_tool_calls` (`<server>:<n>,…` per MCP server; omitted when no MCP tool was used), `started_at`, `mcp_unavailable` (comma-separated MCP servers Symphony added that did not connect; only when there are any), running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` |
 | `model_usage` | `repo`, `issue`, `run`, `model`, `price` (matched entry), token counts, `cost_usd` |
 | `issue_paused` | `repo`, `issue`, `title`, `state`, `continuations`, `max_continuations` |
 | `workspace_removed` | `repo`, `issue`, `state` |
@@ -234,6 +293,8 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
   `updated_at` (ISO strings), `native_ref` (adapter data, for GitHub: `repository`, `number`, `issue_id`, `item_id`,
   `parent` and `sub_issues` as `{identifier, title, state}`, …).
 - `attempt`: `null` on the first run of an issue, then `1`, `2`, … on continuation runs and retries.
+- `role`: name of the [role](#roles) running the issue (e.g. `developer`, `reviewer`), or `default` without `roles`.
+  Always defined, so one prompt can branch per role: `{% if role == "reviewer" %}…{% endif %}`.
 
 Besides the standard Liquid filters there is `without_model_labels`: `issue.labels | without_model_labels` drops the
 `Model: …` labels, which only pick the agent's model (see [Model per issue](#model-per-issue)).
