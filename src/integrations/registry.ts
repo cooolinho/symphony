@@ -1,11 +1,12 @@
 import type { SessionExtensions } from '../agent/types.ts';
+import { laravelIntegration } from '../laravel/integration.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import type { IntegrationPrepareContext, WorkspaceIntegration } from './types.ts';
 
 const RESERVED_SERVER = 'tracker';
 
 export function defaultIntegrations(): WorkspaceIntegration[] {
-  return [];
+  return [laravelIntegration];
 }
 
 /**

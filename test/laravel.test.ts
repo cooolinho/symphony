@@ -5,8 +5,8 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import { boostToolPolicy, prepareLaravelBoost, extractGuidelines } from '../src/laravel/boost.ts';
 import { candidateAppDirs, classifyComposer, detectLaravelApps } from '../src/laravel/detect.ts';
+import { laravelIntegration, type LaravelConfig } from '../src/laravel/integration.ts';
 import { Logger, type LogSink } from '../src/log.ts';
-import type { LaravelConfig } from '../src/workflow/config.ts';
 import { tempDir } from './helpers.ts';
 
 const LARAVEL = JSON.stringify({ require: { php: '^8.3', 'laravel/framework': '^12.0' } });
@@ -183,6 +183,20 @@ describe('Laravel detection', () => {
       fs.writeFileSync(path.join(root, name), content);
     }
     assert.deepEqual(await detectLaravelApps(root), [{ dir: 'laravel', path: path.join(root, 'laravel'), boost: true }]);
+  });
+
+  it('describes the Laravel apps of an existing workspace and the off mode for the dry run', async () => {
+    const root = tempDir();
+    for (const [name, content] of Object.entries({ artisan: '', 'composer.json': LARAVEL, 'api/artisan': '', 'api/composer.json': LARAVEL_BOOST })) {
+      fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true });
+      fs.writeFileSync(path.join(root, name), content);
+    }
+    const { config } = laravelIntegration.resolveConfig({ boost: 'off' }, { workflowDir: root, env: {}, hookTimeoutMs: 1_000 });
+    assert.deepEqual(await laravelIntegration.describe!(config, {}, root), [
+      'Laravel app (repository root): no laravel/boost in composer.json',
+      'Laravel app api/: Laravel Boost',
+    ]);
+    assert.deepEqual(await laravelIntegration.describe!(config, {}, null), ['Laravel Boost:   off']);
   });
 
   it('extracts the Boost guideline block', () => {

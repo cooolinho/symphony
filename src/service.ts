@@ -6,8 +6,8 @@ import { PricingStore } from './costs/pricing.ts';
 import { HistoryLog } from './history/history.ts';
 import { killAllAgentProcessGroups } from './agent/spawn.ts';
 import { startHttpServer, type HttpServerHandle } from './http/server.ts';
-import { probeLaravelTools } from './laravel/boost.ts';
-import { detectLaravelApps } from './laravel/detect.ts';
+import { defaultIntegrations } from './integrations/registry.ts';
+import type { WorkspaceIntegration } from './integrations/types.ts';
 import { Logger, type LogLevel } from './log.ts';
 import { hasRequiredFields, hasRequiredLabels, isActiveState, sortForDispatch } from './orchestrator/eligibility.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
@@ -56,10 +56,11 @@ export async function runService(options: ServiceOptions): Promise<number> {
   const logger = Logger.create({ level: options.logLevel, file: options.logFile });
   const { env } = options;
   logEnvFile(logger, options.envFile);
+  const integrations = defaultIntegrations();
 
   let store: WorkflowStore;
   try {
-    store = await WorkflowStore.open(options.workflowPath, { env, logger });
+    store = await WorkflowStore.open(options.workflowPath, { env, logger, integrations });
   } catch (error) {
     logger.error('startup failed: cannot load the workflow', { code: errorCode(error, 'startup_failed'), error: errorMessage(error) });
     await logger.close();
@@ -76,6 +77,7 @@ export async function runService(options: ServiceOptions): Promise<number> {
     logDir: options.logDir,
     pricing,
     history,
+    integrations,
   });
   process.on('exit', killAllAgentProcessGroups);
   try {
@@ -148,15 +150,28 @@ function ineligibleReason(issue: Issue, store: WorkflowStore): string | null {
   return null;
 }
 
-/** Laravel apps in an issue's existing workspace (a new workspace is only cloned when the issue runs). */
-async function laravelLines(workspace: string): Promise<string[]> {
-  if (!fs.existsSync(workspace)) return [];
-  try {
-    const apps = await detectLaravelApps(workspace);
-    return apps.map((app) => `Laravel app ${app.dir === '' ? '(repository root)' : `${app.dir}/`}: ${app.boost ? 'Laravel Boost' : 'no laravel/boost in composer.json'}`);
-  } catch {
-    return [];
+/**
+ * Dry-run lines of every integration: service-wide with a null workspace, otherwise about an issue's existing
+ * workspace (a new workspace is only cloned when the issue runs). A failing integration contributes nothing.
+ */
+async function integrationLines(
+  integrations: readonly WorkspaceIntegration[],
+  configs: Readonly<Record<string, unknown>>,
+  env: NodeJS.ProcessEnv,
+  workspace: string | null,
+): Promise<string[]> {
+  if (workspace !== null && !fs.existsSync(workspace)) return [];
+  const lines: string[] = [];
+  for (const integration of integrations) {
+    const config = configs[integration.id];
+    if (integration.describe === undefined || config === undefined || config === null) continue;
+    try {
+      lines.push(...(await integration.describe(config, env, workspace)));
+    } catch {
+      // Display only.
+    }
   }
+  return lines;
 }
 
 /** Validates the workflow, lists what would be dispatched and previews the first prompt. No agents run. */
@@ -165,7 +180,8 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
   const out = (line = '') => process.stdout.write(`${line}\n`);
   logEnvFile(logger, options.envFile);
   try {
-    const store = await WorkflowStore.open(options.workflowPath, { env: options.env, logger });
+    const integrations = defaultIntegrations();
+    const store = await WorkflowStore.open(options.workflowPath, { env: options.env, logger, integrations });
     const { config } = store.current;
     out(`Workflow:        ${store.path}`);
     out(`Env file:        ${options.envFile?.file ?? '(none)'}`);
@@ -180,14 +196,7 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       const skills = config.claude.skills === null ? 'Claude Code default' : config.claude.skills === 'all' ? 'all' : config.claude.skills.join(', ');
       out(`Plugins:         ${config.claude.plugins.join(', ') || '(none)'}; skills: ${skills}`);
     }
-    if (config.laravel.boost === 'off') {
-      out('Laravel Boost:   off');
-    } else {
-      const tools = await probeLaravelTools(config.laravel, options.env);
-      const describe = (command: string, version: string | null) => `${command} (${version ?? 'not found'})`;
-      out(`Laravel Boost:   auto, for Laravel apps that require laravel/boost; ${describe(config.laravel.php, tools.php)}, ${describe(config.laravel.composer, tools.composer)}`);
-      if (tools.php === null) out('                 ↳ php does not run: Laravel workspaces start without Boost');
-    }
+    for (const line of await integrationLines(integrations, config.integrations, options.env, null)) out(line);
     out();
 
     const errors = validateDispatch(store.current, null, options.env);
@@ -229,7 +238,8 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       out(`            ↳ ${roleModelLine(roleName(role), choice.model)}`);
       if (choice.warning !== null) out(`            ↳ model label ignored: ${choice.warning}; using ${choice.model ?? '(Claude Code default)'}`);
       else if (choice.label !== null) out(`            ↳ model ${choice.model} (label "${choice.label}")`);
-      for (const line of await laravelLines(path.join(config.workspace.root, workspaceKey(issue.identifier)))) out(`            ↳ ${line}`);
+      const workspace = path.join(config.workspace.root, workspaceKey(issue.identifier));
+      for (const line of await integrationLines(integrations, config.integrations, options.env, workspace)) out(`            ↳ ${line}`);
     }
 
     if (first !== null) {

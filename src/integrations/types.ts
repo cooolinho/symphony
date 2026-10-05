@@ -23,5 +23,6 @@ export interface WorkspaceIntegration<C = unknown> {
   /** Must never throw: failures are logged and yield null. */
   prepare(config: C, ctx: IntegrationPrepareContext): Promise<SessionExtensions | null>;
   checkEnv?(config: C, workspacePath: string): Promise<Record<string, string>>;
+  /** Dry-run lines: service-wide with a null workspace, otherwise about that existing workspace. */
   describe?(config: C, env: NodeJS.ProcessEnv, workspacePath: string | null): Promise<string[]>;
 }

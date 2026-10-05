@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { defaultIntegrations } from '../integrations/registry.ts';
+import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
 import { trackerDefaults } from '../tracker/registry.ts';
 import { SymphonyError, errorCode, errorMessage } from '../util/errors.ts';
@@ -38,6 +40,7 @@ function hash(source: string): string {
 export class WorkflowStore {
   readonly path: string;
   #env: NodeJS.ProcessEnv;
+  #integrations: readonly WorkspaceIntegration[];
   #logger: Logger;
   #current: EffectiveWorkflow;
   #lastError: WorkflowLoadError | null = null;
@@ -46,18 +49,29 @@ export class WorkflowStore {
   #debounce: NodeJS.Timeout | null = null;
   #listeners = new Set<(workflow: EffectiveWorkflow) => void>();
 
-  private constructor(filePath: string, env: NodeJS.ProcessEnv, logger: Logger, initial: EffectiveWorkflow) {
+  private constructor(
+    filePath: string,
+    env: NodeJS.ProcessEnv,
+    integrations: readonly WorkspaceIntegration[],
+    logger: Logger,
+    initial: EffectiveWorkflow,
+  ) {
     this.path = filePath;
     this.#env = env;
+    this.#integrations = integrations;
     this.#logger = logger;
     this.#current = initial;
   }
 
   /** Loads the workflow once; throws (startup failure) if it cannot be read, parsed or resolved. */
-  static async open(filePath: string, options: { env: NodeJS.ProcessEnv; logger: Logger }): Promise<WorkflowStore> {
+  static async open(
+    filePath: string,
+    options: { env: NodeJS.ProcessEnv; logger: Logger; integrations?: readonly WorkspaceIntegration[] },
+  ): Promise<WorkflowStore> {
     const absolute = path.resolve(filePath);
-    const { workflow } = await build(absolute, options.env, 1);
-    const store = new WorkflowStore(absolute, options.env, options.logger, workflow);
+    const integrations = options.integrations ?? defaultIntegrations();
+    const { workflow } = await build(absolute, options.env, integrations, 1);
+    const store = new WorkflowStore(absolute, options.env, integrations, options.logger, workflow);
     store.#logWarnings(workflow);
     return store;
   }
@@ -96,7 +110,7 @@ export class WorkflowStore {
     if (contentHash === this.#failedHash) return;
 
     try {
-      const { workflow } = await build(this.path, this.#env, this.#current.version + 1);
+      const { workflow } = await build(this.path, this.#env, this.#integrations, this.#current.version + 1);
       this.#current = workflow;
       this.#lastError = null;
       this.#failedHash = null;
@@ -173,9 +187,14 @@ export class WorkflowStore {
   }
 }
 
-async function build(filePath: string, env: NodeJS.ProcessEnv, version: number): Promise<{ workflow: EffectiveWorkflow }> {
+async function build(
+  filePath: string,
+  env: NodeJS.ProcessEnv,
+  integrations: readonly WorkspaceIntegration[],
+  version: number,
+): Promise<{ workflow: EffectiveWorkflow }> {
   const { definition, source } = await loadWorkflowFile(filePath);
-  const config = resolveConfig(definition.config, { workflowPath: filePath, env, trackerDefaults });
+  const config = resolveConfig(definition.config, { workflowPath: filePath, env, trackerDefaults, integrations });
   return {
     workflow: {
       definition,

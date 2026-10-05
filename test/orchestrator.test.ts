@@ -5,6 +5,7 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import { PricingStore } from '../src/costs/pricing.ts';
 import { HistoryLog, readHistory } from '../src/history/history.ts';
+import type { WorkspaceIntegration } from '../src/integrations/types.ts';
 import { Logger } from '../src/log.ts';
 import { failureBackoffMs, sortForDispatch } from '../src/orchestrator/eligibility.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
@@ -34,14 +35,26 @@ interface Setup {
 }
 
 function setup(
-  options: { issues?: ReturnType<typeof makeIssue>[]; front?: Record<string, unknown>; runner?: FakeRunner; prompt?: string; logger?: Logger } = {},
+  options: {
+    issues?: ReturnType<typeof makeIssue>[];
+    front?: Record<string, unknown>;
+    runner?: FakeRunner;
+    prompt?: string;
+    logger?: Logger;
+    integrations?: WorkspaceIntegration[];
+  } = {},
 ): Setup {
   const root = tempDir();
   const tracker = new FakeTracker(options.issues ?? []);
   const runner = options.runner ?? new FakeRunner();
   const timers = new ManualTimers();
   const clock = new ManualClock();
-  const workflow = new StaticWorkflow(makeWorkflow(baseFront(root, options.front), options.prompt !== undefined ? { prompt: options.prompt } : {}));
+  const workflow = new StaticWorkflow(
+    makeWorkflow(baseFront(root, options.front), {
+      ...(options.prompt !== undefined ? { prompt: options.prompt } : {}),
+      ...(options.integrations !== undefined ? { integrations: options.integrations } : {}),
+    }),
+  );
   const orchestrator = new Orchestrator({
     workflow,
     runner,
@@ -51,6 +64,7 @@ function setup(
     clock,
     timers,
     createAdapter: () => tracker,
+    ...(options.integrations !== undefined ? { integrations: options.integrations } : {}),
   });
   return { orchestrator, tracker, runner, timers, clock, root, workflow };
 }
@@ -127,6 +141,35 @@ describe('dispatch ordering and eligibility', () => {
     await s.orchestrator.tickNow();
     await until(() => runner.sessions.length === 2, 3_000, 'two sessions');
     assert.deepEqual(snapshot(s).running.map((r) => r.issue_id).sort(), ['a', 'c']);
+  });
+});
+
+describe('workspace integrations', () => {
+  it('hands the session the extensions of an injected integration', async () => {
+    const seen: Array<{ config: unknown; workspacePath: string }> = [];
+    const fake: WorkspaceIntegration<{ greeting: string }> = {
+      id: 'fake',
+      configKey: 'fake_section',
+      resolveConfig: (raw) => ({ config: { greeting: String(raw.greeting ?? 'none') }, errors: [], warnings: [] }),
+      prepare: async (config, ctx) => {
+        seen.push({ config, workspacePath: ctx.workspacePath });
+        return { mcpServers: {}, contextSections: [`fake says ${config.greeting}`], additionalDirectories: ['/fake'], env: { FAKE: '1' } };
+      },
+    };
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    const s = setup({ runner, front: { fake_section: { greeting: 'hello' } }, integrations: [fake], issues: [makeIssue({ id: 'a' })] });
+    assert.deepEqual(s.workflow.current.config.integrations, { fake: { greeting: 'hello' } });
+    assert.deepEqual(s.workflow.current.config.warnings, []);
+    await s.orchestrator.tickNow();
+    await until(() => runner.sessions.length === 1, 3_000, 'one session');
+    assert.deepEqual(runner.sessions[0]!.params.extensions, {
+      mcpServers: {},
+      contextSections: ['fake says hello'],
+      additionalDirectories: ['/fake'],
+      env: { FAKE: '1' },
+    });
+    assert.deepEqual(seen.map((entry) => entry.config), [{ greeting: 'hello' }]);
+    assert.equal(seen[0]!.workspacePath, runner.sessions[0]!.params.cwd);
   });
 });
 

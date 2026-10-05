@@ -28,8 +28,8 @@ function setup() {
 }
 
 describe('integration registry', () => {
-  it('has no default integrations yet', () => {
-    assert.deepEqual(defaultIntegrations(), []);
+  it('registers Laravel as the default integration', () => {
+    assert.deepEqual(defaultIntegrations().map((integration) => [integration.id, integration.configKey]), [['laravel', 'laravel']]);
   });
 
   it('merges extensions in list order and skips integrations without config', async () => {
