@@ -5,6 +5,7 @@ import { prepareLaravelBoost } from '../laravel/boost.ts';
 import type { Logger } from '../log.ts';
 import type { Issue, TrackerAdapter } from '../tracker/types.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
+import { describeHolder, type LockResult } from '../workspace/lock.ts';
 import { describeFailure, type HookIssue, type Workspace, type WorkspaceManager } from '../workspace/manager.ts';
 import type { EffectiveWorkflow } from '../workflow/store.ts';
 import { issueTemplateValue, renderPrompt } from '../workflow/template.ts';
@@ -73,6 +74,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
   let workspace: Workspace | null = null;
   let session: AgentSession | null = null;
   let phase: RunPhase = 'PreparingWorkspace';
+  let lock: Extract<LockResult, { ok: true }> | null = null;
 
   const setPhase = (next: RunPhase) => {
     phase = next;
@@ -98,11 +100,23 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
         .runHook('after_run', workspace, hookIssue())
         .catch((error: unknown) => logger.warn('after_run hook could not run', { error: errorMessage(error) }));
     }
+    if (lock !== null) {
+      await lock.release().catch((error: unknown) => logger.warn('workspace lock could not be released', { error: errorMessage(error) }));
+      lock = null;
+    }
     return outcome;
   };
 
   try {
     setPhase('PreparingWorkspace');
+    const acquired = await params.workspaces.lock(issue.identifier);
+    if (!acquired.ok) {
+      // Another Symphony instance owns this workspace: no hooks, no session. The next poll tick retries.
+      const message = `workspace locked by ${describeHolder(acquired.holder)}`;
+      logger.warn('workspace is locked by another Symphony instance; skipping this attempt', { holder: describeHolder(acquired.holder) });
+      return await finish({ kind: 'cancelled', message });
+    }
+    lock = acquired;
     workspace = await params.workspaces.ensure(hookIssue());
     callbacks.workspace(workspace);
     if (signal.aborted) return await finish(cancelled());

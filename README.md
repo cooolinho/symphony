@@ -478,6 +478,14 @@ alle Modelle ein eingebauter Standard von 5 $ / 25 $. Claude Codes eigene Schät
   Die Instanzen teilen sich `~/symphony-workspaces`. Ihre Ordnernamen kollidieren nicht, weil sie das Repository
   enthalten.
 
+- **Eine Instanz pro Board:** Zwei Instanzen auf demselben Board würden dasselbe Issue im selben Ordner bearbeiten
+  (parallele Git-Befehle, `composer install`, zwei Agenten auf einem Branch). Deshalb legt Symphony vor jedem Lauf
+  die Datei `~/symphony-workspaces/<Ordnername>.lock` an, neben dem Klon, sodass `git status` sauber bleibt. Hält eine
+  andere Instanz das Lock (laufender Prozess oder anderer Rechner), startet Symphony weder Hooks noch Agent, warnt im
+  Log mit pid und Host des Halters und versucht es im nächsten Poll erneut. Das Lock eines beendeten Prozesses auf
+  demselben Rechner übernimmt Symphony selbst. Beim Löschen des Workspaces verschwindet auch das Lock. Über mehrere
+  Rechner hinweg gibt es nur diese Sperre, keine verteilte Abstimmung.
+
 ### Konfiguration anpassen
 
 Die häufigsten Stellschrauben in der `WORKFLOW.md`. Alle Optionen beschreibt
