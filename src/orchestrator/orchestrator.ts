@@ -1103,6 +1103,7 @@ export class Orchestrator {
       issue_url: entry.issue.url,
       title: entry.issue.title,
       state: entry.issue.state,
+      role: entry.role,
       phase: entry.phase,
       attempt: entry.attempt,
       session_id: entry.sessionId,
@@ -1223,6 +1224,7 @@ export class Orchestrator {
       issue_url: entry?.issue.url ?? retry?.url ?? record?.url ?? null,
       status:
         entry !== undefined ? (entry.stop !== null ? 'stopping' : 'running') : retry !== undefined ? 'retrying' : paused !== undefined ? 'paused' : 'claimed',
+      role: entry?.role ?? null,
       workspace: { path: entry?.workspacePath ?? record?.workspacePath ?? null },
       attempts: {
         runs: record?.runs ?? 0,

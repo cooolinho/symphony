@@ -323,7 +323,7 @@ Issue das Modell aus dem Label:
   nächsten Session, also der nächsten Fortsetzung oder Wiederholung. Ein pausiertes Issue läuft nach einer
   Label-Änderung weiter, gleich mit dem neuen Modell. So versuchst du ein festgefahrenes Issue z. B. mit `Model: opus`
   erneut.
-- Kontrolle: `npm run dry-run` zeigt pro Issue `↳ model … (label "…")`. Beim Start steht das Modell in der Logzeile
+- Kontrolle: `npm run dry-run` zeigt pro Issue `↳ role …, model …` (ohne Rollen `default`) und bei einem Label `↳ model … (label "…")`. Beim Start steht das Modell in der Logzeile
   `dispatching issue` (`model=…`, bei einem Label auch `model_label=…`) und im Log des Repositorys bei `run_started`.
   Das Dashboard zeigt in der Spalte *Model* das Modell, das Claude Code tatsächlich nutzt.
 - Im Prompt fehlen die Model-Labels in der Label-Liste des Agenten. Für seine Arbeit spielen sie keine Rolle.
@@ -378,7 +378,7 @@ Optionen und Prüfungen beschreibt [docs/e2e.md](docs/e2e.md).
 ### Dashboard und API
 
 Das Dashboard läuft nur, wenn `SYMPHONY_PORT` gesetzt ist oder du `npm start -- --port 4000` aufrufst. Es lauscht nur
-auf `127.0.0.1`. Es zeigt laufende Agenten mit Spalte, Phase, Modell, Turns, letzter Aktivität, Tokens und geschätzten
+auf `127.0.0.1`. Es zeigt laufende Agenten mit Spalte, Rolle, Phase, Modell, Turns, letzter Aktivität, Tokens und geschätzten
 Kosten, außerdem die Wiederholungs-Warteschlange und Probleme wie Konfigurations- oder GitHub-Fehler. Der Button
 **Logs** im Header öffnet die [Logs-Seite](#logs-und-statistiken).
 
@@ -388,8 +388,8 @@ Kosten, außerdem die Wiederholungs-Warteschlange und Probleme wie Konfiguration
 | `GET /logs` | Logs-Seite mit Statistiken, gesamt oder mit `?repo=owner/name` für ein Repository |
 | `GET /api/v1/history` | dieselben Statistiken als JSON, optional mit `?repo=owner/name` |
 | `GET /api/v1/history/raw?repo=owner/name` | die `.log`-Datei eines Repositorys als Text |
-| `GET /api/v1/state` | Gesamtzustand als JSON: laufende Agenten, Warteschlange, Summen, Gesundheit |
-| `GET /api/v1/<identifier>` | Details zu einem Issue: Workspace, Versuche, letzte Ereignisse, letzter Fehler |
+| `GET /api/v1/state` | Gesamtzustand als JSON: laufende Agenten (mit `role`), Warteschlange, Summen, Gesundheit |
+| `GET /api/v1/<identifier>` | Details zu einem Issue: Rolle, Workspace, Versuche, letzte Ereignisse, letzter Fehler |
 | `POST /api/v1/refresh` | sofort abfragen und abgleichen |
 
 ```bash

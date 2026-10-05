@@ -182,6 +182,23 @@ describe('roles', () => {
     assert.equal(byId.d?.turns[0], 'Act as developer on acme/app#d');
   });
 
+  it('shows the role of each run in the snapshot and the issue detail', async () => {
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    const s = setup({
+      runner,
+      front: rolesFront,
+      prompt: rolePrompt,
+      issues: [makeIssue({ id: 'r', state: 'Agent review' }), makeIssue({ id: 'd' })],
+    });
+    await s.orchestrator.tickNow();
+    await until(() => runner.sessions.length === 2, 3_000, 'two sessions');
+    const roles = Object.fromEntries(snapshot(s).running.map((row) => [row.issue_id, row.role]));
+    assert.deepEqual(roles, { r: 'reviewer', d: 'developer' });
+    const detail = s.orchestrator.issueDetail('acme/app#r');
+    assert.equal(detail?.role, 'reviewer');
+    assert.equal(detail?.running?.role, 'reviewer');
+  });
+
   it('uses the implicit default role without roles and tags agent events with run_id and role', async () => {
     const lines: string[] = [];
     const logger = Logger.create({ sinks: [{ name: 'memory', write: (line) => lines.push(line) }], level: 'debug' });
