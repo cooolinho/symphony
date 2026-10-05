@@ -1,3 +1,5 @@
+import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import type { AgentToolSpec, ToolResult } from '../tracker/types.ts';
 import { SerialQueue } from '../util/async.ts';
 import { errorMessage } from '../util/errors.ts';
@@ -21,6 +23,11 @@ export type TransitionGuard = (target: string) => Promise<GuardDecision>;
 /** Check output passed back to the agent on a failed check. */
 export const CHECK_OUTPUT_LIMIT = 6_000;
 export const CHECK_PASSED_NOTE = 'Checks passed — end your turn now.';
+/** Upper bound for each git call that builds the cache key; on timeout the cache is skipped. */
+const GIT_TIMEOUT_MS = 5000;
+
+/** Passing check results of one claim, keyed by `<HEAD sha>:<script hash>`; see {@link cacheKey}. */
+export type CheckCache = Set<string>;
 
 export interface GuardParams {
   /** The run's role; null = the implicit `default` role. */
@@ -32,6 +39,8 @@ export interface GuardParams {
   manager: Pick<WorkspaceManager, 'runScript'>;
   /** The worker's signal: aborting it kills a running check's process group. */
   signal: AbortSignal;
+  /** Passing results to reuse; omitted = no caching. Lives as long as the claim, in memory only. */
+  cache?: CheckCache;
   /** Extra check variables from a workspace integration, when one is available. */
   checkEnv?: () => Promise<Record<string, string>>;
   onEvent?: (event: string, message: string, detail: Record<string, unknown>) => void;
@@ -49,6 +58,24 @@ function describeAllowed(params: GuardParams, allowed: string[] | null): string 
     return `any column except the terminal ones (${terminal})`;
   }
   return allowed.length === 0 ? 'none' : allowed.map((s) => `"${s}"`).join(', ');
+}
+
+function git(cwd: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile('git', args, { cwd, timeout: GIT_TIMEOUT_MS, encoding: 'utf8' }, (error, stdout) => (error ? reject(error) : resolve(stdout)));
+  });
+}
+
+/** `<HEAD sha>:<script hash>` for a clean working tree; null (never cached) when it is dirty or git fails. */
+async function cacheKey(cwd: string, script: string): Promise<{ sha: string; key: string } | null> {
+  try {
+    const [head, status] = await Promise.all([git(cwd, ['rev-parse', 'HEAD']), git(cwd, ['status', '--porcelain'])]);
+    const sha = head.trim();
+    if (sha === '' || status.trim() !== '') return null;
+    return { sha, key: `${sha}:${createHash('sha256').update(script).digest('hex')}` };
+  } catch {
+    return null;
+  }
 }
 
 function checkError(target: string, why: string): GuardDecision {
@@ -99,6 +126,12 @@ export function createGuard(params: GuardParams): TransitionGuard {
     const script = params.config.checks.onEnter.get(key);
     if (script === undefined) return { allow: true, note: null };
 
+    const cached = params.cache !== undefined ? await cacheKey(params.workspace.path, script) : null;
+    if (cached !== null && params.cache?.has(cached.key)) {
+      emit('entry_check_cached', `entry check for ${target} reused (${cached.sha})`, { target, role, sha: cached.sha });
+      return { allow: true, note: `cached result for ${cached.sha}` };
+    }
+
     emit('entry_check_started', `entry check for ${target} started`, { target, role });
     const extra = params.checkEnv !== undefined ? await params.checkEnv() : {};
     const result = await params.manager.runScript(`check:${target}`, script, params.workspace, params.issue(), {
@@ -107,6 +140,7 @@ export function createGuard(params: GuardParams): TransitionGuard {
       env: { ...extra, SYMPHONY_ROLE: role, SYMPHONY_TARGET_STATE: target },
     });
     const decision = decide(target, result);
+    if (decision.allow && cached !== null) params.cache?.add(cached.key);
     emit('entry_check_finished', `entry check for ${target} ${decision.allow ? 'passed' : decision.category}`, {
       target,
       role,

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 import { Logger } from '../src/log.ts';
 import { CHECK_PASSED_NOTE, createGuard, guardTools, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
@@ -118,6 +119,71 @@ describe('transition guard', () => {
     const results = await Promise.all([guard('Agent review'), guard('Agent review')]);
     assert.ok(results.every((r) => r.allow));
     assert.deepEqual(fs.readFileSync(path.join(workspacePath, 'log'), 'utf8').trim().split('\n'), ['start', 'end', 'start', 'end']);
+  });
+});
+
+describe('check cache', () => {
+  function cached(exitCode = 0) {
+    const env = setup({ checks: { 'Agent review': '' } });
+    const counter = path.join(path.dirname(env.workspacePath), 'count');
+    const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: env.workspacePath, stdio: 'ignore' });
+    git('init', '-q');
+    fs.writeFileSync(path.join(env.workspacePath, 'a.txt'), 'a');
+    git('add', '.');
+    git('commit', '-qm', 'one');
+    const make = (script: string) => {
+      const config = { ...env.params.config, checks: { ...env.params.config.checks, onEnter: new Map([['agent review', script]]) } };
+      return createGuard({ ...env.params, config, cache });
+    };
+    const cache = new Set<string>();
+    const script = `echo x >> ${counter}; exit ${exitCode}`;
+    const runs = () => (fs.existsSync(counter) ? fs.readFileSync(counter, 'utf8').trim().split('\n').length : 0);
+    return { ...env, cache, git, make, script, runs };
+  }
+
+  it('runs the script once for the same clean HEAD and script', async () => {
+    const { make, script, runs } = cached();
+    const guard = make(script);
+    const first = await guard('Agent review');
+    assert.deepEqual(first, { allow: true, note: CHECK_PASSED_NOTE });
+    const second = await guard('Agent review');
+    assert.equal(second.allow && second.note?.startsWith('cached result for '), true);
+    assert.equal(runs(), 1);
+  });
+
+  it('re-runs after a new commit, a changed script or a dirty tree', async () => {
+    const { make, script, runs, git, workspacePath } = cached();
+    const guard = make(script);
+    await guard('Agent review');
+    git('commit', '-q', '--allow-empty', '-m', 'two');
+    await guard('Agent review');
+    assert.equal(runs(), 2);
+    await make(`${script}; true`)('Agent review');
+    assert.equal(runs(), 3);
+    fs.writeFileSync(path.join(workspacePath, 'b.txt'), 'dirty');
+    await guard('Agent review');
+    await guard('Agent review');
+    assert.equal(runs(), 5);
+  });
+
+  it('never caches failures', async () => {
+    const { make, script, runs, cache } = cached(1);
+    const guard = make(script);
+    assert.equal((await guard('Agent review')).allow, false);
+    assert.equal((await guard('Agent review')).allow, false);
+    assert.equal(runs(), 2);
+    assert.equal(cache.size, 0);
+  });
+
+  it('runs the check when the workspace is not a git repository', async () => {
+    const env = setup({ checks: { 'Agent review': '' } });
+    const counter = path.join(path.dirname(env.workspacePath), 'count');
+    const script = `echo x >> ${counter}`;
+    const config = { ...env.params.config, checks: { ...env.params.config.checks, onEnter: new Map([['agent review', script]]) } };
+    const guard = createGuard({ ...env.params, config, cache: new Set() });
+    await guard('Agent review');
+    await guard('Agent review');
+    assert.equal(fs.readFileSync(counter, 'utf8').trim().split('\n').length, 2);
   });
 });
 

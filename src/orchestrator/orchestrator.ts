@@ -30,6 +30,7 @@ import {
   stateLimit,
 } from './eligibility.ts';
 import { normalizeStateName } from '../workflow/config.ts';
+import type { CheckCache } from './guard.ts';
 import { runAgentAttempt, type RunPhase, type WorkerOutcome } from './worker.ts';
 
 export interface Clock {
@@ -163,6 +164,8 @@ interface IssueRecord {
   recentEvents: RecentEvent[];
   /** Commit, branch and MCP tool usage of the running or last run. */
   lastRun: RunTrace | null;
+  /** Passing entry-check results per HEAD and script (docs/configuration.md#checks); in memory, dropped with the claim. */
+  checkCache: CheckCache;
 }
 
 interface RunTrace {
@@ -596,6 +599,7 @@ export class Orchestrator {
         childEnv: this.#childEnv(config),
         logger: log,
         signal: controller.signal,
+        checkCache: record.checkCache,
         transcriptDir: this.#deps.logDir === null ? null : path.join(this.#deps.logDir, 'sessions'),
         continueWith: (fresh) => {
           const current = this.#deps.workflow.current.config;
@@ -1126,7 +1130,7 @@ export class Orchestrator {
   #record(issue: Issue): IssueRecord {
     let record = this.#records.get(issue.id);
     if (record === undefined) {
-      record = { identifier: issue.identifier, url: issue.url, workspacePath: null, runs: 0, continuations: 0, lastError: null, recentEvents: [], lastRun: null };
+      record = { identifier: issue.identifier, url: issue.url, workspacePath: null, runs: 0, continuations: 0, lastError: null, recentEvents: [], lastRun: null, checkCache: new Set() };
       this.#records.set(issue.id, record);
     }
     record.identifier = issue.identifier;
