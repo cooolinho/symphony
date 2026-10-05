@@ -8,6 +8,7 @@ import { trackerDefaults } from '../src/tracker/registry.ts';
 import { SymphonyError } from '../src/util/errors.ts';
 import { loadEnvFile } from '../src/util/env.ts';
 import { DEFAULTS, resolveConfig } from '../src/workflow/config.ts';
+import { roleFor } from '../src/workflow/roles.ts';
 import { loadWorkflowFile, parseWorkflow } from '../src/workflow/loader.ts';
 import { type EffectiveWorkflow, WorkflowStore } from '../src/workflow/store.ts';
 import { validateDispatch } from '../src/workflow/validate.ts';
@@ -326,5 +327,97 @@ describe('workflow store', () => {
     const store = await WorkflowStore.open(file, { env: {}, logger: Logger.silent() });
     assert.match(store.current.prompt.source, /You are working on an issue/);
     store.close();
+  });
+});
+
+describe('roles config', () => {
+  const base = { tracker: { kind: 'github', active_states: ['Ready', 'In progress', 'Agent review'] } };
+  const valid = {
+    developer: { states: ['Ready', 'In progress'], may_move_to: ['In progress', 'Agent review'] },
+    reviewer: { states: ['Agent review'], read_only: true, max_turns: 6, claude: { model: 'opus' } },
+  };
+  const messageOf = (front: Record<string, unknown>): string => {
+    try {
+      resolve(front);
+    } catch (error) {
+      return (error as Error).message;
+    }
+    return '';
+  };
+
+  it('is null without a roles section', () => {
+    assert.equal(resolve(base).roles, null);
+  });
+
+  it('parses roles and finds them case-insensitively with roleFor', () => {
+    const roles = resolve({ ...base, roles: valid }).roles;
+    assert.ok(roles);
+    assert.equal(roleFor('in PROGRESS', roles)?.name, 'developer');
+    assert.deepEqual(roles[0]?.states, ['ready', 'in progress']);
+    assert.equal(roles[0]?.readOnly, false);
+    assert.equal(roles[0]?.maxTurns, null);
+    assert.equal(roles[1]?.readOnly, true);
+    assert.equal(roles[1]?.maxTurns, 6);
+    assert.equal(roles[1]?.mayMoveTo, null);
+    assert.deepEqual(roles[1]?.claude, { model: 'opus' });
+    assert.equal(roleFor('Done', roles), null);
+    assert.equal(roleFor('Ready', null), null);
+  });
+
+  it('rejects a role state that is not active', () => {
+    const message = messageOf({ ...base, roles: { ...valid, extra: { states: ['Blocked'] } } });
+    assert.match(message, /roles\.extra\.states: "Blocked" is not in tracker\.active_states/);
+  });
+
+  it('rejects a state in more than one role', () => {
+    const message = messageOf({ ...base, roles: { ...valid, extra: { states: ['ready'] } } });
+    assert.match(message, /belongs to more than one role \(developer, extra\)/);
+  });
+
+  it('rejects an active state without a role', () => {
+    const message = messageOf({ ...base, roles: { developer: valid.developer } });
+    assert.match(message, /active state "Agent review" has no role/);
+  });
+
+  it('rejects unknown keys under a role and its claude block', () => {
+    const message = messageOf({
+      ...base,
+      roles: { ...valid, reviewer: { ...valid.reviewer, bogus: 1, claude: { model: 'opus', permission_mode: 'auto' } } },
+    });
+    assert.match(message, /roles\.reviewer\.bogus is not a known key/);
+    assert.match(message, /roles\.reviewer\.claude\.permission_mode is not a known key/);
+  });
+
+  it('rejects invalid value types', () => {
+    assert.match(messageOf({ ...base, roles: 'x' }), /roles must be a map/);
+    const message = messageOf({
+      ...base,
+      roles: {
+        developer: { states: 'Ready', read_only: 'maybe', max_turns: 0, may_move_to: [1], claude: { effort: 'huge' } },
+        reviewer: valid.reviewer,
+      },
+    });
+    assert.match(message, /roles\.developer\.states must be a list of strings/);
+    assert.match(message, /roles\.developer\.read_only must be true or false/);
+    assert.match(message, /roles\.developer\.max_turns must be an integer >= 1/);
+    assert.match(message, /roles\.developer\.may_move_to must be a list of strings/);
+    assert.match(message, /roles\.developer\.claude\.effort must be one of/);
+  });
+
+  it('reports several errors in one invalid_config', () => {
+    const front = { ...base, roles: { developer: { states: ['Blocked'], bogus: true } } };
+    assert.equal(codeOf(() => resolve(front)), 'invalid_config');
+    const message = messageOf(front);
+    assert.match(message, /not in tracker\.active_states/);
+    assert.match(message, /bogus is not a known key/);
+    assert.match(message, /has no role/);
+  });
+
+  it('warns when roles is set with unlimited max_continuations', () => {
+    const warning = /agent\.max_continuations is unlimited/;
+    assert.ok(resolve({ ...base, roles: valid }).warnings.some((w) => warning.test(w)));
+    const limited = resolve({ ...base, roles: valid, agent: { max_continuations: 3 } });
+    assert.ok(!limited.warnings.some((w) => warning.test(w)));
+    assert.ok(!resolve(base).warnings.some((w) => warning.test(w)));
   });
 });

@@ -134,6 +134,33 @@ Boost only get a log line; `npm run repo-init` creates an issue that adds it. De
 | `env` | `{ APP_ENV: local }` | Environment for Composer, `artisan`, the Boost MCP server and the agent. Boost only registers its commands with `APP_ENV=local` (or `APP_DEBUG=true`), and a fresh clone has no `.env`. Entries are merged over the default, e.g. `{ DB_CONNECTION: sqlite }` keeps Boost's database tools away from a developer's database. |
 | `timeout_ms` | `hooks.timeout_ms` | Limit for each Composer or `artisan` step. |
 
+### `roles`
+
+Optional. Maps board columns to column-scoped agent roles. Without it, every active state is served by one implicit role named `default` and nothing changes. This section is parsed and validated only; dispatch does not use it yet.
+
+```yaml
+roles:
+  developer:
+    states: [Ready, In progress]
+    may_move_to: [In progress, Agent review, Blocked]
+  reviewer:
+    states: [Agent review]
+    read_only: true
+    max_turns: 6
+    may_move_to: [In review, In progress, Blocked]
+    claude: { model: opus }
+```
+
+| Key | Default | Notes |
+|---|---|---|
+| `states` | required | Active states the role serves; matched case-insensitively. |
+| `read_only` | `false` | The role's agent must not change the repository. |
+| `may_move_to` | unrestricted | Column names the agent may move the issue to. Free-form; not checked against the board here. |
+| `max_turns` | `agent.max_turns` | Integer >= 1. |
+| `claude` | `{}` | Overrides of `model`, `effort`, `allowed_tools`, `disallowed_tools`, `append_system_prompt`, `max_budget_usd` (same meaning as in [`claude`](#claude)). |
+
+Invalid configs fail with `invalid_config`, listing every problem: a state outside `tracker.active_states`, a state in more than one role, an active state without a role (once `roles` is set), unknown keys under a role or its `claude` block, and invalid value types. With `roles` set and `agent.max_continuations` unlimited, a warning is logged because role switches will count as continuations.
+
 ### Model per issue
 
 An issue label `Model: <value>` picks the model for that issue's sessions; issues without one use `claude.model`.

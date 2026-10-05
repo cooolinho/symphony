@@ -5,6 +5,7 @@ import { resolveEnvReference } from '../util/env.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { resolveConfigPath } from '../util/paths.ts';
 import { isPlainObject } from './loader.ts';
+import type { RoleClaudeOverrides, RoleConfig } from './roles.ts';
 
 export interface TrackerConfig {
   kind: string | null;
@@ -102,6 +103,8 @@ export interface ServiceConfig {
   agent: AgentConfig;
   claude: ClaudeConfig;
   laravel: LaravelConfig;
+  /** Column-scoped roles; null without a `roles` section (one implicit `default` role). */
+  roles: RoleConfig[] | null;
   server: ServerConfig;
   /** Non-fatal findings (ignored keys, ignored per-state limits) for operator logs. */
   warnings: string[];
@@ -135,7 +138,9 @@ export const DEFAULTS = {
 const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'];
 const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
-const KNOWN_TOP_LEVEL = new Set(['tracker', 'polling', 'workspace', 'hooks', 'agent', 'claude', 'laravel', 'server']);
+const KNOWN_TOP_LEVEL = new Set(['tracker', 'polling', 'workspace', 'hooks', 'agent', 'claude', 'laravel', 'roles', 'server']);
+const ROLE_KEYS = new Set(['states', 'read_only', 'may_move_to', 'max_turns', 'claude']);
+const ROLE_CLAUDE_KEYS = new Set(['model', 'effort', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'max_budget_usd']);
 const BOOST_MODES: readonly BoostMode[] = ['auto', 'off'];
 /** Boost only registers its commands in the local environment (or with debug on); a fresh clone has no .env. */
 const LARAVEL_DEFAULT_ENV: Readonly<Record<string, string>> = { APP_ENV: 'local' };
@@ -250,6 +255,84 @@ function parseInteger(value: unknown): number | null {
     return Number.isSafeInteger(parsed) ? parsed : null;
   }
   return null;
+}
+
+function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: string[]): RoleConfig[] | null {
+  if (raw.roles === undefined || raw.roles === null) return null;
+  if (!isPlainObject(raw.roles)) {
+    reader.errors.push('roles must be a map');
+    return null;
+  }
+  const roles: RoleConfig[] = [];
+  const owners = new Map<string, string>();
+  const active = new Set(activeStates.map(normalizeStateName));
+  for (const [name, value] of Object.entries(raw.roles)) {
+    const field = `roles.${name}`;
+    if (!isPlainObject(value)) {
+      reader.errors.push(`${field} must be a map`);
+      continue;
+    }
+    for (const key of Object.keys(value)) {
+      if (!ROLE_KEYS.has(key)) reader.errors.push(`${field}.${key} is not a known key (allowed: ${[...ROLE_KEYS].join(', ')})`);
+    }
+    const states: string[] = [];
+    const statesValue = reader.stringList(value, 'states', `${field}.states`);
+    if (statesValue === null && value.states === undefined) reader.errors.push(`${field}.states is required`);
+    for (const state of statesValue ?? []) {
+      const key = normalizeStateName(state);
+      if (key === '' || states.includes(key)) continue;
+      states.push(key);
+      if (!active.has(key)) reader.errors.push(`${field}.states: ${JSON.stringify(state)} is not in tracker.active_states`);
+      const owner = owners.get(key);
+      if (owner !== undefined) reader.errors.push(`state ${JSON.stringify(state)} belongs to more than one role (${owner}, ${name})`);
+      else owners.set(key, name);
+    }
+    if (statesValue !== null && states.length === 0) reader.errors.push(`${field}.states must list at least one state`);
+
+    const mayMoveTo = reader.stringList(value, 'may_move_to', `${field}.may_move_to`);
+    const maxTurnsValue = value.max_turns;
+    const claudeRaw = value.claude;
+    let claude: RoleClaudeOverrides = {};
+    if (claudeRaw !== undefined && claudeRaw !== null) {
+      if (isPlainObject(claudeRaw)) claude = readRoleClaude(reader, claudeRaw, `${field}.claude`);
+      else reader.errors.push(`${field}.claude must be a map`);
+    }
+    roles.push({
+      name,
+      states,
+      readOnly: reader.bool(value, 'read_only', `${field}.read_only`, false),
+      mayMoveTo: mayMoveTo === null ? null : mayMoveTo.map((entry) => entry.trim()).filter((entry) => entry !== ''),
+      maxTurns:
+        maxTurnsValue === undefined || maxTurnsValue === null
+          ? null
+          : reader.int(value, 'max_turns', `${field}.max_turns`, 0, 1) || null,
+      claude,
+    });
+  }
+  for (const state of activeStates) {
+    if (!owners.has(normalizeStateName(state))) reader.errors.push(`active state ${JSON.stringify(state)} has no role`);
+  }
+  return roles;
+}
+
+function readRoleClaude(reader: Reader, raw: Record<string, unknown>, field: string): RoleClaudeOverrides {
+  for (const key of Object.keys(raw)) {
+    if (!ROLE_CLAUDE_KEYS.has(key)) reader.errors.push(`${field}.${key} is not a known key (allowed: ${[...ROLE_CLAUDE_KEYS].join(', ')})`);
+  }
+  const claude: RoleClaudeOverrides = {};
+  const model = reader.string(raw, 'model', `${field}.model`)?.trim();
+  if (model) claude.model = model;
+  const effort = reader.oneOf(raw, 'effort', `${field}.effort`, EFFORT_LEVELS, null);
+  if (effort !== null) claude.effort = effort;
+  const allowedTools = reader.stringList(raw, 'allowed_tools', `${field}.allowed_tools`);
+  if (allowedTools !== null) claude.allowedTools = allowedTools;
+  const disallowedTools = reader.stringList(raw, 'disallowed_tools', `${field}.disallowed_tools`);
+  if (disallowedTools !== null) claude.disallowedTools = disallowedTools;
+  const appendSystemPrompt = reader.script(raw, 'append_system_prompt', `${field}.append_system_prompt`);
+  if (appendSystemPrompt !== null) claude.appendSystemPrompt = appendSystemPrompt;
+  const maxBudgetUsd = reader.number(raw, 'max_budget_usd', `${field}.max_budget_usd`);
+  if (maxBudgetUsd !== null) claude.maxBudgetUsd = maxBudgetUsd;
+  return claude;
 }
 
 /**
@@ -448,6 +531,14 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     env: { ...LARAVEL_DEFAULT_ENV, ...reader.stringMap(laravelRaw, 'env', 'laravel.env') },
   };
 
+  // roles
+  const roles = readRoles(reader, raw, activeStates);
+  if (roles !== null && agent.maxContinuations === null) {
+    reader.warnings.push(
+      'roles is set while agent.max_continuations is unlimited: role switches count as continuations, so set a limit',
+    );
+  }
+
   // server (HTTP extension)
   const serverRaw = reader.section(raw, 'server');
   const portValue = serverRaw.port;
@@ -471,6 +562,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     agent,
     claude,
     laravel,
+    roles,
     server,
     warnings: reader.warnings,
   };
