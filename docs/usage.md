@@ -265,8 +265,10 @@ Woher die Daten kommen und wo die Grenzen liegen:
 |---|---|
 | `GET /` | Dashboard |
 | `GET /agent?id=<identifier>` | Agent-Detailansicht (Execution Trace) |
-| `GET /logs` | Logs-Seite mit Statistiken, gesamt oder mit `?repo=owner/name` für ein Repository |
-| `GET /api/v1/history` | dieselben Statistiken als JSON, optional mit `?repo=owner/name` |
+| `GET /logs` | Statistik- und Analyse-Seite; Filter in der URL: `?period=30d` (`today`, `yesterday`, `7d`, `14d`, `30d`, `90d`, `month`, `last_month`, `all` oder `custom&from=YYYY-MM-DD&to=YYYY-MM-DD`), `&repo=owner/name`, `&model=<id>` |
+| `GET /api/v1/history` | Gesamtstatistik als JSON (ohne Zeitraum), optional mit `?repo=owner/name`; speist den Logs-Drawer im Dashboard |
+| `GET /api/v1/history/analytics?from=&to=&repo=&model=&tz=` | serverseitig aggregierte Analysen für einen Zeitraum (`from` inklusive, `to` exklusive, ISO-Zeitpunkte, beide optional): Kennzahlen mit Vorperiode, Zeitreihen, Modelle, Repositories, Issues, Ergebnisse, Laufzeiten, Heatmap, Top-Läufe, Auffälligkeiten. `tz` (IANA-Zone) bestimmt Buckets, Wochentage und Stunden |
+| `GET /api/v1/history/entries?from=&to=&repo=&issue=&event=&result=&order=desc&limit=200` | Log-Einträge eines Zeitraums, gefiltert und sortiert (höchstens 1.000) |
 | `GET /api/v1/history/raw?repo=owner/name` | die `.log`-Datei eines Repositorys als Text |
 | `GET /api/v1/state` | Gesamtzustand als JSON: laufende Agenten (mit `role`), Warteschlange, Summen, Gesundheit |
 | `GET /api/v1/<identifier>` | Details zu einem Issue: Titel, Rolle, Workspace, Versuche, Sessions (`sessions`), Tokens und Kosten pro Modell (`usage_by_model`), letzte Ereignisse, letzter Fehler, letzter Entry-Check (`last_check`) |
@@ -310,13 +312,37 @@ ts=2026-10-04T09:17:00.000Z event=model_usage repo=cooolinho/trainingsstunden-po
 | `issue_paused` | Ein Issue wurde nach seinen Fortsetzungs-Sessions pausiert. |
 | `workspace_removed` | Der Workspace eines Issues in `Done` wurde gelöscht. |
 
-Die **Logs-Seite** (`/logs`, Button *Logs* im Dashboard) wertet diese Dateien aus. Oben wählst du *Alle
-Repositories* oder ein einzelnes. Die Seite zeigt dann:
+Die **Statistik-Seite** (`/logs`, Button *Logs* im Dashboard) wertet diese Dateien aus. Oben steht ein globaler
+Filter: **Zeitraum** (Heute, Gestern, letzte 7/14/30/90 Tage, dieser/letzter Monat, alles oder ein eigener
+Datumsbereich), **Repository** und **Modell**. Er gilt für alle Abschnitte und steht in der URL. Ein Klick auf ein
+Modell oder Repository in den Balkendiagrammen setzt diesen Filter, ein Klick auf einen Balken im Aktivitätsdiagramm
+zoomt in den Zeitraum. Die Seite zeigt:
 
-- Kennzahlen: geschätzte Kosten, Tokens, Agentenzeit, Läufe und Issues,
-- Tabellen nach **Modell** (mit Kostenanteil), nach **Repository**, nach **Issue** (Läufe, letztes Ergebnis, erster
-  Start, letztes Ende) und nach **Tag**,
-- die letzten Log-Einträge und bei einem einzelnen Repository einen Link auf die rohe `.log`-Datei.
+- **Kennzahlen**: Läufe, Issues, Tokens, geschätzte Kosten, Agentenzeit, durchschnittliche Laufzeit, Kosten und
+  Tokens pro Lauf, erfolgreiche und fehlgeschlagene Läufe, Retry-Rate, pausierte Issues. Dazu der Vergleich mit der
+  gleich langen Vorperiode, aber nur, wenn die Logs diese Vorperiode vollständig abdecken.
+- **Zeitreihen** für Läufe, Tokens, Kosten und Agentenzeit. Die Granularität passt sich an: stündlich bis 2 Tage,
+  täglich bis ~3 Monate, wöchentlich bis 2 Jahre, sonst monatlich. Dazu Kosten pro Bucket oder kumuliert und Tokens
+  gestapelt nach Input, Output und Cache.
+- **Modelle**: Vergleich nach Kosten, Läufen, Tokens, Kosten/Lauf, Tokens/Lauf oder Agentenzeit, plus eine
+  Effizienztabelle (Kosten pro 1M Tokens, Output/Input-Verhältnis). Mit Modellfilter zählen Tokens und Kosten nur
+  dieses Modell.
+- **Repositories**: Vergleich, Aktivität über die Zeit (die drei aktivsten plus „Other“) und eine Tabelle mit
+  letzter Aktivität.
+- **Ergebnisse** der Läufe so, wie sie geloggt sind (`handed_off`/`continuing` = erfolgreich, `failed`/`stalled` =
+  fehlgeschlagen, `stopped`/`shutdown` = gestoppt). Ein Lauf gilt als *Retry*, wenn der vorige Lauf desselben Issues
+  fehlgeschlagen ist.
+- **Laufzeiten**: Durchschnitt, Median (ab 3 Läufen), p90/p95 (ab 20 Läufen), kürzester und längster Lauf,
+  Verteilung; eine **Heatmap** der Startzeiten nach Wochentag und Stunde.
+- **Top-Läufe** nach Kosten, Tokens und Dauer, die meist wiederholten Issues und **Needs attention**: Läufe mit
+  mindestens dem 3-fachen Durchschnitt des Zeitraums (ab 5 Läufen) sowie Issues mit mindestens 3 fehlgeschlagenen
+  oder wiederholten Läufen.
+- **Issues**, sortierbar (teuerste, meiste Tokens, längste Laufzeit, meiste Läufe, neueste, zuletzt beendet,
+  fehlgeschlagen), und das **Log** des Zeitraums mit Filtern nach Issue, Ereignis und Ergebnis. Das Log lädt
+  getrennt: Schlägt es fehl, bleiben die Statistiken sichtbar und das Log lässt sich einzeln neu laden. Bei einem
+  einzelnen Repository gibt es einen Link auf die rohe `.log`-Datei.
+
+Alle Zahlen kommen aus den Logs; die Kosten rechnet die Seite wie bisher mit der aktuellen `model-costs.yml`.
 
 ## Kosten schätzen mit `model-costs.yml`
 
