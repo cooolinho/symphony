@@ -7,3 +7,4 @@ node_modules/
 .idea/
 /logs/
 .claude/settings.local.json
+/secrets/
