@@ -110,6 +110,43 @@ It copies `.env.example`, sets `APP_ENV=local`, `APP_DEBUG=true`, a fresh `APP_K
 `DB_USERNAME` and `DB_PASSWORD`, creates the SQLite file and adds `.env` and the file to `.git/info/exclude` if the app
 does not ignore them.
 
+##### Optional: MySQL instead of SQLite
+
+Apps whose tests or Boost usage need MySQL can opt in with `SYMPHONY_LARAVEL_DB=mysql` in Symphony's environment. Each
+workspace then gets a development database `symphony_<key>` and a test database `symphony_<key>_test`, where `<key>`
+is the first 12 hex characters of the sha256 of `SYMPHONY_WORKSPACE_KEY` (names stay below MySQL's 64-character limit).
+`laravel-env.sh` creates both with the `mysql` client (`CREATE DATABASE IF NOT EXISTS`), sets `DB_CONNECTION=mysql`,
+`DB_DATABASE`, `DB_HOST`, `DB_PORT`, `DB_USERNAME` and `DB_PASSWORD` in `.env` (mode `0600`) and writes `.env.testing`
+for the test database. A failed `CREATE DATABASE` exits non-zero, so the half-created workspace is removed.
+`hooks/laravel-db-drop.sh` drops both databases in `before_remove`; missing databases are not an error.
+
+```yaml
+hooks:
+  after_create: |
+    git clone --quiet "git@github.com:${SYMPHONY_ISSUE_REPOSITORY}.git" .
+    bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-env.sh"
+  before_remove: |
+    bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-db-drop.sh"
+```
+
+| Variable | Meaning |
+| --- | --- |
+| `SYMPHONY_LARAVEL_DB` | `mysql` enables this variant; anything else keeps SQLite |
+| `SYMPHONY_MYSQL_HOST`, `SYMPHONY_MYSQL_PORT` | Server, default `127.0.0.1` and `3306` |
+| `SYMPHONY_MYSQL_USER` | Required |
+| `SYMPHONY_MYSQL_PASSWORD` | Passed to `mysql` via `MYSQL_PWD`, never printed; single line |
+
+Create a dedicated user restricted to `symphony\_%` databases (this also covers the suffixed databases of
+`php artisan test --parallel`). Symphony does not provision the MySQL server.
+
+```sql
+CREATE USER 'symphony'@'localhost' IDENTIFIED BY '...';
+GRANT ALL PRIVILEGES ON `symphony\_%`.* TO 'symphony'@'localhost';
+```
+
+Prerequisite in the app: do not hard-code `DB_DATABASE` in `phpunit.xml`. PHPUnit's value would win over
+`.env.testing`, and parallel workspaces would share one test database.
+
 Hooks finish when their output pipes close, so redirect the output of background jobs (`cmd >/dev/null 2>&1 &`).
 
 ### `checks`

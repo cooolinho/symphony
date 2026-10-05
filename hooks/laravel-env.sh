@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Gives every Laravel app in the workspace its own .env and SQLite database.
+# With SYMPHONY_LARAVEL_DB=mysql it uses two MySQL databases per workspace instead (see docs/configuration.md).
 # Run from hooks.after_create after the clone. Silent no-op when there is no app to prepare.
 set -euo pipefail
 
 workspace="$(cd "${SYMPHONY_WORKSPACE:-$(pwd)}" && pwd -P)"
+use_mysql=false
+[ "${SYMPHONY_LARAVEL_DB:-}" = mysql ] && use_mysql=true
 
 # Rewrites $1 in place: each key in $SETTINGS ("KEY=value" lines) replaces its first (possibly commented)
 # definition, later definitions are dropped, missing keys are appended. DB_HOST & co. are commented out.
@@ -58,15 +61,60 @@ exclude_untracked() {
   printf '/%s%s\n' "$prefix" "${target#"$app"/}" >> "$exclude"
 }
 
+# Name of the workspace's development database; "<name>_test" is the test database. 12 hex characters keep it < 64.
+mysql_name() {
+  printf 'symphony_%s' "$(printf '%s' "${SYMPHONY_WORKSPACE_KEY:?SYMPHONY_WORKSPACE_KEY is required for MySQL}" | sha256sum | cut -c1-12)"
+}
+
+# Quotes $1 as a .env value unless it only holds plain characters.
+env_quote() {
+  local v="$1"
+  case "$v" in
+    '' | *[!A-Za-z0-9_.,:/@%+=-]*) v="${v//\\/\\\\}"; v="${v//\"/\\\"}"; printf '"%s"' "${v//\$/\\\$}" ;;
+    *) printf '%s' "$v" ;;
+  esac
+}
+
+# Creates the databases given as arguments. The password only travels in MYSQL_PWD, never in arguments or output.
+create_mysql_databases() {
+  local name
+  for name in "$@"; do
+    if ! MYSQL_PWD="${SYMPHONY_MYSQL_PASSWORD:-}" mysql --host="$mysql_host" --port="$mysql_port" \
+      --user="$SYMPHONY_MYSQL_USER" --execute="CREATE DATABASE IF NOT EXISTS \`$name\`"; then
+      echo "laravel-env: CREATE DATABASE $name failed on $mysql_host:$mysql_port as $SYMPHONY_MYSQL_USER" >&2
+      exit 1
+    fi
+  done
+}
+
+if $use_mysql; then
+  : "${SYMPHONY_MYSQL_USER:?laravel-env: SYMPHONY_LARAVEL_DB=mysql needs SYMPHONY_MYSQL_USER}"
+  case "${SYMPHONY_MYSQL_PASSWORD:-}" in *$'\n'*) echo "laravel-env: SYMPHONY_MYSQL_PASSWORD must be a single line" >&2; exit 1 ;; esac
+  mysql_host="${SYMPHONY_MYSQL_HOST:-127.0.0.1}"
+  mysql_port="${SYMPHONY_MYSQL_PORT:-3306}"
+  mysql_db="$(mysql_name)"
+fi
+
 prepare_app() {
   local app="$1" key sqlite settings
   sqlite="$app/database/symphony.sqlite"
   key="base64:$(openssl rand -base64 32)"
+  if $use_mysql; then
+    settings="DB_CONNECTION=mysql
+DB_HOST=$mysql_host
+DB_PORT=$mysql_port
+DB_DATABASE=$mysql_db
+DB_USERNAME=$(env_quote "$SYMPHONY_MYSQL_USER")
+DB_PASSWORD=$(env_quote "${SYMPHONY_MYSQL_PASSWORD:-}")"
+    create_mysql_databases "$mysql_db" "${mysql_db}_test"
+  else
+    settings="DB_CONNECTION=sqlite
+DB_DATABASE=$sqlite"
+  fi
   settings="APP_ENV=local
 APP_DEBUG=true
 APP_KEY=$key
-DB_CONNECTION=sqlite
-DB_DATABASE=$sqlite
+$settings
 CACHE_STORE=file
 QUEUE_CONNECTION=sync
 MAIL_MAILER=log
@@ -74,10 +122,20 @@ BOOST_BROWSER_LOGS_WATCHER=false"
 
   cp "$app/.env.example" "$app/.env"
   SETTINGS="$settings" rewrite_env "$app/.env"
-  mkdir -p "$app/database"
-  touch "$sqlite"
   exclude_untracked "$app" "$app/.env"
-  exclude_untracked "$app" "$sqlite"
+  if $use_mysql; then
+    chmod 600 "$app/.env"
+    if ! git -C "$app" ls-files --error-unmatch .env.testing >/dev/null 2>&1; then
+      cp "$app/.env" "$app/.env.testing"
+      SETTINGS="APP_ENV=testing
+DB_DATABASE=${mysql_db}_test" rewrite_env "$app/.env.testing"
+      exclude_untracked "$app" "$app/.env.testing"
+    fi
+  else
+    mkdir -p "$app/database"
+    touch "$sqlite"
+    exclude_untracked "$app" "$sqlite"
+  fi
   echo "laravel-env: prepared ${app#"$workspace"/}"
 }
 
