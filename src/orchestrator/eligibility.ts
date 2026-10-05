@@ -2,6 +2,8 @@ import type { Issue } from '../tracker/types.ts';
 import { normalizeStateName, type AgentConfig, type TrackerConfig } from '../workflow/config.ts';
 
 export const CONTINUATION_DELAY_MS = 1_000;
+/** Largest delay setTimeout honors (2^31-1 ms); Node fires longer timers after 1 ms. */
+export const MAX_TIMER_MS = 2_147_483_647;
 const FAILURE_BASE_DELAY_MS = 10_000;
 
 /** Failure retries: 10s, 20s, 40s, ... capped at agent.max_retry_backoff_ms. */

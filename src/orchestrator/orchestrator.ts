@@ -22,6 +22,7 @@ import type { EffectiveWorkflow, WorkflowLoadError } from '../workflow/store.ts'
 import { unknownBoardColumns, validateDispatch } from '../workflow/validate.ts';
 import {
   CONTINUATION_DELAY_MS,
+  MAX_TIMER_MS,
   failureBackoffMs,
   hasRequiredFields,
   isActiveState,
@@ -1054,7 +1055,7 @@ export class Orchestrator {
       (info.kind === 'continuation'
         ? CONTINUATION_DELAY_MS
         : failureBackoffMs(attempt, this.#deps.workflow.current.config.agent.maxRetryBackoffMs));
-    const timer = this.#timers.setTimeout(() => void this.#serial.run(() => this.#onRetryTimer(issueId)), delay);
+    const timer = this.#timers.setTimeout(() => void this.#serial.run(() => this.#onRetryTimer(issueId)), Math.min(delay, MAX_TIMER_MS));
     this.#retries.set(issueId, {
       issueId,
       identifier: info.identifier,
@@ -1122,6 +1123,19 @@ export class Orchestrator {
       this.#release(issueId);
       return;
     }
+    if (retry.kind === 'session_limit' && retry.limit?.waiting) {
+      // The timer fired early (wall-clock jump, suspend) or was clamped: keep waiting for the remaining time.
+      const remainingMs = retry.dueAt.getTime() - this.#clock.now().getTime();
+      if (remainingMs > 1_000) {
+        this.#scheduleRetry(
+          issueId,
+          retry.attempt,
+          { identifier: retry.identifier, url: retry.url, kind: retry.kind, error: retry.error, limit: retry.limit },
+          remainingMs,
+        );
+        return;
+      }
+    }
     // A session-limit retry keeps its kind and limit; any other kind is requeued as a failure, as before.
     // A woken waiting entry is past its reset: it now waits for a short backoff, not for the reset again.
     const limit = retry.limit?.waiting ? { ...retry.limit, waiting: false } : retry.limit;
@@ -1143,6 +1157,10 @@ export class Orchestrator {
       refreshed = await adapter.fetchIssuesByIds([issueId]);
     } catch (error) {
       requeue(`retry refresh failed: ${errorMessage(error)}`);
+      return;
+    }
+    if (this.#stopping) {
+      this.#release(issueId);
       return;
     }
 
@@ -1171,6 +1189,10 @@ export class Orchestrator {
       return;
     }
     await this.#loadStatusOptions(workflow);
+    if (this.#stopping) {
+      this.#release(issueId);
+      return;
+    }
     const errors = this.#validate(workflow);
     if (errors.length > 0) {
       requeue(`dispatch validation failed: ${errors[0]}`);

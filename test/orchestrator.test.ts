@@ -947,6 +947,76 @@ describe('session limit retries', () => {
     assert.equal(event?.level, 'warn');
     assert.equal(event?.detail?.outcome, 'session_limit');
   });
+
+  it('clamps the timer delay to 2^31-1 ms but keeps the real due_at', async () => {
+    const { s } = limitSetup({ front: { agent: { max_turns: 1, max_retry_backoff_ms: 3_000_000_000, max_session_limit_retries: 100 } } });
+    s.runner.sessions.length = 0;
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'first retry');
+    for (let i = 0; i < 25 && s.timers.delays()[0] !== 2_147_483_647; i++) {
+      const delay = s.timers.delays()[0] ?? 0;
+      await fireRetry(s, delay);
+    }
+    assert.deepEqual(s.timers.delays(), [2_147_483_647]);
+    const realDelay = Math.min(10_000 * 2 ** ((retry(s)?.attempt ?? 1) - 1), 3_000_000_000);
+    assert.ok(realDelay > 2_147_483_647);
+    assert.equal(retry(s)?.due_at, new Date(s.clock.now().getTime() + realDelay).toISOString());
+  });
+
+  it('keeps a waiting entry waiting when its timer fires before the wall clock reaches due_at', async () => {
+    const { s } = limitSetup({ front: { agent: { max_turns: 1, max_session_limit_retries: 0 } } });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'waiting entry');
+    const before = retry(s);
+    assert.equal(before?.limit?.waiting, true);
+    const wait = s.timers.delays()[0] ?? 0;
+    const fetches: string[][] = [];
+    const original = s.tracker.fetchIssuesByIds.bind(s.tracker);
+    s.tracker.fetchIssuesByIds = async (ids: string[]) => {
+      fetches.push(ids);
+      return original(ids);
+    };
+    s.clock.advance(wait - 10_000);
+    s.timers.fire(wait);
+    await until(() => s.timers.delays().length === 1 && s.timers.delays()[0] === 10_000, 3_000, 'rescheduled');
+    const after = retry(s);
+    assert.equal(after?.kind, 'session_limit');
+    assert.equal(after?.attempt, before?.attempt);
+    assert.deepEqual(after?.limit, before?.limit);
+    assert.equal(after?.due_at, before?.due_at);
+    assert.equal(fetches.length, 0);
+    assert.equal(s.runner.sessions.length, 1);
+
+    s.clock.advance(10_000);
+    s.timers.fire(10_000);
+    await until(() => s.runner.sessions.length === 2, 3_000, 'dispatch');
+    assert.equal(fetches.length, 1);
+  });
+
+  it('does not dispatch when shutdown runs while the retry refresh is pending', async () => {
+    const { s } = limitSetup();
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'first retry');
+    const original = s.tracker.fetchIssuesByIds.bind(s.tracker);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let called = false;
+    s.tracker.fetchIssuesByIds = async (ids: string[]) => {
+      called = true;
+      await gate;
+      return original(ids);
+    };
+    s.timers.fire(10_000);
+    await until(() => called, 3_000, 'fetch started');
+    const stopped = s.orchestrator.shutdown(1_000);
+    release();
+    await stopped;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(s.runner.sessions.length, 1);
+    assert.equal(snapshot(s).counts.claimed, 0);
+  });
 });
 
 describe('reconciliation', () => {
