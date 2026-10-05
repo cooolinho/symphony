@@ -37,11 +37,21 @@ export type TurnFailureCode =
   | 'turn_timeout'
   | 'turn_input_required'
   | 'port_exit'
-  | 'response_error';
+  | 'response_error'
+  | 'session_limit';
+
+/** A turn that failed because the account hit a Claude usage limit. */
+export interface SessionLimitInfo {
+  window: string | null;
+  resetsAt: Date | null;
+  source: 'event' | 'message' | null;
+  text: string;
+  overageDisabledReason: string | null;
+}
 
 export type TurnResult =
   | { ok: true; turnId: string; resultText: string }
-  | { ok: false; turnId: string; code: TurnFailureCode; message: string };
+  | { ok: false; turnId: string; code: TurnFailureCode; message: string; sessionLimit?: SessionLimitInfo };
 
 export interface AgentSession {
   readonly threadId: string;

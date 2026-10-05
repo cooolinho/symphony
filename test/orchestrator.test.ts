@@ -525,6 +525,14 @@ describe('worker lifecycle and retries', () => {
     assert.equal(snapshot(s).retrying.length, 0);
   });
 
+  it('reports a session_limit turn failure as worker exited: session_limit', async () => {
+    const s = setup({ issues: [makeIssue({ id: 'a' })] });
+    s.runner.script = (turn) => ({ ok: false, turnId: String(turn), code: 'session_limit', message: "turn ended with an error: You've hit your session limit" });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'retry');
+    assert.match(snapshot(s).retrying[0]?.error ?? '', /worker exited: session_limit: turn ended with an error: You've hit your session limit/);
+  });
+
   it('retries failures with exponential backoff and re-dispatches with the attempt number', async () => {
     const s = setup({ issues: [makeIssue({ id: 'a' })] });
     s.runner.script = (turn) => ({ ok: false, turnId: String(turn), code: 'turn_failed', message: 'boom' });

@@ -12,6 +12,7 @@ import {
   type SandboxSettings,
   type SDKAssistantMessage,
   type SDKMessage,
+  type SDKRateLimitInfo,
   type SDKResultMessage,
   type SDKSystemMessage,
   type SDKUserMessage,
@@ -21,8 +22,9 @@ import type { Issue, ToolResult } from '../tracker/types.ts';
 import { AsyncQueue, settledWithin, sleep, withTimeout } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { oneLine, tail, truncate } from '../util/text.ts';
+import { parseLimitMessage } from './rate-limit.ts';
 import { forgetProcessGroup, killProcessGroup, processGroupSpawner } from './spawn.ts';
-import type { AgentEvent, AgentRunner, AgentSession, StartSessionParams, TokenUsage, TurnResult } from './types.ts';
+import type { AgentEvent, AgentRunner, AgentSession, SessionLimitInfo, StartSessionParams, TokenUsage, TurnResult } from './types.ts';
 
 export type QueryFn = (params: { prompt: string | AsyncIterable<SDKUserMessage>; options?: Options }) => Query;
 
@@ -102,6 +104,13 @@ function describeResult(result: SDKResultMessage): string {
   return `${reason[result.subtype] ?? result.subtype}${errors}`;
 }
 
+/** resetsAt from the SDK is Unix seconds; a value above 1e11 is taken as milliseconds. */
+function dateFromResetsAt(value: unknown): Date | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+  const date = new Date(value > 1e11 ? value : value * 1000);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 function summarizeToolInput(name: string, input: unknown): string {
   const value = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {};
   const primary = value.command ?? value.file_path ?? value.path ?? value.pattern ?? value.url ?? value.description;
@@ -139,6 +148,9 @@ class ClaudeSession implements AgentSession {
   #reader: Promise<void> | null = null;
   #pid: number | null = null;
   #pending: PendingTurn | null = null;
+  /** Evidence of a usage limit for the pending turn only; cleared when a turn starts and settles. */
+  #limitEvent: SDKRateLimitInfo | null = null;
+  #limitAssistantText: string | null = null;
   #turnNumber = 0;
   #turnId: string | null = null;
   #stderr = '';
@@ -196,6 +208,7 @@ class ClaudeSession implements AgentSession {
     if (this.#pending !== null) return Promise.reject(new Error('a turn is already running on this session'));
     const turnId = String(++this.#turnNumber);
     this.#turnId = turnId;
+    this.#clearLimitEvidence();
     if (this.#ended || this.#stopped !== null) {
       return Promise.resolve({ ok: false, turnId, code: 'port_exit', message: this.#endReason ?? 'the agent session has ended' });
     }
@@ -399,6 +412,7 @@ class ClaudeSession implements AgentSession {
         this.#onResult(message);
         return;
       case 'rate_limit_event':
+        if (this.#pending !== null && message.rate_limit_info.status === 'rejected') this.#limitEvent = message.rate_limit_info;
         this.#emit('rate_limit', { message: `rate limit ${message.rate_limit_info.status}`, rateLimits: message.rate_limit_info });
         return;
       case 'auth_status':
@@ -485,8 +499,39 @@ class ClaudeSession implements AgentSession {
     }
   }
 
+  #clearLimitEvidence(): void {
+    this.#limitEvent = null;
+    this.#limitAssistantText = null;
+  }
+
+  #classifySessionLimit(message: SDKResultMessage): SessionLimitInfo | null {
+    const event = this.#limitEvent;
+    const assistantText = this.#limitAssistantText;
+    const resultText = message.subtype === 'success' ? message.result : '';
+    const now = new Date();
+    const fromResult = resultText.trim() !== '' ? parseLimitMessage(resultText, now) : null;
+    const fromAssistant = assistantText !== null && assistantText.trim() !== '' ? parseLimitMessage(assistantText, now) : null;
+    const parsed = fromResult ?? fromAssistant;
+    const is429 = 'api_error_status' in message && message.api_error_status === 429;
+    if (parsed === null && assistantText === null && !(event !== null && is429)) return null;
+
+    const eventReset = event === null ? null : dateFromResetsAt(event.resetsAt);
+    const text = resultText.trim() !== '' ? resultText : (assistantText ?? '');
+    return {
+      window: event?.rateLimitType ?? parsed?.window ?? null,
+      resetsAt: eventReset ?? parsed?.resetsAt ?? null,
+      source: eventReset !== null ? 'event' : parsed?.resetsAt ? 'message' : null,
+      text,
+      overageDisabledReason: event?.overageDisabledReason ?? null,
+    };
+  }
+
   #onAssistant(message: SDKAssistantMessage): void {
     if (message.error !== undefined) {
+      if (this.#pending !== null && message.error === 'rate_limit') {
+        const text = message.message.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('\n');
+        this.#limitAssistantText = text;
+      }
       this.#emit('agent_error', { message: `Claude API error: ${message.error}` });
       return;
     }
@@ -506,16 +551,23 @@ class ClaudeSession implements AgentSession {
   #onResult(message: SDKResultMessage): void {
     const succeeded = message.subtype === 'success' && !message.is_error;
     const usage = usageFromModelUsage(message.modelUsage);
+    const sessionLimit = !succeeded && this.#pending !== null ? this.#classifySessionLimit(message) : null;
     this.#emit(succeeded ? 'turn_completed' : 'turn_failed', {
       message: succeeded ? `turn completed (${message.num_turns} model calls)` : describeResult(message),
       usage,
       modelUsage: modelUsageBreakdown(message.modelUsage),
       costUsd: message.total_cost_usd,
-      detail: { subtype: message.subtype, stop_reason: message.stop_reason, duration_ms: message.duration_ms },
+      detail: {
+        subtype: message.subtype,
+        stop_reason: message.stop_reason,
+        duration_ms: message.duration_ms,
+        ...(sessionLimit ? { session_limit: { window: sessionLimit.window, resets_at: sessionLimit.resetsAt?.toISOString() ?? null, source: sessionLimit.source } } : {}),
+      },
     });
     const pending = this.#pending;
     if (pending === null) return;
     if (succeeded) this.#settle({ ok: true, turnId: pending.turnId, resultText: message.subtype === 'success' ? message.result : '' });
+    else if (sessionLimit) this.#settle({ ok: false, turnId: pending.turnId, code: 'session_limit', message: describeResult(message), sessionLimit });
     else this.#settle({ ok: false, turnId: pending.turnId, code: 'turn_failed', message: describeResult(message) });
   }
 
@@ -538,6 +590,7 @@ class ClaudeSession implements AgentSession {
     if (pending === null) return;
     if (pending.timer !== null) clearTimeout(pending.timer);
     this.#pending = null;
+    this.#clearLimitEvidence();
     pending.resolve(result);
   }
 
