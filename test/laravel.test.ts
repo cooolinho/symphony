@@ -45,6 +45,14 @@ if (command === 'boost:install') {
   fs.mkdirSync(path.join(app, '.claude/skills/testing-best-practices'), { recursive: true });
   fs.writeFileSync(path.join(app, '.claude/skills/testing-best-practices/SKILL.md'), '---\\nname: testing-best-practices\\n---\\n');
   const config = JSON.parse(fs.readFileSync(path.join(app, 'boost.json'), 'utf8'));
+  for (const pkg of config.packages || []) {
+    const skills = path.join(app, 'vendor', pkg, 'resources/boost/skills');
+    if (!fs.existsSync(skills)) continue;
+    for (const skill of fs.readdirSync(skills)) {
+      fs.mkdirSync(path.join(app, '.claude/skills', skill), { recursive: true });
+      fs.copyFileSync(path.join(skills, skill, 'SKILL.md'), path.join(app, '.claude/skills', skill, 'SKILL.md'));
+    }
+  }
   config.skills = ['testing-best-practices'];
   if (process.env.FAKE_SAIL) config.sail = true;
   fs.writeFileSync(path.join(app, 'boost.json'), JSON.stringify(config));
@@ -58,6 +66,10 @@ fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify(['composer', ...process.a
 fs.mkdirSync('vendor/laravel/boost', { recursive: true });
 fs.mkdirSync('vendor/composer', { recursive: true });
 fs.writeFileSync('vendor/autoload.php', '<?php');
+for (const pkg of (process.env.FAKE_PACKAGES || '').split(',').filter(Boolean)) {
+  fs.mkdirSync('vendor/' + pkg + '/resources/boost/skills/filament-development', { recursive: true });
+  fs.writeFileSync('vendor/' + pkg + '/resources/boost/skills/filament-development/SKILL.md', '---\\nname: filament-development\\n---\\n');
+}
 fs.writeFileSync('vendor/composer/installed.json', JSON.stringify({ packages: [{ name: 'laravel/boost', version: 'v2.0.0' }] }));
 `;
 
@@ -292,6 +304,34 @@ describe('Laravel Boost preparation', () => {
     fs.rmSync(path.join(f.repo, '.claude'), { recursive: true });
     await prepare(f);
     assert.equal(calls(f).length, 6, 'a deleted generated file regenerates');
+  });
+
+  it('lists installed packages with Boost resources in boost.json and installs their skills', async () => {
+    const f = fixture({ artisan: '', 'composer.json': LARAVEL_BOOST, 'composer.lock': '{}' });
+    const extensions = await prepare(f, { env: { ...process.env, FAKE_PACKAGES: 'filament/filament' } });
+    const boostJson = JSON.parse(fs.readFileSync(path.join(f.repo, 'boost.json'), 'utf8'));
+    assert.deepEqual(boostJson.packages, ['filament/filament']);
+    assert.ok(excludeBlock(f).includes('/.claude/skills/filament-development/SKILL.md'));
+    assert.equal(gitStatus(f), '');
+    assert.match(extensions?.contextSections[0] as string, /`filament-development`/);
+  });
+
+  it('keeps existing packages entries and regenerates only when the package list changes', async () => {
+    const f = fixture({ artisan: '', 'composer.json': LARAVEL_BOOST, 'composer.lock': '{}' });
+    process.env.FAKE_PACKAGES = 'filament/filament';
+    try {
+      await prepare(f);
+      fs.writeFileSync(path.join(f.repo, 'boost.json'), JSON.stringify({ packages: ['acme/custom'] }));
+      await prepare(f);
+      assert.equal(calls(f).length, 2, 'unchanged list keeps the fingerprint');
+      fs.mkdirSync(path.join(f.repo, 'vendor/spatie/thing/resources/boost/guidelines'), { recursive: true });
+      await prepare(f);
+      assert.equal(calls(f).length, 3, 'a new package regenerates');
+      const boostJson = JSON.parse(fs.readFileSync(path.join(f.repo, 'boost.json'), 'utf8'));
+      assert.deepEqual(boostJson.packages, ['acme/custom', 'filament/filament', 'spatie/thing']);
+    } finally {
+      delete process.env.FAKE_PACKAGES;
+    }
   });
 
   it('uses committed Boost files as they are', async () => {

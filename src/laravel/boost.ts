@@ -180,7 +180,7 @@ async function prepareApp(app: LaravelApp, git: Git, state: State, params: Prepa
     return { app, ...found, guidelinesLoaded: await loadedByClaude(app, found.guidelinesFile, found.guidelines), selfManaged, excluded: [] };
   }
 
-  const fingerprint = await computeFingerprint(app, lockHash, config.php);
+  const fingerprint = await computeFingerprint(app, lockHash, config.php, await findBoostPackages(app));
   if (previous !== undefined && previous.fingerprint === fingerprint && (await allExist(git, previous.excluded))) {
     log.debug('Laravel Boost files are up to date');
     return {
@@ -231,7 +231,7 @@ async function generate(
     backups.set(file, await readOrNull(path.join(git.top, file)));
   }
 
-  await writeBoostConfig(path.join(app.path, 'boost.json'));
+  await writeBoostConfig(path.join(app.path, 'boost.json'), await findBoostPackages(app));
   const guidelineName = (await exists(path.join(app.path, 'CLAUDE.md'))) ? 'CLAUDE.md' : 'AGENTS.md';
   const install = await runStep(
     config.php,
@@ -397,16 +397,47 @@ export function extractGuidelines(content: string): string | null {
 }
 
 /** Targets Claude Code and keeps the MCP guidance without writing Boost's own .mcp.json. */
-async function writeBoostConfig(file: string): Promise<void> {
+async function writeBoostConfig(file: string, installedPackages: string[]): Promise<void> {
   const current = (await readJsonOrNull(file)) ?? {};
   const agents = Array.isArray(current.agents) ? current.agents.filter((agent): agent is string => typeof agent === 'string') : [];
   if (!agents.includes('claude_code')) agents.push('claude_code');
-  await fs.writeFile(file, `${JSON.stringify({ ...current, agents, guidelines: true, mcp: true }, null, 4)}\n`);
+  // Assumption (laravel/boost source was not available to verify): `packages` is a list of
+  // "vendor/name" strings, and non-interactive boost:install installs third-party skills only from it.
+  // Existing entries, including non-string ones a user added, are kept as they are.
+  const packages: unknown[] = Array.isArray(current.packages) ? [...current.packages] : [];
+  for (const name of installedPackages) if (!packages.includes(name)) packages.push(name);
+  const next: Record<string, unknown> = { ...current, agents, guidelines: true, mcp: true };
+  if (packages.length > 0) next.packages = packages;
+  await fs.writeFile(file, `${JSON.stringify(next, null, 4)}\n`);
 }
 
-async function computeFingerprint(app: LaravelApp, lockHash: string, php: string): Promise<string> {
+/** Installed packages (`vendor/<vendor>/<name>`) that ship Boost resources, sorted. */
+async function findBoostPackages(app: LaravelApp): Promise<string[]> {
+  const vendorDir = path.join(app.path, 'vendor');
+  const found: string[] = [];
+  for (const vendor of await listDirs(vendorDir)) {
+    for (const name of await listDirs(path.join(vendorDir, vendor))) {
+      const resources = path.join(vendorDir, vendor, name, 'resources', 'boost');
+      // laravel/boost's own resources are what boost:install uses by itself.
+      if (`${vendor}/${name}` === 'laravel/boost') continue;
+      if ((await exists(path.join(resources, 'skills'))) || (await exists(path.join(resources, 'guidelines')))) found.push(`${vendor}/${name}`);
+    }
+  }
+  return found.sort();
+}
+
+async function listDirs(dir: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    return entries.filter((entry) => entry.isDirectory() || entry.isSymbolicLink()).map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+}
+
+async function computeFingerprint(app: LaravelApp, lockHash: string, php: string, packages: string[]): Promise<string> {
   const hash = createHash('sha256');
-  hash.update(JSON.stringify({ step: STEP_VERSION, lockHash, php, boost: await boostVersion(app) }));
+  hash.update(JSON.stringify({ step: STEP_VERSION, lockHash, php, boost: await boostVersion(app), packages }));
   for (const file of await listFiles(path.join(app.path, '.ai'))) {
     hash.update(`\0${file}\0`);
     hash.update((await readOrNull(path.join(app.path, '.ai', file))) ?? '');
