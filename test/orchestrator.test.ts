@@ -174,7 +174,10 @@ describe('worker lifecycle and retries', () => {
   });
 
   it('requeues a retry when no slot is free', async () => {
-    const s = setup({ front: { agent: { max_concurrent_agents: 1 } }, issues: [makeIssue({ id: 'a', priority: 1 })] });
+    const s = setup({
+      front: { polling: { interval_ms: 7_000 }, agent: { max_concurrent_agents: 1 } },
+      issues: [makeIssue({ id: 'a', priority: 1 })],
+    });
     s.runner.script = (turn) => ({ ok: false, turnId: String(turn), code: 'turn_failed', message: 'boom' });
     await s.orchestrator.tickNow();
     await until(() => snapshot(s).retrying.length === 1, 3_000, 'retry');
@@ -186,7 +189,30 @@ describe('worker lifecycle and retries', () => {
     await until(() => snapshot(s).running.length === 1, 3_000, 'b running');
     s.timers.fire(10_000);
     await until(() => snapshot(s).retrying[0]?.error === 'no available orchestrator slots', 3_000, 'requeue');
-    assert.equal(snapshot(s).retrying[0]?.attempt, 2);
+    assert.equal(snapshot(s).retrying[0]?.attempt, 1);
+    assert.equal(snapshot(s).retrying[0]?.kind, 'failure');
+    assert.ok(s.timers.delays().includes(7_000));
+    assert.ok(!s.timers.delays().includes(20_000));
+  });
+
+  it('requeues a continuation with no free slot as a continuation after one poll interval', async () => {
+    const s = setup({
+      front: { polling: { interval_ms: 7_000 }, agent: { max_concurrent_agents: 1, max_turns: 1 } },
+      issues: [makeIssue({ id: 'a', priority: 1 })],
+    });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying[0]?.kind === 'continuation', 3_000, 'continuation retry');
+
+    s.runner.script = () => new Promise(() => undefined);
+    s.tracker.issues.set('b', makeIssue({ id: 'b', priority: 2 }));
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running.length === 1, 3_000, 'b running');
+    s.timers.fire(1_000);
+    await until(() => snapshot(s).retrying[0]?.error === 'no available orchestrator slots', 3_000, 'requeue');
+    const retry = snapshot(s).retrying[0];
+    assert.equal(retry?.kind, 'continuation');
+    assert.equal(retry?.attempt, 1);
+    assert.ok(s.timers.delays().includes(7_000));
   });
 
   it('releases the claim when a retried issue has disappeared', async () => {

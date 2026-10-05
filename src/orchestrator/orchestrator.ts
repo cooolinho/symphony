@@ -661,6 +661,7 @@ export class Orchestrator {
     issueId: string,
     attempt: number,
     info: { identifier: string; url: string | null; kind: RetryEntry['kind']; error: string | null },
+    delayMs?: number,
   ): void {
     if (this.#stopping) {
       this.#release(issueId);
@@ -668,9 +669,10 @@ export class Orchestrator {
     }
     this.#cancelRetry(issueId);
     const delay =
-      info.kind === 'continuation'
+      delayMs ??
+      (info.kind === 'continuation'
         ? CONTINUATION_DELAY_MS
-        : failureBackoffMs(attempt, this.#deps.workflow.current.config.agent.maxRetryBackoffMs);
+        : failureBackoffMs(attempt, this.#deps.workflow.current.config.agent.maxRetryBackoffMs));
     const timer = this.#timers.setTimeout(() => void this.#serial.run(() => this.#onRetryTimer(issueId)), delay);
     this.#retries.set(issueId, {
       issueId,
@@ -754,7 +756,13 @@ export class Orchestrator {
       return;
     }
     if (this.#slotsFor(issue.state, config) <= 0) {
-      requeue('no available orchestrator slots');
+      // Waiting for a slot is not a failure: keep kind and attempt, retry after one poll interval.
+      this.#scheduleRetry(
+        issueId,
+        retry.attempt,
+        { identifier: retry.identifier, url: retry.url, kind: retry.kind, error: 'no available orchestrator slots' },
+        config.polling.intervalMs,
+      );
       return;
     }
     this.#dispatch(issue, retry.attempt, workflow, adapter, retry.kind === 'continuation');
