@@ -105,6 +105,35 @@ describe('http extension', () => {
     assert.equal((await request(server.port, 'GET', '/api/v1/history/raw')).status, 400);
   });
 
+  it('serves analytics and log entries for one period, repository and model', async () => {
+    const page = (await request(server.port, 'GET', '/logs')).body;
+    assert.match(page, /\/api\/v1\/history\/analytics\?/);
+    assert.match(page, /\/api\/v1\/history\/entries\?/);
+
+    const week = '/api/v1/history/analytics?from=2026-09-28T00:00:00Z&to=2026-10-05T00:00:00Z&tz=Europe%2FBerlin';
+    const a = JSON.parse((await request(server.port, 'GET', week)).body);
+    assert.equal(a.totals.runs, 1);
+    assert.equal(a.totals.cost_usd, 0.0175);
+    assert.equal(a.period.time_zone, 'Europe/Berlin');
+    assert.equal(a.period.granularity, 'day');
+    assert.deepEqual(a.repositories_available, ['acme/app', 'other/repo']);
+    assert.deepEqual(a.models_available, ['claude-opus-5-5']);
+    // A second identical request is served from the cache with the same figures.
+    assert.deepEqual(JSON.parse((await request(server.port, 'GET', week)).body).series, a.series);
+
+    const empty = JSON.parse((await request(server.port, 'GET', '/api/v1/history/analytics?repo=other%2Frepo&model=claude-opus-5-5')).body);
+    assert.equal(empty.totals.runs, 0);
+    assert.deepEqual(empty.repositories_available, ['acme/app', 'other/repo']);
+
+    assert.equal((await request(server.port, 'GET', '/api/v1/history/analytics?from=yesterday')).status, 400);
+    assert.equal((await request(server.port, 'GET', '/api/v1/history/analytics?from=2026-10-05T00:00:00Z&to=2026-10-01T00:00:00Z')).status, 400);
+
+    const log = JSON.parse((await request(server.port, 'GET', '/api/v1/history/entries?repo=other%2Frepo&limit=5')).body);
+    assert.deepEqual(log.entries.map((e: { event: string }) => e.event), ['workspace_removed']);
+    const runs = JSON.parse((await request(server.port, 'GET', '/api/v1/history/entries?result=handed_off&order=asc')).body);
+    assert.deepEqual(runs.entries.map((e: { issue: string }) => e.issue), ['acme/app#1']);
+  });
+
   it('serves the agent detail view and links the agent cards to it', async () => {
     const page = await request(server.port, 'GET', '/agent?id=acme%2Fapp%231');
     assert.equal(page.status, 200);

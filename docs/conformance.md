@@ -54,11 +54,11 @@ Agent SDK instead; the mapping of threads, turns, approvals, user input, timeout
 
 | Extension | Status |
 |---|---|
-| HTTP server (13.7) | Implemented: `/`, `/api/v1/state`, `/api/v1/<identifier>`, `POST /api/v1/refresh`; extensions: `/agent?id=<identifier>` (agent detail view), `/api/v1/<identifier>/timeline` and `/transcript`, `/logs`, `/api/v1/history` |
+| HTTP server (13.7) | Implemented: `/`, `/api/v1/state`, `/api/v1/<identifier>`, `POST /api/v1/refresh`; extensions: `/agent?id=<identifier>` (agent detail view), `/api/v1/<identifier>/timeline` and `/transcript`, `/logs`, `/api/v1/history` with `/analytics` and `/entries` |
 | Provider-native agent tools (10.5) | Implemented for `github_project`: `get_issue`, `set_status`, `add_comment`, `open_pull_request` |
 | Laravel Boost (`laravel`) | Extension: for Laravel apps that require `laravel/boost`, Composer dependencies, Boost guidelines and skills are prepared before each session (kept out of git) and Boost's MCP server is added; never blocks a run |
 | Plugins and skills (`claude.plugins`, `claude.skills`) | Extension: local Claude Code plugins (Symphony's `.claude` toolbox) loaded into every session |
-| Repository history | Extension: one `key=value` log per repository with every run (tokens per model, cost, agent time), statistics at `/logs` and `/api/v1/history` |
+| Repository history | Extension: one `key=value` log per repository with every run (tokens per model, cost, agent time), statistics and analytics at `/logs`, `/api/v1/history` and `/api/v1/history/analytics` |
 | SSH workers (Appendix A) | Not implemented |
 | Persisted retry queue | Not implemented (spec TODO); state is rebuilt from the tracker after a restart |
 

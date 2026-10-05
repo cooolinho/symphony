@@ -317,11 +317,21 @@ function formatToolCalls(calls: Record<string, number> | undefined): string | un
   return parts.length === 0 ? undefined : parts.join(',');
 }
 
+/** Parsed lines per log file, reused while size and mtime are unchanged (the logs are append-only). */
+const parsedFiles = new Map<string, { stamp: string; entries: HistoryEntry[] }>();
+
+/** Entries of one log file. The returned array and its entries are shared; callers must not mutate them. */
 function readEntries(file: string): HistoryEntry[] {
   let text: string;
+  let stamp: string;
   try {
+    const stat = fs.statSync(file);
+    stamp = `${stat.size}:${stat.mtimeMs}`;
+    const cached = parsedFiles.get(file);
+    if (cached !== undefined && cached.stamp === stamp) return cached.entries;
     text = fs.readFileSync(file, 'utf8');
   } catch {
+    parsedFiles.delete(file);
     return [];
   }
   const entries: HistoryEntry[] = [];
@@ -330,6 +340,7 @@ function readEntries(file: string): HistoryEntry[] {
     const entry = parseHistoryLine(line);
     if (entry !== null) entries.push(entry);
   }
+  parsedFiles.set(file, { stamp, entries });
   return entries;
 }
 
