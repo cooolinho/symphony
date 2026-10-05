@@ -105,10 +105,28 @@ describe('http extension', () => {
     assert.equal((await request(server.port, 'GET', '/api/v1/history/raw')).status, 400);
   });
 
+  it('serves the agent detail view and links the agent cards to it', async () => {
+    const page = await request(server.port, 'GET', '/agent?id=acme%2Fapp%231');
+    assert.equal(page.status, 200);
+    assert.match(page.body, /AGENT TRACE/);
+    assert.match(page.body, /Back to agents/);
+    assert.match(page.body, /id="timeline"/);
+    assert.match(page.body, /'\/timeline\?after='/);
+    assert.match(page.body, /'\/transcript\?run='/);
+    assert.equal((await request(server.port, 'HEAD', '/agent')).status, 200);
+    const dashboard = (await request(server.port, 'GET', '/')).body;
+    assert.match(dashboard, /'\/agent\?id=' \+ encodeURIComponent\(r\.issue_identifier\)/);
+  });
+
   it('returns a JSON 404 for unknown issues and routes', async () => {
     const unknown = await request(server.port, 'GET', `/api/v1/${encodeURIComponent('acme/app#404')}`);
     assert.equal(unknown.status, 404);
     assert.equal(JSON.parse(unknown.body).error.code, 'issue_not_found');
+    for (const sub of ['timeline', 'transcript']) {
+      const missing = await request(server.port, 'GET', `/api/v1/${encodeURIComponent('acme/app#404')}/${sub}`);
+      assert.equal(missing.status, 404);
+      assert.equal(JSON.parse(missing.body).error.code, 'issue_not_found');
+    }
     const route = await request(server.port, 'GET', '/nope');
     assert.equal(route.status, 404);
   });
@@ -165,6 +183,52 @@ describe('issue details', () => {
       assert.equal(detail.last_check.exit_code, 0);
       assert.equal(typeof detail.last_check.duration_ms, 'number');
       assert.equal(typeof detail.last_check.finished_at, 'string');
+    } finally {
+      await orchestrator.shutdown(1_000);
+      await server.close();
+    }
+  });
+});
+
+describe('agent trace API', () => {
+  it('serves the timeline incrementally and the session transcript, normalized or raw', async () => {
+    const runner = new FakeRunner((turn, params) => {
+      fs.mkdirSync(path.dirname(params.transcriptPath as string), { recursive: true });
+      fs.appendFileSync(params.transcriptPath as string, `${JSON.stringify({ at: new Date().toISOString(), prompt: { turn, text: 'Work on acme/app#t' } })}\n`);
+      params.onEvent({ event: 'tool_use', timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: turn, message: 'Bash: ls', detail: { tool: 'Bash' } });
+      return new Promise(() => undefined);
+    });
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir()))),
+      runner,
+      logger: Logger.silent(),
+      env: {},
+      logDir: tempDir(),
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker([makeIssue({ id: 't' })]),
+    });
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    const base = `/api/v1/${encodeURIComponent('acme/app#t')}`;
+    try {
+      await orchestrator.tickNow();
+      await until(() => (orchestrator.issueTimeline('t')?.events ?? []).some((e) => e.event === 'tool_use'), 3_000, 'tool event');
+      const timeline = JSON.parse((await request(server.port, 'GET', `${base}/timeline`)).body);
+      assert.equal(timeline.issue_identifier, 'acme/app#t');
+      assert.equal(timeline.events[0].event, 'run_dispatched');
+      const after = JSON.parse((await request(server.port, 'GET', `${base}/timeline?after=${timeline.latest_seq}`)).body);
+      assert.deepEqual(after.events, []);
+
+      const transcript = JSON.parse((await request(server.port, 'GET', `${base}/transcript`)).body);
+      assert.equal(transcript.available, true);
+      assert.deepEqual(transcript.entries.map((e: { type: string }) => e.type), ['prompt']);
+      const next = JSON.parse((await request(server.port, 'GET', `${base}/transcript?run=${transcript.run}&from=${transcript.next_offset}`)).body);
+      assert.deepEqual(next.entries, []);
+      const raw = await request(server.port, 'GET', `${base}/transcript?run=${transcript.run}&format=raw`);
+      assert.equal(raw.status, 200);
+      assert.match(raw.headers['content-type'] ?? '', /text\/plain/);
+      assert.match(raw.body, /"prompt":\{"turn":1,"text":"Work on acme\/app#t"\}/);
+      assert.equal((await request(server.port, 'GET', `${base}/transcript?run=nope&format=raw`)).status, 404);
+      assert.equal((await request(server.port, 'POST', `${base}/timeline`)).status, 405);
     } finally {
       await orchestrator.shutdown(1_000);
       await server.close();

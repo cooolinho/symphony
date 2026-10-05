@@ -6,6 +6,7 @@ import { computeHistoryStats, readHistory, repositoryFileName } from '../history
 import type { Logger } from '../log.ts';
 import type { Orchestrator } from '../orchestrator/orchestrator.ts';
 import { errorMessage } from '../util/errors.ts';
+import { AGENT_HTML } from './agent-page.ts';
 import { DASHBOARD_HTML } from './dashboard.ts';
 import { LOGS_HTML } from './logs-page.ts';
 
@@ -54,8 +55,9 @@ function sameHost(origin: string, hostHeader: string | undefined): boolean {
 }
 
 /**
- * Observability/control surface (spec 13.7): `/` dashboard, `/api/v1/state`, `/api/v1/<identifier>`,
- * `POST /api/v1/refresh`. Read-only except refresh. On a loopback bind, requests whose Host is
+ * Observability/control surface (spec 13.7): `/` dashboard, `/agent?id=<identifier>` agent detail view,
+ * `/api/v1/state`, `/api/v1/<identifier>` with its `/timeline` and `/transcript`, `POST /api/v1/refresh`.
+ * Read-only except refresh. On a loopback bind, requests whose Host is
  * not a loopback name are rejected (DNS-rebinding guard), and cross-origin POSTs are refused.
  */
 export function startHttpServer(options: {
@@ -88,6 +90,13 @@ export function startHttpServer(options: {
       allow(['GET', 'HEAD'], () => {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
         res.end(method === 'HEAD' ? undefined : DASHBOARD_HTML);
+      });
+      return;
+    }
+    if (pathname === '/agent') {
+      allow(['GET', 'HEAD'], () => {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(method === 'HEAD' ? undefined : AGENT_HTML);
       });
       return;
     }
@@ -150,6 +159,52 @@ export function startHttpServer(options: {
         }
         const { queued, coalesced } = orchestrator.requestRefresh();
         sendJson(res, 202, { queued, coalesced, requested_at: new Date().toISOString(), operations: ['poll', 'reconcile'] });
+      });
+      return;
+    }
+    // Sub-resources of an issue; the identifier is URL-encoded (owner%2Frepo%2312), so its slash cannot end it.
+    const sub = /^(.+)\/(timeline|transcript)$/.exec(pathname.slice(API_PREFIX.length));
+    if (pathname.startsWith(API_PREFIX) && sub !== null) {
+      allow(['GET'], () => {
+        let key: string;
+        try {
+          key = decodeURIComponent(sub[1] as string);
+        } catch {
+          sendError(res, 400, 'bad_request', 'malformed issue identifier');
+          return;
+        }
+        const params = new URL(req.url ?? '/', 'http://localhost').searchParams;
+        const number = (name: string) => {
+          const value = Number(params.get(name) ?? 0);
+          return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+        };
+        if (sub[2] === 'timeline') {
+          const timeline = orchestrator.issueTimeline(key, number('after'));
+          if (timeline === null) sendError(res, 404, 'issue_not_found', `issue ${key} is not known to the running orchestrator`);
+          else sendJson(res, 200, timeline);
+          return;
+        }
+        const run = params.get('run') || null;
+        if (params.get('format') === 'raw') {
+          const file = orchestrator.issueTranscriptFile(key, run);
+          if (file === null) {
+            sendError(res, 404, 'not_found', `no transcript for ${key}${run === null ? '' : ` run ${run}`}`);
+            return;
+          }
+          const stream = fs.createReadStream(file);
+          stream.once('error', () => {
+            if (res.headersSent) res.destroy();
+            else sendError(res, 404, 'not_found', 'the transcript file cannot be read');
+          });
+          stream.once('open', () => {
+            res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+            stream.pipe(res);
+          });
+          return;
+        }
+        const transcript = orchestrator.issueTranscript(key, run, number('from'));
+        if (transcript === null) sendError(res, 404, 'issue_not_found', `issue ${key} is not known to the running orchestrator`);
+        else sendJson(res, 200, transcript);
       });
       return;
     }

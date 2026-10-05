@@ -85,6 +85,8 @@ export interface WorkerCallbacks {
   checkFinished(check: CheckRecord): void;
   /** The guard refused a move (terminal column or outside the role's `may_move_to`). */
   transitionDenied(target: string, message: string): void;
+  /** JSONL transcript of this attempt's agent session, reported before the session starts. */
+  transcript(path: string): void;
 }
 
 export interface WorkerParams {
@@ -252,6 +254,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
           detail,
         }),
     });
+    const transcript = transcriptPath(params.transcriptDir, activeWorkspace);
+    if (transcript !== null) callbacks.transcript(transcript);
     session = await params.runner.startSession({
       cwd: activeWorkspace.path,
       issue,
@@ -265,7 +269,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       logger,
       signal,
       onEvent,
-      transcriptPath: transcriptPath(params.transcriptDir, activeWorkspace),
+      transcriptPath: transcript,
       ...(extensions !== null ? { extensions } : {}),
     });
     const unavailableMcp = Object.entries(session.mcpStatus ?? {}).filter(([, status]) => status !== 'connected');
