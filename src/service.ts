@@ -16,6 +16,7 @@ import type { Issue } from './tracker/types.ts';
 import type { LoadedEnvFile } from './util/env.ts';
 import { errorCode, errorMessage } from './util/errors.ts';
 import { truncate } from './util/text.ts';
+import { roleFor, roleName } from './workflow/roles.ts';
 import { WorkflowStore } from './workflow/store.ts';
 import { issueTemplateValue, renderPrompt } from './workflow/template.ts';
 import { validateDispatch } from './workflow/validate.ts';
@@ -208,7 +209,8 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       if (reason === null && first === null) first = issue;
       out(`  ${reason === null ? 'dispatch' : 'skip    '}  ${issue.identifier}  [${issue.state}${issue.priority === null ? '' : `, p${issue.priority}`}]  ${truncate(issue.title, 70)}`);
       if (reason !== null) out(`            ↳ ${reason}`);
-      const choice = chooseModel(issue.labels, config.claude.model);
+      const role = roleFor(issue.state, config.roles);
+      const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model);
       if (choice.warning !== null) out(`            ↳ model label ignored: ${choice.warning}; using ${choice.model ?? '(Claude Code default)'}`);
       else if (choice.label !== null) out(`            ↳ model ${choice.model} (label "${choice.label}")`);
       for (const line of await laravelLines(path.join(config.workspace.root, workspaceKey(issue.identifier)))) out(`            ↳ ${line}`);
@@ -218,7 +220,11 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       out();
       out(`Prompt preview for ${first.identifier}:`);
       try {
-        const prompt = await renderPrompt(store.current.prompt, { issue: issueTemplateValue(first), attempt: null });
+        const prompt = await renderPrompt(store.current.prompt, {
+          issue: issueTemplateValue(first),
+          attempt: null,
+          role: roleName(roleFor(first.state, config.roles)),
+        });
         const lines = prompt.split('\n');
         for (const line of lines.slice(0, 30)) out(`  | ${line}`);
         if (lines.length > 30) out(`  | … (${lines.length - 30} more lines)`);

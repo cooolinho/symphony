@@ -1,6 +1,9 @@
 import type { ClaudeConfig } from './config.ts';
 import { normalizeStateName } from './config.ts';
 
+/** Name of the implicit role serving issues when `roles` is not set or no role serves the issue's state. */
+export const DEFAULT_ROLE = 'default';
+
 /** Claude settings a role may override for its sessions. */
 export type RoleClaudeOverrides = Partial<
   Pick<ClaudeConfig, 'model' | 'effort' | 'allowedTools' | 'disallowedTools' | 'appendSystemPrompt' | 'maxBudgetUsd'>
@@ -24,4 +27,9 @@ export function roleFor(state: string, roles: readonly RoleConfig[] | null): Rol
   if (roles === null) return null;
   const key = normalizeStateName(state);
   return roles.find((role) => role.states.includes(key)) ?? null;
+}
+
+/** Template and log name of `role`: its name, or `default` for the implicit role. */
+export function roleName(role: RoleConfig | null): string {
+  return role?.name ?? DEFAULT_ROLE;
 }

@@ -9,6 +9,7 @@ import type { Issue, TrackerAdapter } from '../tracker/types.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { describeHolder, type LockResult } from '../workspace/lock.ts';
 import { describeFailure, type HookIssue, type Workspace, type WorkspaceManager } from '../workspace/manager.ts';
+import { roleName, type RoleConfig } from '../workflow/roles.ts';
 import type { EffectiveWorkflow } from '../workflow/store.ts';
 import { issueTemplateValue, renderPrompt } from '../workflow/template.ts';
 
@@ -76,8 +77,10 @@ export interface WorkerParams {
   attempt: number | null;
   /** Workflow snapshot for this attempt: prompt, max_turns and agent settings stay fixed for the session. */
   workflow: EffectiveWorkflow;
-  /** Model for the session: from a "Model: <model>" label, else claude.model; null = Claude Code default. */
+  /** Model for the session: a "Model: <model>" label, else roles.<role>.claude.model, else claude.model; null = Claude Code default. */
   model: string | null;
+  /** Role serving the issue's column at dispatch; null = the implicit `default` role. Fixed for the run. */
+  role: RoleConfig | null;
   /** Adapter snapshot: the tools advertised to the session and the ones executed are the same. */
   adapter: TrackerAdapter;
   runner: AgentRunner;
@@ -105,7 +108,10 @@ function transcriptPath(dir: string | null, workspace: Workspace): string | null
  */
 export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutcome> {
   const { signal, callbacks, logger } = params;
-  const maxTurns = params.workflow.config.agent.maxTurns;
+  const role = params.role;
+  const name = roleName(role);
+  const maxTurns = role?.maxTurns ?? params.workflow.config.agent.maxTurns;
+  const maxTurnsSetting = role !== null && role.maxTurns !== null ? `roles.${name}.max_turns` : 'agent.max_turns';
   let issue = params.issue;
   let workspace: Workspace | null = null;
   let session: AgentSession | null = null;
@@ -180,7 +186,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     session = await params.runner.startSession({
       cwd: activeWorkspace.path,
       issue,
-      config: sessionClaudeConfig(params.workflow.config.claude, params.model),
+      config: sessionClaudeConfig(params.workflow.config.claude, params.model, role?.claude),
+      policy: { readOnly: role?.readOnly ?? false },
       tools: params.adapter.agentToolSpecs(),
       toolContext: () => ({ issue }),
       env: params.childEnv,
@@ -195,10 +202,11 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       setPhase('BuildingPrompt');
       const prompt =
         turn === 1
-          ? await renderPrompt(params.workflow.prompt, { issue: issueTemplateValue(issue), attempt: params.attempt })
+          ? await renderPrompt(params.workflow.prompt, { issue: issueTemplateValue(issue), attempt: params.attempt, role: name })
           : await renderPrompt(params.workflow.continuationPrompt, {
               issue: issueTemplateValue(issue),
               attempt: params.attempt,
+              role: name,
               turn_number: turn,
               max_turns: maxTurns,
             });
@@ -221,7 +229,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       if (!params.stillEligible(issue)) {
         return await finish({ kind: 'normal', turns: turn, reason: `issue left the active states ("${issue.state}")` });
       }
-      if (turn >= maxTurns) return await finish({ kind: 'normal', turns: turn, reason: `reached agent.max_turns (${maxTurns})` });
+      if (turn >= maxTurns) return await finish({ kind: 'normal', turns: turn, reason: `reached ${maxTurnsSetting} (${maxTurns})` });
     }
   } catch (error) {
     if (signal.aborted) return await finish(cancelled());

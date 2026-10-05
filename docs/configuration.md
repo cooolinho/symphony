@@ -111,13 +111,13 @@ Hooks finish when their output pipes close, so redirect the output of background
 | `max_continuations` | unlimited | After a session ends normally while the issue is still active, Symphony starts another one (a *continuation session*). With a limit, an issue that is still active after that many continuation sessions is **paused**: it stays claimed and nothing new starts. It resumes as soon as it changes on the tracker (status, comment, labels, edit), leaves the active states, or the limit is raised. `0` = pause right after the first session. |
 | `max_retry_backoff_ms` | `300000` | Cap for failure retries (10 s, 20 s, 40 s, …). |
 | `max_concurrent_agents_by_state` | `{}` | Per-status limits, e.g. `{ "In Progress": 1 }`. Invalid entries are ignored with a warning. |
-| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `turn_number`, `max_turns`). |
+| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `turn_number`, `max_turns`). |
 
 ### `claude`
 
 | Key | Default | Notes |
 |---|---|---|
-| `model` | Claude Code default | Default model: alias (`opus`, `sonnet`, `haiku`) or full model id. A `Model: <model>` issue label overrides it for that issue, see [Model per issue](#model-per-issue). |
+| `model` | Claude Code default | Default model: alias (`opus`, `sonnet`, `haiku`) or full model id. A role's `claude.model` and a `Model: <model>` issue label override it, see [Model per issue](#model-per-issue). |
 | `fallback_model` | none | Used when the primary model is overloaded. Left out for a session whose model is the same (the Agent SDK refuses that combination). |
 | `effort` | Claude Code default | `low`, `medium`, `high`, `xhigh`, `max`. |
 | `permission_mode` | `auto` | `auto` (a classifier approves or blocks each action), `default`, `acceptEdits`, `dontAsk`, `plan`, `bypassPermissions`. See [agent-claude.md](agent-claude.md). |
@@ -156,7 +156,21 @@ Boost only get a log line; `npm run repo-init` creates an issue that adds it. De
 
 ### `roles`
 
-Optional. Maps board columns to column-scoped agent roles. Without it, every active state is served by one implicit role named `default` and nothing changes. This section is parsed and validated only; dispatch does not use it yet.
+Optional. Maps board columns to column-scoped agent roles. Without it, every active state is served by one implicit role named `default` and nothing changes.
+
+When an issue is dispatched, the role serving its current column is resolved once and kept for the whole run (an
+issue in no role's column runs as `default`). The role decides:
+
+- **Model:** a `Model: …` issue label, else the role's `claude.model`, else `claude.model` (see [Model per issue](#model-per-issue)).
+- **Claude settings:** the role's `claude` block is merged over [`claude`](#claude): `effort` and `max_budget_usd`
+  replace the global value; `allowed_tools`, `disallowed_tools` and `append_system_prompt` are appended to it.
+- **Permissions:** `read_only: true` starts the session read-only ([agent-claude.md](agent-claude.md#permission-and-safety-posture)).
+- **Turns:** `max_turns` replaces `agent.max_turns` for the role's sessions.
+- **Prompt:** the role name is the template variable `role` (see [Prompt template](#prompt-template)).
+
+The role appears as `role` in the `dispatching issue` log line, in `run_started` of the repository log and on every
+agent event log line (together with `run_id`). A session does not yet end when the issue moves to another role's
+column; the next run picks up the new role.
 
 ```yaml
 roles:
@@ -183,7 +197,8 @@ Invalid configs fail with `invalid_config`, listing every problem: a state outsi
 
 ### Model per issue
 
-An issue label `Model: <value>` picks the model for that issue's sessions; issues without one use `claude.model`.
+An issue label `Model: <value>` picks the model for that issue's sessions; issues without one use the model of their
+[role](#roles) (`roles.<role>.claude.model`), else `claude.model`. Precedence: `Model:` label > role model > `claude.model`.
 The prefix is matched case-insensitively and the space after the colon is optional. The value is lowercased and an
 optional `claude-` is removed, then:
 
@@ -193,7 +208,7 @@ optional `claude-` is removed, then:
 | `<family>-<version>` with family `opus`, `sonnet`, `haiku` or `fable` (e.g. `sonnet-5-5`, `claude-opus-5-5`) | the full model id `claude-<family>-<version>` |
 | anything else | unknown |
 
-Unknown values, and several labels naming different models, are ignored: the session uses `claude.model` and Symphony
+Unknown values, and several labels naming different models, are ignored: the session uses the role model or `claude.model` and Symphony
 logs `model label ignored` (the dry run shows the same). The model is chosen when a session is dispatched, so a label
 change applies from the next session (continuation or retry); a paused issue resumes with the new model. The choice
 appears in the `dispatching issue` log line (`model`, plus `model_label` when a label picked it) and as `model` of
@@ -257,7 +272,7 @@ workflow directory, else `$XDG_STATE_HOME/symphony` or `~/.local/state/symphony`
 
 | Event | Fields |
 |---|---|
-| `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested: from a `Model: …` label, else `claude.model`) |
+| `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested: from a `Model: …` label, else the role's model, else `claude.model`), `role` (`default` without roles) |
 | `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `stopped`, `stalled`, `shutdown`), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `head_sha` and `branch` (final commit of a git workspace; omitted otherwise), `mcp_tool_calls` (`<server>:<n>,…` per MCP server; omitted when no MCP tool was used), `started_at`, running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` |
 | `model_usage` | `repo`, `issue`, `run`, `model`, `price` (matched entry), token counts, `cost_usd` |
 | `issue_paused` | `repo`, `issue`, `title`, `state`, `continuations`, `max_continuations` |
@@ -277,6 +292,8 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
   `updated_at` (ISO strings), `native_ref` (adapter data, for GitHub: `repository`, `number`, `issue_id`, `item_id`,
   `parent` and `sub_issues` as `{identifier, title, state}`, …).
 - `attempt`: `null` on the first run of an issue, then `1`, `2`, … on continuation runs and retries.
+- `role`: name of the [role](#roles) running the issue (e.g. `developer`, `reviewer`), or `default` without `roles`.
+  Always defined, so one prompt can branch per role: `{% if role == "reviewer" %}…{% endif %}`.
 
 Besides the standard Liquid filters there is `without_model_labels`: `issue.labels | without_model_labels` drops the
 `Model: …` labels, which only pick the agent's model (see [Model per issue](#model-per-issue)).
