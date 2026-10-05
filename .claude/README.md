@@ -7,7 +7,7 @@ Repositories, die Symphony bearbeitet.
 | Ordner | Inhalt | Aufruf im Agenten |
 |---|---|---|
 | `skills/<name>/SKILL.md` | Skills: Frontmatter mit `name` und `description`, darunter die Anleitung | `symphony:<name>` |
-| `agents/<name>.md` | Subagents | `symphony:<name>` |
+| `agents/<name>.md` | Subagents (optionale Spezialisten-Personas: `architect`, `database-engineer`, `filament-developer`, `test-engineer`, `code-reviewer`) | `symphony:<name>` |
 | `commands/<name>.md` | Slash-Commands (Altform, besser Skills) | `/symphony:<name>` |
 | `hooks/hooks.json` | Hooks; Skripte daneben, im JSON über `${CLAUDE_PLUGIN_ROOT}` referenziert | automatisch |
 | `.claude-plugin/plugin.json` | Plugin-Manifest (Name `symphony`) | – |
