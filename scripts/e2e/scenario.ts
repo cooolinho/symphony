@@ -6,7 +6,7 @@ export const MODEL = 'sonnet';
 export const MODEL_LABEL = `Model: ${MODEL}`;
 export const TITLE_PREFIX = '[Testlauf]';
 
-interface ScenarioIssue {
+export interface ScenarioIssue {
   key: string;
   title: string;
   /** "Blocked by" relationships. */
@@ -50,8 +50,12 @@ export function dependencies(issue: CreatedIssue): string[] {
   return issue.textBlocker === null ? issue.relationships : [...issue.relationships, issue.textBlocker];
 }
 
+export type ScenarioName = 'default' | 'roles';
+
 /** What setup leaves in the run directory (run.json) for the run and the verification. */
 export interface RunRecord {
+  /** Absent in records of older runs: the dependency scenario. */
+  scenario?: ScenarioName;
   startedAt: string;
   repository: string;
   issues: CreatedIssue[];
@@ -61,6 +65,9 @@ export interface RunRecord {
 export function doneMarker(key: string): string {
   return `Testlauf ${key} erledigt`;
 }
+
+/** Issue text; `numbers` holds the issue numbers of the issues created before this one. */
+export type IssueBody = (issue: ScenarioIssue, numbers: Map<string, number>) => string;
 
 function issueBody(issue: ScenarioIssue, numbers: Map<string, number>): string {
   const ref = (key: string) => `${key} (#${numbers.get(key)})`;
@@ -90,7 +97,12 @@ Nicht erlaubt: Dateien ändern, Branch anlegen, committen, pushen, Pull Request 
  * Creates the issues, their relationships and board items, then moves them to the start status.
  * The status is set last, so no issue is ever active without its dependencies.
  */
-export async function createScenario(context: E2eContext, board: Board, log: (line: string) => void): Promise<RunRecord> {
+export async function createScenario(
+  context: E2eContext,
+  board: Board,
+  log: (line: string) => void,
+  scenario: { name: ScenarioName; issues: ScenarioIssue[]; body: IssueBody } = { name: 'default', issues: SCENARIO, body: issueBody },
+): Promise<RunRecord> {
   const startedAt = new Date().toISOString();
   const [owner, name] = context.repository.split('/');
   const { repository } = await context.github.gql<{ repository: { id: string; nameWithOwner: string; label: { id: string } | null } | null }>(
@@ -102,19 +114,19 @@ export async function createScenario(context: E2eContext, board: Board, log: (li
 
   const numbers = new Map<string, number>();
   const ids = new Map<string, string>();
-  for (const issue of SCENARIO) {
+  for (const issue of scenario.issues) {
     const { createIssue } = await context.github.gql<{ createIssue: { issue: { id: string; number: number } } }>(
       `mutation($repo: ID!, $title: String!, $body: String!, $label: ID!) {
         createIssue(input: { repositoryId: $repo, title: $title, body: $body, labelIds: [$label] }) { issue { id number } }
       }`,
-      { repo: repository.id, title: `${TITLE_PREFIX} ${issue.key} – ${issue.title}`, body: issueBody(issue, numbers), label: repository.label.id },
+      { repo: repository.id, title: `${TITLE_PREFIX} ${issue.key} – ${issue.title}`, body: scenario.body(issue, numbers), label: repository.label.id },
     );
     numbers.set(issue.key, createIssue.issue.number);
     ids.set(issue.key, createIssue.issue.id);
     log(`created ${issue.key} as #${createIssue.issue.number}`);
   }
 
-  for (const issue of SCENARIO) {
+  for (const issue of scenario.issues) {
     for (const blocker of issue.blockers) {
       await context.github.gql(
         `mutation($issue: ID!, $blocker: ID!) { addBlockedBy(input: { issueId: $issue, blockingIssueId: $blocker }) { issue { number } } }`,
@@ -124,7 +136,7 @@ export async function createScenario(context: E2eContext, board: Board, log: (li
   }
 
   const items = new Map<string, string>();
-  for (const issue of SCENARIO) {
+  for (const issue of scenario.issues) {
     const { addProjectV2ItemById } = await context.github.gql<{ addProjectV2ItemById: { item: { id: string } } }>(
       `mutation($project: ID!, $content: ID!) { addProjectV2ItemById(input: { projectId: $project, contentId: $content }) { item { id } } }`,
       { project: board.projectId, content: ids.get(issue.key) },
@@ -143,9 +155,10 @@ export async function createScenario(context: E2eContext, board: Board, log: (li
   }
 
   return {
+    scenario: scenario.name,
     startedAt,
     repository: repository.nameWithOwner,
-    issues: SCENARIO.map((issue) => ({
+    issues: scenario.issues.map((issue) => ({
       key: issue.key,
       number: numbers.get(issue.key) as number,
       issueId: ids.get(issue.key) as string,

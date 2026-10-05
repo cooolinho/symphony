@@ -366,8 +366,14 @@ den Reviewer: Issues in `In review` setzt es nach 60 s auf `Done` und schließt 
 als `max_concurrent_agents` Agenten gleichzeitig liefen und dass kein Issue vor dem Schließen seiner Abhängigkeiten
 gestartet wurde.
 
+`npm run e2e -- --scenario roles` prüft stattdessen den Rollen-Ablauf developer → Checks → reviewer → Übergabe:
+Es erzeugt einen Workflow mit den Rollen `developer` und `reviewer`, legt drei Test-Issues an und prüft deren
+Status-Verlauf, die Zeilen `transition_denied`, `checks_finished` und `handed_off` im Repository-Log und das
+Limit für `Agent review`. Das Board braucht dafür zusätzlich die Spalten `Agent review` und `Blocked`.
+
 ```bash
 npm run e2e                                  # nutzt WORKFLOW.md und .env, wie npm start
+npm run e2e -- --scenario roles              # Rollen-Ablauf mit generiertem Workflow
 node scripts/e2e/verify.ts logs/e2e/<zeit>   # einen Lauf später erneut prüfen
 ```
 
