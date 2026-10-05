@@ -33,6 +33,8 @@ export interface WorkspaceSettings {
 
 const MAX_KEY_STEM = 200;
 const LOG_OUTPUT_LIMIT = 2_000;
+/** Agent credentials that check scripts (which run repository code) must never see. */
+const AGENT_CREDENTIAL_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
 
 /**
  * Directory name for an issue: characters outside [A-Za-z0-9._-] become `_`. When that (or
@@ -140,6 +142,41 @@ export class WorkspaceManager {
     return result;
   }
 
+  /**
+   * Runs an arbitrary script (an entry check) in the workspace with the hook environment,
+   * SYMPHONY_HOOK=<label>, and without agent credentials. `env` is merged on top.
+   */
+  async runScript(
+    label: string,
+    script: string,
+    workspace: Workspace,
+    issue: HookIssue,
+    options: { signal?: AbortSignal; timeoutMs: number; env?: Record<string, string> },
+  ): Promise<HookResult> {
+    const log = this.#logger.child({ hook: label, issue_id: issue.id, issue_identifier: issue.identifier });
+    log.info('script started', { workspace: workspace.path });
+    const env: NodeJS.ProcessEnv = { ...this.#hookEnv(label, workspace, issue), ...options.env };
+    for (const name of AGENT_CREDENTIAL_VARS) delete env[name];
+    const result = await runShellScript(script, {
+      cwd: workspace.path,
+      env,
+      timeoutMs: options.timeoutMs,
+      signal: options.signal,
+    });
+    if (result.ok) {
+      log.info('script completed', { duration_ms: result.durationMs });
+    } else {
+      log.warn(result.timedOut ? 'script timed out' : 'script failed', {
+        exit_code: result.exitCode,
+        signal: result.signal,
+        duration_ms: result.durationMs,
+        error: result.error,
+        output: tail(result.output, LOG_OUTPUT_LIMIT),
+      });
+    }
+    return result;
+  }
+
   /** Runs before_remove (failures ignored) and deletes the workspace if it exists. */
   async remove(issue: HookIssue): Promise<boolean> {
     const target = await this.pathFor(issue.identifier);
@@ -172,7 +209,7 @@ export class WorkspaceManager {
     }
   }
 
-  #hookEnv(name: HookName, workspace: Workspace, issue: HookIssue): NodeJS.ProcessEnv {
+  #hookEnv(name: string, workspace: Workspace, issue: HookIssue): NodeJS.ProcessEnv {
     return {
       ...this.#env,
       ...issue.env,

@@ -93,8 +93,11 @@ export interface WorkerParams {
   signal: AbortSignal;
   /** Directory for per-session JSONL transcripts, or null to disable them. */
   transcriptDir: string | null;
-  /** Live eligibility check (uses the current workflow config). */
-  stillEligible: (issue: Issue) => boolean;
+  /**
+   * Live check after each turn (uses the current workflow config): null continues the session, a string ends it
+   * normally with that reason (the issue left the active states, is no longer routable, or another role serves it).
+   */
+  continueWith: (issue: Issue) => string | null;
   callbacks: WorkerCallbacks;
 }
 
@@ -237,9 +240,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       if (next === undefined) return await finish({ kind: 'normal', turns: turn, reason: 'issue is no longer visible on the tracker' });
       issue = next;
       callbacks.issueRefreshed(issue);
-      if (!params.stillEligible(issue)) {
-        return await finish({ kind: 'normal', turns: turn, reason: `issue left the active states ("${issue.state}")` });
-      }
+      const stopReason = params.continueWith(issue);
+      if (stopReason !== null) return await finish({ kind: 'normal', turns: turn, reason: stopReason });
       if (turn >= maxTurns) return await finish({ kind: 'normal', turns: turn, reason: `reached ${maxTurnsSetting} (${maxTurns})` });
     }
   } catch (error) {

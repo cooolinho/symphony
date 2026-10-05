@@ -323,7 +323,7 @@ Issue das Modell aus dem Label:
   nächsten Session, also der nächsten Fortsetzung oder Wiederholung. Ein pausiertes Issue läuft nach einer
   Label-Änderung weiter, gleich mit dem neuen Modell. So versuchst du ein festgefahrenes Issue z. B. mit `Model: opus`
   erneut.
-- Kontrolle: `npm run dry-run` zeigt pro Issue `↳ model … (label "…")`. Beim Start steht das Modell in der Logzeile
+- Kontrolle: `npm run dry-run` zeigt pro Issue `↳ role …, model …` (ohne Rollen `default`) und bei einem Label `↳ model … (label "…")`. Beim Start steht das Modell in der Logzeile
   `dispatching issue` (`model=…`, bei einem Label auch `model_label=…`) und im Log des Repositorys bei `run_started`.
   Das Dashboard zeigt in der Spalte *Model* das Modell, das Claude Code tatsächlich nutzt.
 - Im Prompt fehlen die Model-Labels in der Label-Liste des Agenten. Für seine Arbeit spielen sie keine Rolle.
@@ -378,7 +378,7 @@ Optionen und Prüfungen beschreibt [docs/e2e.md](docs/e2e.md).
 ### Dashboard und API
 
 Das Dashboard läuft nur, wenn `SYMPHONY_PORT` gesetzt ist oder du `npm start -- --port 4000` aufrufst. Es lauscht nur
-auf `127.0.0.1`. Es zeigt laufende Agenten mit Spalte, Phase, Modell, Turns, letzter Aktivität, Tokens und geschätzten
+auf `127.0.0.1`. Es zeigt laufende Agenten mit Spalte, Rolle, Phase, Modell, Turns, letzter Aktivität, Tokens und geschätzten
 Kosten, außerdem die Wiederholungs-Warteschlange und Probleme wie Konfigurations- oder GitHub-Fehler. Der Button
 **Logs** im Header öffnet die [Logs-Seite](#logs-und-statistiken).
 
@@ -388,8 +388,8 @@ Kosten, außerdem die Wiederholungs-Warteschlange und Probleme wie Konfiguration
 | `GET /logs` | Logs-Seite mit Statistiken, gesamt oder mit `?repo=owner/name` für ein Repository |
 | `GET /api/v1/history` | dieselben Statistiken als JSON, optional mit `?repo=owner/name` |
 | `GET /api/v1/history/raw?repo=owner/name` | die `.log`-Datei eines Repositorys als Text |
-| `GET /api/v1/state` | Gesamtzustand als JSON: laufende Agenten, Warteschlange, Summen, Gesundheit |
-| `GET /api/v1/<identifier>` | Details zu einem Issue: Workspace, Versuche, letzte Ereignisse, letzter Fehler |
+| `GET /api/v1/state` | Gesamtzustand als JSON: laufende Agenten (mit `role`), Warteschlange, Summen, Gesundheit |
+| `GET /api/v1/<identifier>` | Details zu einem Issue: Rolle, Workspace, Versuche, letzte Ereignisse, letzter Fehler |
 | `POST /api/v1/refresh` | sofort abfragen und abgleichen |
 
 ```bash
@@ -502,7 +502,7 @@ Die häufigsten Stellschrauben in der `WORKFLOW.md`. Alle Optionen beschreibt
 | `claude.effort` | Denkaufwand: `low` … `max` |
 | `claude.allowed_tools` | Aktionen, die immer erlaubt sind, z. B. `"Bash(npm test:*)"` |
 | `claude.plugins`, `claude.skills` | Plugin-Ordner für alle Sessions (Standard: `./.claude`) und welche Skills aktiv sind (`all`) |
-| `laravel.*` | Laravel Boost: `boost: auto` oder `off`, PHP- und Composer-Befehl, Umgebung (`APP_ENV: local`) |
+| `laravel.*` | Laravel Boost: `boost: auto` oder `off`, PHP- und Composer-Befehl, Umgebung für Boost (`env`, Standard `APP_ENV: local`) und Agent (`agent_env`), Tool-Sperren (`allow_tinker`, `deny_tools`) |
 | `tracker.required_labels` | nur Issues mit diesen Labels bearbeiten, z. B. `[symphony]` |
 | `hooks.*` | Shell-Skripte rund um jeden Lauf, z. B. Abhängigkeiten installieren |
 | Text unterhalb der Front Matter | der Prompt, ein Liquid-Template mit `issue` und `attempt` |
@@ -534,8 +534,8 @@ Tag. Geschätzt wird mit der [`model-costs.yml`](#kosten-schätzen-mit-model-cos
 ### Laravel Boost
 
 [Laravel Boost](https://laravel.com/docs/boost) gibt KI-Agenten Laravel-Wissen passend zu den installierten Paketen:
-**Guidelines** (immer geladen), **Skills** (bei Bedarf geladen, z. B. `pest-testing`, `livewire-development`) und
-einen **MCP-Server** mit Doku-Suche, Datenbankschema, Logs und Fehlern. Symphony nutzt Boost automatisch:
+**Guidelines** (immer geladen), **Skills** (bei Bedarf geladen, z. B. `laravel-best-practices`, `testing-best-practices`,
+`filament-development`) und einen **MCP-Server** mit Doku-Suche, Datenbankschema, Logs und Fehlern. Symphony nutzt Boost automatisch:
 
 1. Nach dem `before_run`-Hook sucht Symphony im Workspace Laravel-Apps: im Root oder eine Ebene tiefer, z. B.
    `laravel/` im trainingsstunden-portal.
@@ -544,6 +544,7 @@ einen **MCP-Server** mit Doku-Suche, Datenbankschema, Logs und Fehlern. Symphony
 3. Die erzeugten Dateien trägt Symphony in `.git/info/exclude` ein. Versionierte Dateien, die Boost verändert hat,
    setzt es zurück. So landet nichts davon im Pull Request.
 4. Die Session bekommt den MCP-Server `laravel-boost`, die Boost-Skills und Boosts Guidelines im System-Prompt.
+   Der Prompt nennt die tatsächlich erzeugten Skills und die freigegebenen und gesperrten Tools.
 5. Neu erzeugt wird nur, wenn sich `composer.lock`, `.ai/` oder die Boost-Version ändern.
 
 Damit Artisan und Boost nie eine fremde Datenbank erreichen, legt `hooks/laravel-env.sh` im `after_create`-Hook für jede
@@ -567,9 +568,17 @@ Voraussetzungen und Grenzen:
   `SYMPHONY_PHP=/usr/bin/php8.4` in der `.env`. Soll PHP später in einem Container laufen, zeigt `laravel.php` auf ein
   Wrapper-Script. Es bekommt den absoluten `artisan`-Pfad als erstes Argument und `SYMPHONY_WORKSPACE` in der
   Umgebung.
-- **`APP_ENV=local`:** Boost läuft nur lokal. Symphony setzt die Variable für Composer, `artisan`, den MCP-Server und
-  den Agenten, weil ein frischer Klon keine `.env` hat. Weitere Variablen kommen unter `laravel.env` dazu, z. B.
-  `DB_CONNECTION: sqlite`, damit Boosts Datenbank-Tools nicht deine Entwicklungsdatenbank lesen.
+- **`APP_ENV=local`:** Boost läuft nur lokal. Symphony setzt `laravel.env` (Standard `APP_ENV: local`) für seine
+  Composer- und `artisan`-Schritte und den MCP-Server, weil ein frischer Klon keine `.env` hat, aber nicht für die Shell
+  des Agenten: Dort würde `APP_ENV=local` PHPUnits `APP_ENV=testing` überstimmen. Variablen für den Agenten gehören
+  nach `laravel.agent_env` (Standard leer). Datenbank-Einstellungen gehören in die `.env` der App (siehe oben), nicht
+  in `laravel.env`.
+- **Boost-Tools:** Freigegeben sind nur die lesenden Tools (`application-info`, `browser-logs`,
+  `database-connections`, `database-query` (nur lesend), `database-schema`, `get-absolute-url`, `last-error`,
+  `read-log-entries`) und `search-docs` (schickt Anfragen und die Paketliste an boost.laravel.com). `tinker` führt
+  beliebiges PHP aus und ist gesperrt, außer mit `laravel.allow_tinker: true`. `laravel.deny_tools` (Standard
+  `[record-rule]`, schreibt `.ai/rules`) sperrt weitere Tools, z. B. `[search-docs, record-rule]`. Neue Tools späterer
+  Boost-Versionen sind nicht vorab freigegeben.
 - **Committete Boost-Dateien:** Liegt `boost.json` im Repository, verwaltet das Repository Boost selbst. Symphony
   erzeugt dann nichts und nutzt die committeten Dateien.
 - **Sail:** Erkennt Boost Laravel Sail, verweisen seine Guidelines auf `vendor/bin/sail`. Symphony warnt dann, weil es
@@ -630,6 +639,7 @@ Mit einem Stack pro Workspace kann `laravel.php` auf ein Wrapper-Script zeigen, 
 | Ein Agent fängt immer wieder von vorn an | Das Issue verlässt die aktiven Spalten nie, etwa weil die Übergabe-Spalte fehlt oder `set_status` scheitert (Warnung `agent tracker_tool` mit `set_status failed` im Log). Erst pausieren (`max_concurrent_agents: 0`), dann die Spalten bzw. den Prompt korrigieren. |
 | Warnung `agent agent_error` (z. B. `authentication_failed`) oder `startup_failed` | Claude Code ist nicht angemeldet bzw. das Konto hat ein Problem. Einmal `claude` starten und `/login` ausführen, oder `ANTHROPIC_API_KEY` setzen. |
 | `env file values ignored because the shell environment already sets them` | Die Variable ist auch in der Shell gesetzt, und die Shell gewinnt. `unset GITHUB_TOKEN` oder den Wert dort anpassen. |
+| `unknown board column "…" (valid: …)` | Die `WORKFLOW.md` nennt eine Spalte, die es auf dem Board nicht gibt (Tippfehler in `active_states`, `terminal_states`, `roles.*.states`, `roles.*.may_move_to` oder `checks.on_enter`). Den Namen korrigieren; die Prüfung ist unabhängig von Groß-/Kleinschreibung und der Fehler verschwindet nach dem automatischen Neuladen. Der Dry Run zeigt ihn ebenfalls. |
 | `dispatch validation failed` | Ein Fehler in der `WORKFLOW.md` oder `.env`. Die genaue Meldung steht im Log bzw. im Dashboard. |
 | Warnung `issue paused: still active after its continuation sessions` | Der Agent hat das Issue nach `SYMPHONY_MAX_CONTINUATIONS` Fortsetzungen nicht abgeschlossen. Lies den letzten Kommentar und das Transkript, dann schreib einen Hinweis ins Issue (das setzt es fort) oder verschieb die Karte. |
 | Warnung `model label ignored` | Ein Model-Label ist unbekannt (Tippfehler), oder das Issue hat mehrere Model-Labels mit verschiedenen Modellen. Symphony nutzt dann `CLAUDE_MODEL`. Label korrigieren, `npm run dry-run` zeigt das Ergebnis. |
@@ -690,9 +700,11 @@ npm run e2e         # End-to-End-Test auf dem Test-Board (legt echte Issues an)
 
 Die CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) führt `npm run check` mit Node 26 für jeden Pull Request
 und jeden Push auf `main` aus. Ist sie für einen Pull Request der Symphony-Agenten (Branch `symphony/*`) grün, mergt
-[.github/workflows/automerge.yml](.github/workflows/automerge.yml) ihn per Squash und löscht den Branch. Das schließt
-das Issue (`Closes #…`), und Symphony startet die Issues, die davon abhängen. Der Auto-Merge läuft immer in der
-Fassung von `main`: Ein Pull Request kann die Regeln für seinen eigenen Merge nicht ändern.
+[.github/workflows/automerge.yml](.github/workflows/automerge.yml) ihn per Squash, schließt die Issues, die er mit
+`Closes #…` nennt, und löscht den Branch. Symphony startet dann die Issues, die davon abhängen. Das Schließen
+übernimmt der Workflow selbst, weil GitHub `Closes #…` bei Merges durch den Actions-Token nicht auswertet; mergst du
+selbst, schließt GitHub die Issues wie gewohnt. Der Auto-Merge läuft immer in der Fassung von `main`: Ein Pull
+Request kann die Regeln für seinen eigenen Merge nicht ändern.
 
 Ein Pull Request bleibt für dich offen, wenn
 

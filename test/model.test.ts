@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { chooseModel, isModelLabel, modelForLabelValue, sessionClaudeConfig } from '../src/agent/model.ts';
+import { roleModelLine } from '../src/service.ts';
 import { STANDARD_LABELS } from '../src/repo-init/labels.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 import { resolveConfig } from '../src/workflow/config.ts';
@@ -111,5 +112,12 @@ describe('model labels', () => {
       assert.ok(label.description.length <= 100, label.name);
       assert.match(label.color, /^[0-9a-f]{6}$/);
     }
+  });
+});
+
+describe('roleModelLine', () => {
+  it('names role and model, or default without a model', () => {
+    assert.equal(roleModelLine('reviewer', 'opus'), 'role reviewer, model opus');
+    assert.equal(roleModelLine('default', null), 'role default, model default');
   });
 });

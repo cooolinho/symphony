@@ -16,7 +16,7 @@ import { WorkspaceManager, type HookIssue } from '../workspace/manager.ts';
 import type { ServiceConfig } from '../workflow/config.ts';
 import { roleFor, roleName } from '../workflow/roles.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../workflow/store.ts';
-import { validateDispatch } from '../workflow/validate.ts';
+import { unknownBoardColumns, validateDispatch } from '../workflow/validate.ts';
 import {
   CONTINUATION_DELAY_MS,
   failureBackoffMs,
@@ -284,6 +284,7 @@ export class Orchestrator {
   #dispatchErrors: string[] = [];
   #lastTrackerError: { at: Date; message: string } | null = null;
   #adapterCache: { version: number; adapter: TrackerAdapter } | null = null;
+  #statusOptionsCache: { version: number; options: string[] } | null = null;
   #listeners = new Set<() => void>();
 
   constructor(deps: OrchestratorDeps) {
@@ -298,6 +299,7 @@ export class Orchestrator {
   /** Startup validation (fails startup), terminal workspace cleanup, then an immediate first tick. */
   async start(): Promise<void> {
     const workflow = this.#deps.workflow.current;
+    await this.#loadStatusOptions(workflow);
     const errors = this.#validate(workflow);
     if (errors.length > 0) throw new SymphonyError('startup_validation_failed', errors.join('; '));
     this.#pollIntervalMs = workflow.config.polling.intervalMs;
@@ -377,6 +379,7 @@ export class Orchestrator {
 
       await this.#reconcile(workflow);
 
+      await this.#loadStatusOptions(workflow);
       const errors = this.#validate(workflow);
       if (errors.join('\n') !== this.#dispatchErrors.join('\n') && errors.length > 0) {
         this.#logger.error('dispatch validation failed; skipping dispatch until fixed', { errors: errors.join('; ') });
@@ -417,7 +420,30 @@ export class Orchestrator {
         errors.push(errorMessage(error));
       }
     }
+    if (this.#statusOptionsCache?.version === workflow.version) {
+      errors.push(...unknownBoardColumns(workflow.config, this.#statusOptionsCache.options));
+    }
     return errors;
+  }
+
+  /**
+   * Fetches the board's status options once per workflow version (adapters without `statusOptions` skip
+   * the check). A failure is a tracker error, not a validation error, and is retried on the next call.
+   */
+  async #loadStatusOptions(workflow: EffectiveWorkflow): Promise<void> {
+    if (this.#statusOptionsCache?.version === workflow.version) return;
+    let adapter: TrackerAdapter;
+    try {
+      adapter = this.#adapterFor(workflow);
+    } catch {
+      return; // reported by #validate
+    }
+    if (adapter.statusOptions === undefined) return;
+    try {
+      this.#statusOptionsCache = { version: workflow.version, options: await adapter.statusOptions() };
+    } catch (error) {
+      this.#trackerFailure('board status options fetch failed; skipping the column check', error);
+    }
   }
 
   /** One adapter per workflow version, so a reload never changes an in-flight session's tracker. */
@@ -566,9 +592,12 @@ export class Orchestrator {
         logger: log,
         signal: controller.signal,
         transcriptDir: this.#deps.logDir === null ? null : path.join(this.#deps.logDir, 'sessions'),
-        stillEligible: (fresh) => {
+        continueWith: (fresh) => {
           const current = this.#deps.workflow.current.config;
-          return isActiveState(fresh.state, current.tracker) && isRoutable(fresh, current.tracker);
+          if (!isActiveState(fresh.state, current.tracker)) return `issue left the active states ("${fresh.state}")`;
+          if (!isRoutable(fresh, current.tracker)) return 'issue is no longer dispatchable (assignee, blockers or labels)';
+          const next = roleName(roleFor(fresh.state, current.roles));
+          return next === entry.role ? null : `role changed (${entry.role} → ${next})`;
         },
         callbacks: {
           phase: (phase) => {
@@ -669,12 +698,21 @@ export class Orchestrator {
     const config = this.#deps.workflow.current.config;
     let result: RunOutcome;
     let reason: string;
+    let nextRole: string | undefined;
     if (entry.stop !== null) {
       result = entry.stop.kind === 'stalled' ? 'stalled' : entry.stop.kind === 'shutdown' ? 'shutdown' : 'stopped';
       reason = entry.stop.reason;
     } else if (outcome.kind === 'normal') {
       result = isActiveState(entry.issue.state, config.tracker) ? 'continuing' : 'handed_off';
       reason = outcome.reason;
+      if (result === 'continuing') {
+        // Moved to a column served by another role: the next session runs as that role.
+        const next = roleName(roleFor(entry.issue.state, config.roles));
+        if (next !== entry.role) {
+          result = 'handed_off';
+          nextRole = next;
+        }
+      }
     } else if (outcome.kind === 'cancelled') {
       result = 'stopped';
       reason = outcome.message;
@@ -690,6 +728,7 @@ export class Orchestrator {
       session: entry.threadId,
       attempt: entry.attempt,
       outcome: result,
+      ...(nextRole !== undefined ? { role: entry.role, nextRole } : {}),
       state: entry.issue.state,
       reason,
       turns: entry.turnCount,
@@ -808,6 +847,7 @@ export class Orchestrator {
       this.#pause(issue, continuations, limit);
       return;
     }
+    await this.#loadStatusOptions(workflow);
     const errors = this.#validate(workflow);
     if (errors.length > 0) {
       requeue(`dispatch validation failed: ${errors[0]}`);
@@ -1110,6 +1150,7 @@ export class Orchestrator {
       issue_url: entry.issue.url,
       title: entry.issue.title,
       state: entry.issue.state,
+      role: entry.role,
       phase: entry.phase,
       attempt: entry.attempt,
       session_id: entry.sessionId,
@@ -1230,6 +1271,7 @@ export class Orchestrator {
       issue_url: entry?.issue.url ?? retry?.url ?? record?.url ?? null,
       status:
         entry !== undefined ? (entry.stop !== null ? 'stopping' : 'running') : retry !== undefined ? 'retrying' : paused !== undefined ? 'paused' : 'claimed',
+      role: entry?.role ?? null,
       workspace: { path: entry?.workspacePath ?? record?.workspacePath ?? null },
       attempts: {
         runs: record?.runs ?? 0,

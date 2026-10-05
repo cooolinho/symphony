@@ -17,7 +17,7 @@ If the variable is unset or empty, the setting counts as **omitted** and its def
 uses `default` instead in that case (`${NAME:-}` with an empty default also means omitted). Numbers and booleans may
 come from variables: `max_turns: ${SYMPHONY_MAX_TURNS:-10}`. This works for every setting except:
 
-- `hooks.*`: shell scripts; the shell expands `$NAME` itself when the hook runs.
+- `hooks.*` and `checks.on_enter.*`: shell scripts; the shell expands `$NAME` itself when the script runs.
 - `tracker.provider.*`: resolved by the tracker adapter, which also uses the same `$NAME` rules (see
   [the adapter profile](adapters/github-project.md)). For `token`, an unset variable is a *missing secret* error.
 
@@ -42,6 +42,14 @@ runs Claude Code and is configured through `claude`.
 | `required_labels` | `[]` | An issue needs every listed label (case-insensitive) to be dispatched or keep running. |
 
 Statuses that are neither active nor terminal (for example `Human Review`) stop the agent and keep the workspace.
+
+**Board preflight.** Every column named in `tracker.active_states`, `tracker.terminal_states`, `roles.*.states`,
+`roles.*.may_move_to` and `checks.on_enter` must be a status option of the board (compared case-insensitively).
+An unknown column is a dispatch-validation error (`unknown board column "Agent Reviw" (valid: …)`): dispatch
+pauses while reconciliation continues, and the error clears on the first tick after `WORKFLOW.md` is fixed. The
+options are fetched once per workflow version; a failed fetch is reported as a tracker error (the check is skipped
+and retried on the next tick), not as a validation error. Adapters without `statusOptions` skip the check. The dry
+run prints the same check.
 
 ### `polling`
 
@@ -102,13 +110,37 @@ does not ignore them.
 
 Hooks finish when their output pipes close, so redirect the output of background jobs (`cmd >/dev/null 2>&1 &`).
 
+### `checks`
+
+Deterministic entry checks: bash scripts that run before an issue may enter a gated column. This section only
+configures them; omitting it changes nothing.
+
+```yaml
+checks:
+  timeout_ms: 1200000
+  retries: 0
+  on_enter:
+    Agent review: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `timeout_ms` | `hooks.timeout_ms` | Limit per script run; must be below `claude.turn_timeout_ms`. A timed-out or aborted script's whole process group is killed. |
+| `retries` | `0` | Extra attempts after a failed check, `0`–`3`. |
+| `on_enter` | `{}` | Map of column name (matched trimmed and case-insensitively) to the bash script that must pass to enter it. |
+
+Scripts run like hooks (`bash -lc` in the issue workspace, own process group) with the same `SYMPHONY_*`
+variables, `SYMPHONY_HOOK` set to the check's label. Because they execute repository code, their environment
+also lacks agent credentials (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`) on top of the tracker credentials
+hooks already lack. Scripts are not `$VAR`-substituted by Symphony; the shell expands them at run time.
+
 ### `agent`
 
 | Key | Default | Notes |
 |---|---|---|
 | `max_concurrent_agents` | `10` | `0` pauses new dispatches; running agents continue. |
-| `max_turns` | `20` | Turns per agent session; between turns Symphony re-reads the issue and stops if it left the active states. |
-| `max_continuations` | unlimited | After a session ends normally while the issue is still active, Symphony starts another one (a *continuation session*). With a limit, an issue that is still active after that many continuation sessions is **paused**: it stays claimed and nothing new starts. It resumes as soon as it changes on the tracker (status, comment, labels, edit), leaves the active states, or the limit is raised. `0` = pause right after the first session. |
+| `max_turns` | `20` | Turns per agent session; between turns Symphony re-reads the issue and stops if it left the active states or moved to a column served by another [role](#roles). |
+| `max_continuations` | unlimited | After a session ends normally while the issue is still active, Symphony starts another one (a *continuation session*). With a limit, an issue that is still active after that many continuation sessions is **paused**: it stays claimed and nothing new starts. It resumes as soon as it changes on the tracker (status, comment, labels, edit), leaves the active states, or the limit is raised. `0` = pause right after the first session. A switch to another [role](#roles) also ends the session and counts as a continuation. |
 | `max_retry_backoff_ms` | `300000` | Cap for failure retries (10 s, 20 s, 40 s, …). |
 | `max_concurrent_agents_by_state` | `{}` | Per-status limits, e.g. `{ "In Progress": 1 }`. Invalid entries are ignored with a warning. |
 | `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `turn_number`, `max_turns`). |
@@ -132,7 +164,7 @@ Hooks finish when their output pipes close, so redirect the output of background
 | `env` | `{}` | Extra environment variables for the agent process. |
 | `executable` | bundled CLI | Path to another Claude Code executable. |
 | `plugins` | `[]` | Local Claude Code plugin directories loaded into every session (skills, subagents, commands, hooks), relative to `WORKFLOW.md`. The shipped `WORKFLOW.md` loads `./.claude`, Symphony's own toolbox; its skills are named `symphony:<skill>`. A missing directory blocks dispatch. |
-| `skills` | Claude Code default | `all` enables every discovered skill (the repository's, a plugin's, Laravel Boost's) and the Skill tool; a list enables only those names (`pest-testing`, `symphony:handoff`). |
+| `skills` | Claude Code default | `all` enables every discovered skill (the repository's, a plugin's, Laravel Boost's) and the Skill tool; a list enables only those names (`testing-best-practices`, `symphony:handoff`). |
 | `turn_timeout_ms` | `3600000` | A turn fails after this long **without any output** from the agent. |
 | `read_timeout_ms` | `30000` | Startup handshake timeout; also bounds the wait for `pending` MCP servers Symphony added. |
 | `stall_timeout_ms` | `300000` | The orchestrator kills and retries a run without any agent event for this long; `<= 0` disables it. |
@@ -152,7 +184,10 @@ Boost only get a log line; `npm run repo-init` creates an issue that adds it. De
 | `php` | `php` | PHP command for `artisan`. A bare name is looked up on `PATH`; a value with `/` or `~` is a path, relative to `WORKFLOW.md`. A wrapper script (for example one that runs PHP in a per-workspace container) receives the absolute `artisan` path as its first argument and `SYMPHONY_WORKSPACE` in its environment. |
 | `composer` | `composer` | Composer command, resolved like `php`. |
 | `install_dependencies` | `true` | Run `composer install` when `vendor/` is missing or `composer.lock` changed since the last install. Off: apps without `vendor/` run without Boost. |
-| `env` | `{ APP_ENV: local }` | Environment for Composer, `artisan`, the Boost MCP server and the agent. Boost only registers its commands with `APP_ENV=local` (or `APP_DEBUG=true`), and a fresh clone has no `.env`. Entries are merged over the default, e.g. `{ DB_CONNECTION: sqlite }` keeps Boost's database tools away from a developer's database. |
+| `env` | `{ APP_ENV: local }` | Environment for Symphony's Composer and `artisan` steps and the Boost MCP server, not for the agent's shell. Boost only registers its commands with `APP_ENV=local` (or `APP_DEBUG=true`), and a fresh clone has no `.env`. Entries are merged over the default. Database settings belong in the app's `.env` (see [Recipe: Laravel apps](#recipe-laravel-apps)), not here. |
+| `agent_env` | `{}` | Variables added to the agent's own environment in Boost sessions (its shell, tests, `artisan`). Keep it empty unless needed: an `APP_ENV` set here overrides PHPUnit's non-forced `APP_ENV=testing`, and `DB_*` values would send tests and `RefreshDatabase` to that database. |
+| `allow_tinker` | `false` | Allow Boost's `tinker` tool, which runs arbitrary PHP. Off: `tinker` is denied, even if the repository enables it (`boost.tinker_tool_enabled`). |
+| `deny_tools` | `[record-rule]` | Boost tools removed from the session. A listed tool is also dropped from the pre-approved ones, e.g. `[search-docs, record-rule]` keeps queries away from boost.laravel.com. `[]` allows `record-rule` (it writes `.ai/rules`) after the permission check. |
 | `timeout_ms` | `hooks.timeout_ms` | Limit for each Composer or `artisan` step. |
 
 ### `roles`
@@ -170,8 +205,20 @@ issue in no role's column runs as `default`). The role decides:
 - **Prompt:** the role name is the template variable `role` (see [Prompt template](#prompt-template)).
 
 The role appears as `role` in the `dispatching issue` log line, in `run_started` of the repository log and on every
-agent event log line (together with `run_id`). A session does not yet end when the issue moves to another role's
-column; the next run picks up the new role.
+agent event log line (together with `run_id`).
+
+**Role switches.** A run keeps its role for its whole session. After each turn Symphony re-reads the issue; when the
+agent moved it to a column served by a **different** role (e.g. `In progress` → `Agent review`), the session ends at
+that turn boundary with the reason `role changed (<from> → <to>)`, and the next role starts in a fresh session through
+the usual continuation retry (1 s later). A move between columns of the same role (e.g. `Ready` → `In progress`) keeps
+the session. Reconciliation never stops a running session because of a role change, so the agent can finish its
+handoff (e.g. a comment) within the current turn. The run's `run_finished` line records `outcome=handed_off` with
+`role` and `next_role` (see [Repository logs](#repository-logs)).
+
+Each role switch starts a continuation session and therefore counts toward
+[`agent.max_continuations`](#agent). This also caps a developer ↔ reviewer ping-pong: once the limit is reached, the
+issue is paused until it changes on the board. With roles, `max_continuations: 6` is a good starting point (room for a
+few review rounds plus continuations within each phase).
 
 ```yaml
 roles:
@@ -274,7 +321,7 @@ workflow directory, else `$XDG_STATE_HOME/symphony` or `~/.local/state/symphony`
 | Event | Fields |
 |---|---|
 | `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested: from a `Model: …` label, else the role's model, else `claude.model`), `role` (`default` without roles) |
-| `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `stopped`, `stalled`, `shutdown`), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `head_sha` and `branch` (final commit of a git workspace; omitted otherwise), `mcp_tool_calls` (`<server>:<n>,…` per MCP server; omitted when no MCP tool was used), `started_at`, `mcp_unavailable` (comma-separated MCP servers Symphony added that did not connect; only when there are any), running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` |
+| `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `stopped`, `stalled`, `shutdown`), `role` and `next_role` (only when the run handed off to another [role](#roles)), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `head_sha` and `branch` (final commit of a git workspace; omitted otherwise), `mcp_tool_calls` (`<server>:<n>,…` per MCP server; omitted when no MCP tool was used), `started_at`, `mcp_unavailable` (comma-separated MCP servers Symphony added that did not connect; only when there are any), running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` |
 | `model_usage` | `repo`, `issue`, `run`, `model`, `price` (matched entry), token counts, `cost_usd` |
 | `issue_paused` | `repo`, `issue`, `title`, `state`, `continuations`, `max_continuations` |
 | `workspace_removed` | `repo`, `issue`, `state` |

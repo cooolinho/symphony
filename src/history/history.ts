@@ -15,7 +15,10 @@ import { formatValue, type Logger } from '../log.ts';
 import { errorMessage } from '../util/errors.ts';
 import { DEFAULT_ROLE } from '../workflow/roles.ts';
 
-/** How a run ended: handed off (left the active states), continuing (still active), or stopped early. */
+/**
+ * How a run ended: handed off (left the active states, or moved to a column served by another role; then the
+ * finish line carries `role` and `next_role`), continuing (still active for the same role), or stopped early.
+ */
 export type RunOutcome = 'handed_off' | 'continuing' | 'failed' | 'stopped' | 'stalled' | 'shutdown';
 
 export interface RunStart {
@@ -40,6 +43,9 @@ export interface RunFinish {
   session: string | null;
   attempt: number | null;
   outcome: RunOutcome;
+  /** Role of the run and of the next session; set only when the run handed off to another role. */
+  role?: string;
+  nextRole?: string;
   state: string;
   reason: string;
   turns: number;
@@ -168,6 +174,8 @@ export class HistoryLog {
       session: finish.session,
       title: finish.title,
       outcome: finish.outcome,
+      role: finish.role,
+      next_role: finish.nextRole,
       state: finish.state,
       reason: finish.reason,
       attempt: finish.attempt,

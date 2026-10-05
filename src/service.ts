@@ -19,7 +19,7 @@ import { truncate } from './util/text.ts';
 import { roleFor, roleName } from './workflow/roles.ts';
 import { WorkflowStore } from './workflow/store.ts';
 import { issueTemplateValue, renderPrompt } from './workflow/template.ts';
-import { validateDispatch } from './workflow/validate.ts';
+import { unknownBoardColumns, validateDispatch } from './workflow/validate.ts';
 import { workspaceKey } from './workspace/manager.ts';
 
 export interface ServiceOptions {
@@ -47,6 +47,11 @@ function logEnvFile(logger: Logger, envFile: LoadedEnvFile | null): void {
 }
 
 /** Runs until SIGINT/SIGTERM. Returns the process exit code. */
+/** Dry-run line naming the role and the model a candidate would run on (`default` when none is configured). */
+export function roleModelLine(role: string, model: string | null): string {
+  return `role ${role}, model ${model ?? 'default'}`;
+}
+
 export async function runService(options: ServiceOptions): Promise<number> {
   const logger = Logger.create({ level: options.logLevel, file: options.logFile });
   const { env } = options;
@@ -201,6 +206,16 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       env: options.env,
       logger,
     });
+    if (adapter.statusOptions !== undefined) {
+      const unknown = unknownBoardColumns(config, await adapter.statusOptions());
+      if (unknown.length > 0) {
+        out('Board column check failed:');
+        for (const error of unknown) out(`  - ${error}`);
+        return 1;
+      }
+      out('Board columns:   all configured columns exist on the board');
+      out();
+    }
     const issues = sortForDispatch(await adapter.fetchIssuesByStates(config.tracker.activeStates));
     out(`Candidates in active states: ${issues.length}`);
     let first: Issue | null = null;
@@ -211,6 +226,7 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       if (reason !== null) out(`            ↳ ${reason}`);
       const role = roleFor(issue.state, config.roles);
       const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model);
+      out(`            ↳ ${roleModelLine(roleName(role), choice.model)}`);
       if (choice.warning !== null) out(`            ↳ model label ignored: ${choice.warning}; using ${choice.model ?? '(Claude Code default)'}`);
       else if (choice.label !== null) out(`            ↳ model ${choice.model} (label "${choice.label}")`);
       for (const line of await laravelLines(path.join(config.workspace.root, workspaceKey(issue.identifier)))) out(`            ↳ ${line}`);
