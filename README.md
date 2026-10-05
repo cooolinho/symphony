@@ -144,8 +144,8 @@ npm run e2e         # End-to-End-Test auf dem Test-Board (legt echte Issues an)
 npm run test:laravel # Laravel-Integration gegen eine echte App (braucht PHP 8.3+, Composer, Netz)
 ```
 
-Die CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) führt `npm run check` mit Node 26 für jeden Pull Request
-und jeden Push auf `main` aus. Ist sie für einen Pull Request der Symphony-Agenten (Branch `symphony/*`) grün, mergt
+Die CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) führt `npm run check` mit Node 26 sowie einen Docker-Build
+mit Start-Test des Images für jeden Pull Request und jeden Push auf `main` aus. Ist sie für einen Pull Request der Symphony-Agenten (Branch `symphony/*`) grün, mergt
 [.github/workflows/automerge.yml](.github/workflows/automerge.yml) ihn per Squash, schließt die Issues, die er mit
 `Closes #…` nennt, und löscht den Branch. Symphony startet dann die Issues, die davon abhängen. Das Schließen
 übernimmt der Workflow selbst, weil GitHub `Closes #…` bei Merges durch den Actions-Token nicht auswertet; mergst du
