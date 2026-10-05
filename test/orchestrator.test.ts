@@ -601,6 +601,208 @@ describe('worker lifecycle and retries', () => {
   });
 });
 
+describe('session limit retries', () => {
+  const RESETS_AT = new Date('2026-10-03T17:30:00Z');
+  const TEXT = "You've hit your session limit · resets 7:30pm (Europe/Berlin)";
+  type Mode = 'limit' | 'fail' | 'ok' | 'hang';
+
+  /** A runner whose next sessions fail with a session limit, fail otherwise, end normally or hang until stopped. */
+  function limitSetup(options: { front?: Record<string, unknown>; history?: HistoryLog } = {}) {
+    const state: { mode: Mode } = { mode: 'limit' };
+    const runner = new FakeRunner((turn, params) => {
+      if (state.mode === 'limit') {
+        return {
+          ok: false,
+          turnId: String(turn),
+          code: 'session_limit',
+          message: `turn ended with an error: ${TEXT}`,
+          sessionLimit: { window: 'five_hour', resetsAt: RESETS_AT, source: 'event', text: TEXT, overageDisabledReason: null },
+        };
+      }
+      if (state.mode === 'fail') return { ok: false, turnId: String(turn), code: 'turn_failed', message: 'boom' };
+      if (state.mode === 'ok') return { ok: true, turnId: String(turn), resultText: 'done' };
+      return new Promise((resolve) => params.signal.addEventListener('abort', () => resolve({ ok: false, turnId: String(turn), code: 'turn_cancelled', message: 'cancelled' })));
+    });
+    const s = setup({ runner, issues: [makeIssue({ id: 'a' })], ...options, front: { agent: { max_turns: 1 }, ...options.front } });
+    return { s, state };
+  }
+
+  const retry = (s: Setup) => snapshot(s).retrying[0];
+
+  /** Fires the pending retry and waits for the run it dispatches to be scheduled again. */
+  async function fireRetry(s: Setup, delay: number) {
+    const sessions = s.runner.sessions.length;
+    assert.ok(s.timers.delays().includes(delay), `a ${delay}ms timer is pending (have ${s.timers.delays().join(', ')})`);
+    s.timers.fire(delay);
+    await until(() => s.runner.sessions.length === sessions + 1 && snapshot(s).retrying.length === 1, 3_000, 'next retry');
+  }
+
+  it('retries a session limit up to max_session_limit_retries times with the failure backoff, then as before', async () => {
+    const { s } = limitSetup();
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'first retry');
+    for (const [hits, delay] of [[1, 10_000], [2, 20_000], [3, 40_000]] as const) {
+      const row = retry(s);
+      assert.equal(row?.kind, 'session_limit');
+      assert.equal(row?.attempt, hits);
+      assert.equal(row?.limit?.hits, hits);
+      assert.equal(row?.limit?.max_retries, 3);
+      assert.deepEqual(s.timers.delays(), [delay]);
+      await fireRetry(s, delay);
+    }
+    // The fourth failure is beyond the cap: still a session_limit retry, with today's capped exponential backoff.
+    const row = retry(s);
+    assert.equal(row?.kind, 'session_limit');
+    assert.equal(row?.attempt, 4);
+    assert.equal(row?.limit?.hits, 4);
+    assert.equal(row?.limit?.waiting, false);
+    assert.deepEqual(s.timers.delays(), [failureBackoffMs(4, 300_000)]);
+    assert.deepEqual(row?.limit, {
+      window: 'five_hour',
+      resets_at: RESETS_AT.toISOString(),
+      source: 'event',
+      text: TEXT,
+      hits: 4,
+      max_retries: 3,
+      waiting: false,
+      overage_disabled_reason: null,
+      observed_at: s.clock.now().toISOString(),
+    });
+    assert.match(row?.error ?? '', /^worker exited: session_limit: turn ended with an error: You've hit your session limit/);
+
+    const detail = s.orchestrator.issueDetail('acme/app#a');
+    assert.match(detail?.last_error ?? '', /^session_limit: /);
+    assert.equal(detail?.retry?.limit?.hits, 4);
+    const scheduled = s.orchestrator.issueTimeline('acme/app#a')?.events.filter((event) => event.event === 'retry_scheduled') ?? [];
+    assert.deepEqual(
+      scheduled.map((event) => [event.level, event.message]),
+      [
+        ['warn', 'session limit: retry 1 of 3 in 10s'],
+        ['warn', 'session limit: retry 2 of 3 in 20s'],
+        ['warn', 'session limit: retry 3 of 3 in 40s'],
+        ['warn', 'session limit: retry 4 of 3 in 80s'],
+      ],
+    );
+    assert.equal((scheduled[0]?.detail?.limit as { text?: string } | null)?.text, TEXT);
+  });
+
+  it('honours agent.max_session_limit_retries: 1', async () => {
+    const { s } = limitSetup({ front: { agent: { max_turns: 1, max_session_limit_retries: 1 } } });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'first retry');
+    assert.equal(retry(s)?.limit?.max_retries, 1);
+    await fireRetry(s, 10_000);
+    // Beyond the cap the attempt drives the backoff, as for any failure.
+    assert.equal(retry(s)?.limit?.hits, 2);
+    assert.deepEqual(s.timers.delays(), [failureBackoffMs(2, 300_000)]);
+  });
+
+  it('starts the count again after a normal run and after another failure', async () => {
+    const { s, state } = limitSetup();
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'first retry');
+    await fireRetry(s, 10_000);
+    assert.equal(retry(s)?.limit?.hits, 2);
+
+    state.mode = 'ok';
+    await fireRetry(s, 20_000);
+    assert.equal(retry(s)?.kind, 'continuation');
+    state.mode = 'limit';
+    await fireRetry(s, 1_000);
+    assert.equal(retry(s)?.kind, 'session_limit');
+    assert.equal(retry(s)?.limit?.hits, 1);
+    assert.deepEqual(s.timers.delays(), [10_000]);
+
+    state.mode = 'fail';
+    await fireRetry(s, 10_000);
+    assert.equal(retry(s)?.kind, 'failure');
+    assert.equal(retry(s)?.limit, null);
+    state.mode = 'limit';
+    const delay = s.timers.delays()[0] ?? 0;
+    await fireRetry(s, delay);
+    assert.equal(retry(s)?.limit?.hits, 1);
+    assert.deepEqual(s.timers.delays(), [10_000]);
+  });
+
+  it('starts the count again after a stalled run (limit → stalled → limit)', async () => {
+    const { s, state } = limitSetup({ front: { agent: { max_turns: 1 }, claude: { stall_timeout_ms: 60_000 } } });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'first retry');
+    await fireRetry(s, 10_000);
+    assert.equal(retry(s)?.limit?.hits, 2);
+
+    state.mode = 'hang';
+    s.timers.fire(20_000);
+    await until(() => snapshot(s).running[0]?.phase === 'StreamingTurn', 3_000, 'streaming');
+    s.clock.advance(61_000);
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'stall retry');
+    assert.equal(retry(s)?.kind, 'failure');
+    assert.match(retry(s)?.error ?? '', /^stalled: /);
+
+    state.mode = 'limit';
+    // The stalled run was attempt 2; its retry uses the attempt-based backoff.
+    await fireRetry(s, failureBackoffMs(3, 300_000));
+    assert.equal(retry(s)?.limit?.hits, 1);
+    assert.ok(s.timers.delays().includes(10_000));
+  });
+
+  it('keeps kind, limit and hits when a retry is requeued without running an agent', async () => {
+    const { s } = limitSetup({ front: { agent: { max_turns: 1, max_concurrent_agents: 1 }, polling: { interval_ms: 7_000 } } });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'first retry');
+    const before = retry(s)?.limit;
+
+    // Tracker refresh fails: attempt + 1, same kind and limit.
+    s.tracker.failNext = new Error('network down');
+    s.timers.fire(10_000);
+    await until(() => /retry refresh failed/.test(retry(s)?.error ?? ''), 3_000, 'refresh requeue');
+    assert.equal(retry(s)?.kind, 'session_limit');
+    assert.equal(retry(s)?.attempt, 2);
+    assert.deepEqual(retry(s)?.limit, before);
+
+    // Validation fails: attempt + 1, same kind and limit.
+    s.workflow.lastError = { code: 'workflow_parse_error', message: 'bad yaml', at: new Date() };
+    s.timers.fire(20_000);
+    await until(() => /dispatch validation failed/.test(retry(s)?.error ?? ''), 3_000, 'validation requeue');
+    assert.equal(retry(s)?.kind, 'session_limit');
+    assert.equal(retry(s)?.attempt, 3);
+    assert.deepEqual(retry(s)?.limit, before);
+    s.workflow.lastError = null;
+
+    // No free slot: same attempt, kind and limit.
+    s.runner.script = () => new Promise(() => undefined);
+    s.tracker.issues.set('b', makeIssue({ id: 'b', priority: 2 }));
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running.length === 1, 3_000, 'b running');
+    s.timers.fire(40_000);
+    await until(() => retry(s)?.error === 'no available orchestrator slots', 3_000, 'slot requeue');
+    assert.equal(retry(s)?.kind, 'session_limit');
+    assert.equal(retry(s)?.attempt, 3);
+    assert.deepEqual(retry(s)?.limit, before);
+    assert.equal(retry(s)?.limit?.text, TEXT);
+    assert.equal(s.runner.sessions.length, 2);
+  });
+
+  it('logs run_finished with outcome=session_limit', async () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
+    const pricing = new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent());
+    const history = new HistoryLog(path.join(dir, 'repositories'), pricing, Logger.silent());
+    const { s } = limitSetup({ history });
+    s.tracker.issueRepository = () => 'acme/app';
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'retry');
+
+    const finished = readHistory(history.dir, 'acme/app').entries.find((entry) => entry.event === 'run_finished')?.fields ?? {};
+    assert.equal(finished.outcome, 'session_limit');
+    assert.match(finished.reason ?? '', /^session_limit: turn ended with an error: You've hit your session limit/);
+    const event = s.orchestrator.issueTimeline('acme/app#a')?.events.find((entry) => entry.event === 'run_finished');
+    assert.equal(event?.level, 'warn');
+    assert.equal(event?.detail?.outcome, 'session_limit');
+  });
+});
+
 describe('reconciliation', () => {
   async function running(s: Setup, id: string) {
     await s.orchestrator.tickNow();

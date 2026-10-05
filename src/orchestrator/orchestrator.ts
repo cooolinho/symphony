@@ -142,11 +142,46 @@ interface RetryEntry {
   identifier: string;
   url: string | null;
   attempt: number;
-  kind: 'continuation' | 'failure';
+  kind: 'continuation' | 'failure' | 'session_limit';
   dueAtMs: number;
   dueAt: Date;
   error: string | null;
+  /** The session limit behind a `session_limit` retry; null for the other kinds. */
+  limit: SessionLimitState | null;
   timer: unknown;
+}
+
+/** A session-limit failure as the retry queue keeps it (GET /api/v1/state `retrying[].limit`). */
+interface SessionLimitState {
+  window: string | null;
+  resetsAt: Date | null;
+  source: 'event' | 'message' | null;
+  /** The original Claude message; the entry's `error` is replaced by queue-state texts such as "no available orchestrator slots". */
+  text: string;
+  /** Consecutive session-limit failures of this claim, including this one. */
+  hits: number;
+  /** agent.max_session_limit_retries when this entry was scheduled. */
+  maxRetries: number;
+  /** Waiting for the reset instead of retrying (not yet: always false). */
+  waiting: boolean;
+  overageDisabledReason: string | null;
+  /** When the failure was observed. */
+  observedAt: Date;
+}
+
+function limitJson(limit: SessionLimitState | null) {
+  if (limit === null) return null;
+  return {
+    window: limit.window,
+    resets_at: limit.resetsAt?.toISOString() ?? null,
+    source: limit.source,
+    text: limit.text,
+    hits: limit.hits,
+    max_retries: limit.maxRetries,
+    waiting: limit.waiting,
+    overage_disabled_reason: limit.overageDisabledReason,
+    observed_at: limit.observedAt.toISOString(),
+  };
 }
 
 /**
@@ -192,6 +227,8 @@ interface IssueRecord {
   runs: number;
   /** Continuation sessions dispatched since the issue was claimed (agent.max_continuations). */
   continuations: number;
+  /** Consecutive session-limit failures; reset by every run that ends without one. */
+  sessionLimitHits: number;
   lastError: string | null;
   /** Execution timeline of the claim, the newest TIMELINE_EVENTS entries. */
   timeline: TimelineEvent[];
@@ -762,11 +799,13 @@ export class Orchestrator {
     } catch (error) {
       this.#flushStart(entry);
       this.#running.delete(issue.id);
+      record.sessionLimitHits = 0;
       this.#scheduleRetry(issue.id, (attempt ?? 0) + 1, {
         identifier: issue.identifier,
         url: issue.url,
         kind: 'failure',
         error: `failed to spawn agent: ${errorMessage(error)}`,
+        limit: null,
       });
       return;
     }
@@ -818,9 +857,12 @@ export class Orchestrator {
     const log = this.#issueLogger(entry.issue);
     const record = this.#records.get(entry.issueId);
     const nextAttempt = (entry.attempt ?? 0) + 1;
-    const retryInfo = { identifier: entry.identifier, url: entry.issue.url };
-
     const stop = entry.stop;
+    const retryInfo = { identifier: entry.identifier, url: entry.issue.url, limit: null };
+    // Every run that ends without a session limit starts the count again.
+    const sessionLimit = stop === null && outcome.kind === 'failed' ? (outcome.sessionLimit ?? null) : null;
+    if (record && sessionLimit === null) record.sessionLimitHits = 0;
+
     if (stop !== null) {
       if (stop.kind === 'stalled' && !this.#stopping) {
         entry.phase = 'Stalled';
@@ -852,7 +894,28 @@ export class Orchestrator {
       const error = `${outcome.code}: ${outcome.message}`;
       if (record) record.lastError = error;
       log.warn('agent run failed', { code: outcome.code, phase: outcome.phase, error: outcome.message });
-      this.#scheduleRetry(entry.issueId, nextAttempt, { ...retryInfo, kind: 'failure', error: `worker exited: ${error}` });
+      if (sessionLimit !== null && record) {
+        const hits = ++record.sessionLimitHits;
+        const config = this.#deps.workflow.current.config;
+        const maxRetries = config.agent.maxSessionLimitRetries;
+        const limit: SessionLimitState = {
+          window: sessionLimit.window,
+          resetsAt: sessionLimit.resetsAt,
+          source: sessionLimit.source,
+          text: sessionLimit.text,
+          hits,
+          maxRetries,
+          waiting: false,
+          overageDisabledReason: sessionLimit.overageDisabledReason,
+          observedAt: this.#clock.now(),
+        };
+        // Within the cap the backoff follows the session-limit count; beyond it (until the wait for the reset
+        // exists) the usual attempt-based backoff applies.
+        const delayMs = failureBackoffMs(hits <= maxRetries ? hits : nextAttempt, config.agent.maxRetryBackoffMs);
+        this.#scheduleRetry(entry.issueId, nextAttempt, { ...retryInfo, kind: 'session_limit', error: `worker exited: ${error}`, limit }, delayMs);
+      } else {
+        this.#scheduleRetry(entry.issueId, nextAttempt, { ...retryInfo, kind: 'failure', error: `worker exited: ${error}` });
+      }
     }
     this.#notify();
   }
@@ -889,7 +952,7 @@ export class Orchestrator {
       result = 'stopped';
       reason = outcome.message;
     } else {
-      result = 'failed';
+      result = outcome.sessionLimit ? 'session_limit' : 'failed';
       reason = `${outcome.code}: ${outcome.message}`;
     }
     return nextRole === undefined ? { result, reason } : { result, reason, nextRole };
@@ -937,7 +1000,7 @@ export class Orchestrator {
   #scheduleRetry(
     issueId: string,
     attempt: number,
-    info: { identifier: string; url: string | null; kind: RetryEntry['kind']; error: string | null },
+    info: { identifier: string; url: string | null; kind: RetryEntry['kind']; error: string | null; limit: SessionLimitState | null },
     delayMs?: number,
   ): void {
     if (this.#stopping) {
@@ -960,6 +1023,7 @@ export class Orchestrator {
       dueAtMs: this.#clock.monotonicMs() + delay,
       dueAt: new Date(this.#clock.now().getTime() + delay),
       error: info.error,
+      limit: info.limit,
       timer,
     });
     this.#claimed.add(issueId);
@@ -971,11 +1035,23 @@ export class Orchestrator {
       this.#trace(record, {
         kind: 'lifecycle',
         event: 'retry_scheduled',
-        level: info.kind === 'failure' ? 'warn' : 'info',
-        message: info.kind === 'continuation' ? `continuation in ${Math.round(delay / 1000)}s` : `retry ${attempt} in ${Math.round(delay / 1000)}s: ${info.error ?? 'unknown error'}`,
+        level: info.kind === 'continuation' ? 'info' : 'warn',
+        message:
+          info.kind === 'continuation'
+            ? `continuation in ${Math.round(delay / 1000)}s`
+            : info.kind === 'session_limit' && info.limit !== null
+              ? `session limit: retry ${info.limit.hits} of ${info.limit.maxRetries} in ${Math.round(delay / 1000)}s`
+              : `retry ${attempt} in ${Math.round(delay / 1000)}s: ${info.error ?? 'unknown error'}`,
         run: null,
         turn: null,
-        detail: { attempt, kind: info.kind, delay_ms: delay, due_at: new Date(this.#clock.now().getTime() + delay).toISOString(), error: info.error },
+        detail: {
+          attempt,
+          kind: info.kind,
+          delay_ms: delay,
+          due_at: new Date(this.#clock.now().getTime() + delay).toISOString(),
+          error: info.error,
+          limit: limitJson(info.limit),
+        },
       });
     }
     this.#logger.info('retry scheduled', {
@@ -1003,8 +1079,15 @@ export class Orchestrator {
       this.#release(issueId);
       return;
     }
+    // A session-limit retry keeps its kind and limit; any other kind is requeued as a failure, as before.
     const requeue = (error: string) =>
-      this.#scheduleRetry(issueId, retry.attempt + 1, { identifier: retry.identifier, url: retry.url, kind: 'failure', error });
+      this.#scheduleRetry(issueId, retry.attempt + 1, {
+        identifier: retry.identifier,
+        url: retry.url,
+        kind: retry.kind === 'session_limit' ? 'session_limit' : 'failure',
+        error,
+        limit: retry.limit,
+      });
 
     const workflow = this.#deps.workflow.current;
     const config = workflow.config;
@@ -1053,7 +1136,7 @@ export class Orchestrator {
       this.#scheduleRetry(
         issueId,
         retry.attempt,
-        { identifier: retry.identifier, url: retry.url, kind: retry.kind, error: 'no available orchestrator slots' },
+        { identifier: retry.identifier, url: retry.url, kind: retry.kind, error: 'no available orchestrator slots', limit: retry.limit },
         config.polling.intervalMs,
       );
       return;
@@ -1351,6 +1434,7 @@ export class Orchestrator {
         workspacePath: null,
         runs: 0,
         continuations: 0,
+        sessionLimitHits: 0,
         lastError: null,
         timeline: [],
         nextSeq: 1,
@@ -1437,6 +1521,7 @@ export class Orchestrator {
       due_at: retry.dueAt.toISOString(),
       due_in_ms: Math.max(0, Math.round(retry.dueAtMs - now)),
       error: retry.error,
+      limit: limitJson(retry.limit),
     };
   }
 
