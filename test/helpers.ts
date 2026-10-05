@@ -54,7 +54,9 @@ export class FakeTracker implements TrackerAdapter {
   readonly kind = 'github_project';
   issues = new Map<string, Issue>();
   failNext: Error | null = null;
-  calls = { byStates: 0, byIds: 0 };
+  calls = { byStates: 0, byIds: 0, statusOptions: 0 };
+  /** Set to give the tracker a board; adapters without it skip the column check. */
+  statusOptions?: () => Promise<string[]>;
 
   constructor(issues: Issue[] = []) {
     for (const issue of issues) this.issues.set(issue.id, issue);

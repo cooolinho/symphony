@@ -542,6 +542,48 @@ describe('observability', () => {
   });
 });
 
+describe('board column preflight', () => {
+  const BOARD = ['Backlog', 'Todo', 'Agent review', 'In review', 'Done'];
+  const front = (reviewState: string) => ({
+    tracker: {
+      kind: 'github_project',
+      provider: { owner: 'acme', project_number: 1, token: 'test-token' },
+      active_states: ['Todo', reviewState],
+      terminal_states: ['Done'],
+    },
+    roles: { developer: { states: ['Todo'] }, reviewer: { states: [reviewState], may_move_to: ['in review'] } },
+  });
+
+  it('blocks dispatch on an unknown column and clears the error after a reload', async () => {
+    const s = setup({ front: front('Agent Reviw'), issues: [makeIssue({ id: 'a' })] });
+    s.tracker.statusOptions = async () => {
+      s.tracker.calls.statusOptions++;
+      return BOARD;
+    };
+    await s.orchestrator.tickNow();
+    assert.equal(s.runner.sessions.length, 0);
+    assert.match(snapshot(s).health.dispatch_errors.join(), /unknown board column "Agent Reviw" \(valid: Backlog, Todo, Agent review/);
+    await s.orchestrator.tickNow();
+    assert.equal(s.tracker.calls.statusOptions, 1, 'fetched once per workflow version');
+
+    const fixed = makeWorkflow(baseFront(s.root, front('agent REVIEW')));
+    s.workflow.current = { ...fixed, version: 2 };
+    await s.orchestrator.tickNow();
+    assert.deepEqual(snapshot(s).health.dispatch_errors, []);
+    await until(() => s.runner.sessions.length === 1, 3_000, 'dispatch after fix');
+  });
+
+  it('reports a failed options fetch as a tracker error, not a validation error', async () => {
+    const s = setup({ issues: [makeIssue({ id: 'a' })] });
+    s.tracker.statusOptions = async () => {
+      throw new Error('board unreachable');
+    };
+    await s.orchestrator.tickNow();
+    assert.deepEqual(snapshot(s).health.dispatch_errors, []);
+    assert.equal(s.tracker.calls.byStates, 1);
+  });
+});
+
 describe('continuation limit and terminal cleanup', () => {
   it('pauses an issue that stays active after max_continuations sessions and resumes it when it changes', async () => {
     const s = setup({ front: { agent: { max_turns: 1, max_continuations: 1 } }, issues: [makeIssue({ id: 'a' })] });

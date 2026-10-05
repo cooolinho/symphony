@@ -196,6 +196,10 @@ export class GithubProjectAdapter implements TrackerAdapter {
     }
   }
 
+  async statusOptions(): Promise<string[]> {
+    return (await this.meta()).statusOptions.map((option) => option.name);
+  }
+
   agentToolSpecs(): AgentToolSpec[] {
     return createGithubTools(this);
   }

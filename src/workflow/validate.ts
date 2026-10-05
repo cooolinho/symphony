@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { getTrackerFactory, supportedTrackerKinds } from '../tracker/registry.ts';
+import { normalizeStateName, type ServiceConfig } from './config.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from './store.ts';
 
 /**
@@ -47,4 +48,23 @@ export function validateDispatch(
     if (!isDirectory) errors.push(`claude.plugins entry ${plugin} is not a directory`);
   }
   return errors;
+}
+
+/** Board columns referenced by the config (`tracker` states, `roles`, `checks.on_enter`) that are not status options. */
+export function unknownBoardColumns(config: ServiceConfig, statusOptions: readonly string[]): string[] {
+  const known = new Set(statusOptions.map(normalizeStateName));
+  const referenced = [
+    ...config.tracker.activeStates,
+    ...config.tracker.terminalStates,
+    ...(config.roles ?? []).flatMap((role) => [...role.states, ...(role.mayMoveTo ?? [])]),
+    ...config.checks.onEnter.keys(),
+  ];
+  const unknown = new Map<string, string>();
+  for (const name of referenced) {
+    const key = normalizeStateName(name);
+    if (!known.has(key) && !unknown.has(key)) unknown.set(key, name);
+  }
+  return [...unknown.values()].map(
+    (name) => `unknown board column "${name}" (valid: ${statusOptions.join(', ')})`,
+  );
 }
