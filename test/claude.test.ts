@@ -123,7 +123,7 @@ describe('claude agent runner', () => {
       { inputTokens: 250, outputTokens: 40, totalTokens: 290 },
     ]);
     assert.equal(completed[1]?.sessionId, `${session.threadId}-2`);
-    assert.ok(events.some((e) => e.event === 'tool_use' && e.message === 'Bash: npm test'));
+    assert.ok(events.some((e) => e.event === 'tool_use' && e.message === 'Bash: npm test' && e.detail?.tool === 'Bash'));
     assert.equal(events[0]?.event, 'session_started');
 
     const options = fake.options();

@@ -1,3 +1,5 @@
+import { execFile } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { sessionClaudeConfig } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, AgentSession } from '../agent/types.ts';
@@ -27,11 +29,45 @@ export type WorkerOutcome =
   | { kind: 'failed'; code: string; message: string; phase: RunPhase }
   | { kind: 'cancelled'; message: string };
 
+/** Final commit and branch of a git workspace. */
+export interface GitHead {
+  headSha: string;
+  branch: string;
+}
+
+/** Upper bound for reading the final commit and branch; the two git calls run in parallel. */
+const GIT_HEAD_TIMEOUT_MS = 5000;
+
+function gitOutput(cwd: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile('git', args, { cwd, timeout: GIT_HEAD_TIMEOUT_MS, encoding: 'utf8' }, (error, stdout) => {
+      if (error) reject(error);
+      else resolve(stdout.trim());
+    });
+  });
+}
+
+/** Best effort: null for a non-git workspace or when git is slow or fails. Never throws. */
+export async function readGitHead(workspacePath: string): Promise<GitHead | null> {
+  try {
+    if (!fs.existsSync(path.join(workspacePath, '.git'))) return null;
+    const [headSha, branch] = await Promise.all([
+      gitOutput(workspacePath, ['rev-parse', 'HEAD']),
+      gitOutput(workspacePath, ['rev-parse', '--abbrev-ref', 'HEAD']),
+    ]);
+    return headSha === '' ? null : { headSha, branch };
+  } catch {
+    return null;
+  }
+}
+
 export interface WorkerCallbacks {
   phase(phase: RunPhase): void;
   workspace(workspace: Workspace): void;
   agentEvent(event: AgentEvent): void;
   issueRefreshed(issue: Issue): void;
+  /** Final commit and branch of the workspace, reported once while the attempt finishes. */
+  gitHead(head: GitHead): void;
 }
 
 export interface WorkerParams {
@@ -97,6 +133,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       await params.workspaces
         .runHook('after_run', workspace, hookIssue())
         .catch((error: unknown) => logger.warn('after_run hook could not run', { error: errorMessage(error) }));
+      const head = await readGitHead(workspace.path);
+      if (head !== null) callbacks.gitHead(head);
     }
     return outcome;
   };

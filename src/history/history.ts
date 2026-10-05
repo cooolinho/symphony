@@ -47,6 +47,11 @@ export interface RunFinish {
   usage: Record<string, ModelTokenUsage>;
   /** Claude Code's own cost estimate, kept for comparison with model-costs.yml. */
   claudeEstimateUsd: number | null;
+  /** Final commit and branch of a git workspace; null when unknown. */
+  headSha?: string | null;
+  branch?: string | null;
+  /** `tool_use` events per MCP server. */
+  mcpToolCalls?: Record<string, number>;
 }
 
 interface RepoTotals {
@@ -171,6 +176,9 @@ export class HistoryLog {
       cost_usd: round(cost, 4),
       claude_estimate_usd: finish.claudeEstimateUsd === null ? null : round(finish.claudeEstimateUsd, 4),
       agent_seconds: round(finish.agentSeconds, 1),
+      head_sha: finish.headSha ?? undefined,
+      branch: finish.branch ?? undefined,
+      mcp_tool_calls: formatToolCalls(finish.mcpToolCalls),
       started_at: finish.startedAt,
       repo_runs: totals.runs,
       repo_tokens: totals.tokens,
@@ -231,6 +239,11 @@ export class HistoryLog {
       this.#failing = true;
     }
   }
+}
+
+function formatToolCalls(calls: Record<string, number> | undefined): string | undefined {
+  const parts = Object.entries(calls ?? {}).map(([server, count]) => `${server}:${count}`);
+  return parts.length === 0 ? undefined : parts.join(',');
 }
 
 function readEntries(file: string): HistoryEntry[] {

@@ -86,6 +86,17 @@ describe('repository history', () => {
     ...overrides,
   });
 
+  it('logs head_sha, branch and mcp_tool_calls only when present', () => {
+    const { log } = history();
+    log.runFinished(finish('acme/app#1', 'r1', '2026-10-04T08:01:00Z', { headSha: 'abc123', branch: 'symphony/issue-1', mcpToolCalls: { 'laravel-boost': 2, tracker: 1 } }));
+    log.runFinished(finish('acme/app#2', 'r2', '2026-10-04T09:01:00Z', { headSha: null, branch: null, mcpToolCalls: {} }));
+    const [first, second] = readHistory(log.dir, 'acme/app').entries.filter((e) => e.event === 'run_finished');
+    assert.equal(first?.fields.head_sha, 'abc123');
+    assert.equal(first?.fields.branch, 'symphony/issue-1');
+    assert.equal(first?.fields.mcp_tool_calls, 'laravel-boost:2,tracker:1');
+    for (const key of ['head_sha', 'branch', 'mcp_tool_calls']) assert.equal(key in (second?.fields ?? {}), false);
+  });
+
   it('appends key=value lines per repository with running totals', () => {
     const { log } = history();
     log.runStarted({ repo: 'acme/app', issue: 'acme/app#1', title: 'Fix "quotes" and = signs', state: 'Ready', attempt: null, model: 'opus', run: 'r1', at: new Date('2026-10-04T08:00:00Z') });
