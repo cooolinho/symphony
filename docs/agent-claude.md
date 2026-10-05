@@ -15,7 +15,8 @@ Claude Code CLI. The spec targets the Codex app-server; this section documents h
 | Continuation turn | Another user message on the same live session with the continuation prompt |
 | Startup handshake | `initializationResult()`, bounded by `claude.read_timeout_ms` |
 | Session title | `<identifier>: <title>` |
-| Model | `claude.model`, or the model a `Model: <model>` label on the issue names ([configuration](configuration.md#model-per-issue)); fixed for the session |
+| Model | A `Model: <model>` label on the issue, else the role's `claude.model`, else `claude.model` ([configuration](configuration.md#model-per-issue)); fixed for the session |
+| Role | The [role](configuration.md#roles) of the issue's column at dispatch (`default` without roles); fixed for the run. Its `claude` overrides are merged into the session settings, `read_only` sets the policy below, `max_turns` limits the turns |
 | MCP servers | The in-process `tracker` server, plus workspace extensions such as Laravel Boost (below) |
 
 Before launching, the runner checks that the working directory is an absolute, normalized path; the workspace
@@ -49,7 +50,8 @@ Symphony runs agents **unattended**. Nobody watches a session, so every decision
   `disallowedTools` as `mcp__<server>__<tool>`, so the agent cannot call them at all.
 - **Read-only sessions:** a session started with `policy: { readOnly: true }` gets `Edit`, `Write`, `NotebookEdit`,
   `Bash(git commit:*)` and `Bash(git push:*)` added to `disallowedTools`. Deny rules beat allow rules, so this also
-  overrides `claude.allowed_tools: ["Bash(git push:*)"]`. Without a policy a session is not read-only. This is a
+  overrides `claude.allowed_tools: ["Bash(git push:*)"]`. The orchestrator sets `readOnly` from the run's role
+  (`roles.<role>.read_only`); without a policy, or for the `default` role, a session is not read-only. This is a
   policy, not a sandbox: Bash can still write files, so callers that need a hard guarantee must enforce it elsewhere
   (for example in the transition guard, or with `claude.sandbox`). Both inputs are agent-neutral; another runner
   maps them to its own mechanism.

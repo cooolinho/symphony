@@ -32,17 +32,19 @@ interface Setup {
   workflow: StaticWorkflow;
 }
 
-function setup(options: { issues?: ReturnType<typeof makeIssue>[]; front?: Record<string, unknown>; runner?: FakeRunner } = {}): Setup {
+function setup(
+  options: { issues?: ReturnType<typeof makeIssue>[]; front?: Record<string, unknown>; runner?: FakeRunner; prompt?: string; logger?: Logger } = {},
+): Setup {
   const root = tempDir();
   const tracker = new FakeTracker(options.issues ?? []);
   const runner = options.runner ?? new FakeRunner();
   const timers = new ManualTimers();
   const clock = new ManualClock();
-  const workflow = new StaticWorkflow(makeWorkflow(baseFront(root, options.front)));
+  const workflow = new StaticWorkflow(makeWorkflow(baseFront(root, options.front), options.prompt !== undefined ? { prompt: options.prompt } : {}));
   const orchestrator = new Orchestrator({
     workflow,
     runner,
-    logger: Logger.silent(),
+    logger: options.logger ?? Logger.silent(),
     env: {},
     logDir: null,
     clock,
@@ -124,6 +126,75 @@ describe('dispatch ordering and eligibility', () => {
     await s.orchestrator.tickNow();
     await until(() => runner.sessions.length === 2, 3_000, 'two sessions');
     assert.deepEqual(snapshot(s).running.map((r) => r.issue_id).sort(), ['a', 'c']);
+  });
+});
+
+describe('roles', () => {
+  const rolesFront = {
+    tracker: {
+      kind: 'github_project',
+      provider: { owner: 'acme', project_number: 1, token: 'test-token' },
+      active_states: ['Todo', 'Agent review'],
+    },
+    agent: { max_turns: 3, max_continuations: 5 },
+    claude: { model: 'sonnet', allowed_tools: ['Read'] },
+    roles: {
+      developer: { states: ['Todo'] },
+      reviewer: {
+        states: ['Agent review'],
+        read_only: true,
+        max_turns: 6,
+        claude: { model: 'opus', allowed_tools: ['Grep'], append_system_prompt: 'Review only.' },
+      },
+    },
+  };
+  const rolePrompt = 'Act as {{ role }} on {{ issue.identifier }}';
+
+  it('runs a role with its model, read-only policy, overrides and turn limit', async () => {
+    const s = setup({ front: rolesFront, prompt: rolePrompt, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'continuation retry');
+    const session = s.runner.sessions[0];
+    assert.equal(session?.params.config.model, 'opus');
+    assert.equal(session?.params.policy?.readOnly, true);
+    assert.deepEqual(session?.params.config.allowedTools, ['Read', 'Grep']);
+    assert.equal(session?.params.config.appendSystemPrompt, 'Review only.');
+    assert.equal(session?.turns.length, 6);
+    assert.equal(session?.turns[0], 'Act as reviewer on acme/app#r');
+  });
+
+  it('lets a "Model:" label override the role model', async () => {
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    const s = setup({
+      runner,
+      front: rolesFront,
+      prompt: rolePrompt,
+      issues: [makeIssue({ id: 'r', state: 'Agent review', labels: ['model: sonnet'] }), makeIssue({ id: 'd' })],
+    });
+    await s.orchestrator.tickNow();
+    await until(() => runner.sessions.length === 2, 3_000, 'two sessions');
+    const byId = Object.fromEntries(runner.sessions.map((session) => [session.params.issue.id, session]));
+    assert.equal(byId.r?.params.config.model, 'sonnet');
+    assert.equal(byId.r?.params.policy?.readOnly, true);
+    assert.equal(byId.d?.params.config.model, 'sonnet');
+    assert.equal(byId.d?.params.policy?.readOnly, false);
+    assert.deepEqual(byId.d?.params.config.allowedTools, ['Read']);
+    assert.equal(byId.d?.turns[0], 'Act as developer on acme/app#d');
+  });
+
+  it('uses the implicit default role without roles and tags agent events with run_id and role', async () => {
+    const lines: string[] = [];
+    const logger = Logger.create({ sinks: [{ name: 'memory', write: (line) => lines.push(line) }], level: 'debug' });
+    const s = setup({ logger, prompt: rolePrompt, front: { agent: { max_turns: 2 } }, issues: [makeIssue({ id: 'a' })] });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'continuation retry');
+    const session = s.runner.sessions[0];
+    assert.equal(session?.turns[0], 'Act as default on acme/app#a');
+    assert.equal(session?.params.policy?.readOnly, false);
+    assert.equal(session?.turns.length, 2);
+    const event = lines.find((line) => line.includes('agent session_started'));
+    assert.match(event ?? '', /run_id=[0-9a-f]{12}/);
+    assert.match(event ?? '', /role=default/);
   });
 });
 
@@ -509,6 +580,7 @@ describe('run history', () => {
 
     const started = readHistory(history.dir, 'acme/app').entries.find((entry) => entry.event === 'run_started');
     assert.equal(started?.fields.model, 'claude-sonnet-5-5');
+    assert.equal(started?.fields.role, 'default');
     assert.equal(runner.sessions[0]?.params.config.model, 'claude-sonnet-5-5');
   });
 

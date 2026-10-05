@@ -1,4 +1,5 @@
 import type { ClaudeConfig } from '../workflow/config.ts';
+import type { RoleClaudeOverrides } from '../workflow/roles.ts';
 
 /** Issue labels with this prefix pick the Claude model for that issue, e.g. "Model: sonnet". Case-insensitive. */
 export const MODEL_LABEL_PREFIX = 'model:';
@@ -61,13 +62,28 @@ function quoted(labels: string[]): string {
 }
 
 /**
- * Claude settings for one session running `model`. Fallback models equal to it are dropped, because the Agent SDK
- * refuses to start a session whose fallback model is its main model.
+ * Claude settings for one session running `model`, with the role's overrides merged in: `effort` and
+ * `maxBudgetUsd` replace, `allowedTools`/`disallowedTools` and `appendSystemPrompt` are appended. The role's
+ * `model` is not applied here; it is part of `model` (see `chooseModel`). Fallback models equal to `model` are
+ * dropped, because the Agent SDK refuses to start a session whose fallback model is its main model.
  */
-export function sessionClaudeConfig(config: ClaudeConfig, model: string | null): ClaudeConfig {
-  if (model === null || config.fallbackModel === null) return { ...config, model };
-  const fallbacks = config.fallbackModel.split(',').map((entry) => entry.trim());
-  if (!fallbacks.includes(model)) return { ...config, model };
+export function sessionClaudeConfig(config: ClaudeConfig, model: string | null, overrides: RoleClaudeOverrides = {}): ClaudeConfig {
+  const merged = withRoleOverrides(config, overrides);
+  if (model === null || merged.fallbackModel === null) return { ...merged, model };
+  const fallbacks = merged.fallbackModel.split(',').map((entry) => entry.trim());
+  if (!fallbacks.includes(model)) return { ...merged, model };
   const rest = fallbacks.filter((entry) => entry !== '' && entry !== model);
-  return { ...config, model, fallbackModel: rest.length > 0 ? rest.join(',') : null };
+  return { ...merged, model, fallbackModel: rest.length > 0 ? rest.join(',') : null };
+}
+
+function withRoleOverrides(config: ClaudeConfig, overrides: RoleClaudeOverrides): ClaudeConfig {
+  const prompts = [config.appendSystemPrompt, overrides.appendSystemPrompt ?? null].filter((text): text is string => text !== null && text !== '');
+  return {
+    ...config,
+    effort: overrides.effort ?? config.effort,
+    maxBudgetUsd: overrides.maxBudgetUsd ?? config.maxBudgetUsd,
+    allowedTools: [...config.allowedTools, ...(overrides.allowedTools ?? [])],
+    disallowedTools: [...config.disallowedTools, ...(overrides.disallowedTools ?? [])],
+    appendSystemPrompt: prompts.length > 0 ? prompts.join('\n\n') : null,
+  };
 }

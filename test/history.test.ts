@@ -97,6 +97,13 @@ describe('repository history', () => {
     for (const key of ['head_sha', 'branch', 'mcp_tool_calls']) assert.equal(key in (second?.fields ?? {}), false);
   });
 
+  it('records the role of a run in run_started', () => {
+    const { log } = history();
+    log.runStarted({ repo: 'acme/app', issue: 'acme/app#1', title: 'Review', state: 'Agent review', attempt: null, model: 'opus', role: 'reviewer', run: 'r1', at: new Date('2026-10-04T08:00:00Z') });
+    const started = parseHistoryLine(fs.readFileSync(log.fileFor('acme/app'), 'utf8').trim());
+    assert.equal(started?.fields.role, 'reviewer');
+  });
+
   it('appends key=value lines per repository with running totals', () => {
     const { log } = history();
     log.runStarted({ repo: 'acme/app', issue: 'acme/app#1', title: 'Fix "quotes" and = signs', state: 'Ready', attempt: null, model: 'opus', run: 'r1', at: new Date('2026-10-04T08:00:00Z') });
@@ -110,6 +117,7 @@ describe('repository history', () => {
     const started = parseHistoryLine(lines[0] as string);
     assert.equal(started?.event, 'run_started');
     assert.equal(started?.fields.title, 'Fix "quotes" and = signs');
+    assert.equal(started?.fields.role, 'default');
     const second = parseHistoryLine(lines[3] as string);
     assert.equal(second?.event, 'run_finished');
     assert.equal(second?.fields.repo_runs, '2');
