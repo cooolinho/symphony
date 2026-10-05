@@ -43,13 +43,13 @@ Agent SDK instead; the mapping of threads, turns, approvals, user input, timeout
 | Whole-value references | `$NAME`, `${NAME}`, `${NAME:-default}` for every setting except hooks; unset without default means "omitted" |
 | Tracker request retries | Read queries are retried after transient failures (`request_retries`); mutations are not |
 | Session limits | Extension: a turn that fails with a Claude subscription limit (`session_limit`, detected from a rejected `rate_limit_event`, else the message text) is retried up to `agent.max_session_limit_retries` times with failure backoff, then waits in the retry queue until the reset + 60 s (an unknown reset, or one more than 8 days ahead, keeps the failure backoff). The wait is in memory only. |
-| Operator restart | Extension: `POST /api/v1/<identifier>/retry` (loopback binds only) and the dashboard buttons put a waiting or paused worker back into the retry queue without delay and reset its session-limit and continuation counters; eligibility, validation and slots are still checked. |
+| Operator restart | Extension: `POST /api/v1/<identifier>/retry` (loopback binds, or non-loopback binds with `server.allow_remote_control` and a matching `Origin`) and the dashboard buttons put a waiting or paused worker back into the retry queue without delay and reset its session-limit and continuation counters; eligibility, validation and slots are still checked. |
 | `agent.max_continuations` | Extension: pauses an issue after N continuation sessions until it changes on the tracker (default: unlimited, as specified) |
 | `workspace.cleanup_terminal` | Extension: `false` keeps workspaces of terminal issues (default `true`, as specified) |
 | Model per issue | Extension: a `Model: <model>` issue label overrides `claude.model` for that issue's sessions; unknown or conflicting labels fall back to `claude.model` with a warning |
 | Stall detection | Not applied while the run is in `PreparingWorkspace` (hooks, Composer, Laravel Boost have their own timeouts) or `RunningChecks` (entry checks have `checks.timeout_ms`); afterwards counted from the end of preparation until the first agent event, and again from the end of a check |
 | Terminal cleanup of released issues | Issues this process worked on stay watched after release; their workspace is deleted on the first tick that sees them terminal (the spec only requires startup, reconciliation and retry paths) |
-| HTTP server | Loopback by default; Host-header check against DNS rebinding; cross-origin `POST` rejected |
+| HTTP server | Loopback by default (`server.host` / `SYMPHONY_HOST`); Host-header check against DNS rebinding on loopback binds; cross-origin `POST` rejected; on non-loopback binds a startup warning (no built-in login, use an authenticating proxy), restart off unless `server.allow_remote_control`, and then only with a matching `Origin`; `controls.retry` in `/api/v1/state` and `/api/v1/<identifier>` |
 | Logs | `key=value` lines on stderr (optional `--log-file`); per-session JSONL transcripts under the log directory |
 
 ## Optional extensions

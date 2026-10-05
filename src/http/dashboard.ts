@@ -502,8 +502,12 @@ ${BASE_JS}
   // Per-identifier outcome of a restart click; a poll rebuilds the rows, so the button state is drawn from here.
   const restartStates = new Map();
   const RESTART_LABELS = { Retry: 'Retry now', Resume: 'Resume now' };
+  const RESTART_DISABLED = 'Restart disabled: set SYMPHONY_ALLOW_REMOTE_CONTROL=true behind an authenticating proxy';
+  // From /api/v1/state; false on a non-loopback bind without server.allow_remote_control.
+  let retryAllowed = true;
 
   function restartButton(identifier, verb) {
+    if (!retryAllowed) return el('div', RESTART_DISABLED, 'msg muted restart-off');
     const st = restartStates.get(identifier);
     const b = el('button', st ? st.label : RESTART_LABELS[verb], 'btn restart' + (st && st.cls ? ' ' + st.cls : ''));
     b.type = 'button';
@@ -598,7 +602,7 @@ ${BASE_JS}
         li.append(el('div', r.limit.text || r.error || '—', 'msg'));
         if (r.limit.text && r.error && r.error !== r.limit.text) li.append(el('div', r.error, 'msg muted'));
         if (r.limit.overage_disabled_reason === 'out_of_credits') {
-          li.append(el('div', 'Extra usage is off because credits are used up. Top up, then press Retry now.', 'msg'));
+          li.append(el('div', 'Extra usage is off because credits are used up. Top up' + (retryAllowed ? ', then press Retry now.' : '.'), 'msg'));
         }
       } else {
         li.append(el('div', r.error || (continuation ? 'Continues the session after a clean exit.' : '—'), 'msg'));
@@ -622,7 +626,7 @@ ${BASE_JS}
       const column = el('span', 'column '); column.append(el('b', r.state));
       const cont = el('span', 'continuations '); cont.append(el('b', r.continuations));
       meta.append(column, cont, el('span', 'paused ' + ago(r.paused_at)), traceLink(r.issue_identifier));
-      li.append(row, meta, el('div', 'Resume: change the issue on the board (status, comment or labels), or press Resume now.', 'msg'), restartButton(r.issue_identifier, 'Resume'));
+      li.append(row, meta, el('div', 'Resume: change the issue on the board (status, comment or labels)' + (retryAllowed ? ', or press Resume now.' : '.'), 'msg'), restartButton(r.issue_identifier, 'Resume'));
       list.append(li);
     }
     patchList('paused', list);
@@ -883,6 +887,7 @@ ${BASE_JS}
       ['Agent time', fmtDuration(t.seconds_running), 'since start', { tone: 'cyan' }],
     ]);
 
+    retryAllowed = !state.controls || state.controls.retry !== false;
     renderAgents(state);
     renderRetries(state.retrying);
     renderPaused(state.paused ?? []);

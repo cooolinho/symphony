@@ -866,8 +866,12 @@ ${BASE_JS}
   // Outcome of the last restart click; the alert is rebuilt every second, so the button is drawn from here.
   let restartState = null;
   const RESTART_LABELS = { Retry: 'Retry now', Resume: 'Resume now' };
+  const RESTART_DISABLED = 'Restart disabled: set SYMPHONY_ALLOW_REMOTE_CONTROL=true behind an authenticating proxy';
+  // controls.retry from /api/v1/<identifier>; false on a non-loopback bind without server.allow_remote_control.
+  const retryAllowed = () => !S.detail || !S.detail.controls || S.detail.controls.retry !== false;
 
   function restartButton(verb) {
+    if (!retryAllowed()) return el('span', RESTART_DISABLED, 'muted restart-off');
     const b = el('button', restartState ? restartState.label : RESTART_LABELS[verb], 'btn restart' + (restartState && restartState.cls ? ' ' + restartState.cls : ''));
     b.type = 'button';
     b.setAttribute('aria-label', RESTART_LABELS[verb] + ' ' + ID);
@@ -908,7 +912,7 @@ ${BASE_JS}
     sub.push(['Retry at', fmtStamp(r.due_at) + ' (in ' + fmtDuration(Math.max(0, Date.parse(r.due_at) - Date.now()) / 1000) + ')']);
     sub.push(['Retries', limit.waiting ? 'used up' : limit.hits <= limit.max_retries ? limit.hits + ' of ' + limit.max_retries : 'backoff']);
     if (limit.text && r.error && r.error !== limit.text) sub.push(['Queue', r.error]);
-    if (limit.overage_disabled_reason === 'out_of_credits') sub.push(['Credits', 'Extra usage is off because credits are used up. Top up, then press Retry now.']);
+    if (limit.overage_disabled_reason === 'out_of_credits') sub.push(['Credits', 'Extra usage is off because credits are used up. Top up' + (retryAllowed() ? ', then press Retry now.' : '.')]);
     return { tone: 'amber', title: '⏳ Session limit reached', reason: limit.text || r.error || 'unknown', sub, restart: 'Retry' };
   }
 
@@ -927,7 +931,7 @@ ${BASE_JS}
     } else if (d && !S.ended && d.status === 'stopping') {
       spec = { tone: 'amber', title: '■ Stopping', reason: d.running && d.running.stopping, sub: [] };
     } else if (d && !S.ended && d.status === 'paused') {
-      spec = { tone: 'gray', title: '⏸ Agent paused', reason: 'Still active after ' + (d.paused ? d.paused.continuations : '?') + ' continuation session(s). Change the issue on the board (status, comment or labels) to resume, or press Resume now.', sub: [], restart: 'Resume' };
+      spec = { tone: 'gray', title: '⏸ Agent paused', reason: 'Still active after ' + (d.paused ? d.paused.continuations : '?') + ' continuation session(s). Change the issue on the board (status, comment or labels) to resume' + (retryAllowed() ? ', or press Resume now.' : '.'), sub: [], restart: 'Resume' };
     } else if (failedRun && !isRunning()) {
       spec = { tone: 'red', title: '✕ Agent failed', reason: fin.detail.reason, sub: [] };
     } else if (isRunning() && d.last_error && d.attempts.current_retry_attempt) {

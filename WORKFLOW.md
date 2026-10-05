@@ -95,7 +95,9 @@ laravel:
   deny_tools: [record-rule]                  # record-rule writes .ai/rules
 
 server:
-  port: $SYMPHONY_PORT                       # dashboard on 127.0.0.1; unset = no dashboard
+  port: $SYMPHONY_PORT                       # dashboard and JSON API; unset = no dashboard
+  host: ${SYMPHONY_HOST:-127.0.0.1}          # bind address; non-loopback only behind an authenticating proxy
+  allow_remote_control: ${SYMPHONY_ALLOW_REMOTE_CONTROL:-false}  # Retry/Resume now on a non-loopback bind
 ---
 {% capture branch %}{% if issue.branch_name %}{{ issue.branch_name }}{% else %}symphony/issue-{{ issue.native_ref.number }}{% endif %}{% endcapture %}
 You are working on GitHub issue **{{ issue.identifier }}**: {{ issue.title }}
