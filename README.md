@@ -638,6 +638,20 @@ after_create: |
   bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-env.sh"
 ```
 
+Optional MySQL statt SQLite: Mit `SYMPHONY_LARAVEL_DB=mysql` in der Umgebung von Symphony legt `hooks/laravel-env.sh`
+pro Workspace die Datenbanken `symphony_<key>` und `symphony_<key>_test` an (`<key>` = die ersten 12 Hex-Zeichen des
+sha256 von `SYMPHONY_WORKSPACE_KEY`), setzt `DB_*` in `.env` und schreibt `.env.testing`. Im Hook `before_remove` löscht
+`bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-db-drop.sh"` beide wieder. Variablen: `SYMPHONY_MYSQL_HOST` (Standard
+`127.0.0.1`), `SYMPHONY_MYSQL_PORT` (`3306`), `SYMPHONY_MYSQL_USER` (Pflicht) und `SYMPHONY_MYSQL_PASSWORD` (wird nie
+ausgegeben). Der MySQL-Benutzer wird auf `symphony\_%` beschränkt, das deckt auch `php artisan test --parallel` ab:
+
+```sql
+GRANT ALL PRIVILEGES ON `symphony\_%`.* TO 'symphony'@'localhost';
+```
+
+Voraussetzung: `phpunit.xml` darf `DB_DATABASE` nicht fest setzen, sonst gewinnt dessen Wert gegenüber `.env.testing` und
+parallele Workspaces teilen sich eine Test-Datenbank. Details in [docs/configuration.md](docs/configuration.md).
+
 Fehlt Boost in einem Laravel-Repository, legt `npm run repo-init` → *Laravel Boost* ein Issue an, das Boost per Pull
 Request einführt. Klappt etwas nicht (kein PHP, `composer install` scheitert), läuft die Session ohne Boost weiter.
 Die Warnung steht im Log. `npm run dry-run` zeigt, ob `php` und `composer` laufen.
@@ -743,7 +757,8 @@ Anleitung (auf Englisch) steht in [docs/laravel-repositories.md](docs/laravel-re
 ```
 symphony/
 ├── WORKFLOW.md                 # Rollen, Checks, Prompt und Einstellungen (wird live neu geladen)
-├── hooks/laravel-env.sh        # after_create: eigene .env und SQLite-Datenbank pro Laravel-App
+├── hooks/laravel-env.sh        # after_create: eigene .env und SQLite-Datenbank pro Laravel-App (optional MySQL)
+├── hooks/laravel-db-drop.sh    # before_remove: löscht die MySQL-Datenbanken des Workspaces
 ├── checks/laravel.sh           # Entry-Check vor Agent review und In review (Lint, Analyse, Tests)
 ├── .claude/                    # Toolbox für alle Sessions, geladen als Plugin "symphony" (skills, agents, commands, hooks)
 ├── .github/workflows/          # CI (npm run check) und automatisches Mergen der Agenten-Pull-Requests
