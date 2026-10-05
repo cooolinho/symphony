@@ -40,11 +40,15 @@ Symphony runs agents **unattended**. Nobody watches a session, so every decision
 - **Settings:** only the repository's project settings are loaded by default (`setting_sources: [project]`). Your
   personal `~/.claude` settings, plugins and hooks are not. Plugins listed in `claude.plugins` (Symphony's own
   `.claude` toolbox in the shipped `WORKFLOW.md`) are loaded explicitly.
-- **Workspace extension tools** (`mcp__laravel-boost__*`) are always allowed. Boost's tools only read the application
-  (`database-query` runs read-only queries); `record-rule` writes Markdown into `.ai/rules`.
+- **Laravel Boost tools** (`mcp__laravel-boost__*`) are not allowed as a whole. Pre-approved are the tools that read
+  the application: `application-info`, `browser-logs`, `database-connections`, `database-query` (Boost enforces
+  read-only), `database-schema`, `get-absolute-url`, `last-error`, `read-log-entries`, plus `search-docs` (sends the
+  query and the package list to boost.laravel.com). Denied are `tinker` (runs arbitrary PHP; allowed with
+  `laravel.allow_tinker: true`) and every tool in `laravel.deny_tools` (default `[record-rule]`, which writes
+  `.ai/rules`); a denied tool is also dropped from the pre-approved list. Tools of later Boost versions are not
+  pre-approved on purpose: they go through the permission mode, and `canUseTool` denies them by default.
 - **Per-server MCP tool policy:** each extension server (`StdioServer`) carries `autoApprove` and `deny`.
-  `autoApprove: 'all'` (the default, used by Laravel Boost) allows the bare `mcp__<server>`, i.e. every tool of the
-  server. A list such as `['search-docs']` allows only `mcp__<server>__search-docs`; the server's other tools go
+  `autoApprove: 'all'` (the default) allows the bare `mcp__<server>`, i.e. every tool of the server. A list such as `['search-docs']` allows only `mcp__<server>__search-docs`; the server's other tools go
   through the permission mode (the `auto` classifier). `deny` lists bare tool names that are added to
   `disallowedTools` as `mcp__<server>__<tool>`, so the agent cannot call them at all.
 - **Read-only sessions:** a session started with `policy: { readOnly: true }` gets `Edit`, `Write`, `NotebookEdit`,
@@ -71,7 +75,7 @@ A session sees three kinds of skills:
 | Source | Location | Name |
 |---|---|---|
 | The repository | `.claude/skills/<name>/SKILL.md` in the clone (project settings) | `<name>` |
-| Laravel Boost | generated into the Laravel app's `.claude/skills/` (below) | `<name>`, e.g. `pest-testing` |
+| Laravel Boost | generated into the Laravel app's `.claude/skills/` (below) | `<name>`, e.g. `laravel-best-practices`, `testing-best-practices`, `filament-development` |
 | Symphony's toolbox | `.claude/skills/` next to `WORKFLOW.md`, loaded as the plugin `symphony` via `claude.plugins` | `symphony:<name>` |
 
 `claude.skills: all` enables all of them and the Skill tool. Plugin skills are namespaced, so they never collide with
@@ -103,11 +107,14 @@ log line (`npm run repo-init` → *Laravel Boost* creates an issue that adds it)
 4. **Committed Boost files:** if `boost.json` is tracked, the repository manages Boost itself; Symphony generates
    nothing and uses the committed files.
 5. **Session:** the MCP server `laravel-boost` (`laravel-boost-<dir>` when a repository holds several apps) runs
-   `laravel.php <app>/artisan boost:mcp` with `laravel.env`. A section in the system prompt names the app, the
-   commands to use, the Boost tools and skills, and contains Boost's guidelines unless Claude Code already loads them
+   `laravel.php <app>/artisan boost:mcp` with `laravel.env` plus `SYMPHONY_WORKSPACE`, using the tool policy above.
+   A section in the system prompt names the app, the commands to use, the pre-approved and denied Boost tools and
+   the skill directories Boost generated (`.claude/skills/<name>/`; the committed ones for committed Boost files),
+   mentions `record-rule` and `.ai/rules` only when `record-rule` is allowed, and contains Boost's guidelines unless Claude Code already loads them
    from the root `CLAUDE.md` (blocks over 48 KB go to a file under `<git-dir>/symphony/` the prompt points to). For an
    app in a subdirectory, its directory is passed as an additional directory so its `.claude/skills` load at start.
-   `laravel.env` is also set in the agent's environment.
+   The agent's environment gets `laravel.agent_env` (default empty), not `laravel.env`: `APP_ENV=local` there would
+   override PHPUnit's `APP_ENV=testing` and keep Boost active in tests.
 
 None of this blocks a run: when PHP is missing, `composer install` or `boost:install` fails, or the workspace is not
 a git checkout, Symphony logs a warning and starts the session without Boost. An abort stops PHP and Composer at once;

@@ -164,6 +164,9 @@ describe('config layer', () => {
       installDependencies: true,
       timeoutMs: 90_000,
       env: { APP_ENV: 'local' },
+      agentEnv: {},
+      allowTinker: false,
+      denyTools: ['record-rule'],
     });
     assert.deepEqual(config.claude.plugins, []);
     assert.equal(config.claude.skills, null);
@@ -194,6 +197,18 @@ describe('config layer', () => {
     assert.equal(resolve({ laravel: { env: { APP_ENV: 'testing' } } }).laravel.env.APP_ENV, 'testing');
   });
 
+  it('reads the Laravel Boost agent env and tool settings', () => {
+    const defaults = resolve({}).laravel;
+    assert.deepEqual(defaults.agentEnv, {});
+    assert.equal(defaults.allowTinker, false);
+    assert.deepEqual(defaults.denyTools, ['record-rule']);
+    const config = resolve({ laravel: { agent_env: { FOO: 'bar', N: 1 }, allow_tinker: true, deny_tools: ['search-docs', ' record-rule ', ''] } }).laravel;
+    assert.deepEqual(config.agentEnv, { FOO: 'bar', N: '1' });
+    assert.equal(config.allowTinker, true);
+    assert.deepEqual(config.denyTools, ['search-docs', 'record-rule']);
+    assert.deepEqual(resolve({ laravel: { deny_tools: [] } }).laravel.denyTools, []);
+  });
+
   it('resolves claude.plugins against the workflow directory and parses claude.skills', () => {
     const config = resolve({ claude: { plugins: ['./.claude', '/opt/plugins/x', ''], skills: 'all' } });
     assert.deepEqual(config.claude.plugins, ['/srv/flows/.claude', '/opt/plugins/x']);
@@ -203,11 +218,19 @@ describe('config layer', () => {
 
   it('rejects invalid laravel and skills values', () => {
     assert.throws(
-      () => resolve({ laravel: { boost: 'always', env: ['x'] }, claude: { skills: 'some' } }),
+      () =>
+        resolve({
+          laravel: { boost: 'always', env: ['x'], agent_env: 'x', allow_tinker: 'yes', deny_tools: 'tinker' },
+          claude: { skills: 'some' },
+        }),
       (error: unknown) =>
         error instanceof SymphonyError &&
+        error.code === 'invalid_config' &&
         error.message.includes('laravel.boost') &&
         error.message.includes('laravel.env') &&
+        error.message.includes('laravel.agent_env') &&
+        error.message.includes('laravel.allow_tinker') &&
+        error.message.includes('laravel.deny_tools') &&
         error.message.includes('claude.skills'),
     );
   });
@@ -270,7 +293,17 @@ describe('prompt templates', () => {
     assert.equal(config.claude.skills, 'all');
     assert.equal(JSON.parse(fs.readFileSync(path.join(toolbox, '.claude-plugin', 'plugin.json'), 'utf8')).name, 'symphony');
     for (const dir of ['skills', 'agents', 'commands', 'hooks']) assert.ok(fs.statSync(path.join(toolbox, dir)).isDirectory(), dir);
-    assert.deepEqual(config.laravel, { boost: 'auto', php: 'php', composer: 'composer', installDependencies: true, timeoutMs: 600_000, env: { APP_ENV: 'local' } });
+    assert.deepEqual(config.laravel, {
+      boost: 'auto',
+      php: 'php',
+      composer: 'composer',
+      installDependencies: true,
+      timeoutMs: 600_000,
+      env: { APP_ENV: 'local' },
+      agentEnv: {},
+      allowTinker: false,
+      denyTools: ['record-rule'],
+    });
     assert.deepEqual(config.warnings, []);
   });
 

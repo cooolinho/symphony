@@ -502,7 +502,7 @@ Die häufigsten Stellschrauben in der `WORKFLOW.md`. Alle Optionen beschreibt
 | `claude.effort` | Denkaufwand: `low` … `max` |
 | `claude.allowed_tools` | Aktionen, die immer erlaubt sind, z. B. `"Bash(npm test:*)"` |
 | `claude.plugins`, `claude.skills` | Plugin-Ordner für alle Sessions (Standard: `./.claude`) und welche Skills aktiv sind (`all`) |
-| `laravel.*` | Laravel Boost: `boost: auto` oder `off`, PHP- und Composer-Befehl, Umgebung (`APP_ENV: local`) |
+| `laravel.*` | Laravel Boost: `boost: auto` oder `off`, PHP- und Composer-Befehl, Umgebung für Boost (`env`, Standard `APP_ENV: local`) und Agent (`agent_env`), Tool-Sperren (`allow_tinker`, `deny_tools`) |
 | `tracker.required_labels` | nur Issues mit diesen Labels bearbeiten, z. B. `[symphony]` |
 | `hooks.*` | Shell-Skripte rund um jeden Lauf, z. B. Abhängigkeiten installieren |
 | Text unterhalb der Front Matter | der Prompt, ein Liquid-Template mit `issue` und `attempt` |
@@ -534,8 +534,8 @@ Tag. Geschätzt wird mit der [`model-costs.yml`](#kosten-schätzen-mit-model-cos
 ### Laravel Boost
 
 [Laravel Boost](https://laravel.com/docs/boost) gibt KI-Agenten Laravel-Wissen passend zu den installierten Paketen:
-**Guidelines** (immer geladen), **Skills** (bei Bedarf geladen, z. B. `pest-testing`, `livewire-development`) und
-einen **MCP-Server** mit Doku-Suche, Datenbankschema, Logs und Fehlern. Symphony nutzt Boost automatisch:
+**Guidelines** (immer geladen), **Skills** (bei Bedarf geladen, z. B. `laravel-best-practices`, `testing-best-practices`,
+`filament-development`) und einen **MCP-Server** mit Doku-Suche, Datenbankschema, Logs und Fehlern. Symphony nutzt Boost automatisch:
 
 1. Nach dem `before_run`-Hook sucht Symphony im Workspace Laravel-Apps: im Root oder eine Ebene tiefer, z. B.
    `laravel/` im trainingsstunden-portal.
@@ -544,6 +544,7 @@ einen **MCP-Server** mit Doku-Suche, Datenbankschema, Logs und Fehlern. Symphony
 3. Die erzeugten Dateien trägt Symphony in `.git/info/exclude` ein. Versionierte Dateien, die Boost verändert hat,
    setzt es zurück. So landet nichts davon im Pull Request.
 4. Die Session bekommt den MCP-Server `laravel-boost`, die Boost-Skills und Boosts Guidelines im System-Prompt.
+   Der Prompt nennt die tatsächlich erzeugten Skills und die freigegebenen und gesperrten Tools.
 5. Neu erzeugt wird nur, wenn sich `composer.lock`, `.ai/` oder die Boost-Version ändern.
 
 Damit Artisan und Boost nie eine fremde Datenbank erreichen, legt `hooks/laravel-env.sh` im `after_create`-Hook für jede
@@ -567,9 +568,17 @@ Voraussetzungen und Grenzen:
   `SYMPHONY_PHP=/usr/bin/php8.4` in der `.env`. Soll PHP später in einem Container laufen, zeigt `laravel.php` auf ein
   Wrapper-Script. Es bekommt den absoluten `artisan`-Pfad als erstes Argument und `SYMPHONY_WORKSPACE` in der
   Umgebung.
-- **`APP_ENV=local`:** Boost läuft nur lokal. Symphony setzt die Variable für Composer, `artisan`, den MCP-Server und
-  den Agenten, weil ein frischer Klon keine `.env` hat. Weitere Variablen kommen unter `laravel.env` dazu, z. B.
-  `DB_CONNECTION: sqlite`, damit Boosts Datenbank-Tools nicht deine Entwicklungsdatenbank lesen.
+- **`APP_ENV=local`:** Boost läuft nur lokal. Symphony setzt `laravel.env` (Standard `APP_ENV: local`) für seine
+  Composer- und `artisan`-Schritte und den MCP-Server, weil ein frischer Klon keine `.env` hat, aber nicht für die Shell
+  des Agenten: Dort würde `APP_ENV=local` PHPUnits `APP_ENV=testing` überstimmen. Variablen für den Agenten gehören
+  nach `laravel.agent_env` (Standard leer). Datenbank-Einstellungen gehören in die `.env` der App (siehe oben), nicht
+  in `laravel.env`.
+- **Boost-Tools:** Freigegeben sind nur die lesenden Tools (`application-info`, `browser-logs`,
+  `database-connections`, `database-query` (nur lesend), `database-schema`, `get-absolute-url`, `last-error`,
+  `read-log-entries`) und `search-docs` (schickt Anfragen und die Paketliste an boost.laravel.com). `tinker` führt
+  beliebiges PHP aus und ist gesperrt, außer mit `laravel.allow_tinker: true`. `laravel.deny_tools` (Standard
+  `[record-rule]`, schreibt `.ai/rules`) sperrt weitere Tools, z. B. `[search-docs, record-rule]`. Neue Tools späterer
+  Boost-Versionen sind nicht vorab freigegeben.
 - **Committete Boost-Dateien:** Liegt `boost.json` im Repository, verwaltet das Repository Boost selbst. Symphony
   erzeugt dann nichts und nutzt die committeten Dateien.
 - **Sail:** Erkennt Boost Laravel Sail, verweisen seine Guidelines auf `vendor/bin/sail`. Symphony warnt dann, weil es

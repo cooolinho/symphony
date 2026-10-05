@@ -81,8 +81,14 @@ export interface LaravelConfig {
   installDependencies: boolean;
   /** Limit for each php or composer step. */
   timeoutMs: number;
-  /** Environment for composer, artisan and the Boost MCP server, on top of the agent's environment. */
+  /** Environment for Symphony's composer and artisan steps and the Boost MCP server; not the agent's shell. */
   env: Record<string, string>;
+  /** Variables added to the agent's own environment in Boost sessions. */
+  agentEnv: Record<string, string>;
+  /** Allow Boost's `tinker` tool (runs arbitrary PHP); denied by default. */
+  allowTinker: boolean;
+  /** Boost tools removed from the session (and from the pre-approved list). */
+  denyTools: string[];
 }
 
 export interface ServerConfig {
@@ -145,6 +151,7 @@ const ROLE_CLAUDE_KEYS = new Set(['model', 'effort', 'allowed_tools', 'disallowe
 const BOOST_MODES: readonly BoostMode[] = ['auto', 'off'];
 /** Boost only registers its commands in the local environment (or with debug on); a fresh clone has no .env. */
 const LARAVEL_DEFAULT_ENV: Readonly<Record<string, string>> = { APP_ENV: 'local' };
+const LARAVEL_DEFAULT_DENY_TOOLS: readonly string[] = ['record-rule'];
 
 export function normalizeStateName(state: string): string {
   return state.trim().toLowerCase();
@@ -422,6 +429,11 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     installDependencies: reader.bool(laravelRaw, 'install_dependencies', 'laravel.install_dependencies', true),
     timeoutMs: reader.int(laravelRaw, 'timeout_ms', 'laravel.timeout_ms', hooks.timeoutMs, 1),
     env: { ...LARAVEL_DEFAULT_ENV, ...reader.stringMap(laravelRaw, 'env', 'laravel.env') },
+    agentEnv: reader.stringMap(laravelRaw, 'agent_env', 'laravel.agent_env'),
+    allowTinker: reader.bool(laravelRaw, 'allow_tinker', 'laravel.allow_tinker', false),
+    denyTools: reader.stringList(laravelRaw, 'deny_tools', 'laravel.deny_tools')?.map((tool) => tool.trim()).filter((tool) => tool !== '') ?? [
+      ...LARAVEL_DEFAULT_DENY_TOOLS,
+    ],
   };
 
   // roles
