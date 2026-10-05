@@ -12,7 +12,7 @@ Die Dateien dazu liegen im Repository: `Dockerfile`, `docker-compose.yml`, `dock
 | Was | Prüfen mit |
 |---|---|
 | **Docker Engine** mit **Compose v2** | `docker --version`, `docker compose version` |
-| **Traefik** läuft, mit einem **externen Docker-Netzwerk**, einem **HTTPS-Entrypoint** und einem **Cert-Resolver** | `docker network ls`, Traefik-Konfiguration |
+| **Traefik** läuft, mit einem **externen Docker-Netzwerk**, einem **HTTPS-Entrypoint** und einem **Cert-Resolver** (beides nur für HTTPS; in einem vertrauenswürdigen LAN geht auch reines HTTP, siehe Schritt 9) | `docker network ls`, Traefik-Konfiguration |
 | **DNS-Eintrag** für die Domain des Dashboards, der auf den Server zeigt | `dig symphony.example.com` |
 | **GitHub Project Board** und **GitHub-Token** mit den Scopes `repo` und `project` | [Getting Started](getting-started.md), Schritte 2 und 3 |
 
@@ -135,6 +135,20 @@ TRAEFIK_CERTRESOLVER=letsencrypt
 
 Die Werte nach dem `=` sind die Standardwerte der Compose-Datei; setze sie auf deine Namen aus den Voraussetzungen.
 
+**Nur HTTP im LAN:** Hat dein Traefik keine Zertifikate (z. B. ein Heimnetz mit `*.docker.lan`), betreibe das Dashboard
+ohne TLS auf dem HTTP-Entrypoint:
+
+```dotenv
+SYMPHONY_DOMAIN=symphony.docker.lan
+TRAEFIK_NETWORK=docker_lan_network     # Netzwerk, an dem Traefik hängt
+TRAEFIK_ENTRYPOINT=web                 # HTTP-Entrypoint (Port 80)
+TRAEFIK_TLS=false                      # kein TLS am Router; TRAEFIK_CERTRESOLVER wird dann ignoriert
+```
+
+`TRAEFIK_TLS=false` ist nötig: Ein Router mit TLS (Standard) beantwortet nur TLS-Verbindungen, auch auf dem
+HTTP-Entrypoint. Ohne die Zeile liefert `http://<SYMPHONY_DOMAIN>/` ein 404, obwohl der Container läuft. Beachte die
+Hinweise unter [Sicherheit](#sicherheit): Über HTTP laufen Login und Daten unverschlüsselt.
+
 `UID` und `GID` (Standard `1000`) sind Build-Args. Sie bestimmen den Besitzer der Volumes und der Datei
 `./secrets/ssh_key`. Passe sie an, wenn dein Server-Benutzer eine andere ID hat (`id -u`, `id -g`):
 
@@ -169,7 +183,8 @@ docker compose logs -f
 
 ### 13. Dashboard öffnen
 
-Öffne `https://<SYMPHONY_DOMAIN>/` und melde dich mit dem Login aus Schritt 8 an.
+Öffne `https://<SYMPHONY_DOMAIN>/` und melde dich mit dem Login aus Schritt 8 an. Mit `TRAEFIK_TLS=false` (Schritt 9) ist
+es `http://<SYMPHONY_DOMAIN>/`; ein Browser im HTTPS-Only-Modus braucht dafür eine Ausnahme.
 
 ## Betrieb
 
@@ -261,6 +276,8 @@ mem_limit: 4g
 | `GitHub token lacks a required scope` | Dem Token fehlt `project` (oder `repo`). Einen klassischen Token mit `repo` und `project` erstellen und `GITHUB_TOKEN` ändern, dann `docker compose up -d`. |
 | `network … declared as external, but could not be found` | Das Netzwerk aus `TRAEFIK_NETWORK` existiert nicht. Namen mit `docker network ls` prüfen und in der `.env` eintragen. |
 | 404 oder 502 über die Domain | Der Container hängt nicht im Traefik-Netz: `TRAEFIK_NETWORK` muss das Netzwerk sein, an dem auch Traefik hängt (`docker network inspect <netz>`). Außerdem `SYMPHONY_DOMAIN`, `TRAEFIK_ENTRYPOINT` und `TRAEFIK_CERTRESOLVER` mit der Traefik-Konfiguration vergleichen und den Container-Status prüfen (`docker compose ps`). |
+| 404 über `http://`, obwohl der Container `healthy` ist | Der Router hat TLS (Standard), hängt aber an einem HTTP-Entrypoint (`TRAEFIK_ENTRYPOINT=web`): Er beantwortet nur TLS-Verbindungen. Für reines HTTP setze `TRAEFIK_TLS=false` (Schritt 9), sonst nutze einen HTTPS-Entrypoint. Danach `docker compose up -d`. |
+| Traefik-Log: `the router symphony@docker uses a non-existent resolver: letsencrypt` | `TRAEFIK_CERTRESOLVER` nennt einen Resolver, den Traefik nicht kennt (`docker logs traefik`). Setze den Namen aus der Traefik-Konfiguration oder schalte TLS mit `TRAEFIK_TLS=false` ab, wenn dein Traefik keine Zertifikate ausstellt. |
 | `403 control_disabled` beim Retry | Der Neustart ist bei einer Nicht-Loopback-Bindung nur mit `SYMPHONY_ALLOW_REMOTE_CONTROL=true` erlaubt. `docker-compose.yml` setzt es; läuft der Container anders (z. B. mit eigener Umgebung), setze es dort. |
 | `403 forbidden_origin` beim Retry | Der `Origin`-Header fehlt oder passt nicht zum `Host`. Der Browser setzt ihn selbst; per `curl` gibst du ihn mit: `-H 'Origin: https://<SYMPHONY_DOMAIN>'`, siehe [Dashboard und API](usage.md#dashboard-und-api). |
 | `Permission denied` auf Volumes nach geänderter `UID`/`GID` | Die Volumes gehören noch der alten ID. Besitzer im Volume ändern, dann neu starten: `docker run --rm -v <volume>:/data debian:stable-slim chown -R <UID>:<GID> /data` für jedes Volume aus der Tabelle oben. Auch `secrets/ssh_key` muss für die neue UID lesbar sein. |
@@ -281,6 +298,9 @@ mem_limit: 4g
 - **Dashboard:** Es ist nur über Traefik mit Login erreichbar. Die Compose-Datei hat kein `ports:`, Symphony hat keine
   eigene Anmeldung, und **Retry** ist nur mit passendem `Origin` möglich (Schutz gegen CSRF). Behalte den Login (BasicAuth
   oder Forward-Auth) bei: Ohne ihn könnte jeder im Netz Worker neu starten.
+- **Nur HTTP (`TRAEFIK_TLS=false`):** Das BasicAuth-Passwort, die Dashboard-Daten und der Retry-Aufruf gehen
+  unverschlüsselt durchs Netz. Nutze das nur in einem vertrauenswürdigen LAN, nie über das Internet; dort bleibt HTTPS
+  mit Zertifikat Pflicht.
 - **Kein Docker-Socket, kein Docker-in-Docker:** Mounte `/var/run/docker.sock` nicht in den Container. Wer ihn erreicht,
   hat Root auf dem Host.
 - **Vertrauen:** Issue-Texte sind fremde Eingaben. Bearbeite nur Boards, deren Issues du vertraust. Weitere Hinweise:
