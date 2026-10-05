@@ -210,6 +210,30 @@ REST API. Other values such as `Model: claude-opus-5-5` work as labels too; crea
 | `port` | none | Starts the dashboard and JSON API. `0` picks a free port. `--port` overrides it. Restart to change it. |
 | `host` | `127.0.0.1` | Bind address. On a loopback address, requests with another `Host` header are rejected. |
 
+## Check scripts (`checks/laravel.sh`)
+
+A deterministic quality gate that runs in the workspace (bash). It is not wired into the configuration yet; the
+transition guard will run it before an issue may enter `Agent review` and `In review`.
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Pass (also when there is no `artisan`: `no Laravel app; nothing to check`). |
+| `1` | The code must be fixed. The output goes to the agent: dirty tree, unpushed commits, `php -l` errors, or a failing lint, analysis or test step. |
+| other (`2`) | Environment problem: missing `php`/`git`, missing or broken `vendor/`, failing `git fetch`, unknown default branch, configured but missing PHPStan. The agent comments and moves the issue to `Blocked`. |
+
+The app directory is `$SYMPHONY_LARAVEL_APP_PATH` (default: the current directory). Steps, in order: clean tree, `git fetch`
+and everything pushed, `php -l` on PHP files changed against `origin/HEAD`, style, static analysis, tests.
+
+| Step | Composer script (preferred) | Fallback |
+|---|---|---|
+| Style | `lint` | `vendor/bin/pint --test <changed files>` if Pint exists |
+| Static analysis | `analyse` | `vendor/bin/phpstan analyse --no-progress` if `phpstan.neon[.dist]` exists |
+| Tests | `test` | `php artisan test` |
+
+Composer scripts are detected with `composer run-script --list --raw`, which lists exactly the scripts defined in
+`composer.json` (without Composer, none are used). The script never modifies tracked files, and prints only the tail
+(about 4000 characters) of a failing step, since the guard forwards at most 6000 characters.
+
 ## `model-costs.yml`
 
 Prices for the cost estimates (dashboard, repository logs, logs page), next to `WORKFLOW.md`. Re-read when the file
