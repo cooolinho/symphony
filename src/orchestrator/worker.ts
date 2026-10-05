@@ -32,6 +32,8 @@ export interface WorkerCallbacks {
   workspace(workspace: Workspace): void;
   agentEvent(event: AgentEvent): void;
   issueRefreshed(issue: Issue): void;
+  /** Names of the MCP servers Symphony added that did not connect (called once the session started). */
+  mcpUnavailable(servers: string[]): void;
 }
 
 export interface WorkerParams {
@@ -54,6 +56,13 @@ export interface WorkerParams {
   /** Live eligibility check (uses the current workflow config). */
   stillEligible: (issue: Issue) => boolean;
   callbacks: WorkerCallbacks;
+}
+
+/** Prepends one generic note per unavailable MCP server; integration-specific hints stay in their own prompt sections. */
+function withMcpNotes(unavailable: Array<[string, string]>, prompt: string): string {
+  if (unavailable.length === 0) return prompt;
+  const notes = unavailable.map(([name, status]) => `MCP server \`${name}\` is unavailable (${status}); do not call its tools.`);
+  return `${notes.join('\n')}\n\n${prompt}`;
 }
 
 function transcriptPath(dir: string | null, workspace: Workspace): string | null {
@@ -138,12 +147,14 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       transcriptPath: transcriptPath(params.transcriptDir, activeWorkspace),
       ...(extensions !== null ? { extensions } : {}),
     });
+    const unavailableMcp = Object.entries(session.mcpStatus ?? {}).filter(([, status]) => status !== 'connected');
+    if (unavailableMcp.length > 0) callbacks.mcpUnavailable(unavailableMcp.map(([name]) => name));
 
     for (let turn = 1; ; turn++) {
       setPhase('BuildingPrompt');
       const prompt =
         turn === 1
-          ? await renderPrompt(params.workflow.prompt, { issue: issueTemplateValue(issue), attempt: params.attempt })
+          ? withMcpNotes(unavailableMcp, await renderPrompt(params.workflow.prompt, { issue: issueTemplateValue(issue), attempt: params.attempt }))
           : await renderPrompt(params.workflow.continuationPrompt, {
               issue: issueTemplateValue(issue),
               attempt: params.attempt,

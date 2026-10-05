@@ -463,6 +463,52 @@ describe('run history', () => {
     assert.equal(finished.claude_estimate_usd, '9.99');
     assert.equal(s.orchestrator.snapshot().agent_totals.cost_usd, 6.04);
     assert.equal(entries[0]?.fields.model, 'opus');
+    assert.equal(finished.mcp_unavailable, undefined);
+  });
+
+  it('tells the agent about unavailable MCP servers on turn 1 and records them in run_finished', async () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
+    const pricing = new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent());
+    const history = new HistoryLog(path.join(dir, 'repositories'), pricing, Logger.silent());
+    const tracker = new FakeTracker([makeIssue({ id: 'a' })]);
+    tracker.issueRepository = () => 'acme/app';
+    const runner = new FakeRunner((turn) => {
+      if (turn === 2) tracker.set('a', { state: 'In review' });
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    });
+    runner.mcpStatus = { 'laravel-boost': 'failed', other: 'connected' };
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir(), { agent: { max_turns: 3 } }))),
+      runner,
+      logger: Logger.silent(),
+      env: {},
+      logDir: null,
+      timers: new ManualTimers(),
+      createAdapter: () => tracker,
+      pricing,
+      history,
+    });
+    await orchestrator.tickNow();
+    await until(() => orchestrator.snapshot().retrying.length === 1, 3_000, 'run finished');
+
+    const [first, second] = runner.sessions[0]?.turns ?? [];
+    assert.ok(first?.startsWith('MCP server `laravel-boost` is unavailable (failed); do not call its tools.\n\n'));
+    assert.match(first ?? '', /Work on acme\/app#a/);
+    assert.ok(!first?.includes('`other`'));
+    assert.ok(!second?.includes('MCP server'));
+    const finished = readHistory(history.dir, 'acme/app').entries.find((entry) => entry.event === 'run_finished');
+    assert.equal(finished?.fields.mcp_unavailable, 'laravel-boost');
+  });
+
+  it('adds no MCP note when every added server connected', async () => {
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    runner.mcpStatus = { 'laravel-boost': 'connected' };
+    const s = setup({ runner, issues: [makeIssue({ id: 'a' })] });
+    await s.orchestrator.tickNow();
+    await until(() => (runner.sessions[0]?.turns.length ?? 0) === 1, 3_000, 'turn 1');
+    assert.ok(!runner.sessions[0]?.turns[0]?.includes('MCP server'));
+    assert.match(runner.sessions[0]?.turns[0] ?? '', /^Work on acme\/app#a/);
   });
 
   it('logs the model a "Model:" label picked when the run starts', async () => {

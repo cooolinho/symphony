@@ -15,7 +15,11 @@ type Emit = (message: Record<string, unknown>) => void;
 type Script = (prompt: string, options: Options, emit: Emit, end: () => void) => Promise<void> | void;
 
 /** Stand-in for the SDK's query(): consumes the streaming input and replays scripted messages. */
-function fakeQuery(script: Script, init: () => Promise<unknown> = async () => ({})) {
+function fakeQuery(
+  script: Script,
+  init: () => Promise<unknown> = async () => ({}),
+  mcpServerStatus: () => Promise<Array<{ name: string; status: string }>> = async () => [],
+) {
   let captured: Options | undefined;
   const fn: QueryFn = ({ prompt, options }) => {
     captured = options;
@@ -44,6 +48,7 @@ function fakeQuery(script: Script, init: () => Promise<unknown> = async () => ({
         return this;
       },
       initializationResult: init,
+      mcpServerStatus,
       interrupt: async () => undefined,
       close: () => out.close(),
     };
@@ -72,6 +77,10 @@ function result(costUsd: number, input: number, output: number, overrides: Recor
     session_id: 's',
     ...overrides,
   };
+}
+
+function boostExtensions(): SessionExtensions {
+  return { mcpServers: { 'laravel-boost': { command: 'php', args: ['artisan', 'boost:mcp'] } }, contextSections: [], additionalDirectories: [], env: {} };
 }
 
 const tool: AgentToolSpec = {
@@ -136,6 +145,8 @@ describe('claude agent runner', () => {
     assert.ok(options.mcpServers?.tracker !== undefined);
     assert.equal(options.env?.PATH, '/usr/bin');
     assert.deepEqual(options.settingSources, ['project']);
+    assert.equal(options.strictMcpConfig, true);
+    assert.equal(session.mcpStatus, undefined);
     assert.deepEqual(Object.keys(options.mcpServers ?? {}), ['tracker']);
     assert.equal(options.plugins, undefined);
     assert.equal(options.skills, undefined);
@@ -157,7 +168,7 @@ describe('claude agent runner', () => {
         skills: ['pest-testing', 'symphony:handoff'],
       });
       emit(result(0.1, 10, 1));
-    });
+    }, undefined, async () => [{ name: 'laravel-boost', status: 'failed' }]);
     const lines: string[] = [];
     const logger = Logger.create({ sinks: [{ name: 'memory', write: (line) => lines.push(line) }], level: 'debug' });
     const events: AgentEvent[] = [];
@@ -188,8 +199,79 @@ describe('claude agent runner', () => {
     assert.ok(lines.some((line) => line.includes('plugin did not load') && line.includes('path-not-found')));
     const configured = events.find((event) => event.event === 'session_configured');
     assert.deepEqual(configured?.detail?.mcp_servers, ['tracker:connected', 'laravel-boost:failed']);
+    assert.deepEqual(configured?.detail?.mcp_status, { 'laravel-boost': 'failed' });
+    assert.deepEqual(session.mcpStatus, { 'laravel-boost': 'failed' });
     assert.deepEqual(configured?.detail?.plugins, ['symphony']);
     assert.equal(configured?.detail?.skills, 2);
+  });
+
+  it('passes claude.strict_mcp_config: false through', async () => {
+    const fake = fakeQuery(() => undefined);
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ claude: { strict_mcp_config: false } }));
+    await session.stop();
+    assert.equal(fake.options().strictMcpConfig, false);
+  });
+
+  it('waits for pending extension servers to connect without warning', async () => {
+    const answers = ['pending', 'pending', 'connected'];
+    let calls = 0;
+    const fake = fakeQuery(() => undefined, undefined, async () => [{ name: 'laravel-boost', status: answers[Math.min(calls++, 2)] ?? 'connected' }]);
+    const lines: string[] = [];
+    const logger = Logger.create({ sinks: [{ name: 'memory', write: (line) => lines.push(line) }], level: 'debug' });
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ extensions: boostExtensions(), logger }));
+    await session.stop();
+    assert.equal(calls, 3);
+    assert.deepEqual(session.mcpStatus, { 'laravel-boost': 'connected' });
+    assert.ok(!lines.some((line) => line.includes('not connected')));
+  });
+
+  it('stops waiting for a pending server after read_timeout_ms', async () => {
+    const fake = fakeQuery(() => undefined, undefined, async () => [{ name: 'laravel-boost', status: 'pending' }]);
+    const lines: string[] = [];
+    const logger = Logger.create({ sinks: [{ name: 'memory', write: (line) => lines.push(line) }], level: 'debug' });
+    const started = Date.now();
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(
+      params({ claude: { read_timeout_ms: 200 }, extensions: boostExtensions(), logger }),
+    );
+    const elapsed = Date.now() - started;
+    await session.stop();
+    assert.ok(elapsed < 400, `poll took ${elapsed}ms`);
+    assert.deepEqual(session.mcpStatus, { 'laravel-boost': 'pending' });
+    assert.ok(lines.some((line) => line.includes('not connected') && line.includes('pending')));
+  });
+
+  it('bounds a status call that never answers by read_timeout_ms', async () => {
+    const fake = fakeQuery(() => undefined, undefined, () => new Promise(() => undefined));
+    const started = Date.now();
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ claude: { read_timeout_ms: 100 }, extensions: boostExtensions() }));
+    assert.ok(Date.now() - started < 300);
+    await session.stop();
+    assert.deepEqual(session.mcpStatus, { 'laravel-boost': 'pending' });
+  });
+
+  it('stops waiting for pending servers when the session is aborted', async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const fake = fakeQuery(() => undefined, undefined, async () => {
+      if (++calls === 2) controller.abort('issue moved to Done');
+      return [{ name: 'laravel-boost', status: 'pending' }];
+    });
+    const started = Date.now();
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(
+      params({ claude: { read_timeout_ms: 30_000 }, extensions: boostExtensions(), signal: controller.signal }),
+    );
+    assert.ok(Date.now() - started < 2_000);
+    assert.equal(calls, 2);
+    await session.stop();
+  });
+
+  it('records a status query failure without throwing', async () => {
+    const fake = fakeQuery(() => undefined, undefined, async () => {
+      throw new Error('control channel closed');
+    });
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ extensions: boostExtensions() }));
+    await session.stop();
+    assert.deepEqual(session.mcpStatus, { 'laravel-boost': 'pending' });
   });
 
   it('refuses an extension server named like the tracker server', async () => {

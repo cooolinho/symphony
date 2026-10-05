@@ -113,6 +113,8 @@ interface RunningEntry {
   reportedCostUsd: number;
   claudeEstimateUsd: number;
   modelUsage: Record<string, ModelTokenUsage>;
+  /** MCP servers Symphony added that did not connect in the session. */
+  mcpUnavailable: string[];
   controller: AbortController;
   stop: StopRequest | null;
   done: Promise<void>;
@@ -474,6 +476,7 @@ export class Orchestrator {
       reportedCostUsd: 0,
       claudeEstimateUsd: 0,
       modelUsage: {},
+      mcpUnavailable: [],
       controller,
       stop: null,
       done: Promise.resolve(),
@@ -538,6 +541,9 @@ export class Orchestrator {
           agentEvent: (event) => this.#onAgentEvent(entry, event),
           issueRefreshed: (fresh) => {
             if (this.#running.get(entry.issueId) === entry) entry.issue = fresh;
+          },
+          mcpUnavailable: (servers) => {
+            entry.mcpUnavailable = servers;
           },
         },
       });
@@ -644,6 +650,7 @@ export class Orchestrator {
       agentSeconds,
       usage: entry.modelUsage,
       claudeEstimateUsd: entry.claudeEstimateUsd > 0 ? entry.claudeEstimateUsd : null,
+      mcpUnavailable: entry.mcpUnavailable,
     });
   }
 

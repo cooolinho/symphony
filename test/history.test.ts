@@ -104,9 +104,19 @@ describe('repository history', () => {
     assert.equal(second?.fields.repo_runs, '2');
     assert.equal(second?.fields.repo_tokens, String(2 * 113_000));
     assert.equal(second?.fields.model, 'claude-opus-5-5');
+    assert.equal(second?.fields.mcp_unavailable, undefined);
     const modelLine = parseHistoryLine(lines[4] as string);
     assert.equal(modelLine?.event, 'model_usage');
     assert.equal(modelLine?.fields.price, 'opus');
+  });
+
+  it('lists unavailable MCP servers in run_finished', () => {
+    const { log } = history();
+    log.runFinished(finish('acme/app#1', 'r1', '2026-10-04T08:01:00Z', { mcpUnavailable: ['laravel-boost', 'docs'] }));
+    log.runFinished(finish('acme/app#1', 'r2', '2026-10-04T08:05:00Z', { mcpUnavailable: [] }));
+    const [first, second] = readHistory(log.dir, 'acme/app').entries.filter((e) => e.event === 'run_finished');
+    assert.equal(first?.fields.mcp_unavailable, 'laravel-boost,docs');
+    assert.equal(second?.fields.mcp_unavailable, undefined);
   });
 
   it('continues the running totals from an existing file', () => {
