@@ -167,3 +167,32 @@ node scripts/e2e/verify.ts logs/e2e/<timestamp>
 | `scripts/e2e/verify.ts` | Checks and report; also usable on its own |
 | `scripts/e2e/verify-roles.ts` | Checks of the roles scenario, unit-tested in `test/e2e-roles.test.ts` |
 | `scripts/e2e/context.ts` | Config from `WORKFLOW.md`/`.env`, board lookup and GitHub GraphQL helpers |
+
+## Laravel integration test: `npm run test:laravel`
+
+A separate, opt-in check of the Laravel integration against real software instead of the stand-in `php` and
+`composer` scripts of `test/laravel.test.ts`. It needs no board and no Claude Code session, and it is not part of
+`npm test` or `npm run check`.
+
+Prerequisites: PHP 8.3 or newer and Composer on `PATH`, plus network access to Packagist. If one is missing, the
+script prints `skipped: …` and exits 0.
+
+```bash
+npm run test:laravel             # builds, checks and removes the temp app
+npm run test:laravel -- --keep   # keeps the temp directory and prints its path
+```
+
+In a temp directory it builds a fresh app with `composer create-project laravel/laravel` (13.x),
+`filament/filament:^5.0`, `laravel/boost` (dev) and Pest (added if the skeleton lacks it), commits it and pushes it
+to a bare `origin`. Then it asserts:
+
+| Step | Passes when |
+|---|---|
+| Workspace hook | `hooks/laravel-env.sh` writes the SQLite settings to `.env`, `php artisan about` succeeds and `git status` stays clean. |
+| Boost preparation | The Laravel integration's `prepare` generates `.claude/skills/filament-development/SKILL.md`, keeps every generated file out of `git status --porcelain`, pre-approves the read-only Boost tools, denies `tinker`, and logs `integration_prepared` with Laravel 13.x, Filament 5.x and `boost=ready`. |
+| MCP handshake | `php artisan boost:mcp`, started from the prepared server spec, answers `initialize` and `tools/list`; the list contains `database-schema` and `search-docs` but not `tinker`. |
+| Check script | `checks/laravel.sh` exits 0 on the fresh app and 1 after a failing Pest test is committed and pushed. |
+
+The summary prints the PHP and Composer versions and the resolved Laravel, Filament, Boost and Pest versions. The
+exit code is 0 only if every assertion passes. A run takes a few minutes, mostly for Composer; the Composer cache
+makes later runs faster.

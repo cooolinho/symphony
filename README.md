@@ -744,6 +744,7 @@ symphony/
 ├── .env.example                # Vorlage für .env (Board, Repository, Modell, Token, Grenzen)
 ├── repo-init.ts                # interaktive Einrichtung der Repositories (Model-Labels, Laravel-Boost-Issue)
 ├── scripts/e2e/                # End-to-End-Test der Orchestrierung auf einem echten Board (npm run e2e)
+├── scripts/laravel-smoke/      # Integrationstest gegen eine echte Laravel-13/Filament-5-App (npm run test:laravel)
 ├── src/
 │   ├── cli.ts                  # Einstiegspunkt: Optionen, .env laden, Start
 │   ├── service.ts              # Start, Herunterfahren, Dry Run
@@ -769,7 +770,7 @@ symphony/
 - [docs/adapters/github-project.md](docs/adapters/github-project.md): GitHub-Projects-Adapter, also Einstellungen, Normalisierung, Agenten-Tools und Fehler
 - [docs/agent-claude.md](docs/agent-claude.md): Ablauf der Claude-Code-Sessions, Berechtigungen, Skills und Plugins, Laravel Boost, Zeitlimits und Kostenzählung
 - [docs/conformance.md](docs/conformance.md): Abweichungen von der Spezifikation und eigene Festlegungen
-- [docs/e2e.md](docs/e2e.md): End-to-End-Test der Orchestrierung, also Szenario, Ablauf, Prüfungen und Run-Verzeichnis
+- [docs/e2e.md](docs/e2e.md): End-to-End-Test der Orchestrierung, also Szenario, Ablauf, Prüfungen und Run-Verzeichnis, sowie der Laravel-Integrationstest (`npm run test:laravel`)
 
 Für die Entwicklung:
 
@@ -778,6 +779,7 @@ npm test            # Tests
 npm run typecheck   # TypeScript-Prüfung
 npm run check       # beides
 npm run e2e         # End-to-End-Test auf dem Test-Board (legt echte Issues an)
+npm run test:laravel # Laravel-Integration gegen eine echte App (braucht PHP 8.3+, Composer, Netz)
 ```
 
 Die CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) führt `npm run check` mit Node 26 für jeden Pull Request
