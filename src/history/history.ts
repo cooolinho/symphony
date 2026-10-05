@@ -19,7 +19,7 @@ import { DEFAULT_ROLE } from '../workflow/roles.ts';
  * How a run ended: handed off (left the active states, or moved to a column served by another role; then the
  * finish line carries `role` and `next_role`), continuing (still active for the same role), or stopped early.
  */
-export type RunOutcome = 'handed_off' | 'continuing' | 'failed' | 'stopped' | 'stalled' | 'shutdown';
+export type RunOutcome = 'handed_off' | 'continuing' | 'failed' | 'session_limit' | 'stopped' | 'stalled' | 'shutdown';
 
 export interface RunStart {
   repo: string;

@@ -49,7 +49,7 @@ const DURATION_BUCKETS: Array<{ label: string; max: number }> = [
 ];
 
 const SUCCESS = new Set(['handed_off', 'continuing']);
-const FAILURE = new Set(['failed', 'stalled']);
+const FAILURE = new Set(['failed', 'session_limit', 'stalled']);
 const STOPPED = new Set(['stopped', 'shutdown']);
 
 interface UsagePart {
