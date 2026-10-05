@@ -48,6 +48,9 @@ und Token stehen in der **`.env`**. Symphony ist eine Implementierung der
   dabei im Symphony-Prozess, der Agent sieht ihn nie.
 - **Robust:** Wiederholungen mit exponentiellem Backoff, Erkennung hängender Sessions. Ändert sich das Board während
   ein Agent läuft, wird er gestoppt.
+- **Session-Limit-Handling:** Erreicht das Claude-Abonnement sein Limit, wiederholt Symphony ein paar Mal und wartet
+  dann bis zum Reset. Wartende und pausierte Worker startest du im Dashboard oder per API sofort neu
+  ([Details](docs/usage.md#session-limit)).
 - **Zentral konfigurierbar:** Die `WORKFLOW.md` wird live neu geladen, ohne Neustart. Die `.env` enthält Board,
   Repository, Modell und Token. Eine Instanz kann mehrere Repositories bedienen.
 - **Beobachtbar:** Optionales Dashboard mit JSON-API und einer Detailansicht pro Agent (Execution Trace mit Prompts,
