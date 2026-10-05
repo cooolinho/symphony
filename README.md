@@ -690,9 +690,11 @@ npm run e2e         # End-to-End-Test auf dem Test-Board (legt echte Issues an)
 
 Die CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) führt `npm run check` mit Node 26 für jeden Pull Request
 und jeden Push auf `main` aus. Ist sie für einen Pull Request der Symphony-Agenten (Branch `symphony/*`) grün, mergt
-[.github/workflows/automerge.yml](.github/workflows/automerge.yml) ihn per Squash und löscht den Branch. Das schließt
-das Issue (`Closes #…`), und Symphony startet die Issues, die davon abhängen. Der Auto-Merge läuft immer in der
-Fassung von `main`: Ein Pull Request kann die Regeln für seinen eigenen Merge nicht ändern.
+[.github/workflows/automerge.yml](.github/workflows/automerge.yml) ihn per Squash, schließt die Issues, die er mit
+`Closes #…` nennt, und löscht den Branch. Symphony startet dann die Issues, die davon abhängen. Das Schließen
+übernimmt der Workflow selbst, weil GitHub `Closes #…` bei Merges durch den Actions-Token nicht auswertet; mergst du
+selbst, schließt GitHub die Issues wie gewohnt. Der Auto-Merge läuft immer in der Fassung von `main`: Ein Pull
+Request kann die Regeln für seinen eigenen Merge nicht ändern.
 
 Ein Pull Request bleibt für dich offen, wenn
 
