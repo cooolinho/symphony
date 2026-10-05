@@ -9,22 +9,30 @@ export const LOGS_HTML = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>Symphony logs</title>
 <style>${BASE_CSS}
   .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 16px; }
   td.event { white-space: nowrap; }
+  td.event .chip[class*="tone-"] { color: var(--tone); border-color: var(--tone-line); background: var(--tone-dim); }
+  h2 { margin-bottom: 12px; }
 </style>
 </head>
 <body>
-<header>
-  <h1><a href="/">Symphony</a> · Logs</h1>
-  <div class="filters">
-    <label class="meta" for="repo">Repository</label>
-    <select id="repo"><option value="">All repositories</option></select>
-    <a class="button" id="raw" href="#" hidden>Raw log</a>
-    <button id="reload" type="button">Reload</button>
-    <a class="button" href="/">Dashboard</a>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/" aria-label="Back to the Symphony dashboard">
+      <span class="brand-mark" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,12 6,12 8.5,6 11.5,18 14.5,4 17,15 19,12 22,12"/></svg></span>
+      <span class="brand-text"><span class="brand-name">SYMPHONY</span><span class="brand-sub">LOGS &amp; STATISTICS</span></span>
+    </a>
+    <div class="filters">
+      <label class="meta" for="repo">Repository</label>
+      <select id="repo"><option value="">All repositories</option></select>
+      <a class="btn" id="raw" href="#" hidden>Raw log</a>
+      <button class="btn" id="reload" type="button">Reload</button>
+      <a class="btn btn-primary" href="/">Dashboard</a>
+    </div>
   </div>
 </header>
 <main>
@@ -58,31 +66,8 @@ export const LOGS_HTML = `<!doctype html>
 (() => {
 ${BASE_JS}
 
-  const OUTCOMES = {
-    handed_off: 'Handed off', continuing: 'Continuing', failed: 'Failed',
-    stopped: 'Stopped', stalled: 'Stalled', shutdown: 'Shutdown',
-  };
   const select = document.getElementById('repo');
   const selected = () => new URLSearchParams(location.search).get('repo') || '';
-
-  function describe(entry) {
-    switch (entry.event) {
-      case 'run_started':
-        return 'Started in "' + entry.state + '"' + (entry.attempt && entry.attempt !== 'null' ? ' (attempt ' + entry.attempt + ')' : '') +
-          (entry.model && entry.model !== 'default' ? ' · ' + entry.model : '');
-      case 'run_finished':
-        return (OUTCOMES[entry.outcome] || entry.outcome) + ' → "' + entry.state + '" · ' + entry.turns + ' turn(s) · ' +
-          fmtCompact(Number(entry.total_tokens)) + ' tokens · ' + fmtUsd(Number(entry.cost_usd)) + ' · ' +
-          fmtDuration(Number(entry.agent_seconds)) + (entry.model && entry.model !== 'null' ? ' · ' + entry.model : '') +
-          (entry.outcome === 'failed' || entry.outcome === 'stalled' ? ' · ' + entry.reason : '');
-      case 'issue_paused':
-        return 'Paused after ' + entry.continuations + ' continuation session(s) in "' + entry.state + '"';
-      case 'workspace_removed':
-        return 'Workspace removed ("' + entry.state + '")';
-      default:
-        return entry.event;
-    }
-  }
 
   function render(data) {
     const repo = data.repo || '';
@@ -155,8 +140,8 @@ ${BASE_JS}
     if (!repo) columns.push({ label: 'Repository', render: (r) => r.repo });
     columns.push(
       { label: 'Issue', className: 'event', render: (r) => r.issue || '—' },
-      { label: 'Event', className: 'event', render: (r) => el('span', r.event.replace(/_/g, ' '), 'chip') },
-      { label: 'Details', render: (r) => el('div', describe(r), 'msg') },
+      { label: 'Event', className: 'event', render: (r) => el('span', r.event.replace(/_/g, ' '), 'chip tone-' + SEVERITY_TONE[logSeverity(r)]) },
+      { label: 'Details', render: (r) => el('div', describeLogEntry(r), 'msg') },
     );
     table('entries', columns, data.recent, 'The log is empty.');
 

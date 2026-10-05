@@ -1,7 +1,147 @@
 import { BASE_CSS, BASE_JS } from './styles.ts';
 
+const DASHBOARD_CSS = `
+  /* Matrix rain: a few faint glyph columns behind everything, disabled for small screens and reduced motion. */
+  .rain { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
+    mask-image: linear-gradient(to bottom, transparent, #000 15%, #000 55%, transparent 90%); }
+  .rain span { position: absolute; top: 0; writing-mode: vertical-rl; text-orientation: upright; white-space: nowrap;
+    font: 12px/1 var(--mono); letter-spacing: .35em; color: rgba(61, 220, 132, .06); transform: translateY(-110%);
+    animation: fall linear infinite; }
+  @keyframes fall { to { transform: translateY(110vh); } }
+  @media (max-width: 640px), (prefers-reduced-motion: reduce) { .rain { display: none; } }
+
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
+
+  /* Running agents */
+  .agents-section { border-color: var(--line-2); }
+  .slots { display: flex; align-items: center; gap: 10px; font: 500 11px var(--mono); color: var(--muted); letter-spacing: .08em; }
+  .slots-bar { display: flex; gap: 3px; }
+  .slots-bar i { width: 14px; height: 6px; border-radius: 2px; background: var(--line-2); transition: background .3s var(--ease), box-shadow .3s var(--ease); }
+  .slots-bar i.on { background: var(--green); box-shadow: 0 0 8px -2px var(--green); }
+  .agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); gap: 14px; }
+  .agent { position: relative; display: flex; flex-direction: column; gap: 14px; min-width: 0; padding: 16px 16px 14px;
+    border: 1px solid var(--line-2); border-radius: var(--radius); overflow: hidden;
+    background: linear-gradient(160deg, var(--tone-dim) 0%, rgba(11, 17, 21, .96) 38%), var(--panel);
+    box-shadow: var(--shadow); transition: border-color .25s var(--ease), transform .25s var(--ease), box-shadow .25s var(--ease); }
+  .agent::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px;
+    background: linear-gradient(90deg, var(--tone), transparent 75%); opacity: .85; transition: background .4s var(--ease); }
+  .agent:hover { border-color: var(--tone-line); transform: translateY(-2px);
+    box-shadow: var(--shadow), 0 0 0 1px var(--tone-dim), 0 18px 40px -24px var(--tone); }
+  .agent.enter { animation: card-in .45s var(--ease) both; }
+  .agent.leave { animation: card-out .3s var(--ease) both; pointer-events: none; }
+  .agent.changed { animation: card-flash 1.1s var(--ease); }
+  @keyframes card-in { from { opacity: 0; transform: translateY(8px) scale(.985); } }
+  @keyframes card-out { to { opacity: 0; transform: scale(.97); } }
+  @keyframes card-flash { 0% { box-shadow: 0 0 0 1px var(--tone), 0 0 28px -6px var(--tone); } 100% { box-shadow: var(--shadow); } }
+  .agent-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .agent-head .tags { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
+  .agent-id { font: 600 15px var(--mono); color: var(--text); letter-spacing: .02em; white-space: nowrap; }
+  .agent-id:hover { color: var(--cyan); }
+  .agent-title { font: 600 16.5px/1.35 var(--sans); color: #f0f6f3; letter-spacing: -.005em; overflow-wrap: anywhere;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .agent-repo { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px 12px; font: 12px var(--mono); color: var(--muted); min-width: 0; }
+  .agent-repo span { overflow-wrap: anywhere; }
+  .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; margin: 0; }
+  .fields dt, .k { font: 600 10px var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+  .fields dd { margin: 3px 0 0; font: 500 13px var(--mono); color: var(--text); overflow-wrap: anywhere; }
+  .fields dd.info { color: var(--cyan); }
+  .activity-box { padding: 10px 12px; border-radius: var(--radius-sm); background: rgba(0, 0, 0, .28); border: 1px solid var(--line); min-width: 0; }
+  .activity-line { margin-top: 3px; display: flex; flex-wrap: wrap; gap: 0 8px; font: 12.5px var(--mono); }
+  .activity-line .ev { color: var(--text); overflow-wrap: anywhere; }
+  .activity-line .age { color: var(--muted); }
+  .activity-line .age.stale { color: var(--amber); }
+  .activity-msg { margin-top: 4px; color: var(--text-2); font-size: 12.5px; overflow-wrap: anywhere;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .activity-msg:empty { display: none; }
+  .agent-foot { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; padding-top: 12px; border-top: 1px dashed var(--line-2); margin-top: auto; }
+  .agent-foot div { min-width: 0; }
+  .agent-foot .v { display: block; margin-top: 2px; font: 600 13.5px var(--mono); font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .agents-empty { display: flex; align-items: center; gap: 16px; padding: 26px 18px; border: 1px dashed var(--line-2); border-radius: var(--radius);
+    background: repeating-linear-gradient(135deg, rgba(255, 255, 255, .012) 0 8px, transparent 8px 16px); }
+  .agents-empty .big { font: 600 13px var(--mono); letter-spacing: .16em; color: var(--text-2); text-transform: uppercase; }
+  .cursor { display: inline-block; width: 8px; height: 15px; background: var(--green); vertical-align: -2px; margin-left: 4px; animation: blink 1.1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* Lower area: activity stream next to the queues */
+  .lower { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  @media (min-width: 1100px) { .lower { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); } }
+  .side { display: grid; gap: 20px; align-content: start; min-width: 0; }
+  .feed { list-style: none; margin: 0; padding: 10px 0; max-height: 360px; overflow-y: auto; border-radius: var(--radius-sm);
+    background: rgba(0, 0, 0, .35); border: 1px solid var(--line); font: 12.5px/1.65 var(--mono); }
+  .feed li { display: grid; grid-template-columns: 72px minmax(0, 9.5em) minmax(0, 1fr); gap: 12px; padding: 1px 14px; color: var(--muted);
+    border-left: 2px solid transparent; }
+  .feed li:nth-child(n+6) { opacity: .75; }
+  .feed li:nth-child(n+16) { opacity: .55; }
+  .feed li.latest { background: linear-gradient(90deg, rgba(61, 220, 132, .07), transparent 70%); border-left-color: var(--green); }
+  .feed li.fresh { animation: feed-in .6s var(--ease); }
+  @keyframes feed-in { from { background: rgba(61, 220, 132, .14); } }
+  .feed .t { color: var(--faint); }
+  .feed li.latest .t { color: var(--text-2); }
+  .feed .who { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .feed .what { color: var(--text-2); overflow-wrap: anywhere; }
+  .feed .what.tone-green { color: var(--green); } .feed .what.tone-cyan { color: var(--cyan); }
+  .feed .what.tone-amber { color: var(--amber); } .feed .what.tone-red { color: var(--red); }
+  .feed li.latest .what:not([class*="tone-"]) { color: var(--text); }
+  .feed .prompt { color: var(--green); padding: 2px 14px; display: block; }
+  @media (max-width: 640px) {
+    .feed li { grid-template-columns: 64px minmax(0, 1fr); gap: 2px 10px; }
+    .feed .what { grid-column: 1 / -1; padding-left: 74px; }
+  }
+
+  /* Retry queue and paused agents */
+  .queue { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  .qitem { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-left: 2px solid var(--tone); border-radius: var(--radius-sm);
+    background: rgba(0, 0, 0, .22); transition: border-color .2s var(--ease); }
+  .qitem:hover { border-color: var(--tone-line); border-left-color: var(--tone); }
+  .qrow { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
+  .qrow .id { font: 600 13px var(--mono); overflow-wrap: anywhere; }
+  .qmeta { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 11.5px var(--mono); color: var(--muted); }
+  .qmeta b { color: var(--text); font-weight: 600; }
+  .qitem .msg { font-size: 12.5px; }
+  .clear { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+  .clear .muted { font-size: 12.5px; }
+
+  /* Logs drawer */
+  .scrim { position: fixed; inset: 0; z-index: 40; background: rgba(2, 4, 5, .5);
+    opacity: 0; visibility: hidden; transition: opacity .25s var(--ease), visibility 0s linear .25s; }
+  .scrim.open { opacity: 1; visibility: visible; transition: opacity .25s var(--ease); }
+  .drawer { position: fixed; top: 0; right: 0; bottom: 0; z-index: 50; width: min(760px, 100vw); display: flex; flex-direction: column;
+    background: linear-gradient(180deg, #0a1014, #06090b); border-left: 1px solid var(--line-2); box-shadow: -30px 0 60px -30px #000;
+    transform: translateX(100%); visibility: hidden; transition: transform .3s var(--ease), visibility 0s linear .3s; }
+  .drawer.open { transform: none; visibility: visible; transition: transform .3s var(--ease); }
+  .drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 18px 12px; border-bottom: 1px solid var(--line); }
+  .drawer-head h2 { margin: 0 0 4px; color: var(--text); display: flex; align-items: center; gap: 8px; }
+  .drawer-filters { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+  .drawer-filters input[type="search"] { flex: 1 1 180px; }
+  .drawer-filters select { flex: 0 1 220px; }
+  .seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: var(--radius-sm); overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; padding: 7px 10px; background: transparent; color: var(--muted); }
+  .seg button + button { border-left: 1px solid var(--line-2); }
+  .seg button[aria-pressed="true"] { background: var(--raise); color: var(--tone, var(--text)); }
+  .logs { list-style: none; margin: 0; padding: 6px 0; flex: 1; overflow-y: auto; font: 12px/1.55 var(--mono); }
+  .logs li { display: grid; grid-template-columns: 118px 44px minmax(0, 1fr); gap: 2px 12px; padding: 7px 18px; border-bottom: 1px solid rgba(24, 37, 44, .6); }
+  .logs li:hover { background: rgba(255, 255, 255, .02); }
+  .logs .t { color: var(--muted); white-space: nowrap; }
+  .logs .sev { font-weight: 600; letter-spacing: .1em; color: var(--tone); }
+  .logs .body { min-width: 0; }
+  .logs .src { color: var(--text-2); overflow-wrap: anywhere; }
+  .logs .src .ev { color: var(--cyan); }
+  .logs .d { color: var(--text); overflow-wrap: anywhere; }
+  .logs .note { padding: 18px; color: var(--muted); display: block; }
+  .drawer-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
+  .drawer-foot .actions { gap: 8px; }
+  @media (max-width: 640px) {
+    .logs li { grid-template-columns: auto 1fr; }
+    .logs .body { grid-column: 1 / -1; }
+    .agent-foot { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 10px; }
+    .sysinfo { gap: 6px 16px; }
+  }
+`;
+
 /**
- * Client-side dashboard: polls /api/v1/state and renders it. All tracker text is inserted with
+ * Client-side dashboard: polls /api/v1/state and renders it as an agent control center. The activity
+ * stream combines changes between snapshots with the per-issue events (/api/v1/<identifier>) and the
+ * repository logs (/api/v1/history), which also feed the logs drawer. All tracker text is inserted with
  * textContent (issue titles and agent messages are untrusted).
  */
 export const DASHBOARD_HTML = `<!doctype html>
@@ -9,37 +149,588 @@ export const DASHBOARD_HTML = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>Symphony</title>
-<style>${BASE_CSS}</style>
+<style>${BASE_CSS}${DASHBOARD_CSS}</style>
 </head>
 <body>
-<header>
-  <h1><span id="health-dot" class="dot"></span>Symphony</h1>
-  <div class="meta" id="meta">loading…</div>
-  <div class="actions">
-    <a class="button" href="/logs">Logs</a>
-    <button id="refresh" type="button">Poll now</button>
+<div class="rain" id="rain" aria-hidden="true"></div>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/" aria-label="Symphony agent orchestrator">
+      <span class="brand-mark" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,12 6,12 8.5,6 11.5,18 14.5,4 17,15 19,12 22,12"/></svg></span>
+      <span class="brand-text"><span class="brand-name">SYMPHONY</span><span class="brand-sub">AGENT ORCHESTRATOR</span></span>
+    </a>
+    <dl class="sysinfo" aria-live="polite">
+      <div><dt>System</dt><dd id="sys-status"><span class="badge tone-gray"><span class="dot"></span><span>Connecting</span></span></dd></div>
+      <div><dt>Workflow</dt><dd id="sys-workflow">—</dd></div>
+      <div><dt>Polling</dt><dd id="sys-interval">—</dd></div>
+      <div><dt>Last poll</dt><dd id="sys-lastpoll">—</dd></div>
+    </dl>
+    <div class="actions">
+      <a class="btn" id="logs-open" href="/logs" aria-controls="logs-drawer" aria-expanded="false">
+        <svg class="btn-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 4h10M3 8h10M3 12h6"/></svg>Logs</a>
+      <button class="btn btn-primary" id="refresh" type="button">
+        <svg class="btn-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.5 2.5v3h-3"/></svg><span id="refresh-label">Poll now</span></button>
+    </div>
   </div>
+  <div class="progress" id="progress" aria-hidden="true"></div>
 </header>
+<p class="sr-only" id="announce" aria-live="polite"></p>
 <main>
-  <section id="problems" class="problems" hidden><h2>Needs attention</h2><ul id="problem-list"></ul></section>
-  <div class="stats" id="stats"></div>
-  <section>
-    <h2>Running</h2>
-    <div class="scroll"><table id="running"></table></div>
+  <section id="problems" class="problems" role="alert" hidden>
+    <h2><span class="dot tone-red"></span>Needs attention</h2>
+    <ul id="problem-list"></ul>
   </section>
-  <section>
-    <h2>Retry queue</h2>
-    <div class="scroll"><table id="retrying"></table></div>
+
+  <div class="stats" id="stats" aria-label="Metrics"></div>
+
+  <section class="agents-section" aria-labelledby="running-title">
+    <div class="section-head">
+      <h2 id="running-title">Running agents <span class="count" id="running-count"></span></h2>
+      <div class="slots" id="slots" aria-hidden="true"></div>
+    </div>
+    <div class="agents" id="agents"></div>
+    <div class="agents-empty" id="agents-empty" hidden>
+      <span class="badge tone-gray"><span class="dot"></span><span>Idle</span></span>
+      <div><div class="big">No agents running<span class="cursor" aria-hidden="true"></span></div>
+        <div class="muted" id="agents-empty-sub">Waiting for issues in an active column.</div></div>
+    </div>
   </section>
-  <section>
-    <h2>Paused</h2>
-    <div class="scroll"><table id="paused"></table></div>
-  </section>
+
+  <div class="lower">
+    <section aria-labelledby="activity-title">
+      <div class="section-head">
+        <h2 id="activity-title">Agent activity</h2>
+        <span class="meta">live stream · newest first</span>
+      </div>
+      <ol class="feed" id="feed" aria-live="off"></ol>
+    </section>
+    <div class="side">
+      <section aria-labelledby="retry-title">
+        <div class="section-head"><h2 id="retry-title">Retry queue <span class="count" id="retry-count"></span></h2></div>
+        <div id="retrying"></div>
+      </section>
+      <section aria-labelledby="paused-title">
+        <div class="section-head"><h2 id="paused-title">Paused <span class="count" id="paused-count"></span></h2></div>
+        <div id="paused"></div>
+      </section>
+    </div>
+  </div>
 </main>
+
+<div class="scrim" id="logs-scrim"></div>
+<aside class="drawer" id="logs-drawer" role="dialog" aria-modal="true" aria-labelledby="logs-title">
+  <div class="drawer-head">
+    <div><h2 id="logs-title"><span class="dot tone-cyan"></span>Logs</h2><div class="meta" id="logs-meta">Repository logs</div></div>
+    <button class="btn btn-ghost" id="logs-close" type="button" aria-label="Close logs">Esc ✕</button>
+  </div>
+  <div class="drawer-filters">
+    <select id="logs-repo" aria-label="Repository"><option value="">All repositories</option></select>
+    <div class="seg" id="logs-sev" role="group" aria-label="Severity">
+      <button type="button" data-sev="" aria-pressed="true">All</button>
+      <button type="button" data-sev="info" class="tone-cyan" aria-pressed="false">Info</button>
+      <button type="button" data-sev="ok" class="tone-green" aria-pressed="false">Ok</button>
+      <button type="button" data-sev="warn" class="tone-amber" aria-pressed="false">Warn</button>
+      <button type="button" data-sev="error" class="tone-red" aria-pressed="false">Error</button>
+    </div>
+    <input type="search" id="logs-q" placeholder="Filter issue, event, text…" aria-label="Filter log entries">
+  </div>
+  <ol class="logs" id="logs-list"></ol>
+  <div class="drawer-foot">
+    <span class="meta" id="logs-count"></span>
+    <div class="actions">
+      <a class="btn" id="logs-raw" href="#" target="_blank" rel="noopener" hidden>Raw log</a>
+      <button class="btn" id="logs-reload" type="button">Reload</button>
+      <a class="btn" href="/logs">Statistics ↗</a>
+    </div>
+  </div>
+</aside>
+
 <script>
 (() => {
 ${BASE_JS}
+
+  const $ = (id) => document.getElementById(id);
+  const setText = (node, text) => { text = String(text ?? ''); if (node.textContent !== text) node.textContent = text; };
+  const splitId = (identifier) => {
+    const i = String(identifier).lastIndexOf('#');
+    return i > 0 ? { repo: identifier.slice(0, i), num: identifier.slice(i) } : { repo: '', num: String(identifier) };
+  };
+  // owner/repo#12 -> repo#12, for the narrow columns of the activity stream.
+  const shortId = (identifier) => { const p = splitId(identifier); return (p.repo.split('/').pop() || '') + p.num; };
+  const fmtStamp = (iso) => (iso ? new Date(iso).toLocaleDateString([], { month: '2-digit', day: '2-digit' }) + ' ' + fmtClock(iso) : '—');
+  const trunc = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + '…' : s || '');
+
+  // Visual state of a running agent, derived from its phase (the data model stays as it is).
+  const PHASE_STATUS = {
+    PreparingWorkspace: 'starting', BuildingPrompt: 'starting', LaunchingAgentProcess: 'starting', InitializingSession: 'starting',
+    StreamingTurn: 'running', RunningChecks: 'checking', Finishing: 'finishing', Succeeded: 'completed',
+    Failed: 'failed', TimedOut: 'failed', Stalled: 'failed', CanceledByReconciliation: 'stopping',
+  };
+  const STATUS = {
+    running: ['Running', 'green', true], starting: ['Starting', 'cyan', true], checking: ['Running checks', 'cyan', true],
+    finishing: ['Finishing', 'green', false], completed: ['Completed', 'green', false], failed: ['Failed', 'red', false],
+    stopping: ['Stopping', 'amber', false],
+  };
+  const agentStatus = (r) => (r.stopping ? 'stopping' : PHASE_STATUS[r.phase] || 'running');
+  const phaseTone = (phase) => STATUS[PHASE_STATUS[phase] || 'running'][1];
+
+  // ------------------------------------------------------------------ background
+
+  (function rain() {
+    const glyphs = '0123456789ABCDEF<>/{}[]=+*';
+    const host = $('rain');
+    const columns = Math.min(18, Math.round(window.innerWidth / 90));
+    for (let i = 0; i < columns; i++) {
+      let text = '';
+      for (let j = 0; j < 18 + Math.floor(Math.random() * 18); j++) text += glyphs[Math.floor(Math.random() * glyphs.length)];
+      const s = el('span', text);
+      s.style.left = ((i + Math.random() * 0.6) / columns) * 100 + '%';
+      s.style.animationDuration = 26 + Math.random() * 30 + 's';
+      s.style.animationDelay = -Math.random() * 50 + 's';
+      host.append(s);
+    }
+  })();
+
+  // ------------------------------------------------------------------ header
+
+  function renderHeader(h, problems, online) {
+    let status;
+    if (!online) status = badge('Offline', 'red', false);
+    else if (h.stopping) status = badge('Shutting down', 'amber', false);
+    else if (problems.length) status = badge('Degraded', 'amber', true);
+    else status = badge('Online', 'green', true);
+    const holder = $('sys-status');
+    const current = holder.firstChild;
+    if (!current || current.className !== status.className || current.textContent !== status.textContent) holder.replaceChildren(status);
+    if (!h) return;
+    setText($('sys-workflow'), 'v' + h.workflow_version);
+    setText($('sys-interval'), 'every ' + Math.round(h.poll_interval_ms / 1000) + 's');
+    const last = $('sys-lastpoll');
+    setText(last, h.last_tick_at ? ago(h.last_tick_at) : 'never');
+    const stale = h.last_tick_at && Date.now() - Date.parse(h.last_tick_at) > Math.max(3 * h.poll_interval_ms, 30000);
+    last.style.color = stale ? 'var(--amber)' : '';
+  }
+
+  // ------------------------------------------------------------------ agent cards
+
+  const cards = new Map();
+
+  function field(dl, label, className) {
+    const wrap = el('div');
+    const dd = el('dd', null, className);
+    wrap.append(el('dt', label), dd);
+    dl.append(wrap);
+    return dd;
+  }
+  function metric(foot, label) {
+    const wrap = el('div');
+    const v = el('span', null, 'v');
+    wrap.append(el('span', label, 'k'), v);
+    foot.append(wrap);
+    return v;
+  }
+
+  function createCard(r) {
+    const card = el('article', null, 'agent enter');
+    card.addEventListener('animationend', (e) => { if (e.target === card) card.classList.remove('enter', 'changed'); });
+    const head = el('div', null, 'agent-head');
+    const tags = el('div', null, 'tags');
+    const statusSlot = el('span');
+    const attempt = el('span', null, 'chip');
+    tags.append(statusSlot, attempt);
+    const id = el('a', null, 'agent-id');
+    head.append(tags, id);
+
+    const titleWrap = el('div');
+    const title = el('h3', null, 'agent-title');
+    const repoLine = el('div', null, 'agent-repo');
+    const repo = el('span');
+    const branch = el('span');
+    repoLine.append(repo, branch);
+    titleWrap.append(title, repoLine);
+
+    const dl = el('dl', null, 'fields');
+    const refs = {
+      card, statusSlot, attempt, id, title, repo, branch,
+      role: field(dl, 'Role'), column: field(dl, 'Board column'), model: field(dl, 'Model', 'info'), phase: field(dl, 'Phase', 'info'),
+    };
+
+    const act = el('div', null, 'activity-box');
+    const line = el('div', null, 'activity-line');
+    refs.event = el('span', null, 'ev');
+    refs.age = el('span', null, 'age');
+    line.append(refs.event, refs.age);
+    refs.message = el('div', null, 'activity-msg');
+    act.append(el('div', 'Last activity', 'k'), line, refs.message);
+
+    const foot = el('div', null, 'agent-foot');
+    refs.turn = metric(foot, 'Turn');
+    refs.runtime = metric(foot, 'Runtime');
+    refs.tokens = metric(foot, 'Tokens');
+    refs.cost = metric(foot, 'Est. cost');
+
+    card.append(head, titleWrap, dl, act, foot);
+    return refs;
+  }
+
+  function updateCard(refs, r, maxTurns) {
+    const status = agentStatus(r);
+    const [label, tone, pulse] = STATUS[status];
+    const className = 'agent tone-' + tone + ' is-' + status;
+    const keep = [...refs.card.classList].filter((c) => c === 'enter' || c === 'changed').join(' ');
+    if (refs.status !== undefined && refs.status !== status) {
+      refs.card.classList.remove('changed');
+      void refs.card.offsetWidth; // restart the flash animation
+      refs.card.className = className + ' changed';
+    } else {
+      refs.card.className = className + (keep ? ' ' + keep : '');
+    }
+    if (refs.status !== status) refs.statusSlot.replaceChildren(badge(label, tone, pulse));
+    refs.status = status;
+
+    const { repo, num } = splitId(r.issue_identifier);
+    refs.card.setAttribute('aria-label', 'Agent ' + r.issue_identifier + ', ' + label);
+    setText(refs.id, num);
+    refs.id.title = r.issue_identifier;
+    if (typeof r.issue_url === 'string' && /^https?:/.test(r.issue_url)) {
+      if (refs.id.getAttribute('href') !== r.issue_url) { refs.id.href = r.issue_url; refs.id.target = '_blank'; refs.id.rel = 'noopener noreferrer'; }
+    } else refs.id.removeAttribute('href');
+    refs.attempt.hidden = !r.attempt;
+    setText(refs.attempt, 'attempt ' + (r.attempt ?? ''));
+    setText(refs.title, r.title || r.issue_identifier);
+    setText(refs.repo, r.repo && r.repo !== 'unknown' ? r.repo : repo);
+    refs.branch.hidden = !r.branch;
+    setText(refs.branch, r.branch ? '⎇ ' + r.branch : '');
+
+    setText(refs.role, r.role || '—');
+    setText(refs.column, r.state || '—');
+    setText(refs.model, r.model || '—');
+    setText(refs.phase, r.phase);
+
+    setText(refs.event, r.last_event || 'waiting for first event');
+    setText(refs.age, r.last_event_at ? '· ' + ago(r.last_event_at) : '');
+    refs.age.classList.toggle('stale', !!r.last_event_at && Date.now() - Date.parse(r.last_event_at) > 120000);
+    setText(refs.message, r.stopping ? 'Stopping: ' + r.stopping : r.last_message);
+
+    setText(refs.turn, pad2(r.turn_count) + (maxTurns ? ' / ' + pad2(maxTurns) : ''));
+    setText(refs.runtime, fmtDuration(r.seconds_running));
+    setText(refs.tokens, fmtCompact(r.tokens.total_tokens));
+    setText(refs.cost, fmtUsd(r.cost_usd));
+  }
+
+  function renderAgents(state) {
+    const h = state.health;
+    const host = $('agents');
+    const live = new Set();
+    const ordered = [];
+    for (const r of state.running) {
+      live.add(r.issue_id);
+      let refs = cards.get(r.issue_id);
+      if (!refs) { refs = createCard(r); cards.set(r.issue_id, refs); }
+      updateCard(refs, r, h.max_turns);
+      ordered.push(refs.card);
+    }
+    for (const [id, refs] of cards) {
+      if (live.has(id)) continue;
+      cards.delete(id);
+      refs.card.classList.remove('enter', 'changed');
+      refs.card.classList.add('leave');
+      setTimeout(() => refs.card.remove(), 320);
+    }
+    ordered.forEach((card, i) => {
+      const active = [...host.children].filter((c) => !c.classList.contains('leave'));
+      if (active[i] !== card) host.insertBefore(card, active[i] || null);
+    });
+
+    const running = state.running.length;
+    const max = h.max_concurrent_agents;
+    setText($('running-count'), pad2(running) + ' / ' + pad2(max));
+    const bar = el('div', null, 'slots-bar');
+    for (let i = 0; i < Math.min(max, 24); i++) bar.append(el('i', null, i < running ? 'on' : ''));
+    const slots = $('slots');
+    slots.replaceChildren(bar, el('span', (max - running > 0 ? max - running : 0) + ' free slot' + (max - running === 1 ? '' : 's')));
+    $('agents-empty').hidden = running > 0;
+    setText($('agents-empty-sub'),
+      'Waiting for issues in ' + (h.active_states && h.active_states.length ? h.active_states.join(', ') : 'an active column') +
+      ' · next poll within ' + Math.round(h.poll_interval_ms / 1000) + 's');
+  }
+
+  // ------------------------------------------------------------------ queues
+
+  // Keep the <ul> and only swap the items that changed.
+  function patchList(id, list) {
+    const host = $(id);
+    const current = host.firstElementChild;
+    if (current && current.tagName === 'UL') patchChildren(current, [...list.children]);
+    else host.replaceChildren(list);
+  }
+
+  function emptyState(id, text, tone, sub) {
+    const box = el('div', null, 'clear');
+    box.append(badge(text, tone, false), el('div', sub, 'muted'));
+    patchChildren($(id), [box]);
+  }
+
+  function renderRetries(rows) {
+    setText($('retry-count'), pad2(rows.length));
+    if (!rows.length) return emptyState('retrying', 'Clear', 'green', 'No agents waiting for retry.');
+    const list = el('ul', null, 'queue');
+    for (const r of rows) {
+      const continuation = r.kind === 'continuation';
+      const tone = continuation ? 'cyan' : 'amber';
+      const li = el('li', null, 'qitem tone-' + tone);
+      const row = el('div', null, 'qrow');
+      const id = link(r.issue_identifier, r.issue_url); id.classList.add('id');
+      row.append(id, badge(continuation ? 'Continuation' : 'Retrying', tone, false));
+      const meta = el('div', null, 'qmeta');
+      const attempt = el('span', 'attempt '); attempt.append(el('b', pad2(r.attempt)));
+      const due = el('span', 'next in '); due.append(el('b', fmtDuration(r.due_in_ms / 1000)));
+      meta.append(attempt, due);
+      li.append(row, meta, el('div', r.error || (continuation ? 'Continues the session after a clean exit.' : '—'), 'msg'));
+      list.append(li);
+    }
+    patchList('retrying', list);
+  }
+
+  function renderPaused(rows) {
+    setText($('paused-count'), pad2(rows.length));
+    if (!rows.length) return emptyState('paused', 'None', 'gray', 'No agents are currently paused.');
+    const list = el('ul', null, 'queue');
+    for (const r of rows) {
+      const li = el('li', null, 'qitem tone-gray');
+      const row = el('div', null, 'qrow');
+      const id = link(r.issue_identifier, r.issue_url); id.classList.add('id');
+      row.append(id, badge('Paused', 'gray', false));
+      const meta = el('div', null, 'qmeta');
+      const column = el('span', 'column '); column.append(el('b', r.state));
+      const cont = el('span', 'continuations '); cont.append(el('b', r.continuations));
+      meta.append(column, cont, el('span', 'paused ' + ago(r.paused_at)));
+      li.append(row, meta, el('div', 'Resume: change the issue on the board (status, comment or labels).', 'msg'));
+      list.append(li);
+    }
+    patchList('paused', list);
+  }
+
+  // ------------------------------------------------------------------ activity stream
+
+  const MAX_ACTIVITY = 200;
+  const activity = [];
+  const seenActivity = new Set();
+  let activityDirty = true;
+  let previous = null;
+  let previousRetries = null;
+  const detailFetchedAt = new Map();
+
+  function pushActivity(at, issue, text, tone, key) {
+    if (!at) return;
+    if (key) { if (seenActivity.has(key)) return; seenActivity.add(key); }
+    activity.push({ at, ms: Date.parse(at), issue, text, tone, rendered: false });
+    activityDirty = true;
+  }
+  const eventText = (event, message) => event + (message ? ' · ' + trunc(message, 160) : '');
+  const eventKey = (issue, at, event) => 'ev|' + issue + '|' + at + '|' + event;
+
+  function diffSnapshots(state) {
+    const now = state.generated_at;
+    const current = new Map(state.running.map((r) => [r.issue_id, r]));
+    for (const r of state.running) {
+      const p = previous ? previous.get(r.issue_id) : undefined;
+      const id = r.issue_identifier;
+      if (!p) pushActivity(r.started_at, id, 'started · ' + (r.state || '') + (r.role ? ' · ' + r.role : ''), 'green', 'start|' + id + '|' + r.started_at);
+      else {
+        if (p.phase !== r.phase) pushActivity(now, id, 'phase → ' + r.phase, phaseTone(r.phase));
+        if (r.model && p.model !== r.model) pushActivity(now, id, 'model → ' + r.model, 'cyan');
+        if (p.state !== r.state) pushActivity(now, id, 'column → ' + r.state, 'cyan');
+        if (!p.stopping && r.stopping) pushActivity(now, id, 'stopping · ' + r.stopping, 'amber');
+      }
+      if (r.last_event && r.last_event_at) {
+        pushActivity(r.last_event_at, id, eventText(r.last_event, r.last_message), null, eventKey(id, r.last_event_at, r.last_event));
+      }
+    }
+    if (previous) {
+      for (const p of previous.values()) {
+        if (!current.has(p.issue_id)) { pushActivity(now, p.issue_identifier, 'session ended after ' + fmtDuration(p.seconds_running), 'gray'); scheduleHistory(1500); }
+      }
+    }
+    const retries = new Set();
+    for (const r of state.retrying) {
+      const key = r.issue_id + '|' + r.attempt + '|' + r.kind;
+      retries.add(key);
+      if (previousRetries && !previousRetries.has(key)) {
+        pushActivity(now, r.issue_identifier,
+          (r.kind === 'continuation' ? 'continuation queued' : 'retry ' + pad2(r.attempt) + ' queued') + ' · in ' + fmtDuration(r.due_in_ms / 1000) +
+          (r.error ? ' · ' + trunc(r.error, 120) : ''), r.kind === 'continuation' ? 'cyan' : 'amber');
+      }
+    }
+    previous = current;
+    previousRetries = retries;
+  }
+
+  // The per-issue endpoint keeps the recent agent events with a message; fetch it when an agent reported something new.
+  function fetchDetails(state) {
+    for (const r of state.running) {
+      if (!r.last_event_at || detailFetchedAt.get(r.issue_id) === r.last_event_at) continue;
+      detailFetchedAt.set(r.issue_id, r.last_event_at);
+      fetch('/api/v1/' + encodeURIComponent(r.issue_identifier), { cache: 'no-store' })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((detail) => {
+          if (!detail) return;
+          for (const e of detail.recent_events || []) pushActivity(e.at, r.issue_identifier, eventText(e.event, e.message), null, eventKey(r.issue_identifier, e.at, e.event));
+          renderActivity();
+        })
+        .catch(() => {});
+    }
+    for (const id of detailFetchedAt.keys()) if (!state.running.some((r) => r.issue_id === id)) detailFetchedAt.delete(id);
+  }
+
+  const HISTORY_TONE = { ok: 'green', info: 'cyan', warn: 'amber', error: 'red' };
+  function mergeHistory(entries) {
+    for (const e of entries.slice(0, 40)) {
+      if (e.event === 'run_started' || e.event === 'model_usage') continue; // starts come live from the snapshots
+      pushActivity(e.ts, e.issue || e.repo || '—', e.event.replace(/_/g, ' ') + ' · ' + describeLogEntry(e), HISTORY_TONE[logSeverity(e)], 'log|' + e.ts + '|' + e.event + '|' + e.issue);
+    }
+    renderActivity();
+  }
+
+  function renderActivity() {
+    if (!activityDirty) return;
+    activityDirty = false;
+    activity.sort((a, b) => b.ms - a.ms);
+    if (activity.length > MAX_ACTIVITY) activity.length = MAX_ACTIVITY;
+    const feed = $('feed');
+    if (!activity.length) {
+      feed.replaceChildren(el('li', '$ awaiting agent events …', 'prompt'));
+      return;
+    }
+    feed.replaceChildren(...activity.slice(0, 60).map((a, i) => {
+      const li = el('li', null, (i === 0 ? 'latest' : '') + (a.rendered ? '' : ' fresh'));
+      a.rendered = true;
+      const who = el('span', shortId(a.issue), 'who'); who.title = a.issue;
+      li.append(el('span', fmtClock(a.at), 't'), who, el('span', a.text, 'what' + (a.tone ? ' tone-' + a.tone : '')));
+      return li;
+    }));
+  }
+
+  // ------------------------------------------------------------------ logs drawer
+
+  const drawer = $('logs-drawer');
+  const scrim = $('logs-scrim');
+  const opener = $('logs-open');
+  const logsState = { repo: '', sev: '', q: '', data: null, timer: null, lastFocus: null };
+
+  function openLogs() {
+    logsState.lastFocus = document.activeElement;
+    drawer.classList.add('open');
+    scrim.classList.add('open');
+    opener.setAttribute('aria-expanded', 'true');
+    document.body.style.overflow = 'hidden';
+    setTimeout(() => $('logs-q').focus(), 60);
+    loadLogs();
+    clearInterval(logsState.timer);
+    logsState.timer = setInterval(loadLogs, 10000);
+  }
+  function closeLogs() {
+    drawer.classList.remove('open');
+    scrim.classList.remove('open');
+    opener.setAttribute('aria-expanded', 'false');
+    document.body.style.overflow = '';
+    clearInterval(logsState.timer);
+    if (logsState.lastFocus && logsState.lastFocus.focus) logsState.lastFocus.focus();
+  }
+  const isOpen = () => drawer.classList.contains('open');
+
+  async function loadLogs() {
+    const list = $('logs-list');
+    try {
+      const res = await fetch('/api/v1/history' + (logsState.repo ? '?repo=' + encodeURIComponent(logsState.repo) : ''), { cache: 'no-store' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ? data.error.message : 'HTTP ' + res.status);
+      logsState.data = data;
+      if (!logsState.repo) mergeHistory(data.recent);
+      const select = $('logs-repo');
+      const options = [['', 'All repositories'], ...data.repositories_available.map((r) => [r.repo, r.repo])];
+      select.replaceChildren(...options.map(([value, label]) => { const o = el('option', label); o.value = value; return o; }));
+      select.value = logsState.repo;
+      const raw = $('logs-raw');
+      raw.hidden = !logsState.repo;
+      raw.href = '/api/v1/history/raw?repo=' + encodeURIComponent(logsState.repo);
+      setText($('logs-meta'), data.history_dir + ' · updated ' + fmtClock(data.generated_at));
+      renderLogs();
+    } catch (error) {
+      logsState.data = null;
+      list.replaceChildren(el('li', 'Cannot load the logs: ' + error.message, 'note'));
+      setText($('logs-count'), '');
+    }
+  }
+
+  function renderLogs() {
+    const data = logsState.data;
+    if (!data) return;
+    const q = logsState.q.trim().toLowerCase();
+    const rows = data.recent.filter((e) => {
+      if (logsState.sev && logSeverity(e) !== logsState.sev) return false;
+      if (!q) return true;
+      return [e.issue, e.repo, e.event, e.title, describeLogEntry(e)].some((v) => v && String(v).toLowerCase().includes(q));
+    });
+    setText($('logs-count'), rows.length + ' of ' + data.recent.length + ' entries');
+    const list = $('logs-list');
+    if (!rows.length) { list.replaceChildren(el('li', data.recent.length ? 'No entries match the filter.' : 'The log is empty.', 'note')); return; }
+    list.replaceChildren(...rows.map((e) => {
+      const sev = logSeverity(e);
+      const li = el('li', null, 'tone-' + SEVERITY_TONE[sev]);
+      const body = el('div', null, 'body');
+      const src = el('div', null, 'src');
+      src.append(el('span', (logsState.repo ? '' : (e.repo || '') + ' ') + (e.issue ? splitId(e.issue).num : '—') + ' '), el('span', e.event.replace(/_/g, ' '), 'ev'));
+      body.append(src, el('div', describeLogEntry(e), 'd'));
+      li.append(el('time', fmtStamp(e.ts), 't'), el('span', sev === 'error' ? 'ERR' : sev.toUpperCase(), 'sev'), body);
+      return li;
+    }));
+  }
+
+  opener.addEventListener('click', (e) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return; // let "open in new tab" through
+    e.preventDefault();
+    openLogs();
+  });
+  $('logs-close').addEventListener('click', closeLogs);
+  scrim.addEventListener('click', closeLogs);
+  $('logs-reload').addEventListener('click', loadLogs);
+  $('logs-repo').addEventListener('change', (e) => { logsState.repo = e.target.value; loadLogs(); });
+  $('logs-q').addEventListener('input', (e) => { logsState.q = e.target.value; renderLogs(); });
+  $('logs-sev').addEventListener('click', (e) => {
+    const button = e.target.closest('button');
+    if (!button) return;
+    logsState.sev = button.dataset.sev;
+    for (const b of $('logs-sev').querySelectorAll('button')) b.setAttribute('aria-pressed', String(b === button));
+    renderLogs();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (!isOpen()) return;
+    if (e.key === 'Escape') { e.preventDefault(); closeLogs(); return; }
+    if (e.key !== 'Tab') return;
+    const focusable = [...drawer.querySelectorAll('a[href], button, select, input')].filter((n) => !n.hidden && n.offsetParent !== null);
+    if (!focusable.length) return;
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    else if (!drawer.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+  });
+
+  // ------------------------------------------------------------------ polling
+
+  let historyTimer = null;
+  async function loadHistory() {
+    try {
+      const res = await fetch('/api/v1/history', { cache: 'no-store' });
+      if (res.ok) mergeHistory((await res.json()).recent);
+    } catch {}
+  }
+  function scheduleHistory(delay) {
+    clearTimeout(historyTimer);
+    historyTimer = setTimeout(loadHistory, delay);
+  }
 
   function render(state) {
     const h = state.health;
@@ -48,68 +739,75 @@ ${BASE_JS}
     for (const e of h.dispatch_errors) if (!h.workflow_error || !e.startsWith('WORKFLOW.md')) problems.push(e);
     if (h.last_tracker_error) problems.push('Tracker: ' + h.last_tracker_error.message);
     if (h.pricing_error) problems.push('model-costs.yml: ' + h.pricing_error);
-    document.getElementById('problems').hidden = problems.length === 0;
-    document.getElementById('problem-list').replaceChildren(...problems.map((p) => el('li', p)));
-    document.getElementById('health-dot').className = problems.length ? 'dot bad' : 'dot';
-    document.getElementById('meta').textContent =
-      'workflow v' + h.workflow_version + ' · polls every ' + Math.round(h.poll_interval_ms / 1000) + 's · last poll ' +
-      ago(h.last_tick_at) + (h.stopping ? ' · shutting down' : '');
+    $('problems').hidden = problems.length === 0;
+    $('problem-list').replaceChildren(...problems.map((p) => el('li', p)));
+    renderHeader(h, problems, true);
 
     const t = state.agent_totals;
+    const running = state.counts.running;
+    const retrying = state.counts.retrying;
+    const paused = state.counts.paused ?? 0;
     tiles('stats', [
-      ['Running', state.counts.running + ' / ' + h.max_concurrent_agents],
-      ['Retrying', state.counts.retrying],
-      ['Paused', state.counts.paused ?? 0],
-      ['Tokens', fmtCompact(t.total_tokens), 'since start'],
-      ['Est. cost', fmtUsd(t.cost_usd), 'since start'],
-      ['Agent time', fmtDuration(t.seconds_running), 'since start'],
+      ['Running', pad2(running), 'active agents', { tone: running ? 'green' : 'gray', hero: true, pulse: running > 0, of: pad2(h.max_concurrent_agents) }],
+      ['Retry queue', pad2(retrying), 'waiting', { tone: retrying ? 'amber' : 'gray' }],
+      ['Paused', pad2(paused), 'agents', { tone: 'gray' }],
+      ['Tokens', fmtCompact(t.total_tokens), 'since start', { tone: 'cyan' }],
+      ['Est. cost', fmtUsd(t.cost_usd), 'since start', { tone: 'cyan' }],
+      ['Agent time', fmtDuration(t.seconds_running), 'since start', { tone: 'cyan' }],
     ]);
 
-    table('running', [
-      { label: 'Issue', render: (r) => { const s = el('span'); s.append(link(r.issue_identifier, r.issue_url), el('div', r.title, 'meta')); return s; } },
-      { label: 'State', render: (r) => el('span', r.stopping ? 'stopping' : r.state, 'chip') },
-      { label: 'Role', render: (r) => r.role || '—' },
-      { label: 'Phase', render: (r) => r.phase },
-      { label: 'Model', render: (r) => r.model || '—' },
-      { label: 'Turns', className: 'num', render: (r) => r.turn_count },
-      { label: 'Last activity', render: (r) => { const s = el('div', null, 'msg'); s.append(el('div', (r.last_event || '—') + ' · ' + ago(r.last_event_at)), el('div', r.stopping || r.last_message)); return s; } },
-      { label: 'Tokens', className: 'num', render: (r) => fmtCompact(r.tokens.total_tokens) },
-      { label: 'Est. cost', className: 'num', render: (r) => fmtUsd(r.cost_usd) },
-      { label: 'Runtime', className: 'num', render: (r) => fmtDuration(r.seconds_running) },
-    ], state.running, 'No agents running.');
-
-    table('retrying', [
-      { label: 'Issue', render: (r) => link(r.issue_identifier, r.issue_url) },
-      { label: 'Attempt', className: 'num', render: (r) => r.attempt },
-      { label: 'Kind', render: (r) => el('span', r.kind, 'chip') },
-      { label: 'Due in', className: 'num', render: (r) => fmtDuration(r.due_in_ms / 1000) },
-      { label: 'Reason', render: (r) => el('div', r.error || '—', 'msg') },
-    ], state.retrying, 'Nothing queued.');
-
-    table('paused', [
-      { label: 'Issue', render: (r) => link(r.issue_identifier, r.issue_url) },
-      { label: 'State', render: (r) => el('span', r.state, 'chip') },
-      { label: 'Continuations', className: 'num', render: (r) => r.continuations },
-      { label: 'Paused', render: (r) => ago(r.paused_at) },
-      { label: 'Resume', render: () => el('div', 'change the issue on the board (status, comment or labels)', 'msg') },
-    ], state.paused ?? [], 'Nothing paused.');
+    renderAgents(state);
+    renderRetries(state.retrying);
+    renderPaused(state.paused ?? []);
+    diffSnapshots(state);
+    fetchDetails(state);
+    renderActivity();
   }
 
   async function load() {
+    const progress = $('progress');
+    progress.classList.remove('tick');
+    void progress.offsetWidth;
+    progress.classList.add('tick');
     try {
       const res = await fetch('/api/v1/state', { cache: 'no-store' });
       render(await res.json());
     } catch (error) {
-      document.getElementById('meta').textContent = 'orchestrator unreachable: ' + error.message;
-      document.getElementById('health-dot').className = 'dot bad';
+      renderHeader(null, [], false);
+      setText($('sys-lastpoll'), 'unreachable');
+      $('problems').hidden = false;
+      $('problem-list').replaceChildren(el('li', 'orchestrator unreachable: ' + error.message));
     }
   }
-  document.getElementById('refresh').addEventListener('click', async () => {
-    await fetch('/api/v1/refresh', { method: 'POST' }).catch(() => {});
+
+  const refresh = $('refresh');
+  const refreshLabel = $('refresh-label');
+  refresh.addEventListener('click', async () => {
+    if (refresh.classList.contains('is-busy')) return;
+    refresh.classList.remove('is-done', 'is-failed');
+    refresh.classList.add('is-busy');
+    refresh.setAttribute('aria-busy', 'true');
+    refreshLabel.textContent = 'Polling…';
+    let outcome = 'failed';
+    try {
+      const res = await fetch('/api/v1/refresh', { method: 'POST' });
+      const body = await res.json();
+      outcome = res.ok ? (body.coalesced ? 'Already queued' : 'Poll queued') : 'failed';
+    } catch {}
+    refresh.classList.remove('is-busy');
+    refresh.removeAttribute('aria-busy');
+    refresh.classList.add(outcome === 'failed' ? 'is-failed' : 'is-done');
+    refreshLabel.textContent = outcome === 'failed' ? 'Poll failed' : outcome;
+    $('announce').textContent = refreshLabel.textContent;
     setTimeout(load, 500);
+    setTimeout(() => { refresh.classList.remove('is-done', 'is-failed'); refreshLabel.textContent = 'Poll now'; }, 1800);
   });
+
+  renderActivity();
   load();
+  loadHistory();
   setInterval(load, 2000);
+  setInterval(loadHistory, 30000);
 })();
 </script>
 </body>
