@@ -25,6 +25,14 @@ export interface HooksConfig {
   timeoutMs: number;
 }
 
+/** Deterministic entry checks (the `checks` section): bash scripts run before an issue enters a gated column. */
+export interface ChecksConfig {
+  timeoutMs: number;
+  retries: number;
+  /** Keys are normalized column names (trimmed, lowercase); values are bash scripts. */
+  onEnter: ReadonlyMap<string, string>;
+}
+
 export interface AgentConfig {
   maxConcurrentAgents: number;
   maxTurns: number;
@@ -101,6 +109,7 @@ export interface ServiceConfig {
     cleanupTerminal: boolean;
   };
   hooks: HooksConfig;
+  checks: ChecksConfig;
   agent: AgentConfig;
   claude: ClaudeConfig;
   laravel: LaravelConfig;
@@ -139,7 +148,7 @@ export const DEFAULTS = {
 const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'];
 const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
-const KNOWN_TOP_LEVEL = new Set(['tracker', 'polling', 'workspace', 'hooks', 'agent', 'claude', 'laravel', 'roles', 'server']);
+const KNOWN_TOP_LEVEL = new Set(['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'laravel', 'roles', 'server']);
 const ROLE_KEYS = new Set(['states', 'read_only', 'may_move_to', 'max_turns', 'claude']);
 const ROLE_CLAUDE_KEYS = new Set(['model', 'effort', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'max_budget_usd']);
 const BOOST_MODES: readonly BoostMode[] = ['auto', 'off'];
@@ -230,11 +239,11 @@ function readRoleClaude(reader: Reader, raw: Record<string, unknown>, field: str
 
 /**
  * Replaces whole-value `$NAME` references (strings and list items) with environment values;
- * unset or empty variables make the setting count as omitted. Hook scripts (shell code) and
+ * unset or empty variables make the setting count as omitted. Hook and check scripts (shell code) and
  * `tracker.provider` (resolved by the adapter, which must know secret variable names) are left alone.
  */
 export function substituteEnvReferences(value: unknown, env: NodeJS.ProcessEnv, path: string[] = []): unknown {
-  if (path[0] === 'hooks' || (path[0] === 'tracker' && path[1] === 'provider')) return value;
+  if (path[0] === 'hooks' || path[0] === 'checks' || (path[0] === 'tracker' && path[1] === 'provider')) return value;
   if (typeof value === 'string') return resolveEnvReference(value, env);
   if (Array.isArray(value)) {
     return value.map((item) => substituteEnvReferences(item, env, path)).filter((item) => item !== undefined);
@@ -308,6 +317,29 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     beforeRemove: reader.script(hooksRaw, 'before_remove', 'hooks.before_remove'),
     timeoutMs: reader.int(hooksRaw, 'timeout_ms', 'hooks.timeout_ms', DEFAULTS.hookTimeoutMs, 1),
   };
+
+  // checks
+  const checksRaw = reader.section(raw, 'checks');
+  const onEnter = new Map<string, string>();
+  const onEnterRaw = checksRaw.on_enter;
+  if (onEnterRaw !== undefined && onEnterRaw !== null) {
+    if (!isPlainObject(onEnterRaw)) {
+      reader.errors.push('checks.on_enter must be a map of column names to scripts');
+    } else {
+      for (const [column, script] of Object.entries(onEnterRaw)) {
+        const key = normalizeStateName(column);
+        if (typeof script !== 'string') reader.errors.push(`checks.on_enter.${column} must be a string`);
+        else if (key === '') reader.errors.push('checks.on_enter column names must not be empty');
+        else if (script.trim() !== '') onEnter.set(key, script);
+      }
+    }
+  }
+  const checks: ChecksConfig = {
+    timeoutMs: reader.int(checksRaw, 'timeout_ms', 'checks.timeout_ms', hooks.timeoutMs, 1),
+    retries: reader.int(checksRaw, 'retries', 'checks.retries', 0, 0),
+    onEnter,
+  };
+  if (checks.retries > 3) reader.errors.push(`checks.retries must be between 0 and 3 (got ${checks.retries})`);
 
   // agent
   const agentRaw = reader.section(raw, 'agent');
@@ -403,6 +435,13 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
   };
 
   // laravel
+  // Only an explicit value is checked, so configs without a checks section are unaffected.
+  if (checksRaw.timeout_ms !== undefined && checksRaw.timeout_ms !== null && checks.timeoutMs >= claude.turnTimeoutMs) {
+    reader.errors.push(
+      `checks.timeout_ms (${checks.timeoutMs}) must be less than claude.turn_timeout_ms (${claude.turnTimeoutMs})`,
+    );
+  }
+
   const laravelRaw = reader.section(raw, 'laravel');
   const command = (key: 'php' | 'composer'): string => {
     const value = reader.string(laravelRaw, key, `laravel.${key}`)?.trim() || key;
@@ -452,6 +491,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     polling: { intervalMs },
     workspace: { root, cleanupTerminal },
     hooks,
+    checks,
     agent,
     claude,
     laravel,

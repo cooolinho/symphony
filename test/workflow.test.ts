@@ -150,6 +150,34 @@ describe('config layer', () => {
     );
   });
 
+  it('parses checks with defaults, normalized columns and literal $VAR scripts', () => {
+    assert.deepEqual(resolve({ hooks: { timeout_ms: 90_000 } }).checks, { timeoutMs: 90_000, retries: 0, onEnter: new Map() });
+    const config = resolve(
+      { checks: { timeout_ms: 5000, retries: 2, on_enter: { ' Agent Review ': 'bash "$SYMPHONY_WORKFLOW_DIR/c.sh"' } } },
+      { SYMPHONY_WORKFLOW_DIR: 'x' },
+    );
+    assert.equal(config.checks.timeoutMs, 5000);
+    assert.equal(config.checks.retries, 2);
+    assert.deepEqual([...config.checks.onEnter], [['agent review', 'bash "$SYMPHONY_WORKFLOW_DIR/c.sh"']]);
+    assert.equal(resolve({ checks: { on_enter: { Done: '$SETUP' } } }, { SETUP: 'x' }).checks.onEnter.get('done'), '$SETUP');
+  });
+
+  it('rejects invalid checks values', () => {
+    const message = (front: Record<string, unknown>) => {
+      try {
+        resolve(front);
+      } catch (error) {
+        return (error as Error).message;
+      }
+      return '';
+    };
+    assert.match(message({ checks: { retries: 4 } }), /checks\.retries/);
+    assert.match(message({ checks: { retries: -1 } }), /checks\.retries/);
+    assert.match(message({ checks: { on_enter: { Review: 5 } } }), /checks\.on_enter\.Review must be a string/);
+    assert.match(message({ checks: { timeout_ms: 3_600_000 } }), /checks\.timeout_ms/);
+    assert.match(message({ claude: { turn_timeout_ms: 1000 }, checks: { timeout_ms: 1000 } }), /checks\.timeout_ms/);
+  });
+
   it('warns about the codex section and unknown keys', () => {
     const config = resolve({ codex: { command: 'codex app-server' }, extension_x: {} });
     assert.equal(config.warnings.length, 2);
