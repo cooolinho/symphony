@@ -32,6 +32,12 @@ const ASK_USER_TOOL = 'AskUserQuestion';
 const STOP_GRACE_MS = 10_000;
 const STDERR_TAIL = 4_000;
 const CLIENT_APP = 'symphony/0.1.0';
+/**
+ * Deny rules for a read-only session. Tool names as in the Agent SDK's permission rule validator
+ * (`filePatternTools` in @anthropic-ai/claude-agent-sdk sdk.mjs; inputs FileEditInput, FileWriteInput and
+ * NotebookEditInput in sdk-tools.d.ts). Deny rules beat allow rules, so these override claude.allowed_tools.
+ */
+const READ_ONLY_DENY = ['Edit', 'Write', 'NotebookEdit', 'Bash(git commit:*)', 'Bash(git push:*)'];
 
 const NO_HUMAN_ANSWER =
   'Nobody can answer questions in this unattended run. Decide on your own using the issue, the repository and ' +
@@ -225,12 +231,22 @@ class ClaudeSession implements AgentSession {
   }
 
   #options(): Options {
-    const { config, issue, tools, env, cwd, extensions } = this.#params;
+    const { config, issue, tools, env, cwd, extensions, policy } = this.#params;
     const toolNames = tools.map((spec) => `mcp__${TRACKER_SERVER}__${spec.name}`);
-    const extensionServers = Object.keys(extensions?.mcpServers ?? {});
-    if (extensionServers.includes(TRACKER_SERVER)) {
+    const extensionServers = Object.entries(extensions?.mcpServers ?? {});
+    if (extensionServers.some(([name]) => name === TRACKER_SERVER)) {
       throw new SymphonyError('invalid_session_extensions', `MCP server name "${TRACKER_SERVER}" is reserved`);
     }
+    const extensionAllowed: string[] = [];
+    const extensionDenied: string[] = [];
+    for (const [name, server] of extensionServers) {
+      const autoApprove = server.autoApprove ?? 'all';
+      // A bare server name allows every tool of that server.
+      if (autoApprove === 'all') extensionAllowed.push(`mcp__${name}`);
+      else extensionAllowed.push(...autoApprove.map((toolName) => `mcp__${name}__${toolName}`));
+      extensionDenied.push(...(server.deny ?? []).map((toolName) => `mcp__${name}__${toolName}`));
+    }
+    const readOnlyDenied = policy?.readOnly === true ? READ_ONLY_DENY : [];
     const options: Options = {
       cwd,
       env: { ...env, ...extensions?.env, ...config.env, CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP },
@@ -239,9 +255,8 @@ class ClaudeSession implements AgentSession {
       title: truncate(`${issue.identifier}: ${issue.title}`, 200),
       permissionMode: config.permissionMode,
       canUseTool: this.#canUseTool,
-      // A bare server name allows every tool of that server.
-      allowedTools: [...config.allowedTools, ...toolNames, ...extensionServers.map((name) => `mcp__${name}`)],
-      disallowedTools: [...new Set([...config.disallowedTools, ASK_USER_TOOL])],
+      allowedTools: [...new Set([...config.allowedTools, ...toolNames, ...extensionAllowed])],
+      disallowedTools: [...new Set([...config.disallowedTools, ASK_USER_TOOL, ...extensionDenied, ...readOnlyDenied])],
       settingSources: config.settingSources,
       systemPrompt: {
         type: 'preset',
