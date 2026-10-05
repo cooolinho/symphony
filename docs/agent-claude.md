@@ -122,8 +122,11 @@ log line (`npm run repo-init` → *Laravel Boost* creates an issue that adds it)
    --guidelines --skills` with `laravel.env` (`APP_ENV=local` by default: Boost registers its commands only locally).
    This writes Boost's guidelines (into `CLAUDE.md` if the app has one, else `AGENTS.md`) and its skills (into
    `.claude/skills/`), matched to the installed package versions and including the app's `.ai/guidelines` and
-   `.ai/skills`. No `.mcp.json` is written: Symphony adds the server itself. Generation runs again only when
-   `composer.lock`, `.ai/`, the Boost version or `laravel.php` change, or a generated file is gone; the state lives in
+   `.ai/skills`. No `.mcp.json` is written: Symphony adds the server itself. **Package skills:** Non-interactive
+   Boost installs third-party skills only from the `packages` list of `boost.json`, so Symphony scans
+   `vendor/*/*/resources/boost/` (a `skills/` or `guidelines/` directory) and adds every such package, for example
+   `filament/filament` with its `filament-development` skill. Existing `packages` entries are kept. Generation runs
+   again only when `composer.lock`, `.ai/`, the Boost version, the list of those packages or `laravel.php` change, or a generated file is gone; the state lives in
    `<git-dir>/symphony/laravel-boost.json`.
 3. **Git stays clean:** Symphony compares `git status` before and after. New files are listed one by one in a managed
    block of `.git/info/exclude`, so they never show up as changes (files the agent adds next to them still do).
