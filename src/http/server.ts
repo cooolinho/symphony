@@ -2,6 +2,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import fs from 'node:fs';
 import type { PricingStore } from '../costs/pricing.ts';
+import { computeAnalytics, filterEntries, isValidTimeZone, type Analytics, type AnalyticsFilter } from '../history/analytics.ts';
 import { computeHistoryStats, readHistory, repositoryFileName } from '../history/history.ts';
 import type { Logger } from '../log.ts';
 import type { Orchestrator } from '../orchestrator/orchestrator.ts';
@@ -22,6 +23,23 @@ export interface HttpServerHandle {
   url: string;
   close(): Promise<void>;
 }
+
+/** Largest page of log entries one request may ask for. */
+const MAX_ENTRIES = 1000;
+const ANALYTICS_CACHE_SIZE = 32;
+
+/** An ISO date/time query parameter; undefined when present but invalid. */
+function dateParam(params: URLSearchParams, name: string): Date | null | undefined {
+  const raw = params.get(name);
+  if (raw === null || raw === '') return null;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? new Date(ms) : undefined;
+}
+
+const textParam = (params: URLSearchParams, name: string): string | null => {
+  const raw = params.get(name)?.trim();
+  return raw === undefined || raw === '' ? null : raw;
+};
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 const API_PREFIX = '/api/v1/';
@@ -56,6 +74,7 @@ function sameHost(origin: string, hostHeader: string | undefined): boolean {
 
 /**
  * Observability/control surface (spec 13.7): `/` dashboard, `/agent?id=<identifier>` agent detail view,
+ * `/logs` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
  * `/api/v1/state`, `/api/v1/<identifier>` with its `/timeline` and `/transcript`, `POST /api/v1/refresh`.
  * Read-only except refresh. On a loopback bind, requests whose Host is
  * not a loopback name are rejected (DNS-rebinding guard), and cross-origin POSTs are refused.
@@ -70,6 +89,8 @@ export function startHttpServer(options: {
   const { orchestrator, logger } = options;
   const history = options.history ?? null;
   const loopbackBind = LOOPBACK_HOSTS.has(options.host);
+  // Analytics per filter, valid while the log files (append-only, so their sizes) and the price table are unchanged.
+  const analyticsCache = new Map<string, { pricing: object; value: Analytics }>();
 
   const route = (req: http.IncomingMessage, res: http.ServerResponse) => {
     if (loopbackBind) {
@@ -108,6 +129,77 @@ export function startHttpServer(options: {
       allow(['GET', 'HEAD'], () => {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
         res.end(method === 'HEAD' ? undefined : LOGS_HTML);
+      });
+      return;
+    }
+    if (pathname === '/api/v1/history/analytics' || pathname === '/api/v1/history/entries') {
+      allow(['GET'], () => {
+        if (history === null) {
+          sendError(res, 404, 'history_disabled', 'the repository history is not enabled');
+          return;
+        }
+        const params = new URL(req.url ?? '/', 'http://localhost').searchParams;
+        const from = dateParam(params, 'from');
+        const to = dateParam(params, 'to');
+        if (from === undefined || to === undefined) {
+          sendError(res, 400, 'bad_request', 'from and to must be ISO dates (e.g. 2026-10-01T00:00:00Z)');
+          return;
+        }
+        if (from !== null && to !== null && from.getTime() >= to.getTime()) {
+          sendError(res, 400, 'bad_request', 'from must be before to');
+          return;
+        }
+        const repo = textParam(params, 'repo');
+        const { files, entries } = readHistory(history.dir, repo);
+        if (pathname === '/api/v1/history/entries') {
+          const limit = Number(params.get('limit') ?? 200);
+          sendJson(res, 200, {
+            generated_at: new Date().toISOString(),
+            ...filterEntries(entries, {
+              from,
+              to,
+              repo,
+              issue: textParam(params, 'issue'),
+              event: textParam(params, 'event'),
+              result: textParam(params, 'result'),
+              order: params.get('order') === 'asc' ? 'asc' : 'desc',
+              limit: Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), MAX_ENTRIES) : 200,
+            }),
+          });
+          return;
+        }
+        const zone = textParam(params, 'tz');
+        const filter: AnalyticsFilter = {
+          from,
+          to,
+          repo,
+          model: textParam(params, 'model'),
+          timeZone: zone !== null && isValidTimeZone(zone) ? zone : Intl.DateTimeFormat().resolvedOptions().timeZone,
+        };
+        const pricing = history.pricing.current();
+        let value: Analytics;
+        // An open end moves with the clock, so only bounded periods are cached.
+        const key = to === null ? null : JSON.stringify([filter, files.map((f) => [f.file, f.bytes])]);
+        const cached = key === null ? undefined : analyticsCache.get(key);
+        if (cached !== undefined && cached.pricing === pricing) {
+          value = cached.value;
+        } else {
+          value = computeAnalytics(entries, pricing, filter);
+          if (key !== null) {
+            analyticsCache.delete(key);
+            analyticsCache.set(key, { pricing, value });
+            if (analyticsCache.size > ANALYTICS_CACHE_SIZE) analyticsCache.delete(analyticsCache.keys().next().value as string);
+          }
+        }
+        const all = repo === null ? files : readHistory(history.dir, null).files;
+        sendJson(res, 200, {
+          generated_at: new Date().toISOString(),
+          history_dir: history.dir,
+          pricing_file: history.pricing.path,
+          pricing_error: history.pricing.lastError,
+          repositories_available: all.map((f) => f.repo),
+          ...value,
+        });
       });
       return;
     }
