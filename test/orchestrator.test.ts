@@ -1620,3 +1620,164 @@ describe('run history', () => {
     });
   });
 });
+
+describe('restart a worker', () => {
+  const RESETS_AT = new Date('2026-10-03T17:30:00Z');
+  const TEXT = "You've hit your session limit · resets 7:30pm (Europe/Berlin)";
+
+  /** A runner whose sessions fail with a session limit, fail otherwise, or end normally. */
+  function restartSetup(options: { front?: Record<string, unknown>; history?: HistoryLog; mode?: 'limit' | 'fail' | 'ok' | 'hang' } = {}) {
+    const state = { mode: options.mode ?? 'limit' };
+    const runner = new FakeRunner((turn, params) => {
+      if (state.mode === 'hang') {
+        return new Promise((resolve) => params.signal.addEventListener('abort', () => resolve({ ok: false, turnId: String(turn), code: 'turn_cancelled', message: 'cancelled' })));
+      }
+      if (state.mode === 'limit') {
+        return {
+          ok: false,
+          turnId: String(turn),
+          code: 'session_limit',
+          message: `turn ended with an error: ${TEXT}`,
+          sessionLimit: { window: 'five_hour', resetsAt: RESETS_AT, source: 'event', text: TEXT, overageDisabledReason: null },
+        };
+      }
+      if (state.mode === 'fail') return { ok: false, turnId: String(turn), code: 'turn_failed', message: 'boom' };
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    });
+    const s = setup({
+      runner,
+      issues: [makeIssue({ id: 'a' })],
+      ...(options.history !== undefined ? { history: options.history } : {}),
+      front: { agent: { max_turns: 1, ...(options.front?.agent as object | undefined) } },
+    });
+    return { s, state };
+  }
+
+  it('starts a worker that waits for the session limit reset at once and resets its counter', async () => {
+    const { s, state } = restartSetup({ front: { agent: { max_session_limit_retries: 0 } } });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'waiting');
+    assert.equal(snapshot(s).retrying[0]?.limit?.waiting, true);
+
+    state.mode = 'fail';
+    assert.deepEqual(await s.orchestrator.restartWorker('acme/app#a'), { ok: true, issueIdentifier: 'acme/app#a', previous: 'retrying' });
+    assert.equal(snapshot(s).retrying[0]?.kind, 'failure');
+    assert.ok(s.timers.delays().includes(0));
+    state.mode = 'limit';
+    s.timers.fire(0);
+    await until(() => s.runner.sessions.length === 2 && snapshot(s).retrying.length === 1, 3_000, 'restarted session');
+    // The counter started again: the next limit is hit 1, which waits again because the cap is 0.
+    assert.equal(snapshot(s).retrying[0]?.limit?.hits, 1);
+    const events = s.orchestrator.issueTimeline('acme/app#a')?.events ?? [];
+    const restarted = events.find((event) => event.event === 'worker_restarted');
+    assert.equal(restarted?.level, 'info');
+    assert.deepEqual(restarted?.detail, { previous: 'retrying' });
+  });
+
+  it('counts session limit retries from 1 after a restart', async () => {
+    const { s } = restartSetup();
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'first retry');
+    s.timers.fire(10_000);
+    await until(() => s.runner.sessions.length === 2 && snapshot(s).retrying[0]?.limit?.hits === 2, 3_000, 'second hit');
+    await s.orchestrator.restartWorker('a');
+    s.timers.fire(0);
+    await until(() => s.runner.sessions.length === 3 && snapshot(s).retrying.length === 1, 3_000, 'restarted session');
+    assert.equal(snapshot(s).retrying[0]?.limit?.hits, 1);
+    assert.equal(snapshot(s).retrying[0]?.kind, 'session_limit');
+  });
+
+  it('skips the backoff of a failure retry', async () => {
+    const { s } = restartSetup({ mode: 'fail' });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'failure retry');
+    assert.deepEqual(s.timers.delays(), [10_000]);
+    assert.equal((await s.orchestrator.restartWorker('a')).ok, true);
+    assert.deepEqual(s.timers.delays(), [0]);
+    s.timers.fire(0);
+    await until(() => s.runner.sessions.length === 2, 3_000, 'second session');
+  });
+
+  it('dispatches a continuation retry after a restart even with max_continuations 0', async () => {
+    const { s } = restartSetup({ mode: 'ok', front: { agent: { max_continuations: 0 } } });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying[0]?.kind === 'continuation', 3_000, 'continuation retry');
+    await s.orchestrator.restartWorker('a');
+    assert.equal(snapshot(s).retrying[0]?.kind, 'failure');
+    s.timers.fire(0);
+    await until(() => s.runner.sessions.length === 2, 3_000, 'second session');
+    assert.equal(snapshot(s).counts.paused, 0);
+  });
+
+  it('restarts a paused issue with attempt 1 and no continuations', async () => {
+    const { s } = restartSetup({ mode: 'ok', front: { agent: { max_continuations: 0 } } });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'retry');
+    s.timers.fire(1_000);
+    await until(() => snapshot(s).counts.paused === 1, 3_000, 'paused');
+    assert.equal(s.orchestrator.issueDetail('a')?.status, 'paused');
+
+    assert.deepEqual(await s.orchestrator.restartWorker('a'), { ok: true, issueIdentifier: 'acme/app#a', previous: 'paused' });
+    assert.equal(snapshot(s).counts.paused, 0);
+    const detail = s.orchestrator.issueDetail('a');
+    assert.equal(detail?.status, 'retrying');
+    assert.equal(detail?.attempts.continuations, 0);
+    assert.equal(detail?.attempts.current_retry_attempt, 1);
+    s.timers.fire(0);
+    await until(() => s.runner.sessions.length === 2, 3_000, 'restarted session');
+  });
+
+  it('reports why a restart is not possible', async () => {
+    const runner = new FakeRunner((_turn, params) => new Promise((resolve) => params.signal.addEventListener('abort', () => resolve({ ok: false, turnId: '1', code: 'turn_cancelled', message: 'cancelled' }))));
+    const s = setup({ runner, issues: [makeIssue({ id: 'a' })], front: { agent: { max_turns: 1 } } });
+    assert.deepEqual(await s.orchestrator.restartWorker('a'), { ok: false, reason: 'not_found' });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running[0]?.phase === 'StreamingTurn', 3_000, 'streaming');
+    assert.deepEqual(await s.orchestrator.restartWorker('a'), { ok: false, reason: 'running' });
+    assert.deepEqual(await s.orchestrator.restartWorker('acme/app#a'), { ok: false, reason: 'running' });
+    assert.deepEqual(await s.orchestrator.restartWorker('nope'), { ok: false, reason: 'not_found' });
+    await s.orchestrator.shutdown(1_000);
+    assert.deepEqual(await s.orchestrator.restartWorker('a'), { ok: false, reason: 'stopping' });
+  });
+
+  it('releases a restarted issue that moved to Done', async () => {
+    const { s } = restartSetup();
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'retry');
+    await s.orchestrator.restartWorker('a');
+    s.tracker.set('a', { state: 'Done' });
+    s.timers.fire(0);
+    await until(() => snapshot(s).counts.claimed === 0, 3_000, 'released');
+    assert.equal(s.runner.sessions.length, 1);
+  });
+
+  it('requeues a restarted worker while no slot is free', async () => {
+    const { s, state } = restartSetup({ mode: 'fail', front: { agent: { max_concurrent_agents: 1 } } });
+    s.tracker.issues.set('b', makeIssue({ id: 'b' }));
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'retry of a');
+    state.mode = 'hang';
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running.length === 1, 3_000, 'b running');
+    await s.orchestrator.restartWorker('a');
+    s.timers.fire(0);
+    await until(() => /no available orchestrator slots/.test(snapshot(s).retrying[0]?.error ?? ''), 3_000, 'requeued');
+    assert.equal(s.runner.sessions.length, 2);
+  });
+
+  it('writes the worker_restarted history note', async () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
+    const pricing = new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent());
+    const history = new HistoryLog(path.join(dir, 'repositories'), pricing, Logger.silent());
+    const { s } = restartSetup({ history, mode: 'fail' });
+    s.tracker.issueRepository = () => 'acme/app';
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'retry');
+    await s.orchestrator.restartWorker('a');
+    const note = readHistory(history.dir, 'acme/app').entries.find((entry) => entry.event === 'worker_restarted')?.fields ?? {};
+    assert.equal(note.issue, 'acme/app#a');
+    assert.equal(note.previous, 'retrying');
+    assert.equal(typeof note.title, 'string');
+  });
+});
