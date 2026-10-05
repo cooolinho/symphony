@@ -155,7 +155,7 @@ before the tracker is touched. The guard decides on the run's role and the targe
 **Cache.** A passing check is remembered per claim, in memory, under the key `HEAD sha` + hash of the script text. Before
 running a check the guard reads `git rev-parse HEAD` and `git status --porcelain` (5 s timeout each); when the tree
 is clean and the key has a passing result, the issue is moved without running the script and the tool result carries
-`note: "cached result for <sha>"`. This lets the move to `In review` reuse the successful check of `Agent review`. A
+`note: "cached result for <sha>"` (logged as `checks_cached`; no phase change, no `checks_finished`). This lets the move to `In review` reuse the successful check of `Agent review`. A
 new commit, a changed script, or any uncommitted change runs the check again; failures and errors are never cached; if
 git fails (e.g. no repository) the check simply runs. The cache is not persisted and not shared between issues, so
 a service restart or a new claim runs the checks again.
