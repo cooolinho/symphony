@@ -106,6 +106,7 @@ const DASHBOARD_CSS = `
   .qmeta { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 11.5px var(--mono); color: var(--muted); }
   .qmeta b { color: var(--text); font-weight: 600; }
   .qitem .msg { font-size: 12.5px; }
+  .qitem button.restart { justify-self: start; }
   .clear { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
   .clear .muted { font-size: 12.5px; }
 
@@ -489,22 +490,114 @@ ${BASE_JS}
     patchChildren($(id), [box]);
   }
 
+  const WINDOW_WORDS = { five_hour: 'five hour', seven_day: 'seven day', seven_day_opus: 'seven day Opus', seven_day_sonnet: 'seven day Sonnet' };
+  const windowWords = (w) => WINDOW_WORDS[w] || String(w || '').replace(/_/g, ' ');
+
+  // Per-identifier outcome of a restart click; a poll rebuilds the rows, so the button state is drawn from here.
+  const restartStates = new Map();
+  const RESTART_LABELS = { Retry: 'Retry now', Resume: 'Resume now' };
+
+  function restartButton(identifier, verb) {
+    const st = restartStates.get(identifier);
+    const b = el('button', st ? st.label : RESTART_LABELS[verb], 'btn restart' + (st && st.cls ? ' ' + st.cls : ''));
+    b.type = 'button';
+    b.dataset.identifier = identifier;
+    b.dataset.verb = verb;
+    b.setAttribute('aria-label', RESTART_LABELS[verb] + ' ' + identifier);
+    if (st && st.cls === 'is-busy') b.setAttribute('aria-busy', 'true');
+    return b;
+  }
+
+  function paintRestart(identifier) {
+    const st = restartStates.get(identifier);
+    for (const b of document.querySelectorAll('button.restart')) {
+      if (b.dataset.identifier !== identifier) continue;
+      b.classList.remove('is-busy', 'is-done', 'is-failed');
+      if (st && st.cls) b.classList.add(st.cls);
+      if (st && st.cls === 'is-busy') b.setAttribute('aria-busy', 'true'); else b.removeAttribute('aria-busy');
+      b.textContent = st ? st.label : RESTART_LABELS[b.dataset.verb];
+    }
+  }
+
+  async function restart(identifier) {
+    const current = restartStates.get(identifier);
+    if (current && current.cls === 'is-busy') return;
+    restartStates.set(identifier, { cls: 'is-busy', label: 'Restarting…' });
+    paintRestart(identifier);
+    let ok = false;
+    let label = 'Restart failed';
+    try {
+      const res = await fetch('/api/v1/' + encodeURIComponent(identifier) + '/retry', { method: 'POST' });
+      let body = null;
+      try { body = await res.json(); } catch {}
+      ok = res.ok;
+      label = ok ? 'Queued' : (body && body.error && body.error.message) || 'Restart failed (' + res.status + ')';
+    } catch {}
+    restartStates.set(identifier, { cls: ok ? 'is-done' : 'is-failed', label });
+    paintRestart(identifier);
+    $('announce').textContent = identifier + ': ' + label;
+    setTimeout(load, 500);
+    setTimeout(() => { restartStates.delete(identifier); paintRestart(identifier); }, ok ? 1800 : 5000);
+  }
+
+  document.addEventListener('click', (event) => {
+    const b = event.target instanceof Element ? event.target.closest('button.restart') : null;
+    if (b) restart(b.dataset.identifier);
+  });
+
+  function sessionLimitBits(r) {
+    const limit = r.limit;
+    const bits = [];
+    if (limit.waiting) {
+      bits.push(el('span', 'waiting for reset'));
+      const resets = el('span', 'resets '); resets.append(el('b', fmtStamp(limit.resets_at)));
+      if (limit.window) resets.append(' (' + windowWords(limit.window) + ')');
+      bits.push(resets);
+      const at = el('span', 'retry at '); at.append(el('b', fmtStamp(r.due_at)), ' (in ' + fmtDuration(r.due_in_ms / 1000) + ')');
+      bits.push(at);
+    } else {
+      if (limit.hits <= limit.max_retries) {
+        const n = el('span', 'retry '); n.append(el('b', limit.hits), ' of ' + limit.max_retries);
+        bits.push(n);
+      } else bits.push(el('span', 'retrying with backoff'));
+      const due = el('span', 'next in '); due.append(el('b', fmtDuration(r.due_in_ms / 1000)));
+      bits.push(due);
+    }
+    return bits;
+  }
+
   function renderRetries(rows) {
     setText($('retry-count'), pad2(rows.length));
     if (!rows.length) return emptyState('retrying', 'Clear', 'green', 'No agents waiting for retry.');
     const list = el('ul', null, 'queue');
     for (const r of rows) {
       const continuation = r.kind === 'continuation';
+      const sessionLimit = r.kind === 'session_limit' && r.limit;
       const tone = continuation ? 'cyan' : 'amber';
       const li = el('li', null, 'qitem tone-' + tone);
       const row = el('div', null, 'qrow');
       const id = link(r.issue_identifier, r.issue_url); id.classList.add('id');
-      row.append(id, badge(continuation ? 'Continuation' : 'Retrying', tone, false));
+      row.append(id, badge(continuation ? 'Continuation' : sessionLimit ? 'Session limit' : 'Retrying', tone, false));
       const meta = el('div', null, 'qmeta');
-      const attempt = el('span', 'attempt '); attempt.append(el('b', pad2(r.attempt)));
-      const due = el('span', 'next in '); due.append(el('b', fmtDuration(r.due_in_ms / 1000)));
-      meta.append(attempt, due, traceLink(r.issue_identifier));
-      li.append(row, meta, el('div', r.error || (continuation ? 'Continues the session after a clean exit.' : '—'), 'msg'));
+      if (sessionLimit) {
+        meta.append(...sessionLimitBits(r));
+      } else {
+        const attempt = el('span', 'attempt '); attempt.append(el('b', pad2(r.attempt)));
+        const due = el('span', 'next in '); due.append(el('b', fmtDuration(r.due_in_ms / 1000)));
+        meta.append(attempt, due);
+      }
+      meta.append(traceLink(r.issue_identifier));
+      li.append(row, meta);
+      if (sessionLimit) {
+        li.append(el('div', r.limit.text || r.error || '—', 'msg'));
+        if (r.limit.text && r.error && r.error !== r.limit.text) li.append(el('div', r.error, 'msg muted'));
+        if (r.limit.overage_disabled_reason === 'out_of_credits') {
+          li.append(el('div', 'Extra usage is off because credits are used up. Top up, then press Retry now.', 'msg'));
+        }
+      } else {
+        li.append(el('div', r.error || (continuation ? 'Continues the session after a clean exit.' : '—'), 'msg'));
+      }
+      li.append(restartButton(r.issue_identifier, 'Retry'));
       list.append(li);
     }
     patchList('retrying', list);
@@ -523,7 +616,7 @@ ${BASE_JS}
       const column = el('span', 'column '); column.append(el('b', r.state));
       const cont = el('span', 'continuations '); cont.append(el('b', r.continuations));
       meta.append(column, cont, el('span', 'paused ' + ago(r.paused_at)), traceLink(r.issue_identifier));
-      li.append(row, meta, el('div', 'Resume: change the issue on the board (status, comment or labels).', 'msg'));
+      li.append(row, meta, el('div', 'Resume: change the issue on the board (status, comment or labels), or press Resume now.', 'msg'), restartButton(r.issue_identifier, 'Resume'));
       list.append(li);
     }
     patchList('paused', list);
@@ -572,12 +665,19 @@ ${BASE_JS}
     }
     const retries = new Set();
     for (const r of state.retrying) {
-      const key = r.issue_id + '|' + r.attempt + '|' + r.kind;
+      const waiting = !!(r.limit && r.limit.waiting);
+      const key = r.issue_id + '|' + r.attempt + '|' + r.kind + '|' + waiting;
       retries.add(key);
       if (previousRetries && !previousRetries.has(key)) {
-        pushActivity(now, r.issue_identifier,
-          (r.kind === 'continuation' ? 'continuation queued' : 'retry ' + pad2(r.attempt) + ' queued') + ' · in ' + fmtDuration(r.due_in_ms / 1000) +
-          (r.error ? ' · ' + trunc(r.error, 120) : ''), r.kind === 'continuation' ? 'cyan' : 'amber');
+        if (r.kind === 'session_limit' && r.limit) {
+          pushActivity(now, r.issue_identifier, waiting
+            ? 'waiting for the session limit · retry at ' + fmtClock(r.due_at)
+            : 'session limit: retry ' + r.limit.hits + ' of ' + r.limit.max_retries + ' queued', 'amber');
+        } else {
+          pushActivity(now, r.issue_identifier,
+            (r.kind === 'continuation' ? 'continuation queued' : 'retry ' + pad2(r.attempt) + ' queued') + ' · in ' + fmtDuration(r.due_in_ms / 1000) +
+            (r.error ? ' · ' + trunc(r.error, 120) : ''), r.kind === 'continuation' ? 'cyan' : 'amber');
+        }
       }
     }
     previous = current;
