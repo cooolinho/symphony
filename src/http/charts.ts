@@ -111,7 +111,7 @@ export const CHART_JS = `
 
   /**
    * Time series over buckets. opts: { labels, title(i), series: [{ label, color, values }], kind: 'bar' | 'area',
-   * stacked, fmt(value), tip(i) -> rows, onClick(i), height, ariaLabel }.
+   * stacked, integer (counts: whole-number ticks), fmt(value), tip(i) -> rows, onClick(i), height, ariaLabel }.
    */
   function timeChart(host, opts) {
     mount(host, () => {
@@ -121,7 +121,8 @@ export const CHART_JS = `
       const totals = opts.labels.map((_, i) => opts.stacked
         ? opts.series.reduce((sum, s) => sum + (s.values[i] || 0), 0)
         : Math.max(0, ...opts.series.map((s) => s.values[i] || 0)));
-      const step = niceStep(Math.max(...totals, 0) / 4);
+      const raw = niceStep(Math.max(...totals, 0) / 4);
+      const step = opts.integer ? Math.max(1, Math.ceil(raw)) : raw;
       const top = Math.max(step, Math.ceil(Math.max(...totals, 0) / step) * step);
       const ticks = []; for (let v = 0; v <= top + step / 2; v += step) ticks.push(v);
       const left = Math.min(80, 10 + Math.max(...ticks.map((v) => opts.fmt(v).length)) * 6.2);

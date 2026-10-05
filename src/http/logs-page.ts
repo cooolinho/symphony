@@ -282,7 +282,7 @@ ${CHART_JS}
   // ------------------------------------------------------------------------------------------------------------
   // Formatting
 
-  const fmtAxisUsd = (v) => '$' + (v >= 100 ? v.toFixed(0) : v >= 1 || v === 0 ? v.toFixed(v % 1 ? 1 : 0) : v.toFixed(v >= 0.1 ? 2 : 3));
+  const fmtAxisUsd = (v) => '$' + (v >= 100 ? v.toFixed(0) : v >= 1 || v === 0 ? v.toFixed(v % 1 ? 1 : 0) : v >= 0.01 ? v.toFixed(v >= 0.1 ? 2 : 3) : String(Number(v.toPrecision(2))));
   const fmtPct = (r) => (r === null || r === undefined ? '—' : (r * 100).toFixed(r * 100 >= 10 || r === 0 ? 0 : 1) + '%');
   const fmtRatio = (r) => (r === null || r === undefined ? '—' : r.toFixed(r >= 10 ? 0 : 2));
   const orDash = (v, fmt) => (v === null || v === undefined ? '—' : fmt(v));
@@ -489,7 +489,7 @@ ${CHART_JS}
       labels: d.series.map((b) => bucketLabel(b.key, g)),
       title: (i) => bucketLabel(d.series[i].key, g, true),
       series: [{ label: metric.label, color: metric.color, values: d.series.map((b) => b[metric.key]) }],
-      kind: 'bar', fmt: metric.axis, height: 240,
+      kind: 'bar', fmt: metric.axis, height: 240, integer: view.activity === 'runs',
       tip: (i) => bucketTip(d.series[i]),
       onClick: g === 'hour' ? null : (i) => zoomInto(d.series[i].key, g),
       ariaLabel: metric.label + ' per ' + g,
@@ -606,7 +606,7 @@ ${CHART_JS}
     timeChart(host, {
       labels: d.series.map((b) => bucketLabel(b.key, g)),
       title: (i) => bucketLabel(d.series[i].key, g, true),
-      series, kind: 'bar', stacked: true, fmt: metric.axis, height: 200,
+      series, kind: 'bar', stacked: true, fmt: metric.axis, height: 200, integer: key === 'runs',
       tip: (i) => series.filter((s) => s.values[i] > 0).map((s) => [shortRepo(s.label), metric.fmt(s.values[i]), s.color]).concat([['Total', metric.fmt(d.series[i][metric.key])]]),
       ariaLabel: metric.label + ' by repository over time',
     });
@@ -655,7 +655,7 @@ ${CHART_JS}
     timeChart(host, {
       labels: d.series.map((b) => bucketLabel(b.key, g)),
       title: (i) => bucketLabel(d.series[i].key, g, true),
-      series, kind: 'bar', stacked: true, fmt: fmtCompact, height: 150,
+      series, kind: 'bar', stacked: true, fmt: fmtCompact, height: 150, integer: true,
       tip: (i) => { const b = d.series[i]; return series.map((s) => [s.label, fmtInt(s.values[i]), s.color]).concat([['Retried', fmtInt(b.retries)], ['Success rate', b.runs ? fmtPct(b.successful / b.runs) : '—']]); },
       ariaLabel: 'Run outcomes over time',
     });
