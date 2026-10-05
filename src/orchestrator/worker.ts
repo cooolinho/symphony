@@ -12,7 +12,7 @@ import { describeFailure, type HookIssue, type Workspace, type WorkspaceManager 
 import { roleName, type RoleConfig } from '../workflow/roles.ts';
 import type { EffectiveWorkflow } from '../workflow/store.ts';
 import { issueTemplateValue, renderPrompt } from '../workflow/template.ts';
-import { createGuard, guardTools } from './guard.ts';
+import { createGuard, guardTools, type CheckCache } from './guard.ts';
 
 export type RunPhase =
   | 'PreparingWorkspace'
@@ -92,6 +92,8 @@ export interface WorkerParams {
   childEnv: NodeJS.ProcessEnv;
   logger: Logger;
   signal: AbortSignal;
+  /** Passing entry-check results of the claim, shared by its sessions. */
+  checkCache: CheckCache;
   /** Directory for per-session JSONL transcripts, or null to disable them. */
   transcriptDir: string | null;
   /**
@@ -209,6 +211,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       issue: hookIssue,
       manager: params.workspaces,
       signal,
+      cache: params.checkCache,
       onEvent: (event, message, detail) =>
         callbacks.agentEvent({
           pid: lastEvent?.pid ?? null,

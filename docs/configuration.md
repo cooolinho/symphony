@@ -152,6 +152,14 @@ before the tracker is touched. The guard decides on the run's role and the targe
 | `1` | Tool error `check_failed`; the column is unchanged | The last 6000 characters of the output; fix the problems and call `set_status` again. |
 | other, timeout, or the check cannot start | Tool error `check_error`; the column is unchanged | Do not change code; describe the problem in an issue comment and move the issue to `Blocked`. |
 
+**Cache.** A passing check is remembered per claim, in memory, under the key `HEAD sha` + hash of the script text. Before
+running a check the guard reads `git rev-parse HEAD` and `git status --porcelain` (5 s timeout each); when the tree
+is clean and the key has a passing result, the issue is moved without running the script and the tool result carries
+`note: "cached result for <sha>"`. This lets the move to `In review` reuse the successful check of `Agent review`. A
+new commit, a changed script, or any uncommitted change runs the check again; failures and errors are never cached; if
+git fails (e.g. no repository) the check simply runs. The cache is not persisted and not shared between issues, so
+a service restart or a new claim runs the checks again.
+
 Because a failed check leaves the column unchanged, reconciliation never stops the run halfway and the agent gets the
 feedback in the same session. Checks of one session run one after the other; stopping the run (e.g. a human moves the
 card to `Done`) kills a running check's process group. Without `roles` and `checks`, only the terminal-target rule
