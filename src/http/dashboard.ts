@@ -35,7 +35,15 @@ const DASHBOARD_CSS = `
   @keyframes card-flash { 0% { box-shadow: 0 0 0 1px var(--tone), 0 0 28px -6px var(--tone); } 100% { box-shadow: var(--shadow); } }
   .agent-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .agent-head .tags { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
-  .agent-id { font: 600 15px var(--mono); color: var(--text); letter-spacing: .02em; white-space: nowrap; }
+  .agent-id { position: relative; z-index: 2; font: 600 15px var(--mono); color: var(--text); letter-spacing: .02em; white-space: nowrap; }
+  /* The title link covers the whole card (opens the agent detail view); the issue link stays on top of it. */
+  .agent-link { color: inherit; }
+  .agent-link:hover { color: inherit; text-decoration: none; }
+  .agent-link::after { content: ""; position: absolute; inset: 0; z-index: 1; border-radius: inherit; }
+  .agent-link:focus-visible { outline: none; }
+  .agent:has(.agent-link:focus-visible) { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  .agent-open { font: 500 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); transition: color .2s var(--ease); }
+  .agent:hover .agent-open { color: var(--cyan); }
   .agent-id:hover { color: var(--cyan); }
   .agent-title { font: 600 16.5px/1.35 var(--sans); color: #f0f6f3; letter-spacing: -.005em; overflow-wrap: anywhere;
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -344,12 +352,14 @@ ${BASE_JS}
     head.append(tags, id);
 
     const titleWrap = el('div');
-    const title = el('h3', null, 'agent-title');
+    const title = el('a', null, 'agent-link');
+    const heading = el('h3', null, 'agent-title');
+    heading.append(title);
     const repoLine = el('div', null, 'agent-repo');
     const repo = el('span');
     const branch = el('span');
     repoLine.append(repo, branch);
-    titleWrap.append(title, repoLine);
+    titleWrap.append(heading, repoLine);
 
     const dl = el('dl', null, 'fields');
     const refs = {
@@ -363,7 +373,9 @@ ${BASE_JS}
     refs.age = el('span', null, 'age');
     line.append(refs.event, refs.age);
     refs.message = el('div', null, 'activity-msg');
-    act.append(el('div', 'Last activity', 'k'), line, refs.message);
+    const actHead = el('div', null, 'qrow');
+    actHead.append(el('span', 'Last activity', 'k'), el('span', 'Trace →', 'agent-open'));
+    act.append(actHead, line, refs.message);
 
     const foot = el('div', null, 'agent-foot');
     refs.turn = metric(foot, 'Turn');
@@ -400,6 +412,8 @@ ${BASE_JS}
     refs.attempt.hidden = !r.attempt;
     setText(refs.attempt, 'attempt ' + (r.attempt ?? ''));
     setText(refs.title, r.title || r.issue_identifier);
+    const trace = '/agent?id=' + encodeURIComponent(r.issue_identifier);
+    if (refs.title.getAttribute('href') !== trace) refs.title.href = trace;
     setText(refs.repo, r.repo && r.repo !== 'unknown' ? r.repo : repo);
     refs.branch.hidden = !r.branch;
     setText(refs.branch, r.branch ? '⎇ ' + r.branch : '');
@@ -467,6 +481,8 @@ ${BASE_JS}
     else host.replaceChildren(list);
   }
 
+  const traceLink = (identifier) => link('trace →', '/agent?id=' + encodeURIComponent(identifier));
+
   function emptyState(id, text, tone, sub) {
     const box = el('div', null, 'clear');
     box.append(badge(text, tone, false), el('div', sub, 'muted'));
@@ -487,7 +503,7 @@ ${BASE_JS}
       const meta = el('div', null, 'qmeta');
       const attempt = el('span', 'attempt '); attempt.append(el('b', pad2(r.attempt)));
       const due = el('span', 'next in '); due.append(el('b', fmtDuration(r.due_in_ms / 1000)));
-      meta.append(attempt, due);
+      meta.append(attempt, due, traceLink(r.issue_identifier));
       li.append(row, meta, el('div', r.error || (continuation ? 'Continues the session after a clean exit.' : '—'), 'msg'));
       list.append(li);
     }
@@ -506,7 +522,7 @@ ${BASE_JS}
       const meta = el('div', null, 'qmeta');
       const column = el('span', 'column '); column.append(el('b', r.state));
       const cont = el('span', 'continuations '); cont.append(el('b', r.continuations));
-      meta.append(column, cont, el('span', 'paused ' + ago(r.paused_at)));
+      meta.append(column, cont, el('span', 'paused ' + ago(r.paused_at)), traceLink(r.issue_identifier));
       li.append(row, meta, el('div', 'Resume: change the issue on the board (status, comment or labels).', 'msg'));
       list.append(li);
     }

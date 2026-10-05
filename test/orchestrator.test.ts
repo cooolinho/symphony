@@ -43,6 +43,7 @@ function setup(
     logger?: Logger;
     integrations?: WorkspaceIntegration[];
     history?: HistoryLog;
+    logDir?: string;
   } = {},
 ): Setup {
   const root = tempDir();
@@ -61,7 +62,7 @@ function setup(
     runner,
     logger: options.logger ?? Logger.silent(),
     env: {},
-    logDir: null,
+    logDir: options.logDir ?? null,
     clock,
     timers,
     createAdapter: () => tracker,
@@ -703,6 +704,85 @@ describe('observability', () => {
     await s.orchestrator.tickNow();
     assert.equal(s.runner.sessions.length, 0);
     assert.match(snapshot(s).health.dispatch_errors.join(), /bad yaml/);
+  });
+});
+
+describe('execution timeline', () => {
+  it('records lifecycle steps, phase transitions and agent events in order, readable incrementally', async () => {
+    const runner = new FakeRunner((turn, params) => {
+      params.onEvent({ event: 'tool_use', timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: turn, message: 'Bash: ls', detail: { tool: 'Bash' } });
+      params.onEvent({ event: 'tool_result', timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: turn });
+      params.onEvent({
+        event: 'turn_failed', timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: turn, message: 'boom',
+        usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 }, detail: { duration_ms: 1500 },
+      });
+      return { ok: false, turnId: String(turn), code: 'turn_failed', message: 'boom' };
+    });
+    const s = setup({ runner, issues: [makeIssue({ id: 'a', title: 'Fix it' })] });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'failure retry');
+
+    const timeline = s.orchestrator.issueTimeline('acme/app#a');
+    assert.ok(timeline !== null);
+    const events = timeline.events.map((e) => e.event);
+    assert.equal(events[0], 'run_dispatched');
+    assert.ok(events.includes('phase'));
+    assert.ok(events.indexOf('tool_use') < events.indexOf('turn_failed'));
+    assert.ok(!events.includes('tool_result'), 'events without message or detail are not kept');
+    assert.deepEqual(events.slice(-2), ['run_finished', 'retry_scheduled']);
+    const phases = timeline.events.filter((e) => e.kind === 'phase').map((e) => e.detail?.to);
+    assert.deepEqual(phases.slice(0, 2), ['LaunchingAgentProcess', 'BuildingPrompt']);
+    const failed = timeline.events.find((e) => e.event === 'turn_failed');
+    assert.equal(failed?.level, 'warn');
+    assert.deepEqual(failed?.detail?.usage, { input_tokens: 100, output_tokens: 20, total_tokens: 120 });
+    const finished = timeline.events.find((e) => e.event === 'run_finished');
+    assert.equal(finished?.detail?.outcome, 'failed');
+    assert.equal(finished?.level, 'error');
+    assert.match(String(finished?.detail?.reason), /turn_failed: boom/);
+    const retry = timeline.events.at(-1);
+    assert.deepEqual([retry?.detail?.attempt, retry?.detail?.kind], [1, 'failure']);
+    assert.deepEqual(timeline.events.map((e) => e.seq), timeline.events.map((_, i) => i + 1));
+
+    const later = s.orchestrator.issueTimeline('a', timeline.latest_seq - 1);
+    assert.deepEqual(later?.events.map((e) => e.event), ['retry_scheduled']);
+
+    const detail = s.orchestrator.issueDetail('a');
+    assert.equal(detail?.title, 'Fix it');
+    assert.equal(detail?.timeline_seq, timeline.latest_seq);
+    assert.equal(detail?.sessions.length, 1);
+    assert.equal(detail?.sessions[0]?.outcome, 'failed');
+    assert.equal(detail?.sessions[0]?.transcript, null);
+    // The dashboard's recent_events stay the agent events with a message.
+    assert.deepEqual(detail?.recent_events.map((e) => e.event), ['tool_use', 'turn_failed']);
+    assert.equal(s.orchestrator.issueTimeline('nope'), null);
+    assert.deepEqual(s.orchestrator.issueTranscript('a', null), { run: detail?.sessions[0]?.run, available: false, reason: 'session transcripts are disabled (no log directory)' });
+  });
+
+  it('serves the session transcript of a run when a log directory is set', async () => {
+    const runner = new FakeRunner((turn, params) => {
+      const file = params.transcriptPath as string;
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.appendFileSync(file, `${JSON.stringify({ at: '2026-10-03T12:00:00.000Z', prompt: { turn, text: 'Work on it' } })}\n`);
+      fs.appendFileSync(
+        file,
+        `${JSON.stringify({ at: '2026-10-03T12:00:01.000Z', message: { type: 'assistant', parent_tool_use_id: null, message: { id: 'm1', model: 'claude-opus-5-5', content: [{ type: 'text', text: 'Done.' }], usage: { input_tokens: 1000, output_tokens: 100 } } } })}\n`,
+      );
+      return new Promise(() => undefined);
+    });
+    const logDir = tempDir();
+    const s = setup({ runner, logDir, issues: [makeIssue({ id: 'a' })] });
+    await s.orchestrator.tickNow();
+    await until(() => (s.orchestrator.issueTranscript('a', null)?.entries?.length ?? 0) === 2, 3_000, 'transcript lines');
+    const transcript = s.orchestrator.issueTranscript('a', null);
+    assert.equal(transcript?.available, true);
+    assert.ok(s.orchestrator.issueTranscriptFile('a', null)?.startsWith(path.join(logDir, 'sessions')));
+    assert.deepEqual(transcript?.entries?.map((e) => e.type), ['prompt', 'model_call']);
+    const call = transcript?.entries?.[1];
+    assert.ok(call?.type === 'model_call');
+    assert.equal(call.cost_usd, null, 'no price table configured');
+    const rest = s.orchestrator.issueTranscript('a', transcript?.run ?? null, transcript?.next_offset);
+    assert.deepEqual(rest?.entries, []);
+    assert.equal(s.orchestrator.issueTranscript('a', 'unknown-run')?.available, false);
   });
 });
 

@@ -50,7 +50,8 @@ und Token stehen in der **`.env`**. Symphony ist eine Implementierung der
   ein Agent läuft, wird er gestoppt.
 - **Zentral konfigurierbar:** Die `WORKFLOW.md` wird live neu geladen, ohne Neustart. Die `.env` enthält Board,
   Repository, Modell und Token. Eine Instanz kann mehrere Repositories bedienen.
-- **Beobachtbar:** Optionales Dashboard mit JSON-API, strukturierte Logs, ein Transkript pro Session, `--dry-run`
+- **Beobachtbar:** Optionales Dashboard mit JSON-API und einer Detailansicht pro Agent (Execution Trace mit Prompts,
+  Modellaufrufen, Tool-Calls, Phasen, Tokens und Kosten), strukturierte Logs, ein Transkript pro Session, `--dry-run`
   zum Prüfen der Einrichtung.
 - **Logs und Kosten pro Repository:** Ein fortlaufendes Log hält fest, wann welches Issue bearbeitet wurde, mit
   Tokens, Modell, geschätzten Kosten und Agentenzeit. Die Kosten berechnet Symphony mit deinen Preisen aus der
@@ -110,7 +111,7 @@ symphony/
 │   ├── orchestrator/           # Abfragen, Starten, Abgleichen, Wiederholungen
 │   ├── history/                # Log pro Repository und Statistiken dazu
 │   ├── costs/                  # model-costs.yml lesen, Kosten berechnen
-│   ├── http/                   # Dashboard, Logs-Seite und JSON-API
+│   ├── http/                   # Dashboard, Agent-Detailansicht (Execution Trace), Logs-Seite und JSON-API
 │   ├── repo-init/              # repo-init: Auswahlliste, GitHub-REST-Client, Standard-Labels, Boost-Issue
 │   └── util/                   # Hilfsfunktionen (.env, Pfade, Fehler, …)
 ├── test/                       # Tests mit node:test

@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { describe, it } from 'node:test';
 import type { Options, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { ClaudeAgentRunner, type QueryFn } from '../src/agent/claude.ts';
+import { readTranscript } from '../src/agent/transcript.ts';
 import { boostToolPolicy } from '../src/laravel/boost.ts';
 import type { AgentEvent, SessionExtensions, SessionPolicy, StartSessionParams } from '../src/agent/types.ts';
 import { Logger } from '../src/log.ts';
@@ -11,7 +13,7 @@ import type { AgentToolSpec } from '../src/tracker/types.ts';
 import { AsyncQueue } from '../src/util/async.ts';
 import type { LaravelConfig } from '../src/laravel/integration.ts';
 import { resolveConfig } from '../src/workflow/config.ts';
-import { makeIssue } from './helpers.ts';
+import { makeIssue, tempDir, until } from './helpers.ts';
 
 type Emit = (message: Record<string, unknown>) => void;
 type Script = (prompt: string, options: Options, emit: Emit, end: () => void) => Promise<void> | void;
@@ -102,6 +104,7 @@ function params(
     logger?: Logger;
     policy?: SessionPolicy;
     toolTimeoutMs?: number;
+    transcriptPath?: string;
   } = {},
 ): StartSessionParams {
   const config = resolveConfig({ claude: { model: 'opus', ...overrides.claude } }, { workflowPath: '/w/WORKFLOW.md', env: {}, trackerDefaults }).claude;
@@ -116,7 +119,7 @@ function params(
     logger: overrides.logger ?? Logger.silent(),
     signal: overrides.signal ?? new AbortController().signal,
     onEvent: (event) => overrides.events?.push(event),
-    transcriptPath: null,
+    transcriptPath: overrides.transcriptPath ?? null,
     ...(overrides.extensions ? { extensions: overrides.extensions } : {}),
     ...(overrides.policy ? { policy: overrides.policy } : {}),
     ...(overrides.toolTimeoutMs !== undefined ? { toolTimeoutMs: overrides.toolTimeoutMs } : {}),
@@ -177,6 +180,23 @@ describe('claude agent runner', () => {
     assert.equal(options.plugins, undefined);
     assert.equal(options.skills, undefined);
     assert.equal(options.additionalDirectories, undefined);
+  });
+
+  it('writes each turn prompt and the agent messages to the transcript, readable by the transcript reader', async () => {
+    const fake = fakeQuery((_prompt, _options, emit) => {
+      emit({ type: 'assistant', message: { id: 'm1', model: 'opus', content: [{ type: 'text', text: 'On it.' }] }, parent_tool_use_id: null });
+      emit(result(0.1, 10, 1));
+    });
+    const transcriptPath = path.join(tempDir(), 'sessions', 'a.jsonl');
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ transcriptPath }));
+    await session.runTurn('Work on acme/app#a');
+    await session.stop();
+    // The write stream flushes asynchronously.
+    await until(() => (readTranscript(transcriptPath, 0)?.entries.length ?? 0) === 3, 3_000, 'transcript lines');
+    const entries = readTranscript(transcriptPath, 0)?.entries ?? [];
+    assert.deepEqual(entries.map((e) => e.type), ['prompt', 'model_call', 'turn_result']);
+    assert.ok(entries[0]?.type === 'prompt');
+    assert.deepEqual([entries[0].turn, entries[0].text], [1, 'Work on acme/app#a']);
   });
 
   it('adds workspace extensions, plugins and skills to the session', async () => {

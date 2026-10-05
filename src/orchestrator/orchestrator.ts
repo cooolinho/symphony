@@ -6,6 +6,7 @@ import { chooseModel } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, TokenUsage } from '../agent/types.ts';
 import { estimateCost, totalTokens, type ModelTokenUsage, type PricingStore } from '../costs/pricing.ts';
 import type { HistoryLog, RunOutcome, RunStart } from '../history/history.ts';
+import { readTranscript, type TranscriptChunk } from '../agent/transcript.ts';
 import { defaultIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
@@ -148,22 +149,55 @@ interface RetryEntry {
   timer: unknown;
 }
 
-interface RecentEvent {
+/**
+ * One entry of an issue's execution timeline (GET /api/v1/<identifier>/timeline): agent events, phase
+ * transitions and lifecycle steps of the orchestrator (`run_dispatched`, `run_finished`, `retry_scheduled`,
+ * `issue_paused`). `seq` grows per issue, so clients can ask for the entries after the last one they have.
+ */
+interface TimelineEvent {
+  seq: number;
   at: string;
+  kind: 'lifecycle' | 'phase' | 'agent';
   event: string;
+  /** Severity the orchestrator logs this event with. */
+  level: 'debug' | 'info' | 'warn' | 'error';
   message: string | null;
+  run: string | null;
+  turn: number | null;
+  detail: Record<string, unknown> | null;
+}
+
+/** One agent session (run) of a claimed issue. */
+interface SessionInfo {
+  run: string;
+  attempt: number | null;
+  role: string;
+  state: string;
+  /** Model chosen at dispatch; null = Claude Code default (the session reports the actual one). */
+  model: string | null;
+  startedAt: Date;
+  finishedAt: Date | null;
+  outcome: RunOutcome | null;
+  /** JSONL transcript of the session, or null when transcripts are disabled. */
+  transcript: string | null;
 }
 
 /** Per-issue debugging context kept while the issue is claimed. */
 interface IssueRecord {
   identifier: string;
   url: string | null;
+  title: string;
+  repo: string | null;
   workspacePath: string | null;
   runs: number;
   /** Continuation sessions dispatched since the issue was claimed (agent.max_continuations). */
   continuations: number;
   lastError: string | null;
-  recentEvents: RecentEvent[];
+  /** Execution timeline of the claim, the newest TIMELINE_EVENTS entries. */
+  timeline: TimelineEvent[];
+  nextSeq: number;
+  /** Sessions of the claim, the newest MAX_SESSIONS. */
+  sessions: SessionInfo[];
   /** Commit, branch and MCP tool usage of the running or last run. */
   lastRun: RunTrace | null;
   /** Passing entry-check results per HEAD and script (docs/configuration.md#checks); in memory, dropped with the claim. */
@@ -219,6 +253,8 @@ interface PausedEntry {
 }
 
 const RECENT_EVENTS = 50;
+const TIMELINE_EVENTS = 2000;
+const MAX_SESSIONS = 20;
 const ZERO_USAGE: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
 /** Lifecycle events logged at info level; everything else is debug. */
 const LIFECYCLE_EVENTS = new Set([
@@ -584,8 +620,30 @@ export class Orchestrator {
     const record = this.#record(issue);
     record.runs++;
     if (continuation) record.continuations++;
+    record.repo = entry.repo;
     // A "Model: <model>" label picks the model for this run, else the role's claude.model, else claude.model.
     const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model);
+    record.sessions.push({
+      run: runId,
+      attempt,
+      role: name,
+      state: issue.state,
+      model: choice.model,
+      startedAt: entry.startedAt,
+      finishedAt: null,
+      outcome: null,
+      transcript: null,
+    });
+    if (record.sessions.length > MAX_SESSIONS) record.sessions.shift();
+    this.#trace(record, {
+      kind: 'lifecycle',
+      event: 'run_dispatched',
+      level: 'info',
+      message: `${continuation ? 'continuation session' : attempt === null ? 'session' : `retry attempt ${attempt}`} started as ${name} in "${issue.state}"`,
+      run: runId,
+      turn: null,
+      detail: { attempt, role: name, state: issue.state, model: choice.model, model_label: choice.label, continuation },
+    });
     if (choice.warning !== null) log.warn('model label ignored', { warning: choice.warning, model: choice.model ?? 'Claude Code default' });
     log.info('dispatching issue', {
       state: issue.state,
@@ -637,7 +695,22 @@ export class Orchestrator {
             if (entry.phase === 'PreparingWorkspace' && phase !== 'PreparingWorkspace') entry.preparedAtMs = this.#clock.monotonicMs();
             // The stall clock starts fresh after a check; the agent was waiting for its tool call meanwhile.
             if (entry.phase === 'RunningChecks' && phase !== 'RunningChecks') entry.lastEventAtMs = this.#clock.monotonicMs();
+            if (entry.phase !== phase && this.#running.get(entry.issueId) === entry) {
+              this.#trace(record, {
+                kind: 'phase',
+                event: 'phase',
+                level: 'debug',
+                message: `${entry.phase} → ${phase}`,
+                run: runId,
+                turn: entry.turnCount,
+                detail: { from: entry.phase, to: phase },
+              });
+            }
             entry.phase = phase;
+          },
+          transcript: (file) => {
+            const session = record.sessions.find((candidate) => candidate.run === runId);
+            if (session !== undefined) session.transcript = file;
           },
           workspace: (workspace) => {
             entry.workspacePath = workspace.path;
@@ -711,9 +784,37 @@ export class Orchestrator {
     this.#running.delete(entry.issueId);
     const agentSeconds = (this.#clock.monotonicMs() - entry.startedAtMs) / 1000;
     this.#totals.endedSeconds += agentSeconds;
-    this.#recordRun(entry, outcome, agentSeconds);
+    const result = this.#runResult(entry, outcome);
+    this.#recordRun(entry, result, agentSeconds);
     const finished = this.#records.get(entry.issueId);
-    if (finished) finished.lastRun = traceOf(entry);
+    if (finished) {
+      finished.lastRun = traceOf(entry);
+      const session = finished.sessions.find((candidate) => candidate.run === entry.runId);
+      if (session !== undefined) {
+        session.finishedAt = this.#clock.now();
+        session.outcome = result.result;
+      }
+      this.#trace(finished, {
+        kind: 'lifecycle',
+        event: 'run_finished',
+        level: result.result === 'failed' || result.result === 'stalled' ? 'error' : result.result === 'continuing' || result.result === 'handed_off' ? 'info' : 'warn',
+        message: `${result.result}: ${result.reason}`,
+        run: entry.runId,
+        turn: entry.turnCount,
+        detail: {
+          outcome: result.result,
+          reason: result.reason,
+          ...(outcome.kind === 'failed' ? { code: outcome.code, phase: outcome.phase } : {}),
+          ...(result.nextRole !== undefined ? { next_role: result.nextRole } : {}),
+          state: entry.issue.state,
+          turns: entry.turnCount,
+          agent_seconds: Math.round(agentSeconds * 10) / 10,
+          tokens: tokensJson(entry.tokens),
+          cost_usd: Math.round(entry.costUsd * 10_000) / 10_000,
+          model: primaryModelOf(entry.modelUsage) ?? entry.model,
+        },
+      });
+    }
     const log = this.#issueLogger(entry.issue);
     const record = this.#records.get(entry.issueId);
     const nextAttempt = (entry.attempt ?? 0) + 1;
@@ -764,11 +865,8 @@ export class Orchestrator {
     this.#deps.history?.runStarted({ ...start, extra });
   }
 
-  /** Writes the finished run to the repository history. */
-  #recordRun(entry: RunningEntry, outcome: WorkerOutcome, agentSeconds: number): void {
-    this.#flushStart(entry);
-    const history = this.#deps.history;
-    if (history === null || history === undefined) return;
+  /** How a run ended, as the repository history and the timeline report it. */
+  #runResult(entry: RunningEntry, outcome: WorkerOutcome): { result: RunOutcome; reason: string; nextRole?: string } {
     const config = this.#deps.workflow.current.config;
     let result: RunOutcome;
     let reason: string;
@@ -794,6 +892,14 @@ export class Orchestrator {
       result = 'failed';
       reason = `${outcome.code}: ${outcome.message}`;
     }
+    return nextRole === undefined ? { result, reason } : { result, reason, nextRole };
+  }
+
+  /** Writes the finished run to the repository history. */
+  #recordRun(entry: RunningEntry, { result, reason, nextRole }: { result: RunOutcome; reason: string; nextRole?: string }, agentSeconds: number): void {
+    this.#flushStart(entry);
+    const history = this.#deps.history;
+    if (history === null || history === undefined) return;
     history.runFinished({
       repo: entry.repo,
       issue: entry.identifier,
@@ -857,6 +963,21 @@ export class Orchestrator {
       timer,
     });
     this.#claimed.add(issueId);
+    const record = this.#records.get(issueId);
+    const last = record?.timeline.at(-1);
+    const repeated =
+      last?.event === 'retry_scheduled' && last.detail?.attempt === attempt && last.detail?.kind === info.kind && last.detail?.error === info.error;
+    if (record !== undefined && !repeated) {
+      this.#trace(record, {
+        kind: 'lifecycle',
+        event: 'retry_scheduled',
+        level: info.kind === 'failure' ? 'warn' : 'info',
+        message: info.kind === 'continuation' ? `continuation in ${Math.round(delay / 1000)}s` : `retry ${attempt} in ${Math.round(delay / 1000)}s: ${info.error ?? 'unknown error'}`,
+        run: null,
+        turn: null,
+        detail: { attempt, kind: info.kind, delay_ms: delay, due_at: new Date(this.#clock.now().getTime() + delay).toISOString(), error: info.error },
+      });
+    }
     this.#logger.info('retry scheduled', {
       issue_id: issueId,
       issue_identifier: info.identifier,
@@ -959,6 +1080,18 @@ export class Orchestrator {
       pausedAt: this.#clock.now(),
     });
     this.#claimed.add(issue.id);
+    const record = this.#records.get(issue.id);
+    if (record !== undefined) {
+      this.#trace(record, {
+        kind: 'lifecycle',
+        event: 'issue_paused',
+        level: 'warn',
+        message: `paused after ${continuations} continuation session(s) in "${issue.state}"; change the issue on the board to resume`,
+        run: null,
+        turn: null,
+        detail: { state: issue.state, continuations, max_continuations: limit },
+      });
+    }
     this.#deps.history?.note(this.#repositoryOf(issue), 'issue_paused', {
       issue: issue.identifier,
       title: issue.title,
@@ -1174,14 +1307,29 @@ export class Orchestrator {
     }
     if (event.rateLimits !== undefined) this.#rateLimits = event.rateLimits;
 
-    const record = this.#records.get(entry.issueId);
-    if (record !== undefined && event.message !== undefined && event.message !== '') {
-      record.recentEvents.push({ at: event.timestamp.toISOString(), event: event.event, message: event.message });
-      if (record.recentEvents.length > RECENT_EVENTS) record.recentEvents.shift();
-    }
-
     const failedTool = event.event === 'tracker_tool' && event.detail?.ok === false;
     const level = WARNING_EVENTS.has(event.event) || failedTool ? 'warn' : LIFECYCLE_EVENTS.has(event.event) ? 'info' : 'debug';
+
+    const record = this.#records.get(entry.issueId);
+    const hasMessage = event.message !== undefined && event.message !== '';
+    if (record !== undefined && (hasMessage || event.detail !== undefined || event.usage !== undefined)) {
+      const detail: Record<string, unknown> = { ...(event.detail ?? {}) };
+      if (event.usage !== undefined) {
+        detail.usage = tokensJson(event.usage);
+        detail.cost_usd = Math.round(entry.costUsd * 10_000) / 10_000;
+      }
+      this.#trace(record, {
+        kind: 'agent',
+        event: event.event,
+        level,
+        message: hasMessage ? (event.message as string) : null,
+        run: entry.runId,
+        turn: event.turnCount,
+        detail: Object.keys(detail).length > 0 ? detail : null,
+        at: event.timestamp,
+      });
+    }
+
     entry.runLog.log(level, `agent ${event.event}`, {
       session_id: event.sessionId ?? event.threadId,
       thread_id: event.threadId,
@@ -1195,12 +1343,41 @@ export class Orchestrator {
   #record(issue: Issue): IssueRecord {
     let record = this.#records.get(issue.id);
     if (record === undefined) {
-      record = { identifier: issue.identifier, url: issue.url, workspacePath: null, runs: 0, continuations: 0, lastError: null, recentEvents: [], lastRun: null, checkCache: new Set(), lastCheck: null };
+      record = {
+        identifier: issue.identifier,
+        url: issue.url,
+        title: issue.title,
+        repo: null,
+        workspacePath: null,
+        runs: 0,
+        continuations: 0,
+        lastError: null,
+        timeline: [],
+        nextSeq: 1,
+        sessions: [],
+        lastRun: null,
+        checkCache: new Set(),
+        lastCheck: null,
+      };
       this.#records.set(issue.id, record);
     }
     record.identifier = issue.identifier;
     record.url = issue.url;
+    record.title = issue.title;
     return record;
+  }
+
+  /** Appends to the issue's timeline, keeping the newest TIMELINE_EVENTS entries. */
+  #trace(record: IssueRecord, event: Omit<TimelineEvent, 'seq' | 'at'> & { at?: Date }): void {
+    const { at, ...rest } = event;
+    record.timeline.push({ seq: record.nextSeq++, at: (at ?? this.#clock.now()).toISOString(), ...rest });
+    if (record.timeline.length > TIMELINE_EVENTS) record.timeline.shift();
+  }
+
+  /** Finds the record of a claimed issue by id or identifier. */
+  #findRecord(key: string): { issueId: string; record: IssueRecord } | null {
+    for (const [issueId, record] of this.#records) if (issueId === key || record.identifier === key) return { issueId, record };
+    return null;
   }
 
   #issueLogger(issue: Pick<Issue, 'id' | 'identifier'>): Logger {
@@ -1339,10 +1516,13 @@ export class Orchestrator {
     if (issueId === undefined) return null;
     const record = this.#records.get(issueId);
     const identifier = entry?.identifier ?? retry?.identifier ?? record?.identifier ?? key;
+    const pricing = this.#deps.pricing?.current();
     return {
       issue_identifier: identifier,
       issue_id: issueId,
       issue_url: entry?.issue.url ?? retry?.url ?? record?.url ?? null,
+      title: entry?.issue.title ?? record?.title ?? null,
+      repo: entry?.repo ?? record?.repo ?? null,
       status:
         entry !== undefined ? (entry.stop !== null ? 'stopping' : 'running') : retry !== undefined ? 'retrying' : paused !== undefined ? 'paused' : 'claimed',
       role: entry?.role ?? null,
@@ -1358,10 +1538,82 @@ export class Orchestrator {
       retry: retry === undefined ? null : this.#retryRow(retry, now),
       paused: paused === undefined ? null : this.#pausedRow(paused),
       logs: { session_transcripts_dir: this.#deps.logDir === null ? null : path.join(this.#deps.logDir, 'sessions') },
-      recent_events: record?.recentEvents ?? [],
+      // Per-model usage of the running session, priced like cost_usd (model-costs.yml).
+      usage_by_model:
+        entry === undefined
+          ? null
+          : Object.fromEntries(
+              Object.entries(entry.modelUsage).map(([model, usage]) => [
+                model,
+                {
+                  input_tokens: usage.inputTokens,
+                  output_tokens: usage.outputTokens,
+                  cache_read_tokens: usage.cacheReadTokens,
+                  cache_write_tokens: usage.cacheWriteTokens,
+                  total_tokens: totalTokens(usage),
+                  cost_usd: pricing === undefined ? null : Math.round(estimateCost(pricing, { [model]: usage }) * 10_000) / 10_000,
+                },
+              ]),
+            ),
+      sessions: (record?.sessions ?? []).map((session) => ({
+        run: session.run,
+        attempt: session.attempt,
+        role: session.role,
+        state: session.state,
+        model: session.model,
+        started_at: session.startedAt.toISOString(),
+        finished_at: session.finishedAt?.toISOString() ?? null,
+        outcome: session.outcome,
+        transcript: session.transcript,
+      })),
+      timeline_seq: (record?.nextSeq ?? 1) - 1,
+      recent_events: (record?.timeline ?? [])
+        .filter((event) => event.kind === 'agent' && event.message !== null)
+        .slice(-RECENT_EVENTS)
+        .map((event) => ({ at: event.at, event: event.event, message: event.message })),
       last_error: record?.lastError ?? null,
       last_check: checkJson(record?.lastCheck ?? null),
       tracked: { completed_before: this.#completed.has(issueId) },
     };
+  }
+
+  /** Timeline entries after `after` (a `seq`) for GET /api/v1/<identifier>/timeline; null when the issue is not tracked. */
+  issueTimeline(key: string, after = 0) {
+    const found = this.#findRecord(key);
+    if (found === null) return null;
+    const { record } = found;
+    const events = record.timeline.filter((event) => event.seq > after);
+    return {
+      issue_identifier: record.identifier,
+      latest_seq: record.nextSeq - 1,
+      // Older entries than the first one here were dropped (TIMELINE_EVENTS).
+      first_seq: record.timeline[0]?.seq ?? record.nextSeq,
+      events,
+    };
+  }
+
+  /** The transcript file of a session (the latest when `run` is null), or null. */
+  issueTranscriptFile(key: string, run: string | null): string | null {
+    const found = this.#findRecord(key);
+    if (found === null) return null;
+    const session = run === null ? found.record.sessions.at(-1) : found.record.sessions.find((candidate) => candidate.run === run);
+    return session?.transcript ?? null;
+  }
+
+  /**
+   * Normalized transcript lines of a session from byte `from` on (GET /api/v1/<identifier>/transcript); null when
+   * the issue is not tracked. Model calls are priced with model-costs.yml.
+   */
+  issueTranscript(key: string, run: string | null, from = 0): ({ run: string | null; available: boolean; reason: string | null } & Partial<TranscriptChunk>) | null {
+    const found = this.#findRecord(key);
+    if (found === null) return null;
+    const session = run === null ? found.record.sessions.at(-1) : found.record.sessions.find((candidate) => candidate.run === run);
+    if (session === undefined) return { run, available: false, reason: 'unknown session' };
+    if (session.transcript === null) {
+      return { run: session.run, available: false, reason: this.#deps.logDir === null ? 'session transcripts are disabled (no log directory)' : 'no transcript yet' };
+    }
+    const chunk = readTranscript(session.transcript, from, { pricing: this.#deps.pricing?.current() ?? null });
+    if (chunk === null) return { run: session.run, available: false, reason: 'transcript file not found' };
+    return { run: session.run, available: true, reason: null, ...chunk };
   }
 }

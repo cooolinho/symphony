@@ -233,14 +233,45 @@ Probleme wie Konfigurations- oder GitHub-Fehler. Der Button **Logs** öffnet die
 Filtern nach Repository, Schweregrad und Text; von dort (oder per Mittelklick auf den Button) führt ein Link zur
 vollständigen [Logs-Seite](#logs-und-statistiken).
 
+### Agent-Detailansicht (Execution Trace)
+
+Ein Klick auf eine Agent-Karte (oder auf *trace →* in Warteschlange und Pausiert-Liste) öffnet `/agent?id=<identifier>`,
+den Ablauf eines Agenten als Execution Trace. Oben stehen Zustand (Running, Retrying, Paused, Completed, Failed …),
+Issue, Repository, Rolle, Modell, Phase, Laufzeit, Turn, Tokens und Kosten. Fehler und Wiederholungen erscheinen als
+Banner mit Grund, fehlgeschlagenem Tool und nächstem Versuch; *View details* springt zur Stelle in der Timeline.
+
+Die **Timeline** zeigt chronologisch alle Sessions des Issues seit dem Claim: Lifecycle (Session gestartet, beendet,
+Retry geplant, pausiert), Phasenwechsel, Prompts, Modellaufrufe (Modell, Tokens, geschätzte Kosten, Zeit seit dem
+vorigen Schritt), Antworten, Thinking und Tool-Calls mit Argumenten, Ergebnis, Status und Dauer. Filter (Lifecycle,
+Phasen, Modell, Tools, Fehler) und eine Suche grenzen sie ein. Prompts, Antworten und Tool-Daten sind zugeklappt und
+werden erst beim Aufklappen gerendert; Fehler stehen immer sichtbar im Eintrag. Neben der Timeline fassen Lifecycle,
+Token-Verbrauch (mit einer kleinen Grafik pro Modellaufruf), Kosten pro Modell, Sessions und Laufkontext (Workspace,
+Branch, Commit, letzter Entry-Check) den Stand zusammen. *Show raw logs* öffnet alle Ereignisse als Terminal-Log mit
+Schweregrad-Filter. Die Seite aktualisiert sich alle 2 s und hängt neue Einträge an, ohne die Scroll-Position zu
+verlieren.
+
+Woher die Daten kommen und wo die Grenzen liegen:
+
+- Prompts, vollständige Antworten, Tool-Argumente und -Ergebnisse sowie Tokens pro Modellaufruf stammen aus dem
+  [Transkript der Session](#logs-transkripte-und-workspaces). Ohne Log-Verzeichnis zeigt die Timeline nur die
+  Agenten-Ereignisse (gekürzte Texte).
+- Tokens und Kosten der Session meldet Claude Code am Ende jedes Turns; die Werte pro Modellaufruf bewertet Symphony
+  mit derselben `model-costs.yml`.
+- Symphony hält die Timeline nur, solange das Issue beansprucht ist (laufend, in der Warteschlange oder pausiert), und
+  höchstens die letzten 2.000 Ereignisse. Nach einem Neustart oder nach `Done` ist sie weg; abgeschlossene Läufe stehen
+  in den [Repository-Logs](#logs-und-statistiken).
+
 | Endpunkt | Inhalt |
 |---|---|
 | `GET /` | Dashboard |
+| `GET /agent?id=<identifier>` | Agent-Detailansicht (Execution Trace) |
 | `GET /logs` | Logs-Seite mit Statistiken, gesamt oder mit `?repo=owner/name` für ein Repository |
 | `GET /api/v1/history` | dieselben Statistiken als JSON, optional mit `?repo=owner/name` |
 | `GET /api/v1/history/raw?repo=owner/name` | die `.log`-Datei eines Repositorys als Text |
 | `GET /api/v1/state` | Gesamtzustand als JSON: laufende Agenten (mit `role`), Warteschlange, Summen, Gesundheit |
-| `GET /api/v1/<identifier>` | Details zu einem Issue: Rolle, Workspace, Versuche, letzte Ereignisse, letzter Fehler, letzter Entry-Check (`last_check`) |
+| `GET /api/v1/<identifier>` | Details zu einem Issue: Titel, Rolle, Workspace, Versuche, Sessions (`sessions`), Tokens und Kosten pro Modell (`usage_by_model`), letzte Ereignisse, letzter Fehler, letzter Entry-Check (`last_check`) |
+| `GET /api/v1/<identifier>/timeline?after=<seq>` | Timeline des Issues: Lifecycle, Phasenwechsel und Agenten-Ereignisse mit fortlaufender `seq`; `after` liefert nur neuere |
+| `GET /api/v1/<identifier>/transcript?run=<run>&from=<offset>` | Transkript einer Session (ohne `run` die neueste), aufbereitet als Prompts, Modellaufrufe, Tool-Ergebnisse; ab Byte-Offset `from`, weiter mit `next_offset`. Mit `&format=raw` die JSONL-Datei |
 | `POST /api/v1/refresh` | sofort abfragen und abgleichen |
 
 ```bash
@@ -255,7 +286,7 @@ curl -s -X POST http://127.0.0.1:4000/api/v1/refresh
 |---|---|
 | Laufende Logs (`key=value`) | Terminal (stderr). Zusätzlich in eine Datei mit `--log-file <pfad>`, ausführlicher mit `--log-level debug`. |
 | Log pro Repository: was wann bearbeitet wurde, mit Tokens, Modell, Kosten und Agentenzeit | `~/.local/state/symphony/repositories/<owner>_<repo>.log`, siehe [Logs und Statistiken](#logs-und-statistiken) |
-| Transkript jeder Session (alle Agenten-Nachrichten als JSON-Zeilen) | `~/.local/state/symphony/sessions/<workspace>/<zeit>.jsonl`. Einen anderen Ort wählst du mit `--log-dir <ordner>`. |
+| Transkript jeder Session (alle Agenten-Nachrichten als JSON-Zeilen `{ at, message }`, dazu der Prompt jedes Turns als `{ at, prompt: { turn, text } }`) | `~/.local/state/symphony/sessions/<workspace>/<zeit>.jsonl`. Einen anderen Ort wählst du mit `--log-dir <ordner>`. Die [Agent-Detailansicht](#agent-detailansicht-execution-trace) zeigt es aufbereitet. |
 | Claude-Code-Session ansehen | im Workspace `claude --resume <thread-id>`. Die ID steht im Log als `thread_id` und in der API (`/api/v1/<identifier>`). |
 | Workspaces | `~/symphony-workspaces/`. Sie werden bei `Done` gelöscht; andere kannst du gefahrlos von Hand löschen, wenn kein Agent darin läuft. |
 

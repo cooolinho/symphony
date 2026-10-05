@@ -204,6 +204,7 @@ class ClaudeSession implements AgentSession {
       this.#pending = { turnId, resolve, timer: null };
       this.#armTurnTimer();
       this.#emit('turn_started', { message: `turn ${turnId} started` });
+      this.#recordPrompt(Number(turnId), prompt);
       try {
         this.#input.push({
           type: 'user',
@@ -582,5 +583,10 @@ class ClaudeSession implements AgentSession {
 
   #record(message: SDKMessage): void {
     this.#transcript?.write(`${JSON.stringify({ at: new Date().toISOString(), message })}\n`);
+  }
+
+  /** The prompt of a turn goes into the transcript too; the SDK does not echo it back (see agent/transcript.ts). */
+  #recordPrompt(turn: number, text: string): void {
+    this.#transcript?.write(`${JSON.stringify({ at: new Date().toISOString(), prompt: { turn, text } })}\n`);
   }
 }
