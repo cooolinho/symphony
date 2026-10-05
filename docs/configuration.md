@@ -107,8 +107,8 @@ Hooks finish when their output pipes close, so redirect the output of background
 | Key | Default | Notes |
 |---|---|---|
 | `max_concurrent_agents` | `10` | `0` pauses new dispatches; running agents continue. |
-| `max_turns` | `20` | Turns per agent session; between turns Symphony re-reads the issue and stops if it left the active states. |
-| `max_continuations` | unlimited | After a session ends normally while the issue is still active, Symphony starts another one (a *continuation session*). With a limit, an issue that is still active after that many continuation sessions is **paused**: it stays claimed and nothing new starts. It resumes as soon as it changes on the tracker (status, comment, labels, edit), leaves the active states, or the limit is raised. `0` = pause right after the first session. |
+| `max_turns` | `20` | Turns per agent session; between turns Symphony re-reads the issue and stops if it left the active states or moved to a column served by another [role](#roles). |
+| `max_continuations` | unlimited | After a session ends normally while the issue is still active, Symphony starts another one (a *continuation session*). With a limit, an issue that is still active after that many continuation sessions is **paused**: it stays claimed and nothing new starts. It resumes as soon as it changes on the tracker (status, comment, labels, edit), leaves the active states, or the limit is raised. `0` = pause right after the first session. A switch to another [role](#roles) also ends the session and counts as a continuation. |
 | `max_retry_backoff_ms` | `300000` | Cap for failure retries (10 s, 20 s, 40 s, …). |
 | `max_concurrent_agents_by_state` | `{}` | Per-status limits, e.g. `{ "In Progress": 1 }`. Invalid entries are ignored with a warning. |
 | `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `turn_number`, `max_turns`). |
@@ -169,8 +169,20 @@ issue in no role's column runs as `default`). The role decides:
 - **Prompt:** the role name is the template variable `role` (see [Prompt template](#prompt-template)).
 
 The role appears as `role` in the `dispatching issue` log line, in `run_started` of the repository log and on every
-agent event log line (together with `run_id`). A session does not yet end when the issue moves to another role's
-column; the next run picks up the new role.
+agent event log line (together with `run_id`).
+
+**Role switches.** A run keeps its role for its whole session. After each turn Symphony re-reads the issue; when the
+agent moved it to a column served by a **different** role (e.g. `In progress` → `Agent review`), the session ends at
+that turn boundary with the reason `role changed (<from> → <to>)`, and the next role starts in a fresh session through
+the usual continuation retry (1 s later). A move between columns of the same role (e.g. `Ready` → `In progress`) keeps
+the session. Reconciliation never stops a running session because of a role change, so the agent can finish its
+handoff (e.g. a comment) within the current turn. The run's `run_finished` line records `outcome=handed_off` with
+`role` and `next_role` (see [Repository logs](#repository-logs)).
+
+Each role switch starts a continuation session and therefore counts toward
+[`agent.max_continuations`](#agent). This also caps a developer ↔ reviewer ping-pong: once the limit is reached, the
+issue is paused until it changes on the board. With roles, `max_continuations: 6` is a good starting point (room for a
+few review rounds plus continuations within each phase).
 
 ```yaml
 roles:
@@ -273,7 +285,7 @@ workflow directory, else `$XDG_STATE_HOME/symphony` or `~/.local/state/symphony`
 | Event | Fields |
 |---|---|
 | `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested: from a `Model: …` label, else the role's model, else `claude.model`), `role` (`default` without roles) |
-| `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `stopped`, `stalled`, `shutdown`), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `head_sha` and `branch` (final commit of a git workspace; omitted otherwise), `mcp_tool_calls` (`<server>:<n>,…` per MCP server; omitted when no MCP tool was used), `started_at`, running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` |
+| `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `stopped`, `stalled`, `shutdown`), `role` and `next_role` (only when the run handed off to another [role](#roles)), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `head_sha` and `branch` (final commit of a git workspace; omitted otherwise), `mcp_tool_calls` (`<server>:<n>,…` per MCP server; omitted when no MCP tool was used), `started_at`, running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` |
 | `model_usage` | `repo`, `issue`, `run`, `model`, `price` (matched entry), token counts, `cost_usd` |
 | `issue_paused` | `repo`, `issue`, `title`, `state`, `continuations`, `max_continuations` |
 | `workspace_removed` | `repo`, `issue`, `state` |

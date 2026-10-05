@@ -563,9 +563,12 @@ export class Orchestrator {
         logger: log,
         signal: controller.signal,
         transcriptDir: this.#deps.logDir === null ? null : path.join(this.#deps.logDir, 'sessions'),
-        stillEligible: (fresh) => {
+        continueWith: (fresh) => {
           const current = this.#deps.workflow.current.config;
-          return isActiveState(fresh.state, current.tracker) && isRoutable(fresh, current.tracker);
+          if (!isActiveState(fresh.state, current.tracker)) return `issue left the active states ("${fresh.state}")`;
+          if (!isRoutable(fresh, current.tracker)) return 'issue is no longer dispatchable (assignee, blockers or labels)';
+          const next = roleName(roleFor(fresh.state, current.roles));
+          return next === entry.role ? null : `role changed (${entry.role} → ${next})`;
         },
         callbacks: {
           phase: (phase) => {
@@ -663,12 +666,21 @@ export class Orchestrator {
     const config = this.#deps.workflow.current.config;
     let result: RunOutcome;
     let reason: string;
+    let nextRole: string | undefined;
     if (entry.stop !== null) {
       result = entry.stop.kind === 'stalled' ? 'stalled' : entry.stop.kind === 'shutdown' ? 'shutdown' : 'stopped';
       reason = entry.stop.reason;
     } else if (outcome.kind === 'normal') {
       result = isActiveState(entry.issue.state, config.tracker) ? 'continuing' : 'handed_off';
       reason = outcome.reason;
+      if (result === 'continuing') {
+        // Moved to a column served by another role: the next session runs as that role.
+        const next = roleName(roleFor(entry.issue.state, config.roles));
+        if (next !== entry.role) {
+          result = 'handed_off';
+          nextRole = next;
+        }
+      }
     } else if (outcome.kind === 'cancelled') {
       result = 'stopped';
       reason = outcome.message;
@@ -684,6 +696,7 @@ export class Orchestrator {
       session: entry.threadId,
       attempt: entry.attempt,
       outcome: result,
+      ...(nextRole !== undefined ? { role: entry.role, nextRole } : {}),
       state: entry.issue.state,
       reason,
       turns: entry.turnCount,
