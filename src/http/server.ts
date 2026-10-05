@@ -75,8 +75,9 @@ function sameHost(origin: string, hostHeader: string | undefined): boolean {
 /**
  * Observability/control surface (spec 13.7): `/` dashboard, `/agent?id=<identifier>` agent detail view,
  * `/logs` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
- * `/api/v1/state`, `/api/v1/<identifier>` with its `/timeline` and `/transcript`, `POST /api/v1/refresh`.
- * Read-only except refresh. On a loopback bind, requests whose Host is
+ * `/api/v1/state`, `/api/v1/<identifier>` with its `/timeline` and `/transcript`, `POST /api/v1/refresh`
+ * and `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker; loopback binds only).
+ * Read-only except refresh and retry. On a loopback bind, requests whose Host is
  * not a loopback name are rejected (DNS-rebinding guard), and cross-origin POSTs are refused.
  */
 export function startHttpServer(options: {
@@ -255,7 +256,59 @@ export function startHttpServer(options: {
       return;
     }
     // Sub-resources of an issue; the identifier is URL-encoded (owner%2Frepo%2312), so its slash cannot end it.
-    const sub = /^(.+)\/(timeline|transcript)$/.exec(pathname.slice(API_PREFIX.length));
+    const sub = /^(.+)\/(timeline|transcript|retry)$/.exec(pathname.slice(API_PREFIX.length));
+    if (pathname.startsWith(API_PREFIX) && sub !== null && sub[2] === 'retry') {
+      allow(['POST'], () => {
+        if (!loopbackBind) {
+          sendError(res, 403, 'control_disabled', 'restart is only available when the server listens on a loopback address');
+          return;
+        }
+        const origin = req.headers.origin;
+        if (origin !== undefined && !sameHost(origin, req.headers.host)) {
+          sendError(res, 403, 'forbidden_origin', 'cross-origin restart requests are not allowed');
+          return;
+        }
+        let key: string;
+        try {
+          key = decodeURIComponent(sub[1] as string);
+        } catch {
+          sendError(res, 400, 'bad_request', 'malformed issue identifier');
+          return;
+        }
+        orchestrator.restartWorker(key).then(
+          (result) => {
+            if (result.ok) {
+              sendJson(res, 202, {
+                queued: true,
+                issue_identifier: result.issueIdentifier,
+                previous: result.previous,
+                requested_at: new Date().toISOString(),
+              });
+              return;
+            }
+            switch (result.reason) {
+              case 'not_found':
+                sendError(res, 404, 'issue_not_found', `issue ${key} is not known to the running orchestrator`);
+                break;
+              case 'running':
+                sendError(res, 409, 'running', 'the worker is running; there is nothing to restart');
+                break;
+              case 'stopping':
+                sendError(res, 409, 'stopping', 'the orchestrator is shutting down; restart it before retrying');
+                break;
+              case 'not_waiting':
+                sendError(res, 409, 'not_waiting', 'the issue is not waiting for a retry or paused; there is nothing to restart');
+                break;
+            }
+          },
+          (error) => {
+            logger.warn('http restart failed', { path: req.url, error: errorMessage(error) });
+            if (!res.headersSent) sendError(res, 500, 'internal_error', 'request failed; see the orchestrator logs');
+          },
+        );
+      });
+      return;
+    }
     if (pathname.startsWith(API_PREFIX) && sub !== null) {
       allow(['GET'], () => {
         let key: string;

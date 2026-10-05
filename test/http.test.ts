@@ -264,3 +264,104 @@ describe('agent trace API', () => {
     }
   });
 });
+
+describe('POST /api/v1/<identifier>/retry', () => {
+  const base = `/api/v1/${encodeURIComponent('acme/app#a')}/retry`;
+
+  it('restarts a waiting worker and reports why others cannot be restarted', async () => {
+    let mode: 'fail' | 'hang' = 'fail';
+    const runner = new FakeRunner((turn, params) =>
+      mode === 'hang'
+        ? new Promise((resolve) => params.signal.addEventListener('abort', () => resolve({ ok: false, turnId: String(turn), code: 'turn_cancelled', message: 'cancelled' })))
+        : { ok: false, turnId: String(turn), code: 'turn_failed', message: 'boom' },
+    );
+    const timers = new ManualTimers();
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir(), { agent: { max_turns: 1 } }))),
+      runner,
+      logger: Logger.silent(),
+      env: {},
+      logDir: null,
+      timers,
+      createAdapter: () => new FakeTracker([makeIssue({ id: 'a' })]),
+    });
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    const state = async () => JSON.parse((await request(server.port, 'GET', '/api/v1/state')).body);
+    try {
+      const unknown = await request(server.port, 'POST', `/api/v1/${encodeURIComponent('acme/app#zzz')}/retry`);
+      assert.equal(unknown.status, 404);
+      assert.equal(JSON.parse(unknown.body).error.code, 'issue_not_found');
+
+      await orchestrator.tickNow();
+      await until(() => orchestrator.snapshot().retrying.length === 1, 3_000, 'waiting');
+      mode = 'hang';
+      const queued = await request(server.port, 'POST', base);
+      assert.equal(queued.status, 202);
+      const body = JSON.parse(queued.body);
+      assert.equal(body.queued, true);
+      assert.equal(body.issue_identifier, 'acme/app#a');
+      assert.equal(body.previous, 'retrying');
+      assert.equal(typeof body.requested_at, 'string');
+      timers.fire(0);
+      await until(() => orchestrator.snapshot().running.length === 1, 3_000, 'dispatched');
+      assert.equal((await state()).running.length, 1);
+
+      const running = await request(server.port, 'POST', base);
+      assert.equal(running.status, 409);
+      assert.equal(JSON.parse(running.body).error.code, 'running');
+    } finally {
+      await orchestrator.shutdown(1_000);
+      await server.close();
+    }
+  });
+
+  it('maps every refusal of restartWorker and guards the route', async () => {
+    let reason: string = 'not_waiting';
+    let calls = 0;
+    const orchestrator = {
+      restartWorker: async () => {
+        calls++;
+        return { ok: false, reason };
+      },
+    } as unknown as Orchestrator;
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    try {
+      for (const [r, status, code] of [['not_waiting', 409, 'not_waiting'], ['stopping', 409, 'stopping'], ['not_found', 404, 'issue_not_found']] as const) {
+        reason = r;
+        const res = await request(server.port, 'POST', base);
+        assert.equal(res.status, status);
+        assert.equal(JSON.parse(res.body).error.code, code);
+      }
+      const get = await request(server.port, 'GET', base);
+      assert.equal(get.status, 405);
+      assert.equal(get.headers.allow, 'POST');
+      assert.equal((await request(server.port, 'POST', base, { origin: 'https://evil.example' })).status, 403);
+      assert.equal(JSON.parse((await request(server.port, 'POST', base, { origin: 'https://evil.example' })).body).error.code, 'forbidden_origin');
+      assert.equal((await request(server.port, 'POST', base, { host: 'evil.example' })).status, 403);
+      assert.equal(calls, 3);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('is disabled when the server is not bound to a loopback address', async () => {
+    let calls = 0;
+    const orchestrator = {
+      restartWorker: async () => {
+        calls++;
+        return { ok: true, issueIdentifier: 'acme/app#a', previous: 'retrying' };
+      },
+      snapshot: () => ({}),
+    } as unknown as Orchestrator;
+    const server = await startHttpServer({ host: '0.0.0.0', port: 0, orchestrator, logger: Logger.silent() });
+    try {
+      const res = await request(server.port, 'POST', base);
+      assert.equal(res.status, 403);
+      assert.equal(JSON.parse(res.body).error.code, 'control_disabled');
+      assert.equal(calls, 0);
+      assert.equal((await request(server.port, 'GET', '/api/v1/state')).status, 200);
+    } finally {
+      await server.close();
+    }
+  });
+});
