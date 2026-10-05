@@ -1,0 +1,152 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { describe, it } from 'node:test';
+import { Logger } from '../src/log.ts';
+import { CHECK_PASSED_NOTE, createGuard, guardTools, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
+import type { AgentToolSpec, ToolResult } from '../src/tracker/types.ts';
+import { WorkspaceManager } from '../src/workspace/manager.ts';
+import { baseFront, makeIssue, makeWorkflow, tempDir } from './helpers.ts';
+
+const ROLES = {
+  developer: { states: ['Todo', 'In progress'], may_move_to: ['In progress', 'Agent review', 'Blocked', 'Done'] },
+  reviewer: { states: ['Agent review'], may_move_to: ['In review', 'In progress'] },
+};
+
+function setup(options: { checks?: Record<string, string>; timeoutMs?: number; roles?: boolean; role?: 'developer' | 'reviewer' } = {}) {
+  const root = tempDir('symphony-guard-');
+  const front = baseFront(root, {
+    tracker: {
+      kind: 'github_project',
+      provider: { owner: 'acme', project_number: 1, token: 'test-token' },
+      active_states: ['Todo', 'In progress', 'Agent review'],
+    },
+    ...(options.roles === false ? {} : { roles: ROLES }),
+    checks: { timeout_ms: options.timeoutMs ?? 10_000, on_enter: options.checks ?? {} },
+  });
+  const config = makeWorkflow(front).config;
+  const workspacePath = path.join(root, 'ws');
+  fs.mkdirSync(workspacePath);
+  const manager = new WorkspaceManager({ root, hooks: config.hooks, workflowDir: root }, { PATH: process.env.PATH }, Logger.silent());
+  const controller = new AbortController();
+  const events: string[] = [];
+  const params: GuardParams = {
+    role: config.roles?.find((r) => r.name === (options.role ?? 'developer')) ?? null,
+    config,
+    workspace: { path: workspacePath, key: 'ws', createdNow: false },
+    issue: () => ({ id: '1', identifier: 'acme/app#1' }),
+    manager,
+    signal: controller.signal,
+    onEvent: (event) => events.push(event),
+  };
+  return { params, guard: createGuard(params), controller, events, workspacePath };
+}
+
+const denied = (decision: GuardDecision) => (decision.allow ? null : decision);
+
+describe('transition guard', () => {
+  it('denies terminal targets and targets outside may_move_to, listing the allowed ones', async () => {
+    const { guard, events } = setup();
+    const done = denied(await guard('done'));
+    assert.equal(done?.category, 'transition_denied');
+    assert.match(done?.message ?? '', /terminal/);
+    assert.match(done?.message ?? '', /Allowed targets: "In progress", "Agent review", "Blocked"\./);
+    const review = denied(await guard('In review'));
+    assert.equal(review?.category, 'transition_denied');
+    assert.match(review?.message ?? '', /role developer may not move issues to "In review"/);
+    assert.deepEqual(await guard('agent review'), { allow: true, note: null });
+    assert.deepEqual(events, ['transition_denied', 'transition_denied']);
+  });
+
+  it('without roles only terminal targets are denied', async () => {
+    const { guard } = setup({ roles: false });
+    assert.deepEqual(await guard('Anything'), { allow: true, note: null });
+    const done = denied(await guard('Done'));
+    assert.equal(done?.category, 'transition_denied');
+    assert.match(done?.message ?? '', /any column except the terminal ones \("Done"\)/);
+  });
+
+  it('allows a gated move when the check exits 0, with role and target in its environment', async () => {
+    const { guard, events } = setup({
+      checks: { 'Agent review': 'test "$SYMPHONY_ROLE" = developer && test "$SYMPHONY_TARGET_STATE" = "Agent review" && test "$SYMPHONY_HOOK" = "check:Agent review"' },
+    });
+    assert.deepEqual(await guard('Agent review'), { allow: true, note: CHECK_PASSED_NOTE });
+    assert.deepEqual(events, ['entry_check_started', 'entry_check_finished']);
+  });
+
+  it('adds the integration check environment', async () => {
+    const { params } = setup({ checks: { 'Agent review': 'test "$EXTRA" = yes' } });
+    const guard = createGuard({ ...params, checkEnv: async () => ({ EXTRA: 'yes' }) });
+    assert.equal((await guard('Agent review')).allow, true);
+  });
+
+  it('returns check_failed with the output tail when the check exits 1', async () => {
+    const { guard } = setup({ checks: { 'agent review': 'head -c 7000 /dev/zero | tr "\\0" x; echo; echo "3 tests failed"; exit 1' } });
+    const decision = denied(await guard('Agent review'));
+    assert.equal(decision?.category, 'check_failed');
+    assert.match(decision?.message ?? '', /3 tests failed/);
+    assert.match(decision?.message ?? '', /Fix the problems and call set_status again/);
+    assert.ok((decision?.message.length ?? 0) < 6_300);
+  });
+
+  it('returns check_error for other exit codes, timeouts, aborts and unexpected errors', async () => {
+    const exit2 = denied(await setup({ checks: { 'Agent review': 'exit 2' } }).guard('Agent review'));
+    assert.equal(exit2?.category, 'check_error');
+    assert.match(exit2?.message ?? '', /exited with code 2/);
+    assert.match(exit2?.message ?? '', /do not change code; describe the problem in an issue comment and move the issue to Blocked/);
+
+    const slow = denied(await setup({ checks: { 'Agent review': 'sleep 5' }, timeoutMs: 200 }).guard('Agent review'));
+    assert.equal(slow?.category, 'check_error');
+    assert.match(slow?.message ?? '', /timed out/);
+
+    const aborted = setup({ checks: { 'Agent review': 'sleep 5' } });
+    const pending = aborted.guard('Agent review');
+    setTimeout(() => aborted.controller.abort('moved to Done'), 100);
+    const started = Date.now();
+    assert.equal(denied(await pending)?.category, 'check_error');
+    assert.ok(Date.now() - started < 4_000);
+
+    const { params } = setup({ checks: { 'Agent review': 'exit 0' } });
+    const broken = createGuard({ ...params, manager: { runScript: () => Promise.reject(new Error('boom')) } });
+    const error = denied(await broken('Agent review'));
+    assert.equal(error?.category, 'check_error');
+    assert.match(error?.message ?? '', /boom/);
+  });
+
+  it('runs the checks of one session one after the other', async () => {
+    const { guard, workspacePath } = setup({ checks: { 'Agent review': 'echo start >> log; sleep 0.2; echo end >> log' } });
+    const results = await Promise.all([guard('Agent review'), guard('Agent review')]);
+    assert.ok(results.every((r) => r.allow));
+    assert.deepEqual(fs.readFileSync(path.join(workspacePath, 'log'), 'utf8').trim().split('\n'), ['start', 'end', 'start', 'end']);
+  });
+});
+
+describe('guardTools', () => {
+  const issue = makeIssue({ id: '1' });
+  const spec = (calls: string[]): AgentToolSpec => ({
+    name: 'set_status',
+    description: '',
+    inputSchema: {},
+    mutates: true,
+    transitionTarget: (args) => (typeof args.status === 'string' ? args.status : null),
+    execute: async (args): Promise<ToolResult> => {
+      calls.push(String(args.status));
+      return { ok: true, data: { status: args.status } };
+    },
+  });
+
+  it('does not run the tool on a denial and adds the guard note on success', async () => {
+    const calls: string[] = [];
+    const other: AgentToolSpec = { name: 'get_issue', description: '', inputSchema: {}, mutates: false, execute: async () => ({ ok: true, data: 1 }) };
+    const tools = guardTools([spec(calls), other], async (target) =>
+      target === 'Done' ? { allow: false, category: 'transition_denied', message: 'no' } : { allow: true, note: target === 'Gated' ? 'end your turn' : null },
+    );
+    assert.equal(tools[1], other);
+    const [setStatus] = tools;
+    assert.deepEqual(await setStatus?.execute({ status: 'Done' }, { issue }), { ok: false, error: { category: 'transition_denied', message: 'no' } });
+    assert.deepEqual(calls, []);
+    assert.deepEqual(await setStatus?.execute({ status: 'Gated' }, { issue }), { ok: true, data: { status: 'Gated', note: 'end your turn' } });
+    assert.deepEqual(await setStatus?.execute({ status: 'Open' }, { issue }), { ok: true, data: { status: 'Open' } });
+    assert.deepEqual(calls, ['Gated', 'Open']);
+  });
+});

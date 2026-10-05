@@ -74,6 +74,11 @@ export interface AgentToolSpec {
   inputSchema: z.ZodRawShape;
   /** Whether the tool can change tracker state (documented in the adapter profile). */
   mutates: boolean;
+  /**
+   * For tools that move the issue to another column: the target column named by `args`, or null when the call does
+   * not change the column. Symphony's transition guard checks such calls before `execute` runs.
+   */
+  transitionTarget?(args: Record<string, unknown>): string | null;
   execute(args: Record<string, unknown>, context: AgentToolContext): Promise<ToolResult>;
 }
 

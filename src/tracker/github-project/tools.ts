@@ -137,6 +137,7 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
       'from "Todo" to "In Progress" or to "Human Review" when you hand off. Use a name from status_options of get_issue.',
     inputSchema: { status: z.string().min(1).describe('Target status option name, e.g. "Human Review"') },
     mutates: true,
+    transitionTarget: (args) => String(args.status),
     execute: (args, context) =>
       guarded(context, async (ref) => {
         const status = String(args.status);

@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { Logger } from '../src/log.ts';
+import { createGuard, guardTools } from '../src/orchestrator/guard.ts';
 import { githubProjectFactory } from '../src/tracker/github-project/index.ts';
 import { parseSettings } from '../src/tracker/github-project/settings.ts';
 import { TrackerError, type Issue, type TrackerAdapter } from '../src/tracker/types.ts';
+import type { ServiceConfig } from '../src/workflow/config.ts';
 
 type Json = Record<string, unknown>;
 interface Reply {
@@ -392,6 +394,28 @@ describe('github_project agent tools', () => {
     const bad = await setStatus?.execute({ status: 'Shipped' }, { issue: issue as Issue });
     assert.equal(bad?.ok, false);
     assert.match(bad?.ok === false ? bad.error.message : '', /valid options: "Todo", "In Progress", "Human Review", "Done"/);
+  });
+
+  it('sends no mutation when the transition guard denies set_status', async () => {
+    const github = new FakeGithub().add(itemNode('A'));
+    const tracker = adapter(github);
+    const [issue] = await tracker.fetchIssuesByIds(['A']);
+    const guard = createGuard({
+      role: null,
+      config: { tracker: { terminalStates: ['Done'] } as ServiceConfig['tracker'], roles: null, checks: { timeoutMs: 1_000, retries: 0, onEnter: new Map() } },
+      workspace: { path: '/nonexistent', key: 'A', createdNow: false },
+      issue: () => ({ id: 'A', identifier: 'acme/app#1' }),
+      manager: { runScript: () => Promise.reject(new Error('no check expected')) },
+      signal: new AbortController().signal,
+    });
+    const setStatus = guardTools(tracker.agentToolSpecs(), guard).find((t) => t.name === 'set_status');
+    const denied = await setStatus?.execute({ status: 'done' }, { issue: issue as Issue });
+    assert.equal(denied?.ok === false ? denied.error.category : null, 'transition_denied');
+    assert.equal(github.requests.some((r) => r.op === 'SymphonySetStatus'), false);
+
+    const moved = await setStatus?.execute({ status: 'Human Review' }, { issue: issue as Issue });
+    assert.equal(moved?.ok, true);
+    assert.equal(github.requests.filter((r) => r.op === 'SymphonySetStatus').length, 1);
   });
 
   it('returns the open pull request for a branch instead of creating a duplicate', async () => {

@@ -95,9 +95,14 @@ Exposed to Claude Code as `mcp__tracker__<name>`. They always act on the session
 | Tool | Input | Mutates | Result |
 |---|---|---|---|
 | `get_issue` | none | no | Issue fields, valid status options, the latest 20 comments, linked pull requests |
-| `set_status` | `status` | yes | Moves the board item; the name is matched case-insensitively. An unknown name returns the valid options. |
+| `set_status` | `status` | yes | Moves the board item; the name is matched case-insensitively. An unknown name returns the valid options. Guarded: see below. |
 | `add_comment` | `body` | yes | Posts a comment on the issue; returns its URL |
 | `open_pull_request` | `head`, `title`, `body?`, `base?`, `draft?` | yes | Opens a PR from an already pushed branch (base defaults to the default branch). An open PR for the same branch is returned instead of a duplicate (`created: false`). |
+
+`set_status` declares its target column (`transitionTarget`), so Symphony's
+[transition guard](../configuration.md#transition-guard) checks every call before the mutation is sent: terminal
+columns and columns outside the role's `may_move_to` are denied (`transition_denied`), and a gated column is entered
+only after its entry check passes (`check_failed` / `check_error` otherwise). A denied call sends no request to GitHub.
 
 Failures come back to the agent as structured tool errors (`{error: {category, message}}`), so it can correct its
 input. Keep GitHub's secondary rate limits in mind: content-creating calls such as comments are limited to roughly
