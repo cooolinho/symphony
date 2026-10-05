@@ -80,6 +80,26 @@ orchestrator's environment **without** tracker credentials (`GITHUB_TOKEN`, `GH_
 | `before_remove` | Before a workspace is deleted | Logged and ignored; the directory is still deleted. |
 | `timeout_ms` | Default `60000`; applies to every hook | A timed-out hook's whole process group is killed. |
 
+#### Recipe: Laravel apps
+
+`hooks/laravel-env.sh` gives every Laravel app in the workspace (root or one level deep, without `vendor`,
+`node_modules` and dot-directories) its own `.env` and SQLite database, so artisan and Laravel Boost never reach a
+developer's or a shared database. It only acts on directories with `artisan` and `.env.example` but no `.env`, never
+overwrites or reads an existing `.env`, and prints nothing when there is no Laravel app.
+
+```yaml
+hooks:
+  after_create: |
+    git clone --quiet "git@github.com:${SYMPHONY_ISSUE_REPOSITORY}.git" .
+    bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-env.sh"
+```
+
+It copies `.env.example`, sets `APP_ENV=local`, `APP_DEBUG=true`, a fresh `APP_KEY`, `DB_CONNECTION=sqlite`, an absolute
+`DB_DATABASE=<app>/database/symphony.sqlite`, `CACHE_STORE=file`, `QUEUE_CONNECTION=sync`, `MAIL_MAILER=log` and
+`BOOST_BROWSER_LOGS_WATCHER=false` (each key exactly once, replaced in place), comments out `DB_HOST`, `DB_PORT`,
+`DB_USERNAME` and `DB_PASSWORD`, creates the SQLite file and adds `.env` and the file to `.git/info/exclude` if the app
+does not ignore them.
+
 Hooks finish when their output pipes close, so redirect the output of background jobs (`cmd >/dev/null 2>&1 &`).
 
 ### `agent`
