@@ -1,6 +1,9 @@
 import { BASE_CSS, BASE_JS } from './styles.ts';
 
 const DASHBOARD_CSS = `
+  /* Dispatch gate: new dispatches wait for an account-wide session limit (a notice, not an error). */
+  .dispatch-gate { border-color: var(--amber-line); background: linear-gradient(180deg, var(--amber-dim), rgba(11, 17, 21, .8));
+    display: flex; align-items: center; gap: 10px; padding: 12px 16px; color: var(--amber); font: 12.5px/1.6 var(--mono); overflow-wrap: anywhere; }
   /* Matrix rain: a few faint glyph columns behind everything, disabled for small screens and reduced motion. */
   .rain { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
     mask-image: linear-gradient(to bottom, transparent, #000 15%, #000 55%, transparent 90%); }
@@ -190,6 +193,9 @@ export const DASHBOARD_HTML = `<!doctype html>
   <section id="problems" class="problems" role="alert" hidden>
     <h2><span class="dot tone-red"></span>Needs attention</h2>
     <ul id="problem-list"></ul>
+  </section>
+  <section id="dispatch-gate" class="dispatch-gate" role="status" hidden>
+    <span class="dot tone-amber"></span><span id="dispatch-gate-text"></span>
   </section>
 
   <div class="stats" id="stats" aria-label="Metrics"></div>
@@ -858,6 +864,11 @@ ${BASE_JS}
     $('problems').hidden = problems.length === 0;
     $('problem-list').replaceChildren(...problems.map((p) => el('li', p)));
     renderHeader(h, problems, true);
+    const gate = h.dispatch_gate;
+    $('dispatch-gate').hidden = !gate;
+    setText($('dispatch-gate-text'), gate
+      ? 'Dispatch paused until ' + fmtStamp(gate.until) + ' · session limit (' + gate.window + ') · started by ' + gate.issue_identifier
+      : '');
 
     const t = state.agent_totals;
     const running = state.counts.running;

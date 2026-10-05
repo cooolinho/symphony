@@ -7,7 +7,7 @@ import { PricingStore } from '../src/costs/pricing.ts';
 import { HistoryLog, readHistory } from '../src/history/history.ts';
 import type { WorkspaceIntegration } from '../src/integrations/types.ts';
 import { Logger } from '../src/log.ts';
-import { SESSION_LIMIT_MAX_WAIT_MS, failureBackoffMs, sessionLimitWaitMs, sortForDispatch } from '../src/orchestrator/eligibility.ts';
+import { CONTINUATION_DELAY_MS, SESSION_LIMIT_MAX_WAIT_MS, failureBackoffMs, sessionLimitWaitMs, sortForDispatch } from '../src/orchestrator/eligibility.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import type { ToolResult } from '../src/tracker/types.ts';
 import { workspaceKey } from '../src/workspace/manager.ts';
@@ -1071,6 +1071,138 @@ describe('session limit retries', () => {
       assert.equal(snapshot(s).counts.claimed, 1);
       assert.equal(retry(s)?.limit?.waiting, true);
       assert.equal(s.runner.sessions.length, 1);
+    });
+  });
+
+  describe('dispatch gate', () => {
+    type GateMode = { mode: 'limit'; window: string | null } | { mode: 'ok' } | { mode: 'hang' };
+
+    /** Issues fail with a session limit of their window (waiting at once), end normally, or hang until stopped. */
+    function gateSetup(modes: Record<string, GateMode>, issues: string[], logger?: Logger) {
+      const runner = new FakeRunner((turn, params) => {
+        const mode = modes[params.issue.id] ?? { mode: 'ok' };
+        if (mode.mode === 'limit') {
+          const resetsAt = new Date(s.clock.now().getTime() + 2 * 3600_000);
+          return {
+            ok: false,
+            turnId: String(turn),
+            code: 'session_limit',
+            message: `turn ended with an error: ${TEXT}`,
+            sessionLimit: { window: mode.window, resetsAt, source: 'event', text: TEXT, overageDisabledReason: null },
+          };
+        }
+        if (mode.mode === 'ok') return { ok: true, turnId: String(turn), resultText: 'done' };
+        return new Promise((resolve) => params.signal.addEventListener('abort', () => resolve({ ok: false, turnId: String(turn), code: 'turn_cancelled', message: 'cancelled' })));
+      });
+      const s = setup({
+        runner,
+        issues: issues.map((id) => makeIssue({ id })),
+        front: { agent: { max_turns: 1, max_session_limit_retries: 0 } },
+        ...(logger !== undefined ? { logger } : {}),
+      });
+      return s;
+    }
+    const waitingCount = (s: Setup) => snapshot(s).retrying.filter((row) => row.limit?.waiting === true).length;
+    const sessionsOf = (s: Setup, id: string) => s.runner.sessions.filter((session) => session.params.issue.id === id).length;
+    const addReady = (s: Setup, id: string) => s.tracker.issues.set(id, makeIssue({ id }));
+
+    it('holds back new dispatches while a worker waits for a five_hour limit, until the wait ends', async () => {
+      const lines: string[] = [];
+      const logger = Logger.create({ sinks: [{ name: 'memory', write: (line) => lines.push(line) }], level: 'info' });
+      const s = gateSetup({ a: { mode: 'limit', window: 'five_hour' }, c: { mode: 'hang' } }, ['a', 'c'], logger);
+      await s.orchestrator.tickNow();
+      await until(() => waitingCount(s) === 1, 3_000, 'waiting entry');
+      const due = snapshot(s).retrying[0]?.due_at ?? '';
+      assert.deepEqual(snapshot(s).health.dispatch_gate, { reason: 'session_limit', window: 'five_hour', until: due, issue_identifier: 'acme/app#a' });
+
+      addReady(s, 'b');
+      const fetches = s.tracker.calls.byStates;
+      const refreshes = s.tracker.calls.byIds;
+      await s.orchestrator.tickNow();
+      await s.orchestrator.tickNow();
+      assert.equal(s.orchestrator.issueDetail('b'), null, 'b not dispatched');
+      assert.equal(s.tracker.calls.byStates, fetches, 'no candidate fetch while gated');
+      assert.ok(s.tracker.calls.byIds > refreshes, 'reconcile still runs');
+      assert.equal(snapshot(s).running[0]?.issue_identifier, 'acme/app#c');
+      assert.equal(snapshot(s).running[0]?.stopping, null);
+      assert.equal(waitingCount(s), 1, 'the retry timer is untouched');
+      assert.equal(lines.filter((line) => line.includes(`dispatch paused until ${due}: session limit (five_hour)`)).length, 1);
+
+      s.clock.advance(new Date(due).getTime() - s.clock.now().getTime());
+      await s.orchestrator.tickNow();
+      assert.equal(snapshot(s).health.dispatch_gate, null);
+      await until(() => sessionsOf(s, 'b') === 1, 3_000, 'b dispatched');
+      assert.equal(lines.filter((line) => line.includes('dispatch resumed')).length, 1);
+    });
+
+    for (const window of ['seven_day_opus', 'overage', null]) {
+      it(`does not gate for a ${window ?? 'missing'} window`, async () => {
+        const s = gateSetup({ a: { mode: 'limit', window } }, ['a']);
+        await s.orchestrator.tickNow();
+        await until(() => waitingCount(s) === 1, 3_000, 'waiting entry');
+        assert.equal(snapshot(s).health.dispatch_gate, null);
+        addReady(s, 'b');
+        await s.orchestrator.tickNow();
+        await until(() => sessionsOf(s, 'b') === 1, 3_000, 'b dispatched');
+      });
+    }
+
+    it('keeps the gate while another entry waits; restart and release lift it once both are gone', async () => {
+      const s = gateSetup({ a: { mode: 'limit', window: 'five_hour' }, c: { mode: 'limit', window: 'seven_day' } }, ['a', 'c']);
+      await s.orchestrator.tickNow();
+      await until(() => waitingCount(s) === 2, 3_000, 'two waiting entries');
+      assert.equal(snapshot(s).health.dispatch_gate?.reason, 'session_limit');
+      addReady(s, 'b');
+
+      assert.equal((await s.orchestrator.restartWorker('acme/app#a')).ok, true);
+      await s.orchestrator.tickNow();
+      assert.equal(snapshot(s).health.dispatch_gate?.issue_identifier, 'acme/app#c');
+      assert.equal(snapshot(s).health.dispatch_gate?.window, 'seven_day');
+      assert.equal(s.orchestrator.issueDetail('b'), null, 'b not dispatched');
+
+      s.tracker.set('c', { state: 'Backlog' });
+      await s.orchestrator.tickNow();
+      assert.equal(snapshot(s).health.dispatch_gate, null);
+      await until(() => sessionsOf(s, 'b') === 1, 3_000, 'b dispatched');
+    });
+
+    it('keeps the gate when the other waiting entry is released, and lifts it after a restart of the last one', async () => {
+      const s = gateSetup({ a: { mode: 'limit', window: 'five_hour' }, c: { mode: 'limit', window: 'five_hour' } }, ['a', 'c']);
+      await s.orchestrator.tickNow();
+      await until(() => waitingCount(s) === 2, 3_000, 'two waiting entries');
+      addReady(s, 'b');
+
+      s.tracker.set('a', { state: 'Backlog' });
+      await s.orchestrator.tickNow();
+      assert.equal(snapshot(s).health.dispatch_gate?.issue_identifier, 'acme/app#c');
+      assert.equal(s.orchestrator.issueDetail('b'), null, 'b not dispatched');
+
+      assert.equal((await s.orchestrator.restartWorker('c')).ok, true);
+      assert.equal(snapshot(s).health.dispatch_gate, null);
+      await s.orchestrator.tickNow();
+      await until(() => sessionsOf(s, 'b') === 1, 3_000, 'b dispatched');
+    });
+
+    it('is lifted by a turn_completed after the limit was observed, not by one before it', async () => {
+      const s = gateSetup({ a: { mode: 'limit', window: 'five_hour' }, c: { mode: 'ok' } }, ['c']);
+      await s.orchestrator.tickNow();
+      await until(() => snapshot(s).retrying.some((row) => row.kind === 'continuation'), 3_000, 'c finished a turn');
+
+      s.clock.advance(1_000);
+      addReady(s, 'a');
+      await s.orchestrator.tickNow();
+      await until(() => waitingCount(s) === 1, 3_000, 'a waiting');
+      addReady(s, 'b');
+      await s.orchestrator.tickNow();
+      assert.notEqual(snapshot(s).health.dispatch_gate, null, 'an earlier successful turn does not lift the gate');
+      assert.equal(s.orchestrator.issueDetail('b'), null, 'b not dispatched');
+
+      s.clock.advance(1_000);
+      s.timers.fire(CONTINUATION_DELAY_MS);
+      await until(() => sessionsOf(s, 'c') === 2 && !snapshot(s).running.some((row) => row.issue_identifier === 'acme/app#c'), 3_000, 'c ran again');
+      assert.equal(snapshot(s).health.dispatch_gate, null);
+      await s.orchestrator.tickNow();
+      await until(() => sessionsOf(s, 'b') === 1, 3_000, 'b dispatched');
     });
   });
 

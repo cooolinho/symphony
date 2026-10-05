@@ -140,6 +140,16 @@ Code (`source` = `event`). Fehlt er, liest es die Uhrzeit aus der Meldung (`sour
 `resets 7:30pm (Europe/Berlin)`). Ist der Reset unbekannt oder mehr als 8 Tage voraus,
 bleibt es beim bisherigen Backoff der Fehlschläge und der Worker wartet nicht auf einen Zeitpunkt.
 
+**Keine neuen Issues während des Wartens:** Das 5-Stunden-Fenster (`five_hour`) und das Wochenlimit (`seven_day`)
+gelten für das ganze Konto. Solange ein Worker auf den Reset eines dieser Limits wartet, startet Symphony keine neuen
+Issues, statt sie einzeln in das Limit laufen zu lassen (jedes würde einen Workspace anlegen, sofort scheitern und
+eigene Retries verbrauchen). Laufende Agenten, Retries und der Abgleich mit dem Board laufen weiter. Die Sperre endet
+von selbst, wenn das Warten endet (Reset erreicht, Issue freigegeben, **Retry now**) oder ein Turn irgendeines Agenten
+nach dem Limit erfolgreich endet. Warten mehrere Worker, gilt die Sperre bis zum spätesten Termin. Das Dashboard zeigt
+dann den Hinweis *Dispatch paused until … · session limit (five_hour) · started by …*, `GET /api/v1/state` das Feld
+`health.dispatch_gate` (`reason`, `window`, `until`, `issue_identifier`, sonst `null`). Modellspezifische Limits
+(`seven_day_opus`, `seven_day_sonnet`), `overage` und Limits ohne bekanntes Fenster sperren nichts.
+
 **Grenzen:**
 
 - Das Warten steht nur im Speicher. Startest du Symphony neu, ist es vergessen: Das Issue wird wie jedes aktive Issue

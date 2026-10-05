@@ -147,7 +147,10 @@ export class FakeRunner implements AgentRunner {
         record.turns.push(prompt);
         const turn = record.turns.length;
         emit({ event: 'turn_started', turnId: String(turn), sessionId: `thread-1-${turn}` });
-        return this.script(turn, params);
+        const result = await this.script(turn, params);
+        // Like the Claude runner, a successful turn reports turn_completed (without ids, so a script's own events stay authoritative).
+        if (result.ok) emit({ event: 'turn_completed', threadId: null, turnId: null, sessionId: null });
+        return result;
       },
       stop: async () => {
         record.stopped = true;

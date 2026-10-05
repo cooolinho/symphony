@@ -72,6 +72,10 @@ describe('http extension', () => {
     assert.match(page.body, /waiting for reset/);
     assert.match(page.body, /Session limit/);
     assert.match(page.body, /Extra usage is off because credits are used up/);
+    // The dispatch gate is an amber status notice, hidden unless health.dispatch_gate is set.
+    assert.match(page.body, /<section id="dispatch-gate" class="dispatch-gate" role="status" hidden>/);
+    assert.match(page.body, /\$\('dispatch-gate'\)\.hidden = !gate/);
+    assert.match(page.body, /'Dispatch paused until ' \+ fmtStamp\(gate\.until\) \+ ' · session limit \(' \+ gate\.window \+ '\) · started by ' \+ gate\.issue_identifier/);
     assert.doesNotMatch(page.body, /\bonclick=/);
 
     const state = await request(server.port, 'GET', '/api/v1/state');
@@ -80,6 +84,7 @@ describe('http extension', () => {
     assert.deepEqual(Object.keys(body.counts), ['running', 'retrying', 'paused', 'claimed']);
     assert.deepEqual(Object.keys(body.agent_totals), ['input_tokens', 'output_tokens', 'total_tokens', 'seconds_running', 'cost_usd', 'claude_estimate_usd']);
     assert.ok(Array.isArray(body.running) && Array.isArray(body.retrying));
+    assert.equal(body.health.dispatch_gate, null);
   });
 
   it('links the logs page from the dashboard and serves it', async () => {

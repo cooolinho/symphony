@@ -295,6 +295,16 @@ interface PausedEntry {
   pausedAt: Date;
 }
 
+/** Session-limit windows that apply to the whole account; a wait for one of them pauses new dispatches. */
+const ACCOUNT_WIDE_WINDOWS = new Set(['five_hour', 'seven_day']);
+
+/** New dispatches are held back while a worker waits for an account-wide session limit to reset. */
+interface DispatchGate {
+  until: Date;
+  window: string;
+  issueIdentifier: string;
+}
+
 const RECENT_EVENTS = 50;
 const TIMELINE_EVENTS = 2000;
 const MAX_SESSIONS = 20;
@@ -382,6 +392,10 @@ export class Orchestrator {
   #cleanups = new Map<string, Promise<void>>();
   #totals = { inputTokens: 0, outputTokens: 0, totalTokens: 0, endedSeconds: 0, costUsd: 0, claudeEstimateUsd: 0 };
   #rateLimits: unknown = null;
+  /** The latest `turn_completed` of any run: session limits observed before it are gone. */
+  #lastTurnSuccessAt: Date | null = null;
+  /** The dispatch gate the last tick logged, to log its start and end once. */
+  #loggedGate: DispatchGate | null = null;
 
   #pollIntervalMs: number;
   #tickTimer: unknown = null;
@@ -552,6 +566,10 @@ export class Orchestrator {
       this.#dispatchErrors = errors;
       if (errors.length > 0) return;
 
+      const gate = this.#dispatchGate();
+      this.#logGate(gate);
+      if (gate !== null) return;
+
       const adapter = this.#adapterFor(workflow);
       let candidates: Issue[];
       try {
@@ -639,6 +657,37 @@ export class Orchestrator {
   }
 
   // ---------------------------------------------------------------- dispatch
+
+  /**
+   * Derived from the waiting retry entries, never stored: an entry that expires, is released or restarted, or
+   * a later successful turn lifts the gate by itself. Lasts until the latest `dueAt` of the gating entries.
+   */
+  #dispatchGate(): DispatchGate | null {
+    const now = this.#clock.now().getTime();
+    const since = this.#lastTurnSuccessAt?.getTime() ?? -Infinity;
+    let gate: DispatchGate | null = null;
+    for (const retry of this.#retries.values()) {
+      const limit = retry.limit;
+      if (retry.kind !== 'session_limit' || limit === null || !limit.waiting) continue;
+      if (limit.window === null || !ACCOUNT_WIDE_WINDOWS.has(limit.window)) continue;
+      if (limit.observedAt.getTime() <= since || retry.dueAt.getTime() <= now) continue;
+      if (gate === null || retry.dueAt > gate.until) gate = { until: retry.dueAt, window: limit.window, issueIdentifier: retry.identifier };
+    }
+    return gate;
+  }
+
+  #logGate(gate: DispatchGate | null): void {
+    const previous = this.#loggedGate;
+    this.#loggedGate = gate;
+    if (gate !== null && previous === null) {
+      this.#logger.info(`dispatch paused until ${gate.until.toISOString()}: session limit (${gate.window})`, {
+        window: gate.window,
+        issue_identifier: gate.issueIdentifier,
+      });
+    } else if (gate === null && previous !== null) {
+      this.#logger.info('dispatch resumed: no worker waits for an account-wide session limit any more');
+    }
+  }
 
   #globalSlots(config: ServiceConfig): number {
     return Math.max(config.agent.maxConcurrentAgents - this.#running.size, 0);
@@ -1536,6 +1585,8 @@ export class Orchestrator {
       entry.reportedCostUsd = cost;
     }
     if (event.rateLimits !== undefined) this.#rateLimits = event.rateLimits;
+    // Outside #serial: only the timestamp, the dispatch gate is derived from it on demand.
+    if (event.event === 'turn_completed') this.#lastTurnSuccessAt = this.#clock.now();
 
     const failedTool = event.event === 'tracker_tool' && event.detail?.ok === false;
     const level = WARNING_EVENTS.has(event.event) || failedTool ? 'warn' : LIFECYCLE_EVENTS.has(event.event) ? 'info' : 'debug';
@@ -1690,6 +1741,7 @@ export class Orchestrator {
     const config = workflow.config;
     let activeSeconds = 0;
     for (const entry of this.#running.values()) activeSeconds += (now - entry.startedAtMs) / 1000;
+    const gate = this.#dispatchGate();
     return {
       generated_at: this.#clock.now().toISOString(),
       counts: { running: this.#running.size, retrying: this.#retries.size, paused: this.#paused.size, claimed: this.#claimed.size },
@@ -1714,6 +1766,10 @@ export class Orchestrator {
           ? { code: this.#deps.workflow.lastError.code, message: this.#deps.workflow.lastError.message }
           : null,
         dispatch_errors: this.#dispatchErrors,
+        dispatch_gate:
+          gate === null
+            ? null
+            : { reason: 'session_limit' as const, window: gate.window, until: gate.until.toISOString(), issue_identifier: gate.issueIdentifier },
         last_tick_at: this.#lastTickAt?.toISOString() ?? null,
         last_tracker_error: this.#lastTrackerError
           ? { at: this.#lastTrackerError.at.toISOString(), message: this.#lastTrackerError.message }
