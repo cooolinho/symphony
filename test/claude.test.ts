@@ -101,6 +101,7 @@ function params(
     extensions?: SessionExtensions;
     logger?: Logger;
     policy?: SessionPolicy;
+    toolTimeoutMs?: number;
   } = {},
 ): StartSessionParams {
   const config = resolveConfig({ claude: { model: 'opus', ...overrides.claude } }, { workflowPath: '/w/WORKFLOW.md', env: {}, trackerDefaults }).claude;
@@ -118,6 +119,7 @@ function params(
     transcriptPath: null,
     ...(overrides.extensions ? { extensions: overrides.extensions } : {}),
     ...(overrides.policy ? { policy: overrides.policy } : {}),
+    ...(overrides.toolTimeoutMs !== undefined ? { toolTimeoutMs: overrides.toolTimeoutMs } : {}),
   };
 }
 
@@ -306,6 +308,15 @@ describe('claude agent runner', () => {
     const noPolicy = await sessionOptions({});
     assert.deepEqual(notReadOnly.allowedTools, noPolicy.allowedTools);
     assert.deepEqual(notReadOnly.disallowedTools, noPolicy.disallowedTools);
+  });
+
+  it('bounds tracker tool calls by toolTimeoutMs unless claude.env sets MCP_TOOL_TIMEOUT', async () => {
+    const timeoutOf = (options: Options) => (options.mcpServers?.tracker as { timeout?: number } | undefined)?.timeout;
+    assert.equal(timeoutOf(await sessionOptions({})), undefined);
+    assert.equal(timeoutOf(await sessionOptions({ toolTimeoutMs: 660_000 })), 660_000);
+    const explicit = await sessionOptions({ toolTimeoutMs: 660_000, claude: { env: { MCP_TOOL_TIMEOUT: '900000' } } });
+    assert.equal(timeoutOf(explicit), undefined);
+    assert.equal(explicit.env?.MCP_TOOL_TIMEOUT, '900000');
   });
 
   it('adds the read-only deny rules', async () => {

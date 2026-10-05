@@ -9,16 +9,16 @@ dein Review wartet.
 Symphony ist ein dauerhaft laufender Dienst. Er fragt in einem festen Takt ein **GitHub Project Board** ab und
 übergibt bereitstehende Issues an **Claude Code**. Pro Issue legt Symphony einen eigenen Ordner an, klont dort das
 Repository und lässt den Agenten arbeiten: Branch anlegen, implementieren, testen, pushen, Pull Request öffnen,
-Ergebnis im Issue kommentieren. Danach schiebt der Agent die Karte nach **In review**. Ab dort bist du dran: Review,
-Merge, Karte nach **Done**.
+Ergebnis im Issue kommentieren. Danach prüfen automatische Checks und ein zweiter, lesender Agent (Reviewer) die
+Arbeit. Erst dann landet die Karte in **In review**. Ab dort bist du dran: Review, Merge, Karte nach **Done**.
 
 ```
-Backlog ──▶ Ready ──▶ In progress ──▶ In review ──▶ Done
-   │          │            │               │           │
- ignoriert  Symphony     Agent          Agent ist   Agent gestoppt,
-            startet      arbeitet       fertig,     Workspace
-            Agent                       wartet auf  gelöscht
-                                        dich
+Backlog ─▶ Ready ─▶ In progress ─[Checks]─▶ Agent review ─[Checks]─▶ In review ─▶ Done
+   │         │            │            ▲          │                     │          │
+ignoriert  Developer   Developer       └─ Ände-  Reviewer           wartet auf  Workspace
+           startet     arbeitet          rungen  prüft (nur          dich        gelöscht
+                                         nötig   lesend)
+                   Blocked: ein Agent braucht dich (Checks kaputt, Fragen offen)
 ```
 
 Was der Agent tun soll, steht in der **`WORKFLOW.md`** (Prompt und Einstellungen). Board, Repository, Standardmodell
@@ -32,6 +32,9 @@ und Token stehen in der **`.env`**. Symphony ist eine Implementierung der
   und Alter, begrenzte Parallelität (gesamt und pro Spalte), offene Blocker werden respektiert.
 - **Isolierte Workspaces:** Pro Issue ein eigener Klon unter `~/symphony-workspaces`. Er wird bei Wiederholungen
   wiederverwendet und gelöscht, sobald das Issue auf *Done* steht.
+- **Developer und Reviewer:** Rollen pro Spalte. Ein Developer-Agent implementiert, ein lesender Reviewer-Agent prüft.
+  Vor `Agent review` und `In review` laufen Checks (Lint, statische Analyse, Tests); scheitern sie, bleibt die Karte
+  stehen und der Agent bessert nach.
 - **Claude Code als Agent:** Mehrere Turns pro Session, Modell frei wählbar (z. B. `opus`). Riskante Aktionen
   blockiert Claude Codes `auto`-Modus.
 - **Modell pro Issue:** Ein Label wie `Model: sonnet` oder `Model: claude-opus-5-5` wählt das Modell für ein Issue.
@@ -78,18 +81,33 @@ npm install
 ### 2. GitHub Project Board einrichten
 
 1. Lege auf GitHub unter **Profil → Projects → New project** ein Projekt mit der Vorlage **Kanban** an. Sie bringt die
-   Spalten `Backlog`, `Ready`, `In progress`, `In review` und `Done` mit. Genau diese Namen erwartet die mitgelieferte
-   `WORKFLOW.md`.
-2. Notiere die **Board-Nummer** aus der URL, z. B. `10` aus `https://github.com/users/cooolinho/projects/10`.
-3. Füge Issues hinzu: im Board über **+ Add item** und dann `#` für ein Issue deines Repositories, oder in der
+   Spalten `Backlog`, `Ready`, `In progress`, `In review` und `Done` mit.
+2. Ergänze die Spalten `Agent review` und `Blocked`: im Board über das Menü des Feldes **Status** (oder
+   *Settings → Fields → Status*) zwei Optionen hinzufügen. Die Reihenfolge ist egal, übersichtlich ist:
+
+   | Spalte | Wer schiebt hierher | Was Symphony tut |
+   |---|---|---|
+   | `Backlog` | du | nichts |
+   | `Ready` | du | startet den **Developer** |
+   | `In progress` | Developer, Reviewer (Änderungen nötig) | Developer arbeitet |
+   | `Agent review` | Developer, nach bestandenen Checks | startet den **Reviewer** (höchstens einen gleichzeitig) |
+   | `Blocked` | Developer oder Reviewer | stoppt den Agenten, Workspace bleibt; du bist dran |
+   | `In review` | nur der Reviewer, nach bestandenen Checks | stoppt den Agenten, Workspace bleibt; dein Review |
+   | `Done` | nur du | stoppt den Agenten und löscht den Workspace |
+
+   Genau diese Namen erwartet die mitgelieferte `WORKFLOW.md`. Der Dry Run (Schritt 6) meldet jede Spalte, die auf
+   dem Board fehlt (`unknown board column`).
+3. Notiere die **Board-Nummer** aus der URL, z. B. `10` aus `https://github.com/users/cooolinho/projects/10`.
+4. Füge Issues hinzu: im Board über **+ Add item** und dann `#` für ein Issue deines Repositories, oder in der
    Seitenleiste eines Issues unter **Projects**. Symphony bearbeitet nur echte Issues, keine Entwürfe und keine
    Pull Requests.
-4. Optional: Abhängigkeiten und Sub-Issues anlegen. Symphony startet ein Issue erst, wenn alles erledigt ist, wovon es
+5. Optional: Abhängigkeiten und Sub-Issues anlegen. Symphony startet ein Issue erst, wenn alles erledigt ist, wovon es
    abhängt. Siehe [Abhängigkeiten und Sub-Issues](#abhängigkeiten-und-sub-issues).
 
 > Heißen deine Spalten anders, zum Beispiel `Todo`, `In Progress`, `Human Review` und `Done` (andere Vorlage), passe
-> `active_states` und `terminal_states` sowie die Statusnamen im Prompt der `WORKFLOW.md` an. Wichtig ist eine
-> Übergabe-Spalte, die weder aktiv noch final ist (hier `In review`). Ohne sie hört der Agent nie auf, siehe
+> `active_states`, `terminal_states`, `roles`, `checks.on_enter`, `agent.max_concurrent_agents_by_state` sowie die
+> Statusnamen im Prompt der `WORKFLOW.md` an. Wichtig ist eine Übergabe-Spalte, die weder aktiv noch final ist (hier
+> `In review`). Ohne sie hört der Agent nie auf, siehe
 > [Fehlerbehebung](#fehlerbehebung).
 
 ### 3. GitHub-Token erstellen
@@ -126,7 +144,7 @@ GITHUB_TOKEN=ghp_…
 # Orchestrator-Grenzen (optional, sonst gelten die Standardwerte aus der WORKFLOW.md)
 SYMPHONY_MAX_CONCURRENT_AGENTS=1
 SYMPHONY_MAX_TURNS=5
-SYMPHONY_MAX_CONTINUATIONS=2
+SYMPHONY_MAX_CONTINUATIONS=6
 SYMPHONY_POLL_INTERVAL_MS=30000
 SYMPHONY_CLEANUP_TERMINAL=true
 ```
@@ -142,7 +160,7 @@ SYMPHONY_CLEANUP_TERMINAL=true
 | `ANTHROPIC_API_KEY` | *optional:* Sonst nutzt Claude Code seine bestehende Anmeldung. |
 | `SYMPHONY_MAX_CONCURRENT_AGENTS` | *optional:* Wie viele Agenten gleichzeitig laufen. Standard 2, `0` pausiert alle neuen Starts. |
 | `SYMPHONY_MAX_TURNS` | *optional:* Turns pro Session, bevor Symphony den Stand neu bewertet. Standard 10. |
-| `SYMPHONY_MAX_CONTINUATIONS` | *optional:* Wie viele weitere Sessions ein Issue bekommt, solange seine Karte aktiv bleibt. Danach **pausiert** Symphony das Issue, siehe [Fortsetzungen und Pausieren](#fortsetzungen-und-pausieren). Leer heißt unbegrenzt. |
+| `SYMPHONY_MAX_CONTINUATIONS` | *optional:* Wie viele weitere Sessions ein Issue bekommt, solange seine Karte aktiv bleibt. Jeder Wechsel zwischen Developer und Reviewer zählt mit. Danach **pausiert** Symphony das Issue, siehe [Fortsetzungen und Pausieren](#fortsetzungen-und-pausieren). Standard 6, leer heißt unbegrenzt. |
 | `SYMPHONY_POLL_INTERVAL_MS` | *optional:* Wie oft das Board abgefragt wird, in Millisekunden. Standard 30000. |
 | `SYMPHONY_CLEANUP_TERMINAL` | *optional:* `true` (Standard) löscht den Workspace, sobald ein Issue in `Done` landet. Vorher läuft der `before_remove`-Hook, z. B. für eine Test-Datenbank. `false` behält die Workspaces. |
 | `SYMPHONY_LOG_DIR` | *optional:* Ordner für Repository-Logs und Session-Transkripte. Standard: `~/.local/state/symphony`. Ein relativer Pfad gilt ab dem Symphony-Ordner, z. B. `logs`. |
@@ -178,7 +196,7 @@ Workspace die erkannten Laravel-Apps. Agenten startet er nicht. Beispiel:
 Workflow:        /home/cooolinho/projects/symphony/WORKFLOW.md
 Env file:        /home/cooolinho/projects/symphony/.env
 Tracker:         github_project
-Active states:   Ready, In progress
+Active states:   Ready, In progress, Agent review
 …
 Plugins:         /home/cooolinho/projects/symphony/.claude; skills: all
 Laravel Boost:   auto, for Laravel apps that require laravel/boost; php (PHP 8.4.12), composer (Composer version 2.8.12 …)
@@ -215,39 +233,92 @@ du das Dashboard unter <http://127.0.0.1:4000/>.
 
 ### Der Ablauf eines Issues
 
-1. Symphony fragt das Board alle 30 Sekunden ab (`polling.interval_ms`). Kandidaten sind Issues in `Ready` oder
-   `In progress`. Sie werden nach Priorität sortiert, dann nach Alter.
+Die mitgelieferte `WORKFLOW.md` arbeitet mit zwei **Rollen**: Ein *Developer* setzt das Issue um, ein *Reviewer*
+prüft es, ohne etwas zu ändern. Welche Rolle läuft, entscheidet die Spalte. Zwischen den Rollen stehen
+**Checks** (`checks/laravel.sh`: sauberer und gepushter Branch, Lint, statische Analyse, Tests), die Symphony selbst
+ausführt, bevor eine Karte nach `Agent review` oder `In review` darf. In Repositories ohne Laravel-App bestehen die
+Checks sofort (Exit 0).
+
+1. Symphony fragt das Board alle 30 Sekunden ab (`polling.interval_ms`). Kandidaten sind Issues in `Ready`,
+   `In progress` und `Agent review`. Sie werden nach Priorität sortiert, dann nach Alter.
 2. Für das Issue entsteht `~/symphony-workspaces/<owner>_<repo>_<nr>-<hash>`. Der Hook `after_create` klont dort das
-   Repository des Issues. Vor jedem Lauf holt `before_run` den neuesten Stand (`git fetch`). Enthält der Klon eine
+   Repository des Issues und richtet mit `hooks/laravel-env.sh` für jede Laravel-App eine eigene `.env` mit
+   SQLite-Datenbank ein. Vor jedem Lauf holt `before_run` den neuesten Stand (`git fetch`). Enthält der Klon eine
    Laravel-App mit Laravel Boost, bereitet Symphony Boost vor (siehe [Laravel Boost](#laravel-boost)).
-3. Claude Code startet im Workspace und bekommt den Prompt aus der `WORKFLOW.md`. Der Agent:
-   - liest `AGENTS.md`, `CLAUDE.md` und `README.md` des Repositories,
-   - liest die Kommentare und verknüpften Pull Requests des Issues,
+3. **Developer** (`Ready`, `In progress`): Claude Code startet im Workspace mit dem Developer-Teil des Prompts. Der
+   Agent
+   - liest `AGENTS.md`, `CLAUDE.md` und `README.md` des Repositories sowie Kommentare und Pull Requests des Issues
+     (auch frühere Reviews),
    - setzt das Issue auf `In progress` und kommentiert seinen Plan,
    - arbeitet auf dem Branch `symphony/issue-<nr>`, oder auf einem Branch, den du im Issue verknüpft hast,
-   - implementiert, testet, committet, pusht und öffnet einen Pull Request mit `Closes #<nr>`,
-   - kommentiert das Ergebnis im Issue und setzt es auf `In review`.
-4. Nach jedem Turn prüft Symphony das Issue. Steht es noch in einer aktiven Spalte, bekommt der Agent einen weiteren
-   Turn, bis `agent.max_turns` erreicht ist. Danach prüft Symphony nach einer Sekunde erneut und startet bei Bedarf
-   eine neue Session. Höchstens `SYMPHONY_MAX_CONTINUATIONS` solcher Sessions, dann wird das Issue pausiert.
-5. Du prüfst den Pull Request, mergst ihn und schiebst die Karte nach `Done`. Symphony löscht dann den Workspace.
+   - implementiert und testet, merged den Basis-Branch hinein, committet, pusht und öffnet einen Pull Request mit
+     `Closes #<nr>`,
+   - kommentiert das Ergebnis und ruft `set_status("Agent review")` auf.
+4. **Checks vor `Agent review`:** Symphony führt die Checks im Workspace aus. Bestehen sie, wandert die Karte nach
+   `Agent review` und die Developer-Session endet. Scheitern sie (`check_failed`), bleibt die Karte stehen und der
+   Agent bekommt die Ausgabe, behebt die Fehler und versucht es erneut. Ist die Umgebung kaputt (`check_error`, z. B.
+   fehlendes `vendor/`), kommentiert er das und schiebt die Karte nach `Blocked`.
+5. **Reviewer** (`Agent review`, höchstens einer gleichzeitig, Modell `opus`, nur lesend, 6 Turns): prüft
+   `git diff origin/<base>...HEAD`, den Pull Request und die Kommentare anhand einer Checkliste (Korrektheit, Tests,
+   Autorisierung, Validierung, N+1, Migrationen, Secrets, geänderte Test-/CI-/Lint-Konfiguration) und schreibt
+   **einen** Kommentar `## Agent review (round N)`. Danach:
+   - **freigegeben:** `In review`. Vorher laufen die Checks noch einmal; für einen unveränderten Commit nimmt Symphony
+     das gespeicherte Ergebnis.
+   - **Änderungen nötig:** zurück nach `In progress`; der Developer arbeitet die Befunde ab (Schritt 3).
+   - **ab Runde 3:** keine weitere Schleife, sondern `In review` mit der Liste der offenen Befunde für dich.
+6. Nach jedem Turn prüft Symphony das Issue. Wechselt es in die Spalte einer anderen Rolle, endet die Session und die
+   nächste Rolle startet eine Sekunde später in einer frischen Session. Steht es noch in einer Spalte derselben Rolle,
+   bekommt der Agent weitere Turns bis `max_turns`, danach eine neue Session. Höchstens `SYMPHONY_MAX_CONTINUATIONS`
+   (Standard 6) solcher Sessions inklusive Rollenwechsel, dann wird das Issue pausiert.
+7. Du prüfst den Pull Request, mergst ihn und schiebst die Karte nach `Done`. Symphony löscht dann den Workspace. Nur
+   du setzt `Done`; Symphony verweigert Agenten diesen Wechsel.
 
 | Spalte | Was Symphony tut |
 |---|---|
 | `Backlog` | nichts. Issues hier sind noch nicht freigegeben. |
-| `Ready` | startet einen Agenten, sobald ein Platz frei ist |
-| `In progress` | ein Agent arbeitet; findet Symphony hier ein Issue ohne Agenten, startet es einen |
-| `In review` | stoppt einen laufenden Agenten; der Workspace bleibt für Nacharbeiten erhalten |
+| `Ready` | startet einen Developer, sobald ein Platz frei ist |
+| `In progress` | ein Developer arbeitet; findet Symphony hier ein Issue ohne Agenten, startet es einen |
+| `Agent review` | startet einen Reviewer (höchstens einen gleichzeitig); nur nach bestandenen Checks erreichbar |
+| `Blocked` | stoppt einen laufenden Agenten; der Workspace bleibt erhalten. Der Agent braucht dich, siehe sein Kommentar. |
+| `In review` | stoppt einen laufenden Agenten; der Workspace bleibt für Nacharbeiten erhalten. Nur der Reviewer schiebt hierher, nach bestandenen Checks. |
 | `Done` | stoppt einen laufenden Agenten und löscht den Workspace, spätestens beim nächsten Abfragen |
 
-Willst du Nacharbeiten, kommentiere im Issue und schiebe es zurück nach `Ready`. Der Agent macht im selben Workspace
-weiter und liest deine Kommentare.
+Willst du Nacharbeiten, kommentiere im Issue und schiebe es zurück nach `Ready` oder `In progress`. Der Developer
+macht im selben Workspace weiter und liest deine Kommentare. Ein Issue aus `Blocked` schiebst du nach Klärung
+ebenso zurück.
+
+#### Umstieg vom Ein-Prompt-Setup
+
+Bis zu dieser Version hatte die `WORKFLOW.md` einen einzigen Prompt: Ein Agent arbeitete von `Ready` bis `In review`.
+Für den Umstieg auf Rollen:
+
+1. **Board:** die Spalten `Agent review` und `Blocked` anlegen (siehe
+   [Board einrichten](#2-github-project-board-einrichten)). Laufende Issues können in ihren Spalten bleiben.
+2. **`WORKFLOW.md`:** die mitgelieferte Datei übernehmen. Hast du eine eigene, ergänze:
+   - `tracker.active_states: [Ready, In progress, Agent review]`,
+   - den Abschnitt `roles` (`developer` für `Ready` und `In progress`, `reviewer` für `Agent review`),
+   - `checks.on_enter` für `Agent review` und `In review` mit `checks/laravel.sh`,
+   - `agent.max_concurrent_agents_by_state: { "Agent review": 1 }` und ein Limit für `agent.max_continuations`
+     (ohne Limit warnt Symphony, weil jeder Rollenwechsel als Fortsetzung zählt),
+   - `bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-env.sh"` im Hook `after_create`,
+   - im Prompt `{% case role %}` mit Abschnitten `{% when "developer" %}`, `{% when "reviewer" %}` und einem
+     `{% else %}` mit deinem bisherigen Prompt als Rückfallebene.
+   Ein vollständiges Beispiel steht in [docs/configuration.md](docs/configuration.md#complete-example-roles-checks-and-laravel).
+3. **`.env`:** `SYMPHONY_MAX_CONTINUATIONS=6` setzen. Der alte Wert `2` reicht für Developer, Reviewer und eine
+   Nachbesserungsrunde nicht.
+4. **Prüfen:** `npm run dry-run` darf keine `unknown board column` melden und zeigt den Prompt der Rolle des ersten
+   Kandidaten.
+
+Bestehende Workspaces bekommen den `after_create`-Hook nicht nachträglich. Für Laravel-Apps darin einmal im
+Workspace `bash ~/projects/symphony/hooks/laravel-env.sh` ausführen oder den Workspace löschen.
+Zurück zum alten Verhalten kommst du, indem du `roles` und `checks` entfernst: Dann läuft jedes Issue mit der Rolle
+`default` und dem `{% else %}`-Prompt.
 
 ### Eingreifen während des Betriebs
 
 | Ziel | So geht's |
 |---|---|
-| Einen Agenten stoppen | Issue nach `Backlog` oder `In review` schieben. Er stoppt beim nächsten Abfragen, spätestens nach 30 s. |
+| Einen Agenten stoppen | Issue nach `Backlog`, `Blocked` oder `In review` schieben. Er stoppt beim nächsten Abfragen, spätestens nach 30 s. |
 | Abbrechen und aufräumen | Issue nach `Done` schieben |
 | Alle neuen Starts pausieren | in der `WORKFLOW.md` `agent.max_concurrent_agents: 0` setzen. Laufende Agenten arbeiten weiter. |
 | Prompt oder Einstellungen ändern | `WORKFLOW.md` bearbeiten. Das gilt sofort für neue Sessions, ohne Neustart. |
@@ -283,10 +354,11 @@ Sub-Issues und Abhängigkeiten im Prompt.
 
 ### Fortsetzungen und Pausieren
 
-Endet eine Session regulär, das Issue steht aber noch in `Ready` oder `In progress`, startet Symphony nach einer
+Endet eine Session regulär, das Issue steht aber noch in einer aktiven Spalte, startet Symphony nach einer
 Sekunde eine **Fortsetzungs-Session**. Der Agent war dann nicht fertig, etwa weil `max_turns` erreicht war. Damit ein
-Issue nicht endlos Sessions verbraucht, begrenzt `SYMPHONY_MAX_CONTINUATIONS` diese Fortsetzungen. Mit dem Wert `2`
-bekommt ein Issue höchstens drei Sessions: die erste und zwei Fortsetzungen. Ist es danach immer noch aktiv, wird es
+Issue nicht endlos Sessions verbraucht, begrenzt `SYMPHONY_MAX_CONTINUATIONS` diese Fortsetzungen. Auch jeder
+Wechsel der Rolle (Developer → Reviewer und zurück) startet eine Fortsetzungs-Session. Mit dem Wert `6` bekommt ein
+Issue höchstens sieben Sessions: die erste und sechs Fortsetzungen. Ist es danach immer noch aktiv, wird es
 **pausiert**:
 
 - Es bleibt für Symphony reserviert, aber kein Agent startet mehr dafür. Im Log erscheint die Warnung
@@ -366,8 +438,14 @@ den Reviewer: Issues in `In review` setzt es nach 60 s auf `Done` und schließt 
 als `max_concurrent_agents` Agenten gleichzeitig liefen und dass kein Issue vor dem Schließen seiner Abhängigkeiten
 gestartet wurde.
 
+`npm run e2e -- --scenario roles` prüft stattdessen den Rollen-Ablauf developer → Checks → reviewer → Übergabe:
+Es erzeugt einen Workflow mit den Rollen `developer` und `reviewer`, legt drei Test-Issues an und prüft deren
+Status-Verlauf, die Zeilen `transition_denied`, `checks_finished` und `handed_off` im Repository-Log und das
+Limit für `Agent review`. Das Board braucht dafür zusätzlich die Spalten `Agent review` und `Blocked`.
+
 ```bash
 npm run e2e                                  # nutzt WORKFLOW.md und .env, wie npm start
+npm run e2e -- --scenario roles              # Rollen-Ablauf mit generiertem Workflow
 node scripts/e2e/verify.ts logs/e2e/<zeit>   # einen Lauf später erneut prüfen
 ```
 
@@ -389,7 +467,7 @@ Kosten, außerdem die Wiederholungs-Warteschlange und Probleme wie Konfiguration
 | `GET /api/v1/history` | dieselben Statistiken als JSON, optional mit `?repo=owner/name` |
 | `GET /api/v1/history/raw?repo=owner/name` | die `.log`-Datei eines Repositorys als Text |
 | `GET /api/v1/state` | Gesamtzustand als JSON: laufende Agenten (mit `role`), Warteschlange, Summen, Gesundheit |
-| `GET /api/v1/<identifier>` | Details zu einem Issue: Rolle, Workspace, Versuche, letzte Ereignisse, letzter Fehler |
+| `GET /api/v1/<identifier>` | Details zu einem Issue: Rolle, Workspace, Versuche, letzte Ereignisse, letzter Fehler, letzter Entry-Check (`last_check`) |
 | `POST /api/v1/refresh` | sofort abfragen und abgleichen |
 
 ```bash
@@ -496,7 +574,9 @@ Die häufigsten Stellschrauben in der `WORKFLOW.md`. Alle Optionen beschreibt
 | `agent.max_concurrent_agents` | wie viele Agenten gleichzeitig laufen (Standard hier: 2) |
 | `agent.max_concurrent_agents_by_state` | Grenze pro Spalte, z. B. `{ "In progress": 1 }` |
 | `agent.max_turns` | Turns pro Session, bevor Symphony den Stand neu bewertet |
-| `agent.max_continuations` | Fortsetzungs-Sessions pro Issue, danach Pause |
+| `agent.max_continuations` | Fortsetzungs-Sessions pro Issue (inklusive Rollenwechsel), danach Pause |
+| `roles` | Rollen pro Spalte: Spalten, erlaubte Zielspalten (`may_move_to`), `read_only`, `max_turns`, Modell |
+| `checks` | Skripte, die bestehen müssen, bevor eine Karte in eine Spalte darf (`on_enter`), und ihr Zeitlimit |
 | `workspace.cleanup_terminal` | Workspaces bei `Done` löschen (Standard) oder behalten |
 | `claude.max_budget_usd` | Kostenobergrenze pro Session |
 | `claude.effort` | Denkaufwand: `low` … `max` |
@@ -505,7 +585,7 @@ Die häufigsten Stellschrauben in der `WORKFLOW.md`. Alle Optionen beschreibt
 | `laravel.*` | Laravel Boost: `boost: auto` oder `off`, PHP- und Composer-Befehl, Umgebung für Boost (`env`, Standard `APP_ENV: local`) und Agent (`agent_env`), Tool-Sperren (`allow_tinker`, `deny_tools`) |
 | `tracker.required_labels` | nur Issues mit diesen Labels bearbeiten, z. B. `[symphony]` |
 | `hooks.*` | Shell-Skripte rund um jeden Lauf, z. B. Abhängigkeiten installieren |
-| Text unterhalb der Front Matter | der Prompt, ein Liquid-Template mit `issue` und `attempt` |
+| Text unterhalb der Front Matter | der Prompt, ein Liquid-Template mit `issue`, `attempt` und `role` |
 
 ### Sicherheit
 
@@ -631,7 +711,7 @@ Mit einem Stack pro Workspace kann `laravel.php` auf ein Wrapper-Script zeigen, 
 |---|---|
 | `GitHub token lacks a required scope` | Dem Token fehlt `project`. Lösung: `gh auth refresh -s project`, oder einen klassischen Token mit `repo` und `project` erstellen. |
 | `GitHub rejected the token (HTTP 401)` | Token falsch oder abgelaufen. `GITHUB_TOKEN` in der `.env` prüfen. |
-| `Candidates in active states: 0` | Das Board ist leer, kein Issue steht in `Ready` oder `In progress`, die Issues stammen aus einem anderen Repository als `GITHUB_REPOSITORY`, oder die Spaltennamen passen nicht zu `active_states`. |
+| `Candidates in active states: 0` | Das Board ist leer, kein Issue steht in `Ready`, `In progress` oder `Agent review`, die Issues stammen aus einem anderen Repository als `GITHUB_REPOSITORY`, oder die Spaltennamen passen nicht zu `active_states`. |
 | `↳ blocked by …` oder `↳ waiting for sub-issues …` im Dry Run | Das Issue wartet auf eine Abhängigkeit oder ein Sub-Issue. Es startet von selbst, sobald diese geschlossen sind, also meist nach dem Merge ihres Pull Requests. |
 | `↳ issue is closed` | Geschlossene Issues werden nicht bearbeitet. |
 | `project field "Status" is missing` | Das Board hat kein Single-Select-Feld `Status`. Den Namen des Feldes unter `tracker.provider.status_field` eintragen. |
@@ -662,13 +742,16 @@ Anleitung (auf Englisch) steht in [docs/laravel-repositories.md](docs/laravel-re
 
 ```
 symphony/
-├── WORKFLOW.md                 # Prompt und Einstellungen (wird live neu geladen)
+├── WORKFLOW.md                 # Rollen, Checks, Prompt und Einstellungen (wird live neu geladen)
+├── hooks/laravel-env.sh        # after_create: eigene .env und SQLite-Datenbank pro Laravel-App
+├── checks/laravel.sh           # Entry-Check vor Agent review und In review (Lint, Analyse, Tests)
 ├── .claude/                    # Toolbox für alle Sessions, geladen als Plugin "symphony" (skills, agents, commands, hooks)
 ├── .github/workflows/          # CI (npm run check) und automatisches Mergen der Agenten-Pull-Requests
 ├── model-costs.yml             # Modellpreise für die Kostenschätzung (wird live neu geladen)
 ├── .env.example                # Vorlage für .env (Board, Repository, Modell, Token, Grenzen)
 ├── repo-init.ts                # interaktive Einrichtung der Repositories (Model-Labels, Laravel-Boost-Issue)
 ├── scripts/e2e/                # End-to-End-Test der Orchestrierung auf einem echten Board (npm run e2e)
+├── scripts/laravel-smoke/      # Integrationstest gegen eine echte Laravel-13/Filament-5-App (npm run test:laravel)
 ├── src/
 │   ├── cli.ts                  # Einstiegspunkt: Optionen, .env laden, Start
 │   ├── service.ts              # Start, Herunterfahren, Dry Run
@@ -695,7 +778,7 @@ symphony/
 - [docs/agent-claude.md](docs/agent-claude.md): Ablauf der Claude-Code-Sessions, Berechtigungen, Skills und Plugins, Laravel Boost, Zeitlimits und Kostenzählung
 - [docs/conformance.md](docs/conformance.md): Abweichungen von der Spezifikation und eigene Festlegungen
 - [docs/laravel-repositories.md](docs/laravel-repositories.md): Konventionen für Laravel-Repositories, also Agenten-Anweisungen, `.ai/`, Composer-Skripte, `.env.example`, `phpunit.xml` und Boost
-- [docs/e2e.md](docs/e2e.md): End-to-End-Test der Orchestrierung, also Szenario, Ablauf, Prüfungen und Run-Verzeichnis
+- [docs/e2e.md](docs/e2e.md): End-to-End-Test der Orchestrierung, also Szenario, Ablauf, Prüfungen und Run-Verzeichnis, sowie der Laravel-Integrationstest (`npm run test:laravel`)
 
 Für die Entwicklung:
 
@@ -704,6 +787,7 @@ npm test            # Tests
 npm run typecheck   # TypeScript-Prüfung
 npm run check       # beides
 npm run e2e         # End-to-End-Test auf dem Test-Board (legt echte Issues an)
+npm run test:laravel # Laravel-Integration gegen eine echte App (braucht PHP 8.3+, Composer, Netz)
 ```
 
 Die CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) führt `npm run check` mit Node 26 für jeden Pull Request

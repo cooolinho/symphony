@@ -124,7 +124,11 @@ function laravelConfig(f: Fixture, overrides: Partial<LaravelConfig> = {}): Lara
   };
 }
 
-function prepare(f: Fixture, options: { config?: Partial<LaravelConfig>; env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {}) {
+async function prepare(f: Fixture, options: { config?: Partial<LaravelConfig>; env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {}) {
+  return (await prepareFull(f, options)).extensions;
+}
+
+function prepareFull(f: Fixture, options: { config?: Partial<LaravelConfig>; env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {}) {
   const sink: LogSink = {
     name: 'memory',
     write: (line) => {
@@ -192,9 +196,10 @@ describe('Laravel detection', () => {
       fs.writeFileSync(path.join(root, name), content);
     }
     const { config } = laravelIntegration.resolveConfig({ boost: 'off' }, { workflowDir: root, env: {}, hookTimeoutMs: 1_000 });
+    fs.writeFileSync(path.join(root, 'api/composer.lock'), JSON.stringify({ packages: [{ name: 'laravel/framework', version: 'v13.1.0' }], 'packages-dev': [{ name: 'laravel/boost', version: 'v2.0.1' }] }));
     assert.deepEqual(await laravelIntegration.describe!(config, {}, root), [
-      'Laravel app (repository root): no laravel/boost in composer.json',
-      'Laravel app api/: Laravel Boost',
+      'Laravel app (repository root): versions unknown (no composer.lock) (no laravel/boost in composer.json)',
+      'Laravel app api/: Laravel v13.1.0 · Boost v2.0.1 (requires laravel/boost)',
     ]);
     assert.deepEqual(await laravelIntegration.describe!(config, {}, null), ['Laravel Boost:   off']);
   });
@@ -403,6 +408,34 @@ describe('Laravel Boost preparation', () => {
     // The next attempt retries.
     assert.notEqual(await prepare(f), null);
     assert.equal(calls(f).filter((call) => call[2] === 'boost:install').length, 2);
+  });
+
+  it('reports a failing boost:install as status failed with a prompt note and run history fields', async () => {
+    const lock = JSON.stringify({ packages: [{ name: 'laravel/framework', version: 'v13.1.0' }], 'packages-dev': [{ name: 'laravel/boost', version: 'v2.0.1' }] });
+    const f = fixture({ artisan: '', 'composer.json': LARAVEL_BOOST, 'composer.lock': lock });
+    const logged: string[] = [];
+    const sink: LogSink = { name: 'memory', write: (line) => logged.push(line) };
+    const result = await laravelIntegration.prepare(laravelConfig(f), {
+      workspacePath: f.repo,
+      env: { ...process.env, FAKE_LOG: f.log, FAKE_PHP_EXIT: '1' },
+      logger: Logger.create({ sinks: [sink], level: 'debug' }),
+      signal: new AbortController().signal,
+    });
+    assert.deepEqual(result?.mcpServers, {});
+    assert.deepEqual(result?.contextSections, ['Laravel Boost is unavailable for `(repository root)` (boost:install failed); use artisan and composer in the shell.']);
+    assert.deepEqual(result?.historyFields, { laravel: '.:v13.1.0', boost: 'failed' });
+    const line = logged.find((entry) => entry.includes('integration_prepared'));
+    assert.match(line ?? '', /laravel\/framework=v13\.1\.0 laravel\/boost=v2\.0\.1.*boost=failed/);
+  });
+
+  it('reports ready, absent and skipped statuses per app', async () => {
+    const f = fixture({ artisan: '', 'composer.json': LARAVEL, 'api/artisan': '', 'api/composer.json': LARAVEL_BOOST });
+    const ready = await prepareFull(f);
+    assert.deepEqual(ready.apps.map((entry) => [entry.app.dir, entry.status, entry.reason]), [['', 'absent', null], ['api', 'ready', null]]);
+    const off = await prepareFull(fixture({ artisan: '', 'composer.json': LARAVEL_BOOST }), { config: { boost: 'off' } });
+    assert.deepEqual(off.apps.map((entry) => [entry.status, entry.reason]), [['skipped', 'laravel.boost is off']]);
+    const noInstall = await prepareFull(fixture({ artisan: '', 'composer.json': LARAVEL_BOOST }), { config: { installDependencies: false } });
+    assert.equal(noInstall.apps[0]?.status, 'skipped');
   });
 
   it('warns about Sail, whose guidelines contradict host PHP', async () => {

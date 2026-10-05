@@ -157,7 +157,7 @@ before the tracker is touched. The guard decides on the run's role and the targe
 **Cache.** A passing check is remembered per claim, in memory, under the key `HEAD sha` + hash of the script text. Before
 running a check the guard reads `git rev-parse HEAD` and `git status --porcelain` (5 s timeout each); when the tree
 is clean and the key has a passing result, the issue is moved without running the script and the tool result carries
-`note: "cached result for <sha>"`. This lets the move to `In review` reuse the successful check of `Agent review`. A
+`note: "cached result for <sha>"` (logged as `checks_cached`; no phase change, no `checks_finished`). This lets the move to `In review` reuse the successful check of `Agent review`. A
 new commit, a changed script, or any uncommitted change runs the check again; failures and errors are never cached; if
 git fails (e.g. no repository) the check simply runs. The cache is not persisted and not shared between issues, so
 a service restart or a new claim runs the checks again.
@@ -166,6 +166,13 @@ Because a failed check leaves the column unchanged, reconciliation never stops t
 feedback in the same session. Checks of one session run one after the other; stopping the run (e.g. a human moves the
 card to `Done`) kills a running check's process group. Without `roles` and `checks`, only the terminal-target rule
 applies.
+
+While a check runs, the run is in phase `RunningChecks`: stall detection is suspended and its clock starts fresh when
+the check ends, and the `set_status` tool call may last `checks.timeout_ms + 60 s`
+(see [agent-claude.md](agent-claude.md#timeouts-and-failures)). Each check logs `checks_started` and
+`checks_finished` (`target`, `sha`, `exit_code`, `duration_ms`, `ok`) at info level, writes a `checks_finished`
+line to the [repository log](#repository-logs) and becomes `last_check` in `GET /api/v1/<identifier>`. Denied targets
+write a `transition_denied` line.
 
 ### `agent`
 
@@ -213,7 +220,10 @@ Laravel Boost for Laravel apps in the workspace. After the `before_run` hook, Sy
 checkout (the root and one level deep: `artisan` plus a `composer.json` that requires `laravel/framework`). For each
 app that requires `laravel/boost`, it installs Composer dependencies if needed, generates Boost's guidelines and skills
 for Claude Code, keeps the generated files out of commits, and adds Boost's MCP server to the session. Apps without
-Boost only get a log line; `npm run repo-init` creates an issue that adds it. Details:
+Boost only get a log line; `npm run repo-init` creates an issue that adds it. One `integration_prepared` log line lists the
+versions from `composer.lock` and the Boost status (`ready`, `failed`, `skipped`, `absent`) of each app; the dry run shows
+the versions for existing workspaces. When Boost is `failed` or `skipped` for an app, the prompt says so and points the
+agent to `artisan` and `composer` in the shell. Details:
 [agent-claude.md](agent-claude.md#workspace-extensions-laravel-boost). What a repository must provide for this to work
 (`AGENTS.md`, `.ai/`, composer scripts, `.env.example`, `phpunit.xml`) is described in
 [Laravel repositories](laravel-repositories.md).
@@ -313,10 +323,103 @@ REST API. Other values such as `Model: claude-opus-5-5` work as labels too; crea
 | `port` | none | Starts the dashboard and JSON API. `0` picks a free port. `--port` overrides it. Restart to change it. |
 | `host` | `127.0.0.1` | Bind address. On a loopback address, requests with another `Host` header are rejected. |
 
+## Complete example: roles, checks and Laravel
+
+The shipped `WORKFLOW.md`, shortened to the parts that make up the developer → checks → reviewer → human flow
+(`Ready → In progress → [checks] → Agent review → [checks] → In review → Done`, plus `Blocked`). The board needs
+the columns `Backlog`, `Ready`, `In progress`, `Agent review`, `Blocked`, `In review` and `Done`; the
+[board preflight](#tracker) reports a missing one. In a repository without a Laravel app the hook and the check
+script do nothing (exit 0), so the same file also works there.
+
+```yaml
+---
+tracker:
+  kind: github_project
+  provider:
+    project_number: $GITHUB_PROJECT_NUMBER
+    repositories: $GITHUB_REPOSITORY
+    token: $GITHUB_TOKEN
+  active_states: [Ready, In progress, Agent review]
+  terminal_states: [Done]                    # In review and Blocked: neither active nor terminal (agent stops, workspace stays)
+
+hooks:
+  timeout_ms: 600000
+  after_create: |
+    git clone --quiet "git@github.com:${SYMPHONY_ISSUE_REPOSITORY}.git" .
+    bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-env.sh"
+  before_run: |
+    git fetch --quiet --prune origin
+
+agent:
+  max_concurrent_agents: ${SYMPHONY_MAX_CONCURRENT_AGENTS:-2}
+  max_turns: ${SYMPHONY_MAX_TURNS:-10}
+  max_continuations: ${SYMPHONY_MAX_CONTINUATIONS:-6}   # role switches count, so keep a limit
+  max_concurrent_agents_by_state:
+    "Agent review": 1
+
+roles:
+  developer:
+    states: [Ready, In progress]
+    may_move_to: [In progress, Agent review, Blocked]
+  reviewer:
+    states: [Agent review]
+    read_only: true
+    max_turns: 6
+    may_move_to: [In review, In progress, Blocked]
+    claude: { model: opus }
+
+checks:
+  timeout_ms: 1200000                        # below claude.turn_timeout_ms (default 3600000)
+  on_enter:
+    Agent review: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
+    In review: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"   # usually a cache hit for the reviewed commit
+
+laravel:
+  agent_env: {}
+  allow_tinker: false
+  deny_tools: [record-rule]
+---
+{% capture branch %}{% if issue.branch_name %}{{ issue.branch_name }}{% else %}symphony/issue-{{ issue.native_ref.number }}{% endif %}{% endcapture %}
+You are working on GitHub issue **{{ issue.identifier }}**: {{ issue.title }}
+
+{{ issue.description | default: "(no description)" }}
+
+{% case role %}{% when "developer" %}## Your role: developer
+
+Implement the issue on `{{ branch }}`, integrate the base branch, commit, push, open a pull request with
+`open_pull_request`, comment with `add_comment`, then hand off with `set_status("Agent review")`.
+On `check_failed`: fix the problems and call `set_status("Agent review")` again.
+On `check_error`: describe the error with `add_comment` and call `set_status("Blocked")`.
+After a successful transition, end your turn.
+{% when "reviewer" %}## Your role: reviewer
+
+You are read-only. Review `git diff origin/<base>...HEAD`, the pull request and the issue comments against the
+checklist, post one comment "## Agent review (round N)", then `set_status("In review")` (approved) or
+`set_status("In progress")` (changes needed). From round 3 on, move it to "In review" and list the open findings.
+{% else %}## How to work
+
+The single-agent prompt: implement, open a pull request and move the issue to "In review".
+{% endcase %}
+```
+
+How the pieces work together:
+
+| Step | Mechanism |
+|---|---|
+| `Ready`/`In progress` → developer session | [`roles`](#roles): the column decides the role, `role` selects the prompt section. |
+| Developer calls `set_status("Agent review")` | [Transition guard](#transition-guard): `Agent review` is in the developer's `may_move_to`, so `checks.on_enter` runs; only exit `0` moves the card. |
+| Card in `Agent review` → reviewer session | Role switch ends the developer session; the reviewer starts in a fresh, read-only session, at most one at a time (`max_concurrent_agents_by_state`). |
+| Reviewer approves (`In review`) or sends back (`In progress`) | `In review` runs the same check again (cached for an unchanged, clean commit); `In progress` has no check. |
+| Ping-pong between the roles | Each switch counts toward `agent.max_continuations`; the prompt also stops sending back from review round 3. |
+| `Done` | Never allowed for agents (terminal state); a human sets it after the merge. |
+
+The full prompt (developer steps, reviewer checklist and the fallback for the `default` role) is the body of the
+shipped `WORKFLOW.md`; `test/workflow-prompt.test.ts` renders it for each role.
+
 ## Check scripts (`checks/laravel.sh`)
 
-A deterministic quality gate that runs in the workspace (bash). It is not wired into the configuration yet; the
-transition guard will run it before an issue may enter `Agent review` and `In review`.
+A deterministic quality gate that runs in the workspace (bash). The shipped `WORKFLOW.md` runs it through
+[`checks.on_enter`](#checks) before an issue may enter `Agent review` and `In review`.
 
 | Exit code | Meaning |
 |---|---|
@@ -360,11 +463,13 @@ workflow directory, else `$XDG_STATE_HOME/symphony` or `~/.local/state/symphony`
 
 | Event | Fields |
 |---|---|
-| `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested: from a `Model: …` label, else the role's model, else `claude.model`), `role` (`default` without roles) |
+| `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested: from a `Model: …` label, else the role's model, else `claude.model`), `role` (`default` without roles), `laravel` and `boost` (only for workspaces with [`laravel`](#laravel) apps: `<app dir>:<laravel/framework version from composer.lock, or unknown>` and the Boost status `ready`, `failed`, `skipped` or `absent`, e.g. `laravel=laravel/:v13.1.0 boost=ready`; several apps give comma-separated entries, each status prefixed by its directory) |
 | `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `stopped`, `stalled`, `shutdown`), `role` and `next_role` (only when the run handed off to another [role](#roles)), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `head_sha` and `branch` (final commit of a git workspace; omitted otherwise), `mcp_tool_calls` (`<server>:<n>,…` per MCP server; omitted when no MCP tool was used), `started_at`, `mcp_unavailable` (comma-separated MCP servers Symphony added that did not connect; only when there are any), running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` |
 | `model_usage` | `repo`, `issue`, `run`, `model`, `price` (matched entry), token counts, `cost_usd` |
 | `issue_paused` | `repo`, `issue`, `title`, `state`, `continuations`, `max_continuations` |
 | `workspace_removed` | `repo`, `issue`, `state` |
+| `checks_finished` | `repo`, `issue`, `run`, `role`, `target`, `sha` (workspace commit; omitted outside git), `ok`, `result` (`passed`, `check_failed`, `check_error`), `exit_code` (`null` when the script did not exit normally), `timed_out` (only when `true`), `duration_ms` |
+| `transition_denied` | `repo`, `issue`, `run`, `role`, `target`, `reason` (the message the agent received) |
 
 `cost_usd` in a line uses the prices at the time it was written; the logs page and `/api/v1/history` recompute every
 cost from the logged tokens with the current `model-costs.yml`. `input_tokens` counts uncached input only;

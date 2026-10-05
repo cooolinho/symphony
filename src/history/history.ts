@@ -33,6 +33,8 @@ export interface RunStart {
   role?: string;
   run: string;
   at: Date;
+  /** Extra fields from workspace integrations (e.g. `laravel`, `boost`), appended to the line. */
+  extra?: Record<string, string>;
 }
 
 export interface RunFinish {
@@ -63,6 +65,34 @@ export interface RunFinish {
   branch?: string | null;
   /** `tool_use` events per MCP server. */
   mcpToolCalls?: Record<string, number>;
+}
+
+/** An entry check the transition guard ran (history line `checks_finished`). */
+export interface CheckFinish {
+  repo: string;
+  issue: string;
+  run: string;
+  role: string;
+  target: string;
+  sha: string | null;
+  exitCode: number | null;
+  timedOut: boolean;
+  durationMs: number;
+  ok: boolean;
+  /** `passed`, `check_failed` or `check_error`. */
+  result: string;
+  at: Date;
+}
+
+/** A status change the guard refused (history line `transition_denied`). */
+export interface TransitionDenial {
+  repo: string;
+  issue: string;
+  run: string;
+  role: string;
+  target: string;
+  reason: string;
+  at: Date;
 }
 
 interface RepoTotals {
@@ -152,6 +182,7 @@ export class HistoryLog {
       attempt: start.attempt,
       model: start.model ?? 'default',
       role: start.role ?? DEFAULT_ROLE,
+      ...start.extra,
     });
   }
 
@@ -215,6 +246,31 @@ export class HistoryLog {
         cost_usd: round(costOf(usage, price), 4),
       });
     }
+  }
+
+  checkFinished(check: CheckFinish): void {
+    this.#append(check.repo, check.at, 'checks_finished', {
+      issue: check.issue,
+      run: check.run,
+      role: check.role,
+      target: check.target,
+      sha: check.sha ?? undefined,
+      ok: check.ok,
+      result: check.result,
+      exit_code: check.exitCode,
+      timed_out: check.timedOut || undefined,
+      duration_ms: check.durationMs,
+    });
+  }
+
+  transitionDenied(denial: TransitionDenial): void {
+    this.#append(denial.repo, denial.at, 'transition_denied', {
+      issue: denial.issue,
+      run: denial.run,
+      role: denial.role,
+      target: denial.target,
+      reason: denial.reason,
+    });
   }
 
   /** Other noteworthy events for the repository history (paused issue, removed workspace, …). */

@@ -5,7 +5,7 @@ import { childEnvironment } from '../agent/env.ts';
 import { chooseModel } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, TokenUsage } from '../agent/types.ts';
 import { estimateCost, totalTokens, type ModelTokenUsage, type PricingStore } from '../costs/pricing.ts';
-import type { HistoryLog, RunOutcome } from '../history/history.ts';
+import type { HistoryLog, RunOutcome, RunStart } from '../history/history.ts';
 import { defaultIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
@@ -30,7 +30,7 @@ import {
   stateLimit,
 } from './eligibility.ts';
 import { normalizeStateName } from '../workflow/config.ts';
-import type { CheckCache } from './guard.ts';
+import type { CheckCache, CheckRecord } from './guard.ts';
 import { runAgentAttempt, type RunPhase, type WorkerOutcome } from './worker.ts';
 
 export interface Clock {
@@ -125,6 +125,8 @@ interface RunningEntry {
   modelUsage: Record<string, ModelTokenUsage>;
   /** MCP servers Symphony added that did not connect in the session. */
   mcpUnavailable: string[];
+  /** `run_started` line waiting for the integrations' fields; written once they ran, or when the run ends first. */
+  pendingStart: RunStart | null;
   /** `tool_use` events per MCP server (`mcp__<server>__<tool>`); built-in tools are not counted. */
   mcpToolCalls: Record<string, number>;
   headSha: string | null;
@@ -166,6 +168,8 @@ interface IssueRecord {
   lastRun: RunTrace | null;
   /** Passing entry-check results per HEAD and script (docs/configuration.md#checks); in memory, dropped with the claim. */
   checkCache: CheckCache;
+  /** The latest entry check of any run for this issue. */
+  lastCheck: CheckRecord | null;
 }
 
 interface RunTrace {
@@ -181,6 +185,21 @@ function traceOf(entry: RunningEntry): RunTrace {
 
 function traceJson(trace: RunTrace | null) {
   return trace === null ? null : { head_sha: trace.headSha, branch: trace.branch, mcp_tool_calls: trace.mcpToolCalls };
+}
+
+function checkJson(check: CheckRecord | null) {
+  if (check === null) return null;
+  return {
+    target: check.target,
+    role: check.role,
+    sha: check.sha,
+    ok: check.ok,
+    result: check.result,
+    exit_code: check.exitCode,
+    timed_out: check.timedOut,
+    duration_ms: check.durationMs,
+    finished_at: check.finishedAt.toISOString(),
+  };
 }
 
 function mcpServerOf(tool: string): string | null {
@@ -215,6 +234,10 @@ const LIFECYCLE_EVENTS = new Set([
   'approval_denied',
   'agent_exited',
   'tracker_tool',
+  'transition_denied',
+  'checks_started',
+  'checks_cached',
+  'checks_finished',
 ]);
 /** Events that usually need an operator's attention. */
 const WARNING_EVENTS = new Set(['agent_error', 'startup_failed', 'turn_failed', 'turn_timeout']);
@@ -547,6 +570,7 @@ export class Orchestrator {
       claudeEstimateUsd: 0,
       modelUsage: {},
       mcpUnavailable: [],
+      pendingStart: null,
       mcpToolCalls: {},
       headSha: null,
       branch: null,
@@ -572,7 +596,7 @@ export class Orchestrator {
       model_label: choice.label ?? undefined,
       title: truncate(issue.title, 120),
     });
-    this.#deps.history?.runStarted({
+    entry.pendingStart = {
       repo: entry.repo,
       issue: issue.identifier,
       title: issue.title,
@@ -582,7 +606,7 @@ export class Orchestrator {
       role: entry.role,
       run: entry.runId,
       at: entry.startedAt,
-    });
+    };
 
     let worker: Promise<WorkerOutcome>;
     try {
@@ -611,6 +635,8 @@ export class Orchestrator {
         callbacks: {
           phase: (phase) => {
             if (entry.phase === 'PreparingWorkspace' && phase !== 'PreparingWorkspace') entry.preparedAtMs = this.#clock.monotonicMs();
+            // The stall clock starts fresh after a check; the agent was waiting for its tool call meanwhile.
+            if (entry.phase === 'RunningChecks' && phase !== 'RunningChecks') entry.lastEventAtMs = this.#clock.monotonicMs();
             entry.phase = phase;
           },
           workspace: (workspace) => {
@@ -626,12 +652,42 @@ export class Orchestrator {
           issueRefreshed: (fresh) => {
             if (this.#running.get(entry.issueId) === entry) entry.issue = fresh;
           },
+          integrationsPrepared: (fields) => this.#flushStart(entry, fields),
           mcpUnavailable: (servers) => {
             entry.mcpUnavailable = servers;
+          },
+          checkFinished: (check) => {
+            record.lastCheck = check;
+            this.#deps.history?.checkFinished({
+              repo: entry.repo,
+              issue: entry.identifier,
+              run: entry.runId,
+              role: check.role,
+              target: check.target,
+              sha: check.sha,
+              exitCode: check.exitCode,
+              timedOut: check.timedOut,
+              durationMs: check.durationMs,
+              ok: check.ok,
+              result: check.result,
+              at: check.finishedAt,
+            });
+          },
+          transitionDenied: (target, message) => {
+            this.#deps.history?.transitionDenied({
+              repo: entry.repo,
+              issue: entry.identifier,
+              run: entry.runId,
+              role: entry.role,
+              target,
+              reason: message,
+              at: this.#clock.now(),
+            });
           },
         },
       });
     } catch (error) {
+      this.#flushStart(entry);
       this.#running.delete(issue.id);
       this.#scheduleRetry(issue.id, (attempt ?? 0) + 1, {
         identifier: issue.identifier,
@@ -700,8 +756,17 @@ export class Orchestrator {
     this.#notify();
   }
 
+  /** Writes the pending `run_started` line (once), with fields the integrations added. */
+  #flushStart(entry: RunningEntry, extra: Record<string, string> = {}): void {
+    const start = entry.pendingStart;
+    if (start === null) return;
+    entry.pendingStart = null;
+    this.#deps.history?.runStarted({ ...start, extra });
+  }
+
   /** Writes the finished run to the repository history. */
   #recordRun(entry: RunningEntry, outcome: WorkerOutcome, agentSeconds: number): void {
+    this.#flushStart(entry);
     const history = this.#deps.history;
     if (history === null || history === undefined) return;
     const config = this.#deps.workflow.current.config;
@@ -924,8 +989,8 @@ export class Orchestrator {
         }
         continue;
       }
-      // Workspace preparation (hooks, composer, Boost) has its own timeouts and emits no agent events.
-      if (stallMs <= 0 || entry.phase === 'PreparingWorkspace') continue;
+      // Workspace preparation (hooks, composer, Boost) and entry checks have their own timeouts and emit no agent events.
+      if (stallMs <= 0 || entry.phase === 'PreparingWorkspace' || entry.phase === 'RunningChecks') continue;
       const elapsed = now - (entry.lastEventAtMs ?? entry.preparedAtMs ?? entry.startedAtMs);
       if (elapsed > stallMs) {
         this.#requestStop(entry, { kind: 'stalled', cleanupWorkspace: false, reason: `no agent activity for ${Math.round(elapsed / 1000)}s` });
@@ -1130,7 +1195,7 @@ export class Orchestrator {
   #record(issue: Issue): IssueRecord {
     let record = this.#records.get(issue.id);
     if (record === undefined) {
-      record = { identifier: issue.identifier, url: issue.url, workspacePath: null, runs: 0, continuations: 0, lastError: null, recentEvents: [], lastRun: null, checkCache: new Set() };
+      record = { identifier: issue.identifier, url: issue.url, workspacePath: null, runs: 0, continuations: 0, lastError: null, recentEvents: [], lastRun: null, checkCache: new Set(), lastCheck: null };
       this.#records.set(issue.id, record);
     }
     record.identifier = issue.identifier;
@@ -1295,6 +1360,7 @@ export class Orchestrator {
       logs: { session_transcripts_dir: this.#deps.logDir === null ? null : path.join(this.#deps.logDir, 'sessions') },
       recent_events: record?.recentEvents ?? [],
       last_error: record?.lastError ?? null,
+      last_check: checkJson(record?.lastCheck ?? null),
       tracked: { completed_before: this.#completed.has(issueId) },
     };
   }

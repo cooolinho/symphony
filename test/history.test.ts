@@ -97,11 +97,36 @@ describe('repository history', () => {
     for (const key of ['head_sha', 'branch', 'mcp_tool_calls']) assert.equal(key in (second?.fields ?? {}), false);
   });
 
+  it('records finished entry checks and denied transitions', () => {
+    const { log } = history();
+    const at = new Date('2026-10-04T08:00:00Z');
+    const check = { repo: 'acme/app', issue: 'acme/app#1', run: 'r1', role: 'developer', target: 'Agent review', at };
+    log.checkFinished({ ...check, sha: 'abc123', exitCode: 1, timedOut: false, durationMs: 4200, ok: false, result: 'check_failed' });
+    log.checkFinished({ ...check, sha: null, exitCode: null, timedOut: true, durationMs: 600_000, ok: false, result: 'check_error' });
+    log.transitionDenied({ repo: 'acme/app', issue: 'acme/app#1', run: 'r1', role: 'developer', target: 'Done', reason: '"Done" is a terminal column', at });
+    const [failed, timedOut, denied] = readHistory(log.dir, 'acme/app').entries;
+    assert.equal(failed?.event, 'checks_finished');
+    assert.deepEqual(failed?.fields, {
+      repo: 'acme/app', issue: 'acme/app#1', run: 'r1', role: 'developer', target: 'Agent review', sha: 'abc123', ok: 'false', result: 'check_failed', exit_code: '1', duration_ms: '4200',
+    });
+    assert.deepEqual([timedOut?.fields.exit_code, timedOut?.fields.timed_out, 'sha' in (timedOut?.fields ?? {})], ['null', 'true', false]);
+    assert.equal(denied?.event, 'transition_denied');
+    assert.deepEqual([denied?.fields.target, denied?.fields.role, denied?.fields.reason], ['Done', 'developer', '"Done" is a terminal column']);
+  });
+
   it('records the role of a run in run_started', () => {
     const { log } = history();
     log.runStarted({ repo: 'acme/app', issue: 'acme/app#1', title: 'Review', state: 'Agent review', attempt: null, model: 'opus', role: 'reviewer', run: 'r1', at: new Date('2026-10-04T08:00:00Z') });
     const started = parseHistoryLine(fs.readFileSync(log.fileFor('acme/app'), 'utf8').trim());
     assert.equal(started?.fields.role, 'reviewer');
+  });
+
+  it('adds integration fields to run_started', () => {
+    const { log } = history();
+    log.runStarted({ repo: 'acme/app', issue: 'acme/app#1', title: 'T', state: 'Ready', attempt: null, model: null, run: 'r1', at: new Date('2026-10-04T08:00:00Z'), extra: { laravel: 'laravel/:v13.1.0', boost: 'ready' } });
+    const started = parseHistoryLine(fs.readFileSync(log.fileFor('acme/app'), 'utf8').trim());
+    assert.equal(started?.fields.laravel, 'laravel/:v13.1.0');
+    assert.equal(started?.fields.boost, 'ready');
   });
 
   it('appends key=value lines per repository with running totals', () => {

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 import { Logger } from '../src/log.ts';
-import { CHECK_PASSED_NOTE, createGuard, guardTools, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
+import { CHECK_PASSED_NOTE, createGuard, guardTools, type CheckRecord, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
 import type { AgentToolSpec, ToolResult } from '../src/tracker/types.ts';
 import { WorkspaceManager } from '../src/workspace/manager.ts';
 import { baseFront, makeIssue, makeWorkflow, tempDir } from './helpers.ts';
@@ -72,7 +72,7 @@ describe('transition guard', () => {
       checks: { 'Agent review': 'test "$SYMPHONY_ROLE" = developer && test "$SYMPHONY_TARGET_STATE" = "Agent review" && test "$SYMPHONY_HOOK" = "check:Agent review"' },
     });
     assert.deepEqual(await guard('Agent review'), { allow: true, note: CHECK_PASSED_NOTE });
-    assert.deepEqual(events, ['entry_check_started', 'entry_check_finished']);
+    assert.deepEqual(events, ['checks_started', 'checks_finished']);
   });
 
   it('adds the integration check environment', async () => {
@@ -112,6 +112,41 @@ describe('transition guard', () => {
     const error = denied(await broken('Agent review'));
     assert.equal(error?.category, 'check_error');
     assert.match(error?.message ?? '', /boom/);
+  });
+
+  it('runs a check inside whileChecking, reports its result and the denied transitions', async () => {
+    const { params } = setup({ checks: { 'Agent review': 'exit 1' } });
+    const phases: string[] = [];
+    const whileChecking: GuardParams['whileChecking'] = async (run) => {
+      phases.push('RunningChecks');
+      try {
+        return await run();
+      } finally {
+        phases.push('restored');
+      }
+    };
+    const checks: CheckRecord[] = [];
+    const denials: string[] = [];
+    const guard = createGuard({
+      ...params,
+      headSha: async () => 'abc123',
+      whileChecking,
+      onCheckFinished: (check) => checks.push(check),
+      onDenied: (target) => denials.push(target),
+    });
+    assert.equal(denied(await guard('Done'))?.category, 'transition_denied');
+    assert.equal(denied(await guard('Agent review'))?.category, 'check_failed');
+    assert.deepEqual(phases, ['RunningChecks', 'restored']);
+    assert.deepEqual(denials, ['Done']);
+    assert.deepEqual(
+      checks.map((c) => [c.target, c.role, c.sha, c.exitCode, c.ok, c.result, c.timedOut]),
+      [['Agent review', 'developer', 'abc123', 1, false, 'check_failed', false]],
+    );
+
+    phases.length = 0;
+    const failing = createGuard({ ...params, manager: { runScript: () => Promise.reject(new Error('boom')) }, whileChecking });
+    assert.equal(denied(await failing('Agent review'))?.category, 'check_error');
+    assert.deepEqual(phases, ['RunningChecks', 'restored'], 'the phase is restored when the check throws');
   });
 
   it('runs the checks of one session one after the other', async () => {

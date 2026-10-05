@@ -2,8 +2,10 @@ import type { WorkspaceIntegration } from '../integrations/types.ts';
 import { errorMessage } from '../util/errors.ts';
 import { resolveConfigPath } from '../util/paths.ts';
 import { Reader } from '../workflow/reader.ts';
-import { prepareLaravelBoost, probeLaravelTools } from './boost.ts';
-import { detectLaravelApps } from './detect.ts';
+import type { SessionExtensions } from '../agent/types.ts';
+import { prepareLaravelBoost, probeLaravelTools, type AppBoostStatus } from './boost.ts';
+import { detectLaravelApps, type LaravelApp } from './detect.ts';
+import { formatVersions, readLaravelFacts, versionFields, type LaravelFacts } from './facts.ts';
 
 export type BoostMode = 'auto' | 'off';
 
@@ -68,14 +70,34 @@ export const laravelIntegration: WorkspaceIntegration<LaravelConfig> = {
   },
 
   // Laravel Boost for detected Laravel apps; problems only log warnings.
-  prepare: (config, ctx) =>
-    prepareLaravelBoost({ workspacePath: ctx.workspacePath, config, env: ctx.env, logger: ctx.logger, signal: ctx.signal }),
+  async prepare(config, ctx) {
+    const { extensions, apps } = await prepareLaravelBoost({
+      workspacePath: ctx.workspacePath,
+      config,
+      env: ctx.env,
+      logger: ctx.logger,
+      signal: ctx.signal,
+    });
+    if (apps.length === 0) return extensions;
+    const facts = await Promise.all(apps.map((entry) => readLaravelFacts(entry.app.path)));
+    ctx.logger.info('integration_prepared', { integration: 'laravel', apps: apps.map((entry, i) => describePrepared(entry, facts[i] as LaravelFacts)).join('; ') });
+    const result: SessionExtensions = extensions ?? { mcpServers: {}, contextSections: [], additionalDirectories: [], env: {} };
+    // Boost off is the user's choice, not a failure worth a prompt note.
+    if (config.boost !== 'off') result.contextSections.push(...apps.flatMap(unavailableNote));
+    result.historyFields = historyFields(apps, facts);
+    return result;
+  },
 
   async describe(config, env, workspacePath) {
     if (workspacePath !== null) {
       // Laravel apps in an issue's existing workspace (a new workspace is only cloned when the issue runs).
       const apps = await detectLaravelApps(workspacePath);
-      return apps.map((app) => `Laravel app ${app.dir === '' ? '(repository root)' : `${app.dir}/`}: ${app.boost ? 'Laravel Boost' : 'no laravel/boost in composer.json'}`);
+      return Promise.all(
+        apps.map(async (app) => {
+          const versions = formatVersions(await readLaravelFacts(app.path)) ?? 'versions unknown (no composer.lock)';
+          return `Laravel app ${displayDir(app)}: ${versions} (${app.boost ? 'requires laravel/boost' : 'no laravel/boost in composer.json'})`;
+        }),
+      );
     }
     if (config.boost === 'off') return ['Laravel Boost:   off'];
     const tools = await probeLaravelTools(config, env);
@@ -85,3 +107,28 @@ export const laravelIntegration: WorkspaceIntegration<LaravelConfig> = {
     return lines;
   },
 };
+
+function displayDir(app: LaravelApp): string {
+  return app.dir === '' ? '(repository root)' : `${app.dir}/`;
+}
+
+/** `laravel/ [laravel/framework=v13.1.0 laravel/boost=v2.0.1] boost=ready` for the integration_prepared line. */
+function describePrepared(entry: AppBoostStatus, facts: LaravelFacts): string {
+  const versions = Object.entries(versionFields(facts)).map(([name, version]) => `${name}=${version}`);
+  const reason = entry.reason === null ? '' : ` (${entry.reason})`;
+  return `${displayDir(entry.app)} [${versions.join(' ')}] boost=${entry.status}${reason}`;
+}
+
+/** The prompt line for an app whose Boost is unavailable: the agent falls back to the shell. */
+function unavailableNote(entry: AppBoostStatus): string[] {
+  if (entry.status !== 'failed' && entry.status !== 'skipped') return [];
+  return [`Laravel Boost is unavailable for \`${displayDir(entry.app)}\` (${entry.reason ?? entry.status}); use artisan and composer in the shell.`];
+}
+
+/** `laravel=laravel/:v13.1.0 boost=ready`; with several apps every entry is prefixed by its directory. */
+function historyFields(apps: AppBoostStatus[], facts: LaravelFacts[]): Record<string, string> {
+  const label = (app: LaravelApp) => (app.dir === '' ? '.' : `${app.dir}/`);
+  const laravel = apps.map((entry, i) => `${label(entry.app)}:${facts[i]?.packages['laravel/framework'] ?? 'unknown'}`);
+  const boost = apps.map((entry) => (apps.length === 1 ? entry.status : `${label(entry.app)}:${entry.status}`));
+  return { laravel: laravel.join(','), boost: boost.join(',') };
+}

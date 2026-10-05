@@ -45,7 +45,7 @@ Agent SDK instead; the mapping of threads, turns, approvals, user input, timeout
 | `agent.max_continuations` | Extension: pauses an issue after N continuation sessions until it changes on the tracker (default: unlimited, as specified) |
 | `workspace.cleanup_terminal` | Extension: `false` keeps workspaces of terminal issues (default `true`, as specified) |
 | Model per issue | Extension: a `Model: <model>` issue label overrides `claude.model` for that issue's sessions; unknown or conflicting labels fall back to `claude.model` with a warning |
-| Stall detection | Not applied while the run is in `PreparingWorkspace` (hooks, Composer, Laravel Boost have their own timeouts); afterwards counted from the end of preparation until the first agent event |
+| Stall detection | Not applied while the run is in `PreparingWorkspace` (hooks, Composer, Laravel Boost have their own timeouts) or `RunningChecks` (entry checks have `checks.timeout_ms`); afterwards counted from the end of preparation until the first agent event, and again from the end of a check |
 | Terminal cleanup of released issues | Issues this process worked on stay watched after release; their workspace is deleted on the first tick that sees them terminal (the spec only requires startup, reconciliation and retry paths) |
 | HTTP server | Loopback by default; Host-header check against DNS rebinding; cross-origin `POST` rejected |
 | Logs | `key=value` lines on stderr (optional `--log-file`); per-session JSONL transcripts under the log directory |

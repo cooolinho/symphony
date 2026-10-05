@@ -1,12 +1,15 @@
 #!/usr/bin/env node
-// Checks a finished e2e run: concurrency limit, dependencies, model, no code changes, completeness.
+// Checks a finished e2e run: concurrency limit, dependencies, model, no code changes, completeness;
+// for the roles scenario the lifecycle checks of verify-roles.ts.
 // Usage: node scripts/e2e/verify.ts <run-dir> [--env-file <path>]
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { parseHistoryLine, repositoryFileName } from '../../src/history/history.ts';
 import { clock, loadContext, type E2eContext } from './context.ts';
+import { AGENT_REVIEW_LIMIT, ROLES_FILES, rolesIssue } from './roles.ts';
 import { MODEL, ROOT_COUNT, dependencies, doneMarker, type RunRecord } from './scenario.ts';
+import { observedPath, verifyRoles, type Check, type TimelineEntry } from './verify-roles.ts';
 
 interface Run {
   number: number;
@@ -85,6 +88,77 @@ function tracePeak(traceFile: string): number {
   return Math.max(0, ...[...fs.readFileSync(traceFile, 'utf8').matchAll(/running=(\d+)/g)].map((match) => Number(match[1])));
 }
 
+function noCodeChanges(record: RunRecord, repository: Pick<RepositoryDetail, 'pullRequests' | 'refs'>): Check {
+  const numbers = new Set(record.issues.map((issue) => issue.number));
+  const pullRequests = repository.pullRequests.nodes.filter((pr) => new Date(pr.createdAt) >= new Date(record.startedAt));
+  const branches = repository.refs.nodes.filter((ref) => numbers.has(Number(ref.name.split('-').at(-1))));
+  return {
+    ok: pullRequests.length === 0 && branches.length === 0,
+    name: 'No code changes',
+    detail: `pull requests: ${pullRequests.map((pr) => `#${pr.number}`).join(', ') || 'none'}, issue branches: ${branches.map((ref) => ref.name).join(', ') || 'none'}`,
+  };
+}
+
+const CODE_CHANGES_QUERY = `
+  pullRequests(first: 50, orderBy: { field: CREATED_AT, direction: DESC }) { nodes { number createdAt headRefName } }
+  refs(refPrefix: "refs/heads/", query: "symphony/issue-", first: 100) { nodes { name } }`;
+
+function report(out: (line: string) => void, rows: string[][], checks: Check[], footer: string): boolean {
+  out('');
+  out(table(rows));
+  out('');
+  for (const check of checks) out(`${check.ok ? 'PASS' : 'FAIL'}  ${check.name}: ${check.detail}`);
+  out(`\n${footer}`);
+  return checks.every((check) => check.ok);
+}
+
+function readLines(file: string): string[] {
+  return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter((line) => line !== '') : [];
+}
+
+/** Status timeline the run recorded (one JSON object per line). */
+export function readTimeline(file: string): TimelineEntry[] {
+  return readLines(file).map((line) => JSON.parse(line) as TimelineEntry);
+}
+
+/** Roles scenario: lifecycle checks from the repository log and the status timeline, plus no code changes. */
+async function verifyRolesRun(context: E2eContext, runDir: string, record: RunRecord, out: (line: string) => void): Promise<boolean> {
+  const historyFile = path.join(runDir, 'state', 'repositories', repositoryFileName(record.repository));
+  const timeline = readTimeline(path.join(runDir, ROLES_FILES.timeline));
+  const traceFile = path.join(runDir, 'trace.log');
+  const polledReviewPeak = fs.existsSync(traceFile)
+    ? Math.max(0, ...[...fs.readFileSync(traceFile, 'utf8').matchAll(/review=(\d+)/g)].map((match) => Number(match[1])))
+    : 0;
+  const checks = verifyRoles({
+    issues: record.issues.map((issue) => ({ key: issue.key, number: issue.number, rejectOnce: rolesIssue(issue.key)?.rejectOnce ?? false })),
+    historyLines: readLines(historyFile),
+    timeline,
+    agentReviewLimit: AGENT_REVIEW_LIMIT,
+    polledReviewPeak,
+  });
+
+  const [owner, name] = record.repository.split('/');
+  const { repository } = await context.github.gql<{ repository: Pick<RepositoryDetail, 'pullRequests' | 'refs'> }>(
+    `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${CODE_CHANGES_QUERY} } }`,
+    { owner, name },
+  );
+  checks.push(noCodeChanges(record, repository));
+
+  const runs = readRuns(historyFile);
+  const rows = [['Issue', 'Status path', 'Runs', 'Turns', 'USD']];
+  for (const issue of record.issues) {
+    const own = runs.filter((run) => run.number === issue.number);
+    rows.push([
+      `${issue.key} #${issue.number}`,
+      observedPath(timeline, issue.number).join(' → ') || '–',
+      String(own.length),
+      own.map((run) => run.turns ?? '–').join(', ') || '–',
+      own.reduce((sum, run) => sum + run.costUsd, 0).toFixed(4),
+    ]);
+  }
+  return report(out, rows, checks, `${runs.length} runs, ${runs.reduce((sum, run) => sum + run.costUsd, 0).toFixed(4)} USD (model-costs.yml)`);
+}
+
 function table(rows: string[][]): string {
   const widths = rows[0]?.map((_, column) => Math.max(...rows.map((row) => (row[column] ?? '').length))) ?? [];
   return rows.map((row) => row.map((cell, column) => cell.padEnd(widths[column] ?? 0)).join('  ').trimEnd()).join('\n');
@@ -92,6 +166,7 @@ function table(rows: string[][]): string {
 
 export async function verify(context: E2eContext, runDir: string, out: (line: string) => void = console.log): Promise<boolean> {
   const record = JSON.parse(fs.readFileSync(path.join(runDir, 'run.json'), 'utf8')) as RunRecord;
+  if (record.scenario === 'roles') return verifyRolesRun(context, runDir, record, out);
   const runs = readRuns(path.join(runDir, 'state', 'repositories', repositoryFileName(record.repository)));
   const byKey = new Map(record.issues.map((issue) => [issue.key, issue]));
   const keyOf = (number: number) => record.issues.find((issue) => issue.number === number)?.key ?? `#${number}`;
@@ -101,8 +176,7 @@ export async function verify(context: E2eContext, runDir: string, out: (line: st
     `query($owner: String!, $name: String!) {
       repository(owner: $owner, name: $name) {
         ${record.issues.map((issue) => `i${issue.number}: issue(number: ${issue.number}) { ...detail }`).join('\n')}
-        pullRequests(first: 50, orderBy: { field: CREATED_AT, direction: DESC }) { nodes { number createdAt headRefName } }
-        refs(refPrefix: "refs/heads/", query: "symphony/issue-", first: 100) { nodes { name } }
+        ${CODE_CHANGES_QUERY}
       }
     }
     fragment detail on Issue {
@@ -117,7 +191,7 @@ export async function verify(context: E2eContext, runDir: string, out: (line: st
   };
   const closedAt = (key: string) => detail(byKey.get(key)?.number ?? 0).closedAt;
 
-  const checks: Array<{ ok: boolean; name: string; detail: string }> = [];
+  const checks: Check[] = [];
 
   const limit = context.config.agent.maxConcurrentAgents;
   const expectedPeak = Math.min(limit, ROOT_COUNT);
@@ -157,14 +231,7 @@ export async function verify(context: E2eContext, runDir: string, out: (line: st
       [...new Set(runs.map((run) => run.usedModel))].join(', '),
   });
 
-  const numbers = new Set(record.issues.map((issue) => issue.number));
-  const pullRequests = repository.pullRequests.nodes.filter((pr) => new Date(pr.createdAt) >= new Date(record.startedAt));
-  const branches = repository.refs.nodes.filter((ref) => numbers.has(Number(ref.name.split('-').at(-1))));
-  checks.push({
-    ok: pullRequests.length === 0 && branches.length === 0,
-    name: 'No code changes',
-    detail: `pull requests: ${pullRequests.map((pr) => `#${pr.number}`).join(', ') || 'none'}, issue branches: ${branches.map((ref) => ref.name).join(', ') || 'none'}`,
-  });
+  checks.push(noCodeChanges(record, repository));
 
   const unfinished = record.issues.filter(
     (issue) =>
@@ -190,12 +257,7 @@ export async function verify(context: E2eContext, runDir: string, out: (line: st
       own.reduce((sum, run) => sum + run.costUsd, 0).toFixed(4),
     ]);
   }
-  out('');
-  out(table(rows));
-  out('');
-  for (const check of checks) out(`${check.ok ? 'PASS' : 'FAIL'}  ${check.name}: ${check.detail}`);
-  out(`\n${runs.length} runs, ${runs.reduce((sum, run) => sum + run.costUsd, 0).toFixed(4)} USD (model-costs.yml), times in UTC`);
-  return checks.every((check) => check.ok);
+  return report(out, rows, checks, `${runs.length} runs, ${runs.reduce((sum, run) => sum + run.costUsd, 0).toFixed(4)} USD (model-costs.yml), times in UTC`);
 }
 
 if (import.meta.main) {

@@ -84,6 +84,8 @@ export interface SessionExtensions {
   additionalDirectories: string[];
   /** Variables added to the agent's environment. */
   env: Record<string, string>;
+  /** Extra fields for the `run_started` line of the repository log (e.g. `laravel`, `boost`). */
+  historyFields?: Record<string, string>;
 }
 
 export interface StartSessionParams {
@@ -105,6 +107,8 @@ export interface StartSessionParams {
   extensions?: SessionExtensions;
   /** Permission policy; absent means not read-only. */
   policy?: SessionPolicy;
+  /** Upper bound for one call of a Symphony tool (it may run an entry check); absent = the agent's default. */
+  toolTimeoutMs?: number;
 }
 
 export interface AgentRunner {
