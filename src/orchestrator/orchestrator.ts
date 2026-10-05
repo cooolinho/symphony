@@ -1284,13 +1284,16 @@ export class Orchestrator {
     // issues that still have a workspace (so it is deleted as soon as they reach a terminal state).
     const ids = [...this.#running.values()].filter((entry) => entry.stop === null).map((entry) => entry.issueId);
     const pausedIds = [...this.#paused.keys()];
+    const waitingIds = [...this.#retries.values()]
+      .filter((retry) => retry.kind === 'session_limit' && retry.limit?.waiting === true)
+      .map((retry) => retry.issueId);
     const watchedIds = config.workspace.cleanupTerminal
       ? [...this.#watched.keys()].filter((id) => !this.#claimed.has(id) && !this.#cleanups.has(id))
       : [];
-    if (ids.length === 0 && pausedIds.length === 0 && watchedIds.length === 0) return;
+    if (ids.length === 0 && pausedIds.length === 0 && waitingIds.length === 0 && watchedIds.length === 0) return;
     let refreshed: Issue[];
     try {
-      refreshed = await this.#adapterFor(workflow).fetchIssuesByIds([...ids, ...pausedIds, ...watchedIds]);
+      refreshed = await this.#adapterFor(workflow).fetchIssuesByIds([...ids, ...pausedIds, ...waitingIds, ...watchedIds]);
     } catch (error) {
       this.#trackerFailure('running-issue refresh failed; keeping workers running', error);
       return;
@@ -1327,6 +1330,25 @@ export class Orchestrator {
       } else if (isTerminalState(issue.state, config.tracker)) {
         this.#issueLogger(issue).info('issue reached a terminal state; removing its workspace', { state: issue.state });
         this.#cleanupWorkspace(issue);
+      }
+    }
+
+    // A waiting entry only follows the board; a changed issue does not end the wait early.
+    for (const id of waitingIds) {
+      const retry = this.#retries.get(id);
+      if (retry === undefined || retry.kind !== 'session_limit' || retry.limit?.waiting !== true) continue;
+      const issue = byId.get(id);
+      const log = this.#logger.child({ issue_id: id, issue_identifier: issue?.identifier ?? retry.identifier });
+      if (issue === undefined) {
+        log.info('waiting issue is no longer visible; releasing it');
+        this.#release(id);
+      } else if (isTerminalState(issue.state, config.tracker)) {
+        log.info('waiting issue is terminal; releasing it', { state: issue.state });
+        this.#release(id);
+        if (config.workspace.cleanupTerminal) this.#cleanupWorkspace(issue);
+      } else if (!isActiveState(issue.state, config.tracker) || !isRoutable(issue, config.tracker)) {
+        log.info('waiting issue left the active states; releasing it', { state: issue.state });
+        this.#release(id);
       }
     }
 

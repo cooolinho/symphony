@@ -993,6 +993,87 @@ describe('session limit retries', () => {
     assert.equal(fetches.length, 1);
   });
 
+  describe('reconcile of waiting entries', () => {
+    async function waiting(front: Record<string, unknown> = {}) {
+      const { s } = limitSetup({ front: { agent: { max_turns: 1, max_session_limit_retries: 0 }, ...front } });
+      await s.orchestrator.tickNow();
+      await until(() => snapshot(s).retrying.length === 1, 3_000, 'waiting entry');
+      assert.equal(retry(s)?.limit?.waiting, true);
+      return s;
+    }
+    const workspaceOf = (s: Setup) => path.join(fs.realpathSync(s.root), workspaceKey('acme/app#a'));
+
+    for (const state of ['In review', 'Blocked', 'Backlog']) {
+      it(`releases a waiting entry whose issue moves to ${state} within one tick`, async () => {
+        const s = await waiting();
+        s.tracker.set('a', { state });
+        await s.orchestrator.tickNow();
+        assert.equal(snapshot(s).counts.claimed, 0);
+        assert.equal(snapshot(s).counts.retrying, 0);
+        assert.deepEqual(s.timers.delays(), []);
+        assert.ok(fs.existsSync(workspaceOf(s)), 'workspace kept');
+      });
+    }
+
+    it('releases a waiting entry whose issue is no longer dispatchable', async () => {
+      const s = await waiting();
+      s.tracker.set('a', { dispatchable: false });
+      await s.orchestrator.tickNow();
+      assert.equal(snapshot(s).counts.claimed, 0);
+      assert.equal(snapshot(s).counts.retrying, 0);
+      assert.deepEqual(s.timers.delays(), []);
+    });
+
+    it('releases a waiting entry at Done and removes the workspace with cleanup_terminal', async () => {
+      const s = await waiting();
+      assert.ok(fs.existsSync(workspaceOf(s)));
+      s.tracker.set('a', { state: 'Done' });
+      await s.orchestrator.tickNow();
+      assert.equal(snapshot(s).counts.claimed, 0);
+      assert.equal(snapshot(s).counts.retrying, 0);
+      assert.deepEqual(s.timers.delays(), []);
+      await until(() => !fs.existsSync(workspaceOf(s)), 3_000, 'workspace removed');
+    });
+
+    it('keeps the workspace at Done when cleanup_terminal is false', async () => {
+      const s = await waiting({ workspace: { cleanup_terminal: false } });
+      s.tracker.set('a', { state: 'Done' });
+      await s.orchestrator.tickNow();
+      assert.equal(snapshot(s).counts.claimed, 0);
+      assert.equal(snapshot(s).counts.retrying, 0);
+      assert.ok(fs.existsSync(workspaceOf(s)));
+    });
+
+    it('releases a waiting entry whose issue was deleted', async () => {
+      const s = await waiting();
+      s.tracker.issues.delete('a');
+      await s.orchestrator.tickNow();
+      assert.equal(snapshot(s).counts.claimed, 0);
+      assert.equal(snapshot(s).counts.retrying, 0);
+      assert.deepEqual(s.timers.delays(), []);
+    });
+
+    it('keeps waiting when the issue is edited or relabelled but stays eligible', async () => {
+      const s = await waiting();
+      const before = retry(s);
+      s.tracker.set('a', { updated_at: new Date(s.clock.now().getTime() + 1_000), labels: ['area:orchestrator'] });
+      await s.orchestrator.tickNow();
+      assert.equal(snapshot(s).counts.claimed, 1);
+      assert.equal(retry(s)?.due_at, before?.due_at);
+      assert.equal(retry(s)?.limit?.waiting, true);
+      assert.equal(s.runner.sessions.length, 1);
+    });
+
+    it('keeps the waiting entry when the tracker call fails', async () => {
+      const s = await waiting();
+      s.tracker.failNext = new Error('tracker down');
+      await s.orchestrator.tickNow();
+      assert.equal(snapshot(s).counts.claimed, 1);
+      assert.equal(retry(s)?.limit?.waiting, true);
+      assert.equal(s.runner.sessions.length, 1);
+    });
+  });
+
   it('does not dispatch when shutdown runs while the retry refresh is pending', async () => {
     const { s } = limitSetup();
     await s.orchestrator.tickNow();
