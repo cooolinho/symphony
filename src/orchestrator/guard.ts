@@ -29,6 +29,21 @@ const GIT_TIMEOUT_MS = 5000;
 /** Passing check results of one claim, keyed by `<HEAD sha>:<script hash>`; see {@link cacheKey}. */
 export type CheckCache = Set<string>;
 
+/** Result of one entry check, reported to the orchestrator (`last_check`, history line `checks_finished`). */
+export interface CheckRecord {
+  target: string;
+  role: string;
+  /** Workspace commit the check ran on; null outside git or when unknown. */
+  sha: string | null;
+  exitCode: number | null;
+  timedOut: boolean;
+  durationMs: number;
+  ok: boolean;
+  /** `passed`, or the denial category the agent received. */
+  result: 'passed' | Exclude<GuardDenial, 'transition_denied'>;
+  finishedAt: Date;
+}
+
 export interface GuardParams {
   /** The run's role; null = the implicit `default` role. */
   role: RoleConfig | null;
@@ -44,6 +59,12 @@ export interface GuardParams {
   /** Extra check variables from a workspace integration, when one is available. */
   checkEnv?: () => Promise<Record<string, string>>;
   onEvent?: (event: string, message: string, detail: Record<string, unknown>) => void;
+  /** Workspace commit for check events; null when unknown. */
+  headSha?: () => Promise<string | null>;
+  /** Runs a check; the worker uses it to switch to the RunningChecks phase for the check's duration. */
+  whileChecking?: <T>(run: () => Promise<T>) => Promise<T>;
+  onCheckFinished?: (check: CheckRecord) => void;
+  onDenied?: (target: string, message: string) => void;
 }
 
 /** Columns the role may move to, or null when unrestricted (no `roles`, or no `may_move_to`). */
@@ -120,6 +141,7 @@ export function createGuard(params: GuardParams): TransitionGuard {
       const why = terminal ? `"${target}" is a terminal column; only a human moves issues there` : `role ${role} may not move issues to "${target}"`;
       const message = `${why}. Allowed targets: ${describeAllowed(params, allowed)}.`;
       emit('transition_denied', `set_status to ${target} denied`, { target, role });
+      params.onDenied?.(target, message);
       return { allow: false, category: 'transition_denied', message };
     }
 
@@ -128,28 +150,45 @@ export function createGuard(params: GuardParams): TransitionGuard {
 
     const cached = params.cache !== undefined ? await cacheKey(params.workspace.path, script) : null;
     if (cached !== null && params.cache?.has(cached.key)) {
-      emit('entry_check_cached', `entry check for ${target} reused (${cached.sha})`, { target, role, sha: cached.sha });
+      emit('checks_cached', `entry check for ${target} reused (${cached.sha})`, { target, role, sha: cached.sha });
       return { allow: true, note: `cached result for ${cached.sha}` };
     }
 
-    emit('entry_check_started', `entry check for ${target} started`, { target, role });
-    const extra = params.checkEnv !== undefined ? await params.checkEnv() : {};
-    const result = await params.manager.runScript(`check:${target}`, script, params.workspace, params.issue(), {
-      signal: params.signal,
-      timeoutMs: params.config.checks.timeoutMs,
-      env: { ...extra, SYMPHONY_ROLE: role, SYMPHONY_TARGET_STATE: target },
+    const whileChecking = params.whileChecking ?? ((run) => run());
+    return whileChecking(async () => {
+      const sha = cached?.sha ?? (params.headSha !== undefined ? await params.headSha() : null);
+      emit('checks_started', `entry check for ${target} started`, { target, role, sha });
+      const extra = params.checkEnv !== undefined ? await params.checkEnv() : {};
+      const result = await params.manager.runScript(`check:${target}`, script, params.workspace, params.issue(), {
+        signal: params.signal,
+        timeoutMs: params.config.checks.timeoutMs,
+        env: { ...extra, SYMPHONY_ROLE: role, SYMPHONY_TARGET_STATE: target },
+      });
+      const decision = decide(target, result);
+      if (decision.allow && cached !== null) params.cache?.add(cached.key);
+      const check: CheckRecord = {
+        target,
+        role,
+        sha,
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+        durationMs: result.durationMs,
+        ok: decision.allow,
+        result: decision.allow ? 'passed' : (decision.category as CheckRecord['result']),
+        finishedAt: new Date(),
+      };
+      emit('checks_finished', `entry check for ${target} ${check.result}`, {
+        target,
+        role,
+        sha,
+        ok: check.ok,
+        exit_code: check.exitCode,
+        timed_out: check.timedOut,
+        duration_ms: check.durationMs,
+      });
+      params.onCheckFinished?.(check);
+      return decision;
     });
-    const decision = decide(target, result);
-    if (decision.allow && cached !== null) params.cache?.add(cached.key);
-    emit('entry_check_finished', `entry check for ${target} ${decision.allow ? 'passed' : decision.category}`, {
-      target,
-      role,
-      ok: decision.allow,
-      exit_code: result.exitCode,
-      timed_out: result.timedOut,
-      duration_ms: result.durationMs,
-    });
-    return decision;
   };
 
   return (target) =>

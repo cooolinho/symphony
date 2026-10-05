@@ -389,7 +389,7 @@ Kosten, außerdem die Wiederholungs-Warteschlange und Probleme wie Konfiguration
 | `GET /api/v1/history` | dieselben Statistiken als JSON, optional mit `?repo=owner/name` |
 | `GET /api/v1/history/raw?repo=owner/name` | die `.log`-Datei eines Repositorys als Text |
 | `GET /api/v1/state` | Gesamtzustand als JSON: laufende Agenten (mit `role`), Warteschlange, Summen, Gesundheit |
-| `GET /api/v1/<identifier>` | Details zu einem Issue: Rolle, Workspace, Versuche, letzte Ereignisse, letzter Fehler |
+| `GET /api/v1/<identifier>` | Details zu einem Issue: Rolle, Workspace, Versuche, letzte Ereignisse, letzter Fehler, letzter Entry-Check (`last_check`) |
 | `POST /api/v1/refresh` | sofort abfragen und abgleichen |
 
 ```bash

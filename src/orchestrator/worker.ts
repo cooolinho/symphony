@@ -13,7 +13,7 @@ import { describeFailure, type HookIssue, type Workspace, type WorkspaceManager 
 import { roleName, type RoleConfig } from '../workflow/roles.ts';
 import type { EffectiveWorkflow } from '../workflow/store.ts';
 import { issueTemplateValue, renderPrompt } from '../workflow/template.ts';
-import { createGuard, guardTools, type CheckCache } from './guard.ts';
+import { createGuard, guardTools, type CheckCache, type CheckRecord } from './guard.ts';
 
 export type RunPhase =
   | 'PreparingWorkspace'
@@ -21,6 +21,8 @@ export type RunPhase =
   | 'LaunchingAgentProcess'
   | 'InitializingSession'
   | 'StreamingTurn'
+  /** An entry check runs inside a status-changing tool call; the agent emits no events meanwhile. */
+  | 'RunningChecks'
   | 'Finishing'
   | 'Succeeded'
   | 'Failed'
@@ -38,6 +40,9 @@ export interface GitHead {
   headSha: string;
   branch: string;
 }
+
+/** Added to checks.timeout_ms for the tool-call timeout of Symphony's MCP server. */
+export const TOOL_TIMEOUT_MARGIN_MS = 60_000;
 
 /** Upper bound for reading the final commit and branch; the two git calls run in parallel. */
 const GIT_HEAD_TIMEOUT_MS = 5000;
@@ -76,6 +81,10 @@ export interface WorkerCallbacks {
   integrationsPrepared(historyFields: Record<string, string>): void;
   /** Final commit and branch of the workspace, reported once while the attempt finishes. */
   gitHead(head: GitHead): void;
+  /** Result of an entry check run by the transition guard. */
+  checkFinished(check: CheckRecord): void;
+  /** The guard refused a move (terminal column or outside the role's `may_move_to`). */
+  transitionDenied(target: string, message: string): void;
 }
 
 export interface WorkerParams {
@@ -217,6 +226,19 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       manager: params.workspaces,
       signal,
       cache: params.checkCache,
+      headSha: async () => (await readGitHead(activeWorkspace.path))?.headSha ?? null,
+      whileChecking: async (run) => {
+        const previous = phase;
+        setPhase('RunningChecks');
+        try {
+          return await run();
+        } finally {
+          // A stopped run may have moved on to Finishing meanwhile; keep that.
+          if (phase === 'RunningChecks') setPhase(previous);
+        }
+      },
+      onCheckFinished: (check) => callbacks.checkFinished(check),
+      onDenied: (target, message) => callbacks.transitionDenied(target, message),
       onEvent: (event, message, detail) =>
         callbacks.agentEvent({
           pid: lastEvent?.pid ?? null,
@@ -235,6 +257,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       issue,
       config: sessionClaudeConfig(params.workflow.config.claude, params.model, role?.claude),
       policy: { readOnly: role?.readOnly ?? false },
+      // Entry checks run inside the status tool call; leave a minute for the tracker call around them.
+      toolTimeoutMs: params.workflow.config.checks.timeoutMs + TOOL_TIMEOUT_MARGIN_MS,
       tools: guardTools(params.adapter.agentToolSpecs(), guard),
       toolContext: () => ({ issue }),
       env: params.childEnv,

@@ -301,11 +301,15 @@ class ClaudeSession implements AgentSession {
   }
 
   #trackerServer() {
-    const { tools, toolContext } = this.#params;
+    const { tools, toolContext, toolTimeoutMs, config } = this.#params;
+    // Claude Code bounds a tool call by the server's `timeout`, else MCP_TOOL_TIMEOUT, else ~28 hours
+    // (docs/agent-claude.md#timeouts). An explicit MCP_TOOL_TIMEOUT in claude.env wins over Symphony's value.
+    const timeout = toolTimeoutMs !== undefined && config.env.MCP_TOOL_TIMEOUT === undefined ? toolTimeoutMs : undefined;
     return createSdkMcpServer({
       name: TRACKER_SERVER,
       version: '0.1.0',
       alwaysLoad: true,
+      ...(timeout !== undefined ? { timeout } : {}),
       tools: tools.map((spec) =>
         tool(spec.name, spec.description, spec.inputSchema, async (args) => {
           const started = Date.now();

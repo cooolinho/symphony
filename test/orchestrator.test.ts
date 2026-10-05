@@ -42,6 +42,7 @@ function setup(
     prompt?: string;
     logger?: Logger;
     integrations?: WorkspaceIntegration[];
+    history?: HistoryLog;
   } = {},
 ): Setup {
   const root = tempDir();
@@ -65,6 +66,7 @@ function setup(
     timers,
     createAdapter: () => tracker,
     ...(options.integrations !== undefined ? { integrations: options.integrations } : {}),
+    ...(options.history !== undefined ? { history: options.history } : {}),
   });
   return { orchestrator, tracker, runner, timers, clock, root, workflow };
 }
@@ -414,6 +416,79 @@ describe('transition guard', () => {
     assert.deepEqual(passed, { ok: true, data: { previous_status: 'Todo', status: 'Agent review', note: 'Checks passed — end your turn now.' } });
     assert.deepEqual(states, ['Todo', 'Todo', 'Agent review']);
     assert.deepEqual(s.tracker.statusCalls, ['Agent review']);
+  });
+});
+
+describe('entry checks at runtime', () => {
+  it('exempts a running check from stall detection, then logs, records and serves its result', async () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
+    const pricing = new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent());
+    const history = new HistoryLog(path.join(dir, 'repositories'), pricing, Logger.silent());
+    const lines: string[] = [];
+    const logger = Logger.create({ sinks: [{ name: 'memory', write: (line) => lines.push(line) }], level: 'info' });
+    const results: ToolResult[] = [];
+    let workspace = '';
+    const runner = new FakeRunner(async (_turn, params) => {
+      workspace = params.cwd;
+      const setStatus = params.tools.find((t) => t.name === 'set_status');
+      results.push(await setStatus!.execute({ status: 'Done' }, params.toolContext()));
+      results.push(await setStatus!.execute({ status: 'Agent review' }, params.toolContext()));
+      return new Promise((resolve) => params.signal.addEventListener('abort', () => resolve({ ok: false, turnId: '1', code: 'turn_cancelled', message: 'cancelled' })));
+    });
+    const s = setup({
+      runner,
+      logger,
+      history,
+      issues: [makeIssue({ id: 'c' })],
+      front: {
+        tracker: {
+          kind: 'github_project',
+          provider: { owner: 'acme', project_number: 1, token: 'test-token' },
+          active_states: ['Todo', 'Agent review'],
+        },
+        claude: { stall_timeout_ms: 60_000 },
+        roles: { developer: { states: ['Todo'], may_move_to: ['Agent review'] }, reviewer: { states: ['Agent review'] } },
+        checks: { on_enter: { 'Agent review': 'while [ ! -f "$SYMPHONY_WORKSPACE/go" ]; do sleep 0.02; done; echo "lint failed"; exit 1' } },
+      },
+    });
+    s.tracker.issueRepository = () => 'acme/app';
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running[0]?.phase === 'RunningChecks', 5_000, 'running checks');
+    s.clock.advance(120_000);
+    await s.orchestrator.tickNow();
+    assert.equal(snapshot(s).running[0]?.stopping, null, 'no stall while a check runs');
+
+    fs.writeFileSync(path.join(workspace, 'go'), '');
+    await until(() => results.length === 2 && snapshot(s).running[0]?.phase === 'StreamingTurn', 5_000, 'check finished');
+    s.clock.advance(30_000);
+    await s.orchestrator.tickNow();
+    assert.equal(snapshot(s).running[0]?.stopping, null, 'the stall clock starts fresh after the check');
+
+    assert.equal(results[1]?.ok === false ? results[1].error.category : null, 'check_failed');
+    const events = lines.filter((line) => line.includes('level=info')).map((line) => /msg="agent (\w+)"/.exec(line)?.[1]);
+    assert.ok(events.includes('transition_denied') && events.includes('checks_started') && events.includes('checks_finished'));
+    const finishedLine = lines.find((line) => line.includes('msg="agent checks_finished"')) ?? '';
+    assert.match(finishedLine, /target="Agent review"/);
+    assert.match(finishedLine, /exit_code=1 /);
+    assert.match(finishedLine, /duration_ms=\d+/);
+    assert.match(finishedLine, /ok=false/);
+
+    const entries = readHistory(history.dir, 'acme/app').entries;
+    const denied = entries.find((e) => e.event === 'transition_denied');
+    assert.equal(denied?.fields.target, 'Done');
+    assert.equal(denied?.fields.role, 'developer');
+    assert.match(denied?.fields.reason ?? '', /terminal column/);
+    const check = entries.find((e) => e.event === 'checks_finished');
+    assert.deepEqual([check?.fields.target, check?.fields.ok, check?.fields.result, check?.fields.exit_code], ['Agent review', 'false', 'check_failed', '1']);
+    assert.ok(Number(check?.fields.duration_ms) >= 0);
+
+    const last = s.orchestrator.issueDetail('acme/app#c')?.last_check;
+    assert.deepEqual([last?.target, last?.role, last?.ok, last?.result, last?.exit_code, last?.timed_out], ['Agent review', 'developer', false, 'check_failed', 1, false]);
+
+    s.clock.advance(31_000);
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'stall retry after the check');
   });
 });
 

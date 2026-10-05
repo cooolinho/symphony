@@ -107,6 +107,8 @@ export interface StartSessionParams {
   extensions?: SessionExtensions;
   /** Permission policy; absent means not read-only. */
   policy?: SessionPolicy;
+  /** Upper bound for one call of a Symphony tool (it may run an entry check); absent = the agent's default. */
+  toolTimeoutMs?: number;
 }
 
 export interface AgentRunner {

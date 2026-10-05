@@ -155,7 +155,7 @@ before the tracker is touched. The guard decides on the run's role and the targe
 **Cache.** A passing check is remembered per claim, in memory, under the key `HEAD sha` + hash of the script text. Before
 running a check the guard reads `git rev-parse HEAD` and `git status --porcelain` (5 s timeout each); when the tree
 is clean and the key has a passing result, the issue is moved without running the script and the tool result carries
-`note: "cached result for <sha>"`. This lets the move to `In review` reuse the successful check of `Agent review`. A
+`note: "cached result for <sha>"` (logged as `checks_cached`; no phase change, no `checks_finished`). This lets the move to `In review` reuse the successful check of `Agent review`. A
 new commit, a changed script, or any uncommitted change runs the check again; failures and errors are never cached; if
 git fails (e.g. no repository) the check simply runs. The cache is not persisted and not shared between issues, so
 a service restart or a new claim runs the checks again.
@@ -164,6 +164,13 @@ Because a failed check leaves the column unchanged, reconciliation never stops t
 feedback in the same session. Checks of one session run one after the other; stopping the run (e.g. a human moves the
 card to `Done`) kills a running check's process group. Without `roles` and `checks`, only the terminal-target rule
 applies.
+
+While a check runs, the run is in phase `RunningChecks`: stall detection is suspended and its clock starts fresh when
+the check ends, and the `set_status` tool call may last `checks.timeout_ms + 60 s`
+(see [agent-claude.md](agent-claude.md#timeouts-and-failures)). Each check logs `checks_started` and
+`checks_finished` (`target`, `sha`, `exit_code`, `duration_ms`, `ok`) at info level, writes a `checks_finished`
+line to the [repository log](#repository-logs) and becomes `last_check` in `GET /api/v1/<identifier>`. Denied targets
+write a `transition_denied` line.
 
 ### `agent`
 
@@ -364,6 +371,8 @@ workflow directory, else `$XDG_STATE_HOME/symphony` or `~/.local/state/symphony`
 | `model_usage` | `repo`, `issue`, `run`, `model`, `price` (matched entry), token counts, `cost_usd` |
 | `issue_paused` | `repo`, `issue`, `title`, `state`, `continuations`, `max_continuations` |
 | `workspace_removed` | `repo`, `issue`, `state` |
+| `checks_finished` | `repo`, `issue`, `run`, `role`, `target`, `sha` (workspace commit; omitted outside git), `ok`, `result` (`passed`, `check_failed`, `check_error`), `exit_code` (`null` when the script did not exit normally), `timed_out` (only when `true`), `duration_ms` |
+| `transition_denied` | `repo`, `issue`, `run`, `role`, `target`, `reason` (the message the agent received) |
 
 `cost_usd` in a line uses the prices at the time it was written; the logs page and `/api/v1/history` recompute every
 cost from the logged tokens with the current `model-costs.yml`. `input_tokens` counts uncached input only;
