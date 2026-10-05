@@ -319,10 +319,103 @@ REST API. Other values such as `Model: claude-opus-5-5` work as labels too; crea
 | `port` | none | Starts the dashboard and JSON API. `0` picks a free port. `--port` overrides it. Restart to change it. |
 | `host` | `127.0.0.1` | Bind address. On a loopback address, requests with another `Host` header are rejected. |
 
+## Complete example: roles, checks and Laravel
+
+The shipped `WORKFLOW.md`, shortened to the parts that make up the developer → checks → reviewer → human flow
+(`Ready → In progress → [checks] → Agent review → [checks] → In review → Done`, plus `Blocked`). The board needs
+the columns `Backlog`, `Ready`, `In progress`, `Agent review`, `Blocked`, `In review` and `Done`; the
+[board preflight](#tracker) reports a missing one. In a repository without a Laravel app the hook and the check
+script do nothing (exit 0), so the same file also works there.
+
+```yaml
+---
+tracker:
+  kind: github_project
+  provider:
+    project_number: $GITHUB_PROJECT_NUMBER
+    repositories: $GITHUB_REPOSITORY
+    token: $GITHUB_TOKEN
+  active_states: [Ready, In progress, Agent review]
+  terminal_states: [Done]                    # In review and Blocked: neither active nor terminal (agent stops, workspace stays)
+
+hooks:
+  timeout_ms: 600000
+  after_create: |
+    git clone --quiet "git@github.com:${SYMPHONY_ISSUE_REPOSITORY}.git" .
+    bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-env.sh"
+  before_run: |
+    git fetch --quiet --prune origin
+
+agent:
+  max_concurrent_agents: ${SYMPHONY_MAX_CONCURRENT_AGENTS:-2}
+  max_turns: ${SYMPHONY_MAX_TURNS:-10}
+  max_continuations: ${SYMPHONY_MAX_CONTINUATIONS:-6}   # role switches count, so keep a limit
+  max_concurrent_agents_by_state:
+    "Agent review": 1
+
+roles:
+  developer:
+    states: [Ready, In progress]
+    may_move_to: [In progress, Agent review, Blocked]
+  reviewer:
+    states: [Agent review]
+    read_only: true
+    max_turns: 6
+    may_move_to: [In review, In progress, Blocked]
+    claude: { model: opus }
+
+checks:
+  timeout_ms: 1200000                        # below claude.turn_timeout_ms (default 3600000)
+  on_enter:
+    Agent review: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
+    In review: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"   # usually a cache hit for the reviewed commit
+
+laravel:
+  agent_env: {}
+  allow_tinker: false
+  deny_tools: [record-rule]
+---
+{% capture branch %}{% if issue.branch_name %}{{ issue.branch_name }}{% else %}symphony/issue-{{ issue.native_ref.number }}{% endif %}{% endcapture %}
+You are working on GitHub issue **{{ issue.identifier }}**: {{ issue.title }}
+
+{{ issue.description | default: "(no description)" }}
+
+{% case role %}{% when "developer" %}## Your role: developer
+
+Implement the issue on `{{ branch }}`, integrate the base branch, commit, push, open a pull request with
+`open_pull_request`, comment with `add_comment`, then hand off with `set_status("Agent review")`.
+On `check_failed`: fix the problems and call `set_status("Agent review")` again.
+On `check_error`: describe the error with `add_comment` and call `set_status("Blocked")`.
+After a successful transition, end your turn.
+{% when "reviewer" %}## Your role: reviewer
+
+You are read-only. Review `git diff origin/<base>...HEAD`, the pull request and the issue comments against the
+checklist, post one comment "## Agent review (round N)", then `set_status("In review")` (approved) or
+`set_status("In progress")` (changes needed). From round 3 on, move it to "In review" and list the open findings.
+{% else %}## How to work
+
+The single-agent prompt: implement, open a pull request and move the issue to "In review".
+{% endcase %}
+```
+
+How the pieces work together:
+
+| Step | Mechanism |
+|---|---|
+| `Ready`/`In progress` → developer session | [`roles`](#roles): the column decides the role, `role` selects the prompt section. |
+| Developer calls `set_status("Agent review")` | [Transition guard](#transition-guard): `Agent review` is in the developer's `may_move_to`, so `checks.on_enter` runs; only exit `0` moves the card. |
+| Card in `Agent review` → reviewer session | Role switch ends the developer session; the reviewer starts in a fresh, read-only session, at most one at a time (`max_concurrent_agents_by_state`). |
+| Reviewer approves (`In review`) or sends back (`In progress`) | `In review` runs the same check again (cached for an unchanged, clean commit); `In progress` has no check. |
+| Ping-pong between the roles | Each switch counts toward `agent.max_continuations`; the prompt also stops sending back from review round 3. |
+| `Done` | Never allowed for agents (terminal state); a human sets it after the merge. |
+
+The full prompt (developer steps, reviewer checklist and the fallback for the `default` role) is the body of the
+shipped `WORKFLOW.md`; `test/workflow-prompt.test.ts` renders it for each role.
+
 ## Check scripts (`checks/laravel.sh`)
 
-A deterministic quality gate that runs in the workspace (bash). It is not wired into the configuration yet; the
-transition guard will run it before an issue may enter `Agent review` and `In review`.
+A deterministic quality gate that runs in the workspace (bash). The shipped `WORKFLOW.md` runs it through
+[`checks.on_enter`](#checks) before an issue may enter `Agent review` and `In review`.
 
 | Exit code | Meaning |
 |---|---|
