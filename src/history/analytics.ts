@@ -619,6 +619,6 @@ export function filterEntries(entries: HistoryEntry[], filter: EntriesFilter) {
     truncated: matched.length > filter.limit,
     events_available: [...events].sort(),
     results_available: [...results].sort(),
-    entries: ordered.slice(0, filter.limit).map((entry) => ({ ts: entry.ts, event: entry.event, ...entry.fields })),
+    entries: ordered.slice(0, filter.limit).map((entry): Record<string, string> => ({ ts: entry.ts, event: entry.event, ...entry.fields })),
   };
 }
