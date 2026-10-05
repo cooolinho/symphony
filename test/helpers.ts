@@ -80,8 +80,27 @@ export class FakeTracker implements TrackerAdapter {
     return ids.map((id) => this.issues.get(id)).filter((issue): issue is Issue => issue !== undefined);
   }
 
+  /** Executed `set_status` calls, in order (only those that reached the tracker). */
+  statusCalls: string[] = [];
+
+  /** `set_status` moves the session's issue in memory, like the GitHub tool does on the board. */
   agentToolSpecs(): AgentToolSpec[] {
-    return [];
+    return [
+      {
+        name: 'set_status',
+        description: 'Move the issue to another column.',
+        inputSchema: {},
+        mutates: true,
+        transitionTarget: (args) => String(args.status),
+        execute: async (args, context) => {
+          const status = String(args.status);
+          const previous = this.issues.get(context.issue.id)?.state ?? context.issue.state;
+          this.statusCalls.push(status);
+          this.set(context.issue.id, { state: status });
+          return { ok: true, data: { previous_status: previous, status } };
+        },
+      },
+    ];
   }
 
   issueRepository?: (issue: Issue) => string | null;

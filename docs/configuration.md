@@ -104,8 +104,8 @@ Hooks finish when their output pipes close, so redirect the output of background
 
 ### `checks`
 
-Deterministic entry checks: bash scripts that run before an issue may enter a gated column. This section only
-configures them; omitting it changes nothing.
+Deterministic entry checks: bash scripts that run before an issue may enter a gated column. Omitting the section
+changes nothing.
 
 ```yaml
 checks:
@@ -125,6 +125,29 @@ Scripts run like hooks (`bash -lc` in the issue workspace, own process group) wi
 variables, `SYMPHONY_HOOK` set to the check's label. Because they execute repository code, their environment
 also lacks agent credentials (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`) on top of the tracker credentials
 hooks already lack. Scripts are not `$VAR`-substituted by Symphony; the shell expands them at run time.
+
+#### Transition guard
+
+Every tracker tool that changes the issue's column (GitHub: `set_status`) goes through Symphony's transition guard
+before the tracker is touched. The guard decides on the run's role and the target column only, in this order:
+
+1. A terminal target (`tracker.terminal_states`, e.g. `Done`) is always denied; only a human moves issues there.
+   With `roles`, a target outside the role's `may_move_to` is denied too. Both return the tool error
+   `transition_denied` with the allowed targets.
+2. A target without `checks.on_enter` entry is allowed.
+3. Otherwise the check runs in the workspace (see above) with `SYMPHONY_ROLE` (the run's role, `default` without
+   roles) and `SYMPHONY_TARGET_STATE` (the target as the agent named it) added to its environment:
+
+| Exit | Result | The agent is told |
+|---|---|---|
+| `0` | The issue is moved; the tool result carries `note: "Checks passed — end your turn now."` | End the turn, so the next role takes over. |
+| `1` | Tool error `check_failed`; the column is unchanged | The last 6000 characters of the output; fix the problems and call `set_status` again. |
+| other, timeout, or the check cannot start | Tool error `check_error`; the column is unchanged | Do not change code; describe the problem in an issue comment and move the issue to `Blocked`. |
+
+Because a failed check leaves the column unchanged, reconciliation never stops the run halfway and the agent gets the
+feedback in the same session. Checks of one session run one after the other; stopping the run (e.g. a human moves the
+card to `Done`) kills a running check's process group. Without `roles` and `checks`, only the terminal-target rule
+applies.
 
 ### `agent`
 
@@ -225,7 +248,7 @@ roles:
 |---|---|---|
 | `states` | required | Active states the role serves; matched case-insensitively. |
 | `read_only` | `false` | The role's agent must not change the repository. |
-| `may_move_to` | unrestricted | Column names the agent may move the issue to. Free-form; not checked against the board here. |
+| `may_move_to` | unrestricted | Column names the agent may move the issue to, matched case-insensitively and enforced by the [transition guard](#transition-guard). Free-form; not checked against the board here. Terminal columns are never allowed. |
 | `max_turns` | `agent.max_turns` | Integer >= 1. |
 | `claude` | `{}` | Overrides of `model`, `effort`, `allowed_tools`, `disallowed_tools`, `append_system_prompt`, `max_budget_usd` (same meaning as in [`claude`](#claude)). |
 

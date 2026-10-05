@@ -12,6 +12,7 @@ import { describeFailure, type HookIssue, type Workspace, type WorkspaceManager 
 import { roleName, type RoleConfig } from '../workflow/roles.ts';
 import type { EffectiveWorkflow } from '../workflow/store.ts';
 import { issueTemplateValue, renderPrompt } from '../workflow/template.ts';
+import { createGuard, guardTools } from './guard.ts';
 
 export type RunPhase =
   | 'PreparingWorkspace'
@@ -186,17 +187,43 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
 
     setPhase('LaunchingAgentProcess');
     const activeWorkspace = workspace;
+    // Guard events carry the session fields of the latest agent event, so they do not reset the running entry.
+    let lastEvent: AgentEvent | null = null;
+    const onEvent = (event: AgentEvent) => {
+      lastEvent = event;
+      callbacks.agentEvent(event);
+    };
+    const guard = createGuard({
+      role,
+      config: params.workflow.config,
+      workspace: activeWorkspace,
+      issue: hookIssue,
+      manager: params.workspaces,
+      signal,
+      onEvent: (event, message, detail) =>
+        callbacks.agentEvent({
+          pid: lastEvent?.pid ?? null,
+          threadId: lastEvent?.threadId ?? null,
+          turnId: lastEvent?.turnId ?? null,
+          sessionId: lastEvent?.sessionId ?? null,
+          turnCount: lastEvent?.turnCount ?? 0,
+          event,
+          timestamp: new Date(),
+          message,
+          detail,
+        }),
+    });
     session = await params.runner.startSession({
       cwd: activeWorkspace.path,
       issue,
       config: sessionClaudeConfig(params.workflow.config.claude, params.model, role?.claude),
       policy: { readOnly: role?.readOnly ?? false },
-      tools: params.adapter.agentToolSpecs(),
+      tools: guardTools(params.adapter.agentToolSpecs(), guard),
       toolContext: () => ({ issue }),
       env: params.childEnv,
       logger,
       signal,
-      onEvent: callbacks.agentEvent,
+      onEvent,
       transcriptPath: transcriptPath(params.transcriptDir, activeWorkspace),
       ...(extensions !== null ? { extensions } : {}),
     });

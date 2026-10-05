@@ -34,7 +34,12 @@ Symphony runs agents **unattended**. Nobody watches a session, so every decision
 - **`claude.allowed_tools`:** actions the workflow always needs, e.g. `Bash(git push:*)`, so the agent can push its
   branch without asking.
 - **Tracker tools** (`mcp__tracker__*`) are always allowed. They run inside Symphony with the GitHub token. The agent
-  process never receives tracker credentials: they are removed from its environment.
+  process never receives tracker credentials: they are removed from its environment. A tool failure reaches the
+  agent as an error result `{error: {category, message}}`. Besides the adapter's own categories, tools that change
+  the issue's column return the [transition guard](configuration.md#transition-guard) categories
+  `transition_denied` (terminal column or outside the role's `may_move_to`), `check_failed` (the entry check exited
+  `1`; the message carries its output) and `check_error` (the check could not run properly). A thrown error becomes
+  `tool_error`.
 - **User input:** `AskUserQuestion` is disabled. If a question still reaches the permission callback, it is answered
   automatically ("nobody can answer; decide yourself or ask on the issue"), an event `turn_input_required` is
   recorded, and the turn continues. A run therefore never waits for a human.
@@ -138,7 +143,8 @@ Events sent to the orchestrator: `session_started`, `session_configured` (model,
 version, MCP server status, plugins, number of skills), `startup_failed`, `turn_started`, `turn_completed`, `turn_failed`, `turn_cancelled`, `turn_timeout`,
 `turn_input_required`, `approval_auto_approved`, `approval_denied`, `permission_denied`, `tool_use`, `tool_result`,
 `tracker_tool`, `assistant_message`, `api_retry`, `rate_limit`, `agent_error` (API or authentication errors),
-`agent_exited`, `notification`, `other_message`.
+`agent_exited`, `notification`, `other_message`. The worker adds the transition guard's `transition_denied`,
+`entry_check_started` and `entry_check_finished`.
 
 Token usage comes from the `modelUsage` totals of each turn result, which are cumulative for the session (main
 loop, subagents and compaction) and broken down per model. In the dashboard totals, input tokens include cache reads

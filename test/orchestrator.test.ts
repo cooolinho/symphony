@@ -8,6 +8,7 @@ import { HistoryLog, readHistory } from '../src/history/history.ts';
 import { Logger } from '../src/log.ts';
 import { failureBackoffMs, sortForDispatch } from '../src/orchestrator/eligibility.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
+import type { ToolResult } from '../src/tracker/types.ts';
 import { workspaceKey } from '../src/workspace/manager.ts';
 import {
   FakeRunner,
@@ -325,6 +326,51 @@ describe('roles', () => {
         ],
       );
     });
+  });
+});
+
+describe('transition guard', () => {
+  it('gates set_status: denies Done, keeps the column on a failed check and moves after a passing one', async () => {
+    const front = {
+      tracker: {
+        kind: 'github_project',
+        provider: { owner: 'acme', project_number: 1, token: 'test-token' },
+        active_states: ['Todo', 'Agent review'],
+      },
+      agent: { max_turns: 2 },
+      roles: {
+        developer: { states: ['Todo'], may_move_to: ['Agent review', 'Blocked'] },
+        reviewer: { states: ['Agent review'], read_only: true },
+      },
+      checks: { on_enter: { 'Agent review': 'test -f ready || { echo "tests failed"; exit 1; }' } },
+    };
+    const results: ToolResult[] = [];
+    const states: string[] = [];
+    const runner = new FakeRunner(async (turn, params) => {
+      const setStatus = params.tools.find((t) => t.name === 'set_status');
+      const call = async (status: string) => {
+        const result = await setStatus!.execute({ status }, params.toolContext());
+        results.push(result);
+        states.push(s.tracker.issues.get('g')!.state);
+      };
+      await call('Done');
+      await call('Agent review');
+      fs.writeFileSync(path.join(params.cwd, 'ready'), '');
+      await call('Agent review');
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    });
+    const s = setup({ front, runner, issues: [makeIssue({ id: 'g' })] });
+    await s.orchestrator.tickNow();
+    await until(() => results.length === 3, 5_000, 'three set_status calls');
+
+    const [done, failed, passed] = results;
+    assert.equal(done?.ok === false ? done.error.category : null, 'transition_denied');
+    assert.match(done?.ok === false ? done.error.message : '', /Allowed targets: "Agent review", "Blocked"/);
+    assert.equal(failed?.ok === false ? failed.error.category : null, 'check_failed');
+    assert.match(failed?.ok === false ? failed.error.message : '', /tests failed/);
+    assert.deepEqual(passed, { ok: true, data: { previous_status: 'Todo', status: 'Agent review', note: 'Checks passed — end your turn now.' } });
+    assert.deepEqual(states, ['Todo', 'Todo', 'Agent review']);
+    assert.deepEqual(s.tracker.statusCalls, ['Agent review']);
   });
 });
 
