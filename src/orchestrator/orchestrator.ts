@@ -60,6 +60,10 @@ export interface WorkflowSource {
   refreshIfChanged(): Promise<void>;
 }
 
+export type RestartResult =
+  | { ok: true; issueIdentifier: string; previous: 'retrying' | 'paused' }
+  | { ok: false; reason: 'not_found' | 'running' | 'stopping' | 'not_waiting' };
+
 export type AdapterFactory = (config: ServiceConfig, env: NodeJS.ProcessEnv, logger: Logger) => TrackerAdapter;
 
 export interface OrchestratorDeps {
@@ -440,6 +444,60 @@ export class Orchestrator {
     this.#refreshPending = true;
     if (!coalesced && !this.#tickInFlight) this.#scheduleTick(0);
     return { queued: true, coalesced };
+  }
+
+  /**
+   * Puts a worker that waits in the retry queue, or is paused, back into the retry queue without delay.
+   * An operator override: the session-limit and continuation counters start again, and the next run is a
+   * plain attempt (never a continuation, so `agent.max_continuations` cannot pause it again).
+   * `#onRetryTimer` still re-checks eligibility, validation and free slots.
+   */
+  restartWorker(key: string): Promise<RestartResult> {
+    return this.#serial.run(async (): Promise<RestartResult> => {
+      if (this.#stopping) return { ok: false, reason: 'stopping' };
+      const matches = (id: string, identifier: string) => id === key || identifier === key;
+      if ([...this.#running.values()].some((e) => matches(e.issueId, e.identifier))) return { ok: false, reason: 'running' };
+      const retry = [...this.#retries.values()].find((r) => matches(r.issueId, r.identifier));
+      const paused = retry === undefined ? [...this.#paused.values()].find((p) => matches(p.issueId, p.identifier)) : undefined;
+      const waiting = retry ?? paused;
+      if (waiting === undefined) {
+        const claimed = [...this.#claimed].some((id) => matches(id, this.#records.get(id)?.identifier ?? ''));
+        return { ok: false, reason: claimed ? 'not_waiting' : 'not_found' };
+      }
+      const issueId = waiting.issueId;
+      const record = this.#records.get(issueId);
+      if (record !== undefined) {
+        record.sessionLimitHits = 0;
+        record.continuations = 0;
+      }
+      const previous = retry !== undefined ? 'retrying' : 'paused';
+      this.#paused.delete(issueId);
+      this.#scheduleRetry(
+        issueId,
+        retry?.attempt ?? 1,
+        { identifier: waiting.identifier, url: waiting.url, kind: 'failure', error: 'restarted by the operator', limit: null },
+        0,
+      );
+      if (record !== undefined) {
+        this.#trace(record, {
+          kind: 'lifecycle',
+          event: 'worker_restarted',
+          level: 'info',
+          message: `restarted by the operator (was ${previous})`,
+          run: null,
+          turn: null,
+          detail: { previous },
+        });
+      }
+      this.#deps.history?.note(record?.repo ?? 'unknown', 'worker_restarted', {
+        issue: waiting.identifier,
+        title: record?.title ?? null,
+        previous,
+      });
+      this.#logger.info('worker restarted by the operator', { issue_id: issueId, issue_identifier: waiting.identifier, previous });
+      this.#notify();
+      return { ok: true, issueIdentifier: waiting.identifier, previous };
+    });
   }
 
   onChange(listener: () => void): () => void {
