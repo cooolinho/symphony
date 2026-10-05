@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -509,5 +510,67 @@ describe('run history', () => {
     const started = readHistory(history.dir, 'acme/app').entries.find((entry) => entry.event === 'run_started');
     assert.equal(started?.fields.model, 'claude-sonnet-5-5');
     assert.equal(runner.sessions[0]?.params.config.model, 'claude-sonnet-5-5');
+  });
+
+  describe('final commit and MCP tool usage', () => {
+    const toolUse = (params: { onEvent: (event: never) => void }, tool: string) =>
+      (params.onEvent as (event: unknown) => void)({
+        event: 'tool_use', timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: 1, message: `${tool}: x`, detail: { tool },
+      });
+
+    async function run(initGit: boolean) {
+      const dir = tempDir();
+      fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
+      const pricing = new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent());
+      const history = new HistoryLog(path.join(dir, 'repositories'), pricing, Logger.silent());
+      const tracker = new FakeTracker([makeIssue({ id: 'a' })]);
+      tracker.issueRepository = () => 'acme/app';
+      const runner = new FakeRunner((turn, params) => {
+        if (initGit) {
+          const git = (...args: string[]) =>
+            execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=T', ...args], { cwd: params.cwd, encoding: 'utf8' });
+          git('init', '-q', '-b', 'feature');
+          git('commit', '-q', '--allow-empty', '-m', 'init');
+        }
+        toolUse(params, 'mcp__laravel-boost__database-schema');
+        toolUse(params, 'mcp__laravel-boost__database-schema');
+        toolUse(params, 'Bash');
+        toolUse(params, 'Edit');
+        tracker.set('a', { state: 'In review' });
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      });
+      const orchestrator = new Orchestrator({
+        workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir()))),
+        runner,
+        logger: Logger.silent(),
+        env: {},
+        logDir: null,
+        timers: new ManualTimers(),
+        createAdapter: () => tracker,
+        pricing,
+        history,
+      });
+      await orchestrator.tickNow();
+      await until(() => orchestrator.snapshot().retrying.length === 1, 3_000, 'run finished');
+      const finished = readHistory(history.dir, 'acme/app').entries.find((e) => e.event === 'run_finished');
+      return { fields: finished?.fields ?? {}, orchestrator, cwd: runner.sessions[0]?.params.cwd ?? '' };
+    }
+
+    it('records head_sha, branch and counts only MCP tools for a git workspace', async () => {
+      const { fields, orchestrator, cwd } = await run(true);
+      const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }).trim();
+      assert.equal(fields.head_sha, sha);
+      assert.equal(fields.branch, 'feature');
+      assert.equal(fields.mcp_tool_calls, 'laravel-boost:2');
+      const detail = orchestrator.issueDetail('a') as { run_trace: { head_sha: string; branch: string; mcp_tool_calls: Record<string, number> } };
+      assert.deepEqual(detail.run_trace, { head_sha: sha, branch: 'feature', mcp_tool_calls: { 'laravel-boost': 2 } });
+    });
+
+    it('omits head_sha and branch for a non-git workspace', async () => {
+      const { fields } = await run(false);
+      assert.equal('head_sha' in fields, false);
+      assert.equal('branch' in fields, false);
+      assert.equal(fields.mcp_tool_calls, 'laravel-boost:2');
+    });
   });
 });

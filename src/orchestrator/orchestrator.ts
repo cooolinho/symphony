@@ -113,6 +113,10 @@ interface RunningEntry {
   reportedCostUsd: number;
   claudeEstimateUsd: number;
   modelUsage: Record<string, ModelTokenUsage>;
+  /** `tool_use` events per MCP server (`mcp__<server>__<tool>`); built-in tools are not counted. */
+  mcpToolCalls: Record<string, number>;
+  headSha: string | null;
+  branch: string | null;
   controller: AbortController;
   stop: StopRequest | null;
   done: Promise<void>;
@@ -146,6 +150,28 @@ interface IssueRecord {
   continuations: number;
   lastError: string | null;
   recentEvents: RecentEvent[];
+  /** Commit, branch and MCP tool usage of the running or last run. */
+  lastRun: RunTrace | null;
+}
+
+interface RunTrace {
+  headSha: string | null;
+  branch: string | null;
+  mcpToolCalls: Record<string, number>;
+}
+
+/** `mcp__<server>__<tool>` → `<server>`; null for built-in tools. */
+function traceOf(entry: RunningEntry): RunTrace {
+  return { headSha: entry.headSha, branch: entry.branch, mcpToolCalls: { ...entry.mcpToolCalls } };
+}
+
+function traceJson(trace: RunTrace | null) {
+  return trace === null ? null : { head_sha: trace.headSha, branch: trace.branch, mcp_tool_calls: trace.mcpToolCalls };
+}
+
+function mcpServerOf(tool: string): string | null {
+  const match = /^mcp__(.+?)__/.exec(tool);
+  return match?.[1] ?? null;
 }
 
 /** An issue held back after agent.max_continuations: claimed, but not running or retrying. */
@@ -474,6 +500,9 @@ export class Orchestrator {
       reportedCostUsd: 0,
       claudeEstimateUsd: 0,
       modelUsage: {},
+      mcpToolCalls: {},
+      headSha: null,
+      branch: null,
       controller,
       stop: null,
       done: Promise.resolve(),
@@ -536,6 +565,10 @@ export class Orchestrator {
             this.#watched.set(issue.id, issue.identifier);
           },
           agentEvent: (event) => this.#onAgentEvent(entry, event),
+          gitHead: (head) => {
+            entry.headSha = head.headSha;
+            entry.branch = head.branch;
+          },
           issueRefreshed: (fresh) => {
             if (this.#running.get(entry.issueId) === entry) entry.issue = fresh;
           },
@@ -566,6 +599,8 @@ export class Orchestrator {
     const agentSeconds = (this.#clock.monotonicMs() - entry.startedAtMs) / 1000;
     this.#totals.endedSeconds += agentSeconds;
     this.#recordRun(entry, outcome, agentSeconds);
+    const finished = this.#records.get(entry.issueId);
+    if (finished) finished.lastRun = traceOf(entry);
     const log = this.#issueLogger(entry.issue);
     const record = this.#records.get(entry.issueId);
     const nextAttempt = (entry.attempt ?? 0) + 1;
@@ -644,6 +679,9 @@ export class Orchestrator {
       agentSeconds,
       usage: entry.modelUsage,
       claudeEstimateUsd: entry.claudeEstimateUsd > 0 ? entry.claudeEstimateUsd : null,
+      headSha: entry.headSha,
+      branch: entry.branch,
+      mcpToolCalls: entry.mcpToolCalls,
     });
   }
 
@@ -974,6 +1012,10 @@ export class Orchestrator {
     if (event.sessionId !== null) entry.sessionId = event.sessionId;
     entry.turnCount = event.turnCount;
     if (event.message !== undefined && event.message !== '') entry.lastMessage = event.message;
+    if (event.event === 'tool_use' && typeof event.detail?.tool === 'string') {
+      const server = mcpServerOf(event.detail.tool);
+      if (server !== null) entry.mcpToolCalls[server] = (entry.mcpToolCalls[server] ?? 0) + 1;
+    }
     if (event.event === 'session_configured' && typeof event.detail?.model === 'string') entry.model = event.detail.model;
 
     if (event.usage !== undefined) {
@@ -1019,7 +1061,7 @@ export class Orchestrator {
   #record(issue: Issue): IssueRecord {
     let record = this.#records.get(issue.id);
     if (record === undefined) {
-      record = { identifier: issue.identifier, url: issue.url, workspacePath: null, runs: 0, continuations: 0, lastError: null, recentEvents: [] };
+      record = { identifier: issue.identifier, url: issue.url, workspacePath: null, runs: 0, continuations: 0, lastError: null, recentEvents: [], lastRun: null };
       this.#records.set(issue.id, record);
     }
     record.identifier = issue.identifier;
@@ -1067,6 +1109,9 @@ export class Orchestrator {
       claude_estimate_usd: Math.round(entry.claudeEstimateUsd * 10_000) / 10_000,
       repo: entry.repo,
       stopping: entry.stop?.reason ?? null,
+      head_sha: entry.headSha,
+      branch: entry.branch,
+      mcp_tool_calls: entry.mcpToolCalls,
     };
   }
 
@@ -1172,6 +1217,7 @@ export class Orchestrator {
         restart_count: Math.max((record?.runs ?? 1) - 1, 0),
         current_retry_attempt: retry?.attempt ?? entry?.attempt ?? null,
       },
+      run_trace: entry !== undefined ? traceJson(traceOf(entry)) : traceJson(record?.lastRun ?? null),
       running: entry === undefined ? null : this.#runningRow(entry, now),
       retry: retry === undefined ? null : this.#retryRow(retry, now),
       paused: paused === undefined ? null : this.#pausedRow(paused),

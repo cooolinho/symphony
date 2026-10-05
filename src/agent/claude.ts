@@ -431,7 +431,7 @@ class ClaudeSession implements AgentSession {
     }
     for (const block of message.message.content) {
       if (block.type === 'tool_use') {
-        this.#emit('tool_use', { message: summarizeToolInput(block.name, block.input) });
+        this.#emit('tool_use', { message: summarizeToolInput(block.name, block.input), detail: { tool: block.name } });
         return;
       }
       if (block.type === 'text' && block.text.trim() !== '') {
