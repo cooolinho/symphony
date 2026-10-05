@@ -91,6 +91,7 @@ Zurück zum alten Verhalten kommst du, indem du `roles` und `checks` entfernst: 
 | Abbrechen und aufräumen | Issue nach `Done` schieben |
 | Alle neuen Starts pausieren | in der `WORKFLOW.md` `agent.max_concurrent_agents: 0` setzen. Laufende Agenten arbeiten weiter. |
 | Prompt oder Einstellungen ändern | `WORKFLOW.md` bearbeiten. Das gilt sofort für neue Sessions, ohne Neustart. |
+| Wartenden oder pausierten Worker sofort neu starten | im Dashboard (Warteschlange, Pausiert-Liste oder Agent-Seite) auf **Retry now** bzw. **Resume now** klicken, oder `curl -X POST http://127.0.0.1:4000/api/v1/<identifier>/retry` (den Identifier URL-kodiert, z. B. `cooolinho%2Ftrainingsstunden-portal%2312`). Das ist der Weg nach einem Session-Limit, wenn du Guthaben aufgeladen hast und nicht bis zum Reset warten willst. Es geht nur, solange der Server auf einer Loopback-Adresse lauscht, siehe [Dashboard und API](#dashboard-und-api). |
 | Sofort abfragen statt 30 s zu warten | im Dashboard auf **Poll now** klicken, oder `curl -X POST http://127.0.0.1:4000/api/v1/refresh` |
 
 Ist die `WORKFLOW.md` nach einer Änderung fehlerhaft, läuft Symphony mit der letzten gültigen Version weiter. Neue
@@ -102,7 +103,54 @@ Scheitert ein Lauf, versucht Symphony es erneut. Gründe können ein fehlgeschla
 Agenten, eine Zeitüberschreitung oder eine hängende Session (10 Minuten ohne Aktivität). Die Wartezeit verdoppelt
 sich jedes Mal: 10 s, 20 s, 40 s und so weiter, höchstens 10 Minuten (`agent.max_retry_backoff_ms`). Die
 Warteschlange mit Grund und nächstem Termin siehst du im Dashboard. Beim nächsten Versuch weiß der Agent über
-`attempt`, dass es schon Vorarbeit im Workspace gibt.
+`attempt`, dass es schon Vorarbeit im Workspace gibt. Ein erreichtes Session-Limit behandelt Symphony gesondert,
+siehe [Session-Limit](#session-limit).
+
+Die **Wiederholungs-Warteschlange** und **Paused** sind zwei verschiedene Dinge: In der Warteschlange hat Symphony
+für das Issue einen nächsten Versuch mit Termin geplant (nach einem Fehlschlag, einer Fortsetzung oder einem
+Session-Limit). Unter *Paused* steht ein Issue, das nach `SYMPHONY_MAX_CONTINUATIONS` Fortsetzungen noch aktiv ist;
+dafür ist kein Termin geplant, siehe [Fortsetzungen und Pausieren](#fortsetzungen-und-pausieren).
+
+## Session-Limit
+
+Erreicht dein Claude-Abonnement sein Nutzungslimit (Meldung `You've hit your session limit · resets 7:30pm`, das
+5-Stunden-Fenster oder ein Wochenlimit), bringt eine Wiederholung nach 10 Sekunden nichts. Symphony geht deshalb
+in zwei Stufen vor:
+
+1. **Retries:** Bis zu `SYMPHONY_MAX_SESSION_LIMIT_RETRIES` Mal (Standard 3) versucht Symphony das Issue nach dem
+   ersten Session-Limit-Fehler erneut, mit der üblichen Wartezeit (10 s, 20 s, 40 s …).
+2. **Warten bis zum Reset:** Ist das Limit danach immer noch erreicht, wartet der Worker bis zum Reset. `retry at` ist
+   der Reset-Zeitpunkt plus 1 Minute. Mit `0` wartet Symphony schon nach dem ersten Fehler. Danach läuft es
+   wie ein normaler Retry weiter. Verlässt die Karte in der Zwischenzeit die aktiven Spalten oder wird sie geschlossen, gibt Symphony das
+   Issue frei.
+
+**Wo du es siehst:**
+
+- Im Dashboard in der Wiederholungs-Warteschlange: Badge *Session limit*, Fenster, Reset-Zeitpunkt, `retry N of M`
+  bzw. *waiting for reset*, dazu die Originalmeldung. Beim Warten steht das Issue nicht unter *Paused*.
+- Auf der Agent-Seite (`/agent?id=<identifier>`) als Hinweis *Session limit reached* mit Fenster, Reset und Retries.
+  Der Ablauf erscheint als `run_finished` mit dem Ergebnis `session_limit` und als Ereignis `session_limit_wait`.
+- In `GET /api/v1/state` im Eintrag unter `retrying[]`: `kind` ist `session_limit`, und das Feld `limit` enthält
+  `window`, `resets_at`, `source`, `text`, `hits`, `max_retries`, `waiting`, `overage_disabled_reason` und
+  `observed_at`. Bei anderen Retries ist `limit` `null`.
+- Im [Repository-Log](#logs-und-statistiken) als `session_limit_wait`.
+
+**Wie Symphony den Reset findet:** Zuerst nimmt es den Zeitpunkt aus dem strukturierten `rate_limit_event` von Claude
+Code (`source` = `event`). Fehlt er, liest es die Uhrzeit aus der Meldung (`source` = `message`, z. B.
+`resets 7:30pm (Europe/Berlin)`). Ist der Reset unbekannt oder mehr als 8 Tage voraus,
+bleibt es beim bisherigen Backoff der Fehlschläge und der Worker wartet nicht auf einen Zeitpunkt.
+
+**Grenzen:**
+
+- Das Warten steht nur im Speicher. Startest du Symphony neu, ist es vergessen: Das Issue wird wie jedes aktive Issue
+  neu abgefragt und startet, und ist das Limit noch aktiv, beginnt der Ablauf von vorn.
+- Nur Session-Limits eines Claude-Abonnements zählen. Rate-Limits (HTTP 429) eines `ANTHROPIC_API_KEY` bleiben
+  gewöhnliche Fehlschläge mit Backoff.
+- Ein modellspezifisches Wochenlimit (Opus oder Sonnet) parkt nur das betroffene Issue. Issues mit anderem Modell
+  laufen weiter.
+- Mit **Retry now** (Abschnitt [Eingreifen während des Betriebs](#eingreifen-während-des-betriebs)) beendest du das
+  Warten sofort, etwa nach dem Aufladen von Guthaben (`overage_disabled_reason` = `out_of_credits`). Der Zähler der
+  Retries beginnt dann von vorn. Ist das Limit noch aktiv, ist der Worker nach wenigen Fehlschlägen wieder im Wartemodus.
 
 ## Abhängigkeiten und Sub-Issues
 
@@ -136,7 +184,18 @@ Issue höchstens sieben Sessions: die erste und sechs Fortsetzungen. Ist es dana
   für den Agenten), ein geändertes Label, eine bearbeitete Beschreibung oder eine andere Spalte. Dann startet eine
   frische Session, die deinen Kommentar liest.
 - Verschiebst du die Karte in eine nicht aktive Spalte, wird die Pause aufgehoben, ohne dass etwas startet.
-- Erhöhst du das Limit in der `.env` und startest Symphony neu, ist die Pause ebenfalls aufgehoben.
+- Erhöhst du das Limit oder entfernst du es (`agent.max_continuations`, z. B. über `SYMPHONY_MAX_CONTINUATIONS` in
+  der `.env` mit Neustart oder direkt in der `WORKFLOW.md`), ist die Pause ebenfalls aufgehoben.
+- Mit **Resume now** im Dashboard oder `POST /api/v1/<identifier>/retry` (siehe [Eingreifen während des
+  Betriebs](#eingreifen-während-des-betriebs)) setzt du ein pausiertes Issue sofort fort. Der Zähler der
+  Fortsetzungen beginnt dann von vorn, und der nächste Lauf ist ein normaler Versuch, den `max_continuations` nicht
+  gleich wieder pausiert.
+
+Wie das genau abläuft: Bei jedem Tick liest `#reconcile` alle pausierten Issues vom Board neu. Es hebt die Pause auf,
+wenn sich ihre Spalte oder ihr `updated_at` geändert hat oder wenn `agent.max_continuations` erhöht oder entfernt
+wurde. Das Issue ist dann wieder ein normaler Kandidat. Einen Timer gibt es nicht: Ohne Änderung, Limit-Anhebung oder
+Klick bleibt das Issue pausiert, auch über Stunden. Wartet ein Worker wegen eines Session-Limits, steht er in der
+Wiederholungs-Warteschlange und nicht unter *Paused*; siehe [Session-Limit](#session-limit).
 
 Fehlgeschlagene Läufe zählen hier nicht mit. Für sie gelten die Wiederholungen mit Wartezeit von oben.
 
@@ -270,17 +329,24 @@ Woher die Daten kommen und wo die Grenzen liegen:
 | `GET /api/v1/history/analytics?from=&to=&repo=&model=&tz=` | serverseitig aggregierte Analysen für einen Zeitraum (`from` inklusive, `to` exklusive, ISO-Zeitpunkte, beide optional): Kennzahlen mit Vorperiode, Zeitreihen, Modelle, Repositories, Issues, Ergebnisse, Laufzeiten, Heatmap, Top-Läufe, Auffälligkeiten. `tz` (IANA-Zone) bestimmt Buckets, Wochentage und Stunden |
 | `GET /api/v1/history/entries?from=&to=&repo=&issue=&event=&result=&order=desc&limit=200` | Log-Einträge eines Zeitraums, gefiltert und sortiert (höchstens 1.000) |
 | `GET /api/v1/history/raw?repo=owner/name` | die `.log`-Datei eines Repositorys als Text |
-| `GET /api/v1/state` | Gesamtzustand als JSON: laufende Agenten (mit `role`), Warteschlange, Summen, Gesundheit |
+| `GET /api/v1/state` | Gesamtzustand als JSON: laufende Agenten (mit `role`), Warteschlange (`retrying[]` mit `kind` und, bei Session-Limits, `limit`), Summen, Gesundheit |
 | `GET /api/v1/<identifier>` | Details zu einem Issue: Titel, Rolle, Workspace, Versuche, Sessions (`sessions`), Tokens und Kosten pro Modell (`usage_by_model`), letzte Ereignisse, letzter Fehler, letzter Entry-Check (`last_check`) |
 | `GET /api/v1/<identifier>/timeline?after=<seq>` | Timeline des Issues: Lifecycle, Phasenwechsel und Agenten-Ereignisse mit fortlaufender `seq`; `after` liefert nur neuere |
 | `GET /api/v1/<identifier>/transcript?run=<run>&from=<offset>` | Transkript einer Session (ohne `run` die neueste), aufbereitet als Prompts, Modellaufrufe, Tool-Ergebnisse; ab Byte-Offset `from`, weiter mit `next_offset`. Mit `&format=raw` die JSONL-Datei |
 | `POST /api/v1/refresh` | sofort abfragen und abgleichen |
+| `POST /api/v1/<identifier>/retry` | einen wartenden (Wiederholungs-Warteschlange, auch Session-Limit) oder pausierten Worker sofort neu starten. Antwort `202` mit `queued`, `issue_identifier` und `previous` (`retrying` oder `paused`). Fehler: `404` (Issue unbekannt), `409` (`running`: läuft gerade; `not_waiting`: wartet auf nichts; `stopping`: Symphony fährt herunter), `403` (`control_disabled` bei einer Nicht-Loopback-Adresse, `forbidden_origin` bei Cross-Origin-Anfragen) |
 
 ```bash
 curl -s http://127.0.0.1:4000/api/v1/state
 curl -s http://127.0.0.1:4000/api/v1/cooolinho%2Ftrainingsstunden-portal%2312   # / als %2F, # als %23
 curl -s -X POST http://127.0.0.1:4000/api/v1/refresh
+curl -s -X POST http://127.0.0.1:4000/api/v1/cooolinho%2Ftrainingsstunden-portal%2312/retry
 ```
+
+Der Neustart-Endpunkt und die Buttons **Retry now** und **Resume now** funktionieren nur, solange der Server auf einer
+Loopback-Adresse (`127.0.0.1`, `::1`, `localhost`) lauscht. Sonst antwortet die API mit `control_disabled`. Der Neustart
+umgeht nur die Wartezeit: Ob das Issue wirklich startet, prüft Symphony wie bei jedem Retry erneut (aktive Spalte,
+Konfiguration, freier Slot).
 
 ## Logs, Transkripte und Workspaces
 
@@ -307,10 +373,11 @@ ts=2026-10-04T09:17:00.000Z event=model_usage repo=cooolinho/trainingsstunden-po
 | Ereignis | Bedeutung |
 |---|---|
 | `run_started` | Ein Agent beginnt mit einem Issue: Zeitpunkt, Issue, Titel, Spalte, Versuch und gewünschtes Modell (aus dem Label `Model: …`, sonst `CLAUDE_MODEL`). |
-| `run_finished` | Ein Lauf endet. Erfasst werden das Ergebnis (`handed_off` = übergeben, `continuing` = noch aktiv, `failed`, `stopped`, `stalled`, `shutdown`) und die Spalte danach. Dazu kommen Turns, das meistgenutzte Modell, Tokens (Input, Output, Cache), geschätzte Kosten und Agentenzeit. Die Felder `repo_*` sind die laufenden Summen des Repositorys. |
+| `run_finished` | Ein Lauf endet. Erfasst werden das Ergebnis (`handed_off` = übergeben, `continuing` = noch aktiv, `failed`, `session_limit`, `stopped`, `stalled`, `shutdown`) und die Spalte danach. Dazu kommen Turns, das meistgenutzte Modell, Tokens (Input, Output, Cache), geschätzte Kosten und Agentenzeit. Die Felder `repo_*` sind die laufenden Summen des Repositorys. |
 | `model_usage` | Tokens und Kosten eines Laufs pro Modell. Arbeitet Claude Code intern mit einem zweiten Modell, gibt es eine zweite Zeile. |
 | `issue_paused` | Ein Issue wurde nach seinen Fortsetzungs-Sessions pausiert. |
-| `session_limit_wait` | Die Session-Limit-Retries sind aufgebraucht: Der Worker wartet bis zum Reset des Limits (`retry_at` = Reset + 1 Minute) und macht dann weiter. |
+| `session_limit_wait` | Die Session-Limit-Retries sind aufgebraucht: Der Worker wartet bis zum Reset des Limits (`retry_at` = Reset + 1 Minute) und macht dann weiter. Felder u. a. `window`, `resets_at`, `retry_at`, `hits`, `max_retries`, `source`. |
+| `worker_restarted` | Ein wartender oder pausierter Worker wurde über **Retry now** / **Resume now** bzw. die API neu gestartet (`previous` = `retrying` oder `paused`). |
 | `workspace_removed` | Der Workspace eines Issues in `Done` wurde gelöscht. |
 
 Die **Statistik-Seite** (`/logs`, Button *Logs* im Dashboard) wertet diese Dateien aus. Oben steht ein globaler
@@ -567,6 +634,8 @@ Mit einem Stack pro Workspace kann `laravel.php` auf ein Wrapper-Script zeigen, 
 | `unknown board column "…" (valid: …)` | Die `WORKFLOW.md` nennt eine Spalte, die es auf dem Board nicht gibt (Tippfehler in `active_states`, `terminal_states`, `roles.*.states`, `roles.*.may_move_to` oder `checks.on_enter`). Den Namen korrigieren; die Prüfung ist unabhängig von Groß-/Kleinschreibung und der Fehler verschwindet nach dem automatischen Neuladen. Der Dry Run zeigt ihn ebenfalls. |
 | `dispatch validation failed` | Ein Fehler in der `WORKFLOW.md` oder `.env`. Die genaue Meldung steht im Log bzw. im Dashboard. |
 | Warnung `issue paused: still active after its continuation sessions` | Der Agent hat das Issue nach `SYMPHONY_MAX_CONTINUATIONS` Fortsetzungen nicht abgeschlossen. Lies den letzten Kommentar und das Transkript, dann schreib einen Hinweis ins Issue (das setzt es fort) oder verschieb die Karte. |
+| Meldung `You've hit your session limit` (Dashboard: *Session limit*) | Dein Claude-Abonnement hat sein Nutzungslimit erreicht. Symphony wiederholt bis zu `SYMPHONY_MAX_SESSION_LIMIT_RETRIES` Mal und wartet dann bis zum Reset, siehe [Session-Limit](#session-limit). Hast du Guthaben aufgeladen, hilft **Retry now**. Ein `ANTHROPIC_API_KEY` hat kein Session-Limit. |
+| Ein Worker wartet länger als erwartet | Im Dashboard unter *Retrying* nach `retry at` und `resets` schauen. Beim Session-Limit ist das der Reset plus 1 Minute, bei unbekanntem Reset gilt der normale Backoff (bis 10 Minuten). Ein pausiertes Issue (*Paused*) hat keinen Termin: Es geht erst bei einer Änderung am Issue, einem höheren `max_continuations` oder per **Resume now** weiter. Nach einem Symphony-Neustart ist ein Warten vergessen. Sofort starten: **Retry now**. |
 | Warnung `model label ignored` | Ein Model-Label ist unbekannt (Tippfehler), oder das Issue hat mehrere Model-Labels mit verschiedenen Modellen. Symphony nutzt dann `CLAUDE_MODEL`. Label korrigieren, `npm run dry-run` zeigt das Ergebnis. |
 | Session scheitert gleich zu Beginn mit einem Modellfehler | Das Label nennt eine Version, die es nicht gibt, z. B. `Model: claude-opus-9-9`. Symphony wiederholt den Lauf mit Wartezeit. Label korrigieren. |
 | `repo-init` meldet `HTTP 404` oder `HTTP 403` | Das Repository in `GITHUB_REPOSITORY` ist falsch geschrieben, oder der Token darf keine Labels oder Issues anlegen bzw. keine Dateien lesen. Klassischer Token: Scope `repo`, Fine-grained Token: *Issues: Read and write* und *Contents: Read*. |

@@ -186,6 +186,21 @@ version, MCP server status, plugins, number of skills), `startup_failed`, `turn_
 `agent_exited`, `notification`, `other_message`. The worker adds the transition guard's `transition_denied`,
 `checks_started` and `checks_finished` (`target`, `sha`, `exit_code`, `duration_ms`, `ok`), logged at info level.
 
+A turn that fails because of a Claude subscription usage limit settles with the failure code `session_limit` (instead
+of `turn_failed`), carrying the window, the reset time and where it came from. Detection order:
+
+1. A `rate_limit_event` with status `rejected` during the turn. Its `resetsAt` is the reset time (`source` = `event`);
+   its `rateLimitType` is the window (`five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet`).
+2. The message text ("You've hit your session limit · resets 7:30pm (Europe/Berlin)", from the result or from an
+   assistant message flagged `rate_limit`). Window and reset are parsed from it (`source` = `message`); a time without
+   a zone uses the host's zone, and the next occurrence of that time counts.
+
+A failed turn with `api_error_status` 429 is only a session limit together with a rejected `rate_limit_event`. Other
+429s, such as rate limits of an `ANTHROPIC_API_KEY` (no `rate_limit_event`), stay `turn_failed` and use the normal
+failure backoff. The orchestrator turns `session_limit` into the retry and wait behavior described under
+`agent.max_session_limit_retries` in [configuration.md](configuration.md#agent); the run is logged with the outcome
+`session_limit`.
+
 Token usage comes from the `modelUsage` totals of each turn result, which are cumulative for the session (main
 loop, subagents and compaction) and broken down per model. In the dashboard totals, input tokens include cache reads
 and cache writes; the repository logs keep the four counts apart. The orchestrator adds the difference to the
