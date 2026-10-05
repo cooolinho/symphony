@@ -90,6 +90,8 @@ orchestrator's environment **without** tracker credentials (`GITHUB_TOKEN`, `GH_
 
 #### Recipe: Laravel apps
 
+The conventions a repository follows for this hook are in [Laravel repositories](laravel-repositories.md).
+
 `hooks/laravel-env.sh` gives every Laravel app in the workspace (root or one level deep, without `vendor`,
 `node_modules` and dot-directories) its own `.env` and SQLite database, so artisan and Laravel Boost never reach a
 developer's or a shared database. It only acts on directories with `artisan` and `.env.example` but no `.env`, never
@@ -212,7 +214,9 @@ checkout (the root and one level deep: `artisan` plus a `composer.json` that req
 app that requires `laravel/boost`, it installs Composer dependencies if needed, generates Boost's guidelines and skills
 for Claude Code, keeps the generated files out of commits, and adds Boost's MCP server to the session. Apps without
 Boost only get a log line; `npm run repo-init` creates an issue that adds it. Details:
-[agent-claude.md](agent-claude.md#workspace-extensions-laravel-boost).
+[agent-claude.md](agent-claude.md#workspace-extensions-laravel-boost). What a repository must provide for this to work
+(`AGENTS.md`, `.ai/`, composer scripts, `.env.example`, `phpunit.xml`) is described in
+[Laravel repositories](laravel-repositories.md).
 
 | Key | Default | Notes |
 |---|---|---|

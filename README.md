@@ -651,6 +651,13 @@ Mit einem Stack pro Workspace kann `laravel.php` auf ein Wrapper-Script zeigen, 
 | Dry Run: `php (not found)` | PHP ist nicht installiert oder nicht im `PATH`. Laravel-Workspaces laufen dann ohne Boost. `SYMPHONY_PHP` auf den Pfad setzen. |
 | `candidate fetch failed … timed out` oder `HTTP 503` | GitHubs GraphQL-API ist kurzzeitig gestört. Lesende Abfragen wiederholt Symphony automatisch, sonst einfach den nächsten Tick abwarten. Laufende Agenten sind nicht betroffen. |
 
+### Laravel-Repositories
+
+Damit Symphony-Agenten und Laravel Boost in einem Laravel-Repository gut arbeiten, muss das Repository einige
+Konventionen einhalten: `AGENTS.md` und `.ai/`, die Composer-Skripte `test`, `lint` und `analyse`, ein vollständiges
+`.env.example`, eine passende `phpunit.xml`, Boost in `require-dev` und die Repository-Einstellungen auf GitHub. Die
+Anleitung (auf Englisch) steht in [docs/laravel-repositories.md](docs/laravel-repositories.md).
+
 ## 📁 Project Structure
 
 ```
@@ -687,6 +694,7 @@ symphony/
 - [docs/adapters/github-project.md](docs/adapters/github-project.md): GitHub-Projects-Adapter, also Einstellungen, Normalisierung, Agenten-Tools und Fehler
 - [docs/agent-claude.md](docs/agent-claude.md): Ablauf der Claude-Code-Sessions, Berechtigungen, Skills und Plugins, Laravel Boost, Zeitlimits und Kostenzählung
 - [docs/conformance.md](docs/conformance.md): Abweichungen von der Spezifikation und eigene Festlegungen
+- [docs/laravel-repositories.md](docs/laravel-repositories.md): Konventionen für Laravel-Repositories, also Agenten-Anweisungen, `.ai/`, Composer-Skripte, `.env.example`, `phpunit.xml` und Boost
 - [docs/e2e.md](docs/e2e.md): End-to-End-Test der Orchestrierung, also Szenario, Ablauf, Prüfungen und Run-Verzeichnis
 
 Für die Entwicklung:
