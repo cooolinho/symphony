@@ -1,0 +1,21 @@
+# Only what Symphony needs at runtime goes into the image; never secrets or .env files.
+.git
+.github
+.idea
+node_modules
+.env
+.env.*
+!.env.example
+logs/
+log/
+*.log
+secrets/
+.claude/settings.local.json
+test/
+scripts/
+docs/
+repo-init.ts
+tsconfig.json
+README.md
+Dockerfile
+.dockerignore
