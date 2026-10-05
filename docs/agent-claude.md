@@ -42,6 +42,17 @@ Symphony runs agents **unattended**. Nobody watches a session, so every decision
   `.claude` toolbox in the shipped `WORKFLOW.md`) are loaded explicitly.
 - **Workspace extension tools** (`mcp__laravel-boost__*`) are always allowed. Boost's tools only read the application
   (`database-query` runs read-only queries); `record-rule` writes Markdown into `.ai/rules`.
+- **Per-server MCP tool policy:** each extension server (`StdioServer`) carries `autoApprove` and `deny`.
+  `autoApprove: 'all'` (the default, used by Laravel Boost) allows the bare `mcp__<server>`, i.e. every tool of the
+  server. A list such as `['search-docs']` allows only `mcp__<server>__search-docs`; the server's other tools go
+  through the permission mode (the `auto` classifier). `deny` lists bare tool names that are added to
+  `disallowedTools` as `mcp__<server>__<tool>`, so the agent cannot call them at all.
+- **Read-only sessions:** a session started with `policy: { readOnly: true }` gets `Edit`, `Write`, `NotebookEdit`,
+  `Bash(git commit:*)` and `Bash(git push:*)` added to `disallowedTools`. Deny rules beat allow rules, so this also
+  overrides `claude.allowed_tools: ["Bash(git push:*)"]`. Without a policy a session is not read-only. This is a
+  policy, not a sandbox: Bash can still write files, so callers that need a hard guarantee must enforce it elsewhere
+  (for example in the transition guard, or with `claude.sandbox`). Both inputs are agent-neutral; another runner
+  maps them to its own mechanism.
 - **Sandboxing:** off by default. `claude.sandbox` passes Claude Code's sandbox settings through (filesystem and
   network restrictions for shell commands).
 

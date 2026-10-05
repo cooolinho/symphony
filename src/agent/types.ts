@@ -57,11 +57,21 @@ export interface StdioServer {
   command: string;
   args: string[];
   env?: Record<string, string>;
+  /** Tools that run without asking: `'all'` (default) or a list of bare tool names. */
+  autoApprove?: string[] | 'all';
+  /** Bare tool names removed from the session. */
+  deny?: string[];
+}
+
+/** Agent-neutral permission inputs for one session; each runner maps them to its own mechanism. */
+export interface SessionPolicy {
+  /** The session must not change the workspace or publish changes (a policy, not a sandbox). */
+  readOnly: boolean;
 }
 
 /** Per-workspace additions to a session, e.g. Laravel Boost for a detected Laravel app. */
 export interface SessionExtensions {
-  /** Extra MCP servers by name; their tools are always allowed. */
+  /** Extra MCP servers by name; their tool policy is set per server (autoApprove, deny). */
   mcpServers: Record<string, StdioServer>;
   /** Markdown sections appended to the system prompt, before claude.append_system_prompt. */
   contextSections: string[];
@@ -88,6 +98,8 @@ export interface StartSessionParams {
   transcriptPath: string | null;
   /** Workspace-specific MCP servers, prompt context and directories (e.g. Laravel Boost). */
   extensions?: SessionExtensions;
+  /** Permission policy; absent means not read-only. */
+  policy?: SessionPolicy;
 }
 
 export interface AgentRunner {
