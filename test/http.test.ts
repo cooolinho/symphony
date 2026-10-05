@@ -65,6 +65,14 @@ describe('http extension', () => {
     assert.match(page.body, /setText\(refs\.model, r\.model/);
     assert.match(page.body, /setText\(refs\.phase, r\.phase/);
     assert.match(page.body, /id="refresh"/);
+    assert.match(page.body, /Retry now/);
+    assert.match(page.body, /Resume now/);
+    assert.match(page.body, /'\/api\/v1\/' \+ encodeURIComponent\(identifier\) \+ '\/retry'/);
+    assert.match(page.body, /limit\.resets_at/);
+    assert.match(page.body, /waiting for reset/);
+    assert.match(page.body, /Session limit/);
+    assert.match(page.body, /Extra usage is off because credits are used up/);
+    assert.doesNotMatch(page.body, /\bonclick=/);
 
     const state = await request(server.port, 'GET', '/api/v1/state');
     assert.equal(state.status, 200);
