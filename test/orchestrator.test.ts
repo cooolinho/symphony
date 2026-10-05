@@ -413,6 +413,22 @@ describe('workspace cleanup after release', () => {
   });
 });
 
+describe('workspace lock', () => {
+  it('starts no hooks or session when another instance holds the workspace', async () => {
+    const s = setup({ issues: [makeIssue({ id: 'a' })] });
+    const root = fs.realpathSync(s.root);
+    fs.writeFileSync(
+      path.join(root, `${workspaceKey('acme/app#a')}.lock`),
+      JSON.stringify({ pid: process.pid, hostname: 'other-host', instance: 'foreign', acquiredAt: 'x' }),
+    );
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).counts.claimed === 0 && snapshot(s).counts.running === 0, 3_000, 'claim released');
+    assert.equal(s.runner.sessions.length, 0);
+    assert.ok(!fs.existsSync(path.join(root, workspaceKey('acme/app#a'))), 'no workspace created');
+    assert.equal(snapshot(s).retrying.length, 0);
+  });
+});
+
 describe('run history', () => {
   it('logs run start and finish with tokens, model and cost to the repository log', async () => {
     const dir = tempDir();

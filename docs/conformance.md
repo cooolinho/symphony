@@ -27,6 +27,7 @@ Agent SDK instead; the mapping of threads, turns, approvals, user input, timeout
 | Workspace key hash | First 16 hex characters (64 bits) of SHA-256 of the original identifier |
 | Non-directory at a workspace path | Fails the attempt (`workspace_path_conflict`); nothing is deleted |
 | Failed `after_create` | The half-created directory is deleted, so the next attempt starts clean |
+| Workspace lock | Extension: `<workspace root>/<key>.lock` (JSON: pid, hostname, instance id, timestamp), created with `wx` outside the clone before `ensure`; released when the attempt ends and deleted with the workspace. A live pid on this host or any other host counts as held and ends the attempt as `cancelled` (no hooks, no session; the next poll tick retries); a dead pid on this host is reclaimed. No locking across hosts beyond "held by another host". |
 | Hook shell | `bash -lc`, own process group, killed as a group on timeout |
 | Hook and agent environment | Tracker secrets and Claude Code nesting markers removed |
 | Empty prompt body | Minimal default prompt including identifier, title and description |

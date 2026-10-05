@@ -124,3 +124,52 @@ describe('workspace manager', () => {
     assert.deepEqual(env, { PATH: '/bin' });
   });
 });
+
+describe('workspace lock', () => {
+  const write = (file: string, info: object) => fs.writeFileSync(file, JSON.stringify(info));
+
+  it('acquires atomically, blocks a second acquire and releases only its own lock', async () => {
+    const root = tempDir();
+    const m = manager(root);
+    const first = await m.lock(issue.identifier);
+    assert.ok(first.ok);
+    const file = path.join(fs.realpathSync(root), `${workspaceKey(issue.identifier)}.lock`);
+    const content = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(content.pid, process.pid);
+    assert.equal(typeof content.instance, 'string');
+    assert.equal(typeof content.hostname, 'string');
+    await first.release();
+    assert.ok(!fs.existsSync(file));
+
+    write(file, { pid: process.pid, hostname: 'other-host', instance: 'foreign', acquiredAt: 'x' });
+    const second = await m.lock(issue.identifier);
+    assert.ok(!second.ok);
+    assert.equal(second.holder?.instance, 'foreign');
+    assert.ok(fs.existsSync(file));
+  });
+
+  it('treats a live pid on this host as held and a dead pid as stale', async () => {
+    const root = tempDir();
+    const m = manager(root);
+    const file = path.join(fs.realpathSync(root), `${workspaceKey(issue.identifier)}.lock`);
+    const os = await import('node:os');
+    write(file, { pid: process.ppid, hostname: os.hostname(), instance: 'foreign', acquiredAt: 'x' });
+    assert.ok(!(await m.lock(issue.identifier)).ok);
+    write(file, { pid: 2 ** 22 + 12345, hostname: os.hostname(), instance: 'foreign', acquiredAt: 'x' });
+    const reclaimed = await m.lock(issue.identifier);
+    assert.ok(reclaimed.ok);
+    await reclaimed.release();
+  });
+
+  it('is deleted together with the workspace and stays out of git status', async () => {
+    const root = tempDir();
+    const m = manager(root);
+    const lock = await m.lock(issue.identifier);
+    const ws = await m.ensure(issue);
+    assert.deepEqual(fs.readdirSync(ws.path), []);
+    assert.ok(fs.existsSync(`${ws.path}.lock`));
+    assert.ok(lock.ok);
+    await m.remove(issue);
+    assert.ok(!fs.existsSync(`${ws.path}.lock`));
+  });
+});
