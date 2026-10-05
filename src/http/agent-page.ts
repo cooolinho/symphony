@@ -324,10 +324,12 @@ ${BASE_JS}
     finishing: ['Finishing', 'green', false], completed: ['✓ Completed', 'green', false], failed: ['✕ Failed', 'red', false],
     stopping: ['Stopping', 'amber', false],
   };
+  const WINDOW_WORDS = { five_hour: 'five hour', seven_day: 'seven day', seven_day_opus: 'seven day Opus', seven_day_sonnet: 'seven day Sonnet' };
+  const windowWords = (w) => WINDOW_WORDS[w] || String(w || '').replace(/_/g, ' ');
   const OUTCOME = {
     handed_off: ['✓ Completed', 'green', 'handed off'], continuing: ['✓ Session done', 'green', 'continues'],
     failed: ['✕ Failed', 'red', 'failed'], stalled: ['✕ Stalled', 'red', 'stalled'],
-    stopped: ['■ Stopped', 'amber', 'stopped'], shutdown: ['■ Shut down', 'amber', 'shutdown'],
+    stopped: ['■ Stopped', 'amber', 'stopped'], shutdown: ['■ Shut down', 'amber', 'shutdown'], session_limit: ['⏳ Session limit', 'amber', 'session limit'],
   };
 
   const S = {
@@ -408,6 +410,7 @@ ${BASE_JS}
   const COVERED_BY_TRANSCRIPT = new Set(['assistant_message', 'tool_use', 'tool_result', 'tracker_tool']);
   const CATEGORY = {
     run_dispatched: 'lifecycle', run_finished: 'lifecycle', retry_scheduled: 'lifecycle', issue_paused: 'lifecycle',
+    session_limit_wait: 'lifecycle', worker_restarted: 'lifecycle',
     session_started: 'lifecycle', session_configured: 'lifecycle', startup_failed: 'lifecycle', agent_exited: 'lifecycle',
     phase: 'phase',
     turn_started: 'model', turn_completed: 'model', turn_failed: 'model', turn_cancelled: 'model', turn_timeout: 'model',
@@ -430,13 +433,25 @@ ${BASE_JS}
       case 'run_finished': {
         const o = OUTCOME[d.outcome] || [d.outcome, 'gray'];
         const failed = d.outcome === 'failed' || d.outcome === 'stalled';
-        return { ...base, type: 'finish', tone: o[1], glyph: failed ? '✕' : '■', err: failed, title: 'RUN ' + String(o[2] || d.outcome).toUpperCase(),
+        const limited = d.outcome === 'session_limit';
+        return { ...base, type: 'finish', tone: o[1], glyph: failed ? '✕' : limited ? '⏳' : '■', err: failed, title: 'RUN ' + String(o[2] || d.outcome).toUpperCase(),
           name: d.next_role ? '→ ' + d.next_role : '', line: failed ? '' : d.reason || '', errText: failed ? d.reason : '',
           chips: [[pad2(d.turns) + ' turns'], [fmtCompact(d.tokens && d.tokens.total_tokens) + ' tokens'], [fmtCost(d.cost_usd)], [fmtDuration(d.agent_seconds)]] };
       }
       case 'retry_scheduled':
+        if (d.kind === 'session_limit') {
+          const lim = d.limit || {};
+          return { ...base, type: 'event', tone: 'amber', glyph: '⏳', err: false,
+            title: lim.waiting ? 'WAITING FOR RESET' : 'SESSION LIMIT · RETRY ' + lim.hits + '/' + lim.max_retries,
+            line: (lim.text ? lim.text + ' · ' : '') + 'retry at ' + fmtStamp(d.due_at) };
+        }
         return { ...base, type: 'event', tone: d.kind === 'failure' ? 'amber' : 'cyan', glyph: '↻', title: d.kind === 'failure' ? 'RETRY #' + d.attempt + ' SCHEDULED' : 'CONTINUATION QUEUED',
           err: false, line: (d.error ? 'Reason: ' + d.error + ' · ' : '') + 'next attempt ' + fmtStamp(d.due_at) };
+      case 'session_limit_wait':
+        return { ...base, tone: 'amber', glyph: '⏳', title: 'WAITING FOR SESSION LIMIT', err: false,
+          line: 'Resets at ' + fmtStamp(d.resets_at) + (d.window ? ' (' + windowWords(d.window) + ')' : '') + ' · retry at ' + fmtStamp(d.retry_at) };
+      case 'worker_restarted':
+        return { ...base, tone: 'cyan', glyph: '↻', title: 'WORKER RESTARTED', err: false, line: e.message || '' };
       case 'issue_paused':
         return { ...base, tone: 'gray', glyph: '⏸', title: 'PAUSED', err: false };
       case 'phase':
@@ -756,6 +771,9 @@ ${BASE_JS}
     }
     if (d.status === 'running') return STATUS[PHASE_STATUS[d.running.phase] || 'running'];
     if (d.status === 'stopping') return STATUS.stopping;
+    if (d.status === 'retrying' && d.retry && d.retry.kind === 'session_limit' && d.retry.limit) {
+      return d.retry.limit.waiting ? ['⏳ Waiting for limit', 'amber', true] : ['⏳ Session limit #' + d.retry.limit.hits, 'amber', true];
+    }
     if (d.status === 'retrying') return d.retry && d.retry.kind === 'continuation' ? ['Continuing', 'cyan', false] : ['↻ Retrying #' + (d.retry ? d.retry.attempt : ''), 'amber', true];
     if (d.status === 'paused') return ['⏸ Paused', 'gray', false];
     return ['Claimed', 'gray', false];
@@ -845,6 +863,55 @@ ${BASE_JS}
     return null;
   }
 
+  // Outcome of the last restart click; the alert is rebuilt every second, so the button is drawn from here.
+  let restartState = null;
+  const RESTART_LABELS = { Retry: 'Retry now', Resume: 'Resume now' };
+
+  function restartButton(verb) {
+    const b = el('button', restartState ? restartState.label : RESTART_LABELS[verb], 'btn restart' + (restartState && restartState.cls ? ' ' + restartState.cls : ''));
+    b.type = 'button';
+    b.setAttribute('aria-label', RESTART_LABELS[verb] + ' ' + ID);
+    if (restartState && restartState.cls === 'is-busy') b.setAttribute('aria-busy', 'true');
+    return b;
+  }
+
+  async function restart() {
+    if (restartState && restartState.cls === 'is-busy') return;
+    restartState = { cls: 'is-busy', label: 'Restarting…' };
+    renderAlert();
+    let ok = false;
+    let label = 'Restart failed';
+    try {
+      const res = await fetch(API + '/retry', { method: 'POST' });
+      let body = null;
+      try { body = await res.json(); } catch {}
+      ok = res.ok;
+      label = ok ? 'Queued' : (body && body.error && body.error.message) || 'Restart failed (' + res.status + ')';
+    } catch {}
+    restartState = { cls: ok ? 'is-done' : 'is-failed', label };
+    renderAlert();
+    $('announce').textContent = ID + ': ' + label;
+    setTimeout(poll, 500);
+    setTimeout(() => { restartState = null; renderAlert(); }, ok ? 1800 : 5000);
+  }
+
+  document.addEventListener('click', (event) => {
+    if (event.target instanceof Element && event.target.closest('button.restart')) restart();
+  });
+
+  function sessionLimitSpec(d) {
+    const r = d.retry;
+    const limit = r.limit;
+    const sub = [];
+    if (limit.window) sub.push(['Window', windowWords(limit.window)]);
+    if (limit.resets_at) sub.push(['Resets at', fmtStamp(limit.resets_at)]);
+    sub.push(['Retry at', fmtStamp(r.due_at) + ' (in ' + fmtDuration(Math.max(0, Date.parse(r.due_at) - Date.now()) / 1000) + ')']);
+    sub.push(['Retries', limit.waiting ? 'used up' : limit.hits <= limit.max_retries ? limit.hits + ' of ' + limit.max_retries : 'backoff']);
+    if (limit.text && r.error && r.error !== limit.text) sub.push(['Queue', r.error]);
+    if (limit.overage_disabled_reason === 'out_of_credits') sub.push(['Credits', 'Extra usage is off because credits are used up. Top up, then press Retry now.']);
+    return { tone: 'amber', title: '⏳ Session limit reached', reason: limit.text || r.error || 'unknown', sub, restart: 'Retry' };
+  }
+
   function renderAlert() {
     const box = $('alert');
     const d = S.detail;
@@ -852,13 +919,15 @@ ${BASE_JS}
     const fin = lastEvent('run_finished');
     const failedRun = fin && (fin.detail.outcome === 'failed' || fin.detail.outcome === 'stalled');
     const errItem = lastErrorItem();
-    if (d && !S.ended && d.status === 'retrying' && d.retry && d.retry.kind === 'failure') {
+    if (d && !S.ended && d.status === 'retrying' && d.retry && d.retry.kind === 'session_limit' && d.retry.limit) {
+      spec = sessionLimitSpec(d);
+    } else if (d && !S.ended && d.status === 'retrying' && d.retry && d.retry.kind === 'failure') {
       spec = { tone: 'amber', title: '↻ Retry #' + d.retry.attempt, reason: d.retry.error || d.last_error || 'unknown error',
         sub: [['Next attempt', fmtStamp(d.retry.due_at) + ' (in ' + fmtDuration(Math.max(0, Date.parse(d.retry.due_at) - Date.now()) / 1000) + ')']] };
     } else if (d && !S.ended && d.status === 'stopping') {
       spec = { tone: 'amber', title: '■ Stopping', reason: d.running && d.running.stopping, sub: [] };
     } else if (d && !S.ended && d.status === 'paused') {
-      spec = { tone: 'gray', title: '⏸ Agent paused', reason: 'Still active after ' + (d.paused ? d.paused.continuations : '?') + ' continuation session(s). Change the issue on the board (status, comment or labels) to resume.', sub: [] };
+      spec = { tone: 'gray', title: '⏸ Agent paused', reason: 'Still active after ' + (d.paused ? d.paused.continuations : '?') + ' continuation session(s). Change the issue on the board (status, comment or labels) to resume, or press Resume now.', sub: [], restart: 'Resume' };
     } else if (failedRun && !isRunning()) {
       spec = { tone: 'red', title: '✕ Agent failed', reason: fin.detail.reason, sub: [] };
     } else if (isRunning() && d.last_error && d.attempts.current_retry_attempt) {
@@ -878,12 +947,16 @@ ${BASE_JS}
       for (const [k, v] of spec.sub) { const s = el('span', k + ' '); s.append(el('b', v)); sub.append(s); }
       nodes.push(sub);
     }
-    if (errItem && spec.tone !== 'gray') {
+    const showDetails = errItem && spec.tone !== 'gray';
+    if (showDetails || spec.restart) {
       const actions = el('div', null, 'actions');
-      const b = el('button', 'View details');
-      b.type = 'button';
-      b.dataset.goto = errItem.key;
-      actions.append(b);
+      if (showDetails) {
+        const b = el('button', 'View details');
+        b.type = 'button';
+        b.dataset.goto = errItem.key;
+        actions.append(b);
+      }
+      if (spec.restart) actions.append(restartButton(spec.restart));
       nodes.push(actions);
     }
     patchChildren(box, nodes);
