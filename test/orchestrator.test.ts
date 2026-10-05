@@ -213,6 +213,119 @@ describe('roles', () => {
     assert.match(event ?? '', /run_id=[0-9a-f]{12}/);
     assert.match(event ?? '', /role=default/);
   });
+
+  describe('role switches', () => {
+    const switchFront = {
+      tracker: {
+        kind: 'github_project',
+        provider: { owner: 'acme', project_number: 1, token: 'test-token' },
+        active_states: ['Ready', 'In progress', 'Agent review'],
+      },
+      agent: { max_turns: 3, max_continuations: 6 },
+      roles: { developer: { states: ['Ready', 'In progress'] }, reviewer: { states: ['Agent review'], read_only: true } },
+    };
+
+    function withHistory(front: Record<string, unknown>, runner: FakeRunner, issues: ReturnType<typeof makeIssue>[]) {
+      const dir = tempDir();
+      fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
+      const pricing = new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent());
+      const history = new HistoryLog(path.join(dir, 'repositories'), pricing, Logger.silent());
+      const tracker = new FakeTracker(issues);
+      tracker.issueRepository = () => 'acme/app';
+      const timers = new ManualTimers();
+      const orchestrator = new Orchestrator({
+        workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir(), front), { prompt: rolePrompt })),
+        runner,
+        logger: Logger.silent(),
+        env: {},
+        logDir: null,
+        clock: new ManualClock(),
+        timers,
+        createAdapter: () => tracker,
+        pricing,
+        history,
+      });
+      const finished = () => readHistory(history.dir, 'acme/app').entries.filter((e) => e.event === 'run_finished');
+      return { orchestrator, tracker, runner, timers, history, finished };
+    }
+
+    it('ends the session when the issue moves to another role and starts the next role in a fresh session', async () => {
+      const runner = new FakeRunner();
+      const s = withHistory(switchFront, runner, [makeIssue({ id: 'a', state: 'Ready' })]);
+      runner.script = (turn) => {
+        if (runner.sessions.length === 1) s.tracker.set('a', { state: 'Agent review' });
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      };
+      await s.orchestrator.tickNow();
+      await until(() => s.orchestrator.snapshot().retrying.length === 1, 3_000, 'continuation retry');
+      assert.equal(runner.sessions[0]?.turns.length, 1);
+      assert.equal(runner.sessions[0]?.stopped, true);
+      assert.equal(s.orchestrator.snapshot().retrying[0]?.kind, 'continuation');
+
+      s.timers.fire(1_000);
+      await until(() => runner.sessions.length === 2 && s.orchestrator.snapshot().retrying.length === 1, 3_000, 'reviewer session');
+      const reviewer = runner.sessions[1];
+      assert.equal(reviewer?.turns[0], 'Act as reviewer on acme/app#a');
+      assert.equal(reviewer?.params.policy?.readOnly, true);
+      assert.equal(reviewer?.turns.length, 3);
+
+      const [developerRun, reviewerRun] = s.finished();
+      assert.match(
+        fs.readFileSync(s.history.fileFor('acme/app'), 'utf8'),
+        /event=run_finished .*outcome=handed_off role=developer next_role=reviewer state="Agent review"/,
+      );
+      assert.equal(developerRun?.fields.reason, 'role changed (developer → reviewer)');
+      assert.equal(reviewerRun?.fields.outcome, 'continuing');
+      assert.equal(reviewerRun?.fields.role, undefined);
+      assert.equal(reviewerRun?.fields.next_role, undefined);
+    });
+
+    it('keeps one session when the issue moves to another column of the same role', async () => {
+      const runner = new FakeRunner();
+      const s = withHistory(switchFront, runner, [makeIssue({ id: 'a', state: 'Ready' })]);
+      runner.script = (turn) => {
+        s.tracker.set('a', { state: 'In progress' });
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      };
+      await s.orchestrator.tickNow();
+      await until(() => s.orchestrator.snapshot().retrying.length === 1, 3_000, 'continuation retry');
+      assert.equal(runner.sessions.length, 1);
+      assert.equal(runner.sessions[0]?.turns.length, 3);
+      assert.equal(s.finished()[0]?.fields.outcome, 'continuing');
+    });
+
+    it('counts role switches as continuations and pauses developer↔reviewer ping-pong', async () => {
+      const runner = new FakeRunner();
+      const s = withHistory({ ...switchFront, agent: { max_turns: 3, max_continuations: 2 } }, runner, [makeIssue({ id: 'a', state: 'Ready' })]);
+      runner.script = (turn, params) => {
+        s.tracker.set('a', { state: params.policy?.readOnly ? 'In progress' : 'Agent review' });
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      };
+      await s.orchestrator.tickNow();
+      await until(() => s.orchestrator.snapshot().retrying.length === 1, 3_000, 'first handoff');
+      s.timers.fire(1_000);
+      await until(() => runner.sessions.length === 2 && s.orchestrator.snapshot().retrying.length === 1, 3_000, 'reviewer session');
+      s.timers.fire(1_000);
+      await until(() => runner.sessions.length === 3 && s.orchestrator.snapshot().retrying.length === 1, 3_000, 'developer session');
+      s.timers.fire(1_000);
+      await until(() => s.orchestrator.snapshot().counts.paused === 1, 3_000, 'paused');
+
+      assert.deepEqual(runner.sessions.map((session) => session.turns[0]), [
+        'Act as developer on acme/app#a',
+        'Act as reviewer on acme/app#a',
+        'Act as developer on acme/app#a',
+      ]);
+      assert.ok(runner.sessions.every((session) => session.turns.length === 1));
+      assert.deepEqual(
+        s.finished().map((e) => [e.fields.outcome, e.fields.role, e.fields.next_role]),
+        [
+          ['handed_off', 'developer', 'reviewer'],
+          ['handed_off', 'reviewer', 'developer'],
+          ['handed_off', 'developer', 'reviewer'],
+        ],
+      );
+    });
+  });
 });
 
 describe('worker lifecycle and retries', () => {
