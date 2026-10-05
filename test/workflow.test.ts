@@ -100,17 +100,21 @@ describe('config layer', () => {
 
   it('supports ${NAME:-default} references, and an empty default means omitted', () => {
     const front = {
-      agent: { max_turns: '${SYMPHONY_MAX_TURNS:-7}', max_continuations: '${SYMPHONY_MAX_CONTINUATIONS:-}' },
+      agent: { max_turns: '${SYMPHONY_MAX_TURNS:-7}', max_continuations: '${SYMPHONY_MAX_CONTINUATIONS:-}', max_session_limit_retries: '${SYMPHONY_MAX_SESSION_LIMIT_RETRIES:-3}' },
       workspace: { cleanup_terminal: '${SYMPHONY_CLEANUP_TERMINAL:-true}' },
       polling: { interval_ms: '${SYMPHONY_POLL_INTERVAL_MS:-30000}' },
     };
     const defaults = resolve(front);
     assert.equal(defaults.agent.maxTurns, 7);
     assert.equal(defaults.agent.maxContinuations, null);
+    assert.equal(defaults.agent.maxSessionLimitRetries, 3);
+    assert.equal(resolve(front, { SYMPHONY_MAX_SESSION_LIMIT_RETRIES: '' }).agent.maxSessionLimitRetries, 3);
+    assert.equal(resolve(front, { SYMPHONY_MAX_SESSION_LIMIT_RETRIES: '0' }).agent.maxSessionLimitRetries, 0);
     assert.equal(defaults.workspace.cleanupTerminal, true);
     const set = resolve(front, { SYMPHONY_MAX_TURNS: '5', SYMPHONY_MAX_CONTINUATIONS: '2', SYMPHONY_CLEANUP_TERMINAL: 'false', SYMPHONY_POLL_INTERVAL_MS: '' });
     assert.equal(set.agent.maxTurns, 5);
     assert.equal(set.agent.maxContinuations, 2);
+    assert.equal(resolve(front, { SYMPHONY_MAX_SESSION_LIMIT_RETRIES: '5' }).agent.maxSessionLimitRetries, 5);
     assert.equal(set.workspace.cleanupTerminal, false);
     assert.equal(set.polling.intervalMs, 30_000);
   });
@@ -151,6 +155,17 @@ describe('config layer', () => {
         error.message.includes('hooks.timeout_ms') &&
         error.message.includes('claude.permission_mode'),
     );
+  });
+
+  it('defaults agent.max_session_limit_retries to 3 and rejects negative or non-integer values', () => {
+    assert.equal(resolve({}).agent.maxSessionLimitRetries, 3);
+    for (const value of [-1, 'abc']) {
+      assert.throws(
+        () => resolve({ agent: { max_session_limit_retries: value } }),
+        (error: unknown) =>
+          error instanceof SymphonyError && error.code === 'invalid_config' && error.message.includes('agent.max_session_limit_retries'),
+      );
+    }
   });
 
   it('parses checks with defaults, normalized columns and literal $VAR scripts', () => {

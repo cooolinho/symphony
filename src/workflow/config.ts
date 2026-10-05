@@ -44,6 +44,8 @@ export interface AgentConfig {
    * the issue is paused until it changes on the tracker. null = unlimited (spec behavior).
    */
   maxContinuations: number | null;
+  /** Retries per issue after the first session-limit failure before waiting for the reset; 0 = wait right away. */
+  maxSessionLimitRetries: number;
   /** Keys are normalized state names (trimmed, lowercase). */
   maxConcurrentAgentsByState: ReadonlyMap<string, number>;
   /** Liquid template for continuation turns; null uses the built-in text. */
@@ -127,6 +129,7 @@ export const DEFAULTS = {
   maxConcurrentAgents: 10,
   maxTurns: 20,
   maxRetryBackoffMs: 300_000,
+  maxSessionLimitRetries: 3,
   turnTimeoutMs: 3_600_000,
   readTimeoutMs: 30_000,
   stallTimeoutMs: 300_000,
@@ -358,6 +361,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
       agentRaw.max_continuations === undefined || agentRaw.max_continuations === null
         ? null
         : reader.int(agentRaw, 'max_continuations', 'agent.max_continuations', 0, 0),
+    maxSessionLimitRetries: reader.int(agentRaw, 'max_session_limit_retries', 'agent.max_session_limit_retries', DEFAULTS.maxSessionLimitRetries, 0),
     continuationPrompt: reader.script(agentRaw, 'continuation_prompt', 'agent.continuation_prompt'),
   };
 

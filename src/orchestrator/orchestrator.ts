@@ -1493,6 +1493,7 @@ export class Orchestrator {
         max_concurrent_agents: config.agent.maxConcurrentAgents,
         max_turns: config.agent.maxTurns,
         max_continuations: config.agent.maxContinuations,
+        max_session_limit_retries: config.agent.maxSessionLimitRetries,
         cleanup_terminal: config.workspace.cleanupTerminal,
         completed_count: this.#completed.size,
         pricing_file: this.#deps.pricing?.path ?? null,
