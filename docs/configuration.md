@@ -17,7 +17,7 @@ If the variable is unset or empty, the setting counts as **omitted** and its def
 uses `default` instead in that case (`${NAME:-}` with an empty default also means omitted). Numbers and booleans may
 come from variables: `max_turns: ${SYMPHONY_MAX_TURNS:-10}`. This works for every setting except:
 
-- `hooks.*`: shell scripts; the shell expands `$NAME` itself when the hook runs.
+- `hooks.*` and `checks.on_enter.*`: shell scripts; the shell expands `$NAME` itself when the script runs.
 - `tracker.provider.*`: resolved by the tracker adapter, which also uses the same `$NAME` rules (see
   [the adapter profile](adapters/github-project.md)). For `token`, an unset variable is a *missing secret* error.
 
@@ -81,6 +81,30 @@ orchestrator's environment **without** tracker credentials (`GITHUB_TOKEN`, `GH_
 | `timeout_ms` | Default `60000`; applies to every hook | A timed-out hook's whole process group is killed. |
 
 Hooks finish when their output pipes close, so redirect the output of background jobs (`cmd >/dev/null 2>&1 &`).
+
+### `checks`
+
+Deterministic entry checks: bash scripts that run before an issue may enter a gated column. This section only
+configures them; omitting it changes nothing.
+
+```yaml
+checks:
+  timeout_ms: 1200000
+  retries: 0
+  on_enter:
+    Agent review: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `timeout_ms` | `hooks.timeout_ms` | Limit per script run; must be below `claude.turn_timeout_ms`. A timed-out or aborted script's whole process group is killed. |
+| `retries` | `0` | Extra attempts after a failed check, `0`–`3`. |
+| `on_enter` | `{}` | Map of column name (matched trimmed and case-insensitively) to the bash script that must pass to enter it. |
+
+Scripts run like hooks (`bash -lc` in the issue workspace, own process group) with the same `SYMPHONY_*`
+variables, `SYMPHONY_HOOK` set to the check's label. Because they execute repository code, their environment
+also lacks agent credentials (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`) on top of the tracker credentials
+hooks already lack. Scripts are not `$VAR`-substituted by Symphony; the shell expands them at run time.
 
 ### `agent`
 

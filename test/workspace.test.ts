@@ -124,3 +124,70 @@ describe('workspace manager', () => {
     assert.deepEqual(env, { PATH: '/bin' });
   });
 });
+
+describe('workspace manager runScript', () => {
+  const prepare = async (env: NodeJS.ProcessEnv = process.env) => {
+    const root = tempDir();
+    const workspaces = manager(root, hooks(), env);
+    const workspace = await workspaces.ensure(issue);
+    return { workspaces, workspace };
+  };
+
+  it('passes SYMPHONY_* variables with the label and merges env', async () => {
+    const { workspaces, workspace } = await prepare();
+    const result = await workspaces.runScript('check:review', 'env > out.txt', workspace, issue, {
+      timeoutMs: 5_000,
+      env: { EXTRA: 'yes' },
+    });
+    assert.equal(result.ok, true);
+    const env = fs.readFileSync(path.join(workspace.path, 'out.txt'), 'utf8');
+    assert.match(env, /^SYMPHONY_HOOK=check:review$/m);
+    assert.match(env, /^SYMPHONY_ISSUE_IDENTIFIER=acme\/app#1$/m);
+    assert.match(env, new RegExp(`^SYMPHONY_WORKSPACE=${workspace.path}$`, 'm'));
+    assert.match(env, /^EXTRA=yes$/m);
+  });
+
+  it('strips agent credentials even when the base environment or env has them', async () => {
+    const { workspaces, workspace } = await prepare({
+      ...process.env,
+      ANTHROPIC_API_KEY: 'sk-a',
+      CLAUDE_CODE_OAUTH_TOKEN: 'tok',
+    });
+    await workspaces.runScript('check', 'env > out.txt', workspace, issue, {
+      timeoutMs: 5_000,
+      env: { ANTHROPIC_API_KEY: 'again' },
+    });
+    const env = fs.readFileSync(path.join(workspace.path, 'out.txt'), 'utf8');
+    assert.doesNotMatch(env, /ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN/);
+  });
+
+  it('reports failures', async () => {
+    const { workspaces, workspace } = await prepare();
+    const result = await workspaces.runScript('check', 'echo bad; exit 3', workspace, issue, { timeoutMs: 5_000 });
+    assert.equal(result.ok, false);
+    assert.equal(result.exitCode, 3);
+    assert.match(result.output, /bad/);
+  });
+
+  it('kills the process group on timeout', async () => {
+    const { workspaces, workspace } = await prepare();
+    const result = await workspaces.runScript('check', 'sleep 30', workspace, issue, { timeoutMs: 200 });
+    assert.equal(result.ok, false);
+    assert.equal(result.timedOut, true);
+    assert.ok(result.durationMs < 10_000);
+  });
+
+  it('kills the process group on abort and reports error "aborted"', async () => {
+    const { workspaces, workspace } = await prepare();
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 200);
+    const result = await workspaces.runScript('check', 'sleep 30', workspace, issue, {
+      timeoutMs: 20_000,
+      signal: controller.signal,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.error, 'aborted');
+    assert.equal(result.timedOut, false);
+    assert.ok(result.durationMs < 10_000);
+  });
+});
