@@ -8,7 +8,7 @@ import { HistoryLog } from '../src/history/history.ts';
 import { startHttpServer, type HttpServerHandle } from '../src/http/server.ts';
 import { Logger } from '../src/log.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
-import { FakeRunner, FakeTracker, ManualTimers, StaticWorkflow, baseFront, makeWorkflow, tempDir } from './helpers.ts';
+import { FakeRunner, FakeTracker, ManualTimers, StaticWorkflow, baseFront, makeIssue, makeWorkflow, tempDir, until } from './helpers.ts';
 
 /** Raw request so tests can set the Host header freely. */
 function request(port: number, method: string, path: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string; headers: http.IncomingHttpHeaders }> {
@@ -121,5 +121,44 @@ describe('http extension', () => {
     assert.equal(rebinding.status, 403);
     const crossOrigin = await request(server.port, 'POST', '/api/v1/refresh', { origin: 'https://evil.example' });
     assert.equal(crossOrigin.status, 403);
+  });
+});
+
+describe('issue details', () => {
+  it('returns the last entry check as last_check', async () => {
+    let checked = false;
+    const runner = new FakeRunner(async (_turn, params) => {
+      await params.tools.find((t) => t.name === 'set_status')!.execute({ status: 'Agent review' }, params.toolContext());
+      checked = true;
+      return new Promise((resolve) => params.signal.addEventListener('abort', () => resolve({ ok: false, turnId: '1', code: 'turn_cancelled', message: 'cancelled' })));
+    });
+    const front = baseFront(tempDir(), {
+      tracker: { kind: 'github_project', provider: { owner: 'acme', project_number: 1, token: 'test-token' }, active_states: ['Todo', 'Agent review'] },
+      checks: { on_enter: { 'Agent review': 'exit 0' } },
+    });
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(front)),
+      runner,
+      logger: Logger.silent(),
+      env: {},
+      logDir: null,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker([makeIssue({ id: 'c' })]),
+    });
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    try {
+      await orchestrator.tickNow();
+      await until(() => checked, 5_000, 'entry check');
+      const detail = JSON.parse((await request(server.port, 'GET', `/api/v1/${encodeURIComponent('acme/app#c')}`)).body);
+      assert.equal(detail.last_check.target, 'Agent review');
+      assert.equal(detail.last_check.ok, true);
+      assert.equal(detail.last_check.result, 'passed');
+      assert.equal(detail.last_check.exit_code, 0);
+      assert.equal(typeof detail.last_check.duration_ms, 'number');
+      assert.equal(typeof detail.last_check.finished_at, 'string');
+    } finally {
+      await orchestrator.shutdown(1_000);
+      await server.close();
+    }
   });
 });

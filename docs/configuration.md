@@ -165,6 +165,13 @@ feedback in the same session. Checks of one session run one after the other; sto
 card to `Done`) kills a running check's process group. Without `roles` and `checks`, only the terminal-target rule
 applies.
 
+While a check runs, the run is in phase `RunningChecks`: stall detection is suspended and its clock starts fresh when
+the check ends, and the `set_status` tool call may last `checks.timeout_ms + 60 s`
+(see [agent-claude.md](agent-claude.md#timeouts-and-failures)). Each check logs `checks_started` and
+`checks_finished` (`target`, `sha`, `exit_code`, `duration_ms`, `ok`) at info level, writes a `checks_finished`
+line to the [repository log](#repository-logs) and becomes `last_check` in `GET /api/v1/<identifier>`. Denied targets
+write a `transition_denied` line.
+
 ### `agent`
 
 | Key | Default | Notes |
@@ -364,6 +371,8 @@ workflow directory, else `$XDG_STATE_HOME/symphony` or `~/.local/state/symphony`
 | `model_usage` | `repo`, `issue`, `run`, `model`, `price` (matched entry), token counts, `cost_usd` |
 | `issue_paused` | `repo`, `issue`, `title`, `state`, `continuations`, `max_continuations` |
 | `workspace_removed` | `repo`, `issue`, `state` |
+| `checks_finished` | `repo`, `issue`, `run`, `role`, `target`, `sha` (workspace commit; omitted outside git), `ok`, `result` (`passed`, `check_failed`, `check_error`), `exit_code` (`null` when the script did not exit normally), `timed_out` (only when `true`), `duration_ms` |
+| `transition_denied` | `repo`, `issue`, `run`, `role`, `target`, `reason` (the message the agent received) |
 
 `cost_usd` in a line uses the prices at the time it was written; the logs page and `/api/v1/history` recompute every
 cost from the logged tokens with the current `model-costs.yml`. `input_tokens` counts uncached input only;

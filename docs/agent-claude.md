@@ -156,10 +156,22 @@ script: it receives the absolute `artisan` path and its arguments, plus `SYMPHON
 |---|---|
 | Handshake slower than `read_timeout_ms` | `response_timeout`; the attempt is retried with backoff |
 | No agent output for `turn_timeout_ms` during a turn | `turn_timeout`; the turn is interrupted, the attempt retried |
-| No agent event for `stall_timeout_ms` (checked each tick) | The orchestrator stops the run (`stalled`) and retries. Workspace preparation (hooks, Composer, Boost) has its own timeouts and does not count; the stall clock starts when the session launches |
+| No agent event for `stall_timeout_ms` (checked each tick) | The orchestrator stops the run (`stalled`) and retries. Workspace preparation (hooks, Composer, Boost) and entry checks (phase `RunningChecks`) have their own timeouts and do not count; the stall clock starts when the session launches and again when a check ends |
+| A Symphony tool call (`mcp__tracker__*`) lasts longer than `checks.timeout_ms + 60 s` | Claude Code ends the call with a tool error. Set `MCP_TOOL_TIMEOUT` in `claude.env` to choose another limit |
 | Turn result is an error (max budget, API error, …) | `turn_failed` |
 | Claude Code exits mid-turn | `port_exit` (stderr tail included in the message) |
 | Orchestrator stops the run (issue moved, shutdown) | `turn_cancelled`, no retry |
+
+Entry checks run inside the `set_status` tool call, so that call must outlive the check. Claude Code (2.1.288, bundled
+with Agent SDK 0.3.288) bounds a call to an MCP server by the server config's `timeout` (used when ≥ 1000 ms), else
+the `MCP_TOOL_TIMEOUT` environment variable, else 100 000 000 ms (about 28 hours); in-process `sdk` servers have no
+idle timeout. Sources: the `timeout` docs of `createSdkMcpServer` and `McpSdkServerConfig` in the SDK's `sdk.d.ts`
+("Overrides the MCP_TOOL_TIMEOUT environment variable for this server"), `sdk.mjs` forwarding it to the CLI as
+`{type: "sdk", name, timeout}`, and the CLI's resolver (`timeout ?? MCP_TOOL_TIMEOUT ?? 1e8`, clamped to
+1000 ms–2³¹−1). Symphony therefore sets `timeout` on its `tracker` server to `checks.timeout_ms + 60000`, unless
+`claude.env` sets `MCP_TOOL_TIMEOUT`; then that value applies. `claude.turn_timeout_ms` must stay above
+`checks.timeout_ms` (validated when `checks.timeout_ms` is set), because the turn timer does not re-arm while a tool
+call is pending.
 
 Stopping a session closes its input, waits up to 10 seconds, then closes it forcibly and kills the **whole process
 group**, so commands the agent started (test runners, dev servers) end with it. On orchestrator exit, remaining
@@ -172,7 +184,7 @@ version, MCP server status, plugins, number of skills), `startup_failed`, `turn_
 `turn_input_required`, `approval_auto_approved`, `approval_denied`, `permission_denied`, `tool_use`, `tool_result`,
 `tracker_tool`, `assistant_message`, `api_retry`, `rate_limit`, `agent_error` (API or authentication errors),
 `agent_exited`, `notification`, `other_message`. The worker adds the transition guard's `transition_denied`,
-`entry_check_started` and `entry_check_finished`.
+`checks_started` and `checks_finished` (`target`, `sha`, `exit_code`, `duration_ms`, `ok`), logged at info level.
 
 Token usage comes from the `modelUsage` totals of each turn result, which are cumulative for the session (main
 loop, subagents and compaction) and broken down per model. In the dashboard totals, input tokens include cache reads
