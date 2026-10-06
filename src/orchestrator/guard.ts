@@ -147,6 +147,10 @@ export function createGuard(params: GuardParams): TransitionGuard {
 
     const script = params.config.checks.onEnter.get(key);
     if (script === undefined) return { allow: true, note: null };
+    if (params.role?.runChecks === false) {
+      emit('checks_skipped', `entry check for ${target} skipped (roles.${role}.run_checks is false)`, { target, role });
+      return { allow: true, note: null };
+    }
 
     const cached = params.cache !== undefined ? await cacheKey(params.workspace.path, script) : null;
     if (cached !== null && params.cache?.has(cached.key)) {
@@ -199,6 +203,11 @@ export function createGuard(params: GuardParams): TransitionGuard {
         return checkError(target, errorMessage(error));
       }
     });
+}
+
+/** The tools `role` may use: tools that create sub-issues only for a role with `max_sub_issues`. */
+export function toolsForRole(specs: AgentToolSpec[], role: RoleConfig | null): AgentToolSpec[] {
+  return role?.maxSubIssues == null ? specs.filter((spec) => spec.createsSubIssues !== true) : specs;
 }
 
 function withNote(data: unknown, note: string): unknown {

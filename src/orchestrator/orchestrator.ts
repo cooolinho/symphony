@@ -326,6 +326,7 @@ const LIFECYCLE_EVENTS = new Set([
   'transition_denied',
   'checks_started',
   'checks_cached',
+  'checks_skipped',
   'checks_finished',
 ]);
 /** Events that usually need an operator's attention. */
@@ -718,7 +719,7 @@ export class Orchestrator {
     const log = this.#issueLogger(issue);
     const controller = new AbortController();
     const config = workflow.config;
-    const role = roleFor(issue.state, config.roles);
+    const role = roleFor(issue, config.roles);
     const name = roleName(role);
     const runId = randomUUID().replace(/-/g, '').slice(0, 12);
     const entry: RunningEntry = {
@@ -851,7 +852,7 @@ export class Orchestrator {
           const current = this.#deps.workflow.current.config;
           if (!isActiveState(fresh.state, current.tracker)) return `issue left the active states ("${fresh.state}")`;
           if (!isRoutable(fresh, current.tracker)) return 'issue is no longer dispatchable (assignee, blockers or labels)';
-          const next = roleName(roleFor(fresh.state, current.roles));
+          const next = roleName(roleFor(fresh, current.roles));
           return next === entry.role ? null : `role changed (${entry.role} → ${next})`;
         },
         callbacks: {
@@ -1109,7 +1110,7 @@ export class Orchestrator {
       reason = outcome.reason;
       if (result === 'continuing') {
         // Moved to a column served by another role: the next session runs as that role.
-        const next = roleName(roleFor(entry.issue.state, config.roles));
+        const next = roleName(roleFor(entry.issue, config.roles));
         if (next !== entry.role) {
           result = 'handed_off';
           nextRole = next;

@@ -6,6 +6,7 @@ import type { WorkspaceIntegration } from '../integrations/types.ts';
 import { resolveEnvReference } from '../util/env.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { resolveConfigPath } from '../util/paths.ts';
+import { COMMAND_NAME } from './command.ts';
 import { isPlainObject } from './loader.ts';
 import { Reader, parseInteger } from './reader.ts';
 import type { RoleClaudeOverrides, RoleConfig } from './roles.ts';
@@ -143,7 +144,9 @@ const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', '
 export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
 const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'server'];
-const ROLE_KEYS = new Set(['states', 'read_only', 'may_move_to', 'max_turns', 'claude']);
+const ROLE_KEYS = new Set(['states', 'read_only', 'may_move_to', 'max_turns', 'commands', 'run_checks', 'max_sub_issues', 'claude']);
+/** GitHub allows 100 sub-issues per issue. */
+const MAX_SUB_ISSUES_LIMIT = 100;
 const ROLE_CLAUDE_KEYS = new Set(['model', 'effort', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'max_budget_usd']);
 
 export function normalizeStateName(state: string): string {
@@ -157,7 +160,10 @@ function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: s
     return null;
   }
   const roles: RoleConfig[] = [];
+  /** Who serves a (command, state) pair; the command is '' for roles without commands. */
   const owners = new Map<string, string>();
+  /** States served by roles without commands: these must cover every active state. */
+  const plainStates = new Set<string>();
   const active = new Set(activeStates.map(normalizeStateName));
   for (const [name, value] of Object.entries(raw.roles)) {
     const field = `roles.${name}`;
@@ -168,6 +174,7 @@ function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: s
     for (const key of Object.keys(value)) {
       if (!ROLE_KEYS.has(key)) reader.errors.push(`${field}.${key} is not a known key (allowed: ${[...ROLE_KEYS].join(', ')})`);
     }
+    const commands = readRoleCommands(reader, value, field);
     const states: string[] = [];
     const statesValue = reader.stringList(value, 'states', `${field}.states`);
     if (statesValue === null && value.states === undefined) reader.errors.push(`${field}.states is required`);
@@ -176,9 +183,16 @@ function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: s
       if (key === '' || states.includes(key)) continue;
       states.push(key);
       if (!active.has(key)) reader.errors.push(`${field}.states: ${JSON.stringify(state)} is not in tracker.active_states`);
-      const owner = owners.get(key);
-      if (owner !== undefined) reader.errors.push(`state ${JSON.stringify(state)} belongs to more than one role (${owner}, ${name})`);
-      else owners.set(key, name);
+      if (commands === null) plainStates.add(key);
+      for (const command of commands ?? ['']) {
+        const owner = owners.get(`${command}\u0000${key}`);
+        if (owner !== undefined) {
+          const scope = command === '' ? '' : ` for /${command}`;
+          reader.errors.push(`state ${JSON.stringify(state)} belongs to more than one role${scope} (${owner}, ${name})`);
+        } else {
+          owners.set(`${command}\u0000${key}`, name);
+        }
+      }
     }
     if (statesValue !== null && states.length === 0) reader.errors.push(`${field}.states must list at least one state`);
 
@@ -199,13 +213,40 @@ function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: s
         maxTurnsValue === undefined || maxTurnsValue === null
           ? null
           : reader.int(value, 'max_turns', `${field}.max_turns`, 0, 1) || null,
+      commands,
+      runChecks: reader.bool(value, 'run_checks', `${field}.run_checks`, true),
+      maxSubIssues: readMaxSubIssues(reader, value, field),
       claude,
     });
   }
   for (const state of activeStates) {
-    if (!owners.has(normalizeStateName(state))) reader.errors.push(`active state ${JSON.stringify(state)} has no role`);
+    if (!plainStates.has(normalizeStateName(state))) reader.errors.push(`active state ${JSON.stringify(state)} has no role`);
   }
   return roles;
+}
+
+/** `commands` of a role: null when omitted; each entry is a skill-style name without the leading slash. */
+function readRoleCommands(reader: Reader, raw: Record<string, unknown>, field: string): string[] | null {
+  const list = reader.stringList(raw, 'commands', `${field}.commands`);
+  if (list === null) return null;
+  const commands: string[] = [];
+  for (const entry of list) {
+    const command = entry.trim().replace(/^\//, '').toLowerCase();
+    if (!COMMAND_NAME.test(command)) reader.errors.push(`${field}.commands: ${JSON.stringify(entry)} is not a command name (lowercase letters, digits and dashes)`);
+    else if (!commands.includes(command)) commands.push(command);
+  }
+  if (list.length === 0) reader.errors.push(`${field}.commands must list at least one command`);
+  return commands;
+}
+
+function readMaxSubIssues(reader: Reader, raw: Record<string, unknown>, field: string): number | null {
+  if (raw.max_sub_issues === undefined || raw.max_sub_issues === null) return null;
+  const value = reader.int(raw, 'max_sub_issues', `${field}.max_sub_issues`, 0, 1);
+  if (value > MAX_SUB_ISSUES_LIMIT) {
+    reader.errors.push(`${field}.max_sub_issues must be at most ${MAX_SUB_ISSUES_LIMIT} (got ${value})`);
+    return null;
+  }
+  return value || null;
 }
 
 function readRoleClaude(reader: Reader, raw: Record<string, unknown>, field: string): RoleClaudeOverrides {

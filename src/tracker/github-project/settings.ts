@@ -4,6 +4,8 @@ import type { TrackerErrorCategory } from '../types.ts';
 export const KIND = 'github_project';
 export const DEFAULT_ENDPOINT = 'https://api.github.com/graphql';
 export const DEFAULT_STATUS_FIELD = 'Status';
+/** Column `create_sub_issue` puts new sub-issues in: a human moves them on, so it must not be an active column. */
+export const DEFAULT_SUB_ISSUE_STATUS = 'Backlog';
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 /** Checked in order when `token` is omitted. */
 export const TOKEN_FALLBACK_ENV = ['GITHUB_TOKEN', 'GH_TOKEN'] as const;
@@ -37,6 +39,8 @@ export interface GithubProjectSettings {
   assignee: string | null;
   respectBlockers: boolean;
   respectSubIssues: boolean;
+  /** Board column for sub-issues created by the `create_sub_issue` tool. */
+  subIssueStatus: string;
   requestTimeoutMs: number;
   requestRetries: number;
 }
@@ -168,6 +172,8 @@ export function parseSettings(provider: Record<string, unknown>, env: NodeJS.Pro
     else errors.push('tracker.provider.respect_sub_issues must be true or false');
   }
 
+  const subIssueStatus = text(read(provider, 'sub_issue_status', env).value) ?? DEFAULT_SUB_ISSUE_STATUS;
+
   let requestTimeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS;
   const timeout = text(read(provider, 'request_timeout_ms', env).value);
   if (timeout !== null) {
@@ -197,6 +203,7 @@ export function parseSettings(provider: Record<string, unknown>, env: NodeJS.Pro
       assignee,
       respectBlockers,
       respectSubIssues,
+      subIssueStatus,
       requestTimeoutMs,
       requestRetries,
     },

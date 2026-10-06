@@ -4,7 +4,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 import { Logger } from '../src/log.ts';
-import { CHECK_PASSED_NOTE, createGuard, guardTools, type CheckRecord, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
+import { CHECK_PASSED_NOTE, createGuard, guardTools, toolsForRole, type CheckRecord, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
 import type { AgentToolSpec, ToolResult } from '../src/tracker/types.ts';
 import { WorkspaceManager } from '../src/workspace/manager.ts';
 import { baseFront, makeIssue, makeWorkflow, tempDir } from './helpers.ts';
@@ -14,7 +14,7 @@ const ROLES = {
   reviewer: { states: ['Agent review'], may_move_to: ['In review', 'In progress'] },
 };
 
-function setup(options: { checks?: Record<string, string>; timeoutMs?: number; roles?: boolean; role?: 'developer' | 'reviewer' } = {}) {
+function setup(options: { checks?: Record<string, string>; timeoutMs?: number; roles?: boolean; role?: string; extraRoles?: Record<string, unknown> } = {}) {
   const root = tempDir('symphony-guard-');
   const front = baseFront(root, {
     tracker: {
@@ -22,7 +22,7 @@ function setup(options: { checks?: Record<string, string>; timeoutMs?: number; r
       provider: { owner: 'acme', project_number: 1, token: 'test-token' },
       active_states: ['Todo', 'In progress', 'Agent review'],
     },
-    ...(options.roles === false ? {} : { roles: ROLES }),
+    ...(options.roles === false ? {} : { roles: { ...ROLES, ...options.extraRoles } }),
     checks: { timeout_ms: options.timeoutMs ?? 10_000, on_enter: options.checks ?? {} },
   });
   const config = makeWorkflow(front).config;
@@ -73,6 +73,21 @@ describe('transition guard', () => {
     });
     assert.deepEqual(await guard('Agent review'), { allow: true, note: CHECK_PASSED_NOTE });
     assert.deepEqual(events, ['checks_started', 'checks_finished']);
+  });
+
+  it('skips the entry check for a role with run_checks false, but still enforces may_move_to', async () => {
+    const auditor = { commands: ['refactoring'], states: ['Todo', 'In progress'], run_checks: false, may_move_to: ['In review', 'Blocked'] };
+    const checks = { 'In review': 'echo "tests failed"; exit 1' };
+    const skipping = setup({ checks, extraRoles: { auditor }, role: 'auditor' });
+    assert.deepEqual(await skipping.guard('In review'), { allow: true, note: null });
+    assert.deepEqual(skipping.events, ['checks_skipped']);
+    assert.equal(denied(await skipping.guard('Agent review'))?.category, 'transition_denied');
+    assert.equal(denied(await skipping.guard('Done'))?.category, 'transition_denied');
+
+    // The same script still gates the reviewer.
+    const gated = setup({ checks, role: 'reviewer' });
+    assert.equal(denied(await gated.guard('In review'))?.category, 'check_failed');
+    assert.deepEqual(gated.events, ['checks_started', 'checks_finished']);
   });
 
   it('adds the integration check environment', async () => {
@@ -249,5 +264,26 @@ describe('guardTools', () => {
     assert.deepEqual(await setStatus?.execute({ status: 'Gated' }, { issue }), { ok: true, data: { status: 'Gated', note: 'end your turn' } });
     assert.deepEqual(await setStatus?.execute({ status: 'Open' }, { issue }), { ok: true, data: { status: 'Open' } });
     assert.deepEqual(calls, ['Gated', 'Open']);
+  });
+});
+
+describe('toolsForRole', () => {
+  const tool = (name: string, createsSubIssues?: boolean): AgentToolSpec => ({
+    name,
+    description: '',
+    inputSchema: {},
+    mutates: true,
+    ...(createsSubIssues !== undefined ? { createsSubIssues } : {}),
+    execute: async () => ({ ok: true, data: null }),
+  });
+  const specs = [tool('get_issue'), tool('create_sub_issue', true)];
+  const roles = setup({ extraRoles: { auditor: { commands: ['refactoring'], states: ['Todo'], max_sub_issues: 5 } } }).params.config.roles ?? [];
+  const named = (role: string | null) => toolsForRole(specs, roles.find((r) => r.name === role) ?? null).map((t) => t.name);
+
+  it('offers create_sub_issue only to a role with max_sub_issues', () => {
+    assert.deepEqual(named('auditor'), ['get_issue', 'create_sub_issue']);
+    assert.deepEqual(named('developer'), ['get_issue']);
+    assert.deepEqual(named('reviewer'), ['get_issue']);
+    assert.deepEqual(named(null), ['get_issue']);
   });
 });

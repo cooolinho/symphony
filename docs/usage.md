@@ -171,13 +171,71 @@ automatisch, sobald alles erledigt ist. Drei Arten von Abhängigkeiten zählen:
 |---|---|
 | Relationship | In der Seitenleiste des Issues unter **Relationships → Blocked by** |
 | Text im Issue | In der Beschreibung, z. B. `blocked by #12`, `blocked #12` oder `Blocked by: #12, #13`. `#N` meint dasselbe Repository, andere gehen als `owner/repo#N`. |
-| Sub-Issues | In der Seitenleiste unter **Sub-issues**. Das Parent-Issue wartet, bis alle Sub-Issues geschlossen sind. |
+| Sub-Issues | In der Seitenleiste unter **Sub-issues**. Das Parent-Issue wartet, bis alle Sub-Issues geschlossen sind. Ausnahme: Ein Issue, dessen Beschreibung mit einem [Befehl](#befehle-im-issue-refactoring) beginnt, wartet nicht, denn bei ihm sind die Sub-Issues das Ergebnis des Laufs. |
 
 Erledigt ist eine Abhängigkeit, wenn das Issue **geschlossen** ist; bei einem referenzierten Pull Request, wenn er
 gemergt oder geschlossen ist. Agenten schließen keine Issues selbst. Eine Abhängigkeit löst sich also, sobald du den
 zugehörigen Pull Request mit `Closes #N` mergst. So baut das nächste Issue auf gemergtem Code auf. Referenzen auf nicht
 existierende Issues werden ignoriert. Warum ein Issue wartet, zeigt `npm run dry-run`. Der Agent sieht Parent,
 Sub-Issues und Abhängigkeiten im Prompt.
+
+## Befehle im Issue: /refactoring
+
+Eine Aufgabe, die in vielen Repositories gleich abläuft, legst du nicht in jedes Repository, sondern einmal in
+Symphony als Skill (`.claude/skills/`). Ein Issue ruft sie über eine Befehlszeile auf: Steht in der **ersten nicht
+leeren Zeile** der Beschreibung `/<name>` (optional mit Argumenten), lädt der Agent den Skill `symphony:<name>`. Der
+Issue-Text bleibt kurz, die Anleitung steckt im Skill. Technik und Auswahlregeln:
+[configuration.md](configuration.md#issue-commands).
+
+Symphony liefert zwei Befehle mit:
+
+| Befehl | Zweck |
+|---|---|
+| `/refactoring [Scope]` | Audit eines Laravel-/Filament-Repositories: Kontext, Baseline, Bugs und Refactoring-Kandidaten. Das Ergebnis sind Sub-Issues. |
+| `/refactor-safely` | Verhaltensneutral umbauen, Tests als Sicherheitsnetz. Steht in der ersten Zeile jedes Refactoring-Sub-Issues. |
+
+### Ablauf des Audits
+
+1. Lege im Ziel-Repository ein Issue an. Titel z. B. „Refactoring-Audit“, Beschreibung nur `/refactoring`, oder mit
+   Scope `/refactoring app/Filament`.
+2. Schiebe es nach **Ready**. Die Rolle `auditor` übernimmt (`opus`, nur lesend, keine Entry-Checks, Budget aus
+   `roles.auditor.claude.max_budget_usd`).
+3. Der Agent ermittelt den Kontext aus `composer.lock` und `package.json` (PHP, Laravel, Filament, Livewire, Pest,
+   Vite …), misst die Baseline (Tests, Analyse, Pint, `composer audit`, `npm audit`, Build) und analysiert mit Laravel
+   Boost (`search-docs` gegen die installierte Version, Schema, Routen). Er **ändert nichts**.
+4. Die Befunde werden Sub-Issues des Audit-Issues, in der Spalte **Backlog** (`tracker.provider.sub_issue_status`):
+   zuerst Sub-Issues für Characterization-Tests, dann Refactorings (`/refactor-safely`, mit `Blocked by #N` auf die Tests),
+   dann Bugs (Label `bug`, ohne Befehl). Dazu ein Report-Kommentar mit Kontext, Baseline und Checkliste. Das Audit-Issue
+   springt nach **In review** und ist damit das Epic.
+5. Du prüfst die Sub-Issues, streichst oder ergänzt sie und schiebst die, die umgesetzt werden sollen, nach **Ready**.
+   Die Reihenfolge ergibt sich aus den Abhängigkeiten ([oben](#abhängigkeiten-und-sub-issues)): Ein Refactoring wartet,
+   bis das Test-Sub-Issue gemergt und geschlossen ist.
+6. Ein Refactoring-Sub-Issue läuft durch den normalen Weg Developer → Reviewer → In review. Der Developer schreibt zuerst
+   die Tests, die das heutige Verhalten festhalten, und ändert danach keine bestehende Assertion. Der Reviewer prüft den
+   Test-Diff und meldet jede Verhaltensänderung als blocker. Bugs behebt der normale Developer-Ablauf, mit einem
+   Regressionstest, der erst rot und dann grün ist.
+
+Dass die Sub-Issues im Backlog landen, ist Absicht: Ein Audit kann 20 Befunde liefern, und du entscheidest, welche
+Läufe (und Kosten) du startest. Wer ein Audit wiederholt, schiebt das Epic erneut nach Ready. Der Skill setzt dann fort,
+statt neu zu beginnen: Ein Sub-Issue mit demselben Titel wird nicht doppelt angelegt.
+
+**Voraussetzungen.** Das Board braucht die Spalten `Backlog` und `In review`. Das Ziel-Repository sollte `laravel/boost`
+als Dev-Abhängigkeit haben ([Laravel Boost](#laravel-boost)); ohne Boost arbeitet der Skill eingeschränkt und vermerkt
+das im Report. Der Token braucht Schreibrechte auf Issues und das Projekt (klassisch: `repo` und `project`).
+
+**Grenzen.** Höchstens `roles.auditor.max_sub_issues` Sub-Issues sind gleichzeitig offen (Standard 20); weitere stehen
+im Report unter „Nicht angelegt“. Ein unbekanntes `/wort` ohne Skill ist ein ganz normales Issue. Ein Befehl im
+Beschreibungstext weiter unten gilt nicht.
+
+### Eigene Befehle
+
+1. Lege `.claude/skills/<name>/SKILL.md` im Symphony-Repository an ([Regeln](../.claude/README.md)). Die
+   `description` sollte sagen, dass der Skill nur auf Verlangen des Prompts geladen wird.
+2. Ein Befehl ohne eigene Rolle läuft in der Rolle der Spalte (Developer oder Reviewer) und lädt nur den Skill. Braucht
+   er eigene Rechte oder Tools (nur lesen, Sub-Issues anlegen, keine Checks), füge eine Rolle mit `commands: [<name>]`
+   in `WORKFLOW.md` hinzu und einen Zweig im Prompt (`{% when "<rolle>" %}`).
+3. Prüfe mit `npm run dry-run`: Für das Issue erscheinen die Rolle und `↳ command /<name> → symphony:<name>`. Fehlt der
+   Skill, meldet die Dispatch-Validierung `no skill for /<name> in claude.plugins`.
 
 ## Fortsetzungen und Pausieren
 
@@ -640,6 +698,7 @@ Faustregel: Wissen gehört dorthin, wo es versioniert wird und wo es gilt.
 | Domäne und Projekt („Rechnungen erstellen“, Mandanten-Scoping) | **Repository:** `.ai/skills/` und `.ai/guidelines/` (Laravel), sonst `.claude/skills/` | wird mit dem Code versioniert und im Pull Request geprüft; hilft auch dir lokal |
 | Projektregeln und Fallen | **Repository:** `.ai/rules/`, über Boosts Tool `record-rule` oder den Skill `infer-conventions` | wird nach Dateipfad geladen und gilt für alle |
 | Arbeitsweise über alle Repositories (PR-Stil, Commits, Prüfen ohne UI, Übergabe ans Board) | **Symphony:** `.claude/skills/` | gilt nur für Symphony-Agenten, in jedem Repository gleich |
+| Aufgaben, die per Befehl im Issue starten (`/refactoring`, `/refactor-safely`) | **Symphony:** `.claude/skills/`, siehe [Befehle im Issue](#befehle-im-issue-refactoring) | einmal pflegen statt in jedem Repository; laufen nur unter Symphony |
 | Persönliche Vorlieben | `~/.claude/` | lädt Symphony bewusst nicht |
 
 Alles ins Symphony-Repository zu legen, wäre bequem, hat aber Nachteile. Diese Skills sähen nur Symphony-Agenten,

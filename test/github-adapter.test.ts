@@ -4,7 +4,7 @@ import { Logger } from '../src/log.ts';
 import { createGuard, guardTools } from '../src/orchestrator/guard.ts';
 import { githubProjectFactory } from '../src/tracker/github-project/index.ts';
 import { parseSettings } from '../src/tracker/github-project/settings.ts';
-import { TrackerError, type Issue, type TrackerAdapter } from '../src/tracker/types.ts';
+import { TrackerError, type Issue, type ToolResult, type TrackerAdapter } from '../src/tracker/types.ts';
 import type { ServiceConfig } from '../src/workflow/config.ts';
 
 type Json = Record<string, unknown>;
@@ -75,6 +75,12 @@ class FakeGithub {
   references = new Map<string, string>();
   lastQuery = '';
   networkError: Error | null = null;
+  /** Sub-issues by parent issue id, as the context query returns them; creating one appends to it. */
+  subIssues = new Map<string, Json[]>();
+  /** Repository labels by lowercase name. */
+  labels = new Map<string, string>();
+  /** Numbers handed out to created issues. */
+  nextNumber = 100;
 
   add(...nodes: Json[]): this {
     for (const node of nodes) this.items.set(node.id as string, node);
@@ -166,6 +172,36 @@ class FakeGithub {
             },
           },
         };
+      case 'SymphonySubIssueContext':
+        return {
+          body: {
+            data: {
+              node: {
+                repository: { id: 'R_1', nameWithOwner: 'acme/app' },
+                subIssues: { nodes: this.subIssues.get(String(variables.issueId)) ?? [] },
+              },
+            },
+          },
+        };
+      case 'SymphonyLabels': {
+        const data: Json = {};
+        for (const match of this.lastQuery.matchAll(/l(\d+): label\(/g)) {
+          const name = String(variables[`l${match[1]}`]);
+          const id = this.labels.get(name.toLowerCase());
+          data[`l${match[1]}`] = id === undefined ? null : { id, name };
+        }
+        return { body: { data: { repository: data } } };
+      }
+      case 'SymphonyCreateSubIssue': {
+        const number = this.nextNumber++;
+        const issue = { id: `I_new${number}`, number, url: `https://github.com/acme/app/issues/${number}` };
+        const siblings = this.subIssues.get(String(variables.parentId)) ?? [];
+        siblings.push({ ...issue, title: variables.title, state: 'OPEN', projectItems: { nodes: [] } });
+        this.subIssues.set(String(variables.parentId), siblings);
+        return { body: { data: { createIssue: { issue } } } };
+      }
+      case 'SymphonyAddProjectItem':
+        return { body: { data: { addProjectV2ItemById: { item: { id: `PVTI_${variables.contentId}` } } } } };
       default:
         return { status: 500, body: { message: `unexpected ${op}` } };
     }
@@ -433,5 +469,176 @@ describe('github_project agent tools', () => {
     const tracker = adapter(github);
     const [issue] = await tracker.fetchIssuesByIds(['A']);
     assert.deepEqual(tracker.hookEnvironment?.(issue as Issue), { SYMPHONY_ISSUE_REPOSITORY: 'acme/app', SYMPHONY_ISSUE_NUMBER: '12' });
+  });
+});
+
+describe('github_project create_sub_issue', () => {
+  // The fake board has no "Backlog" column, so the tests use one of its columns as the sub-issue status.
+  const COLUMN = { sub_issue_status: 'Human Review' };
+
+  async function setup(provider: Json = COLUMN, front: Json = {}) {
+    const github = new FakeGithub().add(itemNode('A', { number: 1, ...front }));
+    github.labels.set('bug', 'L_bug');
+    const tracker = adapter(github, provider);
+    const [issue] = await tracker.fetchIssuesByIds(['A']);
+    const tool = tracker.agentToolSpecs().find((t) => t.name === 'create_sub_issue');
+    assert.ok(tool);
+    /** `max` is the role's max_sub_issues; null runs the tool for a role that has none. */
+    const run = (args: Json, max: number | null = 5) =>
+      tool.execute(args, { issue: issue as Issue, ...(max !== null ? { maxSubIssues: max } : {}) });
+    const ops = (op: string) => github.requests.filter((r) => r.op === op);
+    return { github, tracker, tool, run, ops };
+  }
+
+  /** The data of a successful tool result. */
+  const dataOf = (result: ToolResult): Json => {
+    assert.equal(result.ok, true);
+    return (result as { ok: true; data: Json }).data;
+  };
+
+  it('creates the issue under its parent, labels it and puts it on the board in the configured column', async () => {
+    const { run, ops } = await setup();
+    const result = await run({ title: '  Tests: invoices  ', body: 'Details', labels: ['bug', 'nope'] });
+    assert.deepEqual(result, {
+      ok: true,
+      data: {
+        created: true,
+        number: 100,
+        identifier: 'acme/app#100',
+        url: 'https://github.com/acme/app/issues/100',
+        status: 'Human Review',
+        on_board: true,
+        unknown_labels: ['nope'],
+        remaining: 4,
+      },
+    });
+    assert.deepEqual(ops('SymphonyCreateSubIssue')[0]?.variables, {
+      repositoryId: 'R_1',
+      parentId: 'I_A',
+      title: 'Tests: invoices',
+      body: 'Details',
+      labelIds: ['L_bug'],
+    });
+    assert.deepEqual(ops('SymphonyAddProjectItem')[0]?.variables, { projectId: 'PVT_1', contentId: 'I_new100' });
+    assert.deepEqual(ops('SymphonySetStatus')[0]?.variables, { projectId: 'PVT_1', itemId: 'PVTI_I_new100', fieldId: 'F_status', optionId: 'o3' });
+  });
+
+  it('skips the label lookup without labels and sends no body as null', async () => {
+    const { run, ops } = await setup();
+    assert.equal((await run({ title: 'Plain' })).ok, true);
+    assert.equal(ops('SymphonyLabels').length, 0);
+    assert.deepEqual(ops('SymphonyCreateSubIssue')[0]?.variables, { repositoryId: 'R_1', parentId: 'I_A', title: 'Plain', body: null, labelIds: [] });
+  });
+
+  it('returns the open sub-issue with the same title instead of creating one', async () => {
+    const { github, run, ops } = await setup();
+    const onBoard = { id: 'PVTI_old', project: { id: 'PVT_1' } };
+    github.subIssues.set('I_A', [{ id: 'I_old', number: 7, title: 'Tests:   Invoices', state: 'OPEN', url: 'https://github.com/acme/app/issues/7', projectItems: { nodes: [onBoard] } }]);
+    const result = await run({ title: 'tests: invoices' });
+    assert.equal(dataOf(result).created, false);
+    assert.equal(dataOf(result).number, 7);
+    assert.equal(dataOf(result).remaining, 4);
+    assert.equal(ops('SymphonyCreateSubIssue').length, 0);
+    // Already on the board: a human may have moved it, so neither a second item nor a status change.
+    assert.equal(ops('SymphonyAddProjectItem').length, 0);
+    assert.equal(ops('SymphonySetStatus').length, 0);
+  });
+
+  it('repairs a sub-issue that never made it onto the board', async () => {
+    const { github, run, ops } = await setup();
+    github.subIssues.set('I_A', [{ id: 'I_old', number: 7, title: 'Orphan', state: 'OPEN', url: 'u', projectItems: { nodes: [{ id: 'X', project: { id: 'PVT_other' } }] } }]);
+    const result = await run({ title: 'Orphan' });
+    assert.equal(dataOf(result).created, false);
+    assert.deepEqual(ops('SymphonyAddProjectItem')[0]?.variables, { projectId: 'PVT_1', contentId: 'I_old' });
+    assert.equal(ops('SymphonySetStatus')[0]?.variables.optionId, 'o3');
+  });
+
+  it('creates a new issue when the sub-issue with that title is closed', async () => {
+    const { github, run, ops } = await setup();
+    github.subIssues.set('I_A', [{ id: 'I_old', number: 7, title: 'Done thing', state: 'CLOSED', url: 'u', projectItems: { nodes: [] } }]);
+    const result = await run({ title: 'Done thing' });
+    assert.equal(dataOf(result).created, true);
+    assert.equal(ops('SymphonyCreateSubIssue').length, 1);
+  });
+
+  it('creates exactly one issue for parallel calls with the same title', async () => {
+    const { run, ops } = await setup();
+    const results = await Promise.all([run({ title: 'Same' }), run({ title: 'same ' }), run({ title: 'Same' })]);
+    assert.deepEqual(results.map((r) => dataOf(r).created), [true, false, false]);
+    assert.equal(ops('SymphonyCreateSubIssue').length, 1);
+  });
+
+  it('refuses beyond max_sub_issues, counting only open sub-issues', async () => {
+    const { github, run, ops } = await setup();
+    github.subIssues.set('I_A', [
+      { id: 'I_1', number: 7, title: 'One', state: 'OPEN', url: 'u', projectItems: { nodes: [] } },
+      { id: 'I_2', number: 8, title: 'Two', state: 'CLOSED', url: 'u', projectItems: { nodes: [] } },
+    ]);
+    assert.equal((await run({ title: 'Three' }, 2)).ok, true);
+    const refused = await run({ title: 'Four' }, 2);
+    assert.equal(refused.ok === false ? refused.error.category : null, 'limit_reached');
+    assert.equal(ops('SymphonyCreateSubIssue').length, 1);
+  });
+
+  it('is not allowed without a limit in the context', async () => {
+    const { run, github } = await setup();
+    const result = await run({ title: 'Nope' }, null);
+    assert.equal(result.ok === false ? result.error.category : null, 'not_allowed');
+    assert.equal(github.requests.some((r) => r.op === 'SymphonySubIssueContext'), false);
+  });
+
+  it('reports GitHub errors from creating the issue', async () => {
+    const { github, run, ops } = await setup();
+    github.overrides.set('SymphonyCreateSubIssue', () => ({ body: { data: null, errors: [{ type: 'FORBIDDEN', message: 'no permission', path: ['createIssue'] }] } }));
+    const result = await run({ title: 'X' });
+    assert.equal(result.ok === false ? result.error.category : null, 'github_error');
+    assert.equal(ops('SymphonyAddProjectItem').length, 0);
+  });
+
+  it('keeps the created issue and warns when the board step fails', async () => {
+    const { github, run, ops } = await setup();
+    github.overrides.set('SymphonyAddProjectItem', () => ({ body: { data: null, errors: [{ type: 'FORBIDDEN', message: 'project is read-only', path: ['addProjectV2ItemById'] }] } }));
+    const result = await run({ title: 'X' });
+    assert.equal(result.ok, true);
+    assert.equal(dataOf(result).created, true);
+    assert.equal(dataOf(result).on_board, false);
+    assert.match(String((dataOf(result).warnings as string[])[0]), /could not put the issue on the board: .*project is read-only/);
+    assert.equal(ops('SymphonySetStatus').length, 0);
+  });
+
+  it('warns when the configured column is not on the board and leaves the item without a status', async () => {
+    const { run, ops } = await setup({});
+    const result = await run({ title: 'X' });
+    assert.equal(result.ok, true);
+    assert.equal(dataOf(result).status, null);
+    assert.match(String((dataOf(result).warnings as string[])[0]), /board column "Backlog" does not exist \(valid: "Todo"/);
+    assert.equal(ops('SymphonyAddProjectItem').length, 1);
+    assert.equal(ops('SymphonySetStatus').length, 0);
+  });
+
+  it('marks the tool as sub-issue creating and names the target column', async () => {
+    const { tool } = await setup();
+    assert.equal(tool.createsSubIssues, true);
+    assert.equal(tool.mutates, true);
+    assert.match(tool.description, /column "Human Review"/);
+  });
+
+  it('rejects a sub_issue_status that is an active or terminal column', () => {
+    const github = new FakeGithub();
+    assert.throws(() => adapter(github, { sub_issue_status: 'todo' }), /sub_issue_status "todo" must not be an active or terminal state/);
+    assert.throws(() => adapter(github, { sub_issue_status: 'Done' }), /must not be an active or terminal state/);
+    assert.doesNotThrow(() => adapter(github, { sub_issue_status: 'Backlog' }));
+    assert.equal(parseSettings({ owner: 'acme', project_number: 1, token: 't' }, {}).settings?.subIssueStatus, 'Backlog');
+  });
+
+  it('does not hold back an issue that starts with a command for its open sub-issues', async () => {
+    const subIssues = [{ number: 2, state: 'OPEN' }];
+    const github = new FakeGithub().add(
+      itemNode('audit', { number: 1, body: '/refactoring app/Filament\n\nScope: the panel', subIssues }),
+      itemNode('plain', { number: 3, body: 'Needs the children first.', subIssues }),
+    );
+    const issues = new Map((await adapter(github).fetchIssuesByStates(['Todo'])).map((i) => [i.id, i]));
+    assert.equal(issues.get('audit')?.dispatchable, true);
+    assert.equal(issues.get('plain')?.dispatchable, false);
   });
 });

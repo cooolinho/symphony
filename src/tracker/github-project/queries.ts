@@ -171,3 +171,50 @@ export const CREATE_PULL_REQUEST_MUTATION = /* GraphQL */ `
     }
   }
 `;
+
+/** The issue's repository and its sub-issues (at most 100 on GitHub) with their items on any project board. */
+export const SUB_ISSUE_CONTEXT_QUERY = /* GraphQL */ `
+  query SymphonySubIssueContext($issueId: ID!) {
+    node(id: $issueId) {
+      ... on Issue {
+        repository { id nameWithOwner }
+        subIssues(first: 100) {
+          nodes { id number title state url projectItems(first: 20) { nodes { id project { id } } } }
+        }
+      }
+    }
+  }
+`;
+
+/**
+ * The ids of labels by name, one alias per name (`l0`, `l1`, …); a label that does not exist comes back as null.
+ * Owner, repository and names travel as variables.
+ */
+export function repositoryLabelsQuery(repository: string, names: string[]): { query: string; variables: Record<string, string> } {
+  const [owner, name] = repository.split('/');
+  const variables: Record<string, string> = { owner: owner ?? '', name: name ?? '' };
+  const params = ['$owner: String!', '$name: String!'];
+  const fields = names.map((label, index) => {
+    variables[`l${index}`] = label;
+    params.push(`$l${index}: String!`);
+    return `l${index}: label(name: $l${index}) { id name }`;
+  });
+  return { query: `query SymphonyLabels(${params.join(', ')}) {\n  repository(owner: $owner, name: $name) {\n    ${fields.join('\n    ')}\n  }\n}`, variables };
+}
+
+/** Creates an issue and links it as a sub-issue of `parentId` in one step. */
+export const CREATE_SUB_ISSUE_MUTATION = /* GraphQL */ `
+  mutation SymphonyCreateSubIssue($repositoryId: ID!, $parentId: ID!, $title: String!, $body: String, $labelIds: [ID!]) {
+    createIssue(input: { repositoryId: $repositoryId, parentIssueId: $parentId, title: $title, body: $body, labelIds: $labelIds }) {
+      issue { id number url }
+    }
+  }
+`;
+
+export const ADD_PROJECT_ITEM_MUTATION = /* GraphQL */ `
+  mutation SymphonyAddProjectItem($projectId: ID!, $contentId: ID!) {
+    addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
+      item { id }
+    }
+  }
+`;

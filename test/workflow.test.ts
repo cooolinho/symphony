@@ -330,6 +330,18 @@ describe('prompt templates', () => {
     await assert.rejects(renderPrompt(unknownFilter, { issue, attempt: null }), { code });
   });
 
+  it('exposes the command of the description when a skill of that name exists, else null', async () => {
+    const template = compilePrompt('{% if issue.command %}{{ issue.command.skill }}|{{ issue.command.name }}|{{ issue.command.args }}{% else %}none{% endif %}');
+    const skills = new Map([['refactoring', 'symphony:refactoring']]);
+    const render = (description: string | null, known?: ReadonlyMap<string, string>) =>
+      renderPrompt(template, { issue: issueTemplateValue(makeIssue({ id: '10', description }), known), attempt: null });
+    assert.equal(await render('/refactoring app/Filament\n\nmore', skills), 'symphony:refactoring|refactoring|app/Filament');
+    assert.equal(await render('/refactoring', skills), 'symphony:refactoring|refactoring|');
+    assert.equal(await render('/refactoring'), 'none');
+    assert.equal(await render('/login returns 500', skills), 'none');
+    assert.equal(await render(null, skills), 'none');
+  });
+
   it('drops "Model: …" labels with the without_model_labels filter', async () => {
     const template = compilePrompt('{{ issue.labels | without_model_labels | join: "," }}');
     const labeled = issueTemplateValue(makeIssue({ id: '8', labels: ['bug', 'model: opus', 'ui'] }));
@@ -473,7 +485,7 @@ describe('roles config', () => {
   it('parses roles and finds them case-insensitively with roleFor', () => {
     const roles = resolve({ ...base, roles: valid }).roles;
     assert.ok(roles);
-    assert.equal(roleFor('in PROGRESS', roles)?.name, 'developer');
+    assert.equal(roleFor({ state: 'in PROGRESS', description: null }, roles)?.name, 'developer');
     assert.deepEqual(roles[0]?.states, ['ready', 'in progress']);
     assert.equal(roles[0]?.readOnly, false);
     assert.equal(roles[0]?.maxTurns, null);
@@ -481,8 +493,8 @@ describe('roles config', () => {
     assert.equal(roles[1]?.maxTurns, 6);
     assert.equal(roles[1]?.mayMoveTo, null);
     assert.deepEqual(roles[1]?.claude, { model: 'opus' });
-    assert.equal(roleFor('Done', roles), null);
-    assert.equal(roleFor('Ready', null), null);
+    assert.equal(roleFor({ state: 'Done', description: null }, roles), null);
+    assert.equal(roleFor({ state: 'Ready', description: null }, null), null);
   });
 
   it('rejects a role state that is not active', () => {
@@ -540,5 +552,92 @@ describe('roles config', () => {
     const limited = resolve({ ...base, roles: valid, agent: { max_continuations: 3 } });
     assert.ok(!limited.warnings.some((w) => warning.test(w)));
     assert.ok(!resolve(base).warnings.some((w) => warning.test(w)));
+  });
+
+  describe('commands', () => {
+    const auditor = { commands: ['/Refactoring', 'audit'], states: ['Ready', 'In progress'], run_checks: false, max_sub_issues: 20, read_only: true };
+    const withAuditor = { ...base, roles: { ...valid, auditor } };
+    const roles = () => resolve(withAuditor).roles ?? [];
+
+    it('parses commands, run_checks and max_sub_issues, with defaults for roles that omit them', () => {
+      const [developer, reviewer, found] = roles();
+      assert.deepEqual([developer?.commands, developer?.runChecks, developer?.maxSubIssues], [null, true, null]);
+      assert.deepEqual([reviewer?.commands, reviewer?.runChecks, reviewer?.maxSubIssues], [null, true, null]);
+      assert.deepEqual(found?.commands, ['refactoring', 'audit']);
+      assert.equal(found?.runChecks, false);
+      assert.equal(found?.maxSubIssues, 20);
+    });
+
+    it('lets a command role share states with a role without commands', () => {
+      assert.equal(messageOf(withAuditor), '');
+    });
+
+    it('picks the command role only for an issue that starts with its command', () => {
+      const pick = (state: string, description: string | null) => roleFor({ state, description }, roles())?.name ?? null;
+      assert.equal(pick('Ready', '/refactoring app/Filament'), 'auditor');
+      assert.equal(pick('in PROGRESS', '\n/audit'), 'auditor');
+      assert.equal(pick('Ready', 'Please do /refactoring'), 'developer');
+      assert.equal(pick('Ready', '/unknown thing'), 'developer');
+      assert.equal(pick('Ready', null), 'developer');
+      // No command role serves "Agent review": the reviewer takes the issue.
+      assert.equal(pick('Agent review', '/refactoring'), 'reviewer');
+      assert.equal(pick('Done', '/refactoring'), null);
+    });
+
+    it('keeps the old behaviour for configs without commands', () => {
+      const plain = resolve({ ...base, roles: valid }).roles ?? [];
+      assert.equal(roleFor({ state: 'Ready', description: '/refactoring' }, plain)?.name, 'developer');
+    });
+
+    it('rejects two roles that serve the same command and state, but not the same state for different commands', () => {
+      const twin = { commands: ['refactoring'], states: ['ready'] };
+      assert.match(messageOf({ ...base, roles: { ...valid, auditor, twin } }), /state "ready" belongs to more than one role for \/refactoring \(auditor, twin\)/);
+      assert.equal(messageOf({ ...base, roles: { ...valid, auditor, other: { commands: ['other'], states: ['ready'] } } }), '');
+    });
+
+    it('still requires a role without commands for every active state', () => {
+      const message = messageOf({ ...base, roles: { reviewer: valid.reviewer, auditor } });
+      assert.match(message, /active state "Ready" has no role/);
+      assert.match(message, /active state "In progress" has no role/);
+    });
+
+    it('rejects invalid commands, run_checks and max_sub_issues', () => {
+      const invalid = (extra: Record<string, unknown>) => messageOf({ ...base, roles: { ...valid, auditor: { ...auditor, ...extra } } });
+      assert.match(invalid({ commands: [] }), /roles\.auditor\.commands must list at least one command/);
+      assert.match(invalid({ commands: ['Not A Name'] }), /roles\.auditor\.commands: "Not A Name" is not a command name/);
+      assert.match(invalid({ commands: 'refactoring' }), /roles\.auditor\.commands must be a list of strings/);
+      assert.match(invalid({ run_checks: 'sometimes' }), /roles\.auditor\.run_checks must be true or false/);
+      assert.match(invalid({ max_sub_issues: 0 }), /roles\.auditor\.max_sub_issues must be an integer >= 1/);
+      assert.match(invalid({ max_sub_issues: 101 }), /roles\.auditor\.max_sub_issues must be at most 100 \(got 101\)/);
+      assert.equal(invalid({ max_sub_issues: 100 }), '');
+    });
+  });
+});
+
+describe('command skills in dispatch validation', () => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, '.claude', 'skills', 'refactoring'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.claude', 'skills', 'refactoring', 'SKILL.md'), '---\nname: refactoring\n---\n');
+  const roles = (commands: string[]) => ({
+    developer: { states: ['Todo'] },
+    auditor: { commands, states: ['Todo'] },
+  });
+  const errors = (commands: string[]) =>
+    validateDispatch(
+      {
+        config: resolve({ tracker: { kind: 'github_project', active_states: ['Todo'] }, claude: { plugins: ['./.claude'] }, roles: roles(commands) }, {}, dir),
+      } as unknown as EffectiveWorkflow,
+      null,
+      {},
+    ).filter((error) => error.includes('commands'));
+
+  it('accepts a command that has a skill in claude.plugins', () => {
+    assert.deepEqual(errors(['refactoring']), []);
+  });
+
+  it('blocks dispatch when a role command has no skill', () => {
+    assert.deepEqual(errors(['refactoring', 'missing']), [
+      'roles.auditor.commands: no skill for /missing in claude.plugins (expected skills/missing/SKILL.md)',
+    ]);
   });
 });

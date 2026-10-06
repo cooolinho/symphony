@@ -181,7 +181,8 @@ before the tracker is touched. The guard decides on the run's role and the targe
 1. A terminal target (`tracker.terminal_states`, e.g. `Done`) is always denied; only a human moves issues there.
    With `roles`, a target outside the role's `may_move_to` is denied too. Both return the tool error
    `transition_denied` with the allowed targets.
-2. A target without `checks.on_enter` entry is allowed.
+2. A target without `checks.on_enter` entry is allowed, and so is every target of a role with `run_checks: false`
+   (the guard logs `checks_skipped`; `may_move_to` still applies, see [`roles`](#roles)).
 3. Otherwise the check runs in the workspace (see above) with `SYMPHONY_ROLE` (the run's role, `default` without
    roles) and `SYMPHONY_TARGET_STATE` (the target as the agent named it) added to its environment:
 
@@ -282,8 +283,8 @@ agent to `artisan` and `composer` in the shell. Details:
 
 Optional. Maps board columns to column-scoped agent roles. Without it, every active state is served by one implicit role named `default` and nothing changes.
 
-When an issue is dispatched, the role serving its current column is resolved once and kept for the whole run (an
-issue in no role's column runs as `default`). The role decides:
+When an issue is dispatched, the role serving its current column (and its [command](#issue-commands), if any) is
+resolved once and kept for the whole run (an issue no role serves runs as `default`). The role decides:
 
 - **Model:** a `Model: …` issue label, else the role's `claude.model`, else `claude.model` (see [Model per issue](#model-per-issue)).
 - **Effort:** an `Effort: …` issue label, else the role's `claude.effort`, else `claude.effort` (see [Effort per issue](#effort-per-issue)).
@@ -291,6 +292,8 @@ issue in no role's column runs as `default`). The role decides:
   replaces the global value; `allowed_tools`, `disallowed_tools` and `append_system_prompt` are appended to it.
 - **Permissions:** `read_only: true` starts the session read-only ([agent-claude.md](agent-claude.md#permission-and-safety-posture)).
 - **Turns:** `max_turns` replaces `agent.max_turns` for the role's sessions.
+- **Checks:** `run_checks: false` skips the [`checks.on_enter`](#transition-guard) scripts for the role's status changes.
+- **Tools:** a role with `max_sub_issues` gets the tracker tool that creates sub-issues; other roles do not see it.
 - **Prompt:** the role name is the template variable `role` (see [Prompt template](#prompt-template)).
 
 The role appears as `role` in the `dispatching issue` log line, in `run_started` of the repository log and on every
@@ -328,9 +331,35 @@ roles:
 | `read_only` | `false` | The role's agent must not change the repository. |
 | `may_move_to` | unrestricted | Column names the agent may move the issue to, matched case-insensitively and enforced by the [transition guard](#transition-guard). Free-form; not checked against the board here. Terminal columns are never allowed. |
 | `max_turns` | `agent.max_turns` | Integer >= 1. |
+| `commands` | none | Issue commands the role serves, e.g. `[refactoring]` (lowercase letters, digits and dashes; a leading `/` is allowed). Without it the role serves issues without a command. See [Issue commands](#issue-commands). |
+| `run_checks` | `true` | `false` lets the role move the issue without running `checks.on_enter`. For roles that change nothing, whose hand-off must not depend on the repository's test suite. |
+| `max_sub_issues` | none | Integer 1–100 (GitHub's limit): how many sub-issues the role may have open under its issue at once. Setting it gives the role the GitHub tool `create_sub_issue` ([github-project.md](adapters/github-project.md#agent-tools)). |
 | `claude` | `{}` | Overrides of `model`, `effort`, `allowed_tools`, `disallowed_tools`, `append_system_prompt`, `max_budget_usd` (same meaning as in [`claude`](#claude)). |
 
-Invalid configs fail with `invalid_config`, listing every problem: a state outside `tracker.active_states`, a state in more than one role, an active state without a role (once `roles` is set), unknown keys under a role or its `claude` block, and invalid value types. With `roles` set and `agent.max_continuations` unlimited, a warning is logged because role switches will count as continuations.
+Invalid configs fail with `invalid_config`, listing every problem: a state outside `tracker.active_states`, a state in more than one role (two roles may share a state only for different commands), an active state without a role that has no `commands` (once `roles` is set), a command that is not a name or an empty `commands` list, `max_sub_issues` outside 1–100, unknown keys under a role or its `claude` block, and invalid value types. Dispatch validation also fails while a role's command has no skill in [`claude.plugins`](#claude): `roles.auditor.commands: no skill for /refactoring in claude.plugins (expected skills/refactoring/SKILL.md)`. With `roles` set and `agent.max_continuations` unlimited, a warning is logged because role switches will count as continuations.
+
+#### Issue commands
+
+An issue can ask for a skill: when the **first non-empty line** of its description is `/<name>` (optionally followed by
+arguments, e.g. `/refactoring app/Filament`), Symphony treats it as a command. Text further down, a path such as
+`/api/users` or a sentence that mentions a command is not one.
+
+- **Prompt.** `issue.command` is `{name, args, skill}` when a plugin in [`claude.plugins`](#claude) ships
+  `skills/<name>/SKILL.md`, otherwise `null` (an unknown `/word` is an ordinary issue). `skill` is the name the agent
+  loads with the Skill tool, `<plugin name>:<name>`. The shipped prompt then tells the agent to load that skill first;
+  the skill wins over the steps of the role, but the role's read-only access, `may_move_to` and tools still apply.
+- **Role.** A role that lists the command under `commands` and serves the issue's column wins; a role with `commands`
+  is never chosen for issues without one of them. Otherwise the role without `commands` that serves the column
+  applies. `/refactoring` in `Agent review` therefore goes to the reviewer. The role is re-evaluated after every turn:
+  if the command disappears from the description, the session ends with `role changed (auditor → developer)` and the
+  developer starts fresh.
+- **Sub-issues.** A parent whose first line looks like a command is not held back by `respect_sub_issues`: its
+  sub-issues are the result of the run, not a prerequisite. This looks at the line only, not at whether a skill exists,
+  so a real parent issue that happens to start with `/something` is dispatched with open sub-issues too.
+  `respect_blockers` still applies.
+
+The shipped `WORKFLOW.md` defines the `auditor` role for `/refactoring` and ships the skills `refactoring` and
+`refactor-safely` in `.claude/skills/` (see [agent-claude.md](agent-claude.md#skills-and-plugins)).
 
 ### Model per issue
 
@@ -423,6 +452,15 @@ roles:
     max_turns: 6
     may_move_to: [In review, In progress, Blocked]
     claude: { model: opus }
+  auditor:                                   # issues that start with /refactoring: analysis only, findings become sub-issues
+    commands: [refactoring]
+    states: [Ready, In progress]
+    read_only: true
+    run_checks: false
+    max_sub_issues: 20
+    max_turns: 2
+    may_move_to: [In progress, In review, Blocked]
+    claude: { model: opus, max_budget_usd: 15 }
 
 checks:
   timeout_ms: 1200000                        # below claude.turn_timeout_ms (default 3600000)
@@ -462,7 +500,7 @@ How the pieces work together:
 
 | Step | Mechanism |
 |---|---|
-| `Ready`/`In progress` → developer session | [`roles`](#roles): the column decides the role, `role` selects the prompt section. |
+| `Ready`/`In progress` → developer session | [`roles`](#roles): the column decides the role, `role` selects the prompt section. A description that starts with `/refactoring` selects the `auditor` instead ([issue commands](#issue-commands)). |
 | Developer calls `set_status("Agent review")` | [Transition guard](#transition-guard): `Agent review` is in the developer's `may_move_to`, so `checks.on_enter` runs; only exit `0` moves the card. |
 | Card in `Agent review` → reviewer session | Role switch ends the developer session; the reviewer starts in a fresh, read-only session, at most one at a time (`max_concurrent_agents_by_state`). |
 | Reviewer approves (`In review`) or sends back (`In progress`) | `In review` runs the same check again (cached for an unchanged, clean commit); `In progress` has no check. |
@@ -541,7 +579,8 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
 - `issue`: `id`, `identifier`, `title`, `description`, `priority`, `state`, `branch_name`, `url`, `assignee_id`,
   `labels` (lowercase list), `blocked_by` (list of `{id, identifier, state}`), `dispatchable`, `created_at`,
   `updated_at` (ISO strings), `native_ref` (adapter data, for GitHub: `repository`, `number`, `issue_id`, `item_id`,
-  `parent` and `sub_issues` as `{identifier, title, state}`, …).
+  `parent` and `sub_issues` as `{identifier, title, state}`, …), `command` (`{name, args, skill}` for an
+  [issue command](#issue-commands) that has a skill, else `null`; always defined).
 - `attempt`: `null` on the first run of an issue, then `1`, `2`, … on continuation runs and retries.
 - `role`: name of the [role](#roles) running the issue (e.g. `developer`, `reviewer`), or `default` without `roles`.
   Always defined, so one prompt can branch per role: `{% if role == "reviewer" %}…{% endif %}`.
