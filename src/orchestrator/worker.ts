@@ -11,10 +11,11 @@ import type { Issue, TrackerAdapter } from '../tracker/types.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { describeHolder, type LockResult } from '../workspace/lock.ts';
 import { describeFailure, type HookIssue, type Workspace, type WorkspaceManager } from '../workspace/manager.ts';
+import { commandSkills } from '../workflow/command.ts';
 import { roleName, type RoleConfig } from '../workflow/roles.ts';
 import type { EffectiveWorkflow } from '../workflow/store.ts';
 import { issueTemplateValue, renderPrompt } from '../workflow/template.ts';
-import { createGuard, guardTools, type CheckCache, type CheckRecord } from './guard.ts';
+import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord } from './guard.ts';
 
 export type RunPhase =
   | 'PreparingWorkspace'
@@ -266,8 +267,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       policy: { readOnly: role?.readOnly ?? false },
       // Entry checks run inside the status tool call; leave a minute for the tracker call around them.
       toolTimeoutMs: params.workflow.config.checks.timeoutMs + TOOL_TIMEOUT_MARGIN_MS,
-      tools: guardTools(params.adapter.agentToolSpecs(), guard),
-      toolContext: () => ({ issue }),
+      tools: guardTools(toolsForRole(params.adapter.agentToolSpecs(), role), guard),
+      toolContext: () => ({ issue, ...(role?.maxSubIssues != null ? { maxSubIssues: role.maxSubIssues } : {}) }),
       env: params.childEnv,
       logger,
       signal,
@@ -278,13 +279,14 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     const unavailableMcp = Object.entries(session.mcpStatus ?? {}).filter(([, status]) => status !== 'connected');
     if (unavailableMcp.length > 0) callbacks.mcpUnavailable(unavailableMcp.map(([name]) => name));
 
+    const skills = commandSkills(params.workflow.config.claude.plugins);
     for (let turn = 1; ; turn++) {
       setPhase('BuildingPrompt');
       const prompt =
         turn === 1
-          ? withMcpNotes(unavailableMcp, await renderPrompt(params.workflow.prompt, { issue: issueTemplateValue(issue), attempt: params.attempt, role: name }))
+          ? withMcpNotes(unavailableMcp, await renderPrompt(params.workflow.prompt, { issue: issueTemplateValue(issue, skills), attempt: params.attempt, role: name }))
           : await renderPrompt(params.workflow.continuationPrompt, {
-              issue: issueTemplateValue(issue),
+              issue: issueTemplateValue(issue, skills),
               attempt: params.attempt,
               role: name,
               turn_number: turn,

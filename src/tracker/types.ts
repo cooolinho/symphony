@@ -60,6 +60,8 @@ export class TrackerError extends SymphonyError {
 /** Execution context for provider-native tools: the current issue, never the credential. */
 export interface AgentToolContext {
   issue: Issue;
+  /** Open sub-issues the session's role may have under its issue at once; absent = the role may create none. */
+  maxSubIssues?: number;
 }
 
 export type ToolResult =
@@ -74,6 +76,8 @@ export interface AgentToolSpec {
   inputSchema: z.ZodRawShape;
   /** Whether the tool can change tracker state (documented in the adapter profile). */
   mutates: boolean;
+  /** The tool creates sub-issues; only roles with `max_sub_issues` get it (see `toolsForRole`). */
+  createsSubIssues?: boolean;
   /**
    * For tools that move the issue to another column: the target column named by `args`, or null when the call does
    * not change the column. Symphony's transition guard checks such calls before `execute` runs.

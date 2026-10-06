@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { getTrackerFactory, supportedTrackerKinds } from '../tracker/registry.ts';
+import { commandSkills } from './command.ts';
 import { normalizeStateName, type ServiceConfig } from './config.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from './store.ts';
 
@@ -46,6 +47,13 @@ export function validateDispatch(
       // reported below
     }
     if (!isDirectory) errors.push(`claude.plugins entry ${plugin} is not a directory`);
+  }
+  // A command role without a skill would never get the instructions its issues ask for.
+  const skills = commandSkills(claude.plugins);
+  for (const role of workflow.config.roles ?? []) {
+    for (const command of role.commands ?? []) {
+      if (!skills.has(command)) errors.push(`roles.${role.name}.commands: no skill for /${command} in claude.plugins (expected skills/${command}/SKILL.md)`);
+    }
   }
   return errors;
 }

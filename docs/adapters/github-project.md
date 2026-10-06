@@ -17,7 +17,8 @@ Every key accepts a whole-value `$NAME` reference; an unset or empty variable co
 | `priority_field` | none | Single-select field (first option = priority 1) or number field used for dispatch order. |
 | `assignee` | none | Only issues assigned to this login are dispatchable. |
 | `respect_blockers` | `true` | Issues with an unresolved dependency are not dispatchable: a GitHub "blocked by" relationship, or a reference in the issue text such as `blocked by #12` (see Dependencies). |
-| `respect_sub_issues` | `true` | Parent issues wait until all their sub-issues are closed. |
+| `respect_sub_issues` | `true` | Parent issues wait until all their sub-issues are closed. Exception: an issue whose description starts with a `/command` (see [issue commands](../configuration.md#issue-commands)) never waits for its sub-issues, because they are the result of its run. |
+| `sub_issue_status` | `Backlog` | Board column for sub-issues created by the `create_sub_issue` tool. Must not be an active or terminal state (`invalid_tracker_config`), so a human decides what gets worked on. |
 | `endpoint` | `https://api.github.com/graphql` | GraphQL endpoint (GitHub Enterprise Server). |
 | `request_timeout_ms` | `30000` | Per-request timeout. |
 | `request_retries` | `2` | Extra attempts for read queries after network errors, timeouts and HTTP 502/503/504 (waiting 1 s, 2 s, …). Mutations (status, comments, pull requests) are never retried automatically, so nothing is created twice; the agent gets the error and can retry. |
@@ -76,7 +77,8 @@ An issue waits while any of these is unresolved:
    also with Markdown emphasis (`**blocked by** #12`). Matching is case-insensitive; `#N` means the issue's own
    repository; references may point to issues or pull requests. Words like `unblocked` do not match, and negations
    (`not blocked by #12`) are not understood.
-3. **Sub-issues** of a parent issue: the parent waits until every sub-issue is closed.
+3. **Sub-issues** of a parent issue: the parent waits until every sub-issue is closed (not for an issue that starts
+   with a `/command`, see `respect_sub_issues`).
 
 Text references are resolved with one extra request per poll (`issueOrPullRequest`, 50 per request). A dependency
 is resolved when the issue is closed or the pull request is closed or merged. References that do not exist or are not
@@ -90,7 +92,8 @@ Hooks additionally receive `SYMPHONY_ISSUE_REPOSITORY` and `SYMPHONY_ISSUE_NUMBE
 
 ## Agent tools
 
-Exposed to Claude Code as `mcp__tracker__<name>`. They always act on the session's own issue and repository.
+Exposed to Claude Code as `mcp__tracker__<name>`. They act on the session's own issue and repository; the only issues
+they create are sub-issues of that issue (`create_sub_issue`).
 
 | Tool | Input | Mutates | Result |
 |---|---|---|---|
@@ -98,11 +101,30 @@ Exposed to Claude Code as `mcp__tracker__<name>`. They always act on the session
 | `set_status` | `status` | yes | Moves the board item; the name is matched case-insensitively. An unknown name returns the valid options. Guarded: see below. |
 | `add_comment` | `body` | yes | Posts a comment on the issue; returns its URL |
 | `open_pull_request` | `head`, `title`, `body?`, `base?`, `draft?` | yes | Opens a PR from an already pushed branch (base defaults to the default branch). An open PR for the same branch is returned instead of a duplicate (`created: false`). |
+| `create_sub_issue` | `title`, `body?`, `labels?` | yes | Creates a sub-issue of the session's issue in the same repository, adds it to the board in the `sub_issue_status` column and returns `{created, number, identifier, url, status, on_board, unknown_labels, remaining, warnings?}`. Only offered to [roles](../configuration.md#roles) with `max_sub_issues`. See below. |
 
 `set_status` declares its target column (`transitionTarget`), so Symphony's
 [transition guard](../configuration.md#transition-guard) checks every call before the mutation is sent: terminal
 columns and columns outside the role's `may_move_to` are denied (`transition_denied`), and a gated column is entered
 only after its entry check passes (`check_failed` / `check_error` otherwise). A denied call sends no request to GitHub.
+
+**`create_sub_issue`.** One `createIssue` mutation creates the issue and links it to its parent (`parentIssueId`); then
+the issue is added to the board and its status is set to `sub_issue_status`. The tool is built to survive retries:
+
+- Calls of one session run one after the other. An **open sub-issue with the same title** (compared without case and
+  with collapsed whitespace) is returned with `created: false` instead of a duplicate; if it is not on the board
+  (a previous call failed half-way), it is added. A sub-issue that is already on the board keeps its column.
+- The limit comes from GitHub, not from a counter: with `max_sub_issues` open sub-issues the call fails with
+  `limit_reached`. Closed sub-issues do not count, so the limit holds across retries and continuation sessions.
+- `labels` must already exist in the repository. Unknown ones are skipped and reported in `unknown_labels`; labels are
+  never created.
+- Once the issue exists, failures of the board steps (no access to the project, the column is missing on the board)
+  are returned as `warnings` and the call still succeeds. Without a status the board item is inactive. Call the tool
+  again with the same title to retry.
+- A project workflow such as "Item added to project" can set its own status after the tool did; configure it to match
+  `sub_issue_status` or turn it off.
+- Errors: `not_allowed` (the role has no `max_sub_issues`), `limit_reached`, `github_error` (GitHub rejected the
+  mutation, e.g. missing permission), `not_found`.
 
 Failures come back to the agent as structured tool errors (`{error: {category, message}}`), so it can correct its
 input. Keep GitHub's secondary rate limits in mind: content-creating calls such as comments are limited to roughly

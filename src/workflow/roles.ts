@@ -1,3 +1,5 @@
+import type { Issue } from '../tracker/types.ts';
+import { parseIssueCommand } from './command.ts';
 import type { ClaudeConfig } from './config.ts';
 import { normalizeStateName } from './config.ts';
 
@@ -19,14 +21,31 @@ export interface RoleConfig {
   mayMoveTo: string[] | null;
   /** Turn limit for sessions of this role; null uses `agent.max_turns`. */
   maxTurns: number | null;
+  /**
+   * Issue commands (`/refactoring`) this role serves; null = the role serves issues without a command.
+   * A role with commands is picked only for an issue whose first line is one of them.
+   */
+  commands: string[] | null;
+  /** False skips the `checks.on_enter` scripts for this role's status changes (`may_move_to` still applies). */
+  runChecks: boolean;
+  /** Sub-issues this role may have open under its issue at once; null = the role gets no `create_sub_issue` tool. */
+  maxSubIssues: number | null;
   claude: RoleClaudeOverrides;
 }
 
-/** The role serving `state` (compared case-insensitively), or null when none does. */
-export function roleFor(state: string, roles: readonly RoleConfig[] | null): RoleConfig | null {
+/**
+ * The role serving `issue`, or null when none does. With a command in the description, a role that lists the command
+ * and serves the issue's state (compared case-insensitively) wins; otherwise the role without commands that serves it.
+ */
+export function roleFor(issue: Pick<Issue, 'state' | 'description'>, roles: readonly RoleConfig[] | null): RoleConfig | null {
   if (roles === null) return null;
-  const key = normalizeStateName(state);
-  return roles.find((role) => role.states.includes(key)) ?? null;
+  const key = normalizeStateName(issue.state);
+  const command = parseIssueCommand(issue.description)?.name;
+  if (command !== undefined) {
+    const commanded = roles.find((role) => role.commands?.includes(command) === true && role.states.includes(key));
+    if (commanded !== undefined) return commanded;
+  }
+  return roles.find((role) => role.commands === null && role.states.includes(key)) ?? null;
 }
 
 /** Template and log name of `role`: its name, or `default` for the implicit role. */

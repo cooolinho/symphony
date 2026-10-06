@@ -46,8 +46,12 @@ und Token stehen in der **`.env`**. Symphony ist eine Implementierung der
   Paketversionen. Generierte Dateien landen nie im Pull Request.
 - **Skills für alle Repositories:** Der Ordner `.claude/` wird als Plugin `symphony` in jede Session geladen. Skills
   der Repositories und von Boost kommen dazu.
-- **Tracker-Tools für den Agenten:** Status setzen, kommentieren, Pull Request öffnen. Der GitHub-Token bleibt
-  dabei im Symphony-Prozess, der Agent sieht ihn nie.
+- **Befehle im Issue:** Beginnt die Beschreibung mit `/refactoring`, lädt Symphony einen zentral gepflegten Skill, ohne
+  dass das Repository etwas davon wissen muss. Der Audit-Agent ermittelt den Stack, misst die Baseline, findet Bugs und
+  Refactoring-Kandidaten und legt Sub-Issues im Backlog an. Umgesetzt wird verhaltensneutral mit Tests als
+  Sicherheitsnetz (`/refactor-safely`). ([Details](docs/usage.md#befehle-im-issue-refactoring))
+- **Tracker-Tools für den Agenten:** Status setzen, kommentieren, Pull Request öffnen und (nur für Audit-Rollen)
+  Sub-Issues anlegen. Der GitHub-Token bleibt dabei im Symphony-Prozess, der Agent sieht ihn nie.
 - **Robust:** Wiederholungen mit exponentiellem Backoff, Erkennung hängender Sessions. Ändert sich das Board während
   ein Agent läuft, wird er gestoppt.
 - **Session-Limit-Handling:** Erreicht das Claude-Abonnement sein Limit, wiederholt Symphony ein paar Mal und wartet

@@ -12,7 +12,8 @@ Repositories, die Symphony bearbeitet.
 | `hooks/hooks.json` | Hooks; Skripte daneben, im JSON über `${CLAUDE_PLUGIN_ROOT}` referenziert | automatisch |
 | `.claude-plugin/plugin.json` | Plugin-Manifest (Name `symphony`) | – |
 
-Leere Ordner enthalten eine `.gitkeep`, damit Git sie behält.
+Leere Ordner enthalten eine `.gitkeep`, damit Git sie behält. Mitgeliefert sind die Skills `refactoring` (Audit) und
+`refactor-safely` (Umsetzung).
 
 ## Was gehört hierher, was ins Repository?
 
@@ -40,5 +41,23 @@ ist.
 - In Laravel-Repositories eigene Skills nach `.ai/skills/` legen, nicht nach `.claude/skills/`: Boost überschreibt
   `.claude/skills` beim Generieren, `.ai/` ist agentenneutral (Claude Code, Cursor, Codex …). Ein gleichnamiger Skill in
   `.ai/skills/` ersetzt den Boost-Skill.
+
+## Befehls-Skills (`/refactoring`, `/refactor-safely`)
+
+Beginnt die Beschreibung eines Issues mit `/<name>`, lädt der Agent den Skill `symphony:<name>`, sofern `skills/<name>/SKILL.md`
+existiert (Technik: [docs/configuration.md](../docs/configuration.md#issue-commands)). Für solche Skills gilt zusätzlich:
+
+- Der Ordnername ist der Befehl: nur Kleinbuchstaben, Ziffern und Bindestriche. `name:` im Frontmatter ist derselbe Name.
+- Die `description` sagt, dass der Skill nur auf Verlangen des Prompts geladen wird. Sonst zieht Claude ihn in fremden
+  Sessions von selbst heran.
+- `argument-hint` nennt die Argumente, im Text steht `$ARGUMENTS`.
+- Der Skill sagt klar, was er **nicht** darf (z. B. nichts ändern) und beschreibt jede Phase mit einem prüfbaren Ergebnis.
+  Rechte erzwingt die Rolle (`read_only`, `may_move_to`), nicht der Skill. Er ist nur die Anleitung.
+- Sub-Issues schreiben Abhängigkeiten wörtlich als `Blocked by #N` (Englisch, auch in deutschen Texten). Nur das erkennt
+  Symphony.
+- Braucht ein Befehl eigene Rechte oder Tools, gehört eine Rolle mit `commands: [<name>]` in die `WORKFLOW.md`. Dann
+  prüft die Dispatch-Validierung, dass der Skill existiert.
+- `test/workflow-prompt.test.ts` prüft für jeden Skill, dass Name und Ordner übereinstimmen und alle verlinkten Dateien
+  existieren.
 
 Wer an Symphony selbst mit Claude Code arbeitet, sieht die Skills aus `skills/` ebenfalls.

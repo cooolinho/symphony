@@ -16,6 +16,7 @@ import type { Issue } from './tracker/types.ts';
 import type { LoadedEnvFile } from './util/env.ts';
 import { errorCode, errorMessage } from './util/errors.ts';
 import { truncate } from './util/text.ts';
+import { commandSkills, resolveIssueCommand } from './workflow/command.ts';
 import { roleFor, roleName } from './workflow/roles.ts';
 import { WorkflowStore } from './workflow/store.ts';
 import { issueTemplateValue, renderPrompt } from './workflow/template.ts';
@@ -233,6 +234,7 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       out('Board columns:   all configured columns exist on the board');
       out();
     }
+    const skills = commandSkills(config.claude.plugins);
     const issues = sortForDispatch(await adapter.fetchIssuesByStates(config.tracker.activeStates));
     out(`Candidates in active states: ${issues.length}`);
     let first: Issue | null = null;
@@ -241,10 +243,12 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       if (reason === null && first === null) first = issue;
       out(`  ${reason === null ? 'dispatch' : 'skip    '}  ${issue.identifier}  [${issue.state}${issue.priority === null ? '' : `, p${issue.priority}`}]  ${truncate(issue.title, 70)}`);
       if (reason !== null) out(`            ↳ ${reason}`);
-      const role = roleFor(issue.state, config.roles);
+      const role = roleFor(issue, config.roles);
       const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model);
       const effortChoice = chooseEffort(issue.labels, role?.claude.effort ?? config.claude.effort);
       out(`            ↳ ${roleModelLine(roleName(role), choice.model, effortChoice.effort)}`);
+      const command = resolveIssueCommand(issue.description, skills);
+      if (command !== null) out(`            ↳ command /${command.name} → ${command.skill}`);
       if (choice.warning !== null) out(`            ↳ model label ignored: ${choice.warning}; using ${choice.model ?? '(Claude Code default)'}`);
       else if (choice.label !== null) out(`            ↳ model ${choice.model} (label "${choice.label}")`);
       if (effortChoice.warning !== null) out(`            ↳ effort label ignored: ${effortChoice.warning}; using ${effortChoice.effort ?? '(Claude Code default)'}`);
@@ -258,9 +262,9 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       out(`Prompt preview for ${first.identifier}:`);
       try {
         const prompt = await renderPrompt(store.current.prompt, {
-          issue: issueTemplateValue(first),
+          issue: issueTemplateValue(first, skills),
           attempt: null,
-          role: roleName(roleFor(first.state, config.roles)),
+          role: roleName(roleFor(first, config.roles)),
         });
         const lines = prompt.split('\n');
         for (const line of lines.slice(0, 30)) out(`  | ${line}`);

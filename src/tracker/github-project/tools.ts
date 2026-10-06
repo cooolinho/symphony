@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SerialQueue } from '../../util/async.ts';
 import { errorMessage } from '../../util/errors.ts';
 import { TrackerError, type AgentToolContext, type AgentToolSpec, type Issue, type ToolResult } from '../types.ts';
 import type { GithubProjectAdapter } from './adapter.ts';
@@ -6,10 +7,14 @@ import { assertNoGraphqlErrors } from './client.ts';
 import type { ProjectMeta, SelectOption } from './normalize.ts';
 import {
   ADD_COMMENT_MUTATION,
+  ADD_PROJECT_ITEM_MUTATION,
   CREATE_PULL_REQUEST_MUTATION,
+  CREATE_SUB_ISSUE_MUTATION,
   ISSUE_CONTEXT_QUERY,
   REPOSITORY_QUERY,
   SET_STATUS_MUTATION,
+  SUB_ISSUE_CONTEXT_QUERY,
+  repositoryLabelsQuery,
 } from './queries.ts';
 import { KIND } from './settings.ts';
 
@@ -73,6 +78,11 @@ function issueView(issue: Issue): Json {
 function findOption(meta: ProjectMeta, name: string): SelectOption | undefined {
   const wanted = name.trim().toLowerCase();
   return meta.statusOptions.find((option) => option.name.trim().toLowerCase() === wanted);
+}
+
+/** Titles are compared without case and with collapsed whitespace, so a retry with a re-typed title finds its sub-issue. */
+function titleKey(title: unknown): string {
+  return String(title ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 /** Runs a tool body, turning any exception into a structured failure the agent can read. */
@@ -226,5 +236,129 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
       }),
   };
 
-  return [getIssue, setStatus, addComment, openPullRequest];
+  /**
+   * Creates sub-issues of the session's issue, one at a time per session. The limit and the duplicate check read the
+   * issue's current sub-issues from GitHub on every call, so they hold across retries and continuation sessions.
+   */
+  const subIssueQueue = new SerialQueue();
+  const createSubIssue: AgentToolSpec = {
+    name: 'create_sub_issue',
+    description:
+      'Create a sub-issue of the issue this session is working on, in the same repository, and put it on the project ' +
+      `board in the column "${adapter.settings.subIssueStatus}", where a human decides whether it gets worked on. ` +
+      'Refer to an earlier sub-issue with "Blocked by #<number>" in the body to make one wait for another. ' +
+      'If an open sub-issue with the same title already exists it is returned instead of creating a duplicate. ' +
+      'Labels must already exist in the repository; unknown ones are reported in unknown_labels and skipped.',
+    inputSchema: {
+      title: z.string().min(1).max(256).describe('Issue title'),
+      body: z.string().max(60_000).optional().describe('Issue description (GitHub-flavored Markdown)'),
+      labels: z.array(z.string().min(1)).max(10).optional().describe('Names of existing repository labels, e.g. ["bug"]'),
+    },
+    mutates: true,
+    createsSubIssues: true,
+    execute: (args, context) =>
+      guarded(context, (ref) =>
+        subIssueQueue.run(async (): Promise<ToolResult> => {
+          const max = context.maxSubIssues;
+          if (max === undefined) return fail('not_allowed', 'this role may not create sub-issues (roles.<name>.max_sub_issues is not set)');
+          const title = String(args.title).trim();
+
+          const response = await client.request<Json>(SUB_ISSUE_CONTEXT_QUERY, { issueId: ref.issueId });
+          assertNoGraphqlErrors(response.errors);
+          const parent = obj(obj(response.data)?.node);
+          const repositoryId = obj(parent?.repository)?.id;
+          if (typeof repositoryId !== 'string') return fail('not_found', `cannot read repository ${ref.repository} of the issue`);
+          const open = nodes(parent?.subIssues).filter((sub) => sub.state !== 'CLOSED');
+
+          let meta = await adapter.meta();
+          let column = findOption(meta, adapter.settings.subIssueStatus);
+          if (column === undefined) {
+            meta = await adapter.meta(true);
+            column = findOption(meta, adapter.settings.subIssueStatus);
+          }
+          const warnings: string[] = [];
+          if (column === undefined) {
+            warnings.push(
+              `board column "${adapter.settings.subIssueStatus}" does not exist (valid: ${meta.statusOptions.map((o) => `"${o.name}"`).join(', ')}); ` +
+                'the sub-issue has no status and is not worked on until a human sets one',
+            );
+          }
+
+          /** Puts the issue on the board (once) and sets its column; failures after the issue exists are warnings. */
+          const placeOnBoard = async (issueId: string, items: Json[]): Promise<boolean> => {
+            if (items.some((item) => obj(item.project)?.id === meta.projectId)) return true; // a human may have moved it already
+            try {
+              const added = await client.request<Json>(ADD_PROJECT_ITEM_MUTATION, { projectId: meta.projectId, contentId: issueId });
+              assertNoGraphqlErrors(added.errors);
+              const itemId = obj(obj(obj(added.data)?.addProjectV2ItemById)?.item)?.id;
+              if (typeof itemId !== 'string') throw new Error('GitHub returned no project item');
+              if (column !== undefined) {
+                const status = await client.request<Json>(SET_STATUS_MUTATION, {
+                  projectId: meta.projectId,
+                  itemId,
+                  fieldId: meta.statusFieldId,
+                  optionId: column.id,
+                });
+                assertNoGraphqlErrors(status.errors);
+              }
+              return true;
+            } catch (error) {
+              warnings.push(`could not put the issue on the board: ${errorMessage(error)}; call create_sub_issue again with the same title to retry`);
+              return false;
+            }
+          };
+          const result = (created: boolean, issue: Json, onBoard: boolean, unknownLabels: string[], used: number): ToolResult =>
+            ok({
+              created,
+              number: issue.number ?? null,
+              identifier: typeof issue.number === 'number' ? `${ref.repository}#${issue.number}` : null,
+              url: issue.url ?? null,
+              status: column?.name ?? null,
+              on_board: onBoard,
+              unknown_labels: unknownLabels,
+              remaining: Math.max(0, max - used),
+              ...(warnings.length > 0 ? { warnings } : {}),
+            });
+
+          const existing = open.find((sub) => titleKey(sub.title) === titleKey(title));
+          if (existing !== undefined) {
+            const onBoard = await placeOnBoard(String(existing.id), nodes(obj(existing.projectItems)));
+            return result(false, existing, onBoard, [], open.length);
+          }
+          if (open.length >= max) {
+            return fail('limit_reached', `this issue already has ${open.length} open sub-issues (limit ${max}); put the rest into the report instead`);
+          }
+
+          const unknownLabels: string[] = [];
+          const labelIds: string[] = [];
+          const wanted = Array.isArray(args.labels) ? [...new Set(args.labels.map(String))] : [];
+          if (wanted.length > 0) {
+            const { query, variables } = repositoryLabelsQuery(ref.repository, wanted);
+            const found = await client.request<Json>(query, variables);
+            assertNoGraphqlErrors(found.errors);
+            const repository = obj(obj(found.data)?.repository);
+            wanted.forEach((label, index) => {
+              const id = obj(repository?.[`l${index}`])?.id;
+              if (typeof id === 'string') labelIds.push(id);
+              else unknownLabels.push(label);
+            });
+          }
+
+          const created = await client.request<Json>(CREATE_SUB_ISSUE_MUTATION, {
+            repositoryId,
+            parentId: ref.issueId,
+            title,
+            body: typeof args.body === 'string' ? args.body : null,
+            labelIds,
+          });
+          if (created.errors.length > 0) return fail('github_error', created.errors.map((e) => e.message).join('; '));
+          const issue = obj(obj(obj(created.data)?.createIssue)?.issue);
+          if (issue === null || typeof issue.id !== 'string') return fail('tracker_response', 'GitHub created no issue');
+          const onBoard = await placeOnBoard(issue.id, []);
+          return result(true, issue, onBoard, unknownLabels, open.length + 1);
+        }),
+      ),
+  };
+
+  return [getIssue, setStatus, addComment, openPullRequest, createSubIssue];
 }

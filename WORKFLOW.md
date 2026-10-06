@@ -10,13 +10,16 @@ tracker:
     repositories: $GITHUB_REPOSITORY         # owner/name; comma-separate several repositories
     owner: $GITHUB_PROJECT_OWNER             # optional; defaults to the owner of the first repository
     token: $GITHUB_TOKEN                     # classic token with the repo and project scopes
+    sub_issue_status: Backlog                # column for sub-issues made by create_sub_issue; must not be an active or terminal state
   # Board columns: Backlog | Ready | In progress | Agent review | Blocked | In review | Done
   #   Ready, In progress -> developer agent implements the issue
   #   Agent review       -> reviewer agent (read-only) reviews it; entered only after checks pass
   #   In review          -> human review; only the reviewer moves issues here, after checks pass (ends the run)
   #   Blocked            -> an agent needs a human (ends the run, keeps the workspace)
   #   Done               -> set by a human only; agent stops and its workspace is deleted
-  #   Backlog            -> ignored until someone moves the issue to Ready
+  #   Backlog            -> ignored until someone moves the issue to Ready; also where sub-issues made by the auditor land
+  #   An issue whose description starts with "/refactoring" is served by the auditor instead of the developer
+  #   (roles.auditor.commands): it analyses read-only and files sub-issues. Skills in .claude/skills/ define the commands.
   # If your board names its columns differently, adjust these lists, roles, checks and the prompt below.
   active_states: [Ready, In progress, Agent review]
   terminal_states: [Done]
@@ -75,6 +78,15 @@ roles:
     max_turns: 6
     may_move_to: [In review, In progress, Blocked]
     claude: { model: opus }
+  auditor:
+    commands: [refactoring]                  # served only for issues whose description starts with /refactoring
+    states: [Ready, In progress]
+    read_only: true                          # analysis only; the findings become sub-issues
+    run_checks: false                        # nothing changes, so a red test suite must not block the hand-off
+    max_sub_issues: 20                       # open sub-issues at once; also what grants the create_sub_issue tool
+    max_turns: 2
+    may_move_to: [In progress, In review, Blocked]
+    claude: { model: opus, max_budget_usd: 15 }
 
 checks:
   # Entry checks: set_status into these columns only succeeds when the script passes (exit 0).
@@ -117,7 +129,11 @@ You are working on GitHub issue **{{ issue.identifier }}**: {{ issue.title }}
 
 {{ issue.description | default: "(no description)" }}
 
-{% case role %}{% when "developer" %}## Your role: developer
+{% if issue.command %}## Issue command: /{{ issue.command.name }}
+
+The description starts with the command `/{{ issue.command.name }}`{% if issue.command.args != "" %} and the argument `{{ issue.command.args }}`{% endif %}. Before anything else, load the skill `{{ issue.command.skill }}` with the Skill tool{% if issue.command.args != "" %} and pass it the argument{% endif %}, then follow it. Where the skill and the steps of your role below disagree, the skill wins. What your role may do (read-only access, allowed status changes, available tools) still applies.
+
+{% endif %}{% case role %}{% when "developer" %}## Your role: developer
 
 You implement the issue. A read-only reviewer agent reviews your work after you hand off; a human reviews and merges after that.
 The tracker tools are `get_issue`, `set_status`, `add_comment` and `open_pull_request`.
@@ -185,6 +201,23 @@ The tracker tools are `get_issue`, `set_status` and `add_comment`.
 Never move an issue to "Done": a human does that after review and merge.
 
 Write the review comment in the language the issue is written in.
+{% when "auditor" %}## Your role: auditor
+
+You analyse the repository and turn the findings into sub-issues of this issue, which is the epic. You are **read-only**: do not edit files, commit, push or open a pull request. A human reviews the sub-issues and moves the ones worth doing to "Ready".
+The tracker tools are `get_issue`, `set_status`, `add_comment` and `create_sub_issue`.
+
+The current directory is a clone of the issue's repository. Work only inside it.
+
+1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist).
+2. Call `get_issue` and read the comments and the existing sub-issues. If an earlier run left a report or sub-issues, this is a continuation: do not start over, finish what is missing.
+3. If the board status is "Ready", move the issue to "In progress" with `set_status("In progress")`.
+4. Follow the skill named above. Create sub-issues only with `create_sub_issue`, never with git, `gh` or the API.
+5. Post exactly one report comment with `add_comment`.
+6. Hand off with `set_status("In review")`. No entry checks run for this role. End your turn immediately afterwards.
+
+If you are blocked (unclear scope, missing access, broken infrastructure), explain exactly what you need in an issue comment and move the issue to "Blocked" with `set_status("Blocked")`. Never move an issue to "Done": a human does that.
+
+Write the report, the sub-issues and all comments in the language the issue is written in.
 {% else %}## How to work
 
 The current directory is a clone of the issue's repository. Work only inside it.

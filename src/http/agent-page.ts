@@ -417,7 +417,7 @@ ${BASE_JS}
     assistant_message: 'model', api_retry: 'model', rate_limit: 'model', agent_error: 'model',
     tool_use: 'tools', tool_result: 'tools', tracker_tool: 'tools', approval_auto_approved: 'tools', approval_denied: 'tools',
     permission_denied: 'tools', turn_input_required: 'tools', transition_denied: 'tools',
-    checks_started: 'tools', checks_cached: 'tools', checks_finished: 'tools',
+    checks_started: 'tools', checks_cached: 'tools', checks_skipped: 'tools', checks_finished: 'tools',
   };
   const label = (event) => String(event).replace(/_/g, ' ');
 

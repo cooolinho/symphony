@@ -2,6 +2,7 @@ import { Liquid, type Template } from 'liquidjs';
 import { isEffortLabel, isModelLabel } from '../agent/model.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import type { Issue } from '../tracker/types.ts';
+import { resolveIssueCommand } from './command.ts';
 
 /** Strict Liquid: unknown variables and unknown filters fail rendering. */
 const engine = new Liquid({
@@ -61,9 +62,13 @@ export async function renderPrompt(template: PromptTemplate, scope: Record<strin
   }
 }
 
-/** Template view of an issue: string keys, ISO timestamps, nested lists and maps preserved. */
-export function issueTemplateValue(issue: Issue): Record<string, unknown> {
+/**
+ * Template view of an issue: string keys, ISO timestamps, nested lists and maps preserved. `command` is the
+ * `/<name>` of the description when `skills` (see `commandSkills`) has a skill of that name, else null.
+ */
+export function issueTemplateValue(issue: Issue, skills: ReadonlyMap<string, string> = new Map()): Record<string, unknown> {
   return {
+    command: resolveIssueCommand(issue.description, skills),
     id: issue.id,
     native_ref: issue.native_ref,
     identifier: issue.identifier,

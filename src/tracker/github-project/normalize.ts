@@ -1,3 +1,4 @@
+import { parseIssueCommand } from '../../workflow/command.ts';
 import type { BlockerRef, Issue } from '../types.ts';
 import type { GithubProjectSettings } from './settings.ts';
 import { KIND } from './settings.ts';
@@ -87,7 +88,8 @@ export function applyDispatchRules(
     const open = issue.blocked_by.filter((blocker) => !RESOLVED_STATES.has(blocker.state ?? ''));
     if (open.length > 0) reasons.push(`blocked by ${open.map((b) => b.identifier ?? b.id ?? 'an unknown issue').join(', ')}`);
   }
-  if (settings.respectSubIssues) {
+  // An issue that starts with a `/command` produces its sub-issues (the audit's findings) instead of waiting for them.
+  if (settings.respectSubIssues && parseIssueCommand(issue.description) === null) {
     const subIssues = (issue.native_ref?.sub_issues ?? []) as LinkedIssue[];
     const open = subIssues.filter((sub) => sub.state !== 'CLOSED');
     if (open.length > 0) reasons.push(`waiting for sub-issues ${open.map((sub) => sub.identifier).join(', ')}`);

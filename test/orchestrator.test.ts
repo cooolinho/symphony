@@ -9,7 +9,7 @@ import type { WorkspaceIntegration } from '../src/integrations/types.ts';
 import { Logger } from '../src/log.ts';
 import { CONTINUATION_DELAY_MS, SESSION_LIMIT_MAX_WAIT_MS, failureBackoffMs, sessionLimitWaitMs, sortForDispatch } from '../src/orchestrator/eligibility.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
-import type { ToolResult } from '../src/tracker/types.ts';
+import type { AgentToolSpec, ToolResult } from '../src/tracker/types.ts';
 import { workspaceKey } from '../src/workspace/manager.ts';
 import {
   FakeRunner,
@@ -331,6 +331,99 @@ describe('roles', () => {
     const event = lines.find((line) => line.includes('agent session_started'));
     assert.match(event ?? '', /run_id=[0-9a-f]{12}/);
     assert.match(event ?? '', /role=default/);
+  });
+
+  describe('issue commands', () => {
+    /** A plugin with the skill behind /refactoring, so the dispatch preflight finds it. */
+    function commandPlugin(): string {
+      const dir = tempDir('symphony-plugin-');
+      fs.mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'symphony' }));
+      fs.mkdirSync(path.join(dir, 'skills', 'refactoring'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'skills', 'refactoring', 'SKILL.md'), '---\nname: refactoring\n---\n');
+      return dir;
+    }
+    const commandFront = (plugin: string) => ({
+      tracker: {
+        kind: 'github_project',
+        provider: { owner: 'acme', project_number: 1, token: 'test-token' },
+        active_states: ['Ready', 'In progress', 'Agent review'],
+      },
+      agent: { max_turns: 3, max_continuations: 6 },
+      claude: { plugins: [plugin] },
+      roles: {
+        developer: { states: ['Ready', 'In progress'] },
+        reviewer: { states: ['Agent review'], read_only: true },
+        auditor: { commands: ['refactoring'], states: ['Ready', 'In progress'], read_only: true, run_checks: false, max_sub_issues: 7 },
+      },
+    });
+    const subIssueTool: AgentToolSpec = {
+      name: 'create_sub_issue',
+      description: '',
+      inputSchema: {},
+      mutates: true,
+      createsSubIssues: true,
+      execute: async () => ({ ok: true, data: null }),
+    };
+
+    it('runs a /refactoring issue as the read-only auditor with the sub-issue tool, and other issues as before', async () => {
+      const runner = new FakeRunner(() => new Promise(() => undefined));
+      const s = setup({
+        runner,
+        front: commandFront(commandPlugin()),
+        prompt: '{{ role }}|{% if issue.command %}{{ issue.command.skill }}{% else %}-{% endif %}',
+        issues: [
+          makeIssue({ id: 'a', state: 'Ready', description: '/refactoring app/Filament' }),
+          makeIssue({ id: 'd', state: 'Ready', description: 'Add invoices' }),
+        ],
+      });
+      s.tracker.agentToolSpecs = () => [subIssueTool];
+      await s.orchestrator.tickNow();
+      await until(() => runner.sessions.length === 2, 3_000, 'two sessions');
+      const byId = Object.fromEntries(runner.sessions.map((session) => [session.params.issue.id, session]));
+
+      assert.equal(byId.a?.turns[0], 'auditor|symphony:refactoring');
+      assert.equal(byId.a?.params.policy?.readOnly, true);
+      assert.deepEqual(byId.a?.params.tools.map((tool) => tool.name), ['create_sub_issue']);
+      assert.equal(byId.a?.params.toolContext().maxSubIssues, 7);
+
+      assert.equal(byId.d?.turns[0], 'developer|-');
+      assert.equal(byId.d?.params.policy?.readOnly, false);
+      assert.deepEqual(byId.d?.params.tools.map((tool) => tool.name), []);
+      assert.equal(byId.d?.params.toolContext().maxSubIssues, undefined);
+    });
+
+    it('hands the issue to the developer in a fresh session when the command disappears from its description', async () => {
+      const runner = new FakeRunner();
+      const s = setup({
+        runner,
+        front: commandFront(commandPlugin()),
+        prompt: '{{ role }}|{% if issue.command %}{{ issue.command.skill }}{% else %}-{% endif %}',
+        issues: [makeIssue({ id: 'a', state: 'Ready', description: '/refactoring' })],
+      });
+      runner.script = (turn) => {
+        if (runner.sessions.length === 1) s.tracker.set('a', { description: 'No command any more' });
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      };
+      await s.orchestrator.tickNow();
+      await until(() => snapshot(s).retrying.length === 1, 3_000, 'continuation retry');
+      assert.equal(runner.sessions[0]?.turns.length, 1);
+      assert.equal(runner.sessions[0]?.stopped, true);
+
+      s.timers.fire(1_000);
+      await until(() => runner.sessions.length === 2, 3_000, 'developer session');
+      assert.deepEqual(runner.sessions.map((session) => session.turns[0]), ['auditor|symphony:refactoring', 'developer|-']);
+      assert.equal(runner.sessions[1]?.params.policy?.readOnly, false);
+    });
+
+    it('does not dispatch while a command role has no skill in claude.plugins', async () => {
+      const empty = tempDir('symphony-plugin-');
+      const runner = new FakeRunner(() => new Promise(() => undefined));
+      const s = setup({ runner, front: commandFront(empty), issues: [makeIssue({ id: 'a', state: 'Ready', description: '/refactoring' })] });
+      await s.orchestrator.tickNow();
+      assert.equal(runner.sessions.length, 0);
+      assert.match(snapshot(s).health.dispatch_errors.join(), /roles\.auditor\.commands: no skill for \/refactoring in claude\.plugins/);
+    });
   });
 
   describe('role switches', () => {
