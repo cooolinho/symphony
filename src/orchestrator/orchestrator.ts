@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { childEnvironment } from '../agent/env.ts';
-import { chooseModel } from '../agent/model.ts';
+import { chooseEffort, chooseModel } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, TokenUsage } from '../agent/types.ts';
 import { estimateCost, totalTokens, type ModelTokenUsage, type PricingStore } from '../costs/pricing.ts';
 import type { HistoryLog, RunOutcome, RunStart } from '../history/history.ts';
@@ -769,6 +769,8 @@ export class Orchestrator {
     record.repo = entry.repo;
     // A "Model: <model>" label picks the model for this run, else the role's claude.model, else claude.model.
     const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model);
+    // Likewise an "Effort: <level>" label picks the effort, else the role's claude.effort, else claude.effort.
+    const effortChoice = chooseEffort(issue.labels, role?.claude.effort ?? config.claude.effort);
     record.sessions.push({
       run: runId,
       attempt,
@@ -788,9 +790,21 @@ export class Orchestrator {
       message: `${continuation ? 'continuation session' : attempt === null ? 'session' : `retry attempt ${attempt}`} started as ${name} in "${issue.state}"`,
       run: runId,
       turn: null,
-      detail: { attempt, role: name, state: issue.state, model: choice.model, model_label: choice.label, continuation },
+      detail: {
+        attempt,
+        role: name,
+        state: issue.state,
+        model: choice.model,
+        model_label: choice.label,
+        effort: effortChoice.effort,
+        effort_label: effortChoice.label,
+        continuation,
+      },
     });
     if (choice.warning !== null) log.warn('model label ignored', { warning: choice.warning, model: choice.model ?? 'Claude Code default' });
+    if (effortChoice.warning !== null) {
+      log.warn('effort label ignored', { warning: effortChoice.warning, effort: effortChoice.effort ?? 'Claude Code default' });
+    }
     log.info('dispatching issue', {
       state: issue.state,
       attempt,
@@ -798,6 +812,8 @@ export class Orchestrator {
       role: entry.role,
       model: choice.model ?? 'Claude Code default',
       model_label: choice.label ?? undefined,
+      effort: effortChoice.effort ?? 'Claude Code default',
+      effort_label: effortChoice.label ?? undefined,
       title: truncate(issue.title, 120),
     });
     entry.pendingStart = {
@@ -807,6 +823,7 @@ export class Orchestrator {
       state: issue.state,
       attempt,
       model: choice.model,
+      effort: effortChoice.effort,
       role: entry.role,
       run: entry.runId,
       at: entry.startedAt,
@@ -819,6 +836,7 @@ export class Orchestrator {
         attempt,
         workflow,
         model: choice.model,
+        effort: effortChoice.effort,
         role,
         adapter,
         runner: this.#deps.runner,

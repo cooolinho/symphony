@@ -429,7 +429,8 @@ ${BASE_JS}
     switch (e.event) {
       case 'run_dispatched':
         return { ...base, type: 'run', tone: 'green', glyph: '●', title: d.continuation ? 'CONTINUATION SESSION' : d.attempt ? 'RETRY ATTEMPT ' + d.attempt : 'AGENT STARTED',
-          name: (d.role || '') + ' · ' + (d.state || ''), line: 'Run ' + e.run + (d.model ? ' · model ' + d.model : ' · Claude Code default model') + (d.model_label ? ' (label ' + d.model_label + ')' : '') };
+          name: (d.role || '') + ' · ' + (d.state || ''), line: 'Run ' + e.run + (d.model ? ' · model ' + d.model : ' · Claude Code default model') + (d.model_label ? ' (label ' + d.model_label + ')' : '') +
+            (d.effort ? ' · effort ' + d.effort + (d.effort_label ? ' (label ' + d.effort_label + ')' : '') : '') };
       case 'run_finished': {
         const o = OUTCOME[d.outcome] || [d.outcome, 'gray'];
         const failed = d.outcome === 'failed' || d.outcome === 'stalled';

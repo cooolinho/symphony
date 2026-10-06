@@ -1,4 +1,5 @@
-import { modelForLabelValue } from '../agent/model.ts';
+import { effortForLabelValue, modelForLabelValue } from '../agent/model.ts';
+import { EFFORT_LEVELS } from '../workflow/config.ts';
 import { errorMessage } from '../util/errors.ts';
 import { GithubRestError, type GithubLabel, type GithubRestClient, type LabelUpdate, type NewLabel } from './github-rest.ts';
 import type { InitTask } from './tasks.ts';
@@ -6,6 +7,8 @@ import type { InitTask } from './tasks.ts';
 /** Values of the standard "Model: <value>" labels (README: "Modell pro Issue wählen"). */
 const MODEL_LABEL_VALUES = ['opus', 'sonnet', 'haiku'];
 const FAMILY_COLORS: Record<string, string> = { opus: '5319e7', sonnet: '1d76db', haiku: '0e8a16' };
+/** Colors of the "Effort: <level>" labels, from light (little thinking) to dark (a lot). */
+const EFFORT_COLORS: Record<string, string> = { low: 'c5def5', medium: '9ec5f0', high: 'f9d0c4', xhigh: 'e99695', max: 'b60205' };
 const DEFAULT_COLOR = 'ededed';
 
 function capitalize(text: string): string {
@@ -29,8 +32,19 @@ function modelLabel(value: string): NewLabel {
   };
 }
 
+/** The label for an effort level; its description names the effort Symphony passes to Claude Code. */
+function effortLabel(value: string): NewLabel {
+  const effort = effortForLabelValue(value);
+  if (effort === null) throw new Error(`"Effort: ${value}" does not name an effort level`);
+  return {
+    name: `Effort: ${value}`,
+    color: EFFORT_COLORS[effort] ?? DEFAULT_COLOR,
+    description: `Symphony runs this issue with effort ${effort}`,
+  };
+}
+
 /** What the "Standard labels" task creates in each repository. */
-export const STANDARD_LABELS: readonly NewLabel[] = MODEL_LABEL_VALUES.map(modelLabel);
+export const STANDARD_LABELS: readonly NewLabel[] = [...MODEL_LABEL_VALUES.map(modelLabel), ...EFFORT_LEVELS.map(effortLabel)];
 
 export type LabelChange =
   | { kind: 'create'; label: NewLabel }
@@ -124,7 +138,7 @@ function describeResult(result: ApplyResult): string {
 export const labelsTask: InitTask = {
   id: 'labels',
   title: 'Standard labels',
-  summary: '"Model: …" labels that pick the Claude model per issue',
+  summary: '"Model: …" and "Effort: …" labels that pick the Claude model and effort per issue',
 
   async run({ repositories, github, terminal }) {
     let ok = true;

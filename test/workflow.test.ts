@@ -336,6 +336,12 @@ describe('prompt templates', () => {
     assert.equal(await renderPrompt(template, { issue: labeled, attempt: null }), 'bug,ui');
   });
 
+  it('drops "Model: …" and "Effort: …" labels with the without_agent_labels filter', async () => {
+    const template = compilePrompt('{{ issue.labels | without_agent_labels | join: "," }}');
+    const labeled = issueTemplateValue(makeIssue({ id: '9', labels: ['bug', 'Effort: high', 'model: opus', 'ui', 'side-effort: x'] }));
+    assert.equal(await renderPrompt(template, { issue: labeled, attempt: null }), 'bug,ui,side-effort: x');
+  });
+
   it('keeps model labels out of the shipped WORKFLOW.md prompt', async () => {
     const { definition } = await loadWorkflowFile(path.resolve(import.meta.dirname, '../WORKFLOW.md'));
     const template = compilePrompt(definition.promptTemplate);
@@ -349,6 +355,21 @@ describe('prompt templates', () => {
     assert.match(mixed, /^- Labels: bug$/m);
     assert.doesNotMatch(mixed, /model: sonnet/);
     assert.doesNotMatch(await render(['model: opus']), /Labels:/);
+    const withEffort = await render(['bug', 'Effort: high', 'model: sonnet']);
+    assert.match(withEffort, /^- Labels: bug$/m);
+    assert.doesNotMatch(withEffort, /effort: high/i);
+    assert.doesNotMatch(await render(['effort: low']), /Labels:/);
+  });
+
+  it('reads the default effort of the shipped WORKFLOW.md from CLAUDE_EFFORT', async () => {
+    const workflowPath = path.resolve(import.meta.dirname, '../WORKFLOW.md');
+    const { definition } = await loadWorkflowFile(workflowPath);
+    const effortOf = (env: Record<string, string>) =>
+      resolveConfig(definition.config, { workflowPath, env, trackerDefaults }).claude.effort;
+    assert.equal(effortOf({}), null);
+    assert.equal(effortOf({ CLAUDE_EFFORT: '' }), null);
+    assert.equal(effortOf({ CLAUDE_EFFORT: 'medium' }), 'medium');
+    assert.throws(() => effortOf({ CLAUDE_EFFORT: 'hi' }), /claude\.effort must be one of/);
   });
 
   it('loads the .claude toolbox as a plugin and Laravel Boost on auto in the shipped WORKFLOW.md', async () => {

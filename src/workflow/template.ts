@@ -1,5 +1,5 @@
 import { Liquid, type Template } from 'liquidjs';
-import { isModelLabel } from '../agent/model.ts';
+import { isEffortLabel, isModelLabel } from '../agent/model.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import type { Issue } from '../tracker/types.ts';
 
@@ -14,6 +14,11 @@ const engine = new Liquid({
 /** `issue.labels | without_model_labels`: the labels minus "Model: …" labels, which only pick the agent's model. */
 engine.registerFilter('without_model_labels', (labels: unknown) =>
   Array.isArray(labels) ? labels.filter((label) => typeof label !== 'string' || !isModelLabel(label)) : labels,
+);
+
+/** `issue.labels | without_agent_labels`: the labels minus "Model: …" and "Effort: …" labels, which only configure the agent. */
+engine.registerFilter('without_agent_labels', (labels: unknown) =>
+  Array.isArray(labels) ? labels.filter((label) => typeof label !== 'string' || !(isModelLabel(label) || isEffortLabel(label))) : labels,
 );
 
 /** Used when the WORKFLOW.md body is empty. */

@@ -29,6 +29,8 @@ export interface RunStart {
   attempt: number | null;
   /** Model requested for the run: a "Model: <model>" issue label, else the role's model, else claude.model; null = Claude Code default. */
   model: string | null;
+  /** Effort requested for the run: an "Effort: <level>" issue label, else the role's effort, else claude.effort; null = Claude Code default. */
+  effort?: string | null;
   /** Role serving the issue's column; absent means the implicit `default` role. */
   role?: string;
   run: string;
@@ -181,6 +183,7 @@ export class HistoryLog {
       state: start.state,
       attempt: start.attempt,
       model: start.model ?? 'default',
+      effort: start.effort ?? 'default',
       role: start.role ?? DEFAULT_ROLE,
       ...start.extra,
     });

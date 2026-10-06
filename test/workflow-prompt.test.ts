@@ -18,7 +18,7 @@ const issue = makeIssue({
   description: 'Create an invoice resource.',
   state: 'In progress',
   url: 'https://github.com/acme/app/issues/42',
-  labels: ['feature', 'model: opus'],
+  labels: ['feature', 'model: opus', 'effort: high'],
   native_ref: {
     provider: 'github_project',
     repository: 'acme/app',
@@ -65,6 +65,7 @@ describe('shipped WORKFLOW.md', () => {
     assert.doesNotMatch(prompt, /mcp__tracker__/);
     assert.doesNotMatch(prompt, /Your role: reviewer/);
     assert.doesNotMatch(prompt, /model: opus/);
+    assert.doesNotMatch(prompt, /effort: high/);
   });
 
   it('renders the read-only reviewer prompt with the checklist and round limit', async () => {

@@ -146,6 +146,43 @@ describe('dispatch ordering and eligibility', () => {
     assert.deepEqual(models, { labeled: 'sonnet', plain: 'opus', unknown: 'opus' });
   });
 
+  it('runs each issue at the effort its "Effort:" label names, else on claude.effort', async () => {
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    const s = setup({
+      runner,
+      front: { claude: { model: 'opus', effort: 'medium' } },
+      issues: [
+        makeIssue({ id: 'labeled', labels: ['bug', 'effort: high'] }),
+        makeIssue({ id: 'plain', labels: ['bug'] }),
+        makeIssue({ id: 'unknown', labels: ['effort: hi'] }),
+        makeIssue({ id: 'conflict', labels: ['effort: low', 'effort: max'] }),
+        makeIssue({ id: 'both', labels: ['model: sonnet', 'Effort: LOW'] }),
+      ],
+    });
+    await s.orchestrator.tickNow();
+    await until(() => runner.sessions.length === 5, 3_000, 'five sessions');
+    const configs = Object.fromEntries(runner.sessions.map((session) => [session.params.issue.id, session.params.config]));
+    assert.deepEqual(
+      Object.fromEntries(Object.entries(configs).map(([id, config]) => [id, [config.model, config.effort]])),
+      {
+        labeled: ['opus', 'high'],
+        plain: ['opus', 'medium'],
+        unknown: ['opus', 'medium'],
+        conflict: ['opus', 'medium'],
+        both: ['sonnet', 'low'],
+      },
+    );
+  });
+
+  it('runs without an effort when neither a label nor the config names one', async () => {
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    const s = setup({ runner, issues: [makeIssue({ id: 'plain' }), makeIssue({ id: 'labeled', labels: ['effort: xhigh'] })] });
+    await s.orchestrator.tickNow();
+    await until(() => runner.sessions.length === 2, 3_000, 'two sessions');
+    const efforts = Object.fromEntries(runner.sessions.map((session) => [session.params.issue.id, session.params.config.effort]));
+    assert.deepEqual(efforts, { plain: null, labeled: 'xhigh' });
+  });
+
   it('honours per-state concurrency limits', async () => {
     const runner = new FakeRunner(() => new Promise(() => undefined));
     const s = setup({
@@ -239,6 +276,29 @@ describe('roles', () => {
     assert.equal(byId.d?.params.policy?.readOnly, false);
     assert.deepEqual(byId.d?.params.config.allowedTools, ['Read']);
     assert.equal(byId.d?.turns[0], 'Act as developer on acme/app#d');
+  });
+
+  it('lets an "Effort:" label override the role effort, which overrides claude.effort', async () => {
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    const s = setup({
+      runner,
+      front: {
+        ...rolesFront,
+        claude: { ...rolesFront.claude, effort: 'low' },
+        roles: { ...rolesFront.roles, reviewer: { ...rolesFront.roles.reviewer, claude: { ...rolesFront.roles.reviewer.claude, effort: 'high' } } },
+      },
+      prompt: rolePrompt,
+      issues: [
+        makeIssue({ id: 'r', state: 'Agent review' }),
+        makeIssue({ id: 'rl', state: 'Agent review', labels: ['effort: max'] }),
+        makeIssue({ id: 'd' }),
+        makeIssue({ id: 'dl', labels: ['effort: medium'] }),
+      ],
+    });
+    await s.orchestrator.tickNow();
+    await until(() => runner.sessions.length === 4, 3_000, 'four sessions');
+    const efforts = Object.fromEntries(runner.sessions.map((session) => [session.params.issue.id, session.params.config.effort]));
+    assert.deepEqual(efforts, { r: 'high', rl: 'max', d: 'low', dl: 'medium' });
   });
 
   it('shows the role of each run in the snapshot and the issue detail', async () => {

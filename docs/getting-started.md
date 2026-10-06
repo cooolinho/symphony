@@ -100,6 +100,7 @@ SYMPHONY_CLEANUP_TERMINAL=true
 | `GITHUB_PROJECT_NUMBER` | Nummer des Boards. Die ganze Board-URL geht auch. |
 | `GITHUB_REPOSITORY` | `owner/name` des Repositories. Mehrere Repositories trennst du mit Kommas. Issues anderer Repositories auf dem Board werden ignoriert. |
 | `CLAUDE_MODEL` | Standardmodell für Claude Code: Alias wie `opus` oder `sonnet`, oder eine volle Modell-ID. Leer heißt: Claude-Code-Standard. Ein Label `Model: …` am Issue hat Vorrang, siehe [Modell pro Issue wählen](usage.md#modell-pro-issue-wählen). |
+| `CLAUDE_EFFORT` | *optional:* Standard-Denkaufwand für Claude Code: `low`, `medium`, `high`, `xhigh` oder `max`. Leer heißt: Claude-Code-Standard. Ein Label `Effort: …` am Issue hat Vorrang, siehe [Effort pro Issue wählen](usage.md#effort-pro-issue-wählen). |
 | `GITHUB_TOKEN` | Token aus Schritt 3. Er wird aus der Umgebung von Agenten und Hooks entfernt. |
 | `GITHUB_PROJECT_OWNER` | *optional:* Eigentümer des Boards, falls nicht der Repository-Eigentümer (z. B. eine Organisation) |
 | `SYMPHONY_PORT` | *optional:* Port für Dashboard und API, z. B. `4000` für `http://127.0.0.1:4000/` |
@@ -121,7 +122,7 @@ Wert. Nach Änderungen an der `.env` musst du Symphony neu starten.
 
 ## 5. Labels anlegen (optional)
 
-Mit Labels wie `Model: sonnet` wählst du pro Issue das Modell, siehe [Modell pro Issue wählen](usage.md#modell-pro-issue-wählen).
+Mit Labels wie `Model: sonnet` und `Effort: high` wählst du pro Issue Modell und Denkaufwand, siehe [Modell pro Issue wählen](usage.md#modell-pro-issue-wählen) und [Effort pro Issue wählen](usage.md#effort-pro-issue-wählen).
 Das Script `repo-init` legt sie in den Repositories aus `GITHUB_REPOSITORY` an:
 
 ```bash

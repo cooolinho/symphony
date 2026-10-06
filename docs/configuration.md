@@ -229,7 +229,7 @@ write a `transition_denied` line.
 |---|---|---|
 | `model` | Claude Code default | Default model: alias (`opus`, `sonnet`, `haiku`) or full model id. A role's `claude.model` and a `Model: <model>` issue label override it, see [Model per issue](#model-per-issue). |
 | `fallback_model` | none | Used when the primary model is overloaded. Left out for a session whose model is the same (the Agent SDK refuses that combination). |
-| `effort` | Claude Code default | `low`, `medium`, `high`, `xhigh`, `max`. |
+| `effort` | Claude Code default | `low`, `medium`, `high`, `xhigh`, `max`. The shipped `WORKFLOW.md` reads it from `CLAUDE_EFFORT`. A role's `claude.effort` and an `Effort: <level>` issue label override it, see [Effort per issue](#effort-per-issue). |
 | `permission_mode` | `auto` | `auto` (a classifier approves or blocks each action), `default`, `acceptEdits`, `dontAsk`, `plan`, `bypassPermissions`. See [agent-claude.md](agent-claude.md). |
 | `on_permission_request` | `deny` | Answer when Claude Code asks for approval: `deny` or `approve`. |
 | `allowed_tools` / `disallowed_tools` | `[]` | Claude Code permission rules, e.g. `"Bash(git push:*)"`. Tracker tools are always allowed; `AskUserQuestion` is always disallowed. |
@@ -286,8 +286,9 @@ When an issue is dispatched, the role serving its current column is resolved onc
 issue in no role's column runs as `default`). The role decides:
 
 - **Model:** a `Model: …` issue label, else the role's `claude.model`, else `claude.model` (see [Model per issue](#model-per-issue)).
-- **Claude settings:** the role's `claude` block is merged over [`claude`](#claude): `effort` and `max_budget_usd`
-  replace the global value; `allowed_tools`, `disallowed_tools` and `append_system_prompt` are appended to it.
+- **Effort:** an `Effort: …` issue label, else the role's `claude.effort`, else `claude.effort` (see [Effort per issue](#effort-per-issue)).
+- **Claude settings:** the role's `claude` block is merged over [`claude`](#claude): `max_budget_usd`
+  replaces the global value; `allowed_tools`, `disallowed_tools` and `append_system_prompt` are appended to it.
 - **Permissions:** `read_only: true` starts the session read-only ([agent-claude.md](agent-claude.md#permission-and-safety-posture)).
 - **Turns:** `max_turns` replaces `agent.max_turns` for the role's sessions.
 - **Prompt:** the role name is the template variable `role` (see [Prompt template](#prompt-template)).
@@ -353,6 +354,22 @@ appears in the `dispatching issue` log line (`model`, plus `model_label` when a 
 one the session started with).
 `npm run repo-init` creates the standard labels (`Model: opus`, `Model: sonnet`, `Model: haiku`) through the GitHub
 REST API. Other values such as `Model: claude-opus-5-5` work as labels too; create them by hand.
+
+### Effort per issue
+
+An issue label `Effort: <level>` picks the effort for that issue's sessions; issues without one use the effort of their
+[role](#roles) (`roles.<role>.claude.effort`), else `claude.effort` (`CLAUDE_EFFORT` in the shipped `WORKFLOW.md`; empty
+= Claude Code default). Precedence: `Effort:` label > role effort > `claude.effort`. The prefix is matched
+case-insensitively and the space after the colon is optional. The value is lowercased and must be one of `low`,
+`medium`, `high`, `xhigh` or `max`; anything else is unknown.
+
+Unknown values, and several labels naming different levels, are ignored: the session uses the role effort or
+`claude.effort` and Symphony logs `effort label ignored` (the dry run shows the same). Symphony does not check the effort
+against the model; Claude Code lowers a level the model does not support. Like the model, the effort is chosen when a
+session is dispatched, so a label change applies from the next session. The choice appears in the `dispatching issue`
+log line (`effort`, plus `effort_label` when a label picked it), in the `run_dispatched` trace event and as `effort` of
+`run_started` in the repository log (`default` when none is configured). `npm run repo-init` creates the five standard
+labels `Effort: low` … `Effort: max`.
 
 ### `server`
 
@@ -502,7 +519,7 @@ workflow directory, else `$XDG_STATE_HOME/symphony` or `~/.local/state/symphony`
 
 | Event | Fields |
 |---|---|
-| `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested: from a `Model: …` label, else the role's model, else `claude.model`), `role` (`default` without roles), `laravel` and `boost` (only for workspaces with [`laravel`](#laravel) apps: `<app dir>:<laravel/framework version from composer.lock, or unknown>` and the Boost status `ready`, `failed`, `skipped` or `absent`, e.g. `laravel=laravel/:v13.1.0 boost=ready`; several apps give comma-separated entries, each status prefixed by its directory) |
+| `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested: from a `Model: …` label, else the role's model, else `claude.model`), `effort` (requested: from an `Effort: …` label, else the role's effort, else `claude.effort`; `default` when none), `role` (`default` without roles), `laravel` and `boost` (only for workspaces with [`laravel`](#laravel) apps: `<app dir>:<laravel/framework version from composer.lock, or unknown>` and the Boost status `ready`, `failed`, `skipped` or `absent`, e.g. `laravel=laravel/:v13.1.0 boost=ready`; several apps give comma-separated entries, each status prefixed by its directory) |
 | `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `session_limit` (the run ended with a session limit; see `agent-claude.md`), `stopped`, `stalled`, `shutdown`), `role` and `next_role` (only when the run handed off to another [role](#roles)), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `head_sha` and `branch` (final commit of a git workspace; omitted otherwise), `mcp_tool_calls` (`<server>:<n>,…` per MCP server; omitted when no MCP tool was used), `started_at`, `mcp_unavailable` (comma-separated MCP servers Symphony added that did not connect; only when there are any), running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` |
 | `model_usage` | `repo`, `issue`, `run`, `model`, `price` (matched entry), token counts, `cost_usd` |
 | `issue_paused` | `repo`, `issue`, `title`, `state`, `continuations`, `max_continuations` |
@@ -529,8 +546,10 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
 - `role`: name of the [role](#roles) running the issue (e.g. `developer`, `reviewer`), or `default` without `roles`.
   Always defined, so one prompt can branch per role: `{% if role == "reviewer" %}…{% endif %}`.
 
-Besides the standard Liquid filters there is `without_model_labels`: `issue.labels | without_model_labels` drops the
-`Model: …` labels, which only pick the agent's model (see [Model per issue](#model-per-issue)).
+Besides the standard Liquid filters there are `without_model_labels` and `without_agent_labels`:
+`issue.labels | without_model_labels` drops the `Model: …` labels, which only pick the agent's model (see
+[Model per issue](#model-per-issue)); `issue.labels | without_agent_labels` drops the `Effort: …` labels as well (see
+[Effort per issue](#effort-per-issue)). The shipped `WORKFLOW.md` uses the latter.
 
 An empty body falls back to a minimal default prompt. `npm run dry-run` renders the prompt for the first eligible
 issue so you can check it without starting an agent.

@@ -53,6 +53,9 @@ claude:
   # Default model, e.g. opus or sonnet; unset = Claude Code default. A "Model: <model>" label on an issue
   # overrides it for that issue, e.g. "Model: sonnet" or "Model: claude-opus-5-5" (npm run repo-init creates them).
   model: $CLAUDE_MODEL
+  # Default effort: low, medium, high, xhigh or max; unset = Claude Code default. An "Effort: <level>" label on an
+  # issue overrides it for that issue (a role's claude.effort sits in between).
+  effort: $CLAUDE_EFFORT
   permission_mode: auto                      # a classifier approves safe actions, blocks risky ones
   on_permission_request: deny                # what to answer when it asks: nobody is watching
   allowed_tools:
@@ -104,7 +107,7 @@ You are working on GitHub issue **{{ issue.identifier }}**: {{ issue.title }}
 
 - Issue: {{ issue.url }}
 - Board status: {{ issue.state }}
-{% assign task_labels = issue.labels | without_model_labels %}{% if task_labels != empty %}- Labels: {{ task_labels | join: ", " }}
+{% assign task_labels = issue.labels | without_agent_labels %}{% if task_labels != empty %}- Labels: {{ task_labels | join: ", " }}
 {% endif %}{% if issue.native_ref.parent %}- Parent issue: {{ issue.native_ref.parent.identifier }} ("{{ issue.native_ref.parent.title }}"). This is a sub-issue: keep the change scoped to it.
 {% endif %}{% if issue.native_ref.sub_issues != empty %}- Sub-issues:{% for sub in issue.native_ref.sub_issues %} {{ sub.identifier }} "{{ sub.title }}" ({{ sub.state | downcase }}){% unless forloop.last %},{% endunless %}{% endfor %}. Build on their results instead of redoing them.
 {% endif %}{% if issue.blocked_by != empty %}- Depends on:{% for blocker in issue.blocked_by %} {{ blocker.identifier }} ({{ blocker.state | downcase }}){% unless forloop.last %},{% endunless %}{% endfor %}.

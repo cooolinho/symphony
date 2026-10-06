@@ -237,13 +237,44 @@ Issue das Modell aus dem Label:
   `dispatching issue` (`model=…`, bei einem Label auch `model_label=…`) und im Log des Repositorys bei `run_started`.
   Das Dashboard zeigt in der Spalte *Model* das Modell, das Claude Code tatsächlich nutzt.
 - Im Prompt fehlen die Model-Labels in der Label-Liste des Agenten. Für seine Arbeit spielen sie keine Rolle.
+- Den Denkaufwand wählst du auf dieselbe Weise, siehe [Effort pro Issue wählen](#effort-pro-issue-wählen).
 - Nicht verwechseln mit `claude.fallback_model` in der `WORKFLOW.md`: Das ist ein Ausweichmodell, falls das Modell
   überlastet ist. Wählt ein Label genau dieses Modell, lässt Symphony das Ausweichmodell für diese Session weg.
+
+## Effort pro Issue wählen
+
+Der Effort steuert, wie viel Claude nachdenkt und wie gründlich es vorgeht. Er beeinflusst vor allem Kosten, Laufzeit
+und Kontingent: `low` oder `medium` genügen für kleine Aufgaben (Tippfehler, Doku, ein Config-Wert), `xhigh` oder `max`
+geben einem kniffligen Issue mehr Spielraum, ohne das Modell zu wechseln. Jede Session nutzt den Effort aus
+`CLAUDE_EFFORT`, außer das Issue trägt ein Label `Effort: …`. Dann gilt für dieses Issue der Effort aus dem Label:
+
+| Label | Effort für Claude Code |
+|---|---|
+| `Effort: low` | `low` |
+| `Effort: medium` | `medium` |
+| `Effort: high` | `high` |
+| `Effort: xhigh` | `xhigh` |
+| `Effort: max` | `max` |
+
+- `repo-init` legt alle fünf Labels an, zusammen mit den Model-Labels.
+- Groß- und Kleinschreibung spielen keine Rolle. Andere Werte (z. B. `Effort: hi`) sind unbekannt.
+- Rangfolge: `Effort:`-Label vor dem `effort` der Rolle (`roles.<rolle>.claude.effort`) vor `CLAUDE_EFFORT` (also
+  `claude.effort` in der `WORKFLOW.md`). Ist nichts davon gesetzt, gilt der Standard von Claude Code.
+- Bei einem unbekannten Wert oder bei mehreren Labels mit verschiedenen Stufen gilt der Effort ohne Label. Symphony
+  schreibt dann die Warnung `effort label ignored` ins Log und in den Dry Run.
+- Der Effort gilt für eine ganze Session, genau wie das Modell: Eine Label-Änderung wirkt ab der nächsten Session.
+- Unterstützt ein Modell eine Stufe nicht (z. B. Haiku), stuft Claude Code sie selbst herunter. Symphony prüft das
+  nicht.
+- Kontrolle: `npm run dry-run` zeigt pro Issue `↳ role …, model …, effort …` und bei einem Label
+  `↳ effort … (label "…")`. Beim Start steht der Effort in der Logzeile `dispatching issue` (`effort=…`, bei einem
+  Label auch `effort_label=…`) und im Log des Repositorys bei `run_started` (`effort=…`, `default` ohne Effort). Die
+  Agent-Seite zeigt ihn in der Zeile des Sessionstarts.
+- Im Prompt fehlen die Effort- und Model-Labels in der Label-Liste des Agenten (Filter `without_agent_labels`).
 
 ## Repositories einrichten (repo-init)
 
 `repo-init` richtet die Repositories aus `GITHUB_REPOSITORY` interaktiv ein. Es gibt zwei Schritte: die
-Standard-Labels für die Modellwahl und ein Issue, das Laravel Boost einführt. Weitere Schritte kommen als Einträge in
+Standard-Labels für Modell und Effort und ein Issue, das Laravel Boost einführt. Weitere Schritte kommen als Einträge in
 derselben Auswahlliste dazu.
 
 ```bash
@@ -392,7 +423,7 @@ ts=2026-10-04T09:17:00.000Z event=model_usage repo=cooolinho/trainingsstunden-po
 
 | Ereignis | Bedeutung |
 |---|---|
-| `run_started` | Ein Agent beginnt mit einem Issue: Zeitpunkt, Issue, Titel, Spalte, Versuch und gewünschtes Modell (aus dem Label `Model: …`, sonst `CLAUDE_MODEL`). |
+| `run_started` | Ein Agent beginnt mit einem Issue: Zeitpunkt, Issue, Titel, Spalte, Versuch, gewünschtes Modell (aus dem Label `Model: …`, sonst `CLAUDE_MODEL`) und gewünschter Effort (aus dem Label `Effort: …`, sonst `CLAUDE_EFFORT`). |
 | `run_finished` | Ein Lauf endet. Erfasst werden das Ergebnis (`handed_off` = übergeben, `continuing` = noch aktiv, `failed`, `session_limit`, `stopped`, `stalled`, `shutdown`) und die Spalte danach. Dazu kommen Turns, das meistgenutzte Modell, Tokens (Input, Output, Cache), geschätzte Kosten und Agentenzeit. Die Felder `repo_*` sind die laufenden Summen des Repositorys. |
 | `model_usage` | Tokens und Kosten eines Laufs pro Modell. Arbeitet Claude Code intern mit einem zweiten Modell, gibt es eine zweite Zeile. |
 | `issue_paused` | Ein Issue wurde nach seinen Fortsetzungs-Sessions pausiert. |
@@ -497,7 +528,7 @@ Die häufigsten Stellschrauben in der `WORKFLOW.md`. Alle Optionen beschreibt
 | `checks` | Skripte, die bestehen müssen, bevor eine Karte in eine Spalte darf (`on_enter`), und ihr Zeitlimit |
 | `workspace.cleanup_terminal` | Workspaces bei `Done` löschen (Standard) oder behalten |
 | `claude.max_budget_usd` | Kostenobergrenze pro Session |
-| `claude.effort` | Denkaufwand: `low` … `max` |
+| `claude.effort` | Denkaufwand: `low` … `max`. Kommt aus `CLAUDE_EFFORT`; ein Label `Effort: …` am Issue hat Vorrang, siehe [Effort pro Issue wählen](#effort-pro-issue-wählen) |
 | `claude.allowed_tools` | Aktionen, die immer erlaubt sind, z. B. `"Bash(npm test:*)"` |
 | `claude.plugins`, `claude.skills` | Plugin-Ordner für alle Sessions (Standard: `./.claude`) und welche Skills aktiv sind (`all`) |
 | `laravel.*` | Laravel Boost: `boost: auto` oder `off`, PHP- und Composer-Befehl, Umgebung für Boost (`env`, Standard `APP_ENV: local`) und Agent (`agent_env`), Tool-Sperren (`allow_tinker`, `deny_tools`) |
@@ -660,6 +691,7 @@ Mit einem Stack pro Workspace kann `laravel.php` auf ein Wrapper-Script zeigen, 
 | Meldung `You've hit your session limit` (Dashboard: *Session limit*) | Dein Claude-Abonnement hat sein Nutzungslimit erreicht. Symphony wiederholt bis zu `SYMPHONY_MAX_SESSION_LIMIT_RETRIES` Mal und wartet dann bis zum Reset, siehe [Session-Limit](#session-limit). Hast du Guthaben aufgeladen, hilft **Retry now**. Ein `ANTHROPIC_API_KEY` hat kein Session-Limit. |
 | Ein Worker wartet länger als erwartet | Im Dashboard unter *Retrying* nach `retry at` und `resets` schauen. Beim Session-Limit ist das der Reset plus 1 Minute, bei unbekanntem Reset gilt der normale Backoff (bis 10 Minuten). Ein pausiertes Issue (*Paused*) hat keinen Termin: Es geht erst bei einer Änderung am Issue, einem höheren `max_continuations` oder per **Resume now** weiter. Nach einem Symphony-Neustart ist ein Warten vergessen. Sofort starten: **Retry now**. |
 | Warnung `model label ignored` | Ein Model-Label ist unbekannt (Tippfehler), oder das Issue hat mehrere Model-Labels mit verschiedenen Modellen. Symphony nutzt dann `CLAUDE_MODEL`. Label korrigieren, `npm run dry-run` zeigt das Ergebnis. |
+| Warnung `effort label ignored` | Ein Effort-Label ist unbekannt (Tippfehler, erlaubt sind `low`, `medium`, `high`, `xhigh`, `max`), oder das Issue hat mehrere Effort-Labels mit verschiedenen Stufen. Symphony nutzt dann den Effort der Rolle oder `CLAUDE_EFFORT`. Label korrigieren, `npm run dry-run` zeigt das Ergebnis. |
 | Session scheitert gleich zu Beginn mit einem Modellfehler | Das Label nennt eine Version, die es nicht gibt, z. B. `Model: claude-opus-9-9`. Symphony wiederholt den Lauf mit Wartezeit. Label korrigieren. |
 | `repo-init` meldet `HTTP 404` oder `HTTP 403` | Das Repository in `GITHUB_REPOSITORY` ist falsch geschrieben, oder der Token darf keine Labels oder Issues anlegen bzw. keine Dateien lesen. Klassischer Token: Scope `repo`, Fine-grained Token: *Issues: Read and write* und *Contents: Read*. |
 | Warnung `Laravel Boost skipped: composer install failed` | PHP- oder Erweiterungsversion passt nicht zu `composer.lock`, oder Composer erreicht Packagist nicht. Die Ausgabe steht im Log. Passendes PHP installieren und `SYMPHONY_PHP` setzen. |

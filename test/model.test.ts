@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { chooseModel, isModelLabel, modelForLabelValue, sessionClaudeConfig } from '../src/agent/model.ts';
+import { chooseEffort, chooseModel, effortForLabelValue, isEffortLabel, isModelLabel, modelForLabelValue, sessionClaudeConfig } from '../src/agent/model.ts';
 import { roleModelLine } from '../src/service.ts';
 import { STANDARD_LABELS } from '../src/repo-init/labels.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
@@ -67,14 +67,14 @@ describe('model labels', () => {
   });
 
   it('drops fallback models equal to the session model', () => {
-    assert.equal(sessionClaudeConfig(claudeConfig({ model: 'opus', fallback_model: 'sonnet' }), 'sonnet').fallbackModel, null);
-    assert.equal(sessionClaudeConfig(claudeConfig({ fallback_model: 'sonnet, haiku' }), 'sonnet').fallbackModel, 'haiku');
-    const kept = sessionClaudeConfig(claudeConfig({ model: 'opus', fallback_model: 'sonnet' }), 'haiku');
+    assert.equal(sessionClaudeConfig(claudeConfig({ model: 'opus', fallback_model: 'sonnet' }), 'sonnet', null).fallbackModel, null);
+    assert.equal(sessionClaudeConfig(claudeConfig({ fallback_model: 'sonnet, haiku' }), 'sonnet', null).fallbackModel, 'haiku');
+    const kept = sessionClaudeConfig(claudeConfig({ model: 'opus', fallback_model: 'sonnet' }), 'haiku', null);
     assert.deepEqual([kept.model, kept.fallbackModel], ['haiku', 'sonnet']);
-    assert.equal(sessionClaudeConfig(claudeConfig({ model: 'opus' }), null).model, null);
+    assert.equal(sessionClaudeConfig(claudeConfig({ model: 'opus' }), null, null).model, null);
   });
 
-  it('merges role overrides: effort and budget replace, tools and system prompt append', () => {
+  it('merges role overrides: budget replaces, tools and system prompt append; model and effort are the chosen ones', () => {
     const base = claudeConfig({
       effort: 'medium',
       max_budget_usd: 5,
@@ -82,7 +82,7 @@ describe('model labels', () => {
       disallowed_tools: ['WebFetch'],
       append_system_prompt: 'Base rules.',
     });
-    const merged = sessionClaudeConfig(base, 'opus', {
+    const merged = sessionClaudeConfig(base, 'opus', 'xhigh', {
       model: 'haiku',
       effort: 'high',
       maxBudgetUsd: 1,
@@ -91,33 +91,96 @@ describe('model labels', () => {
       appendSystemPrompt: 'Review only.',
     });
     assert.equal(merged.model, 'opus');
-    assert.equal(merged.effort, 'high');
+    assert.equal(merged.effort, 'xhigh');
     assert.equal(merged.maxBudgetUsd, 1);
     assert.deepEqual(merged.allowedTools, ['Read', 'Grep']);
     assert.deepEqual(merged.disallowedTools, ['WebFetch', 'Bash']);
     assert.equal(merged.appendSystemPrompt, 'Base rules.\n\nReview only.');
 
-    const untouched = sessionClaudeConfig(base, null, {});
+    const untouched = sessionClaudeConfig(base, null, 'medium', {});
     assert.deepEqual([untouched.effort, untouched.maxBudgetUsd, untouched.appendSystemPrompt], ['medium', 5, 'Base rules.']);
-    assert.equal(sessionClaudeConfig(claudeConfig({}), null, { appendSystemPrompt: 'Only role.' }).appendSystemPrompt, 'Only role.');
+    assert.equal(sessionClaudeConfig(claudeConfig({}), null, null, { appendSystemPrompt: 'Only role.' }).appendSystemPrompt, 'Only role.');
+    assert.equal(sessionClaudeConfig(base, null, null).effort, null);
   });
 
-  it('only ships standard labels that resolve to a model', () => {
-    assert.equal(STANDARD_LABELS.length, 3);
+  it('only ships standard labels that resolve to a model or an effort level', () => {
+    assert.equal(STANDARD_LABELS.length, 8);
+    assert.equal(STANDARD_LABELS.filter((label) => isModelLabel(label.name)).length, 3);
+    assert.equal(STANDARD_LABELS.filter((label) => isEffortLabel(label.name)).length, 5);
     for (const label of STANDARD_LABELS) {
-      assert.ok(isModelLabel(label.name), label.name);
-      const choice = chooseModel([label.name.toLowerCase()], null);
-      assert.ok(choice.model !== null && choice.warning === null, label.name);
-      assert.ok(label.description.includes(choice.model), label.name);
+      if (isModelLabel(label.name)) {
+        const choice = chooseModel([label.name.toLowerCase()], null);
+        assert.ok(choice.model !== null && choice.warning === null, label.name);
+        assert.ok(label.description.includes(choice.model), label.name);
+      } else {
+        assert.ok(isEffortLabel(label.name), label.name);
+        const choice = chooseEffort([label.name.toLowerCase()], null);
+        assert.ok(choice.effort !== null && choice.warning === null, label.name);
+        assert.ok(label.description.includes(choice.effort), label.name);
+      }
       assert.ok(label.description.length <= 100, label.name);
       assert.match(label.color, /^[0-9a-f]{6}$/);
     }
   });
 });
 
+describe('effort labels', () => {
+  it('maps every effort level, case-insensitively', () => {
+    for (const level of ['low', 'medium', 'high', 'xhigh', 'max']) assert.equal(effortForLabelValue(level), level, level);
+    assert.equal(effortForLabelValue(' High '), 'high');
+    assert.equal(effortForLabelValue('XHIGH'), 'xhigh');
+  });
+
+  it('rejects values that are not an effort level', () => {
+    for (const value of ['', 'hi', 'extra-high', 'ultra', 'opus', '5']) assert.equal(effortForLabelValue(value), null, value);
+  });
+
+  it('recognizes effort labels case-insensitively and keeps them apart from model labels', () => {
+    assert.equal(isEffortLabel('Effort: high'), true);
+    assert.equal(isEffortLabel('effort:low'), true);
+    assert.equal(isEffortLabel('side-effort: high'), false);
+    assert.equal(isEffortLabel('Model: opus'), false);
+    assert.equal(isModelLabel('Effort: high'), false);
+  });
+
+  it('picks the effort from a label, else the default', () => {
+    assert.deepEqual(chooseEffort(['bug', 'effort: high'], 'low'), { effort: 'high', label: 'effort: high', warning: null });
+    assert.deepEqual(chooseEffort(['Effort:MAX'], null), { effort: 'max', label: 'Effort:MAX', warning: null });
+    assert.deepEqual(chooseEffort(['bug', 'model: opus'], 'medium'), { effort: 'medium', label: null, warning: null });
+    assert.deepEqual(chooseEffort([], null), { effort: null, label: null, warning: null });
+  });
+
+  it('treats labels naming the same level as one choice', () => {
+    assert.deepEqual(chooseEffort(['effort: high', 'Effort: HIGH'], 'low'), { effort: 'high', label: 'effort: high', warning: null });
+  });
+
+  it('falls back to the default effort for conflicting or unknown labels, with a warning', () => {
+    const conflict = chooseEffort(['effort: low', 'effort: max'], 'medium');
+    assert.deepEqual([conflict.effort, conflict.label], ['medium', null]);
+    assert.match(conflict.warning ?? '', /conflicting effort labels "effort: low", "effort: max"/);
+
+    const unknown = chooseEffort(['effort: hi'], 'medium');
+    assert.deepEqual([unknown.effort, unknown.label], ['medium', null]);
+    assert.match(unknown.warning ?? '', /unknown effort label "effort: hi"/);
+
+    const mixed = chooseEffort(['effort: hi', 'effort: low'], 'medium');
+    assert.deepEqual([mixed.effort, mixed.label], ['low', 'effort: low']);
+    assert.match(mixed.warning ?? '', /unknown effort label "effort: hi"/);
+  });
+
+  it('chooses model and effort independently', () => {
+    const labels = ['model: sonnet', 'effort: high'];
+    assert.equal(chooseModel(labels, 'opus').model, 'sonnet');
+    assert.equal(chooseEffort(labels, 'low').effort, 'high');
+    assert.equal(chooseModel(labels, 'opus').warning, null);
+    assert.equal(chooseEffort(labels, 'low').warning, null);
+  });
+});
+
 describe('roleModelLine', () => {
-  it('names role and model, or default without a model', () => {
-    assert.equal(roleModelLine('reviewer', 'opus'), 'role reviewer, model opus');
-    assert.equal(roleModelLine('default', null), 'role default, model default');
+  it('names role, model and effort, or default without them', () => {
+    assert.equal(roleModelLine('reviewer', 'opus', 'high'), 'role reviewer, model opus, effort high');
+    assert.equal(roleModelLine('default', null, null), 'role default, model default, effort default');
+    assert.equal(roleModelLine('default', 'sonnet'), 'role default, model sonnet, effort default');
   });
 });

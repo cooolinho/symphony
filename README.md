@@ -39,6 +39,8 @@ und Token stehen in der **`.env`**. Symphony ist eine Implementierung der
   blockiert Claude Codes `auto`-Modus.
 - **Modell pro Issue:** Ein Label wie `Model: sonnet` oder `Model: claude-opus-5-5` wählt das Modell für ein Issue.
   `npm run repo-init` legt die Labels `Model: opus`, `Model: sonnet` und `Model: haiku` in deinen Repositories an.
+- **Effort pro Issue:** Ein Label wie `Effort: low` oder `Effort: max` wählt den Denkaufwand für ein Issue. Ohne Label
+  gilt `CLAUDE_EFFORT` aus der `.env`. `repo-init` legt die fünf Labels `Effort: low` bis `Effort: max` ebenfalls an.
 - **Laravel Boost automatisch:** Erkennt Symphony im Workspace eine Laravel-App mit `laravel/boost`, bekommt der
   Agent Boosts Guidelines, Skills und MCP-Server (Doku-Suche, Datenbankschema, Logs), passend zu den installierten
   Paketversionen. Generierte Dateien landen nie im Pull Request.
@@ -81,7 +83,7 @@ Dazwischen legst du ein GitHub Project Board mit den Spalten `Backlog`, `Ready`,
 
 Du schiebst ein Issue nach `Ready`. Ein Developer-Agent setzt es um und öffnet einen Pull Request. Nach bestandenen
 Checks prüft ein lesender Reviewer-Agent die Arbeit, danach landet die Karte in `In review`. Du mergst den Pull Request
-und schiebst die Karte nach `Done`. Mit einem Label wie `Model: sonnet` wählst du das Modell pro Issue, das Dashboard
+und schiebst die Karte nach `Done`. Mit Labels wie `Model: sonnet` und `Effort: high` wählst du Modell und Denkaufwand pro Issue, das Dashboard
 (`SYMPHONY_PORT`) zeigt laufende Agenten, Logs und Kosten.
 
 Alles Weitere steht in [docs/usage.md](docs/usage.md): Ablauf eines Issues, Eingreifen im Betrieb, Abhängigkeiten,

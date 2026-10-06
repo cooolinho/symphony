@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ClaudeAgentRunner } from './agent/claude.ts';
-import { chooseModel } from './agent/model.ts';
+import { chooseEffort, chooseModel } from './agent/model.ts';
 import { PricingStore } from './costs/pricing.ts';
 import { HistoryLog } from './history/history.ts';
 import { killAllAgentProcessGroups } from './agent/spawn.ts';
@@ -47,9 +47,9 @@ function logEnvFile(logger: Logger, envFile: LoadedEnvFile | null): void {
 }
 
 /** Runs until SIGINT/SIGTERM. Returns the process exit code. */
-/** Dry-run line naming the role and the model a candidate would run on (`default` when none is configured). */
-export function roleModelLine(role: string, model: string | null): string {
-  return `role ${role}, model ${model ?? 'default'}`;
+/** Dry-run line naming the role, model and effort a candidate would run on (`default` when none is configured). */
+export function roleModelLine(role: string, model: string | null, effort: string | null = null): string {
+  return `role ${role}, model ${model ?? 'default'}, effort ${effort ?? 'default'}`;
 }
 
 export async function runService(options: ServiceOptions): Promise<number> {
@@ -199,7 +199,7 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
     out(`Concurrency:     ${config.agent.maxConcurrentAgents} agents, ${config.agent.maxTurns} turns per session, poll every ${config.polling.intervalMs / 1000}s`);
     out(`Session limit:   ${config.agent.maxSessionLimitRetries} retries, then wait for the reset (0 = wait right away)`);
     out(`Continuations:   ${config.agent.maxContinuations === null ? 'unlimited' : `${config.agent.maxContinuations} per issue, then pause`}; delete workspace on ${config.tracker.terminalStates.join('/')}: ${config.workspace.cleanupTerminal ? 'yes' : 'no'}`);
-    out(`Claude:          model ${config.claude.model ?? '(Claude Code default)'} (default; a "Model: …" issue label overrides it), permission mode ${config.claude.permissionMode}, on_permission_request ${config.claude.onPermissionRequest}`);
+    out(`Claude:          model ${config.claude.model ?? '(Claude Code default)'} (default; a "Model: …" issue label overrides it), effort ${config.claude.effort ?? '(Claude Code default)'} (default; an "Effort: …" issue label overrides it), permission mode ${config.claude.permissionMode}, on_permission_request ${config.claude.onPermissionRequest}`);
     if (config.claude.plugins.length > 0 || config.claude.skills !== null) {
       const skills = config.claude.skills === null ? 'Claude Code default' : config.claude.skills === 'all' ? 'all' : config.claude.skills.join(', ');
       out(`Plugins:         ${config.claude.plugins.join(', ') || '(none)'}; skills: ${skills}`);
@@ -243,9 +243,12 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       if (reason !== null) out(`            ↳ ${reason}`);
       const role = roleFor(issue.state, config.roles);
       const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model);
-      out(`            ↳ ${roleModelLine(roleName(role), choice.model)}`);
+      const effortChoice = chooseEffort(issue.labels, role?.claude.effort ?? config.claude.effort);
+      out(`            ↳ ${roleModelLine(roleName(role), choice.model, effortChoice.effort)}`);
       if (choice.warning !== null) out(`            ↳ model label ignored: ${choice.warning}; using ${choice.model ?? '(Claude Code default)'}`);
       else if (choice.label !== null) out(`            ↳ model ${choice.model} (label "${choice.label}")`);
+      if (effortChoice.warning !== null) out(`            ↳ effort label ignored: ${effortChoice.warning}; using ${effortChoice.effort ?? '(Claude Code default)'}`);
+      else if (effortChoice.label !== null) out(`            ↳ effort ${effortChoice.effort} (label "${effortChoice.label}")`);
       const workspace = path.join(config.workspace.root, workspaceKey(issue.identifier));
       for (const line of await integrationLines(integrations, config.integrations, options.env, workspace)) out(`            ↳ ${line}`);
     }

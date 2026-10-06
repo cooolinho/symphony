@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { sessionClaudeConfig } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, AgentSession, SessionLimitInfo } from '../agent/types.ts';
 import { prepareIntegrations } from '../integrations/registry.ts';
@@ -96,6 +97,8 @@ export interface WorkerParams {
   workflow: EffectiveWorkflow;
   /** Model for the session: a "Model: <model>" label, else roles.<role>.claude.model, else claude.model; null = Claude Code default. */
   model: string | null;
+  /** Effort for the session: an "Effort: <level>" label, else roles.<role>.claude.effort, else claude.effort; null = Claude Code default. */
+  effort: EffortLevel | null;
   /** Role serving the issue's column at dispatch; null = the implicit `default` role. Fixed for the run. */
   role: RoleConfig | null;
   /** Adapter snapshot: the tools advertised to the session and the ones executed are the same. */
@@ -259,7 +262,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     session = await params.runner.startSession({
       cwd: activeWorkspace.path,
       issue,
-      config: sessionClaudeConfig(params.workflow.config.claude, params.model, role?.claude),
+      config: sessionClaudeConfig(params.workflow.config.claude, params.model, params.effort, role?.claude),
       policy: { readOnly: role?.readOnly ?? false },
       // Entry checks run inside the status tool call; leave a minute for the tracker call around them.
       toolTimeoutMs: params.workflow.config.checks.timeoutMs + TOOL_TIMEOUT_MARGIN_MS,

@@ -16,6 +16,7 @@ Claude Code CLI. The spec targets the Codex app-server; this section documents h
 | Startup handshake | `initializationResult()`, bounded by `claude.read_timeout_ms` |
 | Session title | `<identifier>: <title>` |
 | Model | A `Model: <model>` label on the issue, else the role's `claude.model`, else `claude.model` ([configuration](configuration.md#model-per-issue)); fixed for the session |
+| Effort | An `Effort: <level>` label on the issue, else the role's `claude.effort`, else `claude.effort` (`CLAUDE_EFFORT` in the shipped `WORKFLOW.md`) ([configuration](configuration.md#effort-per-issue)); fixed for the session |
 | Role | The [role](configuration.md#roles) of the issue's column at dispatch (`default` without roles); fixed for the run. Its `claude` overrides are merged into the session settings, `read_only` sets the policy below, `max_turns` limits the turns |
 | MCP servers | The in-process `tracker` server, plus workspace extensions such as Laravel Boost (below); nothing else with `claude.strict_mcp_config` (default) |
 
