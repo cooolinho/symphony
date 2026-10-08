@@ -434,6 +434,9 @@ class ClaudeSession implements AgentSession {
       this.#params.logger.warn('Claude Code is not using the requested permission mode', {
         requested,
         actual: message.permissionMode,
+        model: message.model,
+        // A model without auto mode (Haiku) silently runs in "default", where unattended runs deny every prompt.
+        ...(requested === 'auto' ? { hint: 'the model may not support auto mode; set claude.by_model.<model>.permission_mode' } : {}),
       });
     }
     const tracker = message.mcp_servers.find((server) => server.name === TRACKER_SERVER);

@@ -241,6 +241,7 @@ write a `transition_denied` line.
 | `permission_mode` | `auto` | `auto` (a classifier approves or blocks each action), `default`, `acceptEdits`, `dontAsk`, `plan`, `bypassPermissions`. See [agent-claude.md](agent-claude.md). |
 | `on_permission_request` | `deny` | Answer when Claude Code asks for approval: `deny` or `approve`. |
 | `allowed_tools` / `disallowed_tools` | `[]` | Claude Code permission rules, e.g. `"Bash(git push:*)"`. Tracker tools are always allowed; `AskUserQuestion` is always disallowed. |
+| `by_model` | `{}` | Permission overrides per model, for models that cannot run in `permission_mode: auto` (Haiku). Keys name a model like a `Model:` label does (`haiku`, `haiku-4-5`, `claude-haiku-4-5`); an unknown name is a config error. Each entry takes `permission_mode` and `on_permission_request` (replace the values above) and `allowed_tools` / `disallowed_tools` (appended after the global and the role's). A key matches the model family or version and every id below it: `haiku` covers `haiku`, `claude-haiku-4-5` and `claude-haiku-4-5-20251001`; with several matches the longest key wins. See [Permissions per model](#permissions-per-model). |
 | `setting_sources` | `[project]` | Which Claude Code settings to load: `project` (the repository's `.claude/settings.json` and `CLAUDE.md`), `local`, `user` (your personal `~/.claude` settings, plugins and hooks). |
 | `strict_mcp_config` | `true` | Only the MCP servers Symphony passes (the `tracker` server and workspace extensions such as Laravel Boost) load. A repository's `.mcp.json`, user settings, plugin-provided MCP servers and the account's claude.ai connectors are ignored. `false` lets them load; a repository's `.mcp.json` then loads without approval. |
 | `sandbox` | none | Passed to Claude Code's sandbox settings (`enabled`, `network`, `filesystem`, …). |
@@ -412,6 +413,28 @@ appears in the `dispatching issue` log line (`model`, plus `model_label` when a 
 one the session started with).
 `npm run repo-init` creates the standard labels (`Model: opus`, `Model: sonnet`, `Model: haiku`) through the GitHub
 REST API. Other values such as `Model: claude-opus-5-5` work as labels too; create them by hand.
+
+#### Permissions per model
+
+Claude Code's `auto` permission mode is not available for every model. Haiku runs in `default` instead (the
+`session_configured` event and the `init` message of the session transcript show the mode that is really used), and in
+`default` every Bash, Write or Edit call asks for approval, which `on_permission_request: deny` refuses in an unattended run
+("The orchestrator's permission policy does not allow Bash here…"). `claude.by_model` gives such a model its own mode and
+tool rules in the orchestrator config instead of a `.claude/settings.json` in every repository:
+
+```yaml
+claude:
+  permission_mode: auto
+  by_model:
+    haiku:
+      permission_mode: acceptEdits               # file edits without asking
+      allowed_tools: [Bash, Read, Write, Edit]   # shell commands and file tools without asking
+```
+
+The override applies to the model the session runs on, whether a `Model:` label, a role or `claude.model` picked it.
+Sessions on other models keep the global values. Deny rules still win, so a role with `read_only: true` stays
+read-only on Haiku, and `AskUserQuestion` stays disabled. If a session starts in another mode than requested, Symphony
+logs `Claude Code is not using the requested permission mode` with the model.
 
 ### Effort per issue
 

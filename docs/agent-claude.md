@@ -34,6 +34,10 @@ Symphony runs agents **unattended**. Nobody watches a session, so every decision
   logged as `approval_auto_approved`).
 - **`claude.allowed_tools`:** actions the workflow always needs, e.g. `Bash(git push:*)`, so the agent can push its
   branch without asking.
+- **`claude.by_model`:** permission overrides per model. Haiku has no `auto` mode; Claude Code then starts the session in
+  `default` and `on_permission_request: deny` refuses every Bash and Write call. The shipped `WORKFLOW.md` therefore runs
+  Haiku with `permission_mode: acceptEdits` and `allowed_tools: [Bash, Read, Write, Edit]`
+  ([details](configuration.md#permissions-per-model)).
 - **Tracker tools** (`mcp__tracker__*`) are always allowed. They run inside Symphony with the GitHub token. The agent
   process never receives tracker credentials: they are removed from its environment. A tool failure reaches the
   agent as an error result `{error: {category, message}}`. Besides the adapter's own categories, tools that change

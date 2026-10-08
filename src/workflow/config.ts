@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import type { EffortLevel, PermissionMode, SettingSource } from '@anthropic-ai/claude-agent-sdk';
+import { bareModelName, modelForLabelValue } from '../agent/model-name.ts';
 import { defaultIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import { resolveEnvReference } from '../util/env.ts';
@@ -55,6 +56,9 @@ export interface AgentConfig {
 
 export type PermissionRequestPolicy = 'approve' | 'deny';
 
+/** Permission settings a model may override (`claude.by_model.<model>`), e.g. for a model without auto mode. */
+export type ModelClaudeOverrides = Partial<Pick<ClaudeConfig, 'permissionMode' | 'onPermissionRequest' | 'allowedTools' | 'disallowedTools'>>;
+
 /** Claude Code session settings (the `claude` front matter section, replacing the spec's `codex`). */
 export interface ClaudeConfig {
   model: string | null;
@@ -64,6 +68,8 @@ export interface ClaudeConfig {
   onPermissionRequest: PermissionRequestPolicy;
   allowedTools: string[];
   disallowedTools: string[];
+  /** Permission overrides per model family or version; keys are bare model names ("haiku", "haiku-4-5"). */
+  byModel: ReadonlyMap<string, ModelClaudeOverrides>;
   settingSources: SettingSource[];
   /** Only MCP servers Symphony passes load (no repo .mcp.json, user/plugin servers or claude.ai connectors). */
   strictMcpConfig: boolean;
@@ -159,6 +165,7 @@ const ROLE_KEYS = new Set([
 /** GitHub allows 100 sub-issues per issue. */
 const MAX_SUB_ISSUES_LIMIT = 100;
 const ROLE_CLAUDE_KEYS = new Set(['model', 'effort', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'max_budget_usd']);
+const MODEL_CLAUDE_KEYS = new Set(['permission_mode', 'on_permission_request', 'allowed_tools', 'disallowed_tools']);
 
 export function normalizeStateName(state: string): string {
   return state.trim().toLowerCase();
@@ -288,6 +295,51 @@ function readRoleClaude(reader: Reader, raw: Record<string, unknown>, field: str
   const maxBudgetUsd = reader.number(raw, 'max_budget_usd', `${field}.max_budget_usd`);
   if (maxBudgetUsd !== null) claude.maxBudgetUsd = maxBudgetUsd;
   return claude;
+}
+
+/**
+ * `claude.by_model`: permission overrides per model. A key names a model like the `Model:` issue labels do ("haiku",
+ * "haiku-4-5", "claude-haiku-4-5") and is stored without the "claude-" prefix.
+ */
+function readByModel(reader: Reader, claudeRaw: Record<string, unknown>): Map<string, ModelClaudeOverrides> {
+  const byModel = new Map<string, ModelClaudeOverrides>();
+  const raw = claudeRaw.by_model;
+  if (raw === undefined || raw === null) return byModel;
+  if (!isPlainObject(raw)) {
+    reader.errors.push('claude.by_model must be a map of model names to settings');
+    return byModel;
+  }
+  for (const [name, value] of Object.entries(raw)) {
+    const field = `claude.by_model.${name}`;
+    const model = modelForLabelValue(name);
+    if (model === null) {
+      reader.errors.push(`${field}: ${JSON.stringify(name)} is not a model name (e.g. haiku, sonnet-5-5, claude-opus-5-5)`);
+      continue;
+    }
+    if (!isPlainObject(value)) {
+      reader.errors.push(`${field} must be a map`);
+      continue;
+    }
+    for (const key of Object.keys(value)) {
+      if (!MODEL_CLAUDE_KEYS.has(key)) reader.errors.push(`${field}.${key} is not a known key (allowed: ${[...MODEL_CLAUDE_KEYS].join(', ')})`);
+    }
+    const key = bareModelName(model);
+    if (byModel.has(key)) {
+      reader.errors.push(`${field} names the same model as another claude.by_model entry (${key})`);
+      continue;
+    }
+    const overrides: ModelClaudeOverrides = {};
+    const permissionMode = reader.oneOf(value, 'permission_mode', `${field}.permission_mode`, PERMISSION_MODES, null);
+    if (permissionMode !== null) overrides.permissionMode = permissionMode;
+    const onPermissionRequest = reader.oneOf(value, 'on_permission_request', `${field}.on_permission_request`, ['approve', 'deny'] as const, null);
+    if (onPermissionRequest !== null) overrides.onPermissionRequest = onPermissionRequest;
+    const allowedTools = reader.stringList(value, 'allowed_tools', `${field}.allowed_tools`);
+    if (allowedTools !== null) overrides.allowedTools = allowedTools;
+    const disallowedTools = reader.stringList(value, 'disallowed_tools', `${field}.disallowed_tools`);
+    if (disallowedTools !== null) overrides.disallowedTools = disallowedTools;
+    byModel.set(key, overrides);
+  }
+  return byModel;
 }
 
 /**
@@ -475,6 +527,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     onPermissionRequest: reader.oneOf(claudeRaw, 'on_permission_request', 'claude.on_permission_request', ['approve', 'deny'] as const, 'deny'),
     allowedTools: reader.stringList(claudeRaw, 'allowed_tools', 'claude.allowed_tools') ?? [],
     disallowedTools: reader.stringList(claudeRaw, 'disallowed_tools', 'claude.disallowed_tools') ?? [],
+    byModel: readByModel(reader, claudeRaw),
     settingSources: settingSources as SettingSource[],
     strictMcpConfig: reader.bool(claudeRaw, 'strict_mcp_config', 'claude.strict_mcp_config', true),
     sandbox,

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { chooseEffort, chooseModel, effortForLabelValue, isEffortLabel, isModelLabel, modelForLabelValue, sessionClaudeConfig } from '../src/agent/model.ts';
+import { chooseEffort, chooseModel, effortForLabelValue, isEffortLabel, isModelLabel, modelForLabelValue, modelOverridesFor, sessionClaudeConfig } from '../src/agent/model.ts';
 import { roleModelLine } from '../src/service.ts';
 import { STANDARD_LABELS, WORKFLOW_LABELS } from '../src/repo-init/labels.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
@@ -101,6 +101,42 @@ describe('model labels', () => {
     assert.deepEqual([untouched.effort, untouched.maxBudgetUsd, untouched.appendSystemPrompt], ['medium', 5, 'Base rules.']);
     assert.equal(sessionClaudeConfig(claudeConfig({}), null, null, { appendSystemPrompt: 'Only role.' }).appendSystemPrompt, 'Only role.');
     assert.equal(sessionClaudeConfig(base, null, null).effort, null);
+  });
+
+  describe('claude.by_model', () => {
+    const haiku = { permission_mode: 'acceptEdits', allowed_tools: ['Bash', 'Read', 'Write', 'Edit'] };
+
+    it('matches a model by family, version or full id, longest key first, and never without a model', () => {
+      const { byModel } = claudeConfig({ by_model: { haiku, 'claude-haiku-4-5': { permission_mode: 'dontAsk' } } });
+      for (const model of ['haiku', 'claude-haiku-4-6', 'claude-haiku-5-0-20270101', 'HAIKU']) {
+        assert.equal(modelOverridesFor(byModel, model).permissionMode, 'acceptEdits', model);
+      }
+      for (const model of ['claude-haiku-4-5', 'claude-haiku-4-5-20251001', 'claude-haiku-4-5[1m]']) {
+        assert.equal(modelOverridesFor(byModel, model).permissionMode, 'dontAsk', model);
+      }
+      for (const model of ['sonnet', 'opus', 'claude-sonnet-5-5', 'claude-haikuu-1', null]) {
+        assert.deepEqual(modelOverridesFor(byModel, model), {}, String(model));
+      }
+    });
+
+    it('replaces the permission mode and appends tools after the role overrides, only for the matching model', () => {
+      const base = claudeConfig({
+        permission_mode: 'auto',
+        on_permission_request: 'deny',
+        allowed_tools: ['Bash(git push:*)'],
+        by_model: { haiku: { ...haiku, on_permission_request: 'approve', disallowed_tools: ['WebFetch'] } },
+      });
+      const onHaiku = sessionClaudeConfig(base, 'claude-haiku-4-5-20251001', null, { allowedTools: ['Grep'] });
+      assert.equal(onHaiku.permissionMode, 'acceptEdits');
+      assert.equal(onHaiku.onPermissionRequest, 'approve');
+      assert.deepEqual(onHaiku.allowedTools, ['Bash(git push:*)', 'Grep', 'Bash', 'Read', 'Write', 'Edit']);
+      assert.deepEqual(onHaiku.disallowedTools, ['WebFetch']);
+
+      for (const model of ['sonnet', 'opus', null]) {
+        const other = sessionClaudeConfig(base, model, null);
+        assert.deepEqual([other.permissionMode, other.onPermissionRequest, other.allowedTools], ['auto', 'deny', ['Bash(git push:*)']], String(model));
+      }
+    });
   });
 
   it('ships model and effort labels that resolve, plus the workflow labels', () => {

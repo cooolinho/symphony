@@ -17,6 +17,7 @@ import type { LoadedEnvFile } from './util/env.ts';
 import { errorCode, errorMessage } from './util/errors.ts';
 import { truncate } from './util/text.ts';
 import { commandSkills, resolveIssueCommand } from './workflow/command.ts';
+import type { ModelClaudeOverrides } from './workflow/config.ts';
 import { roleFor, roleName } from './workflow/roles.ts';
 import { WorkflowStore } from './workflow/store.ts';
 import { issueTemplateValue, renderPrompt } from './workflow/template.ts';
@@ -51,6 +52,16 @@ function logEnvFile(logger: Logger, envFile: LoadedEnvFile | null): void {
 /** Dry-run line naming the role, model and effort a candidate would run on (`default` when none is configured). */
 export function roleModelLine(role: string, model: string | null, effort: string | null = null): string {
   return `role ${role}, model ${model ?? 'default'}, effort ${effort ?? 'default'}`;
+}
+
+/** Dry-run summary of one `claude.by_model` entry. */
+function byModelLine(overrides: ModelClaudeOverrides): string {
+  const parts: string[] = [];
+  if (overrides.permissionMode !== undefined) parts.push(`permission mode ${overrides.permissionMode}`);
+  if (overrides.onPermissionRequest !== undefined) parts.push(`on_permission_request ${overrides.onPermissionRequest}`);
+  if (overrides.allowedTools?.length) parts.push(`allowed ${overrides.allowedTools.join(', ')}`);
+  if (overrides.disallowedTools?.length) parts.push(`disallowed ${overrides.disallowedTools.join(', ')}`);
+  return parts.join('; ') || '(no overrides)';
 }
 
 export async function runService(options: ServiceOptions): Promise<number> {
@@ -203,6 +214,7 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
     out(`Session limit:   ${config.agent.maxSessionLimitRetries} retries, then wait for the reset (0 = wait right away)`);
     out(`Continuations:   ${config.agent.maxContinuations === null ? 'unlimited' : `${config.agent.maxContinuations} per issue, then pause`}; delete workspace on ${config.tracker.terminalStates.join('/')}: ${config.workspace.cleanupTerminal ? 'yes' : 'no'}`);
     out(`Claude:          model ${config.claude.model ?? '(Claude Code default)'} (default; a "Model: …" issue label overrides it), effort ${config.claude.effort ?? '(Claude Code default)'} (default; an "Effort: …" issue label overrides it), permission mode ${config.claude.permissionMode}, on_permission_request ${config.claude.onPermissionRequest}`);
+    for (const [model, overrides] of config.claude.byModel) out(`                 by_model ${model}: ${byModelLine(overrides)}`);
     if (config.claude.plugins.length > 0 || config.claude.skills !== null) {
       const skills = config.claude.skills === null ? 'Claude Code default' : config.claude.skills === 'all' ? 'all' : config.claude.skills.join(', ');
       out(`Plugins:         ${config.claude.plugins.join(', ') || '(none)'}; skills: ${skills}`);

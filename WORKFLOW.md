@@ -79,6 +79,10 @@ claude:
   on_permission_request: deny                # what to answer when it asks: nobody is watching
   allowed_tools:
     - "Bash(git push:*)"                     # pushing the issue branch is part of the workflow
+  by_model:                                  # permission overrides per model (a "Model: …" label or a role picks the model)
+    haiku:                                   # Haiku has no auto mode: Claude Code falls back to "default" and the
+      permission_mode: acceptEdits           # run would deny every Bash and Write call, so edits are accepted and
+      allowed_tools: [Bash, Read, Write, Edit]  # these tools run without asking (read-only roles still deny edits)
   plugins: [./.claude]                       # Symphony's toolbox: skills, subagents and hooks for every repository
   skills: all                                # repository skills, Laravel Boost skills and symphony:* skills
   stall_timeout_ms: 600000

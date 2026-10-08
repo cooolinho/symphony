@@ -275,6 +275,44 @@ describe('config layer', () => {
     assert.deepEqual(resolve({ claude: { skills: ['pest-testing'] } }).claude.skills, ['pest-testing']);
   });
 
+  it('parses claude.by_model, normalizing model names, and defaults to no overrides', () => {
+    assert.equal(resolve({ claude: {} }).claude.byModel.size, 0);
+    const { byModel } = resolve({
+      claude: {
+        by_model: {
+          Haiku: { permission_mode: 'acceptEdits', allowed_tools: ['Bash', 'Write'], disallowed_tools: ['WebFetch'], on_permission_request: 'approve' },
+          'claude-sonnet-5-5': {},
+        },
+      },
+    }).claude;
+    assert.deepEqual([...byModel.keys()], ['haiku', 'sonnet-5-5']);
+    assert.deepEqual(byModel.get('haiku'), {
+      permissionMode: 'acceptEdits',
+      onPermissionRequest: 'approve',
+      allowedTools: ['Bash', 'Write'],
+      disallowedTools: ['WebFetch'],
+    });
+    assert.deepEqual(byModel.get('sonnet-5-5'), {});
+  });
+
+  it('rejects invalid claude.by_model entries', () => {
+    const message = (byModel: unknown): string => {
+      try {
+        resolve({ claude: { by_model: byModel } });
+      } catch (error) {
+        return error instanceof SymphonyError && error.code === 'invalid_config' ? error.message : String(error);
+      }
+      return '';
+    };
+    assert.match(message(['haiku']), /claude\.by_model must be a map/);
+    assert.match(message({ hiku: {} }), /claude\.by_model\.hiku: "hiku" is not a model name/);
+    assert.match(message({ haiku: 'acceptEdits' }), /claude\.by_model\.haiku must be a map/);
+    assert.match(message({ haiku: { permissionMode: 'acceptEdits' } }), /claude\.by_model\.haiku\.permissionMode is not a known key/);
+    assert.match(message({ haiku: { permission_mode: 'yolo' } }), /claude\.by_model\.haiku\.permission_mode must be one of/);
+    assert.match(message({ haiku: { allowed_tools: 'Bash' } }), /claude\.by_model\.haiku\.allowed_tools must be a list of strings/);
+    assert.match(message({ haiku: {}, 'claude-haiku': {} }), /claude\.by_model\.claude-haiku names the same model/);
+  });
+
   it('rejects invalid laravel and skills values', () => {
     assert.throws(
       () =>
@@ -391,6 +429,9 @@ describe('prompt templates', () => {
     const toolbox = path.resolve(import.meta.dirname, '../.claude');
     assert.deepEqual(config.claude.plugins, [toolbox]);
     assert.equal(config.claude.skills, 'all');
+    // Haiku has no auto mode; without this entry its sessions fall back to "default" and deny every Bash and Write call.
+    assert.deepEqual(config.claude.byModel.get('haiku'), { permissionMode: 'acceptEdits', allowedTools: ['Bash', 'Read', 'Write', 'Edit'] });
+    assert.equal(config.claude.permissionMode, 'auto');
     assert.equal(JSON.parse(fs.readFileSync(path.join(toolbox, '.claude-plugin', 'plugin.json'), 'utf8')).name, 'symphony');
     for (const dir of ['skills', 'agents', 'commands', 'hooks']) assert.ok(fs.statSync(path.join(toolbox, dir)).isDirectory(), dir);
     assert.deepEqual(laravelOf(config), {
