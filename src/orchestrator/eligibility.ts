@@ -1,5 +1,6 @@
-import type { Issue } from '../tracker/types.ts';
+import type { Issue, TrackerAdapter } from '../tracker/types.ts';
 import { normalizeStateName, type AgentConfig, type TrackerConfig } from '../workflow/config.ts';
+import type { RoleConfig } from '../workflow/roles.ts';
 
 export const CONTINUATION_DELAY_MS = 1_000;
 /** Largest delay setTimeout honors (2^31-1 ms); Node fires longer timers after 1 ms. */
@@ -51,6 +52,19 @@ export function hasRequiredLabels(issue: Pick<Issue, 'labels'>, requiredLabels: 
 /** issue_routable: adapter-derived dispatchability plus required labels. */
 export function isRoutable(issue: Pick<Issue, 'dispatchable' | 'labels'>, tracker: Pick<TrackerConfig, 'requiredLabels'>): boolean {
   return issue.dispatchable === true && hasRequiredLabels(issue, tracker.requiredLabels);
+}
+
+/**
+ * The open sub-issues an issue waits for: only for a role with `wait_for_sub_issues`, and only on trackers that know
+ * sub-issues. Unlike `isRoutable`, this gates new sessions only; a running session is not stopped by it.
+ */
+export function waitingForSubIssues(
+  issue: Issue,
+  role: Pick<RoleConfig, 'waitForSubIssues'> | null,
+  adapter: Pick<TrackerAdapter, 'openSubIssues'>,
+): string[] {
+  if (role?.waitForSubIssues !== true) return [];
+  return adapter.openSubIssues?.(issue) ?? [];
 }
 
 export function hasRequiredFields(issue: Partial<Issue>): boolean {

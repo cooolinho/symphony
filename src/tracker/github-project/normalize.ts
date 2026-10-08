@@ -31,6 +31,8 @@ export interface LinkedIssue {
   identifier: string;
   title: string;
   state: string | null;
+  /** Why a closed sub-issue was closed (COMPLETED, NOT_PLANNED, DUPLICATE); only present when GitHub reports one. */
+  state_reason?: string;
 }
 
 /** Dispatch conditions known from the item itself; blockers are added once they are resolved. */
@@ -102,7 +104,13 @@ function linkedIssue(node: Json | null): LinkedIssue | null {
   if (node === null) return null;
   const repo = str(obj(node.repository)?.nameWithOwner);
   if (repo === null || typeof node.number !== 'number') return null;
-  return { identifier: `${repo}#${node.number}`, title: typeof node.title === 'string' ? node.title : '', state: str(node.state) };
+  const reason = str(node.stateReason);
+  return {
+    identifier: `${repo}#${node.number}`,
+    title: typeof node.title === 'string' ? node.title : '',
+    state: str(node.state),
+    ...(reason !== null ? { state_reason: reason } : {}),
+  };
 }
 
 type Json = Record<string, unknown>;
@@ -149,7 +157,7 @@ export function inRepositoryScope(settings: Pick<GithubProjectSettings, 'reposit
 export function normalizeItemNode(
   node: unknown,
   meta: ProjectMeta,
-  settings: Pick<GithubProjectSettings, 'repositories' | 'assignee' | 'respectBlockers' | 'respectSubIssues'>,
+  settings: Pick<GithubProjectSettings, 'repositories' | 'assignee' | 'respectBlockers' | 'respectSubIssues' | 'baseBranch'>,
 ): NormalizeOutcome {
   const item = obj(node);
   if (item === null) return { kind: 'invisible', reason: 'not found' };
@@ -210,6 +218,7 @@ export function normalizeItemNode(
         status_option_id: str(status?.optionId),
         parent: linkedIssue(obj(content.parent)),
         sub_issues: subIssues,
+        base_branch: settings.baseBranch,
         dispatch_note: null,
       },
       identifier: `${repository}#${number}`,

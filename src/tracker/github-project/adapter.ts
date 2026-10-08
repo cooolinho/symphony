@@ -8,6 +8,7 @@ import {
   inRepositoryScope,
   normalizeItemNode,
   type IssueReference,
+  type LinkedIssue,
   type NormalizeOutcome,
   type ProjectMeta,
   type SelectOption,
@@ -209,14 +210,22 @@ export class GithubProjectAdapter implements TrackerAdapter {
     return typeof repository === 'string' ? repository : null;
   }
 
-  /** Lets hooks clone the issue's own repository, so one board can span several repositories. */
+  /** Lets hooks clone the issue's own repository (on the base branch), so one board can span several repositories. */
   hookEnvironment(issue: Issue): Record<string, string> {
     const ref = issue.native_ref;
     if (ref === null || ref.provider !== KIND) return {};
     return {
       SYMPHONY_ISSUE_REPOSITORY: typeof ref.repository === 'string' ? ref.repository : '',
       SYMPHONY_ISSUE_NUMBER: typeof ref.number === 'number' ? String(ref.number) : '',
+      ...(this.settings.baseBranch !== null ? { SYMPHONY_BASE_BRANCH: this.settings.baseBranch } : {}),
     };
+  }
+
+  /** Sub-issues that are not closed; GitHub allows 100 per issue, and the item query reads all of them. */
+  openSubIssues(issue: Issue): string[] {
+    const subIssues = issue.native_ref?.provider === KIND ? issue.native_ref.sub_issues : null;
+    if (!Array.isArray(subIssues)) return [];
+    return (subIssues as LinkedIssue[]).filter((sub) => sub.state !== 'CLOSED').map((sub) => sub.identifier);
   }
 
   async #fetchItemNodes(ids: string[], meta: ProjectMeta): Promise<unknown[]> {

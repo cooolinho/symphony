@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
+import { Logger } from '../src/log.ts';
+import { githubProjectFactory } from '../src/tracker/github-project/index.ts';
+import { parseSettings } from '../src/tracker/github-project/settings.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 import { resolveConfig } from '../src/workflow/config.ts';
 import { commandSkills } from '../src/workflow/command.ts';
@@ -27,17 +30,22 @@ const issue = makeIssue({
     number: 42,
     parent: null,
     sub_issues: [],
+    base_branch: null,
   },
 });
 
 /** Symphony's own plugin: the skills behind the issue commands. */
 const toolbox = path.join(import.meta.dirname, '..', '.claude');
 
-async function render(role: string, attempt: number | null = null, description?: string): Promise<string> {
+async function render(role: string, attempt: number | null = null, description?: string, baseBranch: string | null = null): Promise<string> {
   const { definition } = await loadWorkflowFile(shipped);
   const template = compilePrompt(definition.promptTemplate);
   assert.equal(template.parseError, null);
-  const subject = description === undefined ? issue : { ...issue, description };
+  const subject = {
+    ...issue,
+    ...(description !== undefined ? { description } : {}),
+    native_ref: { ...issue.native_ref, base_branch: baseBranch },
+  };
   return renderPrompt(template, { issue: issueTemplateValue(subject, commandSkills([toolbox])), attempt, role });
 }
 
@@ -168,6 +176,80 @@ describe('shipped WORKFLOW.md issue commands', () => {
     }
   });
 
+  it('serves /auto-code issues with the planner, which waits for its waves', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const config = resolveConfig(definition.config, {
+      workflowPath: shipped,
+      env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' },
+      trackerDefaults,
+    });
+    const roleOf = (state: string, description: string | null) => roleFor({ state, description }, config.roles);
+    for (const state of ['Ready', 'In progress']) {
+      assert.equal(roleName(roleOf(state, '/auto-code docs/index.md wave=3')), 'planner');
+    }
+    assert.equal(roleName(roleOf('Agent review', '/auto-code')), 'reviewer');
+    const planner = roleOf('Ready', '/auto-code');
+    assert.deepEqual(
+      [planner?.readOnly, planner?.runChecks, planner?.maxSubIssues, planner?.subIssueStatus, planner?.waitForSubIssues, planner?.maxTurns],
+      [true, false, 5, 'Ready', true, 2],
+    );
+    assert.deepEqual(planner?.mayMoveTo, ['In progress', 'In review', 'Blocked']);
+    assert.equal(roleOf('Ready', null)?.waitForSubIssues, false);
+  });
+
+  it('turns base_branch and auto_merge on through the environment only', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const providerOf = (env: Record<string, string>) =>
+      resolveConfig(definition.config, {
+        workflowPath: shipped,
+        env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't', ...env },
+        trackerDefaults,
+      }).tracker;
+    const settingsOf = (env: Record<string, string>) => {
+      const tracker = providerOf(env);
+      return parseSettings(tracker.provider, { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't', ...env });
+    };
+    const off = settingsOf({});
+    assert.deepEqual([off.settings?.baseBranch, off.settings?.autoMerge], [null, null]);
+    const env = { SYMPHONY_BASE_BRANCH: 'develop', SYMPHONY_AUTO_MERGE: 'true' };
+    const on = settingsOf(env);
+    assert.equal(on.settings?.baseBranch, 'develop');
+    assert.deepEqual(on.settings?.autoMerge, { onEnter: 'In review', doneState: 'Done', onConflict: 'In progress', method: 'SQUASH', optOutLabel: 'manual-merge' });
+    const tracker = providerOf(env);
+    assert.doesNotThrow(() =>
+      githubProjectFactory.create({
+        provider: tracker.provider,
+        activeStates: tracker.activeStates,
+        terminalStates: tracker.terminalStates,
+        env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't', ...env },
+        logger: Logger.silent(),
+      }),
+    );
+  });
+
+  it('renders the read-only planner prompt that keeps the epic in its column', async () => {
+    const prompt = await render('planner', null, '/auto-code docs/index.md wave=3', 'develop');
+    assert.match(prompt, /Your role: planner/);
+    assert.match(prompt, /load the skill `symphony:auto-code` with the Skill tool and pass it the argument/);
+    assert.match(prompt, /argument `docs\/index\.md wave=3`/);
+    assert.match(prompt, /implement the sub-issues against `develop`/);
+    assert.match(prompt, /`create_sub_issue` and `open_pull_request`/);
+    assert.match(prompt, /End your turn \*\*without changing the status\*\*/);
+    assert.doesNotMatch(prompt, /Your role: (developer|reviewer|auditor)/);
+  });
+
+  it('branches from and integrates the base branch when one is configured', async () => {
+    const developer = await render('developer', null, undefined, 'develop');
+    assert.match(developer, /create it from `origin\/develop` if it does not exist yet/);
+    assert.match(developer, /the pull request's base, else `develop`\)/);
+    const reviewer = await render('reviewer', null, undefined, 'develop');
+    assert.match(reviewer, /the pull request's base branch, else `develop`\)/);
+    assert.match(reviewer, /the result contains `auto_merge`/);
+    const plain = await render('developer');
+    assert.match(plain, /create it from the default branch if it does not exist yet/);
+    assert.doesNotMatch(plain, /origin\/develop/);
+  });
+
   it('adds no command block for an ordinary issue or an unknown command', async () => {
     for (const description of ['Create an invoice resource.', '/login returns 500']) {
       const prompt = await render('developer', null, description);
@@ -182,6 +264,7 @@ describe('Symphony toolbox skills', () => {
 
   it('ships the skills the shipped roles and templates refer to', async () => {
     assert.deepEqual([...commandSkills([toolbox])].sort(), [
+      ['auto-code', 'symphony:auto-code'],
       ['refactor-safely', 'symphony:refactor-safely'],
       ['refactoring', 'symphony:refactoring'],
     ]);

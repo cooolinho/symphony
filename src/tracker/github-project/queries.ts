@@ -83,7 +83,7 @@ export const ITEM_DETAILS_QUERY = /* GraphQL */ `
             linkedBranches(first: 1) { nodes { ref { name } } }
             blockedBy(first: 50) { nodes { id number state repository { nameWithOwner } } }
             parent { number title state repository { nameWithOwner } }
-            subIssues(first: 50) { nodes { number title state repository { nameWithOwner } } }
+            subIssues(first: 100) { nodes { number title state stateReason repository { nameWithOwner } } }
           }
         }
       }
@@ -215,6 +215,40 @@ export const ADD_PROJECT_ITEM_MUTATION = /* GraphQL */ `
   mutation SymphonyAddProjectItem($projectId: ID!, $contentId: ID!) {
     addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
       item { id }
+    }
+  }
+`;
+
+/**
+ * What `auto_merge` needs to decide: the default branch, the issue's labels and the open pull request from the issue's
+ * branch into the base branch.
+ */
+export const MERGE_CANDIDATE_QUERY = /* GraphQL */ `
+  query SymphonyMergeCandidate($owner: String!, $name: String!, $number: Int!, $head: String!, $base: String!) {
+    repository(owner: $owner, name: $name) {
+      defaultBranchRef { name }
+      issue(number: $number) { labels(first: 50) { nodes { name } } }
+      pullRequests(headRefName: $head, baseRefName: $base, states: [OPEN], first: 1) {
+        nodes { id number url title isDraft headRefOid mergeable labels(first: 50) { nodes { name } } }
+      }
+    }
+  }
+`;
+
+/** Merges only the head that was read (`expectedHeadOid`), so a later push is never merged unchecked. */
+export const MERGE_PULL_REQUEST_MUTATION = /* GraphQL */ `
+  mutation SymphonyMergePullRequest($pullRequestId: ID!, $expectedHeadOid: GitObjectID!, $method: PullRequestMergeMethod!, $headline: String) {
+    mergePullRequest(input: { pullRequestId: $pullRequestId, expectedHeadOid: $expectedHeadOid, mergeMethod: $method, commitHeadline: $headline }) {
+      pullRequest { number merged }
+    }
+  }
+`;
+
+/** GitHub closes issues named by "Closes #N" only for merges into the default branch, so `auto_merge` closes them. */
+export const CLOSE_ISSUE_MUTATION = /* GraphQL */ `
+  mutation SymphonyCloseIssue($issueId: ID!) {
+    closeIssue(input: { issueId: $issueId, stateReason: COMPLETED }) {
+      issue { number state }
     }
   }
 `;

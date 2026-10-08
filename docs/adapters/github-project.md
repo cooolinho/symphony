@@ -18,7 +18,9 @@ Every key accepts a whole-value `$NAME` reference; an unset or empty variable co
 | `assignee` | none | Only issues assigned to this login are dispatchable. |
 | `respect_blockers` | `true` | Issues with an unresolved dependency are not dispatchable: a GitHub "blocked by" relationship, or a reference in the issue text such as `blocked by #12` (see Dependencies). |
 | `respect_sub_issues` | `true` | Parent issues wait until all their sub-issues are closed. Exception: an issue whose description starts with a `/command` (see [issue commands](../configuration.md#issue-commands)) never waits for its sub-issues, because they are the result of its run. |
-| `sub_issue_status` | `Backlog` | Board column for sub-issues created by the `create_sub_issue` tool. Must not be an active or terminal state (`invalid_tracker_config`), so a human decides what gets worked on. |
+| `sub_issue_status` | `Backlog` | Board column for sub-issues created by the `create_sub_issue` tool. Must not be an active or terminal state (`invalid_tracker_config`), so a human decides what gets worked on. A [role](../configuration.md#roles) can override it with its own `sub_issue_status`, which may be active. |
+| `base_branch` | none (the repository's default branch) | Branch agents branch from and open pull requests against, e.g. `develop`. Hooks get it as `SYMPHONY_BASE_BRANCH` (the shipped `after_create` clones it), the prompt as `issue.native_ref.base_branch`, and `open_pull_request` uses it when the agent names no `base`. |
+| `auto_merge` | off | Map; Symphony merges an issue's pull request when the issue enters a column. See [Auto-merge](#auto-merge). |
 | `endpoint` | `https://api.github.com/graphql` | GraphQL endpoint (GitHub Enterprise Server). |
 | `request_timeout_ms` | `30000` | Per-request timeout. |
 | `request_retries` | `2` | Extra attempts for read queries after network errors, timeouts and HTTP 502/503/504 (waiting 1 s, 2 s, …). Mutations (status, comments, pull requests) are never retried automatically, so nothing is created twice; the agent gets the error and can retry. |
@@ -29,8 +31,8 @@ Defaults when the workflow omits them: `active_states: [Todo, In Progress]`, `te
 named in `token` are removed from the environment of agents and hooks. The agent changes the issue only through the
 tools below, which run inside Symphony. Pushing branches uses your normal git credentials (SSH).
 
-**Validation errors:** missing `project_number` or `owner`, malformed `repositories`, non-URL `endpoint`
-→ `invalid_tracker_config`; no token → `missing_tracker_secret`. On first use the adapter also checks that the board
+**Validation errors:** missing `project_number` or `owner`, malformed `repositories`, non-URL `endpoint`, an invalid
+`auto_merge` → `invalid_tracker_config`; no token → `missing_tracker_secret`. On first use the adapter also checks that the board
 exists and that the status field is a single-select field (`invalid_tracker_config` otherwise).
 
 ## Reading the board
@@ -66,7 +68,7 @@ see the board preflight in [configuration.md](../configuration.md#tracker).
 | `branch_name` | First branch linked to the issue ("Create a branch" in the issue sidebar), else `null` |
 | `dispatchable` | Issue is open, matches `assignee` (if set), has no unresolved dependency (if `respect_blockers`) and no open sub-issue (if `respect_sub_issues`) |
 | `created_at`, `updated_at` | Issue timestamps |
-| `native_ref` | `{provider, project_id, item_id, issue_id, repository, number, issue_state, status_option_id, parent, sub_issues, dispatch_note}`: `parent` and each sub-issue are `{identifier, title, state}`; `dispatch_note` says why an issue is not dispatchable (shown by `--dry-run`) |
+| `native_ref` | `{provider, project_id, item_id, issue_id, repository, number, issue_state, status_option_id, parent, sub_issues, base_branch, dispatch_note}`: `parent` and each sub-issue are `{identifier, title, state}`, a closed sub-issue also has `state_reason` (`COMPLETED`, `NOT_PLANNED`, `DUPLICATE`); all sub-issues are read (GitHub allows 100); `base_branch` is the configured `base_branch` or `null`; `dispatch_note` says why an issue is not dispatchable (shown by `--dry-run`) |
 
 ### Dependencies
 
@@ -88,7 +90,9 @@ a dependency resolves when its pull request with `Closes #N` is merged.
 A **closed** issue whose status is still active is reported as not dispatchable: a running agent is stopped, but
 the workspace is only deleted once the issue reaches a terminal status.
 
-Hooks additionally receive `SYMPHONY_ISSUE_REPOSITORY` and `SYMPHONY_ISSUE_NUMBER`.
+Hooks additionally receive `SYMPHONY_ISSUE_REPOSITORY` and `SYMPHONY_ISSUE_NUMBER`, and `SYMPHONY_BASE_BRANCH` when
+`base_branch` is set. For roles with `wait_for_sub_issues`, the adapter reports the open sub-issues
+(`openSubIssues`); see [Waves](../configuration.md#waves-wait_for_sub_issues).
 
 ## Agent tools
 
@@ -98,10 +102,10 @@ they create are sub-issues of that issue (`create_sub_issue`).
 | Tool | Input | Mutates | Result |
 |---|---|---|---|
 | `get_issue` | none | no | Issue fields, valid status options, the latest 20 comments, linked pull requests |
-| `set_status` | `status` | yes | Moves the board item; the name is matched case-insensitively. An unknown name returns the valid options. Guarded: see below. |
+| `set_status` | `status` | yes | Moves the board item; the name is matched case-insensitively. An unknown name returns the valid options. Guarded: see below. Entering `auto_merge.on_enter` triggers the [auto-merge](#auto-merge); the result then carries `auto_merge` and the final `status`. |
 | `add_comment` | `body` | yes | Posts a comment on the issue; returns its URL |
-| `open_pull_request` | `head`, `title`, `body?`, `base?`, `draft?` | yes | Opens a PR from an already pushed branch (base defaults to the default branch). An open PR for the same branch is returned instead of a duplicate (`created: false`). |
-| `create_sub_issue` | `title`, `body?`, `labels?` | yes | Creates a sub-issue of the session's issue in the same repository, adds it to the board in the `sub_issue_status` column and returns `{created, number, identifier, url, status, on_board, unknown_labels, remaining, warnings?}`. Only offered to [roles](../configuration.md#roles) with `max_sub_issues`. See below. |
+| `open_pull_request` | `head`, `title`, `body?`, `base?`, `draft?` | yes | Opens a PR from an already pushed branch (base defaults to `base_branch`, else the default branch). An open PR for the same branch is returned instead of a duplicate (`created: false`). |
+| `create_sub_issue` | `title`, `body?`, `labels?` | yes | Creates a sub-issue of the session's issue in the same repository, adds it to the board in the `sub_issue_status` column (the role's, else the provider's) and returns `{created, number, identifier, url, status, on_board, unknown_labels, remaining, warnings?}`. Only offered to [roles](../configuration.md#roles) with `max_sub_issues`. See below. |
 
 `set_status` declares its target column (`transitionTarget`), so Symphony's
 [transition guard](../configuration.md#transition-guard) checks every call before the mutation is sent: terminal
@@ -129,6 +133,44 @@ the issue is added to the board and its status is set to `sub_issue_status`. The
 Failures come back to the agent as structured tool errors (`{error: {category, message}}`), so it can correct its
 input. Keep GitHub's secondary rate limits in mind: content-creating calls such as comments are limited to roughly
 80 per minute per token.
+
+## Auto-merge
+
+```yaml
+tracker:
+  provider:
+    base_branch: develop
+    auto_merge:
+      enabled: true            # or $SYMPHONY_AUTO_MERGE; anything but true (or unset) turns it off
+      on_enter: In review      # required: the column whose successful set_status triggers the merge
+      done_state: Done         # default: the first terminal state
+      on_conflict: In progress # default: none (stay in on_enter)
+      method: squash           # squash | merge | rebase
+      opt_out_label: manual-merge
+```
+
+When an agent's `set_status` moves an issue into `on_enter`, after the [transition guard](../configuration.md#transition-guard)
+let it through (so its entry checks passed), Symphony:
+
+1. looks up the open pull request from the issue's branch (the linked branch, else `symphony/issue-<number>`) into
+   `base_branch`;
+2. does nothing when there is no such pull request (for example when the auditor or the planner hands off its
+   issue), and refuses, leaving the issue in `on_enter` with a comment, when `base_branch` is the repository's default
+   branch, the pull request is a draft, or the pull request or the issue has the `opt_out_label`;
+3. merges it with `mergePullRequest` and `expectedHeadOid` (only the head it read, never a newer push);
+4. closes the issue (`closeIssue`, reason `COMPLETED`): GitHub ignores `Closes #N` for merges into a branch other than
+   the default branch;
+5. moves the issue to `done_state`, so the orchestrator stops tracking it and deletes its workspace, and comments with
+   the pull request link.
+
+A pull request that conflicts with `base_branch` (reported as `CONFLICTING`, or refused by GitHub as not mergeable)
+moves the issue to `on_conflict` with a comment asking to integrate the base branch; without `on_conflict` it stays
+for a human. Once the pull request is merged, a failure to close, move or comment is only reported as a warning.
+
+Validation: `auto_merge` needs `base_branch` and `on_enter`; `on_enter` must not be an active or terminal state (it
+is entered after the agents are done), `done_state` must be terminal and `on_conflict` must not be.
+`auto_merge` never merges into the default branch: what reaches it stays a human decision, e.g. through a release
+pull request from `base_branch`.
 
 ## Errors
 

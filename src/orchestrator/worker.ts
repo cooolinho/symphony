@@ -268,7 +268,11 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       // Entry checks run inside the status tool call; leave a minute for the tracker call around them.
       toolTimeoutMs: params.workflow.config.checks.timeoutMs + TOOL_TIMEOUT_MARGIN_MS,
       tools: guardTools(toolsForRole(params.adapter.agentToolSpecs(), role), guard),
-      toolContext: () => ({ issue, ...(role?.maxSubIssues != null ? { maxSubIssues: role.maxSubIssues } : {}) }),
+      toolContext: () => ({
+        issue,
+        ...(role?.maxSubIssues != null ? { maxSubIssues: role.maxSubIssues } : {}),
+        ...(role?.subIssueStatus != null ? { subIssueStatus: role.subIssueStatus } : {}),
+      }),
       env: params.childEnv,
       logger,
       signal,

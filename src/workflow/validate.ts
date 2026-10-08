@@ -64,7 +64,11 @@ export function unknownBoardColumns(config: ServiceConfig, statusOptions: readon
   const referenced = [
     ...config.tracker.activeStates,
     ...config.tracker.terminalStates,
-    ...(config.roles ?? []).flatMap((role) => [...role.states, ...(role.mayMoveTo ?? [])]),
+    ...(config.roles ?? []).flatMap((role) => [
+      ...role.states,
+      ...(role.mayMoveTo ?? []),
+      ...(role.subIssueStatus !== null ? [role.subIssueStatus] : []),
+    ]),
     ...config.checks.onEnter.keys(),
   ];
   const unknown = new Map<string, string>();

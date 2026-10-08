@@ -21,7 +21,7 @@ const STATUS_OPTIONS = [
   { id: 'o4', name: 'Done' },
 ];
 
-function itemNode(id: string, options: { status?: string | null; repo?: string; number?: number; title?: string; state?: string; labels?: string[]; assignees?: string[]; blockedBy?: Array<{ state: string; number?: number }>; project?: string; type?: string; body?: string; parent?: { number: number; title: string; state: string }; subIssues?: Array<{ number: number; state: string }> } = {}): Json {
+function itemNode(id: string, options: { status?: string | null; repo?: string; number?: number; title?: string; state?: string; labels?: string[]; assignees?: string[]; blockedBy?: Array<{ state: string; number?: number }>; project?: string; type?: string; body?: string; parent?: { number: number; title: string; state: string }; subIssues?: Array<{ number: number; state: string; stateReason?: string }> } = {}): Json {
   const status = options.status === undefined ? 'Todo' : options.status;
   const option = STATUS_OPTIONS.find((o) => o.name === status);
   return {
@@ -81,6 +81,8 @@ class FakeGithub {
   labels = new Map<string, string>();
   /** Numbers handed out to created issues. */
   nextNumber = 100;
+  /** The repository the auto-merge candidate query returns. */
+  mergeCandidate: Json = { defaultBranchRef: { name: 'main' }, issue: { labels: { nodes: [] } }, pullRequests: { nodes: [] } };
 
   add(...nodes: Json[]): this {
     for (const node of nodes) this.items.set(node.id as string, node);
@@ -202,6 +204,16 @@ class FakeGithub {
       }
       case 'SymphonyAddProjectItem':
         return { body: { data: { addProjectV2ItemById: { item: { id: `PVTI_${variables.contentId}` } } } } };
+      case 'SymphonyAddComment':
+        return { body: { data: { addComment: { commentEdge: { node: { url: 'https://github.com/acme/app/issues/1#issuecomment-1' } } } } } };
+      case 'SymphonyCreatePullRequest':
+        return { body: { data: { createPullRequest: { pullRequest: { number: 8, url: 'https://github.com/acme/app/pull/8', title: variables.title, isDraft: false } } } } };
+      case 'SymphonyMergeCandidate':
+        return { body: { data: { repository: this.mergeCandidate } } };
+      case 'SymphonyMergePullRequest':
+        return { body: { data: { mergePullRequest: { pullRequest: { number: 7, merged: true } } } } };
+      case 'SymphonyCloseIssue':
+        return { body: { data: { closeIssue: { issue: { number: 1, state: 'CLOSED' } } } } };
       default:
         return { status: 500, body: { message: `unexpected ${op}` } };
     }
@@ -284,7 +296,7 @@ describe('github_project adapter reads', () => {
     assert.equal(first.id, 'A');
     assert.equal(first.state, 'Todo');
     assert.equal(first.dispatchable, true);
-    assert.deepEqual(first.native_ref, { provider: 'github_project', project_id: 'PVT_1', item_id: 'A', issue_id: 'I_A', repository: 'acme/app', number: 1, issue_state: 'OPEN', status_option_id: 'o1', parent: null, sub_issues: [], dispatch_note: null });
+    assert.deepEqual(first.native_ref, { provider: 'github_project', project_id: 'PVT_1', item_id: 'A', issue_id: 'I_A', repository: 'acme/app', number: 1, issue_state: 'OPEN', status_option_id: 'o1', parent: null, sub_issues: [], base_branch: null, dispatch_note: null });
     assert.equal(first.created_at?.toISOString(), '2026-09-01T10:00:00.000Z');
     assert.equal(github.requests.filter((r) => r.op === 'SymphonyProjectItems').length, 2);
   });
@@ -640,5 +652,214 @@ describe('github_project create_sub_issue', () => {
     const issues = new Map((await adapter(github).fetchIssuesByStates(['Todo'])).map((i) => [i.id, i]));
     assert.equal(issues.get('audit')?.dispatchable, true);
     assert.equal(issues.get('plain')?.dispatchable, false);
+  });
+});
+
+describe('github_project base branch and waves', () => {
+  it('reads base_branch, exposes it to hooks and the prompt, and leaves both out without it', async () => {
+    const github = new FakeGithub().add(itemNode('A', { repo: 'acme/app', number: 12 }));
+    const unset = adapter(github, { base_branch: '$BASE' });
+    assert.equal(parseSettings({ owner: 'acme', project_number: 1, token: 't', base_branch: '$BASE' }, { BASE: 'develop' }).settings?.baseBranch, 'develop');
+    assert.equal(parseSettings({ owner: 'acme', project_number: 1, token: 't', base_branch: '${BASE:-}' }, {}).settings?.baseBranch, null);
+    const [issue] = await adapter(github, { base_branch: 'develop' }).fetchIssuesByIds(['A']);
+    assert.equal(issue?.native_ref?.base_branch, 'develop');
+    assert.deepEqual(adapter(github, { base_branch: 'develop' }).hookEnvironment?.(issue as Issue), {
+      SYMPHONY_ISSUE_REPOSITORY: 'acme/app',
+      SYMPHONY_ISSUE_NUMBER: '12',
+      SYMPHONY_BASE_BRANCH: 'develop',
+    });
+    const [plain] = await unset.fetchIssuesByIds(['A']);
+    assert.equal(plain?.native_ref?.base_branch, null);
+    assert.equal('SYMPHONY_BASE_BRANCH' in (unset.hookEnvironment?.(plain as Issue) ?? {}), false);
+  });
+
+  it('opens pull requests against base_branch unless the agent names a base', async () => {
+    const github = new FakeGithub().add(itemNode('A'));
+    github.overrides.set('SymphonyRepository', () => ({
+      body: { data: { repository: { id: 'R_1', defaultBranchRef: { name: 'main' }, pullRequests: { nodes: [] } } } },
+    }));
+    const tracker = adapter(github, { base_branch: 'develop' });
+    const [issue] = await tracker.fetchIssuesByIds(['A']);
+    const open = tracker.agentToolSpecs().find((t) => t.name === 'open_pull_request');
+    assert.match(open?.description ?? '', /Without base, it targets "develop"/);
+    const toDevelop = await open?.execute({ head: 'symphony/issue-1', title: 'Fix' }, { issue: issue as Issue });
+    assert.equal(toDevelop?.ok === true && (toDevelop.data as Json).base, 'develop');
+    const release = await open?.execute({ head: 'develop', base: 'main', title: 'Release' }, { issue: issue as Issue });
+    assert.equal(release?.ok === true && (release.data as Json).base, 'main');
+    assert.deepEqual(github.requests.filter((r) => r.op === 'SymphonyCreatePullRequest').map((r) => r.variables.base), ['develop', 'main']);
+  });
+
+  it('reports open sub-issues and why closed ones were closed', async () => {
+    const github = new FakeGithub().add(
+      itemNode('epic', {
+        number: 1,
+        body: '/auto-code',
+        subIssues: [
+          { number: 2, state: 'OPEN' },
+          { number: 3, state: 'CLOSED', stateReason: 'NOT_PLANNED' },
+          { number: 4, state: 'CLOSED', stateReason: 'COMPLETED' },
+        ],
+      }),
+    );
+    const tracker = adapter(github);
+    const [epic] = await tracker.fetchIssuesByIds(['epic']);
+    assert.deepEqual(tracker.openSubIssues?.(epic as Issue), ['acme/app#2']);
+    assert.deepEqual(epic?.native_ref?.sub_issues, [
+      { identifier: 'acme/app#2', title: 'Sub 2', state: 'OPEN' },
+      { identifier: 'acme/app#3', title: 'Sub 3', state: 'CLOSED', state_reason: 'NOT_PLANNED' },
+      { identifier: 'acme/app#4', title: 'Sub 4', state: 'CLOSED', state_reason: 'COMPLETED' },
+    ]);
+    // The command keeps the epic dispatchable for the adapter; the role's wait_for_sub_issues holds it back.
+    assert.equal(epic?.dispatchable, true);
+    assert.match(github.lastQuery, /subIssues\(first: 100\) \{ nodes \{ number title state stateReason/);
+  });
+
+  it('puts sub-issues in the column the role names instead of the provider default', async () => {
+    const github = new FakeGithub().add(itemNode('A', { number: 1 }));
+    const tracker = adapter(github, { sub_issue_status: 'Human Review' });
+    const [issue] = await tracker.fetchIssuesByIds(['A']);
+    const tool = tracker.agentToolSpecs().find((t) => t.name === 'create_sub_issue');
+    const result = await tool?.execute({ title: 'Feature: Export' }, { issue: issue as Issue, maxSubIssues: 5, subIssueStatus: 'in progress' });
+    assert.equal(result?.ok === true && (result.data as Json).status, 'In Progress');
+    const status = github.requests.find((r) => r.op === 'SymphonySetStatus');
+    assert.equal(status?.variables.optionId, 'o2');
+  });
+});
+
+describe('github_project auto_merge', () => {
+  const MERGE = { base_branch: 'develop', auto_merge: { enabled: '$AUTO', on_enter: 'Human Review', on_conflict: 'In Progress' } };
+  const pullRequest = (extra: Json = {}): Json => ({
+    id: 'PR_7',
+    number: 7,
+    url: 'https://github.com/acme/app/pull/7',
+    title: 'Feature: Export',
+    isDraft: false,
+    headRefOid: 'abc123',
+    mergeable: 'MERGEABLE',
+    labels: { nodes: [] },
+    ...extra,
+  });
+
+  async function setup(candidate: Json = {}, provider: Json = MERGE) {
+    const github = new FakeGithub().add(itemNode('A', { number: 1 }));
+    github.mergeCandidate = { ...github.mergeCandidate, pullRequests: { nodes: [pullRequest()] }, ...candidate };
+    const tracker = githubProjectFactory.create({
+      provider: { owner: 'acme', project_number: 1, token: 'tok', request_retries: 0, ...provider },
+      activeStates: ['Todo', 'In Progress'],
+      terminalStates: ['Done'],
+      env: { AUTO: 'true' },
+      logger: Logger.silent(),
+      fetch: github.fetch,
+    });
+    const [issue] = await tracker.fetchIssuesByIds(['A']);
+    const setStatus = tracker.agentToolSpecs().find((t) => t.name === 'set_status');
+    assert.ok(setStatus);
+    const move = async (status: string) => {
+      const result = await setStatus.execute({ status }, { issue: issue as Issue });
+      assert.equal(result.ok, true, JSON.stringify(result));
+      return (result as { ok: true; data: Json }).data;
+    };
+    const ops = () => github.requests.map((r) => r.op).filter((op) => op !== 'SymphonyItemDetails' && op !== 'SymphonyProjectMeta');
+    const statuses = () => github.requests.filter((r) => r.op === 'SymphonySetStatus').map((r) => r.variables.optionId);
+    const comments = () => github.requests.filter((r) => r.op === 'SymphonyAddComment').map((r) => String(r.variables.body));
+    return { github, move, ops, statuses, comments };
+  }
+
+  it('merges the pull request into the base branch, closes the issue and moves it to the done column', async () => {
+    const { github, move, ops, statuses, comments } = await setup();
+    const data = await move('Human Review');
+    assert.equal(data.status, 'Done');
+    assert.deepEqual(data.auto_merge, { merged: true, pull_request: 7, status: 'Done', reason: 'merged into develop' });
+    assert.deepEqual(ops(), ['SymphonySetStatus', 'SymphonyMergeCandidate', 'SymphonyMergePullRequest', 'SymphonyCloseIssue', 'SymphonySetStatus', 'SymphonyAddComment']);
+    assert.deepEqual(statuses(), ['o3', 'o4']);
+    const candidate = github.requests.find((r) => r.op === 'SymphonyMergeCandidate');
+    assert.deepEqual(candidate?.variables, { owner: 'acme', name: 'app', number: 1, head: 'symphony/issue-1', base: 'develop' });
+    const merge = github.requests.find((r) => r.op === 'SymphonyMergePullRequest');
+    assert.deepEqual(merge?.variables, { pullRequestId: 'PR_7', expectedHeadOid: 'abc123', method: 'SQUASH', headline: 'Feature: Export (#7)' });
+    assert.match(comments()[0] ?? '', /merged #7 into `develop` \(squash\)/);
+  });
+
+  it('only merges on the configured column', async () => {
+    const { move, ops } = await setup();
+    const data = await move('In Progress');
+    assert.equal(data.auto_merge, undefined);
+    assert.deepEqual(ops(), ['SymphonySetStatus']);
+  });
+
+  it('leaves the issue for a human with the opt-out label, a draft or the default branch as base', async () => {
+    const cases: Array<[Json, RegExp]> = [
+      [{ issue: { labels: { nodes: [{ name: 'Manual-Merge' }] } } }, /has the label "manual-merge"/],
+      [{ pullRequests: { nodes: [pullRequest({ labels: { nodes: [{ name: 'manual-merge' }] } })] } }, /has the label "manual-merge"/],
+      [{ pullRequests: { nodes: [pullRequest({ isDraft: true })] } }, /pull request #7 is a draft/],
+      [{ defaultBranchRef: { name: 'develop' } }, /`develop` is the default branch/],
+    ];
+    for (const [candidate, reason] of cases) {
+      const { move, ops, statuses, comments } = await setup(candidate);
+      const data = await move('Human Review');
+      assert.equal(data.status, 'Human Review', String(reason));
+      assert.equal((data.auto_merge as Json).merged, false);
+      assert.match(String((data.auto_merge as Json).reason), reason);
+      assert.equal(ops().includes('SymphonyMergePullRequest'), false, String(reason));
+      assert.deepEqual(statuses(), ['o3']);
+      assert.match(comments()[0] ?? '', /did not merge automatically: .* stays in "Human Review" for a human/);
+    }
+  });
+
+  it('does nothing without a pull request, as for the hand-off of an auditor or planner', async () => {
+    const { move, ops, comments } = await setup({ pullRequests: { nodes: [] } });
+    const data = await move('Human Review');
+    assert.equal(data.status, 'Human Review');
+    assert.deepEqual(data.auto_merge, { merged: false, pull_request: null, status: 'Human Review', reason: 'there is no open pull request from symphony/issue-1 into develop' });
+    assert.deepEqual(ops(), ['SymphonySetStatus', 'SymphonyMergeCandidate']);
+    assert.deepEqual(comments(), []);
+  });
+
+  it('sends a conflicting pull request back to the developer', async () => {
+    for (const conflict of ['reported', 'on merge']) {
+      const { github, move, statuses, comments } = await setup(conflict === 'reported' ? { pullRequests: { nodes: [pullRequest({ mergeable: 'CONFLICTING' })] } } : {});
+      if (conflict === 'on merge') {
+        github.overrides.set('SymphonyMergePullRequest', () => ({ body: { data: null, errors: [{ type: 'UNPROCESSABLE', message: 'Pull Request is not mergeable', path: ['mergePullRequest'] }] } }));
+      }
+      const data = await move('Human Review');
+      assert.equal(data.status, 'In Progress', conflict);
+      assert.match(String((data.auto_merge as Json).reason), /conflicts with `develop`/);
+      assert.deepEqual(statuses(), ['o3', 'o2']);
+      assert.match(comments()[0] ?? '', /Merge `origin\/develop` into `symphony\/issue-1`/);
+      assert.equal(github.requests.some((r) => r.op === 'SymphonyCloseIssue'), false);
+    }
+  });
+
+  it('keeps a merged result when closing or moving the issue fails afterwards', async () => {
+    const { github, move } = await setup();
+    github.overrides.set('SymphonyCloseIssue', () => ({ body: { data: null, errors: [{ type: 'FORBIDDEN', message: 'no access', path: ['closeIssue'] }] } }));
+    const data = await move('Human Review');
+    assert.equal((data.auto_merge as Json).merged, true);
+    assert.match(String(((data.auto_merge as Json).warnings as string[])[0]), /could not close the issue: .*no access/);
+  });
+
+  it('validates the auto_merge settings', () => {
+    const settingsOf = (autoMerge: unknown, extra: Json = { base_branch: 'develop' }) =>
+      parseSettings({ owner: 'acme', project_number: 1, token: 't', ...extra, auto_merge: autoMerge }, { ON: 'true' });
+    assert.equal(settingsOf({ enabled: '${OFF:-false}', on_enter: 'In review' }).settings?.autoMerge, null);
+    assert.deepEqual(settingsOf({ enabled: '$ON', on_enter: 'In review', method: 'Rebase' }).settings?.autoMerge, {
+      onEnter: 'In review',
+      doneState: null,
+      onConflict: null,
+      method: 'REBASE',
+      optOutLabel: 'manual-merge',
+    });
+    assert.match(settingsOf({ enabled: true, on_enter: 'In review' }, {}).errors.join(), /auto_merge needs tracker\.provider\.base_branch/);
+    assert.match(settingsOf({ enabled: true }).errors.join(), /auto_merge\.on_enter is required/);
+    assert.match(settingsOf({ enabled: true, on_enter: 'x', method: 'octopus' }).errors.join(), /method must be squash, merge or rebase/);
+    assert.match(settingsOf({ enabled: 'yes', on_enter: 'x' }).errors.join(), /auto_merge\.enabled must be true or false/);
+    assert.match(settingsOf({ enabled: false, bogus: 1 }).errors.join(), /auto_merge\.bogus is not a known key/);
+    assert.match(settingsOf('on').errors.join(), /auto_merge must be a map/);
+
+    const github = new FakeGithub();
+    const create = (autoMerge: Json) => () => adapter(github, { base_branch: 'develop', auto_merge: { enabled: true, ...autoMerge } });
+    assert.throws(create({ on_enter: 'In Progress' }), /auto_merge\.on_enter "In Progress" must not be an active or terminal state/);
+    assert.throws(create({ on_enter: 'Human Review', done_state: 'Human Review' }), /auto_merge\.done_state "Human Review" must be a terminal state/);
+    assert.throws(create({ on_enter: 'Human Review', on_conflict: 'Done' }), /auto_merge\.on_conflict "Done" must not be a terminal state/);
+    assert.doesNotThrow(create({ on_enter: 'Human Review' }));
   });
 });

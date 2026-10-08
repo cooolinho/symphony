@@ -43,8 +43,22 @@ function effortLabel(value: string): NewLabel {
   };
 }
 
+/** Labels the /auto-code planner puts on its sub-issues, and the opt-out label of `auto_merge`. */
+export const WORKFLOW_LABELS: readonly NewLabel[] = [
+  { name: 'auto-code', color: '7057ff', description: 'Planned by the Symphony autopilot (/auto-code)' },
+  { name: 'feature', color: 'a2eeef', description: 'New or completed functionality' },
+  { name: 'design', color: 'd4c5f9', description: 'User interface and usability' },
+  { name: 'quality', color: 'fef2c0', description: 'Bugs, tests, refactoring, performance, security' },
+  { name: 'maintenance', color: 'bfd4f2', description: 'Dependencies, upgrades, tooling' },
+  { name: 'manual-merge', color: 'b60205', description: 'A human merges this pull request; Symphony does not merge it' },
+];
+
 /** What the "Standard labels" task creates in each repository. */
-export const STANDARD_LABELS: readonly NewLabel[] = [...MODEL_LABEL_VALUES.map(modelLabel), ...EFFORT_LEVELS.map(effortLabel)];
+export const STANDARD_LABELS: readonly NewLabel[] = [
+  ...MODEL_LABEL_VALUES.map(modelLabel),
+  ...EFFORT_LEVELS.map(effortLabel),
+  ...WORKFLOW_LABELS,
+];
 
 export type LabelChange =
   | { kind: 'create'; label: NewLabel }
@@ -138,7 +152,7 @@ function describeResult(result: ApplyResult): string {
 export const labelsTask: InitTask = {
   id: 'labels',
   title: 'Standard labels',
-  summary: '"Model: …" and "Effort: …" labels that pick the Claude model and effort per issue',
+  summary: '"Model: …" and "Effort: …" labels that pick the Claude model and effort per issue, plus the /auto-code and manual-merge labels',
 
   async run({ repositories, github, terminal }) {
     let ok = true;
