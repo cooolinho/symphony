@@ -103,6 +103,12 @@ export class WorkspaceManager {
         // Policy: never delete or follow something we did not create.
         throw new SymphonyError('workspace_path_conflict', `${target.path} exists but is not a directory`);
       }
+      // A successful after_create leaves files and a failed one deletes the directory, so an empty one is
+      // the leftover of a crash or of a hook that reported success without doing its job: prepare it again.
+      if ((await fs.readdir(target.path)).length === 0) {
+        this.#logger.info('workspace is empty; running after_create again', { issue_id: issue.id, issue_identifier: issue.identifier, workspace: target.path });
+        createdNow = true;
+      }
     }
 
     const workspace: Workspace = { path: target.path, key: target.key, createdNow };

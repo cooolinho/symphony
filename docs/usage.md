@@ -728,6 +728,7 @@ Laravel-App eine eigene `.env` mit eigener SQLite-Datenbank an (`database/sympho
 
 ```yaml
 after_create: |
+  set -e
   git clone --quiet "git@github.com:${SYMPHONY_ISSUE_REPOSITORY}.git" .
   bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-env.sh"
 ```
@@ -825,6 +826,8 @@ Mit einem Stack pro Workspace kann `laravel.php` auf ein Wrapper-Script zeigen, 
 | `↳ issue is closed` | Geschlossene Issues werden nicht bearbeitet. |
 | `project field "Status" is missing` | Das Board hat kein Single-Select-Feld `Status`. Den Namen des Feldes unter `tracker.provider.status_field` eintragen. |
 | `after_create hook exited with code 128 … Permission denied (publickey)` | SSH-Zugriff auf GitHub fehlt. `ssh -T git@github.com` prüfen. |
+| `after_create hook exited with code 128 … Remote branch develop not found` | `SYMPHONY_BASE_BRANCH` gilt für **alle** Repositories auf dem Board. Den Branch in jedem Repository anlegen oder das Repository aus `GITHUB_REPOSITORY` entfernen. |
+| `before_run hook exited with code 128 … not a git repository` | Der Workspace enthält keinen Klon, weil `after_create` einen fehlgeschlagenen `git clone` übergangen hat (ohne `set -e` zählt nur die letzte Zeile des Hooks). Leere Workspaces bereitet Symphony beim nächsten Versuch selbst neu vor. Ist der Workspace nicht leer, aber kaputt, das Verzeichnis löschen. |
 | Ein Agent fängt immer wieder von vorn an | Das Issue verlässt die aktiven Spalten nie, etwa weil die Übergabe-Spalte fehlt oder `set_status` scheitert (Warnung `agent tracker_tool` mit `set_status failed` im Log). Erst pausieren (`max_concurrent_agents: 0`), dann die Spalten bzw. den Prompt korrigieren. |
 | Warnung `agent agent_error` (z. B. `authentication_failed`) oder `startup_failed` | Claude Code ist nicht angemeldet bzw. das Konto hat ein Problem. Einmal `claude` starten und `/login` ausführen, oder `ANTHROPIC_API_KEY` setzen. |
 | `env file values ignored because the shell environment already sets them` | Die Variable ist auch in der Shell gesetzt, und die Shell gewinnt. `unset GITHUB_TOKEN` oder den Wert dort anpassen. |

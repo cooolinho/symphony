@@ -66,6 +66,35 @@ describe('workspace manager', () => {
     assert.equal(fs.existsSync(path.join(root, workspaceKey(issue.identifier))), false);
   });
 
+  it('fails after_create at the first failing line when the script starts with set -e', async () => {
+    const root = tempDir();
+    const workspaces = manager(root, hooks({ afterCreate: 'set -e\necho "fatal: clone failed" >&2\nfalse\ntrue' }));
+    await assert.rejects(workspaces.ensure(issue), (error: unknown) => {
+      return error instanceof SymphonyError && error.code === 'hook_failed' && error.message.includes('clone failed');
+    });
+    assert.equal(fs.existsSync(path.join(root, workspaceKey(issue.identifier))), false);
+  });
+
+  it('runs after_create again for a workspace directory that is empty', async () => {
+    const root = tempDir();
+    const dir = path.join(fs.realpathSync(root), workspaceKey(issue.identifier));
+    fs.mkdirSync(dir);
+    const workspace = await manager(root, hooks({ afterCreate: 'echo created >> marker.txt' })).ensure(issue);
+    assert.equal(workspace.createdNow, true);
+    assert.equal(fs.readFileSync(path.join(dir, 'marker.txt'), 'utf8'), 'created\n');
+  });
+
+  it('keeps a workspace directory that already has content', async () => {
+    const root = tempDir();
+    const dir = path.join(fs.realpathSync(root), workspaceKey(issue.identifier));
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'work.txt'), 'earlier work');
+    const workspace = await manager(root, hooks({ afterCreate: 'echo created >> marker.txt' })).ensure(issue);
+    assert.equal(workspace.createdNow, false);
+    assert.equal(fs.existsSync(path.join(dir, 'marker.txt')), false);
+    assert.equal(fs.readFileSync(path.join(dir, 'work.txt'), 'utf8'), 'earlier work');
+  });
+
   it('refuses a non-directory at the workspace path', async () => {
     const root = tempDir();
     fs.writeFileSync(path.join(root, workspaceKey(issue.identifier)), 'not a dir');

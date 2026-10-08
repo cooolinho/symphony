@@ -50,6 +50,7 @@ hooks:
   # SYMPHONY_ISSUE_REPOSITORY is the issue's own repository, so one board can span several.
   # SYMPHONY_BASE_BRANCH is tracker.provider.base_branch (unset: clone the default branch).
   after_create: |
+    set -e                                               # only the last line's exit code counts: a failed clone must fail the hook
     git clone --quiet ${SYMPHONY_BASE_BRANCH:+--branch "$SYMPHONY_BASE_BRANCH"} "git@github.com:${SYMPHONY_ISSUE_REPOSITORY}.git" .
     bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-env.sh"   # own .env + SQLite per Laravel app; no-op otherwise
   before_run: |

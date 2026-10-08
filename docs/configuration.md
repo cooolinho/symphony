@@ -82,11 +82,16 @@ orchestrator's environment **without** tracker credentials (`GITHUB_TOKEN`, `GH_
 
 | Key | When | On failure |
 |---|---|---|
-| `after_create` | Only when the workspace directory is newly created | The half-created directory is deleted; the attempt fails and is retried. |
+| `after_create` | Only when the workspace directory is newly created or exists but is empty | The half-created directory is deleted; the attempt fails and is retried. |
 | `before_run` | Before every agent attempt | The attempt fails and is retried. |
 | `after_run` | After every attempt (success, failure, cancellation) | Logged and ignored. |
 | `before_remove` | Before a workspace is deleted | Logged and ignored; the directory is still deleted. |
 | `timeout_ms` | Default `60000`; applies to every hook | A timed-out hook's whole process group is killed. |
+
+A hook succeeds or fails by the exit code of its **last** command. Start a multi-line hook with `set -e`; without it a
+failed `git clone` is followed by the next line, which may succeed in the empty directory, and the attempt carries on
+with a workspace that holds no repository. An empty workspace directory (left by a crash or by such a hook) counts as
+new, so `after_create` runs for it again.
 
 #### Recipe: Laravel apps
 
@@ -100,6 +105,7 @@ overwrites or reads an existing `.env`, and prints nothing when there is no Lara
 ```yaml
 hooks:
   after_create: |
+    set -e
     git clone --quiet "git@github.com:${SYMPHONY_ISSUE_REPOSITORY}.git" .
     bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-env.sh"
 ```
@@ -123,6 +129,7 @@ for the test database. A failed `CREATE DATABASE` exits non-zero, so the half-cr
 ```yaml
 hooks:
   after_create: |
+    set -e
     git clone --quiet "git@github.com:${SYMPHONY_ISSUE_REPOSITORY}.git" .
     bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-env.sh"
   before_remove: |
@@ -452,6 +459,7 @@ tracker:
 hooks:
   timeout_ms: 600000
   after_create: |
+    set -e
     git clone --quiet "git@github.com:${SYMPHONY_ISSUE_REPOSITORY}.git" .
     bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-env.sh"
   before_run: |
