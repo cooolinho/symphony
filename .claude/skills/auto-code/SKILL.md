@@ -1,7 +1,7 @@
 ---
 name: auto-code
 description: Autopilot für ein Repository. Plant aus der Projektbeschreibung die nächste Welle neuer Features, Design-, Qualitäts- und Wartungsaufgaben und legt sie als Sub-Issues an, die Symphony sofort umsetzt; Checkpoints alle paar Wellen. Nur laden, wenn der Prompt es verlangt (Issue-Befehl /auto-code), nie von selbst.
-argument-hint: "[Pfad zur Projektbeschreibung] [wave=3] [checkpoint=5]"
+argument-hint: "[Pfad zur Projektbeschreibung] [wave=3] [checkpoint=5] [issue-models=auto|opus|sonnet|haiku]"
 ---
 
 # Autopilot: die nächste Welle planen
@@ -22,6 +22,11 @@ SQLite), ist das in Ordnung, solange sie nicht ins Repository gehören.
 - ein Pfad: die Projektbeschreibung. Ohne Pfad suchst du `docs/vision.md`, dann `docs/index.md`, dann `README.md`.
 - `wave=<n>`: Issues pro Welle, Standard 3. Mehr, als `create_sub_issue` als `remaining` meldet, geht nicht.
 - `checkpoint=<n>`: nach jeder n-ten Welle anhalten, Standard 5. `checkpoint=0` hält nie von selbst an.
+- `issue-models=<auto|opus|sonnet|haiku>`: Modell-Labels für die Sub-Issues. Ohne das Argument (oder mit `off`) setzt du
+  keine Modell-Labels, die Issues laufen dann mit dem Standard-Modell der Instanz (`CLAUDE_MODEL`).
+  - `opus`, `sonnet`, `haiku`: jedes Sub-Issue bekommt das Label `Model: <wert>`.
+  - `auto`: jedes Sub-Issue bekommt das Label, das zu seinem Aufwand passt, siehe [Phase 4](#phase-4-welle-zuschneiden).
+  - Ein anderer Wert ist ungültig: Behandle ihn wie `off` und schreibe die Warnung in den Hinweise-Abschnitt des Berichts.
 
 Text in der Beschreibung des Epics unter der Befehlszeile gilt als Teil des Auftrags (z. B. Schwerpunkte oder eine
 Übergabe aus einem früheren Epic).
@@ -100,6 +105,17 @@ erledigte Arbeit sind ausgeschlossen.
 5. Labels: `auto-code`, die Kategorie (`feature`, `design`, `quality` oder `maintenance`) und `Effort: medium` (S) bzw.
    `Effort: high` (M). Ein Major-Upgrade (Laravel, Filament, PHP) steht allein in seiner Welle und bekommt zusätzlich
    `manual-merge`: Das merged ein Mensch.
+   - **Modell-Label** (nur mit `issue-models`, sonst keines): Bei `opus`, `sonnet` oder `haiku` bekommen alle Issues
+     `Model: <wert>`. Bei `auto` wählst du pro Issue **genau ein** Label nach Aufwand und Risiko:
+
+     | Label | Wann |
+     |---|---|
+     | `Model: haiku` | Aufwand S **und** Risiko niedrig: Texte, Übersetzungen, Konfiguration, kleine Anpassungen in einem Bereich, einfache Tests, Minor-Updates |
+     | `Model: sonnet` | der Normalfall: Aufwand S mit Risiko mittel, Aufwand M mit Risiko niedrig oder mittel (neue Funktion in wenigen Dateien, Design-Issues, Tests, gewöhnliche Refactorings) |
+     | `Model: opus` | Risiko hoch (Datenmodell, Rechte, Geld, Migrationen auf bestehenden Daten), Aufwand M über mehrere Bereiche, Major-Upgrades, knifflige Abhängigkeiten oder ein Refactoring ohne Testnetz |
+
+     Im Zweifel das stärkere Modell. Nenne Label und Grund je Issue im Bericht. Das Label gilt für das ganze Sub-Issue:
+     Developer und Reviewer laufen mit diesem Modell, nicht mit dem Standard-Modell der Instanz.
 6. Ein reines Refactoring ohne Verhaltensänderung beginnt mit `/refactor-safely` in der ersten Zeile. Fehlen in dem
    Bereich Tests, kommt zuerst ein Test-Issue, auf das das Refactoring wartet (`Blocked by #N`).
 
@@ -111,7 +127,8 @@ Die Vorlagen stehen in [templates.md](templates.md).
    zugleich der Schlüssel gegen Duplikate: Bei einem Retry denselben Titel verwenden.
 2. Genau einen Kommentar `## Auto-Code Welle <N+1>` mit `add_comment` posten: Auswahl mit Begründung, Baseline,
    Ideen-Backlog (die besten nicht gewählten Ideen) und Hinweise. Abgelehnte (`limit_reached`) und unbekannte Labels
-   (`unknown_labels`) gehören dazu.
+   (`unknown_labels`) gehören dazu. Fehlt ein `Model: …`-Label im Repository, sag das mit dem Hinweis, dass
+   `npm run repo-init` → *Standard labels* es anlegt; das Issue läuft dann mit dem Standard-Modell.
 3. **Den Turn beenden, ohne den Status zu ändern.** Das Epic bleibt in „In progress“; Symphony startet dich wieder, wenn
    alle Sub-Issues der Welle geschlossen sind.
 

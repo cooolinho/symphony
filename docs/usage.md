@@ -193,7 +193,7 @@ Symphony liefert drei Befehle mit:
 |---|---|
 | `/refactoring [Scope]` | Audit eines Laravel-/Filament-Repositories: Kontext, Baseline, Bugs und Refactoring-Kandidaten. Das Ergebnis sind Sub-Issues. |
 | `/refactor-safely` | Verhaltensneutral umbauen, Tests als Sicherheitsnetz. Steht in der ersten Zeile jedes Refactoring-Sub-Issues. |
-| `/auto-code [Beschreibung] [wave=3] [checkpoint=5]` | [Autopilot](#autopilot-auto-code): entwickelt das Repository aus seiner Projektbeschreibung fortlaufend weiter, in Wellen von Sub-Issues, die sofort umgesetzt werden. |
+| `/auto-code [Beschreibung] [wave=3] [checkpoint=5] [issue-models=auto]` | [Autopilot](#autopilot-auto-code): entwickelt das Repository aus seiner Projektbeschreibung fortlaufend weiter, in Wellen von Sub-Issues, die sofort umgesetzt werden. |
 
 ### Ablauf des Audits
 
@@ -274,10 +274,26 @@ liefern ([Kriterien](../.claude/skills/auto-code/ideation.md)).
 4. **Labels:** `npm run repo-init` → *Standard labels* legt `auto-code`, `feature`, `design`, `quality`, `maintenance`
    und `manual-merge` an.
 5. **Epic:** ein Issue, z. B. „Autopilot“, mit der Beschreibung `/auto-code docs/index.md` (optional `wave=3
-   checkpoint=5`), nach **Ready** schieben. Text unter der Befehlszeile gilt als Teil des Auftrags (z. B. Schwerpunkte).
+   checkpoint=5 issue-models=auto`), nach **Ready** schieben. Text unter der Befehlszeile gilt als Teil des Auftrags (z. B. Schwerpunkte).
 
 Prüfen mit `npm run dry-run`: Das Epic erscheint mit `role=planner` und `↳ command /auto-code → symphony:auto-code`,
 während einer Welle mit `waiting for sub-issues …`.
+
+### Modell pro Sub-Issue (`issue-models`)
+
+Ohne Angabe laufen die Sub-Issues mit dem Modell aus `CLAUDE_MODEL`. Mit dem Argument `issue-models` setzt der Planer
+beim Anlegen ein [Modell-Label](#modell-pro-issue-wählen):
+
+| Argument | Wirkung |
+|---|---|
+| (fehlt) oder `issue-models=off` | keine Modell-Labels, es gilt `CLAUDE_MODEL` |
+| `issue-models=opus`, `sonnet` oder `haiku` | alle Sub-Issues bekommen `Model: <wert>` |
+| `issue-models=auto` | der Planer wählt je Issue nach Aufwand und Risiko: `Model: haiku` für kleine, risikoarme Änderungen, `Model: sonnet` als Normalfall, `Model: opus` bei hohem Risiko, großem Zuschnitt oder Major-Upgrades |
+
+Das Label gilt für Developer und Reviewer des Sub-Issues. Der Planer nennt Label und Grund je Issue im Wellen-Bericht.
+Die Labels `Model: opus|sonnet|haiku` müssen im Repository existieren (`npm run repo-init` → *Standard labels*);
+fehlt eines, meldet der Planer es im Bericht und das Issue läuft mit `CLAUDE_MODEL`. Das Argument gilt für jede Welle
+des Epics; zum Ändern die Befehlszeile in der Beschreibung anpassen.
 
 ### Steuern und stoppen
 
