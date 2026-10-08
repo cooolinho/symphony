@@ -6,7 +6,8 @@ zugleich als Schlüssel, damit ein Retry kein Duplikat anlegt. Pfade und Nummern
 ## Sub-Issue
 
 Titel: `<Feature|Design|Qualität|Wartung>: <was sich ändert>`, z. B. `Feature: CSV-Export der Abrechnungen`.
-Labels: `auto-code`, Kategorie, `Effort: medium|high`, ggf. `manual-merge`.
+Labels: `auto-code`, Kategorie, `Effort: medium|high`, ggf. `Model: opus|sonnet|haiku` (nur mit `issue-models`),
+ggf. `manual-merge`.
 
 ```markdown
 ## Ziel
@@ -46,7 +47,7 @@ Abhängigkeiten stehen als eigene Zeile direkt unter dem Ziel: `Blocked by #<n>`
 - Tests: <Ergebnis> · Analyse: <Ergebnis> · Pint: <Ergebnis>
 
 ### Diese Welle
-- [ ] #<n> <Titel> (<Kategorie>, <Aufwand>, Risiko <…>): <warum jetzt, Bezug zur Beschreibung>
+- [ ] #<n> <Titel> (<Kategorie>, <Aufwand>, Risiko <…>[, Modell <opus|sonnet|haiku>: <Grund>]): <warum jetzt, Bezug zur Beschreibung>
 - [ ] #<n> <Titel> … *wartet auf #<m>*
 
 ### Berücksichtigte Wünsche
