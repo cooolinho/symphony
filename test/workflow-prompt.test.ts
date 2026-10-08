@@ -275,6 +275,15 @@ describe('Symphony toolbox skills', () => {
     }
   });
 
+  it('auto-code: documents issue-models and maps every model label of the standard labels', () => {
+    const text = fs.readFileSync(path.join(skillsDir, 'auto-code', 'SKILL.md'), 'utf8');
+    assert.match(text, /argument-hint:.*issue-models=auto\|opus\|sonnet\|haiku/);
+    assert.match(text, /`issue-models=<auto\|opus\|sonnet\|haiku>`/);
+    for (const label of ['Model: haiku', 'Model: sonnet', 'Model: opus']) {
+      assert.ok(text.includes(`\`${label}\``), label);
+    }
+  });
+
   for (const name of names) {
     it(`${name}: SKILL.md names the skill like its directory and links only to existing files`, () => {
       const text = fs.readFileSync(path.join(skillsDir, name, 'SKILL.md'), 'utf8');
