@@ -144,7 +144,18 @@ const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', '
 export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
 const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'server'];
-const ROLE_KEYS = new Set(['states', 'read_only', 'may_move_to', 'max_turns', 'commands', 'run_checks', 'max_sub_issues', 'claude']);
+const ROLE_KEYS = new Set([
+  'states',
+  'read_only',
+  'may_move_to',
+  'max_turns',
+  'commands',
+  'run_checks',
+  'max_sub_issues',
+  'sub_issue_status',
+  'wait_for_sub_issues',
+  'claude',
+]);
 /** GitHub allows 100 sub-issues per issue. */
 const MAX_SUB_ISSUES_LIMIT = 100;
 const ROLE_CLAUDE_KEYS = new Set(['model', 'effort', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'max_budget_usd']);
@@ -153,7 +164,7 @@ export function normalizeStateName(state: string): string {
   return state.trim().toLowerCase();
 }
 
-function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: string[]): RoleConfig[] | null {
+function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: string[], terminalStates: string[]): RoleConfig[] | null {
   if (raw.roles === undefined || raw.roles === null) return null;
   if (!isPlainObject(raw.roles)) {
     reader.errors.push('roles must be a map');
@@ -204,6 +215,14 @@ function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: s
       if (isPlainObject(claudeRaw)) claude = readRoleClaude(reader, claudeRaw, `${field}.claude`);
       else reader.errors.push(`${field}.claude must be a map`);
     }
+    const maxSubIssues = readMaxSubIssues(reader, value, field);
+    const subIssueStatus = reader.string(value, 'sub_issue_status', `${field}.sub_issue_status`)?.trim() || null;
+    if (subIssueStatus !== null) {
+      if (maxSubIssues === null) reader.errors.push(`${field}.sub_issue_status needs ${field}.max_sub_issues (only then the role creates sub-issues)`);
+      if (terminalStates.some((state) => normalizeStateName(state) === normalizeStateName(subIssueStatus))) {
+        reader.errors.push(`${field}.sub_issue_status must not be a terminal state (got ${JSON.stringify(subIssueStatus)})`);
+      }
+    }
     roles.push({
       name,
       states,
@@ -215,7 +234,9 @@ function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: s
           : reader.int(value, 'max_turns', `${field}.max_turns`, 0, 1) || null,
       commands,
       runChecks: reader.bool(value, 'run_checks', `${field}.run_checks`, true),
-      maxSubIssues: readMaxSubIssues(reader, value, field),
+      maxSubIssues,
+      subIssueStatus,
+      waitForSubIssues: reader.bool(value, 'wait_for_sub_issues', `${field}.wait_for_sub_issues`, false),
       claude,
     });
   }
@@ -488,7 +509,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
   }
 
   // roles
-  const roles = readRoles(reader, raw, activeStates);
+  const roles = readRoles(reader, raw, activeStates, terminalStates);
   if (roles !== null && agent.maxContinuations === null) {
     reader.warnings.push(
       'roles is set while agent.max_continuations is unlimited: role switches count as continuations, so set a limit',

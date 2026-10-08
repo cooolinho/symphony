@@ -50,8 +50,13 @@ und Token stehen in der **`.env`**. Symphony ist eine Implementierung der
   dass das Repository etwas davon wissen muss. Der Audit-Agent ermittelt den Stack, misst die Baseline, findet Bugs und
   Refactoring-Kandidaten und legt Sub-Issues im Backlog an. Umgesetzt wird verhaltensneutral mit Tests als
   Sicherheitsnetz (`/refactor-safely`). ([Details](docs/usage.md#befehle-im-issue-refactoring))
-- **Tracker-Tools für den Agenten:** Status setzen, kommentieren, Pull Request öffnen und (nur für Audit-Rollen)
-  Sub-Issues anlegen. Der GitHub-Token bleibt dabei im Symphony-Prozess, der Agent sieht ihn nie.
+- **Autopilot (`/auto-code`):** Ein Epic mit `/auto-code docs/index.md` lässt Symphony ein Projekt fortlaufend
+  weiterentwickeln. Ein Planer-Agent leitet aus der Projektbeschreibung Wellen neuer Features, Design-, Qualitäts- und
+  Wartungsaufgaben ab. Diese starten sofort und landen nach Review und Checks automatisch gemergt auf `develop`. Alle
+  paar Wellen hält er an, mit Bericht und Release-PR nach `main`. Steuern lässt er sich über Kommentare im Epic.
+  ([Details](docs/usage.md#autopilot-auto-code))
+- **Tracker-Tools für den Agenten:** Status setzen, kommentieren, Pull Request öffnen und (nur für Audit- und
+  Planer-Rollen) Sub-Issues anlegen. Der GitHub-Token bleibt dabei im Symphony-Prozess, der Agent sieht ihn nie.
 - **Robust:** Wiederholungen mit exponentiellem Backoff, Erkennung hängender Sessions. Ändert sich das Board während
   ein Agent läuft, wird er gestoppt.
 - **Session-Limit-Handling:** Erreicht das Claude-Abonnement sein Limit, wiederholt Symphony ein paar Mal und wartet
@@ -110,7 +115,7 @@ symphony/
 ├── docker/                     # entrypoint.sh (Variablen prüfen, SSH-Key, git-Identität) und ssh_known_hosts
 ├── .dockerignore               # hält .env, secrets/, Tests und Docs aus dem Build-Kontext
 ├── .env.example                # Vorlage für .env (Board, Repository, Modell, Token, Grenzen)
-├── repo-init.ts                # interaktive Einrichtung der Repositories (Model-Labels, Laravel-Boost-Issue)
+├── repo-init.ts                # interaktive Einrichtung der Repositories (Standard-Labels, Laravel-Boost-Issue)
 ├── scripts/e2e/                # End-to-End-Test der Orchestrierung auf einem echten Board (npm run e2e)
 ├── scripts/laravel-smoke/      # Integrationstest gegen eine echte Laravel-13/Filament-5-App (npm run test:laravel)
 ├── scripts/push-history.sh     # lokale Historie per SSH in den Docker-Container eines Servers übertragen (docs/docker.md)
@@ -119,7 +124,7 @@ symphony/
 │   ├── service.ts              # Start, Herunterfahren, Dry Run
 │   ├── log.ts                  # strukturierte key=value-Logs
 │   ├── workflow/               # WORKFLOW.md laden, Konfiguration, Templates, Live-Reload, Prüfung
-│   ├── tracker/                # Tracker-Schnittstelle und GitHub-Projects-Adapter samt Agenten-Tools
+│   ├── tracker/                # Tracker-Schnittstelle und GitHub-Projects-Adapter samt Agenten-Tools und Auto-Merge
 │   ├── workspace/              # Workspaces pro Issue und Hooks
 │   ├── agent/                  # Claude-Code-Sessions über das Claude Agent SDK, Modellwahl per Label
 │   ├── laravel/                # Laravel-Apps erkennen, Laravel Boost pro Workspace vorbereiten

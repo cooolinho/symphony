@@ -9,10 +9,10 @@ import { isLoopbackHost, startHttpServer, type HttpServerHandle } from './http/s
 import { defaultIntegrations } from './integrations/registry.ts';
 import type { WorkspaceIntegration } from './integrations/types.ts';
 import { Logger, type LogLevel } from './log.ts';
-import { hasRequiredFields, hasRequiredLabels, isActiveState, sortForDispatch } from './orchestrator/eligibility.ts';
+import { hasRequiredFields, hasRequiredLabels, isActiveState, sortForDispatch, waitingForSubIssues } from './orchestrator/eligibility.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
 import { getTrackerFactory } from './tracker/registry.ts';
-import type { Issue } from './tracker/types.ts';
+import type { Issue, TrackerAdapter } from './tracker/types.ts';
 import type { LoadedEnvFile } from './util/env.ts';
 import { errorCode, errorMessage } from './util/errors.ts';
 import { truncate } from './util/text.ts';
@@ -145,8 +145,8 @@ export async function runService(options: ServiceOptions): Promise<number> {
   return 0;
 }
 
-function ineligibleReason(issue: Issue, store: WorkflowStore): string | null {
-  const { tracker } = store.current.config;
+function ineligibleReason(issue: Issue, store: WorkflowStore, adapter: TrackerAdapter): string | null {
+  const { tracker, roles } = store.current.config;
   if (!hasRequiredFields(issue)) return 'missing required fields';
   if (!isActiveState(issue.state, tracker)) return `state "${issue.state}" is not active`;
   if (!issue.dispatchable) {
@@ -155,6 +155,8 @@ function ineligibleReason(issue: Issue, store: WorkflowStore): string | null {
     return typeof note === 'string' && note !== '' ? note : 'not dispatchable';
   }
   if (!hasRequiredLabels(issue, tracker.requiredLabels)) return `missing required labels (${tracker.requiredLabels.join(', ')})`;
+  const waiting = waitingForSubIssues(issue, roleFor(issue, roles), adapter);
+  if (waiting.length > 0) return `waiting for sub-issues ${waiting.join(', ')} (roles.<role>.wait_for_sub_issues)`;
   return null;
 }
 
@@ -239,7 +241,7 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
     out(`Candidates in active states: ${issues.length}`);
     let first: Issue | null = null;
     for (const issue of issues) {
-      const reason = ineligibleReason(issue, store);
+      const reason = ineligibleReason(issue, store, adapter);
       if (reason === null && first === null) first = issue;
       out(`  ${reason === null ? 'dispatch' : 'skip    '}  ${issue.identifier}  [${issue.state}${issue.priority === null ? '' : `, p${issue.priority}`}]  ${truncate(issue.title, 70)}`);
       if (reason !== null) out(`            ↳ ${reason}`);

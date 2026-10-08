@@ -12,7 +12,7 @@ import { DEFAULTS, resolveConfig, type ServiceConfig } from '../src/workflow/con
 import { roleFor } from '../src/workflow/roles.ts';
 import { loadWorkflowFile, parseWorkflow } from '../src/workflow/loader.ts';
 import { type EffectiveWorkflow, WorkflowStore } from '../src/workflow/store.ts';
-import { validateDispatch } from '../src/workflow/validate.ts';
+import { unknownBoardColumns, validateDispatch } from '../src/workflow/validate.ts';
 import { compilePrompt, renderPrompt } from '../src/workflow/template.ts';
 import { makeIssue, tempDir } from './helpers.ts';
 import { issueTemplateValue } from '../src/workflow/template.ts';
@@ -359,7 +359,7 @@ describe('prompt templates', () => {
     const template = compilePrompt(definition.promptTemplate);
     const render = (labels: string[]) =>
       renderPrompt(template, {
-        issue: issueTemplateValue(makeIssue({ id: '12', labels, native_ref: { number: 12, parent: null, sub_issues: [] } })),
+        issue: issueTemplateValue(makeIssue({ id: '12', labels, native_ref: { number: 12, parent: null, sub_issues: [], base_branch: null } })),
         attempt: null,
         role: 'default',
       });
@@ -610,6 +610,31 @@ describe('roles config', () => {
       assert.match(invalid({ max_sub_issues: 0 }), /roles\.auditor\.max_sub_issues must be an integer >= 1/);
       assert.match(invalid({ max_sub_issues: 101 }), /roles\.auditor\.max_sub_issues must be at most 100 \(got 101\)/);
       assert.equal(invalid({ max_sub_issues: 100 }), '');
+    });
+
+    it('parses sub_issue_status and wait_for_sub_issues, off by default', () => {
+      const planner = { commands: ['auto-code'], states: ['Ready', 'In progress'], max_sub_issues: 5, sub_issue_status: ' Ready ', wait_for_sub_issues: true };
+      const found = resolve({ ...base, roles: { ...valid, planner } }).roles?.find((role) => role.name === 'planner');
+      assert.deepEqual([found?.subIssueStatus, found?.waitForSubIssues], ['Ready', true]);
+      const [developer, , audit] = roles();
+      assert.deepEqual([developer?.subIssueStatus, developer?.waitForSubIssues], [null, false]);
+      assert.deepEqual([audit?.subIssueStatus, audit?.waitForSubIssues], [null, false]);
+    });
+
+    it('rejects a sub_issue_status without max_sub_issues or in a terminal state', () => {
+      const invalid = (extra: Record<string, unknown>) =>
+        messageOf({ ...base, tracker: { ...base.tracker, terminal_states: ['Done'] }, roles: { ...valid, auditor: { ...auditor, ...extra } } });
+      assert.match(invalid({ sub_issue_status: 'Ready', max_sub_issues: undefined }), /roles\.auditor\.sub_issue_status needs roles\.auditor\.max_sub_issues/);
+      assert.match(invalid({ sub_issue_status: 'done' }), /roles\.auditor\.sub_issue_status must not be a terminal state \(got "done"\)/);
+      assert.match(invalid({ wait_for_sub_issues: 'yes' }), /roles\.auditor\.wait_for_sub_issues must be true or false/);
+      assert.equal(invalid({ sub_issue_status: 'Ready', wait_for_sub_issues: true }), '');
+    });
+
+    it('checks a role sub_issue_status against the board columns', () => {
+      const config = resolve({ ...base, roles: { ...valid, auditor: { ...auditor, sub_issue_status: 'Redy' } } });
+      assert.deepEqual(unknownBoardColumns(config, ['Ready', 'In progress', 'Agent review']), [
+        'unknown board column "Redy" (valid: Ready, In progress, Agent review)',
+      ]);
     });
   });
 });

@@ -11,6 +11,18 @@ tracker:
     owner: $GITHUB_PROJECT_OWNER             # optional; defaults to the owner of the first repository
     token: $GITHUB_TOKEN                     # classic token with the repo and project scopes
     sub_issue_status: Backlog                # column for sub-issues made by create_sub_issue; must not be an active or terminal state
+    # Branch agents branch from and open pull requests against; unset = the repository's default branch.
+    # Set it (e.g. develop) to keep the default branch for releases a human merges.
+    base_branch: ${SYMPHONY_BASE_BRANCH:-}
+    auto_merge:
+      # true: when the reviewer moves an issue to on_enter (entry checks passed), Symphony merges its pull request into
+      # base_branch, closes the issue and moves it to done_state. Needs base_branch; never merges into the default branch.
+      # A pull request or issue labelled "manual-merge" stays for a human.
+      enabled: ${SYMPHONY_AUTO_MERGE:-false}
+      on_enter: In review
+      done_state: Done
+      on_conflict: In progress               # a pull request that conflicts with base_branch goes back to the developer
+      method: squash
   # Board columns: Backlog | Ready | In progress | Agent review | Blocked | In review | Done
   #   Ready, In progress -> developer agent implements the issue
   #   Agent review       -> reviewer agent (read-only) reviews it; entered only after checks pass
@@ -20,6 +32,8 @@ tracker:
   #   Backlog            -> ignored until someone moves the issue to Ready; also where sub-issues made by the auditor land
   #   An issue whose description starts with "/refactoring" is served by the auditor instead of the developer
   #   (roles.auditor.commands): it analyses read-only and files sub-issues. Skills in .claude/skills/ define the commands.
+  #   An issue whose description starts with "/auto-code" is served by the planner: it plans waves of sub-issues that
+  #   start in Ready right away, stays in "In progress" and runs again once all sub-issues of the wave are closed.
   # If your board names its columns differently, adjust these lists, roles, checks and the prompt below.
   active_states: [Ready, In progress, Agent review]
   terminal_states: [Done]
@@ -34,8 +48,9 @@ workspace:
 hooks:
   timeout_ms: 600000
   # SYMPHONY_ISSUE_REPOSITORY is the issue's own repository, so one board can span several.
+  # SYMPHONY_BASE_BRANCH is tracker.provider.base_branch (unset: clone the default branch).
   after_create: |
-    git clone --quiet "git@github.com:${SYMPHONY_ISSUE_REPOSITORY}.git" .
+    git clone --quiet ${SYMPHONY_BASE_BRANCH:+--branch "$SYMPHONY_BASE_BRANCH"} "git@github.com:${SYMPHONY_ISSUE_REPOSITORY}.git" .
     bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-env.sh"   # own .env + SQLite per Laravel app; no-op otherwise
   before_run: |
     git fetch --quiet --prune origin
@@ -87,6 +102,17 @@ roles:
     max_turns: 2
     may_move_to: [In progress, In review, Blocked]
     claude: { model: opus, max_budget_usd: 15 }
+  planner:
+    commands: [auto-code]                    # served only for issues whose description starts with /auto-code
+    states: [Ready, In progress]
+    read_only: true                          # plans only; the developer and reviewer implement the sub-issues
+    run_checks: false
+    max_sub_issues: 5                        # open sub-issues at once, i.e. the largest wave
+    sub_issue_status: Ready                  # wave issues start without a human (opt-in; the default column is Backlog)
+    wait_for_sub_issues: true                # the epic runs again only once all sub-issues of its wave are closed
+    max_turns: 2
+    may_move_to: [In progress, In review, Blocked]
+    claude: { model: opus, max_budget_usd: 10 }
 
 checks:
   # Entry checks: set_status into these columns only succeeds when the script passes (exit 0).
@@ -114,7 +140,7 @@ server:
   host: ${SYMPHONY_HOST:-127.0.0.1}          # bind address; non-loopback only behind an authenticating proxy
   allow_remote_control: ${SYMPHONY_ALLOW_REMOTE_CONTROL:-false}  # Retry/Resume now on a non-loopback bind
 ---
-{% capture branch %}{% if issue.branch_name %}{{ issue.branch_name }}{% else %}symphony/issue-{{ issue.native_ref.number }}{% endif %}{% endcapture %}
+{% capture branch %}{% if issue.branch_name %}{{ issue.branch_name }}{% else %}symphony/issue-{{ issue.native_ref.number }}{% endif %}{% endcapture %}{% assign base = issue.native_ref.base_branch %}
 You are working on GitHub issue **{{ issue.identifier }}**: {{ issue.title }}
 
 - Issue: {{ issue.url }}
@@ -143,9 +169,9 @@ The current directory is a clone of the issue's repository. Work only inside it.
 1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist) and follow their conventions.
 2. Call `get_issue` and read the comments and linked pull requests. If a pull request for this issue exists, this is follow-up work: continue on its branch and address the latest feedback, above all the open findings of the latest agent review comment.
 3. If the board status is "Ready", move the issue to "In progress" with `set_status("In progress")` and post a short plan with `add_comment`.
-4. Work on the branch `{{ branch }}`: create it from the default branch if it does not exist yet, otherwise check it out and continue.
+4. Work on the branch `{{ branch }}`: create it from {% if base %}`origin/{{ base }}`{% else %}the default branch{% endif %} if it does not exist yet, otherwise check it out and continue.
 5. Implement the change. Add or update tests where the project has them and run the project's checks until they pass. Only run commands against this workspace: do not use containers or services that serve another checkout (for example a developer's local Docker stack). If a check can only run there, say so in your summary instead.
-6. Integrate the base branch before requesting review: `git fetch origin` and merge `origin/<base>` (the pull request's base, else the default branch) into `{{ branch }}`, resolve conflicts and run the checks again.
+6. Integrate the base branch before requesting review: `git fetch origin` and merge `origin/<base>` (the pull request's base, else {% if base %}`{{ base }}`{% else %}the default branch{% endif %}) into `{{ branch }}`, resolve conflicts and run the checks again.
 7. Commit with clear messages and push the branch (`git push -u origin {{ branch }}`); the working tree must be clean and everything pushed. Open a pull request with `open_pull_request` if none exists yet, with "Closes #{{ issue.native_ref.number }}" in its body.
 8. Comment on the issue with `add_comment`: what changed, how you verified it, and the pull request link.
 9. Hand off with `set_status("Agent review")`. Symphony runs the entry checks (lint, static analysis, tests) before the move:
@@ -165,7 +191,7 @@ The tracker tools are `get_issue`, `set_status` and `add_comment`.
 1. Call `get_issue`: read the issue, all comments and the linked pull request (its base branch, description and discussion).
 2. Count the earlier review comments on the issue (comments starting with "## Agent review"). This review is round N = that count + 1.
 3. Make sure the workspace is on the pull request's branch (`{{ branch }}` unless the pull request says otherwise) at its pushed head: `git fetch origin`, `git status`, `git log --oneline -5`.
-4. Review the full change with `git diff origin/<base>...HEAD` (`<base>`: the pull request's base branch, else the default branch), and read surrounding code where needed.
+4. Review the full change with `git diff origin/<base>...HEAD` (`<base>`: the pull request's base branch, else {% if base %}`{{ base }}`{% else %}the default branch{% endif %}), and read surrounding code where needed.
 5. Check against this list:
    - **Correctness:** does the change do what the issue asks, including its acceptance criteria and edge cases?
    - **Tests:** meaningful Pest tests for the new behavior, including Filament and Livewire component tests where UI changed; no tests that only assert the obvious.
@@ -191,7 +217,7 @@ The tracker tools are `get_issue`, `set_status` and `add_comment`.
    ```
 
 7. Move the issue:
-   - **Approved** (no blocker or major findings): `set_status("In review")`. Symphony runs the entry checks once more.
+   - **Approved** (no blocker or major findings): `set_status("In review")`. Symphony runs the entry checks once more. If Symphony merges automatically, the result contains `auto_merge` with the outcome; there is nothing more for you to do either way.
    - **Changes needed** and N is 1 or 2: `set_status("In progress")`. The developer agent picks up your findings.
    - **Changes needed** and N is 3 or more: do not send it back again. Move it to `set_status("In review")` and make sure your comment lists all open findings for the human reviewer.
    - On `check_failed` when moving to "In review": post a short comment with the failing output and move the issue to "In progress" instead.
@@ -218,6 +244,23 @@ The current directory is a clone of the issue's repository. Work only inside it.
 If you are blocked (unclear scope, missing access, broken infrastructure), explain exactly what you need in an issue comment and move the issue to "Blocked" with `set_status("Blocked")`. Never move an issue to "Done": a human does that.
 
 Write the report, the sub-issues and all comments in the language the issue is written in.
+{% when "planner" %}## Your role: planner
+
+You develop the repository further on your own: you plan the next wave of work from the project description and turn it into sub-issues of this issue, which is the epic. You are **read-only**: do not edit files, commit, push or change branches on the remote. The developer and reviewer agents implement the sub-issues{% if base %} against `{{ base }}`{% endif %}; Symphony starts you again once all sub-issues of the wave are closed.
+The tracker tools are `get_issue`, `set_status`, `add_comment`, `create_sub_issue` and `open_pull_request` (only for the release pull request the skill describes).
+
+The current directory is a clone of the issue's repository. Work only inside it.
+
+1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist).
+2. Call `get_issue` and read the comments and the sub-issues: earlier wave reports, closed and rejected sub-issues, and every human comment since the last wave report.
+3. If the board status is "Ready", move the issue to "In progress" with `set_status("In progress")`.
+4. Follow the skill named above. Create sub-issues only with `create_sub_issue`, never with git, `gh` or the API.
+5. Post exactly one report comment with `add_comment`.
+6. End your turn **without changing the status**: the epic stays in "In progress" and waits for its wave. Move it only where the skill says so: to "In review" at a checkpoint or when nothing worthwhile is left, to "Blocked" when you need a human.
+
+If you are blocked (unclear project description, missing access, broken infrastructure), explain exactly what you need in an issue comment and move the issue to "Blocked" with `set_status("Blocked")`. Never move an issue to "Done": a human does that.
+
+Write the report, the sub-issues and all comments in the language the issue is written in.
 {% else %}## How to work
 
 The current directory is a clone of the issue's repository. Work only inside it.
@@ -225,7 +268,7 @@ The current directory is a clone of the issue's repository. Work only inside it.
 1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist) and follow their conventions.
 2. Call `mcp__tracker__get_issue` and read the comments and linked pull requests. If a pull request for this issue exists, this is follow-up work: continue on its branch and address the latest feedback.
 3. If the board status is "Ready", move the issue to "In progress" with `mcp__tracker__set_status` and post a short plan with `mcp__tracker__add_comment`.
-4. Work on the branch `{{ branch }}`: create it from the default branch if it does not exist yet, otherwise check it out and continue.
+4. Work on the branch `{{ branch }}`: create it from {% if base %}`origin/{{ base }}`{% else %}the default branch{% endif %} if it does not exist yet, otherwise check it out and continue.
 5. Implement the change. Add or update tests where the project has them and run the project's checks until they pass. Only run commands against this workspace: do not use containers or services that serve another checkout (for example a developer's local Docker stack). If a check can only run there, say so in your summary instead.
 6. Commit with clear messages, push the branch (`git push -u origin {{ branch }}`), and open a pull request with `mcp__tracker__open_pull_request`. Put "Closes #{{ issue.native_ref.number }}" in its body.
 7. Comment on the issue: what changed, how you verified it, and the pull request link.

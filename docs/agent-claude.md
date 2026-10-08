@@ -100,12 +100,13 @@ every MCP server; a plugin that fails to load is logged as a warning.
 An issue whose description starts with `/<name>` asks for the skill of that name (see
 [issue commands](configuration.md#issue-commands)). Symphony does not rely on Claude Code to recognise the slash in the
 middle of its own prompt: it resolves the command against `skills/<name>/SKILL.md` in `claude.plugins` and the shipped
-prompt tells the agent to load `symphony:<name>` with the Skill tool first. The toolbox ships two:
+prompt tells the agent to load `symphony:<name>` with the Skill tool first. The toolbox ships three:
 
 | Command | Skill | Role | What it does |
 |---|---|---|---|
 | `/refactoring [scope]` | `symphony:refactoring` | `auditor` (read-only, no entry checks) | Detects the stack (PHP, Laravel, Filament, Livewire, Pest, Vite, …), measures a baseline, finds bugs and refactoring candidates with Laravel Boost's `search-docs` and schema tools, then files them as sub-issues in `Backlog` with `create_sub_issue` and posts one report comment. The issue becomes the epic. |
 | `/refactor-safely` | `symphony:refactor-safely` | `developer` and `reviewer` | Behaviour-neutral refactoring: characterization tests first, existing assertions untouched, no change to routes, config, schema or public signatures. The reviewer checks the test diff for removed assertions. The audit puts this command on the first line of each refactoring sub-issue. |
+| `/auto-code [description] [wave=3] [checkpoint=5]` | `symphony:auto-code` | `planner` (read-only, no entry checks, waits for its sub-issues) | Autopilot: reads the project description, roadmap, code on the base branch and the human's comments on the epic, and files the next wave of features, design, quality and maintenance work as sub-issues that start in `Ready` right away. The epic stays active and runs again when the wave is closed; every few waves it stops at a checkpoint with a report and a release pull request. See [usage.md](usage.md#autopilot-auto-code). |
 
 A role stays read-only after the skill is loaded: `read_only: true` denies Edit, Write, `git commit` and `git push`,
 but the tracker tools stay available, so the auditor can file sub-issues. Skill instructions that Bash could still

@@ -171,7 +171,7 @@ automatisch, sobald alles erledigt ist. Drei Arten von Abhängigkeiten zählen:
 |---|---|
 | Relationship | In der Seitenleiste des Issues unter **Relationships → Blocked by** |
 | Text im Issue | In der Beschreibung, z. B. `blocked by #12`, `blocked #12` oder `Blocked by: #12, #13`. `#N` meint dasselbe Repository, andere gehen als `owner/repo#N`. |
-| Sub-Issues | In der Seitenleiste unter **Sub-issues**. Das Parent-Issue wartet, bis alle Sub-Issues geschlossen sind. Ausnahme: Ein Issue, dessen Beschreibung mit einem [Befehl](#befehle-im-issue-refactoring) beginnt, wartet nicht, denn bei ihm sind die Sub-Issues das Ergebnis des Laufs. |
+| Sub-Issues | In der Seitenleiste unter **Sub-issues**. Das Parent-Issue wartet, bis alle Sub-Issues geschlossen sind. Ausnahme: Ein Issue, dessen Beschreibung mit einem [Befehl](#befehle-im-issue-refactoring) beginnt, wartet nicht, denn bei ihm sind die Sub-Issues das Ergebnis des Laufs. Eine Rolle mit `wait_for_sub_issues` (der [Autopilot](#autopilot-auto-code)) wartet trotzdem: Sie startet erst wieder, wenn ihre Sub-Issues geschlossen sind. |
 
 Erledigt ist eine Abhängigkeit, wenn das Issue **geschlossen** ist; bei einem referenzierten Pull Request, wenn er
 gemergt oder geschlossen ist. Agenten schließen keine Issues selbst. Eine Abhängigkeit löst sich also, sobald du den
@@ -187,12 +187,13 @@ leeren Zeile** der Beschreibung `/<name>` (optional mit Argumenten), lädt der A
 Issue-Text bleibt kurz, die Anleitung steckt im Skill. Technik und Auswahlregeln:
 [configuration.md](configuration.md#issue-commands).
 
-Symphony liefert zwei Befehle mit:
+Symphony liefert drei Befehle mit:
 
 | Befehl | Zweck |
 |---|---|
 | `/refactoring [Scope]` | Audit eines Laravel-/Filament-Repositories: Kontext, Baseline, Bugs und Refactoring-Kandidaten. Das Ergebnis sind Sub-Issues. |
 | `/refactor-safely` | Verhaltensneutral umbauen, Tests als Sicherheitsnetz. Steht in der ersten Zeile jedes Refactoring-Sub-Issues. |
+| `/auto-code [Beschreibung] [wave=3] [checkpoint=5]` | [Autopilot](#autopilot-auto-code): entwickelt das Repository aus seiner Projektbeschreibung fortlaufend weiter, in Wellen von Sub-Issues, die sofort umgesetzt werden. |
 
 ### Ablauf des Audits
 
@@ -236,6 +237,88 @@ Beschreibungstext weiter unten gilt nicht.
    in `WORKFLOW.md` hinzu und einen Zweig im Prompt (`{% when "<rolle>" %}`).
 3. Prüfe mit `npm run dry-run`: Für das Issue erscheinen die Rolle und `↳ command /<name> → symphony:<name>`. Fehlt der
    Skill, meldet die Dispatch-Validierung `no skill for /<name> in claude.plugins`.
+
+## Autopilot: /auto-code
+
+Mit `/auto-code` entwickelt Symphony ein Repository selbstständig weiter. Der einzige Auftrag ist die
+Projektbeschreibung im Repository. Daraus plant der Agent neue Features, Design-, Qualitäts- und Wartungsaufgaben, setzt
+sie um und plant danach die nächsten. Das geht so lange weiter, bis du das Epic stoppst.
+
+Die Arbeit läuft in **Wellen**:
+
+```
+Epic "/auto-code docs/index.md" → Ready
+  → Planer (opus, nur lesend): liest Projektbeschreibung, Roadmap, Code auf develop und deine Kommentare im Epic
+  → Welle N: 3 Sub-Issues direkt in Ready (Labels auto-code, Kategorie, Effort), Bericht im Epic
+  → das Epic bleibt "In progress" und wartet, bis alle Sub-Issues der Welle geschlossen sind
+       je Sub-Issue: Developer → PR nach develop → Entry-Checks → Reviewer → "In review"
+                     → Symphony merged den PR in develop, schließt das Issue, setzt es auf Done
+  → der Planer startet erneut → Welle N+1
+  → nach Welle 5, 10, …: Checkpoint-Bericht und Release-PR develop → main, das Epic geht nach "In review"
+```
+
+Die Anleitung des Planers steht im Skill [`auto-code`](../.claude/skills/auto-code/SKILL.md). Er wählt Ideen nur mit
+Bezug zur Projektbeschreibung und Beleg im Code, hält Mischregeln ein (höchstens ein Wartungs-Issue pro Welle,
+regelmäßig Qualität, keine wiederholten Redesigns derselben Seite) und pausiert lieber, als Beschäftigungstherapie zu
+liefern ([Kriterien](../.claude/skills/auto-code/ideation.md)).
+
+### Einrichten
+
+1. **Projektbeschreibung:** Das Ziel-Repository braucht eine Beschreibung mit erkennbarem Ziel, z. B. `docs/index.md`.
+   Eine Roadmap (`docs/todo.md`) arbeitet der Planer zuerst ab. Sehr empfohlen ist ein Abschnitt „Leitplanken für den
+   Autopiloten“ mit Nicht-Zielen, Prioritäten und Design-Prinzipien
+   ([Vorlage](../.claude/skills/auto-code/vision-template.md)).
+2. **Integrations-Branch:** `develop` aus `main` anlegen und pushen (`git switch -c develop main && git push -u origin develop`).
+3. **Env der Instanz:** `SYMPHONY_BASE_BRANCH=develop` (Agenten klonen, branchen und öffnen PRs gegen `develop`) und
+   `SYMPHONY_AUTO_MERGE=true` (Symphony merged freigegebene PRs in `develop`). Danach Symphony neu starten.
+4. **Labels:** `npm run repo-init` → *Standard labels* legt `auto-code`, `feature`, `design`, `quality`, `maintenance`
+   und `manual-merge` an.
+5. **Epic:** ein Issue, z. B. „Autopilot“, mit der Beschreibung `/auto-code docs/index.md` (optional `wave=3
+   checkpoint=5`), nach **Ready** schieben. Text unter der Befehlszeile gilt als Teil des Auftrags (z. B. Schwerpunkte).
+
+Prüfen mit `npm run dry-run`: Das Epic erscheint mit `role=planner` und `↳ command /auto-code → symphony:auto-code`,
+während einer Welle mit `waiting for sub-issues …`.
+
+### Steuern und stoppen
+
+| Du willst | So geht es |
+|---|---|
+| etwas Bestimmtes als Nächstes | Kommentar im Epic, z. B. „Als Nächstes PDF-Export der Abrechnung“. Der Planer setzt Wünsche vorrangig um und sagt im Bericht, was er damit gemacht hat. |
+| eine Idee ablehnen | Das Sub-Issue als **not planned** schließen. Der Planer schlägt sie nie wieder vor, auch nicht umformuliert. |
+| einen PR selbst mergen | Label `manual-merge` an Issue oder PR. Symphony lässt ihn in „In review“ liegen. Major-Upgrades bekommen es automatisch. |
+| am Checkpoint weitermachen | Release-PR prüfen und mergen (oder nicht), Fragen im Epic beantworten, Epic zurück nach **Ready**. |
+| anhalten | Epic nach **Backlog** schieben. Laufende Sub-Issues laufen zu Ende. Zurück nach **Ready** setzt fort. |
+| beenden | Epic nach **Done** schieben. |
+
+Ein früher Checkpoint kommt, wenn du in einer Welle zwei oder mehr Sub-Issues ablehnst: Dann passt die Richtung nicht.
+Findet der Planer nichts mehr, das die Kriterien erfüllt, schreibt er „Auto-Code Pause“ und geht nach „In review“.
+
+### Auto-Merge nach develop
+
+`tracker.provider.auto_merge` merged, sobald der Reviewer ein Issue nach `on_enter` (hier „In review“) verschiebt, also
+nach bestandenem Agent-Review **und** bestandenen Entry-Checks:
+
+- nur Pull Requests vom Issue-Branch (`symphony/issue-N` bzw. dem verknüpften Branch) nach `base_branch`, nie in den
+  Default-Branch, keine Drafts, nichts mit dem Label `manual-merge`;
+- Squash-Merge des geprüften Commits (`expectedHeadOid`), danach schließt Symphony das Issue (GitHub tut das bei
+  Merges in einen anderen Branch als den Default-Branch nicht) und setzt es auf **Done**;
+- bei einem Merge-Konflikt geht das Issue nach **In progress** zurück, mit einem Kommentar für den Developer;
+- ohne Pull Request passiert nichts (so bei der Übergabe von Auditor und Planer); Drafts, `manual-merge` und ein
+  Fehlschlag bleiben in „In review“ und bekommen einen Kommentar mit dem Grund.
+
+Auto-Merge gilt für alle Issues der Instanz, nicht nur für die des Autopiloten. Deine eigenen Issues landen also
+ebenfalls gemergt in `develop`. Nach `main` kommt nur, was du per Release-PR übernimmst.
+
+### Grenzen und Kosten
+
+- Ein Epic fasst höchstens 100 Sub-Issues (GitHub). Ab 80 schreibt der Planer eine Übergabe; leg dann ein neues Epic an
+  und kopiere den Abschnitt unter die Befehlszeile.
+- Die Welle ist erst fertig, wenn **alle** ihre Sub-Issues geschlossen sind. Ein Sub-Issue in „Blocked“ hält den
+  Autopiloten an, bis du es löst oder schließt.
+- Kosten: pro Welle ein Planer-Lauf (`roles.planner.claude.max_budget_usd`, Standard 10 $) plus Developer- und
+  Reviewer-Läufe pro Sub-Issue. Bremsen: kleinere Wellen (`wave=2`), häufigere Checkpoints, wenige parallele Agenten,
+  ein günstigeres Modell für die Umsetzung (`CLAUDE_MODEL=sonnet`).
+- Der Planer sieht die Oberfläche nicht. Design-Issues schreibt er deshalb mit konkreten, testbaren Kriterien.
 
 ## Fortsetzungen und Pausieren
 
@@ -332,7 +415,8 @@ geben einem kniffligen Issue mehr Spielraum, ohne das Modell zu wechseln. Jede S
 ## Repositories einrichten (repo-init)
 
 `repo-init` richtet die Repositories aus `GITHUB_REPOSITORY` interaktiv ein. Es gibt zwei Schritte: die
-Standard-Labels für Modell und Effort und ein Issue, das Laravel Boost einführt. Weitere Schritte kommen als Einträge in
+Standard-Labels (Modell, Effort und die Labels des [Autopiloten](#autopilot-auto-code)) und ein Issue, das Laravel Boost
+einführt. Weitere Schritte kommen als Einträge in
 derselben Auswahlliste dazu.
 
 ```bash
@@ -698,7 +782,7 @@ Faustregel: Wissen gehört dorthin, wo es versioniert wird und wo es gilt.
 | Domäne und Projekt („Rechnungen erstellen“, Mandanten-Scoping) | **Repository:** `.ai/skills/` und `.ai/guidelines/` (Laravel), sonst `.claude/skills/` | wird mit dem Code versioniert und im Pull Request geprüft; hilft auch dir lokal |
 | Projektregeln und Fallen | **Repository:** `.ai/rules/`, über Boosts Tool `record-rule` oder den Skill `infer-conventions` | wird nach Dateipfad geladen und gilt für alle |
 | Arbeitsweise über alle Repositories (PR-Stil, Commits, Prüfen ohne UI, Übergabe ans Board) | **Symphony:** `.claude/skills/` | gilt nur für Symphony-Agenten, in jedem Repository gleich |
-| Aufgaben, die per Befehl im Issue starten (`/refactoring`, `/refactor-safely`) | **Symphony:** `.claude/skills/`, siehe [Befehle im Issue](#befehle-im-issue-refactoring) | einmal pflegen statt in jedem Repository; laufen nur unter Symphony |
+| Aufgaben, die per Befehl im Issue starten (`/refactoring`, `/refactor-safely`, `/auto-code`) | **Symphony:** `.claude/skills/`, siehe [Befehle im Issue](#befehle-im-issue-refactoring) | einmal pflegen statt in jedem Repository; laufen nur unter Symphony |
 | Persönliche Vorlieben | `~/.claude/` | lädt Symphony bewusst nicht |
 
 Alles ins Symphony-Repository zu legen, wäre bequem, hat aber Nachteile. Diese Skills sähen nur Symphony-Agenten,

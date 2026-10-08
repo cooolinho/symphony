@@ -31,6 +31,7 @@ import {
   sessionLimitWaitMs,
   sortForDispatch,
   stateLimit,
+  waitingForSubIssues,
 } from './eligibility.ts';
 import { normalizeStateName } from '../workflow/config.ts';
 import type { CheckCache, CheckRecord } from './guard.ts';
@@ -583,7 +584,7 @@ export class Orchestrator {
 
       for (const issue of sortForDispatch(candidates)) {
         if (this.#stopping || this.#globalSlots(config) <= 0) break;
-        if (this.#shouldDispatch(issue, config)) this.#dispatch(issue, null, workflow, adapter);
+        if (this.#shouldDispatch(issue, config, adapter)) this.#dispatch(issue, null, workflow, adapter);
       }
     } catch (error) {
       this.#logger.error('tick failed', { error: errorMessage(error) });
@@ -703,7 +704,7 @@ export class Orchestrator {
     return Math.min(this.#globalSlots(config), Math.max(stateLimit(state, config.agent) - inState, 0));
   }
 
-  #shouldDispatch(issue: Issue, config: ServiceConfig): boolean {
+  #shouldDispatch(issue: Issue, config: ServiceConfig, adapter: TrackerAdapter): boolean {
     return (
       hasRequiredFields(issue) &&
       isActiveState(issue.state, config.tracker) &&
@@ -711,7 +712,8 @@ export class Orchestrator {
       !this.#running.has(issue.id) &&
       !this.#claimed.has(issue.id) &&
       !this.#cleanups.has(issue.id) &&
-      this.#slotsFor(issue.state, config) > 0
+      this.#slotsFor(issue.state, config) > 0 &&
+      waitingForSubIssues(issue, roleFor(issue, config.roles), adapter).length === 0
     );
   }
 
@@ -852,8 +854,12 @@ export class Orchestrator {
           const current = this.#deps.workflow.current.config;
           if (!isActiveState(fresh.state, current.tracker)) return `issue left the active states ("${fresh.state}")`;
           if (!isRoutable(fresh, current.tracker)) return 'issue is no longer dispatchable (assignee, blockers or labels)';
-          const next = roleName(roleFor(fresh, current.roles));
-          return next === entry.role ? null : `role changed (${entry.role} → ${next})`;
+          const nextRole = roleFor(fresh, current.roles);
+          const next = roleName(nextRole);
+          if (next !== entry.role) return `role changed (${entry.role} → ${next})`;
+          // The role's work for now is done: it starts again once these sub-issues are closed.
+          const waiting = waitingForSubIssues(fresh, nextRole, adapter);
+          return waiting.length > 0 ? `waiting for sub-issues ${waiting.join(', ')}` : null;
         },
         callbacks: {
           phase: (phase) => {
@@ -1305,6 +1311,13 @@ export class Orchestrator {
     }
     if (!hasRequiredFields(issue) || !isActiveState(issue.state, config.tracker) || !isRoutable(issue, config.tracker)) {
       log.info('issue no longer eligible; releasing claim', { state: issue.state, dispatchable: issue.dispatchable });
+      this.#release(issueId);
+      return;
+    }
+    const waiting = waitingForSubIssues(issue, roleFor(issue, config.roles), adapter);
+    if (waiting.length > 0) {
+      // Not a pause: the next tick dispatches the issue again once its sub-issues are closed.
+      log.info('issue waits for its open sub-issues; releasing claim', { sub_issues: waiting.join(', ') });
       this.#release(issueId);
       return;
     }

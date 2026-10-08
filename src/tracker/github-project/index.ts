@@ -28,6 +28,17 @@ export const githubProjectFactory: TrackerAdapterFactory = {
         `tracker.provider.sub_issue_status "${settings.subIssueStatus}" must not be an active or terminal state`,
       );
     }
+    const autoMerge = settings.autoMerge;
+    if (autoMerge !== null) {
+      const isIn = (states: string[], name: string) => states.some((state) => normalizeStateName(state) === normalizeStateName(name));
+      autoMerge.doneState ??= terminalStates[0] ?? null;
+      const problems: string[] = [];
+      // Entering an active column would merge before the issue has left the agents' hands.
+      if (isIn([...activeStates, ...terminalStates], autoMerge.onEnter)) problems.push(`on_enter "${autoMerge.onEnter}" must not be an active or terminal state`);
+      if (autoMerge.doneState === null || !isIn(terminalStates, autoMerge.doneState)) problems.push(`done_state "${autoMerge.doneState ?? ''}" must be a terminal state`);
+      if (autoMerge.onConflict !== null && isIn(terminalStates, autoMerge.onConflict)) problems.push(`on_conflict "${autoMerge.onConflict}" must not be a terminal state`);
+      if (problems.length > 0) throw new TrackerError('invalid_tracker_config', problems.map((problem) => `tracker.provider.auto_merge.${problem}`).join('; '));
+    }
     if (settings.tokenSource === 'literal') {
       logger.warn('tracker.provider.token is a literal value; prefer $GITHUB_TOKEN so the agent cannot read it from WORKFLOW.md');
     }

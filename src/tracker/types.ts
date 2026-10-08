@@ -62,6 +62,8 @@ export interface AgentToolContext {
   issue: Issue;
   /** Open sub-issues the session's role may have under its issue at once; absent = the role may create none. */
   maxSubIssues?: number;
+  /** Board column for the sub-issues the role creates (`roles.<name>.sub_issue_status`); absent = the adapter's own. */
+  subIssueStatus?: string;
 }
 
 export type ToolResult =
@@ -98,6 +100,8 @@ export interface TrackerAdapter {
   statusOptions?(): Promise<string[]>;
   /** Repository the issue belongs to (`owner/name`), used to group the run history. */
   issueRepository?(issue: Issue): string | null;
+  /** Identifiers of the issue's open sub-issues, for roles with `wait_for_sub_issues`; absent = the tracker has none. */
+  openSubIssues?(issue: Issue): string[];
 }
 
 export interface TrackerAdapterParams {

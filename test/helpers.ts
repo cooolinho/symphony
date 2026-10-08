@@ -58,6 +58,8 @@ export class FakeTracker implements TrackerAdapter {
   calls = { byStates: 0, byIds: 0, statusOptions: 0 };
   /** Set to give the tracker a board; adapters without it skip the column check. */
   statusOptions?: () => Promise<string[]>;
+  /** Set to report open sub-issues (roles with wait_for_sub_issues); trackers without it have none. */
+  openSubIssues?: (issue: Issue) => string[];
 
   constructor(issues: Issue[] = []) {
     for (const issue of issues) this.issues.set(issue.id, issue);

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { chooseEffort, chooseModel, effortForLabelValue, isEffortLabel, isModelLabel, modelForLabelValue, sessionClaudeConfig } from '../src/agent/model.ts';
 import { roleModelLine } from '../src/service.ts';
-import { STANDARD_LABELS } from '../src/repo-init/labels.ts';
+import { STANDARD_LABELS, WORKFLOW_LABELS } from '../src/repo-init/labels.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 import { resolveConfig } from '../src/workflow/config.ts';
 
@@ -103,12 +103,15 @@ describe('model labels', () => {
     assert.equal(sessionClaudeConfig(base, null, null).effort, null);
   });
 
-  it('only ships standard labels that resolve to a model or an effort level', () => {
-    assert.equal(STANDARD_LABELS.length, 8);
+  it('ships model and effort labels that resolve, plus the workflow labels', () => {
+    assert.equal(STANDARD_LABELS.length, 8 + WORKFLOW_LABELS.length);
     assert.equal(STANDARD_LABELS.filter((label) => isModelLabel(label.name)).length, 3);
     assert.equal(STANDARD_LABELS.filter((label) => isEffortLabel(label.name)).length, 5);
+    assert.deepEqual(WORKFLOW_LABELS.map((label) => label.name), ['auto-code', 'feature', 'design', 'quality', 'maintenance', 'manual-merge']);
     for (const label of STANDARD_LABELS) {
-      if (isModelLabel(label.name)) {
+      if (WORKFLOW_LABELS.includes(label)) {
+        assert.ok(!isModelLabel(label.name) && !isEffortLabel(label.name), label.name);
+      } else if (isModelLabel(label.name)) {
         const choice = chooseModel([label.name.toLowerCase()], null);
         assert.ok(choice.model !== null && choice.warning === null, label.name);
         assert.ok(label.description.includes(choice.model), label.name);

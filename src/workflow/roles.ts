@@ -30,6 +30,16 @@ export interface RoleConfig {
   runChecks: boolean;
   /** Sub-issues this role may have open under its issue at once; null = the role gets no `create_sub_issue` tool. */
   maxSubIssues: number | null;
+  /**
+   * Board column for the sub-issues this role creates, overriding `tracker.provider.sub_issue_status`; null keeps
+   * the provider's column. May be an active column, so the sub-issues start without a human (never a terminal one).
+   */
+  subIssueStatus: string | null;
+  /**
+   * True holds the role's issues back while any of their sub-issues is open: a running session is not stopped, but
+   * it ends after its turn once sub-issues are open, and the issue is dispatched again when all of them are closed.
+   */
+  waitForSubIssues: boolean;
   claude: RoleClaudeOverrides;
 }
 

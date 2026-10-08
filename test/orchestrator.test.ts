@@ -426,6 +426,112 @@ describe('roles', () => {
     });
   });
 
+  describe('waves of sub-issues (wait_for_sub_issues)', () => {
+    function autoCodePlugin(): string {
+      const dir = tempDir('symphony-plugin-');
+      fs.mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'symphony' }));
+      fs.mkdirSync(path.join(dir, 'skills', 'auto-code'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'skills', 'auto-code', 'SKILL.md'), '---\nname: auto-code\n---\n');
+      return dir;
+    }
+    const waveFront = () => ({
+      tracker: {
+        kind: 'github_project',
+        provider: { owner: 'acme', project_number: 1, token: 'test-token' },
+        active_states: ['Ready', 'In progress'],
+      },
+      agent: { max_turns: 3, max_continuations: 6 },
+      claude: { plugins: [autoCodePlugin()] },
+      roles: {
+        developer: { states: ['Ready', 'In progress'] },
+        planner: {
+          commands: ['auto-code'],
+          states: ['Ready', 'In progress'],
+          read_only: true,
+          run_checks: false,
+          max_sub_issues: 5,
+          sub_issue_status: 'Ready',
+          wait_for_sub_issues: true,
+        },
+      },
+    });
+    /** Open sub-issues per issue id, as the tracker reports them. */
+    const openSubs = new Map<string, string[]>();
+    const withSubIssues = (s: Setup) => {
+      s.tracker.openSubIssues = (issue) => openSubs.get(issue.id) ?? [];
+      return s;
+    };
+
+    it('holds only the waiting role back while sub-issues are open, and starts it once they are closed', async () => {
+      openSubs.clear();
+      openSubs.set('epic', ['acme/app#2']);
+      openSubs.set('parent', ['acme/app#3']);
+      const runner = new FakeRunner(() => new Promise(() => undefined));
+      const s = withSubIssues(
+        setup({
+          runner,
+          front: waveFront(),
+          prompt: '{{ role }}',
+          issues: [
+            makeIssue({ id: 'epic', state: 'In progress', description: '/auto-code docs/index.md' }),
+            makeIssue({ id: 'parent', state: 'Ready', description: 'An ordinary issue' }),
+          ],
+        }),
+      );
+      await s.orchestrator.tickNow();
+      await until(() => runner.sessions.length === 1, 3_000, 'developer session');
+      assert.equal(runner.sessions[0]?.params.issue.id, 'parent');
+
+      openSubs.set('epic', []);
+      await s.orchestrator.tickNow();
+      await until(() => runner.sessions.length === 2, 3_000, 'planner session');
+      const planner = runner.sessions[1];
+      assert.equal(planner?.turns[0], 'planner');
+      assert.equal(planner?.params.policy?.readOnly, true);
+      assert.equal(planner?.params.toolContext().subIssueStatus, 'Ready');
+      assert.equal(planner?.params.toolContext().maxSubIssues, 5);
+    });
+
+    it('lets the planner finish the turn that opened the wave, then ends the session and waits for the wave', async () => {
+      openSubs.clear();
+      let finishTurn: () => void = () => undefined;
+      const runner = new FakeRunner(
+        () =>
+          new Promise((resolve) => {
+            finishTurn = () => resolve({ ok: true, turnId: '1', resultText: 'wave planned' });
+          }),
+      );
+      const s = withSubIssues(
+        setup({ runner, front: waveFront(), issues: [makeIssue({ id: 'epic', state: 'In progress', description: '/auto-code' })] }),
+      );
+      await s.orchestrator.tickNow();
+      await until(() => runner.sessions[0]?.turns.length === 1, 3_000, 'first turn');
+
+      // create_sub_issue opened the wave mid-turn; reconciliation must not stop the planner for it.
+      openSubs.set('epic', ['acme/app#2', 'acme/app#3']);
+      await s.orchestrator.tickNow();
+      assert.equal(snapshot(s).running.length, 1);
+      assert.equal(runner.sessions[0]?.stopped, false);
+
+      finishTurn();
+      await until(() => snapshot(s).retrying.length === 1, 3_000, 'continuation retry');
+      assert.equal(runner.sessions[0]?.turns.length, 1, 'no second turn while the wave is open');
+      assert.equal(runner.sessions[0]?.stopped, true);
+
+      // The continuation finds the wave open: the claim is released, nothing is paused or restarted.
+      s.timers.fire(CONTINUATION_DELAY_MS);
+      await until(() => snapshot(s).retrying.length === 0, 3_000, 'claim released');
+      await s.orchestrator.tickNow();
+      assert.equal(runner.sessions.length, 1);
+      assert.equal(snapshot(s).paused.length, 0);
+
+      openSubs.set('epic', []);
+      await s.orchestrator.tickNow();
+      await until(() => runner.sessions.length === 2, 3_000, 'next wave');
+    });
+  });
+
   describe('role switches', () => {
     const switchFront = {
       tracker: {

@@ -4,6 +4,7 @@ import { errorMessage } from '../../util/errors.ts';
 import { TrackerError, type AgentToolContext, type AgentToolSpec, type Issue, type ToolResult } from '../types.ts';
 import type { GithubProjectAdapter } from './adapter.ts';
 import { assertNoGraphqlErrors } from './client.ts';
+import { autoMerge } from './merge.ts';
 import type { ProjectMeta, SelectOption } from './normalize.ts';
 import {
   ADD_COMMENT_MUTATION,
@@ -104,6 +105,28 @@ async function guarded(context: AgentToolContext, body: (ref: IssueRef) => Promi
 export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[] {
   const client = adapter.client;
 
+  /** The board's option for a column name (case-insensitive), refreshing the cached columns once if needed. */
+  const statusOption = async (status: string): Promise<{ option: SelectOption | undefined; meta: ProjectMeta }> => {
+    let meta = await adapter.meta();
+    let option = findOption(meta, status);
+    if (option === undefined) {
+      meta = await adapter.meta(true);
+      option = findOption(meta, status);
+    }
+    return { option, meta };
+  };
+
+  const moveTo = async (ref: IssueRef, meta: ProjectMeta, option: SelectOption): Promise<string> => {
+    const response = await client.request<Json>(SET_STATUS_MUTATION, {
+      projectId: meta.projectId,
+      itemId: ref.itemId,
+      fieldId: meta.statusFieldId,
+      optionId: option.id,
+    });
+    assertNoGraphqlErrors(response.errors);
+    return option.name;
+  };
+
   const getIssue: AgentToolSpec = {
     name: 'get_issue',
     description:
@@ -151,24 +174,29 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
     execute: (args, context) =>
       guarded(context, async (ref) => {
         const status = String(args.status);
-        let meta = await adapter.meta();
-        let option = findOption(meta, status);
-        if (option === undefined) {
-          meta = await adapter.meta(true);
-          option = findOption(meta, status);
-        }
+        const { option, meta } = await statusOption(status);
         if (option === undefined) {
           const valid = meta.statusOptions.map((o) => `"${o.name}"`).join(', ');
           return fail('invalid_argument', `unknown status "${status}"; valid options: ${valid}`);
         }
-        const response = await client.request<Json>(SET_STATUS_MUTATION, {
-          projectId: meta.projectId,
-          itemId: ref.itemId,
-          fieldId: meta.statusFieldId,
-          optionId: option.id,
+        const moved = await moveTo(ref, meta, option);
+        const { autoMerge: merge, baseBranch } = adapter.settings;
+        if (merge === null || baseBranch === null || titleKey(moved) !== titleKey(merge.onEnter)) {
+          return ok({ previous_status: context.issue.state, status: moved });
+        }
+        // The guard ran the entry checks before this call: the change is reviewed and green, so it can be merged.
+        const result = await autoMerge(client, merge, baseBranch, ref, context.issue, moved, {
+          setStatus: async (name) => {
+            const next = await statusOption(name);
+            if (next.option === undefined) throw new Error(`board column "${name}" does not exist`);
+            return moveTo(ref, next.meta, next.option);
+          },
+          comment: async (body) => {
+            const response = await client.request<Json>(ADD_COMMENT_MUTATION, { subjectId: ref.issueId, body });
+            assertNoGraphqlErrors(response.errors);
+          },
         });
-        assertNoGraphqlErrors(response.errors);
-        return ok({ previous_status: context.issue.state, status: option.name });
+        return ok({ previous_status: context.issue.state, status: result.status, auto_merge: result });
       }),
   };
 
@@ -193,12 +221,13 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
     description:
       "Open a pull request in the issue's repository from a branch you have already pushed with git. If an open " +
       'pull request for that branch exists, it is returned instead of creating a duplicate. Put "Closes #<issue number>" ' +
-      'in the body to link it to the issue.',
+      'in the body to link it to the issue.' +
+      (adapter.settings.baseBranch !== null ? ` Without base, it targets "${adapter.settings.baseBranch}".` : ''),
     inputSchema: {
       head: z.string().min(1).describe('Branch to merge from (already pushed to the repository)'),
       title: z.string().min(1).describe('Pull request title'),
       body: z.string().optional().describe('Pull request description (Markdown)'),
-      base: z.string().optional().describe("Branch to merge into; defaults to the repository's default branch"),
+      base: z.string().optional().describe("Branch to merge into; defaults to the configured base branch, else the repository's default branch"),
       draft: z.boolean().optional().describe('Open as a draft pull request'),
     },
     mutates: true,
@@ -216,7 +245,10 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
         if (existing !== undefined) {
           return ok({ created: false, number: existing.number, url: existing.url, title: existing.title, base: existing.baseRefName });
         }
-        const base = typeof args.base === 'string' && args.base !== '' ? args.base : obj(repository.defaultBranchRef)?.name;
+        const base =
+          typeof args.base === 'string' && args.base !== ''
+            ? args.base
+            : (adapter.settings.baseBranch ?? obj(repository.defaultBranchRef)?.name);
         if (typeof base !== 'string') return fail('invalid_argument', 'no base branch given and the repository has no default branch');
 
         const created = await client.request<Json>(CREATE_PULL_REQUEST_MUTATION, {
@@ -245,7 +277,8 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
     name: 'create_sub_issue',
     description:
       'Create a sub-issue of the issue this session is working on, in the same repository, and put it on the project ' +
-      `board in the column "${adapter.settings.subIssueStatus}", where a human decides whether it gets worked on. ` +
+      `board in the column "${adapter.settings.subIssueStatus}" (unless your role names another one; the result's ` +
+      'status says where it landed). ' +
       'Refer to an earlier sub-issue with "Blocked by #<number>" in the body to make one wait for another. ' +
       'If an open sub-issue with the same title already exists it is returned instead of creating a duplicate. ' +
       'Labels must already exist in the repository; unknown ones are reported in unknown_labels and skipped.',
@@ -270,16 +303,12 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
           if (typeof repositoryId !== 'string') return fail('not_found', `cannot read repository ${ref.repository} of the issue`);
           const open = nodes(parent?.subIssues).filter((sub) => sub.state !== 'CLOSED');
 
-          let meta = await adapter.meta();
-          let column = findOption(meta, adapter.settings.subIssueStatus);
-          if (column === undefined) {
-            meta = await adapter.meta(true);
-            column = findOption(meta, adapter.settings.subIssueStatus);
-          }
+          const columnName = context.subIssueStatus ?? adapter.settings.subIssueStatus;
+          const { option: column, meta } = await statusOption(columnName);
           const warnings: string[] = [];
           if (column === undefined) {
             warnings.push(
-              `board column "${adapter.settings.subIssueStatus}" does not exist (valid: ${meta.statusOptions.map((o) => `"${o.name}"`).join(', ')}); ` +
+              `board column "${columnName}" does not exist (valid: ${meta.statusOptions.map((o) => `"${o.name}"`).join(', ')}); ` +
                 'the sub-issue has no status and is not worked on until a human sets one',
             );
           }

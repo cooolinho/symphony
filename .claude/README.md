@@ -12,8 +12,8 @@ Repositories, die Symphony bearbeitet.
 | `hooks/hooks.json` | Hooks; Skripte daneben, im JSON über `${CLAUDE_PLUGIN_ROOT}` referenziert | automatisch |
 | `.claude-plugin/plugin.json` | Plugin-Manifest (Name `symphony`) | – |
 
-Leere Ordner enthalten eine `.gitkeep`, damit Git sie behält. Mitgeliefert sind die Skills `refactoring` (Audit) und
-`refactor-safely` (Umsetzung).
+Leere Ordner enthalten eine `.gitkeep`, damit Git sie behält. Mitgeliefert sind die Skills `refactoring` (Audit),
+`refactor-safely` (Umsetzung) und `auto-code` (Autopilot, plant fortlaufend Wellen von Sub-Issues).
 
 ## Was gehört hierher, was ins Repository?
 
@@ -42,7 +42,7 @@ ist.
   `.claude/skills` beim Generieren, `.ai/` ist agentenneutral (Claude Code, Cursor, Codex …). Ein gleichnamiger Skill in
   `.ai/skills/` ersetzt den Boost-Skill.
 
-## Befehls-Skills (`/refactoring`, `/refactor-safely`)
+## Befehls-Skills (`/refactoring`, `/refactor-safely`, `/auto-code`)
 
 Beginnt die Beschreibung eines Issues mit `/<name>`, lädt der Agent den Skill `symphony:<name>`, sofern `skills/<name>/SKILL.md`
 existiert (Technik: [docs/configuration.md](../docs/configuration.md#issue-commands)). Für solche Skills gilt zusätzlich:

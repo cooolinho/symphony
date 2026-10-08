@@ -7,6 +7,9 @@ export const DEFAULT_STATUS_FIELD = 'Status';
 /** Column `create_sub_issue` puts new sub-issues in: a human moves them on, so it must not be an active column. */
 export const DEFAULT_SUB_ISSUE_STATUS = 'Backlog';
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+/** Label on a pull request or its issue that keeps `auto_merge` from merging it. */
+export const DEFAULT_OPT_OUT_LABEL = 'manual-merge';
+const MERGE_METHODS = { squash: 'SQUASH', merge: 'MERGE', rebase: 'REBASE' } as const;
 /** Checked in order when `token` is omitted. */
 export const TOKEN_FALLBACK_ENV = ['GITHUB_TOKEN', 'GH_TOKEN'] as const;
 /** Every variable GitHub tooling (git, gh) reads credentials from; stripped from child processes. */
@@ -25,6 +28,18 @@ export function splitRepositoryList(text: string): string[] {
   return text.split(/[\s,]+/).filter((entry) => entry !== '');
 }
 
+/** `auto_merge`: Symphony merges an issue's pull request into the base branch when the issue enters `onEnter`. */
+export interface AutoMergeSettings {
+  /** Column whose successful `set_status` (entry checks passed) triggers the merge. */
+  onEnter: string;
+  /** Column the issue moves to after the merge; null = the first terminal state. */
+  doneState: string | null;
+  /** Column for a pull request that conflicts with the base branch; null leaves the issue in `onEnter`. */
+  onConflict: string | null;
+  method: (typeof MERGE_METHODS)[keyof typeof MERGE_METHODS];
+  optOutLabel: string;
+}
+
 export interface GithubProjectSettings {
   owner: string;
   projectNumber: number;
@@ -41,6 +56,10 @@ export interface GithubProjectSettings {
   respectSubIssues: boolean;
   /** Board column for sub-issues created by the `create_sub_issue` tool. */
   subIssueStatus: string;
+  /** Branch agents branch from and open pull requests against; null = the repository's default branch. */
+  baseBranch: string | null;
+  /** null = never merge (a human does). */
+  autoMerge: AutoMergeSettings | null;
   requestTimeoutMs: number;
   requestRetries: number;
 }
@@ -173,6 +192,8 @@ export function parseSettings(provider: Record<string, unknown>, env: NodeJS.Pro
   }
 
   const subIssueStatus = text(read(provider, 'sub_issue_status', env).value) ?? DEFAULT_SUB_ISSUE_STATUS;
+  const baseBranch = text(read(provider, 'base_branch', env).value);
+  const autoMerge = parseAutoMerge(provider.auto_merge, env, baseBranch, errors);
 
   let requestTimeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS;
   const timeout = text(read(provider, 'request_timeout_ms', env).value);
@@ -204,11 +225,49 @@ export function parseSettings(provider: Record<string, unknown>, env: NodeJS.Pro
       respectBlockers,
       respectSubIssues,
       subIssueStatus,
+      baseBranch,
+      autoMerge,
       requestTimeoutMs,
       requestRetries,
     },
     errors: [],
     category,
+  };
+}
+
+/** `auto_merge` (a map); null when it is omitted or not enabled. Problems go to `errors`. */
+function parseAutoMerge(raw: unknown, env: NodeJS.ProcessEnv, baseBranch: string | null, errors: string[]): AutoMergeSettings | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    errors.push('tracker.provider.auto_merge must be a map');
+    return null;
+  }
+  const section = raw as Record<string, unknown>;
+  const known = new Set(['enabled', 'on_enter', 'done_state', 'on_conflict', 'method', 'opt_out_label']);
+  for (const key of Object.keys(section)) {
+    if (!known.has(key)) errors.push(`tracker.provider.auto_merge.${key} is not a known key (allowed: ${[...known].join(', ')})`);
+  }
+  const field = (key: string) => read(section, key, env);
+  const enabled = field('enabled').value;
+  if (enabled === undefined || enabled === null || enabled === false || enabled === 'false') return null;
+  if (enabled !== true && enabled !== 'true') {
+    errors.push('tracker.provider.auto_merge.enabled must be true or false');
+    return null;
+  }
+  // Merging into the default branch stays a human decision: auto_merge only serves a separate integration branch.
+  if (baseBranch === null) errors.push('tracker.provider.auto_merge needs tracker.provider.base_branch (it never merges into the default branch)');
+  const onEnter = text(field('on_enter').value);
+  if (onEnter === null) errors.push('tracker.provider.auto_merge.on_enter is required (the column that triggers the merge, e.g. "In review")');
+  const methodName = (text(field('method').value) ?? 'squash').toLowerCase();
+  const method = MERGE_METHODS[methodName as keyof typeof MERGE_METHODS];
+  if (method === undefined) errors.push(`tracker.provider.auto_merge.method must be squash, merge or rebase (got ${JSON.stringify(methodName)})`);
+  if (onEnter === null || method === undefined) return null;
+  return {
+    onEnter,
+    doneState: text(field('done_state').value),
+    onConflict: text(field('on_conflict').value),
+    method,
+    optOutLabel: text(field('opt_out_label').value) ?? DEFAULT_OPT_OUT_LABEL,
   };
 }
 
