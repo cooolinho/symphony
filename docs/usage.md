@@ -485,7 +485,10 @@ Optionen und Prüfungen beschreibt [docs/e2e.md](e2e.md).
 Das Dashboard läuft nur, wenn `SYMPHONY_PORT` gesetzt ist oder du `npm start -- --port 4000` aufrufst. Es lauscht auf
 der Adresse aus `SYMPHONY_HOST`, standardmäßig nur auf `127.0.0.1`. Im Header stehen Systemstatus, Workflow-Version, Poll-Intervall und letzter Poll. Jeder laufende Agent
 erscheint als Karte mit Status, Issue, Repository, Spalte, Rolle, Modell, Phase, letzter Aktivität, Turns, Laufzeit,
-Tokens und geschätzten Kosten. Darunter folgen ein Aktivitäts-Stream (Änderungen zwischen den Abfragen, die letzten
+Tokens und geschätzten Kosten. Arbeitet der Agent an einem Laravel-Projekt, trägt die Karte das **Laravel-Boost-Icon**:
+farbig, wenn Boost für die Session bereitsteht, mit der Zahl der bisherigen Boost-Aufrufe (MCP-Tools und Skills), grau
+mit ✕, wenn Boost fehlt oder nicht vorbereitet werden konnte. Der Tooltip nennt Status, Grund und die genutzten Tools
+und Skills. Darunter folgen ein Aktivitäts-Stream (Änderungen zwischen den Abfragen, die letzten
 Ereignisse der Agenten und Einträge aus den Repository-Logs), die Wiederholungs-Warteschlange, pausierte Issues und
 Probleme wie Konfigurations- oder GitHub-Fehler. Der Button **Logs** öffnet die Log-Einträge in einer Seitenleiste mit
 Filtern nach Repository, Schweregrad und Text; von dort (oder per Mittelklick auf den Button) führt ein Link zur
@@ -504,7 +507,12 @@ vorigen Schritt), Antworten, Thinking und Tool-Calls mit Argumenten, Ergebnis, S
 Phasen, Modell, Tools, Fehler) und eine Suche grenzen sie ein. Prompts, Antworten und Tool-Daten sind zugeklappt und
 werden erst beim Aufklappen gerendert; Fehler stehen immer sichtbar im Eintrag. Neben der Timeline fassen Lifecycle,
 Token-Verbrauch (mit einer kleinen Grafik pro Modellaufruf), Kosten pro Modell, Sessions und Laufkontext (Workspace,
-Branch, Commit, letzter Entry-Check) den Stand zusammen. *Show raw logs* öffnet alle Ereignisse als Terminal-Log mit
+Branch, Commit, letzter Entry-Check) den Stand zusammen. Bei Laravel-Projekten steht darüber der Abschnitt **Laravel
+Boost**: ob der Agent Boost genutzt hat (z. B. *The agent used Laravel Boost in this session: 3 MCP tool calls and 1
+skill loaded*), welche Boost-Tools und Skills wie oft, und was Boost bereitgestellt hat: Versionen, Guidelines (aus
+welcher Datei und ob Claude Code sie selbst lädt oder sie im System-Prompt stehen), die Skills und wie viele davon
+Claude Code tatsächlich geladen hat, den MCP-Server mit seinen freigegebenen Tools sowie Warnungen, falls
+`boost:install` Guidelines oder Skills nicht geschrieben hat. Boost-Aufrufe tragen in der Timeline das Boost-Icon. *Show raw logs* öffnet alle Ereignisse als Terminal-Log mit
 Schweregrad-Filter. Die Seite aktualisiert sich alle 2 s und hängt neue Einträge an, ohne die Scroll-Position zu
 verlieren.
 
@@ -525,7 +533,7 @@ Woher die Daten kommen und wo die Grenzen liegen:
 | `GET /agent?id=<identifier>` | Agent-Detailansicht (Execution Trace) |
 | `GET /logs` | Statistik- und Analyse-Seite; Filter in der URL: `?period=30d` (`today`, `yesterday`, `7d`, `14d`, `30d`, `90d`, `month`, `last_month`, `all` oder `custom&from=YYYY-MM-DD&to=YYYY-MM-DD`), `&repo=owner/name`, `&model=<id>` |
 | `GET /api/v1/history` | Gesamtstatistik als JSON (ohne Zeitraum), optional mit `?repo=owner/name`; speist den Logs-Drawer im Dashboard |
-| `GET /api/v1/history/analytics?from=&to=&repo=&model=&tz=` | serverseitig aggregierte Analysen für einen Zeitraum (`from` inklusive, `to` exklusive, ISO-Zeitpunkte, beide optional): Kennzahlen mit Vorperiode, Zeitreihen, Modelle, Repositories, Issues, Ergebnisse, Laufzeiten, Heatmap, Top-Läufe, Auffälligkeiten. `tz` (IANA-Zone) bestimmt Buckets, Wochentage und Stunden |
+| `GET /api/v1/history/analytics?from=&to=&repo=&model=&tz=` | serverseitig aggregierte Analysen für einen Zeitraum (`from` inklusive, `to` exklusive, ISO-Zeitpunkte, beide optional): Kennzahlen mit Vorperiode, Zeitreihen, Modelle, Repositories, Issues, Ergebnisse, Laufzeiten, Tools und Integrationen (`tools`), Heatmap, Top-Läufe, Auffälligkeiten. `tz` (IANA-Zone) bestimmt Buckets, Wochentage und Stunden |
 | `GET /api/v1/history/entries?from=&to=&repo=&issue=&event=&result=&order=desc&limit=200` | Log-Einträge eines Zeitraums, gefiltert und sortiert (höchstens 1.000) |
 | `GET /api/v1/history/raw?repo=owner/name` | die `.log`-Datei eines Repositorys als Text |
 | `GET /api/v1/state` | Gesamtzustand als JSON: laufende Agenten (mit `role`), Warteschlange (`retrying[]` mit `kind` und, bei Session-Limits, `limit`), Summen, Gesundheit, `controls.retry` (ob der Neustart erlaubt ist) |
@@ -611,6 +619,13 @@ zoomt in den Zeitraum. Die Seite zeigt:
   fehlgeschlagen ist.
 - **Laufzeiten**: Durchschnitt, Median (ab 3 Läufen), p90/p95 (ab 20 Läufen), kürzester und längster Lauf,
   Verteilung; eine **Heatmap** der Startzeiten nach Wochentag und Stunde.
+- **Tools**: Tool-Aufrufe im Zeitraum, Läufe mit Aufrufen, Aufrufe pro Lauf, die meistgenutzten Tools (eingebaute wie
+  `Bash` oder `Edit` und MCP-Tools als `server · tool`) und die geladenen Skills.
+- **Laravel Boost & integrations**: pro Integration die Läufe auf Projekten, die sie nutzen, wie oft sie bereitstand
+  und wie oft der Agent sie tatsächlich genutzt hat (Anteil an den bereitstehenden Läufen), die Aufrufe und die
+  meistgenutzten Boost-Tools und -Skills. Guidelines gehören zu jeder bereitstehenden Session und zählen nicht als
+  Aufruf. Tool-Aufrufe stehen erst in den Logs, seit Symphony sie aufzeichnet; ältere Läufe zählen als Läufe ohne
+  Aufrufe.
 - **Top-Läufe** nach Kosten, Tokens und Dauer, die meist wiederholten Issues und **Needs attention**: Läufe mit
   mindestens dem 3-fachen Durchschnitt des Zeitraums (ab 5 Läufen) sowie Issues mit mindestens 3 fehlgeschlagenen
   oder wiederholten Läufen.
@@ -730,12 +745,17 @@ Tag. Geschätzt wird mit der [`model-costs.yml`](#kosten-schätzen-mit-model-cos
 1. Nach dem `before_run`-Hook sucht Symphony im Workspace Laravel-Apps: im Root oder eine Ebene tiefer, z. B.
    `laravel/` im trainingsstunden-portal.
 2. Steht `laravel/boost` in der `composer.json`, installiert Symphony bei Bedarf die Abhängigkeiten
-   (`composer install`) und erzeugt Boosts Guidelines und Skills für Claude Code (`boost:install`).
+   (`composer install`) und erzeugt Boosts Guidelines und Skills für Claude Code (`boost:install`). Danach prüft es,
+   ob die Guidelines und alle Skills, die Boost in `boost.json` meldet, wirklich geschrieben wurden: `boost:install`
+   endet auch dann mit Exit-Code 0, wenn das Schreiben scheitert. Fehlt etwas, warnt Symphony und erzeugt beim
+   nächsten Versuch neu.
 3. Die erzeugten Dateien trägt Symphony in `.git/info/exclude` ein. Versionierte Dateien, die Boost verändert hat,
    setzt es zurück. So landet nichts davon im Pull Request.
 4. Die Session bekommt den MCP-Server `laravel-boost`, die Boost-Skills und Boosts Guidelines im System-Prompt.
    Der Prompt nennt die tatsächlich erzeugten Skills und die freigegebenen und gesperrten Tools.
 5. Neu erzeugt wird nur, wenn sich `composer.lock`, `.ai/` oder die Boost-Version ändern.
+6. Ob und wie der Agent Boost genutzt hat, zeigen Dashboard-Karte, Agent-Seite und Statistik-Seite (siehe
+   [Dashboard und API](#dashboard-und-api) und [Logs und Statistiken](#logs-und-statistiken)).
 
 Damit Artisan und Boost nie eine fremde Datenbank erreichen, legt `hooks/laravel-env.sh` im `after_create`-Hook für jede
 Laravel-App eine eigene `.env` mit eigener SQLite-Datenbank an (`database/symphony.sqlite`, `CACHE_STORE=file`,

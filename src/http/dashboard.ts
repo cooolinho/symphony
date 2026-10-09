@@ -38,6 +38,11 @@ const DASHBOARD_CSS = `
   @keyframes card-flash { 0% { box-shadow: 0 0 0 1px var(--tone), 0 0 28px -6px var(--tone); } 100% { box-shadow: var(--shadow); } }
   .agent-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .agent-head .tags { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
+  /* Integration chips (e.g. Laravel Boost) sit above the card link so their tooltip shows. */
+  .int-chips { display: contents; }
+  .int-chip { position: relative; z-index: 2; display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px 1px 3px; cursor: help; }
+  .int-chip.used { border-color: rgba(178, 159, 244, .55); color: #d9cffb; background: rgba(178, 159, 244, .12); }
+  .int-chip.off { color: var(--muted); }
   .agent-id { position: relative; z-index: 2; font: 600 15px var(--mono); color: var(--text); letter-spacing: .02em; white-space: nowrap; }
   /* The title link covers the whole card (opens the agent detail view); the issue link stays on top of it. */
   .agent-link { color: inherit; }
@@ -354,7 +359,8 @@ ${BASE_JS}
     const tags = el('div', null, 'tags');
     const statusSlot = el('span');
     const attempt = el('span', null, 'chip');
-    tags.append(statusSlot, attempt);
+    const integrations = el('span', null, 'int-chips');
+    tags.append(statusSlot, attempt, integrations);
     const id = el('a', null, 'agent-id');
     head.append(tags, id);
 
@@ -370,7 +376,7 @@ ${BASE_JS}
 
     const dl = el('dl', null, 'fields');
     const refs = {
-      card, statusSlot, attempt, id, title, repo, branch,
+      card, statusSlot, attempt, integrations, id, title, repo, branch,
       role: field(dl, 'Role'), column: field(dl, 'Board column'), model: field(dl, 'Model', 'info'), phase: field(dl, 'Phase', 'info'),
     };
 
@@ -418,6 +424,7 @@ ${BASE_JS}
     } else refs.id.removeAttribute('href');
     refs.attempt.hidden = !r.attempt;
     setText(refs.attempt, 'attempt ' + (r.attempt ?? ''));
+    patchChildren(refs.integrations, (r.integrations || []).map(integrationChip));
     setText(refs.title, r.title || r.issue_identifier);
     const trace = '/agent?id=' + encodeURIComponent(r.issue_identifier);
     if (refs.title.getAttribute('href') !== trace) refs.title.href = trace;
@@ -439,6 +446,30 @@ ${BASE_JS}
     setText(refs.runtime, fmtDuration(r.seconds_running));
     setText(refs.tokens, fmtCompact(r.tokens.total_tokens));
     setText(refs.cost, fmtUsd(r.cost_usd));
+  }
+
+  /** Chip for an integration of the run (e.g. Laravel Boost): icon, use count, and the details as tooltip. */
+  function integrationChip(x) {
+    const ready = x.status === 'ready';
+    const calls = x.usage ? x.usage.calls : 0;
+    const chip = el('span', null, 'chip int-chip' + (ready ? (calls ? ' used' : '') : ' off'));
+    const name = x.id === 'laravel-boost' ? 'Boost' : x.label;
+    chip.append(integrationIcon(x.id, 14, !ready), el('span', ready ? name + (calls ? ' ×' + calls : '') : name + ' ✕'));
+    const status = INTEGRATION_STATUS[x.status] ? INTEGRATION_STATUS[x.status][0] : x.status;
+    const lines = [x.label + ': ' + status];
+    for (const p of x.parts || []) {
+      if (p.reason) lines.push(p.name + ': ' + p.reason);
+      for (const w of p.warnings || []) lines.push('⚠ ' + p.name + ': ' + w);
+    }
+    if (ready) {
+      const tools = countsText(x.usage.tool_calls), skills = countsText(x.usage.skill_calls);
+      lines.push(calls ? 'Used ' + calls + '×' : 'Not used yet');
+      if (tools) lines.push('Tools: ' + tools);
+      if (skills) lines.push('Skills: ' + skills);
+    }
+    chip.title = lines.join('\\n');
+    chip.setAttribute('aria-label', lines.join('. '));
+    return chip;
   }
 
   function renderAgents(state) {

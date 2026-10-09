@@ -63,6 +63,13 @@ const AGENT_CSS = `
   .chart .cap { display: flex; justify-content: space-between; font: 10.5px var(--mono); color: var(--muted); margin-top: 4px; }
   .tip { position: absolute; z-index: 5; pointer-events: none; transform: translate(-50%, -100%); margin-top: -6px; padding: 5px 8px; border-radius: 5px;
     background: #0d151a; border: 1px solid var(--line-2); font: 11px var(--mono); color: var(--text); white-space: nowrap; box-shadow: var(--shadow); }
+  /* Integrations (e.g. Laravel Boost): what the session got and what the agent used. */
+  #int-title { display: flex; align-items: center; gap: 8px; }
+  .int-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .int-head b { font: 600 13px var(--mono); color: var(--text); }
+  .int-text { font-size: 12.5px; color: var(--text-2); margin: 0 0 4px; overflow-wrap: anywhere; }
+  .int-sub { font: 600 10px var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); margin: 12px 0 6px; }
+  .int-warn { font: 12px var(--mono); color: var(--amber); margin-top: 6px; overflow-wrap: anywhere; }
   .runs { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
   .runs li { display: grid; gap: 3px; padding: 8px 10px; border: 1px solid var(--line); border-left: 2px solid var(--tone, var(--faint)); border-radius: var(--radius-sm); background: rgba(0, 0, 0, .2); font: 12px var(--mono); }
   .runs .row { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
@@ -263,6 +270,10 @@ export const AGENT_HTML = `<!doctype html>
     </section>
 
     <aside class="side" aria-label="Agent summary">
+      <section aria-labelledby="int-title" id="int-section" hidden>
+        <h2 id="int-title"><span>Integrations</span></h2>
+        <div id="int-body"></div>
+      </section>
       <section aria-labelledby="life-title">
         <h2 id="life-title">Agent lifecycle</h2>
         <ul class="milestones" id="milestones"></ul>
@@ -654,6 +665,8 @@ ${BASE_JS}
       if (it.wait !== null) chips.append(el('span', '~' + fmtMs(it.wait), 'chip'));
       head.append(chips);
     } else if (it.type === 'toolcall') {
+      const owner = toolIntegration(it);
+      if (owner) { const icon = integrationIcon(owner.id, 14); icon.title = owner.label; icon.removeAttribute('aria-hidden'); icon.alt = owner.label; titleHost.append(icon); }
       titleHost.append(el('span', it.name, 'name'));
       const chips = el('span', null, 'chips');
       chips.append(el('span', it.status, 'chip tone-' + (it.status === 'running' ? 'amber' : it.status === 'failed' ? 'red' : 'green')));
@@ -1081,6 +1094,94 @@ ${BASE_JS}
     ]);
   }
 
+  /** Integrations of the running session, else of the last one (GET /api/v1/<identifier>). */
+  function integrationsOf(d) {
+    return (d && d.running && d.running.integrations) || (d && d.run_trace && d.run_trace.integrations) || [];
+  }
+
+  /** The integration a timeline tool call belongs to: one of its MCP servers, or a Skill call of one of its skills. */
+  function toolIntegration(it) {
+    const mcp = /^mcp__(.+?)__/.exec(it.name || '');
+    for (const x of integrationsOf(S.detail)) {
+      if (mcp && x.mcp_servers.includes(mcp[1])) return x;
+      if (it.name === 'Skill' && x.skills.some((name) => String(it.input || '').includes('"' + name + '"'))) return x;
+    }
+    return null;
+  }
+
+  /** One section per integration (e.g. Laravel Boost): whether and how the agent used it, and what it provided. */
+  function renderIntegrations() {
+    const list = integrationsOf(S.detail);
+    $('int-section').hidden = list.length === 0;
+    if (!list.length) return;
+    const single = list.length === 1 ? list[0] : null;
+    patchChildren($('int-title'), single ? [integrationIcon(single.id, 18, single.status !== 'ready'), el('span', single.label)] : [el('span', 'Integrations')]);
+    patchChildren($('int-body'), list.flatMap((x) => integrationBlock(x, !single)));
+  }
+
+  function integrationBlock(x, showName) {
+    const nodes = [];
+    const live = isRunning();
+    const ready = x.status === 'ready';
+    const u = x.usage || { calls: 0, tool_calls: {}, skill_calls: {} };
+    const toolCalls = Object.values(u.tool_calls).reduce((s, n) => s + n, 0);
+    const skillCalls = Object.values(u.skill_calls).reduce((s, n) => s + n, 0);
+    const [statusText, tone] = INTEGRATION_STATUS[x.status] || [x.status, 'gray'];
+    const head = el('div', null, 'int-head');
+    if (showName) head.append(integrationIcon(x.id, 16, !ready), el('b', x.label));
+    head.append(badge(statusText, tone, false));
+    if (ready) head.append(badge(u.calls ? 'Used ×' + u.calls : live ? 'Not used yet' : 'Not used', u.calls ? 'cyan' : 'gray', false));
+    nodes.push(head);
+
+    const scope = live ? 'in this session' : 'in the last session';
+    const guided = (x.parts || []).some((p) => p.guidelines);
+    let text;
+    if (ready && u.calls) {
+      const what = [];
+      if (toolCalls) what.push(toolCalls + ' MCP tool call' + (toolCalls === 1 ? '' : 's'));
+      if (skillCalls) what.push(skillCalls + ' skill' + (skillCalls === 1 ? '' : 's') + ' loaded');
+      text = 'The agent used ' + x.label + ' ' + scope + ': ' + what.join(' and ') + '.';
+    } else if (ready) {
+      text = x.label + ' was available ' + scope + '; the agent has not called its tools or skills' + (live ? ' yet' : '') + '.';
+    } else if (x.status === 'unavailable') {
+      text = x.label + ' was unavailable ' + scope + '; the agent worked without it (artisan and composer in the shell).';
+    } else if (x.status === 'absent') {
+      text = x.label + ' is not installed in this project' + (x.id === 'laravel-boost' ? ' (no laravel/boost in composer.json; add it with npm run repo-init)' : '') + '.';
+    } else {
+      text = x.label + ' is switched off in the workflow.';
+    }
+    if (ready && guided) text += ' Its guidelines were part of the agent\\'s context.';
+    nodes.push(el('p', text, 'int-text'));
+
+    if (u.calls) {
+      nodes.push(el('div', 'Used', 'int-sub'));
+      const rows = [];
+      for (const [tool, n] of Object.entries(u.tool_calls).sort((a, b) => b[1] - a[1])) rows.push([tool, '×' + n, 'info']);
+      for (const [skill, n] of Object.entries(u.skill_calls).sort((a, b) => b[1] - a[1])) rows.push(['skill ' + skill, '×' + n, 'info']);
+      const dl = el('dl', null, 'kv'); kv(dl, rows); nodes.push(dl);
+    }
+
+    for (const p of x.parts || []) {
+      if (p.status === 'absent' && x.status !== 'absent') continue;
+      nodes.push(el('div', 'Provided · ' + p.name, 'int-sub'));
+      const rows = [];
+      if (p.status !== 'ready') rows.push(['Status', p.status + (p.reason ? ' (' + p.reason + ')' : ''), p.status === 'failed' ? 'info' : '']);
+      if (p.versions) rows.push(['Versions', p.versions]);
+      if (p.status === 'ready') {
+        rows.push(['Guidelines', p.guidelines || 'none']);
+        rows.push(['Skills', p.skills.length ? p.skills.length + ': ' + p.skills.join(', ') : 'none']);
+        if (x.skills_loaded && p.skills.length) {
+          const loaded = p.skills.filter((name) => x.skills_loaded.includes(name)).length;
+          rows.push(['Loaded by Claude Code', loaded + ' of ' + p.skills.length + ' skills', loaded < p.skills.length ? 'info' : '']);
+        }
+        if (p.mcp_server) rows.push(['MCP server', p.mcp_server + ' · ' + p.tools.length + ' tools pre-approved']);
+      }
+      const dl = el('dl', null, 'kv'); kv(dl, rows); nodes.push(dl);
+      for (const w of p.warnings || []) nodes.push(el('div', '⚠ ' + w, 'int-warn'));
+    }
+    return nodes;
+  }
+
   /** Bars: tokens per model call (one series, one axis); hover shows the call. */
   function renderChart(models) {
     const host = $('tok-chart');
@@ -1207,6 +1308,7 @@ ${BASE_JS}
     if (S.detail || S.ended || S.notFound) {
       renderHeader();
       renderAlert();
+      renderIntegrations();
       renderSummary();
     }
     renderNotice();

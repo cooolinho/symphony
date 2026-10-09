@@ -25,7 +25,8 @@ const LARAVEL_BOOST = JSON.stringify({ require: { 'laravel/framework': '^12.0' }
 
 /**
  * Stand-ins for php and composer: they log their arguments and write what Boost and Composer
- * would. FAKE_PHP_EXIT and FAKE_PHP_SLEEP make php fail or hang.
+ * would. FAKE_PHP_EXIT and FAKE_PHP_SLEEP make php fail or hang; FAKE_BOOST_NO_GUIDELINES and FAKE_BOOST_NO_SKILLS
+ * make boost:install skip writing guidelines or skills (and still exit 0), FAKE_BOOST_NO_SKILL_LIST reports no skills.
  */
 const FAKE_PHP = `#!${process.execPath}
 const fs = require('node:fs');
@@ -41,11 +42,13 @@ if (command === 'boost:install') {
   const next = /<laravel-boost-guidelines>[\\s\\S]*<\\/laravel-boost-guidelines>/.test(current)
     ? current.replace(/<laravel-boost-guidelines>[\\s\\S]*<\\/laravel-boost-guidelines>/, block)
     : current + (current === '' ? '' : '\\n\\n') + block + '\\n';
-  fs.writeFileSync(path.join(app, file), next);
-  fs.mkdirSync(path.join(app, '.claude/skills/testing-best-practices'), { recursive: true });
-  fs.writeFileSync(path.join(app, '.claude/skills/testing-best-practices/SKILL.md'), '---\\nname: testing-best-practices\\n---\\n');
+  if (!process.env.FAKE_BOOST_NO_GUIDELINES) fs.writeFileSync(path.join(app, file), next);
+  if (!process.env.FAKE_BOOST_NO_SKILLS) {
+    fs.mkdirSync(path.join(app, '.claude/skills/testing-best-practices'), { recursive: true });
+    fs.writeFileSync(path.join(app, '.claude/skills/testing-best-practices/SKILL.md'), '---\\nname: testing-best-practices\\n---\\n');
+  }
   const config = JSON.parse(fs.readFileSync(path.join(app, 'boost.json'), 'utf8'));
-  for (const pkg of config.packages || []) {
+  for (const pkg of process.env.FAKE_BOOST_NO_SKILLS ? [] : config.packages || []) {
     const skills = path.join(app, 'vendor', pkg, 'resources/boost/skills');
     if (!fs.existsSync(skills)) continue;
     for (const skill of fs.readdirSync(skills)) {
@@ -53,7 +56,7 @@ if (command === 'boost:install') {
       fs.copyFileSync(path.join(skills, skill, 'SKILL.md'), path.join(app, '.claude/skills', skill, 'SKILL.md'));
     }
   }
-  config.skills = ['testing-best-practices'];
+  config.skills = process.env.FAKE_BOOST_NO_SKILL_LIST ? [] : ['testing-best-practices'];
   if (process.env.FAKE_SAIL) config.sail = true;
   fs.writeFileSync(path.join(app, 'boost.json'), JSON.stringify(config));
 }
@@ -426,6 +429,82 @@ describe('Laravel Boost preparation', () => {
     assert.deepEqual(result?.historyFields, { laravel: '.:v13.1.0', boost: 'failed' });
     const line = logged.find((entry) => entry.includes('integration_prepared'));
     assert.match(line ?? '', /laravel\/framework=v13\.1\.0 laravel\/boost=v2\.0\.1.*boost=failed/);
+  });
+
+  it('reports what the session gets from Boost per app for the dashboard', async () => {
+    const lock = JSON.stringify({ packages: [{ name: 'laravel/framework', version: 'v13.1.0' }], 'packages-dev': [{ name: 'laravel/boost', version: 'v2.0.1' }] });
+    const f = fixture({ artisan: '', 'composer.json': LARAVEL_BOOST, 'composer.lock': lock, 'CLAUDE.md': '# Team notes\n', 'docs/artisan': '', 'docs/composer.json': LARAVEL });
+    const result = await laravelIntegration.prepare(laravelConfig(f), {
+      workspacePath: f.repo,
+      env: { ...process.env, FAKE_LOG: f.log },
+      logger: Logger.silent(),
+      signal: new AbortController().signal,
+    });
+    assert.deepEqual(result?.reports, [
+      {
+        id: 'laravel-boost',
+        label: 'Laravel Boost',
+        status: 'ready',
+        parts: [
+          {
+            name: '(repository root)',
+            status: 'ready',
+            reason: null,
+            versions: 'Laravel v13.1.0 · Boost v2.0.1',
+            guidelines: 'CLAUDE.md (in the system prompt)',
+            skills: ['testing-best-practices'],
+            mcpServer: 'laravel-boost',
+            tools: BOOST_READ_TOOLS,
+            warnings: [],
+          },
+          { name: 'docs/', status: 'absent', reason: null, versions: null, guidelines: null, skills: [], mcpServer: null, tools: [], warnings: [] },
+        ],
+        mcpServers: ['laravel-boost'],
+        skills: ['testing-best-practices'],
+      },
+    ]);
+
+    const failed = fixture({ artisan: '', 'composer.json': LARAVEL_BOOST });
+    const unavailable = await laravelIntegration.prepare(laravelConfig(failed), {
+      workspacePath: failed.repo,
+      env: { ...process.env, FAKE_LOG: failed.log, FAKE_PHP_EXIT: '1' },
+      logger: Logger.silent(),
+      signal: new AbortController().signal,
+    });
+    assert.equal(unavailable?.reports?.[0]?.status, 'unavailable');
+    assert.equal(unavailable?.reports?.[0]?.parts[0]?.reason, 'boost:install failed');
+    assert.deepEqual(unavailable?.reports?.[0]?.mcpServers, []);
+  });
+
+  it('checks that boost:install wrote guidelines and skills and generates incomplete output again', async () => {
+    const f = fixture({ artisan: '', 'composer.json': LARAVEL_BOOST });
+    const first = await prepareFull(f, { env: { FAKE_BOOST_NO_GUIDELINES: '1', FAKE_BOOST_NO_SKILLS: '1' } });
+    assert.equal(first.apps[0]?.status, 'ready', 'the MCP server still works');
+    assert.deepEqual(first.apps[0]?.setup?.warnings, [
+      'boost:install wrote no guidelines to AGENTS.md',
+      'boost:install reported skills it did not write to .claude/skills: testing-best-practices',
+    ]);
+    assert.equal(first.apps[0]?.setup?.guidelines, null);
+    assert.deepEqual(first.apps[0]?.setup?.skills, []);
+    assert.ok(f.warnings.some((line) => line.includes('wrote no guidelines')));
+
+    // Incomplete output is generated again on the next attempt, then reused.
+    const second = await prepareFull(f);
+    assert.deepEqual(second.apps[0]?.setup?.warnings, []);
+    assert.deepEqual(second.apps[0]?.setup?.skills, ['testing-best-practices']);
+    assert.equal(second.apps[0]?.setup?.guidelines, 'AGENTS.md (in the system prompt)');
+    await prepareFull(f);
+    assert.equal(calls(f).filter((call) => call[2] === 'boost:install').length, 2);
+  });
+
+  it('warns when Boost installs no skills at all without generating again', async () => {
+    const f = fixture({ artisan: '', 'composer.json': LARAVEL_BOOST });
+    const env = { FAKE_BOOST_NO_SKILLS: '1', FAKE_BOOST_NO_SKILL_LIST: '1' };
+    const first = await prepareFull(f, { env });
+    assert.deepEqual(first.apps[0]?.setup?.warnings, ['boost:install generated no skills (.claude/skills)']);
+    const second = await prepareFull(f, { env });
+    assert.deepEqual(second.apps[0]?.setup?.warnings, ['boost:install generated no skills (.claude/skills)'], 'kept with the reused files');
+    assert.equal(calls(f).filter((call) => call[2] === 'boost:install').length, 1);
   });
 
   it('reports ready, absent and skipped statuses per app', async () => {

@@ -76,6 +76,9 @@ export const LOGS_HTML = `<!doctype html>
   .attention .who { font: 12px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .attention .val { font: 600 12px var(--mono); text-align: right; }
   .attention .why { grid-column: 2 / -1; color: var(--text-2); font-size: 11.5px; }
+  .int-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 12px; }
+  .int-head b { font: 600 14px var(--mono); color: var(--text); }
+  .int-block + .int-block { margin-top: 18px; padding-top: 14px; border-top: 1px dashed var(--line-2); }
   td.event { white-space: nowrap; }
   td.event .chip[class*="tone-"], .chip[class*="tone-"] { color: var(--tone); border-color: var(--tone-line); background: var(--tone-dim); }
   tr.click { cursor: pointer; }
@@ -171,6 +174,11 @@ export const LOGS_HTML = `<!doctype html>
     </div>
     <div data-body="models"></div>
   </section>
+
+  <div class="grid-2">
+    <section data-section><h2>Tools</h2><div data-body="tools"></div></section>
+    <section data-section><h2>Laravel Boost &amp; integrations</h2><div data-body="integrations"></div></section>
+  </div>
 
   <section data-section>
     <div class="section-head"><h2>Repositories</h2>
@@ -418,11 +426,11 @@ ${CHART_JS}
 
     renderKpis(d);
     if (d.totals.runs === 0) {
-      for (const name of ['activity', 'cost', 'tokens', 'models', 'repos', 'outcomes', 'durations', 'heatmap', 'top', 'attention', 'issues']) setBody(name, noData());
+      for (const name of ['activity', 'cost', 'tokens', 'models', 'tools', 'integrations', 'repos', 'outcomes', 'durations', 'heatmap', 'top', 'attention', 'issues']) setBody(name, noData());
       $('issue-count').textContent = '';
       return;
     }
-    renderActivity(d); renderCost(d); renderTokens(d); renderModels(d); renderRepos(d);
+    renderActivity(d); renderCost(d); renderTokens(d); renderModels(d); renderTools(d); renderIntegrations(d); renderRepos(d);
     renderOutcomes(d); renderDurations(d); renderHeatmap(d); renderTop(d); renderAttention(d); renderIssues(d);
   }
 
@@ -573,6 +581,74 @@ ${CHART_JS}
       { label: 'Cost/1M tok', className: 'num', render: (r) => orDash(r.cost_per_million_tokens, fmtUsd) },
       { label: 'Out/in', className: 'num', render: (r) => fmtRatio(r.output_input_ratio) },
     ], rows, 'No model usage in this period.');
+  }
+
+  function statList(items) {
+    const kv = el('dl', null, 'kv');
+    for (const [label, value, note] of items) { const box = el('div'); const dd = el('dd', value); if (note) dd.append(el('small', note)); box.append(el('dt', label), dd); kv.append(box); }
+    return kv;
+  }
+  const TOOL_NOTE = 'Tool calls are logged per run since Symphony records them; older runs count as runs without tool calls.';
+
+  /** Calls per tool (built-in and MCP) and per skill in the period. */
+  function renderTools(d) {
+    const t = d.tools;
+    if (!t.calls) { setBody('tools', stateBox('empty', 'NO TOOL CALLS', 'No run in this period logged tool calls.'), el('p', TOOL_NOTE, 'note')); return; }
+    const kv = statList([
+      ['Tool calls', fmtInt(t.calls)],
+      ['Runs with calls', fmtInt(t.runs_with_calls), 'of ' + fmtInt(t.runs) + ' runs'],
+      ['Calls / run', orDash(t.avg_calls_per_run, (v) => String(v))],
+      ['Distinct tools', fmtInt(t.distinct_tools)],
+    ]);
+    const bars = el('div', null, 'hbars');
+    hbars(bars, t.tools.slice(0, 15).map((r) => ({
+      label: r.server ? r.server + ' · ' + r.name : r.name, value: r.calls, text: fmtInt(r.calls), sub: fmtPct(r.calls / t.calls),
+      color: r.server ? 'var(--cyan)' : 'var(--green)', tip: [['Calls', fmtInt(r.calls)], ['Runs', fmtInt(r.runs)], ['Tool', r.tool]],
+    })));
+    const nodes = [kv, el('h3', 'Most used tools', 'sub-h'), bars];
+    if (t.skills.length) {
+      const skills = el('div', null, 'hbars');
+      hbars(skills, t.skills.slice(0, 10).map((r) => ({ label: r.skill, value: r.calls, text: fmtInt(r.calls), sub: fmtInt(r.runs) + ' run' + (r.runs === 1 ? '' : 's'), color: 'var(--amber)', tip: [['Loaded', fmtInt(r.calls) + '×'], ['Runs', fmtInt(r.runs)]] })));
+      nodes.push(el('h3', 'Skills loaded', 'sub-h'), skills);
+    }
+    nodes.push(el('p', 'Green: built-in tools, cyan: MCP tools (server · tool). ' + TOOL_NOTE, 'note'));
+    setBody('tools', ...nodes);
+  }
+
+  /** Per integration (e.g. Laravel Boost): runs it was ready in, runs that used it, and its tools and skills. */
+  function renderIntegrations(d) {
+    const list = d.tools.integrations;
+    if (!list.length) {
+      setBody('integrations', stateBox('empty', 'NO INTEGRATIONS', 'No run in this period worked on a project with a workspace integration such as Laravel Boost.'));
+      return;
+    }
+    const nodes = list.map((x) => {
+      const box = el('div', null, 'int-block');
+      const head = el('div', null, 'int-head');
+      head.append(integrationIcon(x.id, 22, x.ready_runs === 0), el('b', integrationLabel(x.id)));
+      const statuses = Object.entries(x.by_status).sort((a, b) => b[1] - a[1]);
+      for (const [status, n] of statuses) { const s = INTEGRATION_STATUS[status] || [status, 'gray']; head.append(badge(s[0] + ' ' + fmtInt(n), s[1], false)); }
+      const kv = statList([
+        ['Runs', fmtInt(x.runs), 'on projects that use it'],
+        ['Ready', fmtInt(x.ready_runs), 'available to the agent'],
+        ['Used', fmtInt(x.used_runs), x.use_rate === null ? null : fmtPct(x.use_rate) + ' of ready runs'],
+        ['Calls', fmtInt(x.calls), x.avg_calls_per_used_run === null ? null : x.avg_calls_per_used_run + ' per using run'],
+      ]);
+      box.append(head, kv);
+      if (x.tools.length) {
+        const bars = el('div', null, 'hbars');
+        hbars(bars, x.tools.map((r) => ({ label: r.tool, value: r.calls, text: fmtInt(r.calls), sub: fmtInt(r.runs) + ' run' + (r.runs === 1 ? '' : 's'), color: 'rgb(178, 159, 244)', tip: [['Calls', fmtInt(r.calls)], ['Runs', fmtInt(r.runs)]] })));
+        box.append(el('h3', 'MCP tools', 'sub-h'), bars);
+      }
+      if (x.skills.length) {
+        const bars = el('div', null, 'hbars');
+        hbars(bars, x.skills.map((r) => ({ label: r.skill, value: r.calls, text: fmtInt(r.calls), sub: fmtInt(r.runs) + ' run' + (r.runs === 1 ? '' : 's'), color: 'var(--amber)', tip: [['Loaded', fmtInt(r.calls) + '×'], ['Runs', fmtInt(r.runs)]] })));
+        box.append(el('h3', 'Skills', 'sub-h'), bars);
+      }
+      if (!x.calls) box.append(el('p', x.ready_runs ? 'Available, but no agent called its tools or skills in this period.' : 'Not available to the agents in this period.', 'note'));
+      return box;
+    });
+    setBody('integrations', ...nodes, el('p', 'Ready: the integration was set up for the session. Used: the agent called at least one of its MCP tools or loaded one of its skills. Guidelines are part of every ready session and are not counted.', 'note'));
   }
 
   const REPO_METRIC = { runs: [fmtInt, 'runs'], cost_usd: [fmtUsd, 'cost'], total_tokens: [fmtCompact, 'tokens'], agent_seconds: [fmtDuration, 'time'] };

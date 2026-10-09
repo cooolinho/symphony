@@ -111,9 +111,19 @@ function dateFromResetsAt(value: unknown): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+/** Claude Code's tool that loads a skill; its input names the skill. */
+const SKILL_TOOL = 'Skill';
+
+/** The skill a Skill tool call loads (`skill`, or `command` in older Claude Code versions), or null. */
+function skillNameOf(input: unknown): string | null {
+  const value = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {};
+  const name = value.skill ?? value.command;
+  return typeof name === 'string' && name.trim() !== '' ? name.trim().replace(/^\//, '') : null;
+}
+
 function summarizeToolInput(name: string, input: unknown): string {
   const value = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {};
-  const primary = value.command ?? value.file_path ?? value.path ?? value.pattern ?? value.url ?? value.description;
+  const primary = value.command ?? value.file_path ?? value.path ?? value.pattern ?? value.url ?? value.description ?? value.skill;
   const text = typeof primary === 'string' ? primary : JSON.stringify(input ?? {});
   return `${name}: ${truncate(oneLine(text), 160)}`;
 }
@@ -454,6 +464,7 @@ class ClaudeSession implements AgentSession {
         ...(this.#mcpStatus !== undefined ? { mcp_status: this.#mcpStatus } : {}),
         plugins: (message.plugins ?? []).map((plugin) => plugin.name),
         skills: message.skills?.length ?? 0,
+        skill_names: [...(message.skills ?? [])],
       },
     });
   }
@@ -535,11 +546,16 @@ class ClaudeSession implements AgentSession {
       this.#emit('agent_error', { message: `Claude API error: ${message.error}` });
       return;
     }
+    // One event per tool call (a message may call several tools in parallel); a text event only without tool calls.
+    let calls = 0;
     for (const block of message.message.content) {
-      if (block.type === 'tool_use') {
-        this.#emit('tool_use', { message: summarizeToolInput(block.name, block.input), detail: { tool: block.name } });
-        return;
-      }
+      if (block.type !== 'tool_use') continue;
+      calls++;
+      const skill = block.name === SKILL_TOOL ? skillNameOf(block.input) : null;
+      this.#emit('tool_use', { message: summarizeToolInput(block.name, block.input), detail: { tool: block.name, ...(skill !== null ? { skill } : {}) } });
+    }
+    if (calls > 0) return;
+    for (const block of message.message.content) {
       if (block.type === 'text' && block.text.trim() !== '') {
         this.#emit('assistant_message', { message: truncate(oneLine(block.text), 300) });
         return;

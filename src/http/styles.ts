@@ -1,3 +1,5 @@
+import { BOOST_ICON_URI } from './icons.ts';
+
 /**
  * Shared look of the dashboard pages: a dark "control center" theme with semantic colors
  * (green = running/healthy, cyan = information, amber = retry/warning, red = error, gray = inactive),
@@ -102,6 +104,11 @@ export const BASE_CSS = `
   .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--panel-2);
     color: var(--text-2); font: 500 11px var(--mono); white-space: nowrap; }
 
+  /* Workspace integrations (e.g. Laravel Boost): icon, dimmed when the integration is not available. */
+  .int-icon { display: inline-block; flex: none; vertical-align: middle; border-radius: 4px; }
+  .int-icon.glyph { display: inline-grid; place-items: center; background: var(--raise); color: var(--text-2); font: 600 10px var(--mono); }
+  .int-icon.dim { filter: grayscale(1); opacity: .45; }
+
   /* Layout */
   main { max-width: 1480px; margin: 0 auto; padding: 20px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
   section, .panel { background: linear-gradient(180deg, rgba(15, 23, 28, .78), rgba(11, 17, 21, .78)); border: 1px solid var(--line);
@@ -191,6 +198,49 @@ export const BASE_JS = `
   const fmtClock = (iso) => (iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '--:--:--');
   const pad2 = (n) => String(n ?? 0).padStart(2, '0');
 
+  // Workspace integrations (e.g. Laravel Boost) as the API reports them: icon, name and status wording.
+  const INTEGRATION_ICONS = { 'laravel-boost': '${BOOST_ICON_URI}' };
+  const INTEGRATION_LABELS = { 'laravel-boost': 'Laravel Boost' };
+  const INTEGRATION_STATUS = { ready: ['Ready', 'green'], unavailable: ['Unavailable', 'amber'], absent: ['Not installed', 'gray'], off: ['Off', 'gray'] };
+  const integrationLabel = (id) => INTEGRATION_LABELS[id] || id;
+  function integrationIcon(id, size, dim) {
+    size = size || 16;
+    const src = INTEGRATION_ICONS[id];
+    let icon;
+    if (src) { icon = el('img', null, 'int-icon'); icon.src = src; icon.alt = ''; icon.width = size; icon.height = size; }
+    else { icon = el('span', String(integrationLabel(id)).slice(0, 1).toUpperCase(), 'int-icon glyph'); icon.style.width = icon.style.height = size + 'px'; }
+    icon.setAttribute('aria-hidden', 'true');
+    if (dim) icon.classList.add('dim');
+    return icon;
+  }
+  /** "name:count,…" of the repository logs (the count follows the last colon) → { name: count }. */
+  function parseCounts(value) {
+    const counts = {};
+    for (const part of String(value || '').split(',')) {
+      const at = part.lastIndexOf(':');
+      const n = Number(part.slice(at + 1));
+      if (at > 0 && Number.isFinite(n)) counts[part.slice(0, at)] = (counts[part.slice(0, at)] || 0) + n;
+    }
+    return counts;
+  }
+  /** { name: count } → "search-docs ×3, database-schema ×1", most used first. */
+  const countsText = (counts) => Object.entries(counts || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => k + ' ×' + v).join(', ');
+  /** Integrations of a run_finished log entry with their calls: { id: { status, calls } }. */
+  function logIntegrations(entry) {
+    const result = {};
+    for (const part of String(entry.integrations || '').split(',')) {
+      const at = part.lastIndexOf(':');
+      if (at > 0) result[part.slice(0, at)] = { status: part.slice(at + 1), calls: 0 };
+    }
+    for (const field of [entry.integration_tools, entry.integration_skills]) {
+      for (const [key, n] of Object.entries(parseCounts(field))) {
+        const x = result[key.split('/')[0]];
+        if (x) x.calls += n;
+      }
+    }
+    return result;
+  }
+
   /** Status dot + label pill; tone is one of green, cyan, amber, red, gray. */
   function badge(text, tone, pulse) {
     const b = el('span', null, 'badge tone-' + tone + (pulse ? ' pulse' : ''));
@@ -212,6 +262,8 @@ export const BASE_JS = `
         return (OUTCOMES[entry.outcome] || entry.outcome) + ' → "' + entry.state + '" · ' + entry.turns + ' turn(s) · ' +
           fmtCompact(Number(entry.total_tokens)) + ' tokens · ' + fmtUsd(Number(entry.cost_usd)) + ' · ' +
           fmtDuration(Number(entry.agent_seconds)) + (entry.model && entry.model !== 'null' ? ' · ' + entry.model : '') +
+          Object.entries(logIntegrations(entry)).filter(([, x]) => x.status === 'ready')
+            .map(([id, x]) => ' · ' + integrationLabel(id) + (x.calls ? ' used ×' + x.calls : ' not used')).join('') +
           (entry.outcome === 'failed' || entry.outcome === 'stalled' ? ' · ' + entry.reason : '');
       case 'issue_paused':
         return 'Paused after ' + entry.continuations + ' continuation session(s) in "' + entry.state + '"';

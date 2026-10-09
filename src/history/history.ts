@@ -67,6 +67,22 @@ export interface RunFinish {
   branch?: string | null;
   /** `tool_use` events per MCP server. */
   mcpToolCalls?: Record<string, number>;
+  /** `tool_use` events per tool (built-in and MCP). */
+  toolCalls?: Record<string, number>;
+  /** Skill tool calls per skill. */
+  skillCalls?: Record<string, number>;
+  /** Workspace integrations of the run (e.g. Laravel Boost) with the calls attributed to them. */
+  integrations?: RunIntegration[];
+}
+
+/** An integration in a finished run: its status and its MCP tool and skill calls. */
+export interface RunIntegration {
+  id: string;
+  status: string;
+  /** Calls by bare MCP tool name. */
+  tools: Record<string, number>;
+  /** Calls by skill name. */
+  skills: Record<string, number>;
 }
 
 /** An entry check the transition guard ran (history line `checks_finished`). */
@@ -227,6 +243,11 @@ export class HistoryLog {
       head_sha: finish.headSha ?? undefined,
       branch: finish.branch ?? undefined,
       mcp_tool_calls: formatToolCalls(finish.mcpToolCalls),
+      tool_calls: formatToolCalls(finish.toolCalls),
+      skill_calls: formatToolCalls(finish.skillCalls),
+      integrations: finish.integrations?.length ? finish.integrations.map((entry) => `${entry.id}:${entry.status}`).join(',') : undefined,
+      integration_tools: formatIntegrationCalls(finish.integrations, 'tools'),
+      integration_skills: formatIntegrationCalls(finish.integrations, 'skills'),
       started_at: finish.startedAt,
       mcp_unavailable: finish.mcpUnavailable?.length ? finish.mcpUnavailable.join(',') : undefined,
       repo_runs: totals.runs,
@@ -318,6 +339,29 @@ export class HistoryLog {
 function formatToolCalls(calls: Record<string, number> | undefined): string | undefined {
   const parts = Object.entries(calls ?? {}).map(([server, count]) => `${server}:${count}`);
   return parts.length === 0 ? undefined : parts.join(',');
+}
+
+/** `laravel-boost/search-docs:3,laravel-boost/database-schema:1`; undefined without calls. */
+function formatIntegrationCalls(integrations: RunIntegration[] | undefined, kind: 'tools' | 'skills'): string | undefined {
+  const parts = (integrations ?? []).flatMap((entry) => Object.entries(entry[kind]).map(([name, count]) => `${entry.id}/${name}:${count}`));
+  return parts.length === 0 ? undefined : parts.join(',');
+}
+
+/**
+ * Parses a `name:count,…` field (tool_calls, skill_calls, mcp_tool_calls, integration_tools); the count follows the
+ * last colon, so names may contain colons (`plugin:skill`). Malformed parts are skipped.
+ */
+export function parseCounts(value: string | undefined): Record<string, number> {
+  const counts: Record<string, number> = {};
+  if (value === undefined || value === '') return counts;
+  for (const part of value.split(',')) {
+    const at = part.lastIndexOf(':');
+    const count = Number(part.slice(at + 1));
+    if (at <= 0 || !Number.isFinite(count)) continue;
+    const name = part.slice(0, at);
+    counts[name] = (counts[name] ?? 0) + count;
+  }
+  return counts;
 }
 
 /** Parsed lines per log file, reused while size and mtime are unchanged (the logs are append-only). */

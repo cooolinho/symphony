@@ -14,7 +14,7 @@ import type { LaravelConfig } from './integration.ts';
 const execFileAsync = promisify(execFile);
 
 /** Bump when the generation steps change, so existing workspaces regenerate once. */
-const STEP_VERSION = 1;
+const STEP_VERSION = 2;
 const STATE_FILE = 'laravel-boost.json';
 const EXCLUDE_BEGIN = '# >>> symphony laravel-boost (generated files, kept out of commits)';
 const EXCLUDE_END = '# <<< symphony laravel-boost';
@@ -60,6 +60,8 @@ interface AppState {
   /** Guideline file (repository-relative) the block came from, and the block. */
   guidelinesFile: string | null;
   guidelines: string | null;
+  /** Problems found when checking what boost:install wrote (absent in states of older Symphony versions). */
+  warnings?: string[];
 }
 
 interface State {
@@ -84,6 +86,7 @@ interface PreparedApp {
   selfManaged: boolean;
   /** Repository-relative files Symphony generated and keeps out of commits. */
   excluded: string[];
+  warnings: string[];
 }
 
 /** Boost preparation of one app: ready, failed (a step errored), skipped (a precondition is missing) or absent (no laravel/boost). */
@@ -94,6 +97,22 @@ export interface AppBoostStatus {
   status: BoostStatus;
   /** Why Boost is not ready (failed, skipped); null otherwise. */
   reason: string | null;
+  /** What the session gets from Boost for this app; null unless ready. */
+  setup: BoostSetup | null;
+}
+
+/** Boost as one session sees it for one app: MCP server, skills and guidelines. */
+export interface BoostSetup {
+  /** MCP server name (`laravel-boost`, or `laravel-boost-<dir>` with several apps). */
+  server: string;
+  /** Boost tools that run without asking. */
+  tools: string[];
+  /** Boost's skills for the app (`.claude/skills/<name>/`). */
+  skills: string[];
+  /** How the agent gets the guidelines, e.g. `CLAUDE.md (loaded by Claude Code)`; null = none. */
+  guidelines: string | null;
+  /** Problems with what boost:install wrote (missing guidelines or skills). */
+  warnings: string[];
 }
 
 export interface BoostPreparation {
@@ -120,7 +139,7 @@ export async function prepareLaravelBoost(params: PrepareBoostParams): Promise<B
   let statuses: AppBoostStatus[] = [];
   try {
     const apps = await detectLaravelApps(params.workspacePath);
-    statuses = apps.map((app) => ({ app, status: app.boost ? 'skipped' : 'absent', reason: app.boost ? 'not prepared' : null }));
+    statuses = apps.map((app) => ({ app, status: app.boost ? 'skipped' : 'absent', reason: app.boost ? 'not prepared' : null, setup: null }));
     const setStatus = (app: LaravelApp, status: BoostStatus, reason: string | null) => {
       const entry = statuses.find((candidate) => candidate.app === app);
       if (entry !== undefined) Object.assign(entry, { status, reason });
@@ -160,12 +179,14 @@ export async function prepareLaravelBoost(params: PrepareBoostParams): Promise<B
     await writeState(git, state);
     await writeExclude(git, Object.values(state.apps).flatMap((entry) => entry.excluded));
     if (prepared.length === 0 || params.signal.aborted) return { extensions: null, apps: statuses };
-    return { extensions: await buildExtensions(prepared, git, params), apps: statuses };
+    const { extensions, setups } = await buildExtensions(prepared, git, params);
+    for (const entry of statuses) entry.setup = setups.get(entry.app) ?? null;
+    return { extensions, apps: statuses };
   } catch (error) {
     logger.warn('Laravel Boost preparation failed; the session runs without Boost', { error: errorMessage(error) });
     return {
       extensions: null,
-      apps: statuses.map((entry) => (entry.status === 'absent' ? entry : { ...entry, status: 'failed', reason: 'preparation error' })),
+      apps: statuses.map((entry) => (entry.status === 'absent' ? entry : { ...entry, status: 'failed', reason: 'preparation error', setup: null })),
     };
   }
 }
@@ -221,7 +242,7 @@ async function prepareApp(app: LaravelApp, git: Git, state: State, params: Prepa
     const found = await readGuidelines(app, git);
     state.apps[app.dir] = { fingerprint: 'self-managed', lockHash, excluded: [], ...found };
     log.info('Laravel Boost files are committed in the repository; using them as they are');
-    return { app, ...found, guidelinesLoaded: await loadedByClaude(app, found.guidelinesFile, found.guidelines), selfManaged, excluded: [] };
+    return { app, ...found, guidelinesLoaded: await loadedByClaude(app, found.guidelinesFile, found.guidelines), selfManaged, excluded: [], warnings: [] };
   }
 
   const fingerprint = await computeFingerprint(app, lockHash, config.php, await findBoostPackages(app));
@@ -234,17 +255,19 @@ async function prepareApp(app: LaravelApp, git: Git, state: State, params: Prepa
       guidelinesLoaded: await loadedByClaude(app, previous.guidelinesFile, previous.guidelines),
       selfManaged,
       excluded: previous.excluded,
+      warnings: previous.warnings ?? [],
     };
   }
 
-  const { ok, ...generated } = await generate(app, git, params, previous?.excluded ?? []);
-  if (!ok) {
+  const generated = await generate(app, git, params, previous?.excluded ?? []);
+  if (!generated.ok) {
     // Whatever it wrote stays excluded; the empty fingerprint retries on the next attempt.
-    state.apps[app.dir] = { fingerprint: '', lockHash, ...generated };
+    state.apps[app.dir] = { fingerprint: '', lockHash, ...stateOf(generated) };
     return { status: 'failed', reason: 'boost:install failed' };
   }
-  state.apps[app.dir] = { fingerprint, lockHash, ...generated };
-  log.info('Laravel Boost guidelines and skills generated', { excluded_files: generated.excluded.length });
+  // Incomplete output (no guidelines, skills Boost reports but did not write) is generated again on the next attempt.
+  state.apps[app.dir] = { fingerprint: generated.retry ? '' : fingerprint, lockHash, ...stateOf(generated) };
+  log.info('Laravel Boost guidelines and skills generated', { excluded_files: generated.excluded.length, skills: generated.skills.length });
   return {
     app,
     guidelinesFile: generated.guidelinesFile,
@@ -252,6 +275,7 @@ async function prepareApp(app: LaravelApp, git: Git, state: State, params: Prepa
     guidelinesLoaded: await loadedByClaude(app, generated.guidelinesFile, generated.guidelines),
     selfManaged,
     excluded: generated.excluded,
+    warnings: generated.warnings,
   };
 }
 
@@ -265,7 +289,7 @@ async function generate(
   git: Git,
   params: PrepareBoostParams,
   previouslyExcluded: string[],
-): Promise<{ ok: boolean } & Omit<AppState, 'fingerprint' | 'lockHash'>> {
+): Promise<Generated> {
   const { config, logger } = params;
   const log = logger.child({ laravel_app: appLabel(app) });
   const before = await status(git);
@@ -314,16 +338,80 @@ async function generate(
   // Files Boost removed again (for example skills of a dropped package) leave the list.
   const present: string[] = [];
   for (const file of [...excluded].sort()) if (await exists(path.join(git.top, file))) present.push(file);
+  const skills = generatedSkills(git, app, present);
   if (!install.ok) {
     log.warn('Laravel Boost skipped: boost:install failed', install.detail);
-    return { ok: false, excluded: present, guidelinesFile, guidelines };
+    return { ok: false, retry: true, excluded: present, guidelinesFile, guidelines, skills, warnings: [] };
   }
   const boostConfig = await readJsonOrNull(path.join(app.path, 'boost.json'));
   if (boostConfig !== null && boostConfig.sail === true) {
     log.warn('Boost detected Laravel Sail: its guidelines tell the agent to use vendor/bin/sail, but Symphony runs PHP on the host');
   }
-  if (guidelines === null) log.warn('boost:install wrote no Laravel Boost guidelines', { file: guidelinesFile });
-  return { ok: true, excluded: present, guidelinesFile, guidelines };
+  // boost:install exits 0 even when writing guidelines or skills failed for an agent: check what it wrote.
+  const { warnings, retry } = await checkGenerated(app, guidelinesFile, guidelines, skills, boostConfig);
+  for (const warning of warnings) log.warn(`Laravel Boost: ${warning}`, { output: install.detail.output });
+  return { ok: true, retry, excluded: present, guidelinesFile, guidelines, skills, warnings };
+}
+
+interface Generated {
+  ok: boolean;
+  /** The output is incomplete: generate again on the next attempt. */
+  retry: boolean;
+  excluded: string[];
+  guidelinesFile: string | null;
+  guidelines: string | null;
+  /** Skill directories boost:install created (`.claude/skills/<name>/`). */
+  skills: string[];
+  warnings: string[];
+}
+
+function stateOf(generated: Generated): Omit<AppState, 'fingerprint' | 'lockHash'> {
+  const { excluded, guidelinesFile, guidelines, warnings } = generated;
+  return { excluded, guidelinesFile, guidelines, warnings };
+}
+
+/** Skill names among the generated files of an app (`.claude/skills/<name>/…`). */
+function generatedSkills(git: Git, app: LaravelApp, files: string[]): string[] {
+  const skillsDir = repoPath(git, path.join(app.path, '.claude', 'skills'));
+  const prefix = skillsDir === '' ? '' : `${skillsDir}/`;
+  const names = new Set<string>();
+  for (const file of files) {
+    if (!file.startsWith(prefix)) continue;
+    const parts = file.slice(prefix.length).split('/');
+    if (parts.length >= 2 && parts[0] !== '') names.add(parts[0] as string);
+  }
+  return [...names].sort();
+}
+
+/**
+ * Checks that boost:install wrote the guidelines and the skills it reports in boost.json (`skills`).
+ * Missing guidelines or reported skills mean a failed write: generate again on the next attempt.
+ */
+async function checkGenerated(
+  app: LaravelApp,
+  guidelinesFile: string,
+  guidelines: string | null,
+  skills: string[],
+  boostConfig: Record<string, unknown> | null,
+): Promise<{ warnings: string[]; retry: boolean }> {
+  const warnings: string[] = [];
+  let retry = false;
+  if (guidelines === null) {
+    warnings.push(`boost:install wrote no guidelines to ${guidelinesFile}`);
+    retry = true;
+  }
+  const reported = Array.isArray(boostConfig?.skills) ? boostConfig.skills.filter((name): name is string => typeof name === 'string') : [];
+  const missing: string[] = [];
+  for (const name of reported) {
+    if (!(await exists(path.join(app.path, '.claude', 'skills', name, 'SKILL.md')))) missing.push(name);
+  }
+  if (missing.length > 0) {
+    warnings.push(`boost:install reported skills it did not write to .claude/skills: ${missing.join(', ')}`);
+    retry = true;
+  } else if (skills.length === 0 && reported.length === 0) {
+    warnings.push('boost:install generated no skills (.claude/skills)');
+  }
+  return { warnings, retry };
 }
 
 /** The Boost tools that run without asking and the ones removed from the session. */
@@ -332,12 +420,17 @@ export function boostToolPolicy(config: LaravelConfig): { autoApprove: string[];
   return { autoApprove: BOOST_READ_TOOLS.filter((tool) => !deny.includes(tool)), deny };
 }
 
-async function buildExtensions(prepared: PreparedApp[], git: Git, params: PrepareBoostParams): Promise<SessionExtensions> {
+async function buildExtensions(
+  prepared: PreparedApp[],
+  git: Git,
+  params: PrepareBoostParams,
+): Promise<{ extensions: SessionExtensions; setups: Map<LaravelApp, BoostSetup> }> {
   const { config } = params;
   const policy = boostToolPolicy(config);
   const mcpServers: Record<string, StdioServer> = {};
   const contextSections: string[] = [];
   const additionalDirectories: string[] = [];
+  const setups = new Map<LaravelApp, BoostSetup>();
   for (const entry of prepared) {
     const { app } = entry;
     const name = prepared.length === 1 ? 'laravel-boost' : `laravel-boost-${slug(app.dir)}`;
@@ -349,9 +442,18 @@ async function buildExtensions(prepared: PreparedApp[], git: Git, params: Prepar
       deny: [...policy.deny],
     };
     if (app.dir !== '') additionalDirectories.push(app.path);
-    contextSections.push(await contextSection(entry, name, git, config, policy));
+    const skills = await skillNames(entry, git);
+    const section = await contextSection(entry, name, git, config, policy, skills);
+    contextSections.push(section.text);
+    setups.set(app, {
+      server: name,
+      tools: [...policy.autoApprove],
+      skills,
+      guidelines: section.guidelines,
+      warnings: [...entry.warnings],
+    });
   }
-  return { mcpServers, contextSections, additionalDirectories, env: { ...config.agentEnv } };
+  return { extensions: { mcpServers, contextSections, additionalDirectories, env: { ...config.agentEnv } }, setups };
 }
 
 /** Skill names of the app: generated `.claude/skills/<name>/` directories, or the committed ones. */
@@ -359,13 +461,7 @@ async function skillNames(entry: PreparedApp, git: Git): Promise<string[]> {
   const skillsDir = repoPath(git, path.join(entry.app.path, '.claude', 'skills'));
   const prefix = skillsDir === '' ? '' : `${skillsDir}/`;
   const files = entry.selfManaged ? (await listFiles(path.join(git.top, skillsDir))).map((file) => prefix + file.split(path.sep).join('/')) : entry.excluded;
-  const names = new Set<string>();
-  for (const file of files) {
-    if (!file.startsWith(prefix)) continue;
-    const parts = file.slice(prefix.length).split('/');
-    if (parts.length >= 2 && parts[0] !== '') names.add(parts[0] as string);
-  }
-  return [...names].sort();
+  return generatedSkills(git, entry.app, files);
 }
 
 async function contextSection(
@@ -374,7 +470,8 @@ async function contextSection(
   git: Git,
   config: LaravelConfig,
   policy: { autoApprove: string[]; deny: string[] },
-): Promise<string> {
+  skills: string[],
+): Promise<{ text: string; guidelines: string | null }> {
   const { app } = entry;
   const where = app.dir === '' ? 'the repository root' : `\`${app.dir}/\``;
   const list = (tools: string[]) => tools.map((tool) => `\`${tool}\``).join(', ');
@@ -390,7 +487,6 @@ async function contextSection(
   if (policy.autoApprove.includes('search-docs')) {
     lines.push('- Use `search-docs` before writing code that depends on Laravel ecosystem APIs or versions.');
   }
-  const skills = await skillNames(entry, git);
   if (skills.length > 0) {
     lines.push(`- Boost's skills for this app's packages are available: ${list(skills)}. Use the matching skill when the task touches its area.`);
   }
@@ -406,17 +502,23 @@ async function contextSection(
     lines.push('- If you record project rules with the `record-rule` tool, commit the `.ai/rules` changes with your work.');
   }
 
-  if (entry.guidelines !== null && !entry.guidelinesLoaded) {
+  const source = entry.guidelinesFile ?? 'guidelines';
+  let guidelines: string | null = null;
+  if (entry.guidelines !== null && entry.guidelinesLoaded) {
+    guidelines = `${source} (loaded by Claude Code)`;
+  } else if (entry.guidelines !== null) {
     if (entry.guidelines.length <= INLINE_GUIDELINES_LIMIT) {
       lines.push('', `## Laravel Boost guidelines${entry.guidelinesFile !== null ? ` (from ${entry.guidelinesFile})` : ''}`, '', entry.guidelines);
+      guidelines = `${source} (in the system prompt)`;
     } else {
       const file = path.join(git.gitDir, 'symphony', `laravel-boost-guidelines-${slug(app.dir)}.md`);
       await fs.mkdir(path.dirname(file), { recursive: true });
       await fs.writeFile(file, entry.guidelines);
       lines.push(`- Read Laravel Boost's guidelines before you start: ${file}`);
+      guidelines = `${source} (too long for the prompt; the agent reads a copy)`;
     }
   }
-  return lines.join('\n');
+  return { text: lines.join('\n'), guidelines };
 }
 
 /** Reads the Boost block from a committed guideline file (CLAUDE.md first, as Boost does). */

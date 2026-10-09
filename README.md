@@ -43,7 +43,9 @@ und Token stehen in der **`.env`**. Symphony ist eine Implementierung der
   gilt `CLAUDE_EFFORT` aus der `.env`. `repo-init` legt die fünf Labels `Effort: low` bis `Effort: max` ebenfalls an.
 - **Laravel Boost automatisch:** Erkennt Symphony im Workspace eine Laravel-App mit `laravel/boost`, bekommt der
   Agent Boosts Guidelines, Skills und MCP-Server (Doku-Suche, Datenbankschema, Logs), passend zu den installierten
-  Paketversionen. Generierte Dateien landen nie im Pull Request.
+  Paketversionen. Generierte Dateien landen nie im Pull Request. Ob `boost:install` Guidelines und Skills wirklich
+  geschrieben hat, prüft Symphony. Ob und wie der Agent Boost genutzt hat, zeigen das Boost-Icon auf der Agent-Karte,
+  die Agent-Seite und die Statistik-Seite.
 - **Skills für alle Repositories:** Der Ordner `.claude/` wird als Plugin `symphony` in jede Session geladen. Skills
   der Repositories und von Boost kommen dazu.
 - **Befehle im Issue:** Beginnt die Beschreibung mit `/refactoring`, lädt Symphony einen zentral gepflegten Skill, ohne
