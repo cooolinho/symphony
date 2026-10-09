@@ -2,7 +2,7 @@ import type { WorkspaceIntegration } from '../integrations/types.ts';
 import { errorMessage } from '../util/errors.ts';
 import { resolveConfigPath } from '../util/paths.ts';
 import { Reader } from '../workflow/reader.ts';
-import type { SessionExtensions } from '../agent/types.ts';
+import type { IntegrationReport, IntegrationStatus, SessionExtensions } from '../agent/types.ts';
 import { prepareLaravelBoost, probeLaravelTools, type AppBoostStatus } from './boost.ts';
 import { detectLaravelApps, type LaravelApp } from './detect.ts';
 import { formatVersions, readLaravelFacts, versionFields, type LaravelFacts } from './facts.ts';
@@ -85,6 +85,7 @@ export const laravelIntegration: WorkspaceIntegration<LaravelConfig> = {
     // Boost off is the user's choice, not a failure worth a prompt note.
     if (config.boost !== 'off') result.contextSections.push(...apps.flatMap(unavailableNote));
     result.historyFields = historyFields(apps, facts);
+    result.reports = [boostReport(config, apps, facts)];
     return result;
   },
 
@@ -123,6 +124,33 @@ function describePrepared(entry: AppBoostStatus, facts: LaravelFacts): string {
 function unavailableNote(entry: AppBoostStatus): string[] {
   if (entry.status !== 'failed' && entry.status !== 'skipped') return [];
   return [`Laravel Boost is unavailable for \`${displayDir(entry.app)}\` (${entry.reason ?? entry.status}); use artisan and composer in the shell.`];
+}
+
+/** Laravel Boost for the dashboard: per app its status, versions, guidelines, skills and MCP server. */
+function boostReport(config: LaravelConfig, apps: AppBoostStatus[], facts: LaravelFacts[]): IntegrationReport {
+  const parts = apps.map((entry, i) => ({
+    name: displayDir(entry.app),
+    status: entry.status,
+    reason: entry.reason,
+    versions: formatVersions(facts[i] as LaravelFacts),
+    guidelines: entry.setup?.guidelines ?? null,
+    skills: entry.setup?.skills ?? [],
+    mcpServer: entry.setup?.server ?? null,
+    tools: entry.setup?.tools ?? [],
+    warnings: entry.setup?.warnings ?? [],
+  }));
+  let status: IntegrationStatus = 'absent';
+  if (config.boost === 'off') status = 'off';
+  else if (apps.some((entry) => entry.status === 'ready')) status = 'ready';
+  else if (apps.some((entry) => entry.status === 'failed' || entry.status === 'skipped')) status = 'unavailable';
+  return {
+    id: 'laravel-boost',
+    label: 'Laravel Boost',
+    status,
+    parts,
+    mcpServers: parts.flatMap((part) => (part.mcpServer === null ? [] : [part.mcpServer])),
+    skills: [...new Set(parts.flatMap((part) => part.skills))].sort(),
+  };
 }
 
 /** `laravel=laravel/:v13.1.0 boost=ready`; with several apps every entry is prefixed by its directory. */

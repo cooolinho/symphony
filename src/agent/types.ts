@@ -96,6 +96,50 @@ export interface SessionExtensions {
   env: Record<string, string>;
   /** Extra fields for the `run_started` line of the repository log (e.g. `laravel`, `boost`). */
   historyFields?: Record<string, string>;
+  /** What the integrations set up for the session (dashboard, tool attribution); absent when none reported. */
+  reports?: IntegrationReport[];
+}
+
+/**
+ * Status of an integration in a session: ready (available to the agent), unavailable (a part failed or was
+ * skipped), absent (the project does not use it) or off (disabled in the workflow).
+ */
+export type IntegrationStatus = 'ready' | 'unavailable' | 'absent' | 'off';
+
+/** One part of an integration, e.g. one Laravel app of the workspace. */
+export interface IntegrationPart {
+  /** Display name, e.g. `repository root` or `backend/`. */
+  name: string;
+  /** Part status as the integration names it (e.g. ready, failed, skipped, absent, off). */
+  status: string;
+  /** Why the part is not ready; null otherwise. */
+  reason: string | null;
+  /** Versions of the relevant packages, e.g. `Laravel v13.1.0 · Boost v2.0.1`. */
+  versions: string | null;
+  /** Where the agent gets the guidelines from, e.g. `CLAUDE.md (loaded by Claude Code)`; null = none. */
+  guidelines: string | null;
+  /** Skills of this part available to the agent. */
+  skills: string[];
+  /** MCP server of this part, or null. */
+  mcpServer: string | null;
+  /** Tools of that server that run without asking. */
+  tools: string[];
+  /** Problems with the generated files that did not stop the session (e.g. no skills written). */
+  warnings: string[];
+}
+
+/** What an integration (e.g. Laravel Boost) set up for a session; its MCP servers and skills attribute tool calls to it. */
+export interface IntegrationReport {
+  /** Stable id, e.g. `laravel-boost`. */
+  id: string;
+  /** Display name, e.g. `Laravel Boost`. */
+  label: string;
+  status: IntegrationStatus;
+  parts: IntegrationPart[];
+  /** Calls of `mcp__<server>__<tool>` for these servers count as the integration's tool calls. */
+  mcpServers: string[];
+  /** Skill tool calls for these names count as the integration's skill calls. */
+  skills: string[];
 }
 
 export interface StartSessionParams {

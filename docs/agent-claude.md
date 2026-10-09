@@ -151,6 +151,10 @@ log line (`npm run repo-init` → *Laravel Boost* creates an issue that adds it)
    `filament/filament` with its `filament-development` skill. Existing `packages` entries are kept. Generation runs
    again only when `composer.lock`, `.ai/`, the Boost version, the list of those packages or `laravel.php` change, or a generated file is gone; the state lives in
    `<git-dir>/symphony/laravel-boost.json`.
+   **Check:** `boost:install` exits with 0 even when writing the guidelines or skills failed for an agent (it only prints
+   ✗), so Symphony checks the result: the Boost block must be in the guideline file, and every skill `boost.json`
+   lists under `skills` must have `.claude/skills/<name>/SKILL.md`. Otherwise it logs a warning and generates again on
+   the next attempt; the session still gets the MCP server. No skills at all (Boost reports none) is a warning only.
 3. **Git stays clean:** Symphony compares `git status` before and after. New files are listed one by one in a managed
    block of `.git/info/exclude`, so they never show up as changes (files the agent adds next to them still do).
    Tracked files Boost changed are restored with `git checkout`; their Boost block goes into the prompt instead.
@@ -166,6 +170,17 @@ log line (`npm run repo-init` → *Laravel Boost* creates an issue that adds it)
    app in a subdirectory, its directory is passed as an additional directory so its `.claude/skills` load at start.
    The agent's environment gets `laravel.agent_env` (default empty), not `laravel.env`: `APP_ENV=local` there would
    override PHPUnit's `APP_ENV=testing` and keep Boost active in tests.
+
+**Visibility:** the Laravel integration reports per app what the session got (status and reason, versions, how the
+guidelines reach the agent, the skills, the MCP server and its pre-approved tools, warnings from the check above).
+The orchestrator counts every `tool_use` event per tool (one event per tool call, also for parallel calls in one
+message) and every Skill tool call per skill, and attributes calls of the Boost MCP servers and Boost skills to Boost.
+`session_configured` carries the skill names Claude Code loaded (`skill_names`), so the agent page can show how many
+of Boost's skills were really available. All of this is in `GET /api/v1/state` (`running[].integrations`,
+`tool_calls`, `skill_calls`), in `run_trace` of `GET /api/v1/<identifier>` and in the `run_finished` line of the
+repository log (`integrations`, `integration_tools`, `integration_skills`, `tool_calls`, `skill_calls`). The
+dashboard shows it as the Boost chip on the agent card, the *Laravel Boost* section of the agent page and the *Tools*
+and *Laravel Boost & integrations* sections of the statistics page.
 
 None of this blocks a run: when PHP is missing, `composer install` or `boost:install` fails, or the workspace is not
 a git checkout, Symphony logs a warning and starts the session without Boost. An abort stops PHP and Composer at once;

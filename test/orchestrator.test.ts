@@ -5,6 +5,7 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import { PricingStore } from '../src/costs/pricing.ts';
 import { HistoryLog, readHistory } from '../src/history/history.ts';
+import type { IntegrationReport } from '../src/agent/types.ts';
 import type { WorkspaceIntegration } from '../src/integrations/types.ts';
 import { Logger } from '../src/log.ts';
 import { CONTINUATION_DELAY_MS, SESSION_LIMIT_MAX_WAIT_MS, failureBackoffMs, sessionLimitWaitMs, sortForDispatch } from '../src/orchestrator/eligibility.ts';
@@ -222,6 +223,68 @@ describe('workspace integrations', () => {
     });
     assert.deepEqual(seen.map((entry) => entry.config), [{ greeting: 'hello' }]);
     assert.equal(seen[0]!.workspacePath, runner.sessions[0]!.params.cwd);
+  });
+
+  it('attributes MCP tool and skill calls to the reports of the integrations', async () => {
+    const report: IntegrationReport = {
+      id: 'laravel-boost',
+      label: 'Laravel Boost',
+      status: 'ready',
+      parts: [{ name: '(repository root)', status: 'ready', reason: null, versions: 'Laravel v13.1.0', guidelines: 'CLAUDE.md (loaded by Claude Code)', skills: ['pest-testing', 'livewire-development'], mcpServer: 'laravel-boost', tools: ['search-docs'], warnings: [] }],
+      mcpServers: ['laravel-boost'],
+      skills: ['livewire-development', 'pest-testing'],
+    };
+    const fake: WorkspaceIntegration<object> = {
+      id: 'fake',
+      configKey: 'fake_section',
+      resolveConfig: () => ({ config: {}, errors: [], warnings: [] }),
+      prepare: async () => ({ mcpServers: {}, contextSections: [], additionalDirectories: [], env: {}, historyFields: { boost: 'ready' }, reports: [report] }),
+    };
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
+    const history = new HistoryLog(path.join(dir, 'repositories'), new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent()), Logger.silent());
+    const emit = (params: { onEvent: (event: never) => void }, event: string, detail: Record<string, unknown>) =>
+      (params.onEvent as (event: unknown) => void)({ event, timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: 1, message: event, detail });
+    let live: unknown = null;
+    let s: Setup | null = null;
+    const runner = new FakeRunner((turn, params) => {
+      emit(params, 'session_configured', { model: 'opus', skill_names: ['pest-testing', 'symphony:handoff'] });
+      emit(params, 'tool_use', { tool: 'mcp__laravel-boost__search-docs' });
+      emit(params, 'tool_use', { tool: 'mcp__laravel-boost__search-docs' });
+      emit(params, 'tool_use', { tool: 'mcp__tracker__set_status' });
+      emit(params, 'tool_use', { tool: 'Skill', skill: 'pest-testing' });
+      emit(params, 'tool_use', { tool: 'Skill', skill: 'symphony:handoff' });
+      emit(params, 'tool_use', { tool: 'Bash' });
+      live = s?.orchestrator.snapshot().running[0]?.integrations;
+      s?.tracker.set('a', { state: 'In review' });
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    });
+    s = setup({ runner, front: { fake_section: {} }, integrations: [fake], issues: [makeIssue({ id: 'a' })], history });
+    s.tracker.issueRepository = () => 'acme/app';
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s!).running.length === 0 && runner.sessions.length === 1, 3_000, 'run finished');
+
+    const expected = {
+      id: 'laravel-boost',
+      label: 'Laravel Boost',
+      status: 'ready',
+      parts: [{ name: '(repository root)', status: 'ready', reason: null, versions: 'Laravel v13.1.0', guidelines: 'CLAUDE.md (loaded by Claude Code)', skills: ['pest-testing', 'livewire-development'], mcp_server: 'laravel-boost', tools: ['search-docs'], warnings: [] }],
+      mcp_servers: ['laravel-boost'],
+      skills: ['livewire-development', 'pest-testing'],
+      skills_loaded: ['pest-testing'],
+      usage: { calls: 3, tool_calls: { 'search-docs': 2 }, skill_calls: { 'pest-testing': 1 } },
+    };
+    assert.deepEqual(live, [expected]);
+    const detail = s.orchestrator.issueDetail('a') as { run_trace: { integrations: unknown; skill_calls: unknown } };
+    assert.deepEqual(detail.run_trace.integrations, [expected]);
+    assert.deepEqual(detail.run_trace.skill_calls, { 'pest-testing': 1, 'symphony:handoff': 1 });
+
+    const finished = readHistory(history.dir, 'acme/app').entries.find((entry) => entry.event === 'run_finished');
+    assert.equal(finished?.fields.integrations, 'laravel-boost:ready');
+    assert.equal(finished?.fields.integration_tools, 'laravel-boost/search-docs:2');
+    assert.equal(finished?.fields.integration_skills, 'laravel-boost/pest-testing:1');
+    assert.equal(finished?.fields.skill_calls, 'pest-testing:1,symphony:handoff:1');
+    assert.equal(finished?.fields.tool_calls, 'mcp__laravel-boost__search-docs:2,mcp__tracker__set_status:1,Skill:2,Bash:1');
   });
 });
 
@@ -1999,8 +2062,18 @@ describe('run history', () => {
       assert.equal(fields.head_sha, sha);
       assert.equal(fields.branch, 'feature');
       assert.equal(fields.mcp_tool_calls, 'laravel-boost:2');
-      const detail = orchestrator.issueDetail('a') as { run_trace: { head_sha: string; branch: string; mcp_tool_calls: Record<string, number> } };
-      assert.deepEqual(detail.run_trace, { head_sha: sha, branch: 'feature', mcp_tool_calls: { 'laravel-boost': 2 } });
+      assert.equal(fields.tool_calls, 'mcp__laravel-boost__database-schema:2,Bash:1,Edit:1');
+      assert.equal('skill_calls' in fields, false);
+      assert.equal('integrations' in fields, false);
+      const detail = orchestrator.issueDetail('a') as { run_trace: Record<string, unknown> };
+      assert.deepEqual(detail.run_trace, {
+        head_sha: sha,
+        branch: 'feature',
+        mcp_tool_calls: { 'laravel-boost': 2 },
+        tool_calls: { 'mcp__laravel-boost__database-schema': 2, Bash: 1, Edit: 1 },
+        skill_calls: {},
+        integrations: [],
+      });
     });
 
     it('omits head_sha and branch for a non-git workspace', async () => {

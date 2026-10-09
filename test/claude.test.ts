@@ -249,6 +249,32 @@ describe('claude agent runner', () => {
     assert.deepEqual(session.mcpStatus, { 'laravel-boost': 'failed' });
     assert.deepEqual(configured?.detail?.plugins, ['symphony']);
     assert.equal(configured?.detail?.skills, 2);
+    assert.deepEqual(configured?.detail?.skill_names, ['pest-testing', 'symphony:handoff']);
+  });
+
+  it('reports every tool call of a message and the skill a Skill call loads', async () => {
+    const fake = fakeQuery((_prompt, _options, emit) => {
+      emit({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'Checking two things.' },
+            { type: 'tool_use', name: 'mcp__laravel-boost__search-docs', input: { queries: ['validation'] } },
+            { type: 'tool_use', name: 'Skill', input: { skill: 'pest-testing' } },
+          ],
+        },
+        parent_tool_use_id: null,
+      });
+      emit(result(0.1, 10, 1));
+    });
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ events }));
+    await session.runTurn('go');
+    await session.stop();
+    const calls = events.filter((event) => event.event === 'tool_use');
+    assert.deepEqual(calls.map((event) => event.detail), [{ tool: 'mcp__laravel-boost__search-docs' }, { tool: 'Skill', skill: 'pest-testing' }]);
+    assert.equal(calls[1]?.message, 'Skill: pest-testing');
+    assert.equal(events.some((event) => event.event === 'assistant_message'), false, 'text next to tool calls is not a separate event');
   });
 
   it('passes claude.strict_mcp_config: false through', async () => {
