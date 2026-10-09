@@ -199,6 +199,16 @@ async function boostPreparation(app: string, tmp: string): Promise<Prepared> {
   assert(/laravel\/framework=v?13\./.test(prepared), 'integration_prepared reports Laravel 13.x', prepared);
   assert(/filament\/filament=v?5\./.test(prepared), 'integration_prepared reports Filament 5.x', prepared);
   assert(/boost=ready/.test(prepared), 'integration_prepared reports Boost status ready', prepared);
+
+  // What the dashboard shows: boost:install really wrote guidelines and skills.
+  const report = extensions.reports?.find((entry) => entry.id === 'laravel-boost');
+  const part = report?.parts[0];
+  const detail = JSON.stringify(report);
+  assert(report?.status === 'ready' && part?.status === 'ready', 'the Laravel Boost report is ready', detail);
+  assert(part.guidelines !== null && part.guidelines.startsWith('CLAUDE.md'), 'the report names the guidelines from CLAUDE.md', detail);
+  assert(part.skills.includes('filament-development'), 'the report lists the filament-development skill', detail);
+  assert(part.warnings.length === 0, 'boost:install wrote the guidelines and every skill it reports', detail);
+  assert(report.mcpServers.includes('laravel-boost'), 'the report names the laravel-boost MCP server', detail);
   return { server, prepared };
 }
 

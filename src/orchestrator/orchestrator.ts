@@ -3,7 +3,7 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { childEnvironment } from '../agent/env.ts';
 import { chooseEffort, chooseModel } from '../agent/model.ts';
-import type { AgentEvent, AgentRunner, TokenUsage } from '../agent/types.ts';
+import type { AgentEvent, AgentRunner, IntegrationReport, TokenUsage } from '../agent/types.ts';
 import { estimateCost, totalTokens, type ModelTokenUsage, type PricingStore } from '../costs/pricing.ts';
 import type { HistoryLog, RunOutcome, RunStart } from '../history/history.ts';
 import { readTranscript, type TranscriptChunk } from '../agent/transcript.ts';
@@ -35,6 +35,7 @@ import {
 } from './eligibility.ts';
 import { normalizeStateName } from '../workflow/config.ts';
 import type { CheckCache, CheckRecord } from './guard.ts';
+import { copyToolUsage, countToolUse, emptyToolUsage, integrationJson, integrationUsage, type ToolUsage } from './tool-usage.ts';
 import { runAgentAttempt, type RunPhase, type WorkerOutcome } from './worker.ts';
 
 export interface Clock {
@@ -137,6 +138,12 @@ interface RunningEntry {
   pendingStart: RunStart | null;
   /** `tool_use` events per MCP server (`mcp__<server>__<tool>`); built-in tools are not counted. */
   mcpToolCalls: Record<string, number>;
+  /** `tool_use` events per tool and Skill tool calls per skill, built-in tools included. */
+  toolUsage: ToolUsage;
+  /** What the workspace integrations (e.g. Laravel Boost) set up for the session. */
+  integrations: IntegrationReport[];
+  /** Skills Claude Code loaded at session start (`session_configured`); null until then. */
+  sessionSkills: string[] | null;
   headSha: string | null;
   branch: string | null;
   controller: AbortController;
@@ -254,15 +261,32 @@ interface RunTrace {
   headSha: string | null;
   branch: string | null;
   mcpToolCalls: Record<string, number>;
+  toolUsage: ToolUsage;
+  integrations: IntegrationReport[];
+  sessionSkills: string[] | null;
 }
 
-/** `mcp__<server>__<tool>` → `<server>`; null for built-in tools. */
 function traceOf(entry: RunningEntry): RunTrace {
-  return { headSha: entry.headSha, branch: entry.branch, mcpToolCalls: { ...entry.mcpToolCalls } };
+  return {
+    headSha: entry.headSha,
+    branch: entry.branch,
+    mcpToolCalls: { ...entry.mcpToolCalls },
+    toolUsage: copyToolUsage(entry.toolUsage),
+    integrations: entry.integrations,
+    sessionSkills: entry.sessionSkills,
+  };
 }
 
 function traceJson(trace: RunTrace | null) {
-  return trace === null ? null : { head_sha: trace.headSha, branch: trace.branch, mcp_tool_calls: trace.mcpToolCalls };
+  if (trace === null) return null;
+  return {
+    head_sha: trace.headSha,
+    branch: trace.branch,
+    mcp_tool_calls: trace.mcpToolCalls,
+    tool_calls: trace.toolUsage.tools,
+    skill_calls: trace.toolUsage.skills,
+    integrations: trace.integrations.map((report) => integrationJson(report, trace.toolUsage, trace.sessionSkills)),
+  };
 }
 
 function checkJson(check: CheckRecord | null) {
@@ -280,6 +304,7 @@ function checkJson(check: CheckRecord | null) {
   };
 }
 
+/** `mcp__<server>__<tool>` → `<server>`; null for built-in tools. */
 function mcpServerOf(tool: string): string | null {
   const match = /^mcp__(.+?)__/.exec(tool);
   return match?.[1] ?? null;
@@ -757,6 +782,9 @@ export class Orchestrator {
       mcpUnavailable: [],
       pendingStart: null,
       mcpToolCalls: {},
+      toolUsage: emptyToolUsage(),
+      integrations: [],
+      sessionSkills: null,
       headSha: null,
       branch: null,
       controller,
@@ -896,7 +924,10 @@ export class Orchestrator {
           issueRefreshed: (fresh) => {
             if (this.#running.get(entry.issueId) === entry) entry.issue = fresh;
           },
-          integrationsPrepared: (fields) => this.#flushStart(entry, fields),
+          integrationsPrepared: (fields, reports) => {
+            entry.integrations = reports;
+            this.#flushStart(entry, fields);
+          },
           mcpUnavailable: (servers) => {
             entry.mcpUnavailable = servers;
           },
@@ -1158,6 +1189,9 @@ export class Orchestrator {
       headSha: entry.headSha,
       branch: entry.branch,
       mcpToolCalls: entry.mcpToolCalls,
+      toolCalls: entry.toolUsage.tools,
+      skillCalls: entry.toolUsage.skills,
+      integrations: entry.integrations.map((report) => ({ id: report.id, status: report.status, ...integrationUsage(report, entry.toolUsage) })),
     });
   }
 
@@ -1593,8 +1627,12 @@ export class Orchestrator {
     if (event.event === 'tool_use' && typeof event.detail?.tool === 'string') {
       const server = mcpServerOf(event.detail.tool);
       if (server !== null) entry.mcpToolCalls[server] = (entry.mcpToolCalls[server] ?? 0) + 1;
+      countToolUse(entry.toolUsage, event.detail.tool, typeof event.detail.skill === 'string' ? event.detail.skill : null);
     }
     if (event.event === 'session_configured' && typeof event.detail?.model === 'string') entry.model = event.detail.model;
+    if (event.event === 'session_configured' && Array.isArray(event.detail?.skill_names)) {
+      entry.sessionSkills = event.detail.skill_names.filter((name): name is string => typeof name === 'string');
+    }
 
     if (event.usage !== undefined) {
       const delta = usageDelta(event.usage, entry.reported);
@@ -1738,6 +1776,9 @@ export class Orchestrator {
       head_sha: entry.headSha,
       branch: entry.branch,
       mcp_tool_calls: entry.mcpToolCalls,
+      tool_calls: entry.toolUsage.tools,
+      skill_calls: entry.toolUsage.skills,
+      integrations: entry.integrations.map((report) => integrationJson(report, entry.toolUsage, entry.sessionSkills)),
     };
   }
 

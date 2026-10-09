@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { sessionClaudeConfig } from '../agent/model.ts';
-import type { AgentEvent, AgentRunner, AgentSession, SessionLimitInfo } from '../agent/types.ts';
+import type { AgentEvent, AgentRunner, AgentSession, IntegrationReport, SessionLimitInfo } from '../agent/types.ts';
 import { prepareIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
@@ -79,8 +79,8 @@ export interface WorkerCallbacks {
   issueRefreshed(issue: Issue): void;
   /** Names of the MCP servers Symphony added that did not connect (called once the session started). */
   mcpUnavailable(servers: string[]): void;
-  /** Extra `run_started` fields from the prepared integrations (called once, after the integrations ran). */
-  integrationsPrepared(historyFields: Record<string, string>): void;
+  /** Extra `run_started` fields and reports (e.g. Laravel Boost) of the prepared integrations (called once, after they ran). */
+  integrationsPrepared(historyFields: Record<string, string>, reports: IntegrationReport[]): void;
   /** Final commit and branch of the workspace, reported once while the attempt finishes. */
   gitHead(head: GitHead): void;
   /** Result of an entry check run by the transition guard. */
@@ -213,7 +213,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       logger,
       signal,
     });
-    callbacks.integrationsPrepared(extensions?.historyFields ?? {});
+    callbacks.integrationsPrepared(extensions?.historyFields ?? {}, extensions?.reports ?? []);
     if (signal.aborted) return await finish(cancelled());
 
     setPhase('LaunchingAgentProcess');

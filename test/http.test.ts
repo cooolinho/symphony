@@ -3,8 +3,13 @@ import http from 'node:http';
 import { after, before, describe, it } from 'node:test';
 import fs from 'node:fs';
 import path from 'node:path';
+import vm from 'node:vm';
 import { PricingStore } from '../src/costs/pricing.ts';
 import { HistoryLog } from '../src/history/history.ts';
+import { AGENT_HTML } from '../src/http/agent-page.ts';
+import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
+import { BOOST_ICON_URI } from '../src/http/icons.ts';
+import { LOGS_HTML } from '../src/http/logs-page.ts';
 import { startHttpServer, type HttpServerHandle } from '../src/http/server.ts';
 import { Logger } from '../src/log.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
@@ -23,6 +28,19 @@ function request(port: number, method: string, path: string, headers: Record<str
     req.end();
   });
 }
+
+describe('dashboard pages', () => {
+  it('ship inline scripts that parse and the Laravel Boost icon', () => {
+    for (const [name, html] of Object.entries({ dashboard: DASHBOARD_HTML, agent: AGENT_HTML, logs: LOGS_HTML })) {
+      const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1] as string);
+      assert.ok(scripts.length > 0, name);
+      for (const script of scripts) assert.doesNotThrow(() => new vm.Script(script, { filename: `${name}.js` }), name);
+      assert.ok(html.includes(BOOST_ICON_URI), `${name} embeds the Boost icon`);
+    }
+    assert.match(BOOST_ICON_URI, /^data:image\/svg\+xml;base64,/);
+    assert.match(Buffer.from(BOOST_ICON_URI.split(',')[1] as string, 'base64').toString('utf8'), /^<svg [^>]*viewBox="0 0 64 64"/);
+  });
+});
 
 describe('http extension', () => {
   let server: HttpServerHandle;

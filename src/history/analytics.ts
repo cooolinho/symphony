@@ -1,10 +1,12 @@
 import { costOf, priceFor, totalTokens, type ModelTokenUsage, type PricingTable } from '../costs/pricing.ts';
-import type { HistoryEntry } from './history.ts';
+import { parseCounts, type HistoryEntry } from './history.ts';
 
 /**
  * Analytics for the statistics page, aggregated on the server for one central filter. Every figure comes from
  * the repository logs: `run_finished` lines (outcome, attempt, timing), their `model_usage` lines (tokens per
- * model, priced with the current model-costs.yml exactly like computeHistoryStats) and `issue_paused` notes.
+ * model, priced with the current model-costs.yml exactly like computeHistoryStats) and `issue_paused` notes. Tool
+ * usage comes from `tool_calls`, `skill_calls` and the integration fields of `run_finished` (runs logged before these
+ * fields existed count as runs without tool calls).
  */
 export interface AnalyticsFilter {
   /** Inclusive start; null = since the first logged run. */
@@ -36,6 +38,8 @@ const MEDIAN_MIN_RUNS = 3;
 const PERCENTILE_MIN_RUNS = 20;
 const TOP_LIMIT = 5;
 const ATTENTION_LIMIT = 10;
+/** Rows of the tool and skill rankings. */
+const TOOL_LIMIT = 25;
 
 /** Run duration histogram: upper bounds in seconds (the last bucket is open). */
 const DURATION_BUCKETS: Array<{ label: string; max: number }> = [
@@ -75,6 +79,12 @@ interface Run {
   /** Dispatched after a failed or stalled run of the same issue. */
   retry: boolean;
   parts: UsagePart[];
+  /** Tool calls by tool name (built-in and `mcp__<server>__<tool>`). */
+  tools: Record<string, number>;
+  /** Skill tool calls by skill. */
+  skills: Record<string, number>;
+  /** Workspace integrations of the run (e.g. Laravel Boost) by id: status and attributed calls. */
+  integrations: Map<string, { status: string; tools: Record<string, number>; skills: Record<string, number> }>;
 }
 
 interface Totals {
@@ -279,10 +289,125 @@ function collectRuns(entries: HistoryEntry[], pricing: PricingTable): Run[] {
       primaryModel: model === undefined || model === 'null' ? null : model,
       retry: FAILURE.has(lastOutcome.get(issue) ?? ''),
       parts: usageByRun.get(entry.fields.run ?? '') ?? [],
+      tools: parseCounts(entry.fields.tool_calls),
+      skills: parseCounts(entry.fields.skill_calls),
+      integrations: runIntegrations(entry.fields),
     });
     lastOutcome.set(issue, outcome);
   }
   return runs;
+}
+
+/** `integrations=laravel-boost:ready` with `integration_tools`/`integration_skills` (`<id>/<name>:<count>`) by integration id. */
+function runIntegrations(fields: Record<string, string>): Run['integrations'] {
+  const result: Run['integrations'] = new Map();
+  for (const [id, status] of Object.entries(parseStatuses(fields.integrations))) result.set(id, { status, tools: {}, skills: {} });
+  for (const kind of ['tools', 'skills'] as const) {
+    for (const [key, count] of Object.entries(parseCounts(fields[`integration_${kind}`]))) {
+      const slash = key.indexOf('/');
+      if (slash <= 0) continue;
+      const integration = result.get(key.slice(0, slash));
+      if (integration === undefined) continue;
+      const name = key.slice(slash + 1);
+      integration[kind][name] = (integration[kind][name] ?? 0) + count;
+    }
+  }
+  return result;
+}
+
+/** `laravel-boost:ready,other:off` → id → status. */
+function parseStatuses(value: string | undefined): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const part of (value ?? '').split(',')) {
+    const at = part.lastIndexOf(':');
+    if (at > 0) result[part.slice(0, at)] = part.slice(at + 1);
+  }
+  return result;
+}
+
+interface CallRow {
+  calls: number;
+  runs: number;
+}
+
+/** Adds the calls of one run to a ranking (`runs` counts the runs that called it). */
+function addCalls(target: Map<string, CallRow>, calls: Record<string, number>): void {
+  for (const [name, count] of Object.entries(calls)) {
+    if (count <= 0) continue;
+    const row = target.get(name) ?? { calls: 0, runs: 0 };
+    row.calls += count;
+    row.runs += 1;
+    target.set(name, row);
+  }
+}
+
+function ranking<K extends string>(rows: Map<string, CallRow>, key: K, limit = TOOL_LIMIT): Array<Record<K, string> & CallRow> {
+  return [...rows]
+    .sort((a, b) => b[1].calls - a[1].calls || b[1].runs - a[1].runs || a[0].localeCompare(b[0]))
+    .slice(0, limit)
+    .map(([name, row]) => ({ [key]: name, ...row }) as Record<K, string> & CallRow);
+}
+
+const sumCalls = (calls: Record<string, number>): number => Object.values(calls).reduce((sum, count) => sum + count, 0);
+
+/**
+ * Tool usage of the runs: calls per tool and skill, and per workspace integration (e.g. Laravel Boost) the runs
+ * it was ready in, the runs that used it, and its calls per tool and skill.
+ */
+function toolStats(runs: Run[]) {
+  const tools = new Map<string, CallRow>();
+  const skills = new Map<string, CallRow>();
+  const integrations = new Map<string, { runs: number; by_status: Record<string, number>; ready_runs: number; used_runs: number; calls: number; tools: Map<string, CallRow>; skills: Map<string, CallRow> }>();
+  let calls = 0;
+  let runsWithCalls = 0;
+  for (const run of runs) {
+    const runCalls = sumCalls(run.tools);
+    calls += runCalls;
+    if (runCalls > 0) runsWithCalls += 1;
+    addCalls(tools, run.tools);
+    addCalls(skills, run.skills);
+    for (const [id, entry] of run.integrations) {
+      let target = integrations.get(id);
+      if (target === undefined) {
+        target = { runs: 0, by_status: {}, ready_runs: 0, used_runs: 0, calls: 0, tools: new Map(), skills: new Map() };
+        integrations.set(id, target);
+      }
+      const used = sumCalls(entry.tools) + sumCalls(entry.skills);
+      target.runs += 1;
+      target.by_status[entry.status] = (target.by_status[entry.status] ?? 0) + 1;
+      if (entry.status === 'ready') target.ready_runs += 1;
+      if (used > 0) target.used_runs += 1;
+      target.calls += used;
+      addCalls(target.tools, entry.tools);
+      addCalls(target.skills, entry.skills);
+    }
+  }
+  return {
+    runs: runs.length,
+    runs_with_calls: runsWithCalls,
+    calls,
+    avg_calls_per_run: ratio(calls, runsWithCalls, 1),
+    distinct_tools: tools.size,
+    tools: ranking(tools, 'tool').map((row) => {
+      const mcp = /^mcp__(.+?)__(.+)$/.exec(row.tool);
+      return { ...row, server: mcp?.[1] ?? null, name: mcp?.[2] ?? row.tool };
+    }),
+    skills: ranking(skills, 'skill'),
+    integrations: [...integrations]
+      .sort((a, b) => b[1].runs - a[1].runs || a[0].localeCompare(b[0]))
+      .map(([id, entry]) => ({
+        id,
+        runs: entry.runs,
+        by_status: entry.by_status,
+        ready_runs: entry.ready_runs,
+        used_runs: entry.used_runs,
+        use_rate: ratio(entry.used_runs, entry.ready_runs),
+        calls: entry.calls,
+        avg_calls_per_used_run: ratio(entry.calls, entry.used_runs, 1),
+        tools: ranking(entry.tools, 'tool'),
+        skills: ranking(entry.skills, 'skill'),
+      })),
+  };
 }
 
 /** Repository and model filter; with a model filter, each run keeps only that model's usage. */
@@ -567,6 +692,7 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
       by_outcome: byOutcome,
     },
     durations,
+    tools: toolStats(runs),
     heatmap: { start_times: heatmap, max: Math.max(0, ...heatmap.flat()) },
     top,
     attention: { rules: ATTENTION_RULES, items: attention.slice(0, ATTENTION_LIMIT), total: attention.length },
