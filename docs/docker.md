@@ -275,7 +275,7 @@ Claude state and Composer cache are not transferred. A locally running Symphony 
 | Variable | Default | Meaning |
 |---|---|---|
 | `SYMPHONY_CONTAINER` | `symphony` | Name of the container on the server (`docker ps -a`), with Compose usually `<project>-symphony-1` |
-| `SYMPHONY_REMOTE` | `cooolinho@docker.lan` | SSH target |
+| `SYMPHONY_REMOTE` | – | SSH target (required, e.g. `user@host`) |
 | `SYMPHONY_LOCAL_STATE` | `$SYMPHONY_LOG_DIR`, otherwise `~/.local/state/symphony` | local log directory |
 
 The script reads the variables from the shell or from the `.env` in the repository directory **on the machine where

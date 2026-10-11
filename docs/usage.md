@@ -91,7 +91,7 @@ To go back to the old behavior, remove `roles` and `checks`: then every issue ru
 | Cancel and clean up | Move the issue to `Done` |
 | Pause all new starts | Set `agent.max_concurrent_agents: 0` in the `WORKFLOW.md`. Running agents keep working. |
 | Change the prompt or settings | Edit `WORKFLOW.md`. This applies right away to new sessions, without a restart. |
-| Restart a waiting or paused worker right away | In the dashboard (queue, paused list or agent page) click **Retry now** or **Resume now**, or `curl -X POST http://127.0.0.1:4000/api/v1/<identifier>/retry` (the identifier URL-encoded, e.g. `cooolinho%2Ftrainingsstunden-portal%2312`). This is the way out of a session limit when you have topped up credits and do not want to wait for the reset. On a non-loopback address (`SYMPHONY_HOST`) it only works with `SYMPHONY_ALLOW_REMOTE_CONTROL=true`; with `curl` through the proxy, pass `-H 'Origin: https://<domain>'`, see [Dashboard and API](#dashboard-and-api). |
+| Restart a waiting or paused worker right away | In the dashboard (queue, paused list or agent page) click **Retry now** or **Resume now**, or `curl -X POST http://127.0.0.1:4000/api/v1/<identifier>/retry` (the identifier URL-encoded, e.g. `owner%2Frepository%2312`). This is the way out of a session limit when you have topped up credits and do not want to wait for the reset. On a non-loopback address (`SYMPHONY_HOST`) it only works with `SYMPHONY_ALLOW_REMOTE_CONTROL=true`; with `curl` through the proxy, pass `-H 'Origin: https://<domain>'`, see [Dashboard and API](#dashboard-and-api). |
 | Poll now instead of waiting 30 s | In the dashboard click **Poll now**, or `curl -X POST http://127.0.0.1:4000/api/v1/refresh` |
 
 If the `WORKFLOW.md` is invalid after a change, Symphony keeps running with the last valid version. It only starts
@@ -533,9 +533,9 @@ Where the data comes from and where the limits are:
 
 ```bash
 curl -s http://127.0.0.1:4000/api/v1/state
-curl -s http://127.0.0.1:4000/api/v1/cooolinho%2Ftrainingsstunden-portal%2312   # / as %2F, # as %23
+curl -s http://127.0.0.1:4000/api/v1/owner%2Frepository%2312   # / as %2F, # as %23
 curl -s -X POST http://127.0.0.1:4000/api/v1/refresh
-curl -s -X POST http://127.0.0.1:4000/api/v1/cooolinho%2Ftrainingsstunden-portal%2312/retry
+curl -s -X POST http://127.0.0.1:4000/api/v1/owner%2Frepository%2312/retry
 ```
 
 The restart endpoint and the **Retry now** and **Resume now** buttons always work as long as the server listens on a
@@ -546,7 +546,7 @@ header that matches the `Host` (protection against CSRF, because the browser sen
 request). The browser sets it itself; with `curl` through the proxy you pass it:
 
 ```bash
-curl -s -X POST -u <user> -H 'Origin: https://<domain>' https://<domain>/api/v1/cooolinho%2Ftrainingsstunden-portal%2312/retry
+curl -s -X POST -u <user> -H 'Origin: https://<domain>' https://<domain>/api/v1/owner%2Frepository%2312/retry
 ```
 
 Whether restarting is allowed is shown in `GET /api/v1/state` and `GET /api/v1/<identifier>` under `controls.retry`.
@@ -566,13 +566,13 @@ column, configuration, free slot).
 ## Logs and statistics
 
 Symphony writes a running log for each repository, e.g.
-`~/.local/state/symphony/repositories/cooolinho_trainingsstunden-portal.log`. Change the folder with
+`~/.local/state/symphony/repositories/owner_repository.log`. Change the folder with
 `SYMPHONY_LOG_DIR` in the `.env` or with `--log-dir`. Each line is one event in `key=value` format:
 
 ```
-ts=2026-10-04T09:16:19.000Z event=run_started repo=cooolinho/trainingsstunden-portal issue=cooolinho/trainingsstunden-portal#5 run=8f3c2a1b9d0e title="Symphony-Testkette 3/3: …" state=Ready attempt=null model=opus
-ts=2026-10-04T09:17:00.000Z event=run_finished repo=cooolinho/trainingsstunden-portal issue=cooolinho/trainingsstunden-portal#5 run=8f3c2a1b9d0e … outcome=handed_off state="In review" turns=1 model=claude-opus-5-5 total_tokens=153200 cost_usd=0.1491 agent_seconds=41 repo_runs=4 repo_tokens=556200 repo_cost_usd=0.5262 repo_agent_seconds=246
-ts=2026-10-04T09:17:00.000Z event=model_usage repo=cooolinho/trainingsstunden-portal issue=cooolinho/trainingsstunden-portal#5 run=8f3c2a1b9d0e model=claude-opus-5-5 price=opus input_tokens=2800 output_tokens=1680 cache_read_tokens=123200 cache_write_tokens=12320 total_tokens=140000 cost_usd=0.1361
+ts=2026-10-04T09:16:19.000Z event=run_started repo=owner/repository issue=owner/repository#5 run=8f3c2a1b9d0e title="Feature: …" state=Ready attempt=null model=opus
+ts=2026-10-04T09:17:00.000Z event=run_finished repo=owner/repository issue=owner/repository#5 run=8f3c2a1b9d0e … outcome=handed_off state="In review" turns=1 model=claude-opus-5-5 total_tokens=153200 cost_usd=0.1491 agent_seconds=41 repo_runs=4 repo_tokens=556200 repo_cost_usd=0.5262 repo_agent_seconds=246
+ts=2026-10-04T09:17:00.000Z event=model_usage repo=owner/repository issue=owner/repository#5 run=8f3c2a1b9d0e model=claude-opus-5-5 price=opus input_tokens=2800 output_tokens=1680 cache_read_tokens=123200 cache_write_tokens=12320 total_tokens=140000 cost_usd=0.1361
 ```
 
 | Event | Meaning |
@@ -648,7 +648,7 @@ built-in default of $5 / $25 applies to all models. Claude Code's own estimate i
 ## Multiple repositories
 
 - **One board for several repositories:** List them all in the `.env`, e.g.
-  `GITHUB_REPOSITORY=cooolinho/trainingsstunden-portal,cooolinho/website`. Each issue is worked on in a clone of its
+  `GITHUB_REPOSITORY=owner/repository1,owner/repository2`. Each issue is worked on in a clone of its
   own repository. The hook uses `$SYMPHONY_ISSUE_REPOSITORY` for this.
 - **One board per repository:** Create a separate env file per board and start one instance per board with its own
   port:
@@ -729,7 +729,7 @@ packages: **guidelines** (always loaded), **skills** (loaded on demand, e.g. `la
 errors. Symphony uses Boost automatically:
 
 1. After the `before_run` hook, Symphony looks for Laravel apps in the workspace: in the root or one level down, e.g.
-   `laravel/` in trainingsstunden-portal.
+   `laravel/` in a typical Laravel repository structure.
 2. If `laravel/boost` is in the `composer.json`, Symphony installs the dependencies if needed (`composer install`)
    and generates Boost's guidelines and skills for Claude Code (`boost:install`). It then checks whether the
    guidelines and all skills that Boost reports in `boost.json` were actually written: `boost:install` exits with
@@ -819,10 +819,10 @@ Symphony's `.claude/` has the folders `skills/`, `agents/`, `commands/` and `hoo
 `claude.plugins: [./.claude]`. Its skills are called `symphony:<name>` in the agent. Rules for good skills are in
 [.claude/README.md](../.claude/README.md).
 
-## Repositories with a Docker setup (e.g. trainingsstunden-portal)
+## Repositories with a Docker setup (e.g. a Laravel portal)
 
-In the portal, PHP and Artisan commands run via `docker exec … portal`, according to `AGENTS.md`. But this container
-mounts your main checkout (`~/projects/trainingsstunden-portal/laravel`), not the agent's workspace. Tests there would
+In a Docker-based application, PHP and Artisan commands run via `docker exec … container`, according to `AGENTS.md`. But this container
+mounts your main checkout (e.g. `~/projects/repo/laravel`), not the agent's workspace. Tests there would
 check the wrong code, and migrations would change your development database. The prompt therefore tells the agent not
 to use foreign containers and to list checks it could not run in its result.
 
