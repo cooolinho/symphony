@@ -222,7 +222,7 @@ capability and notes that in the report. The token needs write access to issues 
 `project`).
 
 **Limitations.** At most `roles.auditor.max_sub_issues` sub-issues are open at the same time (default 20); further
-ones are listed in the report under „Nicht angelegt“ (not created). An unknown `/word` without a skill is an ordinary
+ones are listed in the report under "Not created". An unknown `/word` without a skill is an ordinary
 issue. A command further down in the description does not count.
 
 ### Custom commands
@@ -262,8 +262,8 @@ busywork ([criteria](../.claude/skills/auto-code/ideation.md)).
 ### Setup
 
 1. **Project description:** The target repository needs a description with a clear goal, e.g. `docs/index.md`.
-   The planner works through a roadmap (`docs/todo.md`) first. A section „Leitplanken für den Autopiloten“
-   (guardrails for the autopilot) with non-goals, priorities and design principles is strongly recommended
+   The planner works through a roadmap (`docs/todo.md`) first. A section "Guardrails for the autopilot"
+   with non-goals, priorities and design principles is strongly recommended
    ([template](../.claude/skills/auto-code/vision-template.md)).
 2. **Integration branch:** create and push `develop` from `main` (`git switch -c develop main && git push -u origin develop`).
 3. **Instance env:** `SYMPHONY_BASE_BRANCH=develop` (agents clone, branch and open PRs against `develop`) and
@@ -304,7 +304,7 @@ applies to every wave of the epic; to change it, edit the command line in the de
 | end | Move the epic to **Done**. |
 
 An early checkpoint comes when you reject two or more sub-issues in one wave: then the direction is off. If the
-planner finds nothing more that meets the criteria, it writes „Auto-Code Pause“ and moves to "In review".
+planner finds nothing more that meets the criteria, it writes "Auto-Code Pause" and moves to "In review".
 
 ### Auto-merge into develop
 
