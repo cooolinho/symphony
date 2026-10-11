@@ -1,61 +1,59 @@
 ---
 name: refactor-safely
-description: Verhaltensneutrales Refactoring mit Tests als Sicherheitsnetz, für Entwickler und Reviewer. Nur laden, wenn der Prompt es verlangt (Issue beginnt mit /refactor-safely), nie von selbst.
-argument-hint: "[optionaler Hinweis]"
+description: Behaviour-preserving refactoring with tests as a safety net, for developers and reviewers. Only load when the prompt asks for it (issue starts with /refactor-safely), never on your own.
+argument-hint: "[optional hint]"
 ---
 
-# Refactoring ohne Verhaltensänderung
+# Refactoring without behaviour change
 
-Ein Refactoring ändert die Struktur, nicht das Verhalten. Was das Projekt vorher nach außen tat, tut es danach
-genauso: gleiche Antworten, gleiche Daten, gleiche Fehler. Tests beweisen das. Welche Rolle du hast, steht im Prompt
-(„Your role: developer“ oder „reviewer“). Lies den Abschnitt für deine Rolle und die Regeln für alle.
+A refactoring changes the structure, not the behaviour. Whatever the project did to the outside before, it does exactly
+the same afterwards: same responses, same data, same errors. Tests prove it. Your role is stated in the prompt
+("Your role: developer" or "reviewer"). Read the section for your role and the rules for everyone.
 
-## Regeln für alle
+## Rules for everyone
 
-**Verhalten bleibt gleich.** Nicht ändern, außer das Issue verlangt es ausdrücklich:
+**Behaviour stays the same.** Do not change, unless the issue explicitly asks for it:
 
-- Routen, URLs, HTTP-Statuscodes, Antwortformate
-- Öffentliche Signaturen, die von anderswo genutzt werden (Klassen, Methoden, Events, Jobs, Artisan-Befehle)
-- Datenbankschema und gespeicherte Daten (keine Migration, außer das Issue verlangt sie)
-- Config-Schlüssel, Umgebungsvariablen, Berechtigungen und Validierungsregeln
-- Texte und Übersetzungen, die Benutzer sehen
+- routes, URLs, HTTP status codes, response formats
+- public signatures used elsewhere (classes, methods, events, jobs, Artisan commands)
+- database schema and stored data (no migration, unless the issue asks for one)
+- config keys, environment variables, permissions and validation rules
+- texts and translations that users see
 
-**Bugs gehören nicht hierher.** Entdeckst du beim Refactoring einen Bug, behebe ihn nicht in diesem Pull Request.
-Beschreibe ihn im Issue-Kommentar mit Datei und Zeile; ein eigenes Issue erstellt ein Mensch.
+**Bugs do not belong here.** If you discover a bug while refactoring, do not fix it in this pull request. Describe it
+in the issue comment with file and line; a human creates a separate issue.
 
-**Tests sind das Sicherheitsnetz.** Bestehende Tests werden nicht abgeschwächt, übersprungen oder gelöscht, und ihre
-Assertions bleiben unverändert. Wenn ein bestehender Test rot wird, hast du das Verhalten geändert: Mach die
-Änderung rückgängig, statt den Test anzupassen.
+**Tests are the safety net.** Existing tests are not weakened, skipped or deleted, and their assertions stay
+unchanged. If an existing test turns red, you changed the behaviour: revert the change instead of adjusting the test.
 
-**Verifiziere gegen die installierte Version.** Prüfe Framework-APIs mit Boost `search-docs`, nicht aus dem Gedächtnis;
-Filament, Livewire und Laravel unterscheiden sich zwischen den Major-Versionen stark. Folge `AGENTS.md`, `.ai/` und den
-Konventionen des Projekts.
+**Verify against the installed version.** Check framework APIs with Boost `search-docs`, not from memory; Filament,
+Livewire and Laravel differ a lot between major versions. Follow `AGENTS.md`, `.ai/` and the project's conventions.
 
-## Entwickler
+## Developer
 
-1. Lies das Issue, das Audit-Epic (Parent) und die genannten Dateien. Prüfe die Abhängigkeiten: Wartet das Issue noch
-   auf ein Test-Issue (`Blocked by #N`), das nicht geschlossen ist, melde das und setze `Blocked`.
-2. **Sicherheitsnetz zuerst.** Prüfe, ob der Bereich Tests hat, die das Verhalten wirklich festhalten
-   (siehe [characterization-tests.md](characterization-tests.md)). Fehlen sie, schreibe sie, **bevor** du Produktivcode anfasst.
-   Sie müssen auf dem unveränderten Code grün sein. Committe sie getrennt („Tests: … absichern“).
-3. Steht im Issue „nur Characterization-Tests“, ist hier Schluss: kein Produktivcode, weiter mit Schritt 6.
-4. Refactore in kleinen Schritten. Nach jedem Schritt laufen die betroffenen Tests, dann ein Commit pro sinnvoller
-   Einheit (Umbenennen, Extrahieren, Verschieben getrennt halten).
-5. Zum Schluss die ganze Test-Suite und die Projektprüfungen (Pint, Analyse). Alle bestehenden Tests sind
-   unverändert grün; im Test-Diff stehen nur neue Dateien oder neue Zeilen.
-6. Beschreibe im Pull Request und im Issue-Kommentar: was umgebaut wurde, welche Tests das Verhalten sichern, was
-   sich **nicht** geändert hat. Gibt es Abweichungen vom Ziel, nenne sie offen.
+1. Read the issue, the audit epic (parent) and the files it names. Check the dependencies: if the issue still waits for
+   a test issue (`Blocked by #N`) that is not closed, report that and set `Blocked`.
+2. **Safety net first.** Check whether the area has tests that really pin down the behaviour
+   (see [characterization-tests.md](characterization-tests.md)). If they are missing, write them **before** you touch
+   production code. They must be green on the unchanged code. Commit them separately ("Tests: cover …").
+3. If the issue says "characterization tests only", stop here: no production code, continue with step 6.
+4. Refactor in small steps. After each step run the affected tests, then one commit per meaningful unit (keep renaming,
+   extracting and moving separate).
+5. Finally run the whole test suite and the project checks (Pint, analysis). All existing tests are green and
+   unchanged; the test diff contains only new files or new lines.
+6. Describe in the pull request and in the issue comment: what was restructured, which tests secure the behaviour, what
+   did **not** change. If there are deviations from the goal, state them openly.
 
 ## Reviewer
 
-Du bist read-only und arbeitest über Diffs. Gehe die [review-checklist.md](review-checklist.md) durch. Kurz:
+You are read-only and work from diffs. Go through the [review-checklist.md](review-checklist.md). In short:
 
-1. `git diff origin/<base>...HEAD -- tests/`: Es dürfen nur Zeilen hinzukommen. Entfernte oder geänderte Assertions,
-   neue `skip`/`todo`/`markTestSkipped`, gelockerte Erwartungen: **blocker**.
-2. Diff auf `routes/`, `config/`, `database/migrations/`, `app/Events`, `app/Policies`, Validierung und Übersetzungen:
-   jede Änderung ohne Auftrag im Issue ist ein **blocker**.
-3. Prüfe, ob die neuen Tests das Verhalten wirklich festhalten (Antworten, Datenbankzustand, Fehlerfälle) und nicht nur,
-   dass etwas aufgerufen wird.
-4. Prüfe, dass nichts Fremdes mitgekommen ist: Bugfixes, Formatierungsrauschen in unbeteiligten Dateien, Konfigurationsänderungen.
-5. Melde Befunde im üblichen Format des Reviews. Ein Refactoring mit Verhaltensänderung ist **changes needed**, auch
-   wenn die Änderung gut gemeint ist.
+1. `git diff origin/<base>...HEAD -- tests/`: only added lines are allowed. Removed or changed assertions, new
+   `skip`/`todo`/`markTestSkipped`, loosened expectations: **blocker**.
+2. Diff on `routes/`, `config/`, `database/migrations/`, `app/Events`, `app/Policies`, validation and translations:
+   every change not requested in the issue is a **blocker**.
+3. Check whether the new tests really pin down the behaviour (responses, database state, error cases) and not just that
+   something gets called.
+4. Check that nothing unrelated came along: bug fixes, formatting noise in uninvolved files, configuration changes.
+5. Report findings in the review's usual format. A refactoring with a behaviour change is **changes needed**, even if
+   the change is well-intended.

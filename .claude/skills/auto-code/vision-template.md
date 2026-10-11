@@ -1,28 +1,28 @@
-# Vorlage: Leitplanken für den Autopiloten
+# Template: guardrails for the autopilot
 
-Diesen Abschnitt in die Projektbeschreibung des Ziel-Repositories einfügen (z. B. ans Ende von `docs/index.md`). Er
-ergänzt die Beschreibung der Funktionen um das, was der Autopilot sonst raten müsste. Je konkreter, desto besser passen
-die Wellen.
+Add this section to the project description of the target repository (e.g. at the end of `docs/index.md`). It
+complements the description of the features with what the autopilot would otherwise have to guess. The more concrete,
+the better the waves fit.
 
 ```markdown
-## Leitplanken für den Autopiloten
+## Guardrails for the autopilot
 
-### Ziel in einem Satz
-<Wem hilft das Projekt wobei, und woran merkt man, dass es gelungen ist?>
+### Goal in one sentence
+<Whom does the project help with what, and how do you notice that it has succeeded?>
 
-### Zielgruppen
-- <Rolle>: <was sie mit dem Projekt erledigen will>
+### Target groups
+- <role>: <what they want to get done with the project>
 
-### Prioritäten (wichtigstes zuerst)
-1. <z. B. Die Abrechnung ist für Trainer in unter 5 Minuten erledigt.>
+### Priorities (most important first)
+1. <e.g. Trainers finish billing in under 5 minutes.>
 2. <…>
 
-### Nicht-Ziele
-- <Was das Projekt bewusst nicht tun soll, z. B. „keine Mitgliederverwaltung“, „keine App“, „kein öffentlicher Bereich“>
+### Non-goals
+- <What the project deliberately should not do, e.g. "no member management", "no app", "no public area">
 
-### Design-Prinzipien
-- <z. B. Filament-Standardkomponenten, keine eigenen Themes; mobil nutzbar für Trainer; Deutsch, Sie-Form>
+### Design principles
+- <e.g. Filament standard components, no custom themes; usable on mobile for trainers; German, formal address>
 
-### Tabus (nur nach Rücksprache)
-- <z. B. Datenmodell der Abrechnung, Rechte-System, Zahlungsdaten, neue externe Dienste>
+### Taboos (only after consultation)
+- <e.g. billing data model, permission system, payment data, new external services>
 ```

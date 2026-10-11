@@ -1,32 +1,32 @@
-# Review-Checkliste: Refactoring ohne Verhaltensänderung
+# Review checklist: refactoring without behaviour change
 
-Arbeite über Diffs (`git diff origin/<base>...HEAD`), du bist read-only. Pro Zeile: OK, n/a oder ein Befund.
+Work from diffs (`git diff origin/<base>...HEAD`); you are read-only. Per line: OK, n/a or a finding.
 
-## Tests (Sicherheitsnetz)
+## Tests (safety net)
 
-- [ ] `git diff origin/<base>...HEAD -- tests/` enthält **nur hinzugefügte** Zeilen oder neue Dateien. Jede entfernte oder geänderte Assertion ist ein blocker.
-- [ ] Keine neuen `skip`, `todo`, `markTestSkipped`, `->only()`; keine gelockerten Erwartungen (`assertOk` statt `assertJson`, kleinere Treffermengen).
-- [ ] Das Test-Setup (Factories, `phpunit.xml`, Pest-Konfiguration, CI) ist unverändert, außer das Issue verlangt es.
-- [ ] Neue Tests halten Verhalten fest: Antwort, Datenbankzustand, Fehlerfall, Autorisierung. Sie prüfen nicht nur, dass etwas aufgerufen wurde.
-- [ ] Hatte der Bereich vorher keine Tests, kamen sie in einem **eigenen Commit vor** dem Umbau (`git log --oneline`).
+- [ ] `git diff origin/<base>...HEAD -- tests/` contains **only added** lines or new files. Every removed or changed assertion is a blocker.
+- [ ] No new `skip`, `todo`, `markTestSkipped`, `->only()`; no loosened expectations (`assertOk` instead of `assertJson`, smaller result sets).
+- [ ] The test setup (factories, `phpunit.xml`, Pest configuration, CI) is unchanged, unless the issue asks for it.
+- [ ] New tests pin down behaviour: response, database state, error case, authorization. They do not just check that something was called.
+- [ ] If the area had no tests before, they came in a **separate commit before** the restructuring (`git log --oneline`).
 
-## Verhalten
+## Behaviour
 
-- [ ] `routes/`: keine Route hinzugefügt, entfernt oder umbenannt, Middleware gleich.
-- [ ] `config/` und Umgebungsvariablen unverändert.
-- [ ] `database/migrations/` unverändert, außer das Issue verlangt eine Migration; keine Änderung an Modell-Casts, `$fillable`, `$guarded`, Relationen mit Wirkung nach außen.
-- [ ] Öffentliche Signaturen (Rückgabetyp, Parameter, Sichtbarkeit) und Events, Jobs, Artisan-Befehle gleich oder abwärtskompatibel; alle Aufrufer geprüft (`grep`).
-- [ ] Validierung, Policies, Filament-Autorisierung (`canViewAny`, `canEdit` …) und Übersetzungstexte unverändert.
-- [ ] Reihenfolge und Menge von Ergebnissen gleich (Sortierung, `limit`, `with`), keine neuen Abfragen in Schleifen.
+- [ ] `routes/`: no route added, removed or renamed, middleware the same.
+- [ ] `config/` and environment variables unchanged.
+- [ ] `database/migrations/` unchanged, unless the issue asks for a migration; no change to model casts, `$fillable`, `$guarded`, relations with outward effect.
+- [ ] Public signatures (return type, parameters, visibility) and events, jobs, Artisan commands the same or backwards compatible; all callers checked (`grep`).
+- [ ] Validation, policies, Filament authorization (`canViewAny`, `canEdit` …) and translation texts unchanged.
+- [ ] Order and number of results the same (sorting, `limit`, `with`), no new queries in loops.
 
-## Umfang
+## Scope
 
-- [ ] Nur der im Issue genannte Bereich wurde angefasst; kein Formatierungsrauschen in fremden Dateien.
-- [ ] Kein Bugfix im selben Pull Request. Wurde einer entdeckt, steht er als Hinweis im Kommentar.
-- [ ] Commits klein und beschrieben; Umbenennen, Verschieben und Extrahieren nicht in einem Commit vermischt.
-- [ ] Entry-Checks (Lint, Analyse, Tests) sind grün; nichts wurde dafür abgeschwächt.
+- [ ] Only the area named in the issue was touched; no formatting noise in unrelated files.
+- [ ] No bug fix in the same pull request. If one was discovered, it is mentioned as a note in the comment.
+- [ ] Commits small and described; renaming, moving and extracting not mixed in one commit.
+- [ ] Entry checks (lint, analysis, tests) are green; nothing was weakened to get there.
 
-## Ergebnis
+## Result
 
-- **approved**: keine blocker oder major Befunde.
-- **changes needed**: jede Verhaltensänderung, jede abgeschwächte Assertion, jeder Fremdinhalt.
+- **approved**: no blocker or major findings.
+- **changes needed**: every behaviour change, every weakened assertion, every unrelated content.

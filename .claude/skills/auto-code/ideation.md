@@ -1,64 +1,62 @@
-# Ideen finden und bewerten
+# Finding and rating ideas
 
-Ziel ist ein Projekt, das seiner Beschreibung näherkommt, nicht ein Projekt mit möglichst vielen Funktionen. Eine gute
-Welle ist klein, belegt und mergebar.
+The goal is a project that comes closer to its description, not a project with as many features as possible. A good
+wave is small, backed by evidence and mergeable.
 
-## Kategorien
+## Categories
 
-| Label | Inhalt | Beispiele |
+| Label | Content | Examples |
 |---|---|---|
-| `feature` | Neue oder vervollständigte Funktion aus der Projektbeschreibung oder Roadmap | Export einer Liste, fehlender Freigabeschritt, Benachrichtigung |
-| `design` | Oberfläche und Bedienbarkeit | Dashboard-Widget, verständlichere Formulare, Leer-Zustände, konsistente Tabellen |
-| `quality` | Bugs, fehlende Tests, Refactoring, Performance, Sicherheit | N+1 beheben, Policy ergänzen, Tests für einen ungetesteten Ablauf |
-| `maintenance` | Abhängigkeiten, Upgrades, Werkzeuge | Minor-Updates, veraltete API ersetzen, Deprecations |
+| `feature` | New or completed feature from the project description or roadmap | export of a list, missing approval step, notification |
+| `design` | User interface and usability | dashboard widget, clearer forms, empty states, consistent tables |
+| `quality` | Bugs, missing tests, refactoring, performance, security | fix an N+1, add a policy, tests for an untested flow |
+| `maintenance` | Dependencies, upgrades, tooling | minor updates, replace a deprecated API, deprecations |
 
-## Bewertung
+## Rating
 
-Jede Idee bekommt drei Werte:
+Every idea gets three values:
 
-| | hoch | mittel | niedrig |
+| | high | medium | low |
 |---|---|---|---|
-| **Nutzen** | schließt eine Lücke zum Ziel der Projektbeschreibung oder einen offenen Wunsch | verbessert einen häufig genutzten Ablauf spürbar | nett, aber selten gebraucht |
-| **Risiko** | Datenmodell, Rechte, Geld oder Abrechnung, Migrationen auf bestehenden Daten | mehrere Bereiche, neue Abhängigkeit | ein Bereich, gut testbar |
+| **Value** | closes a gap to the goal of the project description or an open request | noticeably improves a frequently used flow | nice, but rarely needed |
+| **Risk** | data model, permissions, money or billing, migrations on existing data | several areas, new dependency | one area, easy to test |
 
-**Aufwand:** S (eine Datei oder wenige Zeilen) · M (wenige Dateien, ein Pull Request) · L (teilen, nie als Ganzes).
+**Effort:** S (one file or a few lines) · M (a few files, one pull request) · L (split, never as a whole).
 
-Auswahl: Nutzen hoch vor mittel. Bei gleichem Nutzen gewinnt das geringere Risiko, dann der geringere Aufwand. Ideen mit
-niedrigem Nutzen kommen nur ins Ideen-Backlog.
+Selection: high value before medium. With equal value, lower risk wins, then lower effort. Ideas with low value only go
+into the idea backlog.
 
-## Mischregeln
+## Mixing rules
 
-1. Wünsche von Menschen und offene Roadmap-Punkte gehen eigenen Ideen vor.
-2. Höchstens **ein** `maintenance`-Issue pro Welle. Ein Major-Upgrade steht allein in seiner Welle und trägt
-   `manual-merge`.
-3. Jede **dritte** Welle (3, 6, 9 …) enthält mindestens ein `quality`-Issue. Bei roter Baseline besteht die ganze Welle
-   aus `quality`-Issues.
-4. **Design-Sperre:** Ein Bereich (eine Resource, eine Seite, ein Panel), der in den letzten drei Wellen ein
-   `design`-Issue hatte, bekommt kein weiteres. Das verhindert, dass dieselbe Oberfläche immer wieder umgebaut wird.
-5. Höchstens ein Issue mit Risiko „hoch“ pro Welle. Migrationen auf bestehenden Daten brauchen einen reversiblen
-   `down()` und Tests.
+1. Requests from humans and open roadmap items take precedence over your own ideas.
+2. At most **one** `maintenance` issue per wave. A major upgrade stands alone in its wave and carries `manual-merge`.
+3. Every **third** wave (3, 6, 9 …) contains at least one `quality` issue. With a red baseline the whole wave consists
+   of `quality` issues.
+4. **Design lock:** An area (a resource, a page, a panel) that had a `design` issue in the last three waves gets no
+   further one. This prevents the same interface from being rebuilt over and over.
+5. At most one issue with risk "high" per wave. Migrations on existing data need a reversible `down()` and tests.
 
-## Leitplanken gegen Drift
+## Guardrails against drift
 
-- **Belegpflicht.** Jede Idee nennt den Abschnitt der Projektbeschreibung, den sie voranbringt, und die Stelle im Code,
-  an der sie ansetzt. Fehlt eins von beiden, wird sie nicht angelegt.
-- **Nicht-Ziele und Tabus** aus den Leitplanken gelten absolut, ebenso abgelehnte Sub-Issues (`NOT_PLANNED`), auch in
-  anderer Formulierung.
-- **Keine neuen Abhängigkeiten** (Composer, npm) ohne klaren Grund. Den Grund nennst du im Issue.
-- **Keine Querschnitts-Umbauten** (anderes Framework, neue Architektur, Umbenennungen quer durchs Projekt). Solche Ideen
-  gehören in den Checkpoint-Bericht als Frage an den Menschen.
-- **Kein Ersatz für Entscheidungen**: Rechtliches, Preise, Texte mit rechtlicher Wirkung und externe Dienste mit Kosten
-  schlägst du im Bericht vor, legst sie aber nicht als Issue an.
-- **Lieber pausieren als füllen.** Erfüllt keine Idee die Kriterien, ist eine Pause (Phase 7) das richtige Ergebnis.
+- **Evidence required.** Every idea names the section of the project description it advances and the place in the code
+  it starts from. If either is missing, it is not created.
+- **Non-goals and taboos** from the guardrails apply absolutely, as do rejected sub-issues (`NOT_PLANNED`), even
+  worded differently.
+- **No new dependencies** (Composer, npm) without a clear reason. You state the reason in the issue.
+- **No cross-cutting rebuilds** (different framework, new architecture, renames across the whole project). Such ideas
+  belong in the checkpoint report as a question for the human.
+- **No substitute for decisions**: legal matters, prices, texts with legal effect and external services with costs
+  you suggest in the report, but do not create as an issue.
+- **Better to pause than to fill.** If no idea meets the criteria, a pause (Phase 7) is the right result.
 
-## Design-Issues
+## Design issues
 
-Der Agent sieht die Oberfläche nicht. Deshalb gilt für `design`:
+The agent cannot see the interface. Therefore for `design`:
 
-- Konkrete, prüfbare Kriterien: welche Filament-Komponente, welche Spalten, Filter, Aktionen, Texte, Leer- und
-  Fehler-Zustände, welche Rolle was sieht.
-- Bestehende Bausteine des Projekts verwenden (Filament-Komponenten, Theme, vorhandene Muster), keine eigenen
-  CSS-Lösungen, wenn Filament es kann.
-- Ein Feature- oder Livewire-Test, der das Ergebnis belegt (Seite rendert, Aktion sichtbar für Rolle X, nicht für Y).
-- Design-Prinzipien aus den Leitplanken beachten. Fehlen sie, gelten Konsistenz mit dem Bestand und Barrierefreiheit
-  (Labels, Kontrast, Tastaturbedienung).
+- Concrete, verifiable criteria: which Filament component, which columns, filters, actions, texts, empty and error
+  states, which role sees what.
+- Use the project's existing building blocks (Filament components, theme, existing patterns), no custom CSS solutions
+  where Filament can do it.
+- A feature or Livewire test that proves the result (page renders, action visible for role X, not for Y).
+- Follow the design principles from the guardrails. If there are none, consistency with the existing interface and
+  accessibility (labels, contrast, keyboard operation) apply.

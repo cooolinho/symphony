@@ -1,27 +1,27 @@
-# Bewertung
+# Rating
 
-Jeder Befund bekommt **Schwere** und **Aufwand**. Daraus folgt die Reihenfolge der Sub-Issues.
+Every finding gets a **severity** and an **effort**. The order of the sub-issues follows from them.
 
-## Schwere
+## Severity
 
-| Stufe | Kriterium | Beispiele |
+| Level | Criterion | Examples |
 |---|---|---|
-| kritisch | Datenverlust, Sicherheitslücke oder Ausfall in normaler Nutzung | fehlende Autorisierung auf schreibender Aktion, Mass Assignment mit Benutzereingabe |
-| hoch | falsches Verhalten in häufigem Pfad, oder deutlich messbarer Schaden | N+1 in einer Listenansicht, nicht idempotenter Job mit Doppelwirkung |
-| mittel | falsch in seltenen Fällen, oder echte Wartungsbremse | Zeitzonen-Fehler, 400-Zeilen-Controller in oft geänderter Stelle |
-| niedrig | Lesbarkeit, Konsistenz, kleine Veraltungen | doppelte Hilfsfunktion, veraltete Schreibweise einer API |
+| critical | data loss, security hole or outage in normal use | missing authorization on a writing action, mass assignment with user input |
+| high | wrong behaviour in a common path, or clearly measurable damage | N+1 in a list view, non-idempotent job with double effect |
+| medium | wrong in rare cases, or a real maintenance drag | time zone bug, 400-line controller in a frequently changed place |
+| low | readability, consistency, minor deprecations | duplicate helper, outdated spelling of an API |
 
-## Aufwand
+## Effort
 
-| Stufe | Richtwert |
+| Level | Guideline |
 |---|---|
-| S | eine Datei oder wenige Zeilen, ein Test genügt |
-| M | wenige Dateien, ein Pull Request, einige Tests |
-| L | viele Dateien oder Tests fehlen; **in kleinere Sub-Issues teilen**, sonst nicht anlegen |
+| S | one file or a few lines, one test is enough |
+| M | a few files, one pull request, some tests |
+| L | many files or tests missing; **split into smaller sub-issues**, otherwise do not create |
 
-## Auswahl
+## Selection
 
-1. Kritisch und hoch zuerst, unabhängig vom Aufwand.
-2. Danach mittlere Befunde mit Aufwand S oder M, die zusammenhängende Bereiche entlasten.
-3. Niedrige Befunde nur gebündelt (ein Sub-Issue „Aufräumen in …“) oder gar nicht.
-4. Bereiche ohne Tests: Das Test-Sub-Issue hat Vorrang vor dem Refactoring, das davon abhängt.
+1. Critical and high first, regardless of effort.
+2. Then medium findings with effort S or M that relieve related areas.
+3. Low findings only bundled (one sub-issue "Clean up in …") or not at all.
+4. Areas without tests: the test sub-issue takes precedence over the refactoring that depends on it.
