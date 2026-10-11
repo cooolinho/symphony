@@ -245,6 +245,7 @@ immer in der Fassung von `main`: Ein Pull Request kann die Regeln für seinen ei
 
 Ein Pull Request bleibt für dich offen, wenn
 
+- er aus einem Fork kommt, auch von einem Branch `symphony/*` dort (der Workflow mergt nur Branches dieses Repositorys),
 - er selbst oder ein Issue, das er schließt, das Label `manual-merge` hat,
 - er kein Issue schließt,
 - er `.github/`, `package.json` oder `package-lock.json` ändert (CI, Skripte, Abhängigkeiten) oder mehr als 100 Dateien,
