@@ -235,11 +235,11 @@ describe('github_project settings', () => {
   it('takes the board owner from the first repository and resolves $VAR references', () => {
     const { settings } = parseSettings(
       { project_number: '$NUM', repositories: '$REPOS', token: '$GITHUB_TOKEN' },
-      { NUM: '10', REPOS: 'cooolinho/trainingsstunden-portal, cooolinho/other', GITHUB_TOKEN: 'ghp_x' },
+      { NUM: '10', REPOS: 'org/repo-one, org/repo-two', GITHUB_TOKEN: 'ghp_x' },
     );
-    assert.equal(settings?.owner, 'cooolinho');
+    assert.equal(settings?.owner, 'org');
     assert.equal(settings?.projectNumber, 10);
-    assert.deepEqual([...(settings?.repositories ?? [])], ['cooolinho/trainingsstunden-portal', 'cooolinho/other']);
+    assert.deepEqual([...(settings?.repositories ?? [])], ['org/repo-one', 'org/repo-two']);
     assert.equal(settings?.tokenSource, 'GITHUB_TOKEN');
   });
 

@@ -74,7 +74,7 @@ orchestrator's environment **without** tracker credentials (`GITHUB_TOKEN`, `GH_
 |---|---|
 | `SYMPHONY_HOOK` | `after_create`, `before_run`, `after_run` or `before_remove` |
 | `SYMPHONY_ISSUE_ID` | Opaque issue id (GitHub project item id) |
-| `SYMPHONY_ISSUE_IDENTIFIER` | e.g. `cooolinho/trainingsstunden-portal#12` |
+| `SYMPHONY_ISSUE_IDENTIFIER` | e.g. `owner/repository#12` |
 | `SYMPHONY_ISSUE_URL`, `SYMPHONY_ISSUE_BRANCH` | Issue URL; linked branch, if any (may be empty) |
 | `SYMPHONY_ISSUE_REPOSITORY`, `SYMPHONY_ISSUE_NUMBER` | The issue's repository (`owner/name`) and number |
 | `SYMPHONY_WORKSPACE`, `SYMPHONY_WORKSPACE_KEY` | Workspace path and directory name |

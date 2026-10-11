@@ -178,7 +178,7 @@ describe('hooks/laravel-env.sh', () => {
 
 const dropScript = path.resolve(import.meta.dirname, '../hooks/laravel-db-drop.sh');
 const PASSWORD = 's3cr$t pass"word';
-const KEY = 'cooolinho_symphony_22-2e94eeb7ac345503';
+const KEY = 'org_repo_workspace-id-abc123def456';
 const NAME = `symphony_${createHash('sha256').update(KEY).digest('hex').slice(0, 12)}`;
 
 /** A fake mysql that logs its arguments (and whether MYSQL_PWD arrived) and can be made to fail. */

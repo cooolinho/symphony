@@ -41,7 +41,7 @@ npm install
 
    The bundled `WORKFLOW.md` expects exactly these names. The dry run (step 6) reports every column missing from the
    board (`unknown board column`).
-3. Note the **board number** from the URL, e.g. `10` from `https://github.com/users/cooolinho/projects/10`.
+3. Note the **board number** from the URL, e.g. `10` from `https://github.com/users/yourname/projects/10`.
 4. Add issues: on the board via **+ Add item** and then `#` for an issue of your repository, or in an issue's sidebar
    under **Projects**. Symphony only works on real issues, not on drafts or pull requests.
 5. Optional: create dependencies and sub-issues. Symphony starts an issue only once everything it depends on is done.
@@ -80,7 +80,7 @@ Then fill in your values:
 
 ```dotenv
 GITHUB_PROJECT_NUMBER=10
-GITHUB_REPOSITORY=cooolinho/trainingsstunden-portal
+GITHUB_REPOSITORY=owner/repository
 CLAUDE_MODEL=opus
 GITHUB_TOKEN=ghp_…
 
@@ -141,24 +141,24 @@ start. It also checks whether `php` and `composer` work for Laravel Boost, and l
 issues with an existing workspace. It does not start any agents. Example:
 
 ```
-Workflow:        /home/cooolinho/projects/symphony/WORKFLOW.md
-Env file:        /home/cooolinho/projects/symphony/.env
+Workflow:        /home/user/projects/symphony/WORKFLOW.md
+Env file:        /home/user/projects/symphony/.env
 Tracker:         github_project
 Active states:   Ready, In progress, Agent review
 …
-Plugins:         /home/cooolinho/projects/symphony/.claude; skills: all
+Plugins:         /home/user/projects/symphony/.claude; skills: all
 Laravel Boost:   auto, for Laravel apps that require laravel/boost; php (PHP 8.4.12), composer (Composer version 2.8.12 …)
 
 Candidates in active states: 3
-  dispatch  cooolinho/trainingsstunden-portal#12  [Ready]  Export billing as CSV
+  dispatch  owner/repository#12  [Ready]  Implement feature A
             ↳ Laravel app laravel/: Laravel Boost
-  skip      cooolinho/trainingsstunden-portal#15  [Ready]  Export button in the dashboard
-            ↳ blocked by cooolinho/trainingsstunden-portal#12
-  skip      cooolinho/trainingsstunden-portal#16  [Ready]  Export feature
-            ↳ waiting for sub-issues cooolinho/trainingsstunden-portal#15
+  skip      owner/repository#15  [Ready]  Implement feature B
+            ↳ blocked by owner/repository#12
+  skip      owner/repository#16  [Ready]  Write tests
+            ↳ waiting for sub-issues owner/repository#15
 
-Prompt preview for cooolinho/trainingsstunden-portal#12:
-  | You are working on GitHub issue **cooolinho/trainingsstunden-portal#12**: …
+Prompt preview for owner/repository#12:
+  | You are working on GitHub issue **owner/repository#12**: …
 ```
 
 On an error the dry run exits with code 1 and a specific message, e.g. a missing token scope.
