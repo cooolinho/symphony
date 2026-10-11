@@ -239,6 +239,7 @@ them. The auto-merge always runs in the version from `main`, so a pull request c
 
 A pull request stays open for you when
 
+- it comes from a fork, even from a branch `symphony/*` there (the workflow only merges branches of this repository),
 - it, or an issue it closes, has the label `manual-merge`,
 - it closes no issue,
 - it changes `.github/`, `package.json` or `package-lock.json` (CI, scripts, dependencies), or more than 100 files,

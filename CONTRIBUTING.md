@@ -40,8 +40,8 @@ npm run check   # typecheck and tests
 5. Open the pull request against `develop` and fill in the template.
 
 CI runs `npm run check` and a Docker build for every pull request. Pull requests from the Symphony agents
-(`symphony/*` branches) are merged automatically under the rules in the [README](README.md); all other
-pull requests are reviewed and merged by a maintainer.
+(`symphony/*` branches of this repository) are merged automatically under the rules in the [README](README.md); all
+other pull requests, including every pull request from a fork, are reviewed and merged by a maintainer.
 
 ## Conventions
 

@@ -3,7 +3,11 @@
 # merges. Symphony then starts the issues that depend on them.
 #
 # This workflow always runs in the version on main (workflow_run), so a pull request cannot change the rules for
-# its own merge. A pull request stays open for a human when
+# its own merge. Pull requests from forks are never merged automatically, not even from a branch symphony/* in the
+# fork: the job only runs when the head repository is this repository (name and id), the step checks that again, and
+# it only picks a pull request that GitHub does not mark as cross-repository.
+# A pull request stays open for a human when
+#   - it comes from a fork,
 #   - it, or an issue it closes, has the label "manual-merge",
 #   - it closes no issue,
 #   - it changes .github/, package.json or package-lock.json (CI, scripts, dependencies) or more than 100 files,
@@ -25,6 +29,7 @@ jobs:
       && github.event.workflow_run.conclusion == 'success'
       && startsWith(github.event.workflow_run.head_branch, 'symphony/')
       && github.event.workflow_run.head_repository.full_name == github.repository
+      && github.event.workflow_run.head_repository.id == github.event.workflow_run.repository.id
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -38,10 +43,17 @@ jobs:
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           HEAD_REF: ${{ github.event.workflow_run.head_branch }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
           OPT_OUT_LABEL: manual-merge
         run: |
           set -euo pipefail
           note() { echo "::notice::$1"; printf '%s\n' "$1" >> "$GITHUB_STEP_SUMMARY"; }
+
+          # Second line of defence besides the job condition: never merge a branch from a fork.
+          if [ "$HEAD_REPO" != "$REPO" ]; then
+            note "Not merged automatically: the branch $HEAD_REF comes from the fork $HEAD_REPO."
+            exit 0
+          fi
 
           # The pull request as it is now: labels may have changed while CI ran.
           # shellcheck disable=SC2016 # $owner, $name and $branch are GraphQL variables, not shell variables
@@ -51,7 +63,7 @@ jobs:
                 defaultBranchRef { name }
                 pullRequests(headRefName: $branch, states: OPEN, first: 10) {
                   nodes {
-                    number title isDraft headRefOid baseRefName
+                    number title isDraft isCrossRepository headRefOid baseRefName
                     headRepository { nameWithOwner }
                     labels(first: 50) { nodes { name } }
                     closingIssuesReferences(first: 20) {
@@ -65,9 +77,12 @@ jobs:
           result="$(jq -c --arg repo "$REPO" --arg sha "$HEAD_SHA" --arg label "$OPT_OUT_LABEL" '
             def labelled: any(.labels.nodes[]; (.name | ascii_downcase) == ($label | ascii_downcase));
             .data.repository as $r
-            | first($r.pullRequests.nodes[]
-                | select(.baseRefName == $r.defaultBranchRef.name and .headRepository.nameWithOwner == $repo)) // null
-            | if . == null then {reasons: ["there is no open pull request from this branch into the default branch"]}
+            | [$r.pullRequests.nodes[] | select(.baseRefName == $r.defaultBranchRef.name)] as $into
+            # headRefName also matches branches of forks: only a pull request from this repository itself counts.
+            | first($into[] | select(.isCrossRepository == false and .headRepository.nameWithOwner == $repo)) // null
+            | if . == null then
+                {reasons: [if ($into | length) > 0 then "it comes from a fork"
+                           else "there is no open pull request from this branch into the default branch" end]}
               else
                 ([.closingIssuesReferences.nodes[] | "#\(.number)"] | join(", ")) as $issues
                 | ([.files.nodes[].path
