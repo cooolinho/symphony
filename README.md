@@ -1,202 +1,262 @@
-# Symphony
+# Symphony for Laravel × Claude Code
 
-Arbeitet GitHub-Issues selbstständig ab: Für jedes Issue in einer aktiven Spalte deines GitHub Project Boards
-startet Symphony eine eigene Claude-Code-Session in einem eigenen Workspace. Am Ende steht ein Pull Request, der auf
-dein Review wartet.
+**English** | [Deutsch](README.de.md)
 
-## 📖 About
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Node.js 26](https://img.shields.io/badge/Node.js-26-5FA04E?logo=nodedotjs&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)
+![Claude Code](https://img.shields.io/badge/Claude_Code-D97757?logo=claude&logoColor=white)
+![Laravel Boost](https://img.shields.io/badge/Laravel_Boost-FF2D20?logo=laravel&logoColor=white)
 
-Symphony ist ein dauerhaft laufender Dienst. Er fragt in einem festen Takt ein **GitHub Project Board** ab und
-übergibt bereitstehende Issues an **Claude Code**. Pro Issue legt Symphony einen eigenen Ordner an, klont dort das
-Repository und lässt den Agenten arbeiten: Branch anlegen, implementieren, testen, pushen, Pull Request öffnen,
-Ergebnis im Issue kommentieren. Danach prüfen automatische Checks und ein zweiter, lesender Agent (Reviewer) die
-Arbeit. Erst dann landet die Karte in **In review**. Ab dort bist du dran: Review, Merge, Karte nach **Done**.
+An autonomous coding pipeline: move a GitHub issue to **Ready**, and Symphony starts a **Claude Code** agent in an
+isolated workspace that implements it, tests it, opens a pull request and hands it to a second, read-only agent for
+review. You only look at the result.
+
+This repository is my take on agent-driven software delivery: a long-running service that turns a project board into a
+queue of work for AI agents, with guard rails (entry checks, a reviewer role, budgets, permission modes) that make it
+safe to run unattended, and first-class support for **Laravel** projects through **Laravel Boost**.
+
+## 🧭 Origin: the OpenAI Symphony specification
+
+Symphony is an independent implementation of the
+[**Symphony Service Specification**](https://github.com/openai/symphony/blob/main/SPEC.md) published by OpenAI:
+
+> Symphony is a long-running automation service that continuously reads work from a configured issue tracker, creates
+> an isolated workspace for each issue, and runs a coding agent session for that issue inside the workspace.
+
+The spec defines the core: a `WORKFLOW.md` that holds the configuration and the prompt next to the code, one workspace
+per issue, a polling loop with bounded concurrency, reconciliation, retries and an optional HTTP status API. It targets
+the Codex app-server as its coding agent and leaves the tracker to adapters.
+
+This implementation keeps that contract ([conformance notes](docs/conformance.md)) and adapts it:
+
+| Spec | This implementation |
+|---|---|
+| Codex app-server | **Claude Code** through the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) ([mapping](docs/agent-claude.md)) |
+| Pluggable tracker | **GitHub Projects (v2)** adapter: board columns drive the workflow ([profile](docs/adapters/github-project.md)) |
+| One agent per issue | **Roles per column**: a developer implements, a read-only reviewer checks, an auditor and a planner file sub-issues |
+| Agent decides when it is done | **Entry checks** (lint, static analysis, tests) gate every handoff; a failing check keeps the card where it is |
+| Generic repositories | **Tailored to Laravel**: Laravel Boost per workspace, per-workspace databases, a Laravel check script |
+
+## 🐘 Built for Laravel projects
+
+Symphony works with any repository, but it is tuned for Laravel applications:
+
+- **Laravel Boost, automatically.** When a workspace contains a Laravel app that requires `laravel/boost`, Symphony
+  installs the Composer dependencies, generates Boost's guidelines and skills for exactly the installed package
+  versions, and attaches Boost's MCP server (documentation search, database schema, logs) to the session. Generated
+  files never end up in the pull request. The dashboard shows whether and how the agent used Boost.
+- **One environment per issue.** The `after_create` hook ([`hooks/laravel-env.sh`](hooks/laravel-env.sh)) gives every
+  workspace its own `.env` and SQLite database (MySQL optional); [`hooks/laravel-db-drop.sh`](hooks/laravel-db-drop.sh)
+  cleans up.
+- **Laravel checks.** [`checks/laravel.sh`](checks/laravel.sh) runs Pint, static analysis and the test suite before an
+  issue may move to `Agent review` or `In review`.
+- **Laravel-aware subagents.** The shared toolbox in [`.claude/`](.claude/README.md) ships specialists such as
+  `filament-developer`, `database-engineer`, `test-engineer` and a `code-reviewer`.
+- **Repository conventions** for agent instructions, `.ai/`, Composer scripts and Boost are described in
+  [docs/laravel-repositories.md](docs/laravel-repositories.md).
+
+## 🤖 Claude models and effort, chosen per issue by label
+
+The most visible control is on the issue itself: **labels pick the Claude model and the thinking effort** for the
+agent that works on it.
+
+| Label | Effect |
+|---|---|
+| `Model: opus` | Claude Opus for hard, open-ended work (architecture, tricky bugs, larger features) |
+| `Model: sonnet` | Claude Sonnet for everyday implementation work |
+| `Model: haiku` | Claude Haiku for small, well-defined changes (docs, copy, config) |
+| `Model: claude-opus-5-5` | Any full model id works as well |
+| `Effort: low` … `Effort: max` | Thinking effort: `low`, `medium`, `high`, `xhigh`, `max` |
+
+- Without a label, the role's default applies (for example `opus` for the reviewer), then `CLAUDE_MODEL` /
+  `CLAUDE_EFFORT` from `.env`.
+- `npm run repo-init` creates the three model labels and the five effort labels (colored from light to dark) in your
+  repositories.
+- With `/auto-code … issue-models=auto`, the planner agent labels each sub-issue it creates with a model that fits the
+  task, so cheap models handle simple tasks and strong models get the hard ones.
+- Every run is logged per repository with model, tokens, estimated cost (from [`model-costs.yml`](model-costs.yml))
+  and agent time, so the trade-off between model, effort and cost stays measurable.
+
+Details: [choosing the model](docs/usage.md#choosing-the-model-per-issue) and
+[the effort](docs/usage.md#choosing-the-effort-per-issue) per issue.
+
+## 🧰 Tech stack
+
+| | Technology | Used for |
+|---|---|---|
+| <img src="https://cdn.simpleicons.org/claude" width="24" alt="Claude"> | **Claude Code** + [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) | Coding agents: sessions, turns, permission modes, plugins, skills, subagents |
+| <img src="https://cdn.simpleicons.org/anthropic" width="24" alt="Anthropic"> | **Claude Opus / Sonnet / Haiku** | Models picked per issue by label, with per-issue effort |
+| <img src="https://cdn.simpleicons.org/nodedotjs" width="24" alt="Node.js"> | **Node.js 26** | Runtime; runs TypeScript directly, tests with `node:test` |
+| <img src="https://cdn.simpleicons.org/typescript" width="24" alt="TypeScript"> | **TypeScript** | The whole orchestrator, type-checked with `tsc` |
+| <img src="https://cdn.simpleicons.org/github" width="24" alt="GitHub"> | **GitHub Projects v2, GraphQL & REST API** | Tracker: board columns, issues, sub-issues, labels, pull requests |
+| <img src="https://cdn.simpleicons.org/githubactions" width="24" alt="GitHub Actions"> | **GitHub Actions** | CI (`npm run check`, Docker build) and auto-merge of agent pull requests |
+| <img src="https://cdn.simpleicons.org/laravel" width="24" alt="Laravel"> | **Laravel + Laravel Boost** | Target projects; Boost guidelines, skills and MCP server per workspace |
+| <img src="https://cdn.simpleicons.org/php" width="24" alt="PHP"> | **PHP + Composer** | Preparing Laravel workspaces and running their checks |
+| <img src="https://cdn.simpleicons.org/modelcontextprotocol" width="24" alt="MCP"> | **Model Context Protocol** | In-process tracker tools for the agent; Laravel Boost MCP server |
+| <img src="https://cdn.simpleicons.org/docker" width="24" alt="Docker"> | **Docker + Docker Compose** | Server deployment |
+| <img src="https://cdn.simpleicons.org/traefikproxy" width="24" alt="Traefik"> | **Traefik** | Reverse proxy with HTTPS for the dashboard |
+| <img src="https://cdn.simpleicons.org/zod" width="24" alt="Zod"> | **Zod**, **LiquidJS**, **YAML** | Config validation, prompt templates, front matter |
+
+## ⚙️ How it works
 
 ```
 Backlog ─▶ Ready ─▶ In progress ─[Checks]─▶ Agent review ─[Checks]─▶ In review ─▶ Done
    │         │            │            ▲          │                     │          │
-ignoriert  Developer   Developer       └─ Ände-  Reviewer           wartet auf  Workspace
-           startet     arbeitet          rungen  prüft (nur          dich        gelöscht
-                                         nötig   lesend)
-                   Blocked: ein Agent braucht dich (Checks kaputt, Fragen offen)
+ignored   developer   developer        └─ changes reviewer           waits for   workspace
+          starts      works               needed  checks (read-      you         deleted
+                                                  only)
+                 Blocked: an agent needs you (broken checks, open questions)
 ```
 
-Was der Agent tun soll, steht in der **`WORKFLOW.md`** (Prompt und Einstellungen). Board, Repository, Standardmodell
-und Token stehen in der **`.env`**. Symphony ist eine Implementierung der
-[Symphony Service Specification](https://github.com/openai/symphony/blob/main/SPEC.md), die statt Codex
-**Claude Code** über das Claude Agent SDK nutzt.
+Symphony polls a **GitHub Project board** at a fixed interval and hands issues in active columns to **Claude Code**.
+For each issue it creates a folder, clones the repository and lets the agent work: create a branch, implement, test,
+push, open a pull request and comment on the issue. Automatic checks and a second, read-only agent (the reviewer)
+then check the work. Only then does the card land in **In review**, where you review, merge and move it to **Done**.
+
+What the agent does is defined in **`WORKFLOW.md`** (prompt and settings). Board, repositories, default model and token
+live in **`.env`**.
 
 ## ✨ Features
 
-- **Board-gesteuert:** Die Spalten deines GitHub Project Boards (v2) steuern den Ablauf. Reihenfolge nach Priorität
-  und Alter, begrenzte Parallelität (gesamt und pro Spalte), offene Blocker werden respektiert.
-- **Isolierte Workspaces:** Pro Issue ein eigener Klon unter `~/symphony-workspaces`. Er wird bei Wiederholungen
-  wiederverwendet und gelöscht, sobald das Issue auf *Done* steht.
-- **Developer und Reviewer:** Rollen pro Spalte. Ein Developer-Agent implementiert, ein lesender Reviewer-Agent prüft.
-  Vor `Agent review` und `In review` laufen Checks (Lint, statische Analyse, Tests); scheitern sie, bleibt die Karte
-  stehen und der Agent bessert nach.
-- **Claude Code als Agent:** Mehrere Turns pro Session, Modell frei wählbar (z. B. `opus`). Riskante Aktionen
-  blockiert Claude Codes `auto`-Modus.
-- **Modell pro Issue:** Ein Label wie `Model: sonnet` oder `Model: claude-opus-5-5` wählt das Modell für ein Issue.
-  `npm run repo-init` legt die Labels `Model: opus`, `Model: sonnet` und `Model: haiku` in deinen Repositories an.
-- **Effort pro Issue:** Ein Label wie `Effort: low` oder `Effort: max` wählt den Denkaufwand für ein Issue. Ohne Label
-  gilt `CLAUDE_EFFORT` aus der `.env`. `repo-init` legt die fünf Labels `Effort: low` bis `Effort: max` ebenfalls an.
-- **Laravel Boost automatisch:** Erkennt Symphony im Workspace eine Laravel-App mit `laravel/boost`, bekommt der
-  Agent Boosts Guidelines, Skills und MCP-Server (Doku-Suche, Datenbankschema, Logs), passend zu den installierten
-  Paketversionen. Generierte Dateien landen nie im Pull Request. Ob `boost:install` Guidelines und Skills wirklich
-  geschrieben hat, prüft Symphony. Ob und wie der Agent Boost genutzt hat, zeigen das Boost-Icon auf der Agent-Karte,
-  die Agent-Seite und die Statistik-Seite.
-- **Skills für alle Repositories:** Der Ordner `.claude/` wird als Plugin `symphony` in jede Session geladen. Skills
-  der Repositories und von Boost kommen dazu.
-- **Befehle im Issue:** Beginnt die Beschreibung mit `/refactoring`, lädt Symphony einen zentral gepflegten Skill, ohne
-  dass das Repository etwas davon wissen muss. Der Audit-Agent ermittelt den Stack, misst die Baseline, findet Bugs und
-  Refactoring-Kandidaten und legt Sub-Issues im Backlog an. Umgesetzt wird verhaltensneutral mit Tests als
-  Sicherheitsnetz (`/refactor-safely`). ([Details](docs/usage.md#befehle-im-issue-refactoring))
-- **Autopilot (`/auto-code`):** Ein Epic mit `/auto-code docs/index.md` lässt Symphony ein Projekt fortlaufend
-  weiterentwickeln. Ein Planer-Agent leitet aus der Projektbeschreibung Wellen neuer Features, Design-, Qualitäts- und
-  Wartungsaufgaben ab. Diese starten sofort und landen nach Review und Checks automatisch gemergt auf `develop`. Alle
-  paar Wellen hält er an, mit Bericht und Release-PR nach `main`. Steuern lässt er sich über Kommentare im Epic.
-  ([Details](docs/usage.md#autopilot-auto-code))
-- **Tracker-Tools für den Agenten:** Status setzen, kommentieren, Pull Request öffnen und (nur für Audit- und
-  Planer-Rollen) Sub-Issues anlegen. Der GitHub-Token bleibt dabei im Symphony-Prozess, der Agent sieht ihn nie.
-- **Robust:** Wiederholungen mit exponentiellem Backoff, Erkennung hängender Sessions. Ändert sich das Board während
-  ein Agent läuft, wird er gestoppt.
-- **Session-Limit-Handling:** Erreicht das Claude-Abonnement sein Limit, wiederholt Symphony ein paar Mal und wartet
-  dann bis zum Reset. Wartende und pausierte Worker startest du im Dashboard oder per API sofort neu
-  ([Details](docs/usage.md#session-limit)).
-- **Zentral konfigurierbar:** Die `WORKFLOW.md` wird live neu geladen, ohne Neustart. Die `.env` enthält Board,
-  Repository, Modell und Token. Eine Instanz kann mehrere Repositories bedienen.
-- **Beobachtbar:** Optionales Dashboard mit JSON-API und einer Detailansicht pro Agent (Execution Trace mit Prompts,
-  Modellaufrufen, Tool-Calls, Phasen, Tokens und Kosten), strukturierte Logs, ein Transkript pro Session, `--dry-run`
-  zum Prüfen der Einrichtung.
-- **Logs und Kosten pro Repository:** Ein fortlaufendes Log hält fest, wann welches Issue bearbeitet wurde, mit
-  Tokens, Modell, geschätzten Kosten und Agentenzeit. Die Kosten berechnet Symphony mit deinen Preisen aus der
-  `model-costs.yml`. Eine Logs-Seite im Dashboard zeigt Statistiken, gesamt oder pro Repository.
+- **Board-driven:** the columns of your GitHub Project board drive the flow. Ordered by priority and age, with bounded
+  concurrency (overall and per column); open blockers are respected.
+- **Isolated workspaces:** one clone per issue under `~/symphony-workspaces`, reused on retries and deleted once the
+  issue is *Done*.
+- **Developer and reviewer:** roles per column. Before `Agent review` and `In review`, checks run (lint, static
+  analysis, tests); if they fail, the card stays and the agent fixes the problem.
+- **Issue commands:** a description that starts with `/refactoring` loads a centrally maintained audit skill that
+  measures a baseline, finds bugs and refactoring candidates and files sub-issues; `/refactor-safely` implements them
+  behavior-neutrally with tests as a safety net ([details](docs/usage.md#commands-in-the-issue-refactoring)).
+- **Autopilot (`/auto-code`):** an epic with `/auto-code docs/index.md` lets Symphony evolve a project continuously.
+  A planner agent derives waves of features, design, quality and maintenance tasks from the project description;
+  they start right away and are merged into `develop` after review and checks. Every few waves it stops with a report
+  and a release pull request to `main` ([details](docs/usage.md#autopilot-auto-code)).
+- **Tracker tools for the agent:** set the status, comment, open a pull request and (for audit and planner roles only)
+  create sub-issues. The GitHub token stays in the Symphony process; the agent never sees it.
+- **Robust:** retries with exponential backoff, stall detection; an agent is stopped when its issue changes on the board.
+- **Session-limit handling:** when the Claude subscription hits its limit, Symphony retries a few times and then waits
+  for the reset ([details](docs/usage.md#session-limit)).
+- **Live configuration:** `WORKFLOW.md` reloads without a restart; one instance can serve several repositories.
+- **Observable:** dashboard with JSON API and a per-agent execution trace (prompts, model calls, tool calls, phases,
+  tokens and cost), structured logs, one transcript per session, `--dry-run` to check the setup.
+- **Logs and cost per repository:** a running log of every run with tokens, model, estimated cost and agent time, with
+  statistics in the dashboard.
 
-## 🚀 Getting Started
+## 🚀 Getting started
 
-Du brauchst Node.js ≥ 26, git mit SSH-Zugriff auf GitHub, ein angemeldetes Claude Code und einen GitHub-Token mit den
-Scopes `repo` und `project`. Der Weg zum ersten Lauf in Kurzform:
+You need Node.js ≥ 26, git with SSH access to GitHub, a logged-in Claude Code and a GitHub token with the `repo` and
+`project` scopes.
 
 ```bash
 npm install
-cp .env.example .env    # Board-Nummer, Repository, Modell und Token eintragen
-npm run dry-run         # Einrichtung prüfen, startet keine Agenten
-npm start               # Symphony starten
+cp .env.example .env    # board number, repository, model and token
+npm run dry-run         # check the setup without starting agents
+npm start               # start Symphony
 ```
 
-Dazwischen legst du ein GitHub Project Board mit den Spalten `Backlog`, `Ready`, `In progress`, `Agent review`,
-`Blocked`, `In review` und `Done` an. Die ausführliche Anleitung steht in
-[docs/getting-started.md](docs/getting-started.md). Den Betrieb per Docker hinter Traefik beschreibt
-[docs/docker.md](docs/docker.md).
+In between, create a GitHub Project board with the columns `Backlog`, `Ready`, `In progress`, `Agent review`,
+`Blocked`, `In review` and `Done`. The step-by-step guide is [docs/getting-started.md](docs/getting-started.md);
+running it with Docker behind Traefik is described in [docs/docker.md](docs/docker.md).
 
 ## 📋 Usage
 
-Du schiebst ein Issue nach `Ready`. Ein Developer-Agent setzt es um und öffnet einen Pull Request. Nach bestandenen
-Checks prüft ein lesender Reviewer-Agent die Arbeit, danach landet die Karte in `In review`. Du mergst den Pull Request
-und schiebst die Karte nach `Done`. Mit Labels wie `Model: sonnet` und `Effort: high` wählst du Modell und Denkaufwand pro Issue, das Dashboard
-(`SYMPHONY_PORT`) zeigt laufende Agenten, Logs und Kosten.
+Move an issue to `Ready`. A developer agent implements it and opens a pull request. After the checks pass, a read-only
+reviewer agent reviews the work, then the card moves to `In review`. You merge the pull request and move the card to
+`Done`. Labels like `Model: sonnet` and `Effort: high` choose model and effort per issue; the dashboard
+(`SYMPHONY_PORT`) shows running agents, logs and cost.
 
-Alles Weitere steht in [docs/usage.md](docs/usage.md): Ablauf eines Issues, Eingreifen im Betrieb, Abhängigkeiten,
-Modellwahl, `repo-init`, Dashboard und API, Logs und Kosten, mehrere Repositories, Konfiguration, Sicherheit,
-Laravel Boost und Fehlerbehebung.
+Everything else is in [docs/usage.md](docs/usage.md): the life of an issue, intervening while it runs, dependencies,
+model choice, `repo-init`, dashboard and API, logs and cost, several repositories, configuration, security, Laravel
+Boost and troubleshooting.
 
-## 📁 Project Structure
+## 📁 Project structure
 
 ```
 symphony/
-├── WORKFLOW.md                 # Rollen, Checks, Prompt und Einstellungen (wird live neu geladen)
-├── hooks/laravel-env.sh        # after_create: eigene .env und SQLite-Datenbank pro Laravel-App (optional MySQL)
-├── hooks/laravel-db-drop.sh    # before_remove: löscht die MySQL-Datenbanken des Workspaces
-├── checks/laravel.sh           # Entry-Check vor Agent review und In review (Lint, Analyse, Tests)
-├── .claude/                    # Toolbox für alle Sessions, geladen als Plugin "symphony" (skills, agents, commands, hooks)
-├── .github/workflows/          # CI (npm run check) und automatisches Mergen der Agenten-Pull-Requests
-├── model-costs.yml             # Modellpreise für die Kostenschätzung (wird live neu geladen)
-├── Dockerfile                  # Image mit Node, PHP, Composer, git und SSH; läuft als Benutzer symphony
-├── docker-compose.yml          # Betrieb hinter Traefik: Labels, Volumes, Secret für den SSH-Key
-├── docker/                     # entrypoint.sh (Variablen prüfen, SSH-Key, git-Identität) und ssh_known_hosts
-├── .dockerignore               # hält .env, secrets/, Tests und Docs aus dem Build-Kontext
-├── .env.example                # Vorlage für .env (Board, Repository, Modell, Token, Grenzen)
-├── repo-init.ts                # interaktive Einrichtung der Repositories (Standard-Labels, Laravel-Boost-Issue)
-├── scripts/e2e/                # End-to-End-Test der Orchestrierung auf einem echten Board (npm run e2e)
-├── scripts/laravel-smoke/      # Integrationstest gegen eine echte Laravel-13/Filament-5-App (npm run test:laravel)
-├── scripts/push-history.sh     # lokale Historie per SSH in den Docker-Container eines Servers übertragen (docs/docker.md)
+├── WORKFLOW.md                 # roles, checks, prompt and settings (reloaded live)
+├── hooks/laravel-env.sh        # after_create: own .env and SQLite database per Laravel app (optional MySQL)
+├── hooks/laravel-db-drop.sh    # before_remove: drops the workspace's MySQL databases
+├── checks/laravel.sh           # entry check before Agent review and In review (lint, analysis, tests)
+├── .claude/                    # toolbox for all sessions, loaded as plugin "symphony" (skills, agents, commands, hooks)
+├── .github/workflows/          # CI (npm run check) and auto-merge of agent pull requests
+├── model-costs.yml             # model prices for the cost estimate (reloaded live)
+├── Dockerfile                  # image with Node, PHP, Composer, git and SSH; runs as user symphony
+├── docker-compose.yml          # deployment behind Traefik: labels, volumes, secret for the SSH key
+├── docker/                     # entrypoint.sh (checks variables, SSH key, git identity) and ssh_known_hosts
+├── .env.example                # template for .env (board, repository, model, token, limits)
+├── repo-init.ts                # interactive repository setup (standard labels, Laravel Boost issue)
+├── scripts/e2e/                # end-to-end test of the orchestration on a real board (npm run e2e)
+├── scripts/laravel-smoke/      # integration test against a real Laravel 13 / Filament 5 app (npm run test:laravel)
+├── scripts/push-history.sh     # copies the local history to a Symphony container on a server (docs/docker.md)
 ├── src/
-│   ├── cli.ts                  # Einstiegspunkt: Optionen, .env laden, Start
-│   ├── service.ts              # Start, Herunterfahren, Dry Run
-│   ├── log.ts                  # strukturierte key=value-Logs
-│   ├── workflow/               # WORKFLOW.md laden, Konfiguration, Templates, Live-Reload, Prüfung
-│   ├── tracker/                # Tracker-Schnittstelle und GitHub-Projects-Adapter samt Agenten-Tools und Auto-Merge
-│   ├── workspace/              # Workspaces pro Issue und Hooks
-│   ├── agent/                  # Claude-Code-Sessions über das Claude Agent SDK, Modellwahl per Label
-│   ├── laravel/                # Laravel-Apps erkennen, Laravel Boost pro Workspace vorbereiten
-│   ├── orchestrator/           # Abfragen, Starten, Abgleichen, Wiederholungen
-│   ├── history/                # Log pro Repository und Statistiken dazu
-│   ├── costs/                  # model-costs.yml lesen, Kosten berechnen
-│   ├── http/                   # Dashboard, Agent-Detailansicht (Execution Trace), Logs-Seite und JSON-API
-│   ├── repo-init/              # repo-init: Auswahlliste, GitHub-REST-Client, Standard-Labels, Boost-Issue
-│   └── util/                   # Hilfsfunktionen (.env, Pfade, Fehler, …)
-├── test/                       # Tests mit node:test
-└── docs/                       # Dokumentation (index.md als Einstieg)
+│   ├── cli.ts                  # entry point: options, .env, start
+│   ├── service.ts              # startup, shutdown, dry run
+│   ├── workflow/               # load WORKFLOW.md, config, templates, live reload, validation
+│   ├── tracker/                # tracker interface and GitHub Projects adapter with agent tools and auto-merge
+│   ├── workspace/              # per-issue workspaces and hooks
+│   ├── agent/                  # Claude Code sessions via the Claude Agent SDK, model and effort per label
+│   ├── laravel/                # detect Laravel apps, prepare Laravel Boost per workspace
+│   ├── orchestrator/           # polling, dispatch, reconciliation, retries
+│   ├── history/                # per-repository log and statistics
+│   ├── costs/                  # read model-costs.yml, compute cost
+│   ├── http/                   # dashboard, agent detail view, logs page and JSON API
+│   ├── repo-init/              # repo-init: picker, GitHub REST client, standard labels, Boost issue
+│   └── util/                   # helpers (.env, paths, errors, …)
+├── test/                       # tests with node:test
+└── docs/                       # documentation (start at docs/index.md)
 ```
 
 ## 📚 Documentation
 
-Die zentrale Übersicht ist [docs/index.md](docs/index.md).
+Start at [docs/index.md](docs/index.md).
 
-- [docs/getting-started.md](docs/getting-started.md): Einrichtung Schritt für Schritt
-- [docs/docker.md](docs/docker.md): Betrieb mit Docker hinter Traefik, also Einrichtung, Update, Backup, Fehlerbilder und Sicherheit
-- [docs/usage.md](docs/usage.md): Betrieb, Konfiguration und Fehlerbehebung
-- [docs/configuration.md](docs/configuration.md): alle Optionen der `WORKFLOW.md`, `$VARIABLE`-Verweise, Hooks und Prompt-Variablen
-- [docs/adapters/github-project.md](docs/adapters/github-project.md): GitHub-Projects-Adapter, also Einstellungen, Normalisierung, Agenten-Tools und Fehler
-- [docs/agent-claude.md](docs/agent-claude.md): Ablauf der Claude-Code-Sessions, Berechtigungen, Skills und Plugins, Laravel Boost, Zeitlimits und Kostenzählung
-- [docs/conformance.md](docs/conformance.md): Abweichungen von der Spezifikation und eigene Festlegungen
-- [docs/laravel-repositories.md](docs/laravel-repositories.md): Konventionen für Laravel-Repositories, also Agenten-Anweisungen, `.ai/`, Composer-Skripte, `.env.example`, `phpunit.xml` und Boost
-- [docs/e2e.md](docs/e2e.md): End-to-End-Test der Orchestrierung, also Szenario, Ablauf, Prüfungen und Run-Verzeichnis, sowie der Laravel-Integrationstest (`npm run test:laravel`)
+- [docs/getting-started.md](docs/getting-started.md): step-by-step setup
+- [docs/docker.md](docs/docker.md): running with Docker behind Traefik: setup, updates, backup, troubleshooting, security
+- [docs/usage.md](docs/usage.md): operation, configuration and troubleshooting
+- [docs/configuration.md](docs/configuration.md): every `WORKFLOW.md` option, `$VARIABLE` references, hooks and prompt variables
+- [docs/adapters/github-project.md](docs/adapters/github-project.md): the GitHub Projects adapter: settings, normalization, agent tools, errors
+- [docs/agent-claude.md](docs/agent-claude.md): Claude Code sessions, permissions, skills and plugins, Laravel Boost, timeouts, cost accounting
+- [docs/conformance.md](docs/conformance.md): differences from the specification and implementation-defined behavior
+- [docs/laravel-repositories.md](docs/laravel-repositories.md): conventions for Laravel repositories
+- [docs/e2e.md](docs/e2e.md): end-to-end test of the orchestration and the Laravel integration test
 
-Für die Entwicklung:
+## 🛠️ Development
 
 ```bash
-npm test            # Tests
-npm run typecheck   # TypeScript-Prüfung
-npm run check       # beides
-npm run e2e         # End-to-End-Test auf dem Test-Board (legt echte Issues an)
-npm run test:laravel # Laravel-Integration gegen eine echte App (braucht PHP 8.3+, Composer, Netz)
+npm test             # tests
+npm run typecheck    # TypeScript check
+npm run check        # both
+npm run e2e          # end-to-end test on a test board (creates real issues)
+npm run test:laravel # Laravel integration against a real app (needs PHP 8.3+, Composer, network)
 ```
 
-Die CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) führt `npm run check` mit Node 26 sowie einen Docker-Build
-mit Start-Test des Images für jeden Pull Request und jeden Push auf `main` aus. Ist sie für einen Pull Request der Symphony-Agenten (Branch `symphony/*`) grün, mergt
-[.github/workflows/automerge.yml](.github/workflows/automerge.yml) ihn per Squash, schließt die Issues, die er mit
-`Closes #…` nennt, und löscht den Branch. Symphony startet dann die Issues, die davon abhängen. Das Schließen
-übernimmt der Workflow selbst, weil GitHub `Closes #…` bei Merges durch den Actions-Token nicht auswertet; mergst du
-selbst, schließt GitHub die Issues wie gewohnt. Der Auto-Merge läuft immer in der Fassung von `main`: Ein Pull
-Request kann die Regeln für seinen eigenen Merge nicht ändern.
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs `npm run check` on Node 26 and a Docker build with a
+start test of the image for every pull request and every push to `main`. When it passes for a pull request from the
+Symphony agents (branch `symphony/*`), [.github/workflows/automerge.yml](.github/workflows/automerge.yml) squash-merges
+it, closes the issues it names with `Closes #…` and deletes the branch. Symphony then starts the issues that depend on
+them. The auto-merge always runs in the version from `main`, so a pull request cannot change the rules for its own merge.
 
-Ein Pull Request bleibt für dich offen, wenn
+A pull request stays open for you when
 
-- er selbst oder ein Issue, das er schließt, das Label `manual-merge` hat,
-- er kein Issue schließt,
-- er `.github/`, `package.json` oder `package-lock.json` ändert (CI, Skripte, Abhängigkeiten) oder mehr als 100 Dateien,
-- die CI fehlschlägt oder GitHub den Merge ablehnt, etwa wegen Konflikten mit `main`.
-
-Solche Issues bleiben in `In review` stehen. Entfernst du `manual-merge` später wieder, starte den letzten
-„Auto-merge“-Lauf im Actions-Tab neu, oder merge selbst. Für Nacharbeiten kommentiere im Issue und schiebe es zurück
-nach `Ready`.
+- it, or an issue it closes, has the label `manual-merge`,
+- it closes no issue,
+- it changes `.github/`, `package.json` or `package-lock.json` (CI, scripts, dependencies), or more than 100 files,
+- CI fails or GitHub rejects the merge, for example because of conflicts with `main`.
 
 ## 🔗 References
 
-- [Symphony Service Specification](https://github.com/openai/symphony/blob/main/SPEC.md) und die
-  [Referenzimplementierung](https://github.com/openai/symphony) (OpenAI, Apache-2.0)
-- [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) und
-  [Claude-Code-Einstellungen inkl. Sandbox](https://code.claude.com/docs/en/settings#sandbox-settings)
-- [GitHub Projects](https://docs.github.com/en/issues/planning-and-tracking-with-projects) und
-  [Projects über die API](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-api-to-manage-projects)
-- [GitHub Personal Access Tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
-- [LiquidJS](https://liquidjs.com/) (Template-Sprache des Prompts)
-- [Laravel Boost](https://laravel.com/docs/boost) und [Agent Skills](https://agentskills.io/what-are-skills)
-- [Claude-Code-Plugins](https://code.claude.com/docs/en/plugins) und [Skills](https://code.claude.com/docs/en/skills)
+- [Symphony Service Specification](https://github.com/openai/symphony/blob/main/SPEC.md) and the
+  [reference implementation](https://github.com/openai/symphony) (OpenAI, Apache-2.0)
+- [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk),
+  [Claude Code settings and sandbox](https://code.claude.com/docs/en/settings#sandbox-settings),
+  [plugins](https://code.claude.com/docs/en/plugins) and [skills](https://code.claude.com/docs/en/skills)
+- [Laravel Boost](https://laravel.com/docs/boost) and [Agent Skills](https://agentskills.io/what-are-skills)
+- [GitHub Projects](https://docs.github.com/en/issues/planning-and-tracking-with-projects) and
+  [the Projects API](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-api-to-manage-projects)
+- [LiquidJS](https://liquidjs.com/), the template language of the prompt
 
 ## 📄 License
 
-Noch keine Lizenz festgelegt (privates Projekt). Die verwendeten Pakete haben eigene Lizenzen; das Claude Agent SDK
-unterliegt den Nutzungsbedingungen von Anthropic.
+[MIT](LICENSE): fork it, change it, ship it. The packages used have their own licenses; the Claude Agent SDK is
+subject to Anthropic's terms of service.

@@ -1,20 +1,19 @@
-# Dokumentation
+# Documentation
 
-Zentrale Übersicht über alle Dokumente zu Symphony. Einen Überblick über das Projekt gibt die
-[README](../README.md).
+Central overview of all Symphony documents. For an overview of the project, see the [README](../README.md).
 
-## Einstieg
+## Getting started
 
-- [Getting Started](getting-started.md): Voraussetzungen, Installation, Board, Token, `.env`, Dry Run und Start
-- [Docker](docker.md): Betrieb per Docker Compose hinter Traefik: Einrichtung, Update, Backup, Fehlerbilder und Sicherheit
-- [Usage](usage.md): Ablauf eines Issues, Eingreifen im Betrieb, Modell- und Effort-Wahl, `repo-init`, Dashboard und API, Logs und
-  Kosten, mehrere Repositories, Laravel Boost, Sicherheit und Fehlerbehebung
+- [Getting Started](getting-started.md): requirements, installation, board, token, `.env`, dry run and start
+- [Docker](docker.md): running with Docker Compose behind Traefik: setup, updates, backup, common errors and security
+- [Usage](usage.md): the life of an issue, intervening while it runs, model and effort choice, `repo-init`, dashboard
+  and API, logs and cost, several repositories, Laravel Boost, security and troubleshooting
 
-## Referenz
+## Reference
 
-- [configuration.md](configuration.md): alle Optionen der `WORKFLOW.md`, `$VARIABLE`-Verweise, Hooks und Prompt-Variablen
-- [adapters/github-project.md](adapters/github-project.md): GitHub-Projects-Adapter, also Einstellungen, Normalisierung, Agenten-Tools und Fehler
-- [agent-claude.md](agent-claude.md): Ablauf der Claude-Code-Sessions, Berechtigungen, Skills und Plugins, Laravel Boost, Zeitlimits und Kostenzählung
-- [conformance.md](conformance.md): Abweichungen von der Spezifikation und eigene Festlegungen
-- [laravel-repositories.md](laravel-repositories.md): Konventionen für Laravel-Repositories (auf Englisch)
-- [e2e.md](e2e.md): End-to-End-Test der Orchestrierung sowie der Laravel-Integrationstest (`npm run test:laravel`)
+- [configuration.md](configuration.md): every `WORKFLOW.md` option, `$VARIABLE` references, hooks and prompt variables
+- [adapters/github-project.md](adapters/github-project.md): the GitHub Projects adapter: settings, normalization, agent tools and errors
+- [agent-claude.md](agent-claude.md): Claude Code sessions, permissions, skills and plugins, Laravel Boost, timeouts and cost accounting
+- [conformance.md](conformance.md): differences from the specification and implementation-defined behavior
+- [laravel-repositories.md](laravel-repositories.md): conventions for Laravel repositories
+- [e2e.md](e2e.md): end-to-end test of the orchestration and the Laravel integration test (`npm run test:laravel`)
