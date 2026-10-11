@@ -77,6 +77,8 @@ class FakeGithub {
   networkError: Error | null = null;
   /** Sub-issues by parent issue id, as the context query returns them; creating one appends to it. */
   subIssues = new Map<string, Json[]>();
+  /** References ("owner/repo#N") that are pull requests, not issues. */
+  pullRequests = new Set<string>();
   /** Repository labels by lowercase name. */
   labels = new Map<string, string>();
   /** Numbers handed out to created issues. */
@@ -155,7 +157,8 @@ class FakeGithub {
             data[`ref${index}`] = { issueOrPullRequest: null };
             errors.push({ type: 'NOT_FOUND', path: [`ref${index}`, 'issueOrPullRequest'], message: `no ${key}` });
           } else {
-            data[`ref${index}`] = { issueOrPullRequest: { __typename: 'Issue', id: `I_${key}`, number: Number(match[2]), state } };
+            const typename = this.pullRequests.has(key) ? 'PullRequest' : 'Issue';
+            data[`ref${index}`] = { issueOrPullRequest: { __typename: typename, id: `I_${key}`, number: Number(match[2]), state } };
           }
         }
         return { body: { data, ...(errors.length ? { errors } : {}) } };
@@ -174,17 +177,24 @@ class FakeGithub {
             },
           },
         };
-      case 'SymphonySubIssueContext':
+      case 'SymphonySubIssueContext': {
+        // Like GitHub, every child brings its own sub-issues; a test may set `subIssues` or `blockedBy` on a node itself.
+        const children = (this.subIssues.get(String(variables.issueId)) ?? []).map((child) => ({
+          blockedBy: { nodes: [] },
+          subIssues: { nodes: this.subIssues.get(String(child.id)) ?? [] },
+          ...child,
+        }));
         return {
           body: {
             data: {
               node: {
                 repository: { id: 'R_1', nameWithOwner: 'acme/app' },
-                subIssues: { nodes: this.subIssues.get(String(variables.issueId)) ?? [] },
+                subIssues: { nodes: children },
               },
             },
           },
         };
+      }
       case 'SymphonyLabels': {
         const data: Json = {};
         for (const match of this.lastQuery.matchAll(/l(\d+): label\(/g)) {
@@ -202,6 +212,8 @@ class FakeGithub {
         this.subIssues.set(String(variables.parentId), siblings);
         return { body: { data: { createIssue: { issue } } } };
       }
+      case 'SymphonyAddBlockedBy':
+        return { body: { data: { addBlockedBy: { issue: { number: 1 } } } } };
       case 'SymphonyAddProjectItem':
         return { body: { data: { addProjectV2ItemById: { item: { id: `PVTI_${variables.contentId}` } } } } };
       case 'SymphonyAddComment':
@@ -633,6 +645,107 @@ describe('github_project create_sub_issue', () => {
     assert.equal(tool.createsSubIssues, true);
     assert.equal(tool.mutates, true);
     assert.match(tool.description, /column "Human Review"/);
+  });
+
+  describe('under an epic (parent)', () => {
+    const epic = (number: number, extra: Json = {}): Json => ({ id: `I_epic${number}`, number, title: `Epic ${number}`, state: 'OPEN', url: 'u', projectItems: { nodes: [] }, ...extra });
+
+    it('creates the issue one level deeper and counts the whole tree for remaining', async () => {
+      const { github, run, ops } = await setup();
+      github.subIssues.set('I_A', [epic(7)]);
+      const result = await run({ title: 'Feature: invoices', parent: 7 });
+      assert.equal(dataOf(result).created, true);
+      assert.equal(dataOf(result).parent, 7);
+      assert.equal(dataOf(result).remaining, 3); // max 5, the epic and the new issue
+      assert.equal(ops('SymphonyCreateSubIssue')[0]?.variables.parentId, 'I_epic7');
+      assert.equal(github.subIssues.get('I_epic7')?.length, 1);
+      assert.equal(github.subIssues.get('I_A')?.length, 1, 'the root still has only the epic');
+    });
+
+    it('finds a duplicate among the issues of the same epic only', async () => {
+      const { github, run, ops } = await setup();
+      github.subIssues.set('I_A', [epic(7), epic(9)]);
+      github.subIssues.set('I_epic7', [{ id: 'I_c', number: 8, title: 'Same', state: 'OPEN', url: 'u', projectItems: { nodes: [] } }]);
+      const again = await run({ title: 'same', parent: 7 });
+      assert.deepEqual([dataOf(again).created, dataOf(again).number], [false, 8]);
+      const other = await run({ title: 'Same', parent: 9 });
+      assert.equal(dataOf(other).created, true);
+      assert.equal(ops('SymphonyCreateSubIssue').length, 1);
+    });
+
+    it('refuses a parent that is not an open sub-issue of the session issue, without a mutation', async () => {
+      const { github, run, ops } = await setup();
+      github.subIssues.set('I_A', [epic(7, { state: 'CLOSED' })]);
+      for (const parent of [7, 99]) {
+        const result = await run({ title: 'X', parent });
+        assert.equal(result.ok === false ? result.error.category : null, 'invalid_argument', String(parent));
+      }
+      assert.equal(ops('SymphonyCreateSubIssue').length, 0);
+    });
+
+    it('counts the open sub-issues of the sub-issues against max_sub_issues', async () => {
+      const { github, run } = await setup();
+      const grandchildren = { nodes: [{ state: 'OPEN' }, { state: 'OPEN' }, { state: 'CLOSED' }] };
+      github.subIssues.set('I_A', [epic(7, { subIssues: grandchildren })]);
+      const refused = await run({ title: 'Y', parent: 7 }, 3); // the epic and two open issues
+      assert.equal(refused.ok === false ? refused.error.category : null, 'limit_reached');
+      const allowed = await run({ title: 'Y', parent: 7 }, 4);
+      assert.equal(dataOf(allowed).remaining, 0);
+    });
+  });
+
+  describe('blocked_by', () => {
+    it('sets the relationships of a new issue, once per blocker', async () => {
+      const { github, run, ops } = await setup();
+      github.references.set('acme/app#7', 'OPEN');
+      github.references.set('acme/app#8', 'CLOSED');
+      const result = await run({ title: 'Feature: B', blocked_by: [7, 8, 7] });
+      assert.equal(dataOf(result).created, true);
+      assert.deepEqual([dataOf(result).blocked_by, dataOf(result).unknown_blockers], [[7, 8], []]);
+      assert.deepEqual(
+        ops('SymphonyAddBlockedBy').map((r) => r.variables),
+        [
+          { issueId: 'I_new100', blockingIssueId: 'I_acme/app#7' },
+          { issueId: 'I_new100', blockingIssueId: 'I_acme/app#8' },
+        ],
+      );
+    });
+
+    it('reports numbers that are no issue and skips itself and relationships that exist', async () => {
+      const { github, run, ops } = await setup();
+      github.references.set('acme/app#7', 'OPEN');
+      github.references.set('acme/app#9', 'OPEN');
+      github.pullRequests.add('acme/app#9');
+      github.subIssues.set('I_A', [{ id: 'I_old', number: 20, title: 'Existing', state: 'OPEN', url: 'u', projectItems: { nodes: [] }, blockedBy: { nodes: [{ number: 7 }] } }]);
+      const result = await run({ title: 'Existing', blocked_by: [7, 9, 50, 20] });
+      assert.equal(dataOf(result).created, false);
+      assert.deepEqual([dataOf(result).blocked_by, dataOf(result).unknown_blockers], [[7], [9, 50]]);
+      assert.equal(ops('SymphonyAddBlockedBy').length, 0);
+    });
+
+    it('sets the blockers an earlier call missed when it finds the issue again', async () => {
+      const { github, run, ops } = await setup();
+      github.references.set('acme/app#7', 'OPEN');
+      github.subIssues.set('I_A', [{ id: 'I_old', number: 20, title: 'Retry', state: 'OPEN', url: 'u', projectItems: { nodes: [] } }]);
+      await run({ title: 'Retry', blocked_by: [7] });
+      assert.deepEqual(ops('SymphonyAddBlockedBy')[0]?.variables, { issueId: 'I_old', blockingIssueId: 'I_acme/app#7' });
+    });
+
+    it('keeps the created issue and warns when a relationship cannot be set', async () => {
+      const { github, run } = await setup();
+      github.references.set('acme/app#7', 'OPEN');
+      github.overrides.set('SymphonyAddBlockedBy', () => ({ body: { data: null, errors: [{ type: 'FORBIDDEN', message: 'no permission', path: ['addBlockedBy'] }] } }));
+      const result = await run({ title: 'W', blocked_by: [7] });
+      assert.equal(dataOf(result).created, true);
+      assert.deepEqual(dataOf(result).blocked_by, []);
+      assert.match(String((dataOf(result).warnings as string[])[0]), /could not set "blocked by #7": .*no permission/);
+    });
+
+    it('adds neither parent nor blocked_by to the result of a plain call', async () => {
+      const { run } = await setup();
+      const data = dataOf(await run({ title: 'Plain' }));
+      assert.equal('parent' in data || 'blocked_by' in data || 'unknown_blockers' in data, false);
+    });
   });
 
   it('rejects a sub_issue_status that is an active or terminal column', () => {

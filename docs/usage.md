@@ -173,6 +173,9 @@ automatisch, sobald alles erledigt ist. Drei Arten von Abhängigkeiten zählen:
 | Text im Issue | In der Beschreibung, z. B. `blocked by #12`, `blocked #12` oder `Blocked by: #12, #13`. `#N` meint dasselbe Repository, andere gehen als `owner/repo#N`. |
 | Sub-Issues | In der Seitenleiste unter **Sub-issues**. Das Parent-Issue wartet, bis alle Sub-Issues geschlossen sind. Ausnahme: Ein Issue, dessen Beschreibung mit einem [Befehl](#befehle-im-issue-refactoring) beginnt, wartet nicht, denn bei ihm sind die Sub-Issues das Ergebnis des Laufs. Eine Rolle mit `wait_for_sub_issues` (der [Autopilot](#autopilot-auto-code)) wartet trotzdem: Sie startet erst wieder, wenn ihre Sub-Issues geschlossen sind. |
 
+Die Agenten-Befehle `/concept` setzen beide Arten zugleich: die Relationship (`blocked_by` an `create_sub_issue`) und die
+Zeile `Blocked by #N` im Text. Beides zählt als eine Abhängigkeit.
+
 Erledigt ist eine Abhängigkeit, wenn das Issue **geschlossen** ist; bei einem referenzierten Pull Request, wenn er
 gemergt oder geschlossen ist. Agenten schließen keine Issues selbst. Eine Abhängigkeit löst sich also, sobald du den
 zugehörigen Pull Request mit `Closes #N` mergst. So baut das nächste Issue auf gemergtem Code auf. Referenzen auf nicht
@@ -187,13 +190,14 @@ leeren Zeile** der Beschreibung `/<name>` (optional mit Argumenten), lädt der A
 Issue-Text bleibt kurz, die Anleitung steckt im Skill. Technik und Auswahlregeln:
 [configuration.md](configuration.md#issue-commands).
 
-Symphony liefert drei Befehle mit:
+Symphony liefert vier Befehle mit:
 
 | Befehl | Zweck |
 |---|---|
 | `/refactoring [Scope]` | Audit eines Laravel-/Filament-Repositories: Kontext, Baseline, Bugs und Refactoring-Kandidaten. Das Ergebnis sind Sub-Issues. |
 | `/refactor-safely` | Verhaltensneutral umbauen, Tests als Sicherheitsnetz. Steht in der ersten Zeile jedes Refactoring-Sub-Issues. |
 | `/auto-code [Beschreibung] [wave=3] [checkpoint=5] [issue-models=auto]` | [Autopilot](#autopilot-auto-code): entwickelt das Repository aus seiner Projektbeschreibung fortlaufend weiter, in Wellen von Sub-Issues, die sofort umgesetzt werden. |
+| `/concept <Pfad> [issue-models=auto]` | [Konzept zu Backlog](#konzept-zu-backlog-concept): zerlegt ein Konzept (Markdown-Datei) in Epics und Sub-Issues mit Abhängigkeiten sowie Model- und Effort-Labels. Alles landet im Backlog. |
 
 ### Ablauf des Audits
 
@@ -272,7 +276,7 @@ liefern ([Kriterien](../.claude/skills/auto-code/ideation.md)).
 3. **Env der Instanz:** `SYMPHONY_BASE_BRANCH=develop` (Agenten klonen, branchen und öffnen PRs gegen `develop`) und
    `SYMPHONY_AUTO_MERGE=true` (Symphony merged freigegebene PRs in `develop`). Danach Symphony neu starten.
 4. **Labels:** `npm run repo-init` → *Standard labels* legt `auto-code`, `feature`, `design`, `quality`, `maintenance`
-   und `manual-merge` an.
+   und `manual-merge` an, dazu `concept` und `epic` für [`/concept`](#konzept-zu-backlog-concept).
 5. **Epic:** ein Issue, z. B. „Autopilot“, mit der Beschreibung `/auto-code docs/index.md` (optional `wave=3
    checkpoint=5 issue-models=auto`), nach **Ready** schieben. Text unter der Befehlszeile gilt als Teil des Auftrags (z. B. Schwerpunkte).
 
@@ -335,6 +339,78 @@ ebenfalls gemergt in `develop`. Nach `main` kommt nur, was du per Release-PR üb
   Reviewer-Läufe pro Sub-Issue. Bremsen: kleinere Wellen (`wave=2`), häufigere Checkpoints, wenige parallele Agenten,
   ein günstigeres Modell für die Umsetzung (`CLAUDE_MODEL=sonnet`).
 - Der Planer sieht die Oberfläche nicht. Design-Issues schreibt er deshalb mit konkreten, testbaren Kriterien.
+
+## Konzept zu Backlog: /concept
+
+Mit `/concept <Pfad>` wird aus einem Konzept ein Arbeitsplan auf dem Board. Du schreibst das Konzept als Markdown-Datei
+ins Repository (z. B. `docs/index.md`), legst ein Issue mit der Beschreibung `/concept docs/index.md` an und schiebst es
+nach **Ready**. Die Rolle `analyst` (`opus`, nur lesend, keine Entry-Checks) liest das Konzept, prüft, was der Code schon
+kann, und legt zwei Ebenen von Issues an:
+
+```
+#10 /concept docs/index.md                      → In review, wenn der Plan steht
+├─ #11 Epic: Benutzerverwaltung                 Backlog · Labels epic, concept
+│  ├─ #13 Feature: Anmeldung                    Backlog · concept, feature, Effort: high, Model: sonnet
+│  └─ #14 Feature: Rollen und Rechte            Backlog · … Effort: xhigh, Model: opus · blocked by #13
+└─ #12 Epic: Abrechnung                         Backlog
+   └─ #15 Feature: Rechnung anlegen             Backlog · … blocked by #14
+```
+
+Jedes Issue bekommt Akzeptanzkriterien, den Bezug zum Konzeptabschnitt, Tests, **Abhängigkeiten** (GitHub-Relationship
+und Zeile `Blocked by #N`), eine Kategorie (`feature`, `design`, `quality`, `maintenance`), genau ein `Effort: …`-Label und
+ein `Model: …`-Label. Alle landen in **Backlog** (`tracker.provider.sub_issue_status`); sie starten erst, wenn du sie
+nach **Ready** schiebst. Die Anleitung steht im Skill [`concept`](../.claude/skills/concept/SKILL.md), der Zuschnitt in
+[breakdown.md](../.claude/skills/concept/breakdown.md).
+
+### Einrichten
+
+1. **Konzept:** eine Markdown-Datei auf dem Basis-Branch (`SYMPHONY_BASE_BRANCH`, sonst der Default-Branch), denn dort
+   klont der Agent. Relativ verlinkte `.md`-Dateien liest er eine Ebene tief mit. Gut sind Ziel, Rollen, Funktionsbereiche,
+   Abläufe, Nicht-Ziele und offene Fragen.
+2. **Labels:** `npm run repo-init` → *Standard labels* legt `concept`, `epic`, die `Model: …`- und `Effort: …`-Labels sowie
+   die Kategorien an. Fehlt ein Label, legt der Agent das Issue ohne an und sagt es im Bericht.
+3. **Issue:** Beschreibung `/concept docs/index.md`, optional `issue-models=auto|opus|sonnet|haiku|off` (Standard
+   `auto`) und darunter Text mit Schwerpunkten oder Ausschlüssen. Danach nach **Ready**.
+
+Prüfen mit `npm run dry-run`: Das Issue erscheint mit `role=analyst` und `↳ command /concept → symphony:concept`.
+
+### Ablauf
+
+1. Der Agent liest das Konzept und den Stand des Repositories und ordnet jeden Bereich ein (vorhanden, teilweise, fehlt).
+2. Er schneidet Epics (2 bis 10 Issues, fachlich abgeschlossen) und Issues (einzeln mergbar, Größe S oder M) und ordnet sie
+   nach Abhängigkeiten. Jede Anforderung des Konzepts landet in einem Issue oder unter „Nicht angelegt“; Lücken werden
+   Fragen, keine erfundenen Issues.
+3. Er postet den Kommentar **`## Konzept-Plan`**, **bevor** er etwas anlegt: Baum, Labels, Reihenfolge und eine Abdeckungsliste.
+4. Er legt Epics und Issues an, Blocker zuerst. Ein Epic entsteht, wenn sein erstes Issue dran ist.
+5. Er postet **`## Konzept-Bericht`** mit dem Baum samt Issue-Nummern, dem Grund für Modell und Effort je Issue, „Nicht
+   angelegt“, offenen Fragen und Hinweisen. Das Konzept-Issue geht nach **In review**.
+
+Die Labels richten sich nach Aufwand und Risiko ([Tabellen](../.claude/skills/concept/breakdown.md#labels)): `Effort: low`
+für Texte und Konfiguration, `medium` für kleine, `high` für mittlere Aufgaben, `xhigh` bei Datenmodell, Rechten, Geld oder
+Migrationen. `Effort: max` vergibt der Agent nicht. Mit `issue-models=auto` wählt er `Model: haiku`, `sonnet` oder
+`opus`; ein fester Wert setzt dasselbe Modell an alle Issues, `off` lässt die Modell-Labels weg.
+
+### Danach
+
+| Du willst | So geht es |
+|---|---|
+| ein Issue umsetzen lassen | Issue von **Backlog** nach **Ready** schieben. Hat es offene Blocker, wartet es dort und startet, sobald sie geschlossen sind (Pull Request gemergt). |
+| ein Issue streichen oder ändern | Im Backlog schließen oder bearbeiten, bevor es nach Ready geht. |
+| das Konzept erweitern | Konzept ändern und committen (auf den Basis-Branch), Wünsche als Kommentar im Konzept-Issue, das Issue zurück nach **Ready**. Der Agent macht einen **Nachtrag** und legt nur an, was im Bericht fehlt. |
+| einen Abbruch beheben | Bricht ein Lauf ab, setzt Symphony ihn fort (oder du schiebst das Issue zurück nach **Ready**). Der Agent übernimmt den Plan-Kommentar und legt ohne Duplikate nur Fehlendes an: Derselbe Titel unter demselben Epic liefert das vorhandene Issue zurück. |
+
+Die **Epics nicht nach Ready schieben**: Sie sind Container. Ein Epic mit offenen Sub-Issues wird ohnehin nicht gestartet.
+Schließe es von Hand, wenn alle Sub-Issues erledigt sind.
+
+### Grenzen
+
+- Höchstens `roles.analyst.max_sub_issues` (Standard 60) offene Issues gleichzeitig; Epics zählen mit, ebenso die Issues
+  darin. Was nicht mehr hineinpasst, steht im Bericht unter „Nicht angelegt“. Sind Issues erledigt und geschlossen, holt
+  ein Nachtrag den Rest nach.
+- Abhängigkeiten zeigen nie auf ein Epic, sondern auf konkrete Issues, auch über Epics hinweg, nie im Kreis.
+- Der Agent ändert nichts im Repository und sieht die Oberfläche nicht; Design-Issues bekommen deshalb konkrete Kriterien.
+- Kosten: ein Lauf pro Konzept und Nachtrag (`roles.analyst.claude.max_budget_usd`, Standard 20 $), dazu später die
+  Läufe der Issues, die du freigibst.
 
 ## Fortsetzungen und Pausieren
 

@@ -28,7 +28,10 @@ export interface RoleConfig {
   commands: string[] | null;
   /** False skips the `checks.on_enter` scripts for this role's status changes (`may_move_to` still applies). */
   runChecks: boolean;
-  /** Sub-issues this role may have open under its issue at once; null = the role gets no `create_sub_issue` tool. */
+  /**
+   * Sub-issues this role may have open under its issue at once, counting the sub-issues of those (`create_sub_issue`
+   * with `parent`); null = the role gets no `create_sub_issue` tool.
+   */
   maxSubIssues: number | null;
   /**
    * Board column for the sub-issues this role creates, overriding `tracker.provider.sub_issue_status`; null keeps

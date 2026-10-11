@@ -7,6 +7,7 @@ import { assertNoGraphqlErrors } from './client.ts';
 import { autoMerge } from './merge.ts';
 import type { ProjectMeta, SelectOption } from './normalize.ts';
 import {
+  ADD_BLOCKED_BY_MUTATION,
   ADD_COMMENT_MUTATION,
   ADD_PROJECT_ITEM_MUTATION,
   CREATE_PULL_REQUEST_MUTATION,
@@ -15,6 +16,7 @@ import {
   REPOSITORY_QUERY,
   SET_STATUS_MUTATION,
   SUB_ISSUE_CONTEXT_QUERY,
+  referenceStatesQuery,
   repositoryLabelsQuery,
 } from './queries.ts';
 import { KIND } from './settings.ts';
@@ -84,6 +86,10 @@ function findOption(meta: ProjectMeta, name: string): SelectOption | undefined {
 /** Titles are compared without case and with collapsed whitespace, so a retry with a re-typed title finds its sub-issue. */
 function titleKey(title: unknown): string {
   return String(title ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function isOpen(issue: Json): boolean {
+  return issue.state !== 'CLOSED';
 }
 
 /** Runs a tool body, turning any exception into a structured failure the agent can read. */
@@ -271,6 +277,8 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
   /**
    * Creates sub-issues of the session's issue, one at a time per session. The limit and the duplicate check read the
    * issue's current sub-issues from GitHub on every call, so they hold across retries and continuation sessions.
+   * With `parent` the issue becomes a sub-issue of one of those sub-issues (an epic): two levels, never deeper. The
+   * limit counts the whole tree, so `parent` cannot be used to get around it.
    */
   const subIssueQueue = new SerialQueue();
   const createSubIssue: AgentToolSpec = {
@@ -279,13 +287,19 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
       'Create a sub-issue of the issue this session is working on, in the same repository, and put it on the project ' +
       `board in the column "${adapter.settings.subIssueStatus}" (unless your role names another one; the result's ` +
       'status says where it landed). ' +
-      'Refer to an earlier sub-issue with "Blocked by #<number>" in the body to make one wait for another. ' +
-      'If an open sub-issue with the same title already exists it is returned instead of creating a duplicate. ' +
+      'Pass parent (the number of an open sub-issue you created earlier, e.g. an epic) to create it one level deeper ' +
+      'under that sub-issue instead. ' +
+      'Pass blocked_by (issue numbers in the same repository) to make it wait for them: this sets GitHub\'s "blocked by" ' +
+      'relationship; also write "Blocked by #<number>" in the body. Create the blocking issues first. ' +
+      'If an open sub-issue with the same title already exists under the same parent it is returned instead of creating ' +
+      'a duplicate (its missing blockers are still set). ' +
       'Labels must already exist in the repository; unknown ones are reported in unknown_labels and skipped.',
     inputSchema: {
       title: z.string().min(1).max(256).describe('Issue title'),
       body: z.string().max(60_000).optional().describe('Issue description (GitHub-flavored Markdown)'),
       labels: z.array(z.string().min(1)).max(10).optional().describe('Names of existing repository labels, e.g. ["bug"]'),
+      parent: z.number().int().positive().optional().describe('Number of an open sub-issue of this session\'s issue to create the new issue under'),
+      blocked_by: z.array(z.number().int().positive()).max(20).optional().describe('Numbers of issues in the same repository the new issue waits for'),
     },
     mutates: true,
     createsSubIssues: true,
@@ -298,10 +312,31 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
 
           const response = await client.request<Json>(SUB_ISSUE_CONTEXT_QUERY, { issueId: ref.issueId });
           assertNoGraphqlErrors(response.errors);
-          const parent = obj(obj(response.data)?.node);
-          const repositoryId = obj(parent?.repository)?.id;
+          const root = obj(obj(response.data)?.node);
+          const repositoryId = obj(root?.repository)?.id;
           if (typeof repositoryId !== 'string') return fail('not_found', `cannot read repository ${ref.repository} of the issue`);
-          const open = nodes(parent?.subIssues).filter((sub) => sub.state !== 'CLOSED');
+          const children = nodes(root?.subIssues);
+          // The limit counts the whole tree: the open sub-issues and the open sub-issues of those (an epic's issues).
+          const used = children.filter(isOpen).length + children.reduce((sum, child) => sum + nodes(child.subIssues).filter(isOpen).length, 0);
+
+          // Where the new issue goes: under the session's issue, or under one of its open sub-issues (`parent`).
+          const parentNumber = typeof args.parent === 'number' ? args.parent : null;
+          let parentId = ref.issueId;
+          let siblings = children;
+          if (parentNumber !== null) {
+            const epic = children.find((child) => child.number === parentNumber && isOpen(child));
+            if (epic === undefined || typeof epic.id !== 'string') {
+              return fail(
+                'invalid_argument',
+                `parent #${parentNumber} is not an open sub-issue of ${ref.repository}#${ref.number}; create it first, without parent`,
+              );
+            }
+            const epicContext = await client.request<Json>(SUB_ISSUE_CONTEXT_QUERY, { issueId: epic.id });
+            assertNoGraphqlErrors(epicContext.errors);
+            parentId = epic.id;
+            siblings = nodes(obj(obj(epicContext.data)?.node)?.subIssues);
+          }
+          const open = siblings.filter(isOpen);
 
           const columnName = context.subIssueStatus ?? adapter.settings.subIssueStatus;
           const { option: column, meta } = await statusOption(columnName);
@@ -336,7 +371,56 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
               return false;
             }
           };
-          const result = (created: boolean, issue: Json, onBoard: boolean, unknownLabels: string[], used: number): ToolResult =>
+          /**
+           * Sets the "blocked by" relationships of `issue` (GitHub's own, next to the text line in the body). Numbers that
+           * are no issue of this repository (a typo, a pull request) are reported, not set. Failures are warnings.
+           */
+          const requested = Array.isArray(args.blocked_by) ? args.blocked_by.map(Number) : [];
+          const linkBlockers = async (issue: Json): Promise<{ linked: number[]; unknown: number[] }> => {
+            const linked: number[] = [];
+            const unknown: number[] = [];
+            try {
+              const present = new Set(nodes(issue.blockedBy).map((blocker) => blocker.number));
+              const numbers = [...new Set(requested)].filter((number) => number !== issue.number);
+              if (numbers.length === 0) return { linked, unknown };
+              const { query, variables } = referenceStatesQuery(numbers.map((number) => ({ repository: ref.repository, number })));
+              const found = await client.request<Json>(query, variables);
+              // Unknown numbers come back as NOT_FOUND with a null entry.
+              assertNoGraphqlErrors(found.errors, (error) => error.type === 'NOT_FOUND' && String(error.path?.[0] ?? '').startsWith('ref'));
+              for (const [index, number] of numbers.entries()) {
+                const target = obj(obj(obj(found.data)?.[`ref${index}`])?.issueOrPullRequest);
+                if (target === null || target.__typename !== 'Issue' || typeof target.id !== 'string') {
+                  unknown.push(number);
+                  continue;
+                }
+                if (!present.has(number)) {
+                  try {
+                    const added = await client.request<Json>(ADD_BLOCKED_BY_MUTATION, { issueId: String(issue.id), blockingIssueId: target.id });
+                    assertNoGraphqlErrors(added.errors);
+                  } catch (error) {
+                    warnings.push(`could not set "blocked by #${number}": ${errorMessage(error)}; call create_sub_issue again with the same title to retry`);
+                    continue;
+                  }
+                }
+                linked.push(number);
+              }
+            } catch (error) {
+              warnings.push(`could not set the "blocked by" relationships: ${errorMessage(error)}; call create_sub_issue again with the same title to retry`);
+            }
+            return { linked, unknown };
+          };
+          /** What `parent` and `blocked_by` add to the result; nothing for a call without them. */
+          const relations = async (issue: Json): Promise<Json> => {
+            const extra: Json = {};
+            if (parentNumber !== null) extra.parent = parentNumber;
+            if (requested.length > 0) {
+              const { linked, unknown } = await linkBlockers(issue);
+              extra.blocked_by = linked;
+              extra.unknown_blockers = unknown;
+            }
+            return extra;
+          };
+          const result = (created: boolean, issue: Json, onBoard: boolean, unknownLabels: string[], count: number, extra: Json): ToolResult =>
             ok({
               created,
               number: issue.number ?? null,
@@ -345,17 +429,18 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
               status: column?.name ?? null,
               on_board: onBoard,
               unknown_labels: unknownLabels,
-              remaining: Math.max(0, max - used),
+              remaining: Math.max(0, max - count),
+              ...extra,
               ...(warnings.length > 0 ? { warnings } : {}),
             });
 
           const existing = open.find((sub) => titleKey(sub.title) === titleKey(title));
           if (existing !== undefined) {
-            const onBoard = await placeOnBoard(String(existing.id), nodes(obj(existing.projectItems)));
-            return result(false, existing, onBoard, [], open.length);
+            const onBoard = await placeOnBoard(String(existing.id), nodes(existing.projectItems));
+            return result(false, existing, onBoard, [], used, await relations(existing));
           }
-          if (open.length >= max) {
-            return fail('limit_reached', `this issue already has ${open.length} open sub-issues (limit ${max}); put the rest into the report instead`);
+          if (used >= max) {
+            return fail('limit_reached', `this issue already has ${used} open sub-issues (limit ${max}); put the rest into the report instead`);
           }
 
           const unknownLabels: string[] = [];
@@ -375,7 +460,7 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
 
           const created = await client.request<Json>(CREATE_SUB_ISSUE_MUTATION, {
             repositoryId,
-            parentId: ref.issueId,
+            parentId,
             title,
             body: typeof args.body === 'string' ? args.body : null,
             labelIds,
@@ -384,7 +469,7 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
           const issue = obj(obj(obj(created.data)?.createIssue)?.issue);
           if (issue === null || typeof issue.id !== 'string') return fail('tracker_response', 'GitHub created no issue');
           const onBoard = await placeOnBoard(issue.id, []);
-          return result(true, issue, onBoard, unknownLabels, open.length + 1);
+          return result(true, issue, onBoard, unknownLabels, used + 1, await relations(issue));
         }),
       ),
   };

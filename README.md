@@ -57,8 +57,12 @@ und Token stehen in der **`.env`**. Symphony ist eine Implementierung der
   Wartungsaufgaben ab. Diese starten sofort und landen nach Review und Checks automatisch gemergt auf `develop`. Alle
   paar Wellen hält er an, mit Bericht und Release-PR nach `main`. Steuern lässt er sich über Kommentare im Epic.
   ([Details](docs/usage.md#autopilot-auto-code))
-- **Tracker-Tools für den Agenten:** Status setzen, kommentieren, Pull Request öffnen und (nur für Audit- und
-  Planer-Rollen) Sub-Issues anlegen. Der GitHub-Token bleibt dabei im Symphony-Prozess, der Agent sieht ihn nie.
+- **Konzept zu Backlog (`/concept`):** Ein Issue mit `/concept docs/index.md` lässt einen Konzept-Agenten die
+  Markdown-Datei lesen und daraus Epics mit Sub-Issues anlegen: mit Abhängigkeiten (`blocked by` als GitHub-Relationship
+  und im Text), Kategorie sowie passenden `Model:`- und `Effort:`-Labels. Alles landet im Backlog; du schiebst die
+  Issues einzeln nach *Ready*. ([Details](docs/usage.md#konzept-zu-backlog-concept))
+- **Tracker-Tools für den Agenten:** Status setzen, kommentieren, Pull Request öffnen und (nur für Audit-, Planer- und
+  Konzept-Rollen) Sub-Issues anlegen, auf Wunsch unter einem Epic und mit Abhängigkeiten. Der GitHub-Token bleibt dabei im Symphony-Prozess, der Agent sieht ihn nie.
 - **Robust:** Wiederholungen mit exponentiellem Backoff, Erkennung hängender Sessions. Ändert sich das Board während
   ein Agent läuft, wird er gestoppt.
 - **Session-Limit-Handling:** Erreicht das Claude-Abonnement sein Limit, wiederholt Symphony ein paar Mal und wartet
