@@ -256,6 +256,10 @@ A pull request stays open for you when
   [the Projects API](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-api-to-manage-projects)
 - [LiquidJS](https://liquidjs.com/), the template language of the prompt
 
+## 🤝 Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately, see [SECURITY.md](SECURITY.md).
+
 ## 📄 License
 
 [MIT](LICENSE): fork it, change it, ship it. The packages used have their own licenses; the Claude Agent SDK is
