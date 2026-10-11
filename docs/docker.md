@@ -27,7 +27,7 @@ All steps run on the server, except step 4 (local).
 ### 1. Clone the repository
 
 ```bash
-git clone git@github.com:cooolinho/symphony.git
+git clone git@github.com:YOUR_USERNAME/symphony.git
 cd symphony
 ```
 

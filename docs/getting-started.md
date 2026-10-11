@@ -41,7 +41,7 @@ npm install
 
    The bundled `WORKFLOW.md` expects exactly these names. The dry run (step 6) reports every column missing from the
    board (`unknown board column`).
-3. Note the **board number** from the URL, e.g. `10` from `https://github.com/users/cooolinho/projects/10`.
+3. Note the **board number** from the URL, e.g. `10` from `https://github.com/users/yourname/projects/10`.
 4. Add issues: on the board via **+ Add item** and then `#` for an issue of your repository, or in an issue's sidebar
    under **Projects**. Symphony only works on real issues, not on drafts or pull requests.
 5. Optional: create dependencies and sub-issues. Symphony starts an issue only once everything it depends on is done.
