@@ -105,7 +105,7 @@ they create are sub-issues of that issue (`create_sub_issue`).
 | `set_status` | `status` | yes | Moves the board item; the name is matched case-insensitively. An unknown name returns the valid options. Guarded: see below. Entering `auto_merge.on_enter` triggers the [auto-merge](#auto-merge); the result then carries `auto_merge` and the final `status`. |
 | `add_comment` | `body` | yes | Posts a comment on the issue; returns its URL |
 | `open_pull_request` | `head`, `title`, `body?`, `base?`, `draft?` | yes | Opens a PR from an already pushed branch (base defaults to `base_branch`, else the default branch). An open PR for the same branch is returned instead of a duplicate (`created: false`). |
-| `create_sub_issue` | `title`, `body?`, `labels?` | yes | Creates a sub-issue of the session's issue in the same repository, adds it to the board in the `sub_issue_status` column (the role's, else the provider's) and returns `{created, number, identifier, url, status, on_board, unknown_labels, remaining, warnings?}`. Only offered to [roles](../configuration.md#roles) with `max_sub_issues`. See below. |
+| `create_sub_issue` | `title`, `body?`, `labels?`, `parent?`, `blocked_by?` | yes | Creates a sub-issue of the session's issue (or, with `parent`, of one of its open sub-issues) in the same repository, adds it to the board in the `sub_issue_status` column (the role's, else the provider's) and returns `{created, number, identifier, url, status, on_board, unknown_labels, remaining, warnings?}`; with `parent` it also returns `parent`, with `blocked_by` also `blocked_by` and `unknown_blockers`. Only offered to [roles](../configuration.md#roles) with `max_sub_issues`. See below. |
 
 `set_status` declares its target column (`transitionTarget`), so Symphony's
 [transition guard](../configuration.md#transition-guard) checks every call before the mutation is sent: terminal
@@ -119,7 +119,18 @@ the issue is added to the board and its status is set to `sub_issue_status`. The
   with collapsed whitespace) is returned with `created: false` instead of a duplicate; if it is not on the board
   (a previous call failed half-way), it is added. A sub-issue that is already on the board keeps its column.
 - The limit comes from GitHub, not from a counter: with `max_sub_issues` open sub-issues the call fails with
-  `limit_reached`. Closed sub-issues do not count, so the limit holds across retries and continuation sessions.
+  `limit_reached`. Closed sub-issues do not count, so the limit holds across retries and continuation sessions. The
+  count covers the whole tree (see `parent`), so the limit cannot be got around by nesting.
+- **`parent`** is the number of an **open sub-issue of the session's issue** (an epic created earlier); the new issue is
+  created under it, so the tree has two levels and never more. The duplicate check then compares titles among that
+  parent's open sub-issues. A parent that is not an open direct sub-issue fails with `invalid_argument` before any
+  mutation. `remaining` and the limit count the open sub-issues of the session's issue plus the open sub-issues of those.
+- **`blocked_by`** (up to 20 numbers of issues in the same repository) sets GitHub's *blocked by* relationship
+  (`addBlockedBy`) after the issue exists. It also runs when the call finds an existing issue with the same title, so a
+  retry sets what a failed call missed; relationships that already exist, the issue itself and duplicates are skipped.
+  Numbers that are no issue (a typo, a pull request) come back in `unknown_blockers`; a failing mutation becomes a
+  `warnings` entry. The relationship is additional to a "Blocked by #N" line in the body, which Symphony reads too
+  (see [Dependencies](#dependencies)); both count as one dependency.
 - `labels` must already exist in the repository. Unknown ones are skipped and reported in `unknown_labels`; labels are
   never created.
 - Once the issue exists, failures of the board steps (no access to the project, the column is missing on the board)
@@ -127,8 +138,8 @@ the issue is added to the board and its status is set to `sub_issue_status`. The
   again with the same title to retry.
 - A project workflow such as "Item added to project" can set its own status after the tool did; configure it to match
   `sub_issue_status` or turn it off.
-- Errors: `not_allowed` (the role has no `max_sub_issues`), `limit_reached`, `github_error` (GitHub rejected the
-  mutation, e.g. missing permission), `not_found`.
+- Errors: `not_allowed` (the role has no `max_sub_issues`), `limit_reached`, `invalid_argument` (`parent` is no open
+  sub-issue of the session's issue), `github_error` (GitHub rejected the mutation, e.g. missing permission), `not_found`.
 
 Failures come back to the agent as structured tool errors (`{error: {category, message}}`), so it can correct its
 input. Keep GitHub's secondary rate limits in mind: content-creating calls such as comments are limited to roughly

@@ -172,14 +172,22 @@ export const CREATE_PULL_REQUEST_MUTATION = /* GraphQL */ `
   }
 `;
 
-/** The issue's repository and its sub-issues (at most 100 on GitHub) with their items on any project board. */
+/**
+ * The issue's repository and its sub-issues (at most 100 on GitHub) with their items on any project board, their
+ * "blocked by" relationships and the states of their own sub-issues (the second level `create_sub_issue` counts).
+ */
 export const SUB_ISSUE_CONTEXT_QUERY = /* GraphQL */ `
   query SymphonySubIssueContext($issueId: ID!) {
     node(id: $issueId) {
       ... on Issue {
         repository { id nameWithOwner }
         subIssues(first: 100) {
-          nodes { id number title state url projectItems(first: 20) { nodes { id project { id } } } }
+          nodes {
+            id number title state url
+            projectItems(first: 20) { nodes { id project { id } } }
+            blockedBy(first: 50) { nodes { number } }
+            subIssues(first: 100) { nodes { state } }
+          }
         }
       }
     }
@@ -207,6 +215,15 @@ export const CREATE_SUB_ISSUE_MUTATION = /* GraphQL */ `
   mutation SymphonyCreateSubIssue($repositoryId: ID!, $parentId: ID!, $title: String!, $body: String, $labelIds: [ID!]) {
     createIssue(input: { repositoryId: $repositoryId, parentIssueId: $parentId, title: $title, body: $body, labelIds: $labelIds }) {
       issue { id number url }
+    }
+  }
+`;
+
+/** Sets GitHub's "blocked by" relationship: `issueId` waits for `blockingIssueId`. */
+export const ADD_BLOCKED_BY_MUTATION = /* GraphQL */ `
+  mutation SymphonyAddBlockedBy($issueId: ID!, $blockingIssueId: ID!) {
+    addBlockedBy(input: { issueId: $issueId, blockingIssueId: $blockingIssueId }) {
+      issue { number }
     }
   }
 `;

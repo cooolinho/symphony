@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { Logger } from '../src/log.ts';
+import { STANDARD_LABELS } from '../src/repo-init/labels.ts';
 import { githubProjectFactory } from '../src/tracker/github-project/index.ts';
 import { parseSettings } from '../src/tracker/github-project/settings.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
@@ -197,6 +198,42 @@ describe('shipped WORKFLOW.md issue commands', () => {
     assert.equal(roleOf('Ready', null)?.waitForSubIssues, false);
   });
 
+  it('serves /concept issues with the analyst, which files into the backlog', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const config = resolveConfig(definition.config, {
+      workflowPath: shipped,
+      env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' },
+      trackerDefaults,
+    });
+    const roleOf = (state: string, description: string | null) => roleFor({ state, description }, config.roles);
+    for (const state of ['Ready', 'In progress']) {
+      assert.equal(roleName(roleOf(state, '/concept docs/index.md')), 'analyst');
+      assert.equal(roleName(roleOf(state, 'Write a /concept page')), 'developer');
+    }
+    assert.equal(roleName(roleOf('Agent review', '/concept docs/index.md')), 'reviewer');
+    const analyst = roleOf('Ready', '/concept docs/index.md');
+    assert.deepEqual(
+      [analyst?.readOnly, analyst?.runChecks, analyst?.maxSubIssues, analyst?.subIssueStatus, analyst?.waitForSubIssues, analyst?.maxTurns],
+      [true, false, 60, null, false, 3],
+    );
+    assert.deepEqual(analyst?.mayMoveTo, ['In progress', 'In review', 'Blocked']);
+    assert.equal(config.tracker.provider.sub_issue_status, 'Backlog');
+  });
+
+  it('renders the read-only analyst prompt with the skill instruction', async () => {
+    const prompt = await render('analyst', null, '/concept docs/index.md issue-models=auto');
+    assert.match(prompt, /Your role: analyst/);
+    assert.match(prompt, /## Issue command: \/concept/);
+    assert.match(prompt, /load the skill `symphony:concept` with the Skill tool and pass it the argument/);
+    assert.match(prompt, /argument `docs\/index\.md issue-models=auto`/);
+    assert.match(prompt, /read-only/);
+    assert.match(prompt, /`create_sub_issue`/);
+    assert.match(prompt, /`parent`.*`blocked_by`/);
+    assert.match(prompt, /`set_status\("In review"\)`\. No entry checks run for this role/);
+    assert.doesNotMatch(prompt, /open_pull_request/);
+    assert.doesNotMatch(prompt, /Your role: (developer|reviewer|auditor|planner)/);
+  });
+
   it('turns base_branch and auto_merge on through the environment only', async () => {
     const { definition } = await loadWorkflowFile(shipped);
     const providerOf = (env: Record<string, string>) =>
@@ -265,6 +302,7 @@ describe('Symphony toolbox skills', () => {
   it('ships the skills the shipped roles and templates refer to', async () => {
     assert.deepEqual([...commandSkills([toolbox])].sort(), [
       ['auto-code', 'symphony:auto-code'],
+      ['concept', 'symphony:concept'],
       ['refactor-safely', 'symphony:refactor-safely'],
       ['refactoring', 'symphony:refactoring'],
     ]);
@@ -281,6 +319,24 @@ describe('Symphony toolbox skills', () => {
     assert.match(text, /`issue-models=<auto\|opus\|sonnet\|haiku>`/);
     for (const label of ['Model: haiku', 'Model: sonnet', 'Model: opus']) {
       assert.ok(text.includes(`\`${label}\``), label);
+    }
+  });
+
+  it('concept: documents its arguments and uses the label families and tool parameters the workflow provides', () => {
+    const dir = path.join(skillsDir, 'concept');
+    const text = fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8');
+    assert.match(text, /argument-hint:.*issue-models=auto\|opus\|sonnet\|haiku\|off/);
+    assert.match(text, /`issue-models=<auto\|opus\|sonnet\|haiku\|off>`/);
+    for (const phrase of ['## Konzept-Plan', '## Konzept-Bericht', 'parent: <Nummer', 'blocked_by: [<Nummern', 'Blocked by #N']) {
+      assert.ok(text.includes(phrase), phrase);
+    }
+    const breakdown = fs.readFileSync(path.join(dir, 'breakdown.md'), 'utf8');
+    for (const label of ['Model: haiku', 'Model: sonnet', 'Model: opus', 'Effort: low', 'Effort: medium', 'Effort: high', 'Effort: xhigh']) {
+      assert.ok(breakdown.includes(`\`${label}\``), label);
+    }
+    for (const label of ['epic', 'concept']) {
+      assert.ok(STANDARD_LABELS.some((entry) => entry.name === label), `repo-init creates the label ${label}`);
+      assert.ok(fs.readFileSync(path.join(dir, 'templates.md'), 'utf8').includes(`\`${label}\``), `templates use ${label}`);
     }
   });
 
