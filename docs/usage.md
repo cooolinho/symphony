@@ -440,7 +440,7 @@ npm run repo-init -- --env-file .env.website # different env file, as with npm s
    `All standard labels are up to date.`
 4. **Laravel Boost:** The script looks for Laravel apps on the default branch (root or one level down). For each
    repository it reports `– no Laravel app`, `✓ Laravel Boost installed`, `= open issue #N` or
-   `+ create issue "Laravel Boost einrichten"`. After you confirm, it creates the issue: it describes
+   `+ create issue "Set up Laravel Boost"`. After you confirm, it creates the issue: it describes
    `composer require laravel/boost --dev`, `boost:install`, the `.gitignore` entries and the `.ai/` folder. Drag the
    issue onto the board, and an agent introduces Boost via a pull request.
 
