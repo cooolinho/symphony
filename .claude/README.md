@@ -1,63 +1,64 @@
-# `.claude/`: Symphonys Toolbox für alle Agenten
+# `.claude/`: Symphony's toolbox for all agents
 
-Symphony lädt diesen Ordner als lokales Claude-Code-Plugin `symphony` in **jede** Agent-Session, egal zu welchem
-Repository das Issue gehört (`claude.plugins: [./.claude]` in der `WORKFLOW.md`). Was hier liegt, gilt also für alle
-Repositories, die Symphony bearbeitet.
+Symphony loads this folder as the local Claude Code plugin `symphony` into **every** agent session, whatever repository
+the issue belongs to (`claude.plugins: [./.claude]` in `WORKFLOW.md`). Whatever lives here applies to all repositories
+Symphony works on.
 
-| Ordner | Inhalt | Aufruf im Agenten |
+| Folder | Contents | Invoked in the agent as |
 |---|---|---|
-| `skills/<name>/SKILL.md` | Skills: Frontmatter mit `name` und `description`, darunter die Anleitung | `symphony:<name>` |
-| `agents/<name>.md` | Subagents (optionale Spezialisten-Personas: `architect`, `database-engineer`, `filament-developer`, `test-engineer`, `code-reviewer`) | `symphony:<name>` |
-| `commands/<name>.md` | Slash-Commands (Altform, besser Skills) | `/symphony:<name>` |
-| `hooks/hooks.json` | Hooks; Skripte daneben, im JSON über `${CLAUDE_PLUGIN_ROOT}` referenziert | automatisch |
-| `.claude-plugin/plugin.json` | Plugin-Manifest (Name `symphony`) | – |
+| `skills/<name>/SKILL.md` | Skills: front matter with `name` and `description`, followed by the instructions | `symphony:<name>` |
+| `agents/<name>.md` | Subagents (optional specialist personas: `architect`, `database-engineer`, `filament-developer`, `test-engineer`, `code-reviewer`) | `symphony:<name>` |
+| `commands/<name>.md` | Slash commands (legacy form, prefer skills) | `/symphony:<name>` |
+| `hooks/hooks.json` | Hooks; scripts next to it, referenced in the JSON via `${CLAUDE_PLUGIN_ROOT}` | automatic |
+| `.claude-plugin/plugin.json` | Plugin manifest (name `symphony`) | – |
 
-Leere Ordner enthalten eine `.gitkeep`, damit Git sie behält. Mitgeliefert sind die Skills `refactoring` (Audit),
-`refactor-safely` (Umsetzung) und `auto-code` (Autopilot, plant fortlaufend Wellen von Sub-Issues).
+Empty folders contain a `.gitkeep` so git keeps them. Shipped are the skills `refactoring` (audit), `refactor-safely`
+(implementation) and `auto-code` (autopilot, continuously plans waves of sub-issues).
 
-## Was gehört hierher, was ins Repository?
+## What belongs here, what belongs in the repository?
 
-Faustregel: Wissen gehört dorthin, wo es versioniert wird und wo es gilt.
+Rule of thumb: knowledge belongs where it is versioned and where it applies.
 
-| Wissen | Ort |
+| Knowledge | Location |
 |---|---|
-| Framework-Wissen (Laravel, Livewire, Pest, Inertia …) | **Laravel Boost** im jeweiligen Repository. Symphony erzeugt Guidelines und Skills passend zur `composer.lock`. |
-| Domäne und Projekt („Rechnungen erstellen“, Mandanten-Scoping) | **Repository**: in Laravel-Projekten `.ai/skills/` und `.ai/guidelines/`, sonst `.claude/skills/` |
-| Projektregeln und Fallen | **Repository**: `.ai/rules/` (Boost-Tool `record-rule`, Skill `infer-conventions`) |
-| Arbeitsweise über alle Repositories (PR-Stil, Commits, Prüfen ohne UI, Übergabe ans Board) | **hier**, `skills/` |
-| Persönliche Vorlieben | `~/.claude/`, lädt Symphony nicht |
+| Framework knowledge (Laravel, Livewire, Pest, Inertia …) | **Laravel Boost** in the repository. Symphony generates guidelines and skills to match its `composer.lock`. |
+| Domain and project ("create invoices", tenant scoping) | **Repository**: `.ai/skills/` and `.ai/guidelines/` in Laravel projects, `.claude/skills/` otherwise |
+| Project rules and pitfalls | **Repository**: `.ai/rules/` (Boost tool `record-rule`, skill `infer-conventions`) |
+| Ways of working across all repositories (PR style, commits, checking without a UI, handing off to the board) | **here**, `skills/` |
+| Personal preferences | `~/.claude/`, not loaded by Symphony |
 
-Skills im Repository sehen auch du und deine Kollegen lokal, sie werden mit dem Code versioniert und im Pull Request
-geprüft. Hier landet nur, was ausschließlich für unbeaufsichtigte Symphony-Agenten gilt und in jedem Repository gleich
-ist.
+Skills in the repository are also visible to you and your colleagues locally; they are versioned with the code and
+reviewed in pull requests. Only what applies exclusively to unattended Symphony agents, and is the same in every
+repository, belongs here.
 
-## Regeln für eigene Skills
+## Rules for your own skills
 
-- Ein Skill, eine Aufgabe. Die `description` sagt genau, *wann* er greift: danach entscheidet Claude, ob er ihn lädt.
-- `SKILL.md` kurz halten, Details in Dateien daneben auslagern und darauf verweisen.
-- Skills sind eigenständig: Skripte und Referenzdateien liegen außerhalb des Workspaces. Gib sie relativ zur
-  `SKILL.md` an, Claude Code nennt dem Agenten beim Laden das Skill-Verzeichnis.
-- Keine Geheimnisse in Skills. Agenten können die Dateien lesen.
-- In Laravel-Repositories eigene Skills nach `.ai/skills/` legen, nicht nach `.claude/skills/`: Boost überschreibt
-  `.claude/skills` beim Generieren, `.ai/` ist agentenneutral (Claude Code, Cursor, Codex …). Ein gleichnamiger Skill in
-  `.ai/skills/` ersetzt den Boost-Skill.
+- One skill, one task. The `description` says exactly *when* it applies: Claude decides from it whether to load the skill.
+- Keep `SKILL.md` short; move details into files next to it and link to them.
+- Skills are self-contained: scripts and reference files live outside the workspace. Reference them relative to
+  `SKILL.md`; Claude Code tells the agent the skill directory when it loads the skill.
+- No secrets in skills. Agents can read the files.
+- In Laravel repositories, put your own skills in `.ai/skills/`, not `.claude/skills/`: Boost overwrites
+  `.claude/skills` when it generates, and `.ai/` is agent-neutral (Claude Code, Cursor, Codex …). A skill of the same
+  name in `.ai/skills/` replaces the Boost skill.
 
-## Befehls-Skills (`/refactoring`, `/refactor-safely`, `/auto-code`)
+## Command skills (`/refactoring`, `/refactor-safely`, `/auto-code`)
 
-Beginnt die Beschreibung eines Issues mit `/<name>`, lädt der Agent den Skill `symphony:<name>`, sofern `skills/<name>/SKILL.md`
-existiert (Technik: [docs/configuration.md](../docs/configuration.md#issue-commands)). Für solche Skills gilt zusätzlich:
+If an issue description starts with `/<name>`, the agent loads the skill `symphony:<name>`, provided
+`skills/<name>/SKILL.md` exists (mechanics: [docs/configuration.md](../docs/configuration.md#issue-commands)). These
+skills additionally follow these rules:
 
-- Der Ordnername ist der Befehl: nur Kleinbuchstaben, Ziffern und Bindestriche. `name:` im Frontmatter ist derselbe Name.
-- Die `description` sagt, dass der Skill nur auf Verlangen des Prompts geladen wird. Sonst zieht Claude ihn in fremden
-  Sessions von selbst heran.
-- `argument-hint` nennt die Argumente, im Text steht `$ARGUMENTS`.
-- Der Skill sagt klar, was er **nicht** darf (z. B. nichts ändern) und beschreibt jede Phase mit einem prüfbaren Ergebnis.
-  Rechte erzwingt die Rolle (`read_only`, `may_move_to`), nicht der Skill. Er ist nur die Anleitung.
-- Sub-Issues schreiben Abhängigkeiten wörtlich als `Blocked by #N` (Englisch, auch in deutschen Texten). Nur das erkennt
-  Symphony.
-- Braucht ein Befehl eigene Rechte oder Tools, gehört eine Rolle mit `commands: [<name>]` in die `WORKFLOW.md`. Dann
-  prüft die Dispatch-Validierung, dass der Skill existiert.
-- `test/workflow-prompt.test.ts` prüft für jeden Skill, dass Name und Ordner übereinstimmen und alle verlinkten Dateien
-  existieren.
+- The folder name is the command: lowercase letters, digits and hyphens only. `name:` in the front matter is the same name.
+- The `description` says that the skill is loaded only when the prompt asks for it. Otherwise Claude pulls it into
+  unrelated sessions on its own.
+- `argument-hint` names the arguments; the text uses `$ARGUMENTS`.
+- The skill states clearly what it must **not** do (for example change nothing) and describes every phase with a
+  verifiable result. Permissions are enforced by the role (`read_only`, `may_move_to`), not the skill; the skill is
+  only the instructions.
+- Sub-issues write dependencies literally as `Blocked by #N` (in English, even in German texts). That is the only form
+  Symphony recognizes.
+- If a command needs its own permissions or tools, add a role with `commands: [<name>]` to `WORKFLOW.md`. Dispatch
+  validation then checks that the skill exists.
+- `test/workflow-prompt.test.ts` checks for every skill that name and folder match and that all linked files exist.
 
-Wer an Symphony selbst mit Claude Code arbeitet, sieht die Skills aus `skills/` ebenfalls.
+Anyone working on Symphony itself with Claude Code sees the skills from `skills/` as well.

@@ -1,192 +1,192 @@
-# Symphony mit Docker betreiben
+# Running Symphony with Docker
 
-Diese Anleitung richtet Symphony per `docker compose` auf einem Server hinter einem vorhandenen
-[Traefik](https://doc.traefik.io/traefik/) ein, beschreibt den Betrieb und hilft bei Fehlern. Die Einrichtung ohne Docker
-steht in [Getting Started](getting-started.md).
+This guide sets up Symphony with `docker compose` on a server behind an existing
+[Traefik](https://doc.traefik.io/traefik/), describes day-to-day operation and helps with errors. The setup without
+Docker is described in [Getting Started](getting-started.md).
 
-Die Dateien dazu liegen im Repository: `Dockerfile`, `docker-compose.yml`, `docker/entrypoint.sh`,
-`docker/ssh_known_hosts`, `.dockerignore` und die Vorlage `.env.example`.
+The files for this are in the repository: `Dockerfile`, `docker-compose.yml`, `docker/entrypoint.sh`,
+`docker/ssh_known_hosts`, `.dockerignore` and the template `.env.example`.
 
-## Voraussetzungen
+## Requirements
 
-| Was | Prüfen mit |
+| What | Check with |
 |---|---|
-| **Docker Engine** mit **Compose v2** | `docker --version`, `docker compose version` |
-| **Traefik** läuft, mit einem **externen Docker-Netzwerk**, einem **HTTPS-Entrypoint** und einem **Cert-Resolver** (beides nur für HTTPS; in einem vertrauenswürdigen LAN geht auch reines HTTP, siehe Schritt 9) | `docker network ls`, Traefik-Konfiguration |
-| **DNS-Eintrag** für die Domain des Dashboards, der auf den Server zeigt | `dig symphony.example.com` |
-| **GitHub Project Board** und **GitHub-Token** mit den Scopes `repo` und `project` | [Getting Started](getting-started.md), Schritte 2 und 3 |
+| **Docker Engine** with **Compose v2** | `docker --version`, `docker compose version` |
+| **Traefik** running, with an **external Docker network**, an **HTTPS entrypoint** and a **cert resolver** (the last two only for HTTPS; in a trusted LAN plain HTTP works too, see step 9) | `docker network ls`, Traefik configuration |
+| **DNS record** for the dashboard domain pointing to the server | `dig symphony.example.com` |
+| **GitHub Project board** and **GitHub token** with the scopes `repo` and `project` | [Getting Started](getting-started.md), steps 2 and 3 |
 
-Notiere dir die Namen aus Traefik: Netzwerk (Standard in der Compose-Datei: `traefik`), Entrypoint (`websecure`) und
-Cert-Resolver (`letsencrypt`). Du trägst sie in Schritt 9 ein. Board und Token legst du wie in
-[Getting Started](getting-started.md) an; das wird hier nicht wiederholt.
+Note the names from Traefik: network (default in the Compose file: `traefik`), entrypoint (`websecure`) and cert
+resolver (`letsencrypt`). You enter them in step 9. You create the board and token as described in
+[Getting Started](getting-started.md); this is not repeated here.
 
-## Einrichtung Schritt für Schritt
+## Step-by-step setup
 
-Alle Schritte laufen auf dem Server, außer Schritt 4 (lokal).
+All steps run on the server, except step 4 (local).
 
-### 1. Repository klonen
+### 1. Clone the repository
 
 ```bash
 git clone git@github.com:cooolinho/symphony.git
 cd symphony
 ```
 
-### 2. `.env` anlegen
+### 2. Create `.env`
 
 ```bash
 cp .env.example .env
 chmod 600 .env
 ```
 
-### 3. Board, Repository und GitHub-Token eintragen
+### 3. Set board, repository and GitHub token
 
-Setze `GITHUB_PROJECT_NUMBER`, `GITHUB_REPOSITORY` und `GITHUB_TOKEN` wie in
-[Getting Started](getting-started.md#4-env-anlegen) (Token: [Schritt 3](getting-started.md#3-github-token-erstellen)).
-`GITHUB_TOKEN` bleibt im Symphony-Prozess und wird aus der Umgebung von Agenten und Hooks entfernt.
+Set `GITHUB_PROJECT_NUMBER`, `GITHUB_REPOSITORY` and `GITHUB_TOKEN` as in
+[Getting Started](getting-started.md#4-create-env) (token: [step 3](getting-started.md#3-create-a-github-token)).
+`GITHUB_TOKEN` stays in the Symphony process and is removed from the environment of agents and hooks.
 
-### 4. Claude-Zugang erzeugen
+### 4. Create Claude credentials
 
-Führe auf einem Rechner **mit Browser** (nicht auf dem Server) aus:
+On a machine **with a browser** (not on the server), run:
 
 ```bash
 claude setup-token
 ```
 
-Trage den ausgegebenen Token in der `.env` des Servers ein:
+Add the printed token to the server's `.env`:
 
 ```dotenv
 CLAUDE_CODE_OAUTH_TOKEN=…
 ```
 
-Alternative: ein `ANTHROPIC_API_KEY`. Der Entrypoint verlangt eines von beiden.
+Alternative: an `ANTHROPIC_API_KEY`. The entrypoint requires one of the two.
 
-### 5. SSH-Key erzeugen
+### 5. Create an SSH key
 
-Symphony klont per SSH, der Agent pusht per SSH. Der Key liegt als Docker-Secret `ssh_key` unter `./secrets/ssh_key`
-(der Ordner `secrets/` ist in `.gitignore`):
+Symphony clones via SSH, the agent pushes via SSH. The key is the Docker secret `ssh_key` at `./secrets/ssh_key`
+(the `secrets/` directory is in `.gitignore`):
 
 ```bash
 mkdir -p secrets
 ssh-keygen -t ed25519 -f secrets/ssh_key -N '' -C symphony@<server>
 ```
 
-Das Secret ist ein Bind-Mount der Host-Datei und muss für die **UID im Container** lesbar sein (Standard `1000`, siehe
-Schritt 9). Gehört die Datei einem anderen Benutzer, setze den Besitzer und einen engen Modus:
+The secret is a bind mount of the host file and must be readable by the **UID in the container** (default `1000`, see
+step 9). If the file belongs to another user, set the owner and a strict mode:
 
 ```bash
-sudo chown "$(id -u):$(id -g)" secrets/ssh_key   # nur wenn UID/GID der Container dem Server-Benutzer entsprechen
+sudo chown "$(id -u):$(id -g)" secrets/ssh_key   # only if the container's UID/GID match the server user
 chmod 400 secrets/ssh_key
 ```
 
-Der Entrypoint kopiert den Key nach `~/.ssh/id_symphony` mit Modus `0600`. Liegt er im Container an einem anderen Pfad
-als `/run/secrets/ssh_key`, setze `SYMPHONY_SSH_KEY`.
+The entrypoint copies the key to `~/.ssh/id_symphony` with mode `0600`. If it is at a path other than
+`/run/secrets/ssh_key` in the container, set `SYMPHONY_SSH_KEY`.
 
-### 6. Public Key bei GitHub hinterlegen
+### 6. Add the public key to GitHub
 
-Den Inhalt von `secrets/ssh_key.pub` trägst du bei GitHub ein. Es gibt zwei Wege:
+Add the contents of `secrets/ssh_key.pub` to GitHub. There are two ways:
 
-- **Deploy-Key** (Repository → *Settings → Deploy keys*, **Allow write access** aktivieren): Ein Deploy-Key gilt
-  **nur für ein Repository** und braucht Schreibrecht, sonst kann der Agent nicht pushen. Das passt, wenn
-  `GITHUB_REPOSITORY` genau ein Repository nennt.
-- **Maschinen-Benutzer:** Für mehrere Repositories legst du einen eigenen GitHub-Benutzer an, gibst ihm Schreibzugriff
-  auf diese Repositories und trägst den Public Key in dessen *Settings → SSH keys* ein. GitHub erlaubt jeden Deploy-Key
-  nur einmal, ein Benutzer-Key dagegen deckt alle Repositories dieses Benutzers ab.
+- **Deploy key** (repository → *Settings → Deploy keys*, enable **Allow write access**): A deploy key applies to
+  **one repository only** and needs write access, otherwise the agent cannot push. This fits when
+  `GITHUB_REPOSITORY` names exactly one repository.
+- **Machine user:** For multiple repositories, create a dedicated GitHub user, give it write access to these
+  repositories and add the public key under its *Settings → SSH keys*. GitHub allows each deploy key only once, whereas
+  a user key covers all repositories of that user.
 
-Gib dem Key nur die nötigen Rechte, denn der Agent kann ihn erreichen (siehe [Sicherheit](#sicherheit)).
+Give the key only the permissions it needs, because the agent can reach it (see [Security](#security)).
 
-### 7. Git-Identität setzen
+### 7. Set the Git identity
 
-Die Agenten committen im Workspace; ohne Identität scheitert jeder Commit:
+The agents commit in the workspace; without an identity every commit fails:
 
 ```dotenv
 GIT_USER_NAME=Symphony
 GIT_USER_EMAIL=symphony@example.com
 ```
 
-### 8. Dashboard-Login einrichten
+### 8. Set up the dashboard login
 
-Das Dashboard hat keine eigene Anmeldung; Traefik übernimmt sie. Erzeuge eine htpasswd-Zeile (bcrypt):
+The dashboard has no login of its own; Traefik handles it. Generate an htpasswd line (bcrypt):
 
 ```bash
-htpasswd -nbB admin 'MeinPasswort'
-# ohne lokales Apache:
-docker run --rm httpd:2 htpasswd -nbB admin 'MeinPasswort'
+htpasswd -nbB admin 'MyPassword'
+# without a local Apache:
+docker run --rm httpd:2 htpasswd -nbB admin 'MyPassword'
 ```
 
-Trage die Zeile in die `.env` ein, **in einfachen Anführungszeichen und jedes `$` einfach** (kein `$$`). So übernimmt
-`docker compose` den Wert wörtlich, und Node liest ihn unverändert:
+Add the line to `.env`, **in single quotes and with every `$` single** (no `$$`). This way `docker compose` takes the
+value literally, and Node reads it unchanged:
 
 ```dotenv
 SYMPHONY_BASIC_AUTH='admin:$2y$05$…'
 ```
 
-Alternativ nutzt du eine vorhandene Forward-Auth oder Middleware und setzt statt des BasicAuth
-`SYMPHONY_TRAEFIK_MIDDLEWARES`, z. B. `authelia@docker` oder `a@file,b@docker`. Ohne eines von beiden bricht jeder
-`docker compose`-Befehl ab (fail closed).
+Alternatively, use an existing forward auth or middleware and set `SYMPHONY_TRAEFIK_MIDDLEWARES` instead of BasicAuth,
+e.g. `authelia@docker` or `a@file,b@docker`. Without one of the two, every `docker compose` command aborts (fail
+closed).
 
-### 9. Domain und Traefik-Werte setzen
+### 9. Set domain and Traefik values
 
 ```dotenv
-SYMPHONY_DOMAIN=symphony.example.com   # Pflicht
-TRAEFIK_NETWORK=traefik                # externes Netzwerk von Traefik
-TRAEFIK_ENTRYPOINT=websecure           # HTTPS-Entrypoint
+SYMPHONY_DOMAIN=symphony.example.com   # required
+TRAEFIK_NETWORK=traefik                # Traefik's external network
+TRAEFIK_ENTRYPOINT=websecure           # HTTPS entrypoint
 TRAEFIK_CERTRESOLVER=letsencrypt
 ```
 
-Die Werte nach dem `=` sind die Standardwerte der Compose-Datei; setze sie auf deine Namen aus den Voraussetzungen.
+The values after the `=` are the Compose file's defaults; set them to your names from the requirements.
 
-**Nur HTTP im LAN:** Hat dein Traefik keine Zertifikate (z. B. ein Heimnetz mit `*.docker.lan`), betreibe das Dashboard
-ohne TLS auf dem HTTP-Entrypoint:
+**HTTP only in a LAN:** If your Traefik has no certificates (e.g. a home network with `*.docker.lan`), run the dashboard
+without TLS on the HTTP entrypoint:
 
 ```dotenv
 SYMPHONY_DOMAIN=symphony.docker.lan
-TRAEFIK_NETWORK=docker_lan_network     # Netzwerk, an dem Traefik hängt
-TRAEFIK_ENTRYPOINT=web                 # HTTP-Entrypoint (Port 80)
-TRAEFIK_TLS=false                      # kein TLS am Router; TRAEFIK_CERTRESOLVER wird dann ignoriert
+TRAEFIK_NETWORK=docker_lan_network     # network Traefik is attached to
+TRAEFIK_ENTRYPOINT=web                 # HTTP entrypoint (port 80)
+TRAEFIK_TLS=false                      # no TLS on the router; TRAEFIK_CERTRESOLVER is then ignored
 ```
 
-`TRAEFIK_TLS=false` ist nötig: Ein Router mit TLS (Standard) beantwortet nur TLS-Verbindungen, auch auf dem
-HTTP-Entrypoint. Ohne die Zeile liefert `http://<SYMPHONY_DOMAIN>/` ein 404, obwohl der Container läuft. Beachte die
-Hinweise unter [Sicherheit](#sicherheit): Über HTTP laufen Login und Daten unverschlüsselt.
+`TRAEFIK_TLS=false` is required: a router with TLS (the default) only answers TLS connections, even on the HTTP
+entrypoint. Without this line `http://<SYMPHONY_DOMAIN>/` returns a 404 although the container is running. Note the
+remarks under [Security](#security): over HTTP, login and data travel unencrypted.
 
-`UID` und `GID` (Standard `1000`) sind Build-Args. Sie bestimmen den Besitzer der Volumes und der Datei
-`./secrets/ssh_key`. Passe sie an, wenn dein Server-Benutzer eine andere ID hat (`id -u`, `id -g`):
+`UID` and `GID` (default `1000`) are build args. They determine the owner of the volumes and of the file
+`./secrets/ssh_key`. Adjust them if your server user has a different ID (`id -u`, `id -g`):
 
 ```dotenv
 UID=1001
 GID=1001
 ```
 
-Weitere optionale Werte: `SYMPHONY_PORT` (Standard `4000`), `TZ` (Standard `Europe/Berlin`) und `PHP_VERSION`
-(Standard `8.4`, siehe [Fehlerbilder](#fehlerbilder)).
+Other optional values: `SYMPHONY_PORT` (default `4000`), `TZ` (default `Europe/Berlin`) and `PHP_VERSION`
+(default `8.4`, see [Common errors](#common-errors)).
 
-### 10. Dry Run
+### 10. Dry run
 
 ```bash
 docker compose run --rm symphony --dry-run
 ```
 
-Der Befehl baut das Image, falls nötig, prüft Variablen, Token und Board und startet keine Agenten. Er zeigt auch,
-welche Variable fehlt (siehe [Fehlerbilder](#fehlerbilder)).
+The command builds the image if needed, checks variables, token and board, and starts no agents. It also shows which
+variable is missing (see [Common errors](#common-errors)).
 
-### 11. Starten
+### 11. Start
 
 ```bash
 docker compose up -d --build
 ```
 
-### 12. Logs ansehen
+### 12. View logs
 
 ```bash
 docker compose logs -f
 ```
 
-### 13. Dashboard öffnen
+### 13. Open the dashboard
 
-Öffne `https://<SYMPHONY_DOMAIN>/` und melde dich mit dem Login aus Schritt 8 an. Mit `TRAEFIK_TLS=false` (Schritt 9) ist
-es `http://<SYMPHONY_DOMAIN>/`; ein Browser im HTTPS-Only-Modus braucht dafür eine Ausnahme.
+Open `https://<SYMPHONY_DOMAIN>/` and log in with the credentials from step 8. With `TRAEFIK_TLS=false` (step 9) it is
+`http://<SYMPHONY_DOMAIN>/`; a browser in HTTPS-only mode needs an exception for it.
 
-## Betrieb
+## Operation
 
 ### Update
 
@@ -194,153 +194,152 @@ es `http://<SYMPHONY_DOMAIN>/`; ein Browser im HTTPS-Only-Modus braucht dafür e
 git pull && docker compose up -d --build
 ```
 
-Dabei wird der Container ersetzt: Laufende Agenten werden gestoppt, die **Workspaces bleiben** im Volume. Issues, deren
-Karte noch in einer aktiven Spalte steht, nimmt Symphony nach dem Start wieder auf. Wartezeiten aus Session-Limits sind
-danach vergessen, siehe [Fehlerbehebung](usage.md#fehlerbehebung).
+This replaces the container: running agents are stopped, the **workspaces are kept** in the volume. Symphony picks up
+issues whose card is still in an active column again after the start. Wait times from session limits are lost
+afterwards, see [Troubleshooting](usage.md#troubleshooting).
 
 ### `stop_grace_period`
 
-Bei `docker compose stop`, `down` und beim Update sendet Docker `SIGTERM`. Symphony stoppt dann seine Agenten und wartet
-bis zu `hooks.timeout_ms` + 30 s auf sie und ihre `after_run`-Hooks. Die Compose-Datei gibt dafür
-`stop_grace_period: 120s`, danach beendet Docker den Container hart. Bekommt die `WORKFLOW.md` einen langen
-`after_run`-Hook, erhöhe den Wert in `docker-compose.yml`.
+On `docker compose stop`, `down` and during an update, Docker sends `SIGTERM`. Symphony then stops its agents and waits
+up to `hooks.timeout_ms` + 30 s for them and their `after_run` hooks. The Compose file sets
+`stop_grace_period: 120s` for this; after that Docker kills the container. If `WORKFLOW.md` gets a long-running
+`after_run` hook, increase the value in `docker-compose.yml`.
 
-### Konfiguration ändern
+### Changing the configuration
 
-- **`.env` geändert:** `docker compose up -d` erzeugt den Container mit den neuen Werten neu. Ein bloßes
-  `docker compose restart` liest die `.env` nicht neu ein.
-- **`WORKFLOW.md` oder `model-costs.yml` geändert:** Beide liegen im Image unter `/app`. Baue neu mit
-  `docker compose up -d --build`. Ohne Rebuild geht es mit den optionalen Read-only-Mounts in `docker-compose.yml`
-  (Kommentarzeichen entfernen):
+- **`.env` changed:** `docker compose up -d` recreates the container with the new values. A plain
+  `docker compose restart` does not re-read `.env`.
+- **`WORKFLOW.md` or `model-costs.yml` changed:** Both are in the image under `/app`. Rebuild with
+  `docker compose up -d --build`. To avoid rebuilding, use the optional read-only mounts in `docker-compose.yml`
+  (remove the comment characters):
 
   ```yaml
   - ./WORKFLOW.md:/app/WORKFLOW.md:ro
   - ./model-costs.yml:/app/model-costs.yml:ro
   ```
 
-  Symphony lädt beide dann live neu. Ein Bind-Mount einer einzelnen Datei folgt aber dem Inode: Ersetzt dein Editor die
-  Datei, statt sie an Ort und Stelle zu überschreiben, sieht der Container die alte Fassung. Dann hilft
-  `docker compose restart`.
+  Symphony then reloads both live. A bind mount of a single file follows the inode, though: if your editor replaces the
+  file instead of overwriting it in place, the container sees the old version. In that case
+  `docker compose restart` helps.
 
-### Logs und Transkripte
+### Logs and transcripts
 
-`docker compose logs -f` zeigt die laufenden Logs. Log pro Repository und Transkripte liegen im Volume `state`, im
-Container unter `/home/symphony/.local/state/symphony` (`SYMPHONY_LOG_DIR`):
+`docker compose logs -f` shows the live logs. The per-repository logs and transcripts are in the `state` volume, in the
+container under `/home/symphony/.local/state/symphony` (`SYMPHONY_LOG_DIR`):
 
 ```bash
 docker compose exec symphony ls /home/symphony/.local/state/symphony/repositories
 docker compose exec symphony ls /home/symphony/.local/state/symphony/sessions
 ```
 
-Aufbau und Inhalt: [Logs, Transkripte und Workspaces](usage.md#logs-transkripte-und-workspaces).
+Structure and contents: [Logs, transcripts and workspaces](usage.md#logs-transcripts-and-workspaces).
 
-### Volumes und Backup
+### Volumes and backup
 
-| Volume | Pfad im Container | Inhalt |
+| Volume | Path in the container | Contents |
 |---|---|---|
-| `state` | `/home/symphony/.local/state/symphony` | Log pro Repository, Transkripte |
-| `claude` | `/home/symphony/.claude` | Zustand von Claude Code |
-| `workspaces` | `/home/symphony/symphony-workspaces` | ein Klon pro Issue |
-| `composer-cache` | `/home/symphony/.cache/composer` | Composer-Cache, ersetzbar |
+| `state` | `/home/symphony/.local/state/symphony` | per-repository logs, transcripts |
+| `claude` | `/home/symphony/.claude` | Claude Code state |
+| `workspaces` | `/home/symphony/symphony-workspaces` | one clone per issue |
+| `composer-cache` | `/home/symphony/.cache/composer` | Composer cache, replaceable |
 
-Compose stellt den Projektnamen voran (meist der Ordnername): Das Volume heißt z. B. `symphony_state`. Prüfe die Namen
-mit `docker volume ls`. Sicherung eines Volumes:
+Compose prefixes the project name (usually the directory name): the volume is named e.g. `symphony_state`. Check the
+names with `docker volume ls`. Backing up a volume:
 
 ```bash
 docker run --rm -v <volume>:/data:ro -v "$PWD":/backup debian:stable-slim tar czf /backup/<volume>.tgz -C /data .
 ```
 
-Was wichtig ist:
+What matters:
 
-- **`state`** (Statistiken und Logs) und **`claude`** (Claude-Zustand): sichern.
-- **`workspaces`:** lassen sich neu klonen, enthalten aber **unfertige Arbeit** (ungepushte Commits, Änderungen).
-- **`composer-cache`:** muss nicht gesichert werden.
+- **`state`** (statistics and logs) and **`claude`** (Claude state): back up.
+- **`workspaces`:** can be cloned again, but contain **unfinished work** (unpushed commits, changes).
+- **`composer-cache`:** does not need a backup.
 
-### Bestehende Historie auf den Server übertragen
+### Transferring existing history to the server
 
-Startest du Symphony im Container, nachdem es schon lokal gelaufen ist, kannst du Log pro Repository
-(`repositories/`) und Transkripte (`sessions/`) aus `~/.local/state/symphony` in das Volume `state` des Servers
-übertragen. Das Skript läuft **lokal** und verbindet sich per SSH:
+If you start Symphony in the container after it has already run locally, you can transfer the per-repository logs
+(`repositories/`) and transcripts (`sessions/`) from `~/.local/state/symphony` into the server's `state` volume. The
+script runs **locally** and connects via SSH:
 
 ```bash
-scripts/push-history.sh --dry-run   # zeigt nur, was passieren würde
+scripts/push-history.sh --dry-run   # only shows what would happen
 scripts/push-history.sh
 ```
 
-Es stoppt den Container auf dem Server (`docker stop`), sichert den dortigen Stand als `~/symphony-state-backup-<zeit>.tgz`, **ersetzt**
-`repositories/` und `sessions/` komplett durch den lokalen Stand, vergleicht die Dateianzahl und startet den Container
-wieder (auch bei einem Fehler). Alles, was der Server-Container bisher aufgezeichnet hat, wird dabei überschrieben.
-Workspaces, Claude-Zustand und Composer-Cache werden nicht übertragen. Ein lokal laufendes Symphony muss vorher beendet
-sein.
+It stops the container on the server (`docker stop`), backs up the state there as `~/symphony-state-backup-<time>.tgz`,
+**replaces** `repositories/` and `sessions/` completely with the local state, compares the file counts and starts the
+container again (also on an error). Everything the server container has recorded so far is overwritten. Workspaces,
+Claude state and Composer cache are not transferred. A locally running Symphony must be stopped first.
 
-| Variable | Standard | Bedeutung |
+| Variable | Default | Meaning |
 |---|---|---|
-| `SYMPHONY_CONTAINER` | `symphony` | Name des Containers auf dem Server (`docker ps -a`), bei Compose meist `<projekt>-symphony-1` |
-| `SYMPHONY_REMOTE` | `cooolinho@docker.lan` | SSH-Ziel |
-| `SYMPHONY_LOCAL_STATE` | `$SYMPHONY_LOG_DIR`, sonst `~/.local/state/symphony` | lokaler Log-Ordner |
+| `SYMPHONY_CONTAINER` | `symphony` | Name of the container on the server (`docker ps -a`), with Compose usually `<project>-symphony-1` |
+| `SYMPHONY_REMOTE` | `cooolinho@docker.lan` | SSH target |
+| `SYMPHONY_LOCAL_STATE` | `$SYMPHONY_LOG_DIR`, otherwise `~/.local/state/symphony` | local log directory |
 
-Die Variablen liest das Skript aus der Shell oder aus der `.env` im Repository-Ordner **auf dem Rechner, auf dem du es
-startest** (die Shell hat Vorrang), z. B. `SYMPHONY_CONTAINER=symphony-symphony-1`.
+The script reads the variables from the shell or from the `.env` in the repository directory **on the machine where
+you run it** (the shell takes precedence), e.g. `SYMPHONY_CONTAINER=symphony-symphony-1`.
 
-Optionen: `--yes` (ohne Rückfrage), `--no-backup`, `--dry-run`. Das Skript nutzt eine SSH-Verbindung für alle Schritte, ein
-Passwort oder eine Passphrase wird also nur einmal abgefragt.
+Options: `--yes` (no confirmation), `--no-backup`, `--dry-run`. The script uses one SSH connection for all steps, so a
+password or passphrase is only asked for once.
 
-Das Backup spielst du bei Bedarf so zurück (auf dem Server; Container vorher mit `docker stop <container>` stoppen und
-danach mit `docker start <container>` starten):
+To restore the backup if needed (on the server; stop the container first with `docker stop <container>` and start it
+afterwards with `docker start <container>`):
 
 ```bash
 docker run --rm -i --volumes-from <container> --entrypoint bash "$(docker inspect -f '{{.Config.Image}}' <container>)" \
-  -c 'cd /home/symphony/.local/state/symphony && rm -rf repositories sessions && tar xzf -' < ~/symphony-state-backup-<zeit>.tgz
+  -c 'cd /home/symphony/.local/state/symphony && rm -rf repositories sessions && tar xzf -' < ~/symphony-state-backup-<time>.tgz
 ```
 
-### Ressourcen-Limits
+### Resource limits
 
-Als Richtwert braucht jeder parallele Agent (Claude Code, Composer, Tests) etwa 1 CPU und 2 GB RAM. Mit
-`SYMPHONY_MAX_CONCURRENT_AGENTS` begrenzt du die Parallelität. Optional begrenzt du den Container in
-`docker-compose.yml` (Kommentarzeichen entfernen):
+As a rule of thumb, each parallel agent (Claude Code, Composer, tests) needs about 1 CPU and 2 GB RAM. Use
+`SYMPHONY_MAX_CONCURRENT_AGENTS` to limit parallelism. Optionally, limit the container in `docker-compose.yml` (remove
+the comment characters):
 
 ```yaml
 cpus: 2
 mem_limit: 4g
 ```
 
-## Fehlerbilder
+## Common errors
 
-| Symptom | Ursache und Lösung |
+| Symptom | Cause and fix |
 |---|---|
-| `Host key verification failed` | Die `known_hosts` für GitHub liegen im Image (`/etc/ssh/ssh_known_hosts`, aus `docker/ssh_known_hosts`). Ist der Eintrag veraltet, aktualisiere die Datei und baue neu. `StrictHostKeyChecking` **nicht** abschalten. |
-| `Permission denied (publickey)` | Der Public Key fehlt bei GitHub, oder der Deploy-Key gehört zu einem anderen Repository oder hat kein Schreibrecht (*Allow write access*). Für mehrere Repositories einen Maschinen-Benutzer verwenden, siehe Schritt 6. Test: `docker compose exec symphony ssh -T git@github.com`. |
-| `GitHub token lacks a required scope` | Dem Token fehlt `project` (oder `repo`). Einen klassischen Token mit `repo` und `project` erstellen und `GITHUB_TOKEN` ändern, dann `docker compose up -d`. |
-| `network … declared as external, but could not be found` | Das Netzwerk aus `TRAEFIK_NETWORK` existiert nicht. Namen mit `docker network ls` prüfen und in der `.env` eintragen. |
-| 404 oder 502 über die Domain | Der Container hängt nicht im Traefik-Netz: `TRAEFIK_NETWORK` muss das Netzwerk sein, an dem auch Traefik hängt (`docker network inspect <netz>`). Außerdem `SYMPHONY_DOMAIN`, `TRAEFIK_ENTRYPOINT` und `TRAEFIK_CERTRESOLVER` mit der Traefik-Konfiguration vergleichen und den Container-Status prüfen (`docker compose ps`). |
-| 404 über `http://`, obwohl der Container `healthy` ist | Der Router hat TLS (Standard), hängt aber an einem HTTP-Entrypoint (`TRAEFIK_ENTRYPOINT=web`): Er beantwortet nur TLS-Verbindungen. Für reines HTTP setze `TRAEFIK_TLS=false` (Schritt 9), sonst nutze einen HTTPS-Entrypoint. Danach `docker compose up -d`. |
-| Traefik-Log: `the router symphony@docker uses a non-existent resolver: letsencrypt` | `TRAEFIK_CERTRESOLVER` nennt einen Resolver, den Traefik nicht kennt (`docker logs traefik`). Setze den Namen aus der Traefik-Konfiguration oder schalte TLS mit `TRAEFIK_TLS=false` ab, wenn dein Traefik keine Zertifikate ausstellt. |
-| `403 control_disabled` beim Retry | Der Neustart ist bei einer Nicht-Loopback-Bindung nur mit `SYMPHONY_ALLOW_REMOTE_CONTROL=true` erlaubt. `docker-compose.yml` setzt es; läuft der Container anders (z. B. mit eigener Umgebung), setze es dort. |
-| `403 forbidden_origin` beim Retry | Der `Origin`-Header fehlt oder passt nicht zum `Host`. Der Browser setzt ihn selbst; per `curl` gibst du ihn mit: `-H 'Origin: https://<SYMPHONY_DOMAIN>'`, siehe [Dashboard und API](usage.md#dashboard-und-api). |
-| `Permission denied` auf Volumes nach geänderter `UID`/`GID` | Die Volumes gehören noch der alten ID. Besitzer im Volume ändern, dann neu starten: `docker run --rm -v <volume>:/data debian:stable-slim chown -R <UID>:<GID> /data` für jedes Volume aus der Tabelle oben. Auch `secrets/ssh_key` muss für die neue UID lesbar sein. |
-| `symphony-entrypoint: missing required environment variables:` | Der Entrypoint nennt die fehlenden Namen: `GITHUB_TOKEN`, `GITHUB_PROJECT_NUMBER`, `GITHUB_REPOSITORY`, `GIT_USER_NAME`, `GIT_USER_EMAIL` und `CLAUDE_CODE_OAUTH_TOKEN` oder `ANTHROPIC_API_KEY`. In der `.env` ergänzen, dann `docker compose up -d`. |
-| `symphony-entrypoint: SSH key not readable: …` | `./secrets/ssh_key` fehlt oder ist für die UID im Container nicht lesbar, siehe Schritt 5. |
-| Healthcheck `unhealthy` | Der Check ruft `/api/v1/state` auf `SYMPHONY_PORT` ab. Ohne gesetzten `SYMPHONY_PORT` entfällt er. Ursache steht in `docker compose logs`: meist ein Startfehler oder ein anderer Port in `.env` als in Traefik. In den ersten 60 s nach dem Start (`start-period`) wird er noch nicht gewertet. |
-| `Laravel Boost skipped: composer install failed` oder Composer meldet eine PHP- oder Extension-Version, die nicht zu `composer.lock` passt | Das Image bringt PHP 8.4 mit den Extensions `mbstring`, `xml`, `curl`, `zip`, `intl`, `bcmath`, `sqlite3` und `gd` mit. Brauchen die Projekte eine andere Version, setze `PHP_VERSION` in der `.env` (z. B. `8.3`) und baue neu: `docker compose up -d --build`. Fehlt eine weitere Extension, ergänze sie im `Dockerfile` und baue neu. |
+| `Host key verification failed` | The `known_hosts` for GitHub are in the image (`/etc/ssh/ssh_known_hosts`, from `docker/ssh_known_hosts`). If the entry is outdated, update the file and rebuild. Do **not** disable `StrictHostKeyChecking`. |
+| `Permission denied (publickey)` | The public key is missing on GitHub, or the deploy key belongs to another repository or has no write access (*Allow write access*). For multiple repositories use a machine user, see step 6. Test: `docker compose exec symphony ssh -T git@github.com`. |
+| `GitHub token lacks a required scope` | The token lacks `project` (or `repo`). Create a classic token with `repo` and `project`, change `GITHUB_TOKEN`, then run `docker compose up -d`. |
+| `network … declared as external, but could not be found` | The network from `TRAEFIK_NETWORK` does not exist. Check the name with `docker network ls` and set it in `.env`. |
+| 404 or 502 via the domain | The container is not attached to the Traefik network: `TRAEFIK_NETWORK` must be the network Traefik is attached to as well (`docker network inspect <network>`). Also compare `SYMPHONY_DOMAIN`, `TRAEFIK_ENTRYPOINT` and `TRAEFIK_CERTRESOLVER` with the Traefik configuration and check the container status (`docker compose ps`). |
+| 404 via `http://` although the container is `healthy` | The router has TLS (the default) but is attached to an HTTP entrypoint (`TRAEFIK_ENTRYPOINT=web`): it only answers TLS connections. For plain HTTP set `TRAEFIK_TLS=false` (step 9), otherwise use an HTTPS entrypoint. Then run `docker compose up -d`. |
+| Traefik log: `the router symphony@docker uses a non-existent resolver: letsencrypt` | `TRAEFIK_CERTRESOLVER` names a resolver Traefik does not know (`docker logs traefik`). Set the name from the Traefik configuration, or turn off TLS with `TRAEFIK_TLS=false` if your Traefik does not issue certificates. |
+| `403 control_disabled` on retry | With a non-loopback binding, restarting is only allowed with `SYMPHONY_ALLOW_REMOTE_CONTROL=true`. `docker-compose.yml` sets it; if the container runs differently (e.g. with its own environment), set it there. |
+| `403 forbidden_origin` on retry | The `Origin` header is missing or does not match the `Host`. The browser sets it itself; with `curl` you pass it: `-H 'Origin: https://<SYMPHONY_DOMAIN>'`, see [Dashboard and API](usage.md#dashboard-and-api). |
+| `Permission denied` on volumes after changing `UID`/`GID` | The volumes still belong to the old ID. Change the owner in the volume, then restart: `docker run --rm -v <volume>:/data debian:stable-slim chown -R <UID>:<GID> /data` for each volume from the table above. `secrets/ssh_key` must also be readable by the new UID. |
+| `symphony-entrypoint: missing required environment variables:` | The entrypoint names the missing variables: `GITHUB_TOKEN`, `GITHUB_PROJECT_NUMBER`, `GITHUB_REPOSITORY`, `GIT_USER_NAME`, `GIT_USER_EMAIL` and `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`. Add them to `.env`, then run `docker compose up -d`. |
+| `symphony-entrypoint: SSH key not readable: …` | `./secrets/ssh_key` is missing or not readable by the UID in the container, see step 5. |
+| Healthcheck `unhealthy` | The check requests `/api/v1/state` on `SYMPHONY_PORT`. Without `SYMPHONY_PORT` set, there is no check. The cause is in `docker compose logs`: usually a startup error or a different port in `.env` than in Traefik. During the first 60 s after start (`start-period`) it is not evaluated yet. |
+| `Laravel Boost skipped: composer install failed` or Composer reports a PHP or extension version that does not match `composer.lock` | The image ships PHP 8.4 with the extensions `mbstring`, `xml`, `curl`, `zip`, `intl`, `bcmath`, `sqlite3` and `gd`. If the projects need a different version, set `PHP_VERSION` in `.env` (e.g. `8.3`) and rebuild: `docker compose up -d --build`. If another extension is missing, add it to the `Dockerfile` and rebuild. |
 
-## Sicherheit
+## Security
 
-- **Nicht-root:** Symphony und die Agenten laufen im Container als Benutzer `symphony` (UID/GID aus den Build-Args), nicht
-  als root. `/app` gehört root und ist für `symphony` schreibgeschützt: Agenten können Symphony selbst nicht ändern.
-- **`GITHUB_TOKEN`** bleibt im Symphony-Prozess und wird aus der Umgebung von Agenten und Hooks entfernt. Die Checks
-  bekommen zusätzlich weder `ANTHROPIC_API_KEY` noch `CLAUDE_CODE_OAUTH_TOKEN`.
-- **`CLAUDE_CODE_OAUTH_TOKEN` und der SSH-Key** sind für den Agenten erreichbar. Gib dem Key deshalb nur die nötigen
-  Rechte: einen Deploy-Key pro Repository oder einen Maschinen-Benutzer, der nur auf die bearbeiteten Repositories
-  schreiben darf. Kein persönlicher Key.
-- **Dashboard:** Es ist nur über Traefik mit Login erreichbar. Die Compose-Datei hat kein `ports:`, Symphony hat keine
-  eigene Anmeldung, und **Retry** ist nur mit passendem `Origin` möglich (Schutz gegen CSRF). Behalte den Login (BasicAuth
-  oder Forward-Auth) bei: Ohne ihn könnte jeder im Netz Worker neu starten.
-- **Nur HTTP (`TRAEFIK_TLS=false`):** Das BasicAuth-Passwort, die Dashboard-Daten und der Retry-Aufruf gehen
-  unverschlüsselt durchs Netz. Nutze das nur in einem vertrauenswürdigen LAN, nie über das Internet; dort bleibt HTTPS
-  mit Zertifikat Pflicht.
-- **Kein Docker-Socket, kein Docker-in-Docker:** Mounte `/var/run/docker.sock` nicht in den Container. Wer ihn erreicht,
-  hat Root auf dem Host.
-- **Vertrauen:** Issue-Texte sind fremde Eingaben. Bearbeite nur Boards, deren Issues du vertraust. Weitere Hinweise:
-  [Sicherheit](usage.md#sicherheit).
+- **Non-root:** Symphony and the agents run in the container as the user `symphony` (UID/GID from the build args), not
+  as root. `/app` belongs to root and is read-only for `symphony`: agents cannot modify Symphony itself.
+- **`GITHUB_TOKEN`** stays in the Symphony process and is removed from the environment of agents and hooks. The checks
+  additionally receive neither `ANTHROPIC_API_KEY` nor `CLAUDE_CODE_OAUTH_TOKEN`.
+- **`CLAUDE_CODE_OAUTH_TOKEN` and the SSH key** are reachable by the agent. So give the key only the permissions it
+  needs: one deploy key per repository, or a machine user that can only write to the repositories being worked on. No
+  personal key.
+- **Dashboard:** It is only reachable through Traefik with a login. The Compose file has no `ports:`, Symphony has no
+  login of its own, and **Retry** is only possible with a matching `Origin` (protection against CSRF). Keep the login
+  (BasicAuth or forward auth): without it, anyone on the network could restart workers.
+- **HTTP only (`TRAEFIK_TLS=false`):** The BasicAuth password, the dashboard data and the retry request travel
+  unencrypted over the network. Use this only in a trusted LAN, never over the internet; there HTTPS with a certificate
+  remains mandatory.
+- **No Docker socket, no Docker-in-Docker:** Do not mount `/var/run/docker.sock` into the container. Whoever can reach
+  it has root on the host.
+- **Trust:** Issue texts are untrusted input. Only work on boards whose issues you trust. More details:
+  [Security](usage.md#security).
 
-← [Dokumentation](index.md) · Zurück: [Getting Started](getting-started.md)
+← [Documentation](index.md) · Back: [Getting Started](getting-started.md)
