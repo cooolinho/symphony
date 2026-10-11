@@ -255,7 +255,7 @@ describe('repo-init Laravel Boost', () => {
 
   it('writes setup steps that work without a terminal and keep generated files out of git', () => {
     const body = boostIssueBody([{ dir: 'laravel', boost: false }]);
-    assert.match(body, /Die Laravel-App in `laravel\/` hat Boost noch nicht\./);
+    assert.match(body, /The Laravel app in `laravel\/` does not have Boost yet\./);
     assert.match(body, /composer require laravel\/boost --dev/);
     assert.match(body, /APP_ENV=local php artisan boost:install --no-interaction --guidelines --skills --mcp/);
     assert.match(body, /"agents": \["claude_code"\]/);
@@ -271,7 +271,7 @@ describe('repo-init Laravel Boost', () => {
     // all repositories, task 2, confirm, exit
     const first = await run(['', '2', '', '0'], { github, env });
     assert.equal(first.code, 0);
-    assert.match(first.text, /acme\/portal\n {2}\+ create issue "Laravel Boost einrichten" \(laravel\/ without Boost\)/);
+    assert.match(first.text, /acme\/portal\n {2}\+ create issue "Set up Laravel Boost" \(laravel\/ without Boost\)/);
     assert.match(first.text, /acme\/shop\n {2}✓ Laravel Boost installed: \(root\) with Boost/);
     assert.match(first.text, /✓ acme\/portal: issue #1 https:\/\/github\.com\/acme\/portal\/issues\/1/);
     assert.match(first.text, /column Ready/);
@@ -279,7 +279,7 @@ describe('repo-init Laravel Boost', () => {
     assert.equal(github.issues.get('acme/shop')?.length ?? 0, 0);
 
     const second = await run(['', '2', '0'], { github, env });
-    assert.match(second.text, /= open issue #1 "Laravel Boost einrichten"/);
+    assert.match(second.text, /= open issue #1 "Set up Laravel Boost"/);
     assert.match(second.text, /No issue needed\./);
     assert.equal(github.issues.get('acme/portal')?.length, 1);
   });

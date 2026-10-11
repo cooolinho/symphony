@@ -26,7 +26,7 @@ The agents only comment; they change no code.
 ## Scenario
 
 All issues carry `Model: sonnet` and start in `Ready`. Each one asks the agent to set `In progress`, post one
-comment (`Testlauf T<n> erledigt. Abhängigkeiten laut Tracker: …`) and hand off to `In review`.
+comment (`E2E run T<n> done. Dependencies according to the tracker: …`) and hand off to `In review`.
 
 | Issue | Depends on | Covers |
 |---|---|---|
@@ -106,7 +106,7 @@ per role:
 | Issue | Developer | Reviewer |
 |---|---|---|
 | R1 | tries `Done` once (denied: `transition_denied`), comments, moves to `Agent review` | approves: comments, moves to `In review` |
-| R2 | comments, moves to `Agent review` | rejects exactly once (comment `Testlauf R2 abgelehnt`, back to `In progress`), then approves |
+| R2 | comments, moves to `Agent review` | rejects exactly once (comment `E2E run R2 rejected`, back to `In progress`), then approves |
 | R3 | comments, moves to `Agent review` | approves |
 
 The developer's first move to `Agent review` fails with `check_failed`; the issue text tells the agent to repeat

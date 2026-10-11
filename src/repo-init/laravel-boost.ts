@@ -4,7 +4,7 @@ import type { GithubIssueRef, GithubRestClient } from './github-rest.ts';
 import type { InitTask } from './tasks.ts';
 
 /** Title of the setup issue; also how the task recognizes an issue it created before. */
-export const BOOST_ISSUE_TITLE = 'Laravel Boost einrichten';
+export const BOOST_ISSUE_TITLE = 'Set up Laravel Boost';
 
 export interface LaravelAppFacts {
   /** Directory relative to the repository root; '' for the root. */
@@ -41,25 +41,25 @@ export async function planBoostSetup(github: GithubRestClient, repository: strin
 }
 
 function where(dir: string): string {
-  return dir === '' ? 'im Repository-Root' : `in \`${dir}/\``;
+  return dir === '' ? 'in the repository root' : `in \`${dir}/\``;
 }
 
 function label(dir: string): string {
   return dir === '' ? '(root)' : `${dir}/`;
 }
 
-/** The setup issue a Symphony agent works through; German like the rest of the board. */
+/** The setup issue a Symphony agent works through; written in English. */
 export function boostIssueBody(apps: readonly LaravelAppFacts[]): string {
   const missing = apps.filter((app) => !app.boost);
   const dirs = missing.map((app) => where(app.dir)).join(', ');
   const plural = missing.length > 1;
-  return `Symphony nutzt [Laravel Boost](https://laravel.com/docs/boost) für Laravel-Apps: Guidelines und Skills passend zu den installierten Paketversionen sowie den MCP-Server \`laravel-boost\` (Doku-Suche, Datenbankschema, Logs). ${plural ? 'Die Laravel-Apps' : 'Die Laravel-App'} ${dirs} ${plural ? 'haben' : 'hat'} Boost noch nicht.
+  return `Symphony uses [Laravel Boost](https://laravel.com/docs/boost) for Laravel apps: guidelines and skills matching the installed package versions, plus the \`laravel-boost\` MCP server (docs search, database schema, logs). ${plural ? 'The Laravel apps' : 'The Laravel app'} ${dirs} ${plural ? 'do' : 'does'} not have Boost yet.
 
-## Aufgabe
+## Task
 
-Jeweils im App-Verzeichnis (${missing.map((app) => (app.dir === '' ? 'Repository-Root' : `\`${app.dir}/\``)).join(', ')}):
+In each app directory (${missing.map((app) => (app.dir === '' ? 'repository root' : `\`${app.dir}/\``)).join(', ')}):
 
-1. Boost als Entwicklungsabhängigkeit installieren und für Claude Code einrichten. Ohne Terminal braucht Boost \`APP_ENV=local\` und eine \`boost.json\`, die den Agenten nennt:
+1. Install Boost as a dev dependency and set it up for Claude Code. Without a terminal, Boost needs \`APP_ENV=local\` and a \`boost.json\` naming the agent:
 
    \`\`\`bash
    composer require laravel/boost --dev
@@ -67,7 +67,7 @@ Jeweils im App-Verzeichnis (${missing.map((app) => (app.dir === '' ? 'Repository
    APP_ENV=local php artisan boost:install --no-interaction --guidelines --skills --mcp
    \`\`\`
 
-2. Generierte Dateien nicht committen (Empfehlung der Boost-Doku; \`boost:install\` und \`boost:update\` erzeugen sie neu, Symphony erzeugt sie in seinen Workspaces selbst). In die \`.gitignore\` des App-Verzeichnisses:
+2. Do not commit generated files (recommended by the Boost docs; \`boost:install\` and \`boost:update\` regenerate them, and Symphony generates them in its workspaces itself). Add to the app directory's \`.gitignore\`:
 
    \`\`\`gitignore
    /boost.json
@@ -75,27 +75,27 @@ Jeweils im App-Verzeichnis (${missing.map((app) => (app.dir === '' ? 'Repository
    /.claude/skills/
    \`\`\`
 
-   Die Guideline-Datei (\`CLAUDE.md\`, falls vorhanden, sonst \`AGENTS.md\`) ebenfalls ignorieren, wenn Boost sie neu angelegt hat. Ist sie schon versioniert und handgeschrieben, hat Boost seinen Block \`<laravel-boost-guidelines>\` angehängt: entweder die handgeschriebenen Inhalte nach \`.ai/guidelines/\` verschieben (Boost übernimmt sie) und die Datei ignorieren, oder den Block wieder entfernen. Begründe die Wahl im Pull Request.
+   Also ignore the guideline file (\`CLAUDE.md\` if present, otherwise \`AGENTS.md\`) if Boost created it fresh. If it is already versioned and hand-written, Boost has appended its \`<laravel-boost-guidelines>\` block: either move the hand-written content to \`.ai/guidelines/\` (Boost picks it up) and ignore the file, or remove the block again. Explain your choice in the pull request.
 
-   Wichtig: Eine committete \`boost.json\` bedeutet für Symphony „das Repository verwaltet Boost selbst“, dann generiert Symphony nichts.
+   Important: a committed \`boost.json\` means to Symphony "the repository manages Boost itself", so Symphony generates nothing.
 
-3. \`.ai/guidelines/\`, \`.ai/skills/\` und \`.ai/rules/\` anlegen (leere Ordner mit \`.gitkeep\`) und committen. Projektwissen gehört dorthin: Guidelines werden immer geladen, Skills bei Bedarf, Regeln nach Dateipfad.
+3. Create \`.ai/guidelines/\`, \`.ai/skills/\` and \`.ai/rules/\` (empty folders with \`.gitkeep\`) and commit them. Project knowledge belongs there: guidelines are always loaded, skills on demand, rules by file path.
 
-4. Optional in der \`composer.json\` unter \`scripts\` ergänzen, damit Guidelines und Skills bei \`composer update\` aktuell bleiben:
+4. Optionally add this to \`scripts\` in \`composer.json\` so guidelines and skills stay current on \`composer update\`:
 
    \`\`\`json
    "post-update-cmd": ["@php artisan boost:update --ansi"]
    \`\`\`
 
-5. Prüfen: \`git status\` zeigt nur \`composer.json\`, \`composer.lock\`, \`.gitignore\` und \`.ai/\`; die Tests laufen weiter.
+5. Verify: \`git status\` shows only \`composer.json\`, \`composer.lock\`, \`.gitignore\` and \`.ai/\`; the tests still pass.
 
-## Akzeptanzkriterien
+## Acceptance criteria
 
-- \`laravel/boost\` steht in \`require-dev\`, \`composer.lock\` ist aktualisiert.
-- Von Boost generierte Dateien sind ignoriert, \`.ai/\` ist committet.
-- Keine fachlichen Änderungen an der App.
+- \`laravel/boost\` is in \`require-dev\`, \`composer.lock\` is updated.
+- Files generated by Boost are ignored, \`.ai/\` is committed.
+- No functional changes to the app.
 
-Angelegt von \`npm run repo-init\` (Symphony). Nach dem Merge erkennt Symphony Boost automatisch (\`laravel.boost: auto\`) und erzeugt Guidelines, Skills und den MCP-Server in jedem Workspace.
+Created by \`npm run repo-init\` (Symphony). After the merge, Symphony detects Boost automatically (\`laravel.boost: auto\`) and generates guidelines, skills and the MCP server in every workspace.
 `;
 }
 
