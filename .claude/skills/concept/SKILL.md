@@ -1,7 +1,7 @@
 ---
 name: concept
 description: Concept workflow. Reads a concept (Markdown file in the repository), analyses it and creates epics and sub-issues from it in the backlog, with dependencies (Blocked by) as well as model and effort labels. Only load when the prompt asks for it (issue command /concept), never on your own.
-argument-hint: "<path to the concept, e.g. docs/index.md> [issue-models=auto|opus|sonnet|haiku|off]"
+argument-hint: "<path to the concept, e.g. docs/index.md> [issue-models=auto|fable|opus|sonnet|haiku|off]"
 ---
 
 # Break a concept down into epics and issues
@@ -28,9 +28,9 @@ read-only commands, `git fetch` and a local `git switch --detach`. **Forbidden**
 - a path (**required**): the concept, relative to the repository root. A file ending in `.md`, or a directory with
   `index.md` or `README.md`. If the path is missing, the file does not exist, the path is absolute or it contains `..`,
   write a comment saying what is missing and move to "Blocked".
-- `issue-models=<auto|opus|sonnet|haiku|off>`: model labels for the issues. Default `auto`.
+- `issue-models=<auto|fable|opus|sonnet|haiku|off>`: model labels for the issues. Default `auto`.
   - `auto`: per issue the label that fits its size and risk ([breakdown.md](breakdown.md#labels)).
-  - `opus`, `sonnet`, `haiku`: every issue gets `Model: <value>`.
+  - `fable`, `opus`, `sonnet`, `haiku`: every issue gets `Model: <value>`.
   - `off`: no model labels; the issues run with the instance's default model.
   - Any other value is invalid: treat it like `auto` and put the warning in the notes section of the report.
 

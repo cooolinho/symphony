@@ -67,7 +67,7 @@ starts with `/refactor-safely` on the first line; `Blocked by` follows below it.
 ```markdown
 ## Concept Plan
 
-**Concept:** `<path>` @ `<base>` <short commit hash> · **issue-models:** <auto|opus|sonnet|haiku|off>
+**Concept:** `<path>` @ `<base>` <short commit hash> · **issue-models:** <auto|fable|opus|sonnet|haiku|off>
 
 ### Epics and issues
 - **E1 Epic: <area>**: <one sentence>
