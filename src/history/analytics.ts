@@ -1,3 +1,4 @@
+import { bareModelName } from '../agent/model-name.ts';
 import { costOf, priceFor, totalTokens, type ModelTokenUsage, type PricingTable } from '../costs/pricing.ts';
 import { parseCounts, type HistoryEntry } from './history.ts';
 
@@ -17,9 +18,24 @@ export interface AnalyticsFilter {
   repo: string | null;
   /** Model id; keeps runs that used it and counts only its tokens and cost. Null = all models. */
   model: string | null;
+  /** Effort requested for the run (`low` … `max`, `default`); null = all efforts. */
+  effort?: string | null;
   /** IANA time zone for buckets, weekdays and hours (the browser's). */
   timeZone: string;
 }
+
+/** Order of the effort rows: Claude Code's default first, then the levels from low to max, then anything else. */
+const EFFORT_ORDER = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
+
+function effortRank(effort: string): number {
+  const index = EFFORT_ORDER.indexOf(effort);
+  return index === -1 ? EFFORT_ORDER.length : index;
+}
+
+const byEffort = (a: string, b: string): number => effortRank(a) - effortRank(b) || a.localeCompare(b);
+
+/** Effort of a run as logged; runs from before the effort was logged count as `unknown`. */
+const UNKNOWN_EFFORT = 'unknown';
 
 export type Granularity = 'hour' | 'day' | 'week' | 'month';
 
@@ -74,8 +90,13 @@ interface Run {
   outcome: string;
   state: string;
   seconds: number;
-  /** Model with the most tokens in the run (`model` of the run_finished line). */
+  /**
+   * Model with the most tokens in the run (`model` of the run_finished line); for a run without logged usage
+   * the requested model (`model_requested`, else the run_started line), so the run still shows under its model.
+   */
   primaryModel: string | null;
+  /** Effort requested for the run (`effort` of run_finished, else of run_started); null when not logged. */
+  effort: string | null;
   /** Dispatched after a failed or stalled run of the same issue. */
   retry: boolean;
   parts: UsagePart[];
@@ -253,10 +274,47 @@ function usageFromFields(fields: Record<string, string>): ModelTokenUsage {
   };
 }
 
+/** A logged field that is absent, empty or `null` → null. */
+function fieldOrNull(value: string | undefined): string | null {
+  return value === undefined || value === '' || value === 'null' ? null : value;
+}
+
+/**
+ * Maps a requested model to the id Claude Code reported for it, so a run without logged usage lands in the same
+ * row as the runs of that model: an alias (`opus`) becomes the reported id of its family with the most runs
+ * (`claude-opus-5-5`); a full id, or an alias of a family that never reported usage (`fable` before its first
+ * completed run), stays as it is.
+ */
+function requestedModelResolver(runsByModel: Map<string, number>): (requested: string) => string {
+  const cache = new Map<string, string>();
+  return (requested) => {
+    let resolved = cache.get(requested);
+    if (resolved === undefined) {
+      const alias = bareModelName(requested);
+      let best: { model: string; runs: number } | null = null;
+      for (const [model, runs] of runsByModel) {
+        const bare = bareModelName(model);
+        if (bare !== alias && !bare.startsWith(`${alias}-`)) continue;
+        if (best === null || runs > best.runs || (runs === best.runs && model < best.model)) best = { model, runs };
+      }
+      resolved = best?.model ?? requested;
+      cache.set(requested, resolved);
+    }
+    return resolved;
+  };
+}
+
 /** All finished runs in time order, joined with their model lines and marked as retries. */
 function collectRuns(entries: HistoryEntry[], pricing: PricingTable): Run[] {
   const usageByRun = new Map<string, UsagePart[]>();
+  // Requested model and effort of older runs, whose run_finished line does not carry them yet.
+  const startByRun = new Map<string, { model: string | null; effort: string | null }>();
+  const runsByModel = new Map<string, number>();
   for (const entry of entries) {
+    if (entry.event === 'run_started') {
+      if (entry.fields.run !== undefined) startByRun.set(entry.fields.run, { model: fieldOrNull(entry.fields.model), effort: fieldOrNull(entry.fields.effort) });
+      continue;
+    }
     if (entry.event !== 'model_usage') continue;
     const model = entry.fields.model ?? 'unknown';
     const usage = usageFromFields(entry.fields);
@@ -264,7 +322,9 @@ function collectRuns(entries: HistoryEntry[], pricing: PricingTable): Run[] {
     const parts = usageByRun.get(run) ?? [];
     parts.push({ model, usage, cost: costOf(usage, priceFor(pricing, model).price) });
     usageByRun.set(run, parts);
+    runsByModel.set(model, (runsByModel.get(model) ?? 0) + 1);
   }
+  const resolveRequested = requestedModelResolver(runsByModel);
   const lastOutcome = new Map<string, string>();
   const runs: Run[] = [];
   for (const entry of entries) {
@@ -274,7 +334,10 @@ function collectRuns(entries: HistoryEntry[], pricing: PricingTable): Run[] {
     const issue = entry.fields.issue ?? 'unknown';
     const startedMs = Date.parse(entry.fields.started_at ?? '');
     const outcome = entry.fields.outcome ?? 'unknown';
-    const model = entry.fields.model;
+    const start = startByRun.get(entry.fields.run ?? '');
+    const parts = usageByRun.get(entry.fields.run ?? '') ?? [];
+    const requested = fieldOrNull(entry.fields.model_requested) ?? start?.model ?? null;
+    const model = fieldOrNull(entry.fields.model) ?? (parts.length === 0 && requested !== null ? resolveRequested(requested) : null);
     runs.push({
       repo: entry.fields.repo ?? 'unknown',
       issue,
@@ -286,9 +349,10 @@ function collectRuns(entries: HistoryEntry[], pricing: PricingTable): Run[] {
       outcome,
       state: entry.fields.state ?? '',
       seconds: Number(entry.fields.agent_seconds) || 0,
-      primaryModel: model === undefined || model === 'null' ? null : model,
+      primaryModel: model,
+      effort: fieldOrNull(entry.fields.effort) ?? start?.effort ?? null,
       retry: FAILURE.has(lastOutcome.get(issue) ?? ''),
-      parts: usageByRun.get(entry.fields.run ?? '') ?? [],
+      parts,
       tools: parseCounts(entry.fields.tool_calls),
       skills: parseCounts(entry.fields.skill_calls),
       integrations: runIntegrations(entry.fields),
@@ -410,15 +474,24 @@ function toolStats(runs: Run[]) {
   };
 }
 
-/** Repository and model filter; with a model filter, each run keeps only that model's usage. */
+/**
+ * Repository, model and effort filter; with a model filter, each run keeps only that model's usage (a run
+ * without logged usage matches by its requested model).
+ */
 function narrow(runs: Run[], filter: AnalyticsFilter): Run[] {
   const repo = filter.repo?.toLowerCase() ?? null;
   const model = filter.model;
+  const effort = filter.effort ?? null;
   const result: Run[] = [];
   for (const run of runs) {
     if (repo !== null && run.repo.toLowerCase() !== repo) continue;
+    if (effort !== null && (run.effort ?? UNKNOWN_EFFORT) !== effort) continue;
     if (model === null) {
       result.push(run);
+      continue;
+    }
+    if (run.parts.length === 0) {
+      if (run.primaryModel === model) result.push(run);
       continue;
     }
     const parts = run.parts.filter((part) => part.model === model);
@@ -442,6 +515,7 @@ function runRef(run: Run) {
     finished_at: run.finishedAt,
     outcome: run.outcome,
     model: run.primaryModel,
+    effort: run.effort,
     total_tokens: tokensOf(run),
     cost_usd: round(costOfRun(run), 4),
     agent_seconds: round(run.seconds, 1),
@@ -519,24 +593,53 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
     ),
   }));
 
-  // Models: runs = runs that used the model; agent time = runs where it was the primary model.
+  // Models: runs = runs that used the model; agent time = runs where it was the primary model. A run without
+  // logged usage counts under its requested model with zero tokens, so every model that ran is listed.
   const models = new Map<string, Totals & { model: string; price: string; runIds: Set<string>; primary_runs: number; primary_seconds: number }>();
+  const modelRow = (id: string) => {
+    let model = models.get(id);
+    if (model === undefined) {
+      model = { ...emptyTotals(), model: id, price: priceFor(pricing, id).key, runIds: new Set(), primary_runs: 0, primary_seconds: 0 };
+      models.set(id, model);
+    }
+    return model;
+  };
   for (const run of runs) {
     for (const part of run.parts) {
-      let model = models.get(part.model);
-      if (model === undefined) {
-        model = { ...emptyTotals(), model: part.model, price: priceFor(pricing, part.model).key, runIds: new Set(), primary_runs: 0, primary_seconds: 0 };
-        models.set(part.model, model);
-      }
+      const model = modelRow(part.model);
       model.runIds.add(run.run);
       addPart(model, part);
     }
+    if (run.parts.length === 0 && run.primaryModel !== null) modelRow(run.primaryModel).runIds.add(run.run);
     const primary = run.primaryModel !== null ? models.get(run.primaryModel) : undefined;
     if (primary !== undefined) {
       primary.primary_runs += 1;
       primary.primary_seconds += run.seconds;
     }
   }
+
+  // Efforts: the requested effort of each run, with the models it ran (by primary model).
+  const efforts = new Map<string, Totals & { effort: string; models: Record<string, number> }>();
+  for (const run of runs) {
+    const key = run.effort ?? UNKNOWN_EFFORT;
+    let effort = efforts.get(key);
+    if (effort === undefined) {
+      effort = { ...emptyTotals(), effort: key, models: {} };
+      efforts.set(key, effort);
+    }
+    addRun(effort, run);
+    if (run.primaryModel !== null) effort.models[run.primaryModel] = (effort.models[run.primaryModel] ?? 0) + 1;
+  }
+  const effortRows = [...efforts.values()]
+    .map((effort) => ({
+      ...summarize(effort),
+      effort: effort.effort,
+      models: effort.models,
+      success_rate: ratio(effort.successful, effort.runs),
+      cost_share: ratio(effort.cost_usd, totals.cost_usd),
+      token_share: ratio(effort.total_tokens, totals.total_tokens),
+    }))
+    .sort((a, b) => byEffort(a.effort, b.effort));
   const modelRows = [...models.values()]
     .map(({ runIds, primary_seconds, successful: _s, failed: _f, stopped: _st, retries: _r, agent_seconds: _a, runs: _n, ...rest }) => {
       const runCount = runIds.size;
@@ -661,7 +764,12 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
   attention.sort((a, b) => (b.factor ?? b.value) - (a.factor ?? a.value));
 
   const modelsAvailable = new Set<string>();
-  for (const run of allRuns) for (const part of run.parts) modelsAvailable.add(part.model);
+  const effortsAvailable = new Set<string>();
+  for (const run of allRuns) {
+    for (const part of run.parts) modelsAvailable.add(part.model);
+    if (run.parts.length === 0 && run.primaryModel !== null) modelsAvailable.add(run.primaryModel);
+    effortsAvailable.add(run.effort ?? UNKNOWN_EFFORT);
+  }
 
   return {
     period: {
@@ -671,8 +779,9 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
       time_zone: filter.timeZone,
       granularity,
     },
-    filter: { repo: filter.repo, model: filter.model },
+    filter: { repo: filter.repo, model: filter.model, effort: filter.effort ?? null },
     models_available: [...modelsAvailable].sort(),
+    efforts_available: [...effortsAvailable].sort(byEffort),
     history: {
       first_at: firstEntryMs === null ? null : new Date(firstEntryMs).toISOString(),
       runs_logged: scoped.length,
@@ -681,6 +790,7 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
     previous,
     series,
     models: modelRows,
+    efforts: effortRows,
     repositories: repositoryRows,
     issues: issueRows,
     outcomes: {

@@ -56,6 +56,10 @@ export interface RunFinish {
   startedAt: Date;
   finishedAt: Date;
   agentSeconds: number;
+  /** Model requested for the run (label, role or claude.model); null = Claude Code default. Absent = not logged. */
+  modelRequested?: string | null;
+  /** Effort requested for the run (label, role or claude.effort); null = Claude Code default. Absent = not logged. */
+  effort?: string | null;
   /** Per-model token totals of the run's session. */
   usage: Record<string, ModelTokenUsage>;
   /** Claude Code's own cost estimate, kept for comparison with model-costs.yml. */
@@ -217,6 +221,9 @@ export class HistoryLog {
     totals.tokens += tokens;
     totals.costUsd += cost;
     totals.agentSeconds += finish.agentSeconds;
+    // `default` like run_started; absent when the caller did not log them (older callers, tests).
+    const modelRequested = finish.modelRequested === undefined ? undefined : (finish.modelRequested ?? 'default');
+    const effort = finish.effort === undefined ? undefined : (finish.effort ?? 'default');
 
     this.#append(finish.repo, finish.finishedAt, 'run_finished', {
       issue: finish.issue,
@@ -232,6 +239,8 @@ export class HistoryLog {
       turns: finish.turns,
       model: primaryModel(finish.usage),
       models: Object.keys(finish.usage).join(',') || null,
+      model_requested: modelRequested,
+      effort,
       input_tokens: sum.inputTokens,
       output_tokens: sum.outputTokens,
       cache_read_tokens: sum.cacheReadTokens,
@@ -262,6 +271,7 @@ export class HistoryLog {
         run: finish.run,
         model,
         price: key,
+        effort,
         input_tokens: usage.inputTokens,
         output_tokens: usage.outputTokens,
         cache_read_tokens: usage.cacheReadTokens,

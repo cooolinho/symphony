@@ -35,6 +35,7 @@ import {
 } from './eligibility.ts';
 import { normalizeStateName } from '../workflow/config.ts';
 import type { CheckCache, CheckRecord } from './guard.ts';
+import { IssueArchive, type ArchivedIssue } from './issue-archive.ts';
 import { copyToolUsage, countToolUse, emptyToolUsage, integrationJson, integrationUsage, type ToolUsage } from './tool-usage.ts';
 import { runAgentAttempt, type RunPhase, type WorkerOutcome } from './worker.ts';
 
@@ -116,6 +117,10 @@ interface RunningEntry {
   workspacePath: string | null;
   /** Model the agent session reported at startup (`session_configured`). */
   model: string | null;
+  /** Model requested at dispatch (label, role or claude.model); null = Claude Code default. */
+  requestedModel: string | null;
+  /** Effort requested at dispatch (label, role or claude.effort); null = Claude Code default. */
+  effort: string | null;
   sessionId: string | null;
   threadId: string | null;
   turnId: string | null;
@@ -203,7 +208,7 @@ function limitJson(limit: SessionLimitState | null) {
  * transitions and lifecycle steps of the orchestrator (`run_dispatched`, `run_finished`, `retry_scheduled`,
  * `issue_paused`). `seq` grows per issue, so clients can ask for the entries after the last one they have.
  */
-interface TimelineEvent {
+export interface TimelineEvent {
   seq: number;
   at: string;
   kind: 'lifecycle' | 'phase' | 'agent';
@@ -224,6 +229,8 @@ interface SessionInfo {
   state: string;
   /** Model chosen at dispatch; null = Claude Code default (the session reports the actual one). */
   model: string | null;
+  /** Effort chosen at dispatch; null = Claude Code default. */
+  effort: string | null;
   startedAt: Date;
   finishedAt: Date | null;
   outcome: RunOutcome | null;
@@ -304,6 +311,14 @@ function checkJson(check: CheckRecord | null) {
   };
 }
 
+/** The newest agent events with a message, for the dashboard. */
+function recentEvents(timeline: TimelineEvent[]) {
+  return timeline
+    .filter((event) => event.kind === 'agent' && event.message !== null)
+    .slice(-RECENT_EVENTS)
+    .map((event) => ({ at: event.at, event: event.event, message: event.message }));
+}
+
 /** `mcp__<server>__<tool>` → `<server>`; null for built-in tools. */
 function mcpServerOf(tool: string): string | null {
   const match = /^mcp__(.+?)__/.exec(tool);
@@ -380,6 +395,17 @@ function usageDelta(next: TokenUsage, previous: TokenUsage): TokenUsage {
   };
 }
 
+/** Session totals as the dashboard counts them (input includes cache reads and writes), from per-model totals. */
+function tokensOfModelUsage(usage: Record<string, ModelTokenUsage>): TokenUsage {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  for (const model of Object.values(usage)) {
+    inputTokens += model.inputTokens + model.cacheReadTokens + model.cacheWriteTokens;
+    outputTokens += model.outputTokens;
+  }
+  return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
+}
+
 function primaryModelOf(usage: Record<string, ModelTokenUsage>): string | null {
   let best: string | null = null;
   let most = -1;
@@ -412,6 +438,7 @@ export class Orchestrator {
   #claimed = new Set<string>();
   #retries = new Map<string, RetryEntry>();
   #completed = new Set<string>();
+  #archive: IssueArchive;
   #records = new Map<string, IssueRecord>();
   #paused = new Map<string, PausedEntry>();
   /** Issues whose workspace this process created or used; checked for terminal states after release. */
@@ -444,6 +471,7 @@ export class Orchestrator {
     this.#logger = deps.logger;
     this.#createAdapter = deps.createAdapter ?? defaultAdapterFactory;
     this.#pollIntervalMs = deps.workflow.current.config.polling.intervalMs;
+    this.#archive = new IssueArchive(deps.logDir === null ? null : path.join(deps.logDir, 'issues'), deps.logger);
   }
 
   /** Startup validation (fails startup), terminal workspace cleanup, then an immediate first tick. */
@@ -764,6 +792,8 @@ export class Orchestrator {
       phase: 'PreparingWorkspace',
       workspacePath: null,
       model: null,
+      requestedModel: null,
+      effort: null,
       sessionId: null,
       threadId: null,
       turnId: null,
@@ -802,12 +832,15 @@ export class Orchestrator {
     const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model);
     // Likewise an "Effort: <level>" label picks the effort, else the role's claude.effort, else claude.effort.
     const effortChoice = chooseEffort(issue.labels, role?.claude.effort ?? config.claude.effort);
+    entry.requestedModel = choice.model;
+    entry.effort = effortChoice.effort;
     record.sessions.push({
       run: runId,
       attempt,
       role: name,
       state: issue.state,
       model: choice.model,
+      effort: effortChoice.effort,
       startedAt: entry.startedAt,
       finishedAt: null,
       outcome: null,
@@ -1018,6 +1051,8 @@ export class Orchestrator {
           model: primaryModelOf(entry.modelUsage) ?? entry.model,
         },
       });
+      // A snapshot on disk, so the detail view survives a restart even before the issue is released.
+      this.#archive.save(this.#archivedOf(entry.issueId, finished, false));
     }
     const log = this.#issueLogger(entry.issue);
     const record = this.#records.get(entry.issueId);
@@ -1183,6 +1218,8 @@ export class Orchestrator {
       startedAt: entry.startedAt,
       finishedAt: this.#clock.now(),
       agentSeconds,
+      modelRequested: entry.requestedModel,
+      effort: entry.effort,
       usage: entry.modelUsage,
       claudeEstimateUsd: entry.claudeEstimateUsd > 0 ? entry.claudeEstimateUsd : null,
       mcpUnavailable: entry.mcpUnavailable,
@@ -1387,8 +1424,50 @@ export class Orchestrator {
   #release(issueId: string): void {
     this.#cancelRetry(issueId);
     this.#claimed.delete(issueId);
+    // The details stay available (agent detail view, Logs page "Detail") after the release.
+    const record = this.#records.get(issueId);
+    if (record !== undefined && record.runs > 0) this.#archive.save(this.#archivedOf(issueId, record, true));
     this.#records.delete(issueId);
     this.#paused.delete(issueId);
+  }
+
+  /** The issue's debugging context in the archive's JSON shape. */
+  #archivedOf(issueId: string, record: IssueRecord, released: boolean): ArchivedIssue {
+    return {
+      version: 1,
+      issue_id: issueId,
+      issue_identifier: record.identifier,
+      issue_url: record.url,
+      title: record.title,
+      repo: record.repo,
+      workspace_path: record.workspacePath,
+      runs: record.runs,
+      continuations: record.continuations,
+      last_error: record.lastError,
+      archived_at: this.#clock.now().toISOString(),
+      released,
+      completed_before: this.#completed.has(issueId),
+      timeline: record.timeline.slice(),
+      next_seq: record.nextSeq,
+      sessions: record.sessions.map((session) => this.#sessionJson(session)),
+      run_trace: traceJson(record.lastRun),
+      last_check: checkJson(record.lastCheck),
+    };
+  }
+
+  #sessionJson(session: SessionInfo) {
+    return {
+      run: session.run,
+      attempt: session.attempt,
+      role: session.role,
+      state: session.state,
+      model: session.model,
+      effort: session.effort,
+      started_at: session.startedAt.toISOString(),
+      finished_at: session.finishedAt?.toISOString() ?? null,
+      outcome: session.outcome,
+      transcript: session.transcript,
+    };
   }
 
   /** Holds an issue that stays active after its continuation sessions, until it changes. */
@@ -1634,13 +1713,15 @@ export class Orchestrator {
       entry.sessionSkills = event.detail.skill_names.filter((name): name is string => typeof name === 'string');
     }
 
-    if (event.usage !== undefined) {
-      const delta = usageDelta(event.usage, entry.reported);
+    // Per-model totals alone (a model call in the middle of a turn) also move the session's token counters.
+    const usage = event.usage ?? (event.modelUsage !== undefined ? tokensOfModelUsage(event.modelUsage) : undefined);
+    if (usage !== undefined) {
+      const delta = usageDelta(usage, entry.reported);
       this.#totals.inputTokens += delta.inputTokens;
       this.#totals.outputTokens += delta.outputTokens;
       this.#totals.totalTokens += delta.totalTokens;
-      entry.tokens = event.usage;
-      entry.reported = event.usage;
+      entry.tokens = usage;
+      entry.reported = usage;
     }
     if (event.costUsd !== undefined) {
       this.#totals.claudeEstimateUsd += Math.max(0, event.costUsd - entry.claudeEstimateUsd);
@@ -1767,8 +1848,9 @@ export class Orchestrator {
       seconds_running: Math.round((now - entry.startedAtMs) / 100) / 10,
       workspace: entry.workspacePath,
       tokens: tokensJson(entry.tokens),
-      // The model that used the most tokens; until the first turn ends, the one the session started with.
+      // The model that used the most tokens; until the first model call, the one the session started with.
       model: primaryModelOf(entry.modelUsage) ?? entry.model,
+      effort: entry.effort,
       cost_usd: Math.round(entry.costUsd * 10_000) / 10_000,
       claude_estimate_usd: Math.round(entry.claudeEstimateUsd * 10_000) / 10_000,
       repo: entry.repo,
@@ -1864,7 +1946,10 @@ export class Orchestrator {
     };
   }
 
-  /** Debug details for GET /api/v1/<issue_identifier>; null when the issue is not tracked. */
+  /**
+   * Debug details for GET /api/v1/<issue_identifier>: the live claim, else the archived details of a finished
+   * claim (`status` = `finished`); null when the issue is unknown.
+   */
   issueDetail(key: string) {
     const now = this.#clock.monotonicMs();
     const matches = (id: string, identifier: string) => id === key || identifier === key;
@@ -1875,7 +1960,10 @@ export class Orchestrator {
     if (issueId === undefined) {
       for (const [id, record] of this.#records) if (matches(id, record.identifier)) issueId = id;
     }
-    if (issueId === undefined) return null;
+    if (issueId === undefined) {
+      const archived = this.#archive.get(key);
+      return archived === null ? null : this.#archivedDetail(archived);
+    }
     const record = this.#records.get(issueId);
     const identifier = entry?.identifier ?? retry?.identifier ?? record?.identifier ?? key;
     const pricing = this.#deps.pricing?.current();
@@ -1917,59 +2005,89 @@ export class Orchestrator {
                 },
               ]),
             ),
-      sessions: (record?.sessions ?? []).map((session) => ({
-        run: session.run,
-        attempt: session.attempt,
-        role: session.role,
-        state: session.state,
-        model: session.model,
-        started_at: session.startedAt.toISOString(),
-        finished_at: session.finishedAt?.toISOString() ?? null,
-        outcome: session.outcome,
-        transcript: session.transcript,
-      })),
+      sessions: (record?.sessions ?? []).map((session) => this.#sessionJson(session)),
       timeline_seq: (record?.nextSeq ?? 1) - 1,
-      recent_events: (record?.timeline ?? [])
-        .filter((event) => event.kind === 'agent' && event.message !== null)
-        .slice(-RECENT_EVENTS)
-        .map((event) => ({ at: event.at, event: event.event, message: event.message })),
+      recent_events: recentEvents(record?.timeline ?? []),
       last_error: record?.lastError ?? null,
       last_check: checkJson(record?.lastCheck ?? null),
       tracked: { completed_before: this.#completed.has(issueId) },
+      archived: null as { archived_at: string; released: boolean } | null,
     };
   }
 
-  /** Timeline entries after `after` (a `seq`) for GET /api/v1/<identifier>/timeline; null when the issue is not tracked. */
-  issueTimeline(key: string, after = 0) {
-    const found = this.#findRecord(key);
-    if (found === null) return null;
-    const { record } = found;
-    const events = record.timeline.filter((event) => event.seq > after);
+  /** issueDetail for a finished claim served from the archive: the same shape, without live parts. */
+  #archivedDetail(archived: ArchivedIssue) {
+    const lastSession = archived.sessions.at(-1);
     return {
-      issue_identifier: record.identifier,
-      latest_seq: record.nextSeq - 1,
+      issue_identifier: archived.issue_identifier,
+      issue_id: archived.issue_id,
+      issue_url: archived.issue_url,
+      title: archived.title,
+      repo: archived.repo,
+      status: 'finished',
+      role: lastSession?.role ?? null,
+      workspace: { path: archived.workspace_path },
+      attempts: {
+        runs: archived.runs,
+        continuations: archived.continuations,
+        restart_count: Math.max(archived.runs - 1, 0),
+        current_retry_attempt: null,
+      },
+      run_trace: archived.run_trace,
+      running: null,
+      retry: null,
+      paused: null,
+      logs: { session_transcripts_dir: this.#deps.logDir === null ? null : path.join(this.#deps.logDir, 'sessions') },
+      usage_by_model: null,
+      sessions: archived.sessions,
+      timeline_seq: archived.next_seq - 1,
+      recent_events: recentEvents(archived.timeline),
+      last_error: archived.last_error,
+      last_check: archived.last_check,
+      tracked: { completed_before: archived.completed_before },
+      archived: { archived_at: archived.archived_at, released: archived.released },
+    };
+  }
+
+  /** Timeline and sessions of a claimed issue, else of an archived one; null when the issue is unknown. */
+  #findTrace(key: string): { identifier: string; timeline: TimelineEvent[]; nextSeq: number; sessions: Array<{ run: string; transcript: string | null }> } | null {
+    const found = this.#findRecord(key);
+    if (found !== null) return { identifier: found.record.identifier, timeline: found.record.timeline, nextSeq: found.record.nextSeq, sessions: found.record.sessions };
+    const archived = this.#archive.get(key);
+    if (archived === null) return null;
+    return { identifier: archived.issue_identifier, timeline: archived.timeline, nextSeq: archived.next_seq, sessions: archived.sessions };
+  }
+
+  /** Timeline entries after `after` (a `seq`) for GET /api/v1/<identifier>/timeline; null when the issue is unknown. */
+  issueTimeline(key: string, after = 0) {
+    const trace = this.#findTrace(key);
+    if (trace === null) return null;
+    const events = trace.timeline.filter((event) => event.seq > after);
+    return {
+      issue_identifier: trace.identifier,
+      latest_seq: trace.nextSeq - 1,
       // Older entries than the first one here were dropped (TIMELINE_EVENTS).
-      first_seq: record.timeline[0]?.seq ?? record.nextSeq,
+      first_seq: trace.timeline[0]?.seq ?? trace.nextSeq,
       events,
     };
   }
 
   /** The transcript file of a session (the latest when `run` is null), or null. */
   issueTranscriptFile(key: string, run: string | null): string | null {
-    const found = this.#findRecord(key);
-    if (found === null) return null;
-    const session = run === null ? found.record.sessions.at(-1) : found.record.sessions.find((candidate) => candidate.run === run);
+    const trace = this.#findTrace(key);
+    if (trace === null) return null;
+    const session = run === null ? trace.sessions.at(-1) : trace.sessions.find((candidate) => candidate.run === run);
     return session?.transcript ?? null;
   }
 
   /**
    * Normalized transcript lines of a session from byte `from` on (GET /api/v1/<identifier>/transcript); null when
-   * the issue is not tracked. Model calls are priced with model-costs.yml.
+   * the issue is unknown. Model calls are priced with model-costs.yml.
    */
   issueTranscript(key: string, run: string | null, from = 0): ({ run: string | null; available: boolean; reason: string | null } & Partial<TranscriptChunk>) | null {
-    const found = this.#findRecord(key);
-    if (found === null) return null;
-    const session = run === null ? found.record.sessions.at(-1) : found.record.sessions.find((candidate) => candidate.run === run);
+    const trace = this.#findTrace(key);
+    if (trace === null) return null;
+    const session = run === null ? trace.sessions.at(-1) : trace.sessions.find((candidate) => candidate.run === run);
     if (session === undefined) return { run, available: false, reason: 'unknown session' };
     if (session.transcript === null) {
       return { run: session.run, available: false, reason: this.#deps.logDir === null ? 'session transcripts are disabled (no log directory)' : 'no transcript yet' };
