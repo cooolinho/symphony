@@ -1,83 +1,83 @@
-# Zuschnitt: Epics, Issues, Abhängigkeiten, Labels
+# Breakdown: epics, issues, dependencies, labels
 
-Ein guter Plan ist vollständig gegenüber dem Konzept, jedes Issue einzeln mergbar, und die Reihenfolge ergibt sich aus
-den Abhängigkeiten, nicht aus der Nummerierung.
+A good plan is complete with respect to the concept, every issue is mergeable on its own, and the order follows from
+the dependencies, not from the numbering.
 
 ## Epics
 
-- Ein Epic ist ein **fachlich zusammenhängender, für sich lieferbarer Bereich** des Konzepts („Benutzerverwaltung“,
-  „Rechnungen“), kein technischer Layer („Datenbank“, „Frontend“).
-- Ein Epic hat **2 bis 10 Issues**. Ein einzelnes Issue gehört in ein anderes Epic; mehr als 10 Issues sind zwei Epics.
-- Ein Grundlagen-Epic (Rollen, Mandanten, Basis-Layout) nur, wenn das Konzept es voraussetzt und mehrere Bereiche darauf
-  aufbauen. Es kommt zuerst.
-- Titel: `Epic: <Bereich>`. Der Text fasst das Ziel des Bereichs zusammen und verweist auf den Konzeptabschnitt. Er enthält
-  **nie** „blocked by #N“ (auch nicht verneint) und nie `/`-Befehle am Anfang; Verweise auf andere Epics schreibst du als
-  „baut auf #N auf“.
+- An epic is a **functionally coherent area of the concept that can be delivered on its own** ("user management",
+  "invoices"), not a technical layer ("database", "frontend").
+- An epic has **2 to 10 issues**. A single issue belongs in another epic; more than 10 issues are two epics.
+- A foundation epic (roles, tenants, base layout) only if the concept requires it and several areas build on it. It
+  comes first.
+- Title: `Epic: <area>`. The text summarises the goal of the area and refers to the concept section. It **never**
+  contains "blocked by #N" (not even negated) and never `/` commands at the start; references to other epics you write
+  as "builds on #N".
 
 ## Issues
 
-- **Einzeln mergbar**: ein Pull Request, den ein Mensch in Ruhe prüfen kann. Größe S (eine Datei oder wenige Zeilen) oder M
-  (wenige Dateien, ein Bereich). L teilst du.
-- **Vertikale Scheibe statt Schicht**: „Rechnung anlegen“ (Migration, Model, Resource, Policy, Test) statt „alle Migrationen“.
-  Tests gehören ins Issue, das den Code ändert, nicht in ein eigenes Test-Issue.
-- Jedes Issue hat **prüfbare Akzeptanzkriterien** (bei Rechten: wer darf, wer nicht), sagt, welche Tests es braucht, nennt
-  den **Konzeptabschnitt** und sagt, was **nicht** dazugehört.
-- **Design-Issues** (der Agent sieht die Oberfläche nicht): konkrete Kriterien mit Filament-Komponente, Spalten, Filtern,
-  Aktionen, Texten, Leer- und Fehlerzuständen und der Rolle, die was sieht. Nie „schöner machen“.
-- Unklares bleibt eine **Frage im Bericht**, kein Issue. Das gilt auch für Entscheidungen, die ein Mensch treffen muss:
-  Rechtliches, Preise, Texte mit rechtlicher Wirkung, externe Dienste mit Kosten.
-- Titel: `<Feature|Design|Qualität|Wartung>: <was sich ändert>`, kurz und eindeutig. Der Titel ist der Schlüssel gegen
-  Duplikate und muss unter einem Epic eindeutig sein.
-- Ein Major-Upgrade (Laravel, Filament, PHP) steht allein in seinem Epic und bekommt zusätzlich `manual-merge`.
-- Ein reines Refactoring ohne Verhaltensänderung beginnt mit `/refactor-safely` in der ersten Zeile (Abhängigkeiten
-  stehen darunter). Fehlen im Bereich Tests, wartet es auf ein Issue, das sie schreibt.
+- **Mergeable on its own**: one pull request a human can review at leisure. Size S (one file or a few lines) or M
+  (a few files, one area). Split L.
+- **Vertical slice instead of layer**: "create invoice" (migration, model, resource, policy, test) instead of "all
+  migrations". Tests belong in the issue that changes the code, not in a test issue of their own.
+- Every issue has **verifiable acceptance criteria** (for permissions: who may, who may not), says which tests it
+  needs, names the **concept section** and says what does **not** belong to it.
+- **Design issues** (the agent does not see the UI): concrete criteria with Filament component, columns, filters,
+  actions, texts, empty and error states and which role sees what. Never "make it nicer".
+- Anything unclear stays a **question in the report**, not an issue. That also applies to decisions a human has to
+  make: legal matters, prices, texts with legal effect, external services that cost money.
+- Title: `<Feature|Design|Quality|Maintenance>: <what changes>`, short and unambiguous. The title is the key against
+  duplicates and must be unique within an epic.
+- A major upgrade (Laravel, Filament, PHP) stands alone in its epic and additionally gets `manual-merge`.
+- A pure refactoring without behaviour change starts with `/refactor-safely` on the first line (dependencies go below
+  it). If the area lacks tests, it waits for an issue that writes them.
 
-## Abhängigkeiten
+## Dependencies
 
-- **Nur echte Abhängigkeiten**: Issue B braucht Code oder Daten aus Issue A (Model, Rolle, Route, Migration). Gleiche
-  Dateien allein sind ein Grund zum Verketten, ein gemeinsames Thema nicht.
-- **Nie auf ein Epic.** Ein Epic schließt ein Mensch von Hand; es würde ewig blockieren.
-- Abhängigkeiten dürfen über Epics hinweg gehen, aber nie im Kreis. Prüfe den Graphen auf Zyklen, bevor du den Plan postest.
-- Kurze Ketten: Wartet ein Issue auf mehr als drei andere, ist es zu groß oder falsch geschnitten.
-- Im Aufruf: `blocked_by: [<Nummern>]` setzt GitHubs Relationship. Zusätzlich steht im Text als eigene Zeile direkt unter
-  dem Ziel `Blocked by #N` (mehrere: `Blocked by #3, #4`), wörtlich und Englisch, auch in deutschen Texten. Nur das erkennt
-  Symphony im Text.
-- Ein Issue wird erst gestartet, wenn alle Blocker **geschlossen** sind, also ihr Pull Request gemergt ist. Das schreibst
-  du nicht ins Issue; es ist das Verhalten von Symphony.
+- **Only real dependencies**: issue B needs code or data from issue A (model, role, route, migration). Touching the
+  same files alone is a reason to chain, a shared topic is not.
+- **Never on an epic.** A human closes an epic by hand; it would block forever.
+- Dependencies may cross epics, but never form a cycle. Check the graph for cycles before you post the plan.
+- Short chains: if an issue waits for more than three others, it is too big or cut wrongly.
+- In the call: `blocked_by: [<numbers>]` sets GitHub's relationship. In addition the text carries, as its own line
+  directly below the goal, `Blocked by #N` (several: `Blocked by #3, #4`), literally and in English, whatever the
+  language of the text. That is the only form Symphony recognises in the text.
+- An issue is only started once all its blockers are **closed**, i.e. their pull request is merged. You do not write
+  that into the issue; it is Symphony's behaviour.
 
 ## Labels
 
-Pro Issue genau **eine** Kategorie, **ein** Effort-Label und (außer bei `issue-models=off`) **ein** Modell-Label.
+Per issue exactly **one** category, **one** effort label and (except with `issue-models=off`) **one** model label.
 
-**Kategorie**
+**Category**
 
-| Label | Wann |
+| Label | When |
 |---|---|
-| `feature` | neue oder vervollständigte Funktion aus dem Konzept |
-| `design` | Oberfläche und Bedienbarkeit |
-| `quality` | Tests, Refactoring, Performance, Sicherheit |
-| `maintenance` | Abhängigkeiten, Upgrades, Werkzeuge |
+| `feature` | new or completed feature from the concept |
+| `design` | UI and usability |
+| `quality` | tests, refactoring, performance, security |
+| `maintenance` | dependencies, upgrades, tooling |
 
-**Effort** (wie viel nachgedacht wird; Aufwand S/M und Risiko):
+**Effort** (how much thinking goes into it; size S/M and risk):
 
-| Label | Wann |
+| Label | When |
 |---|---|
-| `Effort: low` | Texte, Übersetzungen, Konfiguration, eine Zeile |
-| `Effort: medium` | Aufwand S |
-| `Effort: high` | Aufwand M, der Normalfall |
-| `Effort: xhigh` | Risiko hoch: Datenmodell, Rechte, Geld oder Abrechnung, Migration bestehender Daten, knifflige Abhängigkeiten |
+| `Effort: low` | texts, translations, configuration, one line |
+| `Effort: medium` | size S |
+| `Effort: high` | size M, the normal case |
+| `Effort: xhigh` | high risk: data model, permissions, money or billing, migration of existing data, tricky dependencies |
 
-`Effort: max` vergibst du nie von selbst. Fehlt dir ein Maßstab, nimm `Effort: high`.
+You never assign `Effort: max` on your own. If you lack a yardstick, take `Effort: high`.
 
-**Modell** (`issue-models=auto`; bei `opus`, `sonnet`, `haiku` bekommen alle Issues dasselbe Label):
+**Model** (`issue-models=auto`; with `opus`, `sonnet`, `haiku` all issues get the same label):
 
-| Label | Wann |
+| Label | When |
 |---|---|
-| `Model: haiku` | Aufwand S **und** Risiko niedrig: Texte, Übersetzungen, Konfiguration, kleine Anpassungen in einem Bereich, einfache Tests |
-| `Model: sonnet` | der Normalfall: Aufwand S mit Risiko mittel, Aufwand M mit Risiko niedrig oder mittel (neue Funktion in wenigen Dateien, Design-Issues, Tests) |
-| `Model: opus` | Risiko hoch (Datenmodell, Rechte, Geld, Migrationen auf bestehenden Daten), Aufwand M über mehrere Bereiche, Major-Upgrades, knifflige Abhängigkeiten |
+| `Model: haiku` | size S **and** low risk: texts, translations, configuration, small changes in one area, simple tests |
+| `Model: sonnet` | the normal case: size S with medium risk, size M with low or medium risk (new feature in a few files, design issues, tests) |
+| `Model: opus` | high risk (data model, permissions, money, migrations on existing data), size M across several areas, major upgrades, tricky dependencies |
 
-Im Zweifel das stärkere Modell. Aufwand und Modell hängen zusammen, sollen aber nicht blind gleich laufen: Ein Datenmodell
-in einer Datei ist `Effort: xhigh` und `Model: opus`; ein Übersetzungs-Issue ist `Effort: low` und `Model: haiku`.
+When in doubt, the stronger model. Effort and model are related but should not blindly run in step: a data model in
+one file is `Effort: xhigh` and `Model: opus`; a translation issue is `Effort: low` and `Model: haiku`.
 
-Epics bekommen weder Effort- noch Modell-Label: Sie werden nicht umgesetzt.
+Epics get neither an effort nor a model label: they are not implemented.

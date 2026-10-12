@@ -337,80 +337,84 @@ also merged into `develop`. Only what you take over in a release PR reaches `mai
   a cheaper model for implementation (`CLAUDE_MODEL=sonnet`).
 - The planner does not see the UI. It therefore writes design issues with concrete, testable criteria.
 
-## Continuations and pausing
-## Konzept zu Backlog: /concept
+## Concept to Backlog (`/concept`)
 
-Mit `/concept <Pfad>` wird aus einem Konzept ein Arbeitsplan auf dem Board. Du schreibst das Konzept als Markdown-Datei
-ins Repository (z. B. `docs/index.md`), legst ein Issue mit der Beschreibung `/concept docs/index.md` an und schiebst es
-nach **Ready**. Die Rolle `analyst` (`opus`, nur lesend, keine Entry-Checks) liest das Konzept, prüft, was der Code schon
-kann, und legt zwei Ebenen von Issues an:
+`/concept <path>` turns a concept into a work plan on the board. You write the concept as a Markdown file in the
+repository (e.g. `docs/index.md`), create an issue with the description `/concept docs/index.md` and move it to
+**Ready**. The `analyst` role (`opus`, read-only, no entry checks) reads the concept, checks what the code can already
+do, and creates two levels of issues:
 
 ```
-#10 /concept docs/index.md                      → In review, wenn der Plan steht
-├─ #11 Epic: Benutzerverwaltung                 Backlog · Labels epic, concept
-│  ├─ #13 Feature: Anmeldung                    Backlog · concept, feature, Effort: high, Model: sonnet
-│  └─ #14 Feature: Rollen und Rechte            Backlog · … Effort: xhigh, Model: opus · blocked by #13
-└─ #12 Epic: Abrechnung                         Backlog
-   └─ #15 Feature: Rechnung anlegen             Backlog · … blocked by #14
+#10 /concept docs/index.md                      → In review once the plan is in place
+├─ #11 Epic: User management                    Backlog · labels epic, concept
+│  ├─ #13 Feature: Sign-in                      Backlog · concept, feature, Effort: high, Model: sonnet
+│  └─ #14 Feature: Roles and permissions        Backlog · … Effort: xhigh, Model: opus · blocked by #13
+└─ #12 Epic: Billing                            Backlog
+   └─ #15 Feature: Create invoice               Backlog · … blocked by #14
 ```
 
-Jedes Issue bekommt Akzeptanzkriterien, den Bezug zum Konzeptabschnitt, Tests, **Abhängigkeiten** (GitHub-Relationship
-und Zeile `Blocked by #N`), eine Kategorie (`feature`, `design`, `quality`, `maintenance`), genau ein `Effort: …`-Label und
-ein `Model: …`-Label. Alle landen in **Backlog** (`tracker.provider.sub_issue_status`); sie starten erst, wenn du sie
-nach **Ready** schiebst. Die Anleitung steht im Skill [`concept`](../.claude/skills/concept/SKILL.md), der Zuschnitt in
+Every issue gets acceptance criteria, the reference to the concept section, tests, **dependencies** (GitHub
+relationship and a `Blocked by #N` line), a category (`feature`, `design`, `quality`, `maintenance`), exactly one
+`Effort: …` label and one `Model: …` label. All of them land in **Backlog** (`tracker.provider.sub_issue_status`); they
+only start when you move them to **Ready**. The instructions are in the skill
+[`concept`](../.claude/skills/concept/SKILL.md), the breakdown rules in
 [breakdown.md](../.claude/skills/concept/breakdown.md).
 
-### Einrichten
+### Setup
 
-1. **Konzept:** eine Markdown-Datei auf dem Basis-Branch (`SYMPHONY_BASE_BRANCH`, sonst der Default-Branch), denn dort
-   klont der Agent. Relativ verlinkte `.md`-Dateien liest er eine Ebene tief mit. Gut sind Ziel, Rollen, Funktionsbereiche,
-   Abläufe, Nicht-Ziele und offene Fragen.
-2. **Labels:** `npm run repo-init` → *Standard labels* legt `concept`, `epic`, die `Model: …`- und `Effort: …`-Labels sowie
-   die Kategorien an. Fehlt ein Label, legt der Agent das Issue ohne an und sagt es im Bericht.
-3. **Issue:** Beschreibung `/concept docs/index.md`, optional `issue-models=auto|opus|sonnet|haiku|off` (Standard
-   `auto`) und darunter Text mit Schwerpunkten oder Ausschlüssen. Danach nach **Ready**.
+1. **Concept:** a Markdown file on the base branch (`SYMPHONY_BASE_BRANCH`, otherwise the default branch), because
+   that is what the agent clones. It also reads relatively linked `.md` files one level deep. Goal, roles, functional
+   areas, flows, non-goals and open questions make a good concept.
+2. **Labels:** `npm run repo-init` → *Standard labels* creates `concept`, `epic`, the `Model: …` and `Effort: …` labels
+   and the categories. If a label is missing, the agent creates the issue without it and says so in the report.
+3. **Issue:** description `/concept docs/index.md`, optionally `issue-models=auto|opus|sonnet|haiku|off` (default
+   `auto`) and below it text with focus areas or exclusions. Then move it to **Ready**.
 
-Prüfen mit `npm run dry-run`: Das Issue erscheint mit `role=analyst` und `↳ command /concept → symphony:concept`.
+Check with `npm run dry-run`: the issue shows up with `role=analyst` and `↳ command /concept → symphony:concept`.
 
-### Ablauf
+### How a run works
 
-1. Der Agent liest das Konzept und den Stand des Repositories und ordnet jeden Bereich ein (vorhanden, teilweise, fehlt).
-2. Er schneidet Epics (2 bis 10 Issues, fachlich abgeschlossen) und Issues (einzeln mergbar, Größe S oder M) und ordnet sie
-   nach Abhängigkeiten. Jede Anforderung des Konzepts landet in einem Issue oder unter „Nicht angelegt“; Lücken werden
-   Fragen, keine erfundenen Issues.
-3. Er postet den Kommentar **`## Konzept-Plan`**, **bevor** er etwas anlegt: Baum, Labels, Reihenfolge und eine Abdeckungsliste.
-4. Er legt Epics und Issues an, Blocker zuerst. Ein Epic entsteht, wenn sein erstes Issue dran ist.
-5. Er postet **`## Konzept-Bericht`** mit dem Baum samt Issue-Nummern, dem Grund für Modell und Effort je Issue, „Nicht
-   angelegt“, offenen Fragen und Hinweisen. Das Konzept-Issue geht nach **In review**.
+1. The agent reads the concept and the state of the repository and classifies every area (present, partial, missing).
+2. It cuts epics (2 to 10 issues, functionally self-contained) and issues (mergeable on their own, size S or M) and
+   orders them by their dependencies. Every requirement of the concept ends up in an issue or under "Not created";
+   gaps become questions, not invented issues.
+3. It posts the comment **`## Concept Plan`** **before** it creates anything: tree, labels, order and a coverage list.
+4. It creates epics and issues, blockers first. An epic is created when its first issue is due.
+5. It posts **`## Concept Report`** with the tree including issue numbers, the reason for model and effort per issue,
+   "Not created", open questions and notes. The concept issue moves to **In review**.
 
-Die Labels richten sich nach Aufwand und Risiko ([Tabellen](../.claude/skills/concept/breakdown.md#labels)): `Effort: low`
-für Texte und Konfiguration, `medium` für kleine, `high` für mittlere Aufgaben, `xhigh` bei Datenmodell, Rechten, Geld oder
-Migrationen. `Effort: max` vergibt der Agent nicht. Mit `issue-models=auto` wählt er `Model: haiku`, `sonnet` oder
-`opus`; ein fester Wert setzt dasselbe Modell an alle Issues, `off` lässt die Modell-Labels weg.
+The two comment headings are always English, whatever the language of the concept, because later runs search for them.
+Concept issues started before the skill was translated may carry `## Konzept-Plan` and `## Konzept-Bericht`; the agent
+treats them as equivalent.
 
-### Danach
+The labels follow size and risk ([tables](../.claude/skills/concept/breakdown.md#labels)): `Effort: low` for texts and
+configuration, `medium` for small, `high` for medium-sized tasks, `xhigh` for data model, permissions, money or
+migrations. The agent never assigns `Effort: max`. With `issue-models=auto` it picks `Model: haiku`, `sonnet` or `opus`;
+a fixed value puts the same model on all issues, `off` leaves the model labels out.
 
-| Du willst | So geht es |
+### Afterwards
+
+| You want to | How |
 |---|---|
-| ein Issue umsetzen lassen | Issue von **Backlog** nach **Ready** schieben. Hat es offene Blocker, wartet es dort und startet, sobald sie geschlossen sind (Pull Request gemergt). |
-| ein Issue streichen oder ändern | Im Backlog schließen oder bearbeiten, bevor es nach Ready geht. |
-| das Konzept erweitern | Konzept ändern und committen (auf den Basis-Branch), Wünsche als Kommentar im Konzept-Issue, das Issue zurück nach **Ready**. Der Agent macht einen **Nachtrag** und legt nur an, was im Bericht fehlt. |
-| einen Abbruch beheben | Bricht ein Lauf ab, setzt Symphony ihn fort (oder du schiebst das Issue zurück nach **Ready**). Der Agent übernimmt den Plan-Kommentar und legt ohne Duplikate nur Fehlendes an: Derselbe Titel unter demselben Epic liefert das vorhandene Issue zurück. |
+| have an issue implemented | Move the issue from **Backlog** to **Ready**. If it has open blockers, it waits there and starts as soon as they are closed (pull request merged). |
+| drop or change an issue | Close or edit it in the backlog before it goes to Ready. |
+| extend the concept | Change the concept and commit it (to the base branch), put requests as a comment on the concept issue, move the issue back to **Ready**. The agent writes an **addendum** and creates only what is missing from the report. |
+| recover from an abort | If a run aborts, Symphony continues it (or you move the issue back to **Ready**). The agent takes over the plan comment and creates only what is missing, without duplicates: the same title under the same epic returns the existing issue. |
 
-Die **Epics nicht nach Ready schieben**: Sie sind Container. Ein Epic mit offenen Sub-Issues wird ohnehin nicht gestartet.
-Schließe es von Hand, wenn alle Sub-Issues erledigt sind.
+**Do not move the epics to Ready**: they are containers. An epic with open sub-issues is not started anyway. Close it
+by hand when all sub-issues are done.
 
-### Grenzen
+### Limits
 
-- Höchstens `roles.analyst.max_sub_issues` (Standard 60) offene Issues gleichzeitig; Epics zählen mit, ebenso die Issues
-  darin. Was nicht mehr hineinpasst, steht im Bericht unter „Nicht angelegt“. Sind Issues erledigt und geschlossen, holt
-  ein Nachtrag den Rest nach.
-- Abhängigkeiten zeigen nie auf ein Epic, sondern auf konkrete Issues, auch über Epics hinweg, nie im Kreis.
-- Der Agent ändert nichts im Repository und sieht die Oberfläche nicht; Design-Issues bekommen deshalb konkrete Kriterien.
-- Kosten: ein Lauf pro Konzept und Nachtrag (`roles.analyst.claude.max_budget_usd`, Standard 20 $), dazu später die
-  Läufe der Issues, die du freigibst.
+- At most `roles.analyst.max_sub_issues` (default 60) open issues at once; epics count, and so do the issues inside
+  them. What no longer fits is listed in the report under "Not created". Once issues are done and closed, an addendum
+  picks up the rest.
+- Dependencies never point at an epic but at concrete issues, also across epics, never in a cycle.
+- The agent changes nothing in the repository and does not see the UI; design issues therefore get concrete criteria.
+- Costs: one run per concept and addendum (`roles.analyst.claude.max_budget_usd`, default $20), plus later the runs of
+  the issues you release.
 
-## Fortsetzungen und Pausieren
+## Continuations and pausing
 
 If a session ends normally but the issue is still in an active column, Symphony starts a **continuation session**
 after one second. The agent was not finished then, for example because `max_turns` was reached. So that an issue

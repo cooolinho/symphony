@@ -1,120 +1,121 @@
-# Vorlagen
+# Templates
 
-Schreibe in der Sprache des Konzepts. Die folgenden Vorlagen sind deutsch. Titel kurz und eindeutig: Der Titel dient
-zugleich als Schlüssel, damit ein Retry kein Duplikat anlegt. Pfade, Nummern und Schlüssel sind Platzhalter.
+Write in the language of the concept; translate the template text, but keep the `## Concept Plan` and
+`## Concept Report` headings in English exactly as below, because later runs search for them. Keep titles short and
+unambiguous: the title is also the key that keeps a retry from creating a duplicate. Paths, numbers and keys are
+placeholders.
 
 ## Epic
 
-Titel: `Epic: <Bereich>` · Labels: `epic`, `concept` · Aufruf ohne `parent`.
+Title: `Epic: <area>` · Labels: `epic`, `concept` · call without `parent`.
 
 ```markdown
-## Ziel
-<Was dieser Bereich nach Abschluss leistet, in zwei bis drei Sätzen.>
+## Goal
+<What this area delivers once it is finished, in two or three sentences.>
 
-## Bezug zum Konzept
-`<Pfad>` – <Abschnitt oder Zitat>
+## Reference to the concept
+`<path>` – <section or quote>
 
-## Inhalt
-<Die Issues stehen als Sub-Issues darunter. Hier nur, was sie verbindet: Reihenfolge, gemeinsame Entscheidungen.>
-<Verweise auf andere Epics: "baut auf #<n> auf".>
+## Content
+<The issues are listed below as sub-issues. Here only what connects them: order, shared decisions.>
+<References to other epics: "builds on #<n>".>
 
-## Nicht enthalten
-<Was zum Bereich gehört, aber bewusst nicht in diesem Epic steht, mit Verweis.>
+## Not included
+<What belongs to the area but is deliberately not in this epic, with a reference.>
 
-Dieses Issue ist ein Container: Es bleibt im Backlog und wird nicht umgesetzt. Schließen, wenn alle Sub-Issues erledigt
-sind. Teil des Konzepts #<Konzept-Issue>.
+This issue is a container: it stays in the backlog and is not implemented. Close it when all sub-issues are done.
+Part of concept #<concept issue>.
 ```
 
-## Sub-Issue
+## Sub-issue
 
-Titel: `<Feature|Design|Qualität|Wartung>: <was sich ändert>`, z. B. `Feature: Rechnung anlegen`.
-Labels: `concept`, Kategorie, `Effort: …`, ggf. `Model: …`, ggf. `manual-merge`. Aufruf mit `parent` (Nummer des Epics) und
-`blocked_by`.
+Title: `<Feature|Design|Quality|Maintenance>: <what changes>`, e.g. `Feature: create invoice`.
+Labels: `concept`, category, `Effort: …`, if applicable `Model: …`, if applicable `manual-merge`. Call with `parent`
+(number of the epic) and `blocked_by`.
 
 ```markdown
-## Ziel
-<Was Nutzer danach können oder was danach besser ist, in ein bis zwei Sätzen.>
+## Goal
+<What users can do afterwards or what is better afterwards, in one or two sentences.>
 
 Blocked by #<n>
 
-## Bezug zum Konzept
-`<Pfad>` – <Abschnitt oder Zitat>
+## Reference to the concept
+`<path>` – <section or quote>
 
-## Ausgangslage
-`<Datei>:<Zeile>` / `<Route>` / `<Resource>`: <was es heute gibt oder fehlt; bei Neuem: wo es anknüpft>
+## Starting point
+`<file>:<line>` / `<route>` / `<resource>`: <what exists or is missing today; for something new: where it connects>
 
-## Akzeptanzkriterien
-- [ ] <prüfbares Kriterium>
-- [ ] <prüfbares Kriterium, inkl. Rechte: wer darf, wer nicht>
+## Acceptance criteria
+- [ ] <verifiable criterion>
+- [ ] <verifiable criterion, including permissions: who may, who may not>
 
 ## Tests
-- <Feature-, Livewire- oder Filament-Test, der die Kriterien belegt>
+- <feature, Livewire or Filament test that proves the criteria>
 
-## Nicht enthalten
-<Was bewusst zu einem anderen Issue gehört, mit Verweis „siehe #<n>“, und was nicht geändert werden soll.>
+## Not included
+<What deliberately belongs to another issue, with the reference "see #<n>", and what should not be changed.>
 
-Kategorie: <feature|design|quality|maintenance> · Aufwand: <S|M> · Risiko: <niedrig|mittel|hoch> ·
-Teil von Epic #<Epic> im Konzept #<Konzept-Issue>.
+Category: <feature|design|quality|maintenance> · Size: <S|M> · Risk: <low|medium|high> ·
+Part of epic #<epic> in concept #<concept issue>.
 ```
 
-Die Zeile `Blocked by #<n>` steht nur bei Issues mit Abhängigkeit und direkt unter dem Ziel. Ein reines Refactoring beginnt
-mit `/refactor-safely` in der ersten Zeile, darunter folgt `Blocked by`.
+The line `Blocked by #<n>` is only there for issues with a dependency, directly below the goal. A pure refactoring
+starts with `/refactor-safely` on the first line; `Blocked by` follows below it.
 
 ## Plan
 
 ```markdown
-## Konzept-Plan
+## Concept Plan
 
-**Konzept:** `<Pfad>` @ `<base>` <kurzer Commit-Hash> · **issue-models:** <auto|opus|sonnet|haiku|off>
+**Concept:** `<path>` @ `<base>` <short commit hash> · **issue-models:** <auto|opus|sonnet|haiku|off>
 
-### Epics und Issues
-- **E1 Epic: <Bereich>**: <ein Satz>
-  - E1.1 <Titel> (<Kategorie>, <S|M>, Risiko <…>; `Effort: …`, `Model: …`)
-  - E1.2 <Titel> (…) *wartet auf E1.1*
-- **E2 Epic: <Bereich>**
-  - E2.1 <Titel> (…) *wartet auf E1.2*
+### Epics and issues
+- **E1 Epic: <area>**: <one sentence>
+  - E1.1 <title> (<category>, <S|M>, risk <…>; `Effort: …`, `Model: …`)
+  - E1.2 <title> (…) *waits for E1.1*
+- **E2 Epic: <area>**
+  - E2.1 <title> (…) *waits for E1.2*
 
-### Reihenfolge des Anlegens
+### Creation order
 E1.1, E1.2, E2.1, …
 
-### Abdeckung
-| Konzeptabschnitt | Issue |
+### Coverage
+| Concept section | Issue |
 |---|---|
-| <Abschnitt> | E1.1, E1.2 |
-| <Abschnitt> | vorhanden (`<Datei>`) |
-| <Abschnitt> | nicht angelegt: <Grund> |
+| <section> | E1.1, E1.2 |
+| <section> | present (`<file>`) |
+| <section> | not created: <reason> |
 
-### Annahmen und Fragen
-- <Annahme oder offene Frage>
+### Assumptions and questions
+- <assumption or open question>
 ```
 
-## Bericht
+## Report
 
 ```markdown
-## Konzept-Bericht
+## Concept Report
 
-**Konzept:** `<Pfad>` @ `<base>` <kurzer Commit-Hash>
+**Concept:** `<path>` @ `<base>` <short commit hash>
 
-### Angelegt (Backlog)
-- [ ] #<n> **Epic: <Bereich>**
-  - [ ] #<n> <Titel> (<Kategorie>, <S|M>, `Effort: …`, `Model: …`): <Grund für Effort und Modell in einem Halbsatz>
-  - [ ] #<n> <Titel> (…) *wartet auf #<m>*
-- [ ] #<n> **Epic: <Bereich>**
+### Created (backlog)
+- [ ] #<n> **Epic: <area>**
+  - [ ] #<n> <title> (<category>, <S|M>, `Effort: …`, `Model: …`): <reason for effort and model in half a sentence>
+  - [ ] #<n> <title> (…) *waits for #<m>*
+- [ ] #<n> **Epic: <area>**
   - …
 
-### Nicht angelegt
-- <Anforderung>: <Grund: vorhanden, Nicht-Ziel, offene Frage, Limit>
+### Not created
+- <requirement>: <reason: present, non-goal, open question, limit>
 
-### Offene Fragen
-- <Entscheidung, die ein Mensch treffen sollte, und was davon abhängt>
+### Open questions
+- <decision a human should make, and what depends on it>
 
-### Hinweise
-<`limit_reached`, unbekannte Labels (`unknown_labels`), `unknown_blockers`, `warnings`, ungültige Argumente.>
+### Notes
+<`limit_reached`, unknown labels (`unknown_labels`), `unknown_blockers`, `warnings`, invalid arguments.>
 
-Alle Issues stehen im Backlog. Prüfen, streichen oder ergänzen und einzeln nach „Ready“ schieben: Ein Issue mit
-offenem „Blocked by“ wartet in „Ready“, bis seine Blocker geschlossen sind. Die Epics bleiben im Backlog und werden
-geschlossen, wenn ihre Sub-Issues erledigt sind. Erweitern: Kommentar hier, dann dieses Issue zurück nach „Ready“.
+All issues are in the backlog. Review them, drop or add some and move them to "Ready" one by one: an issue with an
+open "Blocked by" waits in "Ready" until its blockers are closed. The epics stay in the backlog and are closed when
+their sub-issues are done. To extend: comment here, then move this issue back to "Ready".
 ```
 
-Beim Nachtrag lautet die Überschrift `## Konzept-Bericht (Nachtrag <n>)` und der Abschnitt „Angelegt“ nennt nur die neuen
-Issues.
+For an addendum the heading is `## Concept Report (addendum <n>)` and the "Created" section lists only the new issues.
