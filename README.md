@@ -1,5 +1,7 @@
 # Symphony for Laravel × Claude Code
 
+![Project Preview](docs/preview.gif)
+
 **English** | [Deutsch](README.de.md)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
