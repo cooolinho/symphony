@@ -327,7 +327,7 @@ describe('Symphony toolbox skills', () => {
     const text = fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8');
     assert.match(text, /argument-hint:.*issue-models=auto\|opus\|sonnet\|haiku\|off/);
     assert.match(text, /`issue-models=<auto\|opus\|sonnet\|haiku\|off>`/);
-    for (const phrase of ['## Konzept-Plan', '## Konzept-Bericht', 'parent: <Nummer', 'blocked_by: [<Nummern', 'Blocked by #N']) {
+    for (const phrase of ['## Concept Plan', '## Concept Report', 'parent: <number', 'blocked_by: [<numbers', 'Blocked by #N']) {
       assert.ok(text.includes(phrase), phrase);
     }
     const breakdown = fs.readFileSync(path.join(dir, 'breakdown.md'), 'utf8');
