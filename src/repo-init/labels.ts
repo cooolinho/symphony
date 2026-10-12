@@ -5,8 +5,8 @@ import { GithubRestError, type GithubLabel, type GithubRestClient, type LabelUpd
 import type { InitTask } from './tasks.ts';
 
 /** Values of the standard "Model: <value>" labels (docs/usage.md: "Choosing the model per issue"). */
-const MODEL_LABEL_VALUES = ['opus', 'sonnet', 'haiku'];
-const FAMILY_COLORS: Record<string, string> = { opus: '5319e7', sonnet: '1d76db', haiku: '0e8a16' };
+const MODEL_LABEL_VALUES = ['fable', 'opus', 'sonnet', 'haiku'];
+const FAMILY_COLORS: Record<string, string> = { fable: 'bf8700', opus: '5319e7', sonnet: '1d76db', haiku: '0e8a16' };
 /** Colors of the "Effort: <level>" labels, from light (little thinking) to dark (a lot). */
 const EFFORT_COLORS: Record<string, string> = { low: 'c5def5', medium: '9ec5f0', high: 'f9d0c4', xhigh: 'e99695', max: 'b60205' };
 const DEFAULT_COLOR = 'ededed';

@@ -63,6 +63,7 @@ agent that works on it.
 
 | Label | Effect |
 |---|---|
+| `Model: fable` | Claude Fable for complex, high-risk work (data model, permissions, migrations, major upgrades) |
 | `Model: opus` | Claude Opus for hard, open-ended work (architecture, tricky bugs, larger features) |
 | `Model: sonnet` | Claude Sonnet for everyday implementation work |
 | `Model: haiku` | Claude Haiku for small, well-defined changes (docs, copy, config) |
@@ -71,7 +72,7 @@ agent that works on it.
 
 - Without a label, the role's default applies (for example `opus` for the reviewer), then `CLAUDE_MODEL` /
   `CLAUDE_EFFORT` from `.env`.
-- `npm run repo-init` creates the three model labels and the five effort labels (colored from light to dark) in your
+- `npm run repo-init` creates the four model labels and the five effort labels (colored from light to dark) in your
   repositories.
 - With `/auto-code … issue-models=auto`, the planner agent labels each sub-issue it creates with a model that fits the
   task, so cheap models handle simple tasks and strong models get the hard ones.
@@ -86,7 +87,7 @@ Details: [choosing the model](docs/usage.md#choosing-the-model-per-issue) and
 | | Technology | Used for |
 |---|---|---|
 | <img src="https://cdn.simpleicons.org/claude" width="24" alt="Claude"> | **Claude Code** + [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) | Coding agents: sessions, turns, permission modes, plugins, skills, subagents |
-| <img src="https://cdn.simpleicons.org/anthropic" width="24" alt="Anthropic"> | **Claude Opus / Sonnet / Haiku** | Models picked per issue by label, with per-issue effort |
+| <img src="https://cdn.simpleicons.org/anthropic" width="24" alt="Anthropic"> | **Claude Fable / Opus / Sonnet / Haiku** | Models picked per issue by label, with per-issue effort |
 | <img src="https://cdn.simpleicons.org/nodedotjs" width="24" alt="Node.js"> | **Node.js 26** | Runtime; runs TypeScript directly, tests with `node:test` |
 | <img src="https://cdn.simpleicons.org/typescript" width="24" alt="TypeScript"> | **TypeScript** | The whole orchestrator, type-checked with `tsc` |
 | <img src="https://cdn.simpleicons.org/github" width="24" alt="GitHub"> | **GitHub Projects v2, GraphQL & REST API** | Tracker: board columns, issues, sub-issues, labels, pull requests |

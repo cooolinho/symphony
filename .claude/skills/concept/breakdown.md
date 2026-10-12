@@ -69,15 +69,16 @@ Per issue exactly **one** category, **one** effort label and (except with `issue
 
 You never assign `Effort: max` on your own. If you lack a yardstick, take `Effort: high`.
 
-**Model** (`issue-models=auto`; with `opus`, `sonnet`, `haiku` all issues get the same label):
+**Model** (`issue-models=auto`; with `fable`, `opus`, `sonnet`, `haiku` all issues get the same label):
 
 | Label | When |
 |---|---|
 | `Model: haiku` | size S **and** low risk: texts, translations, configuration, small changes in one area, simple tests |
 | `Model: sonnet` | the normal case: size S with medium risk, size M with low or medium risk (new feature in a few files, design issues, tests) |
-| `Model: opus` | high risk (data model, permissions, money, migrations on existing data), size M across several areas, major upgrades, tricky dependencies |
+| `Model: opus` | size M across several areas, wide reach with medium risk |
+| `Model: fable` | complex issues: high risk (data model, permissions, money, migrations on existing data), major upgrades, tricky dependencies |
 
 When in doubt, the stronger model. Effort and model are related but should not blindly run in step: a data model in
-one file is `Effort: xhigh` and `Model: opus`; a translation issue is `Effort: low` and `Model: haiku`.
+one file is `Effort: xhigh` and `Model: fable`; a translation issue is `Effort: low` and `Model: haiku`.
 
 Epics get neither an effort nor a model label: they are not implemented.
