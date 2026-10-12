@@ -143,8 +143,8 @@ live in **`.env`**.
 - **Live configuration:** `WORKFLOW.md` reloads without a restart; one instance can serve several repositories.
 - **Observable:** dashboard with JSON API and a per-agent execution trace (prompts, model calls, tool calls, phases,
   tokens and cost), structured logs, one transcript per session, `--dry-run` to check the setup.
-- **Logs and cost per repository:** a running log of every run with tokens, model, estimated cost and agent time, with
-  statistics in the dashboard.
+- **Logs and cost per repository:** a running log of every run with tokens, model, effort, estimated cost and agent
+  time, with statistics in the dashboard; the details of finished runs stay available in the agent detail view.
 
 ## 🚀 Getting started
 

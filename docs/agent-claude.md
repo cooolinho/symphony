@@ -240,10 +240,14 @@ failure backoff. The orchestrator turns `session_limit` into the retry and wait 
 `agent.max_session_limit_retries` in [configuration.md](configuration.md#agent); the run is logged with the outcome
 `session_limit`.
 
-Token usage comes from the `modelUsage` totals of each turn result, which are cumulative for the session (main
-loop, subagents and compaction) and broken down per model. In the dashboard totals, input tokens include cache reads
-and cache writes; the repository logs keep the four counts apart. The orchestrator adds the difference to the
-previous total, so nothing is counted twice. Cost is estimated per model with `model-costs.yml` (see
+Token usage is counted per model, keyed by the model id Claude Code reports (`claude-opus-5-5`, `claude-fable-5-1`,
+…), so a new model needs no change in Symphony. The runner adds the `usage` of every assistant message as it
+arrives (one response's blocks share a message id and are counted once) and reports the running totals as
+`model_call` events; the `modelUsage` totals of each turn result, which are cumulative for the session (main loop,
+subagents and compaction), then replace them. A run that is stopped, stalls or hits a session limit in the middle
+of a turn therefore still ends with its tokens, cost and model in the repository log. In the dashboard totals, input
+tokens include cache reads and cache writes; the repository logs keep the four counts apart. The orchestrator adds
+the difference to the previous total, so nothing is counted twice. Cost is estimated per model with `model-costs.yml` (see
 [configuration.md](configuration.md)); Claude Code's own estimate (`total_cost_usd`) is kept as
 `claude_estimate_usd` for comparison. Rate-limit snapshots come from `rate_limit_event` messages (subscription
 logins).

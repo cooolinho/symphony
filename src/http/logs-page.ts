@@ -5,7 +5,8 @@ import { BASE_CSS, BASE_JS } from './styles.ts';
  * Statistics page: analytics of the per-repository logs for one global filter (period, repository, model).
  * The server aggregates (/api/v1/history/analytics); the log table is loaded separately
  * (/api/v1/history/entries) so a failure there leaves the charts intact. The filter lives in the URL
- * (?period=30d&repo=owner/name&model=…, custom: ?period=custom&from=YYYY-MM-DD&to=YYYY-MM-DD), so every view can be linked.
+ * (?period=30d&repo=owner/name&model=…&effort=…, custom: ?period=custom&from=YYYY-MM-DD&to=YYYY-MM-DD), so every view
+ * can be linked.
  */
 export const LOGS_HTML = `<!doctype html>
 <html lang="en">
@@ -128,6 +129,7 @@ export const LOGS_HTML = `<!doctype html>
       </div>
       <label class="field"><span>Repository</span><select id="repo"><option value="">All repositories</option></select></label>
       <label class="field"><span>Model</span><select id="model"><option value="">All models</option></select></label>
+      <label class="field"><span>Effort</span><select id="effort"><option value="">All efforts</option></select></label>
     </form>
     <div class="period" id="period-label" aria-live="polite"></div>
   </section>
@@ -173,6 +175,11 @@ export const LOGS_HTML = `<!doctype html>
       </select></label>
     </div>
     <div data-body="models"></div>
+  </section>
+
+  <section data-section>
+    <div class="section-head"><h2>Effort</h2></div>
+    <div data-body="efforts"></div>
   </section>
 
   <div class="grid-2">
@@ -241,7 +248,7 @@ ${CHART_JS}
   function readFilter() {
     const p = new URLSearchParams(location.search);
     const period = PERIODS[p.get('period')] ? p.get('period') : '30d';
-    return { period, from: p.get('from') || '', to: p.get('to') || '', repo: p.get('repo') || '', model: p.get('model') || '' };
+    return { period, from: p.get('from') || '', to: p.get('to') || '', repo: p.get('repo') || '', model: p.get('model') || '', effort: p.get('effort') || '' };
   }
   let filter = readFilter();
 
@@ -250,7 +257,7 @@ ${CHART_JS}
     if (filter.period !== 'custom') { filter.from = ''; filter.to = ''; }
     const url = new URL(location.href);
     url.search = '';
-    for (const key of ['period', 'from', 'to', 'repo', 'model']) if (filter[key]) url.searchParams.set(key, filter[key]);
+    for (const key of ['period', 'from', 'to', 'repo', 'model', 'effort']) if (filter[key]) url.searchParams.set(key, filter[key]);
     history.replaceState(null, '', url);
     loadAll();
   }
@@ -363,6 +370,7 @@ ${CHART_JS}
     if (to) params.set('to', to.toISOString());
     if (filter.repo) params.set('repo', filter.repo);
     if (filter.model) params.set('model', filter.model);
+    if (filter.effort) params.set('effort', filter.effort);
     try {
       if (r.from && to && r.from >= to) throw new Error('The period starts in the future.');
       const res = await fetch('/api/v1/history/analytics?' + params, { cache: 'no-store', signal: controller.signal });
@@ -392,7 +400,7 @@ ${CHART_JS}
       parts.push(el('span', { hour: 'hourly', day: 'daily', week: 'weekly', month: 'monthly' }[data.period.granularity] + ' buckets', 'meta'));
       if (data.previous) parts.push(el('span', 'compared with ' + fmtDay(new Date(data.previous.from)) + ' → ' + fmtDay(new Date(Date.parse(data.previous.to) - 1)), 'meta'));
     }
-    for (const [key, label] of [['repo', 'Repository'], ['model', 'Model']]) {
+    for (const [key, label] of [['repo', 'Repository'], ['model', 'Model'], ['effort', 'Effort']]) {
       if (!filter[key]) continue;
       const chip = el('span', label + ': ' + filter[key] + ' ✕', 'chip on'); chip.tabIndex = 0; chip.setAttribute('role', 'button');
       chip.title = 'Remove the ' + label.toLowerCase() + ' filter';
@@ -415,6 +423,7 @@ ${CHART_JS}
     renderPeriod(range(filter));
     options($('repo'), d.repositories_available, 'All repositories', filter.repo);
     options($('model'), d.models_available, 'All models', filter.model);
+    options($('effort'), d.efforts_available, 'All efforts', filter.effort);
     $('raw').hidden = !filter.repo;
     $('raw').href = '/api/v1/history/raw?repo=' + encodeURIComponent(filter.repo);
     const problems = [];
@@ -426,11 +435,11 @@ ${CHART_JS}
 
     renderKpis(d);
     if (d.totals.runs === 0) {
-      for (const name of ['activity', 'cost', 'tokens', 'models', 'tools', 'integrations', 'repos', 'outcomes', 'durations', 'heatmap', 'top', 'attention', 'issues']) setBody(name, noData());
+      for (const name of ['activity', 'cost', 'tokens', 'models', 'efforts', 'tools', 'integrations', 'repos', 'outcomes', 'durations', 'heatmap', 'top', 'attention', 'issues']) setBody(name, noData());
       $('issue-count').textContent = '';
       return;
     }
-    renderActivity(d); renderCost(d); renderTokens(d); renderModels(d); renderTools(d); renderIntegrations(d); renderRepos(d);
+    renderActivity(d); renderCost(d); renderTokens(d); renderModels(d); renderEfforts(d); renderTools(d); renderIntegrations(d); renderRepos(d);
     renderOutcomes(d); renderDurations(d); renderHeatmap(d); renderTop(d); renderAttention(d); renderIssues(d);
   }
 
@@ -566,7 +575,7 @@ ${CHART_JS}
     const tbl = el('table'); tbl.id = 'models-table';
     const wrap = el('div', null, 'scroll'); wrap.append(tbl);
     setBody('models', bars, el('p', 'Click a model to filter the whole page by it.', 'note'), el('h3', 'Efficiency', 'sub-h'), wrap,
-      el('p', 'A run can use several models: runs and tokens count every model used; agent time and average run count the run for its main model (most tokens). Cost per 1M tokens includes cache tokens; output/input compares output with all input tokens incl. cache.', 'note'));
+      el('p', 'A run can use several models: runs and tokens count every model used; agent time and average run count the run for its main model (most tokens). Cost per 1M tokens includes cache tokens; output/input compares output with all input tokens incl. cache. A run that ended before any usage was logged counts under the model it was started with (an alias such as "opus" under the reported id of that family), with 0 tokens.', 'note'));
     table('models-table', [
       { label: 'Model', className: 'nowrap', render: (r) => r.model },
       { label: 'Runs', className: 'num', render: (r) => fmtInt(r.runs) },
@@ -581,6 +590,36 @@ ${CHART_JS}
       { label: 'Cost/1M tok', className: 'num', render: (r) => orDash(r.cost_per_million_tokens, fmtUsd) },
       { label: 'Out/in', className: 'num', render: (r) => fmtRatio(r.output_input_ratio) },
     ], rows, 'No model usage in this period.');
+  }
+
+  /** Runs, tokens and cost by the effort requested for the run, with the models that ran at that effort. */
+  function renderEfforts(d) {
+    const rows = d.efforts;
+    const bars = el('div', null, 'hbars');
+    hbars(bars, rows.map((r) => ({
+      label: r.effort, value: r.cost_usd || 0, text: fmtUsd(r.cost_usd), sub: fmtInt(r.runs) + ' run' + (r.runs === 1 ? '' : 's') + (r.cost_share !== null ? ' · ' + fmtPct(r.cost_share) + ' of cost' : ''),
+      color: filter.effort === r.effort ? 'var(--green)' : 'var(--amber)', active: filter.effort === r.effort,
+      tip: [['Runs', fmtInt(r.runs)], ['Successful', fmtInt(r.successful)], ['Failed', fmtInt(r.failed)], ['Tokens', fmtCompact(r.total_tokens)],
+        ['Est. cost', fmtUsd(r.cost_usd)], ['Agent time', fmtDuration(r.agent_seconds)], ['Models', countsText(r.models) || '—']],
+      onClick: () => setFilter({ effort: filter.effort === r.effort ? '' : r.effort }),
+    })), 'Filter by effort');
+    const tbl = el('table'); tbl.id = 'efforts-table';
+    const wrap = el('div', null, 'scroll'); wrap.append(tbl);
+    setBody('efforts', bars, el('p', 'Click an effort to filter the whole page by it.', 'note'), wrap,
+      el('p', 'The effort requested for the run: the label Effort: …, else the role\\'s effort or CLAUDE_EFFORT; "default" means Claude Code\\'s own default. Runs logged before the effort was recorded count as "unknown". Models: the main model of the runs at this effort.', 'note'));
+    table('efforts-table', [
+      { label: 'Effort', className: 'nowrap', render: (r) => r.effort },
+      { label: 'Runs', className: 'num', render: (r) => fmtInt(r.runs) },
+      { label: 'Successful', className: 'num', render: (r) => fmtInt(r.successful) + (r.success_rate !== null ? ' (' + fmtPct(r.success_rate) + ')' : '') },
+      { label: 'Failed', className: 'num', render: (r) => fmtInt(r.failed) },
+      { label: 'Tokens', className: 'num', render: (r) => fmtCompact(r.total_tokens) },
+      { label: 'Est. cost', className: 'num', render: (r) => fmtUsd(r.cost_usd) },
+      { label: 'Agent time', className: 'num', render: (r) => fmtDuration(r.agent_seconds) },
+      { label: 'Avg run', className: 'num', render: (r) => orDash(r.avg_run_seconds, fmtDuration) },
+      { label: 'Cost/run', className: 'num', render: (r) => orDash(r.avg_cost_per_run, fmtUsd) },
+      { label: 'Tokens/run', className: 'num', render: (r) => orDash(r.avg_tokens_per_run, fmtCompact) },
+      { label: 'Models', render: (r) => countsText(r.models) || '—' },
+    ], rows, 'No runs in this period.');
   }
 
   function statList(items) {
@@ -794,7 +833,7 @@ ${CHART_JS}
     return list;
   }
   function renderTop(d) {
-    const runMeta = (r) => [r.repo, r.model, fmtTime(r.finished_at), OUTCOMES[r.outcome] || r.outcome].filter(Boolean).join(' · ');
+    const runMeta = (r) => [r.repo, r.model, r.effort && r.effort !== 'default' ? 'effort ' + r.effort : null, fmtTime(r.finished_at), OUTCOMES[r.outcome] || r.outcome].filter(Boolean).join(' · ');
     const grid = el('div', null, 'grid-2');
     grid.style.gap = '4px 20px';
     const block = (title, node) => { const box = el('div'); box.append(el('h3', title, 'sub-h'), node); return box; };
@@ -864,7 +903,7 @@ ${CHART_JS}
         const log = el('button', 'Log', 'btn'); log.type = 'button'; log.title = 'Show the log entries of ' + r.issue;
         log.addEventListener('click', () => showIssueLog(r.issue));
         const agent = link('Detail', '/agent?id=' + encodeURIComponent(r.issue)); agent.className = 'btn';
-        agent.title = 'Agent detail view (available while the orchestrator tracks the issue)';
+        agent.title = 'Agent detail view: timeline, sessions and transcripts of the last claim, kept after the issue finished';
         box.append(log, agent); return box;
       } },
     );
@@ -939,6 +978,7 @@ ${CHART_JS}
   $('filters').addEventListener('submit', (event) => { event.preventDefault(); setFilter({ period: 'custom', from: $('from').value, to: $('to').value }); });
   $('repo').addEventListener('change', () => setFilter({ repo: $('repo').value }));
   $('model').addEventListener('change', () => setFilter({ model: $('model').value }));
+  $('effort').addEventListener('change', () => setFilter({ effort: $('effort').value }));
   $('log-filters').addEventListener('submit', (event) => { event.preventDefault(); loadLogs(); });
   for (const id of ['log-event', 'log-result', 'log-order']) $(id).addEventListener('change', loadLogs);
   $('reload').addEventListener('click', loadAll);

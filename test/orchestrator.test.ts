@@ -1867,6 +1867,75 @@ describe('workspace cleanup after release', () => {
   });
 });
 
+describe('issue archive', () => {
+  it('keeps the details of a released issue and serves them again after a restart', async () => {
+    const logDir = tempDir();
+    const s = setup({ logDir, issues: [makeIssue({ id: 'a', title: 'Archive me', labels: ['effort: high'] })] });
+    s.runner.script = (turn, params) => {
+      fs.mkdirSync(path.dirname(params.transcriptPath as string), { recursive: true });
+      fs.appendFileSync(params.transcriptPath as string, `${JSON.stringify({ at: '2026-10-03T12:00:00.000Z', prompt: { turn, text: 'Work on it' } })}\n`);
+      params.onEvent({ event: 'tool_use', timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: turn, message: 'Bash: ls', detail: { tool: 'Bash' } });
+      s.tracker.set('a', { state: 'In review' });
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    };
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'continuation retry');
+    // Still claimed: the live record answers, but a snapshot is already on disk.
+    assert.equal(s.orchestrator.issueDetail('acme/app#a')?.status, 'retrying');
+    const file = path.join(logDir, 'issues', 'acme_app_a.json');
+    assert.ok(fs.existsSync(file), 'snapshot written when the run finished');
+    assert.equal((JSON.parse(fs.readFileSync(file, 'utf8')) as { released: boolean }).released, false);
+    s.timers.fire(1_000);
+    await until(() => snapshot(s).counts.claimed === 0, 3_000, 'released');
+
+    const detail = s.orchestrator.issueDetail('acme/app#a');
+    assert.equal(detail?.status, 'finished');
+    assert.equal(detail?.title, 'Archive me');
+    assert.equal(detail?.role, 'default');
+    assert.equal(detail?.running, null);
+    assert.equal(detail?.archived?.released, true);
+    assert.equal(detail?.attempts.runs, 1);
+    assert.equal(detail?.sessions.length, 1);
+    assert.equal(detail?.sessions[0]?.outcome, 'handed_off');
+    assert.equal(detail?.sessions[0]?.effort, 'high');
+    assert.equal(detail?.run_trace?.tool_calls && (detail.run_trace.tool_calls as Record<string, number>).Bash, 1);
+    assert.equal(s.orchestrator.issueDetail('a')?.status, 'finished', 'found by issue id too');
+    const timeline = s.orchestrator.issueTimeline('acme/app#a');
+    assert.ok(timeline !== null && timeline.events.some((e) => e.event === 'tool_use') && timeline.events.some((e) => e.event === 'run_finished'));
+    assert.equal(timeline.latest_seq, detail?.timeline_seq);
+    assert.equal(s.orchestrator.issueTranscript('acme/app#a', null)?.available, true);
+    assert.equal((JSON.parse(fs.readFileSync(file, 'utf8')) as { released: boolean }).released, true);
+
+    // A new orchestrator (restart) reads the archive from the log directory.
+    const fresh = setup({ logDir, issues: [] });
+    const again = fresh.orchestrator.issueDetail('acme/app#a');
+    assert.equal(again?.status, 'finished');
+    assert.equal(again?.timeline_seq, detail?.timeline_seq);
+    assert.equal(fresh.orchestrator.issueTimeline('acme/app#a')?.events.length, timeline.events.length);
+    assert.deepEqual(fresh.orchestrator.issueTimeline('acme/app#a', timeline.latest_seq)?.events, []);
+    assert.equal(fresh.orchestrator.issueTranscript('acme/app#a', null)?.available, true);
+    assert.ok(fresh.orchestrator.issueTranscriptFile('acme/app#a', null)?.startsWith(path.join(logDir, 'sessions')));
+    assert.equal(fresh.orchestrator.issueDetail('nope'), null);
+    assert.equal(fresh.orchestrator.issueTimeline('nope'), null);
+  });
+
+  it('serves released issues from memory without a log directory, but not issues that never ran', async () => {
+    const s = setup({ issues: [makeIssue({ id: 'a' })] });
+    s.runner.script = (turn) => {
+      s.tracker.set('a', { state: 'In review' });
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    };
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'continuation retry');
+    s.timers.fire(1_000);
+    await until(() => snapshot(s).counts.claimed === 0, 3_000, 'released');
+    assert.equal(s.orchestrator.issueDetail('acme/app#a')?.status, 'finished');
+    assert.equal(s.orchestrator.issueDetail('acme/app#a')?.sessions[0]?.transcript, null);
+    assert.equal(s.orchestrator.issueTranscript('acme/app#a', null)?.available, false);
+    assert.equal(s.orchestrator.issueDetail('acme/app#b'), null);
+  });
+});
+
 describe('workspace lock', () => {
   it('starts no hooks or session when another instance holds the workspace', async () => {
     const s = setup({ issues: [makeIssue({ id: 'a' })] });
@@ -1934,6 +2003,58 @@ describe('run history', () => {
     assert.equal(s.orchestrator.snapshot().agent_totals.cost_usd, 6.04);
     assert.equal(entries[0]?.fields.model, 'opus');
     assert.equal(finished.mcp_unavailable, undefined);
+  });
+
+  it('logs effort and requested model, and the usage counted from model calls when a run is stopped mid-turn', async () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\nfable: { input: 10, output: 50 }\n');
+    const pricing = new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent());
+    const history = new HistoryLog(path.join(dir, 'repositories'), pricing, Logger.silent());
+    const tracker = new FakeTracker([makeIssue({ id: 'a', labels: ['model: fable', 'effort: xhigh'] })]);
+    tracker.issueRepository = () => 'acme/app';
+    const runner = new FakeRunner((_turn, params) => {
+      params.onEvent({
+        event: 'model_call', timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: 1,
+        modelUsage: { 'claude-fable-5-1': { inputTokens: 1_000_000, outputTokens: 100_000, cacheReadTokens: 0, cacheWriteTokens: 0 } },
+      });
+      // The issue moves on the board during the turn: the orchestrator stops the agent before any turn result.
+      tracker.set('a', { state: 'In review' });
+      return new Promise((resolve) => params.signal.addEventListener('abort', () => resolve({ ok: false, turnId: '1', code: 'turn_cancelled', message: 'cancelled' })));
+    });
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir(), { claude: { model: 'opus' } }))),
+      runner,
+      logger: Logger.silent(),
+      env: {},
+      logDir: null,
+      timers: new ManualTimers(),
+      createAdapter: () => tracker,
+      pricing,
+      history,
+    });
+    await orchestrator.tickNow();
+    await until(() => orchestrator.snapshot().running[0]?.tokens.total_tokens === 1_100_000, 3_000, 'live usage');
+    const running = orchestrator.snapshot().running[0];
+    assert.equal(running?.model, 'claude-fable-5-1');
+    assert.equal(running?.effort, 'xhigh');
+    assert.equal(running?.cost_usd, 15);
+    await orchestrator.tickNow();
+    await until(() => orchestrator.snapshot().counts.claimed === 0, 3_000, 'stopped and released');
+
+    const entries = readHistory(history.dir, 'acme/app').entries;
+    assert.deepEqual(entries.map((e) => e.event), ['run_started', 'run_finished', 'model_usage']);
+    assert.equal(entries[0]?.fields.model, 'fable');
+    assert.equal(entries[0]?.fields.effort, 'xhigh');
+    const finished = entries[1]?.fields ?? {};
+    assert.equal(finished.outcome, 'stopped');
+    assert.equal(finished.model, 'claude-fable-5-1');
+    assert.equal(finished.model_requested, 'fable');
+    assert.equal(finished.effort, 'xhigh');
+    assert.equal(finished.total_tokens, '1100000');
+    // 1M input × $10 + 0.1M output × $50 = $15
+    assert.equal(finished.cost_usd, '15');
+    assert.equal(entries[2]?.fields.model, 'claude-fable-5-1');
+    assert.equal(entries[2]?.fields.effort, 'xhigh');
   });
 
   it('tells the agent about unavailable MCP servers on turn 1 and records them in run_finished', async () => {

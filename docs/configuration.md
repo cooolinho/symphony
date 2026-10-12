@@ -449,8 +449,8 @@ Unknown values, and several labels naming different levels, are ignored: the ses
 against the model; Claude Code lowers a level the model does not support. Like the model, the effort is chosen when a
 session is dispatched, so a label change applies from the next session. The choice appears in the `dispatching issue`
 log line (`effort`, plus `effort_label` when a label picked it), in the `run_dispatched` trace event and as `effort` of
-`run_started` in the repository log (`default` when none is configured). `npm run repo-init` creates the five standard
-labels `Effort: low` … `Effort: max`.
+`run_started`, `run_finished` and `model_usage` in the repository log (`default` when none is configured), which the
+statistics page breaks down by effort. `npm run repo-init` creates the five standard labels `Effort: low` … `Effort: max`.
 
 ### `server`
 

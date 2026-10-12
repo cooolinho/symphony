@@ -78,7 +78,8 @@ function sameHost(origin: string, hostHeader: string | undefined): boolean {
 }
 
 /**
- * Observability/control surface (spec 13.7): `/` dashboard, `/agent?id=<identifier>` agent detail view,
+ * Observability/control surface (spec 13.7): `/` dashboard, `/agent?id=<identifier>` agent detail view (live, or
+ * archived once the orchestrator released the issue),
  * `/logs` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
  * `/api/v1/state`, `/api/v1/<identifier>` with its `/timeline` and `/transcript`, `POST /api/v1/refresh`
  * and `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker).
@@ -187,6 +188,7 @@ export function startHttpServer(options: {
           to,
           repo,
           model: textParam(params, 'model'),
+          effort: textParam(params, 'effort'),
           timeZone: zone !== null && isValidTimeZone(zone) ? zone : Intl.DateTimeFormat().resolvedOptions().timeZone,
         };
         const pricing = history.pricing.current();
@@ -346,7 +348,7 @@ export function startHttpServer(options: {
         };
         if (sub[2] === 'timeline') {
           const timeline = orchestrator.issueTimeline(key, number('after'));
-          if (timeline === null) sendError(res, 404, 'issue_not_found', `issue ${key} is not known to the running orchestrator`);
+          if (timeline === null) sendError(res, 404, 'issue_not_found', `issue ${key} is neither tracked by the orchestrator nor archived`);
           else sendJson(res, 200, timeline);
           return;
         }
@@ -369,7 +371,7 @@ export function startHttpServer(options: {
           return;
         }
         const transcript = orchestrator.issueTranscript(key, run, number('from'));
-        if (transcript === null) sendError(res, 404, 'issue_not_found', `issue ${key} is not known to the running orchestrator`);
+        if (transcript === null) sendError(res, 404, 'issue_not_found', `issue ${key} is neither tracked by the orchestrator nor archived`);
         else sendJson(res, 200, transcript);
       });
       return;
@@ -384,7 +386,7 @@ export function startHttpServer(options: {
           return;
         }
         const detail = orchestrator.issueDetail(key);
-        if (detail === null) sendError(res, 404, 'issue_not_found', `issue ${key} is not known to the running orchestrator`);
+        if (detail === null) sendError(res, 404, 'issue_not_found', `issue ${key} is neither tracked by the orchestrator nor archived`);
         else sendJson(res, 200, { ...detail, controls });
       });
       return;

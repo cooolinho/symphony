@@ -17,7 +17,7 @@ import {
   type SDKSystemMessage,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
-import type { ModelTokenUsage } from '../costs/pricing.ts';
+import { addUsage, emptyUsage, type ModelTokenUsage } from '../costs/pricing.ts';
 import type { Issue, ToolResult } from '../tracker/types.ts';
 import { AsyncQueue, settledWithin, sleep, withTimeout } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
@@ -69,11 +69,16 @@ interface PendingTurn {
 }
 
 export function usageFromModelUsage(modelUsage: Record<string, ModelUsage> | undefined): TokenUsage {
+  return sessionTokens(modelUsageBreakdown(modelUsage));
+}
+
+/** Session totals as the dashboard counts them: input includes cache reads and writes. */
+export function sessionTokens(modelUsage: Record<string, ModelTokenUsage>): TokenUsage {
   let inputTokens = 0;
   let outputTokens = 0;
-  for (const usage of Object.values(modelUsage ?? {})) {
-    inputTokens += (usage.inputTokens ?? 0) + (usage.cacheReadInputTokens ?? 0) + (usage.cacheCreationInputTokens ?? 0);
-    outputTokens += usage.outputTokens ?? 0;
+  for (const usage of Object.values(modelUsage)) {
+    inputTokens += usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
+    outputTokens += usage.outputTokens;
   }
   return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
 }
@@ -171,6 +176,10 @@ class ClaudeSession implements AgentSession {
   #initSeen = false;
   #stopped: Promise<void> | null = null;
   #mcpStatus: Record<string, string> | undefined;
+  /** Per-model totals of the last turn result: cumulative for the session, as Claude Code reports them. */
+  #resultUsage: Record<string, ModelTokenUsage> = {};
+  /** Model calls since the last turn result, by message id (the blocks of one response share the id and usage). */
+  #turnCalls = new Map<string, { model: string; usage: ModelTokenUsage }>();
 
   constructor(params: StartSessionParams, queryFn: QueryFn) {
     this.#params = params;
@@ -549,6 +558,7 @@ class ClaudeSession implements AgentSession {
       this.#emit('agent_error', { message: `Claude API error: ${message.error}` });
       return;
     }
+    this.#trackCall(message);
     // One event per tool call (a message may call several tools in parallel); a text event only without tool calls.
     let calls = 0;
     for (const block of message.message.content) {
@@ -567,14 +577,47 @@ class ClaudeSession implements AgentSession {
     this.#emit('assistant_message', {});
   }
 
+  /**
+   * Adds a model call to the live per-model totals and reports them right away, so a run that ends before its
+   * turn result (stopped, stalled, crashed, session limit) still has tokens, cost and model. Every model Claude
+   * Code reports is counted under its own id. The turn result replaces these totals with Claude Code's own.
+   */
+  #trackCall(message: SDKAssistantMessage): void {
+    const body = message.message;
+    const usage = body.usage;
+    if (usage === undefined || usage === null || typeof body.model !== 'string') return;
+    this.#turnCalls.set(body.id ?? `${this.#turnId ?? 'turn'}:${this.#turnCalls.size}`, {
+      model: body.model,
+      usage: {
+        inputTokens: usage.input_tokens ?? 0,
+        outputTokens: usage.output_tokens ?? 0,
+        cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+        cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
+      },
+    });
+    this.#emit('model_call', { modelUsage: this.#liveUsage() });
+  }
+
+  /** Session totals per model so far: the last turn result plus the model calls since. */
+  #liveUsage(): Record<string, ModelTokenUsage> {
+    const totals: Record<string, ModelTokenUsage> = {};
+    for (const [model, usage] of Object.entries(this.#resultUsage)) totals[model] = { ...usage };
+    for (const call of this.#turnCalls.values()) addUsage((totals[call.model] ??= emptyUsage()), call.usage);
+    return totals;
+  }
+
   #onResult(message: SDKResultMessage): void {
     const succeeded = message.subtype === 'success' && !message.is_error;
-    const usage = usageFromModelUsage(message.modelUsage);
+    // A result without model usage (some error results) keeps the totals counted from the model calls.
+    const reported = modelUsageBreakdown(message.modelUsage);
+    this.#resultUsage = Object.keys(reported).length > 0 ? reported : this.#liveUsage();
+    this.#turnCalls.clear();
+    const usage = sessionTokens(this.#resultUsage);
     const sessionLimit = !succeeded && this.#pending !== null ? this.#classifySessionLimit(message) : null;
     this.#emit(succeeded ? 'turn_completed' : 'turn_failed', {
       message: succeeded ? `turn completed (${message.num_turns} model calls)` : describeResult(message),
       usage,
-      modelUsage: modelUsageBreakdown(message.modelUsage),
+      modelUsage: this.#resultUsage,
       costUsd: message.total_cost_usd,
       detail: {
         subtype: message.subtype,

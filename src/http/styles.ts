@@ -257,11 +257,12 @@ export const BASE_JS = `
     switch (entry.event) {
       case 'run_started':
         return 'Started in "' + entry.state + '"' + (entry.attempt && entry.attempt !== 'null' ? ' (attempt ' + entry.attempt + ')' : '') +
-          (entry.model && entry.model !== 'default' ? ' · ' + entry.model : '');
+          (entry.model && entry.model !== 'default' ? ' · ' + entry.model : '') + (entry.effort && entry.effort !== 'default' ? ' · effort ' + entry.effort : '');
       case 'run_finished':
         return (OUTCOMES[entry.outcome] || entry.outcome) + ' → "' + entry.state + '" · ' + entry.turns + ' turn(s) · ' +
           fmtCompact(Number(entry.total_tokens)) + ' tokens · ' + fmtUsd(Number(entry.cost_usd)) + ' · ' +
           fmtDuration(Number(entry.agent_seconds)) + (entry.model && entry.model !== 'null' ? ' · ' + entry.model : '') +
+          (entry.effort && entry.effort !== 'default' ? ' · effort ' + entry.effort : '') +
           Object.entries(logIntegrations(entry)).filter(([, x]) => x.status === 'ready')
             .map(([id, x]) => ' · ' + integrationLabel(id) + (x.calls ? ' used ×' + x.calls : ' not used')).join('') +
           (entry.outcome === 'failed' || entry.outcome === 'stalled' ? ' · ' + entry.reason : '');
