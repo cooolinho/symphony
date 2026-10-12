@@ -101,31 +101,31 @@ roles:
     may_move_to: [In review, In progress, Blocked]
     claude: { model: opus }
   auditor:
-    commands: [refactoring]                  # served only for issues whose description starts with /refactoring
+    commands: [refactoring]                                 # served only for issues whose description starts with /refactoring
     states: [Ready, In progress]
-    read_only: true                          # analysis only; the findings become sub-issues
-    run_checks: false                        # nothing changes, so a red test suite must not block the hand-off
-    max_sub_issues: 20                       # open sub-issues at once; also what grants the create_sub_issue tool
+    read_only: true                                         # analysis only; the findings become sub-issues
+    run_checks: false                                       # nothing changes, so a red test suite must not block the hand-off
+    max_sub_issues: ${SYMPHONY_AUDITOR_MAX_SUB_ISSUES:-20}  # open sub-issues at once; also what grants the create_sub_issue tool
     max_turns: 2
     may_move_to: [In progress, In review, Blocked]
     claude: { model: fable, max_budget_usd: 15 }
   planner:
-    commands: [auto-code]                    # served only for issues whose description starts with /auto-code
+    commands: [auto-code]                                   # served only for issues whose description starts with /auto-code
     states: [Ready, In progress]
-    read_only: true                          # plans only; the developer and reviewer implement the sub-issues
+    read_only: true                                         # plans only; the developer and reviewer implement the sub-issues
     run_checks: false
-    max_sub_issues: 5                        # open sub-issues at once, i.e. the largest wave
-    sub_issue_status: Ready                  # wave issues start without a human (opt-in; the default column is Backlog)
-    wait_for_sub_issues: true                # the epic runs again only once all sub-issues of its wave are closed
+    max_sub_issues: ${SYMPHONY_PLANNER_MAX_SUB_ISSUES:-5}   # open sub-issues at once, i.e. the largest wave
+    sub_issue_status: Ready                                 # wave issues start without a human (opt-in; the default column is Backlog)
+    wait_for_sub_issues: true                               # the epic runs again only once all sub-issues of its wave are closed
     max_turns: 2
     may_move_to: [In progress, In review, Blocked]
     claude: { model: fable, max_budget_usd: 10 }
   analyst:
-    commands: [concept]                      # served only for issues whose description starts with /concept
+    commands: [concept]                                     # served only for issues whose description starts with /concept
     states: [Ready, In progress]
-    read_only: true                          # analysis only; the concept becomes epics and sub-issues
+    read_only: true                                         # analysis only; the concept becomes epics and sub-issues
     run_checks: false
-    max_sub_issues: 60                       # open epics and sub-issues under the concept issue at once (the whole tree)
+    max_sub_issues: ${SYMPHONY_ANALYST_MAX_SUB_ISSUES:-60}  # open epics and sub-issues under the concept issue at once (the whole tree)
     max_turns: 3
     may_move_to: [In progress, In review, Blocked]
     claude: { model: fable, effort: high, max_budget_usd: 20 }
