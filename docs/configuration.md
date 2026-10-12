@@ -235,7 +235,7 @@ write a `transition_denied` line.
 
 | Key | Default | Notes |
 |---|---|---|
-| `model` | Claude Code default | Default model: alias (`opus`, `sonnet`, `haiku`) or full model id. A role's `claude.model` and a `Model: <model>` issue label override it, see [Model per issue](#model-per-issue). |
+| `model` | Claude Code default | Default model: alias (`fable`, `opus`, `sonnet`, `haiku`) or full model id. A role's `claude.model` and a `Model: <model>` issue label override it, see [Model per issue](#model-per-issue). |
 | `fallback_model` | none | Used when the primary model is overloaded. Left out for a session whose model is the same (the Agent SDK refuses that combination). |
 | `effort` | Claude Code default | `low`, `medium`, `high`, `xhigh`, `max`. The shipped `WORKFLOW.md` reads it from `CLAUDE_EFFORT`. A role's `claude.effort` and an `Effort: <level>` issue label override it, see [Effort per issue](#effort-per-issue). |
 | `permission_mode` | `auto` | `auto` (a classifier approves or blocks each action), `default`, `acceptEdits`, `dontAsk`, `plan`, `bypassPermissions`. See [agent-claude.md](agent-claude.md). |
@@ -400,7 +400,7 @@ optional `claude-` is removed, then:
 
 | Value | Model passed to Claude Code |
 |---|---|
-| `opus`, `sonnet`, `haiku` (also `claude-opus`, …) | the alias itself, i.e. the newest model of that family |
+| `fable`, `opus`, `sonnet`, `haiku` (also `claude-fable`, …) | the alias itself, i.e. the newest model of that family |
 | `<family>-<version>` with family `opus`, `sonnet`, `haiku` or `fable` (e.g. `sonnet-5-5`, `claude-opus-5-5`) | the full model id `claude-<family>-<version>` |
 | anything else | unknown |
 
@@ -411,7 +411,7 @@ appears in the `dispatching issue` log line (`model`, plus `model_label` when a 
 `run_started` in the repository log. The model Claude Code actually runs is logged with `session_configured`; the
 `model` of a running agent in `GET /api/v1/state` is the one that used the most tokens (until the first turn ends, the
 one the session started with).
-`npm run repo-init` creates the standard labels (`Model: opus`, `Model: sonnet`, `Model: haiku`) through the GitHub
+`npm run repo-init` creates the standard labels (`Model: fable`, `Model: opus`, `Model: sonnet`, `Model: haiku`) through the GitHub
 REST API. Other values such as `Model: claude-opus-5-5` work as labels too; create them by hand.
 
 #### Permissions per model
@@ -513,7 +513,7 @@ roles:
     max_sub_issues: 20
     max_turns: 2
     may_move_to: [In progress, In review, Blocked]
-    claude: { model: opus, max_budget_usd: 15 }
+    claude: { model: fable, max_budget_usd: 15 }
 
 checks:
   timeout_ms: 1200000                        # below claude.turn_timeout_ms (default 3600000)

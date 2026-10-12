@@ -71,7 +71,7 @@ agent:
   max_retry_backoff_ms: 600000
 
 claude:
-  # Default model, e.g. opus or sonnet; unset = Claude Code default. A "Model: <model>" label on an issue
+  # Default model, e.g. fable, opus or sonnet; unset = Claude Code default. A "Model: <model>" label on an issue
   # overrides it for that issue, e.g. "Model: sonnet" or "Model: claude-opus-5-5" (npm run repo-init creates them).
   model: $CLAUDE_MODEL
   # Default effort: low, medium, high, xhigh or max; unset = Claude Code default. An "Effort: <level>" label on an
@@ -108,7 +108,7 @@ roles:
     max_sub_issues: 20                       # open sub-issues at once; also what grants the create_sub_issue tool
     max_turns: 2
     may_move_to: [In progress, In review, Blocked]
-    claude: { model: opus, max_budget_usd: 15 }
+    claude: { model: fable, max_budget_usd: 15 }
   planner:
     commands: [auto-code]                    # served only for issues whose description starts with /auto-code
     states: [Ready, In progress]
@@ -119,7 +119,7 @@ roles:
     wait_for_sub_issues: true                # the epic runs again only once all sub-issues of its wave are closed
     max_turns: 2
     may_move_to: [In progress, In review, Blocked]
-    claude: { model: opus, max_budget_usd: 10 }
+    claude: { model: fable, max_budget_usd: 10 }
   analyst:
     commands: [concept]                      # served only for issues whose description starts with /concept
     states: [Ready, In progress]
@@ -128,7 +128,7 @@ roles:
     max_sub_issues: 60                       # open epics and sub-issues under the concept issue at once (the whole tree)
     max_turns: 3
     may_move_to: [In progress, In review, Blocked]
-    claude: { model: opus, effort: high, max_budget_usd: 20 }
+    claude: { model: fable, effort: high, max_budget_usd: 20 }
 
 checks:
   # Entry checks: set_status into these columns only succeeds when the script passes (exit 0).

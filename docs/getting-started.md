@@ -97,7 +97,7 @@ SYMPHONY_CLEANUP_TERMINAL=true
 |---|---|
 | `GITHUB_PROJECT_NUMBER` | Number of the board. The full board URL works too. |
 | `GITHUB_REPOSITORY` | `owner/name` of the repository. Separate multiple repositories with commas. Issues from other repositories on the board are ignored. |
-| `CLAUDE_MODEL` | Default model for Claude Code: an alias such as `opus` or `sonnet`, or a full model ID. Empty means the Claude Code default. A `Model: …` label on the issue takes precedence, see [Choosing the model per issue](usage.md#choosing-the-model-per-issue). |
+| `CLAUDE_MODEL` | Default model for Claude Code: an alias such as `fable`, `opus` or `sonnet`, or a full model ID. Empty means the Claude Code default. A `Model: …` label on the issue takes precedence, see [Choosing the model per issue](usage.md#choosing-the-model-per-issue). |
 | `CLAUDE_EFFORT` | *optional:* Default effort for Claude Code: `low`, `medium`, `high`, `xhigh` or `max`. Empty means the Claude Code default. An `Effort: …` label on the issue takes precedence, see [Choosing the effort per issue](usage.md#choosing-the-effort-per-issue). |
 | `GITHUB_TOKEN` | Token from step 3. It is removed from the environment of agents and hooks. |
 | `GITHUB_PROJECT_OWNER` | *optional:* Owner of the board if it is not the repository owner (e.g. an organization) |

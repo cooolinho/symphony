@@ -1,7 +1,7 @@
 ---
 name: auto-code
 description: Autopilot for a repository. Plans the next wave of new features, design, quality and maintenance tasks from the project description and creates them as sub-issues that Symphony implements right away; checkpoints every few waves. Only load when the prompt asks for it (issue command /auto-code), never on your own.
-argument-hint: "[path to project description] [wave=3] [checkpoint=5] [issue-models=auto|opus|sonnet|haiku]"
+argument-hint: "[path to project description] [wave=3] [checkpoint=5] [issue-models=auto|fable|opus|sonnet|haiku]"
 ---
 
 # Autopilot: plan the next wave
@@ -22,9 +22,9 @@ SQLite), that is fine as long as they do not belong in the repository.
 - a path: the project description. Without a path you look for `docs/vision.md`, then `docs/index.md`, then `README.md`.
 - `wave=<n>`: issues per wave, default 3. More than `create_sub_issue` reports as `remaining` is not possible.
 - `checkpoint=<n>`: stop after every n-th wave, default 5. `checkpoint=0` never stops on its own.
-- `issue-models=<auto|opus|sonnet|haiku>`: model labels for the sub-issues. Without the argument (or with `off`) you set
+- `issue-models=<auto|fable|opus|sonnet|haiku>`: model labels for the sub-issues. Without the argument (or with `off`) you set
   no model labels; the issues then run with the instance's default model (`CLAUDE_MODEL`).
-  - `opus`, `sonnet`, `haiku`: every sub-issue gets the label `Model: <value>`.
+  - `fable`, `opus`, `sonnet`, `haiku`: every sub-issue gets the label `Model: <value>`.
   - `auto`: every sub-issue gets the label that fits its effort, see [Phase 4](#phase-4-cut-the-wave).
   - Any other value is invalid: treat it like `off` and put the warning in the notes section of the report.
 
@@ -112,14 +112,15 @@ excluded.
 5. Labels: `auto-code`, the category (`feature`, `design`, `quality` or `maintenance`) and `Effort: medium` (S) or
    `Effort: high` (M). A major upgrade (Laravel, Filament, PHP) stands alone in its wave and additionally gets
    `manual-merge`: a human merges it.
-   - **Model label** (only with `issue-models`, otherwise none): With `opus`, `sonnet` or `haiku` all issues get
+   - **Model label** (only with `issue-models`, otherwise none): With `fable`, `opus`, `sonnet` or `haiku` all issues get
      `Model: <value>`. With `auto` you pick **exactly one** label per issue by effort and risk:
 
      | Label | When |
      |---|---|
      | `Model: haiku` | effort S **and** low risk: texts, translations, configuration, small changes in one area, simple tests, minor updates |
      | `Model: sonnet` | the normal case: effort S with medium risk, effort M with low or medium risk (new feature in a few files, design issues, tests, ordinary refactorings) |
-     | `Model: opus` | high risk (data model, permissions, money, migrations on existing data), effort M across several areas, major upgrades, tricky dependencies or a refactoring without a test net |
+     | `Model: opus` | effort M across several areas, wide reach with medium risk, ordinary larger refactorings with a test net |
+     | `Model: fable` | complex issues: high risk (data model, permissions, money, migrations on existing data), major upgrades, tricky dependencies or a refactoring without a test net |
 
      When in doubt, the stronger model. State label and reason per issue in the report. The label applies to the whole
      sub-issue: developer and reviewer run with this model, not with the instance's default model.

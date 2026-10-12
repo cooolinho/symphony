@@ -7,7 +7,7 @@ key that keeps a retry from creating a duplicate. Paths and numbers are placehol
 ## Sub-issue
 
 Title: `<Feature|Design|Quality|Maintenance>: <what changes>`, e.g. `Feature: CSV export of invoices`.
-Labels: `auto-code`, category, `Effort: medium|high`, if applicable `Model: opus|sonnet|haiku` (only with
+Labels: `auto-code`, category, `Effort: medium|high`, if applicable `Model: fable|opus|sonnet|haiku` (only with
 `issue-models`), if applicable `manual-merge`.
 
 ```markdown
@@ -48,7 +48,7 @@ Dependencies go on their own line directly below the goal: `Blocked by #<n>`. A 
 - Tests: <result> · Analysis: <result> · Pint: <result>
 
 ### This wave
-- [ ] #<n> <title> (<category>, <effort>, risk <…>[, model <opus|sonnet|haiku>: <reason>]): <why now, reference to the description>
+- [ ] #<n> <title> (<category>, <effort>, risk <…>[, model <fable|opus|sonnet|haiku>: <reason>]): <why now, reference to the description>
 - [ ] #<n> <title> … *waits for #<m>*
 
 ### Requests considered

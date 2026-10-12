@@ -1,5 +1,5 @@
 /** Claude Code aliases that always mean the newest model of their family. */
-const MODEL_ALIASES = new Set(['opus', 'sonnet', 'haiku']);
+const MODEL_ALIASES = new Set(['fable', 'opus', 'sonnet', 'haiku']);
 /** A model family with a version ("opus-5-5", "haiku-4-5"), completed to the full model id. */
 const VERSIONED_MODEL = /^(?:opus|sonnet|haiku|fable)(?:-\d+)+$/;
 

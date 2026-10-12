@@ -199,7 +199,7 @@ Symphony ships four commands:
 
 1. Create an issue in the target repository. Title e.g. "Refactoring audit", description just `/refactoring`, or
    with a scope `/refactoring app/Filament`.
-2. Move it to **Ready**. The role `auditor` takes over (`opus`, read-only, no entry checks, budget from
+2. Move it to **Ready**. The role `auditor` takes over (`fable`, read-only, no entry checks, budget from
    `roles.auditor.claude.max_budget_usd`).
 3. The agent determines the context from `composer.lock` and `package.json` (PHP, Laravel, Filament, Livewire, Pest,
    Vite …), measures the baseline (tests, analysis, Pint, `composer audit`, `npm audit`, build) and analyzes with
@@ -249,7 +249,7 @@ The work runs in **waves**:
 
 ```
 Epic "/auto-code docs/index.md" → Ready
-  → planner (opus, read-only): reads project description, roadmap, code on develop and your comments on the epic
+  → planner (fable, read-only): reads project description, roadmap, code on develop and your comments on the epic
   → wave N: 3 sub-issues directly in Ready (labels auto-code, category, effort), report on the epic
   → the epic stays "In progress" and waits until all sub-issues of the wave are closed
        per sub-issue: developer → PR into develop → entry checks → reviewer → "In review"
@@ -288,11 +288,11 @@ planner sets a [model label](#choosing-the-model-per-issue) when it creates them
 | Argument | Effect |
 |---|---|
 | (missing) or `issue-models=off` | no model labels, `CLAUDE_MODEL` applies |
-| `issue-models=opus`, `sonnet` or `haiku` | all sub-issues get `Model: <value>` |
-| `issue-models=auto` | the planner picks per issue by effort and risk: `Model: haiku` for small, low-risk changes, `Model: sonnet` as the normal case, `Model: opus` for high risk, large scope or major upgrades |
+| `issue-models=fable`, `opus`, `sonnet` or `haiku` | all sub-issues get `Model: <value>` |
+| `issue-models=auto` | the planner picks per issue by effort and risk: `Model: haiku` for small, low-risk changes, `Model: sonnet` as the normal case, `Model: opus` for wide reach with medium risk, `Model: fable` for complex issues (high risk, major upgrades, tricky dependencies) |
 
 The label applies to the developer and reviewer of the sub-issue. The planner states the label and the reason per
-issue in the wave report. The labels `Model: opus|sonnet|haiku` must exist in the repository (`npm run repo-init` →
+issue in the wave report. The labels `Model: fable|opus|sonnet|haiku` must exist in the repository (`npm run repo-init` →
 *Standard labels*); if one is missing, the planner reports it and the issue runs with `CLAUDE_MODEL`. The argument
 applies to every wave of the epic; to change it, edit the command line in the description.
 
@@ -341,14 +341,14 @@ also merged into `develop`. Only what you take over in a release PR reaches `mai
 
 `/concept <path>` turns a concept into a work plan on the board. You write the concept as a Markdown file in the
 repository (e.g. `docs/index.md`), create an issue with the description `/concept docs/index.md` and move it to
-**Ready**. The `analyst` role (`opus`, read-only, no entry checks) reads the concept, checks what the code can already
+**Ready**. The `analyst` role (`fable`, read-only, no entry checks) reads the concept, checks what the code can already
 do, and creates two levels of issues:
 
 ```
 #10 /concept docs/index.md                      → In review once the plan is in place
 ├─ #11 Epic: User management                    Backlog · labels epic, concept
 │  ├─ #13 Feature: Sign-in                      Backlog · concept, feature, Effort: high, Model: sonnet
-│  └─ #14 Feature: Roles and permissions        Backlog · … Effort: xhigh, Model: opus · blocked by #13
+│  └─ #14 Feature: Roles and permissions        Backlog · … Effort: xhigh, Model: fable · blocked by #13
 └─ #12 Epic: Billing                            Backlog
    └─ #15 Feature: Create invoice               Backlog · … blocked by #14
 ```
@@ -367,7 +367,7 @@ only start when you move them to **Ready**. The instructions are in the skill
    areas, flows, non-goals and open questions make a good concept.
 2. **Labels:** `npm run repo-init` → *Standard labels* creates `concept`, `epic`, the `Model: …` and `Effort: …` labels
    and the categories. If a label is missing, the agent creates the issue without it and says so in the report.
-3. **Issue:** description `/concept docs/index.md`, optionally `issue-models=auto|opus|sonnet|haiku|off` (default
+3. **Issue:** description `/concept docs/index.md`, optionally `issue-models=auto|fable|opus|sonnet|haiku|off` (default
    `auto`) and below it text with focus areas or exclusions. Then move it to **Ready**.
 
 Check with `npm run dry-run`: the issue shows up with `role=analyst` and `↳ command /concept → symphony:concept`.
@@ -389,7 +389,7 @@ treats them as equivalent.
 
 The labels follow size and risk ([tables](../.claude/skills/concept/breakdown.md#labels)): `Effort: low` for texts and
 configuration, `medium` for small, `high` for medium-sized tasks, `xhigh` for data model, permissions, money or
-migrations. The agent never assigns `Effort: max`. With `issue-models=auto` it picks `Model: haiku`, `sonnet` or `opus`;
+migrations. The agent never assigns `Effort: max`. With `issue-models=auto` it picks `Model: haiku`, `sonnet`, `opus` or `fable`;
 a fixed value puts the same model on all issues, `off` leaves the model labels out.
 
 ### Afterwards
@@ -449,13 +449,15 @@ label applies to that issue:
 
 | Label | Model for Claude Code |
 |---|---|
+| `Model: fable`, `Model: claude-fable` | `fable`, always the latest Fable model |
+| `Model: claude-fable-5-1` | `claude-fable-5-1` |
 | `Model: opus`, `Model: claude-opus` | `opus`, always the latest Opus model |
 | `Model: claude-opus-5-5` | `claude-opus-5-5` |
 | `Model: sonnet`, `Model: claude-sonnet` | `sonnet`, always the latest Sonnet model |
 | `Model: sonnet-5-5`, `Model: claude-sonnet-5-5` | `claude-sonnet-5-5` |
 | `Model: haiku` | `haiku`, always the latest Haiku model |
 
-- `repo-init` only creates `Model: opus`, `Model: sonnet` and `Model: haiku`. Create the other labels from the table
+- `repo-init` only creates `Model: fable`, `Model: opus`, `Model: sonnet` and `Model: haiku`. Create the other labels from the table
   yourself in GitHub if you need them.
 - Case does not matter. The `claude-` prefix is optional; Symphony adds it for values with a version. This also works
   for models without a standard label, e.g. `Model: claude-opus-4-8`.

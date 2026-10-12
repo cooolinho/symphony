@@ -143,7 +143,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
       [true, false, 20, 2],
     );
     assert.deepEqual(auditor?.mayMoveTo, ['In progress', 'In review', 'Blocked']);
-    assert.equal(auditor?.claude.model, 'opus');
+    assert.equal(auditor?.claude.model, 'fable');
     assert.equal(roleOf('Ready', null)?.runChecks, true);
     assert.equal(roleOf('Ready', null)?.maxSubIssues, null);
     assert.equal(config.tracker.provider.sub_issue_status, 'Backlog');
@@ -315,9 +315,9 @@ describe('Symphony toolbox skills', () => {
 
   it('auto-code: documents issue-models and maps every model label of the standard labels', () => {
     const text = fs.readFileSync(path.join(skillsDir, 'auto-code', 'SKILL.md'), 'utf8');
-    assert.match(text, /argument-hint:.*issue-models=auto\|opus\|sonnet\|haiku/);
-    assert.match(text, /`issue-models=<auto\|opus\|sonnet\|haiku>`/);
-    for (const label of ['Model: haiku', 'Model: sonnet', 'Model: opus']) {
+    assert.match(text, /argument-hint:.*issue-models=auto\|fable\|opus\|sonnet\|haiku/);
+    assert.match(text, /`issue-models=<auto\|fable\|opus\|sonnet\|haiku>`/);
+    for (const label of ['Model: haiku', 'Model: sonnet', 'Model: opus', 'Model: fable']) {
       assert.ok(text.includes(`\`${label}\``), label);
     }
   });
@@ -325,13 +325,13 @@ describe('Symphony toolbox skills', () => {
   it('concept: documents its arguments and uses the label families and tool parameters the workflow provides', () => {
     const dir = path.join(skillsDir, 'concept');
     const text = fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8');
-    assert.match(text, /argument-hint:.*issue-models=auto\|opus\|sonnet\|haiku\|off/);
-    assert.match(text, /`issue-models=<auto\|opus\|sonnet\|haiku\|off>`/);
+    assert.match(text, /argument-hint:.*issue-models=auto\|fable\|opus\|sonnet\|haiku\|off/);
+    assert.match(text, /`issue-models=<auto\|fable\|opus\|sonnet\|haiku\|off>`/);
     for (const phrase of ['## Concept Plan', '## Concept Report', 'parent: <number', 'blocked_by: [<numbers', 'Blocked by #N']) {
       assert.ok(text.includes(phrase), phrase);
     }
     const breakdown = fs.readFileSync(path.join(dir, 'breakdown.md'), 'utf8');
-    for (const label of ['Model: haiku', 'Model: sonnet', 'Model: opus', 'Effort: low', 'Effort: medium', 'Effort: high', 'Effort: xhigh']) {
+    for (const label of ['Model: haiku', 'Model: sonnet', 'Model: opus', 'Model: fable', 'Effort: low', 'Effort: medium', 'Effort: high', 'Effort: xhigh']) {
       assert.ok(breakdown.includes(`\`${label}\``), label);
     }
     for (const label of ['epic', 'concept']) {
