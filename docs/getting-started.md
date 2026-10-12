@@ -1,92 +1,90 @@
 # Getting Started
 
-> Symphony läuft auf einem Server in Docker hinter Traefik? Dann folge [docker.md](docker.md). Diese Anleitung gilt für
-> den Betrieb ohne Docker; Board und Token legst du in beiden Fällen so an wie hier.
+> Running Symphony on a server in Docker behind Traefik? Then follow [docker.md](docker.md). This guide covers running
+> without Docker; you set up the board and token as described here in both cases.
 
-## Voraussetzungen
+## Requirements
 
-| Was | Prüfen mit |
+| What | Check with |
 |---|---|
-| Linux, WSL2 oder macOS mit **Node.js ≥ 26** und npm | `node --version` |
-| **git** mit SSH-Zugriff auf GitHub (Symphony klont per SSH, der Agent pusht per SSH) | `ssh -T git@github.com` |
-| **Claude Code**, angemeldet. Alternativ ein `ANTHROPIC_API_KEY` | `claude` starten, ggf. `/login` |
-| **GitHub-Token** mit den Scopes `repo` und `project` | siehe Schritt 3 |
-| Nur für Laravel-Repositories: **PHP** und **Composer** in den Versionen der Projekte | `php --version`, `composer --version` |
+| Linux, WSL2 or macOS with **Node.js ≥ 26** and npm | `node --version` |
+| **git** with SSH access to GitHub (Symphony clones via SSH, the agent pushes via SSH) | `ssh -T git@github.com` |
+| **Claude Code**, logged in. Alternatively an `ANTHROPIC_API_KEY` | start `claude`, run `/login` if needed |
+| **GitHub token** with the scopes `repo` and `project` | see step 3 |
+| Laravel repositories only: **PHP** and **Composer** in the versions the projects use | `php --version`, `composer --version` |
 
-Das Claude Agent SDK bringt seine eigene Claude-Code-CLI mit. Es nutzt dieselbe Anmeldung wie dein installiertes
-`claude`.
+The Claude Agent SDK ships its own Claude Code CLI. It uses the same login as your installed `claude`.
 
-## 1. Installieren
+## 1. Install
 
 ```bash
 cd ~/projects/symphony
 npm install
 ```
 
-## 2. GitHub Project Board einrichten
+## 2. Set up the GitHub Project board
 
-1. Lege auf GitHub unter **Profil → Projects → New project** ein Projekt mit der Vorlage **Kanban** an. Sie bringt die
-   Spalten `Backlog`, `Ready`, `In progress`, `In review` und `Done` mit.
-2. Ergänze die Spalten `Agent review` und `Blocked`: im Board über das Menü des Feldes **Status** (oder
-   *Settings → Fields → Status*) zwei Optionen hinzufügen. Die Reihenfolge ist egal, übersichtlich ist:
+1. On GitHub, go to **Profile → Projects → New project** and create a project from the **Kanban** template. It comes
+   with the columns `Backlog`, `Ready`, `In progress`, `In review` and `Done`.
+2. Add the columns `Agent review` and `Blocked`: on the board, add two options via the menu of the **Status** field (or
+   *Settings → Fields → Status*). The order does not matter; this one is easy to follow:
 
-   | Spalte | Wer schiebt hierher | Was Symphony tut |
+   | Column | Who moves cards here | What Symphony does |
    |---|---|---|
-   | `Backlog` | du | nichts |
-   | `Ready` | du | startet den **Developer** |
-   | `In progress` | Developer, Reviewer (Änderungen nötig) | Developer arbeitet |
-   | `Agent review` | Developer, nach bestandenen Checks | startet den **Reviewer** (höchstens einen gleichzeitig) |
-   | `Blocked` | Developer oder Reviewer | stoppt den Agenten, Workspace bleibt; du bist dran |
-   | `In review` | nur der Reviewer, nach bestandenen Checks | stoppt den Agenten, Workspace bleibt; dein Review |
-   | `Done` | nur du | stoppt den Agenten und löscht den Workspace |
+   | `Backlog` | you | nothing |
+   | `Ready` | you | starts the **Developer** |
+   | `In progress` | Developer, Reviewer (changes needed) | Developer works |
+   | `Agent review` | Developer, after passing checks | starts the **Reviewer** (at most one at a time) |
+   | `Blocked` | Developer or Reviewer | stops the agent, workspace is kept; your turn |
+   | `In review` | only the Reviewer, after passing checks | stops the agent, workspace is kept; your review |
+   | `Done` | only you | stops the agent and deletes the workspace |
 
-   Genau diese Namen erwartet die mitgelieferte `WORKFLOW.md`. Der Dry Run (Schritt 6) meldet jede Spalte, die auf
-   dem Board fehlt (`unknown board column`).
-3. Notiere die **Board-Nummer** aus der URL, z. B. `10` aus `https://github.com/users/cooolinho/projects/10`.
-4. Füge Issues hinzu: im Board über **+ Add item** und dann `#` für ein Issue deines Repositories, oder in der
-   Seitenleiste eines Issues unter **Projects**. Symphony bearbeitet nur echte Issues, keine Entwürfe und keine
-   Pull Requests.
-5. Optional: Abhängigkeiten und Sub-Issues anlegen. Symphony startet ein Issue erst, wenn alles erledigt ist, wovon es
-   abhängt. Siehe [Abhängigkeiten und Sub-Issues](usage.md#abhängigkeiten-und-sub-issues).
+   The bundled `WORKFLOW.md` expects exactly these names. The dry run (step 6) reports every column missing from the
+   board (`unknown board column`).
+3. Note the **board number** from the URL, e.g. `10` from `https://github.com/users/yourname/projects/10`.
+4. Add issues: on the board via **+ Add item** and then `#` for an issue of your repository, or in an issue's sidebar
+   under **Projects**. Symphony only works on real issues, not on drafts or pull requests.
+5. Optional: create dependencies and sub-issues. Symphony starts an issue only once everything it depends on is done.
+   See [Dependencies and sub-issues](usage.md#dependencies-and-sub-issues).
 
-> Heißen deine Spalten anders, zum Beispiel `Todo`, `In Progress`, `Human Review` und `Done` (andere Vorlage), passe
-> `active_states`, `terminal_states`, `roles`, `checks.on_enter`, `agent.max_concurrent_agents_by_state` sowie die
-> Statusnamen im Prompt der `WORKFLOW.md` an. Wichtig ist eine Übergabe-Spalte, die weder aktiv noch final ist (hier
-> `In review`). Ohne sie hört der Agent nie auf, siehe
-> [Fehlerbehebung](usage.md#fehlerbehebung).
+> If your columns have different names, for example `Todo`, `In Progress`, `Human Review` and `Done` (another
+> template), adjust `active_states`, `terminal_states`, `roles`, `checks.on_enter`, `agent.max_concurrent_agents_by_state`
+> and the status names in the prompt of `WORKFLOW.md`. You need a hand-off column that is neither active nor terminal
+> (here `In review`). Without it the agent never stops, see
+> [Troubleshooting](usage.md#troubleshooting).
 
-## 3. GitHub-Token erstellen
+## 3. Create a GitHub token
 
-Du hast zwei Möglichkeiten:
+You have two options:
 
-- **Klassischer Personal Access Token:** GitHub → *Settings → Developer settings → Personal access tokens →
-  Tokens (classic) → Generate new token*. Wähle die Scopes **`repo`** und **`project`**. Mit einem klassischen
-  Token funktionieren Boards in Benutzer- und Organisationskonten.
-- **Den Login der GitHub-CLI wiederverwenden:**
+- **Classic personal access token:** GitHub → *Settings → Developer settings → Personal access tokens →
+  Tokens (classic) → Generate new token*. Select the scopes **`repo`** and **`project`**. A classic token works with
+  boards in both user and organization accounts.
+- **Reuse the GitHub CLI login:**
 
   ```bash
   gh auth refresh -s project
   gh auth token
   ```
 
-  Der zweite Befehl gibt den Token aus.
+  The second command prints the token.
 
-## 4. `.env` anlegen
+## 4. Create `.env`
 
 ```bash
 cp .env.example .env
 chmod 600 .env
 ```
 
-Trage danach deine Werte ein:
+Then fill in your values:
 
 ```dotenv
 GITHUB_PROJECT_NUMBER=10
-GITHUB_REPOSITORY=cooolinho/trainingsstunden-portal
+GITHUB_REPOSITORY=owner/repository
 CLAUDE_MODEL=opus
 GITHUB_TOKEN=ghp_…
 
-# Orchestrator-Grenzen (optional, sonst gelten die Standardwerte aus der WORKFLOW.md)
+# Orchestrator limits (optional, otherwise the defaults from WORKFLOW.md apply)
 SYMPHONY_MAX_CONCURRENT_AGENTS=1
 SYMPHONY_MAX_TURNS=5
 SYMPHONY_MAX_CONTINUATIONS=6
@@ -95,88 +93,88 @@ SYMPHONY_POLL_INTERVAL_MS=30000
 SYMPHONY_CLEANUP_TERMINAL=true
 ```
 
-| Variable | Bedeutung |
+| Variable | Meaning |
 |---|---|
-| `GITHUB_PROJECT_NUMBER` | Nummer des Boards. Die ganze Board-URL geht auch. |
-| `GITHUB_REPOSITORY` | `owner/name` des Repositories. Mehrere Repositories trennst du mit Kommas. Issues anderer Repositories auf dem Board werden ignoriert. |
-| `CLAUDE_MODEL` | Standardmodell für Claude Code: Alias wie `opus` oder `sonnet`, oder eine volle Modell-ID. Leer heißt: Claude-Code-Standard. Ein Label `Model: …` am Issue hat Vorrang, siehe [Modell pro Issue wählen](usage.md#modell-pro-issue-wählen). |
-| `CLAUDE_EFFORT` | *optional:* Standard-Denkaufwand für Claude Code: `low`, `medium`, `high`, `xhigh` oder `max`. Leer heißt: Claude-Code-Standard. Ein Label `Effort: …` am Issue hat Vorrang, siehe [Effort pro Issue wählen](usage.md#effort-pro-issue-wählen). |
-| `GITHUB_TOKEN` | Token aus Schritt 3. Er wird aus der Umgebung von Agenten und Hooks entfernt. |
-| `GITHUB_PROJECT_OWNER` | *optional:* Eigentümer des Boards, falls nicht der Repository-Eigentümer (z. B. eine Organisation) |
-| `SYMPHONY_PORT` | *optional:* Port für Dashboard und API, z. B. `4000` für `http://127.0.0.1:4000/` |
-| `SYMPHONY_HOST` | *optional:* Bind-Adresse des Dashboards. Standard `127.0.0.1`; `0.0.0.0` (etwa im Container) nur hinter einem Reverse-Proxy mit Anmeldung, siehe [Sicherheit](usage.md#sicherheit). |
-| `SYMPHONY_ALLOW_REMOTE_CONTROL` | *optional:* `true` erlaubt **Retry now** / **Resume now** auch bei einer Nicht-Loopback-Adresse, dann nur mit passendem `Origin`-Header. Standard `false`. |
-| `ANTHROPIC_API_KEY` | *optional:* Sonst nutzt Claude Code seine bestehende Anmeldung. |
-| `SYMPHONY_MAX_CONCURRENT_AGENTS` | *optional:* Wie viele Agenten gleichzeitig laufen. Standard 2, `0` pausiert alle neuen Starts. |
-| `SYMPHONY_MAX_TURNS` | *optional:* Turns pro Session, bevor Symphony den Stand neu bewertet. Standard 10. |
-| `SYMPHONY_MAX_CONTINUATIONS` | *optional:* Wie viele weitere Sessions ein Issue bekommt, solange seine Karte aktiv bleibt. Jeder Wechsel zwischen Developer und Reviewer zählt mit. Danach **pausiert** Symphony das Issue, siehe [Fortsetzungen und Pausieren](usage.md#fortsetzungen-und-pausieren). Standard 6, leer heißt unbegrenzt. |
-| `SYMPHONY_MAX_SESSION_LIMIT_RETRIES` | *optional:* Wie oft Symphony ein Issue nach dem ersten Session-Limit-Fehler erneut versucht, bevor der Worker auf das Reset wartet. Danach wartet er bis zum Reset (Reset + 1 Minute), siehe [Session-Limit](usage.md#session-limit). Standard 3, `0` heißt: sofort warten. |
-| `SYMPHONY_POLL_INTERVAL_MS` | *optional:* Wie oft das Board abgefragt wird, in Millisekunden. Standard 30000. |
-| `SYMPHONY_CLEANUP_TERMINAL` | *optional:* `true` (Standard) löscht den Workspace, sobald ein Issue in `Done` landet. Vorher läuft der `before_remove`-Hook, z. B. für eine Test-Datenbank. `false` behält die Workspaces. |
-| `SYMPHONY_LOG_DIR` | *optional:* Ordner für Repository-Logs und Session-Transkripte. Standard: `~/.local/state/symphony`. Ein relativer Pfad gilt ab dem Symphony-Ordner, z. B. `logs`. |
+| `GITHUB_PROJECT_NUMBER` | Number of the board. The full board URL works too. |
+| `GITHUB_REPOSITORY` | `owner/name` of the repository. Separate multiple repositories with commas. Issues from other repositories on the board are ignored. |
+| `CLAUDE_MODEL` | Default model for Claude Code: an alias such as `opus` or `sonnet`, or a full model ID. Empty means the Claude Code default. A `Model: …` label on the issue takes precedence, see [Choosing the model per issue](usage.md#choosing-the-model-per-issue). |
+| `CLAUDE_EFFORT` | *optional:* Default effort for Claude Code: `low`, `medium`, `high`, `xhigh` or `max`. Empty means the Claude Code default. An `Effort: …` label on the issue takes precedence, see [Choosing the effort per issue](usage.md#choosing-the-effort-per-issue). |
+| `GITHUB_TOKEN` | Token from step 3. It is removed from the environment of agents and hooks. |
+| `GITHUB_PROJECT_OWNER` | *optional:* Owner of the board if it is not the repository owner (e.g. an organization) |
+| `SYMPHONY_PORT` | *optional:* Port for the dashboard and API, e.g. `4000` for `http://127.0.0.1:4000/` |
+| `SYMPHONY_HOST` | *optional:* Bind address of the dashboard. Default `127.0.0.1`; use `0.0.0.0` (e.g. in a container) only behind a reverse proxy with login, see [Security](usage.md#security). |
+| `SYMPHONY_ALLOW_REMOTE_CONTROL` | *optional:* `true` allows **Retry now** / **Resume now** on a non-loopback address too, then only with a matching `Origin` header. Default `false`. |
+| `ANTHROPIC_API_KEY` | *optional:* Otherwise Claude Code uses its existing login. |
+| `SYMPHONY_MAX_CONCURRENT_AGENTS` | *optional:* How many agents run at the same time. Default 2; `0` pauses all new starts. |
+| `SYMPHONY_MAX_TURNS` | *optional:* Turns per session before Symphony re-evaluates the state. Default 10. |
+| `SYMPHONY_MAX_CONTINUATIONS` | *optional:* How many more sessions an issue gets while its card stays active. Every switch between Developer and Reviewer counts. After that Symphony **pauses** the issue, see [Continuations and pausing](usage.md#continuations-and-pausing). Default 6; empty means unlimited. |
+| `SYMPHONY_MAX_SESSION_LIMIT_RETRIES` | *optional:* How often Symphony retries an issue after the first session limit error before the worker waits for the reset. After that it waits until the reset (reset + 1 minute), see [Session limit](usage.md#session-limit). Default 3; `0` means wait right away. |
+| `SYMPHONY_POLL_INTERVAL_MS` | *optional:* How often the board is polled, in milliseconds. Default 30000. |
+| `SYMPHONY_CLEANUP_TERMINAL` | *optional:* `true` (default) deletes the workspace as soon as an issue lands in `Done`. The `before_remove` hook runs first, e.g. for a test database. `false` keeps the workspaces. |
+| `SYMPHONY_LOG_DIR` | *optional:* Directory for repository logs and session transcripts. Default: `~/.local/state/symphony`. A relative path is resolved from the Symphony directory, e.g. `logs`. |
 
-Die `WORKFLOW.md` liest diese Werte über Verweise wie `$GITHUB_TOKEN` oder `${SYMPHONY_MAX_TURNS:-10}`. Die zweite
-Form hat einen Standardwert, falls die Variable fehlt oder leer ist. Variablen, die in deiner Shell bereits gesetzt
-sind, haben Vorrang vor der `.env`. Symphony meldet so einen Konflikt beim Start mit dem Variablennamen, nie mit dem
-Wert. Nach Änderungen an der `.env` musst du Symphony neu starten.
+`WORKFLOW.md` reads these values through references such as `$GITHUB_TOKEN` or `${SYMPHONY_MAX_TURNS:-10}`. The second
+form has a default in case the variable is missing or empty. Variables already set in your shell take precedence over
+`.env`. Symphony reports such a conflict at startup with the variable name, never with the value. After changing `.env`
+you have to restart Symphony.
 
-## 5. Labels anlegen (optional)
+## 5. Create labels (optional)
 
-Mit Labels wie `Model: sonnet` und `Effort: high` wählst du pro Issue Modell und Denkaufwand, siehe [Modell pro Issue wählen](usage.md#modell-pro-issue-wählen) und [Effort pro Issue wählen](usage.md#effort-pro-issue-wählen).
-Das Script `repo-init` legt sie in den Repositories aus `GITHUB_REPOSITORY` an:
+With labels such as `Model: sonnet` and `Effort: high` you choose the model and effort per issue, see [Choosing the model per issue](usage.md#choosing-the-model-per-issue) and [Choosing the effort per issue](usage.md#choosing-the-effort-per-issue).
+The `repo-init` script creates them in the repositories from `GITHUB_REPOSITORY`:
 
 ```bash
 npm run repo-init
 ```
 
-Es führt dich durch eine Auswahlliste, zeigt vor jeder Änderung, was es anlegen würde, und fragt nach. Mehr dazu unter
-[Repositories einrichten (repo-init)](usage.md#repositories-einrichten-repo-init).
+It walks you through a selection list, shows what it would create before each change, and asks for confirmation. More
+in [Setting up repositories (repo-init)](usage.md#setting-up-repositories-repo-init).
 
-## 6. Einrichtung prüfen (Dry Run)
+## 6. Check the setup (dry run)
 
 ```bash
 npm run dry-run
 ```
 
-Der Dry Run lädt `WORKFLOW.md` und `.env`, prüft die Konfiguration, liest das Board und zeigt, was Symphony
-starten würde. Er prüft auch, ob `php` und `composer` für Laravel Boost laufen, und nennt für Issues mit bestehendem
-Workspace die erkannten Laravel-Apps. Agenten startet er nicht. Beispiel:
+The dry run loads `WORKFLOW.md` and `.env`, validates the configuration, reads the board and shows what Symphony would
+start. It also checks whether `php` and `composer` work for Laravel Boost, and lists the detected Laravel apps for
+issues with an existing workspace. It does not start any agents. Example:
 
 ```
-Workflow:        /home/cooolinho/projects/symphony/WORKFLOW.md
-Env file:        /home/cooolinho/projects/symphony/.env
+Workflow:        /home/user/projects/symphony/WORKFLOW.md
+Env file:        /home/user/projects/symphony/.env
 Tracker:         github_project
 Active states:   Ready, In progress, Agent review
 …
-Plugins:         /home/cooolinho/projects/symphony/.claude; skills: all
+Plugins:         /home/user/projects/symphony/.claude; skills: all
 Laravel Boost:   auto, for Laravel apps that require laravel/boost; php (PHP 8.4.12), composer (Composer version 2.8.12 …)
 
 Candidates in active states: 3
-  dispatch  cooolinho/trainingsstunden-portal#12  [Ready]  Abrechnung als CSV exportieren
+  dispatch  owner/repository#12  [Ready]  Implement feature A
             ↳ Laravel app laravel/: Laravel Boost
-  skip      cooolinho/trainingsstunden-portal#15  [Ready]  Export-Button im Dashboard
-            ↳ blocked by cooolinho/trainingsstunden-portal#12
-  skip      cooolinho/trainingsstunden-portal#16  [Ready]  Export-Funktion
-            ↳ waiting for sub-issues cooolinho/trainingsstunden-portal#15
+  skip      owner/repository#15  [Ready]  Implement feature B
+            ↳ blocked by owner/repository#12
+  skip      owner/repository#16  [Ready]  Write tests
+            ↳ waiting for sub-issues owner/repository#15
 
-Prompt preview for cooolinho/trainingsstunden-portal#12:
-  | You are working on GitHub issue **cooolinho/trainingsstunden-portal#12**: …
+Prompt preview for owner/repository#12:
+  | You are working on GitHub issue **owner/repository#12**: …
 ```
 
-Bei einem Fehler endet der Dry Run mit Exit-Code 1 und einer konkreten Meldung, z. B. einem fehlenden Token-Scope.
+On an error the dry run exits with code 1 and a specific message, e.g. a missing token scope.
 
-## 7. Starten
+## 7. Start
 
 ```bash
 npm start
 ```
 
-Symphony läuft im Vordergrund und schreibt seine Logs ins Terminal. Mit `SYMPHONY_PORT=4000` in der `.env` erreichst
-du das Dashboard unter <http://127.0.0.1:4000/>.
+Symphony runs in the foreground and writes its logs to the terminal. With `SYMPHONY_PORT=4000` in `.env` the dashboard
+is available at <http://127.0.0.1:4000/>.
 
-- **Beenden:** `Strg+C`. Symphony stoppt laufende Agenten und wartet, bis ihre `after_run`-Hooks fertig sind. Ein
-  zweites `Strg+C` beendet sofort.
-- **Im Hintergrund laufen lassen:** z. B. in `tmux` oder `screen`, oder mit Logdatei:
+- **Stop:** `Ctrl+C`. Symphony stops running agents and waits until their `after_run` hooks are done. A second
+  `Ctrl+C` exits immediately.
+- **Run in the background:** e.g. in `tmux` or `screen`, or with a log file:
   `npm start -- --log-file ~/symphony.log`
 
-← [Dokumentation](index.md) · Weiter: [Usage](usage.md)
+← [Documentation](index.md) · Next: [Usage](usage.md)

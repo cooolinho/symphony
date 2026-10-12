@@ -1,120 +1,121 @@
-# Vorlagen
+# Templates
 
-Schreibe in der Sprache des Epics. Die folgenden Vorlagen sind deutsch. Titel kurz und eindeutig: Der Titel dient
-zugleich als Schlüssel, damit ein Retry kein Duplikat anlegt. Pfade und Nummern sind Platzhalter.
+Write in the language of the epic; translate the template text, but keep the `## Auto-Code …` report headings in
+English exactly as below, because later runs search for them. Keep titles short and unambiguous: the title is also the
+key that keeps a retry from creating a duplicate. Paths and numbers are placeholders.
 
-## Sub-Issue
+## Sub-issue
 
-Titel: `<Feature|Design|Qualität|Wartung>: <was sich ändert>`, z. B. `Feature: CSV-Export der Abrechnungen`.
-Labels: `auto-code`, Kategorie, `Effort: medium|high`, ggf. `Model: opus|sonnet|haiku` (nur mit `issue-models`),
-ggf. `manual-merge`.
+Title: `<Feature|Design|Quality|Maintenance>: <what changes>`, e.g. `Feature: CSV export of invoices`.
+Labels: `auto-code`, category, `Effort: medium|high`, if applicable `Model: opus|sonnet|haiku` (only with
+`issue-models`), if applicable `manual-merge`.
 
 ```markdown
-## Ziel
-<Was Nutzer danach können oder was danach besser ist, in ein bis zwei Sätzen.>
+## Goal
+<What users can do afterwards or what is better afterwards, in one or two sentences.>
 
-## Bezug zur Projektbeschreibung
-<Abschnitt oder Zitat aus der Projektbeschreibung / dem Roadmap-Punkt, den dieses Issue voranbringt.>
+## Reference to the project description
+<Section or quote from the project description / the roadmap item this issue advances.>
 
-## Ausgangslage
-`<Datei>:<Zeile>` / `<Route>` / `<Resource>`: <was es heute gibt oder fehlt>
+## Starting point
+`<file>:<line>` / `<route>` / `<resource>`: <what exists or is missing today>
 
-## Akzeptanzkriterien
-- [ ] <prüfbares Kriterium>
-- [ ] <prüfbares Kriterium, inkl. Rechte: wer darf, wer nicht>
+## Acceptance criteria
+- [ ] <verifiable criterion>
+- [ ] <verifiable criterion, including permissions: who may, who may not>
 
 ## Tests
-- <Feature-, Livewire- oder Filament-Test, der die Kriterien belegt>
+- <feature, Livewire or Filament test that proves the criteria>
 
-## Hinweise
-<Betroffene Bereiche, was nicht geändert werden soll, ggf. „Roadmap-Punkt `<…>` in `docs/todo.md` abhaken“.>
+## Notes
+<Affected areas, what should not be changed, if applicable "tick off roadmap item `<…>` in `docs/todo.md`".>
 
-Kategorie: <feature|design|quality|maintenance> · Aufwand: <S|M> · Risiko: <niedrig|mittel|hoch> ·
-Teil von Welle <N> des Autopiloten #<Epic>.
+Category: <feature|design|quality|maintenance> · Effort: <S|M> · Risk: <low|medium|high> ·
+Part of wave <N> of autopilot #<epic>.
 ```
 
-Abhängigkeiten stehen als eigene Zeile direkt unter dem Ziel: `Blocked by #<n>`. Ein reines Refactoring beginnt mit
-`/refactor-safely` in der ersten Zeile.
+Dependencies go on their own line directly below the goal: `Blocked by #<n>`. A pure refactoring starts with
+`/refactor-safely` on the first line.
 
-## Wellen-Bericht
+## Wave report
 
 ```markdown
-## Auto-Code Welle <N>
+## Auto-Code Wave <N>
 
-**Stand:** `<base>` @ <kurzer Commit-Hash> · **Projektbeschreibung:** `<Pfad>`
+**State:** `<base>` @ <short commit hash> · **Project description:** `<path>`
 
 ### Baseline
-- Tests: <Ergebnis> · Analyse: <Ergebnis> · Pint: <Ergebnis>
+- Tests: <result> · Analysis: <result> · Pint: <result>
 
-### Diese Welle
-- [ ] #<n> <Titel> (<Kategorie>, <Aufwand>, Risiko <…>[, Modell <opus|sonnet|haiku>: <Grund>]): <warum jetzt, Bezug zur Beschreibung>
-- [ ] #<n> <Titel> … *wartet auf #<m>*
+### This wave
+- [ ] #<n> <title> (<category>, <effort>, risk <…>[, model <opus|sonnet|haiku>: <reason>]): <why now, reference to the description>
+- [ ] #<n> <title> … *waits for #<m>*
 
-### Berücksichtigte Wünsche
-- <Kommentar von @…>: <umgesetzt in #n | später, weil … | nicht, weil …>
+### Requests considered
+- <comment by @…>: <implemented in #n | later, because … | not, because …>
 
-### Ideen-Backlog (nicht angelegt)
-1. <Idee> (<Kategorie>, Nutzen <…>, Aufwand <…>): <warum noch nicht>
+### Idea backlog (not created)
+1. <idea> (<category>, value <…>, effort <…>): <why not yet>
 
-### Hinweise
-<Abgelehnte Anlagen (`limit_reached`), unbekannte Labels, Beobachtungen.>
+### Notes
+<Rejected creations (`limit_reached`), unknown labels, observations.>
 
-Nächste Welle, sobald alle Issues dieser Welle geschlossen sind. Steuern: Wünsche als Kommentar hier im Epic. Eine Idee
-ablehnen: das Sub-Issue als „not planned“ schließen. Stoppen: das Epic nach Backlog verschieben.
+Next wave as soon as all issues of this wave are closed. To steer: requests as a comment here on the epic. To reject an
+idea: close the sub-issue as "not planned". To stop: move the epic to Backlog.
 ```
 
 ## Checkpoint
 
 ```markdown
-## Auto-Code Checkpoint nach Welle <N>
+## Auto-Code Checkpoint after wave <N>
 
-**Release-PR:** #<n> (`<base>` → `<default>`) · **Wellen:** <von>–<N>
+**Release PR:** #<n> (`<base>` → `<default>`) · **Waves:** <from>–<N>
 
-### Erledigt
-- #<n> <Titel>
+### Done
+- #<n> <title>
 
-### Abgelehnt
-- #<n> <Titel>: <was daraus folgt>
+### Rejected
+- #<n> <title>: <what follows from it>
 
-### Zustand
-<Baseline, Testabdeckung der neuen Teile, Auffälligkeiten.>
+### State
+<Baseline, test coverage of the new parts, anything conspicuous.>
 
-### Ideen-Backlog
-1. <Idee>: <Nutzen, Aufwand>
+### Idea backlog
+1. <idea>: <value, effort>
 
-### Empfehlung für die nächsten Wellen
-<Schwerpunkte, Risiken, was du anders machen würdest.>
+### Recommendation for the next waves
+<Focus areas, risks, what you would do differently.>
 
-### Fragen
-- <Entscheidung, die ein Mensch treffen sollte>
+### Questions
+- <decision a human should make>
 
-Zum Weitermachen das Epic zurück nach „Ready“ schieben. Wünsche und Antworten als Kommentar hier.
+To continue, move the epic back to "Ready". Requests and answers as a comment here.
 ```
 
-## Pause und Übergabe
+## Pause and handover
 
 ```markdown
 ## Auto-Code Pause
 
-<Warum keine Idee die Kriterien erfüllt.> Weiter geht es, wenn die Projektbeschreibung neue Ziele bekommt oder hier
-Wünsche stehen; dann das Epic zurück nach „Ready“ schieben.
+<Why no idea meets the criteria.> Work continues when the project description gets new goals or requests are posted
+here; then move the epic back to "Ready".
 ```
 
 ```markdown
-## Auto-Code Übergabe
+## Auto-Code Handover
 
-Dieses Epic hat <n> Sub-Issues (GitHub erlaubt 100). Neues Epic anlegen, Beschreibung:
-`/auto-code <Argumente>`, darunter diesen Abschnitt einfügen.
+This epic has <n> sub-issues (GitHub allows 100). Create a new epic with the description
+`/auto-code <arguments>` and paste this section below it.
 
-### Stand
-<Welle N, Basis-Branch, letzter Release-PR.>
+### State
+<Wave N, base branch, last release PR.>
 
-### Ideen-Backlog
-1. <Idee>
+### Idea backlog
+1. <idea>
 
-### Abgelehnt (nicht erneut vorschlagen)
-- <Idee>
+### Rejected (do not suggest again)
+- <idea>
 
-### Offene Wünsche
-- <Wunsch>
+### Open requests
+- <request>
 ```

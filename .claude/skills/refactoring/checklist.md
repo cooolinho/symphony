@@ -1,43 +1,43 @@
-# Analyse-Checkliste
+# Analysis checklist
 
-Version zuerst feststellen, dann prüfen. Treffer ohne Beleg (Datei:Zeile) sind keine Befunde. **B** = Bug-Kandidat,
-**R** = Refactoring-Kandidat.
+Determine the version first, then check. Hits without evidence (file:line) are not findings. **B** = bug candidate,
+**R** = refactoring candidate.
 
 ## Laravel
 
-- **B** N+1-Abfragen: Relationen in Schleifen, Blade, Resources oder Tabellen ohne `with`/`load`; `Model::preventLazyLoading` ist aus.
-- **B** Mass Assignment: `$guarded = []`, `forceFill`, `unguard` auf Benutzereingaben, `$request->all()` in `create`/`update`.
-- **B** Fehlende Autorisierung: Controller, Routen, Jobs oder Aktionen ohne Policy/Gate; Routen ohne `auth`-Middleware, die Daten ändern.
-- **B** Transaktionen und Queues: mehrere zusammengehörige Schreibvorgänge ohne `DB::transaction`; Jobs ohne `$tries`/`$backoff`, nicht idempotent, `dispatch` innerhalb einer Transaktion ohne `afterCommit`.
-- **B** Zeit und Zahlen: `now()` in Defaults von Migrationen, Zeitzonen-Vergleiche, Geld als `float`, Rundungsfehler.
-- **B** Konfiguration: `env()` außerhalb von `config/`, Secrets im Code, `APP_DEBUG` fest verdrahtet.
-- **R** Dicke Controller, Models oder Livewire-Komponenten; Geschäftslogik in Blade; duplizierte Validierung (Form Requests, Rules).
-- **R** Veraltete oder entfernte APIs der installierten Laravel-Version; Hilfsfunktionen, die das Framework inzwischen bietet.
-- **R** Toter Code: ungenutzte Routen, Methoden, Models, Migrationen-Reste, Konfigurationsschlüssel (per `list-routes` und Suche belegen).
-- **R** Fehlende Indizes auf Fremdschlüsseln und häufig gefilterten Spalten (`database-schema`), nicht umkehrbare Migrationen.
+- **B** N+1 queries: relations in loops, Blade, resources or tables without `with`/`load`; `Model::preventLazyLoading` is off.
+- **B** Mass assignment: `$guarded = []`, `forceFill`, `unguard` on user input, `$request->all()` in `create`/`update`.
+- **B** Missing authorization: controllers, routes, jobs or actions without policy/gate; routes that change data without `auth` middleware.
+- **B** Transactions and queues: several related writes without `DB::transaction`; jobs without `$tries`/`$backoff`, not idempotent, `dispatch` inside a transaction without `afterCommit`.
+- **B** Time and numbers: `now()` in migration defaults, time zone comparisons, money as `float`, rounding errors.
+- **B** Configuration: `env()` outside `config/`, secrets in code, `APP_DEBUG` hard-wired.
+- **R** Fat controllers, models or Livewire components; business logic in Blade; duplicated validation (form requests, rules).
+- **R** Deprecated or removed APIs of the installed Laravel version; helpers the framework now provides.
+- **R** Dead code: unused routes, methods, models, leftover migrations, config keys (back up with `list-routes` and search).
+- **R** Missing indexes on foreign keys and frequently filtered columns (`database-schema`), irreversible migrations.
 
 ## Filament
 
-- **B** Resources, Pages, Relation Manager und Actions ohne Autorisierung (`canViewAny`, `canCreate`, `canEdit`, `canDelete`, Policies); Aktionen, die Daten ändern, ohne Bestätigung oder Prüfung.
-- **B** Tabellen und Widgets mit N+1 (Spalten über Relationen ohne `modifyQueryUsing(... ->with())`), ungefilterte `Model::all()` in Widgets.
-- **B** Mandantenfähigkeit: Abfragen, die den Tenant-Scope umgehen (`withoutGlobalScopes`, rohe Queries).
-- **B** Formulare: fehlende oder zu lockere Validierung, Dateiuploads ohne Typ- und Größenprüfung.
-- **R** APIs der falschen oder veralteten Major-Version (v3-Muster in v4/v5, entfernte Klassen); mit `search-docs` gegen die installierte Version prüfen.
-- **R** Wiederholte Formular-, Tabellen- oder Filter-Definitionen, die in gemeinsame Schemas oder Traits gehören; Resources, die Logik statt Actions/Services enthalten.
+- **B** Resources, pages, relation managers and actions without authorization (`canViewAny`, `canCreate`, `canEdit`, `canDelete`, policies); actions that change data without confirmation or checks.
+- **B** Tables and widgets with N+1 (columns via relations without `modifyQueryUsing(... ->with())`), unfiltered `Model::all()` in widgets.
+- **B** Multi-tenancy: queries that bypass the tenant scope (`withoutGlobalScopes`, raw queries).
+- **B** Forms: missing or too lax validation, file uploads without type and size checks.
+- **R** APIs of the wrong or an outdated major version (v3 patterns in v4/v5, removed classes); check against the installed version with `search-docs`.
+- **R** Repeated form, table or filter definitions that belong in shared schemas or traits; resources that contain logic instead of actions/services.
 
 ## Livewire
 
-- **B** Öffentliche Eigenschaften mit sensiblen Daten oder Models ohne Sperre (`#[Locked]`); Aktionen ohne Autorisierung.
-- **B** `wire:model`-Verhalten der installierten Version missverstanden (Standard ist ab v3 deferred, ab v4 gilt anderes Bubbling).
-- **R** Große Komponenten, die sich in kleinere teilen lassen; Berechnungen, die `#[Computed]` brauchen.
+- **B** Public properties with sensitive data or models without a lock (`#[Locked]`); actions without authorization.
+- **B** `wire:model` behaviour of the installed version misunderstood (deferred by default since v3, different bubbling since v4).
+- **R** Large components that can be split into smaller ones; computations that need `#[Computed]`.
 
-## Frontend und Build
+## Frontend and build
 
-- **B** `npm run build` schlägt fehl oder warnt; Vite-Eingänge, die nicht existieren; fehlende `@vite`-Einbindung.
-- **B** `npm audit` mit hoch/kritisch auf Pakete, die in den Build gelangen.
-- **R** Veraltete Vite-/Tailwind-Konfiguration für die installierte Major-Version; ungenutzte Abhängigkeiten, doppelte Bibliotheken.
-- **R** Inline-Skripte, die Alpine- oder Livewire-Mittel ersetzen könnten.
+- **B** `npm run build` fails or warns; Vite entries that do not exist; missing `@vite` inclusion.
+- **B** `npm audit` with high/critical on packages that end up in the build.
+- **R** Outdated Vite/Tailwind configuration for the installed major version; unused dependencies, duplicate libraries.
+- **R** Inline scripts that Alpine or Livewire means could replace.
 
 ## Tests
 
-- **R** Bereiche ohne Tests, Tests ohne Aussagekraft (nur Statuscode), übersprungene oder markierte Tests; Factories, die nicht zum Schema passen.
+- **R** Areas without tests, tests without meaningful assertions (only status code), skipped or marked tests; factories that do not match the schema.

@@ -346,7 +346,7 @@ describe('Symphony toolbox skills', () => {
       const front = /^---\n([\s\S]*?)\n---\n/.exec(text)?.[1] ?? '';
       assert.equal(/^name:\s*(.+)$/m.exec(front)?.[1]?.trim(), name);
       assert.match(front, /^description:\s*\S/m);
-      assert.match(front, /nur laden|Nur laden/, 'description limits when the skill loads');
+      assert.match(front, /only load/i, 'description limits when the skill loads');
       for (const [, target] of text.matchAll(/\]\(([^)#]+\.md)\)/g)) {
         assert.ok(fs.existsSync(path.join(skillsDir, name, target as string)), `${name}/${target}`);
       }

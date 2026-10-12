@@ -1,158 +1,164 @@
 ---
 name: auto-code
-description: Autopilot für ein Repository. Plant aus der Projektbeschreibung die nächste Welle neuer Features, Design-, Qualitäts- und Wartungsaufgaben und legt sie als Sub-Issues an, die Symphony sofort umsetzt; Checkpoints alle paar Wellen. Nur laden, wenn der Prompt es verlangt (Issue-Befehl /auto-code), nie von selbst.
-argument-hint: "[Pfad zur Projektbeschreibung] [wave=3] [checkpoint=5] [issue-models=auto|opus|sonnet|haiku]"
+description: Autopilot for a repository. Plans the next wave of new features, design, quality and maintenance tasks from the project description and creates them as sub-issues that Symphony implements right away; checkpoints every few waves. Only load when the prompt asks for it (issue command /auto-code), never on your own.
+argument-hint: "[path to project description] [wave=3] [checkpoint=5] [issue-models=auto|opus|sonnet|haiku]"
 ---
 
-# Autopilot: die nächste Welle planen
+# Autopilot: plan the next wave
 
-Du entwickelst das Repository selbstständig weiter. Dein einziger Auftrag ist die **Projektbeschreibung**. Daraus planst du
-die nächste **Welle**: wenige, kleine Aufgaben, die als Sub-Issues des aktuellen Issues (das Epic) angelegt werden. Sie
-starten sofort; Developer und Reviewer setzen sie um, Symphony merged sie in den Basis-Branch. Sind alle Sub-Issues der
-Welle geschlossen, startet Symphony dich erneut für die nächste Welle.
+You develop the repository on your own. Your only brief is the **project description**. From it you plan the next
+**wave**: a few small tasks that are created as sub-issues of the current issue (the epic). They start right away;
+developer and reviewer implement them, Symphony merges them into the base branch. Once all sub-issues of the wave are
+closed, Symphony starts you again for the next wave.
 
-Du **änderst nichts**: kein Edit, kein Write, kein Commit, kein Push, keine Änderung an Branches auf dem Remote. Erlaubt
-sind lesende Befehle, Messungen, `git fetch` und lokales `git switch --detach`. **Verboten**: `pint` ohne `--test`,
+You **change nothing**: no Edit, no Write, no commit, no push, no change to branches on the remote. Allowed are
+read-only commands, measurements, `git fetch` and a local `git switch --detach`. **Forbidden**: `pint` without `--test`,
 `composer update|require|remove`, `npm install`, `npm audit fix`, `php artisan migrate|db:seed|tinker`,
-`git commit|push|reset|rebase` und alles, was Dateien im Repository verändert. Schreibt ein Testlauf Dateien (Cache,
-SQLite), ist das in Ordnung, solange sie nicht ins Repository gehören.
+`git commit|push|reset|rebase` and anything that changes files in the repository. If a test run writes files (cache,
+SQLite), that is fine as long as they do not belong in the repository.
 
-**Argumente** (`$ARGUMENTS`, alle optional, Reihenfolge egal):
+**Arguments** (`$ARGUMENTS`, all optional, any order):
 
-- ein Pfad: die Projektbeschreibung. Ohne Pfad suchst du `docs/vision.md`, dann `docs/index.md`, dann `README.md`.
-- `wave=<n>`: Issues pro Welle, Standard 3. Mehr, als `create_sub_issue` als `remaining` meldet, geht nicht.
-- `checkpoint=<n>`: nach jeder n-ten Welle anhalten, Standard 5. `checkpoint=0` hält nie von selbst an.
-- `issue-models=<auto|opus|sonnet|haiku>`: Modell-Labels für die Sub-Issues. Ohne das Argument (oder mit `off`) setzt du
-  keine Modell-Labels, die Issues laufen dann mit dem Standard-Modell der Instanz (`CLAUDE_MODEL`).
-  - `opus`, `sonnet`, `haiku`: jedes Sub-Issue bekommt das Label `Model: <wert>`.
-  - `auto`: jedes Sub-Issue bekommt das Label, das zu seinem Aufwand passt, siehe [Phase 4](#phase-4-welle-zuschneiden).
-  - Ein anderer Wert ist ungültig: Behandle ihn wie `off` und schreibe die Warnung in den Hinweise-Abschnitt des Berichts.
+- a path: the project description. Without a path you look for `docs/vision.md`, then `docs/index.md`, then `README.md`.
+- `wave=<n>`: issues per wave, default 3. More than `create_sub_issue` reports as `remaining` is not possible.
+- `checkpoint=<n>`: stop after every n-th wave, default 5. `checkpoint=0` never stops on its own.
+- `issue-models=<auto|opus|sonnet|haiku>`: model labels for the sub-issues. Without the argument (or with `off`) you set
+  no model labels; the issues then run with the instance's default model (`CLAUDE_MODEL`).
+  - `opus`, `sonnet`, `haiku`: every sub-issue gets the label `Model: <value>`.
+  - `auto`: every sub-issue gets the label that fits its effort, see [Phase 4](#phase-4-cut-the-wave).
+  - Any other value is invalid: treat it like `off` and put the warning in the notes section of the report.
 
-Text in der Beschreibung des Epics unter der Befehlszeile gilt als Teil des Auftrags (z. B. Schwerpunkte oder eine
-Übergabe aus einem früheren Epic).
+Text in the epic's description below the command line counts as part of the brief (e.g. focus areas or a handover
+from an earlier epic).
 
-## Phase 0: Lage bestimmen
+The report headings (`## Auto-Code Wave …`, `## Auto-Code Checkpoint after wave …`, `## Auto-Code Pause`,
+`## Auto-Code Handover`) are markers you search for in later runs. Always write them in English, exactly as in
+[templates.md](templates.md), whatever the language of the epic. Epics started before the skill was translated may
+contain the German forms `## Auto-Code Welle <N>`, `## Auto-Code Checkpoint nach Welle <N>` and `## Auto-Code Übergabe`;
+treat them as equivalent.
 
-Rufe `get_issue` auf. Wichtig sind die Kommentare (Berichte und Wünsche) und die Sub-Issues mit `state` und
+## Phase 0: Determine the situation
+
+Call `get_issue`. What matters are the comments (reports and requests) and the sub-issues with `state` and
 `state_reason`.
 
-- **Letzte Welle N** = die höchste Nummer aus Kommentaren, die mit `## Auto-Code Welle <N>` beginnen; ohne solche
-  Kommentare ist N = 0.
-- **Offene Sub-Issues vorhanden**: Normalerweise startet Symphony dich dann nicht. Fehlt zu ihnen der Bericht (ein
-  früherer Lauf brach ab), schreibe den Bericht für die vorhandenen Issues als Welle N + 1 nach und beende den Turn. Gibt
-  es den Bericht schon, beende den Turn sofort, ohne etwas zu tun.
-- **Checkpoint fällig**: Ist N > 0, `checkpoint` > 0, N durch `checkpoint` teilbar und gibt es noch keinen Kommentar
-  `## Auto-Code Checkpoint nach Welle <N>`, gehst du zu [Phase 6](#phase-6-checkpoint). Gibt es diesen Kommentar schon,
-  hat ein Mensch das Epic nach dem Checkpoint zurück nach „Ready“ geschoben: Plane weiter.
-- **Früher Checkpoint**: Wurden in der letzten Welle zwei oder mehr Sub-Issues als `NOT_PLANNED` geschlossen, passt die
-  Richtung nicht. Gehe ebenfalls zu Phase 6, auch wenn noch kein regulärer Checkpoint fällig ist.
-- **Epic voll**: Hat das Epic 80 oder mehr Sub-Issues (GitHub erlaubt 100), gehe zu
-  [Phase 7](#phase-7-pause-oder-übergabe) (Übergabe).
+- **Last wave N** = the highest number from comments that start with `## Auto-Code Wave <N>`; without such comments
+  N = 0.
+- **Open sub-issues present**: Normally Symphony does not start you then. If their report is missing (an earlier run
+  aborted), write the report for the existing issues as wave N + 1 and end the turn. If the report already exists, end
+  the turn immediately without doing anything.
+- **Checkpoint due**: If N > 0, `checkpoint` > 0, N is divisible by `checkpoint` and there is no comment
+  `## Auto-Code Checkpoint after wave <N>` yet, go to [Phase 6](#phase-6-checkpoint). If that comment already exists, a
+  human moved the epic back to "Ready" after the checkpoint: keep planning.
+- **Early checkpoint**: If two or more sub-issues of the last wave were closed as `NOT_PLANNED`, the direction is off.
+  Go to Phase 6 as well, even if no regular checkpoint is due yet.
+- **Epic full**: If the epic has 80 or more sub-issues (GitHub allows 100), go to
+  [Phase 7](#phase-7-pause-or-handover) (handover).
 
-## Phase 1: Kontext
+## Phase 1: Context
 
-Ermittle und notiere (Belege aus den Dateien, nicht aus dem Gedächtnis):
+Determine and note (evidence from the files, not from memory):
 
-- **Projektbeschreibung**: Ziel, Zielgruppen und Rollen, Funktionen, Stack. Besonders den Abschnitt „Leitplanken für den
-  Autopiloten“, falls vorhanden (Vorlage: [vision-template.md](vision-template.md)): Nicht-Ziele, Prioritäten,
-  Design-Prinzipien, Tabus. Gibt es keine Beschreibung mit erkennbarem Ziel, schreibe, was fehlt (mit Verweis auf die
-  Vorlage), und gehe nach „Blocked“.
-- **Roadmap**: offene Punkte in `docs/todo.md`, `TODO.md`, `ROADMAP.md` oder Phasen-Dokumenten, in ihrer Reihenfolge.
-- **Projektregeln**: `AGENTS.md`, `CLAUDE.md`, `.ai/` (Guidelines, Rules, Skills).
-- **Aktueller Stand** auf dem Basis-Branch (der Prompt nennt ihn, sonst der Default-Branch): `git fetch origin`, dann
-  `git switch --detach origin/<base>`. `git log --oneline -40` zeigt, was die letzten Wellen gebracht haben. Verschaffe dir
-  einen Überblick über Models, Filament-Resources und -Pages, Routen, Livewire-Komponenten und Tests. Nutze
-  Laravel-Boost-Tools (`application-info`, `database-schema`, `list-routes`, `search-docs`), wo verfügbar.
-- **Historie im Epic**:
-  - Frühere Wellen-Berichte mit ihrem Ideen-Backlog.
-  - Sub-Issues mit `state_reason: NOT_PLANNED`: Diese Ideen hat ein Mensch **abgelehnt**, sie sind tabu, auch umformuliert.
-  - **Kommentare von Menschen seit dem letzten Bericht**: Das sind Wünsche und Kurskorrekturen. Sie haben Vorrang vor
-    allem anderen.
+- **Project description**: goal, target groups and roles, features, stack. In particular the section "Guardrails for
+  the autopilot", if present (template: [vision-template.md](vision-template.md)): non-goals, priorities, design
+  principles, taboos. Older descriptions may name it "Leitplanken für den Autopiloten". If there is no description with
+  a recognisable goal, write what is missing (with a reference to the template) and move to "Blocked".
+- **Roadmap**: open items in `docs/todo.md`, `TODO.md`, `ROADMAP.md` or phase documents, in their order.
+- **Project rules**: `AGENTS.md`, `CLAUDE.md`, `.ai/` (guidelines, rules, skills).
+- **Current state** on the base branch (the prompt names it, otherwise the default branch): `git fetch origin`, then
+  `git switch --detach origin/<base>`. `git log --oneline -40` shows what the last waves delivered. Get an overview of
+  models, Filament resources and pages, routes, Livewire components and tests. Use Laravel Boost tools
+  (`application-info`, `database-schema`, `list-routes`, `search-docs`) where available.
+- **History in the epic**:
+  - Earlier wave reports with their idea backlog.
+  - Sub-issues with `state_reason: NOT_PLANNED`: a human **rejected** these ideas; they are taboo, reworded as well.
+  - **Comments by humans since the last report**: these are requests and course corrections. They take precedence over
+    everything else.
 
 ## Phase 2: Baseline
 
-Miss nur, repariere nichts. Nutze zuerst die Skripte aus `composer.json` und `package.json` (`test`, `lint`, `analyse` …),
-sonst `php artisan test` bzw. `vendor/bin/pest`, `vendor/bin/phpstan analyse`, `vendor/bin/pint --test`. Notiere pro Befehl eine
-Zeile (grün, rot mit Anzahl, nicht vorhanden). Halte dich an die Projektregeln, welche Befehle in einer Symphony-Workspace
-laufen dürfen. Was nicht lokal läuft, vermerkst du als „nicht ausgeführt“.
+Only measure, repair nothing. Use the scripts from `composer.json` and `package.json` first (`test`, `lint`, `analyse` …),
+otherwise `php artisan test` or `vendor/bin/pest`, `vendor/bin/phpstan analyse`, `vendor/bin/pint --test`. Note one
+line per command (green, red with count, not present). Follow the project rules on which commands may run in a Symphony
+workspace. Anything that does not run locally you note as "not run".
 
-**Ist der Basis-Branch rot** (Tests oder Analyse schlagen fehl), wird diese Welle eine **Reparatur-Welle**: nur Issues der
-Kategorie `quality`, die ihn wieder grün machen. Neue Features erst danach.
+**If the base branch is red** (tests or analysis fail), this wave becomes a **repair wave**: only issues of the
+category `quality` that make it green again. New features only afterwards.
 
-## Phase 3: Ideen sammeln und bewerten
+## Phase 3: Collect and rate ideas
 
-Die Quellen in dieser Reihenfolge, die Kriterien und das Bewertungsraster stehen in [ideation.md](ideation.md):
+The sources in this order; the criteria and the rating scheme are in [ideation.md](ideation.md):
 
-1. Wünsche aus den Kommentaren von Menschen im Epic.
-2. Offene Punkte der Roadmap, in ihrer Reihenfolge.
-3. Lücken zwischen Projektbeschreibung und Code: beschriebene Funktionen, die fehlen oder unvollständig sind.
-4. Eigene Ideen, die das Ziel der Projektbeschreibung spürbar voranbringen: Features, Design und UX, Qualität, Wartung.
+1. Requests from humans' comments on the epic.
+2. Open roadmap items, in their order.
+3. Gaps between project description and code: described features that are missing or incomplete.
+4. Your own ideas that noticeably advance the goal of the project description: features, design and UX, quality,
+   maintenance.
 
-Jede Idee braucht einen **Bezug zur Projektbeschreibung** (Abschnitt oder Zitat) und einen **Beleg im Code** (Datei,
-Route oder Resource, an der sie ansetzt). Ideen ohne beides verwirfst du. Nicht-Ziele, Tabus, abgelehnte Ideen und
-erledigte Arbeit sind ausgeschlossen.
+Every idea needs a **reference to the project description** (section or quote) and **evidence in the code** (file,
+route or resource it starts from). Discard ideas without both. Non-goals, taboos, rejected ideas and finished work are
+excluded.
 
-## Phase 4: Welle zuschneiden
+## Phase 4: Cut the wave
 
-1. Wähle höchstens `wave` Ideen mit dem besten Verhältnis aus Nutzen zu Aufwand und Risiko. Halte die
-   [Mischregeln](ideation.md#mischregeln) ein.
-2. Jedes Issue ist **einzeln mergebar**, Größe S oder M. Eine Idee der Größe L teilst du in mehrere Issues über mehrere
-   Wellen, die erste Scheibe kommt in diese Welle.
-3. Berühren zwei Issues derselben Welle dieselben Dateien, verkette sie mit `Blocked by #N` (wörtlich, Englisch), oder
-   verschiebe eines in eine spätere Welle.
-4. Jedes Issue bekommt prüfbare **Akzeptanzkriterien** und sagt, welche Tests es braucht. Bei Design-Issues sind die
-   Kriterien konkret (Komponenten, Layout, Texte, Zustände), nie „schöner machen“.
-5. Labels: `auto-code`, die Kategorie (`feature`, `design`, `quality` oder `maintenance`) und `Effort: medium` (S) bzw.
-   `Effort: high` (M). Ein Major-Upgrade (Laravel, Filament, PHP) steht allein in seiner Welle und bekommt zusätzlich
-   `manual-merge`: Das merged ein Mensch.
-   - **Modell-Label** (nur mit `issue-models`, sonst keines): Bei `opus`, `sonnet` oder `haiku` bekommen alle Issues
-     `Model: <wert>`. Bei `auto` wählst du pro Issue **genau ein** Label nach Aufwand und Risiko:
+1. Choose at most `wave` ideas with the best ratio of value to effort and risk. Follow the
+   [mixing rules](ideation.md#mixing-rules).
+2. Every issue is **mergeable on its own**, size S or M. Split an idea of size L into several issues across several
+   waves; the first slice goes into this wave.
+3. If two issues of the same wave touch the same files, chain them with `Blocked by #N` (literally, in English), or
+   move one to a later wave.
+4. Every issue gets verifiable **acceptance criteria** and says which tests it needs. For design issues the criteria
+   are concrete (components, layout, texts, states), never "make it nicer".
+5. Labels: `auto-code`, the category (`feature`, `design`, `quality` or `maintenance`) and `Effort: medium` (S) or
+   `Effort: high` (M). A major upgrade (Laravel, Filament, PHP) stands alone in its wave and additionally gets
+   `manual-merge`: a human merges it.
+   - **Model label** (only with `issue-models`, otherwise none): With `opus`, `sonnet` or `haiku` all issues get
+     `Model: <value>`. With `auto` you pick **exactly one** label per issue by effort and risk:
 
-     | Label | Wann |
+     | Label | When |
      |---|---|
-     | `Model: haiku` | Aufwand S **und** Risiko niedrig: Texte, Übersetzungen, Konfiguration, kleine Anpassungen in einem Bereich, einfache Tests, Minor-Updates |
-     | `Model: sonnet` | der Normalfall: Aufwand S mit Risiko mittel, Aufwand M mit Risiko niedrig oder mittel (neue Funktion in wenigen Dateien, Design-Issues, Tests, gewöhnliche Refactorings) |
-     | `Model: opus` | Risiko hoch (Datenmodell, Rechte, Geld, Migrationen auf bestehenden Daten), Aufwand M über mehrere Bereiche, Major-Upgrades, knifflige Abhängigkeiten oder ein Refactoring ohne Testnetz |
+     | `Model: haiku` | effort S **and** low risk: texts, translations, configuration, small changes in one area, simple tests, minor updates |
+     | `Model: sonnet` | the normal case: effort S with medium risk, effort M with low or medium risk (new feature in a few files, design issues, tests, ordinary refactorings) |
+     | `Model: opus` | high risk (data model, permissions, money, migrations on existing data), effort M across several areas, major upgrades, tricky dependencies or a refactoring without a test net |
 
-     Im Zweifel das stärkere Modell. Nenne Label und Grund je Issue im Bericht. Das Label gilt für das ganze Sub-Issue:
-     Developer und Reviewer laufen mit diesem Modell, nicht mit dem Standard-Modell der Instanz.
-6. Ein reines Refactoring ohne Verhaltensänderung beginnt mit `/refactor-safely` in der ersten Zeile. Fehlen in dem
-   Bereich Tests, kommt zuerst ein Test-Issue, auf das das Refactoring wartet (`Blocked by #N`).
+     When in doubt, the stronger model. State label and reason per issue in the report. The label applies to the whole
+     sub-issue: developer and reviewer run with this model, not with the instance's default model.
+6. A pure refactoring without behaviour change starts with `/refactor-safely` on the first line. If the area lacks
+   tests, a test issue comes first and the refactoring waits for it (`Blocked by #N`).
 
-## Phase 5: Ausgabe
+## Phase 5: Output
 
-Die Vorlagen stehen in [templates.md](templates.md).
+The templates are in [templates.md](templates.md).
 
-1. Sub-Issues mit `create_sub_issue` anlegen, abhängige zuletzt (sie verweisen auf frühere Nummern). Der Titel ist
-   zugleich der Schlüssel gegen Duplikate: Bei einem Retry denselben Titel verwenden.
-2. Genau einen Kommentar `## Auto-Code Welle <N+1>` mit `add_comment` posten: Auswahl mit Begründung, Baseline,
-   Ideen-Backlog (die besten nicht gewählten Ideen) und Hinweise. Abgelehnte (`limit_reached`) und unbekannte Labels
-   (`unknown_labels`) gehören dazu. Fehlt ein `Model: …`-Label im Repository, sag das mit dem Hinweis, dass
-   `npm run repo-init` → *Standard labels* es anlegt; das Issue läuft dann mit dem Standard-Modell.
-3. **Den Turn beenden, ohne den Status zu ändern.** Das Epic bleibt in „In progress“; Symphony startet dich wieder, wenn
-   alle Sub-Issues der Welle geschlossen sind.
+1. Create the sub-issues with `create_sub_issue`, dependent ones last (they refer to earlier numbers). The title is
+   also the key against duplicates: on a retry, use the same title.
+2. Post exactly one comment `## Auto-Code Wave <N+1>` with `add_comment`: selection with reasoning, baseline, idea
+   backlog (the best ideas not chosen) and notes. Rejected creations (`limit_reached`) and unknown labels
+   (`unknown_labels`) belong there. If a `Model: …` label is missing in the repository, say so, noting that
+   `npm run repo-init` → *Standard labels* creates it; the issue then runs with the default model.
+3. **End the turn without changing the status.** The epic stays in "In progress"; Symphony starts you again once all
+   sub-issues of the wave are closed.
 
-Findest du keine Idee, die die Kriterien erfüllt, legst du **nichts** an: [Phase 7](#phase-7-pause-oder-übergabe).
-Beschäftigungstherapie schadet dem Projekt mehr als eine Pause.
+If you find no idea that meets the criteria, create **nothing**: [Phase 7](#phase-7-pause-or-handover). Busywork harms
+the project more than a pause.
 
 ## Phase 6: Checkpoint
 
-1. Fasse die Wellen seit dem letzten Checkpoint zusammen (Vorlage „Checkpoint“): erledigt, abgelehnt, offenes
-   Ideen-Backlog, Zustand der Baseline, deine Empfehlung für die nächsten Wellen und Fragen an den Menschen.
-2. **Release-PR**: Ist der Basis-Branch nicht der Default-Branch (`git symbolic-ref refs/remotes/origin/HEAD`) und
-   liegt er vor ihm (`git log --oneline origin/<default>..origin/<base>` ist nicht leer), öffne mit `open_pull_request`
-   einen Pull Request mit `head: <base>` und `base: <default>`. Titel: `Release: Autopilot bis Welle <N>`, im Text die
-   Zusammenfassung. Gibt es ihn schon, liefert das Tool ihn zurück. Gemergt wird er von einem Menschen.
-3. Genau einen Kommentar `## Auto-Code Checkpoint nach Welle <N>` posten, mit dem Link zum Release-PR.
-4. `set_status("In review")` und den Turn beenden. Schiebt ein Mensch das Epic zurück nach „Ready“, geht es weiter.
+1. Summarise the waves since the last checkpoint (template "Checkpoint"): done, rejected, open idea backlog, state of
+   the baseline, your recommendation for the next waves and questions for the human.
+2. **Release PR**: If the base branch is not the default branch (`git symbolic-ref refs/remotes/origin/HEAD`) and it is
+   ahead of it (`git log --oneline origin/<default>..origin/<base>` is not empty), open a pull request with
+   `open_pull_request` with `head: <base>` and `base: <default>`. Title: `Release: autopilot up to wave <N>`, the
+   summary in the body. If it already exists, the tool returns it. A human merges it.
+3. Post exactly one comment `## Auto-Code Checkpoint after wave <N>`, with the link to the release PR.
+4. `set_status("In review")` and end the turn. If a human moves the epic back to "Ready", work continues.
 
-## Phase 7: Pause oder Übergabe
+## Phase 7: Pause or handover
 
-- **Nichts Sinnvolles mehr**: Kommentar `## Auto-Code Pause`. Er sagt, warum nichts mehr die Kriterien erfüllt, und was
-  ein Mensch tun kann, damit es weitergeht (Projektbeschreibung erweitern, Wünsche kommentieren). Danach
-  `set_status("In review")`.
-- **Epic voll** (80 oder mehr Sub-Issues): Kommentar `## Auto-Code Übergabe` mit allem, was ein Nachfolger wissen muss:
-  Stand, Ideen-Backlog, abgelehnte Ideen, offene Wünsche. Der Mensch legt ein neues Epic an und kopiert den Abschnitt
-  unter die Befehlszeile. Danach `set_status("In review")`.
+- **Nothing useful left**: comment `## Auto-Code Pause`. It says why nothing meets the criteria anymore and what a
+  human can do so work continues (extend the project description, comment requests). Then `set_status("In review")`.
+- **Epic full** (80 or more sub-issues): comment `## Auto-Code Handover` with everything a successor needs to know:
+  state, idea backlog, rejected ideas, open requests. The human creates a new epic and copies the section below the
+  command line. Then `set_status("In review")`.
 
-Schreibe Sub-Issues, Berichte und Kommentare in der Sprache des Epics.
+Write sub-issues, reports and comments in the language of the epic; only the report headings stay in English.

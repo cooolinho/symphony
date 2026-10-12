@@ -6,7 +6,7 @@
 #
 # Environment:
 #   SYMPHONY_CONTAINER     container name on server   (default symphony; e.g. symphony-symphony-1)
-#   SYMPHONY_REMOTE        ssh target                 (default cooolinho@docker.lan)
+#   SYMPHONY_REMOTE        ssh target                 (required; e.g. user@host)
 #   SYMPHONY_LOCAL_STATE   local log dir              (default $SYMPHONY_LOG_DIR, else ~/.local/state/symphony)
 # SYMPHONY_CONTAINER, SYMPHONY_REMOTE and SYMPHONY_LOCAL_STATE may also be set in the .env next to the repo root;
 # the shell environment takes precedence.
@@ -32,7 +32,7 @@ env_file_value() {
 CONTAINER="${SYMPHONY_CONTAINER:-$(env_file_value SYMPHONY_CONTAINER)}"
 CONTAINER="${CONTAINER:-symphony}"
 REMOTE="${SYMPHONY_REMOTE:-$(env_file_value SYMPHONY_REMOTE)}"
-REMOTE="${REMOTE:-cooolinho@docker.lan}"
+[[ -n "$REMOTE" ]] || die "SYMPHONY_REMOTE is not set (pass as env var or in .env)"
 LOCAL_STATE="${SYMPHONY_LOCAL_STATE:-$(env_file_value SYMPHONY_LOCAL_STATE)}"
 LOCAL_STATE="${LOCAL_STATE:-${SYMPHONY_LOG_DIR:-$HOME/.local/state/symphony}}"
 [[ "$LOCAL_STATE" = /* ]] || LOCAL_STATE="$REPO_ROOT/$LOCAL_STATE"
@@ -161,5 +161,5 @@ printf 'Verified: %s files on the server.\n' "$remote_files"
 
 restart_remote
 
-printf '\nDone. Check http://symphony.docker.lan/logs (period "all").\n'
+printf '\nDone. Check the Symphony dashboard logs (period "all").\n'
 [[ -z "$backup_file" ]] || printf 'Previous server state: %s:~/%s\n' "$REMOTE" "$backup_file"

@@ -1,90 +1,95 @@
 ---
 name: refactoring
-description: Refactoring-Audit für ein Laravel-/Filament-Repository. Ermittelt den Projekt-Kontext, misst die Baseline, findet Bugs und Refactoring-Kandidaten und legt daraus Sub-Issues an. Nur laden, wenn der Prompt es verlangt (Issue-Befehl /refactoring), nie von selbst.
-argument-hint: "[Scope, z. B. app/Filament]"
+description: Refactoring audit for a Laravel/Filament repository. Determines the project context, measures the baseline, finds bugs and refactoring candidates and creates sub-issues from them. Only load when the prompt asks for it (issue command /refactoring), never on your own.
+argument-hint: "[scope, e.g. app/Filament]"
 ---
 
-# Refactoring-Audit
+# Refactoring audit
 
-Du analysierst das Repository und machst aus den Befunden Sub-Issues des aktuellen Issues (das Epic). Du **änderst nichts**:
-kein Edit, kein Write, kein Commit, kein Push, kein Pull Request. Umgesetzt wird später, in den Sub-Issues, nach Freigabe
-durch einen Menschen.
+You analyse the repository and turn the findings into sub-issues of the current issue (the epic). You **change
+nothing**: no Edit, no Write, no commit, no push, no pull request. Implementation happens later, in the sub-issues,
+after a human approves them.
 
-Scope: `$ARGUMENTS` (leer = ganzes Repository). Bei einem Scope analysierst du nur diesen Pfad, liest aber umliegenden
-Code, soweit du ihn zum Verstehen brauchst.
+Scope: `$ARGUMENTS` (empty = whole repository). With a scope you analyse only that path, but read surrounding code as
+far as you need it to understand it.
 
-Erlaubt sind lesende Befehle und Messungen. **Verboten**: `pint` ohne `--test`, `composer update|require|remove`,
-`npm audit fix`, `npm install`, `php artisan migrate|db:seed|tinker`, `git commit|push|checkout` und alles, was Dateien
-im Repository verändert. Schreibt ein Testlauf Dateien (Cache, SQLite), ist das in Ordnung, solange sie nicht ins
-Repository gehören.
+Allowed are read-only commands and measurements. **Forbidden**: `pint` without `--test`, `composer update|require|remove`,
+`npm audit fix`, `npm install`, `php artisan migrate|db:seed|tinker`, `git commit|push|checkout` and anything that
+changes files in the repository. If a test run writes files (cache, SQLite), that is fine as long as they do not
+belong in the repository.
 
-## Phase 0: Fortsetzen oder neu beginnen
+The report heading `## Refactoring audit` is a marker you search for in later runs. Always write it in English, exactly
+as in [templates.md](templates.md), whatever the language of the epic. Epics started before the skill was translated
+may contain the German form `## Refactoring-Audit`; treat it as equivalent.
 
-Rufe `get_issue` auf. Gibt es schon einen Kommentar, der mit `## Refactoring-Audit` beginnt, oder Sub-Issues, setzt ein
-früherer Lauf hier fort (Abbruch, Budget, Retry). Dann beginnst du **nicht** von vorn:
+## Phase 0: Resume or start fresh
 
-- Report vorhanden → prüfe nur, ob alle darin genannten Sub-Issues existieren; lege fehlende an, dann `set_status("In review")`.
-- Nur Sub-Issues vorhanden → analysiere nur die Bereiche, die noch kein Sub-Issue abdeckt, und schreibe danach den Report.
+Call `get_issue`. If there is already a comment that starts with `## Refactoring audit`, or there are sub-issues, an
+earlier run is continuing here (abort, budget, retry). Then you do **not** start over:
 
-`create_sub_issue` ist idempotent: Derselbe Titel liefert das vorhandene Issue zurück.
+- Report present → only check that all sub-issues it names exist; create missing ones, then `set_status("In review")`.
+- Only sub-issues present → analyse only the areas no sub-issue covers yet, and write the report afterwards.
 
-## Phase 1: Projekt-Kontext
+`create_sub_issue` is idempotent: the same title returns the existing issue.
 
-Ermittle und notiere (Belege aus den Dateien, nicht aus dem Gedächtnis):
+## Phase 1: Project context
 
-- **PHP, Laravel, Filament, Livewire, Test-Framework (Pest/PHPUnit), Larastan, Pint** aus `composer.lock` und `composer.json`.
-- **Node, Vite, Tailwind, Alpine** und weitere Frontend-Pakete aus `package.json` und der Lock-Datei, dazu `vite.config.*`.
-- Boost-Tool `application-info`, falls verfügbar: PHP-/Laravel-Version, Pakete, Models.
-- Projektregeln: `CLAUDE.md`, `AGENTS.md`, `.ai/` (Guidelines, Rules, Skills).
-- Struktur: Panels und Resources unter `app/Filament`, Livewire-Komponenten, Jobs, Policies, `routes/`.
+Determine and note (evidence from the files, not from memory):
 
-Steht Boost nicht zur Verfügung (kein `laravel/boost`), halte das im Report fest und prüfe API-Fragen anhand der
-installierten Pakete in `vendor/`.
+- **PHP, Laravel, Filament, Livewire, test framework (Pest/PHPUnit), Larastan, Pint** from `composer.lock` and `composer.json`.
+- **Node, Vite, Tailwind, Alpine** and other frontend packages from `package.json` and the lock file, plus `vite.config.*`.
+- Boost tool `application-info`, if available: PHP/Laravel version, packages, models.
+- Project rules: `CLAUDE.md`, `AGENTS.md`, `.ai/` (guidelines, rules, skills).
+- Structure: panels and resources under `app/Filament`, Livewire components, jobs, policies, `routes/`.
 
-## Phase 2: Baseline messen
+If Boost is not available (no `laravel/boost`), note that in the report and check API questions against the installed
+packages in `vendor/`.
 
-Miss nur, repariere nichts. Nutze zuerst die Skripte aus `composer.json` (`test`, `lint`, `analyse` …), sonst:
-`php artisan test` (oder `vendor/bin/pest`), `vendor/bin/phpstan analyse`, `vendor/bin/pint --test`, `composer audit`,
-`npm audit`, `npm run build`. Pro Befehl: Ergebnis in einer Zeile (grün, rot mit Anzahl, nicht vorhanden). Rote Tests
-und Analysefehler sind Befunde, keine Hindernisse. Ohne Tests im betroffenen Bereich gilt Phase 4, Regel 3.
+## Phase 2: Measure the baseline
 
-## Phase 3: Analyse
+Only measure, repair nothing. Use the scripts from `composer.json` first (`test`, `lint`, `analyse` …), otherwise:
+`php artisan test` (or `vendor/bin/pest`), `vendor/bin/phpstan analyse`, `vendor/bin/pint --test`, `composer audit`,
+`npm audit`, `npm run build`. Per command: result in one line (green, red with count, not present). Red tests and
+analysis errors are findings, not obstacles. Without tests in the affected area, Phase 4, rule 3 applies.
 
-Erfasse **Bugs** und **Refactoring-Kandidaten** getrennt. Ein Bug ist ein Verhalten, das nachweislich falsch ist oder
-sicher bricht. Alles andere (Struktur, Duplikate, Lesbarkeit, veraltete APIs) ist ein Refactoring-Kandidat.
+## Phase 3: Analysis
 
-- Die Kriterien stehen in [checklist.md](checklist.md), die Bewertung in [severity.md](severity.md).
-- Prüfe APIs gegen die **installierte** Version mit Boost `search-docs`. Besonders Filament unterscheidet sich zwischen
-  v3, v4 und v5 stark; was in einer Version richtig ist, kann in der anderen falsch sein.
-- Nutze `database-schema`, `list-routes`, `last-error` und `read-log-entries`, wo sie Behauptungen belegen.
-- Lies die Boost-Skills des Projekts (`laravel-best-practices`, `filament-development`, `testing-best-practices`), soweit vorhanden.
-- Jeder Befund braucht einen Beleg: Datei und Zeile, bei Bugs zusätzlich, wie er auftritt. Vermutungen kommen nicht
-  in ein Sub-Issue. Schreib sie in den Report unter „Unklar“.
-- Bei großen Repositories teilst du die Analyse nach Bereichen auf (z. B. `app/Filament`, `app/Models`, `resources/js`)
-  und lässt read-only Subagents (`symphony:architect`, `symphony:code-reviewer`) je einen Bereich prüfen. Du prüfst
-  ihre Befunde selbst gegen den Code, bevor du sie übernimmst.
+Record **bugs** and **refactoring candidates** separately. A bug is behaviour that is demonstrably wrong or will
+certainly break. Everything else (structure, duplicates, readability, deprecated APIs) is a refactoring candidate.
 
-## Phase 4: Priorisieren und zuschneiden
+- The criteria are in [checklist.md](checklist.md), the rating in [severity.md](severity.md).
+- Check APIs against the **installed** version with Boost `search-docs`. Filament in particular differs a lot between
+  v3, v4 and v5; what is right in one version can be wrong in another.
+- Use `database-schema`, `list-routes`, `last-error` and `read-log-entries` where they back up claims.
+- Read the project's Boost skills (`laravel-best-practices`, `filament-development`, `testing-best-practices`), if present.
+- Every finding needs evidence: file and line, for bugs also how it occurs. Assumptions do not go into a sub-issue.
+  Put them in the report under "Unclear".
+- In large repositories you split the analysis by area (e.g. `app/Filament`, `app/Models`, `resources/js`) and let
+  read-only subagents (`symphony:architect`, `symphony:code-reviewer`) check one area each. You check their findings
+  against the code yourself before you adopt them.
 
-1. Höchstens so viele Sub-Issues, wie `create_sub_issue` zulässt; weniger ist besser. Das Wichtigste zuerst, den Rest
-   nennst du im Report unter „Nicht angelegt“.
-2. Jedes Sub-Issue ist **einzeln mergebar** und klein genug für einen Pull Request, den ein Mensch in Ruhe prüfen kann.
-   Gleichartige Kleinigkeiten fasst du zu einem Sub-Issue zusammen.
-3. Liegt ein Refactoring in einem Bereich ohne ausreichende Tests, bekommt dieser Bereich **zuerst** ein Sub-Issue nur
-   für Characterization-Tests. Das Refactoring wartet darauf (`Blocked by #N`).
-4. Bugfixes sind eigene Sub-Issues und werden nie in ein Refactoring gemischt: Ein Fix ändert Verhalten, ein
-   Refactoring darf das nicht.
+## Phase 4: Prioritise and cut
 
-## Phase 5: Ausgabe
+1. At most as many sub-issues as `create_sub_issue` allows; fewer is better. The most important first; the rest you
+   list in the report under "Not created".
+2. Every sub-issue is **mergeable on its own** and small enough for a pull request a human can review calmly. Bundle
+   similar small items into one sub-issue.
+3. If a refactoring lies in an area without sufficient tests, that area **first** gets a sub-issue for
+   characterization tests only. The refactoring waits for it (`Blocked by #N`).
+4. Bug fixes are separate sub-issues and are never mixed into a refactoring: a fix changes behaviour, a refactoring
+   must not.
 
-Die Vorlagen stehen in [templates.md](templates.md). Reihenfolge, weil spätere Sub-Issues auf frühere verweisen:
+## Phase 5: Output
 
-1. Sub-Issues für Characterization-Tests anlegen und die Nummern notieren.
-2. Refactoring-Sub-Issues anlegen. **Erste Zeile des Bodys: `/refactor-safely`.** Abhängigkeiten schreibst du wörtlich
-   als `Blocked by #N` (Englisch, auch in deutschen Texten, sonst erkennt Symphony sie nicht).
-3. Bug-Sub-Issues anlegen, Label `bug`. Sie beginnen **nicht** mit einem Befehl.
-4. Genau einen Report-Kommentar mit `add_comment` posten: Kontext, Baseline, Checkliste `- [ ] #N Titel`, Nicht angelegt, Unklar.
-5. `set_status("In review")` aufrufen und den Turn beenden. Es laufen keine Entry-Checks.
+The templates are in [templates.md](templates.md). Order, because later sub-issues refer to earlier ones:
 
-Ein Sub-Issue, das `create_sub_issue` mit `limit_reached` ablehnt, gehört in den Report. Unbekannte Labels
-(`unknown_labels`) erwähnst du dort ebenfalls. Schreibe Sub-Issues und Report in der Sprache des Epics.
+1. Create sub-issues for characterization tests and note the numbers.
+2. Create refactoring sub-issues. **First line of the body: `/refactor-safely`.** Write dependencies literally as
+   `Blocked by #N` (in English, also in texts in other languages, otherwise Symphony does not recognise them).
+3. Create bug sub-issues, label `bug`. They do **not** start with a command.
+4. Post exactly one report comment with `add_comment`: context, baseline, checklist `- [ ] #N title`, Not created, Unclear.
+5. Call `set_status("In review")` and end the turn. No entry checks run.
+
+A sub-issue that `create_sub_issue` rejects with `limit_reached` belongs in the report. Mention unknown labels
+(`unknown_labels`) there as well. Write sub-issues and report in the language of the epic; only the report heading
+stays in English.
