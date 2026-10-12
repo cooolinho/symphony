@@ -149,8 +149,13 @@ describe('http extension', () => {
     assert.equal(a.period.granularity, 'day');
     assert.deepEqual(a.repositories_available, ['acme/app', 'other/repo']);
     assert.deepEqual(a.models_available, ['claude-opus-5-5']);
+    assert.deepEqual(a.efforts_available, ['unknown']);
+    assert.equal(a.filter.effort, null);
     // A second identical request is served from the cache with the same figures.
     assert.deepEqual(JSON.parse((await request(server.port, 'GET', week)).body).series, a.series);
+    const effort = JSON.parse((await request(server.port, 'GET', `${week}&effort=high`)).body);
+    assert.equal(effort.totals.runs, 0);
+    assert.equal(effort.filter.effort, 'high');
 
     const empty = JSON.parse((await request(server.port, 'GET', '/api/v1/history/analytics?repo=other%2Frepo&model=claude-opus-5-5')).body);
     assert.equal(empty.totals.runs, 0);

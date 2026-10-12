@@ -100,6 +100,52 @@ describe('statistics analytics', () => {
     assert.deepEqual(none.tools, { runs: 0, runs_with_calls: 0, calls: 0, avg_calls_per_run: null, distinct_tools: 0, tools: [], skills: [], integrations: [] });
   });
 
+  it('breaks runs down by effort, filters by it and lists runs without usage under their requested model', () => {
+    const h = history();
+    h.log.runStarted({ repo: 'acme/app', issue: 'acme/app#7', title: 'Old', state: 'Todo', attempt: null, model: 'sonnet', effort: 'medium', run: 'r7', at: new Date('2026-10-03T09:00:00Z') });
+    // Logged before run_finished carried effort and model: joined through run_started; stopped before any usage.
+    h.log.runFinished(finish('acme/app#7', 'r7', '2026-10-03T10:00:00Z', { outcome: 'stopped', usage: {} }));
+    h.log.runFinished(finish('acme/app#8', 'r8', '2026-10-04T10:00:00Z', { effort: 'high', modelRequested: 'opus' }));
+    h.log.runFinished(finish('acme/app#8', 'r9', '2026-10-04T11:00:00Z', { effort: 'high', modelRequested: 'opus', outcome: 'failed' }));
+    h.log.runFinished(finish('acme/app#9', 'r10', '2026-10-05T10:00:00Z', { effort: null, modelRequested: 'fable', usage: {} }));
+    // Requested as the alias of a family that did report usage: lands in that family's row.
+    h.log.runFinished(finish('acme/app#9', 'r11', '2026-10-05T12:00:00Z', { effort: 'low', modelRequested: 'opus', usage: {}, outcome: 'stopped' }));
+    // Nothing about the effort anywhere.
+    h.log.runFinished(finish('acme/app#1', 'r0', '2026-09-28T09:00:00Z'));
+    const entries = readHistory(h.log.dir, null).entries;
+    const a = computeAnalytics(entries, h.pricing.current(), filter(), NOW);
+
+    assert.deepEqual(a.efforts_available, ['default', 'low', 'medium', 'high', 'unknown']);
+    assert.deepEqual(a.efforts.map((e) => [e.effort, e.runs, e.failed, e.models]), [
+      ['default', 1, 0, { fable: 1 }],
+      ['low', 1, 0, { 'claude-opus-5-5': 1 }],
+      ['medium', 1, 0, { sonnet: 1 }],
+      ['high', 2, 1, { 'claude-opus-5-5': 2 }],
+      ['unknown', 1, 0, { 'claude-opus-5-5': 1 }],
+    ]);
+    const high = a.efforts[3];
+    assert.equal(high?.total_tokens, 2 * (1000 + 2000 + 100_000 + 10_000));
+    assert.equal(high?.success_rate, 0.5);
+    assert.equal(high?.avg_run_seconds, 60);
+    assert.equal(high?.cost_usd, 2 * (a.efforts[4]?.cost_usd ?? 0));
+
+    // Runs without logged usage appear under the model they were started with, with zero tokens.
+    assert.deepEqual(a.models_available, ['claude-opus-5-5', 'fable', 'sonnet']);
+    const fable = a.models.find((m) => m.model === 'fable');
+    assert.deepEqual([fable?.runs, fable?.total_tokens, fable?.cost_usd, fable?.agent_seconds, fable?.price], [1, 0, 0, 60, 'default']);
+    const opus = a.models.find((m) => m.model === 'claude-opus-5-5');
+    assert.deepEqual([opus?.runs, opus?.total_tokens, opus?.agent_seconds], [4, 3 * (1000 + 2000 + 100_000 + 10_000), 240]);
+
+    const onlyHigh = computeAnalytics(entries, h.pricing.current(), filter({ effort: 'high' }), NOW);
+    assert.equal(onlyHigh.totals.runs, 2);
+    assert.equal(onlyHigh.filter.effort, 'high');
+    assert.ok(onlyHigh.top.cost.length === 2 && onlyHigh.top.cost.every((r) => r.effort === 'high'));
+    const onlyFable = computeAnalytics(entries, h.pricing.current(), filter({ model: 'fable' }), NOW);
+    assert.deepEqual(onlyFable.issues.map((i) => i.issue), ['acme/app#9']);
+    assert.equal(onlyFable.totals.total_tokens, 0);
+    assert.equal(computeAnalytics(entries, h.pricing.current(), filter({ effort: 'max' }), NOW).totals.runs, 0);
+  });
+
   it('aggregates a period with the existing prices and compares it with the previous one', () => {
     const { entries, pricing } = seed();
     const a = computeAnalytics(entries, pricing.current(), filter({ from: new Date('2026-09-29T00:00:00Z'), to: new Date('2026-10-06T00:00:00Z') }), NOW);

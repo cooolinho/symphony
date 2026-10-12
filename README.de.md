@@ -145,8 +145,8 @@ und Token stehen in der **`.env`**.
   bedienen.
 - **Beobachtbar:** Dashboard mit JSON-API und einem Execution Trace pro Agent (Prompts, Modellaufrufe, Tool-Calls,
   Phasen, Tokens und Kosten), strukturierte Logs, ein Transkript pro Session, `--dry-run` zum Prüfen der Einrichtung.
-- **Logs und Kosten pro Repository:** Ein fortlaufendes Log jedes Laufs mit Tokens, Modell, geschätzten Kosten und
-  Agentenzeit, mit Statistiken im Dashboard.
+- **Logs und Kosten pro Repository:** Ein fortlaufendes Log jedes Laufs mit Tokens, Modell, Effort, geschätzten Kosten
+  und Agentenzeit, mit Statistiken im Dashboard; die Details beendeter Läufe bleiben in der Agent-Detailansicht abrufbar.
 
 ## 🚀 Getting Started
 

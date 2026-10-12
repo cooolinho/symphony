@@ -594,23 +594,28 @@ Where the data comes from and where the limits are:
   events (shortened texts).
 - Claude Code reports the session's tokens and cost at the end of each turn; Symphony prices the values per model call
   with the same `model-costs.yml`.
-- Symphony keeps the timeline only while the issue is claimed (running, queued or paused), and at most the last
-  2,000 events. After a restart or after `Done` it is gone; finished runs are in the
+- Symphony keeps at most the last 2,000 events of a claim. When the issue is released (moved to `Done` or out of
+  the active columns, or at shutdown) the details are archived: timeline, sessions with their transcripts, the
+  trace of the last run and the last entry check. The page then shows them with the state *Finished* and a note;
+  the **Detail** button on the [logs page](#logs-and-statistics) leads there too. The archive is kept in memory
+  (the last 200 issues) and, with a log directory, as one JSON file per issue under
+  `~/.local/state/symphony/issues/`, so it survives a restart; a snapshot is written whenever a run ends. A new
+  claim of the same issue starts a fresh timeline. The figures of every finished run are also in the
   [repository logs](#logs-and-statistics).
 
 | Endpoint | Content |
 |---|---|
 | `GET /` | Dashboard |
 | `GET /agent?id=<identifier>` | Agent detail view (execution trace) |
-| `GET /logs` | Statistics and analytics page; filters in the URL: `?period=30d` (`today`, `yesterday`, `7d`, `14d`, `30d`, `90d`, `month`, `last_month`, `all` or `custom&from=YYYY-MM-DD&to=YYYY-MM-DD`), `&repo=owner/name`, `&model=<id>` |
+| `GET /logs` | Statistics and analytics page; filters in the URL: `?period=30d` (`today`, `yesterday`, `7d`, `14d`, `30d`, `90d`, `month`, `last_month`, `all` or `custom&from=YYYY-MM-DD&to=YYYY-MM-DD`), `&repo=owner/name`, `&model=<id>`, `&effort=<level>` |
 | `GET /api/v1/history` | Overall statistics as JSON (no time range), optionally with `?repo=owner/name`; feeds the logs drawer in the dashboard |
-| `GET /api/v1/history/analytics?from=&to=&repo=&model=&tz=` | server-side aggregated analytics for a time range (`from` inclusive, `to` exclusive, ISO timestamps, both optional): metrics with previous period, time series, models, repositories, issues, results, run times, tools and integrations (`tools`), heatmap, top runs, anomalies. `tz` (IANA zone) determines buckets, weekdays and hours |
+| `GET /api/v1/history/analytics?from=&to=&repo=&model=&effort=&tz=` | server-side aggregated analytics for a time range (`from` inclusive, `to` exclusive, ISO timestamps, both optional): metrics with previous period, time series, models, efforts, repositories, issues, results, run times, tools and integrations (`tools`), heatmap, top runs, anomalies. `tz` (IANA zone) determines buckets, weekdays and hours |
 | `GET /api/v1/history/entries?from=&to=&repo=&issue=&event=&result=&order=desc&limit=200` | Log entries of a time range, filtered and sorted (at most 1,000) |
 | `GET /api/v1/history/raw?repo=owner/name` | a repository's `.log` file as text |
 | `GET /api/v1/state` | Overall state as JSON: running agents (with `role`), queue (`retrying[]` with `kind` and, for session limits, `limit`), totals, health, `controls.retry` (whether restarting is allowed) |
-| `GET /api/v1/<identifier>` | Details of an issue: title, role, workspace, attempts, sessions (`sessions`), tokens and cost per model (`usage_by_model`), latest events, last error, last entry check (`last_check`), `controls.retry` |
-| `GET /api/v1/<identifier>/timeline?after=<seq>` | Timeline of the issue: lifecycle, phase changes and agent events with a running `seq`; `after` returns only newer ones |
-| `GET /api/v1/<identifier>/transcript?run=<run>&from=<offset>` | Transcript of a session (without `run` the latest), prepared as prompts, model calls, tool results; from byte offset `from`, continue with `next_offset`. With `&format=raw` the JSONL file |
+| `GET /api/v1/<identifier>` | Details of an issue: title, role, workspace, attempts, sessions (`sessions`, each with `model` and `effort`), tokens and cost per model (`usage_by_model`), latest events, last error, last entry check (`last_check`), `controls.retry`. For an issue the orchestrator released, the archived details with `status: "finished"` and `archived` (`archived_at`, `released`); `404` only when nothing is known about the issue |
+| `GET /api/v1/<identifier>/timeline?after=<seq>` | Timeline of the issue (live or archived): lifecycle, phase changes and agent events with a running `seq`; `after` returns only newer ones |
+| `GET /api/v1/<identifier>/transcript?run=<run>&from=<offset>` | Transcript of a session (without `run` the latest; live or archived), prepared as prompts, model calls, tool results; from byte offset `from`, continue with `next_offset`. With `&format=raw` the JSONL file |
 | `POST /api/v1/refresh` | poll and reconcile now |
 | `POST /api/v1/<identifier>/retry` | restart a waiting (retry queue, including session limit) or paused worker right away. Response `202` with `queued`, `issue_identifier` and `previous` (`retrying` or `paused`). Errors: `404` (issue unknown), `409` (`running`: currently running; `not_waiting`: not waiting for anything; `stopping`: Symphony is shutting down), `403` (`control_disabled` on a non-loopback address without `SYMPHONY_ALLOW_REMOTE_CONTROL=true`; `forbidden_origin` for cross-origin requests and, on a non-loopback address, also without an `Origin` header) |
 
@@ -643,6 +648,7 @@ column, configuration, free slot).
 | Running logs (`key=value`) | Terminal (stderr). Also to a file with `--log-file <path>`, more detailed with `--log-level debug`. |
 | Log per repository: what was worked on when, with tokens, model, cost and agent time | `~/.local/state/symphony/repositories/<owner>_<repo>.log`, see [Logs and statistics](#logs-and-statistics) |
 | Transcript of every session (all agent messages as JSON lines `{ at, message }`, plus the prompt of each turn as `{ at, prompt: { turn, text } }`) | `~/.local/state/symphony/sessions/<workspace>/<time>.jsonl`. Choose another location with `--log-dir <folder>`. The [agent detail view](#agent-detail-view-execution-trace) shows it in a prepared form. |
+| Archived details of finished issues (timeline, sessions, last run and check) for the agent detail view | `~/.local/state/symphony/issues/<owner>_<repo>_<number>.json`, written when a run ends and when the issue is released. |
 | View a Claude Code session | in the workspace, `claude --resume <thread-id>`. The ID is in the log as `thread_id` and in the API (`/api/v1/<identifier>`). |
 | Workspaces | `~/symphony-workspaces/`. They are deleted on `Done`; you can safely delete others by hand if no agent is running in them. |
 
@@ -653,16 +659,16 @@ Symphony writes a running log for each repository, e.g.
 `SYMPHONY_LOG_DIR` in the `.env` or with `--log-dir`. Each line is one event in `key=value` format:
 
 ```
-ts=2026-10-04T09:16:19.000Z event=run_started repo=owner/repository issue=owner/repository#5 run=8f3c2a1b9d0e title="Feature: …" state=Ready attempt=null model=opus
-ts=2026-10-04T09:17:00.000Z event=run_finished repo=owner/repository issue=owner/repository#5 run=8f3c2a1b9d0e … outcome=handed_off state="In review" turns=1 model=claude-opus-5-5 total_tokens=153200 cost_usd=0.1491 agent_seconds=41 repo_runs=4 repo_tokens=556200 repo_cost_usd=0.5262 repo_agent_seconds=246
-ts=2026-10-04T09:17:00.000Z event=model_usage repo=owner/repository issue=owner/repository#5 run=8f3c2a1b9d0e model=claude-opus-5-5 price=opus input_tokens=2800 output_tokens=1680 cache_read_tokens=123200 cache_write_tokens=12320 total_tokens=140000 cost_usd=0.1361
+ts=2026-10-04T09:16:19.000Z event=run_started repo=owner/repository issue=owner/repository#5 run=8f3c2a1b9d0e title="Feature: …" state=Ready attempt=null model=opus effort=high role=developer
+ts=2026-10-04T09:17:00.000Z event=run_finished repo=owner/repository issue=owner/repository#5 run=8f3c2a1b9d0e … outcome=handed_off state="In review" turns=1 model=claude-opus-5-5 model_requested=opus effort=high total_tokens=153200 cost_usd=0.1491 agent_seconds=41 repo_runs=4 repo_tokens=556200 repo_cost_usd=0.5262 repo_agent_seconds=246
+ts=2026-10-04T09:17:00.000Z event=model_usage repo=owner/repository issue=owner/repository#5 run=8f3c2a1b9d0e model=claude-opus-5-5 price=opus effort=high input_tokens=2800 output_tokens=1680 cache_read_tokens=123200 cache_write_tokens=12320 total_tokens=140000 cost_usd=0.1361
 ```
 
 | Event | Meaning |
 |---|---|
 | `run_started` | An agent starts on an issue: time, issue, title, column, attempt, requested model (from the label `Model: …`, else `CLAUDE_MODEL`) and requested effort (from the label `Effort: …`, else `CLAUDE_EFFORT`). |
-| `run_finished` | A run ends. It records the result (`handed_off` = handed off, `continuing` = still active, `failed`, `session_limit`, `stopped`, `stalled`, `shutdown`) and the column afterwards. Plus turns, the most used model, tokens (input, output, cache), estimated cost and agent time. The `repo_*` fields are the repository's running totals. |
-| `model_usage` | Tokens and cost of a run per model. If Claude Code uses a second model internally, there is a second line. |
+| `run_finished` | A run ends. It records the result (`handed_off` = handed off, `continuing` = still active, `failed`, `session_limit`, `stopped`, `stalled`, `shutdown`) and the column afterwards. Plus turns, the most used model (`model`, as Claude Code reports it, e.g. `claude-fable-5-1`), the requested model and effort (`model_requested`, `effort`, like `run_started`), tokens (input, output, cache), estimated cost and agent time. The `repo_*` fields are the repository's running totals. |
+| `model_usage` | Tokens and cost of a run per model, with the run's `effort`. One line per model Claude Code reported for the session (a second model used internally gets a second line); a new model needs no change, it is logged under its own id. The tokens are counted from every model call as it happens, so a run that is stopped, stalls or hits a session limit before its turn ends still has its usage. |
 | `issue_paused` | An issue was paused after its continuation sessions. |
 | `session_limit_wait` | The session-limit retries are used up: the worker waits for the limit to reset (`retry_at` = reset + 1 minute) and then continues. Fields include `window`, `resets_at`, `retry_at`, `hits`, `max_retries`, `source`. |
 | `worker_restarted` | A waiting or paused worker was restarted via **Retry now** / **Resume now** or the API (`previous` = `retrying` or `paused`). |
@@ -670,8 +676,9 @@ ts=2026-10-04T09:17:00.000Z event=model_usage repo=owner/repository issue=owner/
 
 The **statistics page** (`/logs`, button *Logs* in the dashboard) evaluates these files. At the top is a global
 filter: **period** (today, yesterday, last 7/14/30/90 days, this/last month, all or a custom date range),
-**repository** and **model**. It applies to all sections and is kept in the URL. Clicking a model or repository in
-the bar charts sets this filter; clicking a bar in the activity chart zooms into that period. The page shows:
+**repository**, **model** and **effort**. It applies to all sections and is kept in the URL. Clicking a model,
+effort or repository in the bar charts sets this filter; clicking a bar in the activity chart zooms into that
+period. The page shows:
 
 - **Metrics**: runs, issues, tokens, estimated cost, agent time, average run time, cost and tokens per run,
   successful and failed runs, retry rate, paused issues. Plus a comparison with the previous period of the same
@@ -680,7 +687,14 @@ the bar charts sets this filter; clicking a bar in the activity chart zooms into
   ~3 months, weekly up to 2 years, monthly otherwise. Plus cost per bucket or cumulative, and tokens stacked by
   input, output and cache.
 - **Models**: comparison by cost, runs, tokens, cost/run, tokens/run or agent time, plus an efficiency table (cost
-  per 1M tokens, output/input ratio). With a model filter, tokens and cost count only that model.
+  per 1M tokens, output/input ratio). Every model id that appears in the logs is listed; a run that ended before any
+  usage was logged counts under the model it was started with, with 0 tokens (an alias such as `opus` under the
+  reported id of that family, e.g. `claude-opus-5-5`; `fable` itself until a Fable run has reported usage). With a
+  model filter, tokens and cost count only that model.
+- **Effort**: runs, successful and failed runs, tokens, cost, agent time and the averages per run by the effort
+  requested for the run (`Effort:` label, else the role's effort or `CLAUDE_EFFORT`; `default` = Claude Code's own
+  default), with the main models that ran at that effort. Runs logged before the effort was recorded count as
+  `unknown`.
 - **Repositories**: comparison, activity over time (the three most active plus "Other") and a table with the last
   activity.
 - **Results** of the runs as logged (`handed_off`/`continuing` = successful, `failed`/`stalled` = failed,

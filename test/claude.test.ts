@@ -182,6 +182,48 @@ describe('claude agent runner', () => {
     assert.equal(options.additionalDirectories, undefined);
   });
 
+  it('counts model calls live per model until the turn result replaces the totals', async () => {
+    const call = (id: string, model: string, input: number, output: number) => ({
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: { id, model, content: [{ type: 'text', text: 'Working…' }], usage: { input_tokens: input, output_tokens: output, cache_read_input_tokens: 10, cache_creation_input_tokens: 0 } },
+    });
+    let turn = 0;
+    const fake = fakeQuery((_prompt, _options, emit) => {
+      turn++;
+      if (turn === 1) {
+        emit(call('m1', 'claude-fable-5-1', 100, 20));
+        // The blocks of one response repeat the message with the same id and usage: counted once.
+        emit(call('m1', 'claude-fable-5-1', 100, 20));
+        emit(call('m2', 'claude-haiku-4-5', 30, 5));
+        emit(result(0.5, 150, 25));
+      } else {
+        emit(call('m3', 'claude-fable-5-1', 200, 40));
+        // A result without model usage keeps what the model calls counted.
+        emit(result(1, 0, 0, { modelUsage: {} }));
+      }
+    });
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ events }));
+    await session.runTurn('first');
+    await session.runTurn('second');
+    await session.stop();
+
+    const fable = (input: number, output: number) => ({ inputTokens: input, outputTokens: output, cacheReadTokens: 10, cacheWriteTokens: 0 });
+    const opus = { inputTokens: 150, outputTokens: 25, cacheReadTokens: 50, cacheWriteTokens: 0 };
+    assert.deepEqual(events.filter((e) => e.event === 'model_call').map((e) => e.modelUsage), [
+      { 'claude-fable-5-1': fable(100, 20) },
+      { 'claude-fable-5-1': fable(100, 20) },
+      { 'claude-fable-5-1': fable(100, 20), 'claude-haiku-4-5': { inputTokens: 30, outputTokens: 5, cacheReadTokens: 10, cacheWriteTokens: 0 } },
+      { 'claude-opus-5-5': opus, 'claude-fable-5-1': fable(200, 40) },
+    ]);
+    const completed = events.filter((e) => e.event === 'turn_completed');
+    assert.deepEqual(completed[0]?.modelUsage, { 'claude-opus-5-5': opus });
+    assert.deepEqual(completed[1]?.modelUsage, { 'claude-opus-5-5': opus, 'claude-fable-5-1': fable(200, 40) });
+    assert.deepEqual(completed[1]?.usage, { inputTokens: 410, outputTokens: 65, totalTokens: 475 });
+    assert.ok(!events.some((e) => e.event === 'model_call' && (e.message !== undefined || e.detail !== undefined)), 'model calls carry only the totals');
+  });
+
   it('writes each turn prompt and the agent messages to the transcript, readable by the transcript reader', async () => {
     const fake = fakeQuery((_prompt, _options, emit) => {
       emit({ type: 'assistant', message: { id: 'm1', model: 'opus', content: [{ type: 'text', text: 'On it.' }] }, parent_tool_use_id: null });

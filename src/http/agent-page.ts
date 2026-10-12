@@ -778,10 +778,10 @@ ${BASE_JS}
   function deriveState() {
     const d = S.detail;
     if (!d && S.notFound) return ['Not tracked', 'gray', false];
-    if (!d || S.ended) {
+    if (!d || S.ended || d.status === 'finished') {
       const fin = lastEvent('run_finished');
       if (fin) { const o = OUTCOME[fin.detail.outcome] || ['Ended', 'gray']; return [o[0], o[1], false]; }
-      return ['Ended', 'gray', false];
+      return [d && d.status === 'finished' ? 'Finished' : 'Ended', 'gray', false];
     }
     if (d.status === 'running') return STATUS[PHASE_STATUS[d.running.phase] || 'running'];
     if (d.status === 'stopping') return STATUS.stopping;
@@ -843,7 +843,9 @@ ${BASE_JS}
     const meta = [];
     meta.push(['role', (d && d.role) || (lastSession && lastSession.role) || 'role N/A']);
     meta.push(['', (t && t.model) || (lastSession && lastSession.model) || 'model N/A']);
-    meta.push(['', run ? run.phase : d && d.status === 'retrying' ? 'waiting for retry' : d && d.status === 'paused' ? 'paused' : S.ended ? 'ended' : '—']);
+    const effort = (run && run.effort) || (lastSession && lastSession.effort);
+    if (effort) meta.push(['', 'effort ' + effort]);
+    meta.push(['', run ? run.phase : d && d.status === 'retrying' ? 'waiting for retry' : d && d.status === 'paused' ? 'paused' : d && d.status === 'finished' ? 'finished' : S.ended ? 'ended' : '—']);
     if (run && run.state) meta.push(['', 'column ' + run.state]);
     const metaBox = $('hero-meta');
     const metaNodes = [];
@@ -1065,7 +1067,7 @@ ${BASE_JS}
       const li = el('li', null, 'tone-' + tone);
       const row = el('div', null, 'row');
       row.append(el('span', s.run), el('span', o ? o[2] : isRunning() && s === lastSession ? 'running' : '—'));
-      li.append(row, el('div', s.role + ' · ' + s.state + (s.attempt ? ' · attempt ' + s.attempt : '') + (s.model ? ' · ' + s.model : ''), 'muted'),
+      li.append(row, el('div', s.role + ' · ' + s.state + (s.attempt ? ' · attempt ' + s.attempt : '') + (s.model ? ' · ' + s.model : '') + (s.effort ? ' · effort ' + s.effort : ''), 'muted'),
         el('div', fmtStamp(s.started_at) + (s.finished_at ? ' → ' + fmtClock(s.finished_at) : ''), 'muted'));
       if (s.transcript) {
         const a = el('a', 'Transcript (JSONL) ↗');
@@ -1247,7 +1249,12 @@ ${BASE_JS}
       setText($('hero-title'), 'No agent selected');
       $('state-slot').replaceChildren(badge('No agent', 'gray', false));
     }
-    else if (S.notFound) text = 'The orchestrator does not track ' + ID + '. It has not run since Symphony started, or it finished and was released. Finished runs are listed on the Logs page.';
+    else if (S.notFound) text = 'The orchestrator has no record of ' + ID + ': it has not run since Symphony started and no archived details exist for it. Finished runs are listed on the Logs page.';
+    else if (S.detail && S.detail.status === 'finished') {
+      const a = S.detail.archived || {};
+      text = 'This issue is no longer tracked by the orchestrator. Shown are the archived details of its last claim' +
+        (a.archived_at ? ' (' + (a.released ? 'released ' : 'saved ') + fmtStamp(a.archived_at) + ')' : '') + '. Finished runs are also listed on the Logs page.';
+    }
     else if (S.ended) text = 'This agent is no longer tracked by the orchestrator (released after finishing). The trace below is what this page had loaded.';
     else if (!S.online) text = 'Orchestrator unreachable: ' + (S.error || '') + ' · retrying every ' + POLL_MS / 1000 + 's';
     notice.hidden = !text;
