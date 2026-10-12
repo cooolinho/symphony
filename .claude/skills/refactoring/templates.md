@@ -1,102 +1,103 @@
-# Vorlagen
+# Templates
 
-Schreibe in der Sprache des Epics. Die folgenden Vorlagen sind deutsch. Titel kurz und eindeutig (der Titel dient zugleich
-als Schlüssel, damit ein Retry kein Duplikat anlegt). Pfade und Nummern sind Platzhalter.
+Write in the language of the epic; translate the template text, but keep the `## Refactoring audit` report heading in
+English, because later runs search for it. Keep titles short and unambiguous (the title is also the key that keeps a
+retry from creating a duplicate). Paths and numbers are placeholders.
 
-## Sub-Issue: Characterization-Tests
+## Sub-issue: characterization tests
 
-Titel: `Tests: <Bereich> absichern`
-
-```markdown
-/refactor-safely
-
-Nur Characterization-Tests (Schritt 1 des Skills), **kein Produktivcode**.
-
-## Bereich
-`<Pfad>`: <was der Code tut, in einem Satz>
-
-## Zu sichern
-- <Verhalten 1, das die Tests festhalten, so wie es heute ist>
-- <Verhalten 2>
-
-## Hinweise
-<Datenbank/Fakes/Besonderheiten>
-
-Teil des Refactoring-Audits #<Epic>.
-```
-
-## Sub-Issue: Refactoring
-
-Titel: `Refactoring: <Bereich> – <Ziel>`
+Title: `Tests: cover <area>`
 
 ```markdown
 /refactor-safely
 
-Blocked by #<Test-Sub-Issue>
+Characterization tests only (step 1 of the skill), **no production code**.
 
-## Befund
-`<Datei>:<Zeile>`: <Problem, belegt>
+## Area
+`<path>`: <what the code does, in one sentence>
 
-## Ziel
-<Zustand nach dem Refactoring, ohne Verhaltensänderung>
+## To secure
+- <behaviour 1 the tests pin down, as it is today>
+- <behaviour 2>
 
-## Vorgehen
-1. <Schritt>
-2. <Schritt>
+## Notes
+<database/fakes/peculiarities>
 
-## Nicht ändern
-<Öffentliche Schnittstellen, die gleich bleiben: Routen, Signaturen, Events, Config-Schlüssel, Schema>
-
-Schwere: <kritisch|hoch|mittel|niedrig> · Aufwand: <S|M|L> · Teil des Refactoring-Audits #<Epic>.
+Part of refactoring audit #<epic>.
 ```
 
-## Sub-Issue: Bug
+## Sub-issue: refactoring
 
-Titel: `Bug: <Symptom>` · Label `bug` · **Kein Befehl in der ersten Zeile.**
+Title: `Refactoring: <area> – <goal>`
 
 ```markdown
-## Fehler
-`<Datei>:<Zeile>`: <was falsch ist>
+/refactor-safely
 
-## Nachweis
-<Wie er auftritt: Eingabe, Ablauf, Log oder Testausgabe>
+Blocked by #<test sub-issue>
 
-## Erwartet
-<Richtiges Verhalten>
+## Finding
+`<file>:<line>`: <problem, with evidence>
 
-## Vorgehen
-Zuerst einen Regressionstest schreiben, der **fehlschlägt** (rot), dann den Fehler beheben (grün). Den Fix nicht mit
-Refactorings mischen.
+## Goal
+<State after the refactoring, without behaviour change>
 
-Schwere: <kritisch|hoch|mittel|niedrig> · Teil des Refactoring-Audits #<Epic>.
+## Approach
+1. <step>
+2. <step>
+
+## Do not change
+<Public interfaces that stay the same: routes, signatures, events, config keys, schema>
+
+Severity: <critical|high|medium|low> · Effort: <S|M|L> · Part of refactoring audit #<epic>.
 ```
 
-## Report-Kommentar
+## Sub-issue: bug
+
+Title: `Bug: <symptom>` · label `bug` · **No command on the first line.**
 
 ```markdown
-## Refactoring-Audit
+## Defect
+`<file>:<line>`: <what is wrong>
 
-**Scope:** <Pfad oder „gesamtes Repository“> · **Stand:** <kurzer Commit-Hash>
+## Evidence
+<How it occurs: input, flow, log or test output>
 
-### Kontext
-PHP <x> · Laravel <x> · Filament <x> · Livewire <x> · Pest/PHPUnit <x> · Vite <x> · Node <x> · Boost <ja/nein>
+## Expected
+<Correct behaviour>
+
+## Approach
+First write a regression test that **fails** (red), then fix the defect (green). Do not mix the fix with
+refactorings.
+
+Severity: <critical|high|medium|low> · Part of refactoring audit #<epic>.
+```
+
+## Report comment
+
+```markdown
+## Refactoring audit
+
+**Scope:** <path or "whole repository"> · **State:** <short commit hash>
+
+### Context
+PHP <x> · Laravel <x> · Filament <x> · Livewire <x> · Pest/PHPUnit <x> · Vite <x> · Node <x> · Boost <yes/no>
 
 ### Baseline
-- Tests: <Ergebnis>
-- Statische Analyse: <Ergebnis>
-- Pint: <Ergebnis>
-- composer audit / npm audit: <Ergebnis>
-- Build: <Ergebnis>
+- Tests: <result>
+- Static analysis: <result>
+- Pint: <result>
+- composer audit / npm audit: <result>
+- Build: <result>
 
-### Sub-Issues
-- [ ] #<n> <Titel> (<Schwere>, <Aufwand>)
-- [ ] #<n> <Titel> … *wartet auf #<m>*
+### Sub-issues
+- [ ] #<n> <title> (<severity>, <effort>)
+- [ ] #<n> <title> … *waits for #<m>*
 
-### Nicht angelegt
-- <Befund>: <warum nicht (Limit, zu klein, zu unsicher)>
+### Not created
+- <finding>: <why not (limit, too small, too uncertain)>
 
-### Unklar
-- <Vermutung ohne Beleg und was zur Klärung nötig wäre>
+### Unclear
+- <assumption without evidence and what would be needed to clarify it>
 
-Die Sub-Issues stehen im Backlog. Zum Umsetzen eines Sub-Issues in „Ready“ verschieben.
+The sub-issues are in the backlog. To implement a sub-issue, move it to "Ready".
 ```

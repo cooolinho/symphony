@@ -2,7 +2,7 @@
   "name": "symphony",
   "version": "0.1.0",
   "description": "Symphony orchestrator: polls a GitHub Projects board and runs one Claude Code session per issue in an isolated workspace.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "bin": {

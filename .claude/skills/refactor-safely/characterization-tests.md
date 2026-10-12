@@ -1,29 +1,29 @@
-# Characterization-Tests
+# Characterization tests
 
-Ein Characterization-Test hält fest, **was der Code heute tut**, nicht was er tun sollte. Er ist die Messlatte für das
-Refactoring. Gefällt dir das Verhalten nicht, schreibst du es trotzdem so auf und meldest es als Befund.
+A characterization test pins down **what the code does today**, not what it should do. It is the yardstick for the
+refactoring. If you do not like the behaviour, write it down as it is anyway and report it as a finding.
 
-## Wann schreiben
+## When to write them
 
-Der Bereich hat keine Tests, oder sie prüfen zu wenig (nur Statuscode, nur „läuft ohne Fehler“). Prüfe das mit einer
-kurzen Mutation im Kopf: Würde ein Test rot, wenn ich die Rückgabe, die Reihenfolge oder eine Bedingung ändere?
+The area has no tests, or they check too little (only the status code, only "runs without errors"). Check this with a
+quick mutation in your head: would a test turn red if I changed the return value, the order or a condition?
 
-## Wie
+## How
 
-1. **Verhalten ermitteln**: Code lesen, im Zweifel einmal ausführen (Testlauf, nicht Produktion) und die Ausgabe
-   notieren. Nicht raten.
-2. **Äußere Schnittstelle testen**, nicht die Innereien, die du gleich umbaust:
-   - HTTP/Livewire/Filament: Antwort, gerenderte Ausgabe, Validierungsfehler, Autorisierung (erlaubt und verboten)
-   - Services/Actions: Rückgabewert, Datenbankzustand danach, ausgelöste Events/Jobs/Mails (`Event::fake()` usw.)
-   - Fehlerfälle: ungültige Eingabe, fehlende Datensätze, fehlende Rechte
-3. **Echte Daten statt Mocks** (Factories, `RefreshDatabase`), Mocks nur an der Systemgrenze (HTTP, Mail, Zeit).
-4. **Deterministisch**: Zeit mit `Carbon::setTestNow`, Zufall und Reihenfolgen festlegen.
-5. **Grün auf dem unveränderten Code**, bevor du etwas umbaust. Ein roter Characterization-Test bedeutet: Du hast das
-   Verhalten falsch beschrieben. Korrigiere den Test, nicht den Code.
-6. In getrennten Commit(s) vor dem Refactoring. Pest, wenn das Projekt Pest nutzt, sonst PHPUnit; nutze die vorhandenen
-   Helfer und Konventionen.
+1. **Determine the behaviour**: read the code, if in doubt run it once (test run, not production) and note the output.
+   Do not guess.
+2. **Test the outer interface**, not the internals you are about to restructure:
+   - HTTP/Livewire/Filament: response, rendered output, validation errors, authorization (allowed and forbidden)
+   - services/actions: return value, database state afterwards, dispatched events/jobs/mails (`Event::fake()` etc.)
+   - error cases: invalid input, missing records, missing permissions
+3. **Real data instead of mocks** (factories, `RefreshDatabase`), mocks only at the system boundary (HTTP, mail, time).
+4. **Deterministic**: fix time with `Carbon::setTestNow`, fix randomness and ordering.
+5. **Green on the unchanged code** before you restructure anything. A red characterization test means: you described
+   the behaviour wrongly. Fix the test, not the code.
+6. In separate commit(s) before the refactoring. Pest if the project uses Pest, otherwise PHPUnit; use the existing
+   helpers and conventions.
 
-## Grenzen
+## Limits
 
-Charakterisiere, was das Refactoring berührt, nicht das ganze Modul. Ein Test für jede Verzweigung im berührten Code,
-nicht für jede Methode im Projekt.
+Characterize what the refactoring touches, not the whole module. One test for every branch in the touched code, not for
+every method in the project.

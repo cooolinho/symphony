@@ -4,7 +4,7 @@ import { STATUS, readItems, setStatus, sleep, type Board, type E2eContext } from
 /** Every test issue runs with this model, chosen by its "Model: …" label. */
 export const MODEL = 'sonnet';
 export const MODEL_LABEL = `Model: ${MODEL}`;
-export const TITLE_PREFIX = '[Testlauf]';
+export const TITLE_PREFIX = '[E2E run]';
 
 export interface ScenarioIssue {
   key: string;
@@ -20,15 +20,15 @@ export interface ScenarioIssue {
  * a chain, a text reference and a final issue that joins three branches.
  */
 export const SCENARIO: ScenarioIssue[] = [
-  { key: 'T1', title: 'Wurzel A', blockers: [] },
-  { key: 'T2', title: 'Wurzel B', blockers: [] },
-  { key: 'T3', title: 'Wurzel C', blockers: [] },
-  { key: 'T4', title: 'Wurzel D', blockers: [] },
-  { key: 'T5', title: 'nach T1', blockers: ['T1'] },
-  { key: 'T6', title: 'nach T1 und T2', blockers: ['T1', 'T2'] },
-  { key: 'T7', title: 'nach T5', blockers: ['T5'] },
-  { key: 'T8', title: 'nach T3 (Text)', blockers: [], textBlocker: 'T3' },
-  { key: 'T9', title: 'Abschluss', blockers: ['T6', 'T7', 'T8'] },
+  { key: 'T1', title: 'Root A', blockers: [] },
+  { key: 'T2', title: 'Root B', blockers: [] },
+  { key: 'T3', title: 'Root C', blockers: [] },
+  { key: 'T4', title: 'Root D', blockers: [] },
+  { key: 'T5', title: 'after T1', blockers: ['T1'] },
+  { key: 'T6', title: 'after T1 and T2', blockers: ['T1', 'T2'] },
+  { key: 'T7', title: 'after T5', blockers: ['T5'] },
+  { key: 'T8', title: 'after T3 (text)', blockers: [], textBlocker: 'T3' },
+  { key: 'T9', title: 'Final', blockers: ['T6', 'T7', 'T8'] },
 ];
 
 /** Issues without any dependency: they all start in the first wave, up to the concurrency limit. */
@@ -63,7 +63,7 @@ export interface RunRecord {
 
 /** Marker the agent's comment must contain. */
 export function doneMarker(key: string): string {
-  return `Testlauf ${key} erledigt`;
+  return `E2E run ${key} done`;
 }
 
 /** Issue text; `numbers` holds the issue numbers of the issues created before this one. */
@@ -73,23 +73,23 @@ function issueBody(issue: ScenarioIssue, numbers: Map<string, number>): string {
   const ref = (key: string) => `${key} (#${numbers.get(key)})`;
   const dependency =
     issue.textBlocker !== undefined
-      ? `Abhängigkeit (nur im Text): Blocked by #${numbers.get(issue.textBlocker)}`
+      ? `Dependency (text only): Blocked by #${numbers.get(issue.textBlocker)}`
       : issue.blockers.length > 0
-        ? `Abhängigkeit über GitHub-Relationship: ${issue.blockers.map(ref).join(', ')}`
-        : 'Abhängigkeit: keine';
-  return `Testlauf der Symphony-Orchestrierung (${issue.key}). **Keine Code-Änderungen.**
+        ? `Dependency via GitHub relationship: ${issue.blockers.map(ref).join(', ')}`
+        : 'Dependency: none';
+  return `E2E run of the Symphony orchestration (${issue.key}). **No code changes.**
 
 ${dependency}
 
-## Aufgabe
+## Task
 
-1. \`mcp__tracker__get_issue\` aufrufen.
-2. Status auf "In progress" setzen.
-3. **Einen** Kommentar posten (keinen separaten Plan-Kommentar) mit genau diesem Inhalt:
-   \`${doneMarker(issue.key)}. Abhängigkeiten laut Tracker: <identifier: state, …>\` – oder \`keine\`, wenn der Tracker keine Abhängigkeiten meldet.
-4. Status auf "${STATUS.handoff}" setzen.
+1. Call \`mcp__tracker__get_issue\`.
+2. Set the status to "In progress".
+3. Post **one** comment (no separate plan comment) with exactly this content:
+   \`${doneMarker(issue.key)}. Dependencies according to the tracker: <identifier: state, …>\`, or \`none\` if the tracker reports no dependencies.
+4. Set the status to "${STATUS.handoff}".
 
-Nicht erlaubt: Dateien ändern, Branch anlegen, committen, pushen, Pull Request öffnen, Status "${STATUS.done}" setzen.
+Not allowed: changing files, creating a branch, committing, pushing, opening a pull request, setting the status "${STATUS.done}".
 `;
 }
 

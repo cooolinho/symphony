@@ -26,47 +26,47 @@ export interface RolesIssue extends ScenarioIssue {
 }
 
 export const ROLES_SCENARIO: RolesIssue[] = [
-  { key: 'R1', title: 'Freigabe, Versuch auf Done', blockers: [], rejectOnce: false, tryDone: true },
-  { key: 'R2', title: 'einmal abgelehnt', blockers: [], rejectOnce: true, tryDone: false },
-  { key: 'R3', title: 'Freigabe', blockers: [], rejectOnce: false, tryDone: false },
+  { key: 'R1', title: 'approval, attempt on Done', blockers: [], rejectOnce: false, tryDone: true },
+  { key: 'R2', title: 'rejected once', blockers: [], rejectOnce: true, tryDone: false },
+  { key: 'R3', title: 'approval', blockers: [], rejectOnce: false, tryDone: false },
 ];
 
 export const rolesIssue = (key: string): RolesIssue | undefined => ROLES_SCENARIO.find((issue) => issue.key === key);
 
 /** Comment markers the agents post. */
 export const ROLES_MARKER = {
-  developed: (key: string) => `Testlauf ${key} entwickelt`,
-  rejected: (key: string) => `Testlauf ${key} abgelehnt`,
-  approved: (key: string) => `Testlauf ${key} freigegeben`,
+  developed: (key: string) => `E2E run ${key} developed`,
+  rejected: (key: string) => `E2E run ${key} rejected`,
+  approved: (key: string) => `E2E run ${key} approved`,
 };
 
 export function rolesIssueBody(issue: ScenarioIssue): string {
   const spec = rolesIssue(issue.key);
   const tryDone = spec?.tryDone
-    ? `3. Einmal versuchen, den Status auf "${STATUS.done}" zu setzen. Symphony lehnt das ab (\`transition_denied\`); das ist erwartet. Nicht wiederholen.\n`
+    ? `3. Try once to set the status to "${STATUS.done}". Symphony denies it (\`transition_denied\`); that is expected. Do not repeat.\n`
     : '';
   const n = tryDone === '' ? 3 : 4;
   const review = spec?.rejectOnce
-    ? `2. Gibt es noch **keinen** Kommentar mit \`${ROLES_MARKER.rejected(issue.key)}\`: genau diesen Kommentar posten, Status auf "${ROLE_STATUS.progress}" setzen, Turn beenden.
-3. Sonst: Kommentar \`${ROLES_MARKER.approved(issue.key)}\` posten, Status auf "${STATUS.handoff}" setzen, Turn beenden.`
-    : `2. Kommentar \`${ROLES_MARKER.approved(issue.key)}\` posten.
-3. Status auf "${STATUS.handoff}" setzen, Turn beenden.`;
-  return `Testlauf des Rollen-Lebenszyklus von Symphony (${issue.key}). **Keine Code-Änderungen.**
-Erlaubt sind nur die Tracker-Tools: \`mcp__tracker__get_issue\`, \`mcp__tracker__add_comment\`, \`mcp__tracker__set_status\`.
+    ? `2. If there is **no** comment with \`${ROLES_MARKER.rejected(issue.key)}\` yet: post exactly this comment, set the status to "${ROLE_STATUS.progress}", end the turn.
+3. Otherwise: post the comment \`${ROLES_MARKER.approved(issue.key)}\`, set the status to "${STATUS.handoff}", end the turn.`
+    : `2. Post the comment \`${ROLES_MARKER.approved(issue.key)}\`.
+3. Set the status to "${STATUS.handoff}", end the turn.`;
+  return `E2E run of the Symphony role lifecycle (${issue.key}). **No code changes.**
+Only the tracker tools are allowed: \`mcp__tracker__get_issue\`, \`mcp__tracker__add_comment\`, \`mcp__tracker__set_status\`.
 
-## Rolle \`developer\` (Status "${STATUS.start}" oder "${ROLE_STATUS.progress}")
+## Role \`developer\` (status "${STATUS.start}" or "${ROLE_STATUS.progress}")
 
-1. \`mcp__tracker__get_issue\` aufrufen.
-2. Steht das Issue auf "${STATUS.start}": Status auf "${ROLE_STATUS.progress}" setzen.
-${tryDone}${n}. **Einen** Kommentar posten: \`${ROLES_MARKER.developed(issue.key)}\`.
-${n + 1}. Status auf "${ROLE_STATUS.review}" setzen. Beim ersten Mal schlägt der Entry-Check absichtlich fehl (\`check_failed\`): dann denselben Aufruf unverändert genau einmal wiederholen. Danach Turn beenden.
+1. Call \`mcp__tracker__get_issue\`.
+2. If the issue is in "${STATUS.start}": set the status to "${ROLE_STATUS.progress}".
+${tryDone}${n}. Post **one** comment: \`${ROLES_MARKER.developed(issue.key)}\`.
+${n + 1}. Set the status to "${ROLE_STATUS.review}". The first time, the entry check fails on purpose (\`check_failed\`): then repeat the same call unchanged exactly once. Then end the turn.
 
-## Rolle \`reviewer\` (Status "${ROLE_STATUS.review}")
+## Role \`reviewer\` (status "${ROLE_STATUS.review}")
 
-1. \`mcp__tracker__get_issue\` aufrufen und die Kommentare lesen.
+1. Call \`mcp__tracker__get_issue\` and read the comments.
 ${review}
 
-Nicht erlaubt: Dateien ändern, Branch anlegen, committen, pushen, Pull Request öffnen.
+Not allowed: changing files, creating a branch, committing, pushing, opening a pull request.
 `;
 }
 

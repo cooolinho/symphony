@@ -28,7 +28,7 @@ function line(minute: number, event: string, fields: Record<string, string | num
 }
 
 const started = (minute: number, number: number, run: string, role: string, state: string) =>
-  line(minute, 'run_started', { issue: `${REPO}#${number}`, run, title: 'Testlauf', state, attempt: 'null', model: 'sonnet', role });
+  line(minute, 'run_started', { issue: `${REPO}#${number}`, run, title: 'E2E run', state, attempt: 'null', model: 'sonnet', role });
 
 const finished = (minute: number, number: number, run: string, outcome: string, roles?: [string, string]) =>
   line(minute, 'run_finished', {
@@ -207,7 +207,7 @@ describe('e2e roles scenario', () => {
     assert.deepEqual(config.claude.plugins, [path.join(ROOT, '.claude')]);
     assert.equal(config.tracker.provider.repositories, '$GITHUB_REPOSITORY', 'provider settings stay unresolved, as in WORKFLOW.md');
 
-    const issue = makeIssue({ id: '12', title: 'Testlauf', description: 'Do this', state: 'Agent review' });
+    const issue = makeIssue({ id: '12', title: 'E2E run', description: 'Do this', state: 'Agent review' });
     const prompt = await renderPrompt(compilePrompt(promptTemplate), { issue, attempt: null, role: 'reviewer' });
     assert.match(prompt, /You are the \*\*reviewer\*\*/);
     assert.match(prompt, /Do this/);
@@ -216,12 +216,12 @@ describe('e2e roles scenario', () => {
   it('writes issue texts with instructions for both roles; only R2 is rejected and only R1 tries Done', () => {
     const bodies = new Map(ROLES_SCENARIO.map((issue) => [issue.key, rolesIssueBody(issue)]));
     for (const [key, body] of bodies) {
-      assert.match(body, /## Rolle `developer`/);
-      assert.match(body, /## Rolle `reviewer`/);
+      assert.match(body, /## Role `developer`/);
+      assert.match(body, /## Role `reviewer`/);
       assert.ok(body.includes(ROLES_MARKER.developed(key)));
       assert.ok(body.includes(ROLES_MARKER.approved(key)));
       assert.equal(body.includes(ROLES_MARKER.rejected(key)), key === 'R2');
-      assert.equal(body.includes('"Done" zu setzen'), key === 'R1');
+      assert.equal(body.includes('set the status to "Done"'), key === 'R1');
     }
   });
 

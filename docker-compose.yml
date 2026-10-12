@@ -6,80 +6,81 @@
 x-auth-required: ${SYMPHONY_TRAEFIK_MIDDLEWARES:-${SYMPHONY_BASIC_AUTH:?set SYMPHONY_BASIC_AUTH (htpasswd) or SYMPHONY_TRAEFIK_MIDDLEWARES}}
 
 services:
-  symphony:
-    build:
-      context: .
-      args:
-        UID: ${UID:-1000}
-        GID: ${GID:-1000}
-        PHP_VERSION: ${PHP_VERSION:-8.4}
-    image: symphony:local
-    restart: unless-stopped
-    # On SIGTERM Symphony stops its agents and waits up to hooks.timeout_ms + 30 s for them and their
-    # after_run hooks. 120 s covers stopping the agents; raise it if WORKFLOW.md gets a long after_run hook.
-    # No init: true, the image already starts through tini.
-    stop_grace_period: 120s
-    env_file: .env
-    # Overrides .env, so host-specific values there (SYMPHONY_PHP=/usr/bin/php8.4, SYMPHONY_LOG_DIR=logs)
-    # do not break the container.
-    environment:
-      SYMPHONY_HOST: 0.0.0.0
-      SYMPHONY_PORT: ${SYMPHONY_PORT:-4000}
-      SYMPHONY_ALLOW_REMOTE_CONTROL: "true"
-      SYMPHONY_LOG_DIR: /home/symphony/.local/state/symphony
-      SYMPHONY_PHP: php
-      SYMPHONY_COMPOSER: composer
-      TZ: ${TZ:-Europe/Berlin}
-    # No ports: the dashboard is reachable only through Traefik.
-    networks:
-      - traefik
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}
-      - traefik.http.routers.symphony.rule=Host(`${SYMPHONY_DOMAIN:?SYMPHONY_DOMAIN is required (dashboard host name, e.g. symphony.example.com)}`)
-      - traefik.http.routers.symphony.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}
-      # TRAEFIK_TLS=false: plain HTTP, e.g. a LAN Traefik without certificates (with TRAEFIK_ENTRYPOINT=web).
-      # Traefik then ignores the whole tls.* block, the cert resolver included. A router with tls=true
-      # answers TLS connections only, so on an HTTP entrypoint it would return 404.
-      - traefik.http.routers.symphony.tls=${TRAEFIK_TLS:-true}
-      - traefik.http.routers.symphony.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}
-      - traefik.http.routers.symphony.middlewares=${SYMPHONY_TRAEFIK_MIDDLEWARES:-symphony-auth}
-      - traefik.http.routers.symphony.service=symphony
-      # htpasswd line(s), bcrypt recommended (htpasswd -nB admin). In .env in single quotes and with single $:
-      #   SYMPHONY_BASIC_AUTH='admin:$2y$05$...'
-      # Compose does not expand the substituted value again; $$ is only needed for a hash written into this file.
-      # An empty value fails closed in Traefik too: no users -> the middleware and its router are not built.
-      - traefik.http.middlewares.symphony-auth.basicauth.users=${SYMPHONY_BASIC_AUTH:-}
-      - traefik.http.services.symphony.loadbalancer.server.port=${SYMPHONY_PORT:-4000}
-    volumes:
-      - workspaces:/home/symphony/symphony-workspaces
-      - state:/home/symphony/.local/state/symphony
-      - claude:/home/symphony/.claude
-      - composer-cache:/home/symphony/.cache/composer
-      # Optional: edit WORKFLOW.md and model-costs.yml without a rebuild. Single-file bind mounts follow the
-      # inode: if an editor replaces the file instead of writing it in place, run docker compose restart.
-      # - ./WORKFLOW.md:/app/WORKFLOW.md:ro
-      # - ./model-costs.yml:/app/model-costs.yml:ro
-    # Lands at /run/secrets/ssh_key, the default of SYMPHONY_SSH_KEY; the entrypoint sets GIT_SSH_COMMAND.
-    secrets:
-      - ssh_key
-    # Optional limits; rough guide per parallel agent (Claude Code, Composer, tests): 1 CPU and 2 GB.
-    # cpus: 2
-    # mem_limit: 4g
+    symphony:
+        container_name: "${COMPOSE_PROJECT_NAME:-symphony}"
+        build:
+            context: .
+            args:
+                UID: ${UID:-1000}
+                GID: ${GID:-1000}
+                PHP_VERSION: ${PHP_VERSION:-8.4}
+        image: symphony:local
+        restart: unless-stopped
+        # On SIGTERM Symphony stops its agents and waits up to hooks.timeout_ms + 30 s for them and their
+        # after_run hooks. 120 s covers stopping the agents; raise it if WORKFLOW.md gets a long after_run hook.
+        # No init: true, the image already starts through tini.
+        stop_grace_period: 120s
+        env_file: .env
+        # Overrides .env, so host-specific values there (SYMPHONY_PHP=/usr/bin/php8.4, SYMPHONY_LOG_DIR=logs)
+        # do not break the container.
+        environment:
+            SYMPHONY_HOST: 0.0.0.0
+            SYMPHONY_PORT: ${SYMPHONY_PORT:-4000}
+            SYMPHONY_ALLOW_REMOTE_CONTROL: "true"
+            SYMPHONY_LOG_DIR: /home/symphony/.local/state/symphony
+            SYMPHONY_PHP: php
+            SYMPHONY_COMPOSER: composer
+            TZ: ${TZ:-Europe/Berlin}
+        # No ports: the dashboard is reachable only through Traefik.
+        networks:
+            - traefik
+        labels:
+            - traefik.enable=true
+            - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}
+            - traefik.http.routers.symphony.rule=Host(`${SYMPHONY_DOMAIN:?SYMPHONY_DOMAIN is required (dashboard host name, e.g. symphony.example.com)}`)
+            - traefik.http.routers.symphony.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}
+            # TRAEFIK_TLS=false: plain HTTP, e.g. a LAN Traefik without certificates (with TRAEFIK_ENTRYPOINT=web).
+            # Traefik then ignores the whole tls.* block, the cert resolver included. A router with tls=true
+            # answers TLS connections only, so on an HTTP entrypoint it would return 404.
+            - traefik.http.routers.symphony.tls=${TRAEFIK_TLS:-true}
+            - traefik.http.routers.symphony.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}
+            - traefik.http.routers.symphony.middlewares=${SYMPHONY_TRAEFIK_MIDDLEWARES:-symphony-auth}
+            - traefik.http.routers.symphony.service=symphony
+            # htpasswd line(s), bcrypt recommended (htpasswd -nB admin). In .env in single quotes and with single $:
+            #   SYMPHONY_BASIC_AUTH='admin:$2y$05$...'
+            # Compose does not expand the substituted value again; $$ is only needed for a hash written into this file.
+            # An empty value fails closed in Traefik too: no users -> the middleware and its router are not built.
+            - traefik.http.middlewares.symphony-auth.basicauth.users=${SYMPHONY_BASIC_AUTH:-}
+            - traefik.http.services.symphony.loadbalancer.server.port=${SYMPHONY_PORT:-4000}
+        volumes:
+            - workspaces:/home/symphony/symphony-workspaces
+            - state:/home/symphony/.local/state/symphony
+            - claude:/home/symphony/.claude
+            - composer-cache:/home/symphony/.cache/composer
+            # Optional: edit WORKFLOW.md and model-costs.yml without a rebuild. Single-file bind mounts follow the
+            # inode: if an editor replaces the file instead of writing it in place, run docker compose restart.
+            # - ./WORKFLOW.md:/app/WORKFLOW.md:ro
+            # - ./model-costs.yml:/app/model-costs.yml:ro
+        # Lands at /run/secrets/ssh_key, the default of SYMPHONY_SSH_KEY; the entrypoint sets GIT_SSH_COMMAND.
+        secrets:
+            - ssh_key
+        # Optional limits; rough guide per parallel agent (Claude Code, Composer, tests): 1 CPU and 2 GB.
+        # cpus: 2
+        # mem_limit: 4g
 
 networks:
-  traefik:
-    external: true
-    name: ${TRAEFIK_NETWORK:-traefik}
+    traefik:
+        external: true
+        name: ${TRAEFIK_NETWORK:-traefik}
 
 volumes:
-  workspaces:
-  state:
-  claude:
-  composer-cache:
+    workspaces:
+    state:
+    claude:
+    composer-cache:
 
 secrets:
-  # A file secret is a bind mount of the host file: it must be readable for UID inside the container
-  # (e.g. owned by UID, mode 0400). The entrypoint copies it to ~/.ssh with mode 0600.
-  ssh_key:
-    file: ./secrets/ssh_key
+    # A file secret is a bind mount of the host file: it must be readable for UID inside the container
+    # (e.g. owned by UID, mode 0400). The entrypoint copies it to ~/.ssh with mode 0600.
+    ssh_key:
+        file: ./secrets/ssh_key
