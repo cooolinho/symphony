@@ -702,10 +702,12 @@ ${PIPELINE_JS}
       li.append(row);
       if (r.title) li.append(el('div', r.title, 'msg'));
       const meta = el('div', null, 'qmeta');
-      meta.append(el('span', r.reason));
+      // The blocker list below already carries a "blocked by …" reason, with the blockers' states.
+      const hasBlockers = r.blocked_by && r.blocked_by.length;
+      if (!(hasBlockers && /^blocked by/.test(r.reason))) meta.append(el('span', r.reason));
       if (r.tracked) meta.append(traceLink(r.issue_identifier));
-      li.append(meta);
-      if (r.blocked_by && r.blocked_by.length) {
+      if (meta.childNodes.length) li.append(meta);
+      if (hasBlockers) {
         const blockers = el('div', null, 'qmeta');
         blockers.append(el('span', 'blocked by'));
         for (const b of r.blocked_by) blockers.append(el('b', (b.identifier || b.id || 'unknown') + (b.state ? ' (' + b.state + ')' : '')));

@@ -87,6 +87,8 @@ export const PIPELINE_JS = `
         linkSvg.setAttribute('aria-hidden', 'true');
         const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
         line.setAttribute('x1', '0'); line.setAttribute('y1', '5'); line.setAttribute('x2', '40'); line.setAttribute('y2', '5');
+        // The svg stretches to the ring height; keep the stroke at its CSS width instead of scaling with it.
+        line.setAttribute('vector-effect', 'non-scaling-stroke');
         linkSvg.append(line);
         nodes.push(linkSvg);
       }
@@ -98,11 +100,11 @@ export const PIPELINE_JS = `
       else ring.textContent = (stage.label || '?').slice(0, 1).toUpperCase();
       const label = el('span', stage.label, 'pipe-label');
       node.append(ring, label);
-      if (!opts.compact) {
+      if (!opts.compact && stage.kind === 'agent') {
         const last = stage.sessions[stage.sessions.length - 1];
-        const sub = stage.kind === 'agent'
-          ? (stage.sessions.length ? stage.sessions.length + ' run' + (stage.sessions.length === 1 ? '' : 's') + (last && last.model ? ' · ' + last.model : '') : '—')
-          : stage.columns.join(', ');
+        const sub = stage.sessions.length
+          ? stage.sessions.length + ' run' + (stage.sessions.length === 1 ? '' : 's') + (last && last.model ? ' · ' + last.model : '')
+          : '—';
         node.append(el('span', sub, 'pipe-sub'));
       }
       node.title = pipeTitle(stage);
