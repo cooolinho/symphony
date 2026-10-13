@@ -99,7 +99,9 @@ describe('http extension', () => {
     const state = await request(server.port, 'GET', '/api/v1/state');
     assert.equal(state.status, 200);
     const body = JSON.parse(state.body);
-    assert.deepEqual(Object.keys(body.counts), ['running', 'retrying', 'paused', 'claimed']);
+    assert.deepEqual(Object.keys(body.counts), ['running', 'retrying', 'paused', 'claimed', 'queued', 'blocked']);
+    assert.ok(Array.isArray(body.issues) && Array.isArray(body.blocked));
+    assert.deepEqual(Object.keys(body.pipeline_config), ['board_columns', 'roles', 'blocked_states']);
     assert.deepEqual(Object.keys(body.agent_totals), ['input_tokens', 'output_tokens', 'total_tokens', 'seconds_running', 'cost_usd', 'claude_estimate_usd']);
     assert.ok(Array.isArray(body.running) && Array.isArray(body.retrying));
     assert.equal(body.health.dispatch_gate, null);

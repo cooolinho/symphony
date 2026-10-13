@@ -2367,3 +2367,82 @@ describe('restart a worker', () => {
     assert.equal(typeof note.title, 'string');
   });
 });
+
+describe('issue-centric snapshot', () => {
+  const ROLE_FRONT = {
+    agent: { max_concurrent_agents: 1 },
+    tracker: {
+      kind: 'github_project',
+      provider: { owner: 'acme', project_number: 1, token: 'test-token' },
+      active_states: ['Ready', 'In progress', 'Agent review'],
+      terminal_states: ['Done'],
+    },
+    roles: {
+      developer: { states: ['Ready', 'In progress'], may_move_to: ['In progress', 'Agent review', 'Blocked'] },
+      reviewer: { states: ['Agent review'], read_only: true, may_move_to: ['In review', 'In progress', 'Blocked'] },
+    },
+  };
+
+  it('lists issues in flight with their pipeline and blocked issues with reasons', async () => {
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    const s = setup({
+      runner,
+      front: ROLE_FRONT,
+      issues: [
+        makeIssue({ id: 'run', state: 'Ready', priority: 1 }),
+        makeIssue({ id: 'wait', state: 'Ready', priority: 2 }),
+        makeIssue({
+          id: 'gated',
+          state: 'Ready',
+          priority: 3,
+          dispatchable: false,
+          blocked_by: [{ id: 'b9', identifier: 'acme/app#9', state: 'OPEN' }],
+          native_ref: { dispatch_note: 'blocked by acme/app#9' },
+        }),
+        makeIssue({ id: 'parked', state: 'Blocked' }),
+      ],
+    });
+    await s.orchestrator.tickNow();
+    await until(() => runner.sessions.length === 1, 3_000, 'one session');
+    const snap = snapshot(s);
+
+    assert.deepEqual(snap.issues.map((issue) => [issue.issue_id, issue.status]), [['run', 'running'], ['wait', 'queued']]);
+    const row = snap.issues[0];
+    assert.deepEqual(
+      row?.stages.map((stage) => [stage.id, stage.status]),
+      [['developer', 'active'], ['reviewer', 'pending'], ['human:in review', 'pending'], ['terminal:done', 'pending']],
+    );
+    assert.equal(row?.stages[0]?.sessions.length, 1);
+    assert.notEqual(row?.running, null);
+    assert.equal(snap.issues[1]?.running, null);
+
+    assert.deepEqual(
+      snap.blocked.map((issue) => [issue.issue_id, issue.reason]),
+      [['parked', 'in column "Blocked"'], ['gated', 'blocked by acme/app#9']],
+    );
+    assert.deepEqual(snap.blocked[1]?.blocked_by, [{ id: 'b9', identifier: 'acme/app#9', state: 'OPEN' }]);
+    assert.equal(snap.counts.queued, 1);
+    assert.equal(snap.counts.blocked, 2);
+    assert.deepEqual(snap.pipeline_config.blocked_states, ['Blocked']);
+    assert.equal(typeof snap.board_fetched_at, 'string');
+  });
+
+  it('serves issue metadata and the pipeline in the issue detail', async () => {
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    const s = setup({
+      runner,
+      front: ROLE_FRONT,
+      issues: [makeIssue({ id: 'run', state: 'In progress', labels: ['bug'], priority: 2 })],
+    });
+    await s.orchestrator.tickNow();
+    await until(() => runner.sessions.length === 1, 3_000, 'one session');
+    const detail = s.orchestrator.issueDetail('run');
+    assert.equal(detail?.issue?.state, 'In progress');
+    assert.deepEqual(detail?.issue?.labels, ['bug']);
+    assert.equal(detail?.issue?.priority, 2);
+    assert.deepEqual(
+      detail?.pipeline.map((stage) => [stage.id, stage.status]),
+      [['developer', 'active'], ['reviewer', 'pending'], ['human:in review', 'pending'], ['terminal:done', 'pending']],
+    );
+  });
+});
