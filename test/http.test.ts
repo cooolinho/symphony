@@ -78,8 +78,10 @@ describe('http extension', () => {
     assert.equal(page.status, 200);
     assert.match(page.body, /<title>Symphony<\/title>/);
     assert.match(page.body, /AGENT ORCHESTRATOR/);
-    // Running agents render as cards that show role, model and phase.
-    assert.match(page.body, /setText\(refs\.role, r\.role/);
+    // Issues in flight render as cards with the pipeline topology strip; blocked issues collapse into a details panel.
+    assert.match(page.body, /renderPipeline\(refs\.pipe, row\.stages/);
+    assert.match(page.body, /state\.issues/);
+    assert.match(page.body, /id="blocked-section"/);
     assert.match(page.body, /setText\(refs\.model, r\.model/);
     assert.match(page.body, /setText\(refs\.phase, r\.phase/);
     assert.match(page.body, /id="refresh"/);
@@ -191,7 +193,7 @@ describe('http extension', () => {
     assert.match(page.body, /worker_restarted/);
     assert.equal((await request(server.port, 'HEAD', '/agent')).status, 200);
     const dashboard = (await request(server.port, 'GET', '/')).body;
-    assert.match(dashboard, /'\/agent\?id=' \+ encodeURIComponent\(r\.issue_identifier\)/);
+    assert.match(dashboard, /'\/agent\?id=' \+ encodeURIComponent\(row\.issue_identifier\)/);
   });
 
   it('returns a JSON 404 for unknown issues and routes', async () => {

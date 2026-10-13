@@ -1999,6 +1999,8 @@ export class Orchestrator {
       status,
       labels: meta?.labels ?? [],
       priority: meta?.priority ?? null,
+      /** True when the orchestrator holds debugging context, so /agent?id=… has something to show. */
+      tracked: record !== undefined,
       stages: this.#pipelineFor({ state: issue.state, description: issue.description }, issue.id, workflow),
       running: rows.running === undefined ? null : this.#runningRow(rows.running, now),
       retry: rows.retry === undefined ? null : this.#retryRow(rows.retry, now),
