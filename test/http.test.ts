@@ -180,6 +180,10 @@ describe('http extension', () => {
     assert.match(page.body, /AGENT TRACE/);
     assert.match(page.body, /Back to agents/);
     assert.match(page.body, /id="timeline"/);
+    // Pipeline topology section and the Issue sidebar (labels, blockers, sub-issues).
+    assert.match(page.body, /id="pipe-section"/);
+    assert.match(page.body, /renderPipeline\(\$\('pipeline'\)/);
+    assert.match(page.body, /id="issue-section"/);
     assert.match(page.body, /'\/timeline\?after='/);
     assert.match(page.body, /'\/transcript\?run='/);
     assert.match(page.body, /Waiting for limit/);

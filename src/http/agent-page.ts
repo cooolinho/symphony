@@ -1,6 +1,22 @@
+import { PIPELINE_CSS, PIPELINE_JS } from './pipeline.ts';
 import { BASE_CSS, BASE_JS } from './styles.ts';
 
 const AGENT_CSS = `
+  /* Pipeline section: the topology strip plus one summary row per agent stage. */
+  .pipe-section .pipe { justify-content: flex-start; }
+  .pipe-rows { margin-top: 12px; display: grid; gap: 6px; }
+  .pipe-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 7px 10px; font: 12px var(--mono);
+    border: 1px solid var(--line); border-left: 2px solid var(--tone, var(--faint)); border-radius: var(--radius-sm); background: rgba(0, 0, 0, .2); }
+  .pipe-row b { color: var(--text); font-weight: 600; }
+  .pipe-row .muted { overflow-wrap: anywhere; }
+
+  /* Issue sidebar section: labels, blockers, sub-issues. */
+  .issue-labels { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .issue-labels:empty { display: none; }
+  .issue-note { margin-top: 10px; font: 12px var(--mono); color: var(--amber); overflow-wrap: anywhere; }
+`;
+
+const AGENT_PAGE_CSS = `
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
   .back { display: inline-flex; align-items: center; gap: 8px; font: 600 11px var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--text-2); width: max-content; }
   .back:hover { color: var(--green); text-decoration: none; }
@@ -182,7 +198,7 @@ export const AGENT_HTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <title>Agent · Symphony</title>
-<style>${BASE_CSS}${AGENT_CSS}</style>
+<style>${BASE_CSS}${PIPELINE_CSS}${AGENT_CSS}${AGENT_PAGE_CSS}</style>
 </head>
 <body>
 <header class="topbar">
@@ -216,6 +232,12 @@ export const AGENT_HTML = `<!doctype html>
     <div class="hero-meta" id="hero-meta"></div>
     <div class="hero-metrics" id="hero-metrics"></div>
     <div class="live-line" id="live-line" hidden><span class="k">Now</span><span class="ev" id="live-ev"></span><span class="age" id="live-age"></span><span class="msg" id="live-msg"></span></div>
+  </section>
+
+  <section class="pipe-section" id="pipe-section" aria-labelledby="pipe-title" hidden>
+    <div class="section-head"><h2 id="pipe-title">Pipeline</h2></div>
+    <div id="pipeline"></div>
+    <div class="pipe-rows" id="pipe-rows"></div>
   </section>
 
   <section class="alert" id="alert" role="alert" hidden></section>
@@ -296,6 +318,12 @@ export const AGENT_HTML = `<!doctype html>
         <h2 id="runs-title">Sessions <span class="count" id="runs-count"></span></h2>
         <ul class="runs" id="runs"></ul>
       </section>
+      <section aria-labelledby="issue-title" id="issue-section" hidden>
+        <h2 id="issue-title">Issue</h2>
+        <div class="issue-labels" id="issue-labels"></div>
+        <dl class="kv" id="issue-kv"></dl>
+        <div id="issue-extra"></div>
+      </section>
       <section aria-labelledby="ctx-title">
         <h2 id="ctx-title">Run context</h2>
         <dl class="kv" id="ctx-kv"></dl>
@@ -307,6 +335,7 @@ export const AGENT_HTML = `<!doctype html>
 <script>
 (() => {
 ${BASE_JS}
+${PIPELINE_JS}
 
   const $ = (id) => document.getElementById(id);
   const setText = (node, text) => { text = String(text ?? ''); if (node.textContent !== text) node.textContent = text; };
@@ -1096,6 +1125,73 @@ ${BASE_JS}
     ]);
   }
 
+  // ------------------------------------------------------------------ pipeline and issue sections
+
+  /** The topology strip plus one summary row per agent stage (sessions newest first in the tooltip). */
+  function renderPipelineSection() {
+    const d = S.detail;
+    const stages = (d && d.pipeline) || [];
+    $('pipe-section').hidden = !stages.length;
+    if (!stages.length) return;
+    renderPipeline($('pipeline'), stages, { liveStatus: d.status === 'stopping' ? 'running' : d.status });
+    const rows = stages.filter((st) => st.kind === 'agent').map((st) => {
+      const last = st.sessions[st.sessions.length - 1];
+      const tone = st.status === 'done' ? 'green' : st.status === 'active' ? (isRunning() ? 'green' : 'cyan') : 'gray';
+      const row = el('div', null, 'pipe-row tone-' + tone);
+      row.append(el('b', st.label));
+      const outcome = last && last.outcome ? (OUTCOME[last.outcome] || [null, null, last.outcome])[2] : st.status === 'active' && isRunning() ? 'running' : st.status;
+      const bits = [st.sessions.length ? st.sessions.length + ' run' + (st.sessions.length === 1 ? '' : 's') : 'no runs yet', outcome];
+      if (last && last.model) bits.push(last.model);
+      if (last && last.effort) bits.push('effort ' + last.effort);
+      if (last) bits.push(fmtStamp(last.started_at) + (last.finished_at ? ' → ' + fmtClock(last.finished_at) : ''));
+      row.append(el('span', bits.join(' · '), 'muted'));
+      return row;
+    });
+    patchChildren($('pipe-rows'), rows);
+  }
+
+  /** Board fields of the issue: labels, priority, parent, blockers, sub-issues, dispatch note. */
+  function renderIssueMeta() {
+    const d = S.detail;
+    const issue = d && d.issue;
+    $('issue-section').hidden = !issue;
+    if (!issue) return;
+    patchChildren($('issue-labels'), (issue.labels || []).map((l) => el('span', l, 'chip')));
+    const rows = [['Column', issue.state || '—']];
+    if (issue.priority !== null && issue.priority !== undefined) rows.push(['Priority', 'P' + issue.priority]);
+    if (issue.parent && issue.parent.identifier) rows.push(['Parent', issue.parent.identifier]);
+    kv($('issue-kv'), rows);
+    const extra = [];
+    if (issue.blocked_by && issue.blocked_by.length) {
+      extra.push(el('div', 'Blocked by', 'int-sub'));
+      const list = el('ul', null, 'runs');
+      for (const b of issue.blocked_by) {
+        const li = el('li', null, 'tone-' + (b.state === 'CLOSED' || b.state === 'MERGED' ? 'green' : 'red'));
+        const row = el('div', null, 'row');
+        row.append(el('span', b.identifier || b.id || 'unknown'), el('span', String(b.state || '').toLowerCase()));
+        li.append(row);
+        list.append(li);
+      }
+      extra.push(list);
+    }
+    if (issue.sub_issues && issue.sub_issues.length) {
+      extra.push(el('div', 'Sub-issues', 'int-sub'));
+      const list = el('ul', null, 'runs');
+      for (const s of issue.sub_issues) {
+        const closed = s.state === 'CLOSED';
+        const li = el('li', null, 'tone-' + (closed ? 'green' : 'cyan'));
+        const row = el('div', null, 'row');
+        row.append(el('span', s.identifier), el('span', (closed ? '✓ closed' : 'open') + (s.state_reason ? ' · ' + String(s.state_reason).toLowerCase() : '')));
+        li.append(row);
+        if (s.title) li.append(el('div', s.title, 'muted'));
+        list.append(li);
+      }
+      extra.push(list);
+    }
+    if (issue.dispatch_note) extra.push(el('div', '⚠ ' + issue.dispatch_note, 'issue-note'));
+    patchChildren($('issue-extra'), extra);
+  }
+
   /** Integrations of the running session, else of the last one (GET /api/v1/<identifier>). */
   function integrationsOf(d) {
     return (d && d.running && d.running.integrations) || (d && d.run_trace && d.run_trace.integrations) || [];
@@ -1319,6 +1415,8 @@ ${BASE_JS}
     for (const it of S.items) if (!S.known.has(it.key)) { S.known.add(it.key); if (S.rendered) S.fresh.add(it.key); }
     if (S.detail || S.ended || S.notFound) {
       renderHeader();
+      renderPipelineSection();
+      renderIssueMeta();
       renderAlert();
       renderIntegrations();
       renderSummary();
