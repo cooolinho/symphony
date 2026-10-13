@@ -1104,9 +1104,11 @@ ${BASE_JS}
   /** The integration a timeline tool call belongs to: one of its MCP servers, or a Skill call of one of its skills. */
   function toolIntegration(it) {
     const mcp = /^mcp__(.+?)__/.exec(it.name || '');
+    const input = String(it.input || '');
     for (const x of integrationsOf(S.detail)) {
       if (mcp && x.mcp_servers.includes(mcp[1])) return x;
-      if (it.name === 'Skill' && x.skills.some((name) => String(it.input || '').includes('"' + name + '"'))) return x;
+      // Like the counters' skillMatches: the exact name, or plugin-qualified ("plugin:name").
+      if (it.name === 'Skill' && x.skills.some((name) => input.includes('"' + name + '"') || input.includes(':' + name + '"'))) return x;
     }
     return null;
   }
