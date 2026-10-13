@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { Logger } from '../log.ts';
 import { errorMessage } from '../util/errors.ts';
 import type { TimelineEvent } from './orchestrator.ts';
+import type { PipelineStage } from './pipeline.ts';
 
 /**
  * The debugging context of a finished issue claim, as the orchestrator kept it while the issue was claimed:
@@ -11,6 +12,10 @@ import type { TimelineEvent } from './orchestrator.ts';
  */
 export interface ArchivedIssue {
   version: 1;
+  /** Board fields of the issue when it was archived; absent in archives from before the pipeline view. */
+  issue_meta?: Record<string, unknown> | null;
+  /** The issue's pipeline stages when it was archived; absent in archives from before the pipeline view. */
+  pipeline?: PipelineStage[];
   issue_id: string;
   issue_identifier: string;
   issue_url: string | null;

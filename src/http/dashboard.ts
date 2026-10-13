@@ -1,3 +1,4 @@
+import { PIPELINE_CSS, PIPELINE_JS } from './pipeline.ts';
 import { BASE_CSS, BASE_JS } from './styles.ts';
 
 const DASHBOARD_CSS = `
@@ -104,7 +105,17 @@ const DASHBOARD_CSS = `
     .feed .what { grid-column: 1 / -1; padding-left: 74px; }
   }
 
-  /* Retry queue and paused agents */
+  /* Issue cards: the pipeline strip and the status box of waiting issues */
+  .agent .pipe { margin: -2px 0; }
+  .agent [hidden] { display: none; }
+
+  /* Blocked issues (a collapsed details panel) and other queue-style lists */
+  details.blocked-section summary { list-style: none; cursor: pointer; }
+  details.blocked-section summary::-webkit-details-marker { display: none; }
+  details.blocked-section summary .chev { display: inline-block; font-style: normal; transition: transform .2s var(--ease); color: var(--muted); }
+  details.blocked-section[open] summary .chev { transform: rotate(90deg); }
+  details.blocked-section .section-head { margin-bottom: 0; }
+  details.blocked-section[open] .section-head { margin-bottom: 14px; }
   .queue { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
   .qitem { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-left: 2px solid var(--tone); border-radius: var(--radius-sm);
     background: rgba(0, 0, 0, .22); transition: border-color .2s var(--ease); }
@@ -168,7 +179,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <title>Symphony</title>
-<style>${BASE_CSS}${DASHBOARD_CSS}</style>
+<style>${BASE_CSS}${PIPELINE_CSS}${DASHBOARD_CSS}</style>
 </head>
 <body>
 <div class="rain" id="rain" aria-hidden="true"></div>
@@ -205,16 +216,16 @@ export const DASHBOARD_HTML = `<!doctype html>
 
   <div class="stats" id="stats" aria-label="Metrics"></div>
 
-  <section class="agents-section" aria-labelledby="running-title">
+  <section class="agents-section" aria-labelledby="issues-title">
     <div class="section-head">
-      <h2 id="running-title">Running agents <span class="count" id="running-count"></span></h2>
+      <h2 id="issues-title">Issues in flight <span class="count" id="issues-count"></span></h2>
       <div class="slots" id="slots" aria-hidden="true"></div>
     </div>
-    <div class="agents" id="agents"></div>
-    <div class="agents-empty" id="agents-empty" hidden>
+    <div class="agents" id="issues"></div>
+    <div class="agents-empty" id="issues-empty" hidden>
       <span class="badge tone-gray"><span class="dot"></span><span>Idle</span></span>
-      <div><div class="big">No agents running<span class="cursor" aria-hidden="true"></span></div>
-        <div class="muted" id="agents-empty-sub">Waiting for issues in an active column.</div></div>
+      <div><div class="big">No issues in flight<span class="cursor" aria-hidden="true"></span></div>
+        <div class="muted" id="issues-empty-sub">Waiting for issues in an active column.</div></div>
     </div>
   </section>
 
@@ -227,14 +238,15 @@ export const DASHBOARD_HTML = `<!doctype html>
       <ol class="feed" id="feed" aria-live="off"></ol>
     </section>
     <div class="side">
-      <section aria-labelledby="retry-title">
-        <div class="section-head"><h2 id="retry-title">Retry queue <span class="count" id="retry-count"></span></h2></div>
-        <div id="retrying"></div>
-      </section>
-      <section aria-labelledby="paused-title">
-        <div class="section-head"><h2 id="paused-title">Paused <span class="count" id="paused-count"></span></h2></div>
-        <div id="paused"></div>
-      </section>
+      <details class="panel blocked-section" id="blocked-section">
+        <summary>
+          <div class="section-head">
+            <h2 id="blocked-title"><span class="chev" aria-hidden="true">▸</span>Blocked <span class="count" id="blocked-count"></span></h2>
+            <span class="meta" id="blocked-meta"></span>
+          </div>
+        </summary>
+        <div id="blocked"></div>
+      </details>
     </div>
   </div>
 </main>
@@ -270,6 +282,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 <script>
 (() => {
 ${BASE_JS}
+${PIPELINE_JS}
 
   const $ = (id) => document.getElementById(id);
   const setText = (node, text) => { text = String(text ?? ''); if (node.textContent !== text) node.textContent = text; };
@@ -292,9 +305,19 @@ ${BASE_JS}
     running: ['Running', 'green', true], starting: ['Starting', 'cyan', true], checking: ['Running checks', 'cyan', true],
     finishing: ['Finishing', 'green', false], completed: ['Completed', 'green', false], failed: ['Failed', 'red', false],
     stopping: ['Stopping', 'amber', false],
+    retrying: ['Retrying', 'amber', true], continuation: ['Continuation', 'cyan', true], session_limit: ['Session limit', 'amber', true],
+    paused: ['Paused', 'gray', false], queued: ['Queued', 'cyan', false],
   };
   const agentStatus = (r) => (r.stopping ? 'stopping' : PHASE_STATUS[r.phase] || 'running');
   const phaseTone = (phase) => STATUS[PHASE_STATUS[phase] || 'running'][1];
+  // Visual status of an issue card: running cards derive it from the agent phase, retries from the retry kind.
+  function issueStatus(row) {
+    if (row.status === 'running' && row.running) return agentStatus(row.running);
+    if (row.status === 'retrying' && row.retry) {
+      return row.retry.kind === 'continuation' ? 'continuation' : row.retry.kind === 'session_limit' && row.retry.limit ? 'session_limit' : 'retrying';
+    }
+    return row.status;
+  }
 
   // ------------------------------------------------------------------ background
 
@@ -352,7 +375,7 @@ ${BASE_JS}
     return v;
   }
 
-  function createCard(r) {
+  function createCard() {
     const card = el('article', null, 'agent enter');
     card.addEventListener('animationend', (e) => { if (e.target === card) card.classList.remove('enter', 'changed'); });
     const head = el('div', null, 'agent-head');
@@ -374,13 +397,16 @@ ${BASE_JS}
     repoLine.append(repo, branch);
     titleWrap.append(heading, repoLine);
 
+    const pipe = el('div');
+
     const dl = el('dl', null, 'fields');
     const refs = {
-      card, statusSlot, attempt, integrations, id, title, repo, branch,
-      role: field(dl, 'Role'), column: field(dl, 'Board column'), model: field(dl, 'Model', 'info'), phase: field(dl, 'Phase', 'info'),
+      card, statusSlot, attempt, integrations, id, title, repo, branch, pipe, fields: dl,
+      model: field(dl, 'Model', 'info'), phase: field(dl, 'Phase', 'info'),
     };
 
     const act = el('div', null, 'activity-box');
+    refs.act = act;
     const line = el('div', null, 'activity-line');
     refs.event = el('span', null, 'ev');
     refs.age = el('span', null, 'age');
@@ -390,19 +416,55 @@ ${BASE_JS}
     actHead.append(el('span', 'Last activity', 'k'), el('span', 'Trace →', 'agent-open'));
     act.append(actHead, line, refs.message);
 
+    // Status box of waiting issues (retrying, paused, queued): meta line, message, Retry/Resume button.
+    refs.info = el('div', null, 'activity-box');
+
     const foot = el('div', null, 'agent-foot');
+    refs.foot = foot;
     refs.turn = metric(foot, 'Turn');
     refs.runtime = metric(foot, 'Runtime');
     refs.tokens = metric(foot, 'Tokens');
     refs.cost = metric(foot, 'Est. cost');
 
-    card.append(head, titleWrap, dl, act, foot);
+    card.append(head, titleWrap, pipe, dl, act, refs.info, foot);
     return refs;
   }
 
-  function updateCard(refs, r, maxTurns) {
-    const status = agentStatus(r);
-    const [label, tone, pulse] = STATUS[status];
+  /** Meta line, message and action of a waiting issue card (status box children, diffed by patchChildren). */
+  function infoChildren(row) {
+    const nodes = [];
+    const meta = el('div', null, 'qmeta');
+    nodes.push(meta);
+    if (row.status === 'retrying' && row.retry) {
+      const r = row.retry;
+      if (r.kind === 'session_limit' && r.limit) {
+        meta.append(...sessionLimitBits(r));
+        nodes.push(el('div', r.limit.text || r.error || '—', 'msg'));
+        if (r.limit.overage_disabled_reason === 'out_of_credits') {
+          nodes.push(el('div', 'Extra usage is off because credits are used up. Top up' + (retryAllowed ? ', then press Retry now.' : '.'), 'msg'));
+        }
+      } else {
+        const attempt = el('span', 'attempt '); attempt.append(el('b', pad2(r.attempt)));
+        const due = el('span', 'next in '); due.append(el('b', fmtDuration(r.due_in_ms / 1000)));
+        meta.append(attempt, due);
+        nodes.push(el('div', r.error || (r.kind === 'continuation' ? 'Continues the session after a clean exit.' : '—'), 'msg'));
+      }
+      nodes.push(restartButton(row.issue_identifier, 'Retry'));
+    } else if (row.status === 'paused' && row.paused) {
+      const cont = el('span', 'continuations '); cont.append(el('b', row.paused.continuations));
+      meta.append(cont, el('span', 'paused ' + ago(row.paused.paused_at)));
+      nodes.push(el('div', 'Resume: change the issue on the board (status, comment or labels)' + (retryAllowed ? ', or press Resume now.' : '.'), 'msg'));
+      nodes.push(restartButton(row.issue_identifier, 'Resume'));
+    } else {
+      meta.append(el('span', 'waiting for dispatch'));
+      nodes.push(el('div', row.dispatch_note || 'Waiting for a free agent slot or the next poll.', 'msg'));
+    }
+    return nodes;
+  }
+
+  function updateCard(refs, row, maxTurns) {
+    const status = issueStatus(row);
+    const [label, tone, pulse] = STATUS[status] || STATUS.queued;
     const className = 'agent tone-' + tone + ' is-' + status;
     const keep = [...refs.card.classList].filter((c) => c === 'enter' || c === 'changed').join(' ');
     if (refs.status !== undefined && refs.status !== status) {
@@ -415,37 +477,48 @@ ${BASE_JS}
     if (refs.status !== status) refs.statusSlot.replaceChildren(badge(label, tone, pulse));
     refs.status = status;
 
-    const { repo, num } = splitId(r.issue_identifier);
-    refs.card.setAttribute('aria-label', 'Agent ' + r.issue_identifier + ', ' + label);
+    const r = row.running;
+    const { repo, num } = splitId(row.issue_identifier);
+    refs.card.setAttribute('aria-label', 'Issue ' + row.issue_identifier + ', ' + label);
     setText(refs.id, num);
-    refs.id.title = r.issue_identifier;
-    if (typeof r.issue_url === 'string' && /^https?:/.test(r.issue_url)) {
-      if (refs.id.getAttribute('href') !== r.issue_url) { refs.id.href = r.issue_url; refs.id.target = '_blank'; refs.id.rel = 'noopener noreferrer'; }
+    refs.id.title = row.issue_identifier;
+    if (typeof row.issue_url === 'string' && /^https?:/.test(row.issue_url)) {
+      if (refs.id.getAttribute('href') !== row.issue_url) { refs.id.href = row.issue_url; refs.id.target = '_blank'; refs.id.rel = 'noopener noreferrer'; }
     } else refs.id.removeAttribute('href');
-    refs.attempt.hidden = !r.attempt;
-    setText(refs.attempt, 'attempt ' + (r.attempt ?? ''));
-    patchChildren(refs.integrations, (r.integrations || []).map(integrationChip));
-    setText(refs.title, r.title || r.issue_identifier);
-    const trace = '/agent?id=' + encodeURIComponent(r.issue_identifier);
-    if (refs.title.getAttribute('href') !== trace) refs.title.href = trace;
-    setText(refs.repo, r.repo && r.repo !== 'unknown' ? r.repo : repo);
-    refs.branch.hidden = !r.branch;
-    setText(refs.branch, r.branch ? '⎇ ' + r.branch : '');
+    const attempt = r ? r.attempt : row.retry ? row.retry.attempt : null;
+    refs.attempt.hidden = !attempt;
+    setText(refs.attempt, 'attempt ' + (attempt ?? ''));
+    patchChildren(refs.integrations, (r ? r.integrations || [] : []).map(integrationChip));
+    setText(refs.title, row.title || row.issue_identifier);
+    // Only tracked issues have a trace; a queued issue without one links nowhere yet.
+    if (row.tracked) {
+      const trace = '/agent?id=' + encodeURIComponent(row.issue_identifier);
+      if (refs.title.getAttribute('href') !== trace) refs.title.href = trace;
+    } else refs.title.removeAttribute('href');
+    setText(refs.repo, row.repo && row.repo !== 'unknown' ? row.repo : repo);
+    refs.branch.hidden = !(r && r.branch);
+    setText(refs.branch, r && r.branch ? '⎇ ' + r.branch : '');
 
-    setText(refs.role, r.role || '—');
-    setText(refs.column, r.state || '—');
-    setText(refs.model, r.model || '—');
-    setText(refs.phase, r.phase);
+    renderPipeline(refs.pipe, row.stages, { compact: true, liveStatus: row.status });
 
-    setText(refs.event, r.last_event || 'waiting for first event');
-    setText(refs.age, r.last_event_at ? '· ' + ago(r.last_event_at) : '');
-    refs.age.classList.toggle('stale', !!r.last_event_at && Date.now() - Date.parse(r.last_event_at) > 120000);
-    setText(refs.message, r.stopping ? 'Stopping: ' + r.stopping : r.last_message);
-
-    setText(refs.turn, pad2(r.turn_count) + (maxTurns ? ' / ' + pad2(maxTurns) : ''));
-    setText(refs.runtime, fmtDuration(r.seconds_running));
-    setText(refs.tokens, fmtCompact(r.tokens.total_tokens));
-    setText(refs.cost, fmtUsd(r.cost_usd));
+    refs.fields.hidden = !r;
+    refs.act.hidden = !r;
+    refs.foot.hidden = !r;
+    refs.info.hidden = !!r;
+    if (r) {
+      setText(refs.model, r.model || '—');
+      setText(refs.phase, r.phase);
+      setText(refs.event, r.last_event || 'waiting for first event');
+      setText(refs.age, r.last_event_at ? '· ' + ago(r.last_event_at) : '');
+      refs.age.classList.toggle('stale', !!r.last_event_at && Date.now() - Date.parse(r.last_event_at) > 120000);
+      setText(refs.message, r.stopping ? 'Stopping: ' + r.stopping : r.last_message);
+      setText(refs.turn, pad2(r.turn_count) + (maxTurns ? ' / ' + pad2(maxTurns) : ''));
+      setText(refs.runtime, fmtDuration(r.seconds_running));
+      setText(refs.tokens, fmtCompact(r.tokens.total_tokens));
+      setText(refs.cost, fmtUsd(r.cost_usd));
+    } else {
+      patchChildren(refs.info, infoChildren(row));
+    }
   }
 
   /** Chip for an integration of the run (e.g. Laravel Boost): icon, use count, and the details as tooltip. */
@@ -472,16 +545,17 @@ ${BASE_JS}
     return chip;
   }
 
-  function renderAgents(state) {
+  function renderIssues(state) {
     const h = state.health;
-    const host = $('agents');
+    const host = $('issues');
+    const rows = state.issues || [];
     const live = new Set();
     const ordered = [];
-    for (const r of state.running) {
-      live.add(r.issue_id);
-      let refs = cards.get(r.issue_id);
-      if (!refs) { refs = createCard(r); cards.set(r.issue_id, refs); }
-      updateCard(refs, r, h.max_turns);
+    for (const row of rows) {
+      live.add(row.issue_id);
+      let refs = cards.get(row.issue_id);
+      if (!refs) { refs = createCard(); cards.set(row.issue_id, refs); }
+      updateCard(refs, row, h.max_turns);
       ordered.push(refs.card);
     }
     for (const [id, refs] of cards) {
@@ -496,15 +570,15 @@ ${BASE_JS}
       if (active[i] !== card) host.insertBefore(card, active[i] || null);
     });
 
-    const running = state.running.length;
+    const running = state.counts.running;
     const max = h.max_concurrent_agents;
-    setText($('running-count'), pad2(running) + ' / ' + pad2(max));
+    setText($('issues-count'), pad2(rows.length));
     const bar = el('div', null, 'slots-bar');
     for (let i = 0; i < Math.min(max, 24); i++) bar.append(el('i', null, i < running ? 'on' : ''));
     const slots = $('slots');
-    slots.replaceChildren(bar, el('span', (max - running > 0 ? max - running : 0) + ' free slot' + (max - running === 1 ? '' : 's')));
-    $('agents-empty').hidden = running > 0;
-    setText($('agents-empty-sub'),
+    slots.replaceChildren(bar, el('span', pad2(running) + ' / ' + pad2(max) + ' agents · ' + (max - running > 0 ? max - running : 0) + ' free slot' + (max - running === 1 ? '' : 's')));
+    $('issues-empty').hidden = rows.length > 0;
+    setText($('issues-empty-sub'),
       'Waiting for issues in ' + (h.active_states && h.active_states.length ? h.active_states.join(', ') : 'an active column') +
       ' · next poll within ' + Math.round(h.poll_interval_ms / 1000) + 's');
   }
@@ -607,60 +681,41 @@ ${BASE_JS}
     return bits;
   }
 
-  function renderRetries(rows) {
-    setText($('retry-count'), pad2(rows.length));
-    if (!rows.length) return emptyState('retrying', 'Clear', 'green', 'No agents waiting for retry.');
-    const list = el('ul', null, 'queue');
-    for (const r of rows) {
-      const continuation = r.kind === 'continuation';
-      const sessionLimit = r.kind === 'session_limit' && r.limit;
-      const tone = continuation ? 'cyan' : 'amber';
-      const li = el('li', null, 'qitem tone-' + tone);
-      const row = el('div', null, 'qrow');
-      const id = link(r.issue_identifier, r.issue_url); id.classList.add('id');
-      row.append(id, badge(continuation ? 'Continuation' : sessionLimit ? 'Session limit' : 'Retrying', tone, false));
-      const meta = el('div', null, 'qmeta');
-      if (sessionLimit) {
-        meta.append(...sessionLimitBits(r));
-      } else {
-        const attempt = el('span', 'attempt '); attempt.append(el('b', pad2(r.attempt)));
-        const due = el('span', 'next in '); due.append(el('b', fmtDuration(r.due_in_ms / 1000)));
-        meta.append(attempt, due);
-      }
-      meta.append(traceLink(r.issue_identifier));
-      li.append(row, meta);
-      if (sessionLimit) {
-        li.append(el('div', r.limit.text || r.error || '—', 'msg'));
-        if (r.limit.text && r.error && r.error !== r.limit.text) li.append(el('div', r.error, 'msg muted'));
-        if (r.limit.overage_disabled_reason === 'out_of_credits') {
-          li.append(el('div', 'Extra usage is off because credits are used up. Top up' + (retryAllowed ? ', then press Retry now.' : '.'), 'msg'));
-        }
-      } else {
-        li.append(el('div', r.error || (continuation ? 'Continues the session after a clean exit.' : '—'), 'msg'));
-      }
-      li.append(restartButton(r.issue_identifier, 'Retry'));
-      list.append(li);
-    }
-    patchList('retrying', list);
-  }
+  // Blocked issues (collapsed by default); the open state survives polls and reloads via localStorage.
+  const blockedDetails = $('blocked-section');
+  try { blockedDetails.open = localStorage.getItem('symphony.blockedOpen') === '1'; } catch {}
+  blockedDetails.addEventListener('toggle', () => {
+    try { localStorage.setItem('symphony.blockedOpen', blockedDetails.open ? '1' : '0'); } catch {}
+  });
 
-  function renderPaused(rows) {
-    setText($('paused-count'), pad2(rows.length));
-    if (!rows.length) return emptyState('paused', 'None', 'gray', 'No agents are currently paused.');
+  function renderBlocked(state) {
+    const rows = state.blocked || [];
+    setText($('blocked-count'), pad2(rows.length));
+    setText($('blocked-meta'), state.board_fetched_at ? 'board as of ' + fmtClock(state.board_fetched_at) : '');
+    if (!rows.length) return emptyState('blocked', 'None', 'green', 'No blocked issues on the board.');
     const list = el('ul', null, 'queue');
     for (const r of rows) {
-      const li = el('li', null, 'qitem tone-gray');
+      const li = el('li', null, 'qitem tone-red');
       const row = el('div', null, 'qrow');
       const id = link(r.issue_identifier, r.issue_url); id.classList.add('id');
-      row.append(id, badge('Paused', 'gray', false));
+      row.append(id, badge(r.state || 'Blocked', 'red', false));
+      li.append(row);
+      if (r.title) li.append(el('div', r.title, 'msg'));
       const meta = el('div', null, 'qmeta');
-      const column = el('span', 'column '); column.append(el('b', r.state));
-      const cont = el('span', 'continuations '); cont.append(el('b', r.continuations));
-      meta.append(column, cont, el('span', 'paused ' + ago(r.paused_at)), traceLink(r.issue_identifier));
-      li.append(row, meta, el('div', 'Resume: change the issue on the board (status, comment or labels)' + (retryAllowed ? ', or press Resume now.' : '.'), 'msg'), restartButton(r.issue_identifier, 'Resume'));
+      // The blocker list below already carries a "blocked by …" reason, with the blockers' states.
+      const hasBlockers = r.blocked_by && r.blocked_by.length;
+      if (!(hasBlockers && /^blocked by/.test(r.reason))) meta.append(el('span', r.reason));
+      if (r.tracked) meta.append(traceLink(r.issue_identifier));
+      if (meta.childNodes.length) li.append(meta);
+      if (hasBlockers) {
+        const blockers = el('div', null, 'qmeta');
+        blockers.append(el('span', 'blocked by'));
+        for (const b of r.blocked_by) blockers.append(el('b', (b.identifier || b.id || 'unknown') + (b.state ? ' (' + b.state + ')' : '')));
+        li.append(blockers);
+      }
       list.append(li);
     }
-    patchList('paused', list);
+    patchList('blocked', list);
   }
 
   // ------------------------------------------------------------------ activity stream
@@ -671,6 +726,7 @@ ${BASE_JS}
   let activityDirty = true;
   let previous = null;
   let previousRetries = null;
+  let previousBlocked = null;
   const detailFetchedAt = new Map();
 
   function pushActivity(at, issue, text, tone, key) {
@@ -721,8 +777,18 @@ ${BASE_JS}
         }
       }
     }
+    const blocked = new Map((state.blocked || []).map((b) => [b.issue_id, b]));
+    if (previousBlocked) {
+      for (const b of blocked.values()) {
+        if (!previousBlocked.has(b.issue_id)) pushActivity(now, b.issue_identifier, 'blocked · ' + b.reason, 'red');
+      }
+      for (const b of previousBlocked.values()) {
+        if (!blocked.has(b.issue_id)) pushActivity(now, b.issue_identifier, 'unblocked', 'green');
+      }
+    }
     previous = current;
     previousRetries = retries;
+    previousBlocked = blocked;
   }
 
   // The per-issue endpoint keeps the recent agent events with a message; fetch it when an agent reported something new.
@@ -909,19 +975,22 @@ ${BASE_JS}
     const running = state.counts.running;
     const retrying = state.counts.retrying;
     const paused = state.counts.paused ?? 0;
+    const queued = state.counts.queued ?? 0;
+    const blocked = state.counts.blocked ?? 0;
+    const waiting = retrying + paused;
     tiles('stats', [
       ['Running', pad2(running), 'active agents', { tone: running ? 'green' : 'gray', hero: true, pulse: running > 0, of: pad2(h.max_concurrent_agents) }],
-      ['Retry queue', pad2(retrying), 'waiting', { tone: retrying ? 'amber' : 'gray' }],
-      ['Paused', pad2(paused), 'agents', { tone: 'gray' }],
+      ['Queued', pad2(queued), 'ready to dispatch', { tone: queued ? 'cyan' : 'gray' }],
+      ['Waiting', pad2(waiting), retrying + ' retry · ' + paused + ' paused', { tone: waiting ? 'amber' : 'gray' }],
+      ['Blocked', pad2(blocked), 'need a human or a blocker', { tone: blocked ? 'red' : 'gray' }],
       ['Tokens', fmtCompact(t.total_tokens), 'since start', { tone: 'cyan' }],
       ['Est. cost', fmtUsd(t.cost_usd), 'since start', { tone: 'cyan' }],
       ['Agent time', fmtDuration(t.seconds_running), 'since start', { tone: 'cyan' }],
     ]);
 
     retryAllowed = !state.controls || state.controls.retry !== false;
-    renderAgents(state);
-    renderRetries(state.retrying);
-    renderPaused(state.paused ?? []);
+    renderIssues(state);
+    renderBlocked(state);
     diffSnapshots(state);
     fetchDetails(state);
     renderActivity();

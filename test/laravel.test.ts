@@ -255,6 +255,7 @@ describe('Laravel Boost preparation', () => {
     assert.match(section, /Pre-approved tools: `application-info`, .*`search-docs`\./);
     assert.match(section, /Not available in this session: `tinker`, `record-rule`\./);
     assert.match(section, /skills for this app's packages are available: `testing-best-practices`\./);
+    assert.match(section, /load that skill with the Skill tool\. Never read SKILL\.md files/);
     assert.doesNotMatch(section, /pest-testing|read-only\)|\.ai\/rules|APP_ENV/);
     assert.match(section, /## Laravel Boost guidelines \(from CLAUDE\.md\)\n\n<laravel-boost-guidelines>\n# Boost guidelines/);
   });
