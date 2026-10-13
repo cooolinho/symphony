@@ -338,6 +338,33 @@ describe('Laravel Boost preparation', () => {
     assert.match(extensions?.contextSections[0] as string, /`filament-development`/);
   });
 
+  it('detects skills although the repository gitignores them (the recommended setup)', async () => {
+    const f = fixture({
+      artisan: '',
+      'composer.json': LARAVEL_BOOST,
+      '.gitignore': 'vendor/\nboost.json\n.claude/skills/\n.mcp.json\n',
+    });
+    const full = await prepareFull(f);
+    assert.deepEqual(full.apps[0]?.setup?.skills, ['testing-best-practices']);
+    assert.deepEqual(full.apps[0]?.setup?.warnings, []);
+    const section = full.extensions?.contextSections[0] as string;
+    assert.match(section, /skills for this app's packages are available: `testing-best-practices`\./);
+    assert.equal(gitStatus(f), '');
+    // The repository ignores the skill files itself; info/exclude does not need them.
+    assert.ok(!excludeBlock(f).some((line) => line.includes('.claude/skills')));
+  });
+
+  it('keeps committed skills out of the Boost list and warns when boost.json is not committed', async () => {
+    const f = fixture({
+      artisan: '',
+      'composer.json': LARAVEL_BOOST,
+      '.claude/skills/my-own/SKILL.md': '---\nname: my-own\n---\n',
+    });
+    const full = await prepareFull(f, { env: { FAKE_BOOST_NO_SKILLS: '1', FAKE_BOOST_NO_SKILL_LIST: '1' } });
+    assert.deepEqual(full.apps[0]?.setup?.skills, []);
+    assert.ok(full.apps[0]?.setup?.warnings.some((warning) => warning.includes('tracked in git')));
+  });
+
   it('keeps existing packages entries and regenerates only when the package list changes', async () => {
     const f = fixture({ artisan: '', 'composer.json': LARAVEL_BOOST, 'composer.lock': '{}' });
     process.env.FAKE_PACKAGES = 'filament/filament';
