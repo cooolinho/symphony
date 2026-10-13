@@ -27,6 +27,8 @@ const LARAVEL_BOOST = JSON.stringify({ require: { 'laravel/framework': '^12.0' }
  * Stand-ins for php and composer: they log their arguments and write what Boost and Composer
  * would. FAKE_PHP_EXIT and FAKE_PHP_SLEEP make php fail or hang; FAKE_BOOST_NO_GUIDELINES and FAKE_BOOST_NO_SKILLS
  * make boost:install skip writing guidelines or skills (and still exit 0), FAKE_BOOST_NO_SKILL_LIST reports no skills.
+ * FAKE_COMPOSER_EXIT makes composer fail, FAKE_COMPOSER_NO_VENDOR skips writing vendor/ (a failure before the
+ * install vs. a failed repository script after it), and FAKE_COMPOSER_WRITE_LOCK writes a composer.lock.
  */
 const FAKE_PHP = `#!${process.execPath}
 const fs = require('node:fs');
@@ -66,14 +68,18 @@ process.exit(Number(process.env.FAKE_PHP_EXIT || 0));
 const FAKE_COMPOSER = `#!${process.execPath}
 const fs = require('node:fs');
 fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify(['composer', ...process.argv.slice(2)]) + '\\n');
-fs.mkdirSync('vendor/laravel/boost', { recursive: true });
-fs.mkdirSync('vendor/composer', { recursive: true });
-fs.writeFileSync('vendor/autoload.php', '<?php');
-for (const pkg of (process.env.FAKE_PACKAGES || '').split(',').filter(Boolean)) {
-  fs.mkdirSync('vendor/' + pkg + '/resources/boost/skills/filament-development', { recursive: true });
-  fs.writeFileSync('vendor/' + pkg + '/resources/boost/skills/filament-development/SKILL.md', '---\\nname: filament-development\\n---\\n');
+if (!process.env.FAKE_COMPOSER_NO_VENDOR) {
+  fs.mkdirSync('vendor/laravel/boost', { recursive: true });
+  fs.mkdirSync('vendor/composer', { recursive: true });
+  fs.writeFileSync('vendor/autoload.php', '<?php');
+  for (const pkg of (process.env.FAKE_PACKAGES || '').split(',').filter(Boolean)) {
+    fs.mkdirSync('vendor/' + pkg + '/resources/boost/skills/filament-development', { recursive: true });
+    fs.writeFileSync('vendor/' + pkg + '/resources/boost/skills/filament-development/SKILL.md', '---\\nname: filament-development\\n---\\n');
+  }
+  fs.writeFileSync('vendor/composer/installed.json', JSON.stringify({ packages: [{ name: 'laravel/boost', version: 'v2.0.0' }] }));
 }
-fs.writeFileSync('vendor/composer/installed.json', JSON.stringify({ packages: [{ name: 'laravel/boost', version: 'v2.0.0' }] }));
+if (process.env.FAKE_COMPOSER_WRITE_LOCK) fs.writeFileSync('composer.lock', '{"content-hash": "fake"}');
+process.exit(Number(process.env.FAKE_COMPOSER_EXIT || 0));
 `;
 
 interface Fixture {
@@ -569,6 +575,39 @@ describe('Laravel Boost preparation', () => {
     assert.deepEqual(off.apps.map((entry) => [entry.status, entry.reason]), [['skipped', 'laravel.boost is off']]);
     const noInstall = await prepareFull(fixture({ artisan: '', 'composer.json': LARAVEL_BOOST }), { config: { installDependencies: false } });
     assert.equal(noInstall.apps[0]?.status, 'skipped');
+  });
+
+  it('continues with a warning when composer install fails after writing vendor/', async () => {
+    // Repositories that gitignore composer.lock run their post-update-cmd scripts (e.g. boost:update,
+    // which needs the boost.json Symphony writes only later) on the first install; vendor/ is complete anyway.
+    const f = fixture({ artisan: '', 'composer.json': LARAVEL_BOOST });
+    const result = await prepareFull(f, { env: { FAKE_COMPOSER_EXIT: '1' } });
+    assert.equal(result.apps[0]?.status, 'ready');
+    assert.deepEqual(Object.keys(result.extensions?.mcpServers ?? {}), ['laravel-boost']);
+    assert.deepEqual(result.apps[0]?.setup?.warnings, [
+      'composer install exited with an error (a composer script, most likely); dependencies were installed and Boost continued',
+    ]);
+    assert.ok(f.warnings.some((line) => line.includes('continuing with Laravel Boost')));
+
+    // The warning describes this session's install only and is not repeated from state.
+    const second = await prepareFull(f);
+    assert.equal(second.apps[0]?.status, 'ready');
+    assert.deepEqual(second.apps[0]?.setup?.warnings, []);
+  });
+
+  it('still fails when composer install fails without writing vendor/', async () => {
+    const f = fixture({ artisan: '', 'composer.json': LARAVEL_BOOST });
+    const result = await prepareFull(f, { env: { FAKE_COMPOSER_EXIT: '1', FAKE_COMPOSER_NO_VENDOR: '1' } });
+    assert.equal(result.extensions, null);
+    assert.deepEqual([result.apps[0]?.status, result.apps[0]?.reason], ['failed', 'composer install failed']);
+    assert.ok(f.warnings.some((line) => line.includes('composer install failed')));
+  });
+
+  it('remembers the composer.lock the install itself created', async () => {
+    const f = fixture({ artisan: '', 'composer.json': LARAVEL_BOOST });
+    await prepareFull(f, { env: { FAKE_COMPOSER_WRITE_LOCK: '1' } });
+    await prepareFull(f);
+    assert.equal(calls(f).filter((call) => call[0] === 'composer').length, 1, 'no re-install because of the new lock file');
   });
 
   it('warns about Sail, whose guidelines contradict host PHP', async () => {
