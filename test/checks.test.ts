@@ -55,34 +55,35 @@ function write(root: string, name: string, content: string, mode?: number): void
 }
 
 /** A Laravel-looking app on a pushed feature branch, with fake php/composer and vendor/bin tools. */
-function fixture(options: { scripts?: Record<string, string>; phpstan?: boolean; vendor?: boolean } = {}): Fixture {
+function fixture(options: { scripts?: Record<string, string>; phpstan?: boolean; vendor?: boolean; appDir?: string } = {}): Fixture {
   const base = tempDir('symphony-checks-');
   const origin = path.join(base, 'origin.git');
   const seed = path.join(base, 'seed');
   const repo = path.join(base, 'repo');
   const bin = path.join(base, 'bin');
+  const app = (name: string) => (options.appDir === undefined ? name : `${options.appDir}/${name}`);
   git(base, 'init', '-q', '--bare', '-b', 'main', origin);
   fs.mkdirSync(seed);
   git(seed, 'init', '-q', '-b', 'main');
   write(seed, '.gitignore', 'vendor/\n');
-  write(seed, 'artisan', '<?php');
-  write(seed, 'app/Old.php', '<?php');
-  write(seed, 'composer.json', JSON.stringify({ scripts: options.scripts ?? {} }));
-  if (options.phpstan) write(seed, 'phpstan.neon', 'parameters: {}');
+  write(seed, app('artisan'), '<?php');
+  write(seed, app('app/Old.php'), '<?php');
+  write(seed, app('composer.json'), JSON.stringify({ scripts: options.scripts ?? {} }));
+  if (options.phpstan) write(seed, app('phpstan.neon'), 'parameters: {}');
   git(seed, 'add', '-A');
   git(seed, 'commit', '-q', '-m', 'init');
   git(seed, 'push', '-q', origin, 'main');
   git(base, 'clone', '-q', origin, repo);
   git(repo, 'checkout', '-q', '-b', 'feature');
-  write(repo, 'app/New.php', '<?php');
+  write(repo, app('app/New.php'), '<?php');
   git(repo, 'add', '-A');
   git(repo, 'commit', '-q', '-m', 'feature');
   git(repo, 'push', '-q', '-u', 'origin', 'feature');
 
   if (options.vendor !== false) {
-    write(repo, 'vendor/autoload.php', '<?php');
-    write(repo, 'vendor/bin/pint', FAKE_TOOL('pint'), 0o755);
-    write(repo, 'vendor/bin/phpstan', FAKE_TOOL('phpstan'), 0o755);
+    write(repo, app('vendor/autoload.php'), '<?php');
+    write(repo, app('vendor/bin/pint'), FAKE_TOOL('pint'), 0o755);
+    write(repo, app('vendor/bin/phpstan'), FAKE_TOOL('phpstan'), 0o755);
   }
   write(base, 'bin/php', FAKE_PHP, 0o755);
   write(base, 'bin/composer', FAKE_COMPOSER, 0o755);
@@ -131,6 +132,38 @@ describe('checks/laravel.sh', () => {
     assert.equal(result.status, 2);
     const empty = tempDir('symphony-checks-empty-');
     assert.match(run(f, { SYMPHONY_LARAVEL_APP_PATH: empty }).out, /no Laravel app/);
+  });
+
+  it('finds a single app in a first-level subdirectory', () => {
+    const f = fixture({ appDir: 'laravel' });
+    const result = run(f);
+    assert.equal(result.status, 0, result.out);
+    const names = calls(f).map((c) => c.join(' '));
+    assert.ok(names.includes('php -l app/New.php'), 'changed files are relative to the app');
+    assert.ok(names.includes('php artisan test'));
+  });
+
+  it('exits 2 when several apps are found and none is configured', () => {
+    const f = fixture({ appDir: 'laravel' });
+    write(f.repo, 'api/artisan', '<?php');
+    write(f.repo, 'api/composer.json', '{}');
+    const result = run(f);
+    assert.equal(result.status, 2);
+    assert.match(result.out, /several Laravel apps/);
+    assert.match(result.out, /SYMPHONY_LARAVEL_APP_PATH/);
+    assert.equal(run(f, { SYMPHONY_LARAVEL_APP_PATH: path.join(f.repo, 'laravel') }).status, 1, 'configured app wins; api/ is untracked');
+  });
+
+  it('never treats vendor/ or node_modules/ as the app', () => {
+    const f = fixture();
+    fs.rmSync(path.join(f.repo, 'artisan'));
+    write(f.repo, 'vendor/artisan', '<?php');
+    write(f.repo, 'vendor/composer.json', '{}');
+    write(f.repo, 'node_modules/artisan', '<?php');
+    write(f.repo, 'node_modules/composer.json', '{}');
+    const result = run(f);
+    assert.equal(result.status, 0);
+    assert.match(result.out, /no Laravel app; nothing to check/);
   });
 
   it('exits 1 on a dirty tree and lists the changes', () => {

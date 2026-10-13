@@ -75,7 +75,8 @@ The script runs these steps in order and stops at the first failure:
 
 Exit code 1 means the code must be fixed (the output goes to the agent); anything else, such as a missing `vendor/` or
 `php`, is an environment problem. Enable the script for a column in `WORKFLOW.md`
-([`checks`](configuration.md#checks)); `SYMPHONY_LARAVEL_APP_PATH` points it at an app in a subdirectory.
+([`checks`](configuration.md#checks)). An app in a single first-level subdirectory is found automatically;
+`SYMPHONY_LARAVEL_APP_PATH` picks the app when a repository holds several.
 
 ## `.env.example`
 
