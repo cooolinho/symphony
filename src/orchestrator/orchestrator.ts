@@ -36,6 +36,7 @@ import {
 import { normalizeStateName } from '../workflow/config.ts';
 import type { CheckCache, CheckRecord } from './guard.ts';
 import { IssueArchive, type ArchivedIssue } from './issue-archive.ts';
+import { blockedBucketColumns, derivePipeline, type PipelineStage, type StageSession } from './pipeline.ts';
 import { copyToolUsage, countToolUse, emptyToolUsage, integrationJson, integrationUsage, type ToolUsage } from './tool-usage.ts';
 import { runAgentAttempt, type RunPhase, type WorkerOutcome } from './worker.ts';
 
@@ -238,6 +239,51 @@ interface SessionInfo {
   transcript: string | null;
 }
 
+/** Board fields of an issue kept while it is claimed, so retrying and paused issues keep their context. */
+interface IssueMeta {
+  state: string;
+  /** First non-empty description line only, enough for `parseIssueCommand` via `roleFor`. */
+  description: string | null;
+  labels: string[];
+  priority: number | null;
+  blockedBy: Issue['blocked_by'];
+  dispatchNote: string | null;
+  parent: unknown;
+  subIssues: unknown[];
+}
+
+/** First non-empty line of a description; what command detection and the pipeline need. */
+function firstLine(text: string | null): string | null {
+  return text?.split(/\r?\n/).find((line) => line.trim() !== '') ?? null;
+}
+
+function issueMeta(issue: Issue): IssueMeta {
+  return {
+    state: issue.state,
+    description: firstLine(issue.description),
+    labels: issue.labels,
+    priority: issue.priority,
+    blockedBy: issue.blocked_by,
+    dispatchNote: typeof issue.native_ref?.dispatch_note === 'string' ? issue.native_ref.dispatch_note : null,
+    parent: issue.native_ref?.parent ?? null,
+    subIssues: Array.isArray(issue.native_ref?.sub_issues) ? issue.native_ref.sub_issues : [],
+  };
+}
+
+/** `issue` object of GET /api/v1/<identifier>. */
+function metaJson(meta: IssueMeta | null) {
+  if (meta === null) return null;
+  return {
+    state: meta.state,
+    labels: meta.labels,
+    priority: meta.priority,
+    blocked_by: meta.blockedBy,
+    dispatch_note: meta.dispatchNote,
+    parent: meta.parent,
+    sub_issues: meta.subIssues,
+  };
+}
+
 /** Per-issue debugging context kept while the issue is claimed. */
 interface IssueRecord {
   identifier: string;
@@ -262,6 +308,8 @@ interface IssueRecord {
   checkCache: CheckCache;
   /** The latest entry check of any run for this issue. */
   lastCheck: CheckRecord | null;
+  /** Board fields of the issue at the last dispatch or reconcile; null before the first dispatch. */
+  meta: IssueMeta | null;
 }
 
 interface RunTrace {
@@ -465,6 +513,8 @@ export class Orchestrator {
   #lastTrackerError: { at: Date; message: string } | null = null;
   #adapterCache: { version: number; adapter: TrackerAdapter } | null = null;
   #statusOptionsCache: { version: number; options: string[] } | null = null;
+  /** The last successful board fetch: active-column candidates plus blocked-column issues, for the dashboard. */
+  #board: { fetchedAt: Date; candidates: Issue[]; parked: Issue[] } | null = null;
   #listeners = new Set<() => void>();
 
   constructor(deps: OrchestratorDeps) {
@@ -629,14 +679,23 @@ export class Orchestrator {
       if (gate !== null) return;
 
       const adapter = this.#adapterFor(workflow);
-      let candidates: Issue[];
+      let fetched: Issue[];
+      const blockedStates = this.#blockedStates(config);
       try {
-        candidates = await adapter.fetchIssuesByStates(config.tracker.activeStates);
+        fetched = await adapter.fetchIssuesByStates([...config.tracker.activeStates, ...blockedStates]);
         this.#lastTrackerError = null;
       } catch (error) {
         this.#trackerFailure('candidate fetch failed; skipping dispatch this tick', error);
         return;
       }
+      const candidates = fetched.filter((issue) => isActiveState(issue.state, config.tracker));
+      // Only the first description line is kept: enough for command detection, without large texts in memory.
+      const strip = (issue: Issue): Issue => ({ ...issue, description: firstLine(issue.description) });
+      this.#board = {
+        fetchedAt: this.#clock.now(),
+        candidates: candidates.map(strip),
+        parked: fetched.filter((issue) => !isActiveState(issue.state, config.tracker)).map(strip),
+      };
 
       for (const issue of sortForDispatch(candidates)) {
         if (this.#stopping || this.#globalSlots(config) <= 0) break;
@@ -683,6 +742,11 @@ export class Orchestrator {
     } catch (error) {
       this.#trackerFailure('board status options fetch failed; skipping the column check', error);
     }
+  }
+
+  /** Columns fetched alongside the active states so the dashboard can list blocked issues. */
+  #blockedStates(config: ServiceConfig): string[] {
+    return blockedBucketColumns(config.roles, config.tracker.activeStates, config.tracker.terminalStates);
   }
 
   /** One adapter per workflow version, so a reload never changes an in-flight session's tracker. */
@@ -831,6 +895,7 @@ export class Orchestrator {
     record.runs++;
     if (continuation) record.continuations++;
     record.repo = entry.repo;
+    record.meta = issueMeta(issue);
     // A "Model: <model>" label picks the model for this run, else the role's claude.model, else claude.model.
     const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model);
     // Likewise an "Effort: <level>" label picks the effort, else the role's claude.effort, else claude.effort.
@@ -1436,8 +1501,11 @@ export class Orchestrator {
 
   /** The issue's debugging context in the archive's JSON shape. */
   #archivedOf(issueId: string, record: IssueRecord, released: boolean): ArchivedIssue {
+    const state = record.meta?.state ?? record.sessions.at(-1)?.state ?? '';
     return {
       version: 1,
+      issue_meta: metaJson(record.meta),
+      pipeline: this.#pipelineFor({ state, description: record.meta?.description ?? null }, issueId, this.#deps.workflow.current),
       issue_id: issueId,
       issue_identifier: record.identifier,
       issue_url: record.url,
@@ -1554,6 +1622,10 @@ export class Orchestrator {
       return;
     }
     const byId = new Map(refreshed.map((issue) => [issue.id, issue]));
+    for (const [id, issue] of byId) {
+      const record = this.#records.get(id);
+      if (record !== undefined) record.meta = issueMeta(issue);
+    }
     for (const id of ids) {
       const entry = this.#running.get(id);
       if (entry === undefined || entry.stop !== null) continue;
@@ -1794,6 +1866,7 @@ export class Orchestrator {
         lastRun: null,
         checkCache: new Set(),
         lastCheck: null,
+        meta: null,
       };
       this.#records.set(issue.id, record);
     }
@@ -1892,6 +1965,138 @@ export class Orchestrator {
     };
   }
 
+  /** The issue's stations across the board, with the sessions of its claim attributed to them. */
+  #pipelineFor(issue: { state: string; description: string | null }, issueId: string, workflow: EffectiveWorkflow): PipelineStage[] {
+    const config = workflow.config;
+    const sessions: StageSession[] = (this.#records.get(issueId)?.sessions ?? []).map((session) => this.#sessionJson(session));
+    return derivePipeline({
+      issue,
+      roles: config.roles,
+      activeStates: config.tracker.activeStates,
+      terminalStates: config.tracker.terminalStates,
+      boardColumns: this.#statusOptionsCache?.version === workflow.version ? this.#statusOptionsCache.options : null,
+      sessions,
+    });
+  }
+
+  /** One `issues[]` row of GET /api/v1/state: an issue in flight with its pipeline and live status. */
+  #issueRow(
+    status: 'running' | 'retrying' | 'paused' | 'queued',
+    issue: { id: string; identifier: string; url: string | null; title: string | null; state: string; description: string | null },
+    workflow: EffectiveWorkflow,
+    now: number,
+    rows: { running?: RunningEntry; retry?: RetryEntry; paused?: PausedEntry; dispatchNote?: string | null },
+  ) {
+    const record = this.#records.get(issue.id);
+    const meta = record?.meta ?? null;
+    return {
+      issue_id: issue.id,
+      issue_identifier: issue.identifier,
+      issue_url: issue.url,
+      title: issue.title ?? record?.title ?? null,
+      repo: rows.running?.repo ?? record?.repo ?? null,
+      state: issue.state,
+      status,
+      labels: meta?.labels ?? [],
+      priority: meta?.priority ?? null,
+      /** True when the orchestrator holds debugging context, so /agent?id=… has something to show. */
+      tracked: record !== undefined,
+      stages: this.#pipelineFor({ state: issue.state, description: issue.description }, issue.id, workflow),
+      running: rows.running === undefined ? null : this.#runningRow(rows.running, now),
+      retry: rows.retry === undefined ? null : this.#retryRow(rows.retry, now),
+      paused: rows.paused === undefined ? null : this.#pausedRow(rows.paused),
+      dispatch_note: rows.dispatchNote ?? null,
+    };
+  }
+
+  /** `issues[]` and `blocked[]` of GET /api/v1/state, built from the live claims and the last board fetch. */
+  #issueRows(workflow: EffectiveWorkflow, now: number) {
+    const config = workflow.config;
+    const byId = new Map((this.#board?.candidates ?? []).map((issue) => [issue.id, issue]));
+    const issues = [];
+    const seen = new Set<string>();
+    for (const entry of this.#running.values()) {
+      seen.add(entry.issueId);
+      const { issue } = entry;
+      issues.push(
+        this.#issueRow('running', { ...issue, description: firstLine(issue.description) }, workflow, now, { running: entry }),
+      );
+    }
+    for (const retry of [...this.#retries.values()].sort((a, b) => a.dueAtMs - b.dueAtMs)) {
+      if (seen.has(retry.issueId)) continue;
+      seen.add(retry.issueId);
+      const meta = this.#records.get(retry.issueId)?.meta;
+      const board = byId.get(retry.issueId);
+      issues.push(
+        this.#issueRow(
+          'retrying',
+          {
+            id: retry.issueId,
+            identifier: retry.identifier,
+            url: retry.url,
+            title: board?.title ?? null,
+            state: board?.state ?? meta?.state ?? '',
+            description: board?.description ?? meta?.description ?? null,
+          },
+          workflow,
+          now,
+          { retry },
+        ),
+      );
+    }
+    for (const paused of this.#paused.values()) {
+      if (seen.has(paused.issueId)) continue;
+      seen.add(paused.issueId);
+      const meta = this.#records.get(paused.issueId)?.meta;
+      issues.push(
+        this.#issueRow(
+          'paused',
+          {
+            id: paused.issueId,
+            identifier: paused.identifier,
+            url: paused.url,
+            title: byId.get(paused.issueId)?.title ?? null,
+            state: paused.state,
+            description: meta?.description ?? null,
+          },
+          workflow,
+          now,
+          { paused },
+        ),
+      );
+    }
+    for (const issue of sortForDispatch(this.#board?.candidates ?? [])) {
+      if (seen.has(issue.id) || this.#claimed.has(issue.id) || this.#cleanups.has(issue.id)) continue;
+      if (!hasRequiredFields(issue) || !isRoutable(issue, config.tracker)) continue;
+      seen.add(issue.id);
+      const note = typeof issue.native_ref?.dispatch_note === 'string' ? issue.native_ref.dispatch_note : null;
+      issues.push(this.#issueRow('queued', issue, workflow, now, { dispatchNote: note }));
+    }
+
+    const blocked = [];
+    const blockedRow = (issue: Issue, reason: string) => ({
+      issue_id: issue.id,
+      issue_identifier: issue.identifier,
+      issue_url: issue.url,
+      title: issue.title,
+      repo: this.#records.get(issue.id)?.repo ?? null,
+      state: issue.state,
+      reason,
+      blocked_by: issue.blocked_by,
+      tracked: this.#records.has(issue.id),
+    });
+    for (const issue of this.#board?.parked ?? []) {
+      if (seen.has(issue.id)) continue;
+      blocked.push(blockedRow(issue, `in column "${issue.state}"`));
+    }
+    for (const issue of this.#board?.candidates ?? []) {
+      if (seen.has(issue.id) || issue.dispatchable) continue;
+      const note = typeof issue.native_ref?.dispatch_note === 'string' ? issue.native_ref.dispatch_note : null;
+      blocked.push(blockedRow(issue, note ?? 'not dispatchable'));
+    }
+    return { issues, blocked };
+  }
+
   /** Runtime snapshot for GET /api/v1/state (spec 13.3). */
   snapshot() {
     const now = this.#clock.monotonicMs();
@@ -1900,9 +2105,28 @@ export class Orchestrator {
     let activeSeconds = 0;
     for (const entry of this.#running.values()) activeSeconds += (now - entry.startedAtMs) / 1000;
     const gate = this.#dispatchGate();
+    const { issues, blocked } = this.#issueRows(workflow, now);
     return {
       generated_at: this.#clock.now().toISOString(),
-      counts: { running: this.#running.size, retrying: this.#retries.size, paused: this.#paused.size, claimed: this.#claimed.size },
+      counts: {
+        running: this.#running.size,
+        retrying: this.#retries.size,
+        paused: this.#paused.size,
+        claimed: this.#claimed.size,
+        queued: issues.filter((issue) => issue.status === 'queued').length,
+        blocked: blocked.length,
+      },
+      issues,
+      blocked,
+      board_fetched_at: this.#board?.fetchedAt.toISOString() ?? null,
+      pipeline_config: {
+        board_columns: this.#statusOptionsCache?.version === workflow.version ? this.#statusOptionsCache.options : null,
+        roles:
+          config.roles === null
+            ? null
+            : config.roles.map((role) => ({ name: role.name, states: role.states, read_only: role.readOnly, commands: role.commands })),
+        blocked_states: this.#blockedStates(config),
+      },
       running: [...this.#running.values()].map((entry) => this.#runningRow(entry, now)),
       retrying: [...this.#retries.values()].sort((a, b) => a.dueAtMs - b.dueAtMs).map((retry) => this.#retryRow(retry, now)),
       paused: [...this.#paused.values()].map((paused) => this.#pausedRow(paused)),
@@ -1970,6 +2194,8 @@ export class Orchestrator {
     const record = this.#records.get(issueId);
     const identifier = entry?.identifier ?? retry?.identifier ?? record?.identifier ?? key;
     const pricing = this.#deps.pricing?.current();
+    const meta = entry !== undefined ? issueMeta(entry.issue) : (record?.meta ?? null);
+    const state = entry?.issue.state ?? paused?.state ?? meta?.state ?? record?.sessions.at(-1)?.state ?? '';
     return {
       issue_identifier: identifier,
       issue_id: issueId,
@@ -1979,6 +2205,8 @@ export class Orchestrator {
       status:
         entry !== undefined ? (entry.stop !== null ? 'stopping' : 'running') : retry !== undefined ? 'retrying' : paused !== undefined ? 'paused' : 'claimed',
       role: entry?.role ?? null,
+      issue: metaJson(meta),
+      pipeline: this.#pipelineFor({ state, description: meta?.description ?? null }, issueId, this.#deps.workflow.current),
       workspace: { path: entry?.workspacePath ?? record?.workspacePath ?? null },
       attempts: {
         runs: record?.runs ?? 0,
@@ -2029,6 +2257,8 @@ export class Orchestrator {
       repo: archived.repo,
       status: 'finished',
       role: lastSession?.role ?? null,
+      issue: archived.issue_meta ?? null,
+      pipeline: archived.pipeline ?? [],
       workspace: { path: archived.workspace_path },
       attempts: {
         runs: archived.runs,
