@@ -91,7 +91,7 @@ To go back to the old behavior, remove `roles` and `checks`: then every issue ru
 | Cancel and clean up | Move the issue to `Done` |
 | Pause all new starts | Set `agent.max_concurrent_agents: 0` in the `WORKFLOW.md`. Running agents keep working. |
 | Change the prompt or settings | Edit `WORKFLOW.md`. This applies right away to new sessions, without a restart. |
-| Restart a waiting or paused worker right away | In the dashboard (queue, paused list or agent page) click **Retry now** or **Resume now**, or `curl -X POST http://127.0.0.1:4000/api/v1/<identifier>/retry` (the identifier URL-encoded, e.g. `owner%2Frepository%2312`). This is the way out of a session limit when you have topped up credits and do not want to wait for the reset. On a non-loopback address (`SYMPHONY_HOST`) it only works with `SYMPHONY_ALLOW_REMOTE_CONTROL=true`; with `curl` through the proxy, pass `-H 'Origin: https://<domain>'`, see [Dashboard and API](#dashboard-and-api). |
+| Restart a waiting or paused worker right away | On the issue card (or the agent page) click **Retry now** or **Resume now**, or `curl -X POST http://127.0.0.1:4000/api/v1/<identifier>/retry` (the identifier URL-encoded, e.g. `owner%2Frepository%2312`). This is the way out of a session limit when you have topped up credits and do not want to wait for the reset. On a non-loopback address (`SYMPHONY_HOST`) it only works with `SYMPHONY_ALLOW_REMOTE_CONTROL=true`; with `curl` through the proxy, pass `-H 'Origin: https://<domain>'`, see [Dashboard and API](#dashboard-and-api). |
 | Poll now instead of waiting 30 s | In the dashboard click **Poll now**, or `curl -X POST http://127.0.0.1:4000/api/v1/refresh` |
 
 If the `WORKFLOW.md` is invalid after a change, Symphony keeps running with the last valid version. It only starts
@@ -101,7 +101,7 @@ new agents again once the error is fixed. The message is in the log and in the d
 
 If a run fails, Symphony tries again. Reasons can be a failed hook, an agent error, a timeout or a stalled session
 (10 minutes without activity). The wait doubles each time: 10 s, 20 s, 40 s and so on, at most 10 minutes
-(`agent.max_retry_backoff_ms`). The dashboard shows the queue with the reason and the next attempt. On the next
+(`agent.max_retry_backoff_ms`). The dashboard shows the issue card as *Retrying*, with the reason and the next attempt. On the next
 attempt the agent knows from `attempt` that there is earlier work in the workspace. Symphony handles a reached
 session limit separately, see [Session limit](#session-limit).
 
@@ -123,7 +123,7 @@ When your Claude subscription hits its usage limit (message `You've hit your ses
 
 **Where you see it:**
 
-- In the dashboard in the retry queue: badge *Session limit*, window, reset time, `retry N of M` or
+- In the dashboard on the issue card: badge *Session limit*, window, reset time, `retry N of M` or
   *waiting for reset*, plus the original message. While waiting, the issue is not listed under *Paused*.
 - On the agent page (`/agent?id=<identifier>`) as the notice *Session limit reached* with window, reset and retries.
   The run appears as `run_finished` with the result `session_limit` and as the event `session_limit_wait`.
@@ -423,7 +423,7 @@ does not use sessions endlessly, `SYMPHONY_MAX_CONTINUATIONS` limits these conti
 sessions: the first one and six continuations. If it is still active after that, it is **paused**:
 
 - It stays reserved for Symphony, but no agent starts for it anymore. The log shows the warning `issue paused`, and
-  the dashboard lists it under **Paused**.
+  the dashboard shows the issue card as *Paused*.
 - It continues by itself as soon as something changes on the board: a comment from you (e.g. a hint for the agent),
   a changed label, an edited description or another column. Then a fresh session starts that reads your comment.
 - If you move the card to a non-active column, the pause is lifted without starting anything.
@@ -469,7 +469,7 @@ label applies to that issue:
   the new model. This way you can retry a stuck issue with `Model: opus`, for example.
 - Verification: `npm run dry-run` shows `↳ role …, model …` per issue (`default` without roles) and, with a label, `↳ model … (label "…")`. At start, the model is in the log line
   `dispatching issue` (`model=…`, with a label also `model_label=…`) and in the repository log at `run_started`.
-  The dashboard shows the model Claude Code actually uses in the *Model* column.
+  The dashboard shows the model Claude Code actually uses in the card’s *Model* field.
 - In the prompt, the model labels are left out of the agent's label list. They do not matter for its work.
 - You choose the thinking effort the same way, see [Choosing the effort per issue](#choosing-the-effort-per-issue).
 - Do not confuse this with `claude.fallback_model` in the `WORKFLOW.md`: that is a fallback model in case the model
@@ -557,22 +557,30 @@ described in [docs/e2e.md](e2e.md).
 ## Dashboard and API
 
 The dashboard only runs if `SYMPHONY_PORT` is set or you call `npm start -- --port 4000`. It listens on the address
-from `SYMPHONY_HOST`, by default only on `127.0.0.1`. The header shows system status, workflow version, poll interval and last poll. Every running agent
-appears as a card with status, issue, repository, column, role, model, phase, last activity, turns, run time, tokens
-and estimated cost. If the agent works on a Laravel project, the card shows the **Laravel Boost icon**: in color if
-Boost is ready for the session, with the number of Boost calls so far (MCP tools and skills); gray with ✕ if Boost is
-missing or could not be prepared. The tooltip names status, reason and the tools and skills used. Below follow an
-activity stream (changes between polls, the agents' latest events and entries from the repository logs), the retry
-queue, paused issues and problems such as configuration or GitHub errors. The **Logs** button opens the log entries
-in a sidebar with filters by repository, severity and text; from there (or by middle-clicking the button) a link
-leads to the full [logs page](#logs-and-statistics).
+from `SYMPHONY_HOST`, by default only on `127.0.0.1`. The header shows system status, workflow version, poll interval
+and last poll. **Issues in flight** shows one card per issue in an active column — running, retrying, paused or
+queued (waiting for a free slot or the next dispatch). Each card carries a **pipeline strip**: every station the
+issue passes on its way across the board (the agent roles from the workflow, hand-off columns such as *In review*,
+and *Done*), with finished stations checked in green, the current one pulsing in the card's status color and the
+connector into it animated, and later ones dimmed. Hovering a station lists its sessions (outcome, model, start
+time). Running cards additionally show model, phase, last activity, turns, run time, tokens and estimated cost;
+retrying and paused cards show the reason, the countdown and the **Retry now** / **Resume now** button. If the agent
+works on a Laravel project, the card shows the **Laravel Boost icon**: in color if Boost is ready for the session,
+with the number of Boost calls so far (MCP tools and skills); gray with ✕ if Boost is missing or could not be
+prepared. The tooltip names status, reason and the tools and skills used. Below follow an activity stream (changes
+between polls, the agents' latest events and entries from the repository logs) and a collapsed **Blocked** panel:
+issues in the shared blocked column and issues held back by open *blocked by* dependencies, each with the reason and
+its blockers; the panel remembers whether you opened it. Problems such as configuration or GitHub errors appear at
+the top. The **Logs** button opens the log entries in a sidebar with filters by repository, severity and text; from
+there (or by middle-clicking the button) a link leads to the full [logs page](#logs-and-statistics).
 
 ### Agent detail view (execution trace)
 
-Clicking an agent card (or *trace →* in the queue and the paused list) opens `/agent?id=<identifier>`, an agent's
-run as an execution trace. At the top are state (Running, Retrying, Paused, Completed, Failed …), issue, repository,
-role, model, phase, run time, turn, tokens and cost. Errors and retries appear as a banner with the reason, the
-failed tool and the next attempt; *View details* jumps to the spot in the timeline.
+Clicking an issue card opens `/agent?id=<identifier>`, the issue's run as an execution trace. At the top are state
+(Running, Retrying, Paused, Completed, Failed …), issue, repository, role, model, phase, run time, turn, tokens and
+cost. Below the header, the **Pipeline** section shows the same topology as the dashboard card in full size, plus
+one row per agent station with its runs (count, last outcome, model, effort, times). Errors and retries appear as a
+banner with the reason, the failed tool and the next attempt; *View details* jumps to the spot in the timeline.
 
 The **timeline** shows all sessions of the issue since the claim in chronological order: lifecycle (session started,
 finished, retry scheduled, paused), phase changes, prompts, model calls (model, tokens, estimated cost, time since
@@ -612,8 +620,8 @@ Where the data comes from and where the limits are:
 | `GET /api/v1/history/analytics?from=&to=&repo=&model=&effort=&tz=` | server-side aggregated analytics for a time range (`from` inclusive, `to` exclusive, ISO timestamps, both optional): metrics with previous period, time series, models, efforts, repositories, issues, results, run times, tools and integrations (`tools`), heatmap, top runs, anomalies. `tz` (IANA zone) determines buckets, weekdays and hours |
 | `GET /api/v1/history/entries?from=&to=&repo=&issue=&event=&result=&order=desc&limit=200` | Log entries of a time range, filtered and sorted (at most 1,000) |
 | `GET /api/v1/history/raw?repo=owner/name` | a repository's `.log` file as text |
-| `GET /api/v1/state` | Overall state as JSON: running agents (with `role`), queue (`retrying[]` with `kind` and, for session limits, `limit`), totals, health, `controls.retry` (whether restarting is allowed) |
-| `GET /api/v1/<identifier>` | Details of an issue: title, role, workspace, attempts, sessions (`sessions`, each with `model` and `effort`), tokens and cost per model (`usage_by_model`), latest events, last error, last entry check (`last_check`), `controls.retry`. For an issue the orchestrator released, the archived details with `status: "finished"` and `archived` (`archived_at`, `released`); `404` only when nothing is known about the issue |
+| `GET /api/v1/state` | Overall state as JSON: issues in flight (`issues[]` with `status` running/retrying/paused/queued and the pipeline `stages[]`), blocked issues (`blocked[]` with the reason and `blocked_by`), `pipeline_config` (board columns, roles, blocked columns), running agents (`running[]` with `role`), queue (`retrying[]` with `kind` and, for session limits, `limit`), totals, health, `controls.retry` (whether restarting is allowed) |
+| `GET /api/v1/<identifier>` | Details of an issue: title, role, board fields (`issue`: column, labels, priority, parent, sub-issues, `blocked_by`, `dispatch_note`), the pipeline stations (`pipeline`), workspace, attempts, sessions (`sessions`, each with `model` and `effort`), tokens and cost per model (`usage_by_model`), latest events, last error, last entry check (`last_check`), `controls.retry`. For an issue the orchestrator released, the archived details with `status: "finished"` and `archived` (`archived_at`, `released`); `404` only when nothing is known about the issue |
 | `GET /api/v1/<identifier>/timeline?after=<seq>` | Timeline of the issue (live or archived): lifecycle, phase changes and agent events with a running `seq`; `after` returns only newer ones |
 | `GET /api/v1/<identifier>/transcript?run=<run>&from=<offset>` | Transcript of a session (without `run` the latest; live or archived), prepared as prompts, model calls, tool results; from byte offset `from`, continue with `next_offset`. With `&format=raw` the JSONL file |
 | `POST /api/v1/refresh` | poll and reconcile now |
