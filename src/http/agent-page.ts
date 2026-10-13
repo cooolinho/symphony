@@ -1154,6 +1154,9 @@ ${BASE_JS}
     }
     if (ready && guided) text += ' Its guidelines were part of the agent\\'s context.';
     nodes.push(el('p', text, 'int-text'));
+    for (const name of x.mcp_unavailable || []) {
+      nodes.push(el('div', '⚠ The MCP server ' + name + ' did not connect ' + scope + '; its tools were unavailable to the agent.', 'int-warn'));
+    }
 
     if (u.calls) {
       nodes.push(el('div', 'Used', 'int-sub'));

@@ -270,6 +270,7 @@ describe('workspace integrations', () => {
       status: 'ready',
       parts: [{ name: '(repository root)', status: 'ready', reason: null, versions: 'Laravel v13.1.0', guidelines: 'CLAUDE.md (loaded by Claude Code)', skills: ['pest-testing', 'livewire-development'], mcp_server: 'laravel-boost', tools: ['search-docs'], warnings: [] }],
       mcp_servers: ['laravel-boost'],
+      mcp_unavailable: [],
       skills: ['livewire-development', 'pest-testing'],
       skills_loaded: ['pest-testing'],
       usage: { calls: 3, tool_calls: { 'search-docs': 2 }, skill_calls: { 'pest-testing': 1 } },

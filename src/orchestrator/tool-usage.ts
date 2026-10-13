@@ -58,9 +58,10 @@ export function integrationUsage(report: IntegrationReport, usage: ToolUsage): I
 
 /**
  * An integration report with its usage in the run, for the API (GET /api/v1/state, /api/v1/<identifier>).
- * `skills_loaded` lists the integration's skills Claude Code reported at session start (null before that).
+ * `skills_loaded` lists the integration's skills Claude Code reported at session start (null before that);
+ * `mcp_unavailable` its MCP servers that did not connect, although the preparation succeeded.
  */
-export function integrationJson(report: IntegrationReport, usage: ToolUsage, sessionSkills: string[] | null) {
+export function integrationJson(report: IntegrationReport, usage: ToolUsage, sessionSkills: string[] | null, mcpUnavailable: string[] = []) {
   const used = integrationUsage(report, usage);
   return {
     id: report.id,
@@ -78,6 +79,7 @@ export function integrationJson(report: IntegrationReport, usage: ToolUsage, ses
       warnings: part.warnings,
     })),
     mcp_servers: report.mcpServers,
+    mcp_unavailable: report.mcpServers.filter((server) => mcpUnavailable.includes(server)),
     skills: report.skills,
     skills_loaded: sessionSkills === null ? null : report.skills.filter((name) => sessionSkills.some((loaded) => skillMatches(loaded, name))),
     usage: { calls: used.calls, tool_calls: used.tools, skill_calls: used.skills },
