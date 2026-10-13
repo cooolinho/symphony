@@ -458,6 +458,33 @@ describe('Laravel Boost preparation', () => {
     assert.match(line ?? '', /laravel\/framework=v13\.1\.0 laravel\/boost=v2\.0\.1.*boost=failed/);
   });
 
+  it('warns when repository instructions route commands through Docker or Sail', async () => {
+    const f = fixture({
+      artisan: '',
+      'composer.json': LARAVEL_BOOST,
+      'CLAUDE.md': '# App\n\nRun tests with `docker exec --user sail app php artisan test`.\n',
+    });
+    const logged: string[] = [];
+    const sink: LogSink = { name: 'memory', write: (line) => logged.push(line) };
+    const result = await laravelIntegration.prepare(laravelConfig(f), {
+      workspacePath: f.repo,
+      env: { ...process.env, FAKE_LOG: f.log },
+      logger: Logger.create({ sinks: [sink], level: 'debug' }),
+      signal: new AbortController().signal,
+    });
+    assert.ok(result?.contextSections.some((section) => section.includes('This workspace has no Docker')));
+    assert.ok(logged.some((line) => line.includes('route commands through Docker')));
+
+    const clean = fixture({ artisan: '', 'composer.json': LARAVEL_BOOST, 'CLAUDE.md': '# App\n\nRun `php artisan test`.\n' });
+    const none = await laravelIntegration.prepare(laravelConfig(clean), {
+      workspacePath: clean.repo,
+      env: { ...process.env, FAKE_LOG: clean.log },
+      logger: Logger.silent(),
+      signal: new AbortController().signal,
+    });
+    assert.ok(!none?.contextSections.some((section) => section.includes('no Docker')));
+  });
+
   it('reports what the session gets from Boost per app for the dashboard', async () => {
     const lock = JSON.stringify({ packages: [{ name: 'laravel/framework', version: 'v13.1.0' }], 'packages-dev': [{ name: 'laravel/boost', version: 'v2.0.1' }] });
     const f = fixture({ artisan: '', 'composer.json': LARAVEL_BOOST, 'composer.lock': lock, 'CLAUDE.md': '# Team notes\n', 'docs/artisan': '', 'docs/composer.json': LARAVEL });

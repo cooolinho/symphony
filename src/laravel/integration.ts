@@ -1,4 +1,7 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
+import type { Logger } from '../log.ts';
 import { errorMessage } from '../util/errors.ts';
 import { resolveConfigPath } from '../util/paths.ts';
 import { Reader } from '../workflow/reader.ts';
@@ -84,6 +87,7 @@ export const laravelIntegration: WorkspaceIntegration<LaravelConfig> = {
     const result: SessionExtensions = extensions ?? { mcpServers: {}, contextSections: [], additionalDirectories: [], env: {} };
     // Boost off is the user's choice, not a failure worth a prompt note.
     if (config.boost !== 'off') result.contextSections.push(...apps.flatMap(unavailableNote));
+    result.contextSections.push(...(await dockerInstructionNotes(ctx.workspacePath, apps, ctx.logger)));
     result.historyFields = historyFields(apps, facts);
     result.reports = [boostReport(config, apps, facts)];
     return result;
@@ -124,6 +128,34 @@ function describePrepared(entry: AppBoostStatus, facts: LaravelFacts): string {
 function unavailableNote(entry: AppBoostStatus): string[] {
   if (entry.status !== 'failed' && entry.status !== 'skipped') return [];
   return [`Laravel Boost is unavailable for \`${displayDir(entry.app)}\` (${entry.reason ?? entry.status}); use artisan and composer in the shell.`];
+}
+
+/** Repository instructions that route commands through Docker or Sail; Symphony workspaces have neither. */
+const DOCKER_INSTRUCTION_PATTERN = /\bdocker(?:\s+|-)compose\b|\bdocker\s+exec\b|vendor\/bin\/sail/i;
+
+/**
+ * One prompt note per instruction file that tells the agent to run commands through Docker or
+ * Sail: followed literally, that fails in a Symphony workspace ("docker: command not found").
+ */
+async function dockerInstructionNotes(workspacePath: string, apps: AppBoostStatus[], logger: Logger): Promise<string[]> {
+  const dirs = [...new Set([workspacePath, ...apps.map((entry) => entry.app.path)])];
+  const notes: string[] = [];
+  for (const dir of dirs) {
+    for (const name of ['CLAUDE.md', 'AGENTS.md']) {
+      let content: string;
+      try {
+        content = await fs.readFile(path.join(dir, name), 'utf8');
+      } catch {
+        continue;
+      }
+      if (!DOCKER_INSTRUCTION_PATTERN.test(content)) continue;
+      const file = path.relative(workspacePath, path.join(dir, name)).split(path.sep).join('/');
+      logger.warn('repository instructions route commands through Docker or Sail, which Symphony workspaces do not have', { file });
+      notes.push(`\`${file}\` tells you to run commands through Docker or Sail. This workspace has no Docker: run \`php artisan\` and \`composer\` directly, from the app directory.`);
+      break;
+    }
+  }
+  return notes;
 }
 
 /** Laravel Boost for the dashboard: per app its status, versions, guidelines, skills and MCP server. */
