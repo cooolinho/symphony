@@ -224,7 +224,7 @@ async function prepareApp(app: LaravelApp, git: Git, state: State, params: Prepa
       }
     } else {
       log.info('installing Composer dependencies', { reason: vendorReady ? 'composer.lock changed' : 'vendor/ missing' });
-      const install = await runStep(config.composer, ['install', '--no-interaction', '--no-progress'], app, params);
+      const install = await withComposerLock(() => runStep(config.composer, ['install', '--no-interaction', '--no-progress'], app, params));
       if (!install.ok) {
         log.warn('Laravel Boost skipped: composer install failed', install.detail);
         return { status: 'failed', reason: 'composer install failed' };
@@ -622,6 +622,18 @@ async function boostVersion(app: LaravelApp): Promise<string | null> {
     }
   }
   return null;
+}
+
+/**
+ * Parallel workers share one Composer cache (the composer-cache volume in Docker); concurrent
+ * installs race on creating its directories and fail with "<cache dir> does not exist and could
+ * not be created". One install at a time per process avoids that; with a warm cache the wait is short.
+ */
+let composerLock: Promise<unknown> = Promise.resolve();
+function withComposerLock<T>(task: () => Promise<T>): Promise<T> {
+  const run = composerLock.then(task);
+  composerLock = run.catch(() => undefined);
+  return run;
 }
 
 async function runStep(
