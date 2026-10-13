@@ -224,7 +224,7 @@ async function prepareApp(app: LaravelApp, git: Git, state: State, params: Prepa
       }
     } else {
       log.info('installing Composer dependencies', { reason: vendorReady ? 'composer.lock changed' : 'vendor/ missing' });
-      const install = await runStep(config.composer, ['install', '--no-interaction', '--no-progress'], app, params);
+      const install = await withComposerLock(() => runStep(config.composer, ['install', '--no-interaction', '--no-progress'], app, params));
       if (!install.ok) {
         log.warn('Laravel Boost skipped: composer install failed', install.detail);
         return { status: 'failed', reason: 'composer install failed' };
@@ -338,7 +338,7 @@ async function generate(
   // Files Boost removed again (for example skills of a dropped package) leave the list.
   const present: string[] = [];
   for (const file of [...excluded].sort()) if (await exists(path.join(git.top, file))) present.push(file);
-  const skills = generatedSkills(git, app, present);
+  const skills = await boostSkills(git, app, false);
   if (!install.ok) {
     log.warn('Laravel Boost skipped: boost:install failed', install.detail);
     return { ok: false, retry: true, excluded: present, guidelinesFile, guidelines, skills, warnings: [] };
@@ -349,6 +349,9 @@ async function generate(
   }
   // boost:install exits 0 even when writing guidelines or skills failed for an agent: check what it wrote.
   const { warnings, retry } = await checkGenerated(app, guidelinesFile, guidelines, skills, boostConfig);
+  if (skills.length === 0 && (await skillDirsOnDisk(app)).length > 0) {
+    warnings.push('the skills in .claude/skills are tracked in git while boost.json is not committed; they count as the repository\'s own, not Boost\'s');
+  }
   for (const warning of warnings) log.warn(`Laravel Boost: ${warning}`, { output: install.detail.output });
   return { ok: true, retry, excluded: present, guidelinesFile, guidelines, skills, warnings };
 }
@@ -370,17 +373,38 @@ function stateOf(generated: Generated): Omit<AppState, 'fingerprint' | 'lockHash
   return { excluded, guidelinesFile, guidelines, warnings };
 }
 
-/** Skill names among the generated files of an app (`.claude/skills/<name>/…`). */
-function generatedSkills(git: Git, app: LaravelApp, files: string[]): string[] {
+/**
+ * Boost's skills for an app, from the filesystem: `.claude/skills/<name>/` directories with a
+ * SKILL.md. Repositories usually gitignore these files (as Boost's docs recommend), so a
+ * `git status` diff never sees them. Unless the repository manages its own Boost files, skills
+ * tracked in git are the repository's own and stay out of the list.
+ */
+async function boostSkills(git: Git, app: LaravelApp, selfManaged: boolean): Promise<string[]> {
+  const onDisk = await skillDirsOnDisk(app);
+  if (selfManaged || onDisk.length === 0) return onDisk;
+  const tracked = await trackedSkillNames(git, app);
+  return onDisk.filter((name) => !tracked.has(name));
+}
+
+/** Skill directories of the app that hold a SKILL.md, sorted. */
+async function skillDirsOnDisk(app: LaravelApp): Promise<string[]> {
+  const dir = path.join(app.path, '.claude', 'skills');
+  const names: string[] = [];
+  for (const name of await listDirs(dir)) if (await exists(path.join(dir, name, 'SKILL.md'))) names.push(name);
+  return names.sort();
+}
+
+/** Skill names tracked in git under the app's `.claude/skills/` (the repository's own skills). */
+async function trackedSkillNames(git: Git, app: LaravelApp): Promise<Set<string>> {
   const skillsDir = repoPath(git, path.join(app.path, '.claude', 'skills'));
-  const prefix = skillsDir === '' ? '' : `${skillsDir}/`;
+  const prefix = `${skillsDir}/`;
   const names = new Set<string>();
-  for (const file of files) {
+  for (const file of (await git.run(['ls-files', '-z', '--', skillsDir])).split('\0')) {
     if (!file.startsWith(prefix)) continue;
-    const parts = file.slice(prefix.length).split('/');
-    if (parts.length >= 2 && parts[0] !== '') names.add(parts[0] as string);
+    const name = file.slice(prefix.length).split('/')[0];
+    if (name !== undefined && name !== '') names.add(name);
   }
-  return [...names].sort();
+  return names;
 }
 
 /**
@@ -456,12 +480,9 @@ async function buildExtensions(
   return { extensions: { mcpServers, contextSections, additionalDirectories, env: { ...config.agentEnv } }, setups };
 }
 
-/** Skill names of the app: generated `.claude/skills/<name>/` directories, or the committed ones. */
+/** Skill names of the app: the `.claude/skills/<name>/` directories on disk (gitignored ones included). */
 async function skillNames(entry: PreparedApp, git: Git): Promise<string[]> {
-  const skillsDir = repoPath(git, path.join(entry.app.path, '.claude', 'skills'));
-  const prefix = skillsDir === '' ? '' : `${skillsDir}/`;
-  const files = entry.selfManaged ? (await listFiles(path.join(git.top, skillsDir))).map((file) => prefix + file.split(path.sep).join('/')) : entry.excluded;
-  return generatedSkills(git, entry.app, files);
+  return boostSkills(git, entry.app, entry.selfManaged);
 }
 
 async function contextSection(
@@ -601,6 +622,18 @@ async function boostVersion(app: LaravelApp): Promise<string | null> {
     }
   }
   return null;
+}
+
+/**
+ * Parallel workers share one Composer cache (the composer-cache volume in Docker); concurrent
+ * installs race on creating its directories and fail with "<cache dir> does not exist and could
+ * not be created". One install at a time per process avoids that; with a warm cache the wait is short.
+ */
+let composerLock: Promise<unknown> = Promise.resolve();
+function withComposerLock<T>(task: () => Promise<T>): Promise<T> {
+  const run = composerLock.then(task);
+  composerLock = run.catch(() => undefined);
+  return run;
 }
 
 async function runStep(

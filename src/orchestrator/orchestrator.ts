@@ -271,6 +271,8 @@ interface RunTrace {
   toolUsage: ToolUsage;
   integrations: IntegrationReport[];
   sessionSkills: string[] | null;
+  /** MCP servers that did not connect at session start. */
+  mcpUnavailable: string[];
 }
 
 function traceOf(entry: RunningEntry): RunTrace {
@@ -281,6 +283,7 @@ function traceOf(entry: RunningEntry): RunTrace {
     toolUsage: copyToolUsage(entry.toolUsage),
     integrations: entry.integrations,
     sessionSkills: entry.sessionSkills,
+    mcpUnavailable: [...entry.mcpUnavailable],
   };
 }
 
@@ -292,7 +295,7 @@ function traceJson(trace: RunTrace | null) {
     mcp_tool_calls: trace.mcpToolCalls,
     tool_calls: trace.toolUsage.tools,
     skill_calls: trace.toolUsage.skills,
-    integrations: trace.integrations.map((report) => integrationJson(report, trace.toolUsage, trace.sessionSkills)),
+    integrations: trace.integrations.map((report) => integrationJson(report, trace.toolUsage, trace.sessionSkills, trace.mcpUnavailable)),
   };
 }
 
@@ -1860,7 +1863,7 @@ export class Orchestrator {
       mcp_tool_calls: entry.mcpToolCalls,
       tool_calls: entry.toolUsage.tools,
       skill_calls: entry.toolUsage.skills,
-      integrations: entry.integrations.map((report) => integrationJson(report, entry.toolUsage, entry.sessionSkills)),
+      integrations: entry.integrations.map((report) => integrationJson(report, entry.toolUsage, entry.sessionSkills, entry.mcpUnavailable)),
     };
   }
 

@@ -338,6 +338,33 @@ describe('Laravel Boost preparation', () => {
     assert.match(extensions?.contextSections[0] as string, /`filament-development`/);
   });
 
+  it('detects skills although the repository gitignores them (the recommended setup)', async () => {
+    const f = fixture({
+      artisan: '',
+      'composer.json': LARAVEL_BOOST,
+      '.gitignore': 'vendor/\nboost.json\n.claude/skills/\n.mcp.json\n',
+    });
+    const full = await prepareFull(f);
+    assert.deepEqual(full.apps[0]?.setup?.skills, ['testing-best-practices']);
+    assert.deepEqual(full.apps[0]?.setup?.warnings, []);
+    const section = full.extensions?.contextSections[0] as string;
+    assert.match(section, /skills for this app's packages are available: `testing-best-practices`\./);
+    assert.equal(gitStatus(f), '');
+    // The repository ignores the skill files itself; info/exclude does not need them.
+    assert.ok(!excludeBlock(f).some((line) => line.includes('.claude/skills')));
+  });
+
+  it('keeps committed skills out of the Boost list and warns when boost.json is not committed', async () => {
+    const f = fixture({
+      artisan: '',
+      'composer.json': LARAVEL_BOOST,
+      '.claude/skills/my-own/SKILL.md': '---\nname: my-own\n---\n',
+    });
+    const full = await prepareFull(f, { env: { FAKE_BOOST_NO_SKILLS: '1', FAKE_BOOST_NO_SKILL_LIST: '1' } });
+    assert.deepEqual(full.apps[0]?.setup?.skills, []);
+    assert.ok(full.apps[0]?.setup?.warnings.some((warning) => warning.includes('tracked in git')));
+  });
+
   it('keeps existing packages entries and regenerates only when the package list changes', async () => {
     const f = fixture({ artisan: '', 'composer.json': LARAVEL_BOOST, 'composer.lock': '{}' });
     process.env.FAKE_PACKAGES = 'filament/filament';
@@ -429,6 +456,33 @@ describe('Laravel Boost preparation', () => {
     assert.deepEqual(result?.historyFields, { laravel: '.:v13.1.0', boost: 'failed' });
     const line = logged.find((entry) => entry.includes('integration_prepared'));
     assert.match(line ?? '', /laravel\/framework=v13\.1\.0 laravel\/boost=v2\.0\.1.*boost=failed/);
+  });
+
+  it('warns when repository instructions route commands through Docker or Sail', async () => {
+    const f = fixture({
+      artisan: '',
+      'composer.json': LARAVEL_BOOST,
+      'CLAUDE.md': '# App\n\nRun tests with `docker exec --user sail app php artisan test`.\n',
+    });
+    const logged: string[] = [];
+    const sink: LogSink = { name: 'memory', write: (line) => logged.push(line) };
+    const result = await laravelIntegration.prepare(laravelConfig(f), {
+      workspacePath: f.repo,
+      env: { ...process.env, FAKE_LOG: f.log },
+      logger: Logger.create({ sinks: [sink], level: 'debug' }),
+      signal: new AbortController().signal,
+    });
+    assert.ok(result?.contextSections.some((section) => section.includes('This workspace has no Docker')));
+    assert.ok(logged.some((line) => line.includes('route commands through Docker')));
+
+    const clean = fixture({ artisan: '', 'composer.json': LARAVEL_BOOST, 'CLAUDE.md': '# App\n\nRun `php artisan test`.\n' });
+    const none = await laravelIntegration.prepare(laravelConfig(clean), {
+      workspacePath: clean.repo,
+      env: { ...process.env, FAKE_LOG: clean.log },
+      logger: Logger.silent(),
+      signal: new AbortController().signal,
+    });
+    assert.ok(!none?.contextSections.some((section) => section.includes('no Docker')));
   });
 
   it('reports what the session gets from Boost per app for the dashboard', async () => {
