@@ -519,7 +519,11 @@ async function contextSection(
     lines.push('- Use `search-docs` before writing code that depends on Laravel ecosystem APIs or versions.');
   }
   if (skills.length > 0) {
-    lines.push(`- Boost's skills for this app's packages are available: ${list(skills)}. Use the matching skill when the task touches its area.`);
+    lines.push(
+      `- Boost's skills for this app's packages are available: ${list(skills)}. Before you write, review or refactor code in a skill's area, ` +
+        'load that skill with the Skill tool. Never read SKILL.md files from `.claude/skills/` or `.ai/skills/` yourself: ' +
+        'the Skill tool loads the complete skill, a partial read misses rules.',
+    );
   }
   if (entry.selfManaged) {
     lines.push('- This repository commits its Boost files. Regenerate them only if the issue asks for it.');
