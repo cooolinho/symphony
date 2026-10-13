@@ -111,7 +111,7 @@ export interface BoostSetup {
   skills: string[];
   /** How the agent gets the guidelines, e.g. `CLAUDE.md (loaded by Claude Code)`; null = none. */
   guidelines: string | null;
-  /** Problems with what boost:install wrote (missing guidelines or skills). */
+  /** Problems preparing Boost (a failed composer script, missing guidelines or skills). */
   warnings: string[];
 }
 
@@ -211,11 +211,12 @@ async function prepareApp(app: LaravelApp, git: Git, state: State, params: Prepa
   const log = logger.child({ laravel_app: appLabel(app) });
   const relative = (name: string) => repoPath(git, path.join(app.path, name));
   const previous = state.apps[app.dir];
-  const lockHash = await hashFile(path.join(app.path, 'composer.lock'));
+  let lockHash = await hashFile(path.join(app.path, 'composer.lock'));
 
   const vendorReady = await exists(path.join(app.path, 'vendor', 'autoload.php'));
   // A lock file that changed since Symphony last installed means vendor/ is stale.
   const lockChanged = previous !== undefined && previous.lockHash !== lockHash;
+  const installWarnings: string[] = [];
   if (!vendorReady || lockChanged) {
     if (!config.installDependencies) {
       if (!vendorReady) {
@@ -226,9 +227,18 @@ async function prepareApp(app: LaravelApp, git: Git, state: State, params: Prepa
       log.info('installing Composer dependencies', { reason: vendorReady ? 'composer.lock changed' : 'vendor/ missing' });
       const install = await withComposerLock(() => runStep(config.composer, ['install', '--no-interaction', '--no-progress'], app, params));
       if (!install.ok) {
-        log.warn('Laravel Boost skipped: composer install failed', install.detail);
-        return { status: 'failed', reason: 'composer install failed' };
+        // Composer scripts of the repository (e.g. `boost:update` in post-update-cmd, which needs the
+        // boost.json written later) may fail after vendor/ is fully installed; Boost still works then.
+        if (await exists(path.join(app.path, 'vendor', 'autoload.php'))) {
+          log.warn('composer install failed after installing vendor/ (a composer script, most likely); continuing with Laravel Boost', install.detail);
+          installWarnings.push('composer install exited with an error (a composer script, most likely); dependencies were installed and Boost continued');
+        } else {
+          log.warn('Laravel Boost skipped: composer install failed', install.detail);
+          return { status: 'failed', reason: 'composer install failed' };
+        }
       }
+      // The install creates or updates composer.lock when the repository does not commit one.
+      lockHash = await hashFile(path.join(app.path, 'composer.lock'));
     }
   }
   if (!(await exists(path.join(app.path, 'vendor', 'laravel', 'boost')))) {
@@ -242,7 +252,7 @@ async function prepareApp(app: LaravelApp, git: Git, state: State, params: Prepa
     const found = await readGuidelines(app, git);
     state.apps[app.dir] = { fingerprint: 'self-managed', lockHash, excluded: [], ...found };
     log.info('Laravel Boost files are committed in the repository; using them as they are');
-    return { app, ...found, guidelinesLoaded: await loadedByClaude(app, found.guidelinesFile, found.guidelines), selfManaged, excluded: [], warnings: [] };
+    return { app, ...found, guidelinesLoaded: await loadedByClaude(app, found.guidelinesFile, found.guidelines), selfManaged, excluded: [], warnings: installWarnings };
   }
 
   const fingerprint = await computeFingerprint(app, lockHash, config.php, await findBoostPackages(app));
@@ -255,7 +265,7 @@ async function prepareApp(app: LaravelApp, git: Git, state: State, params: Prepa
       guidelinesLoaded: await loadedByClaude(app, previous.guidelinesFile, previous.guidelines),
       selfManaged,
       excluded: previous.excluded,
-      warnings: previous.warnings ?? [],
+      warnings: [...installWarnings, ...(previous.warnings ?? [])],
     };
   }
 
@@ -275,7 +285,7 @@ async function prepareApp(app: LaravelApp, git: Git, state: State, params: Prepa
     guidelinesLoaded: await loadedByClaude(app, generated.guidelinesFile, generated.guidelines),
     selfManaged,
     excluded: generated.excluded,
-    warnings: generated.warnings,
+    warnings: [...installWarnings, ...generated.warnings],
   };
 }
 
