@@ -574,8 +574,11 @@ A deterministic quality gate that runs in the workspace (bash). The shipped `WOR
 | `1` | The code must be fixed. The output goes to the agent: dirty tree, unpushed commits, `php -l` errors, or a failing lint, analysis or test step. |
 | other (`2`) | Environment problem: missing `php`/`git`, missing or broken `vendor/`, failing `git fetch`, unknown default branch, configured but missing PHPStan. The agent comments and moves the issue to `Blocked`. |
 
-The app directory is `$SYMPHONY_LARAVEL_APP_PATH` (default: the current directory). Steps, in order: clean tree, `git fetch`
-and everything pushed, `php -l` on PHP files changed against `origin/HEAD`, style, static analysis, tests.
+The app directory is `$SYMPHONY_LARAVEL_APP_PATH`; without it, the script uses the current directory, or the single
+first-level subdirectory that holds an app (`artisan` plus `composer.json`, like Symphony's detection — `vendor/` and
+`node_modules/` never count). With several such subdirectories it exits 2 and asks for `SYMPHONY_LARAVEL_APP_PATH`.
+Steps, in order: clean tree, `git fetch` and everything pushed, `php -l` on PHP files changed against `origin/HEAD`,
+style, static analysis, tests.
 
 | Step | Composer script (preferred) | Fallback |
 |---|---|---|

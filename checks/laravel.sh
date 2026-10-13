@@ -2,7 +2,8 @@
 # Deterministic quality gate for a Laravel app in the current workspace.
 # Exit codes: 0 pass, 1 the code must be fixed (output goes to the agent),
 # anything else (here: 2) an environment problem.
-# The app directory is $SYMPHONY_LARAVEL_APP_PATH (default: the current directory).
+# The app directory is $SYMPHONY_LARAVEL_APP_PATH; without it, the current directory,
+# or the single first-level subdirectory that holds an app (like Symphony's detection).
 set -u
 
 fix() { echo "$*"; exit 1; }
@@ -22,6 +23,19 @@ run() {
 }
 
 cd "${SYMPHONY_LARAVEL_APP_PATH:-.}" 2>/dev/null || env_problem "cannot enter ${SYMPHONY_LARAVEL_APP_PATH}"
+
+if [ -z "${SYMPHONY_LARAVEL_APP_PATH:-}" ] && [ ! -f artisan ]; then
+  apps=()
+  for dir in */; do
+    case "$dir" in vendor/ | node_modules/) continue ;; esac
+    [ -f "${dir}artisan" ] && [ -f "${dir}composer.json" ] && apps+=("${dir%/}")
+  done
+  if [ "${#apps[@]}" -eq 1 ]; then
+    cd "${apps[0]}" || env_problem "cannot enter ${apps[0]}"
+  elif [ "${#apps[@]}" -gt 1 ]; then
+    env_problem "several Laravel apps (${apps[*]}); set SYMPHONY_LARAVEL_APP_PATH to the one to check"
+  fi
+fi
 
 if [ ! -f artisan ]; then
   echo "no Laravel app; nothing to check"
