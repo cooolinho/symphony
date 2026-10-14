@@ -16,9 +16,9 @@ import type { Issue, TrackerAdapter } from './tracker/types.ts';
 import type { LoadedEnvFile } from './util/env.ts';
 import { errorCode, errorMessage } from './util/errors.ts';
 import { truncate } from './util/text.ts';
-import { commandSkills, resolveIssueCommand } from './workflow/command.ts';
+import { commandSkills, pluginAgents, resolveIssueCommand } from './workflow/command.ts';
 import type { ModelClaudeOverrides } from './workflow/config.ts';
-import { roleFor, roleName } from './workflow/roles.ts';
+import { roleFor, roleName, sessionAgents } from './workflow/roles.ts';
 import { WorkflowStore } from './workflow/store.ts';
 import { issueTemplateValue, renderPrompt } from './workflow/template.ts';
 import { unknownBoardColumns, validateDispatch } from './workflow/validate.ts';
@@ -275,10 +275,15 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       out();
       out(`Prompt preview for ${first.identifier}:`);
       try {
+        const role = roleFor(first, config.roles);
+        // The workspace is not prepared here: preview the subagents as for a workspace every integration applies to.
+        const prefixes = integrations.flatMap((integration) => (integration.agentPrefix !== undefined ? [integration.agentPrefix] : []));
+        const agents = sessionAgents(pluginAgents(config.claude.plugins), role, prefixes, prefixes).allowed;
         const prompt = await renderPrompt(store.current.prompt, {
           issue: issueTemplateValue(first, skills),
           attempt: null,
-          role: roleName(roleFor(first, config.roles)),
+          role: roleName(role),
+          agents: agents.map((agent) => ({ name: agent.qualified, description: agent.description })),
         });
         const lines = prompt.split('\n');
         for (const line of lines.slice(0, 30)) out(`  | ${line}`);

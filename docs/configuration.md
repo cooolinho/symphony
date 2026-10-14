@@ -229,7 +229,7 @@ write a `transition_denied` line.
 | `max_session_limit_retries` | `3` | Retries per issue after the first session-limit failure (with the usual 10 s, 20 s, … backoff), before the worker waits for the reset (`retry at` = reset + 60 s). `0` = wait right away. An unknown reset, or one more than 8 days ahead, keeps the failure backoff instead. The wait is in memory only and is forgotten on restart. While a worker waits for an account-wide limit (`five_hour` or `seven_day`), no new issues are dispatched; running agents and retries continue. `GET /api/v1/state` reports this as `health.dispatch_gate` (`{ reason: "session_limit", window, until, issue_identifier }`, else `null`); it ends with the last wait, a restart or release of the waiting worker, or a successful turn of any agent after the limit was observed. See [Session limit](usage.md#session-limit). |
 | `max_retry_backoff_ms` | `300000` | Cap for failure retries (10 s, 20 s, 40 s, …). |
 | `max_concurrent_agents_by_state` | `{}` | Per-status limits, e.g. `{ "In Progress": 1 }`. Invalid entries are ignored with a warning. |
-| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `turn_number`, `max_turns`). |
+| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `agents`, `turn_number`, `max_turns`). |
 
 ### `claude`
 
@@ -305,6 +305,8 @@ resolved once and kept for the whole run (an issue no role serves runs as `defau
   `sub_issue_status` picks the column those sub-issues land in.
 - **Waves:** `wait_for_sub_issues: true` holds the role's issues back while any of their sub-issues is open (see
   [Waves](#waves-wait_for_sub_issues)).
+- **Subagents:** `agents` lists the plugin subagents the role may start; the others are denied for its sessions (see
+  [Subagents per role](#subagents-per-role)).
 - **Prompt:** the role name is the template variable `role` (see [Prompt template](#prompt-template)).
 
 The role appears as `role` in the `dispatching issue` log line, in `run_started` of the repository log and on every
@@ -347,9 +349,10 @@ roles:
 | `max_sub_issues` | none | Integer 1–100 (GitHub's limit): how many sub-issues the role may have open under its issue at once, counting the sub-issues of those (the whole tree when the role creates epics with `parent`). Setting it gives the role the GitHub tool `create_sub_issue` ([github-project.md](adapters/github-project.md#agent-tools)). |
 | `sub_issue_status` | `tracker.provider.sub_issue_status` | Column for the sub-issues this role creates. Unlike the provider setting it may be an active column, so the sub-issues start without a human; this is the deliberate opt-in for autonomous roles such as the planner. Never a terminal column; needs `max_sub_issues`. Checked against the board like the other columns. |
 | `wait_for_sub_issues` | `false` | `true` dispatches the role's issues only while none of their sub-issues is open. See [Waves](#waves-wait_for_sub_issues). |
+| `agents` | all | Plugin subagents (`agents/<name>.md` in [`claude.plugins`](#claude), names without the plugin prefix, e.g. `[laravel-code-reviewer]`) the role may start; `[]` allows none. See [Subagents per role](#subagents-per-role). |
 | `claude` | `{}` | Overrides of `model`, `effort`, `allowed_tools`, `disallowed_tools`, `append_system_prompt`, `max_budget_usd` (same meaning as in [`claude`](#claude)). |
 
-Invalid configs fail with `invalid_config`, listing every problem: a state outside `tracker.active_states`, a state in more than one role (two roles may share a state only for different commands), an active state without a role that has no `commands` (once `roles` is set), a command that is not a name or an empty `commands` list, `max_sub_issues` outside 1–100, a `sub_issue_status` that is terminal or set without `max_sub_issues`, unknown keys under a role or its `claude` block, and invalid value types. Dispatch validation also fails while a role's command has no skill in [`claude.plugins`](#claude): `roles.auditor.commands: no skill for /refactoring in claude.plugins (expected skills/refactoring/SKILL.md)`. With `roles` set and `agent.max_continuations` unlimited, a warning is logged because role switches will count as continuations.
+Invalid configs fail with `invalid_config`, listing every problem: a state outside `tracker.active_states`, a state in more than one role (two roles may share a state only for different commands), an active state without a role that has no `commands` (once `roles` is set), a command that is not a name or an empty `commands` list, `max_sub_issues` outside 1–100, a `sub_issue_status` that is terminal or set without `max_sub_issues`, unknown keys under a role or its `claude` block, and invalid value types. Dispatch validation also fails while a role's command has no skill in [`claude.plugins`](#claude): `roles.auditor.commands: no skill for /refactoring in claude.plugins (expected skills/refactoring/SKILL.md)`, while a role lists a subagent no plugin ships (`roles.reviewer.agents: no subagent … in claude.plugins`), and while a read-only role lists a subagent that can edit files (`roles.reviewer.agents: laravel-filament-developer can edit files, but the role is read-only`). With `roles` set and `agent.max_continuations` unlimited, a warning is logged because role switches will count as continuations.
 
 #### Issue commands
 
@@ -374,6 +377,24 @@ arguments, e.g. `/refactoring app/Filament`), Symphony treats it as a command. T
 The shipped `WORKFLOW.md` defines the `auditor` role for `/refactoring`, the `planner` role for `/auto-code` and the
 `analyst` role for `/concept`, and ships the skills `refactoring`, `refactor-safely`, `auto-code` and `concept` in
 `.claude/skills/` (see [agent-claude.md](agent-claude.md#skills-and-plugins)).
+
+#### Subagents per role
+
+The plugins in `claude.plugins` ship subagents (`agents/<name>.md`; Symphony's toolbox ships the `laravel-*` ones, see
+[laravel-subagents.md](laravel-subagents.md)). Claude Code offers them as `<plugin>:<name>`, e.g.
+`symphony:laravel-architect`. For each session Symphony decides which of them the agent may start:
+
+1. **The role's list.** `agents` unset allows every plugin subagent, a list only those, `[]` none.
+2. **Read-only roles** only get subagents that cannot edit files: their front matter denies `Edit` and `Write`
+   (`disallowedTools: Edit, Write, NotebookEdit`) or lists `tools` without them. This applies with `agents` unset too.
+3. **Project type.** A subagent whose name starts with a workspace integration's prefix belongs to it: `laravel-*`
+   subagents are available only when the [`laravel`](#laravel) integration found a Laravel app in the workspace (with
+   or without Boost).
+
+The others are denied in two ways: a `disallowed_tools` rule `Agent(<plugin>:<name>)` (also `Agent(<name>)`, for a
+repository that ships the same agent as a project agent) and a `PreToolUse` hook that refuses an Agent tool call
+naming one of them. The allowed ones reach the prompt as the variable [`agents`](#prompt-template); the shipped
+`WORKFLOW.md` lists them in each role section, phrased as optional.
 
 #### Waves (`wait_for_sub_issues`)
 
@@ -614,7 +635,7 @@ workflow directory, else `$XDG_STATE_HOME/symphony` or `~/.local/state/symphony`
 | Event | Fields |
 |---|---|
 | `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested: from a `Model: …` label, else the role's model, else `claude.model`), `effort` (requested: from an `Effort: …` label, else the role's effort, else `claude.effort`; `default` when none), `role` (`default` without roles), `laravel` and `boost` (only for workspaces with [`laravel`](#laravel) apps: `<app dir>:<laravel/framework version from composer.lock, or unknown>` and the Boost status `ready`, `failed`, `skipped` or `absent`, e.g. `laravel=laravel/:v13.1.0 boost=ready`; several apps give comma-separated entries, each status prefixed by its directory) |
-| `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `session_limit` (the run ended with a session limit; see `agent-claude.md`), `stopped`, `stalled`, `shutdown`), `role` and `next_role` (only when the run handed off to another [role](#roles)), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `head_sha` and `branch` (final commit of a git workspace; omitted otherwise), `mcp_tool_calls` (`<server>:<n>,…` per MCP server; omitted when no MCP tool was used), `tool_calls` (`<tool>:<n>,…` per tool, built-in and `mcp__<server>__<tool>`; omitted without tool calls), `skill_calls` (`<skill>:<n>,…` per skill the Skill tool loaded; the count follows the last colon, so `symphony:handoff:1` is the skill `symphony:handoff`), `integrations` (`<id>:<status>,…` of the workspace integrations, e.g. `laravel-boost:ready`; status `ready`, `unavailable`, `absent` or `off`), `integration_tools` and `integration_skills` (calls attributed to an integration: `<id>/<tool or skill>:<n>,…`, e.g. `laravel-boost/search-docs:3`), `started_at`, `mcp_unavailable` (comma-separated MCP servers Symphony added that did not connect; only when there are any), running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` |
+| `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `session_limit` (the run ended with a session limit; see `agent-claude.md`), `stopped`, `stalled`, `shutdown`), `role` and `next_role` (only when the run handed off to another [role](#roles)), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `head_sha` and `branch` (final commit of a git workspace; omitted otherwise), `mcp_tool_calls` (`<server>:<n>,…` per MCP server; omitted when no MCP tool was used), `tool_calls` (`<tool>:<n>,…` per tool, built-in and `mcp__<server>__<tool>`; omitted without tool calls), `skill_calls` (`<skill>:<n>,…` per skill the Skill tool loaded; the count follows the last colon, so `symphony:handoff:1` is the skill `symphony:handoff`), `agent_calls` (`<subagent>:<n>,…` per subagent the Agent tool started, by `subagent_type`, `general-purpose` when unset; omitted without such calls), `integrations` (`<id>:<status>,…` of the workspace integrations, e.g. `laravel-boost:ready`; status `ready`, `unavailable`, `absent` or `off`), `integration_tools` and `integration_skills` (calls attributed to an integration: `<id>/<tool or skill>:<n>,…`, e.g. `laravel-boost/search-docs:3`), `started_at`, `mcp_unavailable` (comma-separated MCP servers Symphony added that did not connect; only when there are any), running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` |
 | `model_usage` | `repo`, `issue`, `run`, `model`, `price` (matched entry), token counts, `cost_usd` |
 | `issue_paused` | `repo`, `issue`, `title`, `state`, `continuations`, `max_continuations` |
 | `session_limit_wait` | `repo`, `issue`, `title`, `state`, `window`, `resets_at`, `retry_at` (reset + 60 s), `hits`, `max_retries`, `source` (`event` or `message`); written when the session-limit retries are used up and the worker waits for the reset |
@@ -640,6 +661,9 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
 - `attempt`: `null` on the first run of an issue, then `1`, `2`, … on continuation runs and retries.
 - `role`: name of the [role](#roles) running the issue (e.g. `developer`, `reviewer`), or `default` without `roles`.
   Always defined, so one prompt can branch per role: `{% if role == "reviewer" %}…{% endif %}`.
+- `agents`: the plugin subagents this session may start (see [Subagents per role](#subagents-per-role)), each with
+  `name` (what the Agent tool takes as `subagent_type`, e.g. `symphony:laravel-architect`) and `description`. Always
+  defined; empty when the session may start none: `{% if agents.size > 0 %}…{% endif %}`.
 
 Besides the standard Liquid filters there are `without_model_labels` and `without_agent_labels`:
 `issue.labels | without_model_labels` drops the `Model: …` labels, which only pick the agent's model (see
