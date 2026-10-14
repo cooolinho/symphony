@@ -65,6 +65,61 @@ export function commandSkills(pluginDirs: readonly string[]): ReadonlyMap<string
   return skills;
 }
 
+/** A subagent a plugin ships in `agents/<name>.md`. */
+export interface PluginAgent {
+  /** `name` from the front matter (else the file name), as roles list it: `laravel-architect`. */
+  name: string;
+  /** Name the Agent tool takes as `subagent_type`: `<plugin>:<name>`. */
+  qualified: string;
+  description: string;
+  /** Neither `Edit` nor `Write` is available to it (`disallowedTools`, or a `tools` list without them). */
+  readOnly: boolean;
+}
+
+/** `key: value` lines of a Markdown file's front matter. */
+function frontMatter(text: string): Record<string, string> {
+  const block = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] ?? '';
+  const fields: Record<string, string> = {};
+  for (const line of block.split(/\r?\n/)) {
+    const match = /^([A-Za-z][\w-]*):\s*(.*)$/.exec(line);
+    if (match?.[1] !== undefined) fields[match[1]] = (match[2] ?? '').trim();
+  }
+  return fields;
+}
+
+function toolList(value: string | undefined): string[] | null {
+  return value === undefined ? null : value.split(',').map((tool) => tool.trim()).filter((tool) => tool !== '');
+}
+
+/** Subagents the plugins ship, sorted by name. The first plugin that ships a name wins. */
+export function pluginAgents(pluginDirs: readonly string[]): PluginAgent[] {
+  const agents = new Map<string, PluginAgent>();
+  for (const dir of pluginDirs) {
+    let files: string[];
+    try {
+      files = fs.readdirSync(path.join(dir, 'agents')).filter((file) => file.endsWith('.md'));
+    } catch {
+      continue;
+    }
+    const plugin = pluginName(dir);
+    for (const file of files) {
+      let fields: Record<string, string>;
+      try {
+        fields = frontMatter(fs.readFileSync(path.join(dir, 'agents', file), 'utf8'));
+      } catch {
+        continue;
+      }
+      const name = fields.name || file.slice(0, -'.md'.length);
+      if (agents.has(name)) continue;
+      const tools = toolList(fields.tools);
+      const denied = toolList(fields.disallowedTools) ?? [];
+      const readOnly = ['Edit', 'Write'].every((tool) => denied.includes(tool) || (tools !== null && !tools.includes(tool)));
+      agents.set(name, { name, qualified: `${plugin}:${name}`, description: fields.description ?? '', readOnly });
+    }
+  }
+  return [...agents.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
 /** The command of `description` when a plugin ships a skill of that name; an unknown command is no command. */
 export function resolveIssueCommand(description: string | null, skills: ReadonlyMap<string, string>): ResolvedCommand | null {
   const command = parseIssueCommand(description);

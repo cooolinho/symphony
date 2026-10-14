@@ -1,5 +1,5 @@
 ---
-name: filament-developer
+name: laravel-filament-developer
 description: Use for building or changing Filament resources, forms, tables, actions, widgets, pages and panels, including their authorization and Livewire behaviour, in a Laravel repository.
 ---
 

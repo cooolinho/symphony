@@ -7,14 +7,14 @@ Symphony works on.
 | Folder | Contents | Invoked in the agent as |
 |---|---|---|
 | `skills/<name>/SKILL.md` | Skills: front matter with `name` and `description`, followed by the instructions | `symphony:<name>` |
-| `agents/<name>.md` | Subagents (optional specialist personas: `architect`, `database-engineer`, `filament-developer`, `test-engineer`, `code-reviewer`) | `symphony:<name>` |
+| `agents/<name>.md` | Subagents (optional specialist personas: `laravel-architect`, `laravel-database-engineer`, `laravel-filament-developer`, `laravel-test-engineer`, `laravel-code-reviewer`) | `symphony:<name>` |
 | `commands/<name>.md` | Slash commands (legacy form, prefer skills) | `/symphony:<name>` |
 | `hooks/hooks.json` | Hooks; scripts next to it, referenced in the JSON via `${CLAUDE_PLUGIN_ROOT}` | automatic |
 | `.claude-plugin/plugin.json` | Plugin manifest (name `symphony`) | – |
 
 Empty folders contain a `.gitkeep` so git keeps them. Shipped are the skills `refactoring` (audit), `refactor-safely`
-(implementation) and `auto-code` (autopilot, continuously plans waves of sub-issues) and `concept` (split on concept into Epic
-and Sub-Issues in Backlog).
+(implementation), `auto-code` (autopilot, continuously plans waves of sub-issues), `concept` (splits a concept into epics
+and sub-issues in Backlog) and `plan` (turns every item of a list into one planned sub-issue in Backlog).
 
 ## What belongs here, what belongs in the repository?
 
@@ -43,7 +43,15 @@ repository, belongs here.
   `.claude/skills` when it generates, and `.ai/` is agent-neutral (Claude Code, Cursor, Codex …). A skill of the same
   name in `.ai/skills/` replaces the Boost skill.
 
-## Command skills (`/refactoring`, `/refactor-safely`, `/auto-code`, `/concept`)
+## Rules for subagents
+
+- The file name is the agent's name; `name:` in the front matter is the same name.
+- A subagent that only makes sense for one framework carries it as prefix (`laravel-…`); framework-neutral subagents
+  carry none. How the Laravel subagents relate to the roles: [docs/laravel-subagents.md](../docs/laravel-subagents.md).
+- A read-only subagent denies `Edit, Write, NotebookEdit` with `disallowedTools:` instead of listing `tools:`: an
+  allowlist also drops the MCP tools (Laravel Boost) it needs.
+
+## Command skills (`/refactoring`, `/refactor-safely`, `/auto-code`, `/concept`, `/plan`)
 
 If an issue description starts with `/<name>`, the agent loads the skill `symphony:<name>`, provided
 `skills/<name>/SKILL.md` exists (mechanics: [docs/configuration.md](../docs/configuration.md#issue-commands)). These

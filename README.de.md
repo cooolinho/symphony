@@ -35,7 +35,7 @@ Diese Implementierung hält den Vertrag ein ([Konformität](docs/conformance.md)
 |---|---|
 | Codex-App-Server | **Claude Code** über das [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) ([Zuordnung](docs/agent-claude.md)) |
 | Austauschbarer Tracker | Adapter für **GitHub Projects (v2)**: Die Spalten des Boards steuern den Ablauf ([Profil](docs/adapters/github-project.md)) |
-| Ein Agent pro Issue | **Rollen pro Spalte**: Ein Developer setzt um, ein lesender Reviewer prüft, Auditor und Planer legen Sub-Issues an |
+| Ein Agent pro Issue | **Rollen pro Spalte**: Ein Developer setzt um, ein lesender Reviewer prüft, Auditor, Autopilot, Analyst und Planner legen Sub-Issues an |
 | Der Agent entscheidet, wann er fertig ist | **Entry-Checks** (Lint, statische Analyse, Tests) vor jeder Übergabe; scheitern sie, bleibt die Karte stehen |
 | Beliebige Repositories | **Auf Laravel zugeschnitten**: Laravel Boost pro Workspace, eigene Datenbanken pro Workspace, ein Laravel-Check-Skript |
 
@@ -53,7 +53,8 @@ Symphony funktioniert mit jedem Repository, ist aber auf Laravel-Anwendungen abg
 - **Laravel-Checks.** [`checks/laravel.sh`](checks/laravel.sh) führt Pint, statische Analyse und die Tests aus, bevor ein
   Issue nach `Agent review` oder `In review` darf.
 - **Laravel-Subagents.** Die gemeinsame Toolbox in [`.claude/`](.claude/README.md) bringt Spezialisten wie
-  `filament-developer`, `database-engineer`, `test-engineer` und einen `code-reviewer` mit.
+  `laravel-filament-developer`, `laravel-database-engineer`, `laravel-test-engineer` und einen `laravel-code-reviewer`
+  mit ([wie sie mit den Rollen zusammenspielen](docs/laravel-subagents.md)).
 - **Konventionen für Repositories** (Agenten-Anweisungen, `.ai/`, Composer-Skripte, Boost) beschreibt
   [docs/laravel-repositories.md](docs/laravel-repositories.md).
 
@@ -75,7 +76,7 @@ Agenten, der daran arbeitet.
   der `.env`.
 - `npm run repo-init` legt die vier Modell-Labels und die fünf Effort-Labels (von hell nach dunkel eingefärbt) in deinen
   Repositories an.
-- Mit `/auto-code … issue-models=auto` versieht der Planer-Agent jedes Sub-Issue mit einem passenden Modell-Label:
+- Mit `/auto-code … issue-models=auto` versieht der Autopilot-Agent jedes Sub-Issue mit einem passenden Modell-Label:
   Einfache Aufgaben bekommen ein günstiges Modell, schwierige ein starkes.
 - Jeder Lauf wird pro Repository mit Modell, Tokens, geschätzten Kosten (aus [`model-costs.yml`](model-costs.yml)) und
   Agentenzeit protokolliert. So bleibt der Kompromiss zwischen Modell, Effort und Kosten messbar.
@@ -132,11 +133,15 @@ und Token stehen in der **`.env`**.
   Er misst die Baseline, findet Bugs und Refactoring-Kandidaten und legt Sub-Issues an. `/refactor-safely` setzt sie
   verhaltensneutral mit Tests als Sicherheitsnetz um ([Details](docs/usage.md#commands-in-the-issue-refactoring)).
 - **Autopilot (`/auto-code`):** Ein Epic mit `/auto-code docs/index.md` lässt Symphony ein Projekt fortlaufend
-  weiterentwickeln. Ein Planer-Agent leitet aus der Projektbeschreibung Wellen neuer Features, Design-, Qualitäts- und
+  weiterentwickeln. Ein Autopilot-Agent leitet aus der Projektbeschreibung Wellen neuer Features, Design-, Qualitäts- und
   Wartungsaufgaben ab. Sie starten sofort und werden nach Review und Checks nach `develop` gemergt. Alle paar Wellen hält
   er an, mit Bericht und Release-PR nach `main` ([Details](docs/usage.md#autopilot-auto-code)).
-- **Tracker-Tools für den Agenten:** Status setzen, kommentieren, Pull Request öffnen und (nur für Audit- und
-  Planer-Rollen) Sub-Issues anlegen. Der GitHub-Token bleibt im Symphony-Prozess, der Agent sieht ihn nie.
+- **Konzept und Liste ins Backlog:** `/concept docs/index.md` zerlegt ein Konzept in Epics und Sub-Issues
+  ([Details](docs/usage.md#concept-to-backlog-concept)); `/plan docs/todo.md` oder `/plan` mit einer Liste darunter im
+  Issue macht aus jedem Listenpunkt ein Sub-Issue mit ausführlichem Umsetzungsplan, Abhängigkeiten sowie Effort- und
+  Modell-Labels, im Backlog ([Details](docs/usage.md#list-to-backlog-plan)).
+- **Tracker-Tools für den Agenten:** Status setzen, kommentieren, Pull Request öffnen und (nur für die
+  planenden Rollen) Sub-Issues anlegen. Der GitHub-Token bleibt im Symphony-Prozess, der Agent sieht ihn nie.
 - **Robust:** Wiederholungen mit exponentiellem Backoff, Erkennung hängender Sessions; ändert sich das Issue auf dem
   Board, wird der Agent gestoppt.
 - **Session-Limit-Handling:** Erreicht das Claude-Abonnement sein Limit, wiederholt Symphony ein paar Mal und wartet
@@ -163,7 +168,9 @@ npm start               # Symphony starten
 Dazwischen legst du ein GitHub Project Board mit den Spalten `Backlog`, `Ready`, `In progress`, `Agent review`,
 `Blocked`, `In review` und `Done` an. Die ausführliche Anleitung steht in
 [docs/getting-started.md](docs/getting-started.md), den Betrieb per Docker hinter Traefik beschreibt
-[docs/docker.md](docs/docker.md). Die Dokumentation unter `docs/` ist auf Englisch.
+[docs/docker.md](docs/docker.md), einen lokalen Testlauf desselben Images ohne Traefik (`docker-compose.local.yml`)
+[ein eigener Abschnitt](docs/docker.md#local-test-setup-without-traefik). Die Dokumentation unter `docs/` ist auf
+Englisch.
 
 ## 📋 Usage
 
@@ -189,6 +196,7 @@ symphony/
 ├── model-costs.yml             # Modellpreise für die Kostenschätzung (wird live neu geladen)
 ├── Dockerfile                  # Image mit Node, PHP, Composer, git und SSH; läuft als Benutzer symphony
 ├── docker-compose.yml          # Betrieb hinter Traefik: Labels, Volumes, Secret für den SSH-Key
+├── docker-compose.local.yml    # lokaler Testlauf desselben Images ohne Traefik, Dashboard auf 127.0.0.1
 ├── docker/                     # entrypoint.sh (Variablen prüfen, SSH-Key, git-Identität) und ssh_known_hosts
 ├── .env.example                # Vorlage für .env (Board, Repository, Modell, Token, Grenzen)
 ├── repo-init.ts                # interaktive Einrichtung der Repositories (Standard-Labels, Laravel-Boost-Issue)

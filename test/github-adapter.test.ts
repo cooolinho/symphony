@@ -918,7 +918,7 @@ describe('github_project auto_merge', () => {
     }
   });
 
-  it('does nothing without a pull request, as for the hand-off of an auditor or planner', async () => {
+  it('does nothing without a pull request, as for the hand-off of an auditor, autopilot or planner', async () => {
     const { move, ops, comments } = await setup({ pullRequests: { nodes: [] } });
     const data = await move('Human Review');
     assert.equal(data.status, 'Human Review');

@@ -6,6 +6,7 @@ import {
   query as sdkQuery,
   tool,
   type CanUseTool,
+  type HookCallback,
   type ModelUsage,
   type Options,
   type Query,
@@ -41,6 +42,15 @@ const MCP_STATUS_POLL_MS = 500;
  * NotebookEditInput in sdk-tools.d.ts). Deny rules beat allow rules, so these override claude.allowed_tools.
  */
 const READ_ONLY_DENY = ['Edit', 'Write', 'NotebookEdit', 'Bash(git commit:*)', 'Bash(git push:*)'];
+
+/** The tool that starts a subagent; older Claude Code versions call it `Task`. */
+const AGENT_TOOLS = ['Agent', 'Task'];
+
+/** `subagent_type` of an Agent tool call; Claude Code's default when unset is `general-purpose`. */
+function subagentOf(input: unknown): string {
+  const value = typeof input === 'object' && input !== null ? (input as Record<string, unknown>).subagent_type : undefined;
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : 'general-purpose';
+}
 
 const NO_HUMAN_ANSWER =
   'Nobody can answer questions in this unattended run. Decide on your own using the issue, the repository and ' +
@@ -287,6 +297,7 @@ class ClaudeSession implements AgentSession {
       extensionDenied.push(...(server.deny ?? []).map((toolName) => `mcp__${name}__${toolName}`));
     }
     const readOnlyDenied = policy?.readOnly === true ? READ_ONLY_DENY : [];
+    const deniedAgents = this.#params.deniedAgents ?? [];
     const options: Options = {
       cwd,
       env: { ...env, ...extensions?.env, ...config.env, CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP },
@@ -296,7 +307,9 @@ class ClaudeSession implements AgentSession {
       permissionMode: config.permissionMode,
       canUseTool: this.#canUseTool,
       allowedTools: [...new Set([...config.allowedTools, ...toolNames, ...extensionAllowed])],
-      disallowedTools: [...new Set([...config.disallowedTools, ASK_USER_TOOL, ...extensionDenied, ...readOnlyDenied])],
+      disallowedTools: [
+        ...new Set([...config.disallowedTools, ASK_USER_TOOL, ...extensionDenied, ...readOnlyDenied, ...deniedAgents.map((name) => `Agent(${name})`)]),
+      ],
       settingSources: config.settingSources,
       strictMcpConfig: config.strictMcpConfig,
       systemPrompt: {
@@ -323,6 +336,8 @@ class ClaudeSession implements AgentSession {
     if (config.executable !== null) options.pathToClaudeCodeExecutable = config.executable;
     if (config.plugins.length > 0) options.plugins = config.plugins.map((plugin) => ({ type: 'local' as const, path: plugin }));
     if (config.skills !== null) options.skills = config.skills;
+    // The deny rules hide the subagents; the hook refuses a call that names one anyway.
+    if (deniedAgents.length > 0) options.hooks = { PreToolUse: [{ matcher: AGENT_TOOLS.join('|'), hooks: [this.#refuseDeniedAgents] }] };
     if ((extensions?.additionalDirectories.length ?? 0) > 0) options.additionalDirectories = extensions?.additionalDirectories;
     const mcpServers: NonNullable<Options['mcpServers']> = {};
     for (const [name, server] of Object.entries(extensions?.mcpServers ?? {})) {
@@ -361,6 +376,21 @@ class ClaudeSession implements AgentSession {
       ),
     });
   }
+
+  /** Refuses an Agent tool call for a subagent the role or workspace does not allow (`deniedAgents`). */
+  #refuseDeniedAgents: HookCallback = async (input) => {
+    if (input.hook_event_name !== 'PreToolUse' || !AGENT_TOOLS.includes(input.tool_name)) return {};
+    const agent = subagentOf(input.tool_input);
+    if (!(this.#params.deniedAgents ?? []).includes(agent)) return {};
+    this.#emit('approval_denied', { message: `subagent ${agent} denied by policy`, detail: { tool: input.tool_name, agent } });
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: `The subagent ${agent} is not available to this role in this workspace. Do the work yourself or use another subagent.`,
+      },
+    };
+  };
 
   /** Approval policy (docs/agent-claude.md): questions are auto-answered, the rest follows config. */
   #canUseTool: CanUseTool = async (toolName, input, options) => {
@@ -565,7 +595,11 @@ class ClaudeSession implements AgentSession {
       if (block.type !== 'tool_use') continue;
       calls++;
       const skill = block.name === SKILL_TOOL ? skillNameOf(block.input) : null;
-      this.#emit('tool_use', { message: summarizeToolInput(block.name, block.input), detail: { tool: block.name, ...(skill !== null ? { skill } : {}) } });
+      const agent = AGENT_TOOLS.includes(block.name) ? subagentOf(block.input) : null;
+      this.#emit('tool_use', {
+        message: summarizeToolInput(block.name, block.input),
+        detail: { tool: block.name, ...(skill !== null ? { skill } : {}), ...(agent !== null ? { agent } : {}) },
+      });
     }
     if (calls > 0) return;
     for (const block of message.message.content) {

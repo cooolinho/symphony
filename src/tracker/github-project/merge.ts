@@ -80,7 +80,7 @@ export async function autoMerge(
     const defaultBranch = obj(repository?.defaultBranchRef)?.name;
     if (defaultBranch === baseBranch) return await stay(`\`${baseBranch}\` is the default branch, which auto_merge never merges into`, null);
     pullRequest = nodes(repository?.pullRequests)[0];
-    // Nothing to merge, e.g. the hand-off of a role that files sub-issues (auditor, planner): no comment either.
+    // Nothing to merge, e.g. the hand-off of a role that files sub-issues (auditor, autopilot, analyst, planner): no comment either.
     if (pullRequest === undefined) {
       return { merged: false, pull_request: null, status: currentStatus, reason: `there is no open pull request from ${head} into ${baseBranch}` };
     }

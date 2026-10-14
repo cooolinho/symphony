@@ -1,0 +1,56 @@
+# Local test setup, production-near: docker-compose.yml without the Traefik parts (no external network, no labels,
+# no auth guard). The dashboard is published on 127.0.0.1 instead of going through Traefik.
+# Start: docker compose -f docker-compose.local.yml up -d --build
+
+services:
+    symphony:
+        container_name: "${COMPOSE_PROJECT_NAME:-symphony}-local"
+        build:
+            context: .
+            args:
+                UID: ${UID:-1000}
+                GID: ${GID:-1000}
+                PHP_VERSION: ${PHP_VERSION:-8.4}
+        image: symphony:local
+        restart: unless-stopped
+        # On SIGTERM Symphony stops its agents and waits up to hooks.timeout_ms + 30 s for them and their
+        # after_run hooks. 120 s covers stopping the agents; raise it if WORKFLOW.md gets a long after_run hook.
+        stop_grace_period: 120s
+        env_file: .env
+        # Overrides .env, so host-specific values there (SYMPHONY_PHP=/usr/bin/php8.4, SYMPHONY_LOG_DIR=logs)
+        # do not break the container. Same values as production (docker-compose.yml).
+        environment:
+            SYMPHONY_HOST: 0.0.0.0
+            SYMPHONY_PORT: ${SYMPHONY_PORT:-4000}
+            SYMPHONY_ALLOW_REMOTE_CONTROL: "true"
+            SYMPHONY_LOG_DIR: /home/symphony/.local/state/symphony
+            SYMPHONY_PHP: php
+            SYMPHONY_COMPOSER: composer
+            TZ: ${TZ:-Europe/Berlin}
+        # Local only: no Traefik, dashboard reachable from this machine.
+        ports:
+            - "127.0.0.1:${SYMPHONY_PORT:-4000}:${SYMPHONY_PORT:-4000}"
+        volumes:
+            - workspaces:/home/symphony/symphony-workspaces
+            - state:/home/symphony/.local/state/symphony
+            - claude:/home/symphony/.claude
+            - composer-cache:/home/symphony/.cache/composer
+            # Edit WORKFLOW.md and model-costs.yml without a rebuild. Single-file bind mounts follow the
+            # inode: if an editor replaces the file instead of writing it in place, run docker compose restart.
+            - ./WORKFLOW.md:/app/WORKFLOW.md:ro
+            - ./model-costs.yml:/app/model-costs.yml:ro
+        # Lands at /run/secrets/ssh_key, the default of SYMPHONY_SSH_KEY; the entrypoint sets GIT_SSH_COMMAND.
+        secrets:
+            - ssh_key
+
+volumes:
+    workspaces:
+    state:
+    claude:
+    composer-cache:
+
+secrets:
+    # A file secret is a bind mount of the host file: it must be readable for UID inside the container
+    # (e.g. owned by UID, mode 0400). The entrypoint copies it to ~/.ssh with mode 0600.
+    ssh_key:
+        file: ./secrets/ssh_key

@@ -98,6 +98,8 @@ export interface SessionExtensions {
   historyFields?: Record<string, string>;
   /** What the integrations set up for the session (dashboard, tool attribution); absent when none reported. */
   reports?: IntegrationReport[];
+  /** Subagent name prefixes the integrations enable for this workspace (`laravel-`); see WorkspaceIntegration.agentPrefix. */
+  agentPrefixes?: string[];
 }
 
 /**
@@ -161,6 +163,8 @@ export interface StartSessionParams {
   extensions?: SessionExtensions;
   /** Permission policy; absent means not read-only. */
   policy?: SessionPolicy;
+  /** Subagents (`subagent_type`, e.g. `symphony:laravel-architect`) the session must not start. */
+  deniedAgents?: string[];
   /** Upper bound for one call of a Symphony tool (it may run an entry check); absent = the agent's default. */
   toolTimeoutMs?: number;
 }

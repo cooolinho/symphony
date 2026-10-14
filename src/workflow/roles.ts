@@ -1,5 +1,5 @@
 import type { Issue } from '../tracker/types.ts';
-import { parseIssueCommand } from './command.ts';
+import { parseIssueCommand, type PluginAgent } from './command.ts';
 import type { ClaudeConfig } from './config.ts';
 import { normalizeStateName } from './config.ts';
 
@@ -43,6 +43,11 @@ export interface RoleConfig {
    * it ends after its turn once sub-issues are open, and the issue is dispatched again when all of them are closed.
    */
   waitForSubIssues: boolean;
+  /**
+   * Plugin subagents (`agents/<name>.md`, names without the plugin prefix) the role may call; null = every one the
+   * session may use. Read-only roles never get subagents that can edit files.
+   */
+  agents: string[] | null;
   claude: RoleClaudeOverrides;
 }
 
@@ -64,4 +69,32 @@ export function roleFor(issue: Pick<Issue, 'state' | 'description'>, roles: read
 /** Template and log name of `role`: its name, or `default` for the implicit role. */
 export function roleName(role: RoleConfig | null): string {
   return role?.name ?? DEFAULT_ROLE;
+}
+
+/** Plugin subagents a session may call, and the ones it must not. */
+export interface SessionAgents {
+  allowed: PluginAgent[];
+  denied: PluginAgent[];
+}
+
+/**
+ * Splits the plugin subagents for a session of `role`. A subagent is allowed when the role lists it (or lists none),
+ * it does not edit files in a read-only role, and its name does not start with an integration's prefix
+ * (`laravel-`) unless that integration found its project type in the workspace (`activePrefixes`).
+ */
+export function sessionAgents(
+  agents: readonly PluginAgent[],
+  role: RoleConfig | null,
+  scopedPrefixes: readonly string[],
+  activePrefixes: readonly string[],
+): SessionAgents {
+  const result: SessionAgents = { allowed: [], denied: [] };
+  for (const agent of agents) {
+    const listed = role?.agents == null || role.agents.includes(agent.name);
+    const writable = role?.readOnly !== true || agent.readOnly;
+    const scoped = scopedPrefixes.filter((prefix) => agent.name.startsWith(prefix));
+    const inScope = scoped.length === 0 || scoped.some((prefix) => activePrefixes.includes(prefix));
+    (listed && writable && inScope ? result.allowed : result.denied).push(agent);
+  }
+  return result;
 }

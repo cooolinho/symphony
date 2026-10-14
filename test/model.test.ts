@@ -145,7 +145,7 @@ describe('model labels', () => {
     assert.equal(STANDARD_LABELS.length, 9 + WORKFLOW_LABELS.length);
     assert.equal(STANDARD_LABELS.filter((label) => isModelLabel(label.name)).length, 4);
     assert.equal(STANDARD_LABELS.filter((label) => isEffortLabel(label.name)).length, 5);
-    assert.deepEqual(WORKFLOW_LABELS.map((label) => label.name), ['auto-code', 'concept', 'epic', 'feature', 'design', 'quality', 'maintenance', 'manual-merge']);
+    assert.deepEqual(WORKFLOW_LABELS.map((label) => label.name), ['auto-code', 'concept', 'plan', 'epic', 'feature', 'design', 'quality', 'maintenance', 'manual-merge']);
     for (const label of STANDARD_LABELS) {
       if (WORKFLOW_LABELS.includes(label)) {
         assert.ok(!isModelLabel(label.name) && !isEffortLabel(label.name), label.name);

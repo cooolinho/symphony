@@ -165,8 +165,8 @@ let it through (so its entry checks passed), Symphony:
 
 1. looks up the open pull request from the issue's branch (the linked branch, else `symphony/issue-<number>`) into
    `base_branch`;
-2. does nothing when there is no such pull request (for example when the auditor or the planner hands off its
-   issue), and refuses, leaving the issue in `on_enter` with a comment, when `base_branch` is the repository's default
+2. does nothing when there is no such pull request (for example when the auditor, the analyst or the planner hands off
+   its issue), and refuses, leaving the issue in `on_enter` with a comment, when `base_branch` is the repository's default
    branch, the pull request is a draft, or the pull request or the issue has the `opt_out_label`;
 3. merges it with `mergePullRequest` and `expectedHeadOid` (only the head it read, never a newer push);
 4. closes the issue (`closeIssue`, reason `COMPLETED`): GitHub ignores `Closes #N` for merges into a branch other than

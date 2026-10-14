@@ -650,7 +650,12 @@ ${CHART_JS}
       hbars(skills, t.skills.slice(0, 10).map((r) => ({ label: r.skill, value: r.calls, text: fmtInt(r.calls), sub: fmtInt(r.runs) + ' run' + (r.runs === 1 ? '' : 's'), color: 'var(--amber)', tip: [['Loaded', fmtInt(r.calls) + '×'], ['Runs', fmtInt(r.runs)]] })));
       nodes.push(el('h3', 'Skills loaded', 'sub-h'), skills);
     }
-    nodes.push(el('p', 'Green: built-in tools, cyan: MCP tools (server · tool). ' + TOOL_NOTE, 'note'));
+    if (t.agents && t.agents.length) {
+      const agents = el('div', null, 'hbars');
+      hbars(agents, t.agents.slice(0, 10).map((r) => ({ label: r.agent, value: r.calls, text: fmtInt(r.calls), sub: fmtInt(r.runs) + ' run' + (r.runs === 1 ? '' : 's'), color: 'var(--violet, var(--cyan))', tip: [['Started', fmtInt(r.calls) + '×'], ['Runs', fmtInt(r.runs)]] })));
+      nodes.push(el('h3', 'Subagents used', 'sub-h'), agents);
+    }
+    nodes.push(el('p', 'Green: built-in tools, cyan: MCP tools (server · tool). Subagents count the Agent tool calls by subagent type. ' + TOOL_NOTE, 'note'));
     setBody('tools', ...nodes);
   }
 

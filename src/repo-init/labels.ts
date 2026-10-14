@@ -43,10 +43,11 @@ function effortLabel(value: string): NewLabel {
   };
 }
 
-/** Labels the /auto-code planner and the /concept analyst put on their issues, and the opt-out label of `auto_merge`. */
+/** Labels the /auto-code autopilot, the /concept analyst and the /plan planner put on their issues, and the opt-out label of `auto_merge`. */
 export const WORKFLOW_LABELS: readonly NewLabel[] = [
   { name: 'auto-code', color: '7057ff', description: 'Planned by the Symphony autopilot (/auto-code)' },
   { name: 'concept', color: '0052cc', description: 'Planned from a concept document (/concept)' },
+  { name: 'plan', color: '006b75', description: 'Planned from a list (/plan)' },
   { name: 'epic', color: '3e4b9e', description: 'Container for the issues of one area; not implemented itself' },
   { name: 'feature', color: 'a2eeef', description: 'New or completed functionality' },
   { name: 'design', color: 'd4c5f9', description: 'User interface and usability' },
@@ -154,7 +155,7 @@ function describeResult(result: ApplyResult): string {
 export const labelsTask: InitTask = {
   id: 'labels',
   title: 'Standard labels',
-  summary: '"Model: …" and "Effort: …" labels that pick the Claude model and effort per issue, plus the /auto-code, /concept and manual-merge labels',
+  summary: '"Model: …" and "Effort: …" labels that pick the Claude model and effort per issue, plus the /auto-code, /concept, /plan and manual-merge labels',
 
   async run({ repositories, github, terminal }) {
     let ok = true;

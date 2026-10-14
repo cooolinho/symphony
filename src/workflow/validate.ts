@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { getTrackerFactory, supportedTrackerKinds } from '../tracker/registry.ts';
-import { commandSkills } from './command.ts';
+import { commandSkills, pluginAgents } from './command.ts';
 import { normalizeStateName, type ServiceConfig } from './config.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from './store.ts';
 
@@ -53,6 +53,15 @@ export function validateDispatch(
   for (const role of workflow.config.roles ?? []) {
     for (const command of role.commands ?? []) {
       if (!skills.has(command)) errors.push(`roles.${role.name}.commands: no skill for /${command} in claude.plugins (expected skills/${command}/SKILL.md)`);
+    }
+  }
+  // A role's subagent must exist, and a read-only role must not hand edits to a subagent.
+  const agents = new Map(pluginAgents(claude.plugins).map((agent) => [agent.name, agent]));
+  for (const role of workflow.config.roles ?? []) {
+    for (const name of role.agents ?? []) {
+      const agent = agents.get(name);
+      if (agent === undefined) errors.push(`roles.${role.name}.agents: no subagent ${name} in claude.plugins (expected agents/${name}.md)`);
+      else if (role.readOnly && !agent.readOnly) errors.push(`roles.${role.name}.agents: ${name} can edit files, but the role is read-only`);
     }
   }
   return errors;

@@ -57,7 +57,7 @@ describe('statistics analytics', () => {
     return { ...h, entries: readHistory(h.log.dir, null).entries };
   }
 
-  it('aggregates tool calls, skills and the use of integrations such as Laravel Boost', () => {
+  it('aggregates tool calls, skills, subagents and the use of integrations such as Laravel Boost', () => {
     const h = history();
     const boost = (status: string, tools: Record<string, number>, skills: Record<string, number> = {}) => [{ id: 'laravel-boost', status, tools, skills }];
     h.log.runFinished(finish('acme/app#1', 'r1', '2026-10-03T10:00:00Z', {
@@ -65,7 +65,11 @@ describe('statistics analytics', () => {
       skillCalls: { 'pest-testing': 1 },
       integrations: boost('ready', { 'search-docs': 2 }, { 'pest-testing': 1 }),
     }));
-    h.log.runFinished(finish('acme/app#2', 'r2', '2026-10-04T10:00:00Z', { toolCalls: { Bash: 1, Edit: 2 }, integrations: boost('ready', {}) }));
+    h.log.runFinished(finish('acme/app#2', 'r2', '2026-10-04T10:00:00Z', {
+      toolCalls: { Bash: 1, Edit: 2 },
+      agentCalls: { 'symphony:laravel-code-reviewer': 2, 'general-purpose': 1 },
+      integrations: boost('ready', {}),
+    }));
     h.log.runFinished(finish('acme/app#3', 'r3', '2026-10-05T10:00:00Z', { toolCalls: { 'mcp__laravel-boost__search-docs': 1 }, integrations: boost('unavailable', {}) }));
     // Logged before tool calls were recorded.
     h.log.runFinished(finish('acme/app#4', 'r4', '2026-10-05T11:00:00Z'));
@@ -83,6 +87,10 @@ describe('statistics analytics', () => {
       { tool: 'Skill', calls: 1, runs: 1, server: null, name: 'Skill' },
     ]);
     assert.deepEqual(a.tools.skills, [{ skill: 'pest-testing', calls: 1, runs: 1 }]);
+    assert.deepEqual(a.tools.agents, [
+      { agent: 'symphony:laravel-code-reviewer', calls: 2, runs: 1 },
+      { agent: 'general-purpose', calls: 1, runs: 1 },
+    ]);
     assert.deepEqual(a.tools.integrations, [{
       id: 'laravel-boost',
       runs: 3,
@@ -97,7 +105,7 @@ describe('statistics analytics', () => {
     }]);
 
     const none = computeAnalytics([], h.pricing.current(), filter(), NOW);
-    assert.deepEqual(none.tools, { runs: 0, runs_with_calls: 0, calls: 0, avg_calls_per_run: null, distinct_tools: 0, tools: [], skills: [], integrations: [] });
+    assert.deepEqual(none.tools, { runs: 0, runs_with_calls: 0, calls: 0, avg_calls_per_run: null, distinct_tools: 0, tools: [], skills: [], agents: [], integrations: [] });
   });
 
   it('breaks runs down by effort, filters by it and lists runs without usage under their requested model', () => {

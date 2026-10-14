@@ -9,7 +9,8 @@ import { SymphonyError } from '../src/util/errors.ts';
 import { loadEnvFile } from '../src/util/env.ts';
 import type { LaravelConfig } from '../src/laravel/integration.ts';
 import { DEFAULTS, resolveConfig, type ServiceConfig } from '../src/workflow/config.ts';
-import { roleFor } from '../src/workflow/roles.ts';
+import { roleFor, sessionAgents, type RoleConfig } from '../src/workflow/roles.ts';
+import { pluginAgents } from '../src/workflow/command.ts';
 import { loadWorkflowFile, parseWorkflow } from '../src/workflow/loader.ts';
 import { type EffectiveWorkflow, WorkflowStore } from '../src/workflow/store.ts';
 import { unknownBoardColumns, validateDispatch } from '../src/workflow/validate.ts';
@@ -654,8 +655,8 @@ describe('roles config', () => {
     });
 
     it('parses sub_issue_status and wait_for_sub_issues, off by default', () => {
-      const planner = { commands: ['auto-code'], states: ['Ready', 'In progress'], max_sub_issues: 5, sub_issue_status: ' Ready ', wait_for_sub_issues: true };
-      const found = resolve({ ...base, roles: { ...valid, planner } }).roles?.find((role) => role.name === 'planner');
+      const autopilot = { commands: ['auto-code'], states: ['Ready', 'In progress'], max_sub_issues: 5, sub_issue_status: ' Ready ', wait_for_sub_issues: true };
+      const found = resolve({ ...base, roles: { ...valid, autopilot } }).roles?.find((role) => role.name === 'autopilot');
       assert.deepEqual([found?.subIssueStatus, found?.waitForSubIssues], ['Ready', true]);
       const [developer, , audit] = roles();
       assert.deepEqual([developer?.subIssueStatus, developer?.waitForSubIssues], [null, false]);
@@ -705,5 +706,54 @@ describe('command skills in dispatch validation', () => {
     assert.deepEqual(errors(['refactoring', 'missing']), [
       'roles.auditor.commands: no skill for /missing in claude.plugins (expected skills/missing/SKILL.md)',
     ]);
+  });
+});
+
+describe('role subagents', () => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, '.claude', 'agents'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.claude', 'agents', 'laravel-architect.md'), '---\nname: laravel-architect\ndescription: Plans.\ndisallowedTools: Edit, Write, NotebookEdit\n---\n');
+  fs.writeFileSync(path.join(dir, '.claude', 'agents', 'laravel-filament-developer.md'), '---\nname: laravel-filament-developer\ndescription: Builds.\n---\n');
+  fs.writeFileSync(path.join(dir, '.claude', 'agents', 'reader.md'), '---\nname: reader\ndescription: Reads.\ntools: Read, Grep\n---\n');
+  const front = (reviewer: Record<string, unknown>) => ({
+    tracker: { kind: 'github_project', active_states: ['Todo', 'Agent review'] },
+    claude: { plugins: ['./.claude'] },
+    roles: { developer: { states: ['Todo'] }, reviewer: { states: ['Agent review'], read_only: true, ...reviewer } },
+  });
+  const errors = (reviewer: Record<string, unknown>) =>
+    validateDispatch({ config: resolve(front(reviewer), {}, dir) } as unknown as EffectiveWorkflow, null, {}).filter((error) => error.includes('agents'));
+
+  it('reads the plugin subagents with their read-only flag', () => {
+    assert.deepEqual(pluginAgents([path.join(dir, '.claude')]), [
+      { name: 'laravel-architect', qualified: '.claude:laravel-architect', description: 'Plans.', readOnly: true },
+      { name: 'laravel-filament-developer', qualified: '.claude:laravel-filament-developer', description: 'Builds.', readOnly: false },
+      { name: 'reader', qualified: '.claude:reader', description: 'Reads.', readOnly: true },
+    ]);
+  });
+
+  it('parses roles.<role>.agents: unset means all, an empty list none', () => {
+    const roles = resolve(front({ agents: [] }), {}, dir).roles ?? [];
+    assert.equal(roles.find((role) => role.name === 'developer')?.agents, null);
+    assert.deepEqual(roles.find((role) => role.name === 'reviewer')?.agents, []);
+    assert.throws(() => resolve(front({ agents: ['kit:reader'] }), {}, dir), /roles\.reviewer\.agents: "kit:reader" is not an agent name/);
+  });
+
+  it('blocks dispatch for unknown subagents and editing subagents in a read-only role', () => {
+    assert.deepEqual(errors({ agents: ['laravel-architect', 'reader'] }), []);
+    assert.deepEqual(errors({ agents: ['laravel-filament-developer', 'missing'] }), [
+      'roles.reviewer.agents: laravel-filament-developer can edit files, but the role is read-only',
+      'roles.reviewer.agents: no subagent missing in claude.plugins (expected agents/missing.md)',
+    ]);
+  });
+
+  it('splits the subagents by role list, read-only policy and integration prefix', () => {
+    const agents = pluginAgents([path.join(dir, '.claude')]);
+    const role = (overrides: Partial<RoleConfig>) => ({ name: 'r', states: [], readOnly: false, mayMoveTo: null, maxTurns: null, commands: null, runChecks: true, maxSubIssues: null, subIssueStatus: null, waitForSubIssues: false, agents: null, claude: {}, ...overrides });
+    const names = (split: { allowed: Array<{ name: string }>; denied: Array<{ name: string }> }) => [split.allowed.map((a) => a.name), split.denied.map((a) => a.name)];
+    assert.deepEqual(names(sessionAgents(agents, null, ['laravel-'], ['laravel-'])), [['laravel-architect', 'laravel-filament-developer', 'reader'], []]);
+    assert.deepEqual(names(sessionAgents(agents, null, ['laravel-'], [])), [['reader'], ['laravel-architect', 'laravel-filament-developer']]);
+    assert.deepEqual(names(sessionAgents(agents, role({ readOnly: true }), ['laravel-'], ['laravel-'])), [['laravel-architect', 'reader'], ['laravel-filament-developer']]);
+    assert.deepEqual(names(sessionAgents(agents, role({ agents: ['laravel-architect'] }), ['laravel-'], ['laravel-'])), [['laravel-architect'], ['laravel-filament-developer', 'reader']]);
+    assert.deepEqual(names(sessionAgents(agents, role({ agents: [] }), [], [])), [[], ['laravel-architect', 'laravel-filament-developer', 'reader']]);
   });
 });

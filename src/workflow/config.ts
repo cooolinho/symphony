@@ -160,6 +160,7 @@ const ROLE_KEYS = new Set([
   'max_sub_issues',
   'sub_issue_status',
   'wait_for_sub_issues',
+  'agents',
   'claude',
 ]);
 /** GitHub allows 100 sub-issues per issue. */
@@ -244,6 +245,7 @@ function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: s
       maxSubIssues,
       subIssueStatus,
       waitForSubIssues: reader.bool(value, 'wait_for_sub_issues', `${field}.wait_for_sub_issues`, false),
+      agents: readRoleAgents(reader, value, field),
       claude,
     });
   }
@@ -265,6 +267,19 @@ function readRoleCommands(reader: Reader, raw: Record<string, unknown>, field: s
   }
   if (list.length === 0) reader.errors.push(`${field}.commands must list at least one command`);
   return commands;
+}
+
+/** `agents` of a role: null when omitted (every plugin agent); `[]` allows none. Names come without the plugin prefix. */
+function readRoleAgents(reader: Reader, raw: Record<string, unknown>, field: string): string[] | null {
+  const list = reader.stringList(raw, 'agents', `${field}.agents`);
+  if (list === null) return null;
+  const agents: string[] = [];
+  for (const entry of list) {
+    const name = entry.trim();
+    if (!COMMAND_NAME.test(name)) reader.errors.push(`${field}.agents: ${JSON.stringify(entry)} is not an agent name (lowercase letters, digits and dashes, without the plugin prefix)`);
+    else if (!agents.includes(name)) agents.push(name);
+  }
+  return agents;
 }
 
 function readMaxSubIssues(reader: Reader, raw: Record<string, unknown>, field: string): number | null {
