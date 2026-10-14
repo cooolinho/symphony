@@ -5,7 +5,8 @@ Central overview of all Symphony documents. For an overview of the project, see 
 ## Getting started
 
 - [Getting Started](getting-started.md): requirements, installation, board, token, `.env`, dry run and start
-- [Docker](docker.md): running with Docker Compose behind Traefik: setup, updates, backup, common errors and security
+- [Docker](docker.md): running with Docker Compose behind Traefik: setup, updates, backup, common errors and security;
+  local test setup without Traefik (`docker-compose.local.yml`)
 - [Usage](usage.md): the life of an issue, intervening while it runs, model and effort choice, `repo-init`, dashboard
   and API, logs and cost, several repositories, Laravel Boost, security and troubleshooting
 

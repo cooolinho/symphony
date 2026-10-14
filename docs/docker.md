@@ -5,7 +5,8 @@ This guide sets up Symphony with `docker compose` on a server behind an existing
 Docker is described in [Getting Started](getting-started.md).
 
 The files for this are in the repository: `Dockerfile`, `docker-compose.yml`, `docker/entrypoint.sh`,
-`docker/ssh_known_hosts`, `.dockerignore` and the template `.env.example`.
+`docker/ssh_known_hosts`, `.dockerignore` and the template `.env.example`. To test the same image on your own machine
+without Traefik, use `docker-compose.local.yml`: see [Local test setup without Traefik](#local-test-setup-without-traefik).
 
 ## Requirements
 
@@ -185,6 +186,55 @@ docker compose logs -f
 
 Open `https://<SYMPHONY_DOMAIN>/` and log in with the credentials from step 8. With `TRAEFIK_TLS=false` (step 9) it is
 `http://<SYMPHONY_DOMAIN>/`; a browser in HTTPS-only mode needs an exception for it.
+
+## Local test setup without Traefik
+
+`docker-compose.local.yml` runs the same image as `docker-compose.yml` on your own machine, for trying out a change
+close to production before it goes to the server. It has no Traefik parts: no external network, no labels, no login.
+Instead the dashboard is published on `127.0.0.1`.
+
+| | `docker-compose.yml` | `docker-compose.local.yml` |
+|---|---|---|
+| Dashboard | through Traefik at `SYMPHONY_DOMAIN`, with BasicAuth or forward auth | `http://127.0.0.1:<SYMPHONY_PORT>/` (default `4000`), no login |
+| Required in `.env` | steps 2 to 9 | steps 2 to 7: no `SYMPHONY_DOMAIN`, `TRAEFIK_*` or `SYMPHONY_BASIC_AUTH` |
+| `WORKFLOW.md`, `model-costs.yml` | in the image (mounts optional) | mounted read-only, reloaded live without a rebuild |
+| Container | `${COMPOSE_PROJECT_NAME:-symphony}` | `${COMPOSE_PROJECT_NAME:-symphony}-local` |
+
+Like the production file, it overrides the host-specific values of `.env` (`SYMPHONY_PHP`, `SYMPHONY_LOG_DIR`,
+`SYMPHONY_HOST` …), so the same `.env` serves `npm start` and the container.
+
+### Setup and start
+
+1. Do steps [2](#2-create-env) to [7](#7-set-the-git-identity) of the setup above on your machine: `.env` with board,
+   repository and token, Claude credentials, `secrets/ssh_key` with its public key on GitHub and the Git identity.
+2. Check the setup without starting agents, then start:
+
+   ```bash
+   docker compose -f docker-compose.local.yml run --rm symphony --dry-run
+   docker compose -f docker-compose.local.yml up -d --build
+   docker compose -f docker-compose.local.yml logs -f
+   ```
+
+3. Open `http://127.0.0.1:4000/` (or the port from `SYMPHONY_PORT`).
+4. Stop with `docker compose -f docker-compose.local.yml down`. The volumes are kept; `down -v` deletes them, including
+   the workspaces with unpushed work.
+
+To leave out `-f` in every command, set the file for the shell session: `export COMPOSE_FILE=docker-compose.local.yml`.
+
+### Things to watch
+
+- **One board, one instance.** Two Symphony instances on the same board pick up the same issues and work against each
+  other. While the local container runs, stop the instance on the server, or point `.env` at a test board and test
+  repository (`GITHUB_PROJECT_NUMBER`, `GITHUB_REPOSITORY`).
+- **Same project name as production.** Compose names the project after the directory (`symphony`), for both files. The
+  volumes are therefore called `symphony_state`, `symphony_claude` and so on, the same as those of `docker-compose.yml`.
+  On a machine that also runs `docker-compose.yml` from this directory, add `-p symphony-local` to every command; the
+  volumes are then called `symphony-local_*` and the production container stays untouched.
+- **The dashboard has no login** and allows **Retry** (`SYMPHONY_ALLOW_REMOTE_CONTROL=true`). That is safe only
+  because the port is bound to `127.0.0.1`; do not change the binding in `ports:` to `0.0.0.0` or a LAN address.
+- **Live configuration:** `WORKFLOW.md` and `model-costs.yml` are single-file bind mounts. If your editor replaces the
+  file instead of writing it in place, the container keeps the old version; `docker compose -f docker-compose.local.yml
+  restart` helps. A changed `.env` needs `up -d` (see [Changing the configuration](#changing-the-configuration)).
 
 ## Operation
 

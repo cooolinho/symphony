@@ -165,7 +165,9 @@ npm start               # start Symphony
 
 In between, create a GitHub Project board with the columns `Backlog`, `Ready`, `In progress`, `Agent review`,
 `Blocked`, `In review` and `Done`. The step-by-step guide is [docs/getting-started.md](docs/getting-started.md);
-running it with Docker behind Traefik is described in [docs/docker.md](docs/docker.md).
+running it with Docker behind Traefik is described in [docs/docker.md](docs/docker.md), a local test run of the same
+image without Traefik (`docker-compose.local.yml`) in
+[its own section](docs/docker.md#local-test-setup-without-traefik).
 
 ## 📋 Usage
 
@@ -191,6 +193,7 @@ symphony/
 ├── model-costs.yml             # model prices for the cost estimate (reloaded live)
 ├── Dockerfile                  # image with Node, PHP, Composer, git and SSH; runs as user symphony
 ├── docker-compose.yml          # deployment behind Traefik: labels, volumes, secret for the SSH key
+├── docker-compose.local.yml    # local test run of the same image without Traefik, dashboard on 127.0.0.1
 ├── docker/                     # entrypoint.sh (checks variables, SSH key, git identity) and ssh_known_hosts
 ├── .env.example                # template for .env (board, repository, model, token, limits)
 ├── repo-init.ts                # interactive repository setup (standard labels, Laravel Boost issue)

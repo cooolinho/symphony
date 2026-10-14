@@ -168,7 +168,9 @@ npm start               # Symphony starten
 Dazwischen legst du ein GitHub Project Board mit den Spalten `Backlog`, `Ready`, `In progress`, `Agent review`,
 `Blocked`, `In review` und `Done` an. Die ausführliche Anleitung steht in
 [docs/getting-started.md](docs/getting-started.md), den Betrieb per Docker hinter Traefik beschreibt
-[docs/docker.md](docs/docker.md). Die Dokumentation unter `docs/` ist auf Englisch.
+[docs/docker.md](docs/docker.md), einen lokalen Testlauf desselben Images ohne Traefik (`docker-compose.local.yml`)
+[ein eigener Abschnitt](docs/docker.md#local-test-setup-without-traefik). Die Dokumentation unter `docs/` ist auf
+Englisch.
 
 ## 📋 Usage
 
@@ -194,6 +196,7 @@ symphony/
 ├── model-costs.yml             # Modellpreise für die Kostenschätzung (wird live neu geladen)
 ├── Dockerfile                  # Image mit Node, PHP, Composer, git und SSH; läuft als Benutzer symphony
 ├── docker-compose.yml          # Betrieb hinter Traefik: Labels, Volumes, Secret für den SSH-Key
+├── docker-compose.local.yml    # lokaler Testlauf desselben Images ohne Traefik, Dashboard auf 127.0.0.1
 ├── docker/                     # entrypoint.sh (Variablen prüfen, SSH-Key, git-Identität) und ssh_known_hosts
 ├── .env.example                # Vorlage für .env (Board, Repository, Modell, Token, Grenzen)
 ├── repo-init.ts                # interaktive Einrichtung der Repositories (Standard-Labels, Laravel-Boost-Issue)
