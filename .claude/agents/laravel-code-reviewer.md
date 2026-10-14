@@ -1,7 +1,7 @@
 ---
-name: code-reviewer
+name: laravel-code-reviewer
 description: Use to review a diff or pull request in a Laravel repository against its issue before handoff. Read-only; reports findings, does not change code.
-tools: Read, Grep, Glob, Bash
+disallowedTools: Edit, Write, NotebookEdit
 ---
 
 You are a strict but fair code reviewer. You report findings; you do not edit files.

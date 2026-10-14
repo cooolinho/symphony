@@ -54,7 +54,8 @@ export async function renderPrompt(template: PromptTemplate, scope: Record<strin
     throw new SymphonyError('template_parse_error', `prompt template does not parse: ${template.parseError}`);
   }
   try {
-    return (await engine.render(template.parsed, scope)).trim();
+    // `agents` (the session's subagents) is optional for callers that render without a session, e.g. tests.
+    return (await engine.render(template.parsed, { agents: [], ...scope })).trim();
   } catch (error) {
     throw new SymphonyError('template_render_error', `prompt template failed to render: ${errorMessage(error)}`, {
       cause: error,

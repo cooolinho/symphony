@@ -54,7 +54,8 @@ Symphony works with any repository, but it is tuned for Laravel applications:
 - **Laravel checks.** [`checks/laravel.sh`](checks/laravel.sh) runs Pint, static analysis and the test suite before an
   issue may move to `Agent review` or `In review`.
 - **Laravel-aware subagents.** The shared toolbox in [`.claude/`](.claude/README.md) ships specialists such as
-  `filament-developer`, `database-engineer`, `test-engineer` and a `code-reviewer`.
+  `laravel-filament-developer`, `laravel-database-engineer`, `laravel-test-engineer` and a `laravel-code-reviewer`
+  ([how they relate to the roles](docs/laravel-subagents.md)).
 - **Repository conventions** for agent instructions, `.ai/`, Composer scripts and Boost are described in
   [docs/laravel-repositories.md](docs/laravel-repositories.md).
 

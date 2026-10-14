@@ -7,7 +7,7 @@ Symphony works on.
 | Folder | Contents | Invoked in the agent as |
 |---|---|---|
 | `skills/<name>/SKILL.md` | Skills: front matter with `name` and `description`, followed by the instructions | `symphony:<name>` |
-| `agents/<name>.md` | Subagents (optional specialist personas: `architect`, `database-engineer`, `filament-developer`, `test-engineer`, `code-reviewer`) | `symphony:<name>` |
+| `agents/<name>.md` | Subagents (optional specialist personas: `laravel-architect`, `laravel-database-engineer`, `laravel-filament-developer`, `laravel-test-engineer`, `laravel-code-reviewer`) | `symphony:<name>` |
 | `commands/<name>.md` | Slash commands (legacy form, prefer skills) | `/symphony:<name>` |
 | `hooks/hooks.json` | Hooks; scripts next to it, referenced in the JSON via `${CLAUDE_PLUGIN_ROOT}` | automatic |
 | `.claude-plugin/plugin.json` | Plugin manifest (name `symphony`) | – |
@@ -42,6 +42,14 @@ repository, belongs here.
 - In Laravel repositories, put your own skills in `.ai/skills/`, not `.claude/skills/`: Boost overwrites
   `.claude/skills` when it generates, and `.ai/` is agent-neutral (Claude Code, Cursor, Codex …). A skill of the same
   name in `.ai/skills/` replaces the Boost skill.
+
+## Rules for subagents
+
+- The file name is the agent's name; `name:` in the front matter is the same name.
+- A subagent that only makes sense for one framework carries it as prefix (`laravel-…`); framework-neutral subagents
+  carry none. How the Laravel subagents relate to the roles: [docs/laravel-subagents.md](../docs/laravel-subagents.md).
+- A read-only subagent denies `Edit, Write, NotebookEdit` with `disallowedTools:` instead of listing `tools:`: an
+  allowlist also drops the MCP tools (Laravel Boost) it needs.
 
 ## Command skills (`/refactoring`, `/refactor-safely`, `/auto-code`, `/concept`, `/plan`)
 

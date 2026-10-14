@@ -1,9 +1,11 @@
 import type { IntegrationReport } from '../agent/types.ts';
 
-/** Tool calls of one run: `tool_use` events per tool name, and Skill tool calls per skill. */
+/** Tool calls of one run: `tool_use` events per tool name, Skill tool calls per skill, Agent tool calls per subagent. */
 export interface ToolUsage {
   tools: Record<string, number>;
   skills: Record<string, number>;
+  /** By `subagent_type`, e.g. `symphony:laravel-architect` or `general-purpose`. */
+  agents: Record<string, number>;
 }
 
 /** Calls of one run attributed to an integration. */
@@ -16,16 +18,17 @@ export interface IntegrationUsage {
 }
 
 export function emptyToolUsage(): ToolUsage {
-  return { tools: {}, skills: {} };
+  return { tools: {}, skills: {}, agents: {} };
 }
 
-export function countToolUse(usage: ToolUsage, tool: string, skill: string | null): void {
+export function countToolUse(usage: ToolUsage, tool: string, skill: string | null, agent: string | null = null): void {
   usage.tools[tool] = (usage.tools[tool] ?? 0) + 1;
   if (skill !== null) usage.skills[skill] = (usage.skills[skill] ?? 0) + 1;
+  if (agent !== null) usage.agents[agent] = (usage.agents[agent] ?? 0) + 1;
 }
 
 export function copyToolUsage(usage: ToolUsage): ToolUsage {
-  return { tools: { ...usage.tools }, skills: { ...usage.skills } };
+  return { tools: { ...usage.tools }, skills: { ...usage.skills }, agents: { ...usage.agents } };
 }
 
 /** `mcp__<server>__<tool>` → server and tool; null for built-in tools. */

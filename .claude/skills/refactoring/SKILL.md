@@ -65,7 +65,7 @@ certainly break. Everything else (structure, duplicates, readability, deprecated
 - Every finding needs evidence: file and line, for bugs also how it occurs. Assumptions do not go into a sub-issue.
   Put them in the report under "Unclear".
 - In large repositories you split the analysis by area (e.g. `app/Filament`, `app/Models`, `resources/js`) and let
-  read-only subagents (`symphony:architect`, `symphony:code-reviewer`) check one area each. You check their findings
+  read-only subagents (`symphony:laravel-architect`, `symphony:laravel-code-reviewer`) check one area each. You check their findings
   against the code yourself before you adopt them.
 
 ## Phase 4: Prioritise and cut

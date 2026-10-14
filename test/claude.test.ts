@@ -105,6 +105,7 @@ function params(
     policy?: SessionPolicy;
     toolTimeoutMs?: number;
     transcriptPath?: string;
+    deniedAgents?: string[];
   } = {},
 ): StartSessionParams {
   const config = resolveConfig({ claude: { model: 'opus', ...overrides.claude } }, { workflowPath: '/w/WORKFLOW.md', env: {}, trackerDefaults }).claude;
@@ -123,6 +124,7 @@ function params(
     ...(overrides.extensions ? { extensions: overrides.extensions } : {}),
     ...(overrides.policy ? { policy: overrides.policy } : {}),
     ...(overrides.toolTimeoutMs !== undefined ? { toolTimeoutMs: overrides.toolTimeoutMs } : {}),
+    ...(overrides.deniedAgents ? { deniedAgents: overrides.deniedAgents } : {}),
   };
 }
 
@@ -405,6 +407,57 @@ describe('claude agent runner', () => {
     const explicit = await sessionOptions({ toolTimeoutMs: 660_000, claude: { env: { MCP_TOOL_TIMEOUT: '900000' } } });
     assert.equal(timeoutOf(explicit), undefined);
     assert.equal(explicit.env?.MCP_TOOL_TIMEOUT, '900000');
+  });
+
+  it('denies the subagents a role or workspace does not allow, by rule and by hook', async () => {
+    const events: AgentEvent[] = [];
+    const options = await sessionOptions({ deniedAgents: ['symphony:laravel-filament-developer', 'laravel-filament-developer'], events });
+    assert.ok(options.disallowedTools?.includes('Agent(symphony:laravel-filament-developer)'));
+    assert.ok(options.disallowedTools?.includes('Agent(laravel-filament-developer)'));
+    const matcher = options.hooks?.PreToolUse?.[0];
+    assert.equal(matcher?.matcher, 'Agent|Task');
+    const hook = matcher?.hooks[0];
+    assert.ok(hook !== undefined);
+    const call = (tool: string, input: unknown) =>
+      hook({ hook_event_name: 'PreToolUse', tool_name: tool, tool_input: input, tool_use_id: 't1', session_id: 's', transcript_path: '', cwd: '/tmp' } as never, 't1', {
+        signal: new AbortController().signal,
+      });
+    const denied = (await call('Agent', { subagent_type: 'symphony:laravel-filament-developer', prompt: 'x' })) as { hookSpecificOutput?: { permissionDecision?: string } };
+    assert.equal(denied.hookSpecificOutput?.permissionDecision, 'deny');
+    assert.equal(((await call('Task', { subagent_type: 'laravel-filament-developer' })) as typeof denied).hookSpecificOutput?.permissionDecision, 'deny');
+    assert.deepEqual(await call('Agent', { subagent_type: 'symphony:laravel-code-reviewer' }), {});
+    assert.deepEqual(await call('Agent', { prompt: 'no type: general-purpose' }), {});
+    assert.ok(events.some((event) => event.event === 'approval_denied' && event.detail?.agent === 'symphony:laravel-filament-developer'));
+
+    const open = await sessionOptions({});
+    assert.equal(open.hooks, undefined);
+    assert.ok(!open.disallowedTools?.some((rule) => rule.startsWith('Agent(')));
+  });
+
+  it('reports the subagent of an Agent tool call', async () => {
+    const fake = fakeQuery((_prompt, _options, emit) => {
+      emit({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', name: 'Agent', input: { subagent_type: 'symphony:laravel-code-reviewer', description: 'Review the diff', prompt: 'x' } },
+            { type: 'tool_use', name: 'Task', input: { description: 'Look around', prompt: 'y' } },
+          ],
+        },
+        parent_tool_use_id: null,
+      });
+      emit(result(0.1, 10, 1));
+    });
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ events }));
+    await session.runTurn('go');
+    await session.stop();
+    const calls = events.filter((event) => event.event === 'tool_use');
+    assert.deepEqual(calls.map((event) => event.detail), [
+      { tool: 'Agent', agent: 'symphony:laravel-code-reviewer' },
+      { tool: 'Task', agent: 'general-purpose' },
+    ]);
+    assert.equal(calls[0]?.message, 'Agent: Review the diff');
   });
 
   it('adds the read-only deny rules', async () => {

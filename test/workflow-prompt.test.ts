@@ -8,7 +8,7 @@ import { githubProjectFactory } from '../src/tracker/github-project/index.ts';
 import { parseSettings } from '../src/tracker/github-project/settings.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 import { resolveConfig } from '../src/workflow/config.ts';
-import { commandSkills } from '../src/workflow/command.ts';
+import { commandSkills, pluginAgents } from '../src/workflow/command.ts';
 import { loadWorkflowFile } from '../src/workflow/loader.ts';
 import { roleFor, roleName } from '../src/workflow/roles.ts';
 import { compilePrompt, issueTemplateValue, renderPrompt } from '../src/workflow/template.ts';
@@ -38,7 +38,13 @@ const issue = makeIssue({
 /** Symphony's own plugin: the skills behind the issue commands. */
 const toolbox = path.join(import.meta.dirname, '..', '.claude');
 
-async function render(role: string, attempt: number | null = null, description?: string, baseBranch: string | null = null): Promise<string> {
+async function render(
+  role: string,
+  attempt: number | null = null,
+  description?: string,
+  baseBranch: string | null = null,
+  agents: Array<{ name: string; description: string }> = [],
+): Promise<string> {
   const { definition } = await loadWorkflowFile(shipped);
   const template = compilePrompt(definition.promptTemplate);
   assert.equal(template.parseError, null);
@@ -47,7 +53,7 @@ async function render(role: string, attempt: number | null = null, description?:
     ...(description !== undefined ? { description } : {}),
     native_ref: { ...issue.native_ref, base_branch: baseBranch },
   };
-  return renderPrompt(template, { issue: issueTemplateValue(subject, commandSkills([toolbox])), attempt, role });
+  return renderPrompt(template, { issue: issueTemplateValue(subject, commandSkills([toolbox])), attempt, role, agents });
 }
 
 describe('shipped WORKFLOW.md', () => {
@@ -323,6 +329,44 @@ describe('shipped WORKFLOW.md issue commands', () => {
     assert.doesNotMatch(plain, /origin\/develop/);
   });
 
+  it('lists the subagents of a role only when the session has some', async () => {
+    const agents = [{ name: 'symphony:laravel-code-reviewer', description: 'Reviews a diff.' }];
+    for (const role of ['developer', 'reviewer', 'auditor', 'autopilot', 'analyst', 'planner']) {
+      const without = await render(role);
+      assert.doesNotMatch(without, /Subagents you may start/, role);
+      const prompt = await render(role, null, undefined, null, agents);
+      assert.match(prompt, /Subagents you may start with the Agent tool/, role);
+      assert.match(prompt, /- `symphony:laravel-code-reviewer`: Reviews a diff\./, role);
+    }
+    assert.match(await render('developer', null, undefined, null, agents), /before you hand off with `set_status\("Agent review"\)`/);
+    assert.match(await render('reviewer', null, undefined, null, agents), /second pass over a large diff/);
+  });
+
+  it('gives the shipped roles only subagents the toolbox ships, read-only ones to read-only roles', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const config = resolveConfig(definition.config, {
+      workflowPath: shipped,
+      env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' },
+      trackerDefaults,
+    });
+    const agents = new Map(pluginAgents([toolbox]).map((agent) => [agent.name, agent]));
+    const byRole = Object.fromEntries((config.roles ?? []).map((role) => [role.name, role.agents]));
+    assert.deepEqual(byRole, {
+      developer: ['laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer'],
+      reviewer: ['laravel-code-reviewer'],
+      auditor: ['laravel-architect', 'laravel-code-reviewer'],
+      autopilot: ['laravel-architect'],
+      analyst: ['laravel-architect'],
+      planner: ['laravel-architect'],
+    });
+    for (const role of config.roles ?? []) {
+      for (const name of role.agents ?? []) {
+        assert.ok(agents.has(name), `${role.name}: ${name}`);
+        if (role.readOnly) assert.ok(agents.get(name)?.readOnly, `${role.name} is read-only, ${name} is not`);
+      }
+    }
+  });
+
   it('adds no command block for an ordinary issue or an unknown command', async () => {
     for (const description of ['Create an invoice resource.', '/login returns 500']) {
       const prompt = await render('developer', null, description);
@@ -405,4 +449,43 @@ describe('Symphony toolbox skills', () => {
       }
     });
   }
+});
+
+describe('Symphony toolbox subagents', () => {
+  const agentsDir = path.join(toolbox, 'agents');
+  const files = fs.readdirSync(agentsDir).filter((file) => file.endsWith('.md'));
+
+  it('ships the Laravel subagents', () => {
+    assert.deepEqual(files.map((file) => file.slice(0, -3)).sort(), [
+      'laravel-architect',
+      'laravel-code-reviewer',
+      'laravel-database-engineer',
+      'laravel-filament-developer',
+      'laravel-test-engineer',
+    ]);
+  });
+
+  for (const file of files) {
+    const name = file.slice(0, -3);
+    it(`${name}: named like its file, framework prefix for Laravel agents, MCP tools kept`, () => {
+      const front = /^---\n([\s\S]*?)\n---\n/.exec(fs.readFileSync(path.join(agentsDir, file), 'utf8'))?.[1] ?? '';
+      assert.equal(/^name:\s*(.+)$/m.exec(front)?.[1]?.trim(), name);
+      const description = /^description:\s*(.+)$/m.exec(front)?.[1] ?? '';
+      assert.ok(description.trim() !== '', 'has a description');
+      if (/laravel/i.test(description)) assert.match(name, /^laravel-/);
+      // An allowlist (`tools:`) drops the Boost MCP tools the Laravel agents rely on; read-only agents deny instead.
+      assert.doesNotMatch(front, /^tools:/m);
+    });
+  }
+
+  it('the toolbox only refers to subagents it ships', () => {
+    const shipped = new Set(files.map((file) => `symphony:${file.slice(0, -3)}`));
+    const texts = [path.join(toolbox, 'README.md'), ...fs.readdirSync(path.join(toolbox, 'skills'), { recursive: true, encoding: 'utf8' })
+      .filter((file) => file.endsWith('.md'))
+      .map((file) => path.join(toolbox, 'skills', file))];
+    for (const text of texts.map((file) => fs.readFileSync(file, 'utf8'))) {
+      for (const [ref] of text.matchAll(/symphony:[a-z0-9-]+-(?:architect|reviewer|engineer|developer)\b/g)) assert.ok(shipped.has(ref), ref);
+      assert.doesNotMatch(text, /symphony:(?:architect|code-reviewer|database-engineer|filament-developer|test-engineer)\b/);
+    }
+  });
 });
