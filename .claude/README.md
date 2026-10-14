@@ -13,8 +13,8 @@ Symphony works on.
 | `.claude-plugin/plugin.json` | Plugin manifest (name `symphony`) | – |
 
 Empty folders contain a `.gitkeep` so git keeps them. Shipped are the skills `refactoring` (audit), `refactor-safely`
-(implementation) and `auto-code` (autopilot, continuously plans waves of sub-issues) and `concept` (split on concept into Epic
-and Sub-Issues in Backlog).
+(implementation), `auto-code` (autopilot, continuously plans waves of sub-issues), `concept` (splits a concept into epics
+and sub-issues in Backlog) and `plan` (turns every item of a list into one planned sub-issue in Backlog).
 
 ## What belongs here, what belongs in the repository?
 
@@ -43,7 +43,7 @@ repository, belongs here.
   `.claude/skills` when it generates, and `.ai/` is agent-neutral (Claude Code, Cursor, Codex …). A skill of the same
   name in `.ai/skills/` replaces the Boost skill.
 
-## Command skills (`/refactoring`, `/refactor-safely`, `/auto-code`, `/concept`)
+## Command skills (`/refactoring`, `/refactor-safely`, `/auto-code`, `/concept`, `/plan`)
 
 If an issue description starts with `/<name>`, the agent loads the skill `symphony:<name>`, provided
 `skills/<name>/SKILL.md` exists (mechanics: [docs/configuration.md](../docs/configuration.md#issue-commands)). These

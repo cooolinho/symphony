@@ -36,7 +36,7 @@ This implementation keeps that contract ([conformance notes](docs/conformance.md
 |---|---|
 | Codex app-server | **Claude Code** through the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) ([mapping](docs/agent-claude.md)) |
 | Pluggable tracker | **GitHub Projects (v2)** adapter: board columns drive the workflow ([profile](docs/adapters/github-project.md)) |
-| One agent per issue | **Roles per column**: a developer implements, a read-only reviewer checks, an auditor and a planner file sub-issues |
+| One agent per issue | **Roles per column**: a developer implements, a read-only reviewer checks, auditor, autopilot, analyst and planner file sub-issues |
 | Agent decides when it is done | **Entry checks** (lint, static analysis, tests) gate every handoff; a failing check keeps the card where it is |
 | Generic repositories | **Tailored to Laravel**: Laravel Boost per workspace, per-workspace databases, a Laravel check script |
 
@@ -76,7 +76,7 @@ agent that works on it.
   `CLAUDE_EFFORT` from `.env`.
 - `npm run repo-init` creates the four model labels and the five effort labels (colored from light to dark) in your
   repositories.
-- With `/auto-code … issue-models=auto`, the planner agent labels each sub-issue it creates with a model that fits the
+- With `/auto-code … issue-models=auto`, the autopilot agent labels each sub-issue it creates with a model that fits the
   task, so cheap models handle simple tasks and strong models get the hard ones.
 - Every run is logged per repository with model, tokens, estimated cost (from [`model-costs.yml`](model-costs.yml))
   and agent time, so the trade-off between model, effort and cost stays measurable.
@@ -132,10 +132,14 @@ live in **`.env`**.
   measures a baseline, finds bugs and refactoring candidates and files sub-issues; `/refactor-safely` implements them
   behavior-neutrally with tests as a safety net ([details](docs/usage.md#commands-in-the-issue-refactoring)).
 - **Autopilot (`/auto-code`):** an epic with `/auto-code docs/index.md` lets Symphony evolve a project continuously.
-  A planner agent derives waves of features, design, quality and maintenance tasks from the project description;
+  An autopilot agent derives waves of features, design, quality and maintenance tasks from the project description;
   they start right away and are merged into `develop` after review and checks. Every few waves it stops with a report
   and a release pull request to `main` ([details](docs/usage.md#autopilot-auto-code)).
-- **Tracker tools for the agent:** set the status, comment, open a pull request and (for audit and planner roles only)
+- **Concept and list to backlog:** `/concept docs/index.md` breaks a concept down into epics and sub-issues
+  ([details](docs/usage.md#concept-to-backlog-concept)); `/plan docs/todo.md`, or `/plan` with a list below it in the
+  issue, turns every list item into one sub-issue with a detailed implementation plan, dependencies and effort and model
+  labels, in the backlog ([details](docs/usage.md#list-to-backlog-plan)).
+- **Tracker tools for the agent:** set the status, comment, open a pull request and (for the planning roles only)
   create sub-issues. The GitHub token stays in the Symphony process; the agent never sees it.
 - **Robust:** retries with exponential backoff, stall detection; an agent is stopped when its issue changes on the board.
 - **Session-limit handling:** when the Claude subscription hits its limit, Symphony retries a few times and then waits

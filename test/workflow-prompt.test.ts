@@ -177,7 +177,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
     }
   });
 
-  it('serves /auto-code issues with the planner, which waits for its waves', async () => {
+  it('serves /auto-code issues with the autopilot, which waits for its waves', async () => {
     const { definition } = await loadWorkflowFile(shipped);
     const config = resolveConfig(definition.config, {
       workflowPath: shipped,
@@ -186,15 +186,15 @@ describe('shipped WORKFLOW.md issue commands', () => {
     });
     const roleOf = (state: string, description: string | null) => roleFor({ state, description }, config.roles);
     for (const state of ['Ready', 'In progress']) {
-      assert.equal(roleName(roleOf(state, '/auto-code docs/index.md wave=3')), 'planner');
+      assert.equal(roleName(roleOf(state, '/auto-code docs/index.md wave=3')), 'autopilot');
     }
     assert.equal(roleName(roleOf('Agent review', '/auto-code')), 'reviewer');
-    const planner = roleOf('Ready', '/auto-code');
+    const autopilot = roleOf('Ready', '/auto-code');
     assert.deepEqual(
-      [planner?.readOnly, planner?.runChecks, planner?.maxSubIssues, planner?.subIssueStatus, planner?.waitForSubIssues, planner?.maxTurns],
+      [autopilot?.readOnly, autopilot?.runChecks, autopilot?.maxSubIssues, autopilot?.subIssueStatus, autopilot?.waitForSubIssues, autopilot?.maxTurns],
       [true, false, 5, 'Ready', true, 2],
     );
-    assert.deepEqual(planner?.mayMoveTo, ['In progress', 'In review', 'Blocked']);
+    assert.deepEqual(autopilot?.mayMoveTo, ['In progress', 'In review', 'Blocked']);
     assert.equal(roleOf('Ready', null)?.waitForSubIssues, false);
   });
 
@@ -231,7 +231,43 @@ describe('shipped WORKFLOW.md issue commands', () => {
     assert.match(prompt, /`parent`.*`blocked_by`/);
     assert.match(prompt, /`set_status\("In review"\)`\. No entry checks run for this role/);
     assert.doesNotMatch(prompt, /open_pull_request/);
-    assert.doesNotMatch(prompt, /Your role: (developer|reviewer|auditor|planner)/);
+    assert.doesNotMatch(prompt, /Your role: (developer|reviewer|auditor|autopilot|planner)/);
+  });
+
+  it('serves /plan issues with the planner, which files into the backlog', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const config = resolveConfig(definition.config, {
+      workflowPath: shipped,
+      env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' },
+      trackerDefaults,
+    });
+    const roleOf = (state: string, description: string | null) => roleFor({ state, description }, config.roles);
+    for (const state of ['Ready', 'In progress']) {
+      assert.equal(roleName(roleOf(state, '/plan docs/todo.md')), 'planner');
+      assert.equal(roleName(roleOf(state, '/plan\n- Export invoices as CSV\n- Dark mode')), 'planner');
+      assert.equal(roleName(roleOf(state, 'Write a /plan page')), 'developer');
+    }
+    assert.equal(roleName(roleOf('Agent review', '/plan docs/todo.md')), 'reviewer');
+    const planner = roleOf('Ready', '/plan');
+    assert.deepEqual(
+      [planner?.readOnly, planner?.runChecks, planner?.maxSubIssues, planner?.subIssueStatus, planner?.waitForSubIssues, planner?.maxTurns],
+      [true, false, 30, null, false, 3],
+    );
+    assert.deepEqual(planner?.mayMoveTo, ['In progress', 'In review', 'Blocked']);
+    assert.equal(config.tracker.provider.sub_issue_status, 'Backlog');
+  });
+
+  it('renders the read-only planner prompt with the skill instruction', async () => {
+    const prompt = await render('planner', null, '/plan docs/todo.md issue-models=auto');
+    assert.match(prompt, /Your role: planner/);
+    assert.match(prompt, /## Issue command: \/plan/);
+    assert.match(prompt, /load the skill `symphony:plan` with the Skill tool and pass it the argument/);
+    assert.match(prompt, /argument `docs\/todo\.md issue-models=auto`/);
+    assert.match(prompt, /read-only/);
+    assert.match(prompt, /`create_sub_issue`.*`blocked_by`/);
+    assert.match(prompt, /`set_status\("In review"\)`\. No entry checks run for this role/);
+    assert.doesNotMatch(prompt, /open_pull_request/);
+    assert.doesNotMatch(prompt, /Your role: (developer|reviewer|auditor|autopilot|analyst)/);
   });
 
   it('turns base_branch and auto_merge on through the environment only', async () => {
@@ -264,15 +300,15 @@ describe('shipped WORKFLOW.md issue commands', () => {
     );
   });
 
-  it('renders the read-only planner prompt that keeps the epic in its column', async () => {
-    const prompt = await render('planner', null, '/auto-code docs/index.md wave=3', 'develop');
-    assert.match(prompt, /Your role: planner/);
+  it('renders the read-only autopilot prompt that keeps the epic in its column', async () => {
+    const prompt = await render('autopilot', null, '/auto-code docs/index.md wave=3', 'develop');
+    assert.match(prompt, /Your role: autopilot/);
     assert.match(prompt, /load the skill `symphony:auto-code` with the Skill tool and pass it the argument/);
     assert.match(prompt, /argument `docs\/index\.md wave=3`/);
     assert.match(prompt, /implement the sub-issues against `develop`/);
     assert.match(prompt, /`create_sub_issue` and `open_pull_request`/);
     assert.match(prompt, /End your turn \*\*without changing the status\*\*/);
-    assert.doesNotMatch(prompt, /Your role: (developer|reviewer|auditor)/);
+    assert.doesNotMatch(prompt, /Your role: (developer|reviewer|auditor|planner)/);
   });
 
   it('branches from and integrates the base branch when one is configured', async () => {
@@ -303,6 +339,7 @@ describe('Symphony toolbox skills', () => {
     assert.deepEqual([...commandSkills([toolbox])].sort(), [
       ['auto-code', 'symphony:auto-code'],
       ['concept', 'symphony:concept'],
+      ['plan', 'symphony:plan'],
       ['refactor-safely', 'symphony:refactor-safely'],
       ['refactoring', 'symphony:refactoring'],
     ]);
@@ -338,6 +375,22 @@ describe('Symphony toolbox skills', () => {
       assert.ok(STANDARD_LABELS.some((entry) => entry.name === label), `repo-init creates the label ${label}`);
       assert.ok(fs.readFileSync(path.join(dir, 'templates.md'), 'utf8').includes(`\`${label}\``), `templates use ${label}`);
     }
+  });
+
+  it('plan: documents its arguments and uses the label families and tool parameters the workflow provides', () => {
+    const dir = path.join(skillsDir, 'plan');
+    const text = fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8');
+    assert.match(text, /argument-hint:.*issue-models=auto\|fable\|opus\|sonnet\|haiku\|off/);
+    assert.match(text, /`issue-models=<auto\|fable\|opus\|sonnet\|haiku\|off>`/);
+    for (const phrase of ['## Plan Outline', '## Plan Report', 'blocked_by: [<numbers', 'Blocked by #N', 'without `parent`']) {
+      assert.ok(text.includes(phrase), phrase);
+    }
+    const labels = fs.readFileSync(path.join(dir, 'labels.md'), 'utf8');
+    for (const label of ['Model: haiku', 'Model: sonnet', 'Model: opus', 'Model: fable', 'Effort: low', 'Effort: medium', 'Effort: high', 'Effort: xhigh']) {
+      assert.ok(labels.includes(`\`${label}\``), label);
+    }
+    assert.ok(STANDARD_LABELS.some((entry) => entry.name === 'plan'), 'repo-init creates the label plan');
+    assert.ok(fs.readFileSync(path.join(dir, 'templates.md'), 'utf8').includes('`plan`'), 'templates use plan');
   });
 
   for (const name of names) {

@@ -345,7 +345,7 @@ roles:
 | `commands` | none | Issue commands the role serves, e.g. `[refactoring]` (lowercase letters, digits and dashes; a leading `/` is allowed). Without it the role serves issues without a command. See [Issue commands](#issue-commands). |
 | `run_checks` | `true` | `false` lets the role move the issue without running `checks.on_enter`. For roles that change nothing, whose hand-off must not depend on the repository's test suite. |
 | `max_sub_issues` | none | Integer 1–100 (GitHub's limit): how many sub-issues the role may have open under its issue at once, counting the sub-issues of those (the whole tree when the role creates epics with `parent`). Setting it gives the role the GitHub tool `create_sub_issue` ([github-project.md](adapters/github-project.md#agent-tools)). |
-| `sub_issue_status` | `tracker.provider.sub_issue_status` | Column for the sub-issues this role creates. Unlike the provider setting it may be an active column, so the sub-issues start without a human; this is the deliberate opt-in for autonomous roles such as the planner. Never a terminal column; needs `max_sub_issues`. Checked against the board like the other columns. |
+| `sub_issue_status` | `tracker.provider.sub_issue_status` | Column for the sub-issues this role creates. Unlike the provider setting it may be an active column, so the sub-issues start without a human; this is the deliberate opt-in for autonomous roles such as the autopilot. Never a terminal column; needs `max_sub_issues`. Checked against the board like the other columns. |
 | `wait_for_sub_issues` | `false` | `true` dispatches the role's issues only while none of their sub-issues is open. See [Waves](#waves-wait_for_sub_issues). |
 | `claude` | `{}` | Overrides of `model`, `effort`, `allowed_tools`, `disallowed_tools`, `append_system_prompt`, `max_budget_usd` (same meaning as in [`claude`](#claude)). |
 
@@ -371,14 +371,14 @@ arguments, e.g. `/refactoring app/Filament`), Symphony treats it as a command. T
   so a real parent issue that happens to start with `/something` is dispatched with open sub-issues too.
   `respect_blockers` still applies.
 
-The shipped `WORKFLOW.md` defines the `auditor` role for `/refactoring`, the `planner` role for `/auto-code` and the
-`analyst` role for `/concept`, and ships the skills `refactoring`, `refactor-safely`, `auto-code` and `concept` in
-`.claude/skills/` (see [agent-claude.md](agent-claude.md#skills-and-plugins)).
+The shipped `WORKFLOW.md` defines the `auditor` role for `/refactoring`, the `autopilot` role for `/auto-code`, the
+`analyst` role for `/concept` and the `planner` role for `/plan`, and ships the skills `refactoring`, `refactor-safely`,
+`auto-code`, `concept` and `plan` in `.claude/skills/` (see [agent-claude.md](agent-claude.md#skills-and-plugins)).
 
 #### Waves (`wait_for_sub_issues`)
 
 A role with `wait_for_sub_issues: true` works in waves: it creates sub-issues, ends, and runs again once all of them are
-closed. The shipped `planner` role (`/auto-code`) uses it together with `sub_issue_status: Ready`, so each wave starts
+closed. The shipped `autopilot` role (`/auto-code`) uses it together with `sub_issue_status: Ready`, so each wave starts
 right away and the epic wakes up when the wave is done.
 
 - **Dispatch.** The issue is not dispatched while the tracker reports open sub-issues (the GitHub adapter reads up to

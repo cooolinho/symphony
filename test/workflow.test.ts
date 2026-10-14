@@ -654,8 +654,8 @@ describe('roles config', () => {
     });
 
     it('parses sub_issue_status and wait_for_sub_issues, off by default', () => {
-      const planner = { commands: ['auto-code'], states: ['Ready', 'In progress'], max_sub_issues: 5, sub_issue_status: ' Ready ', wait_for_sub_issues: true };
-      const found = resolve({ ...base, roles: { ...valid, planner } }).roles?.find((role) => role.name === 'planner');
+      const autopilot = { commands: ['auto-code'], states: ['Ready', 'In progress'], max_sub_issues: 5, sub_issue_status: ' Ready ', wait_for_sub_issues: true };
+      const found = resolve({ ...base, roles: { ...valid, autopilot } }).roles?.find((role) => role.name === 'autopilot');
       assert.deepEqual([found?.subIssueStatus, found?.waitForSubIssues], ['Ready', true]);
       const [developer, , audit] = roles();
       assert.deepEqual([developer?.subIssueStatus, developer?.waitForSubIssues], [null, false]);

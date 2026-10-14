@@ -170,8 +170,8 @@ automatically as soon as everything is done. Three kinds of dependencies count:
 | Text in the issue | In the description, e.g. `blocked by #12`, `blocked #12` or `Blocked by: #12, #13`. `#N` means the same repository, others are written as `owner/repo#N`. |
 | Sub-issues | In the sidebar under **Sub-issues**. The parent issue waits until all sub-issues are closed. Exception: an issue whose description starts with a [command](#commands-in-the-issue-refactoring) does not wait, because for it the sub-issues are the result of the run. A role with `wait_for_sub_issues` (the [autopilot](#autopilot-auto-code)) still waits: it only starts again once its sub-issues are closed. |
 
-The `/concept` agent commands set both types at the same time: the relationship (`blocked_by` on `create_sub_issue`) and the
-line `Blocked by #N` in the text. Both count as one dependency.
+The `/concept` and `/plan` agent commands set both types at the same time: the relationship (`blocked_by` on
+`create_sub_issue`) and the line `Blocked by #N` in the text. Both count as one dependency.
 
 A dependency is done when the issue is **closed**; for a referenced pull request, when it is merged or closed.
 Agents do not close issues themselves. So a dependency resolves as soon as you merge the related pull request with
@@ -186,7 +186,7 @@ A task that works the same in many repositories does not go into each repository
 instructions live in the skill. Mechanics and selection rules:
 [configuration.md](configuration.md#issue-commands).
 
-Symphony ships four commands:
+Symphony ships five commands:
 
 | Command | Purpose |
 |---|---|
@@ -194,6 +194,7 @@ Symphony ships four commands:
 | `/refactor-safely` | Restructure without changing behavior, with tests as a safety net. Is the first line of every refactoring sub-issue. |
 | `/auto-code [description] [wave=3] [checkpoint=5] [issue-models=auto]` | [Autopilot](#autopilot-auto-code): develops the repository continuously from its project description, in waves of sub-issues that are implemented right away. |
 | `/concept <path> [issue-models=auto]` | [Concept to Backlog](#concept-to-backlog-concept): breaks down a concept (Markdown file) into epics and sub-issues with dependencies, as well as model and effort labels. Everything ends up in the backlog. |
+| `/plan [<path>] [issue-models=auto]` | [List to Backlog](#list-to-backlog-plan): turns every item of a list (a file in the repository, or the issue description itself) into one sub-issue with a detailed implementation plan, dependencies and category, effort and model labels. Everything ends up in the backlog. |
 
 ### How the audit works
 
@@ -249,16 +250,16 @@ The work runs in **waves**:
 
 ```
 Epic "/auto-code docs/index.md" → Ready
-  → planner (fable, read-only): reads project description, roadmap, code on develop and your comments on the epic
+  → autopilot (fable, read-only): reads project description, roadmap, code on develop and your comments on the epic
   → wave N: 3 sub-issues directly in Ready (labels auto-code, category, effort), report on the epic
   → the epic stays "In progress" and waits until all sub-issues of the wave are closed
        per sub-issue: developer → PR into develop → entry checks → reviewer → "In review"
                       → Symphony merges the PR into develop, closes the issue, sets it to Done
-  → the planner starts again → wave N+1
+  → the autopilot starts again → wave N+1
   → after wave 5, 10, …: checkpoint report and release PR develop → main, the epic moves to "In review"
 ```
 
-The planner's instructions are in the skill [`auto-code`](../.claude/skills/auto-code/SKILL.md). It only picks ideas
+The autopilot's instructions are in the skill [`auto-code`](../.claude/skills/auto-code/SKILL.md). It only picks ideas
 that relate to the project description and are backed by the code, follows mixing rules (at most one maintenance
 issue per wave, regular quality work, no repeated redesigns of the same page) and would rather pause than deliver
 busywork ([criteria](../.claude/skills/auto-code/ideation.md)).
@@ -266,7 +267,7 @@ busywork ([criteria](../.claude/skills/auto-code/ideation.md)).
 ### Setup
 
 1. **Project description:** The target repository needs a description with a clear goal, e.g. `docs/index.md`.
-   The planner works through a roadmap (`docs/todo.md`) first. A section "Guardrails for the autopilot"
+   The autopilot works through a roadmap (`docs/todo.md`) first. A section "Guardrails for the autopilot"
    with non-goals, priorities and design principles is strongly recommended
    ([template](../.claude/skills/auto-code/vision-template.md)).
 2. **Integration branch:** create and push `develop` from `main` (`git switch -c develop main && git push -u origin develop`).
@@ -277,38 +278,38 @@ busywork ([criteria](../.claude/skills/auto-code/ideation.md)).
 5. **Epic:** an issue, e.g. "Autopilot", with the description `/auto-code docs/index.md` (optionally `wave=3
    checkpoint=5 issue-models=auto`), moved to **Ready**. Text below the command line counts as part of the brief (e.g. focus areas).
 
-Check with `npm run dry-run`: the epic appears with `role=planner` and `↳ command /auto-code → symphony:auto-code`,
+Check with `npm run dry-run`: the epic appears with `role=autopilot` and `↳ command /auto-code → symphony:auto-code`,
 during a wave with `waiting for sub-issues …`.
 
 ### Model per sub-issue (`issue-models`)
 
 Without this argument, sub-issues run with the model from `CLAUDE_MODEL`. With the argument `issue-models`, the
-planner sets a [model label](#choosing-the-model-per-issue) when it creates them:
+autopilot sets a [model label](#choosing-the-model-per-issue) when it creates them:
 
 | Argument | Effect |
 |---|---|
 | (missing) or `issue-models=off` | no model labels, `CLAUDE_MODEL` applies |
 | `issue-models=fable`, `opus`, `sonnet` or `haiku` | all sub-issues get `Model: <value>` |
-| `issue-models=auto` | the planner picks per issue by effort and risk: `Model: haiku` for small, low-risk changes, `Model: sonnet` as the normal case, `Model: opus` for wide reach with medium risk, `Model: fable` for complex issues (high risk, major upgrades, tricky dependencies) |
+| `issue-models=auto` | the autopilot picks per issue by effort and risk: `Model: haiku` for small, low-risk changes, `Model: sonnet` as the normal case, `Model: opus` for wide reach with medium risk, `Model: fable` for complex issues (high risk, major upgrades, tricky dependencies) |
 
-The label applies to the developer and reviewer of the sub-issue. The planner states the label and the reason per
+The label applies to the developer and reviewer of the sub-issue. The autopilot states the label and the reason per
 issue in the wave report. The labels `Model: fable|opus|sonnet|haiku` must exist in the repository (`npm run repo-init` →
-*Standard labels*); if one is missing, the planner reports it and the issue runs with `CLAUDE_MODEL`. The argument
+*Standard labels*); if one is missing, the autopilot reports it and the issue runs with `CLAUDE_MODEL`. The argument
 applies to every wave of the epic; to change it, edit the command line in the description.
 
 ### Steering and stopping
 
 | You want to | How |
 |---|---|
-| get something specific next | Comment on the epic, e.g. "Next: PDF export of the invoice". The planner gives requests priority and says in the report what it did with them. |
-| reject an idea | Close the sub-issue as **not planned**. The planner never suggests it again, not even reworded. |
+| get something specific next | Comment on the epic, e.g. "Next: PDF export of the invoice". The autopilot gives requests priority and says in the report what it did with them. |
+| reject an idea | Close the sub-issue as **not planned**. The autopilot never suggests it again, not even reworded. |
 | merge a PR yourself | Label `manual-merge` on the issue or PR. Symphony leaves it in "In review". Major upgrades get it automatically. |
 | continue at a checkpoint | Review and merge the release PR (or not), answer questions on the epic, move the epic back to **Ready**. |
 | pause | Move the epic to **Backlog**. Running sub-issues finish. Moving it back to **Ready** continues. |
 | end | Move the epic to **Done**. |
 
 An early checkpoint comes when you reject two or more sub-issues in one wave: then the direction is off. If the
-planner finds nothing more that meets the criteria, it writes "Auto-Code Pause" and moves to "In review".
+autopilot finds nothing more that meets the criteria, it writes "Auto-Code Pause" and moves to "In review".
 
 ### Auto-merge into develop
 
@@ -320,7 +321,7 @@ after a passed agent review **and** passed entry checks:
 - squash merge of the reviewed commit (`expectedHeadOid`), then Symphony closes the issue (GitHub does not do that
   for merges into a branch other than the default branch) and sets it to **Done**;
 - on a merge conflict the issue goes back to **In progress**, with a comment for the developer;
-- without a pull request nothing happens (as with the handoff of auditor and planner); drafts, `manual-merge` and a
+- without a pull request nothing happens (as with the handoff of auditor, analyst and planner); drafts, `manual-merge` and a
   failure stay in "In review" and get a comment with the reason.
 
 Auto-merge applies to all issues of the instance, not only to those of the autopilot. Your own issues are therefore
@@ -328,14 +329,14 @@ also merged into `develop`. Only what you take over in a release PR reaches `mai
 
 ### Limits and costs
 
-- An epic holds at most 100 sub-issues (GitHub). From 80 on the planner writes a handoff; then create a new epic
+- An epic holds at most 100 sub-issues (GitHub). From 80 on the autopilot writes a handoff; then create a new epic
   and copy the section below the command line.
 - The wave is only done when **all** of its sub-issues are closed. A sub-issue in "Blocked" stops the autopilot
   until you resolve or close it.
-- Costs: per wave one planner run (`roles.planner.claude.max_budget_usd`, default $10) plus developer and reviewer
+- Costs: per wave one autopilot run (`roles.autopilot.claude.max_budget_usd`, default $10) plus developer and reviewer
   runs per sub-issue. Ways to slow it down: smaller waves (`wave=2`), more frequent checkpoints, few parallel agents,
   a cheaper model for implementation (`CLAUDE_MODEL=sonnet`).
-- The planner does not see the UI. It therefore writes design issues with concrete, testable criteria.
+- The autopilot does not see the UI. It therefore writes design issues with concrete, testable criteria.
 
 ## Concept to Backlog (`/concept`)
 
@@ -413,6 +414,90 @@ by hand when all sub-issues are done.
 - The agent changes nothing in the repository and does not see the UI; design issues therefore get concrete criteria.
 - Costs: one run per concept and addendum (`roles.analyst.claude.max_budget_usd`, default $20), plus later the runs of
   the issues you release.
+
+## List to Backlog (`/plan`)
+
+`/plan` turns a list into planned issues: **every item becomes exactly one sub-issue** with a detailed implementation
+plan. Unlike [`/concept`](#concept-to-backlog-concept) it does not cut the work itself and creates no epics: the list
+is the cut. The `planner` role (`fable`, read-only, no entry checks) reads the list, looks up where each item lands in
+the code and files the issues directly below the plan issue:
+
+```
+#20 /plan docs/todo.md                          → In review once the issues are in place
+├─ #21 Feature: Export invoices as CSV           Backlog · plan, feature, Effort: high, Model: sonnet
+├─ #22 Design: Dark mode for the admin panel     Backlog · plan, design, Effort: medium, Model: sonnet
+└─ #23 Quality: Policy tests for invoices        Backlog · plan, quality, Effort: medium, Model: haiku · blocked by #21
+```
+
+The list comes from one of two places:
+
+| Description | Source |
+|---|---|
+| `/plan docs/todo.md` | **File mode:** the file on the base branch (`SYMPHONY_BASE_BRANCH`, otherwise the default branch). An argument counts as a path when it contains `/` or ends in `.md` or `.txt`; if the file is missing, the issue moves to **Blocked**. Text below the command line narrows the brief ("only the section *Billing*"). |
+| `/plan` followed by a list | **Description mode:** the list below the command line in the issue itself. Free text after `/plan` (`/plan Sprint 12`) is only its heading. |
+
+An item is every top-level list entry (`-`, `*`, `1.`, `- [ ]`); indented entries and the text below an entry are its
+details. Ticked entries (`- [x]`) count as done and become no issue. Example of description mode:
+
+```
+/plan issue-models=auto
+
+- Export invoices as CSV (filtered like the table)
+- Dark mode for the admin panel
+- Policy tests for invoices
+  - only accountants may delete
+```
+
+Every issue carries the quoted item, the starting point in the code (`file:line`), a numbered **implementation plan**,
+acceptance criteria, tests, risks and what it does not include, plus the labels: `plan`, a category (`feature`,
+`design`, `quality`, `maintenance`), exactly one `Effort: …` by size and risk and, unless `issue-models=off`, one
+`Model: …` ([tables](../.claude/skills/plan/labels.md)). If one item needs another, it gets a dependency (GitHub
+relationship and a `Blocked by #N` line). The instructions are in the skill [`plan`](../.claude/skills/plan/SKILL.md).
+
+### Setup
+
+1. **Labels:** `npm run repo-init` → *Standard labels* creates `plan`, the categories and the `Model: …` and
+   `Effort: …` labels. If a label is missing, the agent creates the issue without it and says so in the report.
+2. **Issue:** description `/plan <path>` or `/plan` with the list below it, optionally
+   `issue-models=auto|fable|opus|sonnet|haiku|off` (default `auto`). Then move it to **Ready**.
+
+Check with `npm run dry-run`: the issue shows up with `role=planner` and `↳ command /plan → symphony:plan`.
+
+### How a run works
+
+1. The agent reads the list, numbers the items and checks per item what the code already has: **present** items
+   become no issue, **partial** ones an issue for the missing rest.
+2. It plans every item on its own, without splitting or merging items. An item too vague to plan becomes a question
+   in the report instead of an issue; an item of size L stays one issue with `Effort: xhigh` and a note that it should
+   be split before **Ready**.
+3. It posts **`## Plan Outline`** **before** it creates anything: items, labels, dependencies, order and coverage.
+4. It creates the issues, blockers first.
+5. It posts **`## Plan Report`** with the issue numbers, the reason for model and effort per issue, "Not created",
+   open questions and notes. The plan issue moves to **In review**.
+
+The two comment headings are always English, whatever the language of the list, because later runs search for them.
+
+### Afterwards
+
+| You want to | How |
+|---|---|
+| have an issue implemented | Move it from **Backlog** to **Ready**. With open blockers it waits there until they are closed. |
+| drop or change an issue | Close or edit it in the backlog before it goes to Ready. |
+| extend the list | Add items to the file (commit it to the base branch) or to the description, or comment on the plan issue, then move it back to **Ready**. The agent writes an **addendum** and creates only what is missing from the report. |
+| recover from an abort | Symphony continues the run (or you move the issue back to **Ready**). The agent takes over the outline and creates only what is missing: the same title under the plan issue returns the existing issue. |
+
+### Limits
+
+- At most `roles.planner.max_sub_issues` (default 30, `SYMPHONY_PLANNER_MAX_SUB_ISSUES`) open issues at once; the rest
+  is listed under "Not created" and picked up by an addendum once issues are closed. GitHub allows 100 sub-issues per
+  issue.
+- The agent changes nothing in the repository and does not see the UI; design issues therefore get concrete criteria.
+- Costs: one run per list and addendum (`roles.planner.claude.max_budget_usd`, default $20), plus later the runs of the
+  issues you release.
+
+> **Renamed role.** Up to this version the `/auto-code` role was called `planner`. It is now `autopilot`, and its
+> limit is `SYMPHONY_AUTOPILOT_MAX_SUB_ISSUES`. An `.env` that still sets `SYMPHONY_PLANNER_MAX_SUB_ISSUES` now limits
+> `/plan` instead.
 
 ## Continuations and pausing
 

@@ -509,7 +509,7 @@ describe('roles', () => {
       claude: { plugins: [autoCodePlugin()] },
       roles: {
         developer: { states: ['Ready', 'In progress'] },
-        planner: {
+        autopilot: {
           commands: ['auto-code'],
           states: ['Ready', 'In progress'],
           read_only: true,
@@ -549,15 +549,15 @@ describe('roles', () => {
 
       openSubs.set('epic', []);
       await s.orchestrator.tickNow();
-      await until(() => runner.sessions.length === 2, 3_000, 'planner session');
-      const planner = runner.sessions[1];
-      assert.equal(planner?.turns[0], 'planner');
-      assert.equal(planner?.params.policy?.readOnly, true);
-      assert.equal(planner?.params.toolContext().subIssueStatus, 'Ready');
-      assert.equal(planner?.params.toolContext().maxSubIssues, 5);
+      await until(() => runner.sessions.length === 2, 3_000, 'autopilot session');
+      const autopilot = runner.sessions[1];
+      assert.equal(autopilot?.turns[0], 'autopilot');
+      assert.equal(autopilot?.params.policy?.readOnly, true);
+      assert.equal(autopilot?.params.toolContext().subIssueStatus, 'Ready');
+      assert.equal(autopilot?.params.toolContext().maxSubIssues, 5);
     });
 
-    it('lets the planner finish the turn that opened the wave, then ends the session and waits for the wave', async () => {
+    it('lets the autopilot finish the turn that opened the wave, then ends the session and waits for the wave', async () => {
       openSubs.clear();
       let finishTurn: () => void = () => undefined;
       const runner = new FakeRunner(
@@ -572,7 +572,7 @@ describe('roles', () => {
       await s.orchestrator.tickNow();
       await until(() => runner.sessions[0]?.turns.length === 1, 3_000, 'first turn');
 
-      // create_sub_issue opened the wave mid-turn; reconciliation must not stop the planner for it.
+      // create_sub_issue opened the wave mid-turn; reconciliation must not stop the autopilot for it.
       openSubs.set('epic', ['acme/app#2', 'acme/app#3']);
       await s.orchestrator.tickNow();
       assert.equal(snapshot(s).running.length, 1);
