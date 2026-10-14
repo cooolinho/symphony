@@ -118,6 +118,17 @@ but the tracker tools stay available, so the auditor can file sub-issues. Skill 
 bend (`pint` without `--test`, `npm audit fix`, `composer update`) are forbidden in the skill text itself. A new command
 needs a skill directory in the toolbox and a role with `commands` (or none at all, if the role is the developer).
 
+### Subagents
+
+Plugins also ship subagents (`agents/<name>.md`), which Claude Code offers to the Agent tool as `<plugin>:<name>`;
+the `init` message of the transcript lists them under `agents`. Symphony's toolbox ships five for Laravel repositories
+(`laravel-architect`, `laravel-code-reviewer`, `laravel-database-engineer`, `laravel-filament-developer`,
+`laravel-test-engineer`). Which of them a session may start depends on the role's `agents`, read-only roles and the
+workspace's project type ([Subagents per role](configuration.md#subagents-per-role)); the rest are denied by an
+`Agent(<plugin>:<name>)` rule in `disallowedTools` and by a `PreToolUse` hook, which emits `approval_denied` when it
+refuses a call. Every Agent tool call carries its subagent in the `tool_use` event (`detail.agent`), so the statistics
+count subagents like skills. Background and usage figures: [laravel-subagents.md](laravel-subagents.md).
+
 ### MCP server status
 
 Stdio servers such as Laravel Boost may still be `pending` after the handshake (Claude Code waits up to
@@ -175,13 +186,14 @@ log line (`npm run repo-init` → *Laravel Boost* creates an issue that adds it)
 **Visibility:** the Laravel integration reports per app what the session got (status and reason, versions, how the
 guidelines reach the agent, the skills, the MCP server and its pre-approved tools, warnings from the check above).
 The orchestrator counts every `tool_use` event per tool (one event per tool call, also for parallel calls in one
-message) and every Skill tool call per skill, and attributes calls of the Boost MCP servers and Boost skills to Boost.
+message), every Skill tool call per skill and every Agent tool call per subagent, and attributes calls of the Boost MCP servers and Boost skills to Boost.
 `session_configured` carries the skill names Claude Code loaded (`skill_names`), so the agent page can show how many
 of Boost's skills were really available. All of this is in `GET /api/v1/state` (`running[].integrations`,
-`tool_calls`, `skill_calls`), in `run_trace` of `GET /api/v1/<identifier>` and in the `run_finished` line of the
-repository log (`integrations`, `integration_tools`, `integration_skills`, `tool_calls`, `skill_calls`). The
-dashboard shows it as the Boost chip on the agent card, the *Laravel Boost* section of the agent page and the *Tools*
-and *Laravel Boost & integrations* sections of the statistics page.
+`tool_calls`, `skill_calls`, `agent_calls`), in `run_trace` of `GET /api/v1/<identifier>` and in the `run_finished`
+line of the repository log (`integrations`, `integration_tools`, `integration_skills`, `tool_calls`, `skill_calls`,
+`agent_calls`). The dashboard shows it as the Boost chip on the agent card, the *Laravel Boost* section of the agent
+page and the *Tools* (with *Skills loaded* and *Subagents used*) and *Laravel Boost & integrations* sections of the
+statistics page.
 
 None of this blocks a run: when PHP is missing, `composer install` or `boost:install` fails, or the workspace is not
 a git checkout, Symphony logs a warning and starts the session without Boost. An abort stops PHP and Composer at once;

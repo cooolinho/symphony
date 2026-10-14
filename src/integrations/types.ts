@@ -19,6 +19,11 @@ export interface WorkspaceIntegration<C = unknown> {
   readonly id: string;
   /** Front matter section this integration owns. */
   readonly configKey: string;
+  /**
+   * Plugin subagents named with this prefix (`laravel-`) belong to the integration: sessions get them only when
+   * `prepare` reports the prefix in `agentPrefixes`, i.e. the workspace is of the integration's project type.
+   */
+  readonly agentPrefix?: string;
   resolveConfig(raw: Record<string, unknown>, ctx: IntegrationConfigContext): { config: C; errors: string[]; warnings: string[] };
   /** Must never throw: failures are logged and yield null. */
   prepare(config: C, ctx: IntegrationPrepareContext): Promise<SessionExtensions | null>;

@@ -343,6 +343,7 @@ function traceJson(trace: RunTrace | null) {
     mcp_tool_calls: trace.mcpToolCalls,
     tool_calls: trace.toolUsage.tools,
     skill_calls: trace.toolUsage.skills,
+    agent_calls: trace.toolUsage.agents,
     integrations: trace.integrations.map((report) => integrationJson(report, trace.toolUsage, trace.sessionSkills, trace.mcpUnavailable)),
   };
 }
@@ -1296,6 +1297,7 @@ export class Orchestrator {
       mcpToolCalls: entry.mcpToolCalls,
       toolCalls: entry.toolUsage.tools,
       skillCalls: entry.toolUsage.skills,
+      agentCalls: entry.toolUsage.agents,
       integrations: entry.integrations.map((report) => ({ id: report.id, status: report.status, ...integrationUsage(report, entry.toolUsage) })),
     });
   }
@@ -1781,7 +1783,12 @@ export class Orchestrator {
     if (event.event === 'tool_use' && typeof event.detail?.tool === 'string') {
       const server = mcpServerOf(event.detail.tool);
       if (server !== null) entry.mcpToolCalls[server] = (entry.mcpToolCalls[server] ?? 0) + 1;
-      countToolUse(entry.toolUsage, event.detail.tool, typeof event.detail.skill === 'string' ? event.detail.skill : null);
+      countToolUse(
+        entry.toolUsage,
+        event.detail.tool,
+        typeof event.detail.skill === 'string' ? event.detail.skill : null,
+        typeof event.detail.agent === 'string' ? event.detail.agent : null,
+      );
     }
     if (event.event === 'session_configured' && typeof event.detail?.model === 'string') entry.model = event.detail.model;
     if (event.event === 'session_configured' && Array.isArray(event.detail?.skill_names)) {
@@ -1936,6 +1943,7 @@ export class Orchestrator {
       mcp_tool_calls: entry.mcpToolCalls,
       tool_calls: entry.toolUsage.tools,
       skill_calls: entry.toolUsage.skills,
+      agent_calls: entry.toolUsage.agents,
       integrations: entry.integrations.map((report) => integrationJson(report, entry.toolUsage, entry.sessionSkills, entry.mcpUnavailable)),
     };
   }

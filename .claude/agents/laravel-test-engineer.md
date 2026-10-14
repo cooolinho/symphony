@@ -1,5 +1,5 @@
 ---
-name: test-engineer
+name: laravel-test-engineer
 description: Use to write, extend or repair Pest tests (feature, unit, Livewire, Filament) for a Laravel repository, or to judge whether existing tests really prove the change.
 ---
 

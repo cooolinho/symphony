@@ -75,6 +75,8 @@ export interface RunFinish {
   toolCalls?: Record<string, number>;
   /** Skill tool calls per skill. */
   skillCalls?: Record<string, number>;
+  /** Agent tool calls by subagent (`subagent_type`). */
+  agentCalls?: Record<string, number>;
   /** Workspace integrations of the run (e.g. Laravel Boost) with the calls attributed to them. */
   integrations?: RunIntegration[];
 }
@@ -254,6 +256,7 @@ export class HistoryLog {
       mcp_tool_calls: formatToolCalls(finish.mcpToolCalls),
       tool_calls: formatToolCalls(finish.toolCalls),
       skill_calls: formatToolCalls(finish.skillCalls),
+      agent_calls: formatToolCalls(finish.agentCalls),
       integrations: finish.integrations?.length ? finish.integrations.map((entry) => `${entry.id}:${entry.status}`).join(',') : undefined,
       integration_tools: formatIntegrationCalls(finish.integrations, 'tools'),
       integration_skills: formatIntegrationCalls(finish.integrations, 'skills'),
@@ -358,7 +361,7 @@ function formatIntegrationCalls(integrations: RunIntegration[] | undefined, kind
 }
 
 /**
- * Parses a `name:count,…` field (tool_calls, skill_calls, mcp_tool_calls, integration_tools); the count follows the
+ * Parses a `name:count,…` field (tool_calls, skill_calls, agent_calls, mcp_tool_calls, integration_tools); the count follows the
  * last colon, so names may contain colons (`plugin:skill`). Malformed parts are skipped.
  */
 export function parseCounts(value: string | undefined): Record<string, number> {

@@ -42,6 +42,7 @@ const LARAVEL_DEFAULT_DENY_TOOLS: readonly string[] = ['record-rule'];
 export const laravelIntegration: WorkspaceIntegration<LaravelConfig> = {
   id: 'laravel',
   configKey: 'laravel',
+  agentPrefix: 'laravel-',
 
   resolveConfig(laravelRaw, ctx) {
     const reader = new Reader();
@@ -90,6 +91,8 @@ export const laravelIntegration: WorkspaceIntegration<LaravelConfig> = {
     result.contextSections.push(...(await dockerInstructionNotes(ctx.workspacePath, apps, ctx.logger)));
     result.historyFields = historyFields(apps, facts);
     result.reports = [boostReport(config, apps, facts)];
+    // The laravel-* subagents fit every Laravel app, with or without Boost.
+    result.agentPrefixes = ['laravel-'];
     return result;
   },
 

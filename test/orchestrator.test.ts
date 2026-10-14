@@ -254,6 +254,7 @@ describe('workspace integrations', () => {
       emit(params, 'tool_use', { tool: 'mcp__tracker__set_status' });
       emit(params, 'tool_use', { tool: 'Skill', skill: 'pest-testing' });
       emit(params, 'tool_use', { tool: 'Skill', skill: 'symphony:handoff' });
+      emit(params, 'tool_use', { tool: 'Agent', agent: 'symphony:laravel-code-reviewer' });
       emit(params, 'tool_use', { tool: 'Bash' });
       live = s?.orchestrator.snapshot().running[0]?.integrations;
       s?.tracker.set('a', { state: 'In review' });
@@ -276,16 +277,18 @@ describe('workspace integrations', () => {
       usage: { calls: 3, tool_calls: { 'search-docs': 2 }, skill_calls: { 'pest-testing': 1 } },
     };
     assert.deepEqual(live, [expected]);
-    const detail = s.orchestrator.issueDetail('a') as { run_trace: { integrations: unknown; skill_calls: unknown } };
+    const detail = s.orchestrator.issueDetail('a') as { run_trace: { integrations: unknown; skill_calls: unknown; agent_calls: unknown } };
     assert.deepEqual(detail.run_trace.integrations, [expected]);
     assert.deepEqual(detail.run_trace.skill_calls, { 'pest-testing': 1, 'symphony:handoff': 1 });
+    assert.deepEqual(detail.run_trace.agent_calls, { 'symphony:laravel-code-reviewer': 1 });
 
     const finished = readHistory(history.dir, 'acme/app').entries.find((entry) => entry.event === 'run_finished');
     assert.equal(finished?.fields.integrations, 'laravel-boost:ready');
     assert.equal(finished?.fields.integration_tools, 'laravel-boost/search-docs:2');
     assert.equal(finished?.fields.integration_skills, 'laravel-boost/pest-testing:1');
     assert.equal(finished?.fields.skill_calls, 'pest-testing:1,symphony:handoff:1');
-    assert.equal(finished?.fields.tool_calls, 'mcp__laravel-boost__search-docs:2,mcp__tracker__set_status:1,Skill:2,Bash:1');
+    assert.equal(finished?.fields.agent_calls, 'symphony:laravel-code-reviewer:1');
+    assert.equal(finished?.fields.tool_calls, 'mcp__laravel-boost__search-docs:2,mcp__tracker__set_status:1,Skill:2,Agent:1,Bash:1');
   });
 });
 
@@ -321,6 +324,51 @@ describe('roles', () => {
     assert.equal(session?.params.config.appendSystemPrompt, 'Review only.');
     assert.equal(session?.turns.length, 6);
     assert.equal(session?.turns[0], 'Act as reviewer on acme/app#r');
+  });
+
+  it('offers each role only its subagents and the laravel- ones only in a Laravel workspace', async () => {
+    const plugin = tempDir();
+    fs.mkdirSync(path.join(plugin, '.claude-plugin'));
+    fs.writeFileSync(path.join(plugin, '.claude-plugin', 'plugin.json'), '{"name":"kit"}');
+    fs.mkdirSync(path.join(plugin, 'agents'));
+    const agent = (name: string, extra = '') => fs.writeFileSync(path.join(plugin, 'agents', `${name}.md`), `---\nname: ${name}\ndescription: ${name} work\n${extra}---\nBody\n`);
+    agent('laravel-architect', 'disallowedTools: Edit, Write, NotebookEdit\n');
+    agent('laravel-filament-developer');
+    agent('helper');
+    const laravel = (found: boolean): WorkspaceIntegration => ({
+      id: 'fake-laravel',
+      configKey: 'fake_section',
+      agentPrefix: 'laravel-',
+      resolveConfig: () => ({ config: {}, errors: [], warnings: [] }),
+      prepare: async () => ({ mcpServers: {}, contextSections: [], additionalDirectories: [], env: {}, ...(found ? { agentPrefixes: ['laravel-'] } : {}) }),
+    });
+    const front = {
+      ...rolesFront,
+      claude: { ...rolesFront.claude, plugins: [plugin] },
+      roles: { ...rolesFront.roles, developer: { states: ['Todo'], agents: ['laravel-architect', 'laravel-filament-developer'] } },
+      fake_section: {},
+    };
+    const prompt = '{{ role }}:{% for a in agents %} {{ a.name }}{% endfor %}';
+    const run = async (found: boolean) => {
+      const runner = new FakeRunner(() => new Promise(() => undefined));
+      const s = setup({ runner, front, prompt, integrations: [laravel(found)], issues: [makeIssue({ id: 'd' }), makeIssue({ id: 'r', state: 'Agent review' })] });
+      await s.orchestrator.tickNow();
+      await until(() => runner.sessions.length === 2 && runner.sessions.every((x) => x.turns.length === 1), 3_000, 'two sessions');
+      const byRole = (role: string) => runner.sessions.find((x) => x.turns[0]?.startsWith(`${role}:`));
+      return { developer: byRole('developer'), reviewer: byRole('reviewer') };
+    };
+
+    const inLaravel = await run(true);
+    assert.equal(inLaravel.developer?.turns[0], 'developer: kit:laravel-architect kit:laravel-filament-developer');
+    assert.deepEqual(inLaravel.developer?.params.deniedAgents, ['kit:helper', 'helper']);
+    // helper can edit files, so the read-only reviewer does not get it.
+    assert.equal(inLaravel.reviewer?.turns[0], 'reviewer: kit:laravel-architect');
+    assert.deepEqual(inLaravel.reviewer?.params.deniedAgents, ['kit:helper', 'helper', 'kit:laravel-filament-developer', 'laravel-filament-developer']);
+
+    const elsewhere = await run(false);
+    assert.equal(elsewhere.developer?.turns[0], 'developer:');
+    assert.deepEqual(elsewhere.developer?.params.deniedAgents, ['kit:helper', 'helper', 'kit:laravel-architect', 'laravel-architect', 'kit:laravel-filament-developer', 'laravel-filament-developer']);
+    assert.equal(elsewhere.reviewer?.turns[0], 'reviewer:');
   });
 
   it('lets a "Model:" label override the role model', async () => {
@@ -2194,6 +2242,7 @@ describe('run history', () => {
         mcp_tool_calls: { 'laravel-boost': 2 },
         tool_calls: { 'mcp__laravel-boost__database-schema': 2, Bash: 1, Edit: 1 },
         skill_calls: {},
+        agent_calls: {},
         integrations: [],
       });
     });

@@ -6,7 +6,7 @@ import { parseCounts, type HistoryEntry } from './history.ts';
  * Analytics for the statistics page, aggregated on the server for one central filter. Every figure comes from
  * the repository logs: `run_finished` lines (outcome, attempt, timing), their `model_usage` lines (tokens per
  * model, priced with the current model-costs.yml exactly like computeHistoryStats) and `issue_paused` notes. Tool
- * usage comes from `tool_calls`, `skill_calls` and the integration fields of `run_finished` (runs logged before these
+ * usage comes from `tool_calls`, `skill_calls`, `agent_calls` and the integration fields of `run_finished` (runs logged before these
  * fields existed count as runs without tool calls).
  */
 export interface AnalyticsFilter {
@@ -104,6 +104,8 @@ interface Run {
   tools: Record<string, number>;
   /** Skill tool calls by skill. */
   skills: Record<string, number>;
+  /** Agent tool calls by subagent (`subagent_type`). */
+  agents: Record<string, number>;
   /** Workspace integrations of the run (e.g. Laravel Boost) by id: status and attributed calls. */
   integrations: Map<string, { status: string; tools: Record<string, number>; skills: Record<string, number> }>;
 }
@@ -355,6 +357,7 @@ function collectRuns(entries: HistoryEntry[], pricing: PricingTable): Run[] {
       parts,
       tools: parseCounts(entry.fields.tool_calls),
       skills: parseCounts(entry.fields.skill_calls),
+      agents: parseCounts(entry.fields.agent_calls),
       integrations: runIntegrations(entry.fields),
     });
     lastOutcome.set(issue, outcome);
@@ -415,12 +418,13 @@ function ranking<K extends string>(rows: Map<string, CallRow>, key: K, limit = T
 const sumCalls = (calls: Record<string, number>): number => Object.values(calls).reduce((sum, count) => sum + count, 0);
 
 /**
- * Tool usage of the runs: calls per tool and skill, and per workspace integration (e.g. Laravel Boost) the runs
+ * Tool usage of the runs: calls per tool, skill and subagent, and per workspace integration (e.g. Laravel Boost) the runs
  * it was ready in, the runs that used it, and its calls per tool and skill.
  */
 function toolStats(runs: Run[]) {
   const tools = new Map<string, CallRow>();
   const skills = new Map<string, CallRow>();
+  const agents = new Map<string, CallRow>();
   const integrations = new Map<string, { runs: number; by_status: Record<string, number>; ready_runs: number; used_runs: number; calls: number; tools: Map<string, CallRow>; skills: Map<string, CallRow> }>();
   let calls = 0;
   let runsWithCalls = 0;
@@ -430,6 +434,7 @@ function toolStats(runs: Run[]) {
     if (runCalls > 0) runsWithCalls += 1;
     addCalls(tools, run.tools);
     addCalls(skills, run.skills);
+    addCalls(agents, run.agents);
     for (const [id, entry] of run.integrations) {
       let target = integrations.get(id);
       if (target === undefined) {
@@ -457,6 +462,7 @@ function toolStats(runs: Run[]) {
       return { ...row, server: mcp?.[1] ?? null, name: mcp?.[2] ?? row.tool };
     }),
     skills: ranking(skills, 'skill'),
+    agents: ranking(agents, 'agent'),
     integrations: [...integrations]
       .sort((a, b) => b[1].runs - a[1].runs || a[0].localeCompare(b[0]))
       .map(([id, entry]) => ({

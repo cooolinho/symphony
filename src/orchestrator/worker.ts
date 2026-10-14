@@ -11,8 +11,8 @@ import type { Issue, TrackerAdapter } from '../tracker/types.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { describeHolder, type LockResult } from '../workspace/lock.ts';
 import { describeFailure, type HookIssue, type Workspace, type WorkspaceManager } from '../workspace/manager.ts';
-import { commandSkills } from '../workflow/command.ts';
-import { roleName, type RoleConfig } from '../workflow/roles.ts';
+import { commandSkills, pluginAgents } from '../workflow/command.ts';
+import { roleName, sessionAgents, type RoleConfig } from '../workflow/roles.ts';
 import type { EffectiveWorkflow } from '../workflow/store.ts';
 import { issueTemplateValue, renderPrompt } from '../workflow/template.ts';
 import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord } from './guard.ts';
@@ -216,6 +216,15 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     callbacks.integrationsPrepared(extensions?.historyFields ?? {}, extensions?.reports ?? []);
     if (signal.aborted) return await finish(cancelled());
 
+    // Plugin subagents for this role and workspace: the prompt lists the allowed ones, the session refuses the rest.
+    const agents = sessionAgents(
+      pluginAgents(params.workflow.config.claude.plugins),
+      role,
+      params.integrations.flatMap((integration) => (integration.agentPrefix !== undefined ? [integration.agentPrefix] : [])),
+      extensions?.agentPrefixes ?? [],
+    );
+    const agentsValue = agents.allowed.map((agent) => ({ name: agent.qualified, description: agent.description }));
+
     setPhase('LaunchingAgentProcess');
     const activeWorkspace = workspace;
     // Guard events carry the session fields of the latest agent event, so they do not reset the running entry.
@@ -265,6 +274,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       issue,
       config: sessionClaudeConfig(params.workflow.config.claude, params.model, params.effort, role?.claude),
       policy: { readOnly: role?.readOnly ?? false },
+      // The bare name too: a repository's own .claude/agents may load the same agent without the plugin prefix.
+      deniedAgents: agents.denied.flatMap((agent) => [agent.qualified, agent.name]),
       // Entry checks run inside the status tool call; leave a minute for the tracker call around them.
       toolTimeoutMs: params.workflow.config.checks.timeoutMs + TOOL_TIMEOUT_MARGIN_MS,
       tools: guardTools(toolsForRole(params.adapter.agentToolSpecs(), role), guard),
@@ -288,11 +299,12 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       setPhase('BuildingPrompt');
       const prompt =
         turn === 1
-          ? withMcpNotes(unavailableMcp, await renderPrompt(params.workflow.prompt, { issue: issueTemplateValue(issue, skills), attempt: params.attempt, role: name }))
+          ? withMcpNotes(unavailableMcp, await renderPrompt(params.workflow.prompt, { issue: issueTemplateValue(issue, skills), attempt: params.attempt, role: name, agents: agentsValue }))
           : await renderPrompt(params.workflow.continuationPrompt, {
               issue: issueTemplateValue(issue, skills),
               attempt: params.attempt,
               role: name,
+              agents: agentsValue,
               turn_number: turn,
               max_turns: maxTurns,
             });

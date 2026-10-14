@@ -91,14 +91,18 @@ claude:
   # max_budget_usd: 5                        # optional cost cap per agent session
 
 roles:
+  # agents: plugin subagents (.claude/agents) the role may start; unset = all. Read-only roles only get read-only
+  # ones, and laravel-* subagents only exist in workspaces with a Laravel app.
   developer:
     states: [Ready, In progress]
     may_move_to: [In progress, Agent review, Blocked]
+    agents: [laravel-architect, laravel-database-engineer, laravel-filament-developer, laravel-test-engineer, laravel-code-reviewer]
   reviewer:
     states: [Agent review]
     read_only: true                          # no edits, commits or pushes
     max_turns: 6
     may_move_to: [In review, In progress, Blocked]
+    agents: [laravel-code-reviewer]
     claude: { model: opus }
   auditor:
     commands: [refactoring]                                 # served only for issues whose description starts with /refactoring
@@ -108,6 +112,7 @@ roles:
     max_sub_issues: ${SYMPHONY_AUDITOR_MAX_SUB_ISSUES:-20}  # open sub-issues at once; also what grants the create_sub_issue tool
     max_turns: 2
     may_move_to: [In progress, In review, Blocked]
+    agents: [laravel-architect, laravel-code-reviewer]
     claude: { model: fable, max_budget_usd: 15 }
   planner:
     commands: [auto-code]                                   # served only for issues whose description starts with /auto-code
@@ -119,6 +124,7 @@ roles:
     wait_for_sub_issues: true                               # the epic runs again only once all sub-issues of its wave are closed
     max_turns: 2
     may_move_to: [In progress, In review, Blocked]
+    agents: [laravel-architect]
     claude: { model: fable, max_budget_usd: 10 }
   analyst:
     commands: [concept]                                     # served only for issues whose description starts with /concept
@@ -128,6 +134,7 @@ roles:
     max_sub_issues: ${SYMPHONY_ANALYST_MAX_SUB_ISSUES:-60}  # open epics and sub-issues under the concept issue at once (the whole tree)
     max_turns: 3
     may_move_to: [In progress, In review, Blocked]
+    agents: [laravel-architect]
     claude: { model: fable, effort: high, max_budget_usd: 20 }
 
 checks:
@@ -156,7 +163,8 @@ server:
   host: ${SYMPHONY_HOST:-127.0.0.1}          # bind address; non-loopback only behind an authenticating proxy
   allow_remote_control: ${SYMPHONY_ALLOW_REMOTE_CONTROL:-false}  # Retry/Resume now on a non-loopback bind
 ---
-{% capture branch %}{% if issue.branch_name %}{{ issue.branch_name }}{% else %}symphony/issue-{{ issue.native_ref.number }}{% endif %}{% endcapture %}{% assign base = issue.native_ref.base_branch %}
+{% capture branch %}{% if issue.branch_name %}{{ issue.branch_name }}{% else %}symphony/issue-{{ issue.native_ref.number }}{% endif %}{% endcapture %}{% assign base = issue.native_ref.base_branch %}{% capture agent_list %}{% for agent in agents %}
+- `{{ agent.name }}`: {{ agent.description }}{% endfor %}{% endcapture %}{% capture agent_intro %}Subagents you may start with the Agent tool (`subagent_type` is the name). They are optional: each one works in its own context and costs tokens, so use them where they pay off. You stay responsible for their results; check them before you rely on them.{{ agent_list }}{% endcapture %}
 You are working on GitHub issue **{{ issue.identifier }}**: {{ issue.title }}
 
 - Issue: {{ issue.url }}
@@ -179,7 +187,11 @@ The description starts with the command `/{{ issue.command.name }}`{% if issue.c
 
 You implement the issue. A read-only reviewer agent reviews your work after you hand off; a human reviews and merges after that.
 The tracker tools are `get_issue`, `set_status`, `add_comment` and `open_pull_request`.
+{% if agents.size > 0 %}
+{{ agent_intro }}
 
+Good uses: an architect plan before a non-trivial feature, a self-contained part (a Filament resource, a migration with its model, the tests for an acceptance criterion) for the matching specialist, and a code review of your diff before you hand off with `set_status("Agent review")`.
+{% endif %}
 The current directory is a clone of the issue's repository. Work only inside it.
 
 1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist) and follow their conventions.
@@ -203,7 +215,11 @@ Write issue comments and the pull request description in the language the issue 
 
 You review the developer agent's work on this issue. You are **read-only**: do not edit files, commit or push. Your output is one review comment and a status change.
 The tracker tools are `get_issue`, `set_status` and `add_comment`.
+{% if agents.size > 0 %}
+{{ agent_intro }}
 
+Use a reviewer subagent only for a second pass over a large diff. Its findings go into your one review comment only after you checked them against the code.
+{% endif %}
 1. Call `get_issue`: read the issue, all comments and the linked pull request (its base branch, description and discussion).
 2. Count the earlier review comments on the issue (comments starting with "## Agent review"). This review is round N = that count + 1.
 3. Make sure the workspace is on the pull request's branch (`{{ branch }}` unless the pull request says otherwise) at its pushed head: `git fetch origin`, `git status`, `git log --oneline -5`.
@@ -247,7 +263,11 @@ Write the review comment in the language the issue is written in.
 
 You analyse the repository and turn the findings into sub-issues of this issue, which is the epic. You are **read-only**: do not edit files, commit, push or open a pull request. A human reviews the sub-issues and moves the ones worth doing to "Ready".
 The tracker tools are `get_issue`, `set_status`, `add_comment` and `create_sub_issue`.
+{% if agents.size > 0 %}
+{{ agent_intro }}
 
+In a large repository, let them analyse one area each, as the skill describes.
+{% endif %}
 The current directory is a clone of the issue's repository. Work only inside it.
 
 1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist).
@@ -264,7 +284,11 @@ Write the report, the sub-issues and all comments in the language the issue is w
 
 You develop the repository further on your own: you plan the next wave of work from the project description and turn it into sub-issues of this issue, which is the epic. You are **read-only**: do not edit files, commit, push or change branches on the remote. The developer and reviewer agents implement the sub-issues{% if base %} against `{{ base }}`{% endif %}; Symphony starts you again once all sub-issues of the wave are closed.
 The tracker tools are `get_issue`, `set_status`, `add_comment`, `create_sub_issue` and `open_pull_request` (only for the release pull request the skill describes).
+{% if agents.size > 0 %}
+{{ agent_intro }}
 
+Use the architect to check the structure and feasibility of a wave before you file it.
+{% endif %}
 The current directory is a clone of the issue's repository. Work only inside it.
 
 1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist).
@@ -281,7 +305,11 @@ Write the report, the sub-issues and all comments in the language the issue is w
 
 You turn a concept document into a work plan on the board: epics as sub-issues of this issue and the work items as sub-issues of those epics. You are **read-only**: do not edit files, commit, push or open a pull request. Everything you create lands in the backlog column; a human reviews it and moves the issues worth doing to "Ready".
 The tracker tools are `get_issue`, `set_status`, `add_comment` and `create_sub_issue` (its `parent` creates an issue under an epic, its `blocked_by` sets the dependencies).
+{% if agents.size > 0 %}
+{{ agent_intro }}
 
+Use the architect to check the structure and feasibility of the epics before you create them.
+{% endif %}
 The current directory is a clone of the issue's repository. Work only inside it.
 
 1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist).
