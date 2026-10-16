@@ -124,7 +124,7 @@ describe('repository history', () => {
     const at = new Date('2026-10-04T08:00:00Z');
     const check = { repo: 'acme/app', issue: 'acme/app#1', run: 'r1', role: 'developer', target: 'Agent review', at };
     log.checkFinished({ ...check, sha: 'abc123', exitCode: 1, timedOut: false, durationMs: 4200, ok: false, result: 'check_failed' });
-    log.checkFinished({ ...check, sha: null, exitCode: null, timedOut: true, durationMs: 600_000, ok: false, result: 'check_error' });
+    log.checkFinished({ ...check, sha: null, exitCode: null, timedOut: true, durationMs: 600_000, ok: false, result: 'check_timeout' });
     log.transitionDenied({ repo: 'acme/app', issue: 'acme/app#1', run: 'r1', role: 'developer', target: 'Done', reason: '"Done" is a terminal column', at });
     const [failed, timedOut, denied] = readHistory(log.dir, 'acme/app').entries;
     assert.equal(failed?.event, 'checks_finished');

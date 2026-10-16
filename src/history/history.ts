@@ -103,7 +103,7 @@ export interface CheckFinish {
   timedOut: boolean;
   durationMs: number;
   ok: boolean;
-  /** `passed`, `check_failed` or `check_error`. */
+  /** `passed`, `check_failed`, `check_timeout` or `check_error`. */
   result: string;
   at: Date;
 }

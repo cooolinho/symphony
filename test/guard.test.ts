@@ -105,15 +105,19 @@ describe('transition guard', () => {
     assert.ok((decision?.message.length ?? 0) < 6_300);
   });
 
-  it('returns check_error for other exit codes, timeouts, aborts and unexpected errors', async () => {
+  it('returns check_timeout for a check that runs into checks.timeout_ms, without sending the issue to Blocked', async () => {
+    const slow = denied(await setup({ checks: { 'Agent review': 'sleep 5' }, timeoutMs: 200 }).guard('Agent review'));
+    assert.equal(slow?.category, 'check_timeout');
+    assert.match(slow?.message ?? '', /timed out after \d+s \(checks\.timeout_ms\)/);
+    assert.match(slow?.message ?? '', /do not move the issue to Blocked/);
+    assert.match(slow?.message ?? '', /Call set_status again once/);
+  });
+
+  it('returns check_error for other exit codes, aborts and unexpected errors', async () => {
     const exit2 = denied(await setup({ checks: { 'Agent review': 'exit 2' } }).guard('Agent review'));
     assert.equal(exit2?.category, 'check_error');
     assert.match(exit2?.message ?? '', /exited with code 2/);
     assert.match(exit2?.message ?? '', /do not change code; describe the problem in an issue comment and move the issue to Blocked/);
-
-    const slow = denied(await setup({ checks: { 'Agent review': 'sleep 5' }, timeoutMs: 200 }).guard('Agent review'));
-    assert.equal(slow?.category, 'check_error');
-    assert.match(slow?.message ?? '', /timed out/);
 
     const aborted = setup({ checks: { 'Agent review': 'sleep 5' } });
     const pending = aborted.guard('Agent review');

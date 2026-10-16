@@ -171,7 +171,7 @@ checks:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `timeout_ms` | `hooks.timeout_ms` | Limit per script run; must be below `claude.turn_timeout_ms`. A timed-out or aborted script's whole process group is killed. |
+| `timeout_ms` | `hooks.timeout_ms` | Limit per script run; must be below `claude.turn_timeout_ms`. A timed-out or aborted script's whole process group is killed; a timeout returns `check_timeout`. May come from a variable, e.g. `${SYMPHONY_CHECKS_TIMEOUT_MS:-1800000}`. |
 | `retries` | `0` | Extra attempts after a failed check, `0`–`3`. |
 | `on_enter` | `{}` | Map of column name (matched trimmed and case-insensitively) to the bash script that must pass to enter it. |
 
@@ -197,7 +197,8 @@ before the tracker is touched. The guard decides on the run's role and the targe
 |---|---|---|
 | `0` | The issue is moved; the tool result carries `note: "Checks passed — end your turn now."` | End the turn, so the next role takes over. |
 | `1` | Tool error `check_failed`; the column is unchanged | The last 6000 characters of the output; fix the problems and call `set_status` again. |
-| other, timeout, or the check cannot start | Tool error `check_error`; the column is unchanged | Do not change code; describe the problem in an issue comment and move the issue to `Blocked`. |
+| none, `checks.timeout_ms` reached | Tool error `check_timeout`; the column is unchanged | A runtime limit, not the change: do not change code and do not move the issue to `Blocked`; call `set_status` once more, and if that times out too, comment and end the turn without a status change. Symphony picks the issue up again later. |
+| other, aborted, or the check cannot start | Tool error `check_error`; the column is unchanged | Do not change code; describe the problem in an issue comment and move the issue to `Blocked`. |
 
 **Cache.** A passing check is remembered per claim, in memory, under the key `HEAD sha` + hash of the script text. Before
 running a check the guard reads `git rev-parse HEAD` and `git status --porcelain` (5 s timeout each); when the tree
@@ -537,7 +538,7 @@ roles:
     claude: { model: fable, max_budget_usd: 15 }
 
 checks:
-  timeout_ms: 1200000                        # below claude.turn_timeout_ms (default 3600000)
+  timeout_ms: ${SYMPHONY_CHECKS_TIMEOUT_MS:-1800000}   # below claude.turn_timeout_ms (default 3600000)
   on_enter:
     Agent review: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
     In review: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"   # usually a cache hit for the reviewed commit
@@ -557,6 +558,8 @@ You are working on GitHub issue **{{ issue.identifier }}**: {{ issue.title }}
 Implement the issue on `{{ branch }}`, integrate the base branch, commit, push, open a pull request with
 `open_pull_request`, comment with `add_comment`, then hand off with `set_status("Agent review")`.
 On `check_failed`: fix the problems and call `set_status("Agent review")` again.
+On `check_timeout`: call `set_status("Agent review")` once more; if it times out again, comment and end your turn
+without changing the status (never `Blocked`).
 On `check_error`: describe the error with `add_comment` and call `set_status("Blocked")`.
 After a successful transition, end your turn.
 {% when "reviewer" %}## Your role: reviewer
@@ -643,7 +646,7 @@ workflow directory, else `$XDG_STATE_HOME/symphony` or `~/.local/state/symphony`
 | `session_limit_wait` | `repo`, `issue`, `title`, `state`, `window`, `resets_at`, `retry_at` (reset + 60 s), `hits`, `max_retries`, `source` (`event` or `message`); written when the session-limit retries are used up and the worker waits for the reset |
 | `worker_restarted` | `repo`, `issue`, `title`, `previous` (`retrying` or `paused`); written when an operator restarts a waiting or paused worker through the dashboard or `POST /api/v1/<identifier>/retry` |
 | `workspace_removed` | `repo`, `issue`, `state` |
-| `checks_finished` | `repo`, `issue`, `run`, `role`, `target`, `sha` (workspace commit; omitted outside git), `ok`, `result` (`passed`, `check_failed`, `check_error`), `exit_code` (`null` when the script did not exit normally), `timed_out` (only when `true`), `duration_ms` |
+| `checks_finished` | `repo`, `issue`, `run`, `role`, `target`, `sha` (workspace commit; omitted outside git), `ok`, `result` (`passed`, `check_failed`, `check_timeout`, `check_error`), `exit_code` (`null` when the script did not exit normally), `timed_out` (only when `true`), `duration_ms` |
 | `transition_denied` | `repo`, `issue`, `run`, `role`, `target`, `reason` (the message the agent received) |
 
 `cost_usd` in a line uses the prices at the time it was written; the logs page and `/api/v1/history` recompute every

@@ -43,7 +43,8 @@ Symphony runs agents **unattended**. Nobody watches a session, so every decision
   agent as an error result `{error: {category, message}}`. Besides the adapter's own categories, tools that change
   the issue's column return the [transition guard](configuration.md#transition-guard) categories
   `transition_denied` (terminal column or outside the role's `may_move_to`), `check_failed` (the entry check exited
-  `1`; the message carries its output) and `check_error` (the check could not run properly). A thrown error becomes
+  `1`; the message carries its output), `check_timeout` (the check ran into `checks.timeout_ms`; the issue keeps its
+  column) and `check_error` (the check could not run properly). A thrown error becomes
   `tool_error`.
 - **User input:** `AskUserQuestion` is disabled. If a question still reaches the permission callback, it is answered
   automatically ("nobody can answer; decide yourself or ask on the issue"), an event `turn_input_required` is

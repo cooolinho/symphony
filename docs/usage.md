@@ -25,8 +25,10 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
    - comments the result and calls `set_status("Agent review")`.
 4. **Checks before `Agent review`:** Symphony runs the checks in the workspace. If they pass, the card moves to
    `Agent review` and the developer session ends. If they fail (`check_failed`), the card stays and the agent gets
-   the output, fixes the errors and tries again. If the environment is broken (`check_error`, e.g. a missing
-   `vendor/`), the agent comments that and moves the card to `Blocked`.
+   the output, fixes the errors and tries again. If the checks run longer than `checks.timeout_ms`
+   (`check_timeout`), the agent tries once more and otherwise ends its turn; the card keeps its column and never goes
+   to `Blocked` for a timeout. If the environment is broken (`check_error`, e.g. a missing `vendor/`), the agent
+   comments that and moves the card to `Blocked`.
 5. **Reviewer** (`Agent review`, at most one at a time, model `opus`, read-only, 6 turns): checks
    `git diff origin/<base>...HEAD`, the pull request and the comments against a checklist (correctness, tests,
    authorization, validation, N+1, migrations, secrets, changed test/CI/lint configuration) and writes
