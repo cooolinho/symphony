@@ -194,6 +194,12 @@ describe('config layer', () => {
     assert.equal(resolve({ checks: { on_enter: { Done: '$SETUP' } } }, { SETUP: 'x' }).checks.onEnter.get('done'), '$SETUP');
   });
 
+  it('takes checks.timeout_ms from an environment reference', () => {
+    const front = { checks: { timeout_ms: '${CHECKS_TIMEOUT:-1800000}' } };
+    assert.equal(resolve(front, {}).checks.timeoutMs, 1_800_000);
+    assert.equal(resolve(front, { CHECKS_TIMEOUT: '2400000' }).checks.timeoutMs, 2_400_000);
+  });
+
   it('rejects invalid checks values', () => {
     const message = (front: Record<string, unknown>) => {
       try {

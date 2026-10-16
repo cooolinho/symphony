@@ -86,12 +86,12 @@ if [ -n "$syntax_errors" ]; then
   exit 1
 fi
 
-# Composer scripts are read from `composer run-script --list --raw`
-# (one "name  description" line per script defined in composer.json).
+# Composer scripts are read from `composer run-script --list`: one "  name  description" line per script
+# defined in composer.json on stdout (the "scripts:" heading goes to stderr). Composer has no --raw here.
 scripts=""
 if [ -f composer.json ] && command -v composer >/dev/null 2>&1; then
-  scripts=$(composer run-script --list --raw 2>/dev/null | awk '{print $1}') \
-    || env_problem "composer run-script --list failed"
+  listing=$(composer run-script --list --no-ansi 2>/dev/null) || env_problem "composer run-script --list failed"
+  scripts=$(printf '%s\n' "$listing" | awk 'NF {print $1}')
 fi
 has_script() { printf '%s\n' "$scripts" | grep -qx "$1"; }
 

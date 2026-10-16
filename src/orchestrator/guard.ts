@@ -11,7 +11,7 @@ import { roleName, type RoleConfig } from '../workflow/roles.ts';
 import { isTerminalState } from './eligibility.ts';
 
 /** Tool error categories the guard returns instead of running a status-changing tool. */
-export type GuardDenial = 'transition_denied' | 'check_failed' | 'check_error';
+export type GuardDenial = 'transition_denied' | 'check_failed' | 'check_timeout' | 'check_error';
 
 export type GuardDecision =
   | { allow: true; note: string | null }
@@ -109,8 +109,22 @@ function checkError(target: string, why: string): GuardDecision {
   };
 }
 
+/** A check that ran into `checks.timeout_ms`: a runtime limit, so the issue stays in its column instead of Blocked. */
+function checkTimeout(target: string, durationMs: number): GuardDecision {
+  return {
+    allow: false,
+    category: 'check_timeout',
+    message:
+      `The entry check for "${target}" timed out after ${Math.round(durationMs / 1000)}s (checks.timeout_ms), so the issue ` +
+      'was not moved. This is a runtime limit, not a problem with your change: do not change code and do not move the ' +
+      'issue to Blocked. Call set_status again once; if it times out again, post a short issue comment and end your turn ' +
+      'without changing the status. Symphony picks the issue up again later.',
+  };
+}
+
 function decide(target: string, result: HookResult): GuardDecision {
   if (result.ok && result.exitCode === 0) return { allow: true, note: CHECK_PASSED_NOTE };
+  if (result.timedOut) return checkTimeout(target, result.durationMs);
   if (!result.timedOut && result.error === null && result.signal === null && result.exitCode === 1) {
     const output = tail(result.output.trim(), CHECK_OUTPUT_LIMIT);
     return {

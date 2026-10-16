@@ -79,6 +79,7 @@ describe('shipped WORKFLOW.md', () => {
     assert.match(prompt, /Integrate the base branch before requesting review/);
     assert.match(prompt, /set_status\("Agent review"\)/);
     assert.match(prompt, /`check_failed`.*Fix the problems/);
+    assert.match(prompt, /`check_timeout`.*do not move the issue to "Blocked".*without changing the status/);
     assert.match(prompt, /`check_error`.*set_status\("Blocked"\)/);
     assert.match(prompt, /end your turn/);
     assert.match(prompt, /git push -u origin symphony\/issue-42/);
@@ -113,6 +114,7 @@ describe('shipped WORKFLOW.md', () => {
     assert.match(prompt, /set_status\("In review"\)/);
     assert.match(prompt, /set_status\("In progress"\)/);
     assert.match(prompt, /N is 3 or more/);
+    assert.match(prompt, /`check_timeout`.*do not move the issue to "Blocked".*stays in "Agent review"/);
     assert.match(prompt, /Attempt 2/);
     assert.doesNotMatch(prompt, /mcp__tracker__/);
     assert.doesNotMatch(prompt, /Your role: developer/);
