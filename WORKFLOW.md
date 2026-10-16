@@ -152,7 +152,9 @@ roles:
 checks:
   # Entry checks: set_status into these columns only succeeds when the script passes (exit 0).
   # checks/laravel.sh is a no-op (exit 0) for repositories without a Laravel app.
-  timeout_ms: 1200000
+  # A check that runs longer fails with check_timeout: the issue stays in its column (never Blocked).
+  # Must stay below claude.turn_timeout_ms (default 3600000).
+  timeout_ms: ${SYMPHONY_CHECKS_TIMEOUT_MS:-1800000}
   on_enter:
     Agent review: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
     In review: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
@@ -217,6 +219,7 @@ The current directory is a clone of the issue's repository. Work only inside it.
 9. Hand off with `set_status("Agent review")`. Symphony runs the entry checks (lint, static analysis, tests) before the move:
    - **Success** (the result says "Checks passed — end your turn now."): end your turn immediately. The reviewer takes over in a new session.
    - **`check_failed`**: the issue stays in its column and the result contains the check output. Fix the problems, commit, push, and call `set_status("Agent review")` again.
+   - **`check_timeout`**: the checks ran longer than Symphony allows; this is a runtime limit, not your code. Do not change code and do not move the issue to "Blocked". Call `set_status("Agent review")` once more; if it times out again, say so in a short issue comment (`add_comment`) and end your turn without changing the status. Symphony picks the issue up again later.
    - **`check_error`**: the environment is broken, not your code. Do not change code for it: describe the error in an issue comment (`add_comment`) and move the issue to "Blocked" with `set_status("Blocked")`.
 
 If you are blocked (unclear requirements, missing access, broken infrastructure), explain exactly what you need in an issue comment and move the issue to "Blocked". Never move an issue to "In review" or "Done": the reviewer and a human do that.
@@ -265,6 +268,7 @@ Use a reviewer subagent only for a second pass over a large diff. Its findings g
    - **Changes needed** and N is 1 or 2: `set_status("In progress")`. The developer agent picks up your findings.
    - **Changes needed** and N is 3 or more: do not send it back again. Move it to `set_status("In review")` and make sure your comment lists all open findings for the human reviewer.
    - On `check_failed` when moving to "In review": post a short comment with the failing output and move the issue to "In progress" instead.
+   - On `check_timeout`: do not move the issue to "Blocked". Call the same `set_status` once more; if it times out again, say so in a short issue comment and end your turn without changing the status. The issue stays in "Agent review" and Symphony picks it up again later.
    - On `check_error`: describe the error in an issue comment and move the issue to "Blocked".
 8. After a successful `set_status`, end your turn.
 

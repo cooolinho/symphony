@@ -19,14 +19,20 @@ if (args[0] === '-l') {
 if (args[1] === 'test' && process.env.FAKE_TEST_FAIL) { console.log('Tests: 1 failed'); process.exit(1); }
 `;
 
-/** Fake composer: lists the scripts of composer.json; running one logs it and fails with FAKE_FAIL=<name>. */
+/**
+ * Fake composer: lists the scripts of composer.json like Composer 2 (heading on stderr, one indented line per script
+ * on stdout, unknown options rejected); running one logs it and fails with FAKE_FAIL=<name>.
+ */
 const FAKE_COMPOSER = `#!${process.execPath}
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify(['composer', ...args]) + '\\n');
 const scripts = JSON.parse(fs.readFileSync('composer.json', 'utf8')).scripts || {};
 if (args[0] === 'run-script' && args[1] === '--list') {
-  for (const name of Object.keys(scripts)) console.log(name + '  description');
+  const unknown = args.slice(2).find((arg) => arg !== '--no-ansi');
+  if (unknown !== undefined) { console.error('The "' + unknown + '" option does not exist.'); process.exit(1); }
+  console.error('scripts:');
+  for (const name of Object.keys(scripts)) console.log('  ' + name + '  Runs the ' + name + ' script as defined in composer.json');
   process.exit(0);
 }
 if (process.env.FAKE_FAIL === args[1]) { console.log(args[1] + ' broke'); process.exit(1); }
