@@ -359,11 +359,13 @@ function readByModel(reader: Reader, claudeRaw: Record<string, unknown>): Map<st
 
 /**
  * Replaces whole-value `$NAME` references (strings and list items) with environment values;
- * unset or empty variables make the setting count as omitted. Hook and check scripts (shell code) and
- * `tracker.provider` (resolved by the adapter, which must know secret variable names) are left alone.
+ * unset or empty variables make the setting count as omitted. Hooks and check scripts (`checks.on_enter`, shell code)
+ * and `tracker.provider` (resolved by the adapter, which must know secret variable names) are left alone.
  */
 export function substituteEnvReferences(value: unknown, env: NodeJS.ProcessEnv, path: string[] = []): unknown {
-  if (path[0] === 'hooks' || path[0] === 'checks' || (path[0] === 'tracker' && path[1] === 'provider')) return value;
+  if (path[0] === 'hooks' || (path[0] === 'checks' && path[1] === 'on_enter') || (path[0] === 'tracker' && path[1] === 'provider')) {
+    return value;
+  }
   if (typeof value === 'string') return resolveEnvReference(value, env);
   if (Array.isArray(value)) {
     return value.map((item) => substituteEnvReferences(item, env, path)).filter((item) => item !== undefined);
