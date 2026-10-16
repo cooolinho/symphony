@@ -607,9 +607,11 @@ style, static analysis, tests.
 | Static analysis | `analyse` | `vendor/bin/phpstan analyse --no-progress` if `phpstan.neon[.dist]` exists |
 | Tests | `test` | `php artisan test` |
 
-Composer scripts are detected with `composer run-script --list --raw`, which lists exactly the scripts defined in
-`composer.json` (without Composer, none are used). The script never modifies tracked files, and prints only the tail
-(about 4000 characters) of a failing step, since the guard forwards at most 6000 characters.
+Composer scripts are detected with `composer run-script --list`, which lists exactly the scripts defined in
+`composer.json` (without Composer, none are used). A `test` script can run the suite in parallel, e.g.
+`@php artisan test --parallel` with `brianium/paratest`; start it with `Composer\Config::disableProcessTimeout`, or
+Composer stops it after 300 s. The script never modifies tracked files, and prints only the tail (about 4000
+characters) of a failing step, since the guard forwards at most 6000 characters.
 
 ## `model-costs.yml`
 
