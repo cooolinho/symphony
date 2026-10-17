@@ -93,7 +93,7 @@ To go back to the old behavior, remove `roles` and `checks`: then every issue ru
 | Stop an agent | Move the issue to `Backlog`, `Blocked` or `In review`. It stops on the next poll, at the latest after 30 s. |
 | Cancel and clean up | Move the issue to `Done` |
 | Pause all new starts | Set the slots to `0` on the dashboard, or `agent.max_concurrent_agents: 0` in the `WORKFLOW.md`. Running agents keep working. |
-| Change the number of agent slots | At the slot bar of *Running* on the dashboard, use **−** / **+** for the total and for each active column (**×** returns a column to its `WORKFLOW.md` limit, **Reset to WORKFLOW.md** removes every override). The change applies from the next tick without a restart and survives a restart; a reload of `WORKFLOW.md` does not overwrite it, and the dashboard shows the `WORKFLOW.md` value next to it. Lowering it below the running count stops no agent: nothing new starts until the count is below the limit ("3 running, limit 2: no new starts until 2 finish"). With `curl`: `PUT /api/v1/settings/agents` with `Content-Type: application/json`, see [Dashboard and API](#dashboard-and-api). The same rights as restart apply. See [Agent slots set on the dashboard](configuration.md#agent-slots-set-on-the-dashboard). |
+| Change the number of agent slots | At the slot bar of *Running* on the dashboard, use **−** / **+** for the total, for each active column and for the slots reserved per role (**×** returns a column or a role to its `WORKFLOW.md` value, **Reset to WORKFLOW.md** removes every override). The change applies from the next tick without a restart and survives a restart; a reload of `WORKFLOW.md` does not overwrite it, and the dashboard shows the `WORKFLOW.md` value next to it. Lowering it below the running count stops no agent: nothing new starts until the count is below the limit ("3 running, limit 2: no new starts until 2 finish"). With `curl`: `PUT /api/v1/settings/agents` with `Content-Type: application/json`, see [Dashboard and API](#dashboard-and-api). The same rights as restart apply. See [Agent slots set on the dashboard](configuration.md#agent-slots-set-on-the-dashboard). |
 | Change the prompt or settings | Edit `WORKFLOW.md`. This applies right away to new sessions, without a restart. |
 | Restart a waiting or paused worker right away | On the issue card (or the agent page) click **Retry now** or **Resume now**, or `curl -X POST http://127.0.0.1:4000/api/v1/<identifier>/retry` (the identifier URL-encoded, e.g. `owner%2Frepository%2312`). This is the way out of a session limit when you have topped up credits and do not want to wait for the reset. On a non-loopback address (`SYMPHONY_HOST`) it only works with `SYMPHONY_ALLOW_REMOTE_CONTROL=true`; with `curl` through the proxy, pass `-H 'Origin: https://<domain>'`, see [Dashboard and API](#dashboard-and-api). |
 | Pause an issue or a model | On a card in *Running*, *Up next* or *Waiting* (or on the agent page) click **Pause**: a running agent stops at once (the workspace stays), nothing is retried, and the card moves to *Paused* ("paused by operator"). **Resume now** starts it again like a restart. In the *Models* bar, **Pause** next to a model family (e.g. `fable`) stops its running agents and keeps every issue of that model waiting (reason `model_hold`), while the other models keep running; no issue moves to another model. **Resume** retries them at once, as slots allow. With `curl`: `POST /api/v1/<identifier>/pause` and `/resume`, `POST /api/v1/models/<model>/hold` and `/release`. Board changes (comments, labels, column moves, also to `Backlog` and back) do not lift these pauses; an issue reaching a terminal column or leaving the board does. Both survive a restart. The same rights as restart apply (`SYMPHONY_ALLOW_REMOTE_CONTROL` on a non-loopback address). |
@@ -702,8 +702,24 @@ retry timers, `--dry-run` and the dashboard all read it, so the order shown is t
 
 Inside each group the order is priority (Priority field 1–4, others last), then the oldest issue, then the identifier.
 Free slots go down this list; an issue that waits for something else (a model hold, a column limit, open
-sub-issues) takes no slot, the next one gets it. A retry in its backoff holds no slot. This puts finishing work ahead
+sub-issues, a slot reserved for another role) takes no slot, the next one gets it. A retry in its backoff holds no slot. This puts finishing work ahead
 of starting new work: while continuations run, new cards wait longer.
+
+### Example: 3 slots with a developer and a reviewer slot
+
+With `max_concurrent_agents: 3`, `max_concurrent_agents_by_state: { "Agent review": 1 }` and
+`reserved_slots_by_role: { developer: 1, reviewer: 1 }` (see [Reserved slots](configuration.md#reserved-slots)):
+
+1. Five issues in `Ready`, none in `Agent review`: two developers start. The third slot stays free; the other three
+   issues wait with `the free slot is reserved for reviewer`. The slot bar reads
+   `02 / 03 agents · developer 1/1 · reviewer 0/1 reserved · 0 free`.
+2. An issue reaches `Agent review` while both developers run (moved by a human, or by a developer whose session then
+   ends): its reviewer starts at the next tick in the reserved slot. Running developers are never stopped for it, and
+   a slot a developer leaves goes to the next issue in `Ready`, so two developers and one reviewer run side by side.
+3. A second issue reaches `Agent review` while the first is reviewed: it waits with `Agent review limit 1/1`, the column
+   limit still applies.
+4. A `/plan` issue in `Ready` runs as the planner, its own role: it never takes the developer's or the reviewer's
+   reserved slot, only a slot that is free beyond the unused reservations.
 
 Every issue in the plan carries a reason (`reason.code` and a text; times in the text are UTC):
 
@@ -712,6 +728,7 @@ Every issue in the plan carries a reason (`reason.code` and a text; times in the
 | `ready` | starts now or at the next poll | `starts at the next poll`, `continues its session`, `retry 2 starts now` |
 | `no_free_slot` | all `agent.max_concurrent_agents` slots are busy | `waiting for a free slot (3/3 busy)` |
 | `column_limit` | `agent.max_concurrent_agents_by_state` of its column is reached | `Agent review limit 1/1` |
+| `reserved_for_role` | the free slots are kept for other roles by `agent.reserved_slots_by_role` | `the free slot is reserved for reviewer`, `the 2 free slots are reserved for developer, reviewer` |
 | `model_hold` | its model is on hold after a model limit | `model fable on hold until 2026-10-03 18:00 UTC` |
 | `waiting_for_sub_issues` | its role has `wait_for_sub_issues` and sub-issues are open | `waiting for sub-issues owner/repo#7` |
 | `session_limit` | a session-limit retry, or new sessions held back by the dispatch gate | `session limit (five hour): retry after the reset at …`, `new sessions paused until …` |
@@ -807,7 +824,7 @@ Where the data comes from and where the limits are:
 | `POST /api/v1/<identifier>/resume` | lift a pause and start the issue right away (counters reset, attempt kept). Response `202` with `queued` and `issue_identifier`. Errors: `404`, `409` (`not_paused`; `stopping`: the agent is still stopping), `403` as for retry |
 | `POST /api/v1/models/<model>/hold` | pause a model family (`fable`, `opus`, `sonnet`, `haiku`): its running agents stop, its issues wait. Response `202` with `model`, `paused` and `stopped`. Errors: `400 unknown_model`, `409` (`already_paused`, `stopping`), `403` as for retry |
 | `POST /api/v1/models/<model>/release` | resume a model family; its waiting issues retry at once as slots allow. Response `202` with `model`, `paused` and `requeued`. Errors: `400 unknown_model`, `409` (`not_paused`, `stopping`), `403` as for retry |
-| `PUT /api/v1/settings/agents` | change the agent slots (dashboard override). Requires `Content-Type: application/json` (else `415`), body at most 16 KiB (else `413`), e.g. `{ "max_concurrent_agents": 3, "max_concurrent_agents_by_state": { "Agent review": 1 } }`. Fields left out keep their value; `null` removes an override (the total or one column). Total: integer `0`–`50`; per column: integer `1`–`50`, only active columns. Response `200` with `changed` and `limits`. Errors: `400 invalid_settings` with a message, `400 bad_request` (invalid JSON), `409 stopping`, `403` as for retry |
+| `PUT /api/v1/settings/agents` | change the agent slots (dashboard override). Requires `Content-Type: application/json` (else `415`), body at most 16 KiB (else `413`), e.g. `{ "max_concurrent_agents": 3, "max_concurrent_agents_by_state": { "Agent review": 1 }, "reserved_slots_by_role": { "reviewer": 1 } }`. Fields left out keep their value; `null` removes an override (the total, one column or one role). Total: integer `0`–`50`; per column: integer `1`–`50`, only active columns; per role: integer `0`–`50`, only configured roles. A total or reservation that leaves fewer slots than reserved is refused (a total of `0` is always allowed). Response `200` with `changed` and `limits`. Errors: `400 invalid_settings` with a message, `400 bad_request` (invalid JSON), `409 stopping`, `403` as for retry |
 | `DELETE /api/v1/settings/agents` | remove the override: `WORKFLOW.md` applies again. Requires `Content-Type: application/json` like `PUT`; no body needed. Response `200` with `changed` and `limits`; `403` as for retry |
 | `POST /api/v1/<identifier>/retry` | restart a waiting (retry queue, including session limit) or paused worker right away. Response `202` with `queued`, `issue_identifier` and `previous` (`retrying` or `paused`). Errors: `404` (issue unknown), `409` (`running`: currently running; `not_waiting`: not waiting for anything; `stopping`: Symphony is shutting down), `403` (`control_disabled` on a non-loopback address without `SYMPHONY_ALLOW_REMOTE_CONTROL=true`; `forbidden_origin` for cross-origin requests and, on a non-loopback address, also without an `Origin` header) |
 
@@ -829,8 +846,10 @@ Waiting (soonest first), then Paused. Each entry:
 
 `limits` holds the agent slots: `max_concurrent_agents` and, per active column, `by_state["<column>"]`, each as
 `{ effective, workflow, override }` (`override: null` = none set on the dashboard; a column with `effective: null` has
-no limit of its own, only the total applies), plus `override_active` and `max` (the highest value the dashboard
-accepts, 50).
+no limit of its own, only the total applies), per configured role `reserved_slots_by_role["<role>"]` as
+`{ effective, workflow, override, running }` (`0` = no reservation; `running` = sessions of that role now),
+`reservation_problem` (why the reservations are ignored, else `null`), plus `override_active` and `max` (the highest
+value the dashboard accepts, 50).
 
 ```bash
 curl -s http://127.0.0.1:4000/api/v1/state

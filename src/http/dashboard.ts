@@ -30,7 +30,9 @@ const DASHBOARD_CSS = `
   .slots-bar { display: flex; gap: 3px; }
   .slots-bar i { width: 14px; height: 6px; border-radius: 2px; background: var(--line-2); transition: background .3s var(--ease), box-shadow .3s var(--ease); }
   .slots-bar i.on { background: var(--green); box-shadow: 0 0 8px -2px var(--green); }
-  /* Agent slots set on the dashboard: − / value / + for the total and each active column. */
+  /* A slot kept free for a role (agent.reserved_slots_by_role) that runs fewer sessions than reserved. */
+  .slots-bar i.reserved { background: transparent; box-shadow: inset 0 0 0 1px var(--cyan-line); }
+  /* Agent slots set on the dashboard: − / value / + for the total, each active column and each role's reserved slots. */
   .slot-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 0 0 14px; font: 12px var(--mono); color: var(--muted); }
   .slot-item { display: inline-flex; align-items: center; gap: 6px; }
   .slot-item b { min-width: 2ch; color: var(--text); font-weight: 600; text-align: center; }
@@ -484,7 +486,7 @@ ${PIPELINE_JS}
 
   // Tone of the reason chip per dispatch plan reason code (docs/usage.md#dispatch-order).
   const REASON_TONE = {
-    ready: 'green', no_free_slot: 'cyan', column_limit: 'amber', backoff: 'amber', session_limit: 'amber', model_hold: 'amber',
+    ready: 'green', no_free_slot: 'cyan', reserved_for_role: 'cyan', column_limit: 'amber', backoff: 'amber', session_limit: 'amber', model_hold: 'amber',
     waiting_for_sub_issues: 'gray', inactive: 'gray', paused: 'gray',
   };
   // Reason texts carry UTC times (the same text as --dry-run); the chip shows them in local time, the tooltip as sent.
@@ -704,10 +706,20 @@ ${PIPELINE_JS}
 
     const running = state.counts.running;
     const max = h.max_concurrent_agents;
+    // Reserved slots a role does not use yet stay free for it: "developer 1/1 · reviewer 0/1 reserved · 1 free".
+    const reservations = state.limits && !state.limits.reservation_problem
+      ? Object.entries(state.limits.reserved_slots_by_role || {}).filter(([, r]) => r.effective > 0)
+      : [];
+    let unused = 0;
+    for (const [, r] of reservations) unused += Math.max(r.effective - r.running, 0);
+    const free = Math.max(max - running - unused, 0);
     const bar = el('div', null, 'slots-bar');
-    for (let i = 0; i < Math.min(max, 24); i++) bar.append(el('i', null, i < running ? 'on' : ''));
+    for (let i = 0; i < Math.min(max, 24); i++) bar.append(el('i', null, i < running ? 'on' : i < running + unused ? 'reserved' : ''));
     const slots = $('slots');
-    slots.replaceChildren(bar, el('span', pad2(running) + ' / ' + pad2(max) + ' agents · ' + (max - running > 0 ? max - running : 0) + ' free slot' + (max - running === 1 ? '' : 's')));
+    const slotText = reservations.length > 0
+      ? pad2(running) + ' / ' + pad2(max) + ' agents · ' + reservations.map(([role, r]) => role + ' ' + Math.min(r.running, r.effective) + '/' + r.effective).join(' · ') + ' reserved · ' + free + ' free'
+      : pad2(running) + ' / ' + pad2(max) + ' agents · ' + free + ' free slot' + (free === 1 ? '' : 's');
+    slots.replaceChildren(bar, el('span', slotText));
     $('issues-empty').hidden = bySection.running.length > 0;
     setText($('issues-empty-sub'), rows.length
       ? 'Nothing running right now · ' + (rows.length) + ' issue' + (rows.length === 1 ? '' : 's') + ' below'
@@ -912,11 +924,30 @@ ${PIPELINE_JS}
       }
       nodes.push(col);
     }
+    for (const [role, r] of Object.entries(limits.reserved_slots_by_role || {})) {
+      const res = el('span', null, 'slot-item');
+      res.append(el('span', role + ' reserved'));
+      if (retryAllowed) res.append(slotButton('−', 'Reserve fewer slots for ' + role, { reserved_slots_by_role: { [role]: r.effective - 1 } }, r.effective <= 0));
+      res.append(el('b', r.effective));
+      if (retryAllowed) res.append(slotButton('+', 'Reserve one more slot for ' + role, { reserved_slots_by_role: { [role]: r.effective + 1 } }, r.effective >= limits.max));
+      if (r.override !== null) {
+        res.append(el('span', 'set here · WORKFLOW.md ' + r.workflow, 'slot-override'));
+        if (retryAllowed) res.append(slotButton('×', 'Use the WORKFLOW.md reservation of ' + role, { reserved_slots_by_role: { [role]: null } }, false));
+      }
+      nodes.push(res);
+    }
     if (retryAllowed && limits.override_active) {
       const reset = el('button', 'Reset to WORKFLOW.md (' + total.workflow + ')', 'btn slot-reset');
       reset.type = 'button';
       if (slotBusy) reset.disabled = true;
       nodes.push(reset);
+    }
+    const reservedRoles = Object.entries(limits.reserved_slots_by_role || {});
+    let reservedSum = 0;
+    for (const [, r] of reservedRoles) reservedSum += r.effective;
+    const unreserved = reservedRoles.filter(([, r]) => r.effective === 0).map(([role]) => role);
+    if (!limits.reservation_problem && reservedSum > 0 && reservedSum >= total.effective && total.effective > 0 && unreserved.length > 0) {
+      nodes.push(el('span', 'every slot is reserved: ' + unreserved.join(', ') + ' start only with more slots', 'slot-note'));
     }
     if (total.effective === 0) {
       nodes.push(el('span', 'limit 0: new dispatches paused' + (running > 0 ? ', ' + running + ' running keep working' : ''), 'slot-note'));
@@ -1241,6 +1272,7 @@ ${PIPELINE_JS}
     for (const e of h.dispatch_errors) if (!h.workflow_error || !e.startsWith('WORKFLOW.md')) problems.push(e);
     if (h.last_tracker_error) problems.push('Tracker: ' + h.last_tracker_error.message);
     if (h.pricing_error) problems.push('model-costs.yml: ' + h.pricing_error);
+    if (state.limits && state.limits.reservation_problem) problems.push('Agent slots: ' + state.limits.reservation_problem);
     $('problems').hidden = problems.length === 0;
     $('problem-list').replaceChildren(...problems.map((p) => el('li', p)));
     renderHeader(h, problems, true);

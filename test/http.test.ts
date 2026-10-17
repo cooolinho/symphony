@@ -733,6 +733,37 @@ describe('agent settings routes', () => {
     }
   });
 
+  it('changes reserved slots and refuses a limit below their sum with 400', async () => {
+    const orchestrator = setup({
+      agent: { max_concurrent_agents: 3, reserved_slots_by_role: { developer: 1, reviewer: 1 } },
+      tracker: { kind: 'github_project', provider: { owner: 'acme', project_number: 1, token: 't' }, active_states: ['Ready', 'Agent review'] },
+      roles: { developer: { states: ['Ready'] }, reviewer: { states: ['Agent review'], read_only: true } },
+    });
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    try {
+      const before = JSON.parse((await request(server.port, 'GET', '/api/v1/state')).body).limits;
+      assert.deepEqual(before.reserved_slots_by_role.reviewer, { effective: 1, workflow: 1, override: null, running: 0 });
+      assert.equal(before.reservation_problem, null);
+
+      const low = await request(server.port, 'PUT', route, json, JSON.stringify({ max_concurrent_agents: 1 }));
+      assert.equal(low.status, 400);
+      assert.deepEqual(JSON.parse(low.body).error, {
+        code: 'invalid_settings',
+        message: 'the limit of 1 agent slot is below the reserved slots (developer 1 + reviewer 1 = 2); lower the reservations first',
+      });
+      assert.equal(orchestrator.snapshot().limits.override_active, false, 'nothing changed');
+
+      const put = await request(server.port, 'PUT', route, json, JSON.stringify({ reserved_slots_by_role: { developer: 2 } }));
+      assert.equal(put.status, 200);
+      assert.deepEqual(JSON.parse(put.body).limits.reserved_slots_by_role.developer, { effective: 2, workflow: 1, override: 2, running: 0 });
+      const unknownRole = await request(server.port, 'PUT', route, json, JSON.stringify({ reserved_slots_by_role: { tester: 1 } }));
+      assert.equal(unknownRole.status, 400);
+      assert.match(JSON.parse(unknownRole.body).error.message, /tester is not a role/);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('uses the shared control guard', async () => {
     const orchestrator = setup();
     const local = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });

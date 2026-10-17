@@ -3210,3 +3210,129 @@ describe('agent slots set on the dashboard', () => {
     assert.equal(edited.by_state.Todo?.override, null);
   });
 });
+
+describe('reserved slots by role', () => {
+  const hanging = () =>
+    new FakeRunner((turn, params) => new Promise((resolve) => params.signal.addEventListener('abort', () => resolve({ ok: false, turnId: String(turn), code: 'turn_cancelled', message: 'cancelled' }))));
+  /** A plugin with the skill behind /plan, so the dispatch preflight finds it. */
+  const plugin = tempDir('symphony-plugin-');
+  fs.mkdirSync(path.join(plugin, '.claude-plugin'), { recursive: true });
+  fs.writeFileSync(path.join(plugin, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'symphony' }));
+  fs.mkdirSync(path.join(plugin, 'skills', 'plan'), { recursive: true });
+  fs.writeFileSync(path.join(plugin, 'skills', 'plan', 'SKILL.md'), '---\nname: plan\n---\n');
+  const front = (agent: Record<string, unknown> = {}) => ({
+    agent: { max_concurrent_agents: 3, max_continuations: 3, reserved_slots_by_role: { developer: 1, reviewer: 1 }, ...agent },
+    claude: { plugins: [plugin] },
+    tracker: {
+      kind: 'github_project',
+      provider: { owner: 'acme', project_number: 1, token: 'test-token' },
+      active_states: ['Ready', 'In progress', 'Agent review'],
+      terminal_states: ['Done'],
+    },
+    roles: {
+      developer: { states: ['Ready', 'In progress'] },
+      reviewer: { states: ['Agent review'], read_only: true },
+      planner: { states: ['Ready', 'In progress'], commands: ['plan'], read_only: true },
+    },
+  });
+  const ready = (count: number) => Array.from({ length: count }, (_, i) => makeIssue({ id: `dev-${i + 1}`, state: 'Ready', priority: 2 }));
+  const runningRoles = (s: Setup) => snapshot(s).running.map((row) => [row.issue_id, row.role]);
+
+  it('runs two developers with one slot free, then starts a reviewer at the next tick while both keep running', async () => {
+    const s = setup({ runner: hanging(), front: front(), issues: ready(5) });
+    await s.orchestrator.tickNow();
+    await until(() => s.runner.sessions.length === 2, 3_000, 'two developers');
+    await s.orchestrator.tickNow();
+    assert.equal(s.runner.sessions.length, 2, 'the third slot stays free');
+    const waiting = snapshot(s).queue.find((item) => item.issue_id === 'dev-3');
+    assert.deepEqual(waiting?.reason, { code: 'reserved_for_role', text: 'the free slot is reserved for reviewer' });
+    const limits = snapshot(s).limits;
+    assert.deepEqual(limits.reserved_slots_by_role.developer, { effective: 1, workflow: 1, override: null, running: 2 });
+    assert.deepEqual(limits.reserved_slots_by_role.reviewer, { effective: 1, workflow: 1, override: null, running: 0 });
+    assert.deepEqual(limits.reserved_slots_by_role.planner, { effective: 0, workflow: 0, override: null, running: 0 });
+    assert.equal(limits.reservation_problem, null);
+
+    s.tracker.issues.set('review', makeIssue({ id: 'review', state: 'Agent review', priority: 4 }));
+    await s.orchestrator.tickNow();
+    await until(() => s.runner.sessions.length === 3, 3_000, 'reviewer started');
+    assert.deepEqual(runningRoles(s), [['dev-1', 'developer'], ['dev-2', 'developer'], ['review', 'reviewer']]);
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  it('does not give the developer reservation to a /plan issue', async () => {
+    const plan = (id: string) => makeIssue({ id, state: 'Ready', priority: 1, description: '/plan\nitems' });
+    const s = setup({ runner: hanging(), front: front(), issues: [plan('plan-1'), plan('plan-2')] });
+    await s.orchestrator.tickNow();
+    await until(() => s.runner.sessions.length === 1, 3_000, 'one planner');
+    await s.orchestrator.tickNow();
+    assert.equal(s.runner.sessions.length, 1, 'the other two slots are reserved');
+    assert.equal(snapshot(s).queue.find((item) => item.issue_id === 'plan-2')?.reason?.code, 'reserved_for_role');
+
+    s.tracker.issues.set('dev-1', makeIssue({ id: 'dev-1', state: 'Ready', priority: 2 }));
+    await s.orchestrator.tickNow();
+    await until(() => s.runner.sessions.length === 2, 3_000, 'developer started');
+    assert.deepEqual(runningRoles(s), [['plan-1', 'planner'], ['dev-1', 'developer']]);
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  it('keeps the Agent review limit of one reviewer', async () => {
+    const reviews = [makeIssue({ id: 'review-1', state: 'Agent review', priority: 1 }), makeIssue({ id: 'review-2', state: 'Agent review', priority: 1 })];
+    const s = setup({ runner: hanging(), front: front({ max_concurrent_agents_by_state: { 'Agent review': 1 } }), issues: [...reviews, ...ready(1)] });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running.length === 2, 3_000, 'one reviewer, one developer');
+    await s.orchestrator.tickNow();
+    assert.deepEqual(runningRoles(s), [['review-1', 'reviewer'], ['dev-1', 'developer']]);
+    assert.equal(snapshot(s).queue.find((item) => item.issue_id === 'review-2')?.reason?.code, 'column_limit');
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  it('ignores reservations above the limit, logs the problem and reports it under limits', async () => {
+    const lines: string[] = [];
+    const logger = Logger.create({ sinks: [{ name: 'memory', write: (line) => lines.push(line) }], level: 'debug' });
+    const s = setup({ runner: hanging(), front: front({ max_concurrent_agents: 1 }), issues: ready(2), logger });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running.length === 1, 3_000, 'one developer');
+    await s.orchestrator.tickNow();
+    const problem = 'reserved slots ignored: the reservations (developer 1 + reviewer 1 = 2) exceed the limit of 1 agent slot';
+    assert.equal(snapshot(s).limits.reservation_problem, problem);
+    assert.equal(lines.filter((line) => line.includes(problem)).length, 1, 'logged once');
+    assert.equal(snapshot(s).queue.find((item) => item.issue_id === 'dev-2')?.reason?.code, 'no_free_slot');
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  it('changes reservations from the dashboard and refuses a limit below their sum', async () => {
+    const logDir = tempDir();
+    const s = setup({ runner: hanging(), front: front(), issues: ready(5), logDir });
+    const invalid = async (body: unknown, pattern: RegExp) => {
+      const result = await s.orchestrator.updateAgentSettings(body);
+      assert.equal(result.ok, false, JSON.stringify(body));
+      assert.match(result.ok === false && result.reason === 'invalid' ? result.message : '', pattern);
+    };
+    await invalid({ max_concurrent_agents: 1 }, /the limit of 1 agent slot is below the reserved slots \(developer 1 \+ reviewer 1 = 2\); lower the reservations first/);
+    await invalid({ reserved_slots_by_role: { planner: 2 } }, /below the reserved slots \(developer 1 \+ reviewer 1 \+ planner 2 = 4\)/);
+    await invalid({ reserved_slots_by_role: { tester: 1 } }, /tester is not a role; use one of developer, reviewer, planner/);
+    await invalid({ reserved_slots_by_role: { developer: -1 } }, /0 to 50/);
+    await invalid({ reserved_slots_by_role: [] }, /object/);
+    // 0 pauses new dispatches, reservations or not.
+    assert.equal((await s.orchestrator.updateAgentSettings({ max_concurrent_agents: 0 })).ok, true);
+    assert.equal((await s.orchestrator.updateAgentSettings({ max_concurrent_agents: null })).ok, true);
+
+    // Without the reviewer reservation all three slots go to developers.
+    const result = await s.orchestrator.updateAgentSettings({ reserved_slots_by_role: { reviewer: 0 } });
+    assert.equal(result.ok && result.changed, true);
+    assert.deepEqual(snapshot(s).limits.reserved_slots_by_role.reviewer, { effective: 0, workflow: 1, override: 0, running: 0 });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running.length === 3, 3_000, 'three developers');
+    // Lowering the limit to 1 now fits the remaining developer reservation.
+    assert.equal((await s.orchestrator.updateAgentSettings({ max_concurrent_agents: 1 })).ok, true);
+
+    const file = path.join(logDir, 'state', 'github_project.json');
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).settings, {
+      max_concurrent_agents: 1,
+      max_concurrent_agents_by_state: {},
+      reserved_slots_by_role: { reviewer: 0 },
+    });
+    assert.deepEqual(snapshot(setup({ front: front(), logDir })).limits.reserved_slots_by_role.reviewer, { effective: 0, workflow: 1, override: 0, running: 0 });
+    await s.orchestrator.shutdown(1_000);
+  });
+});

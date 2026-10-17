@@ -72,6 +72,11 @@ agent:
   # model_hold_ms: 3600000
   max_concurrent_agents_by_state:
     "Agent review": 1                        # one review at a time
+  # Slots kept free for a role, so a developer and a reviewer can always run side by side. Other roles (/plan,
+  # /refactoring, ...) only get slots beyond these: with 2 slots in total they wait until the limit is raised.
+  reserved_slots_by_role:
+    developer: 1
+    reviewer: 1
   max_retry_backoff_ms: 600000
 
 claude:

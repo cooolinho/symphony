@@ -242,6 +242,95 @@ describe('dispatch plan', () => {
     assert.ok(plan.every((item) => item.position === null && item.decision === 'wait'));
   });
 
+  describe('reserved slots by role', () => {
+    const front = (agent: Record<string, unknown>) => ({
+      agent: { max_concurrent_agents: 3, reserved_slots_by_role: { developer: 1, reviewer: 1 }, ...agent },
+      tracker: { kind: 'github_project', active_states: ['Ready', 'In progress', 'Agent review'], provider: { owner: 'acme', project_number: 1, token: 't' } },
+      roles: {
+        developer: { states: ['Ready', 'In progress'] },
+        reviewer: { states: ['Agent review'], read_only: true },
+        planner: { states: ['Ready', 'In progress'], commands: ['plan'], read_only: true },
+      },
+    });
+    const ready = (count: number) => Array.from({ length: count }, (_, i) => makeIssue({ id: `dev-${i + 1}`, state: 'Ready', priority: 2 }));
+
+    it('keeps the reviewer slot free: two developers start and one slot stays empty', () => {
+      const plan = planDispatch(input({ candidates: ready(5) }, front({})));
+      assert.deepEqual(rows(plan), [
+        [1, 'dev-1', 'next', 'start', 'ready'],
+        [2, 'dev-2', 'next', 'start', 'ready'],
+        [3, 'dev-3', 'next', 'wait', 'reserved_for_role'],
+        [4, 'dev-4', 'next', 'wait', 'reserved_for_role'],
+        [5, 'dev-5', 'next', 'wait', 'reserved_for_role'],
+      ]);
+      assert.equal(plan[2]?.reason.text, 'the free slot is reserved for reviewer');
+    });
+
+    it('starts a reviewer in the reserved slot while both developers keep running', () => {
+      const running = [{ state: 'In progress', role: 'developer' }, { state: 'In progress', role: 'developer' }];
+      const plan = planDispatch(
+        input({ running, candidates: [...ready(2), makeIssue({ id: 'review', state: 'Agent review', priority: 3 })] }, front({})),
+      );
+      assert.deepEqual(rows(plan), [
+        [1, 'dev-1', 'next', 'wait', 'reserved_for_role'],
+        [2, 'dev-2', 'next', 'wait', 'reserved_for_role'],
+        [3, 'review', 'next', 'start', 'ready'],
+      ]);
+    });
+
+    it('gives a reviewer the reserved slot ahead of a continuation of a third developer', () => {
+      const running = [{ state: 'In progress', role: 'developer' }, { state: 'In progress', role: 'developer' }];
+      const plan = planDispatch(
+        input(
+          { running, retries: [retry(makeIssue({ id: 'cont', state: 'In progress' }), 'continuation')], candidates: [makeIssue({ id: 'review', state: 'Agent review' })] },
+          front({}),
+        ),
+      );
+      assert.deepEqual(rows(plan), [
+        [1, 'cont', 'next', 'wait', 'reserved_for_role'],
+        [2, 'review', 'next', 'start', 'ready'],
+      ]);
+    });
+
+    it('keeps the developer reservation from a /plan issue: command roles count as their own role', () => {
+      const plan = (id: string, priority: number) => makeIssue({ id, state: 'Ready', priority, description: '/plan\nitems' });
+      const result = planDispatch(input({ candidates: [plan('plan-1', 1), plan('plan-2', 1), ...ready(1)] }, front({})));
+      assert.deepEqual(rows(result), [
+        [1, 'plan-1', 'next', 'start', 'ready'],
+        [2, 'plan-2', 'next', 'wait', 'reserved_for_role'],
+        [3, 'dev-1', 'next', 'start', 'ready'],
+      ]);
+      assert.equal(result[1]?.reason.text, 'the 2 free slots are reserved for developer, reviewer');
+
+      // With a planner and a reviewer running, the last slot stays the developer's.
+      const busy = planDispatch(
+        input({ running: [{ state: 'Ready', role: 'planner' }, { state: 'Agent review', role: 'reviewer' }], candidates: [plan('plan-3', 1)] }, front({})),
+      );
+      assert.deepEqual(rows(busy), [[1, 'plan-3', 'next', 'wait', 'reserved_for_role']]);
+      assert.equal(busy[0]?.reason.text, 'the free slot is reserved for developer');
+    });
+
+    it('still applies the Agent review column limit to reviewers', () => {
+      const reviews = [makeIssue({ id: 'review-1', state: 'Agent review', priority: 1 }), makeIssue({ id: 'review-2', state: 'Agent review', priority: 1 })];
+      const plan = planDispatch(input({ candidates: [...reviews, ...ready(2)] }, front({ max_concurrent_agents_by_state: { 'agent review': 1 } })));
+      assert.deepEqual(rows(plan), [
+        [1, 'review-1', 'next', 'start', 'ready'],
+        [2, 'review-2', 'next', 'wait', 'column_limit'],
+        [3, 'dev-1', 'next', 'start', 'ready'],
+        [4, 'dev-2', 'next', 'start', 'ready'],
+      ]);
+    });
+
+    it('ignores reservations that add up to more than the limit', () => {
+      const plan = planDispatch(input({ candidates: ready(3) }, front({ max_concurrent_agents: 1 })));
+      assert.deepEqual(rows(plan), [
+        [1, 'dev-1', 'next', 'start', 'ready'],
+        [2, 'dev-2', 'next', 'wait', 'no_free_slot'],
+        [3, 'dev-3', 'next', 'wait', 'no_free_slot'],
+      ]);
+    });
+  });
+
   it('formats reason times in UTC', () => {
     assert.equal(planTime(new Date('2026-10-03T18:00:59Z')), '2026-10-03 18:00 UTC');
   });

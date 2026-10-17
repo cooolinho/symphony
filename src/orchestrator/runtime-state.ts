@@ -61,7 +61,11 @@ interface RuntimeStateJson {
   model_holds: ModelHoldJson[];
   operator_holds?: Array<{ model: string; since: string }>;
   paused_issues?: Array<{ issue_id: string; issue_identifier: string; issue_url: string | null; since: string }>;
-  settings?: { max_concurrent_agents: number | null; max_concurrent_agents_by_state: Record<string, number> };
+  settings?: {
+    max_concurrent_agents: number | null;
+    max_concurrent_agents_by_state: Record<string, number>;
+    reserved_slots_by_role?: Record<string, number>;
+  };
 }
 
 const MAX_NAME_LENGTH = 100;
