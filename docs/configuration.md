@@ -231,11 +231,28 @@ write a `transition_denied` line.
 | `model_hold_ms` | `3600000` | How long a model stays on hold after a model limit (e.g. `You've reached your Fable limit`) whose message names no reset. With a reset the hold lasts until the reset + 60 s. While a model is on hold, no issue that would run on it starts; its issues wait in the retry queue, the other models keep running, and no issue moves to another model. Holds are stored under `<logDir>/state/` and survive a restart. `GET /api/v1/state` reports them as `model_holds[]`. See [Model limits](usage.md#model-limits). |
 | `max_retry_backoff_ms` | `300000` | Cap for failure retries (10 s, 20 s, 40 s, …). |
 | `max_concurrent_agents_by_state` | `{}` | Per-status limits, e.g. `{ "In Progress": 1 }`. Invalid entries are ignored with a warning. |
+| `reserved_slots_by_role` | `{}` | Slots kept free for a [role](#roles), e.g. `{ developer: 1, reviewer: 1 }`, so a developer and a reviewer can always run side by side. An issue of role R starts only while the free slots exceed the unused reservations of the other roles (Σ max(0, reserved − running)); a reserved slot stays empty while its role has nothing to do. Command roles (`planner`, `auditor`, …) count as their own roles and never use the developer's reservation. Column limits still apply. Names that are not roles, and values that are not integers of `0` or more, are ignored with a warning. If the reservations add up to more than `max_concurrent_agents`, they are ignored and the dashboard shows a problem. See [Reserved slots](#reserved-slots). |
 | `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `agents`, `turn_number`, `max_turns`). |
+
+#### Reserved slots
+
+Without reservations, the first issues in [dispatch order](usage.md#dispatch-order) take every slot: with
+`max_concurrent_agents: 3` three developers can run while an issue in `Agent review` waits for one of them to finish.
+`reserved_slots_by_role: { developer: 1, reviewer: 1 }` keeps one slot for each of them:
+
+| Running | Waiting | What starts |
+|---|---|---|
+| nothing | 5 issues in `Ready` | 2 developers; the third slot stays free for the reviewer (`reserved_for_role`, "the free slot is reserved for reviewer") |
+| 2 developers | an issue in `Agent review` | its reviewer, at the next tick; both developers keep running |
+| nothing | 2 `/plan` issues, 1 issue in `Ready` | 1 planner and 1 developer; the second planner waits, since the 2 other slots are reserved |
+
+A reserved slot that its role does not use is idle capacity; that is the price of the guaranteed parallelism. When the
+reservations take every slot (`max_concurrent_agents: 2` with the example above), roles without a reservation never
+start; the dashboard notes it at the slot settings.
 
 #### Agent slots set on the dashboard
 
-`max_concurrent_agents` and `max_concurrent_agents_by_state` can also be changed at runtime, on the dashboard or with
+`max_concurrent_agents`, `max_concurrent_agents_by_state` and `reserved_slots_by_role` can also be changed at runtime, on the dashboard or with
 `PUT /api/v1/settings/agents` (see [Dashboard and API](usage.md#dashboard-and-api)). The value in force comes from the
 first of:
 
@@ -245,9 +262,10 @@ first of:
 3. the `${VAR:-default}` fallback inside `WORKFLOW.md` (e.g. `SYMPHONY_MAX_CONCURRENT_AGENTS`, read once at start).
 
 A reload of `WORKFLOW.md` does not overwrite an override; the dashboard then shows both values. Per column, an
-override replaces that column's limit only; the other columns keep theirs. **Reset to WORKFLOW.md** (`DELETE
-/api/v1/settings/agents`) removes the override. The dashboard accepts `0`–`50` for the total (`0` pauses new
-dispatches) and `1`–`50` per active column. A change applies from the next tick (requested at once); lowering the limit
+override replaces that column's limit only; the other columns keep theirs; the same holds per role for the
+reservations. **Reset to WORKFLOW.md** (`DELETE /api/v1/settings/agents`) removes the override. The dashboard accepts
+`0`–`50` for the total (`0` pauses new dispatches), `1`–`50` per active column and `0`–`50` reserved slots per role. It
+refuses (`400`) a total or a reservation that would leave fewer slots than reserved; a total of `0` is always allowed. A change applies from the next tick (requested at once); lowering the limit
 below the number of running agents stops none of them, nothing new starts until the count is below the limit. Each
 change writes a `settings_changed` line to the [repository log](#repository-logs) (`source`, old and new values) and an
 info log line. Each Symphony instance has its own override; there is no shared budget across instances.

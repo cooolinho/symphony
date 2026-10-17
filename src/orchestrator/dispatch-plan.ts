@@ -2,8 +2,9 @@ import { chooseModel } from '../agent/model.ts';
 import { modelFamilyOf } from '../agent/rate-limit.ts';
 import type { Issue } from '../tracker/types.ts';
 import { normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
-import { roleFor } from '../workflow/roles.ts';
+import { roleFor, roleName } from '../workflow/roles.ts';
 import { hasRequiredFields, hasRequiredLabels, isActiveState, sortForDispatch } from './eligibility.ts';
+import { activeReservations, heldForOtherRoles } from './limits.ts';
 
 /**
  * Why an issue starts or waits. `ready` starts with the next pass; every other code is a wait.
@@ -13,6 +14,7 @@ export type PlanReasonCode =
   | 'ready'
   | 'no_free_slot'
   | 'column_limit'
+  | 'reserved_for_role'
   | 'backoff'
   | 'session_limit'
   | 'model_hold'
@@ -59,8 +61,8 @@ export interface PlanPaused {
 export interface PlanInput {
   config: Pick<ServiceConfig, 'agent' | 'tracker' | 'roles' | 'claude'>;
   now: Date;
-  /** Board column of every running session (they hold a slot each). */
-  running: ReadonlyArray<{ state: string }>;
+  /** Board column and role name (`roleName`) of every running session (they hold a slot each). */
+  running: ReadonlyArray<{ state: string; role?: string }>;
   retries: readonly PlanRetry[];
   paused: readonly PlanPaused[];
   /** Board candidates in active columns that are not claimed (running, retrying or paused). */
@@ -135,16 +137,21 @@ function waitingRetryReason(retry: PlanRetry): PlanReason {
  * Order rule: work in flight first (continuations, then due retries), then new candidates; each group by
  * `sortForDispatch`. A continuation keeps the slot its session left, so no new candidate takes it in the gap.
  * Slots are handed out walking that order; an issue that waits for a hold, a column limit or sub-issues takes none.
+ * Reserved slots (`agent.reserved_slots_by_role`) stay free for their role: an issue of role R starts only while the
+ * free slots exceed the unused reservations of the other roles.
  */
 export function planDispatch(input: PlanInput): PlanItem[] {
   const { config, now } = input;
   const max = config.agent.maxConcurrentAgents;
   let busy = input.running.length;
   const inState = new Map<string, number>();
+  const byRole = new Map<string, number>();
   for (const entry of input.running) {
     const key = normalizeStateName(entry.state);
     inState.set(key, (inState.get(key) ?? 0) + 1);
+    if (entry.role !== undefined) byRole.set(entry.role, (byRole.get(entry.role) ?? 0) + 1);
   }
+  const reserved = activeReservations(config.agent);
   const holdOf = (issue: PlanIssue): { model: string; until: Date | null } | null => {
     const family = modelFamilyOf(plannedModel(issue, config));
     const hold = family === null ? undefined : input.holds.get(family);
@@ -152,15 +159,24 @@ export function planDispatch(input: PlanInput): PlanItem[] {
     return hold.until === null || hold.until.getTime() > now.getTime() ? { model: family, until: hold.until } : null;
   };
 
-  /** Hands out a slot, or names what is missing: a column limit, else a free slot. */
-  const claimSlot = (state: string): PlanReason | null => {
+  /** Hands out a slot, or names what is missing: a column limit, else a free slot, else one not reserved for other roles. */
+  const claimSlot = (issue: PlanIssue): PlanReason | null => {
+    const { state } = issue;
     const key = normalizeStateName(state);
     const columnLimit = config.agent.maxConcurrentAgentsByState.get(key);
     const used = inState.get(key) ?? 0;
     if (columnLimit !== undefined && used >= columnLimit) return { code: 'column_limit', text: `${state} limit ${used}/${columnLimit}` };
     if (busy >= max) return { code: 'no_free_slot', text: `waiting for a free slot (${Math.min(busy, max)}/${max} busy)` };
+    const role = roleName(roleFor(issue, config.roles));
+    const held = heldForOtherRoles(role, reserved, byRole);
+    const free = max - busy;
+    if (free <= held.slots) {
+      const slots = free === 1 ? 'the free slot is' : `the ${free} free slots are`;
+      return { code: 'reserved_for_role', text: `${slots} reserved for ${held.roles.join(', ')}` };
+    }
     busy++;
     inState.set(key, used + 1);
+    byRole.set(role, (byRole.get(role) ?? 0) + 1);
     return null;
   };
 
@@ -194,7 +210,7 @@ export function planDispatch(input: PlanInput): PlanItem[] {
     const reason: PlanReason =
       hold !== null
         ? holdReason(hold)
-        : (claimSlot(issue.state) ?? {
+        : (claimSlot(issue) ?? {
             code: 'ready',
             text: retry.kind === 'continuation' ? 'continues its session' : `retry ${retry.attempt} starts now`,
           });
@@ -223,7 +239,7 @@ export function planDispatch(input: PlanInput): PlanItem[] {
     else if (hold !== null) reason = holdReason(hold);
     else if (input.gate !== null) {
       reason = { code: 'session_limit', text: `new sessions paused until ${planTime(input.gate.until)}: session limit (${windowWords(input.gate.window)})` };
-    } else reason = claimSlot(issue.state);
+    } else reason = claimSlot(issue);
     items.push(item(issue, 'next', 'new', reason ?? { code: 'ready', text: 'starts at the next poll' }, null));
   }
   items.forEach((entry, index) => (entry.position = index + 1));

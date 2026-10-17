@@ -38,12 +38,15 @@ import { planDispatch, type PlanIssue, type PlanItem, type PlanRetry } from './d
 import type { CheckCache, CheckRecord } from './guard.ts';
 import { IssueArchive, type ArchivedIssue } from './issue-archive.ts';
 import {
+  activeReservations,
   applyLimitUpdate,
   effectiveAgentLimits,
   hasLimitOverride,
+  heldForOtherRoles,
   limitsJson,
   limitsSummary,
   NO_LIMIT_OVERRIDE,
+  reservationProblem,
   sameLimitOverride,
   withAgentLimits,
   type AgentLimitOverride,
@@ -552,6 +555,8 @@ export class Orchestrator {
   #lastTurnSuccessAt: Date | null = null;
   /** The dispatch gate the last tick logged, to log its start and end once. */
   #loggedGate: DispatchGate | null = null;
+  /** Why the reservations were ignored at the last tick, to log it once. */
+  #loggedReservationProblem: string | null = null;
   /** Models on hold after a model-scoped usage limit, by family; persisted in the runtime state file. */
   #modelHolds = new Map<string, ModelHold>();
   /** Models the operator paused, by family; no end of their own, persisted in the runtime state file. */
@@ -849,7 +854,7 @@ export class Orchestrator {
   updateAgentSettings(body: unknown): Promise<AgentSettingsResult> {
     return this.#serial.run((): AgentSettingsResult => {
       if (this.#stopping) return { ok: false, reason: 'stopping' };
-      const result = applyLimitUpdate(this.#limitOverride, body, this.#deps.workflow.current.config.tracker);
+      const result = applyLimitUpdate(this.#limitOverride, body, this.#deps.workflow.current.config);
       if (!result.ok) return { ok: false, reason: 'invalid', message: result.message };
       return this.#setLimitOverride(result.override, 'dashboard');
     });
@@ -865,7 +870,7 @@ export class Orchestrator {
 
   #setLimitOverride(override: AgentLimitOverride, source: 'dashboard' | 'reset'): AgentSettingsResult {
     const config = this.#deps.workflow.current.config;
-    if (sameLimitOverride(override, this.#limitOverride)) return { ok: true, changed: false, limits: limitsJson(config, override) };
+    if (sameLimitOverride(override, this.#limitOverride)) return { ok: true, changed: false, limits: limitsJson(config, override, this.#runningByRole()) };
     const previous = limitsSummary(config, this.#limitOverride);
     this.#limitOverride = override;
     this.#saveRuntimeState();
@@ -879,6 +884,8 @@ export class Orchestrator {
         new_max_concurrent_agents: current.max_concurrent_agents,
         old_by_state: columns(previous.max_concurrent_agents_by_state),
         new_by_state: columns(current.max_concurrent_agents_by_state),
+        old_reserved: columns(previous.reserved_slots_by_role),
+        new_reserved: columns(current.reserved_slots_by_role),
         running: this.#running.size,
       });
     }
@@ -889,7 +896,7 @@ export class Orchestrator {
     // A raised limit starts the next agents with this tick.
     this.requestRefresh();
     this.#notify();
-    return { ok: true, changed: true, limits: limitsJson(config, override) };
+    return { ok: true, changed: true, limits: limitsJson(config, override, this.#runningByRole()) };
   }
 
   /**
@@ -1017,6 +1024,7 @@ export class Orchestrator {
       this.#expireModelHolds();
       // The board is fetched even while the dispatch gate is closed, so the dashboard stays current.
       this.#logGate(this.#dispatchGate());
+      this.#logReservationProblem(config);
 
       const adapter = this.#adapterFor(workflow);
       let fetched: Issue[];
@@ -1156,18 +1164,32 @@ export class Orchestrator {
     }
   }
 
-  #globalSlots(config: ServiceConfig): number {
-    return Math.max(effectiveAgentLimits(config.agent, this.#limitOverride).maxConcurrentAgents - this.#running.size, 0);
+  #logReservationProblem(config: ServiceConfig): void {
+    const problem = reservationProblem(effectiveAgentLimits(config, this.#limitOverride));
+    if (problem === this.#loggedReservationProblem) return;
+    if (problem !== null) this.#logger.warn(problem);
+    else this.#logger.info('reserved slots apply again');
+    this.#loggedReservationProblem = problem;
   }
 
-  #slotsFor(state: string, config: ServiceConfig): number {
-    const normalized = normalizeStateName(state);
+  /** Running sessions by role name (`RunningEntry.role`). */
+  #runningByRole(): Map<string, number> {
+    const byRole = new Map<string, number>();
+    for (const entry of this.#running.values()) byRole.set(entry.role, (byRole.get(entry.role) ?? 0) + 1);
+    return byRole;
+  }
+
+  /** Free slots for `issue`: the total less the unused reservations of other roles, capped by its column limit. */
+  #slotsFor(issue: Issue, config: ServiceConfig): number {
+    const normalized = normalizeStateName(issue.state);
     let inState = 0;
     for (const entry of this.#running.values()) {
       if (normalizeStateName(entry.issue.state) === normalized) inState++;
     }
-    const limits = effectiveAgentLimits(config.agent, this.#limitOverride);
-    return Math.min(this.#globalSlots(config), Math.max(stateLimit(state, limits) - inState, 0));
+    const limits = effectiveAgentLimits(config, this.#limitOverride);
+    const held = heldForOtherRoles(roleName(roleFor(issue, config.roles)), activeReservations(limits), this.#runningByRole());
+    const free = limits.maxConcurrentAgents - this.#running.size - held.slots;
+    return Math.max(Math.min(free, stateLimit(issue.state, limits) - inState), 0);
   }
 
   #shouldDispatch(issue: Issue, config: ServiceConfig, adapter: TrackerAdapter): boolean {
@@ -1178,7 +1200,7 @@ export class Orchestrator {
       !this.#running.has(issue.id) &&
       !this.#claimed.has(issue.id) &&
       !this.#cleanups.has(issue.id) &&
-      this.#slotsFor(issue.state, config) > 0 &&
+      this.#slotsFor(issue, config) > 0 &&
       this.#holdFor(issue, config) === null &&
       waitingForSubIssues(issue, roleFor(issue, config.roles), adapter).length === 0
     );
@@ -1223,7 +1245,7 @@ export class Orchestrator {
     return planDispatch({
       config: withAgentLimits(config, this.#limitOverride),
       now,
-      running: [...this.#running.values()].map((entry) => ({ state: entry.issue.state })),
+      running: [...this.#running.values()].map((entry) => ({ state: entry.issue.state, role: entry.role })),
       retries,
       paused: this.#pausedEntries().map((paused) => ({
         issue: this.#planIssue(paused.issueId, paused.identifier, paused.state),
@@ -2790,7 +2812,7 @@ export class Orchestrator {
           .map((hold) => this.#modelHoldJson(hold)),
       ],
       model_controls: this.#modelControls(plan),
-      limits: limitsJson(config, this.#limitOverride),
+      limits: limitsJson(config, this.#limitOverride, this.#runningByRole()),
       agent_totals: {
         input_tokens: this.#totals.inputTokens,
         output_tokens: this.#totals.outputTokens,
@@ -2821,7 +2843,7 @@ export class Orchestrator {
         active_states: config.tracker.activeStates,
         terminal_states: config.tracker.terminalStates,
         poll_interval_ms: this.#pollIntervalMs,
-        max_concurrent_agents: effectiveAgentLimits(config.agent, this.#limitOverride).maxConcurrentAgents,
+        max_concurrent_agents: effectiveAgentLimits(config, this.#limitOverride).maxConcurrentAgents,
         max_turns: config.agent.maxTurns,
         max_continuations: config.agent.maxContinuations,
         max_session_limit_retries: config.agent.maxSessionLimitRetries,

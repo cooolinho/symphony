@@ -556,6 +556,27 @@ describe('roles config', () => {
     assert.equal(roleFor({ state: 'Ready', description: null }, null), null);
   });
 
+  it('reads agent.reserved_slots_by_role for configured roles and ignores the rest with a warning', () => {
+    assert.deepEqual([...resolve({ ...base, roles: valid }).agent.reservedSlotsByRole], [], 'default: no reservations');
+    const config = resolve({
+      ...base,
+      roles: valid,
+      agent: { reserved_slots_by_role: { developer: 1, reviewer: '2', tester: 1, Developer: 1, planner: -1, analyst: 'x', auditor: 0 } },
+    });
+    assert.deepEqual([...config.agent.reservedSlotsByRole], [['developer', 1], ['reviewer', 2]]);
+    const warnings = config.warnings.filter((w) => w.includes('reserved_slots_by_role'));
+    assert.equal(warnings.length, 4);
+    assert.ok(warnings.includes('agent.reserved_slots_by_role.tester ignored: not a role (roles: developer, reviewer)'), warnings.join('\n'));
+    assert.ok(warnings.some((w) => w.startsWith('agent.reserved_slots_by_role.planner ignored: needs an integer')));
+
+    const noRoles = resolve({ ...base, agent: { reserved_slots_by_role: { developer: 1 } } });
+    assert.equal(noRoles.agent.reservedSlotsByRole.size, 0);
+    assert.ok(noRoles.warnings.includes('agent.reserved_slots_by_role.developer ignored: reservations need a roles section'));
+    const notMap = resolve({ ...base, roles: valid, agent: { reserved_slots_by_role: [1] } });
+    assert.equal(notMap.agent.reservedSlotsByRole.size, 0);
+    assert.ok(notMap.warnings.includes('agent.reserved_slots_by_role is not a map; ignored'));
+  });
+
   it('rejects a role state that is not active', () => {
     const message = messageOf({ ...base, roles: { ...valid, extra: { states: ['Blocked'] } } });
     assert.match(message, /roles\.extra\.states: "Blocked" is not in tracker\.active_states/);

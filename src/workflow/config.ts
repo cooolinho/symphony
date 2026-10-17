@@ -52,6 +52,11 @@ export interface AgentConfig {
   modelHoldMs: number;
   /** Keys are normalized state names (trimmed, lowercase). */
   maxConcurrentAgentsByState: ReadonlyMap<string, number>;
+  /**
+   * Slots kept free for a role (`roles` names) while it runs fewer sessions than reserved; only positive counts of
+   * configured roles. Ignored while their sum exceeds `maxConcurrentAgents` (see `activeReservations`).
+   */
+  reservedSlotsByRole: ReadonlyMap<string, number>;
   /** Liquid template for continuation turns; null uses the built-in text. */
   continuationPrompt: string | null;
 }
@@ -487,12 +492,26 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
       }
     }
   }
+  const reserved = new Map<string, number>();
+  const reservedRaw = agentRaw.reserved_slots_by_role;
+  if (reservedRaw !== undefined && reservedRaw !== null) {
+    if (!isPlainObject(reservedRaw)) {
+      reader.warnings.push('agent.reserved_slots_by_role is not a map; ignored');
+    } else {
+      for (const [role, count] of Object.entries(reservedRaw)) {
+        const parsed = parseInteger(count);
+        if (parsed === null || parsed < 0) reader.warnings.push(`agent.reserved_slots_by_role.${role} ignored: needs an integer of 0 or more`);
+        else if (parsed > 0) reserved.set(role, parsed);
+      }
+    }
+  }
   const agent: AgentConfig = {
     // 0 is allowed and pauses all new dispatches.
     maxConcurrentAgents: reader.int(agentRaw, 'max_concurrent_agents', 'agent.max_concurrent_agents', DEFAULTS.maxConcurrentAgents, 0),
     maxTurns: reader.int(agentRaw, 'max_turns', 'agent.max_turns', DEFAULTS.maxTurns, 1),
     maxRetryBackoffMs: reader.int(agentRaw, 'max_retry_backoff_ms', 'agent.max_retry_backoff_ms', DEFAULTS.maxRetryBackoffMs, 1),
     maxConcurrentAgentsByState: byState,
+    reservedSlotsByRole: reserved,
     maxContinuations:
       agentRaw.max_continuations === undefined || agentRaw.max_continuations === null
         ? null
@@ -584,6 +603,15 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
 
   // roles
   const roles = readRoles(reader, raw, activeStates, terminalStates);
+  for (const role of reserved.keys()) {
+    if (roles?.some((known) => known.name === role) === true) continue;
+    reserved.delete(role);
+    reader.warnings.push(
+      roles === null
+        ? `agent.reserved_slots_by_role.${role} ignored: reservations need a roles section`
+        : `agent.reserved_slots_by_role.${role} ignored: not a role (roles: ${roles.map((known) => known.name).join(', ')})`,
+    );
+  }
   if (roles !== null && agent.maxContinuations === null) {
     reader.warnings.push(
       'roles is set while agent.max_continuations is unlimited: role switches count as continuations, so set a limit',
