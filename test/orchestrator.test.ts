@@ -708,7 +708,7 @@ describe('roles', () => {
       );
       assert.equal(developerRun?.fields.reason, 'role changed (developer → reviewer)');
       assert.equal(reviewerRun?.fields.outcome, 'continuing');
-      assert.equal(reviewerRun?.fields.role, undefined);
+      assert.equal(reviewerRun?.fields.role, 'reviewer');
       assert.equal(reviewerRun?.fields.next_role, undefined);
     });
 

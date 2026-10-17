@@ -10,7 +10,8 @@ import { resolveConfigPath } from '../util/paths.ts';
 import { COMMAND_NAME } from './command.ts';
 import { isPlainObject } from './loader.ts';
 import { Reader, parseInteger } from './reader.ts';
-import type { RoleClaudeOverrides, RoleConfig } from './roles.ts';
+import { NEXT_STAGE, resultTargets, type ModelLabelPolicy, type RoleClaudeOverrides, type RoleConfig } from './roles.ts';
+import { AGENT_RESULT_KINDS, RESULT_VERDICTS, type AgentResultKind } from './results.ts';
 
 export interface TrackerConfig {
   kind: string | null;
@@ -95,6 +96,24 @@ export interface ClaudeConfig {
   skills: 'all' | string[] | null;
 }
 
+/** The `pipeline` section: limits and classification shared by the result-driven roles. */
+export interface PipelineConfig {
+  /** Review rounds (review → changes needed → fix) before the issue is handed to a human. */
+  maxReviewRounds: number;
+  /** Test rounds (test failed → fix) before the issue is handed to a human. */
+  maxTestRounds: number;
+  /** Label put on an issue that hit a round limit. */
+  limitLabel: string;
+  /** Issue label (normalized: trimmed, lowercase) → change type. */
+  typeLabels: ReadonlyMap<string, string>;
+  /** Type of an issue without a label in `typeLabels`. */
+  defaultType: string;
+  /** Path globs that mark test, documentation and security-relevant files (used by later pipeline stages). */
+  testPaths: string[];
+  docsPaths: string[];
+  securityPaths: string[];
+}
+
 export interface ServerConfig {
   port: number | null;
   host: string;
@@ -120,6 +139,7 @@ export interface ServiceConfig {
   integrations: Readonly<Record<string, unknown>>;
   /** Column-scoped roles; null without a `roles` section (one implicit `default` role). */
   roles: RoleConfig[] | null;
+  pipeline: PipelineConfig;
   server: ServerConfig;
   /** Non-fatal findings (ignored keys, ignored per-state limits) for operator logs. */
   warnings: string[];
@@ -150,6 +170,12 @@ export const DEFAULTS = {
   turnTimeoutMs: 3_600_000,
   readTimeoutMs: 30_000,
   stallTimeoutMs: 300_000,
+  maxReviewRounds: 3,
+  maxTestRounds: 2,
+  pipelineLimitLabel: 'needs-human',
+  pipelineDefaultType: 'feature',
+  /** Column for a session that ends without the result its role has to report. */
+  onMissingResult: 'Blocked',
   serverHost: '127.0.0.1',
   workspaceRootName: 'symphony_workspaces',
 } as const;
@@ -157,11 +183,16 @@ export const DEFAULTS = {
 const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'];
 export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
-const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'server'];
+const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server'];
 const ROLE_KEYS = new Set([
   'states',
   'read_only',
   'may_move_to',
+  'result',
+  'on_result',
+  'on_check_failed',
+  'on_missing_result',
+  'model_label',
   'max_turns',
   'commands',
   'run_checks',
@@ -173,6 +204,16 @@ const ROLE_KEYS = new Set([
 ]);
 /** GitHub allows 100 sub-issues per issue. */
 const MAX_SUB_ISSUES_LIMIT = 100;
+const PIPELINE_KEYS = new Set([
+  'max_review_rounds',
+  'max_test_rounds',
+  'limit_label',
+  'type_labels',
+  'default_type',
+  'test_paths',
+  'docs_paths',
+  'security_paths',
+]);
 const ROLE_CLAUDE_KEYS = new Set(['model', 'effort', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'max_budget_usd']);
 const MODEL_CLAUDE_KEYS = new Set(['permission_mode', 'on_permission_request', 'allowed_tools', 'disallowed_tools']);
 
@@ -239,11 +280,15 @@ function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: s
         reader.errors.push(`${field}.sub_issue_status must not be a terminal state (got ${JSON.stringify(subIssueStatus)})`);
       }
     }
+    const readOnly = reader.bool(value, 'read_only', `${field}.read_only`, false);
+    const transitions = readRoleTransitions(reader, value, field, terminalStates);
     roles.push({
       name,
       states,
-      readOnly: reader.bool(value, 'read_only', `${field}.read_only`, false),
-      mayMoveTo: mayMoveTo === null ? null : mayMoveTo.map((entry) => entry.trim()).filter((entry) => entry !== ''),
+      readOnly,
+      mayMoveTo: mergeTargets(mayMoveTo, transitions),
+      ...transitions,
+      modelLabel: reader.oneOf<ModelLabelPolicy>(value, 'model_label', `${field}.model_label`, ['apply', 'ignore'], readOnly && transitions.result !== null ? 'ignore' : 'apply'),
       maxTurns:
         maxTurnsValue === undefined || maxTurnsValue === null
           ? null
@@ -261,6 +306,117 @@ function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: s
     if (!plainStates.has(normalizeStateName(state))) reader.errors.push(`active state ${JSON.stringify(state)} has no role`);
   }
   return roles;
+}
+
+type RoleTransitions = Pick<RoleConfig, 'result' | 'onResult' | 'onCheckFailed' | 'onMissingResult'>;
+
+/**
+ * `result`, `on_result`, `on_check_failed` and `on_missing_result` of a role. Verdicts must belong to the result kind
+ * and no target may be a terminal column; `on_missing_result` defaults to `Blocked` once the role has a `result`.
+ */
+function readRoleTransitions(reader: Reader, raw: Record<string, unknown>, field: string, terminalStates: string[]): RoleTransitions {
+  const result = reader.oneOf<AgentResultKind>(raw, 'result', `${field}.result`, AGENT_RESULT_KINDS, null);
+  const terminal = new Set(terminalStates.map(normalizeStateName));
+  /** A column name, trimmed; null (with an error) when empty, terminal or `next` where only a column is allowed. */
+  const column = (value: string, path: string, allowNext: boolean): string | null => {
+    const name = value.trim();
+    if (name === '') reader.errors.push(`${path} must not be empty`);
+    else if (name.toLowerCase() === NEXT_STAGE) {
+      if (allowNext) return NEXT_STAGE;
+      reader.errors.push(`${path} must be a column name (${NEXT_STAGE} is only for on_result)`);
+    } else if (terminal.has(normalizeStateName(name))) reader.errors.push(`${path} must not be a terminal state (got ${JSON.stringify(name)})`);
+    else return name;
+    return null;
+  };
+
+  const onResult: Record<string, string> = {};
+  const onResultRaw = raw.on_result;
+  if (onResultRaw !== undefined && onResultRaw !== null) {
+    if (!isPlainObject(onResultRaw)) {
+      reader.errors.push(`${field}.on_result must be a map of verdicts to columns`);
+    } else {
+      if (result === null) reader.errors.push(`${field}.on_result needs ${field}.result (the kind whose verdicts it maps)`);
+      const verdicts: readonly string[] = result === null ? [] : RESULT_VERDICTS[result];
+      for (const [verdict, value] of Object.entries(onResultRaw)) {
+        const path = `${field}.on_result.${verdict}`;
+        if (result !== null && !verdicts.includes(verdict)) {
+          reader.errors.push(`${path}: ${JSON.stringify(verdict)} is not a verdict of result ${result} (allowed: ${verdicts.join(', ')})`);
+        } else if (typeof value !== 'string') {
+          reader.errors.push(`${path} must be a column name or ${NEXT_STAGE}`);
+        } else {
+          const target = column(value, path, true);
+          if (target !== null) onResult[verdict] = target;
+        }
+      }
+    }
+  }
+  const optionalColumn = (key: string): string | null => {
+    const value = reader.string(raw, key, `${field}.${key}`);
+    return value === null ? null : column(value, `${field}.${key}`, false);
+  };
+  const onCheckFailed = optionalColumn('on_check_failed');
+  const onMissingResult = optionalColumn('on_missing_result');
+  if (onMissingResult !== null && result === null) reader.errors.push(`${field}.on_missing_result needs ${field}.result`);
+  return {
+    result,
+    onResult,
+    onCheckFailed,
+    onMissingResult: result === null ? null : (onMissingResult ?? DEFAULTS.onMissingResult),
+  };
+}
+
+/**
+ * `may_move_to` plus the columns the result-driven transitions name, so the guard, the board check and the pipeline
+ * view see them. A role without `may_move_to` stays unrestricted (null): the targets only extend a list.
+ */
+function mergeTargets(mayMoveTo: string[] | null, transitions: RoleTransitions): string[] | null {
+  if (mayMoveTo === null) return null;
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of [...mayMoveTo, ...resultTargets(transitions)]) {
+    const column = entry.trim();
+    if (column === '' || seen.has(normalizeStateName(column))) continue;
+    seen.add(normalizeStateName(column));
+    merged.push(column);
+  }
+  return merged;
+}
+
+/** The `pipeline` section; every key is optional. Unknown keys are ignored with a warning. */
+function readPipeline(reader: Reader, raw: Record<string, unknown>): PipelineConfig {
+  const section = reader.section(raw, 'pipeline');
+  for (const key of Object.keys(section)) {
+    if (!PIPELINE_KEYS.has(key)) reader.warnings.push(`unknown key pipeline.${key} ignored (known: ${[...PIPELINE_KEYS].join(', ')})`);
+  }
+  const typeLabels = new Map<string, string>();
+  const typeLabelsRaw = section.type_labels;
+  if (typeLabelsRaw !== undefined && typeLabelsRaw !== null) {
+    if (!isPlainObject(typeLabelsRaw)) {
+      reader.errors.push('pipeline.type_labels must be a map of labels to types');
+    } else {
+      for (const [label, type] of Object.entries(typeLabelsRaw)) {
+        const key = label.trim().toLowerCase();
+        if (typeof type !== 'string' || type.trim() === '') reader.errors.push(`pipeline.type_labels.${label} must be a non-empty string`);
+        else if (key === '') reader.errors.push('pipeline.type_labels labels must not be empty');
+        else typeLabels.set(key, type.trim());
+      }
+    }
+  }
+  const nonEmpty = (key: string, fallback: string): string => {
+    const value = reader.string(section, key, `pipeline.${key}`)?.trim();
+    if (value === '') reader.errors.push(`pipeline.${key} must not be empty`);
+    return value || fallback;
+  };
+  return {
+    maxReviewRounds: reader.int(section, 'max_review_rounds', 'pipeline.max_review_rounds', DEFAULTS.maxReviewRounds, 1),
+    maxTestRounds: reader.int(section, 'max_test_rounds', 'pipeline.max_test_rounds', DEFAULTS.maxTestRounds, 1),
+    limitLabel: nonEmpty('limit_label', DEFAULTS.pipelineLimitLabel),
+    typeLabels,
+    defaultType: nonEmpty('default_type', DEFAULTS.pipelineDefaultType),
+    testPaths: reader.stringList(section, 'test_paths', 'pipeline.test_paths') ?? [],
+    docsPaths: reader.stringList(section, 'docs_paths', 'pipeline.docs_paths') ?? [],
+    securityPaths: reader.stringList(section, 'security_paths', 'pipeline.security_paths') ?? [],
+  };
 }
 
 /** `commands` of a role: null when omitted; each entry is a skill-style name without the leading slash. */
@@ -618,6 +774,8 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     );
   }
 
+  const pipeline = readPipeline(reader, raw);
+
   // server (HTTP extension)
   const serverRaw = reader.section(raw, 'server');
   const portValue = serverRaw.port;
@@ -644,6 +802,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     claude,
     integrations,
     roles,
+    pipeline,
     server,
     warnings: reader.warnings,
   };

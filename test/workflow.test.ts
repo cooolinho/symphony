@@ -13,7 +13,7 @@ import { roleFor, sessionAgents, type RoleConfig } from '../src/workflow/roles.t
 import { pluginAgents } from '../src/workflow/command.ts';
 import { loadWorkflowFile, parseWorkflow } from '../src/workflow/loader.ts';
 import { type EffectiveWorkflow, WorkflowStore } from '../src/workflow/store.ts';
-import { unknownBoardColumns, validateDispatch } from '../src/workflow/validate.ts';
+import { nextActiveColumn, nextStageProblems, unknownBoardColumns, validateDispatch } from '../src/workflow/validate.ts';
 import { compilePrompt, renderPrompt } from '../src/workflow/template.ts';
 import { makeIssue, tempDir } from './helpers.ts';
 import { issueTemplateValue } from '../src/workflow/template.ts';
@@ -719,6 +719,203 @@ describe('roles config', () => {
   });
 });
 
+describe('result-driven roles and the pipeline section', () => {
+  const base = { tracker: { kind: 'github', active_states: ['Ready', 'In progress', 'Agent review', 'Docs'], terminal_states: ['Done'] } };
+  const roles = {
+    developer: { states: ['Ready', 'In progress'], may_move_to: ['In progress', 'Agent review'] },
+    reviewer: {
+      states: ['Agent review'],
+      read_only: true,
+      result: 'review',
+      may_move_to: ['In review'],
+      on_result: { approved: 'In review', changes_needed: 'In progress' },
+      on_check_failed: 'In progress',
+    },
+    docs: { states: ['Docs'] },
+  };
+  const messageOf = (front: Record<string, unknown>, env: NodeJS.ProcessEnv = {}): string => {
+    try {
+      resolve(front, env);
+    } catch (error) {
+      return (error as Error).message;
+    }
+    return '';
+  };
+  const withReviewer = (overrides: Record<string, unknown>) => ({ ...base, roles: { ...roles, reviewer: { ...roles.reviewer, ...overrides } } });
+  const reviewerOf = (front: Record<string, unknown>) => resolve(front).roles?.find((role) => role.name === 'reviewer');
+
+  it('loads the shipped WORKFLOW.md without warnings about the new keys', async () => {
+    const { definition } = await loadWorkflowFile(path.resolve(import.meta.dirname, '../WORKFLOW.md'));
+    const config = resolve(definition.config, { CLAUDE_EFFORT: '' });
+    assert.ok(!config.warnings.some((warning) => /pipeline/.test(warning)), config.warnings.join('\n'));
+    for (const role of config.roles ?? []) {
+      assert.deepEqual([role.result, role.onResult, role.onCheckFailed, role.onMissingResult], [null, {}, null, null], role.name);
+    }
+  });
+
+  it('gives roles without the new keys neutral values and the pipeline section its defaults', () => {
+    const config = resolve({ ...base, roles });
+    const developer = config.roles?.[0];
+    assert.deepEqual([developer?.result, developer?.onMissingResult, developer?.modelLabel], [null, null, 'apply']);
+    assert.deepEqual(developer?.mayMoveTo, ['In progress', 'Agent review']);
+    assert.deepEqual(
+      { ...config.pipeline, typeLabels: [...config.pipeline.typeLabels] },
+      {
+        maxReviewRounds: 3,
+        maxTestRounds: 2,
+        limitLabel: 'needs-human',
+        typeLabels: [],
+        defaultType: 'feature',
+        testPaths: [],
+        docsPaths: [],
+        securityPaths: [],
+      },
+    );
+  });
+
+  it('needs only result for a minimal role', () => {
+    const minimal = { ...base, roles: { ...roles, reviewer: { states: ['Agent review'], result: 'review' } } };
+    const reviewer = reviewerOf(minimal);
+    assert.equal(reviewer?.result, 'review');
+    assert.equal(reviewer?.modelLabel, 'apply', 'only read-only roles ignore the model label by default');
+    assert.deepEqual(reviewer?.onResult, {});
+    assert.equal(reviewer?.onMissingResult, 'Blocked');
+    assert.equal(reviewer?.mayMoveTo, null, 'a role without may_move_to stays unrestricted');
+    assert.equal(reviewerOf({ ...base, roles: { ...roles, reviewer: { states: ['Agent review'], result: 'review', read_only: true } } })?.modelLabel, 'ignore');
+  });
+
+  it('reads result, on_result, on_check_failed, on_missing_result and model_label', () => {
+    const reviewer = reviewerOf(withReviewer({ on_missing_result: 'Docs', model_label: 'apply', on_result: { approved: 'next', blocked: 'Docs' } }));
+    assert.equal(reviewer?.result, 'review');
+    assert.deepEqual(reviewer?.onResult, { approved: 'next', blocked: 'Docs' });
+    assert.equal(reviewer?.onCheckFailed, 'In progress');
+    assert.equal(reviewer?.onMissingResult, 'Docs');
+    assert.equal(reviewer?.modelLabel, 'apply');
+    assert.equal(reviewerOf({ ...base, roles: { ...roles, reviewer: { states: ['Agent review'], model_label: 'ignore' } } })?.modelLabel, 'ignore');
+  });
+
+  it('merges the targets into mayMoveTo without duplicates and leaves next out', () => {
+    const reviewer = reviewerOf(withReviewer({ on_missing_result: 'blocked', on_result: { approved: 'In Review', changes_needed: 'next', blocked: 'Docs' } }));
+    assert.deepEqual(reviewer?.mayMoveTo, ['In review', 'Docs', 'In progress', 'blocked']);
+  });
+
+  it('rejects a verdict that does not belong to the result kind', () => {
+    const message = messageOf(withReviewer({ on_result: { passed: 'In review' } }));
+    assert.match(message, /roles\.reviewer\.on_result\.passed: "passed" is not a verdict of result review \(allowed: approved, changes_needed, blocked\)/);
+  });
+
+  it('rejects an unknown result kind, and on_result or on_missing_result without result', () => {
+    assert.match(messageOf(withReviewer({ result: 'tests' })), /roles\.reviewer\.result must be one of analysis, design/);
+    assert.match(messageOf(withReviewer({ result: 'skipped' })), /roles\.reviewer\.result must be one of/, 'internal kinds are not for roles');
+    const noResult = messageOf({ ...base, roles: { ...roles, docs: { states: ['Docs'], on_result: { done: 'Done' }, on_missing_result: 'Blocked' } } });
+    assert.match(noResult, /roles\.docs\.on_result needs roles\.docs\.result/);
+    assert.match(noResult, /roles\.docs\.on_result\.done/);
+    assert.match(noResult, /roles\.docs\.on_missing_result needs roles\.docs\.result/);
+  });
+
+  it('rejects terminal targets with the field path', () => {
+    const message = messageOf(withReviewer({ on_result: { approved: 'done' }, on_check_failed: 'Done', on_missing_result: 'DONE' }));
+    assert.match(message, /roles\.reviewer\.on_result\.approved must not be a terminal state \(got "done"\)/);
+    assert.match(message, /roles\.reviewer\.on_check_failed must not be a terminal state/);
+    assert.match(message, /roles\.reviewer\.on_missing_result must not be a terminal state/);
+  });
+
+  it('rejects empty targets, next outside on_result and malformed values', () => {
+    const message = messageOf(withReviewer({ on_result: { approved: ' ', blocked: 3 }, on_check_failed: 'next', on_missing_result: '' }));
+    assert.match(message, /roles\.reviewer\.on_result\.approved must not be empty/);
+    assert.match(message, /roles\.reviewer\.on_result\.blocked must be a column name or next/);
+    assert.match(message, /roles\.reviewer\.on_check_failed must be a column name \(next is only for on_result\)/);
+    assert.match(message, /roles\.reviewer\.on_missing_result must not be empty/);
+    assert.match(messageOf(withReviewer({ on_result: ['approved'] })), /roles\.reviewer\.on_result must be a map of verdicts to columns/);
+    assert.match(messageOf(withReviewer({ model_label: 'sometimes' })), /roles\.reviewer\.model_label must be one of apply, ignore/);
+  });
+
+  describe('board checks', () => {
+    const board = ['Backlog', 'Ready', 'In progress', 'Agent review', 'Docs', 'Blocked', 'In review', 'Done'];
+
+    it('checks result targets against the board, even for a role without may_move_to', () => {
+      const config = resolve({ ...base, roles: { ...roles, reviewer: { states: ['Agent review'], result: 'review', on_result: { approved: 'Shipped' }, on_check_failed: 'Nope' } } });
+      assert.deepEqual(unknownBoardColumns(config, board), [
+        `unknown board column "Shipped" (valid: ${board.join(', ')})`,
+        `unknown board column "Nope" (valid: ${board.join(', ')})`,
+      ]);
+      assert.deepEqual(unknownBoardColumns(resolve({ ...base, roles }), board), []);
+    });
+
+    it('resolves next to the next active column in board order', () => {
+      const config = resolve(withReviewer({ on_result: { approved: 'next' } }));
+      const reviewer = config.roles?.find((role) => role.name === 'reviewer');
+      assert.ok(reviewer);
+      assert.equal(nextActiveColumn(reviewer, config.tracker.activeStates, board), 'Docs');
+      assert.equal(nextActiveColumn(reviewer, config.tracker.activeStates, ['Docs', 'Agent review']), null);
+      assert.deepEqual(nextStageProblems(config, board), []);
+    });
+
+    it('reports next without a known board order or without a later stage', () => {
+      const config = resolve(withReviewer({ on_result: { approved: 'next' } }));
+      assert.match(nextStageProblems(config, null).join(), /roles\.reviewer\.on_result\.approved: "next" needs the board's column order/);
+      assert.match(nextStageProblems(config, ['Docs', 'Agent review']).join(), /roles\.reviewer\.on_result\.approved: "next" has no later active stage/);
+      assert.deepEqual(nextStageProblems(resolve({ ...base, roles }), null), []);
+    });
+  });
+
+  describe('pipeline section', () => {
+    it('reads every key', () => {
+      const { pipeline } = resolve({
+        ...base,
+        pipeline: {
+          max_review_rounds: 5,
+          max_test_rounds: '4',
+          limit_label: 'stuck',
+          type_labels: { Bug: 'bug', ' Chore ': 'maintenance' },
+          default_type: 'chore',
+          test_paths: ['test/**', '**/*.spec.ts'],
+          docs_paths: ['docs/**'],
+          security_paths: ['src/auth/**'],
+        },
+      });
+      assert.equal(pipeline.maxReviewRounds, 5);
+      assert.equal(pipeline.maxTestRounds, 4);
+      assert.equal(pipeline.limitLabel, 'stuck');
+      assert.deepEqual([...pipeline.typeLabels], [['bug', 'bug'], ['chore', 'maintenance']]);
+      assert.equal(pipeline.defaultType, 'chore');
+      assert.deepEqual([pipeline.testPaths, pipeline.docsPaths, pipeline.securityPaths], [['test/**', '**/*.spec.ts'], ['docs/**'], ['src/auth/**']]);
+    });
+
+    it('resolves $VAR references in the limits and falls back to the defaults for unset ones', () => {
+      const front = { ...base, pipeline: { max_review_rounds: '$REVIEW_ROUNDS', max_test_rounds: '$TEST_ROUNDS', limit_label: '$LIMIT_LABEL', docs_paths: ['$DOCS_GLOB'] } };
+      const set = resolve(front, { REVIEW_ROUNDS: '6', TEST_ROUNDS: '1', LIMIT_LABEL: 'help', DOCS_GLOB: 'manual/**' }).pipeline;
+      assert.deepEqual([set.maxReviewRounds, set.maxTestRounds, set.limitLabel, set.docsPaths], [6, 1, 'help', ['manual/**']]);
+      const unset = resolve(front, {}).pipeline;
+      assert.deepEqual([unset.maxReviewRounds, unset.maxTestRounds, unset.limitLabel, unset.docsPaths], [3, 2, 'needs-human', []]);
+      assert.match(messageOf(front, { REVIEW_ROUNDS: '0' }), /pipeline\.max_review_rounds must be an integer >= 1 \(got "0"\)/);
+      assert.match(messageOf(front, { REVIEW_ROUNDS: 'many' }), /pipeline\.max_review_rounds must be an integer >= 1/);
+    });
+
+    it('rejects invalid limits and malformed values with the field path', () => {
+      const message = messageOf({
+        ...base,
+        pipeline: { max_review_rounds: 0, max_test_rounds: -1, limit_label: ' ', default_type: 3, type_labels: { bug: '' }, test_paths: 'test/**' },
+      });
+      assert.match(message, /pipeline\.max_review_rounds must be an integer >= 1 \(got 0\)/);
+      assert.match(message, /pipeline\.max_test_rounds must be an integer >= 1 \(got -1\)/);
+      assert.match(message, /pipeline\.limit_label must not be empty/);
+      assert.match(message, /pipeline\.default_type must be a string/);
+      assert.match(message, /pipeline\.type_labels\.bug must be a non-empty string/);
+      assert.match(message, /pipeline\.test_paths must be a list of strings/);
+      assert.match(messageOf({ ...base, pipeline: { type_labels: ['bug'] } }), /pipeline\.type_labels must be a map of labels to types/);
+      assert.match(messageOf({ ...base, pipeline: 'x' }), /pipeline must be a map/);
+    });
+
+    it('is a known top-level key and warns about unknown pipeline keys', () => {
+      const warnings = resolve({ ...base, pipeline: { profiles: {} } }).warnings;
+      assert.ok(!warnings.some((warning) => /unknown top-level key "pipeline"/.test(warning)));
+      assert.ok(warnings.some((warning) => warning.startsWith('unknown key pipeline.profiles ignored')), warnings.join('\n'));
+      assert.deepEqual(resolve(base).warnings, [], 'a config without pipeline has no warnings');
+    });
+  });
+});
+
 describe('command skills in dispatch validation', () => {
   const dir = tempDir();
   fs.mkdirSync(path.join(dir, '.claude', 'skills', 'refactoring'), { recursive: true });
@@ -786,7 +983,7 @@ describe('role subagents', () => {
 
   it('splits the subagents by role list, read-only policy and integration prefix', () => {
     const agents = pluginAgents([path.join(dir, '.claude')]);
-    const role = (overrides: Partial<RoleConfig>) => ({ name: 'r', states: [], readOnly: false, mayMoveTo: null, maxTurns: null, commands: null, runChecks: true, maxSubIssues: null, subIssueStatus: null, waitForSubIssues: false, agents: null, claude: {}, ...overrides });
+    const role = (overrides: Partial<RoleConfig>) => ({ name: 'r', states: [], readOnly: false, mayMoveTo: null, result: null, onResult: {}, onCheckFailed: null, onMissingResult: null, modelLabel: 'apply' as const, maxTurns: null, commands: null, runChecks: true, maxSubIssues: null, subIssueStatus: null, waitForSubIssues: false, agents: null, claude: {}, ...overrides });
     const names = (split: { allowed: Array<{ name: string }>; denied: Array<{ name: string }> }) => [split.allowed.map((a) => a.name), split.denied.map((a) => a.name)];
     assert.deepEqual(names(sessionAgents(agents, null, ['laravel-'], ['laravel-'])), [['laravel-architect', 'laravel-filament-developer', 'reader'], []]);
     assert.deepEqual(names(sessionAgents(agents, null, ['laravel-'], [])), [['reader'], ['laravel-architect', 'laravel-filament-developer']]);

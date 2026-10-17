@@ -24,7 +24,7 @@ import type { ModelClaudeOverrides, ServiceConfig } from './workflow/config.ts';
 import { roleFor, roleName, sessionAgents } from './workflow/roles.ts';
 import { WorkflowStore } from './workflow/store.ts';
 import { issueTemplateValue, renderPrompt } from './workflow/template.ts';
-import { unknownBoardColumns, validateDispatch } from './workflow/validate.ts';
+import { nextStageProblems, unknownBoardColumns, validateDispatch } from './workflow/validate.ts';
 import { workspaceKey } from './workspace/manager.ts';
 
 export interface ServiceOptions {
@@ -262,7 +262,8 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       logger,
     });
     if (adapter.statusOptions !== undefined) {
-      const unknown = unknownBoardColumns(config, await adapter.statusOptions());
+      const statusOptions = await adapter.statusOptions();
+      const unknown = [...unknownBoardColumns(config, statusOptions), ...nextStageProblems(config, statusOptions)];
       if (unknown.length > 0) {
         out('Board column check failed:');
         for (const error of unknown) out(`  - ${error}`);
