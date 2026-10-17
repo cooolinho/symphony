@@ -233,6 +233,25 @@ write a `transition_denied` line.
 | `max_concurrent_agents_by_state` | `{}` | Per-status limits, e.g. `{ "In Progress": 1 }`. Invalid entries are ignored with a warning. |
 | `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `agents`, `turn_number`, `max_turns`). |
 
+#### Agent slots set on the dashboard
+
+`max_concurrent_agents` and `max_concurrent_agents_by_state` can also be changed at runtime, on the dashboard or with
+`PUT /api/v1/settings/agents` (see [Dashboard and API](usage.md#dashboard-and-api)). The value in force comes from the
+first of:
+
+1. the dashboard override (stored as `settings` in the runtime state file under `<logDir>/state/`, so it survives a
+   restart),
+2. `WORKFLOW.md`,
+3. the `${VAR:-default}` fallback inside `WORKFLOW.md` (e.g. `SYMPHONY_MAX_CONCURRENT_AGENTS`, read once at start).
+
+A reload of `WORKFLOW.md` does not overwrite an override; the dashboard then shows both values. Per column, an
+override replaces that column's limit only; the other columns keep theirs. **Reset to WORKFLOW.md** (`DELETE
+/api/v1/settings/agents`) removes the override. The dashboard accepts `0`–`50` for the total (`0` pauses new
+dispatches) and `1`–`50` per active column. A change applies from the next tick (requested at once); lowering the limit
+below the number of running agents stops none of them, nothing new starts until the count is below the limit. Each
+change writes a `settings_changed` line to the [repository log](#repository-logs) (`source`, old and new values) and an
+info log line. Each Symphony instance has its own override; there is no shared budget across instances.
+
 ### `claude`
 
 | Key | Default | Notes |
@@ -481,7 +500,7 @@ statistics page breaks down by effort. `npm run repo-init` creates the five stan
 |---|---|---|
 | `port` | none | Starts the dashboard and JSON API. `0` picks a free port. `--port` overrides it. Restart to change it. |
 | `host` | `127.0.0.1` | Bind address; the shipped `WORKFLOW.md` reads it from `SYMPHONY_HOST`. On a loopback address (`127.0.0.1`, `::1`, `localhost`), requests with another `Host` header are rejected. Any other address (e.g. `0.0.0.0` in a container) logs a warning at startup: Symphony has no login of its own, so put a reverse proxy with authentication (BasicAuth, forward auth) in front. Restart to change it. |
-| `allow_remote_control` | `false` | Allows the control routes (restart with `POST /api/v1/<identifier>/retry`, **Retry now** / **Resume now**; pause and resume of issues and models, `/pause`, `/resume`, `/models/<model>/hold` and `/release`) when `host` is not a loopback address; the shipped `WORKFLOW.md` reads it from `SYMPHONY_ALLOW_REMOTE_CONTROL`. On such a bind every restart request must carry an `Origin` header that matches its `Host` (CSRF guard, since the browser sends the proxy's credentials with every request); without it the API answers `403 forbidden_origin`. Has no effect on a loopback bind, where restart is always allowed. Only enable it behind an authenticating proxy. Restart to change it. |
+| `allow_remote_control` | `false` | Allows the control routes (restart with `POST /api/v1/<identifier>/retry`, **Retry now** / **Resume now**; pause and resume of issues and models, `/pause`, `/resume`, `/models/<model>/hold` and `/release`; agent slots with `PUT` / `DELETE /api/v1/settings/agents`) when `host` is not a loopback address; the shipped `WORKFLOW.md` reads it from `SYMPHONY_ALLOW_REMOTE_CONTROL`. On such a bind every restart request must carry an `Origin` header that matches its `Host` (CSRF guard, since the browser sends the proxy's credentials with every request); without it the API answers `403 forbidden_origin`. Has no effect on a loopback bind, where restart is always allowed. Only enable it behind an authenticating proxy. Restart to change it. |
 
 ## Complete example: roles, checks and Laravel
 
