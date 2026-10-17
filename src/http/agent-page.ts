@@ -53,6 +53,8 @@ const AGENT_PAGE_CSS = `
   .alert .sub { font: 12px var(--mono); color: var(--text-2); display: flex; flex-wrap: wrap; gap: 4px 16px; }
   .alert .sub b { color: var(--text); font-weight: 600; }
   .alert .actions { margin-top: 2px; }
+  .hero-actions { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .hero-actions[hidden] { display: none; }
   .notice { font: 12.5px var(--mono); color: var(--text-2); padding: 10px 14px; border: 1px dashed var(--line-2); border-radius: var(--radius-sm); background: rgba(0, 0, 0, .2); }
 
   /* Layout: timeline dominant, summary on the side */
@@ -231,6 +233,7 @@ export const AGENT_HTML = `<!doctype html>
     <div class="hero-repo"><span id="hero-repo"></span><span id="hero-branch" hidden></span><a id="hero-issue" hidden target="_blank" rel="noopener noreferrer">Open issue ↗</a></div>
     <div class="hero-meta" id="hero-meta"></div>
     <div class="hero-metrics" id="hero-metrics"></div>
+    <div class="hero-actions" id="hero-actions" hidden></div>
     <div class="live-line" id="live-line" hidden><span class="k">Now</span><span class="ev" id="live-ev"></span><span class="age" id="live-age"></span><span class="msg" id="live-msg"></span></div>
   </section>
 
@@ -450,7 +453,7 @@ ${PIPELINE_JS}
   const COVERED_BY_TRANSCRIPT = new Set(['assistant_message', 'tool_use', 'tool_result', 'tracker_tool']);
   const CATEGORY = {
     run_dispatched: 'lifecycle', run_finished: 'lifecycle', retry_scheduled: 'lifecycle', issue_paused: 'lifecycle',
-    session_limit_wait: 'lifecycle', worker_restarted: 'lifecycle', model_hold: 'lifecycle', model_hold_ended: 'lifecycle',
+    session_limit_wait: 'lifecycle', worker_restarted: 'lifecycle', issue_resumed: 'lifecycle', model_hold: 'lifecycle', model_hold_ended: 'lifecycle',
     session_started: 'lifecycle', session_configured: 'lifecycle', startup_failed: 'lifecycle', agent_exited: 'lifecycle',
     phase: 'phase',
     turn_started: 'model', turn_completed: 'model', turn_failed: 'model', turn_cancelled: 'model', turn_timeout: 'model',
@@ -492,6 +495,9 @@ ${PIPELINE_JS}
         return { ...base, tone: 'amber', glyph: '⏳', title: 'WAITING FOR SESSION LIMIT', err: false,
           line: 'Resets at ' + fmtStamp(d.resets_at) + (d.window ? ' (' + windowWords(d.window) + ')' : '') + ' · retry at ' + fmtStamp(d.retry_at) };
       case 'model_hold':
+        if (d.source === 'operator') {
+          return { ...base, tone: 'amber', glyph: '⏸', title: 'MODEL ' + String(d.model || '').toUpperCase() + ' PAUSED', err: false, line: e.message || '' };
+        }
         return { ...base, tone: 'amber', glyph: '⏳', title: 'MODEL ' + String(d.model || '').toUpperCase() + ' ON HOLD', err: false,
           line: 'Until ' + fmtStamp(d.until) + (d.extended ? ' (extended)' : '') + (d.text ? ' · ' + d.text : '') };
       case 'model_hold_ended':
@@ -499,7 +505,9 @@ ${PIPELINE_JS}
       case 'worker_restarted':
         return { ...base, tone: 'cyan', glyph: '↻', title: 'WORKER RESTARTED', err: false, line: e.message || '' };
       case 'issue_paused':
-        return { ...base, tone: 'gray', glyph: '⏸', title: 'PAUSED', err: false };
+        return { ...base, tone: 'gray', glyph: '⏸', title: d.source === 'operator' ? 'PAUSED BY OPERATOR' : 'PAUSED', err: false };
+      case 'issue_resumed':
+        return { ...base, tone: 'cyan', glyph: '▶', title: 'RESUMED', err: false, line: e.message || '' };
       case 'phase':
         return { ...base, type: 'phase', cat: 'phase', tone: 'cyan', glyph: '◇', title: 'PHASE', from: d.from, to: d.to, line: '' };
       case 'session_configured':
@@ -895,6 +903,12 @@ ${PIPELINE_JS}
       ['Started', lastSession ? fmtClock(lastSession.started_at) : '—'],
     ]);
 
+    // Pause of a running or retrying issue; a paused issue gets Resume in its alert.
+    const actionsBox = $('hero-actions');
+    const pausable = d && !S.ended && (d.status === 'running' || d.status === 'retrying');
+    actionsBox.hidden = !pausable;
+    patchChildren(actionsBox, pausable ? [restartButton('Pause')] : []);
+
     const live = $('live-line');
     live.hidden = !run;
     if (run) {
@@ -913,44 +927,60 @@ ${PIPELINE_JS}
     return null;
   }
 
-  // Outcome of the last restart click; the alert is rebuilt every second, so the button is drawn from here.
+  // Outcome of the last control click (Retry, Pause, Resume); the alert and the header are rebuilt every second, so
+  // the buttons are drawn from here.
   let restartState = null;
-  const RESTART_LABELS = { Retry: 'Retry now', Resume: 'Resume now' };
-  const RESTART_DISABLED = 'Restart disabled: set SYMPHONY_ALLOW_REMOTE_CONTROL=true behind an authenticating proxy';
+  const RESTART_LABELS = { Retry: 'Retry now', Resume: 'Resume now', Pause: 'Pause' };
+  // Route, busy label and success label of each control button.
+  const CONTROL = {
+    Retry: ['retry', 'Restarting…', 'Queued'],
+    Resume: ['resume', 'Resuming…', 'Queued'],
+    Pause: ['pause', 'Pausing…', 'Paused'],
+  };
+  const RESTART_DISABLED = 'Controls disabled: set SYMPHONY_ALLOW_REMOTE_CONTROL=true behind an authenticating proxy';
   // controls.retry from /api/v1/<identifier>; false on a non-loopback bind without server.allow_remote_control.
   const retryAllowed = () => !S.detail || !S.detail.controls || S.detail.controls.retry !== false;
 
   function restartButton(verb) {
     if (!retryAllowed()) return el('span', RESTART_DISABLED, 'muted restart-off');
-    const b = el('button', restartState ? restartState.label : RESTART_LABELS[verb], 'btn restart' + (restartState && restartState.cls ? ' ' + restartState.cls : ''));
+    const st = restartState && restartState.verb === verb ? restartState : null;
+    const b = el('button', st ? st.label : RESTART_LABELS[verb], 'btn restart' + (st && st.cls ? ' ' + st.cls : ''));
     b.type = 'button';
+    b.dataset.verb = verb;
     b.setAttribute('aria-label', RESTART_LABELS[verb] + ' ' + ID);
-    if (restartState && restartState.cls === 'is-busy') b.setAttribute('aria-busy', 'true');
+    if (st && st.cls === 'is-busy') b.setAttribute('aria-busy', 'true');
     return b;
   }
 
-  async function restart() {
-    if (restartState && restartState.cls === 'is-busy') return;
-    restartState = { cls: 'is-busy', label: 'Restarting…' };
+  function repaintControls() {
     renderAlert();
+    if (S.detail) renderHeader();
+  }
+
+  async function restart(verb) {
+    if (restartState && restartState.cls === 'is-busy') return;
+    const [action, busy, done] = CONTROL[verb] || CONTROL.Retry;
+    restartState = { verb, cls: 'is-busy', label: busy };
+    repaintControls();
     let ok = false;
-    let label = 'Restart failed';
+    let label = RESTART_LABELS[verb] + ' failed';
     try {
-      const res = await fetch(API + '/retry', { method: 'POST' });
+      const res = await fetch(API + '/' + action, { method: 'POST' });
       let body = null;
       try { body = await res.json(); } catch {}
       ok = res.ok;
-      label = ok ? 'Queued' : (body && body.error && body.error.message) || 'Restart failed (' + res.status + ')';
+      label = ok ? done : (body && body.error && body.error.message) || RESTART_LABELS[verb] + ' failed (' + res.status + ')';
     } catch {}
-    restartState = { cls: ok ? 'is-done' : 'is-failed', label };
-    renderAlert();
+    restartState = { verb, cls: ok ? 'is-done' : 'is-failed', label };
+    repaintControls();
     $('announce').textContent = ID + ': ' + label;
     setTimeout(poll, 500);
-    setTimeout(() => { restartState = null; renderAlert(); }, ok ? 1800 : 5000);
+    setTimeout(() => { restartState = null; repaintControls(); }, ok ? 1800 : 5000);
   }
 
   document.addEventListener('click', (event) => {
-    if (event.target instanceof Element && event.target.closest('button.restart')) restart();
+    const b = event.target instanceof Element ? event.target.closest('button.restart') : null;
+    if (b) restart(b.dataset.verb || 'Retry');
   });
 
   function sessionLimitSpec(d) {
@@ -983,7 +1013,10 @@ ${PIPELINE_JS}
     } else if (d && !S.ended && d.status === 'stopping') {
       spec = { tone: 'amber', title: '■ Stopping', reason: d.running && d.running.stopping, sub: [] };
     } else if (d && !S.ended && d.status === 'paused') {
-      spec = { tone: 'gray', title: '⏸ Agent paused', reason: 'Still active after ' + (d.paused ? d.paused.continuations : '?') + ' continuation session(s). Change the issue on the board (status, comment or labels) to resume' + (retryAllowed() ? ', or press Resume now.' : '.'), sub: [], restart: 'Resume' };
+      const reason = d.paused && d.paused.source === 'operator'
+        ? 'Paused by operator. Board changes (status, comments, labels) do not lift the pause; it ends with Resume, Done or leaving the board.'
+        : 'Still active after ' + (d.paused ? d.paused.continuations : '?') + ' continuation session(s). Change the issue on the board (status, comment or labels) to resume' + (retryAllowed() ? ', or press Resume now.' : '.');
+      spec = { tone: 'gray', title: d.paused && d.paused.source === 'operator' ? '⏸ Paused by operator' : '⏸ Agent paused', reason, sub: [], restart: 'Resume' };
     } else if (failedRun && !isRunning()) {
       spec = { tone: 'red', title: '✕ Agent failed', reason: fin.detail.reason, sub: [] };
     } else if (isRunning() && d.last_error && d.attempts.current_retry_attempt) {

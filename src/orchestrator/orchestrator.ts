@@ -3,7 +3,7 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { childEnvironment } from '../agent/env.ts';
 import { chooseEffort, chooseModel } from '../agent/model.ts';
-import { modelFamilyOf } from '../agent/rate-limit.ts';
+import { MODEL_FAMILIES, modelFamilyOf } from '../agent/rate-limit.ts';
 import type { AgentEvent, AgentRunner, IntegrationReport, TokenUsage } from '../agent/types.ts';
 import { estimateCost, totalTokens, type ModelTokenUsage, type PricingStore } from '../costs/pricing.ts';
 import type { HistoryLog, RunOutcome, RunStart } from '../history/history.ts';
@@ -37,7 +37,7 @@ import { normalizeStateName } from '../workflow/config.ts';
 import { planDispatch, type PlanIssue, type PlanItem, type PlanRetry } from './dispatch-plan.ts';
 import type { CheckCache, CheckRecord } from './guard.ts';
 import { IssueArchive, type ArchivedIssue } from './issue-archive.ts';
-import { RuntimeStateStore, runtimeStateFile, type ModelHold } from './runtime-state.ts';
+import { RuntimeStateStore, runtimeStateFile, type ModelHold, type OperatorHold } from './runtime-state.ts';
 import { blockedBucketColumns, derivePipeline, type PipelineStage, type StageSession } from './pipeline.ts';
 import { copyToolUsage, countToolUse, emptyToolUsage, integrationJson, integrationUsage, type ToolUsage } from './tool-usage.ts';
 import { runAgentAttempt, type RunPhase, type WorkerOutcome } from './worker.ts';
@@ -70,6 +70,16 @@ export type RestartResult =
   | { ok: true; issueIdentifier: string; previous: 'retrying' | 'paused' }
   | { ok: false; reason: 'not_found' | 'running' | 'stopping' | 'not_waiting' };
 
+export type PauseResult =
+  | { ok: true; issueIdentifier: string; previous: 'running' | 'retrying' | 'queued' | 'paused' }
+  | { ok: false; reason: 'not_found' | 'already_paused' | 'stopping' };
+
+export type ResumeResult = { ok: true; issueIdentifier: string } | { ok: false; reason: 'not_found' | 'not_paused' | 'stopping' };
+
+export type ModelControlResult =
+  | { ok: true; model: string; issues: number }
+  | { ok: false; reason: 'unknown_model' | 'already_paused' | 'not_paused' | 'stopping' };
+
 export type AdapterFactory = (config: ServiceConfig, env: NodeJS.ProcessEnv, logger: Logger) => TrackerAdapter;
 
 export interface OrchestratorDeps {
@@ -90,7 +100,8 @@ export interface OrchestratorDeps {
   integrations?: readonly WorkspaceIntegration[];
 }
 
-type StopKind = 'terminal' | 'inactive' | 'unroutable' | 'missing' | 'stalled' | 'shutdown';
+/** `paused`: the operator paused the issue; `model_hold`: the operator paused the issue's model. */
+type StopKind = 'terminal' | 'inactive' | 'unroutable' | 'missing' | 'stalled' | 'shutdown' | 'paused' | 'model_hold';
 
 interface StopRequest {
   kind: StopKind;
@@ -389,16 +400,27 @@ function mcpServerOf(tool: string): string | null {
   return match?.[1] ?? null;
 }
 
-/** An issue held back after agent.max_continuations: claimed, but not running or retrying. */
+/**
+ * A paused issue: claimed, but not running or retrying. `continuations`: held back after agent.max_continuations,
+ * lifted by any change on the board. `operator`: paused from the dashboard, lifted only by Resume, a terminal state or
+ * leaving the board; persisted in the runtime state file.
+ */
 interface PausedEntry {
   issueId: string;
   identifier: string;
   url: string | null;
+  title: string | null;
   state: string;
   updatedAtMs: number | null;
   continuations: number;
   pausedAt: Date;
+  source: 'continuations' | 'operator';
+  /** Retry attempt of the claim when it was paused; Resume starts with it. */
+  attempt: number | null;
 }
+
+/** What holds a model: a limit (until its reset) or the operator (until the release). */
+type ActiveHold = { model: string; source: 'limit' | 'operator'; since: Date; until: Date | null };
 
 /** Session-limit windows that apply to the whole account; a wait for one of them pauses new dispatches. */
 const ACCOUNT_WIDE_WINDOWS = new Set(['five_hour', 'seven_day']);
@@ -516,6 +538,8 @@ export class Orchestrator {
   #loggedGate: DispatchGate | null = null;
   /** Models on hold after a model-scoped usage limit, by family; persisted in the runtime state file. */
   #modelHolds = new Map<string, ModelHold>();
+  /** Models the operator paused, by family; no end of their own, persisted in the runtime state file. */
+  #operatorHolds = new Map<string, OperatorHold>();
   #runtimeState: RuntimeStateStore;
 
   #pollIntervalMs: number;
@@ -543,9 +567,31 @@ export class Orchestrator {
     this.#archive = new IssueArchive(deps.logDir === null ? null : path.join(deps.logDir, 'issues'), deps.logger);
     const tracker = deps.workflow.current.config.tracker;
     this.#runtimeState = new RuntimeStateStore(runtimeStateFile(deps.logDir, tracker, deps.env), deps.logger);
-    for (const hold of this.#runtimeState.load(this.#clock.now()).modelHolds) {
+    const restored = this.#runtimeState.load(this.#clock.now());
+    for (const hold of restored.modelHolds) {
       this.#modelHolds.set(hold.model, hold);
       this.#logger.info(`model ${hold.model} on hold until ${hold.until.toISOString()} (restored)`, { model: hold.model, issue_identifier: hold.issueIdentifier });
+    }
+    for (const hold of restored.operatorHolds) {
+      this.#operatorHolds.set(hold.model, hold);
+      this.#logger.info(`model ${hold.model} paused by the operator (restored)`, { model: hold.model });
+    }
+    // Restored pauses keep their claim; the next reconcile fills in the board fields or releases them.
+    for (const pause of restored.pausedIssues) {
+      this.#paused.set(pause.issueId, {
+        issueId: pause.issueId,
+        identifier: pause.identifier,
+        url: pause.url,
+        title: null,
+        state: '',
+        updatedAtMs: null,
+        continuations: 0,
+        pausedAt: pause.since,
+        source: 'operator',
+        attempt: null,
+      });
+      this.#claimed.add(pause.issueId);
+      this.#logger.info('issue paused by the operator (restored)', { issue_id: pause.issueId, issue_identifier: pause.identifier });
     }
   }
 
@@ -609,19 +655,8 @@ export class Orchestrator {
         return { ok: false, reason: claimed ? 'not_waiting' : 'not_found' };
       }
       const issueId = waiting.issueId;
-      const record = this.#records.get(issueId);
-      if (record !== undefined) {
-        record.sessionLimitHits = 0;
-        record.continuations = 0;
-      }
+      const record = this.#restartClaim(issueId, waiting.identifier, waiting.url, retry?.attempt ?? paused?.attempt ?? 1, 'restarted by the operator');
       const previous = retry !== undefined ? 'retrying' : 'paused';
-      this.#paused.delete(issueId);
-      this.#scheduleRetry(
-        issueId,
-        retry?.attempt ?? 1,
-        { identifier: waiting.identifier, url: waiting.url, kind: 'failure', error: 'restarted by the operator', limit: null },
-        0,
-      );
       if (record !== undefined) {
         this.#trace(record, {
           kind: 'lifecycle',
@@ -642,6 +677,216 @@ export class Orchestrator {
       this.#notify();
       return { ok: true, issueIdentifier: waiting.identifier, previous };
     });
+  }
+
+  /** Counters reset, pause lifted, and an immediate retry (`#onRetryTimer` re-checks eligibility and slots). */
+  #restartClaim(issueId: string, identifier: string, url: string | null, attempt: number, error: string): IssueRecord | undefined {
+    const record = this.#records.get(issueId);
+    if (record !== undefined) {
+      record.sessionLimitHits = 0;
+      record.continuations = 0;
+    }
+    this.#unpause(issueId);
+    this.#scheduleRetry(issueId, attempt, { identifier, url, kind: 'failure', error, limit: null }, 0);
+    return record;
+  }
+
+  /** Drops a pause; an operator pause also leaves the runtime state file (kept there while shutting down). */
+  #unpause(issueId: string): void {
+    const paused = this.#paused.get(issueId);
+    if (paused === undefined) return;
+    this.#paused.delete(issueId);
+    if (paused.source === 'operator' && !this.#stopping) this.#saveRuntimeState();
+  }
+
+  /**
+   * Pauses an issue from the dashboard: running (its agent stops at once, workspace kept, no retry follows), retrying
+   * (the timer is cancelled), queued on the board (it is claimed) or paused after its continuations. Only Resume, a
+   * terminal state or leaving the board lifts it; board changes such as comments, labels or column moves do not.
+   */
+  pauseIssue(key: string): Promise<PauseResult> {
+    return this.#serial.run((): PauseResult => {
+      if (this.#stopping) return { ok: false, reason: 'stopping' };
+      const matches = (id: string, identifier: string) => id === key || identifier === key;
+      const now = this.#clock.now();
+      const entry = [...this.#running.values()].find((e) => matches(e.issueId, e.identifier));
+      const existing = [...this.#paused.values()].find((p) => matches(p.issueId, p.identifier));
+      if (entry !== undefined && entry.stop !== null) return { ok: false, reason: existing?.source === 'operator' ? 'already_paused' : 'stopping' };
+      if (existing !== undefined && existing.source === 'operator') return { ok: false, reason: 'already_paused' };
+      const retry = [...this.#retries.values()].find((r) => matches(r.issueId, r.identifier));
+      const candidate =
+        entry === undefined && retry === undefined && existing === undefined
+          ? this.#board?.candidates.find((issue) => matches(issue.id, issue.identifier) && !this.#claimed.has(issue.id) && !this.#cleanups.has(issue.id))
+          : undefined;
+      let previous: 'running' | 'retrying' | 'queued' | 'paused';
+      let paused: PausedEntry;
+      const base = (issueId: string, identifier: string, url: string | null, title: string | null, state: string, attempt: number | null): PausedEntry => ({
+        issueId,
+        identifier,
+        url,
+        title,
+        state,
+        updatedAtMs: null,
+        continuations: this.#records.get(issueId)?.continuations ?? 0,
+        pausedAt: now,
+        source: 'operator',
+        attempt,
+      });
+      if (existing !== undefined) {
+        previous = 'paused';
+        paused = { ...existing, source: 'operator', pausedAt: now };
+      } else if (entry !== undefined) {
+        previous = 'running';
+        paused = base(entry.issueId, entry.identifier, entry.issue.url, entry.issue.title, entry.issue.state, entry.attempt);
+      } else if (retry !== undefined) {
+        previous = 'retrying';
+        this.#cancelRetry(retry.issueId);
+        const meta = this.#records.get(retry.issueId)?.meta;
+        paused = base(retry.issueId, retry.identifier, retry.url, this.#records.get(retry.issueId)?.title ?? null, meta?.state ?? '', retry.attempt);
+      } else if (candidate !== undefined) {
+        previous = 'queued';
+        const record = this.#record(candidate);
+        record.repo ??= this.#repositoryOf(candidate);
+        record.meta = issueMeta(candidate);
+        paused = base(candidate.id, candidate.identifier, candidate.url, candidate.title, candidate.state, null);
+      } else {
+        return { ok: false, reason: 'not_found' };
+      }
+      this.#paused.set(paused.issueId, paused);
+      this.#claimed.add(paused.issueId);
+      this.#saveRuntimeState();
+      if (entry !== undefined) this.#requestStop(entry, { kind: 'paused', cleanupWorkspace: false, reason: 'paused by the operator' });
+      const record = this.#records.get(paused.issueId);
+      if (record !== undefined) {
+        this.#trace(record, {
+          kind: 'lifecycle',
+          event: 'issue_paused',
+          level: 'info',
+          message: `paused by the operator (was ${previous})`,
+          run: entry?.runId ?? null,
+          turn: null,
+          detail: { source: 'operator', previous, state: paused.state },
+        });
+      }
+      this.#deps.history?.note(entry?.repo ?? record?.repo ?? 'unknown', 'issue_paused', {
+        issue: paused.identifier,
+        title: paused.title ?? record?.title ?? null,
+        state: paused.state,
+        source: 'operator',
+        previous,
+      });
+      this.#logger.info('issue paused by the operator', { issue_id: paused.issueId, issue_identifier: paused.identifier, previous });
+      this.#notify();
+      return { ok: true, issueIdentifier: paused.identifier, previous };
+    });
+  }
+
+  /** Lifts a pause (operator or continuations): the issue starts fresh like Resume now (counters reset, attempt kept). */
+  resumeIssue(key: string): Promise<ResumeResult> {
+    return this.#serial.run((): ResumeResult => {
+      if (this.#stopping) return { ok: false, reason: 'stopping' };
+      const matches = (id: string, identifier: string) => id === key || identifier === key;
+      const paused = [...this.#paused.values()].find((p) => matches(p.issueId, p.identifier));
+      if (paused === undefined) {
+        const known =
+          [...this.#claimed].some((id) => matches(id, this.#records.get(id)?.identifier ?? '')) ||
+          [...this.#running.values()].some((e) => matches(e.issueId, e.identifier)) ||
+          (this.#board?.candidates ?? []).some((issue) => matches(issue.id, issue.identifier));
+        return { ok: false, reason: known ? 'not_paused' : 'not_found' };
+      }
+      // Still stopping after the pause: it resumes once the agent exited.
+      if (this.#running.has(paused.issueId)) return { ok: false, reason: 'stopping' };
+      const record = this.#restartClaim(paused.issueId, paused.identifier, paused.url, paused.attempt ?? 1, 'resumed by the operator');
+      if (record !== undefined) {
+        this.#trace(record, {
+          kind: 'lifecycle',
+          event: 'issue_resumed',
+          level: 'info',
+          message: `resumed by the operator (paused ${paused.source === 'operator' ? 'by the operator' : `after ${paused.continuations} continuation session(s)`})`,
+          run: null,
+          turn: null,
+          detail: { source: paused.source },
+        });
+      }
+      this.#deps.history?.note(record?.repo ?? 'unknown', 'issue_resumed', {
+        issue: paused.identifier,
+        title: record?.title ?? paused.title,
+        source: paused.source,
+      });
+      this.#logger.info('issue resumed by the operator', { issue_id: paused.issueId, issue_identifier: paused.identifier, source: paused.source });
+      this.#notify();
+      return { ok: true, issueIdentifier: paused.identifier };
+    });
+  }
+
+  /**
+   * Pauses a model family from the dashboard: an operator hold without an end, next to the limit holds. Running agents
+   * of that model stop at once (workspace kept) and wait with reason `model_hold`; no issue of it starts, nor falls
+   * back to another model, until `releaseModel`.
+   */
+  holdModel(model: string): Promise<ModelControlResult> {
+    return this.#serial.run((): ModelControlResult => {
+      const family = model.trim().toLowerCase();
+      if (!(MODEL_FAMILIES as readonly string[]).includes(family)) return { ok: false, reason: 'unknown_model' };
+      if (this.#stopping) return { ok: false, reason: 'stopping' };
+      if (this.#operatorHolds.has(family)) return { ok: false, reason: 'already_paused' };
+      const hold: OperatorHold = { model: family, since: this.#clock.now() };
+      this.#operatorHolds.set(family, hold);
+      this.#saveRuntimeState();
+      const stopped = [...this.#running.values()].filter((entry) => entry.stop === null && modelFamilyOf(entry.requestedModel) === family);
+      const detail = { model: family, source: 'operator', since: hold.since.toISOString(), until: null };
+      for (const entry of stopped) {
+        this.#requestStop(entry, { kind: 'model_hold', cleanupWorkspace: false, reason: `model ${family} paused by the operator` });
+        const record = this.#records.get(entry.issueId);
+        if (record !== undefined) {
+          this.#trace(record, { kind: 'lifecycle', event: 'model_hold', level: 'info', message: `model ${family} paused by the operator`, run: entry.runId, turn: null, detail });
+        }
+      }
+      for (const repo of this.#knownRepos()) this.#deps.history?.note(repo, 'model_hold', { ...detail, stopped: stopped.length });
+      this.#logger.info(`model ${family} paused by the operator`, { model: family, stopped: stopped.length });
+      this.#notify();
+      return { ok: true, model: family, issues: stopped.length };
+    });
+  }
+
+  /** Lifts the operator hold of a model: its waiting issues retry at once (still subject to free slots and limit holds). */
+  releaseModel(model: string): Promise<ModelControlResult> {
+    return this.#serial.run((): ModelControlResult => {
+      const family = model.trim().toLowerCase();
+      if (!(MODEL_FAMILIES as readonly string[]).includes(family)) return { ok: false, reason: 'unknown_model' };
+      if (this.#stopping) return { ok: false, reason: 'stopping' };
+      const hold = this.#operatorHolds.get(family);
+      if (hold === undefined) return { ok: false, reason: 'not_paused' };
+      this.#operatorHolds.delete(family);
+      this.#saveRuntimeState();
+      const config = this.#deps.workflow.current.config;
+      const waiting = [...this.#retries.values()].filter(
+        (retry) => modelFamilyOf(this.#modelFor(this.#planIssue(retry.issueId, retry.identifier, null), config)) === family,
+      );
+      const detail = { model: family, source: 'operator', since: hold.since.toISOString() };
+      for (const retry of waiting) {
+        const { issueId, attempt, identifier, url, kind, limit } = retry;
+        this.#scheduleRetry(issueId, attempt, { identifier, url, kind, error: `model ${family} released by the operator`, limit }, 0);
+        const record = this.#records.get(issueId);
+        if (record !== undefined) {
+          this.#trace(record, { kind: 'lifecycle', event: 'model_hold_ended', level: 'info', message: `model ${family} released by the operator`, run: null, turn: null, detail });
+        }
+      }
+      for (const repo of this.#knownRepos()) this.#deps.history?.note(repo, 'model_hold_ended', { ...detail, requeued: waiting.length });
+      this.#logger.info(`model ${family} released by the operator`, { model: family, requeued: waiting.length });
+      // New candidates of the model start with the next tick.
+      this.requestRefresh();
+      this.#notify();
+      return { ok: true, model: family, issues: waiting.length };
+    });
+  }
+
+  /** Repositories of the claimed issues, for history lines that belong to no single issue. */
+  #knownRepos(): string[] {
+    const repos = new Set<string>();
+    for (const entry of this.#running.values()) repos.add(entry.repo);
+    for (const record of this.#records.values()) if (record.repo !== null) repos.add(record.repo);
+    return repos.size > 0 ? [...repos] : ['unknown'];
   }
 
   onChange(listener: () => void): () => void {
@@ -906,14 +1151,15 @@ export class Orchestrator {
       now,
       running: [...this.#running.values()].map((entry) => ({ state: entry.issue.state })),
       retries,
-      paused: [...this.#paused.values()].map((paused) => ({
+      paused: this.#pausedEntries().map((paused) => ({
         issue: this.#planIssue(paused.issueId, paused.identifier, paused.state),
+        source: paused.source,
         continuations: paused.continuations,
       })),
       candidates: (this.#board?.candidates ?? []).filter(
         (issue) => !this.#claimed.has(issue.id) && !this.#running.has(issue.id) && !this.#cleanups.has(issue.id),
       ),
-      holds: this.#modelHolds,
+      holds: this.#planHolds(),
       gate: gate === null ? null : { until: gate.until, window: gate.window },
       waitingForSubIssues: (issue) => (adapter === null ? [] : waitingForSubIssues(issue, roleFor(issue, config.roles), adapter)),
     });
@@ -946,25 +1192,50 @@ export class Orchestrator {
   }
 
   /** The active hold of the model the issue would run with; null for Claude Code's default model (never held). */
-  #holdFor(issue: Pick<Issue, 'state' | 'description' | 'labels'>, config: ServiceConfig): ModelHold | null {
+  #holdFor(issue: Pick<Issue, 'state' | 'description' | 'labels'>, config: ServiceConfig): ActiveHold | null {
     const family = modelFamilyOf(this.#modelFor(issue, config));
     return family === null ? null : this.#activeHold(family);
   }
 
-  #activeHold(family: string): ModelHold | null {
+  /** What holds the model now: the operator's hold first (it has no end), else an unexpired limit hold. */
+  #activeHold(family: string): ActiveHold | null {
+    const operator = this.#operatorHolds.get(family);
+    if (operator !== undefined) return { model: family, source: 'operator', since: operator.since, until: null };
+    const limit = this.#activeLimitHold(family);
+    return limit === null ? null : { model: family, source: 'limit', since: limit.since, until: limit.until };
+  }
+
+  #activeLimitHold(family: string): ModelHold | null {
     const hold = this.#modelHolds.get(family);
     return hold !== undefined && hold.until.getTime() > this.#clock.now().getTime() ? hold : null;
+  }
+
+  /** Holds as the dispatch plan reads them: an operator hold has no end (`until: null`). */
+  #planHolds(): Map<string, { until: Date | null }> {
+    const holds = new Map<string, { until: Date | null }>(this.#modelHolds);
+    for (const family of this.#operatorHolds.keys()) holds.set(family, { until: null });
+    return holds;
+  }
+
+  /** How long a retry waits for a hold: until a limit hold ends; an operator hold wakes it on release. */
+  #holdDelayMs(hold: ActiveHold): number {
+    return hold.until === null ? MAX_TIMER_MS : Math.max(hold.until.getTime() - this.#clock.now().getTime(), 1_000);
+  }
+
+  /** Paused issues without the ones whose agent is still stopping (they show as running until it exited). */
+  #pausedEntries(): PausedEntry[] {
+    return [...this.#paused.values()].filter((paused) => !this.#running.has(paused.issueId));
   }
 
   /**
    * Sets or extends the hold of a model after a model-scoped limit: until the reset + 60 s when the message names
    * one, else for agent.model_hold_ms. A later limit while held extends the hold, never shortens it.
    */
-  #holdModel(family: string, entry: RunningEntry, text: string, resetsAt: Date | null): ModelHold {
+  #holdModelForLimit(family: string, entry: RunningEntry, text: string, resetsAt: Date | null): ModelHold {
     const now = this.#clock.now();
     const waitMs = sessionLimitWaitMs(resetsAt, now) ?? this.#deps.workflow.current.config.agent.modelHoldMs;
     const until = new Date(now.getTime() + waitMs);
-    const existing = this.#activeHold(family);
+    const existing = this.#activeLimitHold(family);
     const hold: ModelHold = {
       model: family,
       source: 'limit',
@@ -1035,7 +1306,13 @@ export class Orchestrator {
   }
 
   #saveRuntimeState(): void {
-    this.#runtimeState.save({ modelHolds: [...this.#modelHolds.values()] });
+    this.#runtimeState.save({
+      modelHolds: [...this.#modelHolds.values()],
+      operatorHolds: [...this.#operatorHolds.values()],
+      pausedIssues: [...this.#paused.values()]
+        .filter((paused) => paused.source === 'operator')
+        .map((paused) => ({ issueId: paused.issueId, identifier: paused.identifier, url: paused.url, since: paused.pausedAt })),
+    });
   }
 
   #modelHoldJson(hold: ModelHold) {
@@ -1047,6 +1324,32 @@ export class Orchestrator {
       text: hold.text,
       issue_identifier: hold.issueIdentifier,
     };
+  }
+
+  #operatorHoldJson(hold: OperatorHold) {
+    return { model: hold.model, source: 'operator' as const, since: hold.since.toISOString(), until: null, text: 'paused by the operator', issue_identifier: null };
+  }
+
+  /**
+   * Model families in use (running, planned, or held), each with its holds, for the dashboard's Pause / Resume per model.
+   */
+  #modelControls(plan: PlanItem[]) {
+    const families = new Set<string>([...this.#operatorHolds.keys()]);
+    for (const hold of this.#modelHolds.values()) if (this.#activeLimitHold(hold.model) === hold) families.add(hold.model);
+    for (const entry of this.#running.values()) {
+      const family = modelFamilyOf(entry.requestedModel);
+      if (family !== null) families.add(family);
+    }
+    for (const item of plan) {
+      const family = modelFamilyOf(item.model);
+      if (family !== null) families.add(family);
+    }
+    return MODEL_FAMILIES.filter((family) => families.has(family)).map((family) => ({
+      model: family,
+      paused: this.#operatorHolds.has(family),
+      paused_since: this.#operatorHolds.get(family)?.since.toISOString() ?? null,
+      limit_until: this.#activeLimitHold(family)?.until.toISOString() ?? null,
+    }));
   }
 
   #dispatch(issue: Issue, attempt: number | null, workflow: EffectiveWorkflow, adapter: TrackerAdapter, continuation = false): void {
@@ -1351,6 +1654,17 @@ export class Orchestrator {
         if (record) record.lastError = stop.reason;
         log.warn('stalled agent stopped; retrying', { reason: stop.reason });
         this.#scheduleRetry(entry.issueId, nextAttempt, { ...retryInfo, kind: 'failure', error: `stalled: ${stop.reason}` });
+      } else if (stop.kind === 'paused' && this.#paused.has(entry.issueId)) {
+        // Keeps the claim and the pause; no retry until Resume.
+        entry.phase = 'CanceledByReconciliation';
+        log.info('agent stopped; issue paused by the operator', { reason: stop.reason });
+      } else if (stop.kind === 'model_hold' && !this.#stopping) {
+        // Waits for the release of the model; never runs on another model meanwhile.
+        entry.phase = 'CanceledByReconciliation';
+        log.info('agent stopped; waiting for the model hold to end', { reason: stop.reason });
+        const family = modelFamilyOf(entry.requestedModel);
+        const hold = family === null ? null : this.#activeHold(family);
+        this.#scheduleRetry(entry.issueId, entry.attempt ?? 1, { ...retryInfo, kind: 'failure', error: stop.reason }, hold === null ? 0 : this.#holdDelayMs(hold));
       } else {
         entry.phase = 'CanceledByReconciliation';
         log.info('agent stopped', { reason: stop.reason, cleanup_workspace: stop.cleanupWorkspace });
@@ -1402,7 +1716,7 @@ export class Orchestrator {
         const waitMs = hits > maxRetries ? sessionLimitWaitMs(resetsAtDate, now) : null;
         let delayMs: number;
         if (sessionLimit.scope === 'model' && sessionLimit.model !== null) {
-          const hold = this.#holdModel(sessionLimit.model, entry, sessionLimit.text, resetsAtDate);
+          const hold = this.#holdModelForLimit(sessionLimit.model, entry, sessionLimit.text, resetsAtDate);
           limit.waiting = true;
           delayMs = Math.max(hold.until.getTime() - now.getTime(), 0);
         } else if (waitMs !== null) {
@@ -1615,6 +1929,7 @@ export class Orchestrator {
     // A tick may start a due retry before its timer fires.
     this.#timers.clearTimeout(retry.timer);
     this.#retries.delete(issueId);
+    if (this.#paused.has(issueId)) return;
     if (this.#stopping) {
       this.#release(issueId);
       return;
@@ -1704,12 +2019,8 @@ export class Orchestrator {
     const hold = this.#holdFor(issue, config);
     if (hold !== null) {
       // The model is on hold (also for an operator restart): wait for its end, keep kind, attempt and limit.
-      this.#scheduleRetry(
-        issueId,
-        retry.attempt,
-        { identifier: retry.identifier, url: retry.url, kind: retry.kind, error: `model ${hold.model} on hold until ${hold.until.toISOString()}`, limit: retry.limit },
-        Math.max(hold.until.getTime() - this.#clock.now().getTime(), 1_000),
-      );
+      const error = hold.until === null ? `model ${hold.model} paused by the operator` : `model ${hold.model} on hold until ${hold.until.toISOString()}`;
+      this.#scheduleRetry(issueId, retry.attempt, { identifier: retry.identifier, url: retry.url, kind: retry.kind, error, limit: retry.limit }, this.#holdDelayMs(hold));
       return;
     }
     const plan = this.#plan(config, adapter, { retry, issue });
@@ -1738,7 +2049,7 @@ export class Orchestrator {
     const record = this.#records.get(issueId);
     if (record !== undefined && record.runs > 0) this.#archive.save(this.#archivedOf(issueId, record, true));
     this.#records.delete(issueId);
-    this.#paused.delete(issueId);
+    this.#unpause(issueId);
   }
 
   /** The issue's debugging context in the archive's JSON shape. */
@@ -1789,10 +2100,13 @@ export class Orchestrator {
       issueId: issue.id,
       identifier: issue.identifier,
       url: issue.url,
+      title: issue.title,
       state: issue.state,
       updatedAtMs: issue.updated_at?.getTime() ?? null,
       continuations,
       pausedAt: this.#clock.now(),
+      source: 'continuations',
+      attempt: null,
     });
     this.#claimed.add(issue.id);
     const record = this.#records.get(issue.id);
@@ -1804,13 +2118,14 @@ export class Orchestrator {
         message: `paused after ${continuations} continuation session(s) in "${issue.state}"; change the issue on the board to resume`,
         run: null,
         turn: null,
-        detail: { state: issue.state, continuations, max_continuations: limit },
+        detail: { source: 'continuations', state: issue.state, continuations, max_continuations: limit },
       });
     }
     this.#deps.history?.note(this.#repositoryOf(issue), 'issue_paused', {
       issue: issue.identifier,
       title: issue.title,
       state: issue.state,
+      source: 'continuations',
       continuations,
       max_continuations: limit,
     });
@@ -1848,7 +2163,7 @@ export class Orchestrator {
     // Part B: tracker state refresh for everything still running, plus paused issues and released
     // issues that still have a workspace (so it is deleted as soon as they reach a terminal state).
     const ids = [...this.#running.values()].filter((entry) => entry.stop === null).map((entry) => entry.issueId);
-    const pausedIds = [...this.#paused.keys()];
+    const pausedIds = this.#pausedEntries().map((paused) => paused.issueId);
     const waitingIds = [...this.#retries.values()]
       .filter((retry) => retry.kind === 'session_limit' && retry.limit?.waiting === true)
       .map((retry) => retry.issueId);
@@ -1933,6 +2248,11 @@ export class Orchestrator {
         log.info('paused issue is terminal; releasing it', { state: issue.state });
         this.#release(id);
         if (config.workspace.cleanupTerminal) this.#cleanupWorkspace(issue);
+      } else if (paused.source === 'operator') {
+        // Only Resume lifts an operator pause: comments, labels and column moves (also to Backlog and back) do not.
+        paused.state = issue.state;
+        paused.title = issue.title;
+        paused.url = issue.url;
       } else if (!isActiveState(issue.state, config.tracker) || !isRoutable(issue, config.tracker)) {
         log.info('paused issue left the active states; releasing it', { state: issue.state });
         this.#release(id);
@@ -2208,6 +2528,7 @@ export class Orchestrator {
       issue_identifier: paused.identifier,
       issue_url: paused.url,
       state: paused.state,
+      source: paused.source,
       continuations: paused.continuations,
       paused_at: paused.pausedAt.toISOString(),
     };
@@ -2233,7 +2554,7 @@ export class Orchestrator {
     issue: { id: string; identifier: string; url: string | null; title: string | null; state: string; description: string | null },
     workflow: EffectiveWorkflow,
     now: number,
-    rows: { running?: RunningEntry; retry?: RetryEntry; paused?: PausedEntry; dispatchNote?: string | null; modelHold?: ModelHold | null; plan?: PlanItem },
+    rows: { running?: RunningEntry; retry?: RetryEntry; paused?: PausedEntry; dispatchNote?: string | null; modelHold?: ActiveHold | null; plan?: PlanItem },
   ) {
     const record = this.#records.get(issue.id);
     const meta = record?.meta ?? null;
@@ -2264,7 +2585,9 @@ export class Orchestrator {
       paused: rows.paused === undefined ? null : this.#pausedRow(rows.paused),
       dispatch_note: rows.dispatchNote ?? null,
       /** The hold of the model this waiting issue would run with: it does not start before `until`. */
-      model_hold: rows.modelHold ? { model: rows.modelHold.model, until: rows.modelHold.until.toISOString() } : null,
+      model_hold: rows.modelHold
+        ? { model: rows.modelHold.model, source: rows.modelHold.source, until: rows.modelHold.until?.toISOString() ?? null }
+        : null,
     };
   }
 
@@ -2303,7 +2626,7 @@ export class Orchestrator {
         const note = typeof board.native_ref?.dispatch_note === 'string' ? board.native_ref.dispatch_note : null;
         issues.push(this.#issueRow('queued', board, workflow, now, { dispatchNote: note, modelHold: this.#holdFor(board, config), plan: item }));
       } else if (paused !== undefined) {
-        const title = board?.title ?? null;
+        const title = board?.title ?? paused.title;
         const row = { id: paused.issueId, identifier: paused.identifier, url: paused.url, title, state: paused.state, description: meta?.description ?? null };
         issues.push(this.#issueRow('paused', row, workflow, now, { paused, plan: item }));
       } else if (retry !== undefined) {
@@ -2356,13 +2679,14 @@ export class Orchestrator {
     } catch {
       // Reported by the tick's validation; the plan then ignores sub-issues.
     }
-    const { issues, queue, blocked } = this.#issueRows(workflow, now, this.#plan(config, adapter));
+    const plan = this.#plan(config, adapter);
+    const { issues, queue, blocked } = this.#issueRows(workflow, now, plan);
     return {
       generated_at: this.#clock.now().toISOString(),
       counts: {
         running: this.#running.size,
         retrying: this.#retries.size,
-        paused: this.#paused.size,
+        paused: this.#pausedEntries().length,
         claimed: this.#claimed.size,
         queued: queue.filter((item) => item.kind === 'new' && item.status === 'next').length,
         blocked: blocked.length,
@@ -2381,11 +2705,16 @@ export class Orchestrator {
       },
       running: [...this.#running.values()].map((entry) => this.#runningRow(entry, now)),
       retrying: [...this.#retries.values()].sort((a, b) => a.dueAtMs - b.dueAtMs).map((retry) => this.#retryRow(retry, now)),
-      paused: [...this.#paused.values()].map((paused) => this.#pausedRow(paused)),
-      model_holds: [...this.#modelHolds.values()]
-        .filter((hold) => this.#activeHold(hold.model) === hold)
-        .sort((a, b) => a.until.getTime() - b.until.getTime())
-        .map((hold) => this.#modelHoldJson(hold)),
+      paused: this.#pausedEntries().map((paused) => this.#pausedRow(paused)),
+      // Operator holds first (no end), then limit holds soonest first; a model can have both.
+      model_holds: [
+        ...[...this.#operatorHolds.values()].map((hold) => this.#operatorHoldJson(hold)),
+        ...[...this.#modelHolds.values()]
+          .filter((hold) => this.#activeLimitHold(hold.model) === hold)
+          .sort((a, b) => a.until.getTime() - b.until.getTime())
+          .map((hold) => this.#modelHoldJson(hold)),
+      ],
+      model_controls: this.#modelControls(plan),
       agent_totals: {
         input_tokens: this.#totals.inputTokens,
         output_tokens: this.#totals.outputTokens,

@@ -8,6 +8,11 @@ const DASHBOARD_CSS = `
   /* Model holds: one model hit its own limit; its issues wait, the other models keep running. */
   .model-holds { align-items: flex-start; }
   .model-holds ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+  /* Pause / Resume per model family in use. */
+  .model-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 16px; font: 12px var(--mono); color: var(--muted); }
+  .model-controls .model-control-item { display: inline-flex; align-items: center; gap: 8px; }
+  .model-controls .model-control-item b { color: var(--text); font-weight: 600; }
+  .card-actions { display: flex; flex-wrap: wrap; gap: 8px; }
   /* Matrix rain: a few faint glyph columns behind everything, disabled for small screens and reduced motion. */
   .rain { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
     mask-image: linear-gradient(to bottom, transparent, #000 15%, #000 55%, transparent 90%); }
@@ -225,6 +230,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   <section id="model-holds" class="dispatch-gate model-holds" role="status" hidden>
     <span class="dot tone-amber"></span><ul id="model-hold-list"></ul>
   </section>
+  <section id="model-controls" class="panel model-controls" aria-label="Models" hidden></section>
 
   <div class="stats" id="stats" aria-label="Metrics"></div>
 
@@ -257,7 +263,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   <section class="agents-section queue-section" id="paused-section" aria-labelledby="paused-title" hidden>
     <div class="section-head">
       <h2 id="paused-title">Paused <span class="count" id="paused-count"></span></h2>
-      <span class="meta">after agent.max_continuations · change the issue to resume</span>
+      <span class="meta">by the operator, or after agent.max_continuations</span>
     </div>
     <div class="agents compact" id="paused"></div>
   </section>
@@ -460,7 +466,10 @@ ${PIPELINE_JS}
     refs.tokens = metric(foot, 'Tokens');
     refs.cost = metric(foot, 'Est. cost');
 
-    card.append(head, titleWrap, pipe, dl, act, refs.info, foot);
+    // Pause of a running issue (hidden on the other cards; their status box carries their buttons).
+    refs.controls = el('div', null, 'card-actions');
+
+    card.append(head, titleWrap, pipe, dl, act, refs.controls, refs.info, foot);
     return refs;
   }
 
@@ -516,27 +525,49 @@ ${PIPELINE_JS}
         if (text) nodes.push(el('div', text, 'msg'));
       }
       // Up next starts it with the next free slot anyway; Retry now skips a wait.
-      if (row.section !== 'next') nodes.push(restartButton(row.issue_identifier, 'Retry'));
+      nodes.push(actions(row.section !== 'next' ? [restartButton(row.issue_identifier, 'Retry')] : [], row.issue_identifier));
     } else if (row.status === 'paused' && row.paused) {
-      const cont = el('span', 'continuations '); cont.append(el('b', row.paused.continuations));
-      meta.append(cont, el('span', 'paused ' + ago(row.paused.paused_at)));
-      nodes.push(el('div', 'Resume: change the issue on the board (status, comment or labels)' + (retryAllowed ? ', or press Resume now.' : '.'), 'msg'));
+      if (row.paused.source === 'operator') {
+        meta.append(el('span', 'paused by operator'), el('span', ago(row.paused.paused_at)));
+        nodes.push(el('div', 'Board changes do not lift this pause; it ends with Resume, Done or leaving the board.', 'msg'));
+      } else {
+        const cont = el('span', 'paused after '); cont.append(el('b', row.paused.continuations), ' continuations');
+        meta.append(cont, el('span', ago(row.paused.paused_at)));
+        nodes.push(el('div', 'Resume: change the issue on the board (status, comment or labels)' + (retryAllowed ? ', or press Resume now.' : '.'), 'msg'));
+      }
       nodes.push(restartButton(row.issue_identifier, 'Resume'));
-    } else if (row.model_hold && (!row.reason || row.reason.code !== 'model_hold')) {
-      meta.append(...modelHoldBits(row.model_hold));
-      nodes.push(el('div', waitingForModel(row.model_hold), 'msg'));
-    } else if (row.dispatch_note) {
-      nodes.push(el('div', row.dispatch_note, 'msg'));
+    } else {
+      if (row.model_hold && (!row.reason || row.reason.code !== 'model_hold')) {
+        meta.append(...modelHoldBits(row.model_hold));
+        nodes.push(el('div', waitingForModel(row.model_hold), 'msg'));
+      } else if (row.dispatch_note) {
+        nodes.push(el('div', row.dispatch_note, 'msg'));
+      }
+      if (row.status === 'queued') nodes.push(actions([], row.issue_identifier));
     }
     return nodes.filter((node) => node.childNodes.length > 0);
   }
 
+  /** Buttons of a card that can be paused: the given ones, then Pause (or the controls-disabled notice once). */
+  function actions(buttons, identifier) {
+    const box = el('div', null, 'card-actions');
+    if (!retryAllowed) {
+      if (buttons.length === 0) box.append(el('div', RESTART_DISABLED, 'msg muted restart-off'));
+      else box.append(...buttons);
+      return box;
+    }
+    box.append(...buttons, restartButton(identifier, 'Pause'));
+    return box;
+  }
+
   // A waiting issue whose model is on hold: it starts when the hold ends, never on another model.
   function waitingForModel(hold) {
+    if (!hold.until) return 'Waiting for model ' + hold.model + ' (paused by the operator)';
     return 'Waiting for model ' + hold.model + ' (limit until ' + fmtStamp(hold.until) + ')';
   }
   function modelHoldBits(hold) {
     const model = el('span', 'waiting for model '); model.append(el('b', hold.model));
+    if (!hold.until) return [model, el('span', 'paused by the operator')];
     const until = el('span', 'until '); until.append(el('b', fmtStamp(hold.until)));
     return [model, until];
   }
@@ -584,6 +615,8 @@ ${PIPELINE_JS}
 
     refs.fields.hidden = !r;
     refs.act.hidden = !r;
+    refs.controls.hidden = !r || !!r.stopping;
+    if (r && !r.stopping) patchChildren(refs.controls, [retryAllowed ? restartButton(row.issue_identifier, 'Pause') : el('div', RESTART_DISABLED, 'msg muted restart-off')]);
     refs.foot.hidden = !r;
     refs.info.hidden = !!r;
     if (r) {
@@ -694,16 +727,23 @@ ${PIPELINE_JS}
   const WINDOW_WORDS = { five_hour: 'five hour', seven_day: 'seven day', seven_day_opus: 'seven day Opus', seven_day_sonnet: 'seven day Sonnet' };
   const windowWords = (w) => WINDOW_WORDS[w] || String(w || '').replace(/_/g, ' ');
 
-  // Per-identifier outcome of a restart click; a poll rebuilds the rows, so the button state is drawn from here.
+  // Per-identifier outcome of a control click (Retry, Pause, Resume); a poll rebuilds the rows, so the button state
+  // is drawn from here.
   const restartStates = new Map();
-  const RESTART_LABELS = { Retry: 'Retry now', Resume: 'Resume now' };
-  const RESTART_DISABLED = 'Restart disabled: set SYMPHONY_ALLOW_REMOTE_CONTROL=true behind an authenticating proxy';
+  const RESTART_LABELS = { Retry: 'Retry now', Resume: 'Resume now', Pause: 'Pause' };
+  // Route, busy label and success label of each control button.
+  const CONTROL = {
+    Retry: ['retry', 'Restarting…', 'Queued'],
+    Resume: ['resume', 'Resuming…', 'Queued'],
+    Pause: ['pause', 'Pausing…', 'Paused'],
+  };
+  const RESTART_DISABLED = 'Controls disabled: set SYMPHONY_ALLOW_REMOTE_CONTROL=true behind an authenticating proxy';
   // From /api/v1/state; false on a non-loopback bind without server.allow_remote_control.
   let retryAllowed = true;
 
   function restartButton(identifier, verb) {
     if (!retryAllowed) return el('div', RESTART_DISABLED, 'msg muted restart-off');
-    const st = restartStates.get(identifier);
+    const st = restartStates.get(identifier + ' ' + verb);
     const b = el('button', st ? st.label : RESTART_LABELS[verb], 'btn restart' + (st && st.cls ? ' ' + st.cls : ''));
     b.type = 'button';
     b.dataset.identifier = identifier;
@@ -713,10 +753,10 @@ ${PIPELINE_JS}
     return b;
   }
 
-  function paintRestart(identifier) {
-    const st = restartStates.get(identifier);
+  function paintRestart(identifier, verb) {
+    const st = restartStates.get(identifier + ' ' + verb);
     for (const b of document.querySelectorAll('button.restart')) {
-      if (b.dataset.identifier !== identifier) continue;
+      if (b.dataset.identifier !== identifier || b.dataset.verb !== verb) continue;
       b.classList.remove('is-busy', 'is-done', 'is-failed');
       if (st && st.cls) b.classList.add(st.cls);
       if (st && st.cls === 'is-busy') b.setAttribute('aria-busy', 'true'); else b.removeAttribute('aria-busy');
@@ -724,30 +764,76 @@ ${PIPELINE_JS}
     }
   }
 
-  async function restart(identifier) {
-    const current = restartStates.get(identifier);
+  async function restart(identifier, verb) {
+    const key = identifier + ' ' + verb;
+    const [action, busy, done] = CONTROL[verb] || CONTROL.Retry;
+    const current = restartStates.get(key);
     if (current && current.cls === 'is-busy') return;
-    restartStates.set(identifier, { cls: 'is-busy', label: 'Restarting…' });
-    paintRestart(identifier);
+    restartStates.set(key, { cls: 'is-busy', label: busy });
+    paintRestart(identifier, verb);
     let ok = false;
-    let label = 'Restart failed';
+    let label = RESTART_LABELS[verb] + ' failed';
     try {
-      const res = await fetch('/api/v1/' + encodeURIComponent(identifier) + '/retry', { method: 'POST' });
+      const res = await fetch('/api/v1/' + encodeURIComponent(identifier) + '/' + action, { method: 'POST' });
       let body = null;
       try { body = await res.json(); } catch {}
       ok = res.ok;
-      label = ok ? 'Queued' : (body && body.error && body.error.message) || 'Restart failed (' + res.status + ')';
+      label = ok ? done : (body && body.error && body.error.message) || RESTART_LABELS[verb] + ' failed (' + res.status + ')';
     } catch {}
-    restartStates.set(identifier, { cls: ok ? 'is-done' : 'is-failed', label });
-    paintRestart(identifier);
+    restartStates.set(key, { cls: ok ? 'is-done' : 'is-failed', label });
+    paintRestart(identifier, verb);
     $('announce').textContent = identifier + ': ' + label;
     setTimeout(load, 500);
-    setTimeout(() => { restartStates.delete(identifier); paintRestart(identifier); }, ok ? 1800 : 5000);
+    setTimeout(() => { restartStates.delete(key); paintRestart(identifier, verb); }, ok ? 1800 : 5000);
+  }
+
+  // Pause / Resume of a model family (POST /api/v1/models/<model>/hold or /release).
+  const modelStates = new Map();
+  async function controlModel(model, hold) {
+    if (modelStates.get(model) === 'busy') return;
+    modelStates.set(model, 'busy');
+    let label = 'failed';
+    try {
+      const res = await fetch('/api/v1/models/' + encodeURIComponent(model) + '/' + (hold ? 'hold' : 'release'), { method: 'POST' });
+      let body = null;
+      try { body = await res.json(); } catch {}
+      label = res.ok ? (hold ? 'paused' : 'resumed') : (body && body.error && body.error.message) || 'failed (' + res.status + ')';
+    } catch {}
+    modelStates.delete(model);
+    $('announce').textContent = 'Model ' + model + ': ' + label;
+    setTimeout(load, 300);
+  }
+
+  function renderModelControls(state) {
+    const models = state.model_controls || [];
+    const host = $('model-controls');
+    host.hidden = models.length === 0;
+    const nodes = [el('span', 'Models')];
+    for (const m of models) {
+      const item = el('span', null, 'model-control-item');
+      const name = el('b', m.model);
+      item.append(name, el('span', m.paused ? 'paused by operator' : m.limit_until ? 'limit until ' + fmtStamp(m.limit_until) : 'running'));
+      if (retryAllowed) {
+        const b = el('button', m.paused ? 'Resume' : 'Pause', 'btn model-control');
+        b.type = 'button';
+        b.dataset.model = m.model;
+        b.dataset.hold = m.paused ? '0' : '1';
+        b.setAttribute('aria-label', (m.paused ? 'Resume' : 'Pause') + ' model ' + m.model);
+        if (modelStates.get(m.model) === 'busy') b.setAttribute('aria-busy', 'true');
+        item.append(b);
+      }
+      nodes.push(item);
+    }
+    if (!retryAllowed && models.length > 0) nodes.push(el('span', RESTART_DISABLED, 'muted restart-off'));
+    patchChildren(host, nodes);
   }
 
   document.addEventListener('click', (event) => {
-    const b = event.target instanceof Element ? event.target.closest('button.restart') : null;
-    if (b) restart(b.dataset.identifier);
+    const target = event.target instanceof Element ? event.target : null;
+    const b = target ? target.closest('button.restart') : null;
+    if (b) restart(b.dataset.identifier, b.dataset.verb);
+    const m = target ? target.closest('button.model-control') : null;
+    if (m) controlModel(m.dataset.model, m.dataset.hold === '1');
   });
 
   function sessionLimitBits(r) {
@@ -1064,9 +1150,10 @@ ${PIPELINE_JS}
       : '');
     const holds = state.model_holds || [];
     $('model-holds').hidden = holds.length === 0;
-    $('model-hold-list').replaceChildren(...holds.map((hold) => el('li',
-      'Model ' + hold.model + ' on hold until ' + fmtStamp(hold.until) + (hold.issue_identifier ? ' · hit by ' + hold.issue_identifier : '') +
-      (hold.text ? ' · ' + hold.text : ''))));
+    $('model-hold-list').replaceChildren(...holds.map((hold) => el('li', hold.source === 'operator'
+      ? 'Model ' + hold.model + ' paused by the operator since ' + fmtStamp(hold.since) + ' · its issues wait, none runs on another model'
+      : 'Model ' + hold.model + ' on hold until ' + fmtStamp(hold.until) + (hold.issue_identifier ? ' · hit by ' + hold.issue_identifier : '') +
+        (hold.text ? ' · ' + hold.text : ''))));
 
     const t = state.agent_totals;
     const running = state.counts.running;
@@ -1086,6 +1173,7 @@ ${PIPELINE_JS}
     ]);
 
     retryAllowed = !state.controls || state.controls.retry !== false;
+    renderModelControls(state);
     renderIssues(state);
     renderBlocked(state);
     diffSnapshots(state);

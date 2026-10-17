@@ -103,7 +103,12 @@ describe('http extension', () => {
     assert.match(page.body, /id="refresh"/);
     assert.match(page.body, /Retry now/);
     assert.match(page.body, /Resume now/);
-    assert.match(page.body, /'\/api\/v1\/' \+ encodeURIComponent\(identifier\) \+ '\/retry'/);
+    assert.match(page.body, /'\/api\/v1\/' \+ encodeURIComponent\(identifier\) \+ '\/' \+ action/);
+    for (const route of ["'retry'", "'resume'", "'pause'"]) assert.ok(page.body.includes(route), route);
+    assert.match(page.body, /'\/api\/v1\/models\/' \+ encodeURIComponent\(model\)/);
+    assert.match(page.body, /restartButton\(row\.issue_identifier, 'Pause'\)/);
+    assert.match(page.body, /paused by operator/);
+    assert.match(page.body, /model_controls/);
     assert.match(page.body, /limit\.resets_at/);
     assert.match(page.body, /waiting for reset/);
     assert.match(page.body, /Session limit/);
@@ -138,6 +143,7 @@ describe('http extension', () => {
       'retrying',
       'paused',
       'model_holds',
+      'model_controls',
       'agent_totals',
       'rate_limits',
       'health',
@@ -227,7 +233,9 @@ describe('http extension', () => {
     assert.match(page.body, /Waiting for limit/);
     assert.match(page.body, /Session limit reached/);
     assert.match(page.body, /Resets at/);
-    assert.match(page.body, /API \+ '\/retry'/);
+    assert.match(page.body, /API \+ '\/' \+ action/);
+    assert.match(page.body, /restartButton\('Pause'\)/);
+    assert.match(page.body, /Paused by operator/);
     assert.match(page.body, /Resume now/);
     assert.match(page.body, /session_limit: \['⏳ Session limit', 'amber', 'session limit'\]/);
     assert.match(page.body, /SESSION LIMIT · RETRY/);
@@ -506,6 +514,138 @@ describe('POST /api/v1/<identifier>/retry', () => {
       assert.deepEqual(JSON.parse((await request(server.port, 'GET', detailPath)).body).controls, { retry: true });
       assert.equal((await request(server.port, 'POST', '/api/v1/refresh')).status, 202);
     } finally {
+      await server.close();
+    }
+  });
+});
+
+describe('operator pause routes', () => {
+  const issuePath = (action: string) => `/api/v1/${encodeURIComponent('acme/app#a')}/${action}`;
+
+  /** A fake orchestrator whose control methods answer with `results[name]` and count their calls. */
+  const fakeOrchestrator = (results: Record<string, unknown>) => {
+    const calls: string[] = [];
+    const method = (name: string) => async (key: string) => {
+      calls.push(`${name} ${key}`);
+      return results[name];
+    };
+    const orchestrator = {
+      pauseIssue: method('pauseIssue'),
+      resumeIssue: method('resumeIssue'),
+      holdModel: method('holdModel'),
+      releaseModel: method('releaseModel'),
+      restartWorker: method('restartWorker'),
+      snapshot: () => ({}),
+    } as unknown as Orchestrator;
+    return { orchestrator, calls };
+  };
+
+  it('pauses and resumes issues and models with 202', async () => {
+    const { orchestrator, calls } = fakeOrchestrator({
+      pauseIssue: { ok: true, issueIdentifier: 'acme/app#a', previous: 'running' },
+      resumeIssue: { ok: true, issueIdentifier: 'acme/app#a' },
+      holdModel: { ok: true, model: 'fable', issues: 2 },
+      releaseModel: { ok: true, model: 'fable', issues: 1 },
+    });
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    try {
+      const paused = await request(server.port, 'POST', issuePath('pause'));
+      assert.equal(paused.status, 202);
+      assert.equal(JSON.parse(paused.body).previous, 'running');
+      assert.equal((await request(server.port, 'POST', issuePath('resume'))).status, 202);
+      const hold = await request(server.port, 'POST', '/api/v1/models/fable/hold');
+      assert.equal(hold.status, 202);
+      assert.deepEqual([JSON.parse(hold.body).model, JSON.parse(hold.body).stopped], ['fable', 2]);
+      const release = await request(server.port, 'POST', '/api/v1/models/fable/release');
+      assert.equal(release.status, 202);
+      assert.equal(JSON.parse(release.body).requeued, 1);
+      assert.deepEqual(calls, ['pauseIssue acme/app#a', 'resumeIssue acme/app#a', 'holdModel fable', 'releaseModel fable']);
+      assert.equal((await request(server.port, 'GET', issuePath('pause'))).status, 405);
+      assert.equal((await request(server.port, 'GET', '/api/v1/models/fable/hold')).status, 405);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('maps refusals to 409, 404 and 400', async () => {
+    const results: Record<string, unknown> = {};
+    const { orchestrator } = fakeOrchestrator(results);
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    const expect = async (path: string, status: number, code: string) => {
+      const res = await request(server.port, 'POST', path);
+      assert.equal(res.status, status, path);
+      assert.equal(JSON.parse(res.body).error.code, code, path);
+    };
+    try {
+      for (const [reason, status, code] of [['already_paused', 409, 'already_paused'], ['stopping', 409, 'stopping'], ['not_found', 404, 'issue_not_found']] as const) {
+        results.pauseIssue = { ok: false, reason };
+        await expect(issuePath('pause'), status, code);
+      }
+      for (const [reason, status, code] of [['not_paused', 409, 'not_paused'], ['stopping', 409, 'stopping'], ['not_found', 404, 'issue_not_found']] as const) {
+        results.resumeIssue = { ok: false, reason };
+        await expect(issuePath('resume'), status, code);
+      }
+      for (const [reason, status, code] of [['unknown_model', 400, 'unknown_model'], ['already_paused', 409, 'already_paused'], ['stopping', 409, 'stopping']] as const) {
+        results.holdModel = { ok: false, reason };
+        await expect('/api/v1/models/gpt/hold', status, code);
+      }
+      results.releaseModel = { ok: false, reason: 'not_paused' };
+      await expect('/api/v1/models/fable/release', 409, 'not_paused');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('guards every control route like retry', async () => {
+    const { orchestrator, calls } = fakeOrchestrator({});
+    const routes = [issuePath('pause'), issuePath('resume'), '/api/v1/models/fable/hold', '/api/v1/models/fable/release', issuePath('retry')];
+    const local = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    const remote = await startHttpServer({ host: '0.0.0.0', port: 0, orchestrator, logger: Logger.silent() });
+    const proxied = await startHttpServer({ host: '0.0.0.0', port: 0, orchestrator, logger: Logger.silent(), allowRemoteControl: true });
+    try {
+      for (const route of routes) {
+        const foreign = await request(local.port, 'POST', route, { origin: 'https://evil.example' });
+        assert.equal(foreign.status, 403, route);
+        assert.equal(JSON.parse(foreign.body).error.code, 'forbidden_origin');
+        const disabled = await request(remote.port, 'POST', route, { origin: `http://127.0.0.1:${remote.port}` });
+        assert.equal(disabled.status, 403, route);
+        assert.equal(JSON.parse(disabled.body).error.code, 'control_disabled');
+        const missing = await request(proxied.port, 'POST', route);
+        assert.equal(missing.status, 403, route);
+        assert.equal(JSON.parse(missing.body).error.code, 'forbidden_origin');
+      }
+      assert.deepEqual(calls, []);
+    } finally {
+      await Promise.all([local.close(), remote.close(), proxied.close()]);
+    }
+  });
+
+  it('pauses a running issue end to end and lists it as paused', async () => {
+    const runner = new FakeRunner((turn, params) => new Promise((resolve) => params.signal.addEventListener('abort', () => resolve({ ok: false, turnId: String(turn), code: 'turn_cancelled', message: 'cancelled' }))));
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir(), { agent: { max_turns: 1 } }))),
+      runner,
+      logger: Logger.silent(),
+      env: {},
+      logDir: null,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker([makeIssue({ id: 'a' })]),
+    });
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    try {
+      await orchestrator.tickNow();
+      await until(() => orchestrator.snapshot().running[0]?.phase === 'StreamingTurn', 3_000, 'streaming');
+      assert.equal((await request(server.port, 'POST', issuePath('pause'))).status, 202);
+      await until(() => orchestrator.snapshot().running.length === 0, 3_000, 'stopped');
+      const state = JSON.parse((await request(server.port, 'GET', '/api/v1/state')).body);
+      assert.equal(state.issues[0].section, 'paused');
+      assert.equal(state.paused[0].source, 'operator');
+      assert.equal(JSON.parse((await request(server.port, 'POST', issuePath('pause'))).body).error.code, 'already_paused');
+      assert.equal((await request(server.port, 'POST', issuePath('resume'))).status, 202);
+      assert.equal(JSON.parse((await request(server.port, 'POST', issuePath('resume'))).body).error.code, 'not_paused');
+      assert.equal((await request(server.port, 'POST', '/api/v1/models/nope/hold')).status, 400);
+    } finally {
+      await orchestrator.shutdown(1_000);
       await server.close();
     }
   });

@@ -166,16 +166,18 @@ export function dryRunPlan(
   issues: readonly Issue[],
   config: ServiceConfig,
   adapter: Pick<TrackerAdapter, 'openSubIssues'>,
-  holds: ReadonlyMap<string, { until: Date }>,
+  holds: ReadonlyMap<string, { until: Date | null }>,
   now: Date,
+  /** Issues the operator paused (runtime state file): listed as paused, never started. */
+  pausedIds: ReadonlySet<string> = new Set(),
 ): PlanItem[] {
   return planDispatch({
     config,
     now,
     running: [],
     retries: [],
-    paused: [],
-    candidates: issues,
+    paused: issues.filter((issue) => pausedIds.has(issue.id)).map((issue) => ({ issue, source: 'operator' as const, continuations: 0 })),
+    candidates: issues.filter((issue) => !pausedIds.has(issue.id)),
     holds,
     gate: null,
     waitingForSubIssues: (issue) => waitingForSubIssues(issue, roleFor(issue, config.roles), adapter),
@@ -271,12 +273,16 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
     const skills = commandSkills(config.claude.plugins);
     const issues = await adapter.fetchIssuesByStates(config.tracker.activeStates);
     const now = new Date();
-    const holds = new RuntimeStateStore(runtimeStateFile(options.logDir, config.tracker, options.env), logger).load(now).modelHolds;
-    const plan = dryRunPlan(issues, config, adapter, new Map(holds.map((hold) => [hold.model, hold])), now);
+    const runtime = new RuntimeStateStore(runtimeStateFile(options.logDir, config.tracker, options.env), logger).load(now);
+    const holds = runtime.modelHolds;
+    const planHolds = new Map<string, { until: Date | null }>(holds.map((hold) => [hold.model, hold]));
+    for (const hold of runtime.operatorHolds) planHolds.set(hold.model, { until: null });
+    const plan = dryRunPlan(issues, config, adapter, planHolds, now, new Set(runtime.pausedIssues.map((pause) => pause.issueId)));
     const byId = new Map(issues.map((issue) => [issue.id, issue]));
     out(`Candidates in active states: ${issues.length}`);
     out(`Dispatch plan (up next in start order, ${config.agent.maxConcurrentAgents} free slot${config.agent.maxConcurrentAgents === 1 ? '' : 's'}):`);
     for (const hold of holds) out(`  model ${hold.model} on hold until ${hold.until.toISOString()}`);
+    for (const hold of runtime.operatorHolds) out(`  model ${hold.model} paused by the operator`);
     const first = byId.get((plan.find((item) => item.decision === 'start') ?? plan.find((item) => item.group === 'next'))?.issueId ?? '') ?? null;
     for (const item of plan) {
       const issue = byId.get(item.issueId);

@@ -216,7 +216,7 @@ describe('dispatch plan', () => {
     const plan = planDispatch(
       input(
         {
-          paused: [{ issue: makeIssue({ id: 'paused', labels: ['ai'] }), continuations: 3 }],
+          paused: [{ issue: makeIssue({ id: 'paused', labels: ['ai'] }), source: 'continuations', continuations: 3 }],
           candidates: [
             makeIssue({ id: 'partly', labels: ['AI'] }),
             makeIssue({ id: 'unlabeled', labels: ['bug'] }),
