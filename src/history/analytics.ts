@@ -37,6 +37,9 @@ const byEffort = (a: string, b: string): number => effortRank(a) - effortRank(b)
 /** Effort of a run as logged; runs from before the effort was logged count as `unknown`. */
 const UNKNOWN_EFFORT = 'unknown';
 
+/** Role of a run as logged; runs from before the role was logged on every finish line count as `unknown`. */
+const UNKNOWN_ROLE = 'unknown';
+
 export type Granularity = 'hour' | 'day' | 'week' | 'month';
 
 /** Thresholds of the "Needs attention" section, returned with the data so the page can show them. */
@@ -97,6 +100,8 @@ interface Run {
   primaryModel: string | null;
   /** Effort requested for the run (`effort` of run_finished, else of run_started); null when not logged. */
   effort: string | null;
+  /** Role that served the run (`role` of run_finished, else of run_started); null when not logged. */
+  role: string | null;
   /** Dispatched after a failed or stalled run of the same issue. */
   retry: boolean;
   parts: UsagePart[];
@@ -309,12 +314,12 @@ function requestedModelResolver(runsByModel: Map<string, number>): (requested: s
 /** All finished runs in time order, joined with their model lines and marked as retries. */
 function collectRuns(entries: HistoryEntry[], pricing: PricingTable): Run[] {
   const usageByRun = new Map<string, UsagePart[]>();
-  // Requested model and effort of older runs, whose run_finished line does not carry them yet.
-  const startByRun = new Map<string, { model: string | null; effort: string | null }>();
+  // Requested model, effort and role of older runs, whose run_finished line does not carry them yet.
+  const startByRun = new Map<string, { model: string | null; effort: string | null; role: string | null }>();
   const runsByModel = new Map<string, number>();
   for (const entry of entries) {
     if (entry.event === 'run_started') {
-      if (entry.fields.run !== undefined) startByRun.set(entry.fields.run, { model: fieldOrNull(entry.fields.model), effort: fieldOrNull(entry.fields.effort) });
+      if (entry.fields.run !== undefined) startByRun.set(entry.fields.run, { model: fieldOrNull(entry.fields.model), effort: fieldOrNull(entry.fields.effort), role: fieldOrNull(entry.fields.role) });
       continue;
     }
     if (entry.event !== 'model_usage') continue;
@@ -353,6 +358,7 @@ function collectRuns(entries: HistoryEntry[], pricing: PricingTable): Run[] {
       seconds: Number(entry.fields.agent_seconds) || 0,
       primaryModel: model,
       effort: fieldOrNull(entry.fields.effort) ?? start?.effort ?? null,
+      role: fieldOrNull(entry.fields.role) ?? start?.role ?? null,
       retry: FAILURE.has(lastOutcome.get(issue) ?? ''),
       parts,
       tools: parseCounts(entry.fields.tool_calls),
@@ -363,6 +369,23 @@ function collectRuns(entries: HistoryEntry[], pricing: PricingTable): Run[] {
     lastOutcome.set(issue, outcome);
   }
   return runs;
+}
+
+/** One role's part in an issue's pipeline. */
+interface RoleShare {
+  runs: number;
+  total_tokens: number;
+  cost_usd: number;
+  agent_seconds: number;
+}
+
+/** Per-role shares of an issue, most expensive role first, rounded for JSON. */
+function roleShares(roles: Map<string, RoleShare>): Record<string, RoleShare> {
+  return Object.fromEntries(
+    [...roles.entries()]
+      .sort((a, b) => b[1].cost_usd - a[1].cost_usd || a[0].localeCompare(b[0]))
+      .map(([role, v]) => [role, { ...v, cost_usd: round(v.cost_usd, 4), agent_seconds: round(v.agent_seconds, 1) }]),
+  );
 }
 
 /** `integrations=laravel-boost:ready` with `integration_tools`/`integration_skills` (`<id>/<name>:<count>`) by integration id. */
@@ -522,6 +545,7 @@ function runRef(run: Run) {
     outcome: run.outcome,
     model: run.primaryModel,
     effort: run.effort,
+    role: run.role ?? UNKNOWN_ROLE,
     total_tokens: tokensOf(run),
     cost_usd: round(costOfRun(run), 4),
     agent_seconds: round(run.seconds, 1),
@@ -669,8 +693,20 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
   // Repositories.
   const repoAgg = new Map<string, Totals & { repo: string; issues: Set<string>; last_at: string | null }>();
   // Issues.
-  const issueAgg = new Map<string, Totals & { issue: string; repo: string; title: string; first_started_at: string | null; last_finished_at: string | null; last_outcome: string | null; last_state: string | null }>();
+  const issueAgg = new Map<string, Totals & { issue: string; repo: string; title: string; first_started_at: string | null; last_finished_at: string | null; last_outcome: string | null; last_state: string | null; roles: Map<string, RoleShare> }>();
+  // Roles: runs, tokens, cost, agent time and outcomes per role, with the issues that role worked on.
+  const roleAgg = new Map<string, Totals & { role: string; issues: Set<string>; by_outcome: Record<string, number> }>();
   for (const run of runs) {
+    const roleKey = run.role ?? UNKNOWN_ROLE;
+    let role = roleAgg.get(roleKey);
+    if (role === undefined) {
+      role = { ...emptyTotals(), role: roleKey, issues: new Set(), by_outcome: {} };
+      roleAgg.set(roleKey, role);
+    }
+    addRun(role, run);
+    role.issues.add(run.issue);
+    role.by_outcome[run.outcome] = (role.by_outcome[run.outcome] ?? 0) + 1;
+
     let repo = repoAgg.get(run.repo);
     if (repo === undefined) {
       repo = { ...emptyTotals(), repo: run.repo, issues: new Set(), last_at: null };
@@ -682,10 +718,16 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
 
     let issue = issueAgg.get(run.issue);
     if (issue === undefined) {
-      issue = { ...emptyTotals(), issue: run.issue, repo: run.repo, title: run.title, first_started_at: null, last_finished_at: null, last_outcome: null, last_state: null };
+      issue = { ...emptyTotals(), issue: run.issue, repo: run.repo, title: run.title, first_started_at: null, last_finished_at: null, last_outcome: null, last_state: null, roles: new Map() };
       issueAgg.set(run.issue, issue);
     }
     addRun(issue, run);
+    const share = issue.roles.get(roleKey) ?? { runs: 0, total_tokens: 0, cost_usd: 0, agent_seconds: 0 };
+    share.runs += 1;
+    share.total_tokens += tokensOf(run);
+    share.cost_usd += costOfRun(run);
+    share.agent_seconds += run.seconds;
+    issue.roles.set(roleKey, share);
     issue.title = run.title || issue.title;
     issue.first_started_at ??= new Date(run.startedMs).toISOString();
     issue.last_finished_at = run.finishedAt;
@@ -695,8 +737,20 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
   const repositoryRows = [...repoAgg.values()]
     .map(({ issues: set, ...rest }) => ({ ...summarize(rest), repo: rest.repo, last_at: rest.last_at, issues: set.size }))
     .sort((a, b) => b.cost_usd - a.cost_usd);
+  const roleRows = [...roleAgg.values()]
+    .map(({ issues: set, by_outcome, ...rest }) => ({
+      ...summarize(rest),
+      role: rest.role,
+      issues: set.size,
+      success_rate: ratio(rest.successful, rest.runs),
+      cost_share: ratio(rest.cost_usd, totals.cost_usd),
+      token_share: ratio(rest.total_tokens, totals.total_tokens),
+      time_share: ratio(rest.agent_seconds, totals.agent_seconds),
+      by_outcome,
+    }))
+    .sort((a, b) => b.cost_usd - a.cost_usd || a.role.localeCompare(b.role));
   const issueRows = [...issueAgg.values()]
-    .map((issue) => ({ ...summarize(issue), issue: issue.issue, repo: issue.repo, title: issue.title, first_started_at: issue.first_started_at, last_finished_at: issue.last_finished_at, last_outcome: issue.last_outcome, last_state: issue.last_state }))
+    .map(({ roles, ...issue }) => ({ ...summarize(issue), roles: roleShares(roles), issue: issue.issue, repo: issue.repo, title: issue.title, first_started_at: issue.first_started_at, last_finished_at: issue.last_finished_at, last_outcome: issue.last_outcome, last_state: issue.last_state }))
     .sort((a, b) => ((a.last_finished_at ?? '') < (b.last_finished_at ?? '') ? 1 : -1));
 
   // Outcomes as logged.
@@ -740,6 +794,9 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
     cost: topBy(costOfRun),
     tokens: topBy(tokensOf),
     duration: topBy((run) => run.seconds),
+    // Most expensive issue pipelines: all runs of an issue summed across its roles.
+    pipelines: issueRows.filter((issue) => issue.cost_usd > 0).sort((a, b) => b.cost_usd - a.cost_usd || b.runs - a.runs).slice(0, TOP_LIMIT)
+      .map((issue) => ({ issue: issue.issue, repo: issue.repo, title: issue.title, cost_usd: issue.cost_usd, total_tokens: issue.total_tokens, agent_seconds: issue.agent_seconds, runs: issue.runs, roles: issue.roles, last_outcome: issue.last_outcome })),
     retried: issueRows.filter((issue) => issue.retries > 0).sort((a, b) => b.retries - a.retries || b.runs - a.runs).slice(0, TOP_LIMIT)
       .map((issue) => ({ issue: issue.issue, repo: issue.repo, title: issue.title, retries: issue.retries, failed: issue.failed, runs: issue.runs, last_outcome: issue.last_outcome })),
   };
@@ -797,6 +854,7 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
     series,
     models: modelRows,
     efforts: effortRows,
+    by_role: roleRows,
     repositories: repositoryRows,
     issues: issueRows,
     outcomes: {

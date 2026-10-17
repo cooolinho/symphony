@@ -17,7 +17,7 @@ import { DEFAULT_ROLE } from '../workflow/roles.ts';
 
 /**
  * How a run ended: handed off (left the active states, or moved to a column served by another role; then the
- * finish line carries `role` and `next_role`), continuing (still active for the same role), or stopped early.
+ * finish line also carries `next_role`), continuing (still active for the same role), or stopped early.
  */
 export type RunOutcome = 'handed_off' | 'continuing' | 'failed' | 'session_limit' | 'stopped' | 'stalled' | 'shutdown';
 
@@ -47,8 +47,9 @@ export interface RunFinish {
   session: string | null;
   attempt: number | null;
   outcome: RunOutcome;
-  /** Role of the run and of the next session; set only when the run handed off to another role. */
+  /** Role that served the run; absent means the implicit `default` role. Every finish line carries it. */
   role?: string;
+  /** Role of the next session; set only when the run handed off to another role. */
   nextRole?: string;
   state: string;
   reason: string;
@@ -233,7 +234,7 @@ export class HistoryLog {
       session: finish.session,
       title: finish.title,
       outcome: finish.outcome,
-      role: finish.role,
+      role: finish.role ?? DEFAULT_ROLE,
       next_role: finish.nextRole,
       state: finish.state,
       reason: finish.reason,

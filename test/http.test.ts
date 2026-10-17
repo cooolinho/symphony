@@ -205,6 +205,8 @@ describe('http extension', () => {
     const page = (await request(server.port, 'GET', '/logs')).body;
     assert.match(page, /\/api\/v1\/history\/analytics\?/);
     assert.match(page, /\/api\/v1\/history\/entries\?/);
+    assert.match(page, /data-body="roles"/);
+    assert.match(page, /Most expensive issue pipelines/);
 
     const week = '/api/v1/history/analytics?from=2026-09-28T00:00:00Z&to=2026-10-05T00:00:00Z&tz=Europe%2FBerlin';
     const a = JSON.parse((await request(server.port, 'GET', week)).body);
@@ -215,6 +217,8 @@ describe('http extension', () => {
     assert.deepEqual(a.repositories_available, ['acme/app', 'other/repo']);
     assert.deepEqual(a.models_available, ['claude-opus-5-5']);
     assert.deepEqual(a.efforts_available, ['unknown']);
+    assert.deepEqual(a.by_role.map((r: { role: string; runs: number }) => [r.role, r.runs]), [['default', 1]]);
+    assert.equal(a.top.pipelines.length, 1);
     assert.equal(a.filter.effort, null);
     // A second identical request is served from the cache with the same figures.
     assert.deepEqual(JSON.parse((await request(server.port, 'GET', week)).body).series, a.series);

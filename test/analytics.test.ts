@@ -154,6 +154,52 @@ describe('statistics analytics', () => {
     assert.equal(computeAnalytics(entries, h.pricing.current(), filter({ effort: 'max' }), NOW).totals.runs, 0);
   });
 
+  it('breaks runs down by role and sums each issue across its roles; logs without a role count as unknown', () => {
+    const h = history();
+    // Old line: no role on run_finished, taken from run_started when it is there.
+    h.log.runStarted({ repo: 'acme/app', issue: 'acme/app#1', title: 'Old', state: 'Ready', attempt: null, model: 'opus', role: 'developer', run: 'r1', at: new Date('2026-10-04T08:00:00Z') });
+    h.log.runFinished(finish('acme/app#1', 'r1', '2026-10-04T09:00:00Z'));
+    h.log.runFinished(finish('acme/app#1', 'r2', '2026-10-04T10:00:00Z', { role: 'developer', nextRole: 'reviewer' }));
+    h.log.runFinished(finish('acme/app#1', 'r3', '2026-10-04T11:00:00Z', { role: 'reviewer', outcome: 'failed' }));
+    h.log.runFinished(finish('acme/app#2', 'r4', '2026-10-04T12:00:00Z', { role: 'reviewer', usage: {} }));
+    h.log.runFinished(finish('acme/app#3', 'r5', '2026-10-04T13:00:00Z', { role: 'developer', usage: {} }));
+    const entries = readHistory(h.log.dir, null).entries;
+    // Drop the role of the first finish line and of a run without a start line, as in logs from before it was written.
+    const stripped = entries.map((entry) => {
+      if (entry.event !== 'run_finished' || (entry.fields.run !== 'r1' && entry.fields.run !== 'r5')) return entry;
+      const { role: _role, ...fields } = entry.fields;
+      return { ...entry, fields };
+    });
+    const a = computeAnalytics(stripped, h.pricing.current(), filter(), NOW);
+
+    assert.deepEqual(a.by_role.map((r) => [r.role, r.runs, r.issues, r.failed]), [['developer', 2, 1, 0], ['reviewer', 2, 2, 1], ['unknown', 1, 1, 0]]);
+    const developer = a.by_role[0];
+    assert.equal(developer?.total_tokens, 2 * (1000 + 2000 + 100_000 + 10_000));
+    assert.equal(developer?.agent_seconds, 120);
+    assert.deepEqual(developer?.by_outcome, { handed_off: 2 });
+    assert.deepEqual(a.by_role[1]?.by_outcome, { failed: 1, handed_off: 1 });
+    assert.ok(Math.abs(a.by_role.reduce((sum, r) => sum + r.cost_usd, 0) - a.totals.cost_usd) < 1e-3);
+    assert.ok(Math.abs(a.by_role.reduce((sum, r) => sum + (r.cost_share ?? 0), 0) - 1) < 1e-3);
+
+    // Pipeline cost of an issue = all its runs across roles.
+    const first = a.issues.find((i) => i.issue === 'acme/app#1');
+    assert.equal(first?.cost_usd, a.totals.cost_usd);
+    assert.deepEqual(Object.keys(first?.roles ?? {}), ['developer', 'reviewer']);
+    assert.equal(first?.roles.developer?.runs, 2);
+    assert.equal(first?.roles.reviewer?.cost_usd, a.by_role[1]?.cost_usd);
+    assert.deepEqual(a.top.pipelines.map((p) => [p.issue, p.runs, p.cost_usd]), [['acme/app#1', 3, first?.cost_usd]]);
+    assert.ok(a.top.cost.every((r) => ['developer', 'reviewer', 'unknown'].includes(r.role)));
+
+    // Only logs without any role line.
+    const bare = stripped.filter((entry) => entry.event !== 'run_started').map((entry) => {
+      const { role: _role, ...fields } = entry.fields;
+      return { ...entry, fields };
+    });
+    const old = computeAnalytics(bare, h.pricing.current(), filter(), NOW);
+    assert.deepEqual(old.by_role.map((r) => [r.role, r.runs]), [['unknown', 5]]);
+    assert.deepEqual(computeAnalytics([], h.pricing.current(), filter(), NOW).by_role, []);
+  });
+
   it('aggregates a period with the existing prices and compares it with the previous one', () => {
     const { entries, pricing } = seed();
     const a = computeAnalytics(entries, pricing.current(), filter({ from: new Date('2026-09-29T00:00:00Z'), to: new Date('2026-10-06T00:00:00Z') }), NOW);
