@@ -44,7 +44,8 @@ runs Claude Code and is configured through `claude`.
 Statuses that are neither active nor terminal (for example `Human Review`) stop the agent and keep the workspace.
 
 **Board preflight.** Every column named in `tracker.active_states`, `tracker.terminal_states`, `roles.*.states`,
-`roles.*.may_move_to` and `checks.on_enter` must be a status option of the board (compared case-insensitively).
+`roles.*.may_move_to`, the targets of `roles.*.on_result`, `on_check_failed` and `on_missing_result`, and
+`checks.on_enter` must be a status option of the board (compared case-insensitively).
 An unknown column is a dispatch-validation error (`unknown board column "Agent Reviw" (valid: …)`): dispatch
 pauses while reconciliation continues, and the error clears on the first tick after `WORKFLOW.md` is fixed. The
 options are fetched once per workflow version; a failed fetch is reported as a tracker error (the check is skipped
@@ -382,6 +383,11 @@ roles:
 | `states` | required | Active states the role serves; matched case-insensitively. |
 | `read_only` | `false` | The role's agent must not change the repository. |
 | `may_move_to` | unrestricted | Column names the agent may move the issue to, matched case-insensitively and enforced by the [transition guard](#transition-guard). Free-form; not checked against the board here. Terminal columns are never allowed. |
+| `result` | none | Kind of the stage result the role reports: `analysis`, `design`, `implementation`, `test`, `review`, `security` or `docs` (see [result contracts](#result-driven-transitions)). Setting only this key is enough for a minimal result role. |
+| `on_result` | `{}` | Column per verdict of `result`, or `next` (the next active stage after the role's columns in board order). Needs `result`. See [Result-driven transitions](#result-driven-transitions). |
+| `on_check_failed` | none | Column for an issue whose entry check fails for a role that cannot fix it (a read-only role). |
+| `on_missing_result` | `Blocked` with `result`, else none | Column for a session that ends without a result. Needs `result`. |
+| `model_label` | `apply`; `ignore` for read-only roles with a `result` | `ignore` keeps a `Model:` issue label from changing the role's model. Read here; applied from a later change on. |
 | `max_turns` | `agent.max_turns` | Integer >= 1. |
 | `commands` | none | Issue commands the role serves, e.g. `[refactoring]` (lowercase letters, digits and dashes; a leading `/` is allowed). Without it the role serves issues without a command. See [Issue commands](#issue-commands). |
 | `run_checks` | `true` | `false` lets the role move the issue without running `checks.on_enter`. For roles that change nothing, whose hand-off must not depend on the repository's test suite. |
@@ -390,6 +396,34 @@ roles:
 | `wait_for_sub_issues` | `false` | `true` dispatches the role's issues only while none of their sub-issues is open. See [Waves](#waves-wait_for_sub_issues). |
 | `agents` | all | Plugin subagents (`agents/<name>.md` in [`claude.plugins`](#claude), names without the plugin prefix, e.g. `[laravel-code-reviewer]`) the role may start; `[]` allows none. See [Subagents per role](#subagents-per-role). |
 | `claude` | `{}` | Overrides of `model`, `effort`, `allowed_tools`, `disallowed_tools`, `append_system_prompt`, `max_budget_usd` (same meaning as in [`claude`](#claude)). |
+
+#### Result-driven transitions
+
+A role that reports a stage result names the kind in `result` and says where each verdict leads:
+
+```yaml
+roles:
+  reviewer:
+    states: [Agent review]
+    read_only: true
+    result: review
+    may_move_to: [In review, In progress, Blocked]
+    on_result: { approved: In review, changes_needed: In progress, blocked: Blocked }
+    on_check_failed: In progress
+```
+
+- The verdicts of each kind are `analysis`: `ready`, `needs_info`; `design`: `ready`, `blocked`; `implementation`:
+  `done`, `blocked`; `test`: `passed`, `failed`, `blocked`; `review`: `approved`, `changes_needed`, `blocked`;
+  `security`: `passed`, `issues_found`, `blocked`; `docs`: `done`, `not_needed`, `blocked`. A verdict may be left out.
+- A target is a column name or `next`. `next` needs the board's column order (tracker kinds that list columns, such as
+  `github_project`) and a later active stage; it is checked together with the board preflight.
+- Targets are never terminal columns. Those that name a column are added to `may_move_to` (without duplicates), so the
+  [transition guard](#transition-guard), the board preflight and the dashboard's pipeline view know them. A role
+  without `may_move_to` stays unrestricted, but its targets are still checked against the board.
+
+Every misconfiguration is an `invalid_config` error naming the field, e.g.
+`roles.reviewer.on_result.passed: "passed" is not a verdict of result review (allowed: approved, changes_needed, blocked)`
+or `roles.reviewer.on_result.approved must not be a terminal state (got "Done")`.
 
 Invalid configs fail with `invalid_config`, listing every problem: a state outside `tracker.active_states`, a state in more than one role (two roles may share a state only for different commands), an active state without a role that has no `commands` (once `roles` is set), a command that is not a name or an empty `commands` list, `max_sub_issues` outside 1–100, a `sub_issue_status` that is terminal or set without `max_sub_issues`, unknown keys under a role or its `claude` block, and invalid value types. Dispatch validation also fails while a role's command has no skill in [`claude.plugins`](#claude): `roles.auditor.commands: no skill for /refactoring in claude.plugins (expected skills/refactoring/SKILL.md)`, while a role lists a subagent no plugin ships (`roles.reviewer.agents: no subagent … in claude.plugins`), and while a read-only role lists a subagent that can edit files (`roles.reviewer.agents: laravel-filament-developer can edit files, but the role is read-only`). With `roles` set and `agent.max_continuations` unlimited, a warning is logged because role switches will count as continuations.
 
@@ -511,6 +545,21 @@ session is dispatched, so a label change applies from the next session. The choi
 log line (`effort`, plus `effort_label` when a label picked it), in the `run_dispatched` trace event and as `effort` of
 `run_started`, `run_finished` and `model_usage` in the repository log (`default` when none is configured), which the
 statistics page breaks down by effort. `npm run repo-init` creates the five standard labels `Effort: low` … `Effort: max`.
+
+### `pipeline`
+
+Optional. Limits and classification for the result-driven [roles](#result-driven-transitions); every key has a default,
+so the section can be left out. The glob lists are read now and used by later pipeline stages. `$NAME` references work
+like everywhere else (an unset variable counts as omitted). Unknown keys are ignored with a warning.
+
+| Key | Default | Notes |
+|---|---|---|
+| `max_review_rounds` | `3` | Integer >= 1. Review rounds before the issue goes to a human. |
+| `max_test_rounds` | `2` | Integer >= 1. Test rounds before the issue goes to a human. |
+| `limit_label` | `needs-human` | Label for an issue that hit a round limit. |
+| `type_labels` | `{}` | Map of issue label → change type, e.g. `{ bug: bug, enhancement: feature }` (labels are matched case-insensitively). |
+| `default_type` | `feature` | Type of an issue without a label in `type_labels`. |
+| `test_paths`, `docs_paths`, `security_paths` | `[]` | Path globs marking test, documentation and security-relevant files. |
 
 ### `server`
 

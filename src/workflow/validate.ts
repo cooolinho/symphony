@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { getTrackerFactory, supportedTrackerKinds } from '../tracker/registry.ts';
 import { commandSkills, pluginAgents } from './command.ts';
 import { normalizeStateName, type ServiceConfig } from './config.ts';
+import { NEXT_STAGE, resultTargets, type RoleConfig } from './roles.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from './store.ts';
 
 /**
@@ -67,7 +68,7 @@ export function validateDispatch(
   return errors;
 }
 
-/** Board columns referenced by the config (`tracker` states, `roles`, `checks.on_enter`) that are not status options. */
+/** Board columns referenced by the config (`tracker` states, `roles` including their result targets, `checks.on_enter`) that are not status options. */
 export function unknownBoardColumns(config: ServiceConfig, statusOptions: readonly string[]): string[] {
   const known = new Set(statusOptions.map(normalizeStateName));
   const referenced = [
@@ -76,6 +77,7 @@ export function unknownBoardColumns(config: ServiceConfig, statusOptions: readon
     ...(config.roles ?? []).flatMap((role) => [
       ...role.states,
       ...(role.mayMoveTo ?? []),
+      ...resultTargets(role),
       ...(role.subIssueStatus !== null ? [role.subIssueStatus] : []),
     ]),
     ...config.checks.onEnter.keys(),
@@ -88,4 +90,42 @@ export function unknownBoardColumns(config: ServiceConfig, statusOptions: readon
   return [...unknown.values()].map(
     (name) => `unknown board column "${name}" (valid: ${statusOptions.join(', ')})`,
   );
+}
+
+/**
+ * The active column after the last column `role` serves, in board order (the target of `on_result: next`); null when
+ * the role's stage is the last one or the board does not list its columns. Active columns missing on the board are skipped.
+ */
+export function nextActiveColumn(role: Pick<RoleConfig, 'states'>, activeStates: readonly string[], boardColumns: readonly string[]): string | null {
+  const order = new Map<string, number>();
+  boardColumns.forEach((column, i) => {
+    const key = normalizeStateName(column);
+    if (!order.has(key)) order.set(key, i);
+  });
+  const own = new Set(role.states.map(normalizeStateName));
+  const active = activeStates
+    .filter((column) => order.has(normalizeStateName(column)))
+    .sort((a, b) => (order.get(normalizeStateName(a)) ?? 0) - (order.get(normalizeStateName(b)) ?? 0));
+  const last = active.findLastIndex((column) => own.has(normalizeStateName(column)));
+  return last === -1 ? null : (active[last + 1] ?? null);
+}
+
+/**
+ * Problems with `on_result: next` targets: the board order must be known (`boardColumns` null = the tracker does not
+ * list columns) and the role must have a later active stage.
+ */
+export function nextStageProblems(config: ServiceConfig, boardColumns: readonly string[] | null): string[] {
+  const problems: string[] = [];
+  for (const role of config.roles ?? []) {
+    for (const [verdict, target] of Object.entries(role.onResult)) {
+      if (target !== NEXT_STAGE) continue;
+      const path = `roles.${role.name}.on_result.${verdict}`;
+      if (boardColumns === null || boardColumns.length === 0) {
+        problems.push(`${path}: "${NEXT_STAGE}" needs the board's column order, which the tracker does not provide (name the column instead)`);
+      } else if (nextActiveColumn(role, config.tracker.activeStates, boardColumns) === null) {
+        problems.push(`${path}: "${NEXT_STAGE}" has no later active stage after ${role.states.join(', ')} on the board`);
+      }
+    }
+  }
+  return problems;
 }

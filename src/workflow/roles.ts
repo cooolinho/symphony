@@ -2,6 +2,7 @@ import type { Issue } from '../tracker/types.ts';
 import { parseIssueCommand, type PluginAgent } from './command.ts';
 import type { ClaudeConfig } from './config.ts';
 import { normalizeStateName } from './config.ts';
+import type { AgentResultKind } from './results.ts';
 
 /** Name of the implicit role serving issues when `roles` is not set or no role serves the issue's state. */
 export const DEFAULT_ROLE = 'default';
@@ -11,6 +12,12 @@ export type RoleClaudeOverrides = Partial<
   Pick<ClaudeConfig, 'model' | 'effort' | 'allowedTools' | 'disallowedTools' | 'appendSystemPrompt' | 'maxBudgetUsd'>
 >;
 
+/** `on_result` target meaning the next active stage of the pipeline in board order. */
+export const NEXT_STAGE = 'next';
+
+/** Whether a `Model:` issue label picks the model of a role's sessions. */
+export type ModelLabelPolicy = 'apply' | 'ignore';
+
 /** A column-scoped agent role (the `roles` front matter section). */
 export interface RoleConfig {
   name: string;
@@ -19,6 +26,16 @@ export interface RoleConfig {
   readOnly: boolean;
   /** Columns the agent may move the issue to (free-form names); null = unrestricted. */
   mayMoveTo: string[] | null;
+  /** Kind of the stage result this role reports; null = the role reports none (no result-driven transitions). */
+  result: AgentResultKind | null;
+  /** Target per verdict of `result`: a column name or `next` (`NEXT_STAGE`). Targets other than `next` are in `mayMoveTo`. */
+  onResult: Readonly<Record<string, string>>;
+  /** Column for an issue whose entry check fails for a role that cannot fix it; null = none configured. */
+  onCheckFailed: string | null;
+  /** Column for a session that ends without a result; `Blocked` by default when `result` is set, else null. */
+  onMissingResult: string | null;
+  /** `ignore` keeps a `Model:` issue label from changing the role's model. */
+  modelLabel: ModelLabelPolicy;
   /** Turn limit for sessions of this role; null uses `agent.max_turns`. */
   maxTurns: number | null;
   /**
@@ -49,6 +66,12 @@ export interface RoleConfig {
    */
   agents: string[] | null;
   claude: RoleClaudeOverrides;
+}
+
+/** Columns named by a role's result-driven transitions (without `next`, which depends on the board order). */
+export function resultTargets(role: Pick<RoleConfig, 'onResult' | 'onCheckFailed' | 'onMissingResult'>): string[] {
+  const targets = [...Object.values(role.onResult), role.onCheckFailed, role.onMissingResult];
+  return targets.filter((target): target is string => target !== null && target !== NEXT_STAGE);
 }
 
 /**
