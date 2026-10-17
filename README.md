@@ -175,7 +175,7 @@ image without Traefik (`docker-compose.local.yml`) in
 Move an issue to `Ready`. A developer agent implements it and opens a pull request. After the checks pass, a read-only
 reviewer agent reviews the work, then the card moves to `In review`. You merge the pull request and move the card to
 `Done`. Labels like `Model: sonnet` and `Effort: high` choose model and effort per issue; the dashboard
-(`SYMPHONY_PORT`) shows running agents, logs and cost.
+(`SYMPHONY_PORT`) shows what runs, what starts next and why each issue waits, plus logs and cost.
 
 Everything else is in [docs/usage.md](docs/usage.md): the life of an issue, intervening while it runs, dependencies,
 model choice, `repo-init`, dashboard and API, logs and cost, several repositories, configuration, security, Laravel

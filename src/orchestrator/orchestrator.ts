@@ -30,11 +30,11 @@ import {
   isRoutable,
   isTerminalState,
   sessionLimitWaitMs,
-  sortForDispatch,
   stateLimit,
   waitingForSubIssues,
 } from './eligibility.ts';
 import { normalizeStateName } from '../workflow/config.ts';
+import { planDispatch, type PlanIssue, type PlanItem, type PlanRetry } from './dispatch-plan.ts';
 import type { CheckCache, CheckRecord } from './guard.ts';
 import { IssueArchive, type ArchivedIssue } from './issue-archive.ts';
 import { RuntimeStateStore, runtimeStateFile, type ModelHold } from './runtime-state.ts';
@@ -170,6 +170,8 @@ interface RetryEntry {
   error: string | null;
   /** The session limit behind a `session_limit` retry; null for the other kinds. */
   limit: SessionLimitState | null;
+  /** Requeued because the dispatch plan gave the slot to another issue: it still competes for the next free one. */
+  queued: boolean;
   timer: unknown;
 }
 
@@ -182,7 +184,7 @@ interface SessionLimitState {
   model: string | null;
   resetsAt: Date | null;
   source: 'event' | 'message' | null;
-  /** The original Claude message; the entry's `error` is replaced by queue-state texts such as "no available orchestrator slots". */
+  /** The original Claude message; the entry's `error` is replaced by queue-state texts such as "waiting for a free slot (2/2 busy)". */
   text: string;
   /** Consecutive session-limit failures of this claim, including this one. */
   hits: number;
@@ -254,6 +256,7 @@ interface IssueMeta {
   description: string | null;
   labels: string[];
   priority: number | null;
+  createdAt: Date | null;
   blockedBy: Issue['blocked_by'];
   dispatchNote: string | null;
   parent: unknown;
@@ -271,6 +274,7 @@ function issueMeta(issue: Issue): IssueMeta {
     description: firstLine(issue.description),
     labels: issue.labels,
     priority: issue.priority,
+    createdAt: issue.created_at,
     blockedBy: issue.blocked_by,
     dispatchNote: typeof issue.native_ref?.dispatch_note === 'string' ? issue.native_ref.dispatch_note : null,
     parent: issue.native_ref?.parent ?? null,
@@ -693,9 +697,8 @@ export class Orchestrator {
       if (errors.length > 0) return;
 
       this.#expireModelHolds();
-      const gate = this.#dispatchGate();
-      this.#logGate(gate);
-      if (gate !== null) return;
+      // The board is fetched even while the dispatch gate is closed, so the dashboard stays current.
+      this.#logGate(this.#dispatchGate());
 
       const adapter = this.#adapterFor(workflow);
       let fetched: Issue[];
@@ -710,16 +713,21 @@ export class Orchestrator {
       const candidates = fetched.filter((issue) => isActiveState(issue.state, config.tracker));
       // Only the first description line is kept: enough for command detection, without large texts in memory.
       const strip = (issue: Issue): Issue => ({ ...issue, description: firstLine(issue.description) });
+      for (const issue of fetched) {
+        const record = this.#claimed.has(issue.id) ? this.#records.get(issue.id) : undefined;
+        if (record !== undefined) record.meta = issueMeta(issue);
+      }
       this.#board = {
         fetchedAt: this.#clock.now(),
         candidates: candidates.map(strip),
         parked: fetched.filter((issue) => !isActiveState(issue.state, config.tracker)).map(strip),
       };
 
-      for (const issue of sortForDispatch(candidates)) {
-        if (this.#stopping || this.#globalSlots(config) <= 0) break;
-        if (this.#shouldDispatch(issue, config, adapter)) this.#dispatch(issue, null, workflow, adapter);
-      }
+      const byId = new Map(candidates.map((issue) => [issue.id, issue]));
+      await this.#startPlanned(this.#plan(config, adapter), (item) => {
+        const issue = byId.get(item.issueId);
+        if (issue !== undefined && this.#shouldDispatch(issue, config, adapter)) this.#dispatch(issue, null, workflow, adapter);
+      });
     } catch (error) {
       this.#logger.error('tick failed', { error: errorMessage(error) });
     } finally {
@@ -855,6 +863,79 @@ export class Orchestrator {
       this.#holdFor(issue, config) === null &&
       waitingForSubIssues(issue, roleFor(issue, config.roles), adapter).length === 0
     );
+  }
+
+  /** A claimed issue as the dispatch plan sees it: its newest board fields (dispatch, run end, tick, reconcile). */
+  #planIssue(issueId: string, identifier: string, state: string | null): PlanIssue {
+    const meta = this.#records.get(issueId)?.meta ?? null;
+    const board = meta === null ? this.#board?.candidates.find((issue) => issue.id === issueId) : undefined;
+    if (board !== undefined) return board;
+    return {
+      id: issueId,
+      identifier,
+      state: state ?? meta?.state ?? '',
+      priority: meta?.priority ?? null,
+      created_at: meta?.createdAt ?? null,
+      labels: meta?.labels ?? [],
+      description: meta?.description ?? null,
+    };
+  }
+
+  #planRetry(retry: RetryEntry, now: number, issue: PlanIssue | null = null): PlanRetry {
+    return {
+      issue: issue ?? this.#planIssue(retry.issueId, retry.identifier, null),
+      kind: retry.kind,
+      attempt: retry.attempt,
+      dueAt: retry.dueAt,
+      due: retry.kind === 'continuation' || retry.queued || retry.dueAt.getTime() <= now,
+      limit: retry.limit,
+    };
+  }
+
+  /**
+   * The dispatch plan of the current state (src/orchestrator/dispatch-plan.ts). `fired` is a retry whose timer
+   * just fired: it is out of the retry queue while it runs, and due whatever its `dueAt` says.
+   */
+  #plan(config: ServiceConfig, adapter: TrackerAdapter | null, fired: { retry: RetryEntry; issue: Issue } | null = null): PlanItem[] {
+    const now = this.#clock.now();
+    const retries = [...this.#retries.values()].map((retry) => this.#planRetry(retry, now.getTime()));
+    if (fired !== null) retries.push({ ...this.#planRetry(fired.retry, now.getTime(), fired.issue), due: true });
+    const gate = this.#dispatchGate();
+    return planDispatch({
+      config,
+      now,
+      running: [...this.#running.values()].map((entry) => ({ state: entry.issue.state })),
+      retries,
+      paused: [...this.#paused.values()].map((paused) => ({
+        issue: this.#planIssue(paused.issueId, paused.identifier, paused.state),
+        continuations: paused.continuations,
+      })),
+      candidates: (this.#board?.candidates ?? []).filter(
+        (issue) => !this.#claimed.has(issue.id) && !this.#running.has(issue.id) && !this.#cleanups.has(issue.id),
+      ),
+      holds: this.#modelHolds,
+      gate: gate === null ? null : { until: gate.until, window: gate.window },
+      waitingForSubIssues: (issue) => (adapter === null ? [] : waitingForSubIssues(issue, roleFor(issue, config.roles), adapter)),
+    });
+  }
+
+  /**
+   * Starts what the plan gives a slot to, in plan order: retries that are due through the retry path (it refreshes
+   * the issue first), new candidates through `startNew`. A continuation inside its short delay keeps its slot and
+   * starts from its own timer.
+   */
+  async #startPlanned(plan: PlanItem[], startNew: ((item: PlanItem) => void) | null): Promise<void> {
+    const now = this.#clock.now().getTime();
+    for (const item of plan) {
+      if (this.#stopping) return;
+      if (item.group !== 'next' || item.decision !== 'start') continue;
+      if (item.kind === 'new') {
+        startNew?.(item);
+        continue;
+      }
+      const retry = this.#retries.get(item.issueId);
+      if (retry !== undefined && (retry.queued || retry.dueAt.getTime() <= now)) await this.#onRetryTimer(item.issueId);
+    }
   }
 
   // ---------------------------------------------------------------- model holds
@@ -1225,6 +1306,8 @@ export class Orchestrator {
     const finished = this.#records.get(entry.issueId);
     if (finished) {
       finished.lastRun = traceOf(entry);
+      // The worker refreshes the issue after each turn: the column it ended in decides what comes next.
+      finished.meta = issueMeta(entry.issue);
       const session = finished.sessions.find((candidate) => candidate.run === entry.runId);
       if (session !== undefined) {
         session.finishedAt = this.#clock.now();
@@ -1452,7 +1535,7 @@ export class Orchestrator {
   #scheduleRetry(
     issueId: string,
     attempt: number,
-    info: { identifier: string; url: string | null; kind: RetryEntry['kind']; error: string | null; limit: SessionLimitState | null },
+    info: { identifier: string; url: string | null; kind: RetryEntry['kind']; error: string | null; limit: SessionLimitState | null; queued?: boolean },
     delayMs?: number,
   ): void {
     if (this.#stopping) {
@@ -1476,6 +1559,7 @@ export class Orchestrator {
       dueAt: new Date(this.#clock.now().getTime() + delay),
       error: info.error,
       limit: info.limit,
+      queued: info.queued ?? false,
       timer,
     });
     this.#claimed.add(issueId);
@@ -1528,6 +1612,8 @@ export class Orchestrator {
   async #onRetryTimer(issueId: string): Promise<void> {
     const retry = this.#retries.get(issueId);
     if (retry === undefined) return;
+    // A tick may start a due retry before its timer fires.
+    this.#timers.clearTimeout(retry.timer);
     this.#retries.delete(issueId);
     if (this.#stopping) {
       this.#release(issueId);
@@ -1626,14 +1712,20 @@ export class Orchestrator {
       );
       return;
     }
-    if (this.#slotsFor(issue.state, config) <= 0) {
-      // Waiting for a slot is not a failure: keep kind and attempt, retry after one poll interval.
+    const plan = this.#plan(config, adapter, { retry, issue });
+    const index = plan.findIndex((item) => item.issueId === issueId);
+    const item = plan[index];
+    if (item !== undefined && item.decision === 'wait') {
+      // No slot for it (a column limit, or the plan gives the free slot to work ahead of it): not a failure. Keep
+      // kind and attempt; it keeps competing for the next free slot, at the latest after one poll interval.
       this.#scheduleRetry(
         issueId,
         retry.attempt,
-        { identifier: retry.identifier, url: retry.url, kind: retry.kind, error: 'no available orchestrator slots', limit },
+        { identifier: retry.identifier, url: retry.url, kind: retry.kind, error: item.reason.text, limit, queued: true },
         config.polling.intervalMs,
       );
+      // Start the due work the slot went to now instead of at its own timer.
+      await this.#startPlanned(plan.slice(0, index), null);
       return;
     }
     this.#dispatch(issue, retry.attempt, workflow, adapter, retry.kind === 'continuation');
@@ -2135,16 +2227,17 @@ export class Orchestrator {
     });
   }
 
-  /** One `issues[]` row of GET /api/v1/state: an issue in flight with its pipeline and live status. */
+  /** One `issues[]` row of GET /api/v1/state: an issue in flight with its pipeline, live status and place in the plan. */
   #issueRow(
     status: 'running' | 'retrying' | 'paused' | 'queued',
     issue: { id: string; identifier: string; url: string | null; title: string | null; state: string; description: string | null },
     workflow: EffectiveWorkflow,
     now: number,
-    rows: { running?: RunningEntry; retry?: RetryEntry; paused?: PausedEntry; dispatchNote?: string | null; modelHold?: ModelHold | null },
+    rows: { running?: RunningEntry; retry?: RetryEntry; paused?: PausedEntry; dispatchNote?: string | null; modelHold?: ModelHold | null; plan?: PlanItem },
   ) {
     const record = this.#records.get(issue.id);
     const meta = record?.meta ?? null;
+    const plan = rows.plan ?? null;
     return {
       issue_id: issue.id,
       issue_identifier: issue.identifier,
@@ -2153,8 +2246,16 @@ export class Orchestrator {
       repo: rows.running?.repo ?? record?.repo ?? null,
       state: issue.state,
       status,
+      /** Dashboard section: `running`, else the dispatch plan group (`next`, `waiting`, `paused`). */
+      section: plan?.group ?? 'running',
+      /** Place in the dispatch order (`next` only). */
+      position: plan?.position ?? null,
+      decision: plan?.decision ?? null,
+      reason: plan === null ? null : { code: plan.reason.code, text: plan.reason.text },
+      /** Model the next session would run with (the running session reports its own in `running.model`). */
+      model: plan?.model ?? rows.running?.requestedModel ?? null,
       labels: meta?.labels ?? [],
-      priority: meta?.priority ?? null,
+      priority: plan?.priority ?? meta?.priority ?? null,
       /** True when the orchestrator holds debugging context, so /agent?id=… has something to show. */
       tracked: record !== undefined,
       stages: this.#pipelineFor({ state: issue.state, description: issue.description }, issue.id, workflow),
@@ -2167,73 +2268,18 @@ export class Orchestrator {
     };
   }
 
-  /** `issues[]` and `blocked[]` of GET /api/v1/state, built from the live claims and the last board fetch. */
-  #issueRows(workflow: EffectiveWorkflow, now: number) {
+  /** `issues[]`, `queue[]` and `blocked[]` of GET /api/v1/state: running sessions, then the dispatch plan. */
+  #issueRows(workflow: EffectiveWorkflow, now: number, plan: PlanItem[]) {
     const config = workflow.config;
     const byId = new Map((this.#board?.candidates ?? []).map((issue) => [issue.id, issue]));
     const issues = [];
-    const seen = new Set<string>();
     for (const entry of this.#running.values()) {
-      seen.add(entry.issueId);
       const { issue } = entry;
-      issues.push(
-        this.#issueRow('running', { ...issue, description: firstLine(issue.description) }, workflow, now, { running: entry }),
-      );
+      issues.push(this.#issueRow('running', { ...issue, description: firstLine(issue.description) }, workflow, now, { running: entry }));
     }
-    for (const retry of [...this.#retries.values()].sort((a, b) => a.dueAtMs - b.dueAtMs)) {
-      if (seen.has(retry.issueId)) continue;
-      seen.add(retry.issueId);
-      const meta = this.#records.get(retry.issueId)?.meta;
-      const board = byId.get(retry.issueId);
-      const held = board ?? (meta ? { state: meta.state, description: meta.description, labels: meta.labels } : null);
-      issues.push(
-        this.#issueRow(
-          'retrying',
-          {
-            id: retry.issueId,
-            identifier: retry.identifier,
-            url: retry.url,
-            title: board?.title ?? null,
-            state: board?.state ?? meta?.state ?? '',
-            description: board?.description ?? meta?.description ?? null,
-          },
-          workflow,
-          now,
-          { retry, modelHold: held === null ? null : this.#holdFor(held, config) },
-        ),
-      );
-    }
-    for (const paused of this.#paused.values()) {
-      if (seen.has(paused.issueId)) continue;
-      seen.add(paused.issueId);
-      const meta = this.#records.get(paused.issueId)?.meta;
-      issues.push(
-        this.#issueRow(
-          'paused',
-          {
-            id: paused.issueId,
-            identifier: paused.identifier,
-            url: paused.url,
-            title: byId.get(paused.issueId)?.title ?? null,
-            state: paused.state,
-            description: meta?.description ?? null,
-          },
-          workflow,
-          now,
-          { paused },
-        ),
-      );
-    }
-    for (const issue of sortForDispatch(this.#board?.candidates ?? [])) {
-      if (seen.has(issue.id) || this.#claimed.has(issue.id) || this.#cleanups.has(issue.id)) continue;
-      if (!hasRequiredFields(issue) || !isRoutable(issue, config.tracker)) continue;
-      seen.add(issue.id);
-      const note = typeof issue.native_ref?.dispatch_note === 'string' ? issue.native_ref.dispatch_note : null;
-      issues.push(this.#issueRow('queued', issue, workflow, now, { dispatchNote: note, modelHold: this.#holdFor(issue, config) }));
-    }
-
     const blocked = [];
-    const blockedRow = (issue: Issue, reason: string) => ({
+    const parked = [];
+    const blockedRow = (issue: Issue, reason: string, code: string) => ({
       issue_id: issue.id,
       issue_identifier: issue.identifier,
       issue_url: issue.url,
@@ -2241,19 +2287,59 @@ export class Orchestrator {
       repo: this.#records.get(issue.id)?.repo ?? null,
       state: issue.state,
       reason,
+      reason_code: code,
       blocked_by: issue.blocked_by,
       tracked: this.#records.has(issue.id),
     });
+    for (const item of plan) {
+      const board = byId.get(item.issueId);
+      const retry = this.#retries.get(item.issueId);
+      const paused = this.#paused.get(item.issueId);
+      const meta = this.#records.get(item.issueId)?.meta;
+      if (item.group === 'blocked') {
+        if (board !== undefined) blocked.push(blockedRow(board, item.reason.text, item.reason.code));
+      } else if (item.kind === 'new') {
+        if (board === undefined) continue;
+        const note = typeof board.native_ref?.dispatch_note === 'string' ? board.native_ref.dispatch_note : null;
+        issues.push(this.#issueRow('queued', board, workflow, now, { dispatchNote: note, modelHold: this.#holdFor(board, config), plan: item }));
+      } else if (paused !== undefined) {
+        const title = board?.title ?? null;
+        const row = { id: paused.issueId, identifier: paused.identifier, url: paused.url, title, state: paused.state, description: meta?.description ?? null };
+        issues.push(this.#issueRow('paused', row, workflow, now, { paused, plan: item }));
+      } else if (retry !== undefined) {
+        const held = board ?? (meta ? { state: meta.state, description: meta.description, labels: meta.labels } : null);
+        const row = {
+          id: retry.issueId,
+          identifier: retry.identifier,
+          url: retry.url,
+          title: board?.title ?? null,
+          state: meta?.state ?? board?.state ?? '',
+          description: meta?.description ?? board?.description ?? null,
+        };
+        issues.push(this.#issueRow('retrying', row, workflow, now, { retry, modelHold: held === null ? null : this.#holdFor(held, config), plan: item }));
+      }
+    }
+    // Issues in a blocked-bucket column first, then candidates that are not dispatchable or lack a required label.
+    const listed = new Set(issues.map((row) => row.issue_id));
     for (const issue of this.#board?.parked ?? []) {
-      if (seen.has(issue.id)) continue;
-      blocked.push(blockedRow(issue, `in column "${issue.state}"`));
+      if (!listed.has(issue.id)) parked.push(blockedRow(issue, `in column "${issue.state}"`, 'column'));
     }
-    for (const issue of this.#board?.candidates ?? []) {
-      if (seen.has(issue.id) || issue.dispatchable) continue;
-      const note = typeof issue.native_ref?.dispatch_note === 'string' ? issue.native_ref.dispatch_note : null;
-      blocked.push(blockedRow(issue, note ?? 'not dispatchable'));
-    }
-    return { issues, blocked };
+    const queue = plan
+      .filter((item) => item.group !== 'blocked')
+      .map((item) => ({
+        position: item.position,
+        issue_id: item.issueId,
+        issue_identifier: item.identifier,
+        status: item.group,
+        kind: item.kind,
+        decision: item.decision,
+        reason: { code: item.reason.code, text: item.reason.text },
+        due_at: item.dueAt?.toISOString() ?? null,
+        state: item.state,
+        priority: item.priority,
+        model: item.model,
+      }));
+    return { issues, queue, blocked: [...parked, ...blocked] };
   }
 
   /** Runtime snapshot for GET /api/v1/state (spec 13.3). */
@@ -2264,7 +2350,13 @@ export class Orchestrator {
     let activeSeconds = 0;
     for (const entry of this.#running.values()) activeSeconds += (now - entry.startedAtMs) / 1000;
     const gate = this.#dispatchGate();
-    const { issues, blocked } = this.#issueRows(workflow, now);
+    let adapter: TrackerAdapter | null = null;
+    try {
+      adapter = this.#adapterFor(workflow);
+    } catch {
+      // Reported by the tick's validation; the plan then ignores sub-issues.
+    }
+    const { issues, queue, blocked } = this.#issueRows(workflow, now, this.#plan(config, adapter));
     return {
       generated_at: this.#clock.now().toISOString(),
       counts: {
@@ -2272,10 +2364,11 @@ export class Orchestrator {
         retrying: this.#retries.size,
         paused: this.#paused.size,
         claimed: this.#claimed.size,
-        queued: issues.filter((issue) => issue.status === 'queued').length,
+        queued: queue.filter((item) => item.kind === 'new' && item.status === 'next').length,
         blocked: blocked.length,
       },
       issues,
+      queue,
       blocked,
       board_fetched_at: this.#board?.fetchedAt.toISOString() ?? null,
       pipeline_config: {

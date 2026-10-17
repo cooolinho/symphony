@@ -178,7 +178,8 @@ Englisch.
 Du schiebst ein Issue nach `Ready`. Ein Developer-Agent setzt es um und öffnet einen Pull Request. Nach bestandenen
 Checks prüft ein lesender Reviewer-Agent die Arbeit, danach landet die Karte in `In review`. Du mergst den Pull Request
 und schiebst die Karte nach `Done`. Mit Labels wie `Model: sonnet` und `Effort: high` wählst du Modell und Effort pro
-Issue; das Dashboard (`SYMPHONY_PORT`) zeigt laufende Agenten, Logs und Kosten.
+Issue; das Dashboard (`SYMPHONY_PORT`) zeigt, was läuft, was als Nächstes startet und warum ein Issue wartet, dazu
+Logs und Kosten.
 
 Alles Weitere steht in [docs/usage.md](docs/usage.md): Ablauf eines Issues, Eingreifen im Betrieb, Abhängigkeiten,
 Modellwahl, `repo-init`, Dashboard und API, Logs und Kosten, mehrere Repositories, Konfiguration, Sicherheit,

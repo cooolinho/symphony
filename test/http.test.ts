@@ -78,9 +78,25 @@ describe('http extension', () => {
     assert.equal(page.status, 200);
     assert.match(page.body, /<title>Symphony<\/title>/);
     assert.match(page.body, /AGENT ORCHESTRATOR/);
-    // Issues in flight render as cards with the pipeline topology strip; blocked issues collapse into a details panel.
+    // Issues render as cards with the pipeline topology strip in separate sections (Running, Up next, Waiting,
+    // Paused), each with a count and hidden when empty; blocked issues collapse into a details panel.
     assert.match(page.body, /renderPipeline\(refs\.pipe, row\.stages/);
     assert.match(page.body, /state\.issues/);
+    assert.doesNotMatch(page.body, /Issues in flight/);
+    for (const name of ['running', 'next', 'waiting', 'paused']) {
+      assert.match(page.body, new RegExp(`<div class="agents[^"]*" id="${name}"></div>`));
+      assert.match(page.body, new RegExp(`<span class="count" id="${name}-count"></span>`));
+    }
+    for (const name of ['next', 'waiting', 'paused']) assert.match(page.body, new RegExp(`<section class="agents-section queue-section" id="${name}-section"[^>]*hidden>`));
+    assert.match(page.body, /const SECTIONS = \['running', 'next', 'waiting', 'paused'\]/);
+    assert.match(page.body, /\$\(name \+ '-section'\)\.hidden = ordered\.length === 0/);
+    // Up next is numbered and every waiting card names its reason; the board age sits next to Up next.
+    assert.match(page.body, /setText\(refs\.position, row\.position == null \? '' : '#' \+ row\.position\)/);
+    assert.match(page.body, /why\.append\(reasonChip\(row\.reason\)\)/);
+    assert.match(page.body, /'in start order · board as of ' \+ ago\(state\.board_fetched_at\)/);
+    assert.doesNotMatch(page.body, /Waiting for a free agent slot or the next poll/);
+    // Reason chips show the UTC times of the reason texts in local time.
+    assert.ok(page.body.includes(String.raw`const UTC_TIME = /(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) UTC/g;`));
     assert.match(page.body, /id="blocked-section"/);
     assert.match(page.body, /setText\(refs\.model, r\.model/);
     assert.match(page.body, /setText\(refs\.phase, r\.phase/);
@@ -106,7 +122,7 @@ describe('http extension', () => {
     assert.equal(state.status, 200);
     const body = JSON.parse(state.body);
     assert.deepEqual(Object.keys(body.counts), ['running', 'retrying', 'paused', 'claimed', 'queued', 'blocked']);
-    assert.ok(Array.isArray(body.issues) && Array.isArray(body.blocked));
+    assert.ok(Array.isArray(body.issues) && Array.isArray(body.blocked) && Array.isArray(body.queue));
     assert.deepEqual(Object.keys(body.pipeline_config), ['board_columns', 'roles', 'blocked_states']);
     assert.deepEqual(Object.keys(body.agent_totals), ['input_tokens', 'output_tokens', 'total_tokens', 'seconds_running', 'cost_usd', 'claude_estimate_usd']);
     assert.ok(Array.isArray(body.running) && Array.isArray(body.retrying));
@@ -114,6 +130,7 @@ describe('http extension', () => {
       'generated_at',
       'counts',
       'issues',
+      'queue',
       'blocked',
       'board_fetched_at',
       'pipeline_config',

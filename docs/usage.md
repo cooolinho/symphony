@@ -9,7 +9,8 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
 (exit 0).
 
 1. Symphony polls the board every 30 seconds (`polling.interval_ms`). Candidates are issues in `Ready`,
-   `In progress` and `Agent review`. They are sorted by priority, then by age.
+   `In progress` and `Agent review`. Work already in flight starts first, then new candidates by priority, then by
+   age (see [Dispatch order](#dispatch-order)).
 2. Symphony creates `~/symphony-workspaces/<owner>_<repo>_<nr>-<hash>` for the issue. The `after_create` hook clones
    the issue's repository there and uses `hooks/laravel-env.sh` to set up a separate `.env` with an SQLite database for
    each Laravel app. Before each run, `before_run` fetches the latest state (`git fetch`). If the clone contains a
@@ -680,12 +681,54 @@ Use a separate test repository with its own board: the issues are real, and ever
 USD 0.50). The script aborts if the board already has issues in active columns. Scenario, options and checks are
 described in [docs/e2e.md](e2e.md).
 
+## Dispatch order
+
+One function, the **dispatch plan** (`src/orchestrator/dispatch-plan.ts`), decides what starts next. The poll, the
+retry timers, `--dry-run` and the dashboard all read it, so the order shown is the order used.
+
+1. **Continuations** (a session ended cleanly and the issue stays active). A continuation keeps the slot its session
+   left: no new card takes it in the second before the continuation starts.
+2. **Due retries** (failures and session limits past their backoff, and retries that already waited for a slot).
+3. **New candidates** from the board.
+
+Inside each group the order is priority (Priority field 1–4, others last), then the oldest issue, then the identifier.
+Free slots go down this list; an issue that waits for something else (a model hold, a column limit, open
+sub-issues) takes no slot, the next one gets it. A retry in its backoff holds no slot. This puts finishing work ahead
+of starting new work: while continuations run, new cards wait longer.
+
+Every issue in the plan carries a reason (`reason.code` and a text; times in the text are UTC):
+
+| Code | Meaning | Example text |
+|---|---|---|
+| `ready` | starts now or at the next poll | `starts at the next poll`, `continues its session`, `retry 2 starts now` |
+| `no_free_slot` | all `agent.max_concurrent_agents` slots are busy | `waiting for a free slot (3/3 busy)` |
+| `column_limit` | `agent.max_concurrent_agents_by_state` of its column is reached | `Agent review limit 1/1` |
+| `model_hold` | its model is on hold after a model limit | `model fable on hold until 2026-10-03 18:00 UTC` |
+| `waiting_for_sub_issues` | its role has `wait_for_sub_issues` and sub-issues are open | `waiting for sub-issues owner/repo#7` |
+| `session_limit` | a session-limit retry, or new sessions held back by the dispatch gate | `session limit (five hour): retry after the reset at …`, `new sessions paused until …` |
+| `backoff` | a failure retry before its due time | `retry 2 after a failure at …` |
+| `inactive` | a claimed issue left the active columns; its claim is released at the next check | `left the active columns ("In review"); released at …` |
+| `paused` | paused after `agent.max_continuations` | `paused after 3 continuation sessions; change the issue on the board to resume` |
+| `blocked` | not dispatchable (assignee, open *blocked by*) | the adapter's note, e.g. `blocked by owner/repo#9` |
+| `missing_label` | lacks a label of `tracker.required_labels` | `missing required label ai` |
+
 ## Dashboard and API
 
 The dashboard only runs if `SYMPHONY_PORT` is set or you call `npm start -- --port 4000`. It listens on the address
 from `SYMPHONY_HOST`, by default only on `127.0.0.1`. The header shows system status, workflow version, poll interval
-and last poll. **Issues in flight** shows one card per issue in an active column — running, retrying, paused or
-queued (waiting for a free slot or the next dispatch). Each card carries a **pipeline strip**: every station the
+and last poll. Below, the issues in an active column appear in separate sections, each with a count; empty
+sections are hidden:
+
+- **Running**: one card per agent session, with the slot bar (busy and free slots).
+- **Up next**: numbered in the order Symphony starts them (`#1` takes the next free slot), with the board's age
+  (`board as of …`). Each card shows a reason chip (`waiting for a free slot`, `Agent review limit 1/1`,
+  `model fable on hold until …`), the priority and the model the session would use. Continuations and retries
+  that are due stand here too, ahead of new cards.
+- **Waiting**: retries before their due time (backoff, session limits, model holds), soonest first, with the due
+  time and **Retry now**.
+- **Paused**: issues held after `agent.max_continuations`, with **Resume now**.
+
+See [Dispatch order](#dispatch-order) for the order and the reasons. Each card carries a **pipeline strip**: every station the
 issue passes on its way across the board (the agent roles from the workflow, hand-off columns such as *In review*,
 and *Done*), with finished stations checked in green, the current one pulsing in the card's status color and the
 connector into it animated, and later ones dimmed. Hovering a station lists its sessions (outcome, model, start
@@ -695,8 +738,8 @@ works on a Laravel project, the card shows the **Laravel Boost icon**: in color 
 with the number of Boost calls so far (MCP tools and skills); gray with ✕ if Boost is missing or could not be
 prepared. The tooltip names status, reason and the tools and skills used. Below follow an activity stream (changes
 between polls, the agents' latest events and entries from the repository logs) and a collapsed **Blocked** panel:
-issues in the shared blocked column and issues held back by open *blocked by* dependencies, each with the reason and
-its blockers; the panel remembers whether you opened it. Problems such as configuration or GitHub errors appear at
+issues in the shared blocked column, issues held back by open *blocked by* dependencies and issues without a label
+of `tracker.required_labels`, each with the reason and its blockers; the panel remembers whether you opened it. Problems such as configuration or GitHub errors appear at
 the top. The **Logs** button opens the log entries in a sidebar with filters by repository, severity and text; from
 there (or by middle-clicking the button) a link leads to the full [logs page](#logs-and-statistics).
 
@@ -746,12 +789,28 @@ Where the data comes from and where the limits are:
 | `GET /api/v1/history/analytics?from=&to=&repo=&model=&effort=&tz=` | server-side aggregated analytics for a time range (`from` inclusive, `to` exclusive, ISO timestamps, both optional): metrics with previous period, time series, models, efforts, repositories, issues, results, run times, tools and integrations (`tools`), heatmap, top runs, anomalies. `tz` (IANA zone) determines buckets, weekdays and hours |
 | `GET /api/v1/history/entries?from=&to=&repo=&issue=&event=&result=&order=desc&limit=200` | Log entries of a time range, filtered and sorted (at most 1,000) |
 | `GET /api/v1/history/raw?repo=owner/name` | a repository's `.log` file as text |
-| `GET /api/v1/state` | Overall state as JSON: issues in flight (`issues[]` with `status` running/retrying/paused/queued and the pipeline `stages[]`), blocked issues (`blocked[]` with the reason and `blocked_by`), `pipeline_config` (board columns, roles, blocked columns), running agents (`running[]` with `role`), queue (`retrying[]` with `kind` and, for session limits, `limit`), totals, health, `controls.retry` (whether restarting is allowed) |
+| `GET /api/v1/state` | Overall state as JSON: issues in flight (`issues[]` with `status` running/retrying/paused/queued, the dashboard `section` running/next/waiting/paused, `position`, `reason` and the pipeline `stages[]`), the dispatch plan (`queue[]`, see below), blocked issues (`blocked[]` with the reason, `reason_code` `column`/`blocked`/`missing_label` and `blocked_by`), `pipeline_config` (board columns, roles, blocked columns), running agents (`running[]` with `role`), queue (`retrying[]` with `kind` and, for session limits, `limit`), totals, health, `controls.retry` (whether restarting is allowed) |
 | `GET /api/v1/<identifier>` | Details of an issue: title, role, board fields (`issue`: column, labels, priority, parent, sub-issues, `blocked_by`, `dispatch_note`), the pipeline stations (`pipeline`), workspace, attempts, sessions (`sessions`, each with `model` and `effort`), tokens and cost per model (`usage_by_model`), latest events, last error, last entry check (`last_check`), `controls.retry`. For an issue the orchestrator released, the archived details with `status: "finished"` and `archived` (`archived_at`, `released`); `404` only when nothing is known about the issue |
 | `GET /api/v1/<identifier>/timeline?after=<seq>` | Timeline of the issue (live or archived): lifecycle, phase changes and agent events with a running `seq`; `after` returns only newer ones |
 | `GET /api/v1/<identifier>/transcript?run=<run>&from=<offset>` | Transcript of a session (without `run` the latest; live or archived), prepared as prompts, model calls, tool results; from byte offset `from`, continue with `next_offset`. With `&format=raw` the JSONL file |
 | `POST /api/v1/refresh` | poll and reconcile now |
 | `POST /api/v1/<identifier>/retry` | restart a waiting (retry queue, including session limit) or paused worker right away. Response `202` with `queued`, `issue_identifier` and `previous` (`retrying` or `paused`). Errors: `404` (issue unknown), `409` (`running`: currently running; `not_waiting`: not waiting for anything; `stopping`: Symphony is shutting down), `403` (`control_disabled` on a non-loopback address without `SYMPHONY_ALLOW_REMOTE_CONTROL=true`; `forbidden_origin` for cross-origin requests and, on a non-loopback address, also without an `Origin` header) |
+
+`queue[]` lists the [dispatch plan](#dispatch-order) without running and blocked issues, in order: Up next, then
+Waiting (soonest first), then Paused. Each entry:
+
+| Field | Content |
+|---|---|
+| `position` | place in the start order (1 = next free slot); `null` outside Up next |
+| `issue_id`, `issue_identifier`, `state`, `priority` | the issue |
+| `status` | `next`, `waiting` or `paused` |
+| `kind` | `continuation`, `failure`, `session_limit` (retries), `new` (board candidate) or `paused` |
+| `decision` | `start` (gets a slot) or `wait` |
+| `reason` | `{ code, text }`, see the table in [Dispatch order](#dispatch-order) |
+| `due_at` | when a retry is due; `null` for new and paused issues |
+| `model` | the model the next session would run with; `null` = Claude Code default |
+
+`counts` stays as before (`queued` = new candidates in Up next).
 
 ```bash
 curl -s http://127.0.0.1:4000/api/v1/state

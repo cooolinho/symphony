@@ -12,6 +12,7 @@ import { limitScopeOf } from '../src/agent/rate-limit.ts';
 import { CONTINUATION_DELAY_MS, SESSION_LIMIT_MAX_WAIT_MS, failureBackoffMs, sessionLimitWaitMs, sortForDispatch } from '../src/orchestrator/eligibility.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import type { AgentToolSpec, ToolResult } from '../src/tracker/types.ts';
+import { dryRunPlan, planLines } from '../src/service.ts';
 import { workspaceKey } from '../src/workspace/manager.ts';
 import {
   FakeRunner,
@@ -941,33 +942,101 @@ describe('worker lifecycle and retries', () => {
     await s.orchestrator.tickNow();
     await until(() => snapshot(s).retrying.length === 1, 3_000, 'retry');
 
-    // Another issue takes the only slot before the retry fires.
+    // A retry in its backoff holds no slot: another issue takes the only one before the retry fires.
     s.runner.script = () => new Promise(() => undefined);
     s.tracker.issues.set('b', makeIssue({ id: 'b', priority: 2 }));
     await s.orchestrator.tickNow();
     await until(() => snapshot(s).running.length === 1, 3_000, 'b running');
     s.timers.fire(10_000);
-    await until(() => snapshot(s).retrying[0]?.error === 'no available orchestrator slots', 3_000, 'requeue');
+    await until(() => snapshot(s).retrying[0]?.error === 'waiting for a free slot (1/1 busy)', 3_000, 'requeue');
     assert.equal(snapshot(s).retrying[0]?.attempt, 1);
     assert.equal(snapshot(s).retrying[0]?.kind, 'failure');
     assert.ok(s.timers.delays().includes(7_000));
     assert.ok(!s.timers.delays().includes(20_000));
+    // Requeued for a slot, it stays up next with the reason, ahead of new candidates.
+    const item = snapshot(s).queue[0];
+    assert.equal(item?.issue_identifier, 'acme/app#a');
+    assert.equal(item?.status, 'next');
+    assert.equal(item?.position, 1);
+    assert.deepEqual(item?.reason, { code: 'no_free_slot', text: 'waiting for a free slot (1/1 busy)' });
   });
 
-  it('requeues a continuation with no free slot as a continuation after one poll interval', async () => {
+  it('keeps the slot of a continuation: a new candidate does not take it in the continuation delay', async () => {
     const s = setup({
-      front: { polling: { interval_ms: 7_000 }, agent: { max_concurrent_agents: 1, max_turns: 1 } },
-      issues: [makeIssue({ id: 'a', priority: 1 })],
+      front: { agent: { max_concurrent_agents: 1, max_turns: 1 } },
+      issues: [makeIssue({ id: 'a', priority: 3 })],
     });
     await s.orchestrator.tickNow();
     await until(() => snapshot(s).retrying[0]?.kind === 'continuation', 3_000, 'continuation retry');
 
+    // A new candidate with a higher priority arrives while the continuation waits its 1 s.
     s.runner.script = () => new Promise(() => undefined);
-    s.tracker.issues.set('b', makeIssue({ id: 'b', priority: 2 }));
+    s.tracker.issues.set('b', makeIssue({ id: 'b', priority: 1 }));
     await s.orchestrator.tickNow();
-    await until(() => snapshot(s).running.length === 1, 3_000, 'b running');
-    s.timers.fire(1_000);
-    await until(() => snapshot(s).retrying[0]?.error === 'no available orchestrator slots', 3_000, 'requeue');
+    assert.equal(snapshot(s).running.length, 0, 'b does not take the slot');
+    const queue = snapshot(s).queue;
+    assert.deepEqual(
+      queue.map((item) => [item.position, item.issue_identifier, item.kind, item.decision, item.reason.code]),
+      [
+        [1, 'acme/app#a', 'continuation', 'start', 'ready'],
+        [2, 'acme/app#b', 'new', 'wait', 'no_free_slot'],
+      ],
+    );
+
+    // Position 1 is what starts next.
+    s.timers.fire(CONTINUATION_DELAY_MS);
+    await until(() => snapshot(s).running[0]?.issue_id === 'a', 3_000, 'a continues');
+    await s.orchestrator.tickNow();
+    assert.deepEqual(snapshot(s).running.map((row) => row.issue_id), ['a']);
+    assert.equal(s.runner.sessions.filter((session) => session.params.issue.id === 'b').length, 0);
+  });
+
+  it('starts the issue at position 1 when a slot frees up', async () => {
+    let finish: () => void = () => {};
+    const s = setup({
+      front: { agent: { max_concurrent_agents: 1 } },
+      issues: [makeIssue({ id: 'a', priority: 1 })],
+    });
+    s.runner.script = (turn, params) =>
+      params.issue.id === 'a'
+        ? new Promise((resolve) => (finish = () => resolve({ ok: true, turnId: String(turn), resultText: 'done' })))
+        : new Promise(() => undefined);
+    await s.orchestrator.tickNow();
+    await until(() => s.runner.sessions[0]?.turns.length === 1, 3_000, 'a in its turn');
+    s.tracker.issues.set('late', makeIssue({ id: 'late', priority: 2, created_at: new Date('2026-03-01T00:00:00Z') }));
+    s.tracker.issues.set('early', makeIssue({ id: 'early', priority: 2, created_at: new Date('2026-02-01T00:00:00Z') }));
+    s.tracker.issues.set('low', makeIssue({ id: 'low', priority: 4 }));
+    await s.orchestrator.tickNow();
+    assert.deepEqual(
+      snapshot(s).queue.map((item) => [item.position, item.issue_id, item.reason.code]),
+      [
+        [1, 'early', 'no_free_slot'],
+        [2, 'late', 'no_free_slot'],
+        [3, 'low', 'no_free_slot'],
+      ],
+    );
+    // a hands off; its slot goes to position 1.
+    s.tracker.set('a', { state: 'Human Review' });
+    finish();
+    await until(() => snapshot(s).running.length === 0, 3_000, 'a finished');
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running.length === 1, 3_000, 'next running');
+    assert.equal(snapshot(s).running[0]?.issue_id, 'early');
+  });
+
+  it('requeues a continuation with no free slot as a continuation after one poll interval', async () => {
+    const s = setup({
+      front: { polling: { interval_ms: 7_000 }, agent: { max_concurrent_agents: 2, max_turns: 1 } },
+      issues: [makeIssue({ id: 'a', priority: 1 }), makeIssue({ id: 'b', priority: 2 })],
+    });
+    s.runner.script = (turn, params) => (params.issue.id === 'a' ? { ok: true, turnId: String(turn), resultText: 'done' } : new Promise(() => undefined));
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying[0]?.kind === 'continuation' && snapshot(s).running.length === 1, 3_000, 'continuation retry');
+
+    // A reload lowers the limit while b runs: the continuation has no slot left.
+    s.workflow.current = makeWorkflow(baseFront(s.root, { polling: { interval_ms: 7_000 }, agent: { max_concurrent_agents: 1, max_turns: 1 } }));
+    s.timers.fire(CONTINUATION_DELAY_MS);
+    await until(() => snapshot(s).retrying[0]?.error === 'waiting for a free slot (1/1 busy)', 3_000, 'requeue');
     const retry = snapshot(s).retrying[0];
     assert.equal(retry?.kind, 'continuation');
     assert.equal(retry?.attempt, 1);
@@ -1296,7 +1365,7 @@ describe('session limit retries', () => {
     await s.orchestrator.tickNow();
     await until(() => snapshot(s).running.length === 1 && s.runner.sessions.length === 2, 3_000, 'b running');
     s.timers.fire(40_000);
-    await until(() => retry(s)?.error === 'no available orchestrator slots', 3_000, 'slot requeue');
+    await until(() => retry(s)?.error === 'waiting for a free slot (1/1 busy)', 3_000, 'slot requeue');
     assert.equal(retry(s)?.kind, 'session_limit');
     assert.equal(retry(s)?.attempt, 3);
     assert.deepEqual(retry(s)?.limit, before);
@@ -1495,8 +1564,12 @@ describe('session limit retries', () => {
       await s.orchestrator.tickNow();
       await s.orchestrator.tickNow();
       assert.equal(s.orchestrator.issueDetail('b'), null, 'b not dispatched');
-      assert.equal(s.tracker.calls.byStates, fetches, 'no candidate fetch while gated');
+      // The board is still fetched, so the dashboard shows why b waits.
+      assert.equal(s.tracker.calls.byStates, fetches + 2, 'the board stays current while gated');
       assert.ok(s.tracker.calls.byIds > refreshes, 'reconcile still runs');
+      const queued = snapshot(s).queue.find((item) => item.issue_identifier === 'acme/app#b');
+      assert.equal(queued?.reason.code, 'session_limit');
+      assert.match(queued?.reason.text ?? '', /^new sessions paused until .* UTC: session limit \(five hour\)$/);
       assert.equal(snapshot(s).running[0]?.issue_identifier, 'acme/app#c');
       assert.equal(snapshot(s).running[0]?.stopping, null);
       assert.equal(waitingCount(s), 1, 'the retry timer is untouched');
@@ -1562,7 +1635,8 @@ describe('session limit retries', () => {
       await s.orchestrator.tickNow();
       await until(() => snapshot(s).retrying.some((row) => row.kind === 'continuation'), 3_000, 'c finished a turn');
 
-      s.clock.advance(1_000);
+      // Less than the continuation delay: the tick leaves c's continuation to its timer.
+      s.clock.advance(500);
       addReady(s, 'a');
       await s.orchestrator.tickNow();
       await until(() => waitingCount(s) === 1, 3_000, 'a waiting');
@@ -2623,7 +2697,7 @@ describe('restart a worker', () => {
     await until(() => snapshot(s).running.length === 1, 3_000, 'b running');
     await s.orchestrator.restartWorker('a');
     s.timers.fire(0);
-    await until(() => /no available orchestrator slots/.test(snapshot(s).retrying[0]?.error ?? ''), 3_000, 'requeued');
+    await until(() => snapshot(s).retrying[0]?.error === 'waiting for a free slot (1/1 busy)', 3_000, 'requeued');
     assert.equal(s.runner.sessions.length, 2);
   });
 
@@ -2701,6 +2775,79 @@ describe('issue-centric snapshot', () => {
     assert.equal(snap.counts.blocked, 2);
     assert.deepEqual(snap.pipeline_config.blocked_states, ['Blocked']);
     assert.equal(typeof snap.board_fetched_at, 'string');
+  });
+
+  it('names the reason of every queued issue, in dispatch order, and --dry-run plans the same', async () => {
+    const logDir = tempDir();
+    fs.mkdirSync(path.join(logDir, 'state'));
+    const hold = { model: 'fable', source: 'limit', since: '2026-10-03T11:00:00Z', until: '2026-10-03T18:00:00Z', text: 'limit', issue_identifier: null, repo: 'acme/app' };
+    fs.writeFileSync(path.join(logDir, 'state', 'github_project.json'), JSON.stringify({ version: 1, model_holds: [hold] }));
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    const front = {
+      ...ROLE_FRONT,
+      agent: { max_concurrent_agents: 2, max_concurrent_agents_by_state: { 'agent review': 1 } },
+      tracker: { ...ROLE_FRONT.tracker, required_labels: ['ai'] },
+      roles: { ...ROLE_FRONT.roles, developer: { ...ROLE_FRONT.roles.developer, wait_for_sub_issues: true } },
+    };
+    const issues = [
+      makeIssue({ id: 'rev-run', state: 'Agent review', priority: 1, labels: ['ai'] }),
+      makeIssue({ id: 'rev-wait', state: 'Agent review', priority: 2, labels: ['ai'] }),
+      makeIssue({ id: 'wave', state: 'Ready', priority: 1, labels: ['ai'] }),
+      makeIssue({ id: 'fable', state: 'Ready', priority: 2, labels: ['ai', 'model: fable'] }),
+      makeIssue({ id: 'run', state: 'Ready', priority: 3, labels: ['ai'] }),
+      makeIssue({ id: 'later', state: 'Ready', priority: 4, labels: ['ai'] }),
+      makeIssue({ id: 'unlabeled', state: 'Ready', priority: 1 }),
+    ];
+    const s = setup({ runner, front, issues, logDir });
+    s.tracker.openSubIssues = (issue) => (issue.id === 'wave' ? ['acme/app#7'] : []);
+    await s.orchestrator.tickNow();
+    await until(() => runner.sessions.length === 2, 3_000, 'two sessions');
+    const snap = snapshot(s);
+
+    assert.deepEqual(snap.running.map((row) => row.issue_id), ['rev-run', 'run']);
+    const queue = snap.queue.map((item) => [item.position, item.issue_id, item.status, item.kind, item.decision, item.reason.code, item.reason.text]);
+    assert.deepEqual(queue, [
+      [1, 'wave', 'next', 'new', 'wait', 'waiting_for_sub_issues', 'waiting for sub-issues acme/app#7'],
+      [2, 'fable', 'next', 'new', 'wait', 'model_hold', 'model fable on hold until 2026-10-03 18:00 UTC'],
+      [3, 'rev-wait', 'next', 'new', 'wait', 'column_limit', 'Agent review limit 1/1'],
+      [4, 'later', 'next', 'new', 'wait', 'no_free_slot', 'waiting for a free slot (2/2 busy)'],
+    ]);
+    assert.equal(snap.queue[1]?.model, 'fable');
+    assert.deepEqual(
+      snap.issues.map((row) => [row.issue_id, row.section, row.position, row.reason?.code ?? null]),
+      [
+        ['rev-run', 'running', null, null],
+        ['run', 'running', null, null],
+        ['wave', 'next', 1, 'waiting_for_sub_issues'],
+        ['fable', 'next', 2, 'model_hold'],
+        ['rev-wait', 'next', 3, 'column_limit'],
+        ['later', 'next', 4, 'no_free_slot'],
+      ],
+    );
+    assert.deepEqual(
+      snap.blocked.map((row) => [row.issue_id, row.reason_code, row.reason]),
+      [['unlabeled', 'missing_label', 'missing required label ai']],
+    );
+    assert.equal(snap.counts.queued, 4);
+
+    // The dry run starts with nothing running: it starts what the tick started and gives the rest the same reasons.
+    const plan = dryRunPlan(issues, s.workflow.current.config, s.tracker, new Map([['fable', { until: new Date(hold.until) }]]), s.clock.now());
+    assert.deepEqual(plan.filter((item) => item.decision === 'start').map((item) => item.issueId), ['rev-run', 'run']);
+    assert.deepEqual(
+      plan.filter((item) => item.group === 'next' && item.decision === 'wait').map((item) => [item.issueId, item.reason.text]),
+      snap.queue.map((item) => [item.issue_id, item.reason.text]),
+    );
+    const byId = new Map(issues.map((issue) => [issue.id, issue]));
+    const lines = plan.flatMap((item) => planLines(item, byId.get(item.issueId) as (typeof issues)[number]));
+    assert.deepEqual(lines.slice(0, 6), [
+      '  #1   start  acme/app#rev-run  [Agent review, p1]  Issue rev-run',
+      '              ↳ starts at the next poll',
+      '  #2   wait   acme/app#wave  [Ready, p1]  Issue wave',
+      '              ↳ waiting for sub-issues acme/app#7',
+      '  #3   wait   acme/app#fable  [Ready, p2]  Issue fable',
+      '              ↳ model fable on hold until 2026-10-03 18:00 UTC',
+    ]);
+    assert.deepEqual(lines.slice(-2), ['  blocked     acme/app#unlabeled  [Ready, p1]  Issue unlabeled', '              ↳ missing required label ai']);
   });
 
   it('serves issue metadata and the pipeline in the issue detail', async () => {

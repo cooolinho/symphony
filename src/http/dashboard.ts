@@ -111,6 +111,12 @@ const DASHBOARD_CSS = `
   /* Issue cards: the pipeline strip and the status box of waiting issues */
   .agent .pipe { margin: -2px 0; }
   .agent [hidden] { display: none; }
+  /* Dispatch plan: Up next is numbered in start order; every waiting card names its reason. */
+  .queue-section[hidden] { display: none; }
+  .agents.compact { grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr)); }
+  .chip.pos { color: var(--text); border-color: var(--cyan-line); background: var(--cyan-dim); font-weight: 600; }
+  .chip.reason { white-space: normal; overflow-wrap: anywhere; color: var(--tone, var(--text-2));
+    border-color: var(--tone-line, var(--line-2)); background: var(--tone-dim, var(--panel-2)); }
 
   /* Blocked issues (a collapsed details panel) and other queue-style lists */
   details.blocked-section summary { list-style: none; cursor: pointer; }
@@ -222,17 +228,38 @@ export const DASHBOARD_HTML = `<!doctype html>
 
   <div class="stats" id="stats" aria-label="Metrics"></div>
 
-  <section class="agents-section" aria-labelledby="issues-title">
+  <section class="agents-section" id="running-section" aria-labelledby="running-title">
     <div class="section-head">
-      <h2 id="issues-title">Issues in flight <span class="count" id="issues-count"></span></h2>
+      <h2 id="running-title">Running <span class="count" id="running-count"></span></h2>
       <div class="slots" id="slots" aria-hidden="true"></div>
     </div>
-    <div class="agents" id="issues"></div>
+    <div class="agents" id="running"></div>
     <div class="agents-empty" id="issues-empty" hidden>
       <span class="badge tone-gray"><span class="dot"></span><span>Idle</span></span>
-      <div><div class="big">No issues in flight<span class="cursor" aria-hidden="true"></span></div>
+      <div><div class="big">No agents running<span class="cursor" aria-hidden="true"></span></div>
         <div class="muted" id="issues-empty-sub">Waiting for issues in an active column.</div></div>
     </div>
+  </section>
+  <section class="agents-section queue-section" id="next-section" aria-labelledby="next-title" hidden>
+    <div class="section-head">
+      <h2 id="next-title">Up next <span class="count" id="next-count"></span></h2>
+      <span class="meta" id="next-meta"></span>
+    </div>
+    <div class="agents compact" id="next"></div>
+  </section>
+  <section class="agents-section queue-section" id="waiting-section" aria-labelledby="waiting-title" hidden>
+    <div class="section-head">
+      <h2 id="waiting-title">Waiting <span class="count" id="waiting-count"></span></h2>
+      <span class="meta">backoff, session limits and model holds · soonest first</span>
+    </div>
+    <div class="agents compact" id="waiting"></div>
+  </section>
+  <section class="agents-section queue-section" id="paused-section" aria-labelledby="paused-title" hidden>
+    <div class="section-head">
+      <h2 id="paused-title">Paused <span class="count" id="paused-count"></span></h2>
+      <span class="meta">after agent.max_continuations · change the issue to resume</span>
+    </div>
+    <div class="agents compact" id="paused"></div>
   </section>
 
   <div class="lower">
@@ -312,7 +339,7 @@ ${PIPELINE_JS}
     finishing: ['Finishing', 'green', false], completed: ['Completed', 'green', false], failed: ['Failed', 'red', false],
     stopping: ['Stopping', 'amber', false],
     retrying: ['Retrying', 'amber', true], continuation: ['Continuation', 'cyan', true], session_limit: ['Session limit', 'amber', true],
-    paused: ['Paused', 'gray', false], queued: ['Queued', 'cyan', false],
+    paused: ['Paused', 'gray', false], queued: ['New', 'cyan', false],
   };
   const agentStatus = (r) => (r.stopping ? 'stopping' : PHASE_STATUS[r.phase] || 'running');
   const phaseTone = (phase) => STATUS[PHASE_STATUS[phase] || 'running'][1];
@@ -386,10 +413,11 @@ ${PIPELINE_JS}
     card.addEventListener('animationend', (e) => { if (e.target === card) card.classList.remove('enter', 'changed'); });
     const head = el('div', null, 'agent-head');
     const tags = el('div', null, 'tags');
+    const position = el('span', null, 'chip pos');
     const statusSlot = el('span');
     const attempt = el('span', null, 'chip');
     const integrations = el('span', null, 'int-chips');
-    tags.append(statusSlot, attempt, integrations);
+    tags.append(position, statusSlot, attempt, integrations);
     const id = el('a', null, 'agent-id');
     head.append(tags, id);
 
@@ -407,7 +435,7 @@ ${PIPELINE_JS}
 
     const dl = el('dl', null, 'fields');
     const refs = {
-      card, statusSlot, attempt, integrations, id, title, repo, branch, pipe, fields: dl,
+      card, position, statusSlot, attempt, integrations, id, title, repo, branch, pipe, fields: dl,
       model: field(dl, 'Model', 'info'), phase: field(dl, 'Phase', 'info'),
     };
 
@@ -436,9 +464,30 @@ ${PIPELINE_JS}
     return refs;
   }
 
+  // Tone of the reason chip per dispatch plan reason code (docs/usage.md#dispatch-order).
+  const REASON_TONE = {
+    ready: 'green', no_free_slot: 'cyan', column_limit: 'amber', backoff: 'amber', session_limit: 'amber', model_hold: 'amber',
+    waiting_for_sub_issues: 'gray', inactive: 'gray', paused: 'gray',
+  };
+  // Reason texts carry UTC times (the same text as --dry-run); the chip shows them in local time, the tooltip as sent.
+  const UTC_TIME = /(\\d{4}-\\d{2}-\\d{2}) (\\d{2}:\\d{2}) UTC/g;
+  function reasonChip(reason) {
+    const text = reason.text.replace(UTC_TIME, (_, day, time) => fmtStamp(day + 'T' + time + ':00Z'));
+    const chip = el('span', text, 'chip reason tone-' + (REASON_TONE[reason.code] || 'gray'));
+    chip.title = reason.code + ': ' + reason.text;
+    return chip;
+  }
+
   /** Meta line, message and action of a waiting issue card (status box children, diffed by patchChildren). */
   function infoChildren(row) {
     const nodes = [];
+    if (row.reason) {
+      const why = el('div', null, 'qmeta');
+      why.append(reasonChip(row.reason));
+      if (row.priority != null) { const p = el('span', 'priority '); p.append(el('b', 'P' + row.priority)); why.append(p); }
+      const m = el('span', 'model '); m.append(el('b', row.model || 'default')); why.append(m);
+      nodes.push(why);
+    }
     const meta = el('div', null, 'qmeta');
     nodes.push(meta);
     if (row.status === 'retrying' && row.retry) {
@@ -446,8 +495,11 @@ ${PIPELINE_JS}
       // The issue's own model, else the model whose limit it hit (an issue on the default model is never held).
       const hold = row.model_hold || (r.limit && r.limit.scope === 'model' && r.limit.model ? { model: r.limit.model, until: r.due_at } : null);
       if (hold) {
-        meta.append(...modelHoldBits(hold));
-        nodes.push(el('div', waitingForModel(hold), 'msg'));
+        // The reason chip already names the hold.
+        if (!row.reason || row.reason.code !== 'model_hold') {
+          meta.append(...modelHoldBits(hold));
+          nodes.push(el('div', waitingForModel(hold), 'msg'));
+        }
         if (r.limit && r.limit.text) nodes.push(el('div', r.limit.text, 'msg'));
       } else if (r.kind === 'session_limit' && r.limit) {
         meta.append(...sessionLimitBits(r));
@@ -459,22 +511,24 @@ ${PIPELINE_JS}
         const attempt = el('span', 'attempt '); attempt.append(el('b', pad2(r.attempt)));
         const due = el('span', 'next in '); due.append(el('b', fmtDuration(r.due_in_ms / 1000)));
         meta.append(attempt, due);
-        nodes.push(el('div', r.error || (r.kind === 'continuation' ? 'Continues the session after a clean exit.' : '—'), 'msg'));
+        // A requeued retry's error is its reason, already in the chip.
+        const text = r.error && (!row.reason || r.error !== row.reason.text) ? r.error : r.kind === 'continuation' ? 'Continues the session after a clean exit.' : '';
+        if (text) nodes.push(el('div', text, 'msg'));
       }
-      nodes.push(restartButton(row.issue_identifier, 'Retry'));
+      // Up next starts it with the next free slot anyway; Retry now skips a wait.
+      if (row.section !== 'next') nodes.push(restartButton(row.issue_identifier, 'Retry'));
     } else if (row.status === 'paused' && row.paused) {
       const cont = el('span', 'continuations '); cont.append(el('b', row.paused.continuations));
       meta.append(cont, el('span', 'paused ' + ago(row.paused.paused_at)));
       nodes.push(el('div', 'Resume: change the issue on the board (status, comment or labels)' + (retryAllowed ? ', or press Resume now.' : '.'), 'msg'));
       nodes.push(restartButton(row.issue_identifier, 'Resume'));
-    } else if (row.model_hold) {
+    } else if (row.model_hold && (!row.reason || row.reason.code !== 'model_hold')) {
       meta.append(...modelHoldBits(row.model_hold));
       nodes.push(el('div', waitingForModel(row.model_hold), 'msg'));
-    } else {
-      meta.append(el('span', 'waiting for dispatch'));
-      nodes.push(el('div', row.dispatch_note || 'Waiting for a free agent slot or the next poll.', 'msg'));
+    } else if (row.dispatch_note) {
+      nodes.push(el('div', row.dispatch_note, 'msg'));
     }
-    return nodes;
+    return nodes.filter((node) => node.childNodes.length > 0);
   }
 
   // A waiting issue whose model is on hold: it starts when the hold ends, never on another model.
@@ -510,6 +564,8 @@ ${PIPELINE_JS}
     if (typeof row.issue_url === 'string' && /^https?:/.test(row.issue_url)) {
       if (refs.id.getAttribute('href') !== row.issue_url) { refs.id.href = row.issue_url; refs.id.target = '_blank'; refs.id.rel = 'noopener noreferrer'; }
     } else refs.id.removeAttribute('href');
+    refs.position.hidden = row.position == null;
+    setText(refs.position, row.position == null ? '' : '#' + row.position);
     const attempt = r ? r.attempt : row.retry ? row.retry.attempt : null;
     refs.attempt.hidden = !attempt;
     setText(refs.attempt, 'attempt ' + (attempt ?? ''));
@@ -570,18 +626,20 @@ ${PIPELINE_JS}
     return chip;
   }
 
+  // Dashboard sections in page order; each row of state.issues names its own (running, then the dispatch plan).
+  const SECTIONS = ['running', 'next', 'waiting', 'paused'];
+
   function renderIssues(state) {
     const h = state.health;
-    const host = $('issues');
     const rows = state.issues || [];
     const live = new Set();
-    const ordered = [];
+    const bySection = Object.fromEntries(SECTIONS.map((name) => [name, []]));
     for (const row of rows) {
       live.add(row.issue_id);
       let refs = cards.get(row.issue_id);
       if (!refs) { refs = createCard(); cards.set(row.issue_id, refs); }
       updateCard(refs, row, h.max_turns);
-      ordered.push(refs.card);
+      (bySection[row.section] || bySection.next).push(refs.card);
     }
     for (const [id, refs] of cards) {
       if (live.has(id)) continue;
@@ -590,22 +648,29 @@ ${PIPELINE_JS}
       refs.card.classList.add('leave');
       setTimeout(() => refs.card.remove(), 320);
     }
-    ordered.forEach((card, i) => {
-      const active = [...host.children].filter((c) => !c.classList.contains('leave'));
-      if (active[i] !== card) host.insertBefore(card, active[i] || null);
-    });
+    for (const name of SECTIONS) {
+      const host = $(name);
+      const ordered = bySection[name];
+      ordered.forEach((card, i) => {
+        const active = [...host.children].filter((c) => !c.classList.contains('leave'));
+        if (active[i] !== card) host.insertBefore(card, active[i] || null);
+      });
+      setText($(name + '-count'), pad2(ordered.length));
+      if (name !== 'running') $(name + '-section').hidden = ordered.length === 0;
+    }
+    setText($('next-meta'), state.board_fetched_at ? 'in start order · board as of ' + ago(state.board_fetched_at) : 'in start order · board not fetched yet');
 
     const running = state.counts.running;
     const max = h.max_concurrent_agents;
-    setText($('issues-count'), pad2(rows.length));
     const bar = el('div', null, 'slots-bar');
     for (let i = 0; i < Math.min(max, 24); i++) bar.append(el('i', null, i < running ? 'on' : ''));
     const slots = $('slots');
     slots.replaceChildren(bar, el('span', pad2(running) + ' / ' + pad2(max) + ' agents · ' + (max - running > 0 ? max - running : 0) + ' free slot' + (max - running === 1 ? '' : 's')));
-    $('issues-empty').hidden = rows.length > 0;
-    setText($('issues-empty-sub'),
-      'Waiting for issues in ' + (h.active_states && h.active_states.length ? h.active_states.join(', ') : 'an active column') +
-      ' · next poll within ' + Math.round(h.poll_interval_ms / 1000) + 's');
+    $('issues-empty').hidden = bySection.running.length > 0;
+    setText($('issues-empty-sub'), rows.length
+      ? 'Nothing running right now · ' + (rows.length) + ' issue' + (rows.length === 1 ? '' : 's') + ' below'
+      : 'Waiting for issues in ' + (h.active_states && h.active_states.length ? h.active_states.join(', ') : 'an active column') +
+        ' · next poll within ' + Math.round(h.poll_interval_ms / 1000) + 's');
   }
 
   // ------------------------------------------------------------------ queues
@@ -1005,15 +1070,15 @@ ${PIPELINE_JS}
 
     const t = state.agent_totals;
     const running = state.counts.running;
-    const retrying = state.counts.retrying;
-    const paused = state.counts.paused ?? 0;
-    const queued = state.counts.queued ?? 0;
+    const queue = state.queue || [];
+    const next = queue.filter((item) => item.status === 'next').length;
+    const waiting = queue.filter((item) => item.status === 'waiting').length;
+    const paused = queue.filter((item) => item.status === 'paused').length;
     const blocked = state.counts.blocked ?? 0;
-    const waiting = retrying + paused;
     tiles('stats', [
       ['Running', pad2(running), 'active agents', { tone: running ? 'green' : 'gray', hero: true, pulse: running > 0, of: pad2(h.max_concurrent_agents) }],
-      ['Queued', pad2(queued), 'ready to dispatch', { tone: queued ? 'cyan' : 'gray' }],
-      ['Waiting', pad2(waiting), retrying + ' retry · ' + paused + ' paused', { tone: waiting ? 'amber' : 'gray' }],
+      ['Up next', pad2(next), 'in start order', { tone: next ? 'cyan' : 'gray' }],
+      ['Waiting', pad2(waiting + paused), waiting + ' waiting · ' + paused + ' paused', { tone: waiting + paused ? 'amber' : 'gray' }],
       ['Blocked', pad2(blocked), 'need a human or a blocker', { tone: blocked ? 'red' : 'gray' }],
       ['Tokens', fmtCompact(t.total_tokens), 'since start', { tone: 'cyan' }],
       ['Est. cost', fmtUsd(t.cost_usd), 'since start', { tone: 'cyan' }],
