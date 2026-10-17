@@ -2411,7 +2411,7 @@ describe('model holds', () => {
     assert.ok(s.runner.sessions.every((session) => session.params.config.fallbackModel === null), 'no fallback model');
     const queued = snapshot(s).issues.find((issue) => issue.issue_id === 'b');
     assert.equal(queued?.status, 'queued');
-    assert.deepEqual(queued?.model_hold, { model: 'fable', until: new Date(s.clock.now().getTime() + hour).toISOString() });
+    assert.deepEqual(queued?.model_hold, { model: 'fable', source: 'limit', until: new Date(s.clock.now().getTime() + hour).toISOString() });
     assert.equal(snapshot(s).issues.find((issue) => issue.issue_id === 'a')?.model_hold?.model, 'fable');
 
     const events = s.orchestrator.issueTimeline('acme/app#a')?.events ?? [];
@@ -2867,5 +2867,225 @@ describe('issue-centric snapshot', () => {
       detail?.pipeline.map((stage) => [stage.id, stage.status]),
       [['developer', 'active'], ['reviewer', 'pending'], ['human:in review', 'pending'], ['terminal:done', 'pending']],
     );
+  });
+});
+
+describe('operator pause', () => {
+  /** Sessions hang until stopped (`hang`), fail (`fail`) or end normally (`ok`), by issue id; hang by default. */
+  function pauseSetup(options: { issues: ReturnType<typeof makeIssue>[]; modes?: Record<string, 'hang' | 'fail' | 'ok'>; front?: Record<string, unknown>; logDir?: string; history?: HistoryLog }) {
+    const modes = options.modes ?? {};
+    const runner = new FakeRunner((turn, params) => {
+      const mode = modes[params.issue.id] ?? 'hang';
+      if (mode === 'fail') return { ok: false, turnId: String(turn), code: 'turn_failed', message: 'boom' };
+      if (mode === 'ok') return { ok: true, turnId: String(turn), resultText: 'done' };
+      return new Promise((resolve) => params.signal.addEventListener('abort', () => resolve({ ok: false, turnId: String(turn), code: 'turn_cancelled', message: 'cancelled' })));
+    });
+    const front = options.front ?? {};
+    const s = setup({
+      runner,
+      issues: options.issues,
+      ...(options.logDir !== undefined ? { logDir: options.logDir } : {}),
+      ...(options.history !== undefined ? { history: options.history } : {}),
+      front: {
+        ...front,
+        agent: { max_turns: 1, ...(front.agent as object | undefined) },
+        tracker: { kind: 'github_project', provider: { owner: 'acme', project_number: 1, token: 't', repositories: 'acme/app' } },
+      },
+    });
+    return { s, modes };
+  }
+  const sessionsOf = (s: Setup, id: string) => s.runner.sessions.filter((session) => session.params.issue.id === id);
+  const pausedRow = (s: Setup, id: string) => snapshot(s).issues.find((issue) => issue.issue_id === id);
+
+  it('stops a running agent, keeps its workspace and claim, and schedules no retry', async () => {
+    const { s } = pauseSetup({ issues: [makeIssue({ id: 'a' })] });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running[0]?.phase === 'StreamingTurn', 3_000, 'streaming');
+    const workspace = snapshot(s).running[0]?.workspace as string;
+
+    assert.deepEqual(await s.orchestrator.pauseIssue('acme/app#a'), { ok: true, issueIdentifier: 'acme/app#a', previous: 'running' });
+    await until(() => snapshot(s).running.length === 0, 3_000, 'agent stopped');
+    assert.equal(s.runner.sessions[0]?.stopped, true);
+    assert.ok(fs.existsSync(workspace), 'workspace kept');
+    assert.equal(snapshot(s).retrying.length, 0);
+    assert.deepEqual(s.timers.delays().filter((ms) => ms !== s.workflow.current.config.polling.intervalMs), []);
+    assert.equal(snapshot(s).counts.paused, 1);
+    const row = pausedRow(s, 'a');
+    assert.equal(row?.section, 'paused');
+    assert.equal(row?.paused?.source, 'operator');
+    assert.equal(row?.reason?.text, 'paused by operator; press Resume to continue');
+    assert.equal(s.orchestrator.issueDetail('a')?.status, 'paused');
+    const paused = s.orchestrator.issueTimeline('a')?.events.find((event) => event.event === 'issue_paused');
+    assert.deepEqual(paused?.detail, { source: 'operator', previous: 'running', state: 'Todo' });
+    assert.deepEqual(await s.orchestrator.pauseIssue('a'), { ok: false, reason: 'already_paused' });
+
+    await s.orchestrator.tickNow();
+    assert.equal(s.runner.sessions.length, 1, 'a tick does not start a paused issue');
+  });
+
+  it('is not lifted by a comment, a label change or a column move; Done releases it', async () => {
+    const { s } = pauseSetup({ issues: [makeIssue({ id: 'a' })] });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running[0]?.phase === 'StreamingTurn', 3_000, 'streaming');
+    await s.orchestrator.pauseIssue('a');
+    await until(() => snapshot(s).running.length === 0, 3_000, 'stopped');
+
+    s.tracker.set('a', { updated_at: new Date('2026-10-03T12:05:00Z') });
+    await s.orchestrator.tickNow();
+    s.tracker.set('a', { labels: ['bug'] });
+    await s.orchestrator.tickNow();
+    s.tracker.set('a', { state: 'Backlog' });
+    await s.orchestrator.tickNow();
+    assert.equal(pausedRow(s, 'a')?.state, 'Backlog');
+    s.tracker.set('a', { state: 'Todo' });
+    await s.orchestrator.tickNow();
+    assert.equal(s.runner.sessions.length, 1, 'still paused');
+    assert.equal(snapshot(s).counts.paused, 1);
+
+    s.tracker.set('a', { state: 'Done' });
+    await s.orchestrator.tickNow();
+    assert.equal(snapshot(s).counts.paused, 0);
+    assert.equal(snapshot(s).counts.claimed, 0);
+  });
+
+  it('pauses a retrying issue (its timer is cancelled), a queued board candidate and an auto-paused issue', async () => {
+    const { s } = pauseSetup({
+      issues: [makeIssue({ id: 'a', priority: 1 }), makeIssue({ id: 'b', priority: 4 })],
+      modes: { a: 'fail' },
+      front: { agent: { max_concurrent_agents: 1 } },
+    });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'a retrying');
+    assert.deepEqual(s.timers.delays().filter((ms) => ms === 10_000), [10_000]);
+    assert.deepEqual(await s.orchestrator.pauseIssue('a'), { ok: true, issueIdentifier: 'acme/app#a', previous: 'retrying' });
+    assert.deepEqual(s.timers.delays().filter((ms) => ms === 10_000), [], 'retry timer cancelled');
+    assert.equal(s.timers.fire(10_000), 0);
+
+    // b is a board candidate; pausing it claims it before it ever runs.
+    assert.deepEqual(await s.orchestrator.pauseIssue('b'), { ok: true, issueIdentifier: 'acme/app#b', previous: 'queued' });
+    await s.orchestrator.tickNow();
+    assert.equal(sessionsOf(s, 'b').length, 0, 'queued issue not started');
+    assert.equal(snapshot(s).counts.paused, 2);
+    assert.deepEqual(await s.orchestrator.pauseIssue('nope'), { ok: false, reason: 'not_found' });
+
+    // An issue paused after its continuations becomes an operator pause, and board changes no longer lift it.
+    const auto = pauseSetup({ issues: [makeIssue({ id: 'c' })], modes: { c: 'ok' }, front: { agent: { max_continuations: 0 } } });
+    await auto.s.orchestrator.tickNow();
+    await until(() => snapshot(auto.s).retrying.length === 1, 3_000, 'continuation');
+    auto.s.timers.fire(1_000);
+    await until(() => snapshot(auto.s).counts.paused === 1, 3_000, 'auto-paused');
+    assert.equal(snapshot(auto.s).paused[0]?.source, 'continuations');
+    assert.equal(pausedRow(auto.s, 'c')?.reason?.text, 'paused after 0 continuation sessions; change the issue on the board to resume');
+    assert.deepEqual(await auto.s.orchestrator.pauseIssue('c'), { ok: true, issueIdentifier: 'acme/app#c', previous: 'paused' });
+    auto.s.tracker.set('c', { updated_at: new Date('2026-10-03T12:05:00Z') });
+    await auto.s.orchestrator.tickNow();
+    assert.equal(snapshot(auto.s).paused[0]?.source, 'operator');
+    assert.equal(auto.s.runner.sessions.length, 1);
+  });
+
+  it('resumes like Resume now: counters reset, attempt kept', async () => {
+    const { s, modes } = pauseSetup({ issues: [makeIssue({ id: 'a' })], modes: { a: 'fail' } });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'retry');
+    s.timers.fire(10_000);
+    await until(() => s.runner.sessions.length === 2 && snapshot(s).retrying[0]?.attempt === 2, 3_000, 'second retry');
+    assert.deepEqual(await s.orchestrator.resumeIssue('a'), { ok: false, reason: 'not_paused' });
+    assert.deepEqual(await s.orchestrator.resumeIssue('nope'), { ok: false, reason: 'not_found' });
+    await s.orchestrator.pauseIssue('a');
+
+    modes.a = 'hang';
+    assert.deepEqual(await s.orchestrator.resumeIssue('acme/app#a'), { ok: true, issueIdentifier: 'acme/app#a' });
+    assert.equal(snapshot(s).counts.paused, 0);
+    assert.equal(s.orchestrator.issueDetail('a')?.attempts.current_retry_attempt, 2);
+    assert.ok(s.timers.delays().includes(0));
+    s.timers.fire(0);
+    await until(() => snapshot(s).running.length === 1, 3_000, 'resumed session');
+    assert.equal(snapshot(s).running[0]?.attempt, 2);
+    const events = s.orchestrator.issueTimeline('a')?.events ?? [];
+    assert.deepEqual(events.find((event) => event.event === 'issue_resumed')?.detail, { source: 'operator' });
+  });
+
+  it('pauses model fable: stops Fable agents, holds every Fable issue, keeps other models running; release requeues', async () => {
+    const fable = (id: string) => makeIssue({ id, labels: ['model: fable'] });
+    const { s } = pauseSetup({ issues: [fable('a'), makeIssue({ id: 'b', labels: ['model: opus'] })] });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running.length === 2 && snapshot(s).running.every((row) => row.phase === 'StreamingTurn'), 3_000, 'both running');
+    const workspace = snapshot(s).running.find((row) => row.issue_id === 'a')?.workspace as string;
+
+    assert.deepEqual(await s.orchestrator.holdModel('Fable'), { ok: true, model: 'fable', issues: 1 });
+    assert.deepEqual(await s.orchestrator.holdModel('fable'), { ok: false, reason: 'already_paused' });
+    assert.deepEqual(await s.orchestrator.holdModel('gpt'), { ok: false, reason: 'unknown_model' });
+    await until(() => snapshot(s).running.length === 1, 3_000, 'fable stopped');
+    assert.equal(snapshot(s).running[0]?.issue_id, 'b', 'opus keeps running');
+    assert.ok(fs.existsSync(workspace), 'workspace kept');
+    const waiting = snapshot(s).issues.find((issue) => issue.issue_id === 'a');
+    assert.equal(waiting?.section, 'waiting');
+    assert.deepEqual(waiting?.reason, { code: 'model_hold', text: 'model fable paused by the operator' });
+    assert.equal(snapshot(s).model_holds[0]?.source, 'operator');
+    assert.deepEqual(snapshot(s).model_controls.map((m) => [m.model, m.paused]), [['fable', true], ['opus', false]]);
+
+    s.tracker.issues.set('c', fable('c'));
+    await s.orchestrator.tickNow();
+    assert.equal(sessionsOf(s, 'c').length, 0, 'new Fable issue held');
+    assert.equal(sessionsOf(s, 'a').length, 1);
+    assert.equal(snapshot(s).issues.find((issue) => issue.issue_id === 'c')?.reason?.code, 'model_hold');
+
+    assert.deepEqual(await s.orchestrator.releaseModel('fable'), { ok: true, model: 'fable', issues: 1 });
+    assert.deepEqual(await s.orchestrator.releaseModel('fable'), { ok: false, reason: 'not_paused' });
+    s.timers.fire(0);
+    await until(() => sessionsOf(s, 'a').length === 2 && sessionsOf(s, 'c').length === 1, 3_000, 'fable issues start again');
+    assert.ok(s.runner.sessions.every((session) => session.params.issue.id === 'b' || session.params.config.model === 'fable'), 'no fallback');
+    const events = s.orchestrator.issueTimeline('a')?.events ?? [];
+    assert.equal(events.find((event) => event.event === 'model_hold')?.detail?.source, 'operator');
+    assert.equal(events.find((event) => event.event === 'model_hold_ended')?.detail?.source, 'operator');
+  });
+
+  it('keeps operator pauses and holds across a restart', async () => {
+    const logDir = tempDir();
+    const fable = makeIssue({ id: 'f', labels: ['model: fable'] });
+    const first = pauseSetup({ issues: [makeIssue({ id: 'a' }), fable], logDir });
+    await first.s.orchestrator.holdModel('fable');
+    await first.s.orchestrator.tickNow();
+    await until(() => snapshot(first.s).running.length === 1, 3_000, 'a running');
+    await first.s.orchestrator.pauseIssue('a');
+    await until(() => snapshot(first.s).running.length === 0, 3_000, 'a stopped');
+    const stored = JSON.parse(fs.readFileSync(path.join(logDir, 'state', 'acme_app.json'), 'utf8'));
+    assert.deepEqual(stored.operator_holds.map((hold: { model: string }) => hold.model), ['fable']);
+    assert.deepEqual(stored.paused_issues.map((pause: { issue_identifier: string }) => pause.issue_identifier), ['acme/app#a']);
+    await first.s.orchestrator.shutdown(1_000);
+
+    const second = pauseSetup({ issues: [makeIssue({ id: 'a' }), fable], logDir });
+    assert.equal(snapshot(second.s).counts.paused, 1);
+    assert.equal(snapshot(second.s).model_holds[0]?.source, 'operator');
+    await second.s.orchestrator.tickNow();
+    await second.s.orchestrator.tickNow();
+    assert.equal(second.s.runner.sessions.length, 0, 'nothing starts after the restart');
+    assert.equal(snapshot(second.s).paused[0]?.state, 'Todo');
+
+    assert.equal((await second.s.orchestrator.resumeIssue('acme/app#a')).ok, true);
+    assert.equal((await second.s.orchestrator.releaseModel('fable')).ok, true);
+    const cleared = JSON.parse(fs.readFileSync(path.join(logDir, 'state', 'acme_app.json'), 'utf8'));
+    assert.deepEqual([cleared.operator_holds, cleared.paused_issues], [[], []]);
+  });
+
+  it('refuses while shutting down and writes history notes', async () => {
+    const dir = tempDir();
+    const history = new HistoryLog(path.join(dir, 'repositories'), new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent()), Logger.silent());
+    const { s } = pauseSetup({ issues: [makeIssue({ id: 'a' })], history });
+    s.tracker.issueRepository = () => 'acme/app';
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running.length === 1, 3_000, 'running');
+    await s.orchestrator.pauseIssue('a');
+    await until(() => snapshot(s).running.length === 0, 3_000, 'stopped');
+    await s.orchestrator.resumeIssue('a');
+    await s.orchestrator.holdModel('opus');
+    await s.orchestrator.releaseModel('opus');
+    const events = readHistory(history.dir, 'acme/app').entries.map((entry) => [entry.event, entry.fields.source]);
+    for (const event of ['issue_paused', 'issue_resumed', 'model_hold', 'model_hold_ended']) {
+      assert.deepEqual(events.find(([name]) => name === event), [event, 'operator']);
+    }
+    await s.orchestrator.shutdown(1_000);
+    assert.deepEqual(await s.orchestrator.pauseIssue('a'), { ok: false, reason: 'stopping' });
+    assert.deepEqual(await s.orchestrator.holdModel('fable'), { ok: false, reason: 'stopping' });
   });
 });

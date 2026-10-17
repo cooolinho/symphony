@@ -95,6 +95,7 @@ To go back to the old behavior, remove `roles` and `checks`: then every issue ru
 | Pause all new starts | Set `agent.max_concurrent_agents: 0` in the `WORKFLOW.md`. Running agents keep working. |
 | Change the prompt or settings | Edit `WORKFLOW.md`. This applies right away to new sessions, without a restart. |
 | Restart a waiting or paused worker right away | On the issue card (or the agent page) click **Retry now** or **Resume now**, or `curl -X POST http://127.0.0.1:4000/api/v1/<identifier>/retry` (the identifier URL-encoded, e.g. `owner%2Frepository%2312`). This is the way out of a session limit when you have topped up credits and do not want to wait for the reset. On a non-loopback address (`SYMPHONY_HOST`) it only works with `SYMPHONY_ALLOW_REMOTE_CONTROL=true`; with `curl` through the proxy, pass `-H 'Origin: https://<domain>'`, see [Dashboard and API](#dashboard-and-api). |
+| Pause an issue or a model | On a card in *Running*, *Up next* or *Waiting* (or on the agent page) click **Pause**: a running agent stops at once (the workspace stays), nothing is retried, and the card moves to *Paused* ("paused by operator"). **Resume now** starts it again like a restart. In the *Models* bar, **Pause** next to a model family (e.g. `fable`) stops its running agents and keeps every issue of that model waiting (reason `model_hold`), while the other models keep running; no issue moves to another model. **Resume** retries them at once, as slots allow. With `curl`: `POST /api/v1/<identifier>/pause` and `/resume`, `POST /api/v1/models/<model>/hold` and `/release`. Board changes (comments, labels, column moves, also to `Backlog` and back) do not lift these pauses; an issue reaching a terminal column or leaving the board does. Both survive a restart. The same rights as restart apply (`SYMPHONY_ALLOW_REMOTE_CONTROL` on a non-loopback address). |
 | Poll now instead of waiting 30 s | In the dashboard click **Poll now**, or `curl -X POST http://127.0.0.1:4000/api/v1/refresh` |
 
 If the `WORKFLOW.md` is invalid after a change, Symphony keeps running with the last valid version. It only starts
@@ -109,9 +110,12 @@ attempt the agent knows from `attempt` that there is earlier work in the workspa
 session limit separately, see [Session limit](#session-limit).
 
 The **retry queue** and **Paused** are two different things: in the queue, Symphony has scheduled a next attempt
-with a time for the issue (after a failure, a continuation or a session limit). *Paused* lists an issue that is still
-active after `SYMPHONY_MAX_CONTINUATIONS` continuations; no time is scheduled for it, see
-[Continuations and pausing](#continuations-and-pausing).
+with a time for the issue (after a failure, a continuation or a session limit). *Paused* lists an issue that no time
+is scheduled for: either the operator paused it (*paused by operator*, lifted only by **Resume now**, a terminal
+column or leaving the board), or it is still active after `SYMPHONY_MAX_CONTINUATIONS` continuations (*paused after N
+continuations*, lifted by any change on the board), see [Continuations and pausing](#continuations-and-pausing). An
+issue whose model the operator paused is not under *Paused*: it waits in the retry queue (*Waiting*, reason
+`model_hold`) until the model is resumed.
 
 ## Session limit
 
@@ -181,7 +185,10 @@ as a successful turn). A normal answer that merely mentions a limit stays a norm
 **Where you see it:** the dashboard shows a notice per held model (model, end of the hold, original message), and
 waiting cards say *Waiting for model fable (limit until …)*. `GET /api/v1/state` lists the holds under
 `model_holds[]` (`model`, `source`, `since`, `until`, `text`, `issue_identifier`), and waiting issue rows carry
-`model_hold` (`model`, `until`, else `null`). The issue timeline and the [repository log](#logs-and-statistics) show
+`model_hold` (`model`, `source`, `until`, else `null`). A model the operator paused from the dashboard has a hold with
+`source: "operator"` and `until: null`; it may coexist with a limit hold, and the model is available only when
+neither holds it. `model_controls[]` lists every model family in use with `paused` (by the operator) and
+`limit_until`. The issue timeline and the [repository log](#logs-and-statistics) show
 `model_hold` and `model_hold_ended`.
 
 **Restart:** holds are stored in `<logDir>/state/<repositories>.json` (one file per instance, named after the
@@ -565,7 +572,8 @@ In detail: on every tick `#reconcile` re-reads all paused issues from the board.
 or their `updated_at` has changed, or when `agent.max_continuations` was raised or removed. The issue is then a normal
 candidate again. There is no timer: without a change, a raised limit or a click, the issue stays paused, even for
 hours. A worker that waits because of a session limit is in the retry queue, not under *Paused*; see
-[Session limit](#session-limit).
+[Session limit](#session-limit). Pressing **Pause** on such an issue turns it into an operator pause, which board
+changes no longer lift (see [Intervening while Symphony runs](#intervening-while-symphony-runs)).
 
 Failed runs do not count here. The retries with backoff described above apply to them.
 
@@ -794,6 +802,10 @@ Where the data comes from and where the limits are:
 | `GET /api/v1/<identifier>/timeline?after=<seq>` | Timeline of the issue (live or archived): lifecycle, phase changes and agent events with a running `seq`; `after` returns only newer ones |
 | `GET /api/v1/<identifier>/transcript?run=<run>&from=<offset>` | Transcript of a session (without `run` the latest; live or archived), prepared as prompts, model calls, tool results; from byte offset `from`, continue with `next_offset`. With `&format=raw` the JSONL file |
 | `POST /api/v1/refresh` | poll and reconcile now |
+| `POST /api/v1/<identifier>/pause` | pause an issue (running, retrying, queued on the board, or paused after its continuations); a running agent stops at once, its workspace stays. Response `202` with `paused`, `issue_identifier` and `previous` (`running`, `retrying`, `queued`, `paused`). Errors: `404` (issue unknown), `409` (`already_paused`; `stopping`: its agent is already stopping or Symphony is shutting down), `403` as for retry |
+| `POST /api/v1/<identifier>/resume` | lift a pause and start the issue right away (counters reset, attempt kept). Response `202` with `queued` and `issue_identifier`. Errors: `404`, `409` (`not_paused`; `stopping`: the agent is still stopping), `403` as for retry |
+| `POST /api/v1/models/<model>/hold` | pause a model family (`fable`, `opus`, `sonnet`, `haiku`): its running agents stop, its issues wait. Response `202` with `model`, `paused` and `stopped`. Errors: `400 unknown_model`, `409` (`already_paused`, `stopping`), `403` as for retry |
+| `POST /api/v1/models/<model>/release` | resume a model family; its waiting issues retry at once as slots allow. Response `202` with `model`, `paused` and `requeued`. Errors: `400 unknown_model`, `409` (`not_paused`, `stopping`), `403` as for retry |
 | `POST /api/v1/<identifier>/retry` | restart a waiting (retry queue, including session limit) or paused worker right away. Response `202` with `queued`, `issue_identifier` and `previous` (`retrying` or `paused`). Errors: `404` (issue unknown), `409` (`running`: currently running; `not_waiting`: not waiting for anything; `stopping`: Symphony is shutting down), `403` (`control_disabled` on a non-loopback address without `SYMPHONY_ALLOW_REMOTE_CONTROL=true`; `forbidden_origin` for cross-origin requests and, on a non-loopback address, also without an `Origin` header) |
 
 `queue[]` lists the [dispatch plan](#dispatch-order) without running and blocked issues, in order: Up next, then
@@ -817,6 +829,8 @@ curl -s http://127.0.0.1:4000/api/v1/state
 curl -s http://127.0.0.1:4000/api/v1/owner%2Frepository%2312   # / as %2F, # as %23
 curl -s -X POST http://127.0.0.1:4000/api/v1/refresh
 curl -s -X POST http://127.0.0.1:4000/api/v1/owner%2Frepository%2312/retry
+curl -s -X POST http://127.0.0.1:4000/api/v1/owner%2Frepository%2312/pause
+curl -s -X POST http://127.0.0.1:4000/api/v1/models/fable/hold
 ```
 
 The restart endpoint and the **Retry now** and **Resume now** buttons always work as long as the server listens on a

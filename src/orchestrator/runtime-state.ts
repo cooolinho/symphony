@@ -22,9 +22,25 @@ export interface ModelHold {
   repo: string;
 }
 
+/** No session of `model` starts until the operator releases it (dashboard Pause on a model); no end of its own. */
+export interface OperatorHold {
+  model: string;
+  since: Date;
+}
+
+/** An issue the operator paused: it does not start until Resume, a terminal state or leaving the board. */
+export interface OperatorPause {
+  issueId: string;
+  identifier: string;
+  url: string | null;
+  since: Date;
+}
+
 /** Scheduling state that survives a restart. */
 export interface RuntimeState {
   modelHolds: ModelHold[];
+  operatorHolds: OperatorHold[];
+  pausedIssues: OperatorPause[];
 }
 
 interface ModelHoldJson {
@@ -40,6 +56,8 @@ interface ModelHoldJson {
 interface RuntimeStateJson {
   version: 1;
   model_holds: ModelHoldJson[];
+  operator_holds?: Array<{ model: string; since: string }>;
+  paused_issues?: Array<{ issue_id: string; issue_identifier: string; issue_url: string | null; since: string }>;
 }
 
 const MAX_NAME_LENGTH = 100;
@@ -83,7 +101,7 @@ export class RuntimeStateStore {
 
   /** The stored state; holds that ended before `now` are dropped. */
   load(now: Date): RuntimeState {
-    const empty: RuntimeState = { modelHolds: [] };
+    const empty: RuntimeState = { modelHolds: [], operatorHolds: [], pausedIssues: [] };
     if (this.file === null) return empty;
     let text: string;
     try {
@@ -106,7 +124,13 @@ export class RuntimeStateStore {
       return empty;
     }
     const holds = Array.isArray(parsed.model_holds) ? parsed.model_holds.map(holdOf) : [];
-    return { modelHolds: holds.filter((hold): hold is ModelHold => hold !== null && hold.until.getTime() > now.getTime()) };
+    const operatorHolds = Array.isArray(parsed.operator_holds) ? parsed.operator_holds.map(operatorHoldOf) : [];
+    const pausedIssues = Array.isArray(parsed.paused_issues) ? parsed.paused_issues.map(operatorPauseOf) : [];
+    return {
+      modelHolds: holds.filter((hold): hold is ModelHold => hold !== null && hold.until.getTime() > now.getTime()),
+      operatorHolds: operatorHolds.filter((hold): hold is OperatorHold => hold !== null),
+      pausedIssues: pausedIssues.filter((pause): pause is OperatorPause => pause !== null),
+    };
   }
 
   save(state: RuntimeState): void {
@@ -121,6 +145,13 @@ export class RuntimeStateStore {
         text: hold.text,
         issue_identifier: hold.issueIdentifier,
         repo: hold.repo,
+      })),
+      operator_holds: state.operatorHolds.map((hold) => ({ model: hold.model, since: hold.since.toISOString() })),
+      paused_issues: state.pausedIssues.map((pause) => ({
+        issue_id: pause.issueId,
+        issue_identifier: pause.identifier,
+        issue_url: pause.url,
+        since: pause.since.toISOString(),
       })),
     };
     try {
@@ -152,4 +183,25 @@ function holdOf(value: unknown): ModelHold | null {
     issueIdentifier: typeof hold.issue_identifier === 'string' ? hold.issue_identifier : null,
     repo: typeof hold.repo === 'string' ? hold.repo : 'unknown',
   };
+}
+
+function dateOf(value: unknown): Date | null {
+  const date = new Date(typeof value === 'string' ? value : Number.NaN);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function operatorHoldOf(value: unknown): OperatorHold | null {
+  if (value === null || typeof value !== 'object') return null;
+  const hold = value as { model?: unknown; since?: unknown };
+  const since = dateOf(hold.since);
+  if (typeof hold.model !== 'string' || hold.model === '' || since === null) return null;
+  return { model: hold.model, since };
+}
+
+function operatorPauseOf(value: unknown): OperatorPause | null {
+  if (value === null || typeof value !== 'object') return null;
+  const pause = value as { issue_id?: unknown; issue_identifier?: unknown; issue_url?: unknown; since?: unknown };
+  const since = dateOf(pause.since);
+  if (typeof pause.issue_id !== 'string' || pause.issue_id === '' || typeof pause.issue_identifier !== 'string' || since === null) return null;
+  return { issueId: pause.issue_id, identifier: pause.issue_identifier, url: typeof pause.issue_url === 'string' ? pause.issue_url : null, since };
 }

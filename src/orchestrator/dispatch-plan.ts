@@ -51,6 +51,8 @@ export interface PlanRetry {
 
 export interface PlanPaused {
   issue: PlanIssue;
+  /** `operator`: paused from the dashboard; `continuations`: held back after agent.max_continuations. */
+  source: 'continuations' | 'operator';
   continuations: number;
 }
 
@@ -63,8 +65,8 @@ export interface PlanInput {
   paused: readonly PlanPaused[];
   /** Board candidates in active columns that are not claimed (running, retrying or paused). */
   candidates: readonly Issue[];
-  /** Model holds by family; ended holds are ignored. */
-  holds: ReadonlyMap<string, { until: Date }>;
+  /** Model holds by family; ended holds are ignored. `until: null` is an operator hold without an end. */
+  holds: ReadonlyMap<string, { until: Date | null }>;
   /** New sessions wait while a worker waits for an account-wide session limit. */
   gate: { until: Date; window: string } | null;
   /** Open sub-issues a candidate waits for (roles with `wait_for_sub_issues`); empty when it waits for none. */
@@ -101,6 +103,14 @@ export function plannedModel(issue: Pick<Issue, 'state' | 'description' | 'label
   return chooseModel(issue.labels, roleFor(issue, config.roles)?.claude.model ?? config.claude.model).model;
 }
 
+/** Why an issue of a held model waits: the end of a limit hold, or the operator's release. */
+function holdReason(hold: { model: string; until: Date | null }): PlanReason {
+  return {
+    code: 'model_hold',
+    text: hold.until === null ? `model ${hold.model} paused by the operator` : `model ${hold.model} on hold until ${planTime(hold.until)}`,
+  };
+}
+
 function retryKindRank(retry: PlanRetry): number {
   return retry.kind === 'continuation' ? 0 : 1;
 }
@@ -135,10 +145,11 @@ export function planDispatch(input: PlanInput): PlanItem[] {
     const key = normalizeStateName(entry.state);
     inState.set(key, (inState.get(key) ?? 0) + 1);
   }
-  const holdOf = (issue: PlanIssue): { model: string; until: Date } | null => {
+  const holdOf = (issue: PlanIssue): { model: string; until: Date | null } | null => {
     const family = modelFamilyOf(plannedModel(issue, config));
     const hold = family === null ? undefined : input.holds.get(family);
-    return family !== null && hold !== undefined && hold.until.getTime() > now.getTime() ? { model: family, until: hold.until } : null;
+    if (family === null || hold === undefined) return null;
+    return hold.until === null || hold.until.getTime() > now.getTime() ? { model: family, until: hold.until } : null;
   };
 
   /** Hands out a slot, or names what is missing: a column limit, else a free slot. */
@@ -182,7 +193,7 @@ export function planDispatch(input: PlanInput): PlanItem[] {
     const hold = holdOf(issue);
     const reason: PlanReason =
       hold !== null
-        ? { code: 'model_hold', text: `model ${hold.model} on hold until ${planTime(hold.until)}` }
+        ? holdReason(hold)
         : (claimSlot(issue.state) ?? {
             code: 'ready',
             text: retry.kind === 'continuation' ? 'continues its session' : `retry ${retry.attempt} starts now`,
@@ -209,7 +220,7 @@ export function planDispatch(input: PlanInput): PlanItem[] {
     const hold = holdOf(issue);
     let reason: PlanReason | null;
     if (subIssues.length > 0) reason = { code: 'waiting_for_sub_issues', text: `waiting for sub-issues ${subIssues.join(', ')}` };
-    else if (hold !== null) reason = { code: 'model_hold', text: `model ${hold.model} on hold until ${planTime(hold.until)}` };
+    else if (hold !== null) reason = holdReason(hold);
     else if (input.gate !== null) {
       reason = { code: 'session_limit', text: `new sessions paused until ${planTime(input.gate.until)}: session limit (${windowWords(input.gate.window)})` };
     } else reason = claimSlot(issue.state);
@@ -220,14 +231,21 @@ export function planDispatch(input: PlanInput): PlanItem[] {
   // Waiting for a time: backoff, session limits, model holds; soonest first.
   const waiting = input.retries.filter((retry) => !retry.due || !active(retry)).sort((a, b) => a.dueAt.getTime() - b.dueAt.getTime());
   for (const retry of waiting) {
-    const reason: PlanReason = active(retry)
-      ? waitingRetryReason(retry)
-      : { code: 'inactive', text: `left the active columns ("${retry.issue.state}"); released at ${planTime(retry.dueAt)}` };
+    // An operator hold has no end: the retry waits for the release, whatever its own due time says.
+    const hold = holdOf(retry.issue);
+    const reason: PlanReason = !active(retry)
+      ? { code: 'inactive', text: `left the active columns ("${retry.issue.state}"); released at ${planTime(retry.dueAt)}` }
+      : hold !== null && hold.until === null
+        ? holdReason(hold)
+        : waitingRetryReason(retry);
     items.push(item(retry.issue, 'waiting', retry.kind, reason, retry.dueAt));
   }
 
   for (const paused of input.paused) {
-    const text = `paused after ${paused.continuations} continuation session${paused.continuations === 1 ? '' : 's'}; change the issue on the board to resume`;
+    const text =
+      paused.source === 'operator'
+        ? 'paused by operator; press Resume to continue'
+        : `paused after ${paused.continuations} continuation session${paused.continuations === 1 ? '' : 's'}; change the issue on the board to resume`;
     items.push(item(paused.issue, 'paused', 'paused', { code: 'paused', text }, null));
   }
   return [...items, ...blocked];
