@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { chooseEffort, chooseModel, effortForLabelValue, isEffortLabel, isModelLabel, modelForLabelValue, modelOverridesFor, sessionClaudeConfig } from '../src/agent/model.ts';
 import { roleModelLine } from '../src/service.ts';
 import { STANDARD_LABELS, WORKFLOW_LABELS } from '../src/repo-init/labels.ts';
+import { isComplexityLabel, isNeedsHumanLabel, isTypeLabel } from '../src/workflow/classify.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 import { resolveConfig } from '../src/workflow/config.ts';
 
@@ -141,23 +142,29 @@ describe('model labels', () => {
     });
   });
 
-  it('ships model and effort labels that resolve, plus the workflow labels', () => {
-    assert.equal(STANDARD_LABELS.length, 9 + WORKFLOW_LABELS.length);
+  it('ships model and effort labels that resolve, plus the workflow labels and type/complexity labels', () => {
+    assert.equal(STANDARD_LABELS.length, 16 + WORKFLOW_LABELS.length);
     assert.equal(STANDARD_LABELS.filter((label) => isModelLabel(label.name)).length, 4);
     assert.equal(STANDARD_LABELS.filter((label) => isEffortLabel(label.name)).length, 5);
-    assert.deepEqual(WORKFLOW_LABELS.map((label) => label.name), ['auto-code', 'concept', 'plan', 'epic', 'feature', 'design', 'quality', 'maintenance', 'manual-merge']);
+    assert.equal(STANDARD_LABELS.filter((label) => isTypeLabel(label.name)).length, 3);
+    assert.equal(STANDARD_LABELS.filter((label) => isComplexityLabel(label.name)).length, 4);
+    assert.deepEqual(WORKFLOW_LABELS.map((label) => label.name), ['auto-code', 'concept', 'plan', 'epic', 'feature', 'design', 'quality', 'maintenance', 'manual-merge', 'needs-human']);
     for (const label of STANDARD_LABELS) {
       if (WORKFLOW_LABELS.includes(label)) {
-        assert.ok(!isModelLabel(label.name) && !isEffortLabel(label.name), label.name);
+        assert.ok(!isModelLabel(label.name) && !isEffortLabel(label.name) && !isTypeLabel(label.name) && !isComplexityLabel(label.name) && !isNeedsHumanLabel(label.name), label.name);
       } else if (isModelLabel(label.name)) {
         const choice = chooseModel([label.name.toLowerCase()], null);
         assert.ok(choice.model !== null && choice.warning === null, label.name);
         assert.ok(label.description.includes(choice.model), label.name);
-      } else {
-        assert.ok(isEffortLabel(label.name), label.name);
+      } else if (isEffortLabel(label.name)) {
         const choice = chooseEffort([label.name.toLowerCase()], null);
         assert.ok(choice.effort !== null && choice.warning === null, label.name);
         assert.ok(label.description.includes(choice.effort), label.name);
+      } else if (isTypeLabel(label.name) || isComplexityLabel(label.name)) {
+        // Type and complexity labels are validated by their name format
+        assert.ok(label.name.startsWith('Type: ') || label.name.startsWith('Complexity: '), label.name);
+      } else {
+        assert.fail(`unexpected label type: ${label.name}`);
       }
       assert.ok(label.description.length <= 100, label.name);
       assert.match(label.color, /^[0-9a-f]{6}$/);

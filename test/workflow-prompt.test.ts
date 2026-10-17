@@ -126,6 +126,42 @@ describe('shipped WORKFLOW.md', () => {
     assert.match(prompt, /Move the issue to "In review" with `mcp__tracker__set_status`/);
     assert.doesNotMatch(prompt, /Your role:/);
   });
+
+  it('renders issue type and complexity from labels, filtering them from the issue context', async () => {
+    const testIssue = makeIssue({
+      ...issue,
+      labels: ['feature', 'type: bugfix', 'complexity: M', 'model: opus', 'effort: high'],
+    });
+    const { definition } = await loadWorkflowFile(shipped);
+    const template = compilePrompt(definition.promptTemplate);
+    const subject = { ...testIssue, native_ref: { ...testIssue.native_ref, base_branch: null } };
+    const rendered = await renderPrompt(template, { issue: issueTemplateValue(subject, commandSkills([toolbox])), role: 'developer', agents: [] });
+
+    // Type and complexity are available in the template
+    const value = issueTemplateValue(subject, commandSkills([toolbox]));
+    assert.equal(value.type, 'bugfix');
+    assert.equal(value.complexity, 'M');
+
+    // Model and Effort are filtered from without_agent_labels, but type/complexity/needs-human should be too
+    assert.doesNotMatch(rendered, /model: opus/);
+    assert.doesNotMatch(rendered, /effort: high/);
+    assert.doesNotMatch(rendered, /type: bugfix/);
+    assert.doesNotMatch(rendered, /complexity: M/);
+
+    // Feature label shows up (it's not filtered)
+    assert.match(rendered, /feature/);
+  });
+
+  it('handles issues without type or complexity labels', async () => {
+    const testIssue = makeIssue({
+      ...issue,
+      labels: ['feature', 'model: opus'],
+    });
+    const subject = { ...testIssue, native_ref: { ...testIssue.native_ref, base_branch: null } };
+    const value = issueTemplateValue(subject, commandSkills([toolbox]));
+    assert.equal(value.type, null);
+    assert.equal(value.complexity, null);
+  });
 });
 
 describe('shipped WORKFLOW.md issue commands', () => {
