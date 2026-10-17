@@ -32,6 +32,8 @@ const DASHBOARD_CSS = `
   .slots-bar i.on { background: var(--green); box-shadow: 0 0 8px -2px var(--green); }
   /* A slot kept free for a role (agent.reserved_slots_by_role) that runs fewer sessions than reserved. */
   .slots-bar i.reserved { background: transparent; box-shadow: inset 0 0 0 1px var(--cyan-line); }
+  /* An extra slot of a session started with Start now, beyond the limit. */
+  .slots-bar i.forced { background: var(--amber); box-shadow: 0 0 8px -2px var(--amber); }
   /* Agent slots set on the dashboard: − / value / + for the total, each active column and each role's reserved slots. */
   .slot-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 0 0 14px; font: 12px var(--mono); color: var(--muted); }
   .slot-item { display: inline-flex; align-items: center; gap: 6px; }
@@ -535,8 +537,8 @@ ${PIPELINE_JS}
         const text = r.error && (!row.reason || r.error !== row.reason.text) ? r.error : r.kind === 'continuation' ? 'Continues the session after a clean exit.' : '';
         if (text) nodes.push(el('div', text, 'msg'));
       }
-      // Up next starts it with the next free slot anyway; Retry now skips a wait.
-      nodes.push(actions(row.section !== 'next' ? [restartButton(row.issue_identifier, 'Retry')] : [], row.issue_identifier));
+      // Up next starts it with the next free slot anyway; Retry now skips a wait, Start now also the slot limits.
+      nodes.push(actions([...(row.section !== 'next' ? [restartButton(row.issue_identifier, 'Retry')] : []), ...forceButtons(row)], row.issue_identifier));
     } else if (row.status === 'paused' && row.paused) {
       if (row.paused.source === 'operator') {
         meta.append(el('span', 'paused by operator'), el('span', ago(row.paused.paused_at)));
@@ -546,7 +548,11 @@ ${PIPELINE_JS}
         meta.append(cont, el('span', ago(row.paused.paused_at)));
         nodes.push(el('div', 'Resume: change the issue on the board (status, comment or labels)' + (retryAllowed ? ', or press Resume now.' : '.'), 'msg'));
       }
-      nodes.push(restartButton(row.issue_identifier, 'Resume'));
+      if (retryAllowed) {
+        const box = el('div', null, 'card-actions');
+        box.append(restartButton(row.issue_identifier, 'Resume'), ...forceButtons(row));
+        nodes.push(box);
+      } else nodes.push(restartButton(row.issue_identifier, 'Resume'));
     } else {
       if (row.model_hold && (!row.reason || row.reason.code !== 'model_hold')) {
         meta.append(...modelHoldBits(row.model_hold));
@@ -554,9 +560,16 @@ ${PIPELINE_JS}
       } else if (row.dispatch_note) {
         nodes.push(el('div', row.dispatch_note, 'msg'));
       }
-      if (row.status === 'queued') nodes.push(actions([], row.issue_identifier));
+      if (row.status === 'queued') nodes.push(actions(forceButtons(row), row.issue_identifier));
     }
     return nodes.filter((node) => node.childNodes.length > 0);
+  }
+
+  // Start now never starts an issue whose model is held or that waits for its sub-issues: the button would only fail.
+  const UNFORCEABLE = new Set(['model_hold', 'waiting_for_sub_issues']);
+  function forceButtons(row) {
+    if (!retryAllowed || row.model_hold || (row.reason && UNFORCEABLE.has(row.reason.code))) return [];
+    return [restartButton(row.issue_identifier, 'Force')];
   }
 
   /** Buttons of a card that can be paused: the given ones, then Pause (or the controls-disabled notice once). */
@@ -705,20 +718,26 @@ ${PIPELINE_JS}
     setText($('next-meta'), state.board_fetched_at ? 'in start order · board as of ' + ago(state.board_fetched_at) : 'in start order · board not fetched yet');
 
     const running = state.counts.running;
+    // Sessions started with Start now run in an extra slot each: "04 / 03 agents, 1 forced".
+    const forced = state.counts.forced || 0;
+    const slotted = running - forced;
     const max = h.max_concurrent_agents;
+    slotUse = { slotted, max };
     // Reserved slots a role does not use yet stay free for it: "developer 1/1 · reviewer 0/1 reserved · 1 free".
     const reservations = state.limits && !state.limits.reservation_problem
       ? Object.entries(state.limits.reserved_slots_by_role || {}).filter(([, r]) => r.effective > 0)
       : [];
     let unused = 0;
     for (const [, r] of reservations) unused += Math.max(r.effective - r.running, 0);
-    const free = Math.max(max - running - unused, 0);
+    const free = Math.max(max - slotted - unused, 0);
     const bar = el('div', null, 'slots-bar');
-    for (let i = 0; i < Math.min(max, 24); i++) bar.append(el('i', null, i < running ? 'on' : i < running + unused ? 'reserved' : ''));
+    for (let i = 0; i < Math.min(max, 24); i++) bar.append(el('i', null, i < slotted ? 'on' : i < slotted + unused ? 'reserved' : ''));
+    for (let i = 0; i < Math.min(forced, 8); i++) bar.append(el('i', null, 'forced'));
     const slots = $('slots');
+    const agents = pad2(running) + ' / ' + pad2(max) + ' agents' + (forced > 0 ? ', ' + forced + ' forced' : '');
     const slotText = reservations.length > 0
-      ? pad2(running) + ' / ' + pad2(max) + ' agents · ' + reservations.map(([role, r]) => role + ' ' + Math.min(r.running, r.effective) + '/' + r.effective).join(' · ') + ' reserved · ' + free + ' free'
-      : pad2(running) + ' / ' + pad2(max) + ' agents · ' + free + ' free slot' + (free === 1 ? '' : 's');
+      ? agents + ' · ' + reservations.map(([role, r]) => role + ' ' + Math.min(r.running, r.effective) + '/' + r.effective).join(' · ') + ' reserved · ' + free + ' free'
+      : agents + ' · ' + free + ' free slot' + (free === 1 ? '' : 's');
     slots.replaceChildren(bar, el('span', slotText));
     $('issues-empty').hidden = bySection.running.length > 0;
     setText($('issues-empty-sub'), rows.length
@@ -751,16 +770,19 @@ ${PIPELINE_JS}
   // Per-identifier outcome of a control click (Retry, Pause, Resume); a poll rebuilds the rows, so the button state
   // is drawn from here.
   const restartStates = new Map();
-  const RESTART_LABELS = { Retry: 'Retry now', Resume: 'Resume now', Pause: 'Pause' };
+  const RESTART_LABELS = { Retry: 'Retry now', Resume: 'Resume now', Pause: 'Pause', Force: 'Start now' };
   // Route, busy label and success label of each control button.
   const CONTROL = {
     Retry: ['retry', 'Restarting…', 'Queued'],
+    Force: ['force', 'Starting…', 'Started'],
     Resume: ['resume', 'Resuming…', 'Queued'],
     Pause: ['pause', 'Pausing…', 'Paused'],
   };
   const RESTART_DISABLED = 'Controls disabled: set SYMPHONY_ALLOW_REMOTE_CONTROL=true behind an authenticating proxy';
   // From /api/v1/state; false on a non-loopback bind without server.allow_remote_control.
   let retryAllowed = true;
+  // Sessions holding a slot and the limit, from the last state; Start now asks first when no slot is free.
+  let slotUse = { slotted: 0, max: 0 };
 
   function restartButton(identifier, verb) {
     if (!retryAllowed) return el('div', RESTART_DISABLED, 'msg muted restart-off');
@@ -790,6 +812,10 @@ ${PIPELINE_JS}
     const [action, busy, done] = CONTROL[verb] || CONTROL.Retry;
     const current = restartStates.get(key);
     if (current && current.cls === 'is-busy') return;
+    if (verb === 'Force' && slotUse.slotted >= slotUse.max) {
+      const question = 'All ' + slotUse.max + ' slot' + (slotUse.max === 1 ? ' is' : 's are') + ' busy. Start ' + splitId(identifier).num + ' in an extra slot?';
+      if (!window.confirm(question)) return;
+    }
     restartStates.set(key, { cls: 'is-busy', label: busy });
     paintRestart(identifier, verb);
     let ok = false;
@@ -896,7 +922,8 @@ ${PIPELINE_JS}
     host.hidden = !limits;
     if (!limits) return;
     const total = limits.max_concurrent_agents;
-    const running = state.counts.running;
+    // Forced sessions run beside the limit; only the others hold its slots.
+    const running = state.counts.running - (state.counts.forced || 0);
     const nodes = [];
     const item = el('span', null, 'slot-item');
     item.append(el('span', 'Slots'));

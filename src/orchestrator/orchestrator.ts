@@ -26,6 +26,7 @@ import {
   MAX_TIMER_MS,
   failureBackoffMs,
   hasRequiredFields,
+  hasRequiredLabels,
   isActiveState,
   isRoutable,
   isTerminalState,
@@ -90,6 +91,18 @@ export type PauseResult =
 
 export type ResumeResult = { ok: true; issueIdentifier: string } | { ok: false; reason: 'not_found' | 'not_paused' | 'stopping' };
 
+/** Slot counts of a force-start: `running` includes the forced sessions, `limit` is agent.max_concurrent_agents. */
+export interface ForceSlots {
+  running: number;
+  forced: number;
+  limit: number;
+}
+
+export type ForceResult =
+  | { ok: true; issueIdentifier: string; previous: 'queued' | 'retrying' | 'paused'; slots: ForceSlots }
+  | { ok: false; reason: 'not_found' | 'running' | 'stopping' | 'blocked' | 'not_eligible' | 'invalid_workflow' | 'tracker_error' | 'spawn_failed'; message: string }
+  | { ok: false; reason: 'model_held'; message: string; model: string };
+
 export type ModelControlResult =
   | { ok: true; model: string; issues: number }
   | { ok: false; reason: 'unknown_model' | 'already_paused' | 'not_paused' | 'stopping' };
@@ -138,6 +151,8 @@ interface RunningEntry {
   runId: string;
   /** Role serving the issue's column at dispatch (`default` without a matching role); fixed for the run. */
   role: string;
+  /** Started by the operator in an extra slot (`forceStart`): holds no slot of the limits, for this session only. */
+  forced: boolean;
   /** Logger for this run's agent events, tagged with `run_id` and `role`. */
   runLog: Logger;
   issue: Issue;
@@ -847,6 +862,111 @@ export class Orchestrator {
   }
 
   /**
+   * Starts an issue now in an extra slot (Start now): a candidate in Up next, a waiting retry (backoff, session limit,
+   * continuation) or a paused issue (the pause is lifted). Bypasses the retry wait, the account-wide dispatch gate, the
+   * global and column limits and the reservations; the counters reset as with Retry now. Respects the board (blockers,
+   * open sub-issues for `wait_for_sub_issues`, required labels, an active column) and model holds. The session is
+   * `forced` and holds no slot; what follows it (continuation, hand-off, retry) queues like any other work.
+   */
+  forceStart(key: string): Promise<ForceResult> {
+    return this.#serial.run(async (): Promise<ForceResult> => {
+      const stopping: ForceResult = { ok: false, reason: 'stopping', message: 'the orchestrator is shutting down' };
+      if (this.#stopping) return stopping;
+      const matches = (id: string, identifier: string) => id === key || identifier === key;
+      if ([...this.#running.values()].some((e) => matches(e.issueId, e.identifier))) {
+        return { ok: false, reason: 'running', message: `issue ${key} is already running` };
+      }
+      const retry = [...this.#retries.values()].find((r) => matches(r.issueId, r.identifier));
+      const paused = retry === undefined ? [...this.#paused.values()].find((p) => matches(p.issueId, p.identifier)) : undefined;
+      const candidate =
+        retry === undefined && paused === undefined
+          ? this.#board?.candidates.find((issue) => matches(issue.id, issue.identifier) && !this.#claimed.has(issue.id))
+          : undefined;
+      const issueId = retry?.issueId ?? paused?.issueId ?? candidate?.id;
+      if (issueId === undefined) return { ok: false, reason: 'not_found', message: `issue ${key} is not queued, waiting or paused` };
+      if (this.#cleanups.has(issueId)) return { ok: false, reason: 'not_eligible', message: 'the workspace of this issue is being removed' };
+      const previous = retry !== undefined ? 'retrying' : paused !== undefined ? 'paused' : 'queued';
+
+      const workflow = this.#deps.workflow.current;
+      const config = workflow.config;
+      await this.#loadStatusOptions(workflow);
+      const errors = this.#validate(workflow);
+      if (errors.length > 0) return { ok: false, reason: 'invalid_workflow', message: `dispatch validation failed: ${errors[0]}` };
+      let adapter: TrackerAdapter;
+      let issue: Issue | undefined;
+      try {
+        adapter = this.#adapterFor(workflow);
+        issue = (await adapter.fetchIssuesByIds([issueId])).find((fresh) => fresh.id === issueId);
+      } catch (error) {
+        return { ok: false, reason: 'tracker_error', message: `issue refresh failed: ${errorMessage(error)}` };
+      }
+      if (this.#stopping) return stopping;
+      if (this.#running.has(issueId)) return { ok: false, reason: 'running', message: `issue ${key} is already running` };
+      if (issue === undefined) return { ok: false, reason: 'not_found', message: `issue ${key} is no longer visible on the tracker` };
+      if (!hasRequiredFields(issue) || !isActiveState(issue.state, config.tracker)) {
+        return { ok: false, reason: 'not_eligible', message: `issue is in "${issue.state}", not an active column` };
+      }
+      if (issue.dispatchable !== true) {
+        const note = typeof issue.native_ref?.dispatch_note === 'string' && issue.native_ref.dispatch_note !== '' ? issue.native_ref.dispatch_note : 'not dispatchable';
+        return { ok: false, reason: 'blocked', message: note };
+      }
+      if (!hasRequiredLabels(issue, config.tracker.requiredLabels)) {
+        return { ok: false, reason: 'not_eligible', message: `missing required labels (${config.tracker.requiredLabels.join(', ')})` };
+      }
+      const subIssues = waitingForSubIssues(issue, roleFor(issue, config.roles), adapter);
+      if (subIssues.length > 0) return { ok: false, reason: 'blocked', message: `waiting for sub-issues ${subIssues.join(', ')}` };
+      const hold = this.#holdFor(issue, config);
+      if (hold !== null) {
+        const message =
+          hold.until === null
+            ? `model ${hold.model} is paused by the operator; resume the model first`
+            : `model ${hold.model} is on hold until ${hold.until.toISOString()}; it cannot start before`;
+        return { ok: false, reason: 'model_held', message, model: hold.model };
+      }
+
+      const record = this.#records.get(issueId);
+      if (record !== undefined) {
+        record.sessionLimitHits = 0;
+        record.continuations = 0;
+      }
+      this.#unpause(issueId);
+      this.#cancelRetry(issueId);
+      const attempt = retry?.attempt ?? paused?.attempt ?? null;
+      this.#dispatch(issue, attempt, workflow, adapter, false, true);
+      const entry = this.#running.get(issueId);
+      if (entry === undefined) {
+        // The spawn failed: #dispatch queued a retry.
+        this.#notify();
+        return { ok: false, reason: 'spawn_failed', message: this.#retries.get(issueId)?.error ?? 'failed to spawn agent' };
+      }
+      const slots = this.#slotsJson();
+      const forcedRecord = this.#records.get(issueId);
+      if (forcedRecord !== undefined) {
+        this.#trace(forcedRecord, {
+          kind: 'lifecycle',
+          event: 'worker_forced',
+          level: 'info',
+          message: `started by the operator in an extra slot (was ${previous}; ${slots.running}/${slots.limit} running, ${slots.forced} forced)`,
+          run: entry.runId,
+          turn: null,
+          detail: { previous, running: slots.running, forced: slots.forced, limit: slots.limit },
+        });
+      }
+      this.#deps.history?.note(entry.repo, 'worker_forced', {
+        issue: issue.identifier,
+        title: issue.title,
+        previous,
+        running: slots.running,
+        forced: slots.forced,
+        limit: slots.limit,
+      });
+      this.#logger.info('issue started by the operator in an extra slot', { issue_id: issueId, issue_identifier: issue.identifier, previous, ...slots });
+      this.#notify();
+      return { ok: true, issueIdentifier: issue.identifier, previous, slots };
+    });
+  }
+
+  /**
    * Changes the agent slots from the dashboard (`PUT /api/v1/settings/agents`, see `applyLimitUpdate`). The override
    * takes precedence over `WORKFLOW.md` and its reloads and applies from the next tick, which is requested at once.
    * Lowering below the running count stops nobody: nothing new starts until the count is below the limit.
@@ -1172,23 +1292,33 @@ export class Orchestrator {
     this.#loggedReservationProblem = problem;
   }
 
-  /** Running sessions by role name (`RunningEntry.role`). */
+  /** Running sessions that hold a slot: all but the forced ones, which run in an extra slot each. */
+  #slotted(): RunningEntry[] {
+    return [...this.#running.values()].filter((entry) => !entry.forced);
+  }
+
+  #forcedCount(): number {
+    return this.#running.size - this.#slotted().length;
+  }
+
+  /** Running sessions that hold a slot, by role name (`RunningEntry.role`). */
   #runningByRole(): Map<string, number> {
     const byRole = new Map<string, number>();
-    for (const entry of this.#running.values()) byRole.set(entry.role, (byRole.get(entry.role) ?? 0) + 1);
+    for (const entry of this.#slotted()) byRole.set(entry.role, (byRole.get(entry.role) ?? 0) + 1);
     return byRole;
   }
 
   /** Free slots for `issue`: the total less the unused reservations of other roles, capped by its column limit. */
   #slotsFor(issue: Issue, config: ServiceConfig): number {
     const normalized = normalizeStateName(issue.state);
+    const slotted = this.#slotted();
     let inState = 0;
-    for (const entry of this.#running.values()) {
+    for (const entry of slotted) {
       if (normalizeStateName(entry.issue.state) === normalized) inState++;
     }
     const limits = effectiveAgentLimits(config, this.#limitOverride);
     const held = heldForOtherRoles(roleName(roleFor(issue, config.roles)), activeReservations(limits), this.#runningByRole());
-    const free = limits.maxConcurrentAgents - this.#running.size - held.slots;
+    const free = limits.maxConcurrentAgents - slotted.length - held.slots;
     return Math.max(Math.min(free, stateLimit(issue.state, limits) - inState), 0);
   }
 
@@ -1245,7 +1375,7 @@ export class Orchestrator {
     return planDispatch({
       config: withAgentLimits(config, this.#limitOverride),
       now,
-      running: [...this.#running.values()].map((entry) => ({ state: entry.issue.state, role: entry.role })),
+      running: this.#slotted().map((entry) => ({ state: entry.issue.state, role: entry.role })),
       retries,
       paused: this.#pausedEntries().map((paused) => ({
         issue: this.#planIssue(paused.issueId, paused.identifier, paused.state),
@@ -1449,7 +1579,7 @@ export class Orchestrator {
     }));
   }
 
-  #dispatch(issue: Issue, attempt: number | null, workflow: EffectiveWorkflow, adapter: TrackerAdapter, continuation = false): void {
+  #dispatch(issue: Issue, attempt: number | null, workflow: EffectiveWorkflow, adapter: TrackerAdapter, continuation = false, forced = false): void {
     const log = this.#issueLogger(issue);
     const controller = new AbortController();
     const config = workflow.config;
@@ -1462,6 +1592,7 @@ export class Orchestrator {
       repo: adapter.issueRepository?.(issue) ?? 'unknown',
       runId,
       role: name,
+      forced,
       runLog: log.child({ run_id: runId, role: name }),
       issue,
       attempt,
@@ -1543,6 +1674,7 @@ export class Orchestrator {
         effort: effortChoice.effort,
         effort_label: effortChoice.label,
         continuation,
+        forced,
       },
     });
     if (choice.warning !== null) log.warn('model label ignored', { warning: choice.warning, model: choice.model ?? 'Claude Code default' });
@@ -1553,6 +1685,7 @@ export class Orchestrator {
       state: issue.state,
       attempt,
       continuation: continuation ? record.continuations : undefined,
+      forced: forced || undefined,
       role: entry.role,
       model: choice.model ?? 'Claude Code default',
       model_label: choice.label ?? undefined,
@@ -2575,6 +2708,8 @@ export class Orchestrator {
       title: entry.issue.title,
       state: entry.issue.state,
       role: entry.role,
+      /** Started with Start now in an extra slot: it holds no slot of the limits. */
+      forced: entry.forced,
       phase: entry.phase,
       attempt: entry.attempt,
       session_id: entry.sessionId,
@@ -2762,6 +2897,14 @@ export class Orchestrator {
     return { issues, queue, blocked: [...parked, ...blocked] };
   }
 
+  #slotsJson(): ForceSlots {
+    return {
+      running: this.#running.size,
+      forced: this.#forcedCount(),
+      limit: effectiveAgentLimits(this.#deps.workflow.current.config, this.#limitOverride).maxConcurrentAgents,
+    };
+  }
+
   /** Runtime snapshot for GET /api/v1/state (spec 13.3). */
   snapshot() {
     const now = this.#clock.monotonicMs();
@@ -2782,6 +2925,8 @@ export class Orchestrator {
       generated_at: this.#clock.now().toISOString(),
       counts: {
         running: this.#running.size,
+        /** Running sessions started with Start now: `running` may exceed the limit by this many. */
+        forced: this.#forcedCount(),
         retrying: this.#retries.size,
         paused: this.#pausedEntries().length,
         claimed: this.#claimed.size,
@@ -2925,6 +3070,8 @@ export class Orchestrator {
       last_error: record?.lastError ?? null,
       last_check: checkJson(record?.lastCheck ?? null),
       tracked: { completed_before: this.#completed.has(issueId) },
+      /** Agent slots now, for the Start now confirmation: `running` includes the `forced` sessions. */
+      slots: this.#slotsJson(),
       archived: null as { archived_at: string; released: boolean } | null,
     };
   }
@@ -2961,6 +3108,7 @@ export class Orchestrator {
       last_error: archived.last_error,
       last_check: archived.last_check,
       tracked: { completed_before: archived.completed_before },
+      slots: this.#slotsJson(),
       archived: { archived_at: archived.archived_at, released: archived.released },
     };
   }

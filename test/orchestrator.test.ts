@@ -2718,6 +2718,191 @@ describe('restart a worker', () => {
   });
 });
 
+describe('force-start an issue', () => {
+  const RESETS_AT = new Date('2026-10-03T17:30:00Z');
+  const TEXT = "You've hit your session limit · resets 7:30pm (Europe/Berlin)";
+
+  /** Sessions hang until `finish` ends them (or a stop aborts them); `modes` makes an issue fail or hit a limit at once. */
+  function forceSetup(options: { issues?: ReturnType<typeof makeIssue>[]; agent?: Record<string, unknown>; front?: Record<string, unknown>; history?: HistoryLog } = {}) {
+    const finish = new Map<string, () => void>();
+    const modes: Record<string, 'limit' | 'fail'> = {};
+    const runner = new FakeRunner((turn, params) => {
+      const mode = modes[params.issue.id];
+      if (mode === 'fail') return { ok: false, turnId: String(turn), code: 'turn_failed', message: 'boom' };
+      if (mode === 'limit') {
+        return {
+          ok: false,
+          turnId: String(turn),
+          code: 'session_limit',
+          message: `turn ended with an error: ${TEXT}`,
+          sessionLimit: { window: 'five_hour', scope: 'account', model: null, resetsAt: RESETS_AT, source: 'event', text: TEXT, overageDisabledReason: null },
+        };
+      }
+      return new Promise((resolve) => {
+        finish.set(params.issue.id, () => resolve({ ok: true, turnId: String(turn), resultText: 'done' }));
+        params.signal.addEventListener('abort', () => resolve({ ok: false, turnId: String(turn), code: 'turn_cancelled', message: 'cancelled' }));
+      });
+    });
+    const s = setup({
+      runner,
+      issues: options.issues ?? ['a', 'b', 'c', 'd'].map((id) => makeIssue({ id })),
+      ...(options.history !== undefined ? { history: options.history } : {}),
+      front: { ...options.front, agent: { max_turns: 1, max_concurrent_agents: 3, ...options.agent } },
+    });
+    return { s, finish, modes };
+  }
+  const sessionsOf = (s: Setup, id: string) => s.runner.sessions.filter((session) => session.params.issue.id === id);
+  const runningOf = (s: Setup, id: string) => snapshot(s).running.find((row) => row.issue_id === id);
+
+  it('starts a queued issue in an extra slot when every slot is busy, for one session only', async () => {
+    const { s, finish } = forceSetup();
+    await s.orchestrator.tickNow();
+    await until(() => s.runner.sessions.length === 3, 3_000, 'three sessions');
+    assert.equal(snapshot(s).queue.find((item) => item.issue_id === 'd')?.reason.code, 'no_free_slot');
+
+    assert.deepEqual(await s.orchestrator.forceStart('acme/app#d'), {
+      ok: true,
+      issueIdentifier: 'acme/app#d',
+      previous: 'queued',
+      slots: { running: 4, forced: 1, limit: 3 },
+    });
+    // Dispatched in the same call, not at the next tick.
+    assert.equal(runningOf(s, 'd')?.forced, true);
+    assert.equal(snapshot(s).counts.running, 4);
+    assert.equal(snapshot(s).counts.forced, 1);
+    await until(() => sessionsOf(s, 'd').length === 1, 3_000, 'forced session');
+    const forced = s.orchestrator.issueTimeline('d')?.events.find((event) => event.event === 'worker_forced');
+    assert.deepEqual(forced?.detail, { previous: 'queued', running: 4, forced: 1, limit: 3 });
+    assert.equal(s.orchestrator.issueTimeline('d')?.events.find((event) => event.event === 'run_dispatched')?.detail?.forced, true);
+
+    // The forced session ends: its continuation waits for a free slot like any other work.
+    await until(() => finish.has('d'), 3_000, 'd streaming');
+    finish.get('d')?.();
+    await until(() => snapshot(s).retrying[0]?.kind === 'continuation', 3_000, 'continuation');
+    s.timers.fire(CONTINUATION_DELAY_MS);
+    await until(() => snapshot(s).retrying[0]?.error === 'waiting for a free slot (3/3 busy)', 3_000, 'continuation waits');
+    assert.equal(snapshot(s).counts.running, 3);
+    assert.equal(sessionsOf(s, 'd').length, 1);
+
+    // A slot frees up: the continuation takes it, as a normal session.
+    s.tracker.set('a', { state: 'Done' });
+    await s.orchestrator.tickNow();
+    await until(() => runningOf(s, 'a') === undefined, 3_000, 'a stopped');
+    await s.orchestrator.tickNow();
+    await until(() => sessionsOf(s, 'd').length === 2, 3_000, 'continuation started');
+    assert.equal(runningOf(s, 'd')?.forced, false);
+    assert.equal(snapshot(s).counts.forced, 0);
+  });
+
+  it('keeps the regular slots for the queue while a forced session runs', async () => {
+    const { s, finish } = forceSetup({ agent: { max_concurrent_agents: 1 }, issues: [makeIssue({ id: 'a' }), makeIssue({ id: 'b' }), makeIssue({ id: 'c' })] });
+    await s.orchestrator.tickNow();
+    await until(() => finish.has('a'), 3_000, 'a running');
+    assert.equal((await s.orchestrator.forceStart('c')).ok, true);
+    s.tracker.set('a', { state: 'Done' });
+    await s.orchestrator.tickNow();
+    await until(() => runningOf(s, 'a') === undefined, 3_000, 'a stopped');
+    await s.orchestrator.tickNow();
+    // The forced c holds no slot: b gets the free one.
+    await until(() => sessionsOf(s, 'b').length === 1, 3_000, 'b started');
+    assert.deepEqual(snapshot(s).running.map((row) => [row.issue_id, row.forced]).sort(), [['b', false], ['c', true]]);
+  });
+
+  it('starts an issue that waits for an account-wide session limit, and a new one behind the dispatch gate', async () => {
+    const { s, modes } = forceSetup({ agent: { max_session_limit_retries: 0 }, issues: [makeIssue({ id: 'a' })] });
+    modes.a = 'limit';
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying[0]?.limit?.waiting === true, 3_000, 'waiting for the reset');
+    assert.notEqual(snapshot(s).health.dispatch_gate, null);
+    s.tracker.issues.set('b', makeIssue({ id: 'b' }));
+    await s.orchestrator.tickNow();
+    assert.equal(snapshot(s).queue.find((item) => item.issue_id === 'b')?.reason.code, 'session_limit');
+
+    const b = await s.orchestrator.forceStart('b');
+    assert.equal(b.ok && b.previous, 'queued');
+    await until(() => sessionsOf(s, 'b').length === 1, 3_000, 'b started');
+
+    delete modes.a;
+    const a = await s.orchestrator.forceStart('a');
+    assert.equal(a.ok && a.previous, 'retrying');
+    await until(() => sessionsOf(s, 'a').length === 2, 3_000, 'a started');
+    assert.equal(snapshot(s).retrying.length, 0);
+    assert.equal(s.orchestrator.issueDetail('a')?.running?.attempt, 1);
+  });
+
+  it('skips the backoff of a failure retry and resets the counters', async () => {
+    const { s, modes } = forceSetup({ issues: [makeIssue({ id: 'a' })] });
+    modes.a = 'fail';
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'failure retry');
+    assert.deepEqual(s.timers.delays(), [10_000]);
+    delete modes.a;
+    assert.equal((await s.orchestrator.forceStart('a')).ok, true);
+    assert.deepEqual(s.timers.delays(), []);
+    await until(() => sessionsOf(s, 'a').length === 2, 3_000, 'second session');
+  });
+
+  it('lifts an operator pause and starts the issue', async () => {
+    const { s } = forceSetup({ agent: { max_concurrent_agents: 1 }, issues: [makeIssue({ id: 'a' }), makeIssue({ id: 'b' })] });
+    await s.orchestrator.tickNow();
+    await until(() => s.runner.sessions.length === 1, 3_000, 'a running');
+    assert.equal((await s.orchestrator.pauseIssue('b')).ok, true);
+    assert.equal(snapshot(s).counts.paused, 1);
+
+    const result = await s.orchestrator.forceStart('b');
+    assert.equal(result.ok && result.previous, 'paused');
+    assert.equal(snapshot(s).counts.paused, 0);
+    await until(() => sessionsOf(s, 'b').length === 1, 3_000, 'b started');
+    assert.equal(snapshot(s).counts.running, 2);
+  });
+
+  it('refuses blocked, held, running and ineligible issues', async () => {
+    const { s } = forceSetup({
+      agent: { max_concurrent_agents: 1 },
+      issues: [
+        makeIssue({ id: 'a' }),
+        makeIssue({ id: 'blocked', dispatchable: false, native_ref: { dispatch_note: 'blocked by acme/app#1' } }),
+        makeIssue({ id: 'opus', labels: ['model: opus'] }),
+        makeIssue({ id: 'moved' }),
+      ],
+    });
+    await s.orchestrator.tickNow();
+    await until(() => s.runner.sessions.length === 1, 3_000, 'a running');
+    assert.deepEqual(await s.orchestrator.forceStart('a'), { ok: false, reason: 'running', message: 'issue a is already running' });
+    assert.deepEqual(await s.orchestrator.forceStart('blocked'), { ok: false, reason: 'blocked', message: 'blocked by acme/app#1' });
+    assert.equal((await s.orchestrator.holdModel('opus')).ok, true);
+    const held = await s.orchestrator.forceStart('opus');
+    assert.equal(held.ok === false && held.reason, 'model_held');
+    assert.match(held.ok === false ? held.message : '', /resume the model first/);
+    s.tracker.set('moved', { state: 'Backlog' });
+    const moved = await s.orchestrator.forceStart('moved');
+    assert.equal(moved.ok === false && moved.reason, 'not_eligible');
+    assert.equal((await s.orchestrator.forceStart('nope')).ok === false, true);
+    assert.equal(s.runner.sessions.length, 1);
+    await s.orchestrator.shutdown(1_000);
+    const stopped = await s.orchestrator.forceStart('opus');
+    assert.equal(stopped.ok === false && stopped.reason, 'stopping');
+  });
+
+  it('writes the worker_forced history note with the slot counts', async () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
+    const pricing = new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent());
+    const history = new HistoryLog(path.join(dir, 'repositories'), pricing, Logger.silent());
+    const { s } = forceSetup({ history, agent: { max_concurrent_agents: 1 }, issues: [makeIssue({ id: 'a' }), makeIssue({ id: 'b' })] });
+    s.tracker.issueRepository = () => 'acme/app';
+    await s.orchestrator.tickNow();
+    await until(() => s.runner.sessions.length === 1, 3_000, 'a running');
+    await s.orchestrator.forceStart('b');
+    const note = readHistory(history.dir, 'acme/app').entries.find((entry) => entry.event === 'worker_forced')?.fields ?? {};
+    assert.equal(note.issue, 'acme/app#b');
+    assert.equal(note.previous, 'queued');
+    assert.equal(String(note.running), '2');
+    assert.equal(String(note.forced), '1');
+    assert.equal(String(note.limit), '1');
+  });
+});
+
 describe('issue-centric snapshot', () => {
   const ROLE_FRONT = {
     agent: { max_concurrent_agents: 1 },

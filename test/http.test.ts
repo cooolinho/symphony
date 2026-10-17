@@ -110,7 +110,12 @@ describe('http extension', () => {
     assert.match(page.body, /Retry now/);
     assert.match(page.body, /Resume now/);
     assert.match(page.body, /'\/api\/v1\/' \+ encodeURIComponent\(identifier\) \+ '\/' \+ action/);
-    for (const route of ["'retry'", "'resume'", "'pause'"]) assert.ok(page.body.includes(route), route);
+    for (const route of ["'retry'", "'resume'", "'pause'", "'force'"]) assert.ok(page.body.includes(route), route);
+    // Start now: a button on waiting, queued and paused cards, a confirmation when every slot is taken, forced slots in the bar.
+    assert.match(page.body, /Force: 'Start now'/);
+    assert.match(page.body, /restartButton\(row\.issue_identifier, 'Force'\)/);
+    assert.match(page.body, /' busy\. Start ' \+ splitId\(identifier\)\.num \+ ' in an extra slot\?'/);
+    assert.match(page.body, /', ' \+ forced \+ ' forced'/);
     assert.match(page.body, /'\/api\/v1\/models\/' \+ encodeURIComponent\(model\)/);
     assert.match(page.body, /restartButton\(row\.issue_identifier, 'Pause'\)/);
     assert.match(page.body, /paused by operator/);
@@ -137,7 +142,7 @@ describe('http extension', () => {
     const state = await request(server.port, 'GET', '/api/v1/state');
     assert.equal(state.status, 200);
     const body = JSON.parse(state.body);
-    assert.deepEqual(Object.keys(body.counts), ['running', 'retrying', 'paused', 'claimed', 'queued', 'blocked']);
+    assert.deepEqual(Object.keys(body.counts), ['running', 'forced', 'retrying', 'paused', 'claimed', 'queued', 'blocked']);
     assert.ok(Array.isArray(body.issues) && Array.isArray(body.blocked) && Array.isArray(body.queue));
     assert.deepEqual(Object.keys(body.pipeline_config), ['board_columns', 'roles', 'blocked_states']);
     assert.deepEqual(Object.keys(body.agent_totals), ['input_tokens', 'output_tokens', 'total_tokens', 'seconds_running', 'cost_usd', 'claude_estimate_usd']);
@@ -253,6 +258,9 @@ describe('http extension', () => {
     assert.match(page.body, /SESSION LIMIT · RETRY/);
     assert.match(page.body, /WAITING FOR RESET/);
     assert.match(page.body, /worker_restarted/);
+    assert.match(page.body, /worker_forced/);
+    assert.match(page.body, /restartButton\('Force'\)/);
+    assert.match(page.body, /' in an extra slot\?'/);
     assert.equal((await request(server.port, 'HEAD', '/agent')).status, 200);
     const dashboard = (await request(server.port, 'GET', '/')).body;
     assert.match(dashboard, /'\/agent\?id=' \+ encodeURIComponent\(row\.issue_identifier\)/);
@@ -547,10 +555,46 @@ describe('operator pause routes', () => {
       holdModel: method('holdModel'),
       releaseModel: method('releaseModel'),
       restartWorker: method('restartWorker'),
+      forceStart: method('forceStart'),
       snapshot: () => ({}),
     } as unknown as Orchestrator;
     return { orchestrator, calls };
   };
+
+  it('force-starts an issue with 202 and maps its refusals', async () => {
+    const results: Record<string, unknown> = {
+      forceStart: { ok: true, issueIdentifier: 'acme/app#a', previous: 'queued', slots: { running: 4, forced: 1, limit: 3 } },
+    };
+    const { orchestrator, calls } = fakeOrchestrator(results);
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    try {
+      const started = await request(server.port, 'POST', issuePath('force'));
+      assert.equal(started.status, 202);
+      const body = JSON.parse(started.body);
+      assert.deepEqual([body.started, body.issue_identifier, body.previous, body.slots], [true, 'acme/app#a', 'queued', { running: 4, forced: 1, limit: 3 }]);
+      assert.deepEqual(calls, ['forceStart acme/app#a']);
+      const refusals = [
+        ['running', 409, 'running'],
+        ['blocked', 409, 'blocked'],
+        ['not_eligible', 409, 'not_eligible'],
+        ['model_held', 409, 'model_held'],
+        ['invalid_workflow', 409, 'invalid_workflow'],
+        ['stopping', 409, 'stopping'],
+        ['not_found', 404, 'issue_not_found'],
+        ['tracker_error', 502, 'tracker_error'],
+        ['spawn_failed', 500, 'spawn_failed'],
+      ] as const;
+      for (const [reason, status, code] of refusals) {
+        results.forceStart = { ok: false, reason, message: `refused: ${reason}`, model: 'opus' };
+        const res = await request(server.port, 'POST', issuePath('force'));
+        assert.equal(res.status, status, reason);
+        assert.deepEqual(JSON.parse(res.body).error, { code, message: `refused: ${reason}` });
+      }
+      assert.equal((await request(server.port, 'GET', issuePath('force'))).status, 405);
+    } finally {
+      await server.close();
+    }
+  });
 
   it('pauses and resumes issues and models with 202', async () => {
     const { orchestrator, calls } = fakeOrchestrator({
@@ -610,7 +654,7 @@ describe('operator pause routes', () => {
 
   it('guards every control route like retry', async () => {
     const { orchestrator, calls } = fakeOrchestrator({});
-    const routes = [issuePath('pause'), issuePath('resume'), '/api/v1/models/fable/hold', '/api/v1/models/fable/release', issuePath('retry')];
+    const routes = [issuePath('pause'), issuePath('resume'), '/api/v1/models/fable/hold', '/api/v1/models/fable/release', issuePath('retry'), issuePath('force')];
     const local = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
     const remote = await startHttpServer({ host: '0.0.0.0', port: 0, orchestrator, logger: Logger.silent() });
     const proxied = await startHttpServer({ host: '0.0.0.0', port: 0, orchestrator, logger: Logger.silent(), allowRemoteControl: true });

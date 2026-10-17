@@ -453,7 +453,7 @@ ${PIPELINE_JS}
   const COVERED_BY_TRANSCRIPT = new Set(['assistant_message', 'tool_use', 'tool_result', 'tracker_tool']);
   const CATEGORY = {
     run_dispatched: 'lifecycle', run_finished: 'lifecycle', retry_scheduled: 'lifecycle', issue_paused: 'lifecycle',
-    session_limit_wait: 'lifecycle', worker_restarted: 'lifecycle', issue_resumed: 'lifecycle', model_hold: 'lifecycle', model_hold_ended: 'lifecycle',
+    session_limit_wait: 'lifecycle', worker_restarted: 'lifecycle', worker_forced: 'lifecycle', issue_resumed: 'lifecycle', model_hold: 'lifecycle', model_hold_ended: 'lifecycle',
     session_started: 'lifecycle', session_configured: 'lifecycle', startup_failed: 'lifecycle', agent_exited: 'lifecycle',
     phase: 'phase',
     turn_started: 'model', turn_completed: 'model', turn_failed: 'model', turn_cancelled: 'model', turn_timeout: 'model',
@@ -471,7 +471,7 @@ ${PIPELINE_JS}
       type: 'event', title: label(e.event).toUpperCase(), name: '', line: e.message || '', chips: [], sig: String(e.seq) };
     switch (e.event) {
       case 'run_dispatched':
-        return { ...base, type: 'run', tone: 'green', glyph: '●', title: d.continuation ? 'CONTINUATION SESSION' : d.attempt ? 'RETRY ATTEMPT ' + d.attempt : 'AGENT STARTED',
+        return { ...base, type: 'run', tone: 'green', glyph: '●', title: (d.continuation ? 'CONTINUATION SESSION' : d.attempt ? 'RETRY ATTEMPT ' + d.attempt : 'AGENT STARTED') + (d.forced ? ' · EXTRA SLOT' : ''),
           name: (d.role || '') + ' · ' + (d.state || ''), line: 'Run ' + e.run + (d.model ? ' · model ' + d.model : ' · Claude Code default model') + (d.model_label ? ' (label ' + d.model_label + ')' : '') +
             (d.effort ? ' · effort ' + d.effort + (d.effort_label ? ' (label ' + d.effort_label + ')' : '') : '') };
       case 'run_finished': {
@@ -504,6 +504,8 @@ ${PIPELINE_JS}
         return { ...base, tone: 'cyan', glyph: '▶', title: 'MODEL ' + String(d.model || '').toUpperCase() + ' HOLD ENDED', err: false, line: e.message || '' };
       case 'worker_restarted':
         return { ...base, tone: 'cyan', glyph: '↻', title: 'WORKER RESTARTED', err: false, line: e.message || '' };
+      case 'worker_forced':
+        return { ...base, tone: 'cyan', glyph: '▶', title: 'STARTED IN AN EXTRA SLOT', err: false, line: e.message || '' };
       case 'issue_paused':
         return { ...base, tone: 'gray', glyph: '⏸', title: d.source === 'operator' ? 'PAUSED BY OPERATOR' : 'PAUSED', err: false };
       case 'issue_resumed':
@@ -903,11 +905,12 @@ ${PIPELINE_JS}
       ['Started', lastSession ? fmtClock(lastSession.started_at) : '—'],
     ]);
 
-    // Pause of a running or retrying issue; a paused issue gets Resume in its alert.
+    // Pause of a running or retrying issue; a paused issue gets Resume in its alert. Start now for a waiting or paused one.
     const actionsBox = $('hero-actions');
     const pausable = d && !S.ended && (d.status === 'running' || d.status === 'retrying');
-    actionsBox.hidden = !pausable;
-    patchChildren(actionsBox, pausable ? [restartButton('Pause')] : []);
+    const forceable = d && !S.ended && (d.status === 'retrying' || d.status === 'paused') && retryAllowed();
+    actionsBox.hidden = !pausable && !forceable;
+    patchChildren(actionsBox, [...(forceable ? [restartButton('Force')] : []), ...(pausable ? [restartButton('Pause')] : [])]);
 
     const live = $('live-line');
     live.hidden = !run;
@@ -930,10 +933,11 @@ ${PIPELINE_JS}
   // Outcome of the last control click (Retry, Pause, Resume); the alert and the header are rebuilt every second, so
   // the buttons are drawn from here.
   let restartState = null;
-  const RESTART_LABELS = { Retry: 'Retry now', Resume: 'Resume now', Pause: 'Pause' };
+  const RESTART_LABELS = { Retry: 'Retry now', Resume: 'Resume now', Pause: 'Pause', Force: 'Start now' };
   // Route, busy label and success label of each control button.
   const CONTROL = {
     Retry: ['retry', 'Restarting…', 'Queued'],
+    Force: ['force', 'Starting…', 'Started'],
     Resume: ['resume', 'Resuming…', 'Queued'],
     Pause: ['pause', 'Pausing…', 'Paused'],
   };
@@ -960,6 +964,12 @@ ${PIPELINE_JS}
   async function restart(verb) {
     if (restartState && restartState.cls === 'is-busy') return;
     const [action, busy, done] = CONTROL[verb] || CONTROL.Retry;
+    // Start now runs beside the limit: ask first when every slot is taken.
+    const slots = S.detail && S.detail.slots;
+    if (verb === 'Force' && slots && slots.running - slots.forced >= slots.limit) {
+      const num = ID.lastIndexOf('#') > 0 ? ID.slice(ID.lastIndexOf('#')) : ID;
+      if (!window.confirm('All ' + slots.limit + ' slot' + (slots.limit === 1 ? ' is' : 's are') + ' busy. Start ' + num + ' in an extra slot?')) return;
+    }
     restartState = { verb, cls: 'is-busy', label: busy };
     repaintControls();
     let ok = false;
