@@ -133,8 +133,8 @@ function sameHost(origin: string, hostHeader: string | undefined): boolean {
  * archived once the orchestrator released the issue),
  * `/logs` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
  * `/api/v1/state`, `/api/v1/<identifier>` with its `/timeline` and `/transcript`, `POST /api/v1/refresh`
- * `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker), `/pause` and `/resume` (operator pause of
- * an issue), `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family), and
+ * `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker), `/force` (Start now in an extra slot),
+ * `/pause` and `/resume` (operator pause of an issue), `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family), and
  * `PUT` / `DELETE /api/v1/settings/agents` (agent slots set on the dashboard; JSON body, `Content-Type:
  * application/json` required).
  * Read-only except refresh and these control routes. On a loopback bind, requests whose Host is not a loopback name are
@@ -162,7 +162,7 @@ export function startHttpServer(options: {
   const analyticsCache = new Map<string, { pricing: object; value: Analytics }>();
 
   /**
-   * The guard of every control route (retry, pause, resume, model hold and release, agent settings): loopback bind, or
+   * The guard of every control route (retry, force, pause, resume, model hold and release, agent settings): loopback bind, or
    * `allowRemoteControl` plus an Origin header naming this host. Sends the 403 and returns false when refused.
    */
   const controlAllowed = (req: http.IncomingMessage, res: http.ServerResponse): boolean => {
@@ -414,8 +414,8 @@ export function startHttpServer(options: {
       return;
     }
     // Sub-resources of an issue; the identifier is URL-encoded (owner%2Frepo%2312), so its slash cannot end it.
-    const sub = /^(.+)\/(timeline|transcript|retry|pause|resume)$/.exec(pathname.slice(API_PREFIX.length));
-    if (pathname.startsWith(API_PREFIX) && sub !== null && (sub[2] === 'retry' || sub[2] === 'pause' || sub[2] === 'resume')) {
+    const sub = /^(.+)\/(timeline|transcript|retry|pause|resume|force)$/.exec(pathname.slice(API_PREFIX.length));
+    if (pathname.startsWith(API_PREFIX) && sub !== null && (sub[2] === 'retry' || sub[2] === 'pause' || sub[2] === 'resume' || sub[2] === 'force')) {
       const action = sub[2];
       allow(['POST'], () => {
         if (!controlAllowed(req, res)) return;
@@ -435,6 +435,24 @@ export function startHttpServer(options: {
             } else if (result.reason === 'not_found') notFound();
             else if (result.reason === 'already_paused') sendError(res, 409, 'already_paused', `issue ${key} is already paused by the operator`);
             else sendError(res, 409, 'stopping', 'the agent of this issue is already stopping, or the orchestrator is shutting down');
+          }));
+          return;
+        }
+        if (action === 'force') {
+          respond(orchestrator.forceStart(key).then((result) => {
+            if (result.ok) {
+              sendJson(res, 202, {
+                started: true,
+                issue_identifier: result.issueIdentifier,
+                previous: result.previous,
+                slots: result.slots,
+                requested_at: new Date().toISOString(),
+              });
+            } else if (result.reason === 'not_found') sendError(res, 404, 'issue_not_found', result.message);
+            else if (result.reason === 'model_held') sendError(res, 409, 'model_held', result.message);
+            else if (result.reason === 'tracker_error') sendError(res, 502, 'tracker_error', result.message);
+            else if (result.reason === 'spawn_failed') sendError(res, 500, 'spawn_failed', result.message);
+            else sendError(res, 409, result.reason, result.message);
           }));
           return;
         }

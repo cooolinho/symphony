@@ -96,6 +96,7 @@ To go back to the old behavior, remove `roles` and `checks`: then every issue ru
 | Change the number of agent slots | At the slot bar of *Running* on the dashboard, use **−** / **+** for the total, for each active column and for the slots reserved per role (**×** returns a column or a role to its `WORKFLOW.md` value, **Reset to WORKFLOW.md** removes every override). The change applies from the next tick without a restart and survives a restart; a reload of `WORKFLOW.md` does not overwrite it, and the dashboard shows the `WORKFLOW.md` value next to it. Lowering it below the running count stops no agent: nothing new starts until the count is below the limit ("3 running, limit 2: no new starts until 2 finish"). With `curl`: `PUT /api/v1/settings/agents` with `Content-Type: application/json`, see [Dashboard and API](#dashboard-and-api). The same rights as restart apply. See [Agent slots set on the dashboard](configuration.md#agent-slots-set-on-the-dashboard). |
 | Change the prompt or settings | Edit `WORKFLOW.md`. This applies right away to new sessions, without a restart. |
 | Restart a waiting or paused worker right away | On the issue card (or the agent page) click **Retry now** or **Resume now**, or `curl -X POST http://127.0.0.1:4000/api/v1/<identifier>/retry` (the identifier URL-encoded, e.g. `owner%2Frepository%2312`). This is the way out of a session limit when you have topped up credits and do not want to wait for the reset. On a non-loopback address (`SYMPHONY_HOST`) it only works with `SYMPHONY_ALLOW_REMOTE_CONTROL=true`; with `curl` through the proxy, pass `-H 'Origin: https://<domain>'`, see [Dashboard and API](#dashboard-and-api). |
+| Start an issue now, even when every slot is taken | On a card in *Up next*, *Waiting* or *Paused* (or on the agent page) click **Start now**, or `curl -X POST http://127.0.0.1:4000/api/v1/<identifier>/force`. The issue starts at once in an extra slot, for one session; see [Retry now or Start now](#retry-now-or-start-now). The same rights as restart apply. |
 | Pause an issue or a model | On a card in *Running*, *Up next* or *Waiting* (or on the agent page) click **Pause**: a running agent stops at once (the workspace stays), nothing is retried, and the card moves to *Paused* ("paused by operator"). **Resume now** starts it again like a restart. In the *Models* bar, **Pause** next to a model family (e.g. `fable`) stops its running agents and keeps every issue of that model waiting (reason `model_hold`), while the other models keep running; no issue moves to another model. **Resume** retries them at once, as slots allow. With `curl`: `POST /api/v1/<identifier>/pause` and `/resume`, `POST /api/v1/models/<model>/hold` and `/release`. Board changes (comments, labels, column moves, also to `Backlog` and back) do not lift these pauses; an issue reaching a terminal column or leaving the board does. Both survive a restart. The same rights as restart apply (`SYMPHONY_ALLOW_REMOTE_CONTROL` on a non-loopback address). |
 | Poll now instead of waiting 30 s | In the dashboard click **Poll now**, or `curl -X POST http://127.0.0.1:4000/api/v1/refresh` |
 
@@ -826,6 +827,7 @@ Where the data comes from and where the limits are:
 | `POST /api/v1/models/<model>/release` | resume a model family; its waiting issues retry at once as slots allow. Response `202` with `model`, `paused` and `requeued`. Errors: `400 unknown_model`, `409` (`not_paused`, `stopping`), `403` as for retry |
 | `PUT /api/v1/settings/agents` | change the agent slots (dashboard override). Requires `Content-Type: application/json` (else `415`), body at most 16 KiB (else `413`), e.g. `{ "max_concurrent_agents": 3, "max_concurrent_agents_by_state": { "Agent review": 1 }, "reserved_slots_by_role": { "reviewer": 1 } }`. Fields left out keep their value; `null` removes an override (the total, one column or one role). Total: integer `0`–`50`; per column: integer `1`–`50`, only active columns; per role: integer `0`–`50`, only configured roles. A total or reservation that leaves fewer slots than reserved is refused (a total of `0` is always allowed). Response `200` with `changed` and `limits`. Errors: `400 invalid_settings` with a message, `400 bad_request` (invalid JSON), `409 stopping`, `403` as for retry |
 | `DELETE /api/v1/settings/agents` | remove the override: `WORKFLOW.md` applies again. Requires `Content-Type: application/json` like `PUT`; no body needed. Response `200` with `changed` and `limits`; `403` as for retry |
+| `POST /api/v1/<identifier>/force` | start an issue in *Up next*, *Waiting* or *Paused* now, in an extra slot beyond the limits, for one session. Response `202` with `started`, `issue_identifier`, `previous` and `slots` (`running`, `forced`, `limit`). Errors: `404`, `409` (`running`, `blocked`, `not_eligible`, `model_held`, `invalid_workflow`, `stopping`), `502 tracker_error`, `403` as for retry; see [Retry now or Start now](#retry-now-or-start-now) |
 | `POST /api/v1/<identifier>/retry` | restart a waiting (retry queue, including session limit) or paused worker right away. Response `202` with `queued`, `issue_identifier` and `previous` (`retrying` or `paused`). Errors: `404` (issue unknown), `409` (`running`: currently running; `not_waiting`: not waiting for anything; `stopping`: Symphony is shutting down), `403` (`control_disabled` on a non-loopback address without `SYMPHONY_ALLOW_REMOTE_CONTROL=true`; `forbidden_origin` for cross-origin requests and, on a non-loopback address, also without an `Origin` header) |
 
 `queue[]` lists the [dispatch plan](#dispatch-order) without running and blocked issues, in order: Up next, then
@@ -856,6 +858,7 @@ curl -s http://127.0.0.1:4000/api/v1/state
 curl -s http://127.0.0.1:4000/api/v1/owner%2Frepository%2312   # / as %2F, # as %23
 curl -s -X POST http://127.0.0.1:4000/api/v1/refresh
 curl -s -X POST http://127.0.0.1:4000/api/v1/owner%2Frepository%2312/retry
+curl -s -X POST http://127.0.0.1:4000/api/v1/owner%2Frepository%2312/force
 curl -s -X POST http://127.0.0.1:4000/api/v1/owner%2Frepository%2312/pause
 curl -s -X POST http://127.0.0.1:4000/api/v1/models/fable/hold
 curl -s -X PUT -H 'Content-Type: application/json' -d '{"max_concurrent_agents": 3}' http://127.0.0.1:4000/api/v1/settings/agents
@@ -876,6 +879,35 @@ curl -s -X POST -u <user> -H 'Origin: https://<domain>' https://<domain>/api/v1/
 Whether restarting is allowed is shown in `GET /api/v1/state` and `GET /api/v1/<identifier>` under `controls.retry`.
 The restart only skips the wait: Symphony checks again, as for every retry, whether the issue really starts (active
 column, configuration, free slot).
+
+### Retry now or Start now
+
+**Start now** starts an issue in the same moment, even when every slot is taken: Symphony runs it in an extra slot
+(limit + 1) for one session. When that session ends, its continuation, the hand-off to the next role or a retry waits
+in the queue like any other work and starts only when a slot is free. Each click adds one agent to the shared
+subscription; the dashboard asks first when no slot is free ("All 3 slots are busy. Start #123 in an extra slot?"),
+and the slot bar counts forced sessions separately ("04 / 03 agents, 1 forced"). A forced session holds none of the
+slots, so the regular slots keep filling from the queue.
+
+| | **Retry now** / **Resume now** | **Start now** |
+|---|---|---|
+| Works on | *Waiting* and *Paused* | *Up next*, *Waiting* and *Paused* |
+| Retry backoff, session-limit wait | skipped | skipped |
+| Account-wide dispatch gate (session limit) | holds back new issues only | skipped |
+| Free slot, column limits, reserved slots | respected: waits for a free slot | skipped: starts in an extra slot |
+| Operator pause of the issue | lifted (Resume now) | lifted |
+| Counters (continuations, session-limit hits) | reset | reset |
+| Blockers, open sub-issues (`wait_for_sub_issues`), required labels, active column | respected | respected: `409` |
+| Model on hold (limit or operator) | respected: waits | respected: `409 model_held`; release the model first |
+| When it starts | at the next retry pass, if a slot is free | in the same request |
+
+`POST /api/v1/<identifier>/force` answers `202` with `started`, `issue_identifier`, `previous` (`queued`, `retrying`,
+`paused`) and `slots` (`running` including the forced sessions, `forced`, `limit`). Errors: `404 issue_not_found`
+(not in *Up next*, *Waiting* or *Paused*), `409` with `running` (already running), `blocked` (open blockers or
+sub-issues), `not_eligible` (missing required label, not in an active column), `model_held`, `invalid_workflow`
+(dispatch validation fails) or `stopping` (Symphony is shutting down), `502 tracker_error` (the issue could not be
+refreshed), `403` as for retry. The running entry in `GET /api/v1/state` has `forced: true`, `counts.forced` counts
+them, and the issue's timeline and the repository log get a `worker_forced` line with the slot counts.
 
 ## Logs, transcripts and workspaces
 
@@ -908,6 +940,7 @@ ts=2026-10-04T09:17:00.000Z event=model_usage repo=owner/repository issue=owner/
 | `issue_paused` | An issue was paused after its continuation sessions. |
 | `session_limit_wait` | The session-limit retries are used up: the worker waits for the limit to reset (`retry_at` = reset + 1 minute) and then continues. Fields include `window`, `resets_at`, `retry_at`, `hits`, `max_retries`, `source`. |
 | `worker_restarted` | A waiting or paused worker was restarted via **Retry now** / **Resume now** or the API (`previous` = `retrying` or `paused`). |
+| `worker_forced` | An issue was started with **Start now** or `POST /api/v1/<identifier>/force` in an extra slot (`previous` = `queued`, `retrying` or `paused`; `running`, `forced`, `limit` = the slot counts after the start). |
 | `workspace_removed` | The workspace of an issue in `Done` was deleted. |
 
 The **statistics page** (`/logs`, button *Logs* in the dashboard) evaluates these files. At the top is a global
