@@ -145,7 +145,8 @@ und Token stehen in der **`.env`**.
 - **Robust:** Wiederholungen mit exponentiellem Backoff, Erkennung hängender Sessions; ändert sich das Issue auf dem
   Board, wird der Agent gestoppt.
 - **Session-Limit-Handling:** Erreicht das Claude-Abonnement sein Limit, wiederholt Symphony ein paar Mal und wartet
-  dann bis zum Reset ([Details](docs/usage.md#session-limit)).
+  dann bis zum Reset. Das Limit eines einzelnen Modells (z. B. Fable) hält nur dieses Modell an: Seine Issues warten,
+  die anderen Modelle laufen weiter, und kein Issue wechselt auf ein anderes Modell ([Details](docs/usage.md#session-limit)).
 - **Live-Konfiguration:** Die `WORKFLOW.md` wird ohne Neustart neu geladen; eine Instanz kann mehrere Repositories
   bedienen.
 - **Beobachtbar:** Dashboard mit JSON-API und einem Execution Trace pro Agent (Prompts, Modellaufrufe, Tool-Calls,

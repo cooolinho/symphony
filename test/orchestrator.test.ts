@@ -8,6 +8,7 @@ import { HistoryLog, readHistory } from '../src/history/history.ts';
 import type { IntegrationReport } from '../src/agent/types.ts';
 import type { WorkspaceIntegration } from '../src/integrations/types.ts';
 import { Logger } from '../src/log.ts';
+import { limitScopeOf } from '../src/agent/rate-limit.ts';
 import { CONTINUATION_DELAY_MS, SESSION_LIMIT_MAX_WAIT_MS, failureBackoffMs, sessionLimitWaitMs, sortForDispatch } from '../src/orchestrator/eligibility.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import type { AgentToolSpec, ToolResult } from '../src/tracker/types.ts';
@@ -999,7 +1000,7 @@ describe('session limit retries', () => {
           turnId: String(turn),
           code: 'session_limit',
           message: `turn ended with an error: ${TEXT}`,
-          sessionLimit: { window: 'five_hour', resetsAt: state.resetsAt, source: 'event', text: TEXT, overageDisabledReason: null },
+          sessionLimit: { window: 'five_hour', scope: 'account', model: null, resetsAt: state.resetsAt, source: 'event', text: TEXT, overageDisabledReason: null },
         };
       }
       if (state.mode === 'fail') return { ok: false, turnId: String(turn), code: 'turn_failed', message: 'boom' };
@@ -1045,6 +1046,8 @@ describe('session limit retries', () => {
     assert.equal(row?.due_at, new Date(resetsAt.getTime() + 60_000).toISOString());
     assert.deepEqual(row?.limit, {
       window: 'five_hour',
+      scope: 'account',
+      model: null,
       resets_at: resetsAt.toISOString(),
       source: 'event',
       text: TEXT,
@@ -1291,7 +1294,7 @@ describe('session limit retries', () => {
     s.runner.script = () => new Promise(() => undefined);
     s.tracker.issues.set('b', makeIssue({ id: 'b', priority: 2 }));
     await s.orchestrator.tickNow();
-    await until(() => snapshot(s).running.length === 1, 3_000, 'b running');
+    await until(() => snapshot(s).running.length === 1 && s.runner.sessions.length === 2, 3_000, 'b running');
     s.timers.fire(40_000);
     await until(() => retry(s)?.error === 'no available orchestrator slots', 3_000, 'slot requeue');
     assert.equal(retry(s)?.kind, 'session_limit');
@@ -1459,7 +1462,7 @@ describe('session limit retries', () => {
             turnId: String(turn),
             code: 'session_limit',
             message: `turn ended with an error: ${TEXT}`,
-            sessionLimit: { window: mode.window, resetsAt, source: 'event', text: TEXT, overageDisabledReason: null },
+            sessionLimit: { window: mode.window, ...limitScopeOf(mode.window, null), resetsAt, source: 'event', text: TEXT, overageDisabledReason: null },
           };
         }
         if (mode.mode === 'ok') return { ok: true, turnId: String(turn), resultText: 'done' };
@@ -2256,6 +2259,230 @@ describe('run history', () => {
   });
 });
 
+describe('model holds', () => {
+  const FABLE = "You've reached your Fable limit. Switch to another model to continue.";
+  type Mode = { mode: 'limit'; text?: string; window?: string | null; model?: string | null; resetsAt?: Date | null } | { mode: 'ok' } | { mode: 'hang' };
+
+  /** Issues fail with a usage limit (Fable by default), end normally, or hang until stopped; by issue id. */
+  function holdSetup(options: { issues: ReturnType<typeof makeIssue>[]; modes: Record<string, Mode>; front?: Record<string, unknown>; logDir?: string; history?: HistoryLog }) {
+    const runner = new FakeRunner((turn, params) => {
+      const mode = options.modes[params.issue.id] ?? { mode: 'hang' };
+      if (mode.mode === 'limit') {
+        const window = mode.window ?? null;
+        const model = mode.model === undefined ? 'fable' : mode.model;
+        const text = mode.text ?? FABLE;
+        return {
+          ok: false,
+          turnId: String(turn),
+          code: 'session_limit',
+          message: `turn ended with a usage limit: ${text}`,
+          sessionLimit: { window, ...limitScopeOf(window, model as 'fable' | null), resetsAt: mode.resetsAt ?? null, source: mode.resetsAt ? 'message' : null, text, overageDisabledReason: null },
+        };
+      }
+      if (mode.mode === 'ok') return { ok: true, turnId: String(turn), resultText: 'done' };
+      return new Promise((resolve) => params.signal.addEventListener('abort', () => resolve({ ok: false, turnId: String(turn), code: 'turn_cancelled', message: 'cancelled' })));
+    });
+    const front = options.front ?? {};
+    return setup({
+      runner,
+      issues: options.issues,
+      ...(options.logDir !== undefined ? { logDir: options.logDir } : {}),
+      ...(options.history !== undefined ? { history: options.history } : {}),
+      front: {
+        ...front,
+        agent: { max_turns: 1, ...(front.agent as object | undefined) },
+        tracker: { kind: 'github_project', provider: { owner: 'acme', project_number: 1, token: 't', repositories: 'acme/app' } },
+      },
+    });
+  }
+  const sessionsOf = (s: Setup, id: string) => s.runner.sessions.filter((session) => session.params.issue.id === id);
+  const fable = (id: string, extra: Partial<Parameters<typeof makeIssue>[0]> = {}) => makeIssue({ id, labels: ['model: fable'], ...extra });
+
+  it('holds model fable after a Fable limit; other models and the default model keep running, without a fallback', async () => {
+    const s = holdSetup({ issues: [fable('a')], modes: { a: { mode: 'limit' } } });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'a in the retry queue');
+    const hour = 3_600_000;
+    const row = snapshot(s).retrying[0];
+    assert.equal(row?.kind, 'session_limit');
+    assert.equal(row?.limit?.scope, 'model');
+    assert.equal(row?.limit?.model, 'fable');
+    assert.equal(row?.limit?.waiting, true);
+    // No quick retries: the issue waits for the end of the hold (agent.model_hold_ms without a reset time).
+    assert.deepEqual(s.timers.delays(), [hour]);
+    assert.equal(row?.due_at, new Date(s.clock.now().getTime() + hour).toISOString());
+    assert.deepEqual(snapshot(s).model_holds, [
+      {
+        model: 'fable',
+        source: 'limit',
+        since: s.clock.now().toISOString(),
+        until: new Date(s.clock.now().getTime() + hour).toISOString(),
+        text: FABLE,
+        issue_identifier: 'acme/app#a',
+      },
+    ]);
+    assert.equal(snapshot(s).health.dispatch_gate, null);
+    assert.equal(snapshot(s).running.length, 0);
+
+    s.tracker.issues.set('b', fable('b'));
+    s.tracker.issues.set('c', makeIssue({ id: 'c', labels: ['model: opus'] }));
+    s.tracker.issues.set('d', makeIssue({ id: 'd' }));
+    s.tracker.issues.set('e', makeIssue({ id: 'e', labels: ['Model: claude-fable-5-1'] }));
+    await s.orchestrator.tickNow();
+    await until(() => sessionsOf(s, 'c').length === 1 && sessionsOf(s, 'd').length === 1, 3_000, 'c and d dispatched');
+    assert.equal(sessionsOf(s, 'b').length, 0, 'b (fable) not dispatched');
+    assert.equal(sessionsOf(s, 'e').length, 0, 'e (a fable model id) not dispatched');
+    assert.equal(sessionsOf(s, 'c')[0]?.params.config.model, 'opus');
+    assert.equal(sessionsOf(s, 'd')[0]?.params.config.model, null);
+    assert.ok(s.runner.sessions.every((session) => session.params.config.fallbackModel === null), 'no fallback model');
+    const queued = snapshot(s).issues.find((issue) => issue.issue_id === 'b');
+    assert.equal(queued?.status, 'queued');
+    assert.deepEqual(queued?.model_hold, { model: 'fable', until: new Date(s.clock.now().getTime() + hour).toISOString() });
+    assert.equal(snapshot(s).issues.find((issue) => issue.issue_id === 'a')?.model_hold?.model, 'fable');
+
+    const events = s.orchestrator.issueTimeline('acme/app#a')?.events ?? [];
+    assert.equal(events.find((event) => event.event === 'model_hold')?.detail?.model, 'fable');
+  });
+
+  it('ends the hold at the reset + 60 s; the next Fable issue is the probe and runs on Fable', async () => {
+    // ManualClock starts at 2026-10-03T12:00:00Z.
+    const resetsAt = new Date('2026-10-03T15:00:00Z');
+    const s = holdSetup({ issues: [fable('a')], modes: { a: { mode: 'limit', resetsAt } } });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'a waiting');
+    const until1 = new Date(resetsAt.getTime() + 60_000);
+    assert.equal(snapshot(s).model_holds[0]?.until, until1.toISOString());
+    assert.deepEqual(s.timers.delays(), [until1.getTime() - s.clock.now().getTime()]);
+
+    s.tracker.issues.set('b', fable('b'));
+    s.clock.advance(until1.getTime() - s.clock.now().getTime() - 1_000);
+    await s.orchestrator.tickNow();
+    assert.equal(sessionsOf(s, 'b').length, 0, 'still held a second before the end');
+
+    s.clock.advance(1_000);
+    await s.orchestrator.tickNow();
+    assert.deepEqual(snapshot(s).model_holds, []);
+    await until(() => sessionsOf(s, 'b').length === 1, 3_000, 'b dispatched as the probe');
+    assert.equal(sessionsOf(s, 'b')[0]?.params.config.model, 'fable');
+    const events = s.orchestrator.issueTimeline('acme/app#a')?.events ?? [];
+    assert.ok(events.some((event) => event.event === 'model_hold_ended'));
+  });
+
+  it('uses agent.model_hold_ms without a reset and extends the hold on a later limit', async () => {
+    const s = holdSetup({ issues: [fable('a')], modes: { a: { mode: 'limit' }, b: { mode: 'limit' } }, front: { agent: { model_hold_ms: 600_000 } } });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'a waiting');
+    const since = s.clock.now().toISOString();
+    assert.equal(snapshot(s).model_holds[0]?.until, new Date(s.clock.now().getTime() + 600_000).toISOString());
+
+    // b runs on the default model, which is Fable: never held, but its own Fable limit extends the hold.
+    s.clock.advance(300_000);
+    s.tracker.issues.set('b', makeIssue({ id: 'b' }));
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 2, 3_000, 'b waiting');
+    const hold = snapshot(s).model_holds[0];
+    assert.equal(hold?.since, since);
+    assert.equal(hold?.until, new Date(s.clock.now().getTime() + 600_000).toISOString());
+    assert.equal(hold?.issue_identifier, 'acme/app#b');
+    // a's retry was due at the old end; it is requeued until the new end, without starting a session.
+    s.clock.advance(300_000);
+    s.timers.fire(600_000);
+    await until(() => /^model fable on hold until /.test(snapshot(s).retrying.find((r) => r.issue_id === 'a')?.error ?? ''), 3_000, 'a requeued');
+    assert.equal(sessionsOf(s, 'a').length, 1);
+    assert.equal(snapshot(s).retrying.find((r) => r.issue_id === 'a')?.due_at, hold?.until);
+  });
+
+  it('does not let Retry now bypass the hold', async () => {
+    const s = holdSetup({ issues: [fable('a')], modes: { a: { mode: 'limit' } } });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'a waiting');
+    const hold = snapshot(s).model_holds[0];
+    assert.equal((await s.orchestrator.restartWorker('acme/app#a')).ok, true);
+    s.timers.fire(0);
+    await until(() => snapshot(s).retrying[0]?.error === `model fable on hold until ${hold?.until}`, 3_000, 'requeued');
+    assert.equal(sessionsOf(s, 'a').length, 1);
+    assert.equal(snapshot(s).running.length, 0);
+    assert.equal(snapshot(s).retrying[0]?.due_at, hold?.until);
+  });
+
+  it('scopes a weekly Fable limit to the model: the account-wide gate stays open', async () => {
+    const text = "You've hit your weekly Fable limit · resets Oct 9, 3pm (Europe/Berlin)";
+    const s = holdSetup({ issues: [fable('a')], modes: { a: { mode: 'limit', text, window: 'seven_day', resetsAt: new Date('2026-10-09T13:00:00Z') } } });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'a waiting');
+    assert.equal(snapshot(s).retrying[0]?.limit?.window, 'seven_day');
+    assert.equal(snapshot(s).health.dispatch_gate, null);
+    assert.equal(snapshot(s).model_holds[0]?.until, '2026-10-09T13:01:00.000Z');
+    s.tracker.issues.set('b', makeIssue({ id: 'b', labels: ['model: sonnet'] }));
+    await s.orchestrator.tickNow();
+    await until(() => sessionsOf(s, 'b').length === 1, 3_000, 'b dispatched');
+  });
+
+  it('keeps the account-wide behaviour for a session limit', async () => {
+    const s = holdSetup({ issues: [fable('a')], modes: { a: { mode: 'limit', text: "You've hit your session limit", window: 'five_hour', model: null } } });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'a retrying');
+    assert.deepEqual(snapshot(s).model_holds, []);
+    assert.equal(snapshot(s).retrying[0]?.limit?.scope, 'account');
+    assert.deepEqual(s.timers.delays(), [10_000]);
+  });
+
+  it('writes model_hold and model_hold_ended history notes', async () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
+    const pricing = new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent());
+    const history = new HistoryLog(path.join(dir, 'repositories'), pricing, Logger.silent());
+    const s = holdSetup({ issues: [fable('a')], modes: { a: { mode: 'limit' } }, history });
+    s.tracker.issueRepository = () => 'acme/app';
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'a waiting');
+    s.tracker.set('a', { state: 'Backlog' });
+    s.clock.advance(3_600_000);
+    await s.orchestrator.tickNow();
+    const entries = readHistory(history.dir, 'acme/app').entries;
+    const hold = entries.find((entry) => entry.event === 'model_hold')?.fields ?? {};
+    assert.equal(hold.model, 'fable');
+    assert.equal(hold.issue, 'acme/app#a');
+    assert.equal(hold.text, FABLE);
+    const ended = entries.find((entry) => entry.event === 'model_hold_ended')?.fields ?? {};
+    assert.equal(ended.model, 'fable');
+  });
+
+  it('keeps holds across a restart and drops expired ones on load', async () => {
+    const logDir = tempDir();
+    const s = holdSetup({ issues: [fable('a')], modes: { a: { mode: 'limit' } }, logDir });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'a waiting');
+    const file = path.join(logDir, 'state', 'acme_app.json');
+    const stored = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(stored.version, 1);
+    assert.equal(stored.model_holds[0].model, 'fable');
+    await s.orchestrator.shutdown(1_000);
+
+    const restarted = holdSetup({ issues: [fable('b'), makeIssue({ id: 'c' })], modes: {}, logDir });
+    assert.deepEqual(snapshot(restarted).model_holds.map((hold) => [hold.model, hold.issue_identifier]), [['fable', 'acme/app#a']]);
+    await restarted.orchestrator.tickNow();
+    await until(() => sessionsOf(restarted, 'c').length === 1, 3_000, 'c dispatched');
+    assert.equal(sessionsOf(restarted, 'b').length, 0, 'b held after the restart');
+    await restarted.orchestrator.shutdown(1_000);
+
+    const later = holdSetup({ issues: [], modes: {}, logDir });
+    assert.equal(snapshot(later).model_holds.length, 1);
+    // A clock past the end drops the hold on load.
+    const stale = new Orchestrator({
+      workflow: later.workflow,
+      runner: later.runner,
+      logger: Logger.silent(),
+      env: {},
+      logDir,
+      clock: { now: () => new Date(Date.parse(stored.model_holds[0].until) + 1), monotonicMs: () => 0 },
+      timers: later.timers,
+      createAdapter: () => later.tracker,
+    });
+    assert.deepEqual(stale.snapshot().model_holds, []);
+  });
+});
+
 describe('restart a worker', () => {
   const RESETS_AT = new Date('2026-10-03T17:30:00Z');
   const TEXT = "You've hit your session limit · resets 7:30pm (Europe/Berlin)";
@@ -2273,7 +2500,7 @@ describe('restart a worker', () => {
           turnId: String(turn),
           code: 'session_limit',
           message: `turn ended with an error: ${TEXT}`,
-          sessionLimit: { window: 'five_hour', resetsAt: RESETS_AT, source: 'event', text: TEXT, overageDisabledReason: null },
+          sessionLimit: { window: 'five_hour', scope: 'account', model: null, resetsAt: RESETS_AT, source: 'event', text: TEXT, overageDisabledReason: null },
         };
       }
       if (state.mode === 'fail') return { ok: false, turnId: String(turn), code: 'turn_failed', message: 'boom' };

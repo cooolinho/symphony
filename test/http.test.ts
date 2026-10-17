@@ -96,6 +96,10 @@ describe('http extension', () => {
     assert.match(page.body, /<section id="dispatch-gate" class="dispatch-gate" role="status" hidden>/);
     assert.match(page.body, /\$\('dispatch-gate'\)\.hidden = !gate/);
     assert.match(page.body, /'Dispatch paused until ' \+ fmtStamp\(gate\.until\) \+ ' · session limit \(' \+ gate\.window \+ '\) · started by ' \+ gate\.issue_identifier/);
+    // Model holds: a notice per held model, and waiting cards name the model they wait for.
+    assert.match(page.body, /<section id="model-holds" class="dispatch-gate model-holds" role="status" hidden>/);
+    assert.match(page.body, /'Model ' \+ hold\.model \+ ' on hold until ' \+ fmtStamp\(hold\.until\)/);
+    assert.match(page.body, /'Waiting for model ' \+ hold\.model \+ ' \(limit until ' \+ fmtStamp\(hold\.until\) \+ '\)'/);
     assert.doesNotMatch(page.body, /\bonclick=/);
 
     const state = await request(server.port, 'GET', '/api/v1/state');
@@ -106,6 +110,23 @@ describe('http extension', () => {
     assert.deepEqual(Object.keys(body.pipeline_config), ['board_columns', 'roles', 'blocked_states']);
     assert.deepEqual(Object.keys(body.agent_totals), ['input_tokens', 'output_tokens', 'total_tokens', 'seconds_running', 'cost_usd', 'claude_estimate_usd']);
     assert.ok(Array.isArray(body.running) && Array.isArray(body.retrying));
+    assert.deepEqual(Object.keys(body), [
+      'generated_at',
+      'counts',
+      'issues',
+      'blocked',
+      'board_fetched_at',
+      'pipeline_config',
+      'running',
+      'retrying',
+      'paused',
+      'model_holds',
+      'agent_totals',
+      'rate_limits',
+      'health',
+      'controls',
+    ]);
+    assert.deepEqual(body.model_holds, []);
     assert.equal(body.health.dispatch_gate, null);
   });
 

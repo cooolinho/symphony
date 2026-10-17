@@ -48,6 +48,8 @@ export interface AgentConfig {
   maxContinuations: number | null;
   /** Retries per issue after the first session-limit failure before waiting for the reset; 0 = wait right away. */
   maxSessionLimitRetries: number;
+  /** How long a model limit without a known reset holds its model (no session of that model starts meanwhile). */
+  modelHoldMs: number;
   /** Keys are normalized state names (trimmed, lowercase). */
   maxConcurrentAgentsByState: ReadonlyMap<string, number>;
   /** Liquid template for continuation turns; null uses the built-in text. */
@@ -139,6 +141,7 @@ export const DEFAULTS = {
   maxTurns: 20,
   maxRetryBackoffMs: 300_000,
   maxSessionLimitRetries: 3,
+  modelHoldMs: 3_600_000,
   turnTimeoutMs: 3_600_000,
   readTimeoutMs: 30_000,
   stallTimeoutMs: 300_000,
@@ -495,6 +498,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
         ? null
         : reader.int(agentRaw, 'max_continuations', 'agent.max_continuations', 0, 0),
     maxSessionLimitRetries: reader.int(agentRaw, 'max_session_limit_retries', 'agent.max_session_limit_retries', DEFAULTS.maxSessionLimitRetries, 0),
+    modelHoldMs: reader.int(agentRaw, 'model_hold_ms', 'agent.model_hold_ms', DEFAULTS.modelHoldMs, 1),
     continuationPrompt: reader.script(agentRaw, 'continuation_prompt', 'agent.continuation_prompt'),
   };
 

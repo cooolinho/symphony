@@ -115,7 +115,10 @@ active after `SYMPHONY_MAX_CONTINUATIONS` continuations; no time is scheduled fo
 ## Session limit
 
 When your Claude subscription hits its usage limit (message `You've hit your session limit · resets 7:30pm`, the
-5-hour window or a weekly limit), retrying after 10 seconds does not help. Symphony therefore works in two stages:
+5-hour window or a weekly limit), retrying after 10 seconds does not help. A limit applies either to the **whole
+account** (session limit, weekly limit) or to **one model** (for example `You've reached your Fable limit. Switch to
+another model to continue.`, or a weekly Opus or Sonnet limit). Model limits are described in
+[Model limits](#model-limits). For an account-wide limit Symphony works in two stages:
 
 1. **Retries:** Up to `SYMPHONY_MAX_SESSION_LIMIT_RETRIES` times (default 3), Symphony retries the issue after the
    first session-limit error, with the usual wait (10 s, 20 s, 40 s …).
@@ -146,17 +149,53 @@ Running agents, retries and reconciliation with the board continue. The gate end
 reached, issue released, **Retry now**) or when a turn of any agent finishes successfully after the limit. If several
 workers wait, the gate lasts until the latest time. The dashboard then shows the notice
 *Dispatch paused until … · session limit (five_hour) · started by …*, and `GET /api/v1/state` the field
-`health.dispatch_gate` (`reason`, `window`, `until`, `issue_identifier`, else `null`). Model-specific limits
-(`seven_day_opus`, `seven_day_sonnet`), `overage` and limits without a known window block nothing.
+`health.dispatch_gate` (`reason`, `window`, `until`, `issue_identifier`, else `null`). Model limits, `overage` and
+limits without a known window never close this gate.
+
+### Model limits
+
+A limit whose message names a model family (`fable`, `opus`, `sonnet`, `haiku`), or the structured windows
+`seven_day_opus` and `seven_day_sonnet`, applies to that model only. Symphony then puts **the model on hold**:
+
+- The issue that hit the limit leaves its agent slot and waits in the retry queue until the hold ends. There are no
+  quick retries, because a model limit does not go away within seconds.
+- No issue that would run on that model starts until the hold ends. Symphony resolves the model the same way as at
+  dispatch: `Model: …` label, else the role's `claude.model`, else `claude.model`. Issues with the
+  [Claude Code default model](configuration.md#claude) (no model configured) are never held.
+- Issues on other models keep running and start as usual, in the same tick.
+- **No fallback:** Symphony never moves an issue to another model. An issue labelled `Model: fable` runs on Fable or
+  waits.
+- The hold lasts until the reset plus 1 minute when the message names a reset, otherwise for `agent.model_hold_ms`
+  (default 1 hour). Another limit of the same model while it is held extends the hold, it never shortens it.
+- When the hold ends, the next issue of that model is the probe. If it hits the limit again, a new hold starts.
+- **Retry now** on an issue that waits for a held model does not bypass the hold: the issue goes back into the queue
+  until the hold ends.
+
+The message wins over the event: the Agent SDK has no window for every model (there is no Fable window), so a model
+limit can arrive with the window `seven_day`. A message like `You've hit your weekly Fable limit` is therefore a
+Fable limit, and it does not stop the other models. Claude Code sometimes reports a limit as a successful turn whose
+whole answer is the limit message; Symphony treats such a turn as a limit too (no continuation, and it does not count
+as a successful turn). A normal answer that merely mentions a limit stays a normal answer.
+
+**Where you see it:** the dashboard shows a notice per held model (model, end of the hold, original message), and
+waiting cards say *Waiting for model fable (limit until …)*. `GET /api/v1/state` lists the holds under
+`model_holds[]` (`model`, `source`, `since`, `until`, `text`, `issue_identifier`), and waiting issue rows carry
+`model_hold` (`model`, `until`, else `null`). The issue timeline and the [repository log](#logs-and-statistics) show
+`model_hold` and `model_hold_ended`.
+
+**Restart:** holds are stored in `<logDir>/state/<repositories>.json` (one file per instance, named after the
+configured repositories, so several instances can share one log directory) and restored on start; holds that ended
+in the meantime are dropped. Several Symphony instances on one subscription do not share holds: each one hits the
+limit once and then holds the model.
 
 **Limitations:**
 
-- The wait is kept in memory only. If you restart Symphony, it is forgotten: the issue is fetched again like any
-  active issue and starts, and if the limit is still active, the process starts over.
+- The wait for an account-wide limit is kept in memory only. If you restart Symphony, it is forgotten: the issue is
+  fetched again like any active issue and starts, and if the limit is still active, the process starts over. Model
+  holds survive a restart (see [Model limits](#model-limits)).
 - Only session limits of a Claude subscription count. Rate limits (HTTP 429) of an `ANTHROPIC_API_KEY` remain
   ordinary failures with backoff.
-- A model-specific weekly limit (Opus or Sonnet) parks only the affected issue. Issues with a different model keep
-  running.
+- A model limit holds only the affected model. Issues with a different model keep running.
 - **Retry now** (section [Intervening while Symphony runs](#intervening-while-symphony-runs)) ends the wait right
   away, for example after topping up credits (`overage_disabled_reason` = `out_of_credits`). The retry counter then
   starts over. If the limit is still active, the worker is back in waiting mode after a few failures.

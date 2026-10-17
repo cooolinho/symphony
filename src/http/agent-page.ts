@@ -450,7 +450,7 @@ ${PIPELINE_JS}
   const COVERED_BY_TRANSCRIPT = new Set(['assistant_message', 'tool_use', 'tool_result', 'tracker_tool']);
   const CATEGORY = {
     run_dispatched: 'lifecycle', run_finished: 'lifecycle', retry_scheduled: 'lifecycle', issue_paused: 'lifecycle',
-    session_limit_wait: 'lifecycle', worker_restarted: 'lifecycle',
+    session_limit_wait: 'lifecycle', worker_restarted: 'lifecycle', model_hold: 'lifecycle', model_hold_ended: 'lifecycle',
     session_started: 'lifecycle', session_configured: 'lifecycle', startup_failed: 'lifecycle', agent_exited: 'lifecycle',
     phase: 'phase',
     turn_started: 'model', turn_completed: 'model', turn_failed: 'model', turn_cancelled: 'model', turn_timeout: 'model',
@@ -491,6 +491,11 @@ ${PIPELINE_JS}
       case 'session_limit_wait':
         return { ...base, tone: 'amber', glyph: '⏳', title: 'WAITING FOR SESSION LIMIT', err: false,
           line: 'Resets at ' + fmtStamp(d.resets_at) + (d.window ? ' (' + windowWords(d.window) + ')' : '') + ' · retry at ' + fmtStamp(d.retry_at) };
+      case 'model_hold':
+        return { ...base, tone: 'amber', glyph: '⏳', title: 'MODEL ' + String(d.model || '').toUpperCase() + ' ON HOLD', err: false,
+          line: 'Until ' + fmtStamp(d.until) + (d.extended ? ' (extended)' : '') + (d.text ? ' · ' + d.text : '') };
+      case 'model_hold_ended':
+        return { ...base, tone: 'cyan', glyph: '▶', title: 'MODEL ' + String(d.model || '').toUpperCase() + ' HOLD ENDED', err: false, line: e.message || '' };
       case 'worker_restarted':
         return { ...base, tone: 'cyan', glyph: '↻', title: 'WORKER RESTARTED', err: false, line: e.message || '' };
       case 'issue_paused':
@@ -952,10 +957,12 @@ ${PIPELINE_JS}
     const r = d.retry;
     const limit = r.limit;
     const sub = [];
+    const modelLimit = limit.scope === 'model' && limit.model;
+    if (modelLimit) sub.push(['Model', limit.model + ' on hold; other models keep running, no fallback']);
     if (limit.window) sub.push(['Window', windowWords(limit.window)]);
     if (limit.resets_at) sub.push(['Resets at', fmtStamp(limit.resets_at)]);
     sub.push(['Retry at', fmtStamp(r.due_at) + ' (in ' + fmtDuration(Math.max(0, Date.parse(r.due_at) - Date.now()) / 1000) + ')']);
-    sub.push(['Retries', limit.waiting ? 'used up' : limit.hits <= limit.max_retries ? limit.hits + ' of ' + limit.max_retries : 'backoff']);
+    sub.push(['Retries', modelLimit ? 'none: waits for the end of the hold' : limit.waiting ? 'used up' : limit.hits <= limit.max_retries ? limit.hits + ' of ' + limit.max_retries : 'backoff']);
     if (limit.text && r.error && r.error !== limit.text) sub.push(['Queue', r.error]);
     if (limit.overage_disabled_reason === 'out_of_credits') sub.push(['Credits', 'Extra usage is off because credits are used up. Top up' + (retryAllowed() ? ', then press Retry now.' : '.')]);
     return { tone: 'amber', title: '⏳ Session limit reached', reason: limit.text || r.error || 'unknown', sub, restart: 'Retry' };

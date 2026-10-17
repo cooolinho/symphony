@@ -5,6 +5,9 @@ const DASHBOARD_CSS = `
   /* Dispatch gate: new dispatches wait for an account-wide session limit (a notice, not an error). */
   .dispatch-gate { border-color: var(--amber-line); background: linear-gradient(180deg, var(--amber-dim), rgba(11, 17, 21, .8));
     display: flex; align-items: center; gap: 10px; padding: 12px 16px; color: var(--amber); font: 12.5px/1.6 var(--mono); overflow-wrap: anywhere; }
+  /* Model holds: one model hit its own limit; its issues wait, the other models keep running. */
+  .model-holds { align-items: flex-start; }
+  .model-holds ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
   /* Matrix rain: a few faint glyph columns behind everything, disabled for small screens and reduced motion. */
   .rain { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
     mask-image: linear-gradient(to bottom, transparent, #000 15%, #000 55%, transparent 90%); }
@@ -212,6 +215,9 @@ export const DASHBOARD_HTML = `<!doctype html>
   </section>
   <section id="dispatch-gate" class="dispatch-gate" role="status" hidden>
     <span class="dot tone-amber"></span><span id="dispatch-gate-text"></span>
+  </section>
+  <section id="model-holds" class="dispatch-gate model-holds" role="status" hidden>
+    <span class="dot tone-amber"></span><ul id="model-hold-list"></ul>
   </section>
 
   <div class="stats" id="stats" aria-label="Metrics"></div>
@@ -437,7 +443,13 @@ ${PIPELINE_JS}
     nodes.push(meta);
     if (row.status === 'retrying' && row.retry) {
       const r = row.retry;
-      if (r.kind === 'session_limit' && r.limit) {
+      // The issue's own model, else the model whose limit it hit (an issue on the default model is never held).
+      const hold = row.model_hold || (r.limit && r.limit.scope === 'model' && r.limit.model ? { model: r.limit.model, until: r.due_at } : null);
+      if (hold) {
+        meta.append(...modelHoldBits(hold));
+        nodes.push(el('div', waitingForModel(hold), 'msg'));
+        if (r.limit && r.limit.text) nodes.push(el('div', r.limit.text, 'msg'));
+      } else if (r.kind === 'session_limit' && r.limit) {
         meta.append(...sessionLimitBits(r));
         nodes.push(el('div', r.limit.text || r.error || '—', 'msg'));
         if (r.limit.overage_disabled_reason === 'out_of_credits') {
@@ -455,11 +467,24 @@ ${PIPELINE_JS}
       meta.append(cont, el('span', 'paused ' + ago(row.paused.paused_at)));
       nodes.push(el('div', 'Resume: change the issue on the board (status, comment or labels)' + (retryAllowed ? ', or press Resume now.' : '.'), 'msg'));
       nodes.push(restartButton(row.issue_identifier, 'Resume'));
+    } else if (row.model_hold) {
+      meta.append(...modelHoldBits(row.model_hold));
+      nodes.push(el('div', waitingForModel(row.model_hold), 'msg'));
     } else {
       meta.append(el('span', 'waiting for dispatch'));
       nodes.push(el('div', row.dispatch_note || 'Waiting for a free agent slot or the next poll.', 'msg'));
     }
     return nodes;
+  }
+
+  // A waiting issue whose model is on hold: it starts when the hold ends, never on another model.
+  function waitingForModel(hold) {
+    return 'Waiting for model ' + hold.model + ' (limit until ' + fmtStamp(hold.until) + ')';
+  }
+  function modelHoldBits(hold) {
+    const model = el('span', 'waiting for model '); model.append(el('b', hold.model));
+    const until = el('span', 'until '); until.append(el('b', fmtStamp(hold.until)));
+    return [model, until];
   }
 
   function updateCard(refs, row, maxTurns) {
@@ -767,7 +792,9 @@ ${PIPELINE_JS}
       retries.add(key);
       if (previousRetries && !previousRetries.has(key)) {
         if (r.kind === 'session_limit' && r.limit) {
-          pushActivity(now, r.issue_identifier, waiting
+          pushActivity(now, r.issue_identifier, r.limit.scope === 'model' && r.limit.model
+            ? 'model ' + r.limit.model + ' on hold · retry at ' + fmtClock(r.due_at)
+            : waiting
             ? 'waiting for the session limit · retry at ' + fmtClock(r.due_at)
             : 'session limit: retry ' + r.limit.hits + ' of ' + r.limit.max_retries + ' queued', 'amber');
         } else {
@@ -970,6 +997,11 @@ ${PIPELINE_JS}
     setText($('dispatch-gate-text'), gate
       ? 'Dispatch paused until ' + fmtStamp(gate.until) + ' · session limit (' + gate.window + ') · started by ' + gate.issue_identifier
       : '');
+    const holds = state.model_holds || [];
+    $('model-holds').hidden = holds.length === 0;
+    $('model-hold-list').replaceChildren(...holds.map((hold) => el('li',
+      'Model ' + hold.model + ' on hold until ' + fmtStamp(hold.until) + (hold.issue_identifier ? ' · hit by ' + hold.issue_identifier : '') +
+      (hold.text ? ' · ' + hold.text : ''))));
 
     const t = state.agent_totals;
     const running = state.counts.running;
