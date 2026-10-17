@@ -20,7 +20,7 @@ import { WorkspaceManager, type HookIssue } from '../workspace/manager.ts';
 import type { ServiceConfig } from '../workflow/config.ts';
 import { roleFor, roleName } from '../workflow/roles.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../workflow/store.ts';
-import { unknownBoardColumns, validateDispatch } from '../workflow/validate.ts';
+import { nextStageProblems, unknownBoardColumns, validateDispatch } from '../workflow/validate.ts';
 import {
   CONTINUATION_DELAY_MS,
   MAX_TIMER_MS,
@@ -1193,6 +1193,9 @@ export class Orchestrator {
     }
     if (this.#statusOptionsCache?.version === workflow.version) {
       errors.push(...unknownBoardColumns(workflow.config, this.#statusOptionsCache.options));
+      errors.push(...nextStageProblems(workflow.config, this.#statusOptionsCache.options));
+    } else if (errors.length === 0 && this.#adapterFor(workflow).statusOptions === undefined) {
+      errors.push(...nextStageProblems(workflow.config, null)); // a tracker without columns has no board order
     }
     return errors;
   }
