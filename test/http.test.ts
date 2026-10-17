@@ -217,7 +217,7 @@ describe('http extension', () => {
     assert.deepEqual(a.repositories_available, ['acme/app', 'other/repo']);
     assert.deepEqual(a.models_available, ['claude-opus-5-5']);
     assert.deepEqual(a.efforts_available, ['unknown']);
-    assert.deepEqual(a.by_role.map((r) => [r.role, r.runs]), [['unknown', 1]]);
+    assert.deepEqual(a.by_role.map((r: { role: string; runs: number }) => [r.role, r.runs]), [['default', 1]]);
     assert.equal(a.top.pipelines.length, 1);
     assert.equal(a.filter.effort, null);
     // A second identical request is served from the cache with the same figures.
