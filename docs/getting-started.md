@@ -137,7 +137,8 @@ npm run dry-run
 ```
 
 The dry run loads `WORKFLOW.md` and `.env`, validates the configuration, reads the board and shows what Symphony would
-start. It also checks whether `php` and `composer` work for Laravel Boost, and lists the detected Laravel apps for
+start, in the same order and with the same reasons as the dashboard's *Up next* (model holds come from the runtime
+state in the log directory). It also checks whether `php` and `composer` work for Laravel Boost, and lists the detected Laravel apps for
 issues with an existing workspace. It does not start any agents. Example:
 
 ```
@@ -150,12 +151,17 @@ Plugins:         /home/user/projects/symphony/.claude; skills: all
 Laravel Boost:   auto, for Laravel apps that require laravel/boost; php (PHP 8.4.12), composer (Composer version 2.8.12 …)
 
 Candidates in active states: 3
-  dispatch  owner/repository#12  [Ready]  Implement feature A
-            ↳ Laravel app laravel/: Laravel Boost
-  skip      owner/repository#15  [Ready]  Implement feature B
-            ↳ blocked by owner/repository#12
-  skip      owner/repository#16  [Ready]  Write tests
-            ↳ waiting for sub-issues owner/repository#15
+Dispatch plan (up next in start order, 10 free slots):
+  #1   start  owner/repository#12  [Ready, p1]  Implement feature A
+              ↳ starts at the next poll
+              ↳ role developer, model default, effort default
+              ↳ Laravel app laravel/: Laravel Boost
+  #2   wait   owner/repository#16  [Ready]  Write tests
+              ↳ waiting for sub-issues owner/repository#15
+              ↳ role developer, model default, effort default
+  blocked     owner/repository#15  [Ready]  Implement feature B
+              ↳ blocked by owner/repository#12
+              ↳ role developer, model default, effort default
 
 Prompt preview for owner/repository#12:
   | You are working on GitHub issue **owner/repository#12**: …

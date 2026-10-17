@@ -76,7 +76,7 @@ function priorityRank(priority: number | null): number {
 }
 
 /** Priority 1..4 first (others and null after), then oldest created_at (null last), then identifier. */
-export function sortForDispatch(issues: Issue[]): Issue[] {
+export function sortForDispatch<T extends Pick<Issue, 'priority' | 'created_at' | 'identifier'>>(issues: readonly T[]): T[] {
   return [...issues].sort((a, b) => {
     const byPriority = priorityRank(a.priority) - priorityRank(b.priority);
     if (byPriority !== 0 && !Number.isNaN(byPriority)) return byPriority;
