@@ -554,6 +554,8 @@ describe('claude agent runner', () => {
       assert.equal(outcome.message, `turn ended with an error: ${TEXT}`);
       assert.deepEqual(outcome.sessionLimit, {
         window: 'five_hour',
+        scope: 'account',
+        model: null,
         resetsAt: new Date('2026-10-05T17:30:00Z'),
         source: 'event',
         text: TEXT,
@@ -594,6 +596,93 @@ describe('claude agent runner', () => {
       const info = outcome.ok ? undefined : outcome.sessionLimit;
       assert.equal(info?.text, TEXT);
       assert.equal(info?.window, 'five_hour');
+    });
+
+    describe('model limit (Fable)', () => {
+      const FABLE = "You've reached your Fable limit. Switch to another model to continue.";
+      // No transcript with this message exists yet, so every shape the SDK may use is covered.
+      const shapes: Array<[string, Script]> = [
+        [
+          'failed result (as the session limit arrives today)',
+          (_p, _o, emit) => {
+            emit(limitEvent({ rateLimitType: 'seven_day', resetsAt: undefined }));
+            emit(limitAssistant(FABLE));
+            emit(limitResult({ result: FABLE }));
+          },
+        ],
+        [
+          'assistant rate_limit message with a failed result without text',
+          (_p, _o, emit) => {
+            emit(limitAssistant(FABLE));
+            emit(result(0, 0, 0, { is_error: true, result: '' }));
+          },
+        ],
+        ['successful result whose whole text is the limit message', (_p, _o, emit) => emit(result(0, 0, 0, { result: FABLE }))],
+      ];
+      for (const [name, script] of shapes) {
+        it(`classifies a ${name} as a session limit of model fable`, async () => {
+          const events: AgentEvent[] = [];
+          const session = await new ClaudeAgentRunner({ query: fakeQuery(script).fn }).startSession(params({ events }));
+          const outcome = await session.runTurn('go');
+          await session.stop();
+          assert.equal(outcome.ok, false);
+          if (outcome.ok) return;
+          assert.equal(outcome.code, 'session_limit');
+          assert.equal(outcome.sessionLimit?.scope, 'model');
+          assert.equal(outcome.sessionLimit?.model, 'fable');
+          assert.equal(outcome.sessionLimit?.text, FABLE);
+          // No turn_completed: it would count as a successful turn and lift the account-wide dispatch gate.
+          assert.equal(events.some((event) => event.event === 'turn_completed'), false);
+          const failed = events.find((event) => event.event === 'turn_failed');
+          assert.deepEqual((failed?.detail?.session_limit as { scope?: string; model?: string } | undefined)?.model, 'fable');
+        });
+      }
+
+      it('reports a successful limit turn with the limit text', async () => {
+        const outcome = await run((_p, _o, emit) => emit(result(0, 0, 0, { result: FABLE })));
+        assert.equal(outcome.ok === false && outcome.message, `turn ended with a usage limit: ${FABLE}`);
+      });
+
+      it('scopes a weekly Fable limit to the model even when the event says seven_day', async () => {
+        const text = "You've hit your weekly Fable limit · resets Oct 9, 3pm (Europe/Berlin)";
+        const outcome = await run((_p, _o, emit) => {
+          emit(limitEvent({ rateLimitType: 'seven_day' }));
+          emit(limitAssistant(text));
+          emit(limitResult({ result: text }));
+        });
+        assert.equal(outcome.ok === false && outcome.code, 'session_limit');
+        const info = outcome.ok ? undefined : outcome.sessionLimit;
+        assert.equal(info?.window, 'seven_day');
+        assert.equal(info?.scope, 'model');
+        assert.equal(info?.model, 'fable');
+      });
+
+      it('scopes a seven_day_opus event without model wording to model opus', async () => {
+        const outcome = await run((_p, _o, emit) => {
+          emit(limitEvent({ rateLimitType: 'seven_day_opus' }));
+          emit(limitResult({ result: 'Request rejected (429)' }));
+        });
+        const info = outcome.ok ? undefined : outcome.sessionLimit;
+        assert.equal(info?.scope, 'model');
+        assert.equal(info?.model, 'opus');
+      });
+
+      for (const text of [
+        'I checked why the job failed: you hit your rate limit on the API. Added a retry with backoff.',
+        `Done.\n\n${FABLE}`,
+        `Summary: ${FABLE}`,
+      ]) {
+        it(`keeps a successful result that only mentions a limit as success (${JSON.stringify(text.slice(0, 30))})`, async () => {
+          const events: AgentEvent[] = [];
+          const session = await new ClaudeAgentRunner({ query: fakeQuery((_p, _o, emit) => emit(result(0, 0, 0, { result: text }))).fn }).startSession(
+            params({ events }),
+          );
+          const outcome = await session.runTurn('go');
+          await session.stop();
+          assert.equal(outcome.ok, true);
+          assert.ok(events.some((event) => event.event === 'turn_completed'));
+        });
+      }
     });
 
     it('keeps a bare 429 as turn_failed', async () => {

@@ -182,6 +182,17 @@ describe('config layer', () => {
     }
   });
 
+  it('defaults agent.model_hold_ms to one hour and rejects values below 1', () => {
+    assert.equal(resolve({}).agent.modelHoldMs, 3_600_000);
+    assert.equal(resolve({ agent: { model_hold_ms: 600_000 } }).agent.modelHoldMs, 600_000);
+    for (const value of [0, -1, 'abc']) {
+      assert.throws(
+        () => resolve({ agent: { model_hold_ms: value } }),
+        (error: unknown) => error instanceof SymphonyError && error.code === 'invalid_config' && error.message.includes('agent.model_hold_ms'),
+      );
+    }
+  });
+
   it('parses checks with defaults, normalized columns and literal $VAR scripts', () => {
     assert.deepEqual(resolve({ hooks: { timeout_ms: 90_000 } }).checks, { timeoutMs: 90_000, retries: 0, onEnter: new Map() });
     const config = resolve(

@@ -144,7 +144,8 @@ live in **`.env`**.
   create sub-issues. The GitHub token stays in the Symphony process; the agent never sees it.
 - **Robust:** retries with exponential backoff, stall detection; an agent is stopped when its issue changes on the board.
 - **Session-limit handling:** when the Claude subscription hits its limit, Symphony retries a few times and then waits
-  for the reset ([details](docs/usage.md#session-limit)).
+  for the reset. A limit of one model (e.g. Fable) puts only that model on hold: its issues wait, the other models
+  keep running, and no issue moves to another model ([details](docs/usage.md#session-limit)).
 - **Live configuration:** `WORKFLOW.md` reloads without a restart; one instance can serve several repositories.
 - **Observable:** dashboard with JSON API and a per-agent execution trace (prompts, model calls, tool calls, phases,
   tokens and cost), structured logs, one transcript per session, `--dry-run` to check the setup.

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { parseLimitMessage, type LimitWindow } from '../src/agent/rate-limit.ts';
+import { isWholeLimitMessage, limitScopeOf, modelFamilyOf, parseLimitMessage, type LimitWindow } from '../src/agent/rate-limit.ts';
 
 const BERLIN = (reset: string) => `You've hit your session limit · resets ${reset} (Europe/Berlin)`;
 
@@ -69,5 +69,77 @@ describe('parseLimitMessage window', () => {
   it('returns null for text that is not a limit message', () => {
     assert.equal(parseLimitMessage('Something else went wrong · resets 7pm', now), null);
     assert.equal(parseLimitMessage('', now), null);
+  });
+});
+
+describe('parseLimitMessage scope', () => {
+  const now = new Date('2026-10-05T15:20:31Z');
+  const cases: Array<[string, 'account' | 'model', string | null, LimitWindow | null]> = [
+    ["You've reached your Fable limit. Switch to another model to continue.", 'model', 'fable', null],
+    ["You've hit your Fable limit", 'model', 'fable', null],
+    ["You've hit your weekly Fable limit · resets Oct 9, 3pm (Europe/Berlin)", 'model', 'fable', 'seven_day'],
+    ["You've reached your weekly Haiku limit", 'model', 'haiku', 'seven_day'],
+    ["You've hit your weekly Opus limit", 'model', 'opus', 'seven_day_opus'],
+    ["You've reached your Sonnet limit", 'model', 'sonnet', 'seven_day_sonnet'],
+    ["You've hit your session limit", 'account', null, 'five_hour'],
+    ["You've reached your session limit", 'account', null, 'five_hour'],
+    ["You've hit your weekly limit", 'account', null, 'seven_day'],
+    ["You've hit your usage limit", 'account', null, null],
+  ];
+  for (const [text, scope, model, window] of cases) {
+    it(`${text} -> ${scope} ${model ?? ''}`, () => {
+      const parsed = parseLimitMessage(text, now);
+      assert.equal(parsed?.scope, scope);
+      assert.equal(parsed?.model, model);
+      assert.equal(parsed?.window, window);
+    });
+  }
+
+  it('reads the reset of a reached wording', () => {
+    const parsed = parseLimitMessage("You've reached your Fable limit · resets 7:30pm (UTC)", now);
+    assert.equal(parsed?.resetsAt?.toISOString(), '2026-10-05T19:30:00.000Z');
+  });
+});
+
+describe('limitScopeOf', () => {
+  it('lets the model in the text win over the event window', () => {
+    assert.deepEqual(limitScopeOf('seven_day', 'fable'), { scope: 'model', model: 'fable' });
+    assert.deepEqual(limitScopeOf('five_hour', 'fable'), { scope: 'model', model: 'fable' });
+  });
+  it('maps the model windows of the SDK to their family', () => {
+    assert.deepEqual(limitScopeOf('seven_day_opus', null), { scope: 'model', model: 'opus' });
+    assert.deepEqual(limitScopeOf('seven_day_sonnet', null), { scope: 'model', model: 'sonnet' });
+  });
+  it('keeps every other window account-wide', () => {
+    for (const window of ['five_hour', 'seven_day', 'overage', null]) assert.deepEqual(limitScopeOf(window, null), { scope: 'account', model: null });
+  });
+});
+
+describe('modelFamilyOf', () => {
+  it('maps aliases and model ids to their family', () => {
+    assert.equal(modelFamilyOf('fable'), 'fable');
+    assert.equal(modelFamilyOf('claude-fable-5-1'), 'fable');
+    assert.equal(modelFamilyOf('opus[1m]'), 'opus');
+    assert.equal(modelFamilyOf('claude-haiku-4-5-20251001'), 'haiku');
+    assert.equal(modelFamilyOf('Sonnet'), 'sonnet');
+  });
+  it('has no family for the default model and unknown names', () => {
+    assert.equal(modelFamilyOf(null), null);
+    assert.equal(modelFamilyOf('gpt-4'), null);
+    assert.equal(modelFamilyOf('opusx'), null);
+  });
+});
+
+describe('isWholeLimitMessage', () => {
+  it('accepts a text that is only a limit message', () => {
+    assert.ok(isWholeLimitMessage("You've reached your Fable limit. Switch to another model to continue."));
+    assert.ok(isWholeLimitMessage("  You've hit your session limit · resets 7:30pm (Europe/Berlin)\n"));
+    assert.ok(isWholeLimitMessage('You’ve hit your weekly limit'));
+  });
+  it('rejects answers that only mention a limit', () => {
+    assert.ok(!isWholeLimitMessage(''));
+    assert.ok(!isWholeLimitMessage('Fixed it. You hit your rate limit earlier, so I added a backoff.'));
+    assert.ok(!isWholeLimitMessage("Done.\n\nYou've reached your Fable limit."));
+    assert.ok(!isWholeLimitMessage(`You've hit your session limit ${'x'.repeat(400)}`));
   });
 });

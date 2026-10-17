@@ -3,6 +3,7 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { childEnvironment } from '../agent/env.ts';
 import { chooseEffort, chooseModel } from '../agent/model.ts';
+import { modelFamilyOf } from '../agent/rate-limit.ts';
 import type { AgentEvent, AgentRunner, IntegrationReport, TokenUsage } from '../agent/types.ts';
 import { estimateCost, totalTokens, type ModelTokenUsage, type PricingStore } from '../costs/pricing.ts';
 import type { HistoryLog, RunOutcome, RunStart } from '../history/history.ts';
@@ -36,6 +37,7 @@ import {
 import { normalizeStateName } from '../workflow/config.ts';
 import type { CheckCache, CheckRecord } from './guard.ts';
 import { IssueArchive, type ArchivedIssue } from './issue-archive.ts';
+import { RuntimeStateStore, runtimeStateFile, type ModelHold } from './runtime-state.ts';
 import { blockedBucketColumns, derivePipeline, type PipelineStage, type StageSession } from './pipeline.ts';
 import { copyToolUsage, countToolUse, emptyToolUsage, integrationJson, integrationUsage, type ToolUsage } from './tool-usage.ts';
 import { runAgentAttempt, type RunPhase, type WorkerOutcome } from './worker.ts';
@@ -174,6 +176,10 @@ interface RetryEntry {
 /** A session-limit failure as the retry queue keeps it (GET /api/v1/state `retrying[].limit`). */
 interface SessionLimitState {
   window: string | null;
+  /** `model`: only `model` is limited; the issue waits for the end of the model's hold, not for a quick retry. */
+  scope: 'account' | 'model';
+  /** Model family of a `model` limit; null for `account`. */
+  model: string | null;
   resetsAt: Date | null;
   source: 'event' | 'message' | null;
   /** The original Claude message; the entry's `error` is replaced by queue-state texts such as "no available orchestrator slots". */
@@ -193,6 +199,8 @@ function limitJson(limit: SessionLimitState | null) {
   if (limit === null) return null;
   return {
     window: limit.window,
+    scope: limit.scope,
+    model: limit.model,
     resets_at: limit.resetsAt?.toISOString() ?? null,
     source: limit.source,
     text: limit.text,
@@ -502,6 +510,9 @@ export class Orchestrator {
   #lastTurnSuccessAt: Date | null = null;
   /** The dispatch gate the last tick logged, to log its start and end once. */
   #loggedGate: DispatchGate | null = null;
+  /** Models on hold after a model-scoped usage limit, by family; persisted in the runtime state file. */
+  #modelHolds = new Map<string, ModelHold>();
+  #runtimeState: RuntimeStateStore;
 
   #pollIntervalMs: number;
   #tickTimer: unknown = null;
@@ -526,6 +537,12 @@ export class Orchestrator {
     this.#createAdapter = deps.createAdapter ?? defaultAdapterFactory;
     this.#pollIntervalMs = deps.workflow.current.config.polling.intervalMs;
     this.#archive = new IssueArchive(deps.logDir === null ? null : path.join(deps.logDir, 'issues'), deps.logger);
+    const tracker = deps.workflow.current.config.tracker;
+    this.#runtimeState = new RuntimeStateStore(runtimeStateFile(deps.logDir, tracker, deps.env), deps.logger);
+    for (const hold of this.#runtimeState.load(this.#clock.now()).modelHolds) {
+      this.#modelHolds.set(hold.model, hold);
+      this.#logger.info(`model ${hold.model} on hold until ${hold.until.toISOString()} (restored)`, { model: hold.model, issue_identifier: hold.issueIdentifier });
+    }
   }
 
   /** Startup validation (fails startup), terminal workspace cleanup, then an immediate first tick. */
@@ -675,6 +692,7 @@ export class Orchestrator {
       this.#dispatchErrors = errors;
       if (errors.length > 0) return;
 
+      this.#expireModelHolds();
       const gate = this.#dispatchGate();
       this.#logGate(gate);
       if (gate !== null) return;
@@ -791,7 +809,7 @@ export class Orchestrator {
     let gate: DispatchGate | null = null;
     for (const retry of this.#retries.values()) {
       const limit = retry.limit;
-      if (retry.kind !== 'session_limit' || limit === null || !limit.waiting) continue;
+      if (retry.kind !== 'session_limit' || limit === null || !limit.waiting || limit.scope === 'model') continue;
       if (limit.window === null || !ACCOUNT_WIDE_WINDOWS.has(limit.window)) continue;
       if (limit.observedAt.getTime() <= since || retry.dueAt.getTime() <= now) continue;
       if (gate === null || retry.dueAt > gate.until) gate = { until: retry.dueAt, window: limit.window, issueIdentifier: retry.identifier };
@@ -834,8 +852,120 @@ export class Orchestrator {
       !this.#claimed.has(issue.id) &&
       !this.#cleanups.has(issue.id) &&
       this.#slotsFor(issue.state, config) > 0 &&
+      this.#holdFor(issue, config) === null &&
       waitingForSubIssues(issue, roleFor(issue, config.roles), adapter).length === 0
     );
+  }
+
+  // ---------------------------------------------------------------- model holds
+
+  /** The model a session for the issue runs with, as `#dispatch` chooses it: label, else role, else claude.model. */
+  #modelFor(issue: Pick<Issue, 'state' | 'description' | 'labels'>, config: ServiceConfig): string | null {
+    return chooseModel(issue.labels, roleFor(issue, config.roles)?.claude.model ?? config.claude.model).model;
+  }
+
+  /** The active hold of the model the issue would run with; null for Claude Code's default model (never held). */
+  #holdFor(issue: Pick<Issue, 'state' | 'description' | 'labels'>, config: ServiceConfig): ModelHold | null {
+    const family = modelFamilyOf(this.#modelFor(issue, config));
+    return family === null ? null : this.#activeHold(family);
+  }
+
+  #activeHold(family: string): ModelHold | null {
+    const hold = this.#modelHolds.get(family);
+    return hold !== undefined && hold.until.getTime() > this.#clock.now().getTime() ? hold : null;
+  }
+
+  /**
+   * Sets or extends the hold of a model after a model-scoped limit: until the reset + 60 s when the message names
+   * one, else for agent.model_hold_ms. A later limit while held extends the hold, never shortens it.
+   */
+  #holdModel(family: string, entry: RunningEntry, text: string, resetsAt: Date | null): ModelHold {
+    const now = this.#clock.now();
+    const waitMs = sessionLimitWaitMs(resetsAt, now) ?? this.#deps.workflow.current.config.agent.modelHoldMs;
+    const until = new Date(now.getTime() + waitMs);
+    const existing = this.#activeHold(family);
+    const hold: ModelHold = {
+      model: family,
+      source: 'limit',
+      since: existing?.since ?? now,
+      until: existing !== null && existing.until > until ? existing.until : until,
+      text,
+      issueIdentifier: entry.identifier,
+      repo: entry.repo,
+    };
+    this.#modelHolds.set(family, hold);
+    this.#saveRuntimeState();
+    const extended = existing !== null;
+    const message = `model ${family} on hold until ${hold.until.toISOString()}`;
+    this.#issueLogger(entry.issue).warn(`${message}${extended ? ' (extended)' : ''}: model limit`, { model: family, text });
+    const record = this.#records.get(entry.issueId);
+    if (record !== undefined) {
+      this.#trace(record, {
+        kind: 'lifecycle',
+        event: 'model_hold',
+        level: 'warn',
+        message: `${message}: ${text}`,
+        run: entry.runId,
+        turn: null,
+        detail: { model: family, since: hold.since.toISOString(), until: hold.until.toISOString(), extended, text },
+      });
+    }
+    this.#deps.history?.note(entry.repo, 'model_hold', {
+      issue: entry.identifier,
+      title: entry.issue.title,
+      model: family,
+      since: hold.since.toISOString(),
+      until: hold.until.toISOString(),
+      extended,
+      text,
+    });
+    return hold;
+  }
+
+  /** Drops the holds whose time is up; the next issue of that model is the probe. */
+  #expireModelHolds(): void {
+    const now = this.#clock.now();
+    let changed = false;
+    for (const [family, hold] of this.#modelHolds) {
+      if (hold.until.getTime() > now.getTime()) continue;
+      this.#modelHolds.delete(family);
+      changed = true;
+      this.#logger.info(`model ${family} hold ended`, { model: family, since: hold.since.toISOString(), until: hold.until.toISOString() });
+      const record = [...this.#records.values()].find((candidate) => candidate.identifier === hold.issueIdentifier);
+      if (record !== undefined) {
+        this.#trace(record, {
+          kind: 'lifecycle',
+          event: 'model_hold_ended',
+          level: 'info',
+          message: `model ${family} hold ended`,
+          run: null,
+          turn: null,
+          detail: { model: family, since: hold.since.toISOString(), until: hold.until.toISOString() },
+        });
+      }
+      this.#deps.history?.note(hold.repo, 'model_hold_ended', {
+        issue: hold.issueIdentifier,
+        model: family,
+        since: hold.since.toISOString(),
+        until: hold.until.toISOString(),
+      });
+    }
+    if (changed) this.#saveRuntimeState();
+  }
+
+  #saveRuntimeState(): void {
+    this.#runtimeState.save({ modelHolds: [...this.#modelHolds.values()] });
+  }
+
+  #modelHoldJson(hold: ModelHold) {
+    return {
+      model: hold.model,
+      source: hold.source,
+      since: hold.since.toISOString(),
+      until: hold.until.toISOString(),
+      text: hold.text,
+      issue_identifier: hold.issueIdentifier,
+    };
   }
 
   #dispatch(issue: Issue, attempt: number | null, workflow: EffectiveWorkflow, adapter: TrackerAdapter, continuation = false): void {
@@ -1171,6 +1301,8 @@ export class Orchestrator {
         const resetsAtDate = sessionLimit.resetsAt !== null && Number.isFinite(sessionLimit.resetsAt.getTime()) ? sessionLimit.resetsAt : null;
         const limit: SessionLimitState = {
           window: sessionLimit.window,
+          scope: sessionLimit.scope,
+          model: sessionLimit.model,
           resetsAt: resetsAtDate,
           source: sessionLimit.source,
           text: sessionLimit.text,
@@ -1180,12 +1312,17 @@ export class Orchestrator {
           overageDisabledReason: sessionLimit.overageDisabledReason,
           observedAt: this.#clock.now(),
         };
-        // Within the cap the backoff follows the session-limit count; beyond it the retry waits for the reset,
-        // or, without a usable reset time, the usual attempt-based backoff applies.
+        // A model limit holds its model and the issue waits for the end of the hold: it is not transient, so no
+        // quick retries. Otherwise, within the cap the backoff follows the session-limit count; beyond it the retry
+        // waits for the reset, or, without a usable reset time, the usual attempt-based backoff applies.
         const now = this.#clock.now();
         const waitMs = hits > maxRetries ? sessionLimitWaitMs(resetsAtDate, now) : null;
         let delayMs: number;
-        if (waitMs !== null) {
+        if (sessionLimit.scope === 'model' && sessionLimit.model !== null) {
+          const hold = this.#holdModel(sessionLimit.model, entry, sessionLimit.text, resetsAtDate);
+          limit.waiting = true;
+          delayMs = Math.max(hold.until.getTime() - now.getTime(), 0);
+        } else if (waitMs !== null) {
           limit.waiting = true;
           delayMs = waitMs;
           const retryAt = new Date(now.getTime() + waitMs).toISOString();
@@ -1476,6 +1613,17 @@ export class Orchestrator {
     const errors = this.#validate(workflow);
     if (errors.length > 0) {
       requeue(`dispatch validation failed: ${errors[0]}`);
+      return;
+    }
+    const hold = this.#holdFor(issue, config);
+    if (hold !== null) {
+      // The model is on hold (also for an operator restart): wait for its end, keep kind, attempt and limit.
+      this.#scheduleRetry(
+        issueId,
+        retry.attempt,
+        { identifier: retry.identifier, url: retry.url, kind: retry.kind, error: `model ${hold.model} on hold until ${hold.until.toISOString()}`, limit: retry.limit },
+        Math.max(hold.until.getTime() - this.#clock.now().getTime(), 1_000),
+      );
       return;
     }
     if (this.#slotsFor(issue.state, config) <= 0) {
@@ -1993,7 +2141,7 @@ export class Orchestrator {
     issue: { id: string; identifier: string; url: string | null; title: string | null; state: string; description: string | null },
     workflow: EffectiveWorkflow,
     now: number,
-    rows: { running?: RunningEntry; retry?: RetryEntry; paused?: PausedEntry; dispatchNote?: string | null },
+    rows: { running?: RunningEntry; retry?: RetryEntry; paused?: PausedEntry; dispatchNote?: string | null; modelHold?: ModelHold | null },
   ) {
     const record = this.#records.get(issue.id);
     const meta = record?.meta ?? null;
@@ -2014,6 +2162,8 @@ export class Orchestrator {
       retry: rows.retry === undefined ? null : this.#retryRow(rows.retry, now),
       paused: rows.paused === undefined ? null : this.#pausedRow(rows.paused),
       dispatch_note: rows.dispatchNote ?? null,
+      /** The hold of the model this waiting issue would run with: it does not start before `until`. */
+      model_hold: rows.modelHold ? { model: rows.modelHold.model, until: rows.modelHold.until.toISOString() } : null,
     };
   }
 
@@ -2035,6 +2185,7 @@ export class Orchestrator {
       seen.add(retry.issueId);
       const meta = this.#records.get(retry.issueId)?.meta;
       const board = byId.get(retry.issueId);
+      const held = board ?? (meta ? { state: meta.state, description: meta.description, labels: meta.labels } : null);
       issues.push(
         this.#issueRow(
           'retrying',
@@ -2048,7 +2199,7 @@ export class Orchestrator {
           },
           workflow,
           now,
-          { retry },
+          { retry, modelHold: held === null ? null : this.#holdFor(held, config) },
         ),
       );
     }
@@ -2078,7 +2229,7 @@ export class Orchestrator {
       if (!hasRequiredFields(issue) || !isRoutable(issue, config.tracker)) continue;
       seen.add(issue.id);
       const note = typeof issue.native_ref?.dispatch_note === 'string' ? issue.native_ref.dispatch_note : null;
-      issues.push(this.#issueRow('queued', issue, workflow, now, { dispatchNote: note }));
+      issues.push(this.#issueRow('queued', issue, workflow, now, { dispatchNote: note, modelHold: this.#holdFor(issue, config) }));
     }
 
     const blocked = [];
@@ -2138,6 +2289,10 @@ export class Orchestrator {
       running: [...this.#running.values()].map((entry) => this.#runningRow(entry, now)),
       retrying: [...this.#retries.values()].sort((a, b) => a.dueAtMs - b.dueAtMs).map((retry) => this.#retryRow(retry, now)),
       paused: [...this.#paused.values()].map((paused) => this.#pausedRow(paused)),
+      model_holds: [...this.#modelHolds.values()]
+        .filter((hold) => this.#activeHold(hold.model) === hold)
+        .sort((a, b) => a.until.getTime() - b.until.getTime())
+        .map((hold) => this.#modelHoldJson(hold)),
       agent_totals: {
         input_tokens: this.#totals.inputTokens,
         output_tokens: this.#totals.outputTokens,
