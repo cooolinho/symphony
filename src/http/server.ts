@@ -48,6 +48,8 @@ export function isLoopbackHost(host: string): boolean {
   return LOOPBACK_HOSTS.has(host);
 }
 const API_PREFIX = '/api/v1/';
+/** Largest JSON body a control route reads. */
+const MAX_BODY_BYTES = 16 * 1024;
 
 function sendJson(res: http.ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   const text = JSON.stringify(body, null, 2);
@@ -57,6 +59,55 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown, heade
 
 function sendError(res: http.ServerResponse, status: number, code: string, message: string, headers: Record<string, string> = {}): void {
   sendJson(res, status, { error: { code, message } }, headers);
+}
+
+/**
+ * Reads the JSON body of a control route. Requires `Content-Type: application/json` (415 otherwise, which also
+ * refuses plain form posts) and at most MAX_BODY_BYTES (413). An empty body is null. Sends the error and resolves
+ * `undefined` when refused.
+ */
+function readJsonBody(req: http.IncomingMessage, res: http.ServerResponse): Promise<unknown> {
+  const type = (req.headers['content-type'] ?? '').split(';')[0]?.trim().toLowerCase();
+  if (type !== 'application/json') {
+    req.resume();
+    sendError(res, 415, 'unsupported_media_type', 'send the body with Content-Type: application/json');
+    return Promise.resolve(undefined);
+  }
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let done = false;
+    const finish = (value: unknown) => {
+      if (done) return;
+      done = true;
+      resolve(value);
+    };
+    req.on('data', (chunk: Buffer) => {
+      if (done) return;
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        sendError(res, 413, 'payload_too_large', `the body may have at most ${MAX_BODY_BYTES} bytes`, { connection: 'close' });
+        req.resume();
+        finish(undefined);
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      const text = Buffer.concat(chunks).toString('utf8');
+      if (text.trim() === '') {
+        finish(null);
+        return;
+      }
+      try {
+        finish(JSON.parse(text));
+      } catch {
+        sendError(res, 400, 'bad_request', 'the body is not valid JSON');
+        finish(undefined);
+      }
+    });
+    req.on('error', () => finish(undefined));
+  });
 }
 
 function hostnameOf(hostHeader: string | undefined): string | null {
@@ -83,7 +134,9 @@ function sameHost(origin: string, hostHeader: string | undefined): boolean {
  * `/logs` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
  * `/api/v1/state`, `/api/v1/<identifier>` with its `/timeline` and `/transcript`, `POST /api/v1/refresh`
  * `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker), `/pause` and `/resume` (operator pause of
- * an issue), and `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family).
+ * an issue), `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family), and
+ * `PUT` / `DELETE /api/v1/settings/agents` (agent slots set on the dashboard; JSON body, `Content-Type:
+ * application/json` required).
  * Read-only except refresh and these control routes. On a loopback bind, requests whose Host is not a loopback name are
  * rejected (DNS-rebinding guard), and cross-origin POSTs are refused. On any other bind the server has no
  * login of its own and belongs behind an authenticating reverse proxy: the control routes are disabled unless
@@ -109,7 +162,7 @@ export function startHttpServer(options: {
   const analyticsCache = new Map<string, { pricing: object; value: Analytics }>();
 
   /**
-   * The guard of every control route (retry, pause, resume, model hold and release): loopback bind, or
+   * The guard of every control route (retry, pause, resume, model hold and release, agent settings): loopback bind, or
    * `allowRemoteControl` plus an Origin header naming this host. Sends the 403 and returns false when refused.
    */
   const controlAllowed = (req: http.IncomingMessage, res: http.ServerResponse): boolean => {
@@ -299,6 +352,23 @@ export function startHttpServer(options: {
         }
         const { queued, coalesced } = orchestrator.requestRefresh();
         sendJson(res, 202, { queued, coalesced, requested_at: new Date().toISOString(), operations: ['poll', 'reconcile'] });
+      });
+      return;
+    }
+    // Agent slots set on the dashboard: PUT changes them, DELETE returns to WORKFLOW.md.
+    if (pathname === '/api/v1/settings/agents') {
+      allow(['PUT', 'DELETE'], () => {
+        if (!controlAllowed(req, res)) {
+          req.resume();
+          return;
+        }
+        respond(readJsonBody(req, res).then(async (body) => {
+          if (body === undefined) return;
+          const result = method === 'PUT' ? await orchestrator.updateAgentSettings(body) : await orchestrator.resetAgentSettings();
+          if (result.ok) sendJson(res, 200, { changed: result.changed, limits: result.limits, requested_at: new Date().toISOString() });
+          else if (result.reason === 'invalid') sendError(res, 400, 'invalid_settings', result.message);
+          else sendError(res, 409, 'stopping', 'the orchestrator is shutting down');
+        }));
       });
       return;
     }

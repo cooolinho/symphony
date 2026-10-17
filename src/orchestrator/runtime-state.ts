@@ -5,6 +5,7 @@ import type { Logger } from '../log.ts';
 import { errorMessage } from '../util/errors.ts';
 import { resolveEnvReference } from '../util/env.ts';
 import type { TrackerConfig } from '../workflow/config.ts';
+import { limitOverrideJson, limitOverrideOf, NO_LIMIT_OVERRIDE, type AgentLimitOverride } from './limits.ts';
 
 /** No session of `model` starts until `until`: the model hit its own usage limit. */
 export interface ModelHold {
@@ -41,6 +42,8 @@ export interface RuntimeState {
   modelHolds: ModelHold[];
   operatorHolds: OperatorHold[];
   pausedIssues: OperatorPause[];
+  /** Agent slots set on the dashboard; they take precedence over `WORKFLOW.md`. */
+  settings: AgentLimitOverride;
 }
 
 interface ModelHoldJson {
@@ -58,6 +61,7 @@ interface RuntimeStateJson {
   model_holds: ModelHoldJson[];
   operator_holds?: Array<{ model: string; since: string }>;
   paused_issues?: Array<{ issue_id: string; issue_identifier: string; issue_url: string | null; since: string }>;
+  settings?: { max_concurrent_agents: number | null; max_concurrent_agents_by_state: Record<string, number> };
 }
 
 const MAX_NAME_LENGTH = 100;
@@ -101,7 +105,7 @@ export class RuntimeStateStore {
 
   /** The stored state; holds that ended before `now` are dropped. */
   load(now: Date): RuntimeState {
-    const empty: RuntimeState = { modelHolds: [], operatorHolds: [], pausedIssues: [] };
+    const empty: RuntimeState = { modelHolds: [], operatorHolds: [], pausedIssues: [], settings: NO_LIMIT_OVERRIDE };
     if (this.file === null) return empty;
     let text: string;
     try {
@@ -130,6 +134,7 @@ export class RuntimeStateStore {
       modelHolds: holds.filter((hold): hold is ModelHold => hold !== null && hold.until.getTime() > now.getTime()),
       operatorHolds: operatorHolds.filter((hold): hold is OperatorHold => hold !== null),
       pausedIssues: pausedIssues.filter((pause): pause is OperatorPause => pause !== null),
+      settings: limitOverrideOf(parsed.settings),
     };
   }
 
@@ -153,6 +158,7 @@ export class RuntimeStateStore {
         issue_url: pause.url,
         since: pause.since.toISOString(),
       })),
+      settings: limitOverrideJson(state.settings),
     };
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });

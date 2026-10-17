@@ -3089,3 +3089,124 @@ describe('operator pause', () => {
     assert.deepEqual(await s.orchestrator.holdModel('fable'), { ok: false, reason: 'stopping' });
   });
 });
+
+describe('agent slots set on the dashboard', () => {
+  /** Sessions run until they are stopped. */
+  const hanging = () =>
+    new FakeRunner((turn, params) => new Promise((resolve) => params.signal.addEventListener('abort', () => resolve({ ok: false, turnId: String(turn), code: 'turn_cancelled', message: 'cancelled' }))));
+  const issues = (...ids: string[]) => ids.map((id) => makeIssue({ id }));
+  const front = { agent: { max_concurrent_agents: 3, max_concurrent_agents_by_state: { 'in progress': 1 } } };
+
+  it('raises the limit: a fourth agent starts with the next tick', async () => {
+    const s = setup({ runner: hanging(), front, issues: issues('a', 'b', 'c', 'd', 'e') });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running.length === 3, 3_000, 'three running');
+    assert.equal(snapshot(s).queue.find((item) => item.issue_identifier === 'acme/app#d')?.reason?.code, 'no_free_slot');
+    const result = await s.orchestrator.updateAgentSettings({ max_concurrent_agents: 4 });
+    assert.equal(result.ok && result.changed, true);
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running.length === 4, 3_000, 'four running');
+    const limits = snapshot(s).limits;
+    assert.deepEqual(limits.max_concurrent_agents, { effective: 4, workflow: 3, override: 4 });
+    assert.equal(limits.override_active, true);
+    assert.equal(snapshot(s).health.max_concurrent_agents, 4);
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  it('lowers the limit without stopping a running agent; nothing new starts', async () => {
+    const s = setup({ runner: hanging(), front, issues: issues('a', 'b', 'c') });
+    await s.orchestrator.tickNow();
+    await until(() => s.runner.sessions.length === 3, 3_000, 'three sessions');
+    assert.equal((await s.orchestrator.updateAgentSettings({ max_concurrent_agents: 2 })).ok, true);
+    s.tracker.issues.set('d', makeIssue({ id: 'd' }));
+    await s.orchestrator.tickNow();
+    await s.orchestrator.tickNow();
+    assert.equal(snapshot(s).running.length, 3, 'all three keep running');
+    assert.equal(s.runner.sessions.length, 3, 'nothing new started');
+    assert.equal(snapshot(s).queue.find((item) => item.issue_identifier === 'acme/app#d')?.reason?.text, 'waiting for a free slot (2/2 busy)');
+    // 0 pauses new dispatches, as in WORKFLOW.md.
+    assert.equal((await s.orchestrator.updateAgentSettings({ max_concurrent_agents: 0 })).ok, true);
+    assert.equal(snapshot(s).limits.max_concurrent_agents.effective, 0);
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  it('changes per-column limits and validates every value', async () => {
+    const s = setup({ runner: hanging(), front, issues: [makeIssue({ id: 'a', state: 'In Progress' }), makeIssue({ id: 'b', state: 'In Progress' })] });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running.length === 1, 3_000, 'column limit 1');
+    assert.deepEqual(snapshot(s).limits.by_state['In Progress'], { effective: 1, workflow: 1, override: null });
+    assert.deepEqual(snapshot(s).limits.by_state.Todo, { effective: null, workflow: null, override: null });
+    assert.equal((await s.orchestrator.updateAgentSettings({ max_concurrent_agents_by_state: { 'IN PROGRESS': 2 } })).ok, true);
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running.length === 2, 3_000, 'column limit 2');
+    assert.deepEqual(snapshot(s).limits.by_state['In Progress'], { effective: 2, workflow: 1, override: 2 });
+
+    const invalid = async (body: unknown, pattern: RegExp) => {
+      const result = await s.orchestrator.updateAgentSettings(body);
+      assert.equal(result.ok, false, JSON.stringify(body));
+      assert.match(result.ok === false && result.reason === 'invalid' ? result.message : '', pattern);
+    };
+    await invalid({ max_concurrent_agents: 51 }, /0 to 50/);
+    await invalid({ max_concurrent_agents: -1 }, /0 to 50/);
+    await invalid({ max_concurrent_agents: 2.5 }, /0 to 50/);
+    await invalid({ max_concurrent_agents: '3' }, /0 to 50/);
+    await invalid({ max_concurrent_agents_by_state: { Todo: 0 } }, /1 to 50/);
+    await invalid({ max_concurrent_agents_by_state: { Done: 1 } }, /Done is not an active column/);
+    await invalid({ max_concurrent_agents_by_state: [] }, /object/);
+    await invalid({ slots: 3 }, /unknown field slots/);
+    await invalid({}, /set max_concurrent_agents/);
+    await invalid(null, /JSON object/);
+    assert.equal(snapshot(s).limits.by_state['In Progress']?.override, 2, 'a refused update changes nothing');
+
+    // null removes one override; DELETE (reset) removes all.
+    await s.orchestrator.updateAgentSettings({ max_concurrent_agents: 5, max_concurrent_agents_by_state: { 'In Progress': null } });
+    assert.deepEqual(snapshot(s).limits.by_state['In Progress'], { effective: 1, workflow: 1, override: null });
+    const reset = await s.orchestrator.resetAgentSettings();
+    assert.equal(reset.ok && reset.changed, true);
+    assert.equal(snapshot(s).limits.override_active, false);
+    assert.equal(snapshot(s).limits.max_concurrent_agents.effective, 3);
+    const again = await s.orchestrator.resetAgentSettings();
+    assert.equal(again.ok && again.changed, false);
+    await s.orchestrator.shutdown(1_000);
+    assert.deepEqual(await s.orchestrator.updateAgentSettings({ max_concurrent_agents: 1 }), { ok: false, reason: 'stopping' });
+  });
+
+  it('keeps the override when WORKFLOW.md reloads and shows both values', async () => {
+    const s = setup({ front, issues: [] });
+    await s.orchestrator.updateAgentSettings({ max_concurrent_agents: 4 });
+    s.workflow.current = makeWorkflow(baseFront(s.root, { agent: { max_concurrent_agents: 6 } }));
+    assert.deepEqual(snapshot(s).limits.max_concurrent_agents, { effective: 4, workflow: 6, override: 4 });
+    await s.orchestrator.resetAgentSettings();
+    assert.deepEqual(snapshot(s).limits.max_concurrent_agents, { effective: 6, workflow: 6, override: null });
+  });
+
+  it('survives a restart and writes settings_changed', async () => {
+    const logDir = tempDir();
+    const dir = tempDir();
+    const history = new HistoryLog(path.join(dir, 'repositories'), new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent()), Logger.silent());
+    const first = setup({ front, logDir, history });
+    await first.orchestrator.updateAgentSettings({ max_concurrent_agents: 5, max_concurrent_agents_by_state: { Todo: 2 } });
+    const file = path.join(logDir, 'state', 'github_project.json');
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).settings, { max_concurrent_agents: 5, max_concurrent_agents_by_state: { todo: 2 } });
+    const changed = readHistory(history.dir, null).entries.find((entry) => entry.event === 'settings_changed')?.fields ?? {};
+    assert.equal(changed.source, 'dashboard');
+    assert.deepEqual(
+      [changed.old_max_concurrent_agents, changed.new_max_concurrent_agents, changed.old_by_state, changed.new_by_state],
+      ['3', '5', 'In Progress=1', 'In Progress=1, Todo=2'],
+    );
+
+    const second = setup({ front, logDir });
+    assert.deepEqual(snapshot(second).limits.max_concurrent_agents, { effective: 5, workflow: 3, override: 5 });
+    assert.equal(snapshot(second).limits.by_state.Todo?.effective, 2);
+    await second.orchestrator.resetAgentSettings();
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).settings, { max_concurrent_agents: null, max_concurrent_agents_by_state: {} });
+    assert.equal(snapshot(setup({ front, logDir })).limits.override_active, false);
+
+    // A hand-edited file: out-of-range values are dropped.
+    fs.writeFileSync(file, JSON.stringify({ version: 1, model_holds: [], settings: { max_concurrent_agents: 99, max_concurrent_agents_by_state: { todo: 0, 'in progress': 2 } } }));
+    const edited = snapshot(setup({ front, logDir })).limits;
+    assert.equal(edited.max_concurrent_agents.override, null);
+    assert.deepEqual(edited.by_state['In Progress'], { effective: 2, workflow: 1, override: 2 });
+    assert.equal(edited.by_state.Todo?.override, null);
+  });
+});

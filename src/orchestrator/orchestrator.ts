@@ -37,6 +37,17 @@ import { normalizeStateName } from '../workflow/config.ts';
 import { planDispatch, type PlanIssue, type PlanItem, type PlanRetry } from './dispatch-plan.ts';
 import type { CheckCache, CheckRecord } from './guard.ts';
 import { IssueArchive, type ArchivedIssue } from './issue-archive.ts';
+import {
+  applyLimitUpdate,
+  effectiveAgentLimits,
+  hasLimitOverride,
+  limitsJson,
+  limitsSummary,
+  NO_LIMIT_OVERRIDE,
+  sameLimitOverride,
+  withAgentLimits,
+  type AgentLimitOverride,
+} from './limits.ts';
 import { RuntimeStateStore, runtimeStateFile, type ModelHold, type OperatorHold } from './runtime-state.ts';
 import { blockedBucketColumns, derivePipeline, type PipelineStage, type StageSession } from './pipeline.ts';
 import { copyToolUsage, countToolUse, emptyToolUsage, integrationJson, integrationUsage, type ToolUsage } from './tool-usage.ts';
@@ -79,6 +90,11 @@ export type ResumeResult = { ok: true; issueIdentifier: string } | { ok: false; 
 export type ModelControlResult =
   | { ok: true; model: string; issues: number }
   | { ok: false; reason: 'unknown_model' | 'already_paused' | 'not_paused' | 'stopping' };
+
+export type AgentSettingsResult =
+  | { ok: true; changed: boolean; limits: ReturnType<typeof limitsJson> }
+  | { ok: false; reason: 'invalid'; message: string }
+  | { ok: false; reason: 'stopping' };
 
 export type AdapterFactory = (config: ServiceConfig, env: NodeJS.ProcessEnv, logger: Logger) => TrackerAdapter;
 
@@ -540,6 +556,8 @@ export class Orchestrator {
   #modelHolds = new Map<string, ModelHold>();
   /** Models the operator paused, by family; no end of their own, persisted in the runtime state file. */
   #operatorHolds = new Map<string, OperatorHold>();
+  /** Agent slots set on the dashboard; they take precedence over `WORKFLOW.md`, persisted in the runtime state file. */
+  #limitOverride: AgentLimitOverride = NO_LIMIT_OVERRIDE;
   #runtimeState: RuntimeStateStore;
 
   #pollIntervalMs: number;
@@ -575,6 +593,10 @@ export class Orchestrator {
     for (const hold of restored.operatorHolds) {
       this.#operatorHolds.set(hold.model, hold);
       this.#logger.info(`model ${hold.model} paused by the operator (restored)`, { model: hold.model });
+    }
+    if (hasLimitOverride(restored.settings)) {
+      this.#limitOverride = restored.settings;
+      this.#logger.info('agent slots set on the dashboard (restored)', limitsSummary(deps.workflow.current.config, restored.settings));
     }
     // Restored pauses keep their claim; the next reconcile fills in the board fields or releases them.
     for (const pause of restored.pausedIssues) {
@@ -817,6 +839,57 @@ export class Orchestrator {
       this.#notify();
       return { ok: true, issueIdentifier: paused.identifier };
     });
+  }
+
+  /**
+   * Changes the agent slots from the dashboard (`PUT /api/v1/settings/agents`, see `applyLimitUpdate`). The override
+   * takes precedence over `WORKFLOW.md` and its reloads and applies from the next tick, which is requested at once.
+   * Lowering below the running count stops nobody: nothing new starts until the count is below the limit.
+   */
+  updateAgentSettings(body: unknown): Promise<AgentSettingsResult> {
+    return this.#serial.run((): AgentSettingsResult => {
+      if (this.#stopping) return { ok: false, reason: 'stopping' };
+      const result = applyLimitUpdate(this.#limitOverride, body, this.#deps.workflow.current.config.tracker);
+      if (!result.ok) return { ok: false, reason: 'invalid', message: result.message };
+      return this.#setLimitOverride(result.override, 'dashboard');
+    });
+  }
+
+  /** Removes the dashboard override (`DELETE /api/v1/settings/agents`): `WORKFLOW.md` applies again. */
+  resetAgentSettings(): Promise<AgentSettingsResult> {
+    return this.#serial.run((): AgentSettingsResult => {
+      if (this.#stopping) return { ok: false, reason: 'stopping' };
+      return this.#setLimitOverride(NO_LIMIT_OVERRIDE, 'reset');
+    });
+  }
+
+  #setLimitOverride(override: AgentLimitOverride, source: 'dashboard' | 'reset'): AgentSettingsResult {
+    const config = this.#deps.workflow.current.config;
+    if (sameLimitOverride(override, this.#limitOverride)) return { ok: true, changed: false, limits: limitsJson(config, override) };
+    const previous = limitsSummary(config, this.#limitOverride);
+    this.#limitOverride = override;
+    this.#saveRuntimeState();
+    const current = limitsSummary(config, override);
+    const detail = { source, old: previous, new: current, running: this.#running.size };
+    const columns = (limits: Record<string, number>) => Object.entries(limits).map(([state, limit]) => `${state}=${limit}`).join(', ');
+    for (const repo of this.#knownRepos()) {
+      this.#deps.history?.note(repo, 'settings_changed', {
+        source,
+        old_max_concurrent_agents: previous.max_concurrent_agents,
+        new_max_concurrent_agents: current.max_concurrent_agents,
+        old_by_state: columns(previous.max_concurrent_agents_by_state),
+        new_by_state: columns(current.max_concurrent_agents_by_state),
+        running: this.#running.size,
+      });
+    }
+    this.#logger.info(
+      `agent slots ${source === 'reset' ? 'reset to WORKFLOW.md' : 'changed on the dashboard'}: ${previous.max_concurrent_agents} -> ${current.max_concurrent_agents}`,
+      detail,
+    );
+    // A raised limit starts the next agents with this tick.
+    this.requestRefresh();
+    this.#notify();
+    return { ok: true, changed: true, limits: limitsJson(config, override) };
   }
 
   /**
@@ -1084,7 +1157,7 @@ export class Orchestrator {
   }
 
   #globalSlots(config: ServiceConfig): number {
-    return Math.max(config.agent.maxConcurrentAgents - this.#running.size, 0);
+    return Math.max(effectiveAgentLimits(config.agent, this.#limitOverride).maxConcurrentAgents - this.#running.size, 0);
   }
 
   #slotsFor(state: string, config: ServiceConfig): number {
@@ -1093,7 +1166,8 @@ export class Orchestrator {
     for (const entry of this.#running.values()) {
       if (normalizeStateName(entry.issue.state) === normalized) inState++;
     }
-    return Math.min(this.#globalSlots(config), Math.max(stateLimit(state, config.agent) - inState, 0));
+    const limits = effectiveAgentLimits(config.agent, this.#limitOverride);
+    return Math.min(this.#globalSlots(config), Math.max(stateLimit(state, limits) - inState, 0));
   }
 
   #shouldDispatch(issue: Issue, config: ServiceConfig, adapter: TrackerAdapter): boolean {
@@ -1147,7 +1221,7 @@ export class Orchestrator {
     if (fired !== null) retries.push({ ...this.#planRetry(fired.retry, now.getTime(), fired.issue), due: true });
     const gate = this.#dispatchGate();
     return planDispatch({
-      config,
+      config: withAgentLimits(config, this.#limitOverride),
       now,
       running: [...this.#running.values()].map((entry) => ({ state: entry.issue.state })),
       retries,
@@ -1312,6 +1386,7 @@ export class Orchestrator {
       pausedIssues: [...this.#paused.values()]
         .filter((paused) => paused.source === 'operator')
         .map((paused) => ({ issueId: paused.issueId, identifier: paused.identifier, url: paused.url, since: paused.pausedAt })),
+      settings: this.#limitOverride,
     });
   }
 
@@ -2715,6 +2790,7 @@ export class Orchestrator {
           .map((hold) => this.#modelHoldJson(hold)),
       ],
       model_controls: this.#modelControls(plan),
+      limits: limitsJson(config, this.#limitOverride),
       agent_totals: {
         input_tokens: this.#totals.inputTokens,
         output_tokens: this.#totals.outputTokens,
@@ -2745,7 +2821,7 @@ export class Orchestrator {
         active_states: config.tracker.activeStates,
         terminal_states: config.tracker.terminalStates,
         poll_interval_ms: this.#pollIntervalMs,
-        max_concurrent_agents: config.agent.maxConcurrentAgents,
+        max_concurrent_agents: effectiveAgentLimits(config.agent, this.#limitOverride).maxConcurrentAgents,
         max_turns: config.agent.maxTurns,
         max_continuations: config.agent.maxContinuations,
         max_session_limit_retries: config.agent.maxSessionLimitRetries,

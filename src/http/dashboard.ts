@@ -30,6 +30,14 @@ const DASHBOARD_CSS = `
   .slots-bar { display: flex; gap: 3px; }
   .slots-bar i { width: 14px; height: 6px; border-radius: 2px; background: var(--line-2); transition: background .3s var(--ease), box-shadow .3s var(--ease); }
   .slots-bar i.on { background: var(--green); box-shadow: 0 0 8px -2px var(--green); }
+  /* Agent slots set on the dashboard: − / value / + for the total and each active column. */
+  .slot-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 0 0 14px; font: 12px var(--mono); color: var(--muted); }
+  .slot-item { display: inline-flex; align-items: center; gap: 6px; }
+  .slot-item b { min-width: 2ch; color: var(--text); font-weight: 600; text-align: center; }
+  .slot-control { justify-content: center; min-width: 28px; padding: 2px 6px; }
+  .slot-control:disabled { opacity: .4; cursor: default; }
+  .slot-override, .slot-note { color: var(--amber); }
+  .slot-error { color: var(--red); }
   .agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); gap: 14px; }
   .agent { position: relative; display: flex; flex-direction: column; gap: 14px; min-width: 0; padding: 16px 16px 14px;
     border: 1px solid var(--line-2); border-radius: var(--radius); overflow: hidden;
@@ -239,6 +247,7 @@ export const DASHBOARD_HTML = `<!doctype html>
       <h2 id="running-title">Running <span class="count" id="running-count"></span></h2>
       <div class="slots" id="slots" aria-hidden="true"></div>
     </div>
+    <div class="slot-settings" id="slot-settings" role="group" aria-label="Agent slots" hidden></div>
     <div class="agents" id="running"></div>
     <div class="agents-empty" id="issues-empty" hidden>
       <span class="badge tone-gray"><span class="dot"></span><span>Idle</span></span>
@@ -836,6 +845,98 @@ ${PIPELINE_JS}
     if (m) controlModel(m.dataset.model, m.dataset.hold === '1');
   });
 
+  // Agent slots set on the dashboard (PUT /api/v1/settings/agents; DELETE resets to WORKFLOW.md).
+  let slotBusy = false;
+  let slotError = '';
+  async function changeSlots(method, body) {
+    if (slotBusy) return;
+    slotBusy = true;
+    let label = 'failed';
+    try {
+      const init = { method, headers: { 'content-type': 'application/json' } };
+      if (body !== null) init.body = JSON.stringify(body);
+      const res = await fetch('/api/v1/settings/agents', init);
+      let data = null;
+      try { data = await res.json(); } catch {}
+      label = res.ok ? (method === 'DELETE' ? 'reset to WORKFLOW.md' : 'saved') : (data && data.error && data.error.message) || 'failed (' + res.status + ')';
+      slotError = res.ok ? '' : label;
+    } catch {
+      slotError = label;
+    }
+    slotBusy = false;
+    if (slotError) setTimeout(() => { slotError = ''; }, 8000);
+    $('announce').textContent = 'Agent slots: ' + label;
+    setTimeout(load, 300);
+  }
+
+  function slotButton(text, label, body, disabled) {
+    const b = el('button', text, 'btn slot-control');
+    b.type = 'button';
+    b.dataset.body = JSON.stringify(body);
+    b.setAttribute('aria-label', label);
+    if (disabled || slotBusy) b.disabled = true;
+    return b;
+  }
+
+  function renderSlotSettings(state) {
+    const limits = state.limits;
+    const host = $('slot-settings');
+    host.hidden = !limits;
+    if (!limits) return;
+    const total = limits.max_concurrent_agents;
+    const running = state.counts.running;
+    const nodes = [];
+    const item = el('span', null, 'slot-item');
+    item.append(el('span', 'Slots'));
+    if (retryAllowed) item.append(slotButton('−', 'Fewer agent slots', { max_concurrent_agents: Math.min(total.effective - 1, limits.max) }, total.effective <= 0));
+    item.append(el('b', total.effective));
+    if (retryAllowed) item.append(slotButton('+', 'More agent slots', { max_concurrent_agents: total.effective + 1 }, total.effective >= limits.max));
+    if (total.override !== null && total.override !== total.workflow) item.append(el('span', 'set here · WORKFLOW.md ' + total.workflow, 'slot-override'));
+    else if (total.override !== null) item.append(el('span', 'set here', 'slot-override'));
+    nodes.push(item);
+    for (const [column, v] of Object.entries(limits.by_state || {})) {
+      const col = el('span', null, 'slot-item');
+      col.append(el('span', column));
+      if (retryAllowed && v.effective !== null) {
+        col.append(slotButton('−', 'Lower the limit of ' + column, { max_concurrent_agents_by_state: { [column]: Math.min(v.effective - 1, limits.max) } }, v.effective <= 1));
+      }
+      col.append(el('b', v.effective === null ? '–' : v.effective));
+      if (retryAllowed) {
+        col.append(v.effective === null
+          ? slotButton('+', 'Set a limit of 1 for ' + column, { max_concurrent_agents_by_state: { [column]: 1 } }, false)
+          : slotButton('+', 'Raise the limit of ' + column, { max_concurrent_agents_by_state: { [column]: v.effective + 1 } }, v.effective >= limits.max));
+      }
+      if (v.override !== null) {
+        col.append(el('span', 'set here · WORKFLOW.md ' + (v.workflow === null ? 'none' : v.workflow), 'slot-override'));
+        if (retryAllowed) col.append(slotButton('×', 'Use the WORKFLOW.md limit of ' + column, { max_concurrent_agents_by_state: { [column]: null } }, false));
+      }
+      nodes.push(col);
+    }
+    if (retryAllowed && limits.override_active) {
+      const reset = el('button', 'Reset to WORKFLOW.md (' + total.workflow + ')', 'btn slot-reset');
+      reset.type = 'button';
+      if (slotBusy) reset.disabled = true;
+      nodes.push(reset);
+    }
+    if (total.effective === 0) {
+      nodes.push(el('span', 'limit 0: new dispatches paused' + (running > 0 ? ', ' + running + ' running keep working' : ''), 'slot-note'));
+    } else if (running > total.effective) {
+      const finish = running - total.effective + 1;
+      nodes.push(el('span', running + ' running, limit ' + total.effective + ': no new starts until ' + (finish === 1 ? 'one finishes' : finish + ' finish'), 'slot-note'));
+    }
+    if (!retryAllowed) nodes.push(el('span', RESTART_DISABLED, 'muted restart-off'));
+    if (slotError) nodes.push(el('span', slotError, 'slot-error'));
+    patchChildren(host, nodes);
+  }
+
+  document.addEventListener('click', (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const step = target ? target.closest('button.slot-control') : null;
+    if (step && !step.disabled) changeSlots('PUT', JSON.parse(step.dataset.body));
+    const reset = target ? target.closest('button.slot-reset') : null;
+    if (reset && !reset.disabled) changeSlots('DELETE', null);
+  });
+
   function sessionLimitBits(r) {
     const limit = r.limit;
     const bits = [];
@@ -1174,6 +1275,7 @@ ${PIPELINE_JS}
 
     retryAllowed = !state.controls || state.controls.retry !== false;
     renderModelControls(state);
+    renderSlotSettings(state);
     renderIssues(state);
     renderBlocked(state);
     diffSnapshots(state);
