@@ -1,4 +1,5 @@
-export type IssueType = 'bugfix' | 'feature' | 'refactor';
+export const ISSUE_TYPES = ['bugfix', 'feature', 'refactor'] as const;
+export type IssueType = (typeof ISSUE_TYPES)[number];
 export type IssueComplexity = 'S' | 'M' | 'L' | 'XL';
 
 export interface ClassifyResult {
@@ -27,7 +28,7 @@ const DEFAULT_TYPE_ALIASES: Record<string, IssueType> = {
   refactoring: 'refactor',
 };
 
-const CANONICAL_TYPES = new Set<IssueType>(['bugfix', 'feature', 'refactor']);
+const CANONICAL_TYPES = new Set<IssueType>(ISSUE_TYPES);
 const CANONICAL_COMPLEXITIES = new Set<IssueComplexity>(['S', 'M', 'L', 'XL']);
 
 function hasTypePrefix(label: string): boolean {

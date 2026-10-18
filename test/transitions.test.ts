@@ -6,6 +6,7 @@ import { trackerDefaults } from '../src/tracker/registry.ts';
 import { resolveConfig, type ServiceConfig } from '../src/workflow/config.ts';
 import { AGENT_RESULT_KINDS, RESULT_VERDICTS } from '../src/workflow/results.ts';
 import type { RoleConfig } from '../src/workflow/roles.ts';
+import { profileFor } from '../src/workflow/profile.ts';
 import { nextStageProblems } from '../src/workflow/validate.ts';
 
 const resolve = (front: Record<string, unknown>): ServiceConfig =>
@@ -231,6 +232,96 @@ describe('resolveTransition', () => {
       const plain = { ...roleNamed('developer'), result: null };
       assert.equal(run('developer', 'done', { role: plain }).ok, false);
     });
+  });
+});
+
+describe('profiles read from pipeline.profiles', () => {
+  const profiled = resolve({
+    tracker: { kind: 'github', active_states: ['Ready', 'In progress', 'Testing', 'Agent review', 'Security review'], terminal_states: ['Done'] },
+    roles: {
+      analyst: { states: ['Ready'], result: 'analysis', may_move_to: ['In progress', 'Blocked'], on_result: { ready: 'next', needs_info: 'Blocked' } },
+      developer: { states: ['In progress'], result: 'implementation', may_move_to: ['Testing', 'Agent review', 'Blocked'], on_result: { done: 'next' } },
+      tester: { states: ['Testing'], result: 'test', may_move_to: ['Agent review', 'In progress', 'Blocked'], on_result: { passed: 'next', failed: 'In progress' } },
+      reviewer: {
+        states: ['Agent review'],
+        read_only: true,
+        result: 'review',
+        may_move_to: ['In review', 'In progress', 'Blocked'],
+        on_result: { approved: 'In review', changes_needed: 'In progress' },
+        on_round_limit: 'In review',
+      },
+      security: { states: ['Security review'], result: 'security', may_move_to: ['In review', 'In progress', 'Blocked'], on_result: { passed: 'In review', issues_found: 'In progress' } },
+    },
+    pipeline: {
+      max_review_rounds: 3,
+      profiles: {
+        bugfix: { skip: ['tester', 'security'], max_review_rounds: 2 },
+        refactor: { skip: ['analyst'], on_result: { reviewer: { changes_needed: 'Blocked' }, tester: { failed: 'Blocked' } } },
+        default: { skip: ['security'] },
+      },
+    },
+  });
+  const resolveWith = (role: string, verdict: string, type: 'bugfix' | 'feature' | 'refactor' | null, over: Partial<TransitionInput> = {}) =>
+    ok(
+      resolveTransition({
+        role: roleNamed(role, profiled),
+        verdict,
+        history: { reviewRounds: 0, testRounds: 0 },
+        profile: profileFor(profiled.pipeline, type),
+        flags: {},
+        config: profiled,
+        boardColumns: BOARD,
+        ...over,
+      }),
+    );
+
+  it('picks the profile of the issue type, else the default profile, else none', () => {
+    assert.equal(profileFor(profiled.pipeline, 'bugfix')?.name, 'bugfix');
+    assert.equal(profileFor(profiled.pipeline, 'refactor')?.name, 'refactor');
+    assert.equal(profileFor(profiled.pipeline, 'feature')?.name, 'default');
+    assert.equal(profileFor(profiled.pipeline, null)?.name, 'default');
+    assert.equal(profileFor(config.pipeline, 'bugfix'), null);
+    assert.equal(profileFor(config.pipeline, null), null);
+  });
+
+  it('skips Testing for a profile with skip: [tester] and keeps it for the others', () => {
+    const bugfix = resolveWith('developer', 'done', 'bugfix');
+    assert.deepEqual([bugfix.target, bugfix.reason], ['Agent review', 'implementation done → "Agent review" (on_result.done = next, tester skipped by profile bugfix)']);
+    assert.equal(resolveWith('developer', 'done', 'feature').target, 'Testing');
+    assert.equal(resolveWith('developer', 'done', null).target, 'Testing');
+  });
+
+  it('matrix: next target per type', () => {
+    // [role, verdict, type, target]
+    const matrix: [string, string, 'bugfix' | 'feature' | 'refactor' | null, string][] = [
+      ['analyst', 'ready', 'bugfix', 'In progress'],
+      ['analyst', 'ready', 'refactor', 'In progress'],
+      ['developer', 'done', 'bugfix', 'Agent review'],
+      ['developer', 'done', 'feature', 'Testing'],
+      ['developer', 'done', 'refactor', 'Testing'],
+      ['tester', 'passed', 'feature', 'Agent review'],
+      ['tester', 'passed', 'refactor', 'Agent review'],
+      ['tester', 'failed', 'feature', 'In progress'],
+      ['tester', 'failed', 'refactor', 'Blocked'],
+      ['reviewer', 'changes_needed', 'bugfix', 'In progress'],
+      ['reviewer', 'changes_needed', 'feature', 'In progress'],
+      ['reviewer', 'changes_needed', 'refactor', 'Blocked'],
+      ['reviewer', 'approved', 'refactor', 'In review'],
+    ];
+    for (const [role, verdict, type, target] of matrix) {
+      assert.equal(resolveWith(role, verdict, type).target, target, `${role} ${verdict} for ${type}`);
+    }
+  });
+
+  it('applies the profile round limit', () => {
+    const bugfix = resolveWith('reviewer', 'changes_needed', 'bugfix', { history: { reviewRounds: 1, testRounds: 0 } });
+    assert.deepEqual([bugfix.target, bugfix.limitReached], ['In review', true]);
+    const feature = resolveWith('reviewer', 'changes_needed', 'feature', { history: { reviewRounds: 1, testRounds: 0 } });
+    assert.deepEqual([feature.target, feature.limitReached], ['In progress', false]);
+  });
+
+  it('validates `next` per profile against the board', () => {
+    assert.deepEqual(nextStageProblems(profiled, BOARD), []);
   });
 });
 

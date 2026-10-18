@@ -4,6 +4,8 @@ import { isComplexityLabel, isNeedsHumanLabel, isTypeLabel, classify } from './c
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import type { Issue } from '../tracker/types.ts';
 import { resolveIssueCommand } from './command.ts';
+import type { PipelineConfig } from './config.ts';
+import { profileFor } from './profile.ts';
 
 /** Strict Liquid: unknown variables and unknown filters fail rendering. */
 const engine = new Liquid({
@@ -72,9 +74,14 @@ export async function renderPrompt(template: PromptTemplate, scope: Record<strin
 
 /**
  * Template view of an issue: string keys, ISO timestamps, nested lists and maps preserved. `command` is the
- * `/<name>` of the description when `skills` (see `commandSkills`) has a skill of that name, else null.
+ * `/<name>` of the description when `skills` (see `commandSkills`) has a skill of that name, else null. `profile` is the
+ * name of the workflow profile that applies to the issue (see `profileFor`), null without `pipeline.profiles`.
  */
-export function issueTemplateValue(issue: Issue, skills: ReadonlyMap<string, string> = new Map()): Record<string, unknown> {
+export function issueTemplateValue(
+  issue: Issue,
+  skills: ReadonlyMap<string, string> = new Map(),
+  pipeline: Pick<PipelineConfig, 'profiles'> | null = null,
+): Record<string, unknown> {
   const classification = classify(issue.labels);
   return {
     command: resolveIssueCommand(issue.description, skills),
@@ -95,5 +102,6 @@ export function issueTemplateValue(issue: Issue, skills: ReadonlyMap<string, str
     updated_at: issue.updated_at?.toISOString() ?? null,
     type: classification.type,
     complexity: classification.complexity,
+    profile: pipeline === null ? null : (profileFor(pipeline, classification.type)?.name ?? null),
   };
 }

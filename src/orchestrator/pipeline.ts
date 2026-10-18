@@ -25,7 +25,8 @@ export interface PipelineStage {
   kind: 'agent' | 'human' | 'terminal';
   /** Board columns this stage spans, in their original casing. */
   columns: string[];
-  status: 'done' | 'active' | 'pending';
+  /** `skipped`: the issue's workflow profile leaves the stage out and no session ran there. */
+  status: 'done' | 'active' | 'pending' | 'skipped';
   /** Sessions of this stage's role, oldest first; always empty for human and terminal stages. */
   sessions: StageSession[];
 }
@@ -40,6 +41,8 @@ export interface PipelineInput {
   boardColumns: string[] | null;
   /** The issue's session history, oldest first. */
   sessions: StageSession[];
+  /** Roles the issue's workflow profile skips; their stages show as `skipped`. Omitted = none. */
+  skip?: readonly string[];
 }
 
 function columnIndex(boardColumns: string[] | null): Map<string, number> {
@@ -100,10 +103,11 @@ export function blockedBucketColumns(
  * hand-off column such as "In review" and excludes the shared "Blocked" escape hatch (see
  * `blockedBucketColumns`). When the heuristic yields nothing, the pipeline is agent stages plus the
  * terminal columns, which is always correct. Session history marks a role's stage done even when the
- * column moved backwards; sessions of roles no longer derived get a trailing stage so history never drops.
+ * column moved backwards; sessions of roles no longer derived get a trailing stage so history never drops. Stages of
+ * roles in `skip` (the issue's profile) are `skipped` unless they have sessions.
  */
 export function derivePipeline(input: PipelineInput): PipelineStage[] {
-  const { issue, roles, activeStates, terminalStates, boardColumns, sessions } = input;
+  const { issue, roles, activeStates, terminalStates, boardColumns, sessions, skip = [] } = input;
   const index = columnIndex(boardColumns);
   const active = new Set(activeStates.map(normalizeStateName));
   const terminal = new Set(terminalStates.map(normalizeStateName));
@@ -174,6 +178,10 @@ export function derivePipeline(input: PipelineInput): PipelineStage[] {
     if (stage.kind === 'agent' && stage.status === 'pending' && stage.sessions.some((session) => session.outcome === 'handed_off')) {
       stage.status = 'done';
     }
+  }
+  // A stage the profile leaves out stays `skipped` unless a session already ran there.
+  for (const stage of stages) {
+    if (stage.kind === 'agent' && stage.sessions.length === 0 && skip.includes(stage.id)) stage.status = 'skipped';
   }
   return stages;
 }

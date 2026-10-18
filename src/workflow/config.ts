@@ -7,8 +7,10 @@ import type { WorkspaceIntegration } from '../integrations/types.ts';
 import { resolveEnvReference } from '../util/env.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { resolveConfigPath } from '../util/paths.ts';
+import { ISSUE_TYPES } from './classify.ts';
 import { COMMAND_NAME } from './command.ts';
 import { isPlainObject } from './loader.ts';
+import { DEFAULT_PROFILE, type WorkflowProfile } from './profile.ts';
 import { Reader, parseInteger } from './reader.ts';
 import { NEXT_STAGE, resultTargets, type ModelLabelPolicy, type RoleClaudeOverrides, type RoleConfig } from './roles.ts';
 import { AGENT_RESULT_KINDS, isLoopKind, LOOP_VERDICTS, RESULT_VERDICTS, type AgentResultKind } from './results.ts';
@@ -113,6 +115,11 @@ export interface PipelineConfig {
   typeLabels: ReadonlyMap<string, string>;
   /** Type of an issue without a label in `typeLabels`. */
   defaultType: string;
+  /**
+   * Workflow profiles by name: an issue type (`bugfix`, `feature`, `refactor`) or `default` (see `profileFor`). Each
+   * skips stages and overrides transitions for issues of that type.
+   */
+  profiles: ReadonlyMap<string, WorkflowProfile>;
   /** Path globs that mark test, documentation and security-relevant files (used by later pipeline stages). */
   testPaths: string[];
   docsPaths: string[];
@@ -211,6 +218,7 @@ const ROLE_KEYS = new Set([
 /** GitHub allows 100 sub-issues per issue. */
 const MAX_SUB_ISSUES_LIMIT = 100;
 const PIPELINE_KEYS = new Set([
+  'profiles',
   'max_review_rounds',
   'max_test_rounds',
   'limit_label',
@@ -220,6 +228,7 @@ const PIPELINE_KEYS = new Set([
   'docs_paths',
   'security_paths',
 ]);
+const PROFILE_KEYS = new Set(['skip', 'on_result', 'max_review_rounds', 'max_test_rounds']);
 const ROLE_CLAUDE_KEYS = new Set(['model', 'effort', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'max_budget_usd', 'model_by_complexity']);
 const MODEL_CLAUDE_KEYS = new Set(['permission_mode', 'on_permission_request', 'allowed_tools', 'disallowed_tools']);
 
@@ -395,7 +404,7 @@ function mergeTargets(mayMoveTo: string[] | null, transitions: RoleTransitions):
 }
 
 /** The `pipeline` section; every key is optional. Unknown keys are ignored with a warning. */
-function readPipeline(reader: Reader, raw: Record<string, unknown>): PipelineConfig {
+function readPipeline(reader: Reader, raw: Record<string, unknown>, roles: RoleConfig[] | null, terminalStates: string[]): PipelineConfig {
   const section = reader.section(raw, 'pipeline');
   for (const key of Object.keys(section)) {
     if (!PIPELINE_KEYS.has(key)) reader.warnings.push(`unknown key pipeline.${key} ignored (known: ${[...PIPELINE_KEYS].join(', ')})`);
@@ -425,10 +434,97 @@ function readPipeline(reader: Reader, raw: Record<string, unknown>): PipelineCon
     limitLabel: nonEmpty('limit_label', DEFAULTS.pipelineLimitLabel),
     typeLabels,
     defaultType: nonEmpty('default_type', DEFAULTS.pipelineDefaultType),
+    profiles: readProfiles(reader, section.profiles, roles, terminalStates),
     testPaths: reader.stringList(section, 'test_paths', 'pipeline.test_paths') ?? [],
     docsPaths: reader.stringList(section, 'docs_paths', 'pipeline.docs_paths') ?? [],
     securityPaths: reader.stringList(section, 'security_paths', 'pipeline.security_paths') ?? [],
   };
+}
+
+/**
+ * `pipeline.profiles`: a map of issue type (or `default`) to `{skip, on_result, max_review_rounds, max_test_rounds}`.
+ * `skip` lists role names; `on_result` maps a role name and verdict of its result kind to a column or `next`: never a
+ * terminal column, and one in the role's `may_move_to` when it sets one.
+ */
+function readProfiles(reader: Reader, raw: unknown, roles: RoleConfig[] | null, terminalStates: string[]): ReadonlyMap<string, WorkflowProfile> {
+  const profiles = new Map<string, WorkflowProfile>();
+  if (raw === undefined || raw === null) return profiles;
+  if (!isPlainObject(raw)) {
+    reader.errors.push('pipeline.profiles must be a map of issue types to profiles');
+    return profiles;
+  }
+  const terminal = new Set(terminalStates.map(normalizeStateName));
+  const known = roles === null ? 'none: set roles' : roles.map((role) => role.name).join(', ') || 'none';
+  const names: readonly string[] = [...ISSUE_TYPES, DEFAULT_PROFILE];
+  for (const [name, value] of Object.entries(raw)) {
+    const field = `pipeline.profiles.${name}`;
+    if (!names.includes(name)) {
+      reader.errors.push(`${field}: unknown profile (allowed: ${names.join(', ')})`);
+      continue;
+    }
+    if (!isPlainObject(value)) {
+      reader.errors.push(`${field} must be a map`);
+      continue;
+    }
+    for (const key of Object.keys(value)) {
+      if (!PROFILE_KEYS.has(key)) reader.errors.push(`${field}.${key}: unknown key (allowed: ${[...PROFILE_KEYS].join(', ')})`);
+    }
+    const skip: string[] = [];
+    for (const entry of reader.stringList(value, 'skip', `${field}.skip`) ?? []) {
+      const role = entry.trim();
+      if (roles?.some((candidate) => candidate.name === role) !== true) {
+        reader.errors.push(`${field}.skip: unknown role ${JSON.stringify(entry)} (roles: ${known})`);
+      } else if (!skip.includes(role)) {
+        skip.push(role);
+      }
+    }
+    const onResult: Record<string, Record<string, string>> = {};
+    const onResultRaw = value.on_result;
+    if (onResultRaw !== undefined && onResultRaw !== null) {
+      if (!isPlainObject(onResultRaw)) {
+        reader.errors.push(`${field}.on_result must be a map of roles to verdicts`);
+      } else {
+        for (const [roleKey, verdictsRaw] of Object.entries(onResultRaw)) {
+          const path = `${field}.on_result.${roleKey}`;
+          const role = roles?.find((candidate) => candidate.name === roleKey.trim());
+          if (role === undefined) {
+            reader.errors.push(`${path}: unknown role (roles: ${known})`);
+          } else if (role.result === null) {
+            reader.errors.push(`${path}: role ${role.name} reports no result (roles.${role.name}.result is not set)`);
+          } else if (!isPlainObject(verdictsRaw)) {
+            reader.errors.push(`${path} must be a map of verdicts to columns`);
+          } else {
+            const verdicts: readonly string[] = RESULT_VERDICTS[role.result];
+            const targets: Record<string, string> = {};
+            for (const [verdict, target] of Object.entries(verdictsRaw)) {
+              const targetPath = `${path}.${verdict}`;
+              const column = typeof target === 'string' ? target.trim() : null;
+              if (!verdicts.includes(verdict)) {
+                reader.errors.push(`${targetPath}: ${JSON.stringify(verdict)} is not a verdict of result ${role.result} (allowed: ${verdicts.join(', ')})`);
+              } else if (column === null) {
+                reader.errors.push(`${targetPath} must be a column name or ${NEXT_STAGE}`);
+              } else if (column === '') {
+                reader.errors.push(`${targetPath} must not be empty`);
+              } else if (column.toLowerCase() === NEXT_STAGE) {
+                targets[verdict] = NEXT_STAGE;
+              } else if (terminal.has(normalizeStateName(column))) {
+                reader.errors.push(`${targetPath} must not be a terminal state (got ${JSON.stringify(column)})`);
+              } else if (role.mayMoveTo !== null && !role.mayMoveTo.some((allowed) => normalizeStateName(allowed) === normalizeStateName(column))) {
+                reader.errors.push(`${targetPath}: "${column}" is not in roles.${role.name}.may_move_to (add it there)`);
+              } else {
+                targets[verdict] = column;
+              }
+            }
+            onResult[role.name] = targets;
+          }
+        }
+      }
+    }
+    const rounds = (key: 'max_review_rounds' | 'max_test_rounds'): number | null =>
+      value[key] === undefined || value[key] === null ? null : reader.int(value, key, `${field}.${key}`, 1, 1);
+    profiles.set(name, { name, skip, onResult, maxReviewRounds: rounds('max_review_rounds'), maxTestRounds: rounds('max_test_rounds') });
+  }
+  return profiles;
 }
 
 /** `commands` of a role: null when omitted; each entry is a skill-style name without the leading slash. */
@@ -818,7 +914,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     );
   }
 
-  const pipeline = readPipeline(reader, raw);
+  const pipeline = readPipeline(reader, raw, roles, terminalStates);
 
   // server (HTTP extension)
   const serverRaw = reader.section(raw, 'server');
