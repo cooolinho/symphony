@@ -215,6 +215,15 @@ The run ends without a result when the reminder turn did not produce one, or whe
 A run whose newest entry check timed out (`check_timeout`) is not a missing result: it ends without the reminder turn,
 and the stage runs again in a continuation session. Roles without `result` are not affected.
 
+## Dashboard and history
+
+Every recorded result is also written to the repository history as a `stage_result` line (see
+[configuration.md](configuration.md#repository-logs)); `/api/v1/history/analytics` groups them as `by_profile` and
+`verdicts_by_role`. The agent page lists each result as a card in "Stage results" (role, verdict with round,
+summary, findings, blockers and a link to the comment), fed by `results` of `GET /api/v1/<identifier>`. A dashboard
+card shows a `needs human` chip for an issue with the `needs-human` label and, with `agent.max_issue_cost_usd` set, the
+spent share of the budget (`budget` of `issues[]` in `GET /api/v1/state`).
+
 ## Scenario tests
 
 `test/pipeline-flow.test.ts` drives the developer → reviewer loop end to end without Claude: the real orchestrator,

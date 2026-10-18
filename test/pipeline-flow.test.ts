@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import type { StartSessionParams, TurnResult } from '../src/agent/types.ts';
+import { PricingStore } from '../src/costs/pricing.ts';
+import { HistoryLog, readHistory } from '../src/history/history.ts';
 import { Logger } from '../src/log.ts';
 import { CONTINUATION_DELAY_MS } from '../src/orchestrator/eligibility.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
@@ -99,7 +101,7 @@ function board(): FakeTracker {
  * without a result. `tracker` and `root` take over the board and the workspaces of an earlier instance (a restart);
  * `front` replaces top-level sections of the workflow's front matter.
  */
-function pipeline(stages: Stage[], options: { tracker?: FakeTracker; root?: string; front?: Record<string, unknown> } = {}): Pipeline {
+function pipeline(stages: Stage[], options: { tracker?: FakeTracker; root?: string; front?: Record<string, unknown>; history?: HistoryLog } = {}): Pipeline {
   const root = options.root ?? tempDir();
   const tracker = options.tracker ?? board();
   const reports: ToolResult[] = [];
@@ -126,6 +128,7 @@ function pipeline(stages: Stage[], options: { tracker?: FakeTracker; root?: stri
     clock,
     timers,
     createAdapter: () => tracker,
+    ...(options.history !== undefined ? { history: options.history } : {}),
   });
   return { orchestrator, tracker, runner, timers, clock, workflow, root, reports };
 }
@@ -243,6 +246,33 @@ async function run(h: Pipeline, stop?: () => boolean): Promise<void> {
 }
 
 describe('result-driven developer → reviewer loop', () => {
+  it('writes one stage_result history line per recorded result', async () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
+    const history = new HistoryLog(path.join(dir, 'repositories'), new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent()), Logger.silent());
+    const h = pipeline([done(), changesNeeded('Missing guard'), done(), approved()], { history });
+    await run(h);
+
+    const lines = readHistory(history.dir, null).entries.filter((entry) => entry.event === 'stage_result');
+    assert.deepEqual(
+      lines.map((line) => [line.fields.role, line.fields.kind, line.fields.verdict, line.fields.round ?? null, line.fields.target, line.fields.findings ?? null]),
+      [
+        ['developer', 'implementation', 'done', null, 'Agent review', null],
+        ['reviewer', 'review', 'changes_needed', '1', 'In progress', '1'],
+        ['developer', 'implementation', 'done', null, 'Agent review', null],
+        ['reviewer', 'review', 'approved', '2', 'In review', null],
+      ],
+    );
+    assert.ok(lines.every((line) => line.fields.issue === issue(h).identifier && line.fields.run !== undefined));
+
+    // The agent page reads the same results from the issue detail: verdict, round, findings and the comment's link.
+    const detail = h.orchestrator.issueDetail(issue(h).identifier);
+    const rows = detail?.results ?? [];
+    assert.deepEqual(rows.map((row) => [row.role, row.verdict, row.round]), [['developer', 'done', null], ['reviewer', 'changes_needed', 1], ['developer', 'done', null], ['reviewer', 'approved', 2]]);
+    assert.deepEqual(rows[1]?.findings?.map((finding) => [finding.severity, finding.file, finding.problem]), [['major', 'src/app.ts', 'Missing guard']]);
+    assert.ok(rows.every((row) => typeof row.url === 'string' && row.url.startsWith('http')), JSON.stringify(rows.map((row) => row.url)));
+  });
+
   it('approved in round 1: one result per stage, each hand-off through its entry check', async () => {
     const h = pipeline([done(), approved()]);
     await run(h);

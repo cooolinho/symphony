@@ -57,6 +57,60 @@ describe('statistics analytics', () => {
     return { ...h, entries: readHistory(h.log.dir, null).entries };
   }
 
+  describe('stage results', () => {
+    const result = (issue: string, role: string, kind: string, verdict: string, at: string, over: Record<string, unknown> = {}) => ({
+      repo: 'acme/app', issue, run: null, role, kind, verdict, round: null, target: null, profile: 'bugfix', complexity: 'S', findings: 0, at: new Date(at), ...over,
+    });
+
+    function seedResults() {
+      const h = history();
+      h.log.runFinished(finish('acme/app#1', 'r1', '2026-10-03T10:00:00Z', { role: 'developer' }));
+      h.log.runFinished(finish('acme/app#2', 'r2', '2026-10-03T11:00:00Z', { role: 'developer' }));
+      h.log.stageResult(result('acme/app#1', 'developer', 'implementation', 'done', '2026-10-03T10:00:00Z', { run: 'r1' }));
+      h.log.stageResult(result('acme/app#1', 'reviewer', 'review', 'changes_needed', '2026-10-03T10:30:00Z', { round: 1, findings: 2 }));
+      h.log.stageResult(result('acme/app#1', 'reviewer', 'review', 'approved', '2026-10-04T10:30:00Z', { round: 2 }));
+      h.log.stageResult(result('acme/app#2', 'developer', 'implementation', 'done', '2026-10-03T11:00:00Z', { run: 'r2', profile: 'feature', complexity: 'L' }));
+      h.log.stageResult(result('acme/app#3', 'developer', 'implementation', 'done', '2026-10-03T12:00:00Z', { profile: null, complexity: null }));
+      h.log.stageResult({ ...result('other/repo#4', 'reviewer', 'review', 'approved', '2026-10-03T12:00:00Z'), repo: 'other/repo' });
+      return readHistory(h.log.dir, null).entries;
+    }
+
+    it('groups the results by profile, with the verdicts, complexities and the cost of its issues', () => {
+      const a = computeAnalytics(seedResults(), history().pricing.current(), filter({ repo: 'acme/app' }), NOW);
+      assert.equal(a.stage_results, 5);
+      assert.deepEqual(a.by_profile.map((row) => [row.profile, row.results, row.issues]), [['bugfix', 3, 1], ['default', 1, 1], ['feature', 1, 1]]);
+      const bugfix = a.by_profile[0];
+      assert.deepEqual(bugfix?.verdicts, { 'implementation:done': 1, 'review:changes_needed': 1, 'review:approved': 1 });
+      assert.deepEqual(bugfix?.by_complexity, { S: 3 });
+      assert.equal(bugfix?.max_round, 2);
+      // The runs of acme/app#1 are attributed to its profile.
+      assert.deepEqual([bugfix?.runs, bugfix?.cost_usd, bugfix?.avg_cost_per_issue], [1, 0.114, 0.114]);
+      assert.deepEqual(a.by_profile[1]?.by_complexity, { unknown: 1 });
+    });
+
+    it('counts the verdicts per role', () => {
+      const a = computeAnalytics(seedResults(), history().pricing.current(), filter(), NOW);
+      assert.deepEqual(
+        a.verdicts_by_role.map((row) => [row.role, row.results, row.issues, row.verdicts]),
+        [
+          ['developer', 3, 3, { 'implementation:done': 3 }],
+          ['reviewer', 3, 2, { 'review:changes_needed': 1, 'review:approved': 2 }],
+        ],
+      );
+    });
+
+    it('follows the period and the model filter, and is empty without stage_result lines', () => {
+      const entries = seedResults();
+      const pricing = history().pricing.current();
+      assert.equal(computeAnalytics(entries, pricing, filter({ from: new Date('2026-10-04T00:00:00Z') }), NOW).stage_results, 1);
+      // A model filter keeps only the results of runs that used the model: here the two with a run id.
+      assert.equal(computeAnalytics(entries, pricing, filter({ model: 'claude-opus-5-5' }), NOW).stage_results, 2);
+      assert.equal(computeAnalytics(entries, pricing, filter({ model: 'claude-haiku-4-5' }), NOW).stage_results, 0);
+      const none = computeAnalytics(seed().entries, pricing, filter(), NOW);
+      assert.deepEqual([none.by_profile, none.verdicts_by_role, none.stage_results], [[], [], 0]);
+    });
+  });
+
   it('aggregates tool calls, skills, subagents and the use of integrations such as Laravel Boost', () => {
     const h = history();
     const boost = (status: string, tools: Record<string, number>, skills: Record<string, number> = {}) => [{ id: 'laravel-boost', status, tools, skills }];

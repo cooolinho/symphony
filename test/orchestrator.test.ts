@@ -814,6 +814,8 @@ describe('roles', () => {
       assert.equal(paused?.source, 'budget');
       assert.equal(paused?.cost_usd, 5);
       assert.equal(paused?.max_issue_cost_usd, 4);
+      // The dashboard card shows the spent share of the budget.
+      assert.deepEqual(s.orchestrator.snapshot().issues.find((row) => row.issue_identifier === 'acme/app#a')?.budget, { cost_usd: 5, max_issue_cost_usd: 4 });
       assert.equal(comments.length, 1);
       assert.match(comments[0] ?? '', /Cost budget used up.*\$5\.00.*\$4\.00/s);
       assert.match(fs.readFileSync(s.history.fileFor('acme/app'), 'utf8'), /event=issue_paused .*source=budget cost_usd=5 max_issue_cost_usd=4/);

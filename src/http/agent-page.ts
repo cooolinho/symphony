@@ -10,6 +10,20 @@ const AGENT_CSS = `
   .pipe-row b { color: var(--text); font-weight: 600; }
   .pipe-row .muted { overflow-wrap: anywhere; }
 
+  /* Stage results: one card per result, newest last. */
+  .result-cards { display: grid; gap: 8px; }
+  .result-card { display: grid; gap: 6px; padding: 9px 12px; font: 12px var(--mono); border: 1px solid var(--line);
+    border-left: 2px solid var(--tone, var(--faint)); border-radius: var(--radius-sm); background: rgba(0, 0, 0, .2); }
+  .result-card.vd-good { --tone: var(--green); } .result-card.vd-warn { --tone: var(--amber); } .result-card.vd-bad { --tone: var(--red); }
+  .result-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+  .result-head b { color: var(--text); font-weight: 600; }
+  .result-head .verdict { color: var(--tone, var(--muted)); font-weight: 600; }
+  .result-summary { color: var(--text-2); overflow-wrap: anywhere; white-space: pre-wrap; }
+  .result-findings { margin: 0; padding-left: 18px; display: grid; gap: 3px; color: var(--text-2); overflow-wrap: anywhere; }
+  .result-findings .sev { font-weight: 600; text-transform: uppercase; }
+  .result-findings .sev.blocker, .result-findings .sev.major { color: var(--red); }
+  .result-findings .sev.minor, .result-findings .sev.nit { color: var(--muted); }
+
   /* Issue sidebar section: labels, blockers, sub-issues. */
   .issue-labels { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
   .issue-labels:empty { display: none; }
@@ -241,6 +255,11 @@ export const AGENT_HTML = `<!doctype html>
     <div class="section-head"><h2 id="pipe-title">Pipeline</h2></div>
     <div id="pipeline"></div>
     <div class="pipe-rows" id="pipe-rows"></div>
+  </section>
+
+  <section class="results-section" id="results-section" aria-labelledby="results-title" hidden>
+    <div class="section-head"><h2 id="results-title">Stage results <span class="count" id="results-count"></span></h2></div>
+    <div class="result-cards" id="result-cards"></div>
   </section>
 
   <section class="alert" id="alert" role="alert" hidden></section>
@@ -1204,6 +1223,48 @@ ${PIPELINE_JS}
     patchChildren($('pipe-rows'), rows);
   }
 
+  /** One card per recorded stage result: role, verdict with round, summary, findings, blockers and the comment's link. */
+  function renderResults() {
+    const d = S.detail;
+    const results = (d && d.results) || [];
+    $('results-section').hidden = !results.length;
+    setText($('results-count'), results.length ? String(results.length) : '');
+    const cards = results.map((r) => {
+      const card = el('article', null, 'result-card vd-' + (PIPE_VERDICT_TONE[r.verdict] || 'muted'));
+      const head = el('div', null, 'result-head');
+      head.append(el('b', r.role), el('span', r.kind, 'muted'), el('span', pipeVerdict(r.verdict, r.round), 'verdict'));
+      if (r.target) head.append(el('span', '→ ' + r.target, 'muted'));
+      head.append(el('span', fmtStamp(r.created_at), 'muted'));
+      if (typeof r.url === 'string' && /^https?:/.test(r.url)) {
+        const link = el('a', 'Comment ↗');
+        link.href = r.url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+        head.append(link);
+      }
+      card.append(head);
+      if (r.summary) card.append(el('div', r.summary, 'result-summary'));
+      if (r.findings && r.findings.length) {
+        const list = el('ul', null, 'result-findings');
+        for (const f of r.findings) {
+          const li = el('li');
+          li.append(el('span', f.severity, 'sev ' + f.severity), ' ' + (f.file ? f.file + (f.line ? ':' + f.line : '') + ' — ' : '') + f.problem + (f.fix ? ' → ' + f.fix : ''));
+          list.append(li);
+        }
+        card.append(list);
+      }
+      if (r.blockers && r.blockers.length) {
+        const list = el('ul', null, 'result-findings');
+        for (const b of r.blockers) {
+          const li = el('li');
+          li.append(el('span', b.needs, 'sev blocker'), ' ' + b.description);
+          list.append(li);
+        }
+        card.append(list);
+      }
+      return card;
+    });
+    patchChildren($('result-cards'), cards);
+  }
+
   /** Board fields of the issue: labels, priority, parent, blockers, sub-issues, dispatch note. */
   function renderIssueMeta() {
     const d = S.detail;
@@ -1470,6 +1531,7 @@ ${PIPELINE_JS}
     if (S.detail || S.ended || S.notFound) {
       renderHeader();
       renderPipelineSection();
+      renderResults();
       renderIssueMeta();
       renderAlert();
       renderIntegrations();

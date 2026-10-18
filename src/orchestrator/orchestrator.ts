@@ -2145,6 +2145,22 @@ export class Orchestrator {
           results: (results) => {
             record.results = results;
           },
+          stageResult: ({ result, meta }) => {
+            this.#deps.history?.stageResult({
+              repo: entry.repo,
+              issue: entry.identifier,
+              run: meta.run,
+              role: meta.role,
+              kind: result.kind,
+              verdict: result.verdict,
+              round: meta.round,
+              target: meta.target,
+              profile: meta.profile,
+              complexity: classify(entry.issue.labels).complexity,
+              findings: result.kind === 'review' || result.kind === 'security' ? result.findings.length : 0,
+              at: new Date(meta.created_at),
+            });
+          },
           transitionDenied: (target, message) => {
             this.#deps.history?.transitionDenied({
               repo: entry.repo,
@@ -3317,6 +3333,14 @@ export class Orchestrator {
     });
   }
 
+  /** Spent and allowed cost of an issue (finished runs of every role plus the running one); null without a cap. */
+  #budgetRow(issue: Pick<Issue, 'id' | 'identifier'>, repo: string | null, config: ServiceConfig): { cost_usd: number; max_issue_cost_usd: number } | null {
+    const limit = config.agent.maxIssueCostUsd;
+    if (limit === null || repo === null) return null;
+    const spent = (this.#deps.history?.issueCostUsd(repo, issue.identifier) ?? 0) + (this.#running.get(issue.id)?.costUsd ?? 0);
+    return { cost_usd: round4(spent), max_issue_cost_usd: limit };
+  }
+
   /** One `issues[]` row of GET /api/v1/state: an issue in flight with its pipeline, live status and place in the plan. */
   #issueRow(
     status: 'running' | 'retrying' | 'paused' | 'queued',
@@ -3348,6 +3372,8 @@ export class Orchestrator {
       priority: plan?.priority ?? meta?.priority ?? null,
       /** True when the orchestrator holds debugging context, so /agent?id=… has something to show. */
       tracked: record !== undefined,
+      /** The issue's cost against `agent.max_issue_cost_usd`; null without a cap or a repository. */
+      budget: this.#budgetRow(issue, rows.running?.repo ?? record?.repo ?? null, workflow.config),
       stages: this.#pipelineFor({ state: issue.state, description: issue.description, labels: issue.labels }, issue.id, workflow),
       running: rows.running === undefined ? null : this.#runningRow(rows.running, now),
       retry: rows.retry === undefined ? null : this.#retryRow(rows.retry, now),

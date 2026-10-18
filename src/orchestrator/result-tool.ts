@@ -304,7 +304,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     }
 
     // The result is recorded from here on; the move and the labels follow it, and a repeated call changes nothing.
-    params.onRecorded?.({ result, meta });
+    params.onRecorded?.({ result, meta, url });
     let change: StatusChange;
     try {
       change = await adapter.setStatus(issue, transition.target);

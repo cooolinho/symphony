@@ -120,6 +120,28 @@ export interface TransitionDenial {
   at: Date;
 }
 
+/** A stage result the session recorded with `report_result` (history line `stage_result`). */
+export interface StageResultLine {
+  repo: string;
+  issue: string;
+  run: string | null;
+  role: string;
+  /** Result kind (`implementation`, `review`, …). */
+  kind: string;
+  verdict: string;
+  /** Round of a review or test loop; null when the result is not counted. */
+  round: number | null;
+  /** Column the result handed the issue to. */
+  target: string | null;
+  /** Workflow profile that routed the result; null without one. */
+  profile: string | null;
+  /** Issue complexity (`S` … `XL`); null when unknown. */
+  complexity: string | null;
+  /** Findings of the result (review and security results); 0 for other kinds. */
+  findings: number;
+  at: Date;
+}
+
 interface RepoTotals {
   runs: number;
   tokens: number;
@@ -301,6 +323,21 @@ export class HistoryLog {
       exit_code: check.exitCode,
       timed_out: check.timedOut || undefined,
       duration_ms: check.durationMs,
+    });
+  }
+
+  stageResult(line: StageResultLine): void {
+    this.#append(line.repo, line.at, 'stage_result', {
+      issue: line.issue,
+      run: line.run ?? undefined,
+      role: line.role,
+      kind: line.kind,
+      verdict: line.verdict,
+      round: line.round ?? undefined,
+      target: line.target ?? undefined,
+      profile: line.profile ?? undefined,
+      complexity: line.complexity ?? undefined,
+      findings: line.findings || undefined,
     });
   }
 
