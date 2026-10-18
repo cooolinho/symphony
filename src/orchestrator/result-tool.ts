@@ -12,6 +12,18 @@ import { resolveTransition, type StageConditions, type Transition, type Transiti
 export const RESULT_TOOL = 'report_result';
 export const RESULT_RECORDED_NOTE = 'Result recorded — end your turn now.';
 
+/**
+ * Appended to every continuation prompt of a result-driven role (also to a custom `agent.continuation_prompt`): the
+ * reminder that a stage ends with a result. `column` is the role's `on_missing_result`.
+ */
+export function resultReminder(column: string | null): string {
+  const consequence = column !== null ? `Symphony moves the issue to "${column}" and posts a comment` : 'Symphony stops the stage and posts a comment';
+  return (
+    `Your stage ends with a result: call \`${RESULT_TOOL}\` now. If you cannot finish, report the verdict \`blocked\` with the reason. ` +
+    `If this session ends without a reported result, ${consequence}.`
+  );
+}
+
 /** What the tool needs from the tracker: the comment, the move (including `auto_merge`) and the limit label. */
 export type ResultToolAdapter = Required<Pick<TrackerAdapter, 'postComment' | 'setStatus' | 'addLabels' | 'removeLabels'>>;
 
@@ -40,6 +52,8 @@ export interface ResultToolParams {
   /** The run recorded in the meta; null when unknown. */
   runId: string | null;
   meta: ResultMetaSource;
+  /** Called once, when the result comment is posted (the result is recorded from then on). */
+  onRecorded?: () => void;
 }
 
 function ok(data: unknown): ToolResult {
@@ -203,6 +217,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     }
 
     // The result is recorded from here on; the move and the labels follow it, and a repeated call changes nothing.
+    params.onRecorded?.();
     let change: StatusChange | null = null;
     let statusError: string | null = null;
     try {
