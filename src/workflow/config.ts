@@ -103,6 +103,10 @@ export interface ClaudeConfig {
   skills: 'all' | string[] | null;
 }
 
+/** When the analysis stage runs: see `PipelineConfig.analysis`. */
+export type AnalysisPolicy = 'always' | 'when_unlabeled';
+export const ANALYSIS_POLICIES: readonly AnalysisPolicy[] = ['always', 'when_unlabeled'];
+
 /** The `pipeline` section: limits and classification shared by the result-driven roles. */
 export interface PipelineConfig {
   /** Review rounds (review → changes needed → fix) before the issue is handed to a human. */
@@ -115,6 +119,12 @@ export interface PipelineConfig {
   typeLabels: ReadonlyMap<string, string>;
   /** Type of an issue without a label in `typeLabels`. */
   defaultType: string;
+  /**
+   * Whether the analysis stage (the role whose `result` is `analysis`) runs for every issue (`always`) or only for
+   * issues without a `Type:` or without a `Complexity:` label (`when_unlabeled`); a labelled issue passes it without
+   * a session (see `stageSkip`).
+   */
+  analysis: AnalysisPolicy;
   /**
    * Workflow profiles by name: an issue type (`bugfix`, `feature`, `refactor`) or `default` (see `profileFor`). Each
    * skips stages and overrides transitions for issues of that type.
@@ -224,6 +234,7 @@ const PIPELINE_KEYS = new Set([
   'limit_label',
   'type_labels',
   'default_type',
+  'analysis',
   'test_paths',
   'docs_paths',
   'security_paths',
@@ -428,12 +439,17 @@ function readPipeline(reader: Reader, raw: Record<string, unknown>, roles: RoleC
     if (value === '') reader.errors.push(`pipeline.${key} must not be empty`);
     return value || fallback;
   };
+  const analysis = reader.oneOf(section, 'analysis', 'pipeline.analysis', ANALYSIS_POLICIES, 'always');
+  if (analysis === 'when_unlabeled' && !(roles ?? []).some((role) => role.result === 'analysis')) {
+    reader.errors.push('pipeline.analysis: when_unlabeled needs a role with `result: analysis`');
+  }
   return {
     maxReviewRounds: reader.int(section, 'max_review_rounds', 'pipeline.max_review_rounds', DEFAULTS.maxReviewRounds, 1),
     maxTestRounds: reader.int(section, 'max_test_rounds', 'pipeline.max_test_rounds', DEFAULTS.maxTestRounds, 1),
     limitLabel: nonEmpty('limit_label', DEFAULTS.pipelineLimitLabel),
     typeLabels,
     defaultType: nonEmpty('default_type', DEFAULTS.pipelineDefaultType),
+    analysis,
     profiles: readProfiles(reader, section.profiles, roles, terminalStates),
     testPaths: reader.stringList(section, 'test_paths', 'pipeline.test_paths') ?? [],
     docsPaths: reader.stringList(section, 'docs_paths', 'pipeline.docs_paths') ?? [],

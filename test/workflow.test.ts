@@ -777,6 +777,7 @@ describe('result-driven roles and the pipeline section', () => {
         limitLabel: 'needs-human',
         typeLabels: [],
         defaultType: 'feature',
+        analysis: 'always',
         profiles: [],
         testPaths: [],
         docsPaths: [],
@@ -939,6 +940,14 @@ describe('result-driven roles and the pipeline section', () => {
       assert.match(message, /pipeline\.test_paths must be a list of strings/);
       assert.match(messageOf({ ...base, pipeline: { type_labels: ['bug'] } }), /pipeline\.type_labels must be a map of labels to types/);
       assert.match(messageOf({ ...base, pipeline: 'x' }), /pipeline must be a map/);
+    });
+
+    it('reads pipeline.analysis and requires an analysis role for when_unlabeled', () => {
+      const read = (analysis: unknown, extra: Record<string, unknown> = {}) => ({ ...base, roles: { ...roles, ...extra }, pipeline: { analysis } });
+      assert.equal(resolve({ ...base, roles }).pipeline.analysis, 'always');
+      assert.equal(resolve(read('when_unlabeled', { docs: { states: ['Docs'], result: 'analysis' } })).pipeline.analysis, 'when_unlabeled');
+      assert.match(messageOf(read('sometimes')), /pipeline\.analysis must be one of always, when_unlabeled \(got "sometimes"\)/);
+      assert.match(messageOf(read('when_unlabeled')), /pipeline\.analysis: when_unlabeled needs a role with `result: analysis`/);
     });
 
     describe('profiles', () => {
