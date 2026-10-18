@@ -23,6 +23,7 @@ import {
   ManualTimers,
   StaticWorkflow,
   baseFront,
+  callTool,
   makeIssue,
   makeWorkflow,
   tempDir,
@@ -906,9 +907,8 @@ describe('transition guard', () => {
     const results: ToolResult[] = [];
     const states: string[] = [];
     const runner = new FakeRunner(async (turn, params) => {
-      const setStatus = params.tools.find((t) => t.name === 'set_status');
       const call = async (status: string) => {
-        const result = await setStatus!.execute({ status }, params.toolContext());
+        const result = await callTool(params, 'set_status', { status });
         results.push(result);
         states.push(s.tracker.issues.get('g')!.state);
       };
@@ -945,9 +945,8 @@ describe('entry checks at runtime', () => {
     let workspace = '';
     const runner = new FakeRunner(async (_turn, params) => {
       workspace = params.cwd;
-      const setStatus = params.tools.find((t) => t.name === 'set_status');
-      results.push(await setStatus!.execute({ status: 'Done' }, params.toolContext()));
-      results.push(await setStatus!.execute({ status: 'Agent review' }, params.toolContext()));
+      results.push(await callTool(params, 'set_status', { status: 'Done' }));
+      results.push(await callTool(params, 'set_status', { status: 'Agent review' }));
       return new Promise((resolve) => params.signal.addEventListener('abort', () => resolve({ ok: false, turnId: '1', code: 'turn_cancelled', message: 'cancelled' })));
     });
     const s = setup({
@@ -3891,8 +3890,7 @@ describe('result-driven roles', () => {
 
   it('records the result and moves the issue through the tool the session calls', async () => {
     const runner = new FakeRunner(async (turn, params) => {
-      const report = params.tools.find((tool) => tool.name === 'report_result');
-      await report!.execute({ verdict: 'approved', summary: 'Fine.' }, params.toolContext());
+      await callTool(params, 'report_result', { verdict: 'approved', summary: 'Fine.' });
       return { ok: true, turnId: String(turn), resultText: 'done' };
     });
     const s = setup({ front: front(), runner, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
@@ -3924,8 +3922,7 @@ describe('result-driven roles', () => {
   it('adds the result a session reports to the detail and to the archive', async () => {
     const logDir = tempDir();
     const runner = new FakeRunner(async (turn, params) => {
-      const report = params.tools.find((tool) => tool.name === 'report_result');
-      await report!.execute({ verdict: 'approved', summary: 'Fine.' }, params.toolContext());
+      await callTool(params, 'report_result', { verdict: 'approved', summary: 'Fine.' });
       return { ok: true, turnId: String(turn), resultText: 'done' };
     });
     const s = setup({ front: front(), runner, logDir, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
@@ -4001,8 +3998,7 @@ describe('result-driven roles', () => {
 
   it('moves a reviewer whose hand-off check fails to on_check_failed and records why', async () => {
     const runner = new FakeRunner(async (turn, params) => {
-      const report = params.tools.find((tool) => tool.name === 'report_result');
-      reported.push(await report!.execute({ verdict: 'approved', summary: 'Fine.' }, params.toolContext()));
+      reported.push(await callTool(params, 'report_result', { verdict: 'approved', summary: 'Fine.' }));
       return { ok: true, turnId: String(turn), resultText: 'done' };
     });
     const reported: ToolResult[] = [];
@@ -4032,8 +4028,7 @@ describe('result-driven roles', () => {
   it('keeps the denial for a failed check when the role has no on_check_failed', async () => {
     const reported: ToolResult[] = [];
     const runner = new FakeRunner(async (turn, params) => {
-      const report = params.tools.find((tool) => tool.name === 'report_result');
-      reported.push(await report!.execute({ verdict: 'approved', summary: 'Fine.' }, params.toolContext()));
+      reported.push(await callTool(params, 'report_result', { verdict: 'approved', summary: 'Fine.' }));
       return { ok: true, turnId: String(turn), resultText: 'done' };
     });
     const s = setup({ front: front({ 'In review': 'echo "lint failed"; exit 1' }), runner, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
@@ -4137,7 +4132,7 @@ describe('result-driven roles', () => {
 
     it('does not end the stage when the reviewer reports after the reminder', async () => {
       const runner = new FakeRunner(async (turn, params) => {
-        if (turn === 2) await params.tools.find((tool) => tool.name === 'report_result')!.execute({ verdict: 'approved', summary: 'Fine.' }, params.toolContext());
+        if (turn === 2) await callTool(params, 'report_result', { verdict: 'approved', summary: 'Fine.' });
         return { ok: true, turnId: String(turn), resultText: 'done' };
       });
       const s = setup({ front: front(), runner, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
