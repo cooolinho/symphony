@@ -3731,6 +3731,66 @@ describe('result-driven roles', () => {
     assert.equal(marker?.meta.workflow_hash, 'test');
   });
 
+  describe('agent.max_continuations', () => {
+    /** Developer (no result) <-> reviewer; the reviewer reports changes_needed when `reports` is set. */
+    function pingPong(reports: boolean, maxContinuations: number, rounds = 20) {
+      const runner = new FakeRunner(async (turn, params) => {
+        const report = params.tools.find((tool) => tool.name === 'report_result');
+        if (report === undefined) {
+          s.tracker.set('p', { state: 'Agent review' });
+        } else if (reports) {
+          await report.execute({ verdict: 'changes_needed', summary: 'Again.', findings: [{ severity: 'major', file: 'a.ts', problem: 'Still wrong' }] }, params.toolContext());
+        } else {
+          s.tracker.set('p', { state: 'Todo' });
+        }
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      });
+      const s = setup({
+        front: { ...front(), agent: { max_turns: 2, max_continuations: maxContinuations }, pipeline: { max_review_rounds: rounds } },
+        runner,
+        issues: [makeIssue({ id: 'p', state: 'Todo' })],
+      });
+      return s;
+    }
+    const driveTo = async (s: ReturnType<typeof setup>, sessions: number) => {
+      await s.orchestrator.tickNow();
+      for (let n = 1; n < sessions; n++) {
+        await until(() => s.runner.sessions.length === n && snapshot(s).retrying.length === 1, 3_000, `session ${n}`);
+        s.timers.fire(1_000);
+      }
+      await until(() => s.runner.sessions.length === sessions, 3_000, `session ${sessions}`);
+    };
+
+    it('does not pause a chain of result hand-offs', async () => {
+      const s = pingPong(true, 2);
+      await driveTo(s, 8);
+      await until(() => snapshot(s).retrying.length === 1, 3_000, 'retry after the last session');
+      assert.equal(snapshot(s).counts.paused, 0);
+      await s.orchestrator.shutdown(1_000);
+    });
+
+    it('ends ping-pong between result roles at the round limit, not at max_continuations', async () => {
+      const s = pingPong(true, 2, 2);
+      await driveTo(s, 4);
+      await until(() => snapshot(s).running.length === 0, 3_000, 'last run end');
+      s.timers.fire(1_000);
+      await s.orchestrator.tickNow();
+      assert.equal(snapshot(s).counts.paused, 0);
+      assert.equal(s.runner.sessions.length, 4);
+      assert.notEqual(s.tracker.issues.get('p')?.state, 'Todo');
+      await s.orchestrator.shutdown(1_000);
+    });
+
+    it('still pauses ping-pong between roles without a result', async () => {
+      const s = pingPong(false, 2);
+      await driveTo(s, 3);
+      await until(() => snapshot(s).retrying.length === 1, 3_000, 'retry');
+      s.timers.fire(1_000);
+      await until(() => snapshot(s).counts.paused === 1, 3_000, 'paused');
+      assert.equal(s.runner.sessions.length, 3);
+    });
+  });
+
   it('moves a reviewer whose hand-off check fails to on_check_failed and records why', async () => {
     const runner = new FakeRunner(async (turn, params) => {
       const report = params.tools.find((tool) => tool.name === 'report_result');
