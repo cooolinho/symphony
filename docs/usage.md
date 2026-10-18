@@ -958,6 +958,7 @@ ts=2026-10-04T09:17:00.000Z event=model_usage repo=owner/repository issue=owner/
 | `session_limit_wait` | The session-limit retries are used up: the worker waits for the limit to reset (`retry_at` = reset + 1 minute) and then continues. Fields include `window`, `resets_at`, `retry_at`, `hits`, `max_retries`, `source`. |
 | `worker_restarted` | A waiting or paused worker was restarted via **Retry now** / **Resume now** or the API (`previous` = `retrying` or `paused`). |
 | `worker_forced` | An issue was started with **Start now** or `POST /api/v1/<identifier>/force` in an extra slot (`previous` = `queued`, `retrying` or `paused`; `running`, `forced`, `limit` = the slot counts after the start). |
+| `stage_skipped` | A stage was passed without a session ([skipping stages](configuration.md#skipping-stages-without-a-session)): `issue`, `title`, `role`, `from` and `to` (the columns) and `reason`. The issue's timeline has the same event with the comment URL. |
 | `workspace_removed` | The workspace of an issue in `Done` was deleted. |
 
 The **statistics page** (`/logs`, button *Logs* in the dashboard) evaluates these files. At the top is a global
