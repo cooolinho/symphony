@@ -18,7 +18,7 @@ import {
 } from '../workflow/results.ts';
 import type { RoleConfig } from '../workflow/roles.ts';
 import { filesOutside } from './changed-files.ts';
-import type { PersistedResult, StageHistory } from './stage-history.ts';
+import { refactoringGoals, type PersistedResult, type StageHistory } from './stage-history.ts';
 import { resolveTransition, type StageConditions, type Transition, type TransitionProfile } from './transitions.ts';
 
 /** Name of the tool a role with `result` hands off with, instead of `set_status`. */
@@ -73,8 +73,11 @@ const OFFENDING_FILES_SHOWN = 25;
 export interface ResultToolParams {
   /** The session's role; its `result` is the kind the tool reports. */
   role: RoleConfig;
-  /** Round counters of the issue's persisted results, loaded when the session starts (a run reports once). */
-  history: Pick<StageHistory, 'reviewRounds' | 'testRounds'>;
+  /**
+   * Round counters and results of the issue's persisted results, loaded when the session starts (a run reports once).
+   * A review reads the refactoring goals of the newest analysis from `results`.
+   */
+  history: Pick<StageHistory, 'reviewRounds' | 'testRounds'> & Partial<Pick<StageHistory, 'results'>>;
   profile: TransitionProfile | null;
   flags?: StageConditions;
   config: Pick<ServiceConfig, 'tracker' | 'roles' | 'pipeline'>;
@@ -190,9 +193,18 @@ function isSubIssue(issue: Pick<Issue, 'native_ref'>): boolean {
   return typeof parent === 'object' && parent !== null;
 }
 
-/** What the consistency rules of a result know of the session's issue (with the labels it ends up with) and role. */
-function resultContext(issue: Issue, labels: readonly string[], role: RoleConfig): ResultContext {
-  return { complexity: classify(labels).complexity, subIssue: isSubIssue(issue), maxSubIssues: role.maxSubIssues };
+/**
+ * What the consistency rules of a result know of the session's issue and role: a refactor review has to confirm the
+ * goals of the analysis (other issues and issues without goals are exempt), and a `split` design needs an XL issue that
+ * is not a sub-issue and a role that may open a sub-issue per package.
+ */
+function resultContext(issue: Issue, role: RoleConfig, history: Partial<Pick<StageHistory, 'results'>>): ResultContext {
+  const { type, complexity } = classify(issue.labels);
+  const kind = role.result;
+  return {
+    refactoringGoals: kind === 'review' && type === 'refactor' ? refactoringGoals(history) : [],
+    split: { complexity, subIssue: isSubIssue(issue), maxSubIssues: role.maxSubIssues },
+  };
 }
 
 type Plan = { ok: true; result: StageResult; transition: Transition } | { ok: false; failure: ToolResult };
@@ -219,7 +231,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
 
   const plan = (args: Record<string, unknown>): Plan => {
     const issue = params.issue();
-    const parsed = parseResult(kind, args, resultContext(issue, issue.labels, role));
+    const parsed = parseResult(kind, args, resultContext(issue, role, params.history));
     if (!parsed.ok) return { ok: false, failure: fail('invalid_result', parsed.message) };
     // An analysis classifies the issue as it hands it on, so its `next` is routed by the labels it adds: the profile of
     // the new type and the `skip_when` conditions of the new complexity.

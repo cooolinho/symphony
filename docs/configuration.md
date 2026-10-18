@@ -610,7 +610,7 @@ workspace, branch and pull request. The architect decides; Symphony enforces whe
 - **Outcome.** The review transitions route it: `approved` goes to `In review` after the entry check; `changes_needed`
   goes to `In progress`, where the issue's own developer fixes the findings on the issue's branch with its own pull
   request (the developer prompt says the packages are merged and only the findings are left); that pull request then
-  gets a normal review. The round limit applies as usual.
+  takes the normal path of the issue's profile and gets a normal review. The round limit applies as usual.
 
 Why this and not an integration-engineer role: see
 [Work packages instead of an integration engineer](concepts/multi-agent.md#work-packages-instead-of-an-integration-engineer).
@@ -619,8 +619,9 @@ Why this and not an integration-engineer role: see
 
 The shipped `WORKFLOW.md` also defines an independent test engineer: a role in its own column that writes and runs tests
 for every acceptance criterion, so the tests do not come from the agent that wrote the code. It changes no production
-code, and a failing test sends the issue back to the developer. Bug issues always pass through it (the shipped `bugfix`
-[profile](#workflow-profiles)); other issues only when the stage is switched on for all of them.
+code, and a failing test sends the issue back to the developer. Bug, feature and refactor issues always pass through it
+(the shipped `bugfix`, `feature` and `refactor` [profiles](#workflow-profiles)); other issues only when the stage is
+switched on for all of them.
 
 ```yaml
 roles:
@@ -640,10 +641,12 @@ checks:
     Testing: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
 ```
 
-- **On for bug issues, off by default for the rest.** The shipped `pipeline.profiles.bugfix.on_result` sends the
-  developer's `done` of a bug issue to `Testing`. For every other issue the developer's `done` leads to `Agent review`
+- **On for bug, feature and refactor issues, off by default for the rest.** The shipped
+  `pipeline.profiles.{bugfix,feature,refactor}.on_result` send the developer's `done` of a bug, feature or refactor issue
+  to `Testing`. For every other issue the developer's `done` leads to `Agent review`
   unless `SYMPHONY_AFTER_IMPLEMENTATION=Testing` (the shipped `on_result.done` reads it, `.env.example` documents it).
-  To run bug issues without the stage, set `pipeline.profiles.bugfix.on_result.developer.done: Agent review`. The flow is `In progress → [checks] → Testing →
+  To run bug issues without the stage, set `pipeline.profiles.bugfix.on_result.developer.done: Agent review` (likewise
+  for `feature` and `refactor`). The flow is `In progress → [checks] → Testing →
   [checks] → Agent review → [checks] → In review`. `Testing` is always one of `tracker.active_states`, so the board
   needs the column (the [board preflight](#tracker) reports it as `unknown board column "Testing"`); put it between
   `In progress` and `Agent review`, because `next` and the pipeline view of the dashboard follow the board's order.
@@ -886,6 +889,24 @@ pipeline:
   as `roles.<role>.on_result.<verdict>: "next" has no later active stage … (profile bugfix)`.
 - The prompt sees the name as `issue.profile` (`null` when no profile applies), e.g.
   `{% if issue.profile == "bugfix" %}Reproduce the bug with a failing test first.{% endif %}`.
+
+The shipped `WORKFLOW.md` defines these flows. Every profile has the same roles; the differences are the transitions
+(`on_result`, `skip_when`) and the profile-specific steps in the role prompts, which switch on `issue.type`:
+
+| Profile | Flow | Prompt steps |
+|---|---|---|
+| `bugfix` | `Ready` → `Design` (only `L`, `XL`) → `In progress` → `Testing` → `Agent review` → `In review` | developer: regression test first |
+| `feature` | `Ready` → `Design` (not `S`) → `In progress` → `Testing` → `Agent review` → `In review` | developer: implement the design and the acceptance criteria, a test for every criterion; reviewer: checks the change against the design and every criterion |
+| `refactor` | as `feature` | developer: load `symphony:refactor-safely` (not twice when the issue starts with `/refactor-safely`), characterization tests first, no behaviour change; test engineer: characterization tests green on the base commit and on HEAD, `failed` if behaviour differs; reviewer: public interfaces and existing tests unchanged, confirms each refactoring goal; analyst: fills `refactoring_goals` |
+| `default`, untyped | `Ready` → `Design` (not `S`) → `In progress` → `Agent review` → `In review` | none |
+
+- **Refactoring goals.** The analyst of a refactor issue lists what the refactoring has to achieve in the analysis
+  result's `refactoring_goals`; the prompts of the later stages print them. The review of a refactor issue with goals
+  can only be `approved` when `confirmed_goals` contains every goal ([consistency rules](results.md#consistency-rules));
+  an incomplete approval is refused with `invalid_result`, naming the missing goals.
+- **Characterization tests.** The developer commits them first, as the `refactor-safely` skill describes. The test engineer
+  runs after the developer, so it verifies and extends them against the base commit instead of writing them before the
+  change.
 
 #### Skipping stages without a session
 
@@ -1145,7 +1166,7 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
     (`summary` cut to 1,500 characters), else `null`. With `failed_cases` it tells the developer why the cases failed and
     how to run them again.
   - `results.analysis`: the newest analysis since the last reset, whatever its verdict, as `{verdict, summary, type,
-    complexity, components, acceptance_criteria, risks, docs_needed, open_questions, plan}` (`summary` cut to 1,500
+    complexity, components, acceptance_criteria, risks, docs_needed, open_questions, plan, refactoring_goals}` (`summary` cut to 1,500
     characters; `risks` lists the flags that are set, e.g. `breaking change`), else `null`. The shipped prompts of the
     architect, developer, test engineer and reviewer print it as "Analysis of the issue analyst".
   - `results.design`: the newest design since the last reset, whatever its verdict, as `{verdict, summary, decision,

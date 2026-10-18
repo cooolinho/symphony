@@ -37,7 +37,7 @@ npm install
    | `Ready` | you | starts the **Issue analyst**, who hands the issue on to `Design` (larger changes) or `In progress` |
    | `Design` | Issue analyst, for larger changes (feature and refactor above complexity `S`, bugfix of complexity `L` or `XL`, or no complexity label); smaller issues skip it without a session | starts the **Architect** (read-only), who reports the design the developer implements |
    | `In progress` | Developer, Reviewer (changes needed), Test engineer (tests failed), Architect (design ready) | Developer works |
-   | `Testing` | Developer, after passing checks (bug issues; other issues only with `SYMPHONY_AFTER_IMPLEMENTATION=Testing`) | starts the **Test engineer**, who writes independent tests and may only change test files |
+   | `Testing` | Developer, after passing checks (bug, feature and refactor issues; other issues only with `SYMPHONY_AFTER_IMPLEMENTATION=Testing`) | starts the **Test engineer**, who writes independent tests and may only change test files |
    | `Agent review` | Developer (issues without the test stage), or Test engineer when the tests pass | starts the **Reviewer** (at most one at a time) |
    | `Blocked` | Issue analyst (open questions), Architect, Developer or Reviewer | stops the agent, workspace is kept; your turn |
    | `In review` | only the Reviewer, after passing checks | stops the agent, workspace is kept; your review |
@@ -48,7 +48,9 @@ npm install
    reports `unknown board column "Design"` otherwise). `Testing` is used by the
    [test engineer](configuration.md#the-test-engineer): bug issues (label `bug` or `Type: bugfix`) run
    `Ready → In progress → Testing → Agent review → In review` through the `bugfix`
-   [workflow profile](configuration.md#workflow-profiles), all other issues skip `Testing` unless
+   [workflow profile](configuration.md#workflow-profiles), feature and refactor issues run through `Testing` too (their
+   profiles, see [Features and refactorings](usage.md#features-and-refactorings-the-feature-and-refactor-profiles)), all
+   other issues skip `Testing` unless
    `SYMPHONY_AFTER_IMPLEMENTATION=Testing` makes the developer hand every issue over to it. The column is required
    either way: the dry run (step 6) reports every column missing from the board (`unknown board column "Testing"`).
    To run bug issues without the test stage, see [Bug issues](usage.md#bug-issues-the-bugfix-profile). With the default

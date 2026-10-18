@@ -105,6 +105,7 @@ const kindShapes = {
     docs_needed: z.boolean().optional(),
     open_questions: list(text()).describe('Questions a human must answer; required with the verdict "needs_info"'),
     plan: list(text()).describe('Implementation steps in order'),
+    refactoring_goals: list(text()).describe('Refactor issues: what the refactoring has to achieve, one measurable goal per entry; the review confirms each one'),
   },
   design: {
     options: list(text()).describe('Options considered'),
@@ -129,6 +130,7 @@ const kindShapes = {
   review: {
     findings: list(findingSchema).describe('"approved" allows only minor and nit findings'),
     checked: list(text()).describe('What the review covered'),
+    confirmed_goals: list(text()).describe('Refactor issues: the analysis\'s refactoring goals this review confirmed, copied verbatim; "approved" needs every one'),
   },
   security: {
     findings: list(findingSchema).describe('"passed" allows only minor and nit findings'),
@@ -273,11 +275,19 @@ export function internalResult<K extends InternalResultKind>(kind: K, summary: s
 
 const isSevere = (finding: Finding) => finding.severity === 'blocker' || finding.severity === 'major';
 
-/**
- * What the consistency rules know of the issue and the role a result is reported for (the `report_result` tool passes
- * it). Without it (a unit test, a result read back from its marker) the rules that need it do not apply.
- */
+/** Facts about the issue that some consistency rules need; Symphony derives them, the agent never sets them. */
 export interface ResultContext {
+  /** Refactoring goals of the analysis when the issue is a refactor; empty (or absent) switches the goal rule off. */
+  refactoringGoals?: readonly string[];
+  /**
+   * What a `split` design is checked against (the `report_result` tool passes it). Absent (a unit test, a result read
+   * back from its marker) switches the rules about the issue and the role off; "at least two packages" still applies.
+   */
+  split?: SplitContext;
+}
+
+/** The issue and the role a `split` design is reported for. */
+export interface SplitContext {
   /** The issue's complexity from its `Complexity:` label; null when it has no usable one. */
   complexity: (typeof COMPLEXITIES)[number] | null;
   /** The issue is itself a sub-issue (it has a parent issue): a work package is never split again. */
@@ -286,11 +296,13 @@ export interface ResultContext {
   maxSubIssues: number | null;
 }
 
+const goalKey = (goal: string) => goal.trim().replace(/\s+/g, ' ').toLowerCase();
+
 /**
  * The rules of a `split` design: at least two work packages, and with the context an issue of complexity XL that is not
  * itself a sub-issue, reported by a role that may open a sub-issue for every package.
  */
-function splitProblems(result: ResultOf<'design'>, context: ResultContext | undefined): string[] {
+function splitProblems(result: ResultOf<'design'>, context: SplitContext | undefined): string[] {
   const problems: string[] = [];
   const packages = result.work_packages.length;
   if (packages < 2) problems.push(`verdict "${SPLIT_VERDICT}" needs at least two entries in \`work_packages\` (one sub-issue each); a change of one package is "ready"`);
@@ -309,7 +321,7 @@ function splitProblems(result: ResultOf<'design'>, context: ResultContext | unde
 }
 
 /** Contradictions between the verdict and the fields (and the issue, with `context`), phrased for the agent that has to fix them. */
-export function consistencyProblems(result: StageResult, context?: ResultContext): string[] {
+export function consistencyProblems(result: StageResult, context: ResultContext = {}): string[] {
   const problems: string[] = [];
   if (result.verdict === 'blocked' && result.blockers.length === 0) {
     problems.push('verdict "blocked" needs at least one entry in `blockers` saying what blocks the stage');
@@ -327,7 +339,7 @@ export function consistencyProblems(result: StageResult, context?: ResultContext
         if (result.components.length === 0) problems.push(`verdict "${verdict}" needs at least one entry in \`components\` (the building blocks of the change)`);
         if (result.interfaces.length === 0) problems.push(`verdict "${verdict}" needs at least one entry in \`interfaces\` (new or changed signatures, endpoints, formats)`);
       }
-      if (result.verdict === SPLIT_VERDICT) problems.push(...splitProblems(result, context));
+      if (result.verdict === SPLIT_VERDICT) problems.push(...splitProblems(result, context.split));
       break;
     case 'test': {
       const failed = result.cases.filter((c) => c.status === 'failed').length;
@@ -351,6 +363,15 @@ export function consistencyProblems(result: StageResult, context?: ResultContext
       }
       if (result.verdict === dirty && result.findings.length === 0) {
         problems.push(`verdict "${dirty}" needs at least one entry in \`findings\``);
+      }
+      if (result.kind === 'review' && result.verdict === 'approved') {
+        const confirmed = new Set(result.confirmed_goals.map(goalKey));
+        const missing = (context.refactoringGoals ?? []).filter((goal) => !confirmed.has(goalKey(goal)));
+        if (missing.length > 0) {
+          problems.push(
+            `verdict "approved" on a refactor issue needs every refactoring goal in \`confirmed_goals\` (copied verbatim); missing: ${missing.map((goal) => `"${inline(goal)}"`).join(', ')}. Confirm them or use "changes_needed"`,
+          );
+        }
       }
       break;
     }
@@ -402,7 +423,7 @@ const PROBE_META: ResultMeta = {
  * issue), then the size (findings may be trimmed later, everything else must fit). Unknown fields are reported, not
  * dropped, so a typo does not lose data.
  */
-export function parseResult(kind: AgentResultKind, input: unknown, context?: ResultContext): ParseResultOutcome {
+export function parseResult(kind: AgentResultKind, input: unknown, context: ResultContext = {}): ParseResultOutcome {
   const parsed = z.strictObject(agentShape(kind)).safeParse(input);
   if (!parsed.success) return invalid(kind, parsed.error.issues.map(issueText));
   const result = { schema: RESULT_SCHEMA, kind, ...parsed.data } as StageResult;
@@ -575,6 +596,7 @@ function kindSections(result: StageResult): (string | null)[] {
         risks.length === 0 ? null : `**Risks:** ${risks.join(', ')}`,
         bullets('Open questions', result.open_questions.map(inline)),
         bullets('Plan', result.plan.map(inline), true),
+        bullets('Refactoring goals', result.refactoring_goals.map(inline)),
       ];
     }
     case 'design':
@@ -604,7 +626,7 @@ function kindSections(result: StageResult): (string | null)[] {
         bullets('Uncovered criteria', result.uncovered_criteria.map(inline)),
       ];
     case 'review':
-      return [findingLines(result.findings, result.omitted_findings), bullets('Checked', result.checked.map(inline))];
+      return [findingLines(result.findings, result.omitted_findings), bullets('Checked', result.checked.map(inline)), bullets('Confirmed goals', result.confirmed_goals.map(inline))];
     case 'security':
       return [findingLines(result.findings, result.omitted_findings)];
     case 'docs':

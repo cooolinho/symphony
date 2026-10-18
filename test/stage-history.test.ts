@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { PROMPT_SUMMARY_LIMIT, buildStageHistory, implementationHead, resultRows, resultsTemplateValue, type PersistedResult } from '../src/orchestrator/stage-history.ts';
+import { PROMPT_SUMMARY_LIMIT, buildStageHistory, implementationHead, refactoringGoals, resultRows, resultsTemplateValue, type PersistedResult } from '../src/orchestrator/stage-history.ts';
 import { internalResult, parseResult, type ResultMeta, type StageResult } from '../src/workflow/results.ts';
 
 let clock = 0;
@@ -234,7 +234,18 @@ describe('resultsTemplateValue: the analysis for the later stages', () => {
       docs_needed: true,
       open_questions: [],
       plan: ['Add the exporter', 'Test it'],
+      refactoring_goals: [],
     });
+  });
+
+  it('hands the refactoring goals of the newest analysis on, and none without an analysis or goals in the newest one', () => {
+    const goals = ['The parsing code exists once', 'No public signature changes'];
+    const history = buildStageHistory([analysed({ ...READY, type: 'refactor', refactoring_goals: goals })]);
+    assert.deepEqual(resultsTemplateValue(history).analysis?.refactoring_goals, goals);
+    assert.deepEqual(refactoringGoals(history), goals);
+    assert.deepEqual(refactoringGoals(buildStageHistory([analysed({ ...READY, refactoring_goals: goals }), analysed({ ...READY })])), []);
+    assert.deepEqual(refactoringGoals(buildStageHistory([])), []);
+    assert.deepEqual(refactoringGoals({}), []);
   });
 
   it('is empty without an analysis, and forgets it at a reset', () => {

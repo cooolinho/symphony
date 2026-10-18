@@ -24,11 +24,11 @@ reported to the agent instead of being dropped silently.
 
 | Kind | Verdicts | Fields |
 |---|---|---|
-| `analysis` | `ready`, `needs_info` | `type`, `complexity` (S/M/L/XL), `components[]`, `acceptance_criteria[]`, `risks {security, data_migration, breaking_change}`, `docs_needed`, `open_questions[]`, `plan[]` |
+| `analysis` | `ready`, `needs_info` | `type`, `complexity` (S/M/L/XL), `components[]`, `acceptance_criteria[]`, `risks {security, data_migration, breaking_change}`, `docs_needed`, `open_questions[]`, `plan[]`, `refactoring_goals[]` (refactor issues: what the refactoring has to achieve) |
 | `design` | `ready`, `split`, `blocked` | `options[]`, `decision`, `components[]`, `interfaces[]`, `migrations[]`, `compatibility`, `work_packages[]` (optional; with `split` at least two) |
 | `implementation` | `done`, `blocked` | `changed_files[]`, `tests_added[]`, `notes`, `plan_deviations[]` |
 | `test` | `passed`, `failed`, `blocked` | `cases[] {criterion, test, status: passed\|failed\|skipped}`, `commands[]`, `uncovered_criteria[]` |
-| `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, file, line, problem, fix}`, `checked[]` |
+| `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, file, line, problem, fix}`, `checked[]`, `confirmed_goals[]` (refactor issues: the analysis's refactoring goals the review confirms) |
 | `security` | `passed`, `issues_found`, `blocked` | `findings[]` (as in `review`) |
 | `docs` | `done`, `not_needed`, `blocked` | `files[]` |
 | `skipped`, `reset` | same as the kind | internal, recorded by Symphony without agent input (`skipped`: a stage passed [without a session](configuration.md#skipping-stages-without-a-session)) |
@@ -56,6 +56,12 @@ see them):
   `issues_found` need at least one finding.
 - `failed` (test) needs a case with status `failed`; `passed` allows none.
 - `needs_info` (analysis) needs at least one open question.
+- `approved` (review) of a **refactor issue whose analysis has `refactoring_goals`** needs every goal in
+  `confirmed_goals`, compared trimmed and case-insensitive (the reviewer copies each goal verbatim); the message lists
+  the missing goals and nothing is recorded. The goals come from the newest analysis since the last reset, the issue's
+  type from its `Type:` labels (not the analysis of the same report). The rule does not apply to other issue types, to
+  refactors without goals, or to `changes_needed` and `blocked` reviews. Both fields are optional, so results stored
+  before they existed still read. The analysis's goals are available to later stages as `results.analysis.refactoring_goals`.
 - `ready` (design) needs a `decision`, at least one entry in `components` and at least one in `interfaces`, so a design cannot
   stay generic. The comment renders the decision, the components and the interfaces; the developer's prompt gets them as
   `results.design`.

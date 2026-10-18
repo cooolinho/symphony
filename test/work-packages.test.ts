@@ -169,7 +169,7 @@ const working = (turn: number, params: StartSessionParams): Promise<TurnResult> 
   });
 
 /**
- * The shipped workflow (no clone hooks, no entry checks) on a `SubIssueBoard`. The sessions of an issue run its scripts
+ * The shipped workflow (an empty git checkout instead of the clone, no entry checks) on a `SubIssueBoard`. The sessions of an issue run its scripts
  * in order; a session without a script works until Symphony stops it.
  */
 async function harness(issues: Issue[], scripts: Record<string, Script[]>): Promise<Harness> {
@@ -177,7 +177,8 @@ async function harness(issues: Issue[], scripts: Record<string, Script[]>): Prom
   const config: Record<string, unknown> = {
     ...definition.config,
     workspace: { root: tempDir() },
-    hooks: {},
+    // A git checkout like the shipped hooks make (the test engineer's path rule needs one), without the clone.
+    hooks: { after_create: ['git init -q', 'git config user.email symphony@example.com', 'git config user.name Symphony', 'git commit -q --allow-empty -m init'].join('\n') },
     checks: {},
     tracker: { ...(definition.config.tracker as Record<string, unknown>), kind: 'github_project', provider: { owner: 'acme', project_number: 1, token: 'test-token' } },
   };
@@ -272,10 +273,13 @@ describe('work packages as sub-issues (#211)', () => {
     const glueFix: Script = async ({ report }) => {
       await report({ verdict: 'done', summary: 'Added the PdfExporter behind the Exporter interface.', changed_files: ['src/export/PdfExporter.ts'] });
     };
+    const tests: Script = async ({ report }) => {
+      await report({ verdict: 'passed', summary: 'The PDF export is covered.', cases: [{ criterion: 'Export invoices as PDF', test: 'tests/export.test.ts::pdf', status: 'passed' }] });
+    };
     const prReview: Script = async ({ report }) => {
       await report({ verdict: 'approved', summary: 'The PDF export is in and the command picks it.' });
     };
-    const h = await harness([feature()], { [PARENT]: [architect, integrationReview, glueFix, prReview] });
+    const h = await harness([feature()], { [PARENT]: [architect, integrationReview, glueFix, tests, prReview] });
 
     // The architect files the packages in the middle of its turn; a reconciliation then must not stop its session.
     await h.orchestrator.tickNow();
@@ -372,14 +376,18 @@ describe('work packages as sub-issues (#211)', () => {
     assert.match(developer, /1\. \[major\] src\/export\/PdfExporter\.ts — The PDF export of the acceptance criteria is missing/);
     assert.match(developer, /Work on the branch `symphony\/issue-7`/);
     await until(() => h.reports.length === 3, 3_000, 'the implementation');
+    // The feature profile sends the fix through Testing, as any feature's implementation.
     await continueWith(h);
-    const review = sessionsOf(h, PARENT)[3]?.turns[0] ?? '';
-    assert.equal(roleOf(sessionsOf(h, PARENT)[3]), 'reviewer');
+    await until(() => h.reports.length === 4, 3_000, 'the tests');
+    await continueWith(h);
+    const review = sessionsOf(h, PARENT)[4]?.turns[0] ?? '';
+    assert.equal(roleOf(sessionsOf(h, PARENT)[4]), 'reviewer');
     assert.match(review, /git diff origin\/<base>\.\.\.HEAD/);
-    assert.doesNotMatch(review, /integration review/);
+    assert.match(review, /This pull request fixes what the integration review found still missing or broken across the packages/);
+    assert.doesNotMatch(review, /integration review\)/);
     await until(() => stateOf(h) === 'In review', 3_000, 'In review');
-    assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'In progress', 'Agent review', 'In review']);
-    assert.deepEqual(sessionsOf(h, PARENT).map(roleOf), ['architect', 'reviewer (integration review)', 'developer', 'reviewer']);
+    assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'In progress', 'Testing', 'Agent review', 'In review']);
+    assert.deepEqual(sessionsOf(h, PARENT).map(roleOf), ['architect', 'reviewer (integration review)', 'developer', 'test engineer', 'reviewer']);
     await h.orchestrator.shutdown(1_000);
   });
 
