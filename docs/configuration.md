@@ -391,7 +391,7 @@ roles:
 | `on_result` | `{}` | Column per verdict of `result`, or `next` (the next active stage after the role's columns in board order). Needs `result`. See [Result-driven transitions](#result-driven-transitions). |
 | `on_check_failed` | none | Column for an issue whose entry check fails for a role that cannot fix it (a read-only role). When the check of the column a `report_result` leads to fails, the tool records the result anyway, adds a note with the check output to its summary and moves the issue here (through the transition guard, so this column's own entry check applies). Without it the agent gets `check_failed` and nothing is recorded. Ignored for roles that are not `read_only`. |
 | `on_missing_result` | `Blocked` with `result`, else none | Column for a session that ends without a result. Needs `result`. After the first turn without a result the session gets one reminder turn; if the turn limit comes first or the reminder fails too, Symphony re-fetches the issue and, only if it is still in the role's column, posts a plain comment ("Stage ended without a result") and moves it here. An issue someone moved meanwhile is left alone. See [Stages without a result](results.md#stages-without-a-result). |
-| `on_round_limit` | the blocked column | Column for a loop verdict (review `changes_needed`, test `failed`) that reaches `pipeline.max_review_rounds` / `max_test_rounds`. Needs `result: review` or `result: test`. See [Result-driven transitions](#result-driven-transitions). |
+| `on_round_limit` | the blocked column | Column for a loop verdict (review `changes_needed`, test `failed`, security `issues_found`) that reaches `pipeline.max_review_rounds` / `max_test_rounds` / `max_security_rounds`. Needs `result: review`, `result: test` or `result: security`. See [Result-driven transitions](#result-driven-transitions). |
 | `model_label` | `apply`; `ignore` for read-only roles with a `result` | `ignore` keeps a `Model:` issue label from changing the role's model. Read here; applied from a later change on. |
 | `max_turns` | `agent.max_turns` | Integer >= 1. |
 | `commands` | none | Issue commands the role serves, e.g. `[refactoring]` (lowercase letters, digits and dashes; a leading `/` is allowed). Without it the role serves issues without a command. See [Issue commands](#issue-commands). |
@@ -435,13 +435,15 @@ history at its start). The rules apply in this order:
 1. **`blocked`** goes to `on_result.blocked` when it names a column, else to the blocked column: the column every role
    with `may_move_to` lists besides the active and terminal ones (`Blocked` in the default workflow), else the role's
    `on_missing_result`.
-2. **Round limit.** A review with `changes_needed` or a test with `failed` is round N, where N - 1 is the number of
-   such results since the last reset. When N reaches `pipeline.max_review_rounds` / `max_test_rounds` (with the
-   defaults: the 3rd `changes_needed`, the 2nd `failed`), the issue goes to `on_round_limit` (else the blocked column)
+2. **Round limit.** A review with `changes_needed`, a test with `failed` or a security review with `issues_found` is
+   round N, where N - 1 is the number of such results since the last reset. When N reaches
+   `pipeline.max_review_rounds` / `max_test_rounds` / `max_security_rounds` (with the defaults: the 3rd
+   `changes_needed`, the 2nd `failed`, the 2nd `issues_found`), the issue goes to `on_round_limit` (else the blocked column)
    and gets `pipeline.limit_label`. Every other transition removes that label.
 3. **`on_result[verdict]`.** `next` is the first active column after the role's columns in board order whose role is
    not skipped by the issue's profile and whose stage condition holds. A verdict without a target goes to the blocked
-   column.
+   column. A reviewer's `approved` that leads out of the active columns (to `In review`) goes to the
+   [security review](#the-security-auditor) first when the issue needs it.
 
 The target is always a column the role may move to; a computed target outside `may_move_to` is refused, never used.
 
@@ -653,6 +655,76 @@ checks:
   changes `next`); switch the stage off by overriding the developer's `done` in the profile (see above) or for the
   whole instance.
 
+#### The security auditor
+
+The shipped `WORKFLOW.md` has a read-only `security-auditor` role in the `Security review` column. It audits the diff
+for authorization, injection, mass assignment and leaked secrets before a human reviews the pull request. It is
+conditional: only issues that need it are sent there, all others go from the reviewer straight to `In review` without
+a session.
+
+```yaml
+tracker:
+  active_states: [Ready, Design, In progress, Testing, Agent review, Security review]
+roles:
+  reviewer:
+    on_result: { approved: In review, changes_needed: In progress, blocked: Blocked }
+    may_move_to: [Security review, In review, In progress, Blocked]   # approved goes to Security review when needed
+  security-auditor:
+    states: [Security review]
+    read_only: true
+    max_turns: 6
+    result: security
+    on_result: { passed: In review, issues_found: In progress, blocked: Blocked }
+    on_check_failed: In progress
+    may_move_to: [In review, In progress, Blocked]
+    model_label: ignore
+    agents: [laravel-code-reviewer]
+    claude: { model: opus }
+pipeline:
+  max_security_rounds: 2
+  # security_paths: [app/Policies/**, app/Http/Middleware/**, config/auth.php, routes/**, database/migrations/**]
+```
+
+- **When it runs.** When the reviewer reports `approved`, `report_result` decides, before it routes the result. The
+  security review is needed when **any** of these holds: the issue carries the label `security` (trimmed and compared
+  case-insensitively; `area:security` or `Security: high` are other labels and do not count); the newest analysis since
+  the last reset flags `risks.security`; or at least one file the branch changes matches `pipeline.security_paths`.
+  When none holds, the issue goes to `In review` as `on_result.approved` says, and the transition `reason` in the tool
+  result says why (`security review not needed: no trigger (…)`); the pipeline view of the dashboard shows the stage as
+  skipped, because no session ran there. When a trigger holds, the `reason` names it (`security review needed: 2 changed
+  file(s) match pipeline.security_paths: app/Policies/PostPolicy.php, …`).
+- **The files of the branch.** Symphony runs git in the workspace (each call bounded by a 15 s timeout) against the merge
+  base of `HEAD` and the base branch, `origin/<base_branch>` (`tracker.provider.base_branch`), else `origin/HEAD`: commits
+  since the branch left the base, uncommitted changes and untracked files (ignored files do not count; a rename counts as
+  the deletion of the old and the addition of the new path). It is the whole branch, not just the changes since the last
+  hand-off. If git cannot tell (no git checkout, the base ref is unknown, a git error or timeout), the review is **needed**:
+  a failure never skips the audit silently, and the `reason` says that the changed files could not be determined.
+- **`pipeline.security_paths`** defaults to the places of a Laravel app where authorization, authentication and the schema
+  live: `app/Policies/**`, `app/Http/Middleware/**`, `config/auth.php`, `routes/**`, `database/migrations/**` (see
+  [Path globs](#path-globs)). An explicit list replaces the defaults; `[]` turns the path trigger off, the `security`
+  label and the analysis risk still apply. Path globs miss things, which is why the label and the analysis risk are
+  additional triggers; outside Laravel set the list for the project's layout.
+- **Verdicts.** `passed` leads to `In review` (the entry check of that column runs, and `on_check_failed` sends a failing
+  one back to the developer, like for the reviewer), `issues_found` to `In progress` (the developer) with the findings
+  in the prompt (`results.security_findings`, see [Prompt template](#prompt-template)), `blocked` to `Blocked`. The result
+  has `findings` like a review: `passed` allows only `minor` and `nit` findings, `issues_found` needs at least one
+  ([result contracts](results.md#kinds)). A session that ends without a result goes to `on_missing_result` (`Blocked`).
+- **After `issues_found`** the developer fixes the findings and hands over again; the reviewer reviews the fix, and when
+  it approves, the security check is evaluated again on the new diff.
+- **Round limit.** `pipeline.max_security_rounds` (default 2, at least 1; no profile override) counts `issues_found`
+  results since the last reset. The last allowed round goes to `on_round_limit` (default: the blocked column) with the
+  `needs-human` label (`pipeline.limit_label`) instead of back to the developer. A human moving the issue back to an
+  active column resets the counter; every other transition removes the label.
+- **Board.** `Security review` is one of `tracker.active_states`, so the board needs the column between `Agent review`
+  and `In review` (the [board preflight](#tracker) reports a missing one as `unknown board column "Security review"`),
+  and `roles.reviewer.may_move_to` must list it (the preflight says so otherwise).
+- **Skipping and removing.** A [profile](#workflow-profiles) can list `security-auditor` in `skip`: the stage never runs
+  for those issues, whatever the triggers say. To remove the stage for the whole instance, delete the role, the column from
+  `active_states` and `Security review` from the reviewer's `may_move_to`. A human who moves an issue to `Security review`
+  by hand always gets a session (the conditions only decide the reviewer's hand-off).
+- **Slots.** Like the other additional roles, the auditor only gets slots beyond those of `agent.reserved_slots_by_role`;
+  `agent.max_concurrent_agents_by_state."Security review"` is 1 in the shipped file.
+
 #### Issue commands
 
 An issue can ask for a skill: when the **first non-empty line** of its description is `/<name>` (optionally followed by
@@ -775,21 +847,24 @@ statistics page breaks down by effort. `npm run repo-init` creates the five stan
 ### `pipeline`
 
 Optional. Limits and classification for the result-driven [roles](#result-driven-transitions); every key has a default,
-so the section can be left out. `test_paths` limits what the [test engineer](#the-test-engineer) may change; the other
-glob lists are read now and used by later pipeline stages. `$NAME` references work
+so the section can be left out. `test_paths` limits what the [test engineer](#the-test-engineer) may change,
+`security_paths` is one of the triggers of the [security review](#the-security-auditor); `docs_paths` is read now and
+used by a later pipeline stage. `$NAME` references work
 like everywhere else (an unset variable counts as omitted). Unknown keys are ignored with a warning.
 
 | Key | Default | Notes |
 |---|---|---|
 | `max_review_rounds` | `3` | Integer >= 1. Review rounds before the issue goes to a human. |
 | `max_test_rounds` | `2` | Integer >= 1. Test rounds before the issue goes to a human. |
+| `max_security_rounds` | `2` | Integer >= 1. Security review rounds (`issues_found` → developer fixes) before the issue goes to a human. |
 | `limit_label` | `needs-human` | Label for an issue that hit a round limit. |
 | `type_labels` | `{}` | Map of issue label → change type, e.g. `{ bug: bug, enhancement: feature }` (labels are matched case-insensitively). |
 | `default_type` | `feature` | Type of an issue without a label in `type_labels`. |
 | `analysis` | `always` | `always` or `when_unlabeled`. With `when_unlabeled`, the analysis stage (the role whose `result` is `analysis`) is [skipped without a session](#skipping-stages-without-a-session) for issues that already carry a `Type:` and a `Complexity:` label. Needs a role with `result: analysis`. |
 | `profiles` | `{}` | [Workflow profiles](#workflow-profiles) per issue type. |
 | `test_paths` | `tests/**`, `test/**`, `**/*.test.*`, `**/*Test.php` | [Path globs](#path-globs) for test files: all that a role with `result: test` (the [test engineer](#the-test-engineer)) may change. An explicit list replaces the default; `[]` allows no file at all. |
-| `docs_paths`, `security_paths` | `[]` | Path globs marking documentation and security-relevant files. |
+| `security_paths` | `app/Policies/**`, `app/Http/Middleware/**`, `config/auth.php`, `routes/**`, `database/migrations/**` | [Path globs](#path-globs) for security-relevant files: a changed file that matches sends the reviewer's approval to the [security review](#the-security-auditor). An explicit list replaces the defaults; `[]` turns the path trigger off. |
+| `docs_paths` | `[]` | Path globs marking documentation files. |
 
 #### Path globs
 
@@ -1112,6 +1187,8 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
     created_at}` (`summary` cut to 1,500 characters).
   - `results.open_findings`: the findings `{severity, file, line, problem, fix}` of the newest review since the last
     reset, while its verdict is `changes_needed`; empty otherwise.
+  - `results.security_findings`: the same shape for the newest security review since the last reset, while its verdict is
+    `issues_found`; empty otherwise.
   - `results.failed_cases`: the failed cases `{criterion, test}` of the newest test since the last reset, while its
     verdict is `failed`; empty otherwise.
   - `results.test`: the newest test since the last reset, whatever its verdict, as `{verdict, summary, round, commands}`

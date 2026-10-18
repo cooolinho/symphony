@@ -19,6 +19,8 @@ export interface StageHistory {
   reviewRounds: number;
   /** Tests with the verdict `failed` since the last `reset`. */
   testRounds: number;
+  /** Security reviews with the verdict `issues_found` since the last `reset`. */
+  securityRounds: number;
   /** Column the newest result that moved the issue handed it to; null when none did since the last `reset`. */
   lastTarget: string | null;
   /** The column the issue should be in but is not, or null when the board matches the history. */
@@ -56,16 +58,19 @@ export function buildStageHistory(persisted: readonly PersistedResult[]): StageH
   const latestByRole = new Map<string, PersistedResult>();
   let reviewRounds = 0;
   let testRounds = 0;
+  let securityRounds = 0;
   let lastTarget: string | null = null;
   for (const entry of results) {
     latestByRole.set(entry.meta.role, entry);
     if (entry.result.kind === 'reset') {
       reviewRounds = 0;
       testRounds = 0;
+      securityRounds = 0;
       lastTarget = null;
     }
     if (entry.result.kind === 'review' && entry.result.verdict === 'changes_needed') reviewRounds += 1;
     if (entry.result.kind === 'test' && entry.result.verdict === 'failed') testRounds += 1;
+    if (entry.result.kind === 'security' && entry.result.verdict === 'issues_found') securityRounds += 1;
     if (entry.meta.target !== null) lastTarget = entry.meta.target;
   }
   return {
@@ -73,6 +78,7 @@ export function buildStageHistory(persisted: readonly PersistedResult[]): StageH
     latestByRole,
     reviewRounds,
     testRounds,
+    securityRounds,
     lastTarget,
     pendingTransition: (issueState) =>
       lastTarget !== null && normalizeStateName(lastTarget) !== normalizeStateName(issueState) ? lastTarget : null,
@@ -86,6 +92,12 @@ export function buildStageHistory(persisted: readonly PersistedResult[]): StageH
 export function implementationHead(history: Pick<StageHistory, 'results'>): string | null {
   const entry = history.results.findLast(({ result, meta }) => result.kind === 'implementation' && result.verdict === 'done' && meta.head_sha !== null);
   return entry?.meta.head_sha ?? null;
+}
+
+/** Whether the newest analysis since the last `reset` flags a security risk (`risks.security`). */
+export function analysisFlagsSecurity(history: Pick<StageHistory, 'results'>): boolean {
+  const analysis = newest(history, 'analysis')?.result;
+  return analysis?.kind === 'analysis' && analysis.risks?.security === true;
 }
 
 /** Upper bound for a summary in the prompt's `results.latest`; the full text stays in the issue comment. */
@@ -105,6 +117,8 @@ export interface ResultsTemplateValue {
   }>;
   /** Findings of the newest review when it asked for changes; empty after an approval or without a review. */
   open_findings: Array<{ severity: string; file: string | null; line: number | null; problem: string; fix: string | null }>;
+  /** Findings of the newest security review when it found issues; empty after a pass or without a security review. */
+  security_findings: Array<{ severity: string; file: string | null; line: number | null; problem: string; fix: string | null }>;
   /** Failed cases of the newest test when it failed; empty otherwise. */
   failed_cases: Array<{ criterion: string; test: string }>;
   /**
@@ -167,6 +181,7 @@ export function refactoringGoals(history: Partial<Pick<StageHistory, 'results'>>
 /** The prompt view of a stage history (the `results` variable). */
 export function resultsTemplateValue(history: StageHistory): ResultsTemplateValue {
   const review = newest(history, 'review')?.result;
+  const security = newest(history, 'security')?.result;
   const testEntry = newest(history, 'test');
   const test = testEntry?.result;
   const analysis = newest(history, 'analysis')?.result;
@@ -186,6 +201,16 @@ export function resultsTemplateValue(history: StageHistory): ResultsTemplateValu
     open_findings:
       review?.kind === 'review' && review.verdict === 'changes_needed'
         ? review.findings.map((finding) => ({
+            severity: finding.severity,
+            file: finding.file ?? null,
+            line: finding.line ?? null,
+            problem: finding.problem,
+            fix: finding.fix ?? null,
+          }))
+        : [],
+    security_findings:
+      security?.kind === 'security' && security.verdict === 'issues_found'
+        ? security.findings.map((finding) => ({
             severity: finding.severity,
             file: finding.file ?? null,
             line: finding.line ?? null,

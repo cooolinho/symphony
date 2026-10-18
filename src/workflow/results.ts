@@ -31,8 +31,11 @@ export const RESULT_VERDICTS = {
   reset: ['reset'],
 } as const satisfies Record<ResultKind, readonly [string, ...string[]]>;
 
-/** Result kinds with a round limit and the verdict that starts another round (`pipeline.max_review_rounds` / `max_test_rounds`). */
-export const LOOP_VERDICTS = { review: 'changes_needed', test: 'failed' } as const satisfies Partial<Record<AgentResultKind, string>>;
+/**
+ * Result kinds with a round limit and the verdict that starts another round (`pipeline.max_review_rounds` /
+ * `max_test_rounds` / `max_security_rounds`).
+ */
+export const LOOP_VERDICTS = { review: 'changes_needed', test: 'failed', security: 'issues_found' } as const satisfies Partial<Record<AgentResultKind, string>>;
 export type LoopKind = keyof typeof LOOP_VERDICTS;
 
 export function isLoopKind(kind: string | null): kind is LoopKind {

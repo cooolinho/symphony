@@ -23,7 +23,7 @@ tracker:
       done_state: Done
       on_conflict: In progress               # a pull request that conflicts with base_branch goes back to the developer
       method: squash
-  # Board columns: Backlog | Ready | Design | In progress | Testing | Agent review | Blocked | In review | Done
+  # Board columns: Backlog | Ready | Design | In progress | Testing | Agent review | Security review | Blocked | In review | Done
   #   Ready              -> issue analyst (read-only) works out requirements, risks, refined acceptance criteria, type and
   #                         complexity before anything is implemented; later stages get the analysis in their prompt
   #                         (pipeline.analysis: when_unlabeled skips it for issues that already carry Type and Complexity labels)
@@ -39,6 +39,11 @@ tracker:
   #                         needs the column either way, between In progress and Agent review: `next` and the pipeline view
   #                         use its order.
   #   Agent review       -> reviewer agent (read-only) reviews it; entered only after checks pass
+  #   Security review    -> security auditor (read-only) audits the diff for authorization, injection, mass assignment and
+  #                         secrets. Entered only when the reviewer approved AND the change is security-relevant: a `security`
+  #                         label, `risks.security` in the analysis, or a changed file matching pipeline.security_paths;
+  #                         every other approval goes straight to In review without a session. The board needs the column
+  #                         between Agent review and In review (docs/configuration.md#the-security-auditor).
   #   In review          -> human review; only the reviewer moves issues here, after checks pass (ends the run)
   #   Blocked            -> an agent needs a human (ends the run, keeps the workspace)
   #   Done               -> set by a human only; agent stops and its workspace is deleted
@@ -52,7 +57,7 @@ tracker:
   #   An issue whose description starts with "/plan [file]" is served by the planner: every item of the list (the file,
   #   or the description below the command line) becomes one planned sub-issue in Backlog; a human moves them to Ready.
   # If your board names its columns differently, adjust these lists, roles, checks and the prompt below.
-  active_states: [Ready, Design, In progress, Testing, Agent review]
+  active_states: [Ready, Design, In progress, Testing, Agent review, Security review]
   terminal_states: [Done]
 
 polling:
@@ -86,6 +91,7 @@ agent:
   # model_hold_ms: 3600000
   max_concurrent_agents_by_state:
     "Agent review": 1                        # one review at a time
+    "Security review": 1                     # one security audit at a time
     Testing: 1                               # one test run at a time (bug, feature and refactor issues; every issue with SYMPHONY_AFTER_IMPLEMENTATION=Testing)
   # Slots kept free for a role, so a developer and a reviewer can always run side by side. Other roles (/plan,
   # /refactoring, the issue analyst, the test engineer, ...) only get slots beyond these: with 2 slots in total they wait
@@ -176,9 +182,28 @@ roles:
     read_only: true                          # no edits, commits or pushes
     max_turns: 6
     result: review
-    on_result: { approved: In review, changes_needed: In progress, blocked: Blocked }
+    on_result: { approved: In review, changes_needed: In progress, blocked: Blocked }   # approved: Symphony goes to Security review first when the change needs it
+    on_check_failed: In progress             # the entry check of In review failed: back to the developer, with the output
+    may_move_to: [Security review, In review, In progress, Blocked]
+    agents: [laravel-code-reviewer]
+    claude: { model: opus }
+  # The security auditor is conditional: Symphony sends an approved issue here only when it needs the audit (a `security`
+  # label, `risks.security` in the analysis, or a changed file matching pipeline.security_paths; when the changed files
+  # cannot be determined, it is needed to be safe). Otherwise the reviewer's approval goes straight to In review and no
+  # session runs. `passed` moves the issue to In review; `issues_found` sends it back to the developer with the findings
+  # in the prompt (the reviewer then reviews the fix, and the security check is evaluated again); max_security_rounds
+  # rounds with issues go to Blocked with the needs-human label. A profile that lists security-auditor in `skip` never
+  # runs it. To remove the stage, delete this role, the column from active_states and Security review from
+  # roles.reviewer.may_move_to.
+  security-auditor:
+    states: [Security review]
+    read_only: true                          # no edits, commits or pushes
+    max_turns: 6
+    result: security
+    on_result: { passed: In review, issues_found: In progress, blocked: Blocked }
     on_check_failed: In progress             # the entry check of In review failed: back to the developer, with the output
     may_move_to: [In review, In progress, Blocked]
+    model_label: ignore                      # opus, whatever the issue's Model: label picks for the developer
     agents: [laravel-code-reviewer]
     claude: { model: opus }
   auditor:
@@ -230,6 +255,8 @@ pipeline:
   max_review_rounds: 3
   # Test rounds (test failed -> developer fixes) before the issue goes to Blocked with needs-human.
   max_test_rounds: 2
+  # Security rounds (security review found issues -> developer fixes) before the issue goes to Blocked with needs-human.
+  max_security_rounds: 2
   # always: the issue analyst runs for every issue in Ready. when_unlabeled: it is skipped without a session for issues that
   # already carry a Type: and a Complexity: label (they go straight to In progress).
   analysis: always
@@ -268,6 +295,9 @@ pipeline:
         architect: { complexity: [S] }
   # Files the test engineer may change; defaults: tests/**, test/**, **/*.test.*, **/*Test.php
   # test_paths: [tests/**, test/**, "**/*.test.*", "**/*Test.php"]
+  # Changed files that send an approved issue to the Security review (any match is enough); an explicit list replaces the
+  # Laravel defaults below, [] turns the path trigger off (the security label and the analysis risk still apply).
+  # security_paths: [app/Policies/**, app/Http/Middleware/**, config/auth.php, routes/**, database/migrations/**]
 
 checks:
   # Entry checks: set_status into these columns only succeeds when the script passes (exit 0).
@@ -378,6 +408,12 @@ Good uses: an architect plan before a non-trivial feature (not when a design is 
 Fix these first; the reviewer checks them again:
 {% for finding in results.open_findings %}
 {{ forloop.index }}. [{{ finding.severity }}] {{ finding.file }}{% if finding.line %}:{{ finding.line }}{% endif %} — {{ finding.problem }}{% if finding.fix %} Expected fix: {{ finding.fix }}{% endif %}{% endfor %}
+{% endif %}{% if results.security_findings.size > 0 %}
+## Open findings of the latest security review
+
+The read-only security auditor found these in your change. Fix them first; the reviewer reviews the fix, then the security review runs again:
+{% for finding in results.security_findings %}
+{{ forloop.index }}. [{{ finding.severity }}] {{ finding.file }}{% if finding.line %}:{{ finding.line }}{% endif %} — {{ finding.problem }}{% if finding.fix %} Expected fix: {{ finding.fix }}{% endif %}{% endfor %}
 {% endif %}{% if results.failed_cases.size > 0 %}
 ## Failed test cases of the latest test run
 
@@ -393,7 +429,7 @@ Commands that ran:{% for command in results.test.commands %}
 The current directory is a clone of the issue's repository. Work only inside it.
 
 1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist) and follow their conventions.
-2. Call `get_issue` and read the comments and linked pull requests. If a pull request for this issue exists, this is follow-up work: continue on its branch and address the open findings of the latest agent review{% if results.open_findings.size > 0 %} (listed above){% endif %}{% if results.failed_cases.size > 0 %} and the failed test cases{% endif %}.
+2. Call `get_issue` and read the comments and linked pull requests. If a pull request for this issue exists, this is follow-up work: continue on its branch and address the open findings of the latest agent review{% if results.open_findings.size > 0 %} (listed above){% endif %}{% if results.security_findings.size > 0 %}, the open findings of the latest security review (listed above){% endif %}{% if results.failed_cases.size > 0 %} and the failed test cases{% endif %}.
 3. If the board status is "Ready", post a short plan with `add_comment`. You cannot change the status yourself; Symphony moves the issue when you report your result.
 4. Work on the branch `{{ branch }}`: create it from {% if base %}`origin/{{ base }}`{% else %}the default branch{% endif %} if it does not exist yet, otherwise check it out and continue.
 5. Implement the change. Add or update tests where the project has them and run the project's checks until they pass. Only run commands against this workspace: do not use containers or services that serve another checkout (for example a developer's local Docker stack). If a check can only run there, say so in your summary instead.{% if issue.type == "bugfix" %}
@@ -558,11 +594,54 @@ The developer was asked to fix these. Check each one against the code, and repor
    - `findings`: one entry per problem with `severity` (`blocker`, `major`, `minor` or `nit`), `file`, `line`, `problem` and `fix` (the expected fix). Include every open finding, also from earlier reviews that are still not fixed. An approval may only carry `minor` and `nit` findings.
    - `checked`: one line per checklist item: OK, n/a, or a reference to a finding.{% if issue.type == "refactor" and results.analysis and results.analysis.refactoring_goals.size > 0 %}
    - `confirmed_goals`: the refactoring goals of the analysis that the change meets, each copied word for word. `approved` is refused with `invalid_result` unless every goal is listed.{% endif %}
-6. Symphony routes the verdict: `approved` moves the issue to "In review" (after the entry checks; if Symphony merges automatically, the result contains `auto_merge` with the outcome), `changes_needed` sends it back to the developer, and the review round limit sends it to a human instead. Handle the answer:
+6. Symphony routes the verdict: `approved` moves the issue to "In review" (after the entry checks; if Symphony merges automatically, the result contains `auto_merge` with the outcome), or first to "Security review" when the change is security-relevant (a `security` label, a security risk in the analysis, or a changed security path; the result's `reason` names it), `changes_needed` sends it back to the developer, and the review round limit sends it to a human instead. Handle the answer:
    - **Success** (the result says "Result recorded — end your turn now."): end your turn. There is nothing more for you to do.
    - **`invalid_result`**: nothing was recorded; fix the fields named in the message and call `report_result` again.
    - **Entry check of "In review" failed:** Symphony records your result anyway, appends the failing output to its summary and sends the issue back to the developer. End your turn.
    - **`check_timeout`**: do not change anything. Call `report_result` once more; if it times out again, say so in a short issue comment (`add_comment`) and end your turn. The issue stays in "Agent review" and Symphony picks it up again later.
+   - **`check_error`**: describe the error in an issue comment (`add_comment`) and end your turn.
+
+Never move an issue to "Done": a human does that after review and merge.
+
+Write the result in the language the issue is written in.
+{% when "security-auditor" %}## Your role: security auditor
+
+You audit this change for security problems before a human reviews it. The reviewer approved it already; you look at it from the attacker's side. You are **read-only**: do not edit files, commit or push. Your output is one structured result: `report_result` posts it as the security review comment and moves the issue.
+The tracker tools are `get_issue`, `add_comment` and `report_result`. You do not change the status yourself: Symphony computes the next column from your verdict, and enforces the security round limit. This is security round {{ round }}.
+{% if agents.size > 0 %}
+{{ agent_intro }}
+
+Use a reviewer subagent only for a second pass over a large diff. Its findings go into your result only after you checked them against the code.
+{% endif %}{{ analysis_block }}{% if results.security_findings.size > 0 %}
+## Findings of your previous security review
+
+The developer was asked to fix these. Check each one against the code, and report any that is still open again:
+{% for finding in results.security_findings %}
+{{ forloop.index }}. [{{ finding.severity }}] {{ finding.file }}{% if finding.line %}:{{ finding.line }}{% endif %} — {{ finding.problem }}{% if finding.fix %} Expected fix: {{ finding.fix }}{% endif %}{% endfor %}
+{% endif %}
+The current directory is a clone of the issue's repository. Work only inside it.
+
+1. Call `get_issue`: read the issue, all comments and the linked pull request (its base branch, description and discussion), including the findings of the review.
+2. Make sure the workspace is on the pull request's branch (`{{ branch }}` unless the pull request says otherwise) at its pushed head: `git fetch origin`, `git status`, `git log --oneline -5`.
+3. Read the full change with `git diff origin/<base>...HEAD` (`<base>`: the pull request's base branch, else {% if base %}`{{ base }}`{% else %}the default branch{% endif %}) and the code around it. Follow untrusted input from where it enters (requests, uploads, webhooks, queue payloads, console arguments) to where it is used.
+4. Check against this list; only report what you can show in the code:
+   - **Authorization:** policies and gates on every new or changed route, controller action, Livewire component, job and Filament resource, page and action (`canViewAny`, `canCreate`, `canEdit`, `canDelete`); IDOR (records fetched by id without scoping to the user or tenant); middleware that was removed or loosened; routes outside the auth middleware group.
+   - **Authentication and sessions:** login, password reset, token and session handling; rate limiting on credentials and token endpoints; `config/auth.php` and guard changes.
+   - **Injection:** raw queries (`DB::raw`, `whereRaw`, `selectRaw`, string-built SQL), shell commands, `eval`, unserialize of user data, path traversal in file access and uploads, SSRF in outgoing requests, open redirects.
+   - **Output:** XSS (`{!! !!}`, `->html()`, unescaped Blade or Livewire output of user data), unsafe file downloads and content types.
+   - **Mass assignment and validation:** `$fillable`/`$guarded` opened up, `forceFill`/`unguard`/`create($request->all())`, missing or too loose validation of fields that decide permissions or ownership.
+   - **Secrets and data exposure:** credentials, tokens, keys or `.env` content in code, config, tests, logs or fixtures; sensitive fields in API resources, exports, logs or error messages; debug output left in.
+   - **Migrations:** changes that expose data (nullable ownership columns, dropped constraints) or lose it without a plan.
+   - **Dependencies and configuration:** new packages from unknown sources, disabled CSRF or security headers, permissive CORS, debug mode.
+5. Report exactly one result with `report_result`. Do not post a separate comment. Fields:
+   - `verdict`: `passed` (no `blocker` or `major` finding), `issues_found` (at least one finding; the developer fixes them next) or `blocked` (you cannot audit it, with at least one entry in `blockers`).
+   - `summary`: the outcome in a few sentences: what you audited and what you found.
+   - `findings`: one entry per problem with `severity` (`blocker`, `major`, `minor` or `nit`), `file`, `line`, `problem` (what an attacker can do, and how) and `fix` (the expected fix). Include every open finding, also from earlier security reviews that are still not fixed. A pass may only carry `minor` and `nit` findings.
+6. Symphony routes the verdict: `passed` moves the issue to "In review" (after the entry checks), `issues_found` sends it back to the developer with the findings, then the reviewer reviews the fix and the security review runs again; the security round limit sends it to a human instead. Handle the answer:
+   - **Success** (the result says "Result recorded — end your turn now."): end your turn. There is nothing more for you to do.
+   - **`invalid_result`**: nothing was recorded; fix the fields named in the message and call `report_result` again.
+   - **Entry check of "In review" failed:** Symphony records your result anyway, appends the failing output to its summary and sends the issue back to the developer. End your turn.
+   - **`check_timeout`**: do not change anything. Call `report_result` once more; if it times out again, say so in a short issue comment (`add_comment`) and end your turn. The issue stays in "Security review" and Symphony picks it up again later.
    - **`check_error`**: describe the error in an issue comment (`add_comment`) and end your turn.
 
 Never move an issue to "Done": a human does that after review and merge.

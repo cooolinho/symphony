@@ -155,3 +155,34 @@ describe('skip_when (#204)', () => {
     assert.deepEqual(skipCheckProblems(checked, null), []);
   });
 });
+
+describe('stageSkip and the security review', () => {
+  const BOARD_SECURITY = ['Backlog', 'Ready', 'In progress', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
+  const config = configOf({
+    tracker: {
+      kind: 'github_project',
+      provider: { owner: 'acme', project_number: 1, token: 'test-token' },
+      active_states: ['Ready', 'In progress', 'Agent review', 'Security review'],
+      terminal_states: ['Done'],
+    },
+    roles: {
+      analyst: { states: ['Ready'], read_only: true, result: 'analysis' },
+      developer: { states: ['In progress'] },
+      reviewer: { states: ['Agent review'], read_only: true, result: 'review', may_move_to: ['Security review', 'In review', 'In progress', 'Blocked'], on_result: { approved: 'In review' } },
+      'security-auditor': { states: ['Security review'], read_only: true, result: 'security', may_move_to: ['In review', 'In progress', 'Blocked'], on_result: { passed: 'In review' } },
+    },
+    pipeline: { analysis: 'always', profiles: { refactor: { skip: ['security-auditor'] } } },
+  });
+  const auditor = roleFor({ state: 'Security review', description: null }, config.roles);
+
+  it('never skips a manually entered Security review column from labels alone: only the profile can', () => {
+    for (const labels of [[], ['security'], ['Type: bugfix', 'Complexity: S'], ['feature']]) {
+      assert.equal(stageSkip(makeIssue({ id: 'a', state: 'Security review', labels }), auditor, config, BOARD_SECURITY), null, labels.join() || 'no labels');
+    }
+  });
+
+  it('reports a profile that skips the security role, with nowhere later to go the session still runs', () => {
+    assert.equal(skipReason({ labels: ['Type: refactor'] }, auditor ?? assert.fail('no role'), config), 'skipped by profile refactor');
+    assert.equal(stageSkip(makeIssue({ id: 'a', state: 'Security review', labels: ['Type: refactor'] }), auditor, config, BOARD_SECURITY), null);
+  });
+});

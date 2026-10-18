@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -6,6 +7,7 @@ import { Logger } from '../src/log.ts';
 import { createGuard, guardTools, toolsForRole } from '../src/orchestrator/guard.ts';
 import { RESULT_RECORDED_NOTE, RESULT_TOOL, classificationLabels, createResultTool, type ResultToolParams } from '../src/orchestrator/result-tool.ts';
 import { buildStageHistory } from '../src/orchestrator/stage-history.ts';
+import { changedFiles } from '../src/workspace/changes.ts';
 import type { Issue, StatusChange, ToolResult } from '../src/tracker/types.ts';
 import { decodeMarker, parseResult, toolInputShape } from '../src/workflow/results.ts';
 import { WorkspaceManager } from '../src/workspace/manager.ts';
@@ -17,9 +19,17 @@ const ROLES = {
     states: ['Agent review'],
     read_only: true,
     result: 'review',
-    may_move_to: ['In review', 'In progress', 'Blocked'],
+    may_move_to: ['Security review', 'In review', 'In progress', 'Blocked'],
     on_result: { approved: 'In review', changes_needed: 'In progress' },
     on_round_limit: 'In review',
+  },
+  auditor: {
+    states: ['Security review'],
+    read_only: true,
+    result: 'security',
+    may_move_to: ['In review', 'In progress', 'Blocked'],
+    on_result: { passed: 'In review', issues_found: 'In progress' },
+    on_check_failed: 'In progress',
   },
   planner: { states: ['Todo'], commands: ['plan'], result: 'analysis', may_move_to: ['In progress', 'Blocked'], on_result: { ready: 'next' } },
   analyst: { states: ['Ready'], read_only: true, result: 'analysis', may_move_to: ['In progress', 'Blocked'], on_result: { ready: 'In progress', needs_info: 'Blocked' } },
@@ -44,6 +54,7 @@ interface SetupOptions {
   /** Column the issue is in; default `Agent review`. */
   state?: string;
   pathRule?: ResultToolParams['pathRule'];
+  security?: ResultToolParams['security'];
 }
 
 function setup(options: SetupOptions = {}) {
@@ -52,7 +63,7 @@ function setup(options: SetupOptions = {}) {
     tracker: {
       kind: 'github_project',
       provider: { owner: 'acme', project_number: 1, token: 'test-token' },
-      active_states: ['Todo', 'Ready', 'In progress', 'Testing', 'Agent review'],
+      active_states: ['Todo', 'Ready', 'In progress', 'Testing', 'Agent review', 'Security review'],
     },
     roles: { ...ROLES, reviewer: { ...ROLES.reviewer, ...options.reviewer } },
     pipeline: { max_review_rounds: 3, max_test_rounds: 2 },
@@ -92,6 +103,7 @@ function setup(options: SetupOptions = {}) {
     runId: 'run-1',
     meta: { workflowHash: 'f'.repeat(64), headSha: async () => 'abc123def456abc1', now: () => new Date('2026-10-18T12:00:00Z') },
     ...(options.pathRule !== undefined ? { pathRule: options.pathRule } : {}),
+    ...(options.security !== undefined ? { security: options.security } : {}),
   };
   const unguarded = createResultTool(params);
   const tools = guardTools(toolsForRole(tracker.agentToolSpecs(), role, unguarded), guard);
@@ -111,6 +123,140 @@ function error(result: ToolResult): { category: string; message: string } {
   assert.ok(!result.ok, 'expected a tool error');
   return result.error;
 }
+
+describe('report_result: the security review after the reviewer approved', () => {
+  const facts = (files: string[] | Error, over: Partial<NonNullable<ResultToolParams['security']>> = {}) => {
+    const calls: number[] = [];
+    return {
+      calls,
+      security: {
+        risk: false,
+        securityPaths: ['app/Policies/**', 'routes/**', 'database/migrations/**'],
+        changedFiles: async () => {
+          calls.push(1);
+          if (files instanceof Error) throw files;
+          return files;
+        },
+        ...over,
+      },
+    };
+  };
+
+  it('sends an approval for a diff that touches a policy to Security review: no entry check of In review, the marker names the column', async () => {
+    const { security } = facts(['README.md', 'app/Policies/PostPolicy.php']);
+    const { report, tracker, markers } = setup({ security, checks: { 'In review': 'echo "must not run"; exit 1' } });
+    const result = data(await report(APPROVED));
+    assert.deepEqual([result.target, result.status, result.checks], ['Security review', 'Security review', null]);
+    assert.match(String(result.reason), /→ "Security review" \(on_result\.approved, security review needed: 1 changed file\(s\) match pipeline\.security_paths: app\/Policies\/PostPolicy\.php\)/);
+    assert.deepEqual(tracker.statusCalls, ['Security review']);
+    assert.equal(markers()[0]?.meta.target, 'Security review');
+  });
+
+  it('sends an approval for a docs-only diff straight to In review and says why', async () => {
+    const { security } = facts(['README.md', 'docs/usage.md']);
+    const { report, tracker } = setup({ security });
+    const result = data(await report(APPROVED));
+    assert.equal(result.target, 'In review');
+    assert.match(String(result.reason), /security review not needed: no trigger \(none of 2 changed file\(s\) matches pipeline\.security_paths\)/);
+    assert.deepEqual(tracker.statusCalls, ['In review']);
+  });
+
+  it('runs the entry check of the column the approval leads to: In review when no audit is needed', async () => {
+    const { security } = facts(['README.md']);
+    const { report, tracker } = setup({ security, checks: { 'In review': 'echo "2 tests failed"; exit 1' } });
+    const failed = error(await report(APPROVED));
+    assert.equal(failed.category, 'check_failed');
+    assert.deepEqual(tracker.statusCalls, []);
+  });
+
+  it('is triggered by the security label alone, without asking git', async () => {
+    const { security, calls } = facts(['README.md']);
+    const { report } = setup({ security, labels: ['feature', 'Security'] });
+    const result = data(await report(APPROVED));
+    assert.deepEqual([result.target, calls.length], ['Security review', 0]);
+    assert.match(String(result.reason), /the issue carries the "security" label/);
+  });
+
+  it('is triggered by a security risk in the analysis alone', async () => {
+    const { security } = facts(['README.md']);
+    const { report } = setup({ security: { ...security, risk: true } });
+    const result = data(await report(APPROVED));
+    assert.equal(result.target, 'Security review');
+    assert.match(String(result.reason), /the analysis flags a security risk/);
+  });
+
+  it('does not treat area:security as the security label', async () => {
+    const { security } = facts(['README.md']);
+    const { report } = setup({ security, labels: ['area:security'] });
+    assert.equal(data(await report(APPROVED)).target, 'In review');
+  });
+
+  it('turns the path trigger off with an empty security_paths', async () => {
+    const { security, calls } = facts(['app/Policies/PostPolicy.php'], { securityPaths: [] });
+    const { report } = setup({ security });
+    assert.deepEqual([data(await report(APPROVED)).target, calls.length], ['In review', 0]);
+  });
+
+  it('fails safe: when the changed files cannot be determined the issue goes to Security review, and the reason says why', async () => {
+    const { security } = facts(new Error('git could not list the files changed against origin/develop: unknown revision'));
+    const { report } = setup({ security });
+    const result = data(await report(APPROVED));
+    assert.equal(result.target, 'Security review');
+    assert.match(String(result.reason), /changed files could not be determined \(git could not list the files changed against origin\/develop: unknown revision\), reviewing to be safe/);
+  });
+
+  it('keeps the approval on In review where nothing looks the conditions up', async () => {
+    const { report } = setup({});
+    assert.equal(data(await report(APPROVED)).target, 'In review');
+  });
+
+  it('looks the files up only for an approval', async () => {
+    const { security, calls } = facts(['app/Policies/PostPolicy.php']);
+    const { report } = setup({ security });
+    assert.equal(data(await report(CHANGES)).target, 'In progress');
+    assert.equal(calls.length, 0);
+  });
+
+  it('measures a real branch against its base: a policy goes to Security review, a docs change does not', async () => {
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=T', ...args], { cwd, encoding: 'utf8' });
+    for (const [file, target] of [['app/Policies/PostPolicy.php', 'Security review'], ['docs/guide.md', 'In review']] as const) {
+      const setupResult = setup({});
+      const { workspacePath, params, report } = setupResult;
+      git(workspacePath, 'init', '-q', '-b', 'main');
+      fs.writeFileSync(path.join(workspacePath, 'README.md'), 'x');
+      git(workspacePath, 'add', '-A');
+      git(workspacePath, 'commit', '-q', '-m', 'init');
+      git(workspacePath, 'checkout', '-q', '-b', 'symphony/issue-1');
+      fs.mkdirSync(path.dirname(path.join(workspacePath, file)), { recursive: true });
+      fs.writeFileSync(path.join(workspacePath, file), 'y');
+      git(workspacePath, 'add', '-A');
+      git(workspacePath, 'commit', '-q', '-m', 'change');
+      params.security = { risk: false, securityPaths: ['app/Policies/**'], changedFiles: () => changedFiles(workspacePath, 'main') };
+      assert.equal(data(await report(APPROVED)).target, target, file);
+    }
+  });
+
+  it('routes the security auditor: passed to In review, issues_found to the developer, the last round to Blocked with needs-human', async () => {
+    const passed = setup({ role: 'auditor', state: 'Security review' });
+    assert.equal(data(await passed.report({ verdict: 'passed', summary: 'No findings.' })).target, 'In review');
+    const found = { verdict: 'issues_found', summary: 'IDOR.', findings: [{ severity: 'major', file: 'app/Http/PostController.php', line: 9, problem: 'No scope', fix: 'Scope to the user' }] };
+    const first = setup({ role: 'auditor', state: 'Security review', history: { reviewRounds: 0, testRounds: 0, securityRounds: 0 } });
+    const round = data(await first.report(found));
+    assert.deepEqual([round.target, round.round], ['In progress', 1]);
+    assert.equal(first.markers()[0]?.meta.round, 1);
+    const last = setup({ role: 'auditor', state: 'Security review', history: { reviewRounds: 0, testRounds: 0, securityRounds: 1 } });
+    const limit = data(await last.report(found));
+    assert.deepEqual([limit.target, limit.round, limit.labels], ['Blocked', 2, { added: ['needs-human'], removed: [] }]);
+  });
+
+  it('sends an entry check failure of In review back to the developer for the auditor, like for the reviewer', async () => {
+    const { report, tracker, markers } = setup({ role: 'auditor', state: 'Security review', checks: { 'In review': 'echo "lint failed"; exit 1' } });
+    const result = data(await report({ verdict: 'passed', summary: 'Clean.' }));
+    assert.deepEqual([result.target, result.check_failed_for], ['In progress', 'In review']);
+    assert.deepEqual(tracker.statusCalls, ['In progress']);
+    assert.equal(markers()[0]?.result.verdict, 'passed');
+  });
+});
 
 describe('report_result', () => {
   it('replaces set_status for the role and advertises the result schema of its kind', () => {
@@ -687,7 +833,7 @@ describe('report_result of a refactor review', () => {
     assert.ok(failure.message.includes(`"${GOALS[1]}"`) && !failure.message.includes(`"${GOALS[0]}"`), failure.message);
     assert.deepEqual(tracker.statusCalls, []);
     assert.equal(tracker.comments.get('1'), undefined);
-    assert.equal(unguarded.transitionTarget?.({ ...APPROVED }), null, 'no move is planned for the refused result');
+    assert.equal(await unguarded.transitionTarget?.({ ...APPROVED }), null, 'no move is planned for the refused result');
     assert.equal(error(await report(APPROVED)).category, 'invalid_result');
   });
 

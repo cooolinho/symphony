@@ -19,11 +19,13 @@ import type { EffectiveWorkflow } from '../workflow/store.ts';
 import { internalResult, renderResultComment, type ResultMeta } from '../workflow/results.ts';
 import { normalizeStateName } from '../workflow/config.ts';
 import { EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../workflow/template.ts';
+import { changedFiles } from '../workspace/changes.ts';
 import { baselineCommit, changedFilesSince } from './changed-files.ts';
 import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord } from './guard.ts';
-import { createResultTool, resultReminder, type PathRule, type ResultToolAdapter } from './result-tool.ts';
+import { createResultTool, resultReminder, type PathRule, type ResultToolAdapter, type ResultToolParams } from './result-tool.ts';
+import { securityBaseRef } from './security.ts';
 import { interruptedTransition } from './recovery.ts';
-import { buildStageHistory, implementationHead, resultsTemplateValue, type PersistedResult, type ResultsTemplateValue, type StageHistory } from './stage-history.ts';
+import { analysisFlagsSecurity, buildStageHistory, implementationHead, resultsTemplateValue, type PersistedResult, type ResultsTemplateValue, type StageHistory } from './stage-history.ts';
 
 export type RunPhase =
   | 'PreparingWorkspace'
@@ -197,6 +199,7 @@ async function loadResultSupport(
   issue: () => Issue,
   headSha: () => Promise<string | null>,
   pathRule: ((history: StageHistory) => PathRule) | null,
+  security: ((history: StageHistory) => NonNullable<ResultToolParams['security']>) | null,
   report: (results: PersistedResult[]) => void,
   onRecorded: (entry: PersistedResult) => void,
   onMoved: () => void,
@@ -239,11 +242,12 @@ async function loadResultSupport(
     runId: params.runId,
     meta: { workflowHash: workflow.contentHash, headSha },
     pathRule: pathRule?.(history) ?? null,
+    security: security?.(history) ?? null,
   });
   return {
     tool,
     results: resultsTemplateValue(history),
-    round: (role.result === 'test' ? history.testRounds : history.reviewRounds) + 1,
+    round: (role.result === 'test' ? history.testRounds : role.result === 'security' ? history.securityRounds : history.reviewRounds) + 1,
   };
 }
 
@@ -438,6 +442,15 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       role?.result === 'test'
         ? (history: StageHistory) => testPathRule(activeWorkspace.path, params.workflow.config.pipeline.testPaths, startSha, implementationHead(history))
         : null;
+    // A reviewer's approval needs the security review for a security label, a risk in the analysis or a changed security path.
+    const security =
+      role?.result === 'review'
+        ? (history: StageHistory) => ({
+            risk: analysisFlagsSecurity(history),
+            securityPaths: params.workflow.config.pipeline.securityPaths,
+            changedFiles: () => changedFiles(activeWorkspace.path, securityBaseRef(issue.native_ref?.base_branch)),
+          })
+        : null;
     const support =
       role?.result != null
         ? await loadResultSupport(
@@ -446,6 +459,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
             () => issue,
             async () => (await readGitHead(activeWorkspace.path))?.headSha ?? null,
             pathRule,
+            security,
             callbacks.results,
             (entry) => {
               resultRecorded = true;

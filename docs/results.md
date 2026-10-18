@@ -116,7 +116,12 @@ A call runs these steps, one call at a time:
 2. **Route.** The target column is computed from the verdict, the profile and the round counters of the history
    loaded at session start (`resolveTransition`, see
    [Result-driven transitions](configuration.md#result-driven-transitions)). A configuration that cannot route the
-   verdict returns `transition_error`.
+   verdict returns `transition_error`. For a reviewer's `approved`, the tool first decides whether the issue needs the
+   [security review](configuration.md#the-security-auditor) (a `security` label, `risks.security` in the latest
+   analysis, or a changed file matching `pipeline.security_paths`, looked up with git before the guard runs): if it does,
+   the target is the `Security review` column instead of `In review`; if the changed files cannot be determined, it is
+   needed to be safe. The answer's `reason` says which trigger decided. A `security` result is the audit's verdict:
+   `passed` leads to `In review`, `issues_found` to the developer (counted by `pipeline.max_security_rounds`).
 3. **Guard.** For a role with `result: test`, the [path rule](#path-rule-of-the-test-engineer) comes first. The
    target passes the [transition guard](configuration.md#transition-guard) like a `set_status` call:
    `may_move_to`, then the column's entry check. `check_failed`, `check_timeout` and `check_error` return the guard's

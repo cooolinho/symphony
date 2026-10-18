@@ -24,9 +24,10 @@ The agents only comment or report results; they change no code.
 - Claude Code is logged in, as for normal operation.
 - Only for `--scenario roles`: the board also has the columns `Agent review` and `Blocked` (see `ROLE_STATUS` in
   `scripts/e2e/roles.ts`).
-- Only for `--scenario pipeline`: the board has the columns `Ready`, `In progress`, `Testing`, `Agent review`,
-  `In review`, `Blocked` and `Done` (see `PIPELINE_COLUMNS` in `scripts/e2e/pipeline.ts`), and `Testing` sits between
-  `In progress` and `Agent review`. The agent slots (`SYMPHONY_MAX_CONCURRENT_AGENTS`, default 3) must leave the test
+- Only for `--scenario pipeline`: the board has the columns `Ready`, `Design`, `In progress`, `Testing`, `Agent review`,
+  `Security review`, `In review`, `Blocked` and `Done` (see `PIPELINE_COLUMNS` in `scripts/e2e/pipeline.ts`), and
+  `Testing` sits between `In progress` and `Agent review`. The issues pass `Design` and `Security review` without a
+  session (complexity `S`, no changed files), but the shipped `active_states` name them. The agent slots (`SYMPHONY_MAX_CONCURRENT_AGENTS`, default 3) must leave the test
   engineer a slot beyond the ones reserved for the developer and the reviewer, and the repository must be reachable for
   the workspace hook (`git clone` over SSH, as for normal operation). The test checks the generated workflow against
   the board before it creates any issue and refuses to start on a problem.

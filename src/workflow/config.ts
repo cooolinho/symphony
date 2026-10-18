@@ -114,6 +114,8 @@ export interface PipelineConfig {
   maxReviewRounds: number;
   /** Test rounds (test failed → fix) before the issue is handed to a human. */
   maxTestRounds: number;
+  /** Security rounds (security review found issues → fix) before the issue is handed to a human. */
+  maxSecurityRounds: number;
   /** Label put on an issue that hit a round limit. */
   limitLabel: string;
   /** Issue label (normalized: trimmed, lowercase) → change type. */
@@ -133,7 +135,9 @@ export interface PipelineConfig {
   profiles: ReadonlyMap<string, WorkflowProfile>;
   /**
    * Path globs (see `glob.ts`) that mark test, documentation and security-relevant files. `testPaths` is all a role with
-   * `result: test` may change (`report_result` refuses a result otherwise); the other two are used by later pipeline stages.
+   * `result: test` may change (`report_result` refuses a result otherwise). A changed file matching `securityPaths` sends
+   * the reviewer's approval to the security review (a role with `result: security`); `[]` turns that trigger off.
+   * `docsPaths` is used by a later pipeline stage.
    */
   testPaths: string[];
   docsPaths: string[];
@@ -198,8 +202,11 @@ export const DEFAULTS = {
   stallTimeoutMs: 300_000,
   maxReviewRounds: 3,
   maxTestRounds: 2,
+  maxSecurityRounds: 2,
   /** `pipeline.test_paths` when unset: the usual places of test files (Laravel, Node, Jest/Vitest). */
   testPaths: ['tests/**', 'test/**', '**/*.test.*', '**/*Test.php'],
+  /** `pipeline.security_paths` when unset: the places of a Laravel app where authorization, authentication and the schema live. */
+  securityPaths: ['app/Policies/**', 'app/Http/Middleware/**', 'config/auth.php', 'routes/**', 'database/migrations/**'],
   pipelineLimitLabel: 'needs-human',
   pipelineDefaultType: 'feature',
   /** Column for a session that ends without the result its role has to report. */
@@ -237,6 +244,7 @@ const PIPELINE_KEYS = new Set([
   'profiles',
   'max_review_rounds',
   'max_test_rounds',
+  'max_security_rounds',
   'limit_label',
   'type_labels',
   'default_type',
@@ -345,7 +353,7 @@ type RoleTransitions = Pick<RoleConfig, 'result' | 'onResult' | 'onCheckFailed' 
 /**
  * `result`, `on_result`, `on_check_failed`, `on_missing_result` and `on_round_limit` of a role. Verdicts must belong to
  * the result kind and no target may be a terminal column; `on_missing_result` defaults to `Blocked` once the role has a
- * `result`; `on_round_limit` needs a result kind with a round limit (`review`, `test`).
+ * `result`; `on_round_limit` needs a result kind with a round limit (`review`, `test`, `security`).
  */
 function readRoleTransitions(reader: Reader, raw: Record<string, unknown>, field: string, terminalStates: string[]): RoleTransitions {
   const result = reader.oneOf<AgentResultKind>(raw, 'result', `${field}.result`, AGENT_RESULT_KINDS, null);
@@ -462,6 +470,7 @@ function readPipeline(reader: Reader, raw: Record<string, unknown>, roles: RoleC
   return {
     maxReviewRounds: reader.int(section, 'max_review_rounds', 'pipeline.max_review_rounds', DEFAULTS.maxReviewRounds, 1),
     maxTestRounds: reader.int(section, 'max_test_rounds', 'pipeline.max_test_rounds', DEFAULTS.maxTestRounds, 1),
+    maxSecurityRounds: reader.int(section, 'max_security_rounds', 'pipeline.max_security_rounds', DEFAULTS.maxSecurityRounds, 1),
     limitLabel: nonEmpty('limit_label', DEFAULTS.pipelineLimitLabel),
     typeLabels,
     defaultType: nonEmpty('default_type', DEFAULTS.pipelineDefaultType),
@@ -469,7 +478,7 @@ function readPipeline(reader: Reader, raw: Record<string, unknown>, roles: RoleC
     profiles: readProfiles(reader, section.profiles, roles, terminalStates),
     testPaths: globs('test_paths', DEFAULTS.testPaths),
     docsPaths: globs('docs_paths', []),
-    securityPaths: globs('security_paths', []),
+    securityPaths: globs('security_paths', DEFAULTS.securityPaths),
   };
 }
 
