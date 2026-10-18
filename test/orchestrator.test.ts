@@ -2825,7 +2825,7 @@ describe('restart a worker', () => {
     await s.orchestrator.restartWorker('a');
     s.timers.fire(0);
     await until(() => snapshot(s).retrying[0]?.error === 'waiting for a free slot (1/1 busy)', 3_000, 'requeued');
-    assert.equal(s.runner.sessions.length, 2);
+    await until(() => s.runner.sessions.length === 2, 3_000, 'sessions of a and b');
   });
 
   it('writes the worker_restarted history note', async () => {
@@ -3752,15 +3752,26 @@ describe('stage skipping', () => {
     await s.orchestrator.shutdown(1_000);
   });
 
-  it('keeps the issue in place and tries again when the move fails', async () => {
+  it('keeps the issue in place when the move fails, posts the comment once and moves it when the board works again', async () => {
     const s = setup({ front: front(), issues: [makeIssue({ id: 'a', state: 'Ready', labels: ['Type: bugfix', 'Complexity: S'] })] });
     withBoard(s);
-    s.tracker.setStatus = async () => {
-      throw new Error('board unreachable');
+    const setStatus = s.tracker.setStatus.bind(s.tracker);
+    let calls = 0;
+    s.tracker.setStatus = async (...args: Parameters<typeof setStatus>) => {
+      calls += 1;
+      if (calls <= 2) throw new Error('board unreachable');
+      return setStatus(...args);
     };
     await s.orchestrator.tickNow();
-    await until(() => (s.tracker.comments.get('a')?.length ?? 0) === 1 && snapshot(s).counts.claimed === 0, 3_000, 'failed skip');
+    await until(() => calls === 1 && snapshot(s).counts.claimed === 0, 3_000, 'first failed skip');
     assert.equal(issueState(s, 'a'), 'Ready');
+    await s.orchestrator.tickNow();
+    await until(() => calls === 2 && snapshot(s).counts.claimed === 0, 3_000, 'second failed skip');
+    assert.equal(issueState(s, 'a'), 'Ready');
+    assert.equal(s.tracker.comments.get('a')?.length, 1, 'no duplicate comment on the retry');
+    await s.orchestrator.tickNow();
+    await until(() => issueState(s, 'a') === 'In progress', 3_000, 'move once the board works');
+    assert.equal(s.tracker.comments.get('a')?.length, 1);
     assert.equal(s.runner.sessions.length, 0);
     await s.orchestrator.shutdown(1_000);
   });

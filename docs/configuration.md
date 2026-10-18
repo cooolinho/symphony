@@ -639,7 +639,7 @@ one poll at a time. For example, with an analyst in `Ready` and `pipeline.analys
   developer moves issues from "In progress" to "Agent review" without a workspace, but checks.on_enter has a script for
   "Agent review"`), and dispatch stops until it is fixed.
 - **When nothing is skipped.** The stage runs as usual if the tracker does not list its columns (the board order is
-  needed), no needed stage follows, or the posting or the move fails (the next poll decides again). Only fresh dispatches
+  needed), no needed stage follows (a skipped role in the last active column still runs), or the posting or the move fails (the next poll decides again; a comment that was already posted is not posted twice). Only fresh dispatches
   are skipped: **Start now** (`/force`), retries and continuations of a stage always start a session.
 - Conditions based on changed files are not part of this.
 

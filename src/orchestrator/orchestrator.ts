@@ -586,6 +586,8 @@ export class Orchestrator {
   #claimed = new Set<string>();
   /** Stage skips in flight (see `#skipStage`); `stop` waits for them. */
   #skips = new Set<Promise<void>>();
+  /** Issues whose `skipped` comment is posted but whose move failed, by issue id: the retry must not post it again. */
+  #skipCommented = new Map<string, { key: string; url: string | null }>();
   #retries = new Map<string, RetryEntry>();
   #completed = new Set<string>();
   #archive: IssueArchive;
@@ -1647,8 +1649,16 @@ export class Orchestrator {
     };
     const work = (async () => {
       try {
-        const posted = await adapter.postComment(issue, renderResultComment(internalResult('skipped', summary), meta));
+        // A failed move leaves the issue in its column, so the next tick skips again; the comment is posted only once.
+        const key = `${issue.state}\u0000${skip.target}`;
+        let posted = this.#skipCommented.get(issue.id);
+        if (posted?.key !== key) {
+          const comment = await adapter.postComment(issue, renderResultComment(internalResult('skipped', summary), meta));
+          posted = { key, url: comment.url };
+          this.#skipCommented.set(issue.id, posted);
+        }
         const change = await adapter.setStatus(issue, skip.target);
+        this.#skipCommented.delete(issue.id);
         this.#trace(record, {
           kind: 'lifecycle',
           event: 'stage_skipped',

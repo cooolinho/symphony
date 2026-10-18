@@ -74,6 +74,12 @@ describe('stageSkip', () => {
     const all = configOf({ pipeline: { profiles: { default: { skip: ['analyst', 'developer', 'reviewer'] } } } });
     assert.equal(stageSkip(issueIn('Ready', []), analyst, all, BOARD), null);
   });
+
+  it('runs the stage when the skipped role is the last active stage', () => {
+    const reviewer = roleFor({ state: 'Agent review', description: null }, config.roles);
+    const last = configOf({ pipeline: { profiles: { bugfix: { skip: ['reviewer'] } } } });
+    assert.equal(stageSkip(issueIn('Agent review', ['Type: bugfix']), reviewer, last, BOARD), null);
+  });
 });
 
 describe('skipCheckProblems', () => {
