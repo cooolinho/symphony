@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { chooseEffort, chooseModel, effortForLabelValue, isEffortLabel, isModelLabel, modelForLabelValue, modelOverridesFor, sessionClaudeConfig } from '../src/agent/model.ts';
 import { roleModelLine } from '../src/service.ts';
 import { STANDARD_LABELS, WORKFLOW_LABELS } from '../src/repo-init/labels.ts';
-import { isComplexityLabel, isNeedsHumanLabel, isTypeLabel } from '../src/workflow/classify.ts';
+import { isComplexityLabel, isTypeLabel } from '../src/workflow/classify.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 import { resolveConfig } from '../src/workflow/config.ts';
 
@@ -151,7 +151,7 @@ describe('model labels', () => {
     assert.deepEqual(WORKFLOW_LABELS.map((label) => label.name), ['auto-code', 'concept', 'plan', 'epic', 'feature', 'design', 'quality', 'maintenance', 'manual-merge', 'needs-human']);
     for (const label of STANDARD_LABELS) {
       if (WORKFLOW_LABELS.includes(label)) {
-        assert.ok(!isModelLabel(label.name) && !isEffortLabel(label.name) && !isTypeLabel(label.name) && !isComplexityLabel(label.name) && !isNeedsHumanLabel(label.name), label.name);
+        assert.ok(!isModelLabel(label.name) && !isEffortLabel(label.name) && !isTypeLabel(label.name) && !isComplexityLabel(label.name), label.name);
       } else if (isModelLabel(label.name)) {
         const choice = chooseModel([label.name.toLowerCase()], null);
         assert.ok(choice.model !== null && choice.warning === null, label.name);

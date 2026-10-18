@@ -44,10 +44,10 @@ describe('classify', () => {
       assert.match(result.warning ?? '', /conflicting type labels/);
     });
 
-    it('returns null for conflicting Type: and alias labels', () => {
+    it('lets a Type: label win over alias labels', () => {
       const result = classify(['bug', 'type: feature']);
-      assert.equal(result.type, null);
-      assert.match(result.warning ?? '', /conflicting type labels/);
+      assert.equal(result.type, 'feature');
+      assert.equal(result.warning, null);
     });
 
     it('returns null for unknown Type: values', () => {

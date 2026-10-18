@@ -135,7 +135,7 @@ describe('shipped WORKFLOW.md', () => {
     const { definition } = await loadWorkflowFile(shipped);
     const template = compilePrompt(definition.promptTemplate);
     const subject = { ...testIssue, native_ref: { ...testIssue.native_ref, base_branch: null } };
-    const rendered = await renderPrompt(template, { issue: issueTemplateValue(subject, commandSkills([toolbox])), role: 'developer', agents: [] });
+    const rendered = await renderPrompt(template, { issue: issueTemplateValue(subject, commandSkills([toolbox])), attempt: null, role: 'developer', agents: [] });
 
     // Type and complexity are available in the template
     const value = issueTemplateValue(subject, commandSkills([toolbox]));
@@ -155,7 +155,7 @@ describe('shipped WORKFLOW.md', () => {
   it('handles issues without type or complexity labels', async () => {
     const testIssue = makeIssue({
       ...issue,
-      labels: ['feature', 'model: opus'],
+      labels: ['design', 'model: opus'],
     });
     const subject = { ...testIssue, native_ref: { ...testIssue.native_ref, base_branch: null } };
     const value = issueTemplateValue(subject, commandSkills([toolbox]));

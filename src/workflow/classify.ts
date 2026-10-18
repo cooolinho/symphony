@@ -1,5 +1,3 @@
-import type { LabelChoice } from '../agent/model.ts';
-
 export type IssueType = 'bugfix' | 'feature' | 'refactor';
 export type IssueComplexity = 'S' | 'M' | 'L' | 'XL';
 
@@ -17,13 +15,14 @@ export interface ClassifyResult {
 }
 
 export interface ClassifyOptions {
-  /** Map alias labels to their canonical types. Default: { 'bug': 'bugfix', 'enhancement': 'feature', 'refactoring': 'refactor' } */
+  /** Map alias labels to their canonical types. Default: { 'bug': 'bugfix', 'enhancement': 'feature', 'feature': 'feature', 'refactoring': 'refactor' } */
   typeAliases?: Record<string, IssueType>;
 }
 
 const DEFAULT_TYPE_ALIASES: Record<string, IssueType> = {
   bug: 'bugfix',
   enhancement: 'feature',
+  feature: 'feature',
   refactoring: 'refactor',
 };
 
@@ -50,33 +49,36 @@ function parseComplexityValue(value: string): IssueComplexity | null {
   return null;
 }
 
-function classifyFromLabels<T>(
+interface Choice<T> {
+  value: T | null;
+  label: string | null;
+  warning: string | null;
+}
+
+/** Picks one value from the labels; prefixed labels ("Type: x") win over aliases, differing values cancel out. */
+function classifyFromLabels<T extends string>(
   labels: readonly string[],
   prefix: string,
   noun: string,
   parse: (value: string) => T | null,
-  aliases?: Record<string, T>,
-): LabelChoice<T> {
-  const picked: Array<{ label: string; value: T }> = [];
+  aliases: Record<string, T> = {},
+): Choice<T> {
+  const direct: Array<{ label: string; value: T }> = [];
+  const viaAlias: Array<{ label: string; value: T }> = [];
   const unknown: string[] = [];
 
   for (const label of labels) {
     const lowerLabel = label.trim().toLowerCase();
-
-    // Try as prefixed label (e.g., "Type: bugfix" or "Complexity: S")
     if (lowerLabel.startsWith(prefix)) {
       const value = parse(lowerLabel.slice(prefix.length));
       if (value === null) unknown.push(label);
-      else picked.push({ label, value });
-      continue;
-    }
-
-    // Try as alias (e.g., "bug" -> "bugfix")
-    if (aliases && lowerLabel in aliases) {
-      picked.push({ label, value: aliases[lowerLabel] });
+      else direct.push({ label, value });
+    } else if (Object.hasOwn(aliases, lowerLabel)) {
+      viaAlias.push({ label, value: aliases[lowerLabel] as T });
     }
   }
 
+  const picked = direct.length > 0 ? direct : viaAlias;
   const values = new Set(picked.map((entry) => entry.value));
   const problems: string[] = [];
   if (unknown.length > 0) problems.push(`unknown ${noun} label ${quoted(unknown)}`);
