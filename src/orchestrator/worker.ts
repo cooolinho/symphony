@@ -106,6 +106,8 @@ export interface WorkerCallbacks {
   resultMoved(): void;
   /** Result of an entry check run by the transition guard. */
   checkFinished(check: CheckRecord): void;
+  /** The session recorded a stage result: called once, with the result as persisted, when `report_result` posts its comment. */
+  stageResult(entry: PersistedResult): void;
   /** The issue's stage results: as loaded at the start of a result-driven session, again with each result it records. */
   results(results: PersistedResult[]): void;
   /** The guard refused a move (terminal column or outside the role's `may_move_to`). */
@@ -196,7 +198,7 @@ async function loadResultSupport(
   headSha: () => Promise<string | null>,
   pathRule: ((history: StageHistory) => PathRule) | null,
   report: (results: PersistedResult[]) => void,
-  onRecorded: () => void,
+  onRecorded: (entry: PersistedResult) => void,
   onMoved: () => void,
 ): Promise<ResultSupport> {
   const { adapter, workflow } = params;
@@ -213,7 +215,7 @@ async function loadResultSupport(
   } catch (error) {
     throw new SymphonyError('results_read_error', `could not read the stage results of ${issue().identifier}: ${errorMessage(error)}`, { cause: error });
   }
-  let persisted = tracked.map(({ result, meta }) => ({ result, meta }));
+  let persisted: PersistedResult[] = tracked.map(({ result, meta, url }) => ({ result, meta, url }));
   let history = buildStageHistory(persisted);
   const reset = interruptedTransition(issue(), role, tracked) === null ? await resetAfterHumanResume(params, resultAdapter, issue(), history) : null;
   if (reset !== null) {
@@ -226,7 +228,7 @@ async function loadResultSupport(
     history,
     onRecorded: (entry) => {
       report([...history.results, entry]);
-      onRecorded();
+      onRecorded(entry);
     },
     onMoved,
     profile: profileFor(workflow.config.pipeline, classify(issue().labels).type),
@@ -447,9 +449,10 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
             async () => (await readGitHead(activeWorkspace.path))?.headSha ?? null,
             pathRule,
             callbacks.results,
-            () => {
+            (entry) => {
               resultRecorded = true;
               callbacks.resultRecorded();
+              callbacks.stageResult(entry);
             },
             () => {
               resultMoved = true;

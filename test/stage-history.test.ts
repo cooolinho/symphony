@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { PROMPT_SUMMARY_LIMIT, buildStageHistory, implementationHead, resultsTemplateValue, type PersistedResult } from '../src/orchestrator/stage-history.ts';
+import { PROMPT_SUMMARY_LIMIT, buildStageHistory, implementationHead, resultRows, resultsTemplateValue, type PersistedResult } from '../src/orchestrator/stage-history.ts';
 import { internalResult, parseResult, type ResultMeta, type StageResult } from '../src/workflow/results.ts';
 
 let clock = 0;
@@ -245,5 +245,24 @@ describe('resultsTemplateValue: the analysis for the later stages', () => {
   it('leaves out what the analysis did not report', () => {
     const value = resultsTemplateValue(buildStageHistory([analysed({ verdict: 'ready', summary: 'Small.' })]));
     assert.deepEqual([value.analysis?.type, value.analysis?.complexity, value.analysis?.docs_needed, value.analysis?.risks, value.analysis?.plan], [null, null, null, [], []]);
+  });
+});
+
+describe('resultRows: the rows of the agent page', () => {
+  it('carry the comment link, the findings of a review and the blockers of a blocked result', () => {
+    const review = parseResult('review', { verdict: 'changes_needed', summary: 'Fix it.', findings: [{ severity: 'major', file: 'src/a.ts', line: 7, problem: 'Wrong', fix: 'Right' }, { severity: 'nit', problem: 'Typo' }] });
+    const blocked = parseResult('implementation', { verdict: 'blocked', summary: 'Stuck.', blockers: [{ description: 'No token', needs: 'access' }] });
+    assert.ok(review.ok && blocked.ok);
+    const first = entry('review', 'approved');
+    const rows = resultRows([
+      { ...first, result: review.result, url: 'https://github.com/acme/app/issues/1#issuecomment-1' },
+      { ...entry('implementation', 'done'), result: blocked.result },
+    ]);
+    assert.deepEqual(rows[0]?.findings, [
+      { severity: 'major', file: 'src/a.ts', line: 7, problem: 'Wrong', fix: 'Right' },
+      { severity: 'nit', file: null, line: null, problem: 'Typo', fix: null },
+    ]);
+    assert.equal(rows[0]?.url, 'https://github.com/acme/app/issues/1#issuecomment-1');
+    assert.deepEqual([rows[1]?.url, rows[1]?.findings, rows[1]?.blockers], [null, [], [{ description: 'No token', needs: 'access' }]]);
   });
 });

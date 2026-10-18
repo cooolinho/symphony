@@ -6,6 +6,8 @@ import type { ResultMeta, StageResult } from '../workflow/results.ts';
 export interface PersistedResult {
   result: StageResult;
   meta: ResultMeta;
+  /** The result comment's URL; absent when unknown (results built without a tracker read). */
+  url?: string | null;
 }
 
 export interface StageHistory {
@@ -205,11 +207,25 @@ export interface ResultRow {
   target: string | null;
   head_sha: string | null;
   created_at: string;
+  /** The result comment; null when unknown. Absent in archives from before the dashboard showed results. */
+  url?: string | null;
+  /** Findings of a review or security result (empty for other kinds), for the result card. */
+  findings?: ResultFinding[];
+  /** What blocks the stage, for a `blocked` verdict (empty otherwise). */
+  blockers?: Array<{ description: string; needs: string }>;
+}
+
+export interface ResultFinding {
+  severity: string;
+  file: string | null;
+  line: number | null;
+  problem: string;
+  fix: string | null;
 }
 
 /** The results as JSON rows, deduplicated and oldest first; the full result stays in the issue comment. */
 export function resultRows(results: readonly PersistedResult[]): ResultRow[] {
-  return buildStageHistory(results).results.map(({ result, meta }) => ({
+  return buildStageHistory(results).results.map(({ result, meta, url }) => ({
     role: meta.role,
     run: meta.run,
     kind: result.kind,
@@ -219,5 +235,17 @@ export function resultRows(results: readonly PersistedResult[]): ResultRow[] {
     target: meta.target,
     head_sha: meta.head_sha,
     created_at: meta.created_at,
+    url: url ?? null,
+    findings:
+      result.kind === 'review' || result.kind === 'security'
+        ? result.findings.map((finding) => ({
+            severity: finding.severity,
+            file: finding.file ?? null,
+            line: finding.line ?? null,
+            problem: truncate(finding.problem, PROMPT_SUMMARY_LIMIT),
+            fix: finding.fix === undefined ? null : truncate(finding.fix, PROMPT_SUMMARY_LIMIT),
+          }))
+        : [],
+    blockers: result.blockers.map((blocker) => ({ description: truncate(blocker.description, PROMPT_SUMMARY_LIMIT), needs: blocker.needs })),
   }));
 }

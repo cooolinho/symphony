@@ -331,7 +331,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     }
 
     // The result is recorded from here on; the move and the labels follow it, and a repeated call changes nothing.
-    params.onRecorded?.({ result, meta });
+    params.onRecorded?.({ result, meta, url });
     // An analysis classifies the issue before the stage hands it on, so the next stage (its profile, its model) sees the labels.
     const warnings: string[] = [];
     const classified = await applyTransitionLabels(adapter, issue, { add: classificationLabels(result, issue.labels), remove: [] }, warnings);
