@@ -17,7 +17,9 @@ import { SerialQueue, settledWithin } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { truncate } from '../util/text.ts';
 import { WorkspaceManager, type HookIssue } from '../workspace/manager.ts';
+import { classify } from '../workflow/classify.ts';
 import type { ServiceConfig } from '../workflow/config.ts';
+import { profileFor } from '../workflow/profile.ts';
 import { roleFor, roleName } from '../workflow/roles.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../workflow/store.ts';
 import { nextStageProblems, unknownBoardColumns, validateDispatch } from '../workflow/validate.ts';
@@ -2292,7 +2294,7 @@ export class Orchestrator {
     return {
       version: 1,
       issue_meta: metaJson(record.meta),
-      pipeline: this.#pipelineFor({ state, description: record.meta?.description ?? null }, issueId, this.#deps.workflow.current),
+      pipeline: this.#pipelineFor({ state, description: record.meta?.description ?? null, labels: record.meta?.labels }, issueId, this.#deps.workflow.current),
       issue_id: issueId,
       issue_identifier: record.identifier,
       issue_url: record.url,
@@ -2771,7 +2773,7 @@ export class Orchestrator {
   }
 
   /** The issue's stations across the board, with the sessions of its claim attributed to them. */
-  #pipelineFor(issue: { state: string; description: string | null }, issueId: string, workflow: EffectiveWorkflow): PipelineStage[] {
+  #pipelineFor(issue: { state: string; description: string | null; labels?: readonly string[] }, issueId: string, workflow: EffectiveWorkflow): PipelineStage[] {
     const config = workflow.config;
     const sessions: StageSession[] = (this.#records.get(issueId)?.sessions ?? []).map((session) => this.#sessionJson(session));
     return derivePipeline({
@@ -2781,13 +2783,14 @@ export class Orchestrator {
       terminalStates: config.tracker.terminalStates,
       boardColumns: this.#statusOptionsCache?.version === workflow.version ? this.#statusOptionsCache.options : null,
       sessions,
+      skip: profileFor(config.pipeline, classify(issue.labels ?? []).type)?.skip ?? [],
     });
   }
 
   /** One `issues[]` row of GET /api/v1/state: an issue in flight with its pipeline, live status and place in the plan. */
   #issueRow(
     status: 'running' | 'retrying' | 'paused' | 'queued',
-    issue: { id: string; identifier: string; url: string | null; title: string | null; state: string; description: string | null },
+    issue: { id: string; identifier: string; url: string | null; title: string | null; state: string; description: string | null; labels?: readonly string[] },
     workflow: EffectiveWorkflow,
     now: number,
     rows: { running?: RunningEntry; retry?: RetryEntry; paused?: PausedEntry; dispatchNote?: string | null; modelHold?: ActiveHold | null; plan?: PlanItem },
@@ -2815,7 +2818,7 @@ export class Orchestrator {
       priority: plan?.priority ?? meta?.priority ?? null,
       /** True when the orchestrator holds debugging context, so /agent?id=… has something to show. */
       tracked: record !== undefined,
-      stages: this.#pipelineFor({ state: issue.state, description: issue.description }, issue.id, workflow),
+      stages: this.#pipelineFor({ state: issue.state, description: issue.description, labels: issue.labels }, issue.id, workflow),
       running: rows.running === undefined ? null : this.#runningRow(rows.running, now),
       retry: rows.retry === undefined ? null : this.#retryRow(rows.retry, now),
       paused: rows.paused === undefined ? null : this.#pausedRow(rows.paused),
@@ -2863,7 +2866,7 @@ export class Orchestrator {
         issues.push(this.#issueRow('queued', board, workflow, now, { dispatchNote: note, modelHold: this.#holdFor(board, config), plan: item }));
       } else if (paused !== undefined) {
         const title = board?.title ?? paused.title;
-        const row = { id: paused.issueId, identifier: paused.identifier, url: paused.url, title, state: paused.state, description: meta?.description ?? null };
+        const row = { id: paused.issueId, identifier: paused.identifier, url: paused.url, title, state: paused.state, description: meta?.description ?? null, labels: board?.labels ?? meta?.labels };
         issues.push(this.#issueRow('paused', row, workflow, now, { paused, plan: item }));
       } else if (retry !== undefined) {
         const held = board ?? (meta ? { state: meta.state, description: meta.description, labels: meta.labels } : null);
@@ -2874,6 +2877,7 @@ export class Orchestrator {
           title: board?.title ?? null,
           state: meta?.state ?? board?.state ?? '',
           description: meta?.description ?? board?.description ?? null,
+          labels: board?.labels ?? meta?.labels,
         };
         issues.push(this.#issueRow('retrying', row, workflow, now, { retry, modelHold: held === null ? null : this.#holdFor(held, config), plan: item }));
       }
@@ -3038,7 +3042,7 @@ export class Orchestrator {
         entry !== undefined ? (entry.stop !== null ? 'stopping' : 'running') : retry !== undefined ? 'retrying' : paused !== undefined ? 'paused' : 'claimed',
       role: entry?.role ?? null,
       issue: metaJson(meta),
-      pipeline: this.#pipelineFor({ state, description: meta?.description ?? null }, issueId, this.#deps.workflow.current),
+      pipeline: this.#pipelineFor({ state, description: meta?.description ?? null, labels: meta?.labels }, issueId, this.#deps.workflow.current),
       workspace: { path: entry?.workspacePath ?? record?.workspacePath ?? null },
       attempts: {
         runs: record?.runs ?? 0,

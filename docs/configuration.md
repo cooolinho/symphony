@@ -578,7 +578,42 @@ like everywhere else (an unset variable counts as omitted). Unknown keys are ign
 | `limit_label` | `needs-human` | Label for an issue that hit a round limit. |
 | `type_labels` | `{}` | Map of issue label → change type, e.g. `{ bug: bug, enhancement: feature }` (labels are matched case-insensitively). |
 | `default_type` | `feature` | Type of an issue without a label in `type_labels`. |
+| `profiles` | `{}` | [Workflow profiles](#workflow-profiles) per issue type. |
 | `test_paths`, `docs_paths`, `security_paths` | `[]` | Path globs marking test, documentation and security-relevant files. |
+
+#### Workflow profiles
+
+Bugfix, feature and refactor issues can follow different stage sequences with the same roles: a profile, chosen by the
+issue's type, skips stages and overrides transitions. The type comes from the issue labels (`Type: bugfix`, or the
+aliases `bug`, `feature`, `enhancement`, `refactor`, `refactoring`).
+
+```yaml
+pipeline:
+  profiles:
+    bugfix:
+      skip: [test-engineer]          # roles whose stages `next` passes over
+      max_review_rounds: 2           # optional, overrides pipeline.max_review_rounds
+    refactor:
+      on_result:                     # overrides roles.<role>.on_result for this profile
+        reviewer: { changes_needed: Blocked }
+    default:                         # issues without a type, and types without a profile of their own
+      skip: [security]
+```
+
+- The profile names are the issue types `bugfix`, `feature`, `refactor` and `default`. An issue gets the profile of its
+  type, else `default`, else none (the roles' own transitions). An unknown profile name or key is an error.
+- `skip` lists role names; an unknown role is an error. `next` passes over the stages of these roles when it computes
+  the target ([rule 3](#result-driven-transitions)), and the pipeline view of the dashboard and the API shows them as
+  `skipped` (unless a session already ran there). Skipping does not dispatch anything by itself: an issue that is moved
+  into a skipped column by hand is still served by that column's role (skipping without a session is tracked in #199).
+- `on_result` maps a role name and a verdict of its result kind to a column or `next`, replacing the role's own target for
+  that verdict. The same rules as for `roles.<role>.on_result` apply (no terminal column, a column in the role's
+  `may_move_to` when it sets one, a role with a `result`).
+- `max_review_rounds` and `max_test_rounds` (integers >= 1) override the section's limits for this profile.
+- The board preflight checks `next` for every profile too: a profile that skips every later stage of a role is reported
+  as `roles.<role>.on_result.<verdict>: "next" has no later active stage … (profile bugfix)`.
+- The prompt sees the name as `issue.profile` (`null` when no profile applies), e.g.
+  `{% if issue.profile == "bugfix" %}Reproduce the bug with a failing test first.{% endif %}`.
 
 ### `server`
 

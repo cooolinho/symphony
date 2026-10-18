@@ -136,6 +136,22 @@ describe('derivePipeline', () => {
     assert.deepEqual(stages[0]?.columns, ACTIVE);
   });
 
+  it('shows the stages of skipped roles as skipped, unless a session already ran there', () => {
+    const stages = derive({ issue: { state: 'In progress', description: null }, skip: ['reviewer'] });
+    assert.deepEqual(
+      stages.map((stage) => [stage.id, stage.status]),
+      [
+        ['developer', 'active'],
+        ['reviewer', 'skipped'],
+        ['human:in review', 'pending'],
+        ['terminal:done', 'pending'],
+      ],
+    );
+    const ran = derive({ issue: { state: 'In progress', description: null }, skip: ['reviewer'], sessions: [session({ run: 'r1', role: 'reviewer', state: 'Agent review' })] });
+    assert.equal(ran.find((stage) => stage.id === 'reviewer')?.status, 'pending');
+    assert.equal(derive({ skip: ['auditor'] }).find((stage) => stage.id === 'developer')?.status, 'active');
+  });
+
   it('keeps sessions of a role that is no longer derived as a trailing agent stage', () => {
     const sessions = [session({ run: 'r1', role: 'auditor', state: 'In progress', outcome: 'handed_off' })];
     const stages = derive({ issue: { state: 'In progress', description: null }, sessions });

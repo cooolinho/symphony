@@ -15,6 +15,8 @@ export const PIPELINE_CSS = `
   .pipe-node.kind-human .pipe-ring, .pipe-node.kind-terminal .pipe-ring { border-radius: 9px; }
   .pipe-node.st-pending .pipe-ring { border-style: dashed; box-shadow: none; opacity: .75; }
   .pipe-node.st-pending .pipe-label { color: var(--muted); }
+  .pipe-node.st-skipped .pipe-ring { border-style: dotted; box-shadow: none; opacity: .45; }
+  .pipe-node.st-skipped .pipe-label { color: var(--muted); text-decoration: line-through; }
   .pipe-node.st-active .pipe-ring::after { content: ""; position: absolute; inset: -1px; border-radius: inherit;
     border: 1px solid var(--tone); animation: pipe-pulse 1.8s var(--ease) infinite; }
   @keyframes pipe-pulse { 0% { transform: scale(1); opacity: .7; } 80%, 100% { transform: scale(1.65); opacity: 0; } }
@@ -78,8 +80,10 @@ export const PIPELINE_JS = `
     stages.forEach((stage, i) => {
       if (i > 0) {
         const previous = stages[i - 1];
-        const cls = stage.status === 'active' && previous.status === 'done' ? 'st-flow tone-' + pipeTone(stage, opts.liveStatus)
-          : previous.status === 'done' && stage.status === 'done' ? 'st-done' : 'st-pending';
+        // A skipped stage is passed over: it neither breaks the done chain nor feeds the next stage.
+        const passed = (s) => s.status === 'done' || s.status === 'skipped';
+        const cls = stage.status === 'active' && passed(previous) ? 'st-flow tone-' + pipeTone(stage, opts.liveStatus)
+          : passed(previous) && passed(stage) ? 'st-done' : 'st-pending';
         const linkSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
         linkSvg.setAttribute('class', 'pipe-link ' + cls);
         linkSvg.setAttribute('viewBox', '0 0 40 10');
@@ -104,7 +108,7 @@ export const PIPELINE_JS = `
         const last = stage.sessions[stage.sessions.length - 1];
         const sub = stage.sessions.length
           ? stage.sessions.length + ' run' + (stage.sessions.length === 1 ? '' : 's') + (last && last.model ? ' · ' + last.model : '')
-          : '—';
+          : stage.status === 'skipped' ? 'skipped' : '—';
         node.append(el('span', sub, 'pipe-sub'));
       }
       node.title = pipeTitle(stage);

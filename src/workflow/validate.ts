@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { getTrackerFactory, supportedTrackerKinds } from '../tracker/registry.ts';
 import { commandSkills, pluginAgents } from './command.ts';
 import { normalizeStateName, type ServiceConfig } from './config.ts';
-import { NEXT_STAGE, resultTargets, type RoleConfig } from './roles.ts';
+import { NEXT_STAGE, resultTargets, roleFor, roleName, type RoleConfig } from './roles.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from './store.ts';
 
 /**
@@ -68,7 +68,7 @@ export function validateDispatch(
   return errors;
 }
 
-/** Board columns referenced by the config (`tracker` states, `roles` including their result targets, `checks.on_enter`) that are not status options. */
+/** Board columns referenced by the config (`tracker` states, `roles` including their result targets, the targets of `pipeline.profiles`, `checks.on_enter`) that are not status options. */
 export function unknownBoardColumns(config: ServiceConfig, statusOptions: readonly string[]): string[] {
   const known = new Set(statusOptions.map(normalizeStateName));
   const referenced = [
@@ -80,6 +80,7 @@ export function unknownBoardColumns(config: ServiceConfig, statusOptions: readon
       ...resultTargets(role),
       ...(role.subIssueStatus !== null ? [role.subIssueStatus] : []),
     ]),
+    ...[...config.pipeline.profiles.values()].flatMap((profile) => Object.values(profile.onResult).flatMap((targets) => Object.values(targets))).filter((target) => target !== NEXT_STAGE),
     ...config.checks.onEnter.keys(),
   ];
   const unknown = new Map<string, string>();
@@ -131,23 +132,34 @@ export function nextWithoutBoardOrder(path: string): string {
 }
 
 /**
- * Problems with `on_result: next` targets: the board order must be known (`boardColumns` null = the tracker does not
- * list columns), the role must have a later active stage, and a role with `may_move_to` must list that stage's column
- * (the transition guard enforces `may_move_to` for computed targets too).
+ * Problems with `on_result: next` targets, for the roles' own transitions and again for each profile of
+ * `pipeline.profiles` (whose `skip` passes over later stages and whose `on_result` overrides the role's): the board order
+ * must be known (`boardColumns` null = the tracker does not list columns), the role must have a later active stage the
+ * profile does not skip, and a role with `may_move_to` must list that stage's column (the transition guard enforces
+ * `may_move_to` for computed targets too).
  */
 export function nextStageProblems(config: ServiceConfig, boardColumns: readonly string[] | null): string[] {
   const problems: string[] = [];
-  for (const role of config.roles ?? []) {
-    for (const [verdict, target] of Object.entries(role.onResult)) {
-      if (target !== NEXT_STAGE) continue;
-      const path = `roles.${role.name}.on_result.${verdict}`;
-      const next = boardColumns === null || boardColumns.length === 0 ? undefined : nextActiveColumn(role, config.tracker.activeStates, boardColumns);
-      if (next === undefined) {
-        problems.push(nextWithoutBoardOrder(path));
-      } else if (next === null) {
-        problems.push(`${path}: "${NEXT_STAGE}" has no later active stage after ${role.states.join(', ')} on the board`);
-      } else if (!canMoveTo(role, next, config.tracker.terminalStates)) {
-        problems.push(`${path}: "${NEXT_STAGE}" leads to "${next}", which is not in roles.${role.name}.may_move_to (add it there)`);
+  const profiles = [null, ...config.pipeline.profiles.values()];
+  for (const profile of profiles) {
+    const suffix = profile === null ? '' : ` (profile ${profile.name})`;
+    for (const role of config.roles ?? []) {
+      const override: Readonly<Record<string, string>> = (profile !== null && profile.onResult[role.name]) || {};
+      for (const [verdict, target] of Object.entries({ ...role.onResult, ...override })) {
+        if (target !== NEXT_STAGE) continue;
+        const path = Object.hasOwn(override, verdict) ? `pipeline.profiles.${profile?.name}.on_result.${role.name}.${verdict}` : `roles.${role.name}.on_result.${verdict}`;
+        const later = boardColumns === null || boardColumns.length === 0 ? undefined : laterActiveColumns(role, config.tracker.activeStates, boardColumns);
+        if (later === undefined) {
+          problems.push(`${nextWithoutBoardOrder(path)}${suffix}`);
+          continue;
+        }
+        const skipped = new Set(profile?.skip ?? []);
+        const next = later?.find((column) => !skipped.has(roleName(roleFor({ state: column, description: null }, config.roles)))) ?? null;
+        if (next === null) {
+          problems.push(`${path}: "${NEXT_STAGE}" has no later active stage after ${role.states.join(', ')} on the board${suffix}`);
+        } else if (!canMoveTo(role, next, config.tracker.terminalStates)) {
+          problems.push(`${path}: "${NEXT_STAGE}" leads to "${next}", which is not in roles.${role.name}.may_move_to (add it there)${suffix}`);
+        }
       }
     }
   }

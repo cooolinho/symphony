@@ -759,13 +759,14 @@ describe('result-driven roles and the pipeline section', () => {
     assert.deepEqual([developer?.result, developer?.onMissingResult, developer?.modelLabel], [null, null, 'apply']);
     assert.deepEqual(developer?.mayMoveTo, ['In progress', 'Agent review']);
     assert.deepEqual(
-      { ...config.pipeline, typeLabels: [...config.pipeline.typeLabels] },
+      { ...config.pipeline, typeLabels: [...config.pipeline.typeLabels], profiles: [...config.pipeline.profiles] },
       {
         maxReviewRounds: 3,
         maxTestRounds: 2,
         limitLabel: 'needs-human',
         typeLabels: [],
         defaultType: 'feature',
+        profiles: [],
         testPaths: [],
         docsPaths: [],
         securityPaths: [],
@@ -929,10 +930,94 @@ describe('result-driven roles and the pipeline section', () => {
       assert.match(messageOf({ ...base, pipeline: 'x' }), /pipeline must be a map/);
     });
 
+    describe('profiles', () => {
+      const tester = { states: ['Testing'], result: 'test', may_move_to: ['Agent review', 'In progress', 'Blocked'] };
+      const front = (profiles: unknown, testerRole: Record<string, unknown> = tester) => ({
+        tracker: { ...base.tracker, active_states: [...base.tracker.active_states, 'Testing'] },
+        roles: { ...roles, tester: testerRole },
+        pipeline: { profiles },
+      });
+      const profiles = (value: unknown) => resolve(front(value)).pipeline.profiles;
+
+      it('reads skip, on_result and the round limits per issue type and default', () => {
+        const read = profiles({
+          bugfix: { skip: ['tester', ' docs '], max_review_rounds: 2, max_test_rounds: '1' },
+          default: { on_result: { tester: { failed: 'In progress', passed: 'next' } } },
+          refactor: {},
+        });
+        assert.deepEqual(
+          [...read].map(([name, profile]) => [name, profile]),
+          [
+            ['bugfix', { name: 'bugfix', skip: ['tester', 'docs'], onResult: {}, maxReviewRounds: 2, maxTestRounds: 1 }],
+            ['default', { name: 'default', skip: [], onResult: { tester: { failed: 'In progress', passed: 'next' } }, maxReviewRounds: null, maxTestRounds: null }],
+            ['refactor', { name: 'refactor', skip: [], onResult: {}, maxReviewRounds: null, maxTestRounds: null }],
+          ],
+        );
+        assert.equal(profiles(undefined).size, 0);
+      });
+
+      it('rejects unknown roles in skip and on_result', () => {
+        const message = messageOf(front({ bugfix: { skip: ['tester', 'qa'], on_result: { qa: { passed: 'next' } } } }));
+        assert.match(message, /pipeline\.profiles\.bugfix\.skip: unknown role "qa" \(roles: developer, reviewer, docs, tester\)/);
+        assert.match(message, /pipeline\.profiles\.bugfix\.on_result\.qa: unknown role/);
+        assert.doesNotMatch(message, /unknown role "tester"/);
+        assert.match(messageOf({ ...base, pipeline: { profiles: { bugfix: { skip: ['developer'] } } } }), /skip: unknown role "developer" \(roles: none: set roles\)/);
+      });
+
+      it('validates profile names, keys, verdicts, targets and limits', () => {
+        const message = messageOf(
+          front({
+            hotfix: {},
+            bugfix: { skip: 'tester', skp: [], max_test_rounds: 0 },
+            feature: { on_result: { tester: { passed: 'Done', exploded: 'In progress', failed: 'Docs' }, developer: { done: 'next' }, reviewer: 'x' } },
+            refactor: { on_result: [] },
+            default: 'x',
+          }),
+        );
+        assert.match(message, /pipeline\.profiles\.hotfix: unknown profile \(allowed: bugfix, feature, refactor, default\)/);
+        assert.match(message, /pipeline\.profiles\.bugfix\.skip must be a list of strings/);
+        assert.match(message, /pipeline\.profiles\.bugfix\.skp: unknown key/);
+        assert.match(message, /pipeline\.profiles\.bugfix\.max_test_rounds must be an integer >= 1 \(got 0\)/);
+        assert.match(message, /pipeline\.profiles\.feature\.on_result\.tester\.passed must not be a terminal state \(got "Done"\)/);
+        assert.match(message, /pipeline\.profiles\.feature\.on_result\.tester\.exploded: "exploded" is not a verdict of result test/);
+        assert.match(message, /pipeline\.profiles\.feature\.on_result\.tester\.failed: "Docs" is not in roles\.tester\.may_move_to/);
+        assert.match(message, /pipeline\.profiles\.feature\.on_result\.developer: role developer reports no result/);
+        assert.match(message, /pipeline\.profiles\.feature\.on_result\.reviewer must be a map of verdicts to columns/);
+        assert.match(message, /pipeline\.profiles\.refactor\.on_result must be a map of roles to verdicts/);
+        assert.match(message, /pipeline\.profiles\.default must be a map/);
+        assert.match(messageOf({ ...base, pipeline: { profiles: ['bugfix'] } }), /pipeline\.profiles must be a map of issue types to profiles/);
+      });
+
+      it('checks the profile targets against the board and `next` against the skipped stages', () => {
+        const config = resolve(front({ bugfix: { on_result: { tester: { failed: 'Nowhere' } } } }, { states: ['Testing'], result: 'test' }));
+        assert.ok(unknownBoardColumns(config, ['Ready', 'In progress', 'Agent review', 'Docs', 'Testing', 'Done']).some((problem) => problem.includes('"Nowhere"')));
+
+        const board = ['Ready', 'In progress', 'Docs', 'Agent review', 'Done'];
+        const chain = (skip: string[], mayMoveTo = ['Docs', 'Agent review']) =>
+          resolve({
+            tracker: { kind: 'github', active_states: ['In progress', 'Docs', 'Agent review'], terminal_states: ['Done'] },
+            roles: {
+              developer: { states: ['In progress'], result: 'implementation', may_move_to: mayMoveTo, on_result: { done: 'next' } },
+              docs: { states: ['Docs'], result: 'docs', may_move_to: ['Agent review'], on_result: { done: 'next' } },
+              reviewer: { states: ['Agent review'] },
+            },
+            pipeline: { profiles: { bugfix: { skip } } },
+          });
+        assert.deepEqual(nextStageProblems(chain(['docs']), board), []);
+        assert.deepEqual(nextStageProblems(chain(['docs'], ['Docs']), board), [
+          'roles.developer.on_result.done: "next" leads to "Agent review", which is not in roles.developer.may_move_to (add it there) (profile bugfix)',
+        ]);
+        assert.deepEqual(nextStageProblems(chain(['reviewer']), board), [
+          'roles.docs.on_result.done: "next" has no later active stage after docs on the board (profile bugfix)',
+        ]);
+      });
+    });
+
     it('is a known top-level key and warns about unknown pipeline keys', () => {
-      const warnings = resolve({ ...base, pipeline: { profiles: {} } }).warnings;
+      const warnings = resolve({ ...base, pipeline: { profile: {} } }).warnings;
       assert.ok(!warnings.some((warning) => /unknown top-level key "pipeline"/.test(warning)));
-      assert.ok(warnings.some((warning) => warning.startsWith('unknown key pipeline.profiles ignored')), warnings.join('\n'));
+      assert.ok(warnings.some((warning) => warning.startsWith('unknown key pipeline.profile ignored')), warnings.join('\n'));
+      assert.deepEqual(resolve({ ...base, pipeline: { profiles: {} } }).warnings, []);
       assert.deepEqual(resolve(base).warnings, [], 'a config without pipeline has no warnings');
     });
   });
