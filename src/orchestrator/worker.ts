@@ -16,10 +16,12 @@ import { classify } from '../workflow/classify.ts';
 import { profileFor } from '../workflow/profile.ts';
 import { roleName, sessionAgents, type RoleConfig } from '../workflow/roles.ts';
 import type { EffectiveWorkflow } from '../workflow/store.ts';
+import { internalResult, renderResultComment, type ResultMeta } from '../workflow/results.ts';
+import { normalizeStateName } from '../workflow/config.ts';
 import { EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../workflow/template.ts';
 import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord } from './guard.ts';
 import { createResultTool, type ResultToolAdapter } from './result-tool.ts';
-import { buildStageHistory, resultsTemplateValue, type ResultsTemplateValue } from './stage-history.ts';
+import { buildStageHistory, resultsTemplateValue, type PersistedResult, type ResultsTemplateValue, type StageHistory } from './stage-history.ts';
 
 export type RunPhase =
   | 'PreparingWorkspace'
@@ -166,7 +168,13 @@ async function loadResultSupport(params: WorkerParams, role: RoleConfig, issue: 
   } catch (error) {
     throw new SymphonyError('results_read_error', `could not read the stage results of ${issue().identifier}: ${errorMessage(error)}`, { cause: error });
   }
-  const history = buildStageHistory(tracked.map(({ result, meta }) => ({ result, meta })));
+  let persisted = tracked.map(({ result, meta }) => ({ result, meta }));
+  let history = buildStageHistory(persisted);
+  const reset = await resetAfterHumanResume(params, resultAdapter, issue(), history);
+  if (reset !== null) {
+    persisted = [...persisted, reset];
+    history = buildStageHistory(persisted);
+  }
   const tool = createResultTool({
     role,
     history,
@@ -185,6 +193,46 @@ async function loadResultSupport(params: WorkerParams, role: RoleConfig, issue: 
     results: resultsTemplateValue(history),
     round: (role.result === 'test' ? history.testRounds : history.reviewRounds) + 1,
   };
+}
+
+/**
+ * A human moved the issue back into an active column after a hand-off to a non-active one (a round limit or Blocked):
+ * the newest marker still points at that column, but the board is elsewhere. Records a `reset` marker so the loop starts
+ * at round 1 and removes the limit label. Returns the marker, or null when nothing was written.
+ */
+async function resetAfterHumanResume(
+  params: WorkerParams,
+  adapter: ResultToolAdapter,
+  issue: Issue,
+  history: StageHistory,
+): Promise<PersistedResult | null> {
+  const { activeStates } = params.workflow.config.tracker;
+  const target = history.lastTarget;
+  if (target === null) return null;
+  const isActive = (state: string) => activeStates.some((active) => normalizeStateName(active) === normalizeStateName(state));
+  if (isActive(target) || !isActive(issue.state)) return null;
+  const result = internalResult('reset', `${issue.identifier} was moved from "${target}" back to "${issue.state}" by a human; the round counters start again.`);
+  const meta: ResultMeta = {
+    role: 'symphony',
+    run: params.runId,
+    round: null,
+    profile: null,
+    workflow_hash: params.workflow.contentHash,
+    head_sha: null,
+    checks: null,
+    target: null,
+    created_at: new Date().toISOString(),
+  };
+  try {
+    await adapter.postComment(issue, renderResultComment(result, meta));
+  } catch (error) {
+    throw new SymphonyError('results_read_error', `could not record the reset of ${issue.identifier}: ${errorMessage(error)}`, { cause: error });
+  }
+  const label = params.workflow.config.pipeline.limitLabel;
+  if (issue.labels.some((name) => name.toLowerCase() === label.toLowerCase())) {
+    await adapter.removeLabels(issue, [label]).catch((error: unknown) => params.logger.warn('could not remove the limit label', { error: errorMessage(error) }));
+  }
+  return { result, meta };
 }
 
 function transcriptPath(dir: string | null, workspace: Workspace): string | null {
