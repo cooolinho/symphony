@@ -117,6 +117,8 @@ Symphony polls a **GitHub Project board** at a fixed interval and hands issues i
 For each issue it creates a folder, clones the repository and lets the agent work: create a branch, implement, test,
 push, open a pull request and comment on the issue. Automatic checks and a second, read-only agent (the reviewer)
 then check the work. Only then does the card land in **In review**, where you review, merge and move it to **Done**.
+Bug issues pass a `Testing` column (an independent test engineer) before the review. Review and test loops are bounded: at
+the round limit the card goes to **Blocked** with the label `needs-human`.
 
 What the agent does is defined in **`WORKFLOW.md`** (prompt and settings). Board, repositories, default model and token
 live in **`.env`**.
@@ -127,6 +129,11 @@ live in **`.env`**.
   concurrency (overall and per column); open blockers are respected.
 - **Isolated workspaces:** one clone per issue under `~/symphony-workspaces`, reused on retries and deleted once the
   issue is *Done*.
+- **Multi-agent pipeline:** an analyst, a developer, an optional test engineer and a reviewer each hand off with a typed
+  result (`report_result`) instead of moving the card themselves. Symphony computes the next column from the verdict, per
+  issue type through workflow profiles, and bounds the review and test loops with round limits: at the limit the issue
+  waits for you with the label `needs-human` ([architecture](docs/concepts/multi-agent.md),
+  [result contracts](docs/results.md), [rounds and manual resume](docs/usage.md#rounds-limits-and-manual-resume)).
 - **Developer and reviewer:** roles per column. Before `Agent review` and `In review`, checks run (lint, static
   analysis, tests); if they fail, the card stays and the agent fixes the problem.
 - **Test engineer:** an independent agent in the `Testing` column (bug issues always, other issues optionally) writes tests for the acceptance criteria and
@@ -235,6 +242,8 @@ Start at [docs/index.md](docs/index.md).
 - [docs/configuration.md](docs/configuration.md): every `WORKFLOW.md` option, `$VARIABLE` references, hooks and prompt variables
 - [docs/adapters/github-project.md](docs/adapters/github-project.md): the GitHub Projects adapter: settings, normalization, agent tools, errors
 - [docs/agent-claude.md](docs/agent-claude.md): Claude Code sessions, permissions, skills and plugins, Laravel Boost, timeouts, cost accounting
+- [docs/results.md](docs/results.md): result contracts of the pipeline stages: kinds, verdicts, the `report_result` tool, recovery
+- [docs/concepts/multi-agent.md](docs/concepts/multi-agent.md): the multi-agent pipeline: architecture, decisions and spike results
 - [docs/conformance.md](docs/conformance.md): differences from the specification and implementation-defined behavior
 - [docs/laravel-repositories.md](docs/laravel-repositories.md): conventions for Laravel repositories
 - [docs/e2e.md](docs/e2e.md): end-to-end test of the orchestration and the Laravel integration test

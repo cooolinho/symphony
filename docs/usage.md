@@ -47,7 +47,7 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
      result.
    - **`changes_needed`:** back to `In progress`; the developer works through the findings (step 3).
    - **third `changes_needed`** (`pipeline.max_review_rounds`): no further loop. The issue goes to `Blocked` with the
-     label `needs-human` and the open findings in the review comment.
+     label `needs-human` and the open findings in the review comment. How to continue: [Rounds, limits and manual resume](#rounds-limits-and-manual-resume).
 6. After each turn Symphony checks the issue. If it moves to a column of another role, the session ends and the
    next role starts one second later in a fresh session. If it is still in a column of the same role, the agent
    gets more turns up to `max_turns`, then a new session. At most `SYMPHONY_MAX_CONTINUATIONS` (default 6) such
@@ -112,6 +112,37 @@ Slots: the test engineer gets slots beyond the ones reserved for the developer a
 the issue analyst. With the default of 3 agent slots both take turns on the one free slot; with 4
 (`SYMPHONY_MAX_CONCURRENT_AGENTS=4`) they run side by side. With 2 slots the test engineer never starts (the dashboard
 and `limits.slot_problems` say so). `agent.max_concurrent_agents_by_state.Testing` is 1.
+
+### Rounds, limits and manual resume
+
+The review and the test stage can send an issue back to the developer. Symphony counts these rounds itself, from the
+[stage results](results.md) on the issue, so a loop cannot run forever:
+
+| Loop | Verdict that counts | Limit (default) | At the limit |
+|---|---|---|---|
+| Reviewer → developer | `changes_needed` | `pipeline.max_review_rounds` (3) | the issue goes to the role's `on_round_limit`, else `Blocked`, and gets the label `needs-human` |
+| Test engineer → developer | `failed` | `pipeline.max_test_rounds` (2) | as above |
+
+- **Rounds.** The Nth `changes_needed` is round N (the 3rd with the default limit ends the loop; the findings stay in the
+  review comment). Rounds are read from the results on the issue, not kept in memory, so they survive restarts, retries
+  and continuation sessions. A workflow profile can set its own limits ([profiles](configuration.md#workflow-profiles)).
+  The dashboard shows the round of each result in the stage list and a `needs human` chip on the card.
+- **`needs-human`.** The label (`pipeline.limit_label`; created when the repository lacks it) marks an issue that waits
+  for a decision. It is not a status: the column (`Blocked` by default) is what stops the agents. Any other
+  transition removes the label again.
+- **Resuming.** Read the findings and fix the cause (answer in a comment, change the issue, adjust the acceptance
+  criteria or the code yourself), then move the card back to an active column, usually `In progress`. When Symphony
+  starts the next stage it sees a human moved the issue out of the limit, writes a `reset` result (role `symphony`,
+  no agent run), **removes the label** and rebuilds the history: **the counters start at 1** again, so the developer and the
+  reviewer get a full set of new rounds. Earlier results stay on the issue as history; the next stage reads them.
+- **Not the same as pause and cost.** A round limit is about progress and ends with a human decision on the board. The
+  operator's **Pause**/**Resume now** ([Intervening](#intervening-while-symphony-runs)), the continuation limit
+  (`agent.max_continuations`, [Continuations and pausing](#continuations-and-pausing)) and the cost cap
+  (`agent.max_issue_cost_usd`, [Cost budget per issue](#cost-budget-per-issue)) pause an issue without moving it,
+  never set `needs-human`, and **Resume now** does not reset the round counters.
+- **A move that did not happen.** If a result was recorded but the move to its column failed, the issue is still in
+  the stage's column: that is not a manual resume, no `reset` is written and the next dispatch completes the move
+  ([Interrupted transitions](results.md#interrupted-transitions)).
 
 ### Migrating from the single-prompt setup
 
