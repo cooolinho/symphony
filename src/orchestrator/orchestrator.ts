@@ -19,9 +19,10 @@ import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { truncate } from '../util/text.ts';
 import { WorkspaceManager, type HookIssue } from '../workspace/manager.ts';
 import type { ServiceConfig } from '../workflow/config.ts';
-import { profileFor } from '../workflow/profile.ts';
 import { roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
+import { internalResult, renderResultComment, type ResultMeta } from '../workflow/results.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../workflow/store.ts';
+import { skipCheckProblems, skipReason, stageSkip, type StageSkip } from './skip.ts';
 import { nextStageProblems, unknownBoardColumns, validateDispatch } from '../workflow/validate.ts';
 import {
   CONTINUATION_DELAY_MS,
@@ -55,6 +56,7 @@ import {
   type AgentLimitOverride,
 } from './limits.ts';
 import { RuntimeStateStore, runtimeStateFile, type ModelHold, type OperatorHold } from './runtime-state.ts';
+import { resultRows, type PersistedResult } from './stage-history.ts';
 import { blockedBucketColumns, derivePipeline, type PipelineStage, type StageSession } from './pipeline.ts';
 import { copyToolUsage, countToolUse, emptyToolUsage, integrationJson, integrationUsage, type ToolUsage } from './tool-usage.ts';
 import { runAgentAttempt, type RunPhase, type WorkerOutcome } from './worker.ts';
@@ -388,6 +390,8 @@ interface IssueRecord {
   lastCheck: CheckRecord | null;
   /** Board fields of the issue at the last dispatch or reconcile; null before the first dispatch. */
   meta: IssueMeta | null;
+  /** The issue's stage results as the latest result-driven session saw or reported them; empty before the first one. */
+  results: PersistedResult[];
 }
 
 interface RunTrace {
@@ -586,6 +590,10 @@ export class Orchestrator {
 
   #running = new Map<string, RunningEntry>();
   #claimed = new Set<string>();
+  /** Stage skips in flight (see `#skipStage`); `stop` waits for them. */
+  #skips = new Set<Promise<void>>();
+  /** Issues whose `skipped` comment is posted but whose move failed, by issue id: the retry must not post it again. */
+  #skipCommented = new Map<string, { key: string; url: string | null }>();
   #retries = new Map<string, RetryEntry>();
   #completed = new Set<string>();
   #archive: IssueArchive;
@@ -696,6 +704,7 @@ export class Orchestrator {
         this.#logger.info('waiting for running agents to stop', { count: entries.length });
         await settledWithin(Promise.all(entries.map((entry) => entry.done)), timeoutMs);
       }
+      await settledWithin(Promise.all(this.#skips), timeoutMs);
       this.#notify();
     })();
     return this.#shutdown;
@@ -1229,6 +1238,7 @@ export class Orchestrator {
     if (this.#statusOptionsCache?.version === workflow.version) {
       errors.push(...unknownBoardColumns(workflow.config, this.#statusOptionsCache.options));
       errors.push(...nextStageProblems(workflow.config, this.#statusOptionsCache.options));
+      errors.push(...skipCheckProblems(workflow.config, this.#statusOptionsCache.options));
     } else if (errors.length === 0 && this.#adapterFor(workflow).statusOptions === undefined) {
       errors.push(...nextStageProblems(workflow.config, null)); // a tracker without columns has no board order
     }
@@ -1620,12 +1630,78 @@ export class Orchestrator {
     }));
   }
 
+  /**
+   * Passes a stage without a session: posts the `skipped` result (comment and marker) and moves the issue on. The issue
+   * stays claimed meanwhile, so no tick dispatches it; its record (and with it the timeline) lives on for the next stage.
+   * A failure is logged and leaves the issue where it is: the next tick decides again.
+   */
+  #skipStage(issue: Issue, skip: StageSkip, workflow: EffectiveWorkflow, repo: string, adapter: Required<Pick<TrackerAdapter, 'postComment' | 'setStatus'>>): void {
+    const log = this.#issueLogger(issue);
+    const record = this.#record(issue);
+    record.meta = issueMeta(issue);
+    record.repo = repo;
+    this.#claimed.add(issue.id);
+    const summary = `Stage ${skip.role} skipped: ${skip.reason}. No session was started; the issue moves on to "${skip.target}".`;
+    const meta: ResultMeta = {
+      role: skip.role,
+      run: null,
+      round: null,
+      profile: skip.profile,
+      workflow_hash: workflow.contentHash,
+      head_sha: null,
+      checks: null,
+      target: skip.target,
+      created_at: this.#clock.now().toISOString(),
+    };
+    const work = (async () => {
+      try {
+        // A failed move leaves the issue in its column, so the next tick skips again; the comment is posted only once.
+        const key = `${issue.state}\u0000${skip.target}`;
+        let posted = this.#skipCommented.get(issue.id);
+        if (posted?.key !== key) {
+          const comment = await adapter.postComment(issue, renderResultComment(internalResult('skipped', summary), meta));
+          posted = { key, url: comment.url };
+          this.#skipCommented.set(issue.id, posted);
+        }
+        const change = await adapter.setStatus(issue, skip.target);
+        this.#skipCommented.delete(issue.id);
+        this.#trace(record, {
+          kind: 'lifecycle',
+          event: 'stage_skipped',
+          level: 'info',
+          message: `${skip.role} stage skipped in "${issue.state}" (${skip.reason}); moved to "${change.status}" without a session`,
+          run: null,
+          turn: null,
+          detail: { role: skip.role, state: issue.state, target: change.status, reason: skip.reason, profile: skip.profile, comment_url: posted.url },
+        });
+        log.info('stage skipped', { role: skip.role, state: issue.state, target: change.status, reason: skip.reason });
+        this.#deps.history?.note(repo, 'stage_skipped', { issue: issue.identifier, title: issue.title, role: skip.role, from: issue.state, to: change.status, reason: skip.reason });
+      } catch (error) {
+        log.warn('skipping stage failed; the issue stays', { role: skip.role, state: issue.state, target: skip.target, error: errorMessage(error) });
+      } finally {
+        this.#claimed.delete(issue.id);
+        this.#notify();
+      }
+    })();
+    this.#skips.add(work);
+    void work.finally(() => this.#skips.delete(work));
+  }
+
   #dispatch(issue: Issue, attempt: number | null, workflow: EffectiveWorkflow, adapter: TrackerAdapter, continuation = false, forced = false): void {
     const log = this.#issueLogger(issue);
     const controller = new AbortController();
     const config = workflow.config;
     const role = roleFor(issue, config.roles);
     const name = roleName(role);
+    // A fresh stage the profile or a condition leaves out costs no session. Restarts by the operator, retries and
+    // continuations of a stage that already ran are never skipped.
+    if (!forced && !continuation && attempt === null) {
+      const skip = stageSkip(issue, role, config, this.#statusOptionsCache?.version === workflow.version ? this.#statusOptionsCache.options : null);
+      if (skip !== null && adapter.postComment !== undefined && adapter.setStatus !== undefined) {
+        this.#skipStage(issue, skip, workflow, adapter.issueRepository?.(issue) ?? 'unknown', { postComment: adapter.postComment.bind(adapter), setStatus: adapter.setStatus.bind(adapter) });
+        return;
+      }
+    }
     const runId = randomUUID().replace(/-/g, '').slice(0, 12);
     const entry: RunningEntry = {
       issueId: issue.id,
@@ -1844,6 +1920,9 @@ export class Orchestrator {
               result: check.result,
               at: check.finishedAt,
             });
+          },
+          results: (results) => {
+            record.results = results;
           },
           transitionDenied: (target, message) => {
             this.#deps.history?.transitionDenied({
@@ -2428,7 +2507,7 @@ export class Orchestrator {
   #archivedOf(issueId: string, record: IssueRecord, released: boolean): ArchivedIssue {
     const state = record.meta?.state ?? record.sessions.at(-1)?.state ?? '';
     return {
-      version: 1,
+      version: 2,
       issue_meta: metaJson(record.meta),
       pipeline: this.#pipelineFor({ state, description: record.meta?.description ?? null, labels: record.meta?.labels }, issueId, this.#deps.workflow.current),
       issue_id: issueId,
@@ -2446,6 +2525,7 @@ export class Orchestrator {
       timeline: record.timeline.slice(),
       next_seq: record.nextSeq,
       sessions: record.sessions.map((session) => this.#sessionJson(session)),
+      results: resultRows(record.results),
       run_trace: traceJson(record.lastRun),
       last_check: checkJson(record.lastCheck),
     };
@@ -2894,6 +2974,7 @@ export class Orchestrator {
         checkCache: new Map(),
         lastCheck: null,
         meta: null,
+        results: [],
       };
       this.#records.set(issue.id, record);
     }
@@ -3008,7 +3089,8 @@ export class Orchestrator {
       terminalStates: config.tracker.terminalStates,
       boardColumns: this.#statusOptionsCache?.version === workflow.version ? this.#statusOptionsCache.options : null,
       sessions,
-      skip: profileFor(config.pipeline, classify(issue.labels ?? []).type)?.skip ?? [],
+      skip: (config.roles ?? []).filter((role) => skipReason({ labels: issue.labels ?? [] }, role, config) !== null).map((role) => role.name),
+      results: this.#records.get(issueId)?.results ?? [],
     });
   }
 
@@ -3268,6 +3350,7 @@ export class Orchestrator {
       role: entry?.role ?? null,
       issue: metaJson(meta),
       pipeline: this.#pipelineFor({ state, description: meta?.description ?? null, labels: meta?.labels }, issueId, this.#deps.workflow.current),
+      results: resultRows(record?.results ?? []),
       workspace: { path: entry?.workspacePath ?? record?.workspacePath ?? null },
       attempts: {
         runs: record?.runs ?? 0,
@@ -3322,6 +3405,7 @@ export class Orchestrator {
       role: lastSession?.role ?? null,
       issue: archived.issue_meta ?? null,
       pipeline: archived.pipeline ?? [],
+      results: archived.results,
       workspace: { path: archived.workspace_path },
       attempts: {
         runs: archived.runs,

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { blockedBucketColumns, derivePipeline, type PipelineInput, type StageSession } from '../src/orchestrator/pipeline.ts';
+import type { PersistedResult } from '../src/orchestrator/stage-history.ts';
+import { internalResult, parseResult, type ResultMeta } from '../src/workflow/results.ts';
 import { baseFront, makeWorkflow, tempDir } from './helpers.ts';
 
 const ACTIVE = ['Ready', 'In progress', 'Agent review'];
@@ -38,6 +40,30 @@ function session(overrides: Partial<StageSession> & { run: string; role: string 
     outcome: null,
     ...overrides,
   };
+}
+
+function resultMeta(overrides: Partial<ResultMeta> & { role: string }): ResultMeta {
+  return {
+    run: null,
+    round: 1,
+    profile: null,
+    workflow_hash: null,
+    head_sha: null,
+    checks: null,
+    target: null,
+    created_at: '2026-10-03T12:00:00.000Z',
+    ...overrides,
+  };
+}
+
+/** A persisted result of the agent kind `kind` with the verdict and the fields it needs. */
+function persisted(kind: 'implementation' | 'review', verdict: string, meta: Partial<ResultMeta> & { role: string }): PersistedResult {
+  const input = kind === 'review' && verdict === 'changes_needed'
+    ? { verdict, summary: 'Needs work', findings: [{ severity: 'major', problem: 'Broken' }] }
+    : { verdict, summary: 'Fine' };
+  const parsed = parseResult(kind, input);
+  assert.ok(parsed.ok, 'result parses');
+  return { result: parsed.result, meta: resultMeta(meta) };
 }
 
 function derive(overrides: Partial<PipelineInput>) {
@@ -150,6 +176,61 @@ describe('derivePipeline', () => {
     const ran = derive({ issue: { state: 'In progress', description: null }, skip: ['reviewer'], sessions: [session({ run: 'r1', role: 'reviewer', state: 'Agent review' })] });
     assert.equal(ran.find((stage) => stage.id === 'reviewer')?.status, 'pending');
     assert.equal(derive({ skip: ['auditor'] }).find((stage) => stage.id === 'developer')?.status, 'active');
+  });
+
+  it('shows a skipped stage before the current one as skipped, not done', () => {
+    const stages = derive({ issue: { state: 'Agent review', description: null }, skip: ['developer'] });
+    assert.deepEqual(
+      stages.map((stage) => [stage.id, stage.status]),
+      [
+        ['developer', 'skipped'],
+        ['reviewer', 'active'],
+        ['human:in review', 'pending'],
+        ['terminal:done', 'pending'],
+      ],
+    );
+  });
+
+  it('shows a stage with a skipped marker as skipped, unless a session ran there', () => {
+    const marker: PersistedResult = { result: internalResult('skipped', 'not needed for a bugfix'), meta: resultMeta({ role: 'developer', round: null }) };
+    const stages = derive({ issue: { state: 'Agent review', description: null }, results: [marker] });
+    const developer = stages.find((stage) => stage.id === 'developer');
+    assert.equal(developer?.status, 'skipped');
+    assert.equal(developer?.verdict, 'skipped');
+    const ran = derive({
+      issue: { state: 'Agent review', description: null },
+      results: [marker],
+      sessions: [session({ run: 'r1', role: 'developer', outcome: 'handed_off' })],
+    });
+    assert.equal(ran.find((stage) => stage.id === 'developer')?.status, 'done');
+  });
+
+  it('attaches the verdict and round of the results to stages and to the sessions that reported them', () => {
+    const results = [
+      persisted('review', 'approved', { role: 'reviewer', run: 'r3', round: 2, created_at: '2026-10-03T14:00:00.000Z' }),
+      persisted('review', 'changes_needed', { role: 'reviewer', run: 'r2', round: 1, created_at: '2026-10-03T13:00:00.000Z' }),
+      persisted('implementation', 'done', { role: 'developer', run: 'r1', round: null, created_at: '2026-10-03T12:00:00.000Z' }),
+    ];
+    const sessions = [
+      session({ run: 'r1', role: 'developer', state: 'In progress', outcome: 'handed_off' }),
+      session({ run: 'r2', role: 'reviewer', state: 'Agent review', outcome: 'handed_off' }),
+      session({ run: 'r3', role: 'reviewer', state: 'Agent review', outcome: 'handed_off' }),
+      session({ run: 'r4', role: 'reviewer', state: 'Agent review' }),
+    ];
+    const stages = derive({ issue: { state: 'In review', description: null }, sessions, results });
+    const reviewer = stages.find((stage) => stage.id === 'reviewer');
+    assert.deepEqual([reviewer?.verdict, reviewer?.round], ['approved', 2]);
+    assert.deepEqual(
+      reviewer?.sessions.map((s) => [s.run, s.verdict, s.round]),
+      [
+        ['r2', 'changes_needed', 1],
+        ['r3', 'approved', 2],
+        ['r4', null, null],
+      ],
+    );
+    const developer = stages.find((stage) => stage.id === 'developer');
+    assert.deepEqual([developer?.verdict, developer?.round, developer?.sessions[0]?.verdict], ['done', null, 'done']);
+    assert.deepEqual([stages.at(-1)?.verdict, stages.at(-1)?.round], [null, null]);
   });
 
   it('keeps sessions of a role that is no longer derived as a trailing agent stage', () => {

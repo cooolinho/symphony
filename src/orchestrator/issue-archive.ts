@@ -4,6 +4,7 @@ import type { Logger } from '../log.ts';
 import { errorMessage } from '../util/errors.ts';
 import type { TimelineEvent } from './orchestrator.ts';
 import type { PipelineStage } from './pipeline.ts';
+import type { ResultRow } from './stage-history.ts';
 
 /**
  * The debugging context of a finished issue claim, as the orchestrator kept it while the issue was claimed:
@@ -11,7 +12,8 @@ import type { PipelineStage } from './pipeline.ts';
  * JSON-safe, so it can be written to disk and served again after a restart.
  */
 export interface ArchivedIssue {
-  version: 1;
+  /** Written as 2; version 1 files (without `results`, verdicts and rounds) are read and upgraded in {@link upgrade}. */
+  version: 2;
   /** Board fields of the issue when it was archived; absent in archives from before the pipeline view. */
   issue_meta?: Record<string, unknown> | null;
   /** The issue's pipeline stages when it was archived; absent in archives from before the pipeline view. */
@@ -44,8 +46,29 @@ export interface ArchivedIssue {
     outcome: string | null;
     transcript: string | null;
   }>;
+  /** The issue's stage results (see {@link ResultRow}); empty in archives from before the multi-agent pipeline. */
+  results: ResultRow[];
   run_trace: Record<string, unknown> | null;
   last_check: Record<string, unknown> | null;
+}
+
+/** Reads an archive of version 1 or 2 as version 2: fields version 1 lacks get their empty value. */
+function upgrade(parsed: Partial<Omit<ArchivedIssue, 'version'>> & { version?: number }): ArchivedIssue | null {
+  if ((parsed.version !== 1 && parsed.version !== 2) || typeof parsed.issue_identifier !== 'string') return null;
+  if (!Array.isArray(parsed.timeline) || !Array.isArray(parsed.sessions)) return null;
+  const issue = { ...parsed, version: 2 } as ArchivedIssue;
+  if (!Array.isArray(issue.results)) issue.results = [];
+  if (Array.isArray(issue.pipeline)) {
+    for (const stage of issue.pipeline) {
+      stage.verdict ??= null;
+      stage.round ??= null;
+      for (const session of stage.sessions) {
+        session.verdict ??= null;
+        session.round ??= null;
+      }
+    }
+  }
+  return issue;
 }
 
 /** Archive file of an issue: `owner/name#12` → `owner_name_12.json`. */
@@ -109,12 +132,11 @@ export class IssueArchive {
       return null;
     }
     try {
-      const parsed = JSON.parse(text) as Partial<ArchivedIssue>;
-      if (parsed.version !== 1 || typeof parsed.issue_identifier !== 'string' || !Array.isArray(parsed.timeline) || !Array.isArray(parsed.sessions)) {
+      const issue = upgrade(JSON.parse(text) as Parameters<typeof upgrade>[0]);
+      if (issue === null) {
         this.#logger.warn('ignoring an unreadable issue archive', { file });
         return null;
       }
-      const issue = parsed as ArchivedIssue;
       this.#remember(issue);
       return issue;
     } catch (error) {

@@ -2172,6 +2172,43 @@ describe('issue archive', () => {
     assert.equal(fresh.orchestrator.issueTimeline('nope'), null);
   });
 
+  it('still reads archives written in version 1 and fills in what they lack', () => {
+    const logDir = tempDir();
+    const stage = { id: 'default', label: 'default', kind: 'agent', columns: ['Todo'], status: 'done', sessions: [{ run: 'r1', attempt: null, role: 'default', state: 'Todo', model: null, effort: null, started_at: '2026-10-03T12:00:00.000Z', finished_at: null, outcome: 'handed_off' }] };
+    fs.mkdirSync(path.join(logDir, 'issues'), { recursive: true });
+    fs.writeFileSync(
+      path.join(logDir, 'issues', 'acme_app_old.json'),
+      JSON.stringify({
+        version: 1,
+        pipeline: [stage],
+        issue_id: 'old',
+        issue_identifier: 'acme/app#old',
+        issue_url: null,
+        title: 'Old archive',
+        repo: null,
+        workspace_path: null,
+        runs: 1,
+        continuations: 0,
+        last_error: null,
+        archived_at: '2026-10-03T12:00:00.000Z',
+        released: true,
+        completed_before: false,
+        timeline: [],
+        next_seq: 1,
+        sessions: [],
+        run_trace: null,
+        last_check: null,
+      }),
+    );
+    const detail = setup({ logDir, issues: [] }).orchestrator.issueDetail('acme/app#old');
+    assert.equal(detail?.status, 'finished');
+    assert.equal(detail?.title, 'Old archive');
+    assert.deepEqual(detail?.results, []);
+    assert.equal(detail?.pipeline[0]?.verdict, null);
+    assert.equal(detail?.pipeline[0]?.round, null);
+    assert.equal(detail?.pipeline[0]?.sessions[0]?.verdict, null);
+  });
+
   it('serves released issues from memory without a log directory, but not issues that never ran', async () => {
     const s = setup({ issues: [makeIssue({ id: 'a' })] });
     s.runner.script = (turn) => {
@@ -2825,7 +2862,7 @@ describe('restart a worker', () => {
     await s.orchestrator.restartWorker('a');
     s.timers.fire(0);
     await until(() => snapshot(s).retrying[0]?.error === 'waiting for a free slot (1/1 busy)', 3_000, 'requeued');
-    assert.equal(s.runner.sessions.length, 2);
+    await until(() => s.runner.sessions.length === 2, 3_000, 'sessions of a and b');
   });
 
   it('writes the worker_restarted history note', async () => {
@@ -3649,6 +3686,144 @@ describe('reserved slots by role', () => {
   });
 });
 
+describe('stage skipping', () => {
+  const BOARD = ['Backlog', 'Ready', 'In progress', 'Agent review', 'Blocked', 'In review', 'Done'];
+  const front = (extra: Record<string, unknown> = {}) => ({
+    tracker: {
+      kind: 'github_project',
+      provider: { owner: 'acme', project_number: 1, token: 'test-token' },
+      active_states: ['Ready', 'In progress', 'Agent review'],
+      terminal_states: ['Done'],
+    },
+    roles: {
+      analyst: { states: ['Ready'], read_only: true, result: 'analysis', on_result: { ready: 'next' } },
+      developer: { states: ['In progress'] },
+      reviewer: { states: ['Agent review'], read_only: true },
+    },
+    pipeline: { analysis: 'when_unlabeled' },
+    ...extra,
+  });
+  const withBoard = (s: Setup) => {
+    s.tracker.statusOptions = async () => BOARD;
+  };
+  const issueState = (s: Setup, id: string) => s.tracker.issues.get(id)?.state;
+
+  it('moves a labelled issue from Ready to In progress without an analyst session and shows stage_skipped', async () => {
+    const s = setup({ front: front(), issues: [makeIssue({ id: 'a', state: 'Ready', labels: ['Type: bugfix', 'Complexity: S'] })] });
+    withBoard(s);
+    await s.orchestrator.tickNow();
+    await until(() => issueState(s, 'a') === 'In progress', 3_000, 'move to In progress');
+    assert.equal(s.runner.sessions.length, 0, 'no session for the skipped stage');
+
+    const comment = s.tracker.comments.get('a')?.[0]?.body ?? '';
+    const marker = decodeMarker(comment);
+    assert.equal(marker?.result.kind, 'skipped');
+    assert.deepEqual([marker?.meta.role, marker?.meta.run, marker?.meta.target], ['analyst', null, 'In progress']);
+    assert.match(comment, /Stage skipped/);
+
+    const skipped = s.orchestrator.issueTimeline('acme/app#a')?.events.find((event) => event.event === 'stage_skipped');
+    assert.equal(skipped?.detail?.role, 'analyst');
+    assert.equal(skipped?.detail?.target, 'In progress');
+    assert.equal(snapshot(s).counts.claimed, 0, 'the claim ends with the skip');
+
+    // The next stage starts as usual, and the timeline of the issue goes on.
+    await s.orchestrator.tickNow();
+    await until(() => s.runner.sessions.length === 1, 3_000, 'developer session');
+    const events = s.orchestrator.issueTimeline('acme/app#a')?.events.map((event) => event.event) ?? [];
+    assert.ok(events.indexOf('stage_skipped') < events.indexOf('run_dispatched'));
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  it('starts the analyst for an issue without Type and Complexity labels', async () => {
+    const s = setup({ front: front(), runner: new FakeRunner(() => new Promise(() => undefined)), issues: [makeIssue({ id: 'a', state: 'Ready', labels: ['Type: bugfix'] })] });
+    withBoard(s);
+    await s.orchestrator.tickNow();
+    await until(() => s.runner.sessions.length === 1, 3_000, 'analyst session');
+    assert.equal(issueState(s, 'a'), 'Ready');
+    assert.equal(s.tracker.comments.size, 0);
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  it('runs the analyst for every issue with pipeline.analysis: always', async () => {
+    const s = setup({ front: front({ pipeline: { analysis: 'always' } }), runner: new FakeRunner(() => new Promise(() => undefined)), issues: [makeIssue({ id: 'a', state: 'Ready', labels: ['Type: bugfix', 'Complexity: S'] })] });
+    withBoard(s);
+    await s.orchestrator.tickNow();
+    await until(() => s.runner.sessions.length === 1, 3_000, 'analyst session');
+    assert.equal(s.tracker.statusCalls.length, 0);
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  it('skips a role the issue profile lists, passing over consecutive skipped stages', async () => {
+    const s = setup({
+      front: front({ pipeline: { profiles: { bugfix: { skip: ['analyst', 'developer'] } } } }),
+      issues: [makeIssue({ id: 'a', state: 'Ready', labels: ['Type: bugfix'] })],
+    });
+    withBoard(s);
+    await s.orchestrator.tickNow();
+    await until(() => issueState(s, 'a') === 'Agent review', 3_000, 'move to Agent review');
+    assert.equal(s.runner.sessions.length, 0);
+    assert.equal(s.tracker.comments.get('a')?.length, 1);
+    const marker = decodeMarker(s.tracker.comments.get('a')?.[0]?.body ?? '');
+    assert.deepEqual([marker?.meta.role, marker?.meta.profile, marker?.meta.target], ['analyst', 'bugfix', 'Agent review']);
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  it('does not skip when the tracker does not list its columns', async () => {
+    const roles = { analyst: { states: ['Ready'], read_only: true, result: 'analysis' }, developer: { states: ['In progress'] }, reviewer: { states: ['Agent review'] } };
+    const s = setup({ front: front({ roles }), runner: new FakeRunner(() => new Promise(() => undefined)), issues: [makeIssue({ id: 'a', state: 'Ready', labels: ['Type: bugfix', 'Complexity: S'] })] });
+    await s.orchestrator.tickNow();
+    await until(() => s.runner.sessions.length === 1, 3_000, 'analyst session');
+    assert.equal(s.tracker.statusCalls.length, 0);
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  it('starts a skipped stage when the operator forces the issue', async () => {
+    const s = setup({ front: front(), issues: [makeIssue({ id: 'a', state: 'Ready', labels: ['Type: bugfix', 'Complexity: S'] })] });
+    withBoard(s);
+    await s.orchestrator.tickNow();
+    await until(() => issueState(s, 'a') === 'In progress', 3_000, 'skip');
+    s.tracker.set('a', { state: 'Ready' });
+    const result = await s.orchestrator.forceStart('acme/app#a');
+    assert.equal(result.ok, true);
+    await until(() => s.runner.sessions.length === 1, 3_000, 'forced analyst session');
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  it('keeps the issue in place when the move fails, posts the comment once and moves it when the board works again', async () => {
+    const s = setup({ front: front(), issues: [makeIssue({ id: 'a', state: 'Ready', labels: ['Type: bugfix', 'Complexity: S'] })] });
+    withBoard(s);
+    const setStatus = s.tracker.setStatus.bind(s.tracker);
+    let calls = 0;
+    s.tracker.setStatus = async (...args: Parameters<typeof setStatus>) => {
+      calls += 1;
+      if (calls <= 2) throw new Error('board unreachable');
+      return setStatus(...args);
+    };
+    await s.orchestrator.tickNow();
+    await until(() => calls === 1 && snapshot(s).counts.claimed === 0, 3_000, 'first failed skip');
+    assert.equal(issueState(s, 'a'), 'Ready');
+    await s.orchestrator.tickNow();
+    await until(() => calls === 2 && snapshot(s).counts.claimed === 0, 3_000, 'second failed skip');
+    assert.equal(issueState(s, 'a'), 'Ready');
+    assert.equal(s.tracker.comments.get('a')?.length, 1, 'no duplicate comment on the retry');
+    await s.orchestrator.tickNow();
+    await until(() => issueState(s, 'a') === 'In progress', 3_000, 'move once the board works');
+    assert.equal(s.tracker.comments.get('a')?.length, 1);
+    assert.equal(s.runner.sessions.length, 0);
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  it('reports a skip into a column with an entry check as a dispatch error and starts nothing', async () => {
+    const s = setup({ front: front({ checks: { on_enter: { 'In progress': 'true' } } }), issues: [makeIssue({ id: 'a', state: 'Ready', labels: ['Type: bugfix', 'Complexity: S'] })] });
+    withBoard(s);
+    await s.orchestrator.tickNow();
+    assert.match(snapshot(s).health.dispatch_errors.join(), /pipeline\.analysis: skipping analyst moves issues from "Ready" to "In progress" without a workspace, but checks\.on_enter has a script/);
+    assert.equal(s.runner.sessions.length, 0);
+    assert.equal(s.tracker.statusCalls.length, 0);
+    await s.orchestrator.shutdown(1_000);
+  });
+});
+
 describe('result-driven roles', () => {
   const front = (checks: Record<string, string> = {}, reviewer: Record<string, unknown> = {}) => ({
     tracker: {
@@ -3727,6 +3902,39 @@ describe('result-driven roles', () => {
     assert.equal(marker?.meta.target, 'In review');
     assert.match(marker?.meta.run ?? '', /^[0-9a-f]{12}$/);
     assert.equal(marker?.meta.workflow_hash, 'test');
+  });
+
+  it('shows the loaded results, verdicts and rounds in the issue detail while the session runs', async () => {
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    const s = setup({ front: front(), runner, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
+    persist(s.tracker, 'r', 'implementation', { verdict: 'done', summary: 'Built it.' }, 'developer', '2026-10-01T10:00:00Z');
+    persist(s.tracker, 'r', 'review', { verdict: 'changes_needed', summary: 'One problem.', findings: [{ severity: 'major', problem: 'Off by one' }] }, 'reviewer', '2026-10-01T11:00:00Z');
+    await s.orchestrator.tickNow();
+    await until(() => runner.sessions.length === 1, 3_000, 'session');
+    const detail = s.orchestrator.issueDetail('acme/app#r');
+    assert.deepEqual(detail?.results.map((row) => [row.role, row.kind, row.verdict]), [['developer', 'implementation', 'done'], ['reviewer', 'review', 'changes_needed']]);
+    const stage = (id: string) => detail?.pipeline.find((candidate) => candidate.id === id);
+    assert.equal(stage('developer')?.verdict, 'done');
+    assert.equal(stage('reviewer')?.verdict, 'changes_needed');
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  it('adds the result a session reports to the detail and to the archive', async () => {
+    const logDir = tempDir();
+    const runner = new FakeRunner(async (turn, params) => {
+      const report = params.tools.find((tool) => tool.name === 'report_result');
+      await report!.execute({ verdict: 'approved', summary: 'Fine.' }, params.toolContext());
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    });
+    const s = setup({ front: front(), runner, logDir, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
+    await s.orchestrator.tickNow();
+    await until(() => s.tracker.statusCalls.length === 1, 5_000, 'report_result');
+    await until(() => snapshot(s).running.length === 0, 5_000, 'run finished');
+    const detail = s.orchestrator.issueDetail('acme/app#r');
+    assert.deepEqual(detail?.results.map((row) => [row.role, row.verdict, row.target, row.round]), [['reviewer', 'approved', 'In review', 1]]);
+    const archived = JSON.parse(fs.readFileSync(path.join(logDir, 'issues', 'acme_app_r.json'), 'utf8')) as { version: number; results: Array<{ verdict: string }> };
+    assert.equal(archived.version, 2);
+    assert.deepEqual(archived.results.map((row) => row.verdict), ['approved']);
   });
 
   describe('agent.max_continuations', () => {
