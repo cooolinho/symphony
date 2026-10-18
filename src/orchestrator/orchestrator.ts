@@ -2460,7 +2460,11 @@ export class Orchestrator {
     let result: RunOutcome;
     let reason: string;
     let nextRole: string | undefined;
-    if (entry.stop !== null) {
+    if (entry.stop !== null && entry.resultMoved && (entry.stop.kind === 'inactive' || entry.stop.kind === 'terminal')) {
+      // The run's own result moved the issue out of the active states; reconciliation saw it before the turn ended.
+      result = 'handed_off';
+      reason = entry.stop.reason;
+    } else if (entry.stop !== null) {
       result = entry.stop.kind === 'stalled' ? 'stalled' : entry.stop.kind === 'shutdown' ? 'shutdown' : 'stopped';
       reason = entry.stop.reason;
     } else if (outcome.kind === 'normal') {

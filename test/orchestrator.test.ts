@@ -3929,6 +3929,22 @@ describe('result-driven roles', () => {
     assert.equal(marker?.meta.workflow_hash, 'test');
   });
 
+  it('records a hand-off when reconciliation stops a run after its own result moved the issue', async () => {
+    const reported: unknown[] = [];
+    const runner = new FakeRunner(async (_turn, params) => {
+      reported.push(await callTool(params, 'report_result', { verdict: 'approved', summary: 'Fine.' }));
+      // The agent is still finishing its turn when the next tick sees the issue in "In review".
+      return new Promise((resolve) => params.signal.addEventListener('abort', () => resolve({ ok: false, turnId: '1', code: 'turn_cancelled', message: 'cancelled' })));
+    });
+    const s = setup({ front: front(), runner, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
+    await s.orchestrator.tickNow();
+    await until(() => reported.length === 1, 5_000, 'report_result');
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running.length === 0, 5_000, 'run stopped');
+    const session = s.orchestrator.issueDetail('acme/app#r')?.sessions[0];
+    assert.equal(session?.outcome, 'handed_off');
+  });
+
   it('shows the loaded results, verdicts and rounds in the issue detail while the session runs', async () => {
     const runner = new FakeRunner(() => new Promise(() => undefined));
     const s = setup({ front: front(), runner, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });

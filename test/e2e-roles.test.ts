@@ -200,6 +200,16 @@ describe('e2e roles verification', () => {
     assert.match(failed(data({ polledReviewPeak: 2 }))[name] ?? '', /2 in the API trace/);
   });
 
+  it('counts a reviewer run only until its own result moved the issue out of Agent review', () => {
+    // R1's reviewer reports at minute 4 but only ends at minute 6; R2's reviewer starts at minute 5.
+    const moved = line(4, 'stage_result', { issue: `${REPO}#11`, run: 'a2', role: 'reviewer', kind: 'review', verdict: 'approved', target: STATUS.handoff });
+    const log = passingLog().flatMap((entry) => (entry.includes('run=a2') && entry.includes('run_finished') ? [moved, finished(6, 11, 'a2', 'handed_off')] : [entry]));
+    const name = `At most ${AGENT_REVIEW_LIMIT} agent(s) in "${ROLE_STATUS.review}"`;
+    assert.equal(failed(data({ historyLines: log }))[name], undefined);
+    const unmoved = log.filter((entry) => entry !== moved);
+    assert.match(failed(data({ historyLines: unmoved }))[name] ?? '', /peak 2 of 4 reviewer runs/);
+  });
+
   it('fails everything on an empty run', () => {
     const problems = failed(data({ historyLines: [], timeline: [], polledReviewPeak: 0, results: [] }));
     assert.equal(Object.keys(problems).length, 5);

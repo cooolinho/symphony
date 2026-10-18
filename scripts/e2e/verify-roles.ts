@@ -59,12 +59,14 @@ interface RoleRun {
   end: number | null;
   outcome: string | null;
   nextRole: string | null;
+  /** When the run's own result moved the issue to another column (`stage_result` with a target). */
+  movedAt: number | null;
 }
 
 function roleRuns(entries: HistoryEntry[]): RoleRun[] {
   const runs = new Map<string, RoleRun>();
   for (const { event, ts, fields } of entries) {
-    if (event !== 'run_started' && event !== 'run_finished') continue;
+    if (event !== 'run_started' && event !== 'run_finished' && event !== 'stage_result') continue;
     const run = runs.get(fields.run ?? '') ?? {
       issue: numberOf(fields.issue),
       role: fields.role ?? 'default',
@@ -72,8 +74,11 @@ function roleRuns(entries: HistoryEntry[]): RoleRun[] {
       end: null,
       outcome: null,
       nextRole: null,
+      movedAt: null,
     };
-    if (event === 'run_started') {
+    if (event === 'stage_result') {
+      if (fields.target !== undefined) run.movedAt = Date.parse(ts);
+    } else if (event === 'run_started') {
       run.start = Date.parse(ts);
       run.role = fields.role ?? 'default';
     } else {
@@ -86,11 +91,14 @@ function roleRuns(entries: HistoryEntry[]): RoleRun[] {
   return [...runs.values()].sort((a, b) => a.start - b.start);
 }
 
-/** Highest number of runs active at the same time; unfinished runs count until `now`. */
+/**
+ * Highest number of runs in their column at the same time. Like Symphony's column limit, a run counts until its own
+ * result moved the issue on (the rest of its turn holds no slot of the column), else until it ended or until `now`.
+ */
 function peakOverlap(runs: RoleRun[], now: number): number {
   const events = runs.flatMap((run) => [
     { at: run.start, delta: 1 },
-    { at: run.end ?? now, delta: -1 },
+    { at: run.movedAt ?? run.end ?? now, delta: -1 },
   ]);
   events.sort((a, b) => a.at - b.at || a.delta - b.delta);
   let current = 0;
