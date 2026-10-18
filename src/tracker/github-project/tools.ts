@@ -20,6 +20,17 @@ import {
 
 type Json = Record<string, unknown>;
 
+/** Stage-result markers are Symphony's alone: an agent's text must not carry one (case and spacing do not matter). */
+const MARKER_START = /<!--\s*symphony:/i;
+
+function markerProblem(text: string | undefined): ToolResult | null {
+  if (text === undefined || !MARKER_START.test(text)) return null;
+  return fail(
+    'invalid_argument',
+    'the text contains "<!-- symphony:", which is reserved for the result markers Symphony writes itself; remove that HTML comment and post again',
+  );
+}
+
 function obj(value: unknown): Json | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Json) : null;
 }
@@ -143,7 +154,7 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
     inputSchema: { body: z.string().min(1).describe('Comment text (GitHub-flavored Markdown)') },
     mutates: true,
     execute: (args, context) =>
-      guarded(context, async () => ok(await adapter.postComment(context.issue, String(args.body)))),
+      guarded(context, async () => markerProblem(String(args.body)) ?? ok(await adapter.postComment(context.issue, String(args.body)))),
   };
 
   const openPullRequest: AgentToolSpec = {
@@ -232,6 +243,8 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
         subIssueQueue.run(async (): Promise<ToolResult> => {
           const max = context.maxSubIssues;
           if (max === undefined) return fail('not_allowed', 'this role may not create sub-issues (roles.<name>.max_sub_issues is not set)');
+          const rejected = markerProblem(typeof args.body === 'string' ? args.body : undefined) ?? markerProblem(String(args.title));
+          if (rejected !== null) return rejected;
           const title = String(args.title).trim();
 
           const response = await client.request<Json>(SUB_ISSUE_CONTEXT_QUERY, { issueId: ref.issueId });
