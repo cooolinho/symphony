@@ -1,4 +1,5 @@
 import type { Logger } from '../../log.ts';
+import { decodeMarker } from '../../workflow/results.ts';
 import { normalizeStateName } from '../../workflow/config.ts';
 import {
   TrackerError,
@@ -9,6 +10,7 @@ import {
   type PostedComment,
   type RemoveLabelsResult,
   type StatusChange,
+  type TrackedResult,
   type TrackerAdapter,
 } from '../types.ts';
 import { assertNoGraphqlErrors, type GithubGraphqlClient, type GraphqlError } from './client.ts';
@@ -320,6 +322,21 @@ export class GithubProjectAdapter implements TrackerAdapter {
       seenCursors.add(cursor);
       after = cursor;
     }
+  }
+
+  async readResults(issue: Issue): Promise<TrackedResult[]> {
+    const [comments, viewer] = await Promise.all([this.readComments(issue), this.viewerLogin()]);
+    const results: TrackedResult[] = [];
+    for (const comment of comments) {
+      const decoded = decodeMarker(comment.body);
+      if (decoded === null) continue;
+      if (comment.author !== viewer) {
+        this.#logger.warn('ignoring a result marker from another author', { issue: issue.identifier, author: comment.author, url: comment.url });
+        continue;
+      }
+      results.push({ ...decoded, createdAt: comment.createdAt, url: comment.url });
+    }
+    return results;
   }
 
   /** The account the token acts as; constant per token, so it is fetched once per adapter instance. */

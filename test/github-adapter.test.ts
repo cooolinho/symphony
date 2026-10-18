@@ -5,6 +5,7 @@ import { createGuard, guardTools } from '../src/orchestrator/guard.ts';
 import { githubProjectFactory } from '../src/tracker/github-project/index.ts';
 import { parseSettings } from '../src/tracker/github-project/settings.ts';
 import { TrackerError, type Issue, type ToolResult, type TrackerAdapter } from '../src/tracker/types.ts';
+import { internalResult, renderResultComment } from '../src/workflow/results.ts';
 import type { ServiceConfig } from '../src/workflow/config.ts';
 
 type Json = Record<string, unknown>;
@@ -542,6 +543,25 @@ describe('github_project adapter operations', () => {
     });
   });
 
+  describe('readResults', () => {
+    const meta = { role: 'reviewer', run: null, round: 1, profile: null, workflow_hash: null, head_sha: null, checks: null, target: null, created_at: '2026-09-01T00:00:00Z' };
+    const marked = renderResultComment(internalResult('reset', 'Reset'), meta);
+
+    it('decodes markers only from comments of the viewer and ignores all others', async () => {
+      const { github, tracker, issue } = await setup();
+      github.comments.set('I_A', [
+        comment(1, { body: marked }), // alice
+        comment(2, { body: marked }), // symphony-bot
+        comment(3, { author: null, body: marked }),
+        comment(4, { body: 'plain comment from the bot' }),
+      ]);
+      const results = await tracker.readResults(issue);
+      assert.equal(results.length, 1);
+      assert.equal(results[0]?.result.kind, 'reset');
+      assert.equal(results[0]?.url, 'https://github.com/acme/app/issues/1#issuecomment-2');
+    });
+  });
+
   describe('viewerLogin', () => {
     it('asks GitHub once per adapter and retries after a failure', async () => {
       const { github, tracker, count } = await setup();
@@ -577,6 +597,20 @@ describe('github_project adapter operations', () => {
       await tracker.commentOnIssue(issue, 'From Symphony');
       assert.deepEqual(github.requests.filter((r) => r.op === 'SymphonyAddComment').map((r) => r.variables.body), ['From the agent', 'From Symphony']);
       await assert.rejects(tracker.commentOnIssue({ ...issue, native_ref: null }, 'x'), /has no GitHub reference to comment on/);
+    });
+  });
+
+  describe('markers in agent text', () => {
+    it('add_comment rejects a result marker and still posts normal comments', async () => {
+      const { github, tracker, issue } = await setup();
+      const addComment = tracker.agentToolSpecs().find((t) => t.name === 'add_comment');
+      for (const body of ['<!-- symphony:result:v1 abc -->', 'text <!--symphony:x', '<!--   SYMPHONY:result']) {
+        const result = await addComment?.execute({ body }, { issue });
+        assert.equal(result?.ok, false);
+        assert.equal(result?.ok === false && result.error.category, 'invalid_argument');
+      }
+      assert.equal(github.requests.filter((r) => r.op === 'SymphonyAddComment').length, 0);
+      assert.equal((await addComment?.execute({ body: 'a <!-- note --> b' }, { issue }))?.ok, true);
     });
   });
 
@@ -790,6 +824,16 @@ describe('github_project create_sub_issue', () => {
     assert.equal(result.ok, true);
     return (result as { ok: true; data: Json }).data;
   };
+
+  it('rejects a result marker in the body or title and creates normal issues', async () => {
+    const { run, ops } = await setup();
+    for (const args of [{ title: 'T', body: 'x\n<!-- symphony:result:v1 abc -->' }, { title: '<!-- symphony:x -->' }]) {
+      const result = await run(args);
+      assert.equal(result.ok === false && result.error.category, 'invalid_argument');
+    }
+    assert.equal(ops('SymphonyCreateSubIssue').length, 0);
+    assert.equal((await run({ title: 'T', body: '<!-- plain -->' })).ok, true);
+  });
 
   it('creates the issue under its parent, labels it and puts it on the board in the configured column', async () => {
     const { run, ops } = await setup();

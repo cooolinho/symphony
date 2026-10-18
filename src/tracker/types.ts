@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import type { Logger } from '../log.ts';
+import type { ResultMeta, StageResult } from '../workflow/results.ts';
 import { SymphonyError } from '../util/errors.ts';
 
 export interface BlockerRef {
@@ -90,6 +91,14 @@ export interface AgentToolSpec {
 }
 
 /** A comment on an issue. */
+/** A stage result read back from a comment Symphony wrote. */
+export interface TrackedResult {
+  result: StageResult;
+  meta: ResultMeta;
+  createdAt: Date;
+  url: string;
+}
+
 export interface IssueComment {
   /** Login of the author; null when the account was deleted. */
   author: string | null;
@@ -157,6 +166,11 @@ export interface TrackerAdapter {
   commentOnIssue?(issue: Issue, body: string): Promise<void>;
   /** Every comment of the issue with its author, oldest first, however many pages the tracker needs. */
   readComments?(issue: Issue): Promise<IssueComment[]>;
+  /**
+   * Stage results decoded from the issue's comments, oldest first. Only comments written by the adapter's own account
+   * (`viewerLogin()`) count; markers in all others are ignored and logged.
+   */
+  readResults?(issue: Issue): Promise<TrackedResult[]>;
   /** Login of the account the adapter's credential acts as; fetched once per adapter. */
   viewerLogin?(): Promise<string>;
   /** Posts a Markdown comment on the issue and returns its URL. */
