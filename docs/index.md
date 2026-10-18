@@ -15,7 +15,7 @@ Central overview of all Symphony documents. For an overview of the project, see 
 - [configuration.md](configuration.md): every `WORKFLOW.md` option, `$VARIABLE` references, hooks and prompt variables
 - [adapters/github-project.md](adapters/github-project.md): the GitHub Projects adapter: settings, normalization, agent tools and errors
 - [agent-claude.md](agent-claude.md): Claude Code sessions, permissions, skills and plugins, Laravel Boost, timeouts and cost accounting
-- [results.md](results.md): result contracts of the pipeline stages: kinds, verdicts, consistency rules, comment marker and size cap
+- [results.md](results.md): result contracts of the pipeline stages: kinds, verdicts, consistency rules, comment marker, size cap and the `report_result` tool
 - [conformance.md](conformance.md): differences from the specification and implementation-defined behavior
 - [laravel-repositories.md](laravel-repositories.md): conventions for Laravel repositories
 - [laravel-subagents.md](laravel-subagents.md): the Laravel subagents and the workflow roles: findings from the logs and the plan

@@ -2,8 +2,8 @@
 
 Every agent stage of the multi-agent pipeline reports a typed, validated and versioned result instead of free text.
 Symphony renders it as an issue comment and reads it back from a hidden marker, so later stages, round limits and the
-dashboard work from structured data. The contracts live in `src/workflow/results.ts`; the tool that uses them and
-reading comments back from GitHub follow separately.
+dashboard work from structured data. The contracts live in `src/workflow/results.ts`; agents report through the
+[`report_result` tool](#the-report_result-tool) (`src/orchestrator/result-tool.ts`).
 
 ## Envelope
 
@@ -66,3 +66,41 @@ Symphony adds facts the agent never sets: `role`, `run`, `round`, `profile`, `wo
 - Size cap: the comment stays below 60,000 characters (GitHub allows 65,536). Above it, the least severe findings are
   dropped first and counted in `omitted_findings`; the Markdown notes the omission. A result that does not fit even
   without findings is rejected (`result_too_large`).
+
+## The `report_result` tool
+
+A role with [`result`](configuration.md#result-driven-transitions) hands off with the tracker tool `report_result`
+(`mcp__tracker__report_result`) instead of `set_status`: such a role never gets `set_status` (`toolsForRole`), so a
+stage cannot end just because the agent moves the issue. The tool is built per session; its input is the kind's agent
+fields (`verdict`, `summary`, the common and the kind-specific fields above). Sessions get it once the worker loads the
+issue's stage history at session start, which is not wired up yet.
+
+A call runs these steps, one call at a time:
+
+1. **Validate** the input (`parseResult`). An invalid result returns `invalid_result` with every problem; nothing runs.
+2. **Route.** The target column is computed from the verdict, the profile and the round counters of the history
+   loaded at session start (`resolveTransition`, see
+   [Result-driven transitions](configuration.md#result-driven-transitions)). A configuration that cannot route the
+   verdict returns `transition_error`.
+3. **Guard.** The target passes the [transition guard](configuration.md#transition-guard) like a `set_status` call:
+   `may_move_to`, then the column's entry check. `check_failed`, `check_timeout` and `check_error` return the guard's
+   message (naming `report_result`) and write nothing, so a failed check never counts as a round and the agent can
+   fix the problem and report again in the same session. On `check_error` the agent is told to comment and end its
+   turn instead of moving the issue to `Blocked`, which it cannot.
+4. **Comment.** The result comment (Markdown and marker) is posted. Its meta records the role, the run, the round, the
+   profile, the workflow hash, the workspace commit, the entry check that cleared the move (`checks`; a pass reused
+   from the check cache keeps the record of the check that ran; `null` when the column has no check) and the target.
+   A failed post returns `comment_failed`; nothing is recorded.
+5. **Move** the issue to the target with the adapter's `setStatus`, including [auto-merge](adapters/github-project.md#auto-merge)
+   (the result then carries `auto_merge`, as with `set_status`). If the move fails after the comment, the call returns
+   `status_failed`: the result stands, the agent ends its turn, and the next run finds the pending move in the marker.
+6. **Labels.** At the round limit `pipeline.limit_label` is added (the default `needs-human` is created when the
+   repository lacks it); every other result removes it when the issue carries it. Label failures and a missing custom
+   label are returned as `warnings`; the result and the move stand.
+
+The success result is `{kind, verdict, target, status, previous_status, round, reason, checks, comment_url, labels?,
+auto_merge?, warnings?, note: "Result recorded — end your turn now."}`.
+
+**One result per run.** Once the comment is posted, every further call of the run, with any input, returns the stored
+outcome (`already_recorded: true` on success) without running the checks or touching the tracker. The tool writes only
+after the guard allowed exactly the computed target; called without the guard's approval it refuses (`tool_error`).

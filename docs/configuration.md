@@ -183,8 +183,9 @@ hooks already lack. Scripts are not `$VAR`-substituted by Symphony; the shell ex
 
 #### Transition guard
 
-Every tracker tool that changes the issue's column (GitHub: `set_status`) goes through Symphony's transition guard
-before the tracker is touched. The guard decides on the run's role and the target column only, in this order:
+Every tracker tool that changes the issue's column (GitHub: `set_status`; for roles with `result`:
+[`report_result`](results.md#the-report_result-tool)) goes through Symphony's transition guard before the tracker is
+touched. The guard decides on the run's role and the target column only, in this order:
 
 1. A terminal target (`tracker.terminal_states`, e.g. `Done`) is always denied; only a human moves issues there.
    With `roles`, a target outside the role's `may_move_to` is denied too. Both return the tool error
@@ -196,10 +197,10 @@ before the tracker is touched. The guard decides on the run's role and the targe
 
 | Exit | Result | The agent is told |
 |---|---|---|
-| `0` | The issue is moved; the tool result carries `note: "Checks passed — end your turn now."` | End the turn, so the next role takes over. |
-| `1` | Tool error `check_failed`; the column is unchanged | The last 6000 characters of the output; fix the problems and call `set_status` again. |
+| `0` | The issue is moved; the tool result carries `note: "Checks passed — end your turn now."` (`report_result` keeps its own note, `"Result recorded — end your turn now."`) | End the turn, so the next role takes over. |
+| `1` | Tool error `check_failed`; the column is unchanged | The last 6000 characters of the output; fix the problems and call `set_status` (or `report_result`) again. |
 | none, `checks.timeout_ms` reached | Tool error `check_timeout`; the column is unchanged | A runtime limit, not the change: do not change code and do not move the issue to `Blocked`; call `set_status` once more, and if that times out too, comment and end the turn without a status change. Symphony picks the issue up again later. |
-| other, aborted, or the check cannot start | Tool error `check_error`; the column is unchanged | Do not change code; describe the problem in an issue comment and move the issue to `Blocked`. |
+| other, aborted, or the check cannot start | Tool error `check_error`; the column is unchanged | Do not change code; describe the problem in an issue comment and move the issue to `Blocked` (`report_result`: end the turn instead). |
 
 **Cache.** A passing check is remembered per claim, in memory, under the key `HEAD sha` + hash of the script text. Before
 running a check the guard reads `git rev-parse HEAD` and `git status --porcelain` (5 s timeout each); when the tree
@@ -384,7 +385,7 @@ roles:
 | `states` | required | Active states the role serves; matched case-insensitively. |
 | `read_only` | `false` | The role's agent must not change the repository. |
 | `may_move_to` | unrestricted | Column names the agent may move the issue to, matched case-insensitively and enforced by the [transition guard](#transition-guard). Free-form; not checked against the board here. Terminal columns are never allowed. |
-| `result` | none | Kind of the stage result the role reports: `analysis`, `design`, `implementation`, `test`, `review`, `security` or `docs` (see [result contracts](#result-driven-transitions)). Setting only this key is enough for a minimal result role. |
+| `result` | none | Kind of the stage result the role reports: `analysis`, `design`, `implementation`, `test`, `review`, `security` or `docs` (see [result contracts](#result-driven-transitions)). Setting only this key is enough for a minimal result role. The role hands off with the [`report_result`](results.md#the-report_result-tool) tool and does not get `set_status`. |
 | `on_result` | `{}` | Column per verdict of `result`, or `next` (the next active stage after the role's columns in board order). Needs `result`. See [Result-driven transitions](#result-driven-transitions). |
 | `on_check_failed` | none | Column for an issue whose entry check fails for a role that cannot fix it (a read-only role). |
 | `on_missing_result` | `Blocked` with `result`, else none | Column for a session that ends without a result. Needs `result`. |
@@ -425,8 +426,9 @@ roles:
   [transition guard](#transition-guard), the board preflight and the dashboard's pipeline view know them. A role
   without `may_move_to` stays unrestricted, but its targets are still checked against the board.
 
-The target of a result is computed, not chosen by the agent (`resolveTransition` in `src/orchestrator/transitions.ts`;
-the `report_result` hand-off that uses it is not wired up yet). The rules apply in this order:
+The target of a result is computed, not chosen by the agent (`resolveTransition` in `src/orchestrator/transitions.ts`,
+used by the [`report_result`](results.md#the-report_result-tool) tool; sessions get the tool once the worker loads the
+stage history, which is not wired up yet). The rules apply in this order:
 
 1. **`blocked`** goes to `on_result.blocked` when it names a column, else to the blocked column: the column every role
    with `may_move_to` lists besides the active and terminal ones (`Blocked` in the default workflow), else the role's

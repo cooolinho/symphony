@@ -4,8 +4,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 import { Logger } from '../src/log.ts';
-import { CHECK_PASSED_NOTE, createGuard, guardTools, toolsForRole, type CheckRecord, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
-import type { AgentToolSpec, ToolResult } from '../src/tracker/types.ts';
+import { CHECK_PASSED_NOTE, createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
+import type { AgentToolContext, AgentToolSpec, ToolResult } from '../src/tracker/types.ts';
 import { WorkspaceManager } from '../src/workspace/manager.ts';
 import { baseFront, makeIssue, makeWorkflow, tempDir } from './helpers.ts';
 
@@ -71,7 +71,10 @@ describe('transition guard', () => {
     const { guard, events } = setup({
       checks: { 'Agent review': 'test "$SYMPHONY_ROLE" = developer && test "$SYMPHONY_TARGET_STATE" = "Agent review" && test "$SYMPHONY_HOOK" = "check:Agent review"' },
     });
-    assert.deepEqual(await guard('Agent review'), { allow: true, note: CHECK_PASSED_NOTE });
+    const decision = await guard('Agent review');
+    assert.ok(decision.allow);
+    assert.equal(decision.note, CHECK_PASSED_NOTE);
+    assert.deepEqual([decision.check?.target, decision.check?.role, decision.check?.result, decision.check?.exitCode], ['Agent review', 'developer', 'passed', 0]);
     assert.deepEqual(events, ['checks_started', 'checks_finished']);
   });
 
@@ -103,6 +106,16 @@ describe('transition guard', () => {
     assert.match(decision?.message ?? '', /3 tests failed/);
     assert.match(decision?.message ?? '', /Fix the problems and call set_status again/);
     assert.ok((decision?.message.length ?? 0) < 6_300);
+  });
+
+  it('names the tool the agent called in its denials', async () => {
+    const failed = denied(await setup({ checks: { 'Agent review': 'exit 1' } }).guard('Agent review', 'report_result'));
+    assert.match(failed?.message ?? '', /Fix the problems and call report_result again\.$/);
+    const slow = denied(await setup({ checks: { 'Agent review': 'sleep 5' }, timeoutMs: 200 }).guard('Agent review', 'report_result'));
+    assert.match(slow?.message ?? '', /Call report_result again once/);
+    const broken = denied(await setup({ checks: { 'Agent review': 'exit 2' } }).guard('Agent review', 'report_result'));
+    assert.match(broken?.message ?? '', /describe the problem in an issue comment and end your turn without calling report_result again\.$/);
+    assert.doesNotMatch(broken?.message ?? '', /Blocked/);
   });
 
   it('returns check_timeout for a check that runs into checks.timeout_ms, without sending the issue to Blocked', async () => {
@@ -189,7 +202,7 @@ describe('check cache', () => {
       const config = { ...env.params.config, checks: { ...env.params.config.checks, onEnter: new Map([['agent review', script]]) } };
       return createGuard({ ...env.params, config, cache });
     };
-    const cache = new Set<string>();
+    const cache: CheckCache = new Map();
     const script = `echo x >> ${counter}; exit ${exitCode}`;
     const runs = () => (fs.existsSync(counter) ? fs.readFileSync(counter, 'utf8').trim().split('\n').length : 0);
     return { ...env, cache, git, make, script, runs };
@@ -199,10 +212,13 @@ describe('check cache', () => {
     const { make, script, runs } = cached();
     const guard = make(script);
     const first = await guard('Agent review');
-    assert.deepEqual(first, { allow: true, note: CHECK_PASSED_NOTE });
+    assert.ok(first.allow);
+    assert.equal(first.note, CHECK_PASSED_NOTE);
     const second = await guard('Agent review');
     assert.equal(second.allow && second.note?.startsWith('cached result for '), true);
     assert.equal(runs(), 1);
+    assert.ok(second.allow && first.check !== undefined);
+    assert.equal(second.check, first.check, 'a cached pass carries the record of the check that ran');
   });
 
   it('re-runs after a new commit, a changed script or a dirty tree', async () => {
@@ -234,7 +250,7 @@ describe('check cache', () => {
     const counter = path.join(path.dirname(env.workspacePath), 'count');
     const script = `echo x >> ${counter}`;
     const config = { ...env.params.config, checks: { ...env.params.config.checks, onEnter: new Map([['agent review', script]]) } };
-    const guard = createGuard({ ...env.params, config, cache: new Set() });
+    const guard = createGuard({ ...env.params, config, cache: new Map() });
     await guard('Agent review');
     await guard('Agent review');
     assert.equal(fs.readFileSync(counter, 'utf8').trim().split('\n').length, 2);
@@ -269,6 +285,52 @@ describe('guardTools', () => {
     assert.deepEqual(await setStatus?.execute({ status: 'Open' }, { issue }), { ok: true, data: { status: 'Open' } });
     assert.deepEqual(calls, ['Gated', 'Open']);
   });
+
+  it('hands the allowed move to the tool, and only for a call the guard allowed', async () => {
+    const seen: AgentToolContext[] = [];
+    const check: CheckRecord = {
+      target: 'Gated',
+      role: 'developer',
+      sha: 'abc123',
+      exitCode: 0,
+      timedOut: false,
+      durationMs: 1200,
+      ok: true,
+      result: 'passed',
+      finishedAt: new Date('2026-10-18T10:00:00Z'),
+    };
+    const targets: Array<[string, string | undefined]> = [];
+    const [tool] = guardTools(
+      [
+        {
+          name: 'report_result',
+          description: '',
+          inputSchema: {},
+          mutates: true,
+          transitionTarget: (args) => (typeof args.target === 'string' ? args.target : null),
+          execute: async (_args, context) => {
+            seen.push(context);
+            return { ok: true, data: { note: 'own note' } };
+          },
+        },
+      ],
+      async (target, toolName) => {
+        targets.push([target, toolName]);
+        return target === 'Gated' ? { allow: true, note: CHECK_PASSED_NOTE, check } : { allow: true, note: null };
+      },
+    );
+    const forged = { issue, transition: { target: 'Gated', check: null } };
+    assert.deepEqual(await tool?.execute({ target: 'Gated' }, forged), { ok: true, data: { note: 'own note' } }, "the tool's own note wins");
+    await tool?.execute({ target: 'Open' }, { issue });
+    await tool?.execute({}, forged);
+    assert.deepEqual(targets, [['Gated', 'report_result'], ['Open', 'report_result']]);
+    assert.deepEqual(seen[0]?.transition, {
+      target: 'Gated',
+      check: { result: 'passed', ok: true, exit_code: 0, timed_out: false, duration_ms: 1200, sha: 'abc123', finished_at: '2026-10-18T10:00:00.000Z' },
+    });
+    assert.deepEqual(seen[1]?.transition, { target: 'Open', check: null });
+    assert.equal(seen[2]?.transition, undefined, 'a call without a target never carries a transition');
+  });
 });
 
 describe('toolsForRole', () => {
@@ -289,5 +351,19 @@ describe('toolsForRole', () => {
     assert.deepEqual(named('developer'), ['get_issue']);
     assert.deepEqual(named('reviewer'), ['get_issue']);
     assert.deepEqual(named(null), ['get_issue']);
+  });
+
+  it('gives a role with result report_result instead of the status tools', () => {
+    const setStatus: AgentToolSpec = { ...tool('set_status'), transitionTarget: (args) => String(args.status) };
+    const report: AgentToolSpec = { ...tool('report_result'), transitionTarget: () => null };
+    const all = [tool('get_issue'), setStatus, tool('add_comment')];
+    const withResult = setup({ extraRoles: { reviewer: { states: ['Agent review'], read_only: true, result: 'review' } } }).params.config.roles ?? [];
+    const reviewer = withResult.find((r) => r.name === 'reviewer') ?? null;
+    assert.equal(reviewer?.readOnly, true);
+    assert.deepEqual(toolsForRole(all, reviewer, report).map((t) => t.name), ['get_issue', 'add_comment', 'report_result']);
+    assert.deepEqual(toolsForRole(all, reviewer).map((t) => t.name), ['get_issue', 'add_comment'], 'never set_status, even before report_result is wired');
+    const developer = withResult.find((r) => r.name === 'developer') ?? null;
+    assert.deepEqual(toolsForRole(all, developer, report).map((t) => t.name), ['get_issue', 'set_status', 'add_comment'], 'roles without result keep set_status');
+    assert.deepEqual(toolsForRole(all, null, report).map((t) => t.name), ['get_issue', 'set_status', 'add_comment']);
   });
 });

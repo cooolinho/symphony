@@ -2796,7 +2796,7 @@ export class Orchestrator {
         nextSeq: 1,
         sessions: [],
         lastRun: null,
-        checkCache: new Set(),
+        checkCache: new Map(),
         lastCheck: null,
         meta: null,
       };

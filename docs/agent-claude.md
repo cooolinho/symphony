@@ -44,8 +44,9 @@ Symphony runs agents **unattended**. Nobody watches a session, so every decision
   the issue's column return the [transition guard](configuration.md#transition-guard) categories
   `transition_denied` (terminal column or outside the role's `may_move_to`), `check_failed` (the entry check exited
   `1`; the message carries its output), `check_timeout` (the check ran into `checks.timeout_ms`; the issue keeps its
-  column) and `check_error` (the check could not run properly). A thrown error becomes
-  `tool_error`.
+  column) and `check_error` (the check could not run properly). `report_result` adds `invalid_result`,
+  `transition_error`, `comment_failed` and `status_failed` ([results.md](results.md#the-report_result-tool)). A thrown
+  error becomes `tool_error`.
 - **User input:** `AskUserQuestion` is disabled. If a question still reaches the permission callback, it is answered
   automatically ("nobody can answer; decide yourself or ask on the issue"), an event `turn_input_required` is
   recorded, and the turn continues. A run therefore never waits for a human.

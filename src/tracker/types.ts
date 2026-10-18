@@ -1,6 +1,6 @@
 import type { z } from 'zod';
 import type { Logger } from '../log.ts';
-import type { ResultMeta, StageResult } from '../workflow/results.ts';
+import type { ResultChecks, ResultMeta, StageResult } from '../workflow/results.ts';
 import { SymphonyError } from '../util/errors.ts';
 
 export interface BlockerRef {
@@ -66,6 +66,16 @@ export interface AgentToolContext {
   maxSubIssues?: number;
   /** Board column for the sub-issues the role creates (`roles.<name>.sub_issue_status`); absent = the adapter's own. */
   subIssueStatus?: string;
+  /** Set by the transition guard (`guardTools`) for a call it allowed; absent for every other call. */
+  transition?: AllowedTransition;
+}
+
+/** A move the transition guard allowed for one tool call. */
+export interface AllowedTransition {
+  /** The column the guard checked (`transitionTarget` of the call). */
+  target: string;
+  /** The entry check that cleared the move (run for this call or a cached pass); null when none applied. */
+  check: ResultChecks | null;
 }
 
 export type ToolResult =
