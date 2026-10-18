@@ -458,7 +458,7 @@ The shipped `WORKFLOW.md` runs its two main roles on this mechanism:
 ```yaml
 roles:
   developer:
-    states: [Ready, In progress]
+    states: [In progress]
     result: implementation
     on_result: { done: Agent review, blocked: Blocked }
   reviewer:
@@ -473,8 +473,8 @@ pipeline:
 
 - Both hand off with [`report_result`](results.md#the-report_result-tool) and have no `set_status`. The developer's
   summary, the reviewer's findings and the verdict are the result, posted by Symphony as the issue comment; neither
-  prompt asks for a separate summary comment. The developer therefore cannot move an issue from `Ready` to
-  `In progress` itself: it stays in `Ready` until the result moves it.
+  prompt asks for a separate summary comment. The developer therefore cannot move an issue itself: it stays in its
+  column until the result moves it.
 - The reviewer prompt no longer counts review comments. Symphony counts the rounds: the third `changes_needed` goes to
   the blocked column (`Blocked`) with the `needs-human` label instead of back to the developer (set
   `roles.reviewer.on_round_limit` to choose another column). A human moving the issue back to an active column resets the
@@ -486,6 +486,43 @@ pipeline:
 
 Merging a change to these keys changes the running instance at once (live reload), so merge by hand when no issue is
 active.
+
+#### The issue analyst
+
+Before anything is implemented, the shipped `WORKFLOW.md` serves every issue in `Ready` with a read-only issue analyst
+(the role is named `issue-analyst`: `analyst` is the role of the `/concept` command). The developer serves only
+`In progress`.
+
+```yaml
+roles:
+  issue-analyst:
+    states: [Ready]
+    read_only: true
+    max_turns: 3
+    result: analysis
+    on_result: { ready: next, needs_info: Blocked }
+    may_move_to: [In progress, Blocked]
+    model_label: ignore               # sonnet, whatever the issue's Model: label picks for the developer
+    agents: [laravel-architect]
+    claude: { model: sonnet }
+```
+
+- The analyst reads the project instructions and the code and reports an [`analysis` result](results.md#kinds):
+  requirements in the summary, `components`, refined `acceptance_criteria`, `risks`, `docs_needed`, the `plan`, and a
+  `type` and `complexity`. `ready` moves the issue on (`next`: `In progress`, served by the developer); `needs_info`
+  needs at least one open question, moves the issue to `Blocked` and shows the questions in the comment. A human answers
+  in a comment and moves the issue back to `Ready`; the analyst then runs again.
+- **Labels.** Right before the status change, `report_result` sets the issue's `Type:` and `Complexity:` labels from the
+  analysis where it has none (see [Labels from the analysis](results.md#labels-from-the-analysis)). A label a human set
+  always wins, and an alias such as `bug` or `feature` counts as a type label.
+- **Input for later stages.** The developer, the test engineer and the reviewer get the newest analysis in their
+  prompt (`results.analysis`, see [Prompt template](#prompt-template)).
+- **Cost.** The analyst runs for every issue in `Ready`. `pipeline.analysis: when_unlabeled` skips it, without a
+  session, for issues that already carry a `Type:` and a `Complexity:` label (see
+  [Skipping stages without a session](#skipping-stages-without-a-session)).
+- **Slots.** The analyst has no reserved slot, so it needs a slot beyond the ones kept for the developer and the reviewer:
+  the shipped `agent.max_concurrent_agents` is 3. With 2 slots no issue in `Ready` would start; the dashboard and the log
+  name the stage that never starts.
 
 #### The test engineer
 
@@ -807,15 +844,24 @@ hooks:
     git fetch --quiet --prune origin
 
 agent:
-  max_concurrent_agents: ${SYMPHONY_MAX_CONCURRENT_AGENTS:-2}
+  max_concurrent_agents: ${SYMPHONY_MAX_CONCURRENT_AGENTS:-3}
   max_turns: ${SYMPHONY_MAX_TURNS:-10}
   max_continuations: ${SYMPHONY_MAX_CONTINUATIONS:-6}   # role switches without a result count, so keep a limit
   max_concurrent_agents_by_state:
     "Agent review": 1
 
 roles:
+  issue-analyst:                             # analyses every issue in Ready first, see "The issue analyst"
+    states: [Ready]
+    read_only: true
+    max_turns: 3
+    result: analysis
+    on_result: { ready: next, needs_info: Blocked }
+    may_move_to: [In progress, Blocked]
+    model_label: ignore
+    claude: { model: sonnet }
   developer:
-    states: [Ready, In progress]
+    states: [In progress]
     result: implementation                   # hands off with report_result, see "The shipped developer and reviewer"
     on_result: { done: Agent review, blocked: Blocked }
     may_move_to: [In progress, Agent review, Blocked]
@@ -881,7 +927,8 @@ How the pieces work together:
 
 | Step | Mechanism |
 |---|---|
-| `Ready`/`In progress` → developer session | [`roles`](#roles): the column decides the role, `role` selects the prompt section. A description that starts with `/refactoring` selects the `auditor` instead ([issue commands](#issue-commands)). |
+| `Ready` → issue analyst session | [`roles`](#roles): the column decides the role, `role` selects the prompt section. A description that starts with `/refactoring` selects the `auditor` instead ([issue commands](#issue-commands)). The analyst's `ready` moves the card to `In progress`. |
+| `In progress` → developer session | Same mechanism; the developer gets the analysis in `results.analysis`. |
 | Developer calls `report_result` (`done`) | The verdict leads to `Agent review` (`on_result`). [Transition guard](#transition-guard): `Agent review` is in the developer's `may_move_to`, so `checks.on_enter` runs; only exit `0` records the result and moves the card. |
 | Card in `Agent review` → reviewer session | Role switch ends the developer session; the reviewer starts in a fresh, read-only session, at most one at a time (`max_concurrent_agents_by_state`). |
 | Reviewer reports `approved` (`In review`) or `changes_needed` (`In progress`) | `In review` runs the same check again (cached for an unchanged, clean commit); `In progress` has no check. |
@@ -989,6 +1036,10 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
   - `results.test`: the newest test since the last reset, whatever its verdict, as `{verdict, summary, round, commands}`
     (`summary` cut to 1,500 characters), else `null`. With `failed_cases` it tells the developer why the cases failed and
     how to run them again.
+  - `results.analysis`: the newest analysis since the last reset, whatever its verdict, as `{verdict, summary, type,
+    complexity, components, acceptance_criteria, risks, docs_needed, open_questions, plan}` (`summary` cut to 1,500
+    characters; `risks` lists the flags that are set, e.g. `breaking change`), else `null`. The shipped prompts of the
+    developer, the test engineer and the reviewer print it as "Analysis of the issue analyst".
   - `round`: the round the role is working in, 1 for the first: the number of failed tests plus one for a role with
     `result: test`, else the number of reviews with `changes_needed` plus one (so a developer sees the review round it
     is fixing). 1 for roles without `result`.

@@ -107,8 +107,8 @@ Details: [choosing the model](docs/usage.md#choosing-the-model-per-issue) and
 ```
 Backlog ─▶ Ready ─▶ In progress ─[Checks]─▶ Agent review ─[Checks]─▶ In review ─▶ Done
    │         │            │            ▲          │                     │          │
-ignored   developer   developer        └─ changes reviewer           waits for   workspace
-          starts      works               needed  checks (read-      you         deleted
+ignored   analyst     developer        └─ changes reviewer           waits for   workspace
+          then dev    works               needed  checks (read-      you         deleted
                                                   only)
                  Blocked: an agent needs you (broken checks, open questions)
 ```
@@ -176,7 +176,9 @@ image without Traefik (`docker-compose.local.yml`) in
 
 ## 📋 Usage
 
-Move an issue to `Ready`. A developer agent implements it and opens a pull request. After the checks pass, a read-only
+Move an issue to `Ready`. A read-only analyst agent works out requirements, risks and refined acceptance criteria and
+sets `Type:` and `Complexity:` labels where the issue has none (or asks you a question in `Blocked`). A developer agent
+then implements it and opens a pull request. After the checks pass, a read-only
 reviewer agent reviews the work, then the card moves to `In review`. You merge the pull request and move the card to
 `Done`. Labels like `Model: sonnet` and `Effort: high` choose model and effort per issue; the dashboard
 (`SYMPHONY_PORT`) shows what runs, what starts next and why each issue waits, plus logs and cost.

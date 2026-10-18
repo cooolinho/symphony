@@ -282,6 +282,7 @@ describe('derivePipeline with the shipped workflow', () => {
     assert.deepEqual(
       stages.map((stage) => [stage.id, stage.status]),
       [
+        ['issue-analyst', 'done'],
         ['developer', 'done'],
         ['reviewer', 'active'],
         ['human:in review', 'pending'],
@@ -289,7 +290,7 @@ describe('derivePipeline with the shipped workflow', () => {
       ],
     );
     const done = await shippedPipeline('off', { boardColumns: BOARD_WITH_TESTING, issue: { state: 'Done', description: null }, sessions: developed });
-    assert.deepEqual(ids(done), ['developer', 'reviewer', 'human:in review', 'terminal:done']);
+    assert.deepEqual(ids(done), ['issue-analyst', 'developer', 'reviewer', 'human:in review', 'terminal:done']);
   });
 
   it('keeps the In review stage of this repository\'s board, where Testing sits after Done, while the stage is off', async () => {
@@ -301,6 +302,7 @@ describe('derivePipeline with the shipped workflow', () => {
     assert.deepEqual(
       stages.map((stage) => [stage.id, stage.status]),
       [
+        ['issue-analyst', 'done'],
         ['developer', 'done'],
         ['reviewer', 'done'],
         ['human:in review', 'active'],
@@ -315,6 +317,7 @@ describe('derivePipeline with the shipped workflow', () => {
     assert.deepEqual(
       stages.map((stage) => [stage.id, stage.status]),
       [
+        ['issue-analyst', 'done'],
         ['developer', 'done'],
         ['test-engineer', 'done'],
         ['reviewer', 'active'],
@@ -332,6 +335,7 @@ describe('derivePipeline with the shipped workflow', () => {
     assert.deepEqual(
       stages.map((stage) => [stage.id, stage.status]),
       [
+        ['issue-analyst', 'done'],
         ['developer', 'done'],
         ['test-engineer', 'active'],
         ['reviewer', 'pending'],
@@ -352,9 +356,9 @@ describe('derivePipeline with the shipped workflow', () => {
   it('shows the stage when the issue\'s workflow profile routes the developer to Testing', async () => {
     const profile = { onResult: { developer: { done: 'Testing' } } };
     const routed = await shippedPipeline('off', { boardColumns: BOARD_WITH_TESTING, sessions: developed, profile });
-    assert.deepEqual(ids(routed), ['developer', 'test-engineer', 'reviewer', 'human:in review', 'terminal:done']);
+    assert.deepEqual(ids(routed), ['issue-analyst', 'developer', 'test-engineer', 'reviewer', 'human:in review', 'terminal:done']);
     // Without the profile the stage is off again.
-    assert.deepEqual(ids(await shippedPipeline('off', { boardColumns: BOARD_WITH_TESTING, sessions: developed, profile: null })), ['developer', 'reviewer', 'human:in review', 'terminal:done']);
+    assert.deepEqual(ids(await shippedPipeline('off', { boardColumns: BOARD_WITH_TESTING, sessions: developed, profile: null })), ['issue-analyst', 'developer', 'reviewer', 'human:in review', 'terminal:done']);
   });
 
   it('shows every later stage for a role that hands over with `next`', async () => {
@@ -374,7 +378,7 @@ describe('derivePipeline with the shipped workflow', () => {
       boardColumns: BOARD_WITH_TESTING,
       sessions: [],
     });
-    assert.deepEqual(ids(stages), ['developer', 'test-engineer', 'reviewer', 'human:in review', 'terminal:done']);
+    assert.deepEqual(ids(stages), ['issue-analyst', 'developer', 'test-engineer', 'reviewer', 'human:in review', 'terminal:done']);
   });
 });
 

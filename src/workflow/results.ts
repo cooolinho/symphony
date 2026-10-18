@@ -87,8 +87,8 @@ const commonShape = {
 /** Kind-specific fields: everything optional so a stage only reports what it has. */
 const kindShapes = {
   analysis: {
-    type: text(NAME_MAX).optional().describe('Kind of change, e.g. feature, bug, refactor, docs, chore'),
-    complexity: z.enum(COMPLEXITIES).optional(),
+    type: text(NAME_MAX).optional().describe('Kind of change: bugfix, feature or refactor become the issue\'s Type: label when it has none; other values (docs, chore) are only reported'),
+    complexity: z.enum(COMPLEXITIES).optional().describe('S, M, L or XL; becomes the issue\'s Complexity: label when it has none'),
     components: list(text(NAME_MAX)).describe('Affected modules, directories or services'),
     acceptance_criteria: list(text()),
     risks: z

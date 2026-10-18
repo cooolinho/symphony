@@ -2,8 +2,9 @@
 
 ## The lifecycle of an issue
 
-The bundled `WORKFLOW.md` works with two **roles**: a *developer* implements the issue, a *reviewer* checks it
-without changing anything. The column decides which role runs. Between the roles there are **checks**
+The bundled `WORKFLOW.md` works with three **roles**: an *issue analyst* examines the issue before anything is built
+(requirements, risks, refined acceptance criteria, `Type:` and `Complexity:` labels), a *developer* implements it, a
+*reviewer* checks it without changing anything. The column decides which role runs. Between the roles there are **checks**
 (`checks/laravel.sh`: clean and pushed branch, lint, static analysis, tests) that Symphony runs itself before a card
 may move to `Agent review` or `In review`. In repositories without a Laravel app the checks pass right away
 (exit 0).
@@ -15,7 +16,12 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
    the issue's repository there and uses `hooks/laravel-env.sh` to set up a separate `.env` with an SQLite database for
    each Laravel app. Before each run, `before_run` fetches the latest state (`git fetch`). If the clone contains a
    Laravel app with Laravel Boost, Symphony prepares Boost (see [Laravel Boost](#laravel-boost)).
-3. **Developer** (`Ready`, `In progress`): Claude Code starts in the workspace with the developer part of the prompt.
+3. **Issue analyst** (`Ready`): a short read-only session. It reads the project instructions and the code, then
+   reports the requirements, affected components, risks, refined acceptance criteria and a plan with `report_result`.
+   Symphony sets `Type:` and `Complexity:` where the issue has no such label (yours stay) and moves the issue to
+   `In progress`. If the analyst needs an answer first (`needs_info`), the issue goes to `Blocked` with the open
+   questions in the comment; answer in a comment and move it back to `Ready`.
+   **Developer** (`In progress`): Claude Code starts in the workspace with the developer part of the prompt.
    The agent
    - reads the repository's `AGENTS.md`, `CLAUDE.md` and `README.md`, plus the issue's comments and pull requests
      (including earlier reviews),
@@ -51,8 +57,8 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
 | Column | What Symphony does |
 |---|---|
 | `Backlog` | nothing. Issues here are not released yet. |
-| `Ready` | starts a developer as soon as a slot is free |
-| `In progress` | a developer is working; if Symphony finds an issue here without an agent, it starts one |
+| `Ready` | starts the issue analyst as soon as a slot is free; it hands the issue on to `In progress` |
+| `In progress` | a developer is working (it gets the analysis); if Symphony finds an issue here without an agent, it starts one |
 | `Agent review` | starts a reviewer (at most one at a time); only reachable after passing checks |
 | `Blocked` | stops a running agent; the workspace is kept. The agent needs you, see its comment. |
 | `In review` | stops a running agent; the workspace is kept for follow-up work. Only the reviewer moves cards here, after passing checks. |
@@ -1084,7 +1090,7 @@ The most common settings in the `WORKFLOW.md`. All options are described in
 
 | Setting | Effect |
 |---|---|
-| `agent.max_concurrent_agents` | how many agents run at the same time (default here: 2) |
+| `agent.max_concurrent_agents` | how many agents run at the same time (default here: 3) |
 | `agent.max_concurrent_agents_by_state` | limit per column, e.g. `{ "In progress": 1 }` |
 | `agent.max_turns` | turns per session before Symphony reassesses the state |
 | `agent.max_continuations` | continuation sessions per issue (including role changes), then pause |

@@ -33,6 +33,22 @@ reported to the agent instead of being dropped silently.
 | `docs` | `done`, `not_needed`, `blocked` | `files[]` |
 | `skipped`, `reset` | same as the kind | internal, recorded by Symphony without agent input (`skipped`: a stage passed [without a session](configuration.md#skipping-stages-without-a-session)) |
 
+## Labels from the analysis
+
+When an `analysis` result is recorded, `report_result` sets the issue's `Type:` and `Complexity:` labels from the
+result's `type` and `complexity`, right before it moves the issue (so the next stage, its workflow profile and its model
+see them):
+
+- Only a family the issue has no label of is filled in. A human's `Type:` or `Complexity:` label is never overwritten, an
+  alias such as `bug`, `enhancement`, `feature` or `refactoring` counts as a type label, and so do labels that are
+  unusable (an unknown value, conflicting values): such an issue is left alone.
+- The reported `type` maps to `Type: bugfix`, `Type: feature` or `Type: refactor` (the aliases `bug`, `enhancement` and
+  `refactoring` included, case-insensitive). Any other value (`docs`, `chore`) adds no `Type:` label. `complexity` is
+  `S`, `M`, `L` or `XL`.
+- Both verdicts apply it (`needs_info` too, when the fields are given). The labels are created in the repository when
+  it lacks them. The labels it added show in the tool's `labels.added`. A failure to add them is a warning; the result
+  and the move stand.
+
 ## Consistency rules
 
 - `blocked` needs at least one blocker.

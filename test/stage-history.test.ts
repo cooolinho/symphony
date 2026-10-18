@@ -188,3 +188,62 @@ describe('resultsTemplateValue: the test result for the developer and the test e
     assert.equal(value.test?.summary.length, PROMPT_SUMMARY_LIMIT);
   });
 });
+
+describe('resultsTemplateValue: the analysis for the later stages', () => {
+  function analysed(input: Record<string, unknown>): PersistedResult {
+    const parsed = parseResult('analysis', input);
+    assert.ok(parsed.ok, parsed.ok ? '' : parsed.message);
+    clock += 1;
+    return {
+      result: parsed.result,
+      meta: {
+        role: 'issue-analyst',
+        run: `run-${clock}`,
+        round: null,
+        profile: null,
+        workflow_hash: null,
+        head_sha: null,
+        checks: null,
+        target: 'In progress',
+        created_at: new Date(Date.UTC(2026, 9, 18, 10, 0, clock)).toISOString(),
+      },
+    };
+  }
+  const READY = {
+    verdict: 'ready',
+    summary: 'One component.',
+    type: 'feature',
+    complexity: 'M',
+    components: ['src/invoices'],
+    acceptance_criteria: ['Lists every invoice'],
+    risks: { security: false, data_migration: true, breaking_change: true },
+    docs_needed: true,
+    plan: ['Add the exporter', 'Test it'],
+  };
+
+  it('hands the newest analysis on: criteria, components, risks that apply, docs and plan', () => {
+    const value = resultsTemplateValue(buildStageHistory([analysed({ verdict: 'needs_info', summary: 'Unclear.', open_questions: ['Which format?'] }), analysed(READY)]));
+    assert.deepEqual(value.analysis, {
+      verdict: 'ready',
+      summary: 'One component.',
+      type: 'feature',
+      complexity: 'M',
+      components: ['src/invoices'],
+      acceptance_criteria: ['Lists every invoice'],
+      risks: ['data migration', 'breaking change'],
+      docs_needed: true,
+      open_questions: [],
+      plan: ['Add the exporter', 'Test it'],
+    });
+  });
+
+  it('is empty without an analysis, and forgets it at a reset', () => {
+    assert.equal(resultsTemplateValue(buildStageHistory([])).analysis, null);
+    assert.equal(resultsTemplateValue(buildStageHistory([analysed(READY), entry('reset', 'reset')])).analysis, null);
+  });
+
+  it('leaves out what the analysis did not report', () => {
+    const value = resultsTemplateValue(buildStageHistory([analysed({ verdict: 'ready', summary: 'Small.' })]));
+    assert.deepEqual([value.analysis?.type, value.analysis?.complexity, value.analysis?.docs_needed, value.analysis?.risks, value.analysis?.plan], [null, null, null, [], []]);
+  });
+});

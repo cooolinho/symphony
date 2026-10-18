@@ -769,7 +769,8 @@ describe('result-driven roles and the pipeline section', () => {
       const role = config.roles?.find((candidate) => candidate.name === name);
       return [role?.result, role?.onResult, role?.onCheckFailed, role?.onMissingResult, role?.onRoundLimit];
     };
-    // The developer, the test engineer and the reviewer hand off with report_result; every other role keeps the neutral values.
+    // The issue analyst, the developer, the test engineer and the reviewer hand off with report_result; every other role keeps the neutral values.
+    assert.deepEqual(transitions('issue-analyst'), ['analysis', { ready: 'next', needs_info: 'Blocked' }, null, 'Blocked', null]);
     assert.deepEqual(transitions('developer'), ['implementation', { done: 'Agent review', blocked: 'Blocked' }, null, 'Blocked', null]);
     assert.deepEqual(transitions('test-engineer'), ['test', { passed: 'Agent review', failed: 'In progress', blocked: 'Blocked' }, null, 'Blocked', null]);
     assert.deepEqual(
@@ -779,7 +780,7 @@ describe('result-driven roles and the pipeline section', () => {
     assert.equal(config.pipeline.maxReviewRounds, 3);
     assert.equal(config.pipeline.maxTestRounds, 2);
     for (const role of config.roles ?? []) {
-      if (role.name === 'developer' || role.name === 'test-engineer' || role.name === 'reviewer') continue;
+      if (['issue-analyst', 'developer', 'test-engineer', 'reviewer'].includes(role.name)) continue;
       assert.deepEqual([role.result, role.onResult, role.onCheckFailed, role.onMissingResult, role.onRoundLimit], [null, {}, null, null, null], role.name);
     }
   });

@@ -110,6 +110,22 @@ export interface ResultsTemplateValue {
    * failed, its commands how to run the tests again.
    */
   test: { verdict: string; summary: string; round: number | null; commands: string[] } | null;
+  /**
+   * The newest analysis since the last reset, whatever its verdict; null without one. Later stages work from it: the
+   * refined acceptance criteria, the affected components, the risks and the plan.
+   */
+  analysis: {
+    verdict: string;
+    summary: string;
+    type: string | null;
+    complexity: string | null;
+    components: string[];
+    acceptance_criteria: string[];
+    risks: string[];
+    docs_needed: boolean | null;
+    open_questions: string[];
+    plan: string[];
+  } | null;
 }
 
 /** The newest result of a kind since the last `reset`. */
@@ -127,6 +143,7 @@ export function resultsTemplateValue(history: StageHistory): ResultsTemplateValu
   const review = newest(history, 'review')?.result;
   const testEntry = newest(history, 'test');
   const test = testEntry?.result;
+  const analysis = newest(history, 'analysis')?.result;
   return {
     latest: [...history.latestByRole.values()]
       .filter(({ result }) => result.kind !== 'reset')
@@ -156,6 +173,23 @@ export function resultsTemplateValue(history: StageHistory): ResultsTemplateValu
     test:
       test?.kind === 'test'
         ? { verdict: test.verdict, summary: truncate(test.summary, PROMPT_SUMMARY_LIMIT), round: testEntry?.meta.round ?? null, commands: test.commands }
+        : null,
+    analysis:
+      analysis?.kind === 'analysis'
+        ? {
+            verdict: analysis.verdict,
+            summary: truncate(analysis.summary, PROMPT_SUMMARY_LIMIT),
+            type: analysis.type ?? null,
+            complexity: analysis.complexity ?? null,
+            components: analysis.components,
+            acceptance_criteria: analysis.acceptance_criteria,
+            risks: Object.entries(analysis.risks ?? {})
+              .filter(([, flagged]) => flagged === true)
+              .map(([risk]) => risk.replaceAll('_', ' ')),
+            docs_needed: analysis.docs_needed ?? null,
+            open_questions: analysis.open_questions,
+            plan: analysis.plan,
+          }
         : null,
   };
 }

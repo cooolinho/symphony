@@ -4,10 +4,10 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import { Logger } from '../src/log.ts';
 import { createGuard, guardTools, toolsForRole } from '../src/orchestrator/guard.ts';
-import { RESULT_RECORDED_NOTE, RESULT_TOOL, createResultTool, type ResultToolParams } from '../src/orchestrator/result-tool.ts';
+import { RESULT_RECORDED_NOTE, RESULT_TOOL, classificationLabels, createResultTool, type ResultToolParams } from '../src/orchestrator/result-tool.ts';
 import { buildStageHistory } from '../src/orchestrator/stage-history.ts';
 import type { Issue, StatusChange, ToolResult } from '../src/tracker/types.ts';
-import { decodeMarker, toolInputShape } from '../src/workflow/results.ts';
+import { decodeMarker, parseResult, toolInputShape } from '../src/workflow/results.ts';
 import { WorkspaceManager } from '../src/workspace/manager.ts';
 import { FakeTracker, baseFront, makeIssue, makeWorkflow, tempDir } from './helpers.ts';
 
@@ -22,6 +22,7 @@ const ROLES = {
     on_round_limit: 'In review',
   },
   planner: { states: ['Todo'], commands: ['plan'], result: 'analysis', may_move_to: ['In progress', 'Blocked'], on_result: { ready: 'next' } },
+  analyst: { states: ['Ready'], read_only: true, result: 'analysis', may_move_to: ['In progress', 'Blocked'], on_result: { ready: 'In progress', needs_info: 'Blocked' } },
   tester: {
     states: ['Testing'],
     result: 'test',
@@ -51,7 +52,7 @@ function setup(options: SetupOptions = {}) {
     tracker: {
       kind: 'github_project',
       provider: { owner: 'acme', project_number: 1, token: 'test-token' },
-      active_states: ['Todo', 'In progress', 'Testing', 'Agent review'],
+      active_states: ['Todo', 'Ready', 'In progress', 'Testing', 'Agent review'],
     },
     roles: { ...ROLES, reviewer: { ...ROLES.reviewer, ...options.reviewer } },
     pipeline: { max_review_rounds: 3, max_test_rounds: 2 },
@@ -580,5 +581,87 @@ describe('report_result', () => {
   it('refuses a role without result', () => {
     const { params } = setup();
     assert.throws(() => createResultTool({ ...params, role: { ...params.role, result: null } }), /reports no result/);
+  });
+});
+
+describe('classificationLabels', () => {
+  const analysis = (input: Record<string, unknown>) => {
+    const parsed = parseResult('analysis', { verdict: 'ready', summary: 'Analysed.', ...input });
+    assert.ok(parsed.ok, parsed.ok ? '' : parsed.message);
+    return parsed.result;
+  };
+
+  it('adds Type: and Complexity: for an issue without either', () => {
+    assert.deepEqual(classificationLabels(analysis({ type: 'bugfix', complexity: 'S' }), ['area:agent']), ['Type: bugfix', 'Complexity: S']);
+  });
+
+  it('maps the aliases of the type and ignores case and whitespace', () => {
+    for (const [reported, label] of [['bug', 'bugfix'], ['Enhancement', 'feature'], [' Feature ', 'feature'], ['refactoring', 'refactor']] as const) {
+      assert.deepEqual(classificationLabels(analysis({ type: reported }), []), [`Type: ${label}`], reported);
+    }
+  });
+
+  it('adds nothing for a type the labels do not know, or for fields the analysis did not report', () => {
+    assert.deepEqual(classificationLabels(analysis({ type: 'docs' }), []), []);
+    assert.deepEqual(classificationLabels(analysis({}), []), []);
+  });
+
+  it('never overwrites a human label: Type:, Complexity:, or an alias such as bug and feature', () => {
+    assert.deepEqual(classificationLabels(analysis({ type: 'feature', complexity: 'L' }), ['Type: bugfix']), ['Complexity: L']);
+    assert.deepEqual(classificationLabels(analysis({ type: 'feature', complexity: 'L' }), ['Complexity: S']), ['Type: feature']);
+    assert.deepEqual(classificationLabels(analysis({ type: 'refactor', complexity: 'L' }), ['bug', 'Complexity: S']), []);
+    assert.deepEqual(classificationLabels(analysis({ type: 'bugfix' }), ['feature']), []);
+  });
+
+  it('leaves an issue alone whose own Type: or Complexity: labels are unusable (unknown value, conflict)', () => {
+    assert.deepEqual(classificationLabels(analysis({ type: 'feature', complexity: 'M' }), ['Type: banana', 'Complexity: S', 'Complexity: L']), []);
+  });
+
+  it('only applies to an analysis', () => {
+    const parsed = parseResult('review', APPROVED);
+    assert.ok(parsed.ok);
+    assert.deepEqual(classificationLabels(parsed.result, []), []);
+  });
+});
+
+describe('report_result of an analysis', () => {
+  const analysisTool = (labels: string[] = []) => setup({ role: 'analyst', state: 'Ready', labels });
+
+  it('sets the missing Type: and Complexity: labels before the status change, and reports them', async () => {
+    const { report, tracker, current } = analysisTool();
+    const order: string[] = [];
+    const setStatus = tracker.setStatus.bind(tracker);
+    tracker.setStatus = async (issue, column) => {
+      order.push(`status:${current().labels.join(',')}`);
+      return setStatus(issue, column);
+    };
+    const result = data(await report({ verdict: 'ready', summary: 'Clear.', type: 'bugfix', complexity: 'M' }));
+    assert.deepEqual(order, ['status:type: bugfix,complexity: m']);
+    assert.equal(result.target, 'In progress');
+    assert.deepEqual(result.labels, { added: ['Type: bugfix', 'Complexity: M'], removed: [] });
+  });
+
+  it('leaves labels a human set alone', async () => {
+    const { report, current } = analysisTool(['Type: refactor', 'Complexity: XL']);
+    const result = data(await report({ verdict: 'ready', summary: 'Clear.', type: 'bugfix', complexity: 'S' }));
+    assert.equal(result.labels, undefined);
+    assert.deepEqual(current().labels, ['Type: refactor', 'Complexity: XL']);
+  });
+
+  it('records the result when a label cannot be added: a warning, the move stands', async () => {
+    const { report, tracker } = analysisTool();
+    tracker.addLabels = async () => {
+      throw new Error('label API down');
+    };
+    const result = data(await report({ verdict: 'ready', summary: 'Clear.', type: 'bugfix', complexity: 'M' }));
+    assert.equal(result.target, 'In progress');
+    assert.match(String((result.warnings as string[])[0]), /could not add label\(s\) Type: bugfix, Complexity: M: label API down/);
+  });
+
+  it('adds nothing for a repeated call', async () => {
+    const { report, current } = analysisTool();
+    await report({ verdict: 'ready', summary: 'Clear.', type: 'bugfix' });
+    assert.equal(data(await report({ verdict: 'ready', summary: 'Clear.', type: 'bugfix', complexity: 'XL' })).already_recorded, true);
+    assert.deepEqual(current().labels, ['type: bugfix']);
   });
 });
