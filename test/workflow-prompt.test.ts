@@ -132,7 +132,7 @@ describe('shipped WORKFLOW.md', () => {
     const config = resolveWith({});
     const tester = roleFor({ state: 'Testing', description: null }, config.roles);
     assert.equal(tester?.name, 'test-engineer');
-    assert.deepEqual(config.tracker.activeStates, ['Ready', 'In progress', 'Testing', 'Agent review']);
+    assert.deepEqual(config.tracker.activeStates, ['Ready', 'Design', 'In progress', 'Testing', 'Agent review']);
     assert.deepEqual(
       [tester?.result, tester?.onResult, tester?.readOnly, tester?.modelLabel, tester?.claude.model, tester?.agents],
       ['test', { passed: 'Agent review', failed: 'In progress', blocked: 'Blocked' }, false, 'ignore', 'sonnet', ['laravel-test-engineer']],
@@ -151,7 +151,7 @@ describe('shipped WORKFLOW.md', () => {
   });
 
   describe('bugfix profile', () => {
-    const BOARD = ['Backlog', 'Ready', 'In progress', 'Testing', 'Agent review', 'Blocked', 'In review', 'Done'];
+    const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Blocked', 'In review', 'Done'];
     const resolveWith = async (extra: NodeJS.ProcessEnv = {}) => {
       const { definition } = await loadWorkflowFile(shipped);
       return resolveConfig(definition.config, {
@@ -165,24 +165,29 @@ describe('shipped WORKFLOW.md', () => {
       const profile = profileFor(config.pipeline, issueTemplateValue(makeIssue({ ...issue, labels }), new Map(), config.pipeline).type as never);
       const roleConfig = config.roles?.find((candidate) => candidate.name === role);
       assert.ok(roleConfig);
-      const outcome = resolveTransition({ role: roleConfig, verdict, history: { reviewRounds: 0, testRounds: 0 }, profile, flags: {}, config, boardColumns: board });
+      const outcome = resolveTransition({ role: roleConfig, verdict, history: { reviewRounds: 0, testRounds: 0 }, profile, config, boardColumns: board, issue: { description: null, labels } });
       assert.ok(outcome.ok, outcome.ok ? '' : outcome.problem);
       return outcome.target;
     };
 
-    it('defines the profile without an architect: only the developer hands over to Testing, and the config has no warnings', async () => {
+    it('defines the profiles: only the bugfix developer hands over to Testing, the architect is skipped for small issues, and the config has no warnings', async () => {
       const config = await resolveWith();
-      assert.deepEqual([...config.pipeline.profiles.keys()], ['bugfix']);
+      assert.deepEqual([...config.pipeline.profiles.keys()], ['bugfix', 'feature', 'refactor', 'default']);
       const bugfix = config.pipeline.profiles.get('bugfix');
       assert.deepEqual(bugfix?.onResult, { developer: { done: 'Testing' } });
       assert.deepEqual(bugfix?.skip, []);
-      assert.equal(config.roles?.some((role) => role.name.includes('architect')), false, 'the architect is a subagent, not a stage');
+      assert.deepEqual(bugfix?.skipWhen, { architect: ['S', 'M'] });
+      for (const name of ['feature', 'refactor', 'default']) {
+        assert.deepEqual(config.pipeline.profiles.get(name)?.onResult, {}, name);
+        assert.deepEqual(config.pipeline.profiles.get(name)?.skipWhen, { architect: ['S'] }, name);
+      }
+      assert.equal(config.roles?.some((role) => role.name === 'architect'), true, 'the architect is a stage in Design');
       assert.equal(config.warnings?.length ?? 0, 0);
     });
 
     it('routes a bug through the analyst, developer, test engineer and reviewer to In review', async () => {
       const config = await resolveWith();
-      for (const labels of [['bug'], ['type: bugfix']]) {
+      for (const labels of [['bug', 'complexity: s'], ['type: bugfix', 'complexity: m']]) {
         assert.equal(target(config, labels, 'issue-analyst', 'ready'), 'In progress', labels.join());
         assert.equal(target(config, labels, 'developer', 'done'), 'Testing', labels.join());
         assert.equal(target(config, labels, 'test-engineer', 'passed'), 'Agent review', labels.join());
@@ -218,6 +223,8 @@ describe('shipped WORKFLOW.md', () => {
       const { definition } = await loadWorkflowFile(shipped);
       const front = structuredClone(definition.config) as Record<string, any>;
       front.tracker.active_states = ['Ready', 'In progress', 'Agent review'];
+      delete front.roles.architect;
+      for (const profile of Object.values(front.pipeline.profiles) as Array<Record<string, unknown>>) delete profile.skip_when;
       delete front.roles['test-engineer'];
       front.roles.developer.on_result.done = 'Agent review';
       delete front.checks.on_enter.Testing;
@@ -258,7 +265,7 @@ describe('shipped WORKFLOW.md', () => {
       [analyst?.readOnly, analyst?.result, analyst?.onResult, analyst?.maxTurns, analyst?.modelLabel, analyst?.claude.model, analyst?.agents, analyst?.commands],
       [true, 'analysis', { ready: 'next', needs_info: 'Blocked' }, 3, 'ignore', 'sonnet', ['laravel-architect'], null],
     );
-    assert.deepEqual(analyst?.mayMoveTo, ['In progress', 'Blocked']);
+    assert.deepEqual(analyst?.mayMoveTo, ['Design', 'In progress', 'Blocked']);
     // The developer serves only In progress, so a Ready issue never reaches it without the analysis.
     assert.deepEqual(config.roles?.find((role) => role.name === 'developer')?.states, ['in progress']);
     assert.equal(roleName(roleFor({ state: 'Ready', description: 'Add invoices' }, config.roles)), 'issue-analyst');
@@ -324,6 +331,66 @@ describe('shipped WORKFLOW.md', () => {
     for (const role of ['developer', 'test-engineer', 'reviewer']) {
       assert.doesNotMatch(await render(role), /Analysis of the issue analyst/, role);
     }
+  });
+
+  it('renders the read-only architect prompt: what to decide, the design fields and how to handle each answer', async () => {
+    const agents = [{ name: 'symphony:laravel-architect', description: 'Plans features' }];
+    const prompt = await render('architect', null, undefined, 'develop', agents, { result_required: true, round: 1 });
+    assert.match(prompt, /Your role: architect/);
+    assert.match(prompt, /You are \*\*read-only\*\*: do not edit files, commit, push or open a pull request/);
+    assert.match(prompt, /`get_issue`, `add_comment` and `report_result`/);
+    for (const field of ['verdict', 'summary', 'decision', 'options', 'components', 'interfaces', 'migrations', 'compatibility', 'follow_ups']) {
+      assert.ok(prompt.includes(`\`${field}\``), `the prompt names ${field}`);
+    }
+    assert.match(prompt, /`ready` needs a `decision`, at least one `components` entry and at least one `interfaces` entry/);
+    assert.match(prompt, /`blocked` \(a human must decide something first, with at least one entry in `blockers`\)/);
+    assert.match(prompt, /`invalid_result`.*call `report_result` again/);
+    assert.match(prompt, /`symphony:laravel-architect`: Plans features/);
+    assert.doesNotMatch(prompt, /set_status/);
+    assert.doesNotMatch(prompt, /open_pull_request/);
+    assert.doesNotMatch(prompt, /Your role: developer/);
+    assert.doesNotMatch(prompt, /Design of the architect/);
+  });
+
+  it('gives the developer the design of the architect, and nothing without one', async () => {
+    const results = {
+      latest: [],
+      open_findings: [],
+      failed_cases: [],
+      test: null,
+      analysis: null,
+      design: {
+        verdict: 'ready',
+        summary: 'Extend the existing exporter.',
+        decision: 'A new InvoiceExporter next to the others',
+        components: ['InvoiceExporter: writes the CSV', 'ExportCommand: wires it up'],
+        interfaces: ['exportInvoices(list): string'],
+        migrations: ['add invoices.exported_at'],
+        compatibility: 'Existing exports are unchanged',
+        options: ['A new service', 'Extend the exporter'],
+      },
+    };
+    const prompt = await render('developer', null, undefined, null, [], { result_required: true, round: 1, results });
+    assert.match(prompt, /## Design of the architect/);
+    assert.match(prompt, /Implement this design;.*`plan_deviations`/);
+    assert.match(prompt, /Extend the existing exporter\./);
+    assert.match(prompt, /Decision: A new InvoiceExporter next to the others/);
+    assert.match(prompt, /Components:\n- InvoiceExporter: writes the CSV\n- ExportCommand: wires it up/);
+    assert.match(prompt, /Interfaces:\n- exportInvoices\(list\): string/);
+    assert.match(prompt, /Migrations:\n- add invoices\.exported_at/);
+    assert.match(prompt, /Compatibility: Existing exports are unchanged/);
+    assert.match(prompt, /Options considered:\n- A new service\n- Extend the exporter/);
+    // Only the developer implements it: the other roles do not get the block.
+    for (const role of ['reviewer', 'test-engineer', 'issue-analyst']) {
+      assert.doesNotMatch(await render(role, null, undefined, null, [], { result_required: true, round: 1, results }), /Design of the architect/, role);
+    }
+    // Nothing is rendered without a design (a skipped stage, an old issue, the empty results).
+    assert.doesNotMatch(await render('developer'), /Design of the architect/);
+    assert.doesNotMatch(await render('developer', null, undefined, null, [], { result_required: true, round: 1, results: { ...results, design: null } }), /Design of the architect/);
+    // A design that left the optional fields out renders only what it has.
+    const minimal = await render('developer', null, undefined, null, [], { result_required: true, round: 1, results: { ...results, design: { ...results.design, migrations: [], compatibility: null, options: [] } } });
+    assert.doesNotMatch(minimal, /Migrations:|Compatibility:|Options considered:/);
+    assert.match(minimal, /Interfaces:/);
   });
 
   it('renders the test engineer prompt: its paths, the test round, the result fields and how to handle each answer', async () => {
@@ -736,6 +803,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
     const byRole = Object.fromEntries((config.roles ?? []).map((role) => [role.name, role.agents]));
     assert.deepEqual(byRole, {
       'issue-analyst': ['laravel-architect'],
+      architect: ['laravel-architect'],
       developer: ['laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer'],
       'test-engineer': ['laravel-test-engineer'],
       reviewer: ['laravel-code-reviewer'],

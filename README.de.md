@@ -129,6 +129,10 @@ und Token stehen in der **`.env`**.
   wiederverwendet und gelöscht, sobald das Issue auf *Done* steht.
 - **Developer und Reviewer:** Rollen pro Spalte. Vor `Agent review` und `In review` laufen Checks (Lint, statische
   Analyse, Tests); scheitern sie, bleibt die Karte stehen und der Agent bessert nach.
+- **Architect:** Größere Änderungen (Features und Refactorings ab Komplexität `M`, Bugs der Komplexität `L`/`XL`) laufen
+  zuerst durch die Spalte `Design`: Ein lesender Architect-Agent entscheidet über den Ansatz (Komponenten, Schnittstellen),
+  und der Developer setzt dieses Design um. Kleine Issues überspringen die Spalte ohne Session
+  ([Details](docs/configuration.md#the-architect)).
 - **Test Engineer:** Ein unabhängiger Agent in der Spalte `Testing` (Bug-Issues immer, andere Issues optional) schreibt Tests für die
   Akzeptanzkriterien und darf nur Testdateien ändern; fehlgeschlagene Tests gehen mit den betroffenen Fällen zurück an
   den Developer, und nach `pipeline.max_test_rounds` fehlgeschlagenen Runden wartet das Issue auf dich
@@ -170,7 +174,7 @@ npm run dry-run         # Einrichtung prüfen, startet keine Agenten
 npm start               # Symphony starten
 ```
 
-Dazwischen legst du ein GitHub Project Board mit den Spalten `Backlog`, `Ready`, `In progress`, `Testing`,
+Dazwischen legst du ein GitHub Project Board mit den Spalten `Backlog`, `Ready`, `Design`, `In progress`, `Testing`,
 `Agent review`, `Blocked`, `In review` und `Done` an. Die ausführliche Anleitung steht in
 [docs/getting-started.md](docs/getting-started.md), den Betrieb per Docker hinter Traefik beschreibt
 [docs/docker.md](docs/docker.md), einen lokalen Testlauf desselben Images ohne Traefik (`docker-compose.local.yml`)
@@ -181,7 +185,7 @@ Englisch.
 
 Du schiebst ein Issue nach `Ready`. Ein lesender Analyst-Agent arbeitet Anforderungen, Risiken und geschärfte
 Akzeptanzkriterien heraus und setzt `Type:`- und `Complexity:`-Labels, wo das Issue keine hat (oder stellt dir eine
-Frage in `Blocked`). Danach setzt ein Developer-Agent es um und öffnet einen Pull Request. Nach bestandenen
+Frage in `Blocked`). Bei größeren Änderungen entscheidet danach ein Architect-Agent in `Design` über den Ansatz. Dann setzt ein Developer-Agent es um und öffnet einen Pull Request. Nach bestandenen
 Checks prüft ein lesender Reviewer-Agent die Arbeit, danach landet die Karte in `In review`. Du mergst den Pull Request
 und schiebst die Karte nach `Done`. Mit Labels wie `Model: sonnet` und `Effort: high` wählst du Modell und Effort pro
 Issue; das Dashboard (`SYMPHONY_PORT`) zeigt, was läuft, was als Nächstes startet und warum ein Issue wartet, dazu

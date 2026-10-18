@@ -501,7 +501,7 @@ roles:
     max_turns: 3
     result: analysis
     on_result: { ready: next, needs_info: Blocked }
-    may_move_to: [In progress, Blocked]
+    may_move_to: [Design, In progress, Blocked]
     model_label: ignore               # sonnet, whatever the issue's Model: label picks for the developer
     agents: [laravel-architect]
     claude: { model: sonnet }
@@ -509,20 +509,63 @@ roles:
 
 - The analyst reads the project instructions and the code and reports an [`analysis` result](results.md#kinds):
   requirements in the summary, `components`, refined `acceptance_criteria`, `risks`, `docs_needed`, the `plan`, and a
-  `type` and `complexity`. `ready` moves the issue on (`next`: `In progress`, served by the developer); `needs_info`
+  `type` and `complexity`. `ready` moves the issue on (`next`: `Design` for a larger change, else `In progress`; see
+  [The architect](#the-architect)); `needs_info`
   needs at least one open question, moves the issue to `Blocked` and shows the questions in the comment. A human answers
   in a comment and moves the issue back to `Ready`; the analyst then runs again.
 - **Labels.** Right before the status change, `report_result` sets the issue's `Type:` and `Complexity:` labels from the
   analysis where it has none (see [Labels from the analysis](results.md#labels-from-the-analysis)). A label a human set
   always wins, and an alias such as `bug` or `feature` counts as a type label.
-- **Input for later stages.** The developer, the test engineer and the reviewer get the newest analysis in their
-  prompt (`results.analysis`, see [Prompt template](#prompt-template)).
+- **Input for later stages.** The architect, the developer, the test engineer and the reviewer get the newest analysis in
+  their prompt (`results.analysis`, see [Prompt template](#prompt-template)).
 - **Cost.** The analyst runs for every issue in `Ready`. `pipeline.analysis: when_unlabeled` skips it, without a
   session, for issues that already carry a `Type:` and a `Complexity:` label (see
   [Skipping stages without a session](#skipping-stages-without-a-session)).
 - **Slots.** The analyst has no reserved slot, so it needs a slot beyond the ones kept for the developer and the reviewer:
   the shipped `agent.max_concurrent_agents` is 3. With 2 slots no issue in `Ready` would start; the dashboard and the log
   name the stage that never starts.
+
+#### The architect
+
+Larger features and refactorings get an explicit architecture decision before the implementation. The shipped
+`WORKFLOW.md` has a `Design` column between `Ready` and `In progress` and a read-only `architect` role for it. Small
+issues skip the column without a session, so a bugfix of complexity `S` costs nothing extra.
+
+```yaml
+roles:
+  architect:
+    states: [Design]
+    read_only: true
+    max_turns: 4
+    result: design
+    on_result: { ready: In progress, blocked: Blocked }
+    may_move_to: [In progress, Blocked]
+    model_label: ignore               # opus, whatever the issue's Model: label picks for the developer
+    agents: [laravel-architect]
+    claude: { model: opus }
+```
+
+- The architect reads the code and reports a [`design` result](results.md#kinds): the `options` it compared, the
+  `decision`, the `components` and `interfaces` of the change, `migrations` and `compatibility`. `ready` needs a decision
+  and at least one component and one interface (`report_result` refuses a generic design with `invalid_result`);
+  `blocked` needs a blocker and moves the issue to `Blocked`. It may start the `laravel-architect` subagent.
+- **The developer implements the design.** `ready` moves the issue to `In progress`, and the developer's prompt contains
+  the newest design (`results.design`, see [Prompt template](#prompt-template)). Where the design does not fit the code,
+  the developer deviates and says so in `plan_deviations`.
+- **When it runs.** The condition is `skip_when` in the [workflow profile](#workflow-profiles): the shipped
+  `WORKFLOW.md` skips the architect for features, refactors and untyped issues of complexity `S` (they run it from `M`),
+  and for bugfixes of complexity `S` and `M` (only `L` and `XL` run it). The complexity is the issue's `Complexity:`
+  label, which the issue analyst sets.
+- **No usable complexity label: the stage runs.** An issue without a `Complexity:` label, with an unknown value or with
+  conflicting labels cannot be judged small, so `skip_when` never matches and the architect runs.
+- **Board and entry checks.** The `Design` column must exist on the board, in order between `Ready` and `In progress`,
+  and be an active state. A skipped stage moves the issue without a workspace, so neither `Design` nor the column after it
+  (`In progress`) may have a `checks.on_enter` script; the dispatch preflight reports a configuration that does
+  (`pipeline.profiles.feature.skip_when.architect: skipping architect moves issues from "Design" to … without a
+  workspace, but checks.on_enter has a script for …`).
+- **Slots.** Like the analyst, the architect has no reserved slot and needs one beyond the ones kept for the developer
+  and the reviewer; a skipped stage needs none.
+- **Not included.** Splitting the work into work packages is not part of this stage; `work_packages` stay optional.
 
 #### The test engineer
 
@@ -765,6 +808,8 @@ pipeline:
   profiles:
     bugfix:
       skip: [test-engineer]          # roles whose stages `next` passes over
+      skip_when:                     # roles whose stages are passed over only for some issues
+        architect: { complexity: [S, M] }
       max_review_rounds: 2           # optional, overrides pipeline.max_review_rounds
     refactor:
       on_result:                     # overrides roles.<role>.on_result for this profile
@@ -779,6 +824,12 @@ pipeline:
   the target ([rule 3](#result-driven-transitions)), and the pipeline view of the dashboard and the API shows them as
   `skipped` (unless a session already ran there). An issue that arrives in a skipped column is passed on without a
   session, see [Skipping stages without a session](#skipping-stages-without-a-session).
+- `skip_when` skips a stage only for some issues. The vocabulary is fixed: a map of a role name to a condition, and the
+  only condition is `complexity`, a list of `S`, `M`, `L` and `XL` (`skip_when: { architect: { complexity: [S] } }`).
+  The stage is skipped for an issue whose `Complexity:` label is in the list, in every place a `skip` is: `next`, the
+  dispatch skip, the preflight and the pipeline view. An issue without a usable complexity label (none, an unknown
+  value, conflicting labels) never matches, so the stage runs. An unknown role, condition or complexity value is an error
+  (`pipeline.profiles.bugfix.skip_when.architect.complexity: unknown value "XXL" (allowed: S, M, L, XL)`).
 - `on_result` maps a role name and a verdict of its result kind to a column or `next`, replacing the role's own target for
   that verdict. The same rules as for `roles.<role>.on_result` apply (no terminal column, a column in the role's
   `may_move_to` when it sets one, a role with a `result`).
@@ -793,7 +844,8 @@ pipeline:
 A stage that the issue's profile or a condition leaves out costs nothing: when the issue is due to be dispatched, Symphony
 does not start an agent but moves it on. The stage is skipped when
 
-- the role is in the `skip` list of the issue's [profile](#workflow-profiles), or
+- the role is in the `skip` list of the issue's [profile](#workflow-profiles), or in its `skip_when` with the issue's
+  complexity (the architect of a small issue, see [The architect](#the-architect)), or
 - the role is the analysis stage, `pipeline.analysis` is `when_unlabeled` and the issue has a `Type:` and a
   `Complexity:` label (the aliases `bug`, `enhancement`, … count; conflicting or unknown labels count as unset).
 
@@ -804,7 +856,7 @@ one poll at a time. For example, with an analyst in `Ready` and `pipeline.analys
 `Complexity: S` issue goes from `Ready` to `In progress` without an analyst session.
 
 - **No entry checks.** The move has no workspace, so it cannot run `checks.on_enter`. The dispatch preflight therefore
-  reports a configuration where a skip would lead into a column with a script (`pipeline.profiles.bugfix.skip: skipping
+  reports (a `skip_when` condition counts, because it may skip the stage) a configuration where a skip would lead into a column with a script (`pipeline.profiles.bugfix.skip: skipping
   developer moves issues from "In progress" to "Agent review" without a workspace, but checks.on_enter has a script for
   "Agent review"`), and dispatch stops until it is fixed.
 - **When nothing is skipped.** The stage runs as usual if the tracker does not list its columns (the board order is
@@ -864,7 +916,7 @@ roles:
     max_turns: 3
     result: analysis
     on_result: { ready: next, needs_info: Blocked }
-    may_move_to: [In progress, Blocked]
+    may_move_to: [Design, In progress, Blocked]
     model_label: ignore
     claude: { model: sonnet }
   developer:
@@ -1047,7 +1099,10 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
   - `results.analysis`: the newest analysis since the last reset, whatever its verdict, as `{verdict, summary, type,
     complexity, components, acceptance_criteria, risks, docs_needed, open_questions, plan}` (`summary` cut to 1,500
     characters; `risks` lists the flags that are set, e.g. `breaking change`), else `null`. The shipped prompts of the
-    developer, the test engineer and the reviewer print it as "Analysis of the issue analyst".
+    architect, developer, test engineer and reviewer print it as "Analysis of the issue analyst".
+  - `results.design`: the newest design since the last reset, whatever its verdict, as `{verdict, summary, decision,
+    components, interfaces, migrations, compatibility, options}` (`summary` cut to 1,500 characters), else `null`. The
+    shipped developer prompt prints it as "Design of the architect" and nothing without a design.
   - `round`: the round the role is working in, 1 for the first: the number of failed tests plus one for a role with
     `result: test`, else the number of reviews with `changes_needed` plus one (so a developer sees the review round it
     is fixing). 1 for roles without `result`.

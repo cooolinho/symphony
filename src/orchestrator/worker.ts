@@ -232,8 +232,6 @@ async function loadResultSupport(
     },
     onMoved,
     profile: profileFor(workflow.config.pipeline, classify(issue().labels).type),
-    // No stage of the shipped pipeline is conditional yet, so `next` skips only what the profile skips.
-    flags: {},
     config: workflow.config,
     boardColumns,
     adapter: resultAdapter,

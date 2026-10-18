@@ -248,6 +248,57 @@ describe('resultsTemplateValue: the analysis for the later stages', () => {
   });
 });
 
+describe('resultsTemplateValue: the design for the developer', () => {
+  function designed(input: Record<string, unknown>): PersistedResult {
+    const parsed = parseResult('design', input);
+    assert.ok(parsed.ok, parsed.ok ? '' : parsed.message);
+    clock += 1;
+    return {
+      result: parsed.result,
+      meta: {
+        role: 'architect',
+        run: `run-${clock}`,
+        round: null,
+        profile: null,
+        workflow_hash: null,
+        head_sha: null,
+        checks: null,
+        target: 'In progress',
+        created_at: new Date(Date.UTC(2026, 9, 18, 10, 0, clock)).toISOString(),
+      },
+    };
+  }
+  const READY = {
+    verdict: 'ready',
+    summary: 'Extend the exporter.',
+    options: ['New service', 'Extend the exporter'],
+    decision: 'Extend the exporter',
+    components: ['InvoiceExporter: writes the CSV'],
+    interfaces: ['exportInvoices(list): string'],
+    migrations: ['add invoices.exported_at'],
+    compatibility: 'Existing exports are unchanged',
+  };
+
+  it('hands the newest design on: decision, components, interfaces, migrations, compatibility and options', () => {
+    const value = resultsTemplateValue(buildStageHistory([designed({ verdict: 'blocked', summary: 'Open.', blockers: [{ description: 'Which database?', needs: 'human' }] }), designed(READY)]));
+    assert.deepEqual(value.design, {
+      verdict: 'ready',
+      summary: 'Extend the exporter.',
+      decision: 'Extend the exporter',
+      components: ['InvoiceExporter: writes the CSV'],
+      interfaces: ['exportInvoices(list): string'],
+      migrations: ['add invoices.exported_at'],
+      compatibility: 'Existing exports are unchanged',
+      options: ['New service', 'Extend the exporter'],
+    });
+  });
+
+  it('is empty without a design, and forgets it at a reset', () => {
+    assert.equal(resultsTemplateValue(buildStageHistory([])).design, null);
+    assert.equal(resultsTemplateValue(buildStageHistory([designed(READY), entry('reset', 'reset')])).design, null);
+  });
+});
+
 describe('resultRows: the rows of the agent page', () => {
   it('carry the comment link, the findings of a review and the blockers of a blocked result', () => {
     const review = parseResult('review', { verdict: 'changes_needed', summary: 'Fix it.', findings: [{ severity: 'major', file: 'src/a.ts', line: 7, problem: 'Wrong', fix: 'Right' }, { severity: 'nit', problem: 'Typo' }] });

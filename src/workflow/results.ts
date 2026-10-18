@@ -104,8 +104,9 @@ const kindShapes = {
   },
   design: {
     options: list(text()).describe('Options considered'),
-    decision: text().optional().describe('The chosen option and why'),
-    interfaces: list(text()).describe('New or changed interfaces, signatures, endpoints'),
+    decision: text().optional().describe('The chosen option and why; required with the verdict "ready"'),
+    components: list(text()).describe('The building blocks of the change and what each one does (modules, classes, services); required with the verdict "ready"'),
+    interfaces: list(text()).describe('New or changed interfaces, signatures, endpoints; required with the verdict "ready"'),
     migrations: list(text()),
     compatibility: text().optional().describe('Backwards compatibility and rollout'),
     work_packages: list(text()).describe('Work packages in implementation order'),
@@ -278,6 +279,13 @@ export function consistencyProblems(result: StageResult): string[] {
     case 'analysis':
       if (result.verdict === 'needs_info' && result.open_questions.length === 0) {
         problems.push('verdict "needs_info" needs at least one entry in `open_questions`');
+      }
+      break;
+    case 'design':
+      if (result.verdict === 'ready') {
+        if (result.decision === undefined || result.decision.trim() === '') problems.push('verdict "ready" needs the chosen option in `decision`');
+        if (result.components.length === 0) problems.push('verdict "ready" needs at least one entry in `components` (the building blocks of the change)');
+        if (result.interfaces.length === 0) problems.push('verdict "ready" needs at least one entry in `interfaces` (new or changed signatures, endpoints, formats)');
       }
       break;
     case 'test': {
@@ -530,6 +538,7 @@ function kindSections(result: StageResult): (string | null)[] {
       return [
         result.decision === undefined ? null : `**Decision**\n${block(result.decision)}`,
         bullets('Options', result.options.map(inline)),
+        bullets('Components', result.components.map(inline)),
         bullets('Interfaces', result.interfaces.map(inline)),
         bullets('Migrations', result.migrations.map(inline)),
         result.compatibility === undefined ? null : `**Compatibility**\n${block(result.compatibility)}`,

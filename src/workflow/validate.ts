@@ -136,7 +136,8 @@ export function nextWithoutBoardOrder(path: string): string {
  * `pipeline.profiles` (whose `skip` passes over later stages and whose `on_result` overrides the role's): the board order
  * must be known (`boardColumns` null = the tracker does not list columns), the role must have a later active stage the
  * profile does not skip, and a role with `may_move_to` must list that stage's column (the transition guard enforces
- * `may_move_to` for computed targets too).
+ * `may_move_to` for computed targets too). A stage in the profile's `skip_when` may or may not be skipped, so `next`
+ * can lead to it or past it: every column it can lead to is checked.
  */
 export function nextStageProblems(config: ServiceConfig, boardColumns: readonly string[] | null): string[] {
   const problems: string[] = [];
@@ -154,11 +155,20 @@ export function nextStageProblems(config: ServiceConfig, boardColumns: readonly 
           continue;
         }
         const skipped = new Set(profile?.skip ?? []);
-        const next = later?.find((column) => !skipped.has(roleName(roleFor({ state: column, description: null }, config.roles)))) ?? null;
-        if (next === null) {
+        const reachable: string[] = [];
+        for (const column of later ?? []) {
+          const name = roleName(roleFor({ state: column, description: null }, config.roles));
+          if (skipped.has(name)) continue;
+          reachable.push(column);
+          if (profile === null || !Object.hasOwn(profile.skipWhen, name)) break;
+        }
+        if (reachable.length === 0) {
           problems.push(`${path}: "${NEXT_STAGE}" has no later active stage after ${role.states.join(', ')} on the board${suffix}`);
-        } else if (!canMoveTo(role, next, config.tracker.terminalStates)) {
-          problems.push(`${path}: "${NEXT_STAGE}" leads to "${next}", which is not in roles.${role.name}.may_move_to (add it there)${suffix}`);
+        }
+        for (const next of reachable) {
+          if (!canMoveTo(role, next, config.tracker.terminalStates)) {
+            problems.push(`${path}: "${NEXT_STAGE}" leads to "${next}", which is not in roles.${role.name}.may_move_to (add it there)${suffix}`);
+          }
         }
       }
     }

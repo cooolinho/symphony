@@ -1,6 +1,7 @@
 export const ISSUE_TYPES = ['bugfix', 'feature', 'refactor'] as const;
 export type IssueType = (typeof ISSUE_TYPES)[number];
-export type IssueComplexity = 'S' | 'M' | 'L' | 'XL';
+export const COMPLEXITIES = ['S', 'M', 'L', 'XL'] as const;
+export type IssueComplexity = (typeof COMPLEXITIES)[number];
 
 export interface ClassifyResult {
   /** Issue type: one of the values, or null if no label or conflicting labels. */
@@ -29,7 +30,7 @@ const DEFAULT_TYPE_ALIASES: Record<string, IssueType> = {
 };
 
 const CANONICAL_TYPES = new Set<IssueType>(ISSUE_TYPES);
-const CANONICAL_COMPLEXITIES = new Set<IssueComplexity>(['S', 'M', 'L', 'XL']);
+const CANONICAL_COMPLEXITIES = new Set<IssueComplexity>(COMPLEXITIES);
 
 function hasTypePrefix(label: string): boolean {
   return label.trim().toLowerCase().startsWith('type:');

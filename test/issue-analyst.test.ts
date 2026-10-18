@@ -17,7 +17,7 @@ import { FakeRunner, FakeTracker, ManualClock, ManualTimers, StaticWorkflow, cal
 
 const shipped = path.join(import.meta.dirname, '..', 'WORKFLOW.md');
 const ISSUE = '7';
-const BOARD = ['Backlog', 'Ready', 'In progress', 'Testing', 'Agent review', 'Blocked', 'In review', 'Done'];
+const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Blocked', 'In review', 'Done'];
 const ENV = { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' };
 
 type Script = (params: StartSessionParams, report: (args: Record<string, unknown>) => Promise<ToolResult>) => Promise<void>;
@@ -140,21 +140,27 @@ describe('issue analyst stage with the shipped WORKFLOW.md', () => {
   });
 
   it('an unlabelled issue gets Type: and Complexity: before it moves on, and the developer receives the analysis', async () => {
+    const architect: Script = async (_params, report) => {
+      await report({ verdict: 'ready', summary: 'Extend the exporter.', decision: 'Add an InvoiceExporter next to the existing ones.', components: ['src/export/invoice.ts'], interfaces: ['exportInvoices(list): string'] });
+    };
     const dev: Script = async (_params, report) => {
       await report({ verdict: 'done', summary: 'Implemented.' });
     };
-    const h = await harness([analyse(READY), dev], []);
+    const h = await harness([analyse(READY), architect, dev], []);
     await run(h);
 
     assert.deepEqual(labelsOf(h), ['complexity: l', 'type: feature']);
-    assert.equal(h.moves[0]?.target, 'In progress');
+    // A feature of complexity L is a larger change: the analysis leads to Design, the architect hands it on to In progress.
+    assert.equal(h.moves[0]?.target, 'Design');
+    assert.equal(h.moves[1]?.target, 'In progress');
     assert.deepEqual([...(h.moves[0]?.labels ?? [])].sort(), ['complexity: l', 'type: feature'], 'both labels exist when the status changes');
 
     const analyst = h.runner.sessions[0]!;
     assert.match(analyst.turns[0] ?? '', /issue analyst/i);
     assert.equal(analyst.params.policy?.readOnly, true, 'the analyst session is read-only');
 
-    const developer = h.runner.sessions[1]!;
+    assert.match(h.runner.sessions[1]!.turns[0] ?? '', /Your role: architect/);
+    const developer = h.runner.sessions[2]!;
     assert.match(developer.turns[0] ?? '', /Your role: developer/);
     assert.match(developer.turns[0] ?? '', /Analysis of the issue analyst/);
     assert.match(developer.turns[0] ?? '', /Adds an invoice export to the existing exporter module\./);
@@ -222,7 +228,7 @@ describe('issue analyst stage with the shipped WORKFLOW.md', () => {
     const h = await harness([analyse(READY), async () => {}], [], { addLabelsFails: true });
     await run(h);
 
-    assert.equal(h.tracker.statusCalls[0], 'In progress');
+    assert.equal(h.tracker.statusCalls[0], 'Design');
     assert.equal(comments(h).length >= 1, true, 'the analysis comment was posted');
     assert.deepEqual(issueOf(h).labels, []);
   });
@@ -231,7 +237,8 @@ describe('issue analyst stage with the shipped WORKFLOW.md', () => {
     const h = await harness([analyse({ verdict: 'ready', summary: 'Small change.' }), async () => {}], []);
     await run(h);
 
-    assert.equal(h.tracker.statusCalls[0], 'In progress');
+    // Without a complexity the issue cannot be judged small: it goes through Design.
+    assert.equal(h.tracker.statusCalls[0], 'Design');
     assert.deepEqual(issueOf(h).labels, []);
   });
 });

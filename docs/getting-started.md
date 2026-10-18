@@ -26,23 +26,26 @@ npm install
 
 1. On GitHub, go to **Profile → Projects → New project** and create a project from the **Kanban** template. It comes
    with the columns `Backlog`, `Ready`, `In progress`, `In review` and `Done`.
-2. Add the columns `Testing`, `Agent review` and `Blocked`: on the board, add the options via the menu of the **Status** field (or
-   *Settings → Fields → Status*). Keep this order (`Backlog`, `Ready`, `In progress`, `Testing`, `Agent review`,
-   `Blocked`, `In review`, `Done`): `next` and the pipeline view follow the board's order, so `Testing` belongs between
-   `In progress` and `Agent review`.
+2. Add the columns `Design`, `Testing`, `Agent review` and `Blocked`: on the board, add the options via the menu of the **Status** field (or
+   *Settings → Fields → Status*). Keep this order (`Backlog`, `Ready`, `Design`, `In progress`, `Testing`, `Agent review`,
+   `Blocked`, `In review`, `Done`): `next` and the pipeline view follow the board's order, so `Design` belongs between
+   `Ready` and `In progress`, and `Testing` between `In progress` and `Agent review`.
 
    | Column | Who moves cards here | What Symphony does |
    |---|---|---|
    | `Backlog` | you | nothing |
-   | `Ready` | you | starts the **Issue analyst**, who hands the issue on to `In progress` |
-   | `In progress` | Developer, Reviewer (changes needed), Test engineer (tests failed) | Developer works |
+   | `Ready` | you | starts the **Issue analyst**, who hands the issue on to `Design` (larger changes) or `In progress` |
+   | `Design` | Issue analyst, for larger changes (feature and refactor above complexity `S`, bugfix of complexity `L` or `XL`, or no complexity label); smaller issues skip it without a session | starts the **Architect** (read-only), who reports the design the developer implements |
+   | `In progress` | Developer, Reviewer (changes needed), Test engineer (tests failed), Architect (design ready) | Developer works |
    | `Testing` | Developer, after passing checks (bug issues; other issues only with `SYMPHONY_AFTER_IMPLEMENTATION=Testing`) | starts the **Test engineer**, who writes independent tests and may only change test files |
    | `Agent review` | Developer (issues without the test stage), or Test engineer when the tests pass | starts the **Reviewer** (at most one at a time) |
-   | `Blocked` | Issue analyst (open questions), Developer or Reviewer | stops the agent, workspace is kept; your turn |
+   | `Blocked` | Issue analyst (open questions), Architect, Developer or Reviewer | stops the agent, workspace is kept; your turn |
    | `In review` | only the Reviewer, after passing checks | stops the agent, workspace is kept; your review |
    | `Done` | only you | stops the agent and deletes the workspace |
 
-   The bundled `WORKFLOW.md` expects exactly these names. `Testing` is used by the
+   The bundled `WORKFLOW.md` expects exactly these names. `Design` is used by the
+   [architect](configuration.md#the-architect): it is required on the board even though small issues skip it (the dry run
+   reports `unknown board column "Design"` otherwise). `Testing` is used by the
    [test engineer](configuration.md#the-test-engineer): bug issues (label `bug` or `Type: bugfix`) run
    `Ready → In progress → Testing → Agent review → In review` through the `bugfix`
    [workflow profile](configuration.md#workflow-profiles), all other issues skip `Testing` unless

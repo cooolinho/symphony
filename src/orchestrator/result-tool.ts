@@ -4,6 +4,7 @@ import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { tail, truncate } from '../util/text.ts';
 import { classify, isComplexityLabel, isTypeLabel, type IssueComplexity, type IssueType } from '../workflow/classify.ts';
 import { normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
+import { profileFor } from '../workflow/profile.ts';
 import { RESULT_VERDICTS, SUMMARY_MAX, parseResult, renderResultComment, toolInputShape, type ResultMeta, type StageResult } from '../workflow/results.ts';
 import type { RoleConfig } from '../workflow/roles.ts';
 import { filesOutside } from './changed-files.ts';
@@ -65,7 +66,7 @@ export interface ResultToolParams {
   /** Round counters of the issue's persisted results, loaded when the session starts (a run reports once). */
   history: Pick<StageHistory, 'reviewRounds' | 'testRounds'>;
   profile: TransitionProfile | null;
-  flags: StageConditions;
+  flags?: StageConditions;
   config: Pick<ServiceConfig, 'tracker' | 'roles' | 'pipeline'>;
   /** The board's columns in board order; null when the tracker does not list them. */
   boardColumns: readonly string[] | null;
@@ -192,15 +193,20 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
   const plan = (args: Record<string, unknown>): Plan => {
     const parsed = parseResult(kind, args);
     if (!parsed.ok) return { ok: false, failure: fail('invalid_result', parsed.message) };
+    // An analysis classifies the issue as it hands it on, so its `next` is routed by the labels it adds: the profile of
+    // the new type and the `skip_when` conditions of the new complexity.
+    const issue = params.issue();
+    const added = classificationLabels(parsed.result, issue.labels);
+    const labels = [...issue.labels, ...added];
     const transition = resolveTransition({
       role,
       verdict: parsed.result.verdict,
       history: params.history,
-      profile: params.profile,
+      profile: added.length > 0 ? profileFor(params.config.pipeline, classify(labels).type) : params.profile,
       flags: params.flags,
       config: params.config,
       boardColumns: params.boardColumns,
-      issue: params.issue(),
+      issue: { description: issue.description, labels },
     });
     if (!transition.ok) {
       return {

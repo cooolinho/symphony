@@ -58,8 +58,9 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
 | Column | What Symphony does |
 |---|---|
 | `Backlog` | nothing. Issues here are not released yet. |
-| `Ready` | starts the issue analyst as soon as a slot is free; it hands the issue on to `In progress` |
-| `In progress` | a developer is working (it gets the analysis); if Symphony finds an issue here without an agent, it starts one |
+| `Ready` | starts the issue analyst as soon as a slot is free; it hands the issue on to `Design` (larger changes) or `In progress` |
+| `Design` | starts the architect (read-only), who decides on the approach of a larger change and hands the design to `In progress`; small issues skip the column without a session, see [Design for larger changes](#design-for-larger-changes-the-architect) |
+| `In progress` | a developer is working (it gets the analysis and the design); if Symphony finds an issue here without an agent, it starts one |
 | `Testing` | starts the test engineer (at most one at a time), who writes independent tests and may only change test files; reached by bug issues after the developer, by every issue with `SYMPHONY_AFTER_IMPLEMENTATION=Testing` |
 | `Agent review` | starts a reviewer (at most one at a time); only reachable after passing checks |
 | `Blocked` | stops a running agent; the workspace is kept. The agent needs you, see its comment. |
@@ -84,10 +85,11 @@ Ready (issue analyst) → In progress (developer) → [checks] → Testing (test
   bug and sees the test pass.
 - The independent test engineer checks the acceptance criteria. `failed` sends the issue back to the developer with the
   failed cases (up to `pipeline.max_test_rounds`, then `Blocked` with `needs-human`), `passed` leads to `Agent review`.
-- There is no architect stage. Features, refactors and issues without a type keep the flow without `Testing`, unless
-  `SYMPHONY_AFTER_IMPLEMENTATION=Testing` switches the test stage on for all of them.
+- Only a bug of complexity `L` or `XL` goes through `Design` first (`Ready → Design → In progress`); for `S` and `M`
+  the architect is skipped without a session. Features, refactors and issues without a type keep the flow without
+  `Testing`, unless `SYMPHONY_AFTER_IMPLEMENTATION=Testing` switches the test stage on for all of them.
 
-The board needs the columns in this order: `Backlog`, `Ready`, `In progress`, `Testing`, `Agent review`, `Blocked`,
+The board needs the columns in this order: `Backlog`, `Ready`, `Design`, `In progress`, `Testing`, `Agent review`, `Blocked`,
 `In review`, `Done` (see [Getting started](getting-started.md#2-set-up-the-github-project-board)). `Testing` is always
 an active state, so a board without it fails the dry run and the dispatch preflight with
 `unknown board column "Testing"`. The order matters: `next` and the pipeline view follow the board.
@@ -112,6 +114,30 @@ Slots: the test engineer gets slots beyond the ones reserved for the developer a
 the issue analyst. With the default of 3 agent slots both take turns on the one free slot; with 4
 (`SYMPHONY_MAX_CONCURRENT_AGENTS=4`) they run side by side. With 2 slots the test engineer never starts (the dashboard
 and `limits.slot_problems` say so). `agent.max_concurrent_agents_by_state.Testing` is 1.
+
+### Design for larger changes: the architect
+
+A larger change gets an explicit architecture decision before the implementation. The architect works in the `Design`
+column between `Ready` and `In progress`: a short read-only session that compares the options and reports a `design`
+result (decision, components, interfaces, migrations, compatibility). `ready` moves the issue to `In progress`, where
+the developer gets the design in its prompt; `blocked` sends it to `Blocked`.
+
+```
+Ready (issue analyst) → Design (architect) → In progress (developer) → …
+```
+
+The stage runs only where it pays off, decided by the `skip_when` condition of the issue's
+[workflow profile](configuration.md#workflow-profiles) and the issue's `Complexity:` label (set by the analyst):
+
+| Type | Design runs for complexity | Skipped without a session for |
+|---|---|---|
+| `feature`, `refactor`, untyped | `M`, `L`, `XL` | `S` |
+| `bugfix` | `L`, `XL` | `S`, `M` |
+
+An issue without a usable `Complexity:` label (none, an unknown value or conflicting labels) is **not** skipped: the
+architect runs. A skipped stage posts a `skipped` result, logs `stage_skipped`, and the issue goes from `Ready` straight
+to `In progress`; the pipeline view shows `Design` as skipped. Details and the configuration:
+[The architect](configuration.md#the-architect).
 
 ### Migrating from the single-prompt setup
 

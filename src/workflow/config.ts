@@ -7,7 +7,7 @@ import type { WorkspaceIntegration } from '../integrations/types.ts';
 import { resolveEnvReference } from '../util/env.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { resolveConfigPath } from '../util/paths.ts';
-import { ISSUE_TYPES } from './classify.ts';
+import { COMPLEXITIES, ISSUE_TYPES, type IssueComplexity } from './classify.ts';
 import { COMMAND_NAME } from './command.ts';
 import { globProblem } from './glob.ts';
 import { isPlainObject } from './loader.ts';
@@ -245,7 +245,7 @@ const PIPELINE_KEYS = new Set([
   'docs_paths',
   'security_paths',
 ]);
-const PROFILE_KEYS = new Set(['skip', 'on_result', 'max_review_rounds', 'max_test_rounds']);
+const PROFILE_KEYS = new Set(['skip', 'skip_when', 'on_result', 'max_review_rounds', 'max_test_rounds']);
 const ROLE_CLAUDE_KEYS = new Set(['model', 'effort', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'max_budget_usd', 'model_by_complexity']);
 const MODEL_CLAUDE_KEYS = new Set(['permission_mode', 'on_permission_request', 'allowed_tools', 'disallowed_tools']);
 
@@ -474,8 +474,9 @@ function readPipeline(reader: Reader, raw: Record<string, unknown>, roles: RoleC
 }
 
 /**
- * `pipeline.profiles`: a map of issue type (or `default`) to `{skip, on_result, max_review_rounds, max_test_rounds}`.
- * `skip` lists role names; `on_result` maps a role name and verdict of its result kind to a column or `next`: never a
+ * `pipeline.profiles`: a map of issue type (or `default`) to `{skip, skip_when, on_result, max_review_rounds,
+ * max_test_rounds}`. `skip` lists role names; `skip_when` skips a role's stage only for some issues (see
+ * {@link readSkipWhen}); `on_result` maps a role name and verdict of its result kind to a column or `next`: never a
  * terminal column, and one in the role's `may_move_to` when it sets one.
  */
 function readProfiles(reader: Reader, raw: unknown, roles: RoleConfig[] | null, terminalStates: string[]): ReadonlyMap<string, WorkflowProfile> {
@@ -510,6 +511,7 @@ function readProfiles(reader: Reader, raw: unknown, roles: RoleConfig[] | null, 
         skip.push(role);
       }
     }
+    const skipWhen = readSkipWhen(reader, value.skip_when, `${field}.skip_when`, roles, known);
     const onResult: Record<string, Record<string, string>> = {};
     const onResultRaw = value.on_result;
     if (onResultRaw !== undefined && onResultRaw !== null) {
@@ -554,9 +556,53 @@ function readProfiles(reader: Reader, raw: unknown, roles: RoleConfig[] | null, 
     }
     const rounds = (key: 'max_review_rounds' | 'max_test_rounds'): number | null =>
       value[key] === undefined || value[key] === null ? null : reader.int(value, key, `${field}.${key}`, 1, 1);
-    profiles.set(name, { name, skip, onResult, maxReviewRounds: rounds('max_review_rounds'), maxTestRounds: rounds('max_test_rounds') });
+    profiles.set(name, { name, skip, skipWhen, onResult, maxReviewRounds: rounds('max_review_rounds'), maxTestRounds: rounds('max_test_rounds') });
   }
   return profiles;
+}
+
+/**
+ * `skip_when` of a profile: a map of role name to a condition. The vocabulary is fixed: the only key is `complexity`,
+ * a list of `S`, `M`, `L`, `XL`; the role's stage is skipped for issues with one of these complexities. An issue
+ * without a usable `Complexity:` label never matches. Unknown roles, keys and values are errors.
+ */
+function readSkipWhen(reader: Reader, raw: unknown, field: string, roles: RoleConfig[] | null, known: string): Record<string, readonly IssueComplexity[]> {
+  const skipWhen: Record<string, readonly IssueComplexity[]> = {};
+  if (raw === undefined || raw === null) return skipWhen;
+  if (!isPlainObject(raw)) {
+    reader.errors.push(`${field} must be a map of roles to conditions`);
+    return skipWhen;
+  }
+  for (const [roleKey, condition] of Object.entries(raw)) {
+    const path = `${field}.${roleKey}`;
+    const role = roles?.find((candidate) => candidate.name === roleKey.trim());
+    if (role === undefined) {
+      reader.errors.push(`${path}: unknown role (roles: ${known})`);
+      continue;
+    }
+    if (!isPlainObject(condition)) {
+      reader.errors.push(`${path} must be a map (allowed key: complexity)`);
+      continue;
+    }
+    for (const key of Object.keys(condition)) {
+      if (key !== 'complexity') reader.errors.push(`${path}.${key}: unknown condition (allowed: complexity)`);
+    }
+    const values = reader.stringList(condition, 'complexity', `${path}.complexity`);
+    if (values === null || values.length === 0) {
+      if (values !== null || condition.complexity === undefined || condition.complexity === null) {
+        reader.errors.push(`${path}.complexity must list at least one of ${COMPLEXITIES.join(', ')}`);
+      }
+      continue;
+    }
+    const complexities: IssueComplexity[] = [];
+    for (const entry of values) {
+      const complexity = entry.trim().toUpperCase() as IssueComplexity;
+      if (!COMPLEXITIES.includes(complexity)) reader.errors.push(`${path}.complexity: unknown value ${JSON.stringify(entry)} (allowed: ${COMPLEXITIES.join(', ')})`);
+      else if (!complexities.includes(complexity)) complexities.push(complexity);
+    }
+    if (complexities.length > 0) skipWhen[role.name] = complexities;
+  }
+  return skipWhen;
 }
 
 /** `commands` of a role: null when omitted; each entry is a skill-style name without the leading slash. */

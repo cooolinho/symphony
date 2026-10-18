@@ -25,7 +25,7 @@ reported to the agent instead of being dropped silently.
 | Kind | Verdicts | Fields |
 |---|---|---|
 | `analysis` | `ready`, `needs_info` | `type`, `complexity` (S/M/L/XL), `components[]`, `acceptance_criteria[]`, `risks {security, data_migration, breaking_change}`, `docs_needed`, `open_questions[]`, `plan[]` |
-| `design` | `ready`, `blocked` | `options[]`, `decision`, `interfaces[]`, `migrations[]`, `compatibility`, `work_packages[]` |
+| `design` | `ready`, `blocked` | `options[]`, `decision`, `components[]`, `interfaces[]`, `migrations[]`, `compatibility`, `work_packages[]` (optional) |
 | `implementation` | `done`, `blocked` | `changed_files[]`, `tests_added[]`, `notes`, `plan_deviations[]` |
 | `test` | `passed`, `failed`, `blocked` | `cases[] {criterion, test, status: passed\|failed\|skipped}`, `commands[]`, `uncovered_criteria[]` |
 | `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, file, line, problem, fix}`, `checked[]` |
@@ -56,6 +56,9 @@ see them):
   `issues_found` need at least one finding.
 - `failed` (test) needs a case with status `failed`; `passed` allows none.
 - `needs_info` (analysis) needs at least one open question.
+- `ready` (design) needs a `decision`, at least one entry in `components` and at least one in `interfaces`, so a design cannot
+  stay generic. The comment renders the decision, the components and the interfaces; the developer's prompt gets them as
+  `results.design`.
 
 `parseResult(kind, input)` checks the schema, these rules and the size, and returns every problem in one message the
 agent can act on, e.g. ``- `findings[0].severity`: Invalid option: expected one of "blocker"|"major"|"minor"|"nit"``.

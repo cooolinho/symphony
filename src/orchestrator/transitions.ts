@@ -1,6 +1,7 @@
 import type { Issue } from '../tracker/types.ts';
 import type { ServiceConfig } from '../workflow/config.ts';
-import type { WorkflowProfile } from '../workflow/profile.ts';
+import { classify } from '../workflow/classify.ts';
+import { profileSkipReason, type WorkflowProfile } from '../workflow/profile.ts';
 import { isLoopKind, LOOP_VERDICTS } from '../workflow/results.ts';
 import { NEXT_STAGE, roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
 import { canMoveTo, laterActiveColumns, nextWithoutBoardOrder } from '../workflow/validate.ts';
@@ -10,7 +11,10 @@ import type { StageHistory } from './stage-history.ts';
 /** A workflow profile: a variant of the transition table for one kind of issue (bugfix, feature, …). */
 export type TransitionProfile = WorkflowProfile;
 
-/** Whether the condition of a conditional stage holds for the issue, by role name; roles not listed always run. */
+/**
+ * Whether a conditional stage is needed for the issue, by role name; roles not listed always run. An extra override on
+ * top of the profile's `skip` and `skip_when` (see `profileSkips`), which `nextStage` always evaluates.
+ */
 export type StageConditions = Readonly<Record<string, boolean>>;
 
 export interface TransitionInput {
@@ -20,12 +24,15 @@ export interface TransitionInput {
   /** Round counters of the issue's persisted results, without the result being resolved. */
   history: Pick<StageHistory, 'reviewRounds' | 'testRounds'>;
   profile: TransitionProfile | null;
-  flags: StageConditions;
+  flags?: StageConditions;
   config: Pick<ServiceConfig, 'tracker' | 'roles' | 'pipeline'>;
   /** The board's columns in board order (adapter `statusOptions`); null when the tracker does not list them. */
   boardColumns: readonly string[] | null;
-  /** For the roles serving later columns, which may depend on an issue command; omitted = no command. */
-  issue?: Pick<Issue, 'description'>;
+  /**
+   * For the roles serving later columns, which may depend on an issue command (`description`), and for the profile's
+   * `skip_when` conditions (`labels`: the issue's `Complexity:`); omitted = no command, no complexity.
+   */
+  issue?: Pick<Issue, 'description'> & Partial<Pick<Issue, 'labels'>>;
 }
 
 /** The rule that picked the target, in the order the rules apply. */
@@ -61,7 +68,7 @@ type Target = { column: string; note: string } | { problem: string };
  * 2. A loop verdict (review `changes_needed`, test `failed`) whose round reaches `max_review_rounds` /
  *    `max_test_rounds` (the profile's when set) → `on_round_limit`, else the blocked column, plus `limit_label`.
  * 3. `on_result[verdict]` (the profile's override first); `next` is the first active column after the role's
- *    columns in board order whose role the profile does not skip and whose condition holds.
+ *    columns in board order whose role the profile does not skip (`skip`, or `skip_when` for the issue's complexity).
  *    A verdict without a target goes to the blocked column.
  *
  * Every other transition removes `limit_label`, so an issue that left the limit behind loses it. A target the role may
@@ -131,9 +138,10 @@ function blockedColumn({ role, config }: TransitionInput): Target {
   return allowed ?? { problem: `role ${role.name} has no blocked column to move to (set roles.${role.name}.on_missing_result)` };
 }
 
-/** The first later active stage in board order that the profile does not skip and whose condition holds. */
+/** The first later active stage in board order that the profile does not skip for the issue and whose condition holds. */
 function nextStage(input: TransitionInput): Target {
-  const { role, verdict, config, profile, flags, boardColumns } = input;
+  const { role, verdict, config, profile, flags = {}, boardColumns } = input;
+  const { complexity } = classify(input.issue?.labels ?? []);
   const path = `roles.${role.name}.on_result.${verdict}`;
   if (boardColumns === null || boardColumns.length === 0) return { problem: nextWithoutBoardOrder(path) };
   const later = laterActiveColumns(role, config.tracker.activeStates, boardColumns);
@@ -141,8 +149,8 @@ function nextStage(input: TransitionInput): Target {
   const passed: string[] = [];
   for (const column of later) {
     const name = roleName(roleFor({ state: column, description: input.issue?.description ?? null }, config.roles));
-    const skipped =
-      profile?.skip.includes(name) === true ? `${name} skipped by profile ${profile.name}` : flags[name] === false ? `${name} not needed` : null;
+    const why = profileSkipReason(profile, name, complexity);
+    const skipped = why !== null ? `${name} ${why}` : flags[name] === false ? `${name} not needed` : null;
     if (skipped === null) return { column, note: [`on_result.${verdict} = ${NEXT_STAGE}`, ...passed].join(', ') };
     if (!passed.includes(skipped)) passed.push(skipped);
   }

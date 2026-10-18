@@ -82,7 +82,6 @@ export function interruptedLabels(
     verdict: result.verdict,
     history: buildStageHistory(before),
     profile: profileFor(config.pipeline, classify(issue.labels).type),
-    flags: {},
     config,
     boardColumns,
     issue,
