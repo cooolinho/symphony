@@ -3922,8 +3922,7 @@ describe('result-driven roles', () => {
   it('adds the result a session reports to the detail and to the archive', async () => {
     const logDir = tempDir();
     const runner = new FakeRunner(async (turn, params) => {
-      const report = params.tools.find((tool) => tool.name === 'report_result');
-      await report!.execute({ verdict: 'approved', summary: 'Fine.' }, params.toolContext());
+      await callTool(params, 'report_result', { verdict: 'approved', summary: 'Fine.' });
       return { ok: true, turnId: String(turn), resultText: 'done' };
     });
     const s = setup({ front: front(), runner, logDir, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
