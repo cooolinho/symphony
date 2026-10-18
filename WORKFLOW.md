@@ -34,8 +34,8 @@ tracker:
   #                         label does not skip it). The board needs the column between Ready and In progress.
   #   In progress        -> developer agent implements the issue
   #   Testing            -> test engineer agent writes independent tests for the acceptance criteria; it may only change test
-  #                         files (pipeline.test_paths). Bug issues (pipeline.profiles.bugfix) always go through it; other issues
-  #                         only with SYMPHONY_AFTER_IMPLEMENTATION=Testing (docs/configuration.md#the-test-engineer). The board
+  #                         files (pipeline.test_paths). Bug, feature and refactor issues (pipeline.profiles) always go through it; other
+  #                         issues only with SYMPHONY_AFTER_IMPLEMENTATION=Testing (docs/configuration.md#the-test-engineer). The board
   #                         needs the column either way, between In progress and Agent review: `next` and the pipeline view
   #                         use its order.
   #   Agent review       -> reviewer agent (read-only) reviews it; entered only after checks pass
@@ -86,11 +86,11 @@ agent:
   # model_hold_ms: 3600000
   max_concurrent_agents_by_state:
     "Agent review": 1                        # one review at a time
-    Testing: 1                               # one test run at a time (bug issues; every issue with SYMPHONY_AFTER_IMPLEMENTATION=Testing)
+    Testing: 1                               # one test run at a time (bug, feature and refactor issues; every issue with SYMPHONY_AFTER_IMPLEMENTATION=Testing)
   # Slots kept free for a role, so a developer and a reviewer can always run side by side. Other roles (/plan,
   # /refactoring, the issue analyst, the test engineer, ...) only get slots beyond these: with 2 slots in total they wait
   # until the limit is raised. The issue analyst serves every issue in Ready, so allow 3 slots, or no issue ever starts. The
-  # test engineer of the bugfix profile needs a slot beyond these as well: with 3 it shares the one free slot with the
+  # test engineer of the bugfix, feature and refactor profiles needs a slot beyond these as well: with 3 it shares the one free slot with the
   # analyst, with 4 both can run at once (the dashboard and log say when a stage never starts).
   reserved_slots_by_role:
     developer: 1
@@ -155,7 +155,7 @@ roles:
     states: [In progress]
     result: implementation
     on_result:
-      done: ${SYMPHONY_AFTER_IMPLEMENTATION:-Agent review}   # Agent review, or Testing to run the test engineer first (bug issues: pipeline.profiles.bugfix)
+      done: ${SYMPHONY_AFTER_IMPLEMENTATION:-Agent review}   # Agent review, or Testing to run the test engineer first (bug, feature and refactor issues: pipeline.profiles)
       blocked: Blocked
     may_move_to: [In progress, Testing, Agent review, Blocked]
     agents: [laravel-architect, laravel-database-engineer, laravel-filament-developer, laravel-test-engineer, laravel-code-reviewer]
@@ -237,10 +237,16 @@ pipeline:
   # analysis. The roles stay the same, a profile only overrides transitions. A bug issue runs Ready (analyst) -> In progress
   # (developer, regression test first) -> Testing (test engineer) -> Agent review -> In review. Only a bug of complexity L
   # or XL goes through Design (architect) first; for S and M the architect is skipped without a session.
-  # Needs the Testing column on the board. To run bug issues without the test stage, set developer.done to Agent review here.
+  # A feature runs the full chain: Ready (analyst) -> Design (architect) -> In progress (developer, a test per acceptance
+  # criterion) -> Testing (test engineer) -> Agent review -> In review. A refactoring runs the same chain, behaviour-preserving:
+  # the developer loads symphony:refactor-safely and commits characterization tests first, the test engineer checks them
+  # against the base commit, and the reviewer checks the public interfaces and confirms each refactoring goal of the analysis
+  # (an approval without confirmed_goals is refused). Both skip Design at complexity S.
+  # Needs the Testing column on the board. To run these issues without the test stage, set developer.done to Agent review here.
   # skip_when skips a stage only for some issues: the vocabulary is fixed, `complexity` is a list of S, M, L, XL. Features
   # and refactorings go through Design except at complexity S. An issue without a usable Complexity: label never matches,
-  # so the architect runs. `default` applies to untyped issues (docs/configuration.md#workflow-profiles).
+  # so the architect runs. `default` applies to untyped issues, which go from the developer to Agent review
+  # (docs/configuration.md#workflow-profiles).
   profiles:
     bugfix:
       skip_when:
@@ -250,9 +256,13 @@ pipeline:
     feature:
       skip_when:
         architect: { complexity: [S] }
+      on_result:
+        developer: { done: Testing }
     refactor:
       skip_when:
         architect: { complexity: [S] }
+      on_result:
+        developer: { done: Testing }
     default:
       skip_when:
         architect: { complexity: [S] }
@@ -303,6 +313,9 @@ Refined acceptance criteria:{% for item in results.analysis.acceptance_criteria 
 - [ ] {{ item }}{% endfor %}
 {% endif %}{% if results.analysis.risks.size > 0 %}
 Risks: {{ results.analysis.risks | join: ", " }}.
+{% endif %}{% if results.analysis.refactoring_goals.size > 0 %}
+Refactoring goals (the review confirms each one):{% for item in results.analysis.refactoring_goals %}
+- {{ item }}{% endfor %}
 {% endif %}{% if results.analysis.docs_needed %}
 Documentation needs an update.
 {% endif %}{% if results.analysis.plan.size > 0 %}
@@ -312,7 +325,7 @@ Plan:{% for item in results.analysis.plan %}
 {% endif %}{% endcapture %}{% capture design_block %}{% if results.design %}
 ## Design of the architect
 
-An architect decided on the approach before the implementation{% if results.design.verdict != "ready" %} (verdict: {{ results.design.verdict }}){% endif %}. Implement this design; where it contradicts the issue description or does not fit the code, the issue and the code win, and you say so in the `plan_deviations` of your result.
+An architect decided on the approach before the implementation{% if results.design.verdict != "ready" %} (verdict: {{ results.design.verdict }}){% endif %}. {% if role == "reviewer" %}Check the change against this design; where the developer deviated from it, the deviation must be justified in the `plan_deviations` of the developer's result.{% else %}Implement this design; where it contradicts the issue description or does not fit the code, the issue and the code win, and you say so in the `plan_deviations` of your result.{% endif %}
 
 {{ results.design.summary }}
 {% if results.design.decision %}
@@ -384,7 +397,9 @@ The current directory is a clone of the issue's repository. Work only inside it.
 3. If the board status is "Ready", post a short plan with `add_comment`. You cannot change the status yourself; Symphony moves the issue when you report your result.
 4. Work on the branch `{{ branch }}`: create it from {% if base %}`origin/{{ base }}`{% else %}the default branch{% endif %} if it does not exist yet, otherwise check it out and continue.
 5. Implement the change. Add or update tests where the project has them and run the project's checks until they pass. Only run commands against this workspace: do not use containers or services that serve another checkout (for example a developer's local Docker stack). If a check can only run there, say so in your summary instead.{% if issue.type == "bugfix" %}
-   This is a bug fix, so work test first: write a regression test that reproduces the bug before you change any production code. Run it and confirm that it fails, and that it fails for the right reason (the bug itself, not a typo, a missing import or a broken setup). Then fix the bug and run the test again until it passes. Keep the test: it is the regression test, and the independent test engineer checks it next. If the bug cannot be reproduced with a test, say why in the `notes` of your result.{% endif %}
+   This is a bug fix, so work test first: write a regression test that reproduces the bug before you change any production code. Run it and confirm that it fails, and that it fails for the right reason (the bug itself, not a typo, a missing import or a broken setup). Then fix the bug and run the test again until it passes. Keep the test: it is the regression test, and the independent test engineer checks it next. If the bug cannot be reproduced with a test, say why in the `notes` of your result.{% elsif issue.type == "refactor" %}
+   This is a refactoring: it must not change behaviour. {% unless issue.command.name == "refactor-safely" %}Before you change any code, load the skill `symphony:refactor-safely` with the Skill tool and follow it. {% endunless %}Work characterization tests first: pin the current behaviour of the code you will touch with tests that pass on the unchanged code, and commit them before the first refactoring commit; the test engineer checks them against the base commit next. Then refactor in small steps. Keep the public interfaces and the existing tests unchanged, and do not fix bugs on the way: list them in `follow_ups`.{% if results.analysis and results.analysis.refactoring_goals.size > 0 %} Meet the refactoring goals listed above and say in the `summary` of your result how each one is met.{% endif %}{% elsif issue.type == "feature" %}
+   This is a new feature: implement the design given above (if there is one) and the acceptance criteria. Every acceptance criterion needs a test that fails without the feature; list the tests in `tests_added`, and say in the `summary` of your result which test covers which criterion.{% endif %}
 6. Integrate the base branch before requesting review: `git fetch origin` and merge `origin/<base>` (the pull request's base, else {% if base %}`{{ base }}`{% else %}the default branch{% endif %}) into `{{ branch }}`, resolve conflicts and run the checks again.
 7. Commit with clear messages and push the branch (`git push -u origin {{ branch }}`); the working tree must be clean and everything pushed. Open a pull request with `open_pull_request` if none exists yet, with "Closes #{{ issue.native_ref.number }}" in its body.
 8. Hand off with `report_result` (verdict `done`). Symphony posts the result as the issue comment, runs the entry checks (lint, static analysis, tests) and moves the issue to the next stage ("Agent review", or "Testing" when an independent test engineer writes tests first). Do not write a separate summary comment. Fields:
@@ -417,13 +432,14 @@ The current directory is a clone of the issue's repository. Work only inside it.
 
 1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist).
 2. Call `get_issue` and read the comments and linked pull requests. If a human answered open questions of an earlier analysis in a comment, take the answers into account.
-3. Inspect the code the issue touches: find the affected modules, the existing conventions and tests, and what the change would break. Stay with what the issue needs; do not design beyond it.
+3. Inspect the code the issue touches: find the affected modules, the existing conventions and tests, and what the change would break. Stay with what the issue needs; do not design beyond it.{% if issue.type == "refactor" %} This is a refactoring: find the public interfaces and the existing tests of the code it touches, because both must stay unchanged.{% endif %}
 4. Refine the acceptance criteria: keep every criterion of the issue, make vague ones checkable, add the ones the issue implies but does not name.
 5. Report exactly one result with `report_result`. Do not post a separate analysis comment. Fields:
    - `verdict`: `ready` (the issue is clear enough to implement) or `needs_info` (a human must answer something first; you cannot guess it safely).
    - `summary`: the requirements and the approach in a few sentences.
    - `type`: `bugfix`, `feature` or `refactor`. `complexity`: `S` (a few lines), `M` (one component), `L` (several components) or `XL` (cross-cutting or needs a design). Symphony sets the `Type:` and `Complexity:` labels from them only where the issue has none; a label a human set stays.
-   - `components`: the affected modules, directories or services. `acceptance_criteria`: the refined criteria.
+   - `components`: the affected modules, directories or services. `acceptance_criteria`: the refined criteria.{% if issue.type == "refactor" or issue.type == nil %}
+   - `refactoring_goals`: for a refactoring only: what it has to achieve, one checkable goal per entry (for example "the duplicated parsing code exists once", "no public signature of the module changes"). The review must confirm each goal word for word, so keep them short and concrete; leave the list empty for other types.{% endif %}
    - `risks`: `security`, `data_migration` and `breaking_change` as booleans. `docs_needed`: whether documentation must change. `plan`: the implementation steps in order.
    - `open_questions`: for `needs_info`, every question a human must answer (at least one); they appear in the comment and the issue moves to "Blocked".
 6. Handle the answer:
@@ -486,7 +502,8 @@ The current directory is a clone of the issue's repository. Work only inside it.
 1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist) and follow their testing conventions (for a Laravel app: Pest, with Filament and Livewire component tests where UI changed).
 2. Call `get_issue`: read the issue, all comments and the linked pull request. The acceptance criteria are your test plan; if the issue lists none, derive them from its goal and say so in the summary.
 3. Make sure the workspace is on the pull request's branch (`{{ branch }}` unless the pull request says otherwise) at its pushed head: `git fetch origin`, `git status`, `git log --oneline -5`. Do not merge or rebase the base branch.
-4. Write at least one test for every acceptance criterion, plus the edge cases it implies. Tests must be deterministic and fail for the right reason. Read the developer's tests, but do not rely on them. Do not weaken, skip or delete existing tests, and do not change test configuration (`phpunit.xml`, Pest config, CI) to make tests pass.
+4. Write at least one test for every acceptance criterion, plus the edge cases it implies. Tests must be deterministic and fail for the right reason. Read the developer's tests, but do not rely on them. Do not weaken, skip or delete existing tests, and do not change test configuration (`phpunit.xml`, Pest config, CI) to make tests pass.{% if issue.type == "refactor" %}
+   This is a refactoring: it must not change behaviour, so your tests are characterization tests. The developer commits some first; verify and extend them. Every characterization test must be green on the base commit (`origin/<base>`, check it out in a separate `git worktree`; do not touch the branch) and green on HEAD. A test that passes on HEAD but fails on the base commit pins new behaviour: it does not belong here. A test that is green on the base commit and fails on HEAD means the refactoring changed behaviour: report the verdict `failed` with that case; do not fix the production code. Also check that no existing test was weakened, skipped or deleted since the base commit.{% endif %}
 5. Run your tests, then the project's test suite. Note the commands.
 6. Commit the tests and push the branch (`git push origin {{ branch }}`); the working tree must be clean and everything pushed.
 7. Hand off with `report_result`. Symphony posts the result as the issue comment, runs the entry check of the next column (lint, static analysis, tests) and moves the issue. Do not write a separate summary comment. Fields:
@@ -513,7 +530,7 @@ The tracker tools are `get_issue`, `add_comment` and `report_result`. You do not
 {{ agent_intro }}
 
 Use a reviewer subagent only for a second pass over a large diff. Its findings go into your result only after you checked them against the code.
-{% endif %}{{ analysis_block }}{% if results.open_findings.size > 0 %}
+{% endif %}{{ analysis_block }}{{ design_block }}{% if results.open_findings.size > 0 %}
 ## Findings of your previous review
 
 The developer was asked to fix these. Check each one against the code, and report any that is still open again:
@@ -531,12 +548,16 @@ The developer was asked to fix these. Check each one against the code, and repor
    - **Queries:** no N+1 queries; eager loading (`with`, `load`, Filament `modifyQueryUsing`) where relations are listed.
    - **Migrations:** reversible (`down()` works), indexes for foreign keys and frequently filtered columns; no destructive change to existing data without a plan.
    - **Secrets:** no credentials, tokens, keys or `.env` content committed.
-   - **Guardrails:** scrutinize every change to test, CI or lint configuration (phpunit.xml, Pest config, phpstan, pint, workflows): it must not weaken the checks to make them pass.
+   - **Guardrails:** scrutinize every change to test, CI or lint configuration (phpunit.xml, Pest config, phpstan, pint, workflows): it must not weaken the checks to make them pass.{% if issue.type == "refactor" %}
+   - **Behaviour preserved (refactoring):** {% unless issue.command.name == "refactor-safely" %}load the skill `symphony:refactor-safely` with the Skill tool and use its review checklist. {% endunless %}Public interfaces (class and method signatures used elsewhere, routes, events, jobs, commands, config keys, database schema) are unchanged; existing tests and their assertions are unchanged (nothing weakened, skipped or deleted); characterization tests exist for the touched code; no bug fix or new behaviour is mixed in. A change that breaks any of these is at least a `major` finding.{% if results.analysis and results.analysis.refactoring_goals.size > 0 %}
+   - **Refactoring goals:** check each goal of the analysis (listed above) against the code. Copy each goal you confirmed word for word into `confirmed_goals`. A goal that is not met is a `major` finding and rules out `approved`.{% endif %}{% elsif issue.type == "feature" %}
+   - **Feature:** the change implements the design given above (if there is one) and every acceptance criterion; every criterion has a meaningful test; a deviation from the design is justified in the developer's `plan_deviations`.{% endif %}
 5. Report exactly one result with `report_result`. Do not post a separate review comment. Fields:
    - `verdict`: `approved` (no `blocker` or `major` findings), `changes_needed` (at least one finding) or `blocked` (you cannot review, with at least one entry in `blockers`).
    - `summary`: the outcome in a few sentences.
    - `findings`: one entry per problem with `severity` (`blocker`, `major`, `minor` or `nit`), `file`, `line`, `problem` and `fix` (the expected fix). Include every open finding, also from earlier reviews that are still not fixed. An approval may only carry `minor` and `nit` findings.
-   - `checked`: one line per checklist item: OK, n/a, or a reference to a finding.
+   - `checked`: one line per checklist item: OK, n/a, or a reference to a finding.{% if issue.type == "refactor" and results.analysis and results.analysis.refactoring_goals.size > 0 %}
+   - `confirmed_goals`: the refactoring goals of the analysis that the change meets, each copied word for word. `approved` is refused with `invalid_result` unless every goal is listed.{% endif %}
 6. Symphony routes the verdict: `approved` moves the issue to "In review" (after the entry checks; if Symphony merges automatically, the result contains `auto_merge` with the outcome), `changes_needed` sends it back to the developer, and the review round limit sends it to a human instead. Handle the answer:
    - **Success** (the result says "Result recorded — end your turn now."): end your turn. There is nothing more for you to do.
    - **`invalid_result`**: nothing was recorded; fix the fields named in the message and call `report_result` again.
