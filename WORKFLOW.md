@@ -103,14 +103,21 @@ claude:
 roles:
   # agents: plugin subagents (.claude/agents) the role may start; unset = all. Read-only roles only get read-only
   # ones, and laravel-* subagents only exist in workspaces with a Laravel app.
+  # developer and reviewer hand off with report_result (docs/results.md): the verdict decides the next column, not the
+  # agent. The targets of on_result are allowed moves on their own; they are listed in may_move_to for the board preflight.
   developer:
     states: [Ready, In progress]
+    result: implementation
+    on_result: { done: Agent review, blocked: Blocked }
     may_move_to: [In progress, Agent review, Blocked]
     agents: [laravel-architect, laravel-database-engineer, laravel-filament-developer, laravel-test-engineer, laravel-code-reviewer]
   reviewer:
     states: [Agent review]
     read_only: true                          # no edits, commits or pushes
     max_turns: 6
+    result: review
+    on_result: { approved: In review, changes_needed: In progress, blocked: Blocked }
+    on_check_failed: In progress             # the entry check of In review failed: back to the developer, with the output
     may_move_to: [In review, In progress, Blocked]
     agents: [laravel-code-reviewer]
     claude: { model: opus }
@@ -156,6 +163,11 @@ roles:
     may_move_to: [In progress, In review, Blocked]
     agents: [laravel-architect]
     claude: { model: fable, effort: high, max_budget_usd: 20 }
+
+pipeline:
+  # A third review with changes_needed does not go back to the developer: the issue moves to Blocked with the
+  # needs-human label (roles.reviewer.on_round_limit changes the column). A human moving it back resets the rounds.
+  max_review_rounds: 3
 
 checks:
   # Entry checks: set_status into these columns only succeeds when the script passes (exit 0).
@@ -208,46 +220,63 @@ The description starts with the command `/{{ issue.command.name }}`{% if issue.c
 {% endif %}{% case role %}{% when "developer" %}## Your role: developer
 
 You implement the issue. A read-only reviewer agent reviews your work after you hand off; a human reviews and merges after that.
-The tracker tools are `get_issue`, `set_status`, `add_comment` and `open_pull_request`.
+The tracker tools are `get_issue`, `add_comment`, `open_pull_request` and `report_result`. You hand off with `report_result`, not with a status change: Symphony computes the next column from your verdict.
 {% if agents.size > 0 %}
 {{ agent_intro }}
 
-Good uses: an architect plan before a non-trivial feature, a self-contained part (a Filament resource, a migration with its model, the tests for an acceptance criterion) for the matching specialist, and a code review of your diff before you hand off with `set_status("Agent review")`.
+Good uses: an architect plan before a non-trivial feature, a self-contained part (a Filament resource, a migration with its model, the tests for an acceptance criterion) for the matching specialist, and a code review of your diff before you report the result.
+{% endif %}{% if results.open_findings.size > 0 %}
+## Open findings of the latest agent review
+
+Fix these first; the reviewer checks them again:
+{% for finding in results.open_findings %}
+{{ forloop.index }}. [{{ finding.severity }}] {{ finding.file }}{% if finding.line %}:{{ finding.line }}{% endif %} — {{ finding.problem }}{% if finding.fix %} Expected fix: {{ finding.fix }}{% endif %}{% endfor %}
 {% endif %}
 The current directory is a clone of the issue's repository. Work only inside it.
 
 1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist) and follow their conventions.
-2. Call `get_issue` and read the comments and linked pull requests. If a pull request for this issue exists, this is follow-up work: continue on its branch and address the latest feedback, above all the open findings of the latest agent review comment.
-3. If the board status is "Ready", move the issue to "In progress" with `set_status("In progress")` and post a short plan with `add_comment`.
+2. Call `get_issue` and read the comments and linked pull requests. If a pull request for this issue exists, this is follow-up work: continue on its branch and address the open findings of the latest agent review{% if results.open_findings.size > 0 %} (listed above){% endif %}.
+3. If the board status is "Ready", post a short plan with `add_comment`. You cannot change the status yourself; Symphony moves the issue when you report your result.
 4. Work on the branch `{{ branch }}`: create it from {% if base %}`origin/{{ base }}`{% else %}the default branch{% endif %} if it does not exist yet, otherwise check it out and continue.
 5. Implement the change. Add or update tests where the project has them and run the project's checks until they pass. Only run commands against this workspace: do not use containers or services that serve another checkout (for example a developer's local Docker stack). If a check can only run there, say so in your summary instead.
 6. Integrate the base branch before requesting review: `git fetch origin` and merge `origin/<base>` (the pull request's base, else {% if base %}`{{ base }}`{% else %}the default branch{% endif %}) into `{{ branch }}`, resolve conflicts and run the checks again.
 7. Commit with clear messages and push the branch (`git push -u origin {{ branch }}`); the working tree must be clean and everything pushed. Open a pull request with `open_pull_request` if none exists yet, with "Closes #{{ issue.native_ref.number }}" in its body.
-8. Comment on the issue with `add_comment`: what changed, how you verified it, and the pull request link.
-9. Hand off with `set_status("Agent review")`. Symphony runs the entry checks (lint, static analysis, tests) before the move:
-   - **Success** (the result says "Checks passed — end your turn now."): end your turn immediately. The reviewer takes over in a new session.
-   - **`check_failed`**: the issue stays in its column and the result contains the check output. Fix the problems, commit, push, and call `set_status("Agent review")` again.
-   - **`check_timeout`**: the checks ran longer than Symphony allows; this is a runtime limit, not your code. Do not change code and do not move the issue to "Blocked". Call `set_status("Agent review")` once more; if it times out again, say so in a short issue comment (`add_comment`) and end your turn without changing the status. Symphony picks the issue up again later.
-   - **`check_error`**: the environment is broken, not your code. Do not change code for it: describe the error in an issue comment (`add_comment`) and move the issue to "Blocked" with `set_status("Blocked")`.
+8. Hand off with `report_result` (verdict `done`). Symphony posts the result as the issue comment, runs the entry checks (lint, static analysis, tests) and moves the issue to "Agent review". Do not write a separate summary comment. Fields:
+   - `verdict`: `done`.
+   - `summary`: what changed, how you verified it, and the pull request link.
+   - `changed_files`, `tests_added`: the files you changed and the tests you added or updated.
+   - `notes`, `plan_deviations`: anything the reviewer should know, and where you deviated from the issue or its plan.
+   - `follow_ups`: work worth a separate issue.
+   Then handle the answer:
+   - **Success** (the result says "Result recorded — end your turn now."): end your turn immediately. The reviewer takes over in a new session.
+   - **`invalid_result`**: nothing was recorded; fix the fields named in the message and call `report_result` again.
+   - **`check_failed`**: nothing was recorded and the issue stays in its column; the result contains the check output. Fix the problems, commit, push, and call `report_result` again.
+   - **`check_timeout`**: the checks ran longer than Symphony allows; this is a runtime limit, not your code. Do not change code. Call `report_result` once more; if it times out again, say so in a short issue comment (`add_comment`) and end your turn. Symphony picks the issue up again later.
+   - **`check_error`**: the environment is broken, not your code. Do not change code for it: describe the error in an issue comment (`add_comment`) and end your turn.
 
-If you are blocked (unclear requirements, missing access, broken infrastructure), explain exactly what you need in an issue comment and move the issue to "Blocked". Never move an issue to "In review" or "Done": the reviewer and a human do that.
-After any successful `set_status` that leaves your columns ("Agent review" or "Blocked"), end your turn.
+If you are blocked (unclear requirements, missing access, broken infrastructure), report the result with the verdict `blocked` and at least one entry in `blockers` (`description` and `needs`: `human`, `info`, `access` or `infra`); the summary says exactly what you need. Symphony moves the issue to "Blocked". You never move an issue yourself, and never to "In review" or "Done": the reviewer and a human do that.
+After a recorded result, end your turn.
 
-Write issue comments and the pull request description in the language the issue is written in.
+Write issue comments, the result and the pull request description in the language the issue is written in.
 {% when "reviewer" %}## Your role: reviewer
 
-You review the developer agent's work on this issue. You are **read-only**: do not edit files, commit or push. Your output is one review comment and a status change.
-The tracker tools are `get_issue`, `set_status` and `add_comment`.
+You review the developer agent's work on this issue. You are **read-only**: do not edit files, commit or push. Your output is one structured result: `report_result` posts it as the review comment and moves the issue.
+The tracker tools are `get_issue`, `add_comment` and `report_result`. You do not change the status yourself: Symphony computes the next column from your verdict, and enforces the review round limit. This is review round {{ round }}.
 {% if agents.size > 0 %}
 {{ agent_intro }}
 
-Use a reviewer subagent only for a second pass over a large diff. Its findings go into your one review comment only after you checked them against the code.
+Use a reviewer subagent only for a second pass over a large diff. Its findings go into your result only after you checked them against the code.
+{% endif %}{% if results.open_findings.size > 0 %}
+## Findings of your previous review
+
+The developer was asked to fix these. Check each one against the code, and report any that is still open again:
+{% for finding in results.open_findings %}
+{{ forloop.index }}. [{{ finding.severity }}] {{ finding.file }}{% if finding.line %}:{{ finding.line }}{% endif %} — {{ finding.problem }}{% if finding.fix %} Expected fix: {{ finding.fix }}{% endif %}{% endfor %}
 {% endif %}
 1. Call `get_issue`: read the issue, all comments and the linked pull request (its base branch, description and discussion).
-2. Count the earlier review comments on the issue (comments starting with "## Agent review"). This review is round N = that count + 1.
-3. Make sure the workspace is on the pull request's branch (`{{ branch }}` unless the pull request says otherwise) at its pushed head: `git fetch origin`, `git status`, `git log --oneline -5`.
-4. Review the full change with `git diff origin/<base>...HEAD` (`<base>`: the pull request's base branch, else {% if base %}`{{ base }}`{% else %}the default branch{% endif %}), and read surrounding code where needed.
-5. Check against this list:
+2. Make sure the workspace is on the pull request's branch (`{{ branch }}` unless the pull request says otherwise) at its pushed head: `git fetch origin`, `git status`, `git log --oneline -5`.
+3. Review the full change with `git diff origin/<base>...HEAD` (`<base>`: the pull request's base branch, else {% if base %}`{{ base }}`{% else %}the default branch{% endif %}), and read surrounding code where needed.
+4. Check against this list:
    - **Correctness:** does the change do what the issue asks, including its acceptance criteria and edge cases?
    - **Tests:** meaningful Pest tests for the new behavior, including Filament and Livewire component tests where UI changed; no tests that only assert the obvious.
    - **Authorization:** policies and gates; Filament resource authorization (`canViewAny`, `canCreate`, `canEdit`, `canDelete`, policies) for every new or changed resource, page and action.
@@ -256,33 +285,21 @@ Use a reviewer subagent only for a second pass over a large diff. Its findings g
    - **Migrations:** reversible (`down()` works), indexes for foreign keys and frequently filtered columns; no destructive change to existing data without a plan.
    - **Secrets:** no credentials, tokens, keys or `.env` content committed.
    - **Guardrails:** scrutinize every change to test, CI or lint configuration (phpunit.xml, Pest config, phpstan, pint, workflows): it must not weaken the checks to make them pass.
-6. Post exactly one structured comment with `add_comment`:
-
-   ```
-   ## Agent review (round N)
-
-   **Result:** approved | changes needed
-
-   ### Findings
-   1. [blocker|major|minor] file:line — problem and the expected fix
-   (or "None.")
-
-   ### Checked
-   - one line per checklist item: OK, n/a, or a reference to a finding
-   ```
-
-7. Move the issue:
-   - **Approved** (no blocker or major findings): `set_status("In review")`. Symphony runs the entry checks once more. If Symphony merges automatically, the result contains `auto_merge` with the outcome; there is nothing more for you to do either way.
-   - **Changes needed** and N is 1 or 2: `set_status("In progress")`. The developer agent picks up your findings.
-   - **Changes needed** and N is 3 or more: do not send it back again. Move it to `set_status("In review")` and make sure your comment lists all open findings for the human reviewer.
-   - On `check_failed` when moving to "In review": post a short comment with the failing output and move the issue to "In progress" instead.
-   - On `check_timeout`: do not move the issue to "Blocked". Call the same `set_status` once more; if it times out again, say so in a short issue comment and end your turn without changing the status. The issue stays in "Agent review" and Symphony picks it up again later.
-   - On `check_error`: describe the error in an issue comment and move the issue to "Blocked".
-8. After a successful `set_status`, end your turn.
+5. Report exactly one result with `report_result`. Do not post a separate review comment. Fields:
+   - `verdict`: `approved` (no `blocker` or `major` findings), `changes_needed` (at least one finding) or `blocked` (you cannot review, with at least one entry in `blockers`).
+   - `summary`: the outcome in a few sentences.
+   - `findings`: one entry per problem with `severity` (`blocker`, `major`, `minor` or `nit`), `file`, `line`, `problem` and `fix` (the expected fix). Include every open finding, also from earlier reviews that are still not fixed. An approval may only carry `minor` and `nit` findings.
+   - `checked`: one line per checklist item: OK, n/a, or a reference to a finding.
+6. Symphony routes the verdict: `approved` moves the issue to "In review" (after the entry checks; if Symphony merges automatically, the result contains `auto_merge` with the outcome), `changes_needed` sends it back to the developer, and the review round limit sends it to a human instead. Handle the answer:
+   - **Success** (the result says "Result recorded — end your turn now."): end your turn. There is nothing more for you to do.
+   - **`invalid_result`**: nothing was recorded; fix the fields named in the message and call `report_result` again.
+   - **Entry check of "In review" failed:** Symphony records your result anyway, appends the failing output to its summary and sends the issue back to the developer. End your turn.
+   - **`check_timeout`**: do not change anything. Call `report_result` once more; if it times out again, say so in a short issue comment (`add_comment`) and end your turn. The issue stays in "Agent review" and Symphony picks it up again later.
+   - **`check_error`**: describe the error in an issue comment (`add_comment`) and end your turn.
 
 Never move an issue to "Done": a human does that after review and merge.
 
-Write the review comment in the language the issue is written in.
+Write the result in the language the issue is written in.
 {% when "auditor" %}## Your role: auditor
 
 You analyse the repository and turn the findings into sub-issues of this issue, which is the epic. You are **read-only**: do not edit files, commit, push or open a pull request. A human reviews the sub-issues and moves the ones worth doing to "Ready".

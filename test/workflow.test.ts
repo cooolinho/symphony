@@ -765,7 +765,19 @@ describe('result-driven roles and the pipeline section', () => {
     const { definition } = await loadWorkflowFile(path.resolve(import.meta.dirname, '../WORKFLOW.md'));
     const config = resolve(definition.config, { CLAUDE_EFFORT: '' });
     assert.ok(!config.warnings.some((warning) => /pipeline/.test(warning)), config.warnings.join('\n'));
+    const transitions = (name: string) => {
+      const role = config.roles?.find((candidate) => candidate.name === name);
+      return [role?.result, role?.onResult, role?.onCheckFailed, role?.onMissingResult, role?.onRoundLimit];
+    };
+    // The developer and the reviewer hand off with report_result; every other role keeps the neutral values.
+    assert.deepEqual(transitions('developer'), ['implementation', { done: 'Agent review', blocked: 'Blocked' }, null, 'Blocked', null]);
+    assert.deepEqual(
+      transitions('reviewer'),
+      ['review', { approved: 'In review', changes_needed: 'In progress', blocked: 'Blocked' }, 'In progress', 'Blocked', null],
+    );
+    assert.equal(config.pipeline.maxReviewRounds, 3);
     for (const role of config.roles ?? []) {
+      if (role.name === 'developer' || role.name === 'reviewer') continue;
       assert.deepEqual([role.result, role.onResult, role.onCheckFailed, role.onMissingResult, role.onRoundLimit], [null, {}, null, null, null], role.name);
     }
   });

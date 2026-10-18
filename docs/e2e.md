@@ -9,7 +9,7 @@ The [`roles` scenario](#scenario-roles) (`--scenario roles`) checks the roles li
 developer → entry check → reviewer → handoff.
 
 The test creates real issues and runs real Claude Code sessions, so use a dedicated test repository and board.
-The agents only comment; they change no code.
+The agents only comment or report results; they change no code.
 
 ## Requirements
 
@@ -84,8 +84,10 @@ cost. Times are UTC.
 ## Scenario `roles`
 
 Proves the lifecycle of [roles](configuration.md#roles) and [entry checks](configuration.md#checks) on a real board:
-the developer moves an issue to `Agent review`, the entry check denies it once, the reviewer approves or sends it
-back, and the issue ends in `In review`. The agents only comment and move statuses.
+the developer reports an `implementation` result, the entry check of `Agent review` denies it once, the reviewer
+reports a `review` result (approved, or `changes_needed` once), and the issue ends in `In review`. Both roles hand off
+with [`report_result`](results.md#the-report_result-tool): Symphony posts the result comment and computes the next
+column; the agents never change a status themselves.
 
 **Workflow.** The test writes its own workflow to `<run dir>/WORKFLOW.md`, derived from the repository's
 `WORKFLOW.md`: tracker, workspace, hooks, agent and Claude settings stay the same, relative paths are made absolute,
@@ -94,7 +96,8 @@ Laravel Boost is switched off. Replaced are:
 | Setting | Value |
 |---|---|
 | `tracker.active_states` | `Ready`, `In progress`, `Agent review` |
-| `roles` | `developer` (`Ready`, `In progress`; may move to `In progress`, `Agent review`, `Blocked`) and `reviewer` (`Agent review`, read-only, 6 turns; may move to `In review`, `In progress`, `Blocked`) |
+| `roles` | `developer` (`Ready`, `In progress`; `result: implementation`, `on_result: {done: Agent review, blocked: Blocked}`) and `reviewer` (`Agent review`, read-only, 6 turns; `result: review`, `on_result: {approved: In review, changes_needed: In progress, blocked: Blocked}`, `on_check_failed: In progress`) |
+| `pipeline.max_review_rounds` | 3 |
 | `checks.on_enter` | `Agent review`: `<run dir>/roles-check.sh`. It fails the first time per issue and writes a marker file to `<run dir>/check-markers/`, then passes. |
 | `agent.max_concurrent_agents_by_state` | `Agent review: 1` |
 | `agent.max_continuations` | 6 (role switches without a recorded result count as continuations) |
@@ -105,12 +108,12 @@ per role:
 
 | Issue | Developer | Reviewer |
 |---|---|---|
-| R1 | tries `Done` once (denied: `transition_denied`), comments, moves to `Agent review` | approves: comments, moves to `In review` |
-| R2 | comments, moves to `Agent review` | rejects exactly once (comment `E2E run R2 rejected`, back to `In progress`), then approves |
-| R3 | comments, moves to `Agent review` | approves |
+| R1 | reports `done` (`E2E run R1 developed`) | reports `approved`: the issue moves to `In review` |
+| R2 | reports `done` | reports `changes_needed` with one finding in review round 1 (the prompt's `round`): back to `In progress`; then `approved` |
+| R3 | reports `done` | reports `approved` |
 
-The developer's first move to `Agent review` fails with `check_failed`; the issue text tells the agent to repeat
-the call once. There is no simulated review: the run ends as soon as no test issue is in an active column and no
+The developer's first `report_result` fails with `check_failed` (nothing is recorded); the issue text tells the agent to
+repeat the call once. There is no simulated review: the run ends as soon as no test issue is in an active column and no
 agent runs. Every 3 s the test reads the issues' statuses into `timeline.jsonl` and the running agents into
 `trace.log`.
 
@@ -121,7 +124,8 @@ agent runs. Every 3 s the test reads the issues' statuses into `timeline.jsonl` 
 | Status path | After `Ready`, each issue went `In progress` → `Agent review` → `In review`; R2 went `In progress` → `Agent review` → `In progress` → `Agent review` → `In review`. |
 | Never `Done` | No issue was ever seen in `Done`. |
 | Entry check | Per issue, the first `checks_finished` line for `Agent review` failed, it is the only failed one, and a passing one follows. |
-| Repository log | It has `transition_denied`, `checks_finished` and `run_finished outcome=handed_off` lines; every issue has a developer → reviewer handoff, R2 a reviewer → developer handoff, and each issue's last run is the reviewer's handoff out of the active columns. |
+| Stage results | Read back from the issue comments: R1 and R3 have `implementation:done`, `review:approved`; R2 has `implementation:done`, `review:changes_needed`, `implementation:done`, `review:approved`. |
+| Repository log | It has `checks_finished` and `run_finished outcome=handed_off` lines; every issue has a developer → reviewer handoff, R2 a reviewer → developer handoff, and each issue's last run is the reviewer's handoff out of the active columns. |
 | `Agent review` limit | Reviewer runs in the history never overlap beyond 1, and the API trace never shows more than 1 agent in `Agent review`. |
 | No code changes | As in the default scenario. |
 

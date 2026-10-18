@@ -19,25 +19,28 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
    The agent
    - reads the repository's `AGENTS.md`, `CLAUDE.md` and `README.md`, plus the issue's comments and pull requests
      (including earlier reviews),
-   - sets the issue to `In progress` and comments its plan,
+   - comments its plan (a developer cannot change the status itself: the issue moves when it reports its result),
    - works on the branch `symphony/issue-<nr>`, or on a branch you linked in the issue,
    - implements and tests, merges the base branch in, commits, pushes and opens a pull request with
      `Closes #<nr>`,
-   - comments the result and calls `set_status("Agent review")`.
+   - hands off with `report_result` (verdict `done`, summary, changed files, tests): Symphony posts the result as the
+     issue comment and moves the issue to `Agent review`.
 4. **Checks before `Agent review`:** Symphony runs the checks in the workspace. If they pass, the card moves to
    `Agent review` and the developer session ends. If they fail (`check_failed`), the card stays and the agent gets
    the output, fixes the errors and tries again. If the checks run longer than `checks.timeout_ms`
    (`check_timeout`), the agent tries once more and otherwise ends its turn; the card keeps its column and never goes
    to `Blocked` for a timeout. If the environment is broken (`check_error`, e.g. a missing `vendor/`), the agent
-   comments that and moves the card to `Blocked`.
+   comments that and ends its turn.
 5. **Reviewer** (`Agent review`, at most one at a time, model `opus`, read-only, 6 turns): checks
    `git diff origin/<base>...HEAD`, the pull request and the comments against a checklist (correctness, tests,
-   authorization, validation, N+1, migrations, secrets, changed test/CI/lint configuration) and writes
-   **one** comment `## Agent review (round N)`. Then:
-   - **approved:** `In review`. The checks run once more first; for an unchanged commit Symphony uses the stored
+   authorization, validation, N+1, migrations, secrets, changed test/CI/lint configuration) and reports **one**
+   `review` result with `report_result` (verdict, findings with severity, file and line), which Symphony posts as the
+   comment. The verdict decides the column:
+   - **`approved`:** `In review`. The checks run once more first; for an unchanged commit Symphony uses the stored
      result.
-   - **changes needed:** back to `In progress`; the developer works through the findings (step 3).
-   - **from round 3:** no further loop, but `In review` with the list of open findings for you.
+   - **`changes_needed`:** back to `In progress`; the developer works through the findings (step 3).
+   - **third `changes_needed`** (`pipeline.max_review_rounds`): no further loop. The issue goes to `Blocked` with the
+     label `needs-human` and the open findings in the review comment.
 6. After each turn Symphony checks the issue. If it moves to a column of another role, the session ends and the
    next role starts one second later in a fresh session. If it is still in a column of the same role, the agent
    gets more turns up to `max_turns`, then a new session. At most `SYMPHONY_MAX_CONTINUATIONS` (default 6) such

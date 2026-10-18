@@ -44,6 +44,7 @@ async function render(
   description?: string,
   baseBranch: string | null = null,
   agents: Array<{ name: string; description: string }> = [],
+  history: Record<string, unknown> = {},
 ): Promise<string> {
   const { definition } = await loadWorkflowFile(shipped);
   const template = compilePrompt(definition.promptTemplate);
@@ -53,8 +54,22 @@ async function render(
     ...(description !== undefined ? { description } : {}),
     native_ref: { ...issue.native_ref, base_branch: baseBranch },
   };
-  return renderPrompt(template, { issue: issueTemplateValue(subject, commandSkills([toolbox])), attempt, role, agents });
+  return renderPrompt(template, { issue: issueTemplateValue(subject, commandSkills([toolbox])), attempt, role, agents, ...history });
 }
+
+/** The stage history of a session that follows a review with changes needed. */
+const afterReview = {
+  result_required: true,
+  round: 2,
+  results: {
+    latest: [],
+    open_findings: [
+      { severity: 'major', file: 'app/Invoice.php', line: 12, problem: 'Total ignores discounts', fix: 'Subtract the discount' },
+      { severity: 'minor', file: 'README.md', line: null, problem: 'Typo', fix: null },
+    ],
+    failed_cases: [],
+  },
+};
 
 describe('shipped WORKFLOW.md', () => {
   it('resolves to the developer and reviewer roles with entry checks', async () => {
@@ -70,6 +85,23 @@ describe('shipped WORKFLOW.md', () => {
     assert.equal(config.agent.maxContinuations, 6);
   });
 
+  it('hands off with report_result: verdicts decide the next column and Symphony enforces the review rounds', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const config = resolveConfig(definition.config, {
+      workflowPath: shipped,
+      env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' },
+      trackerDefaults,
+    });
+    const developer = roleFor({ state: 'In progress', description: null }, config.roles);
+    const reviewer = roleFor({ state: 'Agent review', description: null }, config.roles);
+    assert.equal(developer?.result, 'implementation');
+    assert.deepEqual(developer?.onResult, { done: 'Agent review', blocked: 'Blocked' });
+    assert.equal(reviewer?.result, 'review');
+    assert.deepEqual(reviewer?.onResult, { approved: 'In review', changes_needed: 'In progress', blocked: 'Blocked' });
+    assert.equal(reviewer?.onCheckFailed, 'In progress');
+    assert.equal(config.pipeline.maxReviewRounds, 3);
+  });
+
   it('renders the developer prompt with short tool names and the check handling', async () => {
     const prompt = await render('developer');
     assert.match(prompt, /acme\/app#42\*\*: Add invoices/);
@@ -77,11 +109,15 @@ describe('shipped WORKFLOW.md', () => {
     assert.match(prompt, /`get_issue`/);
     assert.match(prompt, /`open_pull_request`/);
     assert.match(prompt, /Integrate the base branch before requesting review/);
-    assert.match(prompt, /set_status\("Agent review"\)/);
-    assert.match(prompt, /`check_failed`.*Fix the problems/);
-    assert.match(prompt, /`check_timeout`.*do not move the issue to "Blocked".*without changing the status/);
-    assert.match(prompt, /`check_error`.*set_status\("Blocked"\)/);
+    assert.match(prompt, /`report_result`/);
+    assert.match(prompt, /verdict `done`/);
+    assert.match(prompt, /verdict `blocked`/);
+    assert.match(prompt, /`check_failed`.*Fix the problems.*call `report_result` again/);
+    assert.match(prompt, /`check_timeout`.*Call `report_result` once more.*end your turn/);
+    assert.match(prompt, /`check_error`.*issue comment.*end your turn/);
     assert.match(prompt, /end your turn/);
+    assert.doesNotMatch(prompt, /set_status/);
+    assert.doesNotMatch(prompt, /Open findings/);
     assert.match(prompt, /git push -u origin symphony\/issue-42/);
     assert.match(prompt, /Closes #42/);
     assert.doesNotMatch(prompt, /mcp__tracker__/);
@@ -90,7 +126,7 @@ describe('shipped WORKFLOW.md', () => {
     assert.doesNotMatch(prompt, /effort: high/);
   });
 
-  it('renders the read-only reviewer prompt with the checklist and round limit', async () => {
+  it('renders the read-only reviewer prompt with the checklist and the result fields', async () => {
     const prompt = await render('reviewer', 2);
     assert.match(prompt, /Your role: reviewer/);
     assert.match(prompt, /read-only/);
@@ -110,14 +146,31 @@ describe('shipped WORKFLOW.md', () => {
     ]) {
       assert.ok(prompt.includes(phrase), `reviewer prompt mentions ${phrase}`);
     }
-    assert.match(prompt, /## Agent review \(round N\)/);
-    assert.match(prompt, /set_status\("In review"\)/);
-    assert.match(prompt, /set_status\("In progress"\)/);
-    assert.match(prompt, /N is 3 or more/);
-    assert.match(prompt, /`check_timeout`.*do not move the issue to "Blocked".*stays in "Agent review"/);
+    assert.match(prompt, /`report_result`/);
+    assert.match(prompt, /`approved`.*`changes_needed`.*`blocked`/);
+    assert.match(prompt, /`severity` \(`blocker`, `major`, `minor` or `nit`\)/);
+    assert.match(prompt, /`check_timeout`.*The issue stays in "Agent review"/);
     assert.match(prompt, /Attempt 2/);
+    assert.doesNotMatch(prompt, /set_status/);
+    assert.doesNotMatch(prompt, /## Agent review \(round/);
+    assert.doesNotMatch(prompt, /Count the earlier review comments/);
+    assert.doesNotMatch(prompt, /N is 3 or more/);
+    assert.doesNotMatch(prompt, /Findings of your previous review/);
     assert.doesNotMatch(prompt, /mcp__tracker__/);
     assert.doesNotMatch(prompt, /Your role: developer/);
+  });
+
+  it('lists the open findings of the latest review for the developer and the reviewer', async () => {
+    const developer = await render('developer', null, undefined, null, [], afterReview);
+    assert.match(developer, /## Open findings of the latest agent review/);
+    assert.match(developer, /1\. \[major\] app\/Invoice\.php:12 — Total ignores discounts Expected fix: Subtract the discount/);
+    assert.match(developer, /2\. \[minor\] README\.md — Typo/);
+    assert.doesNotMatch(developer, /README\.md:/);
+
+    const reviewer = await render('reviewer', null, undefined, null, [], afterReview);
+    assert.match(reviewer, /## Findings of your previous review/);
+    assert.match(reviewer, /This is review round 2\./);
+    assert.match(reviewer, /\[major\] app\/Invoice\.php:12 — Total ignores discounts/);
   });
 
   it('falls back to the single-agent prompt for the default role', async () => {
@@ -399,7 +452,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
       assert.match(prompt, /Subagents you may start with the Agent tool/, role);
       assert.match(prompt, /- `symphony:laravel-code-reviewer`: Reviews a diff\./, role);
     }
-    assert.match(await render('developer', null, undefined, null, agents), /before you hand off with `set_status\("Agent review"\)`/);
+    assert.match(await render('developer', null, undefined, null, agents), /before you report the result/);
     assert.match(await render('reviewer', null, undefined, null, agents), /second pass over a large diff/);
   });
 
