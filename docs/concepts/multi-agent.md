@@ -99,6 +99,7 @@ and only the round limit sets `needs-human`
 | Entry checks gate the move, not the report | A failing check keeps the agent in its session to fix the problem; nothing is recorded, no round is spent | Record first, check later |
 | Skip without a session | A stage that is not needed should cost nothing, not a session that says "nothing to do" | Run the role with a "skip" prompt |
 | Read-only roles fall back with `on_check_failed` | A reviewer cannot repair a red suite; the issue goes back to the developer with the output | Block the issue for a human |
+| Very large changes split into sub-issues | Each work package is a normal issue with its own pipeline; the existing reviewer and entry checks verify the integration | An integration-engineer role, worktrees, several agents on one branch |
 
 ### Forgery protection and the bot account
 
@@ -110,11 +111,41 @@ against agents and other accounts. The decision was to rely on the author, not o
 separate account** (a machine user or a GitHub App token) instead of a personal token. See
 [Marker protection and the bot account](../adapters/github-project.md#stage-result-markers-and-the-bot-account).
 
+### Work packages instead of an integration engineer
+
+An issue of complexity `XL` whose design falls into separate parts is split by the architect: a `split` design files
+one sub-issue per work package, in `Ready`, with `blocked_by` where a package builds on another one
+([Work packages (`split`)](../configuration.md#work-packages-split)). Each package runs the whole pipeline on its own:
+its own workspace, branch, pull request, entry checks and review, and parallel to the others where nothing blocks it.
+The parent waits until every sub-issue is closed and then gets an integration review: the shipped reviewer, in a mode
+of its prompt, checks the integrated base branch against the parent's acceptance criteria, and the entry check of
+`In review` runs on that branch.
+
+The alternative was a separate integration-engineer role that merges parallel work into one branch. It was not taken:
+
+- **No second writer on one branch.** Every package has exactly one developer on exactly one branch, as every other
+  issue does. Two agents never push to the same branch, so there is nothing to lock or to merge between sessions.
+- **No worktrees.** Parallel work needs parallel checkouts; a sub-issue already gets one (its workspace). Worktrees of
+  one clone would share refs and hooks between sessions and need their own cleanup.
+- **Conflicts surface at merge, where they already have a path.** A package's pull request that conflicts with the base
+  branch after another package was merged goes back to its developer through `auto_merge.on_conflict`, with the base it
+  conflicts with. Without auto-merge a human sees the conflict on the pull request as for any other change.
+- **The integration is verified by what exists.** The reviewer and the entry checks on the base branch catch what
+  no single package shows: interfaces that do not match, gaps between packages, a package closed as not planned. Its
+  findings go to the parent's own developer, on the parent's own branch.
+- **One role fewer.** No new prompt, slot, budget or transition table to maintain; the sub-issue gate
+  (`respect_sub_issues`), `create_sub_issue` with `blocked_by` and `max_sub_issues` existed before.
+
+The one change to existing behavior: a running session of a role with `max_sub_issues` is not stopped when only the
+sub-issues it opened hold its issue back, so the architect reports its result after filing the packages.
+
 ### What the pipeline does not do
 
 - It does not decide on `Done`: only a human merges and closes, as before.
 - It does not detect *who* moved an issue. Symphony's moves carry the token owner's name like a human's, so it compares
   timestamps and target columns instead of actors.
+- It does not run several roles on the same issue at once or use git worktrees: parallel work is parallel issues
+  (work packages, see above).
 - The stages of phase 4 (design, security, docs) are not part of this page; each documents its own keys.
 
 ## Spike results

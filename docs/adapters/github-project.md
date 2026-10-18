@@ -68,7 +68,7 @@ see the board preflight in [configuration.md](../configuration.md#tracker).
 | `branch_name` | First branch linked to the issue ("Create a branch" in the issue sidebar), else `null` |
 | `dispatchable` | Issue is open, matches `assignee` (if set), has no unresolved dependency (if `respect_blockers`) and no open sub-issue (if `respect_sub_issues`) |
 | `created_at`, `updated_at` | Issue timestamps |
-| `native_ref` | `{provider, project_id, item_id, issue_id, repository, number, issue_state, status_option_id, parent, sub_issues, base_branch, dispatch_note}`: `parent` and each sub-issue are `{identifier, title, state}`, a closed sub-issue also has `state_reason` (`COMPLETED`, `NOT_PLANNED`, `DUPLICATE`); all sub-issues are read (GitHub allows 100); `base_branch` is the configured `base_branch` or `null`; `dispatch_note` says why an issue is not dispatchable (shown by `--dry-run`) |
+| `native_ref` | `{provider, project_id, item_id, issue_id, repository, number, issue_state, status_option_id, parent, sub_issues, base_branch, dispatch_note, held_by_sub_issues}`: `parent` and each sub-issue are `{identifier, title, state, state_reason}`, where `state_reason` says why a closed issue was closed (`COMPLETED`, `NOT_PLANNED`, `DUPLICATE`) and is `null` for an open one; all sub-issues are read (GitHub allows 100); `base_branch` is the configured `base_branch` or `null`; `dispatch_note` says why an issue is not dispatchable (shown by `--dry-run`); `held_by_sub_issues` is `true` when open sub-issues are the only reason |
 
 ### Dependencies
 
@@ -92,7 +92,10 @@ the workspace is only deleted once the issue reaches a terminal status.
 
 Hooks additionally receive `SYMPHONY_ISSUE_REPOSITORY` and `SYMPHONY_ISSUE_NUMBER`, and `SYMPHONY_BASE_BRANCH` when
 `base_branch` is set. For roles with `wait_for_sub_issues`, the adapter reports the open sub-issues
-(`openSubIssues`); see [Waves](../configuration.md#waves-wait_for_sub_issues).
+(`openSubIssues`); see [Waves](../configuration.md#waves-wait_for_sub_issues). `heldBySubIssues` reports an issue that
+only its open sub-issues hold back (`held_by_sub_issues`): a running session of a role with `max_sub_issues` goes on
+with it, so an architect that files [work packages](../configuration.md#work-packages-split) is not stopped by them
+before it reports. A new session still waits until they are closed.
 
 ## Agent tools
 

@@ -25,7 +25,7 @@ reported to the agent instead of being dropped silently.
 | Kind | Verdicts | Fields |
 |---|---|---|
 | `analysis` | `ready`, `needs_info` | `type`, `complexity` (S/M/L/XL), `components[]`, `acceptance_criteria[]`, `risks {security, data_migration, breaking_change}`, `docs_needed`, `open_questions[]`, `plan[]` |
-| `design` | `ready`, `blocked` | `options[]`, `decision`, `components[]`, `interfaces[]`, `migrations[]`, `compatibility`, `work_packages[]` (optional) |
+| `design` | `ready`, `split`, `blocked` | `options[]`, `decision`, `components[]`, `interfaces[]`, `migrations[]`, `compatibility`, `work_packages[]` (optional; with `split` at least two) |
 | `implementation` | `done`, `blocked` | `changed_files[]`, `tests_added[]`, `notes`, `plan_deviations[]` |
 | `test` | `passed`, `failed`, `blocked` | `cases[] {criterion, test, status: passed\|failed\|skipped}`, `commands[]`, `uncovered_criteria[]` |
 | `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, file, line, problem, fix}`, `checked[]` |
@@ -59,9 +59,28 @@ see them):
 - `ready` (design) needs a `decision`, at least one entry in `components` and at least one in `interfaces`, so a design cannot
   stay generic. The comment renders the decision, the components and the interfaces; the developer's prompt gets them as
   `results.design`.
+- `split` (design, see [Work packages](#work-packages)) needs the same as `ready` and at least two `work_packages`.
 
-`parseResult(kind, input)` checks the schema, these rules and the size, and returns every problem in one message the
-agent can act on, e.g. ``- `findings[0].severity`: Invalid option: expected one of "blocker"|"major"|"minor"|"nit"``.
+`parseResult(kind, input, context?)` checks the schema, these rules and the size, and returns every problem in one
+message the agent can act on, e.g. ``- `findings[0].severity`: Invalid option: expected one of "blocker"|"major"|"minor"|"nit"``.
+The `report_result` tool passes the `context` of the session (the issue's complexity, whether it is a sub-issue, the
+role's `max_sub_issues`), so the rules about the issue apply only there; a result read back from its marker is not
+checked against the issue again.
+
+### Work packages
+
+A `split` design hands an issue of complexity `XL` to sub-issues instead of one developer
+([Work packages (`split`)](configuration.md#work-packages-split)). Besides the rules above, `report_result` refuses it
+with `invalid_result` when:
+
+- the issue's `Complexity:` label is not `XL` (or it has none): report `ready`;
+- the issue is a sub-issue itself (it has a parent): a work package is never split again;
+- the role has no `max_sub_issues`, or there are more `work_packages` than it allows;
+- the issue has fewer sub-issues than `work_packages` when the tool is called (read fresh from the tracker, so the
+  sub-issues the agent filed in the same turn count).
+
+The comment shows the verdict as `🧩 Design: split` and lists the packages under **Work packages**, numbered in
+implementation order.
 
 ## Meta
 
@@ -263,3 +282,13 @@ pass, a test engineer that changes `src/` (refused with `invalid_result`, no ent
 and untracked changes, a workspace that is no git checkout, `failed` with the failed cases in the developer's prompt and
 the engineer's next round, the round limit (`Blocked` with `needs-human`), a human resuming the issue, `max_test_rounds` 1
 and `blocked`. The rule itself is unit-tested against temporary git repositories in `test/changed-files.test.ts`.
+
+`test/work-packages.test.ts` runs a [split](#work-packages) with the shipped `WORKFLOW.md` on an in-memory board that
+treats sub-issues like the GitHub adapter: the architect files three packages mid-session (reconciliation leaves its
+session running), `split` moves the parent to `Agent review` past the developer, the packages start in `Ready` (the
+dependent one only after the two it builds on), and the parent gets no session, no *Start now* and a
+`waiting for sub-issues …` line in the queue and the dry run until the third package is closed. The integration review
+then lists the packages with their state (one closed as not planned), its `changes_needed` goes to the parent's own
+developer, and that pull request gets a normal review. Further cases: a split refused for complexity `L`, for a
+sub-issue and while a package has no sub-issue yet, an architect interrupted after filing the packages, and the
+`before_run` hook that fast-forwards a workspace on the base branch.

@@ -59,10 +59,10 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
 |---|---|
 | `Backlog` | nothing. Issues here are not released yet. |
 | `Ready` | starts the issue analyst as soon as a slot is free; it hands the issue on to `Design` (larger changes) or `In progress` |
-| `Design` | starts the architect (read-only), who decides on the approach of a larger change and hands the design to `In progress`; small issues skip the column without a session, see [Design for larger changes](#design-for-larger-changes-the-architect) |
+| `Design` | starts the architect (read-only), who decides on the approach of a larger change and hands the design to `In progress`; small issues skip the column without a session, see [Design for larger changes](#design-for-larger-changes-the-architect). An `XL` issue may be split into [work packages](#work-packages-for-very-large-changes) instead |
 | `In progress` | a developer is working (it gets the analysis and the design); if Symphony finds an issue here without an agent, it starts one |
 | `Testing` | starts the test engineer (at most one at a time), who writes independent tests and may only change test files; reached by bug issues after the developer, by every issue with `SYMPHONY_AFTER_IMPLEMENTATION=Testing` |
-| `Agent review` | starts a reviewer (at most one at a time); only reachable after passing checks |
+| `Agent review` | starts a reviewer (at most one at a time); only reachable after passing checks. An issue split into work packages waits here until all of its sub-issues are closed and then gets an integration review |
 | `Blocked` | stops a running agent; the workspace is kept. The agent needs you, see its comment. |
 | `In review` | stops a running agent; the workspace is kept for follow-up work. Only the reviewer moves cards here, after passing checks. |
 | `Done` | stops a running agent and deletes the workspace, at the latest on the next poll |
@@ -138,6 +138,43 @@ An issue without a usable `Complexity:` label (none, an unknown value or conflic
 architect runs. A skipped stage posts a `skipped` result, logs `stage_skipped`, and the issue goes from `Ready` straight
 to `In progress`; the pipeline view shows `Design` as skipped. Details and the configuration:
 [The architect](configuration.md#the-architect).
+
+### Work packages for very large changes
+
+An issue of complexity `XL` can be too large for one developer session and one pull request. If its design falls into
+parts that can each be implemented, reviewed and merged on their own, the architect splits it: it files one sub-issue
+per work package and reports the verdict `split` instead of `ready`.
+
+```
+#7 Invoice export (XL)   Ready → Design (architect: split) → Agent review … waits …        → integration review → In review
+├─ #8  CSV writer  (M)   Ready → … → In progress → … → PR into develop → merged, closed
+├─ #9  PDF writer  (M)   Ready → … → In progress → … → PR into develop → merged, closed
+└─ #10 CLI command (S)   blocked by #8, #9 → Ready → … → PR into develop → merged, closed
+```
+
+- **The packages** land in `Ready` and run in parallel, each through the normal pipeline (analysis, design where needed,
+  implementation, tests, review, pull request). A package that builds on another one carries `Blocked by #N` and starts
+  once that one is closed. Each package gets `Type:` and `Complexity:` labels of its own size; as a sub-issue it is
+  never split again.
+- **The parent** goes from `Design` straight to `Agent review`, without a developer or test engineer, and waits there:
+  the dashboard and `npm run dry-run` show `waiting for sub-issues owner/repo#8, owner/repo#9, owner/repo#10`, and
+  *Start now* refuses it. A sub-issue
+  closed as **not planned** counts as closed, so a dropped package does not hold the parent forever.
+- **Conflicts.** Packages that touch the same code can conflict once the first one is merged. With
+  [auto-merge](#auto-merge-into-develop) the conflicting pull request goes back to its developer (`auto_merge.on_conflict`)
+  with the base it conflicts with; the parent keeps waiting.
+- **Integration review.** When the last sub-issue is closed, the reviewer reviews the integrated base branch: the
+  packages with their state, the commits they brought in, and the parent's acceptance criteria, with the entry checks
+  of `In review` on the base branch. A package closed as not planned is a finding where a criterion still needs it.
+  `approved` moves the parent to `In review` for you. `changes_needed` sends it to `In progress`: the parent's own
+  developer fixes the findings on the parent's branch with its own pull request, which then gets a normal review.
+- **When the architect does not split:** for any issue below `XL`, for a sub-issue, or when the parts only work
+  together. Then it reports `ready` and one developer implements the design, as before. `report_result` refuses a
+  `split` that breaks these rules.
+
+The limit is `roles.architect.max_sub_issues` (`SYMPHONY_ARCHITECT_MAX_SUB_ISSUES`, default 5). Details:
+[Work packages (`split`)](configuration.md#work-packages-split); why there is no integration-engineer role:
+[the concept](concepts/multi-agent.md#work-packages-instead-of-an-integration-engineer).
 
 ### Rounds, limits and manual resume
 
@@ -348,7 +385,7 @@ automatically as soon as everything is done. Three kinds of dependencies count:
 |---|---|
 | Relationship | In the issue sidebar under **Relationships → Blocked by** |
 | Text in the issue | In the description, e.g. `blocked by #12`, `blocked #12` or `Blocked by: #12, #13`. `#N` means the same repository, others are written as `owner/repo#N`. |
-| Sub-issues | In the sidebar under **Sub-issues**. The parent issue waits until all sub-issues are closed. Exception: an issue whose description starts with a [command](#commands-in-the-issue-refactoring) does not wait, because for it the sub-issues are the result of the run. A role with `wait_for_sub_issues` (the [autopilot](#autopilot-auto-code)) still waits: it only starts again once its sub-issues are closed. |
+| Sub-issues | In the sidebar under **Sub-issues**. The parent issue waits until all sub-issues are closed. Exception: an issue whose description starts with a [command](#commands-in-the-issue-refactoring) does not wait, because for it the sub-issues are the result of the run. A role with `wait_for_sub_issues` (the [autopilot](#autopilot-auto-code)) still waits: it only starts again once its sub-issues are closed. The architect's [work packages](#work-packages-for-very-large-changes) use the same wait. |
 
 The `/concept` and `/plan` agent commands set both types at the same time: the relationship (`blocked_by` on
 `create_sub_issue`) and the line `Blocked by #N` in the text. Both count as one dependency.
@@ -963,7 +1000,7 @@ Where the data comes from and where the limits are:
 | `GET /api/v1/history/entries?from=&to=&repo=&issue=&event=&result=&order=desc&limit=200` | Log entries of a time range, filtered and sorted (at most 1,000) |
 | `GET /api/v1/history/raw?repo=owner/name` | a repository's `.log` file as text |
 | `GET /api/v1/state` | Overall state as JSON: issues in flight (`issues[]` with `status` running/retrying/paused/queued, the dashboard `section` running/next/waiting/paused, `position`, `reason` and the pipeline `stages[]`), the dispatch plan (`queue[]`, see below), blocked issues (`blocked[]` with the reason, `reason_code` `column`/`blocked`/`missing_label` and `blocked_by`), `pipeline_config` (board columns, roles, blocked columns), running agents (`running[]` with `role`), queue (`retrying[]` with `kind` and, for session limits, `limit`), agent slots (`limits`, see below), totals, health (`health.max_concurrent_agents` is the effective total), `controls.retry` (whether restarting is allowed) |
-| `GET /api/v1/<identifier>` | Details of an issue: title, role, board fields (`issue`: column, labels, priority, parent, sub-issues, `blocked_by`, `dispatch_note`), the pipeline stations (`pipeline`: per stage `status` `done`/`active`/`pending`/`skipped`, the `verdict` and `round` of the role's newest result, and per session the `verdict` and `round` it reported; `skipped` marks a stage the workflow profile or a `skipped` result leaves out), the stage results (`results[]`: role, run, kind, verdict, summary, round, target, `head_sha`, `created_at`; empty for roles without `result`, and until a result-driven session has loaded them), workspace, attempts, sessions (`sessions`, each with `model` and `effort`), tokens and cost per model (`usage_by_model`), latest events, last error, last entry check (`last_check`), `controls.retry`. For an issue the orchestrator released, the archived details with `status: "finished"` and `archived` (`archived_at`, `released`); `404` only when nothing is known about the issue |
+| `GET /api/v1/<identifier>` | Details of an issue: title, role, board fields (`issue`: column, labels, priority, parent, sub-issues, `blocked_by`, `dispatch_note`), the pipeline stations (`pipeline`: per stage `status` `done`/`active`/`pending`/`skipped`, the `verdict` and `round` of the role's newest result, and per session the `verdict` and `round` it reported; `skipped` marks a stage the workflow profile or a `skipped` result leaves out, or one a result's target jumped over without a session there, such as the developer of an issue [split into work packages](#work-packages-for-very-large-changes)), the stage results (`results[]`: role, run, kind, verdict, summary, round, target, `head_sha`, `created_at`; empty for roles without `result`, and until a result-driven session has loaded them), workspace, attempts, sessions (`sessions`, each with `model` and `effort`), tokens and cost per model (`usage_by_model`), latest events, last error, last entry check (`last_check`), `controls.retry`. For an issue the orchestrator released, the archived details with `status: "finished"` and `archived` (`archived_at`, `released`); `404` only when nothing is known about the issue |
 | `GET /api/v1/<identifier>/timeline?after=<seq>` | Timeline of the issue (live or archived): lifecycle, phase changes and agent events with a running `seq`; `after` returns only newer ones |
 | `GET /api/v1/<identifier>/transcript?run=<run>&from=<offset>` | Transcript of a session (without `run` the latest; live or archived), prepared as prompts, model calls, tool results; from byte offset `from`, continue with `next_offset`. With `&format=raw` the JSONL file |
 | `POST /api/v1/refresh` | poll and reconcile now |

@@ -140,6 +140,11 @@ live in **`.env`**.
   through the `Design` column first: a read-only architect agent decides on the approach (components, interfaces) and the
   developer implements that design. Small issues skip the column without a session
   ([details](docs/configuration.md#the-architect)).
+- **Work packages:** a very large feature (complexity `XL`) can be split by the architect into work packages, one
+  sub-issue each, that run in parallel with their own pipeline, workspace, branch and pull request. The parent waits
+  until all of them are closed; then the reviewer checks the integrated base branch against its acceptance criteria. No
+  worktrees and no extra integration role ([details](docs/configuration.md#work-packages-split),
+  [why](docs/concepts/multi-agent.md#work-packages-instead-of-an-integration-engineer)).
 - **Test engineer:** an independent agent in the `Testing` column (bug issues always, other issues optionally) writes tests for the acceptance criteria and
   may only change test files; failed tests go back to the developer with the failed cases, and after
   `pipeline.max_test_rounds` failed rounds the issue waits for you
