@@ -7,7 +7,7 @@ import type { AgentEvent, AgentRunner, AgentSession, IntegrationReport, SessionL
 import { prepareIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
-import type { AgentToolSpec, Issue, TrackerAdapter } from '../tracker/types.ts';
+import type { AgentToolSpec, Issue, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { describeHolder, type LockResult } from '../workspace/lock.ts';
 import { describeFailure, type HookIssue, type Workspace, type WorkspaceManager } from '../workspace/manager.ts';
@@ -21,6 +21,7 @@ import { normalizeStateName } from '../workflow/config.ts';
 import { EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../workflow/template.ts';
 import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord } from './guard.ts';
 import { createResultTool, resultReminder, type ResultToolAdapter } from './result-tool.ts';
+import { interruptedTransition } from './recovery.ts';
 import { buildStageHistory, resultsTemplateValue, type PersistedResult, type ResultsTemplateValue, type StageHistory } from './stage-history.ts';
 
 export type RunPhase =
@@ -125,6 +126,8 @@ export interface WorkerParams {
   effort: EffortLevel | null;
   /** Role serving the issue's column at dispatch; null = the implicit `default` role. Fixed for the run. */
   role: RoleConfig | null;
+  /** The issue's stage results, when the dispatch has just read them; omitted = the run reads them itself. */
+  results?: readonly TrackedResult[];
   /** Adapter snapshot: the tools advertised to the session and the ones executed are the same. */
   adapter: TrackerAdapter;
   runner: AgentRunner;
@@ -186,14 +189,14 @@ async function loadResultSupport(
   let tracked;
   let boardColumns: string[] | null;
   try {
-    tracked = await resultAdapter.readResults(issue());
+    tracked = params.results ?? (await resultAdapter.readResults(issue()));
     boardColumns = adapter.statusOptions !== undefined ? await adapter.statusOptions() : null;
   } catch (error) {
     throw new SymphonyError('results_read_error', `could not read the stage results of ${issue().identifier}: ${errorMessage(error)}`, { cause: error });
   }
   let persisted = tracked.map(({ result, meta }) => ({ result, meta }));
   let history = buildStageHistory(persisted);
-  const reset = await resetAfterHumanResume(params, resultAdapter, issue(), history);
+  const reset = interruptedTransition(issue(), role, tracked) === null ? await resetAfterHumanResume(params, resultAdapter, issue(), history) : null;
   if (reset !== null) {
     persisted = [...persisted, reset];
     history = buildStageHistory(persisted);
@@ -226,7 +229,8 @@ async function loadResultSupport(
 
 /**
  * A human moved the issue back into an active column after a hand-off to a non-active one (a round limit or Blocked):
- * the newest marker still points at that column, but the board is elsewhere. Records a `reset` marker so the loop starts
+ * the newest marker still points at that column, but the board is elsewhere. Not called for a hand-off whose move never
+ * happened (`interruptedTransition`): its rounds go on. Records a `reset` marker so the loop starts
  * at round 1 and removes the limit label. Returns the marker, or null when nothing was written.
  */
 async function resetAfterHumanResume(

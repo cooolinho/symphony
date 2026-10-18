@@ -226,7 +226,7 @@ describe('report_result', () => {
     assert.equal(failed.category, 'status_failed');
     assert.match(failed.message, /The review result was recorded \(https:\/\/github\.com\/acme\/app\/issues\/1#issuecomment-1\)/);
     assert.match(failed.message, /moving the issue to "In review" failed: GitHub is down/);
-    assert.match(failed.message, /Do not report again: end your turn now\. The issue stays in "Agent review" and Symphony runs this stage again later\./);
+    assert.match(failed.message, /Do not report again: end your turn now\. The issue stays in "Agent review" for now; Symphony completes the move later without running this stage again\./);
     assert.equal(markers().length, 1);
     assert.equal(markers()[0]?.meta.target, 'In review', 'the marker keeps the move that did not happen');
 

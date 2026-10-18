@@ -90,6 +90,35 @@ function withCheckFailedNote(result: StageResult, failed: NonNullable<AllowedTra
   return { ...result, summary: `${summary}\n\n${note}${quoted}` };
 }
 
+/** Applies a transition's labels (removing only those the issue carries); failures become warnings. */
+export async function applyTransitionLabels(
+  adapter: Pick<ResultToolAdapter, 'addLabels' | 'removeLabels'>,
+  issue: Issue,
+  labels: Transition['labels'],
+  warnings: string[],
+): Promise<{ added: string[]; removed: string[] }> {
+  const changed = { added: [] as string[], removed: [] as string[] };
+  const carried = new Set(issue.labels.map((name) => name.toLowerCase()));
+  const remove = labels.remove.filter((name) => carried.has(name.toLowerCase()));
+  if (labels.add.length > 0) {
+    try {
+      const result = await adapter.addLabels(issue, labels.add, { create: true });
+      changed.added = result.added;
+      if (result.unknown.length > 0) warnings.push(`label(s) ${result.unknown.map((name) => `"${name}"`).join(', ')} do not exist and were not added`);
+    } catch (error) {
+      warnings.push(`could not add label(s) ${labels.add.join(', ')}: ${errorMessage(error)}`);
+    }
+  }
+  if (remove.length > 0) {
+    try {
+      changed.removed = (await adapter.removeLabels(issue, remove)).removed;
+    } catch (error) {
+      warnings.push(`could not remove label(s) ${remove.join(', ')}: ${errorMessage(error)}`);
+    }
+  }
+  return changed;
+}
+
 type Plan = { ok: true; result: StageResult; transition: Transition } | { ok: false; failure: ToolResult };
 
 /**
@@ -136,30 +165,6 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       };
     }
     return { ok: true, result: parsed.result, transition };
-  };
-
-  /** Applies the transition's labels (removing only those the issue carries); failures become warnings. */
-  const applyLabels = async (issue: Issue, labels: Transition['labels'], warnings: string[]): Promise<{ added: string[]; removed: string[] }> => {
-    const changed = { added: [] as string[], removed: [] as string[] };
-    const carried = new Set(issue.labels.map((name) => name.toLowerCase()));
-    const remove = labels.remove.filter((name) => carried.has(name.toLowerCase()));
-    if (labels.add.length > 0) {
-      try {
-        const result = await adapter.addLabels(issue, labels.add, { create: true });
-        changed.added = result.added;
-        if (result.unknown.length > 0) warnings.push(`label(s) ${result.unknown.map((name) => `"${name}"`).join(', ')} do not exist and were not added`);
-      } catch (error) {
-        warnings.push(`could not add label(s) ${labels.add.join(', ')}: ${errorMessage(error)}`);
-      }
-    }
-    if (remove.length > 0) {
-      try {
-        changed.removed = (await adapter.removeLabels(issue, remove)).removed;
-      } catch (error) {
-        warnings.push(`could not remove label(s) ${remove.join(', ')}: ${errorMessage(error)}`);
-      }
-    }
-    return changed;
   };
 
   const record = async (args: Record<string, unknown>, context: AgentToolContext): Promise<ToolResult> => {
@@ -249,19 +254,19 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     try {
       change = await adapter.setStatus(issue, transition.target);
     } catch (error) {
-      // The labels belong to the move, so they stay as they are. The run ends after this turn; the issue stays in its
-      // column and the stage runs again in a later session (docs/usage.md#failures-of-result-driven-stages).
+      // The labels belong to the move, so they stay as they are. The run ends after this turn; the next dispatch
+      // completes the move from the result's marker without a session (docs/usage.md#failures-of-result-driven-stages).
       recorded = fail(
         'status_failed',
         `The ${kind} result was recorded${url !== null ? ` (${url})` : ''}, but moving the issue to "${transition.target}" ` +
           `failed: ${errorMessage(error)}. Do not report again: end your turn now. The issue stays in "${issue.state}" ` +
-          'and Symphony runs this stage again later.',
+          'for now; Symphony completes the move later without running this stage again.',
       );
       return recorded;
     }
     params.onMoved?.();
     const warnings: string[] = [];
-    const labels = await applyLabels(issue, transition.labels, warnings);
+    const labels = await applyTransitionLabels(adapter, issue, transition.labels, warnings);
     recorded = ok({
       kind,
       verdict: result.verdict,

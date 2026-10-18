@@ -4,7 +4,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 import { Logger } from '../src/log.ts';
-import { CHECK_PASSED_NOTE, createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
+import { CHECK_PASSED_NOTE, createGuard, entryCheckFor, guardTools, toolsForRole, type CheckCache, type CheckRecord, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
 import type { AgentToolContext, AgentToolSpec, ToolResult } from '../src/tracker/types.ts';
 import { WorkspaceManager } from '../src/workspace/manager.ts';
 import { baseFront, makeIssue, makeWorkflow, tempDir } from './helpers.ts';
@@ -91,6 +91,25 @@ describe('transition guard', () => {
     const gated = setup({ checks, role: 'reviewer' });
     assert.equal(denied(await gated.guard('In review'))?.category, 'check_failed');
     assert.deepEqual(gated.events, ['checks_started', 'checks_finished']);
+  });
+
+  it('without a workspace: moves without a check pass, a move that needs one is a check_error', async () => {
+    const { params } = setup({ checks: { 'Agent review': 'exit 0' } });
+    const guard = createGuard({ ...params, workspace: null });
+    assert.deepEqual(await guard('Blocked'), { allow: true, note: null });
+    const review = denied(await guard('Agent review'));
+    assert.equal(review?.category, 'check_error');
+    assert.match(review?.message ?? '', /there is no workspace to run it in/);
+    assert.equal(denied(await guard('In review'))?.category, 'transition_denied');
+  });
+
+  it('entryCheckFor names the script a move runs, none for a role with run_checks false', () => {
+    const auditor = { commands: ['refactoring'], states: ['Todo', 'In progress'], run_checks: false, may_move_to: ['In review', 'Blocked'] };
+    const { params } = setup({ checks: { 'In review': 'exit 0' }, extraRoles: { auditor }, role: 'auditor' });
+    const reviewer = params.config.roles?.find((role) => role.name === 'reviewer') ?? null;
+    assert.equal(entryCheckFor('in review', reviewer, params.config), 'exit 0');
+    assert.equal(entryCheckFor('In progress', reviewer, params.config), null);
+    assert.equal(entryCheckFor('In review', params.role, params.config), null);
   });
 
   it('adds the integration check environment', async () => {

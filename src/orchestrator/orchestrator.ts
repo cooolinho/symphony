@@ -13,11 +13,12 @@ import { defaultIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
 import { getTrackerFactory } from '../tracker/registry.ts';
-import type { Issue, TrackerAdapter } from '../tracker/types.ts';
+import type { Issue, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
 import { SerialQueue, settledWithin } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { truncate } from '../util/text.ts';
-import { WorkspaceManager, type HookIssue } from '../workspace/manager.ts';
+import { describeHolder, type LockResult } from '../workspace/lock.ts';
+import { WorkspaceManager, type HookIssue, type Workspace } from '../workspace/manager.ts';
 import type { ServiceConfig } from '../workflow/config.ts';
 import { roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
 import { internalResult, renderResultComment, type ResultMeta } from '../workflow/results.ts';
@@ -39,7 +40,7 @@ import {
 } from './eligibility.ts';
 import { normalizeStateName } from '../workflow/config.ts';
 import { planDispatch, type PlanIssue, type PlanItem, type PlanRetry } from './dispatch-plan.ts';
-import type { CheckCache, CheckRecord } from './guard.ts';
+import { createGuard, entryCheckFor, type CheckCache, type CheckRecord } from './guard.ts';
 import { IssueArchive, type ArchivedIssue } from './issue-archive.ts';
 import {
   activeReservations,
@@ -60,6 +61,8 @@ import { resultRows, type PersistedResult } from './stage-history.ts';
 import { blockedBucketColumns, derivePipeline, type PipelineStage, type StageSession } from './pipeline.ts';
 import { copyToolUsage, countToolUse, emptyToolUsage, integrationJson, integrationUsage, type ToolUsage } from './tool-usage.ts';
 import { runAgentAttempt, type RunPhase, type WorkerOutcome } from './worker.ts';
+import { interruptedLabels, interruptedTransition, statusUpdatedAt, type InterruptedTransition } from './recovery.ts';
+import { applyTransitionLabels, RESULT_TOOL } from './result-tool.ts';
 
 export interface Clock {
   now(): Date;
@@ -578,6 +581,18 @@ function tokensJson(usage: TokenUsage) {
   return { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens, total_tokens: usage.totalTokens };
 }
 
+/** What a tracker needs to complete an interrupted transition (`#recoverTransition`). */
+type RecoveryAdapter = TrackerAdapter & Required<Pick<TrackerAdapter, 'readResults' | 'setStatus' | 'addLabels' | 'removeLabels'>>;
+
+function canRecover(adapter: TrackerAdapter): adapter is RecoveryAdapter {
+  return adapter.readResults !== undefined && adapter.setStatus !== undefined && adapter.addLabels !== undefined && adapter.removeLabels !== undefined;
+}
+
+/** How a transition recovery ended: moved, declined (the stage runs), changed (moved by someone else) or failed (retried). */
+type RecoveryOutcome =
+  | { kind: 'moved'; status: string; check: CheckRecord | null; labels: { added: string[]; removed: string[] }; warnings: string[] }
+  | { kind: 'declined' | 'changed' | 'failed'; reason: string };
+
 /**
  * The single authority over scheduling state (spec 7-8): polling, dispatch, reconciliation,
  * retries. Mutations run through one serial queue; agent events only update counters.
@@ -592,8 +607,12 @@ export class Orchestrator {
 
   #running = new Map<string, RunningEntry>();
   #claimed = new Set<string>();
-  /** Stage skips in flight (see `#skipStage`); `stop` waits for them. */
+  /** Stage skips and transition recoveries in flight (see `#skipStage`, `#recoverTransition`); `stop` waits for them. */
   #skips = new Set<Promise<void>>();
+  /** Aborted at shutdown: stops the entry check of a transition recovery. */
+  #halt = new AbortController();
+  /** The result comment of an interrupted transition whose recovery was declined, by issue id: its stage runs instead. */
+  #recoveryDeclined = new Map<string, string>();
   /** Issues whose `skipped` comment is posted but whose move failed, by issue id: the retry must not post it again. */
   #skipCommented = new Map<string, { key: string; url: string | null }>();
   #retries = new Map<string, RetryEntry>();
@@ -706,6 +725,7 @@ export class Orchestrator {
         this.#logger.info('waiting for running agents to stop', { count: entries.length });
         await settledWithin(Promise.all(entries.map((entry) => entry.done)), timeoutMs);
       }
+      this.#halt.abort();
       await settledWithin(Promise.all(this.#skips), timeoutMs);
       this.#notify();
     })();
@@ -1213,12 +1233,12 @@ export class Orchestrator {
       };
 
       const byId = new Map(candidates.map((issue) => [issue.id, issue]));
-      await this.#startPlanned(this.#plan(config, adapter), (item) => {
+      await this.#startPlanned(this.#plan(config, adapter), async (item) => {
         const issue = byId.get(item.issueId);
         if (issue === undefined || !this.#shouldDispatch(issue, config, adapter)) return;
         const budget = this.#budgetExceeded(issue, this.#repositoryOf(issue), config);
         if (budget !== null) this.#pauseForBudget(issue, adapter, budget, null);
-        else this.#dispatch(issue, null, workflow, adapter);
+        else await this.#start(issue, null, workflow, adapter, false);
       });
     } catch (error) {
       this.#logger.error('tick failed', { error: errorMessage(error) });
@@ -1447,13 +1467,13 @@ export class Orchestrator {
    * the issue first), new candidates through `startNew`. A continuation inside its short delay keeps its slot and
    * starts from its own timer.
    */
-  async #startPlanned(plan: PlanItem[], startNew: ((item: PlanItem) => void) | null): Promise<void> {
+  async #startPlanned(plan: PlanItem[], startNew: ((item: PlanItem) => Promise<void>) | null): Promise<void> {
     const now = this.#clock.now().getTime();
     for (const item of plan) {
       if (this.#stopping) return;
       if (item.group !== 'next' || item.decision !== 'start') continue;
       if (item.kind === 'new') {
-        startNew?.(item);
+        await startNew?.(item);
         continue;
       }
       const retry = this.#retries.get(item.issueId);
@@ -1689,7 +1709,190 @@ export class Orchestrator {
     void work.finally(() => this.#skips.delete(work));
   }
 
-  #dispatch(issue: Issue, attempt: number | null, workflow: EffectiveWorkflow, adapter: TrackerAdapter, continuation = false, forced = false): void {
+  /**
+   * Starts the stage of the issue's column (`#dispatch`), unless the issue's newest result recorded a hand-off whose move
+   * never happened: `#recoverTransition` then completes it without a session. Only a result-driven role on a tracker
+   * that reports when the column last changed reads the results for that; its run reuses them. An operator's restart
+   * (`force`) never comes here: it always runs the stage.
+   */
+  async #start(issue: Issue, attempt: number | null, workflow: EffectiveWorkflow, adapter: TrackerAdapter, continuation: boolean): Promise<void> {
+    const role = roleFor(issue, workflow.config.roles);
+    let tracked: TrackedResult[] | null = null;
+    if (role?.result != null && statusUpdatedAt(issue) !== null && canRecover(adapter)) {
+      try {
+        tracked = await adapter.readResults(issue);
+      } catch (error) {
+        // The run reads them again, and fails with results_read_error when the tracker still refuses.
+        this.#issueLogger(issue).debug('reading the stage results before dispatch failed', { error: errorMessage(error) });
+      }
+      if (this.#stopping) {
+        this.#release(issue.id);
+        return;
+      }
+      const interrupted = tracked === null ? null : interruptedTransition(issue, role, tracked);
+      if (tracked !== null && interrupted !== null && this.#recoveryDeclined.get(issue.id) !== interrupted.result.url) {
+        this.#recoverTransition(issue, role, interrupted, tracked, attempt, workflow, adapter);
+        return;
+      }
+    }
+    this.#dispatch(issue, attempt, workflow, adapter, continuation, false, tracked);
+  }
+
+  /**
+   * Completes a hand-off whose result comment was posted but whose move did not happen (see `interruptedTransition`),
+   * without a session. The issue stays claimed meanwhile. Afterwards (`#afterRecovery`) the next stage follows as a
+   * continuation, like after any hand-off; a denied move or a failed entry check runs the stage instead, an issue that
+   * moved meanwhile is left to the next tick, and an error is retried with backoff.
+   */
+  #recoverTransition(
+    issue: Issue,
+    role: RoleConfig,
+    interrupted: InterruptedTransition,
+    tracked: readonly TrackedResult[],
+    attempt: number | null,
+    workflow: EffectiveWorkflow,
+    adapter: RecoveryAdapter,
+  ): void {
+    const record = this.#record(issue);
+    record.meta = issueMeta(issue);
+    record.repo = adapter.issueRepository?.(issue) ?? 'unknown';
+    this.#claimed.add(issue.id);
+    const work = (async () => {
+      let outcome: RecoveryOutcome;
+      try {
+        outcome = await this.#completeTransition(issue, role, interrupted, tracked, workflow, adapter, record);
+      } catch (error) {
+        outcome = { kind: 'failed', reason: errorMessage(error) };
+      }
+      await this.#serial.run(() => this.#afterRecovery(issue, role, interrupted, attempt, record, outcome));
+    })();
+    this.#skips.add(work);
+    void work.finally(() => this.#skips.delete(work));
+  }
+
+  /**
+   * The move of `#recoverTransition`. It passes the transition guard like `report_result`: `may_move_to`, then the
+   * target's entry check, run in the issue's workspace (the stage's work; a workspace that no longer exists declines).
+   * Right before the move a fresh read confirms that the column and `status_updated_at` are unchanged, so a human's
+   * move during the check is never undone. The labels follow the move (`interruptedLabels`).
+   */
+  async #completeTransition(
+    issue: Issue,
+    role: RoleConfig,
+    interrupted: InterruptedTransition,
+    tracked: readonly TrackedResult[],
+    workflow: EffectiveWorkflow,
+    adapter: RecoveryAdapter,
+    record: IssueRecord,
+  ): Promise<RecoveryOutcome> {
+    const { config } = workflow;
+    const { target } = interrupted;
+    const workspaces = this.#workspaces(workflow);
+    const hookIssue: HookIssue = { id: issue.id, identifier: issue.identifier, url: issue.url, branch_name: issue.branch_name, env: adapter.hookEnvironment?.(issue) ?? {} };
+    let lock: Extract<LockResult, { ok: true }> | null = null;
+    try {
+      let workspace: Workspace | null = null;
+      if (entryCheckFor(target, role, config) !== null) {
+        const acquired = await workspaces.lock(issue.identifier);
+        if (!acquired.ok) return { kind: 'failed', reason: `workspace locked by ${describeHolder(acquired.holder)}` };
+        lock = acquired;
+        workspace = await workspaces.ensure(hookIssue);
+        if (workspace.createdNow) return { kind: 'declined', reason: `the entry check for "${target}" needs the stage's workspace, which no longer existed` };
+        record.workspacePath = workspace.path;
+        this.#watched.set(issue.id, issue.identifier);
+      }
+      let check: CheckRecord | null = null;
+      const guard = createGuard({
+        role,
+        config,
+        workspace,
+        issue: () => hookIssue,
+        manager: workspaces,
+        signal: this.#halt.signal,
+        onEvent: (event, message, detail) =>
+          this.#trace(record, { kind: 'lifecycle', event, level: event === 'transition_denied' ? 'warn' : 'info', message, run: null, turn: null, detail }),
+        onCheckFinished: (finished) => {
+          check = finished;
+          record.lastCheck = finished;
+        },
+      });
+      const decision = await guard(target, RESULT_TOOL);
+      if (!decision.allow) {
+        const reason = `${decision.category}: ${decision.message}`;
+        return decision.category === 'transition_denied' || decision.category === 'check_failed' ? { kind: 'declined', reason } : { kind: 'failed', reason };
+      }
+      if (this.#halt.signal.aborted) return { kind: 'failed', reason: 'orchestrator shutting down' };
+      const fresh = (await adapter.fetchIssuesByIds([issue.id])).find((candidate) => candidate.id === issue.id);
+      if (fresh === undefined) return { kind: 'changed', reason: 'the issue is no longer visible on the tracker' };
+      if (normalizeStateName(fresh.state) !== normalizeStateName(issue.state) || statusUpdatedAt(fresh)?.toISOString() !== interrupted.statusUpdatedAt) {
+        return { kind: 'changed', reason: `the issue was moved meanwhile (now in "${fresh.state}")` };
+      }
+      const change = await adapter.setStatus(fresh, target);
+      const boardColumns = this.#statusOptionsCache?.version === workflow.version ? this.#statusOptionsCache.options : null;
+      const warnings: string[] = [];
+      const labels = await applyTransitionLabels(adapter, fresh, interruptedLabels(interrupted, tracked, role, config, boardColumns, fresh), warnings);
+      return { kind: 'moved', status: change.status, check, labels, warnings };
+    } finally {
+      await lock?.release().catch((error: unknown) => this.#issueLogger(issue).warn('workspace lock could not be released', { error: errorMessage(error) }));
+    }
+  }
+
+  /** What follows a transition recovery; see `#recoverTransition`. Runs in the serial queue. */
+  #afterRecovery(issue: Issue, role: RoleConfig, interrupted: InterruptedTransition, attempt: number | null, record: IssueRecord, outcome: RecoveryOutcome): void {
+    const log = this.#issueLogger(issue);
+    const from = issue.state;
+    const { target } = interrupted;
+    const comment = interrupted.result.url;
+    const retryInfo = { identifier: issue.identifier, url: issue.url, limit: null };
+    const trace = (event: string, level: TimelineEvent['level'], message: string, detail: Record<string, unknown>) =>
+      this.#trace(record, { kind: 'lifecycle', event, level, message, run: null, turn: null, detail: { role: role.name, from, target, comment_url: comment, ...detail } });
+    if (outcome.kind === 'moved') {
+      this.#recoveryDeclined.delete(issue.id);
+      // A hand-off is progress, as after a run whose result moved the issue.
+      record.continuations = 0;
+      trace('transition_recovered', 'info', `completed the interrupted move of the ${role.name} result from "${from}" to "${outcome.status}" without a session`, {
+        status: outcome.status,
+        check: outcome.check?.result ?? null,
+        labels: outcome.labels,
+        ...(outcome.warnings.length > 0 ? { warnings: outcome.warnings } : {}),
+      });
+      log.info('interrupted transition completed', { role: role.name, from, target: outcome.status, comment_url: comment });
+      this.#deps.history?.note(record.repo ?? 'unknown', 'transition_recovered', { issue: issue.identifier, title: issue.title, role: role.name, from, to: outcome.status, comment_url: comment });
+    } else if (outcome.kind === 'declined') {
+      this.#recoveryDeclined.set(issue.id, comment);
+      trace('transition_recovery_declined', 'warn', `the interrupted move to "${target}" was not completed (${outcome.reason}); the ${role.name} stage runs again`, { reason: outcome.reason });
+      log.warn('interrupted transition not completed; the stage runs again', { role: role.name, from, target, reason: outcome.reason });
+    } else if (outcome.kind === 'changed') {
+      log.info('interrupted transition left alone', { role: role.name, from, target, reason: outcome.reason });
+    } else {
+      record.lastError = `transition recovery failed: ${outcome.reason}`;
+      log.warn('completing the interrupted transition failed; retrying', { role: role.name, from, target, error: outcome.reason });
+    }
+    if (this.#stopping) {
+      this.#release(issue.id);
+    } else if (this.#paused.has(issue.id)) {
+      // The operator paused the issue meanwhile: the claim stays until Resume.
+    } else if (outcome.kind === 'moved') {
+      this.#scheduleRetry(issue.id, 1, { ...retryInfo, kind: 'continuation', error: null });
+    } else if (outcome.kind === 'failed') {
+      this.#scheduleRetry(issue.id, (attempt ?? 0) + 1, { ...retryInfo, kind: 'failure', error: `transition recovery failed: ${outcome.reason}` });
+    } else {
+      // The next tick decides afresh: it runs the declined stage, or whatever the issue's new column needs.
+      this.#claimed.delete(issue.id);
+      this.requestRefresh();
+    }
+    this.#notify();
+  }
+
+  #dispatch(
+    issue: Issue,
+    attempt: number | null,
+    workflow: EffectiveWorkflow,
+    adapter: TrackerAdapter,
+    continuation = false,
+    forced = false,
+    results: readonly TrackedResult[] | null = null,
+  ): void {
     const log = this.#issueLogger(issue);
     const controller = new AbortController();
     const config = workflow.config;
@@ -1836,6 +2039,7 @@ export class Orchestrator {
     try {
       worker = runAgentAttempt({
         issue,
+        ...(results !== null ? { results } : {}),
         runId,
         attempt,
         workflow,
@@ -2497,7 +2701,7 @@ export class Orchestrator {
       await this.#startPlanned(plan.slice(0, index), null);
       return;
     }
-    this.#dispatch(issue, retry.attempt, workflow, adapter, retry.kind === 'continuation');
+    await this.#start(issue, retry.attempt, workflow, adapter, retry.kind === 'continuation');
   }
 
   #release(issueId: string): void {
