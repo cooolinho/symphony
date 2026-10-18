@@ -1,5 +1,6 @@
 import { Liquid, type Template } from 'liquidjs';
 import { isEffortLabel, isModelLabel } from '../agent/model.ts';
+import { isComplexityLabel, isNeedsHumanLabel, isTypeLabel, classify } from './classify.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import type { Issue } from '../tracker/types.ts';
 import { resolveIssueCommand } from './command.ts';
@@ -17,9 +18,15 @@ engine.registerFilter('without_model_labels', (labels: unknown) =>
   Array.isArray(labels) ? labels.filter((label) => typeof label !== 'string' || !isModelLabel(label)) : labels,
 );
 
-/** `issue.labels | without_agent_labels`: the labels minus "Model: …" and "Effort: …" labels, which only configure the agent. */
+/** `issue.labels | without_agent_labels`: the labels minus "Model: …", "Effort: …", "Type: …", "Complexity: …", and "needs-human" labels. */
 engine.registerFilter('without_agent_labels', (labels: unknown) =>
-  Array.isArray(labels) ? labels.filter((label) => typeof label !== 'string' || !(isModelLabel(label) || isEffortLabel(label))) : labels,
+  Array.isArray(labels)
+    ? labels.filter(
+        (label) =>
+          typeof label !== 'string' ||
+          !(isModelLabel(label) || isEffortLabel(label) || isTypeLabel(label) || isComplexityLabel(label) || isNeedsHumanLabel(label)),
+      )
+    : labels,
 );
 
 /** Used when the WORKFLOW.md body is empty. */
@@ -68,6 +75,7 @@ export async function renderPrompt(template: PromptTemplate, scope: Record<strin
  * `/<name>` of the description when `skills` (see `commandSkills`) has a skill of that name, else null.
  */
 export function issueTemplateValue(issue: Issue, skills: ReadonlyMap<string, string> = new Map()): Record<string, unknown> {
+  const classification = classify(issue.labels);
   return {
     command: resolveIssueCommand(issue.description, skills),
     id: issue.id,
@@ -85,5 +93,7 @@ export function issueTemplateValue(issue: Issue, skills: ReadonlyMap<string, str
     dispatchable: issue.dispatchable,
     created_at: issue.created_at?.toISOString() ?? null,
     updated_at: issue.updated_at?.toISOString() ?? null,
+    type: classification.type,
+    complexity: classification.complexity,
   };
 }

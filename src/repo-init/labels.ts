@@ -3,12 +3,19 @@ import { EFFORT_LEVELS } from '../workflow/config.ts';
 import { errorMessage } from '../util/errors.ts';
 import { GithubRestError, type GithubLabel, type GithubRestClient, type LabelUpdate, type NewLabel } from './github-rest.ts';
 import type { InitTask } from './tasks.ts';
+import type { IssueComplexity, IssueType } from '../workflow/classify.ts';
 
 /** Values of the standard "Model: <value>" labels (docs/usage.md: "Choosing the model per issue"). */
 const MODEL_LABEL_VALUES = ['fable', 'opus', 'sonnet', 'haiku'];
 const FAMILY_COLORS: Record<string, string> = { fable: 'bf8700', opus: '5319e7', sonnet: '1d76db', haiku: '0e8a16' };
 /** Colors of the "Effort: <level>" labels, from light (little thinking) to dark (a lot). */
 const EFFORT_COLORS: Record<string, string> = { low: 'c5def5', medium: '9ec5f0', high: 'f9d0c4', xhigh: 'e99695', max: 'b60205' };
+/** Values of the "Type: <value>" labels (bug/enhancement/refactoring map to bugfix/feature/refactor as aliases). */
+const TYPE_VALUES: readonly IssueType[] = ['bugfix', 'feature', 'refactor'];
+const TYPE_COLORS: Record<IssueType, string> = { bugfix: 'ff7f7f', feature: '7f7fff', refactor: '7fff7f' };
+/** Values of the "Complexity: <value>" labels. */
+const COMPLEXITY_VALUES: readonly IssueComplexity[] = ['S', 'M', 'L', 'XL'];
+const COMPLEXITY_COLORS: Record<IssueComplexity, string> = { S: 'c2e0c6', M: '90ee90', L: 'ffd700', XL: 'ff6347' };
 const DEFAULT_COLOR = 'ededed';
 
 function capitalize(text: string): string {
@@ -43,6 +50,24 @@ function effortLabel(value: string): NewLabel {
   };
 }
 
+/** The label for an issue type; its description names the type for workflow decisions. */
+function typeLabel(value: IssueType): NewLabel {
+  return {
+    name: `Type: ${value}`,
+    color: TYPE_COLORS[value] ?? DEFAULT_COLOR,
+    description: `This issue is a ${value}`,
+  };
+}
+
+/** The label for an issue complexity; its description names the complexity for sizing. */
+function complexityLabel(value: IssueComplexity): NewLabel {
+  return {
+    name: `Complexity: ${value}`,
+    color: COMPLEXITY_COLORS[value] ?? DEFAULT_COLOR,
+    description: `This issue has complexity ${value}`,
+  };
+}
+
 /** Labels the /auto-code autopilot, the /concept analyst and the /plan planner put on their issues, and the opt-out label of `auto_merge`. */
 export const WORKFLOW_LABELS: readonly NewLabel[] = [
   { name: 'auto-code', color: '7057ff', description: 'Planned by the Symphony autopilot (/auto-code)' },
@@ -54,12 +79,15 @@ export const WORKFLOW_LABELS: readonly NewLabel[] = [
   { name: 'quality', color: 'fef2c0', description: 'Bugs, tests, refactoring, performance, security' },
   { name: 'maintenance', color: 'bfd4f2', description: 'Dependencies, upgrades, tooling' },
   { name: 'manual-merge', color: 'b60205', description: 'A human merges this pull request; Symphony does not merge it' },
+  { name: 'needs-human', color: 'ff0000', description: 'A human must review or approve this issue before it can progress' },
 ];
 
 /** What the "Standard labels" task creates in each repository. */
 export const STANDARD_LABELS: readonly NewLabel[] = [
   ...MODEL_LABEL_VALUES.map(modelLabel),
   ...EFFORT_LEVELS.map(effortLabel),
+  ...TYPE_VALUES.map(typeLabel),
+  ...COMPLEXITY_VALUES.map(complexityLabel),
   ...WORKFLOW_LABELS,
 ];
 
