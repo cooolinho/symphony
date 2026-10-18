@@ -1,5 +1,5 @@
 import { normalizeStateName, type AgentConfig, type ServiceConfig, type TrackerConfig } from '../workflow/config.ts';
-import { resultTargets, type RoleConfig } from '../workflow/roles.ts';
+import { NEXT_STAGE, resultTargets, type RoleConfig } from '../workflow/roles.ts';
 import { isActiveState } from './eligibility.ts';
 
 /** Highest agent slot count (total and per column) the dashboard accepts. */
@@ -104,19 +104,21 @@ export function heldForOtherRoles(
 
 /**
  * Roles that results lead issues to (the `on_result`, `on_check_failed`, `on_missing_result` and `on_round_limit` targets
- * of any role) but that never start a session: the reservations of the other roles keep every slot free, so an issue
- * waits in the column forever. That is the optional test engineer with the shipped 2 slots, reserved for the developer and
- * the reviewer. One line per role. None while the reservations are ignored (`reservationProblem`) and at a limit of 0,
+ * of any role and of every workflow profile) but that never start a session: the reservations of the other roles keep every slot free, so an issue
+ * waits in the column forever. That is the test engineer with the shipped 2 slots, reserved for the developer and
+ * the reviewer (bug issues reach it through the `bugfix` profile). One line per role. None while the reservations are ignored (`reservationProblem`) and at a limit of 0,
  * which pauses new dispatches anyway.
  */
-export function slotProblems(config: Pick<ServiceConfig, 'roles' | 'tracker'>, limits: AgentLimits): string[] {
+export function slotProblems(config: Pick<ServiceConfig, 'roles' | 'tracker' | 'pipeline'>, limits: AgentLimits): string[] {
   const { roles } = config;
   const total = limits.maxConcurrentAgents;
   if (roles === null || total === 0 || reservationProblem(limits) !== null) return [];
   const columns = activeColumns(config.tracker);
   const problems: string[] = [];
   const reported = new Set<string>();
-  for (const target of new Set(roles.flatMap((role) => resultTargets(role)))) {
+  const profileTargets = [...config.pipeline.profiles.values()].flatMap((profile) => Object.values(profile.onResult).flatMap((targets) => Object.values(targets)));
+  const targets = new Set([...roles.flatMap((role) => resultTargets(role)), ...profileTargets.filter((target) => target !== NEXT_STAGE)]);
+  for (const target of targets) {
     const key = normalizeStateName(target);
     const role = roles.find((candidate) => candidate.commands === null && candidate.states.includes(key));
     const column = columns.get(key);
