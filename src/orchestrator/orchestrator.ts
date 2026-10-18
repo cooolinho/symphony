@@ -1896,6 +1896,8 @@ export class Orchestrator {
     const finished = this.#records.get(entry.issueId);
     if (finished) {
       finished.lastRun = traceOf(entry);
+      // A recorded stage result is progress, not a loop: the round limits bound result-driven hand-offs.
+      if (entry.resultRecorded) finished.continuations = 0;
       // The worker refreshes the issue after each turn: the column it ended in decides what comes next.
       finished.meta = issueMeta(entry.issue);
       const session = finished.sessions.find((candidate) => candidate.run === entry.runId);

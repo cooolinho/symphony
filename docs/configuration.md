@@ -657,7 +657,7 @@ hooks:
 agent:
   max_concurrent_agents: ${SYMPHONY_MAX_CONCURRENT_AGENTS:-2}
   max_turns: ${SYMPHONY_MAX_TURNS:-10}
-  max_continuations: ${SYMPHONY_MAX_CONTINUATIONS:-6}   # role switches count, so keep a limit
+  max_continuations: ${SYMPHONY_MAX_CONTINUATIONS:-6}   # role switches without a result count, so keep a limit
   max_concurrent_agents_by_state:
     "Agent review": 1
 
