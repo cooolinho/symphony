@@ -581,6 +581,7 @@ like everywhere else (an unset variable counts as omitted). Unknown keys are ign
 | `limit_label` | `needs-human` | Label for an issue that hit a round limit. |
 | `type_labels` | `{}` | Map of issue label → change type, e.g. `{ bug: bug, enhancement: feature }` (labels are matched case-insensitively). |
 | `default_type` | `feature` | Type of an issue without a label in `type_labels`. |
+| `analysis` | `always` | `always` or `when_unlabeled`. With `when_unlabeled`, the analysis stage (the role whose `result` is `analysis`) is [skipped without a session](#skipping-stages-without-a-session) for issues that already carry a `Type:` and a `Complexity:` label. Needs a role with `result: analysis`. |
 | `profiles` | `{}` | [Workflow profiles](#workflow-profiles) per issue type. |
 | `test_paths`, `docs_paths`, `security_paths` | `[]` | Path globs marking test, documentation and security-relevant files. |
 
@@ -607,8 +608,8 @@ pipeline:
   type, else `default`, else none (the roles' own transitions). An unknown profile name or key is an error.
 - `skip` lists role names; an unknown role is an error. `next` passes over the stages of these roles when it computes
   the target ([rule 3](#result-driven-transitions)), and the pipeline view of the dashboard and the API shows them as
-  `skipped` (unless a session already ran there). Skipping does not dispatch anything by itself: an issue that is moved
-  into a skipped column by hand is still served by that column's role (skipping without a session is tracked in #199).
+  `skipped` (unless a session already ran there). An issue that arrives in a skipped column is passed on without a
+  session, see [Skipping stages without a session](#skipping-stages-without-a-session).
 - `on_result` maps a role name and a verdict of its result kind to a column or `next`, replacing the role's own target for
   that verdict. The same rules as for `roles.<role>.on_result` apply (no terminal column, a column in the role's
   `may_move_to` when it sets one, a role with a `result`).
@@ -617,6 +618,30 @@ pipeline:
   as `roles.<role>.on_result.<verdict>: "next" has no later active stage … (profile bugfix)`.
 - The prompt sees the name as `issue.profile` (`null` when no profile applies), e.g.
   `{% if issue.profile == "bugfix" %}Reproduce the bug with a failing test first.{% endif %}`.
+
+#### Skipping stages without a session
+
+A stage that the issue's profile or a condition leaves out costs nothing: when the issue is due to be dispatched, Symphony
+does not start an agent but moves it on. The stage is skipped when
+
+- the role is in the `skip` list of the issue's [profile](#workflow-profiles), or
+- the role is the analysis stage, `pipeline.analysis` is `when_unlabeled` and the issue has a `Type:` and a
+  `Complexity:` label (the aliases `bug`, `enhancement`, … count; conflicting or unknown labels count as unset).
+
+Symphony then posts a `skipped` [result](results.md) as an issue comment (hidden marker, `meta.target` = the new column,
+no run), moves the issue to the first active column after its own in board order whose stage is needed, and logs
+`stage_skipped` in the issue's timeline. The next stage starts with the next poll; consecutive skipped stages are passed
+one poll at a time. For example, with an analyst in `Ready` and `pipeline.analysis: when_unlabeled`, a `Type: bugfix`,
+`Complexity: S` issue goes from `Ready` to `In progress` without an analyst session.
+
+- **No entry checks.** The move has no workspace, so it cannot run `checks.on_enter`. The dispatch preflight therefore
+  reports a configuration where a skip would lead into a column with a script (`pipeline.profiles.bugfix.skip: skipping
+  developer moves issues from "In progress" to "Agent review" without a workspace, but checks.on_enter has a script for
+  "Agent review"`), and dispatch stops until it is fixed.
+- **When nothing is skipped.** The stage runs as usual if the tracker does not list its columns (the board order is
+  needed), no needed stage follows (a skipped role in the last active column still runs), or the posting or the move fails (the next poll decides again; a comment that was already posted is not posted twice). Only fresh dispatches
+  are skipped: **Start now** (`/force`), retries and continuations of a stage always start a session.
+- Conditions based on changed files are not part of this.
 
 ### `server`
 

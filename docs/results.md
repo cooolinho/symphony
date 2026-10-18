@@ -31,7 +31,7 @@ reported to the agent instead of being dropped silently.
 | `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, file, line, problem, fix}`, `checked[]` |
 | `security` | `passed`, `issues_found`, `blocked` | `findings[]` (as in `review`) |
 | `docs` | `done`, `not_needed`, `blocked` | `files[]` |
-| `skipped`, `reset` | same as the kind | internal, recorded by Symphony without agent input |
+| `skipped`, `reset` | same as the kind | internal, recorded by Symphony without agent input (`skipped`: a stage passed [without a session](configuration.md#skipping-stages-without-a-session)) |
 
 ## Consistency rules
 
