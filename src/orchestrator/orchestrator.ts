@@ -20,7 +20,7 @@ import { truncate } from '../util/text.ts';
 import { WorkspaceManager, type HookIssue } from '../workspace/manager.ts';
 import type { ServiceConfig } from '../workflow/config.ts';
 import { profileFor } from '../workflow/profile.ts';
-import { roleFor, roleName } from '../workflow/roles.ts';
+import { roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../workflow/store.ts';
 import { nextStageProblems, unknownBoardColumns, validateDispatch } from '../workflow/validate.ts';
 import {
@@ -154,6 +154,10 @@ interface RunningEntry {
   runId: string;
   /** Role serving the issue's column at dispatch (`default` without a matching role); fixed for the run. */
   role: string;
+  /** The role's configuration at dispatch (`on_missing_result`, its columns); null for the implicit `default` role. */
+  roleConfig: RoleConfig | null;
+  /** The session recorded its stage result (`report_result` posted the result comment). */
+  resultRecorded: boolean;
   /** Started by the operator in an extra slot (`forceStart`): holds no slot of the limits, for this session only. */
   forced: boolean;
   /** Logger for this run's agent events, tagged with `run_id` and `role`. */
@@ -1632,6 +1636,8 @@ export class Orchestrator {
       repo: adapter.issueRepository?.(issue) ?? 'unknown',
       runId,
       role: name,
+      roleConfig: role,
+      resultRecorded: false,
       forced,
       runLog: log.child({ run_id: runId, role: name }),
       issue,
@@ -1822,6 +1828,9 @@ export class Orchestrator {
           mcpUnavailable: (servers) => {
             entry.mcpUnavailable = servers;
           },
+          resultRecorded: () => {
+            entry.resultRecorded = true;
+          },
           checkFinished: (check) => {
             record.lastCheck = check;
             this.#deps.history?.checkFinished({
@@ -1959,7 +1968,13 @@ export class Orchestrator {
       entry.phase = 'Succeeded';
       this.#completed.add(entry.issueId);
       log.info('agent run finished', { turns: outcome.turns, reason: outcome.reason });
-      this.#scheduleRetry(entry.issueId, 1, { ...retryInfo, kind: 'continuation', error: null });
+      const missing = outcome.missingResult === true && !entry.resultRecorded ? entry.roleConfig : null;
+      if (missing?.onMissingResult != null) {
+        // The claim stays until the check has decided: continue as before, or end the stage.
+        void this.#serial.run(() => this.#endStageWithoutResult(entry, missing, retryInfo));
+      } else {
+        this.#scheduleRetry(entry.issueId, 1, { ...retryInfo, kind: 'continuation', error: null });
+      }
     } else if (outcome.kind === 'cancelled') {
       entry.phase = 'CanceledByReconciliation';
       this.#release(entry.issueId);
@@ -2038,6 +2053,83 @@ export class Orchestrator {
         this.#scheduleRetry(entry.issueId, nextAttempt, { ...retryInfo, kind: 'failure', error: `worker exited: ${error}` });
       }
     }
+    this.#notify();
+  }
+
+  /**
+   * A run of a result-driven role ended without a result (after the reminder, or at the turn limit). Only after a
+   * fresh fetch confirms the issue is still in the role's column does Symphony comment and move it to the role's
+   * `on_missing_result`, then release it. An issue moved meanwhile (a human, another run) is left alone and the
+   * normal continuation follows; a tracker error is retried like a failed run.
+   */
+  async #endStageWithoutResult(
+    entry: RunningEntry,
+    role: RoleConfig,
+    retryInfo: { identifier: string; url: string | null; limit: null },
+  ): Promise<void> {
+    const issueId = entry.issueId;
+    const target = role.onMissingResult;
+    // A stop, pause or release in between has already dealt with the issue.
+    if (target === null || this.#running.has(issueId) || this.#retries.has(issueId) || !this.#claimed.has(issueId) || this.#paused.has(issueId)) return;
+    if (this.#stopping) {
+      this.#release(issueId);
+      return;
+    }
+    const log = this.#issueLogger(entry.issue);
+    const resume = (error: string | null) =>
+      this.#scheduleRetry(issueId, error === null ? 1 : (entry.attempt ?? 0) + 1, { ...retryInfo, kind: error === null ? 'continuation' : 'failure', error });
+    const adapter = this.#adapterFor(this.#deps.workflow.current);
+    let fresh: Issue | undefined;
+    try {
+      fresh = (await adapter.fetchIssuesByIds([issueId])).find((candidate) => candidate.id === issueId);
+    } catch (error) {
+      log.warn('could not confirm the column of a stage that ended without a result', { error: errorMessage(error) });
+      resume(`missing-result check failed: ${errorMessage(error)}`);
+      return;
+    }
+    if (this.#stopping) {
+      this.#release(issueId);
+      return;
+    }
+    if (fresh === undefined || !role.states.includes(normalizeStateName(fresh.state))) {
+      log.info('stage ended without a result, but the issue has moved on; not moving it again', { state: fresh?.state ?? null });
+      resume(null);
+      return;
+    }
+    if (adapter.setStatus === undefined) {
+      resume(`the ${adapter.kind} tracker cannot move issues`);
+      return;
+    }
+    const body =
+      `**Stage ended without a result.** The ${role.name} session for "${fresh.state}" ended without calling ` +
+      `\`report_result\` (after ${entry.turnCount} turn${entry.turnCount === 1 ? '' : 's'}), so Symphony moved the issue to "${target}" (\`roles.${role.name}.on_missing_result\`). A human needs to look at it.`;
+    try {
+      await adapter.postComment?.(fresh, body);
+    } catch (error) {
+      // The move matters more than the note: an issue left in the column would start the same stage again.
+      log.warn('could not post the missing-result comment', { error: errorMessage(error) });
+    }
+    try {
+      await adapter.setStatus(fresh, target);
+    } catch (error) {
+      log.warn('could not move the issue after a stage ended without a result', { target, error: errorMessage(error) });
+      resume(`moving the issue to "${target}" failed: ${errorMessage(error)}`);
+      return;
+    }
+    log.warn('stage ended without a result; issue moved', { from: fresh.state, to: target, role: role.name });
+    const record = this.#records.get(issueId);
+    if (record !== undefined) {
+      this.#trace(record, {
+        kind: 'lifecycle',
+        event: 'missing_result',
+        level: 'warn',
+        message: `stage ended without a result; moved from "${fresh.state}" to "${target}"`,
+        run: entry.runId,
+        turn: entry.turnCount,
+        detail: { role: role.name, from: fresh.state, to: target },
+      });
+    }
+    this.#release(issueId);
     this.#notify();
   }
 
