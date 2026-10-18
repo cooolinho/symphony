@@ -13,6 +13,7 @@ import type {
   PostedComment,
   RemoveLabelsResult,
   StatusChange,
+  ToolResult,
   TrackedResult,
   TrackerAdapter,
 } from '../src/tracker/types.ts';
@@ -211,6 +212,16 @@ export class FakeTracker implements TrackerAdapter {
 }
 
 export type TurnScript = (turn: number, params: StartSessionParams) => Promise<TurnResult> | TurnResult;
+
+/**
+ * Calls the session tool `name` from a FakeRunner script the way the agent does: the tools the session got (wrapped by
+ * the transition guard) with the session's current tool context. Throws when the session has no such tool.
+ */
+export async function callTool(params: StartSessionParams, name: string, args: Record<string, unknown>): Promise<ToolResult> {
+  const tool = params.tools.find((candidate) => candidate.name === name);
+  if (tool === undefined) throw new Error(`the session has no tool ${name} (it has ${params.tools.map((candidate) => candidate.name).join(', ') || 'none'})`);
+  return tool.execute(args, params.toolContext());
+}
 
 /** Agent runner whose turns are scripted; records every session it starts. */
 export class FakeRunner implements AgentRunner {

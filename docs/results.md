@@ -139,3 +139,12 @@ The run ends without a result when the reminder turn did not produce one, or whe
 3. A tracker error while fetching or moving schedules a retry like a failed run.
 
 Roles without `result` are not affected.
+
+## Scenario tests
+
+`test/pipeline-flow.test.ts` drives the developer → reviewer loop end to end without Claude: the real orchestrator,
+worker, transition guard, entry checks and `report_result` tool, with scripted sessions (`FakeRunner`; `callTool` in
+`test/helpers.ts` calls a session tool the way the agent does), an in-memory board (`FakeTracker`) and manual timers.
+It covers an approval in round 1, two `changes_needed` rounds before an approval, the round limit, a developer
+`check_failed` fixed in the same session, a failed reviewer check (`on_check_failed`), forged markers, a stage without a
+result, a restart mid-review, duplicate `report_result` calls and a session limit during the review.
