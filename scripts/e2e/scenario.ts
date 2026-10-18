@@ -50,7 +50,7 @@ export function dependencies(issue: CreatedIssue): string[] {
   return issue.textBlocker === null ? issue.relationships : [...issue.relationships, issue.textBlocker];
 }
 
-export type ScenarioName = 'default' | 'roles';
+export type ScenarioName = 'default' | 'roles' | 'pipeline';
 
 /** What setup leaves in the run directory (run.json) for the run and the verification. */
 export interface RunRecord {
@@ -93,6 +93,15 @@ Not allowed: changing files, creating a branch, committing, pushing, opening a p
 `;
 }
 
+/** The issues of a scenario and their texts. */
+export interface ScenarioDefinition {
+  name: ScenarioName;
+  issues: ScenarioIssue[];
+  body: IssueBody;
+}
+
+export const DEFAULT_SCENARIO: ScenarioDefinition = { name: 'default', issues: SCENARIO, body: issueBody };
+
 /**
  * Creates the issues, their relationships and board items, then moves them to the start status.
  * The status is set last, so no issue is ever active without its dependencies.
@@ -101,7 +110,7 @@ export async function createScenario(
   context: E2eContext,
   board: Board,
   log: (line: string) => void,
-  scenario: { name: ScenarioName; issues: ScenarioIssue[]; body: IssueBody } = { name: 'default', issues: SCENARIO, body: issueBody },
+  scenario: ScenarioDefinition = DEFAULT_SCENARIO,
 ): Promise<RunRecord> {
   const startedAt = new Date().toISOString();
   const [owner, name] = context.repository.split('/');
