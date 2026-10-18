@@ -50,7 +50,7 @@ export const COMPLEXITIES = ['S', 'M', 'L', 'XL'] as const;
  */
 export const RESULT_SIZE_LIMIT = 60_000;
 
-const SUMMARY_MAX = 4000;
+export const SUMMARY_MAX = 4000;
 const TEXT_MAX = 4000;
 const NAME_MAX = 500;
 const LIST_MAX = 200;

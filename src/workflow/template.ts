@@ -31,6 +31,9 @@ engine.registerFilter('without_agent_labels', (labels: unknown) =>
     : labels,
 );
 
+/** The prompt variable `results` for roles without `result` and for issues without results; see `resultsTemplateValue`. */
+export const EMPTY_RESULTS = { latest: [], open_findings: [], failed_cases: [] };
+
 /** Used when the WORKFLOW.md body is empty. */
 export const DEFAULT_PROMPT = `You are working on an issue from the configured tracker.
 
@@ -63,8 +66,9 @@ export async function renderPrompt(template: PromptTemplate, scope: Record<strin
     throw new SymphonyError('template_parse_error', `prompt template does not parse: ${template.parseError}`);
   }
   try {
-    // `agents` (the session's subagents) is optional for callers that render without a session, e.g. tests.
-    return (await engine.render(template.parsed, { agents: [], ...scope })).trim();
+    // `agents` (the session's subagents) and the stage-history variables are optional for callers that render without a session, e.g. tests.
+    const defaults = { agents: [], results: EMPTY_RESULTS, round: 1, result_required: false };
+    return (await engine.render(template.parsed, { ...defaults, ...scope })).trim();
   } catch (error) {
     throw new SymphonyError('template_render_error', `prompt template failed to render: ${errorMessage(error)}`, {
       cause: error,

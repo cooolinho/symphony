@@ -235,7 +235,7 @@ write a `transition_denied` line.
 | `max_retry_backoff_ms` | `300000` | Cap for failure retries (10 s, 20 s, 40 s, …). |
 | `max_concurrent_agents_by_state` | `{}` | Per-status limits, e.g. `{ "In Progress": 1 }`. Invalid entries are ignored with a warning. |
 | `reserved_slots_by_role` | `{}` | Slots kept free for a [role](#roles), e.g. `{ developer: 1, reviewer: 1 }`, so a developer and a reviewer can always run side by side. An issue of role R starts only while the free slots exceed the unused reservations of the other roles (Σ max(0, reserved − running)); a reserved slot stays empty while its role has nothing to do. Command roles (`planner`, `auditor`, …) count as their own roles and never use the developer's reservation. Column limits still apply. Names that are not roles, and values that are not integers of `0` or more, are ignored with a warning. If the reservations add up to more than `max_concurrent_agents`, they are ignored and the dashboard shows a problem. See [Reserved slots](#reserved-slots). |
-| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `agents`, `turn_number`, `max_turns`). |
+| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `agents`, `results`, `round`, `result_required`, `turn_number`, `max_turns`). |
 
 #### Reserved slots
 
@@ -387,7 +387,7 @@ roles:
 | `may_move_to` | unrestricted | Column names the agent may move the issue to, matched case-insensitively and enforced by the [transition guard](#transition-guard). Free-form; not checked against the board here. Terminal columns are never allowed. |
 | `result` | none | Kind of the stage result the role reports: `analysis`, `design`, `implementation`, `test`, `review`, `security` or `docs` (see [result contracts](#result-driven-transitions)). Setting only this key is enough for a minimal result role. The role hands off with the [`report_result`](results.md#the-report_result-tool) tool and does not get `set_status`. |
 | `on_result` | `{}` | Column per verdict of `result`, or `next` (the next active stage after the role's columns in board order). Needs `result`. See [Result-driven transitions](#result-driven-transitions). |
-| `on_check_failed` | none | Column for an issue whose entry check fails for a role that cannot fix it (a read-only role). |
+| `on_check_failed` | none | Column for an issue whose entry check fails for a role that cannot fix it (a read-only role). When the check of the column a `report_result` leads to fails, the tool records the result anyway, adds a note with the check output to its summary and moves the issue here (through the transition guard, so this column's own entry check applies). Without it the agent gets `check_failed` and nothing is recorded. Ignored for roles that are not `read_only`. |
 | `on_missing_result` | `Blocked` with `result`, else none | Column for a session that ends without a result. Needs `result`. |
 | `on_round_limit` | the blocked column | Column for a loop verdict (review `changes_needed`, test `failed`) that reaches `pipeline.max_review_rounds` / `max_test_rounds`. Needs `result: review` or `result: test`. See [Result-driven transitions](#result-driven-transitions). |
 | `model_label` | `apply`; `ignore` for read-only roles with a `result` | `ignore` keeps a `Model:` issue label from changing the role's model. Read here; applied from a later change on. |
@@ -427,8 +427,8 @@ roles:
   without `may_move_to` stays unrestricted, but its targets are still checked against the board.
 
 The target of a result is computed, not chosen by the agent (`resolveTransition` in `src/orchestrator/transitions.ts`,
-used by the [`report_result`](results.md#the-report_result-tool) tool; sessions get the tool once the worker loads the
-stage history, which is not wired up yet). The rules apply in this order:
+used by the [`report_result`](results.md#the-report_result-tool) tool, which a session gets together with the stage
+history at its start). The rules apply in this order:
 
 1. **`blocked`** goes to `on_result.blocked` when it names a column, else to the blocked column: the column every role
    with `may_move_to` lists besides the active and terminal ones (`Blocked` in the default workflow), else the role's
@@ -815,6 +815,19 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
 - `agents`: the plugin subagents this session may start (see [Subagents per role](#subagents-per-role)), each with
   `name` (what the Agent tool takes as `subagent_type`, e.g. `symphony:laravel-architect`) and `description`. Always
   defined; empty when the session may start none: `{% if agents.size > 0 %}…{% endif %}`.
+- `results`, `round`, `result_required`: the issue's stage history, always defined. A role with
+  [`result`](#result-driven-transitions) reads the issue's persisted results when its session starts (one paginated read
+  of the issue's comments per session; other roles make no extra request and see the empty values).
+  - `results.latest`: the newest result of each role, oldest first, each `{role, kind, verdict, summary, round, target,
+    created_at}` (`summary` cut to 1,500 characters).
+  - `results.open_findings`: the findings `{severity, file, line, problem, fix}` of the newest review since the last
+    reset, while its verdict is `changes_needed`; empty otherwise.
+  - `results.failed_cases`: the failed cases `{criterion, test}` of the newest test since the last reset, while its
+    verdict is `failed`; empty otherwise.
+  - `round`: the round the role is working in, 1 for the first: the number of failed tests plus one for a role with
+    `result: test`, else the number of reviews with `changes_needed` plus one (so a developer sees the review round it
+    is fixing). 1 for roles without `result`.
+  - `result_required`: `true` for a role with `result`, which hands off with `report_result` and has no `set_status`.
 
 Besides the standard Liquid filters there are `without_model_labels` and `without_agent_labels`:
 `issue.labels | without_model_labels` drops the `Model: …` labels, which only pick the agent's model (see

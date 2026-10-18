@@ -1,3 +1,4 @@
+import { truncate } from '../util/text.ts';
 import { normalizeStateName } from '../workflow/config.ts';
 import type { ResultMeta, StageResult } from '../workflow/results.ts';
 
@@ -73,5 +74,69 @@ export function buildStageHistory(persisted: readonly PersistedResult[]): StageH
     lastTarget,
     pendingTransition: (issueState) =>
       lastTarget !== null && normalizeStateName(lastTarget) !== normalizeStateName(issueState) ? lastTarget : null,
+  };
+}
+
+/** Upper bound for a summary in the prompt's `results.latest`; the full text stays in the issue comment. */
+export const PROMPT_SUMMARY_LIMIT = 1500;
+
+/** The `results` prompt variable: what a session needs from the stage history, compact. */
+export interface ResultsTemplateValue {
+  /** The newest result of each role, oldest first. */
+  latest: Array<{
+    role: string;
+    kind: string;
+    verdict: string;
+    summary: string;
+    round: number | null;
+    target: string | null;
+    created_at: string;
+  }>;
+  /** Findings of the newest review when it asked for changes; empty after an approval or without a review. */
+  open_findings: Array<{ severity: string; file: string | null; line: number | null; problem: string; fix: string | null }>;
+  /** Failed cases of the newest test when it failed; empty otherwise. */
+  failed_cases: Array<{ criterion: string; test: string }>;
+}
+
+/** The newest result of a kind since the last `reset`. */
+function newest(history: StageHistory, kind: string): StageResult | undefined {
+  for (let i = history.results.length - 1; i >= 0; i--) {
+    const { result } = history.results[i] as PersistedResult;
+    if (result.kind === 'reset') return undefined;
+    if (result.kind === kind) return result;
+  }
+  return undefined;
+}
+
+/** The prompt view of a stage history (the `results` variable). */
+export function resultsTemplateValue(history: StageHistory): ResultsTemplateValue {
+  const review = newest(history, 'review');
+  const test = newest(history, 'test');
+  return {
+    latest: [...history.latestByRole.values()]
+      .filter(({ result }) => result.kind !== 'reset')
+      .map((entry) => ({
+        role: entry.meta.role,
+        kind: entry.result.kind,
+        verdict: entry.result.verdict,
+        summary: truncate(entry.result.summary, PROMPT_SUMMARY_LIMIT),
+        round: entry.meta.round,
+        target: entry.meta.target,
+        created_at: entry.meta.created_at,
+      })),
+    open_findings:
+      review?.kind === 'review' && review.verdict === 'changes_needed'
+        ? review.findings.map((finding) => ({
+            severity: finding.severity,
+            file: finding.file ?? null,
+            line: finding.line ?? null,
+            problem: finding.problem,
+            fix: finding.fix ?? null,
+          }))
+        : [],
+    failed_cases:
+      test?.kind === 'test' && test.verdict === 'failed'
+        ? test.cases.filter((c) => c.status === 'failed').map((c) => ({ criterion: c.criterion, test: c.test }))
+        : [],
   };
 }

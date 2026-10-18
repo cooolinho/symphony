@@ -76,6 +76,11 @@ export interface AllowedTransition {
   target: string;
   /** The entry check that cleared the move (run for this call or a cached pass); null when none applied. */
   check: ResultChecks | null;
+  /**
+   * Set when the entry check for the move the call asked for failed and the guard used the tool's
+   * `checkFailedTarget` instead: `target` above is then that fallback column, and this is the move that failed.
+   */
+  checkFailed?: { target: string; output: string; check: ResultChecks };
 }
 
 export type ToolResult =
@@ -97,6 +102,12 @@ export interface AgentToolSpec {
    * not change the column. Symphony's transition guard checks such calls before `execute` runs.
    */
   transitionTarget?(args: Record<string, unknown>): string | null;
+  /**
+   * For tools with `transitionTarget`: the column to move to instead when the entry check for that target fails
+   * (`check_failed` only), or null for none. The guard checks that column like any other move, and the tool learns of
+   * the substitution in `context.transition.checkFailed`.
+   */
+  checkFailedTarget?(args: Record<string, unknown>): string | null;
   execute(args: Record<string, unknown>, context: AgentToolContext): Promise<ToolResult>;
 }
 

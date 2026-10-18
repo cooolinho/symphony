@@ -321,6 +321,8 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
           attempt: null,
           role: roleName(role),
           agents: agents.map((agent) => ({ name: agent.qualified, description: agent.description })),
+          // The issue's stage history is not read here: the preview shows an issue without results.
+          result_required: role?.result != null,
         });
         const lines = prompt.split('\n');
         for (const line of lines.slice(0, 30)) out(`  | ${line}`);
