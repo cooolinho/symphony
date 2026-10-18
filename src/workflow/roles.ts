@@ -34,6 +34,11 @@ export interface RoleConfig {
   onCheckFailed: string | null;
   /** Column for a session that ends without a result; `Blocked` by default when `result` is set, else null. */
   onMissingResult: string | null;
+  /**
+   * Column for a loop verdict (review `changes_needed`, test `failed`) at the round limit; null = the blocked column.
+   * Only for roles whose `result` is `review` or `test`.
+   */
+  onRoundLimit: string | null;
   /** `ignore` keeps a `Model:` issue label from changing the role's model. */
   modelLabel: ModelLabelPolicy;
   /** Turn limit for sessions of this role; null uses `agent.max_turns`. */
@@ -69,8 +74,8 @@ export interface RoleConfig {
 }
 
 /** Columns named by a role's result-driven transitions (without `next`, which depends on the board order). */
-export function resultTargets(role: Pick<RoleConfig, 'onResult' | 'onCheckFailed' | 'onMissingResult'>): string[] {
-  const targets = [...Object.values(role.onResult), role.onCheckFailed, role.onMissingResult];
+export function resultTargets(role: Pick<RoleConfig, 'onResult' | 'onCheckFailed' | 'onMissingResult' | 'onRoundLimit'>): string[] {
+  const targets = [...Object.values(role.onResult), role.onCheckFailed, role.onMissingResult, role.onRoundLimit];
   return targets.filter((target): target is string => target !== null && target !== NEXT_STAGE);
 }
 

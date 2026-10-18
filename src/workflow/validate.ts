@@ -93,10 +93,10 @@ export function unknownBoardColumns(config: ServiceConfig, statusOptions: readon
 }
 
 /**
- * The active column after the last column `role` serves, in board order (the target of `on_result: next`); null when
- * the role's stage is the last one or the board does not list its columns. Active columns missing on the board are skipped.
+ * The active columns after the last column `role` serves, in board order (the candidates of `on_result: next`); null
+ * when the board does not list the role's columns. Active columns missing on the board are skipped.
  */
-export function nextActiveColumn(role: Pick<RoleConfig, 'states'>, activeStates: readonly string[], boardColumns: readonly string[]): string | null {
+export function laterActiveColumns(role: Pick<RoleConfig, 'states'>, activeStates: readonly string[], boardColumns: readonly string[]): string[] | null {
   const order = new Map<string, number>();
   boardColumns.forEach((column, i) => {
     const key = normalizeStateName(column);
@@ -107,12 +107,33 @@ export function nextActiveColumn(role: Pick<RoleConfig, 'states'>, activeStates:
     .filter((column) => order.has(normalizeStateName(column)))
     .sort((a, b) => (order.get(normalizeStateName(a)) ?? 0) - (order.get(normalizeStateName(b)) ?? 0));
   const last = active.findLastIndex((column) => own.has(normalizeStateName(column)));
-  return last === -1 ? null : (active[last + 1] ?? null);
+  return last === -1 ? null : active.slice(last + 1);
+}
+
+/**
+ * The active column after the last column `role` serves, in board order (the target of `on_result: next`); null when
+ * the role's stage is the last one or the board does not list its columns. Active columns missing on the board are skipped.
+ */
+export function nextActiveColumn(role: Pick<RoleConfig, 'states'>, activeStates: readonly string[], boardColumns: readonly string[]): string | null {
+  return laterActiveColumns(role, activeStates, boardColumns)?.[0] ?? null;
+}
+
+/** Whether `role` may move an issue to `column`: never a terminal column, and one of `may_move_to` when it is set. */
+export function canMoveTo(role: Pick<RoleConfig, 'mayMoveTo'>, column: string, terminalStates: readonly string[]): boolean {
+  const key = normalizeStateName(column);
+  if (terminalStates.some((state) => normalizeStateName(state) === key)) return false;
+  return role.mayMoveTo === null || role.mayMoveTo.some((allowed) => normalizeStateName(allowed) === key);
+}
+
+/** The problem with `on_result: next` when the tracker lists no columns (also the resolver's runtime message). */
+export function nextWithoutBoardOrder(path: string): string {
+  return `${path}: "${NEXT_STAGE}" needs the board's column order, which the tracker does not provide (name the column instead)`;
 }
 
 /**
  * Problems with `on_result: next` targets: the board order must be known (`boardColumns` null = the tracker does not
- * list columns) and the role must have a later active stage.
+ * list columns), the role must have a later active stage, and a role with `may_move_to` must list that stage's column
+ * (the transition guard enforces `may_move_to` for computed targets too).
  */
 export function nextStageProblems(config: ServiceConfig, boardColumns: readonly string[] | null): string[] {
   const problems: string[] = [];
@@ -120,10 +141,13 @@ export function nextStageProblems(config: ServiceConfig, boardColumns: readonly 
     for (const [verdict, target] of Object.entries(role.onResult)) {
       if (target !== NEXT_STAGE) continue;
       const path = `roles.${role.name}.on_result.${verdict}`;
-      if (boardColumns === null || boardColumns.length === 0) {
-        problems.push(`${path}: "${NEXT_STAGE}" needs the board's column order, which the tracker does not provide (name the column instead)`);
-      } else if (nextActiveColumn(role, config.tracker.activeStates, boardColumns) === null) {
+      const next = boardColumns === null || boardColumns.length === 0 ? undefined : nextActiveColumn(role, config.tracker.activeStates, boardColumns);
+      if (next === undefined) {
+        problems.push(nextWithoutBoardOrder(path));
+      } else if (next === null) {
         problems.push(`${path}: "${NEXT_STAGE}" has no later active stage after ${role.states.join(', ')} on the board`);
+      } else if (!canMoveTo(role, next, config.tracker.terminalStates)) {
+        problems.push(`${path}: "${NEXT_STAGE}" leads to "${next}", which is not in roles.${role.name}.may_move_to (add it there)`);
       }
     }
   }
