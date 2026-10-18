@@ -1,4 +1,4 @@
-# Symphony as a non-root service with PHP, Composer, git and SSH for Node and Laravel repositories.
+# Symphony as a non-root service with PHP, Composer, pnpm, git, SSH and gitleaks for Node and Laravel repositories.
 # Start: docker run <image> [Symphony options]; the entrypoint checks the required variables first.
 FROM node:26-trixie-slim
 
@@ -33,6 +33,31 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
+
+# gitleaks for the secret scan in the projects' pre-commit hooks: pinned release binary, checksums from
+# gitleaks_<version>_checksums.txt. The ARGs sit here so a version bump rebuilds only this layer.
+ARG GITLEAKS_VERSION=8.30.1
+ARG GITLEAKS_SHA256_X64=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+ARG GITLEAKS_SHA256_ARM64=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080
+RUN case "$(dpkg --print-architecture)" in \
+        amd64) arch=x64 sha="${GITLEAKS_SHA256_X64}" ;; \
+        arm64) arch=arm64 sha="${GITLEAKS_SHA256_ARM64}" ;; \
+        *) echo "gitleaks: unsupported architecture $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac \
+    && archive="gitleaks_${GITLEAKS_VERSION}_linux_${arch}.tar.gz" \
+    && curl -fsSLo "/tmp/${archive}" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}" \
+    && echo "${sha}  /tmp/${archive}" | sha256sum -c - \
+    && tar -xzf "/tmp/${archive}" -C /usr/local/bin --no-same-owner gitleaks \
+    && rm "/tmp/${archive}" \
+    && gitleaks version
+
+# pnpm for pnpm workspaces (Node 26 no longer bundles corepack). Pinned; a project whose packageManager names
+# another pnpm version gets it downloaded by pnpm itself. The store lands in the workspaces volume on its own
+# (symphony-workspaces/.pnpm-store, same filesystem as the checkouts, so pnpm hardlinks instead of copying).
+ARG PNPM_VERSION=10.34.7
+RUN npm install -g --no-audit --no-fund "pnpm@${PNPM_VERSION}" \
+    && npm cache clean --force \
+    && pnpm --version
 
 # GitHub's published host keys: ssh verifies github.com strictly, no host-key scan at build time.
 COPY docker/ssh_known_hosts /etc/ssh/ssh_known_hosts

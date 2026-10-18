@@ -290,7 +290,7 @@ Structure and contents: [Logs, transcripts and workspaces](usage.md#logs-transcr
 |---|---|---|
 | `state` | `/home/symphony/.local/state/symphony` | per-repository logs, transcripts |
 | `claude` | `/home/symphony/.claude` | Claude Code state |
-| `workspaces` | `/home/symphony/symphony-workspaces` | one clone per issue |
+| `workspaces` | `/home/symphony/symphony-workspaces` | one clone per issue, plus pnpm's shared store `.pnpm-store` |
 | `composer-cache` | `/home/symphony/.cache/composer` | Composer cache, replaceable |
 
 Compose prefixes the project name (usually the directory name): the volume is named e.g. `symphony_state`. Check the
@@ -382,6 +382,8 @@ mem_limit: 4g
 | `symphony-entrypoint: SSH key not readable: …` | `./secrets/ssh_key` is missing or not readable by the UID in the container, see step 5. |
 | Healthcheck `unhealthy` | The check requests `/api/v1/state` on `SYMPHONY_PORT`. Without `SYMPHONY_PORT` set, there is no check. The cause is in `docker compose logs`: usually a startup error or a different port in `.env` than in Traefik. During the first 60 s after start (`start-period`) it is not evaluated yet. |
 | `Laravel Boost skipped: composer install failed` or Composer reports a PHP or extension version that does not match `composer.lock` | The image ships PHP 8.4 with the extensions `mbstring`, `xml`, `curl`, `zip`, `intl`, `bcmath`, `sqlite3` and `gd`. If the projects need a different version, set `PHP_VERSION` in `.env` (e.g. `8.3`) and rebuild: `docker compose up -d --build`. If another extension is missing, add it to the `Dockerfile` and rebuild. |
+| A project's pre-commit hook fails because `gitleaks` is not installed | The image ships gitleaks (pinned in the `Dockerfile` as `GITLEAKS_VERSION`, with the SHA256 of each architecture's archive). An image built before that has none: rebuild with `docker compose up -d --build`. To move to another version, change `GITLEAKS_VERSION` and both checksums from the release's `gitleaks_<version>_checksums.txt`, then rebuild. |
+| Agents run `npx pnpm` or call `node_modules/.bin` directly, or report `pnpm: command not found` | The image ships pnpm (`PNPM_VERSION` in the `Dockerfile`); an image built before that has none: rebuild with `docker compose up -d --build`. A project that pins another version in `packageManager` gets it downloaded by pnpm on first use. |
 
 ## Security
 
