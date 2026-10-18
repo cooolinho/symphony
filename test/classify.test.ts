@@ -15,9 +15,11 @@ describe('classify', () => {
       assert.equal(classify(['TYPE:Feature']).type, 'feature');
     });
 
-    it('recognizes alias labels (bug, enhancement, refactoring)', () => {
+    it('recognizes alias labels (bug, enhancement, feature, refactor, refactoring)', () => {
       assert.equal(classify(['bug']).type, 'bugfix');
       assert.equal(classify(['enhancement']).type, 'feature');
+      assert.equal(classify(['feature']).type, 'feature');
+      assert.equal(classify(['refactor']).type, 'refactor');
       assert.equal(classify(['refactoring']).type, 'refactor');
     });
 

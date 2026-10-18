@@ -23,6 +23,7 @@ const DEFAULT_TYPE_ALIASES: Record<string, IssueType> = {
   bug: 'bugfix',
   enhancement: 'feature',
   feature: 'feature',
+  refactor: 'refactor',
   refactoring: 'refactor',
 };
 
