@@ -54,6 +54,7 @@ import {
   NO_LIMIT_OVERRIDE,
   reservationProblem,
   sameLimitOverride,
+  slotProblems,
   withAgentLimits,
   type AgentLimitOverride,
 } from './limits.ts';
@@ -634,6 +635,7 @@ export class Orchestrator {
   #loggedGate: DispatchGate | null = null;
   /** Why the reservations were ignored at the last tick, to log it once. */
   #loggedReservationProblem: string | null = null;
+  #loggedSlotProblems = '';
   /** Models on hold after a model-scoped usage limit, by family; persisted in the runtime state file. */
   #modelHolds = new Map<string, ModelHold>();
   /** Models the operator paused, by family; no end of their own, persisted in the runtime state file. */
@@ -1356,11 +1358,19 @@ export class Orchestrator {
   }
 
   #logReservationProblem(config: ServiceConfig): void {
-    const problem = reservationProblem(effectiveAgentLimits(config, this.#limitOverride));
-    if (problem === this.#loggedReservationProblem) return;
-    if (problem !== null) this.#logger.warn(problem);
-    else this.#logger.info('reserved slots apply again');
-    this.#loggedReservationProblem = problem;
+    const limits = effectiveAgentLimits(config, this.#limitOverride);
+    const problem = reservationProblem(limits);
+    if (problem !== this.#loggedReservationProblem) {
+      if (problem !== null) this.#logger.warn(problem);
+      else this.#logger.info('reserved slots apply again');
+      this.#loggedReservationProblem = problem;
+    }
+    const starved = slotProblems(config, limits);
+    const key = starved.join('\n');
+    if (key === this.#loggedSlotProblems) return;
+    for (const line of starved) this.#logger.warn(line);
+    if (starved.length === 0) this.#logger.info('every role that results lead to gets a slot again');
+    this.#loggedSlotProblems = key;
   }
 
   /** Running sessions that hold a slot: all but the forced ones, which run in an extra slot each. */

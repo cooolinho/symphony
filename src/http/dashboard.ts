@@ -1303,6 +1303,7 @@ ${PIPELINE_JS}
     if (h.last_tracker_error) problems.push('Tracker: ' + h.last_tracker_error.message);
     if (h.pricing_error) problems.push('model-costs.yml: ' + h.pricing_error);
     if (state.limits && state.limits.reservation_problem) problems.push('Agent slots: ' + state.limits.reservation_problem);
+    if (state.limits) for (const p of state.limits.slot_problems || []) problems.push('Agent slots: ' + p);
     $('problems').hidden = problems.length === 0;
     $('problem-list').replaceChildren(...problems.map((p) => el('li', p)));
     renderHeader(h, problems, true);

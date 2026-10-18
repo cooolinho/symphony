@@ -251,7 +251,9 @@ Without reservations, the first issues in [dispatch order](usage.md#dispatch-ord
 
 A reserved slot that its role does not use is idle capacity; that is the price of the guaranteed parallelism. When the
 reservations take every slot (`max_concurrent_agents: 2` with the example above), roles without a reservation never
-start; the dashboard notes it at the slot settings.
+start; the dashboard notes it at the slot settings. When a result leads issues to such a role (the optional
+[test engineer](#the-test-engineer) behind `Testing`), Symphony also logs a warning and lists the problem under
+`limits.slot_problems` and in the dashboard's problem list, since the issues would wait in that column for good.
 
 #### Agent slots set on the dashboard
 
@@ -515,13 +517,17 @@ checks:
   needs the column (the [board preflight](#tracker) reports it as `unknown board column "Testing"`); put it between
   `In progress` and `Agent review`, because `next` and the pipeline view of the dashboard follow the board's order.
   While the stage is off, the pipeline view leaves it out: a stage served by a role with `result` shows only when the
-  flow leads to its column (the `on_result`, `on_check_failed`, `on_missing_result` and `on_round_limit` targets of the
-  roles and of the issue's profile, or `next`), when the first stage serves it, or when the issue sits in it. So an
-  issue never shows a test stage as done that did not run, and the order of the `Testing` column on the board does not
-  matter until the stage is on.
+  flow leads to its column, when the first stage serves it, or when the issue sits in it. The flow leads to a column
+  through the `on_result`, `on_check_failed`, `on_missing_result` and `on_round_limit` targets of the roles and of the
+  issue's profile, through `next`, and through the moves of roles that hand off with `set_status` instead of a result
+  (their `may_move_to` columns, or every active column without that list; the same goes for an active column no role
+  serves). A project whose developer has no `result` therefore keeps its test stage once the developer may move issues
+  to `Testing`. So an issue never shows a test stage as done that did not run, and the order of the `Testing` column on
+  the board does not matter until the stage is on.
 - **Slots.** The test engineer is a third role next to the developer and the reviewer, whose slots
   `agent.reserved_slots_by_role` keeps free. Like the other roles it only gets slots beyond those, so allow at least
-  3 agent slots (`SYMPHONY_MAX_CONCURRENT_AGENTS`) when the stage is on, or the test engineer never starts.
+  3 agent slots (`SYMPHONY_MAX_CONCURRENT_AGENTS`) when the stage is on, or the test engineer never starts; the
+  dashboard, the log and `limits.slot_problems` of the API report it when it happens.
 - **Verdicts.** `passed` leads to `Agent review`, `failed` to `In progress` (the developer), `blocked` to `Blocked`
   (see [result contracts](results.md#kinds): `cases[]`, `commands[]`, `uncovered_criteria[]`). A session that ends without
   a result goes to `on_missing_result` (`Blocked`).

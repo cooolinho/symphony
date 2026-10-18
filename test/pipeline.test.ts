@@ -6,6 +6,7 @@ import type { PersistedResult } from '../src/orchestrator/stage-history.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 import { resolveConfig } from '../src/workflow/config.ts';
 import { loadWorkflowFile } from '../src/workflow/loader.ts';
+import type { RoleConfig } from '../src/workflow/roles.ts';
 import { internalResult, parseResult, type ResultMeta } from '../src/workflow/results.ts';
 import { baseFront, makeWorkflow, tempDir } from './helpers.ts';
 
@@ -374,6 +375,104 @@ describe('derivePipeline with the shipped workflow', () => {
       sessions: [],
     });
     assert.deepEqual(ids(stages), ['developer', 'test-engineer', 'reviewer', 'human:in review', 'terminal:done']);
+  });
+});
+
+describe('derivePipeline with roles that move issues without results', () => {
+  const BOARD_TESTING = ['Todo', 'Testing', 'Agent review', 'Blocked', 'In review', 'Done'];
+  const reviewer = { states: ['Agent review'], read_only: true, result: 'review', may_move_to: ['In review', 'Todo', 'Blocked'], on_result: { approved: 'In review', changes_needed: 'Todo' } };
+  const tester = { states: ['Testing'], result: 'test', may_move_to: ['Agent review', 'Todo', 'Blocked'], on_result: { passed: 'Agent review', failed: 'Todo' } };
+
+  /** The `result-driven roles` suite of the orchestrator: a developer that hands off with `set_status`, a reviewer with results. */
+  function pipelineOf(
+    roles: Record<string, unknown>,
+    active: string[],
+    overrides: Partial<PipelineInput> = {},
+    pick: (resolved: readonly RoleConfig[]) => readonly RoleConfig[] = (resolved) => resolved,
+  ) {
+    const front = baseFront(tempDir('symphony-pipeline-'), {
+      tracker: { kind: 'github_project', provider: { owner: 'acme', project_number: 1, token: 'test-token' }, active_states: active, terminal_states: ['Done'] },
+      roles,
+    });
+    const resolved = makeWorkflow(front).config.roles;
+    assert.ok(resolved !== null);
+    return derivePipeline({
+      issue: { state: 'Todo', description: null },
+      roles: pick(resolved),
+      activeStates: active,
+      terminalStates: ['Done'],
+      boardColumns: BOARD_TESTING,
+      sessions: [],
+      ...overrides,
+    });
+  }
+  const shape = (stages: ReturnType<typeof pipelineOf>) => stages.map((stage) => [stage.id, stage.status]);
+  const developer = (mayMoveTo: string[] | null) => ({ states: ['Todo'], ...(mayMoveTo === null ? {} : { may_move_to: mayMoveTo }) });
+
+  it('shows the reviewer and the In review stage for an issue in Todo, like a pipeline without a filter', () => {
+    const stages = pipelineOf({ developer: developer(['Agent review', 'Blocked']), reviewer }, ['Todo', 'Agent review']);
+    assert.deepEqual(shape(stages), [
+      ['developer', 'active'],
+      ['reviewer', 'pending'],
+      ['human:in review', 'pending'],
+      ['terminal:done', 'pending'],
+    ]);
+  });
+
+  it('shows the reviewer as pending-then-done and the In review stage as active for an issue in In review', () => {
+    const sessions = [session({ run: 'r1', role: 'developer', state: 'Todo', outcome: 'handed_off' }), session({ run: 'r2', role: 'reviewer', state: 'Agent review', outcome: 'handed_off' })];
+    const stages = pipelineOf({ developer: developer(['Agent review', 'Blocked']), reviewer }, ['Todo', 'Agent review'], { issue: { state: 'In review', description: null }, sessions });
+    assert.deepEqual(shape(stages), [
+      ['developer', 'done'],
+      ['reviewer', 'done'],
+      ['human:in review', 'active'],
+      ['terminal:done', 'pending'],
+    ]);
+  });
+
+  it('shows the test engineer once a set_status developer may move issues to Testing', () => {
+    const roles = { developer: developer(['Testing', 'Agent review', 'Blocked']), 'test-engineer': tester, reviewer };
+    const sessions = [session({ run: 'r1', role: 'developer', state: 'Todo', outcome: 'handed_off' })];
+    const stages = pipelineOf(roles, ['Todo', 'Testing', 'Agent review'], { issue: { state: 'Agent review', description: null }, sessions });
+    assert.deepEqual(shape(stages), [
+      ['developer', 'done'],
+      ['test-engineer', 'done'],
+      ['reviewer', 'active'],
+      ['human:in review', 'pending'],
+      ['terminal:done', 'pending'],
+    ]);
+  });
+
+  it('shows the test engineer when the set_status developer is unrestricted', () => {
+    const stages = pipelineOf({ developer: developer(null), 'test-engineer': tester, reviewer }, ['Todo', 'Testing', 'Agent review']);
+    assert.deepEqual(stages.map((stage) => stage.id), ['developer', 'test-engineer', 'reviewer', 'human:in review', 'terminal:done']);
+  });
+
+  it('leaves the test engineer out when the set_status developer cannot move issues to Testing', () => {
+    const stages = pipelineOf({ developer: developer(['Agent review', 'Blocked']), 'test-engineer': tester, reviewer }, ['Todo', 'Testing', 'Agent review']);
+    assert.deepEqual(stages.map((stage) => stage.id), ['developer', 'reviewer', 'human:in review', 'terminal:done']);
+  });
+
+  it('shows a result role after a column that no role serves, because the implicit default role may move anywhere', () => {
+    // A resolved config serves every active column, so take the developer out to leave Todo to the default role.
+    const stages = pipelineOf({ developer: developer(['Agent review', 'Blocked']), 'test-engineer': tester, reviewer }, ['Todo', 'Testing', 'Agent review'], {}, (roles) =>
+      roles.filter((role) => role.name !== 'developer'),
+    );
+    assert.deepEqual(stages.map((stage) => stage.id), ['default', 'test-engineer', 'reviewer', 'human:in review', 'terminal:done']);
+  });
+
+  it('ignores the moves of a role that serves other issues than this one (a command role)', () => {
+    const roles = {
+      developer: developer(['Agent review', 'Blocked']),
+      auditor: { commands: ['refactoring'], states: ['Todo'], read_only: true },
+      'test-engineer': tester,
+      reviewer,
+    };
+    const stages = pipelineOf(roles, ['Todo', 'Testing', 'Agent review']);
+    assert.deepEqual(stages.map((stage) => stage.id), ['developer', 'reviewer', 'human:in review', 'terminal:done']);
+    // The /refactoring issue is served by the unrestricted auditor, which may move it to Testing.
+    const commanded = pipelineOf(roles, ['Todo', 'Testing', 'Agent review'], { issue: { state: 'Todo', description: '/refactoring' } });
+    assert.deepEqual(commanded.map((stage) => stage.id), ['auditor', 'test-engineer', 'reviewer', 'human:in review', 'terminal:done']);
   });
 });
 

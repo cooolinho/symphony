@@ -888,8 +888,9 @@ Waiting (soonest first), then Paused. Each entry:
 `{ effective, workflow, override }` (`override: null` = none set on the dashboard; a column with `effective: null` has
 no limit of its own, only the total applies), per configured role `reserved_slots_by_role["<role>"]` as
 `{ effective, workflow, override, running }` (`0` = no reservation; `running` = sessions of that role now),
-`reservation_problem` (why the reservations are ignored, else `null`), plus `override_active` and `max` (the highest
-value the dashboard accepts, 50).
+`reservation_problem` (why the reservations are ignored, else `null`), `slot_problems` (one line per role that results
+lead to but that never gets a slot under the reservations, e.g. the test engineer with 2 slots reserved for the developer
+and the reviewer; `[]` when none), plus `override_active` and `max` (the highest value the dashboard accepts, 50).
 
 ```bash
 curl -s http://127.0.0.1:4000/api/v1/state

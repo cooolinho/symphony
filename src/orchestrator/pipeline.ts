@@ -112,12 +112,20 @@ export function blockedBucketColumns(
 }
 
 /**
- * The normalized active columns that results lead to: the targets of every role's `on_result`, `on_check_failed`,
+ * The normalized active columns that issues are led to: the targets of every role's `on_result`, `on_check_failed`,
  * `on_missing_result` and `on_round_limit` (and of the profile's `on_result` overrides), and, for a role that uses
- * `next`, every active column after its own. `activeColumns` is in board order. Conservative: a column counted here
- * may still never be entered, but a column that is not can only be entered by hand.
+ * `next`, every active column after its own. A role that hands off with `set_status` instead of a result (and the
+ * implicit default role of a column no role serves) moves the issue wherever it likes: its `may_move_to` columns, or
+ * any active column when it has no such list. `activeColumns` is in board order; `description` picks the role of a
+ * column like the dispatcher does (an issue command). Conservative: a column counted here may still never be entered,
+ * but a column that is not can only be entered by hand.
  */
-function routedColumns(roles: readonly RoleConfig[], activeColumns: readonly string[], profile: PipelineInput['profile']): Set<string> {
+function routedColumns(
+  roles: readonly RoleConfig[],
+  activeColumns: readonly string[],
+  description: string | null,
+  profile: PipelineInput['profile'],
+): Set<string> {
   const routed = new Set<string>();
   for (const role of roles) {
     const overrides = Object.values(profile?.onResult[role.name] ?? {});
@@ -128,6 +136,11 @@ function routedColumns(roles: readonly RoleConfig[], activeColumns: readonly str
     const last = activeColumns.findLastIndex((column) => role.states.includes(normalizeStateName(column)));
     if (last === -1) continue;
     for (const column of activeColumns.slice(last + 1)) routed.add(normalizeStateName(column));
+  }
+  for (const column of activeColumns) {
+    const role = roleFor({ state: column, description }, roles);
+    if (role?.result != null) continue;
+    for (const target of role?.mayMoveTo ?? activeColumns) routed.add(normalizeStateName(target));
   }
   return routed;
 }
@@ -150,9 +163,10 @@ function chronological(results: readonly PersistedResult[]): PersistedResult[] {
  *
  * Agent stages come from the active columns (board order when known): each column's serving role via
  * `roleFor`, consecutive columns of the same role merged into one stage. A column served by a role that hands off with
- * results is left out unless the flow leads to it (see `routedColumns`), the first stage serves it, or the issue is in
- * it: a stage nothing routes to (the optional Testing column while the developer hands over to Agent review) is not
- * part of the pipeline, so it never shows as done without having run. Human stages are the non-active,
+ * results is left out unless the flow leads to it (a result's target, or a move another role may make with
+ * `set_status`, see `routedColumns`), the first stage serves it, or the issue is in it: a stage nothing routes to (the
+ * optional Testing column while the developer hands over to Agent review) is not part of the pipeline, so it never
+ * shows as done without having run. Human stages are the non-active,
  * non-terminal columns the final agent stage may move to that not every role lists — that singles out a
  * hand-off column such as "In review" and excludes the shared "Blocked" escape hatch (see
  * `blockedBucketColumns`). When the heuristic yields nothing, the pipeline is agent stages plus the
@@ -170,12 +184,13 @@ export function derivePipeline(input: PipelineInput): PipelineStage[] {
   // Agent stages: one per run of consecutive active columns served by the same role.
   const agents: PipelineStage[] = [];
   const activeColumns = sortByBoard(activeStates, index).filter((column) => !terminal.has(normalizeStateName(column)));
-  const routed = roles === null ? new Set<string>() : routedColumns(roles, activeColumns, profile);
+  const routed = roles === null ? new Set<string>() : routedColumns(roles, activeColumns, issue.description, profile);
   const entry = new Set(roleFor({ state: activeColumns[0] ?? '', description: issue.description }, roles ?? null)?.states ?? []);
   for (const column of activeColumns) {
     const key = normalizeStateName(column);
     const role = roleFor({ state: column, description: issue.description }, roles ?? null);
-    // Only a role with results is wired by them; the moves of any other role are the agent's own and stay unknown.
+    // Only a column served by a role with results can be left out, and only when nothing leads to it: the results
+    // and the `set_status` moves of the other roles are all counted in `routed`.
     if (role?.result != null && !routed.has(key) && !entry.has(key) && key !== normalizeStateName(issue.state)) continue;
     const name = roleName(role);
     const last = agents.at(-1);

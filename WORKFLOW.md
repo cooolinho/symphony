@@ -79,7 +79,7 @@ agent:
     "Agent review": 1                        # one review at a time
   # Slots kept free for a role, so a developer and a reviewer can always run side by side. Other roles (/plan,
   # /refactoring, the test engineer, ...) only get slots beyond these: with 2 slots in total they wait until the limit
-  # is raised. With the Testing stage on, allow 3 slots, or the test engineer never starts.
+  # is raised. With the Testing stage on, allow 3 slots, or the test engineer never starts (the dashboard and log say so).
   reserved_slots_by_role:
     developer: 1
     reviewer: 1
