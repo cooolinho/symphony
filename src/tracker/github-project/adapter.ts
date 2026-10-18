@@ -53,6 +53,8 @@ const MAX_PAGES = 500;
 const DETAIL_BATCH = 50;
 /** Text references resolved per request. */
 const REFERENCE_BATCH = 50;
+/** The start of a stage-result marker, of any version (`decodeMarker` reads only intact v1 markers). */
+const RESULT_MARKER = /<!-- symphony:result:/;
 
 type IssueOutcome = Extract<NormalizeOutcome, { kind: 'issue' }>;
 
@@ -329,7 +331,13 @@ export class GithubProjectAdapter implements TrackerAdapter {
     const results: TrackedResult[] = [];
     for (const comment of comments) {
       const decoded = decodeMarker(comment.body);
-      if (decoded === null) continue;
+      if (decoded === null) {
+        // A damaged marker of Symphony's own counts as no result: the round counters may be one short.
+        if (comment.author === viewer && RESULT_MARKER.test(comment.body)) {
+          this.#logger.warn('ignoring a damaged result marker', { issue: issue.identifier, url: comment.url });
+        }
+        continue;
+      }
       if (comment.author !== viewer) {
         this.#logger.warn('ignoring a result marker from another author', { issue: issue.identifier, author: comment.author, url: comment.url });
         continue;

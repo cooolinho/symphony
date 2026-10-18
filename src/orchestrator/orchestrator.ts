@@ -159,6 +159,8 @@ interface RunningEntry {
   roleConfig: RoleConfig | null;
   /** The session recorded its stage result (`report_result` posted the result comment). */
   resultRecorded: boolean;
+  /** The recorded result moved the issue (false when the move after the comment failed). */
+  resultMoved: boolean;
   /** Started by the operator in an extra slot (`forceStart`): holds no slot of the limits, for this session only. */
   forced: boolean;
   /** Logger for this run's agent events, tagged with `run_id` and `role`. */
@@ -1711,6 +1713,7 @@ export class Orchestrator {
       role: name,
       roleConfig: role,
       resultRecorded: false,
+      resultMoved: false,
       forced,
       runLog: log.child({ run_id: runId, role: name }),
       issue,
@@ -1904,6 +1907,9 @@ export class Orchestrator {
           resultRecorded: () => {
             entry.resultRecorded = true;
           },
+          resultMoved: () => {
+            entry.resultMoved = true;
+          },
           checkFinished: (check) => {
             record.lastCheck = check;
             this.#deps.history?.checkFinished({
@@ -1969,8 +1975,9 @@ export class Orchestrator {
     const finished = this.#records.get(entry.issueId);
     if (finished) {
       finished.lastRun = traceOf(entry);
-      // A recorded stage result is progress, not a loop: the round limits bound result-driven hand-offs.
-      if (entry.resultRecorded) finished.continuations = 0;
+      // A hand-off with a result is progress, not a loop: the round limits bound result-driven hand-offs. A result
+      // whose move failed is none, so a move that keeps failing ends at max_continuations instead of looping.
+      if (entry.resultMoved) finished.continuations = 0;
       // The worker refreshes the issue after each turn: the column it ended in decides what comes next.
       finished.meta = issueMeta(entry.issue);
       const session = finished.sessions.find((candidate) => candidate.run === entry.runId);

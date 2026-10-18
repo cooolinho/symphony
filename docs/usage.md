@@ -119,6 +119,24 @@ continuations*, lifted by any change on the board), see [Continuations and pausi
 issue whose model the operator paused is not under *Paused*: it waits in the retry queue (*Waiting*, reason
 `model_hold`) until the model is resumed.
 
+### Failures of result-driven stages
+
+A stage of a role with [`result`](configuration.md#result-driven-transitions) ends with exactly one recorded result
+(see [Result contracts](results.md)). When GitHub, an entry check, a reload or a human gets in the way, Symphony
+behaves like this:
+
+| Case | What happens |
+|---|---|
+| The result comment cannot be posted | `report_result` returns `comment_failed`: nothing is recorded and the issue stays. The agent calls it again; if it keeps failing, the stage ends [without a result](results.md#stages-without-a-result). |
+| The move fails after the result comment (`status_failed`), e.g. a GitHub error or a token that may comment but not edit the project | The result stands; the labels stay as they are. The agent is told to end its turn, and the run ends after that turn (no reminder, no `on_missing_result`). The issue stays in its column and the next session runs the stage again. A result whose move failed is no progress for [`agent.max_continuations`](#continuations-and-pausing), so a move that keeps failing pauses the issue after that many sessions instead of looping. Symphony does not retry the move itself: GitHub mutations are never retried, because a request that timed out may have been applied. |
+| The same, with a target column that is not active (`In review`, `Blocked`) | The next session cannot tell the failed move from a human who moved the issue back: it records a `reset` first, so the review rounds start at 1 again. Completing an interrupted move without a new session is [#210](https://github.com/cooolinho/symphony/issues/210). |
+| An entry check times out inside `report_result` (`check_timeout`) | Nothing is recorded and the issue stays. As the message says, the agent calls `report_result` once more; if that times out too, it comments and ends its turn. A timeout is a runtime limit, not a missing result: the run ends after that turn without a reminder and without `on_missing_result`, and a continuation session runs the stage again (it counts toward `agent.max_continuations`). |
+| A check inside `report_result` runs longer than `claude.stall_timeout_ms` | No stall: stall detection pauses while an entry check runs (phase `RunningChecks`) and starts fresh after it. The check is bounded by `checks.timeout_ms`, the tool call by `checks.timeout_ms` plus one minute. |
+| Reading the stage results at session start fails, e.g. `tracker_rate_limited` | The run fails with `results_read_error` before the agent starts (no agent cost) and is retried with the backoff above. No session runs without its history, so the round counters stay right. |
+| `WORKFLOW.md` is reloaded in the middle of a stage | The session keeps the snapshot it started with: prompt, `max_turns`, role, routing (`on_result`, round limits), entry checks, `on_missing_result`, and the `workflow_hash` in the result's meta. Only the check after each turn (has the issue left the role's columns?) reads the current workflow. The next session uses the reload. |
+| A comment of Symphony's own account carries a damaged marker (cut off, unknown version, invalid fields) | It counts as no result, and the log shows the warning `ignoring a damaged result marker` with the comment's URL. A damaged review marker may leave the round counters one short. Markers in comments of other accounts never count. |
+| A human moves the issue during the session | Right before writing, `report_result` re-reads the issue: if it has left the role's columns, nothing is recorded (`issue_moved`) and the agent ends its turn, so a result never moves the issue back. After the turn the run ends (`role changed` or `issue left the active states`): the next role starts in a new session, or the issue is released. There is no "Stage ended without a result" comment and no `on_missing_result` move. A move right after the last turn is caught by the same check before `on_missing_result` applies. |
+
 ## Session limit
 
 When your Claude subscription hits its usage limit (message `You've hit your session limit · resets 7:30pm`, the

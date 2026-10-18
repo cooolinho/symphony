@@ -82,6 +82,8 @@ starts without the history.
 If the newest marker handed the issue to a column that is not active (a round limit or Blocked) but the issue now sits
 in an active column, a human moved it back. The session start then posts a `reset` marker (role `symphony`), removes
 `pipeline.limit_label` and rebuilds the history, so the round counters start at 1. Nothing else writes a `reset`.
+A result whose move to such a column failed (`status_failed`, step 6 below) looks the same, so the next session resets
+the rounds then too; telling the two apart is [#210](https://github.com/cooolinho/symphony/issues/210).
 
 A call runs these steps, one call at a time:
 
@@ -101,15 +103,21 @@ A call runs these steps, one call at a time:
    agent's verdict, a note with the failed check's output appended to the summary, `checks` of the failed check and
    `target` of the fallback column. The result then carries `check_failed_for` (the column whose check failed) and the
    round limit label is neither added nor removed. If the fallback is the column that failed, or its own check fails,
-   the agent gets the denial as before. `check_timeout` and `check_error` never redirect.
-4. **Comment.** The result comment (Markdown and marker) is posted. Its meta records the role, the run, the round, the
+   the agent gets the denial as before. `check_timeout` and `check_error` never redirect. A session whose newest entry
+   check timed out ends after the turn without a reminder: a timeout is a runtime limit, not a missing result.
+4. **Confirm the column.** Right before writing, the tool re-reads the issue. If it has left the role's columns (a
+   human moved it while the agent worked or the check ran), it returns `issue_moved` and writes nothing, so a result
+   never moves an issue back; if the read fails, it returns `tracker_error` and the agent may report again.
+5. **Comment.** The result comment (Markdown and marker) is posted. Its meta records the role, the run, the round, the
    profile, the workflow hash, the workspace commit, the entry check that cleared the move (`checks`; a pass reused
    from the check cache keeps the record of the check that ran; `null` when the column has no check) and the target.
    A failed post returns `comment_failed`; nothing is recorded.
-5. **Move** the issue to the target with the adapter's `setStatus`, including [auto-merge](adapters/github-project.md#auto-merge)
+6. **Move** the issue to the target with the adapter's `setStatus`, including [auto-merge](adapters/github-project.md#auto-merge)
    (the result then carries `auto_merge`, as with `set_status`). If the move fails after the comment, the call returns
-   `status_failed`: the result stands, the agent ends its turn, and the next run finds the pending move in the marker.
-6. **Labels.** At the round limit `pipeline.limit_label` is added (the default `needs-human` is created when the
+   `status_failed`: the result stands (its marker keeps the `target`), the labels stay as they are, the agent ends its
+   turn and the issue stays in its column; the stage runs again in a later session (see
+   [Failures of result-driven stages](usage.md#failures-of-result-driven-stages)).
+7. **Labels.** After the move, at the round limit `pipeline.limit_label` is added (the default `needs-human` is created when the
    repository lacks it); every other result removes it when the issue carries it. Label failures and a missing custom
    label are returned as `warnings`; the result and the move stand.
 
@@ -117,7 +125,9 @@ The success result is `{kind, verdict, target, status, previous_status, round, r
 auto_merge?, warnings?, note: "Result recorded — end your turn now."}`.
 
 **One result per run.** Once the comment is posted, every further call of the run, with any input, returns the stored
-outcome (`already_recorded: true` on success) without running the checks or touching the tracker. The tool writes only
+outcome (`already_recorded: true` on success) without running the checks or touching the tracker, and the run ends
+after the turn that recorded the result; when the move led to another column of the same role, its stage starts in a
+new session. The tool writes only
 after the guard allowed exactly the computed target; called without the guard's approval it refuses (`tool_error`).
 
 ## Stages without a result
@@ -138,7 +148,8 @@ The run ends without a result when the reminder turn did not produce one, or whe
    then releases the issue.
 3. A tracker error while fetching or moving schedules a retry like a failed run.
 
-Roles without `result` are not affected.
+A run whose newest entry check timed out (`check_timeout`) is not a missing result: it ends without the reminder turn,
+and the stage runs again in a continuation session. Roles without `result` are not affected.
 
 ## Scenario tests
 
@@ -147,4 +158,8 @@ worker, transition guard, entry checks and `report_result` tool, with scripted s
 `test/helpers.ts` calls a session tool the way the agent does), an in-memory board (`FakeTracker`) and manual timers.
 It covers an approval in round 1, two `changes_needed` rounds before an approval, the round limit, a developer
 `check_failed` fixed in the same session, a failed reviewer check (`on_check_failed`), forged markers, a stage without a
-result, a restart mid-review, duplicate `report_result` calls and a session limit during the review.
+result, a restart mid-review, duplicate `report_result` calls and a session limit during the review. The failure paths
+of [Failures of result-driven stages](usage.md#failures-of-result-driven-stages) each have a scenario there too: a move
+that fails after the result comment (once, and every time), `check_timeout` inside `report_result`,
+`tracker_rate_limited` while reading the results, a check that outlasts the stall timeout, a workflow reload mid-stage,
+damaged markers, and a human moving the issue during the session.
