@@ -7,7 +7,7 @@ import { Logger } from '../src/log.ts';
 import { CONTINUATION_DELAY_MS } from '../src/orchestrator/eligibility.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import { RESULT_RECORDED_NOTE } from '../src/orchestrator/result-tool.ts';
-import type { Issue, ToolResult } from '../src/tracker/types.ts';
+import { TrackerError, type Issue, type ToolResult } from '../src/tracker/types.ts';
 import { decodeMarker, encodeMarker, parseResult, renderResultComment, type ResultMeta } from '../src/workflow/results.ts';
 import { workspaceKey } from '../src/workspace/manager.ts';
 import { FakeRunner, FakeTracker, ManualClock, ManualTimers, StaticWorkflow, baseFront, callTool, makeIssue, makeWorkflow, tempDir, until } from './helpers.ts';
@@ -76,6 +76,9 @@ interface Pipeline {
   tracker: FakeTracker;
   runner: FakeRunner;
   timers: ManualTimers;
+  clock: ManualClock;
+  /** The workflow source; replace `current` to simulate a reload of `WORKFLOW.md`. */
+  workflow: StaticWorkflow;
   root: string;
   /** Every `report_result` outcome, in the order the calls returned. */
   reports: ToolResult[];
@@ -90,9 +93,10 @@ function board(): FakeTracker {
 
 /**
  * An orchestrator serving the pipeline. The Nth session runs `stages[N]`; sessions beyond the plan end their turns
- * without a result. `tracker` and `root` take over the board and the workspaces of an earlier instance (a restart).
+ * without a result. `tracker` and `root` take over the board and the workspaces of an earlier instance (a restart);
+ * `front` replaces top-level sections of the workflow's front matter.
  */
-function pipeline(stages: Stage[], options: { tracker?: FakeTracker; root?: string } = {}): Pipeline {
+function pipeline(stages: Stage[], options: { tracker?: FakeTracker; root?: string; front?: Record<string, unknown> } = {}): Pipeline {
   const root = options.root ?? tempDir();
   const tracker = options.tracker ?? board();
   const reports: ToolResult[] = [];
@@ -108,17 +112,19 @@ function pipeline(stages: Stage[], options: { tracker?: FakeTracker; root?: stri
     return (await assigned.get(params)?.({ turn, params, report })) ?? { ok: true, turnId: String(turn), resultText: 'done' };
   });
   const timers = new ManualTimers();
+  const clock = new ManualClock();
+  const workflow = new StaticWorkflow(makeWorkflow(baseFront(root, { ...FRONT, ...options.front }), { prompt: PROMPT }));
   const orchestrator = new Orchestrator({
-    workflow: new StaticWorkflow(makeWorkflow(baseFront(root, FRONT), { prompt: PROMPT })),
+    workflow,
     runner,
     logger: Logger.silent(),
     env: {},
     logDir: null,
-    clock: new ManualClock(),
+    clock,
     timers,
     createAdapter: () => tracker,
   });
-  return { orchestrator, tracker, runner, timers, root, reports };
+  return { orchestrator, tracker, runner, timers, clock, workflow, root, reports };
 }
 
 /** A session that reports `args` in its first turn, after `before` prepared its workspace. */
@@ -509,6 +515,250 @@ describe('result-driven developer → reviewer loop', () => {
       assert.equal(h.runner.sessions.length, 2);
       assert.deepEqual(await reviews(h), [['approved', 1, 'In review']]);
       assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'In review']);
+    });
+  });
+});
+
+// Failure and retry paths (docs/results.md#failures-and-retries): what happens to a stage when GitHub, a check, the
+// workflow or a human interferes.
+describe('failure and retry paths of result-driven stages', () => {
+  /** The issue's comments that end a stage without a result. */
+  const missingResultComments = (h: Pipeline) => (h.tracker.comments.get(ISSUE) ?? []).filter((comment) => comment.body.startsWith('**Stage ended without a result.**'));
+  /** Makes every move to `column` fail, like GitHub refusing the mutation; `times` limits the failures. */
+  const failMovesTo = (h: Pipeline, column: string, times = Infinity) => {
+    const move = h.tracker.setStatus.bind(h.tracker);
+    let failures = 0;
+    h.tracker.setStatus = async (target, status) => {
+      if (status === column && failures < times) {
+        failures++;
+        throw new Error('Resource not accessible by integration');
+      }
+      return move(target, status);
+    };
+  };
+  const workspace = (h: Pipeline) => path.join(h.root, workspaceKey(issue(h).identifier));
+
+  it('the move fails after the result comment: the run ends at once and the stage runs again', async () => {
+    const h = pipeline([done(), approved(), approved()]);
+    failMovesTo(h, 'In review', 1);
+    await run(h);
+
+    const failed = denial(h.reports[1]);
+    assert.equal(failed?.category, 'status_failed');
+    assert.match(failed?.message ?? '', /result was recorded[\s\S]*Do not report again: end your turn now\. The issue stays in "Agent review" and Symphony runs this stage again later/);
+    assert.equal(h.runner.sessions[1]?.turns.length, 1, 'no reminder turn after a recorded result');
+    assert.deepEqual(missingResultComments(h), []);
+    assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'In review']);
+    assert.deepEqual(prompts(h), ['developer round 1', 'reviewer round 1', 'reviewer round 1']);
+    // The next session cannot tell the failed move from a human resume (#210): it records a reset first.
+    assert.deepEqual(
+      (await results(h)).map((result) => [result.role, result.verdict, result.target]),
+      [
+        ['developer', 'done', 'Agent review'],
+        ['reviewer', 'approved', 'In review'],
+        ['symphony', 'reset', null],
+        ['reviewer', 'approved', 'In review'],
+      ],
+    );
+    assert.equal(counts(h).claimed, 0);
+  });
+
+  it('a move that keeps failing ends at max_continuations instead of looping', async () => {
+    const h = pipeline([done(), approved(), approved(), approved()]);
+    failMovesTo(h, 'In review');
+    await run(h);
+
+    assert.equal(counts(h).paused, 1, 'a result whose move failed is no progress');
+    assert.equal(h.runner.sessions.length, 3, 'the first session and max_continuations (2)');
+    assert.deepEqual(h.reports.slice(1).map((report) => denial(report)?.category), ['status_failed', 'status_failed']);
+    assert.equal(issue(h).state, 'Agent review');
+    assert.deepEqual(missingResultComments(h), []);
+    assert.deepEqual(issue(h).labels, []);
+  });
+
+  it('check_timeout inside report_result: nothing is recorded, no reminder, no Blocked; a later session hands off', async () => {
+    const slow = (column: string, file: string, output: string) => `if [ -f slow-check ]; then sleep 5; fi; ${entryCheck(column, file, output)}`;
+    const h = pipeline(
+      [
+        async ({ turn, params, report }) => {
+          if (turn !== 1) return undefined;
+          touch('slow-check')(params.cwd);
+          await report(DONE);
+          await report(DONE);
+          return undefined;
+        },
+        done(remove('slow-check')),
+        approved(),
+      ],
+      {
+        front: {
+          checks: {
+            timeout_ms: 300,
+            on_enter: { 'Agent review': slow('Agent review', 'failing-tests', '2 tests failed'), 'In review': entryCheck('In review', 'lint-errors', 'lint failed') },
+          },
+        },
+      },
+    );
+    await run(h);
+
+    assert.deepEqual(h.reports.slice(0, 2).map((report) => denial(report)?.category), ['check_timeout', 'check_timeout']);
+    assert.match(denial(h.reports[0])?.message ?? '', /Call report_result again once[\s\S]*Symphony picks the issue up again later/);
+    assert.equal(h.runner.sessions[0]?.turns.length, 1, 'no reminder turn after a timed-out check');
+    assert.deepEqual(missingResultComments(h), []);
+    assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'In review']);
+    assert.deepEqual(prompts(h), ['developer round 1', 'developer round 1', 'reviewer round 1']);
+    assert.deepEqual((await results(h)).map((result) => [result.role, result.verdict]), [
+      ['developer', 'done'],
+      ['reviewer', 'approved'],
+    ]);
+  });
+
+  it('tracker_rate_limited while reading the results: no session starts, the run is retried with backoff', async () => {
+    const h = pipeline([done(), approved()]);
+    await run(h, () => h.orchestrator.snapshot().retrying[0]?.kind === 'continuation');
+    h.tracker.failReadResults = new TrackerError('tracker_rate_limited', 'GitHub rate limit: API rate limit exceeded', { retryAfterMs: 600_000 });
+    h.timers.fire(CONTINUATION_DELAY_MS);
+    await until(() => h.orchestrator.snapshot().retrying[0]?.kind === 'failure', 5_000, 'the failed reviewer run');
+
+    const retry = h.orchestrator.snapshot().retrying[0];
+    assert.equal(retry?.kind, 'failure');
+    assert.match(retry?.error ?? '', /results_read_error: could not read the stage results of acme\/app#1: GitHub rate limit: API rate limit exceeded/);
+    assert.equal(h.runner.sessions.length, 1, 'no reviewer session without the history');
+    assert.equal(issue(h).state, 'Agent review');
+    assert.equal(h.tracker.comments.get(ISSUE)?.length, 1);
+
+    // The continuation was the issue's first attempt, so the failure backoff starts at 20 s.
+    await fireRetry(h, 20_000);
+    await settle(h);
+    assert.deepEqual(prompts(h), ['developer round 1', 'reviewer round 1']);
+    assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'In review']);
+    assert.deepEqual(await reviews(h), [['approved', 1, 'In review']]);
+  });
+
+  it('a check inside report_result that outlasts stall_timeout_ms is no stall', async () => {
+    const h = pipeline([done(), approved()], {
+      front: {
+        claude: { stall_timeout_ms: 60_000 },
+        checks: { timeout_ms: 10_000, on_enter: { ...FRONT.checks.on_enter, 'In review': 'while [ ! -f go ]; do sleep 0.02; done' } },
+      },
+    });
+    await run(h, () => h.runner.sessions.length === 2 && h.orchestrator.snapshot().running[0]?.phase === 'RunningChecks');
+    h.clock.advance(120_000);
+    await h.orchestrator.tickNow();
+    assert.equal(h.orchestrator.snapshot().running[0]?.stopping, null, 'no stall while the check runs');
+
+    fs.writeFileSync(path.join(workspace(h), 'go'), '');
+    await settle(h);
+    assert.deepEqual(await reviews(h), [['approved', 1, 'In review']]);
+    assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'In review']);
+    assert.equal(h.runner.sessions.length, 2);
+    assert.equal(counts(h).claimed, 0);
+  });
+
+  it('a workflow reload in the middle of a stage: the session keeps its snapshot, the next session uses the reload', async () => {
+    const h = pipeline([
+      done(),
+      async ({ turn, report }) => {
+        if (turn !== 1) return undefined;
+        // Reloaded: one review round only, and a check for In progress that always fails.
+        const front = { ...FRONT, pipeline: { max_review_rounds: 1 }, checks: { on_enter: { ...FRONT.checks.on_enter, 'In progress': 'exit 1' } } };
+        h.workflow.current = { ...makeWorkflow(baseFront(h.root, front), { prompt: `reloaded ${PROMPT}` }), version: 2, contentHash: 'reloaded' };
+        await report(changes('Off by one'));
+        return undefined;
+      },
+      done(),
+      changesNeeded('Still off by one'),
+    ]);
+    await run(h);
+
+    assert.deepEqual(prompts(h), ['developer round 1', 'reviewer round 1', 'reloaded developer round 2 | Off by one', 'reloaded reviewer round 2 | Off by one']);
+    assert.deepEqual(await reviews(h), [
+      ['changes_needed', 1, 'In progress'],
+      ['changes_needed', 2, 'In review'],
+    ]);
+    assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'In progress', 'Agent review', 'In review']);
+    assert.deepEqual((await h.tracker.readResults(issue(h))).map((result) => result.meta.workflow_hash), ['test', 'test', 'reloaded', 'reloaded']);
+    assert.deepEqual(issue(h).labels, ['needs-human'], 'the reloaded round limit applies from the next session');
+  });
+
+  it('ignores damaged markers in its own comments: they count as no result', async () => {
+    const parsed = parseResult('review', changes('Damaged'));
+    assert.ok(parsed.ok);
+    const meta = (at: string): ResultMeta => ({
+      role: 'reviewer',
+      run: `damaged-${at}`,
+      round: null,
+      profile: null,
+      workflow_hash: null,
+      head_sha: null,
+      checks: null,
+      target: 'In progress',
+      created_at: at,
+    });
+    const intact = renderResultComment(parsed.result, meta('2026-10-01T10:00:00Z'));
+    const payload = /<!-- symphony:result:v1 ([A-Za-z0-9_-]+) -->/.exec(intact)?.[1] ?? '';
+    const invalidFields = Buffer.from(JSON.stringify({ ...parsed.result, verdict: 'maybe', meta: meta('2026-10-01T12:00:00Z') })).toString('base64url');
+    const tracker = board();
+    tracker.comments.set(
+      ISSUE,
+      [intact.replace(payload, payload.slice(0, 40)), intact.replace('result:v1', 'result:v9'), intact.replace(payload, invalidFields)].map((body, index) => ({
+        author: tracker.viewer,
+        createdAt: new Date(`2026-10-01T1${index}:00:00Z`),
+        body,
+        url: `https://github.com/acme/app/issues/${ISSUE}#damaged-${index}`,
+      })),
+    );
+    const h = pipeline([done(), changesNeeded('Off by one'), done(), approved()], { tracker });
+    await run(h);
+
+    assert.deepEqual(prompts(h), ['developer round 1', 'reviewer round 1', 'developer round 2 | Off by one', 'reviewer round 2 | Off by one']);
+    assert.deepEqual(await reviews(h), [
+      ['changes_needed', 1, 'In progress'],
+      ['approved', 2, 'In review'],
+    ]);
+    assert.deepEqual(issue(h).labels, []);
+  });
+
+  describe('a human moves the issue during the session', () => {
+    it('to another role\'s column: report_result records nothing, the run ends without missing-result handling', async () => {
+      const h = pipeline([
+        done(),
+        async ({ turn, report }) => {
+          if (turn !== 1) return undefined;
+          h.tracker.set(ISSUE, { state: 'In progress' });
+          await report(APPROVED);
+          return undefined;
+        },
+        done(),
+        approved(),
+      ]);
+      await run(h);
+
+      assert.equal(denial(h.reports[1])?.category, 'issue_moved');
+      assert.match(denial(h.reports[1])?.message ?? '', /moved to "In progress" while you worked/);
+      assert.equal(h.runner.sessions[1]?.turns.length, 1, 'continueWith ends the run: role changed');
+      assert.deepEqual(missingResultComments(h), []);
+      assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'Agent review', 'In review'], 'Symphony never moved it back');
+      assert.deepEqual(prompts(h), ['developer round 1', 'reviewer round 1', 'developer round 1', 'reviewer round 1']);
+      assert.deepEqual(await reviews(h), [['approved', 1, 'In review']]);
+    });
+
+    it('to a column that is not active: the run ends, the issue is released untouched', async () => {
+      const h = pipeline([
+        done(),
+        async ({ turn }) => {
+          if (turn === 1) h.tracker.set(ISSUE, { state: 'Blocked' });
+          return undefined;
+        },
+      ]);
+      await run(h);
+
+      assert.equal(h.runner.sessions[1]?.turns.length, 1, 'no reminder turn');
+      assert.deepEqual(missingResultComments(h), []);
+      assert.deepEqual(h.tracker.statusCalls, ['Agent review']);
+      assert.equal(issue(h).state, 'Blocked');
+      assert.equal(h.tracker.comments.get(ISSUE)?.length, 1, 'only the developer result');
+      assert.equal(counts(h).claimed, 0);
     });
   });
 });

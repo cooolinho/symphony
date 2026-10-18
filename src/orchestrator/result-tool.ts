@@ -24,8 +24,11 @@ export function resultReminder(column: string | null): string {
   );
 }
 
-/** What the tool needs from the tracker: the comment, the move (including `auto_merge`) and the limit label. */
-export type ResultToolAdapter = Required<Pick<TrackerAdapter, 'postComment' | 'setStatus' | 'addLabels' | 'removeLabels'>>;
+/**
+ * What the tool needs from the tracker: the issue's current column, the comment, the move (including `auto_merge`)
+ * and the limit label.
+ */
+export type ResultToolAdapter = Pick<TrackerAdapter, 'fetchIssuesByIds'> & Required<Pick<TrackerAdapter, 'postComment' | 'setStatus' | 'addLabels' | 'removeLabels'>>;
 
 /** Facts for the result's meta that come from the session; read when the result is recorded. */
 export interface ResultMetaSource {
@@ -54,6 +57,8 @@ export interface ResultToolParams {
   meta: ResultMetaSource;
   /** Called once, when the result comment is posted (the result is recorded from then on), with the result as persisted. */
   onRecorded?: (entry: PersistedResult) => void;
+  /** Called once, after the recorded result moved the issue (not when the move failed). */
+  onMoved?: () => void;
 }
 
 function ok(data: unknown): ToolResult {
@@ -91,8 +96,9 @@ type Plan = { ok: true; result: StageResult; transition: Transition } | { ok: fa
  * The `report_result` tool of one session (docs/results.md#the-report_result-tool). The agent reports a result;
  * Symphony validates it and computes the target column (`resolveTransition`). `transitionTarget` hands that column to
  * the transition guard (`guardTools`), so the move passes `may_move_to` and the entry checks like `set_status`, and a
- * failed check reaches the agent with nothing written. Only after the guard allowed the move does `execute` post the
- * result comment (Markdown and marker), move the issue (including `auto_merge`) and set the limit label.
+ * failed check reaches the agent with nothing written. Only after the guard allowed the move, and a fresh read
+ * confirmed the issue is still in one of the role's columns, does `execute` post the result comment (Markdown and
+ * marker), move the issue (including `auto_merge`) and set the limit label.
  *
  * A run reports once: after the comment is posted, every further call returns the stored outcome without touching
  * the tracker. Calls run one at a time.
@@ -186,6 +192,27 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
           };
     const result = failed === undefined ? planned.result : withCheckFailedNote(planned.result, failed, allowed.target);
 
+    // The issue may have left the role's columns while the agent worked or the check ran (a human moved it): a result
+    // for a column it is no longer in would move it back. Confirmed right before anything is written.
+    let issue: Issue | undefined;
+    try {
+      issue = (await adapter.fetchIssuesByIds([context.issue.id])).find((candidate) => candidate.id === context.issue.id);
+    } catch (error) {
+      return fail(
+        'tracker_error',
+        `Symphony could not read the issue's column before recording the result (${errorMessage(error)}), so nothing was ` +
+          `recorded and the issue was not moved. Call ${RESULT_TOOL} again; if it fails again, end your turn.`,
+      );
+    }
+    if (issue === undefined || !role.states.includes(normalizeStateName(issue.state))) {
+      const where = issue === undefined ? 'is no longer visible on the tracker' : `was moved to "${issue.state}"`;
+      return fail(
+        'issue_moved',
+        `The issue ${where} while you worked (by a human or another run), so this ${kind} result was not recorded and ` +
+          'the issue was not moved. Do not report again: end your turn now.',
+      );
+    }
+
     const meta: ResultMeta = {
       role: role.name,
       run: params.runId,
@@ -207,7 +234,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
 
     let url: string | null;
     try {
-      url = (await adapter.postComment(context.issue, body)).url;
+      url = (await adapter.postComment(issue, body)).url;
     } catch (error) {
       return fail(
         'comment_failed',
@@ -218,25 +245,23 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
 
     // The result is recorded from here on; the move and the labels follow it, and a repeated call changes nothing.
     params.onRecorded?.({ result, meta });
-    let change: StatusChange | null = null;
-    let statusError: string | null = null;
+    let change: StatusChange;
     try {
-      change = await adapter.setStatus(context.issue, transition.target);
+      change = await adapter.setStatus(issue, transition.target);
     } catch (error) {
-      statusError = errorMessage(error);
-    }
-    const warnings: string[] = [];
-    const labels = await applyLabels(context.issue, transition.labels, warnings);
-
-    if (change === null) {
+      // The labels belong to the move, so they stay as they are. The run ends after this turn; the issue stays in its
+      // column and the stage runs again in a later session (docs/usage.md#failures-of-result-driven-stages).
       recorded = fail(
         'status_failed',
         `The ${kind} result was recorded${url !== null ? ` (${url})` : ''}, but moving the issue to "${transition.target}" ` +
-          `failed: ${statusError}. Do not report again: end your turn now. Symphony moves the issue on its next run.` +
-          (warnings.length > 0 ? ` Also: ${warnings.join('; ')}.` : ''),
+          `failed: ${errorMessage(error)}. Do not report again: end your turn now. The issue stays in "${issue.state}" ` +
+          'and Symphony runs this stage again later.',
       );
       return recorded;
     }
+    params.onMoved?.();
+    const warnings: string[] = [];
+    const labels = await applyLabels(issue, transition.labels, warnings);
     recorded = ok({
       kind,
       verdict: result.verdict,

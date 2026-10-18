@@ -263,13 +263,13 @@ class FakeGithub {
   }
 }
 
-function adapter(github: FakeGithub, provider: Json = {}): TrackerAdapter {
+function adapter(github: FakeGithub, provider: Json = {}, logger: Logger = Logger.silent()): TrackerAdapter {
   return githubProjectFactory.create({
     provider: { owner: 'acme', project_number: 1, token: 'tok', request_retries: 0, ...provider },
     activeStates: ['Todo', 'In Progress'],
     terminalStates: ['Done'],
     env: {},
-    logger: Logger.silent(),
+    logger,
     fetch: github.fetch,
   });
 }
@@ -480,9 +480,9 @@ describe('github_project adapter operations', () => {
     ...extra,
   });
 
-  async function setup(provider: Json = {}) {
+  async function setup(provider: Json = {}, logger?: Logger) {
     const github = new FakeGithub().add(itemNode('A', { number: 1 }));
-    const tracker = adapter(github, provider) as Required<TrackerAdapter>;
+    const tracker = adapter(github, provider, logger) as Required<TrackerAdapter>;
     const [issue] = await tracker.fetchIssuesByIds(['A']);
     assert.ok(issue);
     const count = (op: string) => github.requests.filter((r) => r.op === op).length;
@@ -559,6 +559,25 @@ describe('github_project adapter operations', () => {
       assert.equal(results.length, 1);
       assert.equal(results[0]?.result.kind, 'reset');
       assert.equal(results[0]?.url, 'https://github.com/acme/app/issues/1#issuecomment-2');
+    });
+
+    it('skips a damaged marker of its own with a warning; the intact ones still count', async () => {
+      const lines: string[] = [];
+      const logger = Logger.create({ sinks: [{ name: 'memory', write: (line) => lines.push(line) }], level: 'info' });
+      const { github, tracker, issue } = await setup({}, logger);
+      const payload = /<!-- symphony:result:v1 ([A-Za-z0-9_-]+) -->/.exec(marked)?.[1] ?? '';
+      github.comments.set('I_A', [
+        comment(2, { body: marked.replace(payload, payload.slice(0, 20)) }), // cut off
+        comment(4, { body: marked.replace('result:v1', 'result:v2') }), // unknown version
+        comment(6, { body: marked }),
+        comment(7, { body: marked.replace(payload, 'garbage') }), // alice: no warning, not trusted anyway
+      ]);
+      const results = await tracker.readResults(issue);
+      assert.deepEqual(results.map((result) => result.url), ['https://github.com/acme/app/issues/1#issuecomment-6']);
+      const warnings = lines.filter((line) => line.includes('msg="ignoring a damaged result marker"'));
+      assert.equal(warnings.length, 2);
+      assert.match(warnings[0] ?? '', /issuecomment-2/);
+      assert.match(warnings[1] ?? '', /issuecomment-4/);
     });
   });
 

@@ -216,7 +216,7 @@ describe('report_result', () => {
   });
 
   it('returns status_failed when the move fails after the comment, and keeps it for the run', async () => {
-    const { report, tracker, markers } = setup({ checks: { 'In review': 'exit 0' } });
+    const { report, tracker, markers, params } = setup({ checks: { 'In review': 'exit 0' } });
     let attempts = 0;
     tracker.setStatus = async () => {
       attempts++;
@@ -226,13 +226,63 @@ describe('report_result', () => {
     assert.equal(failed.category, 'status_failed');
     assert.match(failed.message, /The review result was recorded \(https:\/\/github\.com\/acme\/app\/issues\/1#issuecomment-1\)/);
     assert.match(failed.message, /moving the issue to "In review" failed: GitHub is down/);
-    assert.match(failed.message, /Do not report again/);
+    assert.match(failed.message, /Do not report again: end your turn now\. The issue stays in "Agent review" and Symphony runs this stage again later\./);
     assert.equal(markers().length, 1);
-    assert.equal(markers()[0]?.meta.target, 'In review', 'the next run finds the pending move in the marker');
+    assert.equal(markers()[0]?.meta.target, 'In review', 'the marker keeps the move that did not happen');
 
     assert.deepEqual(error(await report(APPROVED)), failed);
     assert.equal(markers().length, 1);
     assert.equal(attempts, 1);
+    assert.equal(params.onMoved, undefined);
+  });
+
+  it('reports the move to onMoved, and a failed move only to onRecorded; the labels stay without the move', async () => {
+    const calls: string[] = [];
+    const moved = setup();
+    const tool = createResultTool({ ...moved.params, onRecorded: () => calls.push('recorded'), onMoved: () => calls.push('moved') });
+    data(await tool.execute(APPROVED, { issue: moved.current(), transition: { target: 'In review', check: null } }));
+    assert.deepEqual(calls, ['recorded', 'moved']);
+
+    calls.length = 0;
+    const failing = setup({ history: { reviewRounds: 2, testRounds: 0 } });
+    failing.tracker.setStatus = async () => {
+      throw new Error('GitHub is down');
+    };
+    const limited = createResultTool({ ...failing.params, onRecorded: () => calls.push('recorded'), onMoved: () => calls.push('moved') });
+    const failed = error(await limited.execute(CHANGES, { issue: failing.current(), transition: { target: 'In review', check: null } }));
+    assert.equal(failed.category, 'status_failed');
+    assert.deepEqual(calls, ['recorded']);
+    assert.deepEqual(failing.current().labels, [], 'no limit label on an issue the round limit did not move');
+  });
+
+  it('records nothing for an issue that left the role\'s columns during the session', async () => {
+    const { report, tracker, events } = setup({ checks: { 'In review': 'exit 0' } });
+    tracker.set('1', { state: 'In progress' });
+    const moved = error(await report(APPROVED));
+    assert.equal(moved.category, 'issue_moved');
+    assert.match(moved.message, /The issue was moved to "In progress" while you worked[\s\S]*not recorded[\s\S]*Do not report again: end your turn now/);
+    assert.deepEqual(events, ['checks_started', 'checks_finished'], 'the column is confirmed after the check, right before writing');
+    assert.equal(tracker.comments.get('1'), undefined);
+    assert.deepEqual(tracker.statusCalls, []);
+
+    const removed = setup();
+    const issue = removed.current();
+    removed.tracker.issues.delete('1');
+    const tool = createResultTool({ ...removed.params, issue: () => issue });
+    const gone = error(await tool.execute(APPROVED, { issue, transition: { target: 'In review', check: null } }));
+    assert.equal(gone.category, 'issue_moved');
+    assert.match(gone.message, /is no longer visible on the tracker/);
+  });
+
+  it('records nothing when the column cannot be confirmed, so the agent can report again', async () => {
+    const { report, tracker } = setup();
+    tracker.failNext = new Error('GitHub is down');
+    const failed = error(await report(APPROVED));
+    assert.equal(failed.category, 'tracker_error');
+    assert.match(failed.message, /could not read the issue's column[\s\S]*GitHub is down[\s\S]*Call report_result again/);
+    assert.equal(tracker.comments.get('1'), undefined);
+    assert.deepEqual(tracker.statusCalls, []);
+    assert.equal(data(await report(APPROVED)).target, 'In review');
   });
 
   it('records nothing when the comment cannot be posted, so the agent can report again', async () => {

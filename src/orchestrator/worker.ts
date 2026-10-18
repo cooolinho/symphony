@@ -100,6 +100,8 @@ export interface WorkerCallbacks {
   gitHead(head: GitHead): void;
   /** The session recorded its stage result (called once, when `report_result` posts the result comment). */
   resultRecorded(): void;
+  /** The recorded result moved the issue (called once, after `report_result` moved it; not when the move failed). */
+  resultMoved(): void;
   /** Result of an entry check run by the transition guard. */
   checkFinished(check: CheckRecord): void;
   /** The issue's stage results: as loaded at the start of a result-driven session, again with each result it records. */
@@ -173,6 +175,7 @@ async function loadResultSupport(
   headSha: () => Promise<string | null>,
   report: (results: PersistedResult[]) => void,
   onRecorded: () => void,
+  onMoved: () => void,
 ): Promise<ResultSupport> {
   const { adapter, workflow } = params;
   const missing = RESULT_CAPABILITIES.filter((capability) => adapter[capability] === undefined);
@@ -203,6 +206,7 @@ async function loadResultSupport(
       report([...history.results, entry]);
       onRecorded();
     },
+    onMoved,
     profile: profileFor(workflow.config.pipeline, classify(issue().labels).type),
     // No stage of the shipped pipeline is conditional yet, so `next` skips only what the profile skips.
     flags: {},
@@ -358,6 +362,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     const activeWorkspace = workspace;
     // Guard events carry the session fields of the latest agent event, so they do not reset the running entry.
     let lastEvent: AgentEvent | null = null;
+    // Whether the newest entry check timed out; in a result-driven session every check belongs to `report_result`.
+    let checkTimedOut = false;
     const onEvent = (event: AgentEvent) => {
       lastEvent = event;
       callbacks.agentEvent(event);
@@ -381,7 +387,10 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
           if (phase === 'RunningChecks') setPhase(previous);
         }
       },
-      onCheckFinished: (check) => callbacks.checkFinished(check),
+      onCheckFinished: (check) => {
+        checkTimedOut = check.result === 'check_timeout';
+        callbacks.checkFinished(check);
+      },
       onDenied: (target, message) => callbacks.transitionDenied(target, message),
       onEvent: (event, message, detail) =>
         callbacks.agentEvent({
@@ -398,6 +407,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     });
     // Roles with `result` start with the issue's stage history; every other role makes no extra tracker request.
     let resultRecorded = false;
+    let resultMoved = false;
     const support =
       role?.result != null
         ? await loadResultSupport(
@@ -409,6 +419,10 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
             () => {
               resultRecorded = true;
               callbacks.resultRecorded();
+            },
+            () => {
+              resultMoved = true;
+              callbacks.resultMoved();
             },
           )
         : null;
@@ -482,10 +496,21 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       callbacks.issueRefreshed(issue);
       const stopReason = params.continueWith(issue);
       if (stopReason !== null) return await finish({ kind: 'normal', turns: turn, reason: stopReason });
-      // The issue is still in the role's column. A result-driven role that has not reported by the turn limit, or
-      // after the one reminder turn (turn 2), ends the run: the orchestrator decides what happens to the issue.
+      // The issue is still in the role's column. A result-driven run reports once: after its result it ends (the move
+      // failed, or led to another column of the role, whose stage starts in a new session).
+      if (support !== null && resultRecorded) {
+        const reason = resultMoved ? `result recorded; "${issue.state}" starts in a new session` : `result recorded, but the issue is still in "${issue.state}"`;
+        return await finish({ kind: 'normal', turns: turn, reason });
+      }
+      // A hand-off whose entry check timed out is a runtime limit, not a missing result: no reminder, no
+      // on_missing_result; the stage runs again in a later session.
+      if (support !== null && checkTimedOut) {
+        return await finish({ kind: 'normal', turns: turn, reason: 'the entry check of the hand-off timed out (checks.timeout_ms)' });
+      }
+      // A result-driven role that has not reported by the turn limit, or after the one reminder turn (turn 2), ends
+      // the run: the orchestrator decides what happens to the issue.
       const reachedMaxTurns = turn >= maxTurns;
-      if (support !== null && !resultRecorded && (reachedMaxTurns || turn >= 2)) {
+      if (support !== null && (reachedMaxTurns || turn >= 2)) {
         const reason = reachedMaxTurns ? `reached ${maxTurnsSetting} (${maxTurns}) without a result` : 'no result after the reminder';
         return await finish({ kind: 'normal', turns: turn, reason, missingResult: true });
       }
