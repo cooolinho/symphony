@@ -1,5 +1,5 @@
 import { errorMessage } from '../../util/errors.ts';
-import type { Issue } from '../types.ts';
+import type { AutoMergeResult, Issue } from '../types.ts';
 import type { GithubGraphqlClient } from './client.ts';
 import { assertNoGraphqlErrors } from './client.ts';
 import { CLOSE_ISSUE_MUTATION, MERGE_CANDIDATE_QUERY, MERGE_PULL_REQUEST_MUTATION } from './queries.ts';
@@ -34,15 +34,6 @@ export interface MergeOps {
   /** Moves the issue to a column and returns the column's name. */
   setStatus(status: string): Promise<string>;
   comment(body: string): Promise<void>;
-}
-
-export interface AutoMergeResult {
-  merged: boolean;
-  pull_request: number | null;
-  /** Column the issue is in afterwards. */
-  status: string;
-  reason: string;
-  warnings?: string[];
 }
 
 /**

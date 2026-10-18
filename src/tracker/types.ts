@@ -36,7 +36,8 @@ export type TrackerErrorCategory =
   | 'tracker_status'
   | 'tracker_response'
   | 'tracker_pagination'
-  | 'tracker_rate_limited';
+  | 'tracker_rate_limited'
+  | 'invalid_argument';
 
 /** Adapter failure; `code` is the portable category, `message` is human-readable. */
 export class TrackerError extends SymphonyError {
@@ -88,6 +89,56 @@ export interface AgentToolSpec {
   execute(args: Record<string, unknown>, context: AgentToolContext): Promise<ToolResult>;
 }
 
+/** A comment on an issue. */
+export interface IssueComment {
+  /** Login of the author; null when the account was deleted. */
+  author: string | null;
+  createdAt: Date;
+  body: string;
+  url: string;
+}
+
+/** A comment Symphony posted. */
+export interface PostedComment {
+  url: string | null;
+}
+
+/** What `auto_merge` did when the issue entered its trigger column. */
+export interface AutoMergeResult {
+  merged: boolean;
+  pull_request: number | null;
+  /** Column the issue is in afterwards. */
+  status: string;
+  reason: string;
+  warnings?: string[];
+}
+
+/** Outcome of moving an issue to another column. */
+export interface StatusChange {
+  /** The column in the `issue` snapshot the caller passed in, not a fresh read. */
+  previous: string;
+  /** Column the issue is in afterwards: the requested one, or the one `auto_merge` moved it to. */
+  status: string;
+  /** Present when entering the column triggered `auto_merge`. */
+  autoMerge?: AutoMergeResult;
+}
+
+export interface AddLabelsResult {
+  /** Labels now on the issue, as the tracker spells them (existing ones and the created ones). */
+  added: string[];
+  /** The part of `added` that did not exist and was created. */
+  created: string[];
+  /** Labels that do not exist and were not created (`create` off, or not a label family the adapter may create). */
+  unknown: string[];
+}
+
+export interface RemoveLabelsResult {
+  /** Existing labels detached from the issue (a label the issue did not carry is a no-op). */
+  removed: string[];
+  /** Labels that do not exist, so there was nothing to remove. */
+  unknown: string[];
+}
+
 /** The read kernel the orchestrator needs (spec 11.1), plus optional agent tools (spec 10.5). */
 export interface TrackerAdapter {
   readonly kind: string;
@@ -104,6 +155,23 @@ export interface TrackerAdapter {
   openSubIssues?(issue: Issue): string[];
   /** Posts a Markdown comment on the issue, for notices from Symphony itself (e.g. a spent cost budget). */
   commentOnIssue?(issue: Issue, body: string): Promise<void>;
+  /** Every comment of the issue with its author, oldest first, however many pages the tracker needs. */
+  readComments?(issue: Issue): Promise<IssueComment[]>;
+  /** Login of the account the adapter's credential acts as; fetched once per adapter. */
+  viewerLogin?(): Promise<string>;
+  /** Posts a Markdown comment on the issue and returns its URL. */
+  postComment?(issue: Issue, body: string): Promise<PostedComment>;
+  /**
+   * Moves the issue to a column (matched case-insensitively), the same operation as the `set_status` tool, including
+   * `auto_merge`. Throws `invalid_argument` for a column the board does not have.
+   */
+  setStatus?(issue: Issue, column: string): Promise<StatusChange>;
+  /**
+   * Adds labels to the issue. Labels that do not exist are reported in `unknown`; with `create` the missing ones of the
+   * families `Type: …`, `Complexity: …` and `needs-human` are created first (other names are never created).
+   */
+  addLabels?(issue: Issue, names: string[], options?: { create?: boolean }): Promise<AddLabelsResult>;
+  removeLabels?(issue: Issue, names: string[]): Promise<RemoveLabelsResult>;
 }
 
 export interface TrackerAdapterParams {

@@ -20,6 +20,30 @@ export interface ProjectMeta {
   priority: { kind: 'single_select'; options: SelectOption[] } | { kind: 'number' } | null;
 }
 
+/** What changing an issue on GitHub needs of its `native_ref`. */
+export interface IssueRef {
+  itemId: string;
+  issueId: string;
+  repository: string;
+  number: number;
+}
+
+/** The GitHub ids of an issue, or null when it does not come from this adapter. */
+export function issueRefOf(issue: Pick<Issue, 'native_ref'>): IssueRef | null {
+  const ref = issue.native_ref;
+  if (ref === null || ref.provider !== KIND) return null;
+  const { item_id: itemId, issue_id: issueId, repository, number } = ref;
+  if (typeof itemId !== 'string' || typeof issueId !== 'string' || typeof repository !== 'string' || typeof number !== 'number') {
+    return null;
+  }
+  return { itemId, issueId, repository, number };
+}
+
+/** Titles and column names are compared without case and with collapsed whitespace, so a re-typed one still matches. */
+export function titleKey(title: unknown): string {
+  return String(title ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
 /** An issue (or pull request) referenced by repository and number. */
 export interface IssueReference {
   repository: string;
