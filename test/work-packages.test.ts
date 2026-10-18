@@ -288,6 +288,7 @@ describe('work packages as sub-issues (#211)', () => {
     assert.ok(h.orchestrator.snapshot().running.some((row) => row.issue_id === PARENT));
     assert.deepEqual(architectSession?.params.toolContext().maxSubIssues, 5);
     assert.equal(architectSession?.params.toolContext().subIssueStatus, 'Ready');
+    assert.ok(architectSession?.params.tools.some((tool) => tool.name === 'create_sub_issue'), 'max_sub_issues grants the tool');
     proceed();
 
     // The split is recorded and moves the parent straight to Agent review; the claim is released without a pause.
@@ -355,6 +356,7 @@ describe('work packages as sub-issues (#211)', () => {
     // The integration review: the packages with their state, the design's packages, no pull request to diff.
     const integration = sessionsOf(h, PARENT)[1]?.turns[0] ?? '';
     assert.equal(roleOf(sessionsOf(h, PARENT)[1]), 'reviewer (integration review)');
+    assert.equal(sessionsOf(h, PARENT)[1]?.params.tools.some((tool) => tool.name === 'create_sub_issue'), false, 'only the architect files sub-issues');
     assert.match(integration, /- acme\/app#8 "Export: CSV writer": closed as completed\n- acme\/app#9 "Export: PDF writer": closed as not planned\n- acme\/app#10 "Export: CLI command": closed as completed/);
     assert.match(integration, /Planned packages:\n1\. Export: CSV writer: the CSV rows/);
     assert.match(integration, /Never approve missing work silently/);

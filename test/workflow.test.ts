@@ -854,6 +854,18 @@ describe('result-driven roles and the pipeline section', () => {
     assert.match(message, /roles\.reviewer\.on_result\.passed: "passed" is not a verdict of result review \(allowed: approved, changes_needed, blocked\)/);
   });
 
+  it('accepts on_result.split only for a role that files the work packages as sub-issues (max_sub_issues)', () => {
+    const architect = (extra: Record<string, unknown>) => ({
+      ...base,
+      tracker: { ...base.tracker, active_states: [...base.tracker.active_states, 'Design'] },
+      roles: { ...roles, architect: { states: ['Design'], read_only: true, result: 'design', on_result: { ready: 'In progress', split: 'Agent review' }, ...extra } },
+    });
+    assert.match(messageOf(architect({})), /roles\.architect\.on_result\.split needs roles\.architect\.max_sub_issues \(the role files the work packages as sub-issues\)/);
+    const role = resolve(architect({ max_sub_issues: 5, sub_issue_status: 'Ready' })).roles?.find((candidate) => candidate.name === 'architect');
+    assert.deepEqual([role?.onResult, role?.maxSubIssues, role?.subIssueStatus], [{ ready: 'In progress', split: 'Agent review' }, 5, 'Ready']);
+    assert.match(messageOf(withReviewer({ on_result: { split: 'In review' } })), /roles\.reviewer\.on_result\.split: "split" is not a verdict of result review/);
+  });
+
   it('rejects an unknown result kind, and on_result or on_missing_result without result', () => {
     assert.match(messageOf(withReviewer({ result: 'tests' })), /roles\.reviewer\.result must be one of analysis, design/);
     assert.match(messageOf(withReviewer({ result: 'skipped' })), /roles\.reviewer\.result must be one of/, 'internal kinds are not for roles');
@@ -1090,6 +1102,13 @@ describe('result-driven roles and the pipeline section', () => {
         assert.match(message, /pipeline\.profiles\.refactor\.on_result must be a map of roles to verdicts/);
         assert.match(message, /pipeline\.profiles\.default must be a map/);
         assert.match(messageOf({ ...base, pipeline: { profiles: ['bugfix'] } }), /pipeline\.profiles must be a map of issue types to profiles/);
+      });
+
+      it('accepts a split target in a profile only for a role with max_sub_issues', () => {
+        const architect = { states: ['Testing'], read_only: true, result: 'design', may_move_to: ['Agent review', 'In progress'] };
+        const split = { feature: { on_result: { tester: { split: 'Agent review' } } } };
+        assert.match(messageOf(front(split, architect)), /pipeline\.profiles\.feature\.on_result\.tester\.split needs roles\.tester\.max_sub_issues/);
+        assert.equal(messageOf(front(split, { ...architect, max_sub_issues: 3 })), '');
       });
 
       it('checks the profile targets against the board and `next` against the skipped stages', () => {

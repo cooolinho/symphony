@@ -15,6 +15,7 @@ import {
   renderResultMarkdown,
   toolInputShape,
   type AgentResultKind,
+  type ResultContext,
   type ResultMeta,
   type StageResult,
 } from '../src/workflow/results.ts';
@@ -217,6 +218,39 @@ describe('result contracts: consistency rules', () => {
   it('a blocked design needs a blocker, not components or interfaces', () => {
     assert.match(problemsOf('design', { verdict: 'blocked', summary: 'x' }).join('\n'), /"blocked" needs .*`blockers`/);
     parsed('design', { verdict: 'blocked', summary: 'x', blockers: [{ description: 'Which database?', needs: 'human' }] });
+  });
+
+  describe('a split design (work packages as sub-issues)', () => {
+    const split = { verdict: 'split', summary: 'x', decision: 'd', components: ['c'], interfaces: ['i'], work_packages: ['A: first', 'B: second'] };
+    const xl: ResultContext = { complexity: 'XL', subIssue: false, maxSubIssues: 5 };
+    const problems = (input: Record<string, unknown>, context?: ResultContext) => {
+      const outcome = parseResult('design', input, context);
+      return outcome.ok ? [] : outcome.problems;
+    };
+
+    it('needs what a ready design needs and at least two work packages', () => {
+      const message = problems({ verdict: 'split', summary: 'x', work_packages: ['A'] }, xl).join('\n');
+      assert.match(message, /"split" needs the chosen option in `decision`/);
+      assert.match(message, /"split" needs at least one entry in `components`/);
+      assert.match(message, /"split" needs at least one entry in `interfaces`/);
+      assert.match(message, /"split" needs at least two entries in `work_packages`.*"ready"/);
+      assert.deepEqual(problems(split, xl), []);
+      const outcome = parseResult('design', split, xl);
+      assert.equal(outcome.ok && outcome.result.verdict, 'split');
+    });
+
+    it('is only for an XL issue that is not a sub-issue, from a role that may open a sub-issue per package', () => {
+      assert.match(problems(split, { ...xl, complexity: 'L' }).join('\n'), /only for an issue of complexity XL, and this one has complexity L: report "ready"/);
+      assert.match(problems(split, { ...xl, complexity: null }).join('\n'), /and this one has no Complexity label/);
+      assert.match(problems(split, { ...xl, subIssue: true }).join('\n'), /not available for a sub-issue: a work package is not split again/);
+      assert.match(problems(split, { ...xl, maxSubIssues: null }).join('\n'), /needs a role that creates sub-issues \(`max_sub_issues`\)/);
+      assert.match(problems(split, { ...xl, maxSubIssues: 1 }).join('\n'), /has 2 work packages, but your role may open at most 1 sub-issues/);
+    });
+
+    it('leaves a ready design alone whatever the issue', () => {
+      const ready = { ...split, verdict: 'ready' };
+      for (const context of [xl, { complexity: 'S', subIssue: true, maxSubIssues: null } satisfies ResultContext]) assert.deepEqual(problems(ready, context), []);
+    });
   });
 
   it('blocked needs a blocker', () => {

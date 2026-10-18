@@ -520,3 +520,36 @@ describe('skip_when: the architect stage of larger changes (#204)', () => {
     assert.deepEqual(nextStageProblems(designed, board), []);
   });
 });
+
+describe('split: work packages as sub-issues (#211)', () => {
+  const split = resolve({
+    tracker: { kind: 'github', active_states: ['Design', 'In progress', 'Testing', 'Agent review'], terminal_states: ['Done'] },
+    roles: {
+      architect: {
+        states: ['Design'],
+        read_only: true,
+        result: 'design',
+        max_sub_issues: 5,
+        may_move_to: ['In progress', 'Agent review', 'Blocked'],
+        on_result: { ready: 'In progress', split: 'Agent review', blocked: 'Blocked' },
+      },
+      developer: { states: ['In progress'], result: 'implementation', may_move_to: ['Testing', 'Agent review', 'Blocked'], on_result: { done: 'next' } },
+      tester: { states: ['Testing'], result: 'test', may_move_to: ['Agent review', 'In progress', 'Blocked'], on_result: { passed: 'Agent review', failed: 'In progress' } },
+      reviewer: { states: ['Agent review'], read_only: true, result: 'review', may_move_to: ['In review', 'In progress', 'Blocked'], on_result: { approved: 'In review', changes_needed: 'In progress' } },
+    },
+  });
+  const route = (role: string, verdict: string) =>
+    ok(resolveTransition({ role: roleNamed(role, split), verdict, history: { reviewRounds: 0, testRounds: 0 }, profile: null, config: split, boardColumns: null }));
+
+  it('sends a split design straight to the integration review, past the developer and the test engineer', () => {
+    const outcome = route('architect', 'split');
+    assert.deepEqual([outcome.target, outcome.rule], ['Agent review', 'on_result']);
+    assert.match(outcome.reason, /design split → "Agent review" \(on_result\.split\)/);
+    assert.equal(route('architect', 'ready').target, 'In progress');
+  });
+
+  it('routes the integration review with the review transitions: changes_needed goes to the issue\'s own developer', () => {
+    assert.equal(route('reviewer', 'changes_needed').target, 'In progress');
+    assert.equal(route('reviewer', 'approved').target, 'In review');
+  });
+});

@@ -469,6 +469,22 @@ describe('github_project dependencies', () => {
     assert.deepEqual(issues.get('child')?.native_ref?.parent, { identifier: 'acme/app#1', title: 'Parent', state: 'OPEN', state_reason: null });
     assert.equal((await dispatch(github, { respect_sub_issues: false })).get('parent')?.dispatchable, true);
   });
+
+  it('marks an issue that only its open sub-issues hold back, for the session that filed them (held_by_sub_issues)', async () => {
+    const subIssues = [{ number: 2, state: 'OPEN' }];
+    const github = new FakeGithub().add(
+      itemNode('held', { number: 1, subIssues }),
+      itemNode('blocked', { number: 3, subIssues, blockedBy: [{ state: 'OPEN', number: 90 }] }),
+      itemNode('closed', { number: 4, subIssues: [{ number: 5, state: 'CLOSED' }] }),
+    );
+    const issues = await dispatch(github);
+    const tracker = adapter(github);
+    const held = (id: string) => [issues.get(id)?.dispatchable, issues.get(id)?.native_ref?.held_by_sub_issues, tracker.heldBySubIssues?.(issues.get(id) as Issue)];
+    assert.deepEqual(held('held'), [false, true, true]);
+    assert.deepEqual(held('blocked'), [false, false, false], 'an open blocker holds it back as well');
+    assert.deepEqual(held('closed'), [true, false, false]);
+    assert.equal((await dispatch(github, { respect_sub_issues: false })).get('held')?.native_ref?.held_by_sub_issues, false);
+  });
 });
 
 describe('github_project adapter operations', () => {
@@ -1300,6 +1316,21 @@ describe('github_project auto_merge', () => {
       assert.match(comments()[0] ?? '', /Merge `origin\/develop` into `symphony\/issue-1`/);
       assert.equal(github.requests.some((r) => r.op === 'SymphonyCloseIssue'), false);
     }
+  });
+
+  it('sends the conflicting pull request of a work package back to its developer while the parent keeps waiting', async () => {
+    // Another package was merged into develop first: this package's pull request conflicts with it now.
+    const { github, move, statuses, comments } = await setup({ pullRequests: { nodes: [pullRequest({ mergeable: 'CONFLICTING' })] } });
+    github.add(itemNode('P', { number: 9, title: 'Invoice export', subIssues: [{ number: 1, state: 'OPEN' }, { number: 2, state: 'CLOSED', stateReason: 'COMPLETED' }] }));
+    const data = await move('Human Review');
+    assert.equal(data.status, 'In Progress');
+    assert.match(String((data.auto_merge as Json).reason), /conflicts with `develop`/);
+    assert.deepEqual(statuses(), ['o3', 'o2']);
+    assert.match(comments()[0] ?? '', /Merge `origin\/develop` into `symphony\/issue-1`/);
+    assert.equal(github.requests.some((r) => r.op === 'SymphonyCloseIssue'), false, 'the package stays open');
+    const [parent] = await adapter(github).fetchIssuesByIds(['P']);
+    assert.equal(parent?.dispatchable, false);
+    assert.equal(parent?.native_ref?.dispatch_note, 'waiting for sub-issues acme/app#1');
   });
 
   it('keeps a merged result when closing or moving the issue fails afterwards', async () => {
