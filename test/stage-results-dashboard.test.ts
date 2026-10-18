@@ -162,9 +162,9 @@ describe('bugfix issue through developer → reviewer, observed from outside', (
       assert.ok(!Number.isNaN(Date.parse(row.created_at)));
     }
     assert.equal(new Set(rows.map((r) => r.url)).size, 4, 'one distinct comment per result');
-    assert.deepEqual(rows[1].findings, [{ severity: 'major', file: 'src/app.ts', line: 12, problem: 'Missing null guard', fix: 'Add the guard' }]);
-    assert.deepEqual(rows[0].findings, []);
-    assert.deepEqual(rows[3].blockers ?? [], []);
+    assert.deepEqual(rows[1]!.findings, [{ severity: 'major', file: 'src/app.ts', line: 12, problem: 'Missing null guard', fix: 'Add the guard' }]);
+    assert.deepEqual(rows[0]!.findings, []);
+    assert.deepEqual(rows[3]!.blockers ?? [], []);
   });
 
   it('the agent page is served with the results section', async () => {
