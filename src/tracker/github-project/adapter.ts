@@ -20,12 +20,13 @@ import {
   NO_STATUS,
   applyDispatchRules,
   inRepositoryScope,
+  isHeldBySubIssues,
   issueRefOf,
   normalizeItemNode,
+  openSubIssuesOf,
   titleKey,
   type IssueRef,
   type IssueReference,
-  type LinkedIssue,
   type NormalizeOutcome,
   type ProjectMeta,
   type SelectOption,
@@ -273,9 +274,12 @@ export class GithubProjectAdapter implements TrackerAdapter {
 
   /** Sub-issues that are not closed; GitHub allows 100 per issue, and the item query reads all of them. */
   openSubIssues(issue: Issue): string[] {
-    const subIssues = issue.native_ref?.provider === KIND ? issue.native_ref.sub_issues : null;
-    if (!Array.isArray(subIssues)) return [];
-    return (subIssues as LinkedIssue[]).filter((sub) => sub.state !== 'CLOSED').map((sub) => sub.identifier);
+    return openSubIssuesOf(issue).map((sub) => sub.identifier);
+  }
+
+  /** Only the open sub-issues hold the issue back (`respect_sub_issues`): no closed issue, assignee or open blocker. */
+  heldBySubIssues(issue: Issue): boolean {
+    return isHeldBySubIssues(issue);
   }
 
   async commentOnIssue(issue: Issue, body: string): Promise<void> {

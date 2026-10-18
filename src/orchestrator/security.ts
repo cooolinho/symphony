@@ -1,5 +1,9 @@
+import type { Issue } from '../tracker/types.ts';
 import { errorMessage } from '../util/errors.ts';
 import { matchesAnyGlob } from '../workflow/glob.ts';
+import { changedFiles } from '../workspace/changes.ts';
+import { designHead, type StageHistory } from './stage-history.ts';
+import { isIntegrationReview } from './work-packages.ts';
 
 /** Matching files named in the reason; more are counted. */
 const FILES_SHOWN = 5;
@@ -51,4 +55,17 @@ export async function securityNeeded(facts: SecurityFacts): Promise<SecurityDeci
 /** The base ref the branch diff is measured against: the tracker's base branch on `origin`, else the remote's default branch. */
 export function securityBaseRef(baseBranch: unknown): string {
   return typeof baseBranch === 'string' && baseBranch.trim() !== '' ? `origin/${baseBranch.trim()}` : 'origin/HEAD';
+}
+
+/**
+ * The files the path trigger looks at when the review of `issue` is approved: the branch diff against the base branch
+ * ({@link securityBaseRef}) for a pull request. An integration review (`isIntegrationReview`) has no branch of its own:
+ * its workspace is at the tip of the base branch, so its diff is measured from the commit the design was made at, which
+ * gives the files the merged work packages changed. Throws when that commit is unknown, so the review is needed to be safe.
+ */
+export async function reviewedFiles(workspace: string, issue: Pick<Issue, 'native_ref'>, history: Pick<StageHistory, 'results'>): Promise<string[]> {
+  if (!isIntegrationReview(issue, history)) return changedFiles(workspace, securityBaseRef(issue.native_ref?.base_branch));
+  const from = designHead(history);
+  if (from === null) throw new Error('the design of the work packages recorded no commit to measure them from');
+  return changedFiles(workspace, from);
 }

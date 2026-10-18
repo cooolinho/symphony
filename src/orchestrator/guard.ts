@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import type { AgentToolSpec, AllowedTransition, ToolResult } from '../tracker/types.ts';
+import type { AgentToolSpec, AllowedTransition, Issue, ToolResult } from '../tracker/types.ts';
 import { SerialQueue } from '../util/async.ts';
 import { errorMessage } from '../util/errors.ts';
 import { tail } from '../util/text.ts';
@@ -10,6 +10,7 @@ import { normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
 import { checkSummary } from '../workflow/results.ts';
 import { roleName, type RoleConfig } from '../workflow/roles.ts';
 import { isTerminalState } from './eligibility.ts';
+import { subIssueLimit } from './work-packages.ts';
 
 /** Tool error categories the guard returns instead of running a status-changing tool. */
 export type GuardDenial = 'transition_denied' | 'check_failed' | 'check_timeout' | 'check_error';
@@ -252,12 +253,18 @@ export function createGuard(params: GuardParams): TransitionGuard {
 }
 
 /**
- * The tools `role` may use: tools that create sub-issues only for a role with `max_sub_issues`. A role with `result`
- * hands off through `resultTool` (`report_result`, see `createResultTool`) instead of the adapter's tools that move
- * the issue to a column the agent names (`set_status`); it never gets those, with or without `resultTool`.
+ * The tools a session of `role` on `issue` may use: tools that create sub-issues only for a role with `max_sub_issues`,
+ * and for a role that reports a design only on an issue it may split into work packages (`subIssueLimit`). A role with
+ * `result` hands off through `resultTool` (`report_result`, see `createResultTool`) instead of the adapter's tools that
+ * move the issue to a column the agent names (`set_status`); it never gets those, with or without `resultTool`.
  */
-export function toolsForRole(specs: AgentToolSpec[], role: RoleConfig | null, resultTool: AgentToolSpec | null = null): AgentToolSpec[] {
-  const subIssues = role?.maxSubIssues != null;
+export function toolsForRole(
+  specs: AgentToolSpec[],
+  role: RoleConfig | null,
+  issue: Pick<Issue, 'labels' | 'native_ref'>,
+  resultTool: AgentToolSpec | null = null,
+): AgentToolSpec[] {
+  const subIssues = subIssueLimit(role, issue) !== null;
   const reportsResult = role?.result != null;
   const allowed = specs.filter((spec) => (subIssues || spec.createsSubIssues !== true) && !(reportsResult && spec.transitionTarget !== undefined));
   return reportsResult && resultTool !== null ? [...allowed, resultTool] : allowed;

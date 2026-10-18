@@ -95,7 +95,10 @@ export interface AgentToolSpec {
   inputSchema: z.ZodRawShape;
   /** Whether the tool can change tracker state (documented in the adapter profile). */
   mutates: boolean;
-  /** The tool creates sub-issues; only roles with `max_sub_issues` get it (see `toolsForRole`). */
+  /**
+   * The tool creates sub-issues; only roles with `max_sub_issues` get it, a role that reports a design only on an issue
+   * it may split (see `toolsForRole`).
+   */
   createsSubIssues?: boolean;
   /**
    * For tools that move the issue to another column: the target column named by `args`, or null when the call does
@@ -190,6 +193,12 @@ export interface TrackerAdapter {
   issueRepository?(issue: Issue): string | null;
   /** Identifiers of the issue's open sub-issues, for roles with `wait_for_sub_issues`; absent = the tracker has none. */
   openSubIssues?(issue: Issue): string[];
+  /**
+   * True when the issue is not dispatchable only because of its open sub-issues (the GitHub adapter's
+   * `respect_sub_issues`). A running session of a role that creates sub-issues (`max_sub_issues`) goes on then, so the
+   * work packages an architect files do not stop it before it reports; absent = sub-issues never hold an issue back.
+   */
+  heldBySubIssues?(issue: Issue): boolean;
   /** Posts a Markdown comment on the issue, for notices from Symphony itself (e.g. a spent cost budget). */
   commentOnIssue?(issue: Issue, body: string): Promise<void>;
   /** Every comment of the issue with its author, oldest first, however many pages the tracker needs. */

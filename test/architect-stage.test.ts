@@ -114,9 +114,9 @@ describe('architect stage with the shipped WORKFLOW.md', () => {
     assert.deepEqual(architect?.states, ['Design']);
     assert.equal(architect?.read_only, true);
     assert.equal(architect?.result, 'design');
-    assert.deepEqual(architect?.on_result, { ready: 'In progress', blocked: 'Blocked' });
+    assert.deepEqual(architect?.on_result, { ready: 'In progress', split: 'Agent review', blocked: 'Blocked' });
     assert.equal(architect?.model_label, 'ignore');
-    assert.deepEqual(architect?.may_move_to, ['In progress', 'Blocked']);
+    assert.deepEqual(architect?.may_move_to, ['In progress', 'Agent review', 'Blocked']);
     assert.ok(((definition.config.tracker as Record<string, unknown>).active_states as string[]).includes('Design'));
   });
 

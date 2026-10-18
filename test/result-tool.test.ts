@@ -109,7 +109,7 @@ function setup(options: SetupOptions = {}) {
     ...(options.docs !== undefined ? { docs: options.docs } : {}),
   };
   const unguarded = createResultTool(params);
-  const tools = guardTools(toolsForRole(tracker.agentToolSpecs(), role, unguarded), guard);
+  const tools = guardTools(toolsForRole(tracker.agentToolSpecs(), role, current(), unguarded), guard);
   const tool = tools.find((spec) => spec.name === RESULT_TOOL);
   assert.ok(tool);
   const report = (args: Record<string, unknown>) => tool.execute(args, { issue: current() });

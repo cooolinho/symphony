@@ -143,6 +143,13 @@ und Token stehen in der **`.env`**.
   zuerst durch die Spalte `Design`: Ein lesender Architect-Agent entscheidet über den Ansatz (Komponenten, Schnittstellen),
   und der Developer setzt dieses Design um. Kleine Issues überspringen die Spalte ohne Session
   ([Details](docs/configuration.md#the-architect)).
+- **Arbeitspakete:** Ein sehr großes Feature (Komplexität `XL`) kann der Architect in Arbeitspakete aufteilen, je ein
+  Sub-Issue, die parallel mit eigener Pipeline, eigenem Workspace, Branch und Pull Request laufen. Das Eltern-Issue
+  wartet, bis alle geschlossen sind; dann prüft der Reviewer den integrierten Basis-Branch gegen seine
+  Akzeptanzkriterien, und der Security Auditor prüft die gemergten Pakete, wenn das Eltern-Issue es braucht. Keine
+  Worktrees und keine zusätzliche Integrationsrolle
+  ([Details](docs/configuration.md#work-packages-split),
+  [warum](docs/concepts/multi-agent.md#work-packages-instead-of-an-integration-engineer)).
 - **Test Engineer:** Ein unabhängiger Agent in der Spalte `Testing` (Bug-, Feature- und Refactor-Issues immer, andere Issues optional) schreibt Tests für die
   Akzeptanzkriterien und darf nur Testdateien ändern; fehlgeschlagene Tests gehen mit den betroffenen Fällen zurück an
   den Developer, und nach `pipeline.max_test_rounds` fehlgeschlagenen Runden wartet das Issue auf dich

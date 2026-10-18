@@ -5,7 +5,17 @@ import { tail, truncate } from '../util/text.ts';
 import { classify, isComplexityLabel, isTypeLabel, type IssueComplexity, type IssueType } from '../workflow/classify.ts';
 import { normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
 import { profileFor } from '../workflow/profile.ts';
-import { RESULT_VERDICTS, SUMMARY_MAX, parseResult, renderResultComment, toolInputShape, type ResultMeta, type StageResult } from '../workflow/results.ts';
+import {
+  RESULT_VERDICTS,
+  SPLIT_VERDICT,
+  SUMMARY_MAX,
+  parseResult,
+  renderResultComment,
+  toolInputShape,
+  type ResultContext,
+  type ResultMeta,
+  type StageResult,
+} from '../workflow/results.ts';
 import type { RoleConfig } from '../workflow/roles.ts';
 import { docsRoles, securityRoles } from '../workflow/validate.ts';
 import { filesOutside } from './changed-files.ts';
@@ -13,6 +23,7 @@ import { docsNeeded, type DocsFacts } from './docs.ts';
 import { securityNeeded, type SecurityFacts } from './security.ts';
 import { refactoringGoals, type PersistedResult, type StageHistory } from './stage-history.ts';
 import { resolveTransition, type RoundHistory, type StageConditions, type Transition, type TransitionProfile } from './transitions.ts';
+import { isSubIssue, subIssueCount } from './work-packages.ts';
 
 /** Name of the tool a role with `result` hands off with, instead of `set_status`. */
 export const RESULT_TOOL = 'report_result';
@@ -188,6 +199,20 @@ export function classificationLabels(result: StageResult, labels: readonly strin
   return added;
 }
 
+/**
+ * What the consistency rules of a result know of the session's issue and role: a refactor review has to confirm the
+ * goals of the analysis (other issues and issues without goals are exempt), and a `split` design needs an XL issue that
+ * is not a sub-issue and a role that may open a sub-issue per package.
+ */
+function resultContext(issue: Issue, role: RoleConfig, history: Partial<Pick<StageHistory, 'results'>>): ResultContext {
+  const { type, complexity } = classify(issue.labels);
+  const kind = role.result;
+  return {
+    refactoringGoals: kind === 'review' && type === 'refactor' ? refactoringGoals(history) : [],
+    split: { complexity, subIssue: isSubIssue(issue), maxSubIssues: role.maxSubIssues },
+  };
+}
+
 /** The conditions of one report: the configured flags plus what was looked up for this call. */
 interface Conditions {
   flags: StageConditions;
@@ -247,9 +272,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
 
   const plan = (args: Record<string, unknown>, stage: Conditions = { flags: params.flags ?? {}, reasons: {} }): Plan => {
     const issue = params.issue();
-    // A refactor review has to confirm the goals of the analysis; other issues and issues without goals are exempt.
-    const goals: readonly string[] = kind === 'review' && classify(issue.labels).type === 'refactor' ? refactoringGoals(params.history) : [];
-    const parsed = parseResult(kind, args, { refactoringGoals: goals });
+    const parsed = parseResult(kind, args, resultContext(issue, role, params.history));
     if (!parsed.ok) return { ok: false, failure: fail('invalid_result', parsed.message) };
     // An analysis classifies the issue as it hands it on, so its `next` is routed by the labels it adds: the profile of
     // the new type and the `skip_when` conditions of the new complexity.
@@ -311,6 +334,37 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
         'end your turn. ' +
         (rule.guidance ??
           'Production code belongs to the developer: if the tests fail because of it, report the verdict `failed` with the failed cases instead of fixing it.'),
+    );
+  };
+
+  /**
+   * The refusal for a `split` design whose work packages are not all sub-issues yet: the issue would go on to its
+   * integration review with nothing to wait for. Read fresh, because the agent creates them in the same turn.
+   */
+  const splitViolation = async (args: Record<string, unknown>, context: AgentToolContext): Promise<ToolResult | null> => {
+    const planned = plan(args);
+    if (!planned.ok || planned.result.kind !== 'design' || planned.result.verdict !== SPLIT_VERDICT) return null;
+    let issue: Issue | undefined;
+    try {
+      issue = (await adapter.fetchIssuesByIds([context.issue.id])).find((candidate) => candidate.id === context.issue.id);
+    } catch (error) {
+      return fail(
+        'tracker_error',
+        `Symphony could not read the sub-issues of the issue (${errorMessage(error)}), so nothing was recorded. Call ` +
+          `${RESULT_TOOL} again; if it fails again, end your turn.`,
+      );
+    }
+    // A vanished or moved issue is reported by `record`, after the guard.
+    if (issue === undefined) return null;
+    const count = subIssueCount(issue);
+    const packages = planned.result.work_packages.length;
+    if (count >= packages) return null;
+    return fail(
+      'invalid_result',
+      `The ${kind} result is invalid: verdict "${SPLIT_VERDICT}" needs one sub-issue per work package, but ${issue.identifier} ` +
+        `has ${count} sub-issue(s) for ${packages} work packages. Nothing was recorded. Create the missing ones with ` +
+        'create_sub_issue (one per entry of `work_packages`, in that order; a title that exists is returned, not created twice), ' +
+        'then report again.',
     );
   };
 
@@ -459,7 +513,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       if (recorded !== null || !role.readOnly || role.onCheckFailed === null) return null;
       return plan(args, looked.get(args)).ok ? role.onCheckFailed : null;
     },
-    precheck: () => queue.run(pathViolation),
+    precheck: (args, context) => queue.run(async () => (await pathViolation()) ?? (await splitViolation(args, context))),
     execute: (args, context) => queue.run(() => record(args, context)),
   };
 }

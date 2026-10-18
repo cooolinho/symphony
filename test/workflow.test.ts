@@ -771,7 +771,7 @@ describe('result-driven roles and the pipeline section', () => {
     };
     // The issue analyst, the architect, the developer, the test engineer, the reviewer and the security auditor hand off with report_result; every other role keeps the neutral values.
     assert.deepEqual(transitions('issue-analyst'), ['analysis', { ready: 'next', needs_info: 'Blocked' }, null, 'Blocked', null]);
-    assert.deepEqual(transitions('architect'), ['design', { ready: 'In progress', blocked: 'Blocked' }, null, 'Blocked', null]);
+    assert.deepEqual(transitions('architect'), ['design', { ready: 'In progress', split: 'Agent review', blocked: 'Blocked' }, null, 'Blocked', null]);
     assert.deepEqual(transitions('developer'), ['implementation', { done: 'Agent review', blocked: 'Blocked' }, null, 'Blocked', null]);
     assert.deepEqual(transitions('test-engineer'), ['test', { passed: 'Agent review', failed: 'In progress', blocked: 'Blocked' }, null, 'Blocked', null]);
     assert.deepEqual(
@@ -863,6 +863,18 @@ describe('result-driven roles and the pipeline section', () => {
   it('rejects a verdict that does not belong to the result kind', () => {
     const message = messageOf(withReviewer({ on_result: { passed: 'In review' } }));
     assert.match(message, /roles\.reviewer\.on_result\.passed: "passed" is not a verdict of result review \(allowed: approved, changes_needed, blocked\)/);
+  });
+
+  it('accepts on_result.split only for a role that files the work packages as sub-issues (max_sub_issues)', () => {
+    const architect = (extra: Record<string, unknown>) => ({
+      ...base,
+      tracker: { ...base.tracker, active_states: [...base.tracker.active_states, 'Design'] },
+      roles: { ...roles, architect: { states: ['Design'], read_only: true, result: 'design', on_result: { ready: 'In progress', split: 'Agent review' }, ...extra } },
+    });
+    assert.match(messageOf(architect({})), /roles\.architect\.on_result\.split needs roles\.architect\.max_sub_issues \(the role files the work packages as sub-issues\)/);
+    const role = resolve(architect({ max_sub_issues: 5, sub_issue_status: 'Ready' })).roles?.find((candidate) => candidate.name === 'architect');
+    assert.deepEqual([role?.onResult, role?.maxSubIssues, role?.subIssueStatus], [{ ready: 'In progress', split: 'Agent review' }, 5, 'Ready']);
+    assert.match(messageOf(withReviewer({ on_result: { split: 'In review' } })), /roles\.reviewer\.on_result\.split: "split" is not a verdict of result review/);
   });
 
   it('rejects an unknown result kind, and on_result or on_missing_result without result', () => {
@@ -1119,6 +1131,13 @@ describe('result-driven roles and the pipeline section', () => {
         assert.match(message, /pipeline\.profiles\.refactor\.on_result must be a map of roles to verdicts/);
         assert.match(message, /pipeline\.profiles\.default must be a map/);
         assert.match(messageOf({ ...base, pipeline: { profiles: ['bugfix'] } }), /pipeline\.profiles must be a map of issue types to profiles/);
+      });
+
+      it('accepts a split target in a profile only for a role with max_sub_issues', () => {
+        const architect = { states: ['Testing'], read_only: true, result: 'design', may_move_to: ['Agent review', 'In progress'] };
+        const split = { feature: { on_result: { tester: { split: 'Agent review' } } } };
+        assert.match(messageOf(front(split, architect)), /pipeline\.profiles\.feature\.on_result\.tester\.split needs roles\.tester\.max_sub_issues/);
+        assert.equal(messageOf(front(split, { ...architect, max_sub_issues: 3 })), '');
       });
 
       it('checks the profile targets against the board and `next` against the skipped stages', () => {

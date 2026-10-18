@@ -21,7 +21,7 @@ export type ResultKind = (typeof RESULT_KINDS)[number];
 
 export const RESULT_VERDICTS = {
   analysis: ['ready', 'needs_info'],
-  design: ['ready', 'blocked'],
+  design: ['ready', 'split', 'blocked'],
   implementation: ['done', 'blocked'],
   test: ['passed', 'failed', 'blocked'],
   review: ['approved', 'changes_needed', 'blocked'],
@@ -46,6 +46,10 @@ export const SEVERITIES = ['blocker', 'major', 'minor', 'nit'] as const;
 export const BLOCKER_NEEDS = ['human', 'info', 'access', 'infra'] as const;
 export const CASE_STATUSES = ['passed', 'failed', 'skipped'] as const;
 export const COMPLEXITIES = ['S', 'M', 'L', 'XL'] as const;
+/** The design verdict that splits an issue into work packages, one sub-issue each (docs/results.md#work-packages). */
+export const SPLIT_VERDICT = 'split';
+/** The only complexity whose design may be split into work packages. */
+export const SPLIT_COMPLEXITY = 'XL';
 
 /**
  * Upper bound (exclusive) for a result comment, Markdown and marker together, and so for the marker alone. GitHub
@@ -108,12 +112,12 @@ const kindShapes = {
   },
   design: {
     options: list(text()).describe('Options considered'),
-    decision: text().optional().describe('The chosen option and why; required with the verdict "ready"'),
-    components: list(text()).describe('The building blocks of the change and what each one does (modules, classes, services); required with the verdict "ready"'),
-    interfaces: list(text()).describe('New or changed interfaces, signatures, endpoints; required with the verdict "ready"'),
+    decision: text().optional().describe('The chosen option and why; required with the verdicts "ready" and "split"'),
+    components: list(text()).describe('The building blocks of the change and what each one does (modules, classes, services); required with the verdicts "ready" and "split"'),
+    interfaces: list(text()).describe('New or changed interfaces, signatures, endpoints; required with the verdicts "ready" and "split"'),
     migrations: list(text()),
     compatibility: text().optional().describe('Backwards compatibility and rollout'),
-    work_packages: list(text()).describe('Work packages in implementation order'),
+    work_packages: list(text()).describe('Work packages in implementation order; with the verdict "split" at least two, each one a sub-issue you created'),
   },
   implementation: {
     changed_files: list(text(NAME_MAX)),
@@ -278,11 +282,48 @@ const isSevere = (finding: Finding) => finding.severity === 'blocker' || finding
 export interface ResultContext {
   /** Refactoring goals of the analysis when the issue is a refactor; empty (or absent) switches the goal rule off. */
   refactoringGoals?: readonly string[];
+  /**
+   * What a `split` design is checked against (the `report_result` tool passes it). Absent (a unit test, a result read
+   * back from its marker) switches the rules about the issue and the role off; "at least two packages" still applies.
+   */
+  split?: SplitContext;
+}
+
+/** The issue and the role a `split` design is reported for. */
+export interface SplitContext {
+  /** The issue's complexity from its `Complexity:` label; null when it has no usable one. */
+  complexity: (typeof COMPLEXITIES)[number] | null;
+  /** The issue is itself a sub-issue (it has a parent issue): a work package is never split again. */
+  subIssue: boolean;
+  /** Open sub-issues the reporting role may have under the issue (`max_sub_issues`); null = the role creates none. */
+  maxSubIssues: number | null;
 }
 
 const goalKey = (goal: string) => goal.trim().replace(/\s+/g, ' ').toLowerCase();
 
-/** Contradictions between the verdict and the fields, phrased for the agent that has to fix them. */
+/**
+ * The rules of a `split` design: at least two work packages, and with the context an issue of complexity XL that is not
+ * itself a sub-issue, reported by a role that may open a sub-issue for every package.
+ */
+function splitProblems(result: ResultOf<'design'>, context: SplitContext | undefined): string[] {
+  const problems: string[] = [];
+  const packages = result.work_packages.length;
+  if (packages < 2) problems.push(`verdict "${SPLIT_VERDICT}" needs at least two entries in \`work_packages\` (one sub-issue each); a change of one package is "ready"`);
+  if (context === undefined) return problems;
+  if (context.maxSubIssues === null) {
+    problems.push(`verdict "${SPLIT_VERDICT}" needs a role that creates sub-issues (\`max_sub_issues\`), and yours does not: report "ready"`);
+  } else if (packages > context.maxSubIssues) {
+    problems.push(`verdict "${SPLIT_VERDICT}" has ${packages} work packages, but your role may open at most ${context.maxSubIssues} sub-issues (\`max_sub_issues\`): merge packages`);
+  }
+  if (context.subIssue) problems.push(`verdict "${SPLIT_VERDICT}" is not available for a sub-issue: a work package is not split again, report "ready"`);
+  if (context.complexity !== SPLIT_COMPLEXITY) {
+    const actual = context.complexity === null ? 'has no Complexity label' : `has complexity ${context.complexity}`;
+    problems.push(`verdict "${SPLIT_VERDICT}" is only for an issue of complexity ${SPLIT_COMPLEXITY}, and this one ${actual}: report "ready" and let one developer implement the design`);
+  }
+  return problems;
+}
+
+/** Contradictions between the verdict and the fields (and the issue, with `context`), phrased for the agent that has to fix them. */
 export function consistencyProblems(result: StageResult, context: ResultContext = {}): string[] {
   const problems: string[] = [];
   if (result.verdict === 'blocked' && result.blockers.length === 0) {
@@ -295,11 +336,13 @@ export function consistencyProblems(result: StageResult, context: ResultContext 
       }
       break;
     case 'design':
-      if (result.verdict === 'ready') {
-        if (result.decision === undefined || result.decision.trim() === '') problems.push('verdict "ready" needs the chosen option in `decision`');
-        if (result.components.length === 0) problems.push('verdict "ready" needs at least one entry in `components` (the building blocks of the change)');
-        if (result.interfaces.length === 0) problems.push('verdict "ready" needs at least one entry in `interfaces` (new or changed signatures, endpoints, formats)');
+      if (result.verdict === 'ready' || result.verdict === SPLIT_VERDICT) {
+        const verdict = result.verdict;
+        if (result.decision === undefined || result.decision.trim() === '') problems.push(`verdict "${verdict}" needs the chosen option in \`decision\``);
+        if (result.components.length === 0) problems.push(`verdict "${verdict}" needs at least one entry in \`components\` (the building blocks of the change)`);
+        if (result.interfaces.length === 0) problems.push(`verdict "${verdict}" needs at least one entry in \`interfaces\` (new or changed signatures, endpoints, formats)`);
       }
+      if (result.verdict === SPLIT_VERDICT) problems.push(...splitProblems(result, context.split));
       break;
     case 'test': {
       const failed = result.cases.filter((c) => c.status === 'failed').length;
@@ -379,8 +422,9 @@ const PROBE_META: ResultMeta = {
 };
 
 /**
- * Validates an agent's `kind` result: the schema, then the consistency rules, then the size (findings may be trimmed
- * later, everything else must fit). Unknown fields are reported, not dropped, so a typo does not lose data.
+ * Validates an agent's `kind` result: the schema, then the consistency rules (with `context`, also those about the
+ * issue), then the size (findings may be trimmed later, everything else must fit). Unknown fields are reported, not
+ * dropped, so a typo does not lose data.
  */
 export function parseResult(kind: AgentResultKind, input: unknown, context: ResultContext = {}): ParseResultOutcome {
   const parsed = z.strictObject(agentShape(kind)).safeParse(input);
@@ -499,6 +543,7 @@ const KIND_TITLES: Record<ResultKind, string> = {
 
 const VERDICT_ICONS: Record<string, string> = {
   ready: '✅',
+  split: '🧩',
   done: '✅',
   passed: '✅',
   approved: '✅',

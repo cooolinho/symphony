@@ -23,9 +23,10 @@ import { changedFiles } from '../workspace/changes.ts';
 import { baselineCommit, changedFilesSince } from './changed-files.ts';
 import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord } from './guard.ts';
 import { createResultTool, resultReminder, type PathRule, type ResultToolAdapter, type ResultToolParams } from './result-tool.ts';
-import { securityBaseRef } from './security.ts';
+import { reviewedFiles, securityBaseRef } from './security.ts';
 import { interruptedTransition } from './recovery.ts';
 import { analysisFlagsSecurity, analysisNeedsDocs, docsBaseHead, buildStageHistory, implementationHead, resultsTemplateValue, type PersistedResult, type ResultsTemplateValue, type StageHistory } from './stage-history.ts';
+import { subIssueLimit } from './work-packages.ts';
 
 export type RunPhase =
   | 'PreparingWorkspace'
@@ -461,13 +462,14 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
             changedFiles: () => changedFiles(activeWorkspace.path, securityBaseRef(issue.native_ref?.base_branch)),
           })
         : null;
-    // A reviewer's approval needs the security review for a security label, a risk in the analysis or a changed security path.
+    // A reviewer's approval needs the security review for a security label, a risk in the analysis or a changed security
+    // path (for an integration review: a path the merged work packages changed).
     const security =
       role?.result === 'review'
         ? (history: StageHistory) => ({
             risk: analysisFlagsSecurity(history),
             securityPaths: params.workflow.config.pipeline.securityPaths,
-            changedFiles: () => changedFiles(activeWorkspace.path, securityBaseRef(issue.native_ref?.base_branch)),
+            changedFiles: () => reviewedFiles(activeWorkspace.path, issue, history),
           })
         : null;
     const support =
@@ -502,6 +504,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     };
     const transcript = transcriptPath(params.transcriptDir, activeWorkspace);
     if (transcript !== null) callbacks.transcript(transcript);
+    // An architect files sub-issues only to split an issue it may split (XL, not a work package itself).
+    const subIssues = subIssueLimit(role, issue);
     session = await params.runner.startSession({
       cwd: activeWorkspace.path,
       issue,
@@ -511,10 +515,10 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       deniedAgents: agents.denied.flatMap((agent) => [agent.qualified, agent.name]),
       // Entry checks run inside the status tool call; leave a minute for the tracker call around them.
       toolTimeoutMs: params.workflow.config.checks.timeoutMs + TOOL_TIMEOUT_MARGIN_MS,
-      tools: guardTools(toolsForRole(params.adapter.agentToolSpecs(), role, support?.tool ?? null), guard),
+      tools: guardTools(toolsForRole(params.adapter.agentToolSpecs(), role, issue, support?.tool ?? null), guard),
       toolContext: () => ({
         issue,
-        ...(role?.maxSubIssues != null ? { maxSubIssues: role.maxSubIssues } : {}),
+        ...(subIssues !== null ? { maxSubIssues: subIssues } : {}),
         ...(role?.subIssueStatus != null ? { subIssueStatus: role.subIssueStatus } : {}),
       }),
       env: params.childEnv,

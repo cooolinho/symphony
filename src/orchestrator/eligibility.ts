@@ -1,6 +1,7 @@
 import type { Issue, TrackerAdapter } from '../tracker/types.ts';
 import { normalizeStateName, type AgentConfig, type TrackerConfig } from '../workflow/config.ts';
 import type { RoleConfig } from '../workflow/roles.ts';
+import { subIssueLimit } from './work-packages.ts';
 
 export const CONTINUATION_DELAY_MS = 1_000;
 /** Largest delay setTimeout honors (2^31-1 ms); Node fires longer timers after 1 ms. */
@@ -52,6 +53,24 @@ export function hasRequiredLabels(issue: Pick<Issue, 'labels'>, requiredLabels: 
 /** issue_routable: adapter-derived dispatchability plus required labels. */
 export function isRoutable(issue: Pick<Issue, 'dispatchable' | 'labels'>, tracker: Pick<TrackerConfig, 'requiredLabels'>): boolean {
   return issue.dispatchable === true && hasRequiredLabels(issue, tracker.requiredLabels);
+}
+
+/**
+ * Whether a running session of `role` goes on with `issue`: the issue is routable, or only its open sub-issues hold it
+ * back (`TrackerAdapter.heldBySubIssues`) and the role may create sub-issues on this issue itself (`subIssueLimit`:
+ * `max_sub_issues`, for an architect only on an issue it may split). So the work packages an architect files as
+ * sub-issues do not stop the session that filed them before it reports its result. Any open sub-issue counts, also one a
+ * human created, as long as nothing else holds the issue back. Only for a running session: a new one never starts while
+ * the sub-issues are open.
+ */
+export function routableWhileRunning(
+  issue: Issue,
+  role: Pick<RoleConfig, 'maxSubIssues' | 'result'> | null,
+  tracker: Pick<TrackerConfig, 'requiredLabels'>,
+  adapter: Pick<TrackerAdapter, 'heldBySubIssues'>,
+): boolean {
+  if (isRoutable(issue, tracker)) return true;
+  return subIssueLimit(role, issue) !== null && hasRequiredLabels(issue, tracker.requiredLabels) && adapter.heldBySubIssues?.(issue) === true;
 }
 
 /**

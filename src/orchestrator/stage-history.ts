@@ -94,6 +94,11 @@ export function implementationHead(history: Pick<StageHistory, 'results'>): stri
   return entry?.meta.head_sha ?? null;
 }
 
+/** The commit the newest design since the last `reset` was made at; null without a design or when it recorded none. */
+export function designHead(history: Pick<StageHistory, 'results'>): string | null {
+  return newest(history, 'design')?.meta.head_sha ?? null;
+}
+
 /**
  * The commit the issue was last handed on at before the documentation stage: the newest finished implementation (`done`)
  * or passed test; null when none recorded one. The docs role's path rule measures from it.
@@ -162,7 +167,9 @@ export interface ResultsTemplateValue {
   } | null;
   /**
    * The newest design since the last reset, whatever its verdict; null without one. The developer implements it: the
-   * decision, the components and interfaces, migrations, compatibility and the options that were considered.
+   * decision, the components and interfaces, migrations, compatibility and the options that were considered. A `split`
+   * design lists the work packages it filed as sub-issues, and `head_sha` is the commit it was made at (the base the
+   * integration review compares the merged packages with).
    */
   design: {
     verdict: string;
@@ -173,7 +180,15 @@ export interface ResultsTemplateValue {
     migrations: string[];
     compatibility: string | null;
     options: string[];
+    work_packages: string[];
+    head_sha: string | null;
   } | null;
+  /**
+   * The newest implementation of the issue's own developer, whatever its verdict and across resets (a reset starts the
+   * rounds again, it does not undo a pull request); null when no developer reported one. The reviewer of an issue split
+   * into work packages reviews the integrated base branch only while this is null.
+   */
+  implementation: { verdict: string; summary: string; head_sha: string | null } | null;
 }
 
 /** The newest result of a kind since the last `reset`. */
@@ -202,7 +217,9 @@ export function resultsTemplateValue(history: StageHistory): ResultsTemplateValu
   const testEntry = newest(history, 'test');
   const test = testEntry?.result;
   const analysis = newest(history, 'analysis')?.result;
-  const design = newest(history, 'design')?.result;
+  const designEntry = newest(history, 'design');
+  const design = designEntry?.result;
+  const implementation = history.results.findLast((entry) => entry.result.kind === 'implementation');
   return {
     latest: [...history.latestByRole.values()]
       .filter(({ result }) => result.kind !== 'reset')
@@ -272,8 +289,14 @@ export function resultsTemplateValue(history: StageHistory): ResultsTemplateValu
             migrations: design.migrations,
             compatibility: design.compatibility ?? null,
             options: design.options,
+            work_packages: design.work_packages,
+            head_sha: designEntry?.meta.head_sha ?? null,
           }
         : null,
+    implementation:
+      implementation === undefined
+        ? null
+        : { verdict: implementation.result.verdict, summary: truncate(implementation.result.summary, PROMPT_SUMMARY_LIMIT), head_sha: implementation.meta.head_sha },
   };
 }
 

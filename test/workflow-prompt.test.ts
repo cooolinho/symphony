@@ -496,6 +496,8 @@ describe('shipped WORKFLOW.md', () => {
         migrations: ['add invoices.exported_at'],
         compatibility: 'Existing exports are unchanged',
         options: ['A new service', 'Extend the exporter'],
+        work_packages: [],
+        head_sha: null,
       },
     };
     const prompt = await render('developer', null, undefined, null, [], { result_required: true, round: 1, results });

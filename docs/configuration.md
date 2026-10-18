@@ -418,9 +418,11 @@ roles:
     on_check_failed: In progress
 ```
 
-- The verdicts of each kind are `analysis`: `ready`, `needs_info`; `design`: `ready`, `blocked`; `implementation`:
-  `done`, `blocked`; `test`: `passed`, `failed`, `blocked`; `review`: `approved`, `changes_needed`, `blocked`;
-  `security`: `passed`, `issues_found`, `blocked`; `docs`: `done`, `not_needed`, `blocked`. A verdict may be left out.
+- The verdicts of each kind are `analysis`: `ready`, `needs_info`; `design`: `ready`, `split`, `blocked`;
+  `implementation`: `done`, `blocked`; `test`: `passed`, `failed`, `blocked`; `review`: `approved`, `changes_needed`,
+  `blocked`; `security`: `passed`, `issues_found`, `blocked`; `docs`: `done`, `not_needed`, `blocked`. A verdict may be
+  left out. `split` (a design split into [work packages](#work-packages-split)) needs `max_sub_issues` on the role, in
+  `on_result` as in a profile's `on_result`.
 - A target is a column name or `next`. `next` needs the board's column order (tracker kinds that list columns, such as
   `github_project`) and a later active stage, whose column must be in `may_move_to` when the role sets it; it is
   checked together with the board preflight.
@@ -538,10 +540,13 @@ roles:
   architect:
     states: [Design]
     read_only: true
+    run_checks: false                 # nothing changes: no entry check before Agent review for a split issue
+    max_sub_issues: ${SYMPHONY_ARCHITECT_MAX_SUB_ISSUES:-5}
+    sub_issue_status: Ready           # the work packages start without a human
     max_turns: 4
     result: design
-    on_result: { ready: In progress, blocked: Blocked }
-    may_move_to: [In progress, Blocked]
+    on_result: { ready: In progress, split: Agent review, blocked: Blocked }
+    may_move_to: [In progress, Agent review, Blocked]
     model_label: ignore               # opus, whatever the issue's Model: label picks for the developer
     agents: [laravel-architect]
     claude: { model: opus }
@@ -567,7 +572,65 @@ roles:
   workspace, but checks.on_enter has a script for …`).
 - **Slots.** Like the analyst, the architect has no reserved slot and needs one beyond the ones kept for the developer
   and the reviewer; a skipped stage needs none.
-- **Not included.** Splitting the work into work packages is not part of this stage; `work_packages` stay optional.
+- **Work packages.** An issue of complexity `XL` may be split instead of designed for one developer, see below. For
+  every other issue `work_packages` stays optional and `split` is refused.
+
+##### Work packages (`split`)
+
+A very large change can be split into work packages that run in parallel, each as a sub-issue with its own pipeline,
+workspace, branch and pull request. The architect decides; Symphony enforces when it may and routes the issue:
+
+- **When.** Only for an issue of complexity `XL` (its `Complexity:` label) that is not a sub-issue itself, and only from
+  a role with `max_sub_issues`. `report_result` refuses `split` with `invalid_result` otherwise (also with fewer than
+  two `work_packages`, or more than `max_sub_issues`), so small and medium issues keep the normal flow and a work
+  package is never split again. A role that reports a `design` gets `create_sub_issue` only on such an issue: on any
+  other one, a work package included, the tool is not offered and the session has no sub-issue limit, so its
+  `max_sub_issues` cannot be used to file sub-issues next to a `ready` design. The shipped architect prompt mentions
+  `split` and `create_sub_issue` only where they apply.
+- **How.** The architect lists the packages in `work_packages` (implementation order) and files one sub-issue per
+  package with `create_sub_issue` in that order: a body that stands on its own (goal, the part of the design, the
+  acceptance criteria it covers, "Part of #N"), a `Type:` and a `Complexity:` label of its own size (plus `security`
+  where the parent is security-relevant and the package touches that risk), and `blocked_by` for a package that builds
+  on another one. `split` needs a decision, components and interfaces like `ready`, and
+  `report_result` refuses it while the issue has fewer sub-issues than `work_packages` (read fresh from the tracker).
+  A title that exists is returned instead of created twice, so an interrupted architect files only the missing ones.
+- **The packages.** `sub_issue_status: Ready` puts them where the issue analyst picks them up right away; each one runs
+  the normal pipeline and is closed when its pull request is merged. A package with `blocked_by` waits for the packages
+  it builds on. A pull request that conflicts with the base branch after another package was merged goes back through
+  [`auto_merge.on_conflict`](adapters/github-project.md#auto-merge) to its developer, like any other.
+- **The parent waits.** `on_result.split` sends the issue to the reviewer's column (`Agent review`) past the developer,
+  the test engineer and the documentation stage; the pipeline view shows those stages as skipped (each package documents
+  its own change). While any sub-issue is open the issue is not
+  dispatchable (`respect_sub_issues`): no session, not even with *Start now*, and the queue and `npm run dry-run` show
+  `waiting for sub-issues …`. The architect's own session is not stopped by the sub-issues it opens: a running session
+  of a role that may create sub-issues on its issue goes on while only open sub-issues hold it back (in practice the
+  work packages it filed; one a human adds counts the same), until it reports.
+  `run_checks: false` keeps the move into `Agent review` free of an entry check, since nothing changed.
+- **Integration review.** Once the last sub-issue is closed (also as not planned), the reviewer runs in integration
+  mode: the shipped prompt switches when the issue has sub-issues and no implementation of its own
+  (`results.implementation` is `null`). It lists every package with its state and `state_reason`, reviews the commits
+  the packages brought into the base branch (from the design's `head_sha`) against the issue's acceptance criteria and
+  reports a normal `review` result. The workspace sits at the tip of `origin/<base>` (the shipped `before_run` hook
+  fast-forwards a workspace that is still on the base branch), so the entry check of `In review` runs on the
+  integrated base branch. A package closed as not planned did not deliver its part: the prompt asks for a `major`
+  finding where a criterion still needs it.
+- **Outcome.** The review transitions route it: `approved` goes to `In review` after the entry check, or first to the
+  [security auditor](#the-security-auditor) when the parent needs the audit (see below); `changes_needed` goes to
+  `In progress`, where the issue's own developer fixes the findings on the issue's branch with its own pull request
+  (the developer prompt says the packages are merged and only the findings are left); that pull request then takes the
+  normal path of the issue's profile and gets a normal review. The round limit applies as usual.
+- **Security review.** An approved integration review is checked for the security triggers like any approval: the
+  parent's `security` label, `risks.security` in its analysis, or a file matching `pipeline.security_paths` among the
+  files the packages changed. The parent has no branch of its own and its workspace is at the tip of the base branch,
+  so these files are measured from the commit the design was made at (the `head_sha` of the `split` result), not from
+  the base branch; without that commit the audit is needed, to be safe. The security auditor then runs in integration
+  mode (same switch as the reviewer): it lists the packages, audits `git diff <design head>..origin/<base>` on the base
+  checkout, and looks for what only shows across packages. `passed` goes to `In review`; `issues_found` goes to the
+  parent's own developer like `changes_needed`, and the fix pull request then gets a normal review and a normal
+  security review. Each package's pull request went through the security decision on its own as well.
+
+Why this and not an integration-engineer role: see
+[Work packages instead of an integration engineer](concepts/multi-agent.md#work-packages-instead-of-an-integration-engineer).
 
 #### The test engineer
 
@@ -698,7 +761,9 @@ pipeline:
   since the branch left the base, uncommitted changes and untracked files (ignored files do not count; a rename counts as
   the deletion of the old and the addition of the new path). It is the whole branch, not just the changes since the last
   hand-off. If git cannot tell (no git checkout, the base ref is unknown, a git error or timeout), the review is **needed**:
-  a failure never skips the audit silently, and the `reason` says that the changed files could not be determined.
+  a failure never skips the audit silently, and the `reason` says that the changed files could not be determined. The
+  integration review of an issue split into [work packages](#work-packages-split) has no branch: its files are measured
+  from the commit the `split` design was made at, and the auditor audits the merged packages in an integration mode.
 - **`pipeline.security_paths`** defaults to the places of a Laravel app where authorization, authentication and the schema
   live: `app/Policies/**`, `app/Http/Middleware/**`, `config/auth.php`, `routes/**`, `database/migrations/**` (see
   [Path globs](#path-globs)). An explicit list replaces the defaults; `[]` turns the path trigger off, the `security`
@@ -1220,7 +1285,7 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
   `labels` (lowercase list), `blocked_by` (list of `{id, identifier, state}`), `dispatchable`, `created_at`,
   `updated_at` (ISO strings), `native_ref` (adapter data, for GitHub: `repository`, `number`, `issue_id`, `item_id`,
   `status_updated_at` (ISO string: when the Status field last changed), `parent` and `sub_issues` as
-  `{identifier, title, state}`, …), `command` (`{name, args, skill}` for an
+  `{identifier, title, state, state_reason}` (`state_reason` is `null` for an open issue), …), `command` (`{name, args, skill}` for an
   [issue command](#issue-commands) that has a skill, else `null`; always defined).
 - `attempt`: `null` on the first run of an issue, then `1`, `2`, … on continuation runs and retries.
 - `role`: name of the [role](#roles) running the issue (e.g. `developer`, `reviewer`), or `default` without `roles`.
@@ -1248,8 +1313,12 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
     characters; `risks` lists the flags that are set, e.g. `breaking change`), else `null`. The shipped prompts of the
     architect, developer, test engineer and reviewer print it as "Analysis of the issue analyst".
   - `results.design`: the newest design since the last reset, whatever its verdict, as `{verdict, summary, decision,
-    components, interfaces, migrations, compatibility, options}` (`summary` cut to 1,500 characters), else `null`. The
-    shipped developer prompt prints it as "Design of the architect" and nothing without a design.
+    components, interfaces, migrations, compatibility, options, work_packages, head_sha}` (`summary` cut to 1,500
+    characters; `head_sha` is the commit the design was made at), else `null`. The shipped developer prompt prints it
+    as "Design of the architect" and nothing without a design.
+  - `results.implementation`: the newest implementation of the issue's developer, whatever its verdict and across
+    resets, as `{verdict, summary, head_sha}`, else `null`. The shipped reviewer prompt reviews an issue
+    [split into work packages](#work-packages-split) in integration mode only while it is `null`.
   - `round`: the round the role is working in, 1 for the first: the number of failed tests plus one for a role with
     `result: test`, else the number of reviews with `changes_needed` plus one (so a developer sees the review round it
     is fixing). 1 for roles without `result`.
