@@ -3836,6 +3836,44 @@ describe('result-driven roles', () => {
     assert.equal(s.tracker.comments.get('r'), undefined);
   });
 
+  /** A review marker that handed the issue to `target` (a round limit when `target` is not active). */
+  function persistReview(tracker: FakeTracker, issueId: string, verdict: 'changes_needed' | 'approved', target: string, at: string): void {
+    const parsed = parseResult('review', verdict === 'approved' ? { verdict, summary: 'Fine.' } : { verdict, summary: 'Again.', findings: [{ severity: 'major', problem: 'Bug' }] });
+    assert.ok(parsed.ok);
+    const meta: ResultMeta = { role: 'reviewer', run: `run-${at}`, round: null, profile: null, workflow_hash: null, head_sha: null, checks: null, target, created_at: at };
+    const list = tracker.comments.get(issueId) ?? [];
+    list.push({ author: tracker.viewer, createdAt: new Date(at), body: renderResultComment(parsed.result, meta), url: `https://github.com/acme/app/issues/${issueId}#c${list.length}` });
+    tracker.comments.set(issueId, list);
+  }
+
+  it('resets the round counters and the limit label when a human moves the issue back after a limit', async () => {
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    const s = setup({ front: front(), runner, prompt, issues: [makeIssue({ id: 'r', state: 'Agent review', labels: ['needs-human'] })] });
+    s.tracker.repositoryLabels.add('needs-human');
+    persistReview(s.tracker, 'r', 'changes_needed', 'Todo', '2026-10-01T10:00:00Z');
+    persistReview(s.tracker, 'r', 'changes_needed', 'Todo', '2026-10-01T11:00:00Z');
+    persistReview(s.tracker, 'r', 'changes_needed', 'In review', '2026-10-01T12:00:00Z');
+    await s.orchestrator.tickNow();
+    await until(() => runner.sessions.length === 1, 3_000, 'session');
+    assert.equal(runner.sessions[0]?.turns[0], 'reviewer|required=true|round=1|latest=1|findings=0|cases=0');
+    const comments = s.tracker.comments.get('r') ?? [];
+    assert.equal(comments.length, 4);
+    assert.equal(decodeMarker(comments[3]?.body ?? '')?.result.kind, 'reset');
+    assert.deepEqual(s.tracker.issues.get('r')?.labels, []);
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  it('writes no reset without a human move: the issue was handed to an active column', async () => {
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    const s = setup({ front: front(), runner, prompt, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
+    persistReview(s.tracker, 'r', 'changes_needed', 'Agent review', '2026-10-01T10:00:00Z');
+    await s.orchestrator.tickNow();
+    await until(() => runner.sessions.length === 1, 3_000, 'session');
+    assert.equal(runner.sessions[0]?.turns[0], 'reviewer|required=true|round=2|latest=1|findings=1|cases=0');
+    assert.equal(s.tracker.comments.get('r')?.length, 1);
+    await s.orchestrator.shutdown(1_000);
+  });
+
   describe('a stage that ends without a result', () => {
     const silent = () => new FakeRunner((turn) => ({ ok: true, turnId: String(turn), resultText: 'done' }));
 
