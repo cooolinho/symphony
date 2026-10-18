@@ -47,6 +47,12 @@ Symphony runs agents **unattended**. Nobody watches a session, so every decision
   column) and `check_error` (the check could not run properly). `report_result` adds `invalid_result`
   (also for a test engineer's changes outside `pipeline.test_paths`), `transition_error`, `comment_failed` and `status_failed` ([results.md](results.md#the-report_result-tool)). A thrown
   error becomes `tool_error`.
+- **`report_result`** is the tracker tool of the pipeline roles. A [role](configuration.md#roles) with `result` gets it
+  (built per session, together with the issue's stage history) and does **not** get `set_status`: the agent reports a
+  typed result with a verdict, and Symphony posts it as the issue comment, computes the target column and moves the
+  issue through the transition guard. Roles without `result` keep `set_status` and never see `report_result`. The agent
+  hands off once per run; after a success it ends its turn. Input, steps, errors and the one-result-per-run rule are in
+  [results.md](results.md#the-report_result-tool).
 - **User input:** `AskUserQuestion` is disabled. If a question still reaches the permission callback, it is answered
   automatically ("nobody can answer; decide yourself or ask on the issue"), an event `turn_input_required` is
   recorded, and the turn continues. A run therefore never waits for a human.
