@@ -377,14 +377,24 @@ describe('roles', () => {
     const runner = new FakeRunner(() => new Promise(() => undefined));
     const s = setup({
       runner,
-      front: rolesFront,
+      front: {
+        ...rolesFront,
+        roles: {
+          ...rolesFront.roles,
+          reviewer: {
+            ...rolesFront.roles.reviewer,
+            result: 'review',
+            on_result: { approved: 'In review', changes_needed: 'Todo', blocked: 'Todo' },
+          },
+        },
+      },
       prompt: rolePrompt,
       issues: [makeIssue({ id: 'r', state: 'Agent review', labels: ['model: sonnet'] }), makeIssue({ id: 'd' })],
     });
     await s.orchestrator.tickNow();
     await until(() => runner.sessions.length === 2, 3_000, 'two sessions');
     const byId = Object.fromEntries(runner.sessions.map((session) => [session.params.issue.id, session]));
-    assert.equal(byId.r?.params.config.model, 'sonnet');
+    assert.equal(byId.r?.params.config.model, 'opus');
     assert.equal(byId.r?.params.policy?.readOnly, true);
     assert.equal(byId.d?.params.config.model, 'sonnet');
     assert.equal(byId.d?.params.policy?.readOnly, false);
