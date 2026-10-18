@@ -7,6 +7,7 @@ import { tail } from '../util/text.ts';
 import type { HookResult } from '../workspace/hooks.ts';
 import { describeFailure, type HookIssue, type Workspace, type WorkspaceManager } from '../workspace/manager.ts';
 import { normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
+import { checkSummary } from '../workflow/results.ts';
 import { roleName, type RoleConfig } from '../workflow/roles.ts';
 import { isTerminalState } from './eligibility.ts';
 
@@ -14,11 +15,18 @@ import { isTerminalState } from './eligibility.ts';
 export type GuardDenial = 'transition_denied' | 'check_failed' | 'check_timeout' | 'check_error';
 
 export type GuardDecision =
-  | { allow: true; note: string | null }
+  /** `check`: the entry check that cleared the move (this call's run or a cached pass); absent when none applied. */
+  | { allow: true; note: string | null; check?: CheckRecord }
   | { allow: false; category: GuardDenial; message: string };
 
-/** Decides whether the session may move its issue to `target`. Never throws. */
-export type TransitionGuard = (target: string) => Promise<GuardDecision>;
+/**
+ * Decides whether the session may move its issue to `target`; `tool` (default `set_status`) is the tool the agent
+ * called, named in the denial messages. Never throws.
+ */
+export type TransitionGuard = (target: string, tool?: string) => Promise<GuardDecision>;
+
+/** The adapter tool that moves an issue to a column the agent names. */
+const STATUS_TOOL = 'set_status';
 
 /** Check output passed back to the agent on a failed check. */
 export const CHECK_OUTPUT_LIMIT = 6_000;
@@ -27,7 +35,7 @@ export const CHECK_PASSED_NOTE = 'Checks passed — end your turn now.';
 const GIT_TIMEOUT_MS = 5000;
 
 /** Passing check results of one claim, keyed by `<HEAD sha>:<script hash>`; see {@link cacheKey}. */
-export type CheckCache = Set<string>;
+export type CheckCache = Map<string, CheckRecord>;
 
 /** Result of one entry check, reported to the orchestrator (`last_check`, history line `checks_finished`). */
 export interface CheckRecord {
@@ -99,32 +107,34 @@ async function cacheKey(cwd: string, script: string): Promise<{ sha: string; key
   }
 }
 
-function checkError(target: string, why: string): GuardDecision {
+/** A broken check environment: `set_status` moves the issue to Blocked; other tools (`report_result`) end the turn. */
+function checkError(target: string, why: string, tool: string): GuardDecision {
+  const next = tool === STATUS_TOOL ? 'move the issue to Blocked' : `end your turn without calling ${tool} again`;
   return {
     allow: false,
     category: 'check_error',
     message:
       `The entry check for "${target}" could not run properly (${why}). This is not a problem with your change: ` +
-      'do not change code; describe the problem in an issue comment and move the issue to Blocked.',
+      `do not change code; describe the problem in an issue comment and ${next}.`,
   };
 }
 
 /** A check that ran into `checks.timeout_ms`: a runtime limit, so the issue stays in its column instead of Blocked. */
-function checkTimeout(target: string, durationMs: number): GuardDecision {
+function checkTimeout(target: string, durationMs: number, tool: string): GuardDecision {
   return {
     allow: false,
     category: 'check_timeout',
     message:
       `The entry check for "${target}" timed out after ${Math.round(durationMs / 1000)}s (checks.timeout_ms), so the issue ` +
       'was not moved. This is a runtime limit, not a problem with your change: do not change code and do not move the ' +
-      'issue to Blocked. Call set_status again once; if it times out again, post a short issue comment and end your turn ' +
+      `issue to Blocked. Call ${tool} again once; if it times out again, post a short issue comment and end your turn ` +
       'without changing the status. Symphony picks the issue up again later.',
   };
 }
 
-function decide(target: string, result: HookResult): GuardDecision {
+function decide(target: string, result: HookResult, tool: string): GuardDecision {
   if (result.ok && result.exitCode === 0) return { allow: true, note: CHECK_PASSED_NOTE };
-  if (result.timedOut) return checkTimeout(target, result.durationMs);
+  if (result.timedOut) return checkTimeout(target, result.durationMs, tool);
   if (!result.timedOut && result.error === null && result.signal === null && result.exitCode === 1) {
     const output = tail(result.output.trim(), CHECK_OUTPUT_LIMIT);
     return {
@@ -132,10 +142,10 @@ function decide(target: string, result: HookResult): GuardDecision {
       category: 'check_failed',
       message:
         `The entry check for "${target}" failed, so the issue was not moved.\n\n${output === '' ? '(no output)' : output}\n\n` +
-        'Fix the problems and call set_status again.',
+        `Fix the problems and call ${tool} again.`,
     };
   }
-  return checkError(target, describeFailure({ ...result, output: '' }));
+  return checkError(target, describeFailure({ ...result, output: '' }), tool);
 }
 
 /**
@@ -147,14 +157,14 @@ export function createGuard(params: GuardParams): TransitionGuard {
   const emit = params.onEvent ?? (() => undefined);
   const role = roleName(params.role);
 
-  const evaluate = async (target: string): Promise<GuardDecision> => {
+  const evaluate = async (target: string, tool: string): Promise<GuardDecision> => {
     const allowed = allowedTargets(params);
     const key = normalizeStateName(target);
     const terminal = isTerminalState(target, params.config.tracker);
     if (terminal || (allowed !== null && !allowed.some((column) => normalizeStateName(column) === key))) {
       const why = terminal ? `"${target}" is a terminal column; only a human moves issues there` : `role ${role} may not move issues to "${target}"`;
       const message = `${why}. Allowed targets: ${describeAllowed(params, allowed)}.`;
-      emit('transition_denied', `set_status to ${target} denied`, { target, role });
+      emit('transition_denied', `${tool} to ${target} denied`, { target, role });
       params.onDenied?.(target, message);
       return { allow: false, category: 'transition_denied', message };
     }
@@ -167,9 +177,10 @@ export function createGuard(params: GuardParams): TransitionGuard {
     }
 
     const cached = params.cache !== undefined ? await cacheKey(params.workspace.path, script) : null;
-    if (cached !== null && params.cache?.has(cached.key)) {
+    const reused = cached !== null ? params.cache?.get(cached.key) : undefined;
+    if (cached !== null && reused !== undefined) {
       emit('checks_cached', `entry check for ${target} reused (${cached.sha})`, { target, role, sha: cached.sha });
-      return { allow: true, note: `cached result for ${cached.sha}` };
+      return { allow: true, note: `cached result for ${cached.sha}`, check: reused };
     }
 
     const whileChecking = params.whileChecking ?? ((run) => run());
@@ -182,8 +193,7 @@ export function createGuard(params: GuardParams): TransitionGuard {
         timeoutMs: params.config.checks.timeoutMs,
         env: { ...extra, SYMPHONY_ROLE: role, SYMPHONY_TARGET_STATE: target },
       });
-      const decision = decide(target, result);
-      if (decision.allow && cached !== null) params.cache?.add(cached.key);
+      const decision = decide(target, result, tool);
       const check: CheckRecord = {
         target,
         role,
@@ -205,43 +215,57 @@ export function createGuard(params: GuardParams): TransitionGuard {
         duration_ms: check.durationMs,
       });
       params.onCheckFinished?.(check);
-      return decision;
+      if (!decision.allow) return decision;
+      if (cached !== null) params.cache?.set(cached.key, check);
+      return { ...decision, check };
     });
   };
 
-  return (target) =>
+  return (target, tool = STATUS_TOOL) =>
     queue.run(async () => {
       try {
-        return await evaluate(target);
+        return await evaluate(target, tool);
       } catch (error) {
-        return checkError(target, errorMessage(error));
+        return checkError(target, errorMessage(error), tool);
       }
     });
 }
 
-/** The tools `role` may use: tools that create sub-issues only for a role with `max_sub_issues`. */
-export function toolsForRole(specs: AgentToolSpec[], role: RoleConfig | null): AgentToolSpec[] {
-  return role?.maxSubIssues == null ? specs.filter((spec) => spec.createsSubIssues !== true) : specs;
+/**
+ * The tools `role` may use: tools that create sub-issues only for a role with `max_sub_issues`. A role with `result`
+ * hands off through `resultTool` (`report_result`, see `createResultTool`) instead of the adapter's tools that move
+ * the issue to a column the agent names (`set_status`); it never gets those, with or without `resultTool`.
+ */
+export function toolsForRole(specs: AgentToolSpec[], role: RoleConfig | null, resultTool: AgentToolSpec | null = null): AgentToolSpec[] {
+  const subIssues = role?.maxSubIssues != null;
+  const reportsResult = role?.result != null;
+  const allowed = specs.filter((spec) => (subIssues || spec.createsSubIssues !== true) && !(reportsResult && spec.transitionTarget !== undefined));
+  return reportsResult && resultTool !== null ? [...allowed, resultTool] : allowed;
 }
 
+/** Adds the guard's note to a tool's data; a note of the tool's own (`report_result`) wins. */
 function withNote(data: unknown, note: string): unknown {
-  if (typeof data === 'object' && data !== null && !Array.isArray(data)) return { ...data, note };
+  if (typeof data === 'object' && data !== null && !Array.isArray(data)) return 'note' in data ? data : { ...data, note };
   return { result: data, note };
 }
 
-/** Wraps every spec with `transitionTarget` so a denied transition never reaches the tracker. */
+/**
+ * Wraps every spec with `transitionTarget` so a denied transition never reaches the tracker. An allowed call gets the
+ * move in `context.transition`; a call without a target never does, so a tool can rely on it as proof of the guard.
+ */
 export function guardTools(specs: AgentToolSpec[], guard: TransitionGuard): AgentToolSpec[] {
   return specs.map((spec) => {
     const transitionTarget = spec.transitionTarget;
     if (transitionTarget === undefined) return spec;
     return {
       ...spec,
-      execute: async (args, context): Promise<ToolResult> => {
+      execute: async (args, { transition: _unchecked, ...context }): Promise<ToolResult> => {
         const target = transitionTarget(args);
         if (target === null) return spec.execute(args, context);
-        const decision = await guard(target);
+        const decision = await guard(target, spec.name);
         if (!decision.allow) return { ok: false, error: { category: decision.category, message: decision.message } };
-        const result = await spec.execute(args, context);
+        const check = decision.check !== undefined ? checkSummary(decision.check) : null;
+        const result = await spec.execute(args, { ...context, transition: { target, check } });
         return result.ok && decision.note !== null ? { ok: true, data: withNote(result.data, decision.note) } : result;
       },
     };
