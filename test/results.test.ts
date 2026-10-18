@@ -249,6 +249,8 @@ describe('result contracts: consistency rules', () => {
     it('accepts an approval that confirms every goal, compared trimmed and case-insensitive', () => {
       assert.equal(parseResult('review', review({ confirmed_goals: goals }), { refactoringGoals: goals }).ok, true);
       assert.equal(parseResult('review', review({ confirmed_goals: ['  the parsing CODE exists once ', goals[1], 'An extra goal'] }), { refactoringGoals: goals }).ok, true);
+      const spaced = goals.map((goal) => `  ${goal.replace(/ /g, '  \n ')} `);
+      assert.equal(parseResult('review', review({ confirmed_goals: spaced }), { refactoringGoals: goals }).ok, true);
     });
 
     it('leaves changes_needed and blocked reviews alone', () => {

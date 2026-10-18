@@ -506,8 +506,15 @@ describe('shipped WORKFLOW.md', () => {
     assert.match(prompt, /Migrations:\n- add invoices\.exported_at/);
     assert.match(prompt, /Compatibility: Existing exports are unchanged/);
     assert.match(prompt, /Options considered:\n- A new service\n- Extend the exporter/);
-    // Only the developer implements it: the other roles do not get the block.
-    for (const role of ['reviewer', 'test-engineer', 'issue-analyst']) {
+    // The reviewer checks the change against it, with the same facts but a reviewer's wording.
+    const reviewer = await render('reviewer', null, undefined, null, [], { result_required: true, round: 1, results });
+    assert.match(reviewer, /## Design of the architect/);
+    assert.match(reviewer, /Check the change against this design;.*`plan_deviations`/);
+    assert.doesNotMatch(reviewer, /Implement this design/);
+    assert.match(reviewer, /Decision: A new InvoiceExporter next to the others/);
+    assert.match(reviewer, /Interfaces:\n- exportInvoices\(list\): string/);
+    // The other roles do not get the block.
+    for (const role of ['test-engineer', 'issue-analyst']) {
       assert.doesNotMatch(await render(role, null, undefined, null, [], { result_required: true, round: 1, results }), /Design of the architect/, role);
     }
     // Nothing is rendered without a design (a skipped stage, an old issue, the empty results).

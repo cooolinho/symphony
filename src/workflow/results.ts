@@ -277,7 +277,7 @@ export interface ResultContext {
   refactoringGoals?: readonly string[];
 }
 
-const goalKey = (goal: string) => goal.trim().toLowerCase();
+const goalKey = (goal: string) => goal.trim().replace(/\s+/g, ' ').toLowerCase();
 
 /** Contradictions between the verdict and the fields, phrased for the agent that has to fix them. */
 export function consistencyProblems(result: StageResult, context: ResultContext = {}): string[] {

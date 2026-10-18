@@ -325,7 +325,7 @@ Plan:{% for item in results.analysis.plan %}
 {% endif %}{% endcapture %}{% capture design_block %}{% if results.design %}
 ## Design of the architect
 
-An architect decided on the approach before the implementation{% if results.design.verdict != "ready" %} (verdict: {{ results.design.verdict }}){% endif %}. Implement this design; where it contradicts the issue description or does not fit the code, the issue and the code win, and you say so in the `plan_deviations` of your result.
+An architect decided on the approach before the implementation{% if results.design.verdict != "ready" %} (verdict: {{ results.design.verdict }}){% endif %}. {% if role == "reviewer" %}Check the change against this design; where the developer deviated from it, the deviation must be justified in the `plan_deviations` of the developer's result.{% else %}Implement this design; where it contradicts the issue description or does not fit the code, the issue and the code win, and you say so in the `plan_deviations` of your result.{% endif %}
 
 {{ results.design.summary }}
 {% if results.design.decision %}
@@ -530,7 +530,7 @@ The tracker tools are `get_issue`, `add_comment` and `report_result`. You do not
 {{ agent_intro }}
 
 Use a reviewer subagent only for a second pass over a large diff. Its findings go into your result only after you checked them against the code.
-{% endif %}{{ analysis_block }}{% if results.open_findings.size > 0 %}
+{% endif %}{{ analysis_block }}{{ design_block }}{% if results.open_findings.size > 0 %}
 ## Findings of your previous review
 
 The developer was asked to fix these. Check each one against the code, and report any that is still open again:
