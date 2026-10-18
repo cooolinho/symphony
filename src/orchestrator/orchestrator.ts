@@ -18,7 +18,6 @@ import { SerialQueue, settledWithin } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { truncate } from '../util/text.ts';
 import { WorkspaceManager, type HookIssue } from '../workspace/manager.ts';
-import { classify } from '../workflow/classify.ts';
 import type { ServiceConfig } from '../workflow/config.ts';
 import { profileFor } from '../workflow/profile.ts';
 import { roleFor, roleName } from '../workflow/roles.ts';
