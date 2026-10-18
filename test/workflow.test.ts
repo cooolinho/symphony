@@ -389,6 +389,12 @@ describe('prompt templates', () => {
     assert.equal(await renderPrompt(template, { issue, attempt: null, role: 'default' }), 'Work as default');
   });
 
+  it('defines the stage-history variables for callers without a session', async () => {
+    const template = compilePrompt('{{ result_required }} {{ round }} {{ results.latest.size }} {{ results.open_findings.size }} {{ results.failed_cases.size }}');
+    assert.equal(await renderPrompt(template, { issue, attempt: null }), 'false 1 0 0 0');
+    assert.equal(await renderPrompt(template, { issue, attempt: null, result_required: true, round: 3 }), 'true 3 0 0 0');
+  });
+
   it('fails on unknown variables and unknown filters', async () => {
     await assert.rejects(renderPrompt(compilePrompt('{{ issue.nope }}'), { issue, attempt: null }), { code: 'template_render_error' });
     await assert.rejects(renderPrompt(compilePrompt('{{ missing }}'), { issue, attempt: null }), { code: 'template_render_error' });

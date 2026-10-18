@@ -12,8 +12,8 @@ import { limitScopeOf } from '../src/agent/rate-limit.ts';
 import { CONTINUATION_DELAY_MS, SESSION_LIMIT_MAX_WAIT_MS, failureBackoffMs, sessionLimitWaitMs, sortForDispatch } from '../src/orchestrator/eligibility.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import type { AgentToolSpec, ToolResult } from '../src/tracker/types.ts';
-import { decodeMarker } from '../src/workflow/results.ts';
 import { dryRunPlan, planLines } from '../src/service.ts';
+import { decodeMarker, parseResult, renderResultComment, type ResultMeta } from '../src/workflow/results.ts';
 import { workspaceKey } from '../src/workspace/manager.ts';
 import {
   FakeRunner,
@@ -3783,6 +3783,147 @@ describe('stage skipping', () => {
     assert.match(snapshot(s).health.dispatch_errors.join(), /pipeline\.analysis: skipping analyst moves issues from "Ready" to "In progress" without a workspace, but checks\.on_enter has a script/);
     assert.equal(s.runner.sessions.length, 0);
     assert.equal(s.tracker.statusCalls.length, 0);
+    await s.orchestrator.shutdown(1_000);
+  });
+});
+
+describe('result-driven roles', () => {
+  const front = (checks: Record<string, string> = {}, reviewer: Record<string, unknown> = {}) => ({
+    tracker: {
+      kind: 'github_project',
+      provider: { owner: 'acme', project_number: 1, token: 'test-token' },
+      active_states: ['Todo', 'Agent review'],
+    },
+    agent: { max_turns: 2 },
+    roles: {
+      developer: { states: ['Todo'], may_move_to: ['Agent review', 'Blocked'] },
+      reviewer: {
+        states: ['Agent review'],
+        read_only: true,
+        result: 'review',
+        may_move_to: ['In review', 'Todo', 'Blocked'],
+        on_result: { approved: 'In review', changes_needed: 'Todo' },
+        ...reviewer,
+      },
+    },
+    checks: { on_enter: checks },
+  });
+  const prompt = '{{ role }}|required={{ result_required }}|round={{ round }}|latest={{ results.latest.size }}|findings={{ results.open_findings.size }}|cases={{ results.failed_cases.size }}';
+  const toolNames = (runner: FakeRunner) => runner.sessions.map((session) => session.params.tools.map((tool) => tool.name));
+
+  /** A persisted result comment by the tracker's own account. */
+  function persist(tracker: FakeTracker, issueId: string, kind: 'review' | 'implementation', input: Record<string, unknown>, role: string, at: string): void {
+    const parsed = parseResult(kind, input);
+    assert.ok(parsed.ok);
+    const meta: ResultMeta = { role, run: `run-${role}-${at}`, round: null, profile: null, workflow_hash: null, head_sha: null, checks: null, target: null, created_at: at };
+    const list = tracker.comments.get(issueId) ?? [];
+    list.push({ author: tracker.viewer, createdAt: new Date(at), body: renderResultComment(parsed.result, meta), url: `https://github.com/acme/app/issues/${issueId}#c${list.length}` });
+    tracker.comments.set(issueId, list);
+  }
+
+  it('gives roles without a result no extra request, no report_result tool and defined prompt variables', async () => {
+    const s = setup({ front: front(), prompt, issues: [makeIssue({ id: 'd' })] });
+    await s.orchestrator.tickNow();
+    await until(() => s.runner.sessions.length === 1, 3_000, 'session');
+    assert.equal(s.tracker.calls.readResults, 0);
+    assert.deepEqual(toolNames(s.runner), [['set_status']]);
+    assert.equal(s.runner.sessions[0]?.turns[0], 'developer|required=false|round=1|latest=0|findings=0|cases=0');
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  it('starts a result role with the stage history in its prompt and the report_result tool', async () => {
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    const s = setup({ front: front(), runner, prompt, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
+    persist(s.tracker, 'r', 'implementation', { verdict: 'done', summary: 'Built it.' }, 'developer', '2026-10-01T10:00:00Z');
+    persist(
+      s.tracker,
+      'r',
+      'review',
+      { verdict: 'changes_needed', summary: 'Two problems.', findings: [{ severity: 'major', file: 'a.ts', problem: 'Off by one' }, { severity: 'nit', problem: 'Typo' }] },
+      'reviewer',
+      '2026-10-01T11:00:00Z',
+    );
+    await s.orchestrator.tickNow();
+    await until(() => runner.sessions.length === 1, 3_000, 'session');
+    assert.equal(s.tracker.calls.readResults, 1);
+    assert.deepEqual(toolNames(runner), [['report_result']]);
+    assert.equal(runner.sessions[0]?.turns[0], 'reviewer|required=true|round=2|latest=2|findings=2|cases=0');
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  it('records the result and moves the issue through the tool the session calls', async () => {
+    const runner = new FakeRunner(async (turn, params) => {
+      const report = params.tools.find((tool) => tool.name === 'report_result');
+      await report!.execute({ verdict: 'approved', summary: 'Fine.' }, params.toolContext());
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    });
+    const s = setup({ front: front(), runner, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
+    await s.orchestrator.tickNow();
+    await until(() => s.tracker.statusCalls.length === 1, 5_000, 'report_result');
+    assert.deepEqual(s.tracker.statusCalls, ['In review']);
+    const marker = decodeMarker(s.tracker.comments.get('r')?.[0]?.body ?? '');
+    assert.equal(marker?.meta.role, 'reviewer');
+    assert.equal(marker?.meta.target, 'In review');
+    assert.match(marker?.meta.run ?? '', /^[0-9a-f]{12}$/);
+    assert.equal(marker?.meta.workflow_hash, 'test');
+  });
+
+  it('moves a reviewer whose hand-off check fails to on_check_failed and records why', async () => {
+    const runner = new FakeRunner(async (turn, params) => {
+      const report = params.tools.find((tool) => tool.name === 'report_result');
+      reported.push(await report!.execute({ verdict: 'approved', summary: 'Fine.' }, params.toolContext()));
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    });
+    const reported: ToolResult[] = [];
+    const s = setup({
+      front: front({ 'In review': 'echo "lint failed"; exit 1' }, { on_check_failed: 'Todo' }),
+      runner,
+      issues: [makeIssue({ id: 'r', state: 'Agent review' })],
+    });
+    await s.orchestrator.tickNow();
+    await until(() => reported.length === 1, 5_000, 'report_result');
+    assert.deepEqual(s.tracker.statusCalls, ['Todo']);
+    assert.equal(s.tracker.issues.get('r')?.state, 'Todo');
+    const [result] = reported;
+    assert.ok(result?.ok);
+    assert.equal((result.data as Record<string, unknown>).target, 'Todo');
+    assert.equal((result.data as Record<string, unknown>).check_failed_for, 'In review');
+
+    const comments = s.tracker.comments.get('r') ?? [];
+    assert.equal(comments.length, 1);
+    const marker = decodeMarker(comments[0]?.body ?? '');
+    assert.equal(marker?.result.verdict, 'approved');
+    assert.equal(marker?.meta.target, 'Todo');
+    assert.equal(marker?.meta.checks?.result, 'check_failed');
+    assert.match(marker?.result.summary ?? '', /Fine\.[\s\S]*Entry check failed[\s\S]*"In review"[\s\S]*"Todo"[\s\S]*lint failed/);
+  });
+
+  it('keeps the denial for a failed check when the role has no on_check_failed', async () => {
+    const reported: ToolResult[] = [];
+    const runner = new FakeRunner(async (turn, params) => {
+      const report = params.tools.find((tool) => tool.name === 'report_result');
+      reported.push(await report!.execute({ verdict: 'approved', summary: 'Fine.' }, params.toolContext()));
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    });
+    const s = setup({ front: front({ 'In review': 'echo "lint failed"; exit 1' }), runner, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
+    await s.orchestrator.tickNow();
+    await until(() => reported.length === 1, 5_000, 'report_result');
+    assert.equal(reported[0]?.ok === false ? reported[0].error.category : null, 'check_failed');
+    assert.deepEqual(s.tracker.statusCalls, []);
+    assert.equal(s.tracker.comments.get('r'), undefined);
+  });
+
+  it('fails the run with results_read_error when the results cannot be read, and retries', async () => {
+    const s = setup({ front: front(), prompt, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
+    s.tracker.failReadResults = new Error('GitHub is down');
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 3_000, 'retry');
+    assert.match(snapshot(s).retrying[0]?.error ?? '', /worker exited: results_read_error: could not read the stage results of acme\/app#r: GitHub is down/);
+    assert.equal(s.runner.sessions.length, 0, 'no session starts without the history');
+
+    s.timers.fire(10_000);
+    await until(() => s.runner.sessions.length === 1, 3_000, 'second attempt');
+    assert.equal(s.runner.sessions[0]?.turns[0], 'reviewer|required=true|round=1|latest=0|findings=0|cases=0');
     await s.orchestrator.shutdown(1_000);
   });
 });

@@ -72,8 +72,12 @@ Symphony adds facts the agent never sets: `role`, `run`, `round`, `profile`, `wo
 A role with [`result`](configuration.md#result-driven-transitions) hands off with the tracker tool `report_result`
 (`mcp__tracker__report_result`) instead of `set_status`: such a role never gets `set_status` (`toolsForRole`), so a
 stage cannot end just because the agent moves the issue. The tool is built per session; its input is the kind's agent
-fields (`verdict`, `summary`, the common and the kind-specific fields above). Sessions get it once the worker loads the
-issue's stage history at session start, which is not wired up yet.
+fields (`verdict`, `summary`, the common and the kind-specific fields above). The worker builds it at session start,
+after reading the issue's persisted results (`readResults`, `buildStageHistory`): the round counters come from that
+history, and the same history fills the prompt variables `results`, `round` and `result_required` (see
+[Prompt template](configuration.md#prompt-template)). Roles without `result` get neither the tool nor the read. If the
+read fails, the run ends as `failed` with the code `results_read_error` and is retried like any failed run; no session
+starts without the history.
 
 A call runs these steps, one call at a time:
 
@@ -87,6 +91,13 @@ A call runs these steps, one call at a time:
    message (naming `report_result`) and write nothing, so a failed check never counts as a round and the agent can
    fix the problem and report again in the same session. On `check_error` the agent is told to comment and end its
    turn instead of moving the issue to `Blocked`, which it cannot.
+   **`on_check_failed`:** a `check_failed` for a `read_only` role that sets [`on_check_failed`](configuration.md#roles)
+   (it cannot fix the code, so repeating the report is pointless) does not stop the call: the guard checks the
+   `on_check_failed` column instead (`may_move_to`, that column's entry check), and the result is recorded with the
+   agent's verdict, a note with the failed check's output appended to the summary, `checks` of the failed check and
+   `target` of the fallback column. The result then carries `check_failed_for` (the column whose check failed) and the
+   round limit label is neither added nor removed. If the fallback is the column that failed, or its own check fails,
+   the agent gets the denial as before. `check_timeout` and `check_error` never redirect.
 4. **Comment.** The result comment (Markdown and marker) is posted. Its meta records the role, the run, the round, the
    profile, the workflow hash, the workspace commit, the entry check that cleared the move (`checks`; a pass reused
    from the check cache keeps the record of the check that ran; `null` when the column has no check) and the target.

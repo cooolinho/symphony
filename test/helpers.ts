@@ -13,8 +13,10 @@ import type {
   PostedComment,
   RemoveLabelsResult,
   StatusChange,
+  TrackedResult,
   TrackerAdapter,
 } from '../src/tracker/types.ts';
+import { decodeMarker } from '../src/workflow/results.ts';
 import { normalizeStateName, resolveConfig } from '../src/workflow/config.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../src/workflow/store.ts';
 import { compilePrompt, DEFAULT_CONTINUATION_PROMPT } from '../src/workflow/template.ts';
@@ -65,7 +67,7 @@ export class FakeTracker implements TrackerAdapter {
   readonly kind = 'github_project';
   issues = new Map<string, Issue>();
   failNext: Error | null = null;
-  calls = { byStates: 0, byIds: 0, statusOptions: 0 };
+  calls = { byStates: 0, byIds: 0, statusOptions: 0, readResults: 0 };
   /** Set to give the tracker a board; adapters without it skip the column check. */
   statusOptions?: () => Promise<string[]>;
   /** Set to report open sub-issues (roles with wait_for_sub_issues); trackers without it have none. */
@@ -109,6 +111,25 @@ export class FakeTracker implements TrackerAdapter {
 
   async readComments(issue: Issue): Promise<IssueComment[]> {
     return [...(this.comments.get(issue.id) ?? [])];
+  }
+
+  /** Set to make `readResults` fail once. */
+  failReadResults: Error | null = null;
+
+  /** Like the GitHub adapter: the markers in the viewer's own comments, oldest first. */
+  async readResults(issue: Issue): Promise<TrackedResult[]> {
+    this.calls.readResults++;
+    if (this.failReadResults !== null) {
+      const error = this.failReadResults;
+      this.failReadResults = null;
+      throw error;
+    }
+    const results: TrackedResult[] = [];
+    for (const comment of this.comments.get(issue.id) ?? []) {
+      const decoded = comment.author === this.viewer ? decodeMarker(comment.body) : null;
+      if (decoded !== null) results.push({ ...decoded, createdAt: comment.createdAt, url: comment.url });
+    }
+    return results;
   }
 
   async viewerLogin(): Promise<string> {

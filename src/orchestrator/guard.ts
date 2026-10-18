@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import type { AgentToolSpec, ToolResult } from '../tracker/types.ts';
+import type { AgentToolSpec, AllowedTransition, ToolResult } from '../tracker/types.ts';
 import { SerialQueue } from '../util/async.ts';
 import { errorMessage } from '../util/errors.ts';
 import { tail } from '../util/text.ts';
@@ -17,7 +17,13 @@ export type GuardDenial = 'transition_denied' | 'check_failed' | 'check_timeout'
 export type GuardDecision =
   /** `check`: the entry check that cleared the move (this call's run or a cached pass); absent when none applied. */
   | { allow: true; note: string | null; check?: CheckRecord }
-  | { allow: false; category: GuardDenial; message: string };
+  | {
+      allow: false;
+      category: GuardDenial;
+      message: string;
+      /** For `check_failed`: the check's output (cut to {@link CHECK_OUTPUT_LIMIT}) and its record. */
+      failed?: { output: string; check: CheckRecord };
+    };
 
 /**
  * Decides whether the session may move its issue to `target`; `tool` (default `set_status`) is the tool the agent
@@ -132,11 +138,15 @@ function checkTimeout(target: string, durationMs: number, tool: string): GuardDe
   };
 }
 
+function checkOutput(result: HookResult): string {
+  return tail(result.output.trim(), CHECK_OUTPUT_LIMIT);
+}
+
 function decide(target: string, result: HookResult, tool: string): GuardDecision {
   if (result.ok && result.exitCode === 0) return { allow: true, note: CHECK_PASSED_NOTE };
   if (result.timedOut) return checkTimeout(target, result.durationMs, tool);
   if (!result.timedOut && result.error === null && result.signal === null && result.exitCode === 1) {
-    const output = tail(result.output.trim(), CHECK_OUTPUT_LIMIT);
+    const output = checkOutput(result);
     return {
       allow: false,
       category: 'check_failed',
@@ -215,7 +225,7 @@ export function createGuard(params: GuardParams): TransitionGuard {
         duration_ms: check.durationMs,
       });
       params.onCheckFinished?.(check);
-      if (!decision.allow) return decision;
+      if (!decision.allow) return decision.category === 'check_failed' ? { ...decision, failed: { output: checkOutput(result), check } } : decision;
       if (cached !== null) params.cache?.set(cached.key, check);
       return { ...decision, check };
     });
@@ -262,10 +272,23 @@ export function guardTools(specs: AgentToolSpec[], guard: TransitionGuard): Agen
       execute: async (args, { transition: _unchecked, ...context }): Promise<ToolResult> => {
         const target = transitionTarget(args);
         if (target === null) return spec.execute(args, context);
-        const decision = await guard(target, spec.name);
+        let decision = await guard(target, spec.name);
+        let moved = target;
+        let checkFailed: AllowedTransition['checkFailed'];
+        if (!decision.allow && decision.failed !== undefined) {
+          // The entry check failed for a tool that has another column for this case (`on_check_failed`): the same
+          // guard decides about that column, so `may_move_to` and its own entry check still apply.
+          const fallback = spec.checkFailedTarget?.(args) ?? null;
+          if (fallback !== null && normalizeStateName(fallback) !== normalizeStateName(target)) {
+            const failed = decision.failed;
+            decision = await guard(fallback, spec.name);
+            moved = fallback;
+            checkFailed = { target, output: failed.output, check: checkSummary(failed.check) };
+          }
+        }
         if (!decision.allow) return { ok: false, error: { category: decision.category, message: decision.message } };
         const check = decision.check !== undefined ? checkSummary(decision.check) : null;
-        const result = await spec.execute(args, { ...context, transition: { target, check } });
+        const result = await spec.execute(args, { ...context, transition: { target: moved, check, ...(checkFailed !== undefined ? { checkFailed } : {}) } });
         return result.ok && decision.note !== null ? { ok: true, data: withNote(result.data, decision.note) } : result;
       },
     };
