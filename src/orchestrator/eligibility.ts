@@ -55,6 +55,22 @@ export function isRoutable(issue: Pick<Issue, 'dispatchable' | 'labels'>, tracke
 }
 
 /**
+ * Whether a running session of `role` goes on with `issue`: the issue is routable, or only its open sub-issues hold it
+ * back (`TrackerAdapter.heldBySubIssues`) and the role creates sub-issues itself (`max_sub_issues`). So the work packages
+ * an architect files as sub-issues do not stop the session that filed them before it reports its result. Only for a
+ * running session: a new one never starts while the sub-issues are open.
+ */
+export function routableWhileRunning(
+  issue: Issue,
+  role: Pick<RoleConfig, 'maxSubIssues'> | null,
+  tracker: Pick<TrackerConfig, 'requiredLabels'>,
+  adapter: Pick<TrackerAdapter, 'heldBySubIssues'>,
+): boolean {
+  if (isRoutable(issue, tracker)) return true;
+  return role?.maxSubIssues != null && hasRequiredLabels(issue, tracker.requiredLabels) && adapter.heldBySubIssues?.(issue) === true;
+}
+
+/**
  * The open sub-issues an issue waits for: only for a role with `wait_for_sub_issues`, and only on trackers that know
  * sub-issues. Unlike `isRoutable`, this gates new sessions only; a running session is not stopped by it.
  */

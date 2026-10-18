@@ -339,7 +339,7 @@ describe('github_project adapter reads', () => {
     assert.equal(first.id, 'A');
     assert.equal(first.state, 'Todo');
     assert.equal(first.dispatchable, true);
-    assert.deepEqual(first.native_ref, { provider: 'github_project', project_id: 'PVT_1', item_id: 'A', issue_id: 'I_A', repository: 'acme/app', number: 1, issue_state: 'OPEN', status_option_id: 'o1', status_updated_at: '2026-09-02T08:30:04.000Z', parent: null, sub_issues: [], base_branch: null, dispatch_note: null });
+    assert.deepEqual(first.native_ref, { provider: 'github_project', project_id: 'PVT_1', item_id: 'A', issue_id: 'I_A', repository: 'acme/app', number: 1, issue_state: 'OPEN', status_option_id: 'o1', status_updated_at: '2026-09-02T08:30:04.000Z', parent: null, sub_issues: [], base_branch: null, dispatch_note: null, held_by_sub_issues: false });
     assert.equal(first.created_at?.toISOString(), '2026-09-01T10:00:00.000Z');
     assert.equal(github.requests.filter((r) => r.op === 'SymphonyProjectItems').length, 2);
   });
@@ -466,7 +466,7 @@ describe('github_project dependencies', () => {
     assert.equal(issues.get('parent')?.native_ref?.dispatch_note, 'waiting for sub-issues acme/app#2');
     assert.equal(issues.get('done')?.dispatchable, true);
     assert.equal(issues.get('child')?.dispatchable, true);
-    assert.deepEqual(issues.get('child')?.native_ref?.parent, { identifier: 'acme/app#1', title: 'Parent', state: 'OPEN' });
+    assert.deepEqual(issues.get('child')?.native_ref?.parent, { identifier: 'acme/app#1', title: 'Parent', state: 'OPEN', state_reason: null });
     assert.equal((await dispatch(github, { respect_sub_issues: false })).get('parent')?.dispatchable, true);
   });
 });
@@ -1152,7 +1152,7 @@ describe('github_project base branch and waves', () => {
     const [epic] = await tracker.fetchIssuesByIds(['epic']);
     assert.deepEqual(tracker.openSubIssues?.(epic as Issue), ['acme/app#2']);
     assert.deepEqual(epic?.native_ref?.sub_issues, [
-      { identifier: 'acme/app#2', title: 'Sub 2', state: 'OPEN' },
+      { identifier: 'acme/app#2', title: 'Sub 2', state: 'OPEN', state_reason: null },
       { identifier: 'acme/app#3', title: 'Sub 3', state: 'CLOSED', state_reason: 'NOT_PLANNED' },
       { identifier: 'acme/app#4', title: 'Sub 4', state: 'CLOSED', state_reason: 'COMPLETED' },
     ]);

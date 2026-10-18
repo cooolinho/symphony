@@ -5,7 +5,17 @@ import { tail, truncate } from '../util/text.ts';
 import { classify, isComplexityLabel, isTypeLabel, type IssueComplexity, type IssueType } from '../workflow/classify.ts';
 import { normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
 import { profileFor } from '../workflow/profile.ts';
-import { RESULT_VERDICTS, SUMMARY_MAX, parseResult, renderResultComment, toolInputShape, type ResultMeta, type StageResult } from '../workflow/results.ts';
+import {
+  RESULT_VERDICTS,
+  SPLIT_VERDICT,
+  SUMMARY_MAX,
+  parseResult,
+  renderResultComment,
+  toolInputShape,
+  type ResultContext,
+  type ResultMeta,
+  type StageResult,
+} from '../workflow/results.ts';
 import type { RoleConfig } from '../workflow/roles.ts';
 import { filesOutside } from './changed-files.ts';
 import type { PersistedResult, StageHistory } from './stage-history.ts';
@@ -168,6 +178,23 @@ export function classificationLabels(result: StageResult, labels: readonly strin
   return added;
 }
 
+/** The issue's sub-issues as the tracker lists them in `native_ref.sub_issues` (open and closed); empty when it lists none. */
+function subIssueCount(issue: Pick<Issue, 'native_ref'>): number {
+  const subIssues = issue.native_ref?.sub_issues;
+  return Array.isArray(subIssues) ? subIssues.length : 0;
+}
+
+/** Whether the issue is itself a sub-issue: the tracker names a parent in `native_ref.parent`. */
+function isSubIssue(issue: Pick<Issue, 'native_ref'>): boolean {
+  const parent = issue.native_ref?.parent;
+  return typeof parent === 'object' && parent !== null;
+}
+
+/** What the consistency rules of a result know of the session's issue (with the labels it ends up with) and role. */
+function resultContext(issue: Issue, labels: readonly string[], role: RoleConfig): ResultContext {
+  return { complexity: classify(labels).complexity, subIssue: isSubIssue(issue), maxSubIssues: role.maxSubIssues };
+}
+
 type Plan = { ok: true; result: StageResult; transition: Transition } | { ok: false; failure: ToolResult };
 
 /**
@@ -191,11 +218,11 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
   let recorded: ToolResult | null = null;
 
   const plan = (args: Record<string, unknown>): Plan => {
-    const parsed = parseResult(kind, args);
+    const issue = params.issue();
+    const parsed = parseResult(kind, args, resultContext(issue, issue.labels, role));
     if (!parsed.ok) return { ok: false, failure: fail('invalid_result', parsed.message) };
     // An analysis classifies the issue as it hands it on, so its `next` is routed by the labels it adds: the profile of
     // the new type and the `skip_when` conditions of the new complexity.
-    const issue = params.issue();
     const added = classificationLabels(parsed.result, issue.labels);
     const labels = [...issue.labels, ...added];
     const transition = resolveTransition({
@@ -252,6 +279,37 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
         'change, for example a commit that was already on the branch or a push by someone else: describe it in an issue comment and ' +
         'end your turn. Production code belongs to the developer: if the tests fail because of it, report the verdict `failed` with ' +
         'the failed cases instead of fixing it.',
+    );
+  };
+
+  /**
+   * The refusal for a `split` design whose work packages are not all sub-issues yet: the issue would go on to its
+   * integration review with nothing to wait for. Read fresh, because the agent creates them in the same turn.
+   */
+  const splitViolation = async (args: Record<string, unknown>, context: AgentToolContext): Promise<ToolResult | null> => {
+    const planned = plan(args);
+    if (!planned.ok || planned.result.kind !== 'design' || planned.result.verdict !== SPLIT_VERDICT) return null;
+    let issue: Issue | undefined;
+    try {
+      issue = (await adapter.fetchIssuesByIds([context.issue.id])).find((candidate) => candidate.id === context.issue.id);
+    } catch (error) {
+      return fail(
+        'tracker_error',
+        `Symphony could not read the sub-issues of the issue (${errorMessage(error)}), so nothing was recorded. Call ` +
+          `${RESULT_TOOL} again; if it fails again, end your turn.`,
+      );
+    }
+    // A vanished or moved issue is reported by `record`, after the guard.
+    if (issue === undefined) return null;
+    const count = subIssueCount(issue);
+    const packages = planned.result.work_packages.length;
+    if (count >= packages) return null;
+    return fail(
+      'invalid_result',
+      `The ${kind} result is invalid: verdict "${SPLIT_VERDICT}" needs one sub-issue per work package, but ${issue.identifier} ` +
+        `has ${count} sub-issue(s) for ${packages} work packages. Nothing was recorded. Create the missing ones with ` +
+        'create_sub_issue (one per entry of `work_packages`, in that order; a title that exists is returned, not created twice), ' +
+        'then report again.',
     );
   };
 
@@ -396,7 +454,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       if (recorded !== null || !role.readOnly || role.onCheckFailed === null) return null;
       return plan(args).ok ? role.onCheckFailed : null;
     },
-    precheck: () => queue.run(pathViolation),
+    precheck: (args, context) => queue.run(async () => (await pathViolation()) ?? (await splitViolation(args, context))),
     execute: (args, context) => queue.run(() => record(args, context)),
   };
 }

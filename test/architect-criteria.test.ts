@@ -41,7 +41,7 @@ describe('#204 shipped WORKFLOW.md: Design column and architect role', () => {
     assert.deepEqual(architect.states.map((state) => state.toLowerCase()), ['design']);
     assert.equal(architect.readOnly, true);
     assert.equal(architect.result, 'design');
-    assert.deepEqual(architect.onResult, { ready: 'In progress', blocked: 'Blocked' });
+    assert.deepEqual(architect.onResult, { ready: 'In progress', split: 'Agent review', blocked: 'Blocked' });
     assert.equal(architect.modelLabel, 'ignore');
     const order = config.tracker.activeStates.map((state) => state.toLowerCase());
     assert.ok(order.includes('design'));
@@ -180,6 +180,8 @@ describe('#204 prompts of the shipped WORKFLOW.md', () => {
     migrations: ['MIGRATION-ONE'],
     compatibility: 'COMPAT-TEXT',
     options: ['OPTION-ONE'],
+    work_packages: [],
+    head_sha: null,
   };
   const render = async (role: string, results: Record<string, unknown> | undefined): Promise<string> => {
     const { definition } = await shippedFront();

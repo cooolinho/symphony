@@ -35,7 +35,10 @@ export interface PipelineStage {
   kind: 'agent' | 'human' | 'terminal';
   /** Board columns this stage spans, in their original casing. */
   columns: string[];
-  /** `skipped`: the issue's workflow profile or a `skipped` result leaves the stage out and no session ran there. */
+  /**
+   * `skipped`: the issue's workflow profile or a `skipped` result leaves the stage out, or a result jumped over it (a
+   * `split` design), and no session ran there.
+   */
   status: 'done' | 'active' | 'pending' | 'skipped';
   /** Sessions of this stage's role, oldest first; always empty for human and terminal stages. */
   sessions: PipelineSession[];
@@ -177,8 +180,8 @@ function chronological(results: readonly PersistedResult[]): PersistedResult[] {
  * `blockedBucketColumns`). When the heuristic yields nothing, the pipeline is agent stages plus the
  * terminal columns, which is always correct. Session history marks a role's stage done even when the
  * column moved backwards; sessions of roles no longer derived get a trailing stage so history never drops. Stages of
- * roles in `skip` (the issue's profile) or whose newest result is a `skipped` marker are `skipped` unless they have
- * sessions. Sessions and stages carry the verdict and round of the results in `results`.
+ * roles in `skip` (the issue's profile) or whose newest result is a `skipped` marker, and stages a result's target
+ * jumped over, are `skipped` unless they have sessions. Sessions and stages carry the verdict and round of the results in `results`.
  */
 export function derivePipeline(input: PipelineInput): PipelineStage[] {
   const { issue, roles, activeStates, terminalStates, boardColumns, sessions, skip = [], results = [], profile = null } = input;
@@ -272,6 +275,17 @@ export function derivePipeline(input: PipelineInput): PipelineStage[] {
     const latest = own.findLast((entry) => entry.result.kind !== 'reset');
     stage.verdict = latest?.result.verdict ?? null;
     stage.round = latest?.meta.round ?? null;
+  }
+  // A stage a result jumped over (from its role's stage forward to the target's, e.g. a `split` design straight to the
+  // integration review) shows as `skipped` unless a session ran there or the issue is in it now.
+  for (const entry of timeline) {
+    if (entry.meta.target === null) continue;
+    const from = stages.findIndex((stage) => stage.kind === 'agent' && stage.id === entry.meta.role);
+    const to = stageAt(entry.meta.target);
+    if (from === -1 || to <= from + 1) continue;
+    for (const stage of stages.slice(from + 1, to)) {
+      if (stage.kind === 'agent' && stage.sessions.length === 0 && stage.status !== 'active') stage.status = 'skipped';
+    }
   }
   // A stage the profile leaves out or a `skipped` result marks stays `skipped` unless a session already ran there.
   for (const stage of stages) {

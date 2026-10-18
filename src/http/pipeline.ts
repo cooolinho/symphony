@@ -57,7 +57,7 @@ export const PIPELINE_JS = `
 
   /** Tone per verdict; keep in sync with RESULT_VERDICTS in src/workflow/results.ts (a missing verdict falls back to muted). */
   const PIPE_VERDICT_TONE = {
-    ready: 'good', approved: 'good', passed: 'good', done: 'good',
+    ready: 'good', split: 'good', approved: 'good', passed: 'good', done: 'good',
     not_needed: 'good', skipped: 'muted', reset: 'muted',
     changes_needed: 'warn', failed: 'warn', issues_found: 'warn',
     needs_info: 'bad', blocked: 'bad',

@@ -35,6 +35,7 @@ import {
   isActiveState,
   isRoutable,
   isTerminalState,
+  routableWhileRunning,
   sessionLimitWaitMs,
   stateLimit,
   waitingForSubIssues,
@@ -2069,7 +2070,7 @@ export class Orchestrator {
         continueWith: (fresh) => {
           const current = this.#deps.workflow.current.config;
           if (!isActiveState(fresh.state, current.tracker)) return `issue left the active states ("${fresh.state}")`;
-          if (!isRoutable(fresh, current.tracker)) return 'issue is no longer dispatchable (assignee, blockers or labels)';
+          if (!routableWhileRunning(fresh, role, current.tracker, adapter)) return 'issue is no longer dispatchable (assignee, blockers or labels)';
           const nextRole = roleFor(fresh, current.roles);
           const next = roleName(nextRole);
           if (next !== entry.role) return `role changed (${entry.role} → ${next})`;
@@ -2942,8 +2943,10 @@ export class Orchestrator {
       : [];
     if (ids.length === 0 && pausedIds.length === 0 && waitingIds.length === 0 && watchedIds.length === 0) return;
     let refreshed: Issue[];
+    let adapter: TrackerAdapter;
     try {
-      refreshed = await this.#adapterFor(workflow).fetchIssuesByIds([...ids, ...pausedIds, ...waitingIds, ...watchedIds]);
+      adapter = this.#adapterFor(workflow);
+      refreshed = await adapter.fetchIssuesByIds([...ids, ...pausedIds, ...waitingIds, ...watchedIds]);
     } catch (error) {
       this.#trackerFailure('running-issue refresh failed; keeping workers running', error);
       return;
@@ -2966,7 +2969,8 @@ export class Orchestrator {
           cleanupWorkspace: config.workspace.cleanupTerminal,
           reason: `issue moved to terminal state "${issue.state}"`,
         });
-      } else if (isActiveState(issue.state, config.tracker) && isRoutable(issue, config.tracker)) {
+      } else if (isActiveState(issue.state, config.tracker) && routableWhileRunning(issue, entry.roleConfig, config.tracker, adapter)) {
+        // Sub-issues the session opened itself (an architect's work packages) do not stop it before it reports.
         entry.issue = issue;
       } else if (isActiveState(issue.state, config.tracker)) {
         entry.issue = issue;

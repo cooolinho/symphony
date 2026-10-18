@@ -290,6 +290,8 @@ describe('resultsTemplateValue: the design for the developer', () => {
       migrations: ['add invoices.exported_at'],
       compatibility: 'Existing exports are unchanged',
       options: ['New service', 'Extend the exporter'],
+      work_packages: [],
+      head_sha: null,
     });
   });
 

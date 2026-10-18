@@ -771,7 +771,7 @@ describe('result-driven roles and the pipeline section', () => {
     };
     // The issue analyst, the architect, the developer, the test engineer and the reviewer hand off with report_result; every other role keeps the neutral values.
     assert.deepEqual(transitions('issue-analyst'), ['analysis', { ready: 'next', needs_info: 'Blocked' }, null, 'Blocked', null]);
-    assert.deepEqual(transitions('architect'), ['design', { ready: 'In progress', blocked: 'Blocked' }, null, 'Blocked', null]);
+    assert.deepEqual(transitions('architect'), ['design', { ready: 'In progress', split: 'Agent review', blocked: 'Blocked' }, null, 'Blocked', null]);
     assert.deepEqual(transitions('developer'), ['implementation', { done: 'Agent review', blocked: 'Blocked' }, null, 'Blocked', null]);
     assert.deepEqual(transitions('test-engineer'), ['test', { passed: 'Agent review', failed: 'In progress', blocked: 'Blocked' }, null, 'Blocked', null]);
     assert.deepEqual(

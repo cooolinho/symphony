@@ -14,7 +14,7 @@ import { isPlainObject } from './loader.ts';
 import { DEFAULT_PROFILE, type WorkflowProfile } from './profile.ts';
 import { Reader, parseInteger } from './reader.ts';
 import { NEXT_STAGE, resultTargets, type ModelLabelPolicy, type RoleClaudeOverrides, type RoleConfig } from './roles.ts';
-import { AGENT_RESULT_KINDS, isLoopKind, LOOP_VERDICTS, RESULT_VERDICTS, type AgentResultKind } from './results.ts';
+import { AGENT_RESULT_KINDS, isLoopKind, LOOP_VERDICTS, RESULT_VERDICTS, SPLIT_VERDICT, type AgentResultKind } from './results.ts';
 
 export interface TrackerConfig {
   kind: string | null;
@@ -314,6 +314,9 @@ function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: s
     }
     const readOnly = reader.bool(value, 'read_only', `${field}.read_only`, false);
     const transitions = readRoleTransitions(reader, value, field, terminalStates);
+    if (Object.hasOwn(transitions.onResult, SPLIT_VERDICT) && maxSubIssues === null) {
+      reader.errors.push(`${field}.on_result.${SPLIT_VERDICT} needs ${field}.max_sub_issues (the role files the work packages as sub-issues)`);
+    }
     roles.push({
       name,
       states,
@@ -535,6 +538,8 @@ function readProfiles(reader: Reader, raw: unknown, roles: RoleConfig[] | null, 
               const column = typeof target === 'string' ? target.trim() : null;
               if (!verdicts.includes(verdict)) {
                 reader.errors.push(`${targetPath}: ${JSON.stringify(verdict)} is not a verdict of result ${role.result} (allowed: ${verdicts.join(', ')})`);
+              } else if (verdict === SPLIT_VERDICT && role.maxSubIssues === null) {
+                reader.errors.push(`${targetPath} needs roles.${role.name}.max_sub_issues (the role files the work packages as sub-issues)`);
               } else if (column === null) {
                 reader.errors.push(`${targetPath} must be a column name or ${NEXT_STAGE}`);
               } else if (column === '') {
