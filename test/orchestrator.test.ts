@@ -14,6 +14,7 @@ import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import type { AgentToolSpec, ToolResult } from '../src/tracker/types.ts';
 import { dryRunPlan, planLines } from '../src/service.ts';
 import { decodeMarker, parseResult, renderResultComment, type ResultMeta } from '../src/workflow/results.ts';
+import { compilePrompt } from '../src/workflow/template.ts';
 import { workspaceKey } from '../src/workspace/manager.ts';
 import {
   FakeRunner,
@@ -3698,7 +3699,7 @@ describe('stage skipping', () => {
   });
 
   it('starts the analyst for an issue without Type and Complexity labels', async () => {
-    const s = setup({ front: front(), issues: [makeIssue({ id: 'a', state: 'Ready', labels: ['Type: bugfix'] })] });
+    const s = setup({ front: front(), runner: new FakeRunner(() => new Promise(() => undefined)), issues: [makeIssue({ id: 'a', state: 'Ready', labels: ['Type: bugfix'] })] });
     withBoard(s);
     await s.orchestrator.tickNow();
     await until(() => s.runner.sessions.length === 1, 3_000, 'analyst session');
@@ -3708,7 +3709,7 @@ describe('stage skipping', () => {
   });
 
   it('runs the analyst for every issue with pipeline.analysis: always', async () => {
-    const s = setup({ front: front({ pipeline: { analysis: 'always' } }), issues: [makeIssue({ id: 'a', state: 'Ready', labels: ['Type: bugfix', 'Complexity: S'] })] });
+    const s = setup({ front: front({ pipeline: { analysis: 'always' } }), runner: new FakeRunner(() => new Promise(() => undefined)), issues: [makeIssue({ id: 'a', state: 'Ready', labels: ['Type: bugfix', 'Complexity: S'] })] });
     withBoard(s);
     await s.orchestrator.tickNow();
     await until(() => s.runner.sessions.length === 1, 3_000, 'analyst session');
@@ -3733,7 +3734,7 @@ describe('stage skipping', () => {
 
   it('does not skip when the tracker does not list its columns', async () => {
     const roles = { analyst: { states: ['Ready'], read_only: true, result: 'analysis' }, developer: { states: ['In progress'] }, reviewer: { states: ['Agent review'] } };
-    const s = setup({ front: front({ roles }), issues: [makeIssue({ id: 'a', state: 'Ready', labels: ['Type: bugfix', 'Complexity: S'] })] });
+    const s = setup({ front: front({ roles }), runner: new FakeRunner(() => new Promise(() => undefined)), issues: [makeIssue({ id: 'a', state: 'Ready', labels: ['Type: bugfix', 'Complexity: S'] })] });
     await s.orchestrator.tickNow();
     await until(() => s.runner.sessions.length === 1, 3_000, 'analyst session');
     assert.equal(s.tracker.statusCalls.length, 0);
@@ -3868,6 +3869,66 @@ describe('result-driven roles', () => {
     assert.equal(marker?.meta.workflow_hash, 'test');
   });
 
+  describe('agent.max_continuations', () => {
+    /** Developer (no result) <-> reviewer; the reviewer reports changes_needed when `reports` is set. */
+    function pingPong(reports: boolean, maxContinuations: number, rounds = 20) {
+      const runner = new FakeRunner(async (turn, params) => {
+        const report = params.tools.find((tool) => tool.name === 'report_result');
+        if (report === undefined) {
+          s.tracker.set('p', { state: 'Agent review' });
+        } else if (reports) {
+          await report.execute({ verdict: 'changes_needed', summary: 'Again.', findings: [{ severity: 'major', file: 'a.ts', problem: 'Still wrong' }] }, params.toolContext());
+        } else {
+          s.tracker.set('p', { state: 'Todo' });
+        }
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      });
+      const s = setup({
+        front: { ...front(), agent: { max_turns: 2, max_continuations: maxContinuations }, pipeline: { max_review_rounds: rounds } },
+        runner,
+        issues: [makeIssue({ id: 'p', state: 'Todo' })],
+      });
+      return s;
+    }
+    const driveTo = async (s: ReturnType<typeof setup>, sessions: number) => {
+      await s.orchestrator.tickNow();
+      for (let n = 1; n < sessions; n++) {
+        await until(() => s.runner.sessions.length === n && snapshot(s).retrying.length === 1, 3_000, `session ${n}`);
+        s.timers.fire(1_000);
+      }
+      await until(() => s.runner.sessions.length === sessions, 3_000, `session ${sessions}`);
+    };
+
+    it('does not pause a chain of result hand-offs', async () => {
+      const s = pingPong(true, 2);
+      await driveTo(s, 8);
+      await until(() => snapshot(s).retrying.length === 1, 3_000, 'retry after the last session');
+      assert.equal(snapshot(s).counts.paused, 0);
+      await s.orchestrator.shutdown(1_000);
+    });
+
+    it('ends ping-pong between result roles at the round limit, not at max_continuations', async () => {
+      const s = pingPong(true, 2, 2);
+      await driveTo(s, 4);
+      await until(() => snapshot(s).running.length === 0, 3_000, 'last run end');
+      s.timers.fire(1_000);
+      await s.orchestrator.tickNow();
+      assert.equal(snapshot(s).counts.paused, 0);
+      assert.equal(s.runner.sessions.length, 4);
+      assert.notEqual(s.tracker.issues.get('p')?.state, 'Todo');
+      await s.orchestrator.shutdown(1_000);
+    });
+
+    it('still pauses ping-pong between roles without a result', async () => {
+      const s = pingPong(false, 2);
+      await driveTo(s, 3);
+      await until(() => snapshot(s).retrying.length === 1, 3_000, 'retry');
+      s.timers.fire(1_000);
+      await until(() => snapshot(s).counts.paused === 1, 3_000, 'paused');
+      assert.equal(s.runner.sessions.length, 3);
+    });
+  });
+
   it('moves a reviewer whose hand-off check fails to on_check_failed and records why', async () => {
     const runner = new FakeRunner(async (turn, params) => {
       const report = params.tools.find((tool) => tool.name === 'report_result');
@@ -3911,6 +3972,127 @@ describe('result-driven roles', () => {
     assert.equal(reported[0]?.ok === false ? reported[0].error.category : null, 'check_failed');
     assert.deepEqual(s.tracker.statusCalls, []);
     assert.equal(s.tracker.comments.get('r'), undefined);
+  });
+
+  describe('a stage that ends without a result', () => {
+    const silent = () => new FakeRunner((turn) => ({ ok: true, turnId: String(turn), resultText: 'done' }));
+
+    it('reminds a reviewer once, then comments and moves the issue to Blocked', async () => {
+      const runner = silent();
+      const s = setup({ front: front(), runner, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
+      await s.orchestrator.tickNow();
+      await until(() => s.tracker.statusCalls.length === 1, 5_000, 'move to Blocked');
+      assert.deepEqual(s.tracker.statusCalls, ['Blocked']);
+      assert.equal(s.tracker.issues.get('r')?.state, 'Blocked');
+      assert.equal(runner.sessions.length, 1);
+      const [first, reminder] = runner.sessions[0]?.turns ?? [];
+      assert.equal(runner.sessions[0]?.turns.length, 2);
+      assert.doesNotMatch(first ?? '', /report_result/);
+      assert.match(reminder ?? '', /still in the active state/);
+      assert.match(reminder ?? '', /call `report_result` now[\s\S]*moves the issue to "Blocked"/);
+      const comments = s.tracker.comments.get('r') ?? [];
+      assert.equal(comments.length, 1);
+      assert.match(comments[0]?.body ?? '', /^\*\*Stage ended without a result\.\*\*/);
+      assert.match(comments[0]?.body ?? '', /moved the issue to "Blocked"/);
+      assert.equal(decodeMarker(comments[0]?.body ?? ''), null, 'a plain comment, not a stage result');
+      await until(() => snapshot(s).running.length === 0, 3_000, 'run end');
+      assert.equal(snapshot(s).retrying.length, 0, 'the claim is released');
+      await s.orchestrator.shutdown(1_000);
+    });
+
+    it('adds the reminder to a custom continuation prompt and honors on_missing_result', async () => {
+      const runner = silent();
+      const s = setup({
+        front: { ...front({}, { on_missing_result: 'Todo' }), agent: { max_turns: 3 } },
+        runner,
+        issues: [makeIssue({ id: 'r', state: 'Agent review' })],
+      });
+      s.workflow.current.continuationPrompt = compilePrompt('Go on, turn {{ turn_number }}.');
+      await s.orchestrator.tickNow();
+      await until(() => s.tracker.statusCalls.length === 1, 5_000, 'move');
+      assert.deepEqual(s.tracker.statusCalls, ['Todo']);
+      const turns = runner.sessions[0]?.turns ?? [];
+      assert.equal(turns.length, 2, 'one reminder turn, not all three');
+      assert.match(turns[1] ?? '', /^Go on, turn 2\.\n\nYour stage ends with a result: call `report_result` now[\s\S]*"Todo"/);
+      await s.orchestrator.shutdown(1_000);
+    });
+
+    it('moves a reviewer that reaches max_turns of 1 without a reminder', async () => {
+      const runner = silent();
+      const s = setup({ front: { ...front(), agent: { max_turns: 1 } }, runner, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
+      await s.orchestrator.tickNow();
+      await until(() => s.tracker.statusCalls.length === 1, 5_000, 'move');
+      assert.equal(runner.sessions[0]?.turns.length, 1);
+      assert.deepEqual(s.tracker.statusCalls, ['Blocked']);
+      await s.orchestrator.shutdown(1_000);
+    });
+
+    it('does not end the stage when the reviewer reports after the reminder', async () => {
+      const runner = new FakeRunner(async (turn, params) => {
+        if (turn === 2) await params.tools.find((tool) => tool.name === 'report_result')!.execute({ verdict: 'approved', summary: 'Fine.' }, params.toolContext());
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      });
+      const s = setup({ front: front(), runner, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
+      await s.orchestrator.tickNow();
+      await until(() => s.tracker.statusCalls.length === 1, 5_000, 'report_result');
+      await until(() => snapshot(s).running.length === 0, 3_000, 'run end');
+      assert.deepEqual(s.tracker.statusCalls, ['In review']);
+      assert.equal(s.tracker.comments.get('r')?.length, 1, 'only the result comment');
+      await s.orchestrator.shutdown(1_000);
+    });
+
+    it('leaves an issue alone that was moved meanwhile', async () => {
+      let turnsDone = 0;
+      const runner = new FakeRunner((turn) => {
+        turnsDone = turn;
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      });
+      const s = setup({ front: front(), runner, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
+      // A human moves the issue right after the worker's last look at it.
+      const fetchIds = s.tracker.fetchIssuesByIds.bind(s.tracker);
+      let moved = false;
+      s.tracker.fetchIssuesByIds = async (ids) => {
+        const issues = await fetchIds(ids);
+        if (turnsDone === 2 && !moved) {
+          moved = true;
+          s.tracker.set('r', { state: 'In review' });
+        }
+        return issues;
+      };
+      await s.orchestrator.tickNow();
+      await until(() => moved, 5_000, 'the human move');
+      await until(() => snapshot(s).retrying.length === 1, 3_000, 'continuation retry');
+      assert.equal(snapshot(s).retrying[0]?.kind, 'continuation');
+      assert.deepEqual(s.tracker.statusCalls, []);
+      assert.equal(s.tracker.comments.get('r'), undefined);
+      assert.equal(s.tracker.issues.get('r')?.state, 'In review');
+      await s.orchestrator.shutdown(1_000);
+    });
+
+    it('retries like a failed run when the tracker cannot move the issue', async () => {
+      const s = setup({ front: front(), runner: silent(), issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
+      s.tracker.setStatus = async () => {
+        throw new Error('GitHub is down');
+      };
+      await s.orchestrator.tickNow();
+      await until(() => snapshot(s).retrying.length === 1, 5_000, 'retry');
+      assert.equal(snapshot(s).retrying[0]?.kind, 'failure');
+      assert.match(snapshot(s).retrying[0]?.error ?? '', /moving the issue to "Blocked" failed: GitHub is down/);
+      await s.orchestrator.shutdown(1_000);
+    });
+
+    it('behaves as before for a role without a result', async () => {
+      const runner = silent();
+      const s = setup({ front: front(), runner, issues: [makeIssue({ id: 'd' })] });
+      await s.orchestrator.tickNow();
+      await until(() => snapshot(s).retrying.length === 1, 3_000, 'continuation retry');
+      assert.equal(snapshot(s).retrying[0]?.kind, 'continuation');
+      assert.equal(runner.sessions[0]?.turns.length, 2);
+      assert.doesNotMatch(runner.sessions[0]?.turns[1] ?? '', /report_result/);
+      assert.deepEqual(s.tracker.statusCalls, []);
+      assert.equal(s.tracker.comments.get('d'), undefined);
+      await s.orchestrator.shutdown(1_000);
+    });
   });
 
   it('fails the run with results_read_error when the results cannot be read, and retries', async () => {

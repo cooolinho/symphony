@@ -926,7 +926,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
   }
   if (roles !== null && agent.maxContinuations === null) {
     reader.warnings.push(
-      'roles is set while agent.max_continuations is unlimited: role switches count as continuations, so set a limit',
+      'roles is set while agent.max_continuations is unlimited: role switches without a recorded result count as continuations, so set a limit',
     );
   }
 
