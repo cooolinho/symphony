@@ -234,7 +234,8 @@ symphony/
 ├── repo-init.ts                # interactive repository setup (standard labels, Laravel Boost issue)
 ├── scripts/e2e/                # end-to-end test of the orchestration on a real board (npm run e2e)
 ├── scripts/laravel-smoke/      # integration test against a real Laravel 13 / Filament 5 app (npm run test:laravel)
-├── scripts/push-history.sh     # copies the local history to a Symphony container on a server (docs/docker.md)
+├── scripts/push-history.sh     # merges the local history into a Symphony container on a server (docs/docker.md)
+├── scripts/merge-history.ts    # merge of two history directories, run by push-history.sh in the container
 ├── src/
 │   ├── cli.ts                  # entry point: options, .env, start
 │   ├── service.ts              # startup, shutdown, dry run

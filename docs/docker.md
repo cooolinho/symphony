@@ -308,19 +308,30 @@ What matters:
 
 ### Transferring existing history to the server
 
-If you start Symphony in the container after it has already run locally, you can transfer the per-repository logs
-(`repositories/`) and transcripts (`sessions/`) from `~/.local/state/symphony` into the server's `state` volume. The
+If Symphony runs locally as well as in the container (or ran locally before), you can bring the local per-repository
+logs (`repositories/`), transcripts (`sessions/`) and issue archives (`issues/`, agent detail view) from
+`~/.local/state/symphony` into the server's `state` volume, so statistics and logs on the server cover both. The
 script runs **locally** and connects via SSH:
 
 ```bash
-scripts/push-history.sh --dry-run   # only shows what would happen
+scripts/push-history.sh --dry-run   # shows what would be added, changes nothing
 scripts/push-history.sh
 ```
 
 It stops the container on the server (`docker stop`), backs up the state there as `~/symphony-state-backup-<time>.tgz`,
-**replaces** `repositories/` and `sessions/` completely with the local state, compares the file counts and starts the
-container again (also on an error). Everything the server container has recorded so far is overwritten. Workspaces,
-Claude state and Composer cache are not transferred. A locally running Symphony must be stopped first.
+**merges** the local history into the server's with `scripts/merge-history.ts` (shipped along, run in a one-off
+container from the server's image), checks that everything arrived and starts the container again (also on an error):
+
+- **Repository logs:** union of both files, each line once, ordered by time. Statistics count the runs of both machines.
+- **Transcripts:** copied if missing on the server; a longer local copy replaces a shorter one; nothing is deleted.
+- **Issue archives:** hold the last claim of an issue, so the newer one (`archived_at`) wins; on a tie the server's.
+  Transcript paths of the local archives are rewritten to the container's state directory.
+
+Nothing the server recorded is lost, and running the script again adds nothing twice, so you can push after every
+local session. `--dry-run` transfers the history into a throwaway container and prints the numbers the merge would
+add; the server container keeps running. With `--replace`, `repositories/`, `sessions/` and `issues/` on the server are
+deleted first, so the server ends up with exactly the local history. Runtime state (`state/`), workspaces, Claude state
+and Composer cache are not transferred. A locally running Symphony must be stopped first.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -331,7 +342,7 @@ Claude state and Composer cache are not transferred. A locally running Symphony 
 The script reads the variables from the shell or from the `.env` in the repository directory **on the machine where
 you run it** (the shell takes precedence), e.g. `SYMPHONY_CONTAINER=symphony-symphony-1`.
 
-Options: `--yes` (no confirmation), `--no-backup`, `--dry-run`. The script uses one SSH connection for all steps, so a
+Options: `--replace` (replace instead of merge), `--yes` (no confirmation), `--no-backup`, `--dry-run`. The script uses one SSH connection for all steps, so a
 password or passphrase is only asked for once.
 
 To restore the backup if needed (on the server; stop the container first with `docker stop <container>` and start it
@@ -339,7 +350,7 @@ afterwards with `docker start <container>`):
 
 ```bash
 docker run --rm -i --volumes-from <container> --entrypoint bash "$(docker inspect -f '{{.Config.Image}}' <container>)" \
-  -c 'cd /home/symphony/.local/state/symphony && rm -rf repositories sessions && tar xzf -' < ~/symphony-state-backup-<time>.tgz
+  -c 'cd /home/symphony/.local/state/symphony && rm -rf repositories sessions issues && tar xzf -' < ~/symphony-state-backup-<time>.tgz
 ```
 
 ### Resource limits
