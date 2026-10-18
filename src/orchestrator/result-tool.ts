@@ -7,9 +7,11 @@ import { normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
 import { profileFor } from '../workflow/profile.ts';
 import { RESULT_VERDICTS, SUMMARY_MAX, parseResult, renderResultComment, toolInputShape, type ResultMeta, type StageResult } from '../workflow/results.ts';
 import type { RoleConfig } from '../workflow/roles.ts';
+import { securityRoles } from '../workflow/validate.ts';
 import { filesOutside } from './changed-files.ts';
-import type { PersistedResult, StageHistory } from './stage-history.ts';
-import { resolveTransition, type StageConditions, type Transition, type TransitionProfile } from './transitions.ts';
+import { securityNeeded, type SecurityFacts } from './security.ts';
+import type { PersistedResult } from './stage-history.ts';
+import { resolveTransition, type RoundHistory, type StageConditions, type Transition, type TransitionProfile } from './transitions.ts';
 
 /** Name of the tool a role with `result` hands off with, instead of `set_status`. */
 export const RESULT_TOOL = 'report_result';
@@ -64,9 +66,14 @@ export interface ResultToolParams {
   /** The session's role; its `result` is the kind the tool reports. */
   role: RoleConfig;
   /** Round counters of the issue's persisted results, loaded when the session starts (a run reports once). */
-  history: Pick<StageHistory, 'reviewRounds' | 'testRounds'>;
+  history: RoundHistory;
   profile: TransitionProfile | null;
   flags?: StageConditions;
+  /**
+   * For a reviewer: what decides whether an approval needs the security review (see `securityNeeded`), looked up when the
+   * agent reports `approved`. Without it the approval keeps its configured target.
+   */
+  security?: Pick<SecurityFacts, 'risk' | 'securityPaths' | 'changedFiles'> | null;
   config: Pick<ServiceConfig, 'tracker' | 'roles' | 'pipeline'>;
   /** The board's columns in board order; null when the tracker does not list them. */
   boardColumns: readonly string[] | null;
@@ -168,6 +175,12 @@ export function classificationLabels(result: StageResult, labels: readonly strin
   return added;
 }
 
+/** The conditions of one report: the configured flags plus what was looked up for this call. */
+interface Conditions {
+  flags: StageConditions;
+  reasons: Readonly<Record<string, string>>;
+}
+
 type Plan = { ok: true; result: StageResult; transition: Transition } | { ok: false; failure: ToolResult };
 
 /**
@@ -190,7 +203,27 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
   /** The outcome of the call that posted the result comment; null until one did. */
   let recorded: ToolResult | null = null;
 
-  const plan = (args: Record<string, unknown>): Plan => {
+  /** The conditions `transitionTarget` looked up for the call in flight; `record` takes them over so both route alike. */
+  let looked: Conditions | null = null;
+
+  /**
+   * The stage conditions for a call: the configured flags, and for a reviewer's `approved` whether the issue needs the
+   * security review (labels, the analysis and the files of the branch diff), set for every security role. Looked up
+   * asynchronously, before the synchronous {@link plan}.
+   */
+  const conditions = async (args: Record<string, unknown>): Promise<Conditions> => {
+    const configured: Conditions = { flags: params.flags ?? {}, reasons: {} };
+    const security = params.security;
+    const auditors = securityRoles(params.config.roles);
+    if (security === undefined || security === null || kind !== 'review' || args.verdict !== 'approved' || auditors.length === 0) return configured;
+    const decision = await securityNeeded({ ...security, labels: params.issue().labels });
+    return {
+      flags: { ...configured.flags, ...Object.fromEntries(auditors.map((auditor) => [auditor.name, decision.needed])) },
+      reasons: Object.fromEntries(auditors.map((auditor) => [auditor.name, decision.reason])),
+    };
+  };
+
+  const plan = (args: Record<string, unknown>, stage: Conditions = { flags: params.flags ?? {}, reasons: {} }): Plan => {
     const parsed = parseResult(kind, args);
     if (!parsed.ok) return { ok: false, failure: fail('invalid_result', parsed.message) };
     // An analysis classifies the issue as it hands it on, so its `next` is routed by the labels it adds: the profile of
@@ -203,7 +236,8 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       verdict: parsed.result.verdict,
       history: params.history,
       profile: added.length > 0 ? profileFor(params.config.pipeline, classify(labels).type) : params.profile,
-      flags: params.flags,
+      flags: stage.flags,
+      flagReasons: stage.reasons,
       config: params.config,
       boardColumns: params.boardColumns,
       issue: { description: issue.description, labels },
@@ -257,7 +291,9 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
 
   const record = async (args: Record<string, unknown>, context: AgentToolContext): Promise<ToolResult> => {
     if (recorded !== null) return recorded.ok ? ok({ ...(recorded.data as object), already_recorded: true }) : recorded;
-    const planned = plan(args);
+    const stage = looked ?? (await conditions(args));
+    looked = null;
+    const planned = plan(args, stage);
     if (!planned.ok) return planned.failure;
     // Fail closed: nothing is written unless the guard allowed exactly this move, or the `on_check_failed` fallback
     // after the computed move failed its entry check.
@@ -387,14 +423,15 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       'stays: do what the error message says and report again.',
     inputSchema: toolInputShape(kind),
     mutates: true,
-    transitionTarget: (args) => {
+    transitionTarget: async (args) => {
       if (recorded !== null) return null;
-      const planned = plan(args);
+      looked = await conditions(args);
+      const planned = plan(args, looked);
       return planned.ok ? planned.transition.target : null;
     },
     checkFailedTarget: (args) => {
       if (recorded !== null || !role.readOnly || role.onCheckFailed === null) return null;
-      return plan(args).ok ? role.onCheckFailed : null;
+      return plan(args, looked ?? undefined).ok ? role.onCheckFailed : null;
     },
     precheck: () => queue.run(pathViolation),
     execute: (args, context) => queue.run(() => record(args, context)),

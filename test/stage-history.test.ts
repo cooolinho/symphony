@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { PROMPT_SUMMARY_LIMIT, buildStageHistory, implementationHead, resultRows, resultsTemplateValue, type PersistedResult } from '../src/orchestrator/stage-history.ts';
+import { PROMPT_SUMMARY_LIMIT, analysisFlagsSecurity, buildStageHistory, implementationHead, resultRows, resultsTemplateValue, type PersistedResult } from '../src/orchestrator/stage-history.ts';
 import { internalResult, parseResult, type ResultMeta, type StageResult } from '../src/workflow/results.ts';
 
 let clock = 0;
 
 function entry(
-  kind: 'review' | 'test' | 'implementation' | 'reset',
+  kind: 'review' | 'test' | 'security' | 'implementation' | 'reset',
   verdict: string,
   over: Partial<ResultMeta> = {},
 ): PersistedResult {
@@ -16,7 +16,7 @@ function entry(
       : ({ schema: 'symphony.result/v1', kind, verdict, summary: 's', blockers: [], follow_ups: [] } as unknown as StageResult);
   clock += 1;
   const meta: ResultMeta = {
-    role: kind === 'implementation' ? 'developer' : kind === 'test' ? 'tester' : 'reviewer',
+    role: kind === 'implementation' ? 'developer' : kind === 'test' ? 'tester' : kind === 'security' ? 'security-auditor' : 'reviewer',
     run: `run-${clock}`,
     round: null,
     profile: null,
@@ -96,6 +96,26 @@ describe('buildStageHistory', () => {
       assert.equal(history.lastTarget, row.last);
       assert.equal(history.pendingTransition(row.state), row.pending);
     }
+  });
+
+  it('counts issues_found of the security review as its own rounds, and a reset clears them', () => {
+    const history = buildStageHistory([
+      entry('security', 'issues_found'),
+      entry('review', 'changes_needed'),
+      entry('security', 'passed'),
+      entry('security', 'issues_found'),
+      entry('security', 'blocked'),
+    ]);
+    assert.deepEqual([history.securityRounds, history.reviewRounds, history.testRounds], [2, 1, 0]);
+    const reset = buildStageHistory([entry('security', 'issues_found'), entry('reset', 'reset'), entry('security', 'issues_found')]);
+    assert.equal(reset.securityRounds, 1);
+    assert.equal(buildStageHistory([entry('security', 'issues_found'), entry('reset', 'reset')]).securityRounds, 0);
+    assert.equal(buildStageHistory([]).securityRounds, 0);
+  });
+
+  it('counts duplicate markers of one security run once', () => {
+    const history = buildStageHistory([entry('security', 'issues_found', { run: 'r1' }), entry('security', 'issues_found', { run: 'r1' })]);
+    assert.equal(history.securityRounds, 1);
   });
 
   it('forgets the target at a reset', () => {
@@ -245,6 +265,74 @@ describe('resultsTemplateValue: the analysis for the later stages', () => {
   it('leaves out what the analysis did not report', () => {
     const value = resultsTemplateValue(buildStageHistory([analysed({ verdict: 'ready', summary: 'Small.' })]));
     assert.deepEqual([value.analysis?.type, value.analysis?.complexity, value.analysis?.docs_needed, value.analysis?.risks, value.analysis?.plan], [null, null, null, [], []]);
+  });
+});
+
+describe('resultsTemplateValue: the security findings for the developer', () => {
+  function audited(input: Record<string, unknown>): PersistedResult {
+    const parsed = parseResult('security', input);
+    assert.ok(parsed.ok, parsed.ok ? '' : parsed.message);
+    clock += 1;
+    return {
+      result: parsed.result,
+      meta: {
+        role: 'security-auditor',
+        run: `run-${clock}`,
+        round: 1,
+        profile: null,
+        workflow_hash: null,
+        head_sha: null,
+        checks: null,
+        target: 'In progress',
+        created_at: new Date(Date.UTC(2026, 9, 18, 10, 0, clock)).toISOString(),
+      },
+    };
+  }
+  const FOUND = {
+    verdict: 'issues_found',
+    summary: 'The policy is bypassed.',
+    findings: [{ severity: 'blocker', file: 'app/Policies/PostPolicy.php', line: 12, problem: 'Any user may update', fix: 'Compare the owner' }, { severity: 'nit', problem: 'Naming' }],
+  };
+
+  it('lists the findings of the newest security review while it found issues', () => {
+    const value = resultsTemplateValue(buildStageHistory([audited(FOUND)]));
+    assert.deepEqual(value.security_findings, [
+      { severity: 'blocker', file: 'app/Policies/PostPolicy.php', line: 12, problem: 'Any user may update', fix: 'Compare the owner' },
+      { severity: 'nit', file: null, line: null, problem: 'Naming', fix: null },
+    ]);
+    assert.deepEqual(value.open_findings, [], 'the review findings are a separate list');
+  });
+
+  it('is empty after a pass, without a security review, and after a reset', () => {
+    assert.deepEqual(resultsTemplateValue(buildStageHistory([audited(FOUND), audited({ verdict: 'passed', summary: 'Fixed.' })])).security_findings, []);
+    assert.deepEqual(resultsTemplateValue(buildStageHistory([])).security_findings, []);
+    assert.deepEqual(resultsTemplateValue(buildStageHistory([audited(FOUND), entry('reset', 'reset')])).security_findings, []);
+  });
+
+  it('shows the security review among the latest results', () => {
+    const latest = resultsTemplateValue(buildStageHistory([audited(FOUND)])).latest;
+    assert.deepEqual(latest.map((item) => [item.role, item.kind, item.verdict]), [['security-auditor', 'security', 'issues_found']]);
+  });
+});
+
+describe('analysisFlagsSecurity', () => {
+  function analysed(security: boolean | undefined): PersistedResult {
+    const parsed = parseResult('analysis', { verdict: 'ready', summary: 'x', ...(security === undefined ? {} : { risks: { security } }) });
+    assert.ok(parsed.ok, parsed.ok ? '' : parsed.message);
+    clock += 1;
+    return {
+      result: parsed.result,
+      meta: { role: 'issue-analyst', run: `run-${clock}`, round: null, profile: null, workflow_hash: null, head_sha: null, checks: null, target: null, created_at: new Date(Date.UTC(2026, 9, 18, 10, 0, clock)).toISOString() },
+    };
+  }
+
+  it('reads risks.security of the newest analysis since the last reset', () => {
+    assert.equal(analysisFlagsSecurity(buildStageHistory([analysed(true)])), true);
+    assert.equal(analysisFlagsSecurity(buildStageHistory([analysed(true), analysed(false)])), false, 'the newest analysis wins');
+    assert.equal(analysisFlagsSecurity(buildStageHistory([analysed(false), analysed(true)])), true);
+    assert.equal(analysisFlagsSecurity(buildStageHistory([analysed(undefined)])), false);
+    assert.equal(analysisFlagsSecurity(buildStageHistory([analysed(true), entry('reset', 'reset')])), false);
+    assert.equal(analysisFlagsSecurity(buildStageHistory([])), false);
   });
 });
 

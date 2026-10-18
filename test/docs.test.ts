@@ -218,8 +218,10 @@ describe('docs: configuration keys', () => {
     assert.equal(row('type_labels'), '`{}`');
     assert.equal(row('profiles'), '`{}`');
     for (const glob of pipeline.testPaths) assert.ok(row('test_paths').includes(`\`${glob}\``), `test_paths default ${glob}`);
-    assert.deepEqual([pipeline.docsPaths, pipeline.securityPaths], [[], []]);
-    assert.match(pipelineTable, /^\| `docs_paths`, `security_paths` \| `\[\]` \|/m);
+    assert.deepEqual(pipeline.docsPaths, []);
+    assert.equal(row('max_security_rounds'), `\`${pipeline.maxSecurityRounds}\``);
+    for (const glob of pipeline.securityPaths) assert.ok(row('security_paths').includes(`\`${glob}\``), `security_paths default ${glob}`);
+    assert.match(pipelineTable, /^\| `docs_paths` \| `\[\]` \|/m);
   });
 
   it('the role defaults named in the issue are stated', () => {

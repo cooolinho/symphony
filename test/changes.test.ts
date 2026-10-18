@@ -1,0 +1,112 @@
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { describe, it } from 'node:test';
+import { SymphonyError } from '../src/util/errors.ts';
+import { changedFiles } from '../src/workspace/changes.ts';
+import { tempDir } from './helpers.ts';
+
+// changedFiles(workspace, base): the whole branch diff against the base branch, for the security review trigger.
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', ...args], { cwd, encoding: 'utf8' }).trim();
+}
+
+function write(repo: string, name: string, content = 'x'): void {
+  const file = path.join(repo, name);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, content);
+}
+
+function commit(repo: string, message: string): void {
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', message);
+}
+
+/** A repository on `main` with a feature branch checked out; `main` is the base ref the tests pass. */
+function repository(): string {
+  const repo = tempDir('symphony-changes-');
+  git(repo, 'init', '-q', '-b', 'main');
+  write(repo, '.gitignore', 'vendor/\n');
+  write(repo, 'app/Policies/PostPolicy.php', 'policy v1\n'.repeat(20));
+  write(repo, 'README.md', 'readme\n');
+  commit(repo, 'init');
+  git(repo, 'checkout', '-q', '-b', 'symphony/issue-1');
+  return repo;
+}
+
+describe('changedFiles', () => {
+  it('lists nothing for a branch without changes', async () => {
+    assert.deepEqual(await changedFiles(repository(), 'main'), []);
+  });
+
+  it('covers the whole branch: commits, uncommitted changes and untracked files, but not ignored ones', async () => {
+    const repo = repository();
+    write(repo, 'docs/guide.md');
+    commit(repo, 'first commit');
+    write(repo, 'routes/web.php');
+    commit(repo, 'second commit');
+    write(repo, 'README.md', 'changed\n');
+    write(repo, 'config/auth.php');
+    git(repo, 'add', 'config/auth.php');
+    write(repo, 'notes.txt');
+    write(repo, 'vendor/autoload.php');
+    assert.deepEqual(await changedFiles(repo, 'main'), ['README.md', 'config/auth.php', 'docs/guide.md', 'notes.txt', 'routes/web.php']);
+  });
+
+  it('measures from the merge base: commits that only the base branch gained do not count', async () => {
+    const repo = repository();
+    write(repo, 'docs/guide.md');
+    commit(repo, 'branch work');
+    git(repo, 'checkout', '-q', 'main');
+    write(repo, 'database/migrations/2026_create_posts.php');
+    commit(repo, 'someone else merged a migration');
+    git(repo, 'checkout', '-q', 'symphony/issue-1');
+    assert.deepEqual(await changedFiles(repo, 'main'), ['docs/guide.md']);
+  });
+
+  it('names both ends of a renamed file, so moving a file out of a protected directory is still seen', async () => {
+    const repo = repository();
+    fs.mkdirSync(path.join(repo, 'src'));
+    git(repo, 'mv', 'app/Policies/PostPolicy.php', 'src/PostPolicy.php');
+    commit(repo, 'move the policy');
+    assert.deepEqual(await changedFiles(repo, 'main'), ['app/Policies/PostPolicy.php', 'src/PostPolicy.php']);
+  });
+
+  it('lists a deleted file and keeps unusual names verbatim', async () => {
+    const repo = repository();
+    git(repo, 'rm', '-q', 'README.md');
+    write(repo, 'docs/with space.md');
+    write(repo, 'docs/ümlaut.md');
+    assert.deepEqual(await changedFiles(repo, 'main'), ['README.md', 'docs/with space.md', 'docs/ümlaut.md']);
+  });
+
+  it('works with a remote-tracking base ref like origin/develop', async () => {
+    const remote = repository();
+    git(remote, 'checkout', '-q', 'main');
+    const clone = tempDir('symphony-changes-clone-');
+    git(clone, 'clone', '-q', remote, '.');
+    git(clone, 'checkout', '-q', '-b', 'symphony/issue-2');
+    write(clone, 'routes/api.php');
+    commit(clone, 'add a route');
+    assert.deepEqual(await changedFiles(clone, 'origin/main'), ['routes/api.php']);
+    assert.deepEqual(await changedFiles(clone, 'origin/HEAD'), ['routes/api.php']);
+  });
+
+  it('throws paths_unverifiable for an unknown base ref', async () => {
+    const repo = repository();
+    await assert.rejects(changedFiles(repo, 'origin/develop'), (error: unknown) => {
+      assert.ok(error instanceof SymphonyError);
+      assert.equal(error.code, 'paths_unverifiable');
+      assert.match(error.message, /changed against origin\/develop/);
+      return true;
+    });
+  });
+
+  it('throws paths_unverifiable for a directory that is no git checkout', async () => {
+    const dir = tempDir('symphony-changes-plain-');
+    write(dir, 'routes/web.php');
+    await assert.rejects(changedFiles(dir, 'main'), (error: unknown) => error instanceof SymphonyError && error.code === 'paths_unverifiable');
+  });
+});

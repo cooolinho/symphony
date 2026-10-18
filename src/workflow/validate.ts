@@ -131,6 +131,36 @@ export function nextWithoutBoardOrder(path: string): string {
   return `${path}: "${NEXT_STAGE}" needs the board's column order, which the tracker does not provide (name the column instead)`;
 }
 
+/** The roles that serve the security review (`result: security`) for issues without a command: the conditional stage after the review. */
+export function securityRoles(roles: readonly RoleConfig[] | null): RoleConfig[] {
+  return (roles ?? []).filter((role) => role.result === 'security' && role.commands === null);
+}
+
+/**
+ * Problems with the route to the security review: a reviewer (`result: review`) whose `approved` leads out of the active
+ * columns goes to the security review's column when the issue needs it, so a reviewer with `may_move_to` must list that
+ * column, and the board must list it (`boardColumns` null = unknown, not checked).
+ */
+export function securityReviewProblems(config: ServiceConfig): string[] {
+  const problems: string[] = [];
+  const active = new Set(config.tracker.activeStates.map(normalizeStateName));
+  for (const auditor of securityRoles(config.roles)) {
+    const column = config.tracker.activeStates.find((state) => auditor.states.includes(normalizeStateName(state)));
+    if (column === undefined) {
+      problems.push(`roles.${auditor.name}: the security review serves no column of tracker.active_states, so no issue is ever routed to it`);
+      continue;
+    }
+    for (const reviewer of (config.roles ?? []).filter((role) => role.result === 'review')) {
+      const approved = reviewer.onResult.approved;
+      if (approved === undefined || approved === NEXT_STAGE || active.has(normalizeStateName(approved))) continue;
+      if (!canMoveTo(reviewer, column, config.tracker.terminalStates)) {
+        problems.push(`roles.${reviewer.name}.may_move_to must list "${column}": an approved issue goes there when it needs a security review (roles.${auditor.name})`);
+      }
+    }
+  }
+  return problems;
+}
+
 /**
  * Problems with `on_result: next` targets, for the roles' own transitions and again for each profile of
  * `pipeline.profiles` (whose `skip` passes over later stages and whose `on_result` overrides the role's): the board order
@@ -140,7 +170,7 @@ export function nextWithoutBoardOrder(path: string): string {
  * can lead to it or past it: every column it can lead to is checked.
  */
 export function nextStageProblems(config: ServiceConfig, boardColumns: readonly string[] | null): string[] {
-  const problems: string[] = [];
+  const problems: string[] = securityReviewProblems(config);
   const profiles = [null, ...config.pipeline.profiles.values()];
   for (const profile of profiles) {
     const suffix = profile === null ? '' : ` (profile ${profile.name})`;

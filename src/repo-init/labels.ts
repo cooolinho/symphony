@@ -68,7 +68,7 @@ function complexityLabel(value: IssueComplexity): NewLabel {
   };
 }
 
-/** Labels the /auto-code autopilot, the /concept analyst and the /plan planner put on their issues, and the opt-out label of `auto_merge`. */
+/** Labels the /auto-code autopilot, the /concept analyst and the /plan planner put on their issues, the opt-in label of the security review and the opt-out label of `auto_merge`. */
 export const WORKFLOW_LABELS: readonly NewLabel[] = [
   { name: 'auto-code', color: '7057ff', description: 'Planned by the Symphony autopilot (/auto-code)' },
   { name: 'concept', color: '0052cc', description: 'Planned from a concept document (/concept)' },
@@ -78,6 +78,7 @@ export const WORKFLOW_LABELS: readonly NewLabel[] = [
   { name: 'design', color: 'd4c5f9', description: 'User interface and usability' },
   { name: 'quality', color: 'fef2c0', description: 'Bugs, tests, refactoring, performance, security' },
   { name: 'maintenance', color: 'bfd4f2', description: 'Dependencies, upgrades, tooling' },
+  { name: 'security', color: 'd93f0b', description: 'Security-relevant: always gets the security review after the agent review' },
   { name: 'manual-merge', color: 'b60205', description: 'A human merges this pull request; Symphony does not merge it' },
   { name: 'needs-human', color: 'ff0000', description: 'A human must review or approve this issue before it can progress' },
 ];

@@ -103,7 +103,10 @@ function board(): FakeTracker {
  * without a result. `tracker` and `root` take over the board and the workspaces of an earlier instance (a restart);
  * `front` replaces top-level sections of the workflow's front matter.
  */
-function pipeline(stages: Stage[], options: { tracker?: FakeTracker; root?: string; front?: Record<string, unknown>; history?: HistoryLog } = {}): Pipeline {
+function pipeline(
+  stages: Stage[],
+  options: { tracker?: FakeTracker; root?: string; front?: Record<string, unknown>; history?: HistoryLog; prompt?: string } = {},
+): Pipeline {
   const root = options.root ?? tempDir();
   const tracker = options.tracker ?? board();
   const reports: ToolResult[] = [];
@@ -120,7 +123,7 @@ function pipeline(stages: Stage[], options: { tracker?: FakeTracker; root?: stri
   });
   const timers = new ManualTimers();
   const clock = new ManualClock();
-  const workflow = new StaticWorkflow(makeWorkflow(baseFront(root, { ...FRONT, ...options.front }), { prompt: PROMPT }));
+  const workflow = new StaticWorkflow(makeWorkflow(baseFront(root, { ...FRONT, ...options.front }), { prompt: options.prompt ?? PROMPT }));
   const orchestrator = new Orchestrator({
     workflow,
     runner,
@@ -1308,5 +1311,154 @@ describe('issue analyst stage', () => {
     const { h } = analystPipeline([analysed({ ...ANALYSIS, type: 'docs', complexity: 'S' })]);
     await run(h);
     assert.deepEqual(issue(h).labels, ['complexity: s']);
+  });
+});
+
+// The security review (docs/configuration.md#the-security-auditor): the reviewer's approval goes to Security review only
+// when the issue needs it, decided by report_result from the files the branch changes against origin/develop.
+
+const BOARD_SECURITY = ['Backlog', 'Ready', 'In progress', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
+
+const SECURITY_PROMPT = PROMPT + '{% for finding in results.security_findings %} | security: {{ finding.problem }}{% endfor %}';
+
+/** The developer → reviewer → security auditor pipeline as the shipped workflow runs it. */
+const SECURITY_FRONT = {
+  tracker: { ...FRONT.tracker, active_states: ['Ready', 'In progress', 'Agent review', 'Security review'] },
+  roles: {
+    developer: FRONT.roles.developer,
+    reviewer: { ...FRONT.roles.reviewer, may_move_to: ['Security review', 'In review', 'In progress', 'Blocked'], on_round_limit: undefined },
+    'security-auditor': {
+      states: ['Security review'],
+      read_only: true,
+      result: 'security',
+      may_move_to: ['In review', 'In progress', 'Blocked'],
+      on_result: { passed: 'In review', issues_found: 'In progress', blocked: 'Blocked' },
+      on_check_failed: 'In progress',
+    },
+  },
+  pipeline: { max_review_rounds: 3, max_security_rounds: 2 },
+  checks: { on_enter: {} },
+};
+
+/** A git checkout with origin/develop as the base, like the shipped hooks leave one; `remote: false` leaves the base ref out. */
+const securityHooks = (remote = true) => ({
+  after_create: [
+    'git init -q',
+    'git symbolic-ref HEAD refs/heads/develop',
+    'git config user.email symphony@example.com',
+    'git config user.name Symphony',
+    "printf '# app\\n' > README.md",
+    'git add -A',
+    'git commit -q -m init',
+    ...(remote ? ['git update-ref refs/remotes/origin/develop HEAD'] : []),
+    'git checkout -q -b symphony/issue-1',
+  ].join('\n'),
+});
+
+function securityPipeline(stages: Stage[], options: { labels?: string[]; remote?: boolean; front?: Record<string, unknown> } = {}): Pipeline {
+  const tracker = new FakeTracker([makeIssue({ id: ISSUE, state: 'Ready', labels: options.labels ?? [], native_ref: { base_branch: 'develop' } })]);
+  tracker.statusOptions = async () => BOARD_SECURITY;
+  return pipeline(stages, { tracker, prompt: SECURITY_PROMPT, front: { ...SECURITY_FRONT, hooks: securityHooks(options.remote ?? true), ...options.front } });
+}
+
+/** The developer's committed change to `file`. */
+const changed = (file: string) => (workspace: string) =>
+  sh(workspace, `mkdir -p "$(dirname ${file})" && printf 'change\\n' > ${file} && git add -A && git commit -q -m 'Change ${file}'`);
+
+const PASSED = { verdict: 'passed', summary: 'No security problems found.' };
+const issuesFound = (problem: string) => ({
+  verdict: 'issues_found',
+  summary: 'The change opens a hole.',
+  findings: [{ severity: 'major', file: 'app/Policies/PostPolicy.php', line: 4, problem, fix: 'Check the owner' }],
+});
+const audited = (args: Record<string, unknown>) => reporting(args);
+
+describe('security review stage', () => {
+  it('a diff that touches a policy goes from approved to Security review, and passed leads to In review', async () => {
+    const h = securityPipeline([done(changed('app/Policies/PostPolicy.php')), approved(), audited(PASSED)]);
+    await run(h);
+
+    assert.deepEqual(prompts(h), ['developer round 1', 'reviewer round 1', 'security-auditor round 1']);
+    assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'Security review', 'In review']);
+    assert.deepEqual(await results(h), [
+      { role: 'developer', verdict: 'done', round: null, target: 'Agent review', check: null },
+      { role: 'reviewer', verdict: 'approved', round: 1, target: 'Security review', check: null },
+      { role: 'security-auditor', verdict: 'passed', round: 1, target: 'In review', check: null },
+    ]);
+    assert.match(String(data(h.reports[1]).reason), /→ "Security review" \(on_result\.approved, security review needed: 1 changed file\(s\) match pipeline\.security_paths: app\/Policies\/PostPolicy\.php\)/);
+    assert.equal(counts(h).claimed, 0, 'In review is not active: the claim is released');
+  });
+
+  it('a docs-only diff goes straight to In review: no security session runs', async () => {
+    const h = securityPipeline([done(changed('docs/guide.md')), approved()]);
+    await run(h);
+
+    assert.deepEqual(prompts(h), ['developer round 1', 'reviewer round 1']);
+    assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'In review']);
+    assert.match(String(data(h.reports[1]).reason), /security review not needed: no trigger/);
+    assert.deepEqual((await results(h)).map((result) => result.role), ['developer', 'reviewer']);
+    // The pipeline view of the dashboard shows the stage as skipped: no session ran there.
+    const stages = h.orchestrator.issueDetail(issue(h).identifier)?.pipeline ?? [];
+    assert.equal(stages.find((stage) => stage.id === 'security-auditor')?.status, 'skipped', JSON.stringify(stages.map((stage) => [stage.id, stage.status])));
+  });
+
+  it('the security label alone sends a docs-only diff to Security review', async () => {
+    const h = securityPipeline([done(changed('docs/guide.md')), approved(), audited(PASSED)], { labels: ['Security'] });
+    await run(h);
+    assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'Security review', 'In review']);
+    assert.match(String(data(h.reports[1]).reason), /"security" label/);
+  });
+
+  it('fails safe when the base ref is unknown: the issue goes to Security review and the reason says why', async () => {
+    const h = securityPipeline([done(changed('docs/guide.md')), approved(), audited(PASSED)], { remote: false });
+    await run(h);
+    assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'Security review', 'In review']);
+    assert.match(String(data(h.reports[1]).reason), /changed files could not be determined .*origin\/develop.*reviewing to be safe/);
+  });
+
+  it('issues_found sends the issue to the developer with the findings; the reviewer runs again, then the check is evaluated on the new diff', async () => {
+    const h = securityPipeline([
+      done(changed('app/Policies/PostPolicy.php')),
+      approved(),
+      audited(issuesFound('Any user may update a post')),
+      done(changed('app/Policies/PostPolicy.php.fixed')),
+      approved(),
+      audited(PASSED),
+    ]);
+    await run(h);
+
+    assert.deepEqual(prompts(h), [
+      'developer round 1',
+      'reviewer round 1',
+      'security-auditor round 1',
+      'developer round 1 | security: Any user may update a post',
+      'reviewer round 1 | security: Any user may update a post', // the test prompt shows the list to every role
+      'security-auditor round 2 | security: Any user may update a post',
+    ]);
+    assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'Security review', 'In progress', 'Agent review', 'Security review', 'In review']);
+    assert.deepEqual((await results(h)).filter((result) => result.role === 'security-auditor').map((result) => [result.verdict, result.round, result.target]), [
+      ['issues_found', 1, 'In progress'],
+      ['passed', 2, 'In review'],
+    ]);
+    assert.deepEqual(issue(h).labels, []);
+  });
+
+  it('ends the loop at max_security_rounds: Blocked with needs-human', async () => {
+    const h = securityPipeline([
+      done(changed('routes/web.php')),
+      approved(),
+      audited(issuesFound('Route without auth middleware')),
+      done(changed('routes/api.php')),
+      approved(),
+      audited(issuesFound('Route still without auth middleware')),
+    ]);
+    await run(h);
+
+    assert.equal(h.runner.sessions.length, 6);
+    assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'Security review', 'In progress', 'Agent review', 'Security review', 'Blocked']);
+    assert.deepEqual(issue(h).labels, ['needs-human']);
+    const last = data(h.reports.at(-1));
+    assert.deepEqual([last.target, last.round], ['Blocked', 2]);
+    assert.equal(counts(h).claimed, 0, 'Blocked is not active');
   });
 });

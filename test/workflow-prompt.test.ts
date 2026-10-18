@@ -132,7 +132,7 @@ describe('shipped WORKFLOW.md', () => {
     const config = resolveWith({});
     const tester = roleFor({ state: 'Testing', description: null }, config.roles);
     assert.equal(tester?.name, 'test-engineer');
-    assert.deepEqual(config.tracker.activeStates, ['Ready', 'Design', 'In progress', 'Testing', 'Agent review']);
+    assert.deepEqual(config.tracker.activeStates, ['Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review']);
     assert.deepEqual(
       [tester?.result, tester?.onResult, tester?.readOnly, tester?.modelLabel, tester?.claude.model, tester?.agents],
       ['test', { passed: 'Agent review', failed: 'In progress', blocked: 'Blocked' }, false, 'ignore', 'sonnet', ['laravel-test-engineer']],
@@ -151,7 +151,7 @@ describe('shipped WORKFLOW.md', () => {
   });
 
   describe('bugfix profile', () => {
-    const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Blocked', 'In review', 'Done'];
+    const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
     const resolveWith = async (extra: NodeJS.ProcessEnv = {}) => {
       const { definition } = await loadWorkflowFile(shipped);
       return resolveConfig(definition.config, {
@@ -226,6 +226,7 @@ describe('shipped WORKFLOW.md', () => {
       delete front.roles.architect;
       for (const profile of Object.values(front.pipeline.profiles) as Array<Record<string, unknown>>) delete profile.skip_when;
       delete front.roles['test-engineer'];
+      delete front.roles['security-auditor'];
       front.roles.developer.on_result.done = 'Agent review';
       delete front.checks.on_enter.Testing;
       const profileOnly = resolveConfig(front, { workflowPath: shipped, env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' }, trackerDefaults });
@@ -807,6 +808,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
       developer: ['laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer'],
       'test-engineer': ['laravel-test-engineer'],
       reviewer: ['laravel-code-reviewer'],
+      'security-auditor': ['laravel-code-reviewer'],
       auditor: ['laravel-architect', 'laravel-code-reviewer'],
       autopilot: ['laravel-architect'],
       analyst: ['laravel-architect'],
@@ -940,5 +942,97 @@ describe('Symphony toolbox subagents', () => {
       for (const [ref] of text.matchAll(/symphony:[a-z0-9-]+-(?:architect|reviewer|engineer|developer)\b/g)) assert.ok(shipped.has(ref), ref);
       assert.doesNotMatch(text, /symphony:(?:architect|code-reviewer|database-engineer|filament-developer|test-engineer)\b/);
     }
+  });
+});
+
+describe('shipped WORKFLOW.md security auditor', () => {
+  const afterSecurity = {
+    result_required: true,
+    round: 2,
+    results: {
+      latest: [],
+      open_findings: [],
+      security_findings: [
+        { severity: 'blocker', file: 'app/Policies/PostPolicy.php', line: 12, problem: 'Any user may update a post', fix: 'Compare the owner' },
+        { severity: 'minor', file: null, line: null, problem: 'Verbose error message', fix: null },
+      ],
+      failed_cases: [],
+    },
+  };
+
+  async function config() {
+    const { definition } = await loadWorkflowFile(shipped);
+    return resolveConfig(definition.config, {
+      workflowPath: shipped,
+      env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' },
+      trackerDefaults,
+    });
+  }
+
+  it('defines a read-only role in the Security review column that reports a security result', async () => {
+    const resolved = await config();
+    const auditor = roleFor({ state: 'Security review', description: null }, resolved.roles);
+    assert.equal(auditor?.name, 'security-auditor');
+    assert.deepEqual(
+      [auditor?.result, auditor?.readOnly, auditor?.onResult, auditor?.onCheckFailed, auditor?.modelLabel, auditor?.claude.model, auditor?.agents],
+      ['security', true, { passed: 'In review', issues_found: 'In progress', blocked: 'Blocked' }, 'In progress', 'ignore', 'opus', ['laravel-code-reviewer']],
+    );
+    assert.ok(resolved.tracker.activeStates.includes('Security review'));
+    assert.ok(roleFor({ state: 'Agent review', description: null }, resolved.roles)?.mayMoveTo?.includes('Security review'));
+    assert.equal(resolved.pipeline.maxSecurityRounds, 2);
+  });
+
+  it('is part of the board preflight: a board without the column is reported', async () => {
+    const resolved = await config();
+    const board = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
+    assert.deepEqual(unknownBoardColumns(resolved, board), []);
+    const without = board.filter((column) => column !== 'Security review');
+    assert.deepEqual(unknownBoardColumns(resolved, without), [`unknown board column "Security review" (valid: ${without.join(', ')})`]);
+  });
+
+  it('lists the column between Agent review and In review in the board comment', () => {
+    const source = fs.readFileSync(shipped, 'utf8');
+    assert.match(source, /# Board columns: .*\| Agent review \| Security review \| Blocked \| In review \| Done/);
+    assert.match(source, /active_states: \[.*Agent review, Security review\]/);
+  });
+
+  it('gives the auditor a read-only prompt with the round, the checklist and the fields of the result', async () => {
+    const text = await render('security-auditor', null, undefined, 'develop', [{ name: 'laravel-code-reviewer', description: 'Reviews Laravel code' }], afterSecurity);
+    assert.match(text, /## Your role: security auditor/);
+    assert.match(text, /You are \*\*read-only\*\*: do not edit files, commit or push/);
+    assert.match(text, /This is security round 2\./);
+    assert.match(text, /git diff origin\/<base>\.\.\.HEAD` \(`<base>`: the pull request's base branch, else `develop`\)/);
+    for (const topic of ['Authorization', 'Authentication and sessions', 'Injection', 'Output', 'Mass assignment', 'Secrets and data exposure', 'Migrations']) {
+      assert.match(text, new RegExp(`\\*\\*${topic}`), topic);
+    }
+    for (const verdict of ['`passed`', '`issues_found`', '`blocked`']) assert.ok(text.includes(verdict), verdict);
+    assert.match(text, /`findings`: one entry per problem with `severity`/);
+    assert.match(text, /`laravel-code-reviewer`: Reviews Laravel code/);
+    assert.match(text, /## Findings of your previous security review/);
+    assert.match(text, /1\. \[blocker\] app\/Policies\/PostPolicy\.php:12 — Any user may update a post Expected fix: Compare the owner/);
+    assert.doesNotMatch(text, /## Your role: reviewer/);
+  });
+
+  it('leaves out the previous findings in the first security round', async () => {
+    const text = await render('security-auditor', null, undefined, null, [], { result_required: true, round: 1 });
+    assert.match(text, /This is security round 1\./);
+    assert.doesNotMatch(text, /Findings of your previous security review/);
+    assert.match(text, /else the default branch/);
+  });
+
+  it('lists the open security findings in the developer prompt, apart from the review findings', async () => {
+    const text = await render('developer', null, undefined, null, [], afterSecurity);
+    assert.match(text, /## Open findings of the latest security review/);
+    assert.match(text, /1\. \[blocker\] app\/Policies\/PostPolicy\.php:12 — Any user may update a post Expected fix: Compare the owner/);
+    assert.match(text, /2\. \[minor\]  — Verbose error message/);
+    assert.match(text, /the open findings of the latest security review \(listed above\)/);
+    assert.doesNotMatch(text, /## Open findings of the latest agent review/);
+    const without = await render('developer', null, undefined, null, [], { result_required: true, round: 1 });
+    assert.doesNotMatch(without, /latest security review/);
+  });
+
+  it('tells the reviewer that an approval may go to the security review first', async () => {
+    const text = await render('reviewer', null, undefined, null, [], { result_required: true, round: 1 });
+    assert.match(text, /or first to "Security review" when the change is security-relevant/);
   });
 });

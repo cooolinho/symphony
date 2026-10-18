@@ -1,6 +1,7 @@
 import { normalizeStateName } from '../workflow/config.ts';
 import type { WorkflowProfile } from '../workflow/profile.ts';
 import { NEXT_STAGE, resultTargets, roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
+import { securityRoles } from '../workflow/validate.ts';
 import type { PersistedResult } from './stage-history.ts';
 
 /** One agent session attributed to a pipeline stage (the `#sessionJson` shape without the transcript). */
@@ -115,7 +116,7 @@ export function blockedBucketColumns(
  * The normalized active columns that issues are led to: the targets of every role's `on_result`, `on_check_failed`,
  * `on_missing_result` and `on_round_limit` (and of the profile's `on_result` overrides), and, for a role that uses
  * `next`, the active columns after its own up to the first one whose role the profile does not skip (`skip`: where
- * `next` really leads, `nextStage` in `transitions.ts`; no stage of the shipped pipeline is conditional). A role that hands off with `set_status` instead of a result (and the
+ * `next` really leads, `nextStage` in `transitions.ts`; the security review is conditional, see below). A role that hands off with `set_status` instead of a result (and the
  * implicit default role of a column no role serves) moves the issue wherever it likes: its `may_move_to` columns, or
  * any active column when it has no such list. `activeColumns` is in board order; `description` picks the role of a
  * column like the dispatcher does (an issue command). Conservative: a column counted here may still never be entered,
@@ -140,6 +141,13 @@ function routedColumns(
     for (const column of activeColumns.slice(last + 1)) {
       routed.add(normalizeStateName(column));
       if (!skip.includes(roleName(roleFor({ state: column, description }, roles)))) break;
+    }
+  }
+  // The security review is conditional: a reviewer's approval goes to it when the issue needs it (`securityStage` in
+  // `transitions.ts`), so the column is routed to whenever a reviewer exists.
+  if (roles.some((role) => role.result === 'review')) {
+    for (const role of securityRoles(roles)) {
+      for (const state of role.states) routed.add(state);
     }
   }
   for (const column of activeColumns) {
@@ -277,6 +285,11 @@ export function derivePipeline(input: PipelineInput): PipelineStage[] {
   for (const stage of stages) {
     if (stage.kind !== 'agent' || stage.sessions.length > 0) continue;
     if (skip.includes(stage.id) || stage.verdict === 'skipped') stage.status = 'skipped';
+  }
+  // The security review runs only for issues that need it: an issue that went past it without a session skipped it.
+  for (const stage of stages) {
+    const conditional = roles?.some((role) => role.name === stage.id && role.result === 'security') === true;
+    if (conditional && stage.sessions.length === 0 && stage.status === 'done') stage.status = 'skipped';
   }
   return stages;
 }

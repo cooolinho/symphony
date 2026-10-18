@@ -38,8 +38,8 @@ export interface RoleConfig {
   /** Column for a session that ends without a result; `Blocked` by default when `result` is set, else null. */
   onMissingResult: string | null;
   /**
-   * Column for a loop verdict (review `changes_needed`, test `failed`) at the round limit; null = the blocked column.
-   * Only for roles whose `result` is `review` or `test`.
+   * Column for a loop verdict (review `changes_needed`, test `failed`, security `issues_found`) at the round limit; null = the blocked column.
+   * Only for roles whose `result` is `review`, `test` or `security`.
    */
   onRoundLimit: string | null;
   /** `ignore` keeps a `Model:` issue label from changing the role's model. */

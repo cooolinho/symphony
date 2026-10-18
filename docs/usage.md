@@ -43,11 +43,12 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
    authorization, validation, N+1, migrations, secrets, changed test/CI/lint configuration) and reports **one**
    `review` result with `report_result` (verdict, findings with severity, file and line), which Symphony posts as the
    comment. The verdict decides the column:
-   - **`approved`:** `In review`. The checks run once more first; for an unchanged commit Symphony uses the stored
-     result.
+   - **`approved`:** `In review`, or `Security review` first when the change is security-relevant (step 5a). The
+     checks run once more first; for an unchanged commit Symphony uses the stored result.
    - **`changes_needed`:** back to `In progress`; the developer works through the findings (step 3).
    - **third `changes_needed`** (`pipeline.max_review_rounds`): no further loop. The issue goes to `Blocked` with the
      label `needs-human` and the open findings in the review comment. How to continue: [Rounds, limits and manual resume](#rounds-limits-and-manual-resume).
+   **Security auditor** (`Security review`, step 5a): only for approved issues that need it.
 6. After each turn Symphony checks the issue. If it moves to a column of another role, the session ends and the
    next role starts one second later in a fresh session. If it is still in a column of the same role, the agent
    gets more turns up to `max_turns`, then a new session. At most `SYMPHONY_MAX_CONTINUATIONS` (default 6) such
@@ -63,6 +64,7 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
 | `In progress` | a developer is working (it gets the analysis and the design); if Symphony finds an issue here without an agent, it starts one |
 | `Testing` | starts the test engineer (at most one at a time), who writes independent tests and may only change test files; reached by bug issues after the developer, by every issue with `SYMPHONY_AFTER_IMPLEMENTATION=Testing` |
 | `Agent review` | starts a reviewer (at most one at a time); only reachable after passing checks |
+| `Security review` | starts the security auditor (at most one at a time, read-only) for an approved issue with a security trigger; other approved issues skip the column without a session, see [Security review](#security-review-for-security-relevant-changes) |
 | `Blocked` | stops a running agent; the workspace is kept. The agent needs you, see its comment. |
 | `In review` | stops a running agent; the workspace is kept for follow-up work. Only the reviewer moves cards here, after passing checks. |
 | `Done` | stops a running agent and deletes the workspace, at the latest on the next poll |
@@ -89,8 +91,8 @@ Ready (issue analyst) → In progress (developer) → [checks] → Testing (test
   the architect is skipped without a session. Features, refactors and issues without a type keep the flow without
   `Testing`, unless `SYMPHONY_AFTER_IMPLEMENTATION=Testing` switches the test stage on for all of them.
 
-The board needs the columns in this order: `Backlog`, `Ready`, `Design`, `In progress`, `Testing`, `Agent review`, `Blocked`,
-`In review`, `Done` (see [Getting started](getting-started.md#2-set-up-the-github-project-board)). `Testing` is always
+The board needs the columns in this order: `Backlog`, `Ready`, `Design`, `In progress`, `Testing`, `Agent review`,
+`Security review`, `Blocked`, `In review`, `Done` (see [Getting started](getting-started.md#2-set-up-the-github-project-board)). `Testing` is always
 an active state, so a board without it fails the dry run and the dispatch preflight with
 `unknown board column "Testing"`. The order matters: `next` and the pipeline view follow the board.
 
@@ -139,15 +141,43 @@ architect runs. A skipped stage posts a `skipped` result, logs `stage_skipped`, 
 to `In progress`; the pipeline view shows `Design` as skipped. Details and the configuration:
 [The architect](configuration.md#the-architect).
 
+### Security review for security-relevant changes
+
+An approved issue that touches security gets a dedicated read-only audit before a human sees the pull request. When the
+reviewer reports `approved`, Symphony decides which column comes next, without a session of its own:
+
+```
+Agent review (reviewer) → approved → Security review (security auditor) → passed → In review
+                                   ↘ no trigger ──────────────────────────────→ In review
+```
+
+The audit is needed when **any** of these holds, otherwise the issue goes straight to `In review`:
+
+| Trigger | Example |
+|---|---|
+| the issue carries the label `security` (exactly that label; `area:security` does not count) | a human labels the issue |
+| the latest analysis flags `risks.security` | the analyst saw an auth change |
+| a file the branch changes (against the merge base with the base branch: commits, uncommitted and untracked files) matches `pipeline.security_paths` | `app/Policies/PostPolicy.php`, `routes/web.php`, `database/migrations/…` |
+
+A docs-only diff (`README.md`, `docs/**`) matches none of the Laravel defaults and skips the stage; the pipeline view
+shows `Security review` as skipped. If Symphony cannot list the changed files (no git checkout, unknown base branch, git
+error), it sends the issue to the audit to be safe. The auditor reports a `security` result: `passed` leads to
+`In review`; `issues_found` sends the issue back to the developer, whose prompt lists the open findings, and after the fix
+the reviewer runs again, then the triggers are evaluated on the new diff. `pipeline.max_security_rounds` (2) bounds that
+loop like the review rounds: the last round goes to `Blocked` with `needs-human`. The result of the reviewer names the
+decision in the `reason` of the `report_result` answer. Configuration and the paths:
+[The security auditor](configuration.md#the-security-auditor).
+
 ### Rounds, limits and manual resume
 
-The review and the test stage can send an issue back to the developer. Symphony counts these rounds itself, from the
+The review, the test and the security stage can send an issue back to the developer. Symphony counts these rounds itself, from the
 [stage results](results.md) on the issue, so a loop cannot run forever:
 
 | Loop | Verdict that counts | Limit (default) | At the limit |
 |---|---|---|---|
 | Reviewer → developer | `changes_needed` | `pipeline.max_review_rounds` (3) | the issue goes to the role's `on_round_limit`, else `Blocked`, and gets the label `needs-human` |
 | Test engineer → developer | `failed` | `pipeline.max_test_rounds` (2) | as above |
+| Security auditor → developer | `issues_found` | `pipeline.max_security_rounds` (2) | as above |
 
 - **Rounds.** The Nth `changes_needed` is round N (the 3rd with the default limit ends the loop; the findings stay in the
   review comment). Rounds are read from the results on the issue, not kept in memory, so they survive restarts, retries

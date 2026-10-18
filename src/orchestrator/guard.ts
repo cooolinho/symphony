@@ -281,7 +281,7 @@ export function guardTools(specs: AgentToolSpec[], guard: TransitionGuard): Agen
     return {
       ...spec,
       execute: async (args, { transition: _unchecked, ...context }): Promise<ToolResult> => {
-        const target = transitionTarget(args);
+        const target = await transitionTarget(args);
         if (target === null) return spec.execute(args, context);
         const refused = await spec.precheck?.(args, context);
         if (refused !== undefined && refused !== null) return refused;
