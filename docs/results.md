@@ -79,6 +79,10 @@ history, and the same history fills the prompt variables `results`, `round` and 
 read fails, the run ends as `failed` with the code `results_read_error` and is retried like any failed run; no session
 starts without the history.
 
+If the newest marker handed the issue to a column that is not active (a round limit or Blocked) but the issue now sits
+in an active column, a human moved it back. The session start then posts a `reset` marker (role `symphony`), removes
+`pipeline.limit_label` and rebuilds the history, so the round counters start at 1. Nothing else writes a `reset`.
+
 A call runs these steps, one call at a time:
 
 1. **Validate** the input (`parseResult`). An invalid result returns `invalid_result` with every problem; nothing runs.
