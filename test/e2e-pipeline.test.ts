@@ -515,8 +515,9 @@ describe('e2e pipeline scenario', () => {
     assert.equal(role('reviewer')?.readOnly, true);
     assert.equal(role('reviewer')?.onCheckFailed, 'In progress');
     assert.deepEqual([...config.pipeline.profiles.keys()], ['bugfix', 'feature', 'refactor', 'default']);
-    assert.deepEqual(config.pipeline.profiles.get('bugfix')?.onResult, { developer: { done: 'Testing' } });
-    assert.deepEqual(config.pipeline.profiles.get('bugfix')?.skip, []);
+    for (const type of ['bugfix', 'feature', 'refactor']) assert.deepEqual(config.pipeline.profiles.get(type)?.onResult, { developer: { done: 'Testing' } }, type);
+    assert.deepEqual(config.pipeline.profiles.get('default')?.onResult, {});
+    for (const type of ['bugfix', 'feature', 'refactor']) assert.deepEqual(config.pipeline.profiles.get(type)?.skip, [], type);
     assert.equal(config.pipeline.maxReviewRounds, 3);
     assert.equal(config.pipeline.maxTestRounds, 2);
     assert.equal(config.pipeline.analysis, 'always');
@@ -551,7 +552,7 @@ describe('e2e pipeline scenario', () => {
   });
 
   it('removes a complexity-based model from the roles', () => {
-    const variant = source.replace('    claude: { model: sonnet }\n  # The architect', '    claude: { model: sonnet, model_by_complexity: { XL: opus } }\n  # The architect');
+    const variant = source.replace('    claude: { model: sonnet }\n  # The architect decides', '    claude: { model: sonnet, model_by_complexity: { XL: opus } }\n  # The architect decides');
     assert.notEqual(variant, source);
     const { config } = resolve({}, variant);
     assert.equal(config.roles?.find((role) => role.name === 'issue-analyst')?.claude.modelByComplexity, undefined);

@@ -74,9 +74,12 @@ describe('#201 bugfix profile in the shipped WORKFLOW.md', () => {
     assert.equal(route(config, ['bug'], 'reviewer', 'changes_needed'), 'In progress');
   });
 
-  it('leaves features, refactors, other types and untyped issues on Agent review, unless SYMPHONY_AFTER_IMPLEMENTATION=Testing', async () => {
+  it('sends features and refactors through Testing like bugs, and leaves other types and untyped issues on Agent review, unless SYMPHONY_AFTER_IMPLEMENTATION=Testing', async () => {
     const config = await load();
-    for (const labels of [['feature'], ['type: feature'], ['type: refactor'], ['refactor'], ['documentation'], []]) {
+    for (const labels of [['feature'], ['type: feature'], ['type: refactor'], ['refactor']]) {
+      assert.equal(route(config, labels, 'developer', 'done'), 'Testing', labels.join());
+    }
+    for (const labels of [['documentation'], []]) {
       assert.equal(route(config, labels, 'developer', 'done'), 'Agent review', labels.join() || 'untyped');
     }
     const all = await load({ SYMPHONY_AFTER_IMPLEMENTATION: 'Testing' });

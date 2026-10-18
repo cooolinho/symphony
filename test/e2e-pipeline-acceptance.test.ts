@@ -304,7 +304,8 @@ describe('#202 the generated pipeline workflow, key by key', () => {
     const b = generated().config as Record<string, any>;
     assert.deepEqual(b.tracker, a.tracker);
     assert.deepEqual(b.pipeline, a.pipeline);
-    assert.deepEqual(b.pipeline.profiles.bugfix, { skip_when: { architect: { complexity: ['S', 'M'] } }, on_result: { developer: { done: 'Testing' } } });
+    assert.deepEqual(Object.keys(b.pipeline.profiles).sort(), ['bugfix', 'default', 'feature', 'refactor']);
+    for (const type of ['bugfix', 'feature', 'refactor']) assert.deepEqual(b.pipeline.profiles[type].on_result, { developer: { done: 'Testing' } }, type);
     assert.equal(b.pipeline.max_review_rounds, 3);
     assert.equal(b.pipeline.max_test_rounds, 2);
     assert.deepEqual(b.tracker.active_states, ['Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review']);

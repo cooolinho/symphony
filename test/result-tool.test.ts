@@ -811,3 +811,64 @@ describe('report_result of an analysis', () => {
     assert.deepEqual(current().labels, ['type: bugfix']);
   });
 });
+
+describe('report_result of a refactor review', () => {
+  const GOALS = ['The parsing code exists once', 'No public signature changes'];
+  const analysed = (goals: string[], run = 'run-0') => {
+    const parsed = parseResult('analysis', { verdict: 'ready', summary: 'Analysed.', type: 'refactor', refactoring_goals: goals });
+    assert.ok(parsed.ok);
+    return {
+      result: parsed.result,
+      meta: { role: 'analyst', run, round: null, profile: null, workflow_hash: null, head_sha: null, checks: null, target: 'In progress', created_at: '2026-10-18T10:00:00.000Z' },
+    };
+  };
+  const reviewTool = (labels: string[], goals: string[] | null = GOALS) =>
+    setup({ labels, history: { ...buildStageHistory(goals === null ? [] : [analysed(goals)]) } });
+
+  it('refuses an approval that does not confirm every goal, names the missing ones and records nothing', async () => {
+    const { report, tracker, unguarded } = reviewTool(['Type: refactor']);
+    const failure = error(await report({ ...APPROVED, confirmed_goals: [GOALS[0]] }));
+    assert.equal(failure.category, 'invalid_result');
+    assert.match(failure.message, /needs every refactoring goal in `confirmed_goals`/);
+    assert.ok(failure.message.includes(`"${GOALS[1]}"`) && !failure.message.includes(`"${GOALS[0]}"`), failure.message);
+    assert.deepEqual(tracker.statusCalls, []);
+    assert.equal(tracker.comments.get('1'), undefined);
+    assert.equal(await unguarded.transitionTarget?.({ ...APPROVED }), null, 'no move is planned for the refused result');
+    assert.equal(error(await report(APPROVED)).category, 'invalid_result');
+  });
+
+  it('records an approval that confirms every goal and keeps the goals in the stored result', async () => {
+    const { report, tracker, markers } = reviewTool(['type: refactor']);
+    const result = data(await report({ ...APPROVED, confirmed_goals: GOALS.map((goal) => ` ${goal.toUpperCase()} `) }));
+    assert.equal(result.target, 'In review');
+    assert.deepEqual(tracker.statusCalls, ['In review']);
+    const [marker] = markers();
+    assert.ok(marker?.result.kind === 'review');
+    assert.deepEqual(marker.result.confirmed_goals, GOALS.map((goal) => goal.toUpperCase()));
+    assert.match(tracker.comments.get('1')?.[0]?.body ?? '', /\*\*Confirmed goals\*\*/);
+  });
+
+  it('does not touch changes_needed reviews', async () => {
+    const { report } = reviewTool(['Type: refactor']);
+    assert.equal(data(await report(CHANGES)).target, 'In progress');
+  });
+
+  it('does not apply to other issue types, to untyped issues or to refactors without goals', async () => {
+    for (const [labels, goals] of [[['Type: feature'], GOALS], [['bug'], GOALS], [[], GOALS], [['Type: refactor'], []], [['Type: refactor'], null]] as const) {
+      const { report } = reviewTool([...labels], goals === null ? null : [...goals]);
+      assert.equal(data(await report(APPROVED)).target, 'In review', `${labels.join() || 'untyped'} / ${goals === null ? 'no analysis' : goals.length}`);
+    }
+  });
+
+  it('uses the goals of the newest analysis', async () => {
+    const older = analysed(['An old goal'], 'run-0');
+    const newer = { ...analysed(GOALS, 'run-1'), meta: { ...analysed(GOALS).meta, run: 'run-1', created_at: '2026-10-18T11:00:00.000Z' } };
+    const { report } = setup({ labels: ['Type: refactor'], history: { ...buildStageHistory([newer, older]) } });
+    assert.match(error(await report(APPROVED)).message, /The parsing code exists once/);
+  });
+
+  it('works without results in the history (older callers)', async () => {
+    const { report } = setup({ labels: ['Type: refactor'] });
+    assert.equal(data(await report(APPROVED)).target, 'In review');
+  });
+});

@@ -117,7 +117,7 @@ Symphony polls a **GitHub Project board** at a fixed interval and hands issues i
 For each issue it creates a folder, clones the repository and lets the agent work: create a branch, implement, test,
 push, open a pull request and comment on the issue. Automatic checks and a second, read-only agent (the reviewer)
 then check the work. Only then does the card land in **In review**, where you review, merge and move it to **Done**.
-Bug issues pass a `Testing` column (an independent test engineer) before the review, and security-relevant changes
+Bug, feature and refactor issues pass a `Testing` column (an independent test engineer) before the review, and security-relevant changes
 (a `security` label, a security risk in the analysis, or changed files such as policies, middleware, routes or migrations)
 pass a read-only `Security review` after it. Review, test and security loops are bounded: at the round limit the card goes
 to **Blocked** with the label `needs-human`.
@@ -142,7 +142,7 @@ live in **`.env`**.
   through the `Design` column first: a read-only architect agent decides on the approach (components, interfaces) and the
   developer implements that design. Small issues skip the column without a session
   ([details](docs/configuration.md#the-architect)).
-- **Test engineer:** an independent agent in the `Testing` column (bug issues always, other issues optionally) writes tests for the acceptance criteria and
+- **Test engineer:** an independent agent in the `Testing` column (bug, feature and refactor issues always, other issues optionally) writes tests for the acceptance criteria and
   may only change test files; failed tests go back to the developer with the failed cases, and after
   `pipeline.max_test_rounds` failed rounds the issue waits for you
   ([details](docs/configuration.md#the-test-engineer)).

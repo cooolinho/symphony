@@ -170,17 +170,19 @@ describe('shipped WORKFLOW.md', () => {
       return outcome.target;
     };
 
-    it('defines the profiles: only the bugfix developer hands over to Testing, the architect is skipped for small issues, and the config has no warnings', async () => {
+    it('defines the profiles: the bugfix, feature and refactor developers hand over to Testing, the architect is skipped for small issues, and the config has no warnings', async () => {
       const config = await resolveWith();
       assert.deepEqual([...config.pipeline.profiles.keys()], ['bugfix', 'feature', 'refactor', 'default']);
       const bugfix = config.pipeline.profiles.get('bugfix');
       assert.deepEqual(bugfix?.onResult, { developer: { done: 'Testing' } });
       assert.deepEqual(bugfix?.skip, []);
       assert.deepEqual(bugfix?.skipWhen, { architect: ['S', 'M'] });
-      for (const name of ['feature', 'refactor', 'default']) {
-        assert.deepEqual(config.pipeline.profiles.get(name)?.onResult, {}, name);
+      for (const name of ['feature', 'refactor']) {
+        assert.deepEqual(config.pipeline.profiles.get(name)?.onResult, { developer: { done: 'Testing' } }, name);
         assert.deepEqual(config.pipeline.profiles.get(name)?.skipWhen, { architect: ['S'] }, name);
       }
+      assert.deepEqual(config.pipeline.profiles.get('default')?.onResult, {});
+      assert.deepEqual(config.pipeline.profiles.get('default')?.skipWhen, { architect: ['S'] });
       assert.equal(config.roles?.some((role) => role.name === 'architect'), true, 'the architect is a stage in Design');
       assert.equal(config.warnings?.length ?? 0, 0);
     });
@@ -196,9 +198,19 @@ describe('shipped WORKFLOW.md', () => {
       }
     });
 
-    it('keeps Agent review after the developer for features, refactors and untyped issues, unless SYMPHONY_AFTER_IMPLEMENTATION=Testing', async () => {
+    it('routes features and refactors through Testing and keeps Agent review for untyped issues, unless SYMPHONY_AFTER_IMPLEMENTATION=Testing', async () => {
       const config = await resolveWith();
-      for (const labels of [['feature'], ['type: refactor'], []]) assert.equal(target(config, labels, 'developer', 'done'), 'Agent review', labels.join() || 'untyped');
+      for (const labels of [['feature'], ['type: refactor']]) {
+        for (const complexity of ['complexity: s', 'complexity: m']) {
+          const all = [...labels, complexity];
+          assert.equal(target(config, all, 'issue-analyst', 'ready'), complexity === 'complexity: s' ? 'In progress' : 'Design', all.join());
+          assert.equal(target(config, all, 'developer', 'done'), 'Testing', all.join());
+          assert.equal(target(config, all, 'test-engineer', 'passed'), 'Agent review', all.join());
+          assert.equal(target(config, all, 'test-engineer', 'failed'), 'In progress', all.join());
+          assert.equal(target(config, all, 'reviewer', 'approved'), 'In review', all.join());
+        }
+      }
+      for (const labels of [['documentation'], []]) assert.equal(target(config, labels, 'developer', 'done'), 'Agent review', labels.join() || 'untyped');
       const on = await resolveWith({ SYMPHONY_AFTER_IMPLEMENTATION: 'Testing' });
       for (const labels of [['feature'], ['bug'], []]) assert.equal(target(on, labels, 'developer', 'done'), 'Testing', labels.join() || 'untyped');
     });
@@ -209,7 +221,7 @@ describe('shipped WORKFLOW.md', () => {
       assert.equal(config.agent.maxConcurrentAgentsByState.get('agent review'), 1);
       assert.ok(config.tracker.activeStates.includes('Testing'));
       const source = fs.readFileSync(shipped, 'utf8');
-      assert.match(source, /#   Testing +-> test engineer[\s\S]*Bug issues \(pipeline\.profiles\.bugfix\) always go through it/);
+      assert.match(source, /#   Testing +-> test engineer[\s\S]*Bug, feature and refactor issues \(pipeline\.profiles\) always go through it/);
       assert.doesNotMatch(source, /Optional: the developer hands over to Testing/);
     });
 
@@ -315,6 +327,7 @@ describe('shipped WORKFLOW.md', () => {
         docs_needed: true,
         open_questions: [],
         plan: ['Add the exporter', 'Test it'],
+        refactoring_goals: [],
       },
     };
     for (const role of ['developer', 'test-engineer', 'reviewer']) {
@@ -332,6 +345,119 @@ describe('shipped WORKFLOW.md', () => {
     for (const role of ['developer', 'test-engineer', 'reviewer']) {
       assert.doesNotMatch(await render(role), /Analysis of the issue analyst/, role);
     }
+  });
+
+  describe('feature and refactor profiles', () => {
+    const GOALS = ['The parsing code exists once', 'No public signature of the module changes'];
+    const resultsWith = (goals: string[]) => ({
+      latest: [],
+      open_findings: [],
+      failed_cases: [],
+      test: null,
+      design: null,
+      analysis: {
+        verdict: 'ready',
+        summary: 'Merge the parsers.',
+        type: 'refactor',
+        complexity: 'M',
+        components: [],
+        acceptance_criteria: [],
+        risks: [],
+        docs_needed: false,
+        open_questions: [],
+        plan: [],
+        refactoring_goals: goals,
+      },
+    });
+    const prompt = (role: string, labels: string[], description?: string, goals: string[] | null = []) => {
+      const subject = { ...issue, labels, ...(description !== undefined ? { description } : {}) };
+      return loadWorkflowFile(shipped).then(({ definition }) =>
+        renderPrompt(compilePrompt(definition.promptTemplate), {
+          issue: issueTemplateValue(makeIssue(subject), commandSkills([toolbox])),
+          attempt: null,
+          role,
+          agents: [],
+          round: 1,
+          result_required: true,
+          test_paths: ['tests/**'],
+          ...(goals === null ? {} : { results: resultsWith(goals) }),
+        }),
+      );
+    };
+    const REFACTOR_ONLY = [
+      /This is a refactoring: it must not change behaviour/,
+      /characterization tests/,
+      /Behaviour preserved \(refactoring\)/,
+      /`refactoring_goals`/,
+      /`confirmed_goals`/,
+      /green on the base commit/,
+    ];
+    const FEATURE_ONLY = [/This is a new feature: implement the design/, /\*\*Feature:\*\* the change implements the design/];
+
+    it('tells the refactor developer to load the skill, work characterization tests first and meet the goals', async () => {
+      const text = await prompt('developer', ['type: refactor'], 'Merge the parsers.', GOALS);
+      assert.match(text, /This is a refactoring: it must not change behaviour\. Before you change any code, load the skill `symphony:refactor-safely` with the Skill tool and follow it\./);
+      assert.match(text, /Work characterization tests first/);
+      assert.match(text, /Keep the public interfaces and the existing tests unchanged, and do not fix bugs on the way/);
+      assert.match(text, /Meet the refactoring goals listed above/);
+      assert.match(text, /Refactoring goals \(the review confirms each one\):\n- The parsing code exists once\n- No public signature of the module changes/);
+      assert.doesNotMatch(await prompt('developer', ['type: refactor'], 'Merge the parsers.'), /Meet the refactoring goals listed above/);
+      // The analysis stage was skipped: no analysis in the history, the steps still render.
+      for (const role of ['developer', 'reviewer', 'test-engineer']) assert.match(await prompt(role, ['type: refactor'], undefined, null), /characterization tests|Behaviour preserved/, role);
+    });
+
+    it('does not load the refactor-safely skill twice when the issue starts with /refactor-safely', async () => {
+      for (const role of ['developer', 'reviewer']) {
+        const text = await prompt(role, ['type: refactor'], '/refactor-safely\n\nMerge the parsers.', GOALS);
+        assert.equal(text.split('load the skill `symphony:refactor-safely`').length - 1, 1, role);
+        assert.match(text, /## Issue command: \/refactor-safely/, role);
+      }
+    });
+
+    it('tells the refactor test engineer to check characterization tests on the base commit and on HEAD', async () => {
+      const text = await prompt('test-engineer', ['type: refactor']);
+      assert.match(text, /your tests are characterization tests/);
+      assert.match(text, /green on the base commit[^]*and green on HEAD/);
+      assert.match(text, /report the verdict `failed`/);
+    });
+
+    it('tells the refactor reviewer to check the interfaces and confirm each goal, and to list confirmed_goals', async () => {
+      const text = await prompt('reviewer', ['type: refactor'], 'Merge the parsers.', GOALS);
+      assert.match(text, /load the skill `symphony:refactor-safely` with the Skill tool and use its review checklist/);
+      assert.match(text, /Public interfaces .* are unchanged; existing tests and their assertions are unchanged/);
+      assert.match(text, /\*\*Refactoring goals:\*\* check each goal of the analysis/);
+      assert.match(text, /`confirmed_goals`: the refactoring goals of the analysis that the change meets/);
+      const none = await prompt('reviewer', ['type: refactor'], 'Merge the parsers.');
+      assert.match(none, /Behaviour preserved \(refactoring\)/);
+      assert.doesNotMatch(none, /confirmed_goals/);
+    });
+
+    it('tells the refactor analyst to fill refactoring_goals, and shows the field to untyped issues too', async () => {
+      assert.match(await prompt('issue-analyst', ['type: refactor']), /`refactoring_goals`: for a refactoring only/);
+      assert.match(await prompt('issue-analyst', ['type: refactor']), /find the public interfaces and the existing tests/);
+      assert.match(await prompt('issue-analyst', []), /`refactoring_goals`: for a refactoring only/);
+      assert.doesNotMatch(await prompt('issue-analyst', ['bug']), /refactoring_goals/);
+    });
+
+    it('gives the feature developer and reviewer the design and acceptance criteria steps', async () => {
+      const developer = await prompt('developer', ['feature']);
+      assert.match(developer, /This is a new feature: implement the design given above \(if there is one\) and the acceptance criteria\. Every acceptance criterion needs a test/);
+      const reviewer = await prompt('reviewer', ['type: feature']);
+      assert.match(reviewer, /\*\*Feature:\*\* the change implements the design given above \(if there is one\) and every acceptance criterion; every criterion has a meaningful test/);
+    });
+
+    it('keeps the profile steps apart: bugfix, other types and untyped issues see neither', async () => {
+      for (const role of ['developer', 'test-engineer', 'reviewer', 'issue-analyst']) {
+        for (const labels of [['bug'], ['documentation'], []]) {
+          const text = await prompt(role, labels, 'Merge the parsers.', GOALS);
+          for (const pattern of [...REFACTOR_ONLY.slice(0, 3), ...FEATURE_ONLY]) assert.doesNotMatch(text, pattern, `${role} ${labels.join() || 'untyped'}`);
+        }
+        assert.doesNotMatch(await prompt(role, ['feature']), REFACTOR_ONLY[0] as RegExp, role);
+        assert.doesNotMatch(await prompt(role, ['type: refactor']), FEATURE_ONLY[0] as RegExp, role);
+      }
+      assert.doesNotMatch(await prompt('reviewer', ['bug'], undefined, GOALS), /confirmed_goals/);
+      assert.doesNotMatch(await prompt('reviewer', ['feature'], undefined, GOALS), /confirmed_goals/);
+    });
   });
 
   it('renders the read-only architect prompt: what to decide, the design fields and how to handle each answer', async () => {
@@ -381,8 +507,15 @@ describe('shipped WORKFLOW.md', () => {
     assert.match(prompt, /Migrations:\n- add invoices\.exported_at/);
     assert.match(prompt, /Compatibility: Existing exports are unchanged/);
     assert.match(prompt, /Options considered:\n- A new service\n- Extend the exporter/);
-    // Only the developer implements it: the other roles do not get the block.
-    for (const role of ['reviewer', 'test-engineer', 'issue-analyst']) {
+    // The reviewer checks the change against it, with the same facts but a reviewer's wording.
+    const reviewer = await render('reviewer', null, undefined, null, [], { result_required: true, round: 1, results });
+    assert.match(reviewer, /## Design of the architect/);
+    assert.match(reviewer, /Check the change against this design;.*`plan_deviations`/);
+    assert.doesNotMatch(reviewer, /Implement this design/);
+    assert.match(reviewer, /Decision: A new InvoiceExporter next to the others/);
+    assert.match(reviewer, /Interfaces:\n- exportInvoices\(list\): string/);
+    // The other roles do not get the block.
+    for (const role of ['test-engineer', 'issue-analyst']) {
       assert.doesNotMatch(await render(role, null, undefined, null, [], { result_required: true, round: 1, results }), /Design of the architect/, role);
     }
     // Nothing is rendered without a design (a skipped stage, an old issue, the empty results).

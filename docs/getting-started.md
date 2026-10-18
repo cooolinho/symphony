@@ -38,7 +38,7 @@ npm install
    | `Ready` | you | starts the **Issue analyst**, who hands the issue on to `Design` (larger changes) or `In progress` |
    | `Design` | Issue analyst, for larger changes (feature and refactor above complexity `S`, bugfix of complexity `L` or `XL`, or no complexity label); smaller issues skip it without a session | starts the **Architect** (read-only), who reports the design the developer implements |
    | `In progress` | Developer, Reviewer (changes needed), Test engineer (tests failed), Architect (design ready) | Developer works |
-   | `Testing` | Developer, after passing checks (bug issues; other issues only with `SYMPHONY_AFTER_IMPLEMENTATION=Testing`) | starts the **Test engineer**, who writes independent tests and may only change test files |
+   | `Testing` | Developer, after passing checks (bug, feature and refactor issues; other issues only with `SYMPHONY_AFTER_IMPLEMENTATION=Testing`) | starts the **Test engineer**, who writes independent tests and may only change test files |
    | `Agent review` | Developer (issues without the test stage), or Test engineer when the tests pass | starts the **Reviewer** (at most one at a time) |
    | `Security review` | Reviewer, when the approved change is security-relevant (a `security` label, a security risk in the analysis, or a changed file in `pipeline.security_paths`); other approved issues skip it without a session | starts the **Security auditor** (read-only, at most one at a time) |
    | `Blocked` | Issue analyst (open questions), Architect, Developer, Reviewer or Security auditor | stops the agent, workspace is kept; your turn |
@@ -50,7 +50,9 @@ npm install
    reports `unknown board column "Design"` otherwise). `Testing` is used by the
    [test engineer](configuration.md#the-test-engineer): bug issues (label `bug` or `Type: bugfix`) run
    `Ready → In progress → Testing → Agent review → In review` through the `bugfix`
-   [workflow profile](configuration.md#workflow-profiles), all other issues skip `Testing` unless
+   [workflow profile](configuration.md#workflow-profiles), feature and refactor issues run through `Testing` too (their
+   profiles, see [Features and refactorings](usage.md#features-and-refactorings-the-feature-and-refactor-profiles)), all
+   other issues skip `Testing` unless
    `SYMPHONY_AFTER_IMPLEMENTATION=Testing` makes the developer hand every issue over to it. The column is required
    either way: the dry run (step 6) reports every column missing from the board (`unknown board column "Testing"`).
    `Security review` is used by the [security auditor](configuration.md#the-security-auditor) and is required on the
