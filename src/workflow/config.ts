@@ -220,7 +220,7 @@ const PIPELINE_KEYS = new Set([
   'docs_paths',
   'security_paths',
 ]);
-const ROLE_CLAUDE_KEYS = new Set(['model', 'effort', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'max_budget_usd']);
+const ROLE_CLAUDE_KEYS = new Set(['model', 'effort', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'max_budget_usd', 'model_by_complexity']);
 const MODEL_CLAUDE_KEYS = new Set(['permission_mode', 'on_permission_request', 'allowed_tools', 'disallowed_tools']);
 
 export function normalizeStateName(state: string): string {
@@ -485,6 +485,37 @@ function readRoleClaude(reader: Reader, raw: Record<string, unknown>, field: str
   if (appendSystemPrompt !== null) claude.appendSystemPrompt = appendSystemPrompt;
   const maxBudgetUsd = reader.number(raw, 'max_budget_usd', `${field}.max_budget_usd`);
   if (maxBudgetUsd !== null) claude.maxBudgetUsd = maxBudgetUsd;
+  const modelByComplexityRaw = raw.model_by_complexity;
+  if (modelByComplexityRaw !== undefined && modelByComplexityRaw !== null) {
+    if (isPlainObject(modelByComplexityRaw)) {
+      const modelByComplexity: Partial<Record<'S' | 'M' | 'L' | 'XL', string | null>> = {};
+      for (const [level, value] of Object.entries(modelByComplexityRaw)) {
+        const levelPath = `${field}.model_by_complexity.${level}`;
+        if (!['S', 'M', 'L', 'XL'].includes(level)) {
+          reader.errors.push(`${levelPath}: ${JSON.stringify(level)} is not a valid complexity level (S, M, L, XL)`);
+          continue;
+        }
+        if (value === null) {
+          modelByComplexity[level as 'S' | 'M' | 'L' | 'XL'] = null;
+        } else {
+          const modelValue = reader.string({ [level]: value }, level, levelPath);
+          if (modelValue === null || modelValue.trim() === '') {
+            reader.errors.push(`${levelPath} must not be empty`);
+            continue;
+          }
+          const validModel = modelForLabelValue(modelValue);
+          if (validModel === null) {
+            reader.errors.push(`${levelPath}: ${JSON.stringify(modelValue)} is not a valid model name`);
+            continue;
+          }
+          modelByComplexity[level as 'S' | 'M' | 'L' | 'XL'] = validModel;
+        }
+      }
+      if (Object.keys(modelByComplexity).length > 0) claude.modelByComplexity = modelByComplexity;
+    } else {
+      reader.errors.push(`${field}.model_by_complexity must be a map of complexity levels to model names`);
+    }
+  }
   return claude;
 }
 

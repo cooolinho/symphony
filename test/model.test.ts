@@ -44,14 +44,14 @@ describe('model labels', () => {
   });
 
   it('picks the model from a label, else the default', () => {
-    assert.deepEqual(chooseModel(['bug', 'model: sonnet-5-5'], 'opus'), { model: 'claude-sonnet-5-5', label: 'model: sonnet-5-5', warning: null, labelIgnored: false });
-    assert.deepEqual(chooseModel(['Model:Haiku'], 'opus'), { model: 'haiku', label: 'Model:Haiku', warning: null, labelIgnored: false });
-    assert.deepEqual(chooseModel(['bug'], 'opus'), { model: 'opus', label: null, warning: null, labelIgnored: false });
-    assert.deepEqual(chooseModel([], null), { model: null, label: null, warning: null, labelIgnored: false });
+    assert.deepEqual(chooseModel(['bug', 'model: sonnet-5-5'], 'opus'), { model: 'claude-sonnet-5-5', label: 'model: sonnet-5-5', warning: null, labelIgnored: false, source: 'label' });
+    assert.deepEqual(chooseModel(['Model:Haiku'], 'opus'), { model: 'haiku', label: 'Model:Haiku', warning: null, labelIgnored: false, source: 'label' });
+    assert.deepEqual(chooseModel(['bug'], 'opus'), { model: 'opus', label: null, warning: null, labelIgnored: false, source: 'role' });
+    assert.deepEqual(chooseModel([], null), { model: null, label: null, warning: null, labelIgnored: false, source: null });
   });
 
   it('treats labels naming the same model as one choice', () => {
-    assert.deepEqual(chooseModel(['model: opus', 'model: claude-opus'], 'sonnet'), { model: 'opus', label: 'model: opus', warning: null, labelIgnored: false });
+    assert.deepEqual(chooseModel(['model: opus', 'model: claude-opus'], 'sonnet'), { model: 'opus', label: 'model: opus', warning: null, labelIgnored: false, source: 'label' });
   });
 
   it('falls back to the default model for conflicting or unknown labels, with a warning', () => {
@@ -69,11 +69,34 @@ describe('model labels', () => {
     assert.match(mixed.warning ?? '', /unknown model label "model: opsu"/);
   });
 
+  it('picks the model from complexity when no label applies, else the default', () => {
+    const modelByComplexity = { S: 'haiku', L: 'opus', XL: 'opus' };
+    const chooseByComplexity = (labels: readonly string[], complexity: 'S' | 'L' | null) =>
+      chooseModel(labels, 'sonnet', 'apply', complexity, modelByComplexity);
+
+    assert.deepEqual(chooseByComplexity(['bug'], 'S'), { model: 'haiku', label: null, warning: null, labelIgnored: false, source: 'complexity' });
+    assert.deepEqual(chooseByComplexity(['bug'], 'L'), { model: 'opus', label: null, warning: null, labelIgnored: false, source: 'complexity' });
+    assert.deepEqual(chooseByComplexity(['bug'], null), { model: 'sonnet', label: null, warning: null, labelIgnored: false, source: 'role' });
+    assert.deepEqual(chooseByComplexity([], 'S'), { model: 'haiku', label: null, warning: null, labelIgnored: false, source: 'complexity' });
+  });
+
+  it('prefers model labels over complexity', () => {
+    const modelByComplexity = { S: 'haiku', L: 'opus' };
+    const choice = chooseModel(['model: sonnet'], 'sonnet', 'apply', 'S', modelByComplexity);
+    assert.deepEqual(choice, { model: 'sonnet', label: 'model: sonnet', warning: null, labelIgnored: false, source: 'label' });
+  });
+
+  it('respects model_by_complexity when modelLabel is "ignore"', () => {
+    const modelByComplexity = { S: 'haiku', L: 'opus' };
+    const choice = chooseModel(['model: sonnet'], 'sonnet', 'ignore', 'L', modelByComplexity);
+    assert.deepEqual(choice, { model: 'opus', label: null, warning: null, labelIgnored: true, source: 'complexity' });
+  });
+
   it('ignores model labels when modelLabel policy is "ignore"', () => {
-    assert.deepEqual(chooseModel(['model: sonnet'], 'opus', 'ignore'), { model: 'opus', label: null, warning: null, labelIgnored: true });
-    assert.deepEqual(chooseModel(['bug', 'model: haiku'], 'sonnet', 'ignore'), { model: 'sonnet', label: null, warning: null, labelIgnored: true });
-    assert.deepEqual(chooseModel(['bug'], 'opus', 'ignore'), { model: 'opus', label: null, warning: null, labelIgnored: false });
-    assert.deepEqual(chooseModel([], 'haiku', 'ignore'), { model: 'haiku', label: null, warning: null, labelIgnored: false });
+    assert.deepEqual(chooseModel(['model: sonnet'], 'opus', 'ignore'), { model: 'opus', label: null, warning: null, labelIgnored: true, source: 'role' });
+    assert.deepEqual(chooseModel(['bug', 'model: haiku'], 'sonnet', 'ignore'), { model: 'sonnet', label: null, warning: null, labelIgnored: true, source: 'role' });
+    assert.deepEqual(chooseModel(['bug'], 'opus', 'ignore'), { model: 'opus', label: null, warning: null, labelIgnored: false, source: 'role' });
+    assert.deepEqual(chooseModel([], 'haiku', 'ignore'), { model: 'haiku', label: null, warning: null, labelIgnored: false, source: 'role' });
   });
 
   it('drops fallback models equal to the session model', () => {
