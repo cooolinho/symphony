@@ -24,7 +24,7 @@ import { FakeRunner, FakeTracker, ManualClock, ManualTimers, StaticWorkflow, cal
 // (`verify.ts <run-dir>`), exactly as the files of a live run would.
 
 const source = fs.readFileSync(path.join(ROOT, 'WORKFLOW.md'), 'utf8');
-const BOARD = ['Backlog', 'Ready', 'In progress', 'Testing', 'Agent review', 'Blocked', 'In review', 'Done'];
+const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
 const REPO = 'acme/app';
 const NUMBERS: Record<string, number> = { P1: 21, P2: 22, P3: 23 };
 
@@ -104,8 +104,18 @@ async function replay(options: ReplayOptions = {}): Promise<Replay> {
     active_states: front.tracker.active_states,
     terminal_states: front.tracker.terminal_states,
   };
-  // Instead of the shipped clone: a git checkout with one commit, which the test engineer's path rule measures from.
-  const hooks = { after_create: ['git init -q', 'git config user.email symphony@example.com', 'git config user.name Symphony', 'git commit -q --allow-empty -m init'].join('\n') };
+  // Instead of the shipped clone: a git checkout with one commit, which the test engineer's path rule and the security
+  // check measure from (a clone has origin/HEAD; without it the check cannot list the changed files and audits).
+  const hooks = {
+    after_create: [
+      'git init -q',
+      'git config user.email symphony@example.com',
+      'git config user.name Symphony',
+      'git commit -q --allow-empty -m init',
+      'git update-ref refs/remotes/origin/main HEAD',
+      'git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main',
+    ].join('\n'),
+  };
   Object.assign(front, { tracker, workspace: { root: workspaceRoot }, hooks });
   delete front.server;
   delete front.laravel;
@@ -289,9 +299,9 @@ describe('#202 pipeline scenario replayed through the real orchestrator', () => 
     const run = await replay();
     const recorded = async (key: string) =>
       (await run.tracker.readResults(issueOf(run, key))).map(({ result, meta }) => [meta.role, result.kind, result.verdict, meta.round, meta.profile ?? null, meta.target]);
-    // The analysis runs before the issue has a type, so it carries no profile; every later stage runs through bugfix.
+    // The analysis runs before the issue has a type, so it carries the default profile; every later stage runs through bugfix.
     assert.deepEqual(await recorded('P1'), [
-      ['issue-analyst', 'analysis', 'ready', null, null, 'In progress'],
+      ['issue-analyst', 'analysis', 'ready', null, 'default', 'In progress'],
       ['developer', 'implementation', 'done', null, 'bugfix', 'Testing'],
       ['test-engineer', 'test', 'failed', 1, 'bugfix', 'In progress'],
       ['developer', 'implementation', 'done', null, 'bugfix', 'Testing'],
@@ -299,7 +309,7 @@ describe('#202 pipeline scenario replayed through the real orchestrator', () => 
       ['reviewer', 'review', 'approved', 1, 'bugfix', 'In review'],
     ]);
     assert.deepEqual(await recorded('P2'), [
-      ['issue-analyst', 'analysis', 'ready', null, null, 'In progress'],
+      ['issue-analyst', 'analysis', 'ready', null, 'default', 'In progress'],
       ['developer', 'implementation', 'done', null, 'bugfix', 'Testing'],
       ['test-engineer', 'test', 'passed', 1, 'bugfix', 'Agent review'],
       ['reviewer', 'review', 'changes_needed', 1, 'bugfix', 'In progress'],
