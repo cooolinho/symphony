@@ -6,7 +6,9 @@ Runs the orchestrator against a real board. The default scenario checks two guar
 - no issue is started while one of its dependencies ("blocked by") is still open.
 
 The [`roles` scenario](#scenario-roles) (`--scenario roles`) checks the roles lifecycle instead:
-developer → entry check → reviewer → handoff.
+developer → entry check → reviewer → handoff. The [`pipeline` scenario](#scenario-pipeline) (`--scenario pipeline`)
+runs the shipped bugfix pipeline: issue analyst → developer → test engineer → reviewer, with a test loop, a review loop
+and a blocked analysis.
 
 The test creates real issues and runs real Claude Code sessions, so use a dedicated test repository and board.
 The agents only comment or report results; they change no code.
@@ -22,6 +24,12 @@ The agents only comment or report results; they change no code.
 - Claude Code is logged in, as for normal operation.
 - Only for `--scenario roles`: the board also has the columns `Agent review` and `Blocked` (see `ROLE_STATUS` in
   `scripts/e2e/roles.ts`).
+- Only for `--scenario pipeline`: the board has the columns `Ready`, `In progress`, `Testing`, `Agent review`,
+  `In review`, `Blocked` and `Done` (see `PIPELINE_COLUMNS` in `scripts/e2e/pipeline.ts`), and `Testing` sits between
+  `In progress` and `Agent review`. The agent slots (`SYMPHONY_MAX_CONCURRENT_AGENTS`, default 3) must leave the test
+  engineer a slot beyond the ones reserved for the developer and the reviewer, and the repository must be reachable for
+  the workspace hook (`git clone` over SSH, as for normal operation). The test checks the generated workflow against
+  the board before it creates any issue and refuses to start on a problem.
 
 ## Scenario
 
@@ -43,15 +51,16 @@ comment (`E2E run T<n> done. Dependencies according to the tracker: …`) and ha
 npm run e2e
 npm run e2e -- --env-file .env.test --review-delay 90
 npm run e2e -- --scenario roles
+npm run e2e -- --scenario pipeline
 ```
 
 | Option | Default | Description |
 |---|---|---|
-| `--scenario <name>` | `default` | `default` (dependencies and concurrency) or `roles` (roles lifecycle, see below) |
+| `--scenario <name>` | `default` | `default` (dependencies and concurrency), `roles` (roles lifecycle) or `pipeline` (bugfix pipeline), see below |
 | `--env-file <path>` | `.env` next to `WORKFLOW.md` | dotenv file for the test and the Symphony instance |
 | `--port <n>` | `server.port`, else 4000 | dashboard/API port of the test instance |
 | `--review-delay <s>` | 60 | Default scenario only. How long an issue stays in `In review` before the simulated review closes it. Keep it longer than the poll interval, so that every dependency is visibly finished but still open for at least one poll. |
-| `--timeout <min>` | 45 | Give up and stop Symphony after this many minutes. |
+| `--timeout <min>` | 45; 60 for `pipeline` | Give up and stop Symphony after this many minutes. |
 
 Steps:
 
@@ -133,6 +142,86 @@ agent runs. Every 3 s the test reads the issues' statuses into `timeline.jsonl` 
 0.50–1 USD and 10–15 minutes with a poll interval of 30 s. The test issues stay open in `In review`; close or archive
 them afterwards.
 
+## Scenario `pipeline`
+
+Proves the shipped multi-agent pipeline of [`WORKFLOW.md`](../WORKFLOW.md) on a real board and with real Claude sessions:
+the [issue analyst](configuration.md#the-issue-analyst) classifies the issue, the developer implements it, the
+[test engineer](configuration.md#the-test-engineer) tests it and the reviewer reviews it. Bug issues take the
+[`bugfix` profile](configuration.md#workflow-profiles), which sends the developer's `done` through `Testing`. Three
+issues cover a test loop, a review loop and a blocked analysis. Every role hands off with
+[`report_result`](results.md#the-report_result-tool): Symphony posts the result comment and computes the next column;
+the agents never change a status themselves.
+
+**Workflow.** The test writes its own workflow to `<run dir>/WORKFLOW.md`, derived from the repository's
+`WORKFLOW.md`. What a regression in the shipped configuration would break stays as shipped, so the run proves it:
+the roles `issue-analyst`, `developer`, `test-engineer` and `reviewer` with their `on_result` targets,
+`pipeline.profiles.bugfix` (`developer: {done: Testing}`), `pipeline.max_review_rounds` (3), `max_test_rounds` (2),
+`pipeline.analysis: always`, `tracker.active_states`, the agent slots (`SYMPHONY_MAX_CONCURRENT_AGENTS`, 3 by default;
+the reservations for the developer and the reviewer, one agent each in `Testing` and `Agent review`) and the tracker,
+hook and Claude settings. Replaced are:
+
+| Setting | Value |
+|---|---|
+| `claude.model` and the `claude.model` of every role | `sonnet`. The shipped reviewer asks for `opus`; `model_by_complexity` is dropped. |
+| `checks.on_enter` | empty (`timeout_ms` 60000): the test issues change no code, so no entry check runs the repository's test suite. |
+| `polling.interval_ms` | 10000 (shipped: 30000). Every stage starts at a poll, and the run has about 14 of them in a row. |
+| `agent.max_issue_cost_usd` | 4: an issue that spent this much gets no new stage. A safety net, not part of the checks. |
+| paths | The workspace root, the hook scripts (`$SYMPHONY_WORKFLOW_DIR`) and `claude.plugins` are made absolute, since the file lives in the run directory. |
+| `laravel.boost` | `off` |
+| prompt | "follow the section of the issue text for your role; tracker tools only". It prints the round and the number of failed test cases or open findings. |
+
+**Issues.** Three issues with `Model: sonnet`, no dependencies, created in `Ready`. Each issue text has one section per
+role that works on the issue, with the exact `report_result` input and a marker string (`E2E run P1 developed`, …) that
+the agent puts into the summary. The test engineer and the reviewer decide by the `round` of their prompt: the number of
+failed tests, respectively `changes_needed` reviews, before it, plus one.
+
+| Issue | Analyst | Developer | Test engineer | Reviewer | Board path after `Ready` |
+|---|---|---|---|---|---|
+| P1 test loop | `ready`, type `bugfix`, complexity `S` | `done` (twice) | round 1 `failed` with one failed case, round 2 `passed` | `approved` | `In progress` → `Testing` → `In progress` → `Testing` → `Agent review` → `In review` |
+| P2 review loop | `ready`, type `bugfix`, complexity `S` | `done` (twice) | `passed` (twice) | round 1 `changes_needed` with one `major` finding, round 2 `approved` | `In progress` → `Testing` → `Agent review` → `In progress` → `Testing` → `Agent review` → `In review` |
+| P3 blocked analysis | `needs_info` with one open question | none | none | none | `Blocked` |
+
+The analyst's `Type: bugfix` label (set by `report_result`, created in the repository when it is missing) is what picks
+the `bugfix` profile for P1 and P2. There is no simulated review: the run ends as soon as no test issue is in an active
+column and no agent runs. Every 3 s the test reads the issues' statuses into `timeline.jsonl` and the running agents
+into `trace.log`.
+
+**Checks** (`scripts/e2e/verify-pipeline.ts`, a pure function over the repository log lines, the status timeline and
+the results read back from the issues; unit-tested in `test/e2e-pipeline.test.ts`):
+
+| Check | Passes when |
+|---|---|
+| Status path | After `Ready`, each issue went the path of the table above. |
+| Never `Done` | No issue was ever seen in `Done`, and each was seen on the board at all. |
+| Stage results | Read back from the issue comments: P1 has `analysis:ready`, `implementation:done`, `test:failed`, `implementation:done`, `test:passed`, `review:approved`; P2 has `analysis:ready`, `implementation:done`, `test:passed`, `review:changes_needed`, `implementation:done`, `test:passed`, `review:approved`; P3 has `analysis:needs_info`. |
+| Markers | Each result's summary carries the marker its issue text asked for. |
+| Rounds | The `round` in each result's meta is the expected one (P1: test 1 `failed`, test 2 `passed`; P2: review 1 `changes_needed`, review 2 `approved`), the `stage_result` lines of the repository log agree with it, no round limit was reached and no issue carries `pipeline.limit_label`. |
+| Profile | The results of P1 and P2 after the analysis were routed by the `bugfix` profile, and both issues carry `Type: bugfix`. |
+| Blocked analysis | P3's only result is `analysis:needs_info` with at least one open question and the target `Blocked`; it had one session (the analyst) and was never in another column. |
+| Run order | The sessions that handed off ran in stage order: the roles of the results above, one session per result. |
+| Last session | Each issue's last session handed off, and no session failed or stalled. |
+| Cost per role | All four roles ran, each with a cost above 0 (`cost_usd` of `run_finished`). |
+| Model | Every run asked for `sonnet` and was answered by a Sonnet model. |
+| Total cost | Above 0 and below `COST_CEILING_USD` (6 USD, `scripts/e2e/pipeline.ts`). |
+| No code changes | As in the default scenario: no pull request and no `symphony/issue-<n>` branch. |
+
+The report starts with a table of the cost per role (sessions, turns, models, USD) followed by the table per issue
+(status path, sessions, turns, USD).
+
+**Cost and duration.** About 14 sessions (P1 6, P2 7, P3 1), each a few turns with Sonnet: expect roughly 1–3 USD and
+20–35 minutes with the 10 s poll interval, so the default `--timeout` is 60 minutes. These are estimates until the
+reference run below is filled in; then tune the timeout, the poll interval and `COST_CEILING_USD` from the measured
+values. The test issues stay open in `In review` and `Blocked`; close or archive them afterwards.
+
+### Reference run
+
+Not recorded yet. The live run needs a board and Claude usage, so it is a manual step: after the first passing
+`npm run e2e -- --scenario pipeline`, enter its values here.
+
+| Date | Duration | Cost | Sessions | Commit | Run directory |
+|---|---|---|---|---|---|
+| _(date)_ | _(minutes)_ | _(USD, total from the report)_ | _(number)_ | _(`git rev-parse --short HEAD`)_ | _(`logs/e2e/<timestamp>`)_ |
+
 ## Run directory
 
 Each run writes to `logs/e2e/<timestamp>/`, which is ignored by git:
@@ -142,10 +231,11 @@ Each run writes to `logs/e2e/<timestamp>/`, which is ignored by git:
 | `run.json` | Start time, repository and the created issues (numbers, node ids, board items, dependencies) |
 | `symphony.log` | Output of the Symphony instance |
 | `state/` | Its log directory: history log and session transcripts. Test runs therefore do not appear in the statistics of your normal instance. |
-| `trace.log` | Running agents every 5 s |
+| `trace.log` | Running agents every 5 s (every 3 s in the roles and pipeline scenarios) |
 | `reviewer.log` | When each issue reached `In review` and when it was closed (default scenario) |
 | `WORKFLOW.md`, `roles-check.sh`, `check-markers/` | Roles scenario: generated workflow, entry check script and its markers |
-| `timeline.jsonl` | Roles scenario: every observed status change, `{"at", "number", "status"}` per line |
+| `WORKFLOW.md` | Pipeline scenario: generated workflow |
+| `timeline.jsonl` | Roles and pipeline scenarios: every observed status change, `{"at", "number", "status"}` per line |
 
 Verify a run again later (`run.json` says which scenario it was):
 
@@ -168,8 +258,11 @@ node scripts/e2e/verify.ts logs/e2e/<timestamp>
 | `scripts/e2e/run.ts` | Entry point (`npm run e2e`): preflight, Symphony instance, monitor, reviewer |
 | `scripts/e2e/scenario.ts` | Scenario definition and setup on GitHub |
 | `scripts/e2e/roles.ts` | Roles scenario: issues, generated workflow and entry check script |
+| `scripts/e2e/pipeline.ts` | Pipeline scenario: issues, expected paths, results and markers, generated workflow |
+| `scripts/e2e/derive.ts` | What the generated workflows share: absolute paths, Laravel Boost off, the file header |
 | `scripts/e2e/verify.ts` | Checks and report; also usable on its own |
 | `scripts/e2e/verify-roles.ts` | Checks of the roles scenario, unit-tested in `test/e2e-roles.test.ts` |
+| `scripts/e2e/verify-pipeline.ts` | Checks and cost per role of the pipeline scenario, unit-tested in `test/e2e-pipeline.test.ts` |
 | `scripts/e2e/context.ts` | Config from `WORKFLOW.md`/`.env`, board lookup and GitHub GraphQL helpers |
 
 ## Laravel integration test: `npm run test:laravel`

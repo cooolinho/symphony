@@ -28,8 +28,9 @@ export interface RolesData {
   results: Array<{ number: number; kind: string; verdict: string }>;
 }
 
-const same = (a: string | null | undefined, b: string) => (a ?? '').trim().toLowerCase() === b.toLowerCase();
-const numberOf = (identifier: string | undefined) => Number(identifier?.split('#').at(-1));
+export const same = (a: string | null | undefined, b: string) => (a ?? '').trim().toLowerCase() === b.toLowerCase();
+/** Issue number of an identifier such as `owner/name#12`. */
+export const numberOf = (identifier: string | undefined) => Number(identifier?.split('#').at(-1));
 
 /**
  * Expected board path after the start status. A result role has no `set_status`, so the developer's first

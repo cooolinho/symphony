@@ -864,15 +864,23 @@ workflow with the roles `developer` and `reviewer`, creates three test issues an
 lines `transition_denied`, `checks_finished` and `handed_off` in the repository log, and the limit for
 `Agent review`. For this the board also needs the columns `Agent review` and `Blocked`.
 
+`npm run e2e -- --scenario pipeline` runs the shipped bugfix pipeline (issue analyst → developer → test engineer →
+reviewer) with a workflow generated from `WORKFLOW.md`, every role on Sonnet and without entry checks. Three test issues
+cover a test loop (one failed test round), a review loop (one `changes_needed` round) and an analysis that ends in
+`Blocked`. It checks the status paths, the stage results with their markers and rounds, the `bugfix` profile, the run
+order and the cost per role. The board needs the columns `Testing`, `Agent review` and `Blocked`, and at least three
+agent slots. About 14 Sonnet sessions, roughly USD 1–3 and 20–35 minutes.
+
 ```bash
 npm run e2e                                  # uses WORKFLOW.md and .env, like npm start
 npm run e2e -- --scenario roles              # role flow with a generated workflow
+npm run e2e -- --scenario pipeline           # bugfix pipeline with a test loop, a review loop and a blocked analysis
 node scripts/e2e/verify.ts logs/e2e/<time>   # check a run again later
 ```
 
 Use a separate test repository with its own board: the issues are real, and every run costs Claude usage (about
-USD 0.50). The script aborts if the board already has issues in active columns. Scenario, options and checks are
-described in [docs/e2e.md](e2e.md).
+USD 0.50 for the default scenario, USD 1–3 for `pipeline`). The script aborts if the board already has issues in
+active columns. Scenario, options and checks are described in [docs/e2e.md](e2e.md).
 
 ## Dispatch order
 
