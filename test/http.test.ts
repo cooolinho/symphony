@@ -62,6 +62,14 @@ describe('http extension', () => {
       state: 'In review', reason: 'done', turns: 1, startedAt: new Date('2026-10-04T08:00:00Z'), finishedAt: new Date('2026-10-04T08:01:00Z'),
       agentSeconds: 60, usage: { 'claude-opus-5-5': { inputTokens: 1000, outputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0 } }, claudeEstimateUsd: null,
     });
+    historyLog.stageResult({
+      repo: 'acme/app', issue: 'acme/app#1', run: 'r1', role: 'developer', kind: 'implementation', verdict: 'done', round: null, target: 'Agent review',
+      profile: 'bugfix', complexity: 'S', findings: 0, at: new Date('2026-10-04T08:01:00Z'),
+    });
+    historyLog.stageResult({
+      repo: 'acme/app', issue: 'acme/app#1', run: 'r2', role: 'reviewer', kind: 'review', verdict: 'approved', round: 1, target: 'In review',
+      profile: 'bugfix', complexity: 'S', findings: 0, at: new Date('2026-10-04T08:05:00Z'),
+    });
     historyLog.note('other/repo', 'workspace_removed', { issue: 'other/repo#2', state: 'Done' });
     const orchestrator = new Orchestrator({
       workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir()))),
@@ -223,6 +231,15 @@ describe('http extension', () => {
     assert.deepEqual(a.efforts_available, ['unknown']);
     assert.deepEqual(a.by_role.map((r: { role: string; runs: number }) => [r.role, r.runs]), [['default', 1]]);
     assert.equal(a.top.pipelines.length, 1);
+    // Stage results by profile and the verdicts per role (the stage_result lines of the seeded history).
+    assert.equal(a.stage_results, 2);
+    assert.deepEqual(a.by_profile.map((p: { profile: string; results: number; issues: number; runs: number; verdicts: object }) => [p.profile, p.results, p.issues, p.runs, p.verdicts]), [
+      ['bugfix', 2, 1, 1, { 'implementation:done': 1, 'review:approved': 1 }],
+    ]);
+    assert.deepEqual(a.verdicts_by_role.map((r: { role: string; verdicts: object }) => [r.role, r.verdicts]), [
+      ['developer', { 'implementation:done': 1 }],
+      ['reviewer', { 'review:approved': 1 }],
+    ]);
     assert.equal(a.filter.effort, null);
     // A second identical request is served from the cache with the same figures.
     assert.deepEqual(JSON.parse((await request(server.port, 'GET', week)).body).series, a.series);
@@ -253,6 +270,12 @@ describe('http extension', () => {
     assert.match(page.body, /id="pipe-section"/);
     assert.match(page.body, /renderPipeline\(\$\('pipeline'\)/);
     assert.match(page.body, /id="issue-section"/);
+    // Stage results: one card per result with its verdict, round, findings and the link to the comment.
+    assert.match(page.body, /id="results-section"/);
+    assert.match(page.body, /id="result-cards"/);
+    assert.match(page.body, /function renderResults\(\)/);
+    assert.match(page.body, /pipeVerdict\(r\.verdict, r\.round\)/);
+    assert.match(page.body, /'Comment ↗'/);
     assert.match(page.body, /'\/timeline\?after='/);
     assert.match(page.body, /'\/transcript\?run='/);
     assert.match(page.body, /Waiting for limit/);
@@ -272,6 +295,10 @@ describe('http extension', () => {
     assert.equal((await request(server.port, 'HEAD', '/agent')).status, 200);
     const dashboard = (await request(server.port, 'GET', '/')).body;
     assert.match(dashboard, /'\/agent\?id=' \+ encodeURIComponent\(row\.issue_identifier\)/);
+    // Cards flag needs-human issues and show the spent share of the cost budget.
+    assert.match(dashboard, /function flagChips\(row\)/);
+    assert.match(dashboard, /'needs human'/);
+    assert.match(dashboard, /row\.budget/);
   });
 
   it('returns a JSON 404 for unknown issues and routes', async () => {

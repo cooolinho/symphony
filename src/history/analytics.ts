@@ -40,6 +40,9 @@ const UNKNOWN_EFFORT = 'unknown';
 /** Role of a run as logged; runs from before the role was logged on every finish line count as `unknown`. */
 const UNKNOWN_ROLE = 'unknown';
 
+/** Profile of a stage result logged without one (the issue ran on the pipeline's default route). */
+const DEFAULT_PROFILE = 'default';
+
 export type Granularity = 'hour' | 'day' | 'week' | 'month';
 
 /** Thresholds of the "Needs attention" section, returned with the data so the page can show them. */
@@ -552,6 +555,104 @@ function runRef(run: Run) {
   };
 }
 
+/** One `stage_result` line, typed. */
+interface StageResultEntry {
+  repo: string;
+  issue: string;
+  run: string | null;
+  role: string;
+  kind: string;
+  verdict: string;
+  round: number | null;
+  profile: string;
+  complexity: string | null;
+  ms: number;
+}
+
+function stageResultOf(entry: HistoryEntry): StageResultEntry {
+  const fields = entry.fields;
+  const round = Number(fields.round);
+  return {
+    repo: fields.repo ?? 'unknown',
+    issue: fields.issue ?? 'unknown',
+    run: fields.run ?? null,
+    role: fields.role ?? UNKNOWN_ROLE,
+    kind: fields.kind ?? 'unknown',
+    verdict: fields.verdict ?? 'unknown',
+    round: fields.round !== undefined && Number.isFinite(round) ? round : null,
+    profile: fields.profile ?? DEFAULT_PROFILE,
+    complexity: fields.complexity ?? null,
+    ms: Date.parse(entry.ts),
+  };
+}
+
+const count = (record: Record<string, number>, key: string): void => {
+  record[key] = (record[key] ?? 0) + 1;
+};
+
+/**
+ * Stage results (`stage_result` lines) of the period and scope: the verdict distribution per role and per profile.
+ * A repository filter applies as everywhere; with a model or effort filter only results of the runs that pass it
+ * count. A profile row also carries the runs, tokens and cost of its issues (the issues whose results name the
+ * profile), so profiles compare by cost per issue.
+ */
+function stageResultStats(entries: HistoryEntry[], inScope: (entry: HistoryEntry) => boolean, inPeriod: (ms: number) => boolean, scopedRuns: Run[], runs: Run[], narrowed: boolean) {
+  const keep = narrowed ? new Set(scopedRuns.map((run) => run.run)) : null;
+  const results = entries
+    .filter((entry) => entry.event === 'stage_result' && inScope(entry))
+    .map(stageResultOf)
+    .filter((result) => keep === null || (result.run !== null && keep.has(result.run)));
+  const inWindow = results.filter((result) => inPeriod(result.ms));
+
+  const roles = new Map<string, { role: string; results: number; issues: Set<string>; verdicts: Record<string, number> }>();
+  const profiles = new Map<string, { profile: string; results: number; issues: Set<string>; verdicts: Record<string, number>; by_complexity: Record<string, number>; max_round: number }>();
+  for (const result of inWindow) {
+    const role = roles.get(result.role) ?? { role: result.role, results: 0, issues: new Set<string>(), verdicts: {} };
+    roles.set(result.role, role);
+    role.results += 1;
+    role.issues.add(result.issue);
+    count(role.verdicts, `${result.kind}:${result.verdict}`);
+
+    const profile = profiles.get(result.profile) ?? { profile: result.profile, results: 0, issues: new Set<string>(), verdicts: {}, by_complexity: {}, max_round: 0 };
+    profiles.set(result.profile, profile);
+    profile.results += 1;
+    profile.issues.add(result.issue);
+    count(profile.verdicts, `${result.kind}:${result.verdict}`);
+    count(profile.by_complexity, result.complexity ?? 'unknown');
+    profile.max_round = Math.max(profile.max_round, result.round ?? 0);
+  }
+
+  // Issue → profile of its newest result (results come oldest first), then the issue's runs in the period.
+  const issueProfile = new Map<string, string>();
+  for (const result of results) issueProfile.set(result.issue, result.profile);
+  const costs = new Map<string, Totals>();
+  for (const run of runs) {
+    const profile = issueProfile.get(run.issue);
+    if (profile === undefined || !profiles.has(profile)) continue;
+    const totals = costs.get(profile) ?? emptyTotals();
+    costs.set(profile, totals);
+    addRun(totals, run);
+  }
+  const by_profile = [...profiles.values()]
+    .map(({ issues, ...rest }) => {
+      const totals = costs.get(rest.profile) ?? emptyTotals();
+      return {
+        ...rest,
+        issues: issues.size,
+        runs: totals.runs,
+        total_tokens: totals.total_tokens,
+        cost_usd: round(totals.cost_usd, 4),
+        agent_seconds: round(totals.agent_seconds, 1),
+        avg_cost_per_issue: ratio(totals.cost_usd, issues.size),
+      };
+    })
+    .sort((a, b) => b.results - a.results || a.profile.localeCompare(b.profile));
+  const verdicts_by_role = [...roles.values()]
+    .map(({ issues, ...rest }) => ({ ...rest, issues: issues.size }))
+    .sort((a, b) => b.results - a.results || a.role.localeCompare(b.role));
+  return { by_profile, verdicts_by_role, total: inWindow.length };
+}
+
 /**
  * Everything the statistics page shows for one filter. `now` is the end of an open period (`to` = null).
  */
@@ -826,6 +927,8 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
   }
   attention.sort((a, b) => (b.factor ?? b.value) - (a.factor ?? a.value));
 
+  const stageStats = stageResultStats(entries, inScope, inPeriod, scoped, runs, filter.model !== null || (filter.effort ?? null) !== null);
+
   const modelsAvailable = new Set<string>();
   const effortsAvailable = new Set<string>();
   for (const run of allRuns) {
@@ -855,6 +958,9 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
     models: modelRows,
     efforts: effortRows,
     by_role: roleRows,
+    by_profile: stageStats.by_profile,
+    verdicts_by_role: stageStats.verdicts_by_role,
+    stage_results: stageStats.total,
     repositories: repositoryRows,
     issues: issueRows,
     outcomes: {

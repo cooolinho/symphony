@@ -61,6 +61,9 @@ const DASHBOARD_CSS = `
   .agent-head .tags { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
   /* Integration chips (e.g. Laravel Boost) sit above the card link so their tooltip shows. */
   .int-chips { display: contents; }
+  .chip.flag-human { color: var(--red); border-color: var(--red-line); background: var(--red-dim); font-weight: 600; }
+  .chip.flag-budget.near { color: var(--amber); border-color: var(--amber-line); }
+  .chip.flag-budget.over { color: var(--red); border-color: var(--red-line); }
   .int-chip { position: relative; z-index: 2; display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px 1px 3px; cursor: help; }
   .int-chip.used { border-color: rgba(178, 159, 244, .55); color: #d9cffb; background: rgba(178, 159, 244, .12); }
   .int-chip.off { color: var(--muted); }
@@ -436,7 +439,8 @@ ${PIPELINE_JS}
     const statusSlot = el('span');
     const attempt = el('span', null, 'chip');
     const integrations = el('span', null, 'int-chips');
-    tags.append(position, statusSlot, attempt, integrations);
+    const flags = el('span', null, 'int-chips');
+    tags.append(position, statusSlot, attempt, flags, integrations);
     const id = el('a', null, 'agent-id');
     head.append(tags, id);
 
@@ -454,7 +458,7 @@ ${PIPELINE_JS}
 
     const dl = el('dl', null, 'fields');
     const refs = {
-      card, position, statusSlot, attempt, integrations, id, title, repo, branch, pipe, fields: dl,
+      card, position, statusSlot, attempt, flags, integrations, id, title, repo, branch, pipe, fields: dl,
       model: field(dl, 'Model', 'info'), phase: field(dl, 'Phase', 'info'),
     };
 
@@ -627,6 +631,7 @@ ${PIPELINE_JS}
     const attempt = r ? r.attempt : row.retry ? row.retry.attempt : null;
     refs.attempt.hidden = !attempt;
     setText(refs.attempt, 'attempt ' + (attempt ?? ''));
+    patchChildren(refs.flags, flagChips(row));
     patchChildren(refs.integrations, (r ? r.integrations || [] : []).map(integrationChip));
     setText(refs.title, row.title || row.issue_identifier);
     // Only tracked issues have a trace; a queued issue without one links nowhere yet.
@@ -660,6 +665,24 @@ ${PIPELINE_JS}
     } else {
       patchChildren(refs.info, infoChildren(row));
     }
+  }
+
+  /** Chips of a card for the board: the needs-human label and the share of the cost budget (agent.max_issue_cost_usd) spent. */
+  function flagChips(row) {
+    const chips = [];
+    if ((row.labels || []).some((l) => String(l).trim().toLowerCase() === 'needs-human')) {
+      const chip = el('span', 'needs human', 'chip flag-human');
+      chip.title = 'A human must review or decide before the issue can progress (label needs-human)';
+      chips.push(chip);
+    }
+    const b = row.budget;
+    if (b && b.max_issue_cost_usd > 0) {
+      const share = b.cost_usd / b.max_issue_cost_usd;
+      const chip = el('span', '$' + b.cost_usd.toFixed(2) + ' / $' + b.max_issue_cost_usd.toFixed(2), 'chip flag-budget' + (share >= 1 ? ' over' : share >= 0.8 ? ' near' : ''));
+      chip.title = 'Cost budget: ' + Math.round(share * 100) + '% of agent.max_issue_cost_usd used';
+      chips.push(chip);
+    }
+    return chips;
   }
 
   /** Chip for an integration of the run (e.g. Laravel Boost): icon, use count, and the details as tooltip. */
