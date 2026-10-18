@@ -115,3 +115,23 @@ auto_merge?, warnings?, note: "Result recorded — end your turn now."}`.
 **One result per run.** Once the comment is posted, every further call of the run, with any input, returns the stored
 outcome (`already_recorded: true` on success) without running the checks or touching the tracker. The tool writes only
 after the guard allowed exactly the computed target; called without the guard's approval it refuses (`tool_error`).
+
+## Stages without a result
+
+A run of a result-driven role never ends silently. When a turn ends with the issue still in the role's column and no
+result recorded (the tool reports it to the worker the moment the result comment is posted), the next turn is a
+reminder: Symphony appends a mandatory hint to the continuation prompt (the default and a custom
+`agent.continuation_prompt` alike). It tells the agent to call `report_result` (verdict `blocked` if it cannot
+finish) and names the column the issue moves to otherwise.
+
+The run ends without a result when the reminder turn did not produce one, or when `max_turns` is reached first (with
+`max_turns: 1` there is no reminder). The orchestrator then handles it in `#endStageWithoutResult`:
+
+1. It **re-fetches** the issue. If it is no longer in one of the role's columns (a human or another run moved it),
+   nothing is changed and the usual continuation follows.
+2. Otherwise it posts a plain comment ("Stage ended without a result", no marker, so it never counts as a stage
+   result) and moves the issue to the role's [`on_missing_result`](configuration.md#roles) (`Blocked` by default),
+   then releases the issue.
+3. A tracker error while fetching or moving schedules a retry like a failed run.
+
+Roles without `result` are not affected.

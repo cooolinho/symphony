@@ -18,7 +18,7 @@ import { roleName, sessionAgents, type RoleConfig } from '../workflow/roles.ts';
 import type { EffectiveWorkflow } from '../workflow/store.ts';
 import { EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../workflow/template.ts';
 import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord } from './guard.ts';
-import { createResultTool, type ResultToolAdapter } from './result-tool.ts';
+import { createResultTool, resultReminder, type ResultToolAdapter } from './result-tool.ts';
 import { buildStageHistory, resultsTemplateValue, type ResultsTemplateValue } from './stage-history.ts';
 
 export type RunPhase =
@@ -37,7 +37,16 @@ export type RunPhase =
   | 'CanceledByReconciliation';
 
 export type WorkerOutcome =
-  | { kind: 'normal'; turns: number; reason: string }
+  | {
+      kind: 'normal';
+      turns: number;
+      reason: string;
+      /**
+       * A result-driven role ended its run without recording a result, after the reminder turn or at the turn limit
+       * while the issue was still in its column. The orchestrator confirms the column and applies `on_missing_result`.
+       */
+      missingResult?: true;
+    }
   | { kind: 'failed'; code: string; message: string; phase: RunPhase; sessionLimit?: SessionLimitInfo }
   | { kind: 'cancelled'; message: string };
 
@@ -87,6 +96,8 @@ export interface WorkerCallbacks {
   integrationsPrepared(historyFields: Record<string, string>, reports: IntegrationReport[]): void;
   /** Final commit and branch of the workspace, reported once while the attempt finishes. */
   gitHead(head: GitHead): void;
+  /** The session recorded its stage result (called once, when `report_result` posts the result comment). */
+  resultRecorded(): void;
   /** Result of an entry check run by the transition guard. */
   checkFinished(check: CheckRecord): void;
   /** The guard refused a move (terminal column or outside the role's `may_move_to`). */
@@ -151,7 +162,13 @@ const RESULT_CAPABILITIES = ['readResults', 'postComment', 'setStatus', 'addLabe
  * paginated read of the issue's comments, plus the board's columns (cached by the adapter). Any failure is a
  * `results_read_error`: without the history the round counters would be wrong, so the run fails and is retried.
  */
-async function loadResultSupport(params: WorkerParams, role: RoleConfig, issue: () => Issue, headSha: () => Promise<string | null>): Promise<ResultSupport> {
+async function loadResultSupport(
+  params: WorkerParams,
+  role: RoleConfig,
+  issue: () => Issue,
+  headSha: () => Promise<string | null>,
+  onRecorded: () => void,
+): Promise<ResultSupport> {
   const { adapter, workflow } = params;
   const missing = RESULT_CAPABILITIES.filter((capability) => adapter[capability] === undefined);
   if (missing.length > 0) {
@@ -179,6 +196,7 @@ async function loadResultSupport(params: WorkerParams, role: RoleConfig, issue: 
     issue,
     runId: params.runId,
     meta: { workflowHash: workflow.contentHash, headSha },
+    onRecorded,
   });
   return {
     tool,
@@ -324,9 +342,19 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
         }),
     });
     // Roles with `result` start with the issue's stage history; every other role makes no extra tracker request.
+    let resultRecorded = false;
     const support =
       role?.result != null
-        ? await loadResultSupport(params, role, () => issue, async () => (await readGitHead(activeWorkspace.path))?.headSha ?? null)
+        ? await loadResultSupport(
+            params,
+            role,
+            () => issue,
+            async () => (await readGitHead(activeWorkspace.path))?.headSha ?? null,
+            () => {
+              resultRecorded = true;
+              callbacks.resultRecorded();
+            },
+          )
         : null;
     if (signal.aborted) return await finish(cancelled());
     const resultVariables = {
@@ -364,18 +392,22 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     const skills = commandSkills(params.workflow.config.claude.plugins);
     for (let turn = 1; ; turn++) {
       setPhase('BuildingPrompt');
-      const prompt =
-        turn === 1
-          ? withMcpNotes(unavailableMcp, await renderPrompt(params.workflow.prompt, { issue: issueTemplateValue(issue, skills, params.workflow.config.pipeline), attempt: params.attempt, role: name, agents: agentsValue, ...resultVariables }))
-          : await renderPrompt(params.workflow.continuationPrompt, {
-              issue: issueTemplateValue(issue, skills, params.workflow.config.pipeline),
-              attempt: params.attempt,
-              role: name,
-              agents: agentsValue,
-              ...resultVariables,
-              turn_number: turn,
-              max_turns: maxTurns,
-            });
+      let prompt: string;
+      if (turn === 1) {
+        prompt = withMcpNotes(unavailableMcp, await renderPrompt(params.workflow.prompt, { issue: issueTemplateValue(issue, skills, params.workflow.config.pipeline), attempt: params.attempt, role: name, agents: agentsValue, ...resultVariables }));
+      } else {
+        prompt = await renderPrompt(params.workflow.continuationPrompt, {
+          issue: issueTemplateValue(issue, skills, params.workflow.config.pipeline),
+          attempt: params.attempt,
+          role: name,
+          agents: agentsValue,
+          ...resultVariables,
+          turn_number: turn,
+          max_turns: maxTurns,
+        });
+        // Mandatory for a result-driven role, whatever the continuation prompt says.
+        if (support !== null) prompt = `${prompt}\n\n${resultReminder(role?.onMissingResult ?? null)}`;
+      }
 
       setPhase('StreamingTurn');
       const result = await session.runTurn(prompt);
@@ -394,7 +426,14 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       callbacks.issueRefreshed(issue);
       const stopReason = params.continueWith(issue);
       if (stopReason !== null) return await finish({ kind: 'normal', turns: turn, reason: stopReason });
-      if (turn >= maxTurns) return await finish({ kind: 'normal', turns: turn, reason: `reached ${maxTurnsSetting} (${maxTurns})` });
+      // The issue is still in the role's column. A result-driven role that has not reported by the turn limit, or
+      // after the one reminder turn (turn 2), ends the run: the orchestrator decides what happens to the issue.
+      const reachedMaxTurns = turn >= maxTurns;
+      if (support !== null && !resultRecorded && (reachedMaxTurns || turn >= 2)) {
+        const reason = reachedMaxTurns ? `reached ${maxTurnsSetting} (${maxTurns}) without a result` : 'no result after the reminder';
+        return await finish({ kind: 'normal', turns: turn, reason, missingResult: true });
+      }
+      if (reachedMaxTurns) return await finish({ kind: 'normal', turns: turn, reason: `reached ${maxTurnsSetting} (${maxTurns})` });
     }
   } catch (error) {
     if (signal.aborted) return await finish(cancelled());
