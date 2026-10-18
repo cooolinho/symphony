@@ -182,6 +182,17 @@ describe('config layer', () => {
     }
   });
 
+  it('leaves agent.max_issue_cost_usd unlimited by default and rejects values that are not positive', () => {
+    assert.equal(resolve({}).agent.maxIssueCostUsd, null);
+    assert.equal(resolve({ agent: { max_issue_cost_usd: 12.5 } }).agent.maxIssueCostUsd, 12.5);
+    for (const value of [0, -1, 'abc']) {
+      assert.throws(
+        () => resolve({ agent: { max_issue_cost_usd: value } }),
+        (error: unknown) => error instanceof SymphonyError && error.code === 'invalid_config' && error.message.includes('agent.max_issue_cost_usd'),
+      );
+    }
+  });
+
   it('defaults agent.model_hold_ms to one hour and rejects values below 1', () => {
     assert.equal(resolve({}).agent.modelHoldMs, 3_600_000);
     assert.equal(resolve({ agent: { model_hold_ms: 600_000 } }).agent.modelHoldMs, 600_000);

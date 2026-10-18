@@ -276,7 +276,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   <section class="agents-section queue-section" id="paused-section" aria-labelledby="paused-title" hidden>
     <div class="section-head">
       <h2 id="paused-title">Paused <span class="count" id="paused-count"></span></h2>
-      <span class="meta">by the operator, or after agent.max_continuations</span>
+      <span class="meta">by the operator, after agent.max_continuations, or at agent.max_issue_cost_usd</span>
     </div>
     <div class="agents compact" id="paused"></div>
   </section>
@@ -543,6 +543,9 @@ ${PIPELINE_JS}
       if (row.paused.source === 'operator') {
         meta.append(el('span', 'paused by operator'), el('span', ago(row.paused.paused_at)));
         nodes.push(el('div', 'Board changes do not lift this pause; it ends with Resume, Done or leaving the board.', 'msg'));
+      } else if (row.paused.source === 'budget') {
+        meta.append(el('span', 'cost budget used up'), el('span', '$' + row.paused.cost_usd.toFixed(2) + ' of $' + row.paused.max_issue_cost_usd.toFixed(2)), el('span', ago(row.paused.paused_at)));
+        nodes.push(el('div', 'Board changes do not lift this pause; it ends with Resume, a higher agent.max_issue_cost_usd, Done or leaving the board.', 'msg'));
       } else {
         const cont = el('span', 'paused after '); cont.append(el('b', row.paused.continuations), ' continuations');
         meta.append(cont, el('span', ago(row.paused.paused_at)));
