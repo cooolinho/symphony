@@ -102,6 +102,8 @@ export interface WorkerCallbacks {
   resultRecorded(): void;
   /** Result of an entry check run by the transition guard. */
   checkFinished(check: CheckRecord): void;
+  /** The issue's stage results: as loaded at the start of a result-driven session, again with each result it records. */
+  results(results: PersistedResult[]): void;
   /** The guard refused a move (terminal column or outside the role's `may_move_to`). */
   transitionDenied(target: string, message: string): void;
   /** JSONL transcript of this attempt's agent session, reported before the session starts. */
@@ -169,6 +171,7 @@ async function loadResultSupport(
   role: RoleConfig,
   issue: () => Issue,
   headSha: () => Promise<string | null>,
+  report: (results: PersistedResult[]) => void,
   onRecorded: () => void,
 ): Promise<ResultSupport> {
   const { adapter, workflow } = params;
@@ -192,9 +195,14 @@ async function loadResultSupport(
     persisted = [...persisted, reset];
     history = buildStageHistory(persisted);
   }
+  report(history.results);
   const tool = createResultTool({
     role,
     history,
+    onRecorded: (entry) => {
+      report([...history.results, entry]);
+      onRecorded();
+    },
     profile: profileFor(workflow.config.pipeline, classify(issue().labels).type),
     // No stage of the shipped pipeline is conditional yet, so `next` skips only what the profile skips.
     flags: {},
@@ -204,7 +212,6 @@ async function loadResultSupport(
     issue,
     runId: params.runId,
     meta: { workflowHash: workflow.contentHash, headSha },
-    onRecorded,
   });
   return {
     tool,
@@ -398,6 +405,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
             role,
             () => issue,
             async () => (await readGitHead(activeWorkspace.path))?.headSha ?? null,
+            callbacks.results,
             () => {
               resultRecorded = true;
               callbacks.resultRecorded();

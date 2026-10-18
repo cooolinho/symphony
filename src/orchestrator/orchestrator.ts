@@ -19,7 +19,6 @@ import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { truncate } from '../util/text.ts';
 import { WorkspaceManager, type HookIssue } from '../workspace/manager.ts';
 import type { ServiceConfig } from '../workflow/config.ts';
-import { profileFor } from '../workflow/profile.ts';
 import { roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
 import { internalResult, renderResultComment, type ResultMeta } from '../workflow/results.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../workflow/store.ts';
@@ -57,6 +56,7 @@ import {
   type AgentLimitOverride,
 } from './limits.ts';
 import { RuntimeStateStore, runtimeStateFile, type ModelHold, type OperatorHold } from './runtime-state.ts';
+import { resultRows, type PersistedResult } from './stage-history.ts';
 import { blockedBucketColumns, derivePipeline, type PipelineStage, type StageSession } from './pipeline.ts';
 import { copyToolUsage, countToolUse, emptyToolUsage, integrationJson, integrationUsage, type ToolUsage } from './tool-usage.ts';
 import { runAgentAttempt, type RunPhase, type WorkerOutcome } from './worker.ts';
@@ -390,6 +390,8 @@ interface IssueRecord {
   lastCheck: CheckRecord | null;
   /** Board fields of the issue at the last dispatch or reconcile; null before the first dispatch. */
   meta: IssueMeta | null;
+  /** The issue's stage results as the latest result-driven session saw or reported them; empty before the first one. */
+  results: PersistedResult[];
 }
 
 interface RunTrace {
@@ -1919,6 +1921,9 @@ export class Orchestrator {
               at: check.finishedAt,
             });
           },
+          results: (results) => {
+            record.results = results;
+          },
           transitionDenied: (target, message) => {
             this.#deps.history?.transitionDenied({
               repo: entry.repo,
@@ -2502,7 +2507,7 @@ export class Orchestrator {
   #archivedOf(issueId: string, record: IssueRecord, released: boolean): ArchivedIssue {
     const state = record.meta?.state ?? record.sessions.at(-1)?.state ?? '';
     return {
-      version: 1,
+      version: 2,
       issue_meta: metaJson(record.meta),
       pipeline: this.#pipelineFor({ state, description: record.meta?.description ?? null, labels: record.meta?.labels }, issueId, this.#deps.workflow.current),
       issue_id: issueId,
@@ -2520,6 +2525,7 @@ export class Orchestrator {
       timeline: record.timeline.slice(),
       next_seq: record.nextSeq,
       sessions: record.sessions.map((session) => this.#sessionJson(session)),
+      results: resultRows(record.results),
       run_trace: traceJson(record.lastRun),
       last_check: checkJson(record.lastCheck),
     };
@@ -2968,6 +2974,7 @@ export class Orchestrator {
         checkCache: new Map(),
         lastCheck: null,
         meta: null,
+        results: [],
       };
       this.#records.set(issue.id, record);
     }
@@ -3083,6 +3090,7 @@ export class Orchestrator {
       boardColumns: this.#statusOptionsCache?.version === workflow.version ? this.#statusOptionsCache.options : null,
       sessions,
       skip: (config.roles ?? []).filter((role) => skipReason({ labels: issue.labels ?? [] }, role, config) !== null).map((role) => role.name),
+      results: this.#records.get(issueId)?.results ?? [],
     });
   }
 
@@ -3342,6 +3350,7 @@ export class Orchestrator {
       role: entry?.role ?? null,
       issue: metaJson(meta),
       pipeline: this.#pipelineFor({ state, description: meta?.description ?? null, labels: meta?.labels }, issueId, this.#deps.workflow.current),
+      results: resultRows(record?.results ?? []),
       workspace: { path: entry?.workspacePath ?? record?.workspacePath ?? null },
       attempts: {
         runs: record?.runs ?? 0,
@@ -3396,6 +3405,7 @@ export class Orchestrator {
       role: lastSession?.role ?? null,
       issue: archived.issue_meta ?? null,
       pipeline: archived.pipeline ?? [],
+      results: archived.results,
       workspace: { path: archived.workspace_path },
       attempts: {
         runs: archived.runs,

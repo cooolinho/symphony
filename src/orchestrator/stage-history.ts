@@ -140,3 +140,31 @@ export function resultsTemplateValue(history: StageHistory): ResultsTemplateValu
         : [],
   };
 }
+
+/** One persisted result as `GET /api/v1/<id>` and the issue archive show it: the envelope without the kind-specific fields. */
+export interface ResultRow {
+  role: string;
+  run: string | null;
+  kind: string;
+  verdict: string;
+  summary: string;
+  round: number | null;
+  target: string | null;
+  head_sha: string | null;
+  created_at: string;
+}
+
+/** The results as JSON rows, deduplicated and oldest first; the full result stays in the issue comment. */
+export function resultRows(results: readonly PersistedResult[]): ResultRow[] {
+  return buildStageHistory(results).results.map(({ result, meta }) => ({
+    role: meta.role,
+    run: meta.run,
+    kind: result.kind,
+    verdict: result.verdict,
+    summary: truncate(result.summary, PROMPT_SUMMARY_LIMIT),
+    round: meta.round,
+    target: meta.target,
+    head_sha: meta.head_sha,
+    created_at: meta.created_at,
+  }));
+}

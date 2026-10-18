@@ -2173,6 +2173,43 @@ describe('issue archive', () => {
     assert.equal(fresh.orchestrator.issueTimeline('nope'), null);
   });
 
+  it('still reads archives written in version 1 and fills in what they lack', () => {
+    const logDir = tempDir();
+    const stage = { id: 'default', label: 'default', kind: 'agent', columns: ['Todo'], status: 'done', sessions: [{ run: 'r1', attempt: null, role: 'default', state: 'Todo', model: null, effort: null, started_at: '2026-10-03T12:00:00.000Z', finished_at: null, outcome: 'handed_off' }] };
+    fs.mkdirSync(path.join(logDir, 'issues'), { recursive: true });
+    fs.writeFileSync(
+      path.join(logDir, 'issues', 'acme_app_old.json'),
+      JSON.stringify({
+        version: 1,
+        pipeline: [stage],
+        issue_id: 'old',
+        issue_identifier: 'acme/app#old',
+        issue_url: null,
+        title: 'Old archive',
+        repo: null,
+        workspace_path: null,
+        runs: 1,
+        continuations: 0,
+        last_error: null,
+        archived_at: '2026-10-03T12:00:00.000Z',
+        released: true,
+        completed_before: false,
+        timeline: [],
+        next_seq: 1,
+        sessions: [],
+        run_trace: null,
+        last_check: null,
+      }),
+    );
+    const detail = setup({ logDir, issues: [] }).orchestrator.issueDetail('acme/app#old');
+    assert.equal(detail?.status, 'finished');
+    assert.equal(detail?.title, 'Old archive');
+    assert.deepEqual(detail?.results, []);
+    assert.equal(detail?.pipeline[0]?.verdict, null);
+    assert.equal(detail?.pipeline[0]?.round, null);
+    assert.equal(detail?.pipeline[0]?.sessions[0]?.verdict, null);
+  });
+
   it('serves released issues from memory without a log directory, but not issues that never ran', async () => {
     const s = setup({ issues: [makeIssue({ id: 'a' })] });
     s.runner.script = (turn) => {
@@ -3867,6 +3904,39 @@ describe('result-driven roles', () => {
     assert.equal(marker?.meta.target, 'In review');
     assert.match(marker?.meta.run ?? '', /^[0-9a-f]{12}$/);
     assert.equal(marker?.meta.workflow_hash, 'test');
+  });
+
+  it('shows the loaded results, verdicts and rounds in the issue detail while the session runs', async () => {
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    const s = setup({ front: front(), runner, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
+    persist(s.tracker, 'r', 'implementation', { verdict: 'done', summary: 'Built it.' }, 'developer', '2026-10-01T10:00:00Z');
+    persist(s.tracker, 'r', 'review', { verdict: 'changes_needed', summary: 'One problem.', findings: [{ severity: 'major', problem: 'Off by one' }] }, 'reviewer', '2026-10-01T11:00:00Z');
+    await s.orchestrator.tickNow();
+    await until(() => runner.sessions.length === 1, 3_000, 'session');
+    const detail = s.orchestrator.issueDetail('acme/app#r');
+    assert.deepEqual(detail?.results.map((row) => [row.role, row.kind, row.verdict]), [['developer', 'implementation', 'done'], ['reviewer', 'review', 'changes_needed']]);
+    const stage = (id: string) => detail?.pipeline.find((candidate) => candidate.id === id);
+    assert.equal(stage('developer')?.verdict, 'done');
+    assert.equal(stage('reviewer')?.verdict, 'changes_needed');
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  it('adds the result a session reports to the detail and to the archive', async () => {
+    const logDir = tempDir();
+    const runner = new FakeRunner(async (turn, params) => {
+      const report = params.tools.find((tool) => tool.name === 'report_result');
+      await report!.execute({ verdict: 'approved', summary: 'Fine.' }, params.toolContext());
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    });
+    const s = setup({ front: front(), runner, logDir, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
+    await s.orchestrator.tickNow();
+    await until(() => s.tracker.statusCalls.length === 1, 5_000, 'report_result');
+    await until(() => snapshot(s).running.length === 0, 5_000, 'run finished');
+    const detail = s.orchestrator.issueDetail('acme/app#r');
+    assert.deepEqual(detail?.results.map((row) => [row.role, row.verdict, row.target, row.round]), [['reviewer', 'approved', 'In review', 1]]);
+    const archived = JSON.parse(fs.readFileSync(path.join(logDir, 'issues', 'acme_app_r.json'), 'utf8')) as { version: number; results: Array<{ verdict: string }> };
+    assert.equal(archived.version, 2);
+    assert.deepEqual(archived.results.map((row) => row.verdict), ['approved']);
   });
 
   describe('agent.max_continuations', () => {

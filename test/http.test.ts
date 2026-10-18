@@ -87,6 +87,10 @@ describe('http extension', () => {
     // Issues render as cards with the pipeline topology strip in separate sections (Running, Up next, Waiting,
     // Paused), each with a count and hidden when empty; blocked issues collapse into a details panel.
     assert.match(page.body, /renderPipeline\(refs\.pipe, row\.stages/);
+    // Stages show the verdict and round of their newest result; skipped stages stay marked as skipped.
+    assert.match(page.body, /pipeVerdict\(stage\.verdict, stage\.round\)/);
+    assert.match(page.body, /\.pipe-verdict\.vd-warn/);
+    assert.match(page.body, /\.pipe-node\.st-skipped/);
     assert.match(page.body, /state\.issues/);
     assert.doesNotMatch(page.body, /Issues in flight/);
     for (const name of ['running', 'next', 'waiting', 'paused']) {
