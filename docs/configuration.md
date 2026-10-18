@@ -235,7 +235,7 @@ write a `transition_denied` line.
 | `max_retry_backoff_ms` | `300000` | Cap for failure retries (10 s, 20 s, 40 s, …). |
 | `max_concurrent_agents_by_state` | `{}` | Per-status limits, e.g. `{ "In Progress": 1 }`. Invalid entries are ignored with a warning. |
 | `reserved_slots_by_role` | `{}` | Slots kept free for a [role](#roles), e.g. `{ developer: 1, reviewer: 1 }`, so a developer and a reviewer can always run side by side. An issue of role R starts only while the free slots exceed the unused reservations of the other roles (Σ max(0, reserved − running)); a reserved slot stays empty while its role has nothing to do. Command roles (`planner`, `auditor`, …) count as their own roles and never use the developer's reservation. Column limits still apply. Names that are not roles, and values that are not integers of `0` or more, are ignored with a warning. If the reservations add up to more than `max_concurrent_agents`, they are ignored and the dashboard shows a problem. See [Reserved slots](#reserved-slots). |
-| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `agents`, `results`, `round`, `result_required`, `turn_number`, `max_turns`). |
+| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `agents`, `results`, `round`, `result_required`, `test_paths`, `turn_number`, `max_turns`). |
 
 #### Reserved slots
 
@@ -485,6 +485,68 @@ pipeline:
 Merging a change to these keys changes the running instance at once (live reload), so merge by hand when no issue is
 active.
 
+#### The test engineer
+
+The shipped `WORKFLOW.md` also defines an independent test engineer: a role in its own column that writes and runs tests
+for every acceptance criterion, so the tests do not come from the agent that wrote the code. It changes no production
+code, and a failing test sends the issue back to the developer.
+
+```yaml
+roles:
+  test-engineer:
+    states: [Testing]
+    result: test
+    on_result: { passed: Agent review, failed: In progress, blocked: Blocked }
+    may_move_to: [Agent review, In progress, Blocked]
+    model_label: ignore               # sonnet, whatever the issue's Model: label picks for the developer
+    agents: [laravel-test-engineer]
+    claude: { model: sonnet }
+pipeline:
+  max_test_rounds: 2
+  # test_paths: [tests/**, test/**, "**/*.test.*", "**/*Test.php"]
+checks:
+  on_enter:
+    Testing: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
+```
+
+- **Off by default.** The developer's `done` leads to `Agent review` unless `SYMPHONY_AFTER_IMPLEMENTATION=Testing` (the
+  shipped `on_result.done` reads it, `.env.example` documents it). Then the flow is `In progress → [checks] → Testing →
+  [checks] → Agent review → [checks] → In review`. `Testing` is always one of `tracker.active_states`, so the board
+  needs the column (the [board preflight](#tracker) reports it as `unknown board column "Testing"`); put it between
+  `In progress` and `Agent review`, because `next` and the pipeline view of the dashboard follow the board's order.
+- **Slots.** The test engineer is a third role next to the developer and the reviewer, whose slots
+  `agent.reserved_slots_by_role` keeps free. Like the other roles it only gets slots beyond those, so allow at least
+  3 agent slots (`SYMPHONY_MAX_CONCURRENT_AGENTS`) when the stage is on, or the test engineer never starts.
+- **Verdicts.** `passed` leads to `Agent review`, `failed` to `In progress` (the developer), `blocked` to `Blocked`
+  (see [result contracts](results.md#kinds): `cases[]`, `commands[]`, `uncovered_criteria[]`). A session that ends without
+  a result goes to `on_missing_result` (`Blocked`).
+- **Entry checks.** `checks.on_enter.Testing` is optional: with it the developer has to hand over green code (lint,
+  static analysis, tests). `Agent review` keeps its own check, which then runs against the commit with the new tests.
+  The role is not `read_only`, so `on_check_failed` does not apply: a failing check of `Agent review` goes back to the
+  test engineer like it goes back to the developer, who fixes the tests or reports `failed`.
+- **Only tests.** `pipeline.test_paths` (default `tests/**`, `test/**`, `**/*.test.*`, `**/*Test.php`; see
+  [`pipeline`](#pipeline)) lists the only files the test engineer may change. Symphony records the workspace commit when
+  its session starts. When the engineer calls `report_result`, it lists what differs from that commit (commits since,
+  uncommitted and untracked files, deletions and both ends of a renamed file; ignored files do not count) and refuses the
+  result with `invalid_result` if a file matches none of the globs: the message names the offending files, nothing is
+  recorded and the entry check of the target column does not run. Whatever the verdict, the engineer has to undo the
+  change (`git checkout <start> -- <file>`, commit) and report again. If git cannot tell, or the workspace is no git
+  checkout, the call fails with `tool_error` and nothing is recorded: the rule is never skipped. The baseline is the
+  commit of the *session*, so a later session of the same stage (after a `check_timeout`, say) measures from where its
+  predecessor left off.
+- **Failed cases reach the developer.** After a `failed` result the prompt of the developer lists the failed cases
+  (`results.failed_cases`), the test engineer's summary and the commands it ran (`results.test`, see
+  [Prompt template](#prompt-template)); the test engineer sees the same list in the next round and runs those cases
+  first.
+- **Round limit.** `pipeline.max_test_rounds` (default 2, overridable per profile) counts `failed` results since the last
+  reset. The failed result of the last allowed round goes to `on_round_limit` (default: the blocked column, `Blocked`)
+  and gets the `needs-human` label (`pipeline.limit_label`) instead of going back to the developer. A human moving the
+  issue back to an active column resets the rounds.
+- **Skipping.** A [profile](#workflow-profiles) can list `test-engineer` in `skip` only when the column its issues go
+  to next has no `checks.on_enter` script: a skipped stage moves the issue without a workspace and so cannot run one
+  ([Skipping stages](#skipping-stages-without-a-session)). With the shipped `Agent review` check the preflight rejects
+  such a profile; the stage is switched on or off for the whole instance instead.
+
 #### Issue commands
 
 An issue can ask for a skill: when the **first non-empty line** of its description is `/<name>` (optionally followed by
@@ -607,7 +669,8 @@ statistics page breaks down by effort. `npm run repo-init` creates the five stan
 ### `pipeline`
 
 Optional. Limits and classification for the result-driven [roles](#result-driven-transitions); every key has a default,
-so the section can be left out. The glob lists are read now and used by later pipeline stages. `$NAME` references work
+so the section can be left out. `test_paths` limits what the [test engineer](#the-test-engineer) may change; the other
+glob lists are read now and used by later pipeline stages. `$NAME` references work
 like everywhere else (an unset variable counts as omitted). Unknown keys are ignored with a warning.
 
 | Key | Default | Notes |
@@ -619,7 +682,17 @@ like everywhere else (an unset variable counts as omitted). Unknown keys are ign
 | `default_type` | `feature` | Type of an issue without a label in `type_labels`. |
 | `analysis` | `always` | `always` or `when_unlabeled`. With `when_unlabeled`, the analysis stage (the role whose `result` is `analysis`) is [skipped without a session](#skipping-stages-without-a-session) for issues that already carry a `Type:` and a `Complexity:` label. Needs a role with `result: analysis`. |
 | `profiles` | `{}` | [Workflow profiles](#workflow-profiles) per issue type. |
-| `test_paths`, `docs_paths`, `security_paths` | `[]` | Path globs marking test, documentation and security-relevant files. |
+| `test_paths` | `tests/**`, `test/**`, `**/*.test.*`, `**/*Test.php` | [Path globs](#path-globs) for test files: all that a role with `result: test` (the [test engineer](#the-test-engineer)) may change. An explicit list replaces the default; `[]` allows no file at all. |
+| `docs_paths`, `security_paths` | `[]` | Path globs marking documentation and security-relevant files. |
+
+#### Path globs
+
+The `*_paths` lists take globs that match repository-relative paths with `/` separators, in the whole path and
+case-sensitively: `*` any characters except `/`, `?` one such character, `**` anything including `/` (`**/` also matches
+no directory, so `**/*.test.*` matches `a.test.ts` and `src/a.test.ts`), `{a,b}` one of the alternatives (not nested).
+Everything else is literal, including a leading dot (`tests/**` matches `tests/.env.testing`). A glob must not be empty,
+absolute or contain `..` segments, and braces must be balanced; otherwise the config fails with `invalid_config`, e.g.
+`pipeline.test_paths[1] "/abs/**" must be relative to the repository root, without a leading "/"`.
 
 #### Workflow profiles
 
@@ -692,7 +765,9 @@ one poll at a time. For example, with an analyst in `Ready` and `pipeline.analys
 The shipped `WORKFLOW.md`, shortened to the parts that make up the developer → checks → reviewer → human flow
 (`Ready → In progress → [checks] → Agent review → [checks] → In review → Done`, plus `Blocked`). The board needs
 the columns `Backlog`, `Ready`, `In progress`, `Agent review`, `Blocked`, `In review` and `Done`; the
-[board preflight](#tracker) reports a missing one. In a repository without a Laravel app the hook and the check
+[board preflight](#tracker) reports a missing one. The shipped file also defines the optional
+[test engineer](#the-test-engineer) and lists its column `Testing` as an active state, so its board needs that column
+too; this example leaves the stage out. In a repository without a Laravel app the hook and the check
 script do nothing (exit 0), so the same file also works there.
 
 ```yaml
@@ -884,6 +959,7 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
 - `agents`: the plugin subagents this session may start (see [Subagents per role](#subagents-per-role)), each with
   `name` (what the Agent tool takes as `subagent_type`, e.g. `symphony:laravel-architect`) and `description`. Always
   defined; empty when the session may start none: `{% if agents.size > 0 %}…{% endif %}`.
+- `test_paths`: the list `pipeline.test_paths`, so the prompt of a test engineer can name the files it may change. Always defined.
 - `results`, `round`, `result_required`: the issue's stage history, always defined. A role with
   [`result`](#result-driven-transitions) reads the issue's persisted results when its session starts (one paginated read
   of the issue's comments per session; other roles make no extra request and see the empty values).
@@ -893,6 +969,9 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
     reset, while its verdict is `changes_needed`; empty otherwise.
   - `results.failed_cases`: the failed cases `{criterion, test}` of the newest test since the last reset, while its
     verdict is `failed`; empty otherwise.
+  - `results.test`: the newest test since the last reset, whatever its verdict, as `{verdict, summary, round, commands}`
+    (`summary` cut to 1,500 characters), else `null`. With `failed_cases` it tells the developer why the cases failed and
+    how to run them again.
   - `round`: the round the role is working in, 1 for the first: the number of failed tests plus one for a role with
     `result: test`, else the number of reviews with `changes_needed` plus one (so a developer sees the review round it
     is fixing). 1 for roles without `result`.

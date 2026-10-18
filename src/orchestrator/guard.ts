@@ -260,8 +260,9 @@ function withNote(data: unknown, note: string): unknown {
 }
 
 /**
- * Wraps every spec with `transitionTarget` so a denied transition never reaches the tracker. An allowed call gets the
- * move in `context.transition`; a call without a target never does, so a tool can rely on it as proof of the guard.
+ * Wraps every spec with `transitionTarget` so a denied transition never reaches the tracker. A call the tool's `precheck`
+ * refuses stops before the guard (no entry check runs). An allowed call gets the move in `context.transition`; a call
+ * without a target never does, so a tool can rely on it as proof of the guard.
  */
 export function guardTools(specs: AgentToolSpec[], guard: TransitionGuard): AgentToolSpec[] {
   return specs.map((spec) => {
@@ -272,6 +273,8 @@ export function guardTools(specs: AgentToolSpec[], guard: TransitionGuard): Agen
       execute: async (args, { transition: _unchecked, ...context }): Promise<ToolResult> => {
         const target = transitionTarget(args);
         if (target === null) return spec.execute(args, context);
+        const refused = await spec.precheck?.(args, context);
+        if (refused !== undefined && refused !== null) return refused;
         let decision = await guard(target, spec.name);
         let moved = target;
         let checkFailed: AllowedTransition['checkFailed'];

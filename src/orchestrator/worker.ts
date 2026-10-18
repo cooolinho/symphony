@@ -19,8 +19,9 @@ import type { EffectiveWorkflow } from '../workflow/store.ts';
 import { internalResult, renderResultComment, type ResultMeta } from '../workflow/results.ts';
 import { normalizeStateName } from '../workflow/config.ts';
 import { EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../workflow/template.ts';
+import { changedFilesSince } from './changed-files.ts';
 import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord } from './guard.ts';
-import { createResultTool, resultReminder, type ResultToolAdapter } from './result-tool.ts';
+import { createResultTool, resultReminder, type PathRule, type ResultToolAdapter } from './result-tool.ts';
 import { buildStageHistory, resultsTemplateValue, type PersistedResult, type ResultsTemplateValue, type StageHistory } from './stage-history.ts';
 
 export type RunPhase =
@@ -161,6 +162,22 @@ interface ResultSupport {
   round: number;
 }
 
+/**
+ * The path rule of a role with `result: test`: its session may only change files matching `pipeline.test_paths`,
+ * measured against the commit the session started from (`startSha`). Without that commit (not a git checkout, or git
+ * failed) the rule cannot be evaluated: it refuses to guess, so the result is not accepted unchecked.
+ */
+function testPathRule(workspacePath: string, testPaths: readonly string[], startSha: string | null): PathRule {
+  return {
+    allowed: testPaths,
+    base: startSha ?? '',
+    changedFiles: async () => {
+      if (startSha === null) throw new SymphonyError('paths_unverifiable', 'the commit this session started from is unknown');
+      return changedFilesSince(workspacePath, startSha);
+    },
+  };
+}
+
 const RESULT_CAPABILITIES = ['readResults', 'postComment', 'setStatus', 'addLabels', 'removeLabels'] as const;
 
 /**
@@ -173,6 +190,7 @@ async function loadResultSupport(
   role: RoleConfig,
   issue: () => Issue,
   headSha: () => Promise<string | null>,
+  pathRule: PathRule | null,
   report: (results: PersistedResult[]) => void,
   onRecorded: () => void,
   onMoved: () => void,
@@ -216,6 +234,7 @@ async function loadResultSupport(
     issue,
     runId: params.runId,
     meta: { workflowHash: workflow.contentHash, headSha },
+    pathRule,
   });
   return {
     tool,
@@ -408,6 +427,11 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     // Roles with `result` start with the issue's stage history; every other role makes no extra tracker request.
     let resultRecorded = false;
     let resultMoved = false;
+    // A test engineer's baseline is the workspace as this session found it (after before_run and the integrations).
+    const pathRule =
+      role?.result === 'test'
+        ? testPathRule(activeWorkspace.path, params.workflow.config.pipeline.testPaths, (await readGitHead(activeWorkspace.path))?.headSha ?? null)
+        : null;
     const support =
       role?.result != null
         ? await loadResultSupport(
@@ -415,6 +439,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
             role,
             () => issue,
             async () => (await readGitHead(activeWorkspace.path))?.headSha ?? null,
+            pathRule,
             callbacks.results,
             () => {
               resultRecorded = true;
@@ -431,6 +456,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       results: support?.results ?? EMPTY_RESULTS,
       round: support?.round ?? 1,
       result_required: support !== null,
+      test_paths: params.workflow.config.pipeline.testPaths,
     };
     const transcript = transcriptPath(params.transcriptDir, activeWorkspace);
     if (transcript !== null) callbacks.transcript(transcript);

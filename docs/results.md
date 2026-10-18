@@ -92,7 +92,8 @@ A call runs these steps, one call at a time:
    loaded at session start (`resolveTransition`, see
    [Result-driven transitions](configuration.md#result-driven-transitions)). A configuration that cannot route the
    verdict returns `transition_error`.
-3. **Guard.** The target passes the [transition guard](configuration.md#transition-guard) like a `set_status` call:
+3. **Guard.** For a role with `result: test`, the [path rule](#path-rule-of-the-test-engineer) comes first. The
+   target passes the [transition guard](configuration.md#transition-guard) like a `set_status` call:
    `may_move_to`, then the column's entry check. `check_failed`, `check_timeout` and `check_error` return the guard's
    message (naming `report_result`) and write nothing, so a failed check never counts as a round and the agent can
    fix the problem and report again in the same session. On `check_error` the agent is told to comment and end its
@@ -130,6 +131,33 @@ after the turn that recorded the result; when the move led to another column of 
 new session. The tool writes only
 after the guard allowed exactly the computed target; called without the guard's approval it refuses (`tool_error`).
 
+## Path rule of the test engineer
+
+A role with `result: test` (the [test engineer](configuration.md#the-test-engineer)) may only change test files. Right
+before a result reaches the guard (step 3), `report_result` compares the workspace with the commit recorded when the
+session started: the files committed since, changed or deleted in the working tree or the index, and untracked ones
+(ignored files do not count; a renamed file counts at both ends). Every file that matches none of the globs of
+`pipeline.test_paths` ([path globs](configuration.md#path-globs)) refuses the result:
+
+```
+invalid_result: The test result is invalid: role test-engineer may only change files matching `pipeline.test_paths`
+(tests/**, test/**, **/*.test.*, **/*Test.php), but 1 file(s) changed since your session started are outside them:
+- src/app.ts
+Nothing was recorded. Undo these changes: restore a changed or deleted file with `git checkout 0123456789ab -- <file>`,
+delete a new one, commit, and report again. …
+```
+
+- It applies to every verdict, `blocked` and `failed` included, and comes after the input check: an invalid result is
+  reported as `invalid_result` without looking at the files.
+- Nothing is recorded or moved, and the entry check of the target column does not run, so the engineer does not wait
+  for a check that cannot lead to a result. The call may be repeated in the same session once the files are restored.
+- Over 25 offending files, the message lists the first 25 and counts the rest.
+- If git cannot list the changes, or the session has no start commit (the workspace is no git checkout), the call fails
+  with `tool_error` and nothing is recorded; the rule is never skipped.
+- Roles with another `result` are not restricted.
+
+The tool declares the check as `precheck`, which `guardTools` runs for a call with a target before it asks the guard.
+
 ## Stages without a result
 
 A run of a result-driven role never ends silently. When a turn ends with the issue still in the role's column and no
@@ -163,3 +191,9 @@ of [Failures of result-driven stages](usage.md#failures-of-result-driven-stages)
 that fails after the result comment (once, and every time), `check_timeout` inside `report_result`,
 `tracker_rate_limited` while reading the results, a check that outlasts the stall timeout, a workflow reload mid-stage,
 damaged markers, and a human moving the issue during the session.
+
+The `test engineer stage` suite in the same file runs developer → test engineer → reviewer in a real git workspace: a
+pass, a test engineer that changes `src/` (refused with `invalid_result`, no entry check, accepted once undone), uncommitted
+and untracked changes, a workspace that is no git checkout, `failed` with the failed cases in the developer's prompt and
+the engineer's next round, the round limit (`Blocked` with `needs-human`), a human resuming the issue, `max_test_rounds` 1
+and `blocked`. The rule itself is unit-tested against temporary git repositories in `test/changed-files.test.ts`.

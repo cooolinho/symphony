@@ -22,6 +22,12 @@ const ROLES = {
     on_round_limit: 'In review',
   },
   planner: { states: ['Todo'], commands: ['plan'], result: 'analysis', may_move_to: ['In progress', 'Blocked'], on_result: { ready: 'next' } },
+  tester: {
+    states: ['Testing'],
+    result: 'test',
+    may_move_to: ['Agent review', 'In progress', 'Blocked'],
+    on_result: { passed: 'Agent review', failed: 'In progress' },
+  },
 };
 
 const APPROVED = { verdict: 'approved', summary: 'Looks good.', findings: [{ severity: 'nit', problem: 'Typo in a comment' }] };
@@ -34,6 +40,9 @@ interface SetupOptions {
   history?: ResultToolParams['history'];
   labels?: string[];
   reviewer?: Record<string, unknown>;
+  /** Column the issue is in; default `Agent review`. */
+  state?: string;
+  pathRule?: ResultToolParams['pathRule'];
 }
 
 function setup(options: SetupOptions = {}) {
@@ -42,10 +51,10 @@ function setup(options: SetupOptions = {}) {
     tracker: {
       kind: 'github_project',
       provider: { owner: 'acme', project_number: 1, token: 'test-token' },
-      active_states: ['Todo', 'In progress', 'Agent review'],
+      active_states: ['Todo', 'In progress', 'Testing', 'Agent review'],
     },
     roles: { ...ROLES, reviewer: { ...ROLES.reviewer, ...options.reviewer } },
-    pipeline: { max_review_rounds: 3 },
+    pipeline: { max_review_rounds: 3, max_test_rounds: 2 },
     checks: { timeout_ms: options.timeoutMs ?? 10_000, on_enter: options.checks ?? {} },
   });
   const config = makeWorkflow(front).config;
@@ -54,7 +63,7 @@ function setup(options: SetupOptions = {}) {
   const manager = new WorkspaceManager({ root, hooks: config.hooks, workflowDir: root }, { PATH: process.env.PATH }, Logger.silent());
   const role = config.roles?.find((r) => r.name === (options.role ?? 'reviewer'));
   assert.ok(role);
-  const tracker = new FakeTracker([makeIssue({ id: '1', state: 'Agent review', labels: options.labels ?? [] })]);
+  const tracker = new FakeTracker([makeIssue({ id: '1', state: options.state ?? 'Agent review', labels: options.labels ?? [] })]);
   const current = (): Issue => {
     const issue = tracker.issues.get('1');
     assert.ok(issue);
@@ -81,6 +90,7 @@ function setup(options: SetupOptions = {}) {
     issue: current,
     runId: 'run-1',
     meta: { workflowHash: 'f'.repeat(64), headSha: async () => 'abc123def456abc1', now: () => new Date('2026-10-18T12:00:00Z') },
+    ...(options.pathRule !== undefined ? { pathRule: options.pathRule } : {}),
   };
   const unguarded = createResultTool(params);
   const tools = guardTools(toolsForRole(tracker.agentToolSpecs(), role, unguarded), guard);
@@ -452,6 +462,118 @@ describe('report_result', () => {
       const forged = await unguarded.execute(APPROVED, { issue: current(), transition: { target: 'Blocked', check: null, checkFailed: { target: 'In review', output: '', check } } });
       assert.equal(error(forged).category, 'tool_error');
       assert.deepEqual(tracker.statusCalls, []);
+    });
+  });
+
+  describe('path rule (test engineer)', () => {
+    const PASSED = { verdict: 'passed', summary: 'Every criterion has a passing test.', cases: [{ criterion: 'Totals add up', test: 'tests/TotalTest.php', status: 'passed' }] };
+    const FAILED = { verdict: 'failed', summary: 'The total ignores discounts.', cases: [{ criterion: 'Totals add up', test: 'tests/TotalTest.php', status: 'failed' }] };
+    const ALLOWED = ['tests/**', '**/*Test.php'];
+
+    /** A rule whose changed files can be edited between calls; `calls` counts the lookups. */
+    function rule(initial: string[]) {
+      const state = { files: initial, calls: 0, failure: null as Error | null };
+      const pathRule = {
+        allowed: ALLOWED,
+        base: '0123456789abcdef0123',
+        changedFiles: async () => {
+          state.calls++;
+          if (state.failure !== null) throw state.failure;
+          return state.files;
+        },
+      };
+      return { state, pathRule };
+    }
+
+    it('refuses a result with changes to src/ with invalid_result, naming the files, before any entry check', async () => {
+      const { state, pathRule } = rule(['src/Total.php', 'tests/TotalTest.php', 'app/Models/Invoice.php']);
+      const { report, tracker, events } = setup({ role: 'tester', state: 'Testing', pathRule, checks: { 'Agent review': 'echo checked >> "$SYMPHONY_WORKFLOW_DIR/checks.log"' } });
+      const refused = error(await report(PASSED));
+      assert.equal(refused.category, 'invalid_result');
+      assert.match(refused.message, /The test result is invalid: role tester may only change files matching `pipeline\.test_paths` \(tests\/\*\*, \*\*\/\*Test\.php\)/);
+      assert.match(refused.message, /but 2 file\(s\) changed since your session started/);
+      assert.match(refused.message, /- src\/Total\.php\n- app\/Models\/Invoice\.php/);
+      assert.doesNotMatch(refused.message, /tests\/TotalTest\.php\n/, 'files inside the paths are not listed');
+      assert.match(refused.message, /Nothing was recorded[\s\S]*git checkout 0123456789ab -- <file>/);
+      assert.deepEqual(events, [], 'the entry check of Agent review did not run');
+      assert.deepEqual(tracker.statusCalls, []);
+      assert.equal(tracker.comments.get('1'), undefined);
+
+      state.files = ['tests/TotalTest.php'];
+      assert.equal(data(await report(PASSED)).target, 'Agent review');
+      assert.deepEqual(tracker.statusCalls, ['Agent review']);
+    });
+
+    it('applies to every verdict: failed and blocked results may not leave production changes behind either', async () => {
+      const { pathRule } = rule(['src/Total.php']);
+      const { report, tracker } = setup({ role: 'tester', state: 'Testing', pathRule });
+      assert.equal(error(await report(FAILED)).category, 'invalid_result');
+      assert.equal(error(await report({ verdict: 'blocked', summary: 'No database.', blockers: [{ description: 'No test database', needs: 'infra' }] })).category, 'invalid_result');
+      assert.deepEqual(tracker.statusCalls, []);
+    });
+
+    it('lets a result through that only touches the allowed paths', async () => {
+      const { pathRule } = rule(['tests/Feature/TotalTest.php', 'app/Domain/OrderTest.php']);
+      const { report, tracker, markers } = setup({ role: 'tester', state: 'Testing', pathRule });
+      const result = data(await report(FAILED));
+      assert.equal(result.target, 'In progress');
+      assert.equal(result.round, 1);
+      assert.deepEqual(tracker.statusCalls, ['In progress']);
+      assert.equal(markers()[0]?.result.verdict, 'failed');
+    });
+
+    it('checks the input first: an invalid result is reported as before, without looking at the files', async () => {
+      const { state, pathRule } = rule(['src/Total.php']);
+      const { report } = setup({ role: 'tester', state: 'Testing', pathRule });
+      const refused = error(await report({ verdict: 'failed', summary: 'No failed case.' }));
+      assert.match(refused.message, /verdict "failed" needs at least one case/);
+      assert.equal(state.calls, 0);
+    });
+
+    it('lists the first files and counts the rest', async () => {
+      const { pathRule } = rule(Array.from({ length: 30 }, (_, i) => `src/file-${String(i).padStart(2, '0')}.php`));
+      const { report } = setup({ role: 'tester', state: 'Testing', pathRule });
+      const message = error(await report(PASSED)).message;
+      assert.match(message, /30 file\(s\)/);
+      assert.match(message, /- src\/file-24\.php\n- … and 5 more\n/);
+      assert.doesNotMatch(message, /file-25/);
+    });
+
+    it('fails closed when git cannot tell, with a message that is not about the change; a later call may succeed', async () => {
+      const { state, pathRule } = rule(['tests/TotalTest.php']);
+      const { report, tracker } = setup({ role: 'tester', state: 'Testing', pathRule });
+      state.failure = new Error('git could not list the files changed since 0123456789ab');
+      const unknown = error(await report(PASSED));
+      assert.equal(unknown.category, 'tool_error');
+      assert.match(unknown.message, /could not check which files you changed \(git could not list[^)]*\), so nothing was recorded[\s\S]*not a problem with your change/);
+      assert.deepEqual(tracker.statusCalls, []);
+      state.failure = null;
+      assert.equal(data(await report(PASSED)).target, 'Agent review');
+    });
+
+    it('does not look again once the result is recorded', async () => {
+      const { state, pathRule } = rule(['tests/TotalTest.php']);
+      const { report } = setup({ role: 'tester', state: 'Testing', pathRule });
+      data(await report(PASSED));
+      const looked = state.calls;
+      state.files = ['src/Total.php'];
+      assert.equal(data(await report(FAILED)).already_recorded, true);
+      assert.equal(state.calls, looked);
+    });
+
+    it('is not applied to a role without a rule', async () => {
+      const { report } = setup();
+      assert.equal(data(await report(APPROVED)).target, 'In review');
+    });
+
+    it('routes the verdicts of the test kind: failed to the developer, the second failed round to Blocked with needs-human', async () => {
+      const first = setup({ role: 'tester', state: 'Testing' });
+      assert.equal(data(await first.report(FAILED)).target, 'In progress');
+      const second = setup({ role: 'tester', state: 'Testing', history: { reviewRounds: 0, testRounds: 1 } });
+      const limit = data(await second.report(FAILED));
+      assert.equal(limit.target, 'Blocked');
+      assert.equal(limit.round, 2);
+      assert.deepEqual(second.current().labels, ['needs-human']);
     });
   });
 

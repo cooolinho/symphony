@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { buildStageHistory, type PersistedResult } from '../src/orchestrator/stage-history.ts';
-import { internalResult, type ResultMeta, type StageResult } from '../src/workflow/results.ts';
+import { PROMPT_SUMMARY_LIMIT, buildStageHistory, resultsTemplateValue, type PersistedResult } from '../src/orchestrator/stage-history.ts';
+import { internalResult, parseResult, type ResultMeta, type StageResult } from '../src/workflow/results.ts';
 
 let clock = 0;
 
@@ -101,5 +101,64 @@ describe('buildStageHistory', () => {
   it('forgets the target at a reset', () => {
     const history = buildStageHistory([entry('review', 'approved', { target: 'In review' }), entry('reset', 'reset')]);
     assert.equal(history.lastTarget, null);
+  });
+});
+
+describe('resultsTemplateValue: the test result for the developer and the test engineer', () => {
+  /** A persisted test result as `report_result` records it. */
+  function tested(input: Record<string, unknown>, over: Partial<ResultMeta> = {}): PersistedResult {
+    const parsed = parseResult('test', input);
+    assert.ok(parsed.ok, parsed.ok ? '' : parsed.message);
+    clock += 1;
+    return {
+      result: parsed.result,
+      meta: {
+        role: 'test-engineer',
+        run: `run-${clock}`,
+        round: 1,
+        profile: null,
+        workflow_hash: null,
+        head_sha: null,
+        checks: null,
+        target: 'In progress',
+        created_at: new Date(Date.UTC(2026, 9, 18, 10, 0, clock)).toISOString(),
+        ...over,
+      },
+    };
+  }
+  const FAILED = {
+    verdict: 'failed',
+    summary: 'The total ignores discounts.',
+    cases: [
+      { criterion: 'Totals add up', test: 'tests/TotalTest.php::adds', status: 'passed' },
+      { criterion: 'A discount lowers the total', test: 'tests/TotalTest.php::discount', status: 'failed' },
+    ],
+    commands: ['php artisan test --filter=Total'],
+  };
+  const PASSED = { verdict: 'passed', summary: 'All good.', cases: [{ criterion: 'A discount lowers the total', test: 'tests/TotalTest.php::discount', status: 'passed' }] };
+
+  it('hands a failed test to the developer: the failed cases, the summary, the commands and the round', () => {
+    const value = resultsTemplateValue(buildStageHistory([tested(FAILED)]));
+    assert.deepEqual(value.failed_cases, [{ criterion: 'A discount lowers the total', test: 'tests/TotalTest.php::discount' }]);
+    assert.deepEqual(value.test, { verdict: 'failed', summary: 'The total ignores discounts.', round: 1, commands: ['php artisan test --filter=Total'] });
+    assert.deepEqual(value.latest.map((latest) => [latest.role, latest.kind, latest.verdict]), [['test-engineer', 'test', 'failed']]);
+  });
+
+  it('has no failed cases after a passing run, but still the test result', () => {
+    const value = resultsTemplateValue(buildStageHistory([tested(FAILED), tested(PASSED, { round: 2, target: 'Agent review' })]));
+    assert.deepEqual(value.failed_cases, []);
+    assert.deepEqual([value.test?.verdict, value.test?.round], ['passed', 2]);
+  });
+
+  it('is empty without a test, and forgets it at a reset', () => {
+    assert.equal(resultsTemplateValue(buildStageHistory([])).test, null);
+    assert.equal(resultsTemplateValue(buildStageHistory([entry('review', 'approved')])).test, null);
+    const reset = resultsTemplateValue(buildStageHistory([tested(FAILED), entry('reset', 'reset')]));
+    assert.deepEqual([reset.test, reset.failed_cases], [null, []]);
+  });
+
+  it('cuts a long summary like the other prompt summaries', () => {
+    const value = resultsTemplateValue(buildStageHistory([tested({ ...FAILED, summary: 'x'.repeat(3000) })]));
+    assert.equal(value.test?.summary.length, PROMPT_SUMMARY_LIMIT);
   });
 });

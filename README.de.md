@@ -129,6 +129,10 @@ und Token stehen in der **`.env`**.
   wiederverwendet und gelöscht, sobald das Issue auf *Done* steht.
 - **Developer und Reviewer:** Rollen pro Spalte. Vor `Agent review` und `In review` laufen Checks (Lint, statische
   Analyse, Tests); scheitern sie, bleibt die Karte stehen und der Agent bessert nach.
+- **Test Engineer (optional):** Ein unabhängiger Agent in der Spalte `Testing` schreibt Tests für die
+  Akzeptanzkriterien und darf nur Testdateien ändern; fehlgeschlagene Tests gehen mit den betroffenen Fällen zurück an
+  den Developer, und nach `pipeline.max_test_rounds` fehlgeschlagenen Runden wartet das Issue auf dich
+  ([Details](docs/configuration.md#the-test-engineer)).
 - **Befehle im Issue:** Beginnt die Beschreibung mit `/refactoring`, lädt Symphony einen zentral gepflegten Audit-Skill:
   Er misst die Baseline, findet Bugs und Refactoring-Kandidaten und legt Sub-Issues an. `/refactor-safely` setzt sie
   verhaltensneutral mit Tests als Sicherheitsnetz um ([Details](docs/usage.md#commands-in-the-issue-refactoring)).
@@ -166,8 +170,8 @@ npm run dry-run         # Einrichtung prüfen, startet keine Agenten
 npm start               # Symphony starten
 ```
 
-Dazwischen legst du ein GitHub Project Board mit den Spalten `Backlog`, `Ready`, `In progress`, `Agent review`,
-`Blocked`, `In review` und `Done` an. Die ausführliche Anleitung steht in
+Dazwischen legst du ein GitHub Project Board mit den Spalten `Backlog`, `Ready`, `In progress`, `Testing`,
+`Agent review`, `Blocked`, `In review` und `Done` an. Die ausführliche Anleitung steht in
 [docs/getting-started.md](docs/getting-started.md), den Betrieb per Docker hinter Traefik beschreibt
 [docs/docker.md](docs/docker.md), einen lokalen Testlauf desselben Images ohne Traefik (`docker-compose.local.yml`)
 [ein eigener Abschnitt](docs/docker.md#local-test-setup-without-traefik). Die Dokumentation unter `docs/` ist auf

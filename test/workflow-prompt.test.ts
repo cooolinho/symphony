@@ -71,6 +71,19 @@ const afterReview = {
   },
 };
 
+/** The stage history of a session that follows a test run with failed cases (a developer fixing it, a test engineer rerunning it). */
+const afterFailedTest = {
+  result_required: true,
+  round: 2,
+  test_paths: ['tests/**', '**/*Test.php'],
+  results: {
+    latest: [],
+    open_findings: [],
+    failed_cases: [{ criterion: 'A discount lowers the total', test: 'tests/TotalTest.php::discount' }],
+    test: { verdict: 'failed', summary: 'The total ignores discounts.', round: 1, commands: ['php artisan test --filter=Total'] },
+  },
+};
+
 describe('shipped WORKFLOW.md', () => {
   it('resolves to the developer and reviewer roles with entry checks', async () => {
     const { definition } = await loadWorkflowFile(shipped);
@@ -100,6 +113,80 @@ describe('shipped WORKFLOW.md', () => {
     assert.deepEqual(reviewer?.onResult, { approved: 'In review', changes_needed: 'In progress', blocked: 'Blocked' });
     assert.equal(reviewer?.onCheckFailed, 'In progress');
     assert.equal(config.pipeline.maxReviewRounds, 3);
+  });
+
+  it('adds the test engineer between the developer and the reviewer, switched on by SYMPHONY_AFTER_IMPLEMENTATION', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const resolveWith = (extra: NodeJS.ProcessEnv) =>
+      resolveConfig(definition.config, {
+        workflowPath: shipped,
+        env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't', ...extra },
+        trackerDefaults,
+      });
+    const config = resolveWith({});
+    const tester = roleFor({ state: 'Testing', description: null }, config.roles);
+    assert.equal(tester?.name, 'test-engineer');
+    assert.deepEqual(config.tracker.activeStates, ['Ready', 'In progress', 'Testing', 'Agent review']);
+    assert.deepEqual(
+      [tester?.result, tester?.onResult, tester?.readOnly, tester?.modelLabel, tester?.claude.model, tester?.agents],
+      ['test', { passed: 'Agent review', failed: 'In progress', blocked: 'Blocked' }, false, 'ignore', 'sonnet', ['laravel-test-engineer']],
+    );
+    assert.deepEqual(tester?.mayMoveTo, ['Agent review', 'In progress', 'Blocked']);
+    assert.deepEqual([config.pipeline.maxTestRounds, config.pipeline.testPaths], [2, ['tests/**', 'test/**', '**/*.test.*', '**/*Test.php']]);
+    assert.ok(config.checks.onEnter.has('testing') && config.checks.onEnter.has('agent review'), 'the optional Testing check, and Agent review keeps its own');
+
+    // Off by default: the developer hands over to Agent review, so existing boards keep their flow.
+    const developer = (candidate: typeof config) => roleFor({ state: 'In progress', description: null }, candidate.roles);
+    assert.equal(developer(config)?.onResult.done, 'Agent review');
+    const on = resolveWith({ SYMPHONY_AFTER_IMPLEMENTATION: 'Testing' });
+    assert.equal(developer(on)?.onResult.done, 'Testing');
+    assert.ok(developer(on)?.mayMoveTo?.includes('Testing'));
+    assert.equal(developer(resolveWith({ SYMPHONY_AFTER_IMPLEMENTATION: '' }))?.onResult.done, 'Agent review');
+  });
+
+  it('renders the test engineer prompt: its paths, the test round, the result fields and how to handle each answer', async () => {
+    const prompt = await render('test-engineer', 2, undefined, 'develop', [], afterFailedTest);
+    assert.match(prompt, /Your role: test engineer/);
+    assert.match(prompt, /files matching `tests\/\*\*`, `\*\*\/\*Test\.php`/);
+    assert.match(prompt, /`report_result` refuses your result with `invalid_result`, naming the files/);
+    assert.match(prompt, /This is test round 2\./);
+    assert.match(prompt, /`get_issue`, `add_comment` and `report_result`/);
+    assert.match(prompt, /pull request's branch \(`symphony\/issue-42` unless the pull request says otherwise\)/);
+    assert.match(prompt, /git push origin symphony\/issue-42/);
+    assert.match(prompt, /`passed`.*`failed`.*`blocked`/);
+    assert.match(prompt, /`cases`.*`criterion`.*`test`.*`status`/);
+    assert.match(prompt, /`invalid_result`.*undo the changes outside the test paths/);
+    assert.match(prompt, /`check_failed`.*production code.*report `failed`/);
+    assert.match(prompt, /`check_timeout`.*Call `report_result` once more/);
+    assert.match(prompt, /`check_error`.*issue comment/);
+    assert.match(prompt, /## Failed cases of your previous test run/);
+    assert.match(prompt, /1\. A discount lowers the total — `tests\/TotalTest\.php::discount`/);
+    assert.doesNotMatch(prompt, /set_status|mcp__tracker__/);
+    assert.doesNotMatch(prompt, /Your role: developer|Your role: reviewer/);
+
+    const first = await render('test-engineer', null, undefined, null, [], { result_required: true });
+    assert.match(first, /This is test round 1\./);
+    assert.match(first, /\(no test path is configured, so you cannot change any file\)/);
+    assert.doesNotMatch(first, /Failed cases of your previous test run/);
+    const agents = [{ name: 'symphony:laravel-test-engineer', description: 'Writes Pest tests.' }];
+    assert.match(await render('test-engineer', null, undefined, null, agents), /- `symphony:laravel-test-engineer`: Writes Pest tests\./);
+  });
+
+  it('gives the developer the failed test cases, the test engineer\'s summary and its commands', async () => {
+    const prompt = await render('developer', null, undefined, null, [], afterFailedTest);
+    assert.match(prompt, /## Failed test cases of the latest test run/);
+    assert.match(prompt, /they fail \(test round 1\)\. Fix the production code until they pass\. Do not weaken, skip or delete the tests/);
+    assert.match(prompt, /1\. A discount lowers the total — `tests\/TotalTest\.php::discount`/);
+    assert.match(prompt, /The test engineer's summary: The total ignores discounts\./);
+    assert.match(prompt, /Commands that ran:\n- `php artisan test --filter=Total`/);
+    assert.match(prompt, /address the open findings of the latest agent review and the failed test cases\./);
+    assert.doesNotMatch(prompt, /Open findings of the latest agent review\n/);
+
+    const without = await render('developer');
+    assert.doesNotMatch(without, /Failed test cases/);
+    assert.match(without, /address the open findings of the latest agent review\./);
+    const both = await render('developer', null, undefined, null, [], { ...afterReview, results: { ...afterReview.results, ...afterFailedTest.results } });
+    assert.ok(both.indexOf('## Open findings of the latest agent review') < both.indexOf('## Failed test cases of the latest test run'));
   });
 
   it('renders the developer prompt with short tool names and the check handling', async () => {
@@ -467,6 +554,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
     const byRole = Object.fromEntries((config.roles ?? []).map((role) => [role.name, role.agents]));
     assert.deepEqual(byRole, {
       developer: ['laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer'],
+      'test-engineer': ['laravel-test-engineer'],
       reviewer: ['laravel-code-reviewer'],
       auditor: ['laravel-architect', 'laravel-code-reviewer'],
       autopilot: ['laravel-architect'],

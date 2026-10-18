@@ -129,6 +129,10 @@ live in **`.env`**.
   issue is *Done*.
 - **Developer and reviewer:** roles per column. Before `Agent review` and `In review`, checks run (lint, static
   analysis, tests); if they fail, the card stays and the agent fixes the problem.
+- **Test engineer (optional):** an independent agent in the `Testing` column writes tests for the acceptance criteria and
+  may only change test files; failed tests go back to the developer with the failed cases, and after
+  `pipeline.max_test_rounds` failed rounds the issue waits for you
+  ([details](docs/configuration.md#the-test-engineer)).
 - **Issue commands:** a description that starts with `/refactoring` loads a centrally maintained audit skill that
   measures a baseline, finds bugs and refactoring candidates and files sub-issues; `/refactor-safely` implements them
   behavior-neutrally with tests as a safety net ([details](docs/usage.md#commands-in-the-issue-refactoring)).
@@ -164,8 +168,8 @@ npm run dry-run         # check the setup without starting agents
 npm start               # start Symphony
 ```
 
-In between, create a GitHub Project board with the columns `Backlog`, `Ready`, `In progress`, `Agent review`,
-`Blocked`, `In review` and `Done`. The step-by-step guide is [docs/getting-started.md](docs/getting-started.md);
+In between, create a GitHub Project board with the columns `Backlog`, `Ready`, `In progress`, `Testing`,
+`Agent review`, `Blocked`, `In review` and `Done`. The step-by-step guide is [docs/getting-started.md](docs/getting-started.md);
 running it with Docker behind Traefik is described in [docs/docker.md](docs/docker.md), a local test run of the same
 image without Traefik (`docker-compose.local.yml`) in
 [its own section](docs/docker.md#local-test-setup-without-traefik).

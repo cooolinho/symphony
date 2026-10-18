@@ -14,6 +14,7 @@ Focus:
 - Cover the unhappy paths: validation failures, unauthorized users, missing records.
 - Keep tests deterministic and isolated; fake time, queues, mail and HTTP where needed.
 - Do not weaken, skip or delete existing tests, and do not change test, CI or lint configuration to make a run pass. If a test is wrong, say why.
+- Change test files only. When a test fails because of the production code, report the failing test and why instead of fixing the code.
 - Run the narrowest relevant tests first, then the full suite.
 
 Report the tests added, the command you ran and the result.

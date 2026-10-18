@@ -9,6 +9,7 @@ import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { resolveConfigPath } from '../util/paths.ts';
 import { ISSUE_TYPES } from './classify.ts';
 import { COMMAND_NAME } from './command.ts';
+import { globProblem } from './glob.ts';
 import { isPlainObject } from './loader.ts';
 import { DEFAULT_PROFILE, type WorkflowProfile } from './profile.ts';
 import { Reader, parseInteger } from './reader.ts';
@@ -130,7 +131,10 @@ export interface PipelineConfig {
    * skips stages and overrides transitions for issues of that type.
    */
   profiles: ReadonlyMap<string, WorkflowProfile>;
-  /** Path globs that mark test, documentation and security-relevant files (used by later pipeline stages). */
+  /**
+   * Path globs (see `glob.ts`) that mark test, documentation and security-relevant files. `testPaths` is all a role with
+   * `result: test` may change (`report_result` refuses a result otherwise); the other two are used by later pipeline stages.
+   */
   testPaths: string[];
   docsPaths: string[];
   securityPaths: string[];
@@ -194,6 +198,8 @@ export const DEFAULTS = {
   stallTimeoutMs: 300_000,
   maxReviewRounds: 3,
   maxTestRounds: 2,
+  /** `pipeline.test_paths` when unset: the usual places of test files (Laravel, Node, Jest/Vitest). */
+  testPaths: ['tests/**', 'test/**', '**/*.test.*', '**/*Test.php'],
   pipelineLimitLabel: 'needs-human',
   pipelineDefaultType: 'feature',
   /** Column for a session that ends without the result its role has to report. */
@@ -439,6 +445,16 @@ function readPipeline(reader: Reader, raw: Record<string, unknown>, roles: RoleC
     if (value === '') reader.errors.push(`pipeline.${key} must not be empty`);
     return value || fallback;
   };
+  /** A list of path globs: unset = `fallback`, an explicit list is used as it is (an empty one allows no path). */
+  const globs = (key: 'test_paths' | 'docs_paths' | 'security_paths', fallback: readonly string[]): string[] => {
+    const list = reader.stringList(section, key, `pipeline.${key}`);
+    if (list === null) return [...fallback];
+    list.forEach((glob, index) => {
+      const problem = globProblem(glob);
+      if (problem !== null) reader.errors.push(`pipeline.${key}[${index}] ${JSON.stringify(glob)} ${problem}`);
+    });
+    return list.map((glob) => glob.trim());
+  };
   const analysis = reader.oneOf(section, 'analysis', 'pipeline.analysis', ANALYSIS_POLICIES, 'always');
   if (analysis === 'when_unlabeled' && !(roles ?? []).some((role) => role.result === 'analysis')) {
     reader.errors.push('pipeline.analysis: when_unlabeled needs a role with `result: analysis`');
@@ -451,9 +467,9 @@ function readPipeline(reader: Reader, raw: Record<string, unknown>, roles: RoleC
     defaultType: nonEmpty('default_type', DEFAULTS.pipelineDefaultType),
     analysis,
     profiles: readProfiles(reader, section.profiles, roles, terminalStates),
-    testPaths: reader.stringList(section, 'test_paths', 'pipeline.test_paths') ?? [],
-    docsPaths: reader.stringList(section, 'docs_paths', 'pipeline.docs_paths') ?? [],
-    securityPaths: reader.stringList(section, 'security_paths', 'pipeline.security_paths') ?? [],
+    testPaths: globs('test_paths', DEFAULTS.testPaths),
+    docsPaths: globs('docs_paths', []),
+    securityPaths: globs('security_paths', []),
   };
 }
 
