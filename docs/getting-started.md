@@ -26,24 +26,31 @@ npm install
 
 1. On GitHub, go to **Profile → Projects → New project** and create a project from the **Kanban** template. It comes
    with the columns `Backlog`, `Ready`, `In progress`, `In review` and `Done`.
-2. Add the columns `Agent review`, `Blocked` and `Testing`: on the board, add the options via the menu of the **Status** field (or
-   *Settings → Fields → Status*). The order does not matter; this one is easy to follow:
+2. Add the columns `Testing`, `Agent review` and `Blocked`: on the board, add the options via the menu of the **Status** field (or
+   *Settings → Fields → Status*). Keep this order (`Backlog`, `Ready`, `In progress`, `Testing`, `Agent review`,
+   `Blocked`, `In review`, `Done`): `next` and the pipeline view follow the board's order, so `Testing` belongs between
+   `In progress` and `Agent review`.
 
    | Column | Who moves cards here | What Symphony does |
    |---|---|---|
    | `Backlog` | you | nothing |
-   | `Ready` | you | starts the **Developer** |
+   | `Ready` | you | starts the **Issue analyst**, who hands the issue on to `In progress` |
    | `In progress` | Developer, Reviewer (changes needed), Test engineer (tests failed) | Developer works |
-   | `Testing` | Developer, after passing checks (optional stage) | starts the **Test engineer**, who writes independent tests and may only change test files |
-   | `Agent review` | Developer, or Test engineer when the tests pass | starts the **Reviewer** (at most one at a time) |
+   | `Testing` | Developer, after passing checks (bug issues; other issues only with `SYMPHONY_AFTER_IMPLEMENTATION=Testing`) | starts the **Test engineer**, who writes independent tests and may only change test files |
+   | `Agent review` | Developer (issues without the test stage), or Test engineer when the tests pass | starts the **Reviewer** (at most one at a time) |
    | `Blocked` | Issue analyst (open questions), Developer or Reviewer | stops the agent, workspace is kept; your turn |
    | `In review` | only the Reviewer, after passing checks | stops the agent, workspace is kept; your review |
    | `Done` | only you | stops the agent and deletes the workspace |
 
-   The bundled `WORKFLOW.md` expects exactly these names, plus `Testing` for the optional
-   [test engineer](configuration.md#the-test-engineer): add that column too, between `In progress` and `Agent review`
-   (it stays unused until `SYMPHONY_AFTER_IMPLEMENTATION=Testing` makes the developer hand over to it). The dry run
-   (step 6) reports every column missing from the board (`unknown board column`).
+   The bundled `WORKFLOW.md` expects exactly these names. `Testing` is used by the
+   [test engineer](configuration.md#the-test-engineer): bug issues (label `bug` or `Type: bugfix`) run
+   `Ready → In progress → Testing → Agent review → In review` through the `bugfix`
+   [workflow profile](configuration.md#workflow-profiles), all other issues skip `Testing` unless
+   `SYMPHONY_AFTER_IMPLEMENTATION=Testing` makes the developer hand every issue over to it. The column is required
+   either way: the dry run (step 6) reports every column missing from the board (`unknown board column "Testing"`).
+   To run bug issues without the test stage, see [Bug issues](usage.md#bug-issues-the-bugfix-profile). With the default
+   of 3 agent slots the test engineer and the issue analyst share one slot; allow 4 (`SYMPHONY_MAX_CONCURRENT_AGENTS`)
+   to run them side by side.
 3. Note the **board number** from the URL, e.g. `10` from `https://github.com/users/yourname/projects/10`.
 4. Add issues: on the board via **+ Add item** and then `#` for an issue of your repository, or in an issue's sidebar
    under **Projects**. Symphony only works on real issues, not on drafts or pull requests.

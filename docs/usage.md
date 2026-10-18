@@ -30,9 +30,10 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
    - implements and tests, merges the base branch in, commits, pushes and opens a pull request with
      `Closes #<nr>`,
    - hands off with `report_result` (verdict `done`, summary, changed files, tests): Symphony posts the result as the
-     issue comment and moves the issue to `Agent review`.
+     issue comment and moves the issue to `Agent review` (a bug issue goes to `Testing` first, see
+     [Bug issues](#bug-issues-the-bugfix-profile)).
 4. **Checks before `Agent review`:** Symphony runs the checks in the workspace. If they pass, the card moves to
-   `Agent review` and the developer session ends. If they fail (`check_failed`), the card stays and the agent gets
+   `Agent review` (or `Testing`) and the developer session ends. If they fail (`check_failed`), the card stays and the agent gets
    the output, fixes the errors and tries again. If the checks run longer than `checks.timeout_ms`
    (`check_timeout`), the agent tries once more and otherwise ends its turn; the card keeps its column and never goes
    to `Blocked` for a timeout. If the environment is broken (`check_error`, e.g. a missing `vendor/`), the agent
@@ -59,6 +60,7 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
 | `Backlog` | nothing. Issues here are not released yet. |
 | `Ready` | starts the issue analyst as soon as a slot is free; it hands the issue on to `In progress` |
 | `In progress` | a developer is working (it gets the analysis); if Symphony finds an issue here without an agent, it starts one |
+| `Testing` | starts the test engineer (at most one at a time), who writes independent tests and may only change test files; reached by bug issues after the developer, by every issue with `SYMPHONY_AFTER_IMPLEMENTATION=Testing` |
 | `Agent review` | starts a reviewer (at most one at a time); only reachable after passing checks |
 | `Blocked` | stops a running agent; the workspace is kept. The agent needs you, see its comment. |
 | `In review` | stops a running agent; the workspace is kept for follow-up work. Only the reviewer moves cards here, after passing checks. |
@@ -67,6 +69,49 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
 If you want follow-up work, comment in the issue and move it back to `Ready` or `In progress`. The developer
 continues in the same workspace and reads your comments. Move an issue out of `Blocked` the same way once the
 problem is resolved.
+
+### Bug issues: the bugfix profile
+
+An issue of type `bugfix` (label `Type: bugfix`, or `bug`; the analyst sets it when the issue has no type) follows the
+`bugfix` [workflow profile](configuration.md#workflow-profiles) of the shipped `WORKFLOW.md` and runs through every
+stage on its own:
+
+```
+Ready (issue analyst) → In progress (developer) → [checks] → Testing (test engineer) → [checks] → Agent review (reviewer) → [checks] → In review
+```
+
+- The developer writes a regression test that fails first, confirms that it fails for the right reason, then fixes the
+  bug and sees the test pass.
+- The independent test engineer checks the acceptance criteria. `failed` sends the issue back to the developer with the
+  failed cases (up to `pipeline.max_test_rounds`, then `Blocked` with `needs-human`), `passed` leads to `Agent review`.
+- There is no architect stage. Features, refactors and issues without a type keep the flow without `Testing`, unless
+  `SYMPHONY_AFTER_IMPLEMENTATION=Testing` switches the test stage on for all of them.
+
+The board needs the columns in this order: `Backlog`, `Ready`, `In progress`, `Testing`, `Agent review`, `Blocked`,
+`In review`, `Done` (see [Getting started](getting-started.md#2-set-up-the-github-project-board)). `Testing` is always
+an active state, so a board without it fails the dry run and the dispatch preflight with
+`unknown board column "Testing"`. The order matters: `next` and the pipeline view follow the board.
+
+**A board without a test stage.** Add the `Testing` column anyway (it stays empty), and switch the stage off for bug
+issues in `WORKFLOW.md`:
+
+```yaml
+pipeline:
+  profiles:
+    bugfix:
+      on_result:
+        developer: { done: Agent review }
+```
+
+`skip: [test-engineer]` is only an option where the column that follows the skipped stage has no `checks.on_enter`
+script: a skipped stage moves the issue without a workspace and cannot run the check. With the shipped `Agent review`
+check the preflight rejects it. `skip` also leaves the `Testing` column itself on the board, because it only changes
+`next`.
+
+Slots: the test engineer gets slots beyond the ones reserved for the developer and the reviewer, and shares them with
+the issue analyst. With the default of 3 agent slots both take turns on the one free slot; with 4
+(`SYMPHONY_MAX_CONCURRENT_AGENTS=4`) they run side by side. With 2 slots the test engineer never starts (the dashboard
+and `limits.slot_problems` say so). `agent.max_concurrent_agents_by_state.Testing` is 1.
 
 ### Migrating from the single-prompt setup
 

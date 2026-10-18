@@ -129,7 +129,7 @@ und Token stehen in der **`.env`**.
   wiederverwendet und gelöscht, sobald das Issue auf *Done* steht.
 - **Developer und Reviewer:** Rollen pro Spalte. Vor `Agent review` und `In review` laufen Checks (Lint, statische
   Analyse, Tests); scheitern sie, bleibt die Karte stehen und der Agent bessert nach.
-- **Test Engineer (optional):** Ein unabhängiger Agent in der Spalte `Testing` schreibt Tests für die
+- **Test Engineer:** Ein unabhängiger Agent in der Spalte `Testing` (Bug-Issues immer, andere Issues optional) schreibt Tests für die
   Akzeptanzkriterien und darf nur Testdateien ändern; fehlgeschlagene Tests gehen mit den betroffenen Fällen zurück an
   den Developer, und nach `pipeline.max_test_rounds` fehlgeschlagenen Runden wartet das Issue auf dich
   ([Details](docs/configuration.md#the-test-engineer)).

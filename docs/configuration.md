@@ -528,7 +528,8 @@ roles:
 
 The shipped `WORKFLOW.md` also defines an independent test engineer: a role in its own column that writes and runs tests
 for every acceptance criterion, so the tests do not come from the agent that wrote the code. It changes no production
-code, and a failing test sends the issue back to the developer.
+code, and a failing test sends the issue back to the developer. Bug issues always pass through it (the shipped `bugfix`
+[profile](#workflow-profiles)); other issues only when the stage is switched on for all of them.
 
 ```yaml
 roles:
@@ -548,8 +549,10 @@ checks:
     Testing: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
 ```
 
-- **Off by default.** The developer's `done` leads to `Agent review` unless `SYMPHONY_AFTER_IMPLEMENTATION=Testing` (the
-  shipped `on_result.done` reads it, `.env.example` documents it). Then the flow is `In progress → [checks] → Testing →
+- **On for bug issues, off by default for the rest.** The shipped `pipeline.profiles.bugfix.on_result` sends the
+  developer's `done` of a bug issue to `Testing`. For every other issue the developer's `done` leads to `Agent review`
+  unless `SYMPHONY_AFTER_IMPLEMENTATION=Testing` (the shipped `on_result.done` reads it, `.env.example` documents it).
+  To run bug issues without the stage, set `pipeline.profiles.bugfix.on_result.developer.done: Agent review`. The flow is `In progress → [checks] → Testing →
   [checks] → Agent review → [checks] → In review`. `Testing` is always one of `tracker.active_states`, so the board
   needs the column (the [board preflight](#tracker) reports it as `unknown board column "Testing"`); put it between
   `In progress` and `Agent review`, because `next` and the pipeline view of the dashboard follow the board's order.
@@ -560,11 +563,13 @@ checks:
   (their `may_move_to` columns, or every active column without that list; the same goes for an active column no role
   serves). A project whose developer has no `result` therefore keeps its test stage once the developer may move issues
   to `Testing`. So an issue never shows a test stage as done that did not run, and the order of the `Testing` column on
-  the board does not matter until the stage is on.
+  the board does not matter until a profile or the setting leads to the stage.
 - **Slots.** The test engineer is a third role next to the developer and the reviewer, whose slots
   `agent.reserved_slots_by_role` keeps free. Like the other roles it only gets slots beyond those, so allow at least
   3 agent slots (`SYMPHONY_MAX_CONCURRENT_AGENTS`) when the stage is on, or the test engineer never starts; the
-  dashboard, the log and `limits.slot_problems` of the API report it when it happens.
+  dashboard, the log and `limits.slot_problems` of the API report it when it happens. With exactly 3 slots the test
+  engineer and the issue analyst share the one free slot, so allow 4 to run them side by side.
+  `agent.max_concurrent_agents_by_state.Testing` is 1 in the shipped file: one test run at a time.
 - **Verdicts.** `passed` leads to `Agent review`, `failed` to `In progress` (the developer), `blocked` to `Blocked`
   (see [result contracts](results.md#kinds): `cases[]`, `commands[]`, `uncovered_criteria[]`). A session that ends without
   a result goes to `on_missing_result` (`Blocked`).
@@ -598,7 +603,9 @@ checks:
 - **Skipping.** A [profile](#workflow-profiles) can list `test-engineer` in `skip` only when the column its issues go
   to next has no `checks.on_enter` script: a skipped stage moves the issue without a workspace and so cannot run one
   ([Skipping stages](#skipping-stages-without-a-session)). With the shipped `Agent review` check the preflight rejects
-  such a profile; the stage is switched on or off for the whole instance instead.
+  such a profile. A board without a test stage still needs the `Testing` column (it is an active state, `skip` only
+  changes `next`); switch the stage off by overriding the developer's `done` in the profile (see above) or for the
+  whole instance.
 
 #### Issue commands
 
@@ -818,9 +825,9 @@ one poll at a time. For example, with an analyst in `Ready` and `pipeline.analys
 The shipped `WORKFLOW.md`, shortened to the parts that make up the developer → checks → reviewer → human flow
 (`Ready → In progress → [checks] → Agent review → [checks] → In review → Done`, plus `Blocked`). The board needs
 the columns `Backlog`, `Ready`, `In progress`, `Agent review`, `Blocked`, `In review` and `Done`; the
-[board preflight](#tracker) reports a missing one. The shipped file also defines the optional
-[test engineer](#the-test-engineer) and lists its column `Testing` as an active state, so its board needs that column
-too; this example leaves the stage out. In a repository without a Laravel app the hook and the check
+[board preflight](#tracker) reports a missing one. The shipped file also defines the
+[test engineer](#the-test-engineer) (used by bug issues through the `bugfix` [profile](#workflow-profiles)) and lists its
+column `Testing` as an active state, so its board needs that column too; this example leaves the stage out. In a repository without a Laravel app the hook and the check
 script do nothing (exit 0), so the same file also works there.
 
 ```yaml

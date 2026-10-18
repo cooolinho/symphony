@@ -129,7 +129,7 @@ live in **`.env`**.
   issue is *Done*.
 - **Developer and reviewer:** roles per column. Before `Agent review` and `In review`, checks run (lint, static
   analysis, tests); if they fail, the card stays and the agent fixes the problem.
-- **Test engineer (optional):** an independent agent in the `Testing` column writes tests for the acceptance criteria and
+- **Test engineer:** an independent agent in the `Testing` column (bug issues always, other issues optionally) writes tests for the acceptance criteria and
   may only change test files; failed tests go back to the developer with the failed cases, and after
   `pipeline.max_test_rounds` failed rounds the issue waits for you
   ([details](docs/configuration.md#the-test-engineer)).

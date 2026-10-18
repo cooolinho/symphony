@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { Logger } from '../src/log.ts';
+import { resolveTransition } from '../src/orchestrator/transitions.ts';
 import { STANDARD_LABELS } from '../src/repo-init/labels.ts';
 import { githubProjectFactory } from '../src/tracker/github-project/index.ts';
 import { parseSettings } from '../src/tracker/github-project/settings.ts';
@@ -10,7 +11,9 @@ import { trackerDefaults } from '../src/tracker/registry.ts';
 import { resolveConfig } from '../src/workflow/config.ts';
 import { commandSkills, pluginAgents } from '../src/workflow/command.ts';
 import { loadWorkflowFile } from '../src/workflow/loader.ts';
+import { profileFor } from '../src/workflow/profile.ts';
 import { roleFor, roleName } from '../src/workflow/roles.ts';
+import { unknownBoardColumns } from '../src/workflow/validate.ts';
 import { compilePrompt, issueTemplateValue, renderPrompt } from '../src/workflow/template.ts';
 import { makeIssue } from './helpers.ts';
 
@@ -145,6 +148,101 @@ describe('shipped WORKFLOW.md', () => {
     assert.equal(developer(on)?.onResult.done, 'Testing');
     assert.ok(developer(on)?.mayMoveTo?.includes('Testing'));
     assert.equal(developer(resolveWith({ SYMPHONY_AFTER_IMPLEMENTATION: '' }))?.onResult.done, 'Agent review');
+  });
+
+  describe('bugfix profile', () => {
+    const BOARD = ['Backlog', 'Ready', 'In progress', 'Testing', 'Agent review', 'Blocked', 'In review', 'Done'];
+    const resolveWith = async (extra: NodeJS.ProcessEnv = {}) => {
+      const { definition } = await loadWorkflowFile(shipped);
+      return resolveConfig(definition.config, {
+        workflowPath: shipped,
+        env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't', ...extra },
+        trackerDefaults,
+      });
+    };
+    /** Where `role` sends an issue with these labels after `verdict`, through the profile the labels pick. */
+    const target = (config: Awaited<ReturnType<typeof resolveWith>>, labels: string[], role: string, verdict: string, board: readonly string[] = BOARD): string | undefined => {
+      const profile = profileFor(config.pipeline, issueTemplateValue(makeIssue({ ...issue, labels }), new Map(), config.pipeline).type as never);
+      const roleConfig = config.roles?.find((candidate) => candidate.name === role);
+      assert.ok(roleConfig);
+      const outcome = resolveTransition({ role: roleConfig, verdict, history: { reviewRounds: 0, testRounds: 0 }, profile, flags: {}, config, boardColumns: board });
+      assert.ok(outcome.ok, outcome.ok ? '' : outcome.problem);
+      return outcome.target;
+    };
+
+    it('defines the profile without an architect: only the developer hands over to Testing, and the config has no warnings', async () => {
+      const config = await resolveWith();
+      assert.deepEqual([...config.pipeline.profiles.keys()], ['bugfix']);
+      const bugfix = config.pipeline.profiles.get('bugfix');
+      assert.deepEqual(bugfix?.onResult, { developer: { done: 'Testing' } });
+      assert.deepEqual(bugfix?.skip, []);
+      assert.equal(config.roles?.some((role) => role.name.includes('architect')), false, 'the architect is a subagent, not a stage');
+      assert.equal(config.warnings?.length ?? 0, 0);
+    });
+
+    it('routes a bug through the analyst, developer, test engineer and reviewer to In review', async () => {
+      const config = await resolveWith();
+      for (const labels of [['bug'], ['type: bugfix']]) {
+        assert.equal(target(config, labels, 'issue-analyst', 'ready'), 'In progress', labels.join());
+        assert.equal(target(config, labels, 'developer', 'done'), 'Testing', labels.join());
+        assert.equal(target(config, labels, 'test-engineer', 'passed'), 'Agent review', labels.join());
+        assert.equal(target(config, labels, 'test-engineer', 'failed'), 'In progress', labels.join());
+        assert.equal(target(config, labels, 'reviewer', 'approved'), 'In review', labels.join());
+      }
+    });
+
+    it('keeps Agent review after the developer for features, refactors and untyped issues, unless SYMPHONY_AFTER_IMPLEMENTATION=Testing', async () => {
+      const config = await resolveWith();
+      for (const labels of [['feature'], ['type: refactor'], []]) assert.equal(target(config, labels, 'developer', 'done'), 'Agent review', labels.join() || 'untyped');
+      const on = await resolveWith({ SYMPHONY_AFTER_IMPLEMENTATION: 'Testing' });
+      for (const labels of [['feature'], ['bug'], []]) assert.equal(target(on, labels, 'developer', 'done'), 'Testing', labels.join() || 'untyped');
+    });
+
+    it('limits the test stage to one run at a time and keeps Testing an active state with a note on the slots', async () => {
+      const config = await resolveWith();
+      assert.equal(config.agent.maxConcurrentAgentsByState.get('testing'), 1);
+      assert.equal(config.agent.maxConcurrentAgentsByState.get('agent review'), 1);
+      assert.ok(config.tracker.activeStates.includes('Testing'));
+      const source = fs.readFileSync(shipped, 'utf8');
+      assert.match(source, /#   Testing +-> test engineer[\s\S]*Bug issues \(pipeline\.profiles\.bugfix\) always go through it/);
+      assert.doesNotMatch(source, /Optional: the developer hands over to Testing/);
+    });
+
+    it('passes the board preflight with all columns and names a missing Testing column, also through the profile target', async () => {
+      const config = await resolveWith();
+      assert.deepEqual(unknownBoardColumns(config, BOARD), []);
+      const withoutTesting = BOARD.filter((column) => column !== 'Testing');
+      assert.deepEqual(unknownBoardColumns(config, withoutTesting), [`unknown board column "Testing" (valid: ${withoutTesting.join(', ')})`]);
+
+      // Even with no role and no active state for Testing, the profile's target (and the developer's may_move_to) still names the column.
+      const { definition } = await loadWorkflowFile(shipped);
+      const front = structuredClone(definition.config) as Record<string, any>;
+      front.tracker.active_states = ['Ready', 'In progress', 'Agent review'];
+      delete front.roles['test-engineer'];
+      front.roles.developer.on_result.done = 'Agent review';
+      delete front.checks.on_enter.Testing;
+      const profileOnly = resolveConfig(front, { workflowPath: shipped, env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' }, trackerDefaults });
+      assert.deepEqual(unknownBoardColumns(profileOnly, withoutTesting), [`unknown board column "Testing" (valid: ${withoutTesting.join(', ')})`]);
+    });
+
+    it('adds the regression-test-first instruction to the developer prompt of bug issues only', async () => {
+      const prompt = async (labels: string[]) => {
+        const { definition } = await loadWorkflowFile(shipped);
+        const template = compilePrompt(definition.promptTemplate);
+        return renderPrompt(template, { issue: issueTemplateValue(makeIssue({ ...issue, labels }), commandSkills([toolbox])), attempt: null, role: 'developer', agents: [], round: 1 });
+      };
+      for (const labels of [['bug'], ['type: bugfix']]) {
+        const text = await prompt(labels);
+        assert.match(text, /write a regression test that reproduces the bug before you change any production code/, labels.join());
+        assert.match(text, /confirm that it fails, and that it fails for the right reason/, labels.join());
+        assert.match(text, /Then fix the bug and run the test again until it passes/, labels.join());
+      }
+      for (const labels of [['feature'], ['type: refactor'], []]) {
+        const text = await prompt(labels);
+        assert.doesNotMatch(text, /regression test/, labels.join() || 'untyped');
+        assert.match(text, /5\. Implement the change\./);
+      }
+    });
   });
 
   it('adds the issue analyst before the developer: read-only, an analysis result, sonnet whatever the Model: label says', async () => {

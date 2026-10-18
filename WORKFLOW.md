@@ -29,9 +29,10 @@ tracker:
   #                         (pipeline.analysis: when_unlabeled skips it for issues that already carry Type and Complexity labels)
   #   In progress        -> developer agent implements the issue
   #   Testing            -> test engineer agent writes independent tests for the acceptance criteria; it may only change test
-  #                         files (pipeline.test_paths). Optional: the developer hands over to Testing instead of Agent review
-  #                         with SYMPHONY_AFTER_IMPLEMENTATION=Testing (docs/configuration.md#the-test-engineer). Keep the
-  #                         column between In progress and Agent review on the board: `next` and the pipeline view use its order.
+  #                         files (pipeline.test_paths). Bug issues (pipeline.profiles.bugfix) always go through it; other issues
+  #                         only with SYMPHONY_AFTER_IMPLEMENTATION=Testing (docs/configuration.md#the-test-engineer). The board
+  #                         needs the column either way, between In progress and Agent review: `next` and the pipeline view
+  #                         use its order.
   #   Agent review       -> reviewer agent (read-only) reviews it; entered only after checks pass
   #   In review          -> human review; only the reviewer moves issues here, after checks pass (ends the run)
   #   Blocked            -> an agent needs a human (ends the run, keeps the workspace)
@@ -80,10 +81,12 @@ agent:
   # model_hold_ms: 3600000
   max_concurrent_agents_by_state:
     "Agent review": 1                        # one review at a time
+    Testing: 1                               # one test run at a time (bug issues; every issue with SYMPHONY_AFTER_IMPLEMENTATION=Testing)
   # Slots kept free for a role, so a developer and a reviewer can always run side by side. Other roles (/plan,
   # /refactoring, the issue analyst, the test engineer, ...) only get slots beyond these: with 2 slots in total they wait
-  # until the limit is raised. The issue analyst serves every issue in Ready, so allow 3 slots, or no issue ever starts. With
-  # the Testing stage on as well, allow 4 (the dashboard and log say when a stage never starts).
+  # until the limit is raised. The issue analyst serves every issue in Ready, so allow 3 slots, or no issue ever starts. The
+  # test engineer of the bugfix profile needs a slot beyond these as well: with 3 it shares the one free slot with the
+  # analyst, with 4 both can run at once (the dashboard and log say when a stage never starts).
   reserved_slots_by_role:
     developer: 1
     reviewer: 1
@@ -132,7 +135,7 @@ roles:
     states: [In progress]
     result: implementation
     on_result:
-      done: ${SYMPHONY_AFTER_IMPLEMENTATION:-Agent review}   # Agent review, or Testing to run the test engineer first
+      done: ${SYMPHONY_AFTER_IMPLEMENTATION:-Agent review}   # Agent review, or Testing to run the test engineer first (bug issues: pipeline.profiles.bugfix)
       blocked: Blocked
     may_move_to: [In progress, Testing, Agent review, Blocked]
     agents: [laravel-architect, laravel-database-engineer, laravel-filament-developer, laravel-test-engineer, laravel-code-reviewer]
@@ -210,6 +213,15 @@ pipeline:
   # always: the issue analyst runs for every issue in Ready. when_unlabeled: it is skipped without a session for issues that
   # already carry a Type: and a Complexity: label (they go straight to In progress).
   analysis: always
+  # Stage sequences per issue type (docs/configuration.md#workflow-profiles); the type comes from the Type: label or the
+  # analysis. The roles stay the same, a profile only overrides transitions. A bug issue runs Ready (analyst) -> In progress
+  # (developer, regression test first) -> Testing (test engineer) -> Agent review -> In review. There is no architect stage.
+  # Needs the Testing column on the board. To run bug issues without the test stage, set developer.done to Agent review here.
+  # Other types (and untyped issues) keep the roles' own transitions (profiles for them: see docs/configuration.md).
+  profiles:
+    bugfix:
+      on_result:
+        developer: { done: Testing }
   # Files the test engineer may change; defaults: tests/**, test/**, **/*.test.*, **/*Test.php
   # test_paths: [tests/**, test/**, "**/*.test.*", "**/*Test.php"]
 
@@ -314,7 +326,8 @@ The current directory is a clone of the issue's repository. Work only inside it.
 2. Call `get_issue` and read the comments and linked pull requests. If a pull request for this issue exists, this is follow-up work: continue on its branch and address the open findings of the latest agent review{% if results.open_findings.size > 0 %} (listed above){% endif %}{% if results.failed_cases.size > 0 %} and the failed test cases{% endif %}.
 3. If the board status is "Ready", post a short plan with `add_comment`. You cannot change the status yourself; Symphony moves the issue when you report your result.
 4. Work on the branch `{{ branch }}`: create it from {% if base %}`origin/{{ base }}`{% else %}the default branch{% endif %} if it does not exist yet, otherwise check it out and continue.
-5. Implement the change. Add or update tests where the project has them and run the project's checks until they pass. Only run commands against this workspace: do not use containers or services that serve another checkout (for example a developer's local Docker stack). If a check can only run there, say so in your summary instead.
+5. Implement the change. Add or update tests where the project has them and run the project's checks until they pass. Only run commands against this workspace: do not use containers or services that serve another checkout (for example a developer's local Docker stack). If a check can only run there, say so in your summary instead.{% if issue.type == "bugfix" %}
+   This is a bug fix, so work test first: write a regression test that reproduces the bug before you change any production code. Run it and confirm that it fails, and that it fails for the right reason (the bug itself, not a typo, a missing import or a broken setup). Then fix the bug and run the test again until it passes. Keep the test: it is the regression test, and the independent test engineer checks it next. If the bug cannot be reproduced with a test, say why in the `notes` of your result.{% endif %}
 6. Integrate the base branch before requesting review: `git fetch origin` and merge `origin/<base>` (the pull request's base, else {% if base %}`{{ base }}`{% else %}the default branch{% endif %}) into `{{ branch }}`, resolve conflicts and run the checks again.
 7. Commit with clear messages and push the branch (`git push -u origin {{ branch }}`); the working tree must be clean and everything pushed. Open a pull request with `open_pull_request` if none exists yet, with "Closes #{{ issue.native_ref.number }}" in its body.
 8. Hand off with `report_result` (verdict `done`). Symphony posts the result as the issue comment, runs the entry checks (lint, static analysis, tests) and moves the issue to the next stage ("Agent review", or "Testing" when an independent test engineer writes tests first). Do not write a separate summary comment. Fields:
