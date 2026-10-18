@@ -507,7 +507,8 @@ ${PIPELINE_JS}
       case 'worker_forced':
         return { ...base, tone: 'cyan', glyph: '▶', title: 'STARTED IN AN EXTRA SLOT', err: false, line: e.message || '' };
       case 'issue_paused':
-        return { ...base, tone: 'gray', glyph: '⏸', title: d.source === 'operator' ? 'PAUSED BY OPERATOR' : 'PAUSED', err: false };
+        return { ...base, tone: 'gray', glyph: '⏸', title: d.source === 'operator' ? 'PAUSED BY OPERATOR' : d.source === 'budget' ? 'COST BUDGET USED UP' : 'PAUSED', err: false,
+          line: d.source === 'budget' ? e.message || '' : undefined };
       case 'issue_resumed':
         return { ...base, tone: 'cyan', glyph: '▶', title: 'RESUMED', err: false, line: e.message || '' };
       case 'phase':
@@ -1023,10 +1024,13 @@ ${PIPELINE_JS}
     } else if (d && !S.ended && d.status === 'stopping') {
       spec = { tone: 'amber', title: '■ Stopping', reason: d.running && d.running.stopping, sub: [] };
     } else if (d && !S.ended && d.status === 'paused') {
+      const budget = d.paused && d.paused.source === 'budget';
       const reason = d.paused && d.paused.source === 'operator'
         ? 'Paused by operator. Board changes (status, comments, labels) do not lift the pause; it ends with Resume, Done or leaving the board.'
+        : budget
+        ? 'Cost budget used up: $' + d.paused.cost_usd.toFixed(2) + ' of $' + d.paused.max_issue_cost_usd.toFixed(2) + ' (agent.max_issue_cost_usd). The next stage does not start. Raise the limit or press Resume; board changes do not lift the pause.'
         : 'Still active after ' + (d.paused ? d.paused.continuations : '?') + ' continuation session(s). Change the issue on the board (status, comment or labels) to resume' + (retryAllowed() ? ', or press Resume now.' : '.');
-      spec = { tone: 'gray', title: d.paused && d.paused.source === 'operator' ? '⏸ Paused by operator' : '⏸ Agent paused', reason, sub: [], restart: 'Resume' };
+      spec = { tone: 'gray', title: d.paused && d.paused.source === 'operator' ? '⏸ Paused by operator' : budget ? '⏸ Cost budget used up' : '⏸ Agent paused', reason, sub: [], restart: 'Resume' };
     } else if (failedRun && !isRunning()) {
       spec = { tone: 'red', title: '✕ Agent failed', reason: fin.detail.reason, sub: [] };
     } else if (isRunning() && d.last_error && d.attempts.current_retry_attempt) {

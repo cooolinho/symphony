@@ -579,6 +579,23 @@ changes no longer lift (see [Intervening while Symphony runs](#intervening-while
 
 Failed runs do not count here. The retries with backoff described above apply to them.
 
+### Cost budget per issue
+
+`agent.max_issue_cost_usd` caps the cost of one issue across all its stages (runs of every role, failed ones included).
+Unset means unlimited; `claude.max_budget_usd` and `roles.<name>.claude.max_budget_usd` still cap each session.
+
+- Before every dispatch (a new stage, a continuation, a retry) Symphony adds up the issue's `run_finished` costs in the
+  repository history, plus a run that is still going. Once the sum reaches the cap, the next stage does not start. A
+  stage that is running is never stopped; it may overshoot the cap.
+- The issue is **paused** (`source=budget`): one comment on the issue says what was spent and how to go on, the timeline
+  shows `issue_paused` with the cost, and the repository log gets an `issue_paused` line with `source=budget`.
+- The figure comes from the history log, so the cap also holds after a Symphony restart. It uses the prices of
+  `model-costs.yml` at the time each run was written. Without a history log, only a running run counts.
+- Board changes (status, comments, labels) do **not** lift this pause. It ends when you raise or remove
+  `agent.max_issue_cost_usd` (the issue resumes on the next tick), with **Resume now** or `POST /api/v1/<identifier>/retry`
+  while the cost is below the cap (otherwise it pauses again, without a second comment), with **Start now** (a one-off
+  override of the cap, the session runs in an extra slot), or when the issue reaches a terminal state or leaves the board.
+
 ## Choosing the model per issue
 
 Every session uses the model from `CLAUDE_MODEL`, unless the issue has a label `Model: …`. Then the model from the
@@ -735,7 +752,7 @@ Every issue in the plan carries a reason (`reason.code` and a text; times in the
 | `session_limit` | a session-limit retry, or new sessions held back by the dispatch gate | `session limit (five hour): retry after the reset at …`, `new sessions paused until …` |
 | `backoff` | a failure retry before its due time | `retry 2 after a failure at …` |
 | `inactive` | a claimed issue left the active columns; its claim is released at the next check | `left the active columns ("In review"); released at …` |
-| `paused` | paused after `agent.max_continuations` | `paused after 3 continuation sessions; change the issue on the board to resume` |
+| `paused` | paused after `agent.max_continuations`, or at `agent.max_issue_cost_usd` | `paused after 3 continuation sessions; change the issue on the board to resume`, `paused: cost budget used up ($5.00 of $4.00); raise agent.max_issue_cost_usd or press Resume` |
 | `blocked` | not dispatchable (assignee, open *blocked by*) | the adapter's note, e.g. `blocked by owner/repo#9` |
 | `missing_label` | lacks a label of `tracker.required_labels` | `missing required label ai` |
 
@@ -753,7 +770,7 @@ sections are hidden:
   that are due stand here too, ahead of new cards.
 - **Waiting**: retries before their due time (backoff, session limits, model holds), soonest first, with the due
   time and **Retry now**.
-- **Paused**: issues held after `agent.max_continuations`, with **Resume now**.
+- **Paused**: issues held after `agent.max_continuations` or at `agent.max_issue_cost_usd` ([cost budget](#cost-budget-per-issue)), with **Resume now**.
 
 See [Dispatch order](#dispatch-order) for the order and the reasons. Each card carries a **pipeline strip**: every station the
 issue passes on its way across the board (the agent roles from the workflow, hand-off columns such as *In review*,
@@ -937,7 +954,7 @@ ts=2026-10-04T09:17:00.000Z event=model_usage repo=owner/repository issue=owner/
 | `run_started` | An agent starts on an issue: time, issue, title, column, attempt, requested model (from the label `Model: …`, else `CLAUDE_MODEL`) and requested effort (from the label `Effort: …`, else `CLAUDE_EFFORT`). |
 | `run_finished` | A run ends. It records the result (`handed_off` = handed off, `continuing` = still active, `failed`, `session_limit`, `stopped`, `stalled`, `shutdown`) and the column afterwards. Plus turns, the most used model (`model`, as Claude Code reports it, e.g. `claude-fable-5-1`), the requested model and effort (`model_requested`, `effort`, like `run_started`), tokens (input, output, cache), estimated cost and agent time. The `repo_*` fields are the repository's running totals. |
 | `model_usage` | Tokens and cost of a run per model, with the run's `effort`. One line per model Claude Code reported for the session (a second model used internally gets a second line); a new model needs no change, it is logged under its own id. The tokens are counted from every model call as it happens, so a run that is stopped, stalls or hits a session limit before its turn ends still has its usage. |
-| `issue_paused` | An issue was paused after its continuation sessions. |
+| `issue_paused` | An issue was paused: after its continuation sessions, by the operator, or because its [cost budget](#cost-budget-per-issue) is used up (`source=budget`, with `cost_usd` and `max_issue_cost_usd`). |
 | `session_limit_wait` | The session-limit retries are used up: the worker waits for the limit to reset (`retry_at` = reset + 1 minute) and then continues. Fields include `window`, `resets_at`, `retry_at`, `hits`, `max_retries`, `source`. |
 | `worker_restarted` | A waiting or paused worker was restarted via **Retry now** / **Resume now** or the API (`previous` = `retrying` or `paused`). |
 | `worker_forced` | An issue was started with **Start now** or `POST /api/v1/<identifier>/force` in an extra slot (`previous` = `queued`, `retrying` or `paused`; `running`, `forced`, `limit` = the slot counts after the start). |
@@ -1047,6 +1064,7 @@ The most common settings in the `WORKFLOW.md`. All options are described in
 | `agent.max_concurrent_agents_by_state` | limit per column, e.g. `{ "In progress": 1 }` |
 | `agent.max_turns` | turns per session before Symphony reassesses the state |
 | `agent.max_continuations` | continuation sessions per issue (including role changes), then pause |
+| `agent.max_issue_cost_usd` | cost cap per issue across all stages; the next stage does not start once it is reached ([details](#cost-budget-per-issue)) |
 | `roles` | roles per column: columns, allowed target columns (`may_move_to`), `read_only`, `max_turns`, model |
 | `checks` | scripts that must pass before a card may enter a column (`on_enter`), and their timeout |
 | `workspace.cleanup_terminal` | delete workspaces on `Done` (default) or keep them |

@@ -53,9 +53,11 @@ export interface PlanRetry {
 
 export interface PlanPaused {
   issue: PlanIssue;
-  /** `operator`: paused from the dashboard; `continuations`: held back after agent.max_continuations. */
-  source: 'continuations' | 'operator';
+  /** `operator`: paused from the dashboard; `continuations`: held back after agent.max_continuations; `budget`: cost cap reached. */
+  source: 'continuations' | 'operator' | 'budget';
   continuations: number;
+  /** Cost and cap in USD of a `budget` pause. */
+  budget?: { costUsd: number; limitUsd: number };
 }
 
 export interface PlanInput {
@@ -261,7 +263,9 @@ export function planDispatch(input: PlanInput): PlanItem[] {
     const text =
       paused.source === 'operator'
         ? 'paused by operator; press Resume to continue'
-        : `paused after ${paused.continuations} continuation session${paused.continuations === 1 ? '' : 's'}; change the issue on the board to resume`;
+        : paused.source === 'budget'
+          ? `paused: cost budget used up ($${(paused.budget?.costUsd ?? 0).toFixed(2)} of $${(paused.budget?.limitUsd ?? 0).toFixed(2)}); raise agent.max_issue_cost_usd or press Resume`
+          : `paused after ${paused.continuations} continuation session${paused.continuations === 1 ? '' : 's'}; change the issue on the board to resume`;
     items.push(item(paused.issue, 'paused', 'paused', { code: 'paused', text }, null));
   }
   return [...items, ...blocked];
