@@ -58,6 +58,7 @@ const fullInputs: Record<AgentResultKind, Record<string, unknown>> = {
     docs_needed: true,
     open_questions: ['Which round limit?'],
     plan: ['Write schemas', 'Write tests'],
+    refactoring_goals: ['The parsing code exists once'],
   },
   design: {
     verdict: 'ready',
@@ -97,6 +98,7 @@ const fullInputs: Record<AgentResultKind, Record<string, unknown>> = {
       { severity: 'nit', problem: 'Typo' },
     ],
     checked: ['tests', 'docs'],
+    confirmed_goals: ['The parsing code exists once'],
   },
   security: {
     verdict: 'issues_found',
@@ -224,6 +226,59 @@ describe('result contracts: consistency rules', () => {
     parsed('implementation', { verdict: 'blocked', summary: 'x', blockers: [{ description: 'No token', needs: 'access' }] });
   });
 
+  describe('refactoring goals', () => {
+    const goals = ['The parsing code exists once', 'No public signature changes'];
+    const review = (extra: Record<string, unknown>) => ({ verdict: 'approved', summary: 'x', ...extra });
+
+    it('rejects an approval that confirms no goal, naming every missing goal', () => {
+      const outcome = parseResult('review', review({}), { refactoringGoals: goals });
+      assert.equal(outcome.ok, false);
+      if (outcome.ok) return;
+      assert.equal(outcome.problems.length, 1);
+      assert.match(outcome.message, /"approved" on a refactor issue needs every refactoring goal in `confirmed_goals`/);
+      for (const goal of goals) assert.ok(outcome.message.includes(`"${goal}"`), outcome.message);
+    });
+
+    it('names only the goals that are still missing', () => {
+      const outcome = parseResult('review', review({ confirmed_goals: [goals[0]] }), { refactoringGoals: goals });
+      assert.equal(outcome.ok, false);
+      if (outcome.ok) return;
+      assert.ok(!outcome.message.includes(`"${goals[0]}"`) && outcome.message.includes(`"${goals[1]}"`), outcome.message);
+    });
+
+    it('accepts an approval that confirms every goal, compared trimmed and case-insensitive', () => {
+      assert.equal(parseResult('review', review({ confirmed_goals: goals }), { refactoringGoals: goals }).ok, true);
+      assert.equal(parseResult('review', review({ confirmed_goals: ['  the parsing CODE exists once ', goals[1], 'An extra goal'] }), { refactoringGoals: goals }).ok, true);
+    });
+
+    it('leaves changes_needed and blocked reviews alone', () => {
+      const context = { refactoringGoals: goals };
+      assert.equal(parseResult('review', { verdict: 'changes_needed', summary: 'x', findings: [{ severity: 'major', problem: 'p' }] }, context).ok, true);
+      assert.equal(parseResult('review', { verdict: 'blocked', summary: 'x', blockers: [{ description: 'd', needs: 'human' }] }, context).ok, true);
+    });
+
+    it('does not apply without goals or a context, or to other kinds', () => {
+      assert.equal(parseResult('review', review({})).ok, true);
+      assert.equal(parseResult('review', review({}), {}).ok, true);
+      assert.equal(parseResult('review', review({}), { refactoringGoals: [] }).ok, true);
+      assert.equal(parseResult('security', { verdict: 'passed', summary: 'x' }, { refactoringGoals: goals }).ok, true);
+    });
+
+    it('stores both lists, empty by default, and reads markers from before the fields existed', () => {
+      assert.deepEqual((parsed('analysis', { verdict: 'ready', summary: 'x' }) as { refactoring_goals: string[] }).refactoring_goals, []);
+      assert.deepEqual((parsed('review', review({})) as { confirmed_goals: string[] }).confirmed_goals, []);
+      const old = { schema: RESULT_SCHEMA, kind: 'review', verdict: 'approved', summary: 'x', blockers: [], follow_ups: [], findings: [], checked: [], meta };
+      const decoded = decodeMarker(`<!-- symphony:result:v1 ${Buffer.from(JSON.stringify(old)).toString('base64url')} -->`);
+      assert.ok(decoded?.result.kind === 'review');
+      assert.deepEqual(decoded.result.confirmed_goals, []);
+    });
+
+    it('offers both fields to the tool as optional', () => {
+      assert.ok('refactoring_goals' in toolInputShape('analysis') && 'confirmed_goals' in toolInputShape('review'));
+      assert.ok(!('confirmed_goals' in toolInputShape('security')));
+    });
+  });
+
   it('returns a message the agent can act on', () => {
     const outcome = parseResult('review', { verdict: 'approved', summary: 'x', findings: [{ severity: 'blocker', problem: 'p' }] });
     assert.equal(outcome.ok, false);
@@ -339,11 +394,11 @@ describe('result contracts: rendering', () => {
 
   it('renders every kind with its fields', () => {
     const expected: Record<AgentResultKind, RegExp[]> = {
-      analysis: [/Type: feature · Complexity: M · Docs needed: yes/, /- \[ \] round trip works/, /\*\*Risks:\*\* breaking change/, /1\. Write schemas\n2\. Write tests/],
+      analysis: [/Type: feature · Complexity: M · Docs needed: yes/, /- \[ \] round trip works/, /\*\*Risks:\*\* breaking change/, /1\. Write schemas\n2\. Write tests/, /\*\*Refactoring goals\*\*\n- The parsing code exists once/],
       design: [/\*\*Decision\*\*\nzod schemas/, /\*\*Components\*\*\n- schemas\.ts: zod schemas per kind\n- markers\.ts/, /\*\*Interfaces\*\*/, /\*\*Compatibility\*\*/, /1\. schemas/],
       implementation: [/- `src\/workflow\/results\.ts`/, /\*\*Tests added\*\*/, /\*\*Notes\*\*\nKept fields optional\./],
       test: [/### ❌ Test: failed/, /- ❌ size cap — `results\.test\.ts`/, /- `npm run check`/, /\*\*Uncovered criteria\*\*\n- dashboard/],
-      review: [/\*\*Checked\*\*\n- tests\n- docs/],
+      review: [/\*\*Checked\*\*\n- tests\n- docs/, /\*\*Confirmed goals\*\*\n- The parsing code exists once/],
       security: [/### ⚠️ Security review: issues found/, /🔴 \*\*blocker\*\* `src\/log\.ts`/],
       docs: [/### ✅ Documentation: done/, /- `docs\/results\.md`/],
     };

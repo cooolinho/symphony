@@ -30,8 +30,8 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
    - implements and tests, merges the base branch in, commits, pushes and opens a pull request with
      `Closes #<nr>`,
    - hands off with `report_result` (verdict `done`, summary, changed files, tests): Symphony posts the result as the
-     issue comment and moves the issue to `Agent review` (a bug issue goes to `Testing` first, see
-     [Bug issues](#bug-issues-the-bugfix-profile)).
+     issue comment and moves the issue to `Agent review` (a bug, feature or refactor issue goes to `Testing` first, see
+     [Bug issues](#bug-issues-the-bugfix-profile) and [Features and refactorings](#features-and-refactorings-the-feature-and-refactor-profiles)).
 4. **Checks before `Agent review`:** Symphony runs the checks in the workspace. If they pass, the card moves to
    `Agent review` (or `Testing`) and the developer session ends. If they fail (`check_failed`), the card stays and the agent gets
    the output, fixes the errors and tries again. If the checks run longer than `checks.timeout_ms`
@@ -61,7 +61,7 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
 | `Ready` | starts the issue analyst as soon as a slot is free; it hands the issue on to `Design` (larger changes) or `In progress` |
 | `Design` | starts the architect (read-only), who decides on the approach of a larger change and hands the design to `In progress`; small issues skip the column without a session, see [Design for larger changes](#design-for-larger-changes-the-architect) |
 | `In progress` | a developer is working (it gets the analysis and the design); if Symphony finds an issue here without an agent, it starts one |
-| `Testing` | starts the test engineer (at most one at a time), who writes independent tests and may only change test files; reached by bug issues after the developer, by every issue with `SYMPHONY_AFTER_IMPLEMENTATION=Testing` |
+| `Testing` | starts the test engineer (at most one at a time), who writes independent tests and may only change test files; reached by bug, feature and refactor issues after the developer, by every issue with `SYMPHONY_AFTER_IMPLEMENTATION=Testing` |
 | `Agent review` | starts a reviewer (at most one at a time); only reachable after passing checks |
 | `Blocked` | stops a running agent; the workspace is kept. The agent needs you, see its comment. |
 | `In review` | stops a running agent; the workspace is kept for follow-up work. Only the reviewer moves cards here, after passing checks. |
@@ -86,8 +86,9 @@ Ready (issue analyst) → In progress (developer) → [checks] → Testing (test
 - The independent test engineer checks the acceptance criteria. `failed` sends the issue back to the developer with the
   failed cases (up to `pipeline.max_test_rounds`, then `Blocked` with `needs-human`), `passed` leads to `Agent review`.
 - Only a bug of complexity `L` or `XL` goes through `Design` first (`Ready → Design → In progress`); for `S` and `M`
-  the architect is skipped without a session. Features, refactors and issues without a type keep the flow without
-  `Testing`, unless `SYMPHONY_AFTER_IMPLEMENTATION=Testing` switches the test stage on for all of them.
+  the architect is skipped without a session. Features and refactors also pass `Testing` (see
+  [Features and refactorings](#features-and-refactorings-the-feature-and-refactor-profiles)); issues without a type keep the
+  flow without it, unless `SYMPHONY_AFTER_IMPLEMENTATION=Testing` switches the test stage on for all of them.
 
 The board needs the columns in this order: `Backlog`, `Ready`, `Design`, `In progress`, `Testing`, `Agent review`, `Blocked`,
 `In review`, `Done` (see [Getting started](getting-started.md#2-set-up-the-github-project-board)). `Testing` is always
@@ -114,6 +115,37 @@ Slots: the test engineer gets slots beyond the ones reserved for the developer a
 the issue analyst. With the default of 3 agent slots both take turns on the one free slot; with 4
 (`SYMPHONY_MAX_CONCURRENT_AGENTS=4`) they run side by side. With 2 slots the test engineer never starts (the dashboard
 and `limits.slot_problems` say so). `agent.max_concurrent_agents_by_state.Testing` is 1.
+
+### Features and refactorings: the feature and refactor profiles
+
+An issue of type `feature` or `refactor` (label `Type: feature` / `Type: refactor`, or `feature`, `enhancement`,
+`refactor`, `refactoring`; the analyst sets it when the issue has none) runs the full chain of the matching profile:
+
+```
+Ready (issue analyst) → Design (architect, not for complexity S) → In progress (developer) → [checks] → Testing (test engineer) → [checks] → Agent review (reviewer) → [checks] → In review
+```
+
+**Feature.** The developer implements the design and the acceptance criteria, with a test for every criterion, and says in
+the result's `summary` which test covers which criterion. The reviewer checks the change against the design and the
+criteria.
+
+**Refactoring.** A refactoring stays behaviour-preserving and has to meet its stated goals:
+
+- The analyst lists the goals in `refactoring_goals` (one checkable goal per entry); every later stage sees them in its
+  prompt.
+- The developer loads `symphony:refactor-safely` (unless the issue starts with `/refactor-safely`, which loads it
+  anyway), commits characterization tests that pass on the unchanged code first, and then refactors without touching
+  public interfaces or existing tests.
+- The test engineer verifies and extends the characterization tests: green on the base commit and on `HEAD`. A test that is
+  green on the base and red on `HEAD` means behaviour changed; the verdict is `failed` and the issue goes back to the
+  developer.
+- The reviewer checks that public interfaces and existing tests are unchanged and lists every confirmed goal, copied
+  verbatim, in `confirmed_goals`. `report_result` refuses an `approved` review that leaves a goal out
+  (`invalid_result`, naming the missing goals); `changes_needed` and `blocked` are not affected. Without goals in the
+  analysis the rule does not apply. See [Results](results.md#consistency-rules).
+
+`Testing` is optional for them like for bugs: set `pipeline.profiles.feature.on_result.developer.done` (or `refactor`) to
+`Agent review` to skip the stage, see [A board without a test stage](#bug-issues-the-bugfix-profile).
 
 ### Design for larger changes: the architect
 

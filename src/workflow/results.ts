@@ -101,6 +101,7 @@ const kindShapes = {
     docs_needed: z.boolean().optional(),
     open_questions: list(text()).describe('Questions a human must answer; required with the verdict "needs_info"'),
     plan: list(text()).describe('Implementation steps in order'),
+    refactoring_goals: list(text()).describe('Refactor issues: what the refactoring has to achieve, one measurable goal per entry; the review confirms each one'),
   },
   design: {
     options: list(text()).describe('Options considered'),
@@ -125,6 +126,7 @@ const kindShapes = {
   review: {
     findings: list(findingSchema).describe('"approved" allows only minor and nit findings'),
     checked: list(text()).describe('What the review covered'),
+    confirmed_goals: list(text()).describe('Refactor issues: the analysis\'s refactoring goals this review confirmed, copied verbatim; "approved" needs every one'),
   },
   security: {
     findings: list(findingSchema).describe('"passed" allows only minor and nit findings'),
@@ -269,8 +271,16 @@ export function internalResult<K extends InternalResultKind>(kind: K, summary: s
 
 const isSevere = (finding: Finding) => finding.severity === 'blocker' || finding.severity === 'major';
 
+/** Facts about the issue that some consistency rules need; Symphony derives them, the agent never sets them. */
+export interface ResultContext {
+  /** Refactoring goals of the analysis when the issue is a refactor; empty (or absent) switches the goal rule off. */
+  refactoringGoals?: readonly string[];
+}
+
+const goalKey = (goal: string) => goal.trim().toLowerCase();
+
 /** Contradictions between the verdict and the fields, phrased for the agent that has to fix them. */
-export function consistencyProblems(result: StageResult): string[] {
+export function consistencyProblems(result: StageResult, context: ResultContext = {}): string[] {
   const problems: string[] = [];
   if (result.verdict === 'blocked' && result.blockers.length === 0) {
     problems.push('verdict "blocked" needs at least one entry in `blockers` saying what blocks the stage');
@@ -310,6 +320,15 @@ export function consistencyProblems(result: StageResult): string[] {
       }
       if (result.verdict === dirty && result.findings.length === 0) {
         problems.push(`verdict "${dirty}" needs at least one entry in \`findings\``);
+      }
+      if (result.kind === 'review' && result.verdict === 'approved') {
+        const confirmed = new Set(result.confirmed_goals.map(goalKey));
+        const missing = (context.refactoringGoals ?? []).filter((goal) => !confirmed.has(goalKey(goal)));
+        if (missing.length > 0) {
+          problems.push(
+            `verdict "approved" on a refactor issue needs every refactoring goal in \`confirmed_goals\` (copied verbatim); missing: ${missing.map((goal) => `"${inline(goal)}"`).join(', ')}. Confirm them or use "changes_needed"`,
+          );
+        }
       }
       break;
     }
@@ -360,11 +379,11 @@ const PROBE_META: ResultMeta = {
  * Validates an agent's `kind` result: the schema, then the consistency rules, then the size (findings may be trimmed
  * later, everything else must fit). Unknown fields are reported, not dropped, so a typo does not lose data.
  */
-export function parseResult(kind: AgentResultKind, input: unknown): ParseResultOutcome {
+export function parseResult(kind: AgentResultKind, input: unknown, context: ResultContext = {}): ParseResultOutcome {
   const parsed = z.strictObject(agentShape(kind)).safeParse(input);
   if (!parsed.success) return invalid(kind, parsed.error.issues.map(issueText));
   const result = { schema: RESULT_SCHEMA, kind, ...parsed.data } as StageResult;
-  const problems = consistencyProblems(result);
+  const problems = consistencyProblems(result, context);
   if (problems.length > 0) return invalid(kind, problems);
   try {
     renderResultComment(result, PROBE_META);
@@ -532,6 +551,7 @@ function kindSections(result: StageResult): (string | null)[] {
         risks.length === 0 ? null : `**Risks:** ${risks.join(', ')}`,
         bullets('Open questions', result.open_questions.map(inline)),
         bullets('Plan', result.plan.map(inline), true),
+        bullets('Refactoring goals', result.refactoring_goals.map(inline)),
       ];
     }
     case 'design':
@@ -561,7 +581,7 @@ function kindSections(result: StageResult): (string | null)[] {
         bullets('Uncovered criteria', result.uncovered_criteria.map(inline)),
       ];
     case 'review':
-      return [findingLines(result.findings, result.omitted_findings), bullets('Checked', result.checked.map(inline))];
+      return [findingLines(result.findings, result.omitted_findings), bullets('Checked', result.checked.map(inline)), bullets('Confirmed goals', result.confirmed_goals.map(inline))];
     case 'security':
       return [findingLines(result.findings, result.omitted_findings)];
     case 'docs':

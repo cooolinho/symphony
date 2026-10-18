@@ -8,7 +8,7 @@ import { profileFor } from '../workflow/profile.ts';
 import { RESULT_VERDICTS, SUMMARY_MAX, parseResult, renderResultComment, toolInputShape, type ResultMeta, type StageResult } from '../workflow/results.ts';
 import type { RoleConfig } from '../workflow/roles.ts';
 import { filesOutside } from './changed-files.ts';
-import type { PersistedResult, StageHistory } from './stage-history.ts';
+import { refactoringGoals, type PersistedResult, type StageHistory } from './stage-history.ts';
 import { resolveTransition, type StageConditions, type Transition, type TransitionProfile } from './transitions.ts';
 
 /** Name of the tool a role with `result` hands off with, instead of `set_status`. */
@@ -63,8 +63,11 @@ const OFFENDING_FILES_SHOWN = 25;
 export interface ResultToolParams {
   /** The session's role; its `result` is the kind the tool reports. */
   role: RoleConfig;
-  /** Round counters of the issue's persisted results, loaded when the session starts (a run reports once). */
-  history: Pick<StageHistory, 'reviewRounds' | 'testRounds'>;
+  /**
+   * Round counters and results of the issue's persisted results, loaded when the session starts (a run reports once).
+   * A review reads the refactoring goals of the newest analysis from `results`.
+   */
+  history: Pick<StageHistory, 'reviewRounds' | 'testRounds'> & Partial<Pick<StageHistory, 'results'>>;
   profile: TransitionProfile | null;
   flags?: StageConditions;
   config: Pick<ServiceConfig, 'tracker' | 'roles' | 'pipeline'>;
@@ -191,11 +194,13 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
   let recorded: ToolResult | null = null;
 
   const plan = (args: Record<string, unknown>): Plan => {
-    const parsed = parseResult(kind, args);
+    const issue = params.issue();
+    // A refactor review has to confirm the goals of the analysis; other issues and issues without goals are exempt.
+    const goals: readonly string[] = kind === 'review' && classify(issue.labels).type === 'refactor' ? refactoringGoals(params.history) : [];
+    const parsed = parseResult(kind, args, { refactoringGoals: goals });
     if (!parsed.ok) return { ok: false, failure: fail('invalid_result', parsed.message) };
     // An analysis classifies the issue as it hands it on, so its `next` is routed by the labels it adds: the profile of
     // the new type and the `skip_when` conditions of the new complexity.
-    const issue = params.issue();
     const added = classificationLabels(parsed.result, issue.labels);
     const labels = [...issue.labels, ...added];
     const transition = resolveTransition({

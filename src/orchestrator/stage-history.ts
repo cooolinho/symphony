@@ -127,6 +127,7 @@ export interface ResultsTemplateValue {
     docs_needed: boolean | null;
     open_questions: string[];
     plan: string[];
+    refactoring_goals: string[];
   } | null;
   /**
    * The newest design since the last reset, whatever its verdict; null without one. The developer implements it: the
@@ -145,13 +146,22 @@ export interface ResultsTemplateValue {
 }
 
 /** The newest result of a kind since the last `reset`. */
-function newest(history: StageHistory, kind: string): PersistedResult | undefined {
+function newest(history: Pick<StageHistory, 'results'>, kind: string): PersistedResult | undefined {
   for (let i = history.results.length - 1; i >= 0; i--) {
     const entry = history.results[i] as PersistedResult;
     if (entry.result.kind === 'reset') return undefined;
     if (entry.result.kind === kind) return entry;
   }
   return undefined;
+}
+
+/**
+ * The refactoring goals of the newest analysis since the last `reset`, whatever its verdict; empty without an analysis
+ * or goals. A refactor review has to confirm each one (`consistencyProblems`).
+ */
+export function refactoringGoals(history: Partial<Pick<StageHistory, 'results'>>): string[] {
+  const entry = history.results === undefined ? undefined : newest({ results: history.results }, 'analysis');
+  return entry?.result.kind === 'analysis' ? entry.result.refactoring_goals : [];
 }
 
 /** The prompt view of a stage history (the `results` variable). */
@@ -206,6 +216,7 @@ export function resultsTemplateValue(history: StageHistory): ResultsTemplateValu
             docs_needed: analysis.docs_needed ?? null,
             open_questions: analysis.open_questions,
             plan: analysis.plan,
+            refactoring_goals: analysis.refactoring_goals,
           }
         : null,
     design:

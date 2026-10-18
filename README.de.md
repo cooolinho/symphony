@@ -117,7 +117,7 @@ Symphony fragt in einem festen Takt ein **GitHub Project Board** ab und übergib
 arbeiten: Branch anlegen, implementieren, testen, pushen, Pull Request öffnen, Ergebnis im Issue kommentieren. Danach
 prüfen automatische Checks und ein zweiter, lesender Agent (Reviewer) die Arbeit. Erst dann landet die Karte in
 **In review**. Ab dort bist du dran: Review, Merge, Karte nach **Done**.
-Bug-Issues durchlaufen vor dem Review eine Spalte `Testing` (ein unabhängiger Test Engineer). Review- und Test-Schleifen
+Bug-, Feature- und Refactor-Issues durchlaufen vor dem Review eine Spalte `Testing` (ein unabhängiger Test Engineer). Review- und Test-Schleifen
 sind begrenzt: Am Rundenlimit geht die Karte nach **Blocked** und bekommt das Label `needs-human`.
 
 Was der Agent tun soll, steht in der **`WORKFLOW.md`** (Prompt und Einstellungen). Board, Repositories, Standardmodell
@@ -141,7 +141,7 @@ und Token stehen in der **`.env`**.
   zuerst durch die Spalte `Design`: Ein lesender Architect-Agent entscheidet über den Ansatz (Komponenten, Schnittstellen),
   und der Developer setzt dieses Design um. Kleine Issues überspringen die Spalte ohne Session
   ([Details](docs/configuration.md#the-architect)).
-- **Test Engineer:** Ein unabhängiger Agent in der Spalte `Testing` (Bug-Issues immer, andere Issues optional) schreibt Tests für die
+- **Test Engineer:** Ein unabhängiger Agent in der Spalte `Testing` (Bug-, Feature- und Refactor-Issues immer, andere Issues optional) schreibt Tests für die
   Akzeptanzkriterien und darf nur Testdateien ändern; fehlgeschlagene Tests gehen mit den betroffenen Fällen zurück an
   den Developer, und nach `pipeline.max_test_rounds` fehlgeschlagenen Runden wartet das Issue auf dich
   ([Details](docs/configuration.md#the-test-engineer)).
