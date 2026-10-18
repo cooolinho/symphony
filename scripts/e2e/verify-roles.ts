@@ -1,7 +1,7 @@
 // Checks of the roles scenario: a pure function over the repository log lines and the recorded status timelines.
 import { parseHistoryLine, type HistoryEntry } from '../../src/history/history.ts';
 import { STATUS } from './context.ts';
-import { ROLE_STATUS } from './roles.ts';
+import { ROLE_STATUS, expectedResults } from './roles.ts';
 
 export interface Check {
   ok: boolean;
@@ -24,6 +24,8 @@ export interface RolesData {
   agentReviewLimit: number;
   /** Highest number of agents running in `Agent review` seen in the API trace. */
   polledReviewPeak: number;
+  /** Stage results recorded on the issues (`report_result` comments), oldest first. */
+  results: Array<{ number: number; kind: string; verdict: string }>;
 }
 
 const same = (a: string | null | undefined, b: string) => (a ?? '').trim().toLowerCase() === b.toLowerCase();
@@ -130,10 +132,20 @@ export function verifyRoles(data: RolesData): Check[] {
     detail: wrongChecks.join('; ') || `${reviewChecks.length} checks`,
   });
 
+  const wrongResults = data.issues.flatMap((issue) => {
+    const observed = data.results.filter((result) => result.number === issue.number).map((result) => `${result.kind}:${result.verdict}`);
+    const expected = expectedResults(issue.rejectOnce);
+    return observed.join(',') === expected.join(',') ? [] : [`${issue.key}: ${observed.join(', ') || '(nothing)'}, expected ${expected.join(', ')}`];
+  });
+  checks.push({
+    ok: wrongResults.length === 0,
+    name: 'Stage results per issue (report_result)',
+    detail: wrongResults.join('; ') || data.issues.map((issue) => `${issue.key}: ${expectedResults(issue.rejectOnce).length} results`).join('; '),
+  });
+
   const count = (event: string, match: (entry: HistoryEntry) => boolean = () => true) =>
     entries.filter((entry) => entry.event === event && match(entry)).length;
   const counts = {
-    transition_denied: count('transition_denied'),
     checks_finished: count('checks_finished'),
     handed_off: count('run_finished', (entry) => entry.fields.outcome === 'handed_off'),
   };
@@ -151,7 +163,7 @@ export function verifyRoles(data: RolesData): Check[] {
   });
   checks.push({
     ok: Object.values(counts).every((n) => n > 0) && missingHandoffs.length === 0,
-    name: 'Repository log has transition_denied, checks_finished and handed_off',
+    name: 'Repository log has checks_finished and handed_off',
     detail: [Object.entries(counts).map(([event, n]) => `${event} ${n}`).join(', '), ...missingHandoffs].join('; '),
   });
 

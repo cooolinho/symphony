@@ -129,7 +129,19 @@ async function verifyRolesRun(context: E2eContext, runDir: string, record: RunRe
   const polledReviewPeak = fs.existsSync(traceFile)
     ? Math.max(0, ...[...fs.readFileSync(traceFile, 'utf8').matchAll(/review=(\d+)/g)].map((match) => Number(match[1])))
     : 0;
+  // The result comments Symphony wrote, read back the way a later stage reads them.
+  const tracked = await context.adapter.fetchIssuesByIds(record.issues.map((issue) => issue.itemId));
+  const results = (
+    await Promise.all(
+      record.issues.map(async (issue) => {
+        const trackedIssue = tracked.find((candidate) => candidate.id === issue.itemId);
+        if (trackedIssue === undefined || context.adapter.readResults === undefined) return [];
+        return (await context.adapter.readResults(trackedIssue)).map(({ result }) => ({ number: issue.number, kind: result.kind, verdict: result.verdict }));
+      }),
+    )
+  ).flat();
   const checks = verifyRoles({
+    results,
     issues: record.issues.map((issue) => ({ key: issue.key, number: issue.number, rejectOnce: rolesIssue(issue.key)?.rejectOnce ?? false })),
     historyLines: readLines(historyFile),
     timeline,

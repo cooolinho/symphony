@@ -449,6 +449,42 @@ or `roles.reviewer.on_result.approved must not be a terminal state (got "Done")`
 
 Invalid configs fail with `invalid_config`, listing every problem: a state outside `tracker.active_states`, a state in more than one role (two roles may share a state only for different commands), an active state without a role that has no `commands` (once `roles` is set), a command that is not a name or an empty `commands` list, `max_sub_issues` outside 1–100, a `sub_issue_status` that is terminal or set without `max_sub_issues`, unknown keys under a role or its `claude` block, and invalid value types. Dispatch validation also fails while a role's command has no skill in [`claude.plugins`](#claude): `roles.auditor.commands: no skill for /refactoring in claude.plugins (expected skills/refactoring/SKILL.md)`, while a role lists a subagent no plugin ships (`roles.reviewer.agents: no subagent … in claude.plugins`), and while a read-only role lists a subagent that can edit files (`roles.reviewer.agents: laravel-filament-developer can edit files, but the role is read-only`). With `roles` set and `agent.max_continuations` unlimited, a warning is logged because role switches will count as continuations.
 
+#### The shipped developer and reviewer
+
+The shipped `WORKFLOW.md` runs its two main roles on this mechanism:
+
+```yaml
+roles:
+  developer:
+    states: [Ready, In progress]
+    result: implementation
+    on_result: { done: Agent review, blocked: Blocked }
+  reviewer:
+    states: [Agent review]
+    read_only: true
+    result: review
+    on_result: { approved: In review, changes_needed: In progress, blocked: Blocked }
+    on_check_failed: In progress
+pipeline:
+  max_review_rounds: 3
+```
+
+- Both hand off with [`report_result`](results.md#the-report_result-tool) and have no `set_status`. The developer's
+  summary, the reviewer's findings and the verdict are the result, posted by Symphony as the issue comment; neither
+  prompt asks for a separate summary comment. The developer therefore cannot move an issue from `Ready` to
+  `In progress` itself: it stays in `Ready` until the result moves it.
+- The reviewer prompt no longer counts review comments. Symphony counts the rounds: the third `changes_needed` goes to
+  the blocked column (`Blocked`) with the `needs-human` label instead of back to the developer (set
+  `roles.reviewer.on_round_limit` to choose another column). A human moving the issue back to an active column resets the
+  rounds.
+- The open findings of the latest review reach the developer through the prompt variable `results.open_findings`
+  (and the reviewer sees the findings it asked to fix), see [Prompt template](#prompt-template).
+- If the entry check of the approved target (`In review`) fails, the reviewer cannot repair the code: the result is
+  recorded, the check output is appended to its summary and the issue goes back to `In progress` (`on_check_failed`).
+
+Merging a change to these keys changes the running instance at once (live reload), so merge by hand when no issue is
+active.
+
 #### Issue commands
 
 An issue can ask for a skill: when the **first non-empty line** of its description is `/<name>` (optionally followed by
@@ -689,11 +725,16 @@ agent:
 roles:
   developer:
     states: [Ready, In progress]
+    result: implementation                   # hands off with report_result, see "The shipped developer and reviewer"
+    on_result: { done: Agent review, blocked: Blocked }
     may_move_to: [In progress, Agent review, Blocked]
   reviewer:
     states: [Agent review]
     read_only: true
     max_turns: 6
+    result: review
+    on_result: { approved: In review, changes_needed: In progress, blocked: Blocked }
+    on_check_failed: In progress
     may_move_to: [In review, In progress, Blocked]
     claude: { model: opus }
   auditor:                                   # issues that start with /refactoring: analysis only, findings become sub-issues
@@ -705,6 +746,9 @@ roles:
     max_turns: 2
     may_move_to: [In progress, In review, Blocked]
     claude: { model: fable, max_budget_usd: 15 }
+
+pipeline:
+  max_review_rounds: 3                       # the 3rd review with changes_needed goes to Blocked (needs-human), not back
 
 checks:
   timeout_ms: ${SYMPHONY_CHECKS_TIMEOUT_MS:-1800000}   # below claude.turn_timeout_ms (default 3600000)
@@ -725,17 +769,17 @@ You are working on GitHub issue **{{ issue.identifier }}**: {{ issue.title }}
 {% case role %}{% when "developer" %}## Your role: developer
 
 Implement the issue on `{{ branch }}`, integrate the base branch, commit, push, open a pull request with
-`open_pull_request`, comment with `add_comment`, then hand off with `set_status("Agent review")`.
-On `check_failed`: fix the problems and call `set_status("Agent review")` again.
-On `check_timeout`: call `set_status("Agent review")` once more; if it times out again, comment and end your turn
-without changing the status (never `Blocked`).
-On `check_error`: describe the error with `add_comment` and call `set_status("Blocked")`.
-After a successful transition, end your turn.
+`open_pull_request`, then hand off with `report_result` (verdict `done`; `blocked` with a blocker if you cannot go on).
+Open findings of the last review: `results.open_findings`.
+On `check_failed`: fix the problems and call `report_result` again.
+On `check_timeout`: call `report_result` once more; if it times out again, comment and end your turn.
+On `check_error`: describe the error with `add_comment` and end your turn.
+After a recorded result, end your turn.
 {% when "reviewer" %}## Your role: reviewer
 
 You are read-only. Review `git diff origin/<base>...HEAD`, the pull request and the issue comments against the
-checklist, post one comment "## Agent review (round N)", then `set_status("In review")` (approved) or
-`set_status("In progress")` (changes needed). From round 3 on, move it to "In review" and list the open findings.
+checklist, then hand off with `report_result`: verdict `approved` or `changes_needed` with `findings`. Symphony picks
+the column and enforces the round limit.
 {% else %}## How to work
 
 The single-agent prompt: implement, open a pull request and move the issue to "In review".
@@ -747,10 +791,10 @@ How the pieces work together:
 | Step | Mechanism |
 |---|---|
 | `Ready`/`In progress` → developer session | [`roles`](#roles): the column decides the role, `role` selects the prompt section. A description that starts with `/refactoring` selects the `auditor` instead ([issue commands](#issue-commands)). |
-| Developer calls `set_status("Agent review")` | [Transition guard](#transition-guard): `Agent review` is in the developer's `may_move_to`, so `checks.on_enter` runs; only exit `0` moves the card. |
+| Developer calls `report_result` (`done`) | The verdict leads to `Agent review` (`on_result`). [Transition guard](#transition-guard): `Agent review` is in the developer's `may_move_to`, so `checks.on_enter` runs; only exit `0` records the result and moves the card. |
 | Card in `Agent review` → reviewer session | Role switch ends the developer session; the reviewer starts in a fresh, read-only session, at most one at a time (`max_concurrent_agents_by_state`). |
-| Reviewer approves (`In review`) or sends back (`In progress`) | `In review` runs the same check again (cached for an unchanged, clean commit); `In progress` has no check. |
-| Ping-pong between the roles | Each switch counts toward `agent.max_continuations`; the prompt also stops sending back from review round 3. |
+| Reviewer reports `approved` (`In review`) or `changes_needed` (`In progress`) | `In review` runs the same check again (cached for an unchanged, clean commit); `In progress` has no check. |
+| Ping-pong between the roles | Each switch counts toward `agent.max_continuations`; results reset the count, and Symphony stops sending back at `pipeline.max_review_rounds`. |
 | `Done` | Never allowed for agents (terminal state); a human sets it after the merge. |
 
 The full prompt (developer steps, reviewer checklist and the fallback for the `default` role) is the body of the
