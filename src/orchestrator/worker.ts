@@ -7,15 +7,19 @@ import type { AgentEvent, AgentRunner, AgentSession, IntegrationReport, SessionL
 import { prepareIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
-import type { Issue, TrackerAdapter } from '../tracker/types.ts';
+import type { AgentToolSpec, Issue, TrackerAdapter } from '../tracker/types.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { describeHolder, type LockResult } from '../workspace/lock.ts';
 import { describeFailure, type HookIssue, type Workspace, type WorkspaceManager } from '../workspace/manager.ts';
 import { commandSkills, pluginAgents } from '../workflow/command.ts';
+import { classify } from '../workflow/classify.ts';
+import { profileFor } from '../workflow/profile.ts';
 import { roleName, sessionAgents, type RoleConfig } from '../workflow/roles.ts';
 import type { EffectiveWorkflow } from '../workflow/store.ts';
-import { issueTemplateValue, renderPrompt } from '../workflow/template.ts';
+import { EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../workflow/template.ts';
 import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord } from './guard.ts';
+import { createResultTool, type ResultToolAdapter } from './result-tool.ts';
+import { buildStageHistory, resultsTemplateValue, type ResultsTemplateValue } from './stage-history.ts';
 
 export type RunPhase =
   | 'PreparingWorkspace'
@@ -93,6 +97,8 @@ export interface WorkerCallbacks {
 
 export interface WorkerParams {
   issue: Issue;
+  /** Id of this run, recorded in the meta of the results it reports; null when unknown. */
+  runId: string | null;
   attempt: number | null;
   /** Workflow snapshot for this attempt: prompt, max_turns and agent settings stay fixed for the session. */
   workflow: EffectiveWorkflow;
@@ -129,6 +135,56 @@ function withMcpNotes(unavailable: Array<[string, string]>, prompt: string): str
   if (unavailable.length === 0) return prompt;
   const notes = unavailable.map(([name, status]) => `MCP server \`${name}\` is unavailable (${status}); do not call its tools.`);
   return `${notes.join('\n')}\n\n${prompt}`;
+}
+
+/** What a session of a result-driven role starts with: the issue's stage history and the tool that extends it. */
+interface ResultSupport {
+  tool: AgentToolSpec;
+  results: ResultsTemplateValue;
+  round: number;
+}
+
+const RESULT_CAPABILITIES = ['readResults', 'postComment', 'setStatus', 'addLabels', 'removeLabels'] as const;
+
+/**
+ * Loads the issue's stage history and builds the `report_result` tool for a session of a result-driven role: one
+ * paginated read of the issue's comments, plus the board's columns (cached by the adapter). Any failure is a
+ * `results_read_error`: without the history the round counters would be wrong, so the run fails and is retried.
+ */
+async function loadResultSupport(params: WorkerParams, role: RoleConfig, issue: () => Issue, headSha: () => Promise<string | null>): Promise<ResultSupport> {
+  const { adapter, workflow } = params;
+  const missing = RESULT_CAPABILITIES.filter((capability) => adapter[capability] === undefined);
+  if (missing.length > 0) {
+    throw new SymphonyError('results_read_error', `role ${role.name} reports results, but the ${adapter.kind} tracker lacks ${missing.join(', ')}`);
+  }
+  const resultAdapter = adapter as TrackerAdapter & ResultToolAdapter & Required<Pick<TrackerAdapter, 'readResults'>>;
+  let tracked;
+  let boardColumns: string[] | null;
+  try {
+    tracked = await resultAdapter.readResults(issue());
+    boardColumns = adapter.statusOptions !== undefined ? await adapter.statusOptions() : null;
+  } catch (error) {
+    throw new SymphonyError('results_read_error', `could not read the stage results of ${issue().identifier}: ${errorMessage(error)}`, { cause: error });
+  }
+  const history = buildStageHistory(tracked.map(({ result, meta }) => ({ result, meta })));
+  const tool = createResultTool({
+    role,
+    history,
+    profile: profileFor(workflow.config.pipeline, classify(issue().labels).type),
+    // No stage of the shipped pipeline is conditional yet, so `next` skips only what the profile skips.
+    flags: {},
+    config: workflow.config,
+    boardColumns,
+    adapter: resultAdapter,
+    issue,
+    runId: params.runId,
+    meta: { workflowHash: workflow.contentHash, headSha },
+  });
+  return {
+    tool,
+    results: resultsTemplateValue(history),
+    round: (role.result === 'test' ? history.testRounds : history.reviewRounds) + 1,
+  };
 }
 
 function transcriptPath(dir: string | null, workspace: Workspace): string | null {
@@ -267,6 +323,17 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
           detail,
         }),
     });
+    // Roles with `result` start with the issue's stage history; every other role makes no extra tracker request.
+    const support =
+      role?.result != null
+        ? await loadResultSupport(params, role, () => issue, async () => (await readGitHead(activeWorkspace.path))?.headSha ?? null)
+        : null;
+    if (signal.aborted) return await finish(cancelled());
+    const resultVariables = {
+      results: support?.results ?? EMPTY_RESULTS,
+      round: support?.round ?? 1,
+      result_required: support !== null,
+    };
     const transcript = transcriptPath(params.transcriptDir, activeWorkspace);
     if (transcript !== null) callbacks.transcript(transcript);
     session = await params.runner.startSession({
@@ -278,7 +345,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       deniedAgents: agents.denied.flatMap((agent) => [agent.qualified, agent.name]),
       // Entry checks run inside the status tool call; leave a minute for the tracker call around them.
       toolTimeoutMs: params.workflow.config.checks.timeoutMs + TOOL_TIMEOUT_MARGIN_MS,
-      tools: guardTools(toolsForRole(params.adapter.agentToolSpecs(), role), guard),
+      tools: guardTools(toolsForRole(params.adapter.agentToolSpecs(), role, support?.tool ?? null), guard),
       toolContext: () => ({
         issue,
         ...(role?.maxSubIssues != null ? { maxSubIssues: role.maxSubIssues } : {}),
@@ -299,12 +366,13 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       setPhase('BuildingPrompt');
       const prompt =
         turn === 1
-          ? withMcpNotes(unavailableMcp, await renderPrompt(params.workflow.prompt, { issue: issueTemplateValue(issue, skills, params.workflow.config.pipeline), attempt: params.attempt, role: name, agents: agentsValue }))
+          ? withMcpNotes(unavailableMcp, await renderPrompt(params.workflow.prompt, { issue: issueTemplateValue(issue, skills, params.workflow.config.pipeline), attempt: params.attempt, role: name, agents: agentsValue, ...resultVariables }))
           : await renderPrompt(params.workflow.continuationPrompt, {
               issue: issueTemplateValue(issue, skills, params.workflow.config.pipeline),
               attempt: params.attempt,
               role: name,
               agents: agentsValue,
+              ...resultVariables,
               turn_number: turn,
               max_turns: maxTurns,
             });

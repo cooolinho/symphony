@@ -1,8 +1,9 @@
-import type { AgentToolContext, AgentToolSpec, Issue, StatusChange, ToolResult, TrackerAdapter } from '../tracker/types.ts';
+import type { AgentToolContext, AgentToolSpec, AllowedTransition, Issue, StatusChange, ToolResult, TrackerAdapter } from '../tracker/types.ts';
 import { SerialQueue } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
+import { tail, truncate } from '../util/text.ts';
 import { normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
-import { RESULT_VERDICTS, parseResult, renderResultComment, toolInputShape, type ResultMeta, type StageResult } from '../workflow/results.ts';
+import { RESULT_VERDICTS, SUMMARY_MAX, parseResult, renderResultComment, toolInputShape, type ResultMeta, type StageResult } from '../workflow/results.ts';
 import type { RoleConfig } from '../workflow/roles.ts';
 import type { StageHistory } from './stage-history.ts';
 import { resolveTransition, type StageConditions, type Transition, type TransitionProfile } from './transitions.ts';
@@ -47,6 +48,27 @@ function ok(data: unknown): ToolResult {
 
 function fail(category: string, message: string): ToolResult {
   return { ok: false, error: { category, message } };
+}
+
+/** Room kept for the cut marker and the line break before the check output in {@link withCheckFailedNote}. */
+const NOTE_SLACK = 40;
+/** Smallest piece of check output worth quoting. */
+const MIN_QUOTED_OUTPUT = 200;
+
+/**
+ * The result with a note that its hand-off failed an entry check and went to `on_check_failed` instead. The note comes
+ * after the summary and quotes as much of the check output as the summary limit leaves room for; the summary itself is
+ * cut when the note alone would not fit.
+ */
+function withCheckFailedNote(result: StageResult, failed: NonNullable<AllowedTransition['checkFailed']>, target: string): StageResult {
+  const note =
+    `**Entry check failed.** The entry check for "${failed.target}" failed, so Symphony moved the issue to "${target}" ` +
+    '(`on_check_failed`) instead of the column this result leads to.';
+  const summary = truncate(result.summary, Math.max(0, SUMMARY_MAX - note.length - 2));
+  const room = SUMMARY_MAX - summary.length - note.length - NOTE_SLACK;
+  const output = failed.output.trim();
+  const quoted = output !== '' && room >= MIN_QUOTED_OUTPUT ? `\n\n${tail(output, room).replace(/^/gm, '    ')}` : '';
+  return { ...result, summary: `${summary}\n\n${note}${quoted}` };
 }
 
 type Plan = { ok: true; result: StageResult; transition: Transition } | { ok: false; failure: ToolResult };
@@ -124,12 +146,31 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     if (recorded !== null) return recorded.ok ? ok({ ...(recorded.data as object), already_recorded: true }) : recorded;
     const planned = plan(args);
     if (!planned.ok) return planned.failure;
-    const { result, transition } = planned;
-    // Fail closed: nothing is written unless the guard allowed exactly this move.
+    // Fail closed: nothing is written unless the guard allowed exactly this move, or the `on_check_failed` fallback
+    // after the computed move failed its entry check.
     const allowed = context.transition;
-    if (allowed === undefined || normalizeStateName(allowed.target) !== normalizeStateName(transition.target)) {
-      return fail('tool_error', `${RESULT_TOOL} ran without the transition guard's approval for "${transition.target}"; nothing was recorded`);
+    const failed = allowed?.checkFailed;
+    const fallback = failed !== undefined && role.readOnly ? role.onCheckFailed : null;
+    const expected = fallback ?? planned.transition.target;
+    if (
+      allowed === undefined ||
+      normalizeStateName(allowed.target) !== normalizeStateName(expected) ||
+      (failed !== undefined && (fallback === null || normalizeStateName(failed.target) !== normalizeStateName(planned.transition.target)))
+    ) {
+      return fail('tool_error', `${RESULT_TOOL} ran without the transition guard's approval for "${expected}"; nothing was recorded`);
     }
+    // The limit label belongs to the move the verdict leads to; a redirect to `on_check_failed` leaves it alone.
+    const transition: Transition =
+      failed === undefined
+        ? planned.transition
+        : {
+            ...planned.transition,
+            target: allowed.target,
+            labels: { add: [], remove: [] },
+            limitReached: false,
+            reason: `${planned.transition.reason}; entry check for "${failed.target}" failed → "${allowed.target}" (on_check_failed)`,
+          };
+    const result = failed === undefined ? planned.result : withCheckFailedNote(planned.result, failed, allowed.target);
 
     const meta: ResultMeta = {
       role: role.name,
@@ -138,7 +179,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       profile: params.profile?.name ?? null,
       workflow_hash: params.meta.workflowHash,
       head_sha: await params.meta.headSha().catch(() => null),
-      checks: allowed.check,
+      checks: failed?.check ?? allowed.check,
       target: transition.target,
       created_at: now().toISOString(),
     };
@@ -189,7 +230,8 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       previous_status: change.previous,
       round: transition.round,
       reason: transition.reason,
-      checks: allowed.check?.result ?? null,
+      checks: (failed?.check ?? allowed.check)?.result ?? null,
+      ...(failed !== undefined ? { check_failed_for: failed.target } : {}),
       comment_url: url,
       ...(labels.added.length > 0 || labels.removed.length > 0 ? { labels } : {}),
       ...(change.autoMerge !== undefined ? { auto_merge: change.autoMerge } : {}),
@@ -213,6 +255,10 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       if (recorded !== null) return null;
       const planned = plan(args);
       return planned.ok ? planned.transition.target : null;
+    },
+    checkFailedTarget: (args) => {
+      if (recorded !== null || !role.readOnly || role.onCheckFailed === null) return null;
+      return plan(args).ok ? role.onCheckFailed : null;
     },
     execute: (args, context) => queue.run(() => record(args, context)),
   };

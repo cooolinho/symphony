@@ -33,6 +33,7 @@ interface SetupOptions {
   role?: string;
   history?: ResultToolParams['history'];
   labels?: string[];
+  reviewer?: Record<string, unknown>;
 }
 
 function setup(options: SetupOptions = {}) {
@@ -43,7 +44,7 @@ function setup(options: SetupOptions = {}) {
       provider: { owner: 'acme', project_number: 1, token: 'test-token' },
       active_states: ['Todo', 'In progress', 'Agent review'],
     },
-    roles: ROLES,
+    roles: { ...ROLES, reviewer: { ...ROLES.reviewer, ...options.reviewer } },
     pipeline: { max_review_rounds: 3 },
     checks: { timeout_ms: options.timeoutMs ?? 10_000, on_enter: options.checks ?? {} },
   });
@@ -330,6 +331,77 @@ describe('report_result', () => {
       duration_ms: 900,
       sha: 'abc123',
       finished_at: '2026-10-18T11:00:00.000Z',
+    });
+  });
+
+  describe('on_check_failed', () => {
+    const FAILING = { 'In review': 'echo "lint failed"; exit 1' };
+
+    it('moves a read-only role to on_check_failed, keeps the verdict and notes the failed check in the summary', async () => {
+      const { report, tracker, markers } = setup({ checks: FAILING, reviewer: { on_check_failed: 'In progress' } });
+      const result = data(await report(APPROVED));
+      assert.equal(result.target, 'In progress');
+      assert.equal(result.status, 'In progress');
+      assert.equal(result.checks, 'check_failed');
+      assert.equal(result.check_failed_for, 'In review');
+      assert.deepEqual(tracker.statusCalls, ['In progress']);
+      const [marker] = markers();
+      assert.equal(marker?.result.verdict, 'approved');
+      assert.equal(marker?.meta.target, 'In progress');
+      assert.equal(marker?.meta.checks?.ok, false);
+      assert.match(marker?.result.summary ?? '', /^Looks good\.\n\n\*\*Entry check failed\.\*\*[^\n]*"In review"[^\n]*"In progress"[^\n]*\n\n {4}lint failed$/);
+      assert.deepEqual(data(await report(CHANGES)).already_recorded, true, 'a run still reports once');
+    });
+
+    it('keeps the summary within its limit with a long summary and long check output', async () => {
+      const { report, markers } = setup({ checks: { 'In review': 'yes "a long line of check output" | head -n 400; exit 1' }, reviewer: { on_check_failed: 'In progress' } });
+      data(await report({ ...APPROVED, summary: 'x'.repeat(3_900) }));
+      const summary = markers()[0]?.result.summary ?? '';
+      assert.ok(summary.length <= 4000, `${summary.length}`);
+      assert.match(summary, /Entry check failed/);
+    });
+
+    it('leaves the round limit label alone when the redirect replaces the move', async () => {
+      const { report, tracker, current } = setup({
+        checks: { 'In review': 'exit 1' },
+        history: { reviewRounds: 2, testRounds: 0 },
+        reviewer: { on_check_failed: 'Blocked' },
+      });
+      const result = data(await report(CHANGES));
+      assert.equal(result.target, 'Blocked', 'the third changes_needed leads to on_round_limit, whose check failed');
+      assert.deepEqual(current().labels, []);
+      assert.deepEqual(tracker.statusCalls, ['Blocked']);
+    });
+
+    it('applies the check of the fallback column too', async () => {
+      const { report, tracker } = setup({ checks: { ...FAILING, 'In progress': 'echo "dirty tree"; exit 1' }, reviewer: { on_check_failed: 'In progress' } });
+      const failed = error(await report(APPROVED));
+      assert.equal(failed.category, 'check_failed');
+      assert.match(failed.message, /"In progress"[\s\S]*dirty tree/);
+      assert.deepEqual(tracker.statusCalls, []);
+      assert.equal(tracker.comments.get('1'), undefined);
+    });
+
+    it('does nothing for a failed check when the fallback is the column that failed', async () => {
+      const { report, tracker } = setup({ checks: { 'In progress': 'exit 1' }, reviewer: { on_check_failed: 'In progress' } });
+      assert.equal(error(await report(CHANGES)).category, 'check_failed');
+      assert.deepEqual(tracker.statusCalls, []);
+    });
+
+    it('is not used by a role that is not read-only, nor for check_timeout or check_error', async () => {
+      const developer = setup({ role: 'developer', checks: { 'Agent review': 'exit 1' }, reviewer: { on_check_failed: 'In progress' } });
+      assert.equal(error(await developer.report({ verdict: 'done', summary: 'Done.' })).category, 'check_failed');
+      const broken = setup({ checks: { 'In review': 'exit 7' }, reviewer: { on_check_failed: 'In progress' } });
+      assert.equal(error(await broken.report(APPROVED)).category, 'check_error');
+      assert.deepEqual(broken.tracker.statusCalls, []);
+    });
+
+    it('refuses a fallback the tool did not expect', async () => {
+      const { unguarded, current, tracker } = setup({ reviewer: { on_check_failed: 'In progress' } });
+      const check = { result: 'check_failed', ok: false, exit_code: 1, timed_out: false, duration_ms: 1, sha: null, finished_at: '' };
+      const forged = await unguarded.execute(APPROVED, { issue: current(), transition: { target: 'Blocked', check: null, checkFailed: { target: 'In review', output: '', check } } });
+      assert.equal(error(forged).category, 'tool_error');
+      assert.deepEqual(tracker.statusCalls, []);
     });
   });
 

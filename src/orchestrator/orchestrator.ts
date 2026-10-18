@@ -1751,6 +1751,7 @@ export class Orchestrator {
     try {
       worker = runAgentAttempt({
         issue,
+        runId,
         attempt,
         workflow,
         model: choice.model,
