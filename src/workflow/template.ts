@@ -32,7 +32,7 @@ engine.registerFilter('without_agent_labels', (labels: unknown) =>
 );
 
 /** The prompt variable `results` for roles without `result` and for issues without results; see `resultsTemplateValue`. */
-export const EMPTY_RESULTS = { latest: [], open_findings: [], failed_cases: [], test: null, analysis: null };
+export const EMPTY_RESULTS = { latest: [], open_findings: [], failed_cases: [], test: null, analysis: null, design: null };
 
 /** Used when the WORKFLOW.md body is empty. */
 export const DEFAULT_PROMPT = `You are working on an issue from the configured tracker.

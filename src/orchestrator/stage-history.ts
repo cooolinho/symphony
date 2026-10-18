@@ -128,6 +128,20 @@ export interface ResultsTemplateValue {
     open_questions: string[];
     plan: string[];
   } | null;
+  /**
+   * The newest design since the last reset, whatever its verdict; null without one. The developer implements it: the
+   * decision, the components and interfaces, migrations, compatibility and the options that were considered.
+   */
+  design: {
+    verdict: string;
+    summary: string;
+    decision: string | null;
+    components: string[];
+    interfaces: string[];
+    migrations: string[];
+    compatibility: string | null;
+    options: string[];
+  } | null;
 }
 
 /** The newest result of a kind since the last `reset`. */
@@ -146,6 +160,7 @@ export function resultsTemplateValue(history: StageHistory): ResultsTemplateValu
   const testEntry = newest(history, 'test');
   const test = testEntry?.result;
   const analysis = newest(history, 'analysis')?.result;
+  const design = newest(history, 'design')?.result;
   return {
     latest: [...history.latestByRole.values()]
       .filter(({ result }) => result.kind !== 'reset')
@@ -191,6 +206,19 @@ export function resultsTemplateValue(history: StageHistory): ResultsTemplateValu
             docs_needed: analysis.docs_needed ?? null,
             open_questions: analysis.open_questions,
             plan: analysis.plan,
+          }
+        : null,
+    design:
+      design?.kind === 'design'
+        ? {
+            verdict: design.verdict,
+            summary: truncate(design.summary, PROMPT_SUMMARY_LIMIT),
+            decision: design.decision ?? null,
+            components: design.components,
+            interfaces: design.interfaces,
+            migrations: design.migrations,
+            compatibility: design.compatibility ?? null,
+            options: design.options,
           }
         : null,
   };

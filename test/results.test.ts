@@ -64,6 +64,7 @@ const fullInputs: Record<AgentResultKind, Record<string, unknown>> = {
     summary: 'One module, zod schemas.',
     options: ['zod schemas', 'JSON schema files'],
     decision: 'zod schemas, already a dependency',
+    components: ['schemas.ts: zod schemas per kind', 'markers.ts: encode and decode'],
     interfaces: ['encodeMarker(result, meta): string'],
     migrations: [],
     compatibility: 'New module, nothing changes',
@@ -128,7 +129,9 @@ describe('result contracts: validation', () => {
 
     it(`accepts a minimal ${kind} result and defaults the lists`, () => {
       const verdict = { analysis: 'ready', design: 'ready', implementation: 'done', test: 'passed', review: 'approved', security: 'passed', docs: 'not_needed' }[kind];
-      const result = parsed(kind, { verdict, summary: 'Short.' });
+      // A ready design has to name its decision, components and interfaces (see the consistency rules).
+      const required = kind === 'design' ? { decision: 'd', components: ['c'], interfaces: ['i'] } : {};
+      const result = parsed(kind, { verdict, summary: 'Short.', ...required });
       assert.deepEqual(result.blockers, []);
       assert.deepEqual(result.follow_ups, []);
     });
@@ -199,6 +202,21 @@ describe('result contracts: consistency rules', () => {
   it('needs_info needs open questions', () => {
     assert.match(problemsOf('analysis', { verdict: 'needs_info', summary: 'x' }).join('\n'), /"needs_info" needs .*`open_questions`/);
     parsed('analysis', { verdict: 'needs_info', summary: 'x', open_questions: ['Which column?'] });
+  });
+
+  it('a ready design needs a decision, components and interfaces, with a message that names each', () => {
+    const message = problemsOf('design', { verdict: 'ready', summary: 'x' }).join('\n');
+    assert.match(message, /"ready" needs the chosen option in `decision`/);
+    assert.match(message, /"ready" needs at least one entry in `components`/);
+    assert.match(message, /"ready" needs at least one entry in `interfaces`/);
+    assert.deepEqual(problemsOf('design', { verdict: 'ready', summary: 'x', decision: 'd', components: ['c'] }).map((p) => p.replace(/ \(.*$/, '')), ['verdict "ready" needs at least one entry in `interfaces`']);
+    assert.match(problemsOf('design', { verdict: 'ready', summary: 'x', decision: '  ', components: ['c'], interfaces: ['i'] }).join('\n'), /`decision`/);
+    parsed('design', { verdict: 'ready', summary: 'x', decision: 'd', components: ['c'], interfaces: ['i'] });
+  });
+
+  it('a blocked design needs a blocker, not components or interfaces', () => {
+    assert.match(problemsOf('design', { verdict: 'blocked', summary: 'x' }).join('\n'), /"blocked" needs .*`blockers`/);
+    parsed('design', { verdict: 'blocked', summary: 'x', blockers: [{ description: 'Which database?', needs: 'human' }] });
   });
 
   it('blocked needs a blocker', () => {
@@ -322,7 +340,7 @@ describe('result contracts: rendering', () => {
   it('renders every kind with its fields', () => {
     const expected: Record<AgentResultKind, RegExp[]> = {
       analysis: [/Type: feature · Complexity: M · Docs needed: yes/, /- \[ \] round trip works/, /\*\*Risks:\*\* breaking change/, /1\. Write schemas\n2\. Write tests/],
-      design: [/\*\*Decision\*\*\nzod schemas/, /\*\*Compatibility\*\*/, /1\. schemas/],
+      design: [/\*\*Decision\*\*\nzod schemas/, /\*\*Components\*\*\n- schemas\.ts: zod schemas per kind\n- markers\.ts/, /\*\*Interfaces\*\*/, /\*\*Compatibility\*\*/, /1\. schemas/],
       implementation: [/- `src\/workflow\/results\.ts`/, /\*\*Tests added\*\*/, /\*\*Notes\*\*\nKept fields optional\./],
       test: [/### ❌ Test: failed/, /- ❌ size cap — `results\.test\.ts`/, /- `npm run check`/, /\*\*Uncovered criteria\*\*\n- dashboard/],
       review: [/\*\*Checked\*\*\n- tests\n- docs/],

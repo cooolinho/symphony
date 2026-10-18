@@ -23,10 +23,15 @@ tracker:
       done_state: Done
       on_conflict: In progress               # a pull request that conflicts with base_branch goes back to the developer
       method: squash
-  # Board columns: Backlog | Ready | In progress | Testing | Agent review | Blocked | In review | Done
+  # Board columns: Backlog | Ready | Design | In progress | Testing | Agent review | Blocked | In review | Done
   #   Ready              -> issue analyst (read-only) works out requirements, risks, refined acceptance criteria, type and
   #                         complexity before anything is implemented; later stages get the analysis in their prompt
   #                         (pipeline.analysis: when_unlabeled skips it for issues that already carry Type and Complexity labels)
+  #   Design             -> architect agent (read-only) decides on the approach before the implementation: the options, the
+  #                         chosen one, its components and interfaces; the developer gets the design in its prompt. Only for
+  #                         larger changes: pipeline.profiles skip_when skips the column without a session for small issues
+  #                         (feature and refactor except complexity S, bugfix only for L and XL; an issue without a Complexity
+  #                         label does not skip it). The board needs the column between Ready and In progress.
   #   In progress        -> developer agent implements the issue
   #   Testing            -> test engineer agent writes independent tests for the acceptance criteria; it may only change test
   #                         files (pipeline.test_paths). Bug issues (pipeline.profiles.bugfix) always go through it; other issues
@@ -47,7 +52,7 @@ tracker:
   #   An issue whose description starts with "/plan [file]" is served by the planner: every item of the list (the file,
   #   or the description below the command line) becomes one planned sub-issue in Backlog; a human moves them to Ready.
   # If your board names its columns differently, adjust these lists, roles, checks and the prompt below.
-  active_states: [Ready, In progress, Testing, Agent review]
+  active_states: [Ready, Design, In progress, Testing, Agent review]
   terminal_states: [Done]
 
 polling:
@@ -120,17 +125,32 @@ roles:
   # The issue analyst runs before the developer, for every issue that enters Ready: a short read-only session that reports
   # an `analysis` result. `ready` moves the issue on (to In progress); `needs_info` sends it to Blocked with the open
   # questions in the comment. Symphony also sets the issue's Type: and Complexity: labels from the analysis where it has
-  # none (a label a human set always wins).
+  # none (a label a human set always wins). `ready` leads to the next stage of the issue's profile: Design for larger
+  # changes, else In progress.
   issue-analyst:
     states: [Ready]
     read_only: true
     max_turns: 3
     result: analysis
     on_result: { ready: next, needs_info: Blocked }
-    may_move_to: [In progress, Blocked]
+    may_move_to: [Design, In progress, Blocked]
     model_label: ignore                      # sonnet, whatever the issue's Model: label picks for the developer
     agents: [laravel-architect]
     claude: { model: sonnet }
+  # The architect decides on the approach of larger changes before the developer starts: a short read-only session that
+  # reports a `design` result. `ready` (decision, components and interfaces are required) moves the issue to In progress,
+  # where the developer gets the design in its prompt; `blocked` sends it to Blocked. Small issues never reach it:
+  # pipeline.profiles.<type>.skip_when passes Design over without a session.
+  architect:
+    states: [Design]
+    read_only: true
+    max_turns: 4
+    result: design
+    on_result: { ready: In progress, blocked: Blocked }
+    may_move_to: [In progress, Blocked]
+    model_label: ignore                      # opus, whatever the issue's Model: label picks for the developer
+    agents: [laravel-architect]
+    claude: { model: opus }
   developer:
     states: [In progress]
     result: implementation
@@ -215,13 +235,27 @@ pipeline:
   analysis: always
   # Stage sequences per issue type (docs/configuration.md#workflow-profiles); the type comes from the Type: label or the
   # analysis. The roles stay the same, a profile only overrides transitions. A bug issue runs Ready (analyst) -> In progress
-  # (developer, regression test first) -> Testing (test engineer) -> Agent review -> In review. There is no architect stage.
+  # (developer, regression test first) -> Testing (test engineer) -> Agent review -> In review. Only a bug of complexity L
+  # or XL goes through Design (architect) first; for S and M the architect is skipped without a session.
   # Needs the Testing column on the board. To run bug issues without the test stage, set developer.done to Agent review here.
-  # Other types (and untyped issues) keep the roles' own transitions (profiles for them: see docs/configuration.md).
+  # skip_when skips a stage only for some issues: the vocabulary is fixed, `complexity` is a list of S, M, L, XL. Features
+  # and refactorings go through Design except at complexity S. An issue without a usable Complexity: label never matches,
+  # so the architect runs. `default` applies to untyped issues (docs/configuration.md#workflow-profiles).
   profiles:
     bugfix:
+      skip_when:
+        architect: { complexity: [S, M] }
       on_result:
         developer: { done: Testing }
+    feature:
+      skip_when:
+        architect: { complexity: [S] }
+    refactor:
+      skip_when:
+        architect: { complexity: [S] }
+    default:
+      skip_when:
+        architect: { complexity: [S] }
   # Files the test engineer may change; defaults: tests/**, test/**, **/*.test.*, **/*Test.php
   # test_paths: [tests/**, test/**, "**/*.test.*", "**/*Test.php"]
 
@@ -275,6 +309,29 @@ Documentation needs an update.
 Plan:{% for item in results.analysis.plan %}
 {{ forloop.index }}. {{ item }}{% endfor %}
 {% endif %}
+{% endif %}{% endcapture %}{% capture design_block %}{% if results.design %}
+## Design of the architect
+
+An architect decided on the approach before the implementation{% if results.design.verdict != "ready" %} (verdict: {{ results.design.verdict }}){% endif %}. Implement this design; where it contradicts the issue description or does not fit the code, the issue and the code win, and you say so in the `plan_deviations` of your result.
+
+{{ results.design.summary }}
+{% if results.design.decision %}
+Decision: {{ results.design.decision }}
+{% endif %}{% if results.design.components.size > 0 %}
+Components:{% for item in results.design.components %}
+- {{ item }}{% endfor %}
+{% endif %}{% if results.design.interfaces.size > 0 %}
+Interfaces:{% for item in results.design.interfaces %}
+- {{ item }}{% endfor %}
+{% endif %}{% if results.design.migrations.size > 0 %}
+Migrations:{% for item in results.design.migrations %}
+- {{ item }}{% endfor %}
+{% endif %}{% if results.design.compatibility %}
+Compatibility: {{ results.design.compatibility }}
+{% endif %}{% if results.design.options.size > 0 %}
+Options considered:{% for item in results.design.options %}
+- {{ item }}{% endfor %}
+{% endif %}
 {% endif %}{% endcapture %}
 You are working on GitHub issue **{{ issue.identifier }}**: {{ issue.title }}
 
@@ -301,8 +358,8 @@ The tracker tools are `get_issue`, `add_comment`, `open_pull_request` and `repor
 {% if agents.size > 0 %}
 {{ agent_intro }}
 
-Good uses: an architect plan before a non-trivial feature, a self-contained part (a Filament resource, a migration with its model, the tests for an acceptance criterion) for the matching specialist, and a code review of your diff before you report the result.
-{% endif %}{{ analysis_block }}{% if results.open_findings.size > 0 %}
+Good uses: an architect plan before a non-trivial feature (not when a design is given below: follow that one), a self-contained part (a Filament resource, a migration with its model, the tests for an acceptance criterion) for the matching specialist, and a code review of your diff before you report the result.
+{% endif %}{{ analysis_block }}{{ design_block }}{% if results.open_findings.size > 0 %}
 ## Open findings of the latest agent review
 
 Fix these first; the reviewer checks them again:
@@ -375,6 +432,36 @@ The current directory is a clone of the issue's repository. Work only inside it.
    - **`transition_error`, `tracker_error`, `comment_failed`, `status_failed`**: follow the instructions in the message.
 
 If you cannot analyse the issue at all (unclear requirements, missing access, broken infrastructure), report `needs_info` and say exactly what you need in `open_questions`. You never move an issue yourself.
+After a recorded result, end your turn.
+
+Write the result in the language the issue is written in.
+{% when "architect" %}## Your role: architect
+
+You decide on the approach before the implementation: which options exist, which one fits this codebase, and what the change consists of. You are **read-only**: do not edit files, commit, push or open a pull request. Your output is one structured result: `report_result` posts it as the design comment and moves the issue; the developer implements your design next and gets it in its prompt.
+The tracker tools are `get_issue`, `add_comment` and `report_result`. You do not change the status yourself: Symphony computes the next column from your verdict.
+{% if agents.size > 0 %}
+{{ agent_intro }}
+
+Use the architect subagent (`laravel-architect`) for the structure of a Laravel or Filament change and check what it proposes against the code before you rely on it.
+{% endif %}{{ analysis_block }}
+The current directory is a clone of the issue's repository. Work only inside it.
+
+1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist) and follow their conventions.
+2. Call `get_issue`: read the issue, all comments and the linked pull requests. If a human answered questions of an earlier design in a comment, take the answers into account.
+3. Inspect the code the change touches: the existing structure, conventions and tests. Prefer extending what exists over adding new layers.
+4. Compare the realistic options, choose one and say why. Stay with what the issue needs: no work packages and no implementation steps beyond what the developer needs to follow the design.
+5. Report exactly one result with `report_result`. Do not post a separate design comment. Fields:
+   - `verdict`: `ready` (the design is complete) or `blocked` (a human must decide something first, with at least one entry in `blockers`).
+   - `summary`: the approach in a few sentences.
+   - `decision`: the chosen option and why. `options`: the options you considered.
+   - `components`: the building blocks of the change and what each one does (modules, classes, services, files). `interfaces`: new or changed signatures, endpoints, configuration keys or formats. Generic entries ("a service", "update the docs") do not help the developer: name the actual parts. `ready` needs a `decision`, at least one `components` entry and at least one `interfaces` entry.
+   - `migrations`: schema or data migrations. `compatibility`: backwards compatibility and rollout. `follow_ups`: work worth a separate issue.
+6. Handle the answer:
+   - **Success** (the result says "Result recorded — end your turn now."): end your turn immediately. The developer takes over in a new session.
+   - **`invalid_result`**: nothing was recorded; fix the fields named in the message and call `report_result` again.
+   - **`transition_error`, `tracker_error`, `comment_failed`, `status_failed`**: follow the instructions in the message.
+
+If you cannot decide (unclear requirements, a decision only a human can make, missing access), report `blocked` and say exactly what you need in `blockers`. You never move an issue yourself.
 After a recorded result, end your turn.
 
 Write the result in the language the issue is written in.

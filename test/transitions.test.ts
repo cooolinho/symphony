@@ -6,6 +6,7 @@ import { trackerDefaults } from '../src/tracker/registry.ts';
 import { resolveConfig, type ServiceConfig } from '../src/workflow/config.ts';
 import { AGENT_RESULT_KINDS, RESULT_VERDICTS } from '../src/workflow/results.ts';
 import type { RoleConfig } from '../src/workflow/roles.ts';
+import { classify } from '../src/workflow/classify.ts';
 import { profileFor } from '../src/workflow/profile.ts';
 import { nextStageProblems } from '../src/workflow/validate.ts';
 
@@ -42,6 +43,7 @@ const roleNamed = (name: string, from: ServiceConfig = config): RoleConfig => {
 
 const profile = (overrides: Partial<TransitionProfile> & { name: string }): TransitionProfile => ({
   skip: [],
+  skipWhen: {},
   onResult: {},
   maxReviewRounds: null,
   maxTestRounds: null,
@@ -427,5 +429,94 @@ describe('resolveTransition over generated inputs', () => {
     assert.ok(seen.cases > 1000, `only ${seen.cases} generated cases`);
     assert.ok(seen.ok > 500 && seen.problems > 20 && seen.limits > 20, JSON.stringify({ ...seen, rules: [...seen.rules] }));
     assert.deepEqual([...seen.rules].sort(), ['blocked', 'on_result', 'round_limit', 'unmapped']);
+  });
+});
+
+describe('skip_when: the architect stage of larger changes (#204)', () => {
+  const designed = resolve({
+    tracker: { kind: 'github', active_states: ['Ready', 'Design', 'In progress', 'Agent review'], terminal_states: ['Done'] },
+    roles: {
+      analyst: { states: ['Ready'], result: 'analysis', may_move_to: ['Design', 'In progress', 'Blocked'], on_result: { ready: 'next', needs_info: 'Blocked' } },
+      architect: { states: ['Design'], read_only: true, result: 'design', may_move_to: ['In progress', 'Blocked'], on_result: { ready: 'In progress', blocked: 'Blocked' } },
+      developer: { states: ['In progress'], result: 'implementation', may_move_to: ['Agent review', 'Blocked'], on_result: { done: 'Agent review' } },
+      reviewer: { states: ['Agent review'], read_only: true, result: 'review', may_move_to: ['In review', 'Blocked'], on_result: { approved: 'In review' } },
+    },
+    pipeline: {
+      profiles: {
+        feature: { skip_when: { architect: { complexity: ['S'] } } },
+        refactor: { skip_when: { architect: { complexity: ['S'] } } },
+        bugfix: { skip_when: { architect: { complexity: ['S', 'M'] } } },
+        default: { skip_when: { architect: { complexity: ['S'] } } },
+      },
+    },
+  });
+  const board = ['Backlog', 'Ready', 'Design', 'In progress', 'Agent review', 'Blocked', 'In review', 'Done'];
+
+  /** Where the analyst sends an issue with these labels after `ready`, through the profile its type picks. */
+  const afterAnalysis = (labels: string[]): string => {
+    const outcome = ok(
+      resolveTransition({
+        role: roleNamed('analyst', designed),
+        verdict: 'ready',
+        history: { reviewRounds: 0, testRounds: 0 },
+        profile: profileFor(designed.pipeline, classify(labels).type),
+        config: designed,
+        boardColumns: board,
+        issue: { description: null, labels },
+      }),
+    );
+    return outcome.target;
+  };
+
+  it('matrix: type × complexity decides between Design and In progress', () => {
+    const types: Record<string, string[]> = { feature: ['Type: feature'], refactor: ['Type: refactor'], bugfix: ['Type: bugfix'], untyped: [] };
+    // Complexities that skip the stage; every other value (and no usable label) goes through Design.
+    const skipping: Record<string, string[]> = { feature: ['S'], refactor: ['S'], bugfix: ['S', 'M'], untyped: ['S'] };
+    for (const [type, typeLabels] of Object.entries(types)) {
+      for (const complexity of ['S', 'M', 'L', 'XL']) {
+        const expected = skipping[type]?.includes(complexity) ? 'In progress' : 'Design';
+        assert.equal(afterAnalysis([...typeLabels, `Complexity: ${complexity}`]), expected, `${type} ${complexity}`);
+      }
+      assert.equal(afterAnalysis(typeLabels), 'Design', `${type} without a complexity label`);
+      assert.equal(afterAnalysis([...typeLabels, 'Complexity: huge']), 'Design', `${type} with an unknown complexity`);
+      assert.equal(afterAnalysis([...typeLabels, 'Complexity: S', 'Complexity: L']), 'Design', `${type} with conflicting complexities`);
+    }
+  });
+
+  it('accepts the label aliases for the type and the case of the complexity', () => {
+    assert.equal(afterAnalysis(['bug', 'complexity: m']), 'In progress');
+    assert.equal(afterAnalysis(['enhancement', 'complexity: m']), 'Design');
+  });
+
+  it('names the skipped stage in the reason', () => {
+    const outcome = ok(
+      resolveTransition({
+        role: roleNamed('analyst', designed),
+        verdict: 'ready',
+        history: { reviewRounds: 0, testRounds: 0 },
+        profile: profileFor(designed.pipeline, 'bugfix'),
+        config: designed,
+        boardColumns: board,
+        issue: { description: null, labels: ['Type: bugfix', 'Complexity: S'] },
+      }),
+    );
+    assert.match(outcome.reason, /architect skipped by profile bugfix \(skip_when: complexity S\)/);
+  });
+
+  it('routes without issue labels as before: nothing to skip on, the stage runs', () => {
+    const outcome = ok(
+      resolveTransition({ role: roleNamed('analyst', designed), verdict: 'ready', history: { reviewRounds: 0, testRounds: 0 }, profile: profileFor(designed.pipeline, 'bugfix'), config: designed, boardColumns: board }),
+    );
+    assert.equal(outcome.target, 'Design');
+  });
+
+  it('sends the architect result on: ready to In progress, blocked to Blocked', () => {
+    const run2 = (verdict: string) => ok(resolveTransition({ role: roleNamed('architect', designed), verdict, history: { reviewRounds: 0, testRounds: 0 }, profile: null, config: designed, boardColumns: board }));
+    assert.equal(run2('ready').target, 'In progress');
+    assert.equal(run2('blocked').target, 'Blocked');
+  });
+
+  it('passes the preflight of `next` for every profile', () => {
+    assert.deepEqual(nextStageProblems(designed, board), []);
   });
 });

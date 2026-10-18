@@ -136,6 +136,10 @@ live in **`.env`**.
   [result contracts](docs/results.md), [rounds and manual resume](docs/usage.md#rounds-limits-and-manual-resume)).
 - **Developer and reviewer:** roles per column. Before `Agent review` and `In review`, checks run (lint, static
   analysis, tests); if they fail, the card stays and the agent fixes the problem.
+- **Architect:** larger changes (features and refactorings above complexity `S`, bugs of complexity `L`/`XL`) pass
+  through the `Design` column first: a read-only architect agent decides on the approach (components, interfaces) and the
+  developer implements that design. Small issues skip the column without a session
+  ([details](docs/configuration.md#the-architect)).
 - **Test engineer:** an independent agent in the `Testing` column (bug issues always, other issues optionally) writes tests for the acceptance criteria and
   may only change test files; failed tests go back to the developer with the failed cases, and after
   `pipeline.max_test_rounds` failed rounds the issue waits for you
@@ -175,7 +179,7 @@ npm run dry-run         # check the setup without starting agents
 npm start               # start Symphony
 ```
 
-In between, create a GitHub Project board with the columns `Backlog`, `Ready`, `In progress`, `Testing`,
+In between, create a GitHub Project board with the columns `Backlog`, `Ready`, `Design`, `In progress`, `Testing`,
 `Agent review`, `Blocked`, `In review` and `Done`. The step-by-step guide is [docs/getting-started.md](docs/getting-started.md);
 running it with Docker behind Traefik is described in [docs/docker.md](docs/docker.md), a local test run of the same
 image without Traefik (`docker-compose.local.yml`) in
@@ -184,8 +188,8 @@ image without Traefik (`docker-compose.local.yml`) in
 ## 📋 Usage
 
 Move an issue to `Ready`. A read-only analyst agent works out requirements, risks and refined acceptance criteria and
-sets `Type:` and `Complexity:` labels where the issue has none (or asks you a question in `Blocked`). A developer agent
-then implements it and opens a pull request. After the checks pass, a read-only
+sets `Type:` and `Complexity:` labels where the issue has none (or asks you a question in `Blocked`). For a larger change
+an architect agent then decides on the approach in `Design`. A developer agent then implements it and opens a pull request. After the checks pass, a read-only
 reviewer agent reviews the work, then the card moves to `In review`. You merge the pull request and move the card to
 `Done`. Labels like `Model: sonnet` and `Effort: high` choose model and effort per issue; the dashboard
 (`SYMPHONY_PORT`) shows what runs, what starts next and why each issue waits, plus logs and cost.

@@ -18,7 +18,7 @@ const root = path.join(import.meta.dirname, '..');
 const shipped = path.join(root, 'WORKFLOW.md');
 const read = (file: string): string => fs.readFileSync(path.join(root, file), 'utf8');
 
-const BOARD = ['Backlog', 'Ready', 'In progress', 'Testing', 'Agent review', 'Blocked', 'In review', 'Done'];
+const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Blocked', 'In review', 'Done'];
 
 async function load(env: NodeJS.ProcessEnv = {}): Promise<ServiceConfig> {
   const { definition } = await loadWorkflowFile(shipped);
@@ -34,29 +34,30 @@ function route(config: ServiceConfig, labels: string[], role: string, verdict: s
   const profile = profileFor(config.pipeline, classify(labels).type);
   const roleConfig = config.roles?.find((candidate) => candidate.name === role);
   assert.ok(roleConfig, `role ${role}`);
-  const outcome = resolveTransition({ role: roleConfig, verdict, history: { reviewRounds: 0, testRounds: 0 }, profile, flags: {}, config, boardColumns: BOARD });
+  const outcome = resolveTransition({ role: roleConfig, verdict, history: { reviewRounds: 0, testRounds: 0 }, profile, config, boardColumns: BOARD, issue: { description: null, labels } });
   assert.ok(outcome.ok, outcome.ok ? '' : outcome.problem);
   return outcome.target;
 }
 
 describe('#201 bugfix profile in the shipped WORKFLOW.md', () => {
-  it('loads without warnings and defines exactly the bugfix profile, which does not skip or add any stage', async () => {
+  it('loads without warnings and defines the bugfix profile, which skips no stage unconditionally and adds the test stage', async () => {
     const config = await load();
     assert.equal(config.warnings?.length ?? 0, 0);
     const profile = config.pipeline.profiles.get('bugfix');
     assert.ok(profile);
     assert.deepEqual(profile.skip, []);
+    assert.deepEqual(profile.skipWhen, { architect: ['S', 'M'] });
     assert.deepEqual(Object.keys(profile.onResult), ['developer']);
     assert.deepEqual(profile.onResult.developer, { done: 'Testing' });
-    // The roles of the pipeline: no architect stage, the analyst, developer, test engineer and reviewer are there.
+    // The roles of the pipeline: the analyst, the architect (#204), developer, test engineer and reviewer are there.
     const names = (config.roles ?? []).map((role) => role.name);
-    assert.ok(!names.some((name) => /architect/.test(name)));
-    for (const name of ['issue-analyst', 'developer', 'test-engineer', 'reviewer']) assert.ok(names.includes(name), name);
+    for (const name of ['issue-analyst', 'architect', 'developer', 'test-engineer', 'reviewer']) assert.ok(names.includes(name), name);
   });
 
   it('runs a bug from Ready through analyst, developer, test engineer and reviewer to In review', async () => {
     const config = await load();
-    for (const labels of [['bug'], ['type: bugfix'], ['Type: bugfix', 'effort: low']]) {
+    // A small bug (S, M) skips Design; without a complexity label the architect runs, see test/architect-stage.test.ts.
+    for (const labels of [['bug', 'Complexity: S'], ['type: bugfix', 'complexity: m'], ['Type: bugfix', 'Complexity: S', 'effort: low']]) {
       const label = labels.join();
       assert.equal(route(config, labels, 'issue-analyst', 'ready'), 'In progress', label);
       assert.equal(route(config, labels, 'developer', 'done'), 'Testing', label);
@@ -162,10 +163,10 @@ describe('#201 slots for the test stage', () => {
 });
 
 describe('#201 comments and documentation', () => {
-  it('lists the board columns in order in the WORKFLOW.md comment, with Testing between In progress and Agent review', () => {
+  it('lists the board columns in order in the WORKFLOW.md comment, with Design between Ready and In progress and Testing between In progress and Agent review', () => {
     const source = read('WORKFLOW.md');
-    assert.match(source, /# Board columns: Backlog \| Ready \| In progress \| Testing \| Agent review \| Blocked \| In review \| Done/);
-    const order = ['Ready', 'In progress', 'Testing', 'Agent review', 'In review'].map((column) => source.search(new RegExp(`^  #   ${column} +->`, 'm')));
+    assert.match(source, /# Board columns: Backlog \| Ready \| Design \| In progress \| Testing \| Agent review \| Blocked \| In review \| Done/);
+    const order = ['Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'In review'].map((column) => source.search(new RegExp(`^  #   ${column} +->`, 'm')));
     assert.ok(order.every((index) => index >= 0), order.join());
     assert.deepEqual([...order].sort((a, b) => a - b), order);
     assert.doesNotMatch(source, /Optional: the developer hands over to Testing/);
@@ -181,7 +182,7 @@ describe('#201 comments and documentation', () => {
   });
 
   for (const file of ['docs/getting-started.md', 'docs/usage.md']) {
-    it(`${file} describes the column order Backlog, Ready, In progress, Testing, Agent review, Blocked, In review, Done`, () => {
+    it(`${file} describes the column order Backlog, Ready, Design, In progress, Testing, Agent review, Blocked, In review, Done`, () => {
       const text = read(file);
       const sequence = BOARD.map((column) => `\`${column}\``).join(', ').replace(/, (`Done`)$/, ', $1');
       const flattened = text.replace(/\s+/g, ' ');

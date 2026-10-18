@@ -99,3 +99,59 @@ describe('skipCheckProblems', () => {
     assert.deepEqual(skipCheckProblems(configOf({ checks: { on_enter: { 'In progress': 'true' } } }), null), []);
   });
 });
+
+describe('skip_when (#204)', () => {
+  const BOARD_DESIGN = ['Backlog', 'Ready', 'Design', 'In progress', 'Agent review', 'Blocked', 'In review', 'Done'];
+  const designConfig = (extra: Record<string, unknown> = {}, profiles: Record<string, unknown> = { feature: { skip_when: { architect: { complexity: ['S'] } } }, bugfix: { skip_when: { architect: { complexity: ['S', 'M'] } } } }) =>
+    configOf({
+      tracker: {
+        kind: 'github_project',
+        provider: { owner: 'acme', project_number: 1, token: 'test-token' },
+        active_states: ['Ready', 'Design', 'In progress', 'Agent review'],
+        terminal_states: ['Done'],
+      },
+      roles: {
+        analyst: { states: ['Ready'], read_only: true, result: 'analysis' },
+        architect: { states: ['Design'], read_only: true, result: 'design' },
+        developer: { states: ['In progress'] },
+        reviewer: { states: ['Agent review'], read_only: true },
+      },
+      pipeline: { analysis: 'always', profiles },
+      ...extra,
+    });
+  const config = designConfig();
+  const architect = roleFor({ state: 'Design', description: null }, config.roles);
+
+  it('skips the stage for the complexities of the issue type and runs it for the others', () => {
+    const reason = (labels: string[]) => (architect === null ? assert.fail('no architect') : skipReason({ labels }, architect, config));
+    assert.equal(reason(['Type: feature', 'Complexity: S']), 'skipped by profile feature (skip_when: complexity S)');
+    for (const complexity of ['M', 'L', 'XL']) assert.equal(reason(['Type: feature', `Complexity: ${complexity}`]), null, complexity);
+    assert.match(reason(['bug', 'Complexity: M']) ?? '', /skipped by profile bugfix \(skip_when: complexity M\)/);
+    for (const complexity of ['L', 'XL']) assert.equal(reason(['bug', `Complexity: ${complexity}`]), null, complexity);
+  });
+
+  it('runs the stage without a usable complexity label, and for a type without a profile', () => {
+    const reason = (labels: string[]) => (architect === null ? assert.fail('no architect') : skipReason({ labels }, architect, config));
+    assert.equal(reason(['Type: feature']), null, 'no complexity');
+    assert.equal(reason(['Type: feature', 'Complexity: huge']), null, 'unknown value');
+    assert.equal(reason(['Type: feature', 'Complexity: S', 'Complexity: L']), null, 'conflicting labels');
+    assert.equal(reason(['Type: refactor', 'Complexity: S']), null, 'no profile for refactor');
+  });
+
+  it('moves a skipped issue from Design to the next needed column, and runs the stage otherwise', () => {
+    const skip = stageSkip(issueIn('Design', ['Type: bugfix', 'Complexity: S']), architect, config, BOARD_DESIGN);
+    assert.deepEqual(skip && { role: skip.role, target: skip.target, profile: skip.profile }, { role: 'architect', target: 'In progress', profile: 'bugfix' });
+    assert.equal(stageSkip(issueIn('Design', ['Type: bugfix', 'Complexity: L']), architect, config, BOARD_DESIGN), null);
+    assert.equal(stageSkip(issueIn('Design', ['Type: bugfix']), architect, config, BOARD_DESIGN), null);
+  });
+
+  it('reports a skip_when stage whose follow-up column has an entry check', () => {
+    const checked = designConfig({ checks: { on_enter: { 'In progress': 'true' } } });
+    assert.deepEqual(skipCheckProblems(checked, BOARD_DESIGN), [
+      'pipeline.profiles.feature.skip_when.architect: skipping architect moves issues from "Design" to "In progress" without a workspace, but checks.on_enter has a script for "In progress"',
+      'pipeline.profiles.bugfix.skip_when.architect: skipping architect moves issues from "Design" to "In progress" without a workspace, but checks.on_enter has a script for "In progress"',
+    ]);
+    assert.deepEqual(skipCheckProblems(config, BOARD_DESIGN), []);
+    assert.deepEqual(skipCheckProblems(checked, null), []);
+  });
+});

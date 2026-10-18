@@ -769,8 +769,9 @@ describe('result-driven roles and the pipeline section', () => {
       const role = config.roles?.find((candidate) => candidate.name === name);
       return [role?.result, role?.onResult, role?.onCheckFailed, role?.onMissingResult, role?.onRoundLimit];
     };
-    // The issue analyst, the developer, the test engineer and the reviewer hand off with report_result; every other role keeps the neutral values.
+    // The issue analyst, the architect, the developer, the test engineer and the reviewer hand off with report_result; every other role keeps the neutral values.
     assert.deepEqual(transitions('issue-analyst'), ['analysis', { ready: 'next', needs_info: 'Blocked' }, null, 'Blocked', null]);
+    assert.deepEqual(transitions('architect'), ['design', { ready: 'In progress', blocked: 'Blocked' }, null, 'Blocked', null]);
     assert.deepEqual(transitions('developer'), ['implementation', { done: 'Agent review', blocked: 'Blocked' }, null, 'Blocked', null]);
     assert.deepEqual(transitions('test-engineer'), ['test', { passed: 'Agent review', failed: 'In progress', blocked: 'Blocked' }, null, 'Blocked', null]);
     assert.deepEqual(
@@ -780,7 +781,7 @@ describe('result-driven roles and the pipeline section', () => {
     assert.equal(config.pipeline.maxReviewRounds, 3);
     assert.equal(config.pipeline.maxTestRounds, 2);
     for (const role of config.roles ?? []) {
-      if (['issue-analyst', 'developer', 'test-engineer', 'reviewer'].includes(role.name)) continue;
+      if (['issue-analyst', 'architect', 'developer', 'test-engineer', 'reviewer'].includes(role.name)) continue;
       assert.deepEqual([role.result, role.onResult, role.onCheckFailed, role.onMissingResult, role.onRoundLimit], [null, {}, null, null, null], role.name);
     }
   });
@@ -1002,12 +1003,61 @@ describe('result-driven roles and the pipeline section', () => {
         assert.deepEqual(
           [...read].map(([name, profile]) => [name, profile]),
           [
-            ['bugfix', { name: 'bugfix', skip: ['tester', 'docs'], onResult: {}, maxReviewRounds: 2, maxTestRounds: 1 }],
-            ['default', { name: 'default', skip: [], onResult: { tester: { failed: 'In progress', passed: 'next' } }, maxReviewRounds: null, maxTestRounds: null }],
-            ['refactor', { name: 'refactor', skip: [], onResult: {}, maxReviewRounds: null, maxTestRounds: null }],
+            ['bugfix', { name: 'bugfix', skip: ['tester', 'docs'], skipWhen: {}, onResult: {}, maxReviewRounds: 2, maxTestRounds: 1 }],
+            ['default', { name: 'default', skip: [], skipWhen: {}, onResult: { tester: { failed: 'In progress', passed: 'next' } }, maxReviewRounds: null, maxTestRounds: null }],
+            ['refactor', { name: 'refactor', skip: [], skipWhen: {}, onResult: {}, maxReviewRounds: null, maxTestRounds: null }],
           ],
         );
         assert.equal(profiles(undefined).size, 0);
+      });
+
+      it('reads skip_when per role with a fixed complexity vocabulary', () => {
+        const read = profiles({
+          bugfix: { skip_when: { tester: { complexity: ['S', ' m ', 's'] } } },
+          feature: { skip_when: { tester: { complexity: ['xl'] } } },
+        });
+        assert.deepEqual(read.get('bugfix')?.skipWhen, { tester: ['S', 'M'] });
+        assert.deepEqual(read.get('feature')?.skipWhen, { tester: ['XL'] });
+      });
+
+      it('rejects unknown roles, conditions and complexity values in skip_when, naming the field', () => {
+        const message = messageOf(
+          front({
+            bugfix: { skip_when: { qa: { complexity: ['S'] }, tester: { complexity: ['S', 'XXL', 'huge'], labels: ['x'] } } },
+            feature: { skip_when: { tester: { type: ['bugfix'] }, docs: 'S', developer: { complexity: [] } } },
+            refactor: { skip_when: ['tester'] },
+            default: { skip_when: { tester: { complexity: 'S' } } },
+          }),
+        );
+        assert.match(message, /pipeline\.profiles\.bugfix\.skip_when\.qa: unknown role \(roles: developer, reviewer, docs, tester\)/);
+        assert.match(message, /pipeline\.profiles\.bugfix\.skip_when\.tester\.complexity: unknown value "XXL" \(allowed: S, M, L, XL\)/);
+        assert.match(message, /pipeline\.profiles\.bugfix\.skip_when\.tester\.complexity: unknown value "huge"/);
+        assert.match(message, /pipeline\.profiles\.bugfix\.skip_when\.tester\.labels: unknown condition \(allowed: complexity\)/);
+        assert.match(message, /pipeline\.profiles\.feature\.skip_when\.tester\.type: unknown condition \(allowed: complexity\)/);
+        assert.match(message, /pipeline\.profiles\.feature\.skip_when\.tester\.complexity must list at least one of S, M, L, XL/);
+        assert.match(message, /pipeline\.profiles\.feature\.skip_when\.docs must be a map \(allowed key: complexity\)/);
+        assert.match(message, /pipeline\.profiles\.feature\.skip_when\.developer\.complexity must list at least one/);
+        assert.match(message, /pipeline\.profiles\.refactor\.skip_when must be a map of roles to conditions/);
+        assert.match(message, /pipeline\.profiles\.default\.skip_when\.tester\.complexity must be a list of strings/);
+      });
+
+      it('checks `next` against every column a skip_when stage can lead to', () => {
+        const board = ['Ready', 'In progress', 'Docs', 'Agent review', 'Done'];
+        const chain = (mayMoveTo: string[]) =>
+          resolve({
+            tracker: { kind: 'github', active_states: ['In progress', 'Docs', 'Agent review'], terminal_states: ['Done'] },
+            roles: {
+              developer: { states: ['In progress'], result: 'implementation', may_move_to: mayMoveTo, on_result: { done: 'next' } },
+              docs: { states: ['Docs'], result: 'docs', may_move_to: ['Agent review'], on_result: { done: 'next' } },
+              reviewer: { states: ['Agent review'] },
+            },
+            pipeline: { profiles: { feature: { skip_when: { docs: { complexity: ['S'] } } } } },
+          });
+        assert.deepEqual(nextStageProblems(chain(['Docs', 'Agent review']), board), []);
+        // Docs is skipped for S: `next` may lead to Agent review, which the developer must be allowed to move to as well.
+        assert.deepEqual(nextStageProblems(chain(['Docs']), board), [
+          'roles.developer.on_result.done: "next" leads to "Agent review", which is not in roles.developer.may_move_to (add it there) (profile feature)',
+        ]);
       });
 
       it('rejects unknown roles in skip and on_result', () => {
