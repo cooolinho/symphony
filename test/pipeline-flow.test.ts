@@ -64,7 +64,9 @@ const FRONT = {
 /** Every session's first prompt names its role, its round and the open findings it starts from. */
 const PROMPT =
   '{{ role }} round {{ round }}{% for finding in results.open_findings %} | {{ finding.problem }}{% endfor %}' +
-  '{% for case in results.failed_cases %} | failed: {{ case.criterion }} ({{ case.test }}){% endfor %}';
+  '{% for case in results.failed_cases %} | failed: {{ case.criterion }} ({{ case.test }}){% endfor %}' +
+  '{% if results.analysis %} | analysis {{ results.analysis.verdict }} {{ results.analysis.type }}/{{ results.analysis.complexity }}' +
+  '{% for criterion in results.analysis.acceptance_criteria %} | criterion: {{ criterion }}{% endfor %}{% endif %}';
 
 interface StageContext {
   turn: number;
@@ -1193,5 +1195,118 @@ describe('test engineer stage', () => {
     assert.deepEqual(h.tracker.statusCalls, ['Testing', 'Blocked']);
     assert.deepEqual(await testRuns(h), [['blocked', 1, 'Blocked']]);
     assert.deepEqual(issue(h).labels, []);
+  });
+});
+
+/** The issue analyst → developer → reviewer pipeline as the shipped workflow configures it (Ready is the analyst's column). */
+const ANALYST_FRONT = {
+  roles: {
+    'issue-analyst': {
+      states: ['Ready'],
+      read_only: true,
+      max_turns: 3,
+      result: 'analysis',
+      may_move_to: ['In progress', 'Blocked'],
+      on_result: { ready: 'next', needs_info: 'Blocked' },
+    },
+    developer: { ...FRONT.roles.developer, states: ['In progress'] },
+    reviewer: FRONT.roles.reviewer,
+  },
+};
+
+const ANALYSIS = {
+  verdict: 'ready',
+  summary: 'Adds an invoice export; one component.',
+  type: 'bugfix',
+  complexity: 'M',
+  components: ['src/invoices'],
+  acceptance_criteria: ['The export lists every invoice', 'An empty list exports a header only'],
+  plan: ['Add the exporter', 'Test it'],
+};
+const analysed = (args: Record<string, unknown> = ANALYSIS) => reporting(args);
+
+/** An analyst pipeline for an issue in Ready with these labels; the labels at every status change are recorded in `labelsAtMove`. */
+function analystPipeline(stages: Stage[], labels: string[] = []) {
+  const tracker = new FakeTracker([makeIssue({ id: ISSUE, state: 'Ready', labels, native_ref: { status_updated_at: '2026-01-01T00:00:00.000Z' } })]);
+  tracker.statusOptions = async () => BOARD;
+  const labelsAtMove: string[][] = [];
+  const setStatus = tracker.setStatus.bind(tracker);
+  tracker.setStatus = async (target, column) => {
+    labelsAtMove.push([...(tracker.issues.get(ISSUE)?.labels ?? [])]);
+    return setStatus(target, column);
+  };
+  return { h: pipeline(stages, { tracker, front: ANALYST_FRONT }), labelsAtMove };
+}
+
+describe('issue analyst stage', () => {
+  it('ready: labels an unlabelled issue with Type and Complexity before the move, and the developer gets the analysis', async () => {
+    const { h, labelsAtMove } = analystPipeline([analysed(), done(), approved()]);
+    await run(h);
+
+    assert.deepEqual(h.tracker.statusCalls, ['In progress', 'Agent review', 'In review']);
+    assert.deepEqual(labelsAtMove[0], ['type: bugfix', 'complexity: m'], 'the labels are set right before the status change');
+    assert.deepEqual(issue(h).labels, ['type: bugfix', 'complexity: m']);
+    assert.deepEqual(h.runner.sessions.map((session) => session.params.tools.map((tool) => tool.name)), [['report_result'], ['report_result'], ['report_result']]);
+    assert.deepEqual(prompts(h), [
+      'issue-analyst round 1',
+      'developer round 1 | analysis ready bugfix/M | criterion: The export lists every invoice | criterion: An empty list exports a header only',
+      'reviewer round 1 | analysis ready bugfix/M | criterion: The export lists every invoice | criterion: An empty list exports a header only',
+    ]);
+    assert.deepEqual((await results(h)).map((result) => [result.role, result.verdict, result.target]), [
+      ['issue-analyst', 'ready', 'In progress'],
+      ['developer', 'done', 'Agent review'],
+      ['reviewer', 'approved', 'In review'],
+    ]);
+    assert.deepEqual(data(h.reports[0]).labels, { added: ['Type: bugfix', 'Complexity: M'], removed: [] });
+  });
+
+  it('needs_info: the issue moves to Blocked and the open questions are in the comment', async () => {
+    const { h } = analystPipeline([
+      analysed({ verdict: 'needs_info', summary: 'The format is not specified.', open_questions: ['Which CSV dialect?', 'Do archived invoices count?'] }),
+    ]);
+    await run(h);
+
+    assert.deepEqual(h.tracker.statusCalls, ['Blocked']);
+    assert.equal(h.runner.sessions.length, 1, 'no developer session');
+    const comment = h.tracker.comments.get(ISSUE)?.at(-1)?.body ?? '';
+    assert.match(comment, /Open questions/);
+    assert.match(comment, /Which CSV dialect\?/);
+    assert.match(comment, /Do archived invoices count\?/);
+    assert.deepEqual((await results(h)).map((result) => [result.verdict, result.target]), [['needs_info', 'Blocked']]);
+    assert.deepEqual(issue(h).labels, [], 'no type and complexity were reported');
+  });
+
+  it('needs_info without an open question is refused and nothing is recorded', async () => {
+    const { h } = analystPipeline([analysed({ verdict: 'needs_info', summary: 'Unclear.' })]);
+    await run(h);
+
+    assert.match(denial(h.reports[0])?.message ?? '', /open_questions/);
+    assert.deepEqual(await results(h), []);
+    assert.equal(h.reports.length, 1);
+  });
+
+  it('keeps a human Type: label (and an alias such as bug), and fills in only what is missing', async () => {
+    const { h } = analystPipeline([analysed({ ...ANALYSIS, type: 'feature' }), done(), approved()], ['Type: refactor']);
+    await run(h);
+    assert.deepEqual(issue(h).labels, ['Type: refactor', 'complexity: m'], 'the human type stays, the missing complexity is added');
+    assert.deepEqual(data(h.reports[0]).labels, { added: ['Complexity: M'], removed: [] });
+
+    const aliased = analystPipeline([analysed({ ...ANALYSIS, type: 'refactor', complexity: 'XL' })], ['bug', 'Complexity: S']);
+    await run(aliased.h);
+    assert.deepEqual(issue(aliased.h).labels, ['bug', 'Complexity: S'], 'an alias and a human complexity win over the analysis');
+    assert.equal(data(aliased.h.reports[0]).labels, undefined);
+    assert.deepEqual(aliased.h.tracker.statusCalls[0], 'In progress');
+  });
+
+  it('maps the aliases of a reported type onto the Type: values', async () => {
+    const { h } = analystPipeline([analysed({ ...ANALYSIS, type: 'Enhancement', complexity: 'L' })]);
+    await run(h);
+    assert.deepEqual(issue(h).labels, ['type: feature', 'complexity: l']);
+  });
+
+  it('adds no Type: label for a type the labels do not know', async () => {
+    const { h } = analystPipeline([analysed({ ...ANALYSIS, type: 'docs', complexity: 'S' })]);
+    await run(h);
+    assert.deepEqual(issue(h).labels, ['complexity: s']);
   });
 });

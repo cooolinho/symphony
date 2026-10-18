@@ -106,8 +106,8 @@ pro Issue wählen.
 ```
 Backlog ─▶ Ready ─▶ In progress ─[Checks]─▶ Agent review ─[Checks]─▶ In review ─▶ Done
    │         │            │            ▲          │                     │          │
-ignoriert  Developer   Developer       └─ Ände-  Reviewer           wartet auf  Workspace
-           startet     arbeitet          rungen  prüft (nur          dich        gelöscht
+ignoriert  Analyst     Developer       └─ Ände-  Reviewer           wartet auf  Workspace
+           dann Dev    arbeitet          rungen  prüft (nur          dich        gelöscht
                                          nötig   lesend)
                    Blocked: ein Agent braucht dich (Checks kaputt, Fragen offen)
 ```
@@ -179,7 +179,9 @@ Englisch.
 
 ## 📋 Usage
 
-Du schiebst ein Issue nach `Ready`. Ein Developer-Agent setzt es um und öffnet einen Pull Request. Nach bestandenen
+Du schiebst ein Issue nach `Ready`. Ein lesender Analyst-Agent arbeitet Anforderungen, Risiken und geschärfte
+Akzeptanzkriterien heraus und setzt `Type:`- und `Complexity:`-Labels, wo das Issue keine hat (oder stellt dir eine
+Frage in `Blocked`). Danach setzt ein Developer-Agent es um und öffnet einen Pull Request. Nach bestandenen
 Checks prüft ein lesender Reviewer-Agent die Arbeit, danach landet die Karte in `In review`. Du mergst den Pull Request
 und schiebst die Karte nach `Done`. Mit Labels wie `Model: sonnet` und `Effort: high` wählst du Modell und Effort pro
 Issue; das Dashboard (`SYMPHONY_PORT`) zeigt, was läuft, was als Nächstes startet und warum ein Issue wartet, dazu

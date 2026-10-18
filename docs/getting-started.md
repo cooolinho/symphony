@@ -36,7 +36,7 @@ npm install
    | `In progress` | Developer, Reviewer (changes needed), Test engineer (tests failed) | Developer works |
    | `Testing` | Developer, after passing checks (optional stage) | starts the **Test engineer**, who writes independent tests and may only change test files |
    | `Agent review` | Developer, or Test engineer when the tests pass | starts the **Reviewer** (at most one at a time) |
-   | `Blocked` | Developer or Reviewer | stops the agent, workspace is kept; your turn |
+   | `Blocked` | Issue analyst (open questions), Developer or Reviewer | stops the agent, workspace is kept; your turn |
    | `In review` | only the Reviewer, after passing checks | stops the agent, workspace is kept; your review |
    | `Done` | only you | stops the agent and deletes the workspace |
 

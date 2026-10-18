@@ -2,6 +2,7 @@ import type { AgentToolContext, AgentToolSpec, AllowedTransition, Issue, StatusC
 import { SerialQueue } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { tail, truncate } from '../util/text.ts';
+import { classify, isComplexityLabel, isTypeLabel, type IssueComplexity, type IssueType } from '../workflow/classify.ts';
 import { normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
 import { RESULT_VERDICTS, SUMMARY_MAX, parseResult, renderResultComment, toolInputShape, type ResultMeta, type StageResult } from '../workflow/results.ts';
 import type { RoleConfig } from '../workflow/roles.ts';
@@ -138,6 +139,32 @@ export async function applyTransitionLabels(
     }
   }
   return changed;
+}
+
+/** Type names an analysis may report besides the canonical ones: the aliases of `classify`. */
+const TYPE_ALIASES: Readonly<Record<string, IssueType>> = {
+  bug: 'bugfix',
+  bugfix: 'bugfix',
+  enhancement: 'feature',
+  feature: 'feature',
+  refactor: 'refactor',
+  refactoring: 'refactor',
+};
+
+/**
+ * The `Type:` and `Complexity:` labels an analysis result adds: only for a family the issue has no label of (a human's
+ * label, or an alias such as `bug` or `feature`, always wins), and only for values the families know. A reported type
+ * that maps to no `Type:` value (docs, chore) adds nothing.
+ */
+export function classificationLabels(result: StageResult, labels: readonly string[]): string[] {
+  if (result.kind !== 'analysis') return [];
+  const known = classify(labels);
+  const added: string[] = [];
+  const type = result.type === undefined ? undefined : TYPE_ALIASES[result.type.trim().toLowerCase()];
+  if (type !== undefined && known.type === null && !labels.some(isTypeLabel)) added.push(`Type: ${type}`);
+  const complexity: IssueComplexity | undefined = result.complexity;
+  if (complexity !== undefined && known.complexity === null && !labels.some(isComplexityLabel)) added.push(`Complexity: ${complexity}`);
+  return added;
 }
 
 type Plan = { ok: true; result: StageResult; transition: Transition } | { ok: false; failure: ToolResult };
@@ -305,6 +332,9 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
 
     // The result is recorded from here on; the move and the labels follow it, and a repeated call changes nothing.
     params.onRecorded?.({ result, meta, url });
+    // An analysis classifies the issue before the stage hands it on, so the next stage (its profile, its model) sees the labels.
+    const warnings: string[] = [];
+    const classified = await applyTransitionLabels(adapter, issue, { add: classificationLabels(result, issue.labels), remove: [] }, warnings);
     let change: StatusChange;
     try {
       change = await adapter.setStatus(issue, transition.target);
@@ -320,8 +350,8 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       return recorded;
     }
     params.onMoved?.();
-    const warnings: string[] = [];
     const labels = await applyTransitionLabels(adapter, issue, transition.labels, warnings);
+    labels.added.unshift(...classified.added);
     recorded = ok({
       kind,
       verdict: result.verdict,

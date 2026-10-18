@@ -24,7 +24,10 @@ tracker:
       on_conflict: In progress               # a pull request that conflicts with base_branch goes back to the developer
       method: squash
   # Board columns: Backlog | Ready | In progress | Testing | Agent review | Blocked | In review | Done
-  #   Ready, In progress -> developer agent implements the issue
+  #   Ready              -> issue analyst (read-only) works out requirements, risks, refined acceptance criteria, type and
+  #                         complexity before anything is implemented; later stages get the analysis in their prompt
+  #                         (pipeline.analysis: when_unlabeled skips it for issues that already carry Type and Complexity labels)
+  #   In progress        -> developer agent implements the issue
   #   Testing            -> test engineer agent writes independent tests for the acceptance criteria; it may only change test
   #                         files (pipeline.test_paths). Optional: the developer hands over to Testing instead of Agent review
   #                         with SYMPHONY_AFTER_IMPLEMENTATION=Testing (docs/configuration.md#the-test-engineer). Keep the
@@ -65,7 +68,7 @@ hooks:
     git fetch --quiet --prune origin
 
 agent:
-  max_concurrent_agents: ${SYMPHONY_MAX_CONCURRENT_AGENTS:-2}
+  max_concurrent_agents: ${SYMPHONY_MAX_CONCURRENT_AGENTS:-3}
   max_turns: ${SYMPHONY_MAX_TURNS:-10}
   # Sessions after the first while the card stays active; then the issue is paused until it
   # changes on the board. Role switches (developer <-> reviewer) count too, so keep a limit; a stage that
@@ -78,8 +81,9 @@ agent:
   max_concurrent_agents_by_state:
     "Agent review": 1                        # one review at a time
   # Slots kept free for a role, so a developer and a reviewer can always run side by side. Other roles (/plan,
-  # /refactoring, the test engineer, ...) only get slots beyond these: with 2 slots in total they wait until the limit
-  # is raised. With the Testing stage on, allow 3 slots, or the test engineer never starts (the dashboard and log say so).
+  # /refactoring, the issue analyst, the test engineer, ...) only get slots beyond these: with 2 slots in total they wait
+  # until the limit is raised. The issue analyst serves every issue in Ready, so allow 3 slots, or no issue ever starts. With
+  # the Testing stage on as well, allow 4 (the dashboard and log say when a stage never starts).
   reserved_slots_by_role:
     developer: 1
     reviewer: 1
@@ -110,8 +114,22 @@ roles:
   # ones, and laravel-* subagents only exist in workspaces with a Laravel app.
   # developer and reviewer hand off with report_result (docs/results.md): the verdict decides the next column, not the
   # agent. The targets of on_result are allowed moves on their own; they are listed in may_move_to for the board preflight.
+  # The issue analyst runs before the developer, for every issue that enters Ready: a short read-only session that reports
+  # an `analysis` result. `ready` moves the issue on (to In progress); `needs_info` sends it to Blocked with the open
+  # questions in the comment. Symphony also sets the issue's Type: and Complexity: labels from the analysis where it has
+  # none (a label a human set always wins).
+  issue-analyst:
+    states: [Ready]
+    read_only: true
+    max_turns: 3
+    result: analysis
+    on_result: { ready: next, needs_info: Blocked }
+    may_move_to: [In progress, Blocked]
+    model_label: ignore                      # sonnet, whatever the issue's Model: label picks for the developer
+    agents: [laravel-architect]
+    claude: { model: sonnet }
   developer:
-    states: [Ready, In progress]
+    states: [In progress]
     result: implementation
     on_result:
       done: ${SYMPHONY_AFTER_IMPLEMENTATION:-Agent review}   # Agent review, or Testing to run the test engineer first
@@ -189,6 +207,9 @@ pipeline:
   max_review_rounds: 3
   # Test rounds (test failed -> developer fixes) before the issue goes to Blocked with needs-human.
   max_test_rounds: 2
+  # always: the issue analyst runs for every issue in Ready. when_unlabeled: it is skipped without a session for issues that
+  # already carry a Type: and a Complexity: label (they go straight to In progress).
+  analysis: always
   # Files the test engineer may change; defaults: tests/**, test/**, **/*.test.*, **/*Test.php
   # test_paths: [tests/**, test/**, "**/*.test.*", "**/*Test.php"]
 
@@ -222,7 +243,27 @@ server:
   allow_remote_control: ${SYMPHONY_ALLOW_REMOTE_CONTROL:-false}  # Retry/Resume now on a non-loopback bind
 ---
 {% capture branch %}{% if issue.branch_name %}{{ issue.branch_name }}{% else %}symphony/issue-{{ issue.native_ref.number }}{% endif %}{% endcapture %}{% assign base = issue.native_ref.base_branch %}{% capture agent_list %}{% for agent in agents %}
-- `{{ agent.name }}`: {{ agent.description }}{% endfor %}{% endcapture %}{% capture agent_intro %}Subagents you may start with the Agent tool (`subagent_type` is the name). They are optional: each one works in its own context and costs tokens, so use them where they pay off. You stay responsible for their results; check them before you rely on them.{{ agent_list }}{% endcapture %}
+- `{{ agent.name }}`: {{ agent.description }}{% endfor %}{% endcapture %}{% capture agent_intro %}Subagents you may start with the Agent tool (`subagent_type` is the name). They are optional: each one works in its own context and costs tokens, so use them where they pay off. You stay responsible for their results; check them before you rely on them.{{ agent_list }}{% endcapture %}{% capture analysis_block %}{% if results.analysis %}
+## Analysis of the issue analyst
+
+A read-only analyst examined the issue before the implementation{% if results.analysis.type or results.analysis.complexity %} (type: {{ results.analysis.type | default: "n/a" }}, complexity: {{ results.analysis.complexity | default: "n/a" }}){% endif %}. Use it as input, but check it against the code: where it contradicts the issue description, the issue wins and you say so.
+
+{{ results.analysis.summary }}
+{% if results.analysis.components.size > 0 %}
+Affected components:{% for item in results.analysis.components %}
+- `{{ item }}`{% endfor %}
+{% endif %}{% if results.analysis.acceptance_criteria.size > 0 %}
+Refined acceptance criteria:{% for item in results.analysis.acceptance_criteria %}
+- [ ] {{ item }}{% endfor %}
+{% endif %}{% if results.analysis.risks.size > 0 %}
+Risks: {{ results.analysis.risks | join: ", " }}.
+{% endif %}{% if results.analysis.docs_needed %}
+Documentation needs an update.
+{% endif %}{% if results.analysis.plan.size > 0 %}
+Plan:{% for item in results.analysis.plan %}
+{{ forloop.index }}. {{ item }}{% endfor %}
+{% endif %}
+{% endif %}{% endcapture %}
 You are working on GitHub issue **{{ issue.identifier }}**: {{ issue.title }}
 
 - Issue: {{ issue.url }}
@@ -249,7 +290,7 @@ The tracker tools are `get_issue`, `add_comment`, `open_pull_request` and `repor
 {{ agent_intro }}
 
 Good uses: an architect plan before a non-trivial feature, a self-contained part (a Filament resource, a migration with its model, the tests for an acceptance criterion) for the matching specialist, and a code review of your diff before you report the result.
-{% endif %}{% if results.open_findings.size > 0 %}
+{% endif %}{{ analysis_block }}{% if results.open_findings.size > 0 %}
 ## Open findings of the latest agent review
 
 Fix these first; the reviewer checks them again:
@@ -293,6 +334,37 @@ If you are blocked (unclear requirements, missing access, broken infrastructure)
 After a recorded result, end your turn.
 
 Write issue comments, the result and the pull request description in the language the issue is written in.
+{% when "issue-analyst" %}## Your role: issue analyst
+
+You analyse the issue before anything is implemented: what it asks for, which parts of the code it touches, what can go wrong, and which acceptance criteria prove it done. You are **read-only**: do not edit files, commit, push or open a pull request. Your output is one structured result: `report_result` posts it as the analysis comment, moves the issue and sets the issue's `Type:` and `Complexity:` labels where it has none. The developer and the other stages receive your analysis as input.
+The tracker tools are `get_issue`, `add_comment` and `report_result`. You do not change the status yourself: Symphony computes the next column from your verdict.
+{% if agents.size > 0 %}
+{{ agent_intro }}
+
+Use the architect to check the feasibility of a larger or riskier plan.
+{% endif %}
+The current directory is a clone of the issue's repository. Work only inside it.
+
+1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist).
+2. Call `get_issue` and read the comments and linked pull requests. If a human answered open questions of an earlier analysis in a comment, take the answers into account.
+3. Inspect the code the issue touches: find the affected modules, the existing conventions and tests, and what the change would break. Stay with what the issue needs; do not design beyond it.
+4. Refine the acceptance criteria: keep every criterion of the issue, make vague ones checkable, add the ones the issue implies but does not name.
+5. Report exactly one result with `report_result`. Do not post a separate analysis comment. Fields:
+   - `verdict`: `ready` (the issue is clear enough to implement) or `needs_info` (a human must answer something first; you cannot guess it safely).
+   - `summary`: the requirements and the approach in a few sentences.
+   - `type`: `bugfix`, `feature` or `refactor`. `complexity`: `S` (a few lines), `M` (one component), `L` (several components) or `XL` (cross-cutting or needs a design). Symphony sets the `Type:` and `Complexity:` labels from them only where the issue has none; a label a human set stays.
+   - `components`: the affected modules, directories or services. `acceptance_criteria`: the refined criteria.
+   - `risks`: `security`, `data_migration` and `breaking_change` as booleans. `docs_needed`: whether documentation must change. `plan`: the implementation steps in order.
+   - `open_questions`: for `needs_info`, every question a human must answer (at least one); they appear in the comment and the issue moves to "Blocked".
+6. Handle the answer:
+   - **Success** (the result says "Result recorded — end your turn now."): end your turn immediately. The next stage takes over in a new session.
+   - **`invalid_result`**: nothing was recorded; fix the fields named in the message and call `report_result` again.
+   - **`transition_error`, `tracker_error`, `comment_failed`, `status_failed`**: follow the instructions in the message.
+
+If you cannot analyse the issue at all (unclear requirements, missing access, broken infrastructure), report `needs_info` and say exactly what you need in `open_questions`. You never move an issue yourself.
+After a recorded result, end your turn.
+
+Write the result in the language the issue is written in.
 {% when "test-engineer" %}## Your role: test engineer
 
 You write and run independent tests for the acceptance criteria of this issue. You did not write the implementation and you do not trust it: derive the tests from the issue, not from the code. If your tests fail, the developer is sent back to fix the production code; a read-only reviewer reviews the change after you.
@@ -302,7 +374,7 @@ The tracker tools are `get_issue`, `add_comment` and `report_result`. You hand o
 {{ agent_intro }}
 
 Good use: the test engineer subagent for a self-contained group of tests. You stay responsible for them: run and read them before you report.
-{% endif %}{% if results.failed_cases.size > 0 %}
+{% endif %}{{ analysis_block }}{% if results.failed_cases.size > 0 %}
 ## Failed cases of your previous test run
 
 The developer was asked to fix the production code for these. Run them again first, and report any that still fails as `failed` again:
@@ -341,7 +413,7 @@ The tracker tools are `get_issue`, `add_comment` and `report_result`. You do not
 {{ agent_intro }}
 
 Use a reviewer subagent only for a second pass over a large diff. Its findings go into your result only after you checked them against the code.
-{% endif %}{% if results.open_findings.size > 0 %}
+{% endif %}{{ analysis_block }}{% if results.open_findings.size > 0 %}
 ## Findings of your previous review
 
 The developer was asked to fix these. Check each one against the code, and report any that is still open again:

@@ -114,7 +114,8 @@ export function blockedBucketColumns(
 /**
  * The normalized active columns that issues are led to: the targets of every role's `on_result`, `on_check_failed`,
  * `on_missing_result` and `on_round_limit` (and of the profile's `on_result` overrides), and, for a role that uses
- * `next`, every active column after its own. A role that hands off with `set_status` instead of a result (and the
+ * `next`, the active columns after its own up to the first one whose role the profile does not skip (`skip`: where
+ * `next` really leads, `nextStage` in `transitions.ts`; no stage of the shipped pipeline is conditional). A role that hands off with `set_status` instead of a result (and the
  * implicit default role of a column no role serves) moves the issue wherever it likes: its `may_move_to` columns, or
  * any active column when it has no such list. `activeColumns` is in board order; `description` picks the role of a
  * column like the dispatcher does (an issue command). Conservative: a column counted here may still never be entered,
@@ -125,6 +126,7 @@ function routedColumns(
   activeColumns: readonly string[],
   description: string | null,
   profile: PipelineInput['profile'],
+  skip: readonly string[],
 ): Set<string> {
   const routed = new Set<string>();
   for (const role of roles) {
@@ -135,7 +137,10 @@ function routedColumns(
     if (![...Object.values(role.onResult), ...overrides].includes(NEXT_STAGE)) continue;
     const last = activeColumns.findLastIndex((column) => role.states.includes(normalizeStateName(column)));
     if (last === -1) continue;
-    for (const column of activeColumns.slice(last + 1)) routed.add(normalizeStateName(column));
+    for (const column of activeColumns.slice(last + 1)) {
+      routed.add(normalizeStateName(column));
+      if (!skip.includes(roleName(roleFor({ state: column, description }, roles)))) break;
+    }
   }
   for (const column of activeColumns) {
     const role = roleFor({ state: column, description }, roles);
@@ -184,7 +189,7 @@ export function derivePipeline(input: PipelineInput): PipelineStage[] {
   // Agent stages: one per run of consecutive active columns served by the same role.
   const agents: PipelineStage[] = [];
   const activeColumns = sortByBoard(activeStates, index).filter((column) => !terminal.has(normalizeStateName(column)));
-  const routed = roles === null ? new Set<string>() : routedColumns(roles, activeColumns, issue.description, profile);
+  const routed = roles === null ? new Set<string>() : routedColumns(roles, activeColumns, issue.description, profile, skip);
   const entry = new Set(roleFor({ state: activeColumns[0] ?? '', description: issue.description }, roles ?? null)?.states ?? []);
   for (const column of activeColumns) {
     const key = normalizeStateName(column);

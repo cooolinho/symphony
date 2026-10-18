@@ -35,6 +35,9 @@ const issue = makeIssue({
   },
 });
 
+/** The role of an ordinary issue (no command): the issue analyst looks at it in Ready, the developer implements it. */
+const serving = (state: string): string => (state === 'Ready' ? 'issue-analyst' : 'developer');
+
 /** Symphony's own plugin: the skills behind the issue commands. */
 const toolbox = path.join(import.meta.dirname, '..', '.claude');
 
@@ -92,7 +95,7 @@ describe('shipped WORKFLOW.md', () => {
       env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' },
       trackerDefaults,
     });
-    assert.equal(roleName(roleFor({ state: 'Ready', description: null }, config.roles)), 'developer');
+    assert.equal(roleName(roleFor({ state: 'Ready', description: null }, config.roles)), 'issue-analyst');
     assert.equal(roleName(roleFor({ state: 'In progress', description: null }, config.roles)), 'developer');
     assert.equal(roleName(roleFor({ state: 'Agent review', description: null }, config.roles)), 'reviewer');
     assert.equal(config.agent.maxContinuations, 6);
@@ -142,6 +145,87 @@ describe('shipped WORKFLOW.md', () => {
     assert.equal(developer(on)?.onResult.done, 'Testing');
     assert.ok(developer(on)?.mayMoveTo?.includes('Testing'));
     assert.equal(developer(resolveWith({ SYMPHONY_AFTER_IMPLEMENTATION: '' }))?.onResult.done, 'Agent review');
+  });
+
+  it('adds the issue analyst before the developer: read-only, an analysis result, sonnet whatever the Model: label says', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const config = resolveConfig(definition.config, {
+      workflowPath: shipped,
+      env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' },
+      trackerDefaults,
+    });
+    const analyst = config.roles?.find((role) => role.name === 'issue-analyst');
+    assert.deepEqual(analyst?.states, ['ready']);
+    assert.deepEqual(
+      [analyst?.readOnly, analyst?.result, analyst?.onResult, analyst?.maxTurns, analyst?.modelLabel, analyst?.claude.model, analyst?.agents, analyst?.commands],
+      [true, 'analysis', { ready: 'next', needs_info: 'Blocked' }, 3, 'ignore', 'sonnet', ['laravel-architect'], null],
+    );
+    assert.deepEqual(analyst?.mayMoveTo, ['In progress', 'Blocked']);
+    // The developer serves only In progress, so a Ready issue never reaches it without the analysis.
+    assert.deepEqual(config.roles?.find((role) => role.name === 'developer')?.states, ['in progress']);
+    assert.equal(roleName(roleFor({ state: 'Ready', description: 'Add invoices' }, config.roles)), 'issue-analyst');
+    assert.equal(config.pipeline.analysis, 'always');
+    // A slot beyond the developer's and the reviewer's, or no issue in Ready would ever start.
+    assert.ok(config.agent.maxConcurrentAgents >= 3);
+  });
+
+  it('renders the read-only issue analyst prompt: what to analyse, the result fields and how to handle each answer', async () => {
+    const prompt = await render('issue-analyst', 2, undefined, 'develop', [{ name: 'laravel-architect', description: 'Plans features' }]);
+    assert.match(prompt, /Your role: issue analyst/);
+    assert.match(prompt, /\*\*read-only\*\*/);
+    assert.match(prompt, /`get_issue`, `add_comment` and `report_result`/);
+    assert.match(prompt, /Read the project's instructions first/);
+    assert.match(prompt, /Inspect the code/);
+    assert.match(prompt, /Refine the acceptance criteria/);
+    for (const field of ['`type`', '`complexity`', '`components`', '`acceptance_criteria`', '`risks`', '`docs_needed`', '`plan`', '`open_questions`']) {
+      assert.ok(prompt.includes(field), `the prompt names ${field}`);
+    }
+    assert.match(prompt, /`ready`.*`needs_info`/);
+    assert.match(prompt, /`open_questions`: for `needs_info`.*at least one.*"Blocked"/);
+    assert.match(prompt, /only where the issue has none; a label a human set stays/);
+    assert.match(prompt, /`invalid_result`.*call `report_result` again/);
+    assert.match(prompt, /`laravel-architect`: Plans features/);
+    assert.match(prompt, /Attempt 2/);
+    assert.doesNotMatch(prompt, /set_status/);
+    assert.doesNotMatch(prompt, /open_pull_request/);
+    assert.doesNotMatch(prompt, /Your role: developer/);
+    assert.doesNotMatch(prompt, /Analysis of the issue analyst/);
+  });
+
+  it('gives the developer, the test engineer and the reviewer the analysis of the issue analyst', async () => {
+    const results = {
+      latest: [],
+      open_findings: [],
+      failed_cases: [],
+      test: null,
+      analysis: {
+        verdict: 'ready',
+        summary: 'One component, no schema change.',
+        type: 'feature',
+        complexity: 'M',
+        components: ['app/Filament/InvoiceResource.php'],
+        acceptance_criteria: ['The export lists every invoice', 'An empty list exports a header only'],
+        risks: ['breaking change'],
+        docs_needed: true,
+        open_questions: [],
+        plan: ['Add the exporter', 'Test it'],
+      },
+    };
+    for (const role of ['developer', 'test-engineer', 'reviewer']) {
+      const prompt = await render(role, null, undefined, null, [], { result_required: true, round: 1, results });
+      assert.match(prompt, /## Analysis of the issue analyst/, role);
+      assert.match(prompt, /\(type: feature, complexity: M\)/, role);
+      assert.match(prompt, /One component, no schema change\./, role);
+      assert.match(prompt, /- `app\/Filament\/InvoiceResource\.php`/, role);
+      assert.match(prompt, /- \[ \] The export lists every invoice\n- \[ \] An empty list exports a header only/, role);
+      assert.match(prompt, /Risks: breaking change\./, role);
+      assert.match(prompt, /Documentation needs an update\./, role);
+      assert.match(prompt, /1\. Add the exporter\n2\. Test it/, role);
+    }
+    // Nothing is rendered without an analysis (the skipped stage, an old issue).
+    for (const role of ['developer', 'test-engineer', 'reviewer']) {
+      assert.doesNotMatch(await render(role), /Analysis of the issue analyst/, role);
+    }
   });
 
   it('renders the test engineer prompt: its paths, the test round, the result fields and how to handle each answer', async () => {
@@ -339,8 +423,8 @@ describe('shipped WORKFLOW.md issue commands', () => {
     for (const state of ['Ready', 'In progress']) {
       assert.equal(roleName(roleOf(state, '/refactoring')), 'auditor');
       assert.equal(roleName(roleOf(state, '/refactoring app/Filament')), 'auditor');
-      assert.equal(roleName(roleOf(state, '/refactor-safely\n\nBlocked by #3')), 'developer');
-      assert.equal(roleName(roleOf(state, 'Add a /refactoring page')), 'developer');
+      assert.equal(roleName(roleOf(state, '/refactor-safely\n\nBlocked by #3')), serving(state));
+      assert.equal(roleName(roleOf(state, 'Add a /refactoring page')), serving(state));
     }
     assert.equal(roleName(roleOf('Agent review', '/refactoring')), 'reviewer');
 
@@ -415,7 +499,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
     const roleOf = (state: string, description: string | null) => roleFor({ state, description }, config.roles);
     for (const state of ['Ready', 'In progress']) {
       assert.equal(roleName(roleOf(state, '/concept docs/index.md')), 'analyst');
-      assert.equal(roleName(roleOf(state, 'Write a /concept page')), 'developer');
+      assert.equal(roleName(roleOf(state, 'Write a /concept page')), serving(state));
     }
     assert.equal(roleName(roleOf('Agent review', '/concept docs/index.md')), 'reviewer');
     const analyst = roleOf('Ready', '/concept docs/index.md');
@@ -452,7 +536,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
     for (const state of ['Ready', 'In progress']) {
       assert.equal(roleName(roleOf(state, '/plan docs/todo.md')), 'planner');
       assert.equal(roleName(roleOf(state, '/plan\n- Export invoices as CSV\n- Dark mode')), 'planner');
-      assert.equal(roleName(roleOf(state, 'Write a /plan page')), 'developer');
+      assert.equal(roleName(roleOf(state, 'Write a /plan page')), serving(state));
     }
     assert.equal(roleName(roleOf('Agent review', '/plan docs/todo.md')), 'reviewer');
     const planner = roleOf('Ready', '/plan');
@@ -553,6 +637,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
     const agents = new Map(pluginAgents([toolbox]).map((agent) => [agent.name, agent]));
     const byRole = Object.fromEntries((config.roles ?? []).map((role) => [role.name, role.agents]));
     assert.deepEqual(byRole, {
+      'issue-analyst': ['laravel-architect'],
       developer: ['laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer'],
       'test-engineer': ['laravel-test-engineer'],
       reviewer: ['laravel-code-reviewer'],
