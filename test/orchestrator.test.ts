@@ -3635,6 +3635,29 @@ describe('reserved slots by role', () => {
     await s.orchestrator.shutdown(1_000);
   });
 
+  it('reports a role that results lead to but no slot reaches, and logs it once', async () => {
+    const lines: string[] = [];
+    const logger = Logger.create({ sinks: [{ name: 'memory', write: (line) => lines.push(line) }], level: 'debug' });
+    const base = front({ max_concurrent_agents: 2 });
+    const withTesting = {
+      ...base,
+      tracker: { ...base.tracker, active_states: ['Ready', 'In progress', 'Testing', 'Agent review'] },
+      roles: {
+        ...base.roles,
+        developer: { states: ['Ready', 'In progress'], result: 'implementation', on_result: { done: 'Testing', blocked: 'Blocked' }, may_move_to: ['Testing', 'Blocked'] },
+        'test-engineer': { states: ['Testing'], result: 'test', on_result: { passed: 'Agent review', failed: 'In progress', blocked: 'Blocked' }, may_move_to: ['Agent review', 'In progress', 'Blocked'] },
+      },
+    };
+    const s = setup({ runner: hanging(), front: withTesting, issues: ready(1), logger });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).running.length === 1, 3_000, 'one developer');
+    await s.orchestrator.tickNow();
+    const problem = 'role test-engineer never starts in Testing: the reservations of the other roles (developer 1 + reviewer 1 = 2) take every one of the 2 agent slots; raise the limit or reserve a slot for test-engineer';
+    assert.deepEqual(snapshot(s).limits.slot_problems, [problem]);
+    assert.equal(lines.filter((line) => line.includes(problem)).length, 1, 'logged once');
+    await s.orchestrator.shutdown(1_000);
+  });
+
   it('ignores reservations above the limit, logs the problem and reports it under limits', async () => {
     const lines: string[] = [];
     const logger = Logger.create({ sinks: [{ name: 'memory', write: (line) => lines.push(line) }], level: 'debug' });

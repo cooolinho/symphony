@@ -108,6 +108,12 @@ export interface AgentToolSpec {
    * the substitution in `context.transition.checkFailed`.
    */
   checkFailedTarget?(args: Record<string, unknown>): string | null;
+  /**
+   * For tools with `transitionTarget`: a refusal that must come before the entry check of the target column, so the agent
+   * does not wait for a check that cannot lead to a recorded result. Runs for a call with a target, after the input was
+   * accepted; a non-null result goes back to the agent as it is, and neither the guard nor `execute` run.
+   */
+  precheck?(args: Record<string, unknown>, context: AgentToolContext): Promise<ToolResult | null>;
   execute(args: Record<string, unknown>, context: AgentToolContext): Promise<ToolResult>;
 }
 

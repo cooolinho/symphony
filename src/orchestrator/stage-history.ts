@@ -77,6 +77,15 @@ export function buildStageHistory(persisted: readonly PersistedResult[]): StageH
   };
 }
 
+/**
+ * The commit the newest finished implementation (`done`) was handed over at; null when none recorded one. The test
+ * engineer's path rule measures from it: what lies before it is the developer's work.
+ */
+export function implementationHead(history: Pick<StageHistory, 'results'>): string | null {
+  const entry = history.results.findLast(({ result, meta }) => result.kind === 'implementation' && result.verdict === 'done' && meta.head_sha !== null);
+  return entry?.meta.head_sha ?? null;
+}
+
 /** Upper bound for a summary in the prompt's `results.latest`; the full text stays in the issue comment. */
 export const PROMPT_SUMMARY_LIMIT = 1500;
 
@@ -96,22 +105,28 @@ export interface ResultsTemplateValue {
   open_findings: Array<{ severity: string; file: string | null; line: number | null; problem: string; fix: string | null }>;
   /** Failed cases of the newest test when it failed; empty otherwise. */
   failed_cases: Array<{ criterion: string; test: string }>;
+  /**
+   * The newest test since the last reset, whatever its verdict; null without one. Its summary says why the failed cases
+   * failed, its commands how to run the tests again.
+   */
+  test: { verdict: string; summary: string; round: number | null; commands: string[] } | null;
 }
 
 /** The newest result of a kind since the last `reset`. */
-function newest(history: StageHistory, kind: string): StageResult | undefined {
+function newest(history: StageHistory, kind: string): PersistedResult | undefined {
   for (let i = history.results.length - 1; i >= 0; i--) {
-    const { result } = history.results[i] as PersistedResult;
-    if (result.kind === 'reset') return undefined;
-    if (result.kind === kind) return result;
+    const entry = history.results[i] as PersistedResult;
+    if (entry.result.kind === 'reset') return undefined;
+    if (entry.result.kind === kind) return entry;
   }
   return undefined;
 }
 
 /** The prompt view of a stage history (the `results` variable). */
 export function resultsTemplateValue(history: StageHistory): ResultsTemplateValue {
-  const review = newest(history, 'review');
-  const test = newest(history, 'test');
+  const review = newest(history, 'review')?.result;
+  const testEntry = newest(history, 'test');
+  const test = testEntry?.result;
   return {
     latest: [...history.latestByRole.values()]
       .filter(({ result }) => result.kind !== 'reset')
@@ -138,6 +153,10 @@ export function resultsTemplateValue(history: StageHistory): ResultsTemplateValu
       test?.kind === 'test' && test.verdict === 'failed'
         ? test.cases.filter((c) => c.status === 'failed').map((c) => ({ criterion: c.criterion, test: c.test }))
         : [],
+    test:
+      test?.kind === 'test'
+        ? { verdict: test.verdict, summary: truncate(test.summary, PROMPT_SUMMARY_LIMIT), round: testEntry?.meta.round ?? null, commands: test.commands }
+        : null,
   };
 }
 

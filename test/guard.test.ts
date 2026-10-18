@@ -352,6 +352,43 @@ describe('guardTools', () => {
   });
 });
 
+describe('guardTools: precheck', () => {
+  const issue = makeIssue({ id: '1' });
+
+  it('stops a refused call before the guard and the tool, and lets the others through', async () => {
+    const order: string[] = [];
+    const [tool] = guardTools(
+      [
+        {
+          name: 'report_result',
+          description: '',
+          inputSchema: {},
+          mutates: true,
+          transitionTarget: (args) => (typeof args.target === 'string' ? args.target : null),
+          precheck: async (args) => {
+            order.push(`precheck ${String(args.target)}`);
+            return args.refuse === true ? { ok: false, error: { category: 'invalid_result', message: 'not yours' } } : null;
+          },
+          execute: async () => {
+            order.push('execute');
+            return { ok: true, data: 1 };
+          },
+        },
+      ],
+      async (target) => {
+        order.push(`guard ${target}`);
+        return { allow: true, note: null };
+      },
+    );
+    assert.deepEqual(await tool?.execute({ target: 'Gated', refuse: true }, { issue }), { ok: false, error: { category: 'invalid_result', message: 'not yours' } });
+    assert.deepEqual(order, ['precheck Gated'], 'no entry check ran');
+    assert.deepEqual(await tool?.execute({ target: 'Gated' }, { issue }), { ok: true, data: 1 });
+    assert.deepEqual(order.slice(1), ['precheck Gated', 'guard Gated', 'execute']);
+    await tool?.execute({ refuse: true }, { issue });
+    assert.deepEqual(order.slice(4), ['execute'], 'a call without a target skips the precheck');
+  });
+});
+
 describe('toolsForRole', () => {
   const tool = (name: string, createsSubIssues?: boolean): AgentToolSpec => ({
     name,

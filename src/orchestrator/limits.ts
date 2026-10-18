@@ -1,5 +1,5 @@
 import { normalizeStateName, type AgentConfig, type ServiceConfig, type TrackerConfig } from '../workflow/config.ts';
-import type { RoleConfig } from '../workflow/roles.ts';
+import { resultTargets, type RoleConfig } from '../workflow/roles.ts';
 import { isActiveState } from './eligibility.ts';
 
 /** Highest agent slot count (total and per column) the dashboard accepts. */
@@ -102,6 +102,37 @@ export function heldForOtherRoles(
   return { slots, roles };
 }
 
+/**
+ * Roles that results lead issues to (the `on_result`, `on_check_failed`, `on_missing_result` and `on_round_limit` targets
+ * of any role) but that never start a session: the reservations of the other roles keep every slot free, so an issue
+ * waits in the column forever. That is the optional test engineer with the shipped 2 slots, reserved for the developer and
+ * the reviewer. One line per role. None while the reservations are ignored (`reservationProblem`) and at a limit of 0,
+ * which pauses new dispatches anyway.
+ */
+export function slotProblems(config: Pick<ServiceConfig, 'roles' | 'tracker'>, limits: AgentLimits): string[] {
+  const { roles } = config;
+  const total = limits.maxConcurrentAgents;
+  if (roles === null || total === 0 || reservationProblem(limits) !== null) return [];
+  const columns = activeColumns(config.tracker);
+  const problems: string[] = [];
+  const reported = new Set<string>();
+  for (const target of new Set(roles.flatMap((role) => resultTargets(role)))) {
+    const key = normalizeStateName(target);
+    const role = roles.find((candidate) => candidate.commands === null && candidate.states.includes(key));
+    const column = columns.get(key);
+    if (role === undefined || column === undefined || reported.has(role.name)) continue;
+    const held = heldForOtherRoles(role.name, limits.reservedSlotsByRole, new Map());
+    if (held.slots < total) continue;
+    reported.add(role.name);
+    const others = new Map([...limits.reservedSlotsByRole].filter(([name]) => name !== role.name && held.roles.includes(name)));
+    problems.push(
+      `role ${role.name} never starts in ${column}: the reservations of the other roles (${reservedText(others)}) take every one of the ${slotWord(total)}; ` +
+        `raise the limit or reserve a slot for ${role.name}`,
+    );
+  }
+  return problems;
+}
+
 /** The active columns by normalized name, spelled as in `WORKFLOW.md`. */
 function activeColumns(tracker: Pick<TrackerConfig, 'activeStates' | 'terminalStates'>): Map<string, string> {
   const columns = new Map<string, string>();
@@ -121,7 +152,7 @@ interface LimitValue {
  * The `limits` key of the snapshot: total and per active column, each with the effective value, the `WORKFLOW.md`
  * value and the dashboard override. A column without a limit of its own has `effective: null` (only the total applies).
  * `reserved_slots_by_role` lists every configured role with its running sessions (`running`, by role name);
- * `reservation_problem` says why the reservations are ignored.
+ * `reservation_problem` says why the reservations are ignored; `slot_problems` names the roles that never get a slot.
  */
 export function limitsJson(config: ServiceConfig, override: AgentLimitOverride, running: ReadonlyMap<string, number> = new Map()) {
   const effective = effectiveAgentLimits(config, override);
@@ -151,6 +182,7 @@ export function limitsJson(config: ServiceConfig, override: AgentLimitOverride, 
     by_state: byState,
     reserved_slots_by_role: reserved,
     reservation_problem: reservationProblem(effective),
+    slot_problems: slotProblems(config, effective),
     override_active: hasLimitOverride(override),
     max: MAX_SLOTS,
   };

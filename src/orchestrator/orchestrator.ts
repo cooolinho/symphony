@@ -20,6 +20,7 @@ import { truncate } from '../util/text.ts';
 import { describeHolder, type LockResult } from '../workspace/lock.ts';
 import { WorkspaceManager, type HookIssue, type Workspace } from '../workspace/manager.ts';
 import type { ServiceConfig } from '../workflow/config.ts';
+import { profileFor } from '../workflow/profile.ts';
 import { roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
 import { internalResult, renderResultComment, type ResultMeta } from '../workflow/results.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../workflow/store.ts';
@@ -53,6 +54,7 @@ import {
   NO_LIMIT_OVERRIDE,
   reservationProblem,
   sameLimitOverride,
+  slotProblems,
   withAgentLimits,
   type AgentLimitOverride,
 } from './limits.ts';
@@ -633,6 +635,7 @@ export class Orchestrator {
   #loggedGate: DispatchGate | null = null;
   /** Why the reservations were ignored at the last tick, to log it once. */
   #loggedReservationProblem: string | null = null;
+  #loggedSlotProblems = '';
   /** Models on hold after a model-scoped usage limit, by family; persisted in the runtime state file. */
   #modelHolds = new Map<string, ModelHold>();
   /** Models the operator paused, by family; no end of their own, persisted in the runtime state file. */
@@ -1355,11 +1358,19 @@ export class Orchestrator {
   }
 
   #logReservationProblem(config: ServiceConfig): void {
-    const problem = reservationProblem(effectiveAgentLimits(config, this.#limitOverride));
-    if (problem === this.#loggedReservationProblem) return;
-    if (problem !== null) this.#logger.warn(problem);
-    else this.#logger.info('reserved slots apply again');
-    this.#loggedReservationProblem = problem;
+    const limits = effectiveAgentLimits(config, this.#limitOverride);
+    const problem = reservationProblem(limits);
+    if (problem !== this.#loggedReservationProblem) {
+      if (problem !== null) this.#logger.warn(problem);
+      else this.#logger.info('reserved slots apply again');
+      this.#loggedReservationProblem = problem;
+    }
+    const starved = slotProblems(config, limits);
+    const key = starved.join('\n');
+    if (key === this.#loggedSlotProblems) return;
+    for (const line of starved) this.#logger.warn(line);
+    if (starved.length === 0) this.#logger.info('every role that results lead to gets a slot again');
+    this.#loggedSlotProblems = key;
   }
 
   /** Running sessions that hold a slot: all but the forced ones, which run in an extra slot each. */
@@ -3301,6 +3312,7 @@ export class Orchestrator {
       boardColumns: this.#statusOptionsCache?.version === workflow.version ? this.#statusOptionsCache.options : null,
       sessions,
       skip: (config.roles ?? []).filter((role) => skipReason({ labels: issue.labels ?? [] }, role, config) !== null).map((role) => role.name),
+      profile: profileFor(config.pipeline, classify(issue.labels ?? []).type),
       results: this.#records.get(issueId)?.results ?? [],
     });
   }

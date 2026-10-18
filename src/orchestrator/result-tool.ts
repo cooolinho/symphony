@@ -5,6 +5,7 @@ import { tail, truncate } from '../util/text.ts';
 import { normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
 import { RESULT_VERDICTS, SUMMARY_MAX, parseResult, renderResultComment, toolInputShape, type ResultMeta, type StageResult } from '../workflow/results.ts';
 import type { RoleConfig } from '../workflow/roles.ts';
+import { filesOutside } from './changed-files.ts';
 import type { PersistedResult, StageHistory } from './stage-history.ts';
 import { resolveTransition, type StageConditions, type Transition, type TransitionProfile } from './transitions.ts';
 
@@ -39,6 +40,24 @@ export interface ResultMetaSource {
   now?: () => Date;
 }
 
+/**
+ * A role whose result may only come with changes to some paths (the test engineer: `pipeline.test_paths`). The rule is
+ * checked when the agent reports, before the entry check of the target column; a file outside `allowed` refuses the
+ * result with `invalid_result` and nothing is recorded.
+ */
+export interface PathRule {
+  /** Path globs (see `src/workflow/glob.ts`) the role may change. */
+  allowed: readonly string[];
+  /**
+   * The commit the role's changes are measured from (`base`) and the repository-relative files that differ from it,
+   * looked up when the agent reports; throws when that cannot be told.
+   */
+  changedFiles: () => Promise<{ base: string; files: string[] }>;
+}
+
+/** Offending files named in a refusal; more are counted. */
+const OFFENDING_FILES_SHOWN = 25;
+
 export interface ResultToolParams {
   /** The session's role; its `result` is the kind the tool reports. */
   role: RoleConfig;
@@ -55,6 +74,8 @@ export interface ResultToolParams {
   /** The run recorded in the meta; null when unknown. */
   runId: string | null;
   meta: ResultMetaSource;
+  /** For a role that may only change some paths: checked before a result is accepted; null = no restriction. */
+  pathRule?: PathRule | null;
   /** Called once, when the result comment is posted (the result is recorded from then on), with the result as persisted. */
   onRecorded?: (entry: PersistedResult) => void;
   /** Called once, after the recorded result moved the issue (not when the move failed). */
@@ -165,6 +186,40 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       };
     }
     return { ok: true, result: parsed.result, transition };
+  };
+
+  /** The refusal for a result that comes with changes outside the role's paths; null when the rule holds or does not apply. */
+  const pathViolation = async (): Promise<ToolResult | null> => {
+    const rule = params.pathRule;
+    if (rule === undefined || rule === null) return null;
+    let outside: string[];
+    let base: string;
+    try {
+      const changed = await rule.changedFiles();
+      base = changed.base;
+      outside = filesOutside(changed.files, rule.allowed);
+    } catch (error) {
+      return fail(
+        'tool_error',
+        `Symphony could not check which files you changed (${errorMessage(error)}), so nothing was recorded. This is not a ` +
+          `problem with your change. Call ${RESULT_TOOL} again; if it fails again, describe the problem in an issue comment ` +
+          'and end your turn.',
+      );
+    }
+    if (outside.length === 0) return null;
+    const shown = outside.slice(0, OFFENDING_FILES_SHOWN).map((file) => `- ${file}`);
+    const more = outside.length > shown.length ? `\n- … and ${outside.length - shown.length} more` : '';
+    return fail(
+      'invalid_result',
+      `The ${kind} result is invalid: role ${role.name} may only change files matching \`pipeline.test_paths\` ` +
+        `(${rule.allowed.length > 0 ? rule.allowed.join(', ') : 'none configured'}), but ${outside.length} file(s) that differ from ` +
+        `commit ${base.slice(0, 12)} (the developer's last hand-off, else where your session started) are outside them:\n${shown.join('\n')}${more}\n` +
+        'Nothing was recorded. Undo the changes you made yourself: restore a changed or deleted file with ' +
+        `\`git checkout ${base.slice(0, 12)} -- <file>\`, delete a new one, commit, and report again. Leave a file alone that you did not ` +
+        'change, for example a commit that was already on the branch or a push by someone else: describe it in an issue comment and ' +
+        'end your turn. Production code belongs to the developer: if the tests fail because of it, report the verdict `failed` with ' +
+        'the failed cases instead of fixing it.',
+    );
   };
 
   const record = async (args: Record<string, unknown>, context: AgentToolContext): Promise<ToolResult> => {
@@ -305,6 +360,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       if (recorded !== null || !role.readOnly || role.onCheckFailed === null) return null;
       return plan(args).ok ? role.onCheckFailed : null;
     },
+    precheck: () => queue.run(pathViolation),
     execute: (args, context) => queue.run(() => record(args, context)),
   };
 }

@@ -769,15 +769,17 @@ describe('result-driven roles and the pipeline section', () => {
       const role = config.roles?.find((candidate) => candidate.name === name);
       return [role?.result, role?.onResult, role?.onCheckFailed, role?.onMissingResult, role?.onRoundLimit];
     };
-    // The developer and the reviewer hand off with report_result; every other role keeps the neutral values.
+    // The developer, the test engineer and the reviewer hand off with report_result; every other role keeps the neutral values.
     assert.deepEqual(transitions('developer'), ['implementation', { done: 'Agent review', blocked: 'Blocked' }, null, 'Blocked', null]);
+    assert.deepEqual(transitions('test-engineer'), ['test', { passed: 'Agent review', failed: 'In progress', blocked: 'Blocked' }, null, 'Blocked', null]);
     assert.deepEqual(
       transitions('reviewer'),
       ['review', { approved: 'In review', changes_needed: 'In progress', blocked: 'Blocked' }, 'In progress', 'Blocked', null],
     );
     assert.equal(config.pipeline.maxReviewRounds, 3);
+    assert.equal(config.pipeline.maxTestRounds, 2);
     for (const role of config.roles ?? []) {
-      if (role.name === 'developer' || role.name === 'reviewer') continue;
+      if (role.name === 'developer' || role.name === 'test-engineer' || role.name === 'reviewer') continue;
       assert.deepEqual([role.result, role.onResult, role.onCheckFailed, role.onMissingResult, role.onRoundLimit], [null, {}, null, null, null], role.name);
     }
   });
@@ -797,7 +799,7 @@ describe('result-driven roles and the pipeline section', () => {
         defaultType: 'feature',
         analysis: 'always',
         profiles: [],
-        testPaths: [],
+        testPaths: ['tests/**', 'test/**', '**/*.test.*', '**/*Test.php'],
         docsPaths: [],
         securityPaths: [],
       },
@@ -933,6 +935,19 @@ describe('result-driven roles and the pipeline section', () => {
       assert.deepEqual([...pipeline.typeLabels], [['bug', 'bug'], ['chore', 'maintenance']]);
       assert.equal(pipeline.defaultType, 'chore');
       assert.deepEqual([pipeline.testPaths, pipeline.docsPaths, pipeline.securityPaths], [['test/**', '**/*.spec.ts'], ['docs/**'], ['src/auth/**']]);
+    });
+
+    it('keeps an explicit test_paths list as it is and validates the globs', () => {
+      const testPaths = (list: unknown) => resolve({ ...base, pipeline: { test_paths: list } }).pipeline.testPaths;
+      assert.deepEqual(testPaths([' spec/** ', '**/*.{spec,test}.ts']), ['spec/**', '**/*.{spec,test}.ts']);
+      assert.deepEqual(testPaths([]), [], 'an empty list allows no path at all');
+      const message = messageOf({ ...base, pipeline: { test_paths: ['', '/abs/**', '../up/**', 'a/{b', '**/*.test.*'], docs_paths: ['{x,{y}}'] } });
+      assert.match(message, /pipeline\.test_paths\[0\] "" must not be empty/);
+      assert.match(message, /pipeline\.test_paths\[1\] "\/abs\/\*\*" must be relative to the repository root/);
+      assert.match(message, /pipeline\.test_paths\[2\] "\.\.\/up\/\*\*" must not contain "\.\." segments/);
+      assert.match(message, /pipeline\.test_paths\[3\] "a\/\{b" unclosed "\{"/);
+      assert.match(message, /pipeline\.docs_paths\[0\] "\{x,\{y\}\}" nested braces are not supported/);
+      assert.doesNotMatch(message, /test_paths\[4\]/);
     });
 
     it('resolves $VAR references in the limits and falls back to the defaults for unset ones', () => {

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -59,7 +60,9 @@ const FRONT = {
 };
 
 /** Every session's first prompt names its role, its round and the open findings it starts from. */
-const PROMPT = '{{ role }} round {{ round }}{% for finding in results.open_findings %} | {{ finding.problem }}{% endfor %}';
+const PROMPT =
+  '{{ role }} round {{ round }}{% for finding in results.open_findings %} | {{ finding.problem }}{% endfor %}' +
+  '{% for case in results.failed_cases %} | failed: {{ case.criterion }} ({{ case.test }}){% endfor %}';
 
 interface StageContext {
   turn: number;
@@ -885,5 +888,280 @@ describe('failure and retry paths of result-driven stages', () => {
       assert.equal(h.tracker.comments.get(ISSUE)?.length, 1, 'only the developer result');
       assert.equal(counts(h).claimed, 0);
     });
+  });
+});
+
+// The test engineer stage (docs/configuration.md#the-test-engineer): developer → Testing → reviewer.
+
+const BOARD_TESTING = ['Backlog', 'Ready', 'In progress', 'Testing', 'Agent review', 'Blocked', 'In review', 'Done'];
+
+/** The developer → test engineer → reviewer pipeline as the shipped workflow runs it with SYMPHONY_AFTER_IMPLEMENTATION=Testing. */
+const TESTING_FRONT = {
+  tracker: { ...FRONT.tracker, active_states: ['Ready', 'In progress', 'Testing', 'Agent review'] },
+  roles: {
+    developer: {
+      states: ['Ready', 'In progress'],
+      result: 'implementation',
+      may_move_to: ['In progress', 'Testing', 'Agent review', 'Blocked'],
+      on_result: { done: 'Testing', blocked: 'Blocked' },
+    },
+    'test-engineer': {
+      states: ['Testing'],
+      result: 'test',
+      may_move_to: ['Agent review', 'In progress', 'Blocked'],
+      on_result: { passed: 'Agent review', failed: 'In progress', blocked: 'Blocked' },
+    },
+    reviewer: FRONT.roles.reviewer,
+  },
+  pipeline: { max_review_rounds: 3, max_test_rounds: 2 },
+  checks: { on_enter: { ...FRONT.checks.on_enter, Testing: entryCheck('Testing', 'red-suite', 'the suite is red') } },
+  // A git checkout like the shipped hooks make, with the files the path rule is about; the logs stay out of its way.
+  hooks: {
+    after_create: [
+      'git init -q',
+      'git config user.email symphony@example.com',
+      'git config user.name Symphony',
+      'mkdir -p src tests',
+      "printf 'export const total = 1;\\n' > src/app.ts",
+      "printf '// existing test\\n' > tests/app.test.ts",
+      "printf 'checks.log\\nred-suite\\nfailing-tests\\nlint-errors\\n' > .gitignore",
+      'git add -A',
+      'git commit -q -m init',
+    ].join('\n'),
+  },
+};
+
+const testingPipeline = (stages: Stage[], options: { front?: Record<string, unknown> } = {}): Pipeline => {
+  const tracker = new FakeTracker([makeIssue({ id: ISSUE, state: 'Ready' })]);
+  tracker.statusOptions = async () => BOARD_TESTING;
+  return pipeline(stages, { tracker, front: { ...TESTING_FRONT, ...options.front } });
+};
+
+/** Runs shell in the session's workspace; returns its output. */
+const sh = (workspace: string, script: string): string => execFileSync('bash', ['-ec', script], { cwd: workspace, encoding: 'utf8' }).trim();
+
+/** The developer's change to production code, committed. */
+const implemented = (workspace: string) => sh(workspace, "printf 'export const total = 2;\\n' > src/app.ts && git add -A && git commit -q -m 'Implement the total'");
+
+const CASES = [
+  { criterion: 'Totals add up', test: 'tests/total.test.ts::adds', status: 'passed' },
+  { criterion: 'A discount lowers the total', test: 'tests/total.test.ts::discount', status: 'failed' },
+];
+const TESTS_PASSED = { verdict: 'passed', summary: 'Every criterion has a passing test.', cases: [{ ...CASES[0], status: 'passed' }, { ...CASES[1], status: 'passed' }], commands: ['npm test'] };
+const TESTS_FAILED = { verdict: 'failed', summary: 'The total ignores discounts.', cases: CASES, commands: ['npm test'] };
+
+/** A test engineer that adds a test file, commits it and reports `args`. */
+const tests = (args: Record<string, unknown>): Stage =>
+  reporting(args, (workspace) => sh(workspace, "printf '// independent tests\\n' > tests/total.test.ts && git add -A && git commit -q --allow-empty -m 'Add independent tests'"));
+
+/** `[verdict, round, target]` of every test. */
+async function testRuns(h: Pipeline) {
+  return (await results(h)).filter((result) => result.role === 'test-engineer').map((result) => [result.verdict, result.round, result.target]);
+}
+
+describe('test engineer stage', () => {
+  it('passed: the developer hands over to Testing, the tests go to the review, each hand-off through its entry check', async () => {
+    const h = testingPipeline([done(implemented), tests(TESTS_PASSED), approved()]);
+    await run(h);
+
+    assert.deepEqual(prompts(h), ['developer round 1', 'test-engineer round 1', 'reviewer round 1']);
+    assert.deepEqual(h.tracker.statusCalls, ['Testing', 'Agent review', 'In review']);
+    assert.deepEqual(checksRun(h), ['Testing', 'Agent review', 'In review']);
+    assert.deepEqual(await results(h), [
+      { role: 'developer', verdict: 'done', round: null, target: 'Testing', check: 'passed' },
+      { role: 'test-engineer', verdict: 'passed', round: 1, target: 'Agent review', check: 'passed' },
+      { role: 'reviewer', verdict: 'approved', round: 1, target: 'In review', check: 'passed' },
+    ]);
+    assert.deepEqual(h.runner.sessions.map((session) => session.params.tools.map((tool) => tool.name)), [['report_result'], ['report_result'], ['report_result']]);
+    assert.deepEqual(issue(h).labels, []);
+    assert.equal(counts(h).claimed, 0);
+  });
+
+  it('rejects a test engineer that changes src/: nothing is recorded and no entry check runs; undoing it lets the result through', async () => {
+    let afterRefusal: unknown = null;
+    let developerHead = '';
+    const h = testingPipeline([
+      done((workspace) => {
+        implemented(workspace);
+        developerHead = sh(workspace, 'git rev-parse HEAD');
+      }),
+      async ({ turn, params, report }) => {
+        if (turn !== 1) return undefined;
+        // The test engineer "fixes" the production code and adds a test file; both are committed.
+        sh(params.cwd, "printf 'export const total = 3;\n' > src/app.ts && printf '// independent tests\n' > tests/total.test.ts && git add -A && git commit -q -m 'Tests, and a fix'");
+        await report(TESTS_PASSED);
+        afterRefusal = { comments: h.tracker.comments.get(ISSUE)?.length, state: issue(h).state, moves: h.tracker.statusCalls.length, checks: checksRun(h) };
+        sh(params.cwd, `git checkout ${developerHead} -- src/app.ts && git commit -q -m 'Undo the fix'`);
+        await report(TESTS_PASSED);
+        return undefined;
+      },
+      approved(),
+    ]);
+    await run(h);
+
+    const refused = denial(h.reports[1]);
+    assert.equal(refused?.category, 'invalid_result');
+    assert.match(refused?.message ?? '', /role test-engineer may only change files matching `pipeline\.test_paths` \(tests\/\*\*, test\/\*\*, \*\*\/\*\.test\.\*, \*\*\/\*Test\.php\)/);
+    assert.match(refused?.message ?? '', new RegExp(`1 file\\(s\\) that differ from commit ${developerHead.slice(0, 12)} .* are outside them:\\n- src/app\\.ts\\n`));
+    assert.ok(!(refused?.message ?? '').includes('tests/total.test.ts'));
+    assert.deepEqual(afterRefusal, { comments: 1, state: 'Testing', moves: 1, checks: ['Testing'] }, 'only the developer result and its move; the Agent review check has not run');
+    assert.equal(data(h.reports[2]).target, 'Agent review');
+    assert.deepEqual(h.tracker.statusCalls, ['Testing', 'Agent review', 'In review']);
+    assert.deepEqual(checksRun(h), ['Testing', 'Agent review', 'In review']);
+    assert.equal(h.runner.sessions[1]?.turns.length, 1, 'fixed within the same turn');
+    assert.deepEqual(await testRuns(h), [['passed', 1, 'Agent review']]);
+    assert.deepEqual(prompts(h), ['developer round 1', 'test-engineer round 1', 'reviewer round 1'], 'a refusal is no test round');
+  });
+
+  it('measures from the developer\'s hand-off: a workspace that starts on the base branch is not blamed for the developer\'s code', async () => {
+    let developerHead = '';
+    // The developer\'s commit is on branch `pr`; the next session starts in a fresh checkout of the root commit (before_run).
+    const h = testingPipeline(
+      [
+        done((workspace) => {
+          implemented(workspace);
+          developerHead = sh(workspace, 'git rev-parse HEAD && git branch -f pr HEAD && touch .git/back').split('\n')[0] ?? '';
+        }),
+        async ({ turn, params, report }) => {
+          if (turn !== 1) return undefined;
+          assert.notEqual(sh(params.cwd, 'git rev-parse HEAD'), developerHead, 'the session starts on the base branch');
+          // Checking out the branch brings the developer\'s commit in; the engineer adds a test and a stray fix.
+          sh(params.cwd, "git checkout -q pr && printf '// independent tests\\n' > tests/total.test.ts && printf 'export const total = 4;\\n' > src/app.ts && git add -A && git commit -q -m 'Tests, and a fix'");
+          await report(TESTS_PASSED);
+          sh(params.cwd, `git checkout ${developerHead} -- src/app.ts && git commit -q -m 'Undo the fix'`);
+          await report(TESTS_PASSED);
+          return undefined;
+        },
+        approved(),
+      ],
+      {
+        front: {
+          hooks: {
+            ...TESTING_FRONT.hooks,
+            before_run: 'if [ -f .git/back ]; then git checkout -q --detach "$(git rev-list --max-parents=0 HEAD | tail -1)" && rm .git/back; fi',
+          },
+        },
+      },
+    );
+    await run(h);
+
+    const refused = denial(h.reports[1]);
+    assert.equal(refused?.category, 'invalid_result');
+    assert.match(refused?.message ?? '', new RegExp(`1 file\\(s\\) that differ from commit ${developerHead.slice(0, 12)} .* are outside them:\\n- src/app\\.ts\\n`));
+    assert.equal(data(h.reports[2]).target, 'Agent review');
+    assert.deepEqual(await testRuns(h), [['passed', 1, 'Agent review']]);
+  });
+
+  it('rejects uncommitted and untracked changes outside the test paths too, whatever the verdict', async () => {
+    const h = testingPipeline([
+      done(implemented),
+      async ({ turn, params, report }) => {
+        if (turn !== 1) return undefined;
+        sh(params.cwd, "printf '// tests\n' > tests/total.test.ts && printf 'x' > src/helper.ts && printf 'edited' >> src/app.ts");
+        await report(TESTS_FAILED);
+        await report({ verdict: 'blocked', summary: 'No database.', blockers: [{ description: 'No test database', needs: 'infra' }] });
+        return undefined;
+      },
+    ]);
+    await run(h);
+
+    const [, failedReport, blockedReport] = h.reports;
+    assert.equal(denial(failedReport)?.category, 'invalid_result');
+    assert.match(denial(failedReport)?.message ?? '', /2 file\(s\)[\s\S]*- src\/app\.ts\n- src\/helper\.ts/);
+    assert.equal(denial(blockedReport)?.category, 'invalid_result');
+    assert.deepEqual(await testRuns(h), []);
+    assert.deepEqual(h.tracker.statusCalls, ['Testing', 'Blocked'], 'the engineer never got a result through: the stage ended without one (on_missing_result)');
+  });
+
+  it('fails closed in a workspace that is no git checkout: the rule cannot be evaluated, so nothing is recorded', async () => {
+    const h = testingPipeline([done(), reporting(TESTS_PASSED)], { front: { hooks: {} } });
+    await run(h);
+
+    const unverified = denial(h.reports[1]);
+    assert.equal(unverified?.category, 'tool_error');
+    assert.match(unverified?.message ?? '', /could not check which files you changed \(the commit this session started from is unknown\)/);
+    assert.deepEqual(await testRuns(h), []);
+    assert.deepEqual(h.tracker.statusCalls, ['Testing', 'Blocked'], 'no result got through: the stage ended without one (on_missing_result)');
+  });
+
+  it('failed: back to the developer with the failed cases in the prompt, and the engineer reruns them next round', async () => {
+    const h = testingPipeline([done(implemented), tests(TESTS_FAILED), done(), tests(TESTS_PASSED), approved()]);
+    await run(h);
+
+    const failedCase = ' | failed: A discount lowers the total (tests/total.test.ts::discount)';
+    assert.deepEqual(prompts(h), [
+      'developer round 1',
+      'test-engineer round 1',
+      `developer round 1${failedCase}`,
+      `test-engineer round 2${failedCase}`,
+      'reviewer round 1',
+    ]);
+    assert.deepEqual(h.tracker.statusCalls, ['Testing', 'In progress', 'Testing', 'Agent review', 'In review']);
+    assert.deepEqual(await testRuns(h), [
+      ['failed', 1, 'In progress'],
+      ['passed', 2, 'Agent review'],
+    ]);
+    assert.deepEqual(issue(h).labels, [], 'a pass in the last round is no limit');
+    assert.equal(counts(h).paused, 0, 'the loop is bounded by the round limit, not by max_continuations');
+    assert.equal(counts(h).claimed, 0);
+    // The test engineer's cases and summary are in the issue comment for humans and later stages.
+    const [, failed] = await h.tracker.readResults(issue(h));
+    assert.equal(failed?.result.kind === 'test' ? failed.result.cases.filter((c) => c.status === 'failed').length : -1, 1);
+    assert.match(h.tracker.comments.get(ISSUE)?.[1]?.body ?? '', /### ❌ Test: failed[\s\S]*A discount lowers the total/);
+  });
+
+  it('round limit: the second failed round goes to Blocked with needs-human, and the loop ends', async () => {
+    const h = testingPipeline([done(implemented), tests(TESTS_FAILED), done(), reporting(TESTS_FAILED)]);
+    await run(h);
+
+    assert.equal(h.runner.sessions.length, 4, 'no further developer session');
+    assert.deepEqual(h.tracker.statusCalls, ['Testing', 'In progress', 'Testing', 'Blocked']);
+    assert.deepEqual(await testRuns(h), [
+      ['failed', 1, 'In progress'],
+      ['failed', 2, 'Blocked'],
+    ]);
+    const limit = data(h.reports.at(-1));
+    assert.deepEqual(limit.labels, { added: ['needs-human'], removed: [] });
+    assert.match(String(limit.reason), /round 2 of 2\) → "Blocked" \(round limit reached/);
+    assert.deepEqual([issue(h).state, issue(h).labels], ['Blocked', ['needs-human']]);
+    assert.ok(h.tracker.repositoryLabels.has('needs-human'));
+    assert.equal(counts(h).claimed, 0);
+  });
+
+  it('a human moving the issue back resets the test rounds', async () => {
+    const h = testingPipeline([done(implemented), tests(TESTS_FAILED), done(), reporting(TESTS_FAILED), done(), tests(TESTS_PASSED), approved()]);
+    await run(h);
+    assert.equal(issue(h).state, 'Blocked');
+
+    h.tracker.set(ISSUE, { state: 'In progress' });
+    await run(h);
+    assert.deepEqual(await testRuns(h), [
+      ['failed', 1, 'In progress'],
+      ['failed', 2, 'Blocked'],
+      ['passed', 1, 'Agent review'],
+    ]);
+    assert.deepEqual(prompts(h).slice(4), ['developer round 1', 'test-engineer round 1', 'reviewer round 1']);
+    assert.deepEqual(issue(h).labels, []);
+    assert.equal(issue(h).state, 'In review');
+  });
+
+  it('max_test_rounds comes from the pipeline section: one failed round is enough with 1', async () => {
+    const h = testingPipeline([done(implemented), tests(TESTS_FAILED)], { front: { pipeline: { max_review_rounds: 3, max_test_rounds: 1 } } });
+    await run(h);
+
+    assert.deepEqual(h.tracker.statusCalls, ['Testing', 'Blocked']);
+    assert.deepEqual(issue(h).labels, ['needs-human']);
+  });
+
+  it('blocked goes to Blocked without a limit label', async () => {
+    const h = testingPipeline([
+      done(implemented),
+      reporting({ verdict: 'blocked', summary: 'The acceptance criteria are ambiguous.', blockers: [{ description: 'Which discount applies?', needs: 'human' }] }),
+    ]);
+    await run(h);
+
+    assert.deepEqual(h.tracker.statusCalls, ['Testing', 'Blocked']);
+    assert.deepEqual(await testRuns(h), [['blocked', 1, 'Blocked']]);
+    assert.deepEqual(issue(h).labels, []);
   });
 });
