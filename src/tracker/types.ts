@@ -102,6 +102,8 @@ export interface TrackerAdapter {
   issueRepository?(issue: Issue): string | null;
   /** Identifiers of the issue's open sub-issues, for roles with `wait_for_sub_issues`; absent = the tracker has none. */
   openSubIssues?(issue: Issue): string[];
+  /** Posts a Markdown comment on the issue, for notices from Symphony itself (e.g. a spent cost budget). */
+  commentOnIssue?(issue: Issue, body: string): Promise<void>;
 }
 
 export interface TrackerAdapterParams {

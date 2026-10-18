@@ -53,9 +53,11 @@ export interface PlanRetry {
 
 export interface PlanPaused {
   issue: PlanIssue;
-  /** `operator`: paused from the dashboard; `continuations`: held back after agent.max_continuations. */
-  source: 'continuations' | 'operator';
+  /** `operator`: paused from the dashboard; `continuations`: held back after agent.max_continuations; `budget`: cost cap reached. */
+  source: 'continuations' | 'operator' | 'budget';
   continuations: number;
+  /** Cost and cap in USD of a `budget` pause. */
+  budget?: { costUsd: number; limitUsd: number };
 }
 
 export interface PlanInput {
@@ -102,7 +104,8 @@ const windowWords = (window: string | null) => (window === null ? 'unknown windo
 
 /** The model a session for the issue would run with, as the orchestrator chooses it: label, else role, else claude.model. */
 export function plannedModel(issue: Pick<Issue, 'state' | 'description' | 'labels'>, config: Pick<ServiceConfig, 'roles' | 'claude'>): string | null {
-  return chooseModel(issue.labels, roleFor(issue, config.roles)?.claude.model ?? config.claude.model).model;
+  const role = roleFor(issue, config.roles);
+  return chooseModel(issue.labels, role?.claude.model ?? config.claude.model, role?.modelLabel).model;
 }
 
 /** Why an issue of a held model waits: the end of a limit hold, or the operator's release. */
@@ -261,7 +264,9 @@ export function planDispatch(input: PlanInput): PlanItem[] {
     const text =
       paused.source === 'operator'
         ? 'paused by operator; press Resume to continue'
-        : `paused after ${paused.continuations} continuation session${paused.continuations === 1 ? '' : 's'}; change the issue on the board to resume`;
+        : paused.source === 'budget'
+          ? `paused: cost budget used up ($${(paused.budget?.costUsd ?? 0).toFixed(2)} of $${(paused.budget?.limitUsd ?? 0).toFixed(2)}); raise agent.max_issue_cost_usd or press Resume`
+          : `paused after ${paused.continuations} continuation session${paused.continuations === 1 ? '' : 's'}; change the issue on the board to resume`;
     items.push(item(paused.issue, 'paused', 'paused', { code: 'paused', text }, null));
   }
   return [...items, ...blocked];

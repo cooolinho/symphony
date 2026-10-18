@@ -13,7 +13,7 @@ import {
   type ProjectMeta,
   type SelectOption,
 } from './normalize.ts';
-import { ITEM_DETAILS_QUERY, PROJECT_ITEMS_QUERY, PROJECT_META_QUERY, referenceStatesQuery } from './queries.ts';
+import { ADD_COMMENT_MUTATION, ITEM_DETAILS_QUERY, PROJECT_ITEMS_QUERY, PROJECT_META_QUERY, referenceStatesQuery } from './queries.ts';
 import { KIND, type GithubProjectSettings } from './settings.ts';
 import { createGithubTools } from './tools.ts';
 
@@ -226,6 +226,15 @@ export class GithubProjectAdapter implements TrackerAdapter {
     const subIssues = issue.native_ref?.provider === KIND ? issue.native_ref.sub_issues : null;
     if (!Array.isArray(subIssues)) return [];
     return (subIssues as LinkedIssue[]).filter((sub) => sub.state !== 'CLOSED').map((sub) => sub.identifier);
+  }
+
+  async commentOnIssue(issue: Issue, body: string): Promise<void> {
+    const ref = issue.native_ref;
+    if (ref === null || ref.provider !== KIND || typeof ref.issue_id !== 'string') {
+      throw new TrackerError('tracker_request', `issue ${issue.identifier} has no GitHub reference to comment on`);
+    }
+    const response = await this.client.request<Json>(ADD_COMMENT_MUTATION, { subjectId: ref.issue_id, body });
+    assertNoGraphqlErrors(response.errors);
   }
 
   async #fetchItemNodes(ids: string[], meta: ProjectMeta): Promise<unknown[]> {

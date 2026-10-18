@@ -311,6 +311,21 @@ interface IssueMeta {
 }
 
 /** First non-empty line of a description; what command detection and the pipeline need. */
+function round4(value: number): number {
+  return Math.round(value * 10_000) / 10_000;
+}
+
+function formatUsd(value: number): string {
+  return `$${value.toFixed(2)}`;
+}
+
+/** Why an issue was paused, for the timeline entry of its Resume. */
+function pausedBecause(paused: PausedEntry): string {
+  if (paused.source === 'operator') return 'by the operator';
+  if (paused.source === 'budget') return 'because its cost budget was used up';
+  return `after ${paused.continuations} continuation session(s)`;
+}
+
 function firstLine(text: string | null): string | null {
   return text?.split(/\r?\n/).find((line) => line.trim() !== '') ?? null;
 }
@@ -450,9 +465,18 @@ interface PausedEntry {
   updatedAtMs: number | null;
   continuations: number;
   pausedAt: Date;
-  source: 'continuations' | 'operator';
+  /** `budget`: the issue's cost reached agent.max_issue_cost_usd. */
+  source: 'continuations' | 'operator' | 'budget';
   /** Retry attempt of the claim when it was paused; Resume starts with it. */
   attempt: number | null;
+  /** Cost and cap of a `budget` pause. */
+  budget?: IssueBudget;
+}
+
+/** An issue's cost against agent.max_issue_cost_usd, both in USD. */
+interface IssueBudget {
+  costUsd: number;
+  limitUsd: number;
 }
 
 /** What holds a model: a limit (until its reset) or the operator (until the release). */
@@ -563,6 +587,8 @@ export class Orchestrator {
   #archive: IssueArchive;
   #records = new Map<string, IssueRecord>();
   #paused = new Map<string, PausedEntry>();
+  /** Cap of the budget comment already posted per issue, so a Resume that pauses again does not comment twice. */
+  #budgetNotified = new Map<string, number>();
   /** Issues whose workspace this process created or used; checked for terminal states after release. */
   #watched = new Map<string, string>();
   #cleanups = new Map<string, Promise<void>>();
@@ -846,7 +872,7 @@ export class Orchestrator {
           kind: 'lifecycle',
           event: 'issue_resumed',
           level: 'info',
-          message: `resumed by the operator (paused ${paused.source === 'operator' ? 'by the operator' : `after ${paused.continuations} continuation session(s)`})`,
+          message: `resumed by the operator (paused ${pausedBecause(paused)})`,
           run: null,
           turn: null,
           detail: { source: paused.source },
@@ -1174,7 +1200,10 @@ export class Orchestrator {
       const byId = new Map(candidates.map((issue) => [issue.id, issue]));
       await this.#startPlanned(this.#plan(config, adapter), (item) => {
         const issue = byId.get(item.issueId);
-        if (issue !== undefined && this.#shouldDispatch(issue, config, adapter)) this.#dispatch(issue, null, workflow, adapter);
+        if (issue === undefined || !this.#shouldDispatch(issue, config, adapter)) return;
+        const budget = this.#budgetExceeded(issue, this.#repositoryOf(issue), config);
+        if (budget !== null) this.#pauseForBudget(issue, adapter, budget, null);
+        else this.#dispatch(issue, null, workflow, adapter);
       });
     } catch (error) {
       this.#logger.error('tick failed', { error: errorMessage(error) });
@@ -1386,6 +1415,7 @@ export class Orchestrator {
         issue: this.#planIssue(paused.issueId, paused.identifier, paused.state),
         source: paused.source,
         continuations: paused.continuations,
+        ...(paused.budget !== undefined ? { budget: paused.budget } : {}),
       })),
       candidates: (this.#board?.candidates ?? []).filter(
         (issue) => !this.#claimed.has(issue.id) && !this.#running.has(issue.id) && !this.#cleanups.has(issue.id),
@@ -1419,7 +1449,8 @@ export class Orchestrator {
 
   /** The model a session for the issue runs with, as `#dispatch` chooses it: label, else role, else claude.model. */
   #modelFor(issue: Pick<Issue, 'state' | 'description' | 'labels'>, config: ServiceConfig): string | null {
-    return chooseModel(issue.labels, roleFor(issue, config.roles)?.claude.model ?? config.claude.model).model;
+    const role = roleFor(issue, config.roles);
+    return chooseModel(issue.labels, role?.claude.model ?? config.claude.model, role?.modelLabel).model;
   }
 
   /** The active hold of the model the issue would run with; null for Claude Code's default model (never held). */
@@ -1645,7 +1676,7 @@ export class Orchestrator {
     record.repo = entry.repo;
     record.meta = issueMeta(issue);
     // A "Model: <model>" label picks the model for this run, else the role's claude.model, else claude.model.
-    const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model);
+    const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model, role?.modelLabel);
     // Likewise an "Effort: <level>" label picks the effort, else the role's claude.effort, else claude.effort.
     const effortChoice = chooseEffort(issue.labels, role?.claude.effort ?? config.claude.effort);
     entry.requestedModel = choice.model;
@@ -1676,6 +1707,7 @@ export class Orchestrator {
         state: issue.state,
         model: choice.model,
         model_label: choice.label,
+        model_label_ignored: choice.labelIgnored,
         effort: effortChoice.effort,
         effort_label: effortChoice.label,
         continuation,
@@ -2242,6 +2274,11 @@ export class Orchestrator {
       this.#pause(issue, continuations, maxContinuations);
       return;
     }
+    const budget = this.#budgetExceeded(issue, this.#repositoryOf(issue), config);
+    if (budget !== null) {
+      this.#pauseForBudget(issue, adapter, budget, retry.attempt);
+      return;
+    }
     await this.#loadStatusOptions(workflow);
     if (this.#stopping) {
       this.#release(issueId);
@@ -2371,6 +2408,82 @@ export class Orchestrator {
     );
   }
 
+  /**
+   * The issue's cost against `agent.max_issue_cost_usd`: finished runs of every role from the repository history plus the
+   * running run. null while the issue is within its budget or has no cap.
+   */
+  #budgetExceeded(issue: Pick<Issue, 'id' | 'identifier'>, repo: string, config: ServiceConfig): IssueBudget | null {
+    const limitUsd = config.agent.maxIssueCostUsd;
+    if (limitUsd === null) return null;
+    const costUsd = (this.#deps.history?.issueCostUsd(repo, issue.identifier) ?? 0) + (this.#running.get(issue.id)?.costUsd ?? 0);
+    return costUsd >= limitUsd ? { costUsd, limitUsd } : null;
+  }
+
+  /**
+   * Holds an issue whose budget is used up instead of starting its next session (a running session is never stopped).
+   * Only Resume, a raised or removed cap, a terminal state or leaving the board lifts the pause.
+   */
+  #pauseForBudget(issue: Issue, adapter: TrackerAdapter, budget: IssueBudget, attempt: number | null): void {
+    const repo = this.#repositoryOf(issue);
+    const record = this.#record(issue);
+    record.repo ??= repo;
+    record.meta = issueMeta(issue);
+    this.#cancelRetry(issue.id);
+    this.#paused.set(issue.id, {
+      issueId: issue.id,
+      identifier: issue.identifier,
+      url: issue.url,
+      title: issue.title,
+      state: issue.state,
+      updatedAtMs: null,
+      continuations: record.continuations,
+      pausedAt: this.#clock.now(),
+      source: 'budget',
+      attempt,
+      budget,
+    });
+    this.#claimed.add(issue.id);
+    const spent = `${formatUsd(budget.costUsd)} of ${formatUsd(budget.limitUsd)}`;
+    this.#trace(record, {
+      kind: 'lifecycle',
+      event: 'issue_paused',
+      level: 'warn',
+      message: `paused: the issue cost ${spent} (agent.max_issue_cost_usd); the next stage does not start`,
+      run: null,
+      turn: null,
+      detail: { source: 'budget', state: issue.state, cost_usd: round4(budget.costUsd), max_issue_cost_usd: budget.limitUsd },
+    });
+    this.#deps.history?.note(repo, 'issue_paused', {
+      issue: issue.identifier,
+      title: issue.title,
+      state: issue.state,
+      source: 'budget',
+      cost_usd: round4(budget.costUsd),
+      max_issue_cost_usd: budget.limitUsd,
+    });
+    this.#issueLogger(issue).warn('issue paused: its cost budget is used up; raise agent.max_issue_cost_usd or press Resume', {
+      state: issue.state,
+      cost_usd: round4(budget.costUsd),
+      max_issue_cost_usd: budget.limitUsd,
+    });
+    this.#notifyBudget(issue, adapter, budget);
+    this.#notify();
+  }
+
+  /** One comment on the issue per cap, so the board says why nothing starts. A failed comment is only logged. */
+  #notifyBudget(issue: Issue, adapter: TrackerAdapter, budget: IssueBudget): void {
+    if (this.#budgetNotified.get(issue.id) === budget.limitUsd || adapter.commentOnIssue === undefined) return;
+    this.#budgetNotified.set(issue.id, budget.limitUsd);
+    const body =
+      `**Cost budget used up.** The agents spent ${formatUsd(budget.costUsd)} on this issue; the limit \`agent.max_issue_cost_usd\` is ` +
+      `${formatUsd(budget.limitUsd)}. The next stage ("${issue.state}") does not start.\n\n` +
+      'To continue, raise `agent.max_issue_cost_usd` in `WORKFLOW.md` (the issue then resumes by itself) or press *Resume* on the dashboard.';
+    adapter.commentOnIssue(issue, body).catch((error: unknown) => {
+      this.#budgetNotified.delete(issue.id);
+      this.#issueLogger(issue).warn('budget comment failed', { error: errorMessage(error) });
+    });
+  }
+
   // ---------------------------------------------------------------- reconciliation
 
   async #reconcile(workflow: EffectiveWorkflow): Promise<void> {
@@ -2492,6 +2605,18 @@ export class Orchestrator {
       } else if (!isActiveState(issue.state, config.tracker) || !isRoutable(issue, config.tracker)) {
         log.info('paused issue left the active states; releasing it', { state: issue.state });
         this.#release(id);
+      } else if (paused.source === 'budget') {
+        // Board changes do not lift a budget pause: Resume does, or a raised or removed agent.max_issue_cost_usd.
+        paused.state = issue.state;
+        paused.title = issue.title;
+        paused.url = issue.url;
+        const budget = this.#budgetExceeded(issue, this.#records.get(id)?.repo ?? this.#repositoryOf(issue), config);
+        if (budget === null) {
+          log.info('resuming paused issue', { reason: 'agent.max_issue_cost_usd raised or removed' });
+          this.#release(id);
+        } else {
+          paused.budget = budget;
+        }
       } else {
         const limit = config.agent.maxContinuations;
         const changed =
@@ -2769,6 +2894,7 @@ export class Orchestrator {
       source: paused.source,
       continuations: paused.continuations,
       paused_at: paused.pausedAt.toISOString(),
+      ...(paused.budget !== undefined ? { cost_usd: round4(paused.budget.costUsd), max_issue_cost_usd: paused.budget.limitUsd } : {}),
     };
   }
 

@@ -377,14 +377,24 @@ describe('roles', () => {
     const runner = new FakeRunner(() => new Promise(() => undefined));
     const s = setup({
       runner,
-      front: rolesFront,
+      front: {
+        ...rolesFront,
+        roles: {
+          ...rolesFront.roles,
+          reviewer: {
+            ...rolesFront.roles.reviewer,
+            result: 'review',
+            on_result: { approved: 'In review', changes_needed: 'Todo', blocked: 'Todo' },
+          },
+        },
+      },
       prompt: rolePrompt,
       issues: [makeIssue({ id: 'r', state: 'Agent review', labels: ['model: sonnet'] }), makeIssue({ id: 'd' })],
     });
     await s.orchestrator.tickNow();
     await until(() => runner.sessions.length === 2, 3_000, 'two sessions');
     const byId = Object.fromEntries(runner.sessions.map((session) => [session.params.issue.id, session]));
-    assert.equal(byId.r?.params.config.model, 'sonnet');
+    assert.equal(byId.r?.params.config.model, 'opus');
     assert.equal(byId.r?.params.policy?.readOnly, true);
     assert.equal(byId.d?.params.config.model, 'sonnet');
     assert.equal(byId.d?.params.policy?.readOnly, false);
@@ -646,41 +656,42 @@ describe('roles', () => {
     });
   });
 
+  const switchFront = {
+    tracker: {
+      kind: 'github_project',
+      provider: { owner: 'acme', project_number: 1, token: 'test-token' },
+      active_states: ['Ready', 'In progress', 'Agent review'],
+    },
+    agent: { max_turns: 3, max_continuations: 6 },
+    roles: { developer: { states: ['Ready', 'In progress'] }, reviewer: { states: ['Agent review'], read_only: true } },
+  };
+
+  function withHistory(front: Record<string, unknown>, runner: FakeRunner, issues: ReturnType<typeof makeIssue>[]) {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
+    const pricing = new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent());
+    const history = new HistoryLog(path.join(dir, 'repositories'), pricing, Logger.silent());
+    const tracker = new FakeTracker(issues);
+    tracker.issueRepository = () => 'acme/app';
+    const timers = new ManualTimers();
+    const workflow = new StaticWorkflow(makeWorkflow(baseFront(tempDir(), front), { prompt: rolePrompt }));
+    const orchestrator = new Orchestrator({
+      workflow,
+      runner,
+      logger: Logger.silent(),
+      env: {},
+      logDir: null,
+      clock: new ManualClock(),
+      timers,
+      createAdapter: () => tracker,
+      pricing,
+      history,
+    });
+    const finished = () => readHistory(history.dir, 'acme/app').entries.filter((e) => e.event === 'run_finished');
+    return { orchestrator, tracker, runner, timers, history, finished, workflow };
+  }
+
   describe('role switches', () => {
-    const switchFront = {
-      tracker: {
-        kind: 'github_project',
-        provider: { owner: 'acme', project_number: 1, token: 'test-token' },
-        active_states: ['Ready', 'In progress', 'Agent review'],
-      },
-      agent: { max_turns: 3, max_continuations: 6 },
-      roles: { developer: { states: ['Ready', 'In progress'] }, reviewer: { states: ['Agent review'], read_only: true } },
-    };
-
-    function withHistory(front: Record<string, unknown>, runner: FakeRunner, issues: ReturnType<typeof makeIssue>[]) {
-      const dir = tempDir();
-      fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
-      const pricing = new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent());
-      const history = new HistoryLog(path.join(dir, 'repositories'), pricing, Logger.silent());
-      const tracker = new FakeTracker(issues);
-      tracker.issueRepository = () => 'acme/app';
-      const timers = new ManualTimers();
-      const orchestrator = new Orchestrator({
-        workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir(), front), { prompt: rolePrompt })),
-        runner,
-        logger: Logger.silent(),
-        env: {},
-        logDir: null,
-        clock: new ManualClock(),
-        timers,
-        createAdapter: () => tracker,
-        pricing,
-        history,
-      });
-      const finished = () => readHistory(history.dir, 'acme/app').entries.filter((e) => e.event === 'run_finished');
-      return { orchestrator, tracker, runner, timers, history, finished };
-    }
-
     it('ends the session when the issue moves to another role and starts the next role in a fresh session', async () => {
       const runner = new FakeRunner();
       const s = withHistory(switchFront, runner, [makeIssue({ id: 'a', state: 'Ready' })]);
@@ -756,6 +767,121 @@ describe('roles', () => {
           ['handed_off', 'developer', 'reviewer'],
         ],
       );
+    });
+  });
+
+  describe('issue cost budget (agent.max_issue_cost_usd)', () => {
+    const budgetFront = (limit: number) => ({
+      ...switchFront,
+      agent: { max_turns: 3, max_continuations: 6, max_issue_cost_usd: limit },
+    });
+    const seedHistory = (s: ReturnType<typeof withHistory>, lines: string[]) => {
+      fs.mkdirSync(s.history.dir, { recursive: true });
+      fs.writeFileSync(s.history.fileFor('acme/app'), `${lines.join('\n')}\n`);
+    };
+    /** One turn that cost $5 at the test pricing (1M input tokens at $5). */
+    const spend = (params: Parameters<FakeRunner['script']>[1], turn: number) =>
+      params.onEvent({
+        event: 'turn_completed', timestamp: new Date(), pid: 1, threadId: 'thread-1', turnId: String(turn), sessionId: `thread-1-${turn}`, turnCount: turn,
+        usage: { inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000 },
+        modelUsage: { 'claude-opus-5-5': { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 } },
+      });
+    const commented = (s: ReturnType<typeof withHistory>) => {
+      const comments: string[] = [];
+      s.tracker.commentOnIssue = async (_issue, body) => void comments.push(body);
+      return comments;
+    };
+
+    it('does not start the next stage once the issue cost reached the budget, and says why', async () => {
+      const runner = new FakeRunner();
+      const s = withHistory(budgetFront(4), runner, [makeIssue({ id: 'a', state: 'Ready' })]);
+      const comments = commented(s);
+      runner.script = (turn, params) => {
+        spend(params, turn);
+        if (runner.sessions.length === 1) s.tracker.set('a', { state: 'Agent review' });
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      };
+      await s.orchestrator.tickNow();
+      await until(() => s.orchestrator.snapshot().retrying.length === 1, 3_000, 'continuation retry');
+      s.timers.fire(1_000);
+      await until(() => s.orchestrator.snapshot().counts.paused === 1, 3_000, 'paused');
+
+      assert.equal(runner.sessions.length, 1, 'the reviewer stage did not start');
+      const paused = s.orchestrator.snapshot().paused[0];
+      assert.equal(paused?.source, 'budget');
+      assert.equal(paused?.cost_usd, 5);
+      assert.equal(paused?.max_issue_cost_usd, 4);
+      assert.equal(comments.length, 1);
+      assert.match(comments[0] ?? '', /Cost budget used up.*\$5\.00.*\$4\.00/s);
+      assert.match(fs.readFileSync(s.history.fileFor('acme/app'), 'utf8'), /event=issue_paused .*source=budget cost_usd=5 max_issue_cost_usd=4/);
+      const timeline = s.orchestrator.issueTimeline('acme/app#a');
+      assert.equal(timeline?.events.find((e) => e.event === 'issue_paused')?.detail?.source, 'budget');
+
+      // Board changes do not lift the pause.
+      s.tracker.set('a', { labels: ['changed'] });
+      await s.orchestrator.tickNow();
+      assert.equal(s.orchestrator.snapshot().counts.paused, 1);
+      assert.equal(runner.sessions.length, 1);
+    });
+
+    it('does not stop a running stage that passes the budget', async () => {
+      const runner = new FakeRunner();
+      const s = withHistory(budgetFront(4), runner, [makeIssue({ id: 'a', state: 'Ready' })]);
+      runner.script = (turn, params) => {
+        spend(params, turn);
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      };
+      await s.orchestrator.tickNow();
+      await until(() => s.orchestrator.snapshot().retrying.length === 1, 3_000, 'continuation retry');
+      assert.equal(runner.sessions[0]?.turns.length, 3, 'all turns ran although the first one used up the budget');
+      s.timers.fire(1_000);
+      await until(() => s.orchestrator.snapshot().counts.paused === 1, 3_000, 'paused');
+      assert.equal(runner.sessions.length, 1);
+    });
+
+    it('applies after a restart: the cost comes from the history log', async () => {
+      const runner = new FakeRunner();
+      const s = withHistory(budgetFront(4), runner, [makeIssue({ id: 'a', state: 'Ready' })]);
+      seedHistory(s, [
+        'ts=2026-10-01T10:00:00.000Z event=run_finished repo=acme/app issue=acme/app#a run=r1 role=developer cost_usd=3',
+        'ts=2026-10-01T11:00:00.000Z event=run_finished repo=acme/app issue=acme/app#a run=r2 role=reviewer cost_usd=1.5',
+        'ts=2026-10-01T12:00:00.000Z event=run_finished repo=acme/app issue=acme/app#b run=r3 role=developer cost_usd=50',
+      ]);
+      await s.orchestrator.tickNow();
+      await until(() => s.orchestrator.snapshot().counts.paused === 1, 3_000, 'paused');
+      assert.equal(runner.sessions.length, 0, 'no session started');
+      assert.equal(s.orchestrator.snapshot().paused[0]?.cost_usd, 4.5);
+    });
+
+    it('starts issues below the budget and without a cap', async () => {
+      for (const front of [budgetFront(6), switchFront]) {
+        const runner = new FakeRunner();
+        const s = withHistory(front, runner, [makeIssue({ id: 'a', state: 'Ready' })]);
+        seedHistory(s, ['ts=2026-10-01T10:00:00.000Z event=run_finished repo=acme/app issue=acme/app#a run=r1 cost_usd=5']);
+        await s.orchestrator.tickNow();
+        await until(() => runner.sessions.length === 1, 3_000, 'session');
+        assert.equal(s.orchestrator.snapshot().counts.paused, 0);
+      }
+    });
+
+    it('resumes by itself when the cap is raised; Resume while still over the cap pauses again without a second comment', async () => {
+      const runner = new FakeRunner();
+      const s = withHistory(budgetFront(4), runner, [makeIssue({ id: 'a', state: 'Ready' })]);
+      const comments = commented(s);
+      seedHistory(s, ['ts=2026-10-01T10:00:00.000Z event=run_finished repo=acme/app issue=acme/app#a run=r1 cost_usd=5']);
+      await s.orchestrator.tickNow();
+      await until(() => s.orchestrator.snapshot().counts.paused === 1, 3_000, 'paused');
+
+      assert.equal((await s.orchestrator.restartWorker('acme/app#a')).ok, true);
+      s.timers.fire(0);
+      await until(() => s.orchestrator.snapshot().counts.paused === 1 && s.orchestrator.snapshot().retrying.length === 0, 3_000, 'paused again');
+      assert.equal(runner.sessions.length, 0);
+      assert.equal(comments.length, 1);
+
+      s.workflow.current = makeWorkflow(baseFront(tempDir(), budgetFront(10)), { prompt: rolePrompt });
+      await s.orchestrator.tickNow();
+      await until(() => runner.sessions.length === 1, 3_000, 'resumed session');
+      assert.equal(s.orchestrator.snapshot().counts.paused, 0);
     });
   });
 });

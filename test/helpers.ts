@@ -60,6 +60,8 @@ export class FakeTracker implements TrackerAdapter {
   statusOptions?: () => Promise<string[]>;
   /** Set to report open sub-issues (roles with wait_for_sub_issues); trackers without it have none. */
   openSubIssues?: (issue: Issue) => string[];
+  /** Set to record the notices Symphony posts on an issue; trackers without it cannot comment. */
+  commentOnIssue?: (issue: Issue, body: string) => Promise<void>;
 
   constructor(issues: Issue[] = []) {
     for (const issue of issues) this.issues.set(issue.id, issue);

@@ -49,6 +49,11 @@ export interface AgentConfig {
    * the issue is paused until it changes on the tracker. null = unlimited (spec behavior).
    */
   maxContinuations: number | null;
+  /**
+   * Cost cap in USD for one issue across all its stages (runs of every role, from the repository history, plus the
+   * running run). When reached, the next session does not start and the issue is paused. null = unlimited.
+   */
+  maxIssueCostUsd: number | null;
   /** Retries per issue after the first session-limit failure before waiting for the reset; 0 = wait right away. */
   maxSessionLimitRetries: number;
   /** How long a model limit without a known reset holds its model (no session of that model starts meanwhile). */
@@ -775,6 +780,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
       agentRaw.max_continuations === undefined || agentRaw.max_continuations === null
         ? null
         : reader.int(agentRaw, 'max_continuations', 'agent.max_continuations', 0, 0),
+    maxIssueCostUsd: reader.number(agentRaw, 'max_issue_cost_usd', 'agent.max_issue_cost_usd'),
     maxSessionLimitRetries: reader.int(agentRaw, 'max_session_limit_retries', 'agent.max_session_limit_retries', DEFAULTS.maxSessionLimitRetries, 0),
     modelHoldMs: reader.int(agentRaw, 'model_hold_ms', 'agent.model_hold_ms', DEFAULTS.modelHoldMs, 1),
     continuationPrompt: reader.script(agentRaw, 'continuation_prompt', 'agent.continuation_prompt'),

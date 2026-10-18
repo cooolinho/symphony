@@ -125,6 +125,8 @@ interface RepoTotals {
   tokens: number;
   costUsd: number;
   agentSeconds: number;
+  /** Cost of the finished runs per issue identifier. */
+  issueCosts: Map<string, number>;
 }
 
 /** One parsed line of a repository log. */
@@ -224,6 +226,7 @@ export class HistoryLog {
     totals.tokens += tokens;
     totals.costUsd += cost;
     totals.agentSeconds += finish.agentSeconds;
+    totals.issueCosts.set(finish.issue, (totals.issueCosts.get(finish.issue) ?? 0) + round(cost, 4));
     // `default` like run_started; absent when the caller did not log them (older callers, tests).
     const modelRequested = finish.modelRequested === undefined ? undefined : (finish.modelRequested ?? 'default');
     const effort = finish.effort === undefined ? undefined : (finish.effort ?? 'default');
@@ -316,17 +319,27 @@ export class HistoryLog {
     this.#append(repo, new Date(), event, fields);
   }
 
+  /**
+   * Cost of all finished runs of an issue (every role), from the repository log. The log is read once per repository;
+   * finished runs are added as they are written, so the figure also holds after a restart.
+   */
+  issueCostUsd(repo: string, issue: string): number {
+    return this.#totalsFor(repo).issueCosts.get(issue) ?? 0;
+  }
+
   /** Running totals, read from the existing file the first time a repository is written. */
   #totalsFor(repo: string): RepoTotals {
     let totals = this.#totals.get(repo);
     if (totals === undefined) {
-      totals = { runs: 0, tokens: 0, costUsd: 0, agentSeconds: 0 };
+      totals = { runs: 0, tokens: 0, costUsd: 0, agentSeconds: 0, issueCosts: new Map() };
       for (const entry of readEntries(this.fileFor(repo))) {
         if (entry.event !== 'run_finished') continue;
         totals.runs += 1;
         totals.tokens += Number(entry.fields.total_tokens) || 0;
         totals.costUsd += Number(entry.fields.cost_usd) || 0;
         totals.agentSeconds += Number(entry.fields.agent_seconds) || 0;
+        const issue = entry.fields.issue;
+        if (issue !== undefined) totals.issueCosts.set(issue, (totals.issueCosts.get(issue) ?? 0) + (Number(entry.fields.cost_usd) || 0));
       }
       this.#totals.set(repo, totals);
     }
