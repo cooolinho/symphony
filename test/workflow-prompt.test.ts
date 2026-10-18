@@ -132,12 +132,12 @@ describe('shipped WORKFLOW.md', () => {
     const config = resolveWith({});
     const tester = roleFor({ state: 'Testing', description: null }, config.roles);
     assert.equal(tester?.name, 'test-engineer');
-    assert.deepEqual(config.tracker.activeStates, ['Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review']);
+    assert.deepEqual(config.tracker.activeStates, ['Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review']);
     assert.deepEqual(
       [tester?.result, tester?.onResult, tester?.readOnly, tester?.modelLabel, tester?.claude.model, tester?.agents],
       ['test', { passed: 'Agent review', failed: 'In progress', blocked: 'Blocked' }, false, 'ignore', 'sonnet', ['laravel-test-engineer']],
     );
-    assert.deepEqual(tester?.mayMoveTo, ['Agent review', 'In progress', 'Blocked']);
+    assert.deepEqual(tester?.mayMoveTo, ['Documentation', 'Agent review', 'In progress', 'Blocked']);
     assert.deepEqual([config.pipeline.maxTestRounds, config.pipeline.testPaths], [2, ['tests/**', 'test/**', '**/*.test.*', '**/*Test.php']]);
     assert.ok(config.checks.onEnter.has('testing') && config.checks.onEnter.has('agent review'), 'the optional Testing check, and Agent review keeps its own');
 
@@ -151,7 +151,7 @@ describe('shipped WORKFLOW.md', () => {
   });
 
   describe('bugfix profile', () => {
-    const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
+    const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
     const resolveWith = async (extra: NodeJS.ProcessEnv = {}) => {
       const { definition } = await loadWorkflowFile(shipped);
       return resolveConfig(definition.config, {
@@ -239,6 +239,7 @@ describe('shipped WORKFLOW.md', () => {
       for (const profile of Object.values(front.pipeline.profiles) as Array<Record<string, unknown>>) delete profile.skip_when;
       delete front.roles['test-engineer'];
       delete front.roles['security-auditor'];
+      delete front.roles.docs;
       front.roles.developer.on_result.done = 'Agent review';
       delete front.checks.on_enter.Testing;
       const profileOnly = resolveConfig(front, { workflowPath: shipped, env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' }, trackerDefaults });
@@ -942,6 +943,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
       architect: ['laravel-architect'],
       developer: ['laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer'],
       'test-engineer': ['laravel-test-engineer'],
+      docs: null,
       reviewer: ['laravel-code-reviewer'],
       'security-auditor': ['laravel-code-reviewer'],
       auditor: ['laravel-architect', 'laravel-code-reviewer'],
@@ -1119,7 +1121,7 @@ describe('shipped WORKFLOW.md security auditor', () => {
 
   it('is part of the board preflight: a board without the column is reported', async () => {
     const resolved = await config();
-    const board = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
+    const board = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
     assert.deepEqual(unknownBoardColumns(resolved, board), []);
     const without = board.filter((column) => column !== 'Security review');
     assert.deepEqual(unknownBoardColumns(resolved, without), [`unknown board column "Security review" (valid: ${without.join(', ')})`]);

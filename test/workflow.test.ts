@@ -778,6 +778,7 @@ describe('result-driven roles and the pipeline section', () => {
       transitions('reviewer'),
       ['review', { approved: 'In review', changes_needed: 'In progress', blocked: 'Blocked' }, 'In progress', 'Blocked', null],
     );
+    assert.deepEqual(transitions('docs'), ['docs', { done: 'Agent review', not_needed: 'Agent review', blocked: 'Blocked' }, null, 'Blocked', null]);
     assert.deepEqual(
       transitions('security-auditor'),
       ['security', { passed: 'In review', issues_found: 'In progress', blocked: 'Blocked' }, 'In progress', 'Blocked', null],
@@ -785,9 +786,11 @@ describe('result-driven roles and the pipeline section', () => {
     assert.equal(config.pipeline.maxReviewRounds, 3);
     assert.equal(config.pipeline.maxTestRounds, 2);
     assert.equal(config.pipeline.maxSecurityRounds, 2);
+    assert.deepEqual(config.pipeline.docsPaths, ['docs/**', 'README*.md', 'CHANGELOG*.md']);
+    assert.deepEqual(config.pipeline.docsTriggerPaths, ['.env.example', 'config/**', 'WORKFLOW.md']);
     assert.deepEqual(config.pipeline.securityPaths, ['app/Policies/**', 'app/Http/Middleware/**', 'config/auth.php', 'routes/**', 'database/migrations/**']);
     for (const role of config.roles ?? []) {
-      if (['issue-analyst', 'architect', 'developer', 'test-engineer', 'reviewer', 'security-auditor'].includes(role.name)) continue;
+      if (['issue-analyst', 'architect', 'developer', 'test-engineer', 'docs', 'reviewer', 'security-auditor'].includes(role.name)) continue;
       assert.deepEqual([role.result, role.onResult, role.onCheckFailed, role.onMissingResult, role.onRoundLimit], [null, {}, null, null, null], role.name);
     }
   });
@@ -809,7 +812,8 @@ describe('result-driven roles and the pipeline section', () => {
         analysis: 'always',
         profiles: [],
         testPaths: ['tests/**', 'test/**', '**/*.test.*', '**/*Test.php'],
-        docsPaths: [],
+        docsPaths: ['docs/**', 'README*.md', 'CHANGELOG*.md'],
+        docsTriggerPaths: ['.env.example', 'config/**', 'WORKFLOW.md'],
         securityPaths: ['app/Policies/**', 'app/Http/Middleware/**', 'config/auth.php', 'routes/**', 'database/migrations/**'],
       },
     );
@@ -956,6 +960,12 @@ describe('result-driven roles and the pipeline section', () => {
       assert.deepEqual([...pipeline.typeLabels], [['bug', 'bug'], ['chore', 'maintenance']]);
       assert.equal(pipeline.defaultType, 'chore');
       assert.deepEqual([pipeline.testPaths, pipeline.docsPaths, pipeline.securityPaths], [['test/**', '**/*.spec.ts'], ['docs/**'], ['src/auth/**']]);
+    });
+
+    it('reads docs_trigger_paths: unset = the configuration surfaces, an explicit list replaces them, [] turns the trigger off', () => {
+      assert.deepEqual(resolve({ ...base, pipeline: {} }).pipeline.docsTriggerPaths, ['.env.example', 'config/**', 'WORKFLOW.md']);
+      assert.deepEqual(resolve({ ...base, pipeline: { docs_trigger_paths: ['settings/**'] } }).pipeline.docsTriggerPaths, ['settings/**']);
+      assert.deepEqual(resolve({ ...base, pipeline: { docs_trigger_paths: [] } }).pipeline.docsTriggerPaths, []);
     });
 
     it('defaults max_security_rounds to 2 (minimum 1) and security_paths to the Laravel places; an explicit list replaces them', () => {

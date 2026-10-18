@@ -18,7 +18,7 @@ const root = path.join(import.meta.dirname, '..');
 const shipped = path.join(root, 'WORKFLOW.md');
 const read = (file: string): string => fs.readFileSync(path.join(root, file), 'utf8');
 
-const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
+const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
 
 async function load(env: NodeJS.ProcessEnv = {}): Promise<ServiceConfig> {
   const { definition } = await loadWorkflowFile(shipped);
@@ -168,7 +168,7 @@ describe('#201 slots for the test stage', () => {
 describe('#201 comments and documentation', () => {
   it('lists the board columns in order in the WORKFLOW.md comment, with Design between Ready and In progress and Testing between In progress and Agent review', () => {
     const source = read('WORKFLOW.md');
-    assert.match(source, /# Board columns: Backlog \| Ready \| Design \| In progress \| Testing \| Agent review \| Security review \| Blocked \| In review \| Done/);
+    assert.match(source, /# Board columns: Backlog \| Ready \| Design \| In progress \| Testing \| Documentation \| Agent review \| Security review \| Blocked \| In review \| Done/);
     const order = ['Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'In review'].map((column) => source.search(new RegExp(`^  #   ${column} +->`, 'm')));
     assert.ok(order.every((index) => index >= 0), order.join());
     assert.deepEqual([...order].sort((a, b) => a - b), order);

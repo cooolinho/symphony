@@ -24,7 +24,7 @@ import { FakeRunner, FakeTracker, ManualClock, ManualTimers, StaticWorkflow, cal
 // (`verify.ts <run-dir>`), exactly as the files of a live run would.
 
 const source = fs.readFileSync(path.join(ROOT, 'WORKFLOW.md'), 'utf8');
-const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
+const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
 const REPO = 'acme/app';
 const NUMBERS: Record<string, number> = { P1: 21, P2: 22, P3: 23 };
 

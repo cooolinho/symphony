@@ -17,8 +17,9 @@ import {
   type StageResult,
 } from '../workflow/results.ts';
 import type { RoleConfig } from '../workflow/roles.ts';
-import { securityRoles } from '../workflow/validate.ts';
+import { docsRoles, securityRoles } from '../workflow/validate.ts';
 import { filesOutside } from './changed-files.ts';
+import { docsNeeded, type DocsFacts } from './docs.ts';
 import { securityNeeded, type SecurityFacts } from './security.ts';
 import { refactoringGoals, type PersistedResult, type StageHistory } from './stage-history.ts';
 import { resolveTransition, type RoundHistory, type StageConditions, type Transition, type TransitionProfile } from './transitions.ts';
@@ -68,6 +69,10 @@ export interface PathRule {
    * looked up when the agent reports; throws when that cannot be told.
    */
   changedFiles: () => Promise<{ base: string; files: string[] }>;
+  /** The setting `allowed` comes from, named in the refusal; default `pipeline.test_paths`. */
+  setting?: string;
+  /** What the role does instead of changing other files, ending the refusal; default: the test engineer's. */
+  guidance?: string;
 }
 
 /** Offending files named in a refusal; more are counted. */
@@ -88,6 +93,11 @@ export interface ResultToolParams {
    * agent reports `approved`. Without it the approval keeps its configured target.
    */
   security?: Pick<SecurityFacts, 'risk' | 'securityPaths' | 'changedFiles'> | null;
+  /**
+   * For a developer's `done` or a test engineer's `passed`: what decides whether the issue needs the documentation stage
+   * (see `docsNeeded`), looked up when the agent reports. Without it the hand-off keeps its configured target.
+   */
+  docs?: Pick<DocsFacts, 'docsNeeded' | 'docsPaths' | 'triggerPaths' | 'changedFiles'> | null;
   config: Pick<ServiceConfig, 'tracker' | 'roles' | 'pipeline'>;
   /** The board's columns in board order; null when the tracker does not list them. */
   boardColumns: readonly string[] | null;
@@ -241,6 +251,15 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
    */
   const conditions = async (args: Record<string, unknown>): Promise<Conditions> => {
     const configured: Conditions = { flags: params.flags ?? {}, reasons: {} };
+    const writers = docsRoles(params.config.roles);
+    const docs = params.docs;
+    if (docs !== undefined && docs !== null && writers.length > 0 && ((kind === 'implementation' && args.verdict === 'done') || (kind === 'test' && args.verdict === 'passed'))) {
+      const decision = await docsNeeded(docs);
+      return {
+        flags: { ...configured.flags, ...Object.fromEntries(writers.map((writer) => [writer.name, decision.needed])) },
+        reasons: Object.fromEntries(writers.map((writer) => [writer.name, decision.reason])),
+      };
+    }
     const security = params.security;
     const auditors = securityRoles(params.config.roles);
     if (security === undefined || security === null || kind !== 'review' || args.verdict !== 'approved' || auditors.length === 0) return configured;
@@ -306,14 +325,15 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     const more = outside.length > shown.length ? `\n- … and ${outside.length - shown.length} more` : '';
     return fail(
       'invalid_result',
-      `The ${kind} result is invalid: role ${role.name} may only change files matching \`pipeline.test_paths\` ` +
+      `The ${kind} result is invalid: role ${role.name} may only change files matching \`${rule.setting ?? 'pipeline.test_paths'}\` ` +
         `(${rule.allowed.length > 0 ? rule.allowed.join(', ') : 'none configured'}), but ${outside.length} file(s) that differ from ` +
         `commit ${base.slice(0, 12)} (the developer's last hand-off, else where your session started) are outside them:\n${shown.join('\n')}${more}\n` +
         'Nothing was recorded. Undo the changes you made yourself: restore a changed or deleted file with ' +
         `\`git checkout ${base.slice(0, 12)} -- <file>\`, delete a new one, commit, and report again. Leave a file alone that you did not ` +
         'change, for example a commit that was already on the branch or a push by someone else: describe it in an issue comment and ' +
-        'end your turn. Production code belongs to the developer: if the tests fail because of it, report the verdict `failed` with ' +
-        'the failed cases instead of fixing it.',
+        'end your turn. ' +
+        (rule.guidance ??
+          'Production code belongs to the developer: if the tests fail because of it, report the verdict `failed` with the failed cases instead of fixing it.'),
     );
   };
 

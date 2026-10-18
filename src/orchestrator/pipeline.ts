@@ -1,7 +1,7 @@
 import { normalizeStateName } from '../workflow/config.ts';
 import type { WorkflowProfile } from '../workflow/profile.ts';
 import { NEXT_STAGE, resultTargets, roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
-import { securityRoles } from '../workflow/validate.ts';
+import { docsRoles, securityRoles } from '../workflow/validate.ts';
 import type { PersistedResult } from './stage-history.ts';
 
 /** One agent session attributed to a pipeline stage (the `#sessionJson` shape without the transcript). */
@@ -150,6 +150,13 @@ function routedColumns(
   // `transitions.ts`), so the column is routed to whenever a reviewer exists.
   if (roles.some((role) => role.result === 'review')) {
     for (const role of securityRoles(roles)) {
+      for (const state of role.states) routed.add(state);
+    }
+  }
+  // The documentation stage is conditional too: a finished implementation or test goes to it when the issue needs it
+  // (`docsStage` in `transitions.ts`).
+  if (roles.some((role) => role.result === 'implementation' || role.result === 'test')) {
+    for (const role of docsRoles(roles)) {
       for (const state of role.states) routed.add(state);
     }
   }
@@ -302,9 +309,10 @@ export function derivePipeline(input: PipelineInput): PipelineStage[] {
     if (stage.kind !== 'agent' || stage.sessions.length > 0) continue;
     if (skip.includes(stage.id) || stage.verdict === 'skipped') stage.status = 'skipped';
   }
-  // The security review runs only for issues that need it: an issue that went past it without a session skipped it.
+  // The security review and the documentation stage run only for issues that need them: an issue that went past one
+  // without a session skipped it.
   for (const stage of stages) {
-    const conditional = roles?.some((role) => role.name === stage.id && role.result === 'security') === true;
+    const conditional = roles?.some((role) => role.name === stage.id && (role.result === 'security' || role.result === 'docs')) === true;
     if (conditional && stage.sessions.length === 0 && stage.status === 'done') stage.status = 'skipped';
   }
   return stages;

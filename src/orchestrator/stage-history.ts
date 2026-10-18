@@ -99,6 +99,23 @@ export function designHead(history: Pick<StageHistory, 'results'>): string | nul
   return newest(history, 'design')?.meta.head_sha ?? null;
 }
 
+/**
+ * The commit the issue was last handed on at before the documentation stage: the newest finished implementation (`done`)
+ * or passed test; null when none recorded one. The docs role's path rule measures from it.
+ */
+export function docsBaseHead(history: Pick<StageHistory, 'results'>): string | null {
+  const entry = history.results.findLast(
+    ({ result, meta }) => meta.head_sha !== null && ((result.kind === 'implementation' && result.verdict === 'done') || (result.kind === 'test' && result.verdict === 'passed')),
+  );
+  return entry?.meta.head_sha ?? null;
+}
+
+/** Whether the newest analysis since the last `reset` says documentation must change (`docs_needed`). */
+export function analysisNeedsDocs(history: Pick<StageHistory, 'results'>): boolean {
+  const analysis = newest(history, 'analysis')?.result;
+  return analysis?.kind === 'analysis' && analysis.docs_needed === true;
+}
+
 /** Whether the newest analysis since the last `reset` flags a security risk (`risks.security`). */
 export function analysisFlagsSecurity(history: Pick<StageHistory, 'results'>): boolean {
   const analysis = newest(history, 'analysis')?.result;

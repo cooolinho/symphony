@@ -26,10 +26,10 @@ npm install
 
 1. On GitHub, go to **Profile → Projects → New project** and create a project from the **Kanban** template. It comes
    with the columns `Backlog`, `Ready`, `In progress`, `In review` and `Done`.
-2. Add the columns `Design`, `Testing`, `Agent review`, `Security review` and `Blocked`: on the board, add the options via the menu of the **Status** field (or
-   *Settings → Fields → Status*). Keep this order (`Backlog`, `Ready`, `Design`, `In progress`, `Testing`, `Agent review`,
+2. Add the columns `Design`, `Testing`, `Documentation`, `Agent review`, `Security review` and `Blocked`: on the board, add the options via the menu of the **Status** field (or
+   *Settings → Fields → Status*). Keep this order (`Backlog`, `Ready`, `Design`, `In progress`, `Testing`, `Documentation`, `Agent review`,
    `Security review`, `Blocked`, `In review`, `Done`): `next` and the pipeline view follow the board's order, so `Design`
-   belongs between `Ready` and `In progress`, `Testing` between `In progress` and `Agent review`, and `Security review`
+   belongs between `Ready` and `In progress`, `Testing` between `In progress` and `Documentation`, `Documentation` between `Testing` and `Agent review`, and `Security review`
    between `Agent review` and `Blocked`.
 
    | Column | Who moves cards here | What Symphony does |
@@ -39,6 +39,7 @@ npm install
    | `Design` | Issue analyst, for larger changes (feature and refactor above complexity `S`, bugfix of complexity `L` or `XL`, or no complexity label); smaller issues skip it without a session | starts the **Architect** (read-only), who reports the design the developer implements |
    | `In progress` | Developer, Reviewer (changes needed), Test engineer (tests failed), Architect (design ready) | Developer works |
    | `Testing` | Developer, after passing checks (bug, feature and refactor issues; other issues only with `SYMPHONY_AFTER_IMPLEMENTATION=Testing`) | starts the **Test engineer**, who writes independent tests and may only change test files |
+   | `Documentation` | Developer or Test engineer, when the change needs documentation (`docs_needed` in the analysis, or a changed file in `pipeline.docs_trigger_paths` without a change in `pipeline.docs_paths`); other issues skip it without a session | starts the **docs agent** (`haiku`), who may only change documentation files |
    | `Agent review` | Developer (issues without the test stage), or Test engineer when the tests pass | starts the **Reviewer** (at most one at a time) |
    | `Security review` | Reviewer, when the approved change is security-relevant (a `security` label, a security risk in the analysis, or a changed file in `pipeline.security_paths`); other approved issues skip it without a session | starts the **Security auditor** (read-only, at most one at a time) |
    | `Blocked` | Issue analyst (open questions), Architect, Developer, Reviewer or Security auditor | stops the agent, workspace is kept; your turn |
@@ -55,6 +56,8 @@ npm install
    other issues skip `Testing` unless
    `SYMPHONY_AFTER_IMPLEMENTATION=Testing` makes the developer hand every issue over to it. The column is required
    either way: the dry run (step 6) reports every column missing from the board (`unknown board column "Testing"`).
+   `Documentation` is used by the [docs agent](configuration.md#the-documentation-stage) and is required on the board
+   as well (`unknown board column "Documentation"` otherwise); it stays empty for issues that need no documentation.
    `Security review` is used by the [security auditor](configuration.md#the-security-auditor) and is required on the
    board as well (`unknown board column "Security review"` otherwise); it stays empty for issues that need no audit.
    To run bug issues without the test stage, see [Bug issues](usage.md#bug-issues-the-bugfix-profile). With the default

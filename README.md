@@ -117,7 +117,7 @@ Symphony polls a **GitHub Project board** at a fixed interval and hands issues i
 For each issue it creates a folder, clones the repository and lets the agent work: create a branch, implement, test,
 push, open a pull request and comment on the issue. Automatic checks and a second, read-only agent (the reviewer)
 then check the work. Only then does the card land in **In review**, where you review, merge and move it to **Done**.
-Bug, feature and refactor issues pass a `Testing` column (an independent test engineer) before the review, and security-relevant changes
+Bug, feature and refactor issues pass a `Testing` column (an independent test engineer) before the review, changes that need documentation pass a cheap `Documentation` stage, and security-relevant changes
 (a `security` label, a security risk in the analysis, or changed files such as policies, middleware, routes or migrations)
 pass a read-only `Security review` after it. Review, test and security loops are bounded: at the round limit the card goes
 to **Blocked** with the label `needs-human`.
@@ -152,6 +152,10 @@ live in **`.env`**.
   may only change test files; failed tests go back to the developer with the failed cases, and after
   `pipeline.max_test_rounds` failed rounds the issue waits for you
   ([details](docs/configuration.md#the-test-engineer)).
+- **Docs agent:** when the analysis says `docs_needed`, or a changed file matches `pipeline.docs_trigger_paths` (by default
+  `.env.example`, `config/**`, `WORKFLOW.md`) without any change in `pipeline.docs_paths`, a `haiku` agent in the
+  `Documentation` column updates the docs before the review; all other issues skip it without a session
+  ([details](docs/configuration.md#the-documentation-stage)).
 - **Security auditor:** after the reviewer approves, a read-only agent in the `Security review` column audits changes
   that touch security (a `security` label, `risks.security` in the analysis, or a changed file matching
   `pipeline.security_paths`, by default Laravel policies, middleware, auth config, routes and migrations); all other
@@ -193,7 +197,7 @@ npm start               # start Symphony
 ```
 
 In between, create a GitHub Project board with the columns `Backlog`, `Ready`, `Design`, `In progress`, `Testing`,
-`Agent review`, `Security review`, `Blocked`, `In review` and `Done`. The step-by-step guide is [docs/getting-started.md](docs/getting-started.md);
+`Documentation`, `Agent review`, `Security review`, `Blocked`, `In review` and `Done`. The step-by-step guide is [docs/getting-started.md](docs/getting-started.md);
 running it with Docker behind Traefik is described in [docs/docker.md](docs/docker.md), a local test run of the same
 image without Traefik (`docker-compose.local.yml`) in
 [its own section](docs/docker.md#local-test-setup-without-traefik).

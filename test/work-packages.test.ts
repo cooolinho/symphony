@@ -21,7 +21,7 @@ import { FakeRunner, FakeTracker, ManualClock, ManualTimers, StaticWorkflow, cal
 // and prompt template on an in-memory board that treats sub-issues like the GitHub adapter, with scripted sessions.
 
 const shipped = path.join(import.meta.dirname, '..', 'WORKFLOW.md');
-const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
+const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
 // Six slots: the analysts of the packages run next to the stages of the parent.
 const ENV = { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't', SYMPHONY_MAX_CONCURRENT_AGENTS: '6' };
 const PARENT = '7';

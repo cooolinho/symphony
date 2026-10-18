@@ -14,7 +14,8 @@ import { WorkspaceManager } from '../src/workspace/manager.ts';
 import { FakeTracker, baseFront, makeIssue, makeWorkflow, tempDir } from './helpers.ts';
 
 const ROLES = {
-  developer: { states: ['Todo', 'In progress'], result: 'implementation', may_move_to: ['Agent review', 'Blocked'], on_result: { done: 'Agent review' } },
+  developer: { states: ['Todo', 'In progress'], result: 'implementation', may_move_to: ['Documentation', 'Agent review', 'Blocked'], on_result: { done: 'Agent review' } },
+  docs: { states: ['Documentation'], result: 'docs', may_move_to: ['Agent review', 'Blocked'], on_result: { done: 'Agent review', not_needed: 'Agent review' } },
   reviewer: {
     states: ['Agent review'],
     read_only: true,
@@ -36,7 +37,7 @@ const ROLES = {
   tester: {
     states: ['Testing'],
     result: 'test',
-    may_move_to: ['Agent review', 'In progress', 'Blocked'],
+    may_move_to: ['Documentation', 'Agent review', 'In progress', 'Blocked'],
     on_result: { passed: 'Agent review', failed: 'In progress' },
   },
 };
@@ -55,6 +56,7 @@ interface SetupOptions {
   state?: string;
   pathRule?: ResultToolParams['pathRule'];
   security?: ResultToolParams['security'];
+  docs?: ResultToolParams['docs'];
 }
 
 function setup(options: SetupOptions = {}) {
@@ -63,7 +65,7 @@ function setup(options: SetupOptions = {}) {
     tracker: {
       kind: 'github_project',
       provider: { owner: 'acme', project_number: 1, token: 'test-token' },
-      active_states: ['Todo', 'Ready', 'In progress', 'Testing', 'Agent review', 'Security review'],
+      active_states: ['Todo', 'Ready', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review'],
     },
     roles: { ...ROLES, reviewer: { ...ROLES.reviewer, ...options.reviewer } },
     pipeline: { max_review_rounds: 3, max_test_rounds: 2 },
@@ -104,6 +106,7 @@ function setup(options: SetupOptions = {}) {
     meta: { workflowHash: 'f'.repeat(64), headSha: async () => 'abc123def456abc1', now: () => new Date('2026-10-18T12:00:00Z') },
     ...(options.pathRule !== undefined ? { pathRule: options.pathRule } : {}),
     ...(options.security !== undefined ? { security: options.security } : {}),
+    ...(options.docs !== undefined ? { docs: options.docs } : {}),
   };
   const unguarded = createResultTool(params);
   const tools = guardTools(toolsForRole(tracker.agentToolSpecs(), role, current(), unguarded), guard);
@@ -123,6 +126,92 @@ function error(result: ToolResult): { category: string; message: string } {
   assert.ok(!result.ok, 'expected a tool error');
   return result.error;
 }
+
+describe('report_result: the documentation stage after the developer finished', () => {
+  const facts = (files: string[] | Error, over: Partial<NonNullable<ResultToolParams['docs']>> = {}) => {
+    const calls: number[] = [];
+    return {
+      calls,
+      docs: {
+        docsNeeded: false,
+        docsPaths: ['docs/**', 'README*.md'],
+        triggerPaths: ['.env.example', 'config/**'],
+        changedFiles: async () => {
+          calls.push(1);
+          if (files instanceof Error) throw files;
+          return files;
+        },
+        ...over,
+      },
+    };
+  };
+  const DONE = { verdict: 'done', summary: 'Implemented.' };
+
+  it('a changed .env.example without a docs change sends the hand-off to Documentation', async () => {
+    const { docs } = facts(['.env.example', 'src/a.ts']);
+    const { report, tracker, markers } = setup({ role: 'developer', state: 'In progress', docs });
+    const result = data(await report(DONE));
+    assert.deepEqual([result.target, tracker.statusCalls], ['Documentation', ['Documentation']]);
+    assert.match(String(result.reason), /documentation needed: 1 changed file\(s\) match pipeline\.docs_trigger_paths/);
+    assert.equal(markers()[0]?.meta.target, 'Documentation');
+  });
+
+  it('goes to Agent review without a trigger, or when the docs changed already', async () => {
+    for (const files of [['src/a.ts'], ['.env.example', 'docs/usage.md']]) {
+      const { docs } = facts(files);
+      const { report, tracker } = setup({ role: 'developer', state: 'In progress', docs });
+      const result = data(await report(DONE));
+      assert.deepEqual([result.target, tracker.statusCalls], ['Agent review', ['Agent review']], files.join());
+      assert.match(String(result.reason), /documentation not needed/);
+    }
+  });
+
+  it('docs_needed of the analysis sends it to Documentation without asking git; a passed test does the same', async () => {
+    const { docs, calls } = facts(['src/a.ts'], { docsNeeded: true });
+    assert.equal(data(await setup({ role: 'developer', state: 'In progress', docs }).report(DONE)).target, 'Documentation');
+    assert.equal(calls.length, 0);
+    const tested = setup({ role: 'tester', state: 'Testing', docs: facts(['config/app.php']).docs });
+    assert.equal(data(await tested.report({ verdict: 'passed', summary: 'Tested.', cases: [{ criterion: 'c', test: 't', status: 'passed' }] })).target, 'Documentation');
+  });
+
+  it('fails safe when git cannot list the files', async () => {
+    const { docs } = facts(new Error('no base'));
+    const result = data(await setup({ role: 'developer', state: 'In progress', docs }).report(DONE));
+    assert.equal(result.target, 'Documentation');
+    assert.match(String(result.reason), /could not be determined \(no base\), documenting to be safe/);
+  });
+
+  it('keeps the configured target without facts, and for other verdicts', async () => {
+    assert.equal(data(await setup({ role: 'developer', state: 'In progress' }).report(DONE)).target, 'Agent review');
+    const { docs, calls } = facts(['.env.example']);
+    const blocked = setup({ role: 'developer', state: 'In progress', docs });
+    assert.equal(data(await blocked.report({ verdict: 'blocked', summary: 'Stuck.', blockers: [{ description: 'x', needs: 'human' }] })).target, 'Blocked');
+    assert.equal(calls.length, 0);
+  });
+
+  it('the docs result leads to Agent review', async () => {
+    const { report, tracker } = setup({ role: 'docs', state: 'Documentation' });
+    assert.equal(data(await report({ verdict: 'done', summary: 'Documented.', files: ['docs/usage.md'] })).target, 'Agent review');
+    assert.deepEqual(tracker.statusCalls, ['Agent review']);
+  });
+
+  it('refuses a docs result with changes outside pipeline.docs_paths, naming the files', async () => {
+    const pathRule = {
+      allowed: ['docs/**', 'README*.md'],
+      setting: 'pipeline.docs_paths',
+      guidance: 'Code belongs to the developer.',
+      changedFiles: async () => ({ base: 'abc123def4567890', files: ['docs/usage.md', 'src/a.ts'] }),
+    };
+    const { report, tracker } = setup({ role: 'docs', state: 'Documentation', pathRule });
+    const refused = error(await report({ verdict: 'done', summary: 'Documented.', files: ['docs/usage.md'] }));
+    assert.equal(refused.category, 'invalid_result');
+    assert.match(refused.message, /may only change files matching `pipeline\.docs_paths` \(docs\/\*\*, README\*\.md\)/);
+    assert.match(refused.message, /- src\/a\.ts/);
+    assert.doesNotMatch(refused.message, /- docs\/usage\.md/);
+    assert.match(refused.message, /Code belongs to the developer\./);
+    assert.deepEqual(tracker.statusCalls, []);
+  });
+});
 
 describe('report_result: the security review after the reviewer approved', () => {
   const facts = (files: string[] | Error, over: Partial<NonNullable<ResultToolParams['security']>> = {}) => {

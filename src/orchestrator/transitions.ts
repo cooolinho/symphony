@@ -4,7 +4,7 @@ import { classify } from '../workflow/classify.ts';
 import { profileSkipReason, type WorkflowProfile } from '../workflow/profile.ts';
 import { isLoopKind, LOOP_VERDICTS, type LoopKind } from '../workflow/results.ts';
 import { NEXT_STAGE, roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
-import { canMoveTo, laterActiveColumns, nextWithoutBoardOrder, securityRoles } from '../workflow/validate.ts';
+import { canMoveTo, docsRoles, laterActiveColumns, nextWithoutBoardOrder, securityRoles } from '../workflow/validate.ts';
 import { blockedBucketColumns } from './pipeline.ts';
 import type { StageHistory } from './stage-history.ts';
 
@@ -14,7 +14,8 @@ export type TransitionProfile = WorkflowProfile;
 /**
  * Whether a conditional stage is needed for the issue, by role name; roles not listed always run. An extra override on
  * top of the profile's `skip` and `skip_when` (see `profileSkips`), which `nextStage` always evaluates. The security
- * review (`result: security`) is the other way round: it runs only for `true`, see {@link securityStage}.
+ * review (`result: security`) and the documentation stage (`result: docs`) are the other way round: they run only for
+ * `true`, see {@link securityStage} and {@link docsStage}.
  */
 export type StageConditions = Readonly<Record<string, boolean>>;
 
@@ -111,7 +112,7 @@ export function resolveTransition(input: TransitionInput): TransitionOutcome {
     rule = mapped === undefined ? 'unmapped' : 'on_result';
     if (mapped === undefined) target = blockedColumn(input);
     else if (mapped === NEXT_STAGE) target = nextStage(input);
-    else target = securityStage(input, { column: mapped, note: `on_result.${verdict}` });
+    else target = securityStage(input, docsStage(input, { column: mapped, note: `on_result.${verdict}` }));
   }
 
   const label = `${kind} ${verdict}${round !== null ? ` (round ${round}${max !== null ? ` of ${max}` : ''})` : ''}`;
@@ -192,6 +193,31 @@ function securityStage(input: TransitionInput, target: { column: string; note: s
     const why = flagReasons[auditor.name];
     if (flags[auditor.name] === true) return { column, note: `${target.note}, security review needed${why !== undefined ? `: ${why}` : ''}` };
     if (flags[auditor.name] === false) notes.push(`security review not needed${why !== undefined ? `: ${why}` : ''}`);
+  }
+  return notes.length > 0 ? { ...target, note: [target.note, ...notes].join(', ') } : target;
+}
+
+/**
+ * A finished implementation (`done`) or test (`passed`) that would go straight to the reviewer goes to the column of the
+ * role with `result: docs` first when the issue needs documentation. That role must be in the active columns, the
+ * profile must not skip it, and `flags[<role>]` must be `true`: the check (see `docsNeeded`) is evaluated by
+ * `report_result`, and a resolver without it keeps the configured target. `next` is handled by {@link nextStage}, which
+ * passes over a docs role the flags call not needed.
+ */
+function docsStage(input: TransitionInput, target: { column: string; note: string }): { column: string; note: string } {
+  const { role, verdict, config, profile, flags = {}, flagReasons = {} } = input;
+  if (!((role.result === 'implementation' && verdict === 'done') || (role.result === 'test' && verdict === 'passed'))) return target;
+  const key = normalizeStateName(target.column);
+  if (!(config.roles ?? []).some((candidate) => candidate.result === 'review' && candidate.commands === null && candidate.states.includes(key))) return target;
+  const { complexity } = classify(input.issue?.labels ?? []);
+  const notes: string[] = [];
+  for (const writer of docsRoles(config.roles)) {
+    if (profileSkipReason(profile, writer.name, complexity) !== null) continue;
+    const column = config.tracker.activeStates.find((state) => writer.states.includes(normalizeStateName(state)));
+    if (column === undefined) continue;
+    const why = flagReasons[writer.name];
+    if (flags[writer.name] === true) return { column, note: `${target.note}, documentation needed${why !== undefined ? `: ${why}` : ''}` };
+    if (flags[writer.name] === false) notes.push(`documentation not needed${why !== undefined ? `: ${why}` : ''}`);
   }
   return notes.length > 0 ? { ...target, note: [target.note, ...notes].join(', ') } : target;
 }

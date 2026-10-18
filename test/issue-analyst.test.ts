@@ -17,7 +17,7 @@ import { FakeRunner, FakeTracker, ManualClock, ManualTimers, StaticWorkflow, cal
 
 const shipped = path.join(import.meta.dirname, '..', 'WORKFLOW.md');
 const ISSUE = '7';
-const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
+const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
 const ENV = { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' };
 
 type Script = (params: StartSessionParams, report: (args: Record<string, unknown>) => Promise<ToolResult>) => Promise<void>;

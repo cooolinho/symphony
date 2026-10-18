@@ -308,7 +308,7 @@ describe('#202 the generated pipeline workflow, key by key', () => {
     for (const type of ['bugfix', 'feature', 'refactor']) assert.deepEqual(b.pipeline.profiles[type].on_result, { developer: { done: 'Testing' } }, type);
     assert.equal(b.pipeline.max_review_rounds, 3);
     assert.equal(b.pipeline.max_test_rounds, 2);
-    assert.deepEqual(b.tracker.active_states, ['Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review']);
+    assert.deepEqual(b.tracker.active_states, ['Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review']);
     for (const name of Object.keys(a.roles)) {
       const { claude: _shipped, ...before } = a.roles[name];
       const { claude: _generated, ...after } = b.roles[name];
@@ -346,9 +346,9 @@ describe('#202 the generated pipeline workflow, key by key', () => {
     assert.equal(pipeline.max_test_rounds, 5);
     assert.equal(pipeline.max_review_rounds, 4);
     assert.deepEqual(pipeline.profiles.bugfix.on_result.developer, { done: 'Agent review' });
-    const columns = source.replace('active_states: [Ready, Design, In progress, Testing, Agent review, Security review]', 'active_states: [Ready, Design, In progress, Agent review, Security review]');
+    const columns = source.replace('active_states: [Ready, Design, In progress, Testing, Documentation, Agent review, Security review]', 'active_states: [Ready, Design, In progress, Documentation, Agent review, Security review]');
     assert.notEqual(columns, source);
-    assert.deepEqual(((generated(columns).config as Record<string, any>).tracker as Record<string, unknown>).active_states, ['Ready', 'Design', 'In progress', 'Agent review', 'Security review']);
+    assert.deepEqual(((generated(columns).config as Record<string, any>).tracker as Record<string, unknown>).active_states, ['Ready', 'Design', 'In progress', 'Documentation', 'Agent review', 'Security review']);
   });
 
   it('uses absolute paths for what the run directory cannot resolve, whatever the root', () => {
@@ -449,7 +449,7 @@ describe('#202 issue texts: what a Claude session is told to do', () => {
   it('needs the board columns of the whole path, the way to Blocked and the terminal column', () => {
     const needed = new Set(PIPELINE_SCENARIO.flatMap((issue) => issue.path));
     for (const status of needed) assert.ok(PIPELINE_COLUMNS.includes(status), `${status} is preflighted`);
-    for (const status of ['Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review', 'In review', 'Blocked', 'Done']) assert.ok(PIPELINE_COLUMNS.includes(status), status);
+    for (const status of ['Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review', 'In review', 'Blocked', 'Done']) assert.ok(PIPELINE_COLUMNS.includes(status), status);
   });
 });
 

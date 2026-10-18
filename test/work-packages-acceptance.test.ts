@@ -39,7 +39,7 @@ const root = path.join(import.meta.dirname, '..');
 const shippedPath = path.join(root, 'WORKFLOW.md');
 const read = (file: string): string => fs.readFileSync(path.join(root, file), 'utf8');
 
-const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
+const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
 const ENV = { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' };
 
 async function shipped(extraEnv: NodeJS.ProcessEnv = {}) {

@@ -1314,6 +1314,67 @@ describe('issue analyst stage', () => {
   });
 });
 
+// The documentation stage (docs/configuration.md#the-documentation-stage): the developer's hand-off goes to Documentation
+// only when the issue needs it, decided by report_result from the files the branch changes against origin/develop.
+
+const BOARD_DOCS = ['Backlog', 'Ready', 'In progress', 'Documentation', 'Agent review', 'Blocked', 'In review', 'Done'];
+
+const DOCS_FRONT = {
+  tracker: { ...FRONT.tracker, active_states: ['Ready', 'In progress', 'Documentation', 'Agent review'] },
+  roles: {
+    developer: { ...FRONT.roles.developer, may_move_to: ['Documentation', 'Agent review', 'In progress', 'Blocked'] },
+    docs: {
+      states: ['Documentation'],
+      result: 'docs',
+      may_move_to: ['Agent review', 'Blocked'],
+      on_result: { done: 'Agent review', not_needed: 'Agent review', blocked: 'Blocked' },
+    },
+    reviewer: { ...FRONT.roles.reviewer, on_round_limit: undefined },
+  },
+  pipeline: { max_review_rounds: 3 },
+  checks: { on_enter: {} },
+};
+
+function docsPipeline(stages: Stage[]): Pipeline {
+  const tracker = new FakeTracker([makeIssue({ id: ISSUE, state: 'In progress', native_ref: { base_branch: 'develop' } })]);
+  tracker.statusOptions = async () => BOARD_DOCS;
+  return pipeline(stages, { tracker, prompt: PROMPT, front: { ...DOCS_FRONT, hooks: securityHooks(true) } });
+}
+
+describe('documentation stage', () => {
+  it('a changed .env.example without docs runs the docs role before the review', async () => {
+    const h = docsPipeline([done(changed('.env.example')), reporting({ verdict: 'done', summary: 'Documented.', files: ['docs/configuration.md'] }, changed('docs/configuration.md')), approved()]);
+    await run(h);
+
+    assert.deepEqual(prompts(h), ['developer round 1', 'docs round 1', 'reviewer round 1']);
+    assert.deepEqual(h.tracker.statusCalls, ['Documentation', 'Agent review', 'In review']);
+    assert.match(String(data(h.reports[0]).reason), /documentation needed: 1 changed file\(s\) match pipeline\.docs_trigger_paths without a change in pipeline\.docs_paths: \.env\.example/);
+    assert.deepEqual((await results(h)).map((result) => [result.role, result.verdict, result.target]), [
+      ['developer', 'done', 'Documentation'],
+      ['docs', 'done', 'Agent review'],
+      ['reviewer', 'approved', 'In review'],
+    ]);
+  });
+
+  it('a change without a trigger goes straight to the review: no docs session runs, the stage shows as skipped', async () => {
+    const h = docsPipeline([done(changed('src/app.ts')), approved()]);
+    await run(h);
+
+    assert.deepEqual(prompts(h), ['developer round 1', 'reviewer round 1']);
+    assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'In review']);
+    assert.match(String(data(h.reports[0]).reason), /documentation not needed: no trigger/);
+    const stages = h.orchestrator.issueDetail(issue(h).identifier)?.pipeline ?? [];
+    assert.equal(stages.find((stage) => stage.id === 'docs')?.status, 'skipped', JSON.stringify(stages.map((stage) => [stage.id, stage.status])));
+  });
+
+  it('a change of .env.example together with a docs change skips the stage', async () => {
+    const h = docsPipeline([done((workspace) => { changed('.env.example')(workspace); changed('docs/configuration.md')(workspace); }), approved()]);
+    await run(h);
+    assert.deepEqual(prompts(h), ['developer round 1', 'reviewer round 1']);
+    assert.match(String(data(h.reports[0]).reason), /documentation already changed/);
+  });
+});
+
 // The security review (docs/configuration.md#the-security-auditor): the reviewer's approval goes to Security review only
 // when the issue needs it, decided by report_result from the files the branch changes against origin/develop.
 

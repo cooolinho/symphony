@@ -23,7 +23,7 @@ tracker:
       done_state: Done
       on_conflict: In progress               # a pull request that conflicts with base_branch goes back to the developer
       method: squash
-  # Board columns: Backlog | Ready | Design | In progress | Testing | Agent review | Security review | Blocked | In review | Done
+  # Board columns: Backlog | Ready | Design | In progress | Testing | Documentation | Agent review | Security review | Blocked | In review | Done
   #   Ready              -> issue analyst (read-only) works out requirements, risks, refined acceptance criteria, type and
   #                         complexity before anything is implemented; later stages get the analysis in their prompt
   #                         (pipeline.analysis: when_unlabeled skips it for issues that already carry Type and Complexity labels)
@@ -41,6 +41,12 @@ tracker:
   #                         issues only with SYMPHONY_AFTER_IMPLEMENTATION=Testing (docs/configuration.md#the-test-engineer). The board
   #                         needs the column either way, between In progress and Agent review: `next` and the pipeline view
   #                         use its order.
+  #   Documentation      -> docs agent (haiku) updates the documentation, and may only change files matching pipeline.docs_paths.
+  #                         Entered only when the hand-off from the developer (or test engineer) needs it: `docs_needed` in the
+  #                         analysis, or a changed file matching pipeline.docs_trigger_paths (.env.example, config/**, WORKFLOW.md)
+  #                         while no file in pipeline.docs_paths changed; every other hand-off goes straight to Agent review
+  #                         without a session. The board needs the column between Testing and Agent review
+  #                         (docs/configuration.md#the-documentation-stage), so the reviewer checks the docs too.
   #   Agent review       -> reviewer agent (read-only) reviews it; entered only after checks pass. An issue split into work
   #                         packages gets an integration review instead: the merged packages on the base branch, once all
   #                         of its sub-issues are closed
@@ -62,7 +68,7 @@ tracker:
   #   An issue whose description starts with "/plan [file]" is served by the planner: every item of the list (the file,
   #   or the description below the command line) becomes one planned sub-issue in Backlog; a human moves them to Ready.
   # If your board names its columns differently, adjust these lists, roles, checks and the prompt below.
-  active_states: [Ready, Design, In progress, Testing, Agent review, Security review]
+  active_states: [Ready, Design, In progress, Testing, Documentation, Agent review, Security review]
   terminal_states: [Done]
 
 polling:
@@ -102,6 +108,7 @@ agent:
   max_concurrent_agents_by_state:
     "Agent review": 1                        # one review at a time
     "Security review": 1                     # one security audit at a time
+    Documentation: 1                         # one docs run at a time
     Testing: 1                               # one test run at a time (bug, feature and refactor issues; every issue with SYMPHONY_AFTER_IMPLEMENTATION=Testing)
   # Slots kept free for a role, so a developer and a reviewer can always run side by side. Other roles (/plan,
   # /refactoring, the issue analyst, the test engineer, ...) only get slots beyond these: with 2 slots in total they wait
@@ -182,7 +189,7 @@ roles:
     on_result:
       done: ${SYMPHONY_AFTER_IMPLEMENTATION:-Agent review}   # Agent review, or Testing to run the test engineer first (bug, feature and refactor issues: pipeline.profiles)
       blocked: Blocked
-    may_move_to: [In progress, Testing, Agent review, Blocked]
+    may_move_to: [In progress, Testing, Documentation, Agent review, Blocked]
     agents: [laravel-architect, laravel-database-engineer, laravel-filament-developer, laravel-test-engineer, laravel-code-reviewer]
   # The test engineer is independent of the developer: it writes and runs tests for every acceptance criterion and may only
   # change files matching pipeline.test_paths (report_result refuses the result with invalid_result otherwise). `failed`
@@ -191,11 +198,24 @@ roles:
   test-engineer:
     states: [Testing]
     result: test
-    on_result: { passed: Agent review, failed: In progress, blocked: Blocked }
-    may_move_to: [Agent review, In progress, Blocked]
+    on_result: { passed: Agent review, failed: In progress, blocked: Blocked }   # passed: Symphony goes to Documentation first when the change needs it
+    may_move_to: [Documentation, Agent review, In progress, Blocked]
     model_label: ignore                      # sonnet, whatever the issue's Model: label picks for the developer
     agents: [laravel-test-engineer]
     claude: { model: sonnet }
+  # The docs agent is conditional: Symphony sends a finished implementation (or passed tests) here only when it needs
+  # documentation (`docs_needed` in the analysis, or a changed file matching pipeline.docs_trigger_paths without any change in
+  # pipeline.docs_paths; when the changed files cannot be determined, it is needed to be safe). Otherwise the hand-off goes
+  # straight to Agent review and no session runs. It may only change files matching pipeline.docs_paths (report_result refuses
+  # the result with invalid_result otherwise). A profile that lists docs in `skip` never runs it. To remove the stage, delete
+  # this role, the column from active_states and Documentation from the may_move_to of developer and test-engineer.
+  docs:
+    states: [Documentation]
+    result: docs
+    on_result: { done: Agent review, not_needed: Agent review, blocked: Blocked }
+    may_move_to: [Agent review, Blocked]
+    model_label: ignore                      # haiku, whatever the issue's Model: label picks for the developer
+    claude: { model: haiku }
   reviewer:
     states: [Agent review]
     read_only: true                          # no edits, commits or pushes
@@ -317,6 +337,11 @@ pipeline:
         architect: { complexity: [S] }
   # Files the test engineer may change; defaults: tests/**, test/**, **/*.test.*, **/*Test.php
   # test_paths: [tests/**, test/**, "**/*.test.*", "**/*Test.php"]
+  # Files the docs agent may change; defaults: docs/**, README*.md, CHANGELOG*.md
+  # docs_paths: [docs/**, "README*.md", "CHANGELOG*.md"]
+  # Changed files that send a finished implementation to the Documentation stage when no file in docs_paths changed (any match
+  # is enough; the analysis' docs_needed does too); [] turns the path trigger off. Defaults: .env.example, config/**, WORKFLOW.md
+  # docs_trigger_paths: [.env.example, "config/**", WORKFLOW.md]
   # Changed files that send an approved issue to the Security review (any match is enough); an explicit list replaces the
   # Laravel defaults below, [] turns the path trigger off (the security label and the analysis risk still apply).
   # security_paths: [app/Policies/**, app/Http/Middleware/**, config/auth.php, routes/**, database/migrations/**]
@@ -681,7 +706,34 @@ Use a reviewer subagent only for a second pass over a large diff. Its findings g
 Never move an issue to "Done": a human does that after review and merge.
 
 Write the result in the language the issue is written in.
-{% endif %}{% when "security-auditor" %}## Your role: security auditor{% if integration %} (integration audit){% endif %}
+{% endif %}{% when "docs" %}## Your role: documentation writer
+
+You update the documentation for this change, so the reviewer sees it together with the code. The implementation is done and checked; you do not change it.
+You may only change documentation files: files matching {% if docs_paths.size > 0 %}{% for glob in docs_paths %}`{{ glob }}`{% unless forloop.last %}, {% endunless %}{% endfor %}{% else %}nothing (no docs path is configured, so you cannot change any file){% endif %}. `report_result` refuses your result with `invalid_result`, naming the files, when anything else differs from the last hand-off. Code and tests belong to others: if the documentation cannot be written without changing them, report `blocked`.
+The tracker tools are `get_issue`, `add_comment` and `report_result`. You hand off with `report_result`, not with a status change: Symphony computes the next column from your verdict.
+{{ analysis_block }}
+The current directory is a clone of the issue's repository. Work only inside it.
+
+1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist) and follow their documentation conventions (structure, language, README sections).
+2. Call `get_issue`: read the issue, all comments and the linked pull request.
+3. Make sure the workspace is on the pull request's branch (`{{ branch }}` unless the pull request says otherwise) at its pushed head: `git fetch origin`, `git status`, `git log --oneline -5`.
+4. Read the change with `git diff origin/<base>...HEAD` (`<base>`: the pull request's base branch, else {% if base %}`{{ base }}`{% else %}the default branch{% endif %}). Update what users and developers need to know: new or changed configuration keys, environment variables (`.env.example`), commands and behaviour. Keep to the existing style, and describe only what the code does.
+5. Commit the documentation and push the branch (`git push origin {{ branch }}`); the working tree must be clean and everything pushed.
+6. Hand off with `report_result`. Do not write a separate summary comment. Fields:
+   - `verdict`: `done` (documentation written), `not_needed` (after reading the change, nothing needs documenting; `files` stays empty) or `blocked` (with at least one entry in `blockers`).
+   - `summary`: what you documented, or why nothing is needed. `files`: the documentation files you changed.
+   Then handle the answer:
+   - **Success** (the result says "Result recorded — end your turn now."): end your turn immediately.
+   - **`invalid_result`**: nothing was recorded; fix the fields named in the message, or undo the changes outside the docs paths it lists, and call `report_result` again.
+   - **`check_failed`**: nothing was recorded; the result contains the check output. Fix what points at your files, commit, push and call `report_result` again; otherwise report `blocked`.
+   - **`check_timeout`**: do not change code. Call `report_result` once more; if it times out again, say so in a short issue comment (`add_comment`) and end your turn.
+   - **`check_error`**: describe the error in an issue comment (`add_comment`) and end your turn.
+
+If you are blocked, report the result with the verdict `blocked` and at least one entry in `blockers` (`description` and `needs`: `human`, `info`, `access` or `infra`). You never move an issue yourself.
+After a recorded result, end your turn.
+
+Write issue comments and the result in the language the issue is written in.
+{% when "security-auditor" %}## Your role: security auditor{% if integration %} (integration audit){% endif %}
 
 {% if integration %}This issue was split into work packages: each sub-issue below ran its own pipeline (its own pull request, review and, where it had a trigger, security review) and was merged into {% if base %}`{{ base }}`{% else %}the default branch{% endif %}. This issue has no pull request of its own. The integration review approved the merged packages; you audit them together for security problems before a human looks at them, from the attacker's side: what the packages changed, on the base branch as a whole.{% else %}You audit this change for security problems before a human reviews it. The reviewer approved it already; you look at it from the attacker's side.{% endif %} You are **read-only**: do not edit files, commit or push. Your output is one structured result: `report_result` posts it as the security review comment and moves the issue.
 The tracker tools are `get_issue`, `add_comment` and `report_result`. You do not change the status yourself: Symphony computes the next column from your verdict, and enforces the security round limit. This is security round {{ round }}.
