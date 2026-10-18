@@ -1,6 +1,6 @@
 import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { EFFORT_LEVELS, type ClaudeConfig, type ModelClaudeOverrides } from '../workflow/config.ts';
-import type { RoleClaudeOverrides } from '../workflow/roles.ts';
+import type { ModelLabelPolicy, RoleClaudeOverrides } from '../workflow/roles.ts';
 import { bareModelName, modelForLabelValue } from './model-name.ts';
 
 export { modelForLabelValue };
@@ -27,6 +27,8 @@ export interface ModelChoice {
   label: string | null;
   /** Why model labels were ignored (unknown value, conflicting labels), or null. */
   warning: string | null;
+  /** Whether a model label was found but ignored by the role's policy. */
+  labelIgnored: boolean;
 }
 
 export interface EffortChoice {
@@ -87,10 +89,15 @@ function chooseFromLabels<T>(
 /**
  * Picks the session model from "Model: <model>" labels, else `defaultModel` (claude.model). Unknown values are
  * ignored and labels naming different models cancel each other out; both are reported in `warning`.
+ * When `modelLabel` is 'ignore', model labels are not evaluated and the default model is used instead.
  */
-export function chooseModel(labels: readonly string[], defaultModel: string | null): ModelChoice {
+export function chooseModel(labels: readonly string[], defaultModel: string | null, modelLabel: ModelLabelPolicy = 'apply'): ModelChoice {
+  if (modelLabel === 'ignore') {
+    const hasModelLabel = labels.some((label) => hasPrefix(label, MODEL_LABEL_PREFIX));
+    return { model: defaultModel, label: null, warning: null, labelIgnored: hasModelLabel };
+  }
   const { value, label, warning } = chooseFromLabels<string | null>(labels, MODEL_LABEL_PREFIX, 'model', modelForLabelValue, defaultModel);
-  return { model: value, label, warning };
+  return { model: value, label, warning, labelIgnored: false };
 }
 
 /**

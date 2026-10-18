@@ -294,12 +294,13 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       if (issue === undefined) continue;
       for (const line of planLines(item, issue)) out(line);
       const role = roleFor(issue, config.roles);
-      const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model);
+      const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model, role?.modelLabel);
       const effortChoice = chooseEffort(issue.labels, role?.claude.effort ?? config.claude.effort);
       out(`              ↳ ${roleModelLine(roleName(role), choice.model, effortChoice.effort)}`);
       const command = resolveIssueCommand(issue.description, skills);
       if (command !== null) out(`              ↳ command /${command.name} → ${command.skill}`);
-      if (choice.warning !== null) out(`              ↳ model label ignored: ${choice.warning}; using ${choice.model ?? '(Claude Code default)'}`);
+      if (choice.labelIgnored) out(`              ↳ model label on issue ignored by role policy; using ${choice.model ?? '(Claude Code default)'}`);
+      else if (choice.warning !== null) out(`              ↳ model label ignored: ${choice.warning}; using ${choice.model ?? '(Claude Code default)'}`);
       else if (choice.label !== null) out(`              ↳ model ${choice.model} (label "${choice.label}")`);
       if (effortChoice.warning !== null) out(`              ↳ effort label ignored: ${effortChoice.warning}; using ${effortChoice.effort ?? '(Claude Code default)'}`);
       else if (effortChoice.label !== null) out(`              ↳ effort ${effortChoice.effort} (label "${effortChoice.label}")`);

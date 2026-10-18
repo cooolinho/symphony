@@ -1417,7 +1417,8 @@ export class Orchestrator {
 
   /** The model a session for the issue runs with, as `#dispatch` chooses it: label, else role, else claude.model. */
   #modelFor(issue: Pick<Issue, 'state' | 'description' | 'labels'>, config: ServiceConfig): string | null {
-    return chooseModel(issue.labels, roleFor(issue, config.roles)?.claude.model ?? config.claude.model).model;
+    const role = roleFor(issue, config.roles);
+    return chooseModel(issue.labels, role?.claude.model ?? config.claude.model, role?.modelLabel).model;
   }
 
   /** The active hold of the model the issue would run with; null for Claude Code's default model (never held). */
@@ -1643,7 +1644,7 @@ export class Orchestrator {
     record.repo = entry.repo;
     record.meta = issueMeta(issue);
     // A "Model: <model>" label picks the model for this run, else the role's claude.model, else claude.model.
-    const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model);
+    const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model, role?.modelLabel);
     // Likewise an "Effort: <level>" label picks the effort, else the role's claude.effort, else claude.effort.
     const effortChoice = chooseEffort(issue.labels, role?.claude.effort ?? config.claude.effort);
     entry.requestedModel = choice.model;
@@ -1674,6 +1675,7 @@ export class Orchestrator {
         state: issue.state,
         model: choice.model,
         model_label: choice.label,
+        model_label_ignored: choice.labelIgnored,
         effort: effortChoice.effort,
         effort_label: effortChoice.label,
         continuation,
