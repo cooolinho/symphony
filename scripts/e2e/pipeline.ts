@@ -12,14 +12,15 @@ import { ROLE_STATUS } from './roles.ts';
 import { MODEL, type ScenarioIssue } from './scenario.ts';
 
 /** Columns of the pipeline on top of `STATUS`. */
-export const PIPELINE_STATUS = { ...ROLE_STATUS, design: 'Design', testing: 'Testing', security: 'Security review' } as const;
+export const PIPELINE_STATUS = { ...ROLE_STATUS, design: 'Design', testing: 'Testing', docs: 'Documentation', security: 'Security review' } as const;
 
-/** Board columns the scenario needs: the whole shipped path (`Design` and `Security review` are skipped without a session, but the board must have them), the way to `Blocked` and the terminal column. */
+/** Board columns the scenario needs: the whole shipped path (`Design`, `Documentation` and `Security review` are skipped without a session, but the board must have them), the way to `Blocked` and the terminal column. */
 export const PIPELINE_COLUMNS: readonly string[] = [
   STATUS.start,
   PIPELINE_STATUS.design,
   PIPELINE_STATUS.progress,
   PIPELINE_STATUS.testing,
+  PIPELINE_STATUS.docs,
   PIPELINE_STATUS.review,
   PIPELINE_STATUS.security,
   STATUS.handoff,

@@ -63,6 +63,7 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
 | `Design` | starts the architect (read-only), who decides on the approach of a larger change and hands the design to `In progress`; small issues skip the column without a session, see [Design for larger changes](#design-for-larger-changes-the-architect) |
 | `In progress` | a developer is working (it gets the analysis and the design); if Symphony finds an issue here without an agent, it starts one |
 | `Testing` | starts the test engineer (at most one at a time), who writes independent tests and may only change test files; reached by bug, feature and refactor issues after the developer, by every issue with `SYMPHONY_AFTER_IMPLEMENTATION=Testing` |
+| `Documentation` | starts the docs agent (at most one at a time, `haiku`) for a finished implementation that needs documentation (`docs_needed`, or a changed file in `pipeline.docs_trigger_paths` without a change in `pipeline.docs_paths`); other issues skip the column without a session, see [the documentation stage](configuration.md#the-documentation-stage) |
 | `Agent review` | starts a reviewer (at most one at a time); only reachable after passing checks |
 | `Security review` | starts the security auditor (at most one at a time, read-only) for an approved issue with a security trigger; other approved issues skip the column without a session, see [Security review](#security-review-for-security-relevant-changes) |
 | `Blocked` | stops a running agent; the workspace is kept. The agent needs you, see its comment. |
@@ -92,7 +93,7 @@ Ready (issue analyst) → In progress (developer) → [checks] → Testing (test
   [Features and refactorings](#features-and-refactorings-the-feature-and-refactor-profiles)); issues without a type keep the
   flow without it, unless `SYMPHONY_AFTER_IMPLEMENTATION=Testing` switches the test stage on for all of them.
 
-The board needs the columns in this order: `Backlog`, `Ready`, `Design`, `In progress`, `Testing`, `Agent review`,
+The board needs the columns in this order: `Backlog`, `Ready`, `Design`, `In progress`, `Testing`, `Documentation`, `Agent review`,
 `Security review`, `Blocked`, `In review`, `Done` (see [Getting started](getting-started.md#2-set-up-the-github-project-board)). `Testing` is always
 an active state, so a board without it fails the dry run and the dispatch preflight with
 `unknown board column "Testing"`. The order matters: `next` and the pipeline view follow the board.

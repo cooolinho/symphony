@@ -324,6 +324,7 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
           // The issue's stage history is not read here: the preview shows an issue without results.
           result_required: role?.result != null,
           test_paths: config.pipeline.testPaths,
+          docs_paths: config.pipeline.docsPaths,
         });
         const lines = prompt.split('\n');
         for (const line of lines.slice(0, 30)) out(`  | ${line}`);

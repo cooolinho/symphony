@@ -137,10 +137,13 @@ export interface PipelineConfig {
    * Path globs (see `glob.ts`) that mark test, documentation and security-relevant files. `testPaths` is all a role with
    * `result: test` may change (`report_result` refuses a result otherwise). A changed file matching `securityPaths` sends
    * the reviewer's approval to the security review (a role with `result: security`); `[]` turns that trigger off.
-   * `docsPaths` is used by a later pipeline stage.
+   * `docsPaths` is all a role with `result: docs` may change. The documentation stage runs for an issue whose analysis
+   * says `docs_needed`, or whose changed files match `docsTriggerPaths` while no file in `docsPaths` changed;
+   * `[]` turns the path trigger off.
    */
   testPaths: string[];
   docsPaths: string[];
+  docsTriggerPaths: string[];
   securityPaths: string[];
 }
 
@@ -206,6 +209,10 @@ export const DEFAULTS = {
   /** `pipeline.test_paths` when unset: the usual places of test files (Laravel, Node, Jest/Vitest). */
   testPaths: ['tests/**', 'test/**', '**/*.test.*', '**/*Test.php'],
   /** `pipeline.security_paths` when unset: the places of a Laravel app where authorization, authentication and the schema live. */
+  /** `pipeline.docs_paths` when unset: the usual places of documentation. */
+  docsPaths: ['docs/**', 'README*.md', 'CHANGELOG*.md'],
+  /** `pipeline.docs_trigger_paths` when unset: configuration surfaces that need documenting. */
+  docsTriggerPaths: ['.env.example', 'config/**', 'WORKFLOW.md'],
   securityPaths: ['app/Policies/**', 'app/Http/Middleware/**', 'config/auth.php', 'routes/**', 'database/migrations/**'],
   pipelineLimitLabel: 'needs-human',
   pipelineDefaultType: 'feature',
@@ -251,6 +258,7 @@ const PIPELINE_KEYS = new Set([
   'analysis',
   'test_paths',
   'docs_paths',
+  'docs_trigger_paths',
   'security_paths',
 ]);
 const PROFILE_KEYS = new Set(['skip', 'skip_when', 'on_result', 'max_review_rounds', 'max_test_rounds']);
@@ -454,7 +462,7 @@ function readPipeline(reader: Reader, raw: Record<string, unknown>, roles: RoleC
     return value || fallback;
   };
   /** A list of path globs: unset = `fallback`, an explicit list is used as it is (an empty one allows no path). */
-  const globs = (key: 'test_paths' | 'docs_paths' | 'security_paths', fallback: readonly string[]): string[] => {
+  const globs = (key: 'test_paths' | 'docs_paths' | 'docs_trigger_paths' | 'security_paths', fallback: readonly string[]): string[] => {
     const list = reader.stringList(section, key, `pipeline.${key}`);
     if (list === null) return [...fallback];
     list.forEach((glob, index) => {
@@ -477,7 +485,8 @@ function readPipeline(reader: Reader, raw: Record<string, unknown>, roles: RoleC
     analysis,
     profiles: readProfiles(reader, section.profiles, roles, terminalStates),
     testPaths: globs('test_paths', DEFAULTS.testPaths),
-    docsPaths: globs('docs_paths', []),
+    docsPaths: globs('docs_paths', DEFAULTS.docsPaths),
+    docsTriggerPaths: globs('docs_trigger_paths', DEFAULTS.docsTriggerPaths),
     securityPaths: globs('security_paths', DEFAULTS.securityPaths),
   };
 }
