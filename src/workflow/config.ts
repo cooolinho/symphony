@@ -11,7 +11,7 @@ import { COMMAND_NAME } from './command.ts';
 import { isPlainObject } from './loader.ts';
 import { Reader, parseInteger } from './reader.ts';
 import { NEXT_STAGE, resultTargets, type ModelLabelPolicy, type RoleClaudeOverrides, type RoleConfig } from './roles.ts';
-import { AGENT_RESULT_KINDS, RESULT_VERDICTS, type AgentResultKind } from './results.ts';
+import { AGENT_RESULT_KINDS, isLoopKind, LOOP_VERDICTS, RESULT_VERDICTS, type AgentResultKind } from './results.ts';
 
 export interface TrackerConfig {
   kind: string | null;
@@ -192,6 +192,7 @@ const ROLE_KEYS = new Set([
   'on_result',
   'on_check_failed',
   'on_missing_result',
+  'on_round_limit',
   'model_label',
   'max_turns',
   'commands',
@@ -308,11 +309,12 @@ function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: s
   return roles;
 }
 
-type RoleTransitions = Pick<RoleConfig, 'result' | 'onResult' | 'onCheckFailed' | 'onMissingResult'>;
+type RoleTransitions = Pick<RoleConfig, 'result' | 'onResult' | 'onCheckFailed' | 'onMissingResult' | 'onRoundLimit'>;
 
 /**
- * `result`, `on_result`, `on_check_failed` and `on_missing_result` of a role. Verdicts must belong to the result kind
- * and no target may be a terminal column; `on_missing_result` defaults to `Blocked` once the role has a `result`.
+ * `result`, `on_result`, `on_check_failed`, `on_missing_result` and `on_round_limit` of a role. Verdicts must belong to
+ * the result kind and no target may be a terminal column; `on_missing_result` defaults to `Blocked` once the role has a
+ * `result`; `on_round_limit` needs a result kind with a round limit (`review`, `test`).
  */
 function readRoleTransitions(reader: Reader, raw: Record<string, unknown>, field: string, terminalStates: string[]): RoleTransitions {
   const result = reader.oneOf<AgentResultKind>(raw, 'result', `${field}.result`, AGENT_RESULT_KINDS, null);
@@ -357,11 +359,16 @@ function readRoleTransitions(reader: Reader, raw: Record<string, unknown>, field
   const onCheckFailed = optionalColumn('on_check_failed');
   const onMissingResult = optionalColumn('on_missing_result');
   if (onMissingResult !== null && result === null) reader.errors.push(`${field}.on_missing_result needs ${field}.result`);
+  const onRoundLimit = optionalColumn('on_round_limit');
+  if (onRoundLimit !== null && !isLoopKind(result)) {
+    reader.errors.push(`${field}.on_round_limit needs ${field}.result ${Object.keys(LOOP_VERDICTS).join(' or ')} (the kinds with a round limit)`);
+  }
   return {
     result,
     onResult,
     onCheckFailed,
     onMissingResult: result === null ? null : (onMissingResult ?? DEFAULTS.onMissingResult),
+    onRoundLimit: isLoopKind(result) ? onRoundLimit : null,
   };
 }
 

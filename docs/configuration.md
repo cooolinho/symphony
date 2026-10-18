@@ -44,7 +44,7 @@ runs Claude Code and is configured through `claude`.
 Statuses that are neither active nor terminal (for example `Human Review`) stop the agent and keep the workspace.
 
 **Board preflight.** Every column named in `tracker.active_states`, `tracker.terminal_states`, `roles.*.states`,
-`roles.*.may_move_to`, the targets of `roles.*.on_result`, `on_check_failed` and `on_missing_result`, and
+`roles.*.may_move_to`, the targets of `roles.*.on_result`, `on_check_failed`, `on_missing_result` and `on_round_limit`, and
 `checks.on_enter` must be a status option of the board (compared case-insensitively).
 An unknown column is a dispatch-validation error (`unknown board column "Agent Reviw" (valid: …)`): dispatch
 pauses while reconciliation continues, and the error clears on the first tick after `WORKFLOW.md` is fixed. The
@@ -387,6 +387,7 @@ roles:
 | `on_result` | `{}` | Column per verdict of `result`, or `next` (the next active stage after the role's columns in board order). Needs `result`. See [Result-driven transitions](#result-driven-transitions). |
 | `on_check_failed` | none | Column for an issue whose entry check fails for a role that cannot fix it (a read-only role). |
 | `on_missing_result` | `Blocked` with `result`, else none | Column for a session that ends without a result. Needs `result`. |
+| `on_round_limit` | the blocked column | Column for a loop verdict (review `changes_needed`, test `failed`) that reaches `pipeline.max_review_rounds` / `max_test_rounds`. Needs `result: review` or `result: test`. See [Result-driven transitions](#result-driven-transitions). |
 | `model_label` | `apply`; `ignore` for read-only roles with a `result` | `ignore` keeps a `Model:` issue label from changing the role's model. Read here; applied from a later change on. |
 | `max_turns` | `agent.max_turns` | Integer >= 1. |
 | `commands` | none | Issue commands the role serves, e.g. `[refactoring]` (lowercase letters, digits and dashes; a leading `/` is allowed). Without it the role serves issues without a command. See [Issue commands](#issue-commands). |
@@ -409,6 +410,7 @@ roles:
     result: review
     may_move_to: [In review, In progress, Blocked]
     on_result: { approved: In review, changes_needed: In progress, blocked: Blocked }
+    on_round_limit: In review
     on_check_failed: In progress
 ```
 
@@ -416,10 +418,27 @@ roles:
   `done`, `blocked`; `test`: `passed`, `failed`, `blocked`; `review`: `approved`, `changes_needed`, `blocked`;
   `security`: `passed`, `issues_found`, `blocked`; `docs`: `done`, `not_needed`, `blocked`. A verdict may be left out.
 - A target is a column name or `next`. `next` needs the board's column order (tracker kinds that list columns, such as
-  `github_project`) and a later active stage; it is checked together with the board preflight.
+  `github_project`) and a later active stage, whose column must be in `may_move_to` when the role sets it; it is
+  checked together with the board preflight.
 - Targets are never terminal columns. Those that name a column are added to `may_move_to` (without duplicates), so the
   [transition guard](#transition-guard), the board preflight and the dashboard's pipeline view know them. A role
   without `may_move_to` stays unrestricted, but its targets are still checked against the board.
+
+The target of a result is computed, not chosen by the agent (`resolveTransition` in `src/orchestrator/transitions.ts`;
+the `report_result` hand-off that uses it is not wired up yet). The rules apply in this order:
+
+1. **`blocked`** goes to `on_result.blocked` when it names a column, else to the blocked column: the column every role
+   with `may_move_to` lists besides the active and terminal ones (`Blocked` in the default workflow), else the role's
+   `on_missing_result`.
+2. **Round limit.** A review with `changes_needed` or a test with `failed` is round N, where N - 1 is the number of
+   such results since the last reset. When N reaches `pipeline.max_review_rounds` / `max_test_rounds` (with the
+   defaults: the 3rd `changes_needed`, the 2nd `failed`), the issue goes to `on_round_limit` (else the blocked column)
+   and gets `pipeline.limit_label`. Every other transition removes that label.
+3. **`on_result[verdict]`.** `next` is the first active column after the role's columns in board order whose role is
+   not skipped by the issue's profile and whose stage condition holds. A verdict without a target goes to the blocked
+   column.
+
+The target is always a column the role may move to; a computed target outside `may_move_to` is refused, never used.
 
 Every misconfiguration is an `invalid_config` error naming the field, e.g.
 `roles.reviewer.on_result.passed: "passed" is not a verdict of result review (allowed: approved, changes_needed, blocked)`

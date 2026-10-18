@@ -749,7 +749,7 @@ describe('result-driven roles and the pipeline section', () => {
     const config = resolve(definition.config, { CLAUDE_EFFORT: '' });
     assert.ok(!config.warnings.some((warning) => /pipeline/.test(warning)), config.warnings.join('\n'));
     for (const role of config.roles ?? []) {
-      assert.deepEqual([role.result, role.onResult, role.onCheckFailed, role.onMissingResult], [null, {}, null, null], role.name);
+      assert.deepEqual([role.result, role.onResult, role.onCheckFailed, role.onMissingResult, role.onRoundLimit], [null, {}, null, null, null], role.name);
     }
   });
 
@@ -792,6 +792,21 @@ describe('result-driven roles and the pipeline section', () => {
     assert.equal(reviewer?.onMissingResult, 'Docs');
     assert.equal(reviewer?.modelLabel, 'apply');
     assert.equal(reviewerOf({ ...base, roles: { ...roles, reviewer: { states: ['Agent review'], model_label: 'ignore' } } })?.modelLabel, 'ignore');
+  });
+
+  it('reads on_round_limit for review and test roles only', () => {
+    const reviewer = reviewerOf(withReviewer({ on_round_limit: ' In review ' }));
+    assert.equal(reviewer?.onRoundLimit, 'In review');
+    assert.equal(reviewerOf(withReviewer({}))?.onRoundLimit, null);
+    assert.deepEqual(reviewerOf(withReviewer({ may_move_to: ['Blocked'], on_round_limit: 'Docs' }))?.mayMoveTo, ['Blocked', 'In review', 'In progress', 'Docs']);
+    const testerOf = (extra: Record<string, unknown>) => resolve({ ...base, roles: { ...roles, docs: { states: ['Docs'], result: 'test', ...extra } } });
+    assert.equal(testerOf({ on_round_limit: 'Blocked' }).roles?.find((role) => role.name === 'docs')?.onRoundLimit, 'Blocked');
+    assert.match(
+      messageOf({ ...base, roles: { ...roles, docs: { states: ['Docs'], result: 'docs', on_round_limit: 'Blocked' } } }),
+      /roles\.docs\.on_round_limit needs roles\.docs\.result review or test \(the kinds with a round limit\)/,
+    );
+    assert.match(messageOf(withReviewer({ on_round_limit: 'Done' })), /roles\.reviewer\.on_round_limit must not be a terminal state/);
+    assert.match(messageOf(withReviewer({ on_round_limit: 'next' })), /roles\.reviewer\.on_round_limit must be a column name \(next is only for on_result\)/);
   });
 
   it('merges the targets into mayMoveTo without duplicates and leaves next out', () => {
@@ -843,12 +858,19 @@ describe('result-driven roles and the pipeline section', () => {
     });
 
     it('resolves next to the next active column in board order', () => {
-      const config = resolve(withReviewer({ on_result: { approved: 'next' } }));
+      const config = resolve(withReviewer({ may_move_to: ['In review', 'Docs'], on_result: { approved: 'next' } }));
       const reviewer = config.roles?.find((role) => role.name === 'reviewer');
       assert.ok(reviewer);
       assert.equal(nextActiveColumn(reviewer, config.tracker.activeStates, board), 'Docs');
       assert.equal(nextActiveColumn(reviewer, config.tracker.activeStates, ['Docs', 'Agent review']), null);
       assert.deepEqual(nextStageProblems(config, board), []);
+    });
+
+    it('reports a next stage outside may_move_to, but not for an unrestricted role', () => {
+      assert.deepEqual(nextStageProblems(resolve(withReviewer({ on_result: { approved: 'next' } })), board), [
+        'roles.reviewer.on_result.approved: "next" leads to "Docs", which is not in roles.reviewer.may_move_to (add it there)',
+      ]);
+      assert.deepEqual(nextStageProblems(resolve(withReviewer({ may_move_to: undefined, on_result: { approved: 'next' } })), board), []);
     });
 
     it('reports next without a known board order or without a later stage', () => {
@@ -983,7 +1005,7 @@ describe('role subagents', () => {
 
   it('splits the subagents by role list, read-only policy and integration prefix', () => {
     const agents = pluginAgents([path.join(dir, '.claude')]);
-    const role = (overrides: Partial<RoleConfig>) => ({ name: 'r', states: [], readOnly: false, mayMoveTo: null, result: null, onResult: {}, onCheckFailed: null, onMissingResult: null, modelLabel: 'apply' as const, maxTurns: null, commands: null, runChecks: true, maxSubIssues: null, subIssueStatus: null, waitForSubIssues: false, agents: null, claude: {}, ...overrides });
+    const role = (overrides: Partial<RoleConfig>) => ({ name: 'r', states: [], readOnly: false, mayMoveTo: null, result: null, onResult: {}, onCheckFailed: null, onMissingResult: null, onRoundLimit: null, modelLabel: 'apply' as const, maxTurns: null, commands: null, runChecks: true, maxSubIssues: null, subIssueStatus: null, waitForSubIssues: false, agents: null, claude: {}, ...overrides });
     const names = (split: { allowed: Array<{ name: string }>; denied: Array<{ name: string }> }) => [split.allowed.map((a) => a.name), split.denied.map((a) => a.name)];
     assert.deepEqual(names(sessionAgents(agents, null, ['laravel-'], ['laravel-'])), [['laravel-architect', 'laravel-filament-developer', 'reader'], []]);
     assert.deepEqual(names(sessionAgents(agents, null, ['laravel-'], [])), [['reader'], ['laravel-architect', 'laravel-filament-developer']]);
