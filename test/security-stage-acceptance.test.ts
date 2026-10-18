@@ -215,7 +215,7 @@ describe('the shipped WORKFLOW.md', () => {
     const config = await load();
     const reviewer = config.roles?.find((candidate) => candidate.result === 'review');
     assert.ok(reviewer);
-    const board = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
+    const board = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
     const approve = (flag: boolean): TransitionOutcome =>
       resolveTransition({
         role: reviewer,
@@ -239,7 +239,7 @@ describe('the shipped WORKFLOW.md', () => {
     const auditor = config.roles?.find((candidate) => candidate.name === 'security-auditor');
     assert.ok(auditor);
     const max = config.pipeline.maxSecurityRounds;
-    const board = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
+    const board = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
     const issues = (done: number): TransitionOutcome =>
       resolveTransition({ role: auditor, verdict: 'issues_found', history: { reviewRounds: 0, testRounds: 0, securityRounds: done }, profile: null, config, boardColumns: board });
     const before = issues(max - 2 < 0 ? 0 : max - 2);

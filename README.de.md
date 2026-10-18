@@ -117,7 +117,7 @@ Symphony fragt in einem festen Takt ein **GitHub Project Board** ab und übergib
 arbeiten: Branch anlegen, implementieren, testen, pushen, Pull Request öffnen, Ergebnis im Issue kommentieren. Danach
 prüfen automatische Checks und ein zweiter, lesender Agent (Reviewer) die Arbeit. Erst dann landet die Karte in
 **In review**. Ab dort bist du dran: Review, Merge, Karte nach **Done**.
-Bug-, Feature- und Refactor-Issues durchlaufen vor dem Review eine Spalte `Testing` (ein unabhängiger Test Engineer), sicherheitsrelevante
+Bug-, Feature- und Refactor-Issues durchlaufen vor dem Review eine Spalte `Testing` (ein unabhängiger Test Engineer), Änderungen mit Dokumentationsbedarf eine günstige Stufe `Documentation`, sicherheitsrelevante
 Änderungen (Label `security`, Sicherheitsrisiko in der Analyse oder geänderte Dateien wie Policies, Middleware, Routen
 oder Migrationen) danach ein lesendes `Security review`. Review-, Test- und Security-Schleifen sind begrenzt: Am
 Rundenlimit geht die Karte nach **Blocked** und bekommt das Label `needs-human`.
@@ -147,6 +147,10 @@ und Token stehen in der **`.env`**.
   Akzeptanzkriterien und darf nur Testdateien ändern; fehlgeschlagene Tests gehen mit den betroffenen Fällen zurück an
   den Developer, und nach `pipeline.max_test_rounds` fehlgeschlagenen Runden wartet das Issue auf dich
   ([Details](docs/configuration.md#the-test-engineer)).
+- **Docs-Agent:** Sagt die Analyse `docs_needed` oder passt eine geänderte Datei zu `pipeline.docs_trigger_paths`
+  (standardmäßig `.env.example`, `config/**`, `WORKFLOW.md`) ohne Änderung in `pipeline.docs_paths`, aktualisiert ein
+  `haiku`-Agent in der Spalte `Documentation` die Doku vor dem Review; alle übrigen Issues überspringen ihn ohne Session
+  ([Details](docs/configuration.md#the-documentation-stage)).
 - **Security Auditor:** Nach der Freigabe durch den Reviewer prüft ein lesender Agent in der Spalte `Security review`
   Änderungen, die Sicherheit berühren (Label `security`, `risks.security` in der Analyse oder eine geänderte Datei, die
   zu `pipeline.security_paths` passt, standardmäßig Laravel-Policies, Middleware, Auth-Konfiguration, Routen und
@@ -190,7 +194,7 @@ npm start               # Symphony starten
 ```
 
 Dazwischen legst du ein GitHub Project Board mit den Spalten `Backlog`, `Ready`, `Design`, `In progress`, `Testing`,
-`Agent review`, `Security review`, `Blocked`, `In review` und `Done` an. Die ausführliche Anleitung steht in
+`Documentation`, `Agent review`, `Security review`, `Blocked`, `In review` und `Done` an. Die ausführliche Anleitung steht in
 [docs/getting-started.md](docs/getting-started.md), den Betrieb per Docker hinter Traefik beschreibt
 [docs/docker.md](docs/docker.md), einen lokalen Testlauf desselben Images ohne Traefik (`docker-compose.local.yml`)
 [ein eigener Abschnitt](docs/docker.md#local-test-setup-without-traefik). Die Dokumentation unter `docs/` ist auf

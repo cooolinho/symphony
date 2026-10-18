@@ -25,7 +25,7 @@ import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecor
 import { createResultTool, resultReminder, type PathRule, type ResultToolAdapter, type ResultToolParams } from './result-tool.ts';
 import { securityBaseRef } from './security.ts';
 import { interruptedTransition } from './recovery.ts';
-import { analysisFlagsSecurity, buildStageHistory, implementationHead, resultsTemplateValue, type PersistedResult, type ResultsTemplateValue, type StageHistory } from './stage-history.ts';
+import { analysisFlagsSecurity, analysisNeedsDocs, docsBaseHead, buildStageHistory, implementationHead, resultsTemplateValue, type PersistedResult, type ResultsTemplateValue, type StageHistory } from './stage-history.ts';
 
 export type RunPhase =
   | 'PreparingWorkspace'
@@ -175,8 +175,9 @@ interface ResultSupport {
  * session started from (`startSha`). Without a commit to measure from (not a git checkout, or git failed) the rule
  * cannot be evaluated: it refuses to guess, so the result is not accepted unchecked.
  */
-function testPathRule(workspacePath: string, testPaths: readonly string[], startSha: string | null, handoffSha: string | null): PathRule {
+function testPathRule(workspacePath: string, testPaths: readonly string[], startSha: string | null, handoffSha: string | null, extra: Pick<PathRule, 'setting' | 'guidance'> = {}): PathRule {
   return {
+    ...extra,
     allowed: testPaths,
     changedFiles: async () => {
       const base = await baselineCommit(workspacePath, handoffSha, startSha);
@@ -200,6 +201,7 @@ async function loadResultSupport(
   headSha: () => Promise<string | null>,
   pathRule: ((history: StageHistory) => PathRule) | null,
   security: ((history: StageHistory) => NonNullable<ResultToolParams['security']>) | null,
+  docs: ((history: StageHistory) => NonNullable<ResultToolParams['docs']>) | null,
   report: (results: PersistedResult[]) => void,
   onRecorded: (entry: PersistedResult) => void,
   onMoved: () => void,
@@ -243,6 +245,7 @@ async function loadResultSupport(
     meta: { workflowHash: workflow.contentHash, headSha },
     pathRule: pathRule?.(history) ?? null,
     security: security?.(history) ?? null,
+    docs: docs?.(history) ?? null,
   });
   return {
     tool,
@@ -437,10 +440,26 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     let resultRecorded = false;
     let resultMoved = false;
     // A test engineer's changes are measured from the developer's last hand-off, else from the workspace as this session found it.
-    const startSha = role?.result === 'test' ? ((await readGitHead(activeWorkspace.path))?.headSha ?? null) : null;
+    const startSha = role?.result === 'test' || role?.result === 'docs' ? ((await readGitHead(activeWorkspace.path))?.headSha ?? null) : null;
     const pathRule =
       role?.result === 'test'
         ? (history: StageHistory) => testPathRule(activeWorkspace.path, params.workflow.config.pipeline.testPaths, startSha, implementationHead(history))
+        : role?.result === 'docs'
+          ? (history: StageHistory) =>
+              testPathRule(activeWorkspace.path, params.workflow.config.pipeline.docsPaths, startSha, docsBaseHead(history), {
+                setting: 'pipeline.docs_paths',
+                guidance: 'Code and tests belong to the developer and the test engineer: leave them alone and report the verdict `blocked` if the documentation cannot be written without changing them.',
+              })
+          : null;
+    // A developer's or test engineer's hand-off needs the documentation stage for a docs_needed analysis or changed configuration files.
+    const docs =
+      role?.result === 'implementation' || role?.result === 'test'
+        ? (history: StageHistory) => ({
+            docsNeeded: analysisNeedsDocs(history),
+            docsPaths: params.workflow.config.pipeline.docsPaths,
+            triggerPaths: params.workflow.config.pipeline.docsTriggerPaths,
+            changedFiles: () => changedFiles(activeWorkspace.path, securityBaseRef(issue.native_ref?.base_branch)),
+          })
         : null;
     // A reviewer's approval needs the security review for a security label, a risk in the analysis or a changed security path.
     const security =
@@ -460,6 +479,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
             async () => (await readGitHead(activeWorkspace.path))?.headSha ?? null,
             pathRule,
             security,
+            docs,
             callbacks.results,
             (entry) => {
               resultRecorded = true;
@@ -478,6 +498,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       round: support?.round ?? 1,
       result_required: support !== null,
       test_paths: params.workflow.config.pipeline.testPaths,
+      docs_paths: params.workflow.config.pipeline.docsPaths,
     };
     const transcript = transcriptPath(params.transcriptDir, activeWorkspace);
     if (transcript !== null) callbacks.transcript(transcript);

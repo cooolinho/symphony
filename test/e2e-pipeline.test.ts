@@ -35,7 +35,7 @@ const ISSUES = [
   { key: 'P2', number: 22 },
   { key: 'P3', number: 23 },
 ];
-const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
+const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
 
 type Step = [kind: string, verdict: string, round: number | null, summary: string];
 
@@ -457,7 +457,7 @@ describe('e2e pipeline scenario', () => {
       assert.deepEqual(issue.results.map((result) => [result.kind, result.verdict, result.round, result.marker]), FLOW[issue.key], issue.key);
       assert.deepEqual(issue.results.map(resultLabel), (FLOW[issue.key] as Step[]).map(([kind, verdict]) => `${kind}:${verdict}`));
     }
-    assert.deepEqual(PIPELINE_COLUMNS, ['Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review', 'In review', 'Blocked', 'Done']);
+    assert.deepEqual(PIPELINE_COLUMNS, ['Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review', 'In review', 'Blocked', 'Done']);
   });
 
   it('names the markers by issue', () => {
@@ -502,9 +502,9 @@ describe('e2e pipeline scenario', () => {
   it('derives a valid workflow that keeps the shipped pipeline', () => {
     const { config } = resolve();
     assert.deepEqual(config.warnings, []);
-    assert.deepEqual(config.tracker.activeStates, ['Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review']);
+    assert.deepEqual(config.tracker.activeStates, ['Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review']);
     assert.deepEqual(config.tracker.terminalStates, ['Done']);
-    assert.deepEqual(config.roles?.map((role) => role.name).slice(0, 5), ['issue-analyst', 'architect', 'developer', 'test-engineer', 'reviewer']);
+    assert.deepEqual(config.roles?.map((role) => role.name).slice(0, 6), ['issue-analyst', 'architect', 'developer', 'test-engineer', 'docs', 'reviewer']);
     const role = (name: string) => config.roles?.find((candidate) => candidate.name === name);
     assert.deepEqual(role('issue-analyst')?.onResult, { ready: 'next', needs_info: 'Blocked' });
     assert.deepEqual(role('developer')?.onResult, { done: 'Agent review', blocked: 'Blocked' });

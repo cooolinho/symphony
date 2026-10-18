@@ -725,6 +725,54 @@ pipeline:
 - **Slots.** Like the other additional roles, the auditor only gets slots beyond those of `agent.reserved_slots_by_role`;
   `agent.max_concurrent_agents_by_state."Security review"` is 1 in the shipped file.
 
+#### The documentation stage
+
+The shipped `WORKFLOW.md` has a `docs` role in the `Documentation` column, served by a cheap model (`haiku`). It updates
+the documentation before the review, so the reviewer checks it together with the code. It is conditional: only issues
+that need it are sent there, all others go straight to `Agent review` without a session.
+
+```yaml
+tracker:
+  active_states: [Ready, Design, In progress, Testing, Documentation, Agent review, Security review]
+roles:
+  developer:
+    may_move_to: [In progress, Testing, Documentation, Agent review, Blocked]   # done goes to Documentation when needed
+  test-engineer:
+    may_move_to: [Documentation, Agent review, In progress, Blocked]            # passed goes to Documentation when needed
+  docs:
+    states: [Documentation]
+    result: docs
+    on_result: { done: Agent review, not_needed: Agent review, blocked: Blocked }
+    may_move_to: [Agent review, Blocked]
+    model_label: ignore
+    claude: { model: haiku }
+pipeline:
+  # docs_paths: [docs/**, "README*.md", "CHANGELOG*.md"]
+  # docs_trigger_paths: [.env.example, "config/**", WORKFLOW.md]
+```
+
+- **When it runs.** When the developer reports `done` (or the test engineer `passed`) and the target is the reviewer,
+  `report_result` decides, before it routes the result. The stage is needed when **either** holds: the newest analysis
+  since the last reset says `docs_needed`; or at least one file the branch changes matches `pipeline.docs_trigger_paths`
+  while **no** changed file matches `pipeline.docs_paths` (the documentation was already written). Otherwise the issue
+  goes to `Agent review` as `on_result` says, and the transition `reason` says why (`documentation not needed: no trigger
+  (…)`); the pipeline view shows the stage as skipped. With the Testing stage on, the decision is taken when the test
+  engineer reports `passed` (the developer's hand-off to `Testing` is not routed to `Documentation`).
+- **The files of the branch** are determined like for the [security review](#the-security-auditor) (merge base against
+  `origin/<base_branch>`, else `origin/HEAD`). If git cannot tell, the stage is **needed**: a failure never skips it
+  silently.
+- **Path rule.** The docs agent may only change files matching `pipeline.docs_paths`. `report_result` compares the
+  files that differ from the last hand-off of the developer or test engineer and refuses a result that comes with other
+  files with `invalid_result`, naming them; nothing is recorded. The prompt lists the paths as `docs_paths`.
+- **Verdicts.** `done` (with the changed `files`) and `not_needed` lead to `Agent review`, `blocked` to `Blocked`.
+- **Haiku.** Haiku has no auto mode; `claude.by_model.haiku` in the shipped file holds the permission settings it needs.
+- **Board.** `Documentation` is one of `tracker.active_states`, so the board needs the column between `Testing` and
+  `Agent review`, and the `may_move_to` of the developer and the test engineer must list it (the preflight says so
+  otherwise). A board without the column and role keeps its flow unchanged.
+- **Skipping and removing.** A [profile](#workflow-profiles) can list `docs` in `skip`. To remove the stage for the
+  whole instance, delete the role, the column from `active_states` and `Documentation` from the `may_move_to` of the
+  developer and the test engineer. A human who moves an issue to `Documentation` by hand always gets a session.
+
 #### Issue commands
 
 An issue can ask for a skill: when the **first non-empty line** of its description is `/<name>` (optionally followed by
@@ -848,8 +896,8 @@ statistics page breaks down by effort. `npm run repo-init` creates the five stan
 
 Optional. Limits and classification for the result-driven [roles](#result-driven-transitions); every key has a default,
 so the section can be left out. `test_paths` limits what the [test engineer](#the-test-engineer) may change,
-`security_paths` is one of the triggers of the [security review](#the-security-auditor); `docs_paths` is read now and
-used by a later pipeline stage. `$NAME` references work
+`security_paths` is one of the triggers of the [security review](#the-security-auditor); `docs_paths` limits what the
+[docs agent](#the-documentation-stage) may change and `docs_trigger_paths` is one of its triggers. `$NAME` references work
 like everywhere else (an unset variable counts as omitted). Unknown keys are ignored with a warning.
 
 | Key | Default | Notes |
@@ -864,7 +912,8 @@ like everywhere else (an unset variable counts as omitted). Unknown keys are ign
 | `profiles` | `{}` | [Workflow profiles](#workflow-profiles) per issue type. |
 | `test_paths` | `tests/**`, `test/**`, `**/*.test.*`, `**/*Test.php` | [Path globs](#path-globs) for test files: all that a role with `result: test` (the [test engineer](#the-test-engineer)) may change. An explicit list replaces the default; `[]` allows no file at all. |
 | `security_paths` | `app/Policies/**`, `app/Http/Middleware/**`, `config/auth.php`, `routes/**`, `database/migrations/**` | [Path globs](#path-globs) for security-relevant files: a changed file that matches sends the reviewer's approval to the [security review](#the-security-auditor). An explicit list replaces the defaults; `[]` turns the path trigger off. |
-| `docs_paths` | `[]` | Path globs marking documentation files. |
+| `docs_paths` | `docs/**`, `README*.md`, `CHANGELOG*.md` | [Path globs](#path-globs) for documentation files: all that a role with `result: docs` (the [docs agent](#the-documentation-stage)) may change, and a changed file that matches means the documentation was already written. An explicit list replaces the default; `[]` allows no file at all. |
+| `docs_trigger_paths` | `.env.example`, `config/**`, `WORKFLOW.md` | [Path globs](#path-globs) for files that need documenting: a changed file that matches, with no change in `docs_paths`, sends the hand-off to the [documentation stage](#the-documentation-stage). An explicit list replaces the defaults; `[]` turns the path trigger off. |
 
 #### Path globs
 

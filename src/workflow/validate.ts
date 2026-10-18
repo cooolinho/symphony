@@ -136,6 +136,11 @@ export function securityRoles(roles: readonly RoleConfig[] | null): RoleConfig[]
   return (roles ?? []).filter((role) => role.result === 'security' && role.commands === null);
 }
 
+/** The roles that serve the documentation stage (`result: docs`) for issues without a command: the conditional stage before the review. */
+export function docsRoles(roles: readonly RoleConfig[] | null): RoleConfig[] {
+  return (roles ?? []).filter((role) => role.result === 'docs' && role.commands === null);
+}
+
 /**
  * Problems with the route to the security review: a reviewer (`result: review`) whose `approved` leads out of the active
  * columns goes to the security review's column when the issue needs it, so a reviewer with `may_move_to` must list that
@@ -162,6 +167,32 @@ export function securityReviewProblems(config: ServiceConfig): string[] {
 }
 
 /**
+ * Problems with the route to the documentation stage: a developer or test engineer whose `done` / `passed` leads to the
+ * reviewer goes to the docs column when the issue needs it, so such a role with `may_move_to` must list that column.
+ */
+export function docsStageProblems(config: ServiceConfig): string[] {
+  const problems: string[] = [];
+  const active = new Set(config.tracker.activeStates.map(normalizeStateName));
+  for (const writer of docsRoles(config.roles)) {
+    const column = config.tracker.activeStates.find((state) => writer.states.includes(normalizeStateName(state)));
+    if (column === undefined) {
+      problems.push(`roles.${writer.name}: the documentation stage serves no column of tracker.active_states, so no issue is ever routed to it`);
+      continue;
+    }
+    for (const role of config.roles ?? []) {
+      const verdict = role.result === 'implementation' ? 'done' : role.result === 'test' ? 'passed' : null;
+      const target = verdict === null ? undefined : role.onResult[verdict];
+      if (target === undefined || target === NEXT_STAGE || !active.has(normalizeStateName(target))) continue;
+      const reviews = (config.roles ?? []).some((candidate) => candidate.result === 'review' && candidate.states.includes(normalizeStateName(target)));
+      if (reviews && !canMoveTo(role, column, config.tracker.terminalStates)) {
+        problems.push(`roles.${role.name}.may_move_to must list "${column}": an issue goes there when it needs documentation (roles.${writer.name})`);
+      }
+    }
+  }
+  return problems;
+}
+
+/**
  * Problems with `on_result: next` targets, for the roles' own transitions and again for each profile of
  * `pipeline.profiles` (whose `skip` passes over later stages and whose `on_result` overrides the role's): the board order
  * must be known (`boardColumns` null = the tracker does not list columns), the role must have a later active stage the
@@ -170,7 +201,7 @@ export function securityReviewProblems(config: ServiceConfig): string[] {
  * can lead to it or past it: every column it can lead to is checked.
  */
 export function nextStageProblems(config: ServiceConfig, boardColumns: readonly string[] | null): string[] {
-  const problems: string[] = securityReviewProblems(config);
+  const problems: string[] = [...securityReviewProblems(config), ...docsStageProblems(config)];
   const profiles = [null, ...config.pipeline.profiles.values()];
   for (const profile of profiles) {
     const suffix = profile === null ? '' : ` (profile ${profile.name})`;

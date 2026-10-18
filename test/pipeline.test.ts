@@ -252,9 +252,9 @@ describe('derivePipeline', () => {
 /** The WORKFLOW.md shipped in the repository root. */
 const shipped = path.join(import.meta.dirname, '..', 'WORKFLOW.md');
 /** The board Testing is meant for: between In progress and Agent review. */
-const BOARD_WITH_TESTING = ['Backlog', 'Ready', 'In progress', 'Testing', 'Agent review', 'Blocked', 'In review', 'Done'];
+const BOARD_WITH_TESTING = ['Backlog', 'Ready', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Blocked', 'In review', 'Done'];
 /** This repository's own board, where Testing was added after Done. */
-const BOARD_TESTING_LAST = ['Backlog', 'Ready', 'In progress', 'Agent review', 'Blocked', 'In review', 'Done', 'Testing', 'Archive'];
+const BOARD_TESTING_LAST = ['Backlog', 'Ready', 'In progress', 'Documentation', 'Agent review', 'Blocked', 'In review', 'Done', 'Testing', 'Archive'];
 
 describe('derivePipeline with the shipped workflow', () => {
   /** The shipped config, the test engineer stage off (the default) or on (the developer hands over to Testing). */
@@ -284,6 +284,7 @@ describe('derivePipeline with the shipped workflow', () => {
       [
         ['issue-analyst', 'done'],
         ['developer', 'done'],
+        ['docs', 'skipped'],
         ['reviewer', 'active'],
         ['security-auditor', 'pending'],
         ['human:in review', 'pending'],
@@ -291,7 +292,7 @@ describe('derivePipeline with the shipped workflow', () => {
       ],
     );
     const done = await shippedPipeline('off', { boardColumns: BOARD_WITH_TESTING, issue: { state: 'Done', description: null }, sessions: developed });
-    assert.deepEqual(ids(done), ['issue-analyst', 'developer', 'reviewer', 'security-auditor', 'human:in review', 'terminal:done']);
+    assert.deepEqual(ids(done), ['issue-analyst', 'developer', 'docs', 'reviewer', 'security-auditor', 'human:in review', 'terminal:done']);
   });
 
   it('keeps the In review stage of this repository\'s board, where Testing sits after Done, while the stage is off', async () => {
@@ -305,6 +306,7 @@ describe('derivePipeline with the shipped workflow', () => {
       [
         ['issue-analyst', 'done'],
         ['developer', 'done'],
+        ['docs', 'skipped'],
         ['reviewer', 'done'],
         ['security-auditor', 'skipped'],
         ['human:in review', 'active'],
@@ -322,6 +324,7 @@ describe('derivePipeline with the shipped workflow', () => {
         ['issue-analyst', 'done'],
         ['developer', 'done'],
         ['test-engineer', 'done'],
+        ['docs', 'skipped'],
         ['reviewer', 'active'],
         ['security-auditor', 'pending'],
         ['human:in review', 'pending'],
@@ -341,6 +344,7 @@ describe('derivePipeline with the shipped workflow', () => {
         ['issue-analyst', 'done'],
         ['developer', 'done'],
         ['test-engineer', 'active'],
+        ['docs', 'pending'],
         ['reviewer', 'pending'],
         ['security-auditor', 'pending'],
         ['human:in review', 'pending'],
@@ -360,9 +364,9 @@ describe('derivePipeline with the shipped workflow', () => {
   it('shows the stage when the issue\'s workflow profile routes the developer to Testing', async () => {
     const profile = { onResult: { developer: { done: 'Testing' } } };
     const routed = await shippedPipeline('off', { boardColumns: BOARD_WITH_TESTING, sessions: developed, profile });
-    assert.deepEqual(ids(routed), ['issue-analyst', 'developer', 'test-engineer', 'reviewer', 'security-auditor', 'human:in review', 'terminal:done']);
+    assert.deepEqual(ids(routed), ['issue-analyst', 'developer', 'test-engineer', 'docs', 'reviewer', 'security-auditor', 'human:in review', 'terminal:done']);
     // Without the profile the stage is off again.
-    assert.deepEqual(ids(await shippedPipeline('off', { boardColumns: BOARD_WITH_TESTING, sessions: developed, profile: null })), ['issue-analyst', 'developer', 'reviewer', 'security-auditor', 'human:in review', 'terminal:done']);
+    assert.deepEqual(ids(await shippedPipeline('off', { boardColumns: BOARD_WITH_TESTING, sessions: developed, profile: null })), ['issue-analyst', 'developer', 'docs', 'reviewer', 'security-auditor', 'human:in review', 'terminal:done']);
   });
 
   it('shows every later stage for a role that hands over with `next`', async () => {
@@ -382,7 +386,7 @@ describe('derivePipeline with the shipped workflow', () => {
       boardColumns: BOARD_WITH_TESTING,
       sessions: [],
     });
-    assert.deepEqual(ids(stages), ['issue-analyst', 'developer', 'test-engineer', 'reviewer', 'security-auditor', 'human:in review', 'terminal:done']);
+    assert.deepEqual(ids(stages), ['issue-analyst', 'developer', 'test-engineer', 'docs', 'reviewer', 'security-auditor', 'human:in review', 'terminal:done']);
   });
 });
 

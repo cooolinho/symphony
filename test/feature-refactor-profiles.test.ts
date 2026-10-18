@@ -25,7 +25,7 @@ const shipped = path.join(root, 'WORKFLOW.md');
 const toolbox = path.join(root, '.claude');
 const read = (file: string): string => fs.readFileSync(path.join(root, file), 'utf8');
 
-const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
+const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
 const GOALS = ['The duplicated parser exists once', 'No public signature of the module changes'];
 
 const META: ResultMeta = {
