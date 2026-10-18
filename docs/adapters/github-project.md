@@ -145,6 +145,24 @@ Failures come back to the agent as structured tool errors (`{error: {category, m
 input. Keep GitHub's secondary rate limits in mind: content-creating calls such as comments are limited to roughly
 80 per minute per token.
 
+## Orchestrator operations
+
+Besides the agent tools, the adapter offers operations the orchestrator calls itself, so it can persist and hand over
+stage results without an agent. All of them are optional parts of the `TrackerAdapter` interface (`src/tracker/types.ts`)
+and take the issue as normalized by the adapter. Queries are retried like all queries; mutations never are.
+
+| Method | GitHub API | Result |
+|---|---|---|
+| `readComments(issue)` | `comments(first: 100, after: …)`, one request per page, 1 rate-limit point each | Every comment, oldest first: `{author, createdAt, body, url}`. `author` is `null` for a deleted account. Fails with `tracker_pagination` when GitHub reports another page without a new cursor. |
+| `viewerLogin()` | `viewer { login }` | The login of the account behind the token; fetched once per adapter instance. |
+| `postComment(issue, body)` | `addComment` | `{url}` of the new comment. The `add_comment` tool and `commentOnIssue` use it. |
+| `setStatus(issue, column)` | `updateProjectV2ItemFieldValue`, then [auto-merge](#auto-merge) | `{previous, status, autoMerge?}`. The one function behind the `set_status` tool, so both behave identically; `previous` is the column in the `issue` passed in. An unknown column fails with `invalid_argument` and names the valid ones. It does not run the transition guard: the caller does. |
+| `addLabels(issue, names, {create})` | label lookup, `createLabel`, `addLabelsToLabelable` | `{added, created, unknown}`. Names are matched case-insensitively. A label the repository does not have is reported in `unknown`, except with `create` for the families `Type: <value>`, `Complexity: <value>` and `needs-human`: those are created (with the colors and descriptions of the standard labels from `repo-init`, else grey) and added. Any other name is never created. |
+| `removeLabels(issue, names)` | label lookup, `removeLabelsFromLabelable` | `{removed, unknown}`. A label the issue does not carry is a no-op on GitHub. |
+
+The calls need the token scopes the adapter already documents (`repo`, `project`); see the spike results in
+[the multi-agent concept](../concepts/multi-agent.md#spike-results).
+
 ## Auto-merge
 
 ```yaml
@@ -192,6 +210,7 @@ pull request from `base_branch`.
 | `tracker_rate_limited` | HTTP 429, 403 with exhausted rate limit, or GraphQL `RATE_LIMITED`; carries `retryAfterMs` when GitHub sends one |
 | `tracker_response` | Non-JSON body, GraphQL errors, unexpected payload, malformed requested item |
 | `tracker_pagination` | GitHub reported more pages without a new cursor, or more than 500 pages |
+| `invalid_argument` | A caller passed something the board does not have, e.g. `setStatus` with an unknown column (the agent tools report the same category) |
 | `invalid_tracker_config` / `missing_tracker_secret` | See Configuration |
 
 Errors are `TrackerError` instances: `category` (also `code`), a human-readable `message`, optional `retryAfterMs`

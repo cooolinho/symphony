@@ -4,7 +4,17 @@ import path from 'node:path';
 import type { AgentEvent, AgentRunner, AgentSession, StartSessionParams, TurnResult } from '../src/agent/types.ts';
 import type { Clock, Timers, WorkflowSource } from '../src/orchestrator/orchestrator.ts';
 import type { WorkspaceIntegration } from '../src/integrations/types.ts';
-import type { AgentToolSpec, Issue, TrackerAdapter } from '../src/tracker/types.ts';
+import { isCreatableLabel } from '../src/tracker/github-project/labels.ts';
+import type {
+  AddLabelsResult,
+  AgentToolSpec,
+  Issue,
+  IssueComment,
+  PostedComment,
+  RemoveLabelsResult,
+  StatusChange,
+  TrackerAdapter,
+} from '../src/tracker/types.ts';
 import { normalizeStateName, resolveConfig } from '../src/workflow/config.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../src/workflow/store.ts';
 import { compilePrompt, DEFAULT_CONTINUATION_PROMPT } from '../src/workflow/template.ts';
@@ -90,7 +100,68 @@ export class FakeTracker implements TrackerAdapter {
   /** Executed `set_status` calls, in order (only those that reached the tracker). */
   statusCalls: string[] = [];
 
-  /** `set_status` moves the session's issue in memory, like the GitHub tool does on the board. */
+  /** Comments by issue id, oldest first; `postComment` appends. */
+  comments = new Map<string, IssueComment[]>();
+  /** Login `viewerLogin` reports and `postComment` writes as the author. */
+  viewer = 'symphony-bot';
+  /** Labels the repository has (any case); `addLabels` only adds these, or creates the pipeline's families. */
+  repositoryLabels = new Set<string>();
+
+  async readComments(issue: Issue): Promise<IssueComment[]> {
+    return [...(this.comments.get(issue.id) ?? [])];
+  }
+
+  async viewerLogin(): Promise<string> {
+    return this.viewer;
+  }
+
+  async postComment(issue: Issue, body: string): Promise<PostedComment> {
+    const list = this.comments.get(issue.id) ?? [];
+    const url = `https://github.com/acme/app/issues/${issue.id}#issuecomment-${list.length + 1}`;
+    list.push({ author: this.viewer, createdAt: new Date(Date.UTC(2026, 0, 1, 0, list.length)), body, url });
+    this.comments.set(issue.id, list);
+    return { url };
+  }
+
+  /** Moves the session's issue in memory, like the GitHub adapter does on the board. */
+  async setStatus(issue: Issue, column: string): Promise<StatusChange> {
+    const previous = this.issues.get(issue.id)?.state ?? issue.state;
+    this.statusCalls.push(column);
+    this.set(issue.id, { state: column });
+    return { previous, status: column };
+  }
+
+  async addLabels(issue: Issue, names: string[], { create = false }: { create?: boolean } = {}): Promise<AddLabelsResult> {
+    const result: AddLabelsResult = { added: [], created: [], unknown: [] };
+    for (const name of names) {
+      const exists = this.#hasLabel(name);
+      if (!exists && !(create && isCreatableLabel(name))) {
+        result.unknown.push(name);
+        continue;
+      }
+      if (!exists) {
+        this.repositoryLabels.add(name);
+        result.created.push(name);
+      }
+      result.added.push(name);
+    }
+    const current = this.issues.get(issue.id)?.labels ?? issue.labels;
+    this.set(issue.id, { labels: [...new Set([...current, ...result.added.map((name) => name.toLowerCase())])] });
+    return result;
+  }
+
+  async removeLabels(issue: Issue, names: string[]): Promise<RemoveLabelsResult> {
+    const result: RemoveLabelsResult = { removed: [], unknown: [] };
+    for (const name of names) (this.#hasLabel(name) ? result.removed : result.unknown).push(name);
+    const gone = new Set(result.removed.map((name) => name.toLowerCase()));
+    this.set(issue.id, { labels: (this.issues.get(issue.id)?.labels ?? issue.labels).filter((label) => !gone.has(label)) });
+    return result;
+  }
+
+  #hasLabel(name: string): boolean {
+    return [...this.repositoryLabels].some((label) => label.toLowerCase() === name.toLowerCase());
+  }
+
   agentToolSpecs(): AgentToolSpec[] {
     return [
       {
@@ -100,11 +171,8 @@ export class FakeTracker implements TrackerAdapter {
         mutates: true,
         transitionTarget: (args) => String(args.status),
         execute: async (args, context) => {
-          const status = String(args.status);
-          const previous = this.issues.get(context.issue.id)?.state ?? context.issue.state;
-          this.statusCalls.push(status);
-          this.set(context.issue.id, { state: status });
-          return { ok: true, data: { previous_status: previous, status } };
+          const change = await this.setStatus(context.issue, String(args.status));
+          return { ok: true, data: { previous_status: change.previous, status: change.status } };
         },
       },
     ];

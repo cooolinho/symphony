@@ -81,6 +81,12 @@ class FakeGithub {
   pullRequests = new Set<string>();
   /** Repository labels by lowercase name. */
   labels = new Map<string, string>();
+  /** How the repository spells a label (by lowercase name); without an entry the lookup echoes the requested name. */
+  labelSpelling = new Map<string, string>();
+  /** Comments by issue node id, oldest first; the comments query pages through them 100 at a time. */
+  comments = new Map<string, Json[]>();
+  /** Login the viewer query returns. */
+  viewer = 'symphony-bot';
   /** Numbers handed out to created issues. */
   nextNumber = 100;
   /** The repository the auto-merge candidate query returns. */
@@ -196,14 +202,38 @@ class FakeGithub {
         };
       }
       case 'SymphonyLabels': {
-        const data: Json = {};
+        const data: Json = { id: 'R_1' };
         for (const match of this.lastQuery.matchAll(/l(\d+): label\(/g)) {
           const name = String(variables[`l${match[1]}`]);
           const id = this.labels.get(name.toLowerCase());
-          data[`l${match[1]}`] = id === undefined ? null : { id, name };
+          data[`l${match[1]}`] = id === undefined ? null : { id, name: this.labelSpelling.get(name.toLowerCase()) ?? name };
         }
         return { body: { data: { repository: data } } };
       }
+      case 'SymphonyCreateLabel': {
+        const name = String(variables.name);
+        if (this.labels.has(name.toLowerCase())) {
+          return { body: { data: null, errors: [{ type: 'UNPROCESSABLE', message: 'Name has already been taken', path: ['createLabel'] }] } };
+        }
+        const id = `L_${this.labels.size + 1}`;
+        this.labels.set(name.toLowerCase(), id);
+        return { body: { data: { createLabel: { label: { id, name } } } } };
+      }
+      case 'SymphonyAddLabels':
+      case 'SymphonyRemoveLabels':
+        return { body: { data: { [op === 'SymphonyAddLabels' ? 'addLabelsToLabelable' : 'removeLabelsFromLabelable']: { clientMutationId: null } } } };
+      case 'SymphonyIssueComments': {
+        const all = this.comments.get(String(variables.issueId)) ?? [];
+        const start = variables.after === null ? 0 : Number(String(variables.after).slice(1));
+        const hasNextPage = start + 100 < all.length;
+        return {
+          body: {
+            data: { node: { comments: { pageInfo: { hasNextPage, endCursor: hasNextPage ? `c${start + 100}` : null }, nodes: all.slice(start, start + 100) } } },
+          },
+        };
+      }
+      case 'SymphonyViewer':
+        return { body: { data: { viewer: { login: this.viewer } } } };
       case 'SymphonyCreateSubIssue': {
         const number = this.nextNumber++;
         const issue = { id: `I_new${number}`, number, url: `https://github.com/acme/app/issues/${number}` };
@@ -437,6 +467,247 @@ describe('github_project dependencies', () => {
     assert.equal(issues.get('child')?.dispatchable, true);
     assert.deepEqual(issues.get('child')?.native_ref?.parent, { identifier: 'acme/app#1', title: 'Parent', state: 'OPEN' });
     assert.equal((await dispatch(github, { respect_sub_issues: false })).get('parent')?.dispatchable, true);
+  });
+});
+
+describe('github_project adapter operations', () => {
+  const comment = (n: number, extra: Json = {}): Json => ({
+    author: { login: n % 2 === 0 ? 'symphony-bot' : 'alice' },
+    createdAt: new Date(Date.UTC(2026, 8, 1, 0, 0, n)).toISOString(),
+    url: `https://github.com/acme/app/issues/1#issuecomment-${n}`,
+    body: `Comment ${n}`,
+    ...extra,
+  });
+
+  async function setup(provider: Json = {}) {
+    const github = new FakeGithub().add(itemNode('A', { number: 1 }));
+    const tracker = adapter(github, provider) as Required<TrackerAdapter>;
+    const [issue] = await tracker.fetchIssuesByIds(['A']);
+    assert.ok(issue);
+    const count = (op: string) => github.requests.filter((r) => r.op === op).length;
+    return { github, tracker, issue, count };
+  }
+
+  describe('readComments', () => {
+    it('reads all 250 comments over three pages, each with author and timestamp', async () => {
+      const { github, tracker, issue } = await setup();
+      github.comments.set('I_A', Array.from({ length: 250 }, (_, i) => comment(i + 1)));
+      const comments = await tracker.readComments(issue);
+      assert.equal(comments.length, 250);
+      assert.deepEqual(comments[0], {
+        author: 'alice',
+        createdAt: new Date('2026-09-01T00:00:01Z'),
+        body: 'Comment 1',
+        url: 'https://github.com/acme/app/issues/1#issuecomment-1',
+      });
+      assert.equal(comments[249]?.body, 'Comment 250');
+      assert.equal(comments[249]?.author, 'symphony-bot');
+      assert.deepEqual(comments.map((c) => c.body), Array.from({ length: 250 }, (_, i) => `Comment ${i + 1}`));
+      assert.ok(comments.every((c) => c.createdAt instanceof Date && !Number.isNaN(c.createdAt.getTime())));
+      const pages = github.requests.filter((r) => r.op === 'SymphonyIssueComments');
+      assert.deepEqual(pages.map((r) => r.variables), [
+        { issueId: 'I_A', after: null },
+        { issueId: 'I_A', after: 'c100' },
+        { issueId: 'I_A', after: 'c200' },
+      ]);
+      assert.match(github.lastQuery, /comments\(first: 100, after: \$after\)/);
+    });
+
+    it('returns an empty list for an issue without comments and reads a deleted account as a null author', async () => {
+      const { github, tracker, issue } = await setup();
+      assert.deepEqual(await tracker.readComments(issue), []);
+      github.comments.set('I_A', [comment(1, { author: null })]);
+      assert.equal((await tracker.readComments(issue))[0]?.author, null);
+    });
+
+    it('fails on a page that promises more without a new cursor, and on malformed comments', async () => {
+      const { github, tracker, issue } = await setup();
+      github.overrides.set('SymphonyIssueComments', () => ({
+        body: { data: { node: { comments: { pageInfo: { hasNextPage: true, endCursor: null }, nodes: [comment(1)] } } } },
+      }));
+      await assert.rejects(tracker.readComments(issue), (e: unknown) => e instanceof TrackerError && e.category === 'tracker_pagination');
+
+      github.overrides.set('SymphonyIssueComments', () => ({
+        body: { data: { node: { comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [comment(1, { createdAt: 'yesterday' })] } } } },
+      }));
+      await assert.rejects(tracker.readComments(issue), (e: unknown) => e instanceof TrackerError && e.category === 'tracker_response');
+
+      github.overrides.set('SymphonyIssueComments', () => ({ body: { data: { node: null } } }));
+      await assert.rejects(tracker.readComments(issue), (e: unknown) => e instanceof TrackerError && e.category === 'tracker_response');
+    });
+
+    it('needs an issue that comes from the board', async () => {
+      const { tracker, issue } = await setup();
+      await assert.rejects(tracker.readComments({ ...issue, native_ref: null }), /has no GitHub reference to read comments of/);
+    });
+  });
+
+  describe('viewerLogin', () => {
+    it('asks GitHub once per adapter and retries after a failure', async () => {
+      const { github, tracker, count } = await setup();
+      github.overrides.set('SymphonyViewer', () => ({ status: 500, body: {} }));
+      await assert.rejects(tracker.viewerLogin(), TrackerError);
+      github.overrides.delete('SymphonyViewer');
+      assert.equal(await tracker.viewerLogin(), 'symphony-bot');
+      assert.equal(await tracker.viewerLogin(), 'symphony-bot');
+      assert.equal(count('SymphonyViewer'), 2);
+    });
+
+    it('rejects a response without a login', async () => {
+      const { github, tracker } = await setup();
+      github.overrides.set('SymphonyViewer', () => ({ body: { data: { viewer: null } } }));
+      await assert.rejects(tracker.viewerLogin(), (e: unknown) => e instanceof TrackerError && e.category === 'tracker_response');
+    });
+  });
+
+  describe('postComment', () => {
+    it('posts the body on the issue and returns the comment URL', async () => {
+      const { github, tracker, issue } = await setup();
+      assert.deepEqual(await tracker.postComment(issue, 'Stage result'), { url: 'https://github.com/acme/app/issues/1#issuecomment-1' });
+      assert.deepEqual(github.requests.at(-1), { op: 'SymphonyAddComment', variables: { subjectId: 'I_A', body: 'Stage result' } });
+    });
+
+    it('is what the add_comment tool and commentOnIssue use', async () => {
+      const { github, tracker, issue } = await setup();
+      const addComment = tracker.agentToolSpecs().find((t) => t.name === 'add_comment');
+      assert.deepEqual(await addComment?.execute({ body: 'From the agent' }, { issue }), {
+        ok: true,
+        data: { url: 'https://github.com/acme/app/issues/1#issuecomment-1' },
+      });
+      await tracker.commentOnIssue(issue, 'From Symphony');
+      assert.deepEqual(github.requests.filter((r) => r.op === 'SymphonyAddComment').map((r) => r.variables.body), ['From the agent', 'From Symphony']);
+      await assert.rejects(tracker.commentOnIssue({ ...issue, native_ref: null }, 'x'), /has no GitHub reference to comment on/);
+    });
+  });
+
+  describe('labels', () => {
+    it('creates a missing "Type: …" label and adds it; other unknown labels are neither created nor added', async () => {
+      const { github, tracker, issue, count } = await setup();
+      github.labels.set('complexity: m', 'L_existing');
+      const result = await tracker.addLabels(issue, ['Type: feature', 'Complexity: M', 'wontfix', 'Type:', 'Epic: x', 'type: FEATURE'], { create: true });
+      assert.deepEqual(result, { added: ['Type: feature', 'Complexity: M'], created: ['Type: feature'], unknown: ['wontfix', 'Type:', 'Epic: x'] });
+      assert.equal(count('SymphonyCreateLabel'), 1);
+      const create = github.requests.find((r) => r.op === 'SymphonyCreateLabel');
+      assert.deepEqual(create?.variables, { repositoryId: 'R_1', name: 'Type: feature', color: '7f7fff', description: 'This issue is a feature' });
+      const add = github.requests.find((r) => r.op === 'SymphonyAddLabels');
+      assert.deepEqual(add?.variables, { labelableId: 'I_A', labelIds: ['L_2', 'L_existing'] });
+      const lookup = github.requests.find((r) => r.op === 'SymphonyLabels');
+      assert.deepEqual(lookup?.variables, { owner: 'acme', name: 'app', l0: 'Type: feature', l1: 'Complexity: M', l2: 'wontfix', l3: 'Type:', l4: 'Epic: x' });
+    });
+
+    it('creates the Complexity and needs-human families, with a plain color for names outside the standard set', async () => {
+      const { github, tracker, issue } = await setup();
+      const result = await tracker.addLabels(issue, ['needs-human', 'Complexity: XL', 'Type: spike'], { create: true });
+      assert.deepEqual(result.created, ['needs-human', 'Complexity: XL', 'Type: spike']);
+      const created = github.requests.filter((r) => r.op === 'SymphonyCreateLabel').map((r) => r.variables);
+      assert.deepEqual(created.map((v) => v.name), ['needs-human', 'Complexity: XL', 'Type: spike']);
+      assert.deepEqual(created.map((v) => v.color), ['ff0000', 'ff6347', 'ededed']);
+      assert.equal(created[2]?.description, null);
+    });
+
+    it('creates nothing without create, and adds the labels that exist', async () => {
+      const { github, tracker, issue, count } = await setup();
+      github.labels.set('bug', 'L_bug');
+      const result = await tracker.addLabels(issue, ['bug', 'Type: feature']);
+      assert.deepEqual(result, { added: ['bug'], created: [], unknown: ['Type: feature'] });
+      assert.equal(count('SymphonyCreateLabel'), 0);
+      assert.deepEqual(github.requests.find((r) => r.op === 'SymphonyAddLabels')?.variables, { labelableId: 'I_A', labelIds: ['L_bug'] });
+
+      github.requests.length = 0;
+      assert.deepEqual(await tracker.addLabels(issue, ['nothing']), { added: [], created: [], unknown: ['nothing'] });
+      assert.equal(count('SymphonyAddLabels'), 0);
+    });
+
+    it('sends nothing for an empty list and drops duplicates (label names are case-insensitive)', async () => {
+      const { github, tracker, issue, count } = await setup();
+      assert.deepEqual(await tracker.addLabels(issue, ['', '  '], { create: true }), { added: [], created: [], unknown: [] });
+      assert.deepEqual(await tracker.removeLabels(issue, []), { removed: [], unknown: [] });
+      assert.equal(github.requests.some((r) => r.op === 'SymphonyLabels'), false);
+
+      const result = await tracker.addLabels(issue, ['Type: bugfix', 'type: BUGFIX', ' Type: bugfix '], { create: true });
+      assert.deepEqual(result.created, ['Type: bugfix']);
+      assert.equal(count('SymphonyCreateLabel'), 1);
+    });
+
+    it('uses the label a concurrent writer created between lookup and creation', async () => {
+      const { github, tracker, issue } = await setup();
+      let lookups = 0;
+      github.overrides.set('SymphonyLabels', () => {
+        if (++lookups === 2) github.labels.set('type: feature', 'L_theirs');
+        return undefined;
+      });
+      github.overrides.set('SymphonyCreateLabel', () => {
+        github.labels.set('type: feature', 'L_theirs');
+        return { body: { data: null, errors: [{ type: 'UNPROCESSABLE', message: 'Name has already been taken', path: ['createLabel'] }] } };
+      });
+      const result = await tracker.addLabels(issue, ['Type: feature'], { create: true });
+      assert.deepEqual(result.added, ['Type: feature']);
+      assert.deepEqual(github.requests.find((r) => r.op === 'SymphonyAddLabels')?.variables, { labelableId: 'I_A', labelIds: ['L_theirs'] });
+    });
+
+    it('removes existing labels by id and reports the ones the repository does not have', async () => {
+      const { github, tracker, issue, count } = await setup();
+      github.labels.set('needs-human', 'L_nh');
+      github.labelSpelling.set('needs-human', 'needs-human');
+      const result = await tracker.removeLabels(issue, ['Needs-Human', 'ghost']);
+      assert.deepEqual(result, { removed: ['needs-human'], unknown: ['ghost'] });
+      assert.deepEqual(github.requests.find((r) => r.op === 'SymphonyRemoveLabels')?.variables, { labelableId: 'I_A', labelIds: ['L_nh'] });
+
+      github.requests.length = 0;
+      assert.deepEqual(await tracker.removeLabels(issue, ['ghost']), { removed: [], unknown: ['ghost'] });
+      assert.equal(count('SymphonyRemoveLabels'), 0);
+    });
+
+    it('fails when the repository cannot be read', async () => {
+      const { github, tracker, issue } = await setup();
+      github.overrides.set('SymphonyLabels', () => ({ body: { data: { repository: null } } }));
+      await assert.rejects(tracker.addLabels(issue, ['bug']), (e: unknown) => e instanceof TrackerError && e.category === 'tracker_response');
+    });
+  });
+
+  it('never retries a mutation, even with retries configured', async () => {
+    const { github, tracker, issue, count } = await setup({ request_retries: 2 });
+    github.labels.set('bug', 'L_bug');
+    for (const [op, run] of [
+      ['SymphonyAddComment', () => tracker.postComment(issue, 'x')],
+      ['SymphonyCreateLabel', () => tracker.addLabels(issue, ['Type: feature'], { create: true })],
+      ['SymphonyAddLabels', () => tracker.addLabels(issue, ['bug'])],
+      ['SymphonyRemoveLabels', () => tracker.removeLabels(issue, ['bug'])],
+      ['SymphonySetStatus', () => tracker.setStatus(issue, 'Done')],
+    ] as const) {
+      github.overrides.set(op, () => ({ status: 503, body: {} }));
+      await assert.rejects(run(), (e: unknown) => e instanceof TrackerError && e.status === 503, op);
+      assert.equal(count(op), 1, op);
+    }
+  });
+
+  describe('setStatus', () => {
+    it('moves the board item by column name and reports the previous column of the snapshot', async () => {
+      const { github, tracker, issue } = await setup();
+      assert.deepEqual(await tracker.setStatus(issue, 'human review'), { previous: 'Todo', status: 'Human Review' });
+      assert.deepEqual(github.requests.find((r) => r.op === 'SymphonySetStatus')?.variables, {
+        projectId: 'PVT_1',
+        itemId: 'A',
+        fieldId: 'F_status',
+        optionId: 'o3',
+      });
+    });
+
+    it('rejects an unknown column as invalid_argument, naming the valid ones, without a mutation', async () => {
+      const { github, tracker, issue } = await setup();
+      await assert.rejects(tracker.setStatus(issue, 'Shipped'), (e: unknown) => {
+        assert.ok(e instanceof TrackerError);
+        assert.equal(e.category, 'invalid_argument');
+        assert.match(e.message, /unknown status "Shipped"; valid options: "Todo", "In Progress", "Human Review", "Done"/);
+        return true;
+      });
+      assert.equal(github.requests.some((r) => r.op === 'SymphonySetStatus'), false);
+    });
+
+    it('needs an issue that comes from the board', async () => {
+      const { tracker, issue } = await setup();
+      await assert.rejects(tracker.setStatus({ ...issue, native_ref: null }, 'Done'), /has no GitHub reference to move/);
+    });
   });
 });
 
@@ -875,7 +1146,7 @@ describe('github_project auto_merge', () => {
     const ops = () => github.requests.map((r) => r.op).filter((op) => op !== 'SymphonyItemDetails' && op !== 'SymphonyProjectMeta');
     const statuses = () => github.requests.filter((r) => r.op === 'SymphonySetStatus').map((r) => r.variables.optionId);
     const comments = () => github.requests.filter((r) => r.op === 'SymphonyAddComment').map((r) => String(r.variables.body));
-    return { github, move, ops, statuses, comments };
+    return { github, tracker, issue: issue as Issue, move, ops, statuses, comments };
   }
 
   it('merges the pull request into the base branch, closes the issue and moves it to the done column', async () => {
@@ -890,6 +1161,32 @@ describe('github_project auto_merge', () => {
     const merge = github.requests.find((r) => r.op === 'SymphonyMergePullRequest');
     assert.deepEqual(merge?.variables, { pullRequestId: 'PR_7', expectedHeadOid: 'abc123', method: 'SQUASH', headline: 'Feature: Export (#7)' });
     assert.match(comments()[0] ?? '', /merged #7 into `develop` \(squash\)/);
+  });
+
+  it('merges through the adapter\'s setStatus exactly like the tool', async () => {
+    const viaTool = await setup();
+    const toolData = await viaTool.move('Human Review');
+
+    const viaAdapter = await setup();
+    const change = await viaAdapter.tracker.setStatus?.(viaAdapter.issue, 'Human Review');
+    assert.deepEqual(change, {
+      previous: 'Todo',
+      status: 'Done',
+      autoMerge: { merged: true, pull_request: 7, status: 'Done', reason: 'merged into develop' },
+    });
+    assert.deepEqual(change?.autoMerge, toolData.auto_merge);
+    assert.equal(change?.status, toolData.status);
+    assert.deepEqual(viaAdapter.ops(), viaTool.ops());
+    assert.deepEqual(viaAdapter.statuses(), ['o3', 'o4']);
+    assert.deepEqual(viaAdapter.comments(), viaTool.comments());
+
+    // Other columns, and a conflict, behave as through the tool.
+    assert.deepEqual(await viaAdapter.tracker.setStatus?.(viaAdapter.issue, 'In Progress'), { previous: 'Todo', status: 'In Progress' });
+    const conflicting = await setup({ pullRequests: { nodes: [pullRequest({ mergeable: 'CONFLICTING' })] } });
+    const sentBack = await conflicting.tracker.setStatus?.(conflicting.issue, 'Human Review');
+    assert.equal(sentBack?.status, 'In Progress');
+    assert.equal(sentBack?.autoMerge?.merged, false);
+    assert.deepEqual(conflicting.statuses(), ['o3', 'o2']);
   });
 
   it('only merges on the configured column', async () => {
