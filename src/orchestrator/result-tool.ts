@@ -17,9 +17,12 @@ import {
   type StageResult,
 } from '../workflow/results.ts';
 import type { RoleConfig } from '../workflow/roles.ts';
+import { securityRoles } from '../workflow/validate.ts';
 import { filesOutside } from './changed-files.ts';
+import { securityNeeded, type SecurityFacts } from './security.ts';
 import { refactoringGoals, type PersistedResult, type StageHistory } from './stage-history.ts';
-import { resolveTransition, type StageConditions, type Transition, type TransitionProfile } from './transitions.ts';
+import { resolveTransition, type RoundHistory, type StageConditions, type Transition, type TransitionProfile } from './transitions.ts';
+import { isSubIssue, subIssueCount } from './work-packages.ts';
 
 /** Name of the tool a role with `result` hands off with, instead of `set_status`. */
 export const RESULT_TOOL = 'report_result';
@@ -77,9 +80,14 @@ export interface ResultToolParams {
    * Round counters and results of the issue's persisted results, loaded when the session starts (a run reports once).
    * A review reads the refactoring goals of the newest analysis from `results`.
    */
-  history: Pick<StageHistory, 'reviewRounds' | 'testRounds'> & Partial<Pick<StageHistory, 'results'>>;
+  history: RoundHistory & Partial<Pick<StageHistory, 'results'>>;
   profile: TransitionProfile | null;
   flags?: StageConditions;
+  /**
+   * For a reviewer: what decides whether an approval needs the security review (see `securityNeeded`), looked up when the
+   * agent reports `approved`. Without it the approval keeps its configured target.
+   */
+  security?: Pick<SecurityFacts, 'risk' | 'securityPaths' | 'changedFiles'> | null;
   config: Pick<ServiceConfig, 'tracker' | 'roles' | 'pipeline'>;
   /** The board's columns in board order; null when the tracker does not list them. */
   boardColumns: readonly string[] | null;
@@ -181,18 +189,6 @@ export function classificationLabels(result: StageResult, labels: readonly strin
   return added;
 }
 
-/** The issue's sub-issues as the tracker lists them in `native_ref.sub_issues` (open and closed); empty when it lists none. */
-function subIssueCount(issue: Pick<Issue, 'native_ref'>): number {
-  const subIssues = issue.native_ref?.sub_issues;
-  return Array.isArray(subIssues) ? subIssues.length : 0;
-}
-
-/** Whether the issue is itself a sub-issue: the tracker names a parent in `native_ref.parent`. */
-function isSubIssue(issue: Pick<Issue, 'native_ref'>): boolean {
-  const parent = issue.native_ref?.parent;
-  return typeof parent === 'object' && parent !== null;
-}
-
 /**
  * What the consistency rules of a result know of the session's issue and role: a refactor review has to confirm the
  * goals of the analysis (other issues and issues without goals are exempt), and a `split` design needs an XL issue that
@@ -205,6 +201,12 @@ function resultContext(issue: Issue, role: RoleConfig, history: Partial<Pick<Sta
     refactoringGoals: kind === 'review' && type === 'refactor' ? refactoringGoals(history) : [],
     split: { complexity, subIssue: isSubIssue(issue), maxSubIssues: role.maxSubIssues },
   };
+}
+
+/** The conditions of one report: the configured flags plus what was looked up for this call. */
+interface Conditions {
+  flags: StageConditions;
+  reasons: Readonly<Record<string, string>>;
 }
 
 type Plan = { ok: true; result: StageResult; transition: Transition } | { ok: false; failure: ToolResult };
@@ -229,7 +231,27 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
   /** The outcome of the call that posted the result comment; null until one did. */
   let recorded: ToolResult | null = null;
 
-  const plan = (args: Record<string, unknown>): Plan => {
+  /** The conditions `transitionTarget` looked up, by the arguments of the call; `record` takes them over so both route alike. */
+  const looked = new WeakMap<object, Conditions>();
+
+  /**
+   * The stage conditions for a call: the configured flags, and for a reviewer's `approved` whether the issue needs the
+   * security review (labels, the analysis and the files of the branch diff), set for every security role. Looked up
+   * asynchronously, before the synchronous {@link plan}.
+   */
+  const conditions = async (args: Record<string, unknown>): Promise<Conditions> => {
+    const configured: Conditions = { flags: params.flags ?? {}, reasons: {} };
+    const security = params.security;
+    const auditors = securityRoles(params.config.roles);
+    if (security === undefined || security === null || kind !== 'review' || args.verdict !== 'approved' || auditors.length === 0) return configured;
+    const decision = await securityNeeded({ ...security, labels: params.issue().labels });
+    return {
+      flags: { ...configured.flags, ...Object.fromEntries(auditors.map((auditor) => [auditor.name, decision.needed])) },
+      reasons: Object.fromEntries(auditors.map((auditor) => [auditor.name, decision.reason])),
+    };
+  };
+
+  const plan = (args: Record<string, unknown>, stage: Conditions = { flags: params.flags ?? {}, reasons: {} }): Plan => {
     const issue = params.issue();
     const parsed = parseResult(kind, args, resultContext(issue, role, params.history));
     if (!parsed.ok) return { ok: false, failure: fail('invalid_result', parsed.message) };
@@ -242,7 +264,8 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       verdict: parsed.result.verdict,
       history: params.history,
       profile: added.length > 0 ? profileFor(params.config.pipeline, classify(labels).type) : params.profile,
-      flags: params.flags,
+      flags: stage.flags,
+      flagReasons: stage.reasons,
       config: params.config,
       boardColumns: params.boardColumns,
       issue: { description: issue.description, labels },
@@ -327,7 +350,9 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
 
   const record = async (args: Record<string, unknown>, context: AgentToolContext): Promise<ToolResult> => {
     if (recorded !== null) return recorded.ok ? ok({ ...(recorded.data as object), already_recorded: true }) : recorded;
-    const planned = plan(args);
+    const stage = looked.get(args) ?? (await conditions(args));
+    looked.delete(args);
+    const planned = plan(args, stage);
     if (!planned.ok) return planned.failure;
     // Fail closed: nothing is written unless the guard allowed exactly this move, or the `on_check_failed` fallback
     // after the computed move failed its entry check.
@@ -457,14 +482,16 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       'stays: do what the error message says and report again.',
     inputSchema: toolInputShape(kind),
     mutates: true,
-    transitionTarget: (args) => {
+    transitionTarget: async (args) => {
       if (recorded !== null) return null;
-      const planned = plan(args);
+      const stage = await conditions(args);
+      looked.set(args, stage);
+      const planned = plan(args, stage);
       return planned.ok ? planned.transition.target : null;
     },
     checkFailedTarget: (args) => {
       if (recorded !== null || !role.readOnly || role.onCheckFailed === null) return null;
-      return plan(args).ok ? role.onCheckFailed : null;
+      return plan(args, looked.get(args)).ok ? role.onCheckFailed : null;
     },
     precheck: (args, context) => queue.run(async () => (await pathViolation()) ?? (await splitViolation(args, context))),
     execute: (args, context) => queue.run(() => record(args, context)),

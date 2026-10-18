@@ -769,7 +769,7 @@ describe('result-driven roles and the pipeline section', () => {
       const role = config.roles?.find((candidate) => candidate.name === name);
       return [role?.result, role?.onResult, role?.onCheckFailed, role?.onMissingResult, role?.onRoundLimit];
     };
-    // The issue analyst, the architect, the developer, the test engineer and the reviewer hand off with report_result; every other role keeps the neutral values.
+    // The issue analyst, the architect, the developer, the test engineer, the reviewer and the security auditor hand off with report_result; every other role keeps the neutral values.
     assert.deepEqual(transitions('issue-analyst'), ['analysis', { ready: 'next', needs_info: 'Blocked' }, null, 'Blocked', null]);
     assert.deepEqual(transitions('architect'), ['design', { ready: 'In progress', split: 'Agent review', blocked: 'Blocked' }, null, 'Blocked', null]);
     assert.deepEqual(transitions('developer'), ['implementation', { done: 'Agent review', blocked: 'Blocked' }, null, 'Blocked', null]);
@@ -778,10 +778,16 @@ describe('result-driven roles and the pipeline section', () => {
       transitions('reviewer'),
       ['review', { approved: 'In review', changes_needed: 'In progress', blocked: 'Blocked' }, 'In progress', 'Blocked', null],
     );
+    assert.deepEqual(
+      transitions('security-auditor'),
+      ['security', { passed: 'In review', issues_found: 'In progress', blocked: 'Blocked' }, 'In progress', 'Blocked', null],
+    );
     assert.equal(config.pipeline.maxReviewRounds, 3);
     assert.equal(config.pipeline.maxTestRounds, 2);
+    assert.equal(config.pipeline.maxSecurityRounds, 2);
+    assert.deepEqual(config.pipeline.securityPaths, ['app/Policies/**', 'app/Http/Middleware/**', 'config/auth.php', 'routes/**', 'database/migrations/**']);
     for (const role of config.roles ?? []) {
-      if (['issue-analyst', 'architect', 'developer', 'test-engineer', 'reviewer'].includes(role.name)) continue;
+      if (['issue-analyst', 'architect', 'developer', 'test-engineer', 'reviewer', 'security-auditor'].includes(role.name)) continue;
       assert.deepEqual([role.result, role.onResult, role.onCheckFailed, role.onMissingResult, role.onRoundLimit], [null, {}, null, null, null], role.name);
     }
   });
@@ -796,6 +802,7 @@ describe('result-driven roles and the pipeline section', () => {
       {
         maxReviewRounds: 3,
         maxTestRounds: 2,
+        maxSecurityRounds: 2,
         limitLabel: 'needs-human',
         typeLabels: [],
         defaultType: 'feature',
@@ -803,7 +810,7 @@ describe('result-driven roles and the pipeline section', () => {
         profiles: [],
         testPaths: ['tests/**', 'test/**', '**/*.test.*', '**/*Test.php'],
         docsPaths: [],
-        securityPaths: [],
+        securityPaths: ['app/Policies/**', 'app/Http/Middleware/**', 'config/auth.php', 'routes/**', 'database/migrations/**'],
       },
     );
   });
@@ -829,7 +836,7 @@ describe('result-driven roles and the pipeline section', () => {
     assert.equal(reviewerOf({ ...base, roles: { ...roles, reviewer: { states: ['Agent review'], model_label: 'ignore' } } })?.modelLabel, 'ignore');
   });
 
-  it('reads on_round_limit for review and test roles only', () => {
+  it('reads on_round_limit for review, test and security roles only', () => {
     const reviewer = reviewerOf(withReviewer({ on_round_limit: ' In review ' }));
     assert.equal(reviewer?.onRoundLimit, 'In review');
     assert.equal(reviewerOf(withReviewer({}))?.onRoundLimit, null);
@@ -838,7 +845,7 @@ describe('result-driven roles and the pipeline section', () => {
     assert.equal(testerOf({ on_round_limit: 'Blocked' }).roles?.find((role) => role.name === 'docs')?.onRoundLimit, 'Blocked');
     assert.match(
       messageOf({ ...base, roles: { ...roles, docs: { states: ['Docs'], result: 'docs', on_round_limit: 'Blocked' } } }),
-      /roles\.docs\.on_round_limit needs roles\.docs\.result review or test \(the kinds with a round limit\)/,
+      /roles\.docs\.on_round_limit needs roles\.docs\.result review or test or security \(the kinds with a round limit\)/,
     );
     assert.match(messageOf(withReviewer({ on_round_limit: 'Done' })), /roles\.reviewer\.on_round_limit must not be a terminal state/);
     assert.match(messageOf(withReviewer({ on_round_limit: 'next' })), /roles\.reviewer\.on_round_limit must be a column name \(next is only for on_result\)/);
@@ -949,6 +956,18 @@ describe('result-driven roles and the pipeline section', () => {
       assert.deepEqual([...pipeline.typeLabels], [['bug', 'bug'], ['chore', 'maintenance']]);
       assert.equal(pipeline.defaultType, 'chore');
       assert.deepEqual([pipeline.testPaths, pipeline.docsPaths, pipeline.securityPaths], [['test/**', '**/*.spec.ts'], ['docs/**'], ['src/auth/**']]);
+    });
+
+    it('defaults max_security_rounds to 2 (minimum 1) and security_paths to the Laravel places; an explicit list replaces them', () => {
+      const unset = resolve({ ...base, pipeline: {} }).pipeline;
+      assert.equal(unset.maxSecurityRounds, 2);
+      assert.deepEqual(unset.securityPaths, ['app/Policies/**', 'app/Http/Middleware/**', 'config/auth.php', 'routes/**', 'database/migrations/**']);
+      assert.equal(resolve({ ...base, pipeline: { max_security_rounds: '4' } }).pipeline.maxSecurityRounds, 4);
+      assert.deepEqual(resolve({ ...base, pipeline: { security_paths: ['src/auth/**'] } }).pipeline.securityPaths, ['src/auth/**']);
+      assert.deepEqual(resolve({ ...base, pipeline: { security_paths: [] } }).pipeline.securityPaths, [], 'an empty list turns the path trigger off');
+      assert.match(messageOf({ ...base, pipeline: { max_security_rounds: 0 } }), /pipeline\.max_security_rounds must be an integer >= 1 \(got 0\)/);
+      assert.match(messageOf({ ...base, pipeline: { security_paths: ['/abs/**'] } }), /pipeline\.security_paths\[0\] "\/abs\/\*\*" must be relative to the repository root/);
+      assert.ok(!resolve({ ...base, pipeline: { max_security_rounds: 3 } }).warnings.some((warning) => /max_security_rounds/.test(warning)));
     });
 
     it('keeps an explicit test_paths list as it is and validates the globs', () => {

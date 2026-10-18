@@ -117,8 +117,10 @@ Symphony fragt in einem festen Takt ein **GitHub Project Board** ab und übergib
 arbeiten: Branch anlegen, implementieren, testen, pushen, Pull Request öffnen, Ergebnis im Issue kommentieren. Danach
 prüfen automatische Checks und ein zweiter, lesender Agent (Reviewer) die Arbeit. Erst dann landet die Karte in
 **In review**. Ab dort bist du dran: Review, Merge, Karte nach **Done**.
-Bug-, Feature- und Refactor-Issues durchlaufen vor dem Review eine Spalte `Testing` (ein unabhängiger Test Engineer). Review- und Test-Schleifen
-sind begrenzt: Am Rundenlimit geht die Karte nach **Blocked** und bekommt das Label `needs-human`.
+Bug-, Feature- und Refactor-Issues durchlaufen vor dem Review eine Spalte `Testing` (ein unabhängiger Test Engineer), sicherheitsrelevante
+Änderungen (Label `security`, Sicherheitsrisiko in der Analyse oder geänderte Dateien wie Policies, Middleware, Routen
+oder Migrationen) danach ein lesendes `Security review`. Review-, Test- und Security-Schleifen sind begrenzt: Am
+Rundenlimit geht die Karte nach **Blocked** und bekommt das Label `needs-human`.
 
 Was der Agent tun soll, steht in der **`WORKFLOW.md`** (Prompt und Einstellungen). Board, Repositories, Standardmodell
 und Token stehen in der **`.env`**.
@@ -144,13 +146,19 @@ und Token stehen in der **`.env`**.
 - **Arbeitspakete:** Ein sehr großes Feature (Komplexität `XL`) kann der Architect in Arbeitspakete aufteilen, je ein
   Sub-Issue, die parallel mit eigener Pipeline, eigenem Workspace, Branch und Pull Request laufen. Das Eltern-Issue
   wartet, bis alle geschlossen sind; dann prüft der Reviewer den integrierten Basis-Branch gegen seine
-  Akzeptanzkriterien. Keine Worktrees und keine zusätzliche Integrationsrolle
+  Akzeptanzkriterien, und der Security Auditor prüft die gemergten Pakete, wenn das Eltern-Issue es braucht. Keine
+  Worktrees und keine zusätzliche Integrationsrolle
   ([Details](docs/configuration.md#work-packages-split),
   [warum](docs/concepts/multi-agent.md#work-packages-instead-of-an-integration-engineer)).
 - **Test Engineer:** Ein unabhängiger Agent in der Spalte `Testing` (Bug-, Feature- und Refactor-Issues immer, andere Issues optional) schreibt Tests für die
   Akzeptanzkriterien und darf nur Testdateien ändern; fehlgeschlagene Tests gehen mit den betroffenen Fällen zurück an
   den Developer, und nach `pipeline.max_test_rounds` fehlgeschlagenen Runden wartet das Issue auf dich
   ([Details](docs/configuration.md#the-test-engineer)).
+- **Security Auditor:** Nach der Freigabe durch den Reviewer prüft ein lesender Agent in der Spalte `Security review`
+  Änderungen, die Sicherheit berühren (Label `security`, `risks.security` in der Analyse oder eine geänderte Datei, die
+  zu `pipeline.security_paths` passt, standardmäßig Laravel-Policies, Middleware, Auth-Konfiguration, Routen und
+  Migrationen); alle übrigen freigegebenen Issues überspringen ihn ohne Session. Befunde gehen zurück an den Developer,
+  begrenzt durch `pipeline.max_security_rounds` ([Details](docs/configuration.md#the-security-auditor)).
 - **Befehle im Issue:** Beginnt die Beschreibung mit `/refactoring`, lädt Symphony einen zentral gepflegten Audit-Skill:
   Er misst die Baseline, findet Bugs und Refactoring-Kandidaten und legt Sub-Issues an. `/refactor-safely` setzt sie
   verhaltensneutral mit Tests als Sicherheitsnetz um ([Details](docs/usage.md#commands-in-the-issue-refactoring)).
@@ -189,7 +197,7 @@ npm start               # Symphony starten
 ```
 
 Dazwischen legst du ein GitHub Project Board mit den Spalten `Backlog`, `Ready`, `Design`, `In progress`, `Testing`,
-`Agent review`, `Blocked`, `In review` und `Done` an. Die ausführliche Anleitung steht in
+`Agent review`, `Security review`, `Blocked`, `In review` und `Done` an. Die ausführliche Anleitung steht in
 [docs/getting-started.md](docs/getting-started.md), den Betrieb per Docker hinter Traefik beschreibt
 [docs/docker.md](docs/docker.md), einen lokalen Testlauf desselben Images ohne Traefik (`docker-compose.local.yml`)
 [ein eigener Abschnitt](docs/docker.md#local-test-setup-without-traefik). Die Dokumentation unter `docs/` ist auf

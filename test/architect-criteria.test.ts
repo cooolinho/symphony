@@ -20,7 +20,7 @@ import { FakeRunner, FakeTracker, ManualClock, ManualTimers, StaticWorkflow, mak
 const shipped = path.join(import.meta.dirname, '..', 'WORKFLOW.md');
 const root = path.join(import.meta.dirname, '..');
 const ENV = { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' };
-const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Blocked', 'In review', 'Done'];
+const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
 
 async function shippedFront(): Promise<{ definition: Awaited<ReturnType<typeof loadWorkflowFile>>['definition']; raw: Record<string, any> }> {
   const { definition } = await loadWorkflowFile(shipped);

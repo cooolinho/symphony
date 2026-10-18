@@ -1,10 +1,10 @@
 import type { Issue } from '../tracker/types.ts';
-import type { ServiceConfig } from '../workflow/config.ts';
+import { normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
 import { classify } from '../workflow/classify.ts';
 import { profileSkipReason, type WorkflowProfile } from '../workflow/profile.ts';
-import { isLoopKind, LOOP_VERDICTS } from '../workflow/results.ts';
+import { isLoopKind, LOOP_VERDICTS, type LoopKind } from '../workflow/results.ts';
 import { NEXT_STAGE, roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
-import { canMoveTo, laterActiveColumns, nextWithoutBoardOrder } from '../workflow/validate.ts';
+import { canMoveTo, laterActiveColumns, nextWithoutBoardOrder, securityRoles } from '../workflow/validate.ts';
 import { blockedBucketColumns } from './pipeline.ts';
 import type { StageHistory } from './stage-history.ts';
 
@@ -13,18 +13,29 @@ export type TransitionProfile = WorkflowProfile;
 
 /**
  * Whether a conditional stage is needed for the issue, by role name; roles not listed always run. An extra override on
- * top of the profile's `skip` and `skip_when` (see `profileSkips`), which `nextStage` always evaluates.
+ * top of the profile's `skip` and `skip_when` (see `profileSkips`), which `nextStage` always evaluates. The security
+ * review (`result: security`) is the other way round: it runs only for `true`, see {@link securityStage}.
  */
 export type StageConditions = Readonly<Record<string, boolean>>;
+
+/** Round counters of the issue's persisted results; `securityRounds` is 0 when omitted. */
+export type RoundHistory = Pick<StageHistory, 'reviewRounds' | 'testRounds'> & Partial<Pick<StageHistory, 'securityRounds'>>;
+
+/** The round the next loop verdict of `kind` would be, minus one: the loop verdicts recorded so far. */
+export function roundsDone(history: RoundHistory, kind: LoopKind): number {
+  return kind === 'review' ? history.reviewRounds : kind === 'test' ? history.testRounds : (history.securityRounds ?? 0);
+}
 
 export interface TransitionInput {
   /** The role that reported the result. */
   role: RoleConfig;
   verdict: string;
   /** Round counters of the issue's persisted results, without the result being resolved. */
-  history: Pick<StageHistory, 'reviewRounds' | 'testRounds'>;
+  history: RoundHistory;
   profile: TransitionProfile | null;
   flags?: StageConditions;
+  /** Why a flag holds or not, by role name; named in the transition reason when it decided the route. */
+  flagReasons?: Readonly<Record<string, string>>;
   config: Pick<ServiceConfig, 'tracker' | 'roles' | 'pipeline'>;
   /** The board's columns in board order (adapter `statusOptions`); null when the tracker does not list them. */
   boardColumns: readonly string[] | null;
@@ -65,11 +76,13 @@ type Target = { column: string; note: string } | { problem: string };
  * Where an issue goes after `input.role` reported `input.verdict`. Pure; the rules apply in this order:
  *
  * 1. `blocked` → `on_result.blocked` when it names a column, else the blocked column (see {@link blockedColumn}).
- * 2. A loop verdict (review `changes_needed`, test `failed`) whose round reaches `max_review_rounds` /
- *    `max_test_rounds` (the profile's when set) → `on_round_limit`, else the blocked column, plus `limit_label`.
+ * 2. A loop verdict (review `changes_needed`, test `failed`, security `issues_found`) whose round reaches
+ *    `max_review_rounds` / `max_test_rounds` (the profile's when set) / `max_security_rounds` → `on_round_limit`, else
+ *    the blocked column, plus `limit_label`.
  * 3. `on_result[verdict]` (the profile's override first); `next` is the first active column after the role's
  *    columns in board order whose role the profile does not skip (`skip`, or `skip_when` for the issue's complexity).
- *    A verdict without a target goes to the blocked column.
+ *    A verdict without a target goes to the blocked column. A reviewer's `approved` that leads out of the active
+ *    columns (to the human review) goes to the security review first when `flags` say it is needed ({@link securityStage}).
  *
  * Every other transition removes `limit_label`, so an issue that left the limit behind loses it. A target the role may
  * not move to is a problem, never a transition.
@@ -80,7 +93,7 @@ export function resolveTransition(input: TransitionInput): TransitionOutcome {
   if (kind === null) return { ok: false, problem: `role ${role.name} reports no result (roles.${role.name}.result is not set)` };
   const override = input.profile !== null && Object.hasOwn(input.profile.onResult, role.name) ? input.profile.onResult[role.name] : {};
   const onResult = new Map(Object.entries({ ...role.onResult, ...override }));
-  const round = isLoopKind(kind) ? (kind === 'review' ? input.history.reviewRounds : input.history.testRounds) + 1 : null;
+  const round = isLoopKind(kind) ? roundsDone(input.history, kind) + 1 : null;
   const max = maxRounds(input);
   const limitReached = isLoopKind(kind) && verdict === LOOP_VERDICTS[kind] && round !== null && max !== null && round >= max;
 
@@ -98,7 +111,7 @@ export function resolveTransition(input: TransitionInput): TransitionOutcome {
     rule = mapped === undefined ? 'unmapped' : 'on_result';
     if (mapped === undefined) target = blockedColumn(input);
     else if (mapped === NEXT_STAGE) target = nextStage(input);
-    else target = { column: mapped, note: `on_result.${verdict}` };
+    else target = securityStage(input, { column: mapped, note: `on_result.${verdict}` });
   }
 
   const label = `${kind} ${verdict}${round !== null ? ` (round ${round}${max !== null ? ` of ${max}` : ''})` : ''}`;
@@ -123,6 +136,7 @@ export function resolveTransition(input: TransitionInput): TransitionOutcome {
 function maxRounds({ role, profile, config }: TransitionInput): number | null {
   if (role.result === 'review') return profile?.maxReviewRounds ?? config.pipeline.maxReviewRounds;
   if (role.result === 'test') return profile?.maxTestRounds ?? config.pipeline.maxTestRounds;
+  if (role.result === 'security') return config.pipeline.maxSecurityRounds;
   return null;
 }
 
@@ -156,4 +170,28 @@ function nextStage(input: TransitionInput): Target {
   }
   const why = passed.length > 0 ? ` (${passed.join(', ')})` : '';
   return { problem: `${path}: "${NEXT_STAGE}" has no later active stage after ${role.states.join(', ')} on the board${why}` };
+}
+
+/**
+ * The reviewer's `approved` leads to the human review, which is no active column. When the issue needs a security
+ * review, it goes to the column of the role with `result: security` first. That role must be in the active columns, the
+ * profile must not skip it, and `flags[<role>]` must be `true`: the security check (see `securityNeeded`) is evaluated
+ * by `report_result` and a resolver without it keeps the configured target. A `Security review` role the flags call not
+ * needed leaves the target alone and says so in the note.
+ */
+function securityStage(input: TransitionInput, target: { column: string; note: string }): { column: string; note: string } {
+  const { role, verdict, config, profile, flags = {}, flagReasons = {} } = input;
+  if (role.result !== 'review' || verdict !== 'approved') return target;
+  if (config.tracker.activeStates.some((state) => normalizeStateName(state) === normalizeStateName(target.column))) return target;
+  const { complexity } = classify(input.issue?.labels ?? []);
+  const notes: string[] = [];
+  for (const auditor of securityRoles(config.roles)) {
+    if (profileSkipReason(profile, auditor.name, complexity) !== null) continue;
+    const column = config.tracker.activeStates.find((state) => auditor.states.includes(normalizeStateName(state)));
+    if (column === undefined) continue;
+    const why = flagReasons[auditor.name];
+    if (flags[auditor.name] === true) return { column, note: `${target.note}, security review needed${why !== undefined ? `: ${why}` : ''}` };
+    if (flags[auditor.name] === false) notes.push(`security review not needed${why !== undefined ? `: ${why}` : ''}`);
+  }
+  return notes.length > 0 ? { ...target, note: [target.note, ...notes].join(', ') } : target;
 }

@@ -26,10 +26,11 @@ npm install
 
 1. On GitHub, go to **Profile → Projects → New project** and create a project from the **Kanban** template. It comes
    with the columns `Backlog`, `Ready`, `In progress`, `In review` and `Done`.
-2. Add the columns `Design`, `Testing`, `Agent review` and `Blocked`: on the board, add the options via the menu of the **Status** field (or
+2. Add the columns `Design`, `Testing`, `Agent review`, `Security review` and `Blocked`: on the board, add the options via the menu of the **Status** field (or
    *Settings → Fields → Status*). Keep this order (`Backlog`, `Ready`, `Design`, `In progress`, `Testing`, `Agent review`,
-   `Blocked`, `In review`, `Done`): `next` and the pipeline view follow the board's order, so `Design` belongs between
-   `Ready` and `In progress`, and `Testing` between `In progress` and `Agent review`.
+   `Security review`, `Blocked`, `In review`, `Done`): `next` and the pipeline view follow the board's order, so `Design`
+   belongs between `Ready` and `In progress`, `Testing` between `In progress` and `Agent review`, and `Security review`
+   between `Agent review` and `Blocked`.
 
    | Column | Who moves cards here | What Symphony does |
    |---|---|---|
@@ -39,8 +40,9 @@ npm install
    | `In progress` | Developer, Reviewer (changes needed), Test engineer (tests failed), Architect (design ready) | Developer works |
    | `Testing` | Developer, after passing checks (bug, feature and refactor issues; other issues only with `SYMPHONY_AFTER_IMPLEMENTATION=Testing`) | starts the **Test engineer**, who writes independent tests and may only change test files |
    | `Agent review` | Developer (issues without the test stage), or Test engineer when the tests pass | starts the **Reviewer** (at most one at a time) |
-   | `Blocked` | Issue analyst (open questions), Architect, Developer or Reviewer | stops the agent, workspace is kept; your turn |
-   | `In review` | only the Reviewer, after passing checks | stops the agent, workspace is kept; your review |
+   | `Security review` | Reviewer, when the approved change is security-relevant (a `security` label, a security risk in the analysis, or a changed file in `pipeline.security_paths`); other approved issues skip it without a session | starts the **Security auditor** (read-only, at most one at a time) |
+   | `Blocked` | Issue analyst (open questions), Architect, Developer, Reviewer or Security auditor | stops the agent, workspace is kept; your turn |
+   | `In review` | only the Reviewer or the Security auditor, after passing checks | stops the agent, workspace is kept; your review |
    | `Done` | only you | stops the agent and deletes the workspace |
 
    The bundled `WORKFLOW.md` expects exactly these names. `Design` is used by the
@@ -53,6 +55,8 @@ npm install
    other issues skip `Testing` unless
    `SYMPHONY_AFTER_IMPLEMENTATION=Testing` makes the developer hand every issue over to it. The column is required
    either way: the dry run (step 6) reports every column missing from the board (`unknown board column "Testing"`).
+   `Security review` is used by the [security auditor](configuration.md#the-security-auditor) and is required on the
+   board as well (`unknown board column "Security review"` otherwise); it stays empty for issues that need no audit.
    To run bug issues without the test stage, see [Bug issues](usage.md#bug-issues-the-bugfix-profile). With the default
    of 3 agent slots the test engineer and the issue analyst share one slot; allow 4 (`SYMPHONY_MAX_CONCURRENT_AGENTS`)
    to run them side by side.

@@ -7,18 +7,21 @@ import type { StartSessionParams, TurnResult } from '../src/agent/types.ts';
 import { Logger } from '../src/log.ts';
 import { CONTINUATION_DELAY_MS, failureBackoffMs, routableWhileRunning } from '../src/orchestrator/eligibility.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
+import { reviewedFiles } from '../src/orchestrator/security.ts';
+import type { PersistedResult } from '../src/orchestrator/stage-history.ts';
+import { isIntegrationReview, isSplittable, subIssueLimit } from '../src/orchestrator/work-packages.ts';
 import { dryRunPlan, planLines } from '../src/service.ts';
 import { applyDispatchRules, isHeldBySubIssues, openSubIssuesOf, type LinkedIssue } from '../src/tracker/github-project/normalize.ts';
 import type { AgentToolSpec, Issue, ToolResult } from '../src/tracker/types.ts';
 import { loadWorkflowFile } from '../src/workflow/loader.ts';
-import { decodeMarker } from '../src/workflow/results.ts';
+import { decodeMarker, parseResult } from '../src/workflow/results.ts';
 import { FakeRunner, FakeTracker, ManualClock, ManualTimers, StaticWorkflow, callTool, makeIssue, makeWorkflow, tempDir, until } from './helpers.ts';
 
 // Work packages as sub-issues (#211): the shipped WORKFLOW.md drives the real orchestrator, worker, report_result tool
 // and prompt template on an in-memory board that treats sub-issues like the GitHub adapter, with scripted sessions.
 
 const shipped = path.join(import.meta.dirname, '..', 'WORKFLOW.md');
-const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Blocked', 'In review', 'Done'];
+const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
 // Six slots: the analysts of the packages run next to the stages of the parent.
 const ENV = { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't', SYMPHONY_MAX_CONCURRENT_AGENTS: '6' };
 const PARENT = '7';
@@ -177,8 +180,18 @@ async function harness(issues: Issue[], scripts: Record<string, Script[]>): Prom
   const config: Record<string, unknown> = {
     ...definition.config,
     workspace: { root: tempDir() },
-    // A git checkout like the shipped hooks make (the test engineer's path rule needs one), without the clone.
-    hooks: { after_create: ['git init -q', 'git config user.email symphony@example.com', 'git config user.name Symphony', 'git commit -q --allow-empty -m init'].join('\n') },
+    // A git checkout like the shipped hooks make (the test engineer's path rule needs one), without the clone; origin/HEAD
+    // as a clone has it, so the security check can list the changed files.
+    hooks: {
+      after_create: [
+        'git init -q',
+        'git config user.email symphony@example.com',
+        'git config user.name Symphony',
+        'git commit -q --allow-empty -m init',
+        'git update-ref refs/remotes/origin/main HEAD',
+        'git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main',
+      ].join('\n'),
+    },
     checks: {},
     tracker: { ...(definition.config.tracker as Record<string, unknown>), kind: 'github_project', provider: { owner: 'acme', project_number: 1, token: 'test-token' } },
   };
@@ -383,7 +396,7 @@ describe('work packages as sub-issues (#211)', () => {
     const review = sessionsOf(h, PARENT)[4]?.turns[0] ?? '';
     assert.equal(roleOf(sessionsOf(h, PARENT)[4]), 'reviewer');
     assert.match(review, /git diff origin\/<base>\.\.\.HEAD/);
-    assert.match(review, /This pull request fixes what the integration review found still missing or broken across the packages/);
+    assert.match(review, /This pull request fixes what the integration review \(or the security audit of the merged packages\) found still missing or broken across the packages/);
     assert.doesNotMatch(review, /integration review\)/);
     await until(() => stateOf(h) === 'In review', 3_000, 'In review');
     assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'In progress', 'Testing', 'Agent review', 'In review']);
@@ -445,6 +458,31 @@ describe('work packages as sub-issues (#211)', () => {
     await h.orchestrator.shutdown(1_000);
   });
 
+  it("does not give a work package's architect create_sub_issue: it cannot file sub-issues of its own and hands on with ready", async () => {
+    const parent = { identifier: 'acme/app#6', title: 'Billing', state: 'OPEN', state_reason: null };
+    for (const [why, issue] of [
+      ['a work package of complexity XL', { ...feature(), native_ref: ref(7, parent) }],
+      ['a work package of complexity L', { ...feature('Design', 'L'), native_ref: ref(7, parent) }],
+      ['an issue of complexity L', feature('Design', 'L')],
+    ] as const) {
+      let tools: string[] = [];
+      let limit: number | undefined;
+      const architect: Script = async ({ params, report }) => {
+        tools = params.tools.map((tool) => tool.name);
+        limit = params.toolContext().maxSubIssues;
+        await report({ ...SPLIT, verdict: 'ready', work_packages: [] });
+      };
+      const h = await harness([issue], { [PARENT]: [architect] });
+      await h.orchestrator.tickNow();
+      await until(() => stateOf(h) === 'In progress', 3_000, `In progress (${why})`);
+      assert.ok(tools.includes('report_result'), why);
+      assert.equal(tools.includes('create_sub_issue'), false, `${why}: no create_sub_issue`);
+      assert.equal(limit, undefined, `${why}: no sub-issue limit in the tool context`);
+      assert.equal(h.tracker.subIssues(PARENT).length, 0, why);
+      await h.orchestrator.shutdown(1_000);
+    }
+  });
+
   it('refuses a split before every work package is a sub-issue, and records it once they are', async () => {
     const outcomes: ToolResult[] = [];
     const architect: Script = async ({ params, report }) => {
@@ -502,21 +540,198 @@ describe('work packages as sub-issues (#211)', () => {
   });
 });
 
+describe('the security review of an issue split into work packages', () => {
+  const TWO = PACKAGES.slice(0, 2);
+  const splitTwo: Script = async ({ params, report }) => {
+    await files(params, TWO);
+    await report({ ...SPLIT, work_packages: SPLIT.work_packages.slice(0, 2) });
+  };
+  const approve: Script = async ({ report }) => {
+    await report({ verdict: 'approved', summary: 'Both packages are on the base branch and meet the acceptance criteria.' });
+  };
+
+  /** Runs the split, closes both packages and waits for the integration review's result. */
+  async function throughIntegrationReview(h: Harness): Promise<void> {
+    await h.orchestrator.tickNow();
+    await until(() => h.reports.length === 1, 3_000, 'the split');
+    await continueWith(h);
+    h.tracker.close('8');
+    h.tracker.close('9');
+    await h.orchestrator.tickNow();
+    await until(() => h.reports.length === 2, 3_000, 'the integration review result');
+    assert.equal(roleOf(sessionsOf(h, PARENT)[1]), 'reviewer (integration review)');
+  }
+
+  const designHead = (h: Harness): string => {
+    const marker = (h.tracker.comments.get(PARENT) ?? []).map((comment) => decodeMarker(comment.body)).find((entry) => entry?.result.kind === 'design');
+    assert.ok(marker?.meta.head_sha, 'the split design recorded the commit it was made at');
+    return marker.meta.head_sha;
+  };
+
+  it("audits the merged packages when they changed a security path, and hands the findings to the parent's own developer", async () => {
+    const approveMerged: Script = async ({ params, report }) => {
+      // The packages were merged into the base branch and the workspace is at its tip (before_run): HEAD and origin/main
+      // moved on together from the commit the design was made at, so the branch diff against the base is empty.
+      fs.mkdirSync(path.join(params.cwd, 'app', 'Policies'), { recursive: true });
+      fs.writeFileSync(path.join(params.cwd, 'app', 'Policies', 'InvoicePolicy.php'), '<?php\n');
+      execFileSync('git', ['add', '-A'], { cwd: params.cwd });
+      execFileSync('git', ['commit', '-q', '-m', 'Merge the packages'], { cwd: params.cwd });
+      execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: params.cwd });
+      await approve({ params, report, turn: 1 });
+    };
+    const audit: Script = async ({ report }) => {
+      await report({
+        verdict: 'issues_found',
+        summary: 'The CSV and the PDF package each authorize their own route, but the policy they share lets any user view any invoice.',
+        findings: [{ severity: 'major', file: 'app/Policies/InvoicePolicy.php', line: 1, problem: 'view() allows every user to read every invoice', fix: 'Scope view() to the owner of the invoice' }],
+      });
+    };
+    const fix: Script = async ({ report }) => {
+      await report({ verdict: 'done', summary: 'Scoped InvoicePolicy::view() to the owner.', changed_files: ['app/Policies/InvoicePolicy.php'] });
+    };
+    const h = await harness([feature()], { [PARENT]: [splitTwo, approveMerged, audit, fix] });
+    await throughIntegrationReview(h);
+    const sha = designHead(h);
+
+    // The files the packages changed since the design decide, not the empty diff of the base checkout against itself.
+    assert.equal(dataOf(h.reports[1]).target, 'Security review');
+    assert.match(String(dataOf(h.reports[1]).reason), /security review needed: 1 changed file\(s\) match pipeline\.security_paths: app\/Policies\/InvoicePolicy\.php/);
+    await continueWith(h);
+    const prompt = sessionsOf(h, PARENT)[2]?.turns[0] ?? '';
+    assert.equal(roleOf(sessionsOf(h, PARENT)[2]), 'security auditor (integration audit)');
+    assert.match(prompt, /This issue has no pull request of its own\. The integration review approved the merged packages/);
+    assert.match(prompt, /- acme\/app#8 "Export: CSV writer": closed as completed\n- acme\/app#9 "Export: PDF writer": closed as completed/);
+    assert.match(prompt, new RegExp(`Read what the packages brought in with \`git diff ${sha}\\.\\.origin/<base>\``));
+    assert.match(prompt, /Symphony brought the workspace to the tip of `origin\/<base>`/);
+    assert.doesNotMatch(prompt, /pull request's branch/);
+    assert.doesNotMatch(prompt, /git diff origin\/<base>\.\.\.HEAD/);
+    assert.match(prompt, /`issues_found` sends it to this issue's developer, who fixes the findings on the branch `symphony\/issue-7`/);
+
+    // issues_found goes to the parent's own developer, with the findings, like a changes_needed of the integration review.
+    await until(() => h.reports.length === 3, 3_000, 'the security result');
+    assert.equal(dataOf(h.reports[2]).target, 'In progress');
+    await continueWith(h);
+    const developer = sessionsOf(h, PARENT)[3]?.turns[0] ?? '';
+    assert.equal(roleOf(sessionsOf(h, PARENT)[3]), 'developer');
+    assert.match(developer, /## Open findings of the latest security review\n[\s\S]*1\. \[major\] app\/Policies\/InvoicePolicy\.php:1 — view\(\) allows every user to read every invoice/);
+    assert.match(developer, /The open findings below, of the integration review or of the security audit of the merged packages, are what is still missing or broken/);
+    await until(() => h.reports.length === 4, 3_000, 'the fix');
+    assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'Security review', 'In progress', 'Testing']);
+    await h.orchestrator.shutdown(1_000);
+  });
+
+  it('audits the merged packages of a parent labelled security, and a pass moves it to In review', async () => {
+    const pass: Script = async ({ report }) => {
+      await report({ verdict: 'passed', summary: 'No finding in what the packages changed.' });
+    };
+    const labelled = { ...feature(), labels: ['Type: feature', 'Complexity: XL', 'security'] };
+    const h = await harness([labelled], { [PARENT]: [splitTwo, approve, pass] });
+    await throughIntegrationReview(h);
+    assert.equal(dataOf(h.reports[1]).target, 'Security review');
+    assert.match(String(dataOf(h.reports[1]).reason), /security review needed: the issue carries the "security" label/);
+    await continueWith(h);
+    assert.equal(roleOf(sessionsOf(h, PARENT)[2]), 'security auditor (integration audit)');
+    await until(() => h.reports.length === 3, 3_000, 'the security result');
+    assert.equal(dataOf(h.reports[2]).target, 'In review');
+    assert.equal(stateOf(h), 'In review');
+    assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'Security review', 'In review']);
+    await h.orchestrator.shutdown(1_000);
+  });
+
+  it('skips the security review when the merged packages give no trigger', async () => {
+    const h = await harness([feature()], { [PARENT]: [splitTwo, approve] });
+    await throughIntegrationReview(h);
+    assert.equal(dataOf(h.reports[1]).target, 'In review');
+    assert.match(String(dataOf(h.reports[1]).reason), /security review not needed: no trigger \(none of 0 changed file\(s\) matches pipeline\.security_paths\)/);
+    assert.deepEqual(h.tracker.statusCalls, ['Agent review', 'In review']);
+    await h.orchestrator.shutdown(1_000);
+  });
+});
+
+describe('work-package rules of the session', () => {
+  const xl = (overrides: Partial<Issue> = {}) => makeIssue({ id: '7', labels: ['Type: feature', 'Complexity: XL'], native_ref: ref(7), ...overrides });
+  const pkg = (labels: string[]) => makeIssue({ id: '8', labels, native_ref: ref(8, { identifier: 'acme/app#7', title: 'Invoice export', state: 'OPEN', state_reason: null }) });
+
+  it('lets only an XL issue that is no sub-issue be split', () => {
+    assert.equal(isSplittable(xl()), true);
+    assert.equal(isSplittable(xl({ labels: ['Complexity: L'] })), false);
+    assert.equal(isSplittable(xl({ labels: [] })), false, 'no complexity label');
+    assert.equal(isSplittable(pkg(['Complexity: XL'])), false, 'a work package');
+  });
+
+  it("gives a design role sub-issues only on an issue it may split; other roles keep their max_sub_issues", () => {
+    const architect = { maxSubIssues: 5, result: 'design' as const };
+    assert.equal(subIssueLimit(architect, xl()), 5);
+    assert.equal(subIssueLimit(architect, xl({ labels: ['Complexity: M'] })), null);
+    assert.equal(subIssueLimit(architect, pkg(['Complexity: XL'])), null);
+    assert.equal(subIssueLimit({ maxSubIssues: null, result: 'design' }, xl()), null);
+    assert.equal(subIssueLimit({ maxSubIssues: 20, result: null }, pkg(['Complexity: S'])), 20, 'an auditor files sub-issues on any issue');
+    assert.equal(subIssueLimit(null, xl()), null);
+  });
+
+  const persisted = (kind: 'design' | 'implementation', input: Record<string, unknown>, headSha: string | null): PersistedResult => {
+    const parsed = parseResult(kind, input);
+    assert.ok(parsed.ok, JSON.stringify(parsed));
+    const role = kind === 'design' ? 'architect' : 'developer';
+    return { result: parsed.result, meta: { role, run: 'r', round: null, profile: null, workflow_hash: null, head_sha: headSha, checks: null, target: null, created_at: '2026-10-18T09:00:00.000Z' } };
+  };
+  const split = (headSha: string | null) => persisted('design', SPLIT, headSha);
+  const withPackages = xl({ native_ref: { ...ref(7), base_branch: 'develop', sub_issues: [{ identifier: 'acme/app#8', title: 'Export: CSV writer', state: 'CLOSED', state_reason: 'COMPLETED' }] } });
+
+  it('takes a review of an issue with sub-issues and no implementation of its own for an integration review', () => {
+    assert.equal(isIntegrationReview(withPackages, { results: [split('abc')] }), true);
+    assert.equal(isIntegrationReview(withPackages, { results: [] }), true, 'sub-issues a human filed count too');
+    assert.equal(isIntegrationReview(withPackages, { results: [split('abc'), persisted('implementation', { verdict: 'done', summary: 'Glue.' }, 'def')] }), false);
+    assert.equal(isIntegrationReview(xl(), { results: [split('abc')] }), false, 'no sub-issues');
+  });
+
+  it('measures the security paths of an integration review from the design commit, and of a pull request from the base branch', async () => {
+    const dir = tempDir('symphony-git-');
+    const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: dir, encoding: 'utf8' }).trim();
+    git('init', '-q');
+    git('commit', '-q', '--allow-empty', '-m', 'design');
+    const designed = git('rev-parse', 'HEAD');
+    git('update-ref', 'refs/remotes/origin/develop', designed);
+    fs.mkdirSync(path.join(dir, 'app', 'Policies'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'app', 'Policies', 'InvoicePolicy.php'), '<?php\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'the packages');
+
+    assert.deepEqual(await reviewedFiles(dir, withPackages, { results: [split(designed)] }), ['app/Policies/InvoicePolicy.php']);
+    await assert.rejects(reviewedFiles(dir, withPackages, { results: [split(null)] }), /the design of the work packages recorded no commit/);
+    // With an implementation of its own it is a pull-request review again: the branch diff against origin/develop.
+    const implemented = { results: [split(designed), persisted('implementation', { verdict: 'done', summary: 'Glue.' }, null)] };
+    assert.deepEqual(await reviewedFiles(dir, withPackages, implemented), ['app/Policies/InvoicePolicy.php']);
+    git('update-ref', 'refs/remotes/origin/develop', 'HEAD');
+    assert.deepEqual(await reviewedFiles(dir, withPackages, implemented), []);
+  });
+});
+
 describe('routableWhileRunning: the sub-issue gate for a running session', () => {
   const tracker = { requiredLabels: [] as string[] };
   const held = (value: boolean) => ({ heldBySubIssues: () => value });
   const issue = (overrides: Partial<Issue> = {}) => makeIssue({ id: 'x', dispatchable: false, ...overrides });
 
+  const creator = { maxSubIssues: 5, result: null };
+  const architect = { maxSubIssues: 5, result: 'design' as const };
+
   it('keeps a session of a role that creates sub-issues when only its open sub-issues hold the issue back', () => {
-    assert.equal(routableWhileRunning(issue(), { maxSubIssues: 5 }, tracker, held(true)), true);
+    assert.equal(routableWhileRunning(issue(), creator, tracker, held(true)), true);
+    assert.equal(routableWhileRunning(issue({ labels: ['Complexity: XL'] }), architect, tracker, held(true)), true, 'an architect on an issue it may split');
   });
 
   it('stops every other session as before', () => {
-    assert.equal(routableWhileRunning(issue(), { maxSubIssues: null }, tracker, held(true)), false, 'a role without max_sub_issues');
+    assert.equal(routableWhileRunning(issue(), { maxSubIssues: null, result: null }, tracker, held(true)), false, 'a role without max_sub_issues');
     assert.equal(routableWhileRunning(issue(), null, tracker, held(true)), false, 'the default role');
-    assert.equal(routableWhileRunning(issue(), { maxSubIssues: 5 }, tracker, held(false)), false, 'held back by something else too');
-    assert.equal(routableWhileRunning(issue(), { maxSubIssues: 5 }, tracker, {}), false, 'a tracker without sub-issues');
-    assert.equal(routableWhileRunning(issue(), { maxSubIssues: 5 }, { requiredLabels: ['ai'] }, held(true)), false, 'a required label is missing');
+    assert.equal(routableWhileRunning(issue(), creator, tracker, held(false)), false, 'held back by something else too');
+    assert.equal(routableWhileRunning(issue(), creator, tracker, {}), false, 'a tracker without sub-issues');
+    assert.equal(routableWhileRunning(issue(), creator, { requiredLabels: ['ai'] }, held(true)), false, 'a required label is missing');
+  });
+
+  it('stops an architect on an issue it may not split: it files no sub-issues there', () => {
+    assert.equal(routableWhileRunning(issue({ labels: ['Complexity: L'] }), architect, tracker, held(true)), false, 'below XL');
+    const pkg = issue({ labels: ['Complexity: XL'], native_ref: ref(8, { identifier: 'acme/app#7', title: 'Invoice export', state: 'OPEN', state_reason: null }) });
+    assert.equal(routableWhileRunning(pkg, architect, tracker, held(true)), false, 'a work package');
   });
 
   it('lets a routable issue go on whatever the role', () => {
@@ -575,5 +790,27 @@ describe('before_run of the shipped WORKFLOW.md: a workspace on the base branch 
     assert.equal(git(workspace, 'rev-parse', 'HEAD'), before);
     assert.notEqual(before, tip);
     assert.equal(git(workspace, 'rev-parse', 'origin/develop'), tip, 'the fetch still ran');
+  });
+
+  it('fails when the fetch fails, so the attempt is retried instead of running on stale refs', async () => {
+    const { workspace } = setup('develop');
+    const before = git(workspace, 'rev-parse', 'HEAD');
+    git(workspace, 'remote', 'set-url', 'origin', path.join(path.dirname(workspace), 'gone.git'));
+    await assert.rejects(run(workspace, { SYMPHONY_BASE_BRANCH: 'develop' }), (error: Error & { status?: number }) => {
+      assert.notEqual(error.status, 0);
+      return true;
+    });
+    assert.equal(git(workspace, 'rev-parse', 'HEAD'), before, 'nothing was merged from the stale origin/develop');
+  });
+
+  it('succeeds when the fast-forward is refused (a diverged checkout of the base branch)', async () => {
+    const { workspace, tip } = setup('develop');
+    fs.writeFileSync(path.join(workspace, 'local.txt'), 'local\n');
+    git(workspace, 'add', '.');
+    git(workspace, 'commit', '--quiet', '-m', 'local');
+    const before = git(workspace, 'rev-parse', 'HEAD');
+    await run(workspace, { SYMPHONY_BASE_BRANCH: 'develop' });
+    assert.equal(git(workspace, 'rev-parse', 'HEAD'), before);
+    assert.equal(git(workspace, 'rev-parse', 'origin/develop'), tip);
   });
 });

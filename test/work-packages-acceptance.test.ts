@@ -39,7 +39,7 @@ const root = path.join(import.meta.dirname, '..');
 const shippedPath = path.join(root, 'WORKFLOW.md');
 const read = (file: string): string => fs.readFileSync(path.join(root, file), 'utf8');
 
-const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Blocked', 'In review', 'Done'];
+const BOARD = ['Backlog', 'Ready', 'Design', 'In progress', 'Testing', 'Agent review', 'Security review', 'Blocked', 'In review', 'Done'];
 const ENV = { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' };
 
 async function shipped(extraEnv: NodeJS.ProcessEnv = {}) {
@@ -68,8 +68,9 @@ describe('WORKFLOW.md with the work-package settings (preflight and routing)', (
     assert.equal(architect.onResult.ready, 'In progress');
     assert.ok(architect.mayMoveTo?.includes('Agent review'), 'the role may move the issue to the target of split');
     assert.ok(config.tracker.activeStates.includes('Ready'), 'sub_issue_status is an existing, active column');
-    const guarded = toolsForRole([{ name: 'create_sub_issue', description: '', inputSchema: {}, mutates: true, createsSubIssues: true, execute: async () => ({ ok: true, data: {} }) }], architect);
-    assert.deepEqual(guarded.map((tool) => tool.name), ['create_sub_issue'], 'max_sub_issues grants the tool');
+    const xl = makeIssue({ id: '7', labels: ['Type: feature', 'Complexity: XL'], native_ref: { parent: null, sub_issues: [] } });
+    const guarded = toolsForRole([{ name: 'create_sub_issue', description: '', inputSchema: {}, mutates: true, createsSubIssues: true, execute: async () => ({ ok: true, data: {} }) }], architect, xl);
+    assert.deepEqual(guarded.map((tool) => tool.name), ['create_sub_issue'], 'max_sub_issues grants the tool on an issue it may split');
   });
 
   it('takes the limit from SYMPHONY_ARCHITECT_MAX_SUB_ISSUES', async () => {
@@ -216,7 +217,7 @@ describe('the pipeline view of a split issue', () => {
     });
   }
   const session = (role: string, state: string, run: string): StageSession => ({ run, attempt: null, role, state, model: null, effort: null, started_at: '2026-10-18T09:00:00.000Z', finished_at: '2026-10-18T09:05:00.000Z', outcome: 'handed_off' });
-  const result = (kind: 'design' | 'implementation' | 'test', role: string, input: Record<string, unknown>, target: string, run: string, second: number): PersistedResult => {
+  const result = (kind: 'design' | 'implementation' | 'test' | 'review', role: string, input: Record<string, unknown>, target: string, run: string, second: number): PersistedResult => {
     const parsed = parseResult(kind, input);
     assert.ok(parsed.ok, JSON.stringify(parsed));
     return { result: parsed.result, meta: { role, run, round: null, profile: null, workflow_hash: null, head_sha: null, checks: null, target, created_at: new Date(Date.UTC(2026, 9, 18, 9, 0, second)).toISOString() } };
@@ -241,6 +242,17 @@ describe('the pipeline view of a split issue', () => {
     );
     assert.equal(status(all, 'developer'), 'done');
     assert.equal(status(all, 'test-engineer'), 'done');
+  });
+
+  it('shows Testing as pending again once the integration review sent the issue back to its developer', async () => {
+    const changes = { verdict: 'changes_needed', summary: 'PDF missing', findings: [{ severity: 'major', file: 'src/Pdf.ts', problem: 'missing', fix: 'add it' }] };
+    const results = [result('design', 'architect', SPLIT, 'Agent review', 'r1', 1), result('review', 'reviewer', changes, 'In progress', 'r2', 2)];
+    const running = { ...session('developer', 'In progress', 'r3'), finished_at: null, outcome: null };
+    const all = await stages('In progress', results, [session('architect', 'Design', 'r1'), session('reviewer', 'Agent review', 'r2'), running]);
+    assert.deepEqual([status(all, 'developer'), status(all, 'test-engineer')], ['active', 'pending']);
+    // Also when the developer hands the issue to Blocked: Testing still lies ahead.
+    const blocked = await stages('Blocked', results, [session('architect', 'Design', 'r1'), session('reviewer', 'Agent review', 'r2'), session('developer', 'In progress', 'r3')]);
+    assert.equal(status(blocked, 'test-engineer'), 'pending');
   });
 
   it('leaves the stages of an ordinary feature as they were: the design goes on to the developer, nothing is skipped', async () => {
@@ -331,7 +343,7 @@ describe('the split verdict through report_result (refusals leave the issue unto
       runId: 'run-1',
       meta: { workflowHash: 'f'.repeat(64), headSha: async () => 'abc123def456abc1', now: () => new Date('2026-10-18T12:00:00Z') },
     };
-    const tool = guardTools(toolsForRole(tracker.agentToolSpecs(), role, createResultTool(params)), guard).find((spec) => spec.name === RESULT_TOOL);
+    const tool = guardTools(toolsForRole(tracker.agentToolSpecs(), role, current(), createResultTool(params)), guard).find((spec) => spec.name === RESULT_TOOL);
     assert.ok(tool);
     const report = (args: Record<string, unknown>) => tool.execute(args, { issue: current() });
     const untouched = () => {
@@ -848,13 +860,34 @@ const working = (turn: number, params: StartSessionParams): Promise<TurnResult> 
     else params.signal.addEventListener('abort', stopped);
   });
 
+/** The workspace's first commit, made with fixed dates: the same in every workspace, so a design made at it can be seeded. */
+const INIT_COMMIT = [
+  'git init -q',
+  'git config user.email symphony@example.com',
+  'git config user.name Symphony',
+  'GIT_AUTHOR_DATE=2026-01-01T00:00:00Z GIT_COMMITTER_DATE=2026-01-01T00:00:00Z git commit -q --no-gpg-sign --allow-empty -m init',
+].join('\n');
+const INIT_SHA = (() => {
+  const dir = tempDir('symphony-init-');
+  execFileSync('bash', ['-c', INIT_COMMIT], { cwd: dir, stdio: 'ignore' });
+  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+})();
+
+/** The architect's `split` result on the parent, made at the workspace's first commit, as the board keeps it. */
+function seedSplitDesign(board: FakeTracker): void {
+  const parsed = parseResult('design', SPLIT);
+  assert.ok(parsed.ok);
+  const meta: ResultMeta = { role: 'architect', run: 'r0', round: null, profile: 'feature', workflow_hash: null, head_sha: INIT_SHA, checks: null, target: 'Agent review', created_at: '2026-01-01T01:00:00.000Z' };
+  board.comments.set(PARENT, [{ author: board.viewer, createdAt: new Date(meta.created_at), body: renderResultComment(parsed.result, meta), url: 'https://github.com/acme/app/issues/7#issuecomment-1' }]);
+}
+
 /** The sessions of an issue run its scripts in order (every turn calls the script of the session); an unscripted session works until stopped. */
 async function harness(issues: Issue[], scripts: Record<string, Script[]> = {}): Promise<Harness> {
   const { definition } = await loadWorkflowFile(shippedPath);
   const config: Record<string, unknown> = {
     ...definition.config,
     workspace: { root: tempDir() },
-    hooks: { after_create: ['git init -q', 'git config user.email symphony@example.com', 'git config user.name Symphony', 'git commit -q --allow-empty -m init'].join('\n') },
+    hooks: { after_create: INIT_COMMIT },
     checks: {},
     tracker: { ...(definition.config.tracker as Record<string, unknown>), kind: 'github_project', provider: { owner: 'acme', project_number: 1, token: 'test-token' } },
   };
@@ -983,6 +1016,7 @@ describe('orchestrator: an XL feature split into three work packages', () => {
     };
     const issues = [parentIssue('Agent review'), packageIssue(8, 'Export: CSV writer'), packageIssue(9, 'Export: PDF writer'), packageIssue(10, 'Export: CLI command')];
     const h = await harness(issues, { [PARENT]: [approve] });
+    seedSplitDesign(h.board);
 
     await h.orchestrator.tickNow();
     const waiting = 'waiting for sub-issues acme/app#8, acme/app#9, acme/app#10';

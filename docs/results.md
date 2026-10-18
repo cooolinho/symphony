@@ -86,7 +86,11 @@ with `invalid_result` when:
   sub-issues the agent filed in the same turn count).
 
 The comment shows the verdict as `🧩 Design: split` and lists the packages under **Work packages**, numbered in
-implementation order.
+implementation order. Its `head_sha` (see [Meta](#meta)) is the commit the integration review and the security check
+measure the merged packages from.
+
+A role that reports a `design` gets `create_sub_issue` only on an issue it may split (`XL`, not a sub-issue): on any
+other issue the tool is not offered, so a `ready` design cannot come with sub-issues of its own.
 
 ## Meta
 
@@ -135,7 +139,12 @@ A call runs these steps, one call at a time:
 2. **Route.** The target column is computed from the verdict, the profile and the round counters of the history
    loaded at session start (`resolveTransition`, see
    [Result-driven transitions](configuration.md#result-driven-transitions)). A configuration that cannot route the
-   verdict returns `transition_error`.
+   verdict returns `transition_error`. For a reviewer's `approved`, the tool first decides whether the issue needs the
+   [security review](configuration.md#the-security-auditor) (a `security` label, `risks.security` in the latest
+   analysis, or a changed file matching `pipeline.security_paths`, looked up with git before the guard runs): if it does,
+   the target is the `Security review` column instead of `In review`; if the changed files cannot be determined, it is
+   needed to be safe. The answer's `reason` says which trigger decided. A `security` result is the audit's verdict:
+   `passed` leads to `In review`, `issues_found` to the developer (counted by `pipeline.max_security_rounds`).
 3. **Guard.** For a role with `result: test`, the [path rule](#path-rule-of-the-test-engineer) comes first. The
    target passes the [transition guard](configuration.md#transition-guard) like a `set_status` call:
    `may_move_to`, then the column's entry check. `check_failed`, `check_timeout` and `check_error` return the guard's
@@ -296,5 +305,9 @@ dependent one only after the two it builds on), and the parent gets no session, 
 `waiting for sub-issues …` line in the queue and the dry run until the third package is closed. The integration review
 then lists the packages with their state (one closed as not planned), its `changes_needed` goes to the parent's own
 developer, and that pull request gets a normal review. Further cases: a split refused for complexity `L`, for a
-sub-issue and while a package has no sub-issue yet, an architect interrupted after filing the packages, and the
-`before_run` hook that fast-forwards a workspace on the base branch.
+sub-issue and while a package has no sub-issue yet, an architect of a work package or of an `L` issue without
+`create_sub_issue`, an architect interrupted after filing the packages, the security review of the merged packages
+(a security path the packages changed, measured from the design commit, and the `security` label send the approved
+integration review to the security auditor in integration mode; `issues_found` goes to the parent's developer; no
+trigger goes straight to `In review`), and the `before_run` hook that fast-forwards a workspace on the base branch and
+fails when the fetch fails.

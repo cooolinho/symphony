@@ -95,13 +95,17 @@ export interface AgentToolSpec {
   inputSchema: z.ZodRawShape;
   /** Whether the tool can change tracker state (documented in the adapter profile). */
   mutates: boolean;
-  /** The tool creates sub-issues; only roles with `max_sub_issues` get it (see `toolsForRole`). */
+  /**
+   * The tool creates sub-issues; only roles with `max_sub_issues` get it, a role that reports a design only on an issue
+   * it may split (see `toolsForRole`).
+   */
   createsSubIssues?: boolean;
   /**
    * For tools that move the issue to another column: the target column named by `args`, or null when the call does
-   * not change the column. Symphony's transition guard checks such calls before `execute` runs.
+   * not change the column. Symphony's transition guard checks such calls before `execute` runs. May be asynchronous when
+   * the target depends on something the tool has to look up (the files a branch changes).
    */
-  transitionTarget?(args: Record<string, unknown>): string | null;
+  transitionTarget?(args: Record<string, unknown>): string | null | Promise<string | null>;
   /**
    * For tools with `transitionTarget`: the column to move to instead when the entry check for that target fails
    * (`check_failed` only), or null for none. The guard checks that column like any other move, and the tool learns of

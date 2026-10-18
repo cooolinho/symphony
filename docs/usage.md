@@ -43,11 +43,12 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
    authorization, validation, N+1, migrations, secrets, changed test/CI/lint configuration) and reports **one**
    `review` result with `report_result` (verdict, findings with severity, file and line), which Symphony posts as the
    comment. The verdict decides the column:
-   - **`approved`:** `In review`. The checks run once more first; for an unchanged commit Symphony uses the stored
-     result.
+   - **`approved`:** `In review`, or `Security review` first when the change is security-relevant (step 5a). The
+     checks run once more first; for an unchanged commit Symphony uses the stored result.
    - **`changes_needed`:** back to `In progress`; the developer works through the findings (step 3).
    - **third `changes_needed`** (`pipeline.max_review_rounds`): no further loop. The issue goes to `Blocked` with the
      label `needs-human` and the open findings in the review comment. How to continue: [Rounds, limits and manual resume](#rounds-limits-and-manual-resume).
+   **Security auditor** (`Security review`, step 5a): only for approved issues that need it.
 6. After each turn Symphony checks the issue. If it moves to a column of another role, the session ends and the
    next role starts one second later in a fresh session. If it is still in a column of the same role, the agent
    gets more turns up to `max_turns`, then a new session. At most `SYMPHONY_MAX_CONTINUATIONS` (default 6) such
@@ -63,6 +64,7 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
 | `In progress` | a developer is working (it gets the analysis and the design); if Symphony finds an issue here without an agent, it starts one |
 | `Testing` | starts the test engineer (at most one at a time), who writes independent tests and may only change test files; reached by bug, feature and refactor issues after the developer, by every issue with `SYMPHONY_AFTER_IMPLEMENTATION=Testing` |
 | `Agent review` | starts a reviewer (at most one at a time); only reachable after passing checks. An issue split into work packages waits here until all of its sub-issues are closed and then gets an integration review |
+| `Security review` | starts the security auditor (at most one at a time, read-only) for an approved issue with a security trigger; other approved issues skip the column without a session, see [Security review](#security-review-for-security-relevant-changes) |
 | `Blocked` | stops a running agent; the workspace is kept. The agent needs you, see its comment. |
 | `In review` | stops a running agent; the workspace is kept for follow-up work. Only the reviewer moves cards here, after passing checks. |
 | `Done` | stops a running agent and deletes the workspace, at the latest on the next poll |
@@ -90,8 +92,8 @@ Ready (issue analyst) → In progress (developer) → [checks] → Testing (test
   [Features and refactorings](#features-and-refactorings-the-feature-and-refactor-profiles)); issues without a type keep the
   flow without it, unless `SYMPHONY_AFTER_IMPLEMENTATION=Testing` switches the test stage on for all of them.
 
-The board needs the columns in this order: `Backlog`, `Ready`, `Design`, `In progress`, `Testing`, `Agent review`, `Blocked`,
-`In review`, `Done` (see [Getting started](getting-started.md#2-set-up-the-github-project-board)). `Testing` is always
+The board needs the columns in this order: `Backlog`, `Ready`, `Design`, `In progress`, `Testing`, `Agent review`,
+`Security review`, `Blocked`, `In review`, `Done` (see [Getting started](getting-started.md#2-set-up-the-github-project-board)). `Testing` is always
 an active state, so a board without it fails the dry run and the dispatch preflight with
 `unknown board column "Testing"`. The order matters: `next` and the pipeline view follow the board.
 
@@ -201,23 +203,57 @@ per work package and reports the verdict `split` instead of `ready`.
   `approved` moves the parent to `In review` for you. `changes_needed` sends it to `In progress`: the parent's own
   developer fixes the findings on the parent's branch with its own pull request, which then takes the normal path
   (`Testing` for a feature, then a normal review).
+- **Security review.** An approved integration review goes to the [security auditor](#security-review-for-security-relevant-changes)
+  first when the parent carries the `security` label, its analysis flags a security risk, or the packages changed a
+  security path (counted from the commit of the design). The auditor then audits the merged packages together on the
+  base branch; `issues_found` goes to the parent's own developer like `changes_needed`.
 - **When the architect does not split:** for any issue below `XL`, for a sub-issue, or when the parts only work
   together. Then it reports `ready` and one developer implements the design, as before. `report_result` refuses a
-  `split` that breaks these rules.
+  `split` that breaks these rules, and on such an issue the architect does not get `create_sub_issue` at all.
 
 The limit is `roles.architect.max_sub_issues` (`SYMPHONY_ARCHITECT_MAX_SUB_ISSUES`, default 5). Details:
 [Work packages (`split`)](configuration.md#work-packages-split); why there is no integration-engineer role:
 [the concept](concepts/multi-agent.md#work-packages-instead-of-an-integration-engineer).
 
+### Security review for security-relevant changes
+
+An approved issue that touches security gets a dedicated read-only audit before a human sees the pull request. When the
+reviewer reports `approved`, Symphony decides which column comes next, without a session of its own:
+
+```
+Agent review (reviewer) → approved → Security review (security auditor) → passed → In review
+                                   ↘ no trigger ──────────────────────────────→ In review
+```
+
+The audit is needed when **any** of these holds, otherwise the issue goes straight to `In review`:
+
+| Trigger | Example |
+|---|---|
+| the issue carries the label `security` (exactly that label; `area:security` does not count) | a human labels the issue |
+| the latest analysis flags `risks.security` | the analyst saw an auth change |
+| a file the branch changes (against the merge base with the base branch: commits, uncommitted and untracked files) matches `pipeline.security_paths` | `app/Policies/PostPolicy.php`, `routes/web.php`, `database/migrations/…` |
+
+A docs-only diff (`README.md`, `docs/**`) matches none of the Laravel defaults and skips the stage; the pipeline view
+shows `Security review` as skipped. If Symphony cannot list the changed files (no git checkout, unknown base branch, git
+error), it sends the issue to the audit to be safe. The auditor reports a `security` result: `passed` leads to
+`In review`; `issues_found` sends the issue back to the developer, whose prompt lists the open findings, and after the fix
+the reviewer runs again, then the triggers are evaluated on the new diff. `pipeline.max_security_rounds` (2) bounds that
+loop like the review rounds: the last round goes to `Blocked` with `needs-human`. The result of the reviewer names the
+decision in the `reason` of the `report_result` answer. An issue split into
+[work packages](#work-packages-for-very-large-changes) has no branch of its own: for its integration review the files
+the packages changed since the design count, and the auditor audits the merged packages on the base branch.
+Configuration and the paths: [The security auditor](configuration.md#the-security-auditor).
+
 ### Rounds, limits and manual resume
 
-The review and the test stage can send an issue back to the developer. Symphony counts these rounds itself, from the
+The review, the test and the security stage can send an issue back to the developer. Symphony counts these rounds itself, from the
 [stage results](results.md) on the issue, so a loop cannot run forever:
 
 | Loop | Verdict that counts | Limit (default) | At the limit |
 |---|---|---|---|
 | Reviewer → developer | `changes_needed` | `pipeline.max_review_rounds` (3) | the issue goes to the role's `on_round_limit`, else `Blocked`, and gets the label `needs-human` |
 | Test engineer → developer | `failed` | `pipeline.max_test_rounds` (2) | as above |
+| Security auditor → developer | `issues_found` | `pipeline.max_security_rounds` (2) | as above |
 
 - **Rounds.** The Nth `changes_needed` is round N (the 3rd with the default limit ends the loop; the findings stay in the
   review comment). Rounds are read from the results on the issue, not kept in memory, so they survive restarts, retries
@@ -1041,7 +1077,7 @@ Where the data comes from and where the limits are:
 | `GET /api/v1/history/entries?from=&to=&repo=&issue=&event=&result=&order=desc&limit=200` | Log entries of a time range, filtered and sorted (at most 1,000) |
 | `GET /api/v1/history/raw?repo=owner/name` | a repository's `.log` file as text |
 | `GET /api/v1/state` | Overall state as JSON: issues in flight (`issues[]` with `status` running/retrying/paused/queued, the dashboard `section` running/next/waiting/paused, `position`, `reason` and the pipeline `stages[]`), the dispatch plan (`queue[]`, see below), blocked issues (`blocked[]` with the reason, `reason_code` `column`/`blocked`/`missing_label` and `blocked_by`), `pipeline_config` (board columns, roles, blocked columns), running agents (`running[]` with `role`), queue (`retrying[]` with `kind` and, for session limits, `limit`), agent slots (`limits`, see below), totals, health (`health.max_concurrent_agents` is the effective total), `controls.retry` (whether restarting is allowed) |
-| `GET /api/v1/<identifier>` | Details of an issue: title, role, board fields (`issue`: column, labels, priority, parent, sub-issues, `blocked_by`, `dispatch_note`), the pipeline stations (`pipeline`: per stage `status` `done`/`active`/`pending`/`skipped`, the `verdict` and `round` of the role's newest result, and per session the `verdict` and `round` it reported; `skipped` marks a stage the workflow profile or a `skipped` result leaves out, or one a result's target jumped over without a session there, such as the developer of an issue [split into work packages](#work-packages-for-very-large-changes)), the stage results (`results[]`: role, run, kind, verdict, summary, round, target, `head_sha`, `created_at`; empty for roles without `result`, and until a result-driven session has loaded them), workspace, attempts, sessions (`sessions`, each with `model` and `effort`), tokens and cost per model (`usage_by_model`), latest events, last error, last entry check (`last_check`), `controls.retry`. For an issue the orchestrator released, the archived details with `status: "finished"` and `archived` (`archived_at`, `released`); `404` only when nothing is known about the issue |
+| `GET /api/v1/<identifier>` | Details of an issue: title, role, board fields (`issue`: column, labels, priority, parent, sub-issues, `blocked_by`, `dispatch_note`), the pipeline stations (`pipeline`: per stage `status` `done`/`active`/`pending`/`skipped`, the `verdict` and `round` of the role's newest result, and per session the `verdict` and `round` it reported; `skipped` marks a stage the workflow profile or a `skipped` result leaves out, or one behind the issue's current stage that a result's target jumped over without a session there, such as the developer of an issue [split into work packages](#work-packages-for-very-large-changes) while it waits; a stage the issue came back before lies ahead again and is `pending`), the stage results (`results[]`: role, run, kind, verdict, summary, round, target, `head_sha`, `created_at`; empty for roles without `result`, and until a result-driven session has loaded them), workspace, attempts, sessions (`sessions`, each with `model` and `effort`), tokens and cost per model (`usage_by_model`), latest events, last error, last entry check (`last_check`), `controls.retry`. For an issue the orchestrator released, the archived details with `status: "finished"` and `archived` (`archived_at`, `released`); `404` only when nothing is known about the issue |
 | `GET /api/v1/<identifier>/timeline?after=<seq>` | Timeline of the issue (live or archived): lifecycle, phase changes and agent events with a running `seq`; `after` returns only newer ones |
 | `GET /api/v1/<identifier>/transcript?run=<run>&from=<offset>` | Transcript of a session (without `run` the latest; live or archived), prepared as prompts, model calls, tool results; from byte offset `from`, continue with `next_offset`. With `&format=raw` the JSONL file |
 | `POST /api/v1/refresh` | poll and reconcile now |

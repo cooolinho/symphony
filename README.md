@@ -117,8 +117,10 @@ Symphony polls a **GitHub Project board** at a fixed interval and hands issues i
 For each issue it creates a folder, clones the repository and lets the agent work: create a branch, implement, test,
 push, open a pull request and comment on the issue. Automatic checks and a second, read-only agent (the reviewer)
 then check the work. Only then does the card land in **In review**, where you review, merge and move it to **Done**.
-Bug, feature and refactor issues pass a `Testing` column (an independent test engineer) before the review. Review and test loops are bounded: at
-the round limit the card goes to **Blocked** with the label `needs-human`.
+Bug, feature and refactor issues pass a `Testing` column (an independent test engineer) before the review, and security-relevant changes
+(a `security` label, a security risk in the analysis, or changed files such as policies, middleware, routes or migrations)
+pass a read-only `Security review` after it. Review, test and security loops are bounded: at the round limit the card goes
+to **Blocked** with the label `needs-human`.
 
 What the agent does is defined in **`WORKFLOW.md`** (prompt and settings). Board, repositories, default model and token
 live in **`.env`**.
@@ -142,13 +144,19 @@ live in **`.env`**.
   ([details](docs/configuration.md#the-architect)).
 - **Work packages:** a very large feature (complexity `XL`) can be split by the architect into work packages, one
   sub-issue each, that run in parallel with their own pipeline, workspace, branch and pull request. The parent waits
-  until all of them are closed; then the reviewer checks the integrated base branch against its acceptance criteria. No
-  worktrees and no extra integration role ([details](docs/configuration.md#work-packages-split),
+  until all of them are closed; then the reviewer checks the integrated base branch against its acceptance criteria,
+  and the security auditor audits the merged packages when the parent needs it. No worktrees and no extra integration
+  role ([details](docs/configuration.md#work-packages-split),
   [why](docs/concepts/multi-agent.md#work-packages-instead-of-an-integration-engineer)).
 - **Test engineer:** an independent agent in the `Testing` column (bug, feature and refactor issues always, other issues optionally) writes tests for the acceptance criteria and
   may only change test files; failed tests go back to the developer with the failed cases, and after
   `pipeline.max_test_rounds` failed rounds the issue waits for you
   ([details](docs/configuration.md#the-test-engineer)).
+- **Security auditor:** after the reviewer approves, a read-only agent in the `Security review` column audits changes
+  that touch security (a `security` label, `risks.security` in the analysis, or a changed file matching
+  `pipeline.security_paths`, by default Laravel policies, middleware, auth config, routes and migrations); all other
+  approved issues skip it without a session. Findings go back to the developer, bounded by `pipeline.max_security_rounds`
+  ([details](docs/configuration.md#the-security-auditor)).
 - **Issue commands:** a description that starts with `/refactoring` loads a centrally maintained audit skill that
   measures a baseline, finds bugs and refactoring candidates and files sub-issues; `/refactor-safely` implements them
   behavior-neutrally with tests as a safety net ([details](docs/usage.md#commands-in-the-issue-refactoring)).
@@ -185,7 +193,7 @@ npm start               # start Symphony
 ```
 
 In between, create a GitHub Project board with the columns `Backlog`, `Ready`, `Design`, `In progress`, `Testing`,
-`Agent review`, `Blocked`, `In review` and `Done`. The step-by-step guide is [docs/getting-started.md](docs/getting-started.md);
+`Agent review`, `Security review`, `Blocked`, `In review` and `Done`. The step-by-step guide is [docs/getting-started.md](docs/getting-started.md);
 running it with Docker behind Traefik is described in [docs/docker.md](docs/docker.md), a local test run of the same
 image without Traefik (`docker-compose.local.yml`) in
 [its own section](docs/docker.md#local-test-setup-without-traefik).

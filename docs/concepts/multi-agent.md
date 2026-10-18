@@ -119,7 +119,12 @@ one sub-issue per work package, in `Ready`, with `blocked_by` where a package bu
 its own workspace, branch, pull request, entry checks and review, and parallel to the others where nothing blocks it.
 The parent waits until every sub-issue is closed and then gets an integration review: the shipped reviewer, in a mode
 of its prompt, checks the integrated base branch against the parent's acceptance criteria, and the entry check of
-`In review` runs on that branch.
+`In review` runs on that branch. An approved integration review goes through the same security decision as any
+approval: when the parent carries the `security` label, its analysis flags a security risk, or the packages changed a
+file in `pipeline.security_paths` (measured from the commit the design was made at, because the parent has no branch of
+its own), the security auditor audits the merged packages in an integration mode of its prompt before a human sees the
+issue. Each package's own pull request went through the security decision as well; the integration audit is there for
+what only shows across packages, such as a route from one package and the policy from another.
 
 The alternative was a separate integration-engineer role that merges parallel work into one branch. It was not taken:
 
@@ -136,8 +141,11 @@ The alternative was a separate integration-engineer role that merges parallel wo
 - **One role fewer.** No new prompt, slot, budget or transition table to maintain; the sub-issue gate
   (`respect_sub_issues`), `create_sub_issue` with `blocked_by` and `max_sub_issues` existed before.
 
-The one change to existing behavior: a running session of a role with `max_sub_issues` is not stopped when only the
-sub-issues it opened hold its issue back, so the architect reports its result after filing the packages.
+The one change to existing behavior: a running session of a role that may create sub-issues on its issue is not
+stopped when only open sub-issues hold its issue back (in practice the work packages it filed), so the architect
+reports its result after filing the packages. The architect may create sub-issues only on an issue it may split
+(`XL`, not a sub-issue itself): on any other issue, a work package included, it does not get `create_sub_issue`, so
+no package is split again.
 
 ### What the pipeline does not do
 

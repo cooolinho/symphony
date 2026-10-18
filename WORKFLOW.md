@@ -23,7 +23,7 @@ tracker:
       done_state: Done
       on_conflict: In progress               # a pull request that conflicts with base_branch goes back to the developer
       method: squash
-  # Board columns: Backlog | Ready | Design | In progress | Testing | Agent review | Blocked | In review | Done
+  # Board columns: Backlog | Ready | Design | In progress | Testing | Agent review | Security review | Blocked | In review | Done
   #   Ready              -> issue analyst (read-only) works out requirements, risks, refined acceptance criteria, type and
   #                         complexity before anything is implemented; later stages get the analysis in their prompt
   #                         (pipeline.analysis: when_unlabeled skips it for issues that already carry Type and Complexity labels)
@@ -44,6 +44,11 @@ tracker:
   #   Agent review       -> reviewer agent (read-only) reviews it; entered only after checks pass. An issue split into work
   #                         packages gets an integration review instead: the merged packages on the base branch, once all
   #                         of its sub-issues are closed
+  #   Security review    -> security auditor (read-only) audits the diff for authorization, injection, mass assignment and
+  #                         secrets. Entered only when the reviewer approved AND the change is security-relevant: a `security`
+  #                         label, `risks.security` in the analysis, or a changed file matching pipeline.security_paths;
+  #                         every other approval goes straight to In review without a session. The board needs the column
+  #                         between Agent review and In review (docs/configuration.md#the-security-auditor).
   #   In review          -> human review; only the reviewer moves issues here, after checks pass (ends the run)
   #   Blocked            -> an agent needs a human (ends the run, keeps the workspace)
   #   Done               -> set by a human only; agent stops and its workspace is deleted
@@ -57,7 +62,7 @@ tracker:
   #   An issue whose description starts with "/plan [file]" is served by the planner: every item of the list (the file,
   #   or the description below the command line) becomes one planned sub-issue in Backlog; a human moves them to Ready.
   # If your board names its columns differently, adjust these lists, roles, checks and the prompt below.
-  active_states: [Ready, Design, In progress, Testing, Agent review]
+  active_states: [Ready, Design, In progress, Testing, Agent review, Security review]
   terminal_states: [Done]
 
 polling:
@@ -78,6 +83,7 @@ hooks:
   # A workspace still on the base branch (no issue branch yet: the analysis, the design, the integration review of an
   # issue split into work packages) follows origin/<base>, so the session and its entry checks see what was merged since.
   before_run: |
+    set -e                                               # a failed fetch must fail the hook (the attempt is retried), not run on stale refs
     git fetch --quiet --prune origin
     base="${SYMPHONY_BASE_BRANCH:-$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed 's|^origin/||')}"
     if [ -n "$base" ] && [ "$(git branch --show-current)" = "$base" ]; then git merge --quiet --ff-only "origin/$base" || true; fi
@@ -95,6 +101,7 @@ agent:
   # model_hold_ms: 3600000
   max_concurrent_agents_by_state:
     "Agent review": 1                        # one review at a time
+    "Security review": 1                     # one security audit at a time
     Testing: 1                               # one test run at a time (bug, feature and refactor issues; every issue with SYMPHONY_AFTER_IMPLEMENTATION=Testing)
   # Slots kept free for a role, so a developer and a reviewer can always run side by side. Other roles (/plan,
   # /refactoring, the issue analyst, the test engineer, ...) only get slots beyond these: with 2 slots in total they wait
@@ -153,12 +160,14 @@ roles:
   # `split` is only for an issue of complexity XL that is not itself a sub-issue, with at least two work packages: the
   # architect files one sub-issue per package (in Ready, so each runs its own pipeline right away) and the issue goes to
   # Agent review, where it waits until every sub-issue is closed. The reviewer then checks the integrated base branch
-  # against the issue's acceptance criteria (docs/usage.md#work-packages-for-very-large-changes).
+  # against the issue's acceptance criteria, and the security auditor audits the merged packages when the issue needs it
+  # (docs/usage.md#work-packages-for-very-large-changes). On any other issue, a work package included, the architect does
+  # not get create_sub_issue, whatever max_sub_issues says.
   architect:
     states: [Design]
     read_only: true
     run_checks: false                                          # nothing changes: no entry check before Agent review for a split issue
-    max_sub_issues: ${SYMPHONY_ARCHITECT_MAX_SUB_ISSUES:-5}    # work packages of one issue; also what grants the create_sub_issue tool
+    max_sub_issues: ${SYMPHONY_ARCHITECT_MAX_SUB_ISSUES:-5}    # work packages of one issue; grants create_sub_issue on an XL issue that is no sub-issue
     sub_issue_status: Ready                                    # the packages start without a human
     max_turns: 4
     result: design
@@ -194,9 +203,29 @@ roles:
     result: review
     # For an issue split into work packages (integration review), changes_needed hands the findings to the issue's own
     # developer, who fixes them on the issue's branch with its own pull request; its next review is a normal one.
-    on_result: { approved: In review, changes_needed: In progress, blocked: Blocked }
+    on_result: { approved: In review, changes_needed: In progress, blocked: Blocked }   # approved: Symphony goes to Security review first when the change needs it
+    on_check_failed: In progress             # the entry check of In review failed: back to the developer, with the output
+    may_move_to: [Security review, In review, In progress, Blocked]
+    agents: [laravel-code-reviewer]
+    claude: { model: opus }
+  # The security auditor is conditional: Symphony sends an approved issue here only when it needs the audit (a `security`
+  # label, `risks.security` in the analysis, or a changed file matching pipeline.security_paths; when the changed files
+  # cannot be determined, it is needed to be safe). Otherwise the reviewer's approval goes straight to In review and no
+  # session runs. `passed` moves the issue to In review; `issues_found` sends it back to the developer with the findings
+  # in the prompt (the reviewer then reviews the fix, and the security check is evaluated again); max_security_rounds
+  # rounds with issues go to Blocked with the needs-human label. A profile that lists security-auditor in `skip` never
+  # runs it. To remove the stage, delete this role, the column from active_states and Security review from
+  # roles.reviewer.may_move_to. After the integration review of an issue split into work packages, the files the packages
+  # changed since the design count, and the auditor audits the merged packages on the base branch (integration mode).
+  security-auditor:
+    states: [Security review]
+    read_only: true                          # no edits, commits or pushes
+    max_turns: 6
+    result: security
+    on_result: { passed: In review, issues_found: In progress, blocked: Blocked }
     on_check_failed: In progress             # the entry check of In review failed: back to the developer, with the output
     may_move_to: [In review, In progress, Blocked]
+    model_label: ignore                      # opus, whatever the issue's Model: label picks for the developer
     agents: [laravel-code-reviewer]
     claude: { model: opus }
   auditor:
@@ -248,6 +277,8 @@ pipeline:
   max_review_rounds: 3
   # Test rounds (test failed -> developer fixes) before the issue goes to Blocked with needs-human.
   max_test_rounds: 2
+  # Security rounds (security review found issues -> developer fixes) before the issue goes to Blocked with needs-human.
+  max_security_rounds: 2
   # always: the issue analyst runs for every issue in Ready. when_unlabeled: it is skipped without a session for issues that
   # already carry a Type: and a Complexity: label (they go straight to In progress).
   analysis: always
@@ -286,6 +317,9 @@ pipeline:
         architect: { complexity: [S] }
   # Files the test engineer may change; defaults: tests/**, test/**, **/*.test.*, **/*Test.php
   # test_paths: [tests/**, test/**, "**/*.test.*", "**/*Test.php"]
+  # Changed files that send an approved issue to the Security review (any match is enough); an explicit list replaces the
+  # Laravel defaults below, [] turns the path trigger off (the security label and the analysis risk still apply).
+  # security_paths: [app/Policies/**, app/Http/Middleware/**, config/auth.php, routes/**, database/migrations/**]
 
 checks:
   # Entry checks: set_status into these columns only succeeds when the script passes (exit 0).
@@ -343,7 +377,7 @@ Plan:{% for item in results.analysis.plan %}
 {% endif %}{% endcapture %}{% capture design_block %}{% if results.design %}
 ## Design of the architect
 
-{% if results.design.verdict == "split" %}An architect split this issue into work packages: the sub-issues listed above implemented them, each with its own pull request, merged into the base branch. {% if role == "reviewer" %}This pull request fixes what the integration review found still missing or broken across the packages: check it against those findings and this issue's acceptance criteria, and do not review the merged packages again.{% else %}The findings of the integration review below are what is still missing or broken across the packages: fix only those, on this issue's own branch with its own pull request, and do not redo the packages. Where the design does not fit the merged code, the code wins, and you say so in the `plan_deviations` of your result.{% endif %}{% else %}An architect decided on the approach before the implementation{% if results.design.verdict != "ready" %} (verdict: {{ results.design.verdict }}){% endif %}. {% if role == "reviewer" %}Check the change against this design; where the developer deviated from it, the deviation must be justified in the `plan_deviations` of the developer's result.{% else %}Implement this design; where it contradicts the issue description or does not fit the code, the issue and the code win, and you say so in the `plan_deviations` of your result.{% endif %}{% endif %}
+{% if results.design.verdict == "split" %}An architect split this issue into work packages: the sub-issues listed above implemented them, each with its own pull request, merged into the base branch. {% if role == "reviewer" %}This pull request fixes what the integration review (or the security audit of the merged packages) found still missing or broken across the packages: check it against those findings and this issue's acceptance criteria, and do not review the merged packages again.{% else %}The open findings below, of the integration review or of the security audit of the merged packages, are what is still missing or broken across the packages: fix only those, on this issue's own branch with its own pull request, and do not redo the packages. Where the design does not fit the merged code, the code wins, and you say so in the `plan_deviations` of your result.{% endif %}{% else %}An architect decided on the approach before the implementation{% if results.design.verdict != "ready" %} (verdict: {{ results.design.verdict }}){% endif %}. {% if role == "reviewer" %}Check the change against this design; where the developer deviated from it, the deviation must be justified in the `plan_deviations` of the developer's result.{% else %}Implement this design; where it contradicts the issue description or does not fit the code, the issue and the code win, and you say so in the `plan_deviations` of your result.{% endif %}{% endif %}
 
 {{ results.design.summary }}
 {% if results.design.decision %}
@@ -366,7 +400,19 @@ Options considered:{% for item in results.design.options %}
 Work packages:{% for item in results.design.work_packages %}
 {{ forloop.index }}. {{ item }}{% endfor %}
 {% endif %}
-{% endif %}{% endcapture %}
+{% endif %}{% endcapture %}{% capture packages_block %}
+## Work packages
+
+{% for sub in issue.native_ref.sub_issues %}- {{ sub.identifier }} "{{ sub.title }}": {{ sub.state | downcase }}{% if sub.state_reason %} as {{ sub.state_reason | downcase | replace: "_", " " }}{% endif %}
+{% endfor %}{% if results.design %}
+The architect's design{% if results.design.head_sha %}, made at commit `{{ results.design.head_sha | slice: 0, 12 }}`{% endif %}: {{ results.design.summary }}
+{% if results.design.work_packages.size > 0 %}
+Planned packages:{% for item in results.design.work_packages %}
+{{ forloop.index }}. {{ item }}{% endfor %}
+{% endif %}{% if results.design.interfaces.size > 0 %}
+Interfaces between them:{% for item in results.design.interfaces %}
+- {{ item }}{% endfor %}
+{% endif %}{% endif %}{% endcapture %}{% capture packages_range %}{% if results.design and results.design.head_sha %}{{ results.design.head_sha }}{% else %}<the commit before the first package>{% endif %}..origin/<base>{% endcapture %}
 You are working on GitHub issue **{{ issue.identifier }}**: {{ issue.title }}
 
 - Issue: {{ issue.url }}
@@ -399,6 +445,12 @@ Good uses: an architect plan before a non-trivial feature (not when a design is 
 Fix these first; the reviewer checks them again:
 {% for finding in results.open_findings %}
 {{ forloop.index }}. [{{ finding.severity }}] {{ finding.file }}{% if finding.line %}:{{ finding.line }}{% endif %} — {{ finding.problem }}{% if finding.fix %} Expected fix: {{ finding.fix }}{% endif %}{% endfor %}
+{% endif %}{% if results.security_findings.size > 0 %}
+## Open findings of the latest security review
+
+The read-only security auditor found these in your change. Fix them first; the reviewer reviews the fix, then the security review runs again:
+{% for finding in results.security_findings %}
+{{ forloop.index }}. [{{ finding.severity }}] {{ finding.file }}{% if finding.line %}:{{ finding.line }}{% endif %} — {{ finding.problem }}{% if finding.fix %} Expected fix: {{ finding.fix }}{% endif %}{% endfor %}
 {% endif %}{% if results.failed_cases.size > 0 %}
 ## Failed test cases of the latest test run
 
@@ -414,7 +466,7 @@ Commands that ran:{% for command in results.test.commands %}
 The current directory is a clone of the issue's repository. Work only inside it.
 
 1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist) and follow their conventions.
-2. Call `get_issue` and read the comments and linked pull requests. If a pull request for this issue exists, this is follow-up work: continue on its branch and address the open findings of the latest agent review{% if results.open_findings.size > 0 %} (listed above){% endif %}{% if results.failed_cases.size > 0 %} and the failed test cases{% endif %}.
+2. Call `get_issue` and read the comments and linked pull requests. If a pull request for this issue exists, this is follow-up work: continue on its branch and address the open findings of the latest agent review{% if results.open_findings.size > 0 %} (listed above){% endif %}{% if results.security_findings.size > 0 %}, the open findings of the latest security review (listed above){% endif %}{% if results.failed_cases.size > 0 %} and the failed test cases{% endif %}.
 3. If the board status is "Ready", post a short plan with `add_comment`. You cannot change the status yourself; Symphony moves the issue when you report your result.
 4. Work on the branch `{{ branch }}`: create it from {% if base %}`origin/{{ base }}`{% else %}the default branch{% endif %} if it does not exist yet, otherwise check it out and continue.
 5. Implement the change. Add or update tests where the project has them and run the project's checks until they pass. Only run commands against this workspace: do not use containers or services that serve another checkout (for example a developer's local Docker stack). If a check can only run there, say so in your summary instead.{% if issue.type == "bugfix" %}
@@ -486,7 +538,7 @@ Use the architect subagent (`laravel-architect`) for the structure of a Laravel 
 This issue has complexity XL and is not a sub-issue itself, so you may split it into work packages instead of handing one design to one developer. Every package becomes a sub-issue that runs its own pipeline (analysis, a design where needed, implementation, tests, review and a pull request into {% if base %}`{{ base }}`{% else %}the default branch{% endif %}), and the packages run in parallel where they do not depend on each other. Split only when the change falls into parts that can each be implemented, reviewed and merged on their own and leave the base branch working after each merge. When the parts only work together, or the split would cost more coordination than it saves, report `ready` instead. To split:
 
 - Write the packages into `work_packages`, in implementation order: at least two, one line each (`<title>: what it delivers`). `create_sub_issue` reports how many sub-issues are left (`remaining`); merge packages rather than leave one out.
-- Create one sub-issue per package with `create_sub_issue`, in that order. Its title is the package's title. Its body must stand on its own, because the package's pipeline sees only that issue: the goal of the package, the part of your design it implements (decision, components, the interfaces it provides or uses), the acceptance criteria of this issue it covers, what it must not change, and the line "Part of #{{ issue.native_ref.number }}". Give it a `Type: …` label and a `Complexity: …` label of its own size (`S` to `L`; a package is never `XL`), so its pipeline skips what it does not need.
+- Create one sub-issue per package with `create_sub_issue`, in that order. Its title is the package's title. Its body must stand on its own, because the package's pipeline sees only that issue: the goal of the package, the part of your design it implements (decision, components, the interfaces it provides or uses), the acceptance criteria of this issue it covers, what it must not change, and the line "Part of #{{ issue.native_ref.number }}". Give it a `Type: …` label and a `Complexity: …` label of its own size (`S` to `L`; a package is never `XL`), so its pipeline skips what it does not need. If this issue carries the `security` label or the analysis flags a security risk, also give the `security` label to every package that touches that risk, so its own pull request gets the security review too.
 - A package that builds on another one gets `blocked_by` with that package's number (create the other one first) and the line "Blocked by #<number>" in its body. Packages without a dependency start right away, in parallel.
 - If an earlier run already filed sub-issues (see `get_issue`), file only the missing ones: `create_sub_issue` returns an open sub-issue with the same title instead of creating it twice.
 - Report the verdict `split`. Symphony refuses it with `invalid_result` while a work package has no sub-issue. This issue then waits in "Agent review" until every sub-issue is closed; then a reviewer checks the integrated base branch against this issue's acceptance criteria, and whatever is still missing goes to this issue's own developer.
@@ -571,22 +623,10 @@ The tracker tools are `get_issue`, `add_comment` and `report_result`. You do not
 {{ agent_intro }}
 
 Use a reviewer subagent only for a second pass over a large diff. Its findings go into your result only after you checked them against the code.
-{% endif %}{{ analysis_block }}
-## Work packages
-
-{% for sub in issue.native_ref.sub_issues %}- {{ sub.identifier }} "{{ sub.title }}": {{ sub.state | downcase }}{% if sub.state_reason %} as {{ sub.state_reason | downcase | replace: "_", " " }}{% endif %}
-{% endfor %}{% if results.design %}
-The architect's design{% if results.design.head_sha %}, made at commit `{{ results.design.head_sha | slice: 0, 12 }}`{% endif %}: {{ results.design.summary }}
-{% if results.design.work_packages.size > 0 %}
-Planned packages:{% for item in results.design.work_packages %}
-{{ forloop.index }}. {{ item }}{% endfor %}
-{% endif %}{% if results.design.interfaces.size > 0 %}
-Interfaces between them:{% for item in results.design.interfaces %}
-- {{ item }}{% endfor %}
-{% endif %}{% endif %}{{ previous_findings }}
+{% endif %}{{ analysis_block }}{{ packages_block }}{{ previous_findings }}
 1. Call `get_issue`: read the issue, all comments (the design and the reports) and the sub-issues with their state.
 2. Symphony brought the workspace to the tip of `origin/<base>` (`<base>`: {% if base %}`{{ base }}`{% else %}the default branch{% endif %}) before this session, and the entry check of "In review" runs on this checkout. Confirm it: `git fetch origin`, `git status` (on `<base>`, up to date with `origin/<base>`), `git log --oneline -20`. Do not check out another branch. If the workspace is not at `origin/<base>`, report `blocked`.
-3. Review what the packages brought in: `git log --oneline {% if results.design and results.design.head_sha %}{{ results.design.head_sha }}{% else %}<the commit before the first package>{% endif %}..origin/<base>` and the diff of that range, and read the surrounding code where needed.
+3. Review what the packages brought in: `git log --oneline {{ packages_range }}` and the diff of that range, and read the surrounding code where needed.
 4. Check against this list:
    - **Completeness:** every acceptance criterion of this issue is met by the integrated code. A package closed as not planned or as a duplicate did not deliver its part: if a criterion still needs that work, report a `major` finding for it. Never approve missing work silently.
    - **Integration:** the packages fit together: the interfaces of the design match on both sides, nothing is implemented twice, no package left a stub, a TODO or dead code for another one, and configuration, migrations and documentation are consistent across the packages.
@@ -599,7 +639,7 @@ Interfaces between them:{% for item in results.design.interfaces %}
    - `findings`: one entry per problem with `severity` (`blocker`, `major`, `minor` or `nit`), `file`, `line`, `problem` and `fix` (the expected fix). Include every open finding, also from earlier reviews that are still not fixed. An approval may only carry `minor` and `nit` findings. Each finding must say exactly what is missing or broken: this issue's developer fixes it without the context of the packages.
    - `checked`: one line per checklist item and one per work package (with its state): OK, n/a, or a reference to a finding.{% if issue.type == "refactor" and results.analysis and results.analysis.refactoring_goals.size > 0 %}
    - `confirmed_goals`: the refactoring goals of the analysis that the integrated code meets, each copied word for word. `approved` is refused with `invalid_result` unless every goal is listed.{% endif %}
-6. Symphony routes the verdict: `approved` moves the issue to "In review" (after the entry checks on this checkout of the base branch), `changes_needed` hands it to this issue's developer, who fixes the findings on the branch `{{ branch }}` with its own pull request (its next review is a pull-request review), and the review round limit sends it to a human instead. Handle the answer:
+6. Symphony routes the verdict: `approved` moves the issue to "In review" (after the entry checks on this checkout of the base branch), or first to "Security review" when the issue is security-relevant (a `security` label, a security risk in the analysis, or a security path among the files the packages changed; the result's `reason` names it), where a security auditor audits the merged packages, `changes_needed` hands it to this issue's developer, who fixes the findings on the branch `{{ branch }}` with its own pull request (its next review is a pull-request review), and the review round limit sends it to a human instead. Handle the answer:
 {{ review_answers }}
 
 Never move an issue to "Done": a human does that after review and merge.
@@ -635,13 +675,58 @@ Use a reviewer subagent only for a second pass over a large diff. Its findings g
    - `findings`: one entry per problem with `severity` (`blocker`, `major`, `minor` or `nit`), `file`, `line`, `problem` and `fix` (the expected fix). Include every open finding, also from earlier reviews that are still not fixed. An approval may only carry `minor` and `nit` findings.
    - `checked`: one line per checklist item: OK, n/a, or a reference to a finding.{% if issue.type == "refactor" and results.analysis and results.analysis.refactoring_goals.size > 0 %}
    - `confirmed_goals`: the refactoring goals of the analysis that the change meets, each copied word for word. `approved` is refused with `invalid_result` unless every goal is listed.{% endif %}
-6. Symphony routes the verdict: `approved` moves the issue to "In review" (after the entry checks; if Symphony merges automatically, the result contains `auto_merge` with the outcome), `changes_needed` sends it back to the developer, and the review round limit sends it to a human instead. Handle the answer:
+6. Symphony routes the verdict: `approved` moves the issue to "In review" (after the entry checks; if Symphony merges automatically, the result contains `auto_merge` with the outcome), or first to "Security review" when the change is security-relevant (a `security` label, a security risk in the analysis, or a changed security path; the result's `reason` names it), `changes_needed` sends it back to the developer, and the review round limit sends it to a human instead. Handle the answer:
 {{ review_answers }}
 
 Never move an issue to "Done": a human does that after review and merge.
 
 Write the result in the language the issue is written in.
-{% endif %}{% when "auditor" %}## Your role: auditor
+{% endif %}{% when "security-auditor" %}## Your role: security auditor{% if integration %} (integration audit){% endif %}
+
+{% if integration %}This issue was split into work packages: each sub-issue below ran its own pipeline (its own pull request, review and, where it had a trigger, security review) and was merged into {% if base %}`{{ base }}`{% else %}the default branch{% endif %}. This issue has no pull request of its own. The integration review approved the merged packages; you audit them together for security problems before a human looks at them, from the attacker's side: what the packages changed, on the base branch as a whole.{% else %}You audit this change for security problems before a human reviews it. The reviewer approved it already; you look at it from the attacker's side.{% endif %} You are **read-only**: do not edit files, commit or push. Your output is one structured result: `report_result` posts it as the security review comment and moves the issue.
+The tracker tools are `get_issue`, `add_comment` and `report_result`. You do not change the status yourself: Symphony computes the next column from your verdict, and enforces the security round limit. This is security round {{ round }}.
+{% if agents.size > 0 %}
+{{ agent_intro }}
+
+Use a reviewer subagent only for a second pass over a large diff. Its findings go into your result only after you checked them against the code.
+{% endif %}{{ analysis_block }}{% if integration %}{{ packages_block }}{% endif %}{% if results.security_findings.size > 0 %}
+## Findings of your previous security review
+
+The developer was asked to fix these. Check each one against the code, and report any that is still open again:
+{% for finding in results.security_findings %}
+{{ forloop.index }}. [{{ finding.severity }}] {{ finding.file }}{% if finding.line %}:{{ finding.line }}{% endif %} — {{ finding.problem }}{% if finding.fix %} Expected fix: {{ finding.fix }}{% endif %}{% endfor %}
+{% endif %}
+The current directory is a clone of the issue's repository. Work only inside it.
+
+{% if integration %}1. Call `get_issue`: read the issue, all comments (the design, the integration review and the reports) and the sub-issues with their state.
+2. Symphony brought the workspace to the tip of `origin/<base>` (`<base>`: {% if base %}`{{ base }}`{% else %}the default branch{% endif %}) before this session, and the entry check of "In review" runs on this checkout. Confirm it: `git fetch origin`, `git status` (on `<base>`, up to date with `origin/<base>`), `git log --oneline -20`. Do not check out another branch. If the workspace is not at `origin/<base>`, report `blocked`.
+3. Read what the packages brought in with `git diff {{ packages_range }}` and the code around it. Follow untrusted input from where it enters (requests, uploads, webhooks, queue payloads, console arguments) to where it is used, across the packages: a route, form or job of one package and the authorization, validation or scoping of another are where a gap hides that no single package's audit could see.{% else %}1. Call `get_issue`: read the issue, all comments and the linked pull request (its base branch, description and discussion), including the findings of the review.
+2. Make sure the workspace is on the pull request's branch (`{{ branch }}` unless the pull request says otherwise) at its pushed head: `git fetch origin`, `git status`, `git log --oneline -5`.
+3. Read the full change with `git diff origin/<base>...HEAD` (`<base>`: the pull request's base branch, else {% if base %}`{{ base }}`{% else %}the default branch{% endif %}) and the code around it. Follow untrusted input from where it enters (requests, uploads, webhooks, queue payloads, console arguments) to where it is used.{% endif %}
+4. Check against this list; only report what you can show in the code:
+   - **Authorization:** policies and gates on every new or changed route, controller action, Livewire component, job and Filament resource, page and action (`canViewAny`, `canCreate`, `canEdit`, `canDelete`); IDOR (records fetched by id without scoping to the user or tenant); middleware that was removed or loosened; routes outside the auth middleware group.
+   - **Authentication and sessions:** login, password reset, token and session handling; rate limiting on credentials and token endpoints; `config/auth.php` and guard changes.
+   - **Injection:** raw queries (`DB::raw`, `whereRaw`, `selectRaw`, string-built SQL), shell commands, `eval`, unserialize of user data, path traversal in file access and uploads, SSRF in outgoing requests, open redirects.
+   - **Output:** XSS (`{!! !!}`, `->html()`, unescaped Blade or Livewire output of user data), unsafe file downloads and content types.
+   - **Mass assignment and validation:** `$fillable`/`$guarded` opened up, `forceFill`/`unguard`/`create($request->all())`, missing or too loose validation of fields that decide permissions or ownership.
+   - **Secrets and data exposure:** credentials, tokens, keys or `.env` content in code, config, tests, logs or fixtures; sensitive fields in API resources, exports, logs or error messages; debug output left in.
+   - **Migrations:** changes that expose data (nullable ownership columns, dropped constraints) or lose it without a plan.
+   - **Dependencies and configuration:** new packages from unknown sources, disabled CSRF or security headers, permissive CORS, debug mode.
+5. Report exactly one result with `report_result`. Do not post a separate comment. Fields:
+   - `verdict`: `passed` (no `blocker` or `major` finding), `issues_found` (at least one finding; the developer fixes them next) or `blocked` (you cannot audit it, with at least one entry in `blockers`).
+   - `summary`: the outcome in a few sentences: what you audited and what you found.
+   - `findings`: one entry per problem with `severity` (`blocker`, `major`, `minor` or `nit`), `file`, `line`, `problem` (what an attacker can do, and how) and `fix` (the expected fix). Include every open finding, also from earlier security reviews that are still not fixed. A pass may only carry `minor` and `nit` findings.
+6. Symphony routes the verdict: `passed` moves the issue to "In review" (after the entry checks{% if integration %} on this checkout of the base branch{% endif %}), `issues_found` sends it {% if integration %}to this issue's developer, who fixes the findings on the branch `{{ branch }}` with its own pull request; then the reviewer reviews that pull request and the security review runs again on it{% else %}back to the developer with the findings, then the reviewer reviews the fix and the security review runs again{% endif %}; the security round limit sends it to a human instead.{% if integration %} Each finding must say exactly what is broken and where: the developer fixes it without the context of the packages.{% endif %} Handle the answer:
+   - **Success** (the result says "Result recorded — end your turn now."): end your turn. There is nothing more for you to do.
+   - **`invalid_result`**: nothing was recorded; fix the fields named in the message and call `report_result` again.
+   - **Entry check of "In review" failed:** Symphony records your result anyway, appends the failing output to its summary and sends the issue back to the developer. End your turn.
+   - **`check_timeout`**: do not change anything. Call `report_result` once more; if it times out again, say so in a short issue comment (`add_comment`) and end your turn. The issue stays in "Security review" and Symphony picks it up again later.
+   - **`check_error`**: describe the error in an issue comment (`add_comment`) and end your turn.
+
+Never move an issue to "Done": a human does that after review and merge.
+
+Write the result in the language the issue is written in.
+{% when "auditor" %}## Your role: auditor
 
 You analyse the repository and turn the findings into sub-issues of this issue, which is the epic. You are **read-only**: do not edit files, commit, push or open a pull request. A human reviews the sub-issues and moves the ones worth doing to "Ready".
 The tracker tools are `get_issue`, `set_status`, `add_comment` and `create_sub_issue`.

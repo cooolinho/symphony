@@ -300,9 +300,9 @@ describe('repo-init', () => {
     const first = await run(['', '1', 'y', '', '0'], { github, env });
     assert.equal(first.code, 0);
     assert.match(first.text, /2 existing labels differ from the standard\. Update them\?/);
-    assert.match(first.text, /Create 50 labels and update 2 labels\?/);
-    assert.match(first.text, /✓ acme\/app: 24 created, 2 updated/);
-    assert.match(first.text, /✓ acme\/web: 26 created/);
+    assert.match(first.text, /Create 52 labels and update 2 labels\?/);
+    assert.match(first.text, /✓ acme\/app: 25 created, 2 updated/);
+    assert.match(first.text, /✓ acme\/web: 27 created/);
     for (const repository of ['acme/app', 'acme/web']) {
       const labels = github.repos.get(repository) ?? [];
       assert.ok(planLabelChanges(labels, STANDARD_LABELS).every((change) => change.kind === 'ok'), repository);
@@ -312,7 +312,7 @@ describe('repo-init', () => {
     const before = github.requests.length;
     const second = await run(['', '1', '0'], { github, env });
     assert.equal(second.code, 0);
-    assert.match(second.text, /= all 26 labels up to date/);
+    assert.match(second.text, /= all 27 labels up to date/);
     assert.match(second.text, /All standard labels are up to date\./);
     assert.ok(github.requests.slice(before).every((request) => request.method === 'GET'));
   });
@@ -333,7 +333,7 @@ describe('repo-init', () => {
     const result = await run(['', '1', '', '0'], { github, env: { GITHUB_REPOSITORY: 'acme/missing,acme/app', GITHUB_TOKEN: 't' } });
     assert.equal(result.code, 1);
     assert.match(result.text, /acme\/missing\n {2}✗ cannot read the labels: not found \(HTTP 404\)/);
-    assert.match(result.text, /✓ acme\/app: 26 created/);
+    assert.match(result.text, /✓ acme\/app: 27 created/);
   });
 
   it('explains missing or invalid configuration', async () => {

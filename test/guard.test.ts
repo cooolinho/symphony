@@ -400,7 +400,7 @@ describe('toolsForRole', () => {
   });
   const specs = [tool('get_issue'), tool('create_sub_issue', true)];
   const roles = setup({ extraRoles: { auditor: { commands: ['refactoring'], states: ['Todo'], max_sub_issues: 5 } } }).params.config.roles ?? [];
-  const named = (role: string | null) => toolsForRole(specs, roles.find((r) => r.name === role) ?? null).map((t) => t.name);
+  const named = (role: string | null) => toolsForRole(specs, roles.find((r) => r.name === role) ?? null, makeIssue({ id: '1' })).map((t) => t.name);
 
   it('offers create_sub_issue only to a role with max_sub_issues', () => {
     assert.deepEqual(named('auditor'), ['get_issue', 'create_sub_issue']);
@@ -416,10 +416,10 @@ describe('toolsForRole', () => {
     const withResult = setup({ extraRoles: { reviewer: { states: ['Agent review'], read_only: true, result: 'review' } } }).params.config.roles ?? [];
     const reviewer = withResult.find((r) => r.name === 'reviewer') ?? null;
     assert.equal(reviewer?.readOnly, true);
-    assert.deepEqual(toolsForRole(all, reviewer, report).map((t) => t.name), ['get_issue', 'add_comment', 'report_result']);
-    assert.deepEqual(toolsForRole(all, reviewer).map((t) => t.name), ['get_issue', 'add_comment'], 'never set_status, even before report_result is wired');
+    assert.deepEqual(toolsForRole(all, reviewer, makeIssue({ id: '1' }), report).map((t) => t.name), ['get_issue', 'add_comment', 'report_result']);
+    assert.deepEqual(toolsForRole(all, reviewer, makeIssue({ id: '1' })).map((t) => t.name), ['get_issue', 'add_comment'], 'never set_status, even before report_result is wired');
     const developer = withResult.find((r) => r.name === 'developer') ?? null;
-    assert.deepEqual(toolsForRole(all, developer, report).map((t) => t.name), ['get_issue', 'set_status', 'add_comment'], 'roles without result keep set_status');
-    assert.deepEqual(toolsForRole(all, null, report).map((t) => t.name), ['get_issue', 'set_status', 'add_comment']);
+    assert.deepEqual(toolsForRole(all, developer, makeIssue({ id: '1' }), report).map((t) => t.name), ['get_issue', 'set_status', 'add_comment'], 'roles without result keep set_status');
+    assert.deepEqual(toolsForRole(all, null, makeIssue({ id: '1' }), report).map((t) => t.name), ['get_issue', 'set_status', 'add_comment']);
   });
 });

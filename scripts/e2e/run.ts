@@ -41,7 +41,8 @@ roles issue-analyst, developer, test-engineer and reviewer, the bugfix profile a
 sonnet, no entry checks, polling every 10 s). Checks the board path of a test loop (P1: one failed test round), a review
 loop (P2: one changes_needed round) and a blocked analysis (P3: needs_info), the stage results with their markers and
 rounds, the workflow profile, the run order, the model and the cost per role.
-The board needs the columns "${PIPELINE_STATUS.testing}", "${PIPELINE_STATUS.review}" and "${PIPELINE_STATUS.blocked}". About 14 Sonnet sessions,
+The board needs the columns "${PIPELINE_STATUS.design}", "${PIPELINE_STATUS.testing}", "${PIPELINE_STATUS.review}", "${PIPELINE_STATUS.security}" and "${PIPELINE_STATUS.blocked}"
+(the Design and Security review stages run without a session for these issues). About 14 Sonnet sessions,
 roughly 1–3 USD, 20–35 minutes; the issues stay open in "${STATUS.handoff}" and "${PIPELINE_STATUS.blocked}".
 
 All use WORKFLOW.md and .env of this checkout and leave comment-only issues on the board.

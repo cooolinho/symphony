@@ -8,7 +8,7 @@ import { AGENT_RESULT_KINDS, RESULT_VERDICTS } from '../src/workflow/results.ts'
 import type { RoleConfig } from '../src/workflow/roles.ts';
 import { classify } from '../src/workflow/classify.ts';
 import { profileFor } from '../src/workflow/profile.ts';
-import { nextStageProblems } from '../src/workflow/validate.ts';
+import { nextStageProblems, securityReviewProblems } from '../src/workflow/validate.ts';
 
 const resolve = (front: Record<string, unknown>): ServiceConfig =>
   resolveConfig(front, { workflowPath: path.join('/srv/flows', 'WORKFLOW.md'), env: {}, trackerDefaults });
@@ -26,7 +26,7 @@ const config = resolve({
       states: ['Agent review'],
       read_only: true,
       result: 'review',
-      may_move_to: ['In review', 'Blocked'],
+      may_move_to: ['Security review', 'In review', 'Blocked'],
       on_result: { approved: 'In review', changes_needed: 'In progress' },
       on_round_limit: 'In review',
     },
@@ -237,6 +237,107 @@ describe('resolveTransition', () => {
   });
 });
 
+describe('security review', () => {
+  const approve = (over: Partial<TransitionInput> = {}) => ok(run('reviewer', 'approved', over));
+
+  it('sends an approval to the security review when the flag holds, naming the reason', () => {
+    const outcome = approve({ flags: { security: true }, flagReasons: { security: '1 changed file(s) match pipeline.security_paths: app/Policies/PostPolicy.php' } });
+    assert.equal(outcome.target, 'Security review');
+    assert.equal(outcome.rule, 'on_result');
+    assert.equal(
+      outcome.reason,
+      'review approved (round 1 of 3) → "Security review" (on_result.approved, security review needed: 1 changed file(s) match pipeline.security_paths: app/Policies/PostPolicy.php)',
+    );
+  });
+
+  it('keeps In review when the flag says the review is not needed, and says so', () => {
+    const outcome = approve({ flags: { security: false }, flagReasons: { security: 'no trigger (none of 2 changed file(s) matches pipeline.security_paths)' } });
+    assert.equal(outcome.target, 'In review');
+    assert.match(outcome.reason, /security review not needed: no trigger/);
+  });
+
+  it('keeps In review without a flag: only report_result, which looks the conditions up, sends approvals to the security review', () => {
+    assert.equal(approve({ flags: {} }).target, 'In review');
+    assert.equal(approve({ flags: undefined }).target, 'In review');
+  });
+
+  it('only redirects the reviewer\'s approval, not other verdicts or roles', () => {
+    const flags = { security: true };
+    assert.equal(ok(run('reviewer', 'changes_needed', { flags })).target, 'In progress');
+    assert.equal(ok(run('reviewer', 'blocked', { flags })).target, 'Blocked');
+    assert.equal(ok(run('tester', 'passed', { flags })).target, 'Agent review');
+    assert.equal(ok(run('security', 'passed', { flags })).target, 'In review');
+  });
+
+  it('does not redirect an approval that stays among the active columns', () => {
+    const inside = { ...roleNamed('reviewer'), onResult: { approved: 'In progress' }, mayMoveTo: ['In progress', 'Blocked'] };
+    assert.equal(ok(run('reviewer', 'approved', { role: inside, flags: { security: true } })).target, 'In progress');
+  });
+
+  it('is skipped by a profile that lists the security role, whatever the flag says', () => {
+    const skipping = profile({ name: 'skipping', skip: ['security'] });
+    assert.equal(approve({ flags: { security: true }, profile: skipping }).target, 'In review');
+    const bySize = profile({ name: 'by-size', skipWhen: { security: ['S'] } });
+    const issue = (labels: string[]) => ({ description: null, labels });
+    assert.equal(approve({ flags: { security: true }, profile: bySize, issue: issue(['Complexity: S']) }).target, 'In review');
+    assert.equal(approve({ flags: { security: true }, profile: bySize, issue: issue(['Complexity: L']) }).target, 'Security review');
+  });
+
+  it('refuses the redirect when the reviewer may not move issues to the security column', () => {
+    const narrow = { ...roleNamed('reviewer'), mayMoveTo: ['In review', 'In progress', 'Blocked'] };
+    const outcome = run('reviewer', 'approved', { role: narrow, flags: { security: true } });
+    assert.equal(outcome.ok, false);
+    assert.match(outcome.ok ? '' : outcome.problem, /role reviewer may not move issues to "Security review"/);
+  });
+
+  it('counts issues_found rounds of its own and ends the loop at max_security_rounds', () => {
+    const first = ok(run('security', 'issues_found', { history: { reviewRounds: 5, testRounds: 5, securityRounds: 0 } }));
+    assert.deepEqual([first.target, first.round, first.limitReached], ['In progress', 1, false]);
+    assert.match(first.reason, /security issues_found \(round 1 of 2\)/);
+    const last = ok(run('security', 'issues_found', { history: { reviewRounds: 0, testRounds: 0, securityRounds: 1 } }));
+    assert.deepEqual([last.target, last.round, last.limitReached, last.rule], ['Blocked', 2, true, 'round_limit']);
+    assert.deepEqual(last.labels, { add: ['needs-human'], remove: [] });
+    assert.equal(ok(run('security', 'issues_found', { history: { reviewRounds: 0, testRounds: 0, securityRounds: 9 } })).limitReached, true);
+  });
+
+  it('lets a passed or blocked result through at the limit and removes the limit label', () => {
+    const history = { reviewRounds: 0, testRounds: 0, securityRounds: 5 };
+    const passed = ok(run('security', 'passed', { history }));
+    assert.deepEqual([passed.target, passed.round, passed.limitReached, passed.labels], ['In review', 6, false, { add: [], remove: ['needs-human'] }]);
+    assert.equal(ok(run('security', 'blocked', { history })).target, 'Blocked');
+  });
+
+  it('uses the security role\'s on_round_limit and the configured max_security_rounds', () => {
+    const custom = { ...roleNamed('security'), onRoundLimit: 'In review' };
+    assert.equal(ok(run('security', 'issues_found', { role: custom, history: { reviewRounds: 0, testRounds: 0, securityRounds: 1 } })).target, 'In review');
+    const wide = { ...config, pipeline: { ...config.pipeline, maxSecurityRounds: 4 } };
+    assert.equal(ok(run('security', 'issues_found', { config: wide, history: { reviewRounds: 0, testRounds: 0, securityRounds: 1 } })).limitReached, false);
+  });
+
+  it('keeps the reviewer\'s and the tester\'s rounds apart from the security rounds', () => {
+    const history = { reviewRounds: 0, testRounds: 0, securityRounds: 1 };
+    assert.equal(ok(run('reviewer', 'changes_needed', { history })).limitReached, false);
+    assert.equal(ok(run('tester', 'failed', { history })).limitReached, false);
+  });
+
+  describe('securityReviewProblems', () => {
+    it('is empty when the reviewer lists the column, and names a reviewer that does not', () => {
+      assert.deepEqual(securityReviewProblems(config), []);
+      const narrow = resolve({
+        tracker: { kind: 'github', active_states: ['Agent review', 'Security review'], terminal_states: ['Done'] },
+        roles: {
+          reviewer: { states: ['Agent review'], result: 'review', may_move_to: ['In review', 'Blocked'], on_result: { approved: 'In review' } },
+          auditor: { states: ['Security review'], result: 'security', may_move_to: ['In review', 'Blocked'], on_result: { passed: 'In review' } },
+        },
+      });
+      assert.deepEqual(securityReviewProblems(narrow), [
+        'roles.reviewer.may_move_to must list "Security review": an approved issue goes there when it needs a security review (roles.auditor)',
+      ]);
+      assert.deepEqual(nextStageProblems(narrow, ['Agent review', 'Security review', 'Blocked', 'In review', 'Done']), securityReviewProblems(narrow));
+    });
+  });
+});
+
 describe('profiles read from pipeline.profiles', () => {
   const profiled = resolve({
     tracker: { kind: 'github', active_states: ['Ready', 'In progress', 'Testing', 'Agent review', 'Security review'], terminal_states: ['Done'] },
@@ -248,7 +349,7 @@ describe('profiles read from pipeline.profiles', () => {
         states: ['Agent review'],
         read_only: true,
         result: 'review',
-        may_move_to: ['In review', 'In progress', 'Blocked'],
+        may_move_to: ['Security review', 'In review', 'In progress', 'Blocked'],
         on_result: { approved: 'In review', changes_needed: 'In progress' },
         on_round_limit: 'In review',
       },

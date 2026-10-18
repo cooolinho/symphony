@@ -1,6 +1,7 @@
 import { normalizeStateName } from '../workflow/config.ts';
 import type { WorkflowProfile } from '../workflow/profile.ts';
 import { NEXT_STAGE, resultTargets, roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
+import { securityRoles } from '../workflow/validate.ts';
 import type { PersistedResult } from './stage-history.ts';
 
 /** One agent session attributed to a pipeline stage (the `#sessionJson` shape without the transcript). */
@@ -118,7 +119,7 @@ export function blockedBucketColumns(
  * The normalized active columns that issues are led to: the targets of every role's `on_result`, `on_check_failed`,
  * `on_missing_result` and `on_round_limit` (and of the profile's `on_result` overrides), and, for a role that uses
  * `next`, the active columns after its own up to the first one whose role the profile does not skip (`skip`: where
- * `next` really leads, `nextStage` in `transitions.ts`; no stage of the shipped pipeline is conditional). A role that hands off with `set_status` instead of a result (and the
+ * `next` really leads, `nextStage` in `transitions.ts`; the security review is conditional, see below). A role that hands off with `set_status` instead of a result (and the
  * implicit default role of a column no role serves) moves the issue wherever it likes: its `may_move_to` columns, or
  * any active column when it has no such list. `activeColumns` is in board order; `description` picks the role of a
  * column like the dispatcher does (an issue command). Conservative: a column counted here may still never be entered,
@@ -143,6 +144,13 @@ function routedColumns(
     for (const column of activeColumns.slice(last + 1)) {
       routed.add(normalizeStateName(column));
       if (!skip.includes(roleName(roleFor({ state: column, description }, roles)))) break;
+    }
+  }
+  // The security review is conditional: a reviewer's approval goes to it when the issue needs it (`securityStage` in
+  // `transitions.ts`), so the column is routed to whenever a reviewer exists.
+  if (roles.some((role) => role.result === 'review')) {
+    for (const role of securityRoles(roles)) {
+      for (const state of role.states) routed.add(state);
     }
   }
   for (const column of activeColumns) {
@@ -180,8 +188,8 @@ function chronological(results: readonly PersistedResult[]): PersistedResult[] {
  * `blockedBucketColumns`). When the heuristic yields nothing, the pipeline is agent stages plus the
  * terminal columns, which is always correct. Session history marks a role's stage done even when the
  * column moved backwards; sessions of roles no longer derived get a trailing stage so history never drops. Stages of
- * roles in `skip` (the issue's profile) or whose newest result is a `skipped` marker, and stages a result's target
- * jumped over, are `skipped` unless they have sessions. Sessions and stages carry the verdict and round of the results in `results`.
+ * roles in `skip` (the issue's profile) or whose newest result is a `skipped` marker, and stages behind the current one
+ * that a result's target jumped over, are `skipped` unless they have sessions. Sessions and stages carry the verdict and round of the results in `results`.
  */
 export function derivePipeline(input: PipelineInput): PipelineStage[] {
   const { issue, roles, activeStates, terminalStates, boardColumns, sessions, skip = [], results = [], profile = null } = input;
@@ -277,20 +285,27 @@ export function derivePipeline(input: PipelineInput): PipelineStage[] {
     stage.round = latest?.meta.round ?? null;
   }
   // A stage a result jumped over (from its role's stage forward to the target's, e.g. a `split` design straight to the
-  // integration review) shows as `skipped` unless a session ran there or the issue is in it now.
+  // integration review) shows as `skipped` unless a session ran there. Only behind the issue's current stage: a stage
+  // the issue came back before since lies ahead again (Testing after the integration review sent the issue back to the
+  // developer) and stays `pending`.
   for (const entry of timeline) {
-    if (entry.meta.target === null) continue;
+    if (entry.meta.target === null || current === -1) continue;
     const from = stages.findIndex((stage) => stage.kind === 'agent' && stage.id === entry.meta.role);
-    const to = stageAt(entry.meta.target);
+    const to = Math.min(stageAt(entry.meta.target), current);
     if (from === -1 || to <= from + 1) continue;
     for (const stage of stages.slice(from + 1, to)) {
-      if (stage.kind === 'agent' && stage.sessions.length === 0 && stage.status !== 'active') stage.status = 'skipped';
+      if (stage.kind === 'agent' && stage.sessions.length === 0) stage.status = 'skipped';
     }
   }
   // A stage the profile leaves out or a `skipped` result marks stays `skipped` unless a session already ran there.
   for (const stage of stages) {
     if (stage.kind !== 'agent' || stage.sessions.length > 0) continue;
     if (skip.includes(stage.id) || stage.verdict === 'skipped') stage.status = 'skipped';
+  }
+  // The security review runs only for issues that need it: an issue that went past it without a session skipped it.
+  for (const stage of stages) {
+    const conditional = roles?.some((role) => role.name === stage.id && role.result === 'security') === true;
+    if (conditional && stage.sessions.length === 0 && stage.status === 'done') stage.status = 'skipped';
   }
   return stages;
 }
