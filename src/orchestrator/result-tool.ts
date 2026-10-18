@@ -5,7 +5,7 @@ import { tail, truncate } from '../util/text.ts';
 import { normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
 import { RESULT_VERDICTS, SUMMARY_MAX, parseResult, renderResultComment, toolInputShape, type ResultMeta, type StageResult } from '../workflow/results.ts';
 import type { RoleConfig } from '../workflow/roles.ts';
-import type { StageHistory } from './stage-history.ts';
+import type { PersistedResult, StageHistory } from './stage-history.ts';
 import { resolveTransition, type StageConditions, type Transition, type TransitionProfile } from './transitions.ts';
 
 /** Name of the tool a role with `result` hands off with, instead of `set_status`. */
@@ -40,6 +40,8 @@ export interface ResultToolParams {
   /** The run recorded in the meta; null when unknown. */
   runId: string | null;
   meta: ResultMetaSource;
+  /** Called once the result comment is posted, with the result as persisted (before the move and the labels). */
+  onRecorded?: (entry: PersistedResult) => void;
 }
 
 function ok(data: unknown): ToolResult {
@@ -202,6 +204,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       );
     }
 
+    params.onRecorded?.({ result, meta });
     // The result is recorded from here on; the move and the labels follow it, and a repeated call changes nothing.
     let change: StatusChange | null = null;
     let statusError: string | null = null;

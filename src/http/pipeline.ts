@@ -23,6 +23,10 @@ export const PIPELINE_CSS = `
   .pipe-label { font: 600 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--text-2);
     max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pipe-sub { font: 500 10px var(--mono); color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pipe-verdict { font: 600 10px var(--mono); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+  .pipe-verdict.vd-good { color: var(--green); }
+  .pipe-verdict.vd-warn { color: var(--amber); }
+  .pipe-verdict.vd-bad { color: var(--red); }
   .pipe-link { flex: 1 1 26px; min-width: 18px; height: 34px; }
   .pipe-link line { stroke: var(--line-2); stroke-width: 2; stroke-dasharray: 5 5; }
   .pipe-link.st-done line { stroke: var(--green); stroke-dasharray: none; opacity: .45; }
@@ -32,7 +36,7 @@ export const PIPELINE_CSS = `
   .pipe.compact .pipe-node { min-width: 44px; max-width: 86px; }
   .pipe.compact .pipe-ring { width: 26px; height: 26px; font-size: 11px; }
   .pipe.compact .pipe-link { height: 26px; min-width: 12px; }
-  .pipe.compact .pipe-sub { display: none; }
+  .pipe.compact .pipe-sub, .pipe.compact .pipe-verdict { display: none; }
 `;
 
 export const PIPELINE_JS = `
@@ -51,11 +55,27 @@ export const PIPELINE_JS = `
     return 'gray';
   }
 
-  /** Tooltip lines for a stage: its columns and one line per session (newest first). */
+  const PIPE_VERDICT_TONE = {
+    ready: 'good', approved: 'good', passed: 'good', done: 'good',
+    not_needed: 'good', skipped: 'muted', reset: 'muted',
+    changes_needed: 'warn', failed: 'warn', issues_found: 'warn',
+    needs_info: 'bad', blocked: 'bad',
+  };
+
+  /** "changes needed · round 2": the verdict of a result with its round (rounds count from 1; null = not counted). */
+  function pipeVerdict(verdict, round) {
+    if (!verdict) return '';
+    return verdict.replace(/_/g, ' ') + (round ? ' · round ' + round : '');
+  }
+
+  /** Tooltip lines for a stage: its columns, its verdict and one line per session (newest first). */
   function pipeTitle(stage) {
     const lines = [stage.label + (stage.columns.length ? ' · ' + stage.columns.join(', ') : '')];
+    if (stage.status === 'skipped') lines.push('skipped' + (stage.verdict && stage.verdict !== 'skipped' ? ' · ' + pipeVerdict(stage.verdict, stage.round) : ''));
+    else if (stage.verdict) lines.push('verdict: ' + pipeVerdict(stage.verdict, stage.round));
     for (const s of [...stage.sessions].reverse()) {
       lines.push((s.outcome ? (OUTCOMES[s.outcome] || s.outcome) : 'running') +
+        (s.verdict ? ' · ' + pipeVerdict(s.verdict, s.round) : '') +
         (s.model ? ' · ' + s.model : '') + (s.effort ? ' · effort ' + s.effort : '') +
         (s.started_at ? ' · ' + fmtClock(s.started_at) : ''));
     }
@@ -70,7 +90,8 @@ export const PIPELINE_JS = `
     opts = opts || {};
     stages = stages || [];
     const fp = JSON.stringify([!!opts.compact, opts.liveStatus || '', stages.map((s) =>
-      [s.id, s.label, s.kind, s.status, s.sessions.length, s.sessions.map((x) => x.outcome + '|' + x.model).join(',')])]);
+      [s.id, s.label, s.kind, s.status, s.verdict || '', s.round || 0, s.sessions.length,
+        s.sessions.map((x) => x.outcome + '|' + x.model + '|' + (x.verdict || '') + '|' + (x.round || 0)).join(',')])]);
     if (host.dataset.pipeFp === fp) return;
     host.dataset.pipeFp = fp;
     host.className = 'pipe' + (opts.compact ? ' compact' : '');
@@ -110,6 +131,9 @@ export const PIPELINE_JS = `
           ? stage.sessions.length + ' run' + (stage.sessions.length === 1 ? '' : 's') + (last && last.model ? ' · ' + last.model : '')
           : stage.status === 'skipped' ? 'skipped' : '—';
         node.append(el('span', sub, 'pipe-sub'));
+        if (stage.verdict && stage.status !== 'skipped') {
+          node.append(el('span', pipeVerdict(stage.verdict, stage.round), 'pipe-verdict vd-' + (PIPE_VERDICT_TONE[stage.verdict] || 'muted')));
+        }
       }
       node.title = pipeTitle(stage);
       nodes.push(node);

@@ -1,5 +1,6 @@
 import { normalizeStateName } from '../workflow/config.ts';
 import { roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
+import type { PersistedResult } from './stage-history.ts';
 
 /** One agent session attributed to a pipeline stage (the `#sessionJson` shape without the transcript). */
 export interface StageSession {
@@ -14,6 +15,14 @@ export interface StageSession {
   outcome: string | null;
 }
 
+/** A session of a pipeline stage with the result it reported (matched by run and role). */
+export interface PipelineSession extends StageSession {
+  /** Verdict of the result this session reported; null when it reported none (or none is known). */
+  verdict: string | null;
+  /** Round the result was recorded for; null when not counted. */
+  round: number | null;
+}
+
 /**
  * One station of an issue's path across the board: an agent role, a human column such as "In review",
  * or a terminal column. Stages are ordered left to right as the issue traverses them.
@@ -25,10 +34,14 @@ export interface PipelineStage {
   kind: 'agent' | 'human' | 'terminal';
   /** Board columns this stage spans, in their original casing. */
   columns: string[];
-  /** `skipped`: the issue's workflow profile leaves the stage out and no session ran there. */
+  /** `skipped`: the issue's workflow profile or a `skipped` result leaves the stage out and no session ran there. */
   status: 'done' | 'active' | 'pending' | 'skipped';
   /** Sessions of this stage's role, oldest first; always empty for human and terminal stages. */
-  sessions: StageSession[];
+  sessions: PipelineSession[];
+  /** Verdict of the role's newest result since the last reset; null without one (and for human and terminal stages). */
+  verdict: string | null;
+  /** Round of that result; null when not counted or without a result. */
+  round: number | null;
 }
 
 export interface PipelineInput {
@@ -43,6 +56,8 @@ export interface PipelineInput {
   sessions: StageSession[];
   /** Roles the issue's workflow profile skips; their stages show as `skipped`. Omitted = none. */
   skip?: readonly string[];
+  /** The issue's persisted stage results (see `buildStageHistory`), in any order. Omitted = none known. */
+  results?: readonly PersistedResult[];
 }
 
 function columnIndex(boardColumns: string[] | null): Map<string, number> {
@@ -93,6 +108,18 @@ export function blockedBucketColumns(
   return [...counts.values()].filter((entry) => entry.roles === restricted.length).map((entry) => entry.column);
 }
 
+/** Results oldest first; ties and unparseable timestamps keep the input order. */
+function chronological(results: readonly PersistedResult[]): PersistedResult[] {
+  const at = (entry: PersistedResult): number => {
+    const time = Date.parse(entry.meta.created_at);
+    return Number.isNaN(time) ? 0 : time;
+  };
+  return results
+    .map((entry, i) => ({ entry, i }))
+    .sort((a, b) => at(a.entry) - at(b.entry) || a.i - b.i)
+    .map(({ entry }) => entry);
+}
+
 /**
  * The ordered stations an issue passes on its way across the board, with each station's status and the
  * sessions already run there.
@@ -104,10 +131,11 @@ export function blockedBucketColumns(
  * `blockedBucketColumns`). When the heuristic yields nothing, the pipeline is agent stages plus the
  * terminal columns, which is always correct. Session history marks a role's stage done even when the
  * column moved backwards; sessions of roles no longer derived get a trailing stage so history never drops. Stages of
- * roles in `skip` (the issue's profile) are `skipped` unless they have sessions.
+ * roles in `skip` (the issue's profile) or whose newest result is a `skipped` marker are `skipped` unless they have
+ * sessions. Sessions and stages carry the verdict and round of the results in `results`.
  */
 export function derivePipeline(input: PipelineInput): PipelineStage[] {
-  const { issue, roles, activeStates, terminalStates, boardColumns, sessions, skip = [] } = input;
+  const { issue, roles, activeStates, terminalStates, boardColumns, sessions, skip = [], results = [] } = input;
   const index = columnIndex(boardColumns);
   const active = new Set(activeStates.map(normalizeStateName));
   const terminal = new Set(terminalStates.map(normalizeStateName));
@@ -120,7 +148,7 @@ export function derivePipeline(input: PipelineInput): PipelineStage[] {
     const name = roleName(role);
     const last = agents.at(-1);
     if (last !== undefined && last.id === name) last.columns.push(column);
-    else agents.push({ id: name, label: name, kind: 'agent', columns: [column], status: 'pending', sessions: [] });
+    else agents.push({ id: name, label: name, kind: 'agent', columns: [column], status: 'pending', sessions: [], verdict: null, round: null });
   }
 
   // Human stages: hand-off columns of the final agent stage that are not every role's shared target.
@@ -132,7 +160,7 @@ export function derivePipeline(input: PipelineInput): PipelineStage[] {
     for (const column of sortByBoard(lastRole.mayMoveTo, index)) {
       const key = normalizeStateName(column);
       if (active.has(key) || terminal.has(key) || shared.has(key)) continue;
-      humans.push({ id: `human:${key}`, label: column, kind: 'human', columns: [column], status: 'pending', sessions: [] });
+      humans.push({ id: `human:${key}`, label: column, kind: 'human', columns: [column], status: 'pending', sessions: [], verdict: null, round: null });
     }
   }
 
@@ -140,7 +168,7 @@ export function derivePipeline(input: PipelineInput): PipelineStage[] {
   for (const column of sortByBoard(terminalStates, index)) {
     const key = normalizeStateName(column);
     if (terminals.some((stage) => stage.id === `terminal:${key}`)) continue;
-    terminals.push({ id: `terminal:${key}`, label: column, kind: 'terminal', columns: [column], status: 'pending', sessions: [] });
+    terminals.push({ id: `terminal:${key}`, label: column, kind: 'terminal', columns: [column], status: 'pending', sessions: [], verdict: null, round: null });
   }
 
   const stages = [...agents, ...humans, ...terminals];
@@ -149,11 +177,11 @@ export function derivePipeline(input: PipelineInput): PipelineStage[] {
   for (const session of sessions) {
     let stage = stages.find((candidate) => candidate.kind === 'agent' && candidate.id === session.role);
     if (stage === undefined) {
-      stage = { id: session.role, label: session.role, kind: 'agent', columns: [], status: 'pending', sessions: [] };
+      stage = { id: session.role, label: session.role, kind: 'agent', columns: [], status: 'pending', sessions: [], verdict: null, round: null };
       stages.splice(agents.length, 0, stage);
       agents.push(stage);
     }
-    stage.sessions.push(session);
+    stage.sessions.push({ ...session, verdict: null, round: null });
     if (stage.columns.length === 0) stage.columns.push(session.state);
   }
 
@@ -179,9 +207,24 @@ export function derivePipeline(input: PipelineInput): PipelineStage[] {
       stage.status = 'done';
     }
   }
-  // A stage the profile leaves out stays `skipped` unless a session already ran there.
+  // Results: a session shows the verdict it reported, a stage the newest one of its role.
+  const timeline = chronological(results);
   for (const stage of stages) {
-    if (stage.kind === 'agent' && stage.sessions.length === 0 && skip.includes(stage.id)) stage.status = 'skipped';
+    if (stage.kind !== 'agent') continue;
+    const own = timeline.filter((entry) => entry.meta.role === stage.id);
+    for (const session of stage.sessions) {
+      const reported = own.findLast((entry) => entry.meta.run !== null && entry.meta.run === session.run && entry.result.kind !== 'skipped');
+      session.verdict = reported?.result.verdict ?? null;
+      session.round = reported?.meta.round ?? null;
+    }
+    const latest = own.findLast((entry) => entry.result.kind !== 'reset');
+    stage.verdict = latest?.result.verdict ?? null;
+    stage.round = latest?.meta.round ?? null;
+  }
+  // A stage the profile leaves out or a `skipped` result marks stays `skipped` unless a session already ran there.
+  for (const stage of stages) {
+    if (stage.kind !== 'agent' || stage.sessions.length > 0) continue;
+    if (skip.includes(stage.id) || stage.verdict === 'skipped') stage.status = 'skipped';
   }
   return stages;
 }

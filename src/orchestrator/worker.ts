@@ -19,7 +19,7 @@ import type { EffectiveWorkflow } from '../workflow/store.ts';
 import { EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../workflow/template.ts';
 import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord } from './guard.ts';
 import { createResultTool, type ResultToolAdapter } from './result-tool.ts';
-import { buildStageHistory, resultsTemplateValue, type ResultsTemplateValue } from './stage-history.ts';
+import { buildStageHistory, resultsTemplateValue, type PersistedResult, type ResultsTemplateValue } from './stage-history.ts';
 
 export type RunPhase =
   | 'PreparingWorkspace'
@@ -89,6 +89,8 @@ export interface WorkerCallbacks {
   gitHead(head: GitHead): void;
   /** Result of an entry check run by the transition guard. */
   checkFinished(check: CheckRecord): void;
+  /** The issue's stage results: as loaded at the start of a result-driven session, again with each result it records. */
+  results(results: PersistedResult[]): void;
   /** The guard refused a move (terminal column or outside the role's `may_move_to`). */
   transitionDenied(target: string, message: string): void;
   /** JSONL transcript of this attempt's agent session, reported before the session starts. */
@@ -151,7 +153,13 @@ const RESULT_CAPABILITIES = ['readResults', 'postComment', 'setStatus', 'addLabe
  * paginated read of the issue's comments, plus the board's columns (cached by the adapter). Any failure is a
  * `results_read_error`: without the history the round counters would be wrong, so the run fails and is retried.
  */
-async function loadResultSupport(params: WorkerParams, role: RoleConfig, issue: () => Issue, headSha: () => Promise<string | null>): Promise<ResultSupport> {
+async function loadResultSupport(
+  params: WorkerParams,
+  role: RoleConfig,
+  issue: () => Issue,
+  headSha: () => Promise<string | null>,
+  report: (results: PersistedResult[]) => void,
+): Promise<ResultSupport> {
   const { adapter, workflow } = params;
   const missing = RESULT_CAPABILITIES.filter((capability) => adapter[capability] === undefined);
   if (missing.length > 0) {
@@ -167,9 +175,11 @@ async function loadResultSupport(params: WorkerParams, role: RoleConfig, issue: 
     throw new SymphonyError('results_read_error', `could not read the stage results of ${issue().identifier}: ${errorMessage(error)}`, { cause: error });
   }
   const history = buildStageHistory(tracked.map(({ result, meta }) => ({ result, meta })));
+  report(history.results);
   const tool = createResultTool({
     role,
     history,
+    onRecorded: (entry) => report([...history.results, entry]),
     profile: profileFor(workflow.config.pipeline, classify(issue().labels).type),
     // No stage of the shipped pipeline is conditional yet, so `next` skips only what the profile skips.
     flags: {},
@@ -326,7 +336,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     // Roles with `result` start with the issue's stage history; every other role makes no extra tracker request.
     const support =
       role?.result != null
-        ? await loadResultSupport(params, role, () => issue, async () => (await readGitHead(activeWorkspace.path))?.headSha ?? null)
+        ? await loadResultSupport(params, role, () => issue, async () => (await readGitHead(activeWorkspace.path))?.headSha ?? null, callbacks.results)
         : null;
     if (signal.aborted) return await finish(cancelled());
     const resultVariables = {
