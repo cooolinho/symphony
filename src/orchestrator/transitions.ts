@@ -1,5 +1,6 @@
 import type { Issue } from '../tracker/types.ts';
 import type { ServiceConfig } from '../workflow/config.ts';
+import type { WorkflowProfile } from '../workflow/profile.ts';
 import { isLoopKind, LOOP_VERDICTS } from '../workflow/results.ts';
 import { NEXT_STAGE, roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
 import { canMoveTo, laterActiveColumns, nextWithoutBoardOrder } from '../workflow/validate.ts';
@@ -7,17 +8,7 @@ import { blockedBucketColumns } from './pipeline.ts';
 import type { StageHistory } from './stage-history.ts';
 
 /** A workflow profile: a variant of the transition table for one kind of issue (bugfix, feature, …). */
-export interface TransitionProfile {
-  name: string;
-  /** Roles whose stages `next` passes over. */
-  skip: readonly string[];
-  /** `on_result` overrides per role name: verdict → column or `next`. */
-  onResult: Readonly<Record<string, Readonly<Record<string, string>>>>;
-  /** Override of `pipeline.max_review_rounds`; null keeps it. */
-  maxReviewRounds: number | null;
-  /** Override of `pipeline.max_test_rounds`; null keeps it. */
-  maxTestRounds: number | null;
-}
+export type TransitionProfile = WorkflowProfile;
 
 /** Whether the condition of a conditional stage holds for the issue, by role name; roles not listed always run. */
 export type StageConditions = Readonly<Record<string, boolean>>;

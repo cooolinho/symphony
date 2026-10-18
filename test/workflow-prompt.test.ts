@@ -161,6 +161,29 @@ describe('shipped WORKFLOW.md', () => {
     const value = issueTemplateValue(subject, commandSkills([toolbox]));
     assert.equal(value.type, null);
     assert.equal(value.complexity, null);
+    assert.equal(value.profile, null);
+  });
+
+  it('exposes the profile of the issue type as issue.profile, so role sections can branch on it', async () => {
+    const config = resolveConfig(
+      {
+        tracker: { kind: 'github', active_states: ['Ready'], terminal_states: ['Done'] },
+        roles: { developer: { states: ['Ready'] } },
+        pipeline: { profiles: { bugfix: { skip: ['developer'] }, default: {} } },
+      },
+      { workflowPath: shipped, env: {}, trackerDefaults },
+    );
+    const profileOf = (labels: string[]) => issueTemplateValue(makeIssue({ ...issue, labels }), new Map(), config.pipeline).profile;
+    assert.equal(profileOf(['bug']), 'bugfix');
+    assert.equal(profileOf(['type: refactor']), 'default');
+    assert.equal(profileOf([]), 'default');
+
+    const template = compilePrompt('{% if issue.profile == "bugfix" %}bugfix flow{% else %}standard flow ({{ issue.profile }}){% endif %}');
+    const render = (labels: string[]) => renderPrompt(template, { issue: issueTemplateValue(makeIssue({ ...issue, labels }), new Map(), config.pipeline) });
+    assert.equal(await render(['bug']), 'bugfix flow');
+    assert.equal(await render(['feature']), 'standard flow (default)');
+    // Without profiles in the config the variable still exists and is null.
+    assert.equal(issueTemplateValue(makeIssue({ ...issue, labels: ['bug'] }), new Map(), resolveConfig({ tracker: { kind: 'github', active_states: ['Ready'], terminal_states: ['Done'] } }, { workflowPath: shipped, env: {}, trackerDefaults }).pipeline).profile, null);
   });
 });
 

@@ -299,9 +299,9 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       setPhase('BuildingPrompt');
       const prompt =
         turn === 1
-          ? withMcpNotes(unavailableMcp, await renderPrompt(params.workflow.prompt, { issue: issueTemplateValue(issue, skills), attempt: params.attempt, role: name, agents: agentsValue }))
+          ? withMcpNotes(unavailableMcp, await renderPrompt(params.workflow.prompt, { issue: issueTemplateValue(issue, skills, params.workflow.config.pipeline), attempt: params.attempt, role: name, agents: agentsValue }))
           : await renderPrompt(params.workflow.continuationPrompt, {
-              issue: issueTemplateValue(issue, skills),
+              issue: issueTemplateValue(issue, skills, params.workflow.config.pipeline),
               attempt: params.attempt,
               role: name,
               agents: agentsValue,

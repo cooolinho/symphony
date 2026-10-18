@@ -317,7 +317,7 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
         const prefixes = integrations.flatMap((integration) => (integration.agentPrefix !== undefined ? [integration.agentPrefix] : []));
         const agents = sessionAgents(pluginAgents(config.claude.plugins), role, prefixes, prefixes).allowed;
         const prompt = await renderPrompt(store.current.prompt, {
-          issue: issueTemplateValue(first, skills),
+          issue: issueTemplateValue(first, skills, config.pipeline),
           attempt: null,
           role: roleName(role),
           agents: agents.map((agent) => ({ name: agent.qualified, description: agent.description })),
