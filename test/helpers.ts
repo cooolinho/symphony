@@ -80,10 +80,26 @@ export class FakeTracker implements TrackerAdapter {
     for (const issue of issues) this.issues.set(issue.id, issue);
   }
 
+  /**
+   * Changes an issue like the board would. A change of column, by Symphony or by a test acting as a human, stamps
+   * `native_ref.status_updated_at` like GitHub's Status field.
+   */
   set(id: string, patch: Partial<Issue>): void {
     const issue = this.issues.get(id);
     if (issue === undefined) throw new Error(`no issue ${id}`);
-    this.issues.set(id, { ...issue, ...patch });
+    const next = { ...issue, ...patch };
+    if (patch.state !== undefined && normalizeStateName(patch.state) !== normalizeStateName(issue.state)) {
+      next.native_ref = { ...next.native_ref, status_updated_at: this.#next(id).toISOString() };
+    }
+    this.issues.set(id, next);
+  }
+
+  /** The board's clock for one issue: one second after its latest comment and its latest column change. */
+  #next(id: string): Date {
+    const moved = this.issues.get(id)?.native_ref?.status_updated_at;
+    const times = [Date.UTC(2026, 0, 1), ...(this.comments.get(id) ?? []).map((comment) => comment.createdAt.getTime())];
+    if (typeof moved === 'string') times.push(Date.parse(moved));
+    return new Date(Math.max(...times) + 1000);
   }
 
   async fetchIssuesByStates(states: string[]): Promise<Issue[]> {
@@ -114,15 +130,19 @@ export class FakeTracker implements TrackerAdapter {
     return [...(this.comments.get(issue.id) ?? [])];
   }
 
-  /** Set to make `readResults` fail once. */
+  /** Set to make `readResults` fail, `failReadResultsTimes` times in a row. */
   failReadResults: Error | null = null;
+  failReadResultsTimes = 1;
 
   /** Like the GitHub adapter: the markers in the viewer's own comments, oldest first. */
   async readResults(issue: Issue): Promise<TrackedResult[]> {
     this.calls.readResults++;
     if (this.failReadResults !== null) {
       const error = this.failReadResults;
-      this.failReadResults = null;
+      if (--this.failReadResultsTimes <= 0) {
+        this.failReadResults = null;
+        this.failReadResultsTimes = 1;
+      }
       throw error;
     }
     const results: TrackedResult[] = [];
@@ -140,7 +160,7 @@ export class FakeTracker implements TrackerAdapter {
   async postComment(issue: Issue, body: string): Promise<PostedComment> {
     const list = this.comments.get(issue.id) ?? [];
     const url = `https://github.com/acme/app/issues/${issue.id}#issuecomment-${list.length + 1}`;
-    list.push({ author: this.viewer, createdAt: new Date(Date.UTC(2026, 0, 1, 0, list.length)), body, url });
+    list.push({ author: this.viewer, createdAt: this.#next(issue.id), body, url });
     this.comments.set(issue.id, list);
     return { url };
   }

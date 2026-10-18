@@ -240,6 +240,8 @@ export function normalizeItemNode(
         number,
         issue_state: str(content.state),
         status_option_id: str(status?.optionId),
+        // When the Status field last changed (any move, by Symphony or a human); see orchestrator/recovery.ts.
+        status_updated_at: date(status?.updatedAt)?.toISOString() ?? null,
         parent: linkedIssue(obj(content.parent)),
         sub_issues: subIssues,
         base_branch: settings.baseBranch,

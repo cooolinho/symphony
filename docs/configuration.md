@@ -876,7 +876,8 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
 - `issue`: `id`, `identifier`, `title`, `description`, `priority`, `state`, `branch_name`, `url`, `assignee_id`,
   `labels` (lowercase list), `blocked_by` (list of `{id, identifier, state}`), `dispatchable`, `created_at`,
   `updated_at` (ISO strings), `native_ref` (adapter data, for GitHub: `repository`, `number`, `issue_id`, `item_id`,
-  `parent` and `sub_issues` as `{identifier, title, state}`, …), `command` (`{name, args, skill}` for an
+  `status_updated_at` (ISO string: when the Status field last changed), `parent` and `sub_issues` as
+  `{identifier, title, state}`, …), `command` (`{name, args, skill}` for an
   [issue command](#issue-commands) that has a skill, else `null`; always defined).
 - `attempt`: `null` on the first run of an issue, then `1`, `2`, … on continuation runs and retries.
 - `role`: name of the [role](#roles) running the issue (e.g. `developer`, `reviewer`), or `default` without `roles`.
