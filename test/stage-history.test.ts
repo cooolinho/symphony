@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { PROMPT_SUMMARY_LIMIT, buildStageHistory, resultsTemplateValue, type PersistedResult } from '../src/orchestrator/stage-history.ts';
+import { PROMPT_SUMMARY_LIMIT, buildStageHistory, implementationHead, resultsTemplateValue, type PersistedResult } from '../src/orchestrator/stage-history.ts';
 import { internalResult, parseResult, type ResultMeta, type StageResult } from '../src/workflow/results.ts';
 
 let clock = 0;
@@ -101,6 +101,32 @@ describe('buildStageHistory', () => {
   it('forgets the target at a reset', () => {
     const history = buildStageHistory([entry('review', 'approved', { target: 'In review' }), entry('reset', 'reset')]);
     assert.equal(history.lastTarget, null);
+  });
+});
+
+describe('implementationHead', () => {
+  const head = (...entries: PersistedResult[]) => implementationHead(buildStageHistory(entries));
+
+  it('is the head of the newest finished implementation', () => {
+    assert.equal(head(entry('implementation', 'done', { head_sha: 'a'.repeat(40) }), entry('implementation', 'done', { head_sha: 'b'.repeat(40) })), 'b'.repeat(40));
+  });
+
+  it('skips implementations that recorded no head, blocked ones and the results of other roles', () => {
+    assert.equal(
+      head(
+        entry('implementation', 'done', { head_sha: 'a'.repeat(40) }),
+        entry('implementation', 'done', { head_sha: null }),
+        entry('implementation', 'blocked', { head_sha: 'c'.repeat(40) }),
+        entry('test', 'failed', { head_sha: 'd'.repeat(40) }),
+        entry('review', 'changes_needed', { head_sha: 'e'.repeat(40) }),
+      ),
+      'a'.repeat(40),
+    );
+  });
+
+  it('is null without a finished implementation', () => {
+    assert.equal(head(), null);
+    assert.equal(head(entry('implementation', 'done', { head_sha: null }), entry('review', 'approved', { head_sha: 'a'.repeat(40) })), null);
   });
 });
 

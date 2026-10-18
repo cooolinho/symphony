@@ -1,5 +1,6 @@
 import { normalizeStateName } from '../workflow/config.ts';
-import { roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
+import type { WorkflowProfile } from '../workflow/profile.ts';
+import { NEXT_STAGE, resultTargets, roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
 import type { PersistedResult } from './stage-history.ts';
 
 /** One agent session attributed to a pipeline stage (the `#sessionJson` shape without the transcript). */
@@ -56,6 +57,8 @@ export interface PipelineInput {
   sessions: StageSession[];
   /** Roles the issue's workflow profile skips; their stages show as `skipped`. Omitted = none. */
   skip?: readonly string[];
+  /** The issue's workflow profile, whose `on_result` overrides route issues too. Omitted = the roles' own routing. */
+  profile?: Pick<WorkflowProfile, 'onResult'> | null;
   /** The issue's persisted stage results (see `buildStageHistory`), in any order. Omitted = none known. */
   results?: readonly PersistedResult[];
 }
@@ -108,6 +111,27 @@ export function blockedBucketColumns(
   return [...counts.values()].filter((entry) => entry.roles === restricted.length).map((entry) => entry.column);
 }
 
+/**
+ * The normalized active columns that results lead to: the targets of every role's `on_result`, `on_check_failed`,
+ * `on_missing_result` and `on_round_limit` (and of the profile's `on_result` overrides), and, for a role that uses
+ * `next`, every active column after its own. `activeColumns` is in board order. Conservative: a column counted here
+ * may still never be entered, but a column that is not can only be entered by hand.
+ */
+function routedColumns(roles: readonly RoleConfig[], activeColumns: readonly string[], profile: PipelineInput['profile']): Set<string> {
+  const routed = new Set<string>();
+  for (const role of roles) {
+    const overrides = Object.values(profile?.onResult[role.name] ?? {});
+    for (const target of [...resultTargets(role), ...overrides]) {
+      if (target !== NEXT_STAGE) routed.add(normalizeStateName(target));
+    }
+    if (![...Object.values(role.onResult), ...overrides].includes(NEXT_STAGE)) continue;
+    const last = activeColumns.findLastIndex((column) => role.states.includes(normalizeStateName(column)));
+    if (last === -1) continue;
+    for (const column of activeColumns.slice(last + 1)) routed.add(normalizeStateName(column));
+  }
+  return routed;
+}
+
 /** Results oldest first; ties and unparseable timestamps keep the input order. */
 function chronological(results: readonly PersistedResult[]): PersistedResult[] {
   const at = (entry: PersistedResult): number => {
@@ -125,7 +149,10 @@ function chronological(results: readonly PersistedResult[]): PersistedResult[] {
  * sessions already run there.
  *
  * Agent stages come from the active columns (board order when known): each column's serving role via
- * `roleFor`, consecutive columns of the same role merged into one stage. Human stages are the non-active,
+ * `roleFor`, consecutive columns of the same role merged into one stage. A column served by a role that hands off with
+ * results is left out unless the flow leads to it (see `routedColumns`), the first stage serves it, or the issue is in
+ * it: a stage nothing routes to (the optional Testing column while the developer hands over to Agent review) is not
+ * part of the pipeline, so it never shows as done without having run. Human stages are the non-active,
  * non-terminal columns the final agent stage may move to that not every role lists — that singles out a
  * hand-off column such as "In review" and excludes the shared "Blocked" escape hatch (see
  * `blockedBucketColumns`). When the heuristic yields nothing, the pipeline is agent stages plus the
@@ -135,16 +162,21 @@ function chronological(results: readonly PersistedResult[]): PersistedResult[] {
  * sessions. Sessions and stages carry the verdict and round of the results in `results`.
  */
 export function derivePipeline(input: PipelineInput): PipelineStage[] {
-  const { issue, roles, activeStates, terminalStates, boardColumns, sessions, skip = [], results = [] } = input;
+  const { issue, roles, activeStates, terminalStates, boardColumns, sessions, skip = [], results = [], profile = null } = input;
   const index = columnIndex(boardColumns);
   const active = new Set(activeStates.map(normalizeStateName));
   const terminal = new Set(terminalStates.map(normalizeStateName));
 
   // Agent stages: one per run of consecutive active columns served by the same role.
   const agents: PipelineStage[] = [];
-  for (const column of sortByBoard(activeStates, index)) {
-    if (terminal.has(normalizeStateName(column))) continue;
+  const activeColumns = sortByBoard(activeStates, index).filter((column) => !terminal.has(normalizeStateName(column)));
+  const routed = roles === null ? new Set<string>() : routedColumns(roles, activeColumns, profile);
+  const entry = new Set(roleFor({ state: activeColumns[0] ?? '', description: issue.description }, roles ?? null)?.states ?? []);
+  for (const column of activeColumns) {
+    const key = normalizeStateName(column);
     const role = roleFor({ state: column, description: issue.description }, roles ?? null);
+    // Only a role with results is wired by them; the moves of any other role are the agent's own and stay unknown.
+    if (role?.result != null && !routed.has(key) && !entry.has(key) && key !== normalizeStateName(issue.state)) continue;
     const name = roleName(role);
     const last = agents.at(-1);
     if (last !== undefined && last.id === name) last.columns.push(column);

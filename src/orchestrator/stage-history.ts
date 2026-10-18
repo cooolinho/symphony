@@ -77,6 +77,15 @@ export function buildStageHistory(persisted: readonly PersistedResult[]): StageH
   };
 }
 
+/**
+ * The commit the newest finished implementation (`done`) was handed over at; null when none recorded one. The test
+ * engineer's path rule measures from it: what lies before it is the developer's work.
+ */
+export function implementationHead(history: Pick<StageHistory, 'results'>): string | null {
+  const entry = history.results.findLast(({ result, meta }) => result.kind === 'implementation' && result.verdict === 'done' && meta.head_sha !== null);
+  return entry?.meta.head_sha ?? null;
+}
+
 /** Upper bound for a summary in the prompt's `results.latest`; the full text stays in the issue comment. */
 export const PROMPT_SUMMARY_LIMIT = 1500;
 

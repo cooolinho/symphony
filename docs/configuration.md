@@ -514,6 +514,11 @@ checks:
   [checks] → Agent review → [checks] → In review`. `Testing` is always one of `tracker.active_states`, so the board
   needs the column (the [board preflight](#tracker) reports it as `unknown board column "Testing"`); put it between
   `In progress` and `Agent review`, because `next` and the pipeline view of the dashboard follow the board's order.
+  While the stage is off, the pipeline view leaves it out: a stage served by a role with `result` shows only when the
+  flow leads to its column (the `on_result`, `on_check_failed`, `on_missing_result` and `on_round_limit` targets of the
+  roles and of the issue's profile, or `next`), when the first stage serves it, or when the issue sits in it. So an
+  issue never shows a test stage as done that did not run, and the order of the `Testing` column on the board does not
+  matter until the stage is on.
 - **Slots.** The test engineer is a third role next to the developer and the reviewer, whose slots
   `agent.reserved_slots_by_role` keeps free. Like the other roles it only gets slots beyond those, so allow at least
   3 agent slots (`SYMPHONY_MAX_CONCURRENT_AGENTS`) when the stage is on, or the test engineer never starts.
@@ -525,15 +530,20 @@ checks:
   The role is not `read_only`, so `on_check_failed` does not apply: a failing check of `Agent review` goes back to the
   test engineer like it goes back to the developer, who fixes the tests or reports `failed`.
 - **Only tests.** `pipeline.test_paths` (default `tests/**`, `test/**`, `**/*.test.*`, `**/*Test.php`; see
-  [`pipeline`](#pipeline)) lists the only files the test engineer may change. Symphony records the workspace commit when
-  its session starts. When the engineer calls `report_result`, it lists what differs from that commit (commits since,
-  uncommitted and untracked files, deletions and both ends of a renamed file; ignored files do not count) and refuses the
-  result with `invalid_result` if a file matches none of the globs: the message names the offending files, nothing is
-  recorded and the entry check of the target column does not run. Whatever the verdict, the engineer has to undo the
-  change (`git checkout <start> -- <file>`, commit) and report again. If git cannot tell, or the workspace is no git
-  checkout, the call fails with `tool_error` and nothing is recorded: the rule is never skipped. The baseline is the
-  commit of the *session*, so a later session of the same stage (after a `check_timeout`, say) measures from where its
-  predecessor left off.
+  [`pipeline`](#pipeline)) lists the only files the test engineer may change. When the engineer calls `report_result`,
+  Symphony lists what differs from a baseline commit (commits since, uncommitted and untracked files, deletions and both
+  ends of a renamed file; ignored files do not count) and refuses the result with `invalid_result` if a file matches
+  none of the globs: the message names the offending files and the baseline, nothing is recorded and the entry check of
+  the target column does not run. Whatever the verdict, the engineer has to undo the changes it made itself
+  (`git checkout <baseline> -- <file>`, commit) and report again; a file it did not change (a commit already on the
+  branch, a push by someone else) it leaves alone and describes in an issue comment. If git cannot tell, or the
+  workspace is no git checkout, the call fails with `tool_error` and nothing is recorded: the rule is never skipped.
+  The baseline is the commit the developer's newest finished `implementation` result recorded (`head_sha`), as long as
+  `HEAD` descends from it when the engineer reports: it does not matter whether the workspace started on the base
+  branch, and a later session of the stage (after a `check_timeout`, say) cannot forgive what an earlier one changed.
+  Without such a result, or when it is no ancestor of `HEAD` (the branch was rebased), the baseline is the commit the
+  session started from. A commit someone else pushes to the branch after the developer's hand-off counts as the
+  engineer's, so the result is refused until a human sorts it out.
 - **Failed cases reach the developer.** After a `failed` result the prompt of the developer lists the failed cases
   (`results.failed_cases`), the test engineer's summary and the commands it ran (`results.test`, see
   [Prompt template](#prompt-template)); the test engineer sees the same list in the next round and runs those cases

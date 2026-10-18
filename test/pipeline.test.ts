@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { describe, it } from 'node:test';
 import { blockedBucketColumns, derivePipeline, type PipelineInput, type StageSession } from '../src/orchestrator/pipeline.ts';
 import type { PersistedResult } from '../src/orchestrator/stage-history.ts';
+import { trackerDefaults } from '../src/tracker/registry.ts';
+import { resolveConfig } from '../src/workflow/config.ts';
+import { loadWorkflowFile } from '../src/workflow/loader.ts';
 import { internalResult, parseResult, type ResultMeta } from '../src/workflow/results.ts';
 import { baseFront, makeWorkflow, tempDir } from './helpers.ts';
 
@@ -241,6 +245,135 @@ describe('derivePipeline', () => {
     assert.equal(auditor?.kind, 'agent');
     assert.equal(auditor?.status, 'done');
     assert.equal(auditor?.sessions.length, 1);
+  });
+});
+
+/** The WORKFLOW.md shipped in the repository root. */
+const shipped = path.join(import.meta.dirname, '..', 'WORKFLOW.md');
+/** The board Testing is meant for: between In progress and Agent review. */
+const BOARD_WITH_TESTING = ['Backlog', 'Ready', 'In progress', 'Testing', 'Agent review', 'Blocked', 'In review', 'Done'];
+/** This repository's own board, where Testing was added after Done. */
+const BOARD_TESTING_LAST = ['Backlog', 'Ready', 'In progress', 'Agent review', 'Blocked', 'In review', 'Done', 'Testing', 'Archive'];
+
+describe('derivePipeline with the shipped workflow', () => {
+  /** The shipped config, the test engineer stage off (the default) or on (the developer hands over to Testing). */
+  async function shippedPipeline(stage: 'off' | 'on', overrides: Partial<PipelineInput> & Pick<PipelineInput, 'boardColumns'>) {
+    const { definition } = await loadWorkflowFile(shipped);
+    const config = resolveConfig(definition.config, {
+      workflowPath: shipped,
+      env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't', ...(stage === 'on' ? { SYMPHONY_AFTER_IMPLEMENTATION: 'Testing' } : {}) },
+      trackerDefaults,
+    });
+    return derivePipeline({
+      issue: { state: 'Agent review', description: null },
+      roles: config.roles,
+      activeStates: config.tracker.activeStates,
+      terminalStates: config.tracker.terminalStates,
+      sessions: [],
+      ...overrides,
+    });
+  }
+  const developed = [session({ run: 'r1', role: 'developer', state: 'In progress', outcome: 'handed_off' })];
+  const ids = (stages: Array<{ id: string }>) => stages.map((stage) => stage.id);
+
+  it('has no test engineer stage while the stage is off, so an issue past it never shows it as done', async () => {
+    const stages = await shippedPipeline('off', { boardColumns: BOARD_WITH_TESTING, sessions: developed });
+    assert.deepEqual(
+      stages.map((stage) => [stage.id, stage.status]),
+      [
+        ['developer', 'done'],
+        ['reviewer', 'active'],
+        ['human:in review', 'pending'],
+        ['terminal:done', 'pending'],
+      ],
+    );
+    const done = await shippedPipeline('off', { boardColumns: BOARD_WITH_TESTING, issue: { state: 'Done', description: null }, sessions: developed });
+    assert.deepEqual(ids(done), ['developer', 'reviewer', 'human:in review', 'terminal:done']);
+  });
+
+  it('keeps the In review stage of this repository\'s board, where Testing sits after Done, while the stage is off', async () => {
+    const stages = await shippedPipeline('off', {
+      boardColumns: BOARD_TESTING_LAST,
+      issue: { state: 'In review', description: null },
+      sessions: [...developed, session({ run: 'r2', role: 'reviewer', state: 'Agent review', outcome: 'handed_off' })],
+    });
+    assert.deepEqual(
+      stages.map((stage) => [stage.id, stage.status]),
+      [
+        ['developer', 'done'],
+        ['reviewer', 'done'],
+        ['human:in review', 'active'],
+        ['terminal:done', 'pending'],
+      ],
+    );
+  });
+
+  it('shows the test engineer between the developer and the reviewer once the developer hands over to Testing', async () => {
+    const tested = [...developed, session({ run: 'r2', role: 'test-engineer', state: 'Testing', outcome: 'handed_off' })];
+    const stages = await shippedPipeline('on', { boardColumns: BOARD_WITH_TESTING, sessions: tested });
+    assert.deepEqual(
+      stages.map((stage) => [stage.id, stage.status]),
+      [
+        ['developer', 'done'],
+        ['test-engineer', 'done'],
+        ['reviewer', 'active'],
+        ['human:in review', 'pending'],
+        ['terminal:done', 'pending'],
+      ],
+    );
+    assert.deepEqual(stages.find((stage) => stage.id === 'test-engineer')?.columns, ['Testing']);
+    const waiting = await shippedPipeline('on', { boardColumns: BOARD_WITH_TESTING, issue: { state: 'Testing', description: null }, sessions: developed });
+    assert.equal(waiting.find((stage) => stage.id === 'test-engineer')?.status, 'active');
+  });
+
+  it('shows the stage for an issue a human moved to Testing while it is off', async () => {
+    const stages = await shippedPipeline('off', { boardColumns: BOARD_WITH_TESTING, issue: { state: 'Testing', description: null }, sessions: developed });
+    assert.deepEqual(
+      stages.map((stage) => [stage.id, stage.status]),
+      [
+        ['developer', 'done'],
+        ['test-engineer', 'active'],
+        ['reviewer', 'pending'],
+        ['human:in review', 'pending'],
+        ['terminal:done', 'pending'],
+      ],
+    );
+  });
+
+  it('keeps the sessions of a test engineer that ran before the stage was switched off', async () => {
+    const ran = [...developed, session({ run: 'r2', role: 'test-engineer', state: 'Testing', outcome: 'handed_off' })];
+    const stages = await shippedPipeline('off', { boardColumns: BOARD_WITH_TESTING, sessions: ran });
+    const tester = stages.find((stage) => stage.id === 'test-engineer');
+    assert.equal(tester?.sessions.length, 1);
+    assert.equal(tester?.status, 'done');
+  });
+
+  it('shows the stage when the issue\'s workflow profile routes the developer to Testing', async () => {
+    const profile = { onResult: { developer: { done: 'Testing' } } };
+    const routed = await shippedPipeline('off', { boardColumns: BOARD_WITH_TESTING, sessions: developed, profile });
+    assert.deepEqual(ids(routed), ['developer', 'test-engineer', 'reviewer', 'human:in review', 'terminal:done']);
+    // Without the profile the stage is off again.
+    assert.deepEqual(ids(await shippedPipeline('off', { boardColumns: BOARD_WITH_TESTING, sessions: developed, profile: null })), ['developer', 'reviewer', 'human:in review', 'terminal:done']);
+  });
+
+  it('shows every later stage for a role that hands over with `next`', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const front = structuredClone(definition.config) as { roles: { developer: { on_result: Record<string, string> } } };
+    front.roles.developer.on_result.done = 'next';
+    const config = resolveConfig(front, {
+      workflowPath: shipped,
+      env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' },
+      trackerDefaults,
+    });
+    const stages = derivePipeline({
+      issue: { state: 'Ready', description: null },
+      roles: config.roles,
+      activeStates: config.tracker.activeStates,
+      terminalStates: config.tracker.terminalStates,
+      boardColumns: BOARD_WITH_TESTING,
+      sessions: [],
+    });
+    assert.deepEqual(ids(stages), ['developer', 'test-engineer', 'reviewer', 'human:in review', 'terminal:done']);
   });
 });
 

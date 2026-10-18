@@ -472,14 +472,13 @@ describe('report_result', () => {
 
     /** A rule whose changed files can be edited between calls; `calls` counts the lookups. */
     function rule(initial: string[]) {
-      const state = { files: initial, calls: 0, failure: null as Error | null };
+      const state = { files: initial, base: '0123456789abcdef0123', calls: 0, failure: null as Error | null };
       const pathRule = {
         allowed: ALLOWED,
-        base: '0123456789abcdef0123',
         changedFiles: async () => {
           state.calls++;
           if (state.failure !== null) throw state.failure;
-          return state.files;
+          return { base: state.base, files: state.files };
         },
       };
       return { state, pathRule };
@@ -491,10 +490,11 @@ describe('report_result', () => {
       const refused = error(await report(PASSED));
       assert.equal(refused.category, 'invalid_result');
       assert.match(refused.message, /The test result is invalid: role tester may only change files matching `pipeline\.test_paths` \(tests\/\*\*, \*\*\/\*Test\.php\)/);
-      assert.match(refused.message, /but 2 file\(s\) changed since your session started/);
+      assert.match(refused.message, /but 2 file\(s\) that differ from commit 0123456789ab \(the developer's last hand-off, else where your session started\) are outside them/);
       assert.match(refused.message, /- src\/Total\.php\n- app\/Models\/Invoice\.php/);
       assert.doesNotMatch(refused.message, /tests\/TotalTest\.php\n/, 'files inside the paths are not listed');
-      assert.match(refused.message, /Nothing was recorded[\s\S]*git checkout 0123456789ab -- <file>/);
+      assert.match(refused.message, /Nothing was recorded\. Undo the changes you made yourself[\s\S]*git checkout 0123456789ab -- <file>/);
+      assert.match(refused.message, /Leave a file alone that you did not change[\s\S]*describe it in an issue comment and end your turn/);
       assert.deepEqual(events, [], 'the entry check of Agent review did not run');
       assert.deepEqual(tracker.statusCalls, []);
       assert.equal(tracker.comments.get('1'), undefined);

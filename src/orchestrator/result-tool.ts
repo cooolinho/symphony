@@ -48,10 +48,11 @@ export interface ResultMetaSource {
 export interface PathRule {
   /** Path globs (see `src/workflow/glob.ts`) the role may change. */
   allowed: readonly string[];
-  /** The commit the session started from; files outside `allowed` are restored to it. */
-  base: string;
-  /** The repository-relative files that differ from `base`; throws when that cannot be told. */
-  changedFiles: () => Promise<string[]>;
+  /**
+   * The commit the role's changes are measured from (`base`) and the repository-relative files that differ from it,
+   * looked up when the agent reports; throws when that cannot be told.
+   */
+  changedFiles: () => Promise<{ base: string; files: string[] }>;
 }
 
 /** Offending files named in a refusal; more are counted. */
@@ -187,8 +188,11 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     const rule = params.pathRule;
     if (rule === undefined || rule === null) return null;
     let outside: string[];
+    let base: string;
     try {
-      outside = filesOutside(await rule.changedFiles(), rule.allowed);
+      const changed = await rule.changedFiles();
+      base = changed.base;
+      outside = filesOutside(changed.files, rule.allowed);
     } catch (error) {
       return fail(
         'tool_error',
@@ -203,11 +207,13 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     return fail(
       'invalid_result',
       `The ${kind} result is invalid: role ${role.name} may only change files matching \`pipeline.test_paths\` ` +
-        `(${rule.allowed.length > 0 ? rule.allowed.join(', ') : 'none configured'}), but ${outside.length} file(s) changed since ` +
-        `your session started are outside them:\n${shown.join('\n')}${more}\n` +
-        `Nothing was recorded. Undo these changes: restore a changed or deleted file with \`git checkout ${rule.base.slice(0, 12)} -- <file>\`, ` +
-        'delete a new one, commit, and report again. Production code belongs to the developer: if the tests fail because ' +
-        'of it, report the verdict `failed` with the failed cases instead of fixing it.',
+        `(${rule.allowed.length > 0 ? rule.allowed.join(', ') : 'none configured'}), but ${outside.length} file(s) that differ from ` +
+        `commit ${base.slice(0, 12)} (the developer's last hand-off, else where your session started) are outside them:\n${shown.join('\n')}${more}\n` +
+        'Nothing was recorded. Undo the changes you made yourself: restore a changed or deleted file with ' +
+        `\`git checkout ${base.slice(0, 12)} -- <file>\`, delete a new one, commit, and report again. Leave a file alone that you did not ` +
+        'change, for example a commit that was already on the branch or a push by someone else: describe it in an issue comment and ' +
+        'end your turn. Production code belongs to the developer: if the tests fail because of it, report the verdict `failed` with ' +
+        'the failed cases instead of fixing it.',
     );
   };
 

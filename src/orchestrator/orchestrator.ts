@@ -19,6 +19,7 @@ import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { truncate } from '../util/text.ts';
 import { WorkspaceManager, type HookIssue } from '../workspace/manager.ts';
 import type { ServiceConfig } from '../workflow/config.ts';
+import { profileFor } from '../workflow/profile.ts';
 import { roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
 import { internalResult, renderResultComment, type ResultMeta } from '../workflow/results.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../workflow/store.ts';
@@ -3097,6 +3098,7 @@ export class Orchestrator {
       boardColumns: this.#statusOptionsCache?.version === workflow.version ? this.#statusOptionsCache.options : null,
       sessions,
       skip: (config.roles ?? []).filter((role) => skipReason({ labels: issue.labels ?? [] }, role, config) !== null).map((role) => role.name),
+      profile: profileFor(config.pipeline, classify(issue.labels ?? []).type),
       results: this.#records.get(issueId)?.results ?? [],
     });
   }

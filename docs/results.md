@@ -134,17 +134,20 @@ after the guard allowed exactly the computed target; called without the guard's 
 ## Path rule of the test engineer
 
 A role with `result: test` (the [test engineer](configuration.md#the-test-engineer)) may only change test files. Right
-before a result reaches the guard (step 3), `report_result` compares the workspace with the commit recorded when the
-session started: the files committed since, changed or deleted in the working tree or the index, and untracked ones
-(ignored files do not count; a renamed file counts at both ends). Every file that matches none of the globs of
+before a result reaches the guard (step 3), `report_result` compares the workspace with a baseline commit: the head the
+developer's newest finished `implementation` result recorded (`head_sha`) when `HEAD` descends from it, else the commit
+the session started from. It looks at the files committed since, changed or deleted in the working tree or the index,
+and untracked ones (ignored files do not count; a renamed file counts at both ends). Every file that matches none of the globs of
 `pipeline.test_paths` ([path globs](configuration.md#path-globs)) refuses the result:
 
 ```
 invalid_result: The test result is invalid: role test-engineer may only change files matching `pipeline.test_paths`
-(tests/**, test/**, **/*.test.*, **/*Test.php), but 1 file(s) changed since your session started are outside them:
+(tests/**, test/**, **/*.test.*, **/*Test.php), but 1 file(s) that differ from commit 0123456789ab (the developer's last
+hand-off, else where your session started) are outside them:
 - src/app.ts
-Nothing was recorded. Undo these changes: restore a changed or deleted file with `git checkout 0123456789ab -- <file>`,
-delete a new one, commit, and report again. …
+Nothing was recorded. Undo the changes you made yourself: restore a changed or deleted file with
+`git checkout 0123456789ab -- <file>`, delete a new one, commit, and report again. Leave a file alone that you did not
+change, … describe it in an issue comment and end your turn. …
 ```
 
 - It applies to every verdict, `blocked` and `failed` included, and comes after the input check: an invalid result is

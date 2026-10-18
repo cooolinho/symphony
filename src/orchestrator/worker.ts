@@ -19,10 +19,10 @@ import type { EffectiveWorkflow } from '../workflow/store.ts';
 import { internalResult, renderResultComment, type ResultMeta } from '../workflow/results.ts';
 import { normalizeStateName } from '../workflow/config.ts';
 import { EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../workflow/template.ts';
-import { changedFilesSince } from './changed-files.ts';
+import { baselineCommit, changedFilesSince } from './changed-files.ts';
 import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord } from './guard.ts';
 import { createResultTool, resultReminder, type PathRule, type ResultToolAdapter } from './result-tool.ts';
-import { buildStageHistory, resultsTemplateValue, type PersistedResult, type ResultsTemplateValue, type StageHistory } from './stage-history.ts';
+import { buildStageHistory, implementationHead, resultsTemplateValue, type PersistedResult, type ResultsTemplateValue, type StageHistory } from './stage-history.ts';
 
 export type RunPhase =
   | 'PreparingWorkspace'
@@ -164,16 +164,17 @@ interface ResultSupport {
 
 /**
  * The path rule of a role with `result: test`: its session may only change files matching `pipeline.test_paths`,
- * measured against the commit the session started from (`startSha`). Without that commit (not a git checkout, or git
- * failed) the rule cannot be evaluated: it refuses to guess, so the result is not accepted unchecked.
+ * measured from the developer's last hand-off (`handoffSha`) when HEAD descends from it, else from the commit the
+ * session started from (`startSha`). Without a commit to measure from (not a git checkout, or git failed) the rule
+ * cannot be evaluated: it refuses to guess, so the result is not accepted unchecked.
  */
-function testPathRule(workspacePath: string, testPaths: readonly string[], startSha: string | null): PathRule {
+function testPathRule(workspacePath: string, testPaths: readonly string[], startSha: string | null, handoffSha: string | null): PathRule {
   return {
     allowed: testPaths,
-    base: startSha ?? '',
     changedFiles: async () => {
-      if (startSha === null) throw new SymphonyError('paths_unverifiable', 'the commit this session started from is unknown');
-      return changedFilesSince(workspacePath, startSha);
+      const base = await baselineCommit(workspacePath, handoffSha, startSha);
+      if (base === null) throw new SymphonyError('paths_unverifiable', 'the commit this session started from is unknown');
+      return { base, files: await changedFilesSince(workspacePath, base) };
     },
   };
 }
@@ -190,7 +191,7 @@ async function loadResultSupport(
   role: RoleConfig,
   issue: () => Issue,
   headSha: () => Promise<string | null>,
-  pathRule: PathRule | null,
+  pathRule: ((history: StageHistory) => PathRule) | null,
   report: (results: PersistedResult[]) => void,
   onRecorded: () => void,
   onMoved: () => void,
@@ -234,7 +235,7 @@ async function loadResultSupport(
     issue,
     runId: params.runId,
     meta: { workflowHash: workflow.contentHash, headSha },
-    pathRule,
+    pathRule: pathRule?.(history) ?? null,
   });
   return {
     tool,
@@ -427,10 +428,11 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     // Roles with `result` start with the issue's stage history; every other role makes no extra tracker request.
     let resultRecorded = false;
     let resultMoved = false;
-    // A test engineer's baseline is the workspace as this session found it (after before_run and the integrations).
+    // A test engineer's changes are measured from the developer's last hand-off, else from the workspace as this session found it.
+    const startSha = role?.result === 'test' ? ((await readGitHead(activeWorkspace.path))?.headSha ?? null) : null;
     const pathRule =
       role?.result === 'test'
-        ? testPathRule(activeWorkspace.path, params.workflow.config.pipeline.testPaths, (await readGitHead(activeWorkspace.path))?.headSha ?? null)
+        ? (history: StageHistory) => testPathRule(activeWorkspace.path, params.workflow.config.pipeline.testPaths, startSha, implementationHead(history))
         : null;
     const support =
       role?.result != null

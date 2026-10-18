@@ -877,7 +877,7 @@ describe('test engineer stage', () => {
     const refused = denial(h.reports[1]);
     assert.equal(refused?.category, 'invalid_result');
     assert.match(refused?.message ?? '', /role test-engineer may only change files matching `pipeline\.test_paths` \(tests\/\*\*, test\/\*\*, \*\*\/\*\.test\.\*, \*\*\/\*Test\.php\)/);
-    assert.match(refused?.message ?? '', /1 file\(s\) changed since your session started are outside them:\n- src\/app\.ts\n/);
+    assert.match(refused?.message ?? '', new RegExp(`1 file\\(s\\) that differ from commit ${developerHead.slice(0, 12)} .* are outside them:\\n- src/app\\.ts\\n`));
     assert.ok(!(refused?.message ?? '').includes('tests/total.test.ts'));
     assert.deepEqual(afterRefusal, { comments: 1, state: 'Testing', moves: 1, checks: ['Testing'] }, 'only the developer result and its move; the Agent review check has not run');
     assert.equal(data(h.reports[2]).target, 'Agent review');
@@ -886,6 +886,45 @@ describe('test engineer stage', () => {
     assert.equal(h.runner.sessions[1]?.turns.length, 1, 'fixed within the same turn');
     assert.deepEqual(await testRuns(h), [['passed', 1, 'Agent review']]);
     assert.deepEqual(prompts(h), ['developer round 1', 'test-engineer round 1', 'reviewer round 1'], 'a refusal is no test round');
+  });
+
+  it('measures from the developer\'s hand-off: a workspace that starts on the base branch is not blamed for the developer\'s code', async () => {
+    let developerHead = '';
+    // The developer\'s commit is on branch `pr`; the next session starts in a fresh checkout of the root commit (before_run).
+    const h = testingPipeline(
+      [
+        done((workspace) => {
+          implemented(workspace);
+          developerHead = sh(workspace, 'git rev-parse HEAD && git branch -f pr HEAD && touch .git/back').split('\n')[0] ?? '';
+        }),
+        async ({ turn, params, report }) => {
+          if (turn !== 1) return undefined;
+          assert.notEqual(sh(params.cwd, 'git rev-parse HEAD'), developerHead, 'the session starts on the base branch');
+          // Checking out the branch brings the developer\'s commit in; the engineer adds a test and a stray fix.
+          sh(params.cwd, "git checkout -q pr && printf '// independent tests\\n' > tests/total.test.ts && printf 'export const total = 4;\\n' > src/app.ts && git add -A && git commit -q -m 'Tests, and a fix'");
+          await report(TESTS_PASSED);
+          sh(params.cwd, `git checkout ${developerHead} -- src/app.ts && git commit -q -m 'Undo the fix'`);
+          await report(TESTS_PASSED);
+          return undefined;
+        },
+        approved(),
+      ],
+      {
+        front: {
+          hooks: {
+            ...TESTING_FRONT.hooks,
+            before_run: 'if [ -f .git/back ]; then git checkout -q --detach "$(git rev-list --max-parents=0 HEAD | tail -1)" && rm .git/back; fi',
+          },
+        },
+      },
+    );
+    await run(h);
+
+    const refused = denial(h.reports[1]);
+    assert.equal(refused?.category, 'invalid_result');
+    assert.match(refused?.message ?? '', new RegExp(`1 file\\(s\\) that differ from commit ${developerHead.slice(0, 12)} .* are outside them:\\n- src/app\\.ts\\n`));
+    assert.equal(data(h.reports[2]).target, 'Agent review');
+    assert.deepEqual(await testRuns(h), [['passed', 1, 'Agent review']]);
   });
 
   it('rejects uncommitted and untracked changes outside the test paths too, whatever the verdict', async () => {

@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { changedFilesSince, filesOutside } from '../src/orchestrator/changed-files.ts';
+import { baselineCommit, changedFilesSince, filesOutside } from '../src/orchestrator/changed-files.ts';
 import { tempDir } from './helpers.ts';
 
 // The path rule of the test engineer (docs/configuration.md#the-test-engineer) against a real repository.
@@ -129,5 +129,50 @@ describe('the path rule: files outside pipeline.test_paths', () => {
     write(repo, 'tests/new.test.ts');
     commit(repo, 'test engineer');
     assert.deepEqual(await violations(repo, sessionStart), []);
+  });
+});
+
+describe('baselineCommit', () => {
+  /** init → developer (production code, the hand-off) → human push; HEAD stays at `init` until the test checks out. */
+  function branch() {
+    const { repo, start } = repository();
+    write(repo, 'src/app.ts', 'the developer implements');
+    const handoff = commit(repo, 'developer');
+    write(repo, 'docs/notes.md', 'a human adds a note');
+    const human = commit(repo, 'human');
+    return { repo, start, handoff, human };
+  }
+
+  it('is the developer\'s hand-off once HEAD descends from it, so a workspace that started on the base branch is not blamed', async () => {
+    const { repo, start, handoff, human } = branch();
+    git(repo, 'checkout', '-q', '--detach', start);
+    // Started on the base branch: the hand-off is not there yet, so the session start is all there is.
+    assert.equal(await baselineCommit(repo, handoff, start), start);
+    // The engineer checks out the branch: everything up to the hand-off is the developer's.
+    git(repo, 'checkout', '-q', '--detach', human);
+    assert.equal(await baselineCommit(repo, handoff, start), handoff);
+  });
+
+  it('keeps measuring from the hand-off when a later session starts after an earlier one changed production code', async () => {
+    const { repo, handoff } = branch();
+    git(repo, 'checkout', '-q', '--detach', handoff);
+    write(repo, 'src/app.ts', 'a first session "fixed" it');
+    const firstSession = commit(repo, 'first session');
+    assert.equal(await baselineCommit(repo, handoff, firstSession), handoff);
+    assert.deepEqual(filesOutside(await changedFilesSince(repo, handoff), TEST_PATHS), ['src/app.ts']);
+  });
+
+  it('falls back to the session start without a hand-off, for one HEAD does not descend from, an unknown one and a non-commit', async () => {
+    const { repo, start, handoff } = branch();
+    git(repo, 'checkout', '-q', '--detach', start);
+    write(repo, 'tests/other.test.ts');
+    const rebased = commit(repo, 'rebased branch');
+    assert.equal(await baselineCommit(repo, null, rebased), rebased);
+    assert.equal(await baselineCommit(repo, handoff, rebased), rebased, 'the hand-off was rebased away');
+    assert.equal(await baselineCommit(repo, 'f'.repeat(40), rebased), rebased, 'unknown to this clone');
+    assert.equal(await baselineCommit(repo, '--output=/tmp/x', rebased), rebased, 'not a commit name');
+    assert.equal(await baselineCommit(repo, 'HEAD', rebased), rebased, 'a ref expression is not a commit name');
+    assert.equal(await baselineCommit(repo, handoff, null), null);
+    assert.equal(await baselineCommit(tempDir('symphony-no-repo-'), handoff, rebased), rebased);
   });
 });
