@@ -205,6 +205,10 @@ describe('#205 the goal rule (a refactor review without confirmed goals is rejec
     ok('review', approved([...GOALS, 'Something extra']), context);
   });
 
+  it('matches goals whose internal whitespace differs (line breaks, double spaces)', () => {
+    ok('review', approved(['The  duplicated\nparser   exists once', ' No public signature\tof the module changes ']), context);
+  });
+
   it('does not accept a paraphrase of a goal', () => {
     rejected('review', approved(['Parser exists once', GOALS[1] as string]), context);
   });
@@ -242,7 +246,18 @@ describe('#205 the goals reach the later stages', () => {
 });
 
 describe('#205 rendered prompts', () => {
-  async function prompt(role: string, labels: string[], description = 'Merge the parsers.', goals?: string[]): Promise<string> {
+  const designResult = (): PersistedResult => ({
+    result: ok('design', {
+      verdict: 'ready',
+      summary: 'Designed.',
+      decision: 'Extract a shared tokenizer module',
+      components: ['tokenizer module'],
+      interfaces: ['tokenize(input: string): Token[]'],
+    }),
+    meta: { ...META, role: 'architect' },
+  });
+
+  async function prompt(role: string, labels: string[], description = 'Merge the parsers.', goals?: string[], withDesign = false): Promise<string> {
     const { definition } = await loadWorkflowFile(shipped);
     const subject = makeIssue({
       id: 'PVTI_1',
@@ -254,10 +269,10 @@ describe('#205 rendered prompts', () => {
       labels,
       native_ref: { provider: 'github_project', repository: 'acme/app', number: 42, parent: null, sub_issues: [], base_branch: null },
     });
-    const results =
-      goals === undefined
-        ? {}
-        : { results: resultsTemplateValue(buildStageHistory([{ result: ok('analysis', analysis(goals)), meta: META }])) };
+    const persisted: PersistedResult[] = [];
+    if (goals !== undefined) persisted.push({ result: ok('analysis', analysis(goals)), meta: META });
+    if (withDesign) persisted.push(designResult());
+    const results = persisted.length === 0 ? {} : { results: resultsTemplateValue(buildStageHistory(persisted)) };
     return renderPrompt(compilePrompt(definition.promptTemplate), {
       issue: issueTemplateValue(subject, commandSkills([toolbox])),
       attempt: null,
@@ -313,6 +328,31 @@ describe('#205 rendered prompts', () => {
     assert.match(developer, /acceptance criterion/i);
     assert.match(developer, /test/i);
     assert.match(await prompt('reviewer', ['Type: feature']), /\*\*Feature:\*\*/);
+  });
+
+  it('feature reviewer sees the architect\'s design (decision, components, interfaces) with reviewer wording', async () => {
+    const text = await prompt('reviewer', ['Type: feature'], undefined, undefined, true);
+    assert.ok(text.includes('Extract a shared tokenizer module'));
+    assert.ok(text.includes('tokenize(input: string): Token[]'));
+    assert.ok(text.includes('tokenizer module'));
+    assert.match(text, /Check the change against this design/);
+    assert.doesNotMatch(text, /Implement this design/);
+    assert.match(text, /implements the design given above/);
+    assert.ok(text.indexOf('Extract a shared tokenizer module') < text.indexOf('implements the design given above'), 'design is above the step');
+  });
+
+  it('feature developer still gets the design with implementer wording; test engineer and analyst get none', async () => {
+    const developer = await prompt('developer', ['Type: feature'], undefined, undefined, true);
+    assert.ok(developer.includes('tokenize(input: string): Token[]'));
+    assert.match(developer, /Implement this design/);
+    for (const role of ['test-engineer', 'issue-analyst']) {
+      assert.ok(!(await prompt(role, ['Type: feature'], undefined, undefined, true)).includes('Extract a shared tokenizer module'), role);
+    }
+  });
+
+  it('reviewer without a design sees no design section', async () => {
+    const text = await prompt('reviewer', ['Type: feature']);
+    assert.doesNotMatch(text, /Check the change against this design/);
   });
 
   it('shows none of the refactor or feature steps to bugfix, other-typed and untyped issues', async () => {
