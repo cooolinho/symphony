@@ -91,9 +91,9 @@ function timeline(paths: Record<number, Array<string | null>>): TimelineEntry[] 
 
 function passingTimeline(): TimelineEntry[] {
   return timeline({
-    11: [null, 'Ready', 'In progress', 'In progress', 'Agent review', 'In review'],
-    12: ['Ready', 'In progress', 'Agent review', 'In progress', 'Agent review', 'Agent review', 'In review'],
-    13: ['Ready', 'In progress', 'Agent review', 'In review'],
+    11: [null, 'Ready', 'Ready', 'Agent review', 'In review'],
+    12: ['Ready', 'Agent review', 'In progress', 'Agent review', 'Agent review', 'In review'],
+    13: ['Ready', 'Agent review', 'In review'],
   });
 }
 
@@ -133,24 +133,24 @@ describe('e2e roles verification', () => {
 
   it('derives the path from the timeline, without repeats and the start status', () => {
     assert.deepEqual(observedPath(passingTimeline(), 12), expectedPath(true));
-    assert.deepEqual(observedPath(passingTimeline(), 11), [ROLE_STATUS.progress, ROLE_STATUS.review, STATUS.handoff]);
+    assert.deepEqual(observedPath(passingTimeline(), 11), [ROLE_STATUS.review, STATUS.handoff]);
     assert.deepEqual(observedPath([], 11), []);
   });
 
-  it('fails when an issue skipped a column, was not rejected or did not end in In review', () => {
+  it('fails when an issue took an extra column, was not rejected or did not end in In review', () => {
     const problems = failed(
       data({
         timeline: timeline({
-          11: ['Ready', 'Agent review', 'In review'],
-          12: ['Ready', 'In progress', 'Agent review', 'In review'],
-          13: ['Ready', 'In progress', 'Agent review'],
+          11: ['Ready', 'In progress', 'Agent review', 'In review'],
+          12: ['Ready', 'Agent review', 'In review'],
+          13: ['Ready', 'Agent review'],
         }),
       }),
     );
     const detail = problems['Status path per issue'] ?? '';
-    assert.match(detail, /R1: Agent review → In review/);
-    assert.match(detail, /R2: In progress → Agent review → In review, expected/);
-    assert.match(detail, /R3: In progress → Agent review, expected/);
+    assert.match(detail, /R1: In progress → Agent review → In review, expected/);
+    assert.match(detail, /R2: Agent review → In review, expected/);
+    assert.match(detail, /R3: Agent review, expected/);
   });
 
   it('fails when an issue reached Done', () => {

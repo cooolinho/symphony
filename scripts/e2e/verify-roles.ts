@@ -31,10 +31,14 @@ export interface RolesData {
 const same = (a: string | null | undefined, b: string) => (a ?? '').trim().toLowerCase() === b.toLowerCase();
 const numberOf = (identifier: string | undefined) => Number(identifier?.split('#').at(-1));
 
-/** Expected board path after the start status. */
+/**
+ * Expected board path after the start status. A result role has no `set_status`, so the developer's first
+ * `report_result` moves the issue straight from the start status to `Agent review`; only `changes_needed` sends it
+ * through `In progress`.
+ */
 export function expectedPath(rejectOnce: boolean): string[] {
-  const round = [ROLE_STATUS.progress, ROLE_STATUS.review];
-  return [...round, ...(rejectOnce ? round : []), STATUS.handoff];
+  const rejection = rejectOnce ? [ROLE_STATUS.progress, ROLE_STATUS.review] : [];
+  return [ROLE_STATUS.review, ...rejection, STATUS.handoff];
 }
 
 /** Statuses of an issue in order, without repeats and without the leading start status. */

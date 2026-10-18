@@ -121,7 +121,7 @@ agent runs. Every 3 s the test reads the issues' statuses into `timeline.jsonl` 
 
 | Check | Passes when |
 |---|---|
-| Status path | After `Ready`, each issue went `In progress` → `Agent review` → `In review`; R2 went `In progress` → `Agent review` → `In progress` → `Agent review` → `In review`. |
+| Status path | After `Ready`, each issue went `Agent review` → `In review` (a result role has no `set_status`, so the developer's `report_result` moves it straight out of `Ready`); R2 went `Agent review` → `In progress` → `Agent review` → `In review`. |
 | Never `Done` | No issue was ever seen in `Done`. |
 | Entry check | Per issue, the first `checks_finished` line for `Agent review` failed, it is the only failed one, and a passing one follows. |
 | Stage results | Read back from the issue comments: R1 and R3 have `implementation:done`, `review:approved`; R2 has `implementation:done`, `review:changes_needed`, `implementation:done`, `review:approved`. |

@@ -79,7 +79,7 @@ if [ -e "$marker" ]; then
   exit 0
 fi
 mkdir -p "$dir" && date -u +%Y-%m-%dT%H:%M:%SZ > "$marker" || { echo "environment: cannot write $marker"; exit 2; }
-echo "e2e: this entry check fails once per issue on purpose. Change nothing; call set_status with the same target again."
+echo "e2e: this entry check fails once per issue on purpose. Change nothing; call report_result with the same arguments again."
 exit 1
 `;
 
