@@ -97,7 +97,7 @@ Laravel Boost is switched off. Replaced are:
 | `roles` | `developer` (`Ready`, `In progress`; may move to `In progress`, `Agent review`, `Blocked`) and `reviewer` (`Agent review`, read-only, 6 turns; may move to `In review`, `In progress`, `Blocked`) |
 | `checks.on_enter` | `Agent review`: `<run dir>/roles-check.sh`. It fails the first time per issue and writes a marker file to `<run dir>/check-markers/`, then passes. |
 | `agent.max_concurrent_agents_by_state` | `Agent review: 1` |
-| `agent.max_continuations` | 6 (role switches count as continuations) |
+| `agent.max_continuations` | 6 (role switches without a recorded result count as continuations) |
 | prompt | "follow the section of the issue text for your role; tracker tools only" |
 
 **Issues.** Three issues with `Model: sonnet`, no dependencies, created in `Ready`. Each issue text has one section

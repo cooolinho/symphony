@@ -64,7 +64,8 @@ agent:
   max_concurrent_agents: ${SYMPHONY_MAX_CONCURRENT_AGENTS:-2}
   max_turns: ${SYMPHONY_MAX_TURNS:-10}
   # Sessions after the first while the card stays active; then the issue is paused until it
-  # changes on the board. Role switches (developer <-> reviewer) count too, so keep a limit.
+  # changes on the board. Role switches (developer <-> reviewer) count too, so keep a limit; a stage that
+  # recorded a result (report_result) resets the count, its loops are bounded by the round limits.
   max_continuations: ${SYMPHONY_MAX_CONTINUATIONS:-6}
   # Retries per issue after the first session-limit failure, then wait for the reset (0 = wait right away).
   max_session_limit_retries: ${SYMPHONY_MAX_SESSION_LIMIT_RETRIES:-3}
