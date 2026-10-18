@@ -82,8 +82,8 @@ starts without the history.
 If the newest marker handed the issue to a column that is not active (a round limit or Blocked) but the issue now sits
 in an active column, a human moved it back. The session start then posts a `reset` marker (role `symphony`), removes
 `pipeline.limit_label` and rebuilds the history, so the round counters start at 1. Nothing else writes a `reset`.
-A result whose move to such a column failed (`status_failed`, step 6 below) looks the same, so the next session resets
-the rounds then too; telling the two apart is [#210](https://github.com/cooolinho/symphony/issues/210).
+A result whose move to such a column never happened looks the same, but the column has not changed since the result
+was posted: that is an [interrupted transition](#interrupted-transitions), and no `reset` is written for it.
 
 A call runs these steps, one call at a time:
 
@@ -116,8 +116,8 @@ A call runs these steps, one call at a time:
 6. **Move** the issue to the target with the adapter's `setStatus`, including [auto-merge](adapters/github-project.md#auto-merge)
    (the result then carries `auto_merge`, as with `set_status`). If the move fails after the comment, the call returns
    `status_failed`: the result stands (its marker keeps the `target`), the labels stay as they are, the agent ends its
-   turn and the issue stays in its column; the stage runs again in a later session (see
-   [Failures of result-driven stages](usage.md#failures-of-result-driven-stages)).
+   turn and the issue stays in its column for now; the next dispatch completes the move without a session (see
+   [Interrupted transitions](#interrupted-transitions)).
 7. **Labels.** After the move, at the round limit `pipeline.limit_label` is added (the default `needs-human` is created when the
    repository lacks it); every other result removes it when the issue carries it. Label failures and a missing custom
    label are returned as `warnings`; the result and the move stand.
@@ -161,6 +161,39 @@ change, … describe it in an issue comment and end your turn. …
 
 The tool declares the check as `precheck`, which `guardTools` runs for a call with a target before it asks the guard.
 
+## Interrupted transitions
+
+If the move after the result comment did not happen (`status_failed`, or Symphony crashed between the comment and the
+move), the next dispatch of the issue completes it instead of paying for the whole stage again. Before it starts a run
+of a result-driven role, the orchestrator reads the issue's results (the run reuses that read) and looks for an
+interrupted transition (`interruptedTransition` in `src/orchestrator/recovery.ts`). All of these must hold:
+
+- The tracker reports when the column last changed (`native_ref.status_updated_at`, the `updatedAt` of the GitHub
+  Status field). Without it there is no recovery.
+- The newest result marker (by the comment's time) comes from the role of the issue's current column.
+- Its `target` is another column than the current one.
+- The column has not changed since: `status_updated_at` lies in an earlier second than the comment. Both timestamps
+  come from GitHub and have second precision; a move in the same second counts as a move after the comment.
+
+A human who moved the issue after the result (away and back, or to another column) changed `status_updated_at`, so
+such a move is never "recovered"; who moved it plays no part, since Symphony's moves carry the token owner's name like
+a human's. An operator's **Start now** always runs the stage.
+
+The recovery starts no session. The move passes the [transition guard](configuration.md#transition-guard) like
+`report_result`: `may_move_to`, then the target's entry check, run in the issue's workspace (the issue stays claimed
+meanwhile; a check here does not take an agent slot). Right before the move a fresh read confirms that the column and
+`status_updated_at` are unchanged. The issue then moves, gets the transition's labels (the round limit label, routed
+again from the earlier results; none when the route no longer leads to the recorded target, e.g. after an
+`on_check_failed` fallback) and the timeline logs `transition_recovered`, the repository history the line of the same
+name. The next stage follows as a continuation, as after any hand-off, and the continuation count starts again.
+
+| Outcome | What follows |
+|---|---|
+| Moved | The next stage starts as a continuation. |
+| The guard denies the move (`may_move_to` changed in a reload) or the entry check fails, or the stage's workspace is gone | The timeline logs `transition_recovery_declined`; the next tick runs the stage again with its round counters unchanged (no `reset`). The same result is not tried again. |
+| The issue moved or left the board meanwhile | Nothing changes; the next tick decides for the new column. |
+| The move, a read, the workspace lock, `check_timeout` or `check_error` fails | A retry with the failure backoff tries the recovery again; no session starts. |
+
 ## Stages without a result
 
 A run of a result-driven role never ends silently. When a turn ends with the issue still in the role's column and no
@@ -191,7 +224,9 @@ It covers an approval in round 1, two `changes_needed` rounds before an approval
 `check_failed` fixed in the same session, a failed reviewer check (`on_check_failed`), forged markers, a stage without a
 result, a restart mid-review, duplicate `report_result` calls and a session limit during the review. The failure paths
 of [Failures of result-driven stages](usage.md#failures-of-result-driven-stages) each have a scenario there too: a move
-that fails after the result comment (once, and every time), `check_timeout` inside `report_result`,
+that fails after the result comment (completed by the next dispatch, retried while it keeps failing, after a crash, at
+the round limit, without an entry check, with an entry check that now fails, and a human move in between that is never
+recovered), `check_timeout` inside `report_result`,
 `tracker_rate_limited` while reading the results, a check that outlasts the stall timeout, a workflow reload mid-stage,
 damaged markers, and a human moving the issue during the session.
 

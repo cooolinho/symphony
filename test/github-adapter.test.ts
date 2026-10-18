@@ -30,7 +30,7 @@ function itemNode(id: string, options: { status?: string | null; repo?: string; 
     id,
     isArchived: false,
     project: { id: options.project ?? 'PVT_1' },
-    status: status === null ? null : { name: status, optionId: option?.id ?? 'ox' },
+    status: status === null ? null : { name: status, optionId: option?.id ?? 'ox', updatedAt: '2026-09-02T08:30:04Z' },
     content:
       options.type === 'DraftIssue'
         ? { __typename: 'DraftIssue' }
@@ -339,7 +339,7 @@ describe('github_project adapter reads', () => {
     assert.equal(first.id, 'A');
     assert.equal(first.state, 'Todo');
     assert.equal(first.dispatchable, true);
-    assert.deepEqual(first.native_ref, { provider: 'github_project', project_id: 'PVT_1', item_id: 'A', issue_id: 'I_A', repository: 'acme/app', number: 1, issue_state: 'OPEN', status_option_id: 'o1', parent: null, sub_issues: [], base_branch: null, dispatch_note: null });
+    assert.deepEqual(first.native_ref, { provider: 'github_project', project_id: 'PVT_1', item_id: 'A', issue_id: 'I_A', repository: 'acme/app', number: 1, issue_state: 'OPEN', status_option_id: 'o1', status_updated_at: '2026-09-02T08:30:04.000Z', parent: null, sub_issues: [], base_branch: null, dispatch_note: null });
     assert.equal(first.created_at?.toISOString(), '2026-09-01T10:00:00.000Z');
     assert.equal(github.requests.filter((r) => r.op === 'SymphonyProjectItems').length, 2);
   });

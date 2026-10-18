@@ -62,7 +62,8 @@ export interface GuardParams {
   /** The run's role; null = the implicit `default` role. */
   role: RoleConfig | null;
   config: Pick<ServiceConfig, 'tracker' | 'roles' | 'checks'>;
-  workspace: Workspace;
+  /** Where entry checks run; null = none at hand, so a move that needs a check is a `check_error`. */
+  workspace: Workspace | null;
   /** Current issue facts for the check environment. */
   issue: () => HookIssue;
   manager: Pick<WorkspaceManager, 'runScript'>;
@@ -158,6 +159,12 @@ function decide(target: string, result: HookResult, tool: string): GuardDecision
   return checkError(target, describeFailure({ ...result, output: '' }), tool);
 }
 
+/** The `checks.on_enter` script a move of `role` to `target` runs; null when none does (no script, or `run_checks: false`). */
+export function entryCheckFor(target: string, role: RoleConfig | null, config: Pick<ServiceConfig, 'checks'>): string | null {
+  if (role?.runChecks === false) return null;
+  return config.checks.onEnter.get(normalizeStateName(target)) ?? null;
+}
+
 /**
  * The transition guard for one session (docs/configuration.md#checks): denies terminal targets and targets outside
  * the role's `may_move_to`, then runs the target's `checks.on_enter` script. Runs one decision at a time.
@@ -186,7 +193,10 @@ export function createGuard(params: GuardParams): TransitionGuard {
       return { allow: true, note: null };
     }
 
-    const cached = params.cache !== undefined ? await cacheKey(params.workspace.path, script) : null;
+    const workspace = params.workspace;
+    if (workspace === null) return checkError(target, 'there is no workspace to run it in', tool);
+
+    const cached = params.cache !== undefined ? await cacheKey(workspace.path, script) : null;
     const reused = cached !== null ? params.cache?.get(cached.key) : undefined;
     if (cached !== null && reused !== undefined) {
       emit('checks_cached', `entry check for ${target} reused (${cached.sha})`, { target, role, sha: cached.sha });
@@ -198,7 +208,7 @@ export function createGuard(params: GuardParams): TransitionGuard {
       const sha = cached?.sha ?? (params.headSha !== undefined ? await params.headSha() : null);
       emit('checks_started', `entry check for ${target} started`, { target, role, sha });
       const extra = params.checkEnv !== undefined ? await params.checkEnv() : {};
-      const result = await params.manager.runScript(`check:${target}`, script, params.workspace, params.issue(), {
+      const result = await params.manager.runScript(`check:${target}`, script, workspace, params.issue(), {
         signal: params.signal,
         timeoutMs: params.config.checks.timeoutMs,
         env: { ...extra, SYMPHONY_ROLE: role, SYMPHONY_TARGET_STATE: target },

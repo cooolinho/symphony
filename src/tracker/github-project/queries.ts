@@ -59,7 +59,7 @@ export const ITEM_DETAILS_QUERY = /* GraphQL */ `
         isArchived
         project { id }
         status: fieldValueByName(name: $statusField) {
-          ... on ProjectV2ItemFieldSingleSelectValue { name optionId }
+          ... on ProjectV2ItemFieldSingleSelectValue { name optionId updatedAt }
         }
         priority: fieldValueByName(name: $priorityField) @include(if: $withPriority) {
           __typename
