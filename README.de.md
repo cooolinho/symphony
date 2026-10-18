@@ -117,6 +117,8 @@ Symphony fragt in einem festen Takt ein **GitHub Project Board** ab und übergib
 arbeiten: Branch anlegen, implementieren, testen, pushen, Pull Request öffnen, Ergebnis im Issue kommentieren. Danach
 prüfen automatische Checks und ein zweiter, lesender Agent (Reviewer) die Arbeit. Erst dann landet die Karte in
 **In review**. Ab dort bist du dran: Review, Merge, Karte nach **Done**.
+Bug-Issues durchlaufen vor dem Review eine Spalte `Testing` (ein unabhängiger Test Engineer). Review- und Test-Schleifen
+sind begrenzt: Am Rundenlimit geht die Karte nach **Blocked** und bekommt das Label `needs-human`.
 
 Was der Agent tun soll, steht in der **`WORKFLOW.md`** (Prompt und Einstellungen). Board, Repositories, Standardmodell
 und Token stehen in der **`.env`**.
@@ -127,6 +129,12 @@ und Token stehen in der **`.env`**.
   Alter, begrenzte Parallelität (gesamt und pro Spalte), offene Blocker werden respektiert.
 - **Isolierte Workspaces:** Pro Issue ein eigener Klon unter `~/symphony-workspaces`, bei Wiederholungen
   wiederverwendet und gelöscht, sobald das Issue auf *Done* steht.
+- **Multi-Agent-Pipeline:** Analyst, Developer, optional Test Engineer und Reviewer übergeben jeweils mit einem
+  typisierten Ergebnis (`report_result`), statt die Karte selbst zu verschieben. Symphony berechnet die nächste Spalte
+  aus dem Urteil, pro Issue-Typ über Workflow-Profile, und begrenzt die Review- und Test-Schleifen durch
+  Rundenlimits: Am Limit wartet das Issue mit dem Label `needs-human` auf dich
+  ([Architektur](docs/concepts/multi-agent.md), [Ergebnis-Verträge](docs/results.md),
+  [Runden und manuelles Fortsetzen](docs/usage.md#rounds-limits-and-manual-resume)).
 - **Developer und Reviewer:** Rollen pro Spalte. Vor `Agent review` und `In review` laufen Checks (Lint, statische
   Analyse, Tests); scheitern sie, bleibt die Karte stehen und der Agent bessert nach.
 - **Test Engineer:** Ein unabhängiger Agent in der Spalte `Testing` (Bug-Issues immer, andere Issues optional) schreibt Tests für die
@@ -239,6 +247,8 @@ Einstieg ist [docs/index.md](docs/index.md) (auf Englisch).
 - [docs/configuration.md](docs/configuration.md): alle Optionen der `WORKFLOW.md`, `$VARIABLE`-Verweise, Hooks und Prompt-Variablen
 - [docs/adapters/github-project.md](docs/adapters/github-project.md): GitHub-Projects-Adapter: Einstellungen, Normalisierung, Agenten-Tools, Fehler
 - [docs/agent-claude.md](docs/agent-claude.md): Claude-Code-Sessions, Berechtigungen, Skills und Plugins, Laravel Boost, Zeitlimits, Kostenzählung
+- [docs/results.md](docs/results.md): Ergebnis-Verträge der Pipeline-Stages: Arten, Urteile, das Tool `report_result`, Recovery
+- [docs/concepts/multi-agent.md](docs/concepts/multi-agent.md): die Multi-Agent-Pipeline: Architektur, Entscheidungen und Spike-Ergebnisse
 - [docs/conformance.md](docs/conformance.md): Abweichungen von der Spezifikation und eigene Festlegungen
 - [docs/laravel-repositories.md](docs/laravel-repositories.md): Konventionen für Laravel-Repositories
 - [docs/e2e.md](docs/e2e.md): End-to-End-Test der Orchestrierung und Laravel-Integrationstest
