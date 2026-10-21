@@ -1,7 +1,7 @@
 // Checks of the roles scenario: a pure function over the repository log lines and the recorded status timelines.
 import { parseHistoryLine, type HistoryEntry } from '../../src/history/history.ts';
 import { STATUS } from './context.ts';
-import { ROLE_STATUS } from './roles.ts';
+import { ROLE_STATUS, expectedResults } from './roles.ts';
 
 export interface Check {
   ok: boolean;
@@ -24,15 +24,22 @@ export interface RolesData {
   agentReviewLimit: number;
   /** Highest number of agents running in `Agent review` seen in the API trace. */
   polledReviewPeak: number;
+  /** Stage results recorded on the issues (`report_result` comments), oldest first. */
+  results: Array<{ number: number; kind: string; verdict: string }>;
 }
 
-const same = (a: string | null | undefined, b: string) => (a ?? '').trim().toLowerCase() === b.toLowerCase();
-const numberOf = (identifier: string | undefined) => Number(identifier?.split('#').at(-1));
+export const same = (a: string | null | undefined, b: string) => (a ?? '').trim().toLowerCase() === b.toLowerCase();
+/** Issue number of an identifier such as `owner/name#12`. */
+export const numberOf = (identifier: string | undefined) => Number(identifier?.split('#').at(-1));
 
-/** Expected board path after the start status. */
+/**
+ * Expected board path after the start status. A result role has no `set_status`, so the developer's first
+ * `report_result` moves the issue straight from the start status to `Agent review`; only `changes_needed` sends it
+ * through `In progress`.
+ */
 export function expectedPath(rejectOnce: boolean): string[] {
-  const round = [ROLE_STATUS.progress, ROLE_STATUS.review];
-  return [...round, ...(rejectOnce ? round : []), STATUS.handoff];
+  const rejection = rejectOnce ? [ROLE_STATUS.progress, ROLE_STATUS.review] : [];
+  return [ROLE_STATUS.review, ...rejection, STATUS.handoff];
 }
 
 /** Statuses of an issue in order, without repeats and without the leading start status. */
@@ -53,12 +60,14 @@ interface RoleRun {
   end: number | null;
   outcome: string | null;
   nextRole: string | null;
+  /** When the run's own result moved the issue to another column (`stage_result` with a target). */
+  movedAt: number | null;
 }
 
 function roleRuns(entries: HistoryEntry[]): RoleRun[] {
   const runs = new Map<string, RoleRun>();
   for (const { event, ts, fields } of entries) {
-    if (event !== 'run_started' && event !== 'run_finished') continue;
+    if (event !== 'run_started' && event !== 'run_finished' && event !== 'stage_result') continue;
     const run = runs.get(fields.run ?? '') ?? {
       issue: numberOf(fields.issue),
       role: fields.role ?? 'default',
@@ -66,8 +75,11 @@ function roleRuns(entries: HistoryEntry[]): RoleRun[] {
       end: null,
       outcome: null,
       nextRole: null,
+      movedAt: null,
     };
-    if (event === 'run_started') {
+    if (event === 'stage_result') {
+      if (fields.target !== undefined) run.movedAt = Date.parse(ts);
+    } else if (event === 'run_started') {
       run.start = Date.parse(ts);
       run.role = fields.role ?? 'default';
     } else {
@@ -80,11 +92,14 @@ function roleRuns(entries: HistoryEntry[]): RoleRun[] {
   return [...runs.values()].sort((a, b) => a.start - b.start);
 }
 
-/** Highest number of runs active at the same time; unfinished runs count until `now`. */
+/**
+ * Highest number of runs in their column at the same time. Like Symphony's column limit, a run counts until its own
+ * result moved the issue on (the rest of its turn holds no slot of the column), else until it ended or until `now`.
+ */
 function peakOverlap(runs: RoleRun[], now: number): number {
   const events = runs.flatMap((run) => [
     { at: run.start, delta: 1 },
-    { at: run.end ?? now, delta: -1 },
+    { at: run.movedAt ?? run.end ?? now, delta: -1 },
   ]);
   events.sort((a, b) => a.at - b.at || a.delta - b.delta);
   let current = 0;
@@ -130,10 +145,20 @@ export function verifyRoles(data: RolesData): Check[] {
     detail: wrongChecks.join('; ') || `${reviewChecks.length} checks`,
   });
 
+  const wrongResults = data.issues.flatMap((issue) => {
+    const observed = data.results.filter((result) => result.number === issue.number).map((result) => `${result.kind}:${result.verdict}`);
+    const expected = expectedResults(issue.rejectOnce);
+    return observed.join(',') === expected.join(',') ? [] : [`${issue.key}: ${observed.join(', ') || '(nothing)'}, expected ${expected.join(', ')}`];
+  });
+  checks.push({
+    ok: wrongResults.length === 0,
+    name: 'Stage results per issue (report_result)',
+    detail: wrongResults.join('; ') || data.issues.map((issue) => `${issue.key}: ${expectedResults(issue.rejectOnce).length} results`).join('; '),
+  });
+
   const count = (event: string, match: (entry: HistoryEntry) => boolean = () => true) =>
     entries.filter((entry) => entry.event === event && match(entry)).length;
   const counts = {
-    transition_denied: count('transition_denied'),
     checks_finished: count('checks_finished'),
     handed_off: count('run_finished', (entry) => entry.fields.outcome === 'handed_off'),
   };
@@ -151,7 +176,7 @@ export function verifyRoles(data: RolesData): Check[] {
   });
   checks.push({
     ok: Object.values(counts).every((n) => n > 0) && missingHandoffs.length === 0,
-    name: 'Repository log has transition_denied, checks_finished and handed_off',
+    name: 'Repository log has checks_finished and handed_off',
     detail: [Object.entries(counts).map(([event, n]) => `${event} ${n}`).join(', '), ...missingHandoffs].join('; '),
   });
 

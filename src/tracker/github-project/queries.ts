@@ -59,7 +59,7 @@ export const ITEM_DETAILS_QUERY = /* GraphQL */ `
         isArchived
         project { id }
         status: fieldValueByName(name: $statusField) {
-          ... on ProjectV2ItemFieldSingleSelectValue { name optionId }
+          ... on ProjectV2ItemFieldSingleSelectValue { name optionId updatedAt }
         }
         priority: fieldValueByName(name: $priorityField) @include(if: $withPriority) {
           __typename
@@ -132,6 +132,42 @@ export const ISSUE_CONTEXT_QUERY = /* GraphQL */ `
   }
 `;
 
+/** One page of an issue's comments, oldest first; 100 is the most GitHub allows per page. `author` is null for deleted accounts. */
+export const ISSUE_COMMENTS_QUERY = /* GraphQL */ `
+  query SymphonyIssueComments($issueId: ID!, $after: String) {
+    node(id: $issueId) {
+      ... on Issue {
+        comments(first: 100, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes { author { login } createdAt url body }
+        }
+      }
+    }
+  }
+`;
+
+/** Rendered HTML of the description and the comments: for private repositories its image URLs are signed. */
+export const ISSUE_ATTACHMENTS_QUERY = /* GraphQL */ `
+  query SymphonyIssueAttachments($issueId: ID!, $after: String) {
+    node(id: $issueId) {
+      ... on Issue {
+        bodyHTML
+        comments(first: 100, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes { url bodyHTML }
+        }
+      }
+    }
+  }
+`;
+
+/** The account the token belongs to. */
+export const VIEWER_QUERY = /* GraphQL */ `
+  query SymphonyViewer {
+    viewer { login }
+  }
+`;
+
 export const REPOSITORY_QUERY = /* GraphQL */ `
   query SymphonyRepository($owner: String!, $name: String!, $head: String!) {
     repository(owner: $owner, name: $name) {
@@ -195,8 +231,8 @@ export const SUB_ISSUE_CONTEXT_QUERY = /* GraphQL */ `
 `;
 
 /**
- * The ids of labels by name, one alias per name (`l0`, `l1`, …); a label that does not exist comes back as null.
- * Owner, repository and names travel as variables.
+ * The repository id and the ids of labels by name, one alias per name (`l0`, `l1`, …); a label that does not exist comes
+ * back as null. Owner, repository and names travel as variables.
  */
 export function repositoryLabelsQuery(repository: string, names: string[]): { query: string; variables: Record<string, string> } {
   const [owner, name] = repository.split('/');
@@ -207,8 +243,30 @@ export function repositoryLabelsQuery(repository: string, names: string[]): { qu
     params.push(`$l${index}: String!`);
     return `l${index}: label(name: $l${index}) { id name }`;
   });
-  return { query: `query SymphonyLabels(${params.join(', ')}) {\n  repository(owner: $owner, name: $name) {\n    ${fields.join('\n    ')}\n  }\n}`, variables };
+  return { query: `query SymphonyLabels(${params.join(', ')}) {\n  repository(owner: $owner, name: $name) {\n    id\n    ${fields.join('\n    ')}\n  }\n}`, variables };
 }
+
+export const CREATE_LABEL_MUTATION = /* GraphQL */ `
+  mutation SymphonyCreateLabel($repositoryId: ID!, $name: String!, $color: String!, $description: String) {
+    createLabel(input: { repositoryId: $repositoryId, name: $name, color: $color, description: $description }) {
+      label { id name }
+    }
+  }
+`;
+
+/** Takes label ids; adding a label the issue already carries is a no-op. */
+export const ADD_LABELS_MUTATION = /* GraphQL */ `
+  mutation SymphonyAddLabels($labelableId: ID!, $labelIds: [ID!]!) {
+    addLabelsToLabelable(input: { labelableId: $labelableId, labelIds: $labelIds }) { clientMutationId }
+  }
+`;
+
+/** Takes label ids; removing a label the issue does not carry is a no-op. */
+export const REMOVE_LABELS_MUTATION = /* GraphQL */ `
+  mutation SymphonyRemoveLabels($labelableId: ID!, $labelIds: [ID!]!) {
+    removeLabelsFromLabelable(input: { labelableId: $labelableId, labelIds: $labelIds }) { clientMutationId }
+  }
+`;
 
 /** Creates an issue and links it as a sub-issue of `parentId` in one step. */
 export const CREATE_SUB_ISSUE_MUTATION = /* GraphQL */ `

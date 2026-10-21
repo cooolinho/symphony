@@ -3,6 +3,8 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { childEnvironment } from '../agent/env.ts';
 import { chooseEffort, chooseModel } from '../agent/model.ts';
+import { classify } from '../workflow/classify.ts';
+import { MODEL_FAMILIES, modelFamilyOf } from '../agent/rate-limit.ts';
 import type { AgentEvent, AgentRunner, IntegrationReport, TokenUsage } from '../agent/types.ts';
 import { estimateCost, totalTokens, type ModelTokenUsage, type PricingStore } from '../costs/pricing.ts';
 import type { HistoryLog, RunOutcome, RunStart } from '../history/history.ts';
@@ -11,34 +13,59 @@ import { defaultIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
 import { getTrackerFactory } from '../tracker/registry.ts';
-import type { Issue, TrackerAdapter } from '../tracker/types.ts';
+import type { Issue, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
 import { SerialQueue, settledWithin } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { truncate } from '../util/text.ts';
-import { WorkspaceManager, type HookIssue } from '../workspace/manager.ts';
+import { describeHolder, type LockResult } from '../workspace/lock.ts';
+import { WorkspaceManager, type HookIssue, type Workspace } from '../workspace/manager.ts';
 import type { ServiceConfig } from '../workflow/config.ts';
-import { roleFor, roleName } from '../workflow/roles.ts';
+import { profileFor } from '../workflow/profile.ts';
+import { roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
+import { internalResult, renderResultComment, type ResultMeta } from '../workflow/results.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../workflow/store.ts';
-import { unknownBoardColumns, validateDispatch } from '../workflow/validate.ts';
+import { skipCheckProblems, skipReason, stageSkip, type StageSkip } from './skip.ts';
+import { nextStageProblems, unknownBoardColumns, validateDispatch } from '../workflow/validate.ts';
 import {
   CONTINUATION_DELAY_MS,
   MAX_TIMER_MS,
   failureBackoffMs,
   hasRequiredFields,
+  hasRequiredLabels,
   isActiveState,
   isRoutable,
   isTerminalState,
+  routableWhileRunning,
   sessionLimitWaitMs,
-  sortForDispatch,
   stateLimit,
   waitingForSubIssues,
 } from './eligibility.ts';
 import { normalizeStateName } from '../workflow/config.ts';
-import type { CheckCache, CheckRecord } from './guard.ts';
+import { planDispatch, type PlanIssue, type PlanItem, type PlanRetry } from './dispatch-plan.ts';
+import { createGuard, entryCheckFor, type CheckCache, type CheckRecord } from './guard.ts';
 import { IssueArchive, type ArchivedIssue } from './issue-archive.ts';
+import {
+  activeReservations,
+  applyLimitUpdate,
+  effectiveAgentLimits,
+  hasLimitOverride,
+  heldForOtherRoles,
+  limitsJson,
+  limitsSummary,
+  NO_LIMIT_OVERRIDE,
+  reservationProblem,
+  sameLimitOverride,
+  slotProblems,
+  withAgentLimits,
+  type AgentLimitOverride,
+} from './limits.ts';
+import { RuntimeStateStore, runtimeStateFile, type ModelHold, type OperatorHold } from './runtime-state.ts';
+import { resultRows, type PersistedResult } from './stage-history.ts';
 import { blockedBucketColumns, derivePipeline, type PipelineStage, type StageSession } from './pipeline.ts';
 import { copyToolUsage, countToolUse, emptyToolUsage, integrationJson, integrationUsage, type ToolUsage } from './tool-usage.ts';
 import { runAgentAttempt, type RunPhase, type WorkerOutcome } from './worker.ts';
+import { interruptedLabels, interruptedTransition, statusUpdatedAt, type InterruptedTransition } from './recovery.ts';
+import { applyTransitionLabels, RESULT_TOOL } from './result-tool.ts';
 
 export interface Clock {
   now(): Date;
@@ -68,6 +95,33 @@ export type RestartResult =
   | { ok: true; issueIdentifier: string; previous: 'retrying' | 'paused' }
   | { ok: false; reason: 'not_found' | 'running' | 'stopping' | 'not_waiting' };
 
+export type PauseResult =
+  | { ok: true; issueIdentifier: string; previous: 'running' | 'retrying' | 'queued' | 'paused' }
+  | { ok: false; reason: 'not_found' | 'already_paused' | 'stopping' };
+
+export type ResumeResult = { ok: true; issueIdentifier: string } | { ok: false; reason: 'not_found' | 'not_paused' | 'stopping' };
+
+/** Slot counts of a force-start: `running` includes the forced sessions, `limit` is agent.max_concurrent_agents. */
+export interface ForceSlots {
+  running: number;
+  forced: number;
+  limit: number;
+}
+
+export type ForceResult =
+  | { ok: true; issueIdentifier: string; previous: 'queued' | 'retrying' | 'paused'; slots: ForceSlots }
+  | { ok: false; reason: 'not_found' | 'running' | 'stopping' | 'blocked' | 'not_eligible' | 'invalid_workflow' | 'tracker_error' | 'spawn_failed'; message: string }
+  | { ok: false; reason: 'model_held'; message: string; model: string };
+
+export type ModelControlResult =
+  | { ok: true; model: string; issues: number }
+  | { ok: false; reason: 'unknown_model' | 'already_paused' | 'not_paused' | 'stopping' };
+
+export type AgentSettingsResult =
+  | { ok: true; changed: boolean; limits: ReturnType<typeof limitsJson> }
+  | { ok: false; reason: 'invalid'; message: string }
+  | { ok: false; reason: 'stopping' };
+
 export type AdapterFactory = (config: ServiceConfig, env: NodeJS.ProcessEnv, logger: Logger) => TrackerAdapter;
 
 export interface OrchestratorDeps {
@@ -88,7 +142,8 @@ export interface OrchestratorDeps {
   integrations?: readonly WorkspaceIntegration[];
 }
 
-type StopKind = 'terminal' | 'inactive' | 'unroutable' | 'missing' | 'stalled' | 'shutdown';
+/** `paused`: the operator paused the issue; `model_hold`: the operator paused the issue's model. */
+type StopKind = 'terminal' | 'inactive' | 'unroutable' | 'missing' | 'stalled' | 'shutdown' | 'paused' | 'model_hold';
 
 interface StopRequest {
   kind: StopKind;
@@ -106,6 +161,14 @@ interface RunningEntry {
   runId: string;
   /** Role serving the issue's column at dispatch (`default` without a matching role); fixed for the run. */
   role: string;
+  /** The role's configuration at dispatch (`on_missing_result`, its columns); null for the implicit `default` role. */
+  roleConfig: RoleConfig | null;
+  /** The session recorded its stage result (`report_result` posted the result comment). */
+  resultRecorded: boolean;
+  /** The recorded result moved the issue (false when the move after the comment failed). */
+  resultMoved: boolean;
+  /** Started by the operator in an extra slot (`forceStart`): holds no slot of the limits, for this session only. */
+  forced: boolean;
   /** Logger for this run's agent events, tagged with `run_id` and `role`. */
   runLog: Logger;
   issue: Issue;
@@ -168,15 +231,21 @@ interface RetryEntry {
   error: string | null;
   /** The session limit behind a `session_limit` retry; null for the other kinds. */
   limit: SessionLimitState | null;
+  /** Requeued because the dispatch plan gave the slot to another issue: it still competes for the next free one. */
+  queued: boolean;
   timer: unknown;
 }
 
 /** A session-limit failure as the retry queue keeps it (GET /api/v1/state `retrying[].limit`). */
 interface SessionLimitState {
   window: string | null;
+  /** `model`: only `model` is limited; the issue waits for the end of the model's hold, not for a quick retry. */
+  scope: 'account' | 'model';
+  /** Model family of a `model` limit; null for `account`. */
+  model: string | null;
   resetsAt: Date | null;
   source: 'event' | 'message' | null;
-  /** The original Claude message; the entry's `error` is replaced by queue-state texts such as "no available orchestrator slots". */
+  /** The original Claude message; the entry's `error` is replaced by queue-state texts such as "waiting for a free slot (2/2 busy)". */
   text: string;
   /** Consecutive session-limit failures of this claim, including this one. */
   hits: number;
@@ -193,6 +262,8 @@ function limitJson(limit: SessionLimitState | null) {
   if (limit === null) return null;
   return {
     window: limit.window,
+    scope: limit.scope,
+    model: limit.model,
     resets_at: limit.resetsAt?.toISOString() ?? null,
     source: limit.source,
     text: limit.text,
@@ -246,6 +317,7 @@ interface IssueMeta {
   description: string | null;
   labels: string[];
   priority: number | null;
+  createdAt: Date | null;
   blockedBy: Issue['blocked_by'];
   dispatchNote: string | null;
   parent: unknown;
@@ -253,6 +325,21 @@ interface IssueMeta {
 }
 
 /** First non-empty line of a description; what command detection and the pipeline need. */
+function round4(value: number): number {
+  return Math.round(value * 10_000) / 10_000;
+}
+
+function formatUsd(value: number): string {
+  return `$${value.toFixed(2)}`;
+}
+
+/** Why an issue was paused, for the timeline entry of its Resume. */
+function pausedBecause(paused: PausedEntry): string {
+  if (paused.source === 'operator') return 'by the operator';
+  if (paused.source === 'budget') return 'because its cost budget was used up';
+  return `after ${paused.continuations} continuation session(s)`;
+}
+
 function firstLine(text: string | null): string | null {
   return text?.split(/\r?\n/).find((line) => line.trim() !== '') ?? null;
 }
@@ -263,6 +350,7 @@ function issueMeta(issue: Issue): IssueMeta {
     description: firstLine(issue.description),
     labels: issue.labels,
     priority: issue.priority,
+    createdAt: issue.created_at,
     blockedBy: issue.blocked_by,
     dispatchNote: typeof issue.native_ref?.dispatch_note === 'string' ? issue.native_ref.dispatch_note : null,
     parent: issue.native_ref?.parent ?? null,
@@ -310,6 +398,8 @@ interface IssueRecord {
   lastCheck: CheckRecord | null;
   /** Board fields of the issue at the last dispatch or reconcile; null before the first dispatch. */
   meta: IssueMeta | null;
+  /** The issue's stage results as the latest result-driven session saw or reported them; empty before the first one. */
+  results: PersistedResult[];
 }
 
 interface RunTrace {
@@ -377,16 +467,36 @@ function mcpServerOf(tool: string): string | null {
   return match?.[1] ?? null;
 }
 
-/** An issue held back after agent.max_continuations: claimed, but not running or retrying. */
+/**
+ * A paused issue: claimed, but not running or retrying. `continuations`: held back after agent.max_continuations,
+ * lifted by any change on the board. `operator`: paused from the dashboard, lifted only by Resume, a terminal state or
+ * leaving the board; persisted in the runtime state file.
+ */
 interface PausedEntry {
   issueId: string;
   identifier: string;
   url: string | null;
+  title: string | null;
   state: string;
   updatedAtMs: number | null;
   continuations: number;
   pausedAt: Date;
+  /** `budget`: the issue's cost reached agent.max_issue_cost_usd. */
+  source: 'continuations' | 'operator' | 'budget';
+  /** Retry attempt of the claim when it was paused; Resume starts with it. */
+  attempt: number | null;
+  /** Cost and cap of a `budget` pause. */
+  budget?: IssueBudget;
 }
+
+/** An issue's cost against agent.max_issue_cost_usd, both in USD. */
+interface IssueBudget {
+  costUsd: number;
+  limitUsd: number;
+}
+
+/** What holds a model: a limit (until its reset) or the operator (until the release). */
+type ActiveHold = { model: string; source: 'limit' | 'operator'; since: Date; until: Date | null };
 
 /** Session-limit windows that apply to the whole account; a wait for one of them pauses new dispatches. */
 const ACCOUNT_WIDE_WINDOWS = new Set(['five_hour', 'seven_day']);
@@ -474,6 +584,18 @@ function tokensJson(usage: TokenUsage) {
   return { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens, total_tokens: usage.totalTokens };
 }
 
+/** What a tracker needs to complete an interrupted transition (`#recoverTransition`). */
+type RecoveryAdapter = TrackerAdapter & Required<Pick<TrackerAdapter, 'readResults' | 'setStatus' | 'addLabels' | 'removeLabels'>>;
+
+function canRecover(adapter: TrackerAdapter): adapter is RecoveryAdapter {
+  return adapter.readResults !== undefined && adapter.setStatus !== undefined && adapter.addLabels !== undefined && adapter.removeLabels !== undefined;
+}
+
+/** How a transition recovery ended: moved, declined (the stage runs), changed (moved by someone else) or failed (retried). */
+type RecoveryOutcome =
+  | { kind: 'moved'; status: string; check: CheckRecord | null; labels: { added: string[]; removed: string[] }; warnings: string[] }
+  | { kind: 'declined' | 'changed' | 'failed'; reason: string };
+
 /**
  * The single authority over scheduling state (spec 7-8): polling, dispatch, reconciliation,
  * retries. Mutations run through one serial queue; agent events only update counters.
@@ -488,11 +610,21 @@ export class Orchestrator {
 
   #running = new Map<string, RunningEntry>();
   #claimed = new Set<string>();
+  /** Stage skips and transition recoveries in flight (see `#skipStage`, `#recoverTransition`); `stop` waits for them. */
+  #skips = new Set<Promise<void>>();
+  /** Aborted at shutdown: stops the entry check of a transition recovery. */
+  #halt = new AbortController();
+  /** The result comment of an interrupted transition whose recovery was declined, by issue id: its stage runs instead. */
+  #recoveryDeclined = new Map<string, string>();
+  /** Issues whose `skipped` comment is posted but whose move failed, by issue id: the retry must not post it again. */
+  #skipCommented = new Map<string, { key: string; url: string | null }>();
   #retries = new Map<string, RetryEntry>();
   #completed = new Set<string>();
   #archive: IssueArchive;
   #records = new Map<string, IssueRecord>();
   #paused = new Map<string, PausedEntry>();
+  /** Cap of the budget comment already posted per issue, so a Resume that pauses again does not comment twice. */
+  #budgetNotified = new Map<string, number>();
   /** Issues whose workspace this process created or used; checked for terminal states after release. */
   #watched = new Map<string, string>();
   #cleanups = new Map<string, Promise<void>>();
@@ -502,6 +634,16 @@ export class Orchestrator {
   #lastTurnSuccessAt: Date | null = null;
   /** The dispatch gate the last tick logged, to log its start and end once. */
   #loggedGate: DispatchGate | null = null;
+  /** Why the reservations were ignored at the last tick, to log it once. */
+  #loggedReservationProblem: string | null = null;
+  #loggedSlotProblems = '';
+  /** Models on hold after a model-scoped usage limit, by family; persisted in the runtime state file. */
+  #modelHolds = new Map<string, ModelHold>();
+  /** Models the operator paused, by family; no end of their own, persisted in the runtime state file. */
+  #operatorHolds = new Map<string, OperatorHold>();
+  /** Agent slots set on the dashboard; they take precedence over `WORKFLOW.md`, persisted in the runtime state file. */
+  #limitOverride: AgentLimitOverride = NO_LIMIT_OVERRIDE;
+  #runtimeState: RuntimeStateStore;
 
   #pollIntervalMs: number;
   #tickTimer: unknown = null;
@@ -526,6 +668,38 @@ export class Orchestrator {
     this.#createAdapter = deps.createAdapter ?? defaultAdapterFactory;
     this.#pollIntervalMs = deps.workflow.current.config.polling.intervalMs;
     this.#archive = new IssueArchive(deps.logDir === null ? null : path.join(deps.logDir, 'issues'), deps.logger);
+    const tracker = deps.workflow.current.config.tracker;
+    this.#runtimeState = new RuntimeStateStore(runtimeStateFile(deps.logDir, tracker, deps.env), deps.logger);
+    const restored = this.#runtimeState.load(this.#clock.now());
+    for (const hold of restored.modelHolds) {
+      this.#modelHolds.set(hold.model, hold);
+      this.#logger.info(`model ${hold.model} on hold until ${hold.until.toISOString()} (restored)`, { model: hold.model, issue_identifier: hold.issueIdentifier });
+    }
+    for (const hold of restored.operatorHolds) {
+      this.#operatorHolds.set(hold.model, hold);
+      this.#logger.info(`model ${hold.model} paused by the operator (restored)`, { model: hold.model });
+    }
+    if (hasLimitOverride(restored.settings)) {
+      this.#limitOverride = restored.settings;
+      this.#logger.info('agent slots set on the dashboard (restored)', limitsSummary(deps.workflow.current.config, restored.settings));
+    }
+    // Restored pauses keep their claim; the next reconcile fills in the board fields or releases them.
+    for (const pause of restored.pausedIssues) {
+      this.#paused.set(pause.issueId, {
+        issueId: pause.issueId,
+        identifier: pause.identifier,
+        url: pause.url,
+        title: null,
+        state: '',
+        updatedAtMs: null,
+        continuations: 0,
+        pausedAt: pause.since,
+        source: 'operator',
+        attempt: null,
+      });
+      this.#claimed.add(pause.issueId);
+      this.#logger.info('issue paused by the operator (restored)', { issue_id: pause.issueId, issue_identifier: pause.identifier });
+    }
   }
 
   /** Startup validation (fails startup), terminal workspace cleanup, then an immediate first tick. */
@@ -555,6 +729,8 @@ export class Orchestrator {
         this.#logger.info('waiting for running agents to stop', { count: entries.length });
         await settledWithin(Promise.all(entries.map((entry) => entry.done)), timeoutMs);
       }
+      this.#halt.abort();
+      await settledWithin(Promise.all(this.#skips), timeoutMs);
       this.#notify();
     })();
     return this.#shutdown;
@@ -588,19 +764,8 @@ export class Orchestrator {
         return { ok: false, reason: claimed ? 'not_waiting' : 'not_found' };
       }
       const issueId = waiting.issueId;
-      const record = this.#records.get(issueId);
-      if (record !== undefined) {
-        record.sessionLimitHits = 0;
-        record.continuations = 0;
-      }
+      const record = this.#restartClaim(issueId, waiting.identifier, waiting.url, retry?.attempt ?? paused?.attempt ?? 1, 'restarted by the operator');
       const previous = retry !== undefined ? 'retrying' : 'paused';
-      this.#paused.delete(issueId);
-      this.#scheduleRetry(
-        issueId,
-        retry?.attempt ?? 1,
-        { identifier: waiting.identifier, url: waiting.url, kind: 'failure', error: 'restarted by the operator', limit: null },
-        0,
-      );
       if (record !== undefined) {
         this.#trace(record, {
           kind: 'lifecycle',
@@ -621,6 +786,374 @@ export class Orchestrator {
       this.#notify();
       return { ok: true, issueIdentifier: waiting.identifier, previous };
     });
+  }
+
+  /** Counters reset, pause lifted, and an immediate retry (`#onRetryTimer` re-checks eligibility and slots). */
+  #restartClaim(issueId: string, identifier: string, url: string | null, attempt: number, error: string): IssueRecord | undefined {
+    const record = this.#records.get(issueId);
+    if (record !== undefined) {
+      record.sessionLimitHits = 0;
+      record.continuations = 0;
+    }
+    this.#unpause(issueId);
+    this.#scheduleRetry(issueId, attempt, { identifier, url, kind: 'failure', error, limit: null }, 0);
+    return record;
+  }
+
+  /** Drops a pause; an operator pause also leaves the runtime state file (kept there while shutting down). */
+  #unpause(issueId: string): void {
+    const paused = this.#paused.get(issueId);
+    if (paused === undefined) return;
+    this.#paused.delete(issueId);
+    if (paused.source === 'operator' && !this.#stopping) this.#saveRuntimeState();
+  }
+
+  /**
+   * Pauses an issue from the dashboard: running (its agent stops at once, workspace kept, no retry follows), retrying
+   * (the timer is cancelled), queued on the board (it is claimed) or paused after its continuations. Only Resume, a
+   * terminal state or leaving the board lifts it; board changes such as comments, labels or column moves do not.
+   */
+  pauseIssue(key: string): Promise<PauseResult> {
+    return this.#serial.run((): PauseResult => {
+      if (this.#stopping) return { ok: false, reason: 'stopping' };
+      const matches = (id: string, identifier: string) => id === key || identifier === key;
+      const now = this.#clock.now();
+      const entry = [...this.#running.values()].find((e) => matches(e.issueId, e.identifier));
+      const existing = [...this.#paused.values()].find((p) => matches(p.issueId, p.identifier));
+      if (entry !== undefined && entry.stop !== null) return { ok: false, reason: existing?.source === 'operator' ? 'already_paused' : 'stopping' };
+      if (existing !== undefined && existing.source === 'operator') return { ok: false, reason: 'already_paused' };
+      const retry = [...this.#retries.values()].find((r) => matches(r.issueId, r.identifier));
+      const candidate =
+        entry === undefined && retry === undefined && existing === undefined
+          ? this.#board?.candidates.find((issue) => matches(issue.id, issue.identifier) && !this.#claimed.has(issue.id) && !this.#cleanups.has(issue.id))
+          : undefined;
+      let previous: 'running' | 'retrying' | 'queued' | 'paused';
+      let paused: PausedEntry;
+      const base = (issueId: string, identifier: string, url: string | null, title: string | null, state: string, attempt: number | null): PausedEntry => ({
+        issueId,
+        identifier,
+        url,
+        title,
+        state,
+        updatedAtMs: null,
+        continuations: this.#records.get(issueId)?.continuations ?? 0,
+        pausedAt: now,
+        source: 'operator',
+        attempt,
+      });
+      if (existing !== undefined) {
+        previous = 'paused';
+        paused = { ...existing, source: 'operator', pausedAt: now };
+      } else if (entry !== undefined) {
+        previous = 'running';
+        paused = base(entry.issueId, entry.identifier, entry.issue.url, entry.issue.title, entry.issue.state, entry.attempt);
+      } else if (retry !== undefined) {
+        previous = 'retrying';
+        this.#cancelRetry(retry.issueId);
+        const meta = this.#records.get(retry.issueId)?.meta;
+        paused = base(retry.issueId, retry.identifier, retry.url, this.#records.get(retry.issueId)?.title ?? null, meta?.state ?? '', retry.attempt);
+      } else if (candidate !== undefined) {
+        previous = 'queued';
+        const record = this.#record(candidate);
+        record.repo ??= this.#repositoryOf(candidate);
+        record.meta = issueMeta(candidate);
+        paused = base(candidate.id, candidate.identifier, candidate.url, candidate.title, candidate.state, null);
+      } else {
+        return { ok: false, reason: 'not_found' };
+      }
+      this.#paused.set(paused.issueId, paused);
+      this.#claimed.add(paused.issueId);
+      this.#saveRuntimeState();
+      if (entry !== undefined) this.#requestStop(entry, { kind: 'paused', cleanupWorkspace: false, reason: 'paused by the operator' });
+      const record = this.#records.get(paused.issueId);
+      if (record !== undefined) {
+        this.#trace(record, {
+          kind: 'lifecycle',
+          event: 'issue_paused',
+          level: 'info',
+          message: `paused by the operator (was ${previous})`,
+          run: entry?.runId ?? null,
+          turn: null,
+          detail: { source: 'operator', previous, state: paused.state },
+        });
+      }
+      this.#deps.history?.note(entry?.repo ?? record?.repo ?? 'unknown', 'issue_paused', {
+        issue: paused.identifier,
+        title: paused.title ?? record?.title ?? null,
+        state: paused.state,
+        source: 'operator',
+        previous,
+      });
+      this.#logger.info('issue paused by the operator', { issue_id: paused.issueId, issue_identifier: paused.identifier, previous });
+      this.#notify();
+      return { ok: true, issueIdentifier: paused.identifier, previous };
+    });
+  }
+
+  /** Lifts a pause (operator or continuations): the issue starts fresh like Resume now (counters reset, attempt kept). */
+  resumeIssue(key: string): Promise<ResumeResult> {
+    return this.#serial.run((): ResumeResult => {
+      if (this.#stopping) return { ok: false, reason: 'stopping' };
+      const matches = (id: string, identifier: string) => id === key || identifier === key;
+      const paused = [...this.#paused.values()].find((p) => matches(p.issueId, p.identifier));
+      if (paused === undefined) {
+        const known =
+          [...this.#claimed].some((id) => matches(id, this.#records.get(id)?.identifier ?? '')) ||
+          [...this.#running.values()].some((e) => matches(e.issueId, e.identifier)) ||
+          (this.#board?.candidates ?? []).some((issue) => matches(issue.id, issue.identifier));
+        return { ok: false, reason: known ? 'not_paused' : 'not_found' };
+      }
+      // Still stopping after the pause: it resumes once the agent exited.
+      if (this.#running.has(paused.issueId)) return { ok: false, reason: 'stopping' };
+      const record = this.#restartClaim(paused.issueId, paused.identifier, paused.url, paused.attempt ?? 1, 'resumed by the operator');
+      if (record !== undefined) {
+        this.#trace(record, {
+          kind: 'lifecycle',
+          event: 'issue_resumed',
+          level: 'info',
+          message: `resumed by the operator (paused ${pausedBecause(paused)})`,
+          run: null,
+          turn: null,
+          detail: { source: paused.source },
+        });
+      }
+      this.#deps.history?.note(record?.repo ?? 'unknown', 'issue_resumed', {
+        issue: paused.identifier,
+        title: record?.title ?? paused.title,
+        source: paused.source,
+      });
+      this.#logger.info('issue resumed by the operator', { issue_id: paused.issueId, issue_identifier: paused.identifier, source: paused.source });
+      this.#notify();
+      return { ok: true, issueIdentifier: paused.identifier };
+    });
+  }
+
+  /**
+   * Starts an issue now in an extra slot (Start now): a candidate in Up next, a waiting retry (backoff, session limit,
+   * continuation) or a paused issue (the pause is lifted). Bypasses the retry wait, the account-wide dispatch gate, the
+   * global and column limits and the reservations; the counters reset as with Retry now. Respects the board (blockers,
+   * open sub-issues for `wait_for_sub_issues`, required labels, an active column) and model holds. The session is
+   * `forced` and holds no slot; what follows it (continuation, hand-off, retry) queues like any other work.
+   */
+  forceStart(key: string): Promise<ForceResult> {
+    return this.#serial.run(async (): Promise<ForceResult> => {
+      const stopping: ForceResult = { ok: false, reason: 'stopping', message: 'the orchestrator is shutting down' };
+      if (this.#stopping) return stopping;
+      const matches = (id: string, identifier: string) => id === key || identifier === key;
+      if ([...this.#running.values()].some((e) => matches(e.issueId, e.identifier))) {
+        return { ok: false, reason: 'running', message: `issue ${key} is already running` };
+      }
+      const retry = [...this.#retries.values()].find((r) => matches(r.issueId, r.identifier));
+      const paused = retry === undefined ? [...this.#paused.values()].find((p) => matches(p.issueId, p.identifier)) : undefined;
+      const candidate =
+        retry === undefined && paused === undefined
+          ? this.#board?.candidates.find((issue) => matches(issue.id, issue.identifier) && !this.#claimed.has(issue.id))
+          : undefined;
+      const issueId = retry?.issueId ?? paused?.issueId ?? candidate?.id;
+      if (issueId === undefined) return { ok: false, reason: 'not_found', message: `issue ${key} is not queued, waiting or paused` };
+      if (this.#cleanups.has(issueId)) return { ok: false, reason: 'not_eligible', message: 'the workspace of this issue is being removed' };
+      const previous = retry !== undefined ? 'retrying' : paused !== undefined ? 'paused' : 'queued';
+
+      const workflow = this.#deps.workflow.current;
+      const config = workflow.config;
+      await this.#loadStatusOptions(workflow);
+      const errors = this.#validate(workflow);
+      if (errors.length > 0) return { ok: false, reason: 'invalid_workflow', message: `dispatch validation failed: ${errors[0]}` };
+      let adapter: TrackerAdapter;
+      let issue: Issue | undefined;
+      try {
+        adapter = this.#adapterFor(workflow);
+        issue = (await adapter.fetchIssuesByIds([issueId])).find((fresh) => fresh.id === issueId);
+      } catch (error) {
+        return { ok: false, reason: 'tracker_error', message: `issue refresh failed: ${errorMessage(error)}` };
+      }
+      if (this.#stopping) return stopping;
+      if (this.#running.has(issueId)) return { ok: false, reason: 'running', message: `issue ${key} is already running` };
+      if (issue === undefined) return { ok: false, reason: 'not_found', message: `issue ${key} is no longer visible on the tracker` };
+      if (!hasRequiredFields(issue) || !isActiveState(issue.state, config.tracker)) {
+        return { ok: false, reason: 'not_eligible', message: `issue is in "${issue.state}", not an active column` };
+      }
+      if (issue.dispatchable !== true) {
+        const note = typeof issue.native_ref?.dispatch_note === 'string' && issue.native_ref.dispatch_note !== '' ? issue.native_ref.dispatch_note : 'not dispatchable';
+        return { ok: false, reason: 'blocked', message: note };
+      }
+      if (!hasRequiredLabels(issue, config.tracker.requiredLabels)) {
+        return { ok: false, reason: 'not_eligible', message: `missing required labels (${config.tracker.requiredLabels.join(', ')})` };
+      }
+      const subIssues = waitingForSubIssues(issue, roleFor(issue, config.roles), adapter);
+      if (subIssues.length > 0) return { ok: false, reason: 'blocked', message: `waiting for sub-issues ${subIssues.join(', ')}` };
+      const hold = this.#holdFor(issue, config);
+      if (hold !== null) {
+        const message =
+          hold.until === null
+            ? `model ${hold.model} is paused by the operator; resume the model first`
+            : `model ${hold.model} is on hold until ${hold.until.toISOString()}; it cannot start before`;
+        return { ok: false, reason: 'model_held', message, model: hold.model };
+      }
+
+      const record = this.#records.get(issueId);
+      if (record !== undefined) {
+        record.sessionLimitHits = 0;
+        record.continuations = 0;
+      }
+      this.#unpause(issueId);
+      this.#cancelRetry(issueId);
+      const attempt = retry?.attempt ?? paused?.attempt ?? null;
+      this.#dispatch(issue, attempt, workflow, adapter, false, true);
+      const entry = this.#running.get(issueId);
+      if (entry === undefined) {
+        // The spawn failed: #dispatch queued a retry.
+        this.#notify();
+        return { ok: false, reason: 'spawn_failed', message: this.#retries.get(issueId)?.error ?? 'failed to spawn agent' };
+      }
+      const slots = this.#slotsJson();
+      const forcedRecord = this.#records.get(issueId);
+      if (forcedRecord !== undefined) {
+        this.#trace(forcedRecord, {
+          kind: 'lifecycle',
+          event: 'worker_forced',
+          level: 'info',
+          message: `started by the operator in an extra slot (was ${previous}; ${slots.running}/${slots.limit} running, ${slots.forced} forced)`,
+          run: entry.runId,
+          turn: null,
+          detail: { previous, running: slots.running, forced: slots.forced, limit: slots.limit },
+        });
+      }
+      this.#deps.history?.note(entry.repo, 'worker_forced', {
+        issue: issue.identifier,
+        title: issue.title,
+        previous,
+        running: slots.running,
+        forced: slots.forced,
+        limit: slots.limit,
+      });
+      this.#logger.info('issue started by the operator in an extra slot', { issue_id: issueId, issue_identifier: issue.identifier, previous, ...slots });
+      this.#notify();
+      return { ok: true, issueIdentifier: issue.identifier, previous, slots };
+    });
+  }
+
+  /**
+   * Changes the agent slots from the dashboard (`PUT /api/v1/settings/agents`, see `applyLimitUpdate`). The override
+   * takes precedence over `WORKFLOW.md` and its reloads and applies from the next tick, which is requested at once.
+   * Lowering below the running count stops nobody: nothing new starts until the count is below the limit.
+   */
+  updateAgentSettings(body: unknown): Promise<AgentSettingsResult> {
+    return this.#serial.run((): AgentSettingsResult => {
+      if (this.#stopping) return { ok: false, reason: 'stopping' };
+      const result = applyLimitUpdate(this.#limitOverride, body, this.#deps.workflow.current.config);
+      if (!result.ok) return { ok: false, reason: 'invalid', message: result.message };
+      return this.#setLimitOverride(result.override, 'dashboard');
+    });
+  }
+
+  /** Removes the dashboard override (`DELETE /api/v1/settings/agents`): `WORKFLOW.md` applies again. */
+  resetAgentSettings(): Promise<AgentSettingsResult> {
+    return this.#serial.run((): AgentSettingsResult => {
+      if (this.#stopping) return { ok: false, reason: 'stopping' };
+      return this.#setLimitOverride(NO_LIMIT_OVERRIDE, 'reset');
+    });
+  }
+
+  #setLimitOverride(override: AgentLimitOverride, source: 'dashboard' | 'reset'): AgentSettingsResult {
+    const config = this.#deps.workflow.current.config;
+    if (sameLimitOverride(override, this.#limitOverride)) return { ok: true, changed: false, limits: limitsJson(config, override, this.#runningByRole()) };
+    const previous = limitsSummary(config, this.#limitOverride);
+    this.#limitOverride = override;
+    this.#saveRuntimeState();
+    const current = limitsSummary(config, override);
+    const detail = { source, old: previous, new: current, running: this.#running.size };
+    const columns = (limits: Record<string, number>) => Object.entries(limits).map(([state, limit]) => `${state}=${limit}`).join(', ');
+    for (const repo of this.#knownRepos()) {
+      this.#deps.history?.note(repo, 'settings_changed', {
+        source,
+        old_max_concurrent_agents: previous.max_concurrent_agents,
+        new_max_concurrent_agents: current.max_concurrent_agents,
+        old_by_state: columns(previous.max_concurrent_agents_by_state),
+        new_by_state: columns(current.max_concurrent_agents_by_state),
+        old_reserved: columns(previous.reserved_slots_by_role),
+        new_reserved: columns(current.reserved_slots_by_role),
+        running: this.#running.size,
+      });
+    }
+    this.#logger.info(
+      `agent slots ${source === 'reset' ? 'reset to WORKFLOW.md' : 'changed on the dashboard'}: ${previous.max_concurrent_agents} -> ${current.max_concurrent_agents}`,
+      detail,
+    );
+    // A raised limit starts the next agents with this tick.
+    this.requestRefresh();
+    this.#notify();
+    return { ok: true, changed: true, limits: limitsJson(config, override, this.#runningByRole()) };
+  }
+
+  /**
+   * Pauses a model family from the dashboard: an operator hold without an end, next to the limit holds. Running agents
+   * of that model stop at once (workspace kept) and wait with reason `model_hold`; no issue of it starts, nor falls
+   * back to another model, until `releaseModel`.
+   */
+  holdModel(model: string): Promise<ModelControlResult> {
+    return this.#serial.run((): ModelControlResult => {
+      const family = model.trim().toLowerCase();
+      if (!(MODEL_FAMILIES as readonly string[]).includes(family)) return { ok: false, reason: 'unknown_model' };
+      if (this.#stopping) return { ok: false, reason: 'stopping' };
+      if (this.#operatorHolds.has(family)) return { ok: false, reason: 'already_paused' };
+      const hold: OperatorHold = { model: family, since: this.#clock.now() };
+      this.#operatorHolds.set(family, hold);
+      this.#saveRuntimeState();
+      const stopped = [...this.#running.values()].filter((entry) => entry.stop === null && modelFamilyOf(entry.requestedModel) === family);
+      const detail = { model: family, source: 'operator', since: hold.since.toISOString(), until: null };
+      for (const entry of stopped) {
+        this.#requestStop(entry, { kind: 'model_hold', cleanupWorkspace: false, reason: `model ${family} paused by the operator` });
+        const record = this.#records.get(entry.issueId);
+        if (record !== undefined) {
+          this.#trace(record, { kind: 'lifecycle', event: 'model_hold', level: 'info', message: `model ${family} paused by the operator`, run: entry.runId, turn: null, detail });
+        }
+      }
+      for (const repo of this.#knownRepos()) this.#deps.history?.note(repo, 'model_hold', { ...detail, stopped: stopped.length });
+      this.#logger.info(`model ${family} paused by the operator`, { model: family, stopped: stopped.length });
+      this.#notify();
+      return { ok: true, model: family, issues: stopped.length };
+    });
+  }
+
+  /** Lifts the operator hold of a model: its waiting issues retry at once (still subject to free slots and limit holds). */
+  releaseModel(model: string): Promise<ModelControlResult> {
+    return this.#serial.run((): ModelControlResult => {
+      const family = model.trim().toLowerCase();
+      if (!(MODEL_FAMILIES as readonly string[]).includes(family)) return { ok: false, reason: 'unknown_model' };
+      if (this.#stopping) return { ok: false, reason: 'stopping' };
+      const hold = this.#operatorHolds.get(family);
+      if (hold === undefined) return { ok: false, reason: 'not_paused' };
+      this.#operatorHolds.delete(family);
+      this.#saveRuntimeState();
+      const config = this.#deps.workflow.current.config;
+      const waiting = [...this.#retries.values()].filter(
+        (retry) => modelFamilyOf(this.#modelFor(this.#planIssue(retry.issueId, retry.identifier, null), config)) === family,
+      );
+      const detail = { model: family, source: 'operator', since: hold.since.toISOString() };
+      for (const retry of waiting) {
+        const { issueId, attempt, identifier, url, kind, limit } = retry;
+        this.#scheduleRetry(issueId, attempt, { identifier, url, kind, error: `model ${family} released by the operator`, limit }, 0);
+        const record = this.#records.get(issueId);
+        if (record !== undefined) {
+          this.#trace(record, { kind: 'lifecycle', event: 'model_hold_ended', level: 'info', message: `model ${family} released by the operator`, run: null, turn: null, detail });
+        }
+      }
+      for (const repo of this.#knownRepos()) this.#deps.history?.note(repo, 'model_hold_ended', { ...detail, requeued: waiting.length });
+      this.#logger.info(`model ${family} released by the operator`, { model: family, requeued: waiting.length });
+      // New candidates of the model start with the next tick.
+      this.requestRefresh();
+      this.#notify();
+      return { ok: true, model: family, issues: waiting.length };
+    });
+  }
+
+  /** Repositories of the claimed issues, for history lines that belong to no single issue. */
+  #knownRepos(): string[] {
+    const repos = new Set<string>();
+    for (const entry of this.#running.values()) repos.add(entry.repo);
+    for (const record of this.#records.values()) if (record.repo !== null) repos.add(record.repo);
+    return repos.size > 0 ? [...repos] : ['unknown'];
   }
 
   onChange(listener: () => void): () => void {
@@ -675,9 +1208,10 @@ export class Orchestrator {
       this.#dispatchErrors = errors;
       if (errors.length > 0) return;
 
-      const gate = this.#dispatchGate();
-      this.#logGate(gate);
-      if (gate !== null) return;
+      this.#expireModelHolds();
+      // The board is fetched even while the dispatch gate is closed, so the dashboard stays current.
+      this.#logGate(this.#dispatchGate());
+      this.#logReservationProblem(config);
 
       const adapter = this.#adapterFor(workflow);
       let fetched: Issue[];
@@ -692,16 +1226,24 @@ export class Orchestrator {
       const candidates = fetched.filter((issue) => isActiveState(issue.state, config.tracker));
       // Only the first description line is kept: enough for command detection, without large texts in memory.
       const strip = (issue: Issue): Issue => ({ ...issue, description: firstLine(issue.description) });
+      for (const issue of fetched) {
+        const record = this.#claimed.has(issue.id) ? this.#records.get(issue.id) : undefined;
+        if (record !== undefined) record.meta = issueMeta(issue);
+      }
       this.#board = {
         fetchedAt: this.#clock.now(),
         candidates: candidates.map(strip),
         parked: fetched.filter((issue) => !isActiveState(issue.state, config.tracker)).map(strip),
       };
 
-      for (const issue of sortForDispatch(candidates)) {
-        if (this.#stopping || this.#globalSlots(config) <= 0) break;
-        if (this.#shouldDispatch(issue, config, adapter)) this.#dispatch(issue, null, workflow, adapter);
-      }
+      const byId = new Map(candidates.map((issue) => [issue.id, issue]));
+      await this.#startPlanned(this.#plan(config, adapter), async (item) => {
+        const issue = byId.get(item.issueId);
+        if (issue === undefined || !this.#shouldDispatch(issue, config, adapter)) return;
+        const budget = this.#budgetExceeded(issue, this.#repositoryOf(issue), config);
+        if (budget !== null) this.#pauseForBudget(issue, adapter, budget, null);
+        else await this.#start(issue, null, workflow, adapter, false);
+      });
     } catch (error) {
       this.#logger.error('tick failed', { error: errorMessage(error) });
     } finally {
@@ -721,6 +1263,10 @@ export class Orchestrator {
     }
     if (this.#statusOptionsCache?.version === workflow.version) {
       errors.push(...unknownBoardColumns(workflow.config, this.#statusOptionsCache.options));
+      errors.push(...nextStageProblems(workflow.config, this.#statusOptionsCache.options));
+      errors.push(...skipCheckProblems(workflow.config, this.#statusOptionsCache.options));
+    } else if (errors.length === 0 && this.#adapterFor(workflow).statusOptions === undefined) {
+      errors.push(...nextStageProblems(workflow.config, null)); // a tracker without columns has no board order
     }
     return errors;
   }
@@ -791,7 +1337,7 @@ export class Orchestrator {
     let gate: DispatchGate | null = null;
     for (const retry of this.#retries.values()) {
       const limit = retry.limit;
-      if (retry.kind !== 'session_limit' || limit === null || !limit.waiting) continue;
+      if (retry.kind !== 'session_limit' || limit === null || !limit.waiting || limit.scope === 'model') continue;
       if (limit.window === null || !ACCOUNT_WIDE_WINDOWS.has(limit.window)) continue;
       if (limit.observedAt.getTime() <= since || retry.dueAt.getTime() <= now) continue;
       if (gate === null || retry.dueAt > gate.until) gate = { until: retry.dueAt, window: limit.window, issueIdentifier: retry.identifier };
@@ -812,17 +1358,50 @@ export class Orchestrator {
     }
   }
 
-  #globalSlots(config: ServiceConfig): number {
-    return Math.max(config.agent.maxConcurrentAgents - this.#running.size, 0);
+  #logReservationProblem(config: ServiceConfig): void {
+    const limits = effectiveAgentLimits(config, this.#limitOverride);
+    const problem = reservationProblem(limits);
+    if (problem !== this.#loggedReservationProblem) {
+      if (problem !== null) this.#logger.warn(problem);
+      else this.#logger.info('reserved slots apply again');
+      this.#loggedReservationProblem = problem;
+    }
+    const starved = slotProblems(config, limits);
+    const key = starved.join('\n');
+    if (key === this.#loggedSlotProblems) return;
+    for (const line of starved) this.#logger.warn(line);
+    if (starved.length === 0) this.#logger.info('every role that results lead to gets a slot again');
+    this.#loggedSlotProblems = key;
   }
 
-  #slotsFor(state: string, config: ServiceConfig): number {
-    const normalized = normalizeStateName(state);
+  /** Running sessions that hold a slot: all but the forced ones, which run in an extra slot each. */
+  #slotted(): RunningEntry[] {
+    return [...this.#running.values()].filter((entry) => !entry.forced);
+  }
+
+  #forcedCount(): number {
+    return this.#running.size - this.#slotted().length;
+  }
+
+  /** Running sessions that hold a slot, by role name (`RunningEntry.role`). */
+  #runningByRole(): Map<string, number> {
+    const byRole = new Map<string, number>();
+    for (const entry of this.#slotted()) byRole.set(entry.role, (byRole.get(entry.role) ?? 0) + 1);
+    return byRole;
+  }
+
+  /** Free slots for `issue`: the total less the unused reservations of other roles, capped by its column limit. */
+  #slotsFor(issue: Issue, config: ServiceConfig): number {
+    const normalized = normalizeStateName(issue.state);
+    const slotted = this.#slotted();
     let inState = 0;
-    for (const entry of this.#running.values()) {
+    for (const entry of slotted) {
       if (normalizeStateName(entry.issue.state) === normalized) inState++;
     }
-    return Math.min(this.#globalSlots(config), Math.max(stateLimit(state, config.agent) - inState, 0));
+    const limits = effectiveAgentLimits(config, this.#limitOverride);
+    const held = heldForOtherRoles(roleName(roleFor(issue, config.roles)), activeReservations(limits), this.#runningByRole());
+    const free = limits.maxConcurrentAgents - slotted.length - held.slots;
+    return Math.max(Math.min(free, stateLimit(issue.state, limits) - inState), 0);
   }
 
   #shouldDispatch(issue: Issue, config: ServiceConfig, adapter: TrackerAdapter): boolean {
@@ -833,17 +1412,513 @@ export class Orchestrator {
       !this.#running.has(issue.id) &&
       !this.#claimed.has(issue.id) &&
       !this.#cleanups.has(issue.id) &&
-      this.#slotsFor(issue.state, config) > 0 &&
+      this.#slotsFor(issue, config) > 0 &&
+      this.#holdFor(issue, config) === null &&
       waitingForSubIssues(issue, roleFor(issue, config.roles), adapter).length === 0
     );
   }
 
-  #dispatch(issue: Issue, attempt: number | null, workflow: EffectiveWorkflow, adapter: TrackerAdapter, continuation = false): void {
+  /** A claimed issue as the dispatch plan sees it: its newest board fields (dispatch, run end, tick, reconcile). */
+  #planIssue(issueId: string, identifier: string, state: string | null): PlanIssue {
+    const meta = this.#records.get(issueId)?.meta ?? null;
+    const board = meta === null ? this.#board?.candidates.find((issue) => issue.id === issueId) : undefined;
+    if (board !== undefined) return board;
+    return {
+      id: issueId,
+      identifier,
+      state: state ?? meta?.state ?? '',
+      priority: meta?.priority ?? null,
+      created_at: meta?.createdAt ?? null,
+      labels: meta?.labels ?? [],
+      description: meta?.description ?? null,
+    };
+  }
+
+  #planRetry(retry: RetryEntry, now: number, issue: PlanIssue | null = null): PlanRetry {
+    return {
+      issue: issue ?? this.#planIssue(retry.issueId, retry.identifier, null),
+      kind: retry.kind,
+      attempt: retry.attempt,
+      dueAt: retry.dueAt,
+      due: retry.kind === 'continuation' || retry.queued || retry.dueAt.getTime() <= now,
+      limit: retry.limit,
+    };
+  }
+
+  /**
+   * The dispatch plan of the current state (src/orchestrator/dispatch-plan.ts). `fired` is a retry whose timer
+   * just fired: it is out of the retry queue while it runs, and due whatever its `dueAt` says.
+   */
+  #plan(config: ServiceConfig, adapter: TrackerAdapter | null, fired: { retry: RetryEntry; issue: Issue } | null = null): PlanItem[] {
+    const now = this.#clock.now();
+    const retries = [...this.#retries.values()].map((retry) => this.#planRetry(retry, now.getTime()));
+    if (fired !== null) retries.push({ ...this.#planRetry(fired.retry, now.getTime(), fired.issue), due: true });
+    const gate = this.#dispatchGate();
+    return planDispatch({
+      config: withAgentLimits(config, this.#limitOverride),
+      now,
+      running: this.#slotted().map((entry) => ({ state: entry.issue.state, role: entry.role })),
+      retries,
+      paused: this.#pausedEntries().map((paused) => ({
+        issue: this.#planIssue(paused.issueId, paused.identifier, paused.state),
+        source: paused.source,
+        continuations: paused.continuations,
+        ...(paused.budget !== undefined ? { budget: paused.budget } : {}),
+      })),
+      candidates: (this.#board?.candidates ?? []).filter(
+        (issue) => !this.#claimed.has(issue.id) && !this.#running.has(issue.id) && !this.#cleanups.has(issue.id),
+      ),
+      holds: this.#planHolds(),
+      gate: gate === null ? null : { until: gate.until, window: gate.window },
+      waitingForSubIssues: (issue) => (adapter === null ? [] : waitingForSubIssues(issue, roleFor(issue, config.roles), adapter)),
+    });
+  }
+
+  /**
+   * Starts what the plan gives a slot to, in plan order: retries that are due through the retry path (it refreshes
+   * the issue first), new candidates through `startNew`. A continuation inside its short delay keeps its slot and
+   * starts from its own timer.
+   */
+  async #startPlanned(plan: PlanItem[], startNew: ((item: PlanItem) => Promise<void>) | null): Promise<void> {
+    const now = this.#clock.now().getTime();
+    for (const item of plan) {
+      if (this.#stopping) return;
+      if (item.group !== 'next' || item.decision !== 'start') continue;
+      if (item.kind === 'new') {
+        await startNew?.(item);
+        continue;
+      }
+      const retry = this.#retries.get(item.issueId);
+      if (retry !== undefined && (retry.queued || retry.dueAt.getTime() <= now)) await this.#onRetryTimer(item.issueId);
+    }
+  }
+
+  // ---------------------------------------------------------------- model holds
+
+  /** The model a session for the issue runs with, as `#dispatch` chooses it: label, else complexity-based, else role, else claude.model. */
+  #modelFor(issue: Pick<Issue, 'state' | 'description' | 'labels'>, config: ServiceConfig): string | null {
+    const role = roleFor(issue, config.roles);
+    const { complexity } = classify(issue.labels);
+    return chooseModel(issue.labels, role?.claude.model ?? config.claude.model, role?.modelLabel, complexity, role?.claude.modelByComplexity ?? null).model;
+  }
+
+  /** The active hold of the model the issue would run with; null for Claude Code's default model (never held). */
+  #holdFor(issue: Pick<Issue, 'state' | 'description' | 'labels'>, config: ServiceConfig): ActiveHold | null {
+    const family = modelFamilyOf(this.#modelFor(issue, config));
+    return family === null ? null : this.#activeHold(family);
+  }
+
+  /** What holds the model now: the operator's hold first (it has no end), else an unexpired limit hold. */
+  #activeHold(family: string): ActiveHold | null {
+    const operator = this.#operatorHolds.get(family);
+    if (operator !== undefined) return { model: family, source: 'operator', since: operator.since, until: null };
+    const limit = this.#activeLimitHold(family);
+    return limit === null ? null : { model: family, source: 'limit', since: limit.since, until: limit.until };
+  }
+
+  #activeLimitHold(family: string): ModelHold | null {
+    const hold = this.#modelHolds.get(family);
+    return hold !== undefined && hold.until.getTime() > this.#clock.now().getTime() ? hold : null;
+  }
+
+  /** Holds as the dispatch plan reads them: an operator hold has no end (`until: null`). */
+  #planHolds(): Map<string, { until: Date | null }> {
+    const holds = new Map<string, { until: Date | null }>(this.#modelHolds);
+    for (const family of this.#operatorHolds.keys()) holds.set(family, { until: null });
+    return holds;
+  }
+
+  /** How long a retry waits for a hold: until a limit hold ends; an operator hold wakes it on release. */
+  #holdDelayMs(hold: ActiveHold): number {
+    return hold.until === null ? MAX_TIMER_MS : Math.max(hold.until.getTime() - this.#clock.now().getTime(), 1_000);
+  }
+
+  /** Paused issues without the ones whose agent is still stopping (they show as running until it exited). */
+  #pausedEntries(): PausedEntry[] {
+    return [...this.#paused.values()].filter((paused) => !this.#running.has(paused.issueId));
+  }
+
+  /**
+   * Sets or extends the hold of a model after a model-scoped limit: until the reset + 60 s when the message names
+   * one, else for agent.model_hold_ms. A later limit while held extends the hold, never shortens it.
+   */
+  #holdModelForLimit(family: string, entry: RunningEntry, text: string, resetsAt: Date | null): ModelHold {
+    const now = this.#clock.now();
+    const waitMs = sessionLimitWaitMs(resetsAt, now) ?? this.#deps.workflow.current.config.agent.modelHoldMs;
+    const until = new Date(now.getTime() + waitMs);
+    const existing = this.#activeLimitHold(family);
+    const hold: ModelHold = {
+      model: family,
+      source: 'limit',
+      since: existing?.since ?? now,
+      until: existing !== null && existing.until > until ? existing.until : until,
+      text,
+      issueIdentifier: entry.identifier,
+      repo: entry.repo,
+    };
+    this.#modelHolds.set(family, hold);
+    this.#saveRuntimeState();
+    const extended = existing !== null;
+    const message = `model ${family} on hold until ${hold.until.toISOString()}`;
+    this.#issueLogger(entry.issue).warn(`${message}${extended ? ' (extended)' : ''}: model limit`, { model: family, text });
+    const record = this.#records.get(entry.issueId);
+    if (record !== undefined) {
+      this.#trace(record, {
+        kind: 'lifecycle',
+        event: 'model_hold',
+        level: 'warn',
+        message: `${message}: ${text}`,
+        run: entry.runId,
+        turn: null,
+        detail: { model: family, since: hold.since.toISOString(), until: hold.until.toISOString(), extended, text },
+      });
+    }
+    this.#deps.history?.note(entry.repo, 'model_hold', {
+      issue: entry.identifier,
+      title: entry.issue.title,
+      model: family,
+      since: hold.since.toISOString(),
+      until: hold.until.toISOString(),
+      extended,
+      text,
+    });
+    return hold;
+  }
+
+  /** Drops the holds whose time is up; the next issue of that model is the probe. */
+  #expireModelHolds(): void {
+    const now = this.#clock.now();
+    let changed = false;
+    for (const [family, hold] of this.#modelHolds) {
+      if (hold.until.getTime() > now.getTime()) continue;
+      this.#modelHolds.delete(family);
+      changed = true;
+      this.#logger.info(`model ${family} hold ended`, { model: family, since: hold.since.toISOString(), until: hold.until.toISOString() });
+      const record = [...this.#records.values()].find((candidate) => candidate.identifier === hold.issueIdentifier);
+      if (record !== undefined) {
+        this.#trace(record, {
+          kind: 'lifecycle',
+          event: 'model_hold_ended',
+          level: 'info',
+          message: `model ${family} hold ended`,
+          run: null,
+          turn: null,
+          detail: { model: family, since: hold.since.toISOString(), until: hold.until.toISOString() },
+        });
+      }
+      this.#deps.history?.note(hold.repo, 'model_hold_ended', {
+        issue: hold.issueIdentifier,
+        model: family,
+        since: hold.since.toISOString(),
+        until: hold.until.toISOString(),
+      });
+    }
+    if (changed) this.#saveRuntimeState();
+  }
+
+  #saveRuntimeState(): void {
+    this.#runtimeState.save({
+      modelHolds: [...this.#modelHolds.values()],
+      operatorHolds: [...this.#operatorHolds.values()],
+      pausedIssues: [...this.#paused.values()]
+        .filter((paused) => paused.source === 'operator')
+        .map((paused) => ({ issueId: paused.issueId, identifier: paused.identifier, url: paused.url, since: paused.pausedAt })),
+      settings: this.#limitOverride,
+    });
+  }
+
+  #modelHoldJson(hold: ModelHold) {
+    return {
+      model: hold.model,
+      source: hold.source,
+      since: hold.since.toISOString(),
+      until: hold.until.toISOString(),
+      text: hold.text,
+      issue_identifier: hold.issueIdentifier,
+    };
+  }
+
+  #operatorHoldJson(hold: OperatorHold) {
+    return { model: hold.model, source: 'operator' as const, since: hold.since.toISOString(), until: null, text: 'paused by the operator', issue_identifier: null };
+  }
+
+  /**
+   * Model families in use (running, planned, or held), each with its holds, for the dashboard's Pause / Resume per model.
+   */
+  #modelControls(plan: PlanItem[]) {
+    const families = new Set<string>([...this.#operatorHolds.keys()]);
+    for (const hold of this.#modelHolds.values()) if (this.#activeLimitHold(hold.model) === hold) families.add(hold.model);
+    for (const entry of this.#running.values()) {
+      const family = modelFamilyOf(entry.requestedModel);
+      if (family !== null) families.add(family);
+    }
+    for (const item of plan) {
+      const family = modelFamilyOf(item.model);
+      if (family !== null) families.add(family);
+    }
+    return MODEL_FAMILIES.filter((family) => families.has(family)).map((family) => ({
+      model: family,
+      paused: this.#operatorHolds.has(family),
+      paused_since: this.#operatorHolds.get(family)?.since.toISOString() ?? null,
+      limit_until: this.#activeLimitHold(family)?.until.toISOString() ?? null,
+    }));
+  }
+
+  /**
+   * Passes a stage without a session: posts the `skipped` result (comment and marker) and moves the issue on. The issue
+   * stays claimed meanwhile, so no tick dispatches it; its record (and with it the timeline) lives on for the next stage.
+   * A failure is logged and leaves the issue where it is: the next tick decides again.
+   */
+  #skipStage(issue: Issue, skip: StageSkip, workflow: EffectiveWorkflow, repo: string, adapter: Required<Pick<TrackerAdapter, 'postComment' | 'setStatus'>>): void {
+    const log = this.#issueLogger(issue);
+    const record = this.#record(issue);
+    record.meta = issueMeta(issue);
+    record.repo = repo;
+    this.#claimed.add(issue.id);
+    const summary = `Stage ${skip.role} skipped: ${skip.reason}. No session was started; the issue moves on to "${skip.target}".`;
+    const meta: ResultMeta = {
+      role: skip.role,
+      run: null,
+      round: null,
+      profile: skip.profile,
+      workflow_hash: workflow.contentHash,
+      head_sha: null,
+      checks: null,
+      target: skip.target,
+      created_at: this.#clock.now().toISOString(),
+    };
+    const work = (async () => {
+      try {
+        // A failed move leaves the issue in its column, so the next tick skips again; the comment is posted only once.
+        const key = `${issue.state}\u0000${skip.target}`;
+        let posted = this.#skipCommented.get(issue.id);
+        if (posted?.key !== key) {
+          const comment = await adapter.postComment(issue, renderResultComment(internalResult('skipped', summary), meta));
+          posted = { key, url: comment.url };
+          this.#skipCommented.set(issue.id, posted);
+        }
+        const change = await adapter.setStatus(issue, skip.target);
+        this.#skipCommented.delete(issue.id);
+        this.#trace(record, {
+          kind: 'lifecycle',
+          event: 'stage_skipped',
+          level: 'info',
+          message: `${skip.role} stage skipped in "${issue.state}" (${skip.reason}); moved to "${change.status}" without a session`,
+          run: null,
+          turn: null,
+          detail: { role: skip.role, state: issue.state, target: change.status, reason: skip.reason, profile: skip.profile, comment_url: posted.url },
+        });
+        log.info('stage skipped', { role: skip.role, state: issue.state, target: change.status, reason: skip.reason });
+        this.#deps.history?.note(repo, 'stage_skipped', { issue: issue.identifier, title: issue.title, role: skip.role, from: issue.state, to: change.status, reason: skip.reason });
+      } catch (error) {
+        log.warn('skipping stage failed; the issue stays', { role: skip.role, state: issue.state, target: skip.target, error: errorMessage(error) });
+      } finally {
+        this.#claimed.delete(issue.id);
+        this.#notify();
+      }
+    })();
+    this.#skips.add(work);
+    void work.finally(() => this.#skips.delete(work));
+  }
+
+  /**
+   * Starts the stage of the issue's column (`#dispatch`), unless the issue's newest result recorded a hand-off whose move
+   * never happened: `#recoverTransition` then completes it without a session. Only a result-driven role on a tracker
+   * that reports when the column last changed reads the results for that; its run reuses them. An operator's restart
+   * (`force`) never comes here: it always runs the stage.
+   */
+  async #start(issue: Issue, attempt: number | null, workflow: EffectiveWorkflow, adapter: TrackerAdapter, continuation: boolean): Promise<void> {
+    const role = roleFor(issue, workflow.config.roles);
+    let tracked: TrackedResult[] | null = null;
+    if (role?.result != null && statusUpdatedAt(issue) !== null && canRecover(adapter)) {
+      try {
+        tracked = await adapter.readResults(issue);
+      } catch (error) {
+        // The run reads them again, and fails with results_read_error when the tracker still refuses.
+        this.#issueLogger(issue).debug('reading the stage results before dispatch failed', { error: errorMessage(error) });
+      }
+      if (this.#stopping) {
+        this.#release(issue.id);
+        return;
+      }
+      const interrupted = tracked === null ? null : interruptedTransition(issue, role, tracked);
+      if (tracked !== null && interrupted !== null && this.#recoveryDeclined.get(issue.id) !== interrupted.result.url) {
+        this.#recoverTransition(issue, role, interrupted, tracked, attempt, workflow, adapter);
+        return;
+      }
+    }
+    this.#dispatch(issue, attempt, workflow, adapter, continuation, false, tracked);
+  }
+
+  /**
+   * Completes a hand-off whose result comment was posted but whose move did not happen (see `interruptedTransition`),
+   * without a session. The issue stays claimed meanwhile. Afterwards (`#afterRecovery`) the next stage follows as a
+   * continuation, like after any hand-off; a denied move or a failed entry check runs the stage instead, an issue that
+   * moved meanwhile is left to the next tick, and an error is retried with backoff.
+   */
+  #recoverTransition(
+    issue: Issue,
+    role: RoleConfig,
+    interrupted: InterruptedTransition,
+    tracked: readonly TrackedResult[],
+    attempt: number | null,
+    workflow: EffectiveWorkflow,
+    adapter: RecoveryAdapter,
+  ): void {
+    const record = this.#record(issue);
+    record.meta = issueMeta(issue);
+    record.repo = adapter.issueRepository?.(issue) ?? 'unknown';
+    this.#claimed.add(issue.id);
+    const work = (async () => {
+      let outcome: RecoveryOutcome;
+      try {
+        outcome = await this.#completeTransition(issue, role, interrupted, tracked, workflow, adapter, record);
+      } catch (error) {
+        outcome = { kind: 'failed', reason: errorMessage(error) };
+      }
+      await this.#serial.run(() => this.#afterRecovery(issue, role, interrupted, attempt, record, outcome));
+    })();
+    this.#skips.add(work);
+    void work.finally(() => this.#skips.delete(work));
+  }
+
+  /**
+   * The move of `#recoverTransition`. It passes the transition guard like `report_result`: `may_move_to`, then the
+   * target's entry check, run in the issue's workspace (the stage's work; a workspace that no longer exists declines).
+   * Right before the move a fresh read confirms that the column and `status_updated_at` are unchanged, so a human's
+   * move during the check is never undone. The labels follow the move (`interruptedLabels`).
+   */
+  async #completeTransition(
+    issue: Issue,
+    role: RoleConfig,
+    interrupted: InterruptedTransition,
+    tracked: readonly TrackedResult[],
+    workflow: EffectiveWorkflow,
+    adapter: RecoveryAdapter,
+    record: IssueRecord,
+  ): Promise<RecoveryOutcome> {
+    const { config } = workflow;
+    const { target } = interrupted;
+    const workspaces = this.#workspaces(workflow);
+    const hookIssue: HookIssue = { id: issue.id, identifier: issue.identifier, url: issue.url, branch_name: issue.branch_name, env: adapter.hookEnvironment?.(issue) ?? {} };
+    let lock: Extract<LockResult, { ok: true }> | null = null;
+    try {
+      let workspace: Workspace | null = null;
+      if (entryCheckFor(target, role, config) !== null) {
+        const acquired = await workspaces.lock(issue.identifier);
+        if (!acquired.ok) return { kind: 'failed', reason: `workspace locked by ${describeHolder(acquired.holder)}` };
+        lock = acquired;
+        workspace = await workspaces.ensure(hookIssue);
+        if (workspace.createdNow) return { kind: 'declined', reason: `the entry check for "${target}" needs the stage's workspace, which no longer existed` };
+        record.workspacePath = workspace.path;
+        this.#watched.set(issue.id, issue.identifier);
+      }
+      let check: CheckRecord | null = null;
+      const guard = createGuard({
+        role,
+        config,
+        workspace,
+        issue: () => hookIssue,
+        manager: workspaces,
+        signal: this.#halt.signal,
+        onEvent: (event, message, detail) =>
+          this.#trace(record, { kind: 'lifecycle', event, level: event === 'transition_denied' ? 'warn' : 'info', message, run: null, turn: null, detail }),
+        onCheckFinished: (finished) => {
+          check = finished;
+          record.lastCheck = finished;
+        },
+      });
+      const decision = await guard(target, RESULT_TOOL);
+      if (!decision.allow) {
+        const reason = `${decision.category}: ${decision.message}`;
+        return decision.category === 'transition_denied' || decision.category === 'check_failed' ? { kind: 'declined', reason } : { kind: 'failed', reason };
+      }
+      if (this.#halt.signal.aborted) return { kind: 'failed', reason: 'orchestrator shutting down' };
+      const fresh = (await adapter.fetchIssuesByIds([issue.id])).find((candidate) => candidate.id === issue.id);
+      if (fresh === undefined) return { kind: 'changed', reason: 'the issue is no longer visible on the tracker' };
+      if (normalizeStateName(fresh.state) !== normalizeStateName(issue.state) || statusUpdatedAt(fresh)?.toISOString() !== interrupted.statusUpdatedAt) {
+        return { kind: 'changed', reason: `the issue was moved meanwhile (now in "${fresh.state}")` };
+      }
+      const change = await adapter.setStatus(fresh, target);
+      const boardColumns = this.#statusOptionsCache?.version === workflow.version ? this.#statusOptionsCache.options : null;
+      const warnings: string[] = [];
+      const labels = await applyTransitionLabels(adapter, fresh, interruptedLabels(interrupted, tracked, role, config, boardColumns, fresh), warnings);
+      return { kind: 'moved', status: change.status, check, labels, warnings };
+    } finally {
+      await lock?.release().catch((error: unknown) => this.#issueLogger(issue).warn('workspace lock could not be released', { error: errorMessage(error) }));
+    }
+  }
+
+  /** What follows a transition recovery; see `#recoverTransition`. Runs in the serial queue. */
+  #afterRecovery(issue: Issue, role: RoleConfig, interrupted: InterruptedTransition, attempt: number | null, record: IssueRecord, outcome: RecoveryOutcome): void {
+    const log = this.#issueLogger(issue);
+    const from = issue.state;
+    const { target } = interrupted;
+    const comment = interrupted.result.url;
+    const retryInfo = { identifier: issue.identifier, url: issue.url, limit: null };
+    const trace = (event: string, level: TimelineEvent['level'], message: string, detail: Record<string, unknown>) =>
+      this.#trace(record, { kind: 'lifecycle', event, level, message, run: null, turn: null, detail: { role: role.name, from, target, comment_url: comment, ...detail } });
+    if (outcome.kind === 'moved') {
+      this.#recoveryDeclined.delete(issue.id);
+      // A hand-off is progress, as after a run whose result moved the issue.
+      record.continuations = 0;
+      trace('transition_recovered', 'info', `completed the interrupted move of the ${role.name} result from "${from}" to "${outcome.status}" without a session`, {
+        status: outcome.status,
+        check: outcome.check?.result ?? null,
+        labels: outcome.labels,
+        ...(outcome.warnings.length > 0 ? { warnings: outcome.warnings } : {}),
+      });
+      log.info('interrupted transition completed', { role: role.name, from, target: outcome.status, comment_url: comment });
+      this.#deps.history?.note(record.repo ?? 'unknown', 'transition_recovered', { issue: issue.identifier, title: issue.title, role: role.name, from, to: outcome.status, comment_url: comment });
+    } else if (outcome.kind === 'declined') {
+      this.#recoveryDeclined.set(issue.id, comment);
+      trace('transition_recovery_declined', 'warn', `the interrupted move to "${target}" was not completed (${outcome.reason}); the ${role.name} stage runs again`, { reason: outcome.reason });
+      log.warn('interrupted transition not completed; the stage runs again', { role: role.name, from, target, reason: outcome.reason });
+    } else if (outcome.kind === 'changed') {
+      log.info('interrupted transition left alone', { role: role.name, from, target, reason: outcome.reason });
+    } else {
+      record.lastError = `transition recovery failed: ${outcome.reason}`;
+      log.warn('completing the interrupted transition failed; retrying', { role: role.name, from, target, error: outcome.reason });
+    }
+    if (this.#stopping) {
+      this.#release(issue.id);
+    } else if (this.#paused.has(issue.id)) {
+      // The operator paused the issue meanwhile: the claim stays until Resume.
+    } else if (outcome.kind === 'moved') {
+      this.#scheduleRetry(issue.id, 1, { ...retryInfo, kind: 'continuation', error: null });
+    } else if (outcome.kind === 'failed') {
+      this.#scheduleRetry(issue.id, (attempt ?? 0) + 1, { ...retryInfo, kind: 'failure', error: `transition recovery failed: ${outcome.reason}` });
+    } else {
+      // The next tick decides afresh: it runs the declined stage, or whatever the issue's new column needs.
+      this.#claimed.delete(issue.id);
+      this.requestRefresh();
+    }
+    this.#notify();
+  }
+
+  #dispatch(
+    issue: Issue,
+    attempt: number | null,
+    workflow: EffectiveWorkflow,
+    adapter: TrackerAdapter,
+    continuation = false,
+    forced = false,
+    results: readonly TrackedResult[] | null = null,
+  ): void {
     const log = this.#issueLogger(issue);
     const controller = new AbortController();
     const config = workflow.config;
     const role = roleFor(issue, config.roles);
     const name = roleName(role);
+    // A fresh stage the profile or a condition leaves out costs no session. Restarts by the operator, retries and
+    // continuations of a stage that already ran are never skipped.
+    if (!forced && !continuation && attempt === null) {
+      const skip = stageSkip(issue, role, config, this.#statusOptionsCache?.version === workflow.version ? this.#statusOptionsCache.options : null);
+      if (skip !== null && adapter.postComment !== undefined && adapter.setStatus !== undefined) {
+        this.#skipStage(issue, skip, workflow, adapter.issueRepository?.(issue) ?? 'unknown', { postComment: adapter.postComment.bind(adapter), setStatus: adapter.setStatus.bind(adapter) });
+        return;
+      }
+    }
     const runId = randomUUID().replace(/-/g, '').slice(0, 12);
     const entry: RunningEntry = {
       issueId: issue.id,
@@ -851,6 +1926,10 @@ export class Orchestrator {
       repo: adapter.issueRepository?.(issue) ?? 'unknown',
       runId,
       role: name,
+      roleConfig: role,
+      resultRecorded: false,
+      resultMoved: false,
+      forced,
       runLog: log.child({ run_id: runId, role: name }),
       issue,
       attempt,
@@ -897,8 +1976,9 @@ export class Orchestrator {
     if (continuation) record.continuations++;
     record.repo = entry.repo;
     record.meta = issueMeta(issue);
-    // A "Model: <model>" label picks the model for this run, else the role's claude.model, else claude.model.
-    const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model);
+    // A "Model: <model>" label picks the model for this run, else model_by_complexity, else the role's claude.model, else claude.model.
+    const { complexity } = classify(issue.labels);
+    const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model, role?.modelLabel, complexity, role?.claude.modelByComplexity ?? null);
     // Likewise an "Effort: <level>" label picks the effort, else the role's claude.effort, else claude.effort.
     const effortChoice = chooseEffort(issue.labels, role?.claude.effort ?? config.claude.effort);
     entry.requestedModel = choice.model;
@@ -929,9 +2009,13 @@ export class Orchestrator {
         state: issue.state,
         model: choice.model,
         model_label: choice.label,
+        model_label_ignored: choice.labelIgnored,
+        model_source: choice.source,
+        complexity,
         effort: effortChoice.effort,
         effort_label: effortChoice.label,
         continuation,
+        forced,
       },
     });
     if (choice.warning !== null) log.warn('model label ignored', { warning: choice.warning, model: choice.model ?? 'Claude Code default' });
@@ -942,6 +2026,7 @@ export class Orchestrator {
       state: issue.state,
       attempt,
       continuation: continuation ? record.continuations : undefined,
+      forced: forced || undefined,
       role: entry.role,
       model: choice.model ?? 'Claude Code default',
       model_label: choice.label ?? undefined,
@@ -966,6 +2051,8 @@ export class Orchestrator {
     try {
       worker = runAgentAttempt({
         issue,
+        ...(results !== null ? { results } : {}),
+        runId,
         attempt,
         workflow,
         model: choice.model,
@@ -983,7 +2070,7 @@ export class Orchestrator {
         continueWith: (fresh) => {
           const current = this.#deps.workflow.current.config;
           if (!isActiveState(fresh.state, current.tracker)) return `issue left the active states ("${fresh.state}")`;
-          if (!isRoutable(fresh, current.tracker)) return 'issue is no longer dispatchable (assignee, blockers or labels)';
+          if (!routableWhileRunning(fresh, role, current.tracker, adapter)) return 'issue is no longer dispatchable (assignee, blockers or labels)';
           const nextRole = roleFor(fresh, current.roles);
           const next = roleName(nextRole);
           if (next !== entry.role) return `role changed (${entry.role} → ${next})`;
@@ -1033,6 +2120,12 @@ export class Orchestrator {
           mcpUnavailable: (servers) => {
             entry.mcpUnavailable = servers;
           },
+          resultRecorded: () => {
+            entry.resultRecorded = true;
+          },
+          resultMoved: () => {
+            entry.resultMoved = true;
+          },
           checkFinished: (check) => {
             record.lastCheck = check;
             this.#deps.history?.checkFinished({
@@ -1048,6 +2141,25 @@ export class Orchestrator {
               ok: check.ok,
               result: check.result,
               at: check.finishedAt,
+            });
+          },
+          results: (results) => {
+            record.results = results;
+          },
+          stageResult: ({ result, meta }) => {
+            this.#deps.history?.stageResult({
+              repo: entry.repo,
+              issue: entry.identifier,
+              run: meta.run,
+              role: meta.role,
+              kind: result.kind,
+              verdict: result.verdict,
+              round: meta.round,
+              target: meta.target,
+              profile: meta.profile,
+              complexity: classify(entry.issue.labels).complexity,
+              findings: result.kind === 'review' || result.kind === 'security' ? result.findings.length : 0,
+              at: new Date(meta.created_at),
             });
           },
           transitionDenied: (target, message) => {
@@ -1095,6 +2207,11 @@ export class Orchestrator {
     const finished = this.#records.get(entry.issueId);
     if (finished) {
       finished.lastRun = traceOf(entry);
+      // A hand-off with a result is progress, not a loop: the round limits bound result-driven hand-offs. A result
+      // whose move failed is none, so a move that keeps failing ends at max_continuations instead of looping.
+      if (entry.resultMoved) finished.continuations = 0;
+      // The worker refreshes the issue after each turn: the column it ended in decides what comes next.
+      finished.meta = issueMeta(entry.issue);
       const session = finished.sessions.find((candidate) => candidate.run === entry.runId);
       if (session !== undefined) {
         session.finishedAt = this.#clock.now();
@@ -1138,6 +2255,17 @@ export class Orchestrator {
         if (record) record.lastError = stop.reason;
         log.warn('stalled agent stopped; retrying', { reason: stop.reason });
         this.#scheduleRetry(entry.issueId, nextAttempt, { ...retryInfo, kind: 'failure', error: `stalled: ${stop.reason}` });
+      } else if (stop.kind === 'paused' && this.#paused.has(entry.issueId)) {
+        // Keeps the claim and the pause; no retry until Resume.
+        entry.phase = 'CanceledByReconciliation';
+        log.info('agent stopped; issue paused by the operator', { reason: stop.reason });
+      } else if (stop.kind === 'model_hold' && !this.#stopping) {
+        // Waits for the release of the model; never runs on another model meanwhile.
+        entry.phase = 'CanceledByReconciliation';
+        log.info('agent stopped; waiting for the model hold to end', { reason: stop.reason });
+        const family = modelFamilyOf(entry.requestedModel);
+        const hold = family === null ? null : this.#activeHold(family);
+        this.#scheduleRetry(entry.issueId, entry.attempt ?? 1, { ...retryInfo, kind: 'failure', error: stop.reason }, hold === null ? 0 : this.#holdDelayMs(hold));
       } else {
         entry.phase = 'CanceledByReconciliation';
         log.info('agent stopped', { reason: stop.reason, cleanup_workspace: stop.cleanupWorkspace });
@@ -1154,7 +2282,13 @@ export class Orchestrator {
       entry.phase = 'Succeeded';
       this.#completed.add(entry.issueId);
       log.info('agent run finished', { turns: outcome.turns, reason: outcome.reason });
-      this.#scheduleRetry(entry.issueId, 1, { ...retryInfo, kind: 'continuation', error: null });
+      const missing = outcome.missingResult === true && !entry.resultRecorded ? entry.roleConfig : null;
+      if (missing?.onMissingResult != null) {
+        // The claim stays until the check has decided: continue as before, or end the stage.
+        void this.#serial.run(() => this.#endStageWithoutResult(entry, missing, retryInfo));
+      } else {
+        this.#scheduleRetry(entry.issueId, 1, { ...retryInfo, kind: 'continuation', error: null });
+      }
     } else if (outcome.kind === 'cancelled') {
       entry.phase = 'CanceledByReconciliation';
       this.#release(entry.issueId);
@@ -1171,6 +2305,8 @@ export class Orchestrator {
         const resetsAtDate = sessionLimit.resetsAt !== null && Number.isFinite(sessionLimit.resetsAt.getTime()) ? sessionLimit.resetsAt : null;
         const limit: SessionLimitState = {
           window: sessionLimit.window,
+          scope: sessionLimit.scope,
+          model: sessionLimit.model,
           resetsAt: resetsAtDate,
           source: sessionLimit.source,
           text: sessionLimit.text,
@@ -1180,12 +2316,17 @@ export class Orchestrator {
           overageDisabledReason: sessionLimit.overageDisabledReason,
           observedAt: this.#clock.now(),
         };
-        // Within the cap the backoff follows the session-limit count; beyond it the retry waits for the reset,
-        // or, without a usable reset time, the usual attempt-based backoff applies.
+        // A model limit holds its model and the issue waits for the end of the hold: it is not transient, so no
+        // quick retries. Otherwise, within the cap the backoff follows the session-limit count; beyond it the retry
+        // waits for the reset, or, without a usable reset time, the usual attempt-based backoff applies.
         const now = this.#clock.now();
         const waitMs = hits > maxRetries ? sessionLimitWaitMs(resetsAtDate, now) : null;
         let delayMs: number;
-        if (waitMs !== null) {
+        if (sessionLimit.scope === 'model' && sessionLimit.model !== null) {
+          const hold = this.#holdModelForLimit(sessionLimit.model, entry, sessionLimit.text, resetsAtDate);
+          limit.waiting = true;
+          delayMs = Math.max(hold.until.getTime() - now.getTime(), 0);
+        } else if (waitMs !== null) {
           limit.waiting = true;
           delayMs = waitMs;
           const retryAt = new Date(now.getTime() + waitMs).toISOString();
@@ -1229,6 +2370,83 @@ export class Orchestrator {
     this.#notify();
   }
 
+  /**
+   * A run of a result-driven role ended without a result (after the reminder, or at the turn limit). Only after a
+   * fresh fetch confirms the issue is still in the role's column does Symphony comment and move it to the role's
+   * `on_missing_result`, then release it. An issue moved meanwhile (a human, another run) is left alone and the
+   * normal continuation follows; a tracker error is retried like a failed run.
+   */
+  async #endStageWithoutResult(
+    entry: RunningEntry,
+    role: RoleConfig,
+    retryInfo: { identifier: string; url: string | null; limit: null },
+  ): Promise<void> {
+    const issueId = entry.issueId;
+    const target = role.onMissingResult;
+    // A stop, pause or release in between has already dealt with the issue.
+    if (target === null || this.#running.has(issueId) || this.#retries.has(issueId) || !this.#claimed.has(issueId) || this.#paused.has(issueId)) return;
+    if (this.#stopping) {
+      this.#release(issueId);
+      return;
+    }
+    const log = this.#issueLogger(entry.issue);
+    const resume = (error: string | null) =>
+      this.#scheduleRetry(issueId, error === null ? 1 : (entry.attempt ?? 0) + 1, { ...retryInfo, kind: error === null ? 'continuation' : 'failure', error });
+    const adapter = this.#adapterFor(this.#deps.workflow.current);
+    let fresh: Issue | undefined;
+    try {
+      fresh = (await adapter.fetchIssuesByIds([issueId])).find((candidate) => candidate.id === issueId);
+    } catch (error) {
+      log.warn('could not confirm the column of a stage that ended without a result', { error: errorMessage(error) });
+      resume(`missing-result check failed: ${errorMessage(error)}`);
+      return;
+    }
+    if (this.#stopping) {
+      this.#release(issueId);
+      return;
+    }
+    if (fresh === undefined || !role.states.includes(normalizeStateName(fresh.state))) {
+      log.info('stage ended without a result, but the issue has moved on; not moving it again', { state: fresh?.state ?? null });
+      resume(null);
+      return;
+    }
+    if (adapter.setStatus === undefined) {
+      resume(`the ${adapter.kind} tracker cannot move issues`);
+      return;
+    }
+    const body =
+      `**Stage ended without a result.** The ${role.name} session for "${fresh.state}" ended without calling ` +
+      `\`report_result\` (after ${entry.turnCount} turn${entry.turnCount === 1 ? '' : 's'}), so Symphony moved the issue to "${target}" (\`roles.${role.name}.on_missing_result\`). A human needs to look at it.`;
+    try {
+      await adapter.postComment?.(fresh, body);
+    } catch (error) {
+      // The move matters more than the note: an issue left in the column would start the same stage again.
+      log.warn('could not post the missing-result comment', { error: errorMessage(error) });
+    }
+    try {
+      await adapter.setStatus(fresh, target);
+    } catch (error) {
+      log.warn('could not move the issue after a stage ended without a result', { target, error: errorMessage(error) });
+      resume(`moving the issue to "${target}" failed: ${errorMessage(error)}`);
+      return;
+    }
+    log.warn('stage ended without a result; issue moved', { from: fresh.state, to: target, role: role.name });
+    const record = this.#records.get(issueId);
+    if (record !== undefined) {
+      this.#trace(record, {
+        kind: 'lifecycle',
+        event: 'missing_result',
+        level: 'warn',
+        message: `stage ended without a result; moved from "${fresh.state}" to "${target}"`,
+        run: entry.runId,
+        turn: entry.turnCount,
+        detail: { role: role.name, from: fresh.state, to: target },
+      });
+    }
+    this.#release(issueId);
+    this.#notify();
+  }
+
   /** Writes the pending `run_started` line (once), with fields the integrations added. */
   #flushStart(entry: RunningEntry, extra: Record<string, string> = {}): void {
     const start = entry.pendingStart;
@@ -1243,7 +2461,11 @@ export class Orchestrator {
     let result: RunOutcome;
     let reason: string;
     let nextRole: string | undefined;
-    if (entry.stop !== null) {
+    if (entry.stop !== null && entry.resultMoved && (entry.stop.kind === 'inactive' || entry.stop.kind === 'terminal')) {
+      // The run's own result moved the issue out of the active states; reconciliation saw it before the turn ended.
+      result = 'handed_off';
+      reason = entry.stop.reason;
+    } else if (entry.stop !== null) {
       result = entry.stop.kind === 'stalled' ? 'stalled' : entry.stop.kind === 'shutdown' ? 'shutdown' : 'stopped';
       reason = entry.stop.reason;
     } else if (outcome.kind === 'normal') {
@@ -1280,7 +2502,8 @@ export class Orchestrator {
       session: entry.threadId,
       attempt: entry.attempt,
       outcome: result,
-      ...(nextRole !== undefined ? { role: entry.role, nextRole } : {}),
+      role: entry.role,
+      ...(nextRole !== undefined ? { nextRole } : {}),
       state: entry.issue.state,
       reason,
       turns: entry.turnCount,
@@ -1315,7 +2538,7 @@ export class Orchestrator {
   #scheduleRetry(
     issueId: string,
     attempt: number,
-    info: { identifier: string; url: string | null; kind: RetryEntry['kind']; error: string | null; limit: SessionLimitState | null },
+    info: { identifier: string; url: string | null; kind: RetryEntry['kind']; error: string | null; limit: SessionLimitState | null; queued?: boolean },
     delayMs?: number,
   ): void {
     if (this.#stopping) {
@@ -1339,6 +2562,7 @@ export class Orchestrator {
       dueAt: new Date(this.#clock.now().getTime() + delay),
       error: info.error,
       limit: info.limit,
+      queued: info.queued ?? false,
       timer,
     });
     this.#claimed.add(issueId);
@@ -1391,7 +2615,10 @@ export class Orchestrator {
   async #onRetryTimer(issueId: string): Promise<void> {
     const retry = this.#retries.get(issueId);
     if (retry === undefined) return;
+    // A tick may start a due retry before its timer fires.
+    this.#timers.clearTimeout(retry.timer);
     this.#retries.delete(issueId);
+    if (this.#paused.has(issueId)) return;
     if (this.#stopping) {
       this.#release(issueId);
       return;
@@ -1468,6 +2695,11 @@ export class Orchestrator {
       this.#pause(issue, continuations, maxContinuations);
       return;
     }
+    const budget = this.#budgetExceeded(issue, this.#repositoryOf(issue), config);
+    if (budget !== null) {
+      this.#pauseForBudget(issue, adapter, budget, retry.attempt);
+      return;
+    }
     await this.#loadStatusOptions(workflow);
     if (this.#stopping) {
       this.#release(issueId);
@@ -1478,17 +2710,30 @@ export class Orchestrator {
       requeue(`dispatch validation failed: ${errors[0]}`);
       return;
     }
-    if (this.#slotsFor(issue.state, config) <= 0) {
-      // Waiting for a slot is not a failure: keep kind and attempt, retry after one poll interval.
+    const hold = this.#holdFor(issue, config);
+    if (hold !== null) {
+      // The model is on hold (also for an operator restart): wait for its end, keep kind, attempt and limit.
+      const error = hold.until === null ? `model ${hold.model} paused by the operator` : `model ${hold.model} on hold until ${hold.until.toISOString()}`;
+      this.#scheduleRetry(issueId, retry.attempt, { identifier: retry.identifier, url: retry.url, kind: retry.kind, error, limit: retry.limit }, this.#holdDelayMs(hold));
+      return;
+    }
+    const plan = this.#plan(config, adapter, { retry, issue });
+    const index = plan.findIndex((item) => item.issueId === issueId);
+    const item = plan[index];
+    if (item !== undefined && item.decision === 'wait') {
+      // No slot for it (a column limit, or the plan gives the free slot to work ahead of it): not a failure. Keep
+      // kind and attempt; it keeps competing for the next free slot, at the latest after one poll interval.
       this.#scheduleRetry(
         issueId,
         retry.attempt,
-        { identifier: retry.identifier, url: retry.url, kind: retry.kind, error: 'no available orchestrator slots', limit },
+        { identifier: retry.identifier, url: retry.url, kind: retry.kind, error: item.reason.text, limit, queued: true },
         config.polling.intervalMs,
       );
+      // Start the due work the slot went to now instead of at its own timer.
+      await this.#startPlanned(plan.slice(0, index), null);
       return;
     }
-    this.#dispatch(issue, retry.attempt, workflow, adapter, retry.kind === 'continuation');
+    await this.#start(issue, retry.attempt, workflow, adapter, retry.kind === 'continuation');
   }
 
   #release(issueId: string): void {
@@ -1498,16 +2743,16 @@ export class Orchestrator {
     const record = this.#records.get(issueId);
     if (record !== undefined && record.runs > 0) this.#archive.save(this.#archivedOf(issueId, record, true));
     this.#records.delete(issueId);
-    this.#paused.delete(issueId);
+    this.#unpause(issueId);
   }
 
   /** The issue's debugging context in the archive's JSON shape. */
   #archivedOf(issueId: string, record: IssueRecord, released: boolean): ArchivedIssue {
     const state = record.meta?.state ?? record.sessions.at(-1)?.state ?? '';
     return {
-      version: 1,
+      version: 2,
       issue_meta: metaJson(record.meta),
-      pipeline: this.#pipelineFor({ state, description: record.meta?.description ?? null }, issueId, this.#deps.workflow.current),
+      pipeline: this.#pipelineFor({ state, description: record.meta?.description ?? null, labels: record.meta?.labels }, issueId, this.#deps.workflow.current),
       issue_id: issueId,
       issue_identifier: record.identifier,
       issue_url: record.url,
@@ -1523,6 +2768,7 @@ export class Orchestrator {
       timeline: record.timeline.slice(),
       next_seq: record.nextSeq,
       sessions: record.sessions.map((session) => this.#sessionJson(session)),
+      results: resultRows(record.results),
       run_trace: traceJson(record.lastRun),
       last_check: checkJson(record.lastCheck),
     };
@@ -1549,10 +2795,13 @@ export class Orchestrator {
       issueId: issue.id,
       identifier: issue.identifier,
       url: issue.url,
+      title: issue.title,
       state: issue.state,
       updatedAtMs: issue.updated_at?.getTime() ?? null,
       continuations,
       pausedAt: this.#clock.now(),
+      source: 'continuations',
+      attempt: null,
     });
     this.#claimed.add(issue.id);
     const record = this.#records.get(issue.id);
@@ -1564,13 +2813,14 @@ export class Orchestrator {
         message: `paused after ${continuations} continuation session(s) in "${issue.state}"; change the issue on the board to resume`,
         run: null,
         turn: null,
-        detail: { state: issue.state, continuations, max_continuations: limit },
+        detail: { source: 'continuations', state: issue.state, continuations, max_continuations: limit },
       });
     }
     this.#deps.history?.note(this.#repositoryOf(issue), 'issue_paused', {
       issue: issue.identifier,
       title: issue.title,
       state: issue.state,
+      source: 'continuations',
       continuations,
       max_continuations: limit,
     });
@@ -1578,6 +2828,82 @@ export class Orchestrator {
       'issue paused: still active after its continuation sessions; change it on the board (status, comment, labels) to resume',
       { state: issue.state, continuations, max_continuations: limit },
     );
+  }
+
+  /**
+   * The issue's cost against `agent.max_issue_cost_usd`: finished runs of every role from the repository history plus the
+   * running run. null while the issue is within its budget or has no cap.
+   */
+  #budgetExceeded(issue: Pick<Issue, 'id' | 'identifier'>, repo: string, config: ServiceConfig): IssueBudget | null {
+    const limitUsd = config.agent.maxIssueCostUsd;
+    if (limitUsd === null) return null;
+    const costUsd = (this.#deps.history?.issueCostUsd(repo, issue.identifier) ?? 0) + (this.#running.get(issue.id)?.costUsd ?? 0);
+    return costUsd >= limitUsd ? { costUsd, limitUsd } : null;
+  }
+
+  /**
+   * Holds an issue whose budget is used up instead of starting its next session (a running session is never stopped).
+   * Only Resume, a raised or removed cap, a terminal state or leaving the board lifts the pause.
+   */
+  #pauseForBudget(issue: Issue, adapter: TrackerAdapter, budget: IssueBudget, attempt: number | null): void {
+    const repo = this.#repositoryOf(issue);
+    const record = this.#record(issue);
+    record.repo ??= repo;
+    record.meta = issueMeta(issue);
+    this.#cancelRetry(issue.id);
+    this.#paused.set(issue.id, {
+      issueId: issue.id,
+      identifier: issue.identifier,
+      url: issue.url,
+      title: issue.title,
+      state: issue.state,
+      updatedAtMs: null,
+      continuations: record.continuations,
+      pausedAt: this.#clock.now(),
+      source: 'budget',
+      attempt,
+      budget,
+    });
+    this.#claimed.add(issue.id);
+    const spent = `${formatUsd(budget.costUsd)} of ${formatUsd(budget.limitUsd)}`;
+    this.#trace(record, {
+      kind: 'lifecycle',
+      event: 'issue_paused',
+      level: 'warn',
+      message: `paused: the issue cost ${spent} (agent.max_issue_cost_usd); the next stage does not start`,
+      run: null,
+      turn: null,
+      detail: { source: 'budget', state: issue.state, cost_usd: round4(budget.costUsd), max_issue_cost_usd: budget.limitUsd },
+    });
+    this.#deps.history?.note(repo, 'issue_paused', {
+      issue: issue.identifier,
+      title: issue.title,
+      state: issue.state,
+      source: 'budget',
+      cost_usd: round4(budget.costUsd),
+      max_issue_cost_usd: budget.limitUsd,
+    });
+    this.#issueLogger(issue).warn('issue paused: its cost budget is used up; raise agent.max_issue_cost_usd or press Resume', {
+      state: issue.state,
+      cost_usd: round4(budget.costUsd),
+      max_issue_cost_usd: budget.limitUsd,
+    });
+    this.#notifyBudget(issue, adapter, budget);
+    this.#notify();
+  }
+
+  /** One comment on the issue per cap, so the board says why nothing starts. A failed comment is only logged. */
+  #notifyBudget(issue: Issue, adapter: TrackerAdapter, budget: IssueBudget): void {
+    if (this.#budgetNotified.get(issue.id) === budget.limitUsd || adapter.commentOnIssue === undefined) return;
+    this.#budgetNotified.set(issue.id, budget.limitUsd);
+    const body =
+      `**Cost budget used up.** The agents spent ${formatUsd(budget.costUsd)} on this issue; the limit \`agent.max_issue_cost_usd\` is ` +
+      `${formatUsd(budget.limitUsd)}. The next stage ("${issue.state}") does not start.\n\n` +
+      'To continue, raise `agent.max_issue_cost_usd` in `WORKFLOW.md` (the issue then resumes by itself) or press *Resume* on the dashboard.';
+    adapter.commentOnIssue(issue, body).catch((error: unknown) => {
+      this.#budgetNotified.delete(issue.id);
+      this.#issueLogger(issue).warn('budget comment failed', { error: errorMessage(error) });
+    });
   }
 
   // ---------------------------------------------------------------- reconciliation
@@ -1608,7 +2934,7 @@ export class Orchestrator {
     // Part B: tracker state refresh for everything still running, plus paused issues and released
     // issues that still have a workspace (so it is deleted as soon as they reach a terminal state).
     const ids = [...this.#running.values()].filter((entry) => entry.stop === null).map((entry) => entry.issueId);
-    const pausedIds = [...this.#paused.keys()];
+    const pausedIds = this.#pausedEntries().map((paused) => paused.issueId);
     const waitingIds = [...this.#retries.values()]
       .filter((retry) => retry.kind === 'session_limit' && retry.limit?.waiting === true)
       .map((retry) => retry.issueId);
@@ -1617,8 +2943,10 @@ export class Orchestrator {
       : [];
     if (ids.length === 0 && pausedIds.length === 0 && waitingIds.length === 0 && watchedIds.length === 0) return;
     let refreshed: Issue[];
+    let adapter: TrackerAdapter;
     try {
-      refreshed = await this.#adapterFor(workflow).fetchIssuesByIds([...ids, ...pausedIds, ...waitingIds, ...watchedIds]);
+      adapter = this.#adapterFor(workflow);
+      refreshed = await adapter.fetchIssuesByIds([...ids, ...pausedIds, ...waitingIds, ...watchedIds]);
     } catch (error) {
       this.#trackerFailure('running-issue refresh failed; keeping workers running', error);
       return;
@@ -1641,7 +2969,8 @@ export class Orchestrator {
           cleanupWorkspace: config.workspace.cleanupTerminal,
           reason: `issue moved to terminal state "${issue.state}"`,
         });
-      } else if (isActiveState(issue.state, config.tracker) && isRoutable(issue, config.tracker)) {
+      } else if (isActiveState(issue.state, config.tracker) && routableWhileRunning(issue, entry.roleConfig, config.tracker, adapter)) {
+        // Sub-issues the session opened itself (an architect's work packages) do not stop it before it reports.
         entry.issue = issue;
       } else if (isActiveState(issue.state, config.tracker)) {
         entry.issue = issue;
@@ -1693,9 +3022,26 @@ export class Orchestrator {
         log.info('paused issue is terminal; releasing it', { state: issue.state });
         this.#release(id);
         if (config.workspace.cleanupTerminal) this.#cleanupWorkspace(issue);
+      } else if (paused.source === 'operator') {
+        // Only Resume lifts an operator pause: comments, labels and column moves (also to Backlog and back) do not.
+        paused.state = issue.state;
+        paused.title = issue.title;
+        paused.url = issue.url;
       } else if (!isActiveState(issue.state, config.tracker) || !isRoutable(issue, config.tracker)) {
         log.info('paused issue left the active states; releasing it', { state: issue.state });
         this.#release(id);
+      } else if (paused.source === 'budget') {
+        // Board changes do not lift a budget pause: Resume does, or a raised or removed agent.max_issue_cost_usd.
+        paused.state = issue.state;
+        paused.title = issue.title;
+        paused.url = issue.url;
+        const budget = this.#budgetExceeded(issue, this.#records.get(id)?.repo ?? this.#repositoryOf(issue), config);
+        if (budget === null) {
+          log.info('resuming paused issue', { reason: 'agent.max_issue_cost_usd raised or removed' });
+          this.#release(id);
+        } else {
+          paused.budget = budget;
+        }
       } else {
         const limit = config.agent.maxContinuations;
         const changed =
@@ -1871,9 +3217,10 @@ export class Orchestrator {
         nextSeq: 1,
         sessions: [],
         lastRun: null,
-        checkCache: new Set(),
+        checkCache: new Map(),
         lastCheck: null,
         meta: null,
+        results: [],
       };
       this.#records.set(issue.id, record);
     }
@@ -1918,6 +3265,8 @@ export class Orchestrator {
       title: entry.issue.title,
       state: entry.issue.state,
       role: entry.role,
+      /** Started with Start now in an extra slot: it holds no slot of the limits. */
+      forced: entry.forced,
       phase: entry.phase,
       attempt: entry.attempt,
       session_id: entry.sessionId,
@@ -1968,13 +3317,15 @@ export class Orchestrator {
       issue_identifier: paused.identifier,
       issue_url: paused.url,
       state: paused.state,
+      source: paused.source,
       continuations: paused.continuations,
       paused_at: paused.pausedAt.toISOString(),
+      ...(paused.budget !== undefined ? { cost_usd: round4(paused.budget.costUsd), max_issue_cost_usd: paused.budget.limitUsd } : {}),
     };
   }
 
   /** The issue's stations across the board, with the sessions of its claim attributed to them. */
-  #pipelineFor(issue: { state: string; description: string | null }, issueId: string, workflow: EffectiveWorkflow): PipelineStage[] {
+  #pipelineFor(issue: { state: string; description: string | null; labels?: readonly string[] }, issueId: string, workflow: EffectiveWorkflow): PipelineStage[] {
     const config = workflow.config;
     const sessions: StageSession[] = (this.#records.get(issueId)?.sessions ?? []).map((session) => this.#sessionJson(session));
     return derivePipeline({
@@ -1984,19 +3335,31 @@ export class Orchestrator {
       terminalStates: config.tracker.terminalStates,
       boardColumns: this.#statusOptionsCache?.version === workflow.version ? this.#statusOptionsCache.options : null,
       sessions,
+      skip: (config.roles ?? []).filter((role) => skipReason({ labels: issue.labels ?? [] }, role, config) !== null).map((role) => role.name),
+      profile: profileFor(config.pipeline, classify(issue.labels ?? []).type),
+      results: this.#records.get(issueId)?.results ?? [],
     });
   }
 
-  /** One `issues[]` row of GET /api/v1/state: an issue in flight with its pipeline and live status. */
+  /** Spent and allowed cost of an issue (finished runs of every role plus the running one); null without a cap. */
+  #budgetRow(issue: Pick<Issue, 'id' | 'identifier'>, repo: string | null, config: ServiceConfig): { cost_usd: number; max_issue_cost_usd: number } | null {
+    const limit = config.agent.maxIssueCostUsd;
+    if (limit === null || repo === null) return null;
+    const spent = (this.#deps.history?.issueCostUsd(repo, issue.identifier) ?? 0) + (this.#running.get(issue.id)?.costUsd ?? 0);
+    return { cost_usd: round4(spent), max_issue_cost_usd: limit };
+  }
+
+  /** One `issues[]` row of GET /api/v1/state: an issue in flight with its pipeline, live status and place in the plan. */
   #issueRow(
     status: 'running' | 'retrying' | 'paused' | 'queued',
-    issue: { id: string; identifier: string; url: string | null; title: string | null; state: string; description: string | null },
+    issue: { id: string; identifier: string; url: string | null; title: string | null; state: string; description: string | null; labels?: readonly string[] },
     workflow: EffectiveWorkflow,
     now: number,
-    rows: { running?: RunningEntry; retry?: RetryEntry; paused?: PausedEntry; dispatchNote?: string | null },
+    rows: { running?: RunningEntry; retry?: RetryEntry; paused?: PausedEntry; dispatchNote?: string | null; modelHold?: ActiveHold | null; plan?: PlanItem },
   ) {
     const record = this.#records.get(issue.id);
     const meta = record?.meta ?? null;
+    const plan = rows.plan ?? null;
     return {
       issue_id: issue.id,
       issue_identifier: issue.identifier,
@@ -2005,84 +3368,44 @@ export class Orchestrator {
       repo: rows.running?.repo ?? record?.repo ?? null,
       state: issue.state,
       status,
+      /** Dashboard section: `running`, else the dispatch plan group (`next`, `waiting`, `paused`). */
+      section: plan?.group ?? 'running',
+      /** Place in the dispatch order (`next` only). */
+      position: plan?.position ?? null,
+      decision: plan?.decision ?? null,
+      reason: plan === null ? null : { code: plan.reason.code, text: plan.reason.text },
+      /** Model the next session would run with (the running session reports its own in `running.model`). */
+      model: plan?.model ?? rows.running?.requestedModel ?? null,
       labels: meta?.labels ?? [],
-      priority: meta?.priority ?? null,
+      priority: plan?.priority ?? meta?.priority ?? null,
       /** True when the orchestrator holds debugging context, so /agent?id=… has something to show. */
       tracked: record !== undefined,
-      stages: this.#pipelineFor({ state: issue.state, description: issue.description }, issue.id, workflow),
+      /** The issue's cost against `agent.max_issue_cost_usd`; null without a cap or a repository. */
+      budget: this.#budgetRow(issue, rows.running?.repo ?? record?.repo ?? null, workflow.config),
+      stages: this.#pipelineFor({ state: issue.state, description: issue.description, labels: issue.labels }, issue.id, workflow),
       running: rows.running === undefined ? null : this.#runningRow(rows.running, now),
       retry: rows.retry === undefined ? null : this.#retryRow(rows.retry, now),
       paused: rows.paused === undefined ? null : this.#pausedRow(rows.paused),
       dispatch_note: rows.dispatchNote ?? null,
+      /** The hold of the model this waiting issue would run with: it does not start before `until`. */
+      model_hold: rows.modelHold
+        ? { model: rows.modelHold.model, source: rows.modelHold.source, until: rows.modelHold.until?.toISOString() ?? null }
+        : null,
     };
   }
 
-  /** `issues[]` and `blocked[]` of GET /api/v1/state, built from the live claims and the last board fetch. */
-  #issueRows(workflow: EffectiveWorkflow, now: number) {
+  /** `issues[]`, `queue[]` and `blocked[]` of GET /api/v1/state: running sessions, then the dispatch plan. */
+  #issueRows(workflow: EffectiveWorkflow, now: number, plan: PlanItem[]) {
     const config = workflow.config;
     const byId = new Map((this.#board?.candidates ?? []).map((issue) => [issue.id, issue]));
     const issues = [];
-    const seen = new Set<string>();
     for (const entry of this.#running.values()) {
-      seen.add(entry.issueId);
       const { issue } = entry;
-      issues.push(
-        this.#issueRow('running', { ...issue, description: firstLine(issue.description) }, workflow, now, { running: entry }),
-      );
+      issues.push(this.#issueRow('running', { ...issue, description: firstLine(issue.description) }, workflow, now, { running: entry }));
     }
-    for (const retry of [...this.#retries.values()].sort((a, b) => a.dueAtMs - b.dueAtMs)) {
-      if (seen.has(retry.issueId)) continue;
-      seen.add(retry.issueId);
-      const meta = this.#records.get(retry.issueId)?.meta;
-      const board = byId.get(retry.issueId);
-      issues.push(
-        this.#issueRow(
-          'retrying',
-          {
-            id: retry.issueId,
-            identifier: retry.identifier,
-            url: retry.url,
-            title: board?.title ?? null,
-            state: board?.state ?? meta?.state ?? '',
-            description: board?.description ?? meta?.description ?? null,
-          },
-          workflow,
-          now,
-          { retry },
-        ),
-      );
-    }
-    for (const paused of this.#paused.values()) {
-      if (seen.has(paused.issueId)) continue;
-      seen.add(paused.issueId);
-      const meta = this.#records.get(paused.issueId)?.meta;
-      issues.push(
-        this.#issueRow(
-          'paused',
-          {
-            id: paused.issueId,
-            identifier: paused.identifier,
-            url: paused.url,
-            title: byId.get(paused.issueId)?.title ?? null,
-            state: paused.state,
-            description: meta?.description ?? null,
-          },
-          workflow,
-          now,
-          { paused },
-        ),
-      );
-    }
-    for (const issue of sortForDispatch(this.#board?.candidates ?? [])) {
-      if (seen.has(issue.id) || this.#claimed.has(issue.id) || this.#cleanups.has(issue.id)) continue;
-      if (!hasRequiredFields(issue) || !isRoutable(issue, config.tracker)) continue;
-      seen.add(issue.id);
-      const note = typeof issue.native_ref?.dispatch_note === 'string' ? issue.native_ref.dispatch_note : null;
-      issues.push(this.#issueRow('queued', issue, workflow, now, { dispatchNote: note }));
-    }
-
     const blocked = [];
-    const blockedRow = (issue: Issue, reason: string) => ({
+    const parked = [];
+    const blockedRow = (issue: Issue, reason: string, code: string) => ({
       issue_id: issue.id,
       issue_identifier: issue.identifier,
       issue_url: issue.url,
@@ -2090,19 +3413,68 @@ export class Orchestrator {
       repo: this.#records.get(issue.id)?.repo ?? null,
       state: issue.state,
       reason,
+      reason_code: code,
       blocked_by: issue.blocked_by,
       tracked: this.#records.has(issue.id),
     });
+    for (const item of plan) {
+      const board = byId.get(item.issueId);
+      const retry = this.#retries.get(item.issueId);
+      const paused = this.#paused.get(item.issueId);
+      const meta = this.#records.get(item.issueId)?.meta;
+      if (item.group === 'blocked') {
+        if (board !== undefined) blocked.push(blockedRow(board, item.reason.text, item.reason.code));
+      } else if (item.kind === 'new') {
+        if (board === undefined) continue;
+        const note = typeof board.native_ref?.dispatch_note === 'string' ? board.native_ref.dispatch_note : null;
+        issues.push(this.#issueRow('queued', board, workflow, now, { dispatchNote: note, modelHold: this.#holdFor(board, config), plan: item }));
+      } else if (paused !== undefined) {
+        const title = board?.title ?? paused.title;
+        const row = { id: paused.issueId, identifier: paused.identifier, url: paused.url, title, state: paused.state, description: meta?.description ?? null, labels: board?.labels ?? meta?.labels };
+        issues.push(this.#issueRow('paused', row, workflow, now, { paused, plan: item }));
+      } else if (retry !== undefined) {
+        const held = board ?? (meta ? { state: meta.state, description: meta.description, labels: meta.labels } : null);
+        const row = {
+          id: retry.issueId,
+          identifier: retry.identifier,
+          url: retry.url,
+          title: board?.title ?? null,
+          state: meta?.state ?? board?.state ?? '',
+          description: meta?.description ?? board?.description ?? null,
+          labels: board?.labels ?? meta?.labels,
+        };
+        issues.push(this.#issueRow('retrying', row, workflow, now, { retry, modelHold: held === null ? null : this.#holdFor(held, config), plan: item }));
+      }
+    }
+    // Issues in a blocked-bucket column first, then candidates that are not dispatchable or lack a required label.
+    const listed = new Set(issues.map((row) => row.issue_id));
     for (const issue of this.#board?.parked ?? []) {
-      if (seen.has(issue.id)) continue;
-      blocked.push(blockedRow(issue, `in column "${issue.state}"`));
+      if (!listed.has(issue.id)) parked.push(blockedRow(issue, `in column "${issue.state}"`, 'column'));
     }
-    for (const issue of this.#board?.candidates ?? []) {
-      if (seen.has(issue.id) || issue.dispatchable) continue;
-      const note = typeof issue.native_ref?.dispatch_note === 'string' ? issue.native_ref.dispatch_note : null;
-      blocked.push(blockedRow(issue, note ?? 'not dispatchable'));
-    }
-    return { issues, blocked };
+    const queue = plan
+      .filter((item) => item.group !== 'blocked')
+      .map((item) => ({
+        position: item.position,
+        issue_id: item.issueId,
+        issue_identifier: item.identifier,
+        status: item.group,
+        kind: item.kind,
+        decision: item.decision,
+        reason: { code: item.reason.code, text: item.reason.text },
+        due_at: item.dueAt?.toISOString() ?? null,
+        state: item.state,
+        priority: item.priority,
+        model: item.model,
+      }));
+    return { issues, queue, blocked: [...parked, ...blocked] };
+  }
+
+  #slotsJson(): ForceSlots {
+    return {
+      running: this.#running.size,
+      forced: this.#forcedCount(),
+      limit: effectiveAgentLimits(this.#deps.workflow.current.config, this.#limitOverride).maxConcurrentAgents,
+    };
   }
 
   /** Runtime snapshot for GET /api/v1/state (spec 13.3). */
@@ -2113,18 +3485,28 @@ export class Orchestrator {
     let activeSeconds = 0;
     for (const entry of this.#running.values()) activeSeconds += (now - entry.startedAtMs) / 1000;
     const gate = this.#dispatchGate();
-    const { issues, blocked } = this.#issueRows(workflow, now);
+    let adapter: TrackerAdapter | null = null;
+    try {
+      adapter = this.#adapterFor(workflow);
+    } catch {
+      // Reported by the tick's validation; the plan then ignores sub-issues.
+    }
+    const plan = this.#plan(config, adapter);
+    const { issues, queue, blocked } = this.#issueRows(workflow, now, plan);
     return {
       generated_at: this.#clock.now().toISOString(),
       counts: {
         running: this.#running.size,
+        /** Running sessions started with Start now: `running` may exceed the limit by this many. */
+        forced: this.#forcedCount(),
         retrying: this.#retries.size,
-        paused: this.#paused.size,
+        paused: this.#pausedEntries().length,
         claimed: this.#claimed.size,
-        queued: issues.filter((issue) => issue.status === 'queued').length,
+        queued: queue.filter((item) => item.kind === 'new' && item.status === 'next').length,
         blocked: blocked.length,
       },
       issues,
+      queue,
       blocked,
       board_fetched_at: this.#board?.fetchedAt.toISOString() ?? null,
       pipeline_config: {
@@ -2137,7 +3519,17 @@ export class Orchestrator {
       },
       running: [...this.#running.values()].map((entry) => this.#runningRow(entry, now)),
       retrying: [...this.#retries.values()].sort((a, b) => a.dueAtMs - b.dueAtMs).map((retry) => this.#retryRow(retry, now)),
-      paused: [...this.#paused.values()].map((paused) => this.#pausedRow(paused)),
+      paused: this.#pausedEntries().map((paused) => this.#pausedRow(paused)),
+      // Operator holds first (no end), then limit holds soonest first; a model can have both.
+      model_holds: [
+        ...[...this.#operatorHolds.values()].map((hold) => this.#operatorHoldJson(hold)),
+        ...[...this.#modelHolds.values()]
+          .filter((hold) => this.#activeLimitHold(hold.model) === hold)
+          .sort((a, b) => a.until.getTime() - b.until.getTime())
+          .map((hold) => this.#modelHoldJson(hold)),
+      ],
+      model_controls: this.#modelControls(plan),
+      limits: limitsJson(config, this.#limitOverride, this.#runningByRole()),
       agent_totals: {
         input_tokens: this.#totals.inputTokens,
         output_tokens: this.#totals.outputTokens,
@@ -2168,7 +3560,7 @@ export class Orchestrator {
         active_states: config.tracker.activeStates,
         terminal_states: config.tracker.terminalStates,
         poll_interval_ms: this.#pollIntervalMs,
-        max_concurrent_agents: config.agent.maxConcurrentAgents,
+        max_concurrent_agents: effectiveAgentLimits(config, this.#limitOverride).maxConcurrentAgents,
         max_turns: config.agent.maxTurns,
         max_continuations: config.agent.maxContinuations,
         max_session_limit_retries: config.agent.maxSessionLimitRetries,
@@ -2214,7 +3606,8 @@ export class Orchestrator {
         entry !== undefined ? (entry.stop !== null ? 'stopping' : 'running') : retry !== undefined ? 'retrying' : paused !== undefined ? 'paused' : 'claimed',
       role: entry?.role ?? null,
       issue: metaJson(meta),
-      pipeline: this.#pipelineFor({ state, description: meta?.description ?? null }, issueId, this.#deps.workflow.current),
+      pipeline: this.#pipelineFor({ state, description: meta?.description ?? null, labels: meta?.labels }, issueId, this.#deps.workflow.current),
+      results: resultRows(record?.results ?? []),
       workspace: { path: entry?.workspacePath ?? record?.workspacePath ?? null },
       attempts: {
         runs: record?.runs ?? 0,
@@ -2250,6 +3643,8 @@ export class Orchestrator {
       last_error: record?.lastError ?? null,
       last_check: checkJson(record?.lastCheck ?? null),
       tracked: { completed_before: this.#completed.has(issueId) },
+      /** Agent slots now, for the Start now confirmation: `running` includes the `forced` sessions. */
+      slots: this.#slotsJson(),
       archived: null as { archived_at: string; released: boolean } | null,
     };
   }
@@ -2267,6 +3662,7 @@ export class Orchestrator {
       role: lastSession?.role ?? null,
       issue: archived.issue_meta ?? null,
       pipeline: archived.pipeline ?? [],
+      results: archived.results,
       workspace: { path: archived.workspace_path },
       attempts: {
         runs: archived.runs,
@@ -2286,6 +3682,7 @@ export class Orchestrator {
       last_error: archived.last_error,
       last_check: archived.last_check,
       tracked: { completed_before: archived.completed_before },
+      slots: this.#slotsJson(),
       archived: { archived_at: archived.archived_at, released: archived.released },
     };
   }

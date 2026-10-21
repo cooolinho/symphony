@@ -1,5 +1,8 @@
 import { normalizeStateName } from '../workflow/config.ts';
-import { roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
+import type { WorkflowProfile } from '../workflow/profile.ts';
+import { NEXT_STAGE, resultTargets, roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
+import { docsRoles, securityRoles } from '../workflow/validate.ts';
+import type { PersistedResult } from './stage-history.ts';
 
 /** One agent session attributed to a pipeline stage (the `#sessionJson` shape without the transcript). */
 export interface StageSession {
@@ -14,6 +17,14 @@ export interface StageSession {
   outcome: string | null;
 }
 
+/** A session of a pipeline stage with the result it reported (matched by run and role). */
+export interface PipelineSession extends StageSession {
+  /** Verdict of the result this session reported; null when it reported none (or none is known). */
+  verdict: string | null;
+  /** Round the result was recorded for; null when not counted. */
+  round: number | null;
+}
+
 /**
  * One station of an issue's path across the board: an agent role, a human column such as "In review",
  * or a terminal column. Stages are ordered left to right as the issue traverses them.
@@ -25,9 +36,17 @@ export interface PipelineStage {
   kind: 'agent' | 'human' | 'terminal';
   /** Board columns this stage spans, in their original casing. */
   columns: string[];
-  status: 'done' | 'active' | 'pending';
+  /**
+   * `skipped`: the issue's workflow profile or a `skipped` result leaves the stage out, or a result jumped over it (a
+   * `split` design), and no session ran there.
+   */
+  status: 'done' | 'active' | 'pending' | 'skipped';
   /** Sessions of this stage's role, oldest first; always empty for human and terminal stages. */
-  sessions: StageSession[];
+  sessions: PipelineSession[];
+  /** Verdict of the role's newest result since the last reset; null without one (and for human and terminal stages). */
+  verdict: string | null;
+  /** Round of that result; null when not counted or without a result. */
+  round: number | null;
 }
 
 export interface PipelineInput {
@@ -40,6 +59,12 @@ export interface PipelineInput {
   boardColumns: string[] | null;
   /** The issue's session history, oldest first. */
   sessions: StageSession[];
+  /** Roles the issue's workflow profile skips; their stages show as `skipped`. Omitted = none. */
+  skip?: readonly string[];
+  /** The issue's workflow profile, whose `on_result` overrides route issues too. Omitted = the roles' own routing. */
+  profile?: Pick<WorkflowProfile, 'onResult'> | null;
+  /** The issue's persisted stage results (see `buildStageHistory`), in any order. Omitted = none known. */
+  results?: readonly PersistedResult[];
 }
 
 function columnIndex(boardColumns: string[] | null): Map<string, number> {
@@ -91,32 +116,109 @@ export function blockedBucketColumns(
 }
 
 /**
+ * The normalized active columns that issues are led to: the targets of every role's `on_result`, `on_check_failed`,
+ * `on_missing_result` and `on_round_limit` (and of the profile's `on_result` overrides), and, for a role that uses
+ * `next`, the active columns after its own up to the first one whose role the profile does not skip (`skip`: where
+ * `next` really leads, `nextStage` in `transitions.ts`; the security review is conditional, see below). A role that hands off with `set_status` instead of a result (and the
+ * implicit default role of a column no role serves) moves the issue wherever it likes: its `may_move_to` columns, or
+ * any active column when it has no such list. `activeColumns` is in board order; `description` picks the role of a
+ * column like the dispatcher does (an issue command). Conservative: a column counted here may still never be entered,
+ * but a column that is not can only be entered by hand.
+ */
+function routedColumns(
+  roles: readonly RoleConfig[],
+  activeColumns: readonly string[],
+  description: string | null,
+  profile: PipelineInput['profile'],
+  skip: readonly string[],
+): Set<string> {
+  const routed = new Set<string>();
+  for (const role of roles) {
+    const overrides = Object.values(profile?.onResult[role.name] ?? {});
+    for (const target of [...resultTargets(role), ...overrides]) {
+      if (target !== NEXT_STAGE) routed.add(normalizeStateName(target));
+    }
+    if (![...Object.values(role.onResult), ...overrides].includes(NEXT_STAGE)) continue;
+    const last = activeColumns.findLastIndex((column) => role.states.includes(normalizeStateName(column)));
+    if (last === -1) continue;
+    for (const column of activeColumns.slice(last + 1)) {
+      routed.add(normalizeStateName(column));
+      if (!skip.includes(roleName(roleFor({ state: column, description }, roles)))) break;
+    }
+  }
+  // The security review is conditional: a reviewer's approval goes to it when the issue needs it (`securityStage` in
+  // `transitions.ts`), so the column is routed to whenever a reviewer exists.
+  if (roles.some((role) => role.result === 'review')) {
+    for (const role of securityRoles(roles)) {
+      for (const state of role.states) routed.add(state);
+    }
+  }
+  // The documentation stage is conditional too: a finished implementation or test goes to it when the issue needs it
+  // (`docsStage` in `transitions.ts`).
+  if (roles.some((role) => role.result === 'implementation' || role.result === 'test')) {
+    for (const role of docsRoles(roles)) {
+      for (const state of role.states) routed.add(state);
+    }
+  }
+  for (const column of activeColumns) {
+    const role = roleFor({ state: column, description }, roles);
+    if (role?.result != null) continue;
+    for (const target of role?.mayMoveTo ?? activeColumns) routed.add(normalizeStateName(target));
+  }
+  return routed;
+}
+
+/** Results oldest first; ties and unparseable timestamps keep the input order. */
+function chronological(results: readonly PersistedResult[]): PersistedResult[] {
+  const at = (entry: PersistedResult): number => {
+    const time = Date.parse(entry.meta.created_at);
+    return Number.isNaN(time) ? 0 : time;
+  };
+  return results
+    .map((entry, i) => ({ entry, i }))
+    .sort((a, b) => at(a.entry) - at(b.entry) || a.i - b.i)
+    .map(({ entry }) => entry);
+}
+
+/**
  * The ordered stations an issue passes on its way across the board, with each station's status and the
  * sessions already run there.
  *
  * Agent stages come from the active columns (board order when known): each column's serving role via
- * `roleFor`, consecutive columns of the same role merged into one stage. Human stages are the non-active,
+ * `roleFor`, consecutive columns of the same role merged into one stage. A column served by a role that hands off with
+ * results is left out unless the flow leads to it (a result's target, or a move another role may make with
+ * `set_status`, see `routedColumns`), the first stage serves it, or the issue is in it: a stage nothing routes to (the
+ * optional Testing column while the developer hands over to Agent review) is not part of the pipeline, so it never
+ * shows as done without having run. Human stages are the non-active,
  * non-terminal columns the final agent stage may move to that not every role lists — that singles out a
  * hand-off column such as "In review" and excludes the shared "Blocked" escape hatch (see
  * `blockedBucketColumns`). When the heuristic yields nothing, the pipeline is agent stages plus the
  * terminal columns, which is always correct. Session history marks a role's stage done even when the
- * column moved backwards; sessions of roles no longer derived get a trailing stage so history never drops.
+ * column moved backwards; sessions of roles no longer derived get a trailing stage so history never drops. Stages of
+ * roles in `skip` (the issue's profile) or whose newest result is a `skipped` marker, and stages behind the current one
+ * that a result's target jumped over, are `skipped` unless they have sessions. Sessions and stages carry the verdict and round of the results in `results`.
  */
 export function derivePipeline(input: PipelineInput): PipelineStage[] {
-  const { issue, roles, activeStates, terminalStates, boardColumns, sessions } = input;
+  const { issue, roles, activeStates, terminalStates, boardColumns, sessions, skip = [], results = [], profile = null } = input;
   const index = columnIndex(boardColumns);
   const active = new Set(activeStates.map(normalizeStateName));
   const terminal = new Set(terminalStates.map(normalizeStateName));
 
   // Agent stages: one per run of consecutive active columns served by the same role.
   const agents: PipelineStage[] = [];
-  for (const column of sortByBoard(activeStates, index)) {
-    if (terminal.has(normalizeStateName(column))) continue;
+  const activeColumns = sortByBoard(activeStates, index).filter((column) => !terminal.has(normalizeStateName(column)));
+  const routed = roles === null ? new Set<string>() : routedColumns(roles, activeColumns, issue.description, profile, skip);
+  const entry = new Set(roleFor({ state: activeColumns[0] ?? '', description: issue.description }, roles ?? null)?.states ?? []);
+  for (const column of activeColumns) {
+    const key = normalizeStateName(column);
     const role = roleFor({ state: column, description: issue.description }, roles ?? null);
+    // Only a column served by a role with results can be left out, and only when nothing leads to it: the results
+    // and the `set_status` moves of the other roles are all counted in `routed`.
+    if (role?.result != null && !routed.has(key) && !entry.has(key) && key !== normalizeStateName(issue.state)) continue;
     const name = roleName(role);
     const last = agents.at(-1);
     if (last !== undefined && last.id === name) last.columns.push(column);
-    else agents.push({ id: name, label: name, kind: 'agent', columns: [column], status: 'pending', sessions: [] });
+    else agents.push({ id: name, label: name, kind: 'agent', columns: [column], status: 'pending', sessions: [], verdict: null, round: null });
   }
 
   // Human stages: hand-off columns of the final agent stage that are not every role's shared target.
@@ -128,7 +230,7 @@ export function derivePipeline(input: PipelineInput): PipelineStage[] {
     for (const column of sortByBoard(lastRole.mayMoveTo, index)) {
       const key = normalizeStateName(column);
       if (active.has(key) || terminal.has(key) || shared.has(key)) continue;
-      humans.push({ id: `human:${key}`, label: column, kind: 'human', columns: [column], status: 'pending', sessions: [] });
+      humans.push({ id: `human:${key}`, label: column, kind: 'human', columns: [column], status: 'pending', sessions: [], verdict: null, round: null });
     }
   }
 
@@ -136,7 +238,7 @@ export function derivePipeline(input: PipelineInput): PipelineStage[] {
   for (const column of sortByBoard(terminalStates, index)) {
     const key = normalizeStateName(column);
     if (terminals.some((stage) => stage.id === `terminal:${key}`)) continue;
-    terminals.push({ id: `terminal:${key}`, label: column, kind: 'terminal', columns: [column], status: 'pending', sessions: [] });
+    terminals.push({ id: `terminal:${key}`, label: column, kind: 'terminal', columns: [column], status: 'pending', sessions: [], verdict: null, round: null });
   }
 
   const stages = [...agents, ...humans, ...terminals];
@@ -145,11 +247,11 @@ export function derivePipeline(input: PipelineInput): PipelineStage[] {
   for (const session of sessions) {
     let stage = stages.find((candidate) => candidate.kind === 'agent' && candidate.id === session.role);
     if (stage === undefined) {
-      stage = { id: session.role, label: session.role, kind: 'agent', columns: [], status: 'pending', sessions: [] };
+      stage = { id: session.role, label: session.role, kind: 'agent', columns: [], status: 'pending', sessions: [], verdict: null, round: null };
       stages.splice(agents.length, 0, stage);
       agents.push(stage);
     }
-    stage.sessions.push(session);
+    stage.sessions.push({ ...session, verdict: null, round: null });
     if (stage.columns.length === 0) stage.columns.push(session.state);
   }
 
@@ -174,6 +276,44 @@ export function derivePipeline(input: PipelineInput): PipelineStage[] {
     if (stage.kind === 'agent' && stage.status === 'pending' && stage.sessions.some((session) => session.outcome === 'handed_off')) {
       stage.status = 'done';
     }
+  }
+  // Results: a session shows the verdict it reported, a stage the newest one of its role.
+  const timeline = chronological(results);
+  for (const stage of stages) {
+    if (stage.kind !== 'agent') continue;
+    const own = timeline.filter((entry) => entry.meta.role === stage.id);
+    for (const session of stage.sessions) {
+      const reported = own.findLast((entry) => entry.meta.run !== null && entry.meta.run === session.run && entry.result.kind !== 'skipped');
+      session.verdict = reported?.result.verdict ?? null;
+      session.round = reported?.meta.round ?? null;
+    }
+    const latest = own.findLast((entry) => entry.result.kind !== 'reset');
+    stage.verdict = latest?.result.verdict ?? null;
+    stage.round = latest?.meta.round ?? null;
+  }
+  // A stage a result jumped over (from its role's stage forward to the target's, e.g. a `split` design straight to the
+  // integration review) shows as `skipped` unless a session ran there. Only behind the issue's current stage: a stage
+  // the issue came back before since lies ahead again (Testing after the integration review sent the issue back to the
+  // developer) and stays `pending`.
+  for (const entry of timeline) {
+    if (entry.meta.target === null || current === -1) continue;
+    const from = stages.findIndex((stage) => stage.kind === 'agent' && stage.id === entry.meta.role);
+    const to = Math.min(stageAt(entry.meta.target), current);
+    if (from === -1 || to <= from + 1) continue;
+    for (const stage of stages.slice(from + 1, to)) {
+      if (stage.kind === 'agent' && stage.sessions.length === 0) stage.status = 'skipped';
+    }
+  }
+  // A stage the profile leaves out or a `skipped` result marks stays `skipped` unless a session already ran there.
+  for (const stage of stages) {
+    if (stage.kind !== 'agent' || stage.sessions.length > 0) continue;
+    if (skip.includes(stage.id) || stage.verdict === 'skipped') stage.status = 'skipped';
+  }
+  // The security review and the documentation stage run only for issues that need them: an issue that went past one
+  // without a session skipped it.
+  for (const stage of stages) {
+    const conditional = roles?.some((role) => role.name === stage.id && (role.result === 'security' || role.result === 'docs')) === true;
+    if (conditional && stage.sessions.length === 0 && stage.status === 'done') stage.status = 'skipped';
   }
   return stages;
 }

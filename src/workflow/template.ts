@@ -1,8 +1,11 @@
 import { Liquid, type Template } from 'liquidjs';
 import { isEffortLabel, isModelLabel } from '../agent/model.ts';
+import { isComplexityLabel, isNeedsHumanLabel, isTypeLabel, classify } from './classify.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import type { Issue } from '../tracker/types.ts';
 import { resolveIssueCommand } from './command.ts';
+import type { PipelineConfig } from './config.ts';
+import { profileFor } from './profile.ts';
 
 /** Strict Liquid: unknown variables and unknown filters fail rendering. */
 const engine = new Liquid({
@@ -17,10 +20,19 @@ engine.registerFilter('without_model_labels', (labels: unknown) =>
   Array.isArray(labels) ? labels.filter((label) => typeof label !== 'string' || !isModelLabel(label)) : labels,
 );
 
-/** `issue.labels | without_agent_labels`: the labels minus "Model: …" and "Effort: …" labels, which only configure the agent. */
+/** `issue.labels | without_agent_labels`: the labels minus "Model: …", "Effort: …", "Type: …", "Complexity: …", and "needs-human" labels. */
 engine.registerFilter('without_agent_labels', (labels: unknown) =>
-  Array.isArray(labels) ? labels.filter((label) => typeof label !== 'string' || !(isModelLabel(label) || isEffortLabel(label))) : labels,
+  Array.isArray(labels)
+    ? labels.filter(
+        (label) =>
+          typeof label !== 'string' ||
+          !(isModelLabel(label) || isEffortLabel(label) || isTypeLabel(label) || isComplexityLabel(label) || isNeedsHumanLabel(label)),
+      )
+    : labels,
 );
+
+/** The prompt variable `results` for roles without `result` and for issues without results; see `resultsTemplateValue`. */
+export const EMPTY_RESULTS = { latest: [], open_findings: [], security_findings: [], failed_cases: [], test: null, analysis: null, design: null, implementation: null };
 
 /** Used when the WORKFLOW.md body is empty. */
 export const DEFAULT_PROMPT = `You are working on an issue from the configured tracker.
@@ -54,8 +66,10 @@ export async function renderPrompt(template: PromptTemplate, scope: Record<strin
     throw new SymphonyError('template_parse_error', `prompt template does not parse: ${template.parseError}`);
   }
   try {
-    // `agents` (the session's subagents) is optional for callers that render without a session, e.g. tests.
-    return (await engine.render(template.parsed, { agents: [], ...scope })).trim();
+    // `agents` (the session's subagents), `test_paths`, `attachments` and the stage-history variables are optional for callers that render without a session, e.g. tests.
+    const defaults = { agents: [], results: EMPTY_RESULTS, round: 1, result_required: false, test_paths: [], docs_paths: [], attachments: [] };
+    const results = typeof scope.results === 'object' && scope.results !== null ? { ...EMPTY_RESULTS, ...scope.results } : defaults.results;
+    return (await engine.render(template.parsed, { ...defaults, ...scope, results })).trim();
   } catch (error) {
     throw new SymphonyError('template_render_error', `prompt template failed to render: ${errorMessage(error)}`, {
       cause: error,
@@ -65,9 +79,15 @@ export async function renderPrompt(template: PromptTemplate, scope: Record<strin
 
 /**
  * Template view of an issue: string keys, ISO timestamps, nested lists and maps preserved. `command` is the
- * `/<name>` of the description when `skills` (see `commandSkills`) has a skill of that name, else null.
+ * `/<name>` of the description when `skills` (see `commandSkills`) has a skill of that name, else null. `profile` is the
+ * name of the workflow profile that applies to the issue (see `profileFor`), null without `pipeline.profiles`.
  */
-export function issueTemplateValue(issue: Issue, skills: ReadonlyMap<string, string> = new Map()): Record<string, unknown> {
+export function issueTemplateValue(
+  issue: Issue,
+  skills: ReadonlyMap<string, string> = new Map(),
+  pipeline: Pick<PipelineConfig, 'profiles'> | null = null,
+): Record<string, unknown> {
+  const classification = classify(issue.labels);
   return {
     command: resolveIssueCommand(issue.description, skills),
     id: issue.id,
@@ -85,5 +105,8 @@ export function issueTemplateValue(issue: Issue, skills: ReadonlyMap<string, str
     dispatchable: issue.dispatchable,
     created_at: issue.created_at?.toISOString() ?? null,
     updated_at: issue.updated_at?.toISOString() ?? null,
+    type: classification.type,
+    complexity: classification.complexity,
+    profile: pipeline === null ? null : (profileFor(pipeline, classification.type)?.name ?? null),
   };
 }

@@ -10,6 +10,20 @@ const AGENT_CSS = `
   .pipe-row b { color: var(--text); font-weight: 600; }
   .pipe-row .muted { overflow-wrap: anywhere; }
 
+  /* Stage results: one card per result, newest last. */
+  .result-cards { display: grid; gap: 8px; }
+  .result-card { display: grid; gap: 6px; padding: 9px 12px; font: 12px var(--mono); border: 1px solid var(--line);
+    border-left: 2px solid var(--tone, var(--faint)); border-radius: var(--radius-sm); background: rgba(0, 0, 0, .2); }
+  .result-card.vd-good { --tone: var(--green); } .result-card.vd-warn { --tone: var(--amber); } .result-card.vd-bad { --tone: var(--red); }
+  .result-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+  .result-head b { color: var(--text); font-weight: 600; }
+  .result-head .verdict { color: var(--tone, var(--muted)); font-weight: 600; }
+  .result-summary { color: var(--text-2); overflow-wrap: anywhere; white-space: pre-wrap; }
+  .result-findings { margin: 0; padding-left: 18px; display: grid; gap: 3px; color: var(--text-2); overflow-wrap: anywhere; }
+  .result-findings .sev { font-weight: 600; text-transform: uppercase; }
+  .result-findings .sev.blocker, .result-findings .sev.major { color: var(--red); }
+  .result-findings .sev.minor, .result-findings .sev.nit { color: var(--muted); }
+
   /* Issue sidebar section: labels, blockers, sub-issues. */
   .issue-labels { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
   .issue-labels:empty { display: none; }
@@ -53,6 +67,8 @@ const AGENT_PAGE_CSS = `
   .alert .sub { font: 12px var(--mono); color: var(--text-2); display: flex; flex-wrap: wrap; gap: 4px 16px; }
   .alert .sub b { color: var(--text); font-weight: 600; }
   .alert .actions { margin-top: 2px; }
+  .hero-actions { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .hero-actions[hidden] { display: none; }
   .notice { font: 12.5px var(--mono); color: var(--text-2); padding: 10px 14px; border: 1px dashed var(--line-2); border-radius: var(--radius-sm); background: rgba(0, 0, 0, .2); }
 
   /* Layout: timeline dominant, summary on the side */
@@ -231,6 +247,7 @@ export const AGENT_HTML = `<!doctype html>
     <div class="hero-repo"><span id="hero-repo"></span><span id="hero-branch" hidden></span><a id="hero-issue" hidden target="_blank" rel="noopener noreferrer">Open issue ↗</a></div>
     <div class="hero-meta" id="hero-meta"></div>
     <div class="hero-metrics" id="hero-metrics"></div>
+    <div class="hero-actions" id="hero-actions" hidden></div>
     <div class="live-line" id="live-line" hidden><span class="k">Now</span><span class="ev" id="live-ev"></span><span class="age" id="live-age"></span><span class="msg" id="live-msg"></span></div>
   </section>
 
@@ -238,6 +255,11 @@ export const AGENT_HTML = `<!doctype html>
     <div class="section-head"><h2 id="pipe-title">Pipeline</h2></div>
     <div id="pipeline"></div>
     <div class="pipe-rows" id="pipe-rows"></div>
+  </section>
+
+  <section class="results-section" id="results-section" aria-labelledby="results-title" hidden>
+    <div class="section-head"><h2 id="results-title">Stage results <span class="count" id="results-count"></span></h2></div>
+    <div class="result-cards" id="result-cards"></div>
   </section>
 
   <section class="alert" id="alert" role="alert" hidden></section>
@@ -450,7 +472,7 @@ ${PIPELINE_JS}
   const COVERED_BY_TRANSCRIPT = new Set(['assistant_message', 'tool_use', 'tool_result', 'tracker_tool']);
   const CATEGORY = {
     run_dispatched: 'lifecycle', run_finished: 'lifecycle', retry_scheduled: 'lifecycle', issue_paused: 'lifecycle',
-    session_limit_wait: 'lifecycle', worker_restarted: 'lifecycle',
+    session_limit_wait: 'lifecycle', worker_restarted: 'lifecycle', worker_forced: 'lifecycle', issue_resumed: 'lifecycle', model_hold: 'lifecycle', model_hold_ended: 'lifecycle',
     session_started: 'lifecycle', session_configured: 'lifecycle', startup_failed: 'lifecycle', agent_exited: 'lifecycle',
     phase: 'phase',
     turn_started: 'model', turn_completed: 'model', turn_failed: 'model', turn_cancelled: 'model', turn_timeout: 'model',
@@ -468,7 +490,7 @@ ${PIPELINE_JS}
       type: 'event', title: label(e.event).toUpperCase(), name: '', line: e.message || '', chips: [], sig: String(e.seq) };
     switch (e.event) {
       case 'run_dispatched':
-        return { ...base, type: 'run', tone: 'green', glyph: '●', title: d.continuation ? 'CONTINUATION SESSION' : d.attempt ? 'RETRY ATTEMPT ' + d.attempt : 'AGENT STARTED',
+        return { ...base, type: 'run', tone: 'green', glyph: '●', title: (d.continuation ? 'CONTINUATION SESSION' : d.attempt ? 'RETRY ATTEMPT ' + d.attempt : 'AGENT STARTED') + (d.forced ? ' · EXTRA SLOT' : ''),
           name: (d.role || '') + ' · ' + (d.state || ''), line: 'Run ' + e.run + (d.model ? ' · model ' + d.model : ' · Claude Code default model') + (d.model_label ? ' (label ' + d.model_label + ')' : '') +
             (d.effort ? ' · effort ' + d.effort + (d.effort_label ? ' (label ' + d.effort_label + ')' : '') : '') };
       case 'run_finished': {
@@ -491,10 +513,23 @@ ${PIPELINE_JS}
       case 'session_limit_wait':
         return { ...base, tone: 'amber', glyph: '⏳', title: 'WAITING FOR SESSION LIMIT', err: false,
           line: 'Resets at ' + fmtStamp(d.resets_at) + (d.window ? ' (' + windowWords(d.window) + ')' : '') + ' · retry at ' + fmtStamp(d.retry_at) };
+      case 'model_hold':
+        if (d.source === 'operator') {
+          return { ...base, tone: 'amber', glyph: '⏸', title: 'MODEL ' + String(d.model || '').toUpperCase() + ' PAUSED', err: false, line: e.message || '' };
+        }
+        return { ...base, tone: 'amber', glyph: '⏳', title: 'MODEL ' + String(d.model || '').toUpperCase() + ' ON HOLD', err: false,
+          line: 'Until ' + fmtStamp(d.until) + (d.extended ? ' (extended)' : '') + (d.text ? ' · ' + d.text : '') };
+      case 'model_hold_ended':
+        return { ...base, tone: 'cyan', glyph: '▶', title: 'MODEL ' + String(d.model || '').toUpperCase() + ' HOLD ENDED', err: false, line: e.message || '' };
       case 'worker_restarted':
         return { ...base, tone: 'cyan', glyph: '↻', title: 'WORKER RESTARTED', err: false, line: e.message || '' };
+      case 'worker_forced':
+        return { ...base, tone: 'cyan', glyph: '▶', title: 'STARTED IN AN EXTRA SLOT', err: false, line: e.message || '' };
       case 'issue_paused':
-        return { ...base, tone: 'gray', glyph: '⏸', title: 'PAUSED', err: false };
+        return { ...base, tone: 'gray', glyph: '⏸', title: d.source === 'operator' ? 'PAUSED BY OPERATOR' : d.source === 'budget' ? 'COST BUDGET USED UP' : 'PAUSED', err: false,
+          line: d.source === 'budget' ? e.message || '' : undefined };
+      case 'issue_resumed':
+        return { ...base, tone: 'cyan', glyph: '▶', title: 'RESUMED', err: false, line: e.message || '' };
       case 'phase':
         return { ...base, type: 'phase', cat: 'phase', tone: 'cyan', glyph: '◇', title: 'PHASE', from: d.from, to: d.to, line: '' };
       case 'session_configured':
@@ -890,6 +925,13 @@ ${PIPELINE_JS}
       ['Started', lastSession ? fmtClock(lastSession.started_at) : '—'],
     ]);
 
+    // Pause of a running or retrying issue; a paused issue gets Resume in its alert. Start now for a waiting or paused one.
+    const actionsBox = $('hero-actions');
+    const pausable = d && !S.ended && (d.status === 'running' || d.status === 'retrying');
+    const forceable = d && !S.ended && (d.status === 'retrying' || d.status === 'paused') && retryAllowed();
+    actionsBox.hidden = !pausable && !forceable;
+    patchChildren(actionsBox, [...(forceable ? [restartButton('Force')] : []), ...(pausable ? [restartButton('Pause')] : [])]);
+
     const live = $('live-line');
     live.hidden = !run;
     if (run) {
@@ -908,54 +950,79 @@ ${PIPELINE_JS}
     return null;
   }
 
-  // Outcome of the last restart click; the alert is rebuilt every second, so the button is drawn from here.
+  // Outcome of the last control click (Retry, Pause, Resume); the alert and the header are rebuilt every second, so
+  // the buttons are drawn from here.
   let restartState = null;
-  const RESTART_LABELS = { Retry: 'Retry now', Resume: 'Resume now' };
-  const RESTART_DISABLED = 'Restart disabled: set SYMPHONY_ALLOW_REMOTE_CONTROL=true behind an authenticating proxy';
+  const RESTART_LABELS = { Retry: 'Retry now', Resume: 'Resume now', Pause: 'Pause', Force: 'Start now' };
+  // Route, busy label and success label of each control button.
+  const CONTROL = {
+    Retry: ['retry', 'Restarting…', 'Queued'],
+    Force: ['force', 'Starting…', 'Started'],
+    Resume: ['resume', 'Resuming…', 'Queued'],
+    Pause: ['pause', 'Pausing…', 'Paused'],
+  };
+  const RESTART_DISABLED = 'Controls disabled: set SYMPHONY_ALLOW_REMOTE_CONTROL=true behind an authenticating proxy';
   // controls.retry from /api/v1/<identifier>; false on a non-loopback bind without server.allow_remote_control.
   const retryAllowed = () => !S.detail || !S.detail.controls || S.detail.controls.retry !== false;
 
   function restartButton(verb) {
     if (!retryAllowed()) return el('span', RESTART_DISABLED, 'muted restart-off');
-    const b = el('button', restartState ? restartState.label : RESTART_LABELS[verb], 'btn restart' + (restartState && restartState.cls ? ' ' + restartState.cls : ''));
+    const st = restartState && restartState.verb === verb ? restartState : null;
+    const b = el('button', st ? st.label : RESTART_LABELS[verb], 'btn restart' + (st && st.cls ? ' ' + st.cls : ''));
     b.type = 'button';
+    b.dataset.verb = verb;
     b.setAttribute('aria-label', RESTART_LABELS[verb] + ' ' + ID);
-    if (restartState && restartState.cls === 'is-busy') b.setAttribute('aria-busy', 'true');
+    if (st && st.cls === 'is-busy') b.setAttribute('aria-busy', 'true');
     return b;
   }
 
-  async function restart() {
-    if (restartState && restartState.cls === 'is-busy') return;
-    restartState = { cls: 'is-busy', label: 'Restarting…' };
+  function repaintControls() {
     renderAlert();
+    if (S.detail) renderHeader();
+  }
+
+  async function restart(verb) {
+    if (restartState && restartState.cls === 'is-busy') return;
+    const [action, busy, done] = CONTROL[verb] || CONTROL.Retry;
+    // Start now runs beside the limit: ask first when every slot is taken.
+    const slots = S.detail && S.detail.slots;
+    if (verb === 'Force' && slots && slots.running - slots.forced >= slots.limit) {
+      const num = ID.lastIndexOf('#') > 0 ? ID.slice(ID.lastIndexOf('#')) : ID;
+      if (!window.confirm('All ' + slots.limit + ' slot' + (slots.limit === 1 ? ' is' : 's are') + ' busy. Start ' + num + ' in an extra slot?')) return;
+    }
+    restartState = { verb, cls: 'is-busy', label: busy };
+    repaintControls();
     let ok = false;
-    let label = 'Restart failed';
+    let label = RESTART_LABELS[verb] + ' failed';
     try {
-      const res = await fetch(API + '/retry', { method: 'POST' });
+      const res = await fetch(API + '/' + action, { method: 'POST' });
       let body = null;
       try { body = await res.json(); } catch {}
       ok = res.ok;
-      label = ok ? 'Queued' : (body && body.error && body.error.message) || 'Restart failed (' + res.status + ')';
+      label = ok ? done : (body && body.error && body.error.message) || RESTART_LABELS[verb] + ' failed (' + res.status + ')';
     } catch {}
-    restartState = { cls: ok ? 'is-done' : 'is-failed', label };
-    renderAlert();
+    restartState = { verb, cls: ok ? 'is-done' : 'is-failed', label };
+    repaintControls();
     $('announce').textContent = ID + ': ' + label;
     setTimeout(poll, 500);
-    setTimeout(() => { restartState = null; renderAlert(); }, ok ? 1800 : 5000);
+    setTimeout(() => { restartState = null; repaintControls(); }, ok ? 1800 : 5000);
   }
 
   document.addEventListener('click', (event) => {
-    if (event.target instanceof Element && event.target.closest('button.restart')) restart();
+    const b = event.target instanceof Element ? event.target.closest('button.restart') : null;
+    if (b) restart(b.dataset.verb || 'Retry');
   });
 
   function sessionLimitSpec(d) {
     const r = d.retry;
     const limit = r.limit;
     const sub = [];
+    const modelLimit = limit.scope === 'model' && limit.model;
+    if (modelLimit) sub.push(['Model', limit.model + ' on hold; other models keep running, no fallback']);
     if (limit.window) sub.push(['Window', windowWords(limit.window)]);
     if (limit.resets_at) sub.push(['Resets at', fmtStamp(limit.resets_at)]);
     sub.push(['Retry at', fmtStamp(r.due_at) + ' (in ' + fmtDuration(Math.max(0, Date.parse(r.due_at) - Date.now()) / 1000) + ')']);
-    sub.push(['Retries', limit.waiting ? 'used up' : limit.hits <= limit.max_retries ? limit.hits + ' of ' + limit.max_retries : 'backoff']);
+    sub.push(['Retries', modelLimit ? 'none: waits for the end of the hold' : limit.waiting ? 'used up' : limit.hits <= limit.max_retries ? limit.hits + ' of ' + limit.max_retries : 'backoff']);
     if (limit.text && r.error && r.error !== limit.text) sub.push(['Queue', r.error]);
     if (limit.overage_disabled_reason === 'out_of_credits') sub.push(['Credits', 'Extra usage is off because credits are used up. Top up' + (retryAllowed() ? ', then press Retry now.' : '.')]);
     return { tone: 'amber', title: '⏳ Session limit reached', reason: limit.text || r.error || 'unknown', sub, restart: 'Retry' };
@@ -976,7 +1043,13 @@ ${PIPELINE_JS}
     } else if (d && !S.ended && d.status === 'stopping') {
       spec = { tone: 'amber', title: '■ Stopping', reason: d.running && d.running.stopping, sub: [] };
     } else if (d && !S.ended && d.status === 'paused') {
-      spec = { tone: 'gray', title: '⏸ Agent paused', reason: 'Still active after ' + (d.paused ? d.paused.continuations : '?') + ' continuation session(s). Change the issue on the board (status, comment or labels) to resume' + (retryAllowed() ? ', or press Resume now.' : '.'), sub: [], restart: 'Resume' };
+      const budget = d.paused && d.paused.source === 'budget';
+      const reason = d.paused && d.paused.source === 'operator'
+        ? 'Paused by operator. Board changes (status, comments, labels) do not lift the pause; it ends with Resume, Done or leaving the board.'
+        : budget
+        ? 'Cost budget used up: $' + d.paused.cost_usd.toFixed(2) + ' of $' + d.paused.max_issue_cost_usd.toFixed(2) + ' (agent.max_issue_cost_usd). The next stage does not start. Raise the limit or press Resume; board changes do not lift the pause.'
+        : 'Still active after ' + (d.paused ? d.paused.continuations : '?') + ' continuation session(s). Change the issue on the board (status, comment or labels) to resume' + (retryAllowed() ? ', or press Resume now.' : '.');
+      spec = { tone: 'gray', title: d.paused && d.paused.source === 'operator' ? '⏸ Paused by operator' : budget ? '⏸ Cost budget used up' : '⏸ Agent paused', reason, sub: [], restart: 'Resume' };
     } else if (failedRun && !isRunning()) {
       spec = { tone: 'red', title: '✕ Agent failed', reason: fin.detail.reason, sub: [] };
     } else if (isRunning() && d.last_error && d.attempts.current_retry_attempt) {
@@ -1148,6 +1221,48 @@ ${PIPELINE_JS}
       return row;
     });
     patchChildren($('pipe-rows'), rows);
+  }
+
+  /** One card per recorded stage result: role, verdict with round, summary, findings, blockers and the comment's link. */
+  function renderResults() {
+    const d = S.detail;
+    const results = (d && d.results) || [];
+    $('results-section').hidden = !results.length;
+    setText($('results-count'), results.length ? String(results.length) : '');
+    const cards = results.map((r) => {
+      const card = el('article', null, 'result-card vd-' + (PIPE_VERDICT_TONE[r.verdict] || 'muted'));
+      const head = el('div', null, 'result-head');
+      head.append(el('b', r.role), el('span', r.kind, 'muted'), el('span', pipeVerdict(r.verdict, r.round), 'verdict'));
+      if (r.target) head.append(el('span', '→ ' + r.target, 'muted'));
+      head.append(el('span', fmtStamp(r.created_at), 'muted'));
+      if (typeof r.url === 'string' && /^https?:/.test(r.url)) {
+        const link = el('a', 'Comment ↗');
+        link.href = r.url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+        head.append(link);
+      }
+      card.append(head);
+      if (r.summary) card.append(el('div', r.summary, 'result-summary'));
+      if (r.findings && r.findings.length) {
+        const list = el('ul', null, 'result-findings');
+        for (const f of r.findings) {
+          const li = el('li');
+          li.append(el('span', f.severity, 'sev ' + f.severity), ' ' + (f.file ? f.file + (f.line ? ':' + f.line : '') + ' — ' : '') + f.problem + (f.fix ? ' → ' + f.fix : ''));
+          list.append(li);
+        }
+        card.append(list);
+      }
+      if (r.blockers && r.blockers.length) {
+        const list = el('ul', null, 'result-findings');
+        for (const b of r.blockers) {
+          const li = el('li');
+          li.append(el('span', b.needs, 'sev blocker'), ' ' + b.description);
+          list.append(li);
+        }
+        card.append(list);
+      }
+      return card;
+    });
+    patchChildren($('result-cards'), cards);
   }
 
   /** Board fields of the issue: labels, priority, parent, blockers, sub-issues, dispatch note. */
@@ -1416,6 +1531,7 @@ ${PIPELINE_JS}
     if (S.detail || S.ended || S.notFound) {
       renderHeader();
       renderPipelineSection();
+      renderResults();
       renderIssueMeta();
       renderAlert();
       renderIntegrations();

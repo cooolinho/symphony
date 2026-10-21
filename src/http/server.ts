@@ -48,6 +48,8 @@ export function isLoopbackHost(host: string): boolean {
   return LOOPBACK_HOSTS.has(host);
 }
 const API_PREFIX = '/api/v1/';
+/** Largest JSON body a control route reads. */
+const MAX_BODY_BYTES = 16 * 1024;
 
 function sendJson(res: http.ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   const text = JSON.stringify(body, null, 2);
@@ -57,6 +59,55 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown, heade
 
 function sendError(res: http.ServerResponse, status: number, code: string, message: string, headers: Record<string, string> = {}): void {
   sendJson(res, status, { error: { code, message } }, headers);
+}
+
+/**
+ * Reads the JSON body of a control route. Requires `Content-Type: application/json` (415 otherwise, which also
+ * refuses plain form posts) and at most MAX_BODY_BYTES (413). An empty body is null. Sends the error and resolves
+ * `undefined` when refused.
+ */
+function readJsonBody(req: http.IncomingMessage, res: http.ServerResponse): Promise<unknown> {
+  const type = (req.headers['content-type'] ?? '').split(';')[0]?.trim().toLowerCase();
+  if (type !== 'application/json') {
+    req.resume();
+    sendError(res, 415, 'unsupported_media_type', 'send the body with Content-Type: application/json');
+    return Promise.resolve(undefined);
+  }
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let done = false;
+    const finish = (value: unknown) => {
+      if (done) return;
+      done = true;
+      resolve(value);
+    };
+    req.on('data', (chunk: Buffer) => {
+      if (done) return;
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        sendError(res, 413, 'payload_too_large', `the body may have at most ${MAX_BODY_BYTES} bytes`, { connection: 'close' });
+        req.resume();
+        finish(undefined);
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      const text = Buffer.concat(chunks).toString('utf8');
+      if (text.trim() === '') {
+        finish(null);
+        return;
+      }
+      try {
+        finish(JSON.parse(text));
+      } catch {
+        sendError(res, 400, 'bad_request', 'the body is not valid JSON');
+        finish(undefined);
+      }
+    });
+    req.on('error', () => finish(undefined));
+  });
 }
 
 function hostnameOf(hostHeader: string | undefined): string | null {
@@ -82,13 +133,17 @@ function sameHost(origin: string, hostHeader: string | undefined): boolean {
  * archived once the orchestrator released the issue),
  * `/logs` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
  * `/api/v1/state`, `/api/v1/<identifier>` with its `/timeline` and `/transcript`, `POST /api/v1/refresh`
- * and `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker).
- * Read-only except refresh and retry. On a loopback bind, requests whose Host is not a loopback name are
+ * `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker), `/force` (Start now in an extra slot),
+ * `/pause` and `/resume` (operator pause of an issue), `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family), and
+ * `PUT` / `DELETE /api/v1/settings/agents` (agent slots set on the dashboard; JSON body, `Content-Type:
+ * application/json` required).
+ * Read-only except refresh and these control routes. On a loopback bind, requests whose Host is not a loopback name are
  * rejected (DNS-rebinding guard), and cross-origin POSTs are refused. On any other bind the server has no
- * login of its own and belongs behind an authenticating reverse proxy: retry is disabled unless
+ * login of its own and belongs behind an authenticating reverse proxy: the control routes are disabled unless
  * `allowRemoteControl` is set, and then requires an Origin header naming this host (CSRF guard, since a
- * proxy's BasicAuth credentials ride along with every browser request). `/api/v1/state` and
- * `/api/v1/<identifier>` report `controls.retry` so the pages show the restart buttons only when allowed.
+ * proxy's BasicAuth credentials ride along with every browser request). The same guard applies to every control
+ * route. `/api/v1/state` and `/api/v1/<identifier>` report `controls.retry` so the pages show the control buttons
+ * only when allowed.
  */
 export function startHttpServer(options: {
   host: string;
@@ -106,7 +161,38 @@ export function startHttpServer(options: {
   // Analytics per filter, valid while the log files (append-only, so their sizes) and the price table are unchanged.
   const analyticsCache = new Map<string, { pricing: object; value: Analytics }>();
 
+  /**
+   * The guard of every control route (retry, force, pause, resume, model hold and release, agent settings): loopback bind, or
+   * `allowRemoteControl` plus an Origin header naming this host. Sends the 403 and returns false when refused.
+   */
+  const controlAllowed = (req: http.IncomingMessage, res: http.ServerResponse): boolean => {
+    if (!controls.retry) {
+      sendError(
+        res,
+        403,
+        'control_disabled',
+        'controls are disabled on a non-loopback bind; set server.allow_remote_control (SYMPHONY_ALLOW_REMOTE_CONTROL=true) behind an authenticating proxy',
+      );
+      return false;
+    }
+    const origin = req.headers.origin;
+    if (origin === undefined && !loopbackBind) {
+      sendError(res, 403, 'forbidden_origin', 'control requests need an Origin header naming this host (e.g. -H \'Origin: https://<domain>\')');
+      return false;
+    }
+    if (origin !== undefined && !sameHost(origin, req.headers.host)) {
+      sendError(res, 403, 'forbidden_origin', 'cross-origin control requests are not allowed');
+      return false;
+    }
+    return true;
+  };
+
   const route = (req: http.IncomingMessage, res: http.ServerResponse) => {
+    const respond = (pending: Promise<void>) =>
+      pending.catch((error: unknown) => {
+        logger.warn('http control request failed', { path: req.url, error: errorMessage(error) });
+        if (!res.headersSent) sendError(res, 500, 'internal_error', 'request failed; see the orchestrator logs');
+      });
     if (loopbackBind) {
       const hostname = hostnameOf(req.headers.host);
       if (hostname === null || !LOOPBACK_HOSTS.has(hostname)) {
@@ -269,28 +355,70 @@ export function startHttpServer(options: {
       });
       return;
     }
-    // Sub-resources of an issue; the identifier is URL-encoded (owner%2Frepo%2312), so its slash cannot end it.
-    const sub = /^(.+)\/(timeline|transcript|retry)$/.exec(pathname.slice(API_PREFIX.length));
-    if (pathname.startsWith(API_PREFIX) && sub !== null && sub[2] === 'retry') {
+    // Agent slots set on the dashboard: PUT changes them, DELETE returns to WORKFLOW.md.
+    if (pathname === '/api/v1/settings/agents') {
+      allow(['PUT', 'DELETE'], () => {
+        if (!controlAllowed(req, res)) {
+          req.resume();
+          return;
+        }
+        respond(readJsonBody(req, res).then(async (body) => {
+          if (body === undefined) return;
+          const result = method === 'PUT' ? await orchestrator.updateAgentSettings(body) : await orchestrator.resetAgentSettings();
+          if (result.ok) sendJson(res, 200, { changed: result.changed, limits: result.limits, requested_at: new Date().toISOString() });
+          else if (result.reason === 'invalid') sendError(res, 400, 'invalid_settings', result.message);
+          else sendError(res, 409, 'stopping', 'the orchestrator is shutting down');
+        }));
+      });
+      return;
+    }
+    // Pause / Resume of a model family: POST /api/v1/models/<model>/hold and /release.
+    const modelRoute = /^models\/([^/]+)\/(hold|release)$/.exec(pathname.slice(API_PREFIX.length));
+    if (pathname.startsWith(API_PREFIX) && modelRoute !== null) {
       allow(['POST'], () => {
-        if (!controls.retry) {
-          sendError(
-            res,
-            403,
-            'control_disabled',
-            'restart is disabled on a non-loopback bind; set server.allow_remote_control (SYMPHONY_ALLOW_REMOTE_CONTROL=true) behind an authenticating proxy',
-          );
+        if (!controlAllowed(req, res)) return;
+        let model: string;
+        try {
+          model = decodeURIComponent(modelRoute[1] as string);
+        } catch {
+          sendError(res, 400, 'bad_request', 'malformed model family');
           return;
         }
-        const origin = req.headers.origin;
-        if (origin === undefined && !loopbackBind) {
-          sendError(res, 403, 'forbidden_origin', 'restart requests need an Origin header naming this host (e.g. -H \'Origin: https://<domain>\')');
-          return;
-        }
-        if (origin !== undefined && !sameHost(origin, req.headers.host)) {
-          sendError(res, 403, 'forbidden_origin', 'cross-origin restart requests are not allowed');
-          return;
-        }
+        const hold = modelRoute[2] === 'hold';
+        respond((hold ? orchestrator.holdModel(model) : orchestrator.releaseModel(model)).then((result) => {
+          if (result.ok) {
+            sendJson(res, 202, {
+              model: result.model,
+              paused: hold,
+              [hold ? 'stopped' : 'requeued']: result.issues,
+              requested_at: new Date().toISOString(),
+            });
+            return;
+          }
+          switch (result.reason) {
+            case 'unknown_model':
+              sendError(res, 400, 'unknown_model', `unknown model family ${model}; use one of fable, opus, sonnet, haiku`);
+              break;
+            case 'already_paused':
+              sendError(res, 409, 'already_paused', `model ${model} is already paused`);
+              break;
+            case 'not_paused':
+              sendError(res, 409, 'not_paused', `model ${model} is not paused by the operator`);
+              break;
+            case 'stopping':
+              sendError(res, 409, 'stopping', 'the orchestrator is shutting down');
+              break;
+          }
+        }));
+      });
+      return;
+    }
+    // Sub-resources of an issue; the identifier is URL-encoded (owner%2Frepo%2312), so its slash cannot end it.
+    const sub = /^(.+)\/(timeline|transcript|retry|pause|resume|force)$/.exec(pathname.slice(API_PREFIX.length));
+    if (pathname.startsWith(API_PREFIX) && sub !== null && (sub[2] === 'retry' || sub[2] === 'pause' || sub[2] === 'resume' || sub[2] === 'force')) {
+      const action = sub[2];
+      allow(['POST'], () => {
+        if (!controlAllowed(req, res)) return;
         let key: string;
         try {
           key = decodeURIComponent(sub[1] as string);
@@ -298,37 +426,70 @@ export function startHttpServer(options: {
           sendError(res, 400, 'bad_request', 'malformed issue identifier');
           return;
         }
-        orchestrator.restartWorker(key).then(
-          (result) => {
+        const notFound = () => sendError(res, 404, 'issue_not_found', `issue ${key} is not known to the running orchestrator`);
+        const shuttingDown = () => sendError(res, 409, 'stopping', 'the orchestrator is shutting down; restart it before retrying');
+        if (action === 'pause') {
+          respond(orchestrator.pauseIssue(key).then((result) => {
+            if (result.ok) {
+              sendJson(res, 202, { paused: true, issue_identifier: result.issueIdentifier, previous: result.previous, requested_at: new Date().toISOString() });
+            } else if (result.reason === 'not_found') notFound();
+            else if (result.reason === 'already_paused') sendError(res, 409, 'already_paused', `issue ${key} is already paused by the operator`);
+            else sendError(res, 409, 'stopping', 'the agent of this issue is already stopping, or the orchestrator is shutting down');
+          }));
+          return;
+        }
+        if (action === 'force') {
+          respond(orchestrator.forceStart(key).then((result) => {
             if (result.ok) {
               sendJson(res, 202, {
-                queued: true,
+                started: true,
                 issue_identifier: result.issueIdentifier,
                 previous: result.previous,
+                slots: result.slots,
                 requested_at: new Date().toISOString(),
               });
-              return;
-            }
-            switch (result.reason) {
-              case 'not_found':
-                sendError(res, 404, 'issue_not_found', `issue ${key} is not known to the running orchestrator`);
-                break;
-              case 'running':
-                sendError(res, 409, 'running', 'the worker is running; there is nothing to restart');
-                break;
-              case 'stopping':
-                sendError(res, 409, 'stopping', 'the orchestrator is shutting down; restart it before retrying');
-                break;
-              case 'not_waiting':
-                sendError(res, 409, 'not_waiting', 'the issue is not waiting for a retry or paused; there is nothing to restart');
-                break;
-            }
-          },
-          (error) => {
-            logger.warn('http restart failed', { path: req.url, error: errorMessage(error) });
-            if (!res.headersSent) sendError(res, 500, 'internal_error', 'request failed; see the orchestrator logs');
-          },
-        );
+            } else if (result.reason === 'not_found') sendError(res, 404, 'issue_not_found', result.message);
+            else if (result.reason === 'model_held') sendError(res, 409, 'model_held', result.message);
+            else if (result.reason === 'tracker_error') sendError(res, 502, 'tracker_error', result.message);
+            else if (result.reason === 'spawn_failed') sendError(res, 500, 'spawn_failed', result.message);
+            else sendError(res, 409, result.reason, result.message);
+          }));
+          return;
+        }
+        if (action === 'resume') {
+          respond(orchestrator.resumeIssue(key).then((result) => {
+            if (result.ok) sendJson(res, 202, { queued: true, issue_identifier: result.issueIdentifier, requested_at: new Date().toISOString() });
+            else if (result.reason === 'not_found') notFound();
+            else if (result.reason === 'not_paused') sendError(res, 409, 'not_paused', `issue ${key} is not paused`);
+            else sendError(res, 409, 'stopping', 'the agent of this issue is still stopping, or the orchestrator is shutting down');
+          }));
+          return;
+        }
+        respond(orchestrator.restartWorker(key).then((result) => {
+          if (result.ok) {
+            sendJson(res, 202, {
+              queued: true,
+              issue_identifier: result.issueIdentifier,
+              previous: result.previous,
+              requested_at: new Date().toISOString(),
+            });
+            return;
+          }
+          switch (result.reason) {
+            case 'not_found':
+              notFound();
+              break;
+            case 'running':
+              sendError(res, 409, 'running', 'the worker is running; there is nothing to restart');
+              break;
+            case 'stopping':
+              shuttingDown();
+              break;
+            case 'not_waiting':
+              sendError(res, 409, 'not_waiting', 'the issue is not waiting for a retry or paused; there is nothing to restart');
+              break;
+          }
+        }));
       });
       return;
     }

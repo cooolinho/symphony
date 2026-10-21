@@ -1,11 +1,36 @@
+import { bareModelName } from './model-name.ts';
+
 export type LimitWindow = 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet';
+
+/** Model families a limit can apply to on its own ("You've reached your Fable limit"). */
+export const MODEL_FAMILIES = ['fable', 'opus', 'sonnet', 'haiku'] as const;
+export type ModelFamily = (typeof MODEL_FAMILIES)[number];
+
+/**
+ * Who a limit stops: `account` (session or weekly limit, every model) or `model` (one model family; the other
+ * models keep working).
+ */
+export type LimitScope = 'account' | 'model';
 
 export interface ParsedLimitMessage {
   /** The exhausted window, or null when the wording is not recognised. */
   window: LimitWindow | null;
   /** The next reset as an absolute instant, or null when it could not be read. */
   resetsAt: Date | null;
+  /** `model` when the wording names a model family, else `account`. */
+  scope: LimitScope;
+  /** The model family the wording names; null for an account-wide limit. */
+  model: ModelFamily | null;
 }
+
+/** "hit your … limit" (session and weekly limits) or "reached your … limit" (model limits). */
+const LIMIT_PHRASE = /\b(?:hit|reached)\s+your\b(.*?)\blimit\b/i;
+/**
+ * A text that is only a limit message: it starts with the phrase ("You've hit your session limit · resets …",
+ * "You've reached your Fable limit. Switch to another model to continue."), is short and has one line.
+ */
+const WHOLE_LIMIT_MESSAGE = /^(?:claude\s+(?:ai\s+)?)?(?:you(?:['’]ve|\s+have)\s+)?(?:hit|reached)\s+your\b[^\n]{0,60}?\blimit\b[^\n]*$/i;
+const WHOLE_LIMIT_MAX_LENGTH = 300;
 
 const MONTHS = [
   'january', 'february', 'march', 'april', 'may', 'june',
@@ -35,25 +60,65 @@ export function parseLimitMessage(
   now: Date,
   options: { defaultZone?: string } = {},
 ): ParsedLimitMessage | null {
-  const phrase = /hit\s+your\b(.*?)\blimit\b/i.exec(text);
+  const phrase = LIMIT_PHRASE.exec(text);
   if (!phrase) return null;
-  const window = windowOf(phrase[1] ?? '');
+  const wording = phrase[1] ?? '';
+  const window = windowOf(wording);
+  const model = modelOf(wording);
+  const parsed = { window, resetsAt: null as Date | null, scope: (model === null ? 'account' : 'model') as LimitScope, model };
 
   const resets = /\bresets?\s+(.*)$/is.exec(text.slice(phrase.index + phrase[0].length));
   const reset = resets ? RESET_PATTERN.exec((resets[1] ?? '').trim()) : null;
-  if (!reset) return { window, resetsAt: null };
+  if (!reset) return parsed;
 
   const time = readTime(reset[3], reset[4], reset[5]);
   const date = reset[1] === undefined ? null : readDate(reset[1], reset[2]);
-  if (!time || (reset[1] !== undefined && !date)) return { window, resetsAt: null };
+  if (!time || (reset[1] !== undefined && !date)) return parsed;
 
   const zone = reset[6]?.trim() || options.defaultZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
   try {
-    return { window, resetsAt: nextOccurrence(time, date, zone, now) };
+    return { ...parsed, resetsAt: nextOccurrence(time, date, zone, now) };
   } catch (error) {
-    if (error instanceof RangeError) return { window, resetsAt: null }; // unknown time zone
+    if (error instanceof RangeError) return parsed; // unknown time zone
     throw error;
   }
+}
+
+/**
+ * True when the whole text is a limit message and nothing else, for a turn Claude Code reports as successful: a
+ * normal answer that mentions a limit ("I hit your rate limit while testing …") is longer or does not start with it.
+ */
+export function isWholeLimitMessage(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.length > 0 && trimmed.length <= WHOLE_LIMIT_MAX_LENGTH && WHOLE_LIMIT_MESSAGE.test(trimmed);
+}
+
+/**
+ * Scope of a limit from the event's window and the model family the message names. The text wins: the SDK has no
+ * window for every model (there is no Fable window), so a model limit can arrive as `seven_day`, and taking the
+ * event's word for it would stop every model. Without a model in the text, `seven_day_opus` and `seven_day_sonnet`
+ * are model limits of their family; every other window applies to the account.
+ */
+export function limitScopeOf(window: string | null, textModel: ModelFamily | null): { scope: LimitScope; model: ModelFamily | null } {
+  if (textModel !== null) return { scope: 'model', model: textModel };
+  if (window === 'seven_day_opus') return { scope: 'model', model: 'opus' };
+  if (window === 'seven_day_sonnet') return { scope: 'model', model: 'sonnet' };
+  return { scope: 'account', model: null };
+}
+
+/**
+ * The family of a model name or id ("claude-fable-5-1" and "fable" → fable, "opus[1m]" → opus); null for null
+ * (Claude Code's default model) and for names outside the known families.
+ */
+export function modelFamilyOf(model: string | null): ModelFamily | null {
+  if (model === null) return null;
+  const name = bareModelName(model);
+  return MODEL_FAMILIES.find((family) => name === family || name.startsWith(`${family}-`)) ?? null;
+}
+
+function modelOf(wording: string): ModelFamily | null {
+  const w = wording.toLowerCase();
+  return MODEL_FAMILIES.find((family) => new RegExp(`\\b${family}\\b`).test(w)) ?? null;
 }
 
 function windowOf(wording: string): LimitWindow | null {

@@ -34,3 +34,17 @@ run it. In short:
 - Never commit your `.env` or share GitHub or Anthropic tokens.
 
 Vulnerabilities in dependencies (for example the Claude Agent SDK) should be reported to the respective project.
+
+### Stage-result markers
+
+Stage results are stored as hidden `<!-- symphony:result:v1 … -->` markers in issue comments. Two rules keep them from
+being forged:
+
+- `add_comment` and `create_sub_issue` reject any text containing `<!-- symphony:` (`invalid_argument`), so an agent
+  cannot write a marker.
+- Markers only count in comments authored by the account the token belongs to (`viewerLogin()`); markers from every
+  other author are ignored and logged.
+
+Run Symphony with its **own account** (a machine user or a GitHub App token), not a personal token. With a personal
+token, a human comment from the same account could carry a marker and would be trusted; the author filter then only
+protects against agents and other accounts.

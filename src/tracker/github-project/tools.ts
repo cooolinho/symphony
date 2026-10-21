@@ -4,11 +4,9 @@ import { errorMessage } from '../../util/errors.ts';
 import { TrackerError, type AgentToolContext, type AgentToolSpec, type Issue, type ToolResult } from '../types.ts';
 import type { GithubProjectAdapter } from './adapter.ts';
 import { assertNoGraphqlErrors } from './client.ts';
-import { autoMerge } from './merge.ts';
-import type { ProjectMeta, SelectOption } from './normalize.ts';
+import { issueRefOf, titleKey, type IssueRef } from './normalize.ts';
 import {
   ADD_BLOCKED_BY_MUTATION,
-  ADD_COMMENT_MUTATION,
   ADD_PROJECT_ITEM_MUTATION,
   CREATE_PULL_REQUEST_MUTATION,
   CREATE_SUB_ISSUE_MUTATION,
@@ -19,15 +17,18 @@ import {
   referenceStatesQuery,
   repositoryLabelsQuery,
 } from './queries.ts';
-import { KIND } from './settings.ts';
 
 type Json = Record<string, unknown>;
 
-interface IssueRef {
-  itemId: string;
-  issueId: string;
-  repository: string;
-  number: number;
+/** Stage-result markers are Symphony's alone: an agent's text must not carry one (case and spacing do not matter). */
+const MARKER_START = /<!--\s*symphony:/i;
+
+function markerProblem(text: string | undefined): ToolResult | null {
+  if (text === undefined || !MARKER_START.test(text)) return null;
+  return fail(
+    'invalid_argument',
+    'the text contains "<!-- symphony:", which is reserved for the result markers Symphony writes itself; remove that HTML comment and post again',
+  );
 }
 
 function obj(value: unknown): Json | null {
@@ -45,17 +46,6 @@ function ok(data: unknown): ToolResult {
 
 function fail(category: string, message: string): ToolResult {
   return { ok: false, error: { category, message } };
-}
-
-/** Tools only ever act on the issue the session was started for. */
-function issueRef(context: AgentToolContext): IssueRef | null {
-  const ref = context.issue.native_ref;
-  if (ref === null || ref.provider !== KIND) return null;
-  const { item_id: itemId, issue_id: issueId, repository, number } = ref;
-  if (typeof itemId !== 'string' || typeof issueId !== 'string' || typeof repository !== 'string' || typeof number !== 'number') {
-    return null;
-  }
-  return { itemId, issueId, repository, number };
 }
 
 function issueView(issue: Issue): Json {
@@ -78,23 +68,13 @@ function issueView(issue: Issue): Json {
   };
 }
 
-function findOption(meta: ProjectMeta, name: string): SelectOption | undefined {
-  const wanted = name.trim().toLowerCase();
-  return meta.statusOptions.find((option) => option.name.trim().toLowerCase() === wanted);
-}
-
-/** Titles are compared without case and with collapsed whitespace, so a retry with a re-typed title finds its sub-issue. */
-function titleKey(title: unknown): string {
-  return String(title ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
-}
-
 function isOpen(issue: Json): boolean {
   return issue.state !== 'CLOSED';
 }
 
-/** Runs a tool body, turning any exception into a structured failure the agent can read. */
+/** Runs a tool body on the session's issue, turning any exception into a structured failure the agent can read. */
 async function guarded(context: AgentToolContext, body: (ref: IssueRef) => Promise<ToolResult>): Promise<ToolResult> {
-  const ref = issueRef(context);
+  const ref = issueRefOf(context.issue);
   if (ref === null) return fail('invalid_context', 'this session has no GitHub project item to act on');
   try {
     return await body(ref);
@@ -110,28 +90,6 @@ async function guarded(context: AgentToolContext, body: (ref: IssueRef) => Promi
  */
 export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[] {
   const client = adapter.client;
-
-  /** The board's option for a column name (case-insensitive), refreshing the cached columns once if needed. */
-  const statusOption = async (status: string): Promise<{ option: SelectOption | undefined; meta: ProjectMeta }> => {
-    let meta = await adapter.meta();
-    let option = findOption(meta, status);
-    if (option === undefined) {
-      meta = await adapter.meta(true);
-      option = findOption(meta, status);
-    }
-    return { option, meta };
-  };
-
-  const moveTo = async (ref: IssueRef, meta: ProjectMeta, option: SelectOption): Promise<string> => {
-    const response = await client.request<Json>(SET_STATUS_MUTATION, {
-      projectId: meta.projectId,
-      itemId: ref.itemId,
-      fieldId: meta.statusFieldId,
-      optionId: option.id,
-    });
-    assertNoGraphqlErrors(response.errors);
-    return option.name;
-  };
 
   const getIssue: AgentToolSpec = {
     name: 'get_issue',
@@ -178,31 +136,13 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
     mutates: true,
     transitionTarget: (args) => String(args.status),
     execute: (args, context) =>
-      guarded(context, async (ref) => {
-        const status = String(args.status);
-        const { option, meta } = await statusOption(status);
-        if (option === undefined) {
-          const valid = meta.statusOptions.map((o) => `"${o.name}"`).join(', ');
-          return fail('invalid_argument', `unknown status "${status}"; valid options: ${valid}`);
-        }
-        const moved = await moveTo(ref, meta, option);
-        const { autoMerge: merge, baseBranch } = adapter.settings;
-        if (merge === null || baseBranch === null || titleKey(moved) !== titleKey(merge.onEnter)) {
-          return ok({ previous_status: context.issue.state, status: moved });
-        }
-        // The guard ran the entry checks before this call: the change is reviewed and green, so it can be merged.
-        const result = await autoMerge(client, merge, baseBranch, ref, context.issue, moved, {
-          setStatus: async (name) => {
-            const next = await statusOption(name);
-            if (next.option === undefined) throw new Error(`board column "${name}" does not exist`);
-            return moveTo(ref, next.meta, next.option);
-          },
-          comment: async (body) => {
-            const response = await client.request<Json>(ADD_COMMENT_MUTATION, { subjectId: ref.issueId, body });
-            assertNoGraphqlErrors(response.errors);
-          },
+      guarded(context, async () => {
+        const change = await adapter.setStatus(context.issue, String(args.status));
+        return ok({
+          previous_status: change.previous,
+          status: change.status,
+          ...(change.autoMerge !== undefined ? { auto_merge: change.autoMerge } : {}),
         });
-        return ok({ previous_status: context.issue.state, status: result.status, auto_merge: result });
       }),
   };
 
@@ -214,12 +154,7 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
     inputSchema: { body: z.string().min(1).describe('Comment text (GitHub-flavored Markdown)') },
     mutates: true,
     execute: (args, context) =>
-      guarded(context, async (ref) => {
-        const response = await client.request<Json>(ADD_COMMENT_MUTATION, { subjectId: ref.issueId, body: String(args.body) });
-        assertNoGraphqlErrors(response.errors);
-        const url = obj(obj(obj(obj(response.data)?.addComment)?.commentEdge)?.node)?.url ?? null;
-        return ok({ url });
-      }),
+      guarded(context, async () => markerProblem(String(args.body)) ?? ok(await adapter.postComment(context.issue, String(args.body)))),
   };
 
   const openPullRequest: AgentToolSpec = {
@@ -308,6 +243,8 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
         subIssueQueue.run(async (): Promise<ToolResult> => {
           const max = context.maxSubIssues;
           if (max === undefined) return fail('not_allowed', 'this role may not create sub-issues (roles.<name>.max_sub_issues is not set)');
+          const rejected = markerProblem(typeof args.body === 'string' ? args.body : undefined) ?? markerProblem(String(args.title));
+          if (rejected !== null) return rejected;
           const title = String(args.title).trim();
 
           const response = await client.request<Json>(SUB_ISSUE_CONTEXT_QUERY, { issueId: ref.issueId });
@@ -339,7 +276,7 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
           const open = siblings.filter(isOpen);
 
           const columnName = context.subIssueStatus ?? adapter.settings.subIssueStatus;
-          const { option: column, meta } = await statusOption(columnName);
+          const { option: column, meta } = await adapter.statusOption(columnName);
           const warnings: string[] = [];
           if (column === undefined) {
             warnings.push(

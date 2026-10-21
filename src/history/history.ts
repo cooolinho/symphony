@@ -17,7 +17,7 @@ import { DEFAULT_ROLE } from '../workflow/roles.ts';
 
 /**
  * How a run ended: handed off (left the active states, or moved to a column served by another role; then the
- * finish line carries `role` and `next_role`), continuing (still active for the same role), or stopped early.
+ * finish line also carries `next_role`), continuing (still active for the same role), or stopped early.
  */
 export type RunOutcome = 'handed_off' | 'continuing' | 'failed' | 'session_limit' | 'stopped' | 'stalled' | 'shutdown';
 
@@ -47,8 +47,9 @@ export interface RunFinish {
   session: string | null;
   attempt: number | null;
   outcome: RunOutcome;
-  /** Role of the run and of the next session; set only when the run handed off to another role. */
+  /** Role that served the run; absent means the implicit `default` role. Every finish line carries it. */
   role?: string;
+  /** Role of the next session; set only when the run handed off to another role. */
   nextRole?: string;
   state: string;
   reason: string;
@@ -119,11 +120,35 @@ export interface TransitionDenial {
   at: Date;
 }
 
+/** A stage result the session recorded with `report_result` (history line `stage_result`). */
+export interface StageResultLine {
+  repo: string;
+  issue: string;
+  run: string | null;
+  role: string;
+  /** Result kind (`implementation`, `review`, …). */
+  kind: string;
+  verdict: string;
+  /** Round of a review or test loop; null when the result is not counted. */
+  round: number | null;
+  /** Column the result handed the issue to. */
+  target: string | null;
+  /** Workflow profile that routed the result; null without one. */
+  profile: string | null;
+  /** Issue complexity (`S` … `XL`); null when unknown. */
+  complexity: string | null;
+  /** Findings of the result (review and security results); 0 for other kinds. */
+  findings: number;
+  at: Date;
+}
+
 interface RepoTotals {
   runs: number;
   tokens: number;
   costUsd: number;
   agentSeconds: number;
+  /** Cost of the finished runs per issue identifier. */
+  issueCosts: Map<string, number>;
 }
 
 /** One parsed line of a repository log. */
@@ -223,6 +248,7 @@ export class HistoryLog {
     totals.tokens += tokens;
     totals.costUsd += cost;
     totals.agentSeconds += finish.agentSeconds;
+    totals.issueCosts.set(finish.issue, (totals.issueCosts.get(finish.issue) ?? 0) + round(cost, 4));
     // `default` like run_started; absent when the caller did not log them (older callers, tests).
     const modelRequested = finish.modelRequested === undefined ? undefined : (finish.modelRequested ?? 'default');
     const effort = finish.effort === undefined ? undefined : (finish.effort ?? 'default');
@@ -233,7 +259,7 @@ export class HistoryLog {
       session: finish.session,
       title: finish.title,
       outcome: finish.outcome,
-      role: finish.role,
+      role: finish.role ?? DEFAULT_ROLE,
       next_role: finish.nextRole,
       state: finish.state,
       reason: finish.reason,
@@ -300,6 +326,21 @@ export class HistoryLog {
     });
   }
 
+  stageResult(line: StageResultLine): void {
+    this.#append(line.repo, line.at, 'stage_result', {
+      issue: line.issue,
+      run: line.run ?? undefined,
+      role: line.role,
+      kind: line.kind,
+      verdict: line.verdict,
+      round: line.round ?? undefined,
+      target: line.target ?? undefined,
+      profile: line.profile ?? undefined,
+      complexity: line.complexity ?? undefined,
+      findings: line.findings || undefined,
+    });
+  }
+
   transitionDenied(denial: TransitionDenial): void {
     this.#append(denial.repo, denial.at, 'transition_denied', {
       issue: denial.issue,
@@ -315,17 +356,27 @@ export class HistoryLog {
     this.#append(repo, new Date(), event, fields);
   }
 
+  /**
+   * Cost of all finished runs of an issue (every role), from the repository log. The log is read once per repository;
+   * finished runs are added as they are written, so the figure also holds after a restart.
+   */
+  issueCostUsd(repo: string, issue: string): number {
+    return this.#totalsFor(repo).issueCosts.get(issue) ?? 0;
+  }
+
   /** Running totals, read from the existing file the first time a repository is written. */
   #totalsFor(repo: string): RepoTotals {
     let totals = this.#totals.get(repo);
     if (totals === undefined) {
-      totals = { runs: 0, tokens: 0, costUsd: 0, agentSeconds: 0 };
+      totals = { runs: 0, tokens: 0, costUsd: 0, agentSeconds: 0, issueCosts: new Map() };
       for (const entry of readEntries(this.fileFor(repo))) {
         if (entry.event !== 'run_finished') continue;
         totals.runs += 1;
         totals.tokens += Number(entry.fields.total_tokens) || 0;
         totals.costUsd += Number(entry.fields.cost_usd) || 0;
         totals.agentSeconds += Number(entry.fields.agent_seconds) || 0;
+        const issue = entry.fields.issue;
+        if (issue !== undefined) totals.issueCosts.set(issue, (totals.issueCosts.get(issue) ?? 0) + (Number(entry.fields.cost_usd) || 0));
       }
       this.#totals.set(repo, totals);
     }

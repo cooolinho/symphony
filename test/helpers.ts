@@ -4,7 +4,20 @@ import path from 'node:path';
 import type { AgentEvent, AgentRunner, AgentSession, StartSessionParams, TurnResult } from '../src/agent/types.ts';
 import type { Clock, Timers, WorkflowSource } from '../src/orchestrator/orchestrator.ts';
 import type { WorkspaceIntegration } from '../src/integrations/types.ts';
-import type { AgentToolSpec, Issue, TrackerAdapter } from '../src/tracker/types.ts';
+import { isCreatableLabel } from '../src/tracker/github-project/labels.ts';
+import type {
+  AddLabelsResult,
+  AgentToolSpec,
+  Issue,
+  IssueComment,
+  PostedComment,
+  RemoveLabelsResult,
+  StatusChange,
+  ToolResult,
+  TrackedResult,
+  TrackerAdapter,
+} from '../src/tracker/types.ts';
+import { decodeMarker } from '../src/workflow/results.ts';
 import { normalizeStateName, resolveConfig } from '../src/workflow/config.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../src/workflow/store.ts';
 import { compilePrompt, DEFAULT_CONTINUATION_PROMPT } from '../src/workflow/template.ts';
@@ -55,20 +68,38 @@ export class FakeTracker implements TrackerAdapter {
   readonly kind = 'github_project';
   issues = new Map<string, Issue>();
   failNext: Error | null = null;
-  calls = { byStates: 0, byIds: 0, statusOptions: 0 };
+  calls = { byStates: 0, byIds: 0, statusOptions: 0, readResults: 0 };
   /** Set to give the tracker a board; adapters without it skip the column check. */
   statusOptions?: () => Promise<string[]>;
   /** Set to report open sub-issues (roles with wait_for_sub_issues); trackers without it have none. */
   openSubIssues?: (issue: Issue) => string[];
+  /** Set to record the notices Symphony posts on an issue; trackers without it cannot comment. */
+  commentOnIssue?: (issue: Issue, body: string) => Promise<void>;
 
   constructor(issues: Issue[] = []) {
     for (const issue of issues) this.issues.set(issue.id, issue);
   }
 
+  /**
+   * Changes an issue like the board would. A change of column, by Symphony or by a test acting as a human, stamps
+   * `native_ref.status_updated_at` like GitHub's Status field.
+   */
   set(id: string, patch: Partial<Issue>): void {
     const issue = this.issues.get(id);
     if (issue === undefined) throw new Error(`no issue ${id}`);
-    this.issues.set(id, { ...issue, ...patch });
+    const next = { ...issue, ...patch };
+    if (patch.state !== undefined && normalizeStateName(patch.state) !== normalizeStateName(issue.state)) {
+      next.native_ref = { ...next.native_ref, status_updated_at: this.#next(id).toISOString() };
+    }
+    this.issues.set(id, next);
+  }
+
+  /** The board's clock for one issue: one second after its latest comment and its latest column change. */
+  #next(id: string): Date {
+    const moved = this.issues.get(id)?.native_ref?.status_updated_at;
+    const times = [Date.UTC(2026, 0, 1), ...(this.comments.get(id) ?? []).map((comment) => comment.createdAt.getTime())];
+    if (typeof moved === 'string') times.push(Date.parse(moved));
+    return new Date(Math.max(...times) + 1000);
   }
 
   async fetchIssuesByStates(states: string[]): Promise<Issue[]> {
@@ -88,7 +119,91 @@ export class FakeTracker implements TrackerAdapter {
   /** Executed `set_status` calls, in order (only those that reached the tracker). */
   statusCalls: string[] = [];
 
-  /** `set_status` moves the session's issue in memory, like the GitHub tool does on the board. */
+  /** Comments by issue id, oldest first; `postComment` appends. */
+  comments = new Map<string, IssueComment[]>();
+  /** Login `viewerLogin` reports and `postComment` writes as the author. */
+  viewer = 'symphony-bot';
+  /** Labels the repository has (any case); `addLabels` only adds these, or creates the pipeline's families. */
+  repositoryLabels = new Set<string>();
+
+  async readComments(issue: Issue): Promise<IssueComment[]> {
+    return [...(this.comments.get(issue.id) ?? [])];
+  }
+
+  /** Set to make `readResults` fail, `failReadResultsTimes` times in a row. */
+  failReadResults: Error | null = null;
+  failReadResultsTimes = 1;
+
+  /** Like the GitHub adapter: the markers in the viewer's own comments, oldest first. */
+  async readResults(issue: Issue): Promise<TrackedResult[]> {
+    this.calls.readResults++;
+    if (this.failReadResults !== null) {
+      const error = this.failReadResults;
+      if (--this.failReadResultsTimes <= 0) {
+        this.failReadResults = null;
+        this.failReadResultsTimes = 1;
+      }
+      throw error;
+    }
+    const results: TrackedResult[] = [];
+    for (const comment of this.comments.get(issue.id) ?? []) {
+      const decoded = comment.author === this.viewer ? decodeMarker(comment.body) : null;
+      if (decoded !== null) results.push({ ...decoded, createdAt: comment.createdAt, url: comment.url });
+    }
+    return results;
+  }
+
+  async viewerLogin(): Promise<string> {
+    return this.viewer;
+  }
+
+  async postComment(issue: Issue, body: string): Promise<PostedComment> {
+    const list = this.comments.get(issue.id) ?? [];
+    const url = `https://github.com/acme/app/issues/${issue.id}#issuecomment-${list.length + 1}`;
+    list.push({ author: this.viewer, createdAt: this.#next(issue.id), body, url });
+    this.comments.set(issue.id, list);
+    return { url };
+  }
+
+  /** Moves the session's issue in memory, like the GitHub adapter does on the board. */
+  async setStatus(issue: Issue, column: string): Promise<StatusChange> {
+    const previous = this.issues.get(issue.id)?.state ?? issue.state;
+    this.statusCalls.push(column);
+    this.set(issue.id, { state: column });
+    return { previous, status: column };
+  }
+
+  async addLabels(issue: Issue, names: string[], { create = false }: { create?: boolean } = {}): Promise<AddLabelsResult> {
+    const result: AddLabelsResult = { added: [], created: [], unknown: [] };
+    for (const name of names) {
+      const exists = this.#hasLabel(name);
+      if (!exists && !(create && isCreatableLabel(name))) {
+        result.unknown.push(name);
+        continue;
+      }
+      if (!exists) {
+        this.repositoryLabels.add(name);
+        result.created.push(name);
+      }
+      result.added.push(name);
+    }
+    const current = this.issues.get(issue.id)?.labels ?? issue.labels;
+    this.set(issue.id, { labels: [...new Set([...current, ...result.added.map((name) => name.toLowerCase())])] });
+    return result;
+  }
+
+  async removeLabels(issue: Issue, names: string[]): Promise<RemoveLabelsResult> {
+    const result: RemoveLabelsResult = { removed: [], unknown: [] };
+    for (const name of names) (this.#hasLabel(name) ? result.removed : result.unknown).push(name);
+    const gone = new Set(result.removed.map((name) => name.toLowerCase()));
+    this.set(issue.id, { labels: (this.issues.get(issue.id)?.labels ?? issue.labels).filter((label) => !gone.has(label)) });
+    return result;
+  }
+
+  #hasLabel(name: string): boolean {
+    return [...this.repositoryLabels].some((label) => label.toLowerCase() === name.toLowerCase());
+  }
+
   agentToolSpecs(): AgentToolSpec[] {
     return [
       {
@@ -98,11 +213,8 @@ export class FakeTracker implements TrackerAdapter {
         mutates: true,
         transitionTarget: (args) => String(args.status),
         execute: async (args, context) => {
-          const status = String(args.status);
-          const previous = this.issues.get(context.issue.id)?.state ?? context.issue.state;
-          this.statusCalls.push(status);
-          this.set(context.issue.id, { state: status });
-          return { ok: true, data: { previous_status: previous, status } };
+          const change = await this.setStatus(context.issue, String(args.status));
+          return { ok: true, data: { previous_status: change.previous, status: change.status } };
         },
       },
     ];
@@ -120,6 +232,16 @@ export class FakeTracker implements TrackerAdapter {
 }
 
 export type TurnScript = (turn: number, params: StartSessionParams) => Promise<TurnResult> | TurnResult;
+
+/**
+ * Calls the session tool `name` from a FakeRunner script the way the agent does: the tools the session got (wrapped by
+ * the transition guard) with the session's current tool context. Throws when the session has no such tool.
+ */
+export async function callTool(params: StartSessionParams, name: string, args: Record<string, unknown>): Promise<ToolResult> {
+  const tool = params.tools.find((candidate) => candidate.name === name);
+  if (tool === undefined) throw new Error(`the session has no tool ${name} (it has ${params.tools.map((candidate) => candidate.name).join(', ') || 'none'})`);
+  return tool.execute(args, params.toolContext());
+}
 
 /** Agent runner whose turns are scripted; records every session it starts. */
 export class FakeRunner implements AgentRunner {

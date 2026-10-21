@@ -50,7 +50,7 @@ Agent tool calls in all 535 sessions:
 | developer (other) | 2 × `general-purpose`, 1 × `Explore`, 3 × without `subagent_type` |
 | every other role | none |
 
-`architect`, `database-engineer`, `filament-developer` and `test-engineer` were never called. The reviewer role
+`architect`, `database-engineer`, `filament-developer` and `test-engineer` were never called (the `Design` column with its own architect role, added afterwards, gives the architect subagent a place in the flow). The reviewer role
 carries its own checklist in the prompt that largely repeats `code-reviewer.md`.
 
 For comparison, the Skill tool was called 80 times, mostly Boost skills in Laravel developer sessions
@@ -149,7 +149,9 @@ context and tokens.
 
 | Role | `agents` | Guidance in the prompt |
 |---|---|---|
-| developer | all five | `laravel-architect` before a non-trivial feature; `laravel-filament-developer`, `laravel-database-engineer`, `laravel-test-engineer` for self-contained parts; `laravel-code-reviewer` on the diff before `set_status("Agent review")` |
+| architect | `laravel-architect` | structure of a Laravel or Filament change; the role itself decides and reports the `design` result, and runs only for larger changes ([details](configuration.md#the-architect)) |
+| developer | all five | `laravel-architect` before a non-trivial feature, unless the architect stage already delivered a design (`results.design` in the prompt); `laravel-filament-developer`, `laravel-database-engineer`, `laravel-test-engineer` for self-contained parts; `laravel-code-reviewer` on the diff before `set_status("Agent review")` |
+| test engineer | `laravel-test-engineer` | a self-contained group of tests; the role itself is the independent tester of the acceptance criteria and may only change test files ([details](configuration.md#the-test-engineer)) |
 | reviewer | `laravel-code-reviewer` | optional second pass over a large diff; the reviewer still checks its findings and writes the one review comment |
 | auditor | `laravel-architect`, `laravel-code-reviewer` | one area each in large repositories (what the `refactoring` skill describes) |
 | autopilot | `laravel-architect` | structure and feasibility of a wave |

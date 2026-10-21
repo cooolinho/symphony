@@ -7,15 +7,27 @@ import type { AgentEvent, AgentRunner, AgentSession, IntegrationReport, SessionL
 import { prepareIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
-import type { Issue, TrackerAdapter } from '../tracker/types.ts';
+import type { AgentToolSpec, Issue, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { describeHolder, type LockResult } from '../workspace/lock.ts';
 import { describeFailure, type HookIssue, type Workspace, type WorkspaceManager } from '../workspace/manager.ts';
 import { commandSkills, pluginAgents } from '../workflow/command.ts';
+import { classify } from '../workflow/classify.ts';
+import { profileFor } from '../workflow/profile.ts';
 import { roleName, sessionAgents, type RoleConfig } from '../workflow/roles.ts';
 import type { EffectiveWorkflow } from '../workflow/store.ts';
-import { issueTemplateValue, renderPrompt } from '../workflow/template.ts';
+import { internalResult, renderResultComment, type ResultMeta } from '../workflow/results.ts';
+import { normalizeStateName } from '../workflow/config.ts';
+import { EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../workflow/template.ts';
+import { writeAttachments, type AttachmentFile } from '../workspace/attachments.ts';
+import { changedFiles } from '../workspace/changes.ts';
+import { baselineCommit, changedFilesSince } from './changed-files.ts';
 import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord } from './guard.ts';
+import { createResultTool, resultReminder, type PathRule, type ResultToolAdapter, type ResultToolParams } from './result-tool.ts';
+import { reviewedFiles, securityBaseRef } from './security.ts';
+import { interruptedTransition } from './recovery.ts';
+import { analysisFlagsSecurity, analysisNeedsDocs, docsBaseHead, buildStageHistory, implementationHead, resultsTemplateValue, type PersistedResult, type ResultsTemplateValue, type StageHistory } from './stage-history.ts';
+import { subIssueLimit } from './work-packages.ts';
 
 export type RunPhase =
   | 'PreparingWorkspace'
@@ -33,7 +45,16 @@ export type RunPhase =
   | 'CanceledByReconciliation';
 
 export type WorkerOutcome =
-  | { kind: 'normal'; turns: number; reason: string }
+  | {
+      kind: 'normal';
+      turns: number;
+      reason: string;
+      /**
+       * A result-driven role ended its run without recording a result, after the reminder turn or at the turn limit
+       * while the issue was still in its column. The orchestrator confirms the column and applies `on_missing_result`.
+       */
+      missingResult?: true;
+    }
   | { kind: 'failed'; code: string; message: string; phase: RunPhase; sessionLimit?: SessionLimitInfo }
   | { kind: 'cancelled'; message: string };
 
@@ -83,8 +104,16 @@ export interface WorkerCallbacks {
   integrationsPrepared(historyFields: Record<string, string>, reports: IntegrationReport[]): void;
   /** Final commit and branch of the workspace, reported once while the attempt finishes. */
   gitHead(head: GitHead): void;
+  /** The session recorded its stage result (called once, when `report_result` posts the result comment). */
+  resultRecorded(): void;
+  /** The recorded result moved the issue (called once, after `report_result` moved it; not when the move failed). */
+  resultMoved(): void;
   /** Result of an entry check run by the transition guard. */
   checkFinished(check: CheckRecord): void;
+  /** The session recorded a stage result: called once, with the result as persisted, when `report_result` posts its comment. */
+  stageResult(entry: PersistedResult): void;
+  /** The issue's stage results: as loaded at the start of a result-driven session, again with each result it records. */
+  results(results: PersistedResult[]): void;
   /** The guard refused a move (terminal column or outside the role's `may_move_to`). */
   transitionDenied(target: string, message: string): void;
   /** JSONL transcript of this attempt's agent session, reported before the session starts. */
@@ -93,6 +122,8 @@ export interface WorkerCallbacks {
 
 export interface WorkerParams {
   issue: Issue;
+  /** Id of this run, recorded in the meta of the results it reports; null when unknown. */
+  runId: string | null;
   attempt: number | null;
   /** Workflow snapshot for this attempt: prompt, max_turns and agent settings stay fixed for the session. */
   workflow: EffectiveWorkflow;
@@ -102,6 +133,8 @@ export interface WorkerParams {
   effort: EffortLevel | null;
   /** Role serving the issue's column at dispatch; null = the implicit `default` role. Fixed for the run. */
   role: RoleConfig | null;
+  /** The issue's stage results, when the dispatch has just read them; omitted = the run reads them itself. */
+  results?: readonly TrackedResult[];
   /** Adapter snapshot: the tools advertised to the session and the ones executed are the same. */
   adapter: TrackerAdapter;
   runner: AgentRunner;
@@ -131,10 +164,162 @@ function withMcpNotes(unavailable: Array<[string, string]>, prompt: string): str
   return `${notes.join('\n')}\n\n${prompt}`;
 }
 
+/** What a session of a result-driven role starts with: the issue's stage history and the tool that extends it. */
+interface ResultSupport {
+  tool: AgentToolSpec;
+  results: ResultsTemplateValue;
+  round: number;
+}
+
+/**
+ * The path rule of a role with `result: test`: its session may only change files matching `pipeline.test_paths`,
+ * measured from the developer's last hand-off (`handoffSha`) when HEAD descends from it, else from the commit the
+ * session started from (`startSha`). Without a commit to measure from (not a git checkout, or git failed) the rule
+ * cannot be evaluated: it refuses to guess, so the result is not accepted unchecked.
+ */
+function testPathRule(workspacePath: string, testPaths: readonly string[], startSha: string | null, handoffSha: string | null, extra: Pick<PathRule, 'setting' | 'guidance'> = {}): PathRule {
+  return {
+    ...extra,
+    allowed: testPaths,
+    changedFiles: async () => {
+      const base = await baselineCommit(workspacePath, handoffSha, startSha);
+      if (base === null) throw new SymphonyError('paths_unverifiable', 'the commit this session started from is unknown');
+      return { base, files: await changedFilesSince(workspacePath, base) };
+    },
+  };
+}
+
+const RESULT_CAPABILITIES = ['readResults', 'postComment', 'setStatus', 'addLabels', 'removeLabels'] as const;
+
+/**
+ * Loads the issue's stage history and builds the `report_result` tool for a session of a result-driven role: one
+ * paginated read of the issue's comments, plus the board's columns (cached by the adapter). Any failure is a
+ * `results_read_error`: without the history the round counters would be wrong, so the run fails and is retried.
+ */
+async function loadResultSupport(
+  params: WorkerParams,
+  role: RoleConfig,
+  issue: () => Issue,
+  headSha: () => Promise<string | null>,
+  pathRule: ((history: StageHistory) => PathRule) | null,
+  security: ((history: StageHistory) => NonNullable<ResultToolParams['security']>) | null,
+  docs: ((history: StageHistory) => NonNullable<ResultToolParams['docs']>) | null,
+  report: (results: PersistedResult[]) => void,
+  onRecorded: (entry: PersistedResult) => void,
+  onMoved: () => void,
+): Promise<ResultSupport> {
+  const { adapter, workflow } = params;
+  const missing = RESULT_CAPABILITIES.filter((capability) => adapter[capability] === undefined);
+  if (missing.length > 0) {
+    throw new SymphonyError('results_read_error', `role ${role.name} reports results, but the ${adapter.kind} tracker lacks ${missing.join(', ')}`);
+  }
+  const resultAdapter = adapter as TrackerAdapter & ResultToolAdapter & Required<Pick<TrackerAdapter, 'readResults'>>;
+  let tracked;
+  let boardColumns: string[] | null;
+  try {
+    tracked = params.results ?? (await resultAdapter.readResults(issue()));
+    boardColumns = adapter.statusOptions !== undefined ? await adapter.statusOptions() : null;
+  } catch (error) {
+    throw new SymphonyError('results_read_error', `could not read the stage results of ${issue().identifier}: ${errorMessage(error)}`, { cause: error });
+  }
+  let persisted: PersistedResult[] = tracked.map(({ result, meta, url }) => ({ result, meta, url }));
+  let history = buildStageHistory(persisted);
+  const reset = interruptedTransition(issue(), role, tracked) === null ? await resetAfterHumanResume(params, resultAdapter, issue(), history) : null;
+  if (reset !== null) {
+    persisted = [...persisted, reset];
+    history = buildStageHistory(persisted);
+  }
+  report(history.results);
+  const tool = createResultTool({
+    role,
+    history,
+    onRecorded: (entry) => {
+      report([...history.results, entry]);
+      onRecorded(entry);
+    },
+    onMoved,
+    profile: profileFor(workflow.config.pipeline, classify(issue().labels).type),
+    config: workflow.config,
+    boardColumns,
+    adapter: resultAdapter,
+    issue,
+    runId: params.runId,
+    meta: { workflowHash: workflow.contentHash, headSha },
+    pathRule: pathRule?.(history) ?? null,
+    security: security?.(history) ?? null,
+    docs: docs?.(history) ?? null,
+  });
+  return {
+    tool,
+    results: resultsTemplateValue(history),
+    round: (role.result === 'test' ? history.testRounds : role.result === 'security' ? history.securityRounds : history.reviewRounds) + 1,
+  };
+}
+
+/**
+ * A human moved the issue back into an active column after a hand-off to a non-active one (a round limit or Blocked):
+ * the newest marker still points at that column, but the board is elsewhere. Not called for a hand-off whose move never
+ * happened (`interruptedTransition`): its rounds go on. Records a `reset` marker so the loop starts
+ * at round 1 and removes the limit label. Returns the marker, or null when nothing was written.
+ */
+async function resetAfterHumanResume(
+  params: WorkerParams,
+  adapter: ResultToolAdapter,
+  issue: Issue,
+  history: StageHistory,
+): Promise<PersistedResult | null> {
+  const { activeStates } = params.workflow.config.tracker;
+  const target = history.lastTarget;
+  if (target === null) return null;
+  const isActive = (state: string) => activeStates.some((active) => normalizeStateName(active) === normalizeStateName(state));
+  if (isActive(target) || !isActive(issue.state)) return null;
+  const result = internalResult('reset', `${issue.identifier} was moved from "${target}" back to "${issue.state}" by a human; the round counters start again.`);
+  const meta: ResultMeta = {
+    role: 'symphony',
+    run: params.runId,
+    round: null,
+    profile: null,
+    workflow_hash: params.workflow.contentHash,
+    head_sha: null,
+    checks: null,
+    target: null,
+    created_at: new Date().toISOString(),
+  };
+  try {
+    await adapter.postComment(issue, renderResultComment(result, meta));
+  } catch (error) {
+    throw new SymphonyError('results_read_error', `could not record the reset of ${issue.identifier}: ${errorMessage(error)}`, { cause: error });
+  }
+  const label = params.workflow.config.pipeline.limitLabel;
+  if (issue.labels.some((name) => name.toLowerCase() === label.toLowerCase())) {
+    await adapter.removeLabels(issue, [label]).catch((error: unknown) => params.logger.warn('could not remove the limit label', { error: errorMessage(error) }));
+  }
+  return { result, meta };
+}
+
 function transcriptPath(dir: string | null, workspace: Workspace): string | null {
   if (dir === null) return null;
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   return path.join(dir, workspace.key, `${stamp}.jsonl`);
+}
+
+/**
+ * Downloads the issue's attachments into the workspace for the prompt variable `attachments`. Never throws: when the
+ * issue cannot be read, the list holds one entry with the error, so the agent knows the files are missing.
+ */
+async function prepareAttachments(adapter: TrackerAdapter, issue: Issue, workspacePath: string, logger: Logger): Promise<AttachmentFile[]> {
+  if (adapter.issueAttachments === undefined) return [];
+  try {
+    const files = await writeAttachments(workspacePath, await adapter.issueAttachments(issue));
+    if (files.length > 0) {
+      logger.info('issue attachments downloaded', { files: files.map((file) => file.path ?? `failed (${file.error})`).join(', ') });
+    }
+    return files;
+  } catch (error) {
+    logger.warn('issue attachments could not be downloaded', { error: errorMessage(error) });
+    await writeAttachments(workspacePath, []).catch(() => undefined);
+    return [{ path: null, label: '', source: 'description and comments', error: errorMessage(error) }];
+  }
 }
 
 /**
@@ -216,6 +401,10 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     callbacks.integrationsPrepared(extensions?.historyFields ?? {}, extensions?.reports ?? []);
     if (signal.aborted) return await finish(cancelled());
 
+    // Images and PDFs uploaded to the issue: the agent only sees their content when it opens the downloaded files.
+    const attachments = await prepareAttachments(params.adapter, issue, workspace.path, logger);
+    if (signal.aborted) return await finish(cancelled());
+
     // Plugin subagents for this role and workspace: the prompt lists the allowed ones, the session refuses the rest.
     const agents = sessionAgents(
       pluginAgents(params.workflow.config.claude.plugins),
@@ -229,6 +418,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     const activeWorkspace = workspace;
     // Guard events carry the session fields of the latest agent event, so they do not reset the running entry.
     let lastEvent: AgentEvent | null = null;
+    // Whether the newest entry check timed out; in a result-driven session every check belongs to `report_result`.
+    let checkTimedOut = false;
     const onEvent = (event: AgentEvent) => {
       lastEvent = event;
       callbacks.agentEvent(event);
@@ -252,7 +443,10 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
           if (phase === 'RunningChecks') setPhase(previous);
         }
       },
-      onCheckFinished: (check) => callbacks.checkFinished(check),
+      onCheckFinished: (check) => {
+        checkTimedOut = check.result === 'check_timeout';
+        callbacks.checkFinished(check);
+      },
       onDenied: (target, message) => callbacks.transitionDenied(target, message),
       onEvent: (event, message, detail) =>
         callbacks.agentEvent({
@@ -267,8 +461,76 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
           detail,
         }),
     });
+    // Roles with `result` start with the issue's stage history; every other role makes no extra tracker request.
+    let resultRecorded = false;
+    let resultMoved = false;
+    // A test engineer's changes are measured from the developer's last hand-off, else from the workspace as this session found it.
+    const startSha = role?.result === 'test' || role?.result === 'docs' ? ((await readGitHead(activeWorkspace.path))?.headSha ?? null) : null;
+    const pathRule =
+      role?.result === 'test'
+        ? (history: StageHistory) => testPathRule(activeWorkspace.path, params.workflow.config.pipeline.testPaths, startSha, implementationHead(history))
+        : role?.result === 'docs'
+          ? (history: StageHistory) =>
+              testPathRule(activeWorkspace.path, params.workflow.config.pipeline.docsPaths, startSha, docsBaseHead(history), {
+                setting: 'pipeline.docs_paths',
+                guidance: 'Code and tests belong to the developer and the test engineer: leave them alone and report the verdict `blocked` if the documentation cannot be written without changing them.',
+              })
+          : null;
+    // A developer's or test engineer's hand-off needs the documentation stage for a docs_needed analysis or changed configuration files.
+    const docs =
+      role?.result === 'implementation' || role?.result === 'test'
+        ? (history: StageHistory) => ({
+            docsNeeded: analysisNeedsDocs(history),
+            docsPaths: params.workflow.config.pipeline.docsPaths,
+            triggerPaths: params.workflow.config.pipeline.docsTriggerPaths,
+            changedFiles: () => changedFiles(activeWorkspace.path, securityBaseRef(issue.native_ref?.base_branch)),
+          })
+        : null;
+    // A reviewer's approval needs the security review for a security label, a risk in the analysis or a changed security
+    // path (for an integration review: a path the merged work packages changed).
+    const security =
+      role?.result === 'review'
+        ? (history: StageHistory) => ({
+            risk: analysisFlagsSecurity(history),
+            securityPaths: params.workflow.config.pipeline.securityPaths,
+            changedFiles: () => reviewedFiles(activeWorkspace.path, issue, history),
+          })
+        : null;
+    const support =
+      role?.result != null
+        ? await loadResultSupport(
+            params,
+            role,
+            () => issue,
+            async () => (await readGitHead(activeWorkspace.path))?.headSha ?? null,
+            pathRule,
+            security,
+            docs,
+            callbacks.results,
+            (entry) => {
+              resultRecorded = true;
+              callbacks.resultRecorded();
+              callbacks.stageResult(entry);
+            },
+            () => {
+              resultMoved = true;
+              callbacks.resultMoved();
+            },
+          )
+        : null;
+    if (signal.aborted) return await finish(cancelled());
+    const resultVariables = {
+      results: support?.results ?? EMPTY_RESULTS,
+      round: support?.round ?? 1,
+      result_required: support !== null,
+      test_paths: params.workflow.config.pipeline.testPaths,
+      docs_paths: params.workflow.config.pipeline.docsPaths,
+      attachments,
+    };
     const transcript = transcriptPath(params.transcriptDir, activeWorkspace);
     if (transcript !== null) callbacks.transcript(transcript);
+    // An architect files sub-issues only to split an issue it may split (XL, not a work package itself).
+    const subIssues = subIssueLimit(role, issue);
     session = await params.runner.startSession({
       cwd: activeWorkspace.path,
       issue,
@@ -278,10 +540,10 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       deniedAgents: agents.denied.flatMap((agent) => [agent.qualified, agent.name]),
       // Entry checks run inside the status tool call; leave a minute for the tracker call around them.
       toolTimeoutMs: params.workflow.config.checks.timeoutMs + TOOL_TIMEOUT_MARGIN_MS,
-      tools: guardTools(toolsForRole(params.adapter.agentToolSpecs(), role), guard),
+      tools: guardTools(toolsForRole(params.adapter.agentToolSpecs(), role, issue, support?.tool ?? null), guard),
       toolContext: () => ({
         issue,
-        ...(role?.maxSubIssues != null ? { maxSubIssues: role.maxSubIssues } : {}),
+        ...(subIssues !== null ? { maxSubIssues: subIssues } : {}),
         ...(role?.subIssueStatus != null ? { subIssueStatus: role.subIssueStatus } : {}),
       }),
       env: params.childEnv,
@@ -297,17 +559,22 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     const skills = commandSkills(params.workflow.config.claude.plugins);
     for (let turn = 1; ; turn++) {
       setPhase('BuildingPrompt');
-      const prompt =
-        turn === 1
-          ? withMcpNotes(unavailableMcp, await renderPrompt(params.workflow.prompt, { issue: issueTemplateValue(issue, skills), attempt: params.attempt, role: name, agents: agentsValue }))
-          : await renderPrompt(params.workflow.continuationPrompt, {
-              issue: issueTemplateValue(issue, skills),
-              attempt: params.attempt,
-              role: name,
-              agents: agentsValue,
-              turn_number: turn,
-              max_turns: maxTurns,
-            });
+      let prompt: string;
+      if (turn === 1) {
+        prompt = withMcpNotes(unavailableMcp, await renderPrompt(params.workflow.prompt, { issue: issueTemplateValue(issue, skills, params.workflow.config.pipeline), attempt: params.attempt, role: name, agents: agentsValue, ...resultVariables }));
+      } else {
+        prompt = await renderPrompt(params.workflow.continuationPrompt, {
+          issue: issueTemplateValue(issue, skills, params.workflow.config.pipeline),
+          attempt: params.attempt,
+          role: name,
+          agents: agentsValue,
+          ...resultVariables,
+          turn_number: turn,
+          max_turns: maxTurns,
+        });
+        // Mandatory for a result-driven role, whatever the continuation prompt says.
+        if (support !== null) prompt = `${prompt}\n\n${resultReminder(role?.onMissingResult ?? null)}`;
+      }
 
       setPhase('StreamingTurn');
       const result = await session.runTurn(prompt);
@@ -326,7 +593,25 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       callbacks.issueRefreshed(issue);
       const stopReason = params.continueWith(issue);
       if (stopReason !== null) return await finish({ kind: 'normal', turns: turn, reason: stopReason });
-      if (turn >= maxTurns) return await finish({ kind: 'normal', turns: turn, reason: `reached ${maxTurnsSetting} (${maxTurns})` });
+      // The issue is still in the role's column. A result-driven run reports once: after its result it ends (the move
+      // failed, or led to another column of the role, whose stage starts in a new session).
+      if (support !== null && resultRecorded) {
+        const reason = resultMoved ? `result recorded; "${issue.state}" starts in a new session` : `result recorded, but the issue is still in "${issue.state}"`;
+        return await finish({ kind: 'normal', turns: turn, reason });
+      }
+      // A hand-off whose entry check timed out is a runtime limit, not a missing result: no reminder, no
+      // on_missing_result; the stage runs again in a later session.
+      if (support !== null && checkTimedOut) {
+        return await finish({ kind: 'normal', turns: turn, reason: 'the entry check of the hand-off timed out (checks.timeout_ms)' });
+      }
+      // A result-driven role that has not reported by the turn limit, or after the one reminder turn (turn 2), ends
+      // the run: the orchestrator decides what happens to the issue.
+      const reachedMaxTurns = turn >= maxTurns;
+      if (support !== null && (reachedMaxTurns || turn >= 2)) {
+        const reason = reachedMaxTurns ? `reached ${maxTurnsSetting} (${maxTurns}) without a result` : 'no result after the reminder';
+        return await finish({ kind: 'normal', turns: turn, reason, missingResult: true });
+      }
+      if (reachedMaxTurns) return await finish({ kind: 'normal', turns: turn, reason: `reached ${maxTurnsSetting} (${maxTurns})` });
     }
   } catch (error) {
     if (signal.aborted) return await finish(cancelled());

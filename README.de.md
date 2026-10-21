@@ -106,8 +106,8 @@ pro Issue wählen.
 ```
 Backlog ─▶ Ready ─▶ In progress ─[Checks]─▶ Agent review ─[Checks]─▶ In review ─▶ Done
    │         │            │            ▲          │                     │          │
-ignoriert  Developer   Developer       └─ Ände-  Reviewer           wartet auf  Workspace
-           startet     arbeitet          rungen  prüft (nur          dich        gelöscht
+ignoriert  Analyst     Developer       └─ Ände-  Reviewer           wartet auf  Workspace
+           dann Dev    arbeitet          rungen  prüft (nur          dich        gelöscht
                                          nötig   lesend)
                    Blocked: ein Agent braucht dich (Checks kaputt, Fragen offen)
 ```
@@ -117,6 +117,10 @@ Symphony fragt in einem festen Takt ein **GitHub Project Board** ab und übergib
 arbeiten: Branch anlegen, implementieren, testen, pushen, Pull Request öffnen, Ergebnis im Issue kommentieren. Danach
 prüfen automatische Checks und ein zweiter, lesender Agent (Reviewer) die Arbeit. Erst dann landet die Karte in
 **In review**. Ab dort bist du dran: Review, Merge, Karte nach **Done**.
+Bug-, Feature- und Refactor-Issues durchlaufen vor dem Review eine Spalte `Testing` (ein unabhängiger Test Engineer), Änderungen mit Dokumentationsbedarf eine günstige Stufe `Documentation`, sicherheitsrelevante
+Änderungen (Label `security`, Sicherheitsrisiko in der Analyse oder geänderte Dateien wie Policies, Middleware, Routen
+oder Migrationen) danach ein lesendes `Security review`. Review-, Test- und Security-Schleifen sind begrenzt: Am
+Rundenlimit geht die Karte nach **Blocked** und bekommt das Label `needs-human`.
 
 Was der Agent tun soll, steht in der **`WORKFLOW.md`** (Prompt und Einstellungen). Board, Repositories, Standardmodell
 und Token stehen in der **`.env`**.
@@ -127,8 +131,38 @@ und Token stehen in der **`.env`**.
   Alter, begrenzte Parallelität (gesamt und pro Spalte), offene Blocker werden respektiert.
 - **Isolierte Workspaces:** Pro Issue ein eigener Klon unter `~/symphony-workspaces`, bei Wiederholungen
   wiederverwendet und gelöscht, sobald das Issue auf *Done* steht.
+- **Multi-Agent-Pipeline:** Analyst, Developer, optional Test Engineer und Reviewer übergeben jeweils mit einem
+  typisierten Ergebnis (`report_result`), statt die Karte selbst zu verschieben. Symphony berechnet die nächste Spalte
+  aus dem Urteil, pro Issue-Typ über Workflow-Profile, und begrenzt die Review- und Test-Schleifen durch
+  Rundenlimits: Am Limit wartet das Issue mit dem Label `needs-human` auf dich
+  ([Architektur](docs/concepts/multi-agent.md), [Ergebnis-Verträge](docs/results.md),
+  [Runden und manuelles Fortsetzen](docs/usage.md#rounds-limits-and-manual-resume)).
 - **Developer und Reviewer:** Rollen pro Spalte. Vor `Agent review` und `In review` laufen Checks (Lint, statische
   Analyse, Tests); scheitern sie, bleibt die Karte stehen und der Agent bessert nach.
+- **Architect:** Größere Änderungen (Features und Refactorings ab Komplexität `M`, Bugs der Komplexität `L`/`XL`) laufen
+  zuerst durch die Spalte `Design`: Ein lesender Architect-Agent entscheidet über den Ansatz (Komponenten, Schnittstellen),
+  und der Developer setzt dieses Design um. Kleine Issues überspringen die Spalte ohne Session
+  ([Details](docs/configuration.md#the-architect)).
+- **Arbeitspakete:** Ein sehr großes Feature (Komplexität `XL`) kann der Architect in Arbeitspakete aufteilen, je ein
+  Sub-Issue, die parallel mit eigener Pipeline, eigenem Workspace, Branch und Pull Request laufen. Das Eltern-Issue
+  wartet, bis alle geschlossen sind; dann prüft der Reviewer den integrierten Basis-Branch gegen seine
+  Akzeptanzkriterien, und der Security Auditor prüft die gemergten Pakete, wenn das Eltern-Issue es braucht. Keine
+  Worktrees und keine zusätzliche Integrationsrolle
+  ([Details](docs/configuration.md#work-packages-split),
+  [warum](docs/concepts/multi-agent.md#work-packages-instead-of-an-integration-engineer)).
+- **Test Engineer:** Ein unabhängiger Agent in der Spalte `Testing` (Bug-, Feature- und Refactor-Issues immer, andere Issues optional) schreibt Tests für die
+  Akzeptanzkriterien und darf nur Testdateien ändern; fehlgeschlagene Tests gehen mit den betroffenen Fällen zurück an
+  den Developer, und nach `pipeline.max_test_rounds` fehlgeschlagenen Runden wartet das Issue auf dich
+  ([Details](docs/configuration.md#the-test-engineer)).
+- **Docs-Agent:** Sagt die Analyse `docs_needed` oder passt eine geänderte Datei zu `pipeline.docs_trigger_paths`
+  (standardmäßig `.env.example`, `config/**`, `WORKFLOW.md`) ohne Änderung in `pipeline.docs_paths`, aktualisiert ein
+  `haiku`-Agent in der Spalte `Documentation` die Doku vor dem Review; alle übrigen Issues überspringen ihn ohne Session
+  ([Details](docs/configuration.md#the-documentation-stage)).
+- **Security Auditor:** Nach der Freigabe durch den Reviewer prüft ein lesender Agent in der Spalte `Security review`
+  Änderungen, die Sicherheit berühren (Label `security`, `risks.security` in der Analyse oder eine geänderte Datei, die
+  zu `pipeline.security_paths` passt, standardmäßig Laravel-Policies, Middleware, Auth-Konfiguration, Routen und
+  Migrationen); alle übrigen freigegebenen Issues überspringen ihn ohne Session. Befunde gehen zurück an den Developer,
+  begrenzt durch `pipeline.max_security_rounds` ([Details](docs/configuration.md#the-security-auditor)).
 - **Befehle im Issue:** Beginnt die Beschreibung mit `/refactoring`, lädt Symphony einen zentral gepflegten Audit-Skill:
   Er misst die Baseline, findet Bugs und Refactoring-Kandidaten und legt Sub-Issues an. `/refactor-safely` setzt sie
   verhaltensneutral mit Tests als Sicherheitsnetz um ([Details](docs/usage.md#commands-in-the-issue-refactoring)).
@@ -140,12 +174,16 @@ und Token stehen in der **`.env`**.
   ([Details](docs/usage.md#concept-to-backlog-concept)); `/plan docs/todo.md` oder `/plan` mit einer Liste darunter im
   Issue macht aus jedem Listenpunkt ein Sub-Issue mit ausführlichem Umsetzungsplan, Abhängigkeiten sowie Effort- und
   Modell-Labels, im Backlog ([Details](docs/usage.md#list-to-backlog-plan)).
+- **Bilder und Dateien im Issue:** Mockups, Screenshots und PDFs, die in ein Issue hochgeladen wurden, lädt Symphony
+  vor jeder Session in den Workspace (auch aus privaten Repositories), und der Agent öffnet sie, bevor er loslegt; der
+  Analyst beschreibt sie in seiner Analyse ([Details](docs/usage.md#images-and-files-in-the-issue)).
 - **Tracker-Tools für den Agenten:** Status setzen, kommentieren, Pull Request öffnen und (nur für die
   planenden Rollen) Sub-Issues anlegen. Der GitHub-Token bleibt im Symphony-Prozess, der Agent sieht ihn nie.
 - **Robust:** Wiederholungen mit exponentiellem Backoff, Erkennung hängender Sessions; ändert sich das Issue auf dem
   Board, wird der Agent gestoppt.
 - **Session-Limit-Handling:** Erreicht das Claude-Abonnement sein Limit, wiederholt Symphony ein paar Mal und wartet
-  dann bis zum Reset ([Details](docs/usage.md#session-limit)).
+  dann bis zum Reset. Das Limit eines einzelnen Modells (z. B. Fable) hält nur dieses Modell an: Seine Issues warten,
+  die anderen Modelle laufen weiter, und kein Issue wechselt auf ein anderes Modell ([Details](docs/usage.md#session-limit)).
 - **Live-Konfiguration:** Die `WORKFLOW.md` wird ohne Neustart neu geladen; eine Instanz kann mehrere Repositories
   bedienen.
 - **Beobachtbar:** Dashboard mit JSON-API und einem Execution Trace pro Agent (Prompts, Modellaufrufe, Tool-Calls,
@@ -165,8 +203,8 @@ npm run dry-run         # Einrichtung prüfen, startet keine Agenten
 npm start               # Symphony starten
 ```
 
-Dazwischen legst du ein GitHub Project Board mit den Spalten `Backlog`, `Ready`, `In progress`, `Agent review`,
-`Blocked`, `In review` und `Done` an. Die ausführliche Anleitung steht in
+Dazwischen legst du ein GitHub Project Board mit den Spalten `Backlog`, `Ready`, `Design`, `In progress`, `Testing`,
+`Documentation`, `Agent review`, `Security review`, `Blocked`, `In review` und `Done` an. Die ausführliche Anleitung steht in
 [docs/getting-started.md](docs/getting-started.md), den Betrieb per Docker hinter Traefik beschreibt
 [docs/docker.md](docs/docker.md), einen lokalen Testlauf desselben Images ohne Traefik (`docker-compose.local.yml`)
 [ein eigener Abschnitt](docs/docker.md#local-test-setup-without-traefik). Die Dokumentation unter `docs/` ist auf
@@ -174,10 +212,13 @@ Englisch.
 
 ## 📋 Usage
 
-Du schiebst ein Issue nach `Ready`. Ein Developer-Agent setzt es um und öffnet einen Pull Request. Nach bestandenen
+Du schiebst ein Issue nach `Ready`. Ein lesender Analyst-Agent arbeitet Anforderungen, Risiken und geschärfte
+Akzeptanzkriterien heraus und setzt `Type:`- und `Complexity:`-Labels, wo das Issue keine hat (oder stellt dir eine
+Frage in `Blocked`). Bei größeren Änderungen entscheidet danach ein Architect-Agent in `Design` über den Ansatz. Dann setzt ein Developer-Agent es um und öffnet einen Pull Request. Nach bestandenen
 Checks prüft ein lesender Reviewer-Agent die Arbeit, danach landet die Karte in `In review`. Du mergst den Pull Request
 und schiebst die Karte nach `Done`. Mit Labels wie `Model: sonnet` und `Effort: high` wählst du Modell und Effort pro
-Issue; das Dashboard (`SYMPHONY_PORT`) zeigt laufende Agenten, Logs und Kosten.
+Issue; das Dashboard (`SYMPHONY_PORT`) zeigt, was läuft, was als Nächstes startet und warum ein Issue wartet, dazu
+Logs und Kosten.
 
 Alles Weitere steht in [docs/usage.md](docs/usage.md): Ablauf eines Issues, Eingreifen im Betrieb, Abhängigkeiten,
 Modellwahl, `repo-init`, Dashboard und API, Logs und Kosten, mehrere Repositories, Konfiguration, Sicherheit,
@@ -194,7 +235,7 @@ symphony/
 ├── .claude/                    # Toolbox für alle Sessions, geladen als Plugin "symphony" (Skills, Agents, Commands, Hooks)
 ├── .github/workflows/          # CI (npm run check) und automatisches Mergen der Agenten-Pull-Requests
 ├── model-costs.yml             # Modellpreise für die Kostenschätzung (wird live neu geladen)
-├── Dockerfile                  # Image mit Node, PHP, Composer, git und SSH; läuft als Benutzer symphony
+├── Dockerfile                  # Image mit Node, PHP, Composer, pnpm, git, SSH und gitleaks; läuft als Benutzer symphony
 ├── docker-compose.yml          # Betrieb hinter Traefik: Labels, Volumes, Secret für den SSH-Key
 ├── docker-compose.local.yml    # lokaler Testlauf desselben Images ohne Traefik, Dashboard auf 127.0.0.1
 ├── docker/                     # entrypoint.sh (Variablen prüfen, SSH-Key, git-Identität) und ssh_known_hosts
@@ -202,7 +243,8 @@ symphony/
 ├── repo-init.ts                # interaktive Einrichtung der Repositories (Standard-Labels, Laravel-Boost-Issue)
 ├── scripts/e2e/                # End-to-End-Test der Orchestrierung auf einem echten Board (npm run e2e)
 ├── scripts/laravel-smoke/      # Integrationstest gegen eine echte Laravel-13/Filament-5-App (npm run test:laravel)
-├── scripts/push-history.sh     # lokale Historie in den Symphony-Container eines Servers übertragen (docs/docker.md)
+├── scripts/push-history.sh     # lokale Historie mit der eines Symphony-Containers auf einem Server zusammenführen (docs/docker.md)
+├── scripts/merge-history.ts    # Zusammenführung zweier Historien, von push-history.sh im Container ausgeführt
 ├── src/
 │   ├── cli.ts                  # Einstiegspunkt: Optionen, .env laden, Start
 │   ├── service.ts              # Start, Herunterfahren, Dry Run
@@ -231,6 +273,8 @@ Einstieg ist [docs/index.md](docs/index.md) (auf Englisch).
 - [docs/configuration.md](docs/configuration.md): alle Optionen der `WORKFLOW.md`, `$VARIABLE`-Verweise, Hooks und Prompt-Variablen
 - [docs/adapters/github-project.md](docs/adapters/github-project.md): GitHub-Projects-Adapter: Einstellungen, Normalisierung, Agenten-Tools, Fehler
 - [docs/agent-claude.md](docs/agent-claude.md): Claude-Code-Sessions, Berechtigungen, Skills und Plugins, Laravel Boost, Zeitlimits, Kostenzählung
+- [docs/results.md](docs/results.md): Ergebnis-Verträge der Pipeline-Stages: Arten, Urteile, das Tool `report_result`, Recovery
+- [docs/concepts/multi-agent.md](docs/concepts/multi-agent.md): die Multi-Agent-Pipeline: Architektur, Entscheidungen und Spike-Ergebnisse
 - [docs/conformance.md](docs/conformance.md): Abweichungen von der Spezifikation und eigene Festlegungen
 - [docs/laravel-repositories.md](docs/laravel-repositories.md): Konventionen für Laravel-Repositories
 - [docs/e2e.md](docs/e2e.md): End-to-End-Test der Orchestrierung und Laravel-Integrationstest

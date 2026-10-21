@@ -107,8 +107,8 @@ Details: [choosing the model](docs/usage.md#choosing-the-model-per-issue) and
 ```
 Backlog ─▶ Ready ─▶ In progress ─[Checks]─▶ Agent review ─[Checks]─▶ In review ─▶ Done
    │         │            │            ▲          │                     │          │
-ignored   developer   developer        └─ changes reviewer           waits for   workspace
-          starts      works               needed  checks (read-      you         deleted
+ignored   analyst     developer        └─ changes reviewer           waits for   workspace
+          then dev    works               needed  checks (read-      you         deleted
                                                   only)
                  Blocked: an agent needs you (broken checks, open questions)
 ```
@@ -117,6 +117,10 @@ Symphony polls a **GitHub Project board** at a fixed interval and hands issues i
 For each issue it creates a folder, clones the repository and lets the agent work: create a branch, implement, test,
 push, open a pull request and comment on the issue. Automatic checks and a second, read-only agent (the reviewer)
 then check the work. Only then does the card land in **In review**, where you review, merge and move it to **Done**.
+Bug, feature and refactor issues pass a `Testing` column (an independent test engineer) before the review, changes that need documentation pass a cheap `Documentation` stage, and security-relevant changes
+(a `security` label, a security risk in the analysis, or changed files such as policies, middleware, routes or migrations)
+pass a read-only `Security review` after it. Review, test and security loops are bounded: at the round limit the card goes
+to **Blocked** with the label `needs-human`.
 
 What the agent does is defined in **`WORKFLOW.md`** (prompt and settings). Board, repositories, default model and token
 live in **`.env`**.
@@ -127,8 +131,36 @@ live in **`.env`**.
   concurrency (overall and per column); open blockers are respected.
 - **Isolated workspaces:** one clone per issue under `~/symphony-workspaces`, reused on retries and deleted once the
   issue is *Done*.
+- **Multi-agent pipeline:** an analyst, a developer, an optional test engineer and a reviewer each hand off with a typed
+  result (`report_result`) instead of moving the card themselves. Symphony computes the next column from the verdict, per
+  issue type through workflow profiles, and bounds the review and test loops with round limits: at the limit the issue
+  waits for you with the label `needs-human` ([architecture](docs/concepts/multi-agent.md),
+  [result contracts](docs/results.md), [rounds and manual resume](docs/usage.md#rounds-limits-and-manual-resume)).
 - **Developer and reviewer:** roles per column. Before `Agent review` and `In review`, checks run (lint, static
   analysis, tests); if they fail, the card stays and the agent fixes the problem.
+- **Architect:** larger changes (features and refactorings above complexity `S`, bugs of complexity `L`/`XL`) pass
+  through the `Design` column first: a read-only architect agent decides on the approach (components, interfaces) and the
+  developer implements that design. Small issues skip the column without a session
+  ([details](docs/configuration.md#the-architect)).
+- **Work packages:** a very large feature (complexity `XL`) can be split by the architect into work packages, one
+  sub-issue each, that run in parallel with their own pipeline, workspace, branch and pull request. The parent waits
+  until all of them are closed; then the reviewer checks the integrated base branch against its acceptance criteria,
+  and the security auditor audits the merged packages when the parent needs it. No worktrees and no extra integration
+  role ([details](docs/configuration.md#work-packages-split),
+  [why](docs/concepts/multi-agent.md#work-packages-instead-of-an-integration-engineer)).
+- **Test engineer:** an independent agent in the `Testing` column (bug, feature and refactor issues always, other issues optionally) writes tests for the acceptance criteria and
+  may only change test files; failed tests go back to the developer with the failed cases, and after
+  `pipeline.max_test_rounds` failed rounds the issue waits for you
+  ([details](docs/configuration.md#the-test-engineer)).
+- **Docs agent:** when the analysis says `docs_needed`, or a changed file matches `pipeline.docs_trigger_paths` (by default
+  `.env.example`, `config/**`, `WORKFLOW.md`) without any change in `pipeline.docs_paths`, a `haiku` agent in the
+  `Documentation` column updates the docs before the review; all other issues skip it without a session
+  ([details](docs/configuration.md#the-documentation-stage)).
+- **Security auditor:** after the reviewer approves, a read-only agent in the `Security review` column audits changes
+  that touch security (a `security` label, `risks.security` in the analysis, or a changed file matching
+  `pipeline.security_paths`, by default Laravel policies, middleware, auth config, routes and migrations); all other
+  approved issues skip it without a session. Findings go back to the developer, bounded by `pipeline.max_security_rounds`
+  ([details](docs/configuration.md#the-security-auditor)).
 - **Issue commands:** a description that starts with `/refactoring` loads a centrally maintained audit skill that
   measures a baseline, finds bugs and refactoring candidates and files sub-issues; `/refactor-safely` implements them
   behavior-neutrally with tests as a safety net ([details](docs/usage.md#commands-in-the-issue-refactoring)).
@@ -140,11 +172,15 @@ live in **`.env`**.
   ([details](docs/usage.md#concept-to-backlog-concept)); `/plan docs/todo.md`, or `/plan` with a list below it in the
   issue, turns every list item into one sub-issue with a detailed implementation plan, dependencies and effort and model
   labels, in the backlog ([details](docs/usage.md#list-to-backlog-plan)).
+- **Images and files in the issue:** mockups, screenshots and PDFs uploaded to an issue are downloaded into the
+  workspace before every session (also from private repositories), and the agent opens them before it starts; the
+  analyst describes them in its analysis ([details](docs/usage.md#images-and-files-in-the-issue)).
 - **Tracker tools for the agent:** set the status, comment, open a pull request and (for the planning roles only)
   create sub-issues. The GitHub token stays in the Symphony process; the agent never sees it.
 - **Robust:** retries with exponential backoff, stall detection; an agent is stopped when its issue changes on the board.
 - **Session-limit handling:** when the Claude subscription hits its limit, Symphony retries a few times and then waits
-  for the reset ([details](docs/usage.md#session-limit)).
+  for the reset. A limit of one model (e.g. Fable) puts only that model on hold: its issues wait, the other models
+  keep running, and no issue moves to another model ([details](docs/usage.md#session-limit)).
 - **Live configuration:** `WORKFLOW.md` reloads without a restart; one instance can serve several repositories.
 - **Observable:** dashboard with JSON API and a per-agent execution trace (prompts, model calls, tool calls, phases,
   tokens and cost), structured logs, one transcript per session, `--dry-run` to check the setup.
@@ -163,18 +199,20 @@ npm run dry-run         # check the setup without starting agents
 npm start               # start Symphony
 ```
 
-In between, create a GitHub Project board with the columns `Backlog`, `Ready`, `In progress`, `Agent review`,
-`Blocked`, `In review` and `Done`. The step-by-step guide is [docs/getting-started.md](docs/getting-started.md);
+In between, create a GitHub Project board with the columns `Backlog`, `Ready`, `Design`, `In progress`, `Testing`,
+`Documentation`, `Agent review`, `Security review`, `Blocked`, `In review` and `Done`. The step-by-step guide is [docs/getting-started.md](docs/getting-started.md);
 running it with Docker behind Traefik is described in [docs/docker.md](docs/docker.md), a local test run of the same
 image without Traefik (`docker-compose.local.yml`) in
 [its own section](docs/docker.md#local-test-setup-without-traefik).
 
 ## 📋 Usage
 
-Move an issue to `Ready`. A developer agent implements it and opens a pull request. After the checks pass, a read-only
+Move an issue to `Ready`. A read-only analyst agent works out requirements, risks and refined acceptance criteria and
+sets `Type:` and `Complexity:` labels where the issue has none (or asks you a question in `Blocked`). For a larger change
+an architect agent then decides on the approach in `Design`. A developer agent then implements it and opens a pull request. After the checks pass, a read-only
 reviewer agent reviews the work, then the card moves to `In review`. You merge the pull request and move the card to
 `Done`. Labels like `Model: sonnet` and `Effort: high` choose model and effort per issue; the dashboard
-(`SYMPHONY_PORT`) shows running agents, logs and cost.
+(`SYMPHONY_PORT`) shows what runs, what starts next and why each issue waits, plus logs and cost.
 
 Everything else is in [docs/usage.md](docs/usage.md): the life of an issue, intervening while it runs, dependencies,
 model choice, `repo-init`, dashboard and API, logs and cost, several repositories, configuration, security, Laravel
@@ -191,7 +229,7 @@ symphony/
 ├── .claude/                    # toolbox for all sessions, loaded as plugin "symphony" (skills, agents, commands, hooks)
 ├── .github/workflows/          # CI (npm run check) and auto-merge of agent pull requests
 ├── model-costs.yml             # model prices for the cost estimate (reloaded live)
-├── Dockerfile                  # image with Node, PHP, Composer, git and SSH; runs as user symphony
+├── Dockerfile                  # image with Node, PHP, Composer, pnpm, git, SSH and gitleaks; runs as user symphony
 ├── docker-compose.yml          # deployment behind Traefik: labels, volumes, secret for the SSH key
 ├── docker-compose.local.yml    # local test run of the same image without Traefik, dashboard on 127.0.0.1
 ├── docker/                     # entrypoint.sh (checks variables, SSH key, git identity) and ssh_known_hosts
@@ -199,7 +237,8 @@ symphony/
 ├── repo-init.ts                # interactive repository setup (standard labels, Laravel Boost issue)
 ├── scripts/e2e/                # end-to-end test of the orchestration on a real board (npm run e2e)
 ├── scripts/laravel-smoke/      # integration test against a real Laravel 13 / Filament 5 app (npm run test:laravel)
-├── scripts/push-history.sh     # copies the local history to a Symphony container on a server (docs/docker.md)
+├── scripts/push-history.sh     # merges the local history into a Symphony container on a server (docs/docker.md)
+├── scripts/merge-history.ts    # merge of two history directories, run by push-history.sh in the container
 ├── src/
 │   ├── cli.ts                  # entry point: options, .env, start
 │   ├── service.ts              # startup, shutdown, dry run
@@ -228,6 +267,8 @@ Start at [docs/index.md](docs/index.md).
 - [docs/configuration.md](docs/configuration.md): every `WORKFLOW.md` option, `$VARIABLE` references, hooks and prompt variables
 - [docs/adapters/github-project.md](docs/adapters/github-project.md): the GitHub Projects adapter: settings, normalization, agent tools, errors
 - [docs/agent-claude.md](docs/agent-claude.md): Claude Code sessions, permissions, skills and plugins, Laravel Boost, timeouts, cost accounting
+- [docs/results.md](docs/results.md): result contracts of the pipeline stages: kinds, verdicts, the `report_result` tool, recovery
+- [docs/concepts/multi-agent.md](docs/concepts/multi-agent.md): the multi-agent pipeline: architecture, decisions and spike results
 - [docs/conformance.md](docs/conformance.md): differences from the specification and implementation-defined behavior
 - [docs/laravel-repositories.md](docs/laravel-repositories.md): conventions for Laravel repositories
 - [docs/e2e.md](docs/e2e.md): end-to-end test of the orchestration and the Laravel integration test

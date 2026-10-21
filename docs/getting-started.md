@@ -26,21 +26,43 @@ npm install
 
 1. On GitHub, go to **Profile → Projects → New project** and create a project from the **Kanban** template. It comes
    with the columns `Backlog`, `Ready`, `In progress`, `In review` and `Done`.
-2. Add the columns `Agent review` and `Blocked`: on the board, add two options via the menu of the **Status** field (or
-   *Settings → Fields → Status*). The order does not matter; this one is easy to follow:
+2. Add the columns `Design`, `Testing`, `Documentation`, `Agent review`, `Security review` and `Blocked`: on the board, add the options via the menu of the **Status** field (or
+   *Settings → Fields → Status*). Keep this order (`Backlog`, `Ready`, `Design`, `In progress`, `Testing`, `Documentation`, `Agent review`,
+   `Security review`, `Blocked`, `In review`, `Done`): `next` and the pipeline view follow the board's order, so `Design`
+   belongs between `Ready` and `In progress`, `Testing` between `In progress` and `Documentation`, `Documentation` between `Testing` and `Agent review`, and `Security review`
+   between `Agent review` and `Blocked`.
 
    | Column | Who moves cards here | What Symphony does |
    |---|---|---|
    | `Backlog` | you | nothing |
-   | `Ready` | you | starts the **Developer** |
-   | `In progress` | Developer, Reviewer (changes needed) | Developer works |
-   | `Agent review` | Developer, after passing checks | starts the **Reviewer** (at most one at a time) |
-   | `Blocked` | Developer or Reviewer | stops the agent, workspace is kept; your turn |
-   | `In review` | only the Reviewer, after passing checks | stops the agent, workspace is kept; your review |
+   | `Ready` | you | starts the **Issue analyst**, who hands the issue on to `Design` (larger changes) or `In progress` |
+   | `Design` | Issue analyst, for larger changes (feature and refactor above complexity `S`, bugfix of complexity `L` or `XL`, or no complexity label); smaller issues skip it without a session | starts the **Architect** (read-only), who reports the design the developer implements |
+   | `In progress` | Developer, Reviewer (changes needed), Test engineer (tests failed), Architect (design ready) | Developer works |
+   | `Testing` | Developer, after passing checks (bug, feature and refactor issues; other issues only with `SYMPHONY_AFTER_IMPLEMENTATION=Testing`) | starts the **Test engineer**, who writes independent tests and may only change test files |
+   | `Documentation` | Developer or Test engineer, when the change needs documentation (`docs_needed` in the analysis, or a changed file in `pipeline.docs_trigger_paths` without a change in `pipeline.docs_paths`); other issues skip it without a session | starts the **docs agent** (`haiku`), who may only change documentation files |
+   | `Agent review` | Developer (issues without the test stage), or Test engineer when the tests pass | starts the **Reviewer** (at most one at a time) |
+   | `Security review` | Reviewer, when the approved change is security-relevant (a `security` label, a security risk in the analysis, or a changed file in `pipeline.security_paths`); other approved issues skip it without a session | starts the **Security auditor** (read-only, at most one at a time) |
+   | `Blocked` | Issue analyst (open questions), Architect, Developer, Reviewer or Security auditor | stops the agent, workspace is kept; your turn |
+   | `In review` | only the Reviewer or the Security auditor, after passing checks | stops the agent, workspace is kept; your review |
    | `Done` | only you | stops the agent and deletes the workspace |
 
-   The bundled `WORKFLOW.md` expects exactly these names. The dry run (step 6) reports every column missing from the
-   board (`unknown board column`).
+   The bundled `WORKFLOW.md` expects exactly these names. `Design` is used by the
+   [architect](configuration.md#the-architect): it is required on the board even though small issues skip it (the dry run
+   reports `unknown board column "Design"` otherwise). `Testing` is used by the
+   [test engineer](configuration.md#the-test-engineer): bug issues (label `bug` or `Type: bugfix`) run
+   `Ready → In progress → Testing → Agent review → In review` through the `bugfix`
+   [workflow profile](configuration.md#workflow-profiles), feature and refactor issues run through `Testing` too (their
+   profiles, see [Features and refactorings](usage.md#features-and-refactorings-the-feature-and-refactor-profiles)), all
+   other issues skip `Testing` unless
+   `SYMPHONY_AFTER_IMPLEMENTATION=Testing` makes the developer hand every issue over to it. The column is required
+   either way: the dry run (step 6) reports every column missing from the board (`unknown board column "Testing"`).
+   `Documentation` is used by the [docs agent](configuration.md#the-documentation-stage) and is required on the board
+   as well (`unknown board column "Documentation"` otherwise); it stays empty for issues that need no documentation.
+   `Security review` is used by the [security auditor](configuration.md#the-security-auditor) and is required on the
+   board as well (`unknown board column "Security review"` otherwise); it stays empty for issues that need no audit.
+   To run bug issues without the test stage, see [Bug issues](usage.md#bug-issues-the-bugfix-profile). With the default
+   of 3 agent slots the test engineer and the issue analyst share one slot; allow 4 (`SYMPHONY_MAX_CONCURRENT_AGENTS`)
+   to run them side by side.
 3. Note the **board number** from the URL, e.g. `10` from `https://github.com/users/yourname/projects/10`.
 4. Add issues: on the board via **+ Add item** and then `#` for an issue of your repository, or in an issue's sidebar
    under **Projects**. Symphony only works on real issues, not on drafts or pull requests.
@@ -137,7 +159,8 @@ npm run dry-run
 ```
 
 The dry run loads `WORKFLOW.md` and `.env`, validates the configuration, reads the board and shows what Symphony would
-start. It also checks whether `php` and `composer` work for Laravel Boost, and lists the detected Laravel apps for
+start, in the same order and with the same reasons as the dashboard's *Up next* (model holds come from the runtime
+state in the log directory). It also checks whether `php` and `composer` work for Laravel Boost, and lists the detected Laravel apps for
 issues with an existing workspace. It does not start any agents. Example:
 
 ```
@@ -150,12 +173,17 @@ Plugins:         /home/user/projects/symphony/.claude; skills: all
 Laravel Boost:   auto, for Laravel apps that require laravel/boost; php (PHP 8.4.12), composer (Composer version 2.8.12 …)
 
 Candidates in active states: 3
-  dispatch  owner/repository#12  [Ready]  Implement feature A
-            ↳ Laravel app laravel/: Laravel Boost
-  skip      owner/repository#15  [Ready]  Implement feature B
-            ↳ blocked by owner/repository#12
-  skip      owner/repository#16  [Ready]  Write tests
-            ↳ waiting for sub-issues owner/repository#15
+Dispatch plan (up next in start order, 10 free slots):
+  #1   start  owner/repository#12  [Ready, p1]  Implement feature A
+              ↳ starts at the next poll
+              ↳ role developer, model default, effort default
+              ↳ Laravel app laravel/: Laravel Boost
+  #2   wait   owner/repository#16  [Ready]  Write tests
+              ↳ waiting for sub-issues owner/repository#15
+              ↳ role developer, model default, effort default
+  blocked     owner/repository#15  [Ready]  Implement feature B
+              ↳ blocked by owner/repository#12
+              ↳ role developer, model default, effort default
 
 Prompt preview for owner/repository#12:
   | You are working on GitHub issue **owner/repository#12**: …

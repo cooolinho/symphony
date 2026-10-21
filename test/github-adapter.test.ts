@@ -5,6 +5,7 @@ import { createGuard, guardTools } from '../src/orchestrator/guard.ts';
 import { githubProjectFactory } from '../src/tracker/github-project/index.ts';
 import { parseSettings } from '../src/tracker/github-project/settings.ts';
 import { TrackerError, type Issue, type ToolResult, type TrackerAdapter } from '../src/tracker/types.ts';
+import { internalResult, renderResultComment } from '../src/workflow/results.ts';
 import type { ServiceConfig } from '../src/workflow/config.ts';
 
 type Json = Record<string, unknown>;
@@ -29,7 +30,7 @@ function itemNode(id: string, options: { status?: string | null; repo?: string; 
     id,
     isArchived: false,
     project: { id: options.project ?? 'PVT_1' },
-    status: status === null ? null : { name: status, optionId: option?.id ?? 'ox' },
+    status: status === null ? null : { name: status, optionId: option?.id ?? 'ox', updatedAt: '2026-09-02T08:30:04Z' },
     content:
       options.type === 'DraftIssue'
         ? { __typename: 'DraftIssue' }
@@ -81,6 +82,12 @@ class FakeGithub {
   pullRequests = new Set<string>();
   /** Repository labels by lowercase name. */
   labels = new Map<string, string>();
+  /** How the repository spells a label (by lowercase name); without an entry the lookup echoes the requested name. */
+  labelSpelling = new Map<string, string>();
+  /** Comments by issue node id, oldest first; the comments query pages through them 100 at a time. */
+  comments = new Map<string, Json[]>();
+  /** Login the viewer query returns. */
+  viewer = 'symphony-bot';
   /** Numbers handed out to created issues. */
   nextNumber = 100;
   /** The repository the auto-merge candidate query returns. */
@@ -196,14 +203,38 @@ class FakeGithub {
         };
       }
       case 'SymphonyLabels': {
-        const data: Json = {};
+        const data: Json = { id: 'R_1' };
         for (const match of this.lastQuery.matchAll(/l(\d+): label\(/g)) {
           const name = String(variables[`l${match[1]}`]);
           const id = this.labels.get(name.toLowerCase());
-          data[`l${match[1]}`] = id === undefined ? null : { id, name };
+          data[`l${match[1]}`] = id === undefined ? null : { id, name: this.labelSpelling.get(name.toLowerCase()) ?? name };
         }
         return { body: { data: { repository: data } } };
       }
+      case 'SymphonyCreateLabel': {
+        const name = String(variables.name);
+        if (this.labels.has(name.toLowerCase())) {
+          return { body: { data: null, errors: [{ type: 'UNPROCESSABLE', message: 'Name has already been taken', path: ['createLabel'] }] } };
+        }
+        const id = `L_${this.labels.size + 1}`;
+        this.labels.set(name.toLowerCase(), id);
+        return { body: { data: { createLabel: { label: { id, name } } } } };
+      }
+      case 'SymphonyAddLabels':
+      case 'SymphonyRemoveLabels':
+        return { body: { data: { [op === 'SymphonyAddLabels' ? 'addLabelsToLabelable' : 'removeLabelsFromLabelable']: { clientMutationId: null } } } };
+      case 'SymphonyIssueComments': {
+        const all = this.comments.get(String(variables.issueId)) ?? [];
+        const start = variables.after === null ? 0 : Number(String(variables.after).slice(1));
+        const hasNextPage = start + 100 < all.length;
+        return {
+          body: {
+            data: { node: { comments: { pageInfo: { hasNextPage, endCursor: hasNextPage ? `c${start + 100}` : null }, nodes: all.slice(start, start + 100) } } },
+          },
+        };
+      }
+      case 'SymphonyViewer':
+        return { body: { data: { viewer: { login: this.viewer } } } };
       case 'SymphonyCreateSubIssue': {
         const number = this.nextNumber++;
         const issue = { id: `I_new${number}`, number, url: `https://github.com/acme/app/issues/${number}` };
@@ -232,13 +263,13 @@ class FakeGithub {
   }
 }
 
-function adapter(github: FakeGithub, provider: Json = {}): TrackerAdapter {
+function adapter(github: FakeGithub, provider: Json = {}, logger: Logger = Logger.silent()): TrackerAdapter {
   return githubProjectFactory.create({
     provider: { owner: 'acme', project_number: 1, token: 'tok', request_retries: 0, ...provider },
     activeStates: ['Todo', 'In Progress'],
     terminalStates: ['Done'],
     env: {},
-    logger: Logger.silent(),
+    logger,
     fetch: github.fetch,
   });
 }
@@ -308,7 +339,7 @@ describe('github_project adapter reads', () => {
     assert.equal(first.id, 'A');
     assert.equal(first.state, 'Todo');
     assert.equal(first.dispatchable, true);
-    assert.deepEqual(first.native_ref, { provider: 'github_project', project_id: 'PVT_1', item_id: 'A', issue_id: 'I_A', repository: 'acme/app', number: 1, issue_state: 'OPEN', status_option_id: 'o1', parent: null, sub_issues: [], base_branch: null, dispatch_note: null });
+    assert.deepEqual(first.native_ref, { provider: 'github_project', project_id: 'PVT_1', item_id: 'A', issue_id: 'I_A', repository: 'acme/app', number: 1, issue_state: 'OPEN', status_option_id: 'o1', status_updated_at: '2026-09-02T08:30:04.000Z', parent: null, sub_issues: [], base_branch: null, dispatch_note: null, held_by_sub_issues: false });
     assert.equal(first.created_at?.toISOString(), '2026-09-01T10:00:00.000Z');
     assert.equal(github.requests.filter((r) => r.op === 'SymphonyProjectItems').length, 2);
   });
@@ -435,8 +466,317 @@ describe('github_project dependencies', () => {
     assert.equal(issues.get('parent')?.native_ref?.dispatch_note, 'waiting for sub-issues acme/app#2');
     assert.equal(issues.get('done')?.dispatchable, true);
     assert.equal(issues.get('child')?.dispatchable, true);
-    assert.deepEqual(issues.get('child')?.native_ref?.parent, { identifier: 'acme/app#1', title: 'Parent', state: 'OPEN' });
+    assert.deepEqual(issues.get('child')?.native_ref?.parent, { identifier: 'acme/app#1', title: 'Parent', state: 'OPEN', state_reason: null });
     assert.equal((await dispatch(github, { respect_sub_issues: false })).get('parent')?.dispatchable, true);
+  });
+
+  it('marks an issue that only its open sub-issues hold back, for the session that filed them (held_by_sub_issues)', async () => {
+    const subIssues = [{ number: 2, state: 'OPEN' }];
+    const github = new FakeGithub().add(
+      itemNode('held', { number: 1, subIssues }),
+      itemNode('blocked', { number: 3, subIssues, blockedBy: [{ state: 'OPEN', number: 90 }] }),
+      itemNode('closed', { number: 4, subIssues: [{ number: 5, state: 'CLOSED' }] }),
+    );
+    const issues = await dispatch(github);
+    const tracker = adapter(github);
+    const held = (id: string) => [issues.get(id)?.dispatchable, issues.get(id)?.native_ref?.held_by_sub_issues, tracker.heldBySubIssues?.(issues.get(id) as Issue)];
+    assert.deepEqual(held('held'), [false, true, true]);
+    assert.deepEqual(held('blocked'), [false, false, false], 'an open blocker holds it back as well');
+    assert.deepEqual(held('closed'), [true, false, false]);
+    assert.equal((await dispatch(github, { respect_sub_issues: false })).get('held')?.native_ref?.held_by_sub_issues, false);
+  });
+});
+
+describe('github_project adapter operations', () => {
+  const comment = (n: number, extra: Json = {}): Json => ({
+    author: { login: n % 2 === 0 ? 'symphony-bot' : 'alice' },
+    createdAt: new Date(Date.UTC(2026, 8, 1, 0, 0, n)).toISOString(),
+    url: `https://github.com/acme/app/issues/1#issuecomment-${n}`,
+    body: `Comment ${n}`,
+    ...extra,
+  });
+
+  async function setup(provider: Json = {}, logger?: Logger) {
+    const github = new FakeGithub().add(itemNode('A', { number: 1 }));
+    const tracker = adapter(github, provider, logger) as Required<TrackerAdapter>;
+    const [issue] = await tracker.fetchIssuesByIds(['A']);
+    assert.ok(issue);
+    const count = (op: string) => github.requests.filter((r) => r.op === op).length;
+    return { github, tracker, issue, count };
+  }
+
+  describe('readComments', () => {
+    it('reads all 250 comments over three pages, each with author and timestamp', async () => {
+      const { github, tracker, issue } = await setup();
+      github.comments.set('I_A', Array.from({ length: 250 }, (_, i) => comment(i + 1)));
+      const comments = await tracker.readComments(issue);
+      assert.equal(comments.length, 250);
+      assert.deepEqual(comments[0], {
+        author: 'alice',
+        createdAt: new Date('2026-09-01T00:00:01Z'),
+        body: 'Comment 1',
+        url: 'https://github.com/acme/app/issues/1#issuecomment-1',
+      });
+      assert.equal(comments[249]?.body, 'Comment 250');
+      assert.equal(comments[249]?.author, 'symphony-bot');
+      assert.deepEqual(comments.map((c) => c.body), Array.from({ length: 250 }, (_, i) => `Comment ${i + 1}`));
+      assert.ok(comments.every((c) => c.createdAt instanceof Date && !Number.isNaN(c.createdAt.getTime())));
+      const pages = github.requests.filter((r) => r.op === 'SymphonyIssueComments');
+      assert.deepEqual(pages.map((r) => r.variables), [
+        { issueId: 'I_A', after: null },
+        { issueId: 'I_A', after: 'c100' },
+        { issueId: 'I_A', after: 'c200' },
+      ]);
+      assert.match(github.lastQuery, /comments\(first: 100, after: \$after\)/);
+    });
+
+    it('returns an empty list for an issue without comments and reads a deleted account as a null author', async () => {
+      const { github, tracker, issue } = await setup();
+      assert.deepEqual(await tracker.readComments(issue), []);
+      github.comments.set('I_A', [comment(1, { author: null })]);
+      assert.equal((await tracker.readComments(issue))[0]?.author, null);
+    });
+
+    it('fails on a page that promises more without a new cursor, and on malformed comments', async () => {
+      const { github, tracker, issue } = await setup();
+      github.overrides.set('SymphonyIssueComments', () => ({
+        body: { data: { node: { comments: { pageInfo: { hasNextPage: true, endCursor: null }, nodes: [comment(1)] } } } },
+      }));
+      await assert.rejects(tracker.readComments(issue), (e: unknown) => e instanceof TrackerError && e.category === 'tracker_pagination');
+
+      github.overrides.set('SymphonyIssueComments', () => ({
+        body: { data: { node: { comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [comment(1, { createdAt: 'yesterday' })] } } } },
+      }));
+      await assert.rejects(tracker.readComments(issue), (e: unknown) => e instanceof TrackerError && e.category === 'tracker_response');
+
+      github.overrides.set('SymphonyIssueComments', () => ({ body: { data: { node: null } } }));
+      await assert.rejects(tracker.readComments(issue), (e: unknown) => e instanceof TrackerError && e.category === 'tracker_response');
+    });
+
+    it('needs an issue that comes from the board', async () => {
+      const { tracker, issue } = await setup();
+      await assert.rejects(tracker.readComments({ ...issue, native_ref: null }), /has no GitHub reference to read comments of/);
+    });
+  });
+
+  describe('readResults', () => {
+    const meta = { role: 'reviewer', run: null, round: 1, profile: null, workflow_hash: null, head_sha: null, checks: null, target: null, created_at: '2026-09-01T00:00:00Z' };
+    const marked = renderResultComment(internalResult('reset', 'Reset'), meta);
+
+    it('decodes markers only from comments of the viewer and ignores all others', async () => {
+      const { github, tracker, issue } = await setup();
+      github.comments.set('I_A', [
+        comment(1, { body: marked }), // alice
+        comment(2, { body: marked }), // symphony-bot
+        comment(3, { author: null, body: marked }),
+        comment(4, { body: 'plain comment from the bot' }),
+      ]);
+      const results = await tracker.readResults(issue);
+      assert.equal(results.length, 1);
+      assert.equal(results[0]?.result.kind, 'reset');
+      assert.equal(results[0]?.url, 'https://github.com/acme/app/issues/1#issuecomment-2');
+    });
+
+    it('skips a damaged marker of its own with a warning; the intact ones still count', async () => {
+      const lines: string[] = [];
+      const logger = Logger.create({ sinks: [{ name: 'memory', write: (line) => lines.push(line) }], level: 'info' });
+      const { github, tracker, issue } = await setup({}, logger);
+      const payload = /<!-- symphony:result:v1 ([A-Za-z0-9_-]+) -->/.exec(marked)?.[1] ?? '';
+      github.comments.set('I_A', [
+        comment(2, { body: marked.replace(payload, payload.slice(0, 20)) }), // cut off
+        comment(4, { body: marked.replace('result:v1', 'result:v2') }), // unknown version
+        comment(6, { body: marked }),
+        comment(7, { body: marked.replace(payload, 'garbage') }), // alice: no warning, not trusted anyway
+      ]);
+      const results = await tracker.readResults(issue);
+      assert.deepEqual(results.map((result) => result.url), ['https://github.com/acme/app/issues/1#issuecomment-6']);
+      const warnings = lines.filter((line) => line.includes('msg="ignoring a damaged result marker"'));
+      assert.equal(warnings.length, 2);
+      assert.match(warnings[0] ?? '', /issuecomment-2/);
+      assert.match(warnings[1] ?? '', /issuecomment-4/);
+    });
+  });
+
+  describe('viewerLogin', () => {
+    it('asks GitHub once per adapter and retries after a failure', async () => {
+      const { github, tracker, count } = await setup();
+      github.overrides.set('SymphonyViewer', () => ({ status: 500, body: {} }));
+      await assert.rejects(tracker.viewerLogin(), TrackerError);
+      github.overrides.delete('SymphonyViewer');
+      assert.equal(await tracker.viewerLogin(), 'symphony-bot');
+      assert.equal(await tracker.viewerLogin(), 'symphony-bot');
+      assert.equal(count('SymphonyViewer'), 2);
+    });
+
+    it('rejects a response without a login', async () => {
+      const { github, tracker } = await setup();
+      github.overrides.set('SymphonyViewer', () => ({ body: { data: { viewer: null } } }));
+      await assert.rejects(tracker.viewerLogin(), (e: unknown) => e instanceof TrackerError && e.category === 'tracker_response');
+    });
+  });
+
+  describe('postComment', () => {
+    it('posts the body on the issue and returns the comment URL', async () => {
+      const { github, tracker, issue } = await setup();
+      assert.deepEqual(await tracker.postComment(issue, 'Stage result'), { url: 'https://github.com/acme/app/issues/1#issuecomment-1' });
+      assert.deepEqual(github.requests.at(-1), { op: 'SymphonyAddComment', variables: { subjectId: 'I_A', body: 'Stage result' } });
+    });
+
+    it('is what the add_comment tool and commentOnIssue use', async () => {
+      const { github, tracker, issue } = await setup();
+      const addComment = tracker.agentToolSpecs().find((t) => t.name === 'add_comment');
+      assert.deepEqual(await addComment?.execute({ body: 'From the agent' }, { issue }), {
+        ok: true,
+        data: { url: 'https://github.com/acme/app/issues/1#issuecomment-1' },
+      });
+      await tracker.commentOnIssue(issue, 'From Symphony');
+      assert.deepEqual(github.requests.filter((r) => r.op === 'SymphonyAddComment').map((r) => r.variables.body), ['From the agent', 'From Symphony']);
+      await assert.rejects(tracker.commentOnIssue({ ...issue, native_ref: null }, 'x'), /has no GitHub reference to comment on/);
+    });
+  });
+
+  describe('markers in agent text', () => {
+    it('add_comment rejects a result marker and still posts normal comments', async () => {
+      const { github, tracker, issue } = await setup();
+      const addComment = tracker.agentToolSpecs().find((t) => t.name === 'add_comment');
+      for (const body of ['<!-- symphony:result:v1 abc -->', 'text <!--symphony:x', '<!--   SYMPHONY:result']) {
+        const result = await addComment?.execute({ body }, { issue });
+        assert.equal(result?.ok, false);
+        assert.equal(result?.ok === false && result.error.category, 'invalid_argument');
+      }
+      assert.equal(github.requests.filter((r) => r.op === 'SymphonyAddComment').length, 0);
+      assert.equal((await addComment?.execute({ body: 'a <!-- note --> b' }, { issue }))?.ok, true);
+    });
+  });
+
+  describe('labels', () => {
+    it('creates a missing "Type: …" label and adds it; other unknown labels are neither created nor added', async () => {
+      const { github, tracker, issue, count } = await setup();
+      github.labels.set('complexity: m', 'L_existing');
+      const result = await tracker.addLabels(issue, ['Type: feature', 'Complexity: M', 'wontfix', 'Type:', 'Epic: x', 'type: FEATURE'], { create: true });
+      assert.deepEqual(result, { added: ['Type: feature', 'Complexity: M'], created: ['Type: feature'], unknown: ['wontfix', 'Type:', 'Epic: x'] });
+      assert.equal(count('SymphonyCreateLabel'), 1);
+      const create = github.requests.find((r) => r.op === 'SymphonyCreateLabel');
+      assert.deepEqual(create?.variables, { repositoryId: 'R_1', name: 'Type: feature', color: '7f7fff', description: 'This issue is a feature' });
+      const add = github.requests.find((r) => r.op === 'SymphonyAddLabels');
+      assert.deepEqual(add?.variables, { labelableId: 'I_A', labelIds: ['L_2', 'L_existing'] });
+      const lookup = github.requests.find((r) => r.op === 'SymphonyLabels');
+      assert.deepEqual(lookup?.variables, { owner: 'acme', name: 'app', l0: 'Type: feature', l1: 'Complexity: M', l2: 'wontfix', l3: 'Type:', l4: 'Epic: x' });
+    });
+
+    it('creates the Complexity and needs-human families, with a plain color for names outside the standard set', async () => {
+      const { github, tracker, issue } = await setup();
+      const result = await tracker.addLabels(issue, ['needs-human', 'Complexity: XL', 'Type: spike'], { create: true });
+      assert.deepEqual(result.created, ['needs-human', 'Complexity: XL', 'Type: spike']);
+      const created = github.requests.filter((r) => r.op === 'SymphonyCreateLabel').map((r) => r.variables);
+      assert.deepEqual(created.map((v) => v.name), ['needs-human', 'Complexity: XL', 'Type: spike']);
+      assert.deepEqual(created.map((v) => v.color), ['ff0000', 'ff6347', 'ededed']);
+      assert.equal(created[2]?.description, null);
+    });
+
+    it('creates nothing without create, and adds the labels that exist', async () => {
+      const { github, tracker, issue, count } = await setup();
+      github.labels.set('bug', 'L_bug');
+      const result = await tracker.addLabels(issue, ['bug', 'Type: feature']);
+      assert.deepEqual(result, { added: ['bug'], created: [], unknown: ['Type: feature'] });
+      assert.equal(count('SymphonyCreateLabel'), 0);
+      assert.deepEqual(github.requests.find((r) => r.op === 'SymphonyAddLabels')?.variables, { labelableId: 'I_A', labelIds: ['L_bug'] });
+
+      github.requests.length = 0;
+      assert.deepEqual(await tracker.addLabels(issue, ['nothing']), { added: [], created: [], unknown: ['nothing'] });
+      assert.equal(count('SymphonyAddLabels'), 0);
+    });
+
+    it('sends nothing for an empty list and drops duplicates (label names are case-insensitive)', async () => {
+      const { github, tracker, issue, count } = await setup();
+      assert.deepEqual(await tracker.addLabels(issue, ['', '  '], { create: true }), { added: [], created: [], unknown: [] });
+      assert.deepEqual(await tracker.removeLabels(issue, []), { removed: [], unknown: [] });
+      assert.equal(github.requests.some((r) => r.op === 'SymphonyLabels'), false);
+
+      const result = await tracker.addLabels(issue, ['Type: bugfix', 'type: BUGFIX', ' Type: bugfix '], { create: true });
+      assert.deepEqual(result.created, ['Type: bugfix']);
+      assert.equal(count('SymphonyCreateLabel'), 1);
+    });
+
+    it('uses the label a concurrent writer created between lookup and creation', async () => {
+      const { github, tracker, issue } = await setup();
+      let lookups = 0;
+      github.overrides.set('SymphonyLabels', () => {
+        if (++lookups === 2) github.labels.set('type: feature', 'L_theirs');
+        return undefined;
+      });
+      github.overrides.set('SymphonyCreateLabel', () => {
+        github.labels.set('type: feature', 'L_theirs');
+        return { body: { data: null, errors: [{ type: 'UNPROCESSABLE', message: 'Name has already been taken', path: ['createLabel'] }] } };
+      });
+      const result = await tracker.addLabels(issue, ['Type: feature'], { create: true });
+      assert.deepEqual(result.added, ['Type: feature']);
+      assert.deepEqual(github.requests.find((r) => r.op === 'SymphonyAddLabels')?.variables, { labelableId: 'I_A', labelIds: ['L_theirs'] });
+    });
+
+    it('removes existing labels by id and reports the ones the repository does not have', async () => {
+      const { github, tracker, issue, count } = await setup();
+      github.labels.set('needs-human', 'L_nh');
+      github.labelSpelling.set('needs-human', 'needs-human');
+      const result = await tracker.removeLabels(issue, ['Needs-Human', 'ghost']);
+      assert.deepEqual(result, { removed: ['needs-human'], unknown: ['ghost'] });
+      assert.deepEqual(github.requests.find((r) => r.op === 'SymphonyRemoveLabels')?.variables, { labelableId: 'I_A', labelIds: ['L_nh'] });
+
+      github.requests.length = 0;
+      assert.deepEqual(await tracker.removeLabels(issue, ['ghost']), { removed: [], unknown: ['ghost'] });
+      assert.equal(count('SymphonyRemoveLabels'), 0);
+    });
+
+    it('fails when the repository cannot be read', async () => {
+      const { github, tracker, issue } = await setup();
+      github.overrides.set('SymphonyLabels', () => ({ body: { data: { repository: null } } }));
+      await assert.rejects(tracker.addLabels(issue, ['bug']), (e: unknown) => e instanceof TrackerError && e.category === 'tracker_response');
+    });
+  });
+
+  it('never retries a mutation, even with retries configured', async () => {
+    const { github, tracker, issue, count } = await setup({ request_retries: 2 });
+    github.labels.set('bug', 'L_bug');
+    for (const [op, run] of [
+      ['SymphonyAddComment', () => tracker.postComment(issue, 'x')],
+      ['SymphonyCreateLabel', () => tracker.addLabels(issue, ['Type: feature'], { create: true })],
+      ['SymphonyAddLabels', () => tracker.addLabels(issue, ['bug'])],
+      ['SymphonyRemoveLabels', () => tracker.removeLabels(issue, ['bug'])],
+      ['SymphonySetStatus', () => tracker.setStatus(issue, 'Done')],
+    ] as const) {
+      github.overrides.set(op, () => ({ status: 503, body: {} }));
+      await assert.rejects(run(), (e: unknown) => e instanceof TrackerError && e.status === 503, op);
+      assert.equal(count(op), 1, op);
+    }
+  });
+
+  describe('setStatus', () => {
+    it('moves the board item by column name and reports the previous column of the snapshot', async () => {
+      const { github, tracker, issue } = await setup();
+      assert.deepEqual(await tracker.setStatus(issue, 'human review'), { previous: 'Todo', status: 'Human Review' });
+      assert.deepEqual(github.requests.find((r) => r.op === 'SymphonySetStatus')?.variables, {
+        projectId: 'PVT_1',
+        itemId: 'A',
+        fieldId: 'F_status',
+        optionId: 'o3',
+      });
+    });
+
+    it('rejects an unknown column as invalid_argument, naming the valid ones, without a mutation', async () => {
+      const { github, tracker, issue } = await setup();
+      await assert.rejects(tracker.setStatus(issue, 'Shipped'), (e: unknown) => {
+        assert.ok(e instanceof TrackerError);
+        assert.equal(e.category, 'invalid_argument');
+        assert.match(e.message, /unknown status "Shipped"; valid options: "Todo", "In Progress", "Human Review", "Done"/);
+        return true;
+      });
+      assert.equal(github.requests.some((r) => r.op === 'SymphonySetStatus'), false);
+    });
+
+    it('needs an issue that comes from the board', async () => {
+      const { tracker, issue } = await setup();
+      await assert.rejects(tracker.setStatus({ ...issue, native_ref: null }, 'Done'), /has no GitHub reference to move/);
+    });
   });
 });
 
@@ -519,6 +859,16 @@ describe('github_project create_sub_issue', () => {
     assert.equal(result.ok, true);
     return (result as { ok: true; data: Json }).data;
   };
+
+  it('rejects a result marker in the body or title and creates normal issues', async () => {
+    const { run, ops } = await setup();
+    for (const args of [{ title: 'T', body: 'x\n<!-- symphony:result:v1 abc -->' }, { title: '<!-- symphony:x -->' }]) {
+      const result = await run(args);
+      assert.equal(result.ok === false && result.error.category, 'invalid_argument');
+    }
+    assert.equal(ops('SymphonyCreateSubIssue').length, 0);
+    assert.equal((await run({ title: 'T', body: '<!-- plain -->' })).ok, true);
+  });
 
   it('creates the issue under its parent, labels it and puts it on the board in the configured column', async () => {
     const { run, ops } = await setup();
@@ -818,7 +1168,7 @@ describe('github_project base branch and waves', () => {
     const [epic] = await tracker.fetchIssuesByIds(['epic']);
     assert.deepEqual(tracker.openSubIssues?.(epic as Issue), ['acme/app#2']);
     assert.deepEqual(epic?.native_ref?.sub_issues, [
-      { identifier: 'acme/app#2', title: 'Sub 2', state: 'OPEN' },
+      { identifier: 'acme/app#2', title: 'Sub 2', state: 'OPEN', state_reason: null },
       { identifier: 'acme/app#3', title: 'Sub 3', state: 'CLOSED', state_reason: 'NOT_PLANNED' },
       { identifier: 'acme/app#4', title: 'Sub 4', state: 'CLOSED', state_reason: 'COMPLETED' },
     ]);
@@ -875,7 +1225,7 @@ describe('github_project auto_merge', () => {
     const ops = () => github.requests.map((r) => r.op).filter((op) => op !== 'SymphonyItemDetails' && op !== 'SymphonyProjectMeta');
     const statuses = () => github.requests.filter((r) => r.op === 'SymphonySetStatus').map((r) => r.variables.optionId);
     const comments = () => github.requests.filter((r) => r.op === 'SymphonyAddComment').map((r) => String(r.variables.body));
-    return { github, move, ops, statuses, comments };
+    return { github, tracker, issue: issue as Issue, move, ops, statuses, comments };
   }
 
   it('merges the pull request into the base branch, closes the issue and moves it to the done column', async () => {
@@ -890,6 +1240,32 @@ describe('github_project auto_merge', () => {
     const merge = github.requests.find((r) => r.op === 'SymphonyMergePullRequest');
     assert.deepEqual(merge?.variables, { pullRequestId: 'PR_7', expectedHeadOid: 'abc123', method: 'SQUASH', headline: 'Feature: Export (#7)' });
     assert.match(comments()[0] ?? '', /merged #7 into `develop` \(squash\)/);
+  });
+
+  it('merges through the adapter\'s setStatus exactly like the tool', async () => {
+    const viaTool = await setup();
+    const toolData = await viaTool.move('Human Review');
+
+    const viaAdapter = await setup();
+    const change = await viaAdapter.tracker.setStatus?.(viaAdapter.issue, 'Human Review');
+    assert.deepEqual(change, {
+      previous: 'Todo',
+      status: 'Done',
+      autoMerge: { merged: true, pull_request: 7, status: 'Done', reason: 'merged into develop' },
+    });
+    assert.deepEqual(change?.autoMerge, toolData.auto_merge);
+    assert.equal(change?.status, toolData.status);
+    assert.deepEqual(viaAdapter.ops(), viaTool.ops());
+    assert.deepEqual(viaAdapter.statuses(), ['o3', 'o4']);
+    assert.deepEqual(viaAdapter.comments(), viaTool.comments());
+
+    // Other columns, and a conflict, behave as through the tool.
+    assert.deepEqual(await viaAdapter.tracker.setStatus?.(viaAdapter.issue, 'In Progress'), { previous: 'Todo', status: 'In Progress' });
+    const conflicting = await setup({ pullRequests: { nodes: [pullRequest({ mergeable: 'CONFLICTING' })] } });
+    const sentBack = await conflicting.tracker.setStatus?.(conflicting.issue, 'Human Review');
+    assert.equal(sentBack?.status, 'In Progress');
+    assert.equal(sentBack?.autoMerge?.merged, false);
+    assert.deepEqual(conflicting.statuses(), ['o3', 'o2']);
   });
 
   it('only merges on the configured column', async () => {
@@ -942,6 +1318,21 @@ describe('github_project auto_merge', () => {
     }
   });
 
+  it('sends the conflicting pull request of a work package back to its developer while the parent keeps waiting', async () => {
+    // Another package was merged into develop first: this package's pull request conflicts with it now.
+    const { github, move, statuses, comments } = await setup({ pullRequests: { nodes: [pullRequest({ mergeable: 'CONFLICTING' })] } });
+    github.add(itemNode('P', { number: 9, title: 'Invoice export', subIssues: [{ number: 1, state: 'OPEN' }, { number: 2, state: 'CLOSED', stateReason: 'COMPLETED' }] }));
+    const data = await move('Human Review');
+    assert.equal(data.status, 'In Progress');
+    assert.match(String((data.auto_merge as Json).reason), /conflicts with `develop`/);
+    assert.deepEqual(statuses(), ['o3', 'o2']);
+    assert.match(comments()[0] ?? '', /Merge `origin\/develop` into `symphony\/issue-1`/);
+    assert.equal(github.requests.some((r) => r.op === 'SymphonyCloseIssue'), false, 'the package stays open');
+    const [parent] = await adapter(github).fetchIssuesByIds(['P']);
+    assert.equal(parent?.dispatchable, false);
+    assert.equal(parent?.native_ref?.dispatch_note, 'waiting for sub-issues acme/app#1');
+  });
+
   it('keeps a merged result when closing or moving the issue fails afterwards', async () => {
     const { github, move } = await setup();
     github.overrides.set('SymphonyCloseIssue', () => ({ body: { data: null, errors: [{ type: 'FORBIDDEN', message: 'no access', path: ['closeIssue'] }] } }));
@@ -974,5 +1365,240 @@ describe('github_project auto_merge', () => {
     assert.throws(create({ on_enter: 'Human Review', done_state: 'Human Review' }), /auto_merge\.done_state "Human Review" must be a terminal state/);
     assert.throws(create({ on_enter: 'Human Review', on_conflict: 'Done' }), /auto_merge\.on_conflict "Done" must not be a terminal state/);
     assert.doesNotThrow(create({ on_enter: 'Human Review' }));
+  });
+});
+
+describe('github_project work packages as sub-issues (#211)', () => {
+  // The fake board has no "Ready" column, so "Human Review" stands in for the column the architect's packages start in.
+  const READY = 'Human Review';
+  const PACKAGES = [
+    { title: 'Export: CSV writer', body: 'Rows as CSV.\n\nPart of #7', labels: ['Type: feature', 'Complexity: M'] },
+    { title: 'Export: PDF writer', body: 'One PDF per invoice.\n\nPart of #7', labels: ['Type: feature', 'Complexity: M'] },
+    { title: 'Export: CLI command', body: 'Wires both.\n\nBlocked by #8, #9\n\nPart of #7', labels: ['Type: feature', 'Complexity: S'], blocked_by: [8, 9] },
+  ];
+
+  /** The parent #7 as an XL issue on the board; GitHub numbers the packages 8, 9 and 10. */
+  function parentBoard() {
+    const github = new FakeGithub().add(itemNode('P', { number: 7, title: 'Invoice export', labels: ['Type: feature', 'Complexity: XL'] }));
+    github.nextNumber = 8;
+    for (const label of ['type: feature', 'complexity: m', 'complexity: s']) github.labels.set(label, `L_${label}`);
+    github.references.set('acme/app#8', 'OPEN');
+    github.references.set('acme/app#9', 'OPEN');
+    return github;
+  }
+
+  /** Lets the parent's board item list the sub-issues GitHub holds now, as the item query would. */
+  function syncParent(github: FakeGithub, states: Record<number, { state: string; stateReason?: string }> = {}): void {
+    const node = github.items.get('P') as Json;
+    const content = node.content as Json;
+    const children = (github.subIssues.get('I_P') ?? []) as Json[];
+    content.subIssues = {
+      nodes: children.map((child) => ({ number: child.number, title: child.title, state: 'OPEN', ...states[child.number as number], repository: { nameWithOwner: 'acme/app' } })),
+    };
+  }
+
+  it('files exactly three sub-issues under the parent, in the role\'s column, with the last one blocked by the other two', async () => {
+    const github = parentBoard();
+    const tracker = adapter(github);
+    const [parent] = await tracker.fetchIssuesByIds(['P']);
+    const create = tracker.agentToolSpecs().find((tool) => tool.name === 'create_sub_issue');
+    assert.ok(create);
+    const results: ToolResult[] = [];
+    for (const pkg of PACKAGES) results.push(await create.execute(pkg, { issue: parent as Issue, maxSubIssues: 5, subIssueStatus: READY }));
+
+    const data = results.map((result) => {
+      assert.equal(result.ok, true, JSON.stringify(result));
+      return (result as { ok: true; data: Json }).data;
+    });
+    assert.deepEqual(data.map((entry) => [entry.created, entry.number, entry.identifier, entry.status, entry.remaining]), [
+      [true, 8, 'acme/app#8', READY, 4],
+      [true, 9, 'acme/app#9', READY, 3],
+      [true, 10, 'acme/app#10', READY, 2],
+    ]);
+    const creates = github.requests.filter((r) => r.op === 'SymphonyCreateSubIssue');
+    assert.deepEqual(creates.map((r) => [r.variables.parentId, r.variables.title]), PACKAGES.map((pkg) => ['I_P', pkg.title]));
+    assert.deepEqual(creates.map((r) => r.variables.labelIds), [['L_type: feature', 'L_complexity: m'], ['L_type: feature', 'L_complexity: m'], ['L_type: feature', 'L_complexity: s']]);
+    // Each package is on the board in the column of the role (not the provider default), so it starts without a human.
+    assert.deepEqual(github.requests.filter((r) => r.op === 'SymphonySetStatus').map((r) => r.variables.optionId), ['o3', 'o3', 'o3']);
+    // Only the dependent package waits, for exactly the two packages it builds on.
+    assert.deepEqual(
+      github.requests.filter((r) => r.op === 'SymphonyAddBlockedBy').map((r) => [r.variables.issueId, r.variables.blockingIssueId]),
+      [['I_new10', 'I_acme/app#8'], ['I_new10', 'I_acme/app#9']],
+    );
+    assert.deepEqual(data[2]?.blocked_by, [8, 9]);
+    assert.deepEqual(data[0]?.blocked_by, undefined);
+  });
+
+  it('does not file a package twice when the architect runs the same calls again, and stops at max_sub_issues', async () => {
+    const github = parentBoard();
+    const tracker = adapter(github);
+    const [parent] = await tracker.fetchIssuesByIds(['P']);
+    const create = tracker.agentToolSpecs().find((tool) => tool.name === 'create_sub_issue');
+    assert.ok(create);
+    const context = (max: number) => ({ issue: parent as Issue, maxSubIssues: max, subIssueStatus: READY });
+    for (const pkg of PACKAGES) await create.execute(pkg, context(3));
+    const again = await Promise.all(PACKAGES.map((pkg) => create.execute(pkg, context(3))));
+    assert.deepEqual(again.map((result) => result.ok && (result.data as Json).created), [false, false, false]);
+    assert.equal(github.requests.filter((r) => r.op === 'SymphonyCreateSubIssue').length, 3, 'three sub-issues, not six');
+    const fourth = await create.execute({ title: 'Export: a fourth package' }, context(3));
+    assert.equal(fourth.ok === false && fourth.error.category, 'limit_reached');
+    assert.equal(github.requests.filter((r) => r.op === 'SymphonyCreateSubIssue').length, 3);
+  });
+
+  it('holds the parent until the last package is closed, whatever the reason, and then releases it', async () => {
+    const github = parentBoard();
+    const tracker = adapter(github);
+    const [fresh] = await tracker.fetchIssuesByIds(['P']);
+    assert.deepEqual([fresh?.dispatchable, fresh?.native_ref?.held_by_sub_issues], [true, false], 'no package yet');
+    const create = tracker.agentToolSpecs().find((tool) => tool.name === 'create_sub_issue');
+    assert.ok(create);
+    for (const pkg of PACKAGES) await create.execute(pkg, { issue: fresh as Issue, maxSubIssues: 5, subIssueStatus: READY });
+
+    const read = async () => {
+      const [parent] = await tracker.fetchIssuesByIds(['P']);
+      assert.ok(parent);
+      return { parent, open: tracker.openSubIssues?.(parent), held: tracker.heldBySubIssues?.(parent) };
+    };
+    syncParent(github);
+    let seen = await read();
+    assert.deepEqual([seen.parent.dispatchable, seen.held, seen.open], [false, true, ['acme/app#8', 'acme/app#9', 'acme/app#10']]);
+    assert.equal(seen.parent.native_ref?.dispatch_note, 'waiting for sub-issues acme/app#8, acme/app#9, acme/app#10');
+
+    syncParent(github, { 8: { state: 'CLOSED', stateReason: 'COMPLETED' } });
+    seen = await read();
+    assert.deepEqual([seen.parent.dispatchable, seen.open], [false, ['acme/app#9', 'acme/app#10']]);
+    syncParent(github, { 8: { state: 'CLOSED', stateReason: 'COMPLETED' }, 9: { state: 'CLOSED', stateReason: 'NOT_PLANNED' } });
+    seen = await read();
+    assert.deepEqual([seen.parent.dispatchable, seen.open], [false, ['acme/app#10']]);
+
+    syncParent(github, { 8: { state: 'CLOSED', stateReason: 'COMPLETED' }, 9: { state: 'CLOSED', stateReason: 'NOT_PLANNED' }, 10: { state: 'CLOSED', stateReason: 'COMPLETED' } });
+    seen = await read();
+    assert.deepEqual([seen.parent.dispatchable, seen.held, seen.open], [true, false, []]);
+    // The integration review reads each package with the reason it was closed.
+    assert.deepEqual(
+      (seen.parent.native_ref?.sub_issues as Json[]).map((entry) => [entry.identifier, entry.state, entry.state_reason]),
+      [['acme/app#8', 'CLOSED', 'COMPLETED'], ['acme/app#9', 'CLOSED', 'NOT_PLANNED'], ['acme/app#10', 'CLOSED', 'COMPLETED']],
+    );
+    assert.equal(seen.parent.native_ref?.dispatch_note, null);
+  });
+
+  describe('a package whose pull request conflicts after another package was merged', () => {
+    const MERGE = { base_branch: 'develop', auto_merge: { enabled: '$AUTO', on_enter: 'Human Review', on_conflict: 'In Progress' } };
+    const pullRequest = (extra: Json = {}): Json => ({ id: 'PR_7', number: 7, url: 'https://github.com/acme/app/pull/7', title: 'Export: CSV writer', isDraft: false, headRefOid: 'abc123', mergeable: 'MERGEABLE', labels: { nodes: [] }, ...extra });
+
+    it('returns to In Progress with a comment naming the base, the parent keeps waiting, and the resolved package then merges and releases it', async () => {
+      // #1 is the package under test (a sub-issue of #9), #2 the package another developer merged first.
+      const github = new FakeGithub().add(
+        itemNode('A', { number: 1, title: 'Export: CSV writer', parent: { number: 9, title: 'Invoice export', state: 'OPEN' } }),
+        itemNode('P', { number: 9, title: 'Invoice export', labels: ['Type: feature', 'Complexity: XL'], subIssues: [{ number: 1, state: 'OPEN' }, { number: 2, state: 'CLOSED', stateReason: 'COMPLETED' }] }),
+      );
+      github.mergeCandidate = { ...github.mergeCandidate, pullRequests: { nodes: [pullRequest({ mergeable: 'CONFLICTING' })] } };
+      const tracker = githubProjectFactory.create({
+        provider: { owner: 'acme', project_number: 1, token: 'tok', request_retries: 0, ...MERGE },
+        activeStates: ['Todo', 'In Progress'],
+        terminalStates: ['Done'],
+        env: { AUTO: 'true' },
+        logger: Logger.silent(),
+        fetch: github.fetch,
+      });
+      const [pkg] = await tracker.fetchIssuesByIds(['A']);
+      assert.equal((pkg?.native_ref?.parent as Json).identifier, 'acme/app#9', 'the package knows its parent');
+      const setStatus = tracker.agentToolSpecs().find((tool) => tool.name === 'set_status');
+      assert.ok(setStatus);
+      const move = async () => {
+        const result = await setStatus.execute({ status: 'Human Review' }, { issue: pkg as Issue });
+        assert.equal(result.ok, true, JSON.stringify(result));
+        return (result as { ok: true; data: Json }).data;
+      };
+      const parentState = async () => {
+        const [parent] = await tracker.fetchIssuesByIds(['P']);
+        return [parent?.dispatchable, parent?.native_ref?.dispatch_note];
+      };
+
+      // Conflict: the package goes back to the developer, is not merged and not closed; the parent keeps waiting for it.
+      const first = await move();
+      assert.equal(first.status, 'In Progress');
+      assert.equal((first.auto_merge as Json).merged, false);
+      assert.match(String((first.auto_merge as Json).reason), /pull request #7 conflicts with `develop`/);
+      const commentsOf = () => github.requests.filter((r) => r.op === 'SymphonyAddComment').map((r) => String(r.variables.body));
+      assert.match(commentsOf()[0] ?? '', /could not merge: pull request #7 conflicts with `develop`\. Merge `origin\/develop` into `symphony\/issue-1`/);
+      assert.equal(github.requests.some((r) => r.op === 'SymphonyMergePullRequest'), false);
+      assert.equal(github.requests.some((r) => r.op === 'SymphonyCloseIssue'), false);
+      assert.deepEqual(await parentState(), [false, 'waiting for sub-issues acme/app#1']);
+
+      // The developer merged the base into the branch; the next hand-off merges the pull request and closes the package.
+      github.mergeCandidate = { ...github.mergeCandidate, pullRequests: { nodes: [pullRequest({ mergeable: 'MERGEABLE' })] } };
+      const second = await move();
+      assert.equal(second.status, 'Done');
+      assert.equal((second.auto_merge as Json).merged, true);
+      assert.equal(github.requests.filter((r) => r.op === 'SymphonyCloseIssue').length, 1);
+      assert.deepEqual(github.requests.filter((r) => r.op === 'SymphonySetStatus').map((r) => r.variables.optionId), ['o3', 'o2', 'o3', 'o4']);
+
+      // GitHub closed the package: the parent's item lists no open sub-issue any more.
+      ((github.items.get('P') as Json).content as Json).subIssues = {
+        nodes: [1, 2].map((number) => ({ number, title: `Sub ${number}`, state: 'CLOSED', stateReason: 'COMPLETED', repository: { nameWithOwner: 'acme/app' } })),
+      };
+      assert.deepEqual(await parentState(), [true, null]);
+    });
+
+    it('leaves a conflicting package where it is when no on_conflict column is configured (a human sees the pull request)', async () => {
+      const github = new FakeGithub().add(itemNode('A', { number: 1 }));
+      github.mergeCandidate = { ...github.mergeCandidate, pullRequests: { nodes: [pullRequest({ mergeable: 'CONFLICTING' })] } };
+      const tracker = githubProjectFactory.create({
+        provider: { owner: 'acme', project_number: 1, token: 'tok', request_retries: 0, base_branch: 'develop', auto_merge: { enabled: true, on_enter: 'Human Review' } },
+        activeStates: ['Todo', 'In Progress'],
+        terminalStates: ['Done'],
+        env: {},
+        logger: Logger.silent(),
+        fetch: github.fetch,
+      });
+      const [pkg] = await tracker.fetchIssuesByIds(['A']);
+      const change = await tracker.setStatus?.(pkg as Issue, 'Human Review');
+      assert.equal(change?.status, 'Human Review');
+      assert.equal(change?.autoMerge?.merged, false);
+      assert.deepEqual(github.requests.filter((r) => r.op === 'SymphonySetStatus').map((r) => r.variables.optionId), ['o3']);
+      assert.equal(github.requests.some((r) => r.op === 'SymphonyCloseIssue'), false);
+    });
+  });
+
+  it('does not treat an issue as held by its sub-issues alone while a blocker named in its text is open', async () => {
+    const github = new FakeGithub().add(
+      itemNode('P', { number: 7, title: 'Invoice export', body: 'Needs the payment API.\n\nBlocked by #99', subIssues: [{ number: 8, state: 'OPEN' }] }),
+      itemNode('Q', { number: 20, title: 'Other export', body: 'Blocked by #99', subIssues: [{ number: 21, state: 'OPEN' }] }),
+    );
+    github.references.set('acme/app#99', 'OPEN');
+    const tracker = adapter(github);
+    const [open] = await tracker.fetchIssuesByIds(['P']);
+    assert.deepEqual([open?.dispatchable, open?.native_ref?.held_by_sub_issues, tracker.heldBySubIssues?.(open as Issue)], [false, false, false]);
+    assert.match(String(open?.native_ref?.dispatch_note), /blocked by acme\/app#99; waiting for sub-issues acme\/app#8/);
+    const listed = (await tracker.fetchIssuesByStates(['Todo'])).find((issue) => issue.id === 'Q');
+    assert.deepEqual([listed?.dispatchable, listed?.native_ref?.held_by_sub_issues], [false, false], 'the same on the dispatch listing');
+
+    github.references.set('acme/app#99', 'CLOSED');
+    const [resolved] = await tracker.fetchIssuesByIds(['P']);
+    assert.deepEqual([resolved?.dispatchable, resolved?.native_ref?.held_by_sub_issues], [false, true], 'only the sub-issue holds it back now');
+  });
+
+  it('leaves the parent in In review for a human after an approved integration review, even with auto-merge on: it has no pull request of its own', async () => {
+    const github = new FakeGithub().add(
+      itemNode('P', { number: 7, title: 'Invoice export', labels: ['Type: feature', 'Complexity: XL'], subIssues: [8, 9, 10].map((number) => ({ number, state: 'CLOSED', stateReason: 'COMPLETED' })) }),
+    );
+    github.mergeCandidate = { ...github.mergeCandidate, pullRequests: { nodes: [] } };
+    const tracker = githubProjectFactory.create({
+      provider: { owner: 'acme', project_number: 1, token: 'tok', request_retries: 0, base_branch: 'develop', auto_merge: { enabled: true, on_enter: 'Human Review', on_conflict: 'In Progress' } },
+      activeStates: ['Todo', 'In Progress'],
+      terminalStates: ['Done'],
+      env: {},
+      logger: Logger.silent(),
+      fetch: github.fetch,
+    });
+    const [parent] = await tracker.fetchIssuesByIds(['P']);
+    assert.equal(parent?.dispatchable, true, 'every package is closed');
+    const change = await tracker.setStatus?.(parent as Issue, 'Human Review');
+    assert.equal(change?.status, 'Human Review', 'not merged, not closed, not moved to Done');
+    assert.equal(change?.autoMerge?.merged, false);
+    assert.match(String(change?.autoMerge?.reason), /there is no open pull request from symphony\/issue-7 into develop/);
+    assert.equal(github.requests.some((r) => r.op === 'SymphonyMergePullRequest' || r.op === 'SymphonyCloseIssue'), false);
+    assert.deepEqual(github.requests.filter((r) => r.op === 'SymphonySetStatus').map((r) => r.variables.optionId), ['o3']);
   });
 });

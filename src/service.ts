@@ -9,19 +9,22 @@ import { isLoopbackHost, startHttpServer, type HttpServerHandle } from './http/s
 import { defaultIntegrations } from './integrations/registry.ts';
 import type { WorkspaceIntegration } from './integrations/types.ts';
 import { Logger, type LogLevel } from './log.ts';
-import { hasRequiredFields, hasRequiredLabels, isActiveState, sortForDispatch, waitingForSubIssues } from './orchestrator/eligibility.ts';
+import { planDispatch, type PlanItem } from './orchestrator/dispatch-plan.ts';
+import { waitingForSubIssues } from './orchestrator/eligibility.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
+import { RuntimeStateStore, runtimeStateFile } from './orchestrator/runtime-state.ts';
+import { hasLimitOverride, withAgentLimits } from './orchestrator/limits.ts';
 import { getTrackerFactory } from './tracker/registry.ts';
 import type { Issue, TrackerAdapter } from './tracker/types.ts';
 import type { LoadedEnvFile } from './util/env.ts';
 import { errorCode, errorMessage } from './util/errors.ts';
 import { truncate } from './util/text.ts';
 import { commandSkills, pluginAgents, resolveIssueCommand } from './workflow/command.ts';
-import type { ModelClaudeOverrides } from './workflow/config.ts';
+import type { ModelClaudeOverrides, ServiceConfig } from './workflow/config.ts';
 import { roleFor, roleName, sessionAgents } from './workflow/roles.ts';
 import { WorkflowStore } from './workflow/store.ts';
 import { issueTemplateValue, renderPrompt } from './workflow/template.ts';
-import { unknownBoardColumns, validateDispatch } from './workflow/validate.ts';
+import { nextStageProblems, unknownBoardColumns, validateDispatch } from './workflow/validate.ts';
 import { workspaceKey } from './workspace/manager.ts';
 
 export interface ServiceOptions {
@@ -156,19 +159,39 @@ export async function runService(options: ServiceOptions): Promise<number> {
   return 0;
 }
 
-function ineligibleReason(issue: Issue, store: WorkflowStore, adapter: TrackerAdapter): string | null {
-  const { tracker, roles } = store.current.config;
-  if (!hasRequiredFields(issue)) return 'missing required fields';
-  if (!isActiveState(issue.state, tracker)) return `state "${issue.state}" is not active`;
-  if (!issue.dispatchable) {
-    // Display only: adapters may explain their dispatchability decision in native_ref.dispatch_note.
-    const note = issue.native_ref?.dispatch_note;
-    return typeof note === 'string' && note !== '' ? note : 'not dispatchable';
-  }
-  if (!hasRequiredLabels(issue, tracker.requiredLabels)) return `missing required labels (${tracker.requiredLabels.join(', ')})`;
-  const waiting = waitingForSubIssues(issue, roleFor(issue, roles), adapter);
-  if (waiting.length > 0) return `waiting for sub-issues ${waiting.join(', ')} (roles.<role>.wait_for_sub_issues)`;
-  return null;
+/**
+ * The dispatch plan as the dry run sees it: the board, the config and the model holds of the runtime state; nothing
+ * runs or waits for a retry yet. The same function orders the orchestrator's dispatch and the dashboard queue.
+ */
+export function dryRunPlan(
+  issues: readonly Issue[],
+  config: ServiceConfig,
+  adapter: Pick<TrackerAdapter, 'openSubIssues'>,
+  holds: ReadonlyMap<string, { until: Date | null }>,
+  now: Date,
+  /** Issues the operator paused (runtime state file): listed as paused, never started. */
+  pausedIds: ReadonlySet<string> = new Set(),
+): PlanItem[] {
+  return planDispatch({
+    config,
+    now,
+    running: [],
+    retries: [],
+    paused: issues.filter((issue) => pausedIds.has(issue.id)).map((issue) => ({ issue, source: 'operator' as const, continuations: 0 })),
+    candidates: issues.filter((issue) => !pausedIds.has(issue.id)),
+    holds,
+    gate: null,
+    waitingForSubIssues: (issue) => waitingForSubIssues(issue, roleFor(issue, config.roles), adapter),
+  });
+}
+
+/** Dry-run lines of one plan item: position and decision, then the reason the dashboard shows as well. */
+export function planLines(item: PlanItem, issue: Pick<Issue, 'identifier' | 'state' | 'priority' | 'title'>): string[] {
+  const place = item.position === null ? item.group.padEnd(11) : `#${item.position}`.padEnd(4) + ` ${item.decision.padEnd(6)}`;
+  return [
+    `  ${place} ${issue.identifier}  [${issue.state}${issue.priority === null ? '' : `, p${issue.priority}`}]  ${truncate(issue.title, 70)}`,
+    `              ↳ ${item.reason.text}`,
+  ];
 }
 
 /**
@@ -196,7 +219,7 @@ async function integrationLines(
 }
 
 /** Validates the workflow, lists what would be dispatched and previews the first prompt. No agents run. */
-export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env' | 'envFile' | 'logLevel'>): Promise<number> {
+export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env' | 'envFile' | 'logLevel'> & { logDir: string | null }): Promise<number> {
   const logger = Logger.create({ level: options.logLevel });
   const out = (line = '') => process.stdout.write(`${line}\n`);
   logEnvFile(logger, options.envFile);
@@ -211,7 +234,7 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
     out(`Terminal states: ${config.tracker.terminalStates.join(', ')}`);
     out(`Workspace root:  ${config.workspace.root}`);
     out(`Concurrency:     ${config.agent.maxConcurrentAgents} agents, ${config.agent.maxTurns} turns per session, poll every ${config.polling.intervalMs / 1000}s`);
-    out(`Session limit:   ${config.agent.maxSessionLimitRetries} retries, then wait for the reset (0 = wait right away)`);
+    out(`Session limit:   ${config.agent.maxSessionLimitRetries} retries, then wait for the reset (0 = wait right away); a model limit holds that model until its reset, else ${config.agent.modelHoldMs / 60_000} min`);
     out(`Continuations:   ${config.agent.maxContinuations === null ? 'unlimited' : `${config.agent.maxContinuations} per issue, then pause`}; delete workspace on ${config.tracker.terminalStates.join('/')}: ${config.workspace.cleanupTerminal ? 'yes' : 'no'}`);
     out(`Claude:          model ${config.claude.model ?? '(Claude Code default)'} (default; a "Model: …" issue label overrides it), effort ${config.claude.effort ?? '(Claude Code default)'} (default; an "Effort: …" issue label overrides it), permission mode ${config.claude.permissionMode}, on_permission_request ${config.claude.onPermissionRequest}`);
     for (const [model, overrides] of config.claude.byModel) out(`                 by_model ${model}: ${byModelLine(overrides)}`);
@@ -239,7 +262,8 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       logger,
     });
     if (adapter.statusOptions !== undefined) {
-      const unknown = unknownBoardColumns(config, await adapter.statusOptions());
+      const statusOptions = await adapter.statusOptions();
+      const unknown = [...unknownBoardColumns(config, statusOptions), ...nextStageProblems(config, statusOptions)];
       if (unknown.length > 0) {
         out('Board column check failed:');
         for (const error of unknown) out(`  - ${error}`);
@@ -249,26 +273,39 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       out();
     }
     const skills = commandSkills(config.claude.plugins);
-    const issues = sortForDispatch(await adapter.fetchIssuesByStates(config.tracker.activeStates));
+    const issues = await adapter.fetchIssuesByStates(config.tracker.activeStates);
+    const now = new Date();
+    const runtime = new RuntimeStateStore(runtimeStateFile(options.logDir, config.tracker, options.env), logger).load(now);
+    const holds = runtime.modelHolds;
+    const planHolds = new Map<string, { until: Date | null }>(holds.map((hold) => [hold.model, hold]));
+    for (const hold of runtime.operatorHolds) planHolds.set(hold.model, { until: null });
+    const planConfig = withAgentLimits(config, runtime.settings);
+    const plan = dryRunPlan(issues, planConfig, adapter, planHolds, now, new Set(runtime.pausedIssues.map((pause) => pause.issueId)));
+    const byId = new Map(issues.map((issue) => [issue.id, issue]));
     out(`Candidates in active states: ${issues.length}`);
-    let first: Issue | null = null;
-    for (const issue of issues) {
-      const reason = ineligibleReason(issue, store, adapter);
-      if (reason === null && first === null) first = issue;
-      out(`  ${reason === null ? 'dispatch' : 'skip    '}  ${issue.identifier}  [${issue.state}${issue.priority === null ? '' : `, p${issue.priority}`}]  ${truncate(issue.title, 70)}`);
-      if (reason !== null) out(`            ↳ ${reason}`);
+    const slots = planConfig.agent.maxConcurrentAgents;
+    const overridden = hasLimitOverride(runtime.settings) ? ', set on the dashboard' : '';
+    out(`Dispatch plan (up next in start order, ${slots} free slot${slots === 1 ? '' : 's'}${overridden}):`);
+    for (const hold of holds) out(`  model ${hold.model} on hold until ${hold.until.toISOString()}`);
+    for (const hold of runtime.operatorHolds) out(`  model ${hold.model} paused by the operator`);
+    const first = byId.get((plan.find((item) => item.decision === 'start') ?? plan.find((item) => item.group === 'next'))?.issueId ?? '') ?? null;
+    for (const item of plan) {
+      const issue = byId.get(item.issueId);
+      if (issue === undefined) continue;
+      for (const line of planLines(item, issue)) out(line);
       const role = roleFor(issue, config.roles);
-      const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model);
+      const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model, role?.modelLabel);
       const effortChoice = chooseEffort(issue.labels, role?.claude.effort ?? config.claude.effort);
-      out(`            ↳ ${roleModelLine(roleName(role), choice.model, effortChoice.effort)}`);
+      out(`              ↳ ${roleModelLine(roleName(role), choice.model, effortChoice.effort)}`);
       const command = resolveIssueCommand(issue.description, skills);
-      if (command !== null) out(`            ↳ command /${command.name} → ${command.skill}`);
-      if (choice.warning !== null) out(`            ↳ model label ignored: ${choice.warning}; using ${choice.model ?? '(Claude Code default)'}`);
-      else if (choice.label !== null) out(`            ↳ model ${choice.model} (label "${choice.label}")`);
-      if (effortChoice.warning !== null) out(`            ↳ effort label ignored: ${effortChoice.warning}; using ${effortChoice.effort ?? '(Claude Code default)'}`);
-      else if (effortChoice.label !== null) out(`            ↳ effort ${effortChoice.effort} (label "${effortChoice.label}")`);
+      if (command !== null) out(`              ↳ command /${command.name} → ${command.skill}`);
+      if (choice.labelIgnored) out(`              ↳ model label on issue ignored by role policy; using ${choice.model ?? '(Claude Code default)'}`);
+      else if (choice.warning !== null) out(`              ↳ model label ignored: ${choice.warning}; using ${choice.model ?? '(Claude Code default)'}`);
+      else if (choice.label !== null) out(`              ↳ model ${choice.model} (label "${choice.label}")`);
+      if (effortChoice.warning !== null) out(`              ↳ effort label ignored: ${effortChoice.warning}; using ${effortChoice.effort ?? '(Claude Code default)'}`);
+      else if (effortChoice.label !== null) out(`              ↳ effort ${effortChoice.effort} (label "${effortChoice.label}")`);
       const workspace = path.join(config.workspace.root, workspaceKey(issue.identifier));
-      for (const line of await integrationLines(integrations, config.integrations, options.env, workspace)) out(`            ↳ ${line}`);
+      for (const line of await integrationLines(integrations, config.integrations, options.env, workspace)) out(`              ↳ ${line}`);
     }
 
     if (first !== null) {
@@ -280,10 +317,14 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
         const prefixes = integrations.flatMap((integration) => (integration.agentPrefix !== undefined ? [integration.agentPrefix] : []));
         const agents = sessionAgents(pluginAgents(config.claude.plugins), role, prefixes, prefixes).allowed;
         const prompt = await renderPrompt(store.current.prompt, {
-          issue: issueTemplateValue(first, skills),
+          issue: issueTemplateValue(first, skills, config.pipeline),
           attempt: null,
           role: roleName(role),
           agents: agents.map((agent) => ({ name: agent.qualified, description: agent.description })),
+          // The issue's stage history is not read here: the preview shows an issue without results.
+          result_required: role?.result != null,
+          test_paths: config.pipeline.testPaths,
+          docs_paths: config.pipeline.docsPaths,
         });
         const lines = prompt.split('\n');
         for (const line of lines.slice(0, 30)) out(`  | ${line}`);

@@ -23,7 +23,7 @@ import type { Issue, ToolResult } from '../tracker/types.ts';
 import { AsyncQueue, settledWithin, sleep, withTimeout } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { oneLine, tail, truncate } from '../util/text.ts';
-import { parseLimitMessage } from './rate-limit.ts';
+import { isWholeLimitMessage, limitScopeOf, parseLimitMessage } from './rate-limit.ts';
 import { forgetProcessGroup, killProcessGroup, processGroupSpawner } from './spawn.ts';
 import type { AgentEvent, AgentRunner, AgentSession, SessionLimitInfo, StartSessionParams, TokenUsage, TurnResult } from './types.ts';
 
@@ -557,10 +557,16 @@ class ClaudeSession implements AgentSession {
     this.#limitAssistantText = null;
   }
 
-  #classifySessionLimit(message: SDKResultMessage): SessionLimitInfo | null {
+  /**
+   * The usage limit behind a turn result, or null. A failed result is a limit with any evidence (limit wording in
+   * the result or a `rate_limit` assistant message, or a rejected rate-limit event with HTTP 429). A successful
+   * result only when its whole text is a limit message, since a normal answer may mention limits.
+   */
+  #classifySessionLimit(message: SDKResultMessage, succeeded: boolean): SessionLimitInfo | null {
+    const resultText = message.subtype === 'success' ? message.result : '';
+    if (succeeded && !isWholeLimitMessage(resultText)) return null;
     const event = this.#limitEvent;
     const assistantText = this.#limitAssistantText;
-    const resultText = message.subtype === 'success' ? message.result : '';
     const now = new Date();
     const fromResult = resultText.trim() !== '' ? parseLimitMessage(resultText, now) : null;
     const fromAssistant = assistantText !== null && assistantText.trim() !== '' ? parseLimitMessage(assistantText, now) : null;
@@ -570,8 +576,13 @@ class ClaudeSession implements AgentSession {
 
     const eventReset = event === null ? null : dateFromResetsAt(event.resetsAt);
     const text = resultText.trim() !== '' ? resultText : (assistantText ?? '');
+    const window = event?.rateLimitType ?? parsed?.window ?? null;
+    // The text names the model when the event cannot (see limitScopeOf).
+    const { scope, model } = limitScopeOf(window, parsed?.model ?? null);
     return {
-      window: event?.rateLimitType ?? parsed?.window ?? null,
+      window,
+      scope,
+      model,
       resetsAt: eventReset ?? parsed?.resetsAt ?? null,
       source: eventReset !== null ? 'event' : parsed?.resetsAt ? 'message' : null,
       text,
@@ -641,15 +652,18 @@ class ClaudeSession implements AgentSession {
   }
 
   #onResult(message: SDKResultMessage): void {
-    const succeeded = message.subtype === 'success' && !message.is_error;
+    const reportedSuccess = message.subtype === 'success' && !message.is_error;
     // A result without model usage (some error results) keeps the totals counted from the model calls.
     const reported = modelUsageBreakdown(message.modelUsage);
     this.#resultUsage = Object.keys(reported).length > 0 ? reported : this.#liveUsage();
     this.#turnCalls.clear();
     const usage = sessionTokens(this.#resultUsage);
-    const sessionLimit = !succeeded && this.#pending !== null ? this.#classifySessionLimit(message) : null;
+    const sessionLimit = this.#pending !== null ? this.#classifySessionLimit(message, reportedSuccess) : null;
+    // A "successful" turn whose whole answer is a limit message failed: no continuation, no `turn_completed`.
+    const succeeded = reportedSuccess && sessionLimit === null;
+    const failure = reportedSuccess ? `turn ended with a usage limit: ${truncate(oneLine(sessionLimit?.text ?? ''), 500)}` : describeResult(message);
     this.#emit(succeeded ? 'turn_completed' : 'turn_failed', {
-      message: succeeded ? `turn completed (${message.num_turns} model calls)` : describeResult(message),
+      message: succeeded ? `turn completed (${message.num_turns} model calls)` : failure,
       usage,
       modelUsage: this.#resultUsage,
       costUsd: message.total_cost_usd,
@@ -657,14 +671,24 @@ class ClaudeSession implements AgentSession {
         subtype: message.subtype,
         stop_reason: message.stop_reason,
         duration_ms: message.duration_ms,
-        ...(sessionLimit ? { session_limit: { window: sessionLimit.window, resets_at: sessionLimit.resetsAt?.toISOString() ?? null, source: sessionLimit.source } } : {}),
+        ...(sessionLimit
+          ? {
+              session_limit: {
+                window: sessionLimit.window,
+                scope: sessionLimit.scope,
+                model: sessionLimit.model,
+                resets_at: sessionLimit.resetsAt?.toISOString() ?? null,
+                source: sessionLimit.source,
+              },
+            }
+          : {}),
       },
     });
     const pending = this.#pending;
     if (pending === null) return;
     if (succeeded) this.#settle({ ok: true, turnId: pending.turnId, resultText: message.subtype === 'success' ? message.result : '' });
-    else if (sessionLimit) this.#settle({ ok: false, turnId: pending.turnId, code: 'session_limit', message: describeResult(message), sessionLimit });
-    else this.#settle({ ok: false, turnId: pending.turnId, code: 'turn_failed', message: describeResult(message) });
+    else if (sessionLimit) this.#settle({ ok: false, turnId: pending.turnId, code: 'session_limit', message: failure, sessionLimit });
+    else this.#settle({ ok: false, turnId: pending.turnId, code: 'turn_failed', message: failure });
   }
 
   #armTurnTimer(): void {

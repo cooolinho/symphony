@@ -16,7 +16,13 @@ import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import { FakeRunner, FakeTracker, ManualTimers, StaticWorkflow, baseFront, makeIssue, makeWorkflow, tempDir, until } from './helpers.ts';
 
 /** Raw request so tests can set the Host header freely. */
-function request(port: number, method: string, path: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string; headers: http.IncomingHttpHeaders }> {
+function request(
+  port: number,
+  method: string,
+  path: string,
+  headers: Record<string, string> = {},
+  body?: string,
+): Promise<{ status: number; body: string; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const req = http.request({ host: '127.0.0.1', port, method, path, headers }, (res) => {
       let body = '';
@@ -25,7 +31,7 @@ function request(port: number, method: string, path: string, headers: Record<str
       res.on('end', () => resolve({ status: res.statusCode ?? 0, body, headers: res.headers }));
     });
     req.on('error', reject);
-    req.end();
+    req.end(body);
   });
 }
 
@@ -56,6 +62,14 @@ describe('http extension', () => {
       state: 'In review', reason: 'done', turns: 1, startedAt: new Date('2026-10-04T08:00:00Z'), finishedAt: new Date('2026-10-04T08:01:00Z'),
       agentSeconds: 60, usage: { 'claude-opus-5-5': { inputTokens: 1000, outputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0 } }, claudeEstimateUsd: null,
     });
+    historyLog.stageResult({
+      repo: 'acme/app', issue: 'acme/app#1', run: 'r1', role: 'developer', kind: 'implementation', verdict: 'done', round: null, target: 'Agent review',
+      profile: 'bugfix', complexity: 'S', findings: 0, at: new Date('2026-10-04T08:01:00Z'),
+    });
+    historyLog.stageResult({
+      repo: 'acme/app', issue: 'acme/app#1', run: 'r2', role: 'reviewer', kind: 'review', verdict: 'approved', round: 1, target: 'In review',
+      profile: 'bugfix', complexity: 'S', findings: 0, at: new Date('2026-10-04T08:05:00Z'),
+    });
     historyLog.note('other/repo', 'workspace_removed', { issue: 'other/repo#2', state: 'Done' });
     const orchestrator = new Orchestrator({
       workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir()))),
@@ -78,16 +92,46 @@ describe('http extension', () => {
     assert.equal(page.status, 200);
     assert.match(page.body, /<title>Symphony<\/title>/);
     assert.match(page.body, /AGENT ORCHESTRATOR/);
-    // Issues in flight render as cards with the pipeline topology strip; blocked issues collapse into a details panel.
+    // Issues render as cards with the pipeline topology strip in separate sections (Running, Up next, Waiting,
+    // Paused), each with a count and hidden when empty; blocked issues collapse into a details panel.
     assert.match(page.body, /renderPipeline\(refs\.pipe, row\.stages/);
+    // Stages show the verdict and round of their newest result; skipped stages stay marked as skipped.
+    assert.match(page.body, /pipeVerdict\(stage\.verdict, stage\.round\)/);
+    assert.match(page.body, /\.pipe-verdict\.vd-warn/);
+    assert.match(page.body, /\.pipe-node\.st-skipped/);
     assert.match(page.body, /state\.issues/);
+    assert.doesNotMatch(page.body, /Issues in flight/);
+    for (const name of ['running', 'next', 'waiting', 'paused']) {
+      assert.match(page.body, new RegExp(`<div class="agents[^"]*" id="${name}"></div>`));
+      assert.match(page.body, new RegExp(`<span class="count" id="${name}-count"></span>`));
+    }
+    for (const name of ['next', 'waiting', 'paused']) assert.match(page.body, new RegExp(`<section class="agents-section queue-section" id="${name}-section"[^>]*hidden>`));
+    assert.match(page.body, /const SECTIONS = \['running', 'next', 'waiting', 'paused'\]/);
+    assert.match(page.body, /\$\(name \+ '-section'\)\.hidden = ordered\.length === 0/);
+    // Up next is numbered and every waiting card names its reason; the board age sits next to Up next.
+    assert.match(page.body, /setText\(refs\.position, row\.position == null \? '' : '#' \+ row\.position\)/);
+    assert.match(page.body, /why\.append\(reasonChip\(row\.reason\)\)/);
+    assert.match(page.body, /'in start order · board as of ' \+ ago\(state\.board_fetched_at\)/);
+    assert.doesNotMatch(page.body, /Waiting for a free agent slot or the next poll/);
+    // Reason chips show the UTC times of the reason texts in local time.
+    assert.ok(page.body.includes(String.raw`const UTC_TIME = /(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) UTC/g;`));
     assert.match(page.body, /id="blocked-section"/);
     assert.match(page.body, /setText\(refs\.model, r\.model/);
     assert.match(page.body, /setText\(refs\.phase, r\.phase/);
     assert.match(page.body, /id="refresh"/);
     assert.match(page.body, /Retry now/);
     assert.match(page.body, /Resume now/);
-    assert.match(page.body, /'\/api\/v1\/' \+ encodeURIComponent\(identifier\) \+ '\/retry'/);
+    assert.match(page.body, /'\/api\/v1\/' \+ encodeURIComponent\(identifier\) \+ '\/' \+ action/);
+    for (const route of ["'retry'", "'resume'", "'pause'", "'force'"]) assert.ok(page.body.includes(route), route);
+    // Start now: a button on waiting, queued and paused cards, a confirmation when every slot is taken, forced slots in the bar.
+    assert.match(page.body, /Force: 'Start now'/);
+    assert.match(page.body, /restartButton\(row\.issue_identifier, 'Force'\)/);
+    assert.match(page.body, /' busy\. Start ' \+ splitId\(identifier\)\.num \+ ' in an extra slot\?'/);
+    assert.match(page.body, /', ' \+ forced \+ ' forced'/);
+    assert.match(page.body, /'\/api\/v1\/models\/' \+ encodeURIComponent\(model\)/);
+    assert.match(page.body, /restartButton\(row\.issue_identifier, 'Pause'\)/);
+    assert.match(page.body, /paused by operator/);
+    assert.match(page.body, /model_controls/);
     assert.match(page.body, /limit\.resets_at/);
     assert.match(page.body, /waiting for reset/);
     assert.match(page.body, /Session limit/);
@@ -96,16 +140,45 @@ describe('http extension', () => {
     assert.match(page.body, /<section id="dispatch-gate" class="dispatch-gate" role="status" hidden>/);
     assert.match(page.body, /\$\('dispatch-gate'\)\.hidden = !gate/);
     assert.match(page.body, /'Dispatch paused until ' \+ fmtStamp\(gate\.until\) \+ ' · session limit \(' \+ gate\.window \+ '\) · started by ' \+ gate\.issue_identifier/);
+    // Model holds: a notice per held model, and waiting cards name the model they wait for.
+    assert.match(page.body, /<section id="model-holds" class="dispatch-gate model-holds" role="status" hidden>/);
+    assert.match(page.body, /'Model ' \+ hold\.model \+ ' on hold until ' \+ fmtStamp\(hold\.until\)/);
+    assert.match(page.body, /'Waiting for model ' \+ hold\.model \+ ' \(limit until ' \+ fmtStamp\(hold\.until\) \+ '\)'/);
     assert.doesNotMatch(page.body, /\bonclick=/);
+    // Agent slots: − / value / + at the slot bar, Reset to WORKFLOW.md, and the note when lowered below the running count.
+    assert.match(page.body, /<div class="slot-settings" id="slot-settings" role="group" aria-label="Agent slots" hidden><\/div>/);
+    assert.match(page.body, /fetch\('\/api\/v1\/settings\/agents', init\)/);
+    assert.match(page.body, /'Reset to WORKFLOW\.md \(' \+ total\.workflow \+ '\)'/);
+    assert.match(page.body, /' running, limit ' \+ total\.effective \+ ': no new starts until '/);
 
     const state = await request(server.port, 'GET', '/api/v1/state');
     assert.equal(state.status, 200);
     const body = JSON.parse(state.body);
-    assert.deepEqual(Object.keys(body.counts), ['running', 'retrying', 'paused', 'claimed', 'queued', 'blocked']);
-    assert.ok(Array.isArray(body.issues) && Array.isArray(body.blocked));
+    assert.deepEqual(Object.keys(body.counts), ['running', 'forced', 'retrying', 'paused', 'claimed', 'queued', 'blocked']);
+    assert.ok(Array.isArray(body.issues) && Array.isArray(body.blocked) && Array.isArray(body.queue));
     assert.deepEqual(Object.keys(body.pipeline_config), ['board_columns', 'roles', 'blocked_states']);
     assert.deepEqual(Object.keys(body.agent_totals), ['input_tokens', 'output_tokens', 'total_tokens', 'seconds_running', 'cost_usd', 'claude_estimate_usd']);
     assert.ok(Array.isArray(body.running) && Array.isArray(body.retrying));
+    assert.deepEqual(Object.keys(body), [
+      'generated_at',
+      'counts',
+      'issues',
+      'queue',
+      'blocked',
+      'board_fetched_at',
+      'pipeline_config',
+      'running',
+      'retrying',
+      'paused',
+      'model_holds',
+      'model_controls',
+      'limits',
+      'agent_totals',
+      'rate_limits',
+      'health',
+      'controls',
+    ]);
+    assert.deepEqual(body.model_holds, []);
     assert.equal(body.health.dispatch_gate, null);
   });
 
@@ -144,6 +217,8 @@ describe('http extension', () => {
     const page = (await request(server.port, 'GET', '/logs')).body;
     assert.match(page, /\/api\/v1\/history\/analytics\?/);
     assert.match(page, /\/api\/v1\/history\/entries\?/);
+    assert.match(page, /data-body="roles"/);
+    assert.match(page, /Most expensive issue pipelines/);
 
     const week = '/api/v1/history/analytics?from=2026-09-28T00:00:00Z&to=2026-10-05T00:00:00Z&tz=Europe%2FBerlin';
     const a = JSON.parse((await request(server.port, 'GET', week)).body);
@@ -154,6 +229,17 @@ describe('http extension', () => {
     assert.deepEqual(a.repositories_available, ['acme/app', 'other/repo']);
     assert.deepEqual(a.models_available, ['claude-opus-5-5']);
     assert.deepEqual(a.efforts_available, ['unknown']);
+    assert.deepEqual(a.by_role.map((r: { role: string; runs: number }) => [r.role, r.runs]), [['default', 1]]);
+    assert.equal(a.top.pipelines.length, 1);
+    // Stage results by profile and the verdicts per role (the stage_result lines of the seeded history).
+    assert.equal(a.stage_results, 2);
+    assert.deepEqual(a.by_profile.map((p: { profile: string; results: number; issues: number; runs: number; verdicts: object }) => [p.profile, p.results, p.issues, p.runs, p.verdicts]), [
+      ['bugfix', 2, 1, 1, { 'implementation:done': 1, 'review:approved': 1 }],
+    ]);
+    assert.deepEqual(a.verdicts_by_role.map((r: { role: string; verdicts: object }) => [r.role, r.verdicts]), [
+      ['developer', { 'implementation:done': 1 }],
+      ['reviewer', { 'review:approved': 1 }],
+    ]);
     assert.equal(a.filter.effort, null);
     // A second identical request is served from the cache with the same figures.
     assert.deepEqual(JSON.parse((await request(server.port, 'GET', week)).body).series, a.series);
@@ -184,20 +270,35 @@ describe('http extension', () => {
     assert.match(page.body, /id="pipe-section"/);
     assert.match(page.body, /renderPipeline\(\$\('pipeline'\)/);
     assert.match(page.body, /id="issue-section"/);
+    // Stage results: one card per result with its verdict, round, findings and the link to the comment.
+    assert.match(page.body, /id="results-section"/);
+    assert.match(page.body, /id="result-cards"/);
+    assert.match(page.body, /function renderResults\(\)/);
+    assert.match(page.body, /pipeVerdict\(r\.verdict, r\.round\)/);
+    assert.match(page.body, /'Comment ↗'/);
     assert.match(page.body, /'\/timeline\?after='/);
     assert.match(page.body, /'\/transcript\?run='/);
     assert.match(page.body, /Waiting for limit/);
     assert.match(page.body, /Session limit reached/);
     assert.match(page.body, /Resets at/);
-    assert.match(page.body, /API \+ '\/retry'/);
+    assert.match(page.body, /API \+ '\/' \+ action/);
+    assert.match(page.body, /restartButton\('Pause'\)/);
+    assert.match(page.body, /Paused by operator/);
     assert.match(page.body, /Resume now/);
     assert.match(page.body, /session_limit: \['⏳ Session limit', 'amber', 'session limit'\]/);
     assert.match(page.body, /SESSION LIMIT · RETRY/);
     assert.match(page.body, /WAITING FOR RESET/);
     assert.match(page.body, /worker_restarted/);
+    assert.match(page.body, /worker_forced/);
+    assert.match(page.body, /restartButton\('Force'\)/);
+    assert.match(page.body, /' in an extra slot\?'/);
     assert.equal((await request(server.port, 'HEAD', '/agent')).status, 200);
     const dashboard = (await request(server.port, 'GET', '/')).body;
     assert.match(dashboard, /'\/agent\?id=' \+ encodeURIComponent\(row\.issue_identifier\)/);
+    // Cards flag needs-human issues and show the spent share of the cost budget.
+    assert.match(dashboard, /function flagChips\(row\)/);
+    assert.match(dashboard, /'needs human'/);
+    assert.match(dashboard, /row\.budget/);
   });
 
   it('returns a JSON 404 for unknown issues and routes', async () => {
@@ -469,6 +570,305 @@ describe('POST /api/v1/<identifier>/retry', () => {
       assert.equal((await request(server.port, 'POST', '/api/v1/refresh')).status, 202);
     } finally {
       await server.close();
+    }
+  });
+});
+
+describe('operator pause routes', () => {
+  const issuePath = (action: string) => `/api/v1/${encodeURIComponent('acme/app#a')}/${action}`;
+
+  /** A fake orchestrator whose control methods answer with `results[name]` and count their calls. */
+  const fakeOrchestrator = (results: Record<string, unknown>) => {
+    const calls: string[] = [];
+    const method = (name: string) => async (key: string) => {
+      calls.push(`${name} ${key}`);
+      return results[name];
+    };
+    const orchestrator = {
+      pauseIssue: method('pauseIssue'),
+      resumeIssue: method('resumeIssue'),
+      holdModel: method('holdModel'),
+      releaseModel: method('releaseModel'),
+      restartWorker: method('restartWorker'),
+      forceStart: method('forceStart'),
+      snapshot: () => ({}),
+    } as unknown as Orchestrator;
+    return { orchestrator, calls };
+  };
+
+  it('force-starts an issue with 202 and maps its refusals', async () => {
+    const results: Record<string, unknown> = {
+      forceStart: { ok: true, issueIdentifier: 'acme/app#a', previous: 'queued', slots: { running: 4, forced: 1, limit: 3 } },
+    };
+    const { orchestrator, calls } = fakeOrchestrator(results);
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    try {
+      const started = await request(server.port, 'POST', issuePath('force'));
+      assert.equal(started.status, 202);
+      const body = JSON.parse(started.body);
+      assert.deepEqual([body.started, body.issue_identifier, body.previous, body.slots], [true, 'acme/app#a', 'queued', { running: 4, forced: 1, limit: 3 }]);
+      assert.deepEqual(calls, ['forceStart acme/app#a']);
+      const refusals = [
+        ['running', 409, 'running'],
+        ['blocked', 409, 'blocked'],
+        ['not_eligible', 409, 'not_eligible'],
+        ['model_held', 409, 'model_held'],
+        ['invalid_workflow', 409, 'invalid_workflow'],
+        ['stopping', 409, 'stopping'],
+        ['not_found', 404, 'issue_not_found'],
+        ['tracker_error', 502, 'tracker_error'],
+        ['spawn_failed', 500, 'spawn_failed'],
+      ] as const;
+      for (const [reason, status, code] of refusals) {
+        results.forceStart = { ok: false, reason, message: `refused: ${reason}`, model: 'opus' };
+        const res = await request(server.port, 'POST', issuePath('force'));
+        assert.equal(res.status, status, reason);
+        assert.deepEqual(JSON.parse(res.body).error, { code, message: `refused: ${reason}` });
+      }
+      assert.equal((await request(server.port, 'GET', issuePath('force'))).status, 405);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('pauses and resumes issues and models with 202', async () => {
+    const { orchestrator, calls } = fakeOrchestrator({
+      pauseIssue: { ok: true, issueIdentifier: 'acme/app#a', previous: 'running' },
+      resumeIssue: { ok: true, issueIdentifier: 'acme/app#a' },
+      holdModel: { ok: true, model: 'fable', issues: 2 },
+      releaseModel: { ok: true, model: 'fable', issues: 1 },
+    });
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    try {
+      const paused = await request(server.port, 'POST', issuePath('pause'));
+      assert.equal(paused.status, 202);
+      assert.equal(JSON.parse(paused.body).previous, 'running');
+      assert.equal((await request(server.port, 'POST', issuePath('resume'))).status, 202);
+      const hold = await request(server.port, 'POST', '/api/v1/models/fable/hold');
+      assert.equal(hold.status, 202);
+      assert.deepEqual([JSON.parse(hold.body).model, JSON.parse(hold.body).stopped], ['fable', 2]);
+      const release = await request(server.port, 'POST', '/api/v1/models/fable/release');
+      assert.equal(release.status, 202);
+      assert.equal(JSON.parse(release.body).requeued, 1);
+      assert.deepEqual(calls, ['pauseIssue acme/app#a', 'resumeIssue acme/app#a', 'holdModel fable', 'releaseModel fable']);
+      assert.equal((await request(server.port, 'GET', issuePath('pause'))).status, 405);
+      assert.equal((await request(server.port, 'GET', '/api/v1/models/fable/hold')).status, 405);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('maps refusals to 409, 404 and 400', async () => {
+    const results: Record<string, unknown> = {};
+    const { orchestrator } = fakeOrchestrator(results);
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    const expect = async (path: string, status: number, code: string) => {
+      const res = await request(server.port, 'POST', path);
+      assert.equal(res.status, status, path);
+      assert.equal(JSON.parse(res.body).error.code, code, path);
+    };
+    try {
+      for (const [reason, status, code] of [['already_paused', 409, 'already_paused'], ['stopping', 409, 'stopping'], ['not_found', 404, 'issue_not_found']] as const) {
+        results.pauseIssue = { ok: false, reason };
+        await expect(issuePath('pause'), status, code);
+      }
+      for (const [reason, status, code] of [['not_paused', 409, 'not_paused'], ['stopping', 409, 'stopping'], ['not_found', 404, 'issue_not_found']] as const) {
+        results.resumeIssue = { ok: false, reason };
+        await expect(issuePath('resume'), status, code);
+      }
+      for (const [reason, status, code] of [['unknown_model', 400, 'unknown_model'], ['already_paused', 409, 'already_paused'], ['stopping', 409, 'stopping']] as const) {
+        results.holdModel = { ok: false, reason };
+        await expect('/api/v1/models/gpt/hold', status, code);
+      }
+      results.releaseModel = { ok: false, reason: 'not_paused' };
+      await expect('/api/v1/models/fable/release', 409, 'not_paused');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('guards every control route like retry', async () => {
+    const { orchestrator, calls } = fakeOrchestrator({});
+    const routes = [issuePath('pause'), issuePath('resume'), '/api/v1/models/fable/hold', '/api/v1/models/fable/release', issuePath('retry'), issuePath('force')];
+    const local = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    const remote = await startHttpServer({ host: '0.0.0.0', port: 0, orchestrator, logger: Logger.silent() });
+    const proxied = await startHttpServer({ host: '0.0.0.0', port: 0, orchestrator, logger: Logger.silent(), allowRemoteControl: true });
+    try {
+      for (const route of routes) {
+        const foreign = await request(local.port, 'POST', route, { origin: 'https://evil.example' });
+        assert.equal(foreign.status, 403, route);
+        assert.equal(JSON.parse(foreign.body).error.code, 'forbidden_origin');
+        const disabled = await request(remote.port, 'POST', route, { origin: `http://127.0.0.1:${remote.port}` });
+        assert.equal(disabled.status, 403, route);
+        assert.equal(JSON.parse(disabled.body).error.code, 'control_disabled');
+        const missing = await request(proxied.port, 'POST', route);
+        assert.equal(missing.status, 403, route);
+        assert.equal(JSON.parse(missing.body).error.code, 'forbidden_origin');
+      }
+      assert.deepEqual(calls, []);
+    } finally {
+      await Promise.all([local.close(), remote.close(), proxied.close()]);
+    }
+  });
+
+  it('pauses a running issue end to end and lists it as paused', async () => {
+    const runner = new FakeRunner((turn, params) => new Promise((resolve) => params.signal.addEventListener('abort', () => resolve({ ok: false, turnId: String(turn), code: 'turn_cancelled', message: 'cancelled' }))));
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir(), { agent: { max_turns: 1 } }))),
+      runner,
+      logger: Logger.silent(),
+      env: {},
+      logDir: null,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker([makeIssue({ id: 'a' })]),
+    });
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    try {
+      await orchestrator.tickNow();
+      await until(() => orchestrator.snapshot().running[0]?.phase === 'StreamingTurn', 3_000, 'streaming');
+      assert.equal((await request(server.port, 'POST', issuePath('pause'))).status, 202);
+      await until(() => orchestrator.snapshot().running.length === 0, 3_000, 'stopped');
+      const state = JSON.parse((await request(server.port, 'GET', '/api/v1/state')).body);
+      assert.equal(state.issues[0].section, 'paused');
+      assert.equal(state.paused[0].source, 'operator');
+      assert.equal(JSON.parse((await request(server.port, 'POST', issuePath('pause'))).body).error.code, 'already_paused');
+      assert.equal((await request(server.port, 'POST', issuePath('resume'))).status, 202);
+      assert.equal(JSON.parse((await request(server.port, 'POST', issuePath('resume'))).body).error.code, 'not_paused');
+      assert.equal((await request(server.port, 'POST', '/api/v1/models/nope/hold')).status, 400);
+    } finally {
+      await orchestrator.shutdown(1_000);
+      await server.close();
+    }
+  });
+});
+
+describe('agent settings routes', () => {
+  const route = '/api/v1/settings/agents';
+  const json = { 'content-type': 'application/json' };
+  const setup = (front: Record<string, unknown> = {}) =>
+    new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir(), { agent: { max_concurrent_agents: 2, max_concurrent_agents_by_state: { todo: 1 } }, ...front }))),
+      runner: new FakeRunner(),
+      logger: Logger.silent(),
+      env: {},
+      logDir: null,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker(),
+    });
+
+  it('changes and resets the slots and reports them under limits', async () => {
+    const orchestrator = setup();
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    try {
+      const before = JSON.parse((await request(server.port, 'GET', '/api/v1/state')).body).limits;
+      assert.deepEqual(before.max_concurrent_agents, { effective: 2, workflow: 2, override: null });
+      assert.deepEqual(before.by_state.Todo, { effective: 1, workflow: 1, override: null });
+      assert.equal(before.override_active, false);
+
+      const put = await request(server.port, 'PUT', route, { 'content-type': 'application/json; charset=utf-8' }, JSON.stringify({ max_concurrent_agents: 3, max_concurrent_agents_by_state: { Todo: 2 } }));
+      assert.equal(put.status, 200);
+      const body = JSON.parse(put.body);
+      assert.equal(body.changed, true);
+      assert.deepEqual(body.limits.max_concurrent_agents, { effective: 3, workflow: 2, override: 3 });
+      assert.deepEqual(body.limits.by_state.Todo, { effective: 2, workflow: 1, override: 2 });
+      const state = JSON.parse((await request(server.port, 'GET', '/api/v1/state')).body);
+      assert.equal(state.limits.override_active, true);
+      assert.equal(state.health.max_concurrent_agents, 3);
+
+      const reset = await request(server.port, 'DELETE', route, json);
+      assert.equal(reset.status, 200);
+      assert.deepEqual(JSON.parse(reset.body).limits.max_concurrent_agents, { effective: 2, workflow: 2, override: null });
+      assert.equal((await request(server.port, 'POST', route, json, '{}')).status, 405);
+      assert.equal((await request(server.port, 'GET', route)).status, 405);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('answers 400 for invalid values, 415 without JSON and 413 for a large body', async () => {
+    const orchestrator = setup();
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    const expect = async (body: string, status: number, code: string, headers: Record<string, string> = json) => {
+      const res = await request(server.port, 'PUT', route, headers, body);
+      assert.equal(res.status, status, body.slice(0, 80));
+      const error = JSON.parse(res.body).error;
+      assert.equal(error.code, code, body.slice(0, 80));
+      return error.message as string;
+    };
+    try {
+      assert.match(await expect(JSON.stringify({ max_concurrent_agents: 51 }), 400, 'invalid_settings'), /0 to 50/);
+      assert.match(await expect(JSON.stringify({ max_concurrent_agents_by_state: { Todo: 0 } }), 400, 'invalid_settings'), /1 to 50/);
+      assert.match(await expect(JSON.stringify({ max_concurrent_agents_by_state: { Done: 1 } }), 400, 'invalid_settings'), /not an active column/);
+      assert.match(await expect('{nope', 400, 'bad_request'), /not valid JSON/);
+      assert.match(await expect('', 400, 'invalid_settings'), /JSON object/);
+      await expect('max_concurrent_agents=3', 415, 'unsupported_media_type', { 'content-type': 'application/x-www-form-urlencoded' });
+      await expect('{"max_concurrent_agents":3}', 415, 'unsupported_media_type', { 'content-type': 'text/plain' });
+      await expect('{"max_concurrent_agents":3}', 415, 'unsupported_media_type', {});
+      assert.equal((await request(server.port, 'DELETE', route)).status, 415);
+      await expect(JSON.stringify({ max_concurrent_agents: 3, pad: 'x'.repeat(20_000) }), 413, 'payload_too_large');
+      assert.equal(orchestrator.snapshot().limits.override_active, false, 'nothing changed');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('changes reserved slots and refuses a limit below their sum with 400', async () => {
+    const orchestrator = setup({
+      agent: { max_concurrent_agents: 3, reserved_slots_by_role: { developer: 1, reviewer: 1 } },
+      tracker: { kind: 'github_project', provider: { owner: 'acme', project_number: 1, token: 't' }, active_states: ['Ready', 'Agent review'] },
+      roles: { developer: { states: ['Ready'] }, reviewer: { states: ['Agent review'], read_only: true } },
+    });
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    try {
+      const before = JSON.parse((await request(server.port, 'GET', '/api/v1/state')).body).limits;
+      assert.deepEqual(before.reserved_slots_by_role.reviewer, { effective: 1, workflow: 1, override: null, running: 0 });
+      assert.equal(before.reservation_problem, null);
+
+      const low = await request(server.port, 'PUT', route, json, JSON.stringify({ max_concurrent_agents: 1 }));
+      assert.equal(low.status, 400);
+      assert.deepEqual(JSON.parse(low.body).error, {
+        code: 'invalid_settings',
+        message: 'the limit of 1 agent slot is below the reserved slots (developer 1 + reviewer 1 = 2); lower the reservations first',
+      });
+      assert.equal(orchestrator.snapshot().limits.override_active, false, 'nothing changed');
+
+      const put = await request(server.port, 'PUT', route, json, JSON.stringify({ reserved_slots_by_role: { developer: 2 } }));
+      assert.equal(put.status, 200);
+      assert.deepEqual(JSON.parse(put.body).limits.reserved_slots_by_role.developer, { effective: 2, workflow: 1, override: 2, running: 0 });
+      const unknownRole = await request(server.port, 'PUT', route, json, JSON.stringify({ reserved_slots_by_role: { tester: 1 } }));
+      assert.equal(unknownRole.status, 400);
+      assert.match(JSON.parse(unknownRole.body).error.message, /tester is not a role/);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('uses the shared control guard', async () => {
+    const orchestrator = setup();
+    const local = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    const remote = await startHttpServer({ host: '0.0.0.0', port: 0, orchestrator, logger: Logger.silent() });
+    const proxied = await startHttpServer({ host: '0.0.0.0', port: 0, orchestrator, logger: Logger.silent(), allowRemoteControl: true });
+    const put = JSON.stringify({ max_concurrent_agents: 4 });
+    try {
+      for (const method of ['PUT', 'DELETE']) {
+        // Node's client sends a DELETE body without a length, which breaks the kept-alive connection.
+        const body = method === 'PUT' ? put : undefined;
+        const foreign = await request(local.port, method, route, { ...json, origin: 'https://evil.example' }, body);
+        assert.equal(foreign.status, 403, method);
+        assert.equal(JSON.parse(foreign.body).error.code, 'forbidden_origin');
+        const disabled = await request(remote.port, method, route, { ...json, origin: `http://127.0.0.1:${remote.port}` }, body);
+        assert.equal(disabled.status, 403, method);
+        assert.equal(JSON.parse(disabled.body).error.code, 'control_disabled');
+        const missing = await request(proxied.port, method, route, json, body);
+        assert.equal(missing.status, 403, method);
+        assert.equal(JSON.parse(missing.body).error.code, 'forbidden_origin');
+      }
+      assert.equal(orchestrator.snapshot().limits.override_active, false);
+      const allowed = await request(proxied.port, 'PUT', route, { ...json, host: 'symphony.example', origin: 'https://symphony.example' }, put);
+      assert.equal(allowed.status, 200);
+      assert.equal(orchestrator.snapshot().limits.max_concurrent_agents.override, 4);
+    } finally {
+      await Promise.all([local.close(), remote.close(), proxied.close()]);
     }
   });
 });

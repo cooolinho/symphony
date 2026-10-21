@@ -136,11 +136,35 @@ describe('repository history', () => {
     assert.deepEqual([denied?.fields.target, denied?.fields.role, denied?.fields.reason], ['Done', 'developer', '"Done" is a terminal column']);
   });
 
+  it('records a stage_result line with the optional fields left out when unknown', () => {
+    const { log } = history();
+    const line = { repo: 'acme/app', issue: 'acme/app#1', run: 'r1', role: 'reviewer', kind: 'review', verdict: 'changes_needed', round: 2, target: 'In progress', profile: 'bugfix', complexity: 'M', findings: 3 };
+    log.stageResult({ ...line, at: new Date('2026-10-04T08:00:00Z') });
+    log.stageResult({ ...line, run: null, role: 'developer', kind: 'implementation', verdict: 'done', round: null, target: null, profile: null, complexity: null, findings: 0, at: new Date('2026-10-04T08:01:00Z') });
+    const [review, implementation] = readHistory(log.dir, 'acme/app').entries;
+    assert.equal(review?.event, 'stage_result');
+    assert.deepEqual(review?.fields, {
+      repo: 'acme/app', issue: 'acme/app#1', run: 'r1', role: 'reviewer', kind: 'review', verdict: 'changes_needed', round: '2', target: 'In progress', profile: 'bugfix', complexity: 'M', findings: '3',
+    });
+    assert.deepEqual(implementation?.fields, { repo: 'acme/app', issue: 'acme/app#1', role: 'developer', kind: 'implementation', verdict: 'done' });
+  });
+
   it('records the role of a run in run_started', () => {
     const { log } = history();
     log.runStarted({ repo: 'acme/app', issue: 'acme/app#1', title: 'Review', state: 'Agent review', attempt: null, model: 'opus', role: 'reviewer', run: 'r1', at: new Date('2026-10-04T08:00:00Z') });
     const started = parseHistoryLine(fs.readFileSync(log.fileFor('acme/app'), 'utf8').trim());
     assert.equal(started?.fields.role, 'reviewer');
+  });
+
+  it('writes the role on every run_finished line, next_role only on a hand-off', () => {
+    const { log } = history();
+    log.runFinished({ ...finish('acme/app#1', 'r1', '2026-10-04T08:01:00Z'), outcome: 'handed_off', role: 'developer', nextRole: 'reviewer' });
+    log.runFinished({ ...finish('acme/app#1', 'r2', '2026-10-04T08:02:00Z'), outcome: 'continuing', role: 'reviewer' });
+    log.runFinished(finish('acme/app#1', 'r3', '2026-10-04T08:03:00Z'));
+    const [handed, continuing, implicit] = fs.readFileSync(log.fileFor('acme/app'), 'utf8').trim().split('\n').map((line) => parseHistoryLine(line)).filter((entry) => entry?.event === 'run_finished');
+    assert.deepEqual([handed?.fields.role, handed?.fields.next_role], ['developer', 'reviewer']);
+    assert.deepEqual([continuing?.fields.role, continuing?.fields.next_role], ['reviewer', undefined]);
+    assert.deepEqual([implicit?.fields.role, implicit?.fields.next_role], ['default', undefined]);
   });
 
   it('adds integration fields to run_started', () => {

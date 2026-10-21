@@ -182,6 +182,11 @@ export const LOGS_HTML = `<!doctype html>
     <div data-body="efforts"></div>
   </section>
 
+  <section data-section>
+    <div class="section-head"><h2>Roles</h2></div>
+    <div data-body="roles"></div>
+  </section>
+
   <div class="grid-2">
     <section data-section><h2>Tools</h2><div data-body="tools"></div></section>
     <section data-section><h2>Laravel Boost &amp; integrations</h2><div data-body="integrations"></div></section>
@@ -435,11 +440,11 @@ ${CHART_JS}
 
     renderKpis(d);
     if (d.totals.runs === 0) {
-      for (const name of ['activity', 'cost', 'tokens', 'models', 'efforts', 'tools', 'integrations', 'repos', 'outcomes', 'durations', 'heatmap', 'top', 'attention', 'issues']) setBody(name, noData());
+      for (const name of ['activity', 'cost', 'tokens', 'models', 'efforts', 'roles', 'tools', 'integrations', 'repos', 'outcomes', 'durations', 'heatmap', 'top', 'attention', 'issues']) setBody(name, noData());
       $('issue-count').textContent = '';
       return;
     }
-    renderActivity(d); renderCost(d); renderTokens(d); renderModels(d); renderEfforts(d); renderTools(d); renderIntegrations(d); renderRepos(d);
+    renderActivity(d); renderCost(d); renderTokens(d); renderModels(d); renderEfforts(d); renderRoles(d); renderTools(d); renderIntegrations(d); renderRepos(d);
     renderOutcomes(d); renderDurations(d); renderHeatmap(d); renderTop(d); renderAttention(d); renderIssues(d);
   }
 
@@ -619,6 +624,35 @@ ${CHART_JS}
       { label: 'Cost/run', className: 'num', render: (r) => orDash(r.avg_cost_per_run, fmtUsd) },
       { label: 'Tokens/run', className: 'num', render: (r) => orDash(r.avg_tokens_per_run, fmtCompact) },
       { label: 'Models', render: (r) => countsText(r.models) || '—' },
+    ], rows, 'No runs in this period.');
+  }
+
+  /** Runs, tokens, cost, agent time and outcomes by the agent role that served the run. */
+  function renderRoles(d) {
+    const rows = d.by_role;
+    const bars = el('div', null, 'hbars');
+    hbars(bars, rows.map((r) => ({
+      label: r.role, value: r.cost_usd || 0, text: fmtUsd(r.cost_usd), sub: fmtInt(r.runs) + ' run' + (r.runs === 1 ? '' : 's') + (r.cost_share !== null ? ' · ' + fmtPct(r.cost_share) + ' of cost' : ''),
+      color: 'var(--amber)',
+      tip: [['Runs', fmtInt(r.runs)], ['Issues', fmtInt(r.issues)], ['Successful', fmtInt(r.successful)], ['Failed', fmtInt(r.failed)], ['Tokens', fmtCompact(r.total_tokens)],
+        ['Est. cost', fmtUsd(r.cost_usd)], ['Agent time', fmtDuration(r.agent_seconds)], ['Outcomes', countsText(r.by_outcome) || '—']],
+    })), null);
+    const tbl = el('table'); tbl.id = 'roles-table';
+    const wrap = el('div', null, 'scroll'); wrap.append(tbl);
+    setBody('roles', bars, wrap,
+      el('p', 'The role that served the run (the stage of the issue pipeline). Runs logged before the role was recorded count as "unknown".', 'note'));
+    table('roles-table', [
+      { label: 'Role', className: 'nowrap', render: (r) => r.role },
+      { label: 'Runs', className: 'num', render: (r) => fmtInt(r.runs) },
+      { label: 'Issues', className: 'num', render: (r) => fmtInt(r.issues) },
+      { label: 'Successful', className: 'num', render: (r) => fmtInt(r.successful) + (r.success_rate !== null ? ' (' + fmtPct(r.success_rate) + ')' : '') },
+      { label: 'Failed', className: 'num', render: (r) => fmtInt(r.failed) },
+      { label: 'Tokens', className: 'num', render: (r) => fmtCompact(r.total_tokens) },
+      { label: 'Est. cost', className: 'num', render: (r) => fmtUsd(r.cost_usd) + (r.cost_share !== null ? ' (' + fmtPct(r.cost_share) + ')' : '') },
+      { label: 'Agent time', className: 'num', render: (r) => fmtDuration(r.agent_seconds) },
+      { label: 'Avg run', className: 'num', render: (r) => orDash(r.avg_run_seconds, fmtDuration) },
+      { label: 'Cost/run', className: 'num', render: (r) => orDash(r.avg_cost_per_run, fmtUsd) },
+      { label: 'Outcomes', render: (r) => countsText(r.by_outcome) || '—' },
     ], rows, 'No runs in this period.');
   }
 
@@ -846,6 +880,8 @@ ${CHART_JS}
       block('Top cost', rankList(d.top.cost, (r) => fmtUsd(r.cost_usd), runMeta)),
       block('Top token usage', rankList(d.top.tokens, (r) => fmtCompact(r.total_tokens), runMeta)),
       block('Longest runs', rankList(d.top.duration, (r) => fmtDuration(r.agent_seconds), runMeta)),
+      block('Most expensive issue pipelines', rankList(d.top.pipelines, (r) => fmtUsd(r.cost_usd),
+        (r) => r.repo + ' · ' + fmtInt(r.runs) + ' runs · ' + Object.entries(r.roles).map(([role, v]) => role + ' ' + fmtUsd(v.cost_usd)).join(', '))),
       block('Most retried issues', rankList(d.top.retried, (r) => fmtInt(r.retries) + '×', (r) => r.repo + ' · ' + fmtInt(r.runs) + ' runs · ' + fmtInt(r.failed) + ' failed')),
     );
     setBody('top', grid, el('p', 'Click an entry to see its log.', 'note'));
@@ -900,6 +936,7 @@ ${CHART_JS}
       { label: 'Result', className: 'event', render: (r) => el('span', (OUTCOMES[r.last_outcome] || r.last_outcome || '—') + ' → ' + (r.last_state || '—'), 'chip tone-' + (OUTCOME_TONE[r.last_outcome] || 'gray')) },
       { label: 'Tokens', className: 'num', render: (r) => fmtCompact(r.total_tokens) },
       { label: 'Est. cost', className: 'num', render: (r) => fmtUsd(r.cost_usd) },
+      { label: 'Cost by role', render: (r) => Object.entries(r.roles).map(([role, v]) => role + ' ' + fmtUsd(v.cost_usd)).join(', ') || '—' },
       { label: 'Agent time', className: 'num', render: (r) => fmtDuration(r.agent_seconds) },
       { label: 'First started', className: 'nowrap', render: (r) => fmtTime(r.first_started_at) },
       { label: 'Last finished', className: 'nowrap', render: (r) => fmtTime(r.last_finished_at) },

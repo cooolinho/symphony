@@ -1,15 +1,26 @@
 #!/usr/bin/env node
 // End-to-end test of the orchestration on a real board: creates the scenario, runs Symphony, plays the
 // reviewer who closes handed-off issues, then verifies concurrency and dependencies. With --scenario roles it runs
-// the developer → checks → reviewer → handoff lifecycle with a generated workflow instead. See docs/e2e.md.
+// the developer → checks → reviewer → handoff lifecycle with a generated workflow instead, with --scenario pipeline the
+// shipped bugfix pipeline (analysis, development, tests, review). See docs/e2e.md.
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import type { Issue } from '../../src/tracker/types.ts';
 import { ROOT, STATUS, clock, closeIssue, loadBoard, loadContext, readItems, setStatus, sleep, statusOption, type Board, type E2eContext } from './context.ts';
-import { AGENT_REVIEW_LIMIT, ROLES_FILES, ROLES_SCENARIO, ROLE_STATUS, rolesIssueBody, writeRolesWorkflow } from './roles.ts';
-import { ROOT_COUNT, createScenario, dependencies, type RunRecord, type ScenarioName } from './scenario.ts';
+import { TIMELINE_FILE } from './derive.ts';
+import {
+  PIPELINE_COLUMNS,
+  PIPELINE_SCENARIO,
+  PIPELINE_STATUS,
+  PIPELINE_TIMEOUT_MIN,
+  pipelineConfigProblems,
+  pipelineIssueBody,
+  writePipelineWorkflow,
+} from './pipeline.ts';
+import { AGENT_REVIEW_LIMIT, ROLES_SCENARIO, ROLE_STATUS, rolesIssueBody, writeRolesWorkflow } from './roles.ts';
+import { DEFAULT_SCENARIO, ROOT_COUNT, createScenario, dependencies, type RunRecord, type ScenarioDefinition, type ScenarioName } from './scenario.ts';
 import { verify } from './verify.ts';
 
 const USAGE = `Usage: npm run e2e -- [options]
@@ -25,23 +36,87 @@ that fails once per issue). Checks the path ${STATUS.start} → ${ROLE_STATUS.pr
 The board needs the columns "${ROLE_STATUS.review}" and "${ROLE_STATUS.blocked}". About eight Sonnet sessions,
 roughly 0.50–1 USD; the issues stay open in "${STATUS.handoff}".
 
-Both use WORKFLOW.md and .env of this checkout and leave comment-only issues on the board.
+Scenario "pipeline": creates three test issues and runs Symphony with a workflow generated from WORKFLOW.md (the shipped
+roles issue-analyst, developer, test-engineer and reviewer, the bugfix profile and its round limits; every role with
+sonnet, no entry checks, polling every 10 s). Checks the board path of a test loop (P1: one failed test round), a review
+loop (P2: one changes_needed round) and a blocked analysis (P3: needs_info), the stage results with their markers and
+rounds, the workflow profile, the run order, the model and the cost per role.
+The board needs the columns "${PIPELINE_STATUS.design}", "${PIPELINE_STATUS.testing}", "${PIPELINE_STATUS.review}", "${PIPELINE_STATUS.security}" and "${PIPELINE_STATUS.blocked}"
+(the Design, Documentation and Security review stages run without a session for these issues). About 14 Sonnet sessions,
+roughly 1–3 USD, 20–35 minutes; the issues stay open in "${STATUS.handoff}" and "${PIPELINE_STATUS.blocked}".
+
+All use WORKFLOW.md and .env of this checkout and leave comment-only issues on the board.
 
 Options:
-  --scenario <name>     default | roles (default: default)
+  --scenario <name>     default | roles | pipeline (default: default)
   --env-file <path>     dotenv file for Symphony and the test (default: .env next to WORKFLOW.md)
   --port <n>            dashboard/API port of the test instance (default: server.port, else 4000)
   --review-delay <s>    default scenario: seconds an issue stays in "${STATUS.handoff}" before the simulated
                         review closes it (default: 60)
-  --timeout <min>       give up after this many minutes (default: 45)
+  --timeout <min>       give up after this many minutes (default: 45, pipeline: ${PIPELINE_TIMEOUT_MIN})
   -h, --help            show this help
 `;
 
+/** How a scenario runs besides its issues; the default scenario plays the reviewer, the others watch the board. */
+interface ScenarioPlan {
+  definition: ScenarioDefinition;
+  /** Writes the scenario's own workflow into the run directory and returns its path; null runs with WORKFLOW.md. */
+  writeWorkflow: ((root: string, runDir: string) => string) | null;
+  /** Board columns the scenario needs; checked before any issue is created (the ones of `STATUS` always are). */
+  columns: readonly string[];
+  /** Problems of the config against the board's columns (in board order) that would stall the run. */
+  configProblems: ((config: E2eContext['config'], columns: readonly string[]) => string[]) | null;
+  /** Records every status change of the test issues (`timeline.jsonl`) instead of simulating the review. */
+  recordsTimeline: boolean;
+  /** Pause between two ticks (ms). */
+  tickMs: number;
+  /** Default of `--timeout` (minutes). */
+  timeoutMin: number;
+  /** What the run says when it is over. */
+  finished: string;
+}
+
 const TICK_MS = 5_000;
-/** The roles scenario reads the board every tick; a shorter tick catches brief stays in a column. */
-const ROLES_TICK_MS = 3_000;
+/** The scenarios that record a timeline read the board every tick; a shorter tick catches brief stays in a column. */
+const TIMELINE_TICK_MS = 3_000;
 const REVIEW_EVERY_TICKS = 3;
-const SCENARIOS: readonly ScenarioName[] = ['default', 'roles'];
+const DEFAULT_TIMEOUT_MIN = 45;
+const NO_ACTIVE_ISSUE = 'no test issue active, no agent running; Symphony stopped';
+
+const PLANS: Record<ScenarioName, ScenarioPlan> = {
+  default: {
+    definition: DEFAULT_SCENARIO,
+    writeWorkflow: null,
+    columns: [],
+    configProblems: null,
+    recordsTimeline: false,
+    tickMs: TICK_MS,
+    timeoutMin: DEFAULT_TIMEOUT_MIN,
+    finished: 'all test issues closed, no agent running; Symphony stopped',
+  },
+  roles: {
+    definition: { name: 'roles', issues: ROLES_SCENARIO, body: rolesIssueBody },
+    writeWorkflow: writeRolesWorkflow,
+    columns: Object.values(ROLE_STATUS),
+    configProblems: null,
+    recordsTimeline: true,
+    tickMs: TIMELINE_TICK_MS,
+    timeoutMin: DEFAULT_TIMEOUT_MIN,
+    finished: NO_ACTIVE_ISSUE,
+  },
+  pipeline: {
+    definition: { name: 'pipeline', issues: PIPELINE_SCENARIO, body: pipelineIssueBody },
+    writeWorkflow: writePipelineWorkflow,
+    columns: PIPELINE_COLUMNS,
+    configProblems: pipelineConfigProblems,
+    recordsTimeline: true,
+    tickMs: TIMELINE_TICK_MS,
+    timeoutMin: PIPELINE_TIMEOUT_MIN,
+    finished: NO_ACTIVE_ISSUE,
+  },
+};
+
+const SCENARIOS = Object.keys(PLANS) as ScenarioName[];
 
 interface StateSnapshot {
   counts: { running: number };
@@ -147,7 +222,7 @@ class Reviewer {
   }
 }
 
-/** Roles scenario: records every status change of the test issues; true once none is in an active state. */
+/** Roles and pipeline scenarios: records every status change of the test issues; true once none is in an active state. */
 class StatusRecorder {
   #last = new Map<number, string | null>();
   #context: E2eContext;
@@ -197,15 +272,15 @@ async function main(): Promise<number> {
   }
   const scenario = (values.scenario ?? 'default') as ScenarioName;
   if (!SCENARIOS.includes(scenario)) throw new Error(`--scenario must be one of ${SCENARIOS.join(', ')} (got ${values.scenario})`);
-  const roles = scenario === 'roles';
+  const plan = PLANS[scenario];
   const reviewDelayMs = positiveNumber(values['review-delay'], 60, 'review-delay') * 1000;
-  const timeoutMs = positiveNumber(values.timeout, 45, 'timeout') * 60_000;
+  const timeoutMs = positiveNumber(values.timeout, plan.timeoutMin, 'timeout') * 60_000;
 
   const runDir = path.join(ROOT, 'logs', 'e2e', new Date().toISOString().replace(/[:.]/g, '-'));
   let context = await loadContext({ envFile: values['env-file'] });
-  if (roles) {
+  if (plan.writeWorkflow !== null) {
     fs.mkdirSync(runDir, { recursive: true });
-    context = await loadContext({ workflowPath: writeRolesWorkflow(ROOT, runDir), envFile: context.envFile ?? undefined });
+    context = await loadContext({ workflowPath: plan.writeWorkflow(ROOT, runDir), envFile: context.envFile ?? undefined });
   }
   const port = positiveNumber(values.port, context.config.server.port ?? 4000, 'port');
   const limit = context.config.agent.maxConcurrentAgents;
@@ -217,7 +292,7 @@ async function main(): Promise<number> {
   };
 
   say(`scenario ${scenario}, board ${context.settings.owner}/projects/${context.settings.projectNumber}, repository ${context.repository}, limit ${limit} agents`);
-  if (roles) say(`workflow ${path.relative(ROOT, context.workflowPath)}, at most ${AGENT_REVIEW_LIMIT} agent in "${ROLE_STATUS.review}"`);
+  if (plan.writeWorkflow !== null) say(`workflow ${path.relative(ROOT, context.workflowPath)}`);
   else if (limit >= ROOT_COUNT) say(`note: the scenario has ${ROOT_COUNT} free issues, so with a limit of ${limit} none has to wait for a slot`);
 
   if (await portAnswers(port)) throw new Error(`port ${port} is in use; stop the running Symphony or pass --port`);
@@ -226,17 +301,17 @@ async function main(): Promise<number> {
     throw new Error(`the board already has active issues (${active.map((issue) => issue.identifier).join(', ')}); Symphony would work on them too`);
   }
   const board = await loadBoard(context);
-  if (roles) for (const status of Object.values(ROLE_STATUS)) statusOption(board, status);
+  for (const status of plan.columns) statusOption(board, status);
+  const problems = plan.configProblems?.(context.config, [...board.options.keys()]) ?? [];
+  if (problems.length > 0) throw new Error(`the generated workflow does not fit the board, Symphony not started: ${problems.join('; ')}`);
 
   fs.mkdirSync(runDir, { recursive: true });
   say(`run directory ${path.relative(ROOT, runDir)}`);
   createdIn = runDir;
-  const record = roles
-    ? await createScenario(context, board, say, { name: 'roles', issues: ROLES_SCENARIO, body: rolesIssueBody })
-    : await createScenario(context, board, say);
+  const record = await createScenario(context, board, say, plan.definition);
   fs.writeFileSync(path.join(runDir, 'run.json'), `${JSON.stringify(record, null, 2)}\n`);
-  const problems = dispatchProblems(record, await context.adapter.fetchIssuesByStates(context.config.tracker.activeStates));
-  if (problems.length > 0) throw new Error(`unexpected dispatch decisions, Symphony not started: ${problems.join('; ')}`);
+  const dispatch = dispatchProblems(record, await context.adapter.fetchIssuesByStates(context.config.tracker.activeStates));
+  if (dispatch.length > 0) throw new Error(`unexpected dispatch decisions, Symphony not started: ${dispatch.join('; ')}`);
   say(`dispatchable: ${record.issues.filter((issue) => dependencies(issue).length === 0).map((issue) => `#${issue.number}`).join(', ')}; all others wait`);
 
   const symphony = startSymphony(context, port, runDir);
@@ -247,7 +322,7 @@ async function main(): Promise<number> {
   });
 
   const reviewer = new Reviewer(context, board, record, reviewDelayMs, reviewLog);
-  const recorder = new StatusRecorder(context, record, path.join(runDir, ROLES_FILES.timeline), say);
+  const recorder = new StatusRecorder(context, record, path.join(runDir, TIMELINE_FILE), say);
   const deadline = Date.now() + timeoutMs;
   let lastRunning = '';
   let finished = false;
@@ -264,12 +339,15 @@ async function main(): Promise<number> {
         const ids = state.running.map((row) => `#${issueNumber(row.issue_identifier)}`).join(',');
         const inReview = state.running.filter((row) => row.state?.toLowerCase() === ROLE_STATUS.review.toLowerCase()).length;
         trace(`running=${state.counts.running} ids=${ids} review=${inReview}`);
-        if (roles && inReview > AGENT_REVIEW_LIMIT) say(`WARNING: ${inReview} agents in "${ROLE_STATUS.review}", limit is ${AGENT_REVIEW_LIMIT}`);
+        for (const [column, columnLimit] of context.config.agent.maxConcurrentAgentsByState) {
+          const inColumn = state.running.filter((row) => row.state?.toLowerCase() === column).length;
+          if (inColumn > columnLimit) say(`WARNING: ${inColumn} agents in "${column}", limit is ${columnLimit}`);
+        }
         if (ids !== lastRunning) say(`running ${state.counts.running}/${limit}: ${ids || '–'}`);
         if (state.counts.running > limit) say(`WARNING: ${state.counts.running} agents running, limit is ${limit}`);
         lastRunning = ids;
       }
-      if (roles) {
+      if (plan.recordsTimeline) {
         // Every tick: a short stay in a column must still show up in the timeline.
         try {
           finished = await recorder.poll();
@@ -285,12 +363,12 @@ async function main(): Promise<number> {
       }
       if (finished && state?.counts.running === 0) break;
       if (Date.now() > deadline) throw new Error(`timed out after ${timeoutMs / 60_000} minutes`);
-      await sleep(roles ? ROLES_TICK_MS : TICK_MS);
+      await sleep(plan.tickMs);
     }
   } finally {
     await stopSymphony(symphony);
   }
-  say(roles ? 'no test issue active, no agent running; Symphony stopped' : 'all test issues closed, no agent running; Symphony stopped');
+  say(plan.finished);
   return (await verify(context, runDir)) ? 0 : 1;
 }
 

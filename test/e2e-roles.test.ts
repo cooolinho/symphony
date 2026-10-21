@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { ROOT, STATUS } from '../scripts/e2e/context.ts';
-import { AGENT_REVIEW_LIMIT, CHECK_SCRIPT, ROLES_FILES, ROLES_MARKER, ROLES_SCENARIO, ROLE_STATUS, rolesIssueBody, rolesWorkflow } from '../scripts/e2e/roles.ts';
+import { AGENT_REVIEW_LIMIT, CHECK_SCRIPT, ROLES_FILES, ROLES_MARKER, ROLES_SCENARIO, ROLE_STATUS, expectedResults, rolesIssueBody, rolesWorkflow } from '../scripts/e2e/roles.ts';
 import { expectedPath, observedPath, verifyRoles, type RolesData, type TimelineEntry } from '../scripts/e2e/verify-roles.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 import { resolveConfig } from '../src/workflow/config.ts';
@@ -60,7 +60,6 @@ function passingLog(): string[] {
   return [
     started(0, 11, 'a1', 'developer', 'Ready'),
     started(0, 12, 'b1', 'developer', 'Ready'),
-    line(1, 'transition_denied', { issue: `${REPO}#11`, run: 'a1', role: 'developer', target: 'Done', reason: '"Done" is a terminal column' }),
     check(1, 11, 'a1', 'check_failed'),
     check(1, 12, 'b1', 'check_failed'),
     check(2, 11, 'a1', 'passed'),
@@ -92,14 +91,25 @@ function timeline(paths: Record<number, Array<string | null>>): TimelineEntry[] 
 
 function passingTimeline(): TimelineEntry[] {
   return timeline({
-    11: [null, 'Ready', 'In progress', 'In progress', 'Agent review', 'In review'],
-    12: ['Ready', 'In progress', 'Agent review', 'In progress', 'Agent review', 'Agent review', 'In review'],
-    13: ['Ready', 'In progress', 'Agent review', 'In review'],
+    11: [null, 'Ready', 'Ready', 'Agent review', 'In review'],
+    12: ['Ready', 'Agent review', 'In progress', 'Agent review', 'Agent review', 'In review'],
+    13: ['Ready', 'Agent review', 'In review'],
   });
+}
+
+/** The results `report_result` recorded in a run that followed the lifecycle. */
+function passingResults(): RolesData['results'] {
+  return ISSUES.flatMap((issue) =>
+    expectedResults(issue.rejectOnce).map((entry) => {
+      const [kind = '', verdict = ''] = entry.split(':');
+      return { number: issue.number, kind, verdict };
+    }),
+  );
 }
 
 function data(overrides: Partial<RolesData> = {}): RolesData {
   return {
+    results: passingResults(),
     issues: ISSUES,
     historyLines: passingLog(),
     timeline: passingTimeline(),
@@ -117,30 +127,30 @@ describe('e2e roles verification', () => {
   it('passes a recorded run that followed the lifecycle', () => {
     const checks = verifyRoles(data());
     assert.deepEqual(checks.filter((c) => !c.ok), []);
-    assert.equal(checks.length, 5);
-    assert.match(checks[3]?.detail ?? '', /transition_denied 1, checks_finished 6, handed_off 8/);
+    assert.equal(checks.length, 6);
+    assert.match(checks.find((c) => c.name.startsWith('Repository log'))?.detail ?? '', /checks_finished 6, handed_off 8/);
   });
 
   it('derives the path from the timeline, without repeats and the start status', () => {
     assert.deepEqual(observedPath(passingTimeline(), 12), expectedPath(true));
-    assert.deepEqual(observedPath(passingTimeline(), 11), [ROLE_STATUS.progress, ROLE_STATUS.review, STATUS.handoff]);
+    assert.deepEqual(observedPath(passingTimeline(), 11), [ROLE_STATUS.review, STATUS.handoff]);
     assert.deepEqual(observedPath([], 11), []);
   });
 
-  it('fails when an issue skipped a column, was not rejected or did not end in In review', () => {
+  it('fails when an issue took an extra column, was not rejected or did not end in In review', () => {
     const problems = failed(
       data({
         timeline: timeline({
-          11: ['Ready', 'Agent review', 'In review'],
-          12: ['Ready', 'In progress', 'Agent review', 'In review'],
-          13: ['Ready', 'In progress', 'Agent review'],
+          11: ['Ready', 'In progress', 'Agent review', 'In review'],
+          12: ['Ready', 'Agent review', 'In review'],
+          13: ['Ready', 'Agent review'],
         }),
       }),
     );
     const detail = problems['Status path per issue'] ?? '';
-    assert.match(detail, /R1: Agent review → In review/);
-    assert.match(detail, /R2: In progress → Agent review → In review, expected/);
-    assert.match(detail, /R3: In progress → Agent review, expected/);
+    assert.match(detail, /R1: In progress → Agent review → In review, expected/);
+    assert.match(detail, /R2: Agent review → In review, expected/);
+    assert.match(detail, /R3: Agent review, expected/);
   });
 
   it('fails when an issue reached Done', () => {
@@ -160,16 +170,26 @@ describe('e2e roles verification', () => {
     assert.doesNotMatch(detail, /R1/);
   });
 
-  it('fails when the log lacks transition_denied or a handoff', () => {
-    const log = passingLog().filter((entry) => !entry.includes('transition_denied') && !(entry.includes('run=b2') && entry.includes('run_finished')));
-    const detail = failed(data({ historyLines: log }))['Repository log has transition_denied, checks_finished and handed_off'] ?? '';
-    assert.match(detail, /transition_denied 0/);
+  it('fails when the results are not the ones the lifecycle records', () => {
+    const name = 'Stage results per issue (report_result)';
+    assert.deepEqual(expectedResults(true), ['implementation:done', 'review:changes_needed', 'implementation:done', 'review:approved']);
+    const dropped = passingResults().filter((result) => !(result.number === 12 && result.verdict === 'changes_needed'));
+    assert.match(failed(data({ results: dropped }))[name] ?? '', /R2: implementation:done, implementation:done, review:approved, expected implementation:done, review:changes_needed/);
+    const early = passingResults().filter((result) => result.number !== 13);
+    assert.match(failed(data({ results: early }))[name] ?? '', /R3: \(nothing\), expected implementation:done, review:approved/);
+    assert.deepEqual(Object.keys(failed(data({ results: [] }))), [name]);
+  });
+
+  it('fails when the log lacks checks_finished or a handoff', () => {
+    const log = passingLog().filter((entry) => !entry.includes('checks_finished') && !(entry.includes('run=b2') && entry.includes('run_finished')));
+    const detail = failed(data({ historyLines: log }))['Repository log has checks_finished and handed_off'] ?? '';
+    assert.match(detail, /checks_finished 0/);
     assert.match(detail, /R2: no reviewer → developer handoff/);
   });
 
   it('fails when the last run of an issue is not the reviewer handing off', () => {
     const log = passingLog().filter((entry) => !entry.includes('run=b4'));
-    const detail = failed(data({ historyLines: log }))['Repository log has transition_denied, checks_finished and handed_off'] ?? '';
+    const detail = failed(data({ historyLines: log }))['Repository log has checks_finished and handed_off'] ?? '';
     assert.match(detail, /R2: last run is not the reviewer's handoff/);
   });
 
@@ -180,9 +200,19 @@ describe('e2e roles verification', () => {
     assert.match(failed(data({ polledReviewPeak: 2 }))[name] ?? '', /2 in the API trace/);
   });
 
+  it('counts a reviewer run only until its own result moved the issue out of Agent review', () => {
+    // R1's reviewer reports at minute 4 but only ends at minute 6; R2's reviewer starts at minute 5.
+    const moved = line(4, 'stage_result', { issue: `${REPO}#11`, run: 'a2', role: 'reviewer', kind: 'review', verdict: 'approved', target: STATUS.handoff });
+    const log = passingLog().flatMap((entry) => (entry.includes('run=a2') && entry.includes('run_finished') ? [moved, finished(6, 11, 'a2', 'handed_off')] : [entry]));
+    const name = `At most ${AGENT_REVIEW_LIMIT} agent(s) in "${ROLE_STATUS.review}"`;
+    assert.equal(failed(data({ historyLines: log }))[name], undefined);
+    const unmoved = log.filter((entry) => entry !== moved);
+    assert.match(failed(data({ historyLines: unmoved }))[name] ?? '', /peak 2 of 4 reviewer runs/);
+  });
+
   it('fails everything on an empty run', () => {
-    const problems = failed(data({ historyLines: [], timeline: [], polledReviewPeak: 0 }));
-    assert.equal(Object.keys(problems).length, 4);
+    const problems = failed(data({ historyLines: [], timeline: [], polledReviewPeak: 0, results: [] }));
+    assert.equal(Object.keys(problems).length, 5);
   });
 });
 
@@ -201,6 +231,12 @@ describe('e2e roles scenario', () => {
       ['developer', ['ready', 'in progress']],
       ['reviewer', ['agent review']],
     ]);
+    assert.deepEqual(config.roles?.map((role) => [role.name, role.result, role.onResult]), [
+      ['developer', 'implementation', { done: ROLE_STATUS.review, blocked: ROLE_STATUS.blocked }],
+      ['reviewer', 'review', { approved: STATUS.handoff, changes_needed: ROLE_STATUS.progress, blocked: ROLE_STATUS.blocked }],
+    ]);
+    assert.equal(config.roles?.find((role) => role.name === 'reviewer')?.onCheckFailed, ROLE_STATUS.progress);
+    assert.equal(config.pipeline.maxReviewRounds, 3);
     assert.equal(config.checks.onEnter.get('agent review'), `bash "$SYMPHONY_WORKFLOW_DIR/${ROLES_FILES.check}"`);
     assert.equal(config.agent.maxConcurrentAgentsByState.get('agent review'), AGENT_REVIEW_LIMIT);
     assert.ok(config.agent.maxContinuations !== null);
@@ -208,12 +244,13 @@ describe('e2e roles scenario', () => {
     assert.equal(config.tracker.provider.repositories, '$GITHUB_REPOSITORY', 'provider settings stay unresolved, as in WORKFLOW.md');
 
     const issue = makeIssue({ id: '12', title: 'E2E run', description: 'Do this', state: 'Agent review' });
-    const prompt = await renderPrompt(compilePrompt(promptTemplate), { issue, attempt: null, role: 'reviewer' });
+    const prompt = await renderPrompt(compilePrompt(promptTemplate), { issue, attempt: null, role: 'reviewer', round: 2 });
     assert.match(prompt, /You are the \*\*reviewer\*\*/);
+    assert.match(prompt, /Review round 2\./);
     assert.match(prompt, /Do this/);
   });
 
-  it('writes issue texts with instructions for both roles; only R2 is rejected and only R1 tries Done', () => {
+  it('writes issue texts with report_result instructions for both roles; only R2 gets changes_needed', () => {
     const bodies = new Map(ROLES_SCENARIO.map((issue) => [issue.key, rolesIssueBody(issue)]));
     for (const [key, body] of bodies) {
       assert.match(body, /## Role `developer`/);
@@ -221,7 +258,9 @@ describe('e2e roles scenario', () => {
       assert.ok(body.includes(ROLES_MARKER.developed(key)));
       assert.ok(body.includes(ROLES_MARKER.approved(key)));
       assert.equal(body.includes(ROLES_MARKER.rejected(key)), key === 'R2');
-      assert.equal(body.includes('set the status to "Done"'), key === 'R1');
+      assert.equal(body.includes('`changes_needed`'), key === 'R2');
+      assert.match(body, /`report_result` with the verdict `done`/);
+      assert.doesNotMatch(body, /set_status|set the status/);
     }
   });
 

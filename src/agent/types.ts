@@ -40,9 +40,13 @@ export type TurnFailureCode =
   | 'response_error'
   | 'session_limit';
 
-/** A turn that failed because the account hit a Claude usage limit. */
+/** A turn that failed because the account, or one model of it, hit a Claude usage limit. */
 export interface SessionLimitInfo {
   window: string | null;
+  /** `model`: only `model` is limited, the other models keep working; `account`: every model is. */
+  scope: 'account' | 'model';
+  /** The limited model family (`fable`, `opus`, `sonnet`, `haiku`) of a `model` limit; null for `account`. */
+  model: string | null;
   resetsAt: Date | null;
   source: 'event' | 'message' | null;
   text: string;

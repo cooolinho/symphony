@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 // Checks a finished e2e run: concurrency limit, dependencies, model, no code changes, completeness;
-// for the roles scenario the lifecycle checks of verify-roles.ts.
+// for the roles scenario the lifecycle checks of verify-roles.ts, for the pipeline scenario those of verify-pipeline.ts.
 // Usage: node scripts/e2e/verify.ts <run-dir> [--env-file <path>]
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { parseHistoryLine, repositoryFileName } from '../../src/history/history.ts';
+import type { TrackedResult } from '../../src/tracker/types.ts';
 import { clock, loadContext, type E2eContext } from './context.ts';
+import { COST_CEILING_USD, PIPELINE_FILES } from './pipeline.ts';
 import { AGENT_REVIEW_LIMIT, ROLES_FILES, rolesIssue } from './roles.ts';
-import { MODEL, ROOT_COUNT, dependencies, doneMarker, type RunRecord } from './scenario.ts';
+import { MODEL, ROOT_COUNT, dependencies, doneMarker, type CreatedIssue, type RunRecord } from './scenario.ts';
+import { costByRole, pipelineRuns, verifyPipeline, type PipelineResult } from './verify-pipeline.ts';
 import { observedPath, verifyRoles, type Check, type TimelineEntry } from './verify-roles.ts';
 
 interface Run {
@@ -121,30 +124,33 @@ export function readTimeline(file: string): TimelineEntry[] {
   return readLines(file).map((line) => JSON.parse(line) as TimelineEntry);
 }
 
-/** Roles scenario: lifecycle checks from the repository log and the status timeline, plus no code changes. */
-async function verifyRolesRun(context: E2eContext, runDir: string, record: RunRecord, out: (line: string) => void): Promise<boolean> {
-  const historyFile = path.join(runDir, 'state', 'repositories', repositoryFileName(record.repository));
-  const timeline = readTimeline(path.join(runDir, ROLES_FILES.timeline));
-  const traceFile = path.join(runDir, 'trace.log');
-  const polledReviewPeak = fs.existsSync(traceFile)
-    ? Math.max(0, ...[...fs.readFileSync(traceFile, 'utf8').matchAll(/review=(\d+)/g)].map((match) => Number(match[1])))
-    : 0;
-  const checks = verifyRoles({
-    issues: record.issues.map((issue) => ({ key: issue.key, number: issue.number, rejectOnce: rolesIssue(issue.key)?.rejectOnce ?? false })),
-    historyLines: readLines(historyFile),
-    timeline,
-    agentReviewLimit: AGENT_REVIEW_LIMIT,
-    polledReviewPeak,
-  });
+/** The result comments Symphony wrote, read back the way a later stage reads them, with the labels of each issue. */
+async function readIssueResults(
+  context: E2eContext,
+  record: RunRecord,
+): Promise<Array<{ issue: CreatedIssue; labels: string[]; results: TrackedResult[] }>> {
+  const tracked = await context.adapter.fetchIssuesByIds(record.issues.map((issue) => issue.itemId));
+  return Promise.all(
+    record.issues.map(async (issue) => {
+      const trackedIssue = tracked.find((candidate) => candidate.id === issue.itemId);
+      if (trackedIssue === undefined || context.adapter.readResults === undefined) return { issue, labels: [], results: [] };
+      return { issue, labels: trackedIssue.labels, results: await context.adapter.readResults(trackedIssue) };
+    }),
+  );
+}
 
+/** Pull requests and issue branches the test issues may have caused, from the repository on GitHub. */
+async function noCodeChangesCheck(context: E2eContext, record: RunRecord): Promise<Check> {
   const [owner, name] = record.repository.split('/');
   const { repository } = await context.github.gql<{ repository: Pick<RepositoryDetail, 'pullRequests' | 'refs'> }>(
     `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${CODE_CHANGES_QUERY} } }`,
     { owner, name },
   );
-  checks.push(noCodeChanges(record, repository));
+  return noCodeChanges(record, repository);
+}
 
-  const runs = readRuns(historyFile);
+/** Table of the lifecycle scenarios: status path, runs, turns and cost per issue. */
+function lifecycleRows(record: RunRecord, runs: Run[], timeline: TimelineEntry[]): string[][] {
   const rows = [['Issue', 'Status path', 'Runs', 'Turns', 'USD']];
   for (const issue of record.issues) {
     const own = runs.filter((run) => run.number === issue.number);
@@ -156,7 +162,78 @@ async function verifyRolesRun(context: E2eContext, runDir: string, record: RunRe
       own.reduce((sum, run) => sum + run.costUsd, 0).toFixed(4),
     ]);
   }
+  return rows;
+}
+
+/** Roles scenario: lifecycle checks from the repository log and the status timeline, plus no code changes. */
+async function verifyRolesRun(context: E2eContext, runDir: string, record: RunRecord, out: (line: string) => void): Promise<boolean> {
+  const historyFile = path.join(runDir, 'state', 'repositories', repositoryFileName(record.repository));
+  const timeline = readTimeline(path.join(runDir, ROLES_FILES.timeline));
+  const traceFile = path.join(runDir, 'trace.log');
+  const polledReviewPeak = fs.existsSync(traceFile)
+    ? Math.max(0, ...[...fs.readFileSync(traceFile, 'utf8').matchAll(/review=(\d+)/g)].map((match) => Number(match[1])))
+    : 0;
+  const results = (await readIssueResults(context, record)).flatMap(({ issue, results: own }) =>
+    own.map(({ result }) => ({ number: issue.number, kind: result.kind, verdict: result.verdict })),
+  );
+  const checks = verifyRoles({
+    results,
+    issues: record.issues.map((issue) => ({ key: issue.key, number: issue.number, rejectOnce: rolesIssue(issue.key)?.rejectOnce ?? false })),
+    historyLines: readLines(historyFile),
+    timeline,
+    agentReviewLimit: AGENT_REVIEW_LIMIT,
+    polledReviewPeak,
+  });
+  checks.push(await noCodeChangesCheck(context, record));
+
+  const runs = readRuns(historyFile);
+  const rows = lifecycleRows(record, runs, timeline);
   return report(out, rows, checks, `${runs.length} runs, ${runs.reduce((sum, run) => sum + run.costUsd, 0).toFixed(4)} USD (model-costs.yml)`);
+}
+
+/** Pipeline scenario: stage checks from the repository log, the status timeline and the results on the issues, plus no code changes. */
+async function verifyPipelineRun(context: E2eContext, runDir: string, record: RunRecord, out: (line: string) => void): Promise<boolean> {
+  const historyFile = path.join(runDir, 'state', 'repositories', repositoryFileName(record.repository));
+  const historyLines = readLines(historyFile);
+  const timeline = readTimeline(path.join(runDir, PIPELINE_FILES.timeline));
+  const tracked = await readIssueResults(context, record);
+  const results: PipelineResult[] = tracked.flatMap(({ issue, results: own }) =>
+    own.map(({ result, meta }) => ({
+      number: issue.number,
+      kind: result.kind,
+      verdict: result.verdict,
+      summary: result.summary,
+      role: meta.role,
+      run: meta.run,
+      round: meta.round,
+      profile: meta.profile,
+      target: meta.target,
+      openQuestions: result.kind === 'analysis' ? result.open_questions.length : 0,
+    })),
+  );
+  const { pipeline } = context.config;
+  const checks = verifyPipeline({
+    issues: record.issues.map((issue) => ({ key: issue.key, number: issue.number })),
+    historyLines,
+    timeline,
+    results,
+    labels: Object.fromEntries(tracked.map(({ issue, labels }) => [issue.number, labels.map((label) => label.toLowerCase())])),
+    maxReviewRounds: pipeline.maxReviewRounds,
+    maxTestRounds: pipeline.maxTestRounds,
+    limitLabel: pipeline.limitLabel,
+    costCeilingUsd: COST_CEILING_USD,
+  });
+  checks.push(await noCodeChangesCheck(context, record));
+
+  const runs = readRuns(historyFile);
+  const rows = lifecycleRows(record, runs, timeline);
+  const roleRows = [['Role', 'Runs', 'Turns', 'Models', 'USD']];
+  for (const cost of costByRole(pipelineRuns(historyLines))) {
+    roleRows.push([cost.role, String(cost.runs), String(cost.turns), cost.models.join(', ') || '–', cost.costUsd.toFixed(4)]);
+  }
+  out('');
+  out(table(roleRows));
+  return report(out, rows, checks, `${runs.length} runs, ${runs.reduce((sum, run) => sum + run.costUsd, 0).toFixed(4)} USD (model-costs.yml), ceiling ${COST_CEILING_USD} USD`);
 }
 
 function table(rows: string[][]): string {
@@ -167,6 +244,7 @@ function table(rows: string[][]): string {
 export async function verify(context: E2eContext, runDir: string, out: (line: string) => void = console.log): Promise<boolean> {
   const record = JSON.parse(fs.readFileSync(path.join(runDir, 'run.json'), 'utf8')) as RunRecord;
   if (record.scenario === 'roles') return verifyRolesRun(context, runDir, record, out);
+  if (record.scenario === 'pipeline') return verifyPipelineRun(context, runDir, record, out);
   const runs = readRuns(path.join(runDir, 'state', 'repositories', repositoryFileName(record.repository)));
   const byKey = new Map(record.issues.map((issue) => [issue.key, issue]));
   const keyOf = (number: number) => record.issues.find((issue) => issue.number === number)?.key ?? `#${number}`;

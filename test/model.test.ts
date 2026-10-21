@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { chooseEffort, chooseModel, effortForLabelValue, isEffortLabel, isModelLabel, modelForLabelValue, modelOverridesFor, sessionClaudeConfig } from '../src/agent/model.ts';
 import { roleModelLine } from '../src/service.ts';
 import { STANDARD_LABELS, WORKFLOW_LABELS } from '../src/repo-init/labels.ts';
+import { isComplexityLabel, isTypeLabel } from '../src/workflow/classify.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 import { resolveConfig } from '../src/workflow/config.ts';
 
@@ -43,14 +44,14 @@ describe('model labels', () => {
   });
 
   it('picks the model from a label, else the default', () => {
-    assert.deepEqual(chooseModel(['bug', 'model: sonnet-5-5'], 'opus'), { model: 'claude-sonnet-5-5', label: 'model: sonnet-5-5', warning: null });
-    assert.deepEqual(chooseModel(['Model:Haiku'], 'opus'), { model: 'haiku', label: 'Model:Haiku', warning: null });
-    assert.deepEqual(chooseModel(['bug'], 'opus'), { model: 'opus', label: null, warning: null });
-    assert.deepEqual(chooseModel([], null), { model: null, label: null, warning: null });
+    assert.deepEqual(chooseModel(['bug', 'model: sonnet-5-5'], 'opus'), { model: 'claude-sonnet-5-5', label: 'model: sonnet-5-5', warning: null, labelIgnored: false, source: 'label' });
+    assert.deepEqual(chooseModel(['Model:Haiku'], 'opus'), { model: 'haiku', label: 'Model:Haiku', warning: null, labelIgnored: false, source: 'label' });
+    assert.deepEqual(chooseModel(['bug'], 'opus'), { model: 'opus', label: null, warning: null, labelIgnored: false, source: 'role' });
+    assert.deepEqual(chooseModel([], null), { model: null, label: null, warning: null, labelIgnored: false, source: null });
   });
 
   it('treats labels naming the same model as one choice', () => {
-    assert.deepEqual(chooseModel(['model: opus', 'model: claude-opus'], 'sonnet'), { model: 'opus', label: 'model: opus', warning: null });
+    assert.deepEqual(chooseModel(['model: opus', 'model: claude-opus'], 'sonnet'), { model: 'opus', label: 'model: opus', warning: null, labelIgnored: false, source: 'label' });
   });
 
   it('falls back to the default model for conflicting or unknown labels, with a warning', () => {
@@ -66,6 +67,36 @@ describe('model labels', () => {
     const mixed = chooseModel(['model: opsu', 'model: haiku'], 'sonnet');
     assert.deepEqual([mixed.model, mixed.label], ['haiku', 'model: haiku']);
     assert.match(mixed.warning ?? '', /unknown model label "model: opsu"/);
+  });
+
+  it('picks the model from complexity when no label applies, else the default', () => {
+    const modelByComplexity = { S: 'haiku', L: 'opus', XL: 'opus' };
+    const chooseByComplexity = (labels: readonly string[], complexity: 'S' | 'L' | null) =>
+      chooseModel(labels, 'sonnet', 'apply', complexity, modelByComplexity);
+
+    assert.deepEqual(chooseByComplexity(['bug'], 'S'), { model: 'haiku', label: null, warning: null, labelIgnored: false, source: 'complexity' });
+    assert.deepEqual(chooseByComplexity(['bug'], 'L'), { model: 'opus', label: null, warning: null, labelIgnored: false, source: 'complexity' });
+    assert.deepEqual(chooseByComplexity(['bug'], null), { model: 'sonnet', label: null, warning: null, labelIgnored: false, source: 'role' });
+    assert.deepEqual(chooseByComplexity([], 'S'), { model: 'haiku', label: null, warning: null, labelIgnored: false, source: 'complexity' });
+  });
+
+  it('prefers model labels over complexity', () => {
+    const modelByComplexity = { S: 'haiku', L: 'opus' };
+    const choice = chooseModel(['model: sonnet'], 'sonnet', 'apply', 'S', modelByComplexity);
+    assert.deepEqual(choice, { model: 'sonnet', label: 'model: sonnet', warning: null, labelIgnored: false, source: 'label' });
+  });
+
+  it('respects model_by_complexity when modelLabel is "ignore"', () => {
+    const modelByComplexity = { S: 'haiku', L: 'opus' };
+    const choice = chooseModel(['model: sonnet'], 'sonnet', 'ignore', 'L', modelByComplexity);
+    assert.deepEqual(choice, { model: 'opus', label: null, warning: null, labelIgnored: true, source: 'complexity' });
+  });
+
+  it('ignores model labels when modelLabel policy is "ignore"', () => {
+    assert.deepEqual(chooseModel(['model: sonnet'], 'opus', 'ignore'), { model: 'opus', label: null, warning: null, labelIgnored: true, source: 'role' });
+    assert.deepEqual(chooseModel(['bug', 'model: haiku'], 'sonnet', 'ignore'), { model: 'sonnet', label: null, warning: null, labelIgnored: true, source: 'role' });
+    assert.deepEqual(chooseModel(['bug'], 'opus', 'ignore'), { model: 'opus', label: null, warning: null, labelIgnored: false, source: 'role' });
+    assert.deepEqual(chooseModel([], 'haiku', 'ignore'), { model: 'haiku', label: null, warning: null, labelIgnored: false, source: 'role' });
   });
 
   it('drops fallback models equal to the session model', () => {
@@ -141,23 +172,29 @@ describe('model labels', () => {
     });
   });
 
-  it('ships model and effort labels that resolve, plus the workflow labels', () => {
-    assert.equal(STANDARD_LABELS.length, 9 + WORKFLOW_LABELS.length);
+  it('ships model and effort labels that resolve, plus the workflow labels and type/complexity labels', () => {
+    assert.equal(STANDARD_LABELS.length, 16 + WORKFLOW_LABELS.length);
     assert.equal(STANDARD_LABELS.filter((label) => isModelLabel(label.name)).length, 4);
     assert.equal(STANDARD_LABELS.filter((label) => isEffortLabel(label.name)).length, 5);
-    assert.deepEqual(WORKFLOW_LABELS.map((label) => label.name), ['auto-code', 'concept', 'plan', 'epic', 'feature', 'design', 'quality', 'maintenance', 'manual-merge']);
+    assert.equal(STANDARD_LABELS.filter((label) => isTypeLabel(label.name)).length, 3);
+    assert.equal(STANDARD_LABELS.filter((label) => isComplexityLabel(label.name)).length, 4);
+    assert.deepEqual(WORKFLOW_LABELS.map((label) => label.name), ['auto-code', 'concept', 'plan', 'epic', 'feature', 'design', 'quality', 'maintenance', 'security', 'manual-merge', 'needs-human']);
     for (const label of STANDARD_LABELS) {
       if (WORKFLOW_LABELS.includes(label)) {
-        assert.ok(!isModelLabel(label.name) && !isEffortLabel(label.name), label.name);
+        assert.ok(!isModelLabel(label.name) && !isEffortLabel(label.name) && !isTypeLabel(label.name) && !isComplexityLabel(label.name), label.name);
       } else if (isModelLabel(label.name)) {
         const choice = chooseModel([label.name.toLowerCase()], null);
         assert.ok(choice.model !== null && choice.warning === null, label.name);
         assert.ok(label.description.includes(choice.model), label.name);
-      } else {
-        assert.ok(isEffortLabel(label.name), label.name);
+      } else if (isEffortLabel(label.name)) {
         const choice = chooseEffort([label.name.toLowerCase()], null);
         assert.ok(choice.effort !== null && choice.warning === null, label.name);
         assert.ok(label.description.includes(choice.effort), label.name);
+      } else if (isTypeLabel(label.name) || isComplexityLabel(label.name)) {
+        // Type and complexity labels are validated by their name format
+        assert.ok(label.name.startsWith('Type: ') || label.name.startsWith('Complexity: '), label.name);
+      } else {
+        assert.fail(`unexpected label type: ${label.name}`);
       }
       assert.ok(label.description.length <= 100, label.name);
       assert.match(label.color, /^[0-9a-f]{6}$/);

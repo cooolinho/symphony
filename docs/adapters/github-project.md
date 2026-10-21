@@ -68,7 +68,7 @@ see the board preflight in [configuration.md](../configuration.md#tracker).
 | `branch_name` | First branch linked to the issue ("Create a branch" in the issue sidebar), else `null` |
 | `dispatchable` | Issue is open, matches `assignee` (if set), has no unresolved dependency (if `respect_blockers`) and no open sub-issue (if `respect_sub_issues`) |
 | `created_at`, `updated_at` | Issue timestamps |
-| `native_ref` | `{provider, project_id, item_id, issue_id, repository, number, issue_state, status_option_id, parent, sub_issues, base_branch, dispatch_note}`: `parent` and each sub-issue are `{identifier, title, state}`, a closed sub-issue also has `state_reason` (`COMPLETED`, `NOT_PLANNED`, `DUPLICATE`); all sub-issues are read (GitHub allows 100); `base_branch` is the configured `base_branch` or `null`; `dispatch_note` says why an issue is not dispatchable (shown by `--dry-run`) |
+| `native_ref` | `{provider, project_id, item_id, issue_id, repository, number, issue_state, status_option_id, parent, sub_issues, base_branch, dispatch_note, held_by_sub_issues}`: `parent` and each sub-issue are `{identifier, title, state, state_reason}`, where `state_reason` says why a closed issue was closed (`COMPLETED`, `NOT_PLANNED`, `DUPLICATE`) and is `null` for an open one; all sub-issues are read (GitHub allows 100); `base_branch` is the configured `base_branch` or `null`; `dispatch_note` says why an issue is not dispatchable (shown by `--dry-run`); `held_by_sub_issues` is `true` when open sub-issues are the only reason |
 
 ### Dependencies
 
@@ -92,7 +92,10 @@ the workspace is only deleted once the issue reaches a terminal status.
 
 Hooks additionally receive `SYMPHONY_ISSUE_REPOSITORY` and `SYMPHONY_ISSUE_NUMBER`, and `SYMPHONY_BASE_BRANCH` when
 `base_branch` is set. For roles with `wait_for_sub_issues`, the adapter reports the open sub-issues
-(`openSubIssues`); see [Waves](../configuration.md#waves-wait_for_sub_issues).
+(`openSubIssues`); see [Waves](../configuration.md#waves-wait_for_sub_issues). `heldBySubIssues` reports an issue that
+only its open sub-issues hold back (`held_by_sub_issues`): a running session of a role with `max_sub_issues` goes on
+with it, so an architect that files [work packages](../configuration.md#work-packages-split) is not stopped by them
+before it reports. A new session still waits until they are closed.
 
 ## Agent tools
 
@@ -102,10 +105,10 @@ they create are sub-issues of that issue (`create_sub_issue`).
 | Tool | Input | Mutates | Result |
 |---|---|---|---|
 | `get_issue` | none | no | Issue fields, valid status options, the latest 20 comments, linked pull requests |
-| `set_status` | `status` | yes | Moves the board item; the name is matched case-insensitively. An unknown name returns the valid options. Guarded: see below. Entering `auto_merge.on_enter` triggers the [auto-merge](#auto-merge); the result then carries `auto_merge` and the final `status`. |
-| `add_comment` | `body` | yes | Posts a comment on the issue; returns its URL |
+| `set_status` | `status` | yes | Moves the board item; the name is matched case-insensitively. An unknown name returns the valid options. Guarded: see below. Entering `auto_merge.on_enter` triggers the [auto-merge](#auto-merge); the result then carries `auto_merge` and the final `status`. Not offered to [roles](../configuration.md#roles) with `result`: they hand off with Symphony's [`report_result`](../results.md#the-report_result-tool), which moves the issue through the same adapter operation. |
+| `add_comment` | `body` | yes | Posts a comment on the issue; returns its URL. Text containing `<!-- symphony:` is rejected (`invalid_argument`), see [Stage-result markers](#stage-result-markers-and-the-bot-account). |
 | `open_pull_request` | `head`, `title`, `body?`, `base?`, `draft?` | yes | Opens a PR from an already pushed branch (base defaults to `base_branch`, else the default branch). An open PR for the same branch is returned instead of a duplicate (`created: false`). |
-| `create_sub_issue` | `title`, `body?`, `labels?`, `parent?`, `blocked_by?` | yes | Creates a sub-issue of the session's issue (or, with `parent`, of one of its open sub-issues) in the same repository, adds it to the board in the `sub_issue_status` column (the role's, else the provider's) and returns `{created, number, identifier, url, status, on_board, unknown_labels, remaining, warnings?}`; with `parent` it also returns `parent`, with `blocked_by` also `blocked_by` and `unknown_blockers`. Only offered to [roles](../configuration.md#roles) with `max_sub_issues`. See below. |
+| `create_sub_issue` | `title`, `body?`, `labels?`, `parent?`, `blocked_by?` | yes | Creates a sub-issue of the session's issue (or, with `parent`, of one of its open sub-issues) in the same repository, adds it to the board in the `sub_issue_status` column (the role's, else the provider's) and returns `{created, number, identifier, url, status, on_board, unknown_labels, remaining, warnings?}`; with `parent` it also returns `parent`, with `blocked_by` also `blocked_by` and `unknown_blockers`. Only offered to [roles](../configuration.md#roles) with `max_sub_issues`. Title and body with `<!-- symphony:` are rejected like in `add_comment`. See below. |
 
 `set_status` declares its target column (`transitionTarget`), so Symphony's
 [transition guard](../configuration.md#transition-guard) checks every call before the mutation is sent: terminal
@@ -144,6 +147,45 @@ the issue is added to the board and its status is set to `sub_issue_status`. The
 Failures come back to the agent as structured tool errors (`{error: {category, message}}`), so it can correct its
 input. Keep GitHub's secondary rate limits in mind: content-creating calls such as comments are limited to roughly
 80 per minute per token.
+
+## Orchestrator operations
+
+Besides the agent tools, the adapter offers operations the orchestrator calls itself, so it can persist and hand over
+stage results without an agent. All of them are optional parts of the `TrackerAdapter` interface (`src/tracker/types.ts`)
+and take the issue as normalized by the adapter. Queries are retried like all queries; mutations never are.
+
+| Method | GitHub API | Result |
+|---|---|---|
+| `readComments(issue)` | `comments(first: 100, after: …)`, one request per page, 1 rate-limit point each | Every comment, oldest first: `{author, createdAt, body, url}`. `author` is `null` for a deleted account. Fails with `tracker_pagination` when GitHub reports another page without a new cursor. |
+| `readResults(issue)` | the `readComments` pages, plus `viewerLogin()` | The stage results decoded from the markers in the comments, oldest first, each with the comment's `createdAt` and `url`. Only comments written by the token's account count; a marker in a comment of any other author is ignored and logged (`ignoring a result marker from another author`), a damaged marker of the token's account counts as no result and is logged. See [Stage-result markers and the bot account](#stage-result-markers-and-the-bot-account). |
+| `viewerLogin()` | `viewer { login }` | The login of the account behind the token; fetched once per adapter instance. |
+| `postComment(issue, body)` | `addComment` | `{url}` of the new comment. The `add_comment` tool and `commentOnIssue` use it. |
+| `setStatus(issue, column)` | `updateProjectV2ItemFieldValue`, then [auto-merge](#auto-merge) | `{previous, status, autoMerge?}`. The one function behind the `set_status` tool, so both behave identically; `previous` is the column in the `issue` passed in. An unknown column fails with `invalid_argument` and names the valid ones. It does not run the transition guard: the caller does. |
+| `addLabels(issue, names, {create})` | label lookup, `createLabel`, `addLabelsToLabelable` | `{added, created, unknown}`. Names are matched case-insensitively. A label the repository does not have is reported in `unknown`, except with `create` for the families `Type: <value>`, `Complexity: <value>` and `needs-human`: those are created (with the colors and descriptions of the standard labels from `repo-init`, else grey) and added. Any other name is never created. |
+| `removeLabels(issue, names)` | label lookup, `removeLabelsFromLabelable` | `{removed, unknown}`. A label the issue does not carry is a no-op on GitHub. |
+
+### Stage-result markers and the bot account
+
+The [stage results](../results.md) of the multi-agent pipeline live in the issue's comments as hidden
+`<!-- symphony:result:v1 … -->` markers, written by `postComment` through `report_result` (`commentOnIssue` for plain
+notices posts no marker). Two rules keep them from being forged
+([SECURITY.md](../../SECURITY.md#stage-result-markers)):
+
+- **Marker protection.** The agent tools `add_comment` and `create_sub_issue` reject any text containing
+  `<!-- symphony:` with `invalid_argument` (the match ignores case and the whitespace after `<!--`), so an agent cannot
+  write a marker. The text in a result's Markdown cannot open a comment either: `<!--` is escaped
+  ([Comment and marker](../results.md#comment-and-marker)).
+- **Author filter.** `readResults` trusts only comments whose author is `viewerLogin()`, the account behind the token.
+  A marker pasted into a comment by someone else does not count and cannot move the round counters.
+
+**Use a separate account for Symphony** (a machine user, or a GitHub App token), not your personal token. With a
+personal token Symphony comments as you, so a comment you write by hand with a marker in it would be trusted, and the
+author filter only protects against agents and other accounts. The account needs the same access as before (the `repo` and
+`project` scopes, see `token` above). A separate account also keeps the timeline readable: GitHub reports the token's
+owner as the actor of every move, so with a personal token nothing tells Symphony's moves from yours.
+
+The calls need the token scopes the adapter already documents (`repo`, `project`); see the spike results in
+[the multi-agent concept](../concepts/multi-agent.md#spike-results).
 
 ## Auto-merge
 
@@ -192,6 +234,7 @@ pull request from `base_branch`.
 | `tracker_rate_limited` | HTTP 429, 403 with exhausted rate limit, or GraphQL `RATE_LIMITED`; carries `retryAfterMs` when GitHub sends one |
 | `tracker_response` | Non-JSON body, GraphQL errors, unexpected payload, malformed requested item |
 | `tracker_pagination` | GitHub reported more pages without a new cursor, or more than 500 pages |
+| `invalid_argument` | A caller passed something the board does not have, e.g. `setStatus` with an unknown column (the agent tools report the same category) |
 | `invalid_tracker_config` / `missing_tracker_secret` | See Configuration |
 
 Errors are `TrackerError` instances: `category` (also `code`), a human-readable `message`, optional `retryAfterMs`

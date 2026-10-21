@@ -20,6 +20,30 @@ export interface ProjectMeta {
   priority: { kind: 'single_select'; options: SelectOption[] } | { kind: 'number' } | null;
 }
 
+/** What changing an issue on GitHub needs of its `native_ref`. */
+export interface IssueRef {
+  itemId: string;
+  issueId: string;
+  repository: string;
+  number: number;
+}
+
+/** The GitHub ids of an issue, or null when it does not come from this adapter. */
+export function issueRefOf(issue: Pick<Issue, 'native_ref'>): IssueRef | null {
+  const ref = issue.native_ref;
+  if (ref === null || ref.provider !== KIND) return null;
+  const { item_id: itemId, issue_id: issueId, repository, number } = ref;
+  if (typeof itemId !== 'string' || typeof issueId !== 'string' || typeof repository !== 'string' || typeof number !== 'number') {
+    return null;
+  }
+  return { itemId, issueId, repository, number };
+}
+
+/** Titles and column names are compared without case and with collapsed whitespace, so a re-typed one still matches. */
+export function titleKey(title: unknown): string {
+  return String(title ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
 /** An issue (or pull request) referenced by repository and number. */
 export interface IssueReference {
   repository: string;
@@ -31,8 +55,11 @@ export interface LinkedIssue {
   identifier: string;
   title: string;
   state: string | null;
-  /** Why a closed sub-issue was closed (COMPLETED, NOT_PLANNED, DUPLICATE); only present when GitHub reports one. */
-  state_reason?: string;
+  /**
+   * Why a closed issue was closed (COMPLETED, NOT_PLANNED, DUPLICATE); null when GitHub reports none (an open issue).
+   * Always present, so a prompt can read it under strict variables (the integration review of work packages does).
+   */
+  state_reason: string | null;
 }
 
 /** Dispatch conditions known from the item itself; blockers are added once they are resolved. */
@@ -74,9 +101,21 @@ export function parseTextBlockers(body: string | null, ownRepository: string, ow
   return [...seen.values()];
 }
 
+/** The issue's sub-issues that are not closed (`native_ref.sub_issues`); empty for an issue of another adapter. */
+export function openSubIssuesOf(issue: Pick<Issue, 'native_ref'>): LinkedIssue[] {
+  const subIssues = issue.native_ref?.provider === KIND ? issue.native_ref.sub_issues : null;
+  return Array.isArray(subIssues) ? (subIssues as LinkedIssue[]).filter((sub) => sub.state !== 'CLOSED') : [];
+}
+
+/** Whether only the open sub-issues keep the issue from being dispatched (`native_ref.held_by_sub_issues`). */
+export function isHeldBySubIssues(issue: Pick<Issue, 'native_ref'>): boolean {
+  return issue.native_ref?.provider === KIND && issue.native_ref.held_by_sub_issues === true;
+}
+
 /**
  * Sets `dispatchable` and `native_ref.dispatch_note` from the gates, all known blockers
- * (`respect_blockers`) and open sub-issues (`respect_sub_issues`).
+ * (`respect_blockers`) and open sub-issues (`respect_sub_issues`). `native_ref.held_by_sub_issues` records that the
+ * open sub-issues are the only reason (see `TrackerAdapter.heldBySubIssues`).
  */
 export function applyDispatchRules(
   issue: Issue,
@@ -90,26 +129,28 @@ export function applyDispatchRules(
     const open = issue.blocked_by.filter((blocker) => !RESOLVED_STATES.has(blocker.state ?? ''));
     if (open.length > 0) reasons.push(`blocked by ${open.map((b) => b.identifier ?? b.id ?? 'an unknown issue').join(', ')}`);
   }
+  const others = reasons.length;
   // An issue that starts with a `/command` produces its sub-issues (the audit's findings) instead of waiting for them.
   if (settings.respectSubIssues && parseIssueCommand(issue.description) === null) {
-    const subIssues = (issue.native_ref?.sub_issues ?? []) as LinkedIssue[];
-    const open = subIssues.filter((sub) => sub.state !== 'CLOSED');
+    const open = openSubIssuesOf(issue);
     if (open.length > 0) reasons.push(`waiting for sub-issues ${open.map((sub) => sub.identifier).join(', ')}`);
   }
   issue.dispatchable = reasons.length === 0;
-  if (issue.native_ref !== null) issue.native_ref.dispatch_note = reasons.length > 0 ? reasons.join('; ') : null;
+  if (issue.native_ref !== null) {
+    issue.native_ref.dispatch_note = reasons.length > 0 ? reasons.join('; ') : null;
+    issue.native_ref.held_by_sub_issues = others === 0 && reasons.length > 0;
+  }
 }
 
 function linkedIssue(node: Json | null): LinkedIssue | null {
   if (node === null) return null;
   const repo = str(obj(node.repository)?.nameWithOwner);
   if (repo === null || typeof node.number !== 'number') return null;
-  const reason = str(node.stateReason);
   return {
     identifier: `${repo}#${node.number}`,
     title: typeof node.title === 'string' ? node.title : '',
     state: str(node.state),
-    ...(reason !== null ? { state_reason: reason } : {}),
+    state_reason: str(node.stateReason),
   };
 }
 
@@ -216,6 +257,8 @@ export function normalizeItemNode(
         number,
         issue_state: str(content.state),
         status_option_id: str(status?.optionId),
+        // When the Status field last changed (any move, by Symphony or a human); see orchestrator/recovery.ts.
+        status_updated_at: date(status?.updatedAt)?.toISOString() ?? null,
         parent: linkedIssue(obj(content.parent)),
         sub_issues: subIssues,
         base_branch: settings.baseBranch,

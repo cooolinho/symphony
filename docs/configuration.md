@@ -44,7 +44,8 @@ runs Claude Code and is configured through `claude`.
 Statuses that are neither active nor terminal (for example `Human Review`) stop the agent and keep the workspace.
 
 **Board preflight.** Every column named in `tracker.active_states`, `tracker.terminal_states`, `roles.*.states`,
-`roles.*.may_move_to` and `checks.on_enter` must be a status option of the board (compared case-insensitively).
+`roles.*.may_move_to`, the targets of `roles.*.on_result`, `on_check_failed`, `on_missing_result` and `on_round_limit`, and
+`checks.on_enter` must be a status option of the board (compared case-insensitively).
 An unknown column is a dispatch-validation error (`unknown board column "Agent Reviw" (valid: …)`): dispatch
 pauses while reconciliation continues, and the error clears on the first tick after `WORKFLOW.md` is fixed. The
 options are fetched once per workflow version; a failed fetch is reported as a tracker error (the check is skipped
@@ -182,8 +183,9 @@ hooks already lack. Scripts are not `$VAR`-substituted by Symphony; the shell ex
 
 #### Transition guard
 
-Every tracker tool that changes the issue's column (GitHub: `set_status`) goes through Symphony's transition guard
-before the tracker is touched. The guard decides on the run's role and the target column only, in this order:
+Every tracker tool that changes the issue's column (GitHub: `set_status`; for roles with `result`:
+[`report_result`](results.md#the-report_result-tool)) goes through Symphony's transition guard before the tracker is
+touched. The guard decides on the run's role and the target column only, in this order:
 
 1. A terminal target (`tracker.terminal_states`, e.g. `Done`) is always denied; only a human moves issues there.
    With `roles`, a target outside the role's `may_move_to` is denied too. Both return the tool error
@@ -195,10 +197,10 @@ before the tracker is touched. The guard decides on the run's role and the targe
 
 | Exit | Result | The agent is told |
 |---|---|---|
-| `0` | The issue is moved; the tool result carries `note: "Checks passed — end your turn now."` | End the turn, so the next role takes over. |
-| `1` | Tool error `check_failed`; the column is unchanged | The last 6000 characters of the output; fix the problems and call `set_status` again. |
+| `0` | The issue is moved; the tool result carries `note: "Checks passed — end your turn now."` (`report_result` keeps its own note, `"Result recorded — end your turn now."`) | End the turn, so the next role takes over. |
+| `1` | Tool error `check_failed`; the column is unchanged | The last 6000 characters of the output; fix the problems and call `set_status` (or `report_result`) again. |
 | none, `checks.timeout_ms` reached | Tool error `check_timeout`; the column is unchanged | A runtime limit, not the change: do not change code and do not move the issue to `Blocked`; call `set_status` once more, and if that times out too, comment and end the turn without a status change. Symphony picks the issue up again later. |
-| other, aborted, or the check cannot start | Tool error `check_error`; the column is unchanged | Do not change code; describe the problem in an issue comment and move the issue to `Blocked`. |
+| other, aborted, or the check cannot start | Tool error `check_error`; the column is unchanged | Do not change code; describe the problem in an issue comment and move the issue to `Blocked` (`report_result`: end the turn instead). |
 
 **Cache.** A passing check is remembered per claim, in memory, under the key `HEAD sha` + hash of the script text. Before
 running a check the guard reads `git rev-parse HEAD` and `git status --porcelain` (5 s timeout each); when the tree
@@ -226,11 +228,52 @@ write a `transition_denied` line.
 |---|---|---|
 | `max_concurrent_agents` | `10` | `0` pauses new dispatches; running agents continue. |
 | `max_turns` | `20` | Turns per agent session; between turns Symphony re-reads the issue and stops if it left the active states or moved to a column served by another [role](#roles). |
-| `max_continuations` | unlimited | After a session ends normally while the issue is still active, Symphony starts another one (a *continuation session*). With a limit, an issue that is still active after that many continuation sessions is **paused**: it stays claimed and nothing new starts. It resumes as soon as it changes on the tracker (status, comment, labels, edit), leaves the active states, the limit is raised or removed, or an operator restarts it (`POST /api/v1/<identifier>/retry`, which also restarts workers waiting in the retry queue). `0` = pause right after the first session. A switch to another [role](#roles) also ends the session and counts as a continuation. |
-| `max_session_limit_retries` | `3` | Retries per issue after the first session-limit failure (with the usual 10 s, 20 s, … backoff), before the worker waits for the reset (`retry at` = reset + 60 s). `0` = wait right away. An unknown reset, or one more than 8 days ahead, keeps the failure backoff instead. The wait is in memory only and is forgotten on restart. While a worker waits for an account-wide limit (`five_hour` or `seven_day`), no new issues are dispatched; running agents and retries continue. `GET /api/v1/state` reports this as `health.dispatch_gate` (`{ reason: "session_limit", window, until, issue_identifier }`, else `null`); it ends with the last wait, a restart or release of the waiting worker, or a successful turn of any agent after the limit was observed. See [Session limit](usage.md#session-limit). |
+| `max_continuations` | unlimited | After a session ends normally while the issue is still active, Symphony starts another one (a *continuation session*). With a limit, an issue that is still active after that many continuation sessions is **paused**: it stays claimed and nothing new starts. It resumes as soon as it changes on the tracker (status, comment, labels, edit), leaves the active states, the limit is raised or removed, or an operator restarts it (`POST /api/v1/<identifier>/retry`, which also restarts workers waiting in the retry queue). `0` = pause right after the first session. A switch to another [role](#roles) also ends the session and counts as a continuation; a session that hands the issue on with a recorded [result](results.md) starts the count again, unless the move after the result failed. |
+| `max_issue_cost_usd` | unlimited | Cost cap in USD for one issue across all its stages. Before each dispatch Symphony sums the issue's run costs from the repository history (every role) plus a running run; once the sum reaches the cap, the next stage does not start and the issue is **paused** with a comment saying why. A running stage is not stopped. The cap holds after a restart. Only **Resume now**, **Start now**, a raised or removed cap, a terminal state or leaving the board lifts the pause; board changes do not. Must be positive. See [Cost budget per issue](usage.md#cost-budget-per-issue). |
+| `max_session_limit_retries` | `3` | Retries per issue after the first session-limit failure (with the usual 10 s, 20 s, … backoff), before the worker waits for the reset (`retry at` = reset + 60 s). `0` = wait right away. An unknown reset, or one more than 8 days ahead, keeps the failure backoff instead. The wait is in memory only and is forgotten on restart. A model limit (`seven_day_opus`, `seven_day_sonnet`, or a message naming a model such as Fable) skips these retries and holds the model instead, see `model_hold_ms`. While a worker waits for an account-wide limit (`five_hour` or `seven_day` without a model in the message), no new issues are dispatched; running agents and retries continue. `GET /api/v1/state` reports this as `health.dispatch_gate` (`{ reason: "session_limit", window, until, issue_identifier }`, else `null`); it ends with the last wait, a restart or release of the waiting worker, or a successful turn of any agent after the limit was observed. See [Session limit](usage.md#session-limit). |
+| `model_hold_ms` | `3600000` | How long a model stays on hold after a model limit (e.g. `You've reached your Fable limit`) whose message names no reset. With a reset the hold lasts until the reset + 60 s. While a model is on hold, no issue that would run on it starts; its issues wait in the retry queue, the other models keep running, and no issue moves to another model. Holds are stored under `<logDir>/state/` and survive a restart. `GET /api/v1/state` reports them as `model_holds[]`. See [Model limits](usage.md#model-limits). |
 | `max_retry_backoff_ms` | `300000` | Cap for failure retries (10 s, 20 s, 40 s, …). |
 | `max_concurrent_agents_by_state` | `{}` | Per-status limits, e.g. `{ "In Progress": 1 }`. Invalid entries are ignored with a warning. |
-| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `agents`, `turn_number`, `max_turns`). |
+| `reserved_slots_by_role` | `{}` | Slots kept free for a [role](#roles), e.g. `{ developer: 1, reviewer: 1 }`, so a developer and a reviewer can always run side by side. An issue of role R starts only while the free slots exceed the unused reservations of the other roles (Σ max(0, reserved − running)); a reserved slot stays empty while its role has nothing to do. Command roles (`planner`, `auditor`, …) count as their own roles and never use the developer's reservation. Column limits still apply. Names that are not roles, and values that are not integers of `0` or more, are ignored with a warning. If the reservations add up to more than `max_concurrent_agents`, they are ignored and the dashboard shows a problem. See [Reserved slots](#reserved-slots). |
+| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `agents`, `results`, `round`, `result_required`, `test_paths`, `attachments`, `turn_number`, `max_turns`). |
+
+#### Reserved slots
+
+Without reservations, the first issues in [dispatch order](usage.md#dispatch-order) take every slot: with
+`max_concurrent_agents: 3` three developers can run while an issue in `Agent review` waits for one of them to finish.
+`reserved_slots_by_role: { developer: 1, reviewer: 1 }` keeps one slot for each of them:
+
+| Running | Waiting | What starts |
+|---|---|---|
+| nothing | 5 issues in `Ready` | 2 developers; the third slot stays free for the reviewer (`reserved_for_role`, "the free slot is reserved for reviewer") |
+| 2 developers | an issue in `Agent review` | its reviewer, at the next tick; both developers keep running |
+| nothing | 2 `/plan` issues, 1 issue in `Ready` | 1 planner and 1 developer; the second planner waits, since the 2 other slots are reserved |
+
+A reserved slot that its role does not use is idle capacity; that is the price of the guaranteed parallelism. When the
+reservations take every slot (`max_concurrent_agents: 2` with the example above), roles without a reservation never
+start; the dashboard notes it at the slot settings. When a result leads issues to such a role (the optional
+[test engineer](#the-test-engineer) behind `Testing`), Symphony also logs a warning and lists the problem under
+`limits.slot_problems` and in the dashboard's problem list, since the issues would wait in that column for good.
+
+#### Agent slots set on the dashboard
+
+`max_concurrent_agents`, `max_concurrent_agents_by_state` and `reserved_slots_by_role` can also be changed at runtime, on the dashboard or with
+`PUT /api/v1/settings/agents` (see [Dashboard and API](usage.md#dashboard-and-api)). The value in force comes from the
+first of:
+
+1. the dashboard override (stored as `settings` in the runtime state file under `<logDir>/state/`, so it survives a
+   restart),
+2. `WORKFLOW.md`,
+3. the `${VAR:-default}` fallback inside `WORKFLOW.md` (e.g. `SYMPHONY_MAX_CONCURRENT_AGENTS`, read once at start).
+
+A reload of `WORKFLOW.md` does not overwrite an override; the dashboard then shows both values. Per column, an
+override replaces that column's limit only; the other columns keep theirs; the same holds per role for the
+reservations. **Reset to WORKFLOW.md** (`DELETE /api/v1/settings/agents`) removes the override. The dashboard accepts
+`0`–`50` for the total (`0` pauses new dispatches), `1`–`50` per active column and `0`–`50` reserved slots per role. It
+refuses (`400`) a total or a reservation that would leave fewer slots than reserved; a total of `0` is always allowed. A change applies from the next tick (requested at once); lowering the limit
+below the number of running agents stops none of them, nothing new starts until the count is below the limit. Each
+change writes a `settings_changed` line to the [repository log](#repository-logs) (`source`, old and new values) and an
+info log line. Each Symphony instance has its own override; there is no shared budget across instances.
 
 ### `claude`
 
@@ -319,7 +362,7 @@ that turn boundary with the reason `role changed (<from> → <to>)`, and the nex
 the usual continuation retry (1 s later). A move between columns of the same role (e.g. `Ready` → `In progress`) keeps
 the session. Reconciliation never stops a running session because of a role change, so the agent can finish its
 handoff (e.g. a comment) within the current turn. The run's `run_finished` line records `outcome=handed_off` with
-`role` and `next_role` (see [Repository logs](#repository-logs)).
+`next_role` (every `run_finished` line carries the `role` of the run; see [Repository logs](#repository-logs)).
 
 Each role switch starts a continuation session and therefore counts toward
 [`agent.max_continuations`](#agent). This also caps a developer ↔ reviewer ping-pong: once the limit is reached, the
@@ -344,6 +387,12 @@ roles:
 | `states` | required | Active states the role serves; matched case-insensitively. |
 | `read_only` | `false` | The role's agent must not change the repository. |
 | `may_move_to` | unrestricted | Column names the agent may move the issue to, matched case-insensitively and enforced by the [transition guard](#transition-guard). Free-form; not checked against the board here. Terminal columns are never allowed. |
+| `result` | none | Kind of the stage result the role reports: `analysis`, `design`, `implementation`, `test`, `review`, `security` or `docs` (see [result contracts](#result-driven-transitions)). Setting only this key is enough for a minimal result role. The role hands off with the [`report_result`](results.md#the-report_result-tool) tool and does not get `set_status`. |
+| `on_result` | `{}` | Column per verdict of `result`, or `next` (the next active stage after the role's columns in board order). Needs `result`. See [Result-driven transitions](#result-driven-transitions). |
+| `on_check_failed` | none | Column for an issue whose entry check fails for a role that cannot fix it (a read-only role). When the check of the column a `report_result` leads to fails, the tool records the result anyway, adds a note with the check output to its summary and moves the issue here (through the transition guard, so this column's own entry check applies). Without it the agent gets `check_failed` and nothing is recorded. Ignored for roles that are not `read_only`. |
+| `on_missing_result` | `Blocked` with `result`, else none | Column for a session that ends without a result. Needs `result`. After the first turn without a result the session gets one reminder turn; if the turn limit comes first or the reminder fails too, Symphony re-fetches the issue and, only if it is still in the role's column, posts a plain comment ("Stage ended without a result") and moves it here. An issue someone moved meanwhile is left alone. See [Stages without a result](results.md#stages-without-a-result). |
+| `on_round_limit` | the blocked column | Column for a loop verdict (review `changes_needed`, test `failed`, security `issues_found`) that reaches `pipeline.max_review_rounds` / `max_test_rounds` / `max_security_rounds`. Needs `result: review`, `result: test` or `result: security`. See [Result-driven transitions](#result-driven-transitions). |
+| `model_label` | `apply`; `ignore` for read-only roles with a `result` | `ignore` keeps a `Model:` issue label from changing the role's model. Read here; applied from a later change on. |
 | `max_turns` | `agent.max_turns` | Integer >= 1. |
 | `commands` | none | Issue commands the role serves, e.g. `[refactoring]` (lowercase letters, digits and dashes; a leading `/` is allowed). Without it the role serves issues without a command. See [Issue commands](#issue-commands). |
 | `run_checks` | `true` | `false` lets the role move the issue without running `checks.on_enter`. For roles that change nothing, whose hand-off must not depend on the repository's test suite. |
@@ -353,7 +402,441 @@ roles:
 | `agents` | all | Plugin subagents (`agents/<name>.md` in [`claude.plugins`](#claude), names without the plugin prefix, e.g. `[laravel-code-reviewer]`) the role may start; `[]` allows none. See [Subagents per role](#subagents-per-role). |
 | `claude` | `{}` | Overrides of `model`, `effort`, `allowed_tools`, `disallowed_tools`, `append_system_prompt`, `max_budget_usd` (same meaning as in [`claude`](#claude)). |
 
+#### Result-driven transitions
+
+A role that reports a stage result names the kind in `result` and says where each verdict leads:
+
+```yaml
+roles:
+  reviewer:
+    states: [Agent review]
+    read_only: true
+    result: review
+    may_move_to: [In review, In progress, Blocked]
+    on_result: { approved: In review, changes_needed: In progress, blocked: Blocked }
+    on_round_limit: In review
+    on_check_failed: In progress
+```
+
+- The verdicts of each kind are `analysis`: `ready`, `needs_info`; `design`: `ready`, `split`, `blocked`;
+  `implementation`: `done`, `blocked`; `test`: `passed`, `failed`, `blocked`; `review`: `approved`, `changes_needed`,
+  `blocked`; `security`: `passed`, `issues_found`, `blocked`; `docs`: `done`, `not_needed`, `blocked`. A verdict may be
+  left out. `split` (a design split into [work packages](#work-packages-split)) needs `max_sub_issues` on the role, in
+  `on_result` as in a profile's `on_result`.
+- A target is a column name or `next`. `next` needs the board's column order (tracker kinds that list columns, such as
+  `github_project`) and a later active stage, whose column must be in `may_move_to` when the role sets it; it is
+  checked together with the board preflight.
+- Targets are never terminal columns. Those that name a column are added to `may_move_to` (without duplicates), so the
+  [transition guard](#transition-guard), the board preflight and the dashboard's pipeline view know them. A role
+  without `may_move_to` stays unrestricted, but its targets are still checked against the board.
+
+The target of a result is computed, not chosen by the agent (`resolveTransition` in `src/orchestrator/transitions.ts`,
+used by the [`report_result`](results.md#the-report_result-tool) tool, which a session gets together with the stage
+history at its start). The rules apply in this order:
+
+1. **`blocked`** goes to `on_result.blocked` when it names a column, else to the blocked column: the column every role
+   with `may_move_to` lists besides the active and terminal ones (`Blocked` in the default workflow), else the role's
+   `on_missing_result`.
+2. **Round limit.** A review with `changes_needed`, a test with `failed` or a security review with `issues_found` is
+   round N, where N - 1 is the number of such results since the last reset. When N reaches
+   `pipeline.max_review_rounds` / `max_test_rounds` / `max_security_rounds` (with the defaults: the 3rd
+   `changes_needed`, the 2nd `failed`, the 2nd `issues_found`), the issue goes to `on_round_limit` (else the blocked column)
+   and gets `pipeline.limit_label`. Every other transition removes that label.
+3. **`on_result[verdict]`.** `next` is the first active column after the role's columns in board order whose role is
+   not skipped by the issue's profile and whose stage condition holds. A verdict without a target goes to the blocked
+   column. A reviewer's `approved` that leads out of the active columns (to `In review`) goes to the
+   [security review](#the-security-auditor) first when the issue needs it.
+
+The target is always a column the role may move to; a computed target outside `may_move_to` is refused, never used.
+
+Every misconfiguration is an `invalid_config` error naming the field, e.g.
+`roles.reviewer.on_result.passed: "passed" is not a verdict of result review (allowed: approved, changes_needed, blocked)`
+or `roles.reviewer.on_result.approved must not be a terminal state (got "Done")`.
+
 Invalid configs fail with `invalid_config`, listing every problem: a state outside `tracker.active_states`, a state in more than one role (two roles may share a state only for different commands), an active state without a role that has no `commands` (once `roles` is set), a command that is not a name or an empty `commands` list, `max_sub_issues` outside 1–100, a `sub_issue_status` that is terminal or set without `max_sub_issues`, unknown keys under a role or its `claude` block, and invalid value types. Dispatch validation also fails while a role's command has no skill in [`claude.plugins`](#claude): `roles.auditor.commands: no skill for /refactoring in claude.plugins (expected skills/refactoring/SKILL.md)`, while a role lists a subagent no plugin ships (`roles.reviewer.agents: no subagent … in claude.plugins`), and while a read-only role lists a subagent that can edit files (`roles.reviewer.agents: laravel-filament-developer can edit files, but the role is read-only`). With `roles` set and `agent.max_continuations` unlimited, a warning is logged because role switches will count as continuations.
+
+#### The shipped developer and reviewer
+
+The shipped `WORKFLOW.md` runs its two main roles on this mechanism:
+
+```yaml
+roles:
+  developer:
+    states: [In progress]
+    result: implementation
+    on_result: { done: Agent review, blocked: Blocked }
+  reviewer:
+    states: [Agent review]
+    read_only: true
+    result: review
+    on_result: { approved: In review, changes_needed: In progress, blocked: Blocked }
+    on_check_failed: In progress
+pipeline:
+  max_review_rounds: 3
+```
+
+- Both hand off with [`report_result`](results.md#the-report_result-tool) and have no `set_status`. The developer's
+  summary, the reviewer's findings and the verdict are the result, posted by Symphony as the issue comment; neither
+  prompt asks for a separate summary comment. The developer therefore cannot move an issue itself: it stays in its
+  column until the result moves it.
+- The reviewer prompt no longer counts review comments. Symphony counts the rounds: the third `changes_needed` goes to
+  the blocked column (`Blocked`) with the `needs-human` label instead of back to the developer (set
+  `roles.reviewer.on_round_limit` to choose another column). A human moving the issue back to an active column resets the
+  rounds.
+- The open findings of the latest review reach the developer through the prompt variable `results.open_findings`
+  (and the reviewer sees the findings it asked to fix), see [Prompt template](#prompt-template).
+- If the entry check of the approved target (`In review`) fails, the reviewer cannot repair the code: the result is
+  recorded, the check output is appended to its summary and the issue goes back to `In progress` (`on_check_failed`).
+
+Merging a change to these keys changes the running instance at once (live reload), so merge by hand when no issue is
+active.
+
+#### The issue analyst
+
+Before anything is implemented, the shipped `WORKFLOW.md` serves every issue in `Ready` with a read-only issue analyst
+(the role is named `issue-analyst`: `analyst` is the role of the `/concept` command). The developer serves only
+`In progress`.
+
+```yaml
+roles:
+  issue-analyst:
+    states: [Ready]
+    read_only: true
+    max_turns: 3
+    result: analysis
+    on_result: { ready: next, needs_info: Blocked }
+    may_move_to: [Design, In progress, Blocked]
+    model_label: ignore               # sonnet, whatever the issue's Model: label picks for the developer
+    agents: [laravel-architect]
+    claude: { model: sonnet }
+```
+
+- The analyst reads the project instructions and the code and reports an [`analysis` result](results.md#kinds):
+  requirements in the summary, `components`, refined `acceptance_criteria`, `risks`, `docs_needed`, the `plan`, and a
+  `type` and `complexity`. `ready` moves the issue on (`next`: `Design` for a larger change, else `In progress`; see
+  [The architect](#the-architect)); `needs_info`
+  needs at least one open question, moves the issue to `Blocked` and shows the questions in the comment. A human answers
+  in a comment and moves the issue back to `Ready`; the analyst then runs again.
+- **Labels.** Right before the status change, `report_result` sets the issue's `Type:` and `Complexity:` labels from the
+  analysis where it has none (see [Labels from the analysis](results.md#labels-from-the-analysis)). A label a human set
+  always wins, and an alias such as `bug` or `feature` counts as a type label.
+- **Input for later stages.** The architect, the developer, the test engineer and the reviewer get the newest analysis in
+  their prompt (`results.analysis`, see [Prompt template](#prompt-template)).
+- **Cost.** The analyst runs for every issue in `Ready`. `pipeline.analysis: when_unlabeled` skips it, without a
+  session, for issues that already carry a `Type:` and a `Complexity:` label (see
+  [Skipping stages without a session](#skipping-stages-without-a-session)).
+- **Slots.** The analyst has no reserved slot, so it needs a slot beyond the ones kept for the developer and the reviewer:
+  the shipped `agent.max_concurrent_agents` is 3. With 2 slots no issue in `Ready` would start; the dashboard and the log
+  name the stage that never starts.
+
+#### The architect
+
+Larger features and refactorings get an explicit architecture decision before the implementation. The shipped
+`WORKFLOW.md` has a `Design` column between `Ready` and `In progress` and a read-only `architect` role for it. Small
+issues skip the column without a session, so a bugfix of complexity `S` costs nothing extra.
+
+```yaml
+roles:
+  architect:
+    states: [Design]
+    read_only: true
+    run_checks: false                 # nothing changes: no entry check before Agent review for a split issue
+    max_sub_issues: ${SYMPHONY_ARCHITECT_MAX_SUB_ISSUES:-5}
+    sub_issue_status: Ready           # the work packages start without a human
+    max_turns: 4
+    result: design
+    on_result: { ready: In progress, split: Agent review, blocked: Blocked }
+    may_move_to: [In progress, Agent review, Blocked]
+    model_label: ignore               # opus, whatever the issue's Model: label picks for the developer
+    agents: [laravel-architect]
+    claude: { model: opus }
+```
+
+- The architect reads the code and reports a [`design` result](results.md#kinds): the `options` it compared, the
+  `decision`, the `components` and `interfaces` of the change, `migrations` and `compatibility`. `ready` needs a decision
+  and at least one component and one interface (`report_result` refuses a generic design with `invalid_result`);
+  `blocked` needs a blocker and moves the issue to `Blocked`. It may start the `laravel-architect` subagent.
+- **The developer implements the design.** `ready` moves the issue to `In progress`, and the developer's prompt contains
+  the newest design (`results.design`, see [Prompt template](#prompt-template)). Where the design does not fit the code,
+  the developer deviates and says so in `plan_deviations`.
+- **When it runs.** The condition is `skip_when` in the [workflow profile](#workflow-profiles): the shipped
+  `WORKFLOW.md` skips the architect for features, refactors and untyped issues of complexity `S` (they run it from `M`),
+  and for bugfixes of complexity `S` and `M` (only `L` and `XL` run it). The complexity is the issue's `Complexity:`
+  label, which the issue analyst sets.
+- **No usable complexity label: the stage runs.** An issue without a `Complexity:` label, with an unknown value or with
+  conflicting labels cannot be judged small, so `skip_when` never matches and the architect runs.
+- **Board and entry checks.** The `Design` column must exist on the board, in order between `Ready` and `In progress`,
+  and be an active state. A skipped stage moves the issue without a workspace, so neither `Design` nor the column after it
+  (`In progress`) may have a `checks.on_enter` script; the dispatch preflight reports a configuration that does
+  (`pipeline.profiles.feature.skip_when.architect: skipping architect moves issues from "Design" to … without a
+  workspace, but checks.on_enter has a script for …`).
+- **Slots.** Like the analyst, the architect has no reserved slot and needs one beyond the ones kept for the developer
+  and the reviewer; a skipped stage needs none.
+- **Work packages.** An issue of complexity `XL` may be split instead of designed for one developer, see below. For
+  every other issue `work_packages` stays optional and `split` is refused.
+
+##### Work packages (`split`)
+
+A very large change can be split into work packages that run in parallel, each as a sub-issue with its own pipeline,
+workspace, branch and pull request. The architect decides; Symphony enforces when it may and routes the issue:
+
+- **When.** Only for an issue of complexity `XL` (its `Complexity:` label) that is not a sub-issue itself, and only from
+  a role with `max_sub_issues`. `report_result` refuses `split` with `invalid_result` otherwise (also with fewer than
+  two `work_packages`, or more than `max_sub_issues`), so small and medium issues keep the normal flow and a work
+  package is never split again. A role that reports a `design` gets `create_sub_issue` only on such an issue: on any
+  other one, a work package included, the tool is not offered and the session has no sub-issue limit, so its
+  `max_sub_issues` cannot be used to file sub-issues next to a `ready` design. The shipped architect prompt mentions
+  `split` and `create_sub_issue` only where they apply.
+- **How.** The architect lists the packages in `work_packages` (implementation order) and files one sub-issue per
+  package with `create_sub_issue` in that order: a body that stands on its own (goal, the part of the design, the
+  acceptance criteria it covers, "Part of #N"), a `Type:` and a `Complexity:` label of its own size (plus `security`
+  where the parent is security-relevant and the package touches that risk), and `blocked_by` for a package that builds
+  on another one. `split` needs a decision, components and interfaces like `ready`, and
+  `report_result` refuses it while the issue has fewer sub-issues than `work_packages` (read fresh from the tracker).
+  A title that exists is returned instead of created twice, so an interrupted architect files only the missing ones.
+- **The packages.** `sub_issue_status: Ready` puts them where the issue analyst picks them up right away; each one runs
+  the normal pipeline and is closed when its pull request is merged. A package with `blocked_by` waits for the packages
+  it builds on. A pull request that conflicts with the base branch after another package was merged goes back through
+  [`auto_merge.on_conflict`](adapters/github-project.md#auto-merge) to its developer, like any other.
+- **The parent waits.** `on_result.split` sends the issue to the reviewer's column (`Agent review`) past the developer,
+  the test engineer and the documentation stage; the pipeline view shows those stages as skipped (each package documents
+  its own change). While any sub-issue is open the issue is not
+  dispatchable (`respect_sub_issues`): no session, not even with *Start now*, and the queue and `npm run dry-run` show
+  `waiting for sub-issues …`. The architect's own session is not stopped by the sub-issues it opens: a running session
+  of a role that may create sub-issues on its issue goes on while only open sub-issues hold it back (in practice the
+  work packages it filed; one a human adds counts the same), until it reports.
+  `run_checks: false` keeps the move into `Agent review` free of an entry check, since nothing changed.
+- **Integration review.** Once the last sub-issue is closed (also as not planned), the reviewer runs in integration
+  mode: the shipped prompt switches when the issue has sub-issues and no implementation of its own
+  (`results.implementation` is `null`). It lists every package with its state and `state_reason`, reviews the commits
+  the packages brought into the base branch (from the design's `head_sha`) against the issue's acceptance criteria and
+  reports a normal `review` result. The workspace sits at the tip of `origin/<base>` (the shipped `before_run` hook
+  fast-forwards a workspace that is still on the base branch), so the entry check of `In review` runs on the
+  integrated base branch. A package closed as not planned did not deliver its part: the prompt asks for a `major`
+  finding where a criterion still needs it.
+- **Outcome.** The review transitions route it: `approved` goes to `In review` after the entry check, or first to the
+  [security auditor](#the-security-auditor) when the parent needs the audit (see below); `changes_needed` goes to
+  `In progress`, where the issue's own developer fixes the findings on the issue's branch with its own pull request
+  (the developer prompt says the packages are merged and only the findings are left); that pull request then takes the
+  normal path of the issue's profile and gets a normal review. The round limit applies as usual.
+- **Security review.** An approved integration review is checked for the security triggers like any approval: the
+  parent's `security` label, `risks.security` in its analysis, or a file matching `pipeline.security_paths` among the
+  files the packages changed. The parent has no branch of its own and its workspace is at the tip of the base branch,
+  so these files are measured from the commit the design was made at (the `head_sha` of the `split` result), not from
+  the base branch; without that commit the audit is needed, to be safe. The security auditor then runs in integration
+  mode (same switch as the reviewer): it lists the packages, audits `git diff <design head>..origin/<base>` on the base
+  checkout, and looks for what only shows across packages. `passed` goes to `In review`; `issues_found` goes to the
+  parent's own developer like `changes_needed`, and the fix pull request then gets a normal review and a normal
+  security review. Each package's pull request went through the security decision on its own as well.
+
+Why this and not an integration-engineer role: see
+[Work packages instead of an integration engineer](concepts/multi-agent.md#work-packages-instead-of-an-integration-engineer).
+
+#### The test engineer
+
+The shipped `WORKFLOW.md` also defines an independent test engineer: a role in its own column that writes and runs tests
+for every acceptance criterion, so the tests do not come from the agent that wrote the code. It changes no production
+code, and a failing test sends the issue back to the developer. Bug, feature and refactor issues always pass through it
+(the shipped `bugfix`, `feature` and `refactor` [profiles](#workflow-profiles)); other issues only when the stage is
+switched on for all of them.
+
+```yaml
+roles:
+  test-engineer:
+    states: [Testing]
+    result: test
+    on_result: { passed: Agent review, failed: In progress, blocked: Blocked }
+    may_move_to: [Agent review, In progress, Blocked]
+    model_label: ignore               # sonnet, whatever the issue's Model: label picks for the developer
+    agents: [laravel-test-engineer]
+    claude: { model: sonnet }
+pipeline:
+  max_test_rounds: 2
+  # test_paths: [tests/**, test/**, "**/*.test.*", "**/*Test.php"]
+checks:
+  on_enter:
+    Testing: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
+```
+
+- **On for bug, feature and refactor issues, off by default for the rest.** The shipped
+  `pipeline.profiles.{bugfix,feature,refactor}.on_result` send the developer's `done` of a bug, feature or refactor issue
+  to `Testing`. For every other issue the developer's `done` leads to `Agent review`
+  unless `SYMPHONY_AFTER_IMPLEMENTATION=Testing` (the shipped `on_result.done` reads it, `.env.example` documents it).
+  To run bug issues without the stage, set `pipeline.profiles.bugfix.on_result.developer.done: Agent review` (likewise
+  for `feature` and `refactor`). The flow is `In progress → [checks] → Testing →
+  [checks] → Agent review → [checks] → In review`. `Testing` is always one of `tracker.active_states`, so the board
+  needs the column (the [board preflight](#tracker) reports it as `unknown board column "Testing"`); put it between
+  `In progress` and `Agent review`, because `next` and the pipeline view of the dashboard follow the board's order.
+  While the stage is off, the pipeline view leaves it out: a stage served by a role with `result` shows only when the
+  flow leads to its column, when the first stage serves it, or when the issue sits in it. The flow leads to a column
+  through the `on_result`, `on_check_failed`, `on_missing_result` and `on_round_limit` targets of the roles and of the
+  issue's profile, through `next`, and through the moves of roles that hand off with `set_status` instead of a result
+  (their `may_move_to` columns, or every active column without that list; the same goes for an active column no role
+  serves). A project whose developer has no `result` therefore keeps its test stage once the developer may move issues
+  to `Testing`. So an issue never shows a test stage as done that did not run, and the order of the `Testing` column on
+  the board does not matter until a profile or the setting leads to the stage.
+- **Slots.** The test engineer is a third role next to the developer and the reviewer, whose slots
+  `agent.reserved_slots_by_role` keeps free. Like the other roles it only gets slots beyond those, so allow at least
+  3 agent slots (`SYMPHONY_MAX_CONCURRENT_AGENTS`) when the stage is on, or the test engineer never starts; the
+  dashboard, the log and `limits.slot_problems` of the API report it when it happens. With exactly 3 slots the test
+  engineer and the issue analyst share the one free slot, so allow 4 to run them side by side.
+  `agent.max_concurrent_agents_by_state.Testing` is 1 in the shipped file: one test run at a time.
+- **Verdicts.** `passed` leads to `Agent review`, `failed` to `In progress` (the developer), `blocked` to `Blocked`
+  (see [result contracts](results.md#kinds): `cases[]`, `commands[]`, `uncovered_criteria[]`). A session that ends without
+  a result goes to `on_missing_result` (`Blocked`).
+- **Entry checks.** `checks.on_enter.Testing` is optional: with it the developer has to hand over green code (lint,
+  static analysis, tests). `Agent review` keeps its own check, which then runs against the commit with the new tests.
+  The role is not `read_only`, so `on_check_failed` does not apply: a failing check of `Agent review` goes back to the
+  test engineer like it goes back to the developer, who fixes the tests or reports `failed`.
+- **Only tests.** `pipeline.test_paths` (default `tests/**`, `test/**`, `**/*.test.*`, `**/*Test.php`; see
+  [`pipeline`](#pipeline)) lists the only files the test engineer may change. When the engineer calls `report_result`,
+  Symphony lists what differs from a baseline commit (commits since, uncommitted and untracked files, deletions and both
+  ends of a renamed file; ignored files do not count) and refuses the result with `invalid_result` if a file matches
+  none of the globs: the message names the offending files and the baseline, nothing is recorded and the entry check of
+  the target column does not run. Whatever the verdict, the engineer has to undo the changes it made itself
+  (`git checkout <baseline> -- <file>`, commit) and report again; a file it did not change (a commit already on the
+  branch, a push by someone else) it leaves alone and describes in an issue comment. If git cannot tell, or the
+  workspace is no git checkout, the call fails with `tool_error` and nothing is recorded: the rule is never skipped.
+  The baseline is the commit the developer's newest finished `implementation` result recorded (`head_sha`), as long as
+  `HEAD` descends from it when the engineer reports: it does not matter whether the workspace started on the base
+  branch, and a later session of the stage (after a `check_timeout`, say) cannot forgive what an earlier one changed.
+  Without such a result, or when it is no ancestor of `HEAD` (the branch was rebased), the baseline is the commit the
+  session started from. A commit someone else pushes to the branch after the developer's hand-off counts as the
+  engineer's, so the result is refused until a human sorts it out.
+- **Failed cases reach the developer.** After a `failed` result the prompt of the developer lists the failed cases
+  (`results.failed_cases`), the test engineer's summary and the commands it ran (`results.test`, see
+  [Prompt template](#prompt-template)); the test engineer sees the same list in the next round and runs those cases
+  first.
+- **Round limit.** `pipeline.max_test_rounds` (default 2, overridable per profile) counts `failed` results since the last
+  reset. The failed result of the last allowed round goes to `on_round_limit` (default: the blocked column, `Blocked`)
+  and gets the `needs-human` label (`pipeline.limit_label`) instead of going back to the developer. A human moving the
+  issue back to an active column resets the rounds.
+- **Skipping.** A [profile](#workflow-profiles) can list `test-engineer` in `skip` only when the column its issues go
+  to next has no `checks.on_enter` script: a skipped stage moves the issue without a workspace and so cannot run one
+  ([Skipping stages](#skipping-stages-without-a-session)). With the shipped `Agent review` check the preflight rejects
+  such a profile. A board without a test stage still needs the `Testing` column (it is an active state, `skip` only
+  changes `next`); switch the stage off by overriding the developer's `done` in the profile (see above) or for the
+  whole instance.
+
+#### The security auditor
+
+The shipped `WORKFLOW.md` has a read-only `security-auditor` role in the `Security review` column. It audits the diff
+for authorization, injection, mass assignment and leaked secrets before a human reviews the pull request. It is
+conditional: only issues that need it are sent there, all others go from the reviewer straight to `In review` without
+a session.
+
+```yaml
+tracker:
+  active_states: [Ready, Design, In progress, Testing, Agent review, Security review]
+roles:
+  reviewer:
+    on_result: { approved: In review, changes_needed: In progress, blocked: Blocked }
+    may_move_to: [Security review, In review, In progress, Blocked]   # approved goes to Security review when needed
+  security-auditor:
+    states: [Security review]
+    read_only: true
+    max_turns: 6
+    result: security
+    on_result: { passed: In review, issues_found: In progress, blocked: Blocked }
+    on_check_failed: In progress
+    may_move_to: [In review, In progress, Blocked]
+    model_label: ignore
+    agents: [laravel-code-reviewer]
+    claude: { model: opus }
+pipeline:
+  max_security_rounds: 2
+  # security_paths: [app/Policies/**, app/Http/Middleware/**, config/auth.php, routes/**, database/migrations/**]
+```
+
+- **When it runs.** When the reviewer reports `approved`, `report_result` decides, before it routes the result. The
+  security review is needed when **any** of these holds: the issue carries the label `security` (trimmed and compared
+  case-insensitively; `area:security` or `Security: high` are other labels and do not count); the newest analysis since
+  the last reset flags `risks.security`; or at least one file the branch changes matches `pipeline.security_paths`.
+  When none holds, the issue goes to `In review` as `on_result.approved` says, and the transition `reason` in the tool
+  result says why (`security review not needed: no trigger (…)`); the pipeline view of the dashboard shows the stage as
+  skipped, because no session ran there. When a trigger holds, the `reason` names it (`security review needed: 2 changed
+  file(s) match pipeline.security_paths: app/Policies/PostPolicy.php, …`).
+- **The files of the branch.** Symphony runs git in the workspace (each call bounded by a 15 s timeout) against the merge
+  base of `HEAD` and the base branch, `origin/<base_branch>` (`tracker.provider.base_branch`), else `origin/HEAD`: commits
+  since the branch left the base, uncommitted changes and untracked files (ignored files do not count; a rename counts as
+  the deletion of the old and the addition of the new path). It is the whole branch, not just the changes since the last
+  hand-off. If git cannot tell (no git checkout, the base ref is unknown, a git error or timeout), the review is **needed**:
+  a failure never skips the audit silently, and the `reason` says that the changed files could not be determined. The
+  integration review of an issue split into [work packages](#work-packages-split) has no branch: its files are measured
+  from the commit the `split` design was made at, and the auditor audits the merged packages in an integration mode.
+- **`pipeline.security_paths`** defaults to the places of a Laravel app where authorization, authentication and the schema
+  live: `app/Policies/**`, `app/Http/Middleware/**`, `config/auth.php`, `routes/**`, `database/migrations/**` (see
+  [Path globs](#path-globs)). An explicit list replaces the defaults; `[]` turns the path trigger off, the `security`
+  label and the analysis risk still apply. Path globs miss things, which is why the label and the analysis risk are
+  additional triggers; outside Laravel set the list for the project's layout.
+- **Verdicts.** `passed` leads to `In review` (the entry check of that column runs, and `on_check_failed` sends a failing
+  one back to the developer, like for the reviewer), `issues_found` to `In progress` (the developer) with the findings
+  in the prompt (`results.security_findings`, see [Prompt template](#prompt-template)), `blocked` to `Blocked`. The result
+  has `findings` like a review: `passed` allows only `minor` and `nit` findings, `issues_found` needs at least one
+  ([result contracts](results.md#kinds)). A session that ends without a result goes to `on_missing_result` (`Blocked`).
+- **After `issues_found`** the developer fixes the findings and hands over again; the reviewer reviews the fix, and when
+  it approves, the security check is evaluated again on the new diff.
+- **Round limit.** `pipeline.max_security_rounds` (default 2, at least 1; no profile override) counts `issues_found`
+  results since the last reset. The last allowed round goes to `on_round_limit` (default: the blocked column) with the
+  `needs-human` label (`pipeline.limit_label`) instead of back to the developer. A human moving the issue back to an
+  active column resets the counter; every other transition removes the label.
+- **Board.** `Security review` is one of `tracker.active_states`, so the board needs the column between `Agent review`
+  and `In review` (the [board preflight](#tracker) reports a missing one as `unknown board column "Security review"`),
+  and `roles.reviewer.may_move_to` must list it (the preflight says so otherwise).
+- **Skipping and removing.** A [profile](#workflow-profiles) can list `security-auditor` in `skip`: the stage never runs
+  for those issues, whatever the triggers say. To remove the stage for the whole instance, delete the role, the column from
+  `active_states` and `Security review` from the reviewer's `may_move_to`. A human who moves an issue to `Security review`
+  by hand always gets a session (the conditions only decide the reviewer's hand-off).
+- **Slots.** Like the other additional roles, the auditor only gets slots beyond those of `agent.reserved_slots_by_role`;
+  `agent.max_concurrent_agents_by_state."Security review"` is 1 in the shipped file.
+
+#### The documentation stage
+
+The shipped `WORKFLOW.md` has a `docs` role in the `Documentation` column, served by a cheap model (`haiku`). It updates
+the documentation before the review, so the reviewer checks it together with the code. It is conditional: only issues
+that need it are sent there, all others go straight to `Agent review` without a session.
+
+```yaml
+tracker:
+  active_states: [Ready, Design, In progress, Testing, Documentation, Agent review, Security review]
+roles:
+  developer:
+    may_move_to: [In progress, Testing, Documentation, Agent review, Blocked]   # done goes to Documentation when needed
+  test-engineer:
+    may_move_to: [Documentation, Agent review, In progress, Blocked]            # passed goes to Documentation when needed
+  docs:
+    states: [Documentation]
+    result: docs
+    on_result: { done: Agent review, not_needed: Agent review, blocked: Blocked }
+    may_move_to: [Agent review, Blocked]
+    model_label: ignore
+    claude: { model: haiku }
+pipeline:
+  # docs_paths: [docs/**, "README*.md", "CHANGELOG*.md"]
+  # docs_trigger_paths: [.env.example, "config/**", WORKFLOW.md]
+```
+
+- **When it runs.** When the developer reports `done` (or the test engineer `passed`) and the target is the reviewer,
+  `report_result` decides, before it routes the result. The stage is needed when **either** holds: the newest analysis
+  since the last reset says `docs_needed`; or at least one file the branch changes matches `pipeline.docs_trigger_paths`
+  while **no** changed file matches `pipeline.docs_paths` (the documentation was already written). Otherwise the issue
+  goes to `Agent review` as `on_result` says, and the transition `reason` says why (`documentation not needed: no trigger
+  (…)`); the pipeline view shows the stage as skipped. With the Testing stage on, the decision is taken when the test
+  engineer reports `passed` (the developer's hand-off to `Testing` is not routed to `Documentation`).
+- **The files of the branch** are determined like for the [security review](#the-security-auditor) (merge base against
+  `origin/<base_branch>`, else `origin/HEAD`). If git cannot tell, the stage is **needed**: a failure never skips it
+  silently.
+- **Path rule.** The docs agent may only change files matching `pipeline.docs_paths`. `report_result` compares the
+  files that differ from the last hand-off of the developer or test engineer and refuses a result that comes with other
+  files with `invalid_result`, naming them; nothing is recorded. The prompt lists the paths as `docs_paths`.
+- **Verdicts.** `done` (with the changed `files`) and `not_needed` lead to `Agent review`, `blocked` to `Blocked`.
+- **Haiku.** Haiku has no auto mode; `claude.by_model.haiku` in the shipped file holds the permission settings it needs.
+- **Board.** `Documentation` is one of `tracker.active_states`, so the board needs the column between `Testing` and
+  `Agent review`, and the `may_move_to` of the developer and the test engineer must list it (the preflight says so
+  otherwise). A board without the column and role keeps its flow unchanged.
+- **Skipping and removing.** A [profile](#workflow-profiles) can list `docs` in `skip`. To remove the stage for the
+  whole instance, delete the role, the column from `active_states` and `Documentation` from the `may_move_to` of the
+  developer and the test engineer. A human who moves an issue to `Documentation` by hand always gets a session.
 
 #### Issue commands
 
@@ -474,20 +957,139 @@ log line (`effort`, plus `effort_label` when a label picked it), in the `run_dis
 `run_started`, `run_finished` and `model_usage` in the repository log (`default` when none is configured), which the
 statistics page breaks down by effort. `npm run repo-init` creates the five standard labels `Effort: low` … `Effort: max`.
 
+### `pipeline`
+
+Optional. Limits and classification for the result-driven [roles](#result-driven-transitions); every key has a default,
+so the section can be left out. `test_paths` limits what the [test engineer](#the-test-engineer) may change,
+`security_paths` is one of the triggers of the [security review](#the-security-auditor); `docs_paths` limits what the
+[docs agent](#the-documentation-stage) may change and `docs_trigger_paths` is one of its triggers. `$NAME` references work
+like everywhere else (an unset variable counts as omitted). Unknown keys are ignored with a warning.
+
+| Key | Default | Notes |
+|---|---|---|
+| `max_review_rounds` | `3` | Integer >= 1. Review rounds before the issue goes to a human. |
+| `max_test_rounds` | `2` | Integer >= 1. Test rounds before the issue goes to a human. |
+| `max_security_rounds` | `2` | Integer >= 1. Security review rounds (`issues_found` → developer fixes) before the issue goes to a human. |
+| `limit_label` | `needs-human` | Label for an issue that hit a round limit. |
+| `type_labels` | `{}` | Map of issue label → change type, e.g. `{ bug: bug, enhancement: feature }` (labels are matched case-insensitively). |
+| `default_type` | `feature` | Type of an issue without a label in `type_labels`. |
+| `analysis` | `always` | `always` or `when_unlabeled`. With `when_unlabeled`, the analysis stage (the role whose `result` is `analysis`) is [skipped without a session](#skipping-stages-without-a-session) for issues that already carry a `Type:` and a `Complexity:` label. Needs a role with `result: analysis`. |
+| `profiles` | `{}` | [Workflow profiles](#workflow-profiles) per issue type. |
+| `test_paths` | `tests/**`, `test/**`, `**/*.test.*`, `**/*Test.php` | [Path globs](#path-globs) for test files: all that a role with `result: test` (the [test engineer](#the-test-engineer)) may change. An explicit list replaces the default; `[]` allows no file at all. |
+| `security_paths` | `app/Policies/**`, `app/Http/Middleware/**`, `config/auth.php`, `routes/**`, `database/migrations/**` | [Path globs](#path-globs) for security-relevant files: a changed file that matches sends the reviewer's approval to the [security review](#the-security-auditor). An explicit list replaces the defaults; `[]` turns the path trigger off. |
+| `docs_paths` | `docs/**`, `README*.md`, `CHANGELOG*.md` | [Path globs](#path-globs) for documentation files: all that a role with `result: docs` (the [docs agent](#the-documentation-stage)) may change, and a changed file that matches means the documentation was already written. An explicit list replaces the default; `[]` allows no file at all. |
+| `docs_trigger_paths` | `.env.example`, `config/**`, `WORKFLOW.md` | [Path globs](#path-globs) for files that need documenting: a changed file that matches, with no change in `docs_paths`, sends the hand-off to the [documentation stage](#the-documentation-stage). An explicit list replaces the defaults; `[]` turns the path trigger off. |
+
+#### Path globs
+
+The `*_paths` lists take globs that match repository-relative paths with `/` separators, in the whole path and
+case-sensitively: `*` any characters except `/`, `?` one such character, `**` anything including `/` (`**/` also matches
+no directory, so `**/*.test.*` matches `a.test.ts` and `src/a.test.ts`), `{a,b}` one of the alternatives (not nested).
+Everything else is literal, including a leading dot (`tests/**` matches `tests/.env.testing`). A glob must not be empty,
+absolute or contain `..` segments, and braces must be balanced; otherwise the config fails with `invalid_config`, e.g.
+`pipeline.test_paths[1] "/abs/**" must be relative to the repository root, without a leading "/"`.
+
+#### Workflow profiles
+
+Bugfix, feature and refactor issues can follow different stage sequences with the same roles: a profile, chosen by the
+issue's type, skips stages and overrides transitions. The type comes from the issue labels (`Type: bugfix`, or the
+aliases `bug`, `feature`, `enhancement`, `refactor`, `refactoring`).
+
+```yaml
+pipeline:
+  profiles:
+    bugfix:
+      skip: [test-engineer]          # roles whose stages `next` passes over
+      skip_when:                     # roles whose stages are passed over only for some issues
+        architect: { complexity: [S, M] }
+      max_review_rounds: 2           # optional, overrides pipeline.max_review_rounds
+    refactor:
+      on_result:                     # overrides roles.<role>.on_result for this profile
+        reviewer: { changes_needed: Blocked }
+    default:                         # issues without a type, and types without a profile of their own
+      skip: [security]
+```
+
+- The profile names are the issue types `bugfix`, `feature`, `refactor` and `default`. An issue gets the profile of its
+  type, else `default`, else none (the roles' own transitions). An unknown profile name or key is an error.
+- `skip` lists role names; an unknown role is an error. `next` passes over the stages of these roles when it computes
+  the target ([rule 3](#result-driven-transitions)), and the pipeline view of the dashboard and the API shows them as
+  `skipped` (unless a session already ran there). An issue that arrives in a skipped column is passed on without a
+  session, see [Skipping stages without a session](#skipping-stages-without-a-session).
+- `skip_when` skips a stage only for some issues. The vocabulary is fixed: a map of a role name to a condition, and the
+  only condition is `complexity`, a list of `S`, `M`, `L` and `XL` (`skip_when: { architect: { complexity: [S] } }`).
+  The stage is skipped for an issue whose `Complexity:` label is in the list, in every place a `skip` is: `next`, the
+  dispatch skip, the preflight and the pipeline view. An issue without a usable complexity label (none, an unknown
+  value, conflicting labels) never matches, so the stage runs. An unknown role, condition or complexity value is an error
+  (`pipeline.profiles.bugfix.skip_when.architect.complexity: unknown value "XXL" (allowed: S, M, L, XL)`).
+- `on_result` maps a role name and a verdict of its result kind to a column or `next`, replacing the role's own target for
+  that verdict. The same rules as for `roles.<role>.on_result` apply (no terminal column, a column in the role's
+  `may_move_to` when it sets one, a role with a `result`).
+- `max_review_rounds` and `max_test_rounds` (integers >= 1) override the section's limits for this profile.
+- The board preflight checks `next` for every profile too: a profile that skips every later stage of a role is reported
+  as `roles.<role>.on_result.<verdict>: "next" has no later active stage … (profile bugfix)`.
+- The prompt sees the name as `issue.profile` (`null` when no profile applies), e.g.
+  `{% if issue.profile == "bugfix" %}Reproduce the bug with a failing test first.{% endif %}`.
+
+The shipped `WORKFLOW.md` defines these flows. Every profile has the same roles; the differences are the transitions
+(`on_result`, `skip_when`) and the profile-specific steps in the role prompts, which switch on `issue.type`:
+
+| Profile | Flow | Prompt steps |
+|---|---|---|
+| `bugfix` | `Ready` → `Design` (only `L`, `XL`) → `In progress` → `Testing` → `Agent review` → `In review` | developer: regression test first |
+| `feature` | `Ready` → `Design` (not `S`) → `In progress` → `Testing` → `Agent review` → `In review` | developer: implement the design and the acceptance criteria, a test for every criterion; reviewer: checks the change against the design and every criterion |
+| `refactor` | as `feature` | developer: load `symphony:refactor-safely` (not twice when the issue starts with `/refactor-safely`), characterization tests first, no behaviour change; test engineer: characterization tests green on the base commit and on HEAD, `failed` if behaviour differs; reviewer: public interfaces and existing tests unchanged, confirms each refactoring goal; analyst: fills `refactoring_goals` |
+| `default`, untyped | `Ready` → `Design` (not `S`) → `In progress` → `Agent review` → `In review` | none |
+
+- **Refactoring goals.** The analyst of a refactor issue lists what the refactoring has to achieve in the analysis
+  result's `refactoring_goals`; the prompts of the later stages print them. The review of a refactor issue with goals
+  can only be `approved` when `confirmed_goals` contains every goal ([consistency rules](results.md#consistency-rules));
+  an incomplete approval is refused with `invalid_result`, naming the missing goals.
+- **Characterization tests.** The developer commits them first, as the `refactor-safely` skill describes. The test engineer
+  runs after the developer, so it verifies and extends them against the base commit instead of writing them before the
+  change.
+
+#### Skipping stages without a session
+
+A stage that the issue's profile or a condition leaves out costs nothing: when the issue is due to be dispatched, Symphony
+does not start an agent but moves it on. The stage is skipped when
+
+- the role is in the `skip` list of the issue's [profile](#workflow-profiles), or in its `skip_when` with the issue's
+  complexity (the architect of a small issue, see [The architect](#the-architect)), or
+- the role is the analysis stage, `pipeline.analysis` is `when_unlabeled` and the issue has a `Type:` and a
+  `Complexity:` label (the aliases `bug`, `enhancement`, … count; conflicting or unknown labels count as unset).
+
+Symphony then posts a `skipped` [result](results.md) as an issue comment (hidden marker, `meta.target` = the new column,
+no run), moves the issue to the first active column after its own in board order whose stage is needed, and logs
+`stage_skipped` in the issue's timeline. The next stage starts with the next poll; consecutive skipped stages are passed
+one poll at a time. For example, with an analyst in `Ready` and `pipeline.analysis: when_unlabeled`, a `Type: bugfix`,
+`Complexity: S` issue goes from `Ready` to `In progress` without an analyst session.
+
+- **No entry checks.** The move has no workspace, so it cannot run `checks.on_enter`. The dispatch preflight therefore
+  reports (a `skip_when` condition counts, because it may skip the stage) a configuration where a skip would lead into a column with a script (`pipeline.profiles.bugfix.skip: skipping
+  developer moves issues from "In progress" to "Agent review" without a workspace, but checks.on_enter has a script for
+  "Agent review"`), and dispatch stops until it is fixed.
+- **When nothing is skipped.** The stage runs as usual if the tracker does not list its columns (the board order is
+  needed), no needed stage follows (a skipped role in the last active column still runs), or the posting or the move fails (the next poll decides again; a comment that was already posted is not posted twice). Only fresh dispatches
+  are skipped: **Start now** (`/force`), retries and continuations of a stage always start a session.
+- Conditions based on changed files are not part of this.
+
 ### `server`
 
 | Key | Default | Notes |
 |---|---|---|
 | `port` | none | Starts the dashboard and JSON API. `0` picks a free port. `--port` overrides it. Restart to change it. |
 | `host` | `127.0.0.1` | Bind address; the shipped `WORKFLOW.md` reads it from `SYMPHONY_HOST`. On a loopback address (`127.0.0.1`, `::1`, `localhost`), requests with another `Host` header are rejected. Any other address (e.g. `0.0.0.0` in a container) logs a warning at startup: Symphony has no login of its own, so put a reverse proxy with authentication (BasicAuth, forward auth) in front. Restart to change it. |
-| `allow_remote_control` | `false` | Allows restarting waiting or paused workers (`POST /api/v1/<identifier>/retry`, **Retry now** / **Resume now**) when `host` is not a loopback address; the shipped `WORKFLOW.md` reads it from `SYMPHONY_ALLOW_REMOTE_CONTROL`. On such a bind every restart request must carry an `Origin` header that matches its `Host` (CSRF guard, since the browser sends the proxy's credentials with every request); without it the API answers `403 forbidden_origin`. Has no effect on a loopback bind, where restart is always allowed. Only enable it behind an authenticating proxy. Restart to change it. |
+| `allow_remote_control` | `false` | Allows the control routes (restart with `POST /api/v1/<identifier>/retry`, **Retry now** / **Resume now**; **Start now** with `/force`; pause and resume of issues and models, `/pause`, `/resume`, `/models/<model>/hold` and `/release`; agent slots with `PUT` / `DELETE /api/v1/settings/agents`) when `host` is not a loopback address; the shipped `WORKFLOW.md` reads it from `SYMPHONY_ALLOW_REMOTE_CONTROL`. On such a bind every restart request must carry an `Origin` header that matches its `Host` (CSRF guard, since the browser sends the proxy's credentials with every request); without it the API answers `403 forbidden_origin`. Has no effect on a loopback bind, where restart is always allowed. Only enable it behind an authenticating proxy. Restart to change it. |
 
 ## Complete example: roles, checks and Laravel
 
 The shipped `WORKFLOW.md`, shortened to the parts that make up the developer → checks → reviewer → human flow
 (`Ready → In progress → [checks] → Agent review → [checks] → In review → Done`, plus `Blocked`). The board needs
 the columns `Backlog`, `Ready`, `In progress`, `Agent review`, `Blocked`, `In review` and `Done`; the
-[board preflight](#tracker) reports a missing one. In a repository without a Laravel app the hook and the check
+[board preflight](#tracker) reports a missing one. The shipped file also defines the
+[test engineer](#the-test-engineer) (used by bug issues through the `bugfix` [profile](#workflow-profiles)) and lists its
+column `Testing` as an active state, so its board needs that column too; this example leaves the stage out. In a repository without a Laravel app the hook and the check
 script do nothing (exit 0), so the same file also works there.
 
 ```yaml
@@ -511,20 +1113,34 @@ hooks:
     git fetch --quiet --prune origin
 
 agent:
-  max_concurrent_agents: ${SYMPHONY_MAX_CONCURRENT_AGENTS:-2}
+  max_concurrent_agents: ${SYMPHONY_MAX_CONCURRENT_AGENTS:-3}
   max_turns: ${SYMPHONY_MAX_TURNS:-10}
-  max_continuations: ${SYMPHONY_MAX_CONTINUATIONS:-6}   # role switches count, so keep a limit
+  max_continuations: ${SYMPHONY_MAX_CONTINUATIONS:-6}   # role switches without a result count, so keep a limit
   max_concurrent_agents_by_state:
     "Agent review": 1
 
 roles:
+  issue-analyst:                             # analyses every issue in Ready first, see "The issue analyst"
+    states: [Ready]
+    read_only: true
+    max_turns: 3
+    result: analysis
+    on_result: { ready: next, needs_info: Blocked }
+    may_move_to: [Design, In progress, Blocked]
+    model_label: ignore
+    claude: { model: sonnet }
   developer:
-    states: [Ready, In progress]
+    states: [In progress]
+    result: implementation                   # hands off with report_result, see "The shipped developer and reviewer"
+    on_result: { done: Agent review, blocked: Blocked }
     may_move_to: [In progress, Agent review, Blocked]
   reviewer:
     states: [Agent review]
     read_only: true
     max_turns: 6
+    result: review
+    on_result: { approved: In review, changes_needed: In progress, blocked: Blocked }
+    on_check_failed: In progress
     may_move_to: [In review, In progress, Blocked]
     claude: { model: opus }
   auditor:                                   # issues that start with /refactoring: analysis only, findings become sub-issues
@@ -536,6 +1152,9 @@ roles:
     max_turns: 2
     may_move_to: [In progress, In review, Blocked]
     claude: { model: fable, max_budget_usd: 15 }
+
+pipeline:
+  max_review_rounds: 3                       # the 3rd review with changes_needed goes to Blocked (needs-human), not back
 
 checks:
   timeout_ms: ${SYMPHONY_CHECKS_TIMEOUT_MS:-1800000}   # below claude.turn_timeout_ms (default 3600000)
@@ -556,17 +1175,17 @@ You are working on GitHub issue **{{ issue.identifier }}**: {{ issue.title }}
 {% case role %}{% when "developer" %}## Your role: developer
 
 Implement the issue on `{{ branch }}`, integrate the base branch, commit, push, open a pull request with
-`open_pull_request`, comment with `add_comment`, then hand off with `set_status("Agent review")`.
-On `check_failed`: fix the problems and call `set_status("Agent review")` again.
-On `check_timeout`: call `set_status("Agent review")` once more; if it times out again, comment and end your turn
-without changing the status (never `Blocked`).
-On `check_error`: describe the error with `add_comment` and call `set_status("Blocked")`.
-After a successful transition, end your turn.
+`open_pull_request`, then hand off with `report_result` (verdict `done`; `blocked` with a blocker if you cannot go on).
+Open findings of the last review: `results.open_findings`.
+On `check_failed`: fix the problems and call `report_result` again.
+On `check_timeout`: call `report_result` once more; if it times out again, comment and end your turn.
+On `check_error`: describe the error with `add_comment` and end your turn.
+After a recorded result, end your turn.
 {% when "reviewer" %}## Your role: reviewer
 
 You are read-only. Review `git diff origin/<base>...HEAD`, the pull request and the issue comments against the
-checklist, post one comment "## Agent review (round N)", then `set_status("In review")` (approved) or
-`set_status("In progress")` (changes needed). From round 3 on, move it to "In review" and list the open findings.
+checklist, then hand off with `report_result`: verdict `approved` or `changes_needed` with `findings`. Symphony picks
+the column and enforces the round limit.
 {% else %}## How to work
 
 The single-agent prompt: implement, open a pull request and move the issue to "In review".
@@ -577,11 +1196,12 @@ How the pieces work together:
 
 | Step | Mechanism |
 |---|---|
-| `Ready`/`In progress` → developer session | [`roles`](#roles): the column decides the role, `role` selects the prompt section. A description that starts with `/refactoring` selects the `auditor` instead ([issue commands](#issue-commands)). |
-| Developer calls `set_status("Agent review")` | [Transition guard](#transition-guard): `Agent review` is in the developer's `may_move_to`, so `checks.on_enter` runs; only exit `0` moves the card. |
+| `Ready` → issue analyst session | [`roles`](#roles): the column decides the role, `role` selects the prompt section. A description that starts with `/refactoring` selects the `auditor` instead ([issue commands](#issue-commands)). The analyst's `ready` moves the card to `In progress`. |
+| `In progress` → developer session | Same mechanism; the developer gets the analysis in `results.analysis`. |
+| Developer calls `report_result` (`done`) | The verdict leads to `Agent review` (`on_result`). [Transition guard](#transition-guard): `Agent review` is in the developer's `may_move_to`, so `checks.on_enter` runs; only exit `0` records the result and moves the card. |
 | Card in `Agent review` → reviewer session | Role switch ends the developer session; the reviewer starts in a fresh, read-only session, at most one at a time (`max_concurrent_agents_by_state`). |
-| Reviewer approves (`In review`) or sends back (`In progress`) | `In review` runs the same check again (cached for an unchanged, clean commit); `In progress` has no check. |
-| Ping-pong between the roles | Each switch counts toward `agent.max_continuations`; the prompt also stops sending back from review round 3. |
+| Reviewer reports `approved` (`In review`) or `changes_needed` (`In progress`) | `In review` runs the same check again (cached for an unchanged, clean commit); `In progress` has no check. |
+| Ping-pong between the roles | Each switch counts toward `agent.max_continuations`; results reset the count, and Symphony stops sending back at `pipeline.max_review_rounds`. |
 | `Done` | Never allowed for agents (terminal state); a human sets it after the merge. |
 
 The full prompt (developer steps, reviewer checklist and the fallback for the `default` role) is the body of the
@@ -640,10 +1260,13 @@ workflow directory, else `$XDG_STATE_HOME/symphony` or `~/.local/state/symphony`
 | Event | Fields |
 |---|---|
 | `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested: from a `Model: …` label, else the role's model, else `claude.model`), `effort` (requested: from an `Effort: …` label, else the role's effort, else `claude.effort`; `default` when none), `role` (`default` without roles), `laravel` and `boost` (only for workspaces with [`laravel`](#laravel) apps: `<app dir>:<laravel/framework version from composer.lock, or unknown>` and the Boost status `ready`, `failed`, `skipped` or `absent`, e.g. `laravel=laravel/:v13.1.0 boost=ready`; several apps give comma-separated entries, each status prefixed by its directory) |
-| `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `session_limit` (the run ended with a session limit; see `agent-claude.md`), `stopped`, `stalled`, `shutdown`), `role` and `next_role` (only when the run handed off to another [role](#roles)), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `head_sha` and `branch` (final commit of a git workspace; omitted otherwise), `mcp_tool_calls` (`<server>:<n>,…` per MCP server; omitted when no MCP tool was used), `tool_calls` (`<tool>:<n>,…` per tool, built-in and `mcp__<server>__<tool>`; omitted without tool calls), `skill_calls` (`<skill>:<n>,…` per skill the Skill tool loaded; the count follows the last colon, so `symphony:handoff:1` is the skill `symphony:handoff`), `agent_calls` (`<subagent>:<n>,…` per subagent the Agent tool started, by `subagent_type`, `general-purpose` when unset; omitted without such calls), `integrations` (`<id>:<status>,…` of the workspace integrations, e.g. `laravel-boost:ready`; status `ready`, `unavailable`, `absent` or `off`), `integration_tools` and `integration_skills` (calls attributed to an integration: `<id>/<tool or skill>:<n>,…`, e.g. `laravel-boost/search-docs:3`), `started_at`, `mcp_unavailable` (comma-separated MCP servers Symphony added that did not connect; only when there are any), running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` |
+| `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `session_limit` (the run ended with a session limit; see `agent-claude.md`), `stopped`, `stalled`, `shutdown`), `role` (the [role](#roles) that served the run; `default` without roles; logs from before it was written have none and count as `unknown` in the analytics) and `next_role` (only when the run handed off to another role), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `head_sha` and `branch` (final commit of a git workspace; omitted otherwise), `mcp_tool_calls` (`<server>:<n>,…` per MCP server; omitted when no MCP tool was used), `tool_calls` (`<tool>:<n>,…` per tool, built-in and `mcp__<server>__<tool>`; omitted without tool calls), `skill_calls` (`<skill>:<n>,…` per skill the Skill tool loaded; the count follows the last colon, so `symphony:handoff:1` is the skill `symphony:handoff`), `agent_calls` (`<subagent>:<n>,…` per subagent the Agent tool started, by `subagent_type`, `general-purpose` when unset; omitted without such calls), `integrations` (`<id>:<status>,…` of the workspace integrations, e.g. `laravel-boost:ready`; status `ready`, `unavailable`, `absent` or `off`), `integration_tools` and `integration_skills` (calls attributed to an integration: `<id>/<tool or skill>:<n>,…`, e.g. `laravel-boost/search-docs:3`), `started_at`, `mcp_unavailable` (comma-separated MCP servers Symphony added that did not connect; only when there are any), running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` |
 | `model_usage` | `repo`, `issue`, `run`, `model`, `price` (matched entry), token counts, `cost_usd` |
-| `issue_paused` | `repo`, `issue`, `title`, `state`, `continuations`, `max_continuations` |
+| `stage_result` | `repo`, `issue`, `run`, `role`, `kind` (result kind, e.g. `review`), `verdict`, `round` (review and test loops; omitted otherwise), `target` (column the result handed the issue to), `profile` (workflow profile; omitted without one), `complexity` (`S` … `XL` from the issue's `Complexity:` label; omitted without one), `findings` (number of findings of a review or security result; omitted when 0). Written when `report_result` has posted the result comment; the analytics group these lines by profile and role |
 | `session_limit_wait` | `repo`, `issue`, `title`, `state`, `window`, `resets_at`, `retry_at` (reset + 60 s), `hits`, `max_retries`, `source` (`event` or `message`); written when the session-limit retries are used up and the worker waits for the reset |
+| `issue_paused` | `repo`, `issue`, `title`, `state`, `source` (`continuations` with `continuations` and `max_continuations`, `operator` with `previous`, or `budget` with `cost_usd` and `max_issue_cost_usd`) |
+| `issue_resumed` | `repo`, `issue`, `title`, `source` (the source of the lifted pause); written when an operator resumes a paused issue (`POST /api/v1/<identifier>/resume`) |
+| `model_hold`, `model_hold_ended` | `model`, `since`, `until`; a limit hold also `issue`, `title`, `extended`, `text`; an operator hold (dashboard **Pause** on a model) `source=operator` with `stopped` or `requeued`, written to every repository with a claimed issue |
 | `worker_restarted` | `repo`, `issue`, `title`, `previous` (`retrying` or `paused`); written when an operator restarts a waiting or paused worker through the dashboard or `POST /api/v1/<identifier>/retry` |
 | `workspace_removed` | `repo`, `issue`, `state` |
 | `checks_finished` | `repo`, `issue`, `run`, `role`, `target`, `sha` (workspace commit; omitted outside git), `ok`, `result` (`passed`, `check_failed`, `check_timeout`, `check_error`), `exit_code` (`null` when the script did not exit normally), `timed_out` (only when `true`), `duration_ms` |
@@ -661,7 +1284,8 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
 - `issue`: `id`, `identifier`, `title`, `description`, `priority`, `state`, `branch_name`, `url`, `assignee_id`,
   `labels` (lowercase list), `blocked_by` (list of `{id, identifier, state}`), `dispatchable`, `created_at`,
   `updated_at` (ISO strings), `native_ref` (adapter data, for GitHub: `repository`, `number`, `issue_id`, `item_id`,
-  `parent` and `sub_issues` as `{identifier, title, state}`, …), `command` (`{name, args, skill}` for an
+  `status_updated_at` (ISO string: when the Status field last changed), `parent` and `sub_issues` as
+  `{identifier, title, state, state_reason}` (`state_reason` is `null` for an open issue), …), `command` (`{name, args, skill}` for an
   [issue command](#issue-commands) that has a skill, else `null`; always defined).
 - `attempt`: `null` on the first run of an issue, then `1`, `2`, … on continuation runs and retries.
 - `role`: name of the [role](#roles) running the issue (e.g. `developer`, `reviewer`), or `default` without `roles`.
@@ -669,6 +1293,41 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
 - `agents`: the plugin subagents this session may start (see [Subagents per role](#subagents-per-role)), each with
   `name` (what the Agent tool takes as `subagent_type`, e.g. `symphony:laravel-architect`) and `description`. Always
   defined; empty when the session may start none: `{% if agents.size > 0 %}…{% endif %}`.
+- `test_paths`: the list `pipeline.test_paths`, so the prompt of a test engineer can name the files it may change. Always defined.
+- `attachments`: the files uploaded to the issue's description and comments, downloaded into the workspace before the
+  session (see [Images and files in the issue](usage.md#images-and-files-in-the-issue)), in order of appearance, each
+  `{path, label, source, error}`: `path` is workspace-relative (`.issue-assets/attachment-1.png`), or `null` when the
+  download failed and `error` says why; `label` is the image's alt text or the file link's text; `source` is
+  `description` or the comment's URL. Always defined; empty without attachments: `{% if attachments.size > 0 %}…{% endif %}`.
+- `results`, `round`, `result_required`: the issue's stage history, always defined. A role with
+  [`result`](#result-driven-transitions) reads the issue's persisted results when its session starts (one paginated read
+  of the issue's comments per session; other roles make no extra request and see the empty values).
+  - `results.latest`: the newest result of each role, oldest first, each `{role, kind, verdict, summary, round, target,
+    created_at}` (`summary` cut to 1,500 characters).
+  - `results.open_findings`: the findings `{severity, file, line, problem, fix}` of the newest review since the last
+    reset, while its verdict is `changes_needed`; empty otherwise.
+  - `results.security_findings`: the same shape for the newest security review since the last reset, while its verdict is
+    `issues_found`; empty otherwise.
+  - `results.failed_cases`: the failed cases `{criterion, test}` of the newest test since the last reset, while its
+    verdict is `failed`; empty otherwise.
+  - `results.test`: the newest test since the last reset, whatever its verdict, as `{verdict, summary, round, commands}`
+    (`summary` cut to 1,500 characters), else `null`. With `failed_cases` it tells the developer why the cases failed and
+    how to run them again.
+  - `results.analysis`: the newest analysis since the last reset, whatever its verdict, as `{verdict, summary, type,
+    complexity, components, acceptance_criteria, risks, docs_needed, open_questions, plan, refactoring_goals}` (`summary` cut to 1,500
+    characters; `risks` lists the flags that are set, e.g. `breaking change`), else `null`. The shipped prompts of the
+    architect, developer, test engineer and reviewer print it as "Analysis of the issue analyst".
+  - `results.design`: the newest design since the last reset, whatever its verdict, as `{verdict, summary, decision,
+    components, interfaces, migrations, compatibility, options, work_packages, head_sha}` (`summary` cut to 1,500
+    characters; `head_sha` is the commit the design was made at), else `null`. The shipped developer prompt prints it
+    as "Design of the architect" and nothing without a design.
+  - `results.implementation`: the newest implementation of the issue's developer, whatever its verdict and across
+    resets, as `{verdict, summary, head_sha}`, else `null`. The shipped reviewer prompt reviews an issue
+    [split into work packages](#work-packages-split) in integration mode only while it is `null`.
+  - `round`: the round the role is working in, 1 for the first: the number of failed tests plus one for a role with
+    `result: test`, else the number of reviews with `changes_needed` plus one (so a developer sees the review round it
+    is fixing). 1 for roles without `result`.
+  - `result_required`: `true` for a role with `result`, which hands off with `report_result` and has no `set_status`.
 
 Besides the standard Liquid filters there are `without_model_labels` and `without_agent_labels`:
 `issue.labels | without_model_labels` drops the `Model: …` labels, which only pick the agent's model (see

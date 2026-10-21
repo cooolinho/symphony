@@ -1,6 +1,7 @@
 import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { EFFORT_LEVELS, type ClaudeConfig, type ModelClaudeOverrides } from '../workflow/config.ts';
-import type { RoleClaudeOverrides } from '../workflow/roles.ts';
+import type { ModelLabelPolicy, RoleClaudeOverrides } from '../workflow/roles.ts';
+import type { IssueComplexity } from '../workflow/classify.ts';
 import { bareModelName, modelForLabelValue } from './model-name.ts';
 
 export { modelForLabelValue };
@@ -27,6 +28,10 @@ export interface ModelChoice {
   label: string | null;
   /** Why model labels were ignored (unknown value, conflicting labels), or null. */
   warning: string | null;
+  /** Whether a model label was found but ignored by the role's policy. */
+  labelIgnored: boolean;
+  /** Where the model came from: 'label', 'complexity', 'role', 'global', or null (Claude Code default). */
+  source: 'label' | 'complexity' | 'role' | 'global' | null;
 }
 
 export interface EffortChoice {
@@ -85,12 +90,42 @@ function chooseFromLabels<T>(
 }
 
 /**
- * Picks the session model from "Model: <model>" labels, else `defaultModel` (claude.model). Unknown values are
- * ignored and labels naming different models cancel each other out; both are reported in `warning`.
+ * Picks the session model from "Model: <model>" labels, else `model_by_complexity`, else `defaultModel` (role's
+ * claude.model or global claude.model). Unknown values are ignored and labels naming different models cancel each
+ * other out; both are reported in `warning`. When `modelLabel` is 'ignore', model labels are not evaluated.
+ * When complexity is provided but no complexity label is found, no model_by_complexity mapping is applied.
  */
-export function chooseModel(labels: readonly string[], defaultModel: string | null): ModelChoice {
+export function chooseModel(
+  labels: readonly string[],
+  defaultModel: string | null,
+  modelLabel: ModelLabelPolicy = 'apply',
+  complexity: IssueComplexity | null = null,
+  modelByComplexity: Partial<Record<IssueComplexity, string | null>> | null = null,
+): ModelChoice {
+  if (modelLabel === 'ignore') {
+    const hasModelLabel = labels.some((label) => hasPrefix(label, MODEL_LABEL_PREFIX));
+    // Check complexity-based model if label is ignored
+    if (complexity !== null && modelByComplexity !== null && modelByComplexity[complexity] !== undefined) {
+      const model = modelByComplexity[complexity];
+      return { model, label: null, warning: null, labelIgnored: hasModelLabel, source: 'complexity' };
+    }
+    return { model: defaultModel, label: null, warning: null, labelIgnored: hasModelLabel, source: defaultModel === null ? null : 'role' };
+  }
+
   const { value, label, warning } = chooseFromLabels<string | null>(labels, MODEL_LABEL_PREFIX, 'model', modelForLabelValue, defaultModel);
-  return { model: value, label, warning };
+  if (label !== null) {
+    // A model label was found and applied
+    return { model: value, label, warning, labelIgnored: false, source: 'label' };
+  }
+
+  // No model label; check complexity-based model
+  if (complexity !== null && modelByComplexity !== null && modelByComplexity[complexity] !== undefined) {
+    const model = modelByComplexity[complexity];
+    return { model, label: null, warning, labelIgnored: false, source: 'complexity' };
+  }
+
+  // Fall back to default model (role or global)
+  return { model: value, label: null, warning, labelIgnored: false, source: value === null ? null : 'role' };
 }
 
 /**

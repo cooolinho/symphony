@@ -49,6 +49,6 @@ export const githubProjectFactory: TrackerAdapterFactory = {
       retries: settings.requestRetries,
       fetch,
     });
-    return new GithubProjectAdapter(settings, client, logger);
+    return new GithubProjectAdapter(settings, client, logger, fetch);
   },
 };

@@ -2,41 +2,53 @@
 
 ## The lifecycle of an issue
 
-The bundled `WORKFLOW.md` works with two **roles**: a *developer* implements the issue, a *reviewer* checks it
-without changing anything. The column decides which role runs. Between the roles there are **checks**
+The bundled `WORKFLOW.md` works with three **roles**: an *issue analyst* examines the issue before anything is built
+(requirements, risks, refined acceptance criteria, `Type:` and `Complexity:` labels), a *developer* implements it, a
+*reviewer* checks it without changing anything. The column decides which role runs. Between the roles there are **checks**
 (`checks/laravel.sh`: clean and pushed branch, lint, static analysis, tests) that Symphony runs itself before a card
 may move to `Agent review` or `In review`. In repositories without a Laravel app the checks pass right away
 (exit 0).
 
 1. Symphony polls the board every 30 seconds (`polling.interval_ms`). Candidates are issues in `Ready`,
-   `In progress` and `Agent review`. They are sorted by priority, then by age.
+   `In progress` and `Agent review`. Work already in flight starts first, then new candidates by priority, then by
+   age (see [Dispatch order](#dispatch-order)).
 2. Symphony creates `~/symphony-workspaces/<owner>_<repo>_<nr>-<hash>` for the issue. The `after_create` hook clones
    the issue's repository there and uses `hooks/laravel-env.sh` to set up a separate `.env` with an SQLite database for
    each Laravel app. Before each run, `before_run` fetches the latest state (`git fetch`). If the clone contains a
    Laravel app with Laravel Boost, Symphony prepares Boost (see [Laravel Boost](#laravel-boost)).
-3. **Developer** (`Ready`, `In progress`): Claude Code starts in the workspace with the developer part of the prompt.
+3. **Issue analyst** (`Ready`): a short read-only session. It reads the project instructions and the code, then
+   reports the requirements, affected components, risks, refined acceptance criteria and a plan with `report_result`.
+   Symphony sets `Type:` and `Complexity:` where the issue has no such label (yours stay) and moves the issue to
+   `In progress`. If the analyst needs an answer first (`needs_info`), the issue goes to `Blocked` with the open
+   questions in the comment; answer in a comment and move it back to `Ready`.
+   **Developer** (`In progress`): Claude Code starts in the workspace with the developer part of the prompt.
    The agent
    - reads the repository's `AGENTS.md`, `CLAUDE.md` and `README.md`, plus the issue's comments and pull requests
      (including earlier reviews),
-   - sets the issue to `In progress` and comments its plan,
+   - comments its plan (a developer cannot change the status itself: the issue moves when it reports its result),
    - works on the branch `symphony/issue-<nr>`, or on a branch you linked in the issue,
    - implements and tests, merges the base branch in, commits, pushes and opens a pull request with
      `Closes #<nr>`,
-   - comments the result and calls `set_status("Agent review")`.
+   - hands off with `report_result` (verdict `done`, summary, changed files, tests): Symphony posts the result as the
+     issue comment and moves the issue to `Agent review` (a bug, feature or refactor issue goes to `Testing` first, see
+     [Bug issues](#bug-issues-the-bugfix-profile) and [Features and refactorings](#features-and-refactorings-the-feature-and-refactor-profiles)).
 4. **Checks before `Agent review`:** Symphony runs the checks in the workspace. If they pass, the card moves to
-   `Agent review` and the developer session ends. If they fail (`check_failed`), the card stays and the agent gets
+   `Agent review` (or `Testing`) and the developer session ends. If they fail (`check_failed`), the card stays and the agent gets
    the output, fixes the errors and tries again. If the checks run longer than `checks.timeout_ms`
    (`check_timeout`), the agent tries once more and otherwise ends its turn; the card keeps its column and never goes
    to `Blocked` for a timeout. If the environment is broken (`check_error`, e.g. a missing `vendor/`), the agent
-   comments that and moves the card to `Blocked`.
+   comments that and ends its turn.
 5. **Reviewer** (`Agent review`, at most one at a time, model `opus`, read-only, 6 turns): checks
    `git diff origin/<base>...HEAD`, the pull request and the comments against a checklist (correctness, tests,
-   authorization, validation, N+1, migrations, secrets, changed test/CI/lint configuration) and writes
-   **one** comment `## Agent review (round N)`. Then:
-   - **approved:** `In review`. The checks run once more first; for an unchanged commit Symphony uses the stored
-     result.
-   - **changes needed:** back to `In progress`; the developer works through the findings (step 3).
-   - **from round 3:** no further loop, but `In review` with the list of open findings for you.
+   authorization, validation, N+1, migrations, secrets, changed test/CI/lint configuration) and reports **one**
+   `review` result with `report_result` (verdict, findings with severity, file and line), which Symphony posts as the
+   comment. The verdict decides the column:
+   - **`approved`:** `In review`, or `Security review` first when the change is security-relevant (step 5a). The
+     checks run once more first; for an unchanged commit Symphony uses the stored result.
+   - **`changes_needed`:** back to `In progress`; the developer works through the findings (step 3).
+   - **third `changes_needed`** (`pipeline.max_review_rounds`): no further loop. The issue goes to `Blocked` with the
+     label `needs-human` and the open findings in the review comment. How to continue: [Rounds, limits and manual resume](#rounds-limits-and-manual-resume).
+   **Security auditor** (`Security review`, step 5a): only for approved issues that need it.
 6. After each turn Symphony checks the issue. If it moves to a column of another role, the session ends and the
    next role starts one second later in a fresh session. If it is still in a column of the same role, the agent
    gets more turns up to `max_turns`, then a new session. At most `SYMPHONY_MAX_CONTINUATIONS` (default 6) such
@@ -47,9 +59,13 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
 | Column | What Symphony does |
 |---|---|
 | `Backlog` | nothing. Issues here are not released yet. |
-| `Ready` | starts a developer as soon as a slot is free |
-| `In progress` | a developer is working; if Symphony finds an issue here without an agent, it starts one |
-| `Agent review` | starts a reviewer (at most one at a time); only reachable after passing checks |
+| `Ready` | starts the issue analyst as soon as a slot is free; it hands the issue on to `Design` (larger changes) or `In progress` |
+| `Design` | starts the architect (read-only), who decides on the approach of a larger change and hands the design to `In progress`; small issues skip the column without a session, see [Design for larger changes](#design-for-larger-changes-the-architect). An `XL` issue may be split into [work packages](#work-packages-for-very-large-changes) instead |
+| `In progress` | a developer is working (it gets the analysis and the design); if Symphony finds an issue here without an agent, it starts one |
+| `Testing` | starts the test engineer (at most one at a time), who writes independent tests and may only change test files; reached by bug, feature and refactor issues after the developer, by every issue with `SYMPHONY_AFTER_IMPLEMENTATION=Testing` |
+| `Documentation` | starts the docs agent (at most one at a time, `haiku`) for a finished implementation that needs documentation (`docs_needed`, or a changed file in `pipeline.docs_trigger_paths` without a change in `pipeline.docs_paths`); other issues skip the column without a session, see [the documentation stage](configuration.md#the-documentation-stage) |
+| `Agent review` | starts a reviewer (at most one at a time); only reachable after passing checks. An issue split into work packages waits here until all of its sub-issues are closed and then gets an integration review |
+| `Security review` | starts the security auditor (at most one at a time, read-only) for an approved issue with a security trigger; other approved issues skip the column without a session, see [Security review](#security-review-for-security-relevant-changes) |
 | `Blocked` | stops a running agent; the workspace is kept. The agent needs you, see its comment. |
 | `In review` | stops a running agent; the workspace is kept for follow-up work. Only the reviewer moves cards here, after passing checks. |
 | `Done` | stops a running agent and deletes the workspace, at the latest on the next poll |
@@ -57,6 +73,209 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
 If you want follow-up work, comment in the issue and move it back to `Ready` or `In progress`. The developer
 continues in the same workspace and reads your comments. Move an issue out of `Blocked` the same way once the
 problem is resolved.
+
+### Bug issues: the bugfix profile
+
+An issue of type `bugfix` (label `Type: bugfix`, or `bug`; the analyst sets it when the issue has no type) follows the
+`bugfix` [workflow profile](configuration.md#workflow-profiles) of the shipped `WORKFLOW.md` and runs through every
+stage on its own:
+
+```
+Ready (issue analyst) → In progress (developer) → [checks] → Testing (test engineer) → [checks] → Agent review (reviewer) → [checks] → In review
+```
+
+- The developer writes a regression test that fails first, confirms that it fails for the right reason, then fixes the
+  bug and sees the test pass.
+- The independent test engineer checks the acceptance criteria. `failed` sends the issue back to the developer with the
+  failed cases (up to `pipeline.max_test_rounds`, then `Blocked` with `needs-human`), `passed` leads to `Agent review`.
+- Only a bug of complexity `L` or `XL` goes through `Design` first (`Ready → Design → In progress`); for `S` and `M`
+  the architect is skipped without a session. Features and refactors also pass `Testing` (see
+  [Features and refactorings](#features-and-refactorings-the-feature-and-refactor-profiles)); issues without a type keep the
+  flow without it, unless `SYMPHONY_AFTER_IMPLEMENTATION=Testing` switches the test stage on for all of them.
+
+The board needs the columns in this order: `Backlog`, `Ready`, `Design`, `In progress`, `Testing`, `Documentation`, `Agent review`,
+`Security review`, `Blocked`, `In review`, `Done` (see [Getting started](getting-started.md#2-set-up-the-github-project-board)). `Testing` is always
+an active state, so a board without it fails the dry run and the dispatch preflight with
+`unknown board column "Testing"`. The order matters: `next` and the pipeline view follow the board.
+
+**A board without a test stage.** Add the `Testing` column anyway (it stays empty), and switch the stage off for bug
+issues in `WORKFLOW.md`:
+
+```yaml
+pipeline:
+  profiles:
+    bugfix:
+      on_result:
+        developer: { done: Agent review }
+```
+
+`skip: [test-engineer]` is only an option where the column that follows the skipped stage has no `checks.on_enter`
+script: a skipped stage moves the issue without a workspace and cannot run the check. With the shipped `Agent review`
+check the preflight rejects it. `skip` also leaves the `Testing` column itself on the board, because it only changes
+`next`.
+
+Slots: the test engineer gets slots beyond the ones reserved for the developer and the reviewer, and shares them with
+the issue analyst. With the default of 3 agent slots both take turns on the one free slot; with 4
+(`SYMPHONY_MAX_CONCURRENT_AGENTS=4`) they run side by side. With 2 slots the test engineer never starts (the dashboard
+and `limits.slot_problems` say so). `agent.max_concurrent_agents_by_state.Testing` is 1.
+
+### Features and refactorings: the feature and refactor profiles
+
+An issue of type `feature` or `refactor` (label `Type: feature` / `Type: refactor`, or `feature`, `enhancement`,
+`refactor`, `refactoring`; the analyst sets it when the issue has none) runs the full chain of the matching profile:
+
+```
+Ready (issue analyst) → Design (architect, not for complexity S) → In progress (developer) → [checks] → Testing (test engineer) → [checks] → Agent review (reviewer) → [checks] → In review
+```
+
+**Feature.** The developer implements the design and the acceptance criteria, with a test for every criterion, and says in
+the result's `summary` which test covers which criterion. The reviewer checks the change against the design and the
+criteria.
+
+**Refactoring.** A refactoring stays behaviour-preserving and has to meet its stated goals:
+
+- The analyst lists the goals in `refactoring_goals` (one checkable goal per entry); every later stage sees them in its
+  prompt.
+- The developer loads `symphony:refactor-safely` (unless the issue starts with `/refactor-safely`, which loads it
+  anyway), commits characterization tests that pass on the unchanged code first, and then refactors without touching
+  public interfaces or existing tests.
+- The test engineer verifies and extends the characterization tests: green on the base commit and on `HEAD`. A test that is
+  green on the base and red on `HEAD` means behaviour changed; the verdict is `failed` and the issue goes back to the
+  developer.
+- The reviewer checks that public interfaces and existing tests are unchanged and lists every confirmed goal, copied
+  verbatim, in `confirmed_goals`. `report_result` refuses an `approved` review that leaves a goal out
+  (`invalid_result`, naming the missing goals); `changes_needed` and `blocked` are not affected. Without goals in the
+  analysis the rule does not apply. See [Results](results.md#consistency-rules).
+
+`Testing` is optional for them like for bugs: set `pipeline.profiles.feature.on_result.developer.done` (or `refactor`) to
+`Agent review` to skip the stage, see [A board without a test stage](#bug-issues-the-bugfix-profile).
+
+### Design for larger changes: the architect
+
+A larger change gets an explicit architecture decision before the implementation. The architect works in the `Design`
+column between `Ready` and `In progress`: a short read-only session that compares the options and reports a `design`
+result (decision, components, interfaces, migrations, compatibility). `ready` moves the issue to `In progress`, where
+the developer gets the design in its prompt; `blocked` sends it to `Blocked`.
+
+```
+Ready (issue analyst) → Design (architect) → In progress (developer) → …
+```
+
+The stage runs only where it pays off, decided by the `skip_when` condition of the issue's
+[workflow profile](configuration.md#workflow-profiles) and the issue's `Complexity:` label (set by the analyst):
+
+| Type | Design runs for complexity | Skipped without a session for |
+|---|---|---|
+| `feature`, `refactor`, untyped | `M`, `L`, `XL` | `S` |
+| `bugfix` | `L`, `XL` | `S`, `M` |
+
+An issue without a usable `Complexity:` label (none, an unknown value or conflicting labels) is **not** skipped: the
+architect runs. A skipped stage posts a `skipped` result, logs `stage_skipped`, and the issue goes from `Ready` straight
+to `In progress`; the pipeline view shows `Design` as skipped. Details and the configuration:
+[The architect](configuration.md#the-architect).
+
+### Work packages for very large changes
+
+An issue of complexity `XL` can be too large for one developer session and one pull request. If its design falls into
+parts that can each be implemented, reviewed and merged on their own, the architect splits it: it files one sub-issue
+per work package and reports the verdict `split` instead of `ready`.
+
+```
+#7 Invoice export (XL)   Ready → Design (architect: split) → Agent review … waits …        → integration review → In review
+├─ #8  CSV writer  (M)   Ready → … → In progress → … → PR into develop → merged, closed
+├─ #9  PDF writer  (M)   Ready → … → In progress → … → PR into develop → merged, closed
+└─ #10 CLI command (S)   blocked by #8, #9 → Ready → … → PR into develop → merged, closed
+```
+
+- **The packages** land in `Ready` and run in parallel, each through the normal pipeline (analysis, design where needed,
+  implementation, tests, review, pull request). A package that builds on another one carries `Blocked by #N` and starts
+  once that one is closed. Each package gets `Type:` and `Complexity:` labels of its own size; as a sub-issue it is
+  never split again.
+- **The parent** goes from `Design` straight to `Agent review`, without a developer, test engineer or docs agent, and
+  waits there: the dashboard and `npm run dry-run` show `waiting for sub-issues owner/repo#8, owner/repo#9,
+  owner/repo#10`, and *Start now* refuses it. A sub-issue closed as **not planned** counts as closed, so a dropped
+  package does not hold the parent forever.
+- **Conflicts.** Packages that touch the same code can conflict once the first one is merged. With
+  [auto-merge](#auto-merge-into-develop) the conflicting pull request goes back to its developer (`auto_merge.on_conflict`)
+  with the base it conflicts with; the parent keeps waiting.
+- **Integration review.** When the last sub-issue is closed, the reviewer reviews the integrated base branch: the
+  packages with their state, the commits they brought in, and the parent's acceptance criteria, with the entry checks
+  of `In review` on the base branch. A package closed as not planned is a finding where a criterion still needs it.
+  `approved` moves the parent to `In review` for you. `changes_needed` sends it to `In progress`: the parent's own
+  developer fixes the findings on the parent's branch with its own pull request, which then takes the normal path
+  (`Testing` for a feature, then a normal review).
+- **Security review.** An approved integration review goes to the [security auditor](#security-review-for-security-relevant-changes)
+  first when the parent carries the `security` label, its analysis flags a security risk, or the packages changed a
+  security path (counted from the commit of the design). The auditor then audits the merged packages together on the
+  base branch; `issues_found` goes to the parent's own developer like `changes_needed`.
+- **When the architect does not split:** for any issue below `XL`, for a sub-issue, or when the parts only work
+  together. Then it reports `ready` and one developer implements the design, as before. `report_result` refuses a
+  `split` that breaks these rules, and on such an issue the architect does not get `create_sub_issue` at all.
+
+The limit is `roles.architect.max_sub_issues` (`SYMPHONY_ARCHITECT_MAX_SUB_ISSUES`, default 5). Details:
+[Work packages (`split`)](configuration.md#work-packages-split); why there is no integration-engineer role:
+[the concept](concepts/multi-agent.md#work-packages-instead-of-an-integration-engineer).
+
+### Security review for security-relevant changes
+
+An approved issue that touches security gets a dedicated read-only audit before a human sees the pull request. When the
+reviewer reports `approved`, Symphony decides which column comes next, without a session of its own:
+
+```
+Agent review (reviewer) → approved → Security review (security auditor) → passed → In review
+                                   ↘ no trigger ──────────────────────────────→ In review
+```
+
+The audit is needed when **any** of these holds, otherwise the issue goes straight to `In review`:
+
+| Trigger | Example |
+|---|---|
+| the issue carries the label `security` (exactly that label; `area:security` does not count) | a human labels the issue |
+| the latest analysis flags `risks.security` | the analyst saw an auth change |
+| a file the branch changes (against the merge base with the base branch: commits, uncommitted and untracked files) matches `pipeline.security_paths` | `app/Policies/PostPolicy.php`, `routes/web.php`, `database/migrations/…` |
+
+A docs-only diff (`README.md`, `docs/**`) matches none of the Laravel defaults and skips the stage; the pipeline view
+shows `Security review` as skipped. If Symphony cannot list the changed files (no git checkout, unknown base branch, git
+error), it sends the issue to the audit to be safe. The auditor reports a `security` result: `passed` leads to
+`In review`; `issues_found` sends the issue back to the developer, whose prompt lists the open findings, and after the fix
+the reviewer runs again, then the triggers are evaluated on the new diff. `pipeline.max_security_rounds` (2) bounds that
+loop like the review rounds: the last round goes to `Blocked` with `needs-human`. The result of the reviewer names the
+decision in the `reason` of the `report_result` answer. An issue split into
+[work packages](#work-packages-for-very-large-changes) has no branch of its own: for its integration review the files
+the packages changed since the design count, and the auditor audits the merged packages on the base branch.
+Configuration and the paths: [The security auditor](configuration.md#the-security-auditor).
+
+### Rounds, limits and manual resume
+
+The review, the test and the security stage can send an issue back to the developer. Symphony counts these rounds itself, from the
+[stage results](results.md) on the issue, so a loop cannot run forever:
+
+| Loop | Verdict that counts | Limit (default) | At the limit |
+|---|---|---|---|
+| Reviewer → developer | `changes_needed` | `pipeline.max_review_rounds` (3) | the issue goes to the role's `on_round_limit`, else `Blocked`, and gets the label `needs-human` |
+| Test engineer → developer | `failed` | `pipeline.max_test_rounds` (2) | as above |
+| Security auditor → developer | `issues_found` | `pipeline.max_security_rounds` (2) | as above |
+
+- **Rounds.** The Nth `changes_needed` is round N (the 3rd with the default limit ends the loop; the findings stay in the
+  review comment). Rounds are read from the results on the issue, not kept in memory, so they survive restarts, retries
+  and continuation sessions. A workflow profile can set its own limits ([profiles](configuration.md#workflow-profiles)).
+  The dashboard shows the round of each result in the stage list and a `needs human` chip on the card.
+- **`needs-human`.** The label (`pipeline.limit_label`; created when the repository lacks it) marks an issue that waits
+  for a decision. It is not a status: the column (`Blocked` by default) is what stops the agents. Any other
+  transition removes the label again.
+- **Resuming.** Read the findings and fix the cause (answer in a comment, change the issue, adjust the acceptance
+  criteria or the code yourself), then move the card back to an active column, usually `In progress`. When Symphony
+  starts the next stage it sees a human moved the issue out of the limit, writes a `reset` result (role `symphony`,
+  no agent run), **removes the label** and rebuilds the history: **the counters start at 1** again, so the developer and the
+  reviewer get a full set of new rounds. Earlier results stay on the issue as history; the next stage reads them.
+- **Not the same as pause and cost.** A round limit is about progress and ends with a human decision on the board. The
+  operator's **Pause**/**Resume now** ([Intervening](#intervening-while-symphony-runs)), the continuation limit
+  (`agent.max_continuations`, [Continuations and pausing](#continuations-and-pausing)) and the cost cap
+  (`agent.max_issue_cost_usd`, [Cost budget per issue](#cost-budget-per-issue)) pause an issue without moving it,
+  never set `needs-human`, and **Resume now** does not reset the round counters.
+- **A move that did not happen.** If a result was recorded but the move to its column failed, the issue is still in
+  the stage's column: that is not a manual resume, no `reset` is written and the next dispatch completes the move
+  ([Interrupted transitions](results.md#interrupted-transitions)).
 
 ### Migrating from the single-prompt setup
 
@@ -91,9 +310,12 @@ To go back to the old behavior, remove `roles` and `checks`: then every issue ru
 |---|---|
 | Stop an agent | Move the issue to `Backlog`, `Blocked` or `In review`. It stops on the next poll, at the latest after 30 s. |
 | Cancel and clean up | Move the issue to `Done` |
-| Pause all new starts | Set `agent.max_concurrent_agents: 0` in the `WORKFLOW.md`. Running agents keep working. |
+| Pause all new starts | Set the slots to `0` on the dashboard, or `agent.max_concurrent_agents: 0` in the `WORKFLOW.md`. Running agents keep working. |
+| Change the number of agent slots | At the slot bar of *Running* on the dashboard, use **−** / **+** for the total, for each active column and for the slots reserved per role (**×** returns a column or a role to its `WORKFLOW.md` value, **Reset to WORKFLOW.md** removes every override). The change applies from the next tick without a restart and survives a restart; a reload of `WORKFLOW.md` does not overwrite it, and the dashboard shows the `WORKFLOW.md` value next to it. Lowering it below the running count stops no agent: nothing new starts until the count is below the limit ("3 running, limit 2: no new starts until 2 finish"). With `curl`: `PUT /api/v1/settings/agents` with `Content-Type: application/json`, see [Dashboard and API](#dashboard-and-api). The same rights as restart apply. See [Agent slots set on the dashboard](configuration.md#agent-slots-set-on-the-dashboard). |
 | Change the prompt or settings | Edit `WORKFLOW.md`. This applies right away to new sessions, without a restart. |
 | Restart a waiting or paused worker right away | On the issue card (or the agent page) click **Retry now** or **Resume now**, or `curl -X POST http://127.0.0.1:4000/api/v1/<identifier>/retry` (the identifier URL-encoded, e.g. `owner%2Frepository%2312`). This is the way out of a session limit when you have topped up credits and do not want to wait for the reset. On a non-loopback address (`SYMPHONY_HOST`) it only works with `SYMPHONY_ALLOW_REMOTE_CONTROL=true`; with `curl` through the proxy, pass `-H 'Origin: https://<domain>'`, see [Dashboard and API](#dashboard-and-api). |
+| Start an issue now, even when every slot is taken | On a card in *Up next*, *Waiting* or *Paused* (or on the agent page) click **Start now**, or `curl -X POST http://127.0.0.1:4000/api/v1/<identifier>/force`. The issue starts at once in an extra slot, for one session; see [Retry now or Start now](#retry-now-or-start-now). The same rights as restart apply. |
+| Pause an issue or a model | On a card in *Running*, *Up next* or *Waiting* (or on the agent page) click **Pause**: a running agent stops at once (the workspace stays), nothing is retried, and the card moves to *Paused* ("paused by operator"). **Resume now** starts it again like a restart. In the *Models* bar, **Pause** next to a model family (e.g. `fable`) stops its running agents and keeps every issue of that model waiting (reason `model_hold`), while the other models keep running; no issue moves to another model. **Resume** retries them at once, as slots allow. With `curl`: `POST /api/v1/<identifier>/pause` and `/resume`, `POST /api/v1/models/<model>/hold` and `/release`. Board changes (comments, labels, column moves, also to `Backlog` and back) do not lift these pauses; an issue reaching a terminal column or leaving the board does. Both survive a restart. The same rights as restart apply (`SYMPHONY_ALLOW_REMOTE_CONTROL` on a non-loopback address). |
 | Poll now instead of waiting 30 s | In the dashboard click **Poll now**, or `curl -X POST http://127.0.0.1:4000/api/v1/refresh` |
 
 If the `WORKFLOW.md` is invalid after a change, Symphony keeps running with the last valid version. It only starts
@@ -108,14 +330,38 @@ attempt the agent knows from `attempt` that there is earlier work in the workspa
 session limit separately, see [Session limit](#session-limit).
 
 The **retry queue** and **Paused** are two different things: in the queue, Symphony has scheduled a next attempt
-with a time for the issue (after a failure, a continuation or a session limit). *Paused* lists an issue that is still
-active after `SYMPHONY_MAX_CONTINUATIONS` continuations; no time is scheduled for it, see
-[Continuations and pausing](#continuations-and-pausing).
+with a time for the issue (after a failure, a continuation or a session limit). *Paused* lists an issue that no time
+is scheduled for: either the operator paused it (*paused by operator*, lifted only by **Resume now**, a terminal
+column or leaving the board), or it is still active after `SYMPHONY_MAX_CONTINUATIONS` continuations (*paused after N
+continuations*, lifted by any change on the board), see [Continuations and pausing](#continuations-and-pausing). An
+issue whose model the operator paused is not under *Paused*: it waits in the retry queue (*Waiting*, reason
+`model_hold`) until the model is resumed.
+
+### Failures of result-driven stages
+
+A stage of a role with [`result`](configuration.md#result-driven-transitions) ends with exactly one recorded result
+(see [Result contracts](results.md)). When GitHub, an entry check, a reload or a human gets in the way, Symphony
+behaves like this:
+
+| Case | What happens |
+|---|---|
+| The result comment cannot be posted | `report_result` returns `comment_failed`: nothing is recorded and the issue stays. The agent calls it again; if it keeps failing, the stage ends [without a result](results.md#stages-without-a-result). |
+| The move fails after the result comment (`status_failed`), e.g. a GitHub error or a token that may comment but not edit the project, or Symphony crashes between the comment and the move | The result stands; the labels stay as they are. The agent is told to end its turn, and the run ends after that turn (no reminder, no `on_missing_result`). The next dispatch completes the [interrupted transition](results.md#interrupted-transitions) without a session: the guard and the target's entry check again, then the move and the labels. A move that keeps failing is retried with the failure backoff, never with a new session. Symphony does not retry the mutation within one attempt: GitHub mutations are never retried, because a request that timed out may have been applied. A human who moves the issue in the meantime takes over: the recovery never undoes a move. |
+| An entry check times out inside `report_result` (`check_timeout`) | Nothing is recorded and the issue stays. As the message says, the agent calls `report_result` once more; if that times out too, it comments and ends its turn. A timeout is a runtime limit, not a missing result: the run ends after that turn without a reminder and without `on_missing_result`, and a continuation session runs the stage again (it counts toward `agent.max_continuations`). |
+| The test engineer's workspace differs from its start commit outside `pipeline.test_paths` | `report_result` returns `invalid_result` naming the files (the [path rule](results.md#path-rule-of-the-test-engineer)); nothing is recorded, no entry check runs and the issue stays. The engineer undoes the changes and reports again in the same session. If it never does, the stage ends [without a result](results.md#stages-without-a-result). If git cannot list the changes (or the workspace is no git checkout), the call fails with `tool_error` and nothing is recorded. |
+| A check inside `report_result` runs longer than `claude.stall_timeout_ms` | No stall: stall detection pauses while an entry check runs (phase `RunningChecks`) and starts fresh after it. The check is bounded by `checks.timeout_ms`, the tool call by `checks.timeout_ms` plus one minute. |
+| Reading the stage results at session start fails, e.g. `tracker_rate_limited` | The run fails with `results_read_error` before the agent starts (no agent cost) and is retried with the backoff above. No session runs without its history, so the round counters stay right. |
+| `WORKFLOW.md` is reloaded in the middle of a stage | The session keeps the snapshot it started with: prompt, `max_turns`, role, routing (`on_result`, round limits), entry checks, `on_missing_result`, and the `workflow_hash` in the result's meta. Only the check after each turn (has the issue left the role's columns?) reads the current workflow. The next session uses the reload. |
+| A comment of Symphony's own account carries a damaged marker (cut off, unknown version, invalid fields) | It counts as no result, and the log shows the warning `ignoring a damaged result marker` with the comment's URL. A damaged review marker may leave the round counters one short. Markers in comments of other accounts never count. |
+| A human moves the issue during the session | Right before writing, `report_result` re-reads the issue: if it has left the role's columns, nothing is recorded (`issue_moved`) and the agent ends its turn, so a result never moves the issue back. After the turn the run ends (`role changed` or `issue left the active states`): the next role starts in a new session, or the issue is released. There is no "Stage ended without a result" comment and no `on_missing_result` move. A move right after the last turn is caught by the same check before `on_missing_result` applies. |
 
 ## Session limit
 
 When your Claude subscription hits its usage limit (message `You've hit your session limit · resets 7:30pm`, the
-5-hour window or a weekly limit), retrying after 10 seconds does not help. Symphony therefore works in two stages:
+5-hour window or a weekly limit), retrying after 10 seconds does not help. A limit applies either to the **whole
+account** (session limit, weekly limit) or to **one model** (for example `You've reached your Fable limit. Switch to
+another model to continue.`, or a weekly Opus or Sonnet limit). Model limits are described in
+[Model limits](#model-limits). For an account-wide limit Symphony works in two stages:
 
 1. **Retries:** Up to `SYMPHONY_MAX_SESSION_LIMIT_RETRIES` times (default 3), Symphony retries the issue after the
    first session-limit error, with the usual wait (10 s, 20 s, 40 s …).
@@ -146,17 +392,56 @@ Running agents, retries and reconciliation with the board continue. The gate end
 reached, issue released, **Retry now**) or when a turn of any agent finishes successfully after the limit. If several
 workers wait, the gate lasts until the latest time. The dashboard then shows the notice
 *Dispatch paused until … · session limit (five_hour) · started by …*, and `GET /api/v1/state` the field
-`health.dispatch_gate` (`reason`, `window`, `until`, `issue_identifier`, else `null`). Model-specific limits
-(`seven_day_opus`, `seven_day_sonnet`), `overage` and limits without a known window block nothing.
+`health.dispatch_gate` (`reason`, `window`, `until`, `issue_identifier`, else `null`). Model limits, `overage` and
+limits without a known window never close this gate.
+
+### Model limits
+
+A limit whose message names a model family (`fable`, `opus`, `sonnet`, `haiku`), or the structured windows
+`seven_day_opus` and `seven_day_sonnet`, applies to that model only. Symphony then puts **the model on hold**:
+
+- The issue that hit the limit leaves its agent slot and waits in the retry queue until the hold ends. There are no
+  quick retries, because a model limit does not go away within seconds.
+- No issue that would run on that model starts until the hold ends. Symphony resolves the model the same way as at
+  dispatch: `Model: …` label, else the role's `claude.model`, else `claude.model`. Issues with the
+  [Claude Code default model](configuration.md#claude) (no model configured) are never held.
+- Issues on other models keep running and start as usual, in the same tick.
+- **No fallback:** Symphony never moves an issue to another model. An issue labelled `Model: fable` runs on Fable or
+  waits.
+- The hold lasts until the reset plus 1 minute when the message names a reset, otherwise for `agent.model_hold_ms`
+  (default 1 hour). Another limit of the same model while it is held extends the hold, it never shortens it.
+- When the hold ends, the next issue of that model is the probe. If it hits the limit again, a new hold starts.
+- **Retry now** on an issue that waits for a held model does not bypass the hold: the issue goes back into the queue
+  until the hold ends.
+
+The message wins over the event: the Agent SDK has no window for every model (there is no Fable window), so a model
+limit can arrive with the window `seven_day`. A message like `You've hit your weekly Fable limit` is therefore a
+Fable limit, and it does not stop the other models. Claude Code sometimes reports a limit as a successful turn whose
+whole answer is the limit message; Symphony treats such a turn as a limit too (no continuation, and it does not count
+as a successful turn). A normal answer that merely mentions a limit stays a normal answer.
+
+**Where you see it:** the dashboard shows a notice per held model (model, end of the hold, original message), and
+waiting cards say *Waiting for model fable (limit until …)*. `GET /api/v1/state` lists the holds under
+`model_holds[]` (`model`, `source`, `since`, `until`, `text`, `issue_identifier`), and waiting issue rows carry
+`model_hold` (`model`, `source`, `until`, else `null`). A model the operator paused from the dashboard has a hold with
+`source: "operator"` and `until: null`; it may coexist with a limit hold, and the model is available only when
+neither holds it. `model_controls[]` lists every model family in use with `paused` (by the operator) and
+`limit_until`. The issue timeline and the [repository log](#logs-and-statistics) show
+`model_hold` and `model_hold_ended`.
+
+**Restart:** holds are stored in `<logDir>/state/<repositories>.json` (one file per instance, named after the
+configured repositories, so several instances can share one log directory) and restored on start; holds that ended
+in the meantime are dropped. Several Symphony instances on one subscription do not share holds: each one hits the
+limit once and then holds the model.
 
 **Limitations:**
 
-- The wait is kept in memory only. If you restart Symphony, it is forgotten: the issue is fetched again like any
-  active issue and starts, and if the limit is still active, the process starts over.
+- The wait for an account-wide limit is kept in memory only. If you restart Symphony, it is forgotten: the issue is
+  fetched again like any active issue and starts, and if the limit is still active, the process starts over. Model
+  holds survive a restart (see [Model limits](#model-limits)).
 - Only session limits of a Claude subscription count. Rate limits (HTTP 429) of an `ANTHROPIC_API_KEY` remain
   ordinary failures with backoff.
-- A model-specific weekly limit (Opus or Sonnet) parks only the affected issue. Issues with a different model keep
-  running.
+- A model limit holds only the affected model. Issues with a different model keep running.
 - **Retry now** (section [Intervening while Symphony runs](#intervening-while-symphony-runs)) ends the wait right
   away, for example after topping up credits (`overage_disabled_reason` = `out_of_credits`). The retry counter then
   starts over. If the limit is still active, the worker is back in waiting mode after a few failures.
@@ -170,7 +455,7 @@ automatically as soon as everything is done. Three kinds of dependencies count:
 |---|---|
 | Relationship | In the issue sidebar under **Relationships → Blocked by** |
 | Text in the issue | In the description, e.g. `blocked by #12`, `blocked #12` or `Blocked by: #12, #13`. `#N` means the same repository, others are written as `owner/repo#N`. |
-| Sub-issues | In the sidebar under **Sub-issues**. The parent issue waits until all sub-issues are closed. Exception: an issue whose description starts with a [command](#commands-in-the-issue-refactoring) does not wait, because for it the sub-issues are the result of the run. A role with `wait_for_sub_issues` (the [autopilot](#autopilot-auto-code)) still waits: it only starts again once its sub-issues are closed. |
+| Sub-issues | In the sidebar under **Sub-issues**. The parent issue waits until all sub-issues are closed. Exception: an issue whose description starts with a [command](#commands-in-the-issue-refactoring) does not wait, because for it the sub-issues are the result of the run. A role with `wait_for_sub_issues` (the [autopilot](#autopilot-auto-code)) still waits: it only starts again once its sub-issues are closed. The architect's [work packages](#work-packages-for-very-large-changes) use the same wait. |
 
 The `/concept` and `/plan` agent commands set both types at the same time: the relationship (`blocked_by` on
 `create_sub_issue`) and the line `Blocked by #N` in the text. Both count as one dependency.
@@ -179,6 +464,31 @@ A dependency is done when the issue is **closed**; for a referenced pull request
 Agents do not close issues themselves. So a dependency resolves as soon as you merge the related pull request with
 `Closes #N`. That way the next issue builds on merged code. References to issues that do not exist are ignored.
 `npm run dry-run` shows why an issue waits. The agent sees parent, sub-issues and dependencies in the prompt.
+
+## Images and files in the issue
+
+An agent reading an issue only sees text: an image in the description is a link, not a picture. So before every
+session (after `before_run`), Symphony downloads the files uploaded to the issue's description and comments (images,
+PDFs and other files dragged into the issue) into the workspace:
+
+- `.issue-assets/attachment-<n>.<ext>` in order of appearance (the description first, then the comments), plus
+  `.issue-assets/INDEX.md` naming each file's label and source. The directory is listed in `.git/info/exclude`, so no
+  stage commits it, and it is replaced on every session.
+- The prompt lists the files ([`attachments`](configuration.md#prompt-template)) and tells the agent to open each one
+  with the Read tool before it plans or changes anything; a mockup counts as part of the requirements. The issue
+  analyst describes what each attachment shows in its analysis comment, so you can check that it looked at them; the
+  developer names the mockups it implemented.
+
+Symphony downloads with its own GitHub token, which the agent never sees. Private repositories work: their image URLs
+are signed for a few minutes, so the download follows right after reading the issue. The token is only sent to
+`github.com` (the web host of a GitHub Enterprise endpoint); redirects to the signed storage URLs go without it.
+A classic token with the `repo` scope is needed (fine-grained tokens cannot download attachments of private
+repositories). Only uploads count: emojis and images from other sites are skipped. At most 20 files of up to 20 MB
+each; a file that fails is listed in the prompt with its error, and the session starts anyway.
+
+Tips for mockups: PNG, JPG, WebP or PDF (no SVG or Figma links: the agent cannot open them), one screen per image, a
+meaningful alt text (`![Mockup desktop – start page](…)` instead of `![image](…)`), and no large transparent areas
+(Claude Code's Read tool can fail on those).
 
 ## Commands in the issue (`/refactoring`)
 
@@ -525,9 +835,27 @@ In detail: on every tick `#reconcile` re-reads all paused issues from the board.
 or their `updated_at` has changed, or when `agent.max_continuations` was raised or removed. The issue is then a normal
 candidate again. There is no timer: without a change, a raised limit or a click, the issue stays paused, even for
 hours. A worker that waits because of a session limit is in the retry queue, not under *Paused*; see
-[Session limit](#session-limit).
+[Session limit](#session-limit). Pressing **Pause** on such an issue turns it into an operator pause, which board
+changes no longer lift (see [Intervening while Symphony runs](#intervening-while-symphony-runs)).
 
 Failed runs do not count here. The retries with backoff described above apply to them.
+
+### Cost budget per issue
+
+`agent.max_issue_cost_usd` caps the cost of one issue across all its stages (runs of every role, failed ones included).
+Unset means unlimited; `claude.max_budget_usd` and `roles.<name>.claude.max_budget_usd` still cap each session.
+
+- Before every dispatch (a new stage, a continuation, a retry) Symphony adds up the issue's `run_finished` costs in the
+  repository history, plus a run that is still going. Once the sum reaches the cap, the next stage does not start. A
+  stage that is running is never stopped; it may overshoot the cap.
+- The issue is **paused** (`source=budget`): one comment on the issue says what was spent and how to go on, the timeline
+  shows `issue_paused` with the cost, and the repository log gets an `issue_paused` line with `source=budget`.
+- The figure comes from the history log, so the cap also holds after a Symphony restart. It uses the prices of
+  `model-costs.yml` at the time each run was written. Without a history log, only a running run counts.
+- Board changes (status, comments, labels) do **not** lift this pause. It ends when you raise or remove
+  `agent.max_issue_cost_usd` (the issue resumes on the next tick), with **Resume now** or `POST /api/v1/<identifier>/retry`
+  while the cost is below the cap (otherwise it pauses again, without a second comment), with **Start now** (a one-off
+  override of the cap, the session runs in an extra slot), or when the issue reaches a terminal state or leaves the board.
 
 ## Choosing the model per issue
 
@@ -631,22 +959,89 @@ workflow with the roles `developer` and `reviewer`, creates three test issues an
 lines `transition_denied`, `checks_finished` and `handed_off` in the repository log, and the limit for
 `Agent review`. For this the board also needs the columns `Agent review` and `Blocked`.
 
+`npm run e2e -- --scenario pipeline` runs the shipped bugfix pipeline (issue analyst → developer → test engineer →
+reviewer) with a workflow generated from `WORKFLOW.md`, every role on Sonnet and without entry checks. Three test issues
+cover a test loop (one failed test round), a review loop (one `changes_needed` round) and an analysis that ends in
+`Blocked`. It checks the status paths, the stage results with their markers and rounds, the `bugfix` profile, the run
+order and the cost per role. The board needs the columns `Testing`, `Agent review` and `Blocked`, and at least three
+agent slots. About 14 Sonnet sessions, roughly USD 1–3 and 20–35 minutes.
+
 ```bash
 npm run e2e                                  # uses WORKFLOW.md and .env, like npm start
 npm run e2e -- --scenario roles              # role flow with a generated workflow
+npm run e2e -- --scenario pipeline           # bugfix pipeline with a test loop, a review loop and a blocked analysis
 node scripts/e2e/verify.ts logs/e2e/<time>   # check a run again later
 ```
 
 Use a separate test repository with its own board: the issues are real, and every run costs Claude usage (about
-USD 0.50). The script aborts if the board already has issues in active columns. Scenario, options and checks are
-described in [docs/e2e.md](e2e.md).
+USD 0.50 for the default scenario, USD 1–3 for `pipeline`). The script aborts if the board already has issues in
+active columns. Scenario, options and checks are described in [docs/e2e.md](e2e.md).
+
+## Dispatch order
+
+One function, the **dispatch plan** (`src/orchestrator/dispatch-plan.ts`), decides what starts next. The poll, the
+retry timers, `--dry-run` and the dashboard all read it, so the order shown is the order used.
+
+1. **Continuations** (a session ended cleanly and the issue stays active). A continuation keeps the slot its session
+   left: no new card takes it in the second before the continuation starts.
+2. **Due retries** (failures and session limits past their backoff, and retries that already waited for a slot).
+3. **New candidates** from the board.
+
+Inside each group the order is priority (Priority field 1–4, others last), then the oldest issue, then the identifier.
+Free slots go down this list; an issue that waits for something else (a model hold, a column limit, open
+sub-issues, a slot reserved for another role) takes no slot, the next one gets it. A retry in its backoff holds no slot. This puts finishing work ahead
+of starting new work: while continuations run, new cards wait longer.
+
+### Example: 3 slots with a developer and a reviewer slot
+
+With `max_concurrent_agents: 3`, `max_concurrent_agents_by_state: { "Agent review": 1 }` and
+`reserved_slots_by_role: { developer: 1, reviewer: 1 }` (see [Reserved slots](configuration.md#reserved-slots)):
+
+1. Five issues in `Ready`, none in `Agent review`: two developers start. The third slot stays free; the other three
+   issues wait with `the free slot is reserved for reviewer`. The slot bar reads
+   `02 / 03 agents · developer 1/1 · reviewer 0/1 reserved · 0 free`.
+2. An issue reaches `Agent review` while both developers run (moved by a human, or by a developer whose session then
+   ends): its reviewer starts at the next tick in the reserved slot. Running developers are never stopped for it, and
+   a slot a developer leaves goes to the next issue in `Ready`, so two developers and one reviewer run side by side.
+3. A second issue reaches `Agent review` while the first is reviewed: it waits with `Agent review limit 1/1`, the column
+   limit still applies.
+4. A `/plan` issue in `Ready` runs as the planner, its own role: it never takes the developer's or the reviewer's
+   reserved slot, only a slot that is free beyond the unused reservations.
+
+Every issue in the plan carries a reason (`reason.code` and a text; times in the text are UTC):
+
+| Code | Meaning | Example text |
+|---|---|---|
+| `ready` | starts now or at the next poll | `starts at the next poll`, `continues its session`, `retry 2 starts now` |
+| `no_free_slot` | all `agent.max_concurrent_agents` slots are busy | `waiting for a free slot (3/3 busy)` |
+| `column_limit` | `agent.max_concurrent_agents_by_state` of its column is reached | `Agent review limit 1/1` |
+| `reserved_for_role` | the free slots are kept for other roles by `agent.reserved_slots_by_role` | `the free slot is reserved for reviewer`, `the 2 free slots are reserved for developer, reviewer` |
+| `model_hold` | its model is on hold after a model limit | `model fable on hold until 2026-10-03 18:00 UTC` |
+| `waiting_for_sub_issues` | its role has `wait_for_sub_issues` and sub-issues are open | `waiting for sub-issues owner/repo#7` |
+| `session_limit` | a session-limit retry, or new sessions held back by the dispatch gate | `session limit (five hour): retry after the reset at …`, `new sessions paused until …` |
+| `backoff` | a failure retry before its due time | `retry 2 after a failure at …` |
+| `inactive` | a claimed issue left the active columns; its claim is released at the next check | `left the active columns ("In review"); released at …` |
+| `paused` | paused after `agent.max_continuations`, or at `agent.max_issue_cost_usd` | `paused after 3 continuation sessions; change the issue on the board to resume`, `paused: cost budget used up ($5.00 of $4.00); raise agent.max_issue_cost_usd or press Resume` |
+| `blocked` | not dispatchable (assignee, open *blocked by*) | the adapter's note, e.g. `blocked by owner/repo#9` |
+| `missing_label` | lacks a label of `tracker.required_labels` | `missing required label ai` |
 
 ## Dashboard and API
 
 The dashboard only runs if `SYMPHONY_PORT` is set or you call `npm start -- --port 4000`. It listens on the address
 from `SYMPHONY_HOST`, by default only on `127.0.0.1`. The header shows system status, workflow version, poll interval
-and last poll. **Issues in flight** shows one card per issue in an active column — running, retrying, paused or
-queued (waiting for a free slot or the next dispatch). Each card carries a **pipeline strip**: every station the
+and last poll. Below, the issues in an active column appear in separate sections, each with a count; empty
+sections are hidden:
+
+- **Running**: one card per agent session, with the slot bar (busy and free slots).
+- **Up next**: numbered in the order Symphony starts them (`#1` takes the next free slot), with the board's age
+  (`board as of …`). Each card shows a reason chip (`waiting for a free slot`, `Agent review limit 1/1`,
+  `model fable on hold until …`), the priority and the model the session would use. Continuations and retries
+  that are due stand here too, ahead of new cards.
+- **Waiting**: retries before their due time (backoff, session limits, model holds), soonest first, with the due
+  time and **Retry now**.
+- **Paused**: issues held after `agent.max_continuations` or at `agent.max_issue_cost_usd` ([cost budget](#cost-budget-per-issue)), with **Resume now**.
+
+See [Dispatch order](#dispatch-order) for the order and the reasons. Each card carries a **pipeline strip**: every station the
 issue passes on its way across the board (the agent roles from the workflow, hand-off columns such as *In review*,
 and *Done*), with finished stations checked in green, the current one pulsing in the card's status color and the
 connector into it animated, and later ones dimmed. Hovering a station lists its sessions (outcome, model, start
@@ -656,8 +1051,8 @@ works on a Laravel project, the card shows the **Laravel Boost icon**: in color 
 with the number of Boost calls so far (MCP tools and skills); gray with ✕ if Boost is missing or could not be
 prepared. The tooltip names status, reason and the tools and skills used. Below follow an activity stream (changes
 between polls, the agents' latest events and entries from the repository logs) and a collapsed **Blocked** panel:
-issues in the shared blocked column and issues held back by open *blocked by* dependencies, each with the reason and
-its blockers; the panel remembers whether you opened it. Problems such as configuration or GitHub errors appear at
+issues in the shared blocked column, issues held back by open *blocked by* dependencies and issues without a label
+of `tracker.required_labels`, each with the reason and its blockers; the panel remembers whether you opened it. Problems such as configuration or GitHub errors appear at
 the top. The **Logs** button opens the log entries in a sidebar with filters by repository, severity and text; from
 there (or by middle-clicking the button) a link leads to the full [logs page](#logs-and-statistics).
 
@@ -704,21 +1099,57 @@ Where the data comes from and where the limits are:
 | `GET /agent?id=<identifier>` | Agent detail view (execution trace) |
 | `GET /logs` | Statistics and analytics page; filters in the URL: `?period=30d` (`today`, `yesterday`, `7d`, `14d`, `30d`, `90d`, `month`, `last_month`, `all` or `custom&from=YYYY-MM-DD&to=YYYY-MM-DD`), `&repo=owner/name`, `&model=<id>`, `&effort=<level>` |
 | `GET /api/v1/history` | Overall statistics as JSON (no time range), optionally with `?repo=owner/name`; feeds the logs drawer in the dashboard |
-| `GET /api/v1/history/analytics?from=&to=&repo=&model=&effort=&tz=` | server-side aggregated analytics for a time range (`from` inclusive, `to` exclusive, ISO timestamps, both optional): metrics with previous period, time series, models, efforts, repositories, issues, results, run times, tools and integrations (`tools`), heatmap, top runs, anomalies. `tz` (IANA zone) determines buckets, weekdays and hours |
+| `GET /api/v1/history/analytics?from=&to=&repo=&model=&effort=&tz=` | server-side aggregated analytics for a time range (`from` inclusive, `to` exclusive, ISO timestamps, both optional): metrics with previous period, time series, models, efforts, roles (`by_role`: runs, tokens, cost, agent time and outcomes per role), stage results from the `stage_result` history lines (`by_profile`: results, issues, verdicts as `<kind>:<verdict>` counts, complexities, highest round and the runs and cost of the profile's issues; `verdicts_by_role`: the verdict distribution per role; `stage_results`: their number), repositories, issues (with the cost per role, i.e. the pipeline cost across all stages), results, run times, tools and integrations (`tools`), heatmap, top runs and most expensive issue pipelines (`top.pipelines`), anomalies. `tz` (IANA zone) determines buckets, weekdays and hours |
 | `GET /api/v1/history/entries?from=&to=&repo=&issue=&event=&result=&order=desc&limit=200` | Log entries of a time range, filtered and sorted (at most 1,000) |
 | `GET /api/v1/history/raw?repo=owner/name` | a repository's `.log` file as text |
-| `GET /api/v1/state` | Overall state as JSON: issues in flight (`issues[]` with `status` running/retrying/paused/queued and the pipeline `stages[]`), blocked issues (`blocked[]` with the reason and `blocked_by`), `pipeline_config` (board columns, roles, blocked columns), running agents (`running[]` with `role`), queue (`retrying[]` with `kind` and, for session limits, `limit`), totals, health, `controls.retry` (whether restarting is allowed) |
-| `GET /api/v1/<identifier>` | Details of an issue: title, role, board fields (`issue`: column, labels, priority, parent, sub-issues, `blocked_by`, `dispatch_note`), the pipeline stations (`pipeline`), workspace, attempts, sessions (`sessions`, each with `model` and `effort`), tokens and cost per model (`usage_by_model`), latest events, last error, last entry check (`last_check`), `controls.retry`. For an issue the orchestrator released, the archived details with `status: "finished"` and `archived` (`archived_at`, `released`); `404` only when nothing is known about the issue |
+| `GET /api/v1/state` | Overall state as JSON: issues in flight (`issues[]` with `status` running/retrying/paused/queued, the dashboard `section` running/next/waiting/paused, `position`, `reason` and the pipeline `stages[]`), the dispatch plan (`queue[]`, see below), blocked issues (`blocked[]` with the reason, `reason_code` `column`/`blocked`/`missing_label` and `blocked_by`), `pipeline_config` (board columns, roles, blocked columns), running agents (`running[]` with `role`), queue (`retrying[]` with `kind` and, for session limits, `limit`), agent slots (`limits`, see below), totals, health (`health.max_concurrent_agents` is the effective total), `controls.retry` (whether restarting is allowed) |
+| `GET /api/v1/<identifier>` | Details of an issue: title, role, board fields (`issue`: column, labels, priority, parent, sub-issues, `blocked_by`, `dispatch_note`), the pipeline stations (`pipeline`: per stage `status` `done`/`active`/`pending`/`skipped`, the `verdict` and `round` of the role's newest result, and per session the `verdict` and `round` it reported; `skipped` marks a stage the workflow profile or a `skipped` result leaves out, or one behind the issue's current stage that a result's target jumped over without a session there, such as the developer of an issue [split into work packages](#work-packages-for-very-large-changes) while it waits; a stage the issue came back before lies ahead again and is `pending`), the stage results (`results[]`: role, run, kind, verdict, summary, round, target, `head_sha`, `created_at`; empty for roles without `result`, and until a result-driven session has loaded them), workspace, attempts, sessions (`sessions`, each with `model` and `effort`), tokens and cost per model (`usage_by_model`), latest events, last error, last entry check (`last_check`), `controls.retry`. For an issue the orchestrator released, the archived details with `status: "finished"` and `archived` (`archived_at`, `released`); `404` only when nothing is known about the issue |
 | `GET /api/v1/<identifier>/timeline?after=<seq>` | Timeline of the issue (live or archived): lifecycle, phase changes and agent events with a running `seq`; `after` returns only newer ones |
 | `GET /api/v1/<identifier>/transcript?run=<run>&from=<offset>` | Transcript of a session (without `run` the latest; live or archived), prepared as prompts, model calls, tool results; from byte offset `from`, continue with `next_offset`. With `&format=raw` the JSONL file |
 | `POST /api/v1/refresh` | poll and reconcile now |
+| `POST /api/v1/<identifier>/pause` | pause an issue (running, retrying, queued on the board, or paused after its continuations); a running agent stops at once, its workspace stays. Response `202` with `paused`, `issue_identifier` and `previous` (`running`, `retrying`, `queued`, `paused`). Errors: `404` (issue unknown), `409` (`already_paused`; `stopping`: its agent is already stopping or Symphony is shutting down), `403` as for retry |
+| `POST /api/v1/<identifier>/resume` | lift a pause and start the issue right away (counters reset, attempt kept). Response `202` with `queued` and `issue_identifier`. Errors: `404`, `409` (`not_paused`; `stopping`: the agent is still stopping), `403` as for retry |
+| `POST /api/v1/models/<model>/hold` | pause a model family (`fable`, `opus`, `sonnet`, `haiku`): its running agents stop, its issues wait. Response `202` with `model`, `paused` and `stopped`. Errors: `400 unknown_model`, `409` (`already_paused`, `stopping`), `403` as for retry |
+| `POST /api/v1/models/<model>/release` | resume a model family; its waiting issues retry at once as slots allow. Response `202` with `model`, `paused` and `requeued`. Errors: `400 unknown_model`, `409` (`not_paused`, `stopping`), `403` as for retry |
+| `PUT /api/v1/settings/agents` | change the agent slots (dashboard override). Requires `Content-Type: application/json` (else `415`), body at most 16 KiB (else `413`), e.g. `{ "max_concurrent_agents": 3, "max_concurrent_agents_by_state": { "Agent review": 1 }, "reserved_slots_by_role": { "reviewer": 1 } }`. Fields left out keep their value; `null` removes an override (the total, one column or one role). Total: integer `0`–`50`; per column: integer `1`–`50`, only active columns; per role: integer `0`–`50`, only configured roles. A total or reservation that leaves fewer slots than reserved is refused (a total of `0` is always allowed). Response `200` with `changed` and `limits`. Errors: `400 invalid_settings` with a message, `400 bad_request` (invalid JSON), `409 stopping`, `403` as for retry |
+| `DELETE /api/v1/settings/agents` | remove the override: `WORKFLOW.md` applies again. Requires `Content-Type: application/json` like `PUT`; no body needed. Response `200` with `changed` and `limits`; `403` as for retry |
+| `POST /api/v1/<identifier>/force` | start an issue in *Up next*, *Waiting* or *Paused* now, in an extra slot beyond the limits, for one session. Response `202` with `started`, `issue_identifier`, `previous` and `slots` (`running`, `forced`, `limit`). Errors: `404`, `409` (`running`, `blocked`, `not_eligible`, `model_held`, `invalid_workflow`, `stopping`), `502 tracker_error`, `403` as for retry; see [Retry now or Start now](#retry-now-or-start-now) |
 | `POST /api/v1/<identifier>/retry` | restart a waiting (retry queue, including session limit) or paused worker right away. Response `202` with `queued`, `issue_identifier` and `previous` (`retrying` or `paused`). Errors: `404` (issue unknown), `409` (`running`: currently running; `not_waiting`: not waiting for anything; `stopping`: Symphony is shutting down), `403` (`control_disabled` on a non-loopback address without `SYMPHONY_ALLOW_REMOTE_CONTROL=true`; `forbidden_origin` for cross-origin requests and, on a non-loopback address, also without an `Origin` header) |
+
+`queue[]` lists the [dispatch plan](#dispatch-order) without running and blocked issues, in order: Up next, then
+Waiting (soonest first), then Paused. Each entry:
+
+| Field | Content |
+|---|---|
+| `position` | place in the start order (1 = next free slot); `null` outside Up next |
+| `issue_id`, `issue_identifier`, `state`, `priority` | the issue |
+| `status` | `next`, `waiting` or `paused` |
+| `kind` | `continuation`, `failure`, `session_limit` (retries), `new` (board candidate) or `paused` |
+| `decision` | `start` (gets a slot) or `wait` |
+| `reason` | `{ code, text }`, see the table in [Dispatch order](#dispatch-order) |
+| `due_at` | when a retry is due; `null` for new and paused issues |
+| `model` | the model the next session would run with; `null` = Claude Code default |
+
+`counts` stays as before (`queued` = new candidates in Up next).
+
+`limits` holds the agent slots: `max_concurrent_agents` and, per active column, `by_state["<column>"]`, each as
+`{ effective, workflow, override }` (`override: null` = none set on the dashboard; a column with `effective: null` has
+no limit of its own, only the total applies), per configured role `reserved_slots_by_role["<role>"]` as
+`{ effective, workflow, override, running }` (`0` = no reservation; `running` = sessions of that role now),
+`reservation_problem` (why the reservations are ignored, else `null`), `slot_problems` (one line per role that results
+lead to but that never gets a slot under the reservations, e.g. the test engineer with 2 slots reserved for the developer
+and the reviewer; `[]` when none), plus `override_active` and `max` (the highest value the dashboard accepts, 50).
 
 ```bash
 curl -s http://127.0.0.1:4000/api/v1/state
 curl -s http://127.0.0.1:4000/api/v1/owner%2Frepository%2312   # / as %2F, # as %23
 curl -s -X POST http://127.0.0.1:4000/api/v1/refresh
 curl -s -X POST http://127.0.0.1:4000/api/v1/owner%2Frepository%2312/retry
+curl -s -X POST http://127.0.0.1:4000/api/v1/owner%2Frepository%2312/force
+curl -s -X POST http://127.0.0.1:4000/api/v1/owner%2Frepository%2312/pause
+curl -s -X POST http://127.0.0.1:4000/api/v1/models/fable/hold
+curl -s -X PUT -H 'Content-Type: application/json' -d '{"max_concurrent_agents": 3}' http://127.0.0.1:4000/api/v1/settings/agents
+curl -s -X DELETE -H 'Content-Type: application/json' http://127.0.0.1:4000/api/v1/settings/agents
 ```
 
 The restart endpoint and the **Retry now** and **Resume now** buttons always work as long as the server listens on a
@@ -735,6 +1166,35 @@ curl -s -X POST -u <user> -H 'Origin: https://<domain>' https://<domain>/api/v1/
 Whether restarting is allowed is shown in `GET /api/v1/state` and `GET /api/v1/<identifier>` under `controls.retry`.
 The restart only skips the wait: Symphony checks again, as for every retry, whether the issue really starts (active
 column, configuration, free slot).
+
+### Retry now or Start now
+
+**Start now** starts an issue in the same moment, even when every slot is taken: Symphony runs it in an extra slot
+(limit + 1) for one session. When that session ends, its continuation, the hand-off to the next role or a retry waits
+in the queue like any other work and starts only when a slot is free. Each click adds one agent to the shared
+subscription; the dashboard asks first when no slot is free ("All 3 slots are busy. Start #123 in an extra slot?"),
+and the slot bar counts forced sessions separately ("04 / 03 agents, 1 forced"). A forced session holds none of the
+slots, so the regular slots keep filling from the queue.
+
+| | **Retry now** / **Resume now** | **Start now** |
+|---|---|---|
+| Works on | *Waiting* and *Paused* | *Up next*, *Waiting* and *Paused* |
+| Retry backoff, session-limit wait | skipped | skipped |
+| Account-wide dispatch gate (session limit) | holds back new issues only | skipped |
+| Free slot, column limits, reserved slots | respected: waits for a free slot | skipped: starts in an extra slot |
+| Operator pause of the issue | lifted (Resume now) | lifted |
+| Counters (continuations, session-limit hits) | reset | reset |
+| Blockers, open sub-issues (`wait_for_sub_issues`), required labels, active column | respected | respected: `409` |
+| Model on hold (limit or operator) | respected: waits | respected: `409 model_held`; release the model first |
+| When it starts | at the next retry pass, if a slot is free | in the same request |
+
+`POST /api/v1/<identifier>/force` answers `202` with `started`, `issue_identifier`, `previous` (`queued`, `retrying`,
+`paused`) and `slots` (`running` including the forced sessions, `forced`, `limit`). Errors: `404 issue_not_found`
+(not in *Up next*, *Waiting* or *Paused*), `409` with `running` (already running), `blocked` (open blockers or
+sub-issues), `not_eligible` (missing required label, not in an active column), `model_held`, `invalid_workflow`
+(dispatch validation fails) or `stopping` (Symphony is shutting down), `502 tracker_error` (the issue could not be
+refreshed), `403` as for retry. The running entry in `GET /api/v1/state` has `forced: true`, `counts.forced` counts
+them, and the issue's timeline and the repository log get a `worker_forced` line with the slot counts.
 
 ## Logs, transcripts and workspaces
 
@@ -764,9 +1224,12 @@ ts=2026-10-04T09:17:00.000Z event=model_usage repo=owner/repository issue=owner/
 | `run_started` | An agent starts on an issue: time, issue, title, column, attempt, requested model (from the label `Model: …`, else `CLAUDE_MODEL`) and requested effort (from the label `Effort: …`, else `CLAUDE_EFFORT`). |
 | `run_finished` | A run ends. It records the result (`handed_off` = handed off, `continuing` = still active, `failed`, `session_limit`, `stopped`, `stalled`, `shutdown`) and the column afterwards. Plus turns, the most used model (`model`, as Claude Code reports it, e.g. `claude-fable-5-1`), the requested model and effort (`model_requested`, `effort`, like `run_started`), tokens (input, output, cache), estimated cost and agent time. The `repo_*` fields are the repository's running totals. |
 | `model_usage` | Tokens and cost of a run per model, with the run's `effort`. One line per model Claude Code reported for the session (a second model used internally gets a second line); a new model needs no change, it is logged under its own id. The tokens are counted from every model call as it happens, so a run that is stopped, stalls or hits a session limit before its turn ends still has its usage. |
-| `issue_paused` | An issue was paused after its continuation sessions. |
+| `issue_paused` | An issue was paused: after its continuation sessions, by the operator, or because its [cost budget](#cost-budget-per-issue) is used up (`source=budget`, with `cost_usd` and `max_issue_cost_usd`). |
 | `session_limit_wait` | The session-limit retries are used up: the worker waits for the limit to reset (`retry_at` = reset + 1 minute) and then continues. Fields include `window`, `resets_at`, `retry_at`, `hits`, `max_retries`, `source`. |
 | `worker_restarted` | A waiting or paused worker was restarted via **Retry now** / **Resume now** or the API (`previous` = `retrying` or `paused`). |
+| `worker_forced` | An issue was started with **Start now** or `POST /api/v1/<identifier>/force` in an extra slot (`previous` = `queued`, `retrying` or `paused`; `running`, `forced`, `limit` = the slot counts after the start). |
+| `stage_skipped` | A stage was passed without a session ([skipping stages](configuration.md#skipping-stages-without-a-session)): `issue`, `title`, `role`, `from` and `to` (the columns) and `reason`. The issue's timeline has the same event with the comment URL. |
+| `transition_recovered` | An [interrupted transition](results.md#interrupted-transitions) was completed without a session: `issue`, `title`, `role`, `from` and `to` (the columns) and `comment_url` (the result it completes). |
 | `workspace_removed` | The workspace of an issue in `Done` was deleted. |
 
 The **statistics page** (`/logs`, button *Logs* in the dashboard) evaluates these files. At the top is a global
@@ -869,10 +1332,11 @@ The most common settings in the `WORKFLOW.md`. All options are described in
 
 | Setting | Effect |
 |---|---|
-| `agent.max_concurrent_agents` | how many agents run at the same time (default here: 2) |
+| `agent.max_concurrent_agents` | how many agents run at the same time (default here: 3) |
 | `agent.max_concurrent_agents_by_state` | limit per column, e.g. `{ "In progress": 1 }` |
 | `agent.max_turns` | turns per session before Symphony reassesses the state |
 | `agent.max_continuations` | continuation sessions per issue (including role changes), then pause |
+| `agent.max_issue_cost_usd` | cost cap per issue across all stages; the next stage does not start once it is reached ([details](#cost-budget-per-issue)) |
 | `roles` | roles per column: columns, allowed target columns (`may_move_to`), `read_only`, `max_turns`, model |
 | `checks` | scripts that must pass before a card may enter a column (`on_enter`), and their timeout |
 | `workspace.cleanup_terminal` | delete workspaces on `Done` (default) or keep them |

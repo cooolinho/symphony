@@ -57,6 +57,60 @@ describe('statistics analytics', () => {
     return { ...h, entries: readHistory(h.log.dir, null).entries };
   }
 
+  describe('stage results', () => {
+    const result = (issue: string, role: string, kind: string, verdict: string, at: string, over: Record<string, unknown> = {}) => ({
+      repo: 'acme/app', issue, run: null, role, kind, verdict, round: null, target: null, profile: 'bugfix', complexity: 'S', findings: 0, at: new Date(at), ...over,
+    });
+
+    function seedResults() {
+      const h = history();
+      h.log.runFinished(finish('acme/app#1', 'r1', '2026-10-03T10:00:00Z', { role: 'developer' }));
+      h.log.runFinished(finish('acme/app#2', 'r2', '2026-10-03T11:00:00Z', { role: 'developer' }));
+      h.log.stageResult(result('acme/app#1', 'developer', 'implementation', 'done', '2026-10-03T10:00:00Z', { run: 'r1' }));
+      h.log.stageResult(result('acme/app#1', 'reviewer', 'review', 'changes_needed', '2026-10-03T10:30:00Z', { round: 1, findings: 2 }));
+      h.log.stageResult(result('acme/app#1', 'reviewer', 'review', 'approved', '2026-10-04T10:30:00Z', { round: 2 }));
+      h.log.stageResult(result('acme/app#2', 'developer', 'implementation', 'done', '2026-10-03T11:00:00Z', { run: 'r2', profile: 'feature', complexity: 'L' }));
+      h.log.stageResult(result('acme/app#3', 'developer', 'implementation', 'done', '2026-10-03T12:00:00Z', { profile: null, complexity: null }));
+      h.log.stageResult({ ...result('other/repo#4', 'reviewer', 'review', 'approved', '2026-10-03T12:00:00Z'), repo: 'other/repo' });
+      return readHistory(h.log.dir, null).entries;
+    }
+
+    it('groups the results by profile, with the verdicts, complexities and the cost of its issues', () => {
+      const a = computeAnalytics(seedResults(), history().pricing.current(), filter({ repo: 'acme/app' }), NOW);
+      assert.equal(a.stage_results, 5);
+      assert.deepEqual(a.by_profile.map((row) => [row.profile, row.results, row.issues]), [['bugfix', 3, 1], ['default', 1, 1], ['feature', 1, 1]]);
+      const bugfix = a.by_profile[0];
+      assert.deepEqual(bugfix?.verdicts, { 'implementation:done': 1, 'review:changes_needed': 1, 'review:approved': 1 });
+      assert.deepEqual(bugfix?.by_complexity, { S: 3 });
+      assert.equal(bugfix?.max_round, 2);
+      // The runs of acme/app#1 are attributed to its profile.
+      assert.deepEqual([bugfix?.runs, bugfix?.cost_usd, bugfix?.avg_cost_per_issue], [1, 0.114, 0.114]);
+      assert.deepEqual(a.by_profile[1]?.by_complexity, { unknown: 1 });
+    });
+
+    it('counts the verdicts per role', () => {
+      const a = computeAnalytics(seedResults(), history().pricing.current(), filter(), NOW);
+      assert.deepEqual(
+        a.verdicts_by_role.map((row) => [row.role, row.results, row.issues, row.verdicts]),
+        [
+          ['developer', 3, 3, { 'implementation:done': 3 }],
+          ['reviewer', 3, 2, { 'review:changes_needed': 1, 'review:approved': 2 }],
+        ],
+      );
+    });
+
+    it('follows the period and the model filter, and is empty without stage_result lines', () => {
+      const entries = seedResults();
+      const pricing = history().pricing.current();
+      assert.equal(computeAnalytics(entries, pricing, filter({ from: new Date('2026-10-04T00:00:00Z') }), NOW).stage_results, 1);
+      // A model filter keeps only the results of runs that used the model: here the two with a run id.
+      assert.equal(computeAnalytics(entries, pricing, filter({ model: 'claude-opus-5-5' }), NOW).stage_results, 2);
+      assert.equal(computeAnalytics(entries, pricing, filter({ model: 'claude-haiku-4-5' }), NOW).stage_results, 0);
+      const none = computeAnalytics(seed().entries, pricing, filter(), NOW);
+      assert.deepEqual([none.by_profile, none.verdicts_by_role, none.stage_results], [[], [], 0]);
+    });
+  });
+
   it('aggregates tool calls, skills, subagents and the use of integrations such as Laravel Boost', () => {
     const h = history();
     const boost = (status: string, tools: Record<string, number>, skills: Record<string, number> = {}) => [{ id: 'laravel-boost', status, tools, skills }];
@@ -152,6 +206,52 @@ describe('statistics analytics', () => {
     assert.deepEqual(onlyFable.issues.map((i) => i.issue), ['acme/app#9']);
     assert.equal(onlyFable.totals.total_tokens, 0);
     assert.equal(computeAnalytics(entries, h.pricing.current(), filter({ effort: 'max' }), NOW).totals.runs, 0);
+  });
+
+  it('breaks runs down by role and sums each issue across its roles; logs without a role count as unknown', () => {
+    const h = history();
+    // Old line: no role on run_finished, taken from run_started when it is there.
+    h.log.runStarted({ repo: 'acme/app', issue: 'acme/app#1', title: 'Old', state: 'Ready', attempt: null, model: 'opus', role: 'developer', run: 'r1', at: new Date('2026-10-04T08:00:00Z') });
+    h.log.runFinished(finish('acme/app#1', 'r1', '2026-10-04T09:00:00Z'));
+    h.log.runFinished(finish('acme/app#1', 'r2', '2026-10-04T10:00:00Z', { role: 'developer', nextRole: 'reviewer' }));
+    h.log.runFinished(finish('acme/app#1', 'r3', '2026-10-04T11:00:00Z', { role: 'reviewer', outcome: 'failed' }));
+    h.log.runFinished(finish('acme/app#2', 'r4', '2026-10-04T12:00:00Z', { role: 'reviewer', usage: {} }));
+    h.log.runFinished(finish('acme/app#3', 'r5', '2026-10-04T13:00:00Z', { role: 'developer', usage: {} }));
+    const entries = readHistory(h.log.dir, null).entries;
+    // Drop the role of the first finish line and of a run without a start line, as in logs from before it was written.
+    const stripped = entries.map((entry) => {
+      if (entry.event !== 'run_finished' || (entry.fields.run !== 'r1' && entry.fields.run !== 'r5')) return entry;
+      const { role: _role, ...fields } = entry.fields;
+      return { ...entry, fields };
+    });
+    const a = computeAnalytics(stripped, h.pricing.current(), filter(), NOW);
+
+    assert.deepEqual(a.by_role.map((r) => [r.role, r.runs, r.issues, r.failed]), [['developer', 2, 1, 0], ['reviewer', 2, 2, 1], ['unknown', 1, 1, 0]]);
+    const developer = a.by_role[0];
+    assert.equal(developer?.total_tokens, 2 * (1000 + 2000 + 100_000 + 10_000));
+    assert.equal(developer?.agent_seconds, 120);
+    assert.deepEqual(developer?.by_outcome, { handed_off: 2 });
+    assert.deepEqual(a.by_role[1]?.by_outcome, { failed: 1, handed_off: 1 });
+    assert.ok(Math.abs(a.by_role.reduce((sum, r) => sum + r.cost_usd, 0) - a.totals.cost_usd) < 1e-3);
+    assert.ok(Math.abs(a.by_role.reduce((sum, r) => sum + (r.cost_share ?? 0), 0) - 1) < 1e-3);
+
+    // Pipeline cost of an issue = all its runs across roles.
+    const first = a.issues.find((i) => i.issue === 'acme/app#1');
+    assert.equal(first?.cost_usd, a.totals.cost_usd);
+    assert.deepEqual(Object.keys(first?.roles ?? {}), ['developer', 'reviewer']);
+    assert.equal(first?.roles.developer?.runs, 2);
+    assert.equal(first?.roles.reviewer?.cost_usd, a.by_role[1]?.cost_usd);
+    assert.deepEqual(a.top.pipelines.map((p) => [p.issue, p.runs, p.cost_usd]), [['acme/app#1', 3, first?.cost_usd]]);
+    assert.ok(a.top.cost.every((r) => ['developer', 'reviewer', 'unknown'].includes(r.role)));
+
+    // Only logs without any role line.
+    const bare = stripped.filter((entry) => entry.event !== 'run_started').map((entry) => {
+      const { role: _role, ...fields } = entry.fields;
+      return { ...entry, fields };
+    });
+    const old = computeAnalytics(bare, h.pricing.current(), filter(), NOW);
+    assert.deepEqual(old.by_role.map((r) => [r.role, r.runs]), [['unknown', 5]]);
+    assert.deepEqual(computeAnalytics([], h.pricing.current(), filter(), NOW).by_role, []);
   });
 
   it('aggregates a period with the existing prices and compares it with the previous one', () => {

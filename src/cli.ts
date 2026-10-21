@@ -101,11 +101,13 @@ async function main(): Promise<number> {
   }
   const env = envFile?.env ?? process.env;
 
-  if (values['dry-run']) return dryRun({ workflowPath, env, envFile, logLevel });
+  const logDir = path.resolve(values['log-dir'] ?? defaultLogDir(env, path.dirname(workflowPath)));
+  // The dry run reads the model holds of the runtime state there, it writes nothing.
+  if (values['dry-run']) return dryRun({ workflowPath, env, envFile, logLevel, logDir });
   return runService({
     workflowPath,
     port,
-    logDir: path.resolve(values['log-dir'] ?? defaultLogDir(env, path.dirname(workflowPath))),
+    logDir,
     logFile: values['log-file'] !== undefined ? path.resolve(values['log-file']) : null,
     logLevel,
     env,
