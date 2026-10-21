@@ -19,6 +19,7 @@ import type { EffectiveWorkflow } from '../workflow/store.ts';
 import { internalResult, renderResultComment, type ResultMeta } from '../workflow/results.ts';
 import { normalizeStateName } from '../workflow/config.ts';
 import { EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../workflow/template.ts';
+import { writeAttachments, type AttachmentFile } from '../workspace/attachments.ts';
 import { changedFiles } from '../workspace/changes.ts';
 import { baselineCommit, changedFilesSince } from './changed-files.ts';
 import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord } from './guard.ts';
@@ -303,6 +304,25 @@ function transcriptPath(dir: string | null, workspace: Workspace): string | null
 }
 
 /**
+ * Downloads the issue's attachments into the workspace for the prompt variable `attachments`. Never throws: when the
+ * issue cannot be read, the list holds one entry with the error, so the agent knows the files are missing.
+ */
+async function prepareAttachments(adapter: TrackerAdapter, issue: Issue, workspacePath: string, logger: Logger): Promise<AttachmentFile[]> {
+  if (adapter.issueAttachments === undefined) return [];
+  try {
+    const files = await writeAttachments(workspacePath, await adapter.issueAttachments(issue));
+    if (files.length > 0) {
+      logger.info('issue attachments downloaded', { files: files.map((file) => file.path ?? `failed (${file.error})`).join(', ') });
+    }
+    return files;
+  } catch (error) {
+    logger.warn('issue attachments could not be downloaded', { error: errorMessage(error) });
+    await writeAttachments(workspacePath, []).catch(() => undefined);
+    return [{ path: null, label: '', source: 'description and comments', error: errorMessage(error) }];
+  }
+}
+
+/**
  * One run attempt (spec 16.5): workspace, before_run, one live agent session with up to
  * max_turns turns while the issue stays active, then after_run. Never throws.
  */
@@ -379,6 +399,10 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       signal,
     });
     callbacks.integrationsPrepared(extensions?.historyFields ?? {}, extensions?.reports ?? []);
+    if (signal.aborted) return await finish(cancelled());
+
+    // Images and PDFs uploaded to the issue: the agent only sees their content when it opens the downloaded files.
+    const attachments = await prepareAttachments(params.adapter, issue, workspace.path, logger);
     if (signal.aborted) return await finish(cancelled());
 
     // Plugin subagents for this role and workspace: the prompt lists the allowed ones, the session refuses the rest.
@@ -501,6 +525,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       result_required: support !== null,
       test_paths: params.workflow.config.pipeline.testPaths,
       docs_paths: params.workflow.config.pipeline.docsPaths,
+      attachments,
     };
     const transcript = transcriptPath(params.transcriptDir, activeWorkspace);
     if (transcript !== null) callbacks.transcript(transcript);

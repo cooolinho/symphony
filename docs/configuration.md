@@ -235,7 +235,7 @@ write a `transition_denied` line.
 | `max_retry_backoff_ms` | `300000` | Cap for failure retries (10 s, 20 s, 40 s, …). |
 | `max_concurrent_agents_by_state` | `{}` | Per-status limits, e.g. `{ "In Progress": 1 }`. Invalid entries are ignored with a warning. |
 | `reserved_slots_by_role` | `{}` | Slots kept free for a [role](#roles), e.g. `{ developer: 1, reviewer: 1 }`, so a developer and a reviewer can always run side by side. An issue of role R starts only while the free slots exceed the unused reservations of the other roles (Σ max(0, reserved − running)); a reserved slot stays empty while its role has nothing to do. Command roles (`planner`, `auditor`, …) count as their own roles and never use the developer's reservation. Column limits still apply. Names that are not roles, and values that are not integers of `0` or more, are ignored with a warning. If the reservations add up to more than `max_concurrent_agents`, they are ignored and the dashboard shows a problem. See [Reserved slots](#reserved-slots). |
-| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `agents`, `results`, `round`, `result_required`, `test_paths`, `turn_number`, `max_turns`). |
+| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `agents`, `results`, `round`, `result_required`, `test_paths`, `attachments`, `turn_number`, `max_turns`). |
 
 #### Reserved slots
 
@@ -1294,6 +1294,11 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
   `name` (what the Agent tool takes as `subagent_type`, e.g. `symphony:laravel-architect`) and `description`. Always
   defined; empty when the session may start none: `{% if agents.size > 0 %}…{% endif %}`.
 - `test_paths`: the list `pipeline.test_paths`, so the prompt of a test engineer can name the files it may change. Always defined.
+- `attachments`: the files uploaded to the issue's description and comments, downloaded into the workspace before the
+  session (see [Images and files in the issue](usage.md#images-and-files-in-the-issue)), in order of appearance, each
+  `{path, label, source, error}`: `path` is workspace-relative (`.issue-assets/attachment-1.png`), or `null` when the
+  download failed and `error` says why; `label` is the image's alt text or the file link's text; `source` is
+  `description` or the comment's URL. Always defined; empty without attachments: `{% if attachments.size > 0 %}…{% endif %}`.
 - `results`, `round`, `result_required`: the issue's stage history, always defined. A role with
   [`result`](#result-driven-transitions) reads the issue's persisted results when its session starts (one paginated read
   of the issue's comments per session; other roles make no extra request and see the empty values).

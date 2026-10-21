@@ -452,7 +452,15 @@ You are working on GitHub issue **{{ issue.identifier }}**: {{ issue.title }}
 
 {{ issue.description | default: "(no description)" }}
 
-{% if issue.command %}## Issue command: /{{ issue.command.name }}
+{% if attachments.size > 0 %}## Attachments
+
+The description and comments only link to these files; Symphony downloaded them into the workspace (`.issue-assets/`, kept out of git and listed in `.issue-assets/INDEX.md`). You see an image or PDF only when you open it: open every file below with the Read tool before you plan, design or change anything.
+{% for file in attachments %}
+- {% if file.path %}`{{ file.path }}`{% else %}not downloaded ({{ file.error }}){% endif %}{% if file.label != "" %}: "{{ file.label }}"{% endif %}, from {% if file.source == "description" %}the description{% else %}{{ file.source }}{% endif %}{% endfor %}
+
+A mockup or screenshot is part of the requirements: layout, order, labels and texts follow it. Where it contradicts the description, say so in your result. If the issue depends on a file that could not be downloaded or opened, do not guess what it shows: say so in your result.
+
+{% endif %}{% if issue.command %}## Issue command: /{{ issue.command.name }}
 
 The description starts with the command `/{{ issue.command.name }}`{% if issue.command.args != "" %} and the argument `{{ issue.command.args }}`{% endif %}. Before anything else, load the skill `{{ issue.command.skill }}` with the Skill tool{% if issue.command.args != "" %} and pass it the argument{% endif %}, then follow it. Where the skill and the steps of your role below disagree, the skill wins. What your role may do (read-only access, allowed status changes, available tools) still applies.
 
@@ -502,7 +510,7 @@ The current directory is a clone of the issue's repository. Work only inside it.
 7. Commit with clear messages and push the branch (`git push -u origin {{ branch }}`); the working tree must be clean and everything pushed. Open a pull request with `open_pull_request` if none exists yet, with "Closes #{{ issue.native_ref.number }}" in its body.
 8. Hand off with `report_result` (verdict `done`). Symphony posts the result as the issue comment, runs the entry checks (lint, static analysis, tests) and moves the issue to the next stage ("Agent review", or "Testing" when an independent test engineer writes tests first). Do not write a separate summary comment. Fields:
    - `verdict`: `done`.
-   - `summary`: what changed, how you verified it, and the pull request link.
+   - `summary`: what changed, how you verified it, and the pull request link.{% if attachments.size > 0 %} Name the attachments (mockups, screenshots) the change implements.{% endif %}
    - `changed_files`, `tests_added`: the files you changed and the tests you added or updated.
    - `notes`, `plan_deviations`: anything the reviewer should know, and where you deviated from the issue or its plan.
    - `follow_ups`: work worth a separate issue.
@@ -534,7 +542,7 @@ The current directory is a clone of the issue's repository. Work only inside it.
 4. Refine the acceptance criteria: keep every criterion of the issue, make vague ones checkable, add the ones the issue implies but does not name.
 5. Report exactly one result with `report_result`. Do not post a separate analysis comment. Fields:
    - `verdict`: `ready` (the issue is clear enough to implement) or `needs_info` (a human must answer something first; you cannot guess it safely).
-   - `summary`: the requirements and the approach in a few sentences.
+   - `summary`: the requirements and the approach in a few sentences.{% if attachments.size > 0 %} Also describe what each attachment shows (one or two sentences per file, named by its file name), so a human can check that you looked at it.{% endif %}
    - `type`: `bugfix`, `feature` or `refactor`. `complexity`: `S` (a few lines), `M` (one component), `L` (several components) or `XL` (cross-cutting or needs a design). Symphony sets the `Type:` and `Complexity:` labels from them only where the issue has none; a label a human set stays.
    - `components`: the affected modules, directories or services. `acceptance_criteria`: the refined criteria.{% if issue.type == "refactor" or issue.type == nil %}
    - `refactoring_goals`: for a refactoring only: what it has to achieve, one checkable goal per entry (for example "the duplicated parsing code exists once", "no public signature of the module changes"). The review must confirm each goal word for word, so keep them short and concrete; leave the list empty for other types.{% endif %}

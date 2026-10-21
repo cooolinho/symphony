@@ -172,6 +172,9 @@ live in **`.env`**.
   ([details](docs/usage.md#concept-to-backlog-concept)); `/plan docs/todo.md`, or `/plan` with a list below it in the
   issue, turns every list item into one sub-issue with a detailed implementation plan, dependencies and effort and model
   labels, in the backlog ([details](docs/usage.md#list-to-backlog-plan)).
+- **Images and files in the issue:** mockups, screenshots and PDFs uploaded to an issue are downloaded into the
+  workspace before every session (also from private repositories), and the agent opens them before it starts; the
+  analyst describes them in its analysis ([details](docs/usage.md#images-and-files-in-the-issue)).
 - **Tracker tools for the agent:** set the status, comment, open a pull request and (for the planning roles only)
   create sub-issues. The GitHub token stays in the Symphony process; the agent never sees it.
 - **Robust:** retries with exponential backoff, stall detection; an agent is stopped when its issue changes on the board.

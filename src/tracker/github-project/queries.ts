@@ -146,6 +146,21 @@ export const ISSUE_COMMENTS_QUERY = /* GraphQL */ `
   }
 `;
 
+/** Rendered HTML of the description and the comments: for private repositories its image URLs are signed. */
+export const ISSUE_ATTACHMENTS_QUERY = /* GraphQL */ `
+  query SymphonyIssueAttachments($issueId: ID!, $after: String) {
+    node(id: $issueId) {
+      ... on Issue {
+        bodyHTML
+        comments(first: 100, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes { url bodyHTML }
+        }
+      }
+    }
+  }
+`;
+
 /** The account the token belongs to. */
 export const VIEWER_QUERY = /* GraphQL */ `
   query SymphonyViewer {

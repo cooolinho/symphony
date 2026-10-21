@@ -66,8 +66,8 @@ export async function renderPrompt(template: PromptTemplate, scope: Record<strin
     throw new SymphonyError('template_parse_error', `prompt template does not parse: ${template.parseError}`);
   }
   try {
-    // `agents` (the session's subagents), `test_paths` and the stage-history variables are optional for callers that render without a session, e.g. tests.
-    const defaults = { agents: [], results: EMPTY_RESULTS, round: 1, result_required: false, test_paths: [], docs_paths: [] };
+    // `agents` (the session's subagents), `test_paths`, `attachments` and the stage-history variables are optional for callers that render without a session, e.g. tests.
+    const defaults = { agents: [], results: EMPTY_RESULTS, round: 1, result_required: false, test_paths: [], docs_paths: [], attachments: [] };
     const results = typeof scope.results === 'object' && scope.results !== null ? { ...EMPTY_RESULTS, ...scope.results } : defaults.results;
     return (await engine.render(template.parsed, { ...defaults, ...scope, results })).trim();
   } catch (error) {

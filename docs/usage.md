@@ -465,6 +465,31 @@ Agents do not close issues themselves. So a dependency resolves as soon as you m
 `Closes #N`. That way the next issue builds on merged code. References to issues that do not exist are ignored.
 `npm run dry-run` shows why an issue waits. The agent sees parent, sub-issues and dependencies in the prompt.
 
+## Images and files in the issue
+
+An agent reading an issue only sees text: an image in the description is a link, not a picture. So before every
+session (after `before_run`), Symphony downloads the files uploaded to the issue's description and comments (images,
+PDFs and other files dragged into the issue) into the workspace:
+
+- `.issue-assets/attachment-<n>.<ext>` in order of appearance (the description first, then the comments), plus
+  `.issue-assets/INDEX.md` naming each file's label and source. The directory is listed in `.git/info/exclude`, so no
+  stage commits it, and it is replaced on every session.
+- The prompt lists the files ([`attachments`](configuration.md#prompt-template)) and tells the agent to open each one
+  with the Read tool before it plans or changes anything; a mockup counts as part of the requirements. The issue
+  analyst describes what each attachment shows in its analysis comment, so you can check that it looked at them; the
+  developer names the mockups it implemented.
+
+Symphony downloads with its own GitHub token, which the agent never sees. Private repositories work: their image URLs
+are signed for a few minutes, so the download follows right after reading the issue. The token is only sent to
+`github.com` (the web host of a GitHub Enterprise endpoint); redirects to the signed storage URLs go without it.
+A classic token with the `repo` scope is needed (fine-grained tokens cannot download attachments of private
+repositories). Only uploads count: emojis and images from other sites are skipped. At most 20 files of up to 20 MB
+each; a file that fails is listed in the prompt with its error, and the session starts anyway.
+
+Tips for mockups: PNG, JPG, WebP or PDF (no SVG or Figma links: the agent cannot open them), one screen per image, a
+meaningful alt text (`![Mockup desktop – start page](…)` instead of `![image](…)`), and no large transparent areas
+(Claude Code's Read tool can fail on those).
+
 ## Commands in the issue (`/refactoring`)
 
 A task that works the same in many repositories does not go into each repository, but once into Symphony as a skill

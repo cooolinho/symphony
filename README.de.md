@@ -174,6 +174,9 @@ und Token stehen in der **`.env`**.
   ([Details](docs/usage.md#concept-to-backlog-concept)); `/plan docs/todo.md` oder `/plan` mit einer Liste darunter im
   Issue macht aus jedem Listenpunkt ein Sub-Issue mit ausführlichem Umsetzungsplan, Abhängigkeiten sowie Effort- und
   Modell-Labels, im Backlog ([Details](docs/usage.md#list-to-backlog-plan)).
+- **Bilder und Dateien im Issue:** Mockups, Screenshots und PDFs, die in ein Issue hochgeladen wurden, lädt Symphony
+  vor jeder Session in den Workspace (auch aus privaten Repositories), und der Agent öffnet sie, bevor er loslegt; der
+  Analyst beschreibt sie in seiner Analyse ([Details](docs/usage.md#images-and-files-in-the-issue)).
 - **Tracker-Tools für den Agenten:** Status setzen, kommentieren, Pull Request öffnen und (nur für die
   planenden Rollen) Sub-Issues anlegen. Der GitHub-Token bleibt im Symphony-Prozess, der Agent sieht ihn nie.
 - **Robust:** Wiederholungen mit exponentiellem Backoff, Erkennung hängender Sessions; ändert sich das Issue auf dem

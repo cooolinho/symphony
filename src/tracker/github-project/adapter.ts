@@ -6,6 +6,7 @@ import {
   type AddLabelsResult,
   type AgentToolSpec,
   type Issue,
+  type IssueAttachment,
   type IssueComment,
   type PostedComment,
   type RemoveLabelsResult,
@@ -13,6 +14,7 @@ import {
   type TrackedResult,
   type TrackerAdapter,
 } from '../types.ts';
+import { downloadAttachments, extractAttachmentLinks, webOrigin, type AttachmentLink } from './attachments.ts';
 import { assertNoGraphqlErrors, type GithubGraphqlClient, type GraphqlError } from './client.ts';
 import { isCreatableLabel, labelDefinition } from './labels.ts';
 import { autoMerge } from './merge.ts';
@@ -35,6 +37,7 @@ import {
   ADD_COMMENT_MUTATION,
   ADD_LABELS_MUTATION,
   CREATE_LABEL_MUTATION,
+  ISSUE_ATTACHMENTS_QUERY,
   ISSUE_COMMENTS_QUERY,
   ITEM_DETAILS_QUERY,
   PROJECT_ITEMS_QUERY,
@@ -101,13 +104,15 @@ export class GithubProjectAdapter implements TrackerAdapter {
   readonly settings: GithubProjectSettings;
   readonly client: GithubGraphqlClient;
   #logger: Logger;
+  #fetch: typeof fetch;
   #meta: Promise<ProjectMeta> | null = null;
   #viewer: Promise<string> | null = null;
 
-  constructor(settings: GithubProjectSettings, client: GithubGraphqlClient, logger: Logger) {
+  constructor(settings: GithubProjectSettings, client: GithubGraphqlClient, logger: Logger, fetchImpl: typeof fetch = fetch) {
     this.settings = settings;
     this.client = client;
     this.#logger = logger.child({ tracker: KIND });
+    this.#fetch = fetchImpl;
   }
 
   /** Project id and field metadata, fetched once per adapter instance (refresh with force). */
@@ -328,6 +333,41 @@ export class GithubProjectAdapter implements TrackerAdapter {
       seenCursors.add(cursor);
       after = cursor;
     }
+  }
+
+  async issueAttachments(issue: Issue): Promise<IssueAttachment[]> {
+    const ref = this.#requireRef(issue, 'read attachments of');
+    const origin = webOrigin(this.settings.endpoint);
+    const links: AttachmentLink[] = [];
+    const seenCursors = new Set<string>();
+    let after: string | null = null;
+    for (let page = 1; ; page++) {
+      const response = await this.client.request<Json>(ISSUE_ATTACHMENTS_QUERY, { issueId: ref.issueId, after });
+      assertNoGraphqlErrors(response.errors);
+      const node = obj(obj(response.data)?.node);
+      const connection = obj(node?.comments);
+      const pageInfo = obj(connection?.pageInfo);
+      if (node === null || connection === null || pageInfo === null || !Array.isArray(connection.nodes)) {
+        throw new TrackerError('tracker_response', `attachments of ${issue.identifier} missing from GitHub response`);
+      }
+      if (page === 1 && typeof node.bodyHTML === 'string') links.push(...extractAttachmentLinks(node.bodyHTML, 'description', origin));
+      for (const raw of connection.nodes) {
+        const comment = obj(raw);
+        if (typeof comment?.bodyHTML === 'string' && typeof comment.url === 'string') {
+          links.push(...extractAttachmentLinks(comment.bodyHTML, comment.url, origin));
+        }
+      }
+
+      if (pageInfo.hasNextPage !== true) break;
+      const cursor = pageInfo.endCursor;
+      if (typeof cursor !== 'string' || cursor === '' || seenCursors.has(cursor) || page >= MAX_PAGES) {
+        throw new TrackerError('tracker_pagination', `could not page through the comments of ${issue.identifier}`);
+      }
+      seenCursors.add(cursor);
+      after = cursor;
+    }
+    // Signed image URLs expire after a few minutes: download right after reading them.
+    return downloadAttachments(links, { fetch: this.#fetch, token: this.settings.token, origin, timeoutMs: this.settings.requestTimeoutMs });
   }
 
   async readResults(issue: Issue): Promise<TrackedResult[]> {

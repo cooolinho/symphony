@@ -179,6 +179,20 @@ export interface RemoveLabelsResult {
   unknown: string[];
 }
 
+/** A file uploaded to an issue's description or one of its comments, downloaded for the agent to open. */
+export interface IssueAttachment {
+  /** Alt text of the image or text of the file link; '' when it has none. */
+  label: string;
+  /** Where it appears: "description", or the URL of the comment. */
+  source: string;
+  /** File extension without the dot (from the content type, else the URL); '' when the download failed. */
+  extension: string;
+  /** The file's content; null when the download failed. */
+  data: Uint8Array | null;
+  /** Why the download failed; null when it succeeded. */
+  error: string | null;
+}
+
 /** The read kernel the orchestrator needs (spec 11.1), plus optional agent tools (spec 10.5). */
 export interface TrackerAdapter {
   readonly kind: string;
@@ -203,6 +217,11 @@ export interface TrackerAdapter {
   commentOnIssue?(issue: Issue, body: string): Promise<void>;
   /** Every comment of the issue with its author, oldest first, however many pages the tracker needs. */
   readComments?(issue: Issue): Promise<IssueComment[]>;
+  /**
+   * The files uploaded to the issue's description and comments (images, PDFs, other files), downloaded in order of
+   * appearance. A file that could not be downloaded is listed with `error`; only reading the issue itself throws.
+   */
+  issueAttachments?(issue: Issue): Promise<IssueAttachment[]>;
   /**
    * Stage results decoded from the issue's comments, oldest first. Only comments written by the adapter's own account
    * (`viewerLogin()`) count; markers in all others are ignored and logged.
