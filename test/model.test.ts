@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { describe, it } from 'node:test';
-import { chooseEffort, chooseModel, effortForLabelValue, isEffortLabel, isModelLabel, modelForLabelValue, modelOverridesFor, sessionClaudeConfig } from '../src/agent/model.ts';
+import { chooseEffort, chooseModel, chooseRoleEffort, chooseRoleModel, effortForLabelValue, isEffortLabel, isModelLabel, modelForLabelValue, modelOverridesFor, sessionClaudeConfig } from '../src/agent/model.ts';
 import { roleModelLine } from '../src/service.ts';
 import { STANDARD_LABELS, WORKFLOW_LABELS } from '../src/repo-init/labels.ts';
 import { isComplexityLabel, isTypeLabel } from '../src/workflow/classify.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 import { resolveConfig } from '../src/workflow/config.ts';
+import { loadWorkflowFile } from '../src/workflow/loader.ts';
 
 const claudeConfig = (claude: Record<string, unknown>) =>
   resolveConfig({ claude }, { workflowPath: '/w/WORKFLOW.md', env: {}, trackerDefaults }).claude;
@@ -222,14 +224,14 @@ describe('effort labels', () => {
   });
 
   it('picks the effort from a label, else the default', () => {
-    assert.deepEqual(chooseEffort(['bug', 'effort: high'], 'low'), { effort: 'high', label: 'effort: high', warning: null });
-    assert.deepEqual(chooseEffort(['Effort:MAX'], null), { effort: 'max', label: 'Effort:MAX', warning: null });
-    assert.deepEqual(chooseEffort(['bug', 'model: opus'], 'medium'), { effort: 'medium', label: null, warning: null });
-    assert.deepEqual(chooseEffort([], null), { effort: null, label: null, warning: null });
+    assert.deepEqual(chooseEffort(['bug', 'effort: high'], 'low'), { effort: 'high', label: 'effort: high', warning: null, labelIgnored: false });
+    assert.deepEqual(chooseEffort(['Effort:MAX'], null), { effort: 'max', label: 'Effort:MAX', warning: null, labelIgnored: false });
+    assert.deepEqual(chooseEffort(['bug', 'model: opus'], 'medium'), { effort: 'medium', label: null, warning: null, labelIgnored: false });
+    assert.deepEqual(chooseEffort([], null), { effort: null, label: null, warning: null, labelIgnored: false });
   });
 
   it('treats labels naming the same level as one choice', () => {
-    assert.deepEqual(chooseEffort(['effort: high', 'Effort: HIGH'], 'low'), { effort: 'high', label: 'effort: high', warning: null });
+    assert.deepEqual(chooseEffort(['effort: high', 'Effort: HIGH'], 'low'), { effort: 'high', label: 'effort: high', warning: null, labelIgnored: false });
   });
 
   it('falls back to the default effort for conflicting or unknown labels, with a warning', () => {
@@ -253,6 +255,42 @@ describe('effort labels', () => {
     assert.equal(chooseModel(labels, 'opus').warning, null);
     assert.equal(chooseEffort(labels, 'low').warning, null);
   });
+
+  it('ignores effort labels when the effortLabel policy is "ignore"', () => {
+    assert.deepEqual(chooseEffort(['effort: xhigh'], 'high', 'ignore'), { effort: 'high', label: null, warning: null, labelIgnored: true });
+    assert.deepEqual(chooseEffort(['effort: hi'], null, 'ignore'), { effort: null, label: null, warning: null, labelIgnored: true });
+    assert.deepEqual(chooseEffort(['bug'], 'medium', 'ignore'), { effort: 'medium', label: null, warning: null, labelIgnored: false });
+  });
+});
+
+describe('model and effort of a role', () => {
+  const role = (claude: Record<string, unknown>, policies: { modelLabel?: 'apply' | 'ignore'; effortLabel?: 'apply' | 'ignore' } = {}) => ({
+    modelLabel: policies.modelLabel ?? 'apply',
+    effortLabel: policies.effortLabel ?? 'apply',
+    claude,
+  });
+
+  it('picks the model by label, else by the Complexity: label, else the role model, else the default', () => {
+    const developer = role({ modelByComplexity: { L: 'opus', XL: 'opus' } });
+    assert.equal(chooseRoleModel(['complexity: l'], developer, 'sonnet').model, 'opus');
+    assert.equal(chooseRoleModel(['Complexity: XL'], developer, 'sonnet').source, 'complexity');
+    assert.equal(chooseRoleModel(['complexity: m'], developer, 'sonnet').model, 'sonnet');
+    assert.equal(chooseRoleModel([], developer, 'sonnet').model, 'sonnet');
+    assert.equal(chooseRoleModel(['complexity: l', 'model: fable'], developer, 'sonnet').model, 'fable', 'a label escalates');
+
+    const architect = role({ model: 'opus', modelByComplexity: { L: 'fable', XL: 'fable' } }, { modelLabel: 'ignore' });
+    assert.equal(chooseRoleModel(['complexity: xl', 'model: haiku'], architect, 'sonnet').model, 'fable');
+    assert.equal(chooseRoleModel(['complexity: s', 'model: haiku'], architect, 'sonnet').model, 'opus');
+    assert.equal(chooseRoleModel(['model: haiku'], null, 'sonnet').model, 'haiku', 'no role: the label and the default');
+  });
+
+  it('picks the effort by label unless the role ignores it, else the role effort, else the default', () => {
+    assert.equal(chooseRoleEffort(['effort: xhigh'], role({ effort: 'high' }), 'medium').effort, 'xhigh');
+    const reviewer = chooseRoleEffort(['effort: xhigh'], role({ effort: 'high' }, { effortLabel: 'ignore' }), 'medium');
+    assert.deepEqual([reviewer.effort, reviewer.labelIgnored], ['high', true]);
+    assert.equal(chooseRoleEffort([], role({}), 'medium').effort, 'medium');
+    assert.equal(chooseRoleEffort(['effort: low'], null, 'medium').effort, 'low');
+  });
 });
 
 describe('roleModelLine', () => {
@@ -260,5 +298,38 @@ describe('roleModelLine', () => {
     assert.equal(roleModelLine('reviewer', 'opus', 'high'), 'role reviewer, model opus, effort high');
     assert.equal(roleModelLine('default', null, null), 'role default, model default, effort default');
     assert.equal(roleModelLine('default', 'sonnet'), 'role default, model sonnet, effort default');
+  });
+});
+
+describe('models and effort of the shipped WORKFLOW.md', () => {
+  const shipped = path.join(import.meta.dirname, '..', 'WORKFLOW.md');
+  const env = { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't', CLAUDE_MODEL: 'sonnet' };
+  const session = async (roleName: string, labels: string[]) => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const config = resolveConfig(definition.config, { workflowPath: shipped, env, trackerDefaults });
+    const role = config.roles?.find((entry) => entry.name === roleName) ?? null;
+    assert.ok(role, roleName);
+    return { model: chooseRoleModel(labels, role, config.claude.model).model, effort: chooseRoleEffort(labels, role, config.claude.effort).effort };
+  };
+
+  it('designs larger changes with fable and implements them with opus, smaller ones with CLAUDE_MODEL', async () => {
+    assert.equal((await session('architect', ['complexity: l'])).model, 'fable');
+    assert.equal((await session('architect', ['Complexity: XL', 'model: haiku'])).model, 'fable');
+    assert.equal((await session('architect', ['complexity: m'])).model, 'opus');
+    assert.equal((await session('developer', ['complexity: l'])).model, 'opus');
+    assert.equal((await session('developer', ['complexity: m'])).model, 'sonnet');
+    assert.equal((await session('developer', [])).model, 'sonnet');
+    assert.equal((await session('developer', ['complexity: xl', 'model: fable'])).model, 'fable', 'a Model: label escalates the developer');
+  });
+
+  it('keeps the model and effort of the roles with a fixed task, whatever the labels say', async () => {
+    const labels = ['model: haiku', 'effort: xhigh', 'complexity: xl'];
+    assert.deepEqual(await session('issue-analyst', labels), { model: 'sonnet', effort: 'medium' });
+    assert.deepEqual(await session('test-engineer', labels), { model: 'sonnet', effort: 'high' });
+    assert.deepEqual(await session('docs', labels), { model: 'haiku', effort: 'medium' });
+    assert.deepEqual(await session('reviewer', labels), { model: 'opus', effort: 'high' });
+    assert.deepEqual(await session('security-auditor', labels), { model: 'opus', effort: 'high' });
+    assert.equal((await session('developer', labels)).effort, 'xhigh', 'an Effort: label still steers the developer');
+    assert.equal((await session('architect', labels)).effort, 'xhigh', 'and the architect');
   });
 });

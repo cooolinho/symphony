@@ -74,6 +74,10 @@ Agenten, der daran arbeitet.
 
 - Ohne Label gilt der Standard der Rolle (z. B. `opus` für den Reviewer), danach `CLAUDE_MODEL` / `CLAUDE_EFFORT` aus
   der `.env`.
+- Labels steuern den Developer: Die Rollen mit fester Aufgabe (Analyse, Tests, Doku, Review, Security) behalten ihr
+  Modell und ihren Effort (`model_label` / `effort_label: ignore`). Der Architect entwirft größere Änderungen mit
+  `fable` (Complexity L und XL), der Developer setzt sie mit `opus` um; siehe
+  [Model and effort per role](docs/usage.md#model-and-effort-per-role).
 - `npm run repo-init` legt die vier Modell-Labels und die fünf Effort-Labels (von hell nach dunkel eingefärbt) in deinen
   Repositories an.
 - Mit `/auto-code … issue-models=auto` versieht der Autopilot-Agent jedes Sub-Issue mit einem passenden Modell-Label:
@@ -122,8 +126,8 @@ Bug-, Feature- und Refactor-Issues durchlaufen vor dem Review eine Spalte `Testi
 oder Migrationen) danach ein lesendes `Security review`. Review-, Test- und Security-Schleifen sind begrenzt: Am
 Rundenlimit geht die Karte nach **Blocked** und bekommt das Label `needs-human`.
 
-Was der Agent tun soll, steht in der **`WORKFLOW.md`** (Prompt und Einstellungen). Board, Repositories, Standardmodell
-und Token stehen in der **`.env`**.
+Was der Agent tun soll, steht in der **`WORKFLOW.md`** (Prompt und Einstellungen) und in den Rollen-Prompts, die sie
+aus **`roles/<rolle>.md`** einbindet. Board, Repositories, Standardmodell und Token stehen in der **`.env`**.
 
 ## ✨ Features
 
@@ -229,6 +233,7 @@ Laravel Boost und Fehlerbehebung.
 ```
 symphony/
 ├── WORKFLOW.md                 # Rollen, Checks, Prompt und Einstellungen (wird live neu geladen)
+├── roles/                      # ein Prompt pro Rolle (developer.md, reviewer.md, …), eingebunden von WORKFLOW.md
 ├── hooks/laravel-env.sh        # after_create: eigene .env und SQLite-Datenbank pro Laravel-App (optional MySQL)
 ├── hooks/laravel-db-drop.sh    # before_remove: löscht die MySQL-Datenbanken des Workspaces
 ├── checks/laravel.sh           # Entry-Check vor Agent review und In review (Lint, Analyse, Tests)

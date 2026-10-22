@@ -181,13 +181,15 @@ describe('#204 prompts of the shipped WORKFLOW.md', () => {
     compatibility: 'COMPAT-TEXT',
     options: ['OPTION-ONE'],
     work_packages: [],
+    plan: ['PLAN-STEP-ONE'],
+    tests: ['TEST-ONE'],
     head_sha: null,
   };
   const render = async (role: string, results: Record<string, unknown> | undefined): Promise<string> => {
     const { definition } = await shippedFront();
     const issue = makeIssue({ id: '7', state: 'In progress', labels: ['Type: feature', 'Complexity: M'], description: 'Add an export', native_ref: { provider: 'github_project', repository: 'acme/app', number: 7, parent: null, sub_issues: [], base_branch: null, status_updated_at: '2026-01-01T00:00:00.000Z' } });
     const subject = { ...issue, native_ref: { ...issue.native_ref, base_branch: null } };
-    const template = compilePrompt(definition.promptTemplate);
+    const template = compilePrompt(definition.promptTemplate, definition.partials);
     assert.equal(template.parseError, null);
     const empty = { latest: [], open_findings: [], failed_cases: [], test: null, analysis: null, design: null };
     return renderPrompt(template, {
@@ -204,7 +206,7 @@ describe('#204 prompts of the shipped WORKFLOW.md', () => {
   it('the developer sees the newest design when present and no design block when absent', async () => {
     const empty = { latest: [], open_findings: [], failed_cases: [], test: null, analysis: null, design: null };
     const withDesign = await render('developer', { ...empty, design });
-    for (const part of ['DECISION-TEXT', 'COMPONENT-ONE', 'INTERFACE-ONE', 'MIGRATION-ONE', 'COMPAT-TEXT', 'OPTION-ONE']) assert.ok(withDesign.includes(part), part);
+    for (const part of ['DECISION-TEXT', 'COMPONENT-ONE', 'INTERFACE-ONE', 'MIGRATION-ONE', 'COMPAT-TEXT', 'OPTION-ONE', 'PLAN-STEP-ONE', 'TEST-ONE']) assert.ok(withDesign.includes(part), part);
     const without = await render('developer', undefined);
     assert.doesNotMatch(without, /DECISION-TEXT|COMPONENT-ONE/);
     assert.doesNotMatch(without, /Design of the architect/);
@@ -254,7 +256,7 @@ describe('#204 orchestrator: dispatch skips of Design for refactor S and bugfix 
     ]);
     tracker.statusOptions = async () => BOARD;
     const runner = new FakeRunner(async (turn): Promise<TurnResult> => ({ ok: true, turnId: String(turn), resultText: 'done' }));
-    const workflow = new StaticWorkflow(makeWorkflow(config, { prompt: definition.promptTemplate, env: ENV, dir: path.dirname(shipped) }));
+    const workflow = new StaticWorkflow(makeWorkflow(config, { prompt: definition.promptTemplate, partials: definition.partials, env: ENV, dir: path.dirname(shipped) }));
     const orchestrator = new Orchestrator({ workflow, runner, logger: Logger.silent(), env: {}, logDir: null, clock: new ManualClock(), timers: new ManualTimers(), createAdapter: () => tracker });
     return { orchestrator, tracker, runner };
   }

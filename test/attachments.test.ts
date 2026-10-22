@@ -217,7 +217,7 @@ describe('attachments in the shipped prompt', () => {
   });
   const render = async (role: string, attachments?: unknown[]) => {
     const { definition } = await loadWorkflowFile(shipped);
-    return renderPrompt(compilePrompt(definition.promptTemplate), {
+    return renderPrompt(compilePrompt(definition.promptTemplate, definition.partials), {
       issue: issueTemplateValue(issue),
       attempt: null,
       role,

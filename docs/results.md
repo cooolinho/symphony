@@ -25,7 +25,7 @@ reported to the agent instead of being dropped silently.
 | Kind | Verdicts | Fields |
 |---|---|---|
 | `analysis` | `ready`, `needs_info` | `type`, `complexity` (S/M/L/XL), `components[]`, `acceptance_criteria[]`, `risks {security, data_migration, breaking_change}`, `docs_needed`, `open_questions[]`, `plan[]`, `refactoring_goals[]` (refactor issues: what the refactoring has to achieve) |
-| `design` | `ready`, `split`, `blocked` | `options[]`, `decision`, `components[]`, `interfaces[]`, `migrations[]`, `compatibility`, `work_packages[]` (optional; with `split` at least two) |
+| `design` | `ready`, `split`, `blocked` | `options[]`, `decision`, `components[]`, `interfaces[]`, `migrations[]`, `compatibility`, `work_packages[]` (optional; with `split` at least two), `plan[]` (implementation steps in order, each with its files), `tests[]` (one test per acceptance criterion) |
 | `implementation` | `done`, `blocked` | `changed_files[]`, `tests_added[]`, `notes`, `plan_deviations[]` |
 | `test` | `passed`, `failed`, `blocked` | `cases[] {criterion, test, status: passed\|failed\|skipped}`, `commands[]`, `uncovered_criteria[]` |
 | `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, file, line, problem, fix}`, `checked[]`, `confirmed_goals[]` (refactor issues: the analysis's refactoring goals the review confirms) |
@@ -253,7 +253,8 @@ A run of a result-driven role never ends silently. When a turn ends with the iss
 result recorded (the tool reports it to the worker the moment the result comment is posted), the next turn is a
 reminder: Symphony appends a mandatory hint to the continuation prompt (the default and a custom
 `agent.continuation_prompt` alike). It tells the agent to call `report_result` (verdict `blocked` if it cannot
-finish) and names the column the issue moves to otherwise.
+finish), that this is the last turn and nothing still running in the background reports back after it, and names
+the column the issue moves to otherwise.
 
 The run ends without a result when the reminder turn did not produce one, or when `max_turns` is reached first (with
 `max_turns: 1` there is no reminder). The orchestrator then handles it in `#endStageWithoutResult`:
@@ -262,7 +263,10 @@ The run ends without a result when the reminder turn did not produce one, or whe
    nothing is changed and the usual continuation follows.
 2. Otherwise it posts a plain comment ("Stage ended without a result", no marker, so it never counts as a stage
    result) and moves the issue to the role's [`on_missing_result`](configuration.md#roles) (`Blocked` by default),
-   then releases the issue.
+   then releases the issue. Background tasks the last turn left running (`background_tasks_changed` from Claude
+   Code) are named in the comment and in the `missing_result` trace (`detail.background_tasks`): an agent that ends
+   its turn to wait for a background subagent is the usual cause, which is why sessions run with
+   [background tasks disabled](agent-claude.md#subagents).
 3. A tracker error while fetching or moving schedules a retry like a failed run.
 
 A run whose newest entry check timed out (`check_timeout`) is not a missing result: it ends without the reminder turn,

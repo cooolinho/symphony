@@ -5,7 +5,7 @@ import { defaultIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
 import { trackerDefaults } from '../tracker/registry.ts';
-import { SymphonyError, errorCode, errorMessage } from '../util/errors.ts';
+import { errorCode, errorMessage } from '../util/errors.ts';
 import { resolveConfig, type ServiceConfig } from './config.ts';
 import { loadWorkflowFile, type WorkflowDefinition } from './loader.ts';
 import { compilePrompt, DEFAULT_CONTINUATION_PROMPT, DEFAULT_PROMPT, type PromptTemplate } from './template.ts';
@@ -29,8 +29,14 @@ export interface WorkflowLoadError {
 
 const RELOAD_DEBOUNCE_MS = 200;
 
-function hash(source: string): string {
-  return createHash('sha256').update(source).digest('hex');
+/** What `loadWorkflowFile` read: WORKFLOW.md and the files its prompt includes. */
+type LoadedWorkflow = Awaited<ReturnType<typeof loadWorkflowFile>>;
+
+/** Hash over WORKFLOW.md and every file its prompt includes, so a change to an included file is a new version too. */
+function fingerprint({ source, definition }: LoadedWorkflow): string {
+  const hash = createHash('sha256').update(source);
+  for (const name of Object.keys(definition.partials).sort()) hash.update(`\0${name}\0${definition.partials[name]}`);
+  return hash.digest('hex');
 }
 
 /**
@@ -45,7 +51,11 @@ export class WorkflowStore {
   #current: EffectiveWorkflow;
   #lastError: WorkflowLoadError | null = null;
   #failedHash: string | null = null;
-  #watcher: fs.FSWatcher | null = null;
+  #watching = false;
+  /** One watcher per directory holding WORKFLOW.md or a file its prompt includes. */
+  #watchers = new Map<string, fs.FSWatcher>();
+  /** The file names worth a reload, per watched directory. */
+  #watchedNames = new Map<string, Set<string>>();
   #debounce: NodeJS.Timeout | null = null;
   #listeners = new Set<(workflow: EffectiveWorkflow) => void>();
 
@@ -70,7 +80,7 @@ export class WorkflowStore {
   ): Promise<WorkflowStore> {
     const absolute = path.resolve(filePath);
     const integrations = options.integrations ?? defaultIntegrations();
-    const { workflow } = await build(absolute, options.env, integrations, 1);
+    const workflow = build(await loadWorkflowFile(absolute), absolute, options.env, integrations, 1);
     const store = new WorkflowStore(absolute, options.env, integrations, options.logger, workflow);
     store.#logWarnings(workflow);
     return store;
@@ -89,16 +99,16 @@ export class WorkflowStore {
     return () => this.#listeners.delete(listener);
   }
 
-  /** Re-reads the file; applies it if its content changed. Never throws. */
+  /** Re-reads the file and the files its prompt includes; applies them if their content changed. Never throws. */
   async reload(reason: string): Promise<void> {
-    let source: string;
+    let loaded: LoadedWorkflow;
     try {
-      source = await fs.promises.readFile(this.path, 'utf8');
+      loaded = await loadWorkflowFile(this.path);
     } catch (error) {
-      this.#fail(new SymphonyError('missing_workflow_file', `cannot read ${this.path}: ${errorMessage(error)}`), null, reason);
+      this.#fail(error, null, reason);
       return;
     }
-    const contentHash = hash(source);
+    const contentHash = fingerprint(loaded);
     if (contentHash === this.#current.contentHash) {
       if (this.#lastError !== null) {
         this.#logger.info('workflow file restored to the running version', { path: this.path });
@@ -110,8 +120,9 @@ export class WorkflowStore {
     if (contentHash === this.#failedHash) return;
 
     try {
-      const { workflow } = await build(this.path, this.#env, this.#integrations, this.#current.version + 1);
+      const workflow = build(loaded, this.path, this.#env, this.#integrations, this.#current.version + 1);
       this.#current = workflow;
+      this.#watchFiles();
       this.#lastError = null;
       this.#failedHash = null;
       this.#logger.info('workflow reloaded', { path: this.path, version: workflow.version, reason });
@@ -127,32 +138,58 @@ export class WorkflowStore {
     return this.reload('poll');
   }
 
+  /** Watches WORKFLOW.md and the files its prompt includes (e.g. roles/*.md); a change triggers a reload. */
   watch(): void {
-    if (this.#watcher !== null) return;
-    const base = path.basename(this.path);
+    if (this.#watching) return;
+    this.#watching = true;
+    this.#watchFiles();
+  }
+
+  close(): void {
+    if (this.#debounce !== null) clearTimeout(this.#debounce);
+    this.#watching = false;
+    for (const watcher of this.#watchers.values()) watcher.close();
+    this.#watchers.clear();
+  }
+
+  /** Brings the directory watchers in line with the files of the current version. */
+  #watchFiles(): void {
+    if (!this.#watching) return;
+    const dir = path.dirname(this.path);
+    const files = [this.path, ...Object.keys(this.#current.definition.partials).map((name) => path.resolve(dir, name))];
+    this.#watchedNames = new Map();
+    for (const file of files) {
+      const names = this.#watchedNames.get(path.dirname(file)) ?? new Set<string>();
+      names.add(path.basename(file));
+      this.#watchedNames.set(path.dirname(file), names);
+    }
+    for (const [watched, watcher] of this.#watchers) {
+      if (this.#watchedNames.has(watched)) continue;
+      watcher.close();
+      this.#watchers.delete(watched);
+    }
+    for (const watched of this.#watchedNames.keys()) if (!this.#watchers.has(watched)) this.#watchDirectory(watched);
+  }
+
+  #watchDirectory(dir: string): void {
     try {
-      this.#watcher = fs.watch(path.dirname(this.path), (_event, filename) => {
-        if (filename !== null && filename.toString() !== base) return;
+      const watcher = fs.watch(dir, (_event, filename) => {
+        if (filename !== null && this.#watchedNames.get(dir)?.has(filename.toString()) !== true) return;
         if (this.#debounce !== null) clearTimeout(this.#debounce);
         this.#debounce = setTimeout(() => {
           this.#debounce = null;
           void this.reload('watch');
         }, RELOAD_DEBOUNCE_MS);
       });
-      this.#watcher.on('error', (error) => {
-        this.#logger.warn('workflow file watch failed; relying on the per-tick check', { error: error.message });
-        this.#watcher?.close();
-        this.#watcher = null;
+      watcher.on('error', (error) => {
+        this.#logger.warn('workflow file watch failed; relying on the per-tick check', { error: error.message, dir });
+        watcher.close();
+        this.#watchers.delete(dir);
       });
+      this.#watchers.set(dir, watcher);
     } catch (error) {
-      this.#logger.warn('cannot watch the workflow file; relying on the per-tick check', { error: errorMessage(error) });
+      this.#logger.warn('cannot watch the workflow file; relying on the per-tick check', { error: errorMessage(error), dir });
     }
-  }
-
-  close(): void {
-    if (this.#debounce !== null) clearTimeout(this.#debounce);
-    this.#watcher?.close();
-    this.#watcher = null;
   }
 
   #fail(error: unknown, contentHash: string | null, reason: string): void {
@@ -187,23 +224,22 @@ export class WorkflowStore {
   }
 }
 
-async function build(
+function build(
+  loaded: LoadedWorkflow,
   filePath: string,
   env: NodeJS.ProcessEnv,
   integrations: readonly WorkspaceIntegration[],
   version: number,
-): Promise<{ workflow: EffectiveWorkflow }> {
-  const { definition, source } = await loadWorkflowFile(filePath);
+): EffectiveWorkflow {
+  const { definition } = loaded;
   const config = resolveConfig(definition.config, { workflowPath: filePath, env, trackerDefaults, integrations });
   return {
-    workflow: {
-      definition,
-      config,
-      prompt: compilePrompt(definition.promptTemplate === '' ? DEFAULT_PROMPT : definition.promptTemplate),
-      continuationPrompt: compilePrompt(config.agent.continuationPrompt ?? DEFAULT_CONTINUATION_PROMPT),
-      version,
-      contentHash: hash(source),
-      loadedAt: new Date(),
-    },
+    definition,
+    config,
+    prompt: compilePrompt(definition.promptTemplate === '' ? DEFAULT_PROMPT : definition.promptTemplate, definition.partials),
+    continuationPrompt: compilePrompt(config.agent.continuationPrompt ?? DEFAULT_CONTINUATION_PROMPT),
+    version,
+    contentHash: fingerprint(loaded),
+    loadedAt: new Date(),
   };
 }

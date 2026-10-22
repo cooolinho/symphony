@@ -552,7 +552,7 @@ describe('e2e pipeline scenario', () => {
   });
 
   it('removes a complexity-based model from the roles', () => {
-    const variant = source.replace('    claude: { model: sonnet }\n  # The architect decides', '    claude: { model: sonnet, model_by_complexity: { XL: opus } }\n  # The architect decides');
+    const variant = source.replace('    claude: { model: sonnet, effort: medium }\n  # The architect decides', '    claude: { model: sonnet, effort: medium, model_by_complexity: { XL: opus } }\n  # The architect decides');
     assert.notEqual(variant, source);
     const { config } = resolve({}, variant);
     assert.equal(config.roles?.find((role) => role.name === 'issue-analyst')?.claude.modelByComplexity, undefined);

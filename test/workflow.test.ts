@@ -429,7 +429,7 @@ describe('prompt templates', () => {
 
   it('keeps model labels out of the shipped WORKFLOW.md prompt', async () => {
     const { definition } = await loadWorkflowFile(path.resolve(import.meta.dirname, '../WORKFLOW.md'));
-    const template = compilePrompt(definition.promptTemplate);
+    const template = compilePrompt(definition.promptTemplate, definition.partials);
     const render = (labels: string[]) =>
       renderPrompt(template, {
         issue: issueTemplateValue(makeIssue({ id: '12', labels, native_ref: { number: 12, parent: null, sub_issues: [], base_branch: null } })),
@@ -840,6 +840,12 @@ describe('result-driven roles and the pipeline section', () => {
     assert.equal(reviewerOf({ ...base, roles: { ...roles, reviewer: { states: ['Agent review'], model_label: 'ignore' } } })?.modelLabel, 'ignore');
   });
 
+  it('reads effort_label, which applies by default, even for read-only roles with a result', () => {
+    assert.equal(reviewerOf(withReviewer({}))?.effortLabel, 'apply');
+    assert.equal(reviewerOf(withReviewer({ effort_label: 'ignore' }))?.effortLabel, 'ignore');
+    assert.throws(() => reviewerOf(withReviewer({ effort_label: 'never' })), /roles\.reviewer\.effort_label/);
+  });
+
   it('reads on_round_limit for review, test and security roles only', () => {
     const reviewer = reviewerOf(withReviewer({ on_round_limit: ' In review ' }));
     assert.equal(reviewer?.onRoundLimit, 'In review');
@@ -1242,7 +1248,7 @@ describe('role subagents', () => {
 
   it('splits the subagents by role list, read-only policy and integration prefix', () => {
     const agents = pluginAgents([path.join(dir, '.claude')]);
-    const role = (overrides: Partial<RoleConfig>) => ({ name: 'r', states: [], readOnly: false, mayMoveTo: null, result: null, onResult: {}, onCheckFailed: null, onMissingResult: null, onRoundLimit: null, modelLabel: 'apply' as const, maxTurns: null, commands: null, runChecks: true, maxSubIssues: null, subIssueStatus: null, waitForSubIssues: false, agents: null, claude: {}, ...overrides });
+    const role = (overrides: Partial<RoleConfig>) => ({ name: 'r', states: [], readOnly: false, mayMoveTo: null, result: null, onResult: {}, onCheckFailed: null, onMissingResult: null, onRoundLimit: null, modelLabel: 'apply' as const, effortLabel: 'apply' as const, maxTurns: null, commands: null, runChecks: true, maxSubIssues: null, subIssueStatus: null, waitForSubIssues: false, agents: null, claude: {}, ...overrides });
     const names = (split: { allowed: Array<{ name: string }>; denied: Array<{ name: string }> }) => [split.allowed.map((a) => a.name), split.denied.map((a) => a.name)];
     assert.deepEqual(names(sessionAgents(agents, null, ['laravel-'], ['laravel-'])), [['laravel-architect', 'laravel-filament-developer', 'reader'], []]);
     assert.deepEqual(names(sessionAgents(agents, null, ['laravel-'], [])), [['reader'], ['laravel-architect', 'laravel-filament-developer']]);

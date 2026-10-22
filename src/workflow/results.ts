@@ -118,6 +118,8 @@ const kindShapes = {
     migrations: list(text()),
     compatibility: text().optional().describe('Backwards compatibility and rollout'),
     work_packages: list(text()).describe('Work packages in implementation order; with the verdict "split" at least two, each one a sub-issue you created'),
+    plan: list(text()).describe('Implementation steps in order, each naming the files it touches, so the developer can follow the design'),
+    tests: list(text()).describe('One test per acceptance criterion: the criterion, the test file and what the test checks'),
   },
   implementation: {
     changed_files: list(text(NAME_MAX)),
@@ -611,6 +613,8 @@ function kindSections(result: StageResult): (string | null)[] {
         bullets('Migrations', result.migrations.map(inline)),
         result.compatibility === undefined ? null : `**Compatibility**\n${block(result.compatibility)}`,
         bullets('Work packages', result.work_packages.map(inline), true),
+        bullets('Plan', result.plan.map(inline), true),
+        bullets('Tests', result.tests.map(inline)),
       ];
     case 'implementation':
       return [

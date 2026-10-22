@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ClaudeAgentRunner } from './agent/claude.ts';
-import { chooseEffort, chooseModel } from './agent/model.ts';
+import { chooseRoleEffort, chooseRoleModel } from './agent/model.ts';
 import { PricingStore } from './costs/pricing.ts';
 import { HistoryLog } from './history/history.ts';
 import { killAllAgentProcessGroups } from './agent/spawn.ts';
@@ -294,15 +294,16 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
       if (issue === undefined) continue;
       for (const line of planLines(item, issue)) out(line);
       const role = roleFor(issue, config.roles);
-      const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model, role?.modelLabel);
-      const effortChoice = chooseEffort(issue.labels, role?.claude.effort ?? config.claude.effort);
+      const choice = chooseRoleModel(issue.labels, role, config.claude.model);
+      const effortChoice = chooseRoleEffort(issue.labels, role, config.claude.effort);
       out(`              ↳ ${roleModelLine(roleName(role), choice.model, effortChoice.effort)}`);
       const command = resolveIssueCommand(issue.description, skills);
       if (command !== null) out(`              ↳ command /${command.name} → ${command.skill}`);
       if (choice.labelIgnored) out(`              ↳ model label on issue ignored by role policy; using ${choice.model ?? '(Claude Code default)'}`);
       else if (choice.warning !== null) out(`              ↳ model label ignored: ${choice.warning}; using ${choice.model ?? '(Claude Code default)'}`);
       else if (choice.label !== null) out(`              ↳ model ${choice.model} (label "${choice.label}")`);
-      if (effortChoice.warning !== null) out(`              ↳ effort label ignored: ${effortChoice.warning}; using ${effortChoice.effort ?? '(Claude Code default)'}`);
+      if (effortChoice.labelIgnored) out(`              ↳ effort label on issue ignored by role policy; using ${effortChoice.effort ?? '(Claude Code default)'}`);
+      else if (effortChoice.warning !== null) out(`              ↳ effort label ignored: ${effortChoice.warning}; using ${effortChoice.effort ?? '(Claude Code default)'}`);
       else if (effortChoice.label !== null) out(`              ↳ effort ${effortChoice.effort} (label "${effortChoice.label}")`);
       const workspace = path.join(config.workspace.root, workspaceKey(issue.identifier));
       for (const line of await integrationLines(integrations, config.integrations, options.env, workspace)) out(`              ↳ ${line}`);

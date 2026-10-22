@@ -15,8 +15,8 @@ Claude Code CLI. The spec targets the Codex app-server; this section documents h
 | Continuation turn | Another user message on the same live session with the continuation prompt |
 | Startup handshake | `initializationResult()`, bounded by `claude.read_timeout_ms` |
 | Session title | `<identifier>: <title>` |
-| Model | A `Model: <model>` label on the issue, else the role's `claude.model`, else `claude.model` ([configuration](configuration.md#model-per-issue)); fixed for the session |
-| Effort | An `Effort: <level>` label on the issue, else the role's `claude.effort`, else `claude.effort` (`CLAUDE_EFFORT` in the shipped `WORKFLOW.md`) ([configuration](configuration.md#effort-per-issue)); fixed for the session |
+| Model | A `Model: <model>` label on the issue (unless the role has `model_label: ignore`), else the role's `model_by_complexity` for the issue's complexity, else the role's `claude.model`, else `claude.model` ([configuration](configuration.md#model-per-issue)); fixed for the session |
+| Effort | An `Effort: <level>` label on the issue (unless the role has `effort_label: ignore`), else the role's `claude.effort`, else `claude.effort` (`CLAUDE_EFFORT` in the shipped `WORKFLOW.md`) ([configuration](configuration.md#effort-per-issue)); fixed for the session |
 | Role | The [role](configuration.md#roles) of the issue's column at dispatch (`default` without roles); fixed for the run. Its `claude` overrides are merged into the session settings, `read_only` sets the policy below, `max_turns` limits the turns |
 | MCP servers | The in-process `tracker` server, plus workspace extensions such as Laravel Boost (below); nothing else with `claude.strict_mcp_config` (default) |
 
@@ -137,6 +137,15 @@ workspace's project type ([Subagents per role](configuration.md#subagents-per-ro
 `Agent(<plugin>:<name>)` rule in `disallowedTools` and by a `PreToolUse` hook, which emits `approval_denied` when it
 refuses a call. Every Agent tool call carries its subagent in the `tool_use` event (`detail.agent`), so the statistics
 count subagents like skills. Background and usage figures: [laravel-subagents.md](laravel-subagents.md).
+
+Subagents and commands run in the **foreground**: every session starts with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`,
+so the Agent and Bash tools offer no `run_in_background` and nothing is moved to the background automatically. A
+background task only reports back in a later turn, but Symphony ends a result-driven session after the one reminder
+turn (and every session at `max_turns`), which stops the task with it. An agent that ended its turn to wait for a
+background code review would then lose the review and the stage would end without a result. The system prompt
+addition says the same: use the results in the same turn and never end a turn to wait. `claude.env` can set the
+variable to `0`; if a session then ends without a result while tasks still run, the "Stage ended without a result"
+comment names them, and `turn_completed` carries them in `detail.background_tasks`.
 
 ### MCP server status
 

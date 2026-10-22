@@ -71,6 +71,8 @@ const fullInputs: Record<AgentResultKind, Record<string, unknown>> = {
     migrations: [],
     compatibility: 'New module, nothing changes',
     work_packages: ['schemas', 'markers', 'rendering'],
+    plan: ['Add src/workflow/results.ts', 'Render the comment in src/workflow/results.ts'],
+    tests: ['round trip works: test/results.test.ts decodes what it encodes'],
   },
   implementation: {
     verdict: 'done',
@@ -436,7 +438,7 @@ describe('result contracts: rendering', () => {
   it('renders every kind with its fields', () => {
     const expected: Record<AgentResultKind, RegExp[]> = {
       analysis: [/Type: feature · Complexity: M · Docs needed: yes/, /- \[ \] round trip works/, /\*\*Risks:\*\* breaking change/, /1\. Write schemas\n2\. Write tests/, /\*\*Refactoring goals\*\*\n- The parsing code exists once/],
-      design: [/\*\*Decision\*\*\nzod schemas/, /\*\*Components\*\*\n- schemas\.ts: zod schemas per kind\n- markers\.ts/, /\*\*Interfaces\*\*/, /\*\*Compatibility\*\*/, /1\. schemas/],
+      design: [/\*\*Decision\*\*\nzod schemas/, /\*\*Components\*\*\n- schemas\.ts: zod schemas per kind\n- markers\.ts/, /\*\*Interfaces\*\*/, /\*\*Compatibility\*\*/, /1\. schemas/, /\*\*Plan\*\*\n1\. Add src\/workflow\/results\.ts\n2\. Render/, /\*\*Tests\*\*\n- round trip works/],
       implementation: [/- `src\/workflow\/results\.ts`/, /\*\*Tests added\*\*/, /\*\*Notes\*\*\nKept fields optional\./],
       test: [/### ❌ Test: failed/, /- ❌ size cap — `results\.test\.ts`/, /- `npm run check`/, /\*\*Uncovered criteria\*\*\n- dashboard/],
       review: [/\*\*Checked\*\*\n- tests\n- docs/, /\*\*Confirmed goals\*\*\n- The parsing code exists once/],

@@ -13,7 +13,7 @@ import { globProblem } from './glob.ts';
 import { isPlainObject } from './loader.ts';
 import { DEFAULT_PROFILE, type WorkflowProfile } from './profile.ts';
 import { Reader, parseInteger } from './reader.ts';
-import { NEXT_STAGE, resultTargets, type ModelLabelPolicy, type RoleClaudeOverrides, type RoleConfig } from './roles.ts';
+import { NEXT_STAGE, resultTargets, type EffortLabelPolicy, type ModelLabelPolicy, type RoleClaudeOverrides, type RoleConfig } from './roles.ts';
 import { AGENT_RESULT_KINDS, isLoopKind, LOOP_VERDICTS, RESULT_VERDICTS, SPLIT_VERDICT, type AgentResultKind } from './results.ts';
 
 export interface TrackerConfig {
@@ -236,6 +236,7 @@ const ROLE_KEYS = new Set([
   'on_missing_result',
   'on_round_limit',
   'model_label',
+  'effort_label',
   'max_turns',
   'commands',
   'run_checks',
@@ -340,6 +341,7 @@ function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: s
       mayMoveTo: mergeTargets(mayMoveTo, transitions),
       ...transitions,
       modelLabel: reader.oneOf<ModelLabelPolicy>(value, 'model_label', `${field}.model_label`, ['apply', 'ignore'], readOnly && transitions.result !== null ? 'ignore' : 'apply'),
+      effortLabel: reader.oneOf<EffortLabelPolicy>(value, 'effort_label', `${field}.effort_label`, ['apply', 'ignore'], 'apply'),
       maxTurns:
         maxTurnsValue === undefined || maxTurnsValue === null
           ? null

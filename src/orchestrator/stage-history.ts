@@ -167,7 +167,8 @@ export interface ResultsTemplateValue {
   } | null;
   /**
    * The newest design since the last reset, whatever its verdict; null without one. The developer implements it: the
-   * decision, the components and interfaces, migrations, compatibility and the options that were considered. A `split`
+   * decision, the components and interfaces, migrations, compatibility, the options that were considered, the plan of
+   * implementation steps and the test per acceptance criterion. A `split`
    * design lists the work packages it filed as sub-issues, and `head_sha` is the commit it was made at (the base the
    * integration review compares the merged packages with).
    */
@@ -181,6 +182,8 @@ export interface ResultsTemplateValue {
     compatibility: string | null;
     options: string[];
     work_packages: string[];
+    plan: string[];
+    tests: string[];
     head_sha: string | null;
   } | null;
   /**
@@ -290,6 +293,8 @@ export function resultsTemplateValue(history: StageHistory): ResultsTemplateValu
             compatibility: design.compatibility ?? null,
             options: design.options,
             work_packages: design.work_packages,
+            plan: design.plan,
+            tests: design.tests,
             head_sha: designEntry?.meta.head_sha ?? null,
           }
         : null,

@@ -1,4 +1,4 @@
-import { chooseModel } from '../agent/model.ts';
+import { chooseRoleModel } from '../agent/model.ts';
 import { modelFamilyOf } from '../agent/rate-limit.ts';
 import type { Issue } from '../tracker/types.ts';
 import { normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
@@ -102,10 +102,9 @@ export function planTime(date: Date): string {
 const WINDOW_WORDS: Record<string, string> = { five_hour: 'five hour', seven_day: 'seven day' };
 const windowWords = (window: string | null) => (window === null ? 'unknown window' : (WINDOW_WORDS[window] ?? window.replace(/_/g, ' ')));
 
-/** The model a session for the issue would run with, as the orchestrator chooses it: label, else role, else claude.model. */
+/** The model a session for the issue would run with, as the orchestrator chooses it: label, else complexity, else role, else claude.model. */
 export function plannedModel(issue: Pick<Issue, 'state' | 'description' | 'labels'>, config: Pick<ServiceConfig, 'roles' | 'claude'>): string | null {
-  const role = roleFor(issue, config.roles);
-  return chooseModel(issue.labels, role?.claude.model ?? config.claude.model, role?.modelLabel).model;
+  return chooseRoleModel(issue.labels, roleFor(issue, config.roles), config.claude.model).model;
 }
 
 /** Why an issue of a held model waits: the end of a limit hold, or the operator's release. */

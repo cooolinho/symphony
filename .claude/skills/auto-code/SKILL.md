@@ -119,11 +119,13 @@ excluded.
      |---|---|
      | `Model: haiku` | effort S **and** low risk: texts, translations, configuration, small changes in one area, simple tests, minor updates |
      | `Model: sonnet` | the normal case: effort S with medium risk, effort M with low or medium risk (new feature in a few files, design issues, tests, ordinary refactorings) |
-     | `Model: opus` | effort M across several areas, wide reach with medium risk, ordinary larger refactorings with a test net |
-     | `Model: fable` | complex issues: high risk (data model, permissions, money, migrations on existing data), major upgrades, tricky dependencies or a refactoring without a test net |
+     | `Model: opus` | effort M across several areas, wide reach with medium risk, ordinary larger refactorings with a test net, complex issues: high risk (data model, permissions, money, migrations on existing data), major upgrades, tricky dependencies or a refactoring without a test net |
 
-     When in doubt, the stronger model. State label and reason per issue in the report. The label applies to the whole
-     sub-issue: developer and reviewer run with this model, not with the instance's default model.
+     You never pick `Model: fable` with `auto`: for large and risky issues the architect already designs with fable
+     (complexity L and XL), and the developer implements that design with opus; `Model: fable` stays for a human who
+     escalates an issue the developer failed on. When in doubt, the stronger model. State label and reason per issue in
+     the report. The label applies to the developer of the sub-issue, not to the instance's default model; the other
+     roles (architect, reviewer, test engineer, …) keep the model `WORKFLOW.md` gives them.
 6. A pure refactoring without behaviour change starts with `/refactor-safely` on the first line. If the area lacks
    tests, a test issue comes first and the refactoring waits for it (`Blocked by #N`).
 

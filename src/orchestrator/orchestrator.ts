@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { childEnvironment } from '../agent/env.ts';
-import { chooseEffort, chooseModel } from '../agent/model.ts';
+import { chooseRoleEffort, chooseRoleModel } from '../agent/model.ts';
 import { classify } from '../workflow/classify.ts';
 import { MODEL_FAMILIES, modelFamilyOf } from '../agent/rate-limit.ts';
 import type { AgentEvent, AgentRunner, IntegrationReport, TokenUsage } from '../agent/types.ts';
@@ -1497,9 +1497,7 @@ export class Orchestrator {
 
   /** The model a session for the issue runs with, as `#dispatch` chooses it: label, else complexity-based, else role, else claude.model. */
   #modelFor(issue: Pick<Issue, 'state' | 'description' | 'labels'>, config: ServiceConfig): string | null {
-    const role = roleFor(issue, config.roles);
-    const { complexity } = classify(issue.labels);
-    return chooseModel(issue.labels, role?.claude.model ?? config.claude.model, role?.modelLabel, complexity, role?.claude.modelByComplexity ?? null).model;
+    return chooseRoleModel(issue.labels, roleFor(issue, config.roles), config.claude.model).model;
   }
 
   /** The active hold of the model the issue would run with; null for Claude Code's default model (never held). */
@@ -1978,9 +1976,9 @@ export class Orchestrator {
     record.meta = issueMeta(issue);
     // A "Model: <model>" label picks the model for this run, else model_by_complexity, else the role's claude.model, else claude.model.
     const { complexity } = classify(issue.labels);
-    const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model, role?.modelLabel, complexity, role?.claude.modelByComplexity ?? null);
+    const choice = chooseRoleModel(issue.labels, role, config.claude.model);
     // Likewise an "Effort: <level>" label picks the effort, else the role's claude.effort, else claude.effort.
-    const effortChoice = chooseEffort(issue.labels, role?.claude.effort ?? config.claude.effort);
+    const effortChoice = chooseRoleEffort(issue.labels, role, config.claude.effort);
     entry.requestedModel = choice.model;
     entry.effort = effortChoice.effort;
     record.sessions.push({
@@ -2014,6 +2012,7 @@ export class Orchestrator {
         complexity,
         effort: effortChoice.effort,
         effort_label: effortChoice.label,
+        effort_label_ignored: effortChoice.labelIgnored,
         continuation,
         forced,
       },
@@ -2285,7 +2284,7 @@ export class Orchestrator {
       const missing = outcome.missingResult === true && !entry.resultRecorded ? entry.roleConfig : null;
       if (missing?.onMissingResult != null) {
         // The claim stays until the check has decided: continue as before, or end the stage.
-        void this.#serial.run(() => this.#endStageWithoutResult(entry, missing, retryInfo));
+        void this.#serial.run(() => this.#endStageWithoutResult(entry, missing, retryInfo, outcome.backgroundTasks ?? []));
       } else {
         this.#scheduleRetry(entry.issueId, 1, { ...retryInfo, kind: 'continuation', error: null });
       }
@@ -2374,12 +2373,14 @@ export class Orchestrator {
    * A run of a result-driven role ended without a result (after the reminder, or at the turn limit). Only after a
    * fresh fetch confirms the issue is still in the role's column does Symphony comment and move it to the role's
    * `on_missing_result`, then release it. An issue moved meanwhile (a human, another run) is left alone and the
-   * normal continuation follows; a tracker error is retried like a failed run.
+   * normal continuation follows; a tracker error is retried like a failed run. `backgroundTasks` were still running
+   * when the session ended; the comment names them, since an agent waiting for one is the usual cause.
    */
   async #endStageWithoutResult(
     entry: RunningEntry,
     role: RoleConfig,
     retryInfo: { identifier: string; url: string | null; limit: null },
+    backgroundTasks: string[],
   ): Promise<void> {
     const issueId = entry.issueId;
     const target = role.onMissingResult;
@@ -2416,7 +2417,11 @@ export class Orchestrator {
     }
     const body =
       `**Stage ended without a result.** The ${role.name} session for "${fresh.state}" ended without calling ` +
-      `\`report_result\` (after ${entry.turnCount} turn${entry.turnCount === 1 ? '' : 's'}), so Symphony moved the issue to "${target}" (\`roles.${role.name}.on_missing_result\`). A human needs to look at it.`;
+      `\`report_result\` (after ${entry.turnCount} turn${entry.turnCount === 1 ? '' : 's'}), so Symphony moved the issue to "${target}" (\`roles.${role.name}.on_missing_result\`). ` +
+      (backgroundTasks.length > 0
+        ? `Still running in the background when the session ended, and stopped with it: ${backgroundTasks.map((task) => `"${task}"`).join(', ')}. `
+        : '') +
+      'A human needs to look at it.';
     try {
       await adapter.postComment?.(fresh, body);
     } catch (error) {
@@ -2440,7 +2445,7 @@ export class Orchestrator {
         message: `stage ended without a result; moved from "${fresh.state}" to "${target}"`,
         run: entry.runId,
         turn: entry.turnCount,
-        detail: { role: role.name, from: fresh.state, to: target },
+        detail: { role: role.name, from: fresh.state, to: target, ...(backgroundTasks.length > 0 ? { background_tasks: backgroundTasks } : {}) },
       });
     }
     this.#release(issueId);

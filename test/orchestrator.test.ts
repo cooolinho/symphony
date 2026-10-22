@@ -4134,13 +4134,24 @@ describe('result-driven roles', () => {
       assert.doesNotMatch(first ?? '', /report_result/);
       assert.match(reminder ?? '', /still in the active state/);
       assert.match(reminder ?? '', /call `report_result` now[\s\S]*moves the issue to "Blocked"/);
+      assert.match(reminder ?? '', /last turn of the session: nothing still running in the background reports back/);
       const comments = s.tracker.comments.get('r') ?? [];
       assert.equal(comments.length, 1);
       assert.match(comments[0]?.body ?? '', /^\*\*Stage ended without a result\.\*\*/);
       assert.match(comments[0]?.body ?? '', /moved the issue to "Blocked"/);
       assert.equal(decodeMarker(comments[0]?.body ?? ''), null, 'a plain comment, not a stage result');
+      assert.doesNotMatch(comments[0]?.body ?? '', /background/);
       await until(() => snapshot(s).running.length === 0, 3_000, 'run end');
       assert.equal(snapshot(s).retrying.length, 0, 'the claim is released');
+      await s.orchestrator.shutdown(1_000);
+    });
+
+    it('names the background tasks the session left running in the comment', async () => {
+      const runner = new FakeRunner((turn) => ({ ok: true, turnId: String(turn), resultText: 'waiting', backgroundTasks: ['Review the diff'] }));
+      const s = setup({ front: front(), runner, issues: [makeIssue({ id: 'r', state: 'Agent review' })] });
+      await s.orchestrator.tickNow();
+      await until(() => s.tracker.statusCalls.length === 1, 5_000, 'move to Blocked');
+      assert.match(s.tracker.comments.get('r')?.[0]?.body ?? '', /Still running in the background when the session ended, and stopped with it: "Review the diff"\. A human/);
       await s.orchestrator.shutdown(1_000);
     });
 

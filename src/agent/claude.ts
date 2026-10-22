@@ -35,6 +35,11 @@ const ASK_USER_TOOL = 'AskUserQuestion';
 const STOP_GRACE_MS = 10_000;
 const STDERR_TAIL = 4_000;
 const CLIENT_APP = 'symphony/0.1.0';
+/**
+ * Subagents and commands run in the foreground: when a turn ends, Symphony decides what happens next and may end the
+ * session, so a background task never reports back. claude.env can set it to `0`.
+ */
+const BACKGROUND_TASKS_OFF = { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1' };
 const MCP_STATUS_POLL_MS = 500;
 /**
  * Deny rules for a read-only session. Tool names as in the Agent SDK's permission rule validator
@@ -154,6 +159,8 @@ function symphonyContext(issue: Issue, toolNames: string[], sections: string[], 
     `You are running unattended under the Symphony orchestrator, working on ${issue.identifier} in a dedicated ` +
       'workspace: the current working directory. Keep all changes inside it.',
     'No human watches this session or can answer questions while it runs. Make reasonable decisions on your own.',
+    'Run subagents and commands in the foreground and use their results in the same turn. When your turn ends, ' +
+      'Symphony takes over: nothing you started keeps running and no notification reaches you, so never end a turn to wait for something.',
   ];
   if (toolNames.length > 0) {
     lines.push(`Read and update the issue on the tracker with these tools: ${toolNames.join(', ')}.`);
@@ -190,6 +197,8 @@ class ClaudeSession implements AgentSession {
   #resultUsage: Record<string, ModelTokenUsage> = {};
   /** Model calls since the last turn result, by message id (the blocks of one response share the id and usage). */
   #turnCalls = new Map<string, { model: string; usage: ModelTokenUsage }>();
+  /** Descriptions of the live background tasks, as the latest `background_tasks_changed` lists them. */
+  #backgroundTasks: string[] = [];
 
   constructor(params: StartSessionParams, queryFn: QueryFn) {
     this.#params = params;
@@ -300,7 +309,7 @@ class ClaudeSession implements AgentSession {
     const deniedAgents = this.#params.deniedAgents ?? [];
     const options: Options = {
       cwd,
-      env: { ...env, ...extensions?.env, ...config.env, CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP },
+      env: { ...env, ...BACKGROUND_TASKS_OFF, ...extensions?.env, ...config.env, CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP },
       abortController: this.#abort,
       sessionId: this.threadId,
       title: truncate(`${issue.identifier}: ${issue.title}`, 200),
@@ -443,6 +452,10 @@ class ClaudeSession implements AgentSession {
   #handle(message: SDKMessage): void {
     switch (message.type) {
       case 'system':
+        // The list replaces the previous one; ambient tasks (watchers) are not work the agent waits for.
+        if (message.subtype === 'background_tasks_changed') {
+          this.#backgroundTasks = message.tasks.filter((task) => task.ambient !== true).map((task) => task.description);
+        }
         if (message.subtype === 'init') this.#onInit(message);
         else if (message.subtype === 'api_retry') {
           this.#emit('api_retry', {
@@ -662,6 +675,7 @@ class ClaudeSession implements AgentSession {
     // A "successful" turn whose whole answer is a limit message failed: no continuation, no `turn_completed`.
     const succeeded = reportedSuccess && sessionLimit === null;
     const failure = reportedSuccess ? `turn ended with a usage limit: ${truncate(oneLine(sessionLimit?.text ?? ''), 500)}` : describeResult(message);
+    const backgroundTasks = [...this.#backgroundTasks];
     this.#emit(succeeded ? 'turn_completed' : 'turn_failed', {
       message: succeeded ? `turn completed (${message.num_turns} model calls)` : failure,
       usage,
@@ -671,6 +685,7 @@ class ClaudeSession implements AgentSession {
         subtype: message.subtype,
         stop_reason: message.stop_reason,
         duration_ms: message.duration_ms,
+        ...(backgroundTasks.length > 0 ? { background_tasks: backgroundTasks } : {}),
         ...(sessionLimit
           ? {
               session_limit: {
@@ -686,7 +701,14 @@ class ClaudeSession implements AgentSession {
     });
     const pending = this.#pending;
     if (pending === null) return;
-    if (succeeded) this.#settle({ ok: true, turnId: pending.turnId, resultText: message.subtype === 'success' ? message.result : '' });
+    if (succeeded) {
+      this.#settle({
+        ok: true,
+        turnId: pending.turnId,
+        resultText: message.subtype === 'success' ? message.result : '',
+        ...(backgroundTasks.length > 0 ? { backgroundTasks } : {}),
+      });
+    }
     else if (sessionLimit) this.#settle({ ok: false, turnId: pending.turnId, code: 'session_limit', message: failure, sessionLimit });
     else this.#settle({ ok: false, turnId: pending.turnId, code: 'turn_failed', message: failure });
   }

@@ -184,6 +184,39 @@ describe('claude agent runner', () => {
     assert.equal(options.additionalDirectories, undefined);
   });
 
+  it('runs subagents and commands in the foreground unless claude.env allows background tasks', async () => {
+    const options = await sessionOptions({});
+    assert.equal(options.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '1');
+    const append = (options.systemPrompt as { append?: string }).append ?? '';
+    assert.match(append, /never end a turn to wait for something/);
+    const allowed = await sessionOptions({ claude: { env: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '0' } } });
+    assert.equal(allowed.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '0');
+  });
+
+  it('reports the background tasks still running when a turn ends', async () => {
+    let turn = 0;
+    const fake = fakeQuery((_prompt, _options, emit) => {
+      turn++;
+      const tasks =
+        turn === 1
+          ? [
+              { task_id: 'a1', task_type: 'local_agent', description: 'Review the diff' },
+              { task_id: 'w1', task_type: 'monitor', description: 'Watch the log', ambient: true },
+            ]
+          : [];
+      emit({ type: 'system', subtype: 'background_tasks_changed', tasks, uuid: 'u', session_id: 's' });
+      emit(result(0.1, 10, 1));
+    });
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ events }));
+    assert.deepEqual(await session.runTurn('first'), { ok: true, turnId: '1', resultText: 'all done', backgroundTasks: ['Review the diff'] });
+    assert.deepEqual(await session.runTurn('second'), { ok: true, turnId: '2', resultText: 'all done' });
+    await session.stop();
+    const completed = events.filter((e) => e.event === 'turn_completed');
+    assert.deepEqual(completed[0]?.detail?.background_tasks, ['Review the diff']);
+    assert.equal(completed[1]?.detail?.background_tasks, undefined);
+  });
+
   it('counts model calls live per model until the turn result replaces the totals', async () => {
     const call = (id: string, model: string, input: number, output: number) => ({
       type: 'assistant',

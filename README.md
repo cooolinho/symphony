@@ -75,6 +75,10 @@ agent that works on it.
 
 - Without a label, the role's default applies (for example `opus` for the reviewer), then `CLAUDE_MODEL` /
   `CLAUDE_EFFORT` from `.env`.
+- Labels steer the developer: the roles with a fixed task (analysis, tests, docs, review, security) keep their model
+  and effort (`model_label` / `effort_label: ignore`). The architect designs larger changes with `fable` (complexity L
+  and XL), the developer implements them with `opus`; see
+  [Model and effort per role](docs/usage.md#model-and-effort-per-role).
 - `npm run repo-init` creates the four model labels and the five effort labels (colored from light to dark) in your
   repositories.
 - With `/auto-code … issue-models=auto`, the autopilot agent labels each sub-issue it creates with a model that fits the
@@ -122,8 +126,8 @@ Bug, feature and refactor issues pass a `Testing` column (an independent test en
 pass a read-only `Security review` after it. Review, test and security loops are bounded: at the round limit the card goes
 to **Blocked** with the label `needs-human`.
 
-What the agent does is defined in **`WORKFLOW.md`** (prompt and settings). Board, repositories, default model and token
-live in **`.env`**.
+What the agent does is defined in **`WORKFLOW.md`** (prompt and settings) and the role prompts it includes from
+**`roles/<role>.md`**. Board, repositories, default model and token live in **`.env`**.
 
 ## ✨ Features
 
@@ -223,6 +227,7 @@ Boost and troubleshooting.
 ```
 symphony/
 ├── WORKFLOW.md                 # roles, checks, prompt and settings (reloaded live)
+├── roles/                      # one prompt per role (developer.md, reviewer.md, …), included by WORKFLOW.md
 ├── hooks/laravel-env.sh        # after_create: own .env and SQLite database per Laravel app (optional MySQL)
 ├── hooks/laravel-db-drop.sh    # before_remove: drops the workspace's MySQL databases
 ├── checks/laravel.sh           # entry check before Agent review and In review (lint, analysis, tests)

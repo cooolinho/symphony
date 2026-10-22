@@ -36,7 +36,9 @@ export const RESULT_RECORDED_NOTE = 'Result recorded — end your turn now.';
 export function resultReminder(column: string | null): string {
   const consequence = column !== null ? `Symphony moves the issue to "${column}" and posts a comment` : 'Symphony stops the stage and posts a comment';
   return (
-    `Your stage ends with a result: call \`${RESULT_TOOL}\` now. If you cannot finish, report the verdict \`blocked\` with the reason. ` +
+    `Your stage ends with a result: call \`${RESULT_TOOL}\` now. This is the last turn of the session: nothing still running in the ` +
+    'background reports back after it, so do not wait for it; report with what you have and name any check you could not finish. ' +
+    `If you cannot finish, report the verdict \`blocked\` with the reason. ` +
     `If this session ends without a reported result, ${consequence}.`
   );
 }

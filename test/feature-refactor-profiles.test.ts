@@ -273,7 +273,7 @@ describe('#205 rendered prompts', () => {
     if (goals !== undefined) persisted.push({ result: ok('analysis', analysis(goals)), meta: META });
     if (withDesign) persisted.push(designResult());
     const results = persisted.length === 0 ? {} : { results: resultsTemplateValue(buildStageHistory(persisted)) };
-    return renderPrompt(compilePrompt(definition.promptTemplate), {
+    return renderPrompt(compilePrompt(definition.promptTemplate, definition.partials), {
       issue: issueTemplateValue(subject, commandSkills([toolbox])),
       attempt: null,
       role,

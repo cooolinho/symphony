@@ -54,7 +54,13 @@ export interface SessionLimitInfo {
 }
 
 export type TurnResult =
-  | { ok: true; turnId: string; resultText: string }
+  | {
+      ok: true;
+      turnId: string;
+      resultText: string;
+      /** Background tasks (subagents, commands) still running when the turn ended; absent when none. */
+      backgroundTasks?: string[];
+    }
   | { ok: false; turnId: string; code: TurnFailureCode; message: string; sessionLimit?: SessionLimitInfo };
 
 export interface AgentSession {

@@ -602,9 +602,9 @@ autopilot sets a [model label](#choosing-the-model-per-issue) when it creates th
 |---|---|
 | (missing) or `issue-models=off` | no model labels, `CLAUDE_MODEL` applies |
 | `issue-models=fable`, `opus`, `sonnet` or `haiku` | all sub-issues get `Model: <value>` |
-| `issue-models=auto` | the autopilot picks per issue by effort and risk: `Model: haiku` for small, low-risk changes, `Model: sonnet` as the normal case, `Model: opus` for wide reach with medium risk, `Model: fable` for complex issues (high risk, major upgrades, tricky dependencies) |
+| `issue-models=auto` | the autopilot picks per issue by effort and risk: `Model: haiku` for small, low-risk changes, `Model: sonnet` as the normal case, `Model: opus` for wide reach and for complex issues (high risk, major upgrades, tricky dependencies). It never picks `Model: fable`: large issues get their design from a fable architect (complexity L and XL, see [Model and effort per role](#model-and-effort-per-role)) |
 
-The label applies to the developer and reviewer of the sub-issue. The autopilot states the label and the reason per
+The label applies to the developer of the sub-issue; the other roles keep the model the `WORKFLOW.md` gives them. The autopilot states the label and the reason per
 issue in the wave report. The labels `Model: fable|opus|sonnet|haiku` must exist in the repository (`npm run repo-init` →
 *Standard labels*); if one is missing, the autopilot reports it and the issue runs with `CLAUDE_MODEL`. The argument
 applies to every wave of the epic; to change it, edit the command line in the description.
@@ -857,10 +857,37 @@ Unset means unlimited; `claude.max_budget_usd` and `roles.<name>.claude.max_budg
   while the cost is below the cap (otherwise it pauses again, without a second comment), with **Start now** (a one-off
   override of the cap, the session runs in an extra slot), or when the issue reaches a terminal state or leaves the board.
 
+## Model and effort per role
+
+The shipped `WORKFLOW.md` follows "plan strong, implement cheaper": the architect designs larger changes with the
+strongest model, the developer implements the design with a cheaper one, and the roles with a fixed task run with a
+fixed model and effort. The design is a short, read-only session, while the implementation is the long loop of tool
+calls, tests and fixes, and by far the largest share of the cost. A strong reviewer keeps the cheaper implementation safe.
+
+| Role | Model | Effort | `Model:` label | `Effort:` label |
+|---|---|---|---|---|
+| issue-analyst | `sonnet` | `medium` | ignored | ignored |
+| architect | `opus`, `fable` at complexity L and XL | label, else `CLAUDE_EFFORT` | ignored | applies |
+| developer | `CLAUDE_MODEL`, `opus` at complexity L and XL | label, else `CLAUDE_EFFORT` | applies | applies |
+| test-engineer | `sonnet` | `high` | ignored | ignored |
+| docs | `haiku` | `medium` | ignored | ignored |
+| reviewer | `opus` | `high` | ignored | ignored |
+| security-auditor | `opus` | `high` | ignored | ignored |
+| auditor, autopilot, analyst, planner | `fable` | role or label | applies | applies |
+
+- The complexity comes from the issue's `Complexity:` label, which the issue analyst sets when it is missing
+  (`roles.<role>.claude.model_by_complexity`, see [Roles](configuration.md#roles)).
+- `model_label: ignore` and `effort_label: ignore` keep the issue's labels from changing a role. In the shipped
+  `WORKFLOW.md` the labels therefore steer the developer (and the issue commands) only.
+- **Escalate instead of starting expensive:** if the developer fails on an issue (review or test round limit,
+  Blocked), give it `Model: fable` (or `Model: opus` below complexity L) and move it back; the next session uses it.
+- Without a Complexity label the developer uses `CLAUDE_MODEL` and the architect `opus`.
+
 ## Choosing the model per issue
 
-Every session uses the model from `CLAUDE_MODEL`, unless the issue has a label `Model: …`. Then the model from the
-label applies to that issue:
+Every session uses the model of its role (see [Model and effort per role](#model-and-effort-per-role)), else the model
+from `CLAUDE_MODEL`, unless the issue has a label `Model: …` and the role applies it (`model_label`). Then the model
+from the label applies to that issue:
 
 | Label | Model for Claude Code |
 |---|---|
@@ -876,7 +903,7 @@ label applies to that issue:
   yourself in GitHub if you need them.
 - Case does not matter. The `claude-` prefix is optional; Symphony adds it for values with a version. This also works
   for models without a standard label, e.g. `Model: claude-opus-4-8`.
-- Without a model label, `CLAUDE_MODEL` applies. The same is true for an unknown value (e.g. `Model: gpt-4`) or for
+- Without a model label, the role's model applies, else `CLAUDE_MODEL`. The same is true for an unknown value (e.g. `Model: gpt-4`) or for
   several labels with different models. Symphony then writes the warning `model label ignored` to the log and the
   dry run.
 - The model applies to a whole session. If you change the label while an agent runs, the new model applies from the
@@ -908,7 +935,11 @@ room without changing the model. Every session uses the effort from `CLAUDE_EFFO
 - `repo-init` creates all five labels, together with the model labels.
 - Case does not matter. Other values (e.g. `Effort: hi`) are unknown.
 - Precedence: `Effort:` label over the role's `effort` (`roles.<role>.claude.effort`) over `CLAUDE_EFFORT` (that is,
-  `claude.effort` in the `WORKFLOW.md`). If none of these is set, Claude Code's default applies.
+  `claude.effort` in the `WORKFLOW.md`). If none of these is set, Claude Code's default applies. A role with
+  `effort_label: ignore` keeps its own effort whatever the label says; in the shipped `WORKFLOW.md` these are the
+  issue analyst, test engineer, docs agent, reviewer and security auditor (see
+  [Model and effort per role](#model-and-effort-per-role)). The dry run then shows
+  `↳ effort label on issue ignored by role policy`.
 - For an unknown value or several labels with different levels, the effort without the label applies. Symphony then
   writes the warning `effort label ignored` to the log and the dry run.
 - The effort applies to a whole session, just like the model: a label change takes effect from the next session.
@@ -1513,7 +1544,7 @@ With one stack per workspace, `laravel.php` can point to a wrapper script that r
 | Warning `issue paused: still active after its continuation sessions` | The agent did not finish the issue after `SYMPHONY_MAX_CONTINUATIONS` continuations. Read the last comment and the transcript, then write a hint in the issue (that resumes it) or move the card. |
 | Message `You've hit your session limit` (dashboard: *Session limit*) | Your Claude subscription has reached its usage limit. Symphony retries up to `SYMPHONY_MAX_SESSION_LIMIT_RETRIES` times and then waits for the reset, see [Session limit](#session-limit). If you have topped up credits, **Retry now** helps. An `ANTHROPIC_API_KEY` has no session limit. |
 | A worker waits longer than expected | In the dashboard under *Retrying*, look at `retry at` and `resets`. For a session limit this is the reset plus 1 minute; for an unknown reset the normal backoff applies (up to 10 minutes). A paused issue (*Paused*) has no scheduled time: it only continues on a change to the issue, a higher `max_continuations` or via **Resume now**. After a Symphony restart a wait is forgotten. To start right away: **Retry now**. |
-| Warning `model label ignored` | A model label is unknown (typo), or the issue has several model labels with different models. Symphony then uses `CLAUDE_MODEL`. Fix the label; `npm run dry-run` shows the result. |
+| Warning `model label ignored` | A model label is unknown (typo), or the issue has several model labels with different models. Symphony then uses the role's model or `CLAUDE_MODEL`. Fix the label; `npm run dry-run` shows the result. |
 | Warning `effort label ignored` | An effort label is unknown (typo; allowed are `low`, `medium`, `high`, `xhigh`, `max`), or the issue has several effort labels with different levels. Symphony then uses the role's effort or `CLAUDE_EFFORT`. Fix the label; `npm run dry-run` shows the result. |
 | Session fails right at the start with a model error | The label names a version that does not exist, e.g. `Model: claude-opus-9-9`. Symphony retries the run with backoff. Fix the label. |
 | `repo-init` reports `HTTP 404` or `HTTP 403` | The repository in `GITHUB_REPOSITORY` is misspelled, or the token may not create labels or issues, or may not read files. Classic token: scope `repo`; fine-grained token: *Issues: Read and write* and *Contents: Read*. |
