@@ -83,6 +83,7 @@ function role(overrides: Partial<RoleConfig> & Pick<RoleConfig, 'name' | 'states
     onMissingResult: 'Blocked',
     onRoundLimit: null,
     modelLabel: 'apply',
+    effortLabel: 'apply',
     maxTurns: null,
     commands: null,
     runChecks: true,

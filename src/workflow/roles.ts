@@ -21,6 +21,9 @@ export const NEXT_STAGE = 'next';
 /** Whether a `Model:` issue label picks the model of a role's sessions. */
 export type ModelLabelPolicy = 'apply' | 'ignore';
 
+/** Whether an `Effort:` issue label picks the effort of a role's sessions. */
+export type EffortLabelPolicy = 'apply' | 'ignore';
+
 /** A column-scoped agent role (the `roles` front matter section). */
 export interface RoleConfig {
   name: string;
@@ -44,6 +47,8 @@ export interface RoleConfig {
   onRoundLimit: string | null;
   /** `ignore` keeps a `Model:` issue label from changing the role's model. */
   modelLabel: ModelLabelPolicy;
+  /** `ignore` keeps an `Effort:` issue label from changing the role's effort. */
+  effortLabel: EffortLabelPolicy;
   /** Turn limit for sessions of this role; null uses `agent.max_turns`. */
   maxTurns: number | null;
   /**

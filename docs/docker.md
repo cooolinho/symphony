@@ -197,7 +197,7 @@ Instead the dashboard is published on `127.0.0.1`.
 |---|---|---|
 | Dashboard | through Traefik at `SYMPHONY_DOMAIN`, with BasicAuth or forward auth | `http://127.0.0.1:<SYMPHONY_PORT>/` (default `4000`), no login |
 | Required in `.env` | steps 2 to 9 | steps 2 to 7: no `SYMPHONY_DOMAIN`, `TRAEFIK_*` or `SYMPHONY_BASIC_AUTH` |
-| `WORKFLOW.md`, `model-costs.yml` | in the image (mounts optional) | mounted read-only, reloaded live without a rebuild |
+| `WORKFLOW.md`, `roles/`, `model-costs.yml` | in the image (mounts optional) | mounted read-only, reloaded live without a rebuild |
 | Container | `${COMPOSE_PROJECT_NAME:-symphony}` | `${COMPOSE_PROJECT_NAME:-symphony}-local` |
 
 Like the production file, it overrides the host-specific values of `.env` (`SYMPHONY_PHP`, `SYMPHONY_LOG_DIR`,
@@ -232,8 +232,9 @@ To leave out `-f` in every command, set the file for the shell session: `export 
   volumes are then called `symphony-local_*` and the production container stays untouched.
 - **The dashboard has no login** and allows **Retry** (`SYMPHONY_ALLOW_REMOTE_CONTROL=true`). That is safe only
   because the port is bound to `127.0.0.1`; do not change the binding in `ports:` to `0.0.0.0` or a LAN address.
-- **Live configuration:** `WORKFLOW.md` and `model-costs.yml` are single-file bind mounts. If your editor replaces the
-  file instead of writing it in place, the container keeps the old version; `docker compose -f docker-compose.local.yml
+- **Live configuration:** `WORKFLOW.md` and `model-costs.yml` are single-file bind mounts, `roles/` (the role prompts
+  `WORKFLOW.md` includes) is a directory mount. If your editor replaces one of the two files instead of writing it in
+  place, the container keeps the old version; `docker compose -f docker-compose.local.yml
   restart` helps. A changed `.env` needs `up -d` (see [Changing the configuration](#changing-the-configuration)).
 
 ## Operation
@@ -259,17 +260,19 @@ up to `hooks.timeout_ms` + 30 s for them and their `after_run` hooks. The Compos
 
 - **`.env` changed:** `docker compose up -d` recreates the container with the new values. A plain
   `docker compose restart` does not re-read `.env`.
-- **`WORKFLOW.md` or `model-costs.yml` changed:** Both are in the image under `/app`. Rebuild with
-  `docker compose up -d --build`. To avoid rebuilding, use the optional read-only mounts in `docker-compose.yml`
+- **`WORKFLOW.md`, a role prompt in `roles/` or `model-costs.yml` changed:** They are in the image under `/app`. Rebuild
+  with `docker compose up -d --build`. To avoid rebuilding, use the optional read-only mounts in `docker-compose.yml`
   (remove the comment characters):
 
   ```yaml
   - ./WORKFLOW.md:/app/WORKFLOW.md:ro
   - ./model-costs.yml:/app/model-costs.yml:ro
+  - ./roles:/app/roles:ro
   ```
 
-  Symphony then reloads both live. A bind mount of a single file follows the inode, though: if your editor replaces the
-  file instead of overwriting it in place, the container sees the old version. In that case
+  Symphony then reloads them live. A bind mount of a single file follows the inode, though: if your editor replaces the
+  file instead of overwriting it in place, the container sees the old version (the directory mount of `roles/` does
+  not have this problem). In that case
   `docker compose restart` helps.
 
 ### Logs and transcripts

@@ -1,7 +1,7 @@
 import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { EFFORT_LEVELS, type ClaudeConfig, type ModelClaudeOverrides } from '../workflow/config.ts';
-import type { ModelLabelPolicy, RoleClaudeOverrides } from '../workflow/roles.ts';
-import type { IssueComplexity } from '../workflow/classify.ts';
+import type { EffortLabelPolicy, ModelLabelPolicy, RoleClaudeOverrides, RoleConfig } from '../workflow/roles.ts';
+import { classify, type IssueComplexity } from '../workflow/classify.ts';
 import { bareModelName, modelForLabelValue } from './model-name.ts';
 
 export { modelForLabelValue };
@@ -41,6 +41,8 @@ export interface EffortChoice {
   label: string | null;
   /** Why effort labels were ignored (unknown value, conflicting labels), or null. */
   warning: string | null;
+  /** Whether an effort label was found but ignored by the role's policy (`effort_label: ignore`). */
+  labelIgnored: boolean;
 }
 
 export function isModelLabel(label: string): boolean {
@@ -131,10 +133,32 @@ export function chooseModel(
 /**
  * Picks the session effort from "Effort: <level>" labels, else `defaultEffort` (the role's or claude.effort).
  * Unknown values are ignored and labels naming different levels cancel each other out; both are reported in `warning`.
+ * When `effortLabel` is 'ignore', effort labels are not evaluated.
  */
-export function chooseEffort(labels: readonly string[], defaultEffort: EffortLevel | null): EffortChoice {
+export function chooseEffort(labels: readonly string[], defaultEffort: EffortLevel | null, effortLabel: EffortLabelPolicy = 'apply'): EffortChoice {
+  if (effortLabel === 'ignore') {
+    return { effort: defaultEffort, label: null, warning: null, labelIgnored: labels.some((label) => hasPrefix(label, EFFORT_LABEL_PREFIX)) };
+  }
   const { value, label, warning } = chooseFromLabels<EffortLevel | null>(labels, EFFORT_LABEL_PREFIX, 'effort', effortForLabelValue, defaultEffort);
-  return { effort: value, label, warning };
+  return { effort: value, label, warning, labelIgnored: false };
+}
+
+/**
+ * The model of a session of `role` (null: no role) on an issue with `labels`, as Symphony starts it: a "Model:" label
+ * unless the role ignores it, else the role's `model_by_complexity` for the issue's Complexity: label, else the role's
+ * `claude.model`, else `defaultModel` (claude.model).
+ */
+export function chooseRoleModel(labels: readonly string[], role: Pick<RoleConfig, 'modelLabel' | 'claude'> | null, defaultModel: string | null): ModelChoice {
+  const { complexity } = classify(labels);
+  return chooseModel(labels, role?.claude.model ?? defaultModel, role?.modelLabel, complexity, role?.claude.modelByComplexity ?? null);
+}
+
+/**
+ * The effort of a session of `role` (null: no role): an "Effort:" label unless the role ignores it, else the role's
+ * `claude.effort`, else `defaultEffort` (claude.effort).
+ */
+export function chooseRoleEffort(labels: readonly string[], role: Pick<RoleConfig, 'effortLabel' | 'claude'> | null, defaultEffort: EffortLevel | null): EffortChoice {
+  return chooseEffort(labels, role?.claude.effort ?? defaultEffort, role?.effortLabel);
 }
 
 function quoted(labels: string[]): string {

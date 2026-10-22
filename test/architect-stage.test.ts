@@ -65,7 +65,7 @@ async function harness(scripts: Script[], labels: string[], state = 'Ready', fro
     return { ok: true, turnId: String(turn), resultText: 'done' };
   });
   const timers = new ManualTimers();
-  const workflow = new StaticWorkflow(makeWorkflow(front(config), { prompt: definition.promptTemplate, env: ENV, dir: path.dirname(shipped) }));
+  const workflow = new StaticWorkflow(makeWorkflow(front(config), { prompt: definition.promptTemplate, partials: definition.partials, env: ENV, dir: path.dirname(shipped) }));
   const orchestrator = new Orchestrator({ workflow, runner, logger: Logger.silent(), env: {}, logDir: null, clock: new ManualClock(), timers, createAdapter: () => tracker });
   return { orchestrator, tracker, runner, timers, reports };
 }

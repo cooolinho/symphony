@@ -338,8 +338,10 @@ Optional. Maps board columns to column-scoped agent roles. Without it, every act
 When an issue is dispatched, the role serving its current column (and its [command](#issue-commands), if any) is
 resolved once and kept for the whole run (an issue no role serves runs as `default`). The role decides:
 
-- **Model:** a `Model: …` issue label, else the role's `claude.model`, else `claude.model` (see [Model per issue](#model-per-issue)).
-- **Effort:** an `Effort: …` issue label, else the role's `claude.effort`, else `claude.effort` (see [Effort per issue](#effort-per-issue)).
+- **Model:** a `Model: …` issue label (unless `model_label: ignore`), else the role's `claude.model_by_complexity` for
+  the issue's `Complexity:` label, else the role's `claude.model`, else `claude.model` (see [Model per issue](#model-per-issue)).
+- **Effort:** an `Effort: …` issue label (unless `effort_label: ignore`), else the role's `claude.effort`, else
+  `claude.effort` (see [Effort per issue](#effort-per-issue)).
 - **Claude settings:** the role's `claude` block is merged over [`claude`](#claude): `max_budget_usd`
   replaces the global value; `allowed_tools`, `disallowed_tools` and `append_system_prompt` are appended to it.
 - **Permissions:** `read_only: true` starts the session read-only ([agent-claude.md](agent-claude.md#permission-and-safety-posture)).
@@ -392,7 +394,8 @@ roles:
 | `on_check_failed` | none | Column for an issue whose entry check fails for a role that cannot fix it (a read-only role). When the check of the column a `report_result` leads to fails, the tool records the result anyway, adds a note with the check output to its summary and moves the issue here (through the transition guard, so this column's own entry check applies). Without it the agent gets `check_failed` and nothing is recorded. Ignored for roles that are not `read_only`. |
 | `on_missing_result` | `Blocked` with `result`, else none | Column for a session that ends without a result. Needs `result`. After the first turn without a result the session gets one reminder turn; if the turn limit comes first or the reminder fails too, Symphony re-fetches the issue and, only if it is still in the role's column, posts a plain comment ("Stage ended without a result") and moves it here. An issue someone moved meanwhile is left alone. See [Stages without a result](results.md#stages-without-a-result). |
 | `on_round_limit` | the blocked column | Column for a loop verdict (review `changes_needed`, test `failed`, security `issues_found`) that reaches `pipeline.max_review_rounds` / `max_test_rounds` / `max_security_rounds`. Needs `result: review`, `result: test` or `result: security`. See [Result-driven transitions](#result-driven-transitions). |
-| `model_label` | `apply`; `ignore` for read-only roles with a `result` | `ignore` keeps a `Model:` issue label from changing the role's model. Read here; applied from a later change on. |
+| `model_label` | `apply`; `ignore` for read-only roles with a `result` | `ignore` keeps a `Model:` issue label from changing the role's model (`model_by_complexity` still applies). |
+| `effort_label` | `apply` | `ignore` keeps an `Effort:` issue label from changing the role's effort: the session runs with the role's `claude.effort`, else `claude.effort`. The shipped `WORKFLOW.md` sets it for the roles with a fixed task, so a label like `Effort: xhigh` raises the developer's effort, not the reviewer's or the docs agent's. |
 | `max_turns` | `agent.max_turns` | Integer >= 1. |
 | `commands` | none | Issue commands the role serves, e.g. `[refactoring]` (lowercase letters, digits and dashes; a leading `/` is allowed). Without it the role serves issues without a command. See [Issue commands](#issue-commands). |
 | `run_checks` | `true` | `false` lets the role move the issue without running `checks.on_enter`. For roles that change nothing, whose hand-off must not depend on the repository's test suite. |
@@ -945,7 +948,9 @@ logs `Claude Code is not using the requested permission mode` with the model.
 
 An issue label `Effort: <level>` picks the effort for that issue's sessions; issues without one use the effort of their
 [role](#roles) (`roles.<role>.claude.effort`), else `claude.effort` (`CLAUDE_EFFORT` in the shipped `WORKFLOW.md`; empty
-= Claude Code default). Precedence: `Effort:` label > role effort > `claude.effort`. The prefix is matched
+= Claude Code default). Precedence: `Effort:` label > role effort > `claude.effort`; a role with `effort_label: ignore`
+skips the label (the dry run shows `effort label on issue ignored by role policy`, the `run_dispatched` trace event
+`effort_label_ignored`). The prefix is matched
 case-insensitively and the space after the colon is optional. The value is lowercased and must be one of `low`,
 `medium`, `high`, `xhigh` or `max`; anything else is unknown.
 
@@ -1318,7 +1323,7 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
     characters; `risks` lists the flags that are set, e.g. `breaking change`), else `null`. The shipped prompts of the
     architect, developer, test engineer and reviewer print it as "Analysis of the issue analyst".
   - `results.design`: the newest design since the last reset, whatever its verdict, as `{verdict, summary, decision,
-    components, interfaces, migrations, compatibility, options, work_packages, head_sha}` (`summary` cut to 1,500
+    components, interfaces, migrations, compatibility, options, work_packages, plan, tests, head_sha}` (`summary` cut to 1,500
     characters; `head_sha` is the commit the design was made at), else `null`. The shipped developer prompt prints it
     as "Design of the architect" and nothing without a design.
   - `results.implementation`: the newest implementation of the issue's developer, whatever its verdict and across
@@ -1336,3 +1341,29 @@ Besides the standard Liquid filters there are `without_model_labels` and `withou
 
 An empty body falls back to a minimal default prompt. `npm run dry-run` renders the prompt for the first eligible
 issue so you can check it without starting an agent.
+
+### Role prompts in separate files
+
+The body can pull in other files with `{% include "<path>" %}` (or `{% render "<path>" %}`). The shipped `WORKFLOW.md`
+keeps the instructions of each role in its own file and picks the one for the session's role:
+
+```liquid
+{% case role %}
+{%- when "developer" %}{% include "roles/developer.md" %}
+{%- when "reviewer" %}{% include "roles/reviewer.md" %}
+{%- else %}{% include "roles/default.md" %}
+{%- endcase %}
+```
+
+- Paths are relative to the directory of `WORKFLOW.md`, also inside an included file, and must stay inside it:
+  no absolute paths, no `./` or `../`. Only quoted paths work; `{% include role %}` with a variable does not.
+- An included file sees the whole scope of the prompt, including what the body `capture`s before the include
+  (`{% render %}` sees only what it is passed, as in standard Liquid).
+- Symphony loads the included files together with `WORKFLOW.md`: a change to one of them reloads the workflow live,
+  like a change to `WORKFLOW.md`. A missing file stops the start; on a reload it keeps the last good version and
+  pauses new dispatches until the file is back (`missing_prompt_partial` in the log). A syntax error in an included
+  file fails every run attempt, with the file's path in the error.
+- Rendering reads only these files, never other files from the disk.
+- A new role needs three things: its entry under [`roles`](#roles), a file `roles/<role>.md` and a line
+  `{%- when "<role>" %}{% include "roles/<role>.md" %}` in the body. A role without a `when` line gets
+  `roles/default.md`.

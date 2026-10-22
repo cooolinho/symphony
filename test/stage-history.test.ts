@@ -376,9 +376,11 @@ describe('resultsTemplateValue: the design for the developer', () => {
     interfaces: ['exportInvoices(list): string'],
     migrations: ['add invoices.exported_at'],
     compatibility: 'Existing exports are unchanged',
+    plan: ['Add the CSV columns to app/Exports/InvoiceExporter.php'],
+    tests: ['Invoices export as CSV: tests/Feature/InvoiceExportTest.php'],
   };
 
-  it('hands the newest design on: decision, components, interfaces, migrations, compatibility and options', () => {
+  it('hands the newest design on: decision, components, interfaces, migrations, compatibility, options, plan and tests', () => {
     const value = resultsTemplateValue(buildStageHistory([designed({ verdict: 'blocked', summary: 'Open.', blockers: [{ description: 'Which database?', needs: 'human' }] }), designed(READY)]));
     assert.deepEqual(value.design, {
       verdict: 'ready',
@@ -390,6 +392,8 @@ describe('resultsTemplateValue: the design for the developer', () => {
       compatibility: 'Existing exports are unchanged',
       options: ['New service', 'Extend the exporter'],
       work_packages: [],
+      plan: ['Add the CSV columns to app/Exports/InvoiceExporter.php'],
+      tests: ['Invoices export as CSV: tests/Feature/InvoiceExportTest.php'],
       head_sha: null,
     });
   });

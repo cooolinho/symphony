@@ -53,7 +53,7 @@ async function render(
   history: Record<string, unknown> = {},
 ): Promise<string> {
   const { definition } = await loadWorkflowFile(shipped);
-  const template = compilePrompt(definition.promptTemplate);
+  const template = compilePrompt(definition.promptTemplate, definition.partials);
   assert.equal(template.parseError, null);
   const subject = {
     ...issue,
@@ -249,7 +249,7 @@ describe('shipped WORKFLOW.md', () => {
     it('adds the regression-test-first instruction to the developer prompt of bug issues only', async () => {
       const prompt = async (labels: string[]) => {
         const { definition } = await loadWorkflowFile(shipped);
-        const template = compilePrompt(definition.promptTemplate);
+        const template = compilePrompt(definition.promptTemplate, definition.partials);
         return renderPrompt(template, { issue: issueTemplateValue(makeIssue({ ...issue, labels }), commandSkills([toolbox])), attempt: null, role: 'developer', agents: [], round: 1 });
       };
       for (const labels of [['bug'], ['type: bugfix']]) {
@@ -373,7 +373,7 @@ describe('shipped WORKFLOW.md', () => {
     const prompt = (role: string, labels: string[], description?: string, goals: string[] | null = []) => {
       const subject = { ...issue, labels, ...(description !== undefined ? { description } : {}) };
       return loadWorkflowFile(shipped).then(({ definition }) =>
-        renderPrompt(compilePrompt(definition.promptTemplate), {
+        renderPrompt(compilePrompt(definition.promptTemplate, definition.partials), {
           issue: issueTemplateValue(makeIssue(subject), commandSkills([toolbox])),
           attempt: null,
           role,
@@ -497,6 +497,8 @@ describe('shipped WORKFLOW.md', () => {
         compatibility: 'Existing exports are unchanged',
         options: ['A new service', 'Extend the exporter'],
         work_packages: [],
+        plan: ['Add InvoiceExporter in app/Exports/InvoiceExporter.php', 'Call it from app/Console/ExportCommand.php'],
+        tests: ['Invoices export as CSV: tests/Feature/InvoiceExportTest.php checks the rows'],
         head_sha: null,
       },
     };
@@ -510,6 +512,8 @@ describe('shipped WORKFLOW.md', () => {
     assert.match(prompt, /Migrations:\n- add invoices\.exported_at/);
     assert.match(prompt, /Compatibility: Existing exports are unchanged/);
     assert.match(prompt, /Options considered:\n- A new service\n- Extend the exporter/);
+    assert.match(prompt, /Plan:\n1\. Add InvoiceExporter in app\/Exports\/InvoiceExporter\.php\n2\. Call it from app\/Console\/ExportCommand\.php/);
+    assert.match(prompt, /Tests \(one per acceptance criterion\):\n- Invoices export as CSV: tests\/Feature\/InvoiceExportTest\.php checks the rows/);
     // The reviewer checks the change against it, with the same facts but a reviewer's wording.
     const reviewer = await render('reviewer', null, undefined, null, [], { result_required: true, round: 1, results });
     assert.match(reviewer, /## Design of the architect/);
@@ -517,6 +521,7 @@ describe('shipped WORKFLOW.md', () => {
     assert.doesNotMatch(reviewer, /Implement this design/);
     assert.match(reviewer, /Decision: A new InvoiceExporter next to the others/);
     assert.match(reviewer, /Interfaces:\n- exportInvoices\(list\): string/);
+    assert.match(reviewer, /Plan:\n1\. Add InvoiceExporter/);
     // The other roles do not get the block.
     for (const role of ['test-engineer', 'issue-analyst']) {
       assert.doesNotMatch(await render(role, null, undefined, null, [], { result_required: true, round: 1, results }), /Design of the architect/, role);
@@ -659,7 +664,7 @@ describe('shipped WORKFLOW.md', () => {
       labels: ['feature', 'type: bugfix', 'complexity: M', 'model: opus', 'effort: high'],
     });
     const { definition } = await loadWorkflowFile(shipped);
-    const template = compilePrompt(definition.promptTemplate);
+    const template = compilePrompt(definition.promptTemplate, definition.partials);
     const subject = { ...testIssue, native_ref: { ...testIssue.native_ref, base_branch: null } };
     const rendered = await renderPrompt(template, { issue: issueTemplateValue(subject, commandSkills([toolbox])), attempt: null, role: 'developer', agents: [] });
 

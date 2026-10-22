@@ -216,7 +216,7 @@ async function harness(issues: Issue[], scripts: Record<string, Script[]>): Prom
   });
   const timers = new ManualTimers();
   const clock = new ManualClock();
-  const workflow = new StaticWorkflow(makeWorkflow(config, { prompt: definition.promptTemplate, env: ENV, dir: path.dirname(shipped) }));
+  const workflow = new StaticWorkflow(makeWorkflow(config, { prompt: definition.promptTemplate, partials: definition.partials, env: ENV, dir: path.dirname(shipped) }));
   const orchestrator = new Orchestrator({ workflow, runner, logger: Logger.silent(), env: {}, logDir: null, clock, timers, createAdapter: () => tracker });
   return { orchestrator, tracker, runner, timers, clock, workflow, reports };
 }
@@ -436,7 +436,7 @@ describe('work packages as sub-issues (#211)', () => {
     // An L issue's architect is not told about work packages, and the design hands the issue to the developer.
     const prompt = sessionsOf(h, PARENT)[0]?.turns[0] ?? '';
     assert.doesNotMatch(prompt, /## Work packages \(complexity XL\)/);
-    assert.match(prompt, /no work packages and no implementation steps/);
+    assert.match(prompt, /, and no work packages\. Then make the chosen option a recipe/);
     assert.deepEqual(h.tracker.statusCalls, ['In progress']);
     await h.orchestrator.shutdown(1_000);
   });

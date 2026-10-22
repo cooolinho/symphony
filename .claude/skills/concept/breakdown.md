@@ -75,10 +75,11 @@ You never assign `Effort: max` on your own. If you lack a yardstick, take `Effor
 |---|---|
 | `Model: haiku` | size S **and** low risk: texts, translations, configuration, small changes in one area, simple tests |
 | `Model: sonnet` | the normal case: size S with medium risk, size M with low or medium risk (new feature in a few files, design issues, tests) |
-| `Model: opus` | size M across several areas, wide reach with medium risk |
-| `Model: fable` | complex issues: high risk (data model, permissions, money, migrations on existing data), major upgrades, tricky dependencies |
+| `Model: opus` | size M across several areas, wide reach with medium risk, complex issues: high risk (data model, permissions, money, migrations on existing data), major upgrades, tricky dependencies |
 
-When in doubt, the stronger model. Effort and model are related but should not blindly run in step: a data model in
-one file is `Effort: xhigh` and `Model: fable`; a translation issue is `Effort: low` and `Model: haiku`.
+You never pick `Model: fable` with `auto`. For large and risky issues the architect already designs with fable
+(complexity L and XL), and the developer implements that design with opus; `Model: fable` stays for a human who
+escalates an issue the developer failed on. When in doubt, the stronger model. Effort and model are related but should not blindly run in step: a data
+model in one file is `Effort: xhigh` and `Model: opus`; a translation issue is `Effort: low` and `Model: haiku`.
 
 Epics get neither an effort nor a model label: they are not implemented.

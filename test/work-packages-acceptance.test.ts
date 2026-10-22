@@ -477,7 +477,7 @@ async function prompt(options: PromptOptions): Promise<string> {
     labels: options.labels ?? ['Type: feature', 'Complexity: XL'],
     native_ref: { provider: 'github_project', repository: 'acme/app', number, parent: options.parent ?? null, sub_issues: options.subIssues ?? [], base_branch: options.base ?? null },
   });
-  const template = compilePrompt(definition.promptTemplate);
+  const template = compilePrompt(definition.promptTemplate, definition.partials);
   assert.equal(template.parseError, null);
   return renderPrompt(template, {
     issue: issueTemplateValue(issue, new Map()),
@@ -515,6 +515,8 @@ const DESIGN = {
   compatibility: null,
   options: [],
   work_packages: ['CSV writer: rows', 'PDF writer: pages', 'CLI command: wires both'],
+  plan: [],
+  tests: [],
   head_sha: 'abcdef0123456789abcdef0123456789abcdef01',
 };
 
@@ -949,7 +951,7 @@ async function harness(issues: Issue[], scripts: Record<string, Script[]> = {}):
   });
   const timers = new ManualTimers();
   const clock = new ManualClock();
-  const workflow = new StaticWorkflow(makeWorkflow(config, { prompt: definition.promptTemplate, env: SCENARIO_ENV, dir: root }));
+  const workflow = new StaticWorkflow(makeWorkflow(config, { prompt: definition.promptTemplate, partials: definition.partials, env: SCENARIO_ENV, dir: root }));
   const orchestrator = new Orchestrator({ workflow, runner, logger: Logger.silent(), env: {}, logDir: null, clock, timers, createAdapter: () => board });
   return { orchestrator, board, runner, timers, clock, workflow, reports };
 }

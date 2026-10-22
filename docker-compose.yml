@@ -61,6 +61,7 @@ services:
             # inode: if an editor replaces the file instead of writing it in place, run docker compose restart.
             # - ./WORKFLOW.md:/app/WORKFLOW.md:ro
             # - ./model-costs.yml:/app/model-costs.yml:ro
+            # - ./roles:/app/roles:ro                  # the role prompts WORKFLOW.md includes
         # Lands at /run/secrets/ssh_key, the default of SYMPHONY_SSH_KEY; the entrypoint sets GIT_SSH_COMMAND.
         secrets:
             - ssh_key

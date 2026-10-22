@@ -334,7 +334,14 @@ export class ManualClock implements Clock {
 
 export function makeWorkflow(
   front: Record<string, unknown>,
-  options: { prompt?: string; dir?: string; env?: NodeJS.ProcessEnv; integrations?: readonly WorkspaceIntegration[] } = {},
+  options: {
+    prompt?: string;
+    /** The files `prompt` includes, as `WorkflowDefinition.partials` (the shipped prompt: its roles/*.md). */
+    partials?: Record<string, string>;
+    dir?: string;
+    env?: NodeJS.ProcessEnv;
+    integrations?: readonly WorkspaceIntegration[];
+  } = {},
 ): EffectiveWorkflow {
   const dir = options.dir ?? tempDir();
   const config = resolveConfig(front, {
@@ -344,9 +351,9 @@ export function makeWorkflow(
     ...(options.integrations !== undefined ? { integrations: options.integrations } : {}),
   });
   return {
-    definition: { config: front, promptTemplate: options.prompt ?? 'Work on {{ issue.identifier }}' },
+    definition: { config: front, promptTemplate: options.prompt ?? 'Work on {{ issue.identifier }}', partials: options.partials ?? {} },
     config,
-    prompt: compilePrompt(options.prompt ?? 'Work on {{ issue.identifier }}'),
+    prompt: compilePrompt(options.prompt ?? 'Work on {{ issue.identifier }}', options.partials),
     continuationPrompt: compilePrompt(DEFAULT_CONTINUATION_PROMPT),
     version: 1,
     contentHash: 'test',

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { childEnvironment } from '../agent/env.ts';
-import { chooseEffort, chooseModel } from '../agent/model.ts';
+import { chooseRoleEffort, chooseRoleModel } from '../agent/model.ts';
 import { classify } from '../workflow/classify.ts';
 import { MODEL_FAMILIES, modelFamilyOf } from '../agent/rate-limit.ts';
 import type { AgentEvent, AgentRunner, IntegrationReport, TokenUsage } from '../agent/types.ts';
@@ -1497,9 +1497,7 @@ export class Orchestrator {
 
   /** The model a session for the issue runs with, as `#dispatch` chooses it: label, else complexity-based, else role, else claude.model. */
   #modelFor(issue: Pick<Issue, 'state' | 'description' | 'labels'>, config: ServiceConfig): string | null {
-    const role = roleFor(issue, config.roles);
-    const { complexity } = classify(issue.labels);
-    return chooseModel(issue.labels, role?.claude.model ?? config.claude.model, role?.modelLabel, complexity, role?.claude.modelByComplexity ?? null).model;
+    return chooseRoleModel(issue.labels, roleFor(issue, config.roles), config.claude.model).model;
   }
 
   /** The active hold of the model the issue would run with; null for Claude Code's default model (never held). */
@@ -1978,9 +1976,9 @@ export class Orchestrator {
     record.meta = issueMeta(issue);
     // A "Model: <model>" label picks the model for this run, else model_by_complexity, else the role's claude.model, else claude.model.
     const { complexity } = classify(issue.labels);
-    const choice = chooseModel(issue.labels, role?.claude.model ?? config.claude.model, role?.modelLabel, complexity, role?.claude.modelByComplexity ?? null);
+    const choice = chooseRoleModel(issue.labels, role, config.claude.model);
     // Likewise an "Effort: <level>" label picks the effort, else the role's claude.effort, else claude.effort.
-    const effortChoice = chooseEffort(issue.labels, role?.claude.effort ?? config.claude.effort);
+    const effortChoice = chooseRoleEffort(issue.labels, role, config.claude.effort);
     entry.requestedModel = choice.model;
     entry.effort = effortChoice.effort;
     record.sessions.push({
@@ -2014,6 +2012,7 @@ export class Orchestrator {
         complexity,
         effort: effortChoice.effort,
         effort_label: effortChoice.label,
+        effort_label_ignored: effortChoice.labelIgnored,
         continuation,
         forced,
       },
@@ -2380,8 +2379,8 @@ export class Orchestrator {
   async #endStageWithoutResult(
     entry: RunningEntry,
     role: RoleConfig,
-    backgroundTasks: string[],
     retryInfo: { identifier: string; url: string | null; limit: null },
+    backgroundTasks: string[],
   ): Promise<void> {
     const issueId = entry.issueId;
     const target = role.onMissingResult;

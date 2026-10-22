@@ -7,29 +7,36 @@ import { resolveIssueCommand } from './command.ts';
 import type { PipelineConfig } from './config.ts';
 import { profileFor } from './profile.ts';
 
-/** Strict Liquid: unknown variables and unknown filters fail rendering. */
-const engine = new Liquid({
-  strictVariables: true,
-  strictFilters: true,
-  ownPropertyOnly: true,
-  cache: false,
-});
+/**
+ * Strict Liquid: unknown variables and unknown filters fail rendering. `{% include %}` and `{% render %}` read only
+ * `partials` (the path as written in the tag → its text, see `loadPartials`), never the disk.
+ */
+function createEngine(partials: Readonly<Record<string, string>>): Liquid {
+  const engine = new Liquid({
+    strictVariables: true,
+    strictFilters: true,
+    ownPropertyOnly: true,
+    cache: false,
+    templates: { ...partials },
+  });
 
-/** `issue.labels | without_model_labels`: the labels minus "Model: …" labels, which only pick the agent's model. */
-engine.registerFilter('without_model_labels', (labels: unknown) =>
-  Array.isArray(labels) ? labels.filter((label) => typeof label !== 'string' || !isModelLabel(label)) : labels,
-);
+  /** `issue.labels | without_model_labels`: the labels minus "Model: …" labels, which only pick the agent's model. */
+  engine.registerFilter('without_model_labels', (labels: unknown) =>
+    Array.isArray(labels) ? labels.filter((label) => typeof label !== 'string' || !isModelLabel(label)) : labels,
+  );
 
-/** `issue.labels | without_agent_labels`: the labels minus "Model: …", "Effort: …", "Type: …", "Complexity: …", and "needs-human" labels. */
-engine.registerFilter('without_agent_labels', (labels: unknown) =>
-  Array.isArray(labels)
-    ? labels.filter(
-        (label) =>
-          typeof label !== 'string' ||
-          !(isModelLabel(label) || isEffortLabel(label) || isTypeLabel(label) || isComplexityLabel(label) || isNeedsHumanLabel(label)),
-      )
-    : labels,
-);
+  /** `issue.labels | without_agent_labels`: the labels minus "Model: …", "Effort: …", "Type: …", "Complexity: …", and "needs-human" labels. */
+  engine.registerFilter('without_agent_labels', (labels: unknown) =>
+    Array.isArray(labels)
+      ? labels.filter(
+          (label) =>
+            typeof label !== 'string' ||
+            !(isModelLabel(label) || isEffortLabel(label) || isTypeLabel(label) || isComplexityLabel(label) || isNeedsHumanLabel(label)),
+        )
+      : labels,
+  );
+  return engine;
+}
 
 /** The prompt variable `results` for roles without `result` and for issues without results; see `resultsTemplateValue`. */
 export const EMPTY_RESULTS = { latest: [], open_findings: [], security_findings: [], failed_cases: [], test: null, analysis: null, design: null, implementation: null };
@@ -51,13 +58,28 @@ export interface PromptTemplate {
   source: string;
   parsed: Template[] | null;
   parseError: string | null;
+  /** The engine that parsed it, holding the files the template may include. */
+  engine: Liquid;
 }
 
-export function compilePrompt(source: string): PromptTemplate {
+/**
+ * Parses `source` and every file in `partials` (the files it includes, see `WorkflowDefinition.partials`). A syntax
+ * error in an included file fails the whole template, named with the file's path.
+ */
+export function compilePrompt(source: string, partials: Readonly<Record<string, string>> = {}): PromptTemplate {
+  const engine = createEngine(partials);
   try {
-    return { source, parsed: engine.parse(source), parseError: null };
+    const parsed = engine.parse(source);
+    for (const [name, text] of Object.entries(partials)) {
+      try {
+        engine.parse(text, name);
+      } catch (error) {
+        return { source, parsed: null, parseError: `${name}: ${errorMessage(error)}`, engine };
+      }
+    }
+    return { source, parsed, parseError: null, engine };
   } catch (error) {
-    return { source, parsed: null, parseError: errorMessage(error) };
+    return { source, parsed: null, parseError: errorMessage(error), engine };
   }
 }
 
@@ -69,7 +91,7 @@ export async function renderPrompt(template: PromptTemplate, scope: Record<strin
     // `agents` (the session's subagents), `test_paths`, `attachments` and the stage-history variables are optional for callers that render without a session, e.g. tests.
     const defaults = { agents: [], results: EMPTY_RESULTS, round: 1, result_required: false, test_paths: [], docs_paths: [], attachments: [] };
     const results = typeof scope.results === 'object' && scope.results !== null ? { ...EMPTY_RESULTS, ...scope.results } : defaults.results;
-    return (await engine.render(template.parsed, { ...defaults, ...scope, results })).trim();
+    return (await template.engine.render(template.parsed, { ...defaults, ...scope, results })).trim();
   } catch (error) {
     throw new SymphonyError('template_render_error', `prompt template failed to render: ${errorMessage(error)}`, {
       cause: error,
