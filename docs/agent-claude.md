@@ -138,6 +138,15 @@ workspace's project type ([Subagents per role](configuration.md#subagents-per-ro
 refuses a call. Every Agent tool call carries its subagent in the `tool_use` event (`detail.agent`), so the statistics
 count subagents like skills. Background and usage figures: [laravel-subagents.md](laravel-subagents.md).
 
+Subagents and commands run in the **foreground**: every session starts with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`,
+so the Agent and Bash tools offer no `run_in_background` and nothing is moved to the background automatically. A
+background task only reports back in a later turn, but Symphony ends a result-driven session after the one reminder
+turn (and every session at `max_turns`), which stops the task with it. An agent that ended its turn to wait for a
+background code review would then lose the review and the stage would end without a result. The system prompt
+addition says the same: use the results in the same turn and never end a turn to wait. `claude.env` can set the
+variable to `0`; if a session then ends without a result while tasks still run, the "Stage ended without a result"
+comment names them, and `turn_completed` carries them in `detail.background_tasks`.
+
 ### MCP server status
 
 Stdio servers such as Laravel Boost may still be `pending` after the handshake (Claude Code waits up to

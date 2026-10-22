@@ -2285,7 +2285,7 @@ export class Orchestrator {
       const missing = outcome.missingResult === true && !entry.resultRecorded ? entry.roleConfig : null;
       if (missing?.onMissingResult != null) {
         // The claim stays until the check has decided: continue as before, or end the stage.
-        void this.#serial.run(() => this.#endStageWithoutResult(entry, missing, retryInfo));
+        void this.#serial.run(() => this.#endStageWithoutResult(entry, missing, retryInfo, outcome.backgroundTasks ?? []));
       } else {
         this.#scheduleRetry(entry.issueId, 1, { ...retryInfo, kind: 'continuation', error: null });
       }
@@ -2374,11 +2374,13 @@ export class Orchestrator {
    * A run of a result-driven role ended without a result (after the reminder, or at the turn limit). Only after a
    * fresh fetch confirms the issue is still in the role's column does Symphony comment and move it to the role's
    * `on_missing_result`, then release it. An issue moved meanwhile (a human, another run) is left alone and the
-   * normal continuation follows; a tracker error is retried like a failed run.
+   * normal continuation follows; a tracker error is retried like a failed run. `backgroundTasks` were still running
+   * when the session ended; the comment names them, since an agent waiting for one is the usual cause.
    */
   async #endStageWithoutResult(
     entry: RunningEntry,
     role: RoleConfig,
+    backgroundTasks: string[],
     retryInfo: { identifier: string; url: string | null; limit: null },
   ): Promise<void> {
     const issueId = entry.issueId;
@@ -2416,7 +2418,11 @@ export class Orchestrator {
     }
     const body =
       `**Stage ended without a result.** The ${role.name} session for "${fresh.state}" ended without calling ` +
-      `\`report_result\` (after ${entry.turnCount} turn${entry.turnCount === 1 ? '' : 's'}), so Symphony moved the issue to "${target}" (\`roles.${role.name}.on_missing_result\`). A human needs to look at it.`;
+      `\`report_result\` (after ${entry.turnCount} turn${entry.turnCount === 1 ? '' : 's'}), so Symphony moved the issue to "${target}" (\`roles.${role.name}.on_missing_result\`). ` +
+      (backgroundTasks.length > 0
+        ? `Still running in the background when the session ended, and stopped with it: ${backgroundTasks.map((task) => `"${task}"`).join(', ')}. `
+        : '') +
+      'A human needs to look at it.';
     try {
       await adapter.postComment?.(fresh, body);
     } catch (error) {
@@ -2440,7 +2446,7 @@ export class Orchestrator {
         message: `stage ended without a result; moved from "${fresh.state}" to "${target}"`,
         run: entry.runId,
         turn: entry.turnCount,
-        detail: { role: role.name, from: fresh.state, to: target },
+        detail: { role: role.name, from: fresh.state, to: target, ...(backgroundTasks.length > 0 ? { background_tasks: backgroundTasks } : {}) },
       });
     }
     this.#release(issueId);

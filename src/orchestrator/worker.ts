@@ -54,6 +54,8 @@ export type WorkerOutcome =
        * while the issue was still in its column. The orchestrator confirms the column and applies `on_missing_result`.
        */
       missingResult?: true;
+      /** With `missingResult`: background tasks still running when the last turn ended (they end with the session). */
+      backgroundTasks?: string[];
     }
   | { kind: 'failed'; code: string; message: string; phase: RunPhase; sessionLimit?: SessionLimitInfo }
   | { kind: 'cancelled'; message: string };
@@ -557,6 +559,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     if (unavailableMcp.length > 0) callbacks.mcpUnavailable(unavailableMcp.map(([name]) => name));
 
     const skills = commandSkills(params.workflow.config.claude.plugins);
+    // What the last turn left running in the background; the session's end stops it.
+    let backgroundTasks: string[] = [];
     for (let turn = 1; ; turn++) {
       setPhase('BuildingPrompt');
       let prompt: string;
@@ -580,6 +584,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       const result = await session.runTurn(prompt);
       if (signal.aborted) return await finish(cancelled());
       if (!result.ok) return await finish({ kind: 'failed', code: result.code, message: result.message, phase, ...(result.sessionLimit ? { sessionLimit: result.sessionLimit } : {}) });
+      backgroundTasks = result.backgroundTasks ?? [];
 
       let refreshed: Issue[];
       try {
@@ -609,7 +614,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       const reachedMaxTurns = turn >= maxTurns;
       if (support !== null && (reachedMaxTurns || turn >= 2)) {
         const reason = reachedMaxTurns ? `reached ${maxTurnsSetting} (${maxTurns}) without a result` : 'no result after the reminder';
-        return await finish({ kind: 'normal', turns: turn, reason, missingResult: true });
+        return await finish({ kind: 'normal', turns: turn, reason, missingResult: true, ...(backgroundTasks.length > 0 ? { backgroundTasks } : {}) });
       }
       if (reachedMaxTurns) return await finish({ kind: 'normal', turns: turn, reason: `reached ${maxTurnsSetting} (${maxTurns})` });
     }

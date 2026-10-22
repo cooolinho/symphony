@@ -292,7 +292,7 @@ info log line. Each Symphony instance has its own override; there is no shared b
 | `append_system_prompt` | none | Extra text appended to Claude Code's system prompt. |
 | `max_budget_usd` | none | Cost cap per agent session; the turn fails when it is exceeded. |
 | `persist_session` | `true` | Keep transcripts in `~/.claude/projects` so a session can be inspected with `claude --resume <id>`. |
-| `env` | `{}` | Extra environment variables for the agent process. |
+| `env` | `{}` | Extra environment variables for the agent process. They win over Symphony's defaults, e.g. `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "0"` allows background tasks again ([why they are off](agent-claude.md#subagents)). |
 | `executable` | bundled CLI | Path to another Claude Code executable. |
 | `plugins` | `[]` | Local Claude Code plugin directories loaded into every session (skills, subagents, commands, hooks), relative to `WORKFLOW.md`. The shipped `WORKFLOW.md` loads `./.claude`, Symphony's own toolbox; its skills are named `symphony:<skill>`. A missing directory blocks dispatch. |
 | `skills` | Claude Code default | `all` enables every discovered skill (the repository's, a plugin's, Laravel Boost's) and the Skill tool; a list enables only those names (`testing-best-practices`, `symphony:handoff`). |
