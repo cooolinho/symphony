@@ -1,0 +1,61 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { createGithubTools } from '../src/tracker/github-project/tools.ts';
+import type { AgentToolSpec } from '../src/tracker/types.ts';
+import { makeIssue } from './helpers.ts';
+
+const MARKER = `<!-- symphony:result:v1 ${Buffer.from('{"kind":"implementation"}').toString('base64url')} -->`;
+
+function getIssueTool(comments: Array<{ body: string }>): AgentToolSpec {
+  const issue = makeIssue({
+    id: 'I_1',
+    native_ref: { provider: 'github_project', item_id: 'PVTI_1', issue_id: 'I_1', repository: 'o/r', number: 1 },
+  } as never);
+  const adapter = {
+    settings: { baseBranch: null },
+    fetchIssuesByIds: async () => [issue],
+    meta: async () => ({ statusOptions: [{ id: 'a', name: 'Todo' }] }),
+    client: {
+      request: async () => ({
+        errors: [],
+        data: {
+          node: {
+            comments: { totalCount: comments.length, nodes: comments.map((c) => ({ author: { login: 'bot' }, createdAt: 't', url: 'u', ...c })) },
+            closedByPullRequestsReferences: { nodes: [] },
+          },
+        },
+      }),
+    },
+  };
+  const tool = createGithubTools(adapter as never).find((t) => t.name === 'get_issue');
+  assert.ok(tool);
+  return tool;
+}
+
+async function run(tool: AgentToolSpec, args: Record<string, unknown> = {}): Promise<{ comments: Array<{ body: string }> }> {
+  const result = await tool.execute(args, { issue: makeIssue({ id: 'I_1', native_ref: { provider: 'github_project', item_id: 'PVTI_1', issue_id: 'I_1', repository: 'o/r', number: 1 } } as never) } as never);
+  assert.ok(result.ok, JSON.stringify(result));
+  return result.data as { comments: Array<{ body: string }> };
+}
+
+describe('get_issue', () => {
+  it('replaces the base64 result marker and keeps the visible text', async () => {
+    const tool = getIssueTool([{ body: `Summary text\n\n${MARKER}` }, { body: 'plain <!-- note --> comment' }]);
+    const { comments } = await run(tool);
+    assert.equal(comments[0]?.body, 'Summary text\n\n<!-- symphony:result -->');
+    assert.equal(comments[1]?.body, 'plain <!-- note --> comment');
+  });
+
+  it('truncates bodies with max_comment_chars and says how much was cut', async () => {
+    const tool = getIssueTool([{ body: 'x'.repeat(100) }]);
+    const { comments } = await run(tool, { max_comment_chars: 10 });
+    assert.match(comments[0]?.body ?? '', /^x{10}… \[90 characters cut\]$/);
+  });
+
+  it('documents the JSON shape in its description', () => {
+    const { description } = getIssueTool([]);
+    for (const part of ['status_options', 'list of strings', 'comments', 'created_at', 'total_comments', 'linked_pull_requests', 'may be empty']) {
+      assert.ok(description.includes(part), part);
+    }
+  });
+});

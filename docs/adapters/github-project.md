@@ -104,7 +104,7 @@ they create are sub-issues of that issue (`create_sub_issue`).
 
 | Tool | Input | Mutates | Result |
 |---|---|---|---|
-| `get_issue` | none | no | Issue fields, valid status options, the latest 20 comments, linked pull requests |
+| `get_issue` | `max_comment_chars?` | no | JSON `{issue, status_options: string[], comments: [{author, created_at, url, body}], total_comments, linked_pull_requests: [{number, url, state, title, head}]}` (the last may be empty): issue fields, valid status names, the latest 20 comments, linked pull requests. Stage-result markers in comment bodies are shown as `<!-- symphony:result -->` without the base64 payload (the comments on GitHub and `readResults` are unchanged). `max_comment_chars` cuts each body and notes the number of cut characters. |
 | `set_status` | `status` | yes | Moves the board item; the name is matched case-insensitively. An unknown name returns the valid options. Guarded: see below. Entering `auto_merge.on_enter` triggers the [auto-merge](#auto-merge); the result then carries `auto_merge` and the final `status`. Not offered to [roles](../configuration.md#roles) with `result`: they hand off with Symphony's [`report_result`](../results.md#the-report_result-tool), which moves the issue through the same adapter operation. |
 | `add_comment` | `body` | yes | Posts a comment on the issue; returns its URL. Text containing `<!-- symphony:` is rejected (`invalid_argument`), see [Stage-result markers](#stage-result-markers-and-the-bot-account). |
 | `open_pull_request` | `head`, `title`, `body?`, `base?`, `draft?` | yes | Opens a PR from an already pushed branch (base defaults to `base_branch`, else the default branch). An open PR for the same branch is returned instead of a duplicate (`created: false`). |
