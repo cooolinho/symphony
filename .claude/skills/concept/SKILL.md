@@ -1,7 +1,7 @@
 ---
 name: concept
 description: Concept workflow. Reads a concept (Markdown file in the repository), analyses it and creates epics and sub-issues from it in the backlog, with dependencies (Blocked by) as well as model and effort labels. Only load when the prompt asks for it (issue command /concept), never on your own.
-argument-hint: "<path to the concept, e.g. docs/index.md> [issue-models=auto|fable|opus|sonnet|haiku|off]"
+argument-hint: "<path to the concept, e.g. docs/index.md> [issue-models=auto|fable|opus|sonnet|haiku|off] [issue-efforts=auto|off]"
 ---
 
 # Break a concept down into epics and issues
@@ -12,7 +12,7 @@ work plan on the board. The issue you run on is the root; two levels are created
 ```
 Concept issue (this issue)
 └─ Epic: <functional area>             labels epic, concept · container, never "Ready"
-   └─ <Category>: <task>               labels concept, category, Effort, Model · implementable on its own
+   └─ <Category>: <task>               labels concept, category (Effort, Model on request) · implementable on its own
 ```
 
 Everything lands in the **backlog**. A human reviews the issues, drops or adds some and moves the ones to be
@@ -34,6 +34,11 @@ read-only commands, `git fetch` and a local `git switch --detach`. **Forbidden**
     instance's default model. A label would override that, so it is the exception.
   - `auto`: per issue the label that fits its size and risk ([breakdown.md](breakdown.md#labels)).
   - `fable`, `opus`, `sonnet`, `haiku`: every issue gets `Model: <value>`.
+  - Any other value is invalid: treat it like `off` and put the warning in the notes section of the report.
+- `issue-efforts=<auto|off>`: effort labels for the issues. Default `off`.
+  - `off`: no effort labels. The developer and the architect then run with the effort `WORKFLOW.md` gives them
+    (the architect `high`, the developer the model's default); a label would override that, so it is the exception.
+  - `auto`: per issue the label that fits its size and risk ([breakdown.md](breakdown.md#labels)).
   - Any other value is invalid: treat it like `off` and put the warning in the notes section of the report.
 
 Text in the description below the command line counts as part of the brief (focus areas, order, exclusions).
@@ -94,7 +99,8 @@ report.
    [breakdown.md](breakdown.md#dependencies)). Sort all issues **topologically**: blockers before the issues that wait
    for them.
 2. **Labels** per issue ([breakdown.md](breakdown.md#labels)): `concept`, the category (`feature`, `design`, `quality`
-   or `maintenance`), exactly one `Effort: …` and, except with `issue-models=off`, exactly one `Model: …`. Epics carry
+   or `maintenance`), with `issue-efforts=auto` exactly one `Effort: …`, with `issue-models` other than `off` exactly
+   one `Model: …`. Epics carry
    `epic` and `concept`, nothing else.
 3. Give every epic and issue a stable key (`E1`, `E1.1`, `E1.2`, `E2.1` …) and a unique title.
 

@@ -7,7 +7,7 @@ is also the key that keeps a retry from creating a duplicate. Paths, numbers and
 ## Issue
 
 Title: `<Feature|Design|Quality|Maintenance>: <what changes>`, e.g. `Feature: export invoices as CSV`.
-Labels: `plan`, category, `Effort: …`, if applicable `Model: …`, if applicable `manual-merge`. Call without `parent`,
+Labels: `plan`, category, if applicable `Effort: …` and `Model: …`, if applicable `manual-merge`. Call without `parent`,
 with `blocked_by`.
 
 ```markdown
@@ -56,7 +56,7 @@ there are none.
 **Source:** <`<path>` @ `<base>` <short commit hash> | issue description> · **issue-models:** <auto|fable|opus|sonnet|haiku|off>
 
 ### Items
-- P1 <title> (<category>, <S|M|L>, risk <…>; `Effort: …`, `Model: …`)
+- P1 <title> (<category>, <S|M|L>, risk <…>; Effort and Model labels, if any)
 - P2 <title> (…) *waits for P1*
 - P3 <title> (…)
 
@@ -83,7 +83,7 @@ P1, P3, P2, …
 **Source:** <`<path>` @ `<base>` <short commit hash> | issue description>
 
 ### Created (backlog)
-- [ ] #<n> <title> (<category>, <S|M|L>, `Effort: …`, `Model: …`): <reason for effort and model in half a sentence>
+- [ ] #<n> <title> (<category>, <S|M|L>, Effort and Model labels, if any): <reason for those labels in half a sentence, if any>
 - [ ] #<n> <title> (…) *waits for #<m>*
 
 ### Not created

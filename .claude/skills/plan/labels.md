@@ -5,8 +5,8 @@ much thinking it needs.
 
 ## Labels
 
-Per issue: `plan`, exactly **one** category, **one** effort label and (except with `issue-models=off`) **one** model
-label. A major upgrade (Laravel, Filament, PHP) additionally gets `manual-merge`.
+Per issue: `plan` and exactly **one** category; **one** effort label only with `issue-efforts=auto`, **one** model
+label only with an `issue-models` value other than `off`. A major upgrade (Laravel, Filament, PHP) additionally gets `manual-merge`.
 
 ### Category
 
@@ -19,7 +19,7 @@ label. A major upgrade (Laravel, Filament, PHP) additionally gets `manual-merge`
 
 ### Effort
 
-How much thinking goes into it, from size and risk:
+Only with `issue-efforts=auto`. How much thinking goes into it, from size and risk:
 
 | Label | When |
 |---|---|

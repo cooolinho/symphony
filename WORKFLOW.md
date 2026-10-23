@@ -191,7 +191,7 @@ roles:
     may_move_to: [In progress, Agent review, Blocked]
     model_label: ignore                      # opus, fable at complexity L and XL, whatever the issue's Model: label picks
     agents: [laravel-architect]
-    claude: { model: opus, model_by_complexity: { L: fable, XL: fable } }   # a short session: the strong model pays off here
+    claude: { model: opus, effort: high, model_by_complexity: { L: fable, XL: fable } }   # a short session: thinking pays off here
   developer:
     states: [In progress]
     result: implementation

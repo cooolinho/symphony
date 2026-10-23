@@ -1,7 +1,7 @@
 ---
 name: auto-code
 description: Autopilot for a repository. Plans the next wave of new features, design, quality and maintenance tasks from the project description and creates them as sub-issues that Symphony implements right away; checkpoints every few waves. Only load when the prompt asks for it (issue command /auto-code), never on your own.
-argument-hint: "[path to project description] [wave=3] [checkpoint=5] [issue-models=auto|fable|opus|sonnet|haiku]"
+argument-hint: "[path to project description] [wave=3] [checkpoint=5] [issue-models=auto|fable|opus|sonnet|haiku] [issue-efforts=auto|off]"
 ---
 
 # Autopilot: plan the next wave
@@ -27,6 +27,10 @@ SQLite), that is fine as long as they do not belong in the repository.
   - `fable`, `opus`, `sonnet`, `haiku`: every sub-issue gets the label `Model: <value>`.
   - `auto`: every sub-issue gets the label that fits its effort, see [Phase 4](#phase-4-cut-the-wave).
   - Any other value is invalid: treat it like `off` and put the warning in the notes section of the report.
+- `issue-efforts=<auto|off>`: effort labels for the sub-issues. Default `off`: no effort labels, the developer and the
+  architect run with the effort `WORKFLOW.md` gives them. With `auto` every sub-issue gets `Effort: medium` (S) or
+  `Effort: high` (M), see [Phase 4](#phase-4-cut-the-wave). Any other value is invalid: treat it like `off` and put the
+  warning in the notes section of the report.
 
 Text in the epic's description below the command line counts as part of the brief (e.g. focus areas or a handover
 from an earlier epic).
@@ -109,8 +113,8 @@ excluded.
    move one to a later wave.
 4. Every issue gets verifiable **acceptance criteria** and says which tests it needs. For design issues the criteria
    are concrete (components, layout, texts, states), never "make it nicer".
-5. Labels: `auto-code`, the category (`feature`, `design`, `quality` or `maintenance`) and `Effort: medium` (S) or
-   `Effort: high` (M). A major upgrade (Laravel, Filament, PHP) stands alone in its wave and additionally gets
+5. Labels: `auto-code`, the category (`feature`, `design`, `quality` or `maintenance`) and, only with
+   `issue-efforts=auto`, `Effort: medium` (S) or `Effort: high` (M). A major upgrade (Laravel, Filament, PHP) stands alone in its wave and additionally gets
    `manual-merge`: a human merges it.
    - **Model label** (only with `issue-models`, otherwise none): With `fable`, `opus`, `sonnet` or `haiku` all issues get
      `Model: <value>`. With `auto` you pick **exactly one** label per issue by effort and risk:
