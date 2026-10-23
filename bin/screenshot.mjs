@@ -4,7 +4,9 @@
 import { parseArgs } from 'node:util';
 
 const usage = `Usage: symphony-screenshot <url> <out.png> [options]
+       symphony-screenshot --check
 
+  --check               Start Chromium once and report whether it works (no URL, no file)
   --viewport WxH        Viewport size (default 1280x800)
   --scale N             Device scale factor (default 1; 2 for sharp crops)
   --login-url URL       Log in first: fill the email and password fields there and submit
@@ -38,6 +40,7 @@ try {
       clip: { type: 'string' },
       'full-page': { type: 'boolean', default: false },
       timeout: { type: 'string', default: '30000' },
+      check: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
   });
@@ -49,7 +52,7 @@ if (opts.help) {
   console.log(usage);
   process.exit(0);
 }
-if (positionals.length !== 2) fail(`expected <url> and <out.png>\n\n${usage}`);
+if (!opts.check && positionals.length !== 2) fail(`expected <url> and <out.png>\n\n${usage}`);
 const [url, out] = positionals;
 
 const viewport = /^(\d+)x(\d+)$/.exec(opts.viewport);
@@ -77,6 +80,18 @@ try {
   ({ chromium } = await import('playwright'));
 } catch {
   fail('Playwright is not installed in this image (built with WITH_BROWSER=false?)');
+}
+
+if (opts.check) {
+  try {
+    const browser = await chromium.launch();
+    await (await browser.newPage()).setContent('<p>ok</p>');
+    console.log(`chromium ${browser.version()} ok (${process.env.PLAYWRIGHT_BROWSERS_PATH ?? 'default browsers path'})`);
+    await browser.close();
+    process.exit(0);
+  } catch (error) {
+    fail(`Chromium does not start: ${error.message}`);
+  }
 }
 
 const browser = await chromium.launch();

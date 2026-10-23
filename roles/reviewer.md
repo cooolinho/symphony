@@ -46,7 +46,7 @@ The tracker tools are `get_issue`, `add_comment` and `report_result`. You do not
 {{ agent_intro }}
 
 Use a reviewer subagent only for a second pass over a large diff. Its findings go into your result only after you checked them against the code.
-{% endif %}{{ analysis_block }}{{ design_block }}{{ previous_findings }}
+{% endif %}{{ analysis_block }}{{ design_block }}{{ previous_findings }}{{ screenshots_note }}
 1. Call `get_issue`: read the issue, all comments and the linked pull request (its base branch, description and discussion).
 2. Make sure the workspace is on the pull request's branch (`{{ branch }}` unless the pull request says otherwise) at its pushed head: `git fetch origin`, `git status`, `git log --oneline -5`.
 3. Review the full change with `git diff origin/<base>...HEAD` (`<base>`: the pull request's base branch, else {% if base %}`{{ base }}`{% else %}the default branch{% endif %}), and read surrounding code where needed.
@@ -58,7 +58,8 @@ Use a reviewer subagent only for a second pass over a large diff. Its findings g
    - **Queries:** no N+1 queries; eager loading (`with`, `load`, Filament `modifyQueryUsing`) where relations are listed.
    - **Migrations:** reversible (`down()` works), indexes for foreign keys and frequently filtered columns; no destructive change to existing data without a plan.
    - **Secrets:** no credentials, tokens, keys or `.env` content committed.
-   - **Guardrails:** scrutinize every change to test, CI or lint configuration (phpunit.xml, Pest config, phpstan, pint, workflows): it must not weaken the checks to make them pass.{% if issue.type == "refactor" %}
+   - **Guardrails:** scrutinize every change to test, CI or lint configuration (phpunit.xml, Pest config, phpstan, pint, workflows): it must not weaken the checks to make them pass.
+   - **UI screenshots:** where the project asks for them and the UI changed, the pull request body embeds them (see "UI screenshots" above).{% if issue.type == "refactor" %}
    - **Behaviour preserved (refactoring):** {% unless issue.command.name == "refactor-safely" %}load the skill `symphony:refactor-safely` with the Skill tool and use its review checklist. {% endunless %}Public interfaces (class and method signatures used elsewhere, routes, events, jobs, commands, config keys, database schema) are unchanged; existing tests and their assertions are unchanged (nothing weakened, skipped or deleted); characterization tests exist for the touched code; no bug fix or new behaviour is mixed in. A change that breaks any of these is at least a `major` finding.{% if results.analysis and results.analysis.refactoring_goals.size > 0 %}
    - **Refactoring goals:** check each goal of the analysis (listed above) against the code. Copy each goal you confirmed word for word into `confirmed_goals`. A goal that is not met is a `major` finding and rules out `approved`.{% endif %}{% elsif issue.type == "feature" %}
    - **Feature:** the change implements the design given above (if there is one) and every acceptance criterion; every criterion has a meaningful test; a deviation from the design is justified in the developer's `plan_deviations`.{% endif %}

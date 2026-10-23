@@ -16,7 +16,7 @@ This issue has complexity XL and is not a sub-issue itself, so you may split it 
 - A package that builds on another one gets `blocked_by` with that package's number (create the other one first) and the line "Blocked by #<number>" in its body. Packages without a dependency start right away, in parallel.
 - If an earlier run already filed sub-issues (see `get_issue`), file only the missing ones: `create_sub_issue` returns an open sub-issue with the same title instead of creating it twice.
 - Report the verdict `split`. Symphony refuses it with `invalid_result` while a work package has no sub-issue. This issue then waits in "Agent review" until every sub-issue is closed; then a reviewer checks the integrated base branch against this issue's acceptance criteria, and whatever is still missing goes to this issue's own developer.
-{% endif %}
+{% endif %}{{ screenshots_note }}
 The current directory is a clone of the issue's repository. Work only inside it.
 
 1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist) and follow their conventions.
