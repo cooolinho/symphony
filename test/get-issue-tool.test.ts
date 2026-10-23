@@ -15,6 +15,7 @@ function getIssueTool(comments: Array<{ body: string }>): AgentToolSpec {
     settings: { baseBranch: null },
     fetchIssuesByIds: async () => [issue],
     meta: async () => ({ statusOptions: [{ id: 'a', name: 'Todo' }] }),
+    viewerLogin: async () => 'bot',
     client: {
       request: async () => ({
         errors: [],
@@ -50,6 +51,16 @@ describe('get_issue', () => {
     const tool = getIssueTool([{ body: 'x'.repeat(100) }]);
     const { comments } = await run(tool, { max_comment_chars: 10 });
     assert.match(comments[0]?.body ?? '', /^x{10}… \[90 characters cut\]$/);
+  });
+
+  it('marks the comments of Symphony\'s own account with from_symphony', async () => {
+    const tool = getIssueTool([{ body: 'result' }, { body: 'Bitte X ändern', author: { login: 'human' } } as never]);
+    const { comments } = (await run(tool)) as unknown as { comments: Array<{ from_symphony: boolean }> };
+    assert.deepEqual(
+      comments.map((c) => c.from_symphony),
+      [true, false],
+    );
+    assert.match(getIssueTool([]).description, /oldest first/);
   });
 
   it('documents the JSON shape in its description', () => {

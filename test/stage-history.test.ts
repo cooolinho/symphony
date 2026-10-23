@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { PROMPT_SUMMARY_LIMIT, analysisFlagsSecurity, buildStageHistory, implementationHead, refactoringGoals, resultRows, resultsTemplateValue, type PersistedResult } from '../src/orchestrator/stage-history.ts';
+import { PROMPT_FEEDBACK_LIMIT, PROMPT_SUMMARY_LIMIT, analysisFlagsSecurity, buildStageHistory, humanFeedback, implementationHead, refactoringGoals, resultRows, resultsTemplateValue, type PersistedResult } from '../src/orchestrator/stage-history.ts';
 import { internalResult, parseResult, type ResultMeta, type StageResult } from '../src/workflow/results.ts';
 
 let clock = 0;
@@ -420,5 +420,44 @@ describe('resultRows: the rows of the agent page', () => {
     ]);
     assert.equal(rows[0]?.url, 'https://github.com/acme/app/issues/1#issuecomment-1');
     assert.deepEqual([rows[1]?.url, rows[1]?.findings, rows[1]?.blockers], [null, [], [{ description: 'No token', needs: 'access' }]]);
+  });
+});
+
+describe('humanFeedback: what a human wrote since the last hand-off', () => {
+  const at = (meta: PersistedResult) => new Date(meta.meta.created_at).getTime();
+  const comment = (author: string | null, ms: number, body = `comment at ${ms}`) => ({ author, createdAt: new Date(ms), body, url: `u-${ms}` });
+
+  it('shows the human comment between the last result and the reset, for every stage until the next reset (bandenhub#67)', () => {
+    const security = entry('security', 'passed');
+    const reset = entry('reset', 'reset');
+    const human = comment('cooolinho', at(security) + 100, 'Behebe folgende Findings: …');
+    const comments = [comment('symphony-bot', at(security) - 50), comment('cooolinho', at(security) - 10, 'old'), comment('symphony-bot', at(security) + 50), human];
+    const expected = [{ author: 'cooolinho', created_at: human.createdAt.toISOString(), url: human.url, body: 'Behebe folgende Findings: …' }];
+    assert.deepEqual(humanFeedback(comments, 'symphony-bot', [security, reset]), expected);
+    // The analysis that follows the reset does not hide it from the architect.
+    assert.deepEqual(humanFeedback(comments, 'symphony-bot', [security, reset, entry('review', 'approved')]), expected);
+  });
+
+  it('without a reset, shows the comments after the newest result', () => {
+    const first = entry('implementation', 'done');
+    const second = entry('review', 'changes_needed');
+    const comments = [comment('human', at(first) + 1), comment('human', at(second) + 1)];
+    assert.deepEqual(
+      humanFeedback(comments, 'symphony-bot', [first, second]).map((c) => c.url),
+      [`u-${at(second) + 1}`],
+    );
+  });
+
+  it('is empty before the first result and names a deleted account ghost', () => {
+    assert.deepEqual(humanFeedback([comment('human', Date.now())], 'symphony-bot', []), []);
+    assert.deepEqual(humanFeedback([comment('human', Date.now())], 'symphony-bot', [entry('reset', 'reset')]), []);
+    const result = entry('implementation', 'done');
+    assert.equal(humanFeedback([comment(null, at(result) + 1)], 'symphony-bot', [result])[0]?.author, 'ghost');
+  });
+
+  it('cuts long comments', () => {
+    const result = entry('implementation', 'done');
+    const [cut] = humanFeedback([comment('human', at(result) + 1, 'x'.repeat(PROMPT_FEEDBACK_LIMIT + 10))], 'symphony-bot', [result]);
+    assert.equal(cut?.body.length, PROMPT_FEEDBACK_LIMIT);
   });
 });

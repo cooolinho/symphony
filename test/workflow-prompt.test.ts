@@ -91,6 +91,18 @@ const afterFailedTest = {
 };
 
 describe('shipped WORKFLOW.md', () => {
+  it('puts the newest human comments into the prompt as the current task, and leaves them out without any', async () => {
+    const feedback = { human_feedback: [{ author: 'cooolinho', created_at: '2026-10-23T06:43:57.000Z', url: 'https://github.com/acme/app/issues/7#issuecomment-1', body: 'Behebe folgende Findings: startAgainFor()' }] };
+    for (const role of ['issue-analyst', 'architect', 'developer']) {
+      const prompt = await render(role, null, undefined, null, [], feedback);
+      assert.match(prompt, /## Newest human comments/, role);
+      assert.match(prompt, /### cooolinho, 2026-10-23T06:43:57\.000Z \(https:\/\/github\.com\/acme\/app\/issues\/7#issuecomment-1\)\n\nBehebe folgende Findings: startAgainFor\(\)/, role);
+      assert.match(prompt, /It is the current task/, role);
+    }
+    assert.match(await render('issue-analyst'), /Read the newest human comment first/);
+    assert.doesNotMatch(await render('issue-analyst'), /## Newest human comments/);
+  });
+
   it('resolves to the developer and reviewer roles with entry checks', async () => {
     const { definition } = await loadWorkflowFile(shipped);
     const config = resolveConfig(definition.config, {
@@ -971,7 +983,24 @@ describe('shipped WORKFLOW.md issue commands', () => {
     assert.match(prompt, /import \{ chromium \} from 'playwright'/);
     assert.match(prompt, /commit and push it on `symphony\/issue-42`/);
     assert.match(prompt, /blob\/<commit sha>\/<path>\?raw=true/);
+    assert.match(prompt, /`\/opt\/ms-playwright`\)\. It is not on the `PATH`/);
+    assert.match(prompt, /check it with `symphony-screenshot --check`/);
+    assert.match(prompt, /`public\/build\/manifest\.json` is missing, install the dependencies and run the project's `build` script/);
+    assert.match(prompt, /"No browser" and "no frontend build" are not reasons to skip them/);
     for (const role of ['reviewer', 'docs', 'issue-analyst']) assert.doesNotMatch(await render(role), /## UI screenshots/, role);
+  });
+
+  it('tells the architect and the reviewer that missing screenshots are not acceptable for want of a browser', async () => {
+    for (const role of ['architect', 'reviewer']) {
+      const prompt = await render(role);
+      assert.match(prompt, /UI screenshots: when the project's instructions or the issue ask for screenshots/, role);
+      assert.match(prompt, /`symphony-screenshot --check` tests it/, role);
+    }
+    assert.match(await render('architect'), /do not plan to leave them out or to hand them to a human/);
+    const reviewer = await render('reviewer');
+    assert.match(reviewer, /if they are missing, that is a `major` finding, unless the developer's result names the step that failed/);
+    assert.match(reviewer, /\*\*UI screenshots:\*\* where the project asks for them/);
+    for (const role of ['docs', 'issue-analyst', 'developer']) assert.doesNotMatch(await render(role), /UI screenshots: when the project's/, role);
   });
 
   it('tells only the developer which package manager builds the assets', async () => {
