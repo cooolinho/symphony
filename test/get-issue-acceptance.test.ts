@@ -22,7 +22,7 @@ const meta: ResultMeta = {
 interface Output {
   issue: Record<string, unknown>;
   status_options: unknown[];
-  comments: Array<{ author: string | null; created_at: string | null; url: string | null; body: string }>;
+  comments: Array<{ author: string | null; from_symphony: boolean; created_at: string | null; url: string | null; body: string }>;
   total_comments: number | null;
   linked_pull_requests: Array<Record<string, unknown>>;
 }
@@ -39,6 +39,7 @@ function tool(fixture: Fixture = {}): AgentToolSpec {
   const adapter = {
     settings: { baseBranch: null },
     fetchIssuesByIds: async () => [issue],
+    viewerLogin: async () => 'cooolinho-bot',
     meta: async () => ({ statusOptions: (fixture.statusOptions ?? ['Todo', 'Testing']).map((name, i) => ({ id: `o${i}`, name })) }),
     client: {
       request: async () => ({
@@ -115,7 +116,8 @@ describe('get_issue acceptance', () => {
     );
     assert.deepEqual(Object.keys(out).sort(), ['comments', 'issue', 'linked_pull_requests', 'status_options', 'total_comments']);
     assert.deepEqual(out.status_options, ['Backlog', 'Testing']);
-    assert.deepEqual(Object.keys(out.comments[0] ?? {}).sort(), ['author', 'body', 'created_at', 'url']);
+    assert.deepEqual(Object.keys(out.comments[0] ?? {}).sort(), ['author', 'body', 'created_at', 'from_symphony', 'url']);
+    assert.equal(out.comments[0]?.from_symphony, true);
     assert.equal(out.comments[0]?.author, 'cooolinho-bot');
     assert.equal(out.total_comments, 6);
     assert.deepEqual(out.linked_pull_requests, [{ number: 7, url: 'https://example.test/pr/7', state: 'OPEN', title: 'T', head: 'symphony/issue-1' }]);

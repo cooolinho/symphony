@@ -91,6 +91,18 @@ const afterFailedTest = {
 };
 
 describe('shipped WORKFLOW.md', () => {
+  it('puts the newest human comments into the prompt as the current task, and leaves them out without any', async () => {
+    const feedback = { human_feedback: [{ author: 'cooolinho', created_at: '2026-10-23T06:43:57.000Z', url: 'https://github.com/acme/app/issues/7#issuecomment-1', body: 'Behebe folgende Findings: startAgainFor()' }] };
+    for (const role of ['issue-analyst', 'architect', 'developer']) {
+      const prompt = await render(role, null, undefined, null, [], feedback);
+      assert.match(prompt, /## Newest human comments/, role);
+      assert.match(prompt, /### cooolinho, 2026-10-23T06:43:57\.000Z \(https:\/\/github\.com\/acme\/app\/issues\/7#issuecomment-1\)\n\nBehebe folgende Findings: startAgainFor\(\)/, role);
+      assert.match(prompt, /It is the current task/, role);
+    }
+    assert.match(await render('issue-analyst'), /Read the newest human comment first/);
+    assert.doesNotMatch(await render('issue-analyst'), /## Newest human comments/);
+  });
+
   it('resolves to the developer and reviewer roles with entry checks', async () => {
     const { definition } = await loadWorkflowFile(shipped);
     const config = resolveConfig(definition.config, {

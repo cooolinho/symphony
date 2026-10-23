@@ -7,7 +7,7 @@ import type { AgentEvent, AgentRunner, AgentSession, IntegrationReport, SessionL
 import { prepareIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
-import type { AgentToolSpec, Issue, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
+import type { AgentToolSpec, Issue, IssueComment, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { describeHolder, type LockResult } from '../workspace/lock.ts';
 import { describeFailure, type HookIssue, type Workspace, type WorkspaceManager } from '../workspace/manager.ts';
@@ -26,7 +26,7 @@ import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecor
 import { createResultTool, resultReminder, type PathRule, type ResultToolAdapter, type ResultToolParams } from './result-tool.ts';
 import { reviewedFiles, securityBaseRef } from './security.ts';
 import { interruptedTransition } from './recovery.ts';
-import { analysisFlagsSecurity, analysisNeedsDocs, docsBaseHead, buildStageHistory, implementationHead, resultsTemplateValue, type PersistedResult, type ResultsTemplateValue, type StageHistory } from './stage-history.ts';
+import { analysisFlagsSecurity, analysisNeedsDocs, docsBaseHead, buildStageHistory, humanFeedback, implementationHead, resultsTemplateValue, type HumanFeedbackComment, type PersistedResult, type ResultsTemplateValue, type StageHistory } from './stage-history.ts';
 import { effectivePaths } from '../workflow/path-globs.ts';
 import { subIssueLimit } from './work-packages.ts';
 
@@ -171,6 +171,8 @@ function withMcpNotes(unavailable: Array<[string, string]>, prompt: string): str
 interface ResultSupport {
   tool: AgentToolSpec;
   results: ResultsTemplateValue;
+  /** The prompt variable `human_feedback`: what a human wrote since the pipeline last handed the issue off. */
+  humanFeedback: HumanFeedbackComment[];
   round: number;
 }
 
@@ -219,8 +221,9 @@ async function loadResultSupport(
   const resultAdapter = adapter as TrackerAdapter & ResultToolAdapter & Required<Pick<TrackerAdapter, 'readResults'>>;
   let tracked;
   let boardColumns: string[] | null;
+  let comments: Awaited<ReturnType<typeof readHumanComments>>;
   try {
-    tracked = params.results ?? (await resultAdapter.readResults(issue()));
+    [tracked, comments] = await Promise.all([params.results ?? resultAdapter.readResults(issue()), readHumanComments(adapter, issue())]);
     boardColumns = adapter.statusOptions !== undefined ? await adapter.statusOptions() : null;
   } catch (error) {
     throw new SymphonyError('results_read_error', `could not read the stage results of ${issue().identifier}: ${errorMessage(error)}`, { cause: error });
@@ -255,8 +258,16 @@ async function loadResultSupport(
   return {
     tool,
     results: resultsTemplateValue(history),
+    humanFeedback: comments === null ? [] : humanFeedback(comments.comments, comments.viewer, history.results),
     round: (role.result === 'test' ? history.testRounds : role.result === 'security' ? history.securityRounds : history.reviewRounds) + 1,
   };
+}
+
+/** The issue's comments and Symphony's own login, for `human_feedback`; null when the tracker cannot read comments. */
+async function readHumanComments(adapter: TrackerAdapter, issue: Issue): Promise<{ comments: IssueComment[]; viewer: string } | null> {
+  if (adapter.readComments === undefined || adapter.viewerLogin === undefined) return null;
+  const [comments, viewer] = await Promise.all([adapter.readComments(issue), adapter.viewerLogin()]);
+  return { comments, viewer };
 }
 
 /**
@@ -527,6 +538,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     if (signal.aborted) return await finish(cancelled());
     const resultVariables = {
       results: support?.results ?? EMPTY_RESULTS,
+      human_feedback: support?.humanFeedback ?? [],
       round: support?.round ?? 1,
       result_required: support !== null,
       test_paths: paths.testPaths,

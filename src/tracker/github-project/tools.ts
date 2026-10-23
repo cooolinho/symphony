@@ -107,7 +107,8 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
       'Read the issue this session is working on from the GitHub project board: title, body, status, labels, ' +
       'assignee, blockers, the status options you can move it to, the latest 20 comments and linked pull requests. Read-only. ' +
       'Returns JSON: {issue: {identifier, title, status, url, description, labels, assignee, priority, branch_name, blocked_by, parent, sub_issues, issue_state, created_at, updated_at}, ' +
-      'status_options: list of strings (names, not objects), comments: [{author, created_at, url, body}], total_comments: number, ' +
+      'status_options: list of strings (names, not objects), comments: [{author, from_symphony, created_at, url, body}] oldest first (the newest is last; ' +
+      'from_symphony is false for comments a human wrote), total_comments: number, ' +
       'linked_pull_requests: [{number, url, state, title, head}] (may be empty)}. ' +
       'Stage-result markers in comment bodies are shown as <!-- symphony:result --> without their base64 payload. ' +
       'If the output is large, pass max_comment_chars to cut every comment body (the cut is noted in the body).',
@@ -120,7 +121,7 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
         const maxChars = typeof args.max_comment_chars === 'number' ? args.max_comment_chars : undefined;
         const [fresh] = await adapter.fetchIssuesByIds([context.issue.id]);
         if (fresh === undefined) return fail('not_found', 'the issue is no longer visible on the project board');
-        const meta = await adapter.meta();
+        const [meta, viewer] = await Promise.all([adapter.meta(), adapter.viewerLogin()]);
         const response = await client.request<Json>(ISSUE_CONTEXT_QUERY, { issueId: ref.issueId });
         assertNoGraphqlErrors(response.errors);
         const node = obj(obj(response.data)?.node);
@@ -129,6 +130,7 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
           status_options: meta.statusOptions.map((option) => option.name),
           comments: nodes(node?.comments).map((c) => ({
             author: obj(c.author)?.login ?? null,
+            from_symphony: obj(c.author)?.login === viewer,
             created_at: c.createdAt ?? null,
             url: c.url ?? null,
             body: commentBody(typeof c.body === 'string' ? c.body : '', maxChars),

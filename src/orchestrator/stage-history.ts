@@ -1,5 +1,6 @@
 import { truncate } from '../util/text.ts';
 import { normalizeStateName } from '../workflow/config.ts';
+import type { IssueComment } from '../tracker/types.ts';
 import type { ResultMeta, StageResult } from '../workflow/results.ts';
 
 /** A persisted stage result with its meta, as read back from an issue comment marker. */
@@ -303,6 +304,40 @@ export function resultsTemplateValue(history: StageHistory): ResultsTemplateValu
         ? null
         : { verdict: implementation.result.verdict, summary: truncate(implementation.result.summary, PROMPT_SUMMARY_LIMIT), head_sha: implementation.meta.head_sha },
   };
+}
+
+/** Upper bound for one comment in the prompt's `human_feedback`; the full text stays in the issue comment. */
+export const PROMPT_FEEDBACK_LIMIT = 6000;
+
+/** One comment of the prompt variable `human_feedback`. */
+export interface HumanFeedbackComment {
+  author: string;
+  created_at: string;
+  url: string;
+  body: string;
+}
+
+/**
+ * The comments a human wrote since the pipeline last handed the issue off, oldest first: comments not written by
+ * Symphony's account (`viewer`) that are newer than the newest result before the newest `reset` (without a reset: the
+ * newest result). They stay the same for every stage until the next reset. Empty before the first result: the
+ * description is the task then. A human who sends an issue back writes the new task there; the prompt shows it so the
+ * agent does not have to find it among long result comments in `get_issue`.
+ */
+export function humanFeedback(comments: readonly IssueComment[], viewer: string, results: readonly PersistedResult[]): HumanFeedbackComment[] {
+  const history = ordered(results);
+  const reset = history.findLastIndex((entry) => entry.result.kind === 'reset');
+  const handOff = (reset === -1 ? history : history.slice(0, reset)).findLast((entry) => entry.result.kind !== 'reset');
+  if (handOff === undefined) return [];
+  const since = time(handOff);
+  return comments
+    .filter((comment) => comment.author !== viewer && comment.createdAt.getTime() > since)
+    .map((comment) => ({
+      author: comment.author ?? 'ghost',
+      created_at: comment.createdAt.toISOString(),
+      url: comment.url,
+      body: truncate(comment.body, PROMPT_FEEDBACK_LIMIT),
+    }));
 }
 
 /** One persisted result as `GET /api/v1/<id>` and the issue archive show it: the envelope without the kind-specific fields. */

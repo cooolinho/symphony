@@ -488,7 +488,15 @@ Tools in the container: `jq`, `rg`, `node` and `php` are installed; `python3` is
 
 {{ issue.description | default: "(no description)" }}
 
-{% if attachments.size > 0 %}## Attachments
+{% if human_feedback.size > 0 %}## Newest human comments
+
+A human wrote this on the issue after the pipeline last handed it off, usually when sending the issue back. It is the current task: where it asks for changes, do them, even when earlier results say the issue is done, a pull request is merged or a review approved it. The description and the earlier results are the background.
+{% for comment in human_feedback %}
+### {{ comment.author }}, {{ comment.created_at }} ({{ comment.url }})
+
+{{ comment.body }}
+{% endfor %}
+{% endif %}{% if attachments.size > 0 %}## Attachments
 
 The description and comments only link to these files; Symphony downloaded them into the workspace (`.issue-assets/`, kept out of git and listed in `.issue-assets/INDEX.md`). You see an image or PDF only when you open it: open every file below with the Read tool before you plan, design or change anything.
 {% for file in attachments %}

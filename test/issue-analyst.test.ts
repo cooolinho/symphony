@@ -9,6 +9,7 @@ import { trackerDefaults } from '../src/tracker/registry.ts';
 import type { Issue, ToolResult } from '../src/tracker/types.ts';
 import { resolveConfig } from '../src/workflow/config.ts';
 import { loadWorkflowFile } from '../src/workflow/loader.ts';
+import { encodeMarker, parseResult } from '../src/workflow/results.ts';
 import { roleFor, roleName } from '../src/workflow/roles.ts';
 import { FakeRunner, FakeTracker, ManualClock, ManualTimers, StaticWorkflow, callTool, makeIssue, makeWorkflow, tempDir, until } from './helpers.ts';
 
@@ -122,6 +123,22 @@ const READY = {
 };
 
 describe('issue analyst stage with the shipped WORKFLOW.md', () => {
+  it('shows the human comment that sent the issue back in the analyst prompt (bandenhub#67)', async () => {
+    const h = await harness([analyse(READY)], ['feature']);
+    const earlier = parseResult('analysis', READY);
+    assert.ok(earlier.ok);
+    const meta = { role: 'issue-analyst', run: 'old', round: null, profile: null, workflow_hash: null, head_sha: null, checks: null, target: 'Design', created_at: '2026-01-01T00:00:10.000Z' };
+    h.tracker.comments.set(ISSUE, [
+      { author: 'symphony-bot', createdAt: new Date('2026-01-01T00:00:10.000Z'), body: `### Analysis\n\n${encodeMarker(earlier.result, meta)}`, url: 'u-1' },
+      { author: 'symphony-bot', createdAt: new Date('2026-01-01T00:00:20.000Z'), body: 'Symphony merged #5 into develop', url: 'u-2' },
+      { author: 'cooolinho', createdAt: new Date('2026-01-01T00:00:30.000Z'), body: 'Behebe folgende Findings: the export drops the header', url: 'u-3' },
+    ]);
+    await run(h);
+    const prompt = h.runner.sessions[0]?.turns[0] ?? '';
+    assert.match(prompt, /## Newest human comments[\s\S]*### cooolinho, 2026-01-01T00:00:30\.000Z \(u-3\)\n\nBehebe folgende Findings: the export drops the header/);
+    assert.doesNotMatch(prompt, /Symphony merged #5/);
+  });
+
   it('serves Ready with the issue-analyst; the developer serves only In progress', async () => {
     const { definition } = await loadWorkflowFile(shipped);
     const config = resolveConfig(definition.config, { workflowPath: shipped, env: ENV, trackerDefaults });
