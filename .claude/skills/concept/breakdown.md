@@ -10,7 +10,7 @@ the dependencies, not from the numbering.
 - An epic has **2 to 10 issues**. A single issue belongs in another epic; more than 10 issues are two epics.
 - A foundation epic (roles, tenants, base layout) only if the concept requires it and several areas build on it. It
   comes first.
-- Title: `Epic: <area>`. The text summarises the goal of the area and refers to the concept section. It **never**
+- Title: `(E<n>) Epic: <area>`, with the key from [SKILL.md](SKILL.md#phase-4-order-and-labels). The text summarises the goal of the area and refers to the concept section. It **never**
   contains "blocked by #N" (not even negated) and never `/` commands at the start; references to other epics you write
   as "builds on #N".
 
@@ -26,8 +26,8 @@ the dependencies, not from the numbering.
   actions, texts, empty and error states and which role sees what. Never "make it nicer".
 - Anything unclear stays a **question in the report**, not an issue. That also applies to decisions a human has to
   make: legal matters, prices, texts with legal effect, external services that cost money.
-- Title: `<Feature|Design|Quality|Maintenance>: <what changes>`, short and unambiguous. The title is the key against
-  duplicates and must be unique within an epic.
+- Title: `(E<n>-<m>) <Feature|Design|Quality|Maintenance>: <what changes>`, short and unambiguous. The title is the
+  key against duplicates and must be unique within an epic.
 - A major upgrade (Laravel, Filament, PHP) stands alone in its epic and additionally gets `manual-merge`.
 - A pure refactoring without behaviour change starts with `/refactor-safely` on the first line (dependencies go below
   it). If the area lacks tests, it waits for an issue that writes them.
