@@ -158,8 +158,11 @@ UID=1001
 GID=1001
 ```
 
-Other optional values: `SYMPHONY_PORT` (default `4000`), `TZ` (default `Europe/Berlin`) and `PHP_VERSION`
-(default `8.4`, see [Common errors](#common-errors)).
+Other optional values: `SYMPHONY_PORT` (default `4000`), `TZ` (default `Europe/Berlin`), `PHP_VERSION`
+(default `8.4`, see [Common errors](#common-errors)) and `WITH_BROWSER` (default `true`). The image ships a headless
+Chromium with Playwright (`PLAYWRIGHT_VERSION` in the `Dockerfile`) and the command `symphony-screenshot`, so agents
+can take the UI screenshots a project asks for; `WITH_BROWSER=false` builds the image without them (about 600 MB
+smaller). Both build args take effect on the next `docker compose up -d --build`.
 
 ### 10. Dry run
 
@@ -386,6 +389,7 @@ mem_limit: 4g
 | Healthcheck `unhealthy` | The check requests `/api/v1/state` on `SYMPHONY_PORT`. Without `SYMPHONY_PORT` set, there is no check. The cause is in `docker compose logs`: usually a startup error or a different port in `.env` than in Traefik. During the first 60 s after start (`start-period`) it is not evaluated yet. |
 | `Laravel Boost skipped: composer install failed` or Composer reports a PHP or extension version that does not match `composer.lock` | The image ships PHP 8.4 with the extensions `mbstring`, `xml`, `curl`, `zip`, `intl`, `bcmath`, `sqlite3` and `gd`. If the projects need a different version, set `PHP_VERSION` in `.env` (e.g. `8.3`) and rebuild: `docker compose up -d --build`. If another extension is missing, add it to the `Dockerfile` and rebuild. |
 | A project's pre-commit hook fails because `gitleaks` is not installed | The image ships gitleaks (pinned in the `Dockerfile` as `GITLEAKS_VERSION`, with the SHA256 of each architecture's archive). An image built before that has none: rebuild with `docker compose up -d --build`. To move to another version, change `GITLEAKS_VERSION` and both checksums from the release's `gitleaks_<version>_checksums.txt`, then rebuild. |
+| Agents report "no browser in the workspace" or `symphony-screenshot: command not found`, or Playwright fails with missing shared libraries | The image ships headless Chromium and Playwright unless it was built with `WITH_BROWSER=false`; an image built before that has none: rebuild with `docker compose up -d --build`. To move to another Playwright version, change `PLAYWRIGHT_VERSION` in the `Dockerfile` and rebuild (the matching browser and its system libraries are installed with it). |
 | Agents run `npx pnpm` or call `node_modules/.bin` directly, or report `pnpm: command not found` | The image ships pnpm (`PNPM_VERSION` in the `Dockerfile`); an image built before that has none: rebuild with `docker compose up -d --build`. A project that pins another version in `packageManager` gets it downloaded by pnpm on first use. |
 
 ## Security

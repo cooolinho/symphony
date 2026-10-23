@@ -11,6 +11,7 @@ services:
                 UID: ${UID:-1000}
                 GID: ${GID:-1000}
                 PHP_VERSION: ${PHP_VERSION:-8.4}
+                WITH_BROWSER: ${WITH_BROWSER:-true}
         image: symphony:local
         restart: unless-stopped
         # On SIGTERM Symphony stops its agents and waits up to hooks.timeout_ms + 30 s for them and their

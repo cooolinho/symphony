@@ -237,10 +237,11 @@ symphony/
 ├── hooks/laravel-env.sh        # after_create: eigene .env und SQLite-Datenbank pro Laravel-App (optional MySQL)
 ├── hooks/laravel-db-drop.sh    # before_remove: löscht die MySQL-Datenbanken des Workspaces
 ├── checks/laravel.sh           # Entry-Check vor Agent review und In review (Lint, Analyse, Tests)
+├── bin/screenshot.mjs          # symphony-screenshot: PNG einer Seite mit headless Chromium, für UI-Screenshots der Agenten
 ├── .claude/                    # Toolbox für alle Sessions, geladen als Plugin "symphony" (Skills, Agents, Commands, Hooks)
 ├── .github/workflows/          # CI (npm run check) und automatisches Mergen der Agenten-Pull-Requests
 ├── model-costs.yml             # Modellpreise für die Kostenschätzung (wird live neu geladen)
-├── Dockerfile                  # Image mit Node, PHP, Composer, pnpm, git, SSH und gitleaks; läuft als Benutzer symphony
+├── Dockerfile                  # Image mit Node, PHP, Composer, pnpm, git, SSH, gitleaks und headless Chromium; läuft als Benutzer symphony
 ├── docker-compose.yml          # Betrieb hinter Traefik: Labels, Volumes, Secret für den SSH-Key
 ├── docker-compose.local.yml    # lokaler Testlauf desselben Images ohne Traefik, Dashboard auf 127.0.0.1
 ├── docker/                     # entrypoint.sh (Variablen prüfen, SSH-Key, git-Identität) und ssh_known_hosts

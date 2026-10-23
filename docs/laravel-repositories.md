@@ -163,6 +163,20 @@ overridden.
   Details: [`laravel`](configuration.md#laravel) and
   [agent-claude.md](agent-claude.md#workspace-extensions-laravel-boost).
 
+## UI screenshots
+
+If pull requests need screenshots of UI changes, say so in `AGENTS.md`. The developer agent then serves the app from
+its workspace (`php -S` from `public/` with its own SQLite file and seed data), takes the screenshots with the image's
+headless Chromium (`symphony-screenshot` or a Playwright script), commits them on the pull request's branch and embeds
+them in the pull request body by commit SHA (`https://github.com/<owner>/<repo>/blob/<sha>/<path>?raw=true`, which
+also works for private repositories). Help it with a short section in `AGENTS.md`:
+
+- How to get a demo login: the seeder that creates it and the variables it reads (for example `DEMO_ADMIN_EMAIL`).
+- The login URL of each panel and the variables routing depends on (for example a panel domain), with values that work
+  on `127.0.0.1`.
+- How to build the frontend assets, if the pages need a build (theme, Vite).
+- Where screenshots go (default `docs/screenshots/`) and whether they stay in the repository.
+
 ## `.mcp.json`
 
 A repository's `.mcp.json` is for humans (your editor and your own Claude Code). Symphony sessions ignore it: with
