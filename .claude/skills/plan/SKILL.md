@@ -26,11 +26,13 @@ read-only commands, `git fetch` and a local `git switch --detach`. **Forbidden**
 
 **Arguments** (`$ARGUMENTS`, any order):
 
-- `issue-models=<auto|fable|opus|sonnet|haiku|off>`: model labels for the issues. Default `auto`.
+- `issue-models=<auto|fable|opus|sonnet|haiku|off>`: model labels for the issues. Default `off`.
+  - `off`: no model labels. The model follows the issue's complexity, which the issue analyst sets in Ready: the
+    architect designs large issues with fable, the developer implements them with opus, smaller ones with the
+    instance's default model. A label would override that, so it is the exception.
   - `auto`: per issue the label that fits its size and risk ([labels.md](labels.md#model)).
   - `fable`, `opus`, `sonnet`, `haiku`: every issue gets `Model: <value>`.
-  - `off`: no model labels; the issues run with the instance's default model.
-  - Any other value is invalid: treat it like `auto` and put the warning in the notes section of the report.
+  - Any other value is invalid: treat it like `off` and put the warning in the notes section of the report.
 - an optional **source**. The first argument that is not `key=value` decides:
   - It looks like a path (contains `/` or ends in `.md` or `.txt`): **file mode**. The list is that file, relative to
     the repository root. If the path is absolute, contains `..` or the file does not exist on the base branch, write a
@@ -99,7 +101,7 @@ Rules:
 - The list is the scope. You do not add work that is not on it; gaps become **questions** in the report.
 - An item too vague to plan (no recognisable goal, contradictory) becomes no issue: it goes under "Not created" with
   the question a human has to answer.
-- An item of size L stays one issue: give it `Effort: xhigh` and note in the report that it should be split before it
+- An item of size L stays one issue: give it `Effort: high` and note in the report that it should be split before it
   goes to "Ready".
 - Decisions a human has to make (legal texts, prices, paid external services) are open points in the issue and
   questions in the report, never silent assumptions.
