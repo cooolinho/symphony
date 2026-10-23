@@ -174,7 +174,7 @@ export const REPOSITORY_QUERY = /* GraphQL */ `
       id
       defaultBranchRef { name }
       pullRequests(headRefName: $head, states: [OPEN], first: 1) {
-        nodes { number url title baseRefName headRefName isDraft }
+        nodes { id number url title baseRefName headRefName isDraft }
       }
     }
   }
@@ -204,6 +204,14 @@ export const CREATE_PULL_REQUEST_MUTATION = /* GraphQL */ `
       input: { repositoryId: $repositoryId, baseRefName: $base, headRefName: $head, title: $title, body: $body, draft: $draft }
     ) {
       pullRequest { number url title isDraft }
+    }
+  }
+`;
+
+export const UPDATE_PULL_REQUEST_MUTATION = /* GraphQL */ `
+  mutation SymphonyUpdatePullRequest($pullRequestId: ID!, $title: String!, $body: String!) {
+    updatePullRequest(input: { pullRequestId: $pullRequestId, title: $title, body: $body }) {
+      pullRequest { number url title baseRefName }
     }
   }
 `;

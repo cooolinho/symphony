@@ -14,6 +14,7 @@ import {
   REPOSITORY_QUERY,
   SET_STATUS_MUTATION,
   SUB_ISSUE_CONTEXT_QUERY,
+  UPDATE_PULL_REQUEST_MUTATION,
   referenceStatesQuery,
   repositoryLabelsQuery,
 } from './queries.ts';
@@ -161,8 +162,9 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
     name: 'open_pull_request',
     description:
       "Open a pull request in the issue's repository from a branch you have already pushed with git. If an open " +
-      'pull request for that branch exists, it is returned instead of creating a duplicate. Put "Closes #<issue number>" ' +
-      'in the body to link it to the issue.' +
+      'pull request for that branch exists, no duplicate is created: with a body, its title and description are replaced ' +
+      'by the ones you pass (call it again to refresh the description, e.g. to embed screenshots); without a body it is ' +
+      'returned unchanged. Put "Closes #<issue number>" in the body to link it to the issue.' +
       (adapter.settings.baseBranch !== null ? ` Without base, it targets "${adapter.settings.baseBranch}".` : ''),
     inputSchema: {
       head: z.string().min(1).describe('Branch to merge from (already pushed to the repository)'),
@@ -184,7 +186,24 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
         }
         const existing = nodes(repository.pullRequests)[0];
         if (existing !== undefined) {
-          return ok({ created: false, number: existing.number, url: existing.url, title: existing.title, base: existing.baseRefName });
+          if (typeof args.body !== 'string') {
+            return ok({ created: false, updated: false, number: existing.number, url: existing.url, title: existing.title, base: existing.baseRefName });
+          }
+          const updated = await client.request<Json>(UPDATE_PULL_REQUEST_MUTATION, {
+            pullRequestId: existing.id,
+            title: String(args.title),
+            body: args.body,
+          });
+          if (updated.errors.length > 0) return fail('github_error', updated.errors.map((e) => e.message).join('; '));
+          const pr = obj(obj(obj(updated.data)?.updatePullRequest)?.pullRequest);
+          return ok({
+            created: false,
+            updated: true,
+            number: pr?.number ?? existing.number,
+            url: pr?.url ?? existing.url,
+            title: pr?.title ?? String(args.title),
+            base: pr?.baseRefName ?? existing.baseRefName,
+          });
         }
         const base =
           typeof args.base === 'string' && args.base !== ''

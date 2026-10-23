@@ -179,7 +179,7 @@ class FakeGithub {
               repository: {
                 id: 'R_1',
                 defaultBranchRef: { name: 'main' },
-                pullRequests: { nodes: [{ number: 5, url: 'https://github.com/acme/app/pull/5', title: 'Existing', baseRefName: 'main', headRefName: variables.head, isDraft: false }] },
+                pullRequests: { nodes: [{ id: 'PR_5', number: 5, url: 'https://github.com/acme/app/pull/5', title: 'Existing', baseRefName: 'main', headRefName: variables.head, isDraft: false }] },
               },
             },
           },
@@ -249,6 +249,8 @@ class FakeGithub {
         return { body: { data: { addProjectV2ItemById: { item: { id: `PVTI_${variables.contentId}` } } } } };
       case 'SymphonyAddComment':
         return { body: { data: { addComment: { commentEdge: { node: { url: 'https://github.com/acme/app/issues/1#issuecomment-1' } } } } } };
+      case 'SymphonyUpdatePullRequest':
+        return { body: { data: { updatePullRequest: { pullRequest: { number: 5, url: 'https://github.com/acme/app/pull/5', title: variables.title, baseRefName: 'main' } } } } };
       case 'SymphonyCreatePullRequest':
         return { body: { data: { createPullRequest: { pullRequest: { number: 8, url: 'https://github.com/acme/app/pull/8', title: variables.title, isDraft: false } } } } };
       case 'SymphonyMergeCandidate':
@@ -824,8 +826,35 @@ describe('github_project agent tools', () => {
     const [issue] = await tracker.fetchIssuesByIds(['A']);
     const open = tracker.agentToolSpecs().find((t) => t.name === 'open_pull_request');
     const result = await open?.execute({ head: 'symphony/issue-1', title: 'Fix' }, { issue: issue as Issue });
-    assert.deepEqual(result, { ok: true, data: { created: false, number: 5, url: 'https://github.com/acme/app/pull/5', title: 'Existing', base: 'main' } });
+    assert.deepEqual(result, { ok: true, data: { created: false, updated: false, number: 5, url: 'https://github.com/acme/app/pull/5', title: 'Existing', base: 'main' } });
     assert.equal(github.requests.some((r) => r.op === 'SymphonyCreatePullRequest'), false);
+    assert.equal(github.requests.some((r) => r.op === 'SymphonyUpdatePullRequest'), false);
+  });
+
+  it('updates the title and description of the open pull request when called again with a body', async () => {
+    const github = new FakeGithub().add(itemNode('A'));
+    const tracker = adapter(github);
+    const [issue] = await tracker.fetchIssuesByIds(['A']);
+    const open = tracker.agentToolSpecs().find((t) => t.name === 'open_pull_request');
+    assert.match(open?.description ?? '', /refresh the description/);
+    const body = 'Closes #1\n\n![Screenshot](https://example.com/shot.png)';
+    const result = await open?.execute({ head: 'symphony/issue-1', title: 'Fix login', body }, { issue: issue as Issue });
+    assert.deepEqual(result, { ok: true, data: { created: false, updated: true, number: 5, url: 'https://github.com/acme/app/pull/5', title: 'Fix login', base: 'main' } });
+    assert.deepEqual(
+      github.requests.filter((r) => r.op === 'SymphonyUpdatePullRequest').map((r) => r.variables),
+      [{ pullRequestId: 'PR_5', title: 'Fix login', body }],
+    );
+    assert.equal(github.requests.some((r) => r.op === 'SymphonyCreatePullRequest'), false);
+  });
+
+  it('reports a failed pull request update to the agent', async () => {
+    const github = new FakeGithub().add(itemNode('A'));
+    github.overrides.set('SymphonyUpdatePullRequest', () => ({ body: { data: null, errors: [{ message: 'Resource not accessible by integration' }] } }));
+    const tracker = adapter(github);
+    const [issue] = await tracker.fetchIssuesByIds(['A']);
+    const open = tracker.agentToolSpecs().find((t) => t.name === 'open_pull_request');
+    const result = await open?.execute({ head: 'symphony/issue-1', title: 'Fix', body: 'New body' }, { issue: issue as Issue });
+    assert.deepEqual(result, { ok: false, error: { category: 'github_error', message: 'Resource not accessible by integration' } });
   });
 
   it('exposes the issue repository to hooks', async () => {
