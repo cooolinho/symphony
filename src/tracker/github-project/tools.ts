@@ -69,6 +69,15 @@ function issueView(issue: Issue): Json {
   };
 }
 
+const RESULT_MARKER = /<!--\s*symphony:result:v1\s+[A-Za-z0-9_-]+\s*-->/g;
+
+/** Agents do not need the base64 payload of a stage-result marker; it only doubles the comment's size. */
+function commentBody(body: string, maxChars: number | undefined): string {
+  const clean = body.replace(RESULT_MARKER, '<!-- symphony:result -->');
+  if (maxChars === undefined || clean.length <= maxChars) return clean;
+  return `${clean.slice(0, maxChars)}… [${clean.length - maxChars} characters cut]`;
+}
+
 function isOpen(issue: Json): boolean {
   return issue.state !== 'CLOSED';
 }
@@ -96,11 +105,19 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
     name: 'get_issue',
     description:
       'Read the issue this session is working on from the GitHub project board: title, body, status, labels, ' +
-      'assignee, blockers, the status options you can move it to, the latest 20 comments and linked pull requests. Read-only.',
-    inputSchema: {},
+      'assignee, blockers, the status options you can move it to, the latest 20 comments and linked pull requests. Read-only. ' +
+      'Returns JSON: {issue: {identifier, title, status, url, description, labels, assignee, priority, branch_name, blocked_by, parent, sub_issues, issue_state, created_at, updated_at}, ' +
+      'status_options: list of strings (names, not objects), comments: [{author, created_at, url, body}], total_comments: number, ' +
+      'linked_pull_requests: [{number, url, state, title, head}] (may be empty)}. ' +
+      'Stage-result markers in comment bodies are shown as <!-- symphony:result --> without their base64 payload. ' +
+      'If the output is large, pass max_comment_chars to cut every comment body (the cut is noted in the body).',
+    inputSchema: {
+      max_comment_chars: z.number().int().positive().optional().describe('Cut each comment body to this many characters'),
+    },
     mutates: false,
-    execute: (_args, context) =>
+    execute: (args, context) =>
       guarded(context, async (ref) => {
+        const maxChars = typeof args.max_comment_chars === 'number' ? args.max_comment_chars : undefined;
         const [fresh] = await adapter.fetchIssuesByIds([context.issue.id]);
         if (fresh === undefined) return fail('not_found', 'the issue is no longer visible on the project board');
         const meta = await adapter.meta();
@@ -114,7 +131,7 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
             author: obj(c.author)?.login ?? null,
             created_at: c.createdAt ?? null,
             url: c.url ?? null,
-            body: c.body ?? '',
+            body: commentBody(typeof c.body === 'string' ? c.body : '', maxChars),
           })),
           total_comments: obj(node?.comments)?.totalCount ?? null,
           linked_pull_requests: nodes(node?.closedByPullRequestsReferences).map((pr) => ({
