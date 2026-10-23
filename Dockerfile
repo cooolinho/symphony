@@ -59,6 +59,21 @@ RUN npm install -g --no-audit --no-fund "pnpm@${PNPM_VERSION}" \
     && npm cache clean --force \
     && pnpm --version
 
+# Headless Chromium and Playwright for UI screenshots (symphony-screenshot or the agent's own Playwright scripts).
+# --with-deps installs the system libraries and fonts as root; agents have no sudo. /node_modules links to the
+# package so `import { chromium } from 'playwright'` resolves from every script (ESM ignores NODE_PATH).
+# WITH_BROWSER=false leaves it out (about 600 MB smaller).
+ARG WITH_BROWSER=true
+ARG PLAYWRIGHT_VERSION=1.64.0
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN if [ "${WITH_BROWSER}" = "true" ]; then \
+        npm install --prefix /opt/playwright --no-audit --no-fund "playwright@${PLAYWRIGHT_VERSION}" \
+        && npm cache clean --force \
+        && ln -s /opt/playwright/node_modules /node_modules \
+        && /opt/playwright/node_modules/.bin/playwright install --with-deps --only-shell chromium \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # GitHub's published host keys: ssh verifies github.com strictly, no host-key scan at build time.
 COPY docker/ssh_known_hosts /etc/ssh/ssh_known_hosts
 
@@ -93,6 +108,8 @@ COPY .claude/ ./.claude/
 COPY --chmod=0755 docker/entrypoint.sh ./docker/entrypoint.sh
 COPY WORKFLOW.md model-costs.yml ./
 COPY roles/ ./roles/
+COPY --chmod=0755 bin/ ./bin/
+RUN ln -s /app/bin/screenshot.mjs /usr/local/bin/symphony-screenshot
 
 USER symphony
 

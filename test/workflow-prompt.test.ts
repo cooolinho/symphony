@@ -964,6 +964,16 @@ describe('shipped WORKFLOW.md issue commands', () => {
     }
   });
 
+  it('tells only the developer how to take, store and embed UI screenshots', async () => {
+    const prompt = await render('developer');
+    assert.match(prompt, /## UI screenshots/);
+    assert.match(prompt, /`symphony-screenshot <url> <out\.png>`/);
+    assert.match(prompt, /import \{ chromium \} from 'playwright'/);
+    assert.match(prompt, /commit and push it on `symphony\/issue-42`/);
+    assert.match(prompt, /blob\/<commit sha>\/<path>\?raw=true/);
+    for (const role of ['reviewer', 'docs', 'issue-analyst']) assert.doesNotMatch(await render(role), /## UI screenshots/, role);
+  });
+
   it('adds no command block for an ordinary issue or an unknown command', async () => {
     for (const description of ['Create an invoice resource.', '/login returns 500']) {
       const prompt = await render('developer', null, description);
