@@ -241,7 +241,7 @@ symphony/
 ├── .claude/                    # Toolbox für alle Sessions, geladen als Plugin "symphony" (Skills, Agents, Commands, Hooks)
 ├── .github/workflows/          # CI (npm run check) und automatisches Mergen der Agenten-Pull-Requests
 ├── model-costs.yml             # Modellpreise für die Kostenschätzung (wird live neu geladen)
-├── Dockerfile                  # Image mit Node, PHP, Composer, pnpm, git, SSH, gitleaks und headless Chromium; läuft als Benutzer symphony
+├── Dockerfile                  # Image mit Node, PHP, Composer, pnpm, yarn, git, SSH, gitleaks und headless Chromium; läuft als Benutzer symphony
 ├── docker-compose.yml          # Betrieb hinter Traefik: Labels, Volumes, Secret für den SSH-Key
 ├── docker-compose.local.yml    # lokaler Testlauf desselben Images ohne Traefik, Dashboard auf 127.0.0.1
 ├── docker/                     # entrypoint.sh (Variablen prüfen, SSH-Key, git-Identität) und ssh_known_hosts
