@@ -60,7 +60,8 @@ RUN npm install -g --no-audit --no-fund "pnpm@${PNPM_VERSION}" \
     && pnpm --version
 
 # yarn through a pinned corepack (Node 26 no longer bundles it). Only the yarn shim is enabled; pnpm stays the
-# global install above. Without a packageManager field corepack uses its known yarn 1 (DEFAULT_TO_LATEST=0
+# global install above. Corepack gets its own prefix: `npm install -g corepack` would also link pnpm and pnpx
+# into /usr/local/bin and fail with EEXIST against the pnpm above. Without a packageManager field corepack uses its known yarn 1 (DEFAULT_TO_LATEST=0
 # instead of the newest Berry); a project that pins another version gets it downloaded into COREPACK_HOME.
 # YARN_VERSION itself is pre-warmed as user symphony further down.
 ARG COREPACK_VERSION=0.36.0
@@ -68,8 +69,9 @@ ARG YARN_VERSION=1.22.22
 ENV COREPACK_HOME=/home/symphony/.cache/corepack \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
     COREPACK_DEFAULT_TO_LATEST=0
-RUN npm install -g --no-audit --no-fund "corepack@${COREPACK_VERSION}" \
-    && corepack enable yarn \
+RUN npm install --prefix /opt/corepack --no-audit --no-fund "corepack@${COREPACK_VERSION}" \
+    && ln -s /opt/corepack/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack \
+    && corepack enable --install-directory /usr/local/bin yarn \
     && npm cache clean --force
 
 # Headless Chromium and Playwright for UI screenshots (symphony-screenshot or the agent's own Playwright scripts).

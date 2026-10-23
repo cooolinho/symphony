@@ -34,17 +34,17 @@ describe('Dockerfile: yarn through pinned Corepack', () => {
     assert.match(env, /COREPACK_DEFAULT_TO_LATEST=0(\s|$)/);
   });
 
-  it('installs the pinned corepack globally and enables only the yarn shim', () => {
-    const run = lines.find((l) => l.startsWith('RUN ') && /npm install -g/.test(l) && /corepack@\$\{COREPACK_VERSION\}/.test(l));
-    assert.ok(run, 'RUN npm install -g corepack@${COREPACK_VERSION}');
-    assert.match(run, /corepack enable yarn(\s|&|$)/);
-    assert.doesNotMatch(lines.join('\n'), /corepack enable(?! yarn)/, 'a bare `corepack enable` would also shim pnpm');
+  it('installs the pinned corepack in its own prefix and enables only the yarn shim', () => {
+    const run = lines.find((l) => l.startsWith('RUN ') && /npm install --prefix \/opt\/corepack/.test(l) && /corepack@\$\{COREPACK_VERSION\}/.test(l));
+    assert.ok(run, 'RUN npm install --prefix /opt/corepack corepack@${COREPACK_VERSION} (-g collides with pnpm)');
+    assert.match(run, /corepack enable --install-directory \/usr\/local\/bin yarn(\s|&|$)/);
+    assert.doesNotMatch(lines.join('\n'), /corepack enable(?! --install-directory \/usr\/local\/bin yarn)/, 'a bare `corepack enable` would also shim pnpm');
     assert.doesNotMatch(lines.join('\n'), /corepack enable yarn pnpm|corepack enable pnpm|corepack prepare|corepack use/);
   });
 
   it('leaves the pinned global pnpm install in place', () => {
     assert.ok(lines.some((l) => /npm install -g .*"pnpm@\$\{PNPM_VERSION\}"/.test(l)));
-    assert.ok(index(/pnpm@\$\{PNPM_VERSION\}/) < index(/corepack enable yarn/), 'corepack is set up after pnpm');
+    assert.ok(index(/pnpm@\$\{PNPM_VERSION\}/) < index(/corepack enable --install-directory \/usr\/local\/bin yarn/), 'corepack is set up after pnpm');
   });
 
   it('creates COREPACK_HOME owned by symphony', () => {
@@ -57,7 +57,7 @@ describe('Dockerfile: yarn through pinned Corepack', () => {
     const user = index(/^USER symphony$/);
     const warm = index(/corepack install -g "?yarn@\$\{YARN_VERSION\}"?/);
     assert.ok(user >= 0 && warm > user, 'pre-warm comes after USER symphony');
-    assert.ok(warm > index(/corepack enable yarn/));
+    assert.ok(warm > index(/corepack enable --install-directory \/usr\/local\/bin yarn/));
     assert.equal(lines.slice(user + 1, warm).some((l) => /^USER /.test(l)), false, 'no switch back to root before pre-warm');
   });
 
