@@ -28,11 +28,13 @@ read-only commands, `git fetch` and a local `git switch --detach`. **Forbidden**
 - a path (**required**): the concept, relative to the repository root. A file ending in `.md`, or a directory with
   `index.md` or `README.md`. If the path is missing, the file does not exist, the path is absolute or it contains `..`,
   write a comment saying what is missing and move to "Blocked".
-- `issue-models=<auto|fable|opus|sonnet|haiku|off>`: model labels for the issues. Default `auto`.
+- `issue-models=<auto|fable|opus|sonnet|haiku|off>`: model labels for the issues. Default `off`.
+  - `off`: no model labels. The model follows the issue's complexity, which the issue analyst sets in Ready: the
+    architect designs large issues with fable, the developer implements them with opus, smaller ones with the
+    instance's default model. A label would override that, so it is the exception.
   - `auto`: per issue the label that fits its size and risk ([breakdown.md](breakdown.md#labels)).
   - `fable`, `opus`, `sonnet`, `haiku`: every issue gets `Model: <value>`.
-  - `off`: no model labels; the issues run with the instance's default model.
-  - Any other value is invalid: treat it like `auto` and put the warning in the notes section of the report.
+  - Any other value is invalid: treat it like `off` and put the warning in the notes section of the report.
 
 Text in the description below the command line counts as part of the brief (focus areas, order, exclusions).
 
