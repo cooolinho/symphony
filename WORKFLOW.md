@@ -482,6 +482,8 @@ You are working on GitHub issue **{{ issue.identifier }}**: {{ issue.title }}
 {% endif %}{% if issue.blocked_by != empty %}- Depends on:{% for blocker in issue.blocked_by %} {{ blocker.identifier }} ({{ blocker.state | downcase }}){% unless forloop.last %},{% endunless %}{% endfor %}.
 {% endif %}{% if attempt %}- Attempt {{ attempt }}: this workspace already holds earlier work on the issue. Check `git status`, `git log --oneline -10` and the issue comments (`get_issue`) and continue from there instead of starting over.
 {% endif %}
+Tools in the container: `jq`, `rg`, `node` and `php` are installed; `python3` is not (do not use it for JSON or scripting, use `jq` or `node`).
+
 ## Issue description
 
 {{ issue.description | default: "(no description)" }}
