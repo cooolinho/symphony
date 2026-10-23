@@ -27,6 +27,8 @@ export interface WorkspaceIntegration<C = unknown> {
   resolveConfig(raw: Record<string, unknown>, ctx: IntegrationConfigContext): { config: C; errors: string[]; warnings: string[] };
   /** Must never throw: failures are logged and yield null. */
   prepare(config: C, ctx: IntegrationPrepareContext): Promise<SessionExtensions | null>;
+  /** Directories (relative to the repository root, '' = root) of the integration's apps in the workspace; never throws. */
+  appDirs?(workspacePath: string): Promise<string[]>;
   checkEnv?(config: C, workspacePath: string): Promise<Record<string, string>>;
   /** Dry-run lines: service-wide with a null workspace, otherwise about that existing workspace. */
   describe?(config: C, env: NodeJS.ProcessEnv, workspacePath: string | null): Promise<string[]>;

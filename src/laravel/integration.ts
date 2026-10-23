@@ -96,6 +96,14 @@ export const laravelIntegration: WorkspaceIntegration<LaravelConfig> = {
     return result;
   },
 
+  async appDirs(workspacePath) {
+    try {
+      return (await detectLaravelApps(workspacePath)).map((app) => app.dir);
+    } catch {
+      return [];
+    }
+  },
+
   async describe(config, env, workspacePath) {
     if (workspacePath !== null) {
       // Laravel apps in an issue's existing workspace (a new workspace is only cloned when the issue runs).
