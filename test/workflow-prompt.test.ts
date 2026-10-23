@@ -974,6 +974,13 @@ describe('shipped WORKFLOW.md issue commands', () => {
     for (const role of ['reviewer', 'docs', 'issue-analyst']) assert.doesNotMatch(await render(role), /## UI screenshots/, role);
   });
 
+  it('tells only the developer which package manager builds the assets', async () => {
+    const prompt = await render('developer');
+    assert.match(prompt, /with the project's package manager: `packageManager` in `package\.json`, else the lockfile/);
+    assert.match(prompt, /yarn, pnpm and npm are installed; do not switch to another package manager/);
+    for (const role of ['reviewer', 'docs', 'issue-analyst']) assert.doesNotMatch(await render(role), /do not switch to another package manager/, role);
+  });
+
   it('adds no command block for an ordinary issue or an unknown command', async () => {
     for (const description of ['Create an invoice resource.', '/login returns 500']) {
       const prompt = await render('developer', null, description);

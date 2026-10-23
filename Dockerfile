@@ -59,6 +59,19 @@ RUN npm install -g --no-audit --no-fund "pnpm@${PNPM_VERSION}" \
     && npm cache clean --force \
     && pnpm --version
 
+# yarn through a pinned corepack (Node 26 no longer bundles it). Only the yarn shim is enabled; pnpm stays the
+# global install above. Without a packageManager field corepack uses its known yarn 1 (DEFAULT_TO_LATEST=0
+# instead of the newest Berry); a project that pins another version gets it downloaded into COREPACK_HOME.
+# YARN_VERSION itself is pre-warmed as user symphony further down.
+ARG COREPACK_VERSION=0.36.0
+ARG YARN_VERSION=1.22.22
+ENV COREPACK_HOME=/home/symphony/.cache/corepack \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+    COREPACK_DEFAULT_TO_LATEST=0
+RUN npm install -g --no-audit --no-fund "corepack@${COREPACK_VERSION}" \
+    && corepack enable yarn \
+    && npm cache clean --force
+
 # Headless Chromium and Playwright for UI screenshots (symphony-screenshot or the agent's own Playwright scripts).
 # --with-deps installs the system libraries and fonts as root; agents have no sudo. /node_modules links to the
 # package so `import { chromium } from 'playwright'` resolves from every script (ESM ignores NODE_PATH).
@@ -90,7 +103,8 @@ RUN userdel --remove node \
         /home/symphony/.local/state/symphony \
         /home/symphony/.claude \
         /home/symphony/.cache \
-        /home/symphony/.cache/composer
+        /home/symphony/.cache/composer \
+        /home/symphony/.cache/corepack
 
 # Claude Code keeps .claude.json in CLAUDE_CONFIG_DIR as well, so all its state lands in the volume.
 ENV CLAUDE_CONFIG_DIR=/home/symphony/.claude \
@@ -112,6 +126,9 @@ COPY --chmod=0755 bin/ ./bin/
 RUN ln -s /app/bin/screenshot.mjs /usr/local/bin/symphony-screenshot
 
 USER symphony
+
+# Pre-warm the default yarn so the normal case needs no download at run time.
+RUN corepack install -g "yarn@${YARN_VERSION}" && (cd /tmp && yarn --version)
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD [ -z "${SYMPHONY_PORT:-}" ] || curl -fsS "http://127.0.0.1:${SYMPHONY_PORT}/api/v1/state" >/dev/null
