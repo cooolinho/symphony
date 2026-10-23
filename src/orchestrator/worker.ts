@@ -27,6 +27,7 @@ import { createResultTool, resultReminder, type PathRule, type ResultToolAdapter
 import { reviewedFiles, securityBaseRef } from './security.ts';
 import { interruptedTransition } from './recovery.ts';
 import { analysisFlagsSecurity, analysisNeedsDocs, docsBaseHead, buildStageHistory, implementationHead, resultsTemplateValue, type PersistedResult, type ResultsTemplateValue, type StageHistory } from './stage-history.ts';
+import { effectivePaths } from '../workflow/path-globs.ts';
 import { subIssueLimit } from './work-packages.ts';
 
 export type RunPhase =
@@ -466,14 +467,17 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     // Roles with `result` start with the issue's stage history; every other role makes no extra tracker request.
     let resultRecorded = false;
     let resultMoved = false;
+    // Default path globs also apply below the root of a Laravel app in a subdirectory; explicit ones stay as written.
+    const appDirs = (await Promise.all(params.integrations.map((integration) => integration.appDirs?.(activeWorkspace.path) ?? []))).flat();
+    const paths = effectivePaths(params.workflow.config.pipeline, appDirs);
     // A test engineer's changes are measured from the developer's last hand-off, else from the workspace as this session found it.
     const startSha = role?.result === 'test' || role?.result === 'docs' ? ((await readGitHead(activeWorkspace.path))?.headSha ?? null) : null;
     const pathRule =
       role?.result === 'test'
-        ? (history: StageHistory) => testPathRule(activeWorkspace.path, params.workflow.config.pipeline.testPaths, startSha, implementationHead(history))
+        ? (history: StageHistory) => testPathRule(activeWorkspace.path, paths.testPaths, startSha, implementationHead(history))
         : role?.result === 'docs'
           ? (history: StageHistory) =>
-              testPathRule(activeWorkspace.path, params.workflow.config.pipeline.docsPaths, startSha, docsBaseHead(history), {
+              testPathRule(activeWorkspace.path, paths.docsPaths, startSha, docsBaseHead(history), {
                 setting: 'pipeline.docs_paths',
                 guidance: 'Code and tests belong to the developer and the test engineer: leave them alone and report the verdict `blocked` if the documentation cannot be written without changing them.',
               })
@@ -483,8 +487,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       role?.result === 'implementation' || role?.result === 'test'
         ? (history: StageHistory) => ({
             docsNeeded: analysisNeedsDocs(history),
-            docsPaths: params.workflow.config.pipeline.docsPaths,
-            triggerPaths: params.workflow.config.pipeline.docsTriggerPaths,
+            docsPaths: paths.docsPaths,
+            triggerPaths: paths.docsTriggerPaths,
             changedFiles: () => changedFiles(activeWorkspace.path, securityBaseRef(issue.native_ref?.base_branch)),
           })
         : null;
@@ -494,7 +498,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       role?.result === 'review'
         ? (history: StageHistory) => ({
             risk: analysisFlagsSecurity(history),
-            securityPaths: params.workflow.config.pipeline.securityPaths,
+            securityPaths: paths.securityPaths,
             changedFiles: () => reviewedFiles(activeWorkspace.path, issue, history),
           })
         : null;
@@ -525,8 +529,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       results: support?.results ?? EMPTY_RESULTS,
       round: support?.round ?? 1,
       result_required: support !== null,
-      test_paths: params.workflow.config.pipeline.testPaths,
-      docs_paths: params.workflow.config.pipeline.docsPaths,
+      test_paths: paths.testPaths,
+      docs_paths: paths.docsPaths,
       attachments,
     };
     const transcript = transcriptPath(params.transcriptDir, activeWorkspace);

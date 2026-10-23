@@ -815,6 +815,7 @@ describe('result-driven roles and the pipeline section', () => {
         docsPaths: ['docs/**', 'README*.md', 'CHANGELOG*.md'],
         docsTriggerPaths: ['.env.example', 'config/**', 'WORKFLOW.md'],
         securityPaths: ['app/Policies/**', 'app/Http/Middleware/**', 'config/auth.php', 'routes/**', 'database/migrations/**'],
+        explicitPaths: [],
       },
     );
   });

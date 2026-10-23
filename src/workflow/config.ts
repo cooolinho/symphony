@@ -145,7 +145,14 @@ export interface PipelineConfig {
   docsPaths: string[];
   docsTriggerPaths: string[];
   securityPaths: string[];
+  /**
+   * The path settings that WORKFLOW.md set explicitly. The others hold the built-in defaults, which the worker extends
+   * with the prefix of every Laravel app in a subdirectory (see `expandForApps`).
+   */
+  explicitPaths: PathSetting[];
 }
+
+export type PathSetting = 'test_paths' | 'docs_paths' | 'docs_trigger_paths' | 'security_paths';
 
 export interface ServerConfig {
   port: number | null;
@@ -467,9 +474,11 @@ function readPipeline(reader: Reader, raw: Record<string, unknown>, roles: RoleC
     return value || fallback;
   };
   /** A list of path globs: unset = `fallback`, an explicit list is used as it is (an empty one allows no path). */
-  const globs = (key: 'test_paths' | 'docs_paths' | 'docs_trigger_paths' | 'security_paths', fallback: readonly string[]): string[] => {
+  const explicitPaths: PathSetting[] = [];
+  const globs = (key: PathSetting, fallback: readonly string[]): string[] => {
     const list = reader.stringList(section, key, `pipeline.${key}`);
     if (list === null) return [...fallback];
+    explicitPaths.push(key);
     list.forEach((glob, index) => {
       const problem = globProblem(glob);
       if (problem !== null) reader.errors.push(`pipeline.${key}[${index}] ${JSON.stringify(glob)} ${problem}`);
@@ -493,6 +502,7 @@ function readPipeline(reader: Reader, raw: Record<string, unknown>, roles: RoleC
     docsPaths: globs('docs_paths', DEFAULTS.docsPaths),
     docsTriggerPaths: globs('docs_trigger_paths', DEFAULTS.docsTriggerPaths),
     securityPaths: globs('security_paths', DEFAULTS.securityPaths),
+    explicitPaths,
   };
 }
 

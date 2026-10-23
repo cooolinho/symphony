@@ -994,6 +994,14 @@ Everything else is literal, including a leading dot (`tests/**` matches `tests/.
 absolute or contain `..` segments, and braces must be balanced; otherwise the config fails with `invalid_config`, e.g.
 `pipeline.test_paths[1] "/abs/**" must be relative to the repository root, without a leading "/"`.
 
+**Laravel apps in a subdirectory.** The defaults are written for an app at the repository root. When the workspace holds
+a detected Laravel app in a subdirectory (`laravel/`, see the Laravel integration), Symphony extends each **default**
+list of `test_paths`, `docs_paths`, `docs_trigger_paths` and `security_paths` with the app prefix, in addition to the
+root globs: `tests/**` also covers `laravel/tests/**`, `app/Policies/**` also `laravel/app/Policies/**`. Globs that
+start with `**` already match below any directory and get no copy. A list you set explicitly in `WORKFLOW.md` is used
+exactly as written, never extended; write the prefixed globs yourself (`laravel/tests/**`) if you set one. There is no
+`{app}` placeholder. The rejection message of `report_result` lists the effective globs, prefixes included.
+
 #### Workflow profiles
 
 Bugfix, feature and refactor issues can follow different stage sequences with the same roles: a profile, chosen by the
