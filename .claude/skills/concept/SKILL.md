@@ -11,9 +11,11 @@ work plan on the board. The issue you run on is the root; two levels are created
 
 ```
 Concept issue (this issue)
-└─ Epic: <functional area>             labels epic, concept · container, never "Ready"
-   └─ <Category>: <task>               labels concept, category (Effort, Model on request) · implementable on its own
+└─ (E<n>) Epic: <functional area>      labels epic, concept · container, never "Ready"
+   └─ (E<n>-<m>) <Category>: <task>    labels concept, category (Effort, Model on request) · implementable on its own
 ```
+
+Every title starts with its key in parentheses (Phase 4), so an epic and its issues can be found on the board.
 
 Everything lands in the **backlog**. A human reviews the issues, drops or adds some and moves the ones to be
 implemented to "Ready" one by one. You move nothing there.
@@ -59,7 +61,12 @@ Call `get_issue`. What matters are the comments (your own plans and reports, req
 - **`## Concept Report` present**: addendum. Read the concept and the new comments by humans and create only what is
   missing from the report: the section "Not created", new requirements, requests. Nothing that is in the report is
   created again, even if it has been closed since. Epics you need for this you get back by their title
-  (`created: false`). Number the reports consecutively (`## Concept Report (addendum 1)`).
+  (`created: false`): take it exactly as it stands among the concept issue's sub-issues today, key included, not from
+  the report. A new epic or issue gets the next free key of its area; a key is never given twice, not even one of a
+  closed issue. Number the reports consecutively (`## Concept Report (addendum 1)`).
+
+Plans written before keys went into titles write keys as `E1.1` (read it as `E1-1`) and may have epics whose title has
+no key. Keep such a title as it is: adding a key creates a second epic.
 
 ## Phase 1: Read the concept
 
@@ -102,7 +109,14 @@ report.
    or `maintenance`), with `issue-efforts=auto` exactly one `Effort: …`, with `issue-models` other than `off` exactly
    one `Model: …`. Epics carry
    `epic` and `concept`, nothing else.
-3. Give every epic and issue a stable key (`E1`, `E1.1`, `E1.2`, `E2.1` …) and a unique title.
+3. Give every epic and issue a stable key and a unique title that starts with that key in parentheses:
+   - **Epic** `E<n>`, title `(E<n>) Epic: <area>`. Count from 1 in the order of the concept; if the concept numbers its
+     areas itself (`E0` … `E11`), take its numbers. An area cut into several epics gets one letter per epic (`E1a`,
+     `E1b`).
+   - **Issue** `E<n>-<m>`, title `(E<n>-<m>) <Category>: <task>`. `<n>` is the number of its area, `<m>` counts from 1
+     within the area; if the concept numbers its requirements (`E2-3`), follow that number. A requirement split into
+     several issues gets one letter per issue (`E3-4a`, `E3-4b`).
+   - A key is unique within the concept and never reused. Plan, titles and report use the same keys.
 
 ## Phase 5: Record the plan
 

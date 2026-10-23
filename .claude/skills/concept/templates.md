@@ -2,12 +2,12 @@
 
 Write in the language of the concept; translate the template text, but keep the `## Concept Plan` and
 `## Concept Report` headings in English exactly as below, because later runs search for them. Keep titles short and
-unambiguous: the title is also the key that keeps a retry from creating a duplicate. Paths, numbers and keys are
-placeholders.
+unambiguous: the title is also the key that keeps a retry from creating a duplicate. Every title starts with its key
+from the plan (`(E2)`, `(E2-1)`). Paths, numbers and keys are placeholders.
 
 ## Epic
 
-Title: `Epic: <area>` · Labels: `epic`, `concept` · call without `parent`.
+Title: `(E<n>) Epic: <area>`, e.g. `(E2) Epic: Invoices` · Labels: `epic`, `concept` · call without `parent`.
 
 ```markdown
 ## Goal
@@ -29,7 +29,7 @@ Part of concept #<concept issue>.
 
 ## Sub-issue
 
-Title: `<Feature|Design|Quality|Maintenance>: <what changes>`, e.g. `Feature: create invoice`.
+Title: `(E<n>-<m>) <Feature|Design|Quality|Maintenance>: <what changes>`, e.g. `(E2-1) Feature: create invoice`.
 Labels: `concept`, category, if applicable `Effort: …` and `Model: …`, if applicable `manual-merge`. Call with `parent`
 (number of the epic) and `blocked_by`.
 
@@ -70,19 +70,19 @@ starts with `/refactor-safely` on the first line; `Blocked by` follows below it.
 **Concept:** `<path>` @ `<base>` <short commit hash> · **issue-models:** <auto|fable|opus|sonnet|haiku|off>
 
 ### Epics and issues
-- **E1 Epic: <area>**: <one sentence>
-  - E1.1 <title> (<category>, <S|M>, risk <…>; Effort and Model labels, if any)
-  - E1.2 <title> (…) *waits for E1.1*
-- **E2 Epic: <area>**
-  - E2.1 <title> (…) *waits for E1.2*
+- **(E1) Epic: <area>**: <one sentence>
+  - (E1-1) <Category>: <task> (<category>, <S|M>, risk <…>; Effort and Model labels, if any)
+  - (E1-2) <Category>: <task> (…) *waits for E1-1*
+- **(E2) Epic: <area>**
+  - (E2-1) <Category>: <task> (…) *waits for E1-2*
 
 ### Creation order
-E1.1, E1.2, E2.1, …
+E1-1, E1-2, E2-1, …
 
 ### Coverage
 | Concept section | Issue |
 |---|---|
-| <section> | E1.1, E1.2 |
+| <section> | E1-1, E1-2 |
 | <section> | present (`<file>`) |
 | <section> | not created: <reason> |
 
@@ -98,10 +98,10 @@ E1.1, E1.2, E2.1, …
 **Concept:** `<path>` @ `<base>` <short commit hash>
 
 ### Created (backlog)
-- [ ] #<n> **Epic: <area>**
-  - [ ] #<n> <title> (<category>, <S|M>, Effort and Model labels, if any): <reason for those labels in half a sentence, if any>
-  - [ ] #<n> <title> (…) *waits for #<m>*
-- [ ] #<n> **Epic: <area>**
+- [ ] #<n> **(E1) Epic: <area>**
+  - [ ] #<n> (E1-1) <Category>: <task> (<category>, <S|M>, Effort and Model labels, if any): <reason for those labels in half a sentence, if any>
+  - [ ] #<n> (E1-2) <Category>: <task> (…) *waits for #<m>*
+- [ ] #<n> **(E2) Epic: <area>**
   - …
 
 ### Not created

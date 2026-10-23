@@ -664,13 +664,17 @@ repository (e.g. `docs/index.md`), create an issue with the description `/concep
 do, and creates two levels of issues:
 
 ```
-#10 /concept docs/index.md                      → In review once the plan is in place
-├─ #11 Epic: User management                    Backlog · labels epic, concept
-│  ├─ #13 Feature: Sign-in                      Backlog · concept, feature
-│  └─ #14 Feature: Roles and permissions        Backlog · concept, feature · blocked by #13
-└─ #12 Epic: Billing                            Backlog
-   └─ #15 Feature: Create invoice               Backlog · … blocked by #14
+#10 /concept docs/index.md                         → In review once the plan is in place
+├─ #11 (E1) Epic: User management                  Backlog · labels epic, concept
+│  ├─ #13 (E1-1) Feature: Sign-in                  Backlog · concept, feature
+│  └─ #14 (E1-2) Feature: Roles and permissions    Backlog · concept, feature · blocked by #13
+└─ #12 (E2) Epic: Billing                          Backlog
+   └─ #15 (E2-1) Feature: Create invoice           Backlog · … blocked by #14
 ```
+
+Every title starts with its key from the plan comment: `(E<n>)` for an epic, `(E<n>-<m>)` for an issue of that epic.
+If the concept numbers its areas and requirements itself (`E2`, `E2-3`), the keys follow it. That way an epic and its
+issues are easy to find on the board.
 
 Every issue gets acceptance criteria, the reference to the concept section, tests, **dependencies** (GitHub
 relationship and a `Blocked by #N` line) and a category (`feature`, `design`, `quality`, `maintenance`); `Effort: …`
