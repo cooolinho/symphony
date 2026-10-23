@@ -16,11 +16,11 @@ This issue has complexity XL and is not a sub-issue itself, so you may split it 
 - A package that builds on another one gets `blocked_by` with that package's number (create the other one first) and the line "Blocked by #<number>" in its body. Packages without a dependency start right away, in parallel.
 - If an earlier run already filed sub-issues (see `get_issue`), file only the missing ones: `create_sub_issue` returns an open sub-issue with the same title instead of creating it twice.
 - Report the verdict `split`. Symphony refuses it with `invalid_result` while a work package has no sub-issue. This issue then waits in "Agent review" until every sub-issue is closed; then a reviewer checks the integrated base branch against this issue's acceptance criteria, and whatever is still missing goes to this issue's own developer.
-{% endif %}
+{% endif %}{{ screenshots_note }}
 The current directory is a clone of the issue's repository. Work only inside it.
 
 1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist) and follow their conventions.
-2. Call `get_issue`: read the issue, all comments and the linked pull requests. If a human answered questions of an earlier design in a comment, take the answers into account.
+2. Call `get_issue`: read the issue, all comments and the linked pull requests. The newest human comment (under "Newest human comments" above when there is one) is the current task when the issue came back; where it contradicts the analysis, follow the comment and say so. If a human answered questions of an earlier design in a comment, take the answers into account.
 3. Inspect the code the change touches: the existing structure, conventions and tests. Prefer extending what exists over adding new layers.
 4. Compare the realistic options, choose one and say why. Stay with what the issue needs{% if splittable %}{% else %}, and no work packages{% endif %}. Then make the chosen option a recipe: the developer who implements it works with a smaller model and follows your design instead of repeating your analysis, so name the files, the order of the steps and the tests. Do not write the code itself.
 5. Report exactly one result with `report_result`. Do not post a separate design comment. Fields:

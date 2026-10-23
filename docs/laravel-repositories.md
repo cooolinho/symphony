@@ -169,7 +169,11 @@ If pull requests need screenshots of UI changes, say so in `AGENTS.md`. The deve
 its workspace (`php -S` from `public/` with its own SQLite file and seed data), takes the screenshots with the image's
 headless Chromium (`symphony-screenshot` or a Playwright script), commits them on the pull request's branch and embeds
 them in the pull request body by commit SHA (`https://github.com/<owner>/<repo>/blob/<sha>/<path>?raw=true`, which
-also works for private repositories). Help it with a short section in `AGENTS.md`:
+also works for private repositories). The browser lives under `/opt/ms-playwright`, not on the `PATH`;
+`symphony-screenshot --check` tests it. A fresh workspace has no `node_modules` or `public/build`, so the developer
+installs the dependencies and runs the `build` script first when the app uses Vite (for example a Filament
+`viteTheme`). The architect and the reviewer are told the same, so a design does not plan to skip screenshots and a
+review counts missing ones as `major`. Help the developer with a short section in `AGENTS.md`:
 
 - How to get a demo login: the seeder that creates it and the variables it reads (for example `DEMO_ADMIN_EMAIL`).
 - The login URL of each panel and the variables routing depends on (for example a panel domain), with values that work
