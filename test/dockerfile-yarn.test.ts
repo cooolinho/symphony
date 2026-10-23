@@ -101,3 +101,16 @@ describe('yarn documentation', () => {
     }
   });
 });
+
+describe('Dockerfile: jq and python3 (#287)', () => {
+  it('installs jq with the system tools and no python3', () => {
+    const apt = instructions().find((l) => l.startsWith('RUN ') && /apt-get install/.test(l));
+    assert.ok(apt);
+    assert.match(apt, /(\s)jq(\s)/);
+    assert.doesNotMatch(apt, /python3/);
+  });
+
+  it('tells agents in the shared prompt which script tools exist', () => {
+    assert.match(read('WORKFLOW.md'), /`jq`.*`node`.*`php`.*`python3` is not/);
+  });
+});

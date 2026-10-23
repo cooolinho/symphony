@@ -11,7 +11,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # System tools, then PHP from Ondřej Surý's repository (any PHP_VERSION the Laravel projects need).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        bash ca-certificates curl git openssh-client openssl ripgrep tini unzip \
+        bash ca-certificates curl git jq openssh-client openssl ripgrep tini unzip \
     && curl -fsSLo /tmp/debsuryorg-archive-keyring.deb https://packages.sury.org/debsuryorg-archive-keyring.deb \
     && dpkg -i /tmp/debsuryorg-archive-keyring.deb \
     && rm /tmp/debsuryorg-archive-keyring.deb \
