@@ -465,7 +465,7 @@ Interfaces between them:{% for item in results.design.interfaces %}
 
 When the project's instructions or the issue ask for screenshots of UI changes, take them; the workspace has a headless Chromium. "No browser" is not a reason to skip them.
 
-- Serve the app from this workspace only, on a free local port, with its own SQLite file and seed data; never a stack that serves another checkout. For a Laravel app: from its `public/` directory, `DB_CONNECTION=sqlite DB_DATABASE=/tmp/<name>.sqlite APP_URL=http://127.0.0.1:<port> php -S 127.0.0.1:<port> ../vendor/laravel/framework/src/Illuminate/Foundation/resources/server.php` after `php artisan migrate --seed` against that file (real environment variables override `.env`). Build the frontend assets first if the project needs them. Run the server in the background with a PID file and stop it by that PID when you are done.
+- Serve the app from this workspace only, on a free local port, with its own SQLite file and seed data; never a stack that serves another checkout. For a Laravel app: from its `public/` directory, `DB_CONNECTION=sqlite DB_DATABASE=/tmp/<name>.sqlite APP_URL=http://127.0.0.1:<port> php -S 127.0.0.1:<port> ../vendor/laravel/framework/src/Illuminate/Foundation/resources/server.php` after `php artisan migrate --seed` against that file (real environment variables override `.env`). Build the frontend assets first if the project needs them, with the project's package manager: `packageManager` in `package.json`, else the lockfile (`yarn.lock`, `pnpm-lock.yaml`, `package-lock.json`), else what AGENTS.md names. yarn, pnpm and npm are installed; do not switch to another package manager. Run the server in the background with a PID file and stop it by that PID when you are done.
 - Take the screenshot with `symphony-screenshot <url> <out.png>` (`--login-url`, `--email`, `--password` for a form login, `--click`, `--clip`, `--scale 2`, `--header 'Host: …'`; `symphony-screenshot --help`). For more steps, write a short Node script with `import { chromium } from 'playwright'`; it resolves from any directory.
 - Open every PNG with the Read tool and check that it shows what it should (logged in, right page, real data, no error page).
 - Store it where the project's instructions say, else under `docs/screenshots/` with a descriptive name, then commit and push it on `{{ branch }}`.
@@ -482,6 +482,8 @@ You are working on GitHub issue **{{ issue.identifier }}**: {{ issue.title }}
 {% endif %}{% if issue.blocked_by != empty %}- Depends on:{% for blocker in issue.blocked_by %} {{ blocker.identifier }} ({{ blocker.state | downcase }}){% unless forloop.last %},{% endunless %}{% endfor %}.
 {% endif %}{% if attempt %}- Attempt {{ attempt }}: this workspace already holds earlier work on the issue. Check `git status`, `git log --oneline -10` and the issue comments (`get_issue`) and continue from there instead of starting over.
 {% endif %}
+Tools in the container: `jq`, `rg`, `node` and `php` are installed; `python3` is not (do not use it for JSON or scripting, use `jq` or `node`).
+
 ## Issue description
 
 {{ issue.description | default: "(no description)" }}

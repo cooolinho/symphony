@@ -191,7 +191,7 @@ before a result reaches the guard (step 3), `report_result` compares the workspa
 developer's newest finished `implementation` result recorded (`head_sha`) when `HEAD` descends from it, else the commit
 the session started from. It looks at the files committed since, changed or deleted in the working tree or the index,
 and untracked ones (ignored files do not count; a renamed file counts at both ends). Every file that matches none of the globs of
-`pipeline.test_paths` ([path globs](configuration.md#path-globs)) refuses the result:
+`pipeline.test_paths` ([path globs](configuration.md#path-globs)) refuses the result: For a Laravel app in a subdirectory the default globs include its prefix (`laravel/tests/**`) and the message lists them.
 
 ```
 invalid_result: The test result is invalid: role test-engineer may only change files matching `pipeline.test_paths`

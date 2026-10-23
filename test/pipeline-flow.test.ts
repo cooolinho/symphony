@@ -1523,3 +1523,135 @@ describe('security review stage', () => {
     assert.equal(counts(h).claimed, 0, 'Blocked is not active');
   });
 });
+
+// Issue #283: the default pipeline path globs also apply below the root of a Laravel app in a subdirectory.
+
+/** TESTING_FRONT with a Laravel app in `dir` ('' = root); `pipeline` adds settings, `roles` replaces the roles. */
+function laravelFront(dir: string, options: { pipeline?: Record<string, unknown>; roles?: Record<string, unknown>; board?: boolean } = {}): Record<string, unknown> {
+  const app = dir === '' ? '.' : dir;
+  return {
+    ...TESTING_FRONT,
+    ...(options.roles !== undefined ? { roles: options.roles } : {}),
+    pipeline: { ...TESTING_FRONT.pipeline, ...options.pipeline },
+    laravel: { boost: 'off', install_dependencies: false },
+    hooks: {
+      after_create: [
+        TESTING_FRONT.hooks.after_create,
+        `mkdir -p ${app}/tests ${app}/app/Policies ${app}/config`,
+        `printf '{"require":{"laravel/framework":"^12.0"}}' > ${app}/composer.json`,
+        `touch ${app}/artisan ${app}/tests/KeepTest.php ${app}/app/Policies/PostPolicy.php`,
+        'git add -A',
+        'git commit -q -m laravel',
+      ].join('\n'),
+    },
+  };
+}
+
+/** A test engineer that commits `files` (repository-relative, new) and reports passed. */
+const testsAdding = (files: string[]): Stage =>
+  reporting(TESTS_PASSED, (workspace) =>
+    sh(workspace, [...files.map((file) => `mkdir -p ${path.dirname(file)} && printf '// ${file}\\n' > ${file}`), 'git add -A', "git commit -q -m 'Add tests'"].join('\n')),
+  );
+
+/** The first test-engineer report of a run, and the state of the issue afterwards. */
+async function testEngineerReport(front: Record<string, unknown>, files: string[]) {
+  const h = testingPipeline([done(), testsAdding(files), approved()], { front });
+  await run(h);
+  return { h, first: h.reports[1] };
+}
+
+describe('test engineer stage: Laravel app in a subdirectory (#283)', () => {
+  it('accepts fixtures and helpers under laravel/tests/ with the default test_paths', async () => {
+    const { h, first } = await testEngineerReport(laravelFront('laravel'), ['laravel/tests/Fixtures/Foo.php', 'laravel/tests/Concerns/ReplaysLivewireSnapshots.php', 'laravel/tests/Feature/FooTest.php']);
+    assert.equal(data(first).target, 'Agent review', JSON.stringify(first));
+    assert.deepEqual(h.tracker.statusCalls, ['Testing', 'Agent review', 'In review']);
+  });
+
+  it('still refuses production code of the app, and the refusal lists the prefixed globs', async () => {
+    const { first } = await testEngineerReport(laravelFront('laravel'), ['laravel/tests/Fixtures/Foo.php', 'laravel/app/Models/Foo.php']);
+    const refused = denial(first);
+    assert.equal(refused?.category, 'invalid_result');
+    const message = refused?.message ?? '';
+    assert.match(message, /- laravel\/app\/Models\/Foo\.php/);
+    assert.doesNotMatch(message, /- laravel\/tests\/Fixtures\/Foo\.php/);
+    assert.match(message, /pipeline\.test_paths/);
+    for (const glob of ['tests/**', 'test/**', '**/*.test.*', '**/*Test.php', 'laravel/tests/**', 'laravel/test/**']) assert.ok(message.includes(glob), `${glob} listed in: ${message}`);
+  });
+
+  it('does not accept tests below another directory that is no app', async () => {
+    const { first } = await testEngineerReport(laravelFront('laravel'), ['other/tests/Fixtures/Foo.php']);
+    assert.equal(denial(first)?.category, 'invalid_result');
+    assert.match(denial(first)?.message ?? '', /- other\/tests\/Fixtures\/Foo\.php/);
+  });
+
+  it('keeps the root behaviour for an app at the repository root: nothing is added to the globs', async () => {
+    const root = await testEngineerReport(laravelFront(''), ['tests/Fixtures/Foo.php']);
+    assert.equal(data(root.first).target, 'Agent review');
+    const refusedRun = await testEngineerReport(laravelFront(''), ['laravel/tests/Fixtures/Foo.php']);
+    const message = denial(refusedRun.first)?.message ?? '';
+    assert.equal(denial(refusedRun.first)?.category, 'invalid_result');
+    assert.match(message, /\(tests\/\*\*, test\/\*\*, \*\*\/\*\.test\.\*, \*\*\/\*Test\.php\)/);
+  });
+
+  it('uses an explicit test_paths exactly as written: no app prefix is added', async () => {
+    const { first } = await testEngineerReport(laravelFront('laravel', { pipeline: { test_paths: ['tests/**'] } }), ['laravel/tests/Fixtures/Foo.php']);
+    const message = denial(first)?.message ?? '';
+    assert.equal(denial(first)?.category, 'invalid_result');
+    assert.match(message, /- laravel\/tests\/Fixtures\/Foo\.php/);
+    assert.match(message, /\(tests\/\*\*\), but/);
+    assert.ok(!message.includes('laravel/tests/**'));
+  });
+
+  it('an explicit prefixed glob keeps working', async () => {
+    const { first } = await testEngineerReport(laravelFront('laravel', { pipeline: { test_paths: ['laravel/tests/**'] } }), ['laravel/tests/Fixtures/Foo.php']);
+    assert.equal(data(first).target, 'Agent review');
+  });
+});
+
+describe('security review trigger: Laravel app in a subdirectory (#283)', () => {
+  const REVIEW_ROLES = {
+    ...TESTING_FRONT.roles,
+    reviewer: { ...FRONT.roles.reviewer, may_move_to: ['Security review', 'In review', 'In progress', 'Blocked'] },
+    auditor: { states: ['Security review'], read_only: true, result: 'security', may_move_to: ['In review', 'In progress', 'Blocked'], on_result: { passed: 'In review', issues_found: 'In progress' } },
+  };
+  const BOARD_SECURITY = [...BOARD_TESTING, 'Security review'];
+
+  /** Developer commits `file`, the test engineer passes, the reviewer approves (`reports[2]`). */
+  async function approvedWith(front: Record<string, unknown>, file: string) {
+    const tracker = new FakeTracker([makeIssue({ id: ISSUE, state: 'Ready', native_ref: { base_branch: 'main' } })]);
+    tracker.statusOptions = async () => BOARD_SECURITY;
+    const f = laravelFront('laravel', { roles: REVIEW_ROLES, ...front });
+    f.tracker = { ...TESTING_FRONT.tracker, active_states: [...TESTING_FRONT.tracker.active_states, 'Security review'] };
+    const h = pipeline(
+      [
+        done((workspace) => sh(workspace, `git update-ref refs/remotes/origin/main HEAD && mkdir -p ${path.dirname(file)} && printf 'x\\n' > ${file} && git add -A && git commit -q -m change`)),
+        testsAdding(['laravel/tests/Feature/AnyTest.php']),
+        approved(),
+      ],
+      { tracker, front: f },
+    );
+    await run(h);
+    return h;
+  }
+
+  it('sends a change to laravel/app/Policies/* to Security review', async () => {
+    const h = await approvedWith({}, 'laravel/app/Policies/FooPolicy.php');
+    assert.equal(data(h.reports[2]).target, 'Security review');
+    assert.match(String(data(h.reports[2]).reason), /match pipeline\.security_paths: laravel\/app\/Policies\/FooPolicy\.php/);
+  });
+
+  it('sends a change to laravel/database/migrations/* to Security review', async () => {
+    const h = await approvedWith({}, 'laravel/database/migrations/2026_01_01_create_x.php');
+    assert.equal(data(h.reports[2]).target, 'Security review');
+  });
+
+  it('sends a change outside the security paths to In review', async () => {
+    const h = await approvedWith({}, 'laravel/app/Models/Foo.php');
+    assert.equal(data(h.reports[2]).target, 'In review');
+  });
+
+  it('explicit security_paths are not extended: a laravel/app/Policies change goes to In review', async () => {
+    const h = await approvedWith({ pipeline: { security_paths: ['app/Policies/**'] } }, 'laravel/app/Policies/FooPolicy.php');
+    assert.equal(data(h.reports[2]).target, 'In review');
+  });
+});
