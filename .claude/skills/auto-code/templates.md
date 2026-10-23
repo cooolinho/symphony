@@ -7,8 +7,8 @@ key that keeps a retry from creating a duplicate. Paths and numbers are placehol
 ## Sub-issue
 
 Title: `<Feature|Design|Quality|Maintenance>: <what changes>`, e.g. `Feature: CSV export of invoices`.
-Labels: `auto-code`, category, `Effort: medium|high`, if applicable `Model: fable|opus|sonnet|haiku` (only with
-`issue-models`), if applicable `manual-merge`.
+Labels: `auto-code`, category, if applicable `Effort: medium|high` (only with `issue-efforts=auto`), if applicable
+`Model: fable|opus|sonnet|haiku` (only with `issue-models`), if applicable `manual-merge`.
 
 ```markdown
 ## Goal

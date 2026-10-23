@@ -1,7 +1,7 @@
 ---
 name: plan
 description: Plan workflow. Turns a list (a file in the repository or the issue description) into one sub-issue per item, each with a detailed implementation plan, dependencies (Blocked by) and category, effort and model labels, in the backlog. Only load when the prompt asks for it (issue command /plan), never on your own.
-argument-hint: "[<path to a list, e.g. docs/todo.md>] [issue-models=auto|fable|opus|sonnet|haiku|off]"
+argument-hint: "[<path to a list, e.g. docs/todo.md>] [issue-models=auto|fable|opus|sonnet|haiku|off] [issue-efforts=auto|off]"
 ---
 
 # Turn a list into planned issues
@@ -11,7 +11,7 @@ detailed implementation plan. The issue you run on is the parent; the issues are
 
 ```
 Plan issue (this issue)
-├─ <Category>: <item 1>       labels plan, category, Effort, Model · implementable on its own
+├─ <Category>: <item 1>       labels plan, category (Effort, Model on request) · implementable on its own
 ├─ <Category>: <item 2>       … Blocked by #<item 1>
 └─ …
 ```
@@ -32,6 +32,11 @@ read-only commands, `git fetch` and a local `git switch --detach`. **Forbidden**
     instance's default model. A label would override that, so it is the exception.
   - `auto`: per issue the label that fits its size and risk ([labels.md](labels.md#model)).
   - `fable`, `opus`, `sonnet`, `haiku`: every issue gets `Model: <value>`.
+  - Any other value is invalid: treat it like `off` and put the warning in the notes section of the report.
+- `issue-efforts=<auto|off>`: effort labels for the issues. Default `off`.
+  - `off`: no effort labels. The developer and the architect then run with the effort `WORKFLOW.md` gives them
+    (the architect `high`, the developer the model's default); a label would override that, so it is the exception.
+  - `auto`: per issue the label that fits its size and risk ([labels.md](labels.md#effort)).
   - Any other value is invalid: treat it like `off` and put the warning in the notes section of the report.
 - an optional **source**. The first argument that is not `key=value` decides:
   - It looks like a path (contains `/` or ends in `.md` or `.txt`): **file mode**. The list is that file, relative to
@@ -101,8 +106,8 @@ Rules:
 - The list is the scope. You do not add work that is not on it; gaps become **questions** in the report.
 - An item too vague to plan (no recognisable goal, contradictory) becomes no issue: it goes under "Not created" with
   the question a human has to answer.
-- An item of size L stays one issue: give it `Effort: high` and note in the report that it should be split before it
-  goes to "Ready".
+- An item of size L stays one issue (with `issue-efforts=auto`: `Effort: high`); note in the report that it should be
+  split before it goes to "Ready".
 - Decisions a human has to make (legal texts, prices, paid external services) are open points in the issue and
   questions in the report, never silent assumptions.
 - **Design items** (the agent does not see the UI): concrete criteria with component, columns, filters, actions, texts,
@@ -114,7 +119,8 @@ Rules:
 1. **Dependencies** between items ([labels.md](labels.md#dependencies)): only real ones, never a cycle. Sort the
    items **topologically**: blockers before the items that wait for them; otherwise keep the order of the list.
 2. **Labels** per issue ([labels.md](labels.md)): `plan`, the category (`feature`, `design`, `quality` or
-   `maintenance`), exactly one `Effort: …` and, except with `issue-models=off`, exactly one `Model: …`.
+   `maintenance`), with `issue-efforts=auto` exactly one `Effort: …`, with `issue-models` other than `off` exactly one
+   `Model: …`.
 3. Every title is unique within this issue: it is the key against duplicates.
 
 ## Phase 5: Record the outline

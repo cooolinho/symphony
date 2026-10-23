@@ -609,6 +609,12 @@ issue in the wave report. The labels `Model: fable|opus|sonnet|haiku` must exist
 *Standard labels*); if one is missing, the autopilot reports it and the issue runs with `CLAUDE_MODEL`. The argument
 applies to every wave of the epic; to change it, edit the command line in the description.
 
+### Effort per sub-issue (`issue-efforts`)
+
+Without this argument (or with `issue-efforts=off`), sub-issues get no effort label: the developer runs with the
+model's default effort and the architect with `high` (see [Model and effort per role](#model-and-effort-per-role)).
+With `issue-efforts=auto` every sub-issue gets `Effort: medium` (S) or `Effort: high` (M).
+
 ### Steering and stopping
 
 | You want to | How |
@@ -660,15 +666,15 @@ do, and creates two levels of issues:
 ```
 #10 /concept docs/index.md                      → In review once the plan is in place
 ├─ #11 Epic: User management                    Backlog · labels epic, concept
-│  ├─ #13 Feature: Sign-in                      Backlog · concept, feature, Effort: high, Model: sonnet
-│  └─ #14 Feature: Roles and permissions        Backlog · … Effort: high, Model: opus · blocked by #13
+│  ├─ #13 Feature: Sign-in                      Backlog · concept, feature
+│  └─ #14 Feature: Roles and permissions        Backlog · concept, feature · blocked by #13
 └─ #12 Epic: Billing                            Backlog
    └─ #15 Feature: Create invoice               Backlog · … blocked by #14
 ```
 
 Every issue gets acceptance criteria, the reference to the concept section, tests, **dependencies** (GitHub
-relationship and a `Blocked by #N` line), a category (`feature`, `design`, `quality`, `maintenance`), exactly one
-`Effort: …` label and one `Model: …` label. All of them land in **Backlog** (`tracker.provider.sub_issue_status`); they
+relationship and a `Blocked by #N` line) and a category (`feature`, `design`, `quality`, `maintenance`); `Effort: …`
+and `Model: …` labels only on request (`issue-efforts`, `issue-models`). All of them land in **Backlog** (`tracker.provider.sub_issue_status`); they
 only start when you move them to **Ready**. The instructions are in the skill
 [`concept`](../.claude/skills/concept/SKILL.md), the breakdown rules in
 [breakdown.md](../.claude/skills/concept/breakdown.md).
@@ -682,8 +688,8 @@ only start when you move them to **Ready**. The instructions are in the skill
    and the categories. If a label is missing, the agent creates the issue without it and says so in the report.
 3. **Issue:** description `/concept docs/index.md`, optionally `issue-models=auto|fable|opus|sonnet|haiku|off` (default
    `off`: no model labels, the model follows the issue's complexity, see
-   [Model and effort per role](#model-and-effort-per-role)) and below it text with focus areas or exclusions. Then move
-   it to **Ready**.
+   [Model and effort per role](#model-and-effort-per-role)), optionally `issue-efforts=auto|off` (default `off`: no
+   effort labels) and below it text with focus areas or exclusions. Then move it to **Ready**.
 
 Check with `npm run dry-run`: the issue shows up with `role=analyst` and `↳ command /concept → symphony:concept`.
 
@@ -702,10 +708,12 @@ The two comment headings are always English, whatever the language of the concep
 Concept issues started before the skill was translated may carry `## Konzept-Plan` and `## Konzept-Bericht`; the agent
 treats them as equivalent.
 
-The labels follow size and risk ([tables](../.claude/skills/concept/breakdown.md#labels)): `Effort: low` for texts and
-configuration, `medium` for small, `high` for medium-sized tasks and for data model, permissions, money or migrations.
-The agent never assigns `Effort: xhigh` or `Effort: max`: a human sets them for a single issue. By default
-(`issue-models=off`) it sets no model labels: the model follows the issue's complexity (see
+By default (`issue-efforts=off`) the agent sets no effort labels: the developer runs with the model's default effort,
+the architect with `high`. With `issue-efforts=auto` the labels follow size and risk
+([tables](../.claude/skills/concept/breakdown.md#labels)): `Effort: low` for texts and configuration, `medium` for
+small, `high` for medium-sized tasks and for data model, permissions, money or migrations. The agent never assigns
+`Effort: xhigh` or `Effort: max`: a human sets them for a single issue. By default (`issue-models=off`) it sets no
+model labels: the model follows the issue's complexity (see
 [Model and effort per role](#model-and-effort-per-role)). With `issue-models=auto` it picks `Model: haiku`, `sonnet` or
 `opus` (never `fable`); a fixed value puts the same model on all issues.
 
@@ -740,9 +748,9 @@ the code and files the issues directly below the plan issue:
 
 ```
 #20 /plan docs/todo.md                          → In review once the issues are in place
-├─ #21 Feature: Export invoices as CSV           Backlog · plan, feature, Effort: high, Model: sonnet
-├─ #22 Design: Dark mode for the admin panel     Backlog · plan, design, Effort: medium, Model: sonnet
-└─ #23 Quality: Policy tests for invoices        Backlog · plan, quality, Effort: medium, Model: haiku · blocked by #21
+├─ #21 Feature: Export invoices as CSV           Backlog · plan, feature
+├─ #22 Design: Dark mode for the admin panel     Backlog · plan, design
+└─ #23 Quality: Policy tests for invoices        Backlog · plan, quality · blocked by #21
 ```
 
 The list comes from one of two places:
@@ -766,8 +774,8 @@ details. Ticked entries (`- [x]`) count as done and become no issue. Example of 
 
 Every issue carries the quoted item, the starting point in the code (`file:line`), a numbered **implementation plan**,
 acceptance criteria, tests, risks and what it does not include, plus the labels: `plan`, a category (`feature`,
-`design`, `quality`, `maintenance`), exactly one `Effort: …` by size and risk and, only with an `issue-models`
-argument other than `off`, one `Model: …` ([tables](../.claude/skills/plan/labels.md)). If one item needs another, it gets a dependency (GitHub
+`design`, `quality`, `maintenance`), and only on request one `Effort: …` by size and risk (`issue-efforts=auto`) and
+one `Model: …` (an `issue-models` argument other than `off`) ([tables](../.claude/skills/plan/labels.md)). If one item needs another, it gets a dependency (GitHub
 relationship and a `Blocked by #N` line). The instructions are in the skill [`plan`](../.claude/skills/plan/SKILL.md).
 
 ### Setup
@@ -776,7 +784,7 @@ relationship and a `Blocked by #N` line). The instructions are in the skill [`pl
    `Effort: …` labels. If a label is missing, the agent creates the issue without it and says so in the report.
 2. **Issue:** description `/plan <path>` or `/plan` with the list below it, optionally
    `issue-models=auto|fable|opus|sonnet|haiku|off` (default `off`: no model labels, the model follows the issue's
-   complexity). Then move it to **Ready**.
+   complexity) and `issue-efforts=auto|off` (default `off`: no effort labels). Then move it to **Ready**.
 
 Check with `npm run dry-run`: the issue shows up with `role=planner` and `↳ command /plan → symphony:plan`.
 
@@ -785,7 +793,7 @@ Check with `npm run dry-run`: the issue shows up with `role=planner` and `↳ co
 1. The agent reads the list, numbers the items and checks per item what the code already has: **present** items
    become no issue, **partial** ones an issue for the missing rest.
 2. It plans every item on its own, without splitting or merging items. An item too vague to plan becomes a question
-   in the report instead of an issue; an item of size L stays one issue with `Effort: high` and a note that it should
+   in the report instead of an issue; an item of size L stays one issue (with `issue-efforts=auto`: `Effort: high`) and a note that it should
    be split before **Ready**.
 3. It posts **`## Plan Outline`** **before** it creates anything: items, labels, dependencies, order and coverage.
 4. It creates the issues, blockers first.
@@ -872,7 +880,7 @@ calls, tests and fixes, and by far the largest share of the cost. A strong revie
 | Role | Model | Effort | `Model:` label | `Effort:` label |
 |---|---|---|---|---|
 | issue-analyst | `sonnet` | `medium` | ignored | ignored |
-| architect | `opus`, `fable` at complexity L and XL | label, else `CLAUDE_EFFORT` | ignored | applies |
+| architect | `opus`, `fable` at complexity L and XL | label, else `high` | ignored | applies |
 | developer | `CLAUDE_MODEL`, `opus` at complexity L and XL | label, else `CLAUDE_EFFORT` | applies | applies |
 | test-engineer | `sonnet` | `high` | ignored | ignored |
 | docs | `haiku` | `medium` | ignored | ignored |

@@ -47,7 +47,8 @@ the dependencies, not from the numbering.
 
 ## Labels
 
-Per issue exactly **one** category, **one** effort label and (except with `issue-models=off`) **one** model label.
+Per issue exactly **one** category; **one** effort label only with `issue-efforts=auto`, **one** model label only with
+an `issue-models` value other than `off`.
 
 **Category**
 
@@ -58,7 +59,7 @@ Per issue exactly **one** category, **one** effort label and (except with `issue
 | `quality` | tests, refactoring, performance, security |
 | `maintenance` | dependencies, upgrades, tooling |
 
-**Effort** (how much thinking goes into it; size S/M and risk):
+**Effort** (only with `issue-efforts=auto`; how much thinking goes into it; size S/M and risk):
 
 | Label | When |
 |---|---|

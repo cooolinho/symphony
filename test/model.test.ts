@@ -332,4 +332,10 @@ describe('models and effort of the shipped WORKFLOW.md', () => {
     assert.equal((await session('developer', labels)).effort, 'xhigh', 'an Effort: label still steers the developer');
     assert.equal((await session('architect', labels)).effort, 'xhigh', 'and the architect');
   });
+
+  it('designs with effort high and implements with the model default unless an Effort: label says otherwise', async () => {
+    assert.equal((await session('architect', ['complexity: m'])).effort, 'high');
+    assert.equal((await session('architect', ['complexity: xl'])).effort, 'high');
+    assert.equal((await session('developer', ['complexity: l'])).effort, null, 'CLAUDE_EFFORT unset: Claude Code default');
+  });
 });

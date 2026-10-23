@@ -30,7 +30,7 @@ Part of concept #<concept issue>.
 ## Sub-issue
 
 Title: `<Feature|Design|Quality|Maintenance>: <what changes>`, e.g. `Feature: create invoice`.
-Labels: `concept`, category, `Effort: …`, if applicable `Model: …`, if applicable `manual-merge`. Call with `parent`
+Labels: `concept`, category, if applicable `Effort: …` and `Model: …`, if applicable `manual-merge`. Call with `parent`
 (number of the epic) and `blocked_by`.
 
 ```markdown
@@ -71,7 +71,7 @@ starts with `/refactor-safely` on the first line; `Blocked by` follows below it.
 
 ### Epics and issues
 - **E1 Epic: <area>**: <one sentence>
-  - E1.1 <title> (<category>, <S|M>, risk <…>; `Effort: …`, `Model: …`)
+  - E1.1 <title> (<category>, <S|M>, risk <…>; Effort and Model labels, if any)
   - E1.2 <title> (…) *waits for E1.1*
 - **E2 Epic: <area>**
   - E2.1 <title> (…) *waits for E1.2*
@@ -99,7 +99,7 @@ E1.1, E1.2, E2.1, …
 
 ### Created (backlog)
 - [ ] #<n> **Epic: <area>**
-  - [ ] #<n> <title> (<category>, <S|M>, `Effort: …`, `Model: …`): <reason for effort and model in half a sentence>
+  - [ ] #<n> <title> (<category>, <S|M>, Effort and Model labels, if any): <reason for those labels in half a sentence, if any>
   - [ ] #<n> <title> (…) *waits for #<m>*
 - [ ] #<n> **Epic: <area>**
   - …
