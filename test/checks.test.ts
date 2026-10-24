@@ -17,6 +17,12 @@ if (args[0] === '-l') {
   process.exit(0);
 }
 if (args[1] === 'test' && process.env.FAKE_ENV_LOG) fs.appendFileSync(process.env.FAKE_ENV_LOG, JSON.stringify([process.env.DB_CONNECTION, process.env.DB_DATABASE, process.env.DB_USERNAME, process.env.DB_PASSWORD]) + '\\n');
+if (args[1] === 'test' && process.env.FAKE_TEST_FAIL === 'phpunit') {
+  console.log('\\x1b[37;41mERRORS!\\x1b[0m\\n1) Tests\\\\Feature\\\\ClubPageTest::test_color\\nQueryException: Data too long for column \\'color\\'\\n');
+  for (let i = 0; i < 400; i++) console.log('/app/vendor/laravel/framework/src/Illuminate/Database/Connection.php:' + i);
+  console.log('\\x1b[37;41mTests: 3229, Errors: 1.\\x1b[0m');
+  process.exit(1);
+}
 if (args[1] === 'test' && process.env.FAKE_TEST_FAIL) { console.log('Tests: 1 failed'); process.exit(1); }
 `;
 
@@ -228,6 +234,13 @@ describe('checks/laravel.sh', () => {
     assert.equal(result.status, 1);
     assert.match(result.out, /php artisan test failed/);
     assert.match(result.out, /1 failed/);
+  });
+
+  it('lists the failed tests after the tail of a long test output, so they survive the shortening', () => {
+    const f = fixture();
+    const result = run(f, { FAKE_TEST_FAIL: 'phpunit' });
+    assert.equal(result.status, 1, result.out);
+    assert.match(result.out, /Tests: 3229, Errors: 1\.\x1b\[0m\n\nFailed tests:\n1\) Tests\\Feature\\ClubPageTest::test_color — QueryException: Data too long for column 'color'\n$/);
   });
 
   it('exits 1 on style and static analysis failures', () => {
