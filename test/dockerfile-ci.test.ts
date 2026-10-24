@@ -88,6 +88,10 @@ describe('docker compose: profile ci', () => {
         assert.match(read('docs/docker.md'), new RegExp(`docker:${major}-dind`));
       });
 
+      it('names mysql symphony-ci-mysql on the ci network, so no other project\'s "mysql" answers', () => {
+        assert.match(service(file, 'mysql'), /networks:\n\s+ci:\n\s+aliases:\n\s+- symphony-ci-mysql\n/);
+      });
+
       it('runs mysql 8.0 with the init script and without fail-early interpolation', () => {
         const mysql = service(file, 'mysql');
         assert.match(mysql, /image: mysql:8\.0$/m);
@@ -138,7 +142,7 @@ describe('CI sidecar setup files', () => {
   it('.env.example names every variable of the profile', () => {
     const env = read('.env.example');
     for (const v of ['COMPOSE_PROFILES=ci', 'SYMPHONY_CI_DOCKER_HOST=tcp://docker:2376', 'SYMPHONY_CI_DOCKER_CERT_PATH=/certs/client',
-      'SYMPHONY_MYSQL_HOST=mysql', 'SYMPHONY_MYSQL_PORT=', 'SYMPHONY_MYSQL_USER=', 'SYMPHONY_MYSQL_PASSWORD=',
+      'SYMPHONY_MYSQL_HOST=symphony-ci-mysql', 'SYMPHONY_MYSQL_PORT=', 'SYMPHONY_MYSQL_USER=', 'SYMPHONY_MYSQL_PASSWORD=',
       'SYMPHONY_CI_MYSQL_ROOT_PASSWORD=', 'SYMPHONY_CI_SUBNET=']) {
       assert.ok(env.includes(`# ${v}`), v);
     }

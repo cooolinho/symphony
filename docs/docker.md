@@ -368,7 +368,7 @@ image and starts it with `docker compose`), both Compose files have two optional
 | Service | Image | Reached from `symphony` at | Purpose |
 |---|---|---|---|
 | `dind` | `docker:29-dind`, `privileged` | `tcp://docker:2376` (TLS, client certs in `/certs/client`) | Docker daemon for `docker build` and `docker compose` |
-| `mysql` | `mysql:8.0` | `mysql:3306` | Test databases `symphony_<key>` (one pair per workspace) |
+| `mysql` | `mysql:8.0` | `symphony-ci-mysql:3306` | Test databases `symphony_<key>` (one pair per workspace) |
 
 Without the profile neither service starts and nothing changes. To switch it on, set in `.env` (template in
 `.env.example`):
@@ -377,7 +377,7 @@ Without the profile neither service starts and nothing changes. To switch it on,
 COMPOSE_PROFILES=ci
 SYMPHONY_CI_DOCKER_HOST=tcp://docker:2376
 SYMPHONY_CI_DOCKER_CERT_PATH=/certs/client
-SYMPHONY_MYSQL_HOST=mysql
+SYMPHONY_MYSQL_HOST=symphony-ci-mysql
 SYMPHONY_MYSQL_PORT=3306
 SYMPHONY_MYSQL_USER=symphony
 SYMPHONY_MYSQL_PASSWORD=<random>
@@ -411,6 +411,9 @@ then `docker compose up -d`. `symphony` waits until both sidecars are healthy (`
   attached.
 - **iptables:** `dind` picks the iptables backend the host kernel already uses (legacy or nf_tables). If it still fails
   with iptables errors at start (`docker compose logs dind`), set `DOCKER_IPTABLES_LEGACY=1` in its environment.
+- **Name `symphony-ci-mysql`:** The `symphony` container is also on the Traefik network. If another project there has
+  a service called `mysql`, Docker's DNS may answer with that one, and the checks would create and drop databases on
+  a foreign server. So the sidecar has a name of its own on the `ci` network; keep `SYMPHONY_MYSQL_HOST` on it.
 - **Resources:** `dind` is limited to 4 GB, `mysql` to 1 GB (`mem_limit`). Image builds need disk space in
   `dind-data`.
 
