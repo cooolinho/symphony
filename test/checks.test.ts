@@ -283,6 +283,56 @@ describe('checks/laravel.sh', () => {
   });
 });
 
+describe('checks/laravel.sh with SYMPHONY_TEST_PARALLEL', () => {
+  const testCall = (f: Fixture) => calls(f).find((call) => call[0] === 'php' && call[2] === 'test');
+
+  it('runs the tests in parallel when paratest is installed', () => {
+    const f = fixture();
+    write(f.repo, 'vendor/bin/paratest', FAKE_TOOL('paratest'), 0o755);
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '4' });
+    assert.equal(result.status, 0, result.out);
+    assert.match(result.out, /tests in 4 parallel processes/);
+    assert.deepEqual(testCall(f), ['php', 'artisan', 'test', '--parallel', '--processes=4']);
+  });
+
+  it('runs serially with a note without paratest and never installs anything', () => {
+    const f = fixture();
+    write(f.repo, 'composer.json', JSON.stringify({ scripts: {}, 'require-dev': { 'brianium/paratest': '^7.8' } }));
+    git(f.repo, 'commit', '-qam', 'paratest');
+    git(f.repo, 'push', '-q');
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '4' });
+    assert.equal(result.status, 0, result.out);
+    assert.match(result.out, /SYMPHONY_TEST_PARALLEL is set, but the project has no brianium\/paratest: the tests run in one process/);
+    assert.deepEqual(testCall(f), ['php', 'artisan', 'test']);
+    assert.equal(calls(f).some((call) => call[0] === 'composer' && (call[1] === 'update' || call[1] === 'install')), false, 'nothing installed');
+  });
+
+  it('rejects an invalid value as an environment problem', () => {
+    for (const value of ['many', '0', '-2']) {
+      const result = run(fixture(), { SYMPHONY_TEST_PARALLEL: value });
+      assert.equal(result.status, 2, value);
+      assert.match(result.out, /SYMPHONY_TEST_PARALLEL must be a number of processes/);
+    }
+  });
+
+  it('lets a composer test script win', () => {
+    const f = fixture({ scripts: { test: 'x' } });
+    write(f.repo, 'vendor/bin/paratest', FAKE_TOOL('paratest'), 0o755);
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '4' });
+    assert.equal(result.status, 0, result.out);
+    assert.ok(calls(f).some((call) => call.join(' ') === 'composer run-script test'));
+    assert.equal(testCall(f), undefined);
+  });
+
+  it('has no effect with --full, which reads SYMPHONY_CI_PARALLEL', () => {
+    const f = fixture();
+    write(f.repo, 'vendor/bin/paratest', FAKE_TOOL('paratest'), 0o755);
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '4' }, f.repo, ['--full']);
+    assert.equal(result.status, 0, result.out);
+    assert.deepEqual(testCall(f), ['php', 'artisan', 'test']);
+  });
+});
+
 describe('checks/laravel.sh --full', () => {
   const full = (f: Fixture, env: NodeJS.ProcessEnv = {}) => run(f, env, f.repo, ['--full']);
 

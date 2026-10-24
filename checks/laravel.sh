@@ -9,6 +9,7 @@
 #   laravel.sh --full   the project's CI: Pint on every file, static analysis, migrations and tests; with
 #                       SYMPHONY_CI_DB=mysql against a MySQL database of its own (SYMPHONY_MYSQL_*), dropped afterwards;
 #                       with SYMPHONY_CI_PARALLEL=<n> in n processes (php artisan test --parallel, needs paratest)
+#                       the fast gate tests in n processes with SYMPHONY_TEST_PARALLEL=<n> (needs paratest, installs nothing)
 set -u
 # shellcheck source=checks/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -145,20 +146,24 @@ if $full && [ "${SYMPHONY_CI_DB:-}" = mysql ]; then
   run "php artisan migrate" php artisan migrate --force --no-interaction
 fi
 
-# 7b. --full with SYMPHONY_CI_PARALLEL=<n>: the tests in n processes. A paratest the project requires but the workspace
-# lacks (vendor/ installed before it was added) is installed first when composer.lock is not tracked, so the tree stays
-# clean. With MySQL every process gets a database of its own (<database>_test_<n>), dropped afterwards.
+# 7b. The tests in n processes (php artisan test --parallel, needs paratest): --full with SYMPHONY_CI_PARALLEL=<n>, the
+# fast gate with SYMPHONY_TEST_PARALLEL=<n>. Only --full installs a paratest the project requires but the workspace
+# lacks (vendor/ installed before it was added), when composer.lock is not tracked, so the tree stays clean. With MySQL
+# every process gets a database of its own (<database>_test_<n>), dropped afterwards.
 parallel=()
-if $full && [ -n "${SYMPHONY_CI_PARALLEL:-}" ]; then
-  case "$SYMPHONY_CI_PARALLEL" in '' | *[!0-9]* | 0) env_problem "SYMPHONY_CI_PARALLEL must be a number of processes (got '$SYMPHONY_CI_PARALLEL')" ;; esac
-  if [ ! -x vendor/bin/paratest ] && grep -q '"brianium/paratest"' composer.json 2>/dev/null && ! git ls-files --error-unmatch composer.lock >/dev/null 2>&1; then
+if $full; then parallel_var=SYMPHONY_CI_PARALLEL; else parallel_var=SYMPHONY_TEST_PARALLEL; fi
+parallel_n=${!parallel_var:-}
+if [ -n "$parallel_n" ]; then
+  case "$parallel_n" in *[!0-9]* | 0) env_problem "$parallel_var must be a number of processes (got '$parallel_n')" ;; esac
+  if $full && [ ! -x vendor/bin/paratest ] && grep -q '"brianium/paratest"' composer.json 2>/dev/null && ! git ls-files --error-unmatch composer.lock >/dev/null 2>&1; then
     run "composer update brianium/paratest" composer update brianium/paratest --no-interaction --no-progress --no-scripts
   fi
   if [ -x vendor/bin/paratest ]; then
-    parallel=(--parallel --processes="$SYMPHONY_CI_PARALLEL" --drop-databases)
-    echo "tests in $SYMPHONY_CI_PARALLEL parallel processes"
+    parallel=(--parallel --processes="$parallel_n")
+    $full && parallel+=(--drop-databases)
+    echo "tests in $parallel_n parallel processes"
   else
-    echo "SYMPHONY_CI_PARALLEL is set, but the project has no brianium/paratest: the tests run in one process"
+    echo "$parallel_var is set, but the project has no brianium/paratest: the tests run in one process"
   fi
 fi
 
