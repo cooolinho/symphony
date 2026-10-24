@@ -154,7 +154,8 @@ parallel=()
 if $full; then parallel_var=SYMPHONY_CI_PARALLEL; else parallel_var=SYMPHONY_TEST_PARALLEL; fi
 parallel_n=${!parallel_var:-}
 if [ -n "$parallel_n" ]; then
-  case "$parallel_n" in *[!0-9]* | 0) env_problem "$parallel_var must be a number of processes (got '$parallel_n')" ;; esac
+  case "$parallel_n" in *[!0-9]* | "") env_problem "$parallel_var must be a number of processes (got '$parallel_n')" ;; esac
+  [ "$((10#$parallel_n))" -gt 0 ] || env_problem "$parallel_var must be a number of processes (got '$parallel_n')"
   if $full && [ ! -x vendor/bin/paratest ] && grep -q '"brianium/paratest"' composer.json 2>/dev/null && ! git ls-files --error-unmatch composer.lock >/dev/null 2>&1; then
     run "composer update brianium/paratest" composer update brianium/paratest --no-interaction --no-progress --no-scripts
   fi
