@@ -16,15 +16,30 @@ set -u
 full=false
 [ "${1:-}" = --full ] && full=true
 
-# Runs a command, shows only the tail of its output when it fails.
+# The failed tests of PHPUnit/Pest output, one per line with the first line of its message: PHPUnit's "1) Class::method"
+# (also in parallel runs) and Collision's "FAILED  Class > method". The tail of the output is mostly stack traces.
+failed_tests() {
+  sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' | awk '
+    /^[0-9]+\) [A-Za-z_\\]/ { name = $0; want = 1; next }
+    want && NF { sub(/^[ \t]+/, ""); print name " — " substr($0, 1, 200); want = 0; next }
+    /^ *(FAILED|ERROR) +[A-Za-z_\\]/ { sub(/^ +/, ""); print substr($0, 1, 300) }
+  ' | head -n 30
+}
+
+# Runs a command, shows only the tail of its output when it fails; for tests, the list of failed tests comes last, so
+# it survives when the guard shortens the output from the front.
 run() {
-  local label=$1 out status
+  local label=$1 out status failed
   shift
   out=$("$@" 2>&1)
   status=$?
   if [ "$status" -ne 0 ]; then
     echo "$label failed (exit $status):"
     printf '%s\n' "$out" | tail -c 4000
+    failed=$(printf '%s\n' "$out" | failed_tests)
+    if [ -n "$failed" ]; then
+      printf '\nFailed tests:\n%s\n' "$failed"
+    fi
     exit 1
   fi
 }

@@ -1319,7 +1319,9 @@ Composer scripts are detected with `composer run-script --list`, which lists exa
 `composer.json` (without Composer, none are used). A `test` script can run the suite in parallel, e.g.
 `@php artisan test --parallel` with `brianium/paratest`; start it with `Composer\Config::disableProcessTimeout`, or
 Composer stops it after 300 s. The script never modifies tracked files, and prints only the tail (about 4000
-characters) of a failing step, since the guard forwards at most 6000 characters.
+characters) of a failing step, since the guard forwards at most 6000 characters. For failing tests it adds a list of
+the failed tests last (`Failed tests:`, PHPUnit's `N) Class::method` with the first line of its message, or
+Collision's `FAILED` lines): the tail of a test run is mostly stack traces, and the list survives any shortening.
 
 ## `model-costs.yml`
 
