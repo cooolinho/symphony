@@ -4,7 +4,7 @@
 # restricted to the symphony_% databases (one pair per workspace, plus the suffixed ones of php artisan test --parallel).
 # mysql_native_password: the symphony image's mysql client is MariaDB's (default-mysql-client), which cannot be relied
 # on for MySQL 8's caching_sha2_password.
-# If this script fails, the data directory is already initialised and it never runs again: remove the ci-mysql volume.
+# The data directory is a tmpfs, so this runs on every start of the container.
 set -euo pipefail
 
 : "${SYMPHONY_MYSQL_USER:?mysql-init: SYMPHONY_MYSQL_USER is required}"

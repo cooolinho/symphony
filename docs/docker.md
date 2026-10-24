@@ -368,7 +368,7 @@ image and starts it with `docker compose`), both Compose files have two optional
 | Service | Image | Reached from `symphony` at | Purpose |
 |---|---|---|---|
 | `dind` | `docker:29-dind`, `privileged` | `tcp://docker:2376` (TLS, client certs in `/certs/client`) | Docker daemon for `docker build` and `docker compose` |
-| `mysql` | `mysql:8.0` | `symphony-ci-mysql:3306` | Test databases `symphony_<key>` (one pair per workspace) |
+| `mysql` | `mysql:8.0` | `symphony-ci-mysql:3306` | Test databases `symphony_<key>` (one pair per workspace), in memory |
 
 Without the profile neither service starts and nothing changes. To switch it on, set in `.env` (template in
 `.env.example`):
@@ -396,15 +396,17 @@ then `docker compose up -d`. `symphony` waits until both sidecars are healthy (`
   (`/home/symphony/symphony-workspaces`): the daemon resolves bind mounts such as `./docker/prod:/etc/nginx` on its own
   filesystem, so the paths must match. Images, containers and build cache live in the `dind-data` volume; clean up
   with `docker compose exec dind docker system prune -af`.
-- **MySQL:** On its first start (empty `ci-mysql` volume) `docker/ci/mysql-init.sh` creates `SYMPHONY_MYSQL_USER`
+- **MySQL:** Its data lives in a tmpfs (2 GB, counted in `mem_limit: 3g`): only test databases, so nothing survives a
+  restart, and a Laravel suite with `RefreshDatabase` runs several times faster than on a disk-backed volume. On every
+  start `docker/ci/mysql-init.sh` creates `SYMPHONY_MYSQL_USER`
   with `mysql_native_password` and `GRANT ALL ON \`symphony\_%\`.*`. `hooks/laravel-env.sh` with
   `SYMPHONY_LARAVEL_DB=mysql` then creates the databases per workspace, see
   [Optional: MySQL instead of SQLite](configuration.md#optional-mysql-instead-of-sqlite). `root` may log in only from
   inside the `mysql` container. The image's `mysql` client is MariaDB's, which since 11.4 rejects MySQL's self-signed
   server certificate; the image turns that verification off (`/etc/mysql/mariadb.conf.d/60-symphony-client.cnf`), the
-  connection stays TLS. The server runs without binary log and with `innodb_flush_log_at_trx_commit=0`: fast,
-  but not crash-safe, a test database only. Changing the user or password later does not touch an existing volume:
-  change it in MySQL, or remove the volume (`docker compose down`, `docker volume rm <project>_ci-mysql`).
+  connection stays TLS. The server runs without binary log, doublewrite buffer and with
+  `innodb_flush_log_at_trx_commit=0`: fast, but not crash-safe, a test database only. A changed user or password
+  takes effect with the next start (`docker compose up -d mysql`).
 - **Network:** The sidecars and `symphony` share the network `ci` with a fixed subnet (`SYMPHONY_CI_SUBNET`, default
   `172.31.250.0/24`). It must not overlap the networks a project creates inside `dind` (bandenhub's smoke test uses
   `172.30.250.0/24`) or networks on the host. The network exists without the profile too, with only `symphony`
@@ -414,7 +416,7 @@ then `docker compose up -d`. `symphony` waits until both sidecars are healthy (`
 - **Name `symphony-ci-mysql`:** The `symphony` container is also on the Traefik network. If another project there has
   a service called `mysql`, Docker's DNS may answer with that one, and the checks would create and drop databases on
   a foreign server. So the sidecar has a name of its own on the `ci` network; keep `SYMPHONY_MYSQL_HOST` on it.
-- **Resources:** `dind` is limited to 4 GB, `mysql` to 1 GB (`mem_limit`). Image builds need disk space in
+- **Resources:** `dind` is limited to 4 GB, `mysql` to 3 GB including its tmpfs (`mem_limit`). Image builds need disk space in
   `dind-data`.
 
 Security: see [Security](#security) below; a privileged daemon is effectively root on the host for whoever reaches it.

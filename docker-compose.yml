@@ -129,15 +129,18 @@ services:
             SYMPHONY_MYSQL_USER: ${SYMPHONY_MYSQL_USER:-}
             SYMPHONY_MYSQL_PASSWORD: ${SYMPHONY_MYSQL_PASSWORD:-}
         # Test database: durability and the binary log are not needed.
-        command: [--skip-log-bin, --innodb-flush-log-at-trx-commit=0, --innodb-buffer-pool-size=256M]
+        command: [--skip-log-bin, --innodb-flush-log-at-trx-commit=0, --innodb-doublewrite=0, --innodb-buffer-pool-size=512M]
         # A name of its own: the symphony container is also on the Traefik network, where another project's "mysql"
         # may answer first (the CI check would then create and drop databases on that server).
         networks:
             ci:
                 aliases:
                     - symphony-ci-mysql
+        # Test databases only: in memory, created anew (with the user, by mysql-init.sh) on every start. A disk-backed
+        # volume made a Laravel suite with RefreshDatabase several times slower.
+        tmpfs:
+            - /var/lib/mysql:size=2g,uid=999,gid=999
         volumes:
-            - ci-mysql:/var/lib/mysql
             # Runs once on an empty data directory: creates SYMPHONY_MYSQL_USER for the symphony_% databases.
             - ./docker/ci/mysql-init.sh:/docker-entrypoint-initdb.d/10-symphony-user.sh:ro
         healthcheck:
@@ -148,7 +151,8 @@ services:
             # The first start initialises the data directory, which can take minutes on a slow disk.
             start_period: 300s
             retries: 5
-        mem_limit: 1g
+        # The tmpfs counts against it: buffer pool plus up to 2 GB of data.
+        mem_limit: 3g
 
 networks:
     traefik:
@@ -167,11 +171,10 @@ volumes:
     state:
     claude:
     composer-cache:
-    # "ci" profile: dind's certificates and image store, the CI MySQL data.
+    # "ci" profile: dind's certificates and image store.
     dind-certs-ca:
     dind-certs-client:
     dind-data:
-    ci-mysql:
 
 secrets:
     # A file secret is a bind mount of the host file: it must be readable for UID inside the container

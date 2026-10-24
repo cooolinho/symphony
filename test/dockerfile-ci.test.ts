@@ -98,10 +98,11 @@ describe('docker compose: profile ci', () => {
         assert.match(mysql, /MYSQL_ROOT_PASSWORD: \$\{SYMPHONY_CI_MYSQL_ROOT_PASSWORD:-\}/);
         assert.match(mysql, /MYSQL_ROOT_HOST: localhost/);
         assert.match(mysql, /- \.\/docker\/ci\/mysql-init\.sh:\/docker-entrypoint-initdb\.d\/[\w-]+\.sh:ro/);
-        assert.match(mysql, /command: \[--skip-log-bin, --innodb-flush-log-at-trx-commit=0, --innodb-buffer-pool-size=256M\]/);
-        assert.match(mysql, /- ci-mysql:\/var\/lib\/mysql/);
+        assert.match(mysql, /command: \[--skip-log-bin, --innodb-flush-log-at-trx-commit=0, --innodb-doublewrite=0, --innodb-buffer-pool-size=512M\]/);
+        assert.match(mysql, /tmpfs:\n\s+- \/var\/lib\/mysql:size=2g,uid=999,gid=999\n/, 'test databases in memory');
+        assert.doesNotMatch(read(file), /ci-mysql:\/var\/lib\/mysql/);
         assert.match(mysql, /mysqladmin", "ping"/);
-        assert.match(mysql, /mem_limit: 1g/);
+        assert.match(mysql, /mem_limit: 3g/);
         // compose interpolates services of inactive profiles too: a :? here would break every setup without ci.
         assert.doesNotMatch(read(file), /\$\{(SYMPHONY_CI_|SYMPHONY_MYSQL_)\w*:\?/);
       });
