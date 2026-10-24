@@ -160,7 +160,8 @@ and take the issue as normalized by the adapter. Queries are retried like all qu
 | `readResults(issue)` | the `readComments` pages, plus `viewerLogin()` | The stage results decoded from the markers in the comments, oldest first, each with the comment's `createdAt` and `url`. Only comments written by the token's account count; a marker in a comment of any other author is ignored and logged (`ignoring a result marker from another author`), a damaged marker of the token's account counts as no result and is logged. See [Stage-result markers and the bot account](#stage-result-markers-and-the-bot-account). |
 | `viewerLogin()` | `viewer { login }` | The login of the account behind the token; fetched once per adapter instance. |
 | `postComment(issue, body)` | `addComment` | `{url}` of the new comment. The `add_comment` tool and `commentOnIssue` use it. |
-| `setStatus(issue, column)` | `updateProjectV2ItemFieldValue`, then [auto-merge](#auto-merge) | `{previous, status, autoMerge?}`. The one function behind the `set_status` tool, so both behave identically; `previous` is the column in the `issue` passed in. An unknown column fails with `invalid_argument` and names the valid ones. It does not run the transition guard: the caller does. |
+| `setStatus(issue, column, {checkedSha?})` | `updateProjectV2ItemFieldValue`, then [auto-merge](#auto-merge) | `{previous, status, autoMerge?}`; `checkedSha` is the commit the entry checks ran on, and auto-merge merges no other head. The one function behind the `set_status` tool, so both behave identically; `previous` is the column in the `issue` passed in. An unknown column fails with `invalid_argument` and names the valid ones. It does not run the transition guard: the caller does. |
+| `mergeWatch()` | — | `{column, awaiting(issue), retry(issue)}` for issues waiting in `auto_merge.on_enter` with the label `awaiting-checks`; null without `auto_merge` or with `checks.wait: false`. The orchestrator fetches `column` with the board and calls `retry` once per poll for each waiting issue. |
 | `addLabels(issue, names, {create})` | label lookup, `createLabel`, `addLabelsToLabelable` | `{added, created, unknown}`. Names are matched case-insensitively. A label the repository does not have is reported in `unknown`, except with `create` for the families `Type: <value>`, `Complexity: <value>` and `needs-human`: those are created (with the colors and descriptions of the standard labels from `repo-init`, else grey) and added. Any other name is never created. |
 | `removeLabels(issue, names)` | label lookup, `removeLabelsFromLabelable` | `{removed, unknown}`. A label the issue does not carry is a no-op on GitHub. |
 
@@ -198,8 +199,14 @@ tracker:
       on_enter: In review      # required: the column whose successful set_status triggers the merge
       done_state: Done         # default: the first terminal state
       on_conflict: In progress # default: none (stay in on_enter)
+      on_checks_failed: In progress # default: on_conflict
       method: squash           # squash | merge | rebase
       opt_out_label: manual-merge
+      checks:                  # the merge gate; all keys optional
+        wait: true             # wait for pending checks (label awaiting-checks); false: a human takes over
+        timeout_ms: 3600000    # how long an issue waits in on_enter for pending checks
+        ignore: []             # check names or "owner/repo:name" globs (case-insensitive) the gate disregards
+        max_send_backs: 2      # send-backs for failing checks per issue; the next failure adds needs-human
 ```
 
 When an agent's `set_status` moves an issue into `on_enter`, after the [transition guard](../configuration.md#transition-guard)
@@ -210,18 +217,49 @@ let it through (so its entry checks passed), Symphony:
 2. does nothing when there is no such pull request (for example when the auditor, the analyst or the planner hands off
    its issue), and refuses, leaving the issue in `on_enter` with a comment, when `base_branch` is the repository's default
    branch, the pull request is a draft, or the pull request or the issue has the `opt_out_label`;
-3. merges it with `mergePullRequest` and `expectedHeadOid` (only the head it read, never a newer push);
-4. closes the issue (`closeIssue`, reason `COMPLETED`): GitHub ignores `Closes #N` for merges into a branch other than
+3. refuses as well when the pull request's head is not the commit the entry checks ran on (a push after the checks);
+4. reads the checks of the head commit and applies the [merge gate](#merge-gate);
+5. merges it with `mergePullRequest` and `expectedHeadOid` (only the head it read, never a newer push);
+6. closes the issue (`closeIssue`, reason `COMPLETED`): GitHub ignores `Closes #N` for merges into a branch other than
    the default branch;
-5. moves the issue to `done_state`, so the orchestrator stops tracking it and deletes its workspace, and comments with
+7. moves the issue to `done_state`, so the orchestrator stops tracking it and deletes its workspace, and comments with
    the pull request link.
 
 A pull request that conflicts with `base_branch` (reported as `CONFLICTING`, or refused by GitHub as not mergeable)
 moves the issue to `on_conflict` with a comment asking to integrate the base branch; without `on_conflict` it stays
 for a human. Once the pull request is merged, a failure to close, move or comment is only reported as a warning.
 
+### Merge gate
+
+Before merging, Symphony reads `statusCheckRollup` of the pull request's head commit: check runs (GitHub Actions and
+other apps) and commit statuses (for example `symphony/ci`) alike. Names in `checks.ignore` are left out.
+
+| Checks | What happens |
+|---|---|
+| none, or all `SUCCESS`, `NEUTRAL` or `SKIPPED` | merge |
+| one fails (any other conclusion; status `FAILURE` or `ERROR`) | the issue moves to `on_checks_failed` (default `on_conflict`) with a comment that links the failing checks. After `max_send_backs` such send-backs it stays in `on_enter` with `needs-human` instead |
+| every failing one is a GitHub Actions job GitHub never started (annotation "The job was not started …", e.g. Actions minutes or the spending limit used up) | the issue stays in `on_enter` with a comment for a human; it is never sent back, the developer cannot fix it |
+| one is still running (also `EXPECTED`, more than 100 checks, or a mergeability GitHub has not computed yet) | the issue waits in `on_enter` with the label `awaiting-checks` and one comment. Every poll Symphony tries again, quietly; once the checks pass it merges, once one fails it sends the issue back. After `checks.timeout_ms` (since the issue entered `on_enter`) it stops waiting, comments and removes the label. With `checks.wait: false` a human takes over right away |
+
+GitHub refusing the merge because of branch protection or rulesets ("Required status check …") leaves the issue in
+`on_enter` with a comment; a head that moved while merging makes it wait like pending checks. Only the remaining
+"not mergeable" refusals count as conflicts.
+
+**Running the checks without GitHub Actions.** When the Actions minutes run out, GitHub reports every job as failed
+without starting it, and the gate leaves each approved issue for a human. To let Symphony's own entry checks stand in
+for the workflows, skip the jobs with a repository variable, so they report `SKIPPED` and use no minutes:
+
+```yaml
+jobs:
+  ci:
+    if: vars.CI_RUNNER != 'symphony'   # Settings → Secrets and variables → Actions → Variables: CI_RUNNER=symphony
+```
+
+Without the variable (or with any other value) the jobs run again and the gate waits for them.
+
 Validation: `auto_merge` needs `base_branch` and `on_enter`; `on_enter` must not be an active or terminal state (it
-is entered after the agents are done), `done_state` must be terminal and `on_conflict` must not be.
+is entered after the agents are done), `done_state` must be terminal and neither `on_conflict` nor `on_checks_failed`
+may be.
 `auto_merge` never merges into the default branch: what reaches it stays a human decision, e.g. through a release
 pull request from `base_branch`.
 

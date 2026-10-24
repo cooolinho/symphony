@@ -1261,7 +1261,7 @@ describe('github_project auto_merge', () => {
     const { github, move, ops, statuses, comments } = await setup();
     const data = await move('Human Review');
     assert.equal(data.status, 'Done');
-    assert.deepEqual(data.auto_merge, { merged: true, pull_request: 7, status: 'Done', reason: 'merged into develop' });
+    assert.deepEqual(data.auto_merge, { merged: true, pull_request: 7, status: 'Done', reason: 'merged into develop', checks: { state: 'none', failing: [], pending: [] } });
     assert.deepEqual(ops(), ['SymphonySetStatus', 'SymphonyMergeCandidate', 'SymphonyMergePullRequest', 'SymphonyCloseIssue', 'SymphonySetStatus', 'SymphonyAddComment']);
     assert.deepEqual(statuses(), ['o3', 'o4']);
     const candidate = github.requests.find((r) => r.op === 'SymphonyMergeCandidate');
@@ -1280,7 +1280,7 @@ describe('github_project auto_merge', () => {
     assert.deepEqual(change, {
       previous: 'Todo',
       status: 'Done',
-      autoMerge: { merged: true, pull_request: 7, status: 'Done', reason: 'merged into develop' },
+      autoMerge: { merged: true, pull_request: 7, status: 'Done', reason: 'merged into develop', checks: { state: 'none', failing: [], pending: [] } },
     });
     assert.deepEqual(change?.autoMerge, toolData.auto_merge);
     assert.equal(change?.status, toolData.status);
@@ -1380,7 +1380,20 @@ describe('github_project auto_merge', () => {
       onConflict: null,
       method: 'REBASE',
       optOutLabel: 'manual-merge',
+      onChecksFailed: null,
+      checks: { wait: true, timeoutMs: 3_600_000, ignore: [], maxSendBacks: 2 },
     });
+    assert.deepEqual(
+      settingsOf({ enabled: true, on_enter: 'In review', on_checks_failed: 'In progress', checks: { wait: 'false', timeout_ms: '60000', ignore: 'acme/app:ci, lint*', max_send_backs: 0 } }).settings?.autoMerge?.checks,
+      { wait: false, timeoutMs: 60_000, ignore: ['acme/app:ci', 'lint*'], maxSendBacks: 0 },
+    );
+    assert.equal(settingsOf({ enabled: true, on_enter: 'In review', on_checks_failed: 'In progress' }).settings?.autoMerge?.onChecksFailed, 'In progress');
+    assert.match(settingsOf({ enabled: true, on_enter: 'x', checks: { bogus: 1 } }).errors.join(), /auto_merge\.checks\.bogus is not a known key/);
+    assert.match(settingsOf({ enabled: true, on_enter: 'x', checks: { wait: 'maybe' } }).errors.join(), /auto_merge\.checks\.wait must be true or false/);
+    assert.match(settingsOf({ enabled: true, on_enter: 'x', checks: { timeout_ms: 0 } }).errors.join(), /auto_merge\.checks\.timeout_ms must be an integer >= 1/);
+    assert.match(settingsOf({ enabled: true, on_enter: 'x', checks: { ignore: [1] } }).errors.join(), /auto_merge\.checks\.ignore must be a list/);
+    assert.match(settingsOf({ enabled: true, on_enter: 'x', checks: { ignore: ['{a'] } }).errors.join(), /is not a valid glob/);
+    assert.match(settingsOf({ enabled: true, on_enter: 'x', checks: 'on' }).errors.join(), /auto_merge\.checks must be a map/);
     assert.match(settingsOf({ enabled: true, on_enter: 'In review' }, {}).errors.join(), /auto_merge needs tracker\.provider\.base_branch/);
     assert.match(settingsOf({ enabled: true }).errors.join(), /auto_merge\.on_enter is required/);
     assert.match(settingsOf({ enabled: true, on_enter: 'x', method: 'octopus' }).errors.join(), /method must be squash, merge or rebase/);
@@ -1393,7 +1406,188 @@ describe('github_project auto_merge', () => {
     assert.throws(create({ on_enter: 'In Progress' }), /auto_merge\.on_enter "In Progress" must not be an active or terminal state/);
     assert.throws(create({ on_enter: 'Human Review', done_state: 'Human Review' }), /auto_merge\.done_state "Human Review" must be a terminal state/);
     assert.throws(create({ on_enter: 'Human Review', on_conflict: 'Done' }), /auto_merge\.on_conflict "Done" must not be a terminal state/);
+    assert.throws(create({ on_enter: 'Human Review', on_checks_failed: 'Done' }), /auto_merge\.on_checks_failed "Done" must not be a terminal state/);
     assert.doesNotThrow(create({ on_enter: 'Human Review' }));
+  });
+
+  describe('merge gate on the pull request checks', () => {
+    const run = (name: string, conclusion: string | null, extra: Json = {}): Json => ({
+      __typename: 'CheckRun',
+      name,
+      status: conclusion === null ? 'IN_PROGRESS' : 'COMPLETED',
+      conclusion,
+      detailsUrl: `https://github.com/acme/app/actions/runs/${name}`,
+      annotations: { nodes: [] },
+      ...extra,
+    });
+    const status = (context: string, state: string): Json => ({ __typename: 'StatusContext', context, state, description: null, targetUrl: `https://symphony.example/${context}` });
+    const withChecks = (contexts: Json[] | null, extra: Json = {}): Json => ({
+      pullRequests: {
+        nodes: [
+          pullRequest({
+            commits: { nodes: [{ commit: { oid: 'abc123', statusCheckRollup: contexts === null ? null : { state: 'X', contexts: { totalCount: contexts.length, nodes: contexts } } } }] },
+            ...extra,
+          }),
+        ],
+      },
+    });
+    const BILLING = { annotations: { nodes: [{ message: 'The job was not started because recent account payments have failed or your spending limit needs to be increased.' }] } };
+    const labelOps = (github: FakeGithub) => github.requests.filter((r) => r.op === 'SymphonyAddLabels' || r.op === 'SymphonyRemoveLabels').map((r) => r.op);
+
+    it('merges when every check passed, was skipped or is ignored, and when there are none', async () => {
+      const cases: Array<[Json, Json]> = [
+        [withChecks([run('ci', 'SUCCESS'), run('prod-smoke', 'SKIPPED'), status('symphony/ci', 'SUCCESS')]), MERGE],
+        [withChecks(null), MERGE],
+        [withChecks([run('ci', 'FAILURE'), run('lint', 'NEUTRAL')]), { ...MERGE, auto_merge: { ...MERGE.auto_merge, checks: { ignore: ['acme/app:ci'] } } }],
+      ];
+      for (const [candidate, provider] of cases) {
+        const { move, comments } = await setup(candidate, provider);
+        const data = await move('Human Review');
+        assert.equal(data.status, 'Done', JSON.stringify(candidate));
+        assert.equal((data.auto_merge as Json).merged, true);
+        assert.match(comments()[0] ?? '', /merged #7 into `develop`/);
+      }
+    });
+
+    it('sends failing checks back to the developer with links and a marker', async () => {
+      for (const contexts of [[run('ci', 'FAILURE'), run('prod-smoke', 'SUCCESS')], [status('symphony/ci', 'FAILURE')]]) {
+        const { github, move, statuses, comments } = await setup(withChecks(contexts));
+        const data = await move('Human Review');
+        assert.equal(data.status, 'In Progress');
+        const auto = data.auto_merge as Json;
+        assert.equal(auto.merged, false);
+        assert.equal((auto.checks as Json).state, 'failure');
+        assert.deepEqual(statuses(), ['o3', 'o2']);
+        assert.match(comments()[0] ?? '', /<!-- symphony:merge-gate checks_failed -->/);
+        assert.match(comments()[0] ?? '', /these checks failed: \[(ci|symphony\/ci)\]\(https:\/\/[^)]+\) \(failure\)/);
+        assert.equal(github.requests.some((r) => r.op === 'SymphonyMergePullRequest'), false);
+      }
+    });
+
+    it('uses on_checks_failed over on_conflict', async () => {
+      const provider = { ...MERGE, auto_merge: { ...MERGE.auto_merge, on_checks_failed: 'Todo' } };
+      const { move, statuses } = await setup(withChecks([run('ci', 'FAILURE')]), provider);
+      assert.equal((await move('Human Review')).status, 'Todo');
+      assert.deepEqual(statuses(), ['o3', 'o1']);
+    });
+
+    it('leaves the issue for a human after max_send_backs send-backs, with needs-human', async () => {
+      const { github, issue, move, statuses, comments } = await setup(withChecks([run('ci', 'FAILURE')]));
+      const marker = { author: { login: 'symphony-bot' }, createdAt: '2026-09-03T10:00:00Z', body: '<!-- symphony:merge-gate checks_failed -->\nfailed', url: 'https://x/1' };
+      github.comments.set(issue.native_ref?.issue_id as string, [marker, { ...marker, url: 'https://x/2' }, { ...marker, author: { login: 'someone' }, url: 'https://x/3' }]);
+      github.labels.set('needs-human', 'L_nh');
+      const data = await move('Human Review');
+      assert.equal(data.status, 'Human Review');
+      assert.match(String((data.auto_merge as Json).reason), /sent back for failing checks 2 times already/);
+      assert.deepEqual(statuses(), ['o3']);
+      assert.ok(github.requests.some((r) => r.op === 'SymphonyAddLabels'));
+      assert.match(comments()[0] ?? '', /stays in "Human Review" for a human/);
+    });
+
+    it('never sends back checks GitHub did not start (billing), and says how to fix it', async () => {
+      const { github, move, statuses, comments } = await setup(withChecks([run('ci', 'FAILURE', BILLING), run('prod-smoke', 'FAILURE', BILLING)]));
+      const data = await move('Human Review');
+      assert.equal(data.status, 'Human Review');
+      assert.deepEqual(statuses(), ['o3']);
+      assert.match(comments()[0] ?? '', /GitHub did not start their jobs .*CI_RUNNER=symphony/);
+      assert.equal(github.requests.some((r) => r.op === 'SymphonyMergePullRequest'), false);
+    });
+
+    it('treats a code failure next to a billing failure as a code failure', async () => {
+      const { move } = await setup(withChecks([run('ci', 'FAILURE', BILLING), status('symphony/ci', 'FAILURE')]));
+      assert.equal((await move('Human Review')).status, 'In Progress');
+    });
+
+    it('never merges a head the entry checks did not see', async () => {
+      const { tracker, issue, github, comments } = await setup(withChecks([run('ci', 'SUCCESS')]));
+      const change = await tracker.setStatus?.(issue, 'Human Review', { checkedSha: 'fff999' });
+      assert.equal(change?.status, 'Human Review');
+      assert.match(String(change?.autoMerge?.reason), /commits the entry checks did not see \(checked fff999, head abc123\)/);
+      assert.equal(github.requests.some((r) => r.op === 'SymphonyMergePullRequest'), false);
+      assert.equal(comments().length, 1);
+      const same = await setup(withChecks([run('ci', 'SUCCESS')]));
+      assert.equal((await same.tracker.setStatus?.(same.issue, 'Human Review', { checkedSha: 'abc123' }))?.autoMerge?.merged, true);
+    });
+
+    it('waits for pending checks with a label, retries quietly and merges once they pass', async () => {
+      const { github, tracker, issue, move, comments } = await setup(withChecks([run('ci', null), status('symphony/ci', 'PENDING')]));
+      const data = await move('Human Review');
+      assert.equal(data.status, 'Human Review');
+      const auto = data.auto_merge as Json;
+      assert.equal(auto.awaiting_checks, true);
+      assert.deepEqual((auto.checks as Json).pending, ['ci', 'symphony/ci']);
+      assert.ok(github.labels.has('awaiting-checks'), 'the label is created');
+      assert.deepEqual(labelOps(github), ['SymphonyAddLabels']);
+      assert.match(comments()[0] ?? '', /waits before merging: the checks of #7 are still running/);
+
+      const watch = tracker.mergeWatch?.();
+      assert.ok(watch);
+      assert.equal(watch.column, 'Human Review');
+      const waiting: Issue = { ...issue, state: 'Human Review', labels: ['awaiting-checks'], native_ref: { ...issue.native_ref, status_updated_at: new Date().toISOString() } };
+      assert.equal(watch.awaiting(waiting), true);
+      assert.equal(watch.awaiting({ ...waiting, labels: [] }), false);
+      assert.equal(watch.awaiting({ ...waiting, state: 'Todo' }), false);
+
+      const still = await watch.retry(waiting);
+      assert.equal(still.awaiting_checks, true);
+      assert.equal(comments().length, 1, 'no new comment while waiting');
+      assert.deepEqual(labelOps(github), ['SymphonyAddLabels']);
+
+      github.mergeCandidate = { ...github.mergeCandidate, ...withChecks([run('ci', 'SUCCESS'), status('symphony/ci', 'SUCCESS')]) };
+      const merged = await watch.retry(waiting);
+      assert.equal(merged.merged, true);
+      assert.equal(merged.status, 'Done');
+      assert.deepEqual(labelOps(github), ['SymphonyAddLabels', 'SymphonyRemoveLabels']);
+    });
+
+    it('waits while GitHub has not computed mergeability or the head moved during the merge', async () => {
+      const unknown = await setup(withChecks([run('ci', 'SUCCESS')], { mergeable: 'UNKNOWN' }));
+      assert.equal(((await unknown.move('Human Review')).auto_merge as Json).awaiting_checks, true);
+
+      const moved = await setup(withChecks([run('ci', 'SUCCESS')]));
+      moved.github.overrides.set('SymphonyMergePullRequest', () => ({ body: { data: null, errors: [{ type: 'UNPROCESSABLE', message: 'Head branch was modified. Review and try the merge again.', path: ['mergePullRequest'] }] } }));
+      const data = await moved.move('Human Review');
+      assert.equal(data.status, 'Human Review');
+      assert.equal((data.auto_merge as Json).awaiting_checks, true);
+    });
+
+    it('does not mistake a rule refusal for a conflict', async () => {
+      const { github, move, statuses } = await setup(withChecks([run('ci', 'SUCCESS')]));
+      github.overrides.set('SymphonyMergePullRequest', () => ({
+        body: { data: null, errors: [{ type: 'UNPROCESSABLE', message: 'Pull request is not mergeable: Required status check "symphony/ci" is expected.', path: ['mergePullRequest'] }] },
+      }));
+      const data = await move('Human Review');
+      assert.equal(data.status, 'Human Review');
+      assert.match(String((data.auto_merge as Json).reason), /GitHub refused the merge of #7: .*Required status check/);
+      assert.deepEqual(statuses(), ['o3']);
+    });
+
+    it('leaves pending checks to a human when waiting is off, or after the timeout', async () => {
+      const off = await setup(withChecks([run('ci', null)]), { ...MERGE, auto_merge: { ...MERGE.auto_merge, checks: { wait: false } } });
+      const data = await off.move('Human Review');
+      assert.match(String((data.auto_merge as Json).reason), /still running .*auto_merge\.checks\.wait is off/);
+      assert.equal((data.auto_merge as Json).awaiting_checks, undefined);
+      assert.equal(off.tracker.mergeWatch?.(), null);
+
+      const late = await setup(withChecks([run('ci', null)]), { ...MERGE, auto_merge: { ...MERGE.auto_merge, checks: { timeout_ms: 60_000 } } });
+      const watch = late.tracker.mergeWatch?.();
+      assert.ok(watch);
+      const waiting: Issue = { ...late.issue, state: 'Human Review', labels: ['awaiting-checks'], native_ref: { ...late.issue.native_ref, status_updated_at: new Date(Date.now() - 120_000).toISOString() } };
+      late.github.labels.set('awaiting-checks', 'L_ac');
+      const gaveUp = await watch.retry(waiting);
+      assert.equal(gaveUp.merged, false);
+      assert.match(gaveUp.reason, /did not finish within 1 minutes/);
+      assert.deepEqual(labelOps(late.github), ['SymphonyRemoveLabels']);
+      assert.equal(late.github.requests.some((r) => r.op === 'SymphonyMergeCandidate'), false);
+    });
+
+    it('drops a stale awaiting-checks label when a later entry ends the wait', async () => {
+      const { github, tracker, issue } = await setup(withChecks([run('ci', 'SUCCESS')]));
+      github.labels.set('awaiting-checks', 'L_ac');
+      const change = await tracker.setStatus?.({ ...issue, labels: ['awaiting-checks'] }, 'Human Review');
+      assert.equal(change?.autoMerge?.merged, true);
+      assert.deepEqual(labelOps(github), ['SymphonyRemoveLabels']);
+    });
   });
 });
 

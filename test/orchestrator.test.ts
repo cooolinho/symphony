@@ -1889,6 +1889,53 @@ describe('reconciliation', () => {
   });
 });
 
+describe('auto_merge waiting for pull request checks', () => {
+  it('retries the merge of waiting issues each tick, one attempt per issue at a time, and leaves the rest alone', async () => {
+    const s = setup({
+      issues: [
+        makeIssue({ id: 'w', identifier: 'acme/app#w', state: 'Human Review', labels: ['awaiting-checks'] }),
+        makeIssue({ id: 'h', identifier: 'acme/app#h', state: 'Human Review' }),
+      ],
+    });
+    const calls: string[] = [];
+    let release: (() => void) | null = null;
+    let outcome: 'pending' | 'merged' = 'pending';
+    let finished = 0;
+    s.tracker.mergeWatch = () => ({
+      column: 'Human Review',
+      awaiting: (issue) => issue.labels.includes('awaiting-checks'),
+      retry: async (issue) => {
+        calls.push(issue.id);
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        if (outcome === 'merged') s.tracker.set(issue.id, { state: 'Done', labels: [] });
+        finished++;
+        return { merged: outcome === 'merged', pull_request: 7, status: outcome === 'merged' ? 'Done' : 'Human Review', reason: outcome, ...(outcome === 'pending' ? { awaiting_checks: true } : {}) };
+      },
+    });
+
+    await s.orchestrator.tickNow();
+    await until(() => calls.length === 1, 3_000, 'first retry');
+    assert.deepEqual(calls, ['w']);
+    await s.orchestrator.tickNow();
+    assert.equal(calls.length, 1, 'no second attempt while one is in flight');
+    (release as unknown as () => void)();
+    await until(() => finished === 1, 3_000, 'first retry finished');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    outcome = 'merged';
+    await s.orchestrator.tickNow();
+    await until(() => calls.length === 2, 3_000, 'second retry');
+    (release as unknown as () => void)();
+    await until(() => s.tracker.issues.get('w')?.state === 'Done', 3_000, 'merged');
+    await s.orchestrator.tickNow();
+    assert.equal(calls.length, 2, 'a merged issue is not retried');
+    assert.equal(snapshot(s).running.length, 0, 'no session for issues in the merge column');
+    await s.orchestrator.shutdown(1_000);
+  });
+});
+
 describe('observability', () => {
   it('accumulates token and cost deltas from absolute session totals', async () => {
     const runner = new FakeRunner((turn, params) => {
