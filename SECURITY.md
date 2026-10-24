@@ -32,6 +32,10 @@ run it. In short:
 - The dashboard has no login of its own. Put it behind a reverse proxy with authentication if it is not bound to
   loopback.
 - Never commit your `.env` or share GitHub or Anthropic tokens.
+- The optional compose profile `ci` ([docs/docker.md](docs/docker.md#ci-sidecars-profile-ci)) adds a **privileged
+  Docker-in-Docker** daemon. Whoever can reach it is effectively root on the host. Agents and checks run as the same
+  user (UID 1000) in the `symphony` container and can both read the daemon's client certificates. That `DOCKER_HOST`
+  is kept out of the shared environment prevents accidents; it is not a security boundary.
 
 Vulnerabilities in dependencies (for example the Claude Agent SDK) should be reported to the respective project.
 

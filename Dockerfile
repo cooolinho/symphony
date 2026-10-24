@@ -8,7 +8,10 @@ ARG GID=1000
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# System tools, then PHP from Ondřej Surý's repository (any PHP_VERSION the Laravel projects need).
+# System tools, then PHP from Ondřej Surý's repository (any PHP_VERSION the Laravel projects need), with the MySQL
+# client for hooks/laravel-env.sh (SYMPHONY_LARAVEL_DB=mysql) and the CI MySQL of the compose profile "ci".
+# default-mysql-client is MariaDB's: since 11.4 it verifies the server certificate, and MySQL 8 serves a self-signed
+# one it generated itself. Verification is off (TLS stays on) so the client reaches such test servers at all.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bash ca-certificates curl git jq openssh-client openssl ripgrep tini unzip \
@@ -29,7 +32,10 @@ RUN apt-get update \
         "php${PHP_VERSION}-bcmath" \
         "php${PHP_VERSION}-sqlite3" \
         "php${PHP_VERSION}-gd" \
+        "php${PHP_VERSION}-mysql" \
+        default-mysql-client \
     && update-alternatives --set php "/usr/bin/php${PHP_VERSION}" \
+    && printf '[client-mariadb]\nssl-verify-server-cert = off\n' > /etc/mysql/mariadb.conf.d/60-symphony-client.cnf \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
@@ -87,6 +93,24 @@ RUN if [ "${WITH_BROWSER}" = "true" ]; then \
         && ln -s /opt/playwright/node_modules /node_modules \
         && /opt/playwright/node_modules/.bin/playwright install --with-deps --only-shell chromium \
         && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# Docker CLI with the compose and buildx plugins from Docker's Debian repository, for checks that build images or run
+# docker compose (e.g. a project's prod smoke test) against the dind sidecar of the compose profile "ci". Only the
+# client: no daemon, no socket. Without DOCKER_HOST it talks to nothing; the check scripts set it themselves.
+# WITH_DOCKER_CLI=false leaves it out (about 150 MB smaller).
+ARG WITH_DOCKER_CLI=true
+RUN if [ "${WITH_DOCKER_CLI}" = "true" ]; then \
+        install -d -m 0755 /etc/apt/keyrings \
+        && curl -fsSLo /etc/apt/keyrings/docker.asc https://download.docker.com/linux/debian/gpg \
+        && chmod a+r /etc/apt/keyrings/docker.asc \
+        && . /etc/os-release \
+        && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" \
+            > /etc/apt/sources.list.d/docker.list \
+        && apt-get update \
+        && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin docker-buildx-plugin \
+        && rm -rf /var/lib/apt/lists/* \
+        && docker --version; \
     fi
 
 # GitHub's published host keys: ssh verifies github.com strictly, no host-key scan at build time.
