@@ -517,3 +517,109 @@ describe('checks/repo.sh', () => {
     assert.deepEqual(lines, ['start', 'end', 'start', 'end']);
   });
 });
+
+describe('checks/laravel.sh SYMPHONY_TEST_PARALLEL, edge cases', () => {
+  const testCall = (f: Fixture) => calls(f).find((call) => call[0] === 'php' && call[2] === 'test');
+  const withParatest = () => {
+    const f = fixture();
+    write(f.repo, 'vendor/bin/paratest', FAKE_TOOL('paratest'), 0o755);
+    return f;
+  };
+
+  it('keeps the plain serial run without a note when no variable is set, even with paratest installed', () => {
+    const f = withParatest();
+    const result = run(f);
+    assert.equal(result.status, 0, result.out);
+    assert.deepEqual(testCall(f), ['php', 'artisan', 'test']);
+    assert.doesNotMatch(result.out, /parallel|one process/);
+  });
+
+  it('passes exactly --parallel and --processes=<n> in the fast mode, without --drop-databases', () => {
+    const f = withParatest();
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '12' });
+    assert.equal(result.status, 0, result.out);
+    assert.deepEqual(testCall(f), ['php', 'artisan', 'test', '--parallel', '--processes=12']);
+    assert.match(result.out, /all checks passed/);
+  });
+
+  it('accepts a single process', () => {
+    const f = withParatest();
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '1' });
+    assert.equal(result.status, 0, result.out);
+    assert.deepEqual(testCall(f), ['php', 'artisan', 'test', '--parallel', '--processes=1']);
+  });
+
+  it('ignores SYMPHONY_CI_PARALLEL in the fast mode', () => {
+    const f = withParatest();
+    const result = run(f, { SYMPHONY_CI_PARALLEL: '4' });
+    assert.equal(result.status, 0, result.out);
+    assert.deepEqual(testCall(f), ['php', 'artisan', 'test']);
+    assert.doesNotMatch(result.out, /parallel processes|one process/);
+  });
+
+  it('never installs anything in the fast mode, even when paratest is required, missing and composer.lock untracked', () => {
+    const f = fixture();
+    write(f.repo, 'composer.json', JSON.stringify({ scripts: {}, 'require-dev': { 'brianium/paratest': '^7.8' } }));
+    git(f.repo, 'commit', '-qam', 'paratest');
+    git(f.repo, 'push', '-q');
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '3' });
+    assert.equal(result.status, 0, result.out);
+    assert.equal(calls(f).some((call) => call[0] === 'composer' && call[1] !== 'run-script'), false, 'no composer install/update');
+    assert.equal(testCall(f)?.includes('--parallel'), false, 'serial without paratest');
+    assert.match(result.out, /tests run in one process/);
+  });
+
+  it('stops before any test run with exit 2 on invalid values and names the value', () => {
+    for (const value of ['abc', '1.5', '4x', '-1', ' ']) {
+      const f = withParatest();
+      const result = run(f, { SYMPHONY_TEST_PARALLEL: value });
+      assert.equal(result.status, 2, `'${value}': ${result.out}`);
+      assert.match(result.out, /SYMPHONY_TEST_PARALLEL must be a number of processes/);
+      assert.equal(testCall(f), undefined, `'${value}' ran no tests`);
+    }
+  });
+
+  it('rejects zero written with leading zeros (00), which is no positive number of processes', () => {
+    const f = withParatest();
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '00' });
+    assert.equal(result.status, 2, result.out);
+    assert.equal(testCall(f), undefined);
+  });
+
+  it('does not run php artisan test or pass --parallel when a composer test script exists', () => {
+    const f = fixture({ scripts: { test: 'x' } });
+    write(f.repo, 'vendor/bin/paratest', FAKE_TOOL('paratest'), 0o755);
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '2' });
+    assert.equal(result.status, 0, result.out);
+    assert.equal(calls(f).some((call) => call.includes('--parallel')), false);
+    assert.equal(calls(f).filter((call) => call.join(' ') === 'composer run-script test').length, 1);
+  });
+
+  it('reports failing parallel tests with exit 1', () => {
+    const f = withParatest();
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '2', FAKE_TEST_FAIL: '1' });
+    assert.equal(result.status, 1, result.out);
+  });
+
+  it('leaves --full on SYMPHONY_CI_PARALLEL with --drop-databases, unaffected by SYMPHONY_TEST_PARALLEL', () => {
+    const f = withParatest();
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '9', SYMPHONY_CI_PARALLEL: '2' }, f.repo, ['--full']);
+    assert.equal(result.status, 0, result.out);
+    assert.deepEqual(testCall(f), ['php', 'artisan', 'test', '--parallel', '--processes=2', '--drop-databases']);
+  });
+
+  it('does not validate SYMPHONY_TEST_PARALLEL in --full', () => {
+    const result = run(fixture(), { SYMPHONY_TEST_PARALLEL: 'many' }, undefined, ['--full']);
+    assert.equal(result.status, 0, result.out);
+  });
+});
+
+describe('SYMPHONY_TEST_PARALLEL documentation', () => {
+  it('is described in the script header, docs/configuration.md and .env.example', () => {
+    for (const file of ['checks/laravel.sh', 'docs/configuration.md', '.env.example']) {
+      assert.match(fs.readFileSync(file, 'utf8'), /SYMPHONY_TEST_PARALLEL/, file);
+    }
+    const docs = fs.readFileSync('docs/configuration.md', 'utf8');
+    assert.match(docs.slice(docs.indexOf('SYMPHONY_TEST_PARALLEL') - 1500, docs.indexOf('SYMPHONY_TEST_PARALLEL') + 1500), /paratest/);
+  });
+});
