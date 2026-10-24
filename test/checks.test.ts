@@ -25,6 +25,8 @@ const FAKE_MYSQL = `#!${process.execPath}
 const fs = require('node:fs');
 fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify(['mysql', ...process.argv.slice(2), 'pwd=' + (process.env.MYSQL_PWD || '')]) + '\\n');
 if (process.env.FAKE_MYSQL_FAIL) { console.log('ERROR 1045 (28000): Access denied'); process.exit(1); }
+const sql = process.argv.slice(2).find((arg) => arg.startsWith('--execute=')) || '';
+if (sql.includes('SHOW DATABASES') && process.env.FAKE_MYSQL_SHOW) console.log(['Database (pattern)', ...process.env.FAKE_MYSQL_SHOW.split(',')].join('\\n'));
 `;
 
 /**
@@ -280,6 +282,59 @@ describe('checks/laravel.sh --full', () => {
     assert.ok(made.some((call) => call[0] === 'phpstan'));
     assert.ok(made.some((call) => call[0] === 'php' && call[2] === 'test'));
     assert.equal(made.some((call) => call[0] === 'mysql' || call[2] === 'migrate'), false);
+  });
+
+  it('runs the tests in parallel with SYMPHONY_CI_PARALLEL when paratest is installed', () => {
+    const f = fixture();
+    write(f.repo, 'vendor/bin/paratest', FAKE_TOOL('paratest'), 0o755);
+    const result = full(f, { SYMPHONY_CI_PARALLEL: '4' });
+    assert.equal(result.status, 0, result.out);
+    assert.match(result.out, /tests in 4 parallel processes/);
+    assert.deepEqual(calls(f).find((call) => call[0] === 'php' && call[2] === 'test'), ['php', 'artisan', 'test', '--parallel', '--processes=4', '--drop-databases']);
+  });
+
+  it('installs a required but missing paratest when composer.lock is untracked, else runs in one process', () => {
+    const f = fixture();
+    write(f.repo, 'composer.json', JSON.stringify({ scripts: {}, 'require-dev': { 'brianium/paratest': '^7.8' } }));
+    git(f.repo, 'commit', '-qam', 'paratest');
+    git(f.repo, 'push', '-q');
+    const result = full(f, { SYMPHONY_CI_PARALLEL: '4' });
+    assert.equal(result.status, 0, result.out);
+    assert.ok(calls(f).some((call) => call.join(' ') === 'composer update brianium/paratest --no-interaction --no-progress --no-scripts'));
+    // The fake composer installs nothing: the tests run serially, and say so.
+    assert.match(result.out, /no brianium\/paratest: the tests run in one process/);
+    assert.deepEqual(calls(f).find((call) => call[0] === 'php' && call[2] === 'test'), ['php', 'artisan', 'test']);
+
+    const plain = fixture();
+    const serial = full(plain, { SYMPHONY_CI_PARALLEL: '4' });
+    assert.equal(serial.status, 0, serial.out);
+    assert.equal(calls(plain).some((call) => call[0] === 'composer' && call[1] === 'update'), false, 'no paratest required: nothing installed');
+  });
+
+  it('drops the databases of parallel test processes too, also after failing tests', () => {
+    const f = fixture();
+    const result = full(f, {
+      SYMPHONY_CI_DB: 'mysql',
+      SYMPHONY_MYSQL_USER: 'symphony',
+      SYMPHONY_WORKSPACE_KEY: 'k',
+      FAKE_TEST_FAIL: '1',
+      FAKE_MYSQL_SHOW: 'symphony_x_ci_test_1,symphony_x_ci_test_2',
+    });
+    assert.equal(result.status, 1, result.out);
+    const sql = calls(f).filter((call) => call[0] === 'mysql').map((call) => String(call[4]));
+    const db = /DROP DATABASE IF EXISTS `(symphony_[0-9a-f]{12}_ci)`; CREATE/.exec(sql[0] ?? '')?.[1] ?? '';
+    assert.equal(sql[1], `--execute=SHOW DATABASES LIKE '${db.replaceAll('_', '\\_')}\\_test\\_%'`);
+    assert.deepEqual(sql.slice(2), [
+      `--execute=DROP DATABASE IF EXISTS \`${db}\``,
+      '--execute=DROP DATABASE IF EXISTS `symphony_x_ci_test_1`',
+      '--execute=DROP DATABASE IF EXISTS `symphony_x_ci_test_2`',
+    ]);
+  });
+
+  it('rejects an invalid SYMPHONY_CI_PARALLEL as an environment problem', () => {
+    const result = full(fixture(), { SYMPHONY_CI_PARALLEL: 'many' });
+    assert.equal(result.status, 2);
+    assert.match(result.out, /SYMPHONY_CI_PARALLEL must be a number of processes/);
   });
 
   it('skips (exit 78) without a Laravel app', () => {

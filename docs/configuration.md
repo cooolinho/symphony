@@ -1308,6 +1308,12 @@ creates it with `SYMPHONY_MYSQL_*`, exports `DB_CONNECTION=mysql`, `DB_DATABASE`
 environment beats `.env` and the `<env>` entries of `phpunit.xml`), runs `php artisan config:clear` and
 `php artisan migrate --force`, then the tests, and drops the database on exit. `hooks/laravel-db-drop.sh` in
 `before_remove` drops a leftover of a killed check. The MySQL server of the compose profile `ci` serves this.
+With `SYMPHONY_CI_PARALLEL=<n>` the tests run in `n` processes (`php artisan test --parallel --processes=<n>
+--drop-databases`; with MySQL each process gets `<database>_test_<n>`, which the script drops on exit as well, since
+`--drop-databases` keeps them when tests fail). That needs
+`brianium/paratest`: a project that requires it, in a workspace whose `vendor/` predates it, gets it through
+`composer update brianium/paratest` first, but only when `composer.lock` is not tracked (the tree must stay clean).
+Without paratest the tests run in one process, with a note.
 
 Composer scripts are detected with `composer run-script --list`, which lists exactly the scripts defined in
 `composer.json` (without Composer, none are used). A `test` script can run the suite in parallel, e.g.
