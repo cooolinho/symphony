@@ -125,7 +125,8 @@ is the first 12 hex characters of the sha256 of `SYMPHONY_WORKSPACE_KEY` (names 
 `laravel-env.sh` creates both with the `mysql` client (`CREATE DATABASE IF NOT EXISTS`), sets `DB_CONNECTION=mysql`,
 `DB_DATABASE`, `DB_HOST`, `DB_PORT`, `DB_USERNAME` and `DB_PASSWORD` in `.env` (mode `0600`) and writes `.env.testing`
 for the test database. A failed `CREATE DATABASE` exits non-zero, so the half-created workspace is removed.
-`hooks/laravel-db-drop.sh` drops both databases in `before_remove`; missing databases are not an error.
+`hooks/laravel-db-drop.sh` drops both databases in `before_remove` (and, whenever `SYMPHONY_MYSQL_USER` is set, the
+database of the full CI check, see [check scripts](#check-scripts-checkslaravelsh)); missing databases are not an error.
 
 ```yaml
 hooks:
@@ -174,7 +175,59 @@ checks:
 |---|---|---|
 | `timeout_ms` | `hooks.timeout_ms` | Limit per script run; must be below `claude.turn_timeout_ms`. A timed-out or aborted script's whole process group is killed; a timeout returns `check_timeout`. May come from a variable, e.g. `${SYMPHONY_CHECKS_TIMEOUT_MS:-1800000}`. |
 | `retries` | `0` | Extra attempts after a failed check, `0`–`3`. |
-| `on_enter` | `{}` | Map of column name (matched trimmed and case-insensitively) to the bash script that must pass to enter it. |
+| `on_enter` | `{}` | Map of column name (matched trimmed and case-insensitively) to what must pass to enter it: a bash script, a [named check](#named-checks), or a list of either, run in order. |
+| `report_status` | `false` | Report named checks to the tracker; GitHub: commit statuses `symphony/<name>` (see [named checks](#named-checks)). |
+
+#### Named checks
+
+A column can run several checks, each with a name and its own timeout. The shipped `WORKFLOW.md` uses this for the
+final gate before [auto-merge](adapters/github-project.md#merge-gate), standing in for a repository's GitHub Actions:
+
+```yaml
+checks:
+  report_status: true
+  on_enter:
+    In review:
+      - name: ci
+        command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" ci -- bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh" --full
+        timeout_ms: 1200000
+      - name: prod-smoke
+        command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" --lock prod-smoke
+        timeout_ms: 1800000
+```
+
+| Key | Meaning |
+|---|---|
+| `name` | Lowercase letters, digits, `.`, `_`, `-` (at most 50), unique per column. The script sees it as `SYMPHONY_CHECK_NAME`. |
+| `command` | The bash script, run like a plain one. |
+| `timeout_ms` | Its own limit (default `checks.timeout_ms`); may come from a variable. The checks of one column run in one tool call, so their sum must stay below `claude.turn_timeout_ms`. |
+
+- **Order and failures.** The checks run one after the other. A failing check (exit 1) does not stop the others: the
+  agent gets every failure in one answer, each under a header `== <name>: failed (exit 1, 6m12s) ==`, sharing the
+  6000 characters. A timeout or an environment problem stops at once.
+- **Exit 78** means the check does not apply here (no such script in the repository, no Laravel app): it passes as
+  `skipped` and reports no status.
+- **Cache.** Each check is cached on its own (HEAD sha + name + command), so after a failure only the failed ones run
+  again on the same commit.
+- **Statuses.** With `report_status: true`, a named check posts `pending` once it has run for 5 s, and `success`,
+  `failure` (exit 1) or `error` (timeout, environment) when it ends, on the commit it ran on; a cached pass posts
+  `success` again. The description holds only the duration and exit code (no output: repositories may be public);
+  the link goes to the agent page when [`server.public_url`](#server) is set. A failed post is logged as
+  `check_status_failed` and never changes the decision. GitHub needs the token scope `repo` (classic) or "Commit
+  statuses: write". Branch rules can then require `symphony/ci`, and the auto-merge gate reads them like any check.
+
+#### Repository checks (`checks/repo.sh`)
+
+`checks/repo.sh [--lock] <name> [-- fallback…]` runs a repository's own check, `.symphony/checks/<name>.sh`, **read
+from the base branch** (`SYMPHONY_BASE_BRANCH`, else `origin/HEAD`): a pull request cannot weaken the check of its
+own merge, and a changed script applies once it is merged. Without that script it runs the fallback after `--`;
+without one it exits 78. First it requires a clean tree with everything pushed, like `checks/laravel.sh`.
+
+- `--lock` runs one check of that name per repository at a time (`flock`), for checks with fixed compose project
+  names, ports or networks. Waiting counts against the check's timeout.
+- With `SYMPHONY_CI_DOCKER_HOST` (the compose profile `ci`, see [docker.md](docker.md)) the script gets
+  `DOCKER_HOST`, `DOCKER_TLS_VERIFY` and `DOCKER_CERT_PATH` for the CI Docker daemon, and `SYMPHONY_DOCKER_HOST_IP`,
+  the address of ports that daemon publishes. Agents never get these variables.
 
 Scripts run like hooks (`bash -lc` in the issue workspace, own process group) with the same `SYMPHONY_*`
 variables, `SYMPHONY_HOOK` set to the check's label. Because they execute repository code, their environment
@@ -205,7 +258,8 @@ touched. The guard decides on the run's role and the target column only, in this
 **Cache.** A passing check is remembered per claim, in memory, under the key `HEAD sha` + hash of the script text. Before
 running a check the guard reads `git rev-parse HEAD` and `git status --porcelain` (5 s timeout each); when the tree
 is clean and the key has a passing result, the issue is moved without running the script and the tool result carries
-`note: "cached result for <sha>"` (logged as `checks_cached`; no phase change, no `checks_finished`). This lets the move to `In review` reuse the successful check of `Agent review`. A
+`note: "cached result for <sha>"` (logged as `checks_cached`; no phase change, no `checks_finished`). The key includes
+the script (and the name of a named check), so the shipped final gate of `In review` runs its own checks. A
 new commit, a changed script, or any uncommitted change runs the check again; failures and errors are never cached; if
 git fails (e.g. no repository) the check simply runs. The cache is not persisted and not shared between issues, so
 a service restart or a new claim runs the checks again.
@@ -216,7 +270,8 @@ card to `Done`) kills a running check's process group. Without `roles` and `chec
 applies.
 
 While a check runs, the run is in phase `RunningChecks`: stall detection is suspended and its clock starts fresh when
-the check ends, and the `set_status` tool call may last `checks.timeout_ms + 60 s`
+the check ends, and the `set_status` tool call may last `checks.timeout_ms` (or the longest sum of a column's named
+checks) `+ 60 s`
 (see [agent-claude.md](agent-claude.md#timeouts-and-failures)). Each check logs `checks_started` and
 `checks_finished` (`target`, `sha`, `exit_code`, `duration_ms`, `ok`) at info level, writes a `checks_finished`
 line to the [repository log](#repository-logs) and becomes `last_check` in `GET /api/v1/<identifier>`. Denied targets
@@ -1094,6 +1149,7 @@ one poll at a time. For example, with an analyst in `Ready` and `pipeline.analys
 | `port` | none | Starts the dashboard and JSON API. `0` picks a free port. `--port` overrides it. Restart to change it. |
 | `host` | `127.0.0.1` | Bind address; the shipped `WORKFLOW.md` reads it from `SYMPHONY_HOST`. On a loopback address (`127.0.0.1`, `::1`, `localhost`), requests with another `Host` header are rejected. Any other address (e.g. `0.0.0.0` in a container) logs a warning at startup: Symphony has no login of its own, so put a reverse proxy with authentication (BasicAuth, forward auth) in front. Restart to change it. |
 | `allow_remote_control` | `false` | Allows the control routes (restart with `POST /api/v1/<identifier>/retry`, **Retry now** / **Resume now**; **Start now** with `/force`; pause and resume of issues and models, `/pause`, `/resume`, `/models/<model>/hold` and `/release`; agent slots with `PUT` / `DELETE /api/v1/settings/agents`) when `host` is not a loopback address; the shipped `WORKFLOW.md` reads it from `SYMPHONY_ALLOW_REMOTE_CONTROL`. On such a bind every restart request must carry an `Origin` header that matches its `Host` (CSRF guard, since the browser sends the proxy's credentials with every request); without it the API answers `403 forbidden_origin`. Has no effect on a loopback bind, where restart is always allowed. Only enable it behind an authenticating proxy. Restart to change it. |
+| `public_url` | none | The dashboard's address as people reach it (`https://symphony.example.com`); the shipped `WORKFLOW.md` reads it from `SYMPHONY_PUBLIC_URL`. Links in [commit statuses](#named-checks) point to its agent page. |
 
 ## Complete example: roles, checks and Laravel
 
@@ -1223,11 +1279,13 @@ shipped `WORKFLOW.md`; `test/workflow-prompt.test.ts` renders it for each role.
 ## Check scripts (`checks/laravel.sh`)
 
 A deterministic quality gate that runs in the workspace (bash). The shipped `WORKFLOW.md` runs it through
-[`checks.on_enter`](#checks) before an issue may enter `Agent review` and `In review`.
+[`checks.on_enter`](#checks) before an issue may enter `Testing` and `Agent review`, and with `--full` as the fallback
+of the named check `ci` before `In review`.
 
 | Exit code | Meaning |
 |---|---|
 | `0` | Pass (also when there is no `artisan`: `no Laravel app; nothing to check`). |
+| `78` | Only with `--full`: no Laravel app, the check is skipped. |
 | `1` | The code must be fixed. The output goes to the agent: dirty tree, unpushed commits, `php -l` errors, or a failing lint, analysis or test step. |
 | other (`2`) | Environment problem: missing `php`/`git`, missing or broken `vendor/`, failing `git fetch`, unknown default branch, configured but missing PHPStan. The agent comments and moves the issue to `Blocked`. |
 
@@ -1239,9 +1297,17 @@ style, static analysis, tests.
 
 | Step | Composer script (preferred) | Fallback |
 |---|---|---|
-| Style | `lint` | `vendor/bin/pint --test <changed files>` if Pint exists |
+| Style | `lint` | `vendor/bin/pint --test <changed files>` if Pint exists; with `--full` every file |
 | Static analysis | `analyse` | `vendor/bin/phpstan analyse --no-progress` if `phpstan.neon[.dist]` exists |
 | Tests | `test` | `php artisan test` |
+
+**`--full`** is the project's CI: Pint on every file, static analysis and the tests. With `SYMPHONY_CI_DB=mysql` (a
+repository's `.symphony/checks/ci.sh` sets it) the tests run against a MySQL database of their own,
+`symphony_<key>_ci` (`<key>` as for [the MySQL recipe](#optional-mysql-instead-of-sqlite)): the script drops and
+creates it with `SYMPHONY_MYSQL_*`, exports `DB_CONNECTION=mysql`, `DB_DATABASE` and the credentials (the process
+environment beats `.env` and the `<env>` entries of `phpunit.xml`), runs `php artisan config:clear` and
+`php artisan migrate --force`, then the tests, and drops the database on exit. `hooks/laravel-db-drop.sh` in
+`before_remove` drops a leftover of a killed check. The MySQL server of the compose profile `ci` serves this.
 
 Composer scripts are detected with `composer run-script --list`, which lists exactly the scripts defined in
 `composer.json` (without Composer, none are used). A `test` script can run the suite in parallel, e.g.

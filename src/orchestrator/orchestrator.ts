@@ -42,7 +42,7 @@ import {
 } from './eligibility.ts';
 import { normalizeStateName } from '../workflow/config.ts';
 import { planDispatch, type PlanIssue, type PlanItem, type PlanRetry } from './dispatch-plan.ts';
-import { createGuard, entryCheckFor, type CheckCache, type CheckRecord } from './guard.ts';
+import { createGuard, entryChecksFor, type CheckCache, type CheckRecord } from './guard.ts';
 import { IssueArchive, type ArchivedIssue } from './issue-archive.ts';
 import {
   activeReservations,
@@ -63,7 +63,7 @@ import { RuntimeStateStore, runtimeStateFile, type ModelHold, type OperatorHold 
 import { resultRows, type PersistedResult } from './stage-history.ts';
 import { blockedBucketColumns, derivePipeline, type PipelineStage, type StageSession } from './pipeline.ts';
 import { copyToolUsage, countToolUse, emptyToolUsage, integrationJson, integrationUsage, type ToolUsage } from './tool-usage.ts';
-import { runAgentAttempt, type RunPhase, type WorkerOutcome } from './worker.ts';
+import { checkStatusReporter, runAgentAttempt, type RunPhase, type WorkerOutcome } from './worker.ts';
 import { interruptedLabels, interruptedTransition, statusUpdatedAt, type InterruptedTransition } from './recovery.ts';
 import { applyTransitionLabels, RESULT_TOOL } from './result-tool.ts';
 
@@ -442,6 +442,7 @@ function checkJson(check: CheckRecord | null) {
   if (check === null) return null;
   return {
     target: check.target,
+    name: check.name,
     role: check.role,
     sha: check.sha,
     ok: check.ok,
@@ -1854,7 +1855,7 @@ export class Orchestrator {
     let lock: Extract<LockResult, { ok: true }> | null = null;
     try {
       let workspace: Workspace | null = null;
-      if (entryCheckFor(target, role, config) !== null) {
+      if (entryChecksFor(target, role, config).length > 0) {
         const acquired = await workspaces.lock(issue.identifier);
         if (!acquired.ok) return { kind: 'failed', reason: `workspace locked by ${describeHolder(acquired.holder)}` };
         lock = acquired;
@@ -1877,6 +1878,7 @@ export class Orchestrator {
           check = finished;
           record.lastCheck = finished;
         },
+        ...checkStatusReporter(config, adapter, issue),
       });
       const decision = await guard(target, RESULT_TOOL);
       if (!decision.allow) {
@@ -2185,6 +2187,7 @@ export class Orchestrator {
               run: entry.runId,
               role: check.role,
               target: check.target,
+              name: check.name,
               sha: check.sha,
               exitCode: check.exitCode,
               timedOut: check.timedOut,

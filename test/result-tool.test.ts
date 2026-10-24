@@ -614,7 +614,7 @@ describe('report_result', () => {
   it('records the reused pass of a cached check in the meta', async () => {
     const { unguarded, current, markers } = setup();
     // A guard stub standing in for a cache hit: the record of the check that ran earlier comes with the decision.
-    const record = { target: 'Agent review', role: 'developer', sha: 'abc123', exitCode: 0, timedOut: false, durationMs: 900, ok: true, result: 'passed' as const, finishedAt: new Date('2026-10-18T11:00:00Z') };
+    const record = { target: 'Agent review', name: null, role: 'developer', sha: 'abc123', exitCode: 0, timedOut: false, durationMs: 900, ok: true, result: 'passed' as const, finishedAt: new Date('2026-10-18T11:00:00Z') };
     const [cached] = guardTools([unguarded], async () => ({ allow: true, note: 'cached result for abc123', check: record }));
     const result = data((await cached?.execute(APPROVED, { issue: current() })) ?? { ok: false, error: { category: 'missing', message: '' } });
     assert.equal(result.checks, 'passed');

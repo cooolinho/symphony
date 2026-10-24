@@ -149,7 +149,7 @@ describe('#201 slots for the test stage', () => {
   it('limits Testing to one agent at a time, next to the existing review limit', async () => {
     const config = await load();
     assert.equal(config.agent.maxConcurrentAgentsByState.get('testing'), 1);
-    assert.equal(config.agent.maxConcurrentAgentsByState.get('agent review'), 1);
+    assert.equal(config.agent.maxConcurrentAgentsByState.get('agent review'), 2);
     assert.ok(config.tracker.activeStates.includes('Testing'));
   });
 

@@ -8,7 +8,7 @@ import { STANDARD_LABELS } from '../src/repo-init/labels.ts';
 import { githubProjectFactory } from '../src/tracker/github-project/index.ts';
 import { parseSettings } from '../src/tracker/github-project/settings.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
-import { resolveConfig } from '../src/workflow/config.ts';
+import { maxColumnCheckMs, resolveConfig } from '../src/workflow/config.ts';
 import { commandSkills, pluginAgents } from '../src/workflow/command.ts';
 import { loadWorkflowFile } from '../src/workflow/loader.ts';
 import { profileFor } from '../src/workflow/profile.ts';
@@ -230,7 +230,7 @@ describe('shipped WORKFLOW.md', () => {
     it('limits the test stage to one run at a time and keeps Testing an active state with a note on the slots', async () => {
       const config = await resolveWith();
       assert.equal(config.agent.maxConcurrentAgentsByState.get('testing'), 1);
-      assert.equal(config.agent.maxConcurrentAgentsByState.get('agent review'), 1);
+      assert.equal(config.agent.maxConcurrentAgentsByState.get('agent review'), 2);
       assert.ok(config.tracker.activeStates.includes('Testing'));
       const source = fs.readFileSync(shipped, 'utf8');
       assert.match(source, /#   Testing +-> test engineer[\s\S]*Bug, feature and refactor issues \(pipeline\.profiles\) always go through it/);
@@ -878,6 +878,23 @@ describe('shipped WORKFLOW.md issue commands', () => {
     assert.match(prompt, /`set_status\("In review"\)`\. No entry checks run for this role/);
     assert.doesNotMatch(prompt, /open_pull_request/);
     assert.doesNotMatch(prompt, /Your role: (developer|reviewer|auditor|autopilot|analyst)/);
+  });
+
+  it('ends In review with the named final gate: ci and prod-smoke through checks/repo.sh, within the turn timeout', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const config = resolveConfig(definition.config, {
+      workflowPath: shipped,
+      env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't', SYMPHONY_CHECKS_REPORT_STATUS: 'true', SYMPHONY_PUBLIC_URL: 'http://symphony.lan/' },
+      trackerDefaults,
+    });
+    const gate = config.checks.onEnter.get('in review') ?? [];
+    assert.deepEqual(gate.map((check) => [check.name, check.timeoutMs]), [['ci', 1_200_000], ['prod-smoke', 1_800_000]]);
+    assert.match(gate[0]?.command ?? '', /checks\/repo\.sh" ci -- bash "\$SYMPHONY_WORKFLOW_DIR\/checks\/laravel\.sh" --full$/);
+    assert.match(gate[1]?.command ?? '', /checks\/repo\.sh" --lock prod-smoke$/);
+    assert.ok(maxColumnCheckMs(config.checks) < config.claude.turnTimeoutMs);
+    assert.equal(config.checks.reportStatus, true);
+    assert.equal(config.server.publicUrl, 'http://symphony.lan');
+    assert.match(config.hooks.beforeRemove ?? '', /hooks\/laravel-db-drop\.sh/);
   });
 
   it('turns base_branch and auto_merge on through the environment only', async () => {

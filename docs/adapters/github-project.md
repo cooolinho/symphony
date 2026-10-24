@@ -104,7 +104,7 @@ they create are sub-issues of that issue (`create_sub_issue`).
 
 | Tool | Input | Mutates | Result |
 |---|---|---|---|
-| `get_issue` | `max_comment_chars?` | no | JSON `{issue, status_options: string[], comments: [{author, created_at, url, body}], total_comments, linked_pull_requests: [{number, url, state, title, head}]}` (the last may be empty): issue fields, valid status names, the latest 20 comments, linked pull requests. Stage-result markers in comment bodies are shown as `<!-- symphony:result -->` without the base64 payload (the comments on GitHub and `readResults` are unchanged). `max_comment_chars` cuts each body and notes the number of cut characters. |
+| `get_issue` | `max_comment_chars?` | no | JSON `{issue, status_options: string[], comments: [{author, created_at, url, body}], total_comments, linked_pull_requests: [{number, url, state, title, head}], branch_pull_request}` (the list may be empty): issue fields, valid status names, the latest 20 comments, linked pull requests, and the open pull request from the issue branch with the state of its checks (`{number, url, base, head_sha, checks: {state, failing, pending}}`, or null). Stage-result markers in comment bodies are shown as `<!-- symphony:result -->` without the base64 payload (the comments on GitHub and `readResults` are unchanged). `max_comment_chars` cuts each body and notes the number of cut characters. |
 | `set_status` | `status` | yes | Moves the board item; the name is matched case-insensitively. An unknown name returns the valid options. Guarded: see below. Entering `auto_merge.on_enter` triggers the [auto-merge](#auto-merge); the result then carries `auto_merge` and the final `status`. Not offered to [roles](../configuration.md#roles) with `result`: they hand off with Symphony's [`report_result`](../results.md#the-report_result-tool), which moves the issue through the same adapter operation. |
 | `add_comment` | `body` | yes | Posts a comment on the issue; returns its URL. Text containing `<!-- symphony:` is rejected (`invalid_argument`), see [Stage-result markers](#stage-result-markers-and-the-bot-account). |
 | `open_pull_request` | `head`, `title`, `body?`, `base?`, `draft?` | yes | Opens a PR from an already pushed branch (base defaults to `base_branch`, else the default branch). An open PR for the same branch is returned instead of a duplicate (`created: false`). |
@@ -161,6 +161,7 @@ and take the issue as normalized by the adapter. Queries are retried like all qu
 | `viewerLogin()` | `viewer { login }` | The login of the account behind the token; fetched once per adapter instance. |
 | `postComment(issue, body)` | `addComment` | `{url}` of the new comment. The `add_comment` tool and `commentOnIssue` use it. |
 | `setStatus(issue, column, {checkedSha?})` | `updateProjectV2ItemFieldValue`, then [auto-merge](#auto-merge) | `{previous, status, autoMerge?}`; `checkedSha` is the commit the entry checks ran on, and auto-merge merges no other head. The one function behind the `set_status` tool, so both behave identically; `previous` is the column in the `issue` passed in. An unknown column fails with `invalid_argument` and names the valid ones. It does not run the transition guard: the caller does. |
+| `reportCheckStatus(issue, status)` | REST `POST /repos/{repo}/statuses/{sha}` | Commit status `symphony/<name>` for a named entry check (`checks.report_status`); GraphQL has no mutation for it. The REST base is `api.github.com`, or `<host>/api/v3` on GitHub Enterprise Server. Throws on a refusal; the guard only logs that. |
 | `mergeWatch()` | — | `{column, awaiting(issue), retry(issue)}` for issues waiting in `auto_merge.on_enter` with the label `awaiting-checks`; null without `auto_merge` or with `checks.wait: false`. The orchestrator fetches `column` with the board and calls `retry` once per poll for each waiting issue. |
 | `addLabels(issue, names, {create})` | label lookup, `createLabel`, `addLabelsToLabelable` | `{added, created, unknown}`. Names are matched case-insensitively. A label the repository does not have is reported in `unknown`, except with `create` for the families `Type: <value>`, `Complexity: <value>` and `needs-human`: those are created (with the colors and descriptions of the standard labels from `repo-init`, else grey) and added. Any other name is never created. |
 | `removeLabels(issue, names)` | label lookup, `removeLabelsFromLabelable` | `{removed, unknown}`. A label the issue does not carry is a no-op on GitHub. |
@@ -255,7 +256,11 @@ jobs:
     if: vars.CI_RUNNER != 'symphony'   # Settings → Secrets and variables → Actions → Variables: CI_RUNNER=symphony
 ```
 
-Without the variable (or with any other value) the jobs run again and the gate waits for them.
+Without the variable (or with any other value) the jobs run again and the gate waits for them. Symphony's own checks
+`ci` and `prod-smoke` (the final gate of `In review`, see [named checks](../configuration.md#named-checks)) are
+reported as commit statuses `symphony/ci` and `symphony/prod-smoke` with `checks.report_status`, so the gate and branch
+rules see them like any other check. `get_issue` shows the developer the checks of the branch's pull request
+(`branch_pull_request`).
 
 Validation: `auto_merge` needs `base_branch` and `on_enter`; `on_enter` must not be an active or terminal state (it
 is entered after the agents are done), `done_state` must be terminal and neither `on_conflict` nor `on_checks_failed`
