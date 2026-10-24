@@ -1,7 +1,7 @@
 import type { AgentToolContext, AgentToolSpec, AllowedTransition, Issue, StatusChange, ToolResult, TrackerAdapter } from '../tracker/types.ts';
 import { SerialQueue } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
-import { tail, truncate } from '../util/text.ts';
+import { truncate } from '../util/text.ts';
 import { classify, isComplexityLabel, isTypeLabel, type IssueComplexity, type IssueType } from '../workflow/classify.ts';
 import { normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
 import { profileFor } from '../workflow/profile.ts';
@@ -18,6 +18,7 @@ import {
 } from '../workflow/results.ts';
 import type { RoleConfig } from '../workflow/roles.ts';
 import { docsRoles, securityRoles } from '../workflow/validate.ts';
+import { fitCheckOutput } from './guard.ts';
 import { filesOutside } from './changed-files.ts';
 import { docsNeeded, type DocsFacts } from './docs.ts';
 import { securityNeeded, type SecurityFacts } from './security.ts';
@@ -142,7 +143,17 @@ function withCheckFailedNote(result: StageResult, failed: NonNullable<AllowedTra
   const summary = truncate(result.summary, Math.max(0, SUMMARY_MAX - note.length - 2));
   const room = SUMMARY_MAX - summary.length - note.length - NOTE_SLACK;
   const output = failed.output.trim();
-  const quoted = output !== '' && room >= MIN_QUOTED_OUTPUT ? `\n\n${tail(output, room).replace(/^/gm, '    ')}` : '';
+  // Every failed check keeps its share (fitCheckOutput): the developer needs the ci failures as much as the smoke test's.
+  // The indentation of every line counts too, so the output shrinks until the indented text fits.
+  let quoted = '';
+  for (let budget = room; output !== '' && budget >= MIN_QUOTED_OUTPUT; ) {
+    const indented = fitCheckOutput(output, budget).replace(/^/gm, '    ');
+    if (indented.length <= room) {
+      quoted = `\n\n${indented}`;
+      break;
+    }
+    budget -= indented.length - room;
+  }
   return { ...result, summary: `${summary}\n\n${note}${quoted}` };
 }
 

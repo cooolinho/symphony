@@ -4,7 +4,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 import { Logger } from '../src/log.ts';
-import { CHECK_PASSED_NOTE, createGuard, entryChecksFor, guardTools, toolsForRole, type CheckCache, type CheckRecord, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
+import { CHECK_PASSED_NOTE, createGuard, entryChecksFor, fitCheckOutput, guardTools, toolsForRole, type CheckCache, type CheckRecord, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
 import type { AgentToolContext, AgentToolSpec, ToolResult } from '../src/tracker/types.ts';
 import { WorkspaceManager } from '../src/workspace/manager.ts';
 import { baseFront, makeIssue, makeWorkflow, tempDir } from './helpers.ts';
@@ -345,14 +345,23 @@ describe('named entry checks', () => {
     assert.match(decision?.message ?? '', /The entry check for "ci" for "Agent review" failed, so the issue was not moved\.\n\nbroken\n/);
   });
 
-  it('stops at an environment problem and reports it as an error', async () => {
+  it('keeps every failed check\'s section when the output must be shortened', () => {
+    const output = `== ci: failed (exit 1, 8m12s) ==\n${'a'.repeat(3000)}\nci tail\n\n== prod-smoke: failed (exit 1, 9m07s) ==\n${'b'.repeat(3000)}\nsmoke tail`;
+    const fitted = fitCheckOutput(output, 1000);
+    assert.ok(fitted.length <= 1000, String(fitted.length));
+    assert.match(fitted, /^== ci: failed \(exit 1, 8m12s\) ==\n…?a+\nci tail\n\n== prod-smoke: failed \(exit 1, 9m07s\) ==\n…?b+\nsmoke tail$/);
+    assert.equal(fitCheckOutput('one check\nfailed', 6), '…ailed', 'a single output keeps its end');
+    assert.equal(fitCheckOutput(output, 100_000), output.split('\n\n').map((part) => part.trim()).join('\n\n'));
+  });
+
+  it('stops at an environment problem and reports it as an error, with the end of its output', async () => {
     const { guard, ran, statuses } = named([
-      { name: 'ci', command: 'exit 2' },
+      { name: 'ci', command: 'echo "environment: git fetch origin failed"; exit 2' },
       { name: 'prod-smoke', command: 'exit 0' },
     ]);
     const decision = denied(await guard('Agent review'));
     assert.equal(decision?.category, 'check_error');
-    assert.match(decision?.message ?? '', /The entry check for "ci" for "Agent review" could not run properly/);
+    assert.match(decision?.message ?? '', /The entry check for "ci" for "Agent review" could not run properly \(exited with code 2\)\.\n\nThe end of its output:\n\nenvironment: git fetch origin failed\n\n.*\(quote the output\)/s);
     assert.deepEqual(ran(), ['ci']);
     assert.deepEqual(statuses, ['ci:pending:head', 'ci:error:head']);
   });
