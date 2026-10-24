@@ -237,7 +237,7 @@ describe('e2e roles scenario', () => {
     ]);
     assert.equal(config.roles?.find((role) => role.name === 'reviewer')?.onCheckFailed, ROLE_STATUS.progress);
     assert.equal(config.pipeline.maxReviewRounds, 3);
-    assert.equal(config.checks.onEnter.get('agent review'), `bash "$SYMPHONY_WORKFLOW_DIR/${ROLES_FILES.check}"`);
+    assert.equal(config.checks.onEnter.get('agent review')?.[0]?.command, `bash "$SYMPHONY_WORKFLOW_DIR/${ROLES_FILES.check}"`);
     assert.equal(config.agent.maxConcurrentAgentsByState.get('agent review'), AGENT_REVIEW_LIMIT);
     assert.ok(config.agent.maxContinuations !== null);
     assert.deepEqual(config.claude.plugins, [path.join(ROOT, '.claude')]);

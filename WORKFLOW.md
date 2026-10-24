@@ -103,6 +103,10 @@ hooks:
     git fetch --quiet --prune origin
     base="${SYMPHONY_BASE_BRANCH:-$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed 's|^origin/||')}"
     if [ -n "$base" ] && [ "$(git branch --show-current)" = "$base" ]; then git merge --quiet --ff-only "origin/$base" || true; fi
+  # Drops the workspace's MySQL databases (SYMPHONY_LARAVEL_DB=mysql, the CI database of checks/laravel.sh --full);
+  # a no-op without SYMPHONY_MYSQL_USER. A failure is logged, the workspace is removed anyway.
+  before_remove: |
+    bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-db-drop.sh"
 
 agent:
   max_concurrent_agents: ${SYMPHONY_MAX_CONCURRENT_AGENTS:-3}
@@ -116,7 +120,7 @@ agent:
   # A model limit ("You've reached your Fable limit") holds only that model: until the reset + 60 s, else this long.
   # model_hold_ms: 3600000
   max_concurrent_agents_by_state:
-    "Agent review": 1                        # one review at a time
+    "Agent review": 2                        # two reviews at a time: an approval runs the In review checks (up to 50 min) in its session
     "Security review": 1                     # one security audit at a time
     Documentation: 1                         # one docs run at a time
     Testing: 1                               # one test run at a time (bug, feature and refactor issues; every issue with SYMPHONY_AFTER_IMPLEMENTATION=Testing)
@@ -376,12 +380,25 @@ checks:
   # Entry checks: set_status into these columns only succeeds when the script passes (exit 0).
   # checks/laravel.sh is a no-op (exit 0) for repositories without a Laravel app.
   # A check that runs longer fails with check_timeout: the issue stays in its column (never Blocked).
-  # Must stay below claude.turn_timeout_ms (default 3600000).
+  # Must stay below claude.turn_timeout_ms (default 3600000), like the sum of a column's named checks.
   timeout_ms: ${SYMPHONY_CHECKS_TIMEOUT_MS:-1800000}
+  # true: named checks become commit statuses symphony/<name> on the checked commit (GitHub), which the auto_merge gate
+  # and branch rules read. server.public_url links them to the agent page.
+  report_status: ${SYMPHONY_CHECKS_REPORT_STATUS:-false}
   on_enter:
     Testing: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"       # only reached with the Testing stage on: the developer hands over green code
     Agent review: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
-    In review: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
+    # The final gate before auto_merge: the repository's own CI, standing in for GitHub Actions.
+    # ci: .symphony/checks/ci.sh of the base branch, else checks/laravel.sh --full (skipped without a Laravel app).
+    # prod-smoke: .symphony/checks/prod-smoke.sh of the base branch, one run per repository at a time; skipped without
+    # one. Both get the Docker daemon and MySQL of the compose profile "ci" (docs/docker.md) when it runs.
+    In review:
+      - name: ci
+        command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" ci -- bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh" --full
+        timeout_ms: ${SYMPHONY_CI_TIMEOUT_MS:-1200000}
+      - name: prod-smoke
+        command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" --lock prod-smoke
+        timeout_ms: ${SYMPHONY_SMOKE_TIMEOUT_MS:-1800000}
 
 laravel:
   # Laravel apps (root or one level deep) that require laravel/boost get Boost's guidelines, skills and
@@ -400,6 +417,7 @@ server:
   port: $SYMPHONY_PORT                       # dashboard and JSON API; unset = no dashboard
   host: ${SYMPHONY_HOST:-127.0.0.1}          # bind address; non-loopback only behind an authenticating proxy
   allow_remote_control: ${SYMPHONY_ALLOW_REMOTE_CONTROL:-false}  # Retry/Resume now on a non-loopback bind
+  public_url: ${SYMPHONY_PUBLIC_URL:-}       # the dashboard as people reach it (https://symphony.example.com); links in commit statuses
 ---
 {% capture branch %}{% if issue.branch_name %}{{ issue.branch_name }}{% else %}symphony/issue-{{ issue.native_ref.number }}{% endif %}{% endcapture %}{% assign base = issue.native_ref.base_branch %}{% assign splittable = false %}{% if issue.complexity == "XL" and issue.native_ref.parent == nil %}{% assign splittable = true %}{% endif %}{% assign integration = false %}{% if issue.native_ref.sub_issues.size > 0 and results.implementation == nil %}{% assign integration = true %}{% endif %}{% capture agent_list %}{% for agent in agents %}
 - `{{ agent.name }}`: {{ agent.description }}{% endfor %}{% endcapture %}{% capture agent_intro %}Subagents you may start with the Agent tool (`subagent_type` is the name). They are optional: each one works in its own context and costs tokens, so use them where they pay off. You stay responsible for their results; check them before you rely on them.{{ agent_list }}{% endcapture %}{% capture analysis_block %}{% if results.analysis %}

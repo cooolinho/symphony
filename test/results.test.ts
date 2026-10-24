@@ -22,6 +22,7 @@ import {
 
 const check: CheckRecord = {
   target: 'Agent review',
+  name: null,
   role: 'developer',
   sha: 'a'.repeat(40),
   exitCode: 0,

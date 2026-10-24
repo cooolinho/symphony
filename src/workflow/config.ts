@@ -37,9 +37,22 @@ export interface HooksConfig {
 export interface ChecksConfig {
   timeoutMs: number;
   retries: number;
-  /** Keys are normalized column names (trimmed, lowercase); values are bash scripts. */
-  onEnter: ReadonlyMap<string, string>;
+  /** Keys are normalized column names (trimmed, lowercase); values are the column's checks, run in order (never empty). */
+  onEnter: ReadonlyMap<string, readonly EntryCheck[]>;
+  /** Report named checks to the tracker (GitHub commit statuses `symphony/<name>`). */
+  reportStatus: boolean;
 }
+
+/** One entry check: a bash script; a named one (`ci`, `prod-smoke`) is reported as `symphony/<name>`. */
+export interface EntryCheck {
+  /** null for the plain string form (`Column: <script>`). */
+  name: string | null;
+  command: string;
+  timeoutMs: number;
+}
+
+/** Names of entry checks: they become commit status contexts (`symphony/<name>`). */
+const CHECK_NAME = /^[a-z0-9][a-z0-9._-]{0,49}$/;
 
 export interface AgentConfig {
   maxConcurrentAgents: number;
@@ -159,6 +172,8 @@ export interface ServerConfig {
   host: string;
   /** Allow restarting workers (POST /api/v1/<identifier>/retry) on a non-loopback bind. */
   allowRemoteControl: boolean;
+  /** The dashboard's address as people reach it (e.g. https://symphony.example.com), for links Symphony posts; null = none. */
+  publicUrl: string | null;
 }
 
 export interface ServiceConfig {
@@ -773,6 +788,69 @@ function readByModel(reader: Reader, claudeRaw: Record<string, unknown>): Map<st
   return byModel;
 }
 
+/** How long the checks of one column may run together (each check's own timeout, summed). */
+export function columnCheckMs(checks: readonly EntryCheck[]): number {
+  return checks.reduce((sum, check) => sum + check.timeoutMs, 0);
+}
+
+/** The longest any column's checks may run together; 0 without checks. */
+export function maxColumnCheckMs(checks: Pick<ChecksConfig, 'onEnter'>): number {
+  return Math.max(0, ...[...checks.onEnter.values()].map(columnCheckMs));
+}
+
+/**
+ * One `checks.on_enter` value: a script (string), one named check (`{name, command, timeout_ms}`) or a list of
+ * either. `checks.on_enter` is shell code and keeps its `$VAR`s, so `name` and `timeout_ms` are resolved here.
+ */
+function readEntryChecks(
+  value: unknown,
+  field: string,
+  defaultTimeoutMs: number,
+  env: NodeJS.ProcessEnv,
+  errors: string[],
+): { checks: EntryCheck[]; ownTimeout: boolean } | null {
+  const entries = Array.isArray(value) ? value : [value];
+  const checks: EntryCheck[] = [];
+  let ownTimeout = false;
+  const before = errors.length;
+  for (const [index, entry] of entries.entries()) {
+    const at = Array.isArray(value) ? `${field}[${index}]` : field;
+    if (typeof entry === 'string') {
+      if (entry.trim() !== '') checks.push({ name: null, command: entry, timeoutMs: defaultTimeoutMs });
+      continue;
+    }
+    if (!isPlainObject(entry)) {
+      errors.push(`${at} must be a script or a map with name and command`);
+      continue;
+    }
+    for (const key of Object.keys(entry)) {
+      if (!['name', 'command', 'timeout_ms'].includes(key)) errors.push(`${at}.${key} is not a known key (allowed: name, command, timeout_ms)`);
+    }
+    const name = resolveEnvReference(entry.name, env);
+    if (typeof name !== 'string' || !CHECK_NAME.test(name)) {
+      errors.push(`${at}.name must be lowercase letters, digits, ".", "_" or "-" (at most 50, e.g. ci or prod-smoke)`);
+      continue;
+    }
+    if (checks.some((check) => check.name === name)) errors.push(`${at}.name "${name}" is used twice in ${field}`);
+    if (typeof entry.command !== 'string' || entry.command.trim() === '') {
+      errors.push(`${at}.command must be a non-empty script`);
+      continue;
+    }
+    let timeoutMs = defaultTimeoutMs;
+    const timeout = resolveEnvReference(entry.timeout_ms, env);
+    if (timeout !== undefined && timeout !== null && timeout !== '') {
+      const parsed = Number(timeout);
+      if (!Number.isSafeInteger(parsed) || parsed < 1) errors.push(`${at}.timeout_ms must be a positive integer`);
+      else {
+        timeoutMs = parsed;
+        ownTimeout = true;
+      }
+    }
+    checks.push({ name, command: entry.command, timeoutMs });
+  }
+  return errors.length > before ? null : { checks, ownTimeout };
+}
+
 /**
  * Replaces whole-value `$NAME` references (strings and list items) with environment values;
  * unset or empty variables make the setting count as omitted. Hooks and check scripts (`checks.on_enter`, shell code)
@@ -860,24 +938,33 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
 
   // checks
   const checksRaw = reader.section(raw, 'checks');
-  const onEnter = new Map<string, string>();
+  const checksTimeoutMs = reader.int(checksRaw, 'timeout_ms', 'checks.timeout_ms', hooks.timeoutMs, 1);
+  const onEnter = new Map<string, EntryCheck[]>();
+  /** Columns whose checks set their own timeout or run more than one script: their sum is validated below. */
+  const summedColumns: string[] = [];
   const onEnterRaw = checksRaw.on_enter;
   if (onEnterRaw !== undefined && onEnterRaw !== null) {
     if (!isPlainObject(onEnterRaw)) {
       reader.errors.push('checks.on_enter must be a map of column names to scripts');
     } else {
-      for (const [column, script] of Object.entries(onEnterRaw)) {
+      for (const [column, value] of Object.entries(onEnterRaw)) {
         const key = normalizeStateName(column);
-        if (typeof script !== 'string') reader.errors.push(`checks.on_enter.${column} must be a string`);
-        else if (key === '') reader.errors.push('checks.on_enter column names must not be empty');
-        else if (script.trim() !== '') onEnter.set(key, script);
+        if (key === '') {
+          reader.errors.push('checks.on_enter column names must not be empty');
+          continue;
+        }
+        const parsed = readEntryChecks(value, `checks.on_enter.${column}`, checksTimeoutMs, options.env, reader.errors);
+        if (parsed === null || parsed.checks.length === 0) continue;
+        onEnter.set(key, parsed.checks);
+        if (parsed.checks.length > 1 || parsed.ownTimeout) summedColumns.push(key);
       }
     }
   }
   const checks: ChecksConfig = {
-    timeoutMs: reader.int(checksRaw, 'timeout_ms', 'checks.timeout_ms', hooks.timeoutMs, 1),
+    timeoutMs: checksTimeoutMs,
     retries: reader.int(checksRaw, 'retries', 'checks.retries', 0, 0),
     onEnter,
+    reportStatus: reader.bool(checksRaw, 'report_status', 'checks.report_status', false),
   };
   if (checks.retries > 3) reader.errors.push(`checks.retries must be between 0 and 3 (got ${checks.retries})`);
 
@@ -999,6 +1086,13 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
       `checks.timeout_ms (${checks.timeoutMs}) must be less than claude.turn_timeout_ms (${claude.turnTimeoutMs})`,
     );
   }
+  // The checks of one column run inside one tool call, one after the other.
+  for (const column of summedColumns) {
+    const total = columnCheckMs(onEnter.get(column) ?? []);
+    if (total >= claude.turnTimeoutMs) {
+      reader.errors.push(`the checks of checks.on_enter.${column} may take ${total} ms together, which must be less than claude.turn_timeout_ms (${claude.turnTimeoutMs})`);
+    }
+  }
 
   // workspace integrations (e.g. laravel)
   const integrations: Record<string, unknown> = {};
@@ -1036,7 +1130,13 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     port: portValue === undefined || portValue === null ? null : reader.int(serverRaw, 'port', 'server.port', 0, 0),
     host: reader.string(serverRaw, 'host', 'server.host')?.trim() || DEFAULTS.serverHost,
     allowRemoteControl: reader.bool(serverRaw, 'allow_remote_control', 'server.allow_remote_control', false),
+    publicUrl: null,
   };
+  const publicUrl = reader.string(serverRaw, 'public_url', 'server.public_url')?.trim() ?? '';
+  if (publicUrl !== '') {
+    if (/^https?:\/\/[^\s/]+/.test(publicUrl)) server.publicUrl = publicUrl.replace(/\/+$/, '');
+    else reader.errors.push('server.public_url must be an http(s) URL');
+  }
   if (server.port !== null && server.port > 65_535) reader.errors.push('server.port must be <= 65535');
 
   if (reader.errors.length > 0) {

@@ -8,7 +8,7 @@ import { trackerDefaults } from '../src/tracker/registry.ts';
 import { SymphonyError } from '../src/util/errors.ts';
 import { loadEnvFile } from '../src/util/env.ts';
 import type { LaravelConfig } from '../src/laravel/integration.ts';
-import { DEFAULTS, resolveConfig, type ServiceConfig } from '../src/workflow/config.ts';
+import { DEFAULTS, maxColumnCheckMs, resolveConfig, type ServiceConfig } from '../src/workflow/config.ts';
 import { roleFor, sessionAgents, type RoleConfig } from '../src/workflow/roles.ts';
 import { pluginAgents } from '../src/workflow/command.ts';
 import { loadWorkflowFile, parseWorkflow } from '../src/workflow/loader.ts';
@@ -205,15 +205,45 @@ describe('config layer', () => {
   });
 
   it('parses checks with defaults, normalized columns and literal $VAR scripts', () => {
-    assert.deepEqual(resolve({ hooks: { timeout_ms: 90_000 } }).checks, { timeoutMs: 90_000, retries: 0, onEnter: new Map() });
+    assert.deepEqual(resolve({ hooks: { timeout_ms: 90_000 } }).checks, { timeoutMs: 90_000, retries: 0, onEnter: new Map(), reportStatus: false });
     const config = resolve(
       { checks: { timeout_ms: 5000, retries: 2, on_enter: { ' Agent Review ': 'bash "$SYMPHONY_WORKFLOW_DIR/c.sh"' } } },
       { SYMPHONY_WORKFLOW_DIR: 'x' },
     );
     assert.equal(config.checks.timeoutMs, 5000);
     assert.equal(config.checks.retries, 2);
-    assert.deepEqual([...config.checks.onEnter], [['agent review', 'bash "$SYMPHONY_WORKFLOW_DIR/c.sh"']]);
-    assert.equal(resolve({ checks: { on_enter: { Done: '$SETUP' } } }, { SETUP: 'x' }).checks.onEnter.get('done'), '$SETUP');
+    assert.deepEqual([...config.checks.onEnter], [['agent review', [{ name: null, command: 'bash "$SYMPHONY_WORKFLOW_DIR/c.sh"', timeoutMs: 5000 }]]]);
+    assert.deepEqual(resolve({ checks: { on_enter: { Done: '$SETUP' } } }, { SETUP: 'x' }).checks.onEnter.get('done')?.[0]?.command, '$SETUP');
+  });
+
+  it('parses named checks: a list per column with their own timeouts, resolved from the environment', () => {
+    const config = resolve(
+      {
+        checks: {
+          timeout_ms: 5000,
+          report_status: '${REPORT:-false}',
+          on_enter: {
+            'In review': [
+              { name: 'ci', command: 'bash "$SYMPHONY_WORKFLOW_DIR/ci.sh"', timeout_ms: '${CI_TIMEOUT:-20000}' },
+              { name: 'prod-smoke', command: 'smoke $X' },
+              'echo plain',
+            ],
+            Testing: { name: 'fast', command: 'exit 0' },
+          },
+        },
+        server: { public_url: 'https://symphony.example.com/' },
+      },
+      { REPORT: 'true' },
+    );
+    assert.deepEqual(config.checks.onEnter.get('in review'), [
+      { name: 'ci', command: 'bash "$SYMPHONY_WORKFLOW_DIR/ci.sh"', timeoutMs: 20_000 },
+      { name: 'prod-smoke', command: 'smoke $X', timeoutMs: 5000 },
+      { name: null, command: 'echo plain', timeoutMs: 5000 },
+    ]);
+    assert.deepEqual(config.checks.onEnter.get('testing'), [{ name: 'fast', command: 'exit 0', timeoutMs: 5000 }]);
+    assert.equal(config.checks.reportStatus, true);
+    assert.equal(config.server.publicUrl, 'https://symphony.example.com');
+    assert.equal(maxColumnCheckMs(config.checks), 30_000);
   });
 
   it('takes checks.timeout_ms from an environment reference', () => {
@@ -233,7 +263,17 @@ describe('config layer', () => {
     };
     assert.match(message({ checks: { retries: 4 } }), /checks\.retries/);
     assert.match(message({ checks: { retries: -1 } }), /checks\.retries/);
-    assert.match(message({ checks: { on_enter: { Review: 5 } } }), /checks\.on_enter\.Review must be a string/);
+    assert.match(message({ checks: { on_enter: { Review: 5 } } }), /checks\.on_enter\.Review must be a script or a map with name and command/);
+    assert.match(message({ checks: { on_enter: { Review: [{ name: 'CI', command: 'x' }] } } }), /checks\.on_enter\.Review\[0\]\.name must be lowercase/);
+    assert.match(message({ checks: { on_enter: { Review: [{ name: 'ci', command: 'x' }, { name: 'ci', command: 'y' }] } } }), /name "ci" is used twice/);
+    assert.match(message({ checks: { on_enter: { Review: { name: 'ci' } } } }), /checks\.on_enter\.Review\.command must be a non-empty script/);
+    assert.match(message({ checks: { on_enter: { Review: { name: 'ci', command: 'x', when: 'y' } } } }), /checks\.on_enter\.Review\.when is not a known key/);
+    assert.match(message({ checks: { on_enter: { Review: { name: 'ci', command: 'x', timeout_ms: 0 } } } }), /timeout_ms must be a positive integer/);
+    assert.match(
+      message({ checks: { on_enter: { Review: [{ name: 'a', command: 'x', timeout_ms: 2_000_000 }, { name: 'b', command: 'y', timeout_ms: 2_000_000 }] } } }),
+      /the checks of checks\.on_enter\.review may take 4000000 ms together, which must be less than claude\.turn_timeout_ms/,
+    );
+    assert.match(message({ server: { public_url: 'symphony.lan' } }), /server\.public_url must be an http\(s\) URL/);
     assert.match(message({ checks: { timeout_ms: 3_600_000 } }), /checks\.timeout_ms/);
     assert.match(message({ claude: { turn_timeout_ms: 1000 }, checks: { timeout_ms: 1000 } }), /checks\.timeout_ms/);
   });

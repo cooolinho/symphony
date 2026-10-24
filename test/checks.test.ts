@@ -16,7 +16,15 @@ if (args[0] === '-l') {
   if (fs.readFileSync(args[1], 'utf8').includes('SYNTAX_ERROR')) { console.log('Parse error in ' + args[1]); process.exit(255); }
   process.exit(0);
 }
+if (args[1] === 'test' && process.env.FAKE_ENV_LOG) fs.appendFileSync(process.env.FAKE_ENV_LOG, JSON.stringify([process.env.DB_CONNECTION, process.env.DB_DATABASE, process.env.DB_USERNAME, process.env.DB_PASSWORD]) + '\\n');
 if (args[1] === 'test' && process.env.FAKE_TEST_FAIL) { console.log('Tests: 1 failed'); process.exit(1); }
+`;
+
+/** Fake mysql client: logs its arguments and whether the password came in MYSQL_PWD; FAKE_MYSQL_FAIL makes it fail. */
+const FAKE_MYSQL = `#!${process.execPath}
+const fs = require('node:fs');
+fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify(['mysql', ...process.argv.slice(2), 'pwd=' + (process.env.MYSQL_PWD || '')]) + '\\n');
+if (process.env.FAKE_MYSQL_FAIL) { console.log('ERROR 1045 (28000): Access denied'); process.exit(1); }
 `;
 
 /**
@@ -93,13 +101,14 @@ function fixture(options: { scripts?: Record<string, string>; phpstan?: boolean;
   }
   write(base, 'bin/php', FAKE_PHP, 0o755);
   write(base, 'bin/composer', FAKE_COMPOSER, 0o755);
+  write(base, 'bin/mysql', FAKE_MYSQL, 0o755);
   const log = path.join(base, 'calls.log');
   fs.writeFileSync(log, '');
   return { repo, origin, log, bin };
 }
 
-function run(f: Fixture, env: NodeJS.ProcessEnv = {}, cwd = f.repo) {
-  const result = spawnSync('bash', [SCRIPT], {
+function run(f: Fixture, env: NodeJS.ProcessEnv = {}, cwd = f.repo, args: string[] = [], script = SCRIPT) {
+  const result = spawnSync('bash', [script, ...args], {
     cwd,
     encoding: 'utf8',
     env: { ...process.env, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, ...env },
@@ -256,5 +265,137 @@ describe('checks/laravel.sh', () => {
     assert.ok(names.includes('composer run-script test'));
     assert.ok(!names.some((n) => n.startsWith('pint') || n.startsWith('phpstan') || n === 'php artisan test'));
     assert.equal(run(f, { FAKE_FAIL: 'test' }).status, 1);
+  });
+});
+
+describe('checks/laravel.sh --full', () => {
+  const full = (f: Fixture, env: NodeJS.ProcessEnv = {}) => run(f, env, f.repo, ['--full']);
+
+  it('checks the style of every file, then runs the tests (on the app\'s own database without SYMPHONY_CI_DB)', () => {
+    const f = fixture({ phpstan: true });
+    const result = full(f);
+    assert.equal(result.status, 0, result.out);
+    const made = calls(f);
+    assert.deepEqual(made.find((call) => call[0] === 'pint'), ['pint', '--test']);
+    assert.ok(made.some((call) => call[0] === 'phpstan'));
+    assert.ok(made.some((call) => call[0] === 'php' && call[2] === 'test'));
+    assert.equal(made.some((call) => call[0] === 'mysql' || call[2] === 'migrate'), false);
+  });
+
+  it('skips (exit 78) without a Laravel app', () => {
+    const f = fixture();
+    const empty = tempDir('symphony-no-app-');
+    const result = run(f, {}, empty, ['--full']);
+    assert.equal(result.status, 78, result.out);
+    assert.match(result.out, /no Laravel app/);
+  });
+
+  it('with SYMPHONY_CI_DB=mysql: creates a database of its own, migrates, tests against it and drops it', () => {
+    const f = fixture();
+    const envLog = path.join(path.dirname(f.log), 'env.log');
+    const result = full(f, {
+      SYMPHONY_CI_DB: 'mysql',
+      SYMPHONY_MYSQL_HOST: 'mysql',
+      SYMPHONY_MYSQL_USER: 'symphony',
+      SYMPHONY_MYSQL_PASSWORD: 's3cret',
+      SYMPHONY_WORKSPACE_KEY: 'acme_app_7-abc',
+      FAKE_ENV_LOG: envLog,
+    });
+    assert.equal(result.status, 0, result.out);
+    const db = `symphony_${execFileSync('sh', ['-c', "printf %s acme_app_7-abc | sha256sum | cut -c1-12"], { encoding: 'utf8' }).trim()}_ci`;
+    assert.match(result.out, new RegExp(`tests against MySQL database ${db}`));
+    const made = calls(f);
+    const mysql = made.filter((call) => call[0] === 'mysql');
+    assert.deepEqual(mysql[0], ['mysql', '--host=mysql', '--port=3306', '--user=symphony', `--execute=DROP DATABASE IF EXISTS \`${db}\`; CREATE DATABASE \`${db}\``, 'pwd=s3cret']);
+    assert.equal(mysql[mysql.length - 1]?.[4], `--execute=DROP DATABASE IF EXISTS \`${db}\``, 'dropped at the end');
+    const order = made.filter((call) => call[0] === 'php').map((call) => call[2]);
+    assert.deepEqual(order.slice(-3), ['config:clear', 'migrate', 'test']);
+    assert.deepEqual(JSON.parse(fs.readFileSync(envLog, 'utf8').trim()), ['mysql', db, 'symphony', 's3cret']);
+    assert.equal(result.out.includes('s3cret'), false, 'the password never shows up in the output');
+  });
+
+  it('drops the database after failing tests too, and exits 2 when MySQL is not usable', () => {
+    const f = fixture();
+    const env = { SYMPHONY_CI_DB: 'mysql', SYMPHONY_MYSQL_USER: 'symphony', SYMPHONY_WORKSPACE_KEY: 'k' };
+    const failing = full(f, { ...env, FAKE_TEST_FAIL: '1' });
+    assert.equal(failing.status, 1, failing.out);
+    const mysql = calls(f).filter((call) => call[0] === 'mysql');
+    assert.match(String(mysql[mysql.length - 1]?.[4]), /^--execute=DROP DATABASE IF EXISTS `symphony_[0-9a-f]{12}_ci`$/);
+
+    assert.equal(full(fixture(), { SYMPHONY_CI_DB: 'mysql' }).status, 2);
+    const denied = full(fixture(), { ...env, FAKE_MYSQL_FAIL: '1' });
+    assert.equal(denied.status, 2);
+    assert.match(denied.out, /environment: cannot create the MySQL database symphony_[0-9a-f]{12}_ci .*Access denied/);
+  });
+});
+
+describe('checks/repo.sh', () => {
+  const REPO_SCRIPT = path.resolve('checks/repo.sh');
+  /** The fixture with `.symphony/checks/<name>.sh` on main (the base branch), optionally changed on the feature branch. */
+  function withCheck(name: string, base: string, feature?: string): Fixture {
+    const f = fixture();
+    const seed = path.join(path.dirname(f.repo), 'seed');
+    write(seed, `.symphony/checks/${name}.sh`, base);
+    git(seed, 'add', '-A');
+    git(seed, 'commit', '-q', '-m', 'check');
+    git(seed, 'push', '-q', f.origin, 'main');
+    git(f.repo, 'fetch', '-q', 'origin');
+    git(f.repo, 'merge', '-q', '--no-edit', 'origin/main');
+    if (feature !== undefined) {
+      write(f.repo, `.symphony/checks/${name}.sh`, feature);
+      git(f.repo, 'add', '-A');
+      git(f.repo, 'commit', '-q', '-m', 'weaken');
+    }
+    git(f.repo, 'push', '-q');
+    return f;
+  }
+  const repo = (f: Fixture, args: string[], env: NodeJS.ProcessEnv = {}) => run(f, env, f.repo, args, REPO_SCRIPT);
+
+  it('runs the script of the base branch, not the pull request\'s copy', () => {
+    const f = withCheck('prod-smoke', 'echo "base check in $PWD"; exit 1', 'echo weakened; exit 0');
+    const result = repo(f, ['prod-smoke']);
+    assert.equal(result.status, 1, result.out);
+    assert.match(result.out, /== prod-smoke: \.symphony\/checks\/prod-smoke\.sh from origin\/main/);
+    assert.match(result.out, /base check in /);
+    assert.equal(result.out.includes('weakened'), false);
+  });
+
+  it('runs the fallback without a repository script, and skips (exit 78) without either', () => {
+    const f = fixture();
+    const fallback = repo(f, ['ci', '--', 'bash', '-c', 'echo fallback ran; exit 0']);
+    assert.equal(fallback.status, 0, fallback.out);
+    assert.match(fallback.out, /fallback ran/);
+    const skipped = repo(f, ['ci']);
+    assert.equal(skipped.status, 78, skipped.out);
+    assert.match(skipped.out, /no \.symphony\/checks\/ci\.sh on origin\/main; skipped/);
+  });
+
+  it('refuses a dirty tree or unpushed commits before running anything', () => {
+    const f = withCheck('ci', 'echo ran; exit 0');
+    write(f.repo, 'app/Dirty.php', '<?php');
+    const result = repo(f, ['ci']);
+    assert.equal(result.status, 1);
+    assert.match(result.out, /working tree is not clean/);
+    assert.equal(result.out.includes('ran'), false);
+  });
+
+  it('maps the CI Docker daemon for the script only, with the address of its published ports', () => {
+    const f = withCheck('prod-smoke', 'echo "host=$DOCKER_HOST tls=$DOCKER_TLS_VERIFY certs=$DOCKER_CERT_PATH ip=$SYMPHONY_DOCKER_HOST_IP"');
+    const result = repo(f, ['prod-smoke'], { SYMPHONY_CI_DOCKER_HOST: 'tcp://localhost:2376', SYMPHONY_CI_DOCKER_CERT_PATH: '/certs/client' });
+    assert.equal(result.status, 0, result.out);
+    assert.match(result.out, /host=tcp:\/\/localhost:2376 tls=1 certs=\/certs\/client ip=127\.0\.0\.1/);
+    const without = repo(f, ['prod-smoke']);
+    assert.match(without.out, /host= tls= certs= ip=$/m);
+  });
+
+  it('--lock runs one check of a name per repository at a time', async () => {
+    const f = withCheck('prod-smoke', 'echo "start $$" >> "$LOCK_LOG"; sleep 0.4; echo "end $$" >> "$LOCK_LOG"');
+    const lockLog = path.join(path.dirname(f.log), 'lock.log');
+    const env = { ...process.env, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, LOCK_LOG: lockLog, TMPDIR: tempDir('symphony-locks-'), SYMPHONY_ISSUE_REPOSITORY: 'acme/app' };
+    const { spawn } = await import('node:child_process');
+    const once = () => new Promise<number | null>((resolve) => spawn('bash', [REPO_SCRIPT, '--lock', 'prod-smoke'], { cwd: f.repo, env, stdio: 'ignore' }).on('exit', resolve));
+    assert.deepEqual(await Promise.all([once(), once()]), [0, 0]);
+    const lines = fs.readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => line.split(' ')[0]);
+    assert.deepEqual(lines, ['start', 'end', 'start', 'end']);
   });
 });

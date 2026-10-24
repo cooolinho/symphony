@@ -346,6 +346,20 @@ export const MERGE_CANDIDATE_QUERY = /* GraphQL */ `
   }
 `;
 
+/** The open pull request from a branch with the checks of its head commit, for `get_issue` (`branch_pull_request`). */
+export const BRANCH_PULL_REQUEST_QUERY = /* GraphQL */ `
+  query SymphonyBranchPullRequest($owner: String!, $name: String!, $head: String!) {
+    repository(owner: $owner, name: $name) {
+      pullRequests(headRefName: $head, states: [OPEN], first: 1) {
+        nodes {
+          number url baseRefName headRefOid
+          ${CHECK_ROLLUP_FIELDS}
+        }
+      }
+    }
+  }
+`;
+
 /** Merges only the head that was read (`expectedHeadOid`), so a later push is never merged unchecked. */
 export const MERGE_PULL_REQUEST_MUTATION = /* GraphQL */ `
   mutation SymphonyMergePullRequest($pullRequestId: ID!, $expectedHeadOid: GitObjectID!, $method: PullRequestMergeMethod!, $headline: String) {

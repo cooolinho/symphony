@@ -17,12 +17,12 @@ import { profileFor } from '../workflow/profile.ts';
 import { roleName, sessionAgents, type RoleConfig } from '../workflow/roles.ts';
 import type { EffectiveWorkflow } from '../workflow/store.ts';
 import { internalResult, renderResultComment, type ResultMeta } from '../workflow/results.ts';
-import { normalizeStateName } from '../workflow/config.ts';
+import { maxColumnCheckMs, normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
 import { EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../workflow/template.ts';
 import { writeAttachments, type AttachmentFile } from '../workspace/attachments.ts';
 import { changedFiles } from '../workspace/changes.ts';
 import { baselineCommit, changedFilesSince } from './changed-files.ts';
-import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord } from './guard.ts';
+import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord, type GuardParams } from './guard.ts';
 import { createResultTool, resultReminder, type PathRule, type ResultToolAdapter, type ResultToolParams } from './result-tool.ts';
 import { reviewedFiles, securityBaseRef } from './security.ts';
 import { interruptedTransition } from './recovery.ts';
@@ -192,6 +192,20 @@ function testPathRule(workspacePath: string, testPaths: readonly string[], start
       return { base, files: await changedFilesSince(workspacePath, base) };
     },
   };
+}
+
+/**
+ * `reportStatus` for the transition guard: named checks become tracker statuses (GitHub: `symphony/<name>`) when
+ * `checks.report_status` is on and the tracker can report them; the link goes to the issue's agent page.
+ */
+export function checkStatusReporter(
+  config: Pick<ServiceConfig, 'checks' | 'server'>,
+  adapter: Pick<TrackerAdapter, 'reportCheckStatus'>,
+  issue: Issue,
+): Pick<GuardParams, 'reportStatus'> {
+  if (!config.checks.reportStatus || adapter.reportCheckStatus === undefined) return {};
+  const targetUrl = config.server.publicUrl !== null ? `${config.server.publicUrl}/agent?id=${encodeURIComponent(issue.identifier)}` : null;
+  return { reportStatus: (report) => adapter.reportCheckStatus?.(issue, { ...report, targetUrl }) ?? Promise.resolve() };
 }
 
 const RESULT_CAPABILITIES = ['readResults', 'postComment', 'setStatus', 'addLabels', 'removeLabels'] as const;
@@ -462,6 +476,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
         callbacks.checkFinished(check);
       },
       onDenied: (target, message) => callbacks.transitionDenied(target, message),
+      ...checkStatusReporter(params.workflow.config, params.adapter, issue),
       onEvent: (event, message, detail) =>
         callbacks.agentEvent({
           pid: lastEvent?.pid ?? null,
@@ -557,7 +572,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       // The bare name too: a repository's own .claude/agents may load the same agent without the plugin prefix.
       deniedAgents: agents.denied.flatMap((agent) => [agent.qualified, agent.name]),
       // Entry checks run inside the status tool call; leave a minute for the tracker call around them.
-      toolTimeoutMs: params.workflow.config.checks.timeoutMs + TOOL_TIMEOUT_MARGIN_MS,
+      toolTimeoutMs: Math.max(params.workflow.config.checks.timeoutMs, maxColumnCheckMs(params.workflow.config.checks)) + TOOL_TIMEOUT_MARGIN_MS,
       tools: guardTools(toolsForRole(params.adapter.agentToolSpecs(), role, issue, support?.tool ?? null), guard),
       toolContext: () => ({
         issue,

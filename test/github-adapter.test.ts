@@ -4,6 +4,7 @@ import { Logger } from '../src/log.ts';
 import { createGuard, guardTools } from '../src/orchestrator/guard.ts';
 import { githubProjectFactory } from '../src/tracker/github-project/index.ts';
 import { parseSettings } from '../src/tracker/github-project/settings.ts';
+import { restBase } from '../src/tracker/github-project/statuses.ts';
 import { TrackerError, type Issue, type ToolResult, type TrackerAdapter } from '../src/tracker/types.ts';
 import { internalResult, renderResultComment } from '../src/workflow/results.ts';
 import type { ServiceConfig } from '../src/workflow/config.ts';
@@ -90,6 +91,8 @@ class FakeGithub {
   viewer = 'symphony-bot';
   /** Numbers handed out to created issues. */
   nextNumber = 100;
+  /** Open pull requests from the issue branch, as `get_issue` reads them (`branch_pull_request`). */
+  branchPullRequests: Json[] = [];
   /** The repository the auto-merge candidate query returns. */
   mergeCandidate: Json = { defaultBranchRef: { name: 'main' }, issue: { labels: { nodes: [] } }, pullRequests: { nodes: [] } };
 
@@ -98,8 +101,15 @@ class FakeGithub {
     return this;
   }
 
-  fetch = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+  /** Reply to REST commit status posts; recorded as op `REST POST statuses` with the URL and body. */
+  statusReply: Reply = { status: 201, body: { id: 1 } };
+
+  fetch = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
     if (this.networkError !== null) throw this.networkError;
+    if (String(url).includes('/statuses/')) {
+      this.requests.push({ op: 'REST POST statuses', variables: { url: String(url), ...(JSON.parse(String(init?.body)) as Json) } });
+      return new Response(JSON.stringify(this.statusReply.body), { status: this.statusReply.status ?? 200 });
+    }
     const { query, variables } = JSON.parse(String(init?.body)) as { query: string; variables: Json };
     const op = /(?:query|mutation)\s+(\w+)/.exec(query)?.[1] ?? 'unknown';
     this.lastQuery = query;
@@ -253,6 +263,8 @@ class FakeGithub {
         return { body: { data: { updatePullRequest: { pullRequest: { number: 5, url: 'https://github.com/acme/app/pull/5', title: variables.title, baseRefName: 'main' } } } } };
       case 'SymphonyCreatePullRequest':
         return { body: { data: { createPullRequest: { pullRequest: { number: 8, url: 'https://github.com/acme/app/pull/8', title: variables.title, isDraft: false } } } } };
+      case 'SymphonyBranchPullRequest':
+        return { body: { data: { repository: { pullRequests: { nodes: this.branchPullRequests } } } } };
       case 'SymphonyMergeCandidate':
         return { body: { data: { repository: this.mergeCandidate } } };
       case 'SymphonyMergePullRequest':
@@ -782,6 +794,37 @@ describe('github_project adapter operations', () => {
   });
 });
 
+describe('github_project commit statuses', () => {
+  it('posts symphony/<name> on the commit in the issue\'s repository', async () => {
+    const github = new FakeGithub().add(itemNode('A', { repo: 'acme/web' }));
+    const tracker = adapter(github);
+    const [issue] = await tracker.fetchIssuesByIds(['A']);
+    await tracker.reportCheckStatus?.(issue as Issue, { name: 'ci', sha: 'abc123', state: 'success', description: 'passed in 6m12s', targetUrl: 'https://symphony.example/agent?id=acme%2Fweb%231' });
+    await tracker.reportCheckStatus?.(issue as Issue, { name: 'prod-smoke', sha: 'abc123', state: 'pending', description: 'x'.repeat(200), targetUrl: null });
+    const posts = github.requests.filter((r) => r.op === 'REST POST statuses').map((r) => r.variables);
+    assert.deepEqual(posts[0], {
+      url: 'https://api.github.com/repos/acme/web/statuses/abc123',
+      state: 'success',
+      context: 'symphony/ci',
+      description: 'passed in 6m12s',
+      target_url: 'https://symphony.example/agent?id=acme%2Fweb%231',
+    });
+    assert.equal(posts[1]?.context, 'symphony/prod-smoke');
+    assert.equal(String(posts[1]?.description).length, 140);
+    assert.equal('target_url' in (posts[1] ?? {}), false);
+  });
+
+  it('throws on a refused post, and finds the REST API of GitHub Enterprise Server', async () => {
+    const github = new FakeGithub().add(itemNode('A'));
+    github.statusReply = { status: 422, body: { message: 'No commit found for SHA: abc' } };
+    const tracker = adapter(github);
+    const [issue] = await tracker.fetchIssuesByIds(['A']);
+    await assert.rejects(tracker.reportCheckStatus?.(issue as Issue, { name: 'ci', sha: 'abc', state: 'failure', description: 'failed', targetUrl: null }) ?? Promise.resolve(), /HTTP 422 .*No commit found/);
+    assert.equal(restBase('https://api.github.com/graphql'), 'https://api.github.com');
+    assert.equal(restBase('https://github.acme.dev/api/graphql'), 'https://github.acme.dev/api/v3');
+  });
+});
+
 describe('github_project agent tools', () => {
   it('moves the issue to a status chosen by name, case-insensitively', async () => {
     const github = new FakeGithub().add(itemNode('A'));
@@ -804,7 +847,7 @@ describe('github_project agent tools', () => {
     const [issue] = await tracker.fetchIssuesByIds(['A']);
     const guard = createGuard({
       role: null,
-      config: { tracker: { terminalStates: ['Done'] } as ServiceConfig['tracker'], roles: null, checks: { timeoutMs: 1_000, retries: 0, onEnter: new Map() } },
+      config: { tracker: { terminalStates: ['Done'] } as ServiceConfig['tracker'], roles: null, checks: { timeoutMs: 1_000, retries: 0, onEnter: new Map(), reportStatus: false } },
       workspace: { path: '/nonexistent', key: 'A', createdNow: false },
       issue: () => ({ id: 'A', identifier: 'acme/app#1' }),
       manager: { runScript: () => Promise.reject(new Error('no check expected')) },

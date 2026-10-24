@@ -521,7 +521,7 @@ describe('e2e pipeline scenario', () => {
     assert.equal(config.pipeline.maxReviewRounds, 3);
     assert.equal(config.pipeline.maxTestRounds, 2);
     assert.equal(config.pipeline.analysis, 'always');
-    assert.equal(config.agent.maxConcurrentAgentsByState.get('agent review'), 1);
+    assert.equal(config.agent.maxConcurrentAgentsByState.get('agent review'), 2);
     assert.equal(config.agent.maxConcurrentAgentsByState.get('testing'), 1);
     assert.equal(config.tracker.provider.repositories, '$GITHUB_REPOSITORY', 'provider settings stay unresolved, as in WORKFLOW.md');
   });

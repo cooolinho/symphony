@@ -7,6 +7,7 @@ import {
   type AddLabelsResult,
   type AgentToolSpec,
   type AutoMergeResult,
+  type CheckStatus,
   type Issue,
   type IssueAttachment,
   type IssueComment,
@@ -53,6 +54,7 @@ import {
   repositoryLabelsQuery,
 } from './queries.ts';
 import { KIND, type GithubProjectSettings } from './settings.ts';
+import { postCommitStatus } from './statuses.ts';
 import { createGithubTools } from './tools.ts';
 
 /** Upper bound on board pages per poll (100 items each). */
@@ -440,6 +442,11 @@ export class GithubProjectAdapter implements TrackerAdapter {
     // The guard ran the entry checks before this call: the change is reviewed and green, so it can be merged.
     const result = await this.#merge(issue, ref, moved, { checkedSha: options.checkedSha ?? null });
     return { previous: issue.state, status: result.status, autoMerge: result };
+  }
+
+  async reportCheckStatus(issue: Issue, status: CheckStatus): Promise<void> {
+    const ref = this.#requireRef(issue, 'report a check for');
+    await postCommitStatus({ fetch: this.#fetch, endpoint: this.settings.endpoint, token: this.settings.token, timeoutMs: this.settings.requestTimeoutMs }, ref.repository, status);
   }
 
   /**

@@ -164,6 +164,16 @@ export interface AutoMergeChecks {
   pending: string[];
 }
 
+/** A named entry check's state, posted on the commit it ran on (GitHub: commit status `symphony/<name>`). */
+export interface CheckStatus {
+  name: string;
+  sha: string;
+  state: 'pending' | 'success' | 'failure' | 'error';
+  description: string;
+  /** Where the details are (Symphony's agent page); null = no link. */
+  targetUrl: string | null;
+}
+
 /** Options of a move through `setStatus`. */
 export interface SetStatusOptions {
   /** Commit the entry checks of the target column ran on; `auto_merge` merges nothing else. */
@@ -263,6 +273,8 @@ export interface TrackerAdapter {
    * `auto_merge`. Throws `invalid_argument` for a column the board does not have.
    */
   setStatus?(issue: Issue, column: string, options?: SetStatusOptions): Promise<StatusChange>;
+  /** Reports an entry check's state on the commit it ran on, in the issue's repository (`checks.report_status`). */
+  reportCheckStatus?(issue: Issue, status: CheckStatus): Promise<void>;
   /** Issues waiting for pending pull request checks before `auto_merge`; null or absent when nothing waits. */
   mergeWatch?(): MergeWatch | null;
   /**
