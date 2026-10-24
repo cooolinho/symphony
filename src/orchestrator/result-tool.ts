@@ -460,7 +460,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     const classified = await applyTransitionLabels(adapter, issue, { add: classificationLabels(result, issue.labels), remove: [] }, warnings);
     let change: StatusChange;
     try {
-      change = await adapter.setStatus(issue, transition.target);
+      change = await adapter.setStatus(issue, transition.target, { checkedSha: allowed.check?.sha ?? null });
     } catch (error) {
       // The labels belong to the move, so they stay as they are. The run ends after this turn; the next dispatch
       // completes the move from the result's marker without a session (docs/usage.md#failures-of-result-driven-stages).

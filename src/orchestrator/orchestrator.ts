@@ -13,7 +13,7 @@ import { defaultIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
 import { getTrackerFactory } from '../tracker/registry.ts';
-import type { Issue, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
+import type { Issue, MergeWatch, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
 import { SerialQueue, settledWithin } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { truncate } from '../util/text.ts';
@@ -610,8 +610,10 @@ export class Orchestrator {
 
   #running = new Map<string, RunningEntry>();
   #claimed = new Set<string>();
-  /** Stage skips and transition recoveries in flight (see `#skipStage`, `#recoverTransition`); `stop` waits for them. */
+  /** Stage skips, transition recoveries and merge retries in flight (see `#skipStage`, `#recoverTransition`, `#retryMerges`); `stop` waits for them. */
   #skips = new Set<Promise<void>>();
+  /** Issues whose `auto_merge` retry (`#retryMerges`) is in flight. */
+  #mergeRetries = new Set<string>();
   /** Aborted at shutdown: stops the entry check of a transition recovery. */
   #halt = new AbortController();
   /** The result comment of an interrupted transition whose recovery was declined, by issue id: its stage runs instead. */
@@ -1216,8 +1218,12 @@ export class Orchestrator {
       const adapter = this.#adapterFor(workflow);
       let fetched: Issue[];
       const blockedStates = this.#blockedStates(config);
+      // Issues waiting for pull request checks before auto_merge sit in a column no stage works on; fetched with the board.
+      const watch = adapter.mergeWatch?.() ?? null;
+      const states = [...config.tracker.activeStates, ...blockedStates];
+      const watchOnly = watch !== null && !states.some((state) => normalizeStateName(state) === normalizeStateName(watch.column));
       try {
-        fetched = await adapter.fetchIssuesByStates([...config.tracker.activeStates, ...blockedStates]);
+        fetched = await adapter.fetchIssuesByStates(watchOnly ? [...states, watch.column] : states);
         this.#lastTrackerError = null;
       } catch (error) {
         this.#trackerFailure('candidate fetch failed; skipping dispatch this tick', error);
@@ -1230,11 +1236,13 @@ export class Orchestrator {
         const record = this.#claimed.has(issue.id) ? this.#records.get(issue.id) : undefined;
         if (record !== undefined) record.meta = issueMeta(issue);
       }
+      const listed = watchOnly ? fetched.filter((issue) => normalizeStateName(issue.state) !== normalizeStateName(watch.column)) : fetched;
       this.#board = {
         fetchedAt: this.#clock.now(),
         candidates: candidates.map(strip),
-        parked: fetched.filter((issue) => !isActiveState(issue.state, config.tracker)).map(strip),
+        parked: listed.filter((issue) => !isActiveState(issue.state, config.tracker)).map(strip),
       };
+      if (watch !== null) this.#retryMerges(watch, fetched, adapter);
 
       const byId = new Map(candidates.map((issue) => [issue.id, issue]));
       await this.#startPlanned(this.#plan(config, adapter), async (item) => {
@@ -1249,6 +1257,50 @@ export class Orchestrator {
     } finally {
       this.#lastTickAt = this.#clock.now();
       this.#notify();
+    }
+  }
+
+  /**
+   * Retries `auto_merge` for issues waiting for pull request checks (`MergeWatch`), one attempt per issue at a time and
+   * never for a claimed issue. Runs beside the tick like a stage skip; `stop` waits for it.
+   */
+  #retryMerges(watch: MergeWatch, issues: readonly Issue[], adapter: TrackerAdapter): void {
+    for (const issue of issues) {
+      if (!watch.awaiting(issue) || this.#claimed.has(issue.id) || this.#mergeRetries.has(issue.id)) continue;
+      this.#mergeRetries.add(issue.id);
+      const log = this.#issueLogger(issue);
+      const work = (async () => {
+        try {
+          const result = await watch.retry(issue);
+          if (result.awaiting_checks === true) return;
+          const record = this.#record(issue);
+          record.meta = issueMeta(issue);
+          this.#trace(record, {
+            kind: 'lifecycle',
+            event: 'merge_retried',
+            level: result.merged ? 'info' : 'warn',
+            message: result.merged ? `auto_merge merged after waiting for checks: ${result.reason}` : `auto_merge after waiting for checks: ${result.reason}`,
+            run: null,
+            turn: null,
+            detail: { merged: result.merged, pull_request: result.pull_request, status: result.status, reason: result.reason, checks: result.checks ?? null },
+          });
+          log.info('merge retried', { merged: result.merged, status: result.status, reason: result.reason });
+          this.#deps.history?.note(adapter.issueRepository?.(issue) ?? 'unknown', 'merge_retried', {
+            issue: issue.identifier,
+            title: issue.title,
+            merged: result.merged,
+            status: result.status,
+            reason: result.reason,
+          });
+        } catch (error) {
+          log.warn('merge retry failed; trying again next tick', { error: errorMessage(error) });
+        } finally {
+          this.#mergeRetries.delete(issue.id);
+          this.#notify();
+        }
+      })();
+      this.#skips.add(work);
+      void work.finally(() => this.#skips.delete(work));
     }
   }
 
@@ -1837,7 +1889,7 @@ export class Orchestrator {
       if (normalizeStateName(fresh.state) !== normalizeStateName(issue.state) || statusUpdatedAt(fresh)?.toISOString() !== interrupted.statusUpdatedAt) {
         return { kind: 'changed', reason: `the issue was moved meanwhile (now in "${fresh.state}")` };
       }
-      const change = await adapter.setStatus(fresh, target);
+      const change = await adapter.setStatus(fresh, target, { checkedSha: decision.check?.sha ?? null });
       const boardColumns = this.#statusOptionsCache?.version === workflow.version ? this.#statusOptionsCache.options : null;
       const warnings: string[] = [];
       const labels = await applyTransitionLabels(adapter, fresh, interruptedLabels(interrupted, tracked, role, config, boardColumns, fresh), warnings);

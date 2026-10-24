@@ -180,7 +180,7 @@ describe('model labels', () => {
     assert.equal(STANDARD_LABELS.filter((label) => isEffortLabel(label.name)).length, 5);
     assert.equal(STANDARD_LABELS.filter((label) => isTypeLabel(label.name)).length, 3);
     assert.equal(STANDARD_LABELS.filter((label) => isComplexityLabel(label.name)).length, 4);
-    assert.deepEqual(WORKFLOW_LABELS.map((label) => label.name), ['auto-code', 'concept', 'plan', 'epic', 'feature', 'design', 'quality', 'maintenance', 'security', 'manual-merge', 'needs-human']);
+    assert.deepEqual(WORKFLOW_LABELS.map((label) => label.name), ['auto-code', 'concept', 'plan', 'epic', 'feature', 'design', 'quality', 'maintenance', 'security', 'manual-merge', 'needs-human', 'awaiting-checks']);
     for (const label of STANDARD_LABELS) {
       if (WORKFLOW_LABELS.includes(label)) {
         assert.ok(!isModelLabel(label.name) && !isEffortLabel(label.name) && !isTypeLabel(label.name) && !isComplexityLabel(label.name), label.name);

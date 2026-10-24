@@ -10,6 +10,7 @@ import type {
   AgentToolSpec,
   Issue,
   IssueComment,
+  MergeWatch,
   PostedComment,
   RemoveLabelsResult,
   StatusChange,
@@ -75,6 +76,8 @@ export class FakeTracker implements TrackerAdapter {
   openSubIssues?: (issue: Issue) => string[];
   /** Set to record the notices Symphony posts on an issue; trackers without it cannot comment. */
   commentOnIssue?: (issue: Issue, body: string) => Promise<void>;
+  /** Set to give the tracker issues that wait for pull request checks before auto_merge. */
+  mergeWatch?: () => MergeWatch | null;
 
   constructor(issues: Issue[] = []) {
     for (const issue of issues) this.issues.set(issue.id, issue);

@@ -157,7 +157,7 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
     transitionTarget: (args) => String(args.status),
     execute: (args, context) =>
       guarded(context, async () => {
-        const change = await adapter.setStatus(context.issue, String(args.status));
+        const change = await adapter.setStatus(context.issue, String(args.status), { checkedSha: context.transition?.check?.sha ?? null });
         return ok({
           previous_status: change.previous,
           status: change.status,

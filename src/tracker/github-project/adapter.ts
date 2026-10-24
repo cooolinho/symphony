@@ -1,23 +1,27 @@
 import type { Logger } from '../../log.ts';
+import { errorMessage } from '../../util/errors.ts';
 import { decodeMarker } from '../../workflow/results.ts';
 import { normalizeStateName } from '../../workflow/config.ts';
 import {
   TrackerError,
   type AddLabelsResult,
   type AgentToolSpec,
+  type AutoMergeResult,
   type Issue,
   type IssueAttachment,
   type IssueComment,
+  type MergeWatch,
   type PostedComment,
   type RemoveLabelsResult,
+  type SetStatusOptions,
   type StatusChange,
   type TrackedResult,
   type TrackerAdapter,
 } from '../types.ts';
 import { downloadAttachments, extractAttachmentLinks, webOrigin, type AttachmentLink } from './attachments.ts';
 import { assertNoGraphqlErrors, type GithubGraphqlClient, type GraphqlError } from './client.ts';
-import { isCreatableLabel, labelDefinition } from './labels.ts';
-import { autoMerge } from './merge.ts';
+import { AWAITING_CHECKS_LABEL, isCreatableLabel, labelDefinition } from './labels.ts';
+import { autoMerge, CHECKS_FAILED_MARKER, type MergeOptions } from './merge.ts';
 import {
   NO_STATUS,
   applyDispatchRules,
@@ -107,6 +111,8 @@ export class GithubProjectAdapter implements TrackerAdapter {
   #fetch: typeof fetch;
   #meta: Promise<ProjectMeta> | null = null;
   #viewer: Promise<string> | null = null;
+  /** Commit the entry checks ran on, per issue waiting for pull request checks; lost on restart (then not compared). */
+  #awaitingChecked = new Map<string, string>();
 
   constructor(settings: GithubProjectSettings, client: GithubGraphqlClient, logger: Logger, fetchImpl: typeof fetch = fetch) {
     this.settings = settings;
@@ -416,9 +422,10 @@ export class GithubProjectAdapter implements TrackerAdapter {
 
   /**
    * Moves the issue to a column. Entering `auto_merge.on_enter` merges the issue's pull request afterwards; the caller
-   * (the `set_status` tool, the transition guard) has run the entry checks before. Not retried, like every mutation.
+   * (the `set_status` tool, the transition guard) has run the entry checks before, on `options.checkedSha`. Not
+   * retried, like every mutation.
    */
-  async setStatus(issue: Issue, column: string): Promise<StatusChange> {
+  async setStatus(issue: Issue, column: string, options: SetStatusOptions = {}): Promise<StatusChange> {
     const ref = this.#requireRef(issue, 'move');
     const { option, meta } = await this.statusOption(column);
     if (option === undefined) {
@@ -431,7 +438,43 @@ export class GithubProjectAdapter implements TrackerAdapter {
       return { previous: issue.state, status: moved };
     }
     // The guard ran the entry checks before this call: the change is reviewed and green, so it can be merged.
-    const result = await autoMerge(this.client, merge, baseBranch, ref, issue, moved, {
+    const result = await this.#merge(issue, ref, moved, { checkedSha: options.checkedSha ?? null });
+    return { previous: issue.state, status: result.status, autoMerge: result };
+  }
+
+  /**
+   * Issues in `auto_merge.on_enter` with the label `awaiting-checks`; null without `auto_merge` or with
+   * `auto_merge.checks.wait` off. A retry past `checks.timeout_ms` (since the issue entered the column) gives up.
+   */
+  mergeWatch(): MergeWatch | null {
+    const merge = this.settings.autoMerge;
+    if (merge === null || this.settings.baseBranch === null || !merge.checks.wait) return null;
+    return {
+      column: merge.onEnter,
+      awaiting: (issue) =>
+        titleKey(issue.state) === titleKey(merge.onEnter) && issue.labels.some((label) => label.trim().toLowerCase() === AWAITING_CHECKS_LABEL),
+      retry: async (issue) => {
+        const ref = this.#requireRef(issue, 'merge');
+        const entered = typeof issue.native_ref?.status_updated_at === 'string' ? Date.parse(issue.native_ref.status_updated_at) : Number.NaN;
+        if (!Number.isNaN(entered) && Date.now() - entered > merge.checks.timeoutMs) {
+          const reason = `the pull request checks did not finish within ${Math.round(merge.checks.timeoutMs / 60_000)} minutes (auto_merge.checks.timeout_ms)`;
+          const warnings: string[] = [];
+          await this.postComment(issue, `Symphony did not merge automatically: ${reason}. The issue stays in "${issue.state}" for a human.`).catch((error: unknown) =>
+            warnings.push(`could not comment on the issue: ${errorMessage(error)}`),
+          );
+          await this.#dropAwaitingLabel(issue, warnings);
+          return { merged: false, pull_request: null, status: issue.state, reason, ...(warnings.length > 0 ? { warnings } : {}) };
+        }
+        return this.#merge(issue, ref, issue.state, { checkedSha: this.#awaitingChecked.get(issue.id) ?? null, retry: true });
+      },
+    };
+  }
+
+  /** `autoMerge` with the adapter's operations; drops `awaiting-checks` once the issue no longer waits. */
+  async #merge(issue: Issue, ref: IssueRef, column: string, options: MergeOptions): Promise<AutoMergeResult> {
+    const { autoMerge: merge, baseBranch } = this.settings;
+    if (merge === null || baseBranch === null) throw new Error('auto_merge is not configured');
+    const result = await autoMerge(this.client, merge, baseBranch, ref, issue, column, {
       setStatus: async (name) => {
         const next = await this.statusOption(name);
         if (next.option === undefined) throw new Error(`board column "${name}" does not exist`);
@@ -440,8 +483,35 @@ export class GithubProjectAdapter implements TrackerAdapter {
       comment: async (body) => {
         await this.postComment(issue, body);
       },
-    });
-    return { previous: issue.state, status: result.status, autoMerge: result };
+      addLabel: async (name) => {
+        const added = await this.addLabels(issue, [name], { create: true });
+        if (added.unknown.length > 0) throw new Error(`label "${name}" does not exist`);
+      },
+      sendBacks: async () => {
+        const [comments, viewer] = await Promise.all([this.readComments(issue), this.viewerLogin()]);
+        return comments.filter((comment) => comment.author === viewer && comment.body.includes(CHECKS_FAILED_MARKER)).length;
+      },
+    }, options);
+    if (result.awaiting_checks === true) {
+      if (options.checkedSha !== null && options.checkedSha !== undefined) this.#awaitingChecked.set(issue.id, options.checkedSha);
+      return result;
+    }
+    this.#awaitingChecked.delete(issue.id);
+    const labelled = issue.labels.some((label) => label.trim().toLowerCase() === AWAITING_CHECKS_LABEL);
+    if (options.retry === true || labelled) {
+      const warnings = [...(result.warnings ?? [])];
+      await this.#dropAwaitingLabel(issue, warnings);
+      return warnings.length > 0 ? { ...result, warnings } : result;
+    }
+    return result;
+  }
+
+  async #dropAwaitingLabel(issue: Issue, warnings: string[]): Promise<void> {
+    try {
+      await this.removeLabels(issue, [AWAITING_CHECKS_LABEL]);
+    } catch (error) {
+      warnings.push(`could not remove the label "${AWAITING_CHECKS_LABEL}": ${errorMessage(error)}`);
+    }
   }
 
   async addLabels(issue: Issue, names: string[], { create = false }: { create?: boolean } = {}): Promise<AddLabelsResult> {

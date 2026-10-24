@@ -37,6 +37,9 @@ export const githubProjectFactory: TrackerAdapterFactory = {
       if (isIn([...activeStates, ...terminalStates], autoMerge.onEnter)) problems.push(`on_enter "${autoMerge.onEnter}" must not be an active or terminal state`);
       if (autoMerge.doneState === null || !isIn(terminalStates, autoMerge.doneState)) problems.push(`done_state "${autoMerge.doneState ?? ''}" must be a terminal state`);
       if (autoMerge.onConflict !== null && isIn(terminalStates, autoMerge.onConflict)) problems.push(`on_conflict "${autoMerge.onConflict}" must not be a terminal state`);
+      if (autoMerge.onChecksFailed !== null && isIn(terminalStates, autoMerge.onChecksFailed)) {
+        problems.push(`on_checks_failed "${autoMerge.onChecksFailed}" must not be a terminal state`);
+      }
       if (problems.length > 0) throw new TrackerError('invalid_tracker_config', problems.map((problem) => `tracker.provider.auto_merge.${problem}`).join('; '));
     }
     if (settings.tokenSource === 'literal') {

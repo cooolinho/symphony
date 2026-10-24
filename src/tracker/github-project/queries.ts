@@ -303,8 +303,33 @@ export const ADD_PROJECT_ITEM_MUTATION = /* GraphQL */ `
 `;
 
 /**
+ * The checks of a pull request's head commit: `statusCheckRollup` lists check runs (GitHub Actions, apps) and commit
+ * statuses (`symphony/<check>`, other CI) together. Evaluated by `evaluateRollup` (checks.ts).
+ */
+const CHECK_ROLLUP_FIELDS = /* GraphQL */ `
+  commits(last: 1) {
+    nodes {
+      commit {
+        oid
+        statusCheckRollup {
+          state
+          contexts(first: 100) {
+            totalCount
+            nodes {
+              __typename
+              ... on CheckRun { name status conclusion detailsUrl annotations(first: 3) { nodes { message } } }
+              ... on StatusContext { context state description targetUrl }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+/**
  * What `auto_merge` needs to decide: the default branch, the issue's labels and the open pull request from the issue's
- * branch into the base branch.
+ * branch into the base branch, with the checks of its head commit.
  */
 export const MERGE_CANDIDATE_QUERY = /* GraphQL */ `
   query SymphonyMergeCandidate($owner: String!, $name: String!, $number: Int!, $head: String!, $base: String!) {
@@ -312,7 +337,10 @@ export const MERGE_CANDIDATE_QUERY = /* GraphQL */ `
       defaultBranchRef { name }
       issue(number: $number) { labels(first: 50) { nodes { name } } }
       pullRequests(headRefName: $head, baseRefName: $base, states: [OPEN], first: 1) {
-        nodes { id number url title isDraft headRefOid mergeable labels(first: 50) { nodes { name } } }
+        nodes {
+          id number url title isDraft headRefOid mergeable labels(first: 50) { nodes { name } }
+          ${CHECK_ROLLUP_FIELDS}
+        }
       }
     }
   }

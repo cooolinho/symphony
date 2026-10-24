@@ -897,7 +897,18 @@ describe('shipped WORKFLOW.md issue commands', () => {
     const env = { SYMPHONY_BASE_BRANCH: 'develop', SYMPHONY_AUTO_MERGE: 'true' };
     const on = settingsOf(env);
     assert.equal(on.settings?.baseBranch, 'develop');
-    assert.deepEqual(on.settings?.autoMerge, { onEnter: 'In review', doneState: 'Done', onConflict: 'In progress', method: 'SQUASH', optOutLabel: 'manual-merge' });
+    assert.deepEqual(on.settings?.autoMerge, {
+      onEnter: 'In review',
+      doneState: 'Done',
+      onConflict: 'In progress',
+      method: 'SQUASH',
+      optOutLabel: 'manual-merge',
+      onChecksFailed: 'In progress',
+      checks: { wait: true, timeoutMs: 3_600_000, ignore: [], maxSendBacks: 2 },
+    });
+    // The merge gate's ignore list and waiting come from the environment too.
+    const tuned = settingsOf({ ...env, SYMPHONY_MERGE_IGNORE_CHECKS: 'acme/app:ci,acme/app:prod-smoke', SYMPHONY_MERGE_WAIT_FOR_CHECKS: 'false' });
+    assert.deepEqual(tuned.settings?.autoMerge?.checks, { wait: false, timeoutMs: 3_600_000, ignore: ['acme/app:ci', 'acme/app:prod-smoke'], maxSendBacks: 2 });
     const tracker = providerOf(env);
     assert.doesNotThrow(() =>
       githubProjectFactory.create({

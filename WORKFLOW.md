@@ -18,11 +18,20 @@ tracker:
       # true: when the reviewer moves an issue to on_enter (entry checks passed), Symphony merges its pull request into
       # base_branch, closes the issue and moves it to done_state. Needs base_branch; never merges into the default branch.
       # A pull request or issue labelled "manual-merge" stays for a human.
+      # Merge gate: only merges when every check of the pull request's head passed (GitHub Actions and commit statuses
+      # such as symphony/ci). Failing checks go back to the developer, pending ones wait (label "awaiting-checks"), and
+      # jobs GitHub never started (Actions minutes used up) leave the issue for a human.
       enabled: ${SYMPHONY_AUTO_MERGE:-false}
       on_enter: In review
       done_state: Done
       on_conflict: In progress               # a pull request that conflicts with base_branch goes back to the developer
+      on_checks_failed: In progress          # a pull request whose checks fail goes back to the developer
       method: squash
+      checks:
+        wait: ${SYMPHONY_MERGE_WAIT_FOR_CHECKS:-true}            # wait for pending checks, retried every poll
+        timeout_ms: ${SYMPHONY_MERGE_CHECKS_TIMEOUT_MS:-3600000}  # then a human takes over
+        ignore: ${SYMPHONY_MERGE_IGNORE_CHECKS:-}                # check names or "owner/repo:name" globs, comma-separated
+        max_send_backs: 2                    # send-backs for failing checks per issue; then needs-human
   # Board columns: Backlog | Ready | Design | In progress | Testing | Documentation | Agent review | Security review | Blocked | In review | Done
   #   Ready              -> issue analyst (read-only) works out requirements, risks, refined acceptance criteria, type and
   #                         complexity before anything is implemented; later stages get the analysis in their prompt
