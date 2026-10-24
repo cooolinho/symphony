@@ -657,6 +657,21 @@ describe('report_result', () => {
       assert.match(summary, /Entry check failed/);
     });
 
+    it('keeps the output of every failed check in the summary, not only the last one', async () => {
+      const checks = {
+        'In review': [
+          { name: 'ci', command: 'echo "Data too long for column color"; yes "ci noise" | head -n 300; echo "ci: 2 errors"; exit 1' },
+          { name: 'prod-smoke', command: 'yes "smoke log" | head -n 300; echo "FEHLER: Livewire-Update antwortet mit 419"; exit 1' },
+        ],
+      };
+      const { report, markers } = setup({ checks: checks as never, reviewer: { on_check_failed: 'In progress' } });
+      data(await report(APPROVED));
+      const summary = markers()[0]?.result.summary ?? '';
+      assert.ok(summary.length <= 4000, `${summary.length}`);
+      assert.match(summary, /== ci: failed \(exit 1, \d+s\) ==\n[\s\S]*ci: 2 errors/);
+      assert.match(summary, /== prod-smoke: failed \(exit 1, \d+s\) ==\n[\s\S]*Livewire-Update antwortet mit 419/);
+    });
+
     it('leaves the round limit label alone when the redirect replaces the move', async () => {
       const { report, tracker, current } = setup({
         checks: { 'In review': 'exit 1' },

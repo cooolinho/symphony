@@ -166,14 +166,15 @@ function finalStatus(record: CheckRecord): Pick<CheckStatusReport, 'state' | 'de
 }
 
 /** A broken check environment: `set_status` moves the issue to Blocked; other tools (`report_result`) end the turn. */
-function checkError(label: string, why: string, tool: string): GuardDecision {
+function checkError(label: string, why: string, tool: string, output = ''): GuardDecision {
   const next = tool === STATUS_TOOL ? 'move the issue to Blocked' : `end your turn without calling ${tool} again`;
+  const shown = output === '' ? '' : `\n\nThe end of its output:\n\n${output}\n\n`;
   return {
     allow: false,
     category: 'check_error',
     message:
-      `The entry check for ${label} could not run properly (${why}). This is not a problem with your change: ` +
-      `do not change code; describe the problem in an issue comment and ${next}.`,
+      `The entry check for ${label} could not run properly (${why}).${shown === '' ? ' ' : shown}This is not a problem with your change: ` +
+      `do not change code; describe the problem${shown === '' ? '' : ' (quote the output)'} in an issue comment and ${next}.`,
   };
 }
 
@@ -194,6 +195,31 @@ function checkOutput(result: HookResult, limit: number = CHECK_OUTPUT_LIMIT): st
   return tail(result.output.trim(), limit);
 }
 
+/** Header of one failed check in the combined output of several (`== ci: failed (exit 1, 6m12s) ==`). */
+const SECTION_HEADER = /^== .+ ==$/m;
+
+/**
+ * Shortens check output to `limit` characters, keeping the end of the output (where the failure is). Output of
+ * several failed checks keeps every section: each keeps its header and an equal share of the end of its own output.
+ */
+export function fitCheckOutput(output: string, limit: number): string {
+  const starts = [...output.matchAll(new RegExp(SECTION_HEADER.source, 'gm'))].map((match) => match.index ?? 0);
+  if (starts.length < 2 || starts[0] !== 0) return tail(output, limit);
+  const sections = starts.map((start, index) => output.slice(start, starts[index + 1] ?? output.length).trim());
+  const share = Math.floor((limit - 2 * (sections.length - 1)) / sections.length);
+  return sections
+    .map((section) => {
+      const newline = section.indexOf('\n');
+      const header = newline === -1 ? section : section.slice(0, newline);
+      const body = newline === -1 ? '' : section.slice(newline + 1);
+      return body === '' ? header : `${header}\n${tail(body, Math.max(0, share - header.length - 1))}`;
+    })
+    .join('\n\n');
+}
+
+/** The end of a broken check's output, so the agent can name the problem in its comment. */
+const ERROR_OUTPUT_LIMIT = 1500;
+
 function failedMessage(label: string, output: string, tool: string): string {
   return `The entry check for ${label} failed, so the issue was not moved.\n\n${output === '' ? '(no output)' : output}\n\nFix the problems and call ${tool} again.`;
 }
@@ -204,7 +230,7 @@ function decide(label: string, result: HookResult, tool: string): GuardDecision 
   const clean = !result.timedOut && result.error === null && result.signal === null;
   if (clean && result.exitCode === CHECK_SKIPPED_EXIT) return { allow: true, note: CHECK_PASSED_NOTE };
   if (clean && result.exitCode === 1) return { allow: false, category: 'check_failed', message: failedMessage(label, checkOutput(result), tool) };
-  return checkError(label, describeFailure({ ...result, output: '' }), tool);
+  return checkError(label, describeFailure({ ...result, output: '' }), tool, checkOutput(result, ERROR_OUTPUT_LIMIT));
 }
 
 /** The `checks.on_enter` checks a move of `role` to `target` runs; empty when none does (none set, or `run_checks: false`). */
