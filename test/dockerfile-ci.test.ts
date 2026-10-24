@@ -88,16 +88,21 @@ describe('docker compose: profile ci', () => {
         assert.match(read('docs/docker.md'), new RegExp(`docker:${major}-dind`));
       });
 
+      it('names mysql symphony-ci-mysql on the ci network, so no other project\'s "mysql" answers', () => {
+        assert.match(service(file, 'mysql'), /networks:\n\s+ci:\n\s+aliases:\n\s+- symphony-ci-mysql\n/);
+      });
+
       it('runs mysql 8.0 with the init script and without fail-early interpolation', () => {
         const mysql = service(file, 'mysql');
         assert.match(mysql, /image: mysql:8\.0$/m);
         assert.match(mysql, /MYSQL_ROOT_PASSWORD: \$\{SYMPHONY_CI_MYSQL_ROOT_PASSWORD:-\}/);
         assert.match(mysql, /MYSQL_ROOT_HOST: localhost/);
         assert.match(mysql, /- \.\/docker\/ci\/mysql-init\.sh:\/docker-entrypoint-initdb\.d\/[\w-]+\.sh:ro/);
-        assert.match(mysql, /command: \[--skip-log-bin, --innodb-flush-log-at-trx-commit=0, --innodb-buffer-pool-size=256M\]/);
-        assert.match(mysql, /- ci-mysql:\/var\/lib\/mysql/);
+        assert.match(mysql, /command: \[--skip-log-bin, --innodb-flush-log-at-trx-commit=0, --innodb-doublewrite=0, --innodb-buffer-pool-size=512M\]/);
+        assert.match(mysql, /tmpfs:\n\s+- \/var\/lib\/mysql:size=2g,uid=999,gid=999\n/, 'test databases in memory');
+        assert.doesNotMatch(read(file), /ci-mysql:\/var\/lib\/mysql/);
         assert.match(mysql, /mysqladmin", "ping"/);
-        assert.match(mysql, /mem_limit: 1g/);
+        assert.match(mysql, /mem_limit: 3g/);
         // compose interpolates services of inactive profiles too: a :? here would break every setup without ci.
         assert.doesNotMatch(read(file), /\$\{(SYMPHONY_CI_|SYMPHONY_MYSQL_)\w*:\?/);
       });
@@ -138,7 +143,7 @@ describe('CI sidecar setup files', () => {
   it('.env.example names every variable of the profile', () => {
     const env = read('.env.example');
     for (const v of ['COMPOSE_PROFILES=ci', 'SYMPHONY_CI_DOCKER_HOST=tcp://docker:2376', 'SYMPHONY_CI_DOCKER_CERT_PATH=/certs/client',
-      'SYMPHONY_MYSQL_HOST=mysql', 'SYMPHONY_MYSQL_PORT=', 'SYMPHONY_MYSQL_USER=', 'SYMPHONY_MYSQL_PASSWORD=',
+      'SYMPHONY_MYSQL_HOST=symphony-ci-mysql', 'SYMPHONY_MYSQL_PORT=', 'SYMPHONY_MYSQL_USER=', 'SYMPHONY_MYSQL_PASSWORD=',
       'SYMPHONY_CI_MYSQL_ROOT_PASSWORD=', 'SYMPHONY_CI_SUBNET=']) {
       assert.ok(env.includes(`# ${v}`), v);
     }
