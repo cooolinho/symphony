@@ -204,8 +204,8 @@ compose profile `ci` ([docker.md](docker.md)), a Docker daemon (`DOCKER_HOST`, `
 published ports) and MySQL (`SYMPHONY_MYSQL_*`). For example:
 
 ```bash
-# .symphony/checks/ci.sh: the tests on MySQL like GitHub CI
-export SYMPHONY_CI_DB=mysql
+# .symphony/checks/ci.sh: the tests on MySQL like GitHub CI, in 4 processes (needs brianium/paratest)
+export SYMPHONY_CI_DB=mysql SYMPHONY_CI_PARALLEL=4
 exec bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh" --full
 ```
 
