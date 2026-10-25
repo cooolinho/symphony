@@ -132,8 +132,19 @@ describe('repository history', () => {
       repo: 'acme/app', issue: 'acme/app#1', run: 'r1', role: 'developer', target: 'Agent review', sha: 'abc123', ok: 'false', result: 'check_failed', exit_code: '1', duration_ms: '4200',
     });
     assert.deepEqual([timedOut?.fields.exit_code, timedOut?.fields.timed_out, 'sha' in (timedOut?.fields ?? {})], ['null', 'true', false]);
+    assert.equal('steps' in (failed?.fields ?? {}) || 'load' in (failed?.fields ?? {}), false);
     assert.equal(denied?.event, 'transition_denied');
     assert.deepEqual([denied?.fields.target, denied?.fields.role, denied?.fields.reason], ['Done', 'developer', '"Done" is a terminal column']);
+  });
+
+  it('records the steps and host load of an entry check as structured fields', () => {
+    const { log } = history();
+    const steps = [{ name: 'tests', duration_s: 65, result: 'ok' }];
+    const load = { '1m': 0.5, '5m': 1, '15m': 2, cpus: 4 };
+    log.checkFinished({ repo: 'acme/app', issue: 'acme/app#1', run: 'r1', role: 'developer', target: 'In review', at: new Date('2026-10-04T08:00:00Z'), sha: 'abc', exitCode: 0, timedOut: false, durationMs: 1000, ok: true, result: 'passed', steps, load });
+    const [entry] = readHistory(log.dir, 'acme/app').entries;
+    assert.deepEqual(JSON.parse(entry?.fields.steps ?? 'null'), steps);
+    assert.deepEqual(JSON.parse(entry?.fields.load ?? 'null'), load);
   });
 
   it('records a stage_result line with the optional fields left out when unknown', () => {

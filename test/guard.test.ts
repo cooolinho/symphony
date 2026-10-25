@@ -4,7 +4,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 import { Logger } from '../src/log.ts';
-import { CHECK_OUTPUT_LIMIT, CHECK_PASSED_NOTE, createGuard, entryChecksFor, fitCheckOutput, guardTools, toolsForRole, type CheckCache, type CheckRecord, type GateRun, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
+import { CHECK_OUTPUT_LIMIT, CHECK_PASSED_NOTE, createGuard, entryChecksFor, fitCheckOutput, guardTools, parseCheckSteps, passedOutput, toolsForRole, type CheckCache, type CheckRecord, type GateRun, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
 import type { AgentToolContext, AgentToolSpec, ToolResult } from '../src/tracker/types.ts';
 import { WorkspaceManager } from '../src/workspace/manager.ts';
 import { baseFront, makeIssue, makeWorkflow, tempDir } from './helpers.ts';
@@ -362,6 +362,57 @@ describe('named entry checks', () => {
       assert.equal(last.checks[0]?.timeoutMs, 10_000);
     });
 
+    it('keeps the steps and host load of a passed check in the gate run and the history event, not in the tool answer', async () => {
+      const { seen, onGateUpdate } = gates();
+      const finished: Array<Record<string, unknown> | undefined> = [];
+      const script = "echo lots of noise; echo 'host load at end (1/5/15 min): 0.50 1.25 2.00, 4 CPUs'; echo 'steps:'; echo '  style  12s  ok'; echo '  tests  1m 5s  ok'";
+      const { guard } = named([{ name: 'ci', command: script }], {
+        onGateUpdate,
+        onEvent: (event, _message, detail) => {
+          if (event === 'checks_finished') finished.push(detail);
+        },
+      });
+      const decision = await guard('Agent review');
+      assert.ok(decision.allow);
+      assert.equal(decision.allow && decision.note, CHECK_PASSED_NOTE);
+      const output = seen[seen.length - 1]!.checks[0]?.output ?? '';
+      assert.match(output, /^host load at end/);
+      assert.match(output, /tests {2}1m 5s {2}ok/);
+      assert.doesNotMatch(output, /noise/);
+      assert.deepEqual(finished[0]?.steps, [
+        { name: 'style', duration_s: 12, result: 'ok' },
+        { name: 'tests', duration_s: 65, result: 'ok' },
+      ]);
+      assert.deepEqual(finished[0]?.load, { '1m': 0.5, '5m': 1.25, '15m': 2, cpus: 4 });
+    });
+
+    it('keeps only the short end of the output of a passed check without a steps block', async () => {
+      const { seen, onGateUpdate } = gates();
+      const finished: Array<Record<string, unknown> | undefined> = [];
+      const { guard } = named([{ name: 'ci', command: 'seq 1 500' }, { name: 'quiet', command: 'true' }], {
+        onGateUpdate,
+        onEvent: (event, _message, detail) => {
+          if (event === 'checks_finished') finished.push(detail);
+        },
+      });
+      assert.ok((await guard('Agent review')).allow);
+      const [loud, quiet] = seen[seen.length - 1]!.checks;
+      assert.ok((loud?.output ?? '').length <= 400);
+      assert.match(loud?.output ?? '', /500$/);
+      assert.equal(quiet?.output, null);
+      assert.equal(finished[0]?.steps, undefined);
+      assert.equal(finished[0]?.load, undefined);
+    });
+
+    it('shows the kept output again for a cached result', async () => {
+      const { seen, onGateUpdate } = gates();
+      const { guard } = named([{ name: 'ci', command: 'echo remembered' }], { onGateUpdate });
+      assert.ok((await guard('Agent review')).allow);
+      assert.ok((await guard('Agent review')).allow);
+      const last = seen[seen.length - 1]!.checks[0];
+      assert.deepEqual([last?.cached, last?.output], [true, 'remembered']);
+    });
+
     it('keeps the output of a check that ran into the timeout in the gate run', async () => {
       const { seen, onGateUpdate } = gates();
       const { guard } = named([{ name: 'ci', command: 'echo step-one-done; sleep 5' }], { onGateUpdate }, 500);
@@ -395,7 +446,7 @@ describe('named entry checks', () => {
       assert.equal(denied(await guard('Agent review'))?.category, 'check_timeout');
       const last = seen[seen.length - 1]!;
       assert.deepEqual(last.checks.map((c) => c.status), ['passed', 'check_timeout']);
-      assert.equal(last.checks[0]?.output ?? null, null, 'a passed check has no output');
+      assert.equal(last.checks[0]?.output, 'passed-output', 'a passed check keeps the end of its output');
       assert.match(last.checks[1]?.output ?? '', /b-before-timeout/);
       assert.notEqual(last.finishedAt, null);
     });
@@ -677,5 +728,29 @@ describe('toolsForRole', () => {
     const developer = withResult.find((r) => r.name === 'developer') ?? null;
     assert.deepEqual(toolsForRole(all, developer, makeIssue({ id: '1' }), report).map((t) => t.name), ['get_issue', 'set_status', 'add_comment'], 'roles without result keep set_status');
     assert.deepEqual(toolsForRole(all, null, makeIssue({ id: '1' }), report).map((t) => t.name), ['get_issue', 'set_status', 'add_comment']);
+  });
+});
+
+describe('parseCheckSteps and passedOutput', () => {
+  const output = ['noise', 'host load at end (1/5/15 min): unknown, unknown CPUs', 'steps:', '  php -l  0s  ok', '  tests  2m 3s  timed out (aborted)'].join('\n');
+
+  it('reads steps with minutes, results with spaces and unknown load', () => {
+    assert.deepEqual(parseCheckSteps(output), {
+      steps: [
+        { name: 'php -l', duration_s: 0, result: 'ok' },
+        { name: 'tests', duration_s: 123, result: 'timed out (aborted)' },
+      ],
+      load: { '1m': null, '5m': null, '15m': null, cpus: null },
+    });
+  });
+
+  it('returns nothing for output of another script', () => {
+    assert.deepEqual(parseCheckSteps('all good\nsteps are fine'), {});
+  });
+
+  it('starts at the host load line and cuts to the limit', () => {
+    assert.equal(passedOutput(output), output.slice(output.indexOf('host load')));
+    assert.equal(passedOutput(' \n'), '');
+    assert.equal(passedOutput('x'.repeat(1000)).length, 400);
   });
 });

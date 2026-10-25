@@ -37,6 +37,8 @@ const STATUS_TOOL = 'set_status';
 
 /** Check output passed back to the agent on a failed check. */
 export const CHECK_OUTPUT_LIMIT = 6_000;
+/** The end of the output kept for a passed or skipped check (gate run), from the `host load at end` / `steps:` lines on. */
+export const CHECK_PASSED_OUTPUT_LIMIT = 400;
 export const CHECK_PASSED_NOTE = 'Checks passed — end your turn now.';
 /** Exit code of a check that does not apply here (e.g. no such script in the repository): it passes, as `skipped`. */
 export const CHECK_SKIPPED_EXIT = 78;
@@ -63,6 +65,59 @@ export interface CheckRecord {
   /** `passed`, `skipped` (exit {@link CHECK_SKIPPED_EXIT}), or the denial category the agent received. */
   result: 'passed' | 'skipped' | Exclude<GuardDenial, 'transition_denied'>;
   finishedAt: Date;
+  /** Steps and host load the script printed (`steps:` block, `host load at end` line); absent without them. */
+  steps?: CheckStep[];
+  load?: CheckLoad;
+  /** The kept end of the output of a passed or skipped check; reused for a cached result. */
+  output?: string;
+}
+
+/** One line of the `steps:` block of `checks/laravel.sh`. */
+export interface CheckStep {
+  name: string;
+  duration_s: number;
+  result: string;
+}
+
+/** The `host load at end` line of `checks/laravel.sh`; a value is null where the script printed `unknown`. */
+export interface CheckLoad {
+  '1m': number | null;
+  '5m': number | null;
+  '15m': number | null;
+  cpus: number | null;
+}
+
+const STEP_LINE = /^\s+(.+?)\s{2,}(?:(\d+)m )?(\d+)s\s{2,}(\S.*?)\s*$/;
+const LOAD_LINE = /^host load at end \(1\/5\/15 min\): (.+?), (\S+) CPUs\s*$/m;
+
+/** Reads the `steps:` block and the `host load at end` line from a check's output; both are optional. */
+export function parseCheckSteps(output: string): { steps?: CheckStep[]; load?: CheckLoad } {
+  const result: { steps?: CheckStep[]; load?: CheckLoad } = {};
+  const lines = output.split('\n');
+  const at = lines.findIndex((line) => line.trim() === 'steps:' && !line.startsWith(' '));
+  if (at >= 0) {
+    const steps: CheckStep[] = [];
+    for (const line of lines.slice(at + 1)) {
+      const match = STEP_LINE.exec(line);
+      if (match === null) break;
+      steps.push({ name: match[1] as string, duration_s: Number(match[2] ?? 0) * 60 + Number(match[3]), result: match[4] as string });
+    }
+    if (steps.length > 0) result.steps = steps;
+  }
+  const load = LOAD_LINE.exec(output);
+  if (load !== null) {
+    const num = (text: string | undefined): number | null => (text !== undefined && /^\d+(\.\d+)?$/.test(text) ? Number(text) : null);
+    const [one, five, fifteen] = (load[1] as string).split(/\s+/);
+    result.load = { '1m': num(one), '5m': num(five), '15m': num(fifteen), cpus: num(load[2]) };
+  }
+  return result;
+}
+
+/** The end of a passed check's output: from the `host load at end` / `steps:` lines on, at most the limit; else the plain end. */
+export function passedOutput(output: string): string {
+  const text = output.trim();
+  const starts = [/^host load at end /m, /^steps:\s*$/m].map((pattern) => pattern.exec(text)?.index ?? -1).filter((index) => index >= 0);
+  return tail(starts.length === 0 ? text : text.slice(Math.min(...starts)), CHECK_PASSED_OUTPUT_LIMIT);
 }
 
 /** A check's state in a {@link GateRun}: not started yet, running, or its {@link CheckRecord} result. */
@@ -80,7 +135,7 @@ export interface GateCheck {
   /** The result was reused from an earlier run on the same commit. */
   cached: boolean;
   exitCode: number | null;
-  /** The end of the output as the agent receives it; only for `check_failed` and `check_error`. */
+  /** The end of the output as the agent receives it; for a passed or skipped check only its short end (`passed` limit). */
   output: string | null;
 }
 
@@ -339,7 +394,7 @@ export function createGuard(params: GuardParams): TransitionGuard {
         finishedAt: now,
         checks: checks.map((check, index) => {
           const cached = records[index] as CheckRecord;
-          return { name: check.name, status: cached.result, startedAt: null, durationMs: cached.durationMs, timeoutMs: check.timeoutMs, cached: true, exitCode: cached.exitCode, output: null };
+          return { name: check.name, status: cached.result, startedAt: null, durationMs: cached.durationMs, timeoutMs: check.timeoutMs, cached: true, exitCode: cached.exitCode, output: cached.output ?? null };
         }),
       });
       return { allow: true, note: `cached result for ${clean}`, check: records.length === 1 ? (records[0] as CheckRecord) : summarize(target, records) };
@@ -392,6 +447,7 @@ export function createGuard(params: GuardParams): TransitionGuard {
           entry.cached = true;
           entry.durationMs = reused.durationMs;
           entry.exitCode = reused.exitCode;
+          if (reused.output !== undefined) entry.output = reused.output;
           publish(gate);
           await report(check, reused);
           records.push(reused);
@@ -422,6 +478,14 @@ export function createGuard(params: GuardParams): TransitionGuard {
           result: skipped ? 'skipped' : decision.allow ? 'passed' : (decision.category as CheckRecord['result']),
           finishedAt: new Date(),
         };
+        if (record.ok) {
+          const kept = passedOutput(result.output);
+          if (kept !== '') {
+            record.output = kept;
+            entry.output = kept;
+          }
+          Object.assign(record, parseCheckSteps(result.output));
+        }
         entry.status = record.result;
         entry.durationMs = record.durationMs;
         entry.exitCode = record.exitCode;
@@ -440,6 +504,8 @@ export function createGuard(params: GuardParams): TransitionGuard {
           exit_code: record.exitCode,
           timed_out: record.timedOut,
           duration_ms: record.durationMs,
+          steps: record.steps,
+          load: record.load,
         });
         params.onCheckFinished?.(record);
         await report(check, record, pending.posted());

@@ -1254,7 +1254,15 @@ ${PIPELINE_JS}
       if (c.status === 'running') row.append(el('span', fmtMs(c.duration_ms) + ' / ' + fmtMs(c.timeout_ms), 'muted'));
       else if (c.duration_ms !== null && c.duration_ms !== undefined) row.append(el('span', fmtMs(c.duration_ms), 'muted'));
       if (c.cached) row.append(el('span', 'from cache', 'chip'));
-      if (c.output !== null && c.output !== undefined) row.append(el('pre', c.output || '(no output)', 'code err'));
+      if (c.output !== null && c.output !== undefined) {
+        const quiet = c.status === 'passed' || c.status === 'skipped';
+        const pre = el('pre', c.output || '(no output)', quiet ? 'code' : 'code err');
+        if (quiet) {
+          const details = el('details', null, 'gate-output');
+          details.append(el('summary', 'output (end)'), pre);
+          row.append(details);
+        } else row.append(pre);
+      }
       return row;
     });
     patchChildren($('gate-checks'), rows);

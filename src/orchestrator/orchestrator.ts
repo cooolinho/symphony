@@ -2225,6 +2225,8 @@ export class Orchestrator {
               durationMs: check.durationMs,
               ok: check.ok,
               result: check.result,
+              steps: check.steps,
+              load: check.load,
               at: check.finishedAt,
             });
           },
