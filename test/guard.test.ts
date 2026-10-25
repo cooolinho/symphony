@@ -4,7 +4,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 import { Logger } from '../src/log.ts';
-import { CHECK_PASSED_NOTE, createGuard, entryChecksFor, fitCheckOutput, guardTools, toolsForRole, type CheckCache, type CheckRecord, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
+import { CHECK_OUTPUT_LIMIT, CHECK_PASSED_NOTE, createGuard, entryChecksFor, fitCheckOutput, guardTools, toolsForRole, type CheckCache, type CheckRecord, type GateRun, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
 import type { AgentToolContext, AgentToolSpec, ToolResult } from '../src/tracker/types.ts';
 import { WorkspaceManager } from '../src/workspace/manager.ts';
 import { baseFront, makeIssue, makeWorkflow, tempDir } from './helpers.ts';
@@ -337,6 +337,82 @@ describe('named entry checks', () => {
       statuses.filter((status) => !status.includes('pending')),
       ['ci:failure:head', 'prod-smoke:failure:head', 'docs:success:head'],
     );
+  });
+
+  describe('gate state', () => {
+    const gates = () => {
+      const seen: GateRun[] = [];
+      return { seen, onGateUpdate: (gate: GateRun) => seen.push(gate) };
+    };
+
+    it('goes from pending over running to its result', async () => {
+      const { seen, onGateUpdate } = gates();
+      const { guard, sha } = named([{ name: 'ci', command: 'exit 0' }, { name: 'docs', command: 'exit 78' }], { onGateUpdate });
+      assert.ok((await guard('Agent review')).allow);
+      assert.deepEqual(seen[0]?.checks.map((c) => c.status), ['pending', 'pending']);
+      assert.equal(seen[0]?.finishedAt, null);
+      assert.equal(seen[0]?.target, 'Agent review');
+      assert.equal(seen[0]?.sha, sha);
+      const running = seen.find((g) => g.checks[0]?.status === 'running');
+      assert.ok(running?.checks[0]?.startedAt instanceof Date);
+      assert.equal(running?.checks[1]?.status, 'pending');
+      const last = seen[seen.length - 1]!;
+      assert.deepEqual(last.checks.map((c) => c.status), ['passed', 'skipped']);
+      assert.notEqual(last.finishedAt, null);
+      assert.equal(last.checks[0]?.timeoutMs, 10_000);
+    });
+
+    it('gives each failed check the output share the agent gets', async () => {
+      const { seen, onGateUpdate } = gates();
+      const { guard } = named(
+        [
+          { name: 'a', command: 'yes x | head -c 10000; exit 1' },
+          { name: 'b', command: 'echo bbb; exit 1' },
+        ],
+        { onGateUpdate },
+      );
+      const decision = denied(await guard('Agent review'));
+      const last = seen[seen.length - 1]!;
+      assert.deepEqual(last.checks.map((c) => [c.status, c.exitCode]), [['check_failed', 1], ['check_failed', 1]]);
+      assert.ok((last.checks[0]?.output ?? '').length <= CHECK_OUTPUT_LIMIT / 2);
+      assert.ok((last.checks[0]?.output ?? '').length > 100);
+      assert.equal(last.checks[1]?.output, 'bbb');
+      for (const check of last.checks) assert.ok(decision?.message.includes(check.output ?? '?'));
+    });
+
+    it('keeps a single failure output whole up to the limit', async () => {
+      const { seen, onGateUpdate } = gates();
+      const { guard } = named([{ name: 'ci', command: 'yes x | head -c 10000; exit 1' }], { onGateUpdate });
+      await guard('Agent review');
+      const output = seen[seen.length - 1]!.checks[0]!.output ?? '';
+      assert.equal(output.length, CHECK_OUTPUT_LIMIT);
+    });
+
+    it('stops at a broken check and leaves the rest pending', async () => {
+      const { seen, onGateUpdate } = gates();
+      const { guard } = named([{ name: 'a', command: 'echo oops; exit 2' }, { name: 'b', command: 'exit 0' }], { onGateUpdate });
+      assert.equal(denied(await guard('Agent review'))?.category, 'check_error');
+      const last = seen[seen.length - 1]!;
+      assert.deepEqual(last.checks.map((c) => c.status), ['check_error', 'pending']);
+      assert.match(last.checks[0]?.output ?? '', /oops/);
+      assert.notEqual(last.finishedAt, null);
+    });
+
+    it('marks reused results as cached', async () => {
+      const { seen, onGateUpdate } = gates();
+      const { guard, cache } = named([{ name: 'a', command: 'exit 0' }, { name: 'b', command: 'exit 0' }], { onGateUpdate });
+      assert.ok((await guard('Agent review')).allow);
+      assert.deepEqual(seen[seen.length - 1]?.checks.map((c) => c.cached), [false, false]);
+      seen.length = 0;
+      assert.ok((await guard('Agent review')).allow);
+      assert.equal(seen.length, 1, 'all cached: one finished snapshot');
+      assert.deepEqual(seen[0]?.checks.map((c) => [c.status, c.cached]), [['passed', true], ['passed', true]]);
+      assert.notEqual(seen[0]?.finishedAt, null);
+      cache.delete([...cache.keys()][1]!);
+      seen.length = 0;
+      assert.ok((await guard('Agent review')).allow);
+      assert.deepEqual(seen[seen.length - 1]?.checks.map((c) => c.cached), [true, false]);
+    });
   });
 
   it('names a single failing check in the message', async () => {

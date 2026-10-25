@@ -65,6 +65,36 @@ export interface CheckRecord {
   finishedAt: Date;
 }
 
+/** A check's state in a {@link GateRun}: not started yet, running, or its {@link CheckRecord} result. */
+export type GateCheckStatus = 'pending' | 'running' | CheckRecord['result'];
+
+/** One check of a column's entry gate, for the issue detail. */
+export interface GateCheck {
+  name: string | null;
+  status: GateCheckStatus;
+  /** When it started; null while pending and for a cached result. */
+  startedAt: Date | null;
+  /** Null while pending; for a cached result the duration of the original run. */
+  durationMs: number | null;
+  timeoutMs: number;
+  /** The result was reused from an earlier run on the same commit. */
+  cached: boolean;
+  exitCode: number | null;
+  /** The end of the output as the agent receives it; only for `check_failed` and `check_error`. */
+  output: string | null;
+}
+
+/** The entry gate of one move: every check of the column with its state. Reported on each change. */
+export interface GateRun {
+  target: string;
+  role: string;
+  sha: string | null;
+  startedAt: Date;
+  /** Null while the gate runs. */
+  finishedAt: Date | null;
+  checks: GateCheck[];
+}
+
 /** A named check's state for the tracker (a GitHub commit status `symphony/<name>`). */
 export interface CheckStatusReport {
   name: string;
@@ -94,6 +124,8 @@ export interface GuardParams {
   /** Runs a check; the worker uses it to switch to the RunningChecks phase for the check's duration. */
   whileChecking?: <T>(run: () => Promise<T>) => Promise<T>;
   onCheckFinished?: (check: CheckRecord) => void;
+  /** Called with a copy of the gate's state on each change (checks pending, running, finished). */
+  onGateUpdate?: (gate: GateRun) => void;
   onDenied?: (target: string, message: string) => void;
   /** Reports named checks with a known commit (`checks.report_status`); a failure is logged, never decides. */
   reportStatus?: (report: CheckStatusReport) => Promise<void>;
@@ -265,6 +297,7 @@ export function createGuard(params: GuardParams): TransitionGuard {
   const queue = new SerialQueue();
   const emit = params.onEvent ?? (() => undefined);
   const role = roleName(params.role);
+  const publish = (gate: GateRun): void => params.onGateUpdate?.({ ...gate, checks: gate.checks.map((c) => ({ ...c })) });
 
   const evaluate = async (target: string, tool: string): Promise<GuardDecision> => {
     const allowed = allowedTargets(params);
@@ -297,6 +330,18 @@ export function createGuard(params: GuardParams): TransitionGuard {
         await report(check, cachedAll[index] as CheckRecord);
       }
       const records = cachedAll as CheckRecord[];
+      const now = new Date();
+      publish({
+        target,
+        role,
+        sha: clean,
+        startedAt: now,
+        finishedAt: now,
+        checks: checks.map((check, index) => {
+          const cached = records[index] as CheckRecord;
+          return { name: check.name, status: cached.result, startedAt: null, durationMs: cached.durationMs, timeoutMs: check.timeoutMs, cached: true, exitCode: cached.exitCode, output: null };
+        }),
+      });
       return { allow: true, note: `cached result for ${clean}`, check: records.length === 1 ? (records[0] as CheckRecord) : summarize(target, records) };
     }
 
@@ -304,18 +349,58 @@ export function createGuard(params: GuardParams): TransitionGuard {
     return whileChecking(async () => {
       const sha = clean ?? (params.headSha !== undefined ? await params.headSha() : null);
       const extra = params.checkEnv !== undefined ? await params.checkEnv() : {};
+      const gate: GateRun = {
+        target,
+        role,
+        sha,
+        startedAt: new Date(),
+        finishedAt: null,
+        checks: checks.map((check) => ({ name: check.name, status: 'pending', startedAt: null, durationMs: null, timeoutMs: check.timeoutMs, cached: false, exitCode: null, output: null })),
+      };
+      publish(gate);
+      try {
+        return await runGate(gate, checks, workspace, sha, clean, extra, tool);
+      } finally {
+        // An exception while a check runs leaves it `running`: it did not finish properly.
+        for (const entry of gate.checks) if (entry.status === 'running') entry.status = 'check_error';
+        gate.finishedAt ??= new Date();
+        publish(gate);
+      }
+    });
+  };
+
+  const runGate = async (
+    gate: GateRun,
+    checks: readonly EntryCheck[],
+    workspace: Workspace,
+    sha: string | null,
+    clean: string | null,
+    extra: Record<string, string>,
+    tool: string,
+  ): Promise<GuardDecision> => {
+    const target = gate.target;
+    {
       const records: CheckRecord[] = [];
-      const failures: Array<{ check: EntryCheck; record: CheckRecord; result: HookResult }> = [];
-      for (const check of checks) {
+      const failures: Array<{ index: number; check: EntryCheck; record: CheckRecord; result: HookResult }> = [];
+      for (const [index, check] of checks.entries()) {
+        const entry = gate.checks[index] as GateCheck;
         const label = checkLabel(target, check);
         const reused = clean !== null ? params.cache?.get(cacheKey(clean, check)) : undefined;
         if (reused !== undefined) {
           emit('checks_cached', `entry check for ${label.replaceAll('"', '')} reused (${clean})`, { target, role, sha: clean, name: check.name });
+          entry.status = reused.result;
+          entry.cached = true;
+          entry.durationMs = reused.durationMs;
+          entry.exitCode = reused.exitCode;
+          publish(gate);
           await report(check, reused);
           records.push(reused);
           continue;
         }
         emit('checks_started', `entry check for ${label.replaceAll('"', '')} started`, { target, role, sha, name: check.name });
+        entry.status = 'running';
+        entry.startedAt = new Date();
+        publish(gate);
         const pending = pendingStatus(check, sha);
         const result = await params.manager.runScript(check.name === null ? `check:${target}` : `check:${target}:${check.name}`, check.command, workspace, params.issue(), {
           signal: params.signal,
@@ -337,6 +422,12 @@ export function createGuard(params: GuardParams): TransitionGuard {
           result: skipped ? 'skipped' : decision.allow ? 'passed' : (decision.category as CheckRecord['result']),
           finishedAt: new Date(),
         };
+        entry.status = record.result;
+        entry.durationMs = record.durationMs;
+        entry.exitCode = record.exitCode;
+        if (record.result === 'check_failed') entry.output = checkOutput(result);
+        else if (record.result === 'check_error') entry.output = checkOutput(result, ERROR_OUTPUT_LIMIT);
+        publish(gate);
         emit('checks_finished', `entry check for ${label.replaceAll('"', '')} ${record.result}`, {
           target,
           role,
@@ -355,12 +446,18 @@ export function createGuard(params: GuardParams): TransitionGuard {
           continue;
         }
         if (decision.category !== 'check_failed') return decision;
-        failures.push({ check, record, result });
+        failures.push({ index, check, record, result });
       }
       const summary = records.length === 1 ? (records[0] as CheckRecord) : summarize(target, records);
-      if (failures.length === 0) return { allow: true, note: CHECK_PASSED_NOTE, check: summary };
+      gate.finishedAt = new Date();
+      if (failures.length === 0) {
+        publish(gate);
+        return { allow: true, note: CHECK_PASSED_NOTE, check: summary };
+      }
       // Every failure in one answer: a send-back round costs far more than running the remaining checks.
       const share = Math.floor(CHECK_OUTPUT_LIMIT / failures.length);
+      if (failures.length > 1 || checks.length > 1) for (const { index, result } of failures) (gate.checks[index] as GateCheck).output = checkOutput(result, share);
+      publish(gate);
       const output =
         failures.length === 1 && checks.length === 1
           ? checkOutput((failures[0] as (typeof failures)[number]).result)
@@ -372,7 +469,7 @@ export function createGuard(params: GuardParams): TransitionGuard {
               .join('\n\n');
       const label = failures.length === 1 ? checkLabel(target, (failures[0] as (typeof failures)[number]).check) : `"${target}" (${failures.map((f) => f.check.name ?? 'check').join(', ')})`;
       return { allow: false, category: 'check_failed', message: failedMessage(label, output, tool), failed: { output, check: summary } };
-    });
+    }
   };
 
   /** Starts the delayed `pending` status of a named check; `settle` cancels it or waits until it is posted. */

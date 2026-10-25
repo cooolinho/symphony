@@ -335,6 +335,78 @@ describe('http extension', () => {
 });
 
 describe('issue details', () => {
+  it('returns the entry gate with a running and a finished check', async () => {
+    const workspaceRoot = tempDir();
+    const runner = new FakeRunner(async (_turn, params) => {
+      void params.tools.find((t) => t.name === 'set_status')!.execute({ status: 'Agent review' }, params.toolContext());
+      return new Promise((resolve) => params.signal.addEventListener('abort', () => resolve({ ok: false, turnId: '1', code: 'turn_cancelled', message: 'cancelled' })));
+    });
+    const front = baseFront(workspaceRoot, {
+      tracker: { kind: 'github_project', provider: { owner: 'acme', project_number: 1, token: 'test-token' }, active_states: ['Todo', 'Agent review'] },
+      checks: {
+        on_enter: {
+          'Agent review': [
+            { name: 'lint', command: 'exit 0' },
+            { name: 'ci', command: 'while [ ! -f "$SYMPHONY_WORKSPACE/go" ]; do sleep 0.02; done; exit 0', timeout_ms: 30000 },
+          ],
+        },
+      },
+    });
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(front)),
+      runner,
+      logger: Logger.silent(),
+      env: {},
+      logDir: null,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker([makeIssue({ id: 'g' })]),
+    });
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    const detailOf = async () => JSON.parse((await request(server.port, 'GET', `/api/v1/${encodeURIComponent('acme/app#g')}`)).body);
+    try {
+      await orchestrator.tickNow();
+      await until(() => orchestrator.issueDetail('acme/app#g')?.gate?.checks[1]?.status === 'running', 5_000, 'running check');
+      let detail = await detailOf();
+      assert.equal(detail.gate.target, 'Agent review');
+      assert.equal(detail.gate.finished_at, null);
+      const [lint, ci] = detail.gate.checks;
+      assert.equal(lint.name, 'lint');
+      assert.equal(lint.status, 'passed');
+      assert.equal(typeof lint.duration_ms, 'number');
+      assert.equal(lint.cached, false);
+      assert.equal(lint.output, null);
+      assert.equal(ci.name, 'ci');
+      assert.equal(typeof ci.started_at, 'string');
+      assert.ok(ci.duration_ms >= 0);
+      assert.equal(ci.timeout_ms, 30000);
+      fs.writeFileSync(path.join(orchestrator.issueDetail('acme/app#g')!.workspace.path as string, 'go'), '');
+      await until(() => orchestrator.issueDetail('acme/app#g')?.gate?.finished_at != null, 5_000, 'finished gate');
+      detail = await detailOf();
+      assert.deepEqual(detail.gate.checks.map((c: { status: string }) => c.status), ['passed', 'passed']);
+      assert.equal(detail.last_check.target, 'Agent review');
+    } finally {
+      await orchestrator.shutdown(1_000);
+      await server.close();
+    }
+  });
+
+  it('returns gate: null without an entry gate', async () => {
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir()))),
+      runner: new FakeRunner(async () => ({ ok: true, turnId: '1', resultText: '' })),
+      logger: Logger.silent(),
+      env: {},
+      logDir: null,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker([makeIssue({ id: 'n' })]),
+    });
+    await orchestrator.tickNow();
+    const detail = orchestrator.issueDetail('acme/app#n');
+    assert.equal(detail?.gate, null);
+    assert.equal(detail?.last_check, null);
+    await orchestrator.shutdown(1_000);
+  });
+
   it('returns the last entry check as last_check', async () => {
     let checked = false;
     const runner = new FakeRunner(async (_turn, params) => {
