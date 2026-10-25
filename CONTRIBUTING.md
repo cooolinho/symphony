@@ -39,6 +39,8 @@ npm run check   # typecheck and tests
 4. Write clear commit messages. Reference the issue with `Closes #<number>` in the pull request description.
 5. Open the pull request against `develop` and fill in the template.
 
+Branch names, merge rules and the release process are in [docs/gitflow.md](docs/gitflow.md).
+
 CI runs `npm run check` and a Docker build for every pull request. Pull requests from the Symphony agents
 (`symphony/*` branches of this repository) are merged automatically under the rules in the [README](README.md); all
 other pull requests, including every pull request from a fork, are reviewed and merged by a maintainer.
