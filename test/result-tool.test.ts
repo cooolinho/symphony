@@ -10,7 +10,7 @@ import { JSON_ARGUMENT_HINT, RESULT_RECORDED_NOTE, RESULT_TOOL, classificationLa
 import { buildStageHistory } from '../src/orchestrator/stage-history.ts';
 import { changedFiles } from '../src/workspace/changes.ts';
 import type { Issue, StatusChange, ToolResult } from '../src/tracker/types.ts';
-import { RESULT_FIELD_BUDGET, SUMMARY_MAX, decodeMarker, parseResult, toolInputShape } from '../src/workflow/results.ts';
+import { RESULT_FIELD_BUDGET, SUMMARY_MAX, resultBudgetNote, decodeMarker, parseResult, toolInputShape } from '../src/workflow/results.ts';
 import { WorkspaceManager } from '../src/workspace/manager.ts';
 import { FakeTracker, baseFront, makeIssue, makeWorkflow, tempDir } from './helpers.ts';
 
@@ -1144,5 +1144,18 @@ describe('report_result: size budget (#284)', () => {
     const shortened = { ...TOO_BIG, uncovered_criteria: TOO_BIG.uncovered_criteria.map((entry) => entry.slice(0, 1000)) };
     data(await report(shortened));
     assert.equal(tracker.comments.get('1')?.length, 1);
+  });
+});
+
+describe('report_result description: size budget and JSON hint together', () => {
+  it('names the size budget first and ends with the JSON hint', () => {
+    for (const role of ['reviewer', 'developer']) {
+      const { unguarded } = setup({ role });
+      const budget = unguarded.description.indexOf(resultBudgetNote());
+      const hint = unguarded.description.indexOf(JSON_ARGUMENT_HINT);
+      assert.ok(budget >= 0, `${role}: size budget missing`);
+      assert.ok(hint > budget, `${role}: hint must follow the budget`);
+      assert.ok(unguarded.description.endsWith(JSON_ARGUMENT_HINT), role);
+    }
   });
 });
