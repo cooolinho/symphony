@@ -274,7 +274,7 @@ the check ends, and the `set_status` tool call may last `checks.timeout_ms` (or 
 checks) `+ 60 s`
 (see [agent-claude.md](agent-claude.md#timeouts-and-failures)). Each check logs `checks_started` and
 `checks_finished` (`target`, `sha`, `exit_code`, `duration_ms`, `ok`) at info level, writes a `checks_finished`
-line to the [repository log](#repository-logs) and becomes `last_check` in `GET /api/v1/<identifier>`. Denied targets
+line to the [repository log](#repository-logs) and becomes `last_check` in `GET /api/v1/<identifier>`; while the checks of a move run, `gate` in the same response lists every check of the column with its state, and the agent page shows it as *Entry checks* (see [usage](usage.md#dashboard-and-api)). Denied targets
 write a `transition_denied` line.
 
 ### `agent`

@@ -1000,6 +1000,10 @@ describe('entry checks at runtime', () => {
 
     const last = s.orchestrator.issueDetail('acme/app#c')?.last_check;
     assert.deepEqual([last?.target, last?.role, last?.ok, last?.result, last?.exit_code, last?.timed_out], ['Agent review', 'developer', false, 'check_failed', 1, false]);
+    const gate = s.orchestrator.issueDetail('acme/app#c')?.gate;
+    assert.equal(gate?.target, 'Agent review');
+    assert.notEqual(gate?.finished_at, null, 'a finished gate stays until the next one');
+    assert.equal(gate?.checks[0]?.status, 'check_failed');
 
     s.clock.advance(31_000);
     await s.orchestrator.tickNow();
@@ -2253,6 +2257,7 @@ describe('issue archive', () => {
     assert.equal(detail?.status, 'finished');
     assert.equal(detail?.title, 'Old archive');
     assert.deepEqual(detail?.results, []);
+    assert.equal(detail?.gate, null);
     assert.equal(detail?.pipeline[0]?.verdict, null);
     assert.equal(detail?.pipeline[0]?.round, null);
     assert.equal(detail?.pipeline[0]?.sessions[0]?.verdict, null);
