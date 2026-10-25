@@ -344,6 +344,35 @@ describe('API and repository log: a passed check with steps', () => {
     assert.equal(entry?.fields.result, 'passed');
     assert.equal('steps' in (entry?.fields ?? {}) || 'load' in (entry?.fields ?? {}), false);
   });
+
+  it('writes steps and load to checks_finished of a failed check too, while the gate keeps the failure output', async () => {
+    const dir = tempDir();
+    const history = new HistoryLog(path.join(dir, 'repositories'), new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent()), Logger.silent());
+    const failing = `${script}; exit 1`;
+    const orchestrator = gateOrchestrator(
+      [{ name: 'ci', command: failing }],
+      async (_turn, params) => {
+        await callTool(params, 'set_status', { status: 'Agent review' });
+        return { ok: true, turnId: '1', resultText: 'done' };
+      },
+      { history },
+    );
+    try {
+      await orchestrator.tickNow();
+      await until(() => orchestrator.issueDetail('acme/app#g')?.gate?.finished_at != null, 5_000, 'finished gate');
+      const [ci] = orchestrator.issueDetail('acme/app#g')!.gate!.checks;
+      assert.equal(ci?.status, 'check_failed');
+      assert.match(ci?.output ?? '', /noise/, 'a failure keeps its full output, not cut at the steps block');
+    } finally {
+      await orchestrator.shutdown(1_000);
+    }
+    const [entry] = readHistory(history.dir, null).entries.filter((e) => e.event === 'checks_finished');
+    assert.deepEqual(JSON.parse(entry?.fields.steps ?? 'null'), [
+      { name: 'Pint', duration_s: 3, result: 'ok' },
+      { name: 'tests', duration_s: 65, result: 'timed out (aborted)' },
+    ]);
+    assert.deepEqual(JSON.parse(entry?.fields.load ?? 'null'), { '1m': 0.5, '5m': 1.25, '15m': 2, cpus: 4 });
+  });
 });
 
 describe('API: GET /api/v1/<identifier> gate', () => {
