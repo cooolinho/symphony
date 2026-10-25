@@ -5,7 +5,7 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import { Logger } from '../src/log.ts';
 import { createGuard, guardTools, toolsForRole } from '../src/orchestrator/guard.ts';
-import { RESULT_RECORDED_NOTE, RESULT_TOOL, classificationLabels, createResultTool, type ResultToolParams } from '../src/orchestrator/result-tool.ts';
+import { JSON_ARGUMENT_HINT, RESULT_RECORDED_NOTE, RESULT_TOOL, classificationLabels, createResultTool, type ResultToolParams } from '../src/orchestrator/result-tool.ts';
 import { buildStageHistory } from '../src/orchestrator/stage-history.ts';
 import { changedFiles } from '../src/workspace/changes.ts';
 import type { Issue, StatusChange, ToolResult } from '../src/tracker/types.ts';
@@ -354,6 +354,16 @@ describe('report_result', () => {
     assert.deepEqual(Object.keys(unguarded.inputSchema), Object.keys(toolInputShape('review')));
     assert.match(unguarded.description, /approved, changes_needed, blocked/);
     assert.equal(unguarded.mutates, true);
+  });
+
+  it('tells the agent to send valid JSON arguments (Claude Code rejects broken JSON before the tool runs)', () => {
+    const { unguarded } = setup();
+    assert.match(JSON_ARGUMENT_HINT, /valid JSON/);
+    assert.ok(unguarded.description.includes(JSON_ARGUMENT_HINT));
+    for (const file of fs.readdirSync('roles').filter((name) => name.endsWith('.md'))) {
+      const text = fs.readFileSync(path.join('roles', file), 'utf8');
+      if (/^\d+\. (Report|Hand off).*`report_result`.*Fields:/m.test(text)) assert.ok(text.includes(JSON_ARGUMENT_HINT), `${file} lacks the JSON hint`);
+    }
   });
 
   it('records the result after the entry check passed: comment with marker, move, note', async () => {

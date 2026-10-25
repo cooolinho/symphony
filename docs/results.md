@@ -117,6 +117,11 @@ Symphony adds facts the agent never sets: `role`, `run`, `round`, `profile`, `wo
 
 ## The `report_result` tool
 
+Claude Code parses the tool input as JSON before the tool runs; a call with broken JSON (unescaped quote or backslash, raw
+control character) is rejected as `InputValidationError` and never reaches Symphony. To keep that rare, the tool
+description and every role prompt with a result step carry `JSON_ARGUMENT_HINT` (escape, `/` in paths, regexes in words,
+short summary, details in lists).
+
 A role with [`result`](configuration.md#result-driven-transitions) hands off with the tracker tool `report_result`
 (`mcp__tracker__report_result`) instead of `set_status`: such a role never gets `set_status` (`toolsForRole`), so a
 stage cannot end just because the agent moves the issue. The tool is built per session; its input is the kind's agent

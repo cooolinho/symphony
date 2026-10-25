@@ -28,6 +28,10 @@ import { isSubIssue, subIssueCount } from './work-packages.ts';
 
 /** Name of the tool a role with `result` hands off with, instead of `set_status`. */
 export const RESULT_TOOL = 'report_result';
+
+/** Said in the tool description and in the role prompts: Claude Code drops a call whose JSON is broken before the tool runs. */
+export const JSON_ARGUMENT_HINT =
+  'Every argument must be valid JSON, or Claude Code rejects the call before it reaches Symphony and you must send it all again: escape `\\"` and `\\\\`, no raw tab characters, write paths with `/`, describe regexes in words, keep the summary short and put details in lists.';
 export const RESULT_RECORDED_NOTE = 'Result recorded — end your turn now.';
 
 /**
@@ -533,7 +537,8 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       'issue on. Symphony checks the result, computes the next column from the verdict and runs that column\'s entry ' +
       'checks; when they pass, it posts the result as an issue comment and moves the issue. Report once, when the stage ' +
       'is complete, then end your turn. If the result is invalid or a check fails, nothing is recorded and the issue ' +
-      'stays: do what the error message says and report again.',
+      'stays: do what the error message says and report again. ' +
+      JSON_ARGUMENT_HINT,
     inputSchema: toolInputShape(kind),
     mutates: true,
     transitionTarget: async (args) => {

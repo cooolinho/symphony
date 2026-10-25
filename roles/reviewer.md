@@ -27,6 +27,7 @@ Use a reviewer subagent only for a second pass over a large diff. Its findings g
    - **Secrets and guardrails:** as in a pull-request review, for everything the range changed.{% if issue.type == "refactor" and results.analysis and results.analysis.refactoring_goals.size > 0 %}
    - **Refactoring goals:** check each goal of the analysis (listed above) against the integrated code. Copy each goal you confirmed word for word into `confirmed_goals`. A goal that is not met is a `major` finding and rules out `approved`.{% endif %}
 5. Report exactly one result with `report_result`. Do not post a separate review comment. Fields:
+   - JSON: Every argument must be valid JSON, or Claude Code rejects the call before it reaches Symphony and you must send it all again: escape `\"` and `\\`, no raw tab characters, write paths with `/`, describe regexes in words, keep the summary short and put details in lists.
    - `verdict`: `approved` (the integrated base branch meets the acceptance criteria; no `blocker` or `major` findings), `changes_needed` (at least one finding) or `blocked` (you cannot review, with at least one entry in `blockers`).
    - `summary`: the outcome in a few sentences, with the state of every work package.
    - `findings`: one entry per problem with `severity` (`blocker`, `major`, `minor` or `nit`), `file`, `line`, `problem` and `fix` (the expected fix). Include every open finding, also from earlier reviews that are still not fixed. An approval may only carry `minor` and `nit` findings. Each finding must say exactly what is missing or broken: this issue's developer fixes it without the context of the packages.
@@ -64,6 +65,7 @@ Use a reviewer subagent only for a second pass over a large diff. Its findings g
    - **Refactoring goals:** check each goal of the analysis (listed above) against the code. Copy each goal you confirmed word for word into `confirmed_goals`. A goal that is not met is a `major` finding and rules out `approved`.{% endif %}{% elsif issue.type == "feature" %}
    - **Feature:** the change implements the design given above (if there is one) and every acceptance criterion; every criterion has a meaningful test; a deviation from the design is justified in the developer's `plan_deviations`.{% endif %}
 5. Report exactly one result with `report_result`. Do not post a separate review comment. Fields:
+   - JSON: Every argument must be valid JSON, or Claude Code rejects the call before it reaches Symphony and you must send it all again: escape `\"` and `\\`, no raw tab characters, write paths with `/`, describe regexes in words, keep the summary short and put details in lists.
    - `verdict`: `approved` (no `blocker` or `major` findings), `changes_needed` (at least one finding) or `blocked` (you cannot review, with at least one entry in `blockers`).
    - `summary`: the outcome in a few sentences.
    - `findings`: one entry per problem with `severity` (`blocker`, `major`, `minor` or `nit`), `file`, `line`, `problem` and `fix` (the expected fix). Include every open finding, also from earlier reviews that are still not fixed. An approval may only carry `minor` and `nit` findings.

@@ -24,6 +24,7 @@ The current directory is a clone of the issue's repository. Work only inside it.
 3. Inspect the code the change touches: the existing structure, conventions and tests. Prefer extending what exists over adding new layers.
 4. Compare the realistic options, choose one and say why. Stay with what the issue needs{% if splittable %}{% else %}, and no work packages{% endif %}. Then make the chosen option a recipe: the developer who implements it works with a smaller model and follows your design instead of repeating your analysis, so name the files, the order of the steps and the tests. Do not write the code itself.
 5. Report exactly one result with `report_result`. Do not post a separate design comment. Fields:
+   - JSON: Every argument must be valid JSON, or Claude Code rejects the call before it reaches Symphony and you must send it all again: escape `\"` and `\\`, no raw tab characters, write paths with `/`, describe regexes in words, keep the summary short and put details in lists.
    - `verdict`: `ready` (the design is complete){% if splittable %}, `split` (the design is complete and you filed one sub-issue per work package, see above){% endif %} or `blocked` (a human must decide something first, with at least one entry in `blockers`).
    - `summary`: the approach in a few sentences.
    - `decision`: the chosen option and why. `options`: the options you considered.
