@@ -5,7 +5,9 @@ import type { CheckRecord } from '../src/orchestrator/guard.ts';
 import {
   AGENT_RESULT_KINDS,
   RESULT_SCHEMA,
+  RESULT_FIELD_BUDGET,
   RESULT_SIZE_LIMIT,
+  SUMMARY_MAX,
   checkSummary,
   decodeMarker,
   encodeMarker,
@@ -421,6 +423,36 @@ describe('result contracts: size cap', () => {
     assert.match(problems.join('\n'), /too large for an issue comment .*limit 60000/);
     const result = { schema: RESULT_SCHEMA, kind: 'docs', verdict: 'done', summary: 'x', blockers: [], follow_ups: [], files } as StageResult;
     assert.throws(() => encodeMarker({ ...result, files: [...files, ...files] } as StageResult, meta), { code: 'result_too_large' });
+  });
+});
+
+describe('result contracts: field budget', () => {
+  const design = (fieldText: number) =>
+    ({
+      verdict: 'ready',
+      summary: 'Design.',
+      decision: 'Use the budget.',
+      components: ['module'],
+      interfaces: ['api'],
+      plan: Array.from({ length: Math.ceil(fieldText / 2000) }, (_, i) => `${i} ${'x'.repeat(1990)}`),
+    }) as Record<string, unknown>;
+
+  it('rejects a design of 30,000 characters of field text and names budget, size and largest fields', () => {
+    const problems = problemsOf('design', design(30_000)).join('\n');
+    assert.match(problems, /too large for an issue comment/);
+    assert.match(problems, new RegExp(`budget is about ${RESULT_FIELD_BUDGET}`));
+    assert.match(problems, /its fields hold 29\d{3} characters/);
+    assert.match(problems, /largest fields are plan \(29\d{3}\)/);
+    assert.match(problems, new RegExp(`at most ${SUMMARY_MAX} characters`));
+  });
+
+  it('derives a budget that fits just below and fails well above', () => {
+    assert.ok(RESULT_FIELD_BUDGET > 15_000 && RESULT_FIELD_BUDGET < RESULT_SIZE_LIMIT / 2, `budget ${RESULT_FIELD_BUDGET}`);
+    const fits = parsed('design', design(RESULT_FIELD_BUDGET - 1000));
+    const comment = renderResultComment(fits, meta);
+    assert.ok(comment.length < RESULT_SIZE_LIMIT, `comment has ${comment.length} characters`);
+    assert.ok(comment.length / (RESULT_FIELD_BUDGET - 1000) > 2, 'the comment holds the field text about 2.3 times');
+    assert.ok(problemsOf('design', design(RESULT_FIELD_BUDGET + 4000)).length > 0);
   });
 });
 
