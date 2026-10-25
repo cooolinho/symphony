@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
+import { z } from 'zod';
 import { Logger } from '../src/log.ts';
 import { createGuard, guardTools, toolsForRole } from '../src/orchestrator/guard.ts';
 import { JSON_ARGUMENT_HINT, RESULT_RECORDED_NOTE, RESULT_TOOL, classificationLabels, createResultTool, type ResultToolParams } from '../src/orchestrator/result-tool.ts';
@@ -1091,11 +1092,11 @@ describe('report_result description: list fields are JSON arrays', () => {
   });
 
   it('keeps list fields of the schema as arrays (schema unchanged)', () => {
-    const docs = setup({ role: 'docs' }).unguarded.inputSchema as Record<string, { safeParse: (v: unknown) => { success: boolean } }>;
-    assert.equal(docs.files.safeParse(['README.md']).success, true);
-    assert.equal(docs.files.safeParse('- README.md').success, false);
-    const dev = setup({ role: 'developer' }).unguarded.inputSchema as Record<string, { safeParse: (v: unknown) => { success: boolean } }>;
-    assert.equal(dev.changed_files.safeParse(['a.ts']).success, true);
-    assert.equal(dev.changed_files.safeParse('- a.ts').success, false);
+    const docs = z.object(setup({ role: 'docs' }).unguarded.inputSchema);
+    assert.equal(docs.safeParse({ verdict: 'done', summary: 's', files: ['README.md'] }).success, true);
+    assert.equal(docs.safeParse({ verdict: 'done', summary: 's', files: '- README.md' }).success, false);
+    const dev = z.object(setup({ role: 'developer' }).unguarded.inputSchema);
+    assert.equal(dev.safeParse({ verdict: 'done', summary: 's', changed_files: ['a.ts'] }).success, true);
+    assert.equal(dev.safeParse({ verdict: 'done', summary: 's', changed_files: '- a.ts' }).success, false);
   });
 });
