@@ -8,8 +8,10 @@ import { describe, it } from 'node:test';
 import { AGENT_HTML } from '../src/http/agent-page.ts';
 import { BASE_JS } from '../src/http/styles.ts';
 import { startHttpServer } from '../src/http/server.ts';
+import { HistoryLog, readHistory } from '../src/history/history.ts';
+import { PricingStore } from '../src/costs/pricing.ts';
 import { Logger } from '../src/log.ts';
-import { CHECK_OUTPUT_LIMIT, createGuard, type CheckCache, type GateRun, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
+import { CHECK_OUTPUT_LIMIT, CHECK_PASSED_NOTE, createGuard, type CheckCache, type GateRun, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import { WorkspaceManager } from '../src/workspace/manager.ts';
 import { FakeRunner, FakeTracker, ManualTimers, StaticWorkflow, baseFront, callTool, makeIssue, makeWorkflow, tempDir, until } from './helpers.ts';
@@ -138,7 +140,7 @@ describe('guard: gate snapshots', () => {
     assert.equal(quiet.seen[quiet.seen.length - 1]!.checks[0]!.output, '');
   });
 
-  it('keeps passed checks without output and exposes the exit code of failures', async () => {
+  it('keeps passed checks with the end of their output and exposes the exit code of failures', async () => {
     const { guard, seen } = gateGuard([
       { name: 'ok', command: 'echo fine; exit 0' },
       { name: 'bad', command: 'echo nope; exit 3' },
@@ -146,7 +148,7 @@ describe('guard: gate snapshots', () => {
     const decision = denied(await guard('Agent review'));
     assert.equal(decision?.category, 'check_error');
     const last = seen[seen.length - 1]!;
-    assert.equal(last.checks[0]?.output, null);
+    assert.equal(last.checks[0]?.output, 'fine');
     assert.equal(last.checks[0]?.exitCode, 0);
     assert.equal(last.checks[1]?.status, 'check_error');
     assert.equal(last.checks[1]?.exitCode, 3);
@@ -181,6 +183,64 @@ describe('guard: gate snapshots', () => {
     assert.equal(seen.length, 0);
   });
 
+  const STEPS_SCRIPT = "echo build-noise; echo 'host load at end (1/5/15 min): 1.00 2.00 3.00, 8 CPUs'; echo 'steps:'; echo '  Pint (changed files)  3s  ok'; echo '  phpunit tests  2m 10s  ok'";
+
+  it('keeps the steps block of a passed check in gate.checks[].output, cut from the host load line on', async () => {
+    const { guard, seen } = gateGuard([{ name: 'ci', command: STEPS_SCRIPT }]);
+    const decision = await guard('Agent review');
+    assert.ok(decision.allow);
+    const out = seen[seen.length - 1]!.checks[0]!.output ?? '';
+    assert.ok(out.startsWith('host load at end (1/5/15 min): 1.00 2.00 3.00, 8 CPUs'));
+    assert.ok(out.includes('Pint (changed files)  3s  ok'));
+    assert.ok(out.endsWith('phpunit tests  2m 10s  ok'));
+    assert.ok(!out.includes('build-noise'));
+    assert.ok(out.length <= 400);
+  });
+
+  it('keeps the output of a skipped check too', async () => {
+    const { guard, seen } = gateGuard([{ name: 'docs', command: 'echo no app here; exit 78' }, { name: 'quiet', command: 'exit 78' }]);
+    assert.ok((await guard('Agent review')).allow);
+    const [docs, quiet] = seen[seen.length - 1]!.checks;
+    assert.deepEqual([docs?.status, docs?.output], ['skipped', 'no app here']);
+    assert.deepEqual([quiet?.status, quiet?.output], ['skipped', null]);
+  });
+
+  it('starts at steps: when there is no host load line, and at the earlier of the two when both exist', async () => {
+    const onlySteps = gateGuard([{ name: 'ci', command: "echo noise; echo 'steps:'; echo '  tests  4s  ok'" }]);
+    await onlySteps.guard('Agent review');
+    assert.equal(onlySteps.seen[onlySteps.seen.length - 1]!.checks[0]!.output, 'steps:\n  tests  4s  ok');
+    const both = gateGuard([{ name: 'ci', command: "echo noise; echo 'steps:'; echo '  tests  4s  ok'; echo 'host load at end (1/5/15 min): 0.1 0.2 0.3, 2 CPUs'" }]);
+    await both.guard('Agent review');
+    assert.ok((both.seen[both.seen.length - 1]!.checks[0]!.output ?? '').startsWith('steps:'));
+  });
+
+  it('caps a long steps block at a few hundred characters, keeping the end', async () => {
+    const lines = Array.from({ length: 40 }, (_, i) => `echo '  step number ${i}  ${i}s  ok'`).join('; ');
+    const { guard, seen } = gateGuard([{ name: 'ci', command: `echo 'host load at end (1/5/15 min): 1 2 3, 4 CPUs'; echo 'steps:'; ${lines}` }]);
+    assert.ok((await guard('Agent review')).allow);
+    const out = seen[seen.length - 1]!.checks[0]!.output ?? '';
+    assert.ok(out.length > 0 && out.length <= 500, `length ${out.length}`);
+    assert.ok(out.endsWith('step number 39  39s  ok'));
+  });
+
+  it('keeps the tool answer for a passed check at the note, without any output', async () => {
+    const { guard } = gateGuard([{ name: 'ci', command: STEPS_SCRIPT }, { name: 'lint', command: 'echo lint-noise' }]);
+    const decision = await guard('Agent review');
+    assert.ok(decision.allow);
+    assert.equal(decision.allow && decision.note, CHECK_PASSED_NOTE);
+    const answer = JSON.stringify(decision.allow ? decision.note : decision);
+    assert.ok(!answer.includes('host load') && !answer.includes('lint-noise') && !answer.includes('steps:'));
+  });
+
+  it('leaves the output of a failed check as it was: the tail up to the limit, not cut at steps:', async () => {
+    const { guard, seen } = gateGuard([{ name: 'ci', command: "echo HEADMARK; echo 'host load at end (1/5/15 min): 1 2 3, 4 CPUs'; echo 'steps:'; echo '  tests  4s  failed'; exit 1" }]);
+    const decision = denied(await guard('Agent review'));
+    assert.equal(decision?.category, 'check_failed');
+    const out = seen[seen.length - 1]!.checks[0]!.output ?? '';
+    assert.ok(out.startsWith('HEADMARK'), 'the whole short output of a failure is kept');
+    assert.ok(decision?.message.includes(out));
+  });
+
   it('treats exit 78 as skipped', async () => {
     const { guard, seen } = gateGuard([{ name: 'docs', command: 'exit 78' }, { name: 'ci', command: 'exit 0' }]);
     assert.ok((await guard('Agent review')).allow);
@@ -203,7 +263,7 @@ function request(port: number, urlPath: string): Promise<{ status: number; body:
   });
 }
 
-function gateOrchestrator(commands: Array<{ name: string; command: string; timeout_ms?: number }>, script: ConstructorParameters<typeof FakeRunner>[0]) {
+function gateOrchestrator(commands: Array<{ name: string; command: string; timeout_ms?: number }>, script: ConstructorParameters<typeof FakeRunner>[0], extra: { history?: HistoryLog } = {}) {
   const front = baseFront(tempDir(), {
     tracker: { kind: 'github_project', provider: { owner: 'acme', project_number: 1, token: 'test-token' }, active_states: ['Todo', 'Agent review'] },
     checks: { on_enter: { 'Agent review': commands } },
@@ -216,8 +276,75 @@ function gateOrchestrator(commands: Array<{ name: string; command: string; timeo
     logDir: null,
     timers: new ManualTimers(),
     createAdapter: () => new FakeTracker([makeIssue({ id: 'g' })]),
+    ...extra,
   });
 }
+
+describe('API and repository log: a passed check with steps', () => {
+  const script = "echo noise; echo 'host load at end (1/5/15 min): 0.50 1.25 2.00, 4 CPUs'; echo 'steps:'; echo '  Pint  3s  ok'; echo '  tests  1m 5s  timed out (aborted)'";
+
+  it('serves the kept output in the gate, and writes steps and load to checks_finished', async () => {
+    const dir = tempDir();
+    const history = new HistoryLog(path.join(dir, 'repositories'), new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent()), Logger.silent());
+    let answer: unknown = null;
+    const orchestrator = gateOrchestrator(
+      [{ name: 'ci', command: script }],
+      async (_turn, params) => {
+        answer = await callTool(params, 'set_status', { status: 'Agent review' });
+        return { ok: true, turnId: '1', resultText: 'done' };
+      },
+      { history },
+    );
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    try {
+      await orchestrator.tickNow();
+      await until(() => orchestrator.issueDetail('acme/app#g')?.gate?.finished_at != null, 5_000, 'finished gate');
+      const detail = JSON.parse((await request(server.port, `/api/v1/${encodeURIComponent('acme/app#g')}`)).body);
+      const [ci] = detail.gate.checks;
+      assert.equal(ci.status, 'passed');
+      assert.ok(ci.output.startsWith('host load at end'));
+      assert.match(ci.output, /tests {2}1m 5s {2}timed out \(aborted\)$/);
+      assert.ok(!ci.output.includes('noise'));
+      assert.ok(!JSON.stringify(answer).includes('host load'), 'the tool answer carries no output');
+      assert.ok(JSON.stringify(answer).includes(CHECK_PASSED_NOTE));
+    } finally {
+      await orchestrator.shutdown(1_000);
+      await server.close();
+    }
+    const finished = readHistory(history.dir, null).entries.filter((entry) => entry.event === 'checks_finished');
+    assert.ok(finished.length >= 1);
+    const fields = finished[0]!.fields;
+    assert.equal(fields.result, 'passed');
+    assert.deepEqual(JSON.parse(fields.steps ?? 'null'), [
+      { name: 'Pint', duration_s: 3, result: 'ok' },
+      { name: 'tests', duration_s: 65, result: 'timed out (aborted)' },
+    ]);
+    assert.deepEqual(JSON.parse(fields.load ?? 'null'), { '1m': 0.5, '5m': 1.25, '15m': 2, cpus: 4 });
+  });
+
+  it('writes checks_finished without steps and load for other output', async () => {
+    const dir = tempDir();
+    const history = new HistoryLog(path.join(dir, 'repositories'), new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent()), Logger.silent());
+    const orchestrator = gateOrchestrator(
+      [{ name: 'ci', command: 'echo all good; echo steps are fine' }],
+      async (_turn, params) => {
+        await callTool(params, 'set_status', { status: 'Agent review' });
+        return { ok: true, turnId: '1', resultText: 'done' };
+      },
+      { history },
+    );
+    try {
+      await orchestrator.tickNow();
+      await until(() => orchestrator.issueDetail('acme/app#g')?.gate?.finished_at != null, 5_000, 'finished gate');
+      assert.equal(orchestrator.issueDetail('acme/app#g')?.gate?.checks[0]?.output, 'all good\nsteps are fine');
+    } finally {
+      await orchestrator.shutdown(1_000);
+    }
+    const [entry] = readHistory(history.dir, null).entries.filter((e) => e.event === 'checks_finished');
+    assert.equal(entry?.fields.result, 'passed');
+    assert.equal('steps' in (entry?.fields ?? {}) || 'load' in (entry?.fields ?? {}), false);
+  });
+});
 
 describe('API: GET /api/v1/<identifier> gate', () => {
   it('serves a failed check with the output the agent got, and a fresh gate after a second move', async () => {
@@ -466,6 +593,31 @@ describe('agent page: entry checks section', () => {
   it('shows no output block for passed, running or timed out checks', () => {
     const { rows } = renderGate({ gate: gate([check({ status: 'passed' }), check({ status: 'running', exit_code: null }), check({ status: 'check_timeout', exit_code: null })]) });
     for (const row of rows) assert.equal(row.find((n) => n.tag === 'pre').length, 0);
+  });
+
+  it('folds the output of passed and skipped checks into a details element, as text', () => {
+    const out = 'host load at end (1/5/15 min): 1 2 3, 4 CPUs\nsteps:\n  <b>tests</b>  4s  ok';
+    const { rows } = renderGate({
+      gate: gate([check({ name: 'a', status: 'passed', output: out }), check({ name: 'b', status: 'skipped', exit_code: 78, output: 'not applicable' })], { finished_at: '2026-10-25T10:01:00Z' }),
+    });
+    for (const [index, text] of [out, 'not applicable'].entries()) {
+      const details = rows[index]!.find((n) => n.tag === 'details');
+      assert.equal(details.length, 1, 'the output sits in a collapsed details element');
+      const pre = details[0]!.find((n) => n.tag === 'pre');
+      assert.equal(pre.length, 1);
+      assert.equal(pre[0]!.text, text);
+      assert.equal(pre[0]!.children.length, 0);
+      assert.equal(rows[index]!.children.filter((n) => n.tag === 'pre').length, 0, 'not shown outside of the details element');
+    }
+  });
+
+  it('shows no details element for a passed check without output, and keeps failed output outside of one', () => {
+    const { rows } = renderGate({
+      gate: gate([check({ status: 'passed', output: null }), check({ status: 'check_failed', exit_code: 1, output: 'boom' })], { finished_at: '2026-10-25T10:01:00Z' }),
+    });
+    assert.equal(rows[0]!.find((n) => n.tag === 'details' || n.tag === 'pre').length, 0);
+    assert.equal(rows[1]!.find((n) => n.tag === 'details').length, 0);
+    assert.equal(rows[1]!.children.filter((n) => n.tag === 'pre').length, 1);
   });
 
   it('labels cached checks "from cache" and nothing else', () => {
