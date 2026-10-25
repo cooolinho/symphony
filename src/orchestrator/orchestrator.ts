@@ -12,8 +12,9 @@ import { readTranscript, type TranscriptChunk } from '../agent/transcript.ts';
 import { defaultIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
+import { configuredRepositories, isRepositoryName } from '../tracker/github-project/settings.ts';
 import { getTrackerFactory } from '../tracker/registry.ts';
-import type { Issue, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
+import type { Issue, MergeWatch, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
 import { SerialQueue, settledWithin } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { truncate } from '../util/text.ts';
@@ -42,7 +43,7 @@ import {
 } from './eligibility.ts';
 import { normalizeStateName } from '../workflow/config.ts';
 import { planDispatch, type PlanIssue, type PlanItem, type PlanRetry } from './dispatch-plan.ts';
-import { createGuard, entryCheckFor, type CheckCache, type CheckRecord } from './guard.ts';
+import { createGuard, entryChecksFor, type CheckCache, type CheckRecord, type GateRun } from './guard.ts';
 import { IssueArchive, type ArchivedIssue } from './issue-archive.ts';
 import {
   activeReservations,
@@ -63,7 +64,7 @@ import { RuntimeStateStore, runtimeStateFile, type ModelHold, type OperatorHold 
 import { resultRows, type PersistedResult } from './stage-history.ts';
 import { blockedBucketColumns, derivePipeline, type PipelineStage, type StageSession } from './pipeline.ts';
 import { copyToolUsage, countToolUse, emptyToolUsage, integrationJson, integrationUsage, type ToolUsage } from './tool-usage.ts';
-import { runAgentAttempt, type RunPhase, type WorkerOutcome } from './worker.ts';
+import { checkStatusReporter, runAgentAttempt, type RunPhase, type WorkerOutcome } from './worker.ts';
 import { interruptedLabels, interruptedTransition, statusUpdatedAt, type InterruptedTransition } from './recovery.ts';
 import { applyTransitionLabels, RESULT_TOOL } from './result-tool.ts';
 
@@ -396,6 +397,8 @@ interface IssueRecord {
   checkCache: CheckCache;
   /** The latest entry check of any run for this issue. */
   lastCheck: CheckRecord | null;
+  /** The newest entry gate of the current run: running, or finished until the next gate or run. */
+  gate: GateRun | null;
   /** Board fields of the issue at the last dispatch or reconcile; null before the first dispatch. */
   meta: IssueMeta | null;
   /** The issue's stage results as the latest result-driven session saw or reported them; empty before the first one. */
@@ -438,10 +441,32 @@ function traceJson(trace: RunTrace | null) {
   };
 }
 
+function gateJson(gate: GateRun | null, nowMs: number) {
+  if (gate === null) return null;
+  return {
+    target: gate.target,
+    role: gate.role,
+    sha: gate.sha,
+    started_at: gate.startedAt.toISOString(),
+    finished_at: gate.finishedAt?.toISOString() ?? null,
+    checks: gate.checks.map((check) => ({
+      name: check.name,
+      status: check.status,
+      started_at: check.startedAt?.toISOString() ?? null,
+      duration_ms: check.status === 'running' && check.startedAt !== null ? Math.max(0, nowMs - check.startedAt.getTime()) : check.durationMs,
+      timeout_ms: check.timeoutMs,
+      cached: check.cached,
+      exit_code: check.exitCode,
+      output: check.output,
+    })),
+  };
+}
+
 function checkJson(check: CheckRecord | null) {
   if (check === null) return null;
   return {
     target: check.target,
+    name: check.name,
     role: check.role,
     sha: check.sha,
     ok: check.ok,
@@ -610,8 +635,10 @@ export class Orchestrator {
 
   #running = new Map<string, RunningEntry>();
   #claimed = new Set<string>();
-  /** Stage skips and transition recoveries in flight (see `#skipStage`, `#recoverTransition`); `stop` waits for them. */
+  /** Stage skips, transition recoveries and merge retries in flight (see `#skipStage`, `#recoverTransition`, `#retryMerges`); `stop` waits for them. */
   #skips = new Set<Promise<void>>();
+  /** Issues whose `auto_merge` retry (`#retryMerges`) is in flight. */
+  #mergeRetries = new Set<string>();
   /** Aborted at shutdown: stops the entry check of a transition recovery. */
   #halt = new AbortController();
   /** The result comment of an interrupted transition whose recovery was declined, by issue id: its stage runs instead. */
@@ -1216,8 +1243,12 @@ export class Orchestrator {
       const adapter = this.#adapterFor(workflow);
       let fetched: Issue[];
       const blockedStates = this.#blockedStates(config);
+      // Issues waiting for pull request checks before auto_merge sit in a column no stage works on; fetched with the board.
+      const watch = adapter.mergeWatch?.() ?? null;
+      const states = [...config.tracker.activeStates, ...blockedStates];
+      const watchOnly = watch !== null && !states.some((state) => normalizeStateName(state) === normalizeStateName(watch.column));
       try {
-        fetched = await adapter.fetchIssuesByStates([...config.tracker.activeStates, ...blockedStates]);
+        fetched = await adapter.fetchIssuesByStates(watchOnly ? [...states, watch.column] : states);
         this.#lastTrackerError = null;
       } catch (error) {
         this.#trackerFailure('candidate fetch failed; skipping dispatch this tick', error);
@@ -1230,11 +1261,13 @@ export class Orchestrator {
         const record = this.#claimed.has(issue.id) ? this.#records.get(issue.id) : undefined;
         if (record !== undefined) record.meta = issueMeta(issue);
       }
+      const listed = watchOnly ? fetched.filter((issue) => normalizeStateName(issue.state) !== normalizeStateName(watch.column)) : fetched;
       this.#board = {
         fetchedAt: this.#clock.now(),
         candidates: candidates.map(strip),
-        parked: fetched.filter((issue) => !isActiveState(issue.state, config.tracker)).map(strip),
+        parked: listed.filter((issue) => !isActiveState(issue.state, config.tracker)).map(strip),
       };
+      if (watch !== null) this.#retryMerges(watch, fetched, adapter);
 
       const byId = new Map(candidates.map((issue) => [issue.id, issue]));
       await this.#startPlanned(this.#plan(config, adapter), async (item) => {
@@ -1249,6 +1282,50 @@ export class Orchestrator {
     } finally {
       this.#lastTickAt = this.#clock.now();
       this.#notify();
+    }
+  }
+
+  /**
+   * Retries `auto_merge` for issues waiting for pull request checks (`MergeWatch`), one attempt per issue at a time and
+   * never for a claimed issue. Runs beside the tick like a stage skip; `stop` waits for it.
+   */
+  #retryMerges(watch: MergeWatch, issues: readonly Issue[], adapter: TrackerAdapter): void {
+    for (const issue of issues) {
+      if (!watch.awaiting(issue) || this.#claimed.has(issue.id) || this.#mergeRetries.has(issue.id)) continue;
+      this.#mergeRetries.add(issue.id);
+      const log = this.#issueLogger(issue);
+      const work = (async () => {
+        try {
+          const result = await watch.retry(issue);
+          if (result.awaiting_checks === true) return;
+          const record = this.#record(issue);
+          record.meta = issueMeta(issue);
+          this.#trace(record, {
+            kind: 'lifecycle',
+            event: 'merge_retried',
+            level: result.merged ? 'info' : 'warn',
+            message: result.merged ? `auto_merge merged after waiting for checks: ${result.reason}` : `auto_merge after waiting for checks: ${result.reason}`,
+            run: null,
+            turn: null,
+            detail: { merged: result.merged, pull_request: result.pull_request, status: result.status, reason: result.reason, checks: result.checks ?? null },
+          });
+          log.info('merge retried', { merged: result.merged, status: result.status, reason: result.reason });
+          this.#deps.history?.note(adapter.issueRepository?.(issue) ?? 'unknown', 'merge_retried', {
+            issue: issue.identifier,
+            title: issue.title,
+            merged: result.merged,
+            status: result.status,
+            reason: result.reason,
+          });
+        } catch (error) {
+          log.warn('merge retry failed; trying again next tick', { error: errorMessage(error) });
+        } finally {
+          this.#mergeRetries.delete(issue.id);
+          this.#notify();
+        }
+      })();
+      this.#skips.add(work);
+      void work.finally(() => this.#skips.delete(work));
     }
   }
 
@@ -1802,7 +1879,7 @@ export class Orchestrator {
     let lock: Extract<LockResult, { ok: true }> | null = null;
     try {
       let workspace: Workspace | null = null;
-      if (entryCheckFor(target, role, config) !== null) {
+      if (entryChecksFor(target, role, config).length > 0) {
         const acquired = await workspaces.lock(issue.identifier);
         if (!acquired.ok) return { kind: 'failed', reason: `workspace locked by ${describeHolder(acquired.holder)}` };
         lock = acquired;
@@ -1825,6 +1902,10 @@ export class Orchestrator {
           check = finished;
           record.lastCheck = finished;
         },
+        onGateUpdate: (gate) => {
+          record.gate = gate;
+        },
+        ...checkStatusReporter(config, adapter, issue),
       });
       const decision = await guard(target, RESULT_TOOL);
       if (!decision.allow) {
@@ -1837,7 +1918,7 @@ export class Orchestrator {
       if (normalizeStateName(fresh.state) !== normalizeStateName(issue.state) || statusUpdatedAt(fresh)?.toISOString() !== interrupted.statusUpdatedAt) {
         return { kind: 'changed', reason: `the issue was moved meanwhile (now in "${fresh.state}")` };
       }
-      const change = await adapter.setStatus(fresh, target);
+      const change = await adapter.setStatus(fresh, target, { checkedSha: decision.check?.sha ?? null });
       const boardColumns = this.#statusOptionsCache?.version === workflow.version ? this.#statusOptionsCache.options : null;
       const warnings: string[] = [];
       const labels = await applyTransitionLabels(adapter, fresh, interruptedLabels(interrupted, tracked, role, config, boardColumns, fresh), warnings);
@@ -1971,6 +2052,7 @@ export class Orchestrator {
     this.#cancelRetry(issue.id);
     const record = this.#record(issue);
     record.runs++;
+    record.gate = null;
     if (continuation) record.continuations++;
     record.repo = entry.repo;
     record.meta = issueMeta(issue);
@@ -2125,6 +2207,9 @@ export class Orchestrator {
           resultMoved: () => {
             entry.resultMoved = true;
           },
+          gateUpdated: (gate) => {
+            record.gate = gate;
+          },
           checkFinished: (check) => {
             record.lastCheck = check;
             this.#deps.history?.checkFinished({
@@ -2133,12 +2218,15 @@ export class Orchestrator {
               run: entry.runId,
               role: check.role,
               target: check.target,
+              name: check.name,
               sha: check.sha,
               exitCode: check.exitCode,
               timedOut: check.timedOut,
               durationMs: check.durationMs,
               ok: check.ok,
               result: check.result,
+              steps: check.steps,
+              load: check.load,
               at: check.finishedAt,
             });
           },
@@ -3224,6 +3312,7 @@ export class Orchestrator {
         lastRun: null,
         checkCache: new Map(),
         lastCheck: null,
+        gate: null,
         meta: null,
         results: [],
       };
@@ -3487,6 +3576,7 @@ export class Orchestrator {
     const now = this.#clock.monotonicMs();
     const workflow = this.#deps.workflow.current;
     const config = workflow.config;
+    const repositories = configuredRepositories(config.tracker.provider.repositories, this.#deps.env).filter(isRepositoryName);
     let activeSeconds = 0;
     for (const entry of this.#running.values()) activeSeconds += (now - entry.startedAtMs) / 1000;
     const gate = this.#dispatchGate();
@@ -3562,6 +3652,8 @@ export class Orchestrator {
           ? { at: this.#lastTrackerError.at.toISOString(), message: this.#lastTrackerError.message }
           : null,
         tracker_kind: config.tracker.kind,
+        /** Configured repositories (owner/name, deduplicated); null = no restriction, every repository on the board. */
+        repositories: repositories.length > 0 ? repositories : null,
         active_states: config.tracker.activeStates,
         terminal_states: config.tracker.terminalStates,
         poll_interval_ms: this.#pollIntervalMs,
@@ -3647,6 +3739,7 @@ export class Orchestrator {
       recent_events: recentEvents(record?.timeline ?? []),
       last_error: record?.lastError ?? null,
       last_check: checkJson(record?.lastCheck ?? null),
+      gate: gateJson(record?.gate ?? null, Date.now()),
       tracked: { completed_before: this.#completed.has(issueId) },
       /** Agent slots now, for the Start now confirmation: `running` includes the `forced` sessions. */
       slots: this.#slotsJson(),
@@ -3686,6 +3779,7 @@ export class Orchestrator {
       recent_events: recentEvents(archived.timeline),
       last_error: archived.last_error,
       last_check: archived.last_check,
+      gate: null,
       tracked: { completed_before: archived.completed_before },
       slots: this.#slotsJson(),
       archived: { archived_at: archived.archived_at, released: archived.released },

@@ -360,6 +360,67 @@ docker run --rm -i --volumes-from <container> --entrypoint bash "$(docker inspec
   -c 'cd /home/symphony/.local/state/symphony && rm -rf repositories sessions issues && tar xzf -' < ~/symphony-state-backup-<time>.tgz
 ```
 
+### CI sidecars (profile `ci`)
+
+For projects whose CI Symphony runs itself (lint, static analysis, tests on MySQL, a prod smoke test that builds an
+image and starts it with `docker compose`), both Compose files have two optional services under the profile `ci`:
+
+| Service | Image | Reached from `symphony` at | Purpose |
+|---|---|---|---|
+| `dind` | `docker:29-dind`, `privileged` | `tcp://docker:2376` (TLS, client certs in `/certs/client`) | Docker daemon for `docker build` and `docker compose` |
+| `mysql` | `mysql:8.0` | `symphony-ci-mysql:3306` | Test databases `symphony_<key>` (one pair per workspace), in memory |
+
+Without the profile neither service starts and nothing changes. To switch it on, set in `.env` (template in
+`.env.example`):
+
+```bash
+COMPOSE_PROFILES=ci
+SYMPHONY_CI_DOCKER_HOST=tcp://docker:2376
+SYMPHONY_CI_DOCKER_CERT_PATH=/certs/client
+SYMPHONY_MYSQL_HOST=symphony-ci-mysql
+SYMPHONY_MYSQL_PORT=3306
+SYMPHONY_MYSQL_USER=symphony
+SYMPHONY_MYSQL_PASSWORD=<random>
+SYMPHONY_CI_MYSQL_ROOT_PASSWORD=<random>
+# SYMPHONY_CI_SUBNET=172.31.250.0/24
+```
+
+then `docker compose up -d`. `symphony` waits until both sidecars are healthy (`depends_on` with
+`required: false`, so without the profile it does not wait). Details:
+
+- **Docker:** The image ships the Docker CLI with the `compose` and `buildx` plugins (build arg `WITH_DOCKER_CLI`,
+  default `true`), but no daemon and no socket. `DOCKER_HOST` is deliberately **not** in the container's environment:
+  agents share it, and an agent should not reach the daemon by accident. A check script sets
+  `DOCKER_HOST="$SYMPHONY_CI_DOCKER_HOST"`, `DOCKER_CERT_PATH="$SYMPHONY_CI_DOCKER_CERT_PATH"` and
+  `DOCKER_TLS_VERIFY=1` for its own commands. The workspaces volume is mounted into `dind` at the same path
+  (`/home/symphony/symphony-workspaces`): the daemon resolves bind mounts such as `./docker/prod:/etc/nginx` on its own
+  filesystem, so the paths must match. Images, containers and build cache live in the `dind-data` volume; clean up
+  with `docker compose exec dind docker system prune -af`.
+- **MySQL:** Its data lives in a tmpfs (2 GB, counted in `mem_limit: 3g`): only test databases, so nothing survives a
+  restart, and a Laravel suite with `RefreshDatabase` runs several times faster than on a disk-backed volume. On every
+  start `docker/ci/mysql-init.sh` creates `SYMPHONY_MYSQL_USER`
+  with `mysql_native_password` and `GRANT ALL ON \`symphony\_%\`.*`. `hooks/laravel-env.sh` with
+  `SYMPHONY_LARAVEL_DB=mysql` then creates the databases per workspace, see
+  [Optional: MySQL instead of SQLite](configuration.md#optional-mysql-instead-of-sqlite). `root` may log in only from
+  inside the `mysql` container. The image's `mysql` client is MariaDB's, which since 11.4 rejects MySQL's self-signed
+  server certificate; the image turns that verification off (`/etc/mysql/mariadb.conf.d/60-symphony-client.cnf`), the
+  connection stays TLS. The server runs without binary log, doublewrite buffer and with
+  `innodb_flush_log_at_trx_commit=0`: fast, but not crash-safe, a test database only. A changed user or password
+  takes effect with the next start (`docker compose up -d mysql`).
+- **Network:** The sidecars and `symphony` share the network `ci` with a fixed subnet (`SYMPHONY_CI_SUBNET`, default
+  `172.31.250.0/24`). It must not overlap the networks a project creates inside `dind` (bandenhub's smoke test uses
+  `172.30.250.0/24`) or networks on the host. The network exists without the profile too, with only `symphony`
+  attached.
+- **iptables:** `dind` picks the iptables backend the host kernel already uses (legacy or nf_tables). If it still fails
+  with iptables errors at start (`docker compose logs dind`), set `DOCKER_IPTABLES_LEGACY=1` in its environment.
+- **Name `symphony-ci-mysql`:** The `symphony` container is also on the Traefik network. If another project there has
+  a service called `mysql`, Docker's DNS may answer with that one, and the checks would create and drop databases on
+  a foreign server. So the sidecar has a name of its own on the `ci` network; keep `SYMPHONY_MYSQL_HOST` on it.
+- **Resources:** `dind` is limited to 4 GB, `mysql` to 3 GB including its tmpfs (`mem_limit`). Image builds need disk space in
+  `dind-data`.
+
+Security: see [Security](#security) below; a privileged daemon is effectively root on the host for whoever reaches it.
+
 ### Resource limits
 
 As a rule of thumb, each parallel agent (Claude Code, Composer, tests) needs about 1 CPU and 2 GB RAM. Use
@@ -410,8 +471,14 @@ mem_limit: 4g
 - **HTTP only (`TRAEFIK_TLS=false`):** The BasicAuth password, the dashboard data and the retry request travel
   unencrypted over the network. Use this only in a trusted LAN, never over the internet; there HTTPS with a certificate
   remains mandatory.
-- **No Docker socket, no Docker-in-Docker:** Do not mount `/var/run/docker.sock` into the container. Whoever can reach
-  it has root on the host.
+- **No Docker socket:** Do not mount `/var/run/docker.sock` into the container. Whoever can reach it has root on the
+  host.
+- **Profile `ci` (Docker-in-Docker):** The `dind` sidecar runs `privileged`. Whoever reaches its daemon
+  (`tcp://docker:2376` with the client certs in `/certs/client`) is effectively root on the host. The certs are mounted
+  read-only into `symphony`, and agents and checks run there as the same user (UID 1000): an agent can read them and
+  use the daemon too. Keeping `DOCKER_HOST` out of the container's environment prevents accidents,
+  but it is not a security boundary. Switch the profile on only for boards whose issues you trust as much as shell
+  access to the host.
 - **Trust:** Issue texts are untrusted input. Only work on boards whose issues you trust. More details:
   [Security](usage.md#security).
 

@@ -114,7 +114,7 @@ describe('get_issue acceptance', () => {
         statusOptions: ['Backlog', 'Testing'],
       }),
     );
-    assert.deepEqual(Object.keys(out).sort(), ['comments', 'issue', 'linked_pull_requests', 'status_options', 'total_comments']);
+    assert.deepEqual(Object.keys(out).sort(), ['branch_pull_request', 'comments', 'issue', 'linked_pull_requests', 'status_options', 'total_comments']);
     assert.deepEqual(out.status_options, ['Backlog', 'Testing']);
     assert.deepEqual(Object.keys(out.comments[0] ?? {}).sort(), ['author', 'body', 'created_at', 'from_symphony', 'url']);
     assert.equal(out.comments[0]?.from_symphony, true);

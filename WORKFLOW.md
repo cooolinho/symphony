@@ -18,11 +18,20 @@ tracker:
       # true: when the reviewer moves an issue to on_enter (entry checks passed), Symphony merges its pull request into
       # base_branch, closes the issue and moves it to done_state. Needs base_branch; never merges into the default branch.
       # A pull request or issue labelled "manual-merge" stays for a human.
+      # Merge gate: only merges when every check of the pull request's head passed (GitHub Actions and commit statuses
+      # such as symphony/ci). Failing checks go back to the developer, pending ones wait (label "awaiting-checks"), and
+      # jobs GitHub never started (Actions minutes used up) leave the issue for a human.
       enabled: ${SYMPHONY_AUTO_MERGE:-false}
       on_enter: In review
       done_state: Done
       on_conflict: In progress               # a pull request that conflicts with base_branch goes back to the developer
+      on_checks_failed: In progress          # a pull request whose checks fail goes back to the developer
       method: squash
+      checks:
+        wait: ${SYMPHONY_MERGE_WAIT_FOR_CHECKS:-true}            # wait for pending checks, retried every poll
+        timeout_ms: ${SYMPHONY_MERGE_CHECKS_TIMEOUT_MS:-3600000}  # then a human takes over
+        ignore: ${SYMPHONY_MERGE_IGNORE_CHECKS:-}                # check names or "owner/repo:name" globs, comma-separated
+        max_send_backs: 2                    # send-backs for failing checks per issue; then needs-human
   # Board columns: Backlog | Ready | Design | In progress | Testing | Documentation | Agent review | Security review | Blocked | In review | Done
   #   Ready              -> issue analyst (read-only) works out requirements, risks, refined acceptance criteria, type and
   #                         complexity before anything is implemented; later stages get the analysis in their prompt
@@ -94,6 +103,10 @@ hooks:
     git fetch --quiet --prune origin
     base="${SYMPHONY_BASE_BRANCH:-$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed 's|^origin/||')}"
     if [ -n "$base" ] && [ "$(git branch --show-current)" = "$base" ]; then git merge --quiet --ff-only "origin/$base" || true; fi
+  # Drops the workspace's MySQL databases (SYMPHONY_LARAVEL_DB=mysql, the CI database of checks/laravel.sh --full);
+  # a no-op without SYMPHONY_MYSQL_USER. A failure is logged, the workspace is removed anyway.
+  before_remove: |
+    bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-db-drop.sh"
 
 agent:
   max_concurrent_agents: ${SYMPHONY_MAX_CONCURRENT_AGENTS:-3}
@@ -107,7 +120,7 @@ agent:
   # A model limit ("You've reached your Fable limit") holds only that model: until the reset + 60 s, else this long.
   # model_hold_ms: 3600000
   max_concurrent_agents_by_state:
-    "Agent review": 1                        # one review at a time
+    "Agent review": 2                        # two reviews at a time: an approval runs the In review checks (up to 50 min) in its session
     "Security review": 1                     # one security audit at a time
     Documentation: 1                         # one docs run at a time
     Testing: 1                               # one test run at a time (bug, feature and refactor issues; every issue with SYMPHONY_AFTER_IMPLEMENTATION=Testing)
@@ -316,6 +329,9 @@ pipeline:
   max_test_rounds: 2
   # Security rounds (security review found issues -> developer fixes) before the issue goes to Blocked with needs-human.
   max_security_rounds: 2
+  # Hand-offs back to the developer over on_check_failed (a failed entry check, e.g. In review) per issue; the one that
+  # reaches the limit goes to on_round_limit (else Blocked) with needs-human. A reset result starts the count again.
+  max_check_failures: 3
   # always: the issue analyst runs for every issue in Ready. when_unlabeled: it is skipped without a session for issues that
   # already carry a Type: and a Complexity: label (they go straight to In progress).
   analysis: always
@@ -367,12 +383,25 @@ checks:
   # Entry checks: set_status into these columns only succeeds when the script passes (exit 0).
   # checks/laravel.sh is a no-op (exit 0) for repositories without a Laravel app.
   # A check that runs longer fails with check_timeout: the issue stays in its column (never Blocked).
-  # Must stay below claude.turn_timeout_ms (default 3600000).
+  # Must stay below claude.turn_timeout_ms (default 3600000), like the sum of a column's named checks.
   timeout_ms: ${SYMPHONY_CHECKS_TIMEOUT_MS:-1800000}
+  # true: named checks become commit statuses symphony/<name> on the checked commit (GitHub), which the auto_merge gate
+  # and branch rules read. server.public_url links them to the agent page.
+  report_status: ${SYMPHONY_CHECKS_REPORT_STATUS:-false}
   on_enter:
     Testing: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"       # only reached with the Testing stage on: the developer hands over green code
     Agent review: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
-    In review: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
+    # The final gate before auto_merge: the repository's own CI, standing in for GitHub Actions.
+    # ci: .symphony/checks/ci.sh of the base branch, else checks/laravel.sh --full (skipped without a Laravel app).
+    # prod-smoke: .symphony/checks/prod-smoke.sh of the base branch, one run per repository at a time; skipped without
+    # one. Both get the Docker daemon and MySQL of the compose profile "ci" (docs/docker.md) when it runs.
+    In review:
+      - name: ci
+        command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" ci -- bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh" --full
+        timeout_ms: ${SYMPHONY_CI_TIMEOUT_MS:-1200000}
+      - name: prod-smoke
+        command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" --lock prod-smoke
+        timeout_ms: ${SYMPHONY_SMOKE_TIMEOUT_MS:-1800000}
 
 laravel:
   # Laravel apps (root or one level deep) that require laravel/boost get Boost's guidelines, skills and
@@ -391,6 +420,7 @@ server:
   port: $SYMPHONY_PORT                       # dashboard and JSON API; unset = no dashboard
   host: ${SYMPHONY_HOST:-127.0.0.1}          # bind address; non-loopback only behind an authenticating proxy
   allow_remote_control: ${SYMPHONY_ALLOW_REMOTE_CONTROL:-false}  # Retry/Resume now on a non-loopback bind
+  public_url: ${SYMPHONY_PUBLIC_URL:-}       # the dashboard as people reach it (https://symphony.example.com); links in commit statuses
 ---
 {% capture branch %}{% if issue.branch_name %}{{ issue.branch_name }}{% else %}symphony/issue-{{ issue.native_ref.number }}{% endif %}{% endcapture %}{% assign base = issue.native_ref.base_branch %}{% assign splittable = false %}{% if issue.complexity == "XL" and issue.native_ref.parent == nil %}{% assign splittable = true %}{% endif %}{% assign integration = false %}{% if issue.native_ref.sub_issues.size > 0 and results.implementation == nil %}{% assign integration = true %}{% endif %}{% capture agent_list %}{% for agent in agents %}
 - `{{ agent.name }}`: {{ agent.description }}{% endfor %}{% endcapture %}{% capture agent_intro %}Subagents you may start with the Agent tool (`subagent_type` is the name). They are optional: each one works in its own context and costs tokens, so use them where they pay off. You stay responsible for their results; check them before you rely on them.{{ agent_list }}{% endcapture %}{% capture analysis_block %}{% if results.analysis %}
@@ -460,19 +490,15 @@ Planned packages:{% for item in results.design.work_packages %}
 {% endif %}{% if results.design.interfaces.size > 0 %}
 Interfaces between them:{% for item in results.design.interfaces %}
 - {{ item }}{% endfor %}
-{% endif %}{% endif %}{% endcapture %}{% capture packages_range %}{% if results.design and results.design.head_sha %}{{ results.design.head_sha }}{% else %}<the commit before the first package>{% endif %}..origin/<base>{% endcapture %}{% capture screenshots_block %}
-## UI screenshots
-
-When the project's instructions or the issue ask for screenshots of UI changes, take them; the workspace has a headless Chromium. "No browser" and "no frontend build" are not reasons to skip them.
-
-- The browser is Playwright's Chromium headless shell under `$PLAYWRIGHT_BROWSERS_PATH` (`/opt/ms-playwright`). It is not on the `PATH`, so `which chromium` and `~/.cache/ms-playwright` find nothing; check it with `symphony-screenshot --check`.
-- A fresh workspace has no `node_modules` and no `public/build`; that is expected, not a blocker. If the app uses Vite (`vite.config.*`, `@vite`, `->viteTheme(`) and `public/build/manifest.json` is missing, install the dependencies and run the project's `build` script before you serve it (package manager: see below). Do not commit lockfiles or build output the repository does not track; check `git status` before you commit.
-- Serve the app from this workspace only, on a free local port, with its own SQLite file and seed data; never a stack that serves another checkout. For a Laravel app: from its `public/` directory, `DB_CONNECTION=sqlite DB_DATABASE=/tmp/<name>.sqlite APP_URL=http://127.0.0.1:<port> php -S 127.0.0.1:<port> ../vendor/laravel/framework/src/Illuminate/Foundation/resources/server.php` after `php artisan migrate --seed` against that file (real environment variables override `.env`). Build the frontend assets first if the project needs them (see above), with the project's package manager: `packageManager` in `package.json`, else the lockfile (`yarn.lock`, `pnpm-lock.yaml`, `package-lock.json`), else what AGENTS.md names. yarn, pnpm and npm are installed; do not switch to another package manager. Run the server in the background with a PID file and stop it by that PID when you are done.
-- Take the screenshot with `symphony-screenshot <url> <out.png>` (`--login-url`, `--email`, `--password` for a form login, `--click`, `--clip`, `--scale 2`, `--header 'Host: …'`; `symphony-screenshot --help`). For more steps, write a short Node script with `import { chromium } from 'playwright'`; it resolves from any directory.
-- Open every PNG with the Read tool and check that it shows what it should (logged in, right page, real data, no error page).
-- Store it where the project's instructions say, else under `docs/screenshots/` with a descriptive name, then commit and push it on `{{ branch }}`.
-- Embed it in the pull request body by commit SHA: `![<what it shows>](https://github.com/<owner>/<repo>/blob/<commit sha>/<path>?raw=true)`; this works for private repositories too, `raw.githubusercontent.com` does not. `open_pull_request` on a branch with an open pull request replaces its title and body, so call it again with the complete body after adding screenshots.
-- If a screenshot still cannot be taken, say in your result exactly which step failed and with what error.
+{% endif %}{% endif %}{% endcapture %}{% capture packages_range %}{% if results.design and results.design.head_sha %}{{ results.design.head_sha }}{% else %}<the commit before the first package>{% endif %}..origin/<base>{% endcapture %}{% capture screenshots_block %}UI screenshots. When the project's instructions or the issue ask for screenshots of UI changes, take them before you commit; the workspace has a headless Chromium. "No browser" and "no frontend build" are not reasons to skip them. `report_result` refuses a change to UI files (`pipeline.ui_paths`) without a changed screenshot (`pipeline.screenshot_paths`) when the project asks for screenshots, unless you name the failed step in `screenshots_problem`.
+   - The browser is Playwright's Chromium headless shell under `$PLAYWRIGHT_BROWSERS_PATH` (`/opt/ms-playwright`). It is not on the `PATH`, so `which chromium` and `~/.cache/ms-playwright` find nothing; check it with `symphony-screenshot --check`.
+   - A fresh workspace has no `node_modules` and no `public/build`; that is expected, not a blocker. If the app uses Vite (`vite.config.*`, `@vite`, `->viteTheme(`) and `public/build/manifest.json` is missing, install the dependencies and run the project's `build` script before you serve it (package manager: see below). Do not commit lockfiles or build output the repository does not track; check `git status` before you commit.
+   - Serve the app from this workspace only, on a free local port, with its own SQLite file and seed data; never a stack that serves another checkout. For a Laravel app: from its `public/` directory, `DB_CONNECTION=sqlite DB_DATABASE=/tmp/<name>.sqlite APP_URL=http://127.0.0.1:<port> php -S 127.0.0.1:<port> ../vendor/laravel/framework/src/Illuminate/Foundation/resources/server.php` after `php artisan migrate --seed` against that file (real environment variables override `.env`). Build the frontend assets first if the project needs them (see above), with the project's package manager: `packageManager` in `package.json`, else the lockfile (`yarn.lock`, `pnpm-lock.yaml`, `package-lock.json`), else what AGENTS.md names. yarn, pnpm and npm are installed; do not switch to another package manager. Run the server in the background with a PID file and stop it by that PID when you are done.
+   - Take the screenshot with `symphony-screenshot <url> <out.png>` (`--login-url`, `--email`, `--password` for a form login, `--click`, `--clip`, `--scale 2`, `--header 'Host: …'`; `symphony-screenshot --help`). For more steps, write a short Node script with `import { chromium } from 'playwright'`; it resolves from any directory.
+   - Open every PNG with the Read tool and check that it shows what it should (logged in, right page, real data, no error page).
+   - Store it where the project's instructions say, else under `docs/screenshots/` with a descriptive name, then commit and push it on `{{ branch }}`.
+   - Embed it in the pull request body by commit SHA: `![<what it shows>](https://github.com/<owner>/<repo>/blob/<commit sha>/<path>?raw=true)`; this works for private repositories too, `raw.githubusercontent.com` does not. `open_pull_request` on a branch with an open pull request replaces its title and body, so call it again with the complete body after adding screenshots.
+   - If a screenshot still cannot be taken, set `screenshots_problem` in your result to exactly which step failed and with what error.
 {% endcapture %}{% capture screenshots_note %}
 UI screenshots: when the project's instructions or the issue ask for screenshots of UI changes, the developer takes them in its workspace: it builds the frontend assets where needed, serves the app and uses the image's headless Chromium (`symphony-screenshot --check` tests it; it is not on the `PATH`, and a missing `node_modules` or `public/build` is normal in a fresh workspace). "No browser" or "no frontend build" is never a reason to leave them out{% if role == "reviewer" %}: if they are missing, that is a `major` finding, unless the developer's result names the step that failed and its error; then it is `minor` and quotes that error{% else %}, so do not plan to leave them out or to hand them to a human{% endif %}.
 {% endcapture %}

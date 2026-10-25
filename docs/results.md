@@ -26,7 +26,7 @@ reported to the agent instead of being dropped silently.
 |---|---|---|
 | `analysis` | `ready`, `needs_info` | `type`, `complexity` (S/M/L/XL), `components[]`, `acceptance_criteria[]`, `risks {security, data_migration, breaking_change}`, `docs_needed`, `open_questions[]`, `plan[]`, `refactoring_goals[]` (refactor issues: what the refactoring has to achieve) |
 | `design` | `ready`, `split`, `blocked` | `options[]`, `decision`, `components[]`, `interfaces[]`, `migrations[]`, `compatibility`, `work_packages[]` (optional; with `split` at least two), `plan[]` (implementation steps in order, each with its files), `tests[]` (one test per acceptance criterion) |
-| `implementation` | `done`, `blocked` | `changed_files[]`, `tests_added[]`, `notes`, `plan_deviations[]` |
+| `implementation` | `done`, `blocked` | `changed_files[]`, `tests_added[]`, `notes`, `plan_deviations[]`, `screenshots_problem` (a UI change without screenshots: the failed step and its error message) |
 | `test` | `passed`, `failed`, `blocked` | `cases[] {criterion, test, status: passed\|failed\|skipped}`, `commands[]`, `uncovered_criteria[]` |
 | `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, file, line, problem, fix}`, `checked[]`, `confirmed_goals[]` (refactor issues: the analysis's refactoring goals the review confirms) |
 | `security` | `passed`, `issues_found`, `blocked` | `findings[]` (as in `review`) |
@@ -117,6 +117,12 @@ Symphony adds facts the agent never sets: `role`, `run`, `round`, `profile`, `wo
 
 ## The `report_result` tool
 
+Claude Code parses the tool input as JSON before the tool runs; a call with broken JSON (a Markdown list instead of a JSON
+array in a list field such as `files` - 16 of 18 cases, all haiku in the docs role -, an unescaped quote or backslash, raw
+control character) is rejected as `InputValidationError` and never reaches Symphony. To keep that rare, the tool
+description and every role prompt with a result step carry `JSON_ARGUMENT_HINT` (escape, `/` in paths, regexes in words,
+short summary, details in the array fields; list fields are JSON arrays, never bullet lines).
+
 A role with [`result`](configuration.md#result-driven-transitions) hands off with the tracker tool `report_result`
 (`mcp__tracker__report_result`) instead of `set_status`: such a role never gets `set_status` (`toolsForRole`), so a
 stage cannot end just because the agent moves the issue. The tool is built per session; its input is the kind's agent
@@ -155,8 +161,12 @@ A call runs these steps, one call at a time:
    (it cannot fix the code, so repeating the report is pointless) does not stop the call: the guard checks the
    `on_check_failed` column instead (`may_move_to`, that column's entry check), and the result is recorded with the
    agent's verdict, a note with the failed check's output appended to the summary, `checks` of the failed check and
-   `target` of the fallback column. The result then carries `check_failed_for` (the column whose check failed) and the
-   round limit label is neither added nor removed. If the fallback is the column that failed, or its own check fails,
+   `target` of the fallback column. The result then carries `check_failed_for` (the column whose check failed; it is
+   also in the marker's meta, optional, so older markers still read) and the round limit label is neither added nor
+   removed. These hand-offs are counted per issue (across rounds and roles, back to the last `reset`):
+   the one that reaches `pipeline.max_check_failures` (default 3) goes to `on_round_limit` (else the blocked column)
+   instead of `on_check_failed`, gets `pipeline.limit_label`, and the note in its summary names the checks that failed
+   repeatedly. If the fallback is the column that failed, or its own check fails,
    the agent gets the denial as before. `check_timeout` and `check_error` never redirect. A session whose newest entry
    check timed out ends after the turn without a reminder: a timeout is a runtime limit, not a missing result.
 4. **Confirm the column.** Right before writing, the tool re-reads the issue. If it has left the role's columns (a
@@ -183,6 +193,22 @@ outcome (`already_recorded: true` on success) without running the checks or touc
 after the turn that recorded the result; when the move led to another column of the same role, its stage starts in a
 new session. The tool writes only
 after the guard allowed exactly the computed target; called without the guard's approval it refuses (`tool_error`).
+
+## Screenshots for UI changes
+
+A developer's `implementation` result with the verdict `done` is refused with `invalid_result` when all three hold:
+
+1. The branch changes a file that matches `pipeline.ui_paths` (compared with the base branch, as for the documentation stage).
+2. The project asks for screenshots: `pipeline.require_screenshots` is `always`, or `auto` (the default) and `AGENTS.md` or
+   `CLAUDE.md` in the workspace root, or the issue title or description, mention "screenshot". `never` turns the rule off.
+3. No changed file matches `pipeline.screenshot_paths`, and the result has no `screenshots_problem`.
+
+The message lists the UI files and tells the developer what to do: build the frontend, start the app from the workspace,
+run `symphony-screenshot`, check and commit the image, embed it in the pull request description, and report again. If a
+step really fails, the developer reports again with `screenshots_problem`: the step and its exact error message; the
+result is then accepted and the reviewer sees the field. The verdict `blocked` is not checked. If git cannot list the
+changed files, the call fails with `tool_error` and nothing is recorded. Whether the screenshot fits the change is still
+the reviewer's call.
 
 ## Path rule of the test engineer
 

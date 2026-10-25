@@ -17,12 +17,12 @@ import { profileFor } from '../workflow/profile.ts';
 import { roleName, sessionAgents, type RoleConfig } from '../workflow/roles.ts';
 import type { EffectiveWorkflow } from '../workflow/store.ts';
 import { internalResult, renderResultComment, type ResultMeta } from '../workflow/results.ts';
-import { normalizeStateName } from '../workflow/config.ts';
+import { maxColumnCheckMs, normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
 import { EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../workflow/template.ts';
 import { writeAttachments, type AttachmentFile } from '../workspace/attachments.ts';
 import { changedFiles } from '../workspace/changes.ts';
 import { baselineCommit, changedFilesSince } from './changed-files.ts';
-import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord } from './guard.ts';
+import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord, type GateRun, type GuardParams } from './guard.ts';
 import { createResultTool, resultReminder, type PathRule, type ResultToolAdapter, type ResultToolParams } from './result-tool.ts';
 import { reviewedFiles, securityBaseRef } from './security.ts';
 import { interruptedTransition } from './recovery.ts';
@@ -113,6 +113,8 @@ export interface WorkerCallbacks {
   resultMoved(): void;
   /** Result of an entry check run by the transition guard. */
   checkFinished(check: CheckRecord): void;
+  /** The state of the entry gate changed (a snapshot: checks pending, running, finished). */
+  gateUpdated(gate: GateRun): void;
   /** The session recorded a stage result: called once, with the result as persisted, when `report_result` posts its comment. */
   stageResult(entry: PersistedResult): void;
   /** The issue's stage results: as loaded at the start of a result-driven session, again with each result it records. */
@@ -194,6 +196,20 @@ function testPathRule(workspacePath: string, testPaths: readonly string[], start
   };
 }
 
+/**
+ * `reportStatus` for the transition guard: named checks become tracker statuses (GitHub: `symphony/<name>`) when
+ * `checks.report_status` is on and the tracker can report them; the link goes to the issue's agent page.
+ */
+export function checkStatusReporter(
+  config: Pick<ServiceConfig, 'checks' | 'server'>,
+  adapter: Pick<TrackerAdapter, 'reportCheckStatus'>,
+  issue: Issue,
+): Pick<GuardParams, 'reportStatus'> {
+  if (!config.checks.reportStatus || adapter.reportCheckStatus === undefined) return {};
+  const targetUrl = config.server.publicUrl !== null ? `${config.server.publicUrl}/agent?id=${encodeURIComponent(issue.identifier)}` : null;
+  return { reportStatus: (report) => adapter.reportCheckStatus?.(issue, { ...report, targetUrl }) ?? Promise.resolve() };
+}
+
 const RESULT_CAPABILITIES = ['readResults', 'postComment', 'setStatus', 'addLabels', 'removeLabels'] as const;
 
 /**
@@ -209,6 +225,7 @@ async function loadResultSupport(
   pathRule: ((history: StageHistory) => PathRule) | null,
   security: ((history: StageHistory) => NonNullable<ResultToolParams['security']>) | null,
   docs: ((history: StageHistory) => NonNullable<ResultToolParams['docs']>) | null,
+  screenshots: ResultToolParams['screenshots'],
   report: (results: PersistedResult[]) => void,
   onRecorded: (entry: PersistedResult) => void,
   onMoved: () => void,
@@ -254,6 +271,7 @@ async function loadResultSupport(
     pathRule: pathRule?.(history) ?? null,
     security: security?.(history) ?? null,
     docs: docs?.(history) ?? null,
+    screenshots: screenshots ?? null,
   });
   return {
     tool,
@@ -461,7 +479,9 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
         checkTimedOut = check.result === 'check_timeout';
         callbacks.checkFinished(check);
       },
+      onGateUpdate: (gate) => callbacks.gateUpdated(gate),
       onDenied: (target, message) => callbacks.transitionDenied(target, message),
+      ...checkStatusReporter(params.workflow.config, params.adapter, issue),
       onEvent: (event, message, detail) =>
         callbacks.agentEvent({
           pid: lastEvent?.pid ?? null,
@@ -503,6 +523,18 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
             changedFiles: () => changedFiles(activeWorkspace.path, securityBaseRef(issue.native_ref?.base_branch)),
           })
         : null;
+    // A developer's hand-off for a UI change needs screenshots (or the reason there are none), when the project asks for them.
+    const screenshots =
+      role?.result === 'implementation'
+        ? {
+            uiPaths: paths.uiPaths,
+            screenshotPaths: paths.screenshotPaths,
+            policy: params.workflow.config.pipeline.requireScreenshots,
+            workspace: activeWorkspace.path,
+            issueText: () => `${issue.title}\n${issue.description ?? ''}`,
+            changedFiles: () => changedFiles(activeWorkspace.path, securityBaseRef(issue.native_ref?.base_branch)),
+          }
+        : null;
     // A reviewer's approval needs the security review for a security label, a risk in the analysis or a changed security
     // path (for an integration review: a path the merged work packages changed).
     const security =
@@ -523,6 +555,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
             pathRule,
             security,
             docs,
+            screenshots,
             callbacks.results,
             (entry) => {
               resultRecorded = true;
@@ -557,7 +590,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       // The bare name too: a repository's own .claude/agents may load the same agent without the plugin prefix.
       deniedAgents: agents.denied.flatMap((agent) => [agent.qualified, agent.name]),
       // Entry checks run inside the status tool call; leave a minute for the tracker call around them.
-      toolTimeoutMs: params.workflow.config.checks.timeoutMs + TOOL_TIMEOUT_MARGIN_MS,
+      toolTimeoutMs: Math.max(params.workflow.config.checks.timeoutMs, maxColumnCheckMs(params.workflow.config.checks)) + TOOL_TIMEOUT_MARGIN_MS,
       tools: guardTools(toolsForRole(params.adapter.agentToolSpecs(), role, issue, support?.tool ?? null), guard),
       toolContext: () => ({
         issue,

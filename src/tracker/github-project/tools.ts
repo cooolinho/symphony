@@ -3,11 +3,13 @@ import { SerialQueue } from '../../util/async.ts';
 import { errorMessage } from '../../util/errors.ts';
 import { TrackerError, type AgentToolContext, type AgentToolSpec, type Issue, type ToolResult } from '../types.ts';
 import type { GithubProjectAdapter } from './adapter.ts';
+import { evaluateRollup } from './checks.ts';
 import { assertNoGraphqlErrors } from './client.ts';
 import { issueRefOf, titleKey, type IssueRef } from './normalize.ts';
 import {
   ADD_BLOCKED_BY_MUTATION,
   ADD_PROJECT_ITEM_MUTATION,
+  BRANCH_PULL_REQUEST_QUERY,
   CREATE_PULL_REQUEST_MUTATION,
   CREATE_SUB_ISSUE_MUTATION,
   ISSUE_CONTEXT_QUERY,
@@ -109,7 +111,9 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
       'Returns JSON: {issue: {identifier, title, status, url, description, labels, assignee, priority, branch_name, blocked_by, parent, sub_issues, issue_state, created_at, updated_at}, ' +
       'status_options: list of strings (names, not objects), comments: [{author, from_symphony, created_at, url, body}] oldest first (the newest is last; ' +
       'from_symphony is false for comments a human wrote), total_comments: number, ' +
-      'linked_pull_requests: [{number, url, state, title, head}] (may be empty)}. ' +
+      'linked_pull_requests: [{number, url, state, title, head}] (may be empty), ' +
+      'branch_pull_request: {number, url, base, head_sha, checks: {state: none|success|pending|failure, failing: [{name, state, url}], pending: [names]}} ' +
+      'for the open pull request from the issue branch, or null}. ' +
       'Stage-result markers in comment bodies are shown as <!-- symphony:result --> without their base64 payload. ' +
       'If the output is large, pass max_comment_chars to cut every comment body (the cut is noted in the body).',
     inputSchema: {
@@ -122,7 +126,10 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
         const [fresh] = await adapter.fetchIssuesByIds([context.issue.id]);
         if (fresh === undefined) return fail('not_found', 'the issue is no longer visible on the project board');
         const [meta, viewer] = await Promise.all([adapter.meta(), adapter.viewerLogin()]);
-        const response = await client.request<Json>(ISSUE_CONTEXT_QUERY, { issueId: ref.issueId });
+        const [response, branchPullRequest] = await Promise.all([
+          client.request<Json>(ISSUE_CONTEXT_QUERY, { issueId: ref.issueId }),
+          readBranchPullRequest(ref.repository, fresh.branch_name ?? `symphony/issue-${ref.number}`),
+        ]);
         assertNoGraphqlErrors(response.errors);
         const node = obj(obj(response.data)?.node);
         return ok({
@@ -143,9 +150,31 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
             title: pr.title,
             head: pr.headRefName,
           })),
+          branch_pull_request: branchPullRequest,
         });
       }),
   };
+
+  /** The open pull request from `head` and the state of its checks; null without one, or when GitHub cannot say. */
+  async function readBranchPullRequest(repository: string, head: string): Promise<Json | null> {
+    try {
+      const [owner, name] = repository.split('/');
+      const response = await client.request<Json>(BRANCH_PULL_REQUEST_QUERY, { owner, name, head });
+      assertNoGraphqlErrors(response.errors);
+      const pr = nodes(obj(obj(response.data)?.repository)?.pullRequests)[0];
+      if (pr === undefined) return null;
+      const checks = evaluateRollup(pr.commits, repository, []);
+      return {
+        number: pr.number,
+        url: pr.url,
+        base: pr.baseRefName,
+        head_sha: pr.headRefOid,
+        checks: { state: checks.state, failing: checks.failing, pending: checks.pending.map((check) => check.name) },
+      };
+    } catch {
+      return null;
+    }
+  }
 
   const setStatus: AgentToolSpec = {
     name: 'set_status',
@@ -157,7 +186,7 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
     transitionTarget: (args) => String(args.status),
     execute: (args, context) =>
       guarded(context, async () => {
-        const change = await adapter.setStatus(context.issue, String(args.status));
+        const change = await adapter.setStatus(context.issue, String(args.status), { checkedSha: context.transition?.check?.sha ?? null });
         return ok({
           previous_status: change.previous,
           status: change.status,

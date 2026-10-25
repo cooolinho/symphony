@@ -53,13 +53,22 @@ describe('pipeline path globs for a Laravel app in a subdirectory', () => {
       docsPaths: pipeline.docsPaths,
       docsTriggerPaths: pipeline.docsTriggerPaths,
       securityPaths: pipeline.securityPaths,
+      uiPaths: pipeline.uiPaths,
+      screenshotPaths: pipeline.screenshotPaths,
     });
   });
 
   it('does not extend globs set explicitly in WORKFLOW.md', async () => {
-    const pipeline = pipelineOf({ test_paths: ['tests/**'], security_paths: ['app/Policies/**'], docs_paths: [], docs_trigger_paths: ['config/**'] });
+    const pipeline = pipelineOf({ test_paths: ['tests/**'], security_paths: ['app/Policies/**'], docs_paths: [], docs_trigger_paths: ['config/**'], ui_paths: ['views/**'], screenshot_paths: ['shots/**'] });
     const paths = effectivePaths(pipeline, await appDirs(checkout('laravel')));
-    assert.deepEqual(paths, { testPaths: ['tests/**'], securityPaths: ['app/Policies/**'], docsPaths: [], docsTriggerPaths: ['config/**'] });
+    assert.deepEqual(paths, { testPaths: ['tests/**'], securityPaths: ['app/Policies/**'], docsPaths: [], docsTriggerPaths: ['config/**'], uiPaths: ['views/**'], screenshotPaths: ['shots/**'] });
+  });
+
+  it('extends the UI and screenshot defaults with the app prefix', async () => {
+    const paths = effectivePaths(pipelineOf(), await appDirs(checkout('laravel')));
+    assert.ok(matchesAnyGlob('laravel/resources/views/a.blade.php', paths.uiPaths));
+    assert.ok(matchesAnyGlob('laravel/app/Filament/Pages/A.php', paths.uiPaths));
+    assert.ok(matchesAnyGlob('laravel/docs/screenshots/a.png', paths.screenshotPaths));
   });
 
   it('extends only the settings left at their default', async () => {

@@ -1,4 +1,5 @@
 import { envReferenceName, resolveEnvReference } from '../../util/env.ts';
+import { compileGlob } from '../../workflow/glob.ts';
 import type { TrackerErrorCategory } from '../types.ts';
 
 export const KIND = 'github_project';
@@ -28,6 +29,30 @@ export function splitRepositoryList(text: string): string[] {
   return text.split(/[\s,]+/).filter((entry) => entry !== '');
 }
 
+/**
+ * The repositories a `repositories` setting names: resolves a `$VAR` reference (whole value and list entries),
+ * splits strings by comma/space and drops empty, non-string and duplicate entries (case-insensitive; the first
+ * spelling and the configuration order stay). No validation.
+ */
+export function configuredRepositories(raw: unknown, env: NodeJS.ProcessEnv): string[] {
+  const value = resolveEnvReference(raw, env);
+  const entries = Array.isArray(value)
+    ? value.map((entry) => resolveEnvReference(entry, env))
+    : typeof value === 'string'
+      ? splitRepositoryList(value)
+      : [];
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const entry of entries) {
+    if (typeof entry !== 'string') continue;
+    const name = entry.trim();
+    if (name === '' || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    names.push(name);
+  }
+  return names;
+}
+
 /** `auto_merge`: Symphony merges an issue's pull request into the base branch when the issue enters `onEnter`. */
 export interface AutoMergeSettings {
   /** Column whose successful `set_status` (entry checks passed) triggers the merge. */
@@ -38,7 +63,24 @@ export interface AutoMergeSettings {
   onConflict: string | null;
   method: (typeof MERGE_METHODS)[keyof typeof MERGE_METHODS];
   optOutLabel: string;
+  /** Column for a pull request whose checks fail; null = `onConflict` (and with that null too, it stays). */
+  onChecksFailed: string | null;
+  checks: MergeCheckSettings;
 }
+
+/** `auto_merge.checks`: how the merge gate treats the checks of the pull request's head commit. */
+export interface MergeCheckSettings {
+  /** Wait for pending checks (label `awaiting-checks`, retried every poll); false leaves the issue for a human. */
+  wait: boolean;
+  /** How long an issue waits in `onEnter` for pending checks before a human takes over. */
+  timeoutMs: number;
+  /** Check names (or `owner/repo:name`) the gate disregards; globs, matched case-insensitively. */
+  ignore: string[];
+  /** Send-backs for failing checks per issue; the next failure leaves the issue for a human (`needs-human`). */
+  maxSendBacks: number;
+}
+
+export const DEFAULT_MERGE_CHECKS: MergeCheckSettings = { wait: true, timeoutMs: 3_600_000, ignore: [], maxSendBacks: 2 };
 
 export interface GithubProjectSettings {
   owner: string;
@@ -243,7 +285,7 @@ function parseAutoMerge(raw: unknown, env: NodeJS.ProcessEnv, baseBranch: string
     return null;
   }
   const section = raw as Record<string, unknown>;
-  const known = new Set(['enabled', 'on_enter', 'done_state', 'on_conflict', 'method', 'opt_out_label']);
+  const known = new Set(['enabled', 'on_enter', 'done_state', 'on_conflict', 'on_checks_failed', 'method', 'opt_out_label', 'checks']);
   for (const key of Object.keys(section)) {
     if (!known.has(key)) errors.push(`tracker.provider.auto_merge.${key} is not a known key (allowed: ${[...known].join(', ')})`);
   }
@@ -261,14 +303,77 @@ function parseAutoMerge(raw: unknown, env: NodeJS.ProcessEnv, baseBranch: string
   const methodName = (text(field('method').value) ?? 'squash').toLowerCase();
   const method = MERGE_METHODS[methodName as keyof typeof MERGE_METHODS];
   if (method === undefined) errors.push(`tracker.provider.auto_merge.method must be squash, merge or rebase (got ${JSON.stringify(methodName)})`);
-  if (onEnter === null || method === undefined) return null;
+  const checks = parseMergeChecks(section.checks, env, errors);
+  if (onEnter === null || method === undefined || checks === null) return null;
   return {
     onEnter,
     doneState: text(field('done_state').value),
     onConflict: text(field('on_conflict').value),
     method,
     optOutLabel: text(field('opt_out_label').value) ?? DEFAULT_OPT_OUT_LABEL,
+    onChecksFailed: text(field('on_checks_failed').value),
+    checks,
   };
+}
+
+/** `auto_merge.checks` (a map; omitted = the defaults); null after an error, which goes to `errors`. */
+function parseMergeChecks(raw: unknown, env: NodeJS.ProcessEnv, errors: string[]): MergeCheckSettings | null {
+  if (raw === undefined || raw === null) return { ...DEFAULT_MERGE_CHECKS };
+  const prefix = 'tracker.provider.auto_merge.checks';
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    errors.push(`${prefix} must be a map`);
+    return null;
+  }
+  const section = raw as Record<string, unknown>;
+  const known = new Set(['wait', 'timeout_ms', 'ignore', 'max_send_backs']);
+  const before = errors.length;
+  for (const key of Object.keys(section)) {
+    if (!known.has(key)) errors.push(`${prefix}.${key} is not a known key (allowed: ${[...known].join(', ')})`);
+  }
+  const result: MergeCheckSettings = { ...DEFAULT_MERGE_CHECKS, ignore: [] };
+
+  const wait = read(section, 'wait', env).value;
+  if (wait === true || wait === 'true') result.wait = true;
+  else if (wait === false || wait === 'false') result.wait = false;
+  else if (wait !== undefined && wait !== null && wait !== '') errors.push(`${prefix}.wait must be true or false`);
+
+  const integer = (key: string, min: number): number | null => {
+    const value = text(read(section, key, env).value);
+    if (value === null) return null;
+    const parsed = Number(value);
+    if (!/^\d+$/.test(value) || !Number.isSafeInteger(parsed) || parsed < min) {
+      errors.push(`${prefix}.${key} must be an integer >= ${min}`);
+      return null;
+    }
+    return parsed;
+  };
+  result.timeoutMs = integer('timeout_ms', 1) ?? result.timeoutMs;
+  result.maxSendBacks = integer('max_send_backs', 0) ?? result.maxSendBacks;
+
+  // A list, or a comma/space separated string (so `$VAR` works).
+  const ignore = read(section, 'ignore', env).value;
+  const entries = Array.isArray(ignore)
+    ? ignore.map((entry) => resolveEnvReference(entry, env))
+    : typeof ignore === 'string'
+      ? splitRepositoryList(ignore)
+      : ignore === undefined || ignore === null
+        ? []
+        : null;
+  if (entries === null || entries.some((entry) => typeof entry !== 'string')) {
+    errors.push(`${prefix}.ignore must be a list of check names or globs (e.g. "owner/repo:ci")`);
+  } else {
+    for (const entry of entries as string[]) {
+      const glob = entry.trim();
+      if (glob === '') continue;
+      try {
+        compileGlob(glob);
+        result.ignore.push(glob);
+      } catch (error) {
+        errors.push(`${prefix}.ignore: ${JSON.stringify(glob)} is not a valid glob (${error instanceof Error ? error.message : String(error)})`);
+      }
+    }
+  }
+  return errors.length > before ? null : result;
 }
 
 export function secretEnvironmentNames(provider: Record<string, unknown>): string[] {

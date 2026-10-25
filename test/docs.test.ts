@@ -220,6 +220,7 @@ describe('docs: configuration keys', () => {
     for (const glob of pipeline.testPaths) assert.ok(row('test_paths').includes(`\`${glob}\``), `test_paths default ${glob}`);
     for (const glob of pipeline.docsPaths) assert.ok(row('docs_paths').includes(`\`${glob}\``), `docs_paths default ${glob}`);
     for (const glob of pipeline.docsTriggerPaths) assert.ok(row('docs_trigger_paths').includes(`\`${glob}\``), `docs_trigger_paths default ${glob}`);
+    assert.equal(row('max_check_failures'), `\`${pipeline.maxCheckFailures}\``);
     assert.equal(row('max_security_rounds'), `\`${pipeline.maxSecurityRounds}\``);
     for (const glob of pipeline.securityPaths) assert.ok(row('security_paths').includes(`\`${glob}\``), `security_paths default ${glob}`);
   });

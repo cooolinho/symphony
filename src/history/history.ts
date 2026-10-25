@@ -99,13 +99,18 @@ export interface CheckFinish {
   run: string;
   role: string;
   target: string;
+  /** The check's name for a named `checks.on_enter` entry; absent or null for a plain script. */
+  name?: string | null;
   sha: string | null;
   exitCode: number | null;
   timedOut: boolean;
   durationMs: number;
   ok: boolean;
-  /** `passed`, `check_failed`, `check_timeout` or `check_error`. */
+  /** `passed`, `skipped`, `check_failed`, `check_timeout` or `check_error`. */
   result: string;
+  /** Steps and host load the check script printed; omitted without them. */
+  steps?: unknown[];
+  load?: object;
   at: Date;
 }
 
@@ -317,12 +322,15 @@ export class HistoryLog {
       run: check.run,
       role: check.role,
       target: check.target,
+      name: check.name ?? undefined,
       sha: check.sha ?? undefined,
       ok: check.ok,
       result: check.result,
       exit_code: check.exitCode,
       timed_out: check.timedOut || undefined,
       duration_ms: check.durationMs,
+      steps: check.steps,
+      load: check.load,
     });
   }
 

@@ -3,13 +3,14 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
+import { z } from 'zod';
 import { Logger } from '../src/log.ts';
 import { createGuard, guardTools, toolsForRole } from '../src/orchestrator/guard.ts';
-import { RESULT_RECORDED_NOTE, RESULT_TOOL, classificationLabels, createResultTool, type ResultToolParams } from '../src/orchestrator/result-tool.ts';
+import { JSON_ARGUMENT_HINT, RESULT_RECORDED_NOTE, RESULT_TOOL, classificationLabels, createResultTool, type ResultToolParams } from '../src/orchestrator/result-tool.ts';
 import { buildStageHistory } from '../src/orchestrator/stage-history.ts';
 import { changedFiles } from '../src/workspace/changes.ts';
 import type { Issue, StatusChange, ToolResult } from '../src/tracker/types.ts';
-import { decodeMarker, parseResult, toolInputShape } from '../src/workflow/results.ts';
+import { RESULT_FIELD_BUDGET, SUMMARY_MAX, resultBudgetNote, decodeMarker, parseResult, toolInputShape } from '../src/workflow/results.ts';
 import { WorkspaceManager } from '../src/workspace/manager.ts';
 import { FakeTracker, baseFront, makeIssue, makeWorkflow, tempDir } from './helpers.ts';
 
@@ -57,6 +58,7 @@ interface SetupOptions {
   pathRule?: ResultToolParams['pathRule'];
   security?: ResultToolParams['security'];
   docs?: ResultToolParams['docs'];
+  screenshots?: ResultToolParams['screenshots'];
 }
 
 function setup(options: SetupOptions = {}) {
@@ -107,6 +109,7 @@ function setup(options: SetupOptions = {}) {
     ...(options.pathRule !== undefined ? { pathRule: options.pathRule } : {}),
     ...(options.security !== undefined ? { security: options.security } : {}),
     ...(options.docs !== undefined ? { docs: options.docs } : {}),
+    ...(options.screenshots !== undefined ? { screenshots: options.screenshots } : {}),
   };
   const unguarded = createResultTool(params);
   const tools = guardTools(toolsForRole(tracker.agentToolSpecs(), role, current(), unguarded), guard);
@@ -126,6 +129,65 @@ function error(result: ToolResult): { category: string; message: string } {
   assert.ok(!result.ok, 'expected a tool error');
   return result.error;
 }
+
+describe('report_result: screenshots for a UI change', () => {
+  const DONE = { verdict: 'done', summary: 'Implemented.' };
+  const facts = (files: string[] | Error, over: Partial<NonNullable<ResultToolParams['screenshots']>> = {}) => ({
+    uiPaths: ['resources/views/**', 'app/Filament/**'],
+    screenshotPaths: ['docs/screenshots/**'],
+    policy: 'always' as const,
+    workspace: tempDir('symphony-shots-'),
+    issueText: () => 'Add a page',
+    changedFiles: async () => {
+      if (files instanceof Error) throw files;
+      return files;
+    },
+    ...over,
+  });
+  const developer = (screenshots: ResultToolParams['screenshots']) => setup({ role: 'developer', state: 'In progress', screenshots });
+
+  it('refuses a UI change without screenshots and without screenshots_problem, and says what to do', async () => {
+    const { report, tracker } = developer(facts(['resources/views/a.blade.php', 'src/a.ts']));
+    const refused = error(await report(DONE));
+    assert.equal(refused.category, 'invalid_result');
+    assert.match(refused.message, /- resources\/views\/a\.blade\.php/);
+    for (const hint of [/build/, /symphony-screenshot/, /commit it/, /pull request description/, /screenshots_problem/]) assert.match(refused.message, hint);
+    assert.deepEqual(tracker.statusCalls, []);
+  });
+
+  it('accepts it with a changed screenshot, or with a screenshots_problem', async () => {
+    const shot = developer(facts(['app/Filament/A.php', 'docs/screenshots/a.png']));
+    assert.equal(data(await shot.report(DONE)).target, 'Agent review');
+    const problem = developer(facts(['app/Filament/A.php']));
+    assert.equal(data(await problem.report({ ...DONE, screenshots_problem: 'npm run build failed: ENOSPC' })).target, 'Agent review');
+    assert.match(problem.tracker.comments.get('1')?.[0]?.body ?? '', /npm run build failed: ENOSPC/);
+  });
+
+  it('checks nothing without a UI file, for policy never, or for the verdict blocked', async () => {
+    assert.equal(data(await developer(facts(['src/a.ts'])).report(DONE)).target, 'Agent review');
+    assert.equal(data(await developer(facts(['app/Filament/A.php'], { policy: 'never' })).report(DONE)).target, 'Agent review');
+    const blocked = developer(facts(['app/Filament/A.php']));
+    assert.equal(data(await blocked.report({ verdict: 'blocked', summary: 'Stuck.', blockers: [{ description: 'x', needs: 'human' }] })).target, 'Blocked');
+  });
+
+  it('policy auto: only when AGENTS.md, CLAUDE.md or the issue mention screenshots', async () => {
+    const none = facts(['app/Filament/A.php'], { policy: 'auto' });
+    assert.equal(data(await developer(none).report(DONE)).target, 'Agent review');
+    for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+      const withFile = facts(['app/Filament/A.php'], { policy: 'auto' });
+      fs.writeFileSync(path.join(withFile.workspace, name), 'Attach Screenshots of UI changes.');
+      assert.equal(error(await developer(withFile).report(DONE)).category, 'invalid_result', name);
+    }
+    const inIssue = facts(['app/Filament/A.php'], { policy: 'auto', issueText: () => 'Page\nPlease add a screenshot.' });
+    assert.equal(error(await developer(inIssue).report(DONE)).category, 'invalid_result');
+  });
+
+  it('a tool_error when the changed files cannot be determined', async () => {
+    const refused = error(await developer(facts(new Error('no base'))).report(DONE));
+    assert.equal(refused.category, 'tool_error');
+    assert.match(refused.message, /no base/);
+  });
+});
 
 describe('report_result: the documentation stage after the developer finished', () => {
   const facts = (files: string[] | Error, over: Partial<NonNullable<ResultToolParams['docs']>> = {}) => {
@@ -354,6 +416,22 @@ describe('report_result', () => {
     assert.deepEqual(Object.keys(unguarded.inputSchema), Object.keys(toolInputShape('review')));
     assert.match(unguarded.description, /approved, changes_needed, blocked/);
     assert.equal(unguarded.mutates, true);
+  });
+
+  it('tells the agent to send valid JSON arguments (Claude Code rejects broken JSON before the tool runs)', () => {
+    const { unguarded } = setup();
+    assert.match(JSON_ARGUMENT_HINT, /valid JSON/);
+    assert.ok(unguarded.description.includes(JSON_ARGUMENT_HINT));
+    for (const file of fs.readdirSync('roles').filter((name) => name.endsWith('.md'))) {
+      const text = fs.readFileSync(path.join('roles', file), 'utf8');
+      if (/^\d+\. (Report|Hand off).*`report_result`.*Fields:/m.test(text)) assert.ok(text.includes(JSON_ARGUMENT_HINT), `${file} lacks the JSON hint`);
+    }
+  });
+
+  it('names the size budgets in its description', () => {
+    const { unguarded } = setup();
+    assert.ok(unguarded.description.includes(`at most ${SUMMARY_MAX} characters`));
+    assert.ok(unguarded.description.includes(`at most about ${RESULT_FIELD_BUDGET} characters`));
   });
 
   it('records the result after the entry check passed: comment with marker, move, note', async () => {
@@ -614,7 +692,7 @@ describe('report_result', () => {
   it('records the reused pass of a cached check in the meta', async () => {
     const { unguarded, current, markers } = setup();
     // A guard stub standing in for a cache hit: the record of the check that ran earlier comes with the decision.
-    const record = { target: 'Agent review', role: 'developer', sha: 'abc123', exitCode: 0, timedOut: false, durationMs: 900, ok: true, result: 'passed' as const, finishedAt: new Date('2026-10-18T11:00:00Z') };
+    const record = { target: 'Agent review', name: null, role: 'developer', sha: 'abc123', exitCode: 0, timedOut: false, durationMs: 900, ok: true, result: 'passed' as const, finishedAt: new Date('2026-10-18T11:00:00Z') };
     const [cached] = guardTools([unguarded], async () => ({ allow: true, note: 'cached result for abc123', check: record }));
     const result = data((await cached?.execute(APPROVED, { issue: current() })) ?? { ok: false, error: { category: 'missing', message: '' } });
     assert.equal(result.checks, 'passed');
@@ -649,12 +727,89 @@ describe('report_result', () => {
       assert.deepEqual(data(await report(CHANGES)).already_recorded, true, 'a run still reports once');
     });
 
+    describe('max_check_failures', () => {
+      /** History with `n` earlier hand-offs over on_check_failed, from different runs and roles. */
+      const earlier = (n: number) =>
+        buildStageHistory(
+          Array.from({ length: n }, (_, i) => ({
+            result: { kind: 'review', verdict: 'approved', summary: 's' } as never,
+            meta: {
+              role: i % 2 === 0 ? 'reviewer' : 'auditor',
+              run: `run-${i}`,
+              round: null,
+              profile: null,
+              workflow_hash: null,
+              head_sha: null,
+              checks: null,
+              target: 'In progress',
+              check_failed_for: 'In review',
+              created_at: `2026-10-1${i}T12:00:00Z`,
+            },
+          })),
+        );
+      const options = (n: number) => ({
+        checks: FAILING,
+        history: earlier(n),
+        reviewer: { on_check_failed: 'In progress', on_round_limit: 'Blocked' },
+      });
+
+      it('sends the first and second hand-off back to on_check_failed without a label', async () => {
+        for (const n of [0, 1]) {
+          const { report, current } = setup(options(n));
+          assert.equal(data(await report(APPROVED)).target, 'In progress');
+          assert.deepEqual(current().labels, []);
+        }
+      });
+
+      it('sends the third hand-off, counted over rounds and roles, to on_round_limit with needs-human and names the checks', async () => {
+        const { report, tracker, current, markers } = setup(options(2));
+        const result = data(await report(APPROVED));
+        assert.equal(result.target, 'Blocked');
+        assert.deepEqual(tracker.statusCalls, ['Blocked']);
+        assert.deepEqual(current().labels, ['needs-human']);
+        const [marker] = markers();
+        assert.equal(marker?.meta.check_failed_for, 'In review');
+        assert.match(marker?.result.summary ?? '', /failed repeatedly[^\n]*"In review" \(3×\)/);
+      });
+
+      it('falls back to the blocked column without on_round_limit', async () => {
+        const { report, current } = setup({ ...options(2), reviewer: { on_check_failed: 'In progress', on_round_limit: undefined } });
+        const result = data(await report(APPROVED));
+        assert.equal(result.target, 'Blocked');
+        assert.deepEqual(current().labels, ['needs-human']);
+      });
+
+      it('does not count hand-offs before a reset', () => {
+        const entry = (kind: string, at: number, failed: string | null) => ({
+          result: { kind, verdict: 'x', summary: 's' } as never,
+          meta: { role: 'r', run: `run-${at}`, round: null, profile: null, workflow_hash: null, head_sha: null, checks: null, target: null, check_failed_for: failed, created_at: `2026-10-1${at}T12:00:00Z` },
+        });
+        const history = buildStageHistory([entry('review', 1, 'In review'), entry('review', 2, 'In review'), entry('reset', 3, null), entry('review', 4, 'In review')]);
+        assert.equal(history.checkFailures, 1);
+      });
+    });
+
     it('keeps the summary within its limit with a long summary and long check output', async () => {
       const { report, markers } = setup({ checks: { 'In review': 'yes "a long line of check output" | head -n 400; exit 1' }, reviewer: { on_check_failed: 'In progress' } });
       data(await report({ ...APPROVED, summary: 'x'.repeat(3_900) }));
       const summary = markers()[0]?.result.summary ?? '';
       assert.ok(summary.length <= 4000, `${summary.length}`);
       assert.match(summary, /Entry check failed/);
+    });
+
+    it('keeps the output of every failed check in the summary, not only the last one', async () => {
+      const checks = {
+        'In review': [
+          { name: 'ci', command: 'echo "Data too long for column color"; yes "ci noise" | head -n 300; echo "ci: 2 errors"; exit 1' },
+          { name: 'prod-smoke', command: 'yes "smoke log" | head -n 300; echo "FEHLER: Livewire-Update antwortet mit 419"; exit 1' },
+        ],
+      };
+      const { report, markers } = setup({ checks: checks as never, reviewer: { on_check_failed: 'In progress' } });
+      data(await report(APPROVED));
+      const summary = markers()[0]?.result.summary ?? '';
+      assert.ok(summary.length <= 4000, `${summary.length}`);
+      assert.match(summary, /== ci: failed \(exit 1, \d+s\) ==\n[\s\S]*ci: 2 errors/);
+      assert.match(summary, /== prod-smoke: failed \(exit 1, \d+s\) ==\n[\s\S]*Livewire-Update antwortet mit 419/);
     });
 
     it('leaves the round limit label alone when the redirect replaces the move', async () => {
@@ -959,5 +1114,109 @@ describe('report_result of a refactor review', () => {
   it('works without results in the history (older callers)', async () => {
     const { report } = setup({ labels: ['Type: refactor'] });
     assert.equal(data(await report(APPROVED)).target, 'In review');
+  });
+});
+
+describe('report_result description: JSON hint', () => {
+  it('names every escaping rule from the issue and keeps the original wording of the description', () => {
+    const { unguarded } = setup();
+    const text = unguarded.description;
+    assert.match(text, /valid JSON/);
+    assert.ok(text.includes('escape `\\"` and `\\\\`'), 'quote and backslash escaping');
+    assert.match(text, /no raw tab characters/);
+    assert.match(text, /paths with `\/`/);
+    assert.match(text, /regexes in words/);
+    assert.match(text, /summary short/);
+    assert.match(text, /JSON arrays like `\["a\.md", "b\.md"\]`, never Markdown bullet lines/);
+    assert.match(text, /details in the array fields/);
+    assert.match(text, /nothing is recorded and the issue stays: do what the error message says and report again\./);
+    assert.match(text, /Report once, when the stage is complete, then end your turn\./);
+  });
+
+  it('gives every result kind a hint at the end of the description and leaves the schema keys of the kind alone', () => {
+    for (const role of ['reviewer', 'developer']) {
+      const { unguarded } = setup({ role });
+      assert.ok(unguarded.description.endsWith(JSON_ARGUMENT_HINT), role);
+      assert.ok(unguarded.description.split(JSON_ARGUMENT_HINT).length === 2, `${role}: hint appears once`);
+      assert.ok(Object.keys(unguarded.inputSchema).includes('verdict') && Object.keys(unguarded.inputSchema).includes('summary'), role);
+    }
+  });
+
+  it('the hint is one line without a raw control character', () => {
+    assert.doesNotMatch(JSON_ARGUMENT_HINT, /[\u0000-\u001f]/);
+    assert.ok(JSON_ARGUMENT_HINT.length < 520);
+  });
+});
+
+describe('report_result description: list fields are JSON arrays', () => {
+  it('names the main cause (Markdown bullet lines in an array field) and gives an array example', () => {
+    const { unguarded } = setup();
+    assert.match(unguarded.description, /list fields \(`files`, `changed_files`, `findings`/);
+    assert.match(unguarded.description, /JSON arrays like `\["a\.md", "b\.md"\]`/);
+    assert.match(unguarded.description, /never Markdown bullet lines/);
+    assert.match(unguarded.description, /ASCII quote after a German opening quote/);
+    assert.doesNotMatch(unguarded.description, /put details in lists/);
+  });
+
+  it('keeps list fields of the schema as arrays (schema unchanged)', () => {
+    const docs = z.object(setup({ role: 'docs' }).unguarded.inputSchema);
+    assert.equal(docs.safeParse({ verdict: 'done', summary: 's', files: ['README.md'] }).success, true);
+    assert.equal(docs.safeParse({ verdict: 'done', summary: 's', files: '- README.md' }).success, false);
+    const dev = z.object(setup({ role: 'developer' }).unguarded.inputSchema);
+    assert.equal(dev.safeParse({ verdict: 'done', summary: 's', changed_files: ['a.ts'] }).success, true);
+    assert.equal(dev.safeParse({ verdict: 'done', summary: 's', changed_files: '- a.ts' }).success, false);
+  });
+});
+
+describe('report_result: size budget (#284)', () => {
+  const TOO_BIG = {
+    verdict: 'passed',
+    summary: 'Tested.',
+    uncovered_criteria: Array.from({ length: 8 }, (_, i) => `${i} ${'u'.repeat(3500)}`),
+    commands: ['npm test'],
+  };
+
+  it('names the summary limit and the field budget in the description of every result role', () => {
+    for (const [role, state] of [['reviewer', 'Agent review'], ['tester', 'Testing']] as const) {
+      const { unguarded } = setup({ role, state });
+      assert.ok(unguarded.description.includes(`at most ${SUMMARY_MAX} characters`), `${role}: ${unguarded.description}`);
+      assert.ok(unguarded.description.includes(`at most about ${RESULT_FIELD_BUDGET} characters`), role);
+      assert.ok(unguarded.description.includes('Report once, when the stage is complete'), 'the original text stays');
+    }
+  });
+
+  it('refuses a too large result as invalid_result with budget, size and largest fields, and records nothing', async () => {
+    const { report, tracker, events } = setup({ role: 'tester', state: 'Testing', checks: { 'Documentation': 'exit 0', 'Agent review': 'exit 0' } });
+    const refused = error(await report(TOO_BIG));
+    assert.equal(refused.category, 'invalid_result');
+    assert.match(refused.message, /too large for an issue comment/);
+    assert.ok(refused.message.includes(String(RESULT_FIELD_BUDGET)), refused.message);
+    assert.match(refused.message, /\d+ characters rendered/);
+    assert.match(refused.message, /fields hold \d+ characters/);
+    assert.match(refused.message, /uncovered_criteria \(\d+\)/);
+    assert.deepEqual(events, [], 'no entry check ran');
+    assert.equal(tracker.comments.get('1'), undefined);
+    assert.deepEqual(tracker.statusCalls, []);
+  });
+
+  it('one rejection is enough: the same result with shortened lists is recorded', async () => {
+    const { report, tracker } = setup({ role: 'tester', state: 'Testing', checks: { 'Documentation': 'exit 0', 'Agent review': 'exit 0' } });
+    assert.equal(error(await report(TOO_BIG)).category, 'invalid_result');
+    const shortened = { ...TOO_BIG, uncovered_criteria: TOO_BIG.uncovered_criteria.map((entry) => entry.slice(0, 1000)) };
+    data(await report(shortened));
+    assert.equal(tracker.comments.get('1')?.length, 1);
+  });
+});
+
+describe('report_result description: size budget and JSON hint together', () => {
+  it('names the size budget first and ends with the JSON hint', () => {
+    for (const role of ['reviewer', 'developer']) {
+      const { unguarded } = setup({ role });
+      const budget = unguarded.description.indexOf(resultBudgetNote());
+      const hint = unguarded.description.indexOf(JSON_ARGUMENT_HINT);
+      assert.ok(budget >= 0, `${role}: size budget missing`);
+      assert.ok(hint > budget, `${role}: hint must follow the budget`);
+      assert.ok(unguarded.description.endsWith(JSON_ARGUMENT_HINT), role);
+    }
   });
 });

@@ -125,7 +125,8 @@ is the first 12 hex characters of the sha256 of `SYMPHONY_WORKSPACE_KEY` (names 
 `laravel-env.sh` creates both with the `mysql` client (`CREATE DATABASE IF NOT EXISTS`), sets `DB_CONNECTION=mysql`,
 `DB_DATABASE`, `DB_HOST`, `DB_PORT`, `DB_USERNAME` and `DB_PASSWORD` in `.env` (mode `0600`) and writes `.env.testing`
 for the test database. A failed `CREATE DATABASE` exits non-zero, so the half-created workspace is removed.
-`hooks/laravel-db-drop.sh` drops both databases in `before_remove`; missing databases are not an error.
+`hooks/laravel-db-drop.sh` drops both databases in `before_remove` (and, whenever `SYMPHONY_MYSQL_USER` is set, the
+database of the full CI check, see [check scripts](#check-scripts-checkslaravelsh)); missing databases are not an error.
 
 ```yaml
 hooks:
@@ -174,7 +175,59 @@ checks:
 |---|---|---|
 | `timeout_ms` | `hooks.timeout_ms` | Limit per script run; must be below `claude.turn_timeout_ms`. A timed-out or aborted script's whole process group is killed; a timeout returns `check_timeout`. May come from a variable, e.g. `${SYMPHONY_CHECKS_TIMEOUT_MS:-1800000}`. |
 | `retries` | `0` | Extra attempts after a failed check, `0`–`3`. |
-| `on_enter` | `{}` | Map of column name (matched trimmed and case-insensitively) to the bash script that must pass to enter it. |
+| `on_enter` | `{}` | Map of column name (matched trimmed and case-insensitively) to what must pass to enter it: a bash script, a [named check](#named-checks), or a list of either, run in order. |
+| `report_status` | `false` | Report named checks to the tracker; GitHub: commit statuses `symphony/<name>` (see [named checks](#named-checks)). |
+
+#### Named checks
+
+A column can run several checks, each with a name and its own timeout. The shipped `WORKFLOW.md` uses this for the
+final gate before [auto-merge](adapters/github-project.md#merge-gate), standing in for a repository's GitHub Actions:
+
+```yaml
+checks:
+  report_status: true
+  on_enter:
+    In review:
+      - name: ci
+        command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" ci -- bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh" --full
+        timeout_ms: 1200000
+      - name: prod-smoke
+        command: bash "$SYMPHONY_WORKFLOW_DIR/checks/repo.sh" --lock prod-smoke
+        timeout_ms: 1800000
+```
+
+| Key | Meaning |
+|---|---|
+| `name` | Lowercase letters, digits, `.`, `_`, `-` (at most 50), unique per column. The script sees it as `SYMPHONY_CHECK_NAME`. |
+| `command` | The bash script, run like a plain one. |
+| `timeout_ms` | Its own limit (default `checks.timeout_ms`); may come from a variable. The checks of one column run in one tool call, so their sum must stay below `claude.turn_timeout_ms`. |
+
+- **Order and failures.** The checks run one after the other. A failing check (exit 1) does not stop the others: the
+  agent gets every failure in one answer, each under a header `== <name>: failed (exit 1, 6m12s) ==`, sharing the
+  6000 characters. A timeout or an environment problem stops at once.
+- **Exit 78** means the check does not apply here (no such script in the repository, no Laravel app): it passes as
+  `skipped` and reports no status.
+- **Cache.** Each check is cached on its own (HEAD sha + name + command), so after a failure only the failed ones run
+  again on the same commit.
+- **Statuses.** With `report_status: true`, a named check posts `pending` once it has run for 5 s, and `success`,
+  `failure` (exit 1) or `error` (timeout, environment) when it ends, on the commit it ran on; a cached pass posts
+  `success` again. The description holds only the duration and exit code (no output: repositories may be public);
+  the link goes to the agent page when [`server.public_url`](#server) is set. A failed post is logged as
+  `check_status_failed` and never changes the decision. GitHub needs the token scope `repo` (classic) or "Commit
+  statuses: write". Branch rules can then require `symphony/ci`, and the auto-merge gate reads them like any check.
+
+#### Repository checks (`checks/repo.sh`)
+
+`checks/repo.sh [--lock] <name> [-- fallback…]` runs a repository's own check, `.symphony/checks/<name>.sh`, **read
+from the base branch** (`SYMPHONY_BASE_BRANCH`, else `origin/HEAD`): a pull request cannot weaken the check of its
+own merge, and a changed script applies once it is merged. Without that script it runs the fallback after `--`;
+without one it exits 78. First it requires a clean tree with everything pushed, like `checks/laravel.sh`.
+
+- `--lock` runs one check of that name per repository at a time (`flock`), for checks with fixed compose project
+  names, ports or networks. Waiting counts against the check's timeout.
+- With `SYMPHONY_CI_DOCKER_HOST` (the compose profile `ci`, see [docker.md](docker.md)) the script gets
+  `DOCKER_HOST`, `DOCKER_TLS_VERIFY` and `DOCKER_CERT_PATH` for the CI Docker daemon, and `SYMPHONY_DOCKER_HOST_IP`,
+  the address of ports that daemon publishes. Agents never get these variables.
 
 Scripts run like hooks (`bash -lc` in the issue workspace, own process group) with the same `SYMPHONY_*`
 variables, `SYMPHONY_HOOK` set to the check's label. Because they execute repository code, their environment
@@ -205,7 +258,8 @@ touched. The guard decides on the run's role and the target column only, in this
 **Cache.** A passing check is remembered per claim, in memory, under the key `HEAD sha` + hash of the script text. Before
 running a check the guard reads `git rev-parse HEAD` and `git status --porcelain` (5 s timeout each); when the tree
 is clean and the key has a passing result, the issue is moved without running the script and the tool result carries
-`note: "cached result for <sha>"` (logged as `checks_cached`; no phase change, no `checks_finished`). This lets the move to `In review` reuse the successful check of `Agent review`. A
+`note: "cached result for <sha>"` (logged as `checks_cached`; no phase change, no `checks_finished`). The key includes
+the script (and the name of a named check), so the shipped final gate of `In review` runs its own checks. A
 new commit, a changed script, or any uncommitted change runs the check again; failures and errors are never cached; if
 git fails (e.g. no repository) the check simply runs. The cache is not persisted and not shared between issues, so
 a service restart or a new claim runs the checks again.
@@ -216,10 +270,11 @@ card to `Done`) kills a running check's process group. Without `roles` and `chec
 applies.
 
 While a check runs, the run is in phase `RunningChecks`: stall detection is suspended and its clock starts fresh when
-the check ends, and the `set_status` tool call may last `checks.timeout_ms + 60 s`
+the check ends, and the `set_status` tool call may last `checks.timeout_ms` (or the longest sum of a column's named
+checks) `+ 60 s`
 (see [agent-claude.md](agent-claude.md#timeouts-and-failures)). Each check logs `checks_started` and
 `checks_finished` (`target`, `sha`, `exit_code`, `duration_ms`, `ok`) at info level, writes a `checks_finished`
-line to the [repository log](#repository-logs) and becomes `last_check` in `GET /api/v1/<identifier>`. Denied targets
+line to the [repository log](#repository-logs) and becomes `last_check` in `GET /api/v1/<identifier>`; while the checks of a move run, `gate` in the same response lists every check of the column with its state, and the agent page shows it as *Entry checks* (see [usage](usage.md#dashboard-and-api)). Denied targets
 write a `transition_denied` line.
 
 ### `agent`
@@ -393,7 +448,7 @@ roles:
 | `on_result` | `{}` | Column per verdict of `result`, or `next` (the next active stage after the role's columns in board order). Needs `result`. See [Result-driven transitions](#result-driven-transitions). |
 | `on_check_failed` | none | Column for an issue whose entry check fails for a role that cannot fix it (a read-only role). When the check of the column a `report_result` leads to fails, the tool records the result anyway, adds a note with the check output to its summary and moves the issue here (through the transition guard, so this column's own entry check applies). Without it the agent gets `check_failed` and nothing is recorded. Ignored for roles that are not `read_only`. |
 | `on_missing_result` | `Blocked` with `result`, else none | Column for a session that ends without a result. Needs `result`. After the first turn without a result the session gets one reminder turn; if the turn limit comes first or the reminder fails too, Symphony re-fetches the issue and, only if it is still in the role's column, posts a plain comment ("Stage ended without a result") and moves it here. An issue someone moved meanwhile is left alone. See [Stages without a result](results.md#stages-without-a-result). |
-| `on_round_limit` | the blocked column | Column for a loop verdict (review `changes_needed`, test `failed`, security `issues_found`) that reaches `pipeline.max_review_rounds` / `max_test_rounds` / `max_security_rounds`. Needs `result: review`, `result: test` or `result: security`. See [Result-driven transitions](#result-driven-transitions). |
+| `on_round_limit` | the blocked column | Column for a loop verdict (review `changes_needed`, test `failed`, security `issues_found`) that reaches `pipeline.max_review_rounds` / `max_test_rounds` / `max_security_rounds`. Also the target of the hand-off that reaches `pipeline.max_check_failures` instead of `on_check_failed`. Needs `result: review`, `result: test` or `result: security`. See [Result-driven transitions](#result-driven-transitions). |
 | `model_label` | `apply`; `ignore` for read-only roles with a `result` | `ignore` keeps a `Model:` issue label from changing the role's model (`model_by_complexity` still applies). |
 | `effort_label` | `apply` | `ignore` keeps an `Effort:` issue label from changing the role's effort: the session runs with the role's `claude.effort`, else `claude.effort`. The shipped `WORKFLOW.md` sets it for the roles with a fixed task, so a label like `Effort: xhigh` raises the developer's effort, not the reviewer's or the docs agent's. |
 | `max_turns` | `agent.max_turns` | Integer >= 1. |
@@ -445,6 +500,10 @@ history at its start). The rules apply in this order:
    `pipeline.max_review_rounds` / `max_test_rounds` / `max_security_rounds` (with the defaults: the 3rd
    `changes_needed`, the 2nd `failed`, the 2nd `issues_found`), the issue goes to `on_round_limit` (else the blocked column)
    and gets `pipeline.limit_label`. Every other transition removes that label.
+   **Check failures.** A hand-off whose entry check failed and went to `on_check_failed` is no round, but it is counted
+   per issue, across rounds and roles, from the result markers (`check_failed_for`; a `reset` result starts again). The
+   hand-off that reaches `pipeline.max_check_failures` (default 3, so the 3rd) goes to `on_round_limit` (else the blocked
+   column) instead, gets `pipeline.limit_label`, and its comment names the repeatedly failing checks.
 3. **`on_result[verdict]`.** `next` is the first active column after the role's columns in board order whose role is
    not skipped by the issue's profile and whose stage condition holds. A verdict without a target goes to the blocked
    column. A reviewer's `approved` that leads out of the active columns (to `In review`) goes to the
@@ -975,7 +1034,8 @@ like everywhere else (an unset variable counts as omitted). Unknown keys are ign
 | `max_review_rounds` | `3` | Integer >= 1. Review rounds before the issue goes to a human. |
 | `max_test_rounds` | `2` | Integer >= 1. Test rounds before the issue goes to a human. |
 | `max_security_rounds` | `2` | Integer >= 1. Security review rounds (`issues_found` → developer fixes) before the issue goes to a human. |
-| `limit_label` | `needs-human` | Label for an issue that hit a round limit. |
+| `max_check_failures` | `3` | Integer >= 1. Hand-offs per issue that went to a role's `on_check_failed` (the entry check of the column failed) before the issue goes to a human. |
+| `limit_label` | `needs-human` | Label for an issue that hit a round limit or `max_check_failures`. |
 | `type_labels` | `{}` | Map of issue label → change type, e.g. `{ bug: bug, enhancement: feature }` (labels are matched case-insensitively). |
 | `default_type` | `feature` | Type of an issue without a label in `type_labels`. |
 | `analysis` | `always` | `always` or `when_unlabeled`. With `when_unlabeled`, the analysis stage (the role whose `result` is `analysis`) is [skipped without a session](#skipping-stages-without-a-session) for issues that already carry a `Type:` and a `Complexity:` label. Needs a role with `result: analysis`. |
@@ -984,6 +1044,9 @@ like everywhere else (an unset variable counts as omitted). Unknown keys are ign
 | `security_paths` | `app/Policies/**`, `app/Http/Middleware/**`, `config/auth.php`, `routes/**`, `database/migrations/**` | [Path globs](#path-globs) for security-relevant files: a changed file that matches sends the reviewer's approval to the [security review](#the-security-auditor). An explicit list replaces the defaults; `[]` turns the path trigger off. |
 | `docs_paths` | `docs/**`, `README*.md`, `CHANGELOG*.md` | [Path globs](#path-globs) for documentation files: all that a role with `result: docs` (the [docs agent](#the-documentation-stage)) may change, and a changed file that matches means the documentation was already written. An explicit list replaces the default; `[]` allows no file at all. |
 | `docs_trigger_paths` | `.env.example`, `config/**`, `WORKFLOW.md` | [Path globs](#path-globs) for files that need documenting: a changed file that matches, with no change in `docs_paths`, sends the hand-off to the [documentation stage](#the-documentation-stage). An explicit list replaces the defaults; `[]` turns the path trigger off. |
+| `ui_paths` | `resources/views/**`, `app/Filament/**`, `app/Livewire/**`, `resources/css/**`, `resources/js/**` | [Path globs](#path-globs) for files that make up the user interface: a developer's `done` result for a branch that changes one of them needs [screenshots](results.md#screenshots-for-ui-changes). An explicit list replaces the defaults; `[]` turns the check off. |
+| `screenshot_paths` | `docs/screenshots/**` | [Path globs](#path-globs) for screenshot files: a changed file that matches means the developer delivered screenshots. An explicit list replaces the default. |
+| `require_screenshots` | `auto` | `auto`, `always` or `never`. `auto`: the project asks for screenshots when `AGENTS.md` or `CLAUDE.md` in the workspace root, or the issue title or description, mention "screenshot" (case-insensitive). `always` asks for them for every change to `ui_paths`; `never` turns the check off. |
 
 #### Path globs
 
@@ -1094,6 +1157,7 @@ one poll at a time. For example, with an analyst in `Ready` and `pipeline.analys
 | `port` | none | Starts the dashboard and JSON API. `0` picks a free port. `--port` overrides it. Restart to change it. |
 | `host` | `127.0.0.1` | Bind address; the shipped `WORKFLOW.md` reads it from `SYMPHONY_HOST`. On a loopback address (`127.0.0.1`, `::1`, `localhost`), requests with another `Host` header are rejected. Any other address (e.g. `0.0.0.0` in a container) logs a warning at startup: Symphony has no login of its own, so put a reverse proxy with authentication (BasicAuth, forward auth) in front. Restart to change it. |
 | `allow_remote_control` | `false` | Allows the control routes (restart with `POST /api/v1/<identifier>/retry`, **Retry now** / **Resume now**; **Start now** with `/force`; pause and resume of issues and models, `/pause`, `/resume`, `/models/<model>/hold` and `/release`; agent slots with `PUT` / `DELETE /api/v1/settings/agents`) when `host` is not a loopback address; the shipped `WORKFLOW.md` reads it from `SYMPHONY_ALLOW_REMOTE_CONTROL`. On such a bind every restart request must carry an `Origin` header that matches its `Host` (CSRF guard, since the browser sends the proxy's credentials with every request); without it the API answers `403 forbidden_origin`. Has no effect on a loopback bind, where restart is always allowed. Only enable it behind an authenticating proxy. Restart to change it. |
+| `public_url` | none | The dashboard's address as people reach it (`https://symphony.example.com`); the shipped `WORKFLOW.md` reads it from `SYMPHONY_PUBLIC_URL`. Links in [commit statuses](#named-checks) point to its agent page. |
 
 ## Complete example: roles, checks and Laravel
 
@@ -1223,11 +1287,13 @@ shipped `WORKFLOW.md`; `test/workflow-prompt.test.ts` renders it for each role.
 ## Check scripts (`checks/laravel.sh`)
 
 A deterministic quality gate that runs in the workspace (bash). The shipped `WORKFLOW.md` runs it through
-[`checks.on_enter`](#checks) before an issue may enter `Agent review` and `In review`.
+[`checks.on_enter`](#checks) before an issue may enter `Testing` and `Agent review`, and with `--full` as the fallback
+of the named check `ci` before `In review`.
 
 | Exit code | Meaning |
 |---|---|
 | `0` | Pass (also when there is no `artisan`: `no Laravel app; nothing to check`). |
+| `78` | Only with `--full`: no Laravel app, the check is skipped. |
 | `1` | The code must be fixed. The output goes to the agent: dirty tree, unpushed commits, `php -l` errors, or a failing lint, analysis or test step. |
 | other (`2`) | Environment problem: missing `php`/`git`, missing or broken `vendor/`, failing `git fetch`, unknown default branch, configured but missing PHPStan. The agent comments and moves the issue to `Blocked`. |
 
@@ -1239,15 +1305,54 @@ style, static analysis, tests.
 
 | Step | Composer script (preferred) | Fallback |
 |---|---|---|
-| Style | `lint` | `vendor/bin/pint --test <changed files>` if Pint exists |
+| Style | `lint` | `vendor/bin/pint --test <changed files>` if Pint exists; with `--full` every file |
 | Static analysis | `analyse` | `vendor/bin/phpstan analyse --no-progress` if `phpstan.neon[.dist]` exists |
 | Tests | `test` | `php artisan test` |
+
+**`--full`** is the project's CI: Pint on every file, static analysis and the tests. With `SYMPHONY_CI_DB=mysql` (a
+repository's `.symphony/checks/ci.sh` sets it) the tests run against a MySQL database of their own,
+`symphony_<key>_ci` (`<key>` as for [the MySQL recipe](#optional-mysql-instead-of-sqlite)): the script drops and
+creates it with `SYMPHONY_MYSQL_*`, exports `DB_CONNECTION=mysql`, `DB_DATABASE` and the credentials (the process
+environment beats `.env` and the `<env>` entries of `phpunit.xml`), runs `php artisan config:clear` and
+`php artisan migrate --force`, then the tests, and drops the database on exit. `hooks/laravel-db-drop.sh` in
+`before_remove` drops a leftover of a killed check. The MySQL server of the compose profile `ci` serves this.
+With `SYMPHONY_CI_PARALLEL=<n>` the tests run in `n` processes (`php artisan test --parallel --processes=<n>
+--drop-databases`; with MySQL each process gets `<database>_test_<n>`, which the script drops on exit as well, since
+`--drop-databases` keeps them when tests fail). That needs
+`brianium/paratest`: a project that requires it, in a workspace whose `vendor/` predates it, gets it through
+`composer update brianium/paratest` first, but only when `composer.lock` is not tracked (the tree must stay clean).
+Without paratest the tests run in one process, with a note.
+
+**Timings and host load.** Once the environment checks passed, the script prints `host load at start (1/5/15 min): …,
+<n> CPUs` (from `/proc/loadavg` and `nproc`; `unknown` where they are missing) and, before the tests, `tests: <n>
+process(es), database sqlite|mysql`. The last lines of the output are `host load at end …` and a `steps:` block with
+one line per step (`php -l`, style, static analysis, `php artisan config:clear`/`migrate`, tests) in the form
+`  <name>  <duration>  <ok|failed>`. They come last on every exit after the steps began, also after a failing step, so
+they survive when the guard shortens the output from the front. On a timeout the guard terminates the script
+(SIGTERM): it prints the same lines with the running step as `timed out (aborted)`, drops its MySQL databases and exits
+143. The guard keeps the end of the output of a timed-out check in the gate run (`gate.checks[].output`, shown on the
+issue's detail page), as it does for a failed check.
+
+**Output of passed checks.** For a `passed` or `skipped` check the guard also keeps a short end of the output (at most
+400 characters) in `gate.checks[].output`, from the `host load at end` or `steps:` line on; output without them (another
+script) keeps just its last 400 characters, and empty output stays `null`. The agent page shows it collapsed in *Entry
+checks*. The `checks_finished` line of the [repository log](#repository-logs) carries the parsed `steps` and `load` (also for failed and timed-out runs, which print them too), so
+step durations can be compared across issues. The agent's answer to a passed check stays the short note without output.
+A cached result keeps the output of the original run.
+
+The fast gate (without `--full`) tests in parallel with `SYMPHONY_TEST_PARALLEL=<n>` in Symphony's environment
+(`php artisan test --parallel --processes=<n>`, on SQLite, so without `--drop-databases`), when `vendor/bin/paratest`
+exists. It never installs anything: without paratest the tests run in one process, with a note. An invalid value (not a
+positive integer) is an environment problem (exit 2). A `test` script in `composer.json` takes precedence over both
+variables; `--full` reads only `SYMPHONY_CI_PARALLEL`.
 
 Composer scripts are detected with `composer run-script --list`, which lists exactly the scripts defined in
 `composer.json` (without Composer, none are used). A `test` script can run the suite in parallel, e.g.
 `@php artisan test --parallel` with `brianium/paratest`; start it with `Composer\Config::disableProcessTimeout`, or
 Composer stops it after 300 s. The script never modifies tracked files, and prints only the tail (about 4000
-characters) of a failing step, since the guard forwards at most 6000 characters.
+characters) of a failing step, since the guard forwards at most 6000 characters. For failing tests it adds a list of
+the failed tests last (`Failed tests:`, PHPUnit's `N) Class::method` with the first line of its message, or
+Collision's `FAILED` lines): the tail of a test run is mostly stack traces, and the list survives any shortening.
 
 ## `model-costs.yml`
 
@@ -1282,7 +1387,7 @@ workflow directory, else `$XDG_STATE_HOME/symphony` or `~/.local/state/symphony`
 | `model_hold`, `model_hold_ended` | `model`, `since`, `until`; a limit hold also `issue`, `title`, `extended`, `text`; an operator hold (dashboard **Pause** on a model) `source=operator` with `stopped` or `requeued`, written to every repository with a claimed issue |
 | `worker_restarted` | `repo`, `issue`, `title`, `previous` (`retrying` or `paused`); written when an operator restarts a waiting or paused worker through the dashboard or `POST /api/v1/<identifier>/retry` |
 | `workspace_removed` | `repo`, `issue`, `state` |
-| `checks_finished` | `repo`, `issue`, `run`, `role`, `target`, `sha` (workspace commit; omitted outside git), `ok`, `result` (`passed`, `check_failed`, `check_timeout`, `check_error`), `exit_code` (`null` when the script did not exit normally), `timed_out` (only when `true`), `duration_ms` |
+| `checks_finished` | `repo`, `issue`, `run`, `role`, `target`, `sha` (workspace commit; omitted outside git), `ok`, `result` (`passed`, `skipped`, `check_failed`, `check_timeout`, `check_error`), `exit_code` (`null` when the script did not exit normally), `timed_out` (only when `true`), `duration_ms`, `steps` (JSON list of `{name, duration_s, result}` from the `steps:` block of `checks/laravel.sh`; omitted without one), `load` (JSON object `{1m, 5m, 15m, cpus}` (each a number or `null` when unknown) from the `host load at end` line; omitted without one) |
 | `transition_denied` | `repo`, `issue`, `run`, `role`, `target`, `reason` (the message the agent received) |
 
 `cost_usd` in a line uses the prices at the time it was written; the logs page and `/api/v1/history` recompute every

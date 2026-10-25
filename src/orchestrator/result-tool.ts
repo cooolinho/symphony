@@ -1,12 +1,13 @@
 import type { AgentToolContext, AgentToolSpec, AllowedTransition, Issue, StatusChange, ToolResult, TrackerAdapter } from '../tracker/types.ts';
 import { SerialQueue } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
-import { tail, truncate } from '../util/text.ts';
+import { truncate } from '../util/text.ts';
 import { classify, isComplexityLabel, isTypeLabel, type IssueComplexity, type IssueType } from '../workflow/classify.ts';
 import { normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
 import { profileFor } from '../workflow/profile.ts';
 import {
   RESULT_VERDICTS,
+  resultBudgetNote,
   SPLIT_VERDICT,
   SUMMARY_MAX,
   parseResult,
@@ -18,15 +19,21 @@ import {
 } from '../workflow/results.ts';
 import type { RoleConfig } from '../workflow/roles.ts';
 import { docsRoles, securityRoles } from '../workflow/validate.ts';
+import { fitCheckOutput } from './guard.ts';
 import { filesOutside } from './changed-files.ts';
 import { docsNeeded, type DocsFacts } from './docs.ts';
+import { screenshotsMissing, type ScreenshotFacts } from './screenshots.ts';
 import { securityNeeded, type SecurityFacts } from './security.ts';
 import { refactoringGoals, type PersistedResult, type StageHistory } from './stage-history.ts';
-import { resolveTransition, type RoundHistory, type StageConditions, type Transition, type TransitionProfile } from './transitions.ts';
+import { checkFailedRoute, resolveTransition, type RoundHistory, type StageConditions, type Transition, type TransitionProfile } from './transitions.ts';
 import { isSubIssue, subIssueCount } from './work-packages.ts';
 
 /** Name of the tool a role with `result` hands off with, instead of `set_status`. */
 export const RESULT_TOOL = 'report_result';
+
+/** Said in the tool description and in the role prompts: Claude Code drops a call whose JSON is broken before the tool runs. */
+export const JSON_ARGUMENT_HINT =
+  'Every argument must be valid JSON, or Claude Code rejects the call before it reaches Symphony and you must send it all again: list fields (`files`, `changed_files`, `findings` ...) are JSON arrays like `["a.md", "b.md"]`, never Markdown bullet lines; escape `\\"` and `\\\\` (also an ASCII quote after a German opening quote: close it with the typographic mark), no raw tab characters, write paths with `/`, describe regexes in words, keep the summary short and put details in the array fields.';
 export const RESULT_RECORDED_NOTE = 'Result recorded — end your turn now.';
 
 /**
@@ -87,7 +94,7 @@ export interface ResultToolParams {
    * Round counters and results of the issue's persisted results, loaded when the session starts (a run reports once).
    * A review reads the refactoring goals of the newest analysis from `results`.
    */
-  history: RoundHistory & Partial<Pick<StageHistory, 'results'>>;
+  history: RoundHistory & Partial<Pick<StageHistory, 'results' | 'failedChecks'>>;
   profile: TransitionProfile | null;
   flags?: StageConditions;
   /**
@@ -100,6 +107,11 @@ export interface ResultToolParams {
    * (see `docsNeeded`), looked up when the agent reports. Without it the hand-off keeps its configured target.
    */
   docs?: Pick<DocsFacts, 'docsNeeded' | 'docsPaths' | 'triggerPaths' | 'changedFiles'> | null;
+  /**
+   * For a developer's `done`: what decides whether a UI change owes screenshots (see `screenshotsMissing`), checked before the
+   * result is accepted. Without it nothing is checked.
+   */
+  screenshots?: ScreenshotFacts | null;
   config: Pick<ServiceConfig, 'tracker' | 'roles' | 'pipeline'>;
   /** The board's columns in board order; null when the tracker does not list them. */
   boardColumns: readonly string[] | null;
@@ -135,14 +147,36 @@ const MIN_QUOTED_OUTPUT = 200;
  * after the summary and quotes as much of the check output as the summary limit leaves room for; the summary itself is
  * cut when the note alone would not fit.
  */
-function withCheckFailedNote(result: StageResult, failed: NonNullable<AllowedTransition['checkFailed']>, target: string): StageResult {
+function withCheckFailedNote(
+  result: StageResult,
+  failed: NonNullable<AllowedTransition['checkFailed']>,
+  target: string,
+  limit: { repeated: string[]; max: number } | null,
+): StageResult {
+  const counts = new Map<string, number>();
+  for (const column of limit?.repeated ?? []) counts.set(column, (counts.get(column) ?? 0) + 1);
+  const named = [...counts].map(([column, n]) => `"${column}" (${n}×)`).join(', ');
   const note =
-    `**Entry check failed.** The entry check for "${failed.target}" failed, so Symphony moved the issue to "${target}" ` +
-    '(`on_check_failed`) instead of the column this result leads to.';
+    limit === null
+      ? `**Entry check failed.** The entry check for "${failed.target}" failed, so Symphony moved the issue to "${target}" ` +
+        '(`on_check_failed`) instead of the column this result leads to.'
+      : `**Entry check failed repeatedly.** The entry check for "${failed.target}" failed again; ${limit.repeated.length} hand-offs ` +
+        `went back over \`on_check_failed\` (limit \`pipeline.max_check_failures\` = ${limit.max}): ${named}. Symphony moved the issue to ` +
+        `"${target}" for a human instead of back to the developer.`;
   const summary = truncate(result.summary, Math.max(0, SUMMARY_MAX - note.length - 2));
   const room = SUMMARY_MAX - summary.length - note.length - NOTE_SLACK;
   const output = failed.output.trim();
-  const quoted = output !== '' && room >= MIN_QUOTED_OUTPUT ? `\n\n${tail(output, room).replace(/^/gm, '    ')}` : '';
+  // Every failed check keeps its share (fitCheckOutput): the developer needs the ci failures as much as the smoke test's.
+  // The indentation of every line counts too, so the output shrinks until the indented text fits.
+  let quoted = '';
+  for (let budget = room; output !== '' && budget >= MIN_QUOTED_OUTPUT; ) {
+    const indented = fitCheckOutput(output, budget).replace(/^/gm, '    ');
+    if (indented.length <= room) {
+      quoted = `\n\n${indented}`;
+      break;
+    }
+    budget -= indented.length - room;
+  }
   return { ...result, summary: `${summary}\n\n${note}${quoted}` };
 }
 
@@ -339,6 +373,38 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     );
   };
 
+  /** The refusal for a UI change without screenshots and without a `screenshots_problem`; null when the rule holds or does not apply. */
+  const screenshotViolation = async (args: Record<string, unknown>): Promise<ToolResult | null> => {
+    const facts = params.screenshots;
+    if (facts === undefined || facts === null || kind !== 'implementation' || args.verdict !== 'done') return null;
+    if (typeof args.screenshots_problem === 'string' && args.screenshots_problem.trim() !== '') return null;
+    let decision;
+    try {
+      decision = await screenshotsMissing(facts);
+    } catch (error) {
+      return fail(
+        'tool_error',
+        `Symphony could not check which files you changed (${errorMessage(error)}), so nothing was recorded. This is not a ` +
+          `problem with your change. Call ${RESULT_TOOL} again; if it fails again, describe the problem in an issue comment ` +
+          'and end your turn.',
+      );
+    }
+    if (!decision.missing) return null;
+    const shown = decision.uiFiles.map((file) => `- ${file}`);
+    const more = decision.more > 0 ? `\n- … and ${decision.more} more` : '';
+    return fail(
+      'invalid_result',
+      `The ${kind} result is invalid: your change touches the UI (files matching \`pipeline.ui_paths\`), the project asks for ` +
+        `screenshots, but no file matching \`pipeline.screenshot_paths\` (${facts.screenshotPaths.join(', ') || 'none configured'}) ` +
+        `changed and \`screenshots_problem\` is not set. UI files:\n${shown.join('\n')}${more}\n` +
+        'Nothing was recorded. Take the screenshots: build the frontend assets if the project needs them (install the dependencies, run the ' +
+        '`build` script), start the app from this workspace with its own SQLite file and seed data, run `symphony-screenshot <url> <out.png>` ' +
+        '(`symphony-screenshot --check` tests the browser), open the PNG with the Read tool to check it, commit it under the screenshot path, ' +
+        'push, embed it in the pull request description by commit SHA, and report again. "No browser" and "no frontend build" are not ' +
+        'reasons to skip them. If a step really fails, report again with `screenshots_problem`: the step that failed and its exact error message.',
+    );
+  };
+
   /**
    * The refusal for a `split` design whose work packages are not all sub-issues yet: the issue would go on to its
    * integration review with nothing to wait for. Read fresh, because the agent creates them in the same turn.
@@ -380,7 +446,8 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     // after the computed move failed its entry check.
     const allowed = context.transition;
     const failed = allowed?.checkFailed;
-    const fallback = failed !== undefined && role.readOnly ? role.onCheckFailed : null;
+    const route = failed !== undefined && role.readOnly ? checkFailedRoute({ role, history: params.history, config: params.config }) : null;
+    const fallback = route?.column ?? null;
     const expected = fallback ?? planned.transition.target;
     if (
       allowed === undefined ||
@@ -389,18 +456,25 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     ) {
       return fail('tool_error', `${RESULT_TOOL} ran without the transition guard's approval for "${expected}"; nothing was recorded`);
     }
-    // The limit label belongs to the move the verdict leads to; a redirect to `on_check_failed` leaves it alone.
+    // The limit label belongs to the move the verdict leads to; a redirect to `on_check_failed` leaves it alone, unless
+    // it is the one that reaches `max_check_failures`: that one goes to a human and carries the label.
+    const limitReached = route?.limitReached === true;
+    const limit = params.config.pipeline.limitLabel;
     const transition: Transition =
       failed === undefined
         ? planned.transition
         : {
             ...planned.transition,
             target: allowed.target,
-            labels: { add: [], remove: [] },
-            limitReached: false,
-            reason: `${planned.transition.reason}; entry check for "${failed.target}" failed → "${allowed.target}" (on_check_failed)`,
+            labels: limitReached ? { add: [limit], remove: [] } : { add: [], remove: [] },
+            limitReached,
+            reason: `${planned.transition.reason}; entry check for "${failed.target}" failed → "${allowed.target}" (${route?.note ?? 'on_check_failed'})`,
           };
-    const result = failed === undefined ? planned.result : withCheckFailedNote(planned.result, failed, allowed.target);
+    const repeated = [...(params.history.failedChecks ?? []), ...(failed !== undefined ? [failed.target] : [])];
+    const result =
+      failed === undefined
+        ? planned.result
+        : withCheckFailedNote(planned.result, failed, allowed.target, limitReached ? { repeated, max: params.config.pipeline.maxCheckFailures } : null);
 
     // The issue may have left the role's columns while the agent worked or the check ran (a human moved it): a result
     // for a column it is no longer in would move it back. Confirmed right before anything is written.
@@ -432,6 +506,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       head_sha: await params.meta.headSha().catch(() => null),
       checks: failed?.check ?? allowed.check,
       target: transition.target,
+      ...(failed !== undefined ? { check_failed_for: failed.target } : {}),
       created_at: now().toISOString(),
     };
     let body: string;
@@ -460,7 +535,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     const classified = await applyTransitionLabels(adapter, issue, { add: classificationLabels(result, issue.labels), remove: [] }, warnings);
     let change: StatusChange;
     try {
-      change = await adapter.setStatus(issue, transition.target);
+      change = await adapter.setStatus(issue, transition.target, { checkedSha: allowed.check?.sha ?? null });
     } catch (error) {
       // The labels belong to the move, so they stay as they are. The run ends after this turn; the next dispatch
       // completes the move from the result's marker without a session (docs/usage.md#failures-of-result-driven-stages).
@@ -501,7 +576,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       'issue on. Symphony checks the result, computes the next column from the verdict and runs that column\'s entry ' +
       'checks; when they pass, it posts the result as an issue comment and moves the issue. Report once, when the stage ' +
       'is complete, then end your turn. If the result is invalid or a check fails, nothing is recorded and the issue ' +
-      'stays: do what the error message says and report again.',
+      `stays: do what the error message says and report again. ${resultBudgetNote()} ${JSON_ARGUMENT_HINT}`,
     inputSchema: toolInputShape(kind),
     mutates: true,
     transitionTarget: async (args) => {
@@ -512,10 +587,10 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       return planned.ok ? planned.transition.target : null;
     },
     checkFailedTarget: (args) => {
-      if (recorded !== null || !role.readOnly || role.onCheckFailed === null) return null;
-      return plan(args, looked.get(args)).ok ? role.onCheckFailed : null;
+      if (recorded !== null || !role.readOnly) return null;
+      return plan(args, looked.get(args)).ok ? (checkFailedRoute({ role, history: params.history, config: params.config })?.column ?? null) : null;
     },
-    precheck: (args, context) => queue.run(async () => (await pathViolation()) ?? (await splitViolation(args, context))),
+    precheck: (args, context) => queue.run(async () => (await pathViolation()) ?? (await screenshotViolation(args)) ?? (await splitViolation(args, context))),
     execute: (args, context) => queue.run(() => record(args, context)),
   };
 }

@@ -150,7 +150,44 @@ export interface AutoMergeResult {
   /** Column the issue is in afterwards. */
   status: string;
   reason: string;
+  /** The pull request's checks are still running: the issue waits in its column and the merge is retried. */
+  awaiting_checks?: boolean;
+  /** The checks of the pull request's head commit, when the merge gate read them. */
+  checks?: AutoMergeChecks;
   warnings?: string[];
+}
+
+/** What the merge gate saw on the pull request's head commit. */
+export interface AutoMergeChecks {
+  state: 'none' | 'success' | 'pending' | 'failure';
+  failing: Array<{ name: string; state: string; url: string | null }>;
+  pending: string[];
+}
+
+/** A named entry check's state, posted on the commit it ran on (GitHub: commit status `symphony/<name>`). */
+export interface CheckStatus {
+  name: string;
+  sha: string;
+  state: 'pending' | 'success' | 'failure' | 'error';
+  description: string;
+  /** Where the details are (Symphony's agent page); null = no link. */
+  targetUrl: string | null;
+}
+
+/** Options of a move through `setStatus`. */
+export interface SetStatusOptions {
+  /** Commit the entry checks of the target column ran on; `auto_merge` merges nothing else. */
+  checkedSha?: string | null;
+}
+
+/**
+ * Issues waiting in the `auto_merge` column for pending pull request checks. The orchestrator fetches `column` with
+ * the board and calls `retry` for every issue `awaiting` returns true for, one call per issue at a time.
+ */
+export interface MergeWatch {
+  column: string;
+  awaiting(issue: Issue): boolean;
+  retry(issue: Issue): Promise<AutoMergeResult>;
 }
 
 /** Outcome of moving an issue to another column. */
@@ -235,7 +272,11 @@ export interface TrackerAdapter {
    * Moves the issue to a column (matched case-insensitively), the same operation as the `set_status` tool, including
    * `auto_merge`. Throws `invalid_argument` for a column the board does not have.
    */
-  setStatus?(issue: Issue, column: string): Promise<StatusChange>;
+  setStatus?(issue: Issue, column: string, options?: SetStatusOptions): Promise<StatusChange>;
+  /** Reports an entry check's state on the commit it ran on, in the issue's repository (`checks.report_status`). */
+  reportCheckStatus?(issue: Issue, status: CheckStatus): Promise<void>;
+  /** Issues waiting for pending pull request checks before `auto_merge`; null or absent when nothing waits. */
+  mergeWatch?(): MergeWatch | null;
   /**
    * Adds labels to the issue. Labels that do not exist are reported in `unknown`; with `create` the missing ones of the
    * families `Type: …`, `Complexity: …` and `needs-human` are created first (other names are never created).

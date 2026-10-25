@@ -37,9 +37,22 @@ export interface HooksConfig {
 export interface ChecksConfig {
   timeoutMs: number;
   retries: number;
-  /** Keys are normalized column names (trimmed, lowercase); values are bash scripts. */
-  onEnter: ReadonlyMap<string, string>;
+  /** Keys are normalized column names (trimmed, lowercase); values are the column's checks, run in order (never empty). */
+  onEnter: ReadonlyMap<string, readonly EntryCheck[]>;
+  /** Report named checks to the tracker (GitHub commit statuses `symphony/<name>`). */
+  reportStatus: boolean;
 }
+
+/** One entry check: a bash script; a named one (`ci`, `prod-smoke`) is reported as `symphony/<name>`. */
+export interface EntryCheck {
+  /** null for the plain string form (`Column: <script>`). */
+  name: string | null;
+  command: string;
+  timeoutMs: number;
+}
+
+/** Names of entry checks: they become commit status contexts (`symphony/<name>`). */
+const CHECK_NAME = /^[a-z0-9][a-z0-9._-]{0,49}$/;
 
 export interface AgentConfig {
   maxConcurrentAgents: number;
@@ -116,6 +129,8 @@ export interface PipelineConfig {
   maxTestRounds: number;
   /** Security rounds (security review found issues → fix) before the issue is handed to a human. */
   maxSecurityRounds: number;
+  /** Hand-offs over `on_check_failed` (a failed entry check) per issue before it goes to a human. */
+  maxCheckFailures: number;
   /** Label put on an issue that hit a round limit. */
   limitLabel: string;
   /** Issue label (normalized: trimmed, lowercase) → change type. */
@@ -145,6 +160,12 @@ export interface PipelineConfig {
   docsPaths: string[];
   docsTriggerPaths: string[];
   securityPaths: string[];
+  /** `pipeline.ui_paths`: files whose change touches the UI; the developer then owes screenshots (see `screenshotsMissing`). */
+  uiPaths: string[];
+  /** `pipeline.screenshot_paths`: where screenshots are stored; a change in them means the developer delivered some. */
+  screenshotPaths: string[];
+  /** `pipeline.require_screenshots`: `auto` = when AGENTS.md, CLAUDE.md or the issue mention screenshots. */
+  requireScreenshots: ScreenshotPolicy;
   /**
    * The path settings that WORKFLOW.md set explicitly. The others hold the built-in defaults, which the worker extends
    * with the prefix of every Laravel app in a subdirectory (see `expandForApps`).
@@ -152,13 +173,18 @@ export interface PipelineConfig {
   explicitPaths: PathSetting[];
 }
 
-export type PathSetting = 'test_paths' | 'docs_paths' | 'docs_trigger_paths' | 'security_paths';
+export type PathSetting = 'test_paths' | 'docs_paths' | 'docs_trigger_paths' | 'security_paths' | 'ui_paths' | 'screenshot_paths';
+
+export type ScreenshotPolicy = 'auto' | 'always' | 'never';
+export const SCREENSHOT_POLICIES: readonly ScreenshotPolicy[] = ['auto', 'always', 'never'];
 
 export interface ServerConfig {
   port: number | null;
   host: string;
   /** Allow restarting workers (POST /api/v1/<identifier>/retry) on a non-loopback bind. */
   allowRemoteControl: boolean;
+  /** The dashboard's address as people reach it (e.g. https://symphony.example.com), for links Symphony posts; null = none. */
+  publicUrl: string | null;
 }
 
 export interface ServiceConfig {
@@ -213,6 +239,7 @@ export const DEFAULTS = {
   maxReviewRounds: 3,
   maxTestRounds: 2,
   maxSecurityRounds: 2,
+  maxCheckFailures: 3,
   /** `pipeline.test_paths` when unset: the usual places of test files (Laravel, Node, Jest/Vitest). */
   testPaths: ['tests/**', 'test/**', '**/*.test.*', '**/*Test.php'],
   /** `pipeline.security_paths` when unset: the places of a Laravel app where authorization, authentication and the schema live. */
@@ -221,6 +248,10 @@ export const DEFAULTS = {
   /** `pipeline.docs_trigger_paths` when unset: configuration surfaces that need documenting. */
   docsTriggerPaths: ['.env.example', 'config/**', 'WORKFLOW.md'],
   securityPaths: ['app/Policies/**', 'app/Http/Middleware/**', 'config/auth.php', 'routes/**', 'database/migrations/**'],
+  /** `pipeline.ui_paths` when unset: the places of a Laravel/Filament app where the user interface lives. */
+  uiPaths: ['resources/views/**', 'app/Filament/**', 'app/Livewire/**', 'resources/css/**', 'resources/js/**'],
+  /** `pipeline.screenshot_paths` when unset. */
+  screenshotPaths: ['docs/screenshots/**'],
   pipelineLimitLabel: 'needs-human',
   pipelineDefaultType: 'feature',
   /** Column for a session that ends without the result its role has to report. */
@@ -260,6 +291,7 @@ const PIPELINE_KEYS = new Set([
   'max_review_rounds',
   'max_test_rounds',
   'max_security_rounds',
+  'max_check_failures',
   'limit_label',
   'type_labels',
   'default_type',
@@ -268,6 +300,9 @@ const PIPELINE_KEYS = new Set([
   'docs_paths',
   'docs_trigger_paths',
   'security_paths',
+  'ui_paths',
+  'screenshot_paths',
+  'require_screenshots',
 ]);
 const PROFILE_KEYS = new Set(['skip', 'skip_when', 'on_result', 'max_review_rounds', 'max_test_rounds']);
 const ROLE_CLAUDE_KEYS = new Set(['model', 'effort', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'max_budget_usd', 'model_by_complexity']);
@@ -493,6 +528,7 @@ function readPipeline(reader: Reader, raw: Record<string, unknown>, roles: RoleC
     maxReviewRounds: reader.int(section, 'max_review_rounds', 'pipeline.max_review_rounds', DEFAULTS.maxReviewRounds, 1),
     maxTestRounds: reader.int(section, 'max_test_rounds', 'pipeline.max_test_rounds', DEFAULTS.maxTestRounds, 1),
     maxSecurityRounds: reader.int(section, 'max_security_rounds', 'pipeline.max_security_rounds', DEFAULTS.maxSecurityRounds, 1),
+    maxCheckFailures: reader.int(section, 'max_check_failures', 'pipeline.max_check_failures', DEFAULTS.maxCheckFailures, 1),
     limitLabel: nonEmpty('limit_label', DEFAULTS.pipelineLimitLabel),
     typeLabels,
     defaultType: nonEmpty('default_type', DEFAULTS.pipelineDefaultType),
@@ -502,6 +538,9 @@ function readPipeline(reader: Reader, raw: Record<string, unknown>, roles: RoleC
     docsPaths: globs('docs_paths', DEFAULTS.docsPaths),
     docsTriggerPaths: globs('docs_trigger_paths', DEFAULTS.docsTriggerPaths),
     securityPaths: globs('security_paths', DEFAULTS.securityPaths),
+    uiPaths: globs('ui_paths', DEFAULTS.uiPaths),
+    screenshotPaths: globs('screenshot_paths', DEFAULTS.screenshotPaths),
+    requireScreenshots: reader.oneOf(section, 'require_screenshots', 'pipeline.require_screenshots', SCREENSHOT_POLICIES, 'auto'),
     explicitPaths,
   };
 }
@@ -773,6 +812,69 @@ function readByModel(reader: Reader, claudeRaw: Record<string, unknown>): Map<st
   return byModel;
 }
 
+/** How long the checks of one column may run together (each check's own timeout, summed). */
+export function columnCheckMs(checks: readonly EntryCheck[]): number {
+  return checks.reduce((sum, check) => sum + check.timeoutMs, 0);
+}
+
+/** The longest any column's checks may run together; 0 without checks. */
+export function maxColumnCheckMs(checks: Pick<ChecksConfig, 'onEnter'>): number {
+  return Math.max(0, ...[...checks.onEnter.values()].map(columnCheckMs));
+}
+
+/**
+ * One `checks.on_enter` value: a script (string), one named check (`{name, command, timeout_ms}`) or a list of
+ * either. `checks.on_enter` is shell code and keeps its `$VAR`s, so `name` and `timeout_ms` are resolved here.
+ */
+function readEntryChecks(
+  value: unknown,
+  field: string,
+  defaultTimeoutMs: number,
+  env: NodeJS.ProcessEnv,
+  errors: string[],
+): { checks: EntryCheck[]; ownTimeout: boolean } | null {
+  const entries = Array.isArray(value) ? value : [value];
+  const checks: EntryCheck[] = [];
+  let ownTimeout = false;
+  const before = errors.length;
+  for (const [index, entry] of entries.entries()) {
+    const at = Array.isArray(value) ? `${field}[${index}]` : field;
+    if (typeof entry === 'string') {
+      if (entry.trim() !== '') checks.push({ name: null, command: entry, timeoutMs: defaultTimeoutMs });
+      continue;
+    }
+    if (!isPlainObject(entry)) {
+      errors.push(`${at} must be a script or a map with name and command`);
+      continue;
+    }
+    for (const key of Object.keys(entry)) {
+      if (!['name', 'command', 'timeout_ms'].includes(key)) errors.push(`${at}.${key} is not a known key (allowed: name, command, timeout_ms)`);
+    }
+    const name = resolveEnvReference(entry.name, env);
+    if (typeof name !== 'string' || !CHECK_NAME.test(name)) {
+      errors.push(`${at}.name must be lowercase letters, digits, ".", "_" or "-" (at most 50, e.g. ci or prod-smoke)`);
+      continue;
+    }
+    if (checks.some((check) => check.name === name)) errors.push(`${at}.name "${name}" is used twice in ${field}`);
+    if (typeof entry.command !== 'string' || entry.command.trim() === '') {
+      errors.push(`${at}.command must be a non-empty script`);
+      continue;
+    }
+    let timeoutMs = defaultTimeoutMs;
+    const timeout = resolveEnvReference(entry.timeout_ms, env);
+    if (timeout !== undefined && timeout !== null && timeout !== '') {
+      const parsed = Number(timeout);
+      if (!Number.isSafeInteger(parsed) || parsed < 1) errors.push(`${at}.timeout_ms must be a positive integer`);
+      else {
+        timeoutMs = parsed;
+        ownTimeout = true;
+      }
+    }
+    checks.push({ name, command: entry.command, timeoutMs });
+  }
+  return errors.length > before ? null : { checks, ownTimeout };
+}
+
 /**
  * Replaces whole-value `$NAME` references (strings and list items) with environment values;
  * unset or empty variables make the setting count as omitted. Hooks and check scripts (`checks.on_enter`, shell code)
@@ -860,24 +962,33 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
 
   // checks
   const checksRaw = reader.section(raw, 'checks');
-  const onEnter = new Map<string, string>();
+  const checksTimeoutMs = reader.int(checksRaw, 'timeout_ms', 'checks.timeout_ms', hooks.timeoutMs, 1);
+  const onEnter = new Map<string, EntryCheck[]>();
+  /** Columns whose checks set their own timeout or run more than one script: their sum is validated below. */
+  const summedColumns: string[] = [];
   const onEnterRaw = checksRaw.on_enter;
   if (onEnterRaw !== undefined && onEnterRaw !== null) {
     if (!isPlainObject(onEnterRaw)) {
       reader.errors.push('checks.on_enter must be a map of column names to scripts');
     } else {
-      for (const [column, script] of Object.entries(onEnterRaw)) {
+      for (const [column, value] of Object.entries(onEnterRaw)) {
         const key = normalizeStateName(column);
-        if (typeof script !== 'string') reader.errors.push(`checks.on_enter.${column} must be a string`);
-        else if (key === '') reader.errors.push('checks.on_enter column names must not be empty');
-        else if (script.trim() !== '') onEnter.set(key, script);
+        if (key === '') {
+          reader.errors.push('checks.on_enter column names must not be empty');
+          continue;
+        }
+        const parsed = readEntryChecks(value, `checks.on_enter.${column}`, checksTimeoutMs, options.env, reader.errors);
+        if (parsed === null || parsed.checks.length === 0) continue;
+        onEnter.set(key, parsed.checks);
+        if (parsed.checks.length > 1 || parsed.ownTimeout) summedColumns.push(key);
       }
     }
   }
   const checks: ChecksConfig = {
-    timeoutMs: reader.int(checksRaw, 'timeout_ms', 'checks.timeout_ms', hooks.timeoutMs, 1),
+    timeoutMs: checksTimeoutMs,
     retries: reader.int(checksRaw, 'retries', 'checks.retries', 0, 0),
     onEnter,
+    reportStatus: reader.bool(checksRaw, 'report_status', 'checks.report_status', false),
   };
   if (checks.retries > 3) reader.errors.push(`checks.retries must be between 0 and 3 (got ${checks.retries})`);
 
@@ -999,6 +1110,13 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
       `checks.timeout_ms (${checks.timeoutMs}) must be less than claude.turn_timeout_ms (${claude.turnTimeoutMs})`,
     );
   }
+  // The checks of one column run inside one tool call, one after the other.
+  for (const column of summedColumns) {
+    const total = columnCheckMs(onEnter.get(column) ?? []);
+    if (total >= claude.turnTimeoutMs) {
+      reader.errors.push(`the checks of checks.on_enter.${column} may take ${total} ms together, which must be less than claude.turn_timeout_ms (${claude.turnTimeoutMs})`);
+    }
+  }
 
   // workspace integrations (e.g. laravel)
   const integrations: Record<string, unknown> = {};
@@ -1036,7 +1154,13 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     port: portValue === undefined || portValue === null ? null : reader.int(serverRaw, 'port', 'server.port', 0, 0),
     host: reader.string(serverRaw, 'host', 'server.host')?.trim() || DEFAULTS.serverHost,
     allowRemoteControl: reader.bool(serverRaw, 'allow_remote_control', 'server.allow_remote_control', false),
+    publicUrl: null,
   };
+  const publicUrl = reader.string(serverRaw, 'public_url', 'server.public_url')?.trim() ?? '';
+  if (publicUrl !== '') {
+    if (/^https?:\/\/[^\s/]+/.test(publicUrl)) server.publicUrl = publicUrl.replace(/\/+$/, '');
+    else reader.errors.push('server.public_url must be an http(s) URL');
+  }
   if (server.port !== null && server.port > 65_535) reader.errors.push('server.port must be <= 65535');
 
   if (reader.errors.length > 0) {

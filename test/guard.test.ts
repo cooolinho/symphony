@@ -4,7 +4,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 import { Logger } from '../src/log.ts';
-import { CHECK_PASSED_NOTE, createGuard, entryCheckFor, guardTools, toolsForRole, type CheckCache, type CheckRecord, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
+import { CHECK_OUTPUT_LIMIT, CHECK_PASSED_NOTE, createGuard, entryChecksFor, fitCheckOutput, guardTools, parseCheckSteps, passedOutput, toolsForRole, type CheckCache, type CheckRecord, type GateRun, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
 import type { AgentToolContext, AgentToolSpec, ToolResult } from '../src/tracker/types.ts';
 import { WorkspaceManager } from '../src/workspace/manager.ts';
 import { baseFront, makeIssue, makeWorkflow, tempDir } from './helpers.ts';
@@ -103,13 +103,13 @@ describe('transition guard', () => {
     assert.equal(denied(await guard('In review'))?.category, 'transition_denied');
   });
 
-  it('entryCheckFor names the script a move runs, none for a role with run_checks false', () => {
+  it('entryChecksFor names the scripts a move runs, none for a role with run_checks false', () => {
     const auditor = { commands: ['refactoring'], states: ['Todo', 'In progress'], run_checks: false, may_move_to: ['In review', 'Blocked'] };
     const { params } = setup({ checks: { 'In review': 'exit 0' }, extraRoles: { auditor }, role: 'auditor' });
     const reviewer = params.config.roles?.find((role) => role.name === 'reviewer') ?? null;
-    assert.equal(entryCheckFor('in review', reviewer, params.config), 'exit 0');
-    assert.equal(entryCheckFor('In progress', reviewer, params.config), null);
-    assert.equal(entryCheckFor('In review', params.role, params.config), null);
+    assert.deepEqual(entryChecksFor('in review', reviewer, params.config), [{ name: null, command: 'exit 0', timeoutMs: 10_000 }]);
+    assert.deepEqual(entryChecksFor('In progress', reviewer, params.config), []);
+    assert.deepEqual(entryChecksFor('In review', params.role, params.config), []);
   });
 
   it('adds the integration check environment', async () => {
@@ -218,7 +218,7 @@ describe('check cache', () => {
     git('add', '.');
     git('commit', '-qm', 'one');
     const make = (script: string) => {
-      const config = { ...env.params.config, checks: { ...env.params.config.checks, onEnter: new Map([['agent review', script]]) } };
+      const config = { ...env.params.config, checks: { ...env.params.config.checks, onEnter: new Map([['agent review', [{ name: null, command: script, timeoutMs: 10_000 }]]]) } };
       return createGuard({ ...env.params, config, cache });
     };
     const cache: CheckCache = new Map();
@@ -268,11 +268,324 @@ describe('check cache', () => {
     const env = setup({ checks: { 'Agent review': '' } });
     const counter = path.join(path.dirname(env.workspacePath), 'count');
     const script = `echo x >> ${counter}`;
-    const config = { ...env.params.config, checks: { ...env.params.config.checks, onEnter: new Map([['agent review', script]]) } };
+    const config = { ...env.params.config, checks: { ...env.params.config.checks, onEnter: new Map([['agent review', [{ name: null, command: script, timeoutMs: 10_000 }]]]) } };
     const guard = createGuard({ ...env.params, config, cache: new Map() });
     await guard('Agent review');
     await guard('Agent review');
     assert.equal(fs.readFileSync(counter, 'utf8').trim().split('\n').length, 2);
+  });
+});
+
+describe('named entry checks', () => {
+  function named(entries: Array<{ name: string | null; command: string }>, extra: Partial<GuardParams> = {}, timeoutMs = 10_000) {
+    const env = setup({ checks: { 'Agent review': 'exit 0' } });
+    const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: env.workspacePath, stdio: 'ignore' });
+    git('init', '-q');
+    fs.writeFileSync(path.join(env.workspacePath, 'a.txt'), 'a');
+    git('add', '.');
+    git('commit', '-qm', 'one');
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: env.workspacePath, encoding: 'utf8' }).trim();
+    const log = path.join(path.dirname(env.workspacePath), 'ran');
+    const checks = entries.map((entry) => ({ ...entry, command: `echo ${entry.name ?? 'plain'} >> ${log}; ${entry.command}`, timeoutMs }));
+    const config = { ...env.params.config, checks: { ...env.params.config.checks, onEnter: new Map([['agent review', checks]]) } };
+    const statuses: string[] = [];
+    const cache: CheckCache = new Map();
+    const guard = createGuard({
+      ...env.params,
+      config,
+      cache,
+      pendingDelayMs: 0,
+      reportStatus: async (report) => {
+        statuses.push(`${report.name}:${report.state}:${report.sha === sha ? 'head' : report.sha}`);
+      },
+      ...extra,
+    });
+    const ran = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []);
+    return { ...env, guard, statuses, ran, sha, cache };
+  }
+
+  it('runs the checks in order and reports each named one as pending, then its result', async () => {
+    const { guard, statuses, ran, events } = named([
+      { name: 'ci', command: 'sleep 0.1; exit 0' },
+      { name: 'prod-smoke', command: 'sleep 0.1; exit 0' },
+      { name: null, command: 'exit 0' },
+    ]);
+    const decision = await guard('Agent review');
+    assert.ok(decision.allow);
+    assert.equal(decision.note, CHECK_PASSED_NOTE);
+    assert.equal(decision.check?.result, 'passed');
+    assert.equal(decision.check?.name, null, 'several checks are summarized');
+    assert.deepEqual(ran(), ['ci', 'prod-smoke', 'plain']);
+    assert.deepEqual(statuses, ['ci:pending:head', 'ci:success:head', 'prod-smoke:pending:head', 'prod-smoke:success:head']);
+    assert.deepEqual(events, ['checks_started', 'checks_finished', 'checks_started', 'checks_finished', 'checks_started', 'checks_finished']);
+  });
+
+  it('runs every check after a failure and names all failures in one answer', async () => {
+    const { guard, statuses, ran } = named([
+      { name: 'ci', command: 'echo "pint failed"; exit 1' },
+      { name: 'prod-smoke', command: 'echo "smoke failed"; exit 1' },
+      { name: 'docs', command: 'exit 0' },
+    ]);
+    const decision = denied(await guard('Agent review'));
+    assert.equal(decision?.category, 'check_failed');
+    assert.deepEqual(ran(), ['ci', 'prod-smoke', 'docs']);
+    assert.match(decision?.message ?? '', /The entry check for "Agent review" \(ci, prod-smoke\) failed/);
+    assert.match(decision?.message ?? '', /== ci: failed \(exit 1, \d+s\) ==\npint failed/);
+    assert.match(decision?.message ?? '', /== prod-smoke: failed \(exit 1, \d+s\) ==\nsmoke failed/);
+    assert.equal(decision?.failed?.check.result, 'check_failed');
+    assert.deepEqual(
+      statuses.filter((status) => !status.includes('pending')),
+      ['ci:failure:head', 'prod-smoke:failure:head', 'docs:success:head'],
+    );
+  });
+
+  describe('gate state', () => {
+    const gates = () => {
+      const seen: GateRun[] = [];
+      return { seen, onGateUpdate: (gate: GateRun) => seen.push(gate) };
+    };
+
+    it('goes from pending over running to its result', async () => {
+      const { seen, onGateUpdate } = gates();
+      const { guard, sha } = named([{ name: 'ci', command: 'exit 0' }, { name: 'docs', command: 'exit 78' }], { onGateUpdate });
+      assert.ok((await guard('Agent review')).allow);
+      assert.deepEqual(seen[0]?.checks.map((c) => c.status), ['pending', 'pending']);
+      assert.equal(seen[0]?.finishedAt, null);
+      assert.equal(seen[0]?.target, 'Agent review');
+      assert.equal(seen[0]?.sha, sha);
+      const running = seen.find((g) => g.checks[0]?.status === 'running');
+      assert.ok(running?.checks[0]?.startedAt instanceof Date);
+      assert.equal(running?.checks[1]?.status, 'pending');
+      const last = seen[seen.length - 1]!;
+      assert.deepEqual(last.checks.map((c) => c.status), ['passed', 'skipped']);
+      assert.notEqual(last.finishedAt, null);
+      assert.equal(last.checks[0]?.timeoutMs, 10_000);
+    });
+
+    it('keeps the steps and host load of a passed check in the gate run and the history event, not in the tool answer', async () => {
+      const { seen, onGateUpdate } = gates();
+      const finished: Array<Record<string, unknown> | undefined> = [];
+      const script = "echo lots of noise; echo 'host load at end (1/5/15 min): 0.50 1.25 2.00, 4 CPUs'; echo 'steps:'; echo '  style  12s  ok'; echo '  tests  1m 5s  ok'";
+      const { guard } = named([{ name: 'ci', command: script }], {
+        onGateUpdate,
+        onEvent: (event, _message, detail) => {
+          if (event === 'checks_finished') finished.push(detail);
+        },
+      });
+      const decision = await guard('Agent review');
+      assert.ok(decision.allow);
+      assert.equal(decision.allow && decision.note, CHECK_PASSED_NOTE);
+      const output = seen[seen.length - 1]!.checks[0]?.output ?? '';
+      assert.match(output, /^host load at end/);
+      assert.match(output, /tests {2}1m 5s {2}ok/);
+      assert.doesNotMatch(output, /noise/);
+      assert.deepEqual(finished[0]?.steps, [
+        { name: 'style', duration_s: 12, result: 'ok' },
+        { name: 'tests', duration_s: 65, result: 'ok' },
+      ]);
+      assert.deepEqual(finished[0]?.load, { '1m': 0.5, '5m': 1.25, '15m': 2, cpus: 4 });
+    });
+
+    it('keeps only the short end of the output of a passed check without a steps block', async () => {
+      const { seen, onGateUpdate } = gates();
+      const finished: Array<Record<string, unknown> | undefined> = [];
+      const { guard } = named([{ name: 'ci', command: 'seq 1 500' }, { name: 'quiet', command: 'true' }], {
+        onGateUpdate,
+        onEvent: (event, _message, detail) => {
+          if (event === 'checks_finished') finished.push(detail);
+        },
+      });
+      assert.ok((await guard('Agent review')).allow);
+      const [loud, quiet] = seen[seen.length - 1]!.checks;
+      assert.ok((loud?.output ?? '').length <= 400);
+      assert.match(loud?.output ?? '', /500$/);
+      assert.equal(quiet?.output, null);
+      assert.equal(finished[0]?.steps, undefined);
+      assert.equal(finished[0]?.load, undefined);
+    });
+
+    it('shows the kept output again for a cached result', async () => {
+      const { seen, onGateUpdate } = gates();
+      const { guard } = named([{ name: 'ci', command: 'echo remembered' }], { onGateUpdate });
+      assert.ok((await guard('Agent review')).allow);
+      assert.ok((await guard('Agent review')).allow);
+      const last = seen[seen.length - 1]!.checks[0];
+      assert.deepEqual([last?.cached, last?.output], [true, 'remembered']);
+    });
+
+    it('keeps the output of a check that ran into the timeout in the gate run', async () => {
+      const { seen, onGateUpdate } = gates();
+      const { guard } = named([{ name: 'ci', command: 'echo step-one-done; sleep 5' }], { onGateUpdate }, 500);
+      assert.equal(denied(await guard('Agent review'))?.category, 'check_timeout');
+      const last = seen[seen.length - 1]!;
+      assert.equal(last.checks[0]?.status, 'check_timeout');
+      assert.match(last.checks[0]?.output ?? '', /step-one-done/);
+    });
+
+    it('keeps only the end of a long output of a check that ran into the timeout', async () => {
+      const { seen, onGateUpdate } = gates();
+      const { guard } = named([{ name: 'ci', command: 'yes x | head -c 40000; echo the-last-step-line; sleep 5' }], { onGateUpdate }, 1500);
+      assert.equal(denied(await guard('Agent review'))?.category, 'check_timeout');
+      const check = seen[seen.length - 1]!.checks[0]!;
+      assert.equal(check.status, 'check_timeout');
+      assert.ok((check.output ?? '').length <= CHECK_OUTPUT_LIMIT);
+      assert.ok((check.output ?? '').length > 1000);
+      assert.ok((check.output ?? '').endsWith('the-last-step-line'), 'the end of the output survives');
+    });
+
+    it('gives a timed-out check its own output next to checks that passed or have no output', async () => {
+      const { seen, onGateUpdate } = gates();
+      const { guard } = named(
+        [
+          { name: 'a', command: 'echo passed-output' },
+          { name: 'b', command: 'echo b-before-timeout; sleep 5' },
+        ],
+        { onGateUpdate },
+        1500,
+      );
+      assert.equal(denied(await guard('Agent review'))?.category, 'check_timeout');
+      const last = seen[seen.length - 1]!;
+      assert.deepEqual(last.checks.map((c) => c.status), ['passed', 'check_timeout']);
+      assert.equal(last.checks[0]?.output, 'passed-output', 'a passed check keeps the end of its output');
+      assert.match(last.checks[1]?.output ?? '', /b-before-timeout/);
+      assert.notEqual(last.finishedAt, null);
+    });
+
+    it('keeps the steps block a script prints on SIGTERM in the gate run of a timeout', async () => {
+      const { seen, onGateUpdate } = gates();
+      const script = "trap 'echo steps:; echo \"  php artisan test  1s  timed out (aborted)\"; exit 143' TERM; echo step-one-done; sleep 5 & wait";
+      const finished: Array<Record<string, unknown> | undefined> = [];
+      const { guard } = named([{ name: 'ci', command: script }], {
+        onGateUpdate,
+        onEvent: (event, _message, detail) => {
+          if (event === 'checks_finished') finished.push(detail);
+        },
+      }, 1500);
+      assert.equal(denied(await guard('Agent review'))?.category, 'check_timeout');
+      assert.deepEqual(finished[0]?.steps, [{ name: 'php artisan test', duration_s: 1, result: 'timed out (aborted)' }]);
+      const output = seen[seen.length - 1]!.checks[0]?.output ?? '';
+      assert.match(output, /step-one-done/);
+      assert.ok(output.endsWith('  php artisan test  1s  timed out (aborted)'), output);
+    });
+
+    it('gives each failed check the output share the agent gets', async () => {
+      const { seen, onGateUpdate } = gates();
+      const { guard } = named(
+        [
+          { name: 'a', command: 'yes x | head -c 10000; exit 1' },
+          { name: 'b', command: 'echo bbb; exit 1' },
+        ],
+        { onGateUpdate },
+      );
+      const decision = denied(await guard('Agent review'));
+      const last = seen[seen.length - 1]!;
+      assert.deepEqual(last.checks.map((c) => [c.status, c.exitCode]), [['check_failed', 1], ['check_failed', 1]]);
+      assert.ok((last.checks[0]?.output ?? '').length <= CHECK_OUTPUT_LIMIT / 2);
+      assert.ok((last.checks[0]?.output ?? '').length > 100);
+      assert.equal(last.checks[1]?.output, 'bbb');
+      for (const check of last.checks) assert.ok(decision?.message.includes(check.output ?? '?'));
+    });
+
+    it('keeps a single failure output whole up to the limit', async () => {
+      const { seen, onGateUpdate } = gates();
+      const { guard } = named([{ name: 'ci', command: 'yes x | head -c 10000; exit 1' }], { onGateUpdate });
+      await guard('Agent review');
+      const output = seen[seen.length - 1]!.checks[0]!.output ?? '';
+      assert.equal(output.length, CHECK_OUTPUT_LIMIT);
+    });
+
+    it('stops at a broken check and leaves the rest pending', async () => {
+      const { seen, onGateUpdate } = gates();
+      const { guard } = named([{ name: 'a', command: 'echo oops; exit 2' }, { name: 'b', command: 'exit 0' }], { onGateUpdate });
+      assert.equal(denied(await guard('Agent review'))?.category, 'check_error');
+      const last = seen[seen.length - 1]!;
+      assert.deepEqual(last.checks.map((c) => c.status), ['check_error', 'pending']);
+      assert.match(last.checks[0]?.output ?? '', /oops/);
+      assert.notEqual(last.finishedAt, null);
+    });
+
+    it('marks reused results as cached', async () => {
+      const { seen, onGateUpdate } = gates();
+      const { guard, cache } = named([{ name: 'a', command: 'exit 0' }, { name: 'b', command: 'exit 0' }], { onGateUpdate });
+      assert.ok((await guard('Agent review')).allow);
+      assert.deepEqual(seen[seen.length - 1]?.checks.map((c) => c.cached), [false, false]);
+      seen.length = 0;
+      assert.ok((await guard('Agent review')).allow);
+      assert.equal(seen.length, 1, 'all cached: one finished snapshot');
+      assert.deepEqual(seen[0]?.checks.map((c) => [c.status, c.cached]), [['passed', true], ['passed', true]]);
+      assert.notEqual(seen[0]?.finishedAt, null);
+      cache.delete([...cache.keys()][1]!);
+      seen.length = 0;
+      assert.ok((await guard('Agent review')).allow);
+      assert.deepEqual(seen[seen.length - 1]?.checks.map((c) => c.cached), [true, false]);
+    });
+  });
+
+  it('names a single failing check in the message', async () => {
+    const { guard } = named([{ name: 'ci', command: 'echo broken; exit 1' }]);
+    const decision = denied(await guard('Agent review'));
+    assert.match(decision?.message ?? '', /The entry check for "ci" for "Agent review" failed, so the issue was not moved\.\n\nbroken\n/);
+  });
+
+  it('keeps every failed check\'s section when the output must be shortened', () => {
+    const output = `== ci: failed (exit 1, 8m12s) ==\n${'a'.repeat(3000)}\nci tail\n\n== prod-smoke: failed (exit 1, 9m07s) ==\n${'b'.repeat(3000)}\nsmoke tail`;
+    const fitted = fitCheckOutput(output, 1000);
+    assert.ok(fitted.length <= 1000, String(fitted.length));
+    assert.match(fitted, /^== ci: failed \(exit 1, 8m12s\) ==\n…?a+\nci tail\n\n== prod-smoke: failed \(exit 1, 9m07s\) ==\n…?b+\nsmoke tail$/);
+    assert.equal(fitCheckOutput('one check\nfailed', 6), '…ailed', 'a single output keeps its end');
+    assert.equal(fitCheckOutput(output, 100_000), output.split('\n\n').map((part) => part.trim()).join('\n\n'));
+  });
+
+  it('stops at an environment problem and reports it as an error, with the end of its output', async () => {
+    const { guard, ran, statuses } = named([
+      { name: 'ci', command: 'echo "environment: git fetch origin failed"; exit 2' },
+      { name: 'prod-smoke', command: 'exit 0' },
+    ]);
+    const decision = denied(await guard('Agent review'));
+    assert.equal(decision?.category, 'check_error');
+    assert.match(decision?.message ?? '', /The entry check for "ci" for "Agent review" could not run properly \(exited with code 2\)\.\n\nThe end of its output:\n\nenvironment: git fetch origin failed\n\n.*\(quote the output\)/s);
+    assert.deepEqual(ran(), ['ci']);
+    assert.deepEqual(statuses, ['ci:pending:head', 'ci:error:head']);
+  });
+
+  it('passes a check that exits 78 as skipped, without a status unless one was pending', async () => {
+    const quick = named([{ name: 'prod-smoke', command: 'exit 78' }], { pendingDelayMs: 60_000 });
+    const decision = await quick.guard('Agent review');
+    assert.ok(decision.allow);
+    assert.equal(decision.check?.result, 'skipped');
+    assert.deepEqual(quick.statuses, []);
+
+    const slow = named([{ name: 'prod-smoke', command: 'sleep 0.1; exit 78' }]);
+    assert.ok((await slow.guard('Agent review')).allow);
+    assert.deepEqual(slow.statuses, ['prod-smoke:pending:head', 'prod-smoke:success:head']);
+  });
+
+  it('caches each check: a re-entry runs only the one that did not pass, and reports the cached passes again', async () => {
+    const env = named([
+      { name: 'ci', command: 'exit 0' },
+      { name: 'prod-smoke', command: `test -f ${path.join(tempDir('flag-'), 'missing')}` },
+    ]);
+    assert.equal((await env.guard('Agent review')).allow, false);
+    assert.deepEqual(env.ran(), ['ci', 'prod-smoke']);
+    env.statuses.length = 0;
+    assert.equal((await env.guard('Agent review')).allow, false);
+    assert.deepEqual(env.ran(), ['ci', 'prod-smoke', 'prod-smoke'], 'ci comes from the cache');
+    assert.equal(env.statuses[0], 'ci:success:head');
+    assert.equal(env.cache.size, 1);
+  });
+
+  it('reports nothing for plain scripts, and a failing report never changes the decision', async () => {
+    const plain = named([{ name: null, command: 'exit 0' }]);
+    assert.ok((await plain.guard('Agent review')).allow);
+    assert.deepEqual(plain.statuses, []);
+
+    const broken = named([{ name: 'ci', command: 'exit 0' }], {
+      reportStatus: async () => {
+        throw new Error('HTTP 422');
+      },
+    });
+    assert.ok((await broken.guard('Agent review')).allow);
+    assert.ok(broken.events.includes('check_status_failed'));
   });
 });
 
@@ -309,6 +622,7 @@ describe('guardTools', () => {
     const seen: AgentToolContext[] = [];
     const check: CheckRecord = {
       target: 'Gated',
+      name: null,
       role: 'developer',
       sha: 'abc123',
       exitCode: 0,
@@ -421,5 +735,29 @@ describe('toolsForRole', () => {
     const developer = withResult.find((r) => r.name === 'developer') ?? null;
     assert.deepEqual(toolsForRole(all, developer, makeIssue({ id: '1' }), report).map((t) => t.name), ['get_issue', 'set_status', 'add_comment'], 'roles without result keep set_status');
     assert.deepEqual(toolsForRole(all, null, makeIssue({ id: '1' }), report).map((t) => t.name), ['get_issue', 'set_status', 'add_comment']);
+  });
+});
+
+describe('parseCheckSteps and passedOutput', () => {
+  const output = ['noise', 'host load at end (1/5/15 min): unknown, unknown CPUs', 'steps:', '  php -l  0s  ok', '  tests  2m 3s  timed out (aborted)'].join('\n');
+
+  it('reads steps with minutes, results with spaces and unknown load', () => {
+    assert.deepEqual(parseCheckSteps(output), {
+      steps: [
+        { name: 'php -l', duration_s: 0, result: 'ok' },
+        { name: 'tests', duration_s: 123, result: 'timed out (aborted)' },
+      ],
+      load: { '1m': null, '5m': null, '15m': null, cpus: null },
+    });
+  });
+
+  it('returns nothing for output of another script', () => {
+    assert.deepEqual(parseCheckSteps('all good\nsteps are fine'), {});
+  });
+
+  it('starts at the host load line and cuts to the limit', () => {
+    assert.equal(passedOutput(output), output.slice(output.indexOf('host load')));
+    assert.equal(passedOutput(' \n'), '');
+    assert.equal(passedOutput('x'.repeat(1000)).length, 400);
   });
 });

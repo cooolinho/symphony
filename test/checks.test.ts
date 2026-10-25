@@ -16,7 +16,23 @@ if (args[0] === '-l') {
   if (fs.readFileSync(args[1], 'utf8').includes('SYNTAX_ERROR')) { console.log('Parse error in ' + args[1]); process.exit(255); }
   process.exit(0);
 }
+if (args[1] === 'test' && process.env.FAKE_ENV_LOG) fs.appendFileSync(process.env.FAKE_ENV_LOG, JSON.stringify([process.env.DB_CONNECTION, process.env.DB_DATABASE, process.env.DB_USERNAME, process.env.DB_PASSWORD]) + '\\n');
+if (args[1] === 'test' && process.env.FAKE_TEST_FAIL === 'phpunit') {
+  console.log('\\x1b[37;41mERRORS!\\x1b[0m\\n1) Tests\\\\Feature\\\\ClubPageTest::test_color\\nQueryException: Data too long for column \\'color\\'\\n');
+  for (let i = 0; i < 400; i++) console.log('/app/vendor/laravel/framework/src/Illuminate/Database/Connection.php:' + i);
+  console.log('\\x1b[37;41mTests: 3229, Errors: 1.\\x1b[0m');
+  process.exit(1);
+}
 if (args[1] === 'test' && process.env.FAKE_TEST_FAIL) { console.log('Tests: 1 failed'); process.exit(1); }
+`;
+
+/** Fake mysql client: logs its arguments and whether the password came in MYSQL_PWD; FAKE_MYSQL_FAIL makes it fail. */
+const FAKE_MYSQL = `#!${process.execPath}
+const fs = require('node:fs');
+fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify(['mysql', ...process.argv.slice(2), 'pwd=' + (process.env.MYSQL_PWD || '')]) + '\\n');
+if (process.env.FAKE_MYSQL_FAIL) { console.log('ERROR 1045 (28000): Access denied'); process.exit(1); }
+const sql = process.argv.slice(2).find((arg) => arg.startsWith('--execute=')) || '';
+if (sql.includes('SHOW DATABASES') && process.env.FAKE_MYSQL_SHOW) console.log(['Database (pattern)', ...process.env.FAKE_MYSQL_SHOW.split(',')].join('\\n'));
 `;
 
 /**
@@ -93,13 +109,14 @@ function fixture(options: { scripts?: Record<string, string>; phpstan?: boolean;
   }
   write(base, 'bin/php', FAKE_PHP, 0o755);
   write(base, 'bin/composer', FAKE_COMPOSER, 0o755);
+  write(base, 'bin/mysql', FAKE_MYSQL, 0o755);
   const log = path.join(base, 'calls.log');
   fs.writeFileSync(log, '');
   return { repo, origin, log, bin };
 }
 
-function run(f: Fixture, env: NodeJS.ProcessEnv = {}, cwd = f.repo) {
-  const result = spawnSync('bash', [SCRIPT], {
+function run(f: Fixture, env: NodeJS.ProcessEnv = {}, cwd = f.repo, args: string[] = [], script = SCRIPT) {
+  const result = spawnSync('bash', [script, ...args], {
     cwd,
     encoding: 'utf8',
     env: { ...process.env, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, ...env },
@@ -122,6 +139,48 @@ describe('checks/laravel.sh', () => {
     assert.ok(names.includes('pint --test app/New.php'));
     assert.ok(names.includes('phpstan analyse --no-progress'));
     assert.ok(names.includes('php artisan test'));
+  });
+
+  it('prints load lines, the test setup and one step line each last, on success', () => {
+    const f = fixture({ phpstan: true });
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '3' });
+    assert.equal(result.status, 0, result.out);
+    assert.match(result.out, /host load at start \(1\/5\/15 min\): .*\d+ CPUs/);
+    assert.match(result.out, /host load at end \(1\/5\/15 min\): /);
+    assert.match(result.out, /tests: 1 process\(es\), database sqlite/);
+    const lines = result.out.trimEnd().split('\n');
+    const at = lines.lastIndexOf('steps:');
+    assert.ok(at > lines.indexOf('all checks passed'), 'steps come after the verdict');
+    assert.deepEqual(lines.slice(at + 1).map((l) => l.replace(/ {2}(\S.*?) {2}\d+s {2}(\S.*)$/, '$1|$2')), ['php -l|ok', 'pint|ok', 'phpstan|ok', 'php artisan test|ok']);
+  });
+
+  it('prints the steps last after a failing step, with the output and exit code unchanged', () => {
+    const f = fixture({ phpstan: true });
+    const result = run(f, { FAKE_TEST_FAIL: 'phpunit' });
+    assert.equal(result.status, 1);
+    const lines = result.out.trimEnd().split('\n');
+    assert.match(result.out, /php artisan test failed \(exit 1\):/);
+    const at = lines.lastIndexOf('steps:');
+    assert.ok(at > lines.indexOf('Failed tests:'));
+    assert.match(lines[lines.length - 1] ?? '', /^ {2}php artisan test {2}\d+s {2}failed$/);
+    assert.match(lines[at - 1] ?? '', /^host load at end/);
+    assert.equal(lines.length - at - 1, 4);
+  });
+
+  it('prints the steps and the load when the check is terminated, and still drops the MySQL databases', () => {
+    const f = fixture();
+    write(path.dirname(f.bin), 'bin/php-fake', FAKE_PHP, 0o755);
+    write(path.dirname(f.bin), 'bin/php', `#!/bin/sh\n[ "$2" = migrate ] && sleep 30\nexec "${f.bin}/php-fake" "$@"\n`, 0o755);
+    const result = spawnSync('bash', ['-c', `set -m; bash "$0" --full & pid=$!; sleep 2; kill -TERM -- -$pid; wait $pid`, SCRIPT], {
+      cwd: f.repo,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, SYMPHONY_CI_DB: 'mysql', SYMPHONY_MYSQL_USER: 'u' },
+    });
+    assert.equal(result.status, 143, result.stdout + result.stderr);
+    const lines = result.stdout.trimEnd().split('\n');
+    assert.match(lines[lines.length - 1] ?? '', /^ {2}php artisan migrate {2}\d+s {2}timed out/);
+    assert.ok(lines.includes('steps:'));
+    assert.ok(calls(f).some((c) => c[0] === 'mysql' && c.some((a) => a.includes('DROP DATABASE IF EXISTS'))));
   });
 
   it('exits 0 with a message when there is no Laravel app', () => {
@@ -219,6 +278,13 @@ describe('checks/laravel.sh', () => {
     assert.match(result.out, /1 failed/);
   });
 
+  it('lists the failed tests after the tail of a long test output, so they survive the shortening', () => {
+    const f = fixture();
+    const result = run(f, { FAKE_TEST_FAIL: 'phpunit' });
+    assert.equal(result.status, 1, result.out);
+    assert.match(result.out, /Tests: 3229, Errors: 1\.\x1b\[0m\n\nFailed tests:\n1\) Tests\\Feature\\ClubPageTest::test_color — QueryException: Data too long for column 'color'\nhost load at end/);
+  });
+
   it('exits 1 on style and static analysis failures', () => {
     const f = fixture({ phpstan: true });
     assert.equal(run(f, { FAKE_FAIL: 'pint' }).status, 1);
@@ -256,5 +322,564 @@ describe('checks/laravel.sh', () => {
     assert.ok(names.includes('composer run-script test'));
     assert.ok(!names.some((n) => n.startsWith('pint') || n.startsWith('phpstan') || n === 'php artisan test'));
     assert.equal(run(f, { FAKE_FAIL: 'test' }).status, 1);
+  });
+});
+
+describe('checks/laravel.sh with SYMPHONY_TEST_PARALLEL', () => {
+  const testCall = (f: Fixture) => calls(f).find((call) => call[0] === 'php' && call[2] === 'test');
+
+  it('runs the tests in parallel when paratest is installed', () => {
+    const f = fixture();
+    write(f.repo, 'vendor/bin/paratest', FAKE_TOOL('paratest'), 0o755);
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '4' });
+    assert.equal(result.status, 0, result.out);
+    assert.match(result.out, /tests in 4 parallel processes/);
+    assert.deepEqual(testCall(f), ['php', 'artisan', 'test', '--parallel', '--processes=4']);
+  });
+
+  it('runs serially with a note without paratest and never installs anything', () => {
+    const f = fixture();
+    write(f.repo, 'composer.json', JSON.stringify({ scripts: {}, 'require-dev': { 'brianium/paratest': '^7.8' } }));
+    git(f.repo, 'commit', '-qam', 'paratest');
+    git(f.repo, 'push', '-q');
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '4' });
+    assert.equal(result.status, 0, result.out);
+    assert.match(result.out, /SYMPHONY_TEST_PARALLEL is set, but the project has no brianium\/paratest: the tests run in one process/);
+    assert.deepEqual(testCall(f), ['php', 'artisan', 'test']);
+    assert.equal(calls(f).some((call) => call[0] === 'composer' && (call[1] === 'update' || call[1] === 'install')), false, 'nothing installed');
+  });
+
+  it('rejects an invalid value as an environment problem', () => {
+    for (const value of ['many', '0', '-2']) {
+      const result = run(fixture(), { SYMPHONY_TEST_PARALLEL: value });
+      assert.equal(result.status, 2, value);
+      assert.match(result.out, /SYMPHONY_TEST_PARALLEL must be a number of processes/);
+    }
+  });
+
+  it('lets a composer test script win', () => {
+    const f = fixture({ scripts: { test: 'x' } });
+    write(f.repo, 'vendor/bin/paratest', FAKE_TOOL('paratest'), 0o755);
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '4' });
+    assert.equal(result.status, 0, result.out);
+    assert.ok(calls(f).some((call) => call.join(' ') === 'composer run-script test'));
+    assert.equal(testCall(f), undefined);
+  });
+
+  it('has no effect with --full, which reads SYMPHONY_CI_PARALLEL', () => {
+    const f = fixture();
+    write(f.repo, 'vendor/bin/paratest', FAKE_TOOL('paratest'), 0o755);
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '4' }, f.repo, ['--full']);
+    assert.equal(result.status, 0, result.out);
+    assert.deepEqual(testCall(f), ['php', 'artisan', 'test']);
+  });
+});
+
+describe('checks/laravel.sh --full', () => {
+  const full = (f: Fixture, env: NodeJS.ProcessEnv = {}) => run(f, env, f.repo, ['--full']);
+
+  it('checks the style of every file, then runs the tests (on the app\'s own database without SYMPHONY_CI_DB)', () => {
+    const f = fixture({ phpstan: true });
+    const result = full(f);
+    assert.equal(result.status, 0, result.out);
+    const made = calls(f);
+    assert.deepEqual(made.find((call) => call[0] === 'pint'), ['pint', '--test']);
+    assert.ok(made.some((call) => call[0] === 'phpstan'));
+    assert.ok(made.some((call) => call[0] === 'php' && call[2] === 'test'));
+    assert.equal(made.some((call) => call[0] === 'mysql' || call[2] === 'migrate'), false);
+  });
+
+  it('runs the tests in parallel with SYMPHONY_CI_PARALLEL when paratest is installed', () => {
+    const f = fixture();
+    write(f.repo, 'vendor/bin/paratest', FAKE_TOOL('paratest'), 0o755);
+    const result = full(f, { SYMPHONY_CI_PARALLEL: '4' });
+    assert.equal(result.status, 0, result.out);
+    assert.match(result.out, /tests in 4 parallel processes/);
+    assert.deepEqual(calls(f).find((call) => call[0] === 'php' && call[2] === 'test'), ['php', 'artisan', 'test', '--parallel', '--processes=4', '--drop-databases']);
+  });
+
+  it('installs a required but missing paratest when composer.lock is untracked, else runs in one process', () => {
+    const f = fixture();
+    write(f.repo, 'composer.json', JSON.stringify({ scripts: {}, 'require-dev': { 'brianium/paratest': '^7.8' } }));
+    git(f.repo, 'commit', '-qam', 'paratest');
+    git(f.repo, 'push', '-q');
+    const result = full(f, { SYMPHONY_CI_PARALLEL: '4' });
+    assert.equal(result.status, 0, result.out);
+    assert.ok(calls(f).some((call) => call.join(' ') === 'composer update brianium/paratest --no-interaction --no-progress --no-scripts'));
+    // The fake composer installs nothing: the tests run serially, and say so.
+    assert.match(result.out, /no brianium\/paratest: the tests run in one process/);
+    assert.deepEqual(calls(f).find((call) => call[0] === 'php' && call[2] === 'test'), ['php', 'artisan', 'test']);
+
+    const plain = fixture();
+    const serial = full(plain, { SYMPHONY_CI_PARALLEL: '4' });
+    assert.equal(serial.status, 0, serial.out);
+    assert.equal(calls(plain).some((call) => call[0] === 'composer' && call[1] === 'update'), false, 'no paratest required: nothing installed');
+  });
+
+  it('drops the databases of parallel test processes too, also after failing tests', () => {
+    const f = fixture();
+    const result = full(f, {
+      SYMPHONY_CI_DB: 'mysql',
+      SYMPHONY_MYSQL_USER: 'symphony',
+      SYMPHONY_WORKSPACE_KEY: 'k',
+      FAKE_TEST_FAIL: '1',
+      FAKE_MYSQL_SHOW: 'symphony_x_ci_test_1,symphony_x_ci_test_2',
+    });
+    assert.equal(result.status, 1, result.out);
+    const sql = calls(f).filter((call) => call[0] === 'mysql').map((call) => String(call[4]));
+    const db = /DROP DATABASE IF EXISTS `(symphony_[0-9a-f]{12}_ci)`; CREATE/.exec(sql[0] ?? '')?.[1] ?? '';
+    assert.equal(sql[1], `--execute=SHOW DATABASES LIKE '${db.replaceAll('_', '\\_')}\\_test\\_%'`);
+    assert.deepEqual(sql.slice(2), [
+      `--execute=DROP DATABASE IF EXISTS \`${db}\``,
+      '--execute=DROP DATABASE IF EXISTS `symphony_x_ci_test_1`',
+      '--execute=DROP DATABASE IF EXISTS `symphony_x_ci_test_2`',
+    ]);
+  });
+
+  it('rejects an invalid SYMPHONY_CI_PARALLEL as an environment problem', () => {
+    const result = full(fixture(), { SYMPHONY_CI_PARALLEL: 'many' });
+    assert.equal(result.status, 2);
+    assert.match(result.out, /SYMPHONY_CI_PARALLEL must be a number of processes/);
+  });
+
+  it('skips (exit 78) without a Laravel app', () => {
+    const f = fixture();
+    const empty = tempDir('symphony-no-app-');
+    const result = run(f, {}, empty, ['--full']);
+    assert.equal(result.status, 78, result.out);
+    assert.match(result.out, /no Laravel app/);
+  });
+
+  it('with SYMPHONY_CI_DB=mysql: creates a database of its own, migrates, tests against it and drops it', () => {
+    const f = fixture();
+    const envLog = path.join(path.dirname(f.log), 'env.log');
+    const result = full(f, {
+      SYMPHONY_CI_DB: 'mysql',
+      SYMPHONY_MYSQL_HOST: 'mysql',
+      SYMPHONY_MYSQL_USER: 'symphony',
+      SYMPHONY_MYSQL_PASSWORD: 's3cret',
+      SYMPHONY_WORKSPACE_KEY: 'acme_app_7-abc',
+      FAKE_ENV_LOG: envLog,
+    });
+    assert.equal(result.status, 0, result.out);
+    const db = `symphony_${execFileSync('sh', ['-c', "printf %s acme_app_7-abc | sha256sum | cut -c1-12"], { encoding: 'utf8' }).trim()}_ci`;
+    assert.match(result.out, new RegExp(`tests against MySQL database ${db}`));
+    const made = calls(f);
+    const mysql = made.filter((call) => call[0] === 'mysql');
+    assert.deepEqual(mysql[0], ['mysql', '--host=mysql', '--port=3306', '--user=symphony', `--execute=DROP DATABASE IF EXISTS \`${db}\`; CREATE DATABASE \`${db}\``, 'pwd=s3cret']);
+    assert.equal(mysql[mysql.length - 1]?.[4], `--execute=DROP DATABASE IF EXISTS \`${db}\``, 'dropped at the end');
+    const order = made.filter((call) => call[0] === 'php').map((call) => call[2]);
+    assert.deepEqual(order.slice(-3), ['config:clear', 'migrate', 'test']);
+    assert.deepEqual(JSON.parse(fs.readFileSync(envLog, 'utf8').trim()), ['mysql', db, 'symphony', 's3cret']);
+    assert.equal(result.out.includes('s3cret'), false, 'the password never shows up in the output');
+  });
+
+  it('drops the database after failing tests too, and exits 2 when MySQL is not usable', () => {
+    const f = fixture();
+    const env = { SYMPHONY_CI_DB: 'mysql', SYMPHONY_MYSQL_USER: 'symphony', SYMPHONY_WORKSPACE_KEY: 'k' };
+    const failing = full(f, { ...env, FAKE_TEST_FAIL: '1' });
+    assert.equal(failing.status, 1, failing.out);
+    const mysql = calls(f).filter((call) => call[0] === 'mysql');
+    assert.match(String(mysql[mysql.length - 1]?.[4]), /^--execute=DROP DATABASE IF EXISTS `symphony_[0-9a-f]{12}_ci`$/);
+
+    assert.equal(full(fixture(), { SYMPHONY_CI_DB: 'mysql' }).status, 2);
+    const denied = full(fixture(), { ...env, FAKE_MYSQL_FAIL: '1' });
+    assert.equal(denied.status, 2);
+    assert.match(denied.out, /environment: cannot create the MySQL database symphony_[0-9a-f]{12}_ci .*Access denied/);
+  });
+});
+
+describe('checks/repo.sh', () => {
+  const REPO_SCRIPT = path.resolve('checks/repo.sh');
+  /** The fixture with `.symphony/checks/<name>.sh` on main (the base branch), optionally changed on the feature branch. */
+  function withCheck(name: string, base: string, feature?: string): Fixture {
+    const f = fixture();
+    const seed = path.join(path.dirname(f.repo), 'seed');
+    write(seed, `.symphony/checks/${name}.sh`, base);
+    git(seed, 'add', '-A');
+    git(seed, 'commit', '-q', '-m', 'check');
+    git(seed, 'push', '-q', f.origin, 'main');
+    git(f.repo, 'fetch', '-q', 'origin');
+    git(f.repo, 'merge', '-q', '--no-edit', 'origin/main');
+    if (feature !== undefined) {
+      write(f.repo, `.symphony/checks/${name}.sh`, feature);
+      git(f.repo, 'add', '-A');
+      git(f.repo, 'commit', '-q', '-m', 'weaken');
+    }
+    git(f.repo, 'push', '-q');
+    return f;
+  }
+  const repo = (f: Fixture, args: string[], env: NodeJS.ProcessEnv = {}) => run(f, env, f.repo, args, REPO_SCRIPT);
+
+  it('runs the script of the base branch, not the pull request\'s copy', () => {
+    const f = withCheck('prod-smoke', 'echo "base check in $PWD"; exit 1', 'echo weakened; exit 0');
+    const result = repo(f, ['prod-smoke']);
+    assert.equal(result.status, 1, result.out);
+    assert.match(result.out, /== prod-smoke: \.symphony\/checks\/prod-smoke\.sh from origin\/main/);
+    assert.match(result.out, /base check in /);
+    assert.equal(result.out.includes('weakened'), false);
+  });
+
+  it('runs the fallback without a repository script, and skips (exit 78) without either', () => {
+    const f = fixture();
+    const fallback = repo(f, ['ci', '--', 'bash', '-c', 'echo fallback ran; exit 0']);
+    assert.equal(fallback.status, 0, fallback.out);
+    assert.match(fallback.out, /fallback ran/);
+    const skipped = repo(f, ['ci']);
+    assert.equal(skipped.status, 78, skipped.out);
+    assert.match(skipped.out, /no \.symphony\/checks\/ci\.sh on origin\/main; skipped/);
+  });
+
+  it('refuses a dirty tree or unpushed commits before running anything', () => {
+    const f = withCheck('ci', 'echo ran; exit 0');
+    write(f.repo, 'app/Dirty.php', '<?php');
+    const result = repo(f, ['ci']);
+    assert.equal(result.status, 1);
+    assert.match(result.out, /working tree is not clean/);
+    assert.equal(result.out.includes('ran'), false);
+  });
+
+  it('maps the CI Docker daemon for the script only, with the address of its published ports', () => {
+    const f = withCheck('prod-smoke', 'echo "host=$DOCKER_HOST tls=$DOCKER_TLS_VERIFY certs=$DOCKER_CERT_PATH ip=$SYMPHONY_DOCKER_HOST_IP"');
+    const result = repo(f, ['prod-smoke'], { SYMPHONY_CI_DOCKER_HOST: 'tcp://localhost:2376', SYMPHONY_CI_DOCKER_CERT_PATH: '/certs/client' });
+    assert.equal(result.status, 0, result.out);
+    assert.match(result.out, /host=tcp:\/\/localhost:2376 tls=1 certs=\/certs\/client ip=127\.0\.0\.1/);
+    const without = repo(f, ['prod-smoke']);
+    assert.match(without.out, /host= tls= certs= ip=$/m);
+  });
+
+  it('--lock runs one check of a name per repository at a time', async () => {
+    const f = withCheck('prod-smoke', 'echo "start $$" >> "$LOCK_LOG"; sleep 0.4; echo "end $$" >> "$LOCK_LOG"');
+    const lockLog = path.join(path.dirname(f.log), 'lock.log');
+    const env = { ...process.env, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, LOCK_LOG: lockLog, TMPDIR: tempDir('symphony-locks-'), SYMPHONY_ISSUE_REPOSITORY: 'acme/app' };
+    const { spawn } = await import('node:child_process');
+    const once = () => new Promise<number | null>((resolve) => spawn('bash', [REPO_SCRIPT, '--lock', 'prod-smoke'], { cwd: f.repo, env, stdio: 'ignore' }).on('exit', resolve));
+    assert.deepEqual(await Promise.all([once(), once()]), [0, 0]);
+    const lines = fs.readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => line.split(' ')[0]);
+    assert.deepEqual(lines, ['start', 'end', 'start', 'end']);
+  });
+});
+
+describe('checks/laravel.sh SYMPHONY_TEST_PARALLEL, edge cases', () => {
+  const testCall = (f: Fixture) => calls(f).find((call) => call[0] === 'php' && call[2] === 'test');
+  const withParatest = () => {
+    const f = fixture();
+    write(f.repo, 'vendor/bin/paratest', FAKE_TOOL('paratest'), 0o755);
+    return f;
+  };
+
+  it('keeps the plain serial run without a note when no variable is set, even with paratest installed', () => {
+    const f = withParatest();
+    const result = run(f);
+    assert.equal(result.status, 0, result.out);
+    assert.deepEqual(testCall(f), ['php', 'artisan', 'test']);
+    assert.doesNotMatch(result.out, /parallel|one process/);
+  });
+
+  it('passes exactly --parallel and --processes=<n> in the fast mode, without --drop-databases', () => {
+    const f = withParatest();
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '12' });
+    assert.equal(result.status, 0, result.out);
+    assert.deepEqual(testCall(f), ['php', 'artisan', 'test', '--parallel', '--processes=12']);
+    assert.match(result.out, /all checks passed/);
+  });
+
+  it('accepts a single process', () => {
+    const f = withParatest();
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '1' });
+    assert.equal(result.status, 0, result.out);
+    assert.deepEqual(testCall(f), ['php', 'artisan', 'test', '--parallel', '--processes=1']);
+  });
+
+  it('ignores SYMPHONY_CI_PARALLEL in the fast mode', () => {
+    const f = withParatest();
+    const result = run(f, { SYMPHONY_CI_PARALLEL: '4' });
+    assert.equal(result.status, 0, result.out);
+    assert.deepEqual(testCall(f), ['php', 'artisan', 'test']);
+    assert.doesNotMatch(result.out, /parallel processes|one process/);
+  });
+
+  it('never installs anything in the fast mode, even when paratest is required, missing and composer.lock untracked', () => {
+    const f = fixture();
+    write(f.repo, 'composer.json', JSON.stringify({ scripts: {}, 'require-dev': { 'brianium/paratest': '^7.8' } }));
+    git(f.repo, 'commit', '-qam', 'paratest');
+    git(f.repo, 'push', '-q');
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '3' });
+    assert.equal(result.status, 0, result.out);
+    assert.equal(calls(f).some((call) => call[0] === 'composer' && call[1] !== 'run-script'), false, 'no composer install/update');
+    assert.equal(testCall(f)?.includes('--parallel'), false, 'serial without paratest');
+    assert.match(result.out, /tests run in one process/);
+  });
+
+  it('stops before any test run with exit 2 on invalid values and names the value', () => {
+    for (const value of ['abc', '1.5', '4x', '-1', ' ']) {
+      const f = withParatest();
+      const result = run(f, { SYMPHONY_TEST_PARALLEL: value });
+      assert.equal(result.status, 2, `'${value}': ${result.out}`);
+      assert.match(result.out, /SYMPHONY_TEST_PARALLEL must be a number of processes/);
+      assert.equal(testCall(f), undefined, `'${value}' ran no tests`);
+    }
+  });
+
+  it('rejects zero written with leading zeros (00), which is no positive number of processes', () => {
+    const f = withParatest();
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '00' });
+    assert.equal(result.status, 2, result.out);
+    assert.equal(testCall(f), undefined);
+  });
+
+  it('does not run php artisan test or pass --parallel when a composer test script exists', () => {
+    const f = fixture({ scripts: { test: 'x' } });
+    write(f.repo, 'vendor/bin/paratest', FAKE_TOOL('paratest'), 0o755);
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '2' });
+    assert.equal(result.status, 0, result.out);
+    assert.equal(calls(f).some((call) => call.includes('--parallel')), false);
+    assert.equal(calls(f).filter((call) => call.join(' ') === 'composer run-script test').length, 1);
+  });
+
+  it('reports failing parallel tests with exit 1', () => {
+    const f = withParatest();
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '2', FAKE_TEST_FAIL: '1' });
+    assert.equal(result.status, 1, result.out);
+  });
+
+  it('leaves --full on SYMPHONY_CI_PARALLEL with --drop-databases, unaffected by SYMPHONY_TEST_PARALLEL', () => {
+    const f = withParatest();
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '9', SYMPHONY_CI_PARALLEL: '2' }, f.repo, ['--full']);
+    assert.equal(result.status, 0, result.out);
+    assert.deepEqual(testCall(f), ['php', 'artisan', 'test', '--parallel', '--processes=2', '--drop-databases']);
+  });
+
+  it('does not validate SYMPHONY_TEST_PARALLEL in --full', () => {
+    const result = run(fixture(), { SYMPHONY_TEST_PARALLEL: 'many' }, undefined, ['--full']);
+    assert.equal(result.status, 0, result.out);
+  });
+});
+
+describe('SYMPHONY_TEST_PARALLEL documentation', () => {
+  it('is described in the script header, docs/configuration.md and .env.example', () => {
+    for (const file of ['checks/laravel.sh', 'docs/configuration.md', '.env.example']) {
+      assert.match(fs.readFileSync(file, 'utf8'), /SYMPHONY_TEST_PARALLEL/, file);
+    }
+    const docs = fs.readFileSync('docs/configuration.md', 'utf8');
+    assert.match(docs.slice(docs.indexOf('SYMPHONY_TEST_PARALLEL') - 1500, docs.indexOf('SYMPHONY_TEST_PARALLEL') + 1500), /paratest/);
+  });
+});
+
+describe('checks/laravel.sh step lines and host load', () => {
+  // The container may set these; every test below states what it needs.
+  const CLEAN: NodeJS.ProcessEnv = {
+    SYMPHONY_TEST_PARALLEL: undefined,
+    SYMPHONY_CI_PARALLEL: undefined,
+    SYMPHONY_CI_DB: undefined,
+    SYMPHONY_MYSQL_USER: undefined,
+    SYMPHONY_MYSQL_HOST: undefined,
+    SYMPHONY_MYSQL_PORT: undefined,
+    SYMPHONY_MYSQL_PASSWORD: undefined,
+    SYMPHONY_LARAVEL_APP_PATH: undefined,
+    SYMPHONY_BASE_BRANCH: undefined,
+  };
+  const go = (f: Fixture, env: NodeJS.ProcessEnv = {}, args: string[] = []) => run(f, { ...CLEAN, ...env }, f.repo, args);
+
+  /** The lines after the last `steps:` line, parsed to [name, duration, result]. */
+  function steps(out: string): Array<[string, string, string]> {
+    const lines = out.trimEnd().split('\n');
+    const at = lines.lastIndexOf('steps:');
+    assert.notEqual(at, -1, `no steps: block in\n${out}`);
+    return lines.slice(at + 1).map((line) => {
+      const m = /^ {2}(\S.*?) {2}(\d+m \d+s|\d+s) {2}(\S.*)$/.exec(line);
+      assert.ok(m, `not a step line: '${line}'`);
+      return [m[1] as string, m[2] as string, m[3] as string];
+    });
+  }
+
+  it('ends the output with the steps block, one line per step, in order (fast gate with composer scripts)', () => {
+    const f = fixture({ scripts: { lint: 'x', analyse: 'x', test: 'x' } });
+    const result = go(f);
+    assert.equal(result.status, 0, result.out);
+    assert.deepEqual(steps(result.out).map(([name, , res]) => [name, res]), [
+      ['php -l', 'ok'],
+      ['composer lint', 'ok'],
+      ['composer analyse', 'ok'],
+      ['composer test', 'ok'],
+    ]);
+    assert.ok(result.out.indexOf('all checks passed') < result.out.lastIndexOf('steps:'));
+  });
+
+  it('lists php -l as a step even when no PHP file changed', () => {
+    const f = fixture();
+    git(f.repo, 'checkout', '-q', 'main');
+    const result = go(f);
+    assert.equal(result.status, 0, result.out);
+    assert.equal(calls(f).some((c) => c[0] === 'php' && c[1] === '-l'), false);
+    assert.equal(steps(result.out)[0]?.[0], 'php -l');
+    assert.equal(steps(result.out)[0]?.[2], 'ok');
+  });
+
+  it('lists every --full step with MySQL: config:clear, migrate and the tests with process count and database', () => {
+    const f = fixture({ phpstan: true });
+    write(f.repo, 'vendor/bin/paratest', FAKE_TOOL('paratest'), 0o755);
+    const result = go(f, { SYMPHONY_CI_DB: 'mysql', SYMPHONY_MYSQL_USER: 'u', SYMPHONY_CI_PARALLEL: '4' }, ['--full']);
+    assert.equal(result.status, 0, result.out);
+    assert.deepEqual(steps(result.out).map(([name, , res]) => [name, res]), [
+      ['php -l', 'ok'],
+      ['pint', 'ok'],
+      ['phpstan', 'ok'],
+      ['php artisan config:clear', 'ok'],
+      ['php artisan migrate', 'ok'],
+      ['php artisan test', 'ok'],
+    ]);
+    assert.match(result.out, /^tests: 4 process\(es\), database mysql$/m);
+    const lines = result.out.split('\n');
+    assert.ok(lines.indexOf(lines.find((l) => l.startsWith('tests: 4')) ?? '') < lines.indexOf('all checks passed'));
+    assert.ok(calls(f).some((c) => c[0] === 'mysql' && c.some((a) => a.includes('DROP DATABASE IF EXISTS'))), 'databases dropped');
+  });
+
+  it('names the process count of the fast gate and the sqlite default before the tests', () => {
+    const f = fixture();
+    write(f.repo, 'vendor/bin/paratest', FAKE_TOOL('paratest'), 0o755);
+    const parallel = go(f, { SYMPHONY_TEST_PARALLEL: '3' });
+    assert.equal(parallel.status, 0, parallel.out);
+    assert.match(parallel.out, /^tests: 3 process\(es\), database sqlite$/m);
+    const serial = go(f);
+    assert.match(serial.out, /^tests: 1 process\(es\), database sqlite$/m);
+  });
+
+  it('reports one process when paratest is missing even though a number was requested', () => {
+    const f = fixture();
+    const result = go(f, { SYMPHONY_TEST_PARALLEL: '5' });
+    assert.equal(result.status, 0, result.out);
+    assert.match(result.out, /^tests: 1 process\(es\), database sqlite$/m);
+  });
+
+  it('prints the host load and CPU count first and last, the end line right before the steps', () => {
+    const f = fixture();
+    const result = go(f);
+    const lines = result.out.trimEnd().split('\n');
+    const start = lines.findIndex((l) => l.startsWith('host load at start'));
+    const end = lines.findIndex((l) => l.startsWith('host load at end'));
+    assert.ok(start >= 0 && end > start, result.out);
+    assert.match(lines[start] as string, /^host load at start \(1\/5\/15 min\): \d+\.\d+ \d+\.\d+ \d+\.\d+, \d+ CPUs$/);
+    assert.match(lines[end] as string, /^host load at end \(1\/5\/15 min\): \d+\.\d+ \d+\.\d+ \d+\.\d+, \d+ CPUs$/);
+    assert.equal(lines[end + 1], 'steps:');
+    assert.ok(start < lines.indexOf('all checks passed'));
+  });
+
+  it('does not abort when the load or the CPU count cannot be read', () => {
+    const f = fixture();
+    write(path.dirname(f.bin), 'bin/nproc', '#!/bin/sh\nexit 1\n', 0o755);
+    const result = go(f);
+    assert.equal(result.status, 0, result.out);
+    assert.match(result.out, /host load at start .*, unknown CPUs$/m);
+    assert.match(result.out, /host load at end .*, unknown CPUs$/m);
+    assert.equal(steps(result.out).length, 3);
+  });
+
+  it('measures the duration of each step', () => {
+    const f = fixture();
+    write(path.dirname(f.bin), 'bin/php', `#!/bin/sh\n[ "$2" = test ] && sleep 2\nexec "${f.bin}/php-fake" "$@"\n`, 0o755);
+    write(path.dirname(f.bin), 'bin/php-fake', FAKE_PHP, 0o755);
+    const result = go(f);
+    assert.equal(result.status, 0, result.out);
+    const byName = new Map(steps(result.out).map(([name, dur]) => [name, dur]));
+    const [, min, sec] = /^(?:(\d+)m )?(\d+)s$/.exec(byName.get('php artisan test') ?? '') ?? [];
+    assert.ok(Number(min ?? 0) * 60 + Number(sec) >= 2, `duration ${byName.get('php artisan test')}`);
+  });
+
+  it('prints the steps last after a failing php -l, a failing style step and a failing tool, with the exit code 1', () => {
+    const syntax = fixture();
+    write(syntax.repo, 'app/Bad.php', 'SYNTAX_ERROR');
+    git(syntax.repo, 'add', '-A');
+    git(syntax.repo, 'commit', '-qm', 'bad');
+    git(syntax.repo, 'push', '-q');
+    const s = go(syntax);
+    assert.equal(s.status, 1);
+    assert.match(s.out, /PHP syntax errors:\nParse error in app\/Bad\.php/);
+    assert.deepEqual(steps(s.out).map(([name, , res]) => [name, res]), [['php -l', 'failed']]);
+
+    const style = fixture({ phpstan: true });
+    const p = go(style, { FAKE_FAIL: 'pint' });
+    assert.equal(p.status, 1);
+    assert.match(p.out, /pint failed \(exit 1\):\npint broke/);
+    assert.deepEqual(steps(p.out).map(([name, , res]) => [name, res]), [['php -l', 'ok'], ['pint', 'failed']]);
+    assert.match(p.out.trimEnd().split('\n').pop() as string, /^ {2}pint {2}\d+s {2}failed$/);
+
+    const analysis = fixture({ phpstan: true });
+    const a = go(analysis, { FAKE_FAIL: 'phpstan' });
+    assert.equal(a.status, 1);
+    assert.deepEqual(steps(a.out).map(([name, , res]) => [name, res]), [['php -l', 'ok'], ['pint', 'ok'], ['phpstan', 'failed']]);
+  });
+
+  it('prints the steps last after a failing migration with MySQL and still drops the databases', () => {
+    const f = fixture();
+    write(path.dirname(f.bin), 'bin/php', `#!/bin/sh\nif [ "$2" = migrate ]; then echo migrate exploded; exit 1; fi\nexec "${f.bin}/php-fake" "$@"\n`, 0o755);
+    write(path.dirname(f.bin), 'bin/php-fake', FAKE_PHP, 0o755);
+    const result = go(f, { SYMPHONY_CI_DB: 'mysql', SYMPHONY_MYSQL_USER: 'u' }, ['--full']);
+    assert.equal(result.status, 1, result.out);
+    assert.match(result.out, /php artisan migrate failed \(exit 1\):\nmigrate exploded/);
+    assert.deepEqual(steps(result.out).map(([name, , res]) => [name, res]), [
+      ['php -l', 'ok'],
+      ['pint', 'ok'],
+      ['php artisan config:clear', 'ok'],
+      ['php artisan migrate', 'failed'],
+    ]);
+    assert.ok(calls(f).some((c) => c[0] === 'mysql' && c.some((a) => a.includes('DROP DATABASE IF EXISTS'))));
+    assert.equal(calls(f).some((c) => c[0] === 'php' && c[2] === 'test'), false, 'tests did not run');
+  });
+
+  it('keeps the failed tests list and the tail of the failure before the load and steps lines', () => {
+    const f = fixture();
+    const result = go(f, { FAKE_TEST_FAIL: 'phpunit' });
+    assert.equal(result.status, 1);
+    const lines = result.out.trimEnd().split('\n');
+    const failedAt = lines.indexOf('Failed tests:');
+    assert.ok(failedAt > 0);
+    assert.ok(lines.findIndex((l) => l.startsWith('host load at end')) > failedAt);
+    assert.match(result.out, /Tests: 3229, Errors: 1\./);
+    assert.deepEqual(steps(result.out).map(([name, , res]) => [name, res]), [['php -l', 'ok'], ['pint', 'ok'], ['php artisan test', 'failed']]);
+  });
+
+  it('keeps the exit code 2 of an environment problem after the steps began, with its message', () => {
+    const f = fixture();
+    const result = go(f, { SYMPHONY_TEST_PARALLEL: 'many' });
+    assert.equal(result.status, 2, result.out);
+    assert.match(result.out, /environment: SYMPHONY_TEST_PARALLEL must be a number of processes/);
+  });
+
+  it('prints neither steps nor load when there is no Laravel app', () => {
+    const f = fixture();
+    fs.rmSync(path.join(f.repo, 'artisan'));
+    git(f.repo, 'commit', '-qam', 'no artisan');
+    const fast = go(f);
+    assert.equal(fast.status, 0, fast.out);
+    assert.equal(fast.out.trim(), 'no Laravel app; nothing to check');
+    const full = go(f, {}, ['--full']);
+    assert.equal(full.status, 78, full.out);
+    assert.equal(full.out.trim(), 'no Laravel app; nothing to check');
+  });
+
+  it('prints the steps and the load when the process group is terminated during a step, and exits 143', () => {
+    const f = fixture();
+    const started = path.join(path.dirname(f.bin), 'test-started');
+    write(path.dirname(f.bin), 'bin/php', `#!/bin/sh\nif [ "$2" = test ]; then touch "${started}"; exec sleep 30; fi\nexec "${f.bin}/php-fake" "$@"\n`, 0o755);
+    write(path.dirname(f.bin), 'bin/php-fake', FAKE_PHP, 0o755);
+    // Terminate once the test step runs (not after a fixed time, which a loaded host can miss) and has run for a second.
+    const wait = `i=0; while [ ! -e "${started}" ] && [ $i -lt 600 ]; do sleep 0.1; i=$((i+1)); done; sleep 1.2`;
+    const result = spawnSync('bash', ['-c', `set -m; bash "$0" & pid=$!; ${wait}; kill -TERM -- -$pid; wait $pid`, SCRIPT], {
+      cwd: f.repo,
+      encoding: 'utf8',
+      env: { ...process.env, ...CLEAN, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log },
+    });
+    assert.equal(result.status, 143, result.stdout + result.stderr);
+    const out = result.stdout;
+    assert.deepEqual(steps(out).map(([name, , res]) => [name, res.startsWith('timed out') ? 'timed out' : res]), [
+      ['php -l', 'ok'],
+      ['pint', 'ok'],
+      ['php artisan test', 'timed out'],
+    ]);
+    const lines = out.trimEnd().split('\n');
+    assert.match(lines[lines.lastIndexOf('steps:') - 1] as string, /^host load at end/);
+    assert.equal(out.includes('all checks passed'), false);
+    assert.match(steps(out)[2]?.[1] ?? '', /^[1-9]\d*s$/, 'the running step has its elapsed time');
   });
 });

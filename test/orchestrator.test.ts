@@ -11,6 +11,7 @@ import { Logger } from '../src/log.ts';
 import { limitScopeOf } from '../src/agent/rate-limit.ts';
 import { CONTINUATION_DELAY_MS, SESSION_LIMIT_MAX_WAIT_MS, failureBackoffMs, sessionLimitWaitMs, sortForDispatch } from '../src/orchestrator/eligibility.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
+import { runtimeStateFile } from '../src/orchestrator/runtime-state.ts';
 import type { AgentToolSpec, ToolResult } from '../src/tracker/types.ts';
 import { dryRunPlan, planLines } from '../src/service.ts';
 import { decodeMarker, parseResult, renderResultComment, type ResultMeta } from '../src/workflow/results.ts';
@@ -50,6 +51,7 @@ function setup(
     integrations?: WorkspaceIntegration[];
     history?: HistoryLog;
     logDir?: string;
+    env?: NodeJS.ProcessEnv;
   } = {},
 ): Setup {
   const root = tempDir();
@@ -67,7 +69,7 @@ function setup(
     workflow,
     runner,
     logger: options.logger ?? Logger.silent(),
-    env: {},
+    env: options.env ?? {},
     logDir: options.logDir ?? null,
     clock,
     timers,
@@ -1000,6 +1002,10 @@ describe('entry checks at runtime', () => {
 
     const last = s.orchestrator.issueDetail('acme/app#c')?.last_check;
     assert.deepEqual([last?.target, last?.role, last?.ok, last?.result, last?.exit_code, last?.timed_out], ['Agent review', 'developer', false, 'check_failed', 1, false]);
+    const gate = s.orchestrator.issueDetail('acme/app#c')?.gate;
+    assert.equal(gate?.target, 'Agent review');
+    assert.notEqual(gate?.finished_at, null, 'a finished gate stays until the next one');
+    assert.equal(gate?.checks[0]?.status, 'check_failed');
 
     s.clock.advance(31_000);
     await s.orchestrator.tickNow();
@@ -1889,6 +1895,53 @@ describe('reconciliation', () => {
   });
 });
 
+describe('auto_merge waiting for pull request checks', () => {
+  it('retries the merge of waiting issues each tick, one attempt per issue at a time, and leaves the rest alone', async () => {
+    const s = setup({
+      issues: [
+        makeIssue({ id: 'w', identifier: 'acme/app#w', state: 'Human Review', labels: ['awaiting-checks'] }),
+        makeIssue({ id: 'h', identifier: 'acme/app#h', state: 'Human Review' }),
+      ],
+    });
+    const calls: string[] = [];
+    let release: (() => void) | null = null;
+    let outcome: 'pending' | 'merged' = 'pending';
+    let finished = 0;
+    s.tracker.mergeWatch = () => ({
+      column: 'Human Review',
+      awaiting: (issue) => issue.labels.includes('awaiting-checks'),
+      retry: async (issue) => {
+        calls.push(issue.id);
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        if (outcome === 'merged') s.tracker.set(issue.id, { state: 'Done', labels: [] });
+        finished++;
+        return { merged: outcome === 'merged', pull_request: 7, status: outcome === 'merged' ? 'Done' : 'Human Review', reason: outcome, ...(outcome === 'pending' ? { awaiting_checks: true } : {}) };
+      },
+    });
+
+    await s.orchestrator.tickNow();
+    await until(() => calls.length === 1, 3_000, 'first retry');
+    assert.deepEqual(calls, ['w']);
+    await s.orchestrator.tickNow();
+    assert.equal(calls.length, 1, 'no second attempt while one is in flight');
+    (release as unknown as () => void)();
+    await until(() => finished === 1, 3_000, 'first retry finished');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    outcome = 'merged';
+    await s.orchestrator.tickNow();
+    await until(() => calls.length === 2, 3_000, 'second retry');
+    (release as unknown as () => void)();
+    await until(() => s.tracker.issues.get('w')?.state === 'Done', 3_000, 'merged');
+    await s.orchestrator.tickNow();
+    assert.equal(calls.length, 2, 'a merged issue is not retried');
+    assert.equal(snapshot(s).running.length, 0, 'no session for issues in the merge column');
+    await s.orchestrator.shutdown(1_000);
+  });
+});
+
 describe('observability', () => {
   it('accumulates token and cost deltas from absolute session totals', async () => {
     const runner = new FakeRunner((turn, params) => {
@@ -1925,6 +1978,38 @@ describe('observability', () => {
   it('exposes agent.max_session_limit_retries in the health snapshot', () => {
     const s = setup({ front: { agent: { max_session_limit_retries: 5 } }, issues: [] });
     assert.equal(snapshot(s).health.max_session_limit_retries, 5);
+  });
+});
+
+describe('health.repositories', () => {
+  const repos = (repositories: unknown, env: NodeJS.ProcessEnv = {}) => {
+    const provider: Record<string, unknown> = { owner: 'acme', project_number: 1, token: 'test-token' };
+    if (repositories !== undefined) provider.repositories = repositories;
+    const s = setup({ front: { tracker: { kind: 'github_project', provider } }, env, issues: [] });
+    return snapshot(s).health.repositories;
+  };
+
+  it('lists a single configured repository', () => {
+    assert.deepEqual(repos('$GITHUB_REPOSITORY', { GITHUB_REPOSITORY: 'acme/app' }), ['acme/app']);
+  });
+
+  it('lists several repositories once each, in configuration order', () => {
+    assert.deepEqual(repos('$GITHUB_REPOSITORY', { GITHUB_REPOSITORY: 'acme/app,acme/api, acme/app' }), ['acme/app', 'acme/api']);
+    assert.deepEqual(repos(['acme/app', 'acme/api']), ['acme/app', 'acme/api']);
+  });
+
+  it('is null without a restriction and skips invalid names', () => {
+    assert.equal(repos(undefined), null);
+    assert.equal(repos('$GITHUB_REPOSITORY', {}), null);
+    assert.deepEqual(repos('acme/app not-a-repo'), ['acme/app']);
+  });
+});
+
+describe('runtimeStateFile', () => {
+  it('keeps the state file name for the configured repositories', () => {
+    const tracker = { kind: 'github_project', provider: { repositories: '$R' } };
+    assert.equal(runtimeStateFile('/logs', tracker, { R: 'Acme/B, acme/a acme/b' }), '/logs/state/acme_a+acme_b.json');
+    assert.equal(runtimeStateFile('/logs', { kind: 'github_project', provider: {} }, {}), '/logs/state/github_project.json');
   });
 });
 
@@ -2206,6 +2291,7 @@ describe('issue archive', () => {
     assert.equal(detail?.status, 'finished');
     assert.equal(detail?.title, 'Old archive');
     assert.deepEqual(detail?.results, []);
+    assert.equal(detail?.gate, null);
     assert.equal(detail?.pipeline[0]?.verdict, null);
     assert.equal(detail?.pipeline[0]?.round, null);
     assert.equal(detail?.pipeline[0]?.sessions[0]?.verdict, null);

@@ -4,7 +4,7 @@ import { normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
 import { profileFor } from '../workflow/profile.ts';
 import type { RoleConfig } from '../workflow/roles.ts';
 import { buildStageHistory } from './stage-history.ts';
-import { resolveTransition, type Transition } from './transitions.ts';
+import { checkFailedRoute, resolveTransition, type Transition } from './transitions.ts';
 
 /**
  * A hand-off whose result comment was posted but whose move did not happen (Symphony crashed in between, or the move
@@ -77,10 +77,17 @@ export function interruptedLabels(
   const same = (entry: TrackedResult) => entry === interrupted.result || (meta.run !== null && entry.meta.run === meta.run && entry.meta.role === meta.role && entry.result.kind === result.kind);
   const before = tracked.filter((entry) => !same(entry)).map((entry) => ({ result: entry.result, meta: entry.meta }));
   if (role.result !== result.kind) return NO_LABELS;
+  const history = buildStageHistory(before);
+  if (meta.check_failed_for) {
+    // An `on_check_failed` hand-off: the target is the fallback route; only the one reaching the limit carries a label.
+    const route = checkFailedRoute({ role, history, config });
+    if (route === null || normalizeStateName(route.column) !== normalizeStateName(interrupted.target)) return NO_LABELS;
+    return route.limitReached ? { add: [config.pipeline.limitLabel], remove: [] } : NO_LABELS;
+  }
   const transition = resolveTransition({
     role,
     verdict: result.verdict,
-    history: buildStageHistory(before),
+    history,
     profile: profileFor(config.pipeline, classify(issue.labels).type),
     config,
     boardColumns,

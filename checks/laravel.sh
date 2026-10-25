@@ -1,25 +1,92 @@
 #!/usr/bin/env bash
 # Deterministic quality gate for a Laravel app in the current workspace.
 # Exit codes: 0 pass, 1 the code must be fixed (output goes to the agent),
-# anything else (here: 2) an environment problem.
+# 2 an environment problem, 78 (only with --full) no Laravel app, so the check does not apply.
 # The app directory is $SYMPHONY_LARAVEL_APP_PATH; without it, the current directory,
 # or the single first-level subdirectory that holds an app (like Symphony's detection).
+#
+#   laravel.sh          fast gate: Pint on the changed files, static analysis, tests
+#   laravel.sh --full   the project's CI: Pint on every file, static analysis, migrations and tests; with
+#                       SYMPHONY_CI_DB=mysql against a MySQL database of its own (SYMPHONY_MYSQL_*), dropped afterwards;
+#                       with SYMPHONY_CI_PARALLEL=<n> in n processes (php artisan test --parallel, needs paratest)
+#                       the fast gate tests in n processes with SYMPHONY_TEST_PARALLEL=<n> (needs paratest, installs nothing)
 set -u
+# shellcheck source=checks/lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-fix() { echo "$*"; exit 1; }
-env_problem() { echo "environment: $*"; exit 2; }
+full=false
+[ "${1:-}" = --full ] && full=true
 
-# Runs a command, shows only the tail of its output when it fails.
+# The failed tests of PHPUnit/Pest output, one per line with the first line of its message: PHPUnit's "1) Class::method"
+# (also in parallel runs) and Collision's "FAILED  Class > method". The tail of the output is mostly stack traces.
+failed_tests() {
+  sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' | awk '
+    /^[0-9]+\) [A-Za-z_\\]/ { name = $0; want = 1; next }
+    want && NF { sub(/^[ \t]+/, ""); print name " — " substr($0, 1, 200); want = 0; next }
+    /^ *(FAILED|ERROR) +[A-Za-z_\\]/ { sub(/^ +/, ""); print substr($0, 1, 300) }
+  ' | head -n 30
+}
+
+# One line per step (name, duration, result) and the host load, printed last by the EXIT trap, so they survive when the guard
+# shortens the output from the front, also after a failing step and on a timeout (SIGTERM). Only once the steps began.
+report=false
+terminated=false
+steps=()
+step_name=""
+step_start=0
+
+duration() {
+  if [ "$1" -ge 60 ]; then printf '%dm %ds' "$(($1 / 60))" "$(($1 % 60))"; else printf '%ds' "$1"; fi
+}
+
+load_line() {
+  local load cpus
+  load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null) || load=""
+  cpus=$(nproc 2>/dev/null) || cpus=""
+  echo "host load $1 (1/5/15 min): ${load:-unknown}, ${cpus:-unknown} CPUs"
+}
+
+step_begin() { step_name=$1; step_start=$SECONDS; }
+step_end() {
+  steps+=("  $step_name  $(duration $((SECONDS - step_start)))  $1")
+  step_name=""
+}
+
+finish() {
+  local status=$? line
+  trap - EXIT TERM
+  if $report; then
+    if [ -n "$step_name" ]; then
+      if $terminated; then step_end "timed out (aborted)"; else step_end failed; fi
+    fi
+    load_line "at end"
+    echo "steps:"
+    for line in ${steps[@]+"${steps[@]}"}; do echo "$line"; done
+  fi
+  if declare -F drop_ci_databases >/dev/null; then drop_ci_databases; fi
+  exit "$status"
+}
+trap finish EXIT
+trap 'terminated=true; exit 143' TERM
+
+# Runs a command, shows only the tail of its output when it fails; for tests, the list of failed tests comes last, so
+# it survives when the guard shortens the output from the front.
 run() {
-  local label=$1 out status
+  local label=$1 out status failed
   shift
+  step_begin "$label"
   out=$("$@" 2>&1)
   status=$?
   if [ "$status" -ne 0 ]; then
     echo "$label failed (exit $status):"
     printf '%s\n' "$out" | tail -c 4000
+    failed=$(printf '%s\n' "$out" | failed_tests)
+    if [ -n "$failed" ]; then
+      printf '\nFailed tests:\n%s\n' "$failed"
+    fi
     exit 1
   fi
+  step_end ok
 }
 
 cd "${SYMPHONY_LARAVEL_APP_PATH:-.}" 2>/dev/null || env_problem "cannot enter ${SYMPHONY_LARAVEL_APP_PATH}"
@@ -38,33 +105,19 @@ if [ -z "${SYMPHONY_LARAVEL_APP_PATH:-}" ] && [ ! -f artisan ]; then
 fi
 
 if [ ! -f artisan ]; then
+  $full && skip "no Laravel app; nothing to check"
   echo "no Laravel app; nothing to check"
   exit 0
 fi
 
-command -v git >/dev/null 2>&1 || env_problem "git not found"
 command -v php >/dev/null 2>&1 || env_problem "php not found"
 [ -f vendor/autoload.php ] || env_problem "vendor/ is missing or broken (run composer install)"
 
-# 2. Clean tree
-status=$(git status --porcelain 2>&1) || env_problem "git status failed: $status"
-if [ -n "$status" ]; then
-  echo "working tree is not clean; commit or remove these changes:"
-  printf '%s\n' "$status" | head -n 50
-  exit 1
-fi
+report=true
+load_line "at start"
 
-# 3. Everything pushed
-git fetch -q origin 2>/dev/null || env_problem "git fetch origin failed"
-if ! git rev-parse -q --verify '@{u}' >/dev/null 2>&1; then
-  fix "branch has no upstream; push the branch (git push -u origin HEAD)"
-fi
-unpushed=$(git log --oneline '@{u}..HEAD' 2>&1) || env_problem "git log failed: $unpushed"
-if [ -n "$unpushed" ]; then
-  echo "unpushed commits; push the branch:"
-  printf '%s\n' "$unpushed" | head -n 20
-  exit 1
-fi
+# 2. Clean tree, 3. everything pushed
+require_clean_and_pushed
 
 # 4. PHP syntax of changed files
 base=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null) || {
@@ -77,6 +130,7 @@ while IFS= read -r file; do
 done < <(git diff --relative --name-only --diff-filter=ACMR "$base"...HEAD -- '*.php' 2>/dev/null)
 
 syntax_errors=""
+step_begin "php -l"
 for file in ${changed[@]+"${changed[@]}"}; do
   out=$(php -l "$file" 2>&1) || syntax_errors+="$out"$'\n'
 done
@@ -85,6 +139,7 @@ if [ -n "$syntax_errors" ]; then
   printf '%s' "$syntax_errors" | head -n 30
   exit 1
 fi
+step_end ok
 
 # Composer scripts are read from `composer run-script --list`: one "  name  description" line per script
 # defined in composer.json on stdout (the "scripts:" heading goes to stderr). Composer has no --raw here.
@@ -95,9 +150,11 @@ if [ -f composer.json ] && command -v composer >/dev/null 2>&1; then
 fi
 has_script() { printf '%s\n' "$scripts" | grep -qx "$1"; }
 
-# 5. Style
+# 5. Style (--full: every file, like CI)
 if has_script lint; then
   run "composer lint" composer run-script lint
+elif [ -x vendor/bin/pint ] && $full; then
+  run "pint" vendor/bin/pint --test
 elif [ -x vendor/bin/pint ] && [ ${#changed[@]} -gt 0 ]; then
   run "pint" vendor/bin/pint --test "${changed[@]}"
 fi
@@ -110,11 +167,62 @@ elif [ -f phpstan.neon ] || [ -f phpstan.neon.dist ]; then
   run "phpstan" vendor/bin/phpstan analyse --no-progress
 fi
 
+# 7a. --full with SYMPHONY_CI_DB=mysql: the tests run against a MySQL database of their own, migrated first like in CI.
+# The process environment beats both .env and the <env> entries of phpunit.xml (without force="true").
+if $full && [ "${SYMPHONY_CI_DB:-}" = mysql ]; then
+  command -v mysql >/dev/null 2>&1 || env_problem "SYMPHONY_CI_DB=mysql needs the mysql client"
+  [ -n "${SYMPHONY_MYSQL_USER:-}" ] || env_problem "SYMPHONY_CI_DB=mysql needs SYMPHONY_MYSQL_USER"
+  ci_db="symphony_$(printf '%s' "${SYMPHONY_WORKSPACE_KEY:-$PWD}" | sha256sum | cut -c1-12)_ci"
+  mysql_run() {
+    MYSQL_PWD="${SYMPHONY_MYSQL_PASSWORD:-}" mysql --host="${SYMPHONY_MYSQL_HOST:-127.0.0.1}" --port="${SYMPHONY_MYSQL_PORT:-3306}" \
+      --user="$SYMPHONY_MYSQL_USER" --execute="$1" 2>&1
+  }
+  out=$(mysql_run "DROP DATABASE IF EXISTS \`$ci_db\`; CREATE DATABASE \`$ci_db\`") ||
+    env_problem "cannot create the MySQL database $ci_db on ${SYMPHONY_MYSQL_HOST:-127.0.0.1}: $out"
+  # Drops the database and those of parallel test processes (<database>_test_<n>): --drop-databases skips them when
+  # tests fail.
+  drop_ci_databases() {
+    local db
+    for db in "$ci_db" $(mysql_run "SHOW DATABASES LIKE '${ci_db//_/\\_}\\_test\\_%'" | tail -n +2); do
+      mysql_run "DROP DATABASE IF EXISTS \`$db\`" >/dev/null || true
+    done
+  }
+  export DB_CONNECTION=mysql DB_HOST="${SYMPHONY_MYSQL_HOST:-127.0.0.1}" DB_PORT="${SYMPHONY_MYSQL_PORT:-3306}" \
+    DB_DATABASE="$ci_db" DB_USERNAME="$SYMPHONY_MYSQL_USER" DB_PASSWORD="${SYMPHONY_MYSQL_PASSWORD:-}" DB_URL=
+  echo "tests against MySQL database $ci_db"
+  run "php artisan config:clear" php artisan config:clear
+  run "php artisan migrate" php artisan migrate --force --no-interaction
+fi
+
+# 7b. The tests in n processes (php artisan test --parallel, needs paratest): --full with SYMPHONY_CI_PARALLEL=<n>, the
+# fast gate with SYMPHONY_TEST_PARALLEL=<n>. Only --full installs a paratest the project requires but the workspace
+# lacks (vendor/ installed before it was added), when composer.lock is not tracked, so the tree stays clean. With MySQL
+# every process gets a database of its own (<database>_test_<n>), dropped afterwards.
+parallel=()
+if $full; then parallel_var=SYMPHONY_CI_PARALLEL; else parallel_var=SYMPHONY_TEST_PARALLEL; fi
+parallel_n=${!parallel_var:-}
+if [ -n "$parallel_n" ]; then
+  case "$parallel_n" in *[!0-9]* | "") env_problem "$parallel_var must be a number of processes (got '$parallel_n')" ;; esac
+  [ "$((10#$parallel_n))" -gt 0 ] || env_problem "$parallel_var must be a number of processes (got '$parallel_n')"
+  if $full && [ ! -x vendor/bin/paratest ] && grep -q '"brianium/paratest"' composer.json 2>/dev/null && ! git ls-files --error-unmatch composer.lock >/dev/null 2>&1; then
+    run "composer update brianium/paratest" composer update brianium/paratest --no-interaction --no-progress --no-scripts
+  fi
+  if [ -x vendor/bin/paratest ]; then
+    parallel=(--parallel --processes="$parallel_n")
+    $full && parallel+=(--drop-databases)
+    parallel_n_used=$((10#$parallel_n))
+    echo "tests in $parallel_n parallel processes"
+  else
+    echo "$parallel_var is set, but the project has no brianium/paratest: the tests run in one process"
+  fi
+fi
+
 # 7. Tests
+echo "tests: ${parallel_n_used:-1} process(es), database ${DB_CONNECTION:-sqlite}"
 if has_script test; then
   run "composer test" composer run-script test
 else
-  run "php artisan test" php artisan test
+  run "php artisan test" php artisan test ${parallel[@]+"${parallel[@]}"}
 fi
 
 echo "all checks passed"

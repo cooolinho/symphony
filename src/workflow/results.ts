@@ -58,6 +58,33 @@ export const SPLIT_COMPLEXITY = 'XL';
 export const RESULT_SIZE_LIMIT = 60_000;
 
 export const SUMMARY_MAX = 4000;
+
+/** Room for the headings, labels, meta and JSON punctuation around the field text in the Markdown and in the marker. */
+const RESULT_OVERHEAD = 4000;
+/** Comment characters per field character: once as Markdown and once as base64url (4/3) of the JSON in the marker. */
+const COMMENT_PER_FIELD_CHARACTER = 1 + 4 / 3;
+
+/**
+ * What all fields of a result may hold together (characters of text), derived from {@link RESULT_SIZE_LIMIT}: the
+ * marker carries every field again as base64url, so the visible text may take only about 40% of the limit. Rounded
+ * down to 1,000 so the figure stays safe for text that Markdown or JSON escapes.
+ */
+export const RESULT_FIELD_BUDGET = Math.floor((RESULT_SIZE_LIMIT - RESULT_OVERHEAD) / COMMENT_PER_FIELD_CHARACTER / 1000) * 1000;
+
+/** The size budget as one sentence for the tool description. */
+export function resultBudgetNote(): string {
+  return `The \`summary\` may have at most ${SUMMARY_MAX} characters, and all fields together at most about ${RESULT_FIELD_BUDGET} characters (the comment holds the result twice and may not reach ${RESULT_SIZE_LIMIT}); a longer result is rejected and you have to write it again, so keep the lists short.`;
+}
+
+/** Characters of text per field of `result`, largest first (lists count their entries). */
+export function fieldSizes(result: StageResult): Array<{ field: string; length: number }> {
+  const length = (value: unknown): number =>
+    typeof value === 'string' ? value.length : Array.isArray(value) ? value.reduce((sum: number, entry) => sum + length(entry), 0) : value === null || typeof value !== 'object' ? String(value ?? '').length : JSON.stringify(value).length;
+  return Object.entries(result)
+    .filter(([field]) => field !== 'schema' && field !== 'kind')
+    .map(([field, value]) => ({ field, length: length(value) }))
+    .sort((a, b) => b.length - a.length);
+}
 const TEXT_MAX = 4000;
 const NAME_MAX = 500;
 const LIST_MAX = 200;
@@ -126,6 +153,7 @@ const kindShapes = {
     tests_added: list(text(NAME_MAX)),
     notes: text().optional(),
     plan_deviations: list(text()).describe('Where and why the implementation left the plan'),
+    screenshots_problem: text().optional().describe('UI change without screenshots: the step that failed and its error message; only when you could not take them'),
   },
   test: {
     cases: list(caseSchema).describe('One entry per acceptance criterion checked; "failed" needs a failed case'),
@@ -213,6 +241,8 @@ export interface ResultMeta {
   checks: ResultChecks | null;
   /** Column the stage hands the issue to; null when it does not move it. */
   target: string | null;
+  /** Column whose entry check failed when the result went to `on_check_failed` instead; absent or null otherwise. */
+  check_failed_for?: string | null;
   /** ISO 8601 timestamp. */
   created_at: string;
 }
@@ -238,6 +268,7 @@ const metaSchema = z.object({
     })
     .nullable(),
   target: nullableText,
+  check_failed_for: nullableText.optional(),
   created_at: z.string(),
 }) satisfies z.ZodType<ResultMeta>;
 
@@ -493,9 +524,12 @@ function fitResult(result: StageResult, size: (candidate: StageResult) => number
     }
   }
   if (best !== null) return best;
+  const sizes = fieldSizes(result);
+  const fieldText = sizes.reduce((sum, entry) => sum + entry.length, 0);
+  const largest = sizes.filter((entry) => entry.length > 0).slice(0, 4).map((entry) => `${entry.field} (${entry.length})`).join(', ');
   throw new SymphonyError(
     'result_too_large',
-    `the ${result.kind} result is too large for an issue comment (${size(result)} characters rendered, limit ${RESULT_SIZE_LIMIT}): shorten the summary and the lists`,
+    `the ${result.kind} result is too large for an issue comment (${size(result)} characters rendered, limit ${RESULT_SIZE_LIMIT}): its fields hold ${fieldText} characters, the budget is about ${RESULT_FIELD_BUDGET} because the comment carries them twice; the largest fields are ${largest}. Shorten those first (the summary may have at most ${SUMMARY_MAX} characters)`,
   );
 }
 
@@ -622,6 +656,7 @@ function kindSections(result: StageResult): (string | null)[] {
         bullets('Tests added', result.tests_added.map(code)),
         bullets('Plan deviations', result.plan_deviations.map(inline)),
         result.notes === undefined ? null : `**Notes**\n${block(result.notes)}`,
+        result.screenshots_problem === undefined ? null : `**Screenshots problem**\n${block(result.screenshots_problem)}`,
       ];
     case 'test':
       return [

@@ -12,6 +12,7 @@ services:
                 GID: ${GID:-1000}
                 PHP_VERSION: ${PHP_VERSION:-8.4}
                 WITH_BROWSER: ${WITH_BROWSER:-true}
+                WITH_DOCKER_CLI: ${WITH_DOCKER_CLI:-true}
         image: symphony:local
         restart: unless-stopped
         # On SIGTERM Symphony stops its agents and waits up to hooks.timeout_ms + 30 s for them and their
@@ -31,11 +32,26 @@ services:
         # Local only: no Traefik, dashboard reachable from this machine.
         ports:
             - "127.0.0.1:${SYMPHONY_PORT:-4000}:${SYMPHONY_PORT:-4000}"
+        networks:
+            - default
+            - ci
+        # Only with the profile "ci": required: false skips services that are not enabled.
+        depends_on:
+            dind:
+                condition: service_healthy
+                required: false
+            mysql:
+                condition: service_healthy
+                required: false
         volumes:
             - workspaces:/home/symphony/symphony-workspaces
             - state:/home/symphony/.local/state/symphony
             - claude:/home/symphony/.claude
             - composer-cache:/home/symphony/.cache/composer
+            # "ci" profile: client certs for the dind daemon. No DOCKER_HOST here: agents share this environment,
+            # the check scripts map SYMPHONY_CI_DOCKER_HOST / SYMPHONY_CI_DOCKER_CERT_PATH to DOCKER_* themselves.
+            # Without the profile the volume stays empty.
+            - dind-certs-client:/certs/client:ro
             # Edit WORKFLOW.md and model-costs.yml without a rebuild. Single-file bind mounts follow the
             # inode: if an editor replaces the file instead of writing it in place, run docker compose restart.
             - ./WORKFLOW.md:/app/WORKFLOW.md:ro
@@ -46,11 +62,94 @@ services:
         secrets:
             - ssh_key
 
+    # Compose profile "ci" (COMPOSE_PROFILES=ci in .env): a Docker daemon and a MySQL server for checks that run a
+    # project's CI themselves (docs/docker.md, "CI sidecars"). Without the profile neither service starts.
+    dind:
+        image: docker:29-dind
+        profiles: [ci]
+        restart: unless-stopped
+        # dind needs it. Whoever reaches this daemon (tcp://docker:2376 with the client certs) is root on the host.
+        privileged: true
+        environment:
+            # TLS on 2376; the entrypoint writes the CA and the client certs into the volumes below.
+            DOCKER_TLS_CERTDIR: /certs
+        networks:
+            ci:
+                aliases:
+                    - docker
+        volumes:
+            - dind-certs-ca:/certs/ca
+            - dind-certs-client:/certs/client
+            - dind-data:/var/lib/docker
+            # Same path as in the symphony container: a project's compose file bind-mounts relative paths, and the
+            # daemon resolves them on its own filesystem.
+            - workspaces:/home/symphony/symphony-workspaces
+        healthcheck:
+            test: ["CMD", "docker", "info"]
+            interval: 10s
+            timeout: 5s
+            start_period: 30s
+            retries: 5
+        mem_limit: 4g
+
+    mysql:
+        image: mysql:8.0
+        profiles: [ci]
+        restart: unless-stopped
+        environment:
+            # Not ${VAR:?}: compose interpolates every service, profile or not, so that would break setups without
+            # the profile. The mysql image refuses to initialise without a root password, and mysql-init.sh without
+            # the user, so an empty value still fails closed.
+            MYSQL_ROOT_PASSWORD: ${SYMPHONY_CI_MYSQL_ROOT_PASSWORD:-}
+            # env_file hands .env, and with it this password, to symphony and its agents too: root only from
+            # inside this container.
+            MYSQL_ROOT_HOST: localhost
+            SYMPHONY_MYSQL_USER: ${SYMPHONY_MYSQL_USER:-}
+            SYMPHONY_MYSQL_PASSWORD: ${SYMPHONY_MYSQL_PASSWORD:-}
+        # Test database: durability and the binary log are not needed.
+        command: [--skip-log-bin, --innodb-flush-log-at-trx-commit=0, --innodb-doublewrite=0, --innodb-buffer-pool-size=512M]
+        # A name of its own: the symphony container is also on the Traefik network, where another project's "mysql"
+        # may answer first (the CI check would then create and drop databases on that server).
+        networks:
+            ci:
+                aliases:
+                    - symphony-ci-mysql
+        # Test databases only: in memory, created anew (with the user, by mysql-init.sh) on every start. A disk-backed
+        # volume made a Laravel suite with RefreshDatabase several times slower.
+        tmpfs:
+            - /var/lib/mysql:size=2g,uid=999,gid=999
+        volumes:
+            # Runs once on an empty data directory: creates SYMPHONY_MYSQL_USER for the symphony_% databases.
+            - ./docker/ci/mysql-init.sh:/docker-entrypoint-initdb.d/10-symphony-user.sh:ro
+        healthcheck:
+            # TCP, not the socket: during initialisation the temporary server runs without networking.
+            test: ["CMD", "mysqladmin", "ping", "--host=127.0.0.1", "--silent"]
+            interval: 10s
+            timeout: 5s
+            # The first start initialises the data directory, which can take minutes on a slow disk.
+            start_period: 300s
+            retries: 5
+        # The tmpfs counts against it: buffer pool plus up to 2 GB of data.
+        mem_limit: 3g
+
+networks:
+    # Network of the "ci" profile (dind, mysql). Pinned subnet: Docker's default pool could otherwise hand out a range
+    # that collides with networks a project creates inside dind (bandenhub's smoke test uses 172.30.250.0/24).
+    # Created without the profile too (top-level networks have no profiles); then only symphony is attached.
+    ci:
+        ipam:
+            config:
+                - subnet: ${SYMPHONY_CI_SUBNET:-172.31.250.0/24}
+
 volumes:
     workspaces:
     state:
     claude:
     composer-cache:
+    # "ci" profile: dind's certificates and image store.
+    dind-certs-ca:
+    dind-certs-client:
+    dind-data:
 
 secrets:
     # A file secret is a bind mount of the host file: it must be readable for UID inside the container

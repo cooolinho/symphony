@@ -22,6 +22,10 @@ export interface StageHistory {
   testRounds: number;
   /** Security reviews with the verdict `issues_found` since the last `reset`. */
   securityRounds: number;
+  /** Hand-offs that went to `on_check_failed` since the last `reset`, across rounds and roles. */
+  checkFailures: number;
+  /** The columns whose entry check failed in those hand-offs, oldest first (one entry per hand-off). */
+  failedChecks: string[];
   /** Column the newest result that moved the issue handed it to; null when none did since the last `reset`. */
   lastTarget: string | null;
   /** The column the issue should be in but is not, or null when the board matches the history. */
@@ -61,6 +65,7 @@ export function buildStageHistory(persisted: readonly PersistedResult[]): StageH
   let testRounds = 0;
   let securityRounds = 0;
   let lastTarget: string | null = null;
+  let failedChecks: string[] = [];
   for (const entry of results) {
     latestByRole.set(entry.meta.role, entry);
     if (entry.result.kind === 'reset') {
@@ -68,7 +73,9 @@ export function buildStageHistory(persisted: readonly PersistedResult[]): StageH
       testRounds = 0;
       securityRounds = 0;
       lastTarget = null;
+      failedChecks = [];
     }
+    if (entry.meta.check_failed_for != null) failedChecks.push(entry.meta.check_failed_for);
     if (entry.result.kind === 'review' && entry.result.verdict === 'changes_needed') reviewRounds += 1;
     if (entry.result.kind === 'test' && entry.result.verdict === 'failed') testRounds += 1;
     if (entry.result.kind === 'security' && entry.result.verdict === 'issues_found') securityRounds += 1;
@@ -80,6 +87,8 @@ export function buildStageHistory(persisted: readonly PersistedResult[]): StageH
     reviewRounds,
     testRounds,
     securityRounds,
+    checkFailures: failedChecks.length,
+    failedChecks,
     lastTarget,
     pendingTransition: (issueState) =>
       lastTarget !== null && normalizeStateName(lastTarget) !== normalizeStateName(issueState) ? lastTarget : null,

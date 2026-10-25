@@ -8,13 +8,14 @@ import { STANDARD_LABELS } from '../src/repo-init/labels.ts';
 import { githubProjectFactory } from '../src/tracker/github-project/index.ts';
 import { parseSettings } from '../src/tracker/github-project/settings.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
-import { resolveConfig } from '../src/workflow/config.ts';
+import { maxColumnCheckMs, resolveConfig } from '../src/workflow/config.ts';
 import { commandSkills, pluginAgents } from '../src/workflow/command.ts';
 import { loadWorkflowFile } from '../src/workflow/loader.ts';
 import { profileFor } from '../src/workflow/profile.ts';
 import { roleFor, roleName } from '../src/workflow/roles.ts';
 import { unknownBoardColumns } from '../src/workflow/validate.ts';
 import { compilePrompt, issueTemplateValue, renderPrompt } from '../src/workflow/template.ts';
+import { RESULT_FIELD_BUDGET, SUMMARY_MAX } from '../src/workflow/results.ts';
 import { makeIssue } from './helpers.ts';
 
 /** The WORKFLOW.md shipped in the repository root. */
@@ -230,7 +231,7 @@ describe('shipped WORKFLOW.md', () => {
     it('limits the test stage to one run at a time and keeps Testing an active state with a note on the slots', async () => {
       const config = await resolveWith();
       assert.equal(config.agent.maxConcurrentAgentsByState.get('testing'), 1);
-      assert.equal(config.agent.maxConcurrentAgentsByState.get('agent review'), 1);
+      assert.equal(config.agent.maxConcurrentAgentsByState.get('agent review'), 2);
       assert.ok(config.tracker.activeStates.includes('Testing'));
       const source = fs.readFileSync(shipped, 'utf8');
       assert.match(source, /#   Testing +-> test engineer[\s\S]*Bug, feature and refactor issues \(pipeline\.profiles\) always go through it/);
@@ -880,6 +881,23 @@ describe('shipped WORKFLOW.md issue commands', () => {
     assert.doesNotMatch(prompt, /Your role: (developer|reviewer|auditor|autopilot|analyst)/);
   });
 
+  it('ends In review with the named final gate: ci and prod-smoke through checks/repo.sh, within the turn timeout', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const config = resolveConfig(definition.config, {
+      workflowPath: shipped,
+      env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't', SYMPHONY_CHECKS_REPORT_STATUS: 'true', SYMPHONY_PUBLIC_URL: 'http://symphony.lan/' },
+      trackerDefaults,
+    });
+    const gate = config.checks.onEnter.get('in review') ?? [];
+    assert.deepEqual(gate.map((check) => [check.name, check.timeoutMs]), [['ci', 1_200_000], ['prod-smoke', 1_800_000]]);
+    assert.match(gate[0]?.command ?? '', /checks\/repo\.sh" ci -- bash "\$SYMPHONY_WORKFLOW_DIR\/checks\/laravel\.sh" --full$/);
+    assert.match(gate[1]?.command ?? '', /checks\/repo\.sh" --lock prod-smoke$/);
+    assert.ok(maxColumnCheckMs(config.checks) < config.claude.turnTimeoutMs);
+    assert.equal(config.checks.reportStatus, true);
+    assert.equal(config.server.publicUrl, 'http://symphony.lan');
+    assert.match(config.hooks.beforeRemove ?? '', /hooks\/laravel-db-drop\.sh/);
+  });
+
   it('turns base_branch and auto_merge on through the environment only', async () => {
     const { definition } = await loadWorkflowFile(shipped);
     const providerOf = (env: Record<string, string>) =>
@@ -897,7 +915,18 @@ describe('shipped WORKFLOW.md issue commands', () => {
     const env = { SYMPHONY_BASE_BRANCH: 'develop', SYMPHONY_AUTO_MERGE: 'true' };
     const on = settingsOf(env);
     assert.equal(on.settings?.baseBranch, 'develop');
-    assert.deepEqual(on.settings?.autoMerge, { onEnter: 'In review', doneState: 'Done', onConflict: 'In progress', method: 'SQUASH', optOutLabel: 'manual-merge' });
+    assert.deepEqual(on.settings?.autoMerge, {
+      onEnter: 'In review',
+      doneState: 'Done',
+      onConflict: 'In progress',
+      method: 'SQUASH',
+      optOutLabel: 'manual-merge',
+      onChecksFailed: 'In progress',
+      checks: { wait: true, timeoutMs: 3_600_000, ignore: [], maxSendBacks: 2 },
+    });
+    // The merge gate's ignore list and waiting come from the environment too.
+    const tuned = settingsOf({ ...env, SYMPHONY_MERGE_IGNORE_CHECKS: 'acme/app:ci,acme/app:prod-smoke', SYMPHONY_MERGE_WAIT_FOR_CHECKS: 'false' });
+    assert.deepEqual(tuned.settings?.autoMerge?.checks, { wait: false, timeoutMs: 3_600_000, ignore: ['acme/app:ci', 'acme/app:prod-smoke'], maxSendBacks: 2 });
     const tracker = providerOf(env);
     assert.doesNotThrow(() =>
       githubProjectFactory.create({
@@ -978,7 +1007,10 @@ describe('shipped WORKFLOW.md issue commands', () => {
 
   it('tells only the developer how to take, store and embed UI screenshots', async () => {
     const prompt = await render('developer');
-    assert.match(prompt, /## UI screenshots/);
+    assert.match(prompt, /^7\. UI screenshots\. /m, 'its own numbered step');
+    assert.ok(prompt.indexOf('7. UI screenshots.') < prompt.indexOf('8. Commit with'), 'before the commit and pull request step');
+    assert.doesNotMatch(prompt, /^## UI screenshots/m, 'no block behind the steps');
+    assert.match(prompt, /`screenshots_problem`/);
     assert.match(prompt, /`symphony-screenshot <url> <out\.png>`/);
     assert.match(prompt, /import \{ chromium \} from 'playwright'/);
     assert.match(prompt, /commit and push it on `symphony\/issue-42`/);
@@ -987,7 +1019,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
     assert.match(prompt, /check it with `symphony-screenshot --check`/);
     assert.match(prompt, /`public\/build\/manifest\.json` is missing, install the dependencies and run the project's `build` script/);
     assert.match(prompt, /"No browser" and "no frontend build" are not reasons to skip them/);
-    for (const role of ['reviewer', 'docs', 'issue-analyst']) assert.doesNotMatch(await render(role), /## UI screenshots/, role);
+    for (const role of ['reviewer', 'docs', 'issue-analyst']) assert.doesNotMatch(await render(role), /UI screenshots\. When the project/, role);
   });
 
   it('tells the architect and the reviewer that missing screenshots are not acceptable for want of a browser', async () => {
@@ -1223,4 +1255,87 @@ describe('shipped WORKFLOW.md security auditor', () => {
     const text = await render('reviewer', null, undefined, null, [], { result_required: true, round: 1 });
     assert.match(text, /or first to "Security review" when the change is security-relevant/);
   });
+});
+
+describe('shipped WORKFLOW.md JSON hint for report_result (Claude Code rejects broken JSON before the tool runs)', () => {
+  /** The rendered prompt of every role that hands off with `report_result` must carry the escaping hint. */
+  const ROLES_WITH_RESULT = ['issue-analyst', 'architect', 'developer', 'docs', 'test-engineer', 'reviewer', 'security-auditor'];
+
+  it('puts the hint into the rendered prompt of every role that reports a result', async () => {
+    for (const role of ROLES_WITH_RESULT) {
+      const prompt = await render(role, null, undefined, 'develop', [], { result_required: true, round: 1 });
+      assert.match(prompt, /`report_result`/, role);
+      assert.match(prompt, /must be valid JSON/, role);
+      assert.ok(prompt.includes('escape `\\"` and `\\\\`'), `${role}: escaping of quote and backslash survives rendering`);
+      assert.match(prompt, /no raw tab characters/, role);
+      assert.match(prompt, /never Markdown bullet lines/, role);
+      assert.match(prompt, /write paths with `\/`/, role);
+      assert.match(prompt, /describe regexes in words/, role);
+      assert.match(prompt, /keep the summary short and put details in the array fields/, role);
+    }
+  });
+
+  it('puts the hint into the reviewer prompt of an integration review of split work packages as well', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const reviewerSources = ['roles/reviewer.md'].map((name) => definition.partials[name] ?? '');
+    for (const source of reviewerSources) {
+      const hints = source.match(/must be valid JSON/g) ?? [];
+      const reports = source.match(/Report exactly one result with `report_result`/g) ?? [];
+      assert.ok(reports.length >= 1);
+      assert.equal(hints.length, reports.length, 'every reviewer hand-off step has its own hint');
+    }
+  });
+
+  it('keeps the hint out of the prompts of roles that never call report_result', async () => {
+    for (const role of ['default']) {
+      assert.doesNotMatch(await render(role), /must be valid JSON/, role);
+    }
+  });
+
+  it('keeps the hint short: one line per role prompt, no more than 520 characters', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    for (const [name, source] of Object.entries(definition.partials)) {
+      for (const line of source.split('\n').filter((l) => l.includes('must be valid JSON'))) {
+        assert.ok(line.length <= 520, `${name}: hint line has ${line.length} characters`);
+      }
+    }
+  });
+});
+
+describe('shipped WORKFLOW.md JSON hint targets the main cause (list field written as Markdown list, 16 of 18 cases)', () => {
+  it('tells the docs role that files is a JSON array of strings, with an example', async () => {
+    const prompt = await render('docs', null, undefined, 'develop', [], { result_required: true, round: 1 });
+    assert.match(prompt, /`files`[^\n]*JSON array/);
+    assert.ok(prompt.includes('["README.md"]'));
+    assert.match(prompt, /never a bullet list/);
+  });
+
+  it('names the array fields and shows an array literal in every role prompt with a result step', async () => {
+    for (const role of ['issue-analyst', 'architect', 'developer', 'docs', 'test-engineer', 'reviewer', 'security-auditor']) {
+      const prompt = await render(role, null, undefined, 'develop', [], { result_required: true, round: 1 });
+      assert.match(prompt, /list fields \([^)]*`files`[^)]*\) are JSON arrays like `\["a\.md", "b\.md"\]`/, role);
+    }
+  });
+
+  it('covers the German quote case (ASCII quote after a German opening quote)', async () => {
+    const prompt = await render('developer', null, undefined, 'develop', [], { result_required: true, round: 1 });
+    assert.match(prompt, /ASCII quote after a German opening quote/);
+  });
+
+  it('does not push the agent towards Markdown lists any more', async () => {
+    for (const role of ['developer', 'docs', 'reviewer']) {
+      const prompt = await render(role, null, undefined, 'develop', [], { result_required: true, round: 1 });
+      assert.doesNotMatch(prompt, /put details in lists/, role);
+    }
+  });
+});
+
+describe('shipped prompts: result size budget', () => {
+  for (const role of ['architect', 'issue-analyst', 'test-engineer']) {
+    it(`${role} names the summary limit and the field budget`, async () => {
+      const prompt = await render(role);
+      assert.ok(prompt.includes(`at most ${SUMMARY_MAX} characters`), 'summary limit');
+      assert.ok(prompt.includes(`at most about ${RESULT_FIELD_BUDGET} characters`), 'field budget');
+    });
+  }
 });

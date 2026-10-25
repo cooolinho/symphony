@@ -257,6 +257,7 @@ class FakeNode {
   attrs: Record<string, string> = {};
   href?: string;
   hidden = false;
+  open = false;
   title = '';
   constructor(tag: string, text?: string | null, className?: string) {
     this.tag = tag;
@@ -275,6 +276,9 @@ class FakeNode {
   }
   find(predicate: (node: FakeNode) => boolean): FakeNode[] {
     return [...(predicate(this) ? [this] : []), ...this.children.flatMap((c) => c.find(predicate))];
+  }
+  querySelector(tag: string): FakeNode | null {
+    return this.find((n) => n.tag === tag && n !== this)[0] ?? null;
   }
 }
 
@@ -399,5 +403,98 @@ describe('dashboard card: flagChips', () => {
   it('shows no budget chip without a cap', () => {
     assert.equal(chips({ labels: [], budget: null }).length, 0);
     assert.equal(chips({ labels: [], budget: { cost_usd: 3, max_issue_cost_usd: 0 } }).length, 0);
+  });
+});
+
+describe('agent page: renderGate', () => {
+  const gate = {
+    target: 'In review',
+    role: 'developer',
+    sha: 'abcdef0123456789abcdef',
+    started_at: '2026-10-25T10:00:00Z',
+    finished_at: null,
+    checks: [
+      { name: 'lint', status: 'passed', started_at: null, duration_ms: 3000, timeout_ms: 60000, cached: true, exit_code: 0, output: null },
+      { name: 'ci', status: 'running', started_at: '2026-10-25T10:00:01Z', duration_ms: 12000, timeout_ms: 120000, cached: false, exit_code: null, output: null },
+      { name: 'docs', status: 'check_failed', started_at: '2026-10-25T10:00:02Z', duration_ms: 900, timeout_ms: 60000, cached: false, exit_code: 1, output: '<b>boom</b>' },
+      { name: 'smoke', status: 'pending', started_at: null, duration_ms: null, timeout_ms: 60000, cached: false, exit_code: null, output: null },
+    ],
+  };
+
+  const render = (detail: unknown) => {
+    const { context, node } = pageContext(AGENT_HTML, ['renderGate'], {
+      S: { detail },
+      fmtMs: (ms: number) => (ms < 60000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms / 60000)}m`),
+      fmtClock: (iso: string) => iso,
+    });
+    const start = AGENT_HTML.indexOf('const GATE_STATUS');
+    vm.runInContext(AGENT_HTML.slice(start, AGENT_HTML.indexOf('};\n', start) + 2), context);
+    vm.runInContext('renderGate()', context);
+    return { rows: node('gate-checks').children, section: node('gate-section'), meta: node('gate-meta') };
+  };
+
+  it('lists every check with its state, elapsed time against the timeout and the cache flag', () => {
+    const { rows, section, meta } = render({ gate });
+    assert.equal(section.hidden, false);
+    assert.match(meta.text, /In review · abcdef012345 · running/);
+    assert.equal(rows.length, 4);
+    assert.match(rows[0]!.all, /lint.*passed.*3\.0s.*from cache/);
+    assert.match(rows[1]!.all, /ci.*running.*12\.0s \/ 2m/);
+    assert.ok(rows[1]!.className.includes('tone-cyan'));
+    assert.match(rows[3]!.all, /smoke.*pending/);
+  });
+
+  it('shows the output of a failed check as plain text', () => {
+    const { rows } = render({ gate });
+    assert.ok(rows[2]!.className.includes('tone-red'));
+    assert.match(rows[2]!.all, /failed \(exit 1\)/);
+    const pre = rows[2]!.find((n) => n.tag === 'pre');
+    assert.equal(pre.length, 1);
+    assert.equal(pre[0]!.text, '<b>boom</b>');
+  });
+
+  it('marks checks that never ran in a finished gate', () => {
+    const { rows, meta } = render({ gate: { ...gate, finished_at: '2026-10-25T10:01:00Z' } });
+    assert.match(meta.text, /finished/);
+    assert.match(rows[3]!.all, /not run/);
+  });
+
+  it('is hidden without a gate', () => {
+    for (const detail of [{ gate: null }, null]) {
+      const { rows, section } = render(detail);
+      assert.equal(section.hidden, true);
+      assert.equal(rows.length, 0);
+    }
+  });
+});
+
+describe('dashboard: renderRepositories', () => {
+  const render = (repositories: unknown) => {
+    const { context, node } = pageContext(DASHBOARD_HTML, ['renderRepositories']);
+    context.h = { repositories };
+    vm.runInContext('renderRepositories(h)', context);
+    return node;
+  };
+
+  it('renders one text-only link per repository', () => {
+    const node = render(['acme/app', 'other/<img onerror=x>']);
+    const chips = node('repo-list').children;
+    assert.equal(chips.length, 2);
+    assert.equal(chips[0]!.text, 'acme/app');
+    assert.equal(chips[0]!.href, 'https://github.com/acme/app');
+    assert.equal(chips[1]!.text, 'other/<img onerror=x>');
+    assert.equal(chips[1]!.children.length, 0);
+    assert.equal(node('repositories').hidden, false);
+  });
+
+  it('says all repositories without a restriction', () => {
+    const chips = render(null)('repo-list').children;
+    assert.equal(chips.length, 1);
+    assert.equal(chips[0]!.text, 'all repositories on the board');
+  });
+
+  it('ships the bar and wraps the chips', () => {
+    assert.match(DASHBOARD_HTML, /id="repositories"/);
+    assert.match(DASHBOARD_HTML, /\.repo-list \{[^}]*flex-wrap: wrap/);
   });
 });

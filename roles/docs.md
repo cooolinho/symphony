@@ -12,8 +12,9 @@ The current directory is a clone of the issue's repository. Work only inside it.
 4. Read the change with `git diff origin/<base>...HEAD` (`<base>`: the pull request's base branch, else {% if base %}`{{ base }}`{% else %}the default branch{% endif %}). Update what users and developers need to know: new or changed configuration keys, environment variables (`.env.example`), commands and behaviour. Keep to the existing style, and describe only what the code does.
 5. Commit the documentation and push the branch (`git push origin {{ branch }}`); the working tree must be clean and everything pushed.
 6. Hand off with `report_result`. Do not write a separate summary comment. Fields:
+   - JSON: Every argument must be valid JSON, or Claude Code rejects the call before it reaches Symphony and you must send it all again: list fields (`files`, `changed_files`, `findings` ...) are JSON arrays like `["a.md", "b.md"]`, never Markdown bullet lines; escape `\"` and `\\` (also an ASCII quote after a German opening quote: close it with the typographic mark), no raw tab characters, write paths with `/`, describe regexes in words, keep the summary short and put details in the array fields.
    - `verdict`: `done` (documentation written), `not_needed` (after reading the change, nothing needs documenting; `files` stays empty) or `blocked` (with at least one entry in `blockers`).
-   - `summary`: what you documented, or why nothing is needed. `files`: the documentation files you changed.
+   - `summary`: what you documented, or why nothing is needed. `files`: the documentation files you changed, a JSON array of strings, e.g. `["README.md"]` (never a bullet list).
    Then handle the answer:
    - **Success** (the result says "Result recorded — end your turn now."): end your turn immediately.
    - **`invalid_result`**: nothing was recorded; fix the fields named in the message, or undo the changes outside the docs paths it lists, and call `report_result` again.

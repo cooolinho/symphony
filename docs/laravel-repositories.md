@@ -187,6 +187,40 @@ A repository's `.mcp.json` is for humans (your editor and your own Claude Code).
 `claude.strict_mcp_config` (default `true`) only the `tracker` server and the Boost server that Symphony adds are loaded.
 Do not rely on a server in `.mcp.json` being available to an agent.
 
+## CI in Symphony (`.symphony/checks`)
+
+Before an approved pull request is merged, Symphony runs the named checks `ci` and `prod-smoke` (the final gate of
+`In review`, see [named checks](configuration.md#named-checks)). A repository decides what they do with scripts in
+`.symphony/checks/`, read from the **base branch**, so a pull request cannot weaken the check of its own merge:
+
+| Script | Without it |
+|---|---|
+| `.symphony/checks/ci.sh` | `checks/laravel.sh --full`: Pint on every file, static analysis, tests (on the app's test database) |
+| `.symphony/checks/prod-smoke.sh` | skipped |
+
+Exit codes as for every check: `0` pass, `1` the code must be fixed, `2` an environment problem, `78` not applicable.
+The scripts run from the repository root with `SYMPHONY_WORKFLOW_DIR` (Symphony's `checks/` live there) and, with the
+compose profile `ci` ([docker.md](docker.md)), a Docker daemon (`DOCKER_HOST`, `SYMPHONY_DOCKER_HOST_IP` for
+published ports) and MySQL (`SYMPHONY_MYSQL_*`). For example:
+
+```bash
+# .symphony/checks/ci.sh: the tests on MySQL like GitHub CI, in 4 processes (needs brianium/paratest)
+export SYMPHONY_CI_DB=mysql SYMPHONY_CI_PARALLEL=4
+exec bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh" --full
+```
+
+```bash
+# .symphony/checks/prod-smoke.sh: builds the production image and probes the running stack
+docker info >/dev/null 2>&1 || { echo "environment: no Docker daemon"; exit 2; }
+SMOKE_TARGET_IP="${SYMPHONY_DOCKER_HOST_IP:-127.0.0.1}" exec docker/prod/smoke-test.sh
+```
+
+With `checks.report_status` they appear on the pull request as `symphony/ci` and `symphony/prod-smoke`. To let them
+stand in for GitHub Actions (for example when the Actions minutes run out), skip the workflow jobs with
+`if: vars.CI_RUNNER != 'symphony'` and set the repository variable `CI_RUNNER=symphony`; see
+[the merge gate](adapters/github-project.md#merge-gate). Treat `.symphony/checks/` like CI configuration: the reviewer
+does.
+
 ## Repository settings
 
 On GitHub, under *Settings*:

@@ -284,23 +284,30 @@ describe('hooks/laravel-db-drop.sh', () => {
   const drop = (fake: { bin: string; log: string }, extra: NodeJS.ProcessEnv = {}) =>
     spawnSync('bash', [dropScript], { encoding: 'utf8', env: { ...process.env, ...mysqlEnv(fake, extra) } });
 
-  it('drops both databases without leaking the password', () => {
+  it('drops the development, test and CI databases without leaking the password', () => {
     const fake = fakeMysql();
     const result = drop(fake);
     assert.equal(result.status, 0, result.stderr);
     const log = fs.readFileSync(fake.log, 'utf8');
     const calls = log.trim().split('\n');
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 3);
     assert.match(calls[0]!, new RegExp(`--execute=DROP DATABASE IF EXISTS \`${NAME}\` \\[pwd=set\\]`));
     assert.match(calls[1]!, new RegExp(`DROP DATABASE IF EXISTS \`${NAME}_test\``));
+    assert.match(calls[2]!, new RegExp(`DROP DATABASE IF EXISTS \`${NAME}_ci\``));
     assert.ok(!(log + result.stdout + result.stderr).includes(PASSWORD));
   });
 
-  it('does nothing without SYMPHONY_LARAVEL_DB=mysql', () => {
-    const fake = fakeMysql();
-    const result = drop(fake, { SYMPHONY_LARAVEL_DB: '' });
-    assert.equal(result.status, 0);
-    assert.equal(fs.existsSync(fake.log), false);
+  it('drops only the CI database without SYMPHONY_LARAVEL_DB=mysql, and nothing without a MySQL user', () => {
+    const ci = fakeMysql();
+    const result = drop(ci, { SYMPHONY_LARAVEL_DB: '' });
+    assert.equal(result.status, 0, result.stderr);
+    const calls = fs.readFileSync(ci.log, 'utf8').trim().split('\n');
+    assert.equal(calls.length, 1);
+    assert.match(calls[0]!, new RegExp(`DROP DATABASE IF EXISTS \`${NAME}_ci\``));
+
+    const none = fakeMysql();
+    assert.equal(drop(none, { SYMPHONY_LARAVEL_DB: '', SYMPHONY_MYSQL_USER: '' }).status, 0);
+    assert.equal(fs.existsSync(none.log), false);
   });
 
   it('fails with a message when mysql fails', () => {

@@ -10,13 +10,20 @@ export interface LabelDefinition {
 
 const DEFAULT_COLOR = 'ededed';
 
+/** Label of an issue whose approved pull request waits for pending checks before `auto_merge` merges it. */
+export const AWAITING_CHECKS_LABEL = 'awaiting-checks';
+
 /**
  * Whether the adapter may create the label: only the families the pipeline itself puts on issues (`Type: …`,
- * `Complexity: …`, `needs-human`). Every other name is a typo or somebody else's label and stays unknown.
+ * `Complexity: …`, `needs-human`, `awaiting-checks`). Every other name is a typo or somebody else's label and stays unknown.
  */
 export function isCreatableLabel(name: string): boolean {
   const hasValue = name.slice(name.indexOf(':') + 1).trim() !== '';
-  return isNeedsHumanLabel(name) || ((isTypeLabel(name) || isComplexityLabel(name)) && hasValue);
+  return (
+    isNeedsHumanLabel(name) ||
+    name.trim().toLowerCase() === AWAITING_CHECKS_LABEL ||
+    ((isTypeLabel(name) || isComplexityLabel(name)) && hasValue)
+  );
 }
 
 /** Name, color and description for a new label; the standard labels of `repo-init` keep theirs. */
