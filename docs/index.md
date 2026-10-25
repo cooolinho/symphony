@@ -22,3 +22,4 @@ Central overview of all Symphony documents. For an overview of the project, see 
 - [laravel-repositories.md](laravel-repositories.md): conventions for Laravel repositories
 - [laravel-subagents.md](laravel-subagents.md): the Laravel subagents and the workflow roles: findings from the logs and the plan
 - [e2e.md](e2e.md): end-to-end test of the orchestration and the Laravel integration test (`npm run test:laravel`)
+- [gitflow.md](gitflow.md): branches, pull requests, merges, versions and releases

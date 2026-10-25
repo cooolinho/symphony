@@ -226,6 +226,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     </a>
     <dl class="sysinfo" aria-live="polite">
       <div><dt>System</dt><dd id="sys-status"><span class="badge tone-gray"><span class="dot"></span><span>Connecting</span></span></dd></div>
+      <div><dt>Version</dt><dd id="sys-version">—</dd></div>
       <div><dt>Workflow</dt><dd id="sys-workflow">—</dd></div>
       <div><dt>Polling</dt><dd id="sys-interval">—</dd></div>
       <div><dt>Last poll</dt><dd id="sys-lastpoll">—</dd></div>
@@ -428,6 +429,7 @@ ${PIPELINE_JS}
     const current = holder.firstChild;
     if (!current || current.className !== status.className || current.textContent !== status.textContent) holder.replaceChildren(status);
     if (!h) return;
+    setText($('sys-version'), h.symphony_version ? 'v' + h.symphony_version : '—');
     setText($('sys-workflow'), 'v' + h.workflow_version);
     setText($('sys-interval'), 'every ' + Math.round(h.poll_interval_ms / 1000) + 's');
     const last = $('sys-lastpoll');
