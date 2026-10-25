@@ -61,6 +61,12 @@ const DASHBOARD_CSS = `
   .agent-head .tags { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
   /* Integration chips (e.g. Laravel Boost) sit above the card link so their tooltip shows. */
   .int-chips { display: contents; }
+  .repos { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 14px; }
+  .repos-label { font: 500 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  .repo-list { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+  .repo-chip { color: var(--text); text-decoration: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  a.repo-chip:hover { border-color: var(--cyan-line); color: var(--cyan); }
+  .repo-chip.all { color: var(--muted); }
   .chip.flag-human { color: var(--red); border-color: var(--red-line); background: var(--red-dim); font-weight: 600; }
   .chip.flag-budget.near { color: var(--amber); border-color: var(--amber-line); }
   .chip.flag-budget.over { color: var(--red); border-color: var(--red-line); }
@@ -235,6 +241,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 </header>
 <p class="sr-only" id="announce" aria-live="polite"></p>
 <main>
+  <section id="repositories" class="repos" aria-label="Repositories" hidden><span class="repos-label">Repositories</span><div class="repo-list" id="repo-list"></div></section>
   <section id="problems" class="problems" role="alert" hidden>
     <h2><span class="dot tone-red"></span>Needs attention</h2>
     <ul id="problem-list"></ul>
@@ -392,6 +399,24 @@ ${PIPELINE_JS}
   })();
 
   // ------------------------------------------------------------------ header
+
+  function renderRepositories(h) {
+    const list = h.repositories;
+    $('repositories').hidden = false;
+    let nodes;
+    if (Array.isArray(list) && list.length) {
+      nodes = list.map((name) => {
+        const a = el('a', name, 'chip repo-chip');
+        a.href = 'https://github.com/' + name;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        return a;
+      });
+    } else {
+      nodes = [el('span', 'all repositories on the board', 'chip repo-chip all')];
+    }
+    patchChildren($('repo-list'), nodes);
+  }
 
   function renderHeader(h, problems, online) {
     let status;
@@ -1330,6 +1355,7 @@ ${PIPELINE_JS}
     $('problems').hidden = problems.length === 0;
     $('problem-list').replaceChildren(...problems.map((p) => el('li', p)));
     renderHeader(h, problems, true);
+    renderRepositories(h);
     const gate = h.dispatch_gate;
     $('dispatch-gate').hidden = !gate;
     setText($('dispatch-gate-text'), gate

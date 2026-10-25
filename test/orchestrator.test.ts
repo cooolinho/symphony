@@ -11,6 +11,7 @@ import { Logger } from '../src/log.ts';
 import { limitScopeOf } from '../src/agent/rate-limit.ts';
 import { CONTINUATION_DELAY_MS, SESSION_LIMIT_MAX_WAIT_MS, failureBackoffMs, sessionLimitWaitMs, sortForDispatch } from '../src/orchestrator/eligibility.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
+import { runtimeStateFile } from '../src/orchestrator/runtime-state.ts';
 import type { AgentToolSpec, ToolResult } from '../src/tracker/types.ts';
 import { dryRunPlan, planLines } from '../src/service.ts';
 import { decodeMarker, parseResult, renderResultComment, type ResultMeta } from '../src/workflow/results.ts';
@@ -50,6 +51,7 @@ function setup(
     integrations?: WorkspaceIntegration[];
     history?: HistoryLog;
     logDir?: string;
+    env?: NodeJS.ProcessEnv;
   } = {},
 ): Setup {
   const root = tempDir();
@@ -67,7 +69,7 @@ function setup(
     workflow,
     runner,
     logger: options.logger ?? Logger.silent(),
-    env: {},
+    env: options.env ?? {},
     logDir: options.logDir ?? null,
     clock,
     timers,
@@ -1976,6 +1978,38 @@ describe('observability', () => {
   it('exposes agent.max_session_limit_retries in the health snapshot', () => {
     const s = setup({ front: { agent: { max_session_limit_retries: 5 } }, issues: [] });
     assert.equal(snapshot(s).health.max_session_limit_retries, 5);
+  });
+});
+
+describe('health.repositories', () => {
+  const repos = (repositories: unknown, env: NodeJS.ProcessEnv = {}) => {
+    const provider: Record<string, unknown> = { owner: 'acme', project_number: 1, token: 'test-token' };
+    if (repositories !== undefined) provider.repositories = repositories;
+    const s = setup({ front: { tracker: { kind: 'github_project', provider } }, env, issues: [] });
+    return snapshot(s).health.repositories;
+  };
+
+  it('lists a single configured repository', () => {
+    assert.deepEqual(repos('$GITHUB_REPOSITORY', { GITHUB_REPOSITORY: 'acme/app' }), ['acme/app']);
+  });
+
+  it('lists several repositories once each, in configuration order', () => {
+    assert.deepEqual(repos('$GITHUB_REPOSITORY', { GITHUB_REPOSITORY: 'acme/app,acme/api, acme/app' }), ['acme/app', 'acme/api']);
+    assert.deepEqual(repos(['acme/app', 'acme/api']), ['acme/app', 'acme/api']);
+  });
+
+  it('is null without a restriction and skips invalid names', () => {
+    assert.equal(repos(undefined), null);
+    assert.equal(repos('$GITHUB_REPOSITORY', {}), null);
+    assert.deepEqual(repos('acme/app not-a-repo'), ['acme/app']);
+  });
+});
+
+describe('runtimeStateFile', () => {
+  it('keeps the state file name for the configured repositories', () => {
+    const tracker = { kind: 'github_project', provider: { repositories: '$R' } };
+    assert.equal(runtimeStateFile('/logs', tracker, { R: 'Acme/B, acme/a acme/b' }), '/logs/state/acme_a+acme_b.json');
+    assert.equal(runtimeStateFile('/logs', { kind: 'github_project', provider: {} }, {}), '/logs/state/github_project.json');
   });
 });
 

@@ -29,6 +29,30 @@ export function splitRepositoryList(text: string): string[] {
   return text.split(/[\s,]+/).filter((entry) => entry !== '');
 }
 
+/**
+ * The repositories a `repositories` setting names: resolves a `$VAR` reference (whole value and list entries),
+ * splits strings by comma/space and drops empty, non-string and duplicate entries (case-insensitive; the first
+ * spelling and the configuration order stay). No validation.
+ */
+export function configuredRepositories(raw: unknown, env: NodeJS.ProcessEnv): string[] {
+  const value = resolveEnvReference(raw, env);
+  const entries = Array.isArray(value)
+    ? value.map((entry) => resolveEnvReference(entry, env))
+    : typeof value === 'string'
+      ? splitRepositoryList(value)
+      : [];
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const entry of entries) {
+    if (typeof entry !== 'string') continue;
+    const name = entry.trim();
+    if (name === '' || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    names.push(name);
+  }
+  return names;
+}
+
 /** `auto_merge`: Symphony merges an issue's pull request into the base branch when the issue enters `onEnter`. */
 export interface AutoMergeSettings {
   /** Column whose successful `set_status` (entry checks passed) triggers the merge. */

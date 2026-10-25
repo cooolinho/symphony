@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { Logger } from '../src/log.ts';
 import { createGuard, guardTools } from '../src/orchestrator/guard.ts';
 import { githubProjectFactory } from '../src/tracker/github-project/index.ts';
-import { parseSettings } from '../src/tracker/github-project/settings.ts';
+import { configuredRepositories, parseSettings } from '../src/tracker/github-project/settings.ts';
 import { restBase } from '../src/tracker/github-project/statuses.ts';
 import { TrackerError, type Issue, type ToolResult, type TrackerAdapter } from '../src/tracker/types.ts';
 import { internalResult, renderResultComment } from '../src/workflow/results.ts';
@@ -1866,5 +1866,17 @@ describe('github_project work packages as sub-issues (#211)', () => {
     assert.match(String(change?.autoMerge?.reason), /there is no open pull request from symphony\/issue-7 into develop/);
     assert.equal(github.requests.some((r) => r.op === 'SymphonyMergePullRequest' || r.op === 'SymphonyCloseIssue'), false);
     assert.deepEqual(github.requests.filter((r) => r.op === 'SymphonySetStatus').map((r) => r.variables.optionId), ['o3']);
+  });
+});
+
+describe('configuredRepositories', () => {
+  it('splits, deduplicates case-insensitively and keeps the first spelling and order', () => {
+    assert.deepEqual(configuredRepositories('$R', { R: 'acme/app, acme/api  acme/App' }), ['acme/app', 'acme/api']);
+    assert.deepEqual(configuredRepositories(['acme/App', '$X', 'acme/app'], { X: 'other/lib' }), ['acme/App', 'other/lib']);
+    assert.deepEqual(configuredRepositories(['acme/x', '$R'], { R: 'acme/y' }), ['acme/x', 'acme/y']);
+  });
+
+  it('is empty without a usable value', () => {
+    for (const raw of [undefined, null, '', '$UNSET', 42]) assert.deepEqual(configuredRepositories(raw, {}), []);
   });
 });

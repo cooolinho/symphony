@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Logger } from '../log.ts';
 import { errorMessage } from '../util/errors.ts';
-import { resolveEnvReference } from '../util/env.ts';
+import { configuredRepositories } from '../tracker/github-project/settings.ts';
 import type { TrackerConfig } from '../workflow/config.ts';
 import { limitOverrideJson, limitOverrideOf, NO_LIMIT_OVERRIDE, type AgentLimitOverride } from './limits.ts';
 
@@ -80,13 +80,7 @@ export function runtimeStateFile(logDir: string | null, tracker: Pick<TrackerCon
 }
 
 function instanceName(tracker: Pick<TrackerConfig, 'kind' | 'provider'>, env: NodeJS.ProcessEnv): string {
-  const raw = resolveEnvReference(tracker.provider.repositories, env);
-  const entries = Array.isArray(raw)
-    ? raw.map((entry) => resolveEnvReference(entry, env))
-    : typeof raw === 'string'
-      ? raw.split(/[\s,]+/)
-      : [];
-  const repositories = [...new Set(entries.filter((e): e is string => typeof e === 'string' && e.trim() !== '').map((e) => e.trim().toLowerCase()))].sort();
+  const repositories = [...new Set(configuredRepositories(tracker.provider.repositories, env).map((e) => e.toLowerCase()))].sort();
   const base = repositories.length > 0 ? repositories.join('+') : (tracker.kind ?? 'symphony');
   const name = base.replace(/\//g, '_').replace(/[^a-z0-9._+-]/gi, '_');
   if (name.length <= MAX_NAME_LENGTH) return name;
