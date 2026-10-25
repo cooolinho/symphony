@@ -25,7 +25,7 @@ The current directory is a clone of the issue's repository. Work only inside it.
 6. Commit the tests and push the branch (`git push origin {{ branch }}`); the working tree must be clean and everything pushed.
 7. Hand off with `report_result`. Symphony posts the result as the issue comment, runs the entry check of the next column (lint, static analysis, tests) and moves the issue. Do not write a separate summary comment. Fields:
    - `verdict`: `passed` (every criterion has a passing test and nothing fails), `failed` (a test fails because of the production code; at least one case has the status `failed`) or `blocked` (you cannot test it, with at least one entry in `blockers`).
-   - `summary`: what you tested; for `failed`, what fails and why, as precisely as the developer needs to fix it.
+   - `summary`: what you tested; for `failed`, what fails and why, as precisely as the developer needs to fix it (at most {{ summary_max }} characters; all fields together at most about {{ result_budget }} characters).
    - `cases`: one entry per acceptance criterion checked, with `criterion`, `test` (test name or file) and `status` (`passed`, `failed` or `skipped`).
    - `commands`: the commands that ran. `uncovered_criteria`: criteria you could not cover, and why. `follow_ups`: work worth a separate issue.
    Then handle the answer:

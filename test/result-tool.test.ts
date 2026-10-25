@@ -9,7 +9,7 @@ import { RESULT_RECORDED_NOTE, RESULT_TOOL, classificationLabels, createResultTo
 import { buildStageHistory } from '../src/orchestrator/stage-history.ts';
 import { changedFiles } from '../src/workspace/changes.ts';
 import type { Issue, StatusChange, ToolResult } from '../src/tracker/types.ts';
-import { decodeMarker, parseResult, toolInputShape } from '../src/workflow/results.ts';
+import { RESULT_FIELD_BUDGET, SUMMARY_MAX, decodeMarker, parseResult, toolInputShape } from '../src/workflow/results.ts';
 import { WorkspaceManager } from '../src/workspace/manager.ts';
 import { FakeTracker, baseFront, makeIssue, makeWorkflow, tempDir } from './helpers.ts';
 
@@ -354,6 +354,12 @@ describe('report_result', () => {
     assert.deepEqual(Object.keys(unguarded.inputSchema), Object.keys(toolInputShape('review')));
     assert.match(unguarded.description, /approved, changes_needed, blocked/);
     assert.equal(unguarded.mutates, true);
+  });
+
+  it('names the size budgets in its description', () => {
+    const { unguarded } = setup();
+    assert.ok(unguarded.description.includes(`at most ${SUMMARY_MAX} characters`));
+    assert.ok(unguarded.description.includes(`at most about ${RESULT_FIELD_BUDGET} characters`));
   });
 
   it('records the result after the entry check passed: comment with marker, move, note', async () => {

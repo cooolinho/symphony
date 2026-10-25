@@ -15,6 +15,7 @@ import { profileFor } from '../src/workflow/profile.ts';
 import { roleFor, roleName } from '../src/workflow/roles.ts';
 import { unknownBoardColumns } from '../src/workflow/validate.ts';
 import { compilePrompt, issueTemplateValue, renderPrompt } from '../src/workflow/template.ts';
+import { RESULT_FIELD_BUDGET, SUMMARY_MAX } from '../src/workflow/results.ts';
 import { makeIssue } from './helpers.ts';
 
 /** The WORKFLOW.md shipped in the repository root. */
@@ -1251,4 +1252,14 @@ describe('shipped WORKFLOW.md security auditor', () => {
     const text = await render('reviewer', null, undefined, null, [], { result_required: true, round: 1 });
     assert.match(text, /or first to "Security review" when the change is security-relevant/);
   });
+});
+
+describe('shipped prompts: result size budget', () => {
+  for (const role of ['architect', 'issue-analyst', 'test-engineer']) {
+    it(`${role} names the summary limit and the field budget`, async () => {
+      const prompt = await render(role);
+      assert.ok(prompt.includes(`at most ${SUMMARY_MAX} characters`), 'summary limit');
+      assert.ok(prompt.includes(`at most about ${RESULT_FIELD_BUDGET} characters`), 'field budget');
+    });
+  }
 });
