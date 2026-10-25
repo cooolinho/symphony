@@ -31,7 +31,7 @@ export const RESULT_TOOL = 'report_result';
 
 /** Said in the tool description and in the role prompts: Claude Code drops a call whose JSON is broken before the tool runs. */
 export const JSON_ARGUMENT_HINT =
-  'Every argument must be valid JSON, or Claude Code rejects the call before it reaches Symphony and you must send it all again: escape `\\"` and `\\\\`, no raw tab characters, write paths with `/`, describe regexes in words, keep the summary short and put details in lists.';
+  'Every argument must be valid JSON, or Claude Code rejects the call before it reaches Symphony and you must send it all again: list fields (`files`, `changed_files`, `findings` ...) are JSON arrays like `["a.md", "b.md"]`, never Markdown bullet lines; escape `\\"` and `\\\\` (also an ASCII quote after a German opening quote: close it with the typographic mark), no raw tab characters, write paths with `/`, describe regexes in words, keep the summary short and put details in the array fields.';
 export const RESULT_RECORDED_NOTE = 'Result recorded — end your turn now.';
 
 /**

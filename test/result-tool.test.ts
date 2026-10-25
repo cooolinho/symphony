@@ -1059,7 +1059,8 @@ describe('report_result description: JSON hint', () => {
     assert.match(text, /paths with `\/`/);
     assert.match(text, /regexes in words/);
     assert.match(text, /summary short/);
-    assert.match(text, /details in lists/);
+    assert.match(text, /JSON arrays like `\["a\.md", "b\.md"\]`, never Markdown bullet lines/);
+    assert.match(text, /details in the array fields/);
     assert.match(text, /nothing is recorded and the issue stays: do what the error message says and report again\./);
     assert.match(text, /Report once, when the stage is complete, then end your turn\./);
   });
@@ -1075,6 +1076,6 @@ describe('report_result description: JSON hint', () => {
 
   it('the hint is one line without a raw control character', () => {
     assert.doesNotMatch(JSON_ARGUMENT_HINT, /[\u0000-\u001f]/);
-    assert.ok(JSON_ARGUMENT_HINT.length < 400);
+    assert.ok(JSON_ARGUMENT_HINT.length < 520);
   });
 });

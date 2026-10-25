@@ -1264,9 +1264,10 @@ describe('shipped WORKFLOW.md JSON hint for report_result (Claude Code rejects b
       assert.match(prompt, /must be valid JSON/, role);
       assert.ok(prompt.includes('escape `\\"` and `\\\\`'), `${role}: escaping of quote and backslash survives rendering`);
       assert.match(prompt, /no raw tab characters/, role);
+      assert.match(prompt, /never Markdown bullet lines/, role);
       assert.match(prompt, /write paths with `\/`/, role);
       assert.match(prompt, /describe regexes in words/, role);
-      assert.match(prompt, /keep the summary short and put details in lists/, role);
+      assert.match(prompt, /keep the summary short and put details in the array fields/, role);
     }
   });
 
@@ -1287,11 +1288,11 @@ describe('shipped WORKFLOW.md JSON hint for report_result (Claude Code rejects b
     }
   });
 
-  it('keeps the hint short: one line per role prompt, no more than 400 characters', async () => {
+  it('keeps the hint short: one line per role prompt, no more than 520 characters', async () => {
     const { definition } = await loadWorkflowFile(shipped);
     for (const [name, source] of Object.entries(definition.partials)) {
       for (const line of source.split('\n').filter((l) => l.includes('must be valid JSON'))) {
-        assert.ok(line.length <= 400, `${name}: hint line has ${line.length} characters`);
+        assert.ok(line.length <= 520, `${name}: hint line has ${line.length} characters`);
       }
     }
   });
