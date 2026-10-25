@@ -1297,3 +1297,31 @@ describe('shipped WORKFLOW.md JSON hint for report_result (Claude Code rejects b
     }
   });
 });
+
+describe('shipped WORKFLOW.md JSON hint targets the main cause (list field written as Markdown list, 16 of 18 cases)', () => {
+  it('tells the docs role that files is a JSON array of strings, with an example', async () => {
+    const prompt = await render('docs', null, undefined, 'develop', [], { result_required: true, round: 1 });
+    assert.match(prompt, /`files`[^\n]*JSON array/);
+    assert.ok(prompt.includes('["README.md"]'));
+    assert.match(prompt, /never a bullet list/);
+  });
+
+  it('names the array fields and shows an array literal in every role prompt with a result step', async () => {
+    for (const role of ['issue-analyst', 'architect', 'developer', 'docs', 'test-engineer', 'reviewer', 'security-auditor']) {
+      const prompt = await render(role, null, undefined, 'develop', [], { result_required: true, round: 1 });
+      assert.match(prompt, /list fields \([^)]*`files`[^)]*\) are JSON arrays like `\["a\.md", "b\.md"\]`/, role);
+    }
+  });
+
+  it('covers the German quote case (ASCII quote after a German opening quote)', async () => {
+    const prompt = await render('developer', null, undefined, 'develop', [], { result_required: true, round: 1 });
+    assert.match(prompt, /ASCII quote after a German opening quote/);
+  });
+
+  it('does not push the agent towards Markdown lists any more', async () => {
+    for (const role of ['developer', 'docs', 'reviewer']) {
+      const prompt = await render(role, null, undefined, 'develop', [], { result_required: true, round: 1 });
+      assert.doesNotMatch(prompt, /put details in lists/, role);
+    }
+  });
+});

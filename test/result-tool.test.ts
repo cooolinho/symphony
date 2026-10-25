@@ -1079,3 +1079,23 @@ describe('report_result description: JSON hint', () => {
     assert.ok(JSON_ARGUMENT_HINT.length < 520);
   });
 });
+
+describe('report_result description: list fields are JSON arrays', () => {
+  it('names the main cause (Markdown bullet lines in an array field) and gives an array example', () => {
+    const { unguarded } = setup();
+    assert.match(unguarded.description, /list fields \(`files`, `changed_files`, `findings`/);
+    assert.match(unguarded.description, /JSON arrays like `\["a\.md", "b\.md"\]`/);
+    assert.match(unguarded.description, /never Markdown bullet lines/);
+    assert.match(unguarded.description, /ASCII quote after a German opening quote/);
+    assert.doesNotMatch(unguarded.description, /put details in lists/);
+  });
+
+  it('keeps list fields of the schema as arrays (schema unchanged)', () => {
+    const docs = setup({ role: 'docs' }).unguarded.inputSchema as Record<string, { safeParse: (v: unknown) => { success: boolean } }>;
+    assert.equal(docs.files.safeParse(['README.md']).success, true);
+    assert.equal(docs.files.safeParse('- README.md').success, false);
+    const dev = setup({ role: 'developer' }).unguarded.inputSchema as Record<string, { safeParse: (v: unknown) => { success: boolean } }>;
+    assert.equal(dev.changed_files.safeParse(['a.ts']).success, true);
+    assert.equal(dev.changed_files.safeParse('- a.ts').success, false);
+  });
+});
