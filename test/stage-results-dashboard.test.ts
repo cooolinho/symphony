@@ -463,3 +463,34 @@ describe('agent page: renderGate', () => {
     }
   });
 });
+
+describe('dashboard: renderRepositories', () => {
+  const render = (repositories: unknown) => {
+    const { context, node } = pageContext(DASHBOARD_HTML, ['renderRepositories']);
+    context.h = { repositories };
+    vm.runInContext('renderRepositories(h)', context);
+    return node;
+  };
+
+  it('renders one text-only link per repository', () => {
+    const node = render(['acme/app', 'other/<img onerror=x>']);
+    const chips = node('repo-list').children;
+    assert.equal(chips.length, 2);
+    assert.equal(chips[0]!.text, 'acme/app');
+    assert.equal(chips[0]!.href, 'https://github.com/acme/app');
+    assert.equal(chips[1]!.text, 'other/<img onerror=x>');
+    assert.equal(chips[1]!.children.length, 0);
+    assert.equal(node('repositories').hidden, false);
+  });
+
+  it('says all repositories without a restriction', () => {
+    const chips = render(null)('repo-list').children;
+    assert.equal(chips.length, 1);
+    assert.equal(chips[0]!.text, 'all repositories on the board');
+  });
+
+  it('ships the bar and wraps the chips', () => {
+    assert.match(DASHBOARD_HTML, /id="repositories"/);
+    assert.match(DASHBOARD_HTML, /\.repo-list \{[^}]*flex-wrap: wrap/);
+  });
+});
