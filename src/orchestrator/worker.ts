@@ -22,7 +22,7 @@ import { EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../workflow/tem
 import { writeAttachments, type AttachmentFile } from '../workspace/attachments.ts';
 import { changedFiles } from '../workspace/changes.ts';
 import { baselineCommit, changedFilesSince } from './changed-files.ts';
-import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord, type GuardParams } from './guard.ts';
+import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord, type GateRun, type GuardParams } from './guard.ts';
 import { createResultTool, resultReminder, type PathRule, type ResultToolAdapter, type ResultToolParams } from './result-tool.ts';
 import { reviewedFiles, securityBaseRef } from './security.ts';
 import { interruptedTransition } from './recovery.ts';
@@ -113,6 +113,8 @@ export interface WorkerCallbacks {
   resultMoved(): void;
   /** Result of an entry check run by the transition guard. */
   checkFinished(check: CheckRecord): void;
+  /** The state of the entry gate changed (a snapshot: checks pending, running, finished). */
+  gateUpdated(gate: GateRun): void;
   /** The session recorded a stage result: called once, with the result as persisted, when `report_result` posts its comment. */
   stageResult(entry: PersistedResult): void;
   /** The issue's stage results: as loaded at the start of a result-driven session, again with each result it records. */
@@ -475,6 +477,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
         checkTimedOut = check.result === 'check_timeout';
         callbacks.checkFinished(check);
       },
+      onGateUpdate: (gate) => callbacks.gateUpdated(gate),
       onDenied: (target, message) => callbacks.transitionDenied(target, message),
       ...checkStatusReporter(params.workflow.config, params.adapter, issue),
       onEvent: (event, message, detail) =>

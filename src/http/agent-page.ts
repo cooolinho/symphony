@@ -10,6 +10,13 @@ const AGENT_CSS = `
   .pipe-row b { color: var(--text); font-weight: 600; }
   .pipe-row .muted { overflow-wrap: anywhere; }
 
+  /* Entry gate: one row per check of the column. */
+  .gate-checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  .gate-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 7px 10px; font: 12px var(--mono);
+    border: 1px solid var(--line); border-left: 2px solid var(--tone, var(--faint)); border-radius: var(--radius-sm); background: rgba(0, 0, 0, .2); }
+  .gate-row b { color: var(--text); font-weight: 600; }
+  .gate-row pre.code { flex: 1 0 100%; }
+
   /* Stage results: one card per result, newest last. */
   .result-cards { display: grid; gap: 8px; }
   .result-card { display: grid; gap: 6px; padding: 9px 12px; font: 12px var(--mono); border: 1px solid var(--line);
@@ -260,6 +267,11 @@ export const AGENT_HTML = `<!doctype html>
   <section class="results-section" id="results-section" aria-labelledby="results-title" hidden>
     <div class="section-head"><h2 id="results-title">Stage results <span class="count" id="results-count"></span></h2></div>
     <div class="result-cards" id="result-cards"></div>
+  </section>
+
+  <section class="gate-section" id="gate-section" aria-labelledby="gate-title" hidden>
+    <div class="section-head"><h2 id="gate-title">Entry checks <span class="count" id="gate-meta"></span></h2></div>
+    <ol class="gate-checks" id="gate-checks"></ol>
   </section>
 
   <section class="alert" id="alert" role="alert" hidden></section>
@@ -1223,6 +1235,31 @@ ${PIPELINE_JS}
     patchChildren($('pipe-rows'), rows);
   }
 
+  const GATE_STATUS = {
+    pending: ['gray', 'pending'], running: ['cyan', 'running'], passed: ['green', 'passed'], skipped: ['gray', 'skipped'],
+    check_failed: ['red', 'failed'], check_timeout: ['amber', 'timed out'], check_error: ['red', 'error'],
+  };
+
+  /** The newest entry gate: target, commit, and one row per check with its state, elapsed time and failure output. */
+  function renderGate() {
+    const g = S.detail && S.detail.gate;
+    $('gate-section').hidden = !g;
+    if (!g) { setText($('gate-meta'), ''); patchChildren($('gate-checks'), []); return; }
+    setText($('gate-meta'), '→ ' + g.target + (g.sha ? ' · ' + g.sha.slice(0, 12) : '') + (g.finished_at ? ' · finished ' + fmtClock(g.finished_at) : ' · running'));
+    const rows = g.checks.map((c) => {
+      const known = GATE_STATUS[c.status] || ['gray', c.status];
+      const label = c.status === 'pending' && g.finished_at ? 'not run' : c.status === 'check_failed' ? 'failed (exit ' + c.exit_code + ')' : known[1];
+      const row = el('li', null, 'gate-row tone-' + known[0]);
+      row.append(el('b', c.name || 'check'), el('span', label));
+      if (c.status === 'running') row.append(el('span', fmtMs(c.duration_ms) + ' / ' + fmtMs(c.timeout_ms), 'muted'));
+      else if (c.duration_ms !== null && c.duration_ms !== undefined) row.append(el('span', fmtMs(c.duration_ms), 'muted'));
+      if (c.cached) row.append(el('span', 'from cache', 'chip'));
+      if (c.output !== null && c.output !== undefined) row.append(el('pre', c.output || '(no output)', 'code err'));
+      return row;
+    });
+    patchChildren($('gate-checks'), rows);
+  }
+
   /** One card per recorded stage result: role, verdict with round, summary, findings, blockers and the comment's link. */
   function renderResults() {
     const d = S.detail;
@@ -1532,6 +1569,7 @@ ${PIPELINE_JS}
       renderHeader();
       renderPipelineSection();
       renderResults();
+      renderGate();
       renderIssueMeta();
       renderAlert();
       renderIntegrations();

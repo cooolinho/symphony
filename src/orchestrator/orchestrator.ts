@@ -42,7 +42,7 @@ import {
 } from './eligibility.ts';
 import { normalizeStateName } from '../workflow/config.ts';
 import { planDispatch, type PlanIssue, type PlanItem, type PlanRetry } from './dispatch-plan.ts';
-import { createGuard, entryChecksFor, type CheckCache, type CheckRecord } from './guard.ts';
+import { createGuard, entryChecksFor, type CheckCache, type CheckRecord, type GateRun } from './guard.ts';
 import { IssueArchive, type ArchivedIssue } from './issue-archive.ts';
 import {
   activeReservations,
@@ -396,6 +396,8 @@ interface IssueRecord {
   checkCache: CheckCache;
   /** The latest entry check of any run for this issue. */
   lastCheck: CheckRecord | null;
+  /** The newest entry gate of the current run: running, or finished until the next gate or run. */
+  gate: GateRun | null;
   /** Board fields of the issue at the last dispatch or reconcile; null before the first dispatch. */
   meta: IssueMeta | null;
   /** The issue's stage results as the latest result-driven session saw or reported them; empty before the first one. */
@@ -435,6 +437,27 @@ function traceJson(trace: RunTrace | null) {
     skill_calls: trace.toolUsage.skills,
     agent_calls: trace.toolUsage.agents,
     integrations: trace.integrations.map((report) => integrationJson(report, trace.toolUsage, trace.sessionSkills, trace.mcpUnavailable)),
+  };
+}
+
+function gateJson(gate: GateRun | null, nowMs: number) {
+  if (gate === null) return null;
+  return {
+    target: gate.target,
+    role: gate.role,
+    sha: gate.sha,
+    started_at: gate.startedAt.toISOString(),
+    finished_at: gate.finishedAt?.toISOString() ?? null,
+    checks: gate.checks.map((check) => ({
+      name: check.name,
+      status: check.status,
+      started_at: check.startedAt?.toISOString() ?? null,
+      duration_ms: check.status === 'running' && check.startedAt !== null ? Math.max(0, nowMs - check.startedAt.getTime()) : check.durationMs,
+      timeout_ms: check.timeoutMs,
+      cached: check.cached,
+      exit_code: check.exitCode,
+      output: check.output,
+    })),
   };
 }
 
@@ -1878,6 +1901,9 @@ export class Orchestrator {
           check = finished;
           record.lastCheck = finished;
         },
+        onGateUpdate: (gate) => {
+          record.gate = gate;
+        },
         ...checkStatusReporter(config, adapter, issue),
       });
       const decision = await guard(target, RESULT_TOOL);
@@ -2025,6 +2051,7 @@ export class Orchestrator {
     this.#cancelRetry(issue.id);
     const record = this.#record(issue);
     record.runs++;
+    record.gate = null;
     if (continuation) record.continuations++;
     record.repo = entry.repo;
     record.meta = issueMeta(issue);
@@ -2178,6 +2205,9 @@ export class Orchestrator {
           },
           resultMoved: () => {
             entry.resultMoved = true;
+          },
+          gateUpdated: (gate) => {
+            record.gate = gate;
           },
           checkFinished: (check) => {
             record.lastCheck = check;
@@ -3279,6 +3309,7 @@ export class Orchestrator {
         lastRun: null,
         checkCache: new Map(),
         lastCheck: null,
+        gate: null,
         meta: null,
         results: [],
       };
@@ -3702,6 +3733,7 @@ export class Orchestrator {
       recent_events: recentEvents(record?.timeline ?? []),
       last_error: record?.lastError ?? null,
       last_check: checkJson(record?.lastCheck ?? null),
+      gate: gateJson(record?.gate ?? null, Date.now()),
       tracked: { completed_before: this.#completed.has(issueId) },
       /** Agent slots now, for the Start now confirmation: `running` includes the `forced` sessions. */
       slots: this.#slotsJson(),
@@ -3741,6 +3773,7 @@ export class Orchestrator {
       recent_events: recentEvents(archived.timeline),
       last_error: archived.last_error,
       last_check: archived.last_check,
+      gate: null,
       tracked: { completed_before: archived.completed_before },
       slots: this.#slotsJson(),
       archived: { archived_at: archived.archived_at, released: archived.released },
