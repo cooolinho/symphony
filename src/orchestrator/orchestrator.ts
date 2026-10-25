@@ -12,6 +12,7 @@ import { readTranscript, type TranscriptChunk } from '../agent/transcript.ts';
 import { defaultIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
+import { configuredRepositories, isRepositoryName } from '../tracker/github-project/settings.ts';
 import { getTrackerFactory } from '../tracker/registry.ts';
 import type { Issue, MergeWatch, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
 import { SerialQueue, settledWithin } from '../util/async.ts';
@@ -3573,6 +3574,7 @@ export class Orchestrator {
     const now = this.#clock.monotonicMs();
     const workflow = this.#deps.workflow.current;
     const config = workflow.config;
+    const repositories = configuredRepositories(config.tracker.provider.repositories, this.#deps.env).filter(isRepositoryName);
     let activeSeconds = 0;
     for (const entry of this.#running.values()) activeSeconds += (now - entry.startedAtMs) / 1000;
     const gate = this.#dispatchGate();
@@ -3648,6 +3650,8 @@ export class Orchestrator {
           ? { at: this.#lastTrackerError.at.toISOString(), message: this.#lastTrackerError.message }
           : null,
         tracker_kind: config.tracker.kind,
+        /** Configured repositories (owner/name, deduplicated); null = no restriction, every repository on the board. */
+        repositories: repositories.length > 0 ? repositories : null,
         active_states: config.tracker.activeStates,
         terminal_states: config.tracker.terminalStates,
         poll_interval_ms: this.#pollIntervalMs,
