@@ -371,6 +371,45 @@ describe('named entry checks', () => {
       assert.match(last.checks[0]?.output ?? '', /step-one-done/);
     });
 
+    it('keeps only the end of a long output of a check that ran into the timeout', async () => {
+      const { seen, onGateUpdate } = gates();
+      const { guard } = named([{ name: 'ci', command: 'yes x | head -c 40000; echo the-last-step-line; sleep 5' }], { onGateUpdate }, 1500);
+      assert.equal(denied(await guard('Agent review'))?.category, 'check_timeout');
+      const check = seen[seen.length - 1]!.checks[0]!;
+      assert.equal(check.status, 'check_timeout');
+      assert.ok((check.output ?? '').length <= CHECK_OUTPUT_LIMIT);
+      assert.ok((check.output ?? '').length > 1000);
+      assert.ok((check.output ?? '').endsWith('the-last-step-line'), 'the end of the output survives');
+    });
+
+    it('gives a timed-out check its own output next to checks that passed or have no output', async () => {
+      const { seen, onGateUpdate } = gates();
+      const { guard } = named(
+        [
+          { name: 'a', command: 'echo passed-output' },
+          { name: 'b', command: 'echo b-before-timeout; sleep 5' },
+        ],
+        { onGateUpdate },
+        1500,
+      );
+      assert.equal(denied(await guard('Agent review'))?.category, 'check_timeout');
+      const last = seen[seen.length - 1]!;
+      assert.deepEqual(last.checks.map((c) => c.status), ['passed', 'check_timeout']);
+      assert.equal(last.checks[0]?.output ?? null, null, 'a passed check has no output');
+      assert.match(last.checks[1]?.output ?? '', /b-before-timeout/);
+      assert.notEqual(last.finishedAt, null);
+    });
+
+    it('keeps the steps block a script prints on SIGTERM in the gate run of a timeout', async () => {
+      const { seen, onGateUpdate } = gates();
+      const script = "trap 'echo steps:; echo \"  php artisan test  1s  timed out (aborted)\"; exit 143' TERM; echo step-one-done; sleep 5 & wait";
+      const { guard } = named([{ name: 'ci', command: script }], { onGateUpdate }, 1500);
+      assert.equal(denied(await guard('Agent review'))?.category, 'check_timeout');
+      const output = seen[seen.length - 1]!.checks[0]?.output ?? '';
+      assert.match(output, /step-one-done/);
+      assert.ok(output.endsWith('  php artisan test  1s  timed out (aborted)'), output);
+    });
+
     it('gives each failed check the output share the agent gets', async () => {
       const { seen, onGateUpdate } = gates();
       const { guard } = named(
