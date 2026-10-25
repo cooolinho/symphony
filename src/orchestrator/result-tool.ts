@@ -7,6 +7,7 @@ import { normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
 import { profileFor } from '../workflow/profile.ts';
 import {
   RESULT_VERDICTS,
+  resultBudgetNote,
   SPLIT_VERDICT,
   SUMMARY_MAX,
   parseResult,
@@ -533,7 +534,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       'issue on. Symphony checks the result, computes the next column from the verdict and runs that column\'s entry ' +
       'checks; when they pass, it posts the result as an issue comment and moves the issue. Report once, when the stage ' +
       'is complete, then end your turn. If the result is invalid or a check fails, nothing is recorded and the issue ' +
-      'stays: do what the error message says and report again.',
+      `stays: do what the error message says and report again. ${resultBudgetNote()}`,
     inputSchema: toolInputShape(kind),
     mutates: true,
     transitionTarget: async (args) => {

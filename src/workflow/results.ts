@@ -58,6 +58,33 @@ export const SPLIT_COMPLEXITY = 'XL';
 export const RESULT_SIZE_LIMIT = 60_000;
 
 export const SUMMARY_MAX = 4000;
+
+/** Room for the headings, labels, meta and JSON punctuation around the field text in the Markdown and in the marker. */
+const RESULT_OVERHEAD = 4000;
+/** Comment characters per field character: once as Markdown and once as base64url (4/3) of the JSON in the marker. */
+const COMMENT_PER_FIELD_CHARACTER = 1 + 4 / 3;
+
+/**
+ * What all fields of a result may hold together (characters of text), derived from {@link RESULT_SIZE_LIMIT}: the
+ * marker carries every field again as base64url, so the visible text may take only about 40% of the limit. Rounded
+ * down to 1,000 so the figure stays safe for text that Markdown or JSON escapes.
+ */
+export const RESULT_FIELD_BUDGET = Math.floor((RESULT_SIZE_LIMIT - RESULT_OVERHEAD) / COMMENT_PER_FIELD_CHARACTER / 1000) * 1000;
+
+/** The size budget as one sentence for the tool description. */
+export function resultBudgetNote(): string {
+  return `The \`summary\` may have at most ${SUMMARY_MAX} characters, and all fields together at most about ${RESULT_FIELD_BUDGET} characters (the comment holds the result twice and may not reach ${RESULT_SIZE_LIMIT}); a longer result is rejected and you have to write it again, so keep the lists short.`;
+}
+
+/** Characters of text per field of `result`, largest first (lists count their entries). */
+export function fieldSizes(result: StageResult): Array<{ field: string; length: number }> {
+  const length = (value: unknown): number =>
+    typeof value === 'string' ? value.length : Array.isArray(value) ? value.reduce((sum: number, entry) => sum + length(entry), 0) : value === null || typeof value !== 'object' ? String(value ?? '').length : JSON.stringify(value).length;
+  return Object.entries(result)
+    .filter(([field]) => field !== 'schema' && field !== 'kind')
+    .map(([field, value]) => ({ field, length: length(value) }))
+    .sort((a, b) => b.length - a.length);
+}
 const TEXT_MAX = 4000;
 const NAME_MAX = 500;
 const LIST_MAX = 200;
@@ -496,9 +523,12 @@ function fitResult(result: StageResult, size: (candidate: StageResult) => number
     }
   }
   if (best !== null) return best;
+  const sizes = fieldSizes(result);
+  const fieldText = sizes.reduce((sum, entry) => sum + entry.length, 0);
+  const largest = sizes.filter((entry) => entry.length > 0).slice(0, 4).map((entry) => `${entry.field} (${entry.length})`).join(', ');
   throw new SymphonyError(
     'result_too_large',
-    `the ${result.kind} result is too large for an issue comment (${size(result)} characters rendered, limit ${RESULT_SIZE_LIMIT}): shorten the summary and the lists`,
+    `the ${result.kind} result is too large for an issue comment (${size(result)} characters rendered, limit ${RESULT_SIZE_LIMIT}): its fields hold ${fieldText} characters, the budget is about ${RESULT_FIELD_BUDGET} because the comment carries them twice; the largest fields are ${largest}. Shorten those first (the summary may have at most ${SUMMARY_MAX} characters)`,
   );
 }
 
