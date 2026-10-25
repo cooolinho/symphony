@@ -20,7 +20,7 @@ export type TransitionProfile = WorkflowProfile;
 export type StageConditions = Readonly<Record<string, boolean>>;
 
 /** Round counters of the issue's persisted results; `securityRounds` is 0 when omitted. */
-export type RoundHistory = Pick<StageHistory, 'reviewRounds' | 'testRounds'> & Partial<Pick<StageHistory, 'securityRounds'>>;
+export type RoundHistory = Pick<StageHistory, 'reviewRounds' | 'testRounds'> & Partial<Pick<StageHistory, 'securityRounds' | 'checkFailures'>>;
 
 /** The round the next loop verdict of `kind` would be, minus one: the loop verdicts recorded so far. */
 export function roundsDone(history: RoundHistory, kind: LoopKind): number {
@@ -131,6 +131,28 @@ export function resolveTransition(input: TransitionInput): TransitionOutcome {
     limitReached,
     round,
   };
+}
+
+/** Where a hand-off goes after its entry check failed: `on_check_failed`, or the escalation once `max_check_failures` is reached. */
+export interface CheckFailedRoute {
+  column: string;
+  /** True when this hand-off reaches `pipeline.max_check_failures`: the issue goes to a human and gets `limit_label`. */
+  limitReached: boolean;
+  note: string;
+}
+
+/**
+ * The column for a hand-off whose entry check failed. The first `max_check_failures - 1` go to `on_check_failed`; the
+ * one that reaches the limit goes to `on_round_limit`, else the blocked column. Null without `on_check_failed`, or when
+ * the escalation has no column.
+ */
+export function checkFailedRoute({ role, history, config }: Pick<TransitionInput, 'role' | 'history' | 'config'>): CheckFailedRoute | null {
+  if (role.onCheckFailed === null) return null;
+  const { maxCheckFailures } = config.pipeline;
+  if ((history.checkFailures ?? 0) + 1 < maxCheckFailures) return { column: role.onCheckFailed, limitReached: false, note: 'on_check_failed' };
+  const target = role.onRoundLimit !== null ? { column: role.onRoundLimit, note: 'on_round_limit' } : blockedColumn({ role, config } as TransitionInput);
+  if ('problem' in target) return null;
+  return { column: target.column, limitReached: true, note: target.note };
 }
 
 /** The round limit for the role's result kind; null for kinds without one. */

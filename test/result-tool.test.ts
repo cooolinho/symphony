@@ -649,6 +649,68 @@ describe('report_result', () => {
       assert.deepEqual(data(await report(CHANGES)).already_recorded, true, 'a run still reports once');
     });
 
+    describe('max_check_failures', () => {
+      /** History with `n` earlier hand-offs over on_check_failed, from different runs and roles. */
+      const earlier = (n: number) =>
+        buildStageHistory(
+          Array.from({ length: n }, (_, i) => ({
+            result: { kind: 'review', verdict: 'approved', summary: 's' } as never,
+            meta: {
+              role: i % 2 === 0 ? 'reviewer' : 'auditor',
+              run: `run-${i}`,
+              round: null,
+              profile: null,
+              workflow_hash: null,
+              head_sha: null,
+              checks: null,
+              target: 'In progress',
+              check_failed_for: 'In review',
+              created_at: `2026-10-1${i}T12:00:00Z`,
+            },
+          })),
+        );
+      const options = (n: number) => ({
+        checks: FAILING,
+        history: earlier(n),
+        reviewer: { on_check_failed: 'In progress', on_round_limit: 'Blocked' },
+      });
+
+      it('sends the first and second hand-off back to on_check_failed without a label', async () => {
+        for (const n of [0, 1]) {
+          const { report, current } = setup(options(n));
+          assert.equal(data(await report(APPROVED)).target, 'In progress');
+          assert.deepEqual(current().labels, []);
+        }
+      });
+
+      it('sends the third hand-off, counted over rounds and roles, to on_round_limit with needs-human and names the checks', async () => {
+        const { report, tracker, current, markers } = setup(options(2));
+        const result = data(await report(APPROVED));
+        assert.equal(result.target, 'Blocked');
+        assert.deepEqual(tracker.statusCalls, ['Blocked']);
+        assert.deepEqual(current().labels, ['needs-human']);
+        const [marker] = markers();
+        assert.equal(marker?.meta.check_failed_for, 'In review');
+        assert.match(marker?.result.summary ?? '', /failed repeatedly[^\n]*"In review" \(3×\)/);
+      });
+
+      it('falls back to the blocked column without on_round_limit', async () => {
+        const { report, current } = setup({ ...options(2), reviewer: { on_check_failed: 'In progress', on_round_limit: undefined } });
+        const result = data(await report(APPROVED));
+        assert.equal(result.target, 'Blocked');
+        assert.deepEqual(current().labels, ['needs-human']);
+      });
+
+      it('does not count hand-offs before a reset', () => {
+        const entry = (kind: string, at: number, failed: string | null) => ({
+          result: { kind, verdict: 'x', summary: 's' } as never,
+          meta: { role: 'r', run: `run-${at}`, round: null, profile: null, workflow_hash: null, head_sha: null, checks: null, target: null, check_failed_for: failed, created_at: `2026-10-1${at}T12:00:00Z` },
+        });
+        const history = buildStageHistory([entry('review', 1, 'In review'), entry('review', 2, 'In review'), entry('reset', 3, null), entry('review', 4, 'In review')]);
+        assert.equal(history.checkFailures, 1);
+      });
+    });
+
     it('keeps the summary within its limit with a long summary and long check output', async () => {
       const { report, markers } = setup({ checks: { 'In review': 'yes "a long line of check output" | head -n 400; exit 1' }, reviewer: { on_check_failed: 'In progress' } });
       data(await report({ ...APPROVED, summary: 'x'.repeat(3_900) }));

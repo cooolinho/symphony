@@ -846,6 +846,7 @@ describe('result-driven roles and the pipeline section', () => {
         maxReviewRounds: 3,
         maxTestRounds: 2,
         maxSecurityRounds: 2,
+        maxCheckFailures: 3,
         limitLabel: 'needs-human',
         typeLabels: [],
         defaultType: 'feature',
@@ -1013,6 +1014,12 @@ describe('result-driven roles and the pipeline section', () => {
       assert.deepEqual(resolve({ ...base, pipeline: {} }).pipeline.docsTriggerPaths, ['.env.example', 'config/**', 'WORKFLOW.md']);
       assert.deepEqual(resolve({ ...base, pipeline: { docs_trigger_paths: ['settings/**'] } }).pipeline.docsTriggerPaths, ['settings/**']);
       assert.deepEqual(resolve({ ...base, pipeline: { docs_trigger_paths: [] } }).pipeline.docsTriggerPaths, []);
+    });
+
+    it('defaults max_check_failures to 3 (minimum 1)', () => {
+      assert.equal(resolve({ ...base, pipeline: {} }).pipeline.maxCheckFailures, 3);
+      assert.equal(resolve({ ...base, pipeline: { max_check_failures: '5' } }).pipeline.maxCheckFailures, 5);
+      assert.match(messageOf({ ...base, pipeline: { max_check_failures: 0 } }), /pipeline\.max_check_failures must be an integer >= 1 \(got 0\)/);
     });
 
     it('defaults max_security_rounds to 2 (minimum 1) and security_paths to the Laravel places; an explicit list replaces them', () => {

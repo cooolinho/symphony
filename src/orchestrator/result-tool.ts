@@ -23,7 +23,7 @@ import { filesOutside } from './changed-files.ts';
 import { docsNeeded, type DocsFacts } from './docs.ts';
 import { securityNeeded, type SecurityFacts } from './security.ts';
 import { refactoringGoals, type PersistedResult, type StageHistory } from './stage-history.ts';
-import { resolveTransition, type RoundHistory, type StageConditions, type Transition, type TransitionProfile } from './transitions.ts';
+import { checkFailedRoute, resolveTransition, type RoundHistory, type StageConditions, type Transition, type TransitionProfile } from './transitions.ts';
 import { isSubIssue, subIssueCount } from './work-packages.ts';
 
 /** Name of the tool a role with `result` hands off with, instead of `set_status`. */
@@ -88,7 +88,7 @@ export interface ResultToolParams {
    * Round counters and results of the issue's persisted results, loaded when the session starts (a run reports once).
    * A review reads the refactoring goals of the newest analysis from `results`.
    */
-  history: RoundHistory & Partial<Pick<StageHistory, 'results'>>;
+  history: RoundHistory & Partial<Pick<StageHistory, 'results' | 'failedChecks'>>;
   profile: TransitionProfile | null;
   flags?: StageConditions;
   /**
@@ -136,10 +136,22 @@ const MIN_QUOTED_OUTPUT = 200;
  * after the summary and quotes as much of the check output as the summary limit leaves room for; the summary itself is
  * cut when the note alone would not fit.
  */
-function withCheckFailedNote(result: StageResult, failed: NonNullable<AllowedTransition['checkFailed']>, target: string): StageResult {
+function withCheckFailedNote(
+  result: StageResult,
+  failed: NonNullable<AllowedTransition['checkFailed']>,
+  target: string,
+  limit: { repeated: string[]; max: number } | null,
+): StageResult {
+  const counts = new Map<string, number>();
+  for (const column of limit?.repeated ?? []) counts.set(column, (counts.get(column) ?? 0) + 1);
+  const named = [...counts].map(([column, n]) => `"${column}" (${n}×)`).join(', ');
   const note =
-    `**Entry check failed.** The entry check for "${failed.target}" failed, so Symphony moved the issue to "${target}" ` +
-    '(`on_check_failed`) instead of the column this result leads to.';
+    limit === null
+      ? `**Entry check failed.** The entry check for "${failed.target}" failed, so Symphony moved the issue to "${target}" ` +
+        '(`on_check_failed`) instead of the column this result leads to.'
+      : `**Entry check failed repeatedly.** The entry check for "${failed.target}" failed again; ${limit.repeated.length} hand-offs ` +
+        `went back over \`on_check_failed\` (limit \`pipeline.max_check_failures\` = ${limit.max}): ${named}. Symphony moved the issue to ` +
+        `"${target}" for a human instead of back to the developer.`;
   const summary = truncate(result.summary, Math.max(0, SUMMARY_MAX - note.length - 2));
   const room = SUMMARY_MAX - summary.length - note.length - NOTE_SLACK;
   const output = failed.output.trim();
@@ -391,7 +403,8 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     // after the computed move failed its entry check.
     const allowed = context.transition;
     const failed = allowed?.checkFailed;
-    const fallback = failed !== undefined && role.readOnly ? role.onCheckFailed : null;
+    const route = failed !== undefined && role.readOnly ? checkFailedRoute({ role, history: params.history, config: params.config }) : null;
+    const fallback = route?.column ?? null;
     const expected = fallback ?? planned.transition.target;
     if (
       allowed === undefined ||
@@ -400,18 +413,25 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     ) {
       return fail('tool_error', `${RESULT_TOOL} ran without the transition guard's approval for "${expected}"; nothing was recorded`);
     }
-    // The limit label belongs to the move the verdict leads to; a redirect to `on_check_failed` leaves it alone.
+    // The limit label belongs to the move the verdict leads to; a redirect to `on_check_failed` leaves it alone, unless
+    // it is the one that reaches `max_check_failures`: that one goes to a human and carries the label.
+    const limitReached = route?.limitReached === true;
+    const limit = params.config.pipeline.limitLabel;
     const transition: Transition =
       failed === undefined
         ? planned.transition
         : {
             ...planned.transition,
             target: allowed.target,
-            labels: { add: [], remove: [] },
-            limitReached: false,
-            reason: `${planned.transition.reason}; entry check for "${failed.target}" failed → "${allowed.target}" (on_check_failed)`,
+            labels: limitReached ? { add: [limit], remove: [] } : { add: [], remove: [] },
+            limitReached,
+            reason: `${planned.transition.reason}; entry check for "${failed.target}" failed → "${allowed.target}" (${route?.note ?? 'on_check_failed'})`,
           };
-    const result = failed === undefined ? planned.result : withCheckFailedNote(planned.result, failed, allowed.target);
+    const repeated = [...(params.history.failedChecks ?? []), ...(failed !== undefined ? [failed.target] : [])];
+    const result =
+      failed === undefined
+        ? planned.result
+        : withCheckFailedNote(planned.result, failed, allowed.target, limitReached ? { repeated, max: params.config.pipeline.maxCheckFailures } : null);
 
     // The issue may have left the role's columns while the agent worked or the check ran (a human moved it): a result
     // for a column it is no longer in would move it back. Confirmed right before anything is written.
@@ -443,6 +463,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       head_sha: await params.meta.headSha().catch(() => null),
       checks: failed?.check ?? allowed.check,
       target: transition.target,
+      ...(failed !== undefined ? { check_failed_for: failed.target } : {}),
       created_at: now().toISOString(),
     };
     let body: string;
@@ -523,8 +544,8 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       return planned.ok ? planned.transition.target : null;
     },
     checkFailedTarget: (args) => {
-      if (recorded !== null || !role.readOnly || role.onCheckFailed === null) return null;
-      return plan(args, looked.get(args)).ok ? role.onCheckFailed : null;
+      if (recorded !== null || !role.readOnly) return null;
+      return plan(args, looked.get(args)).ok ? (checkFailedRoute({ role, history: params.history, config: params.config })?.column ?? null) : null;
     },
     precheck: (args, context) => queue.run(async () => (await pathViolation()) ?? (await splitViolation(args, context))),
     execute: (args, context) => queue.run(() => record(args, context)),

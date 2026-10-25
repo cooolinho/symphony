@@ -129,6 +129,8 @@ export interface PipelineConfig {
   maxTestRounds: number;
   /** Security rounds (security review found issues → fix) before the issue is handed to a human. */
   maxSecurityRounds: number;
+  /** Hand-offs over `on_check_failed` (a failed entry check) per issue before it goes to a human. */
+  maxCheckFailures: number;
   /** Label put on an issue that hit a round limit. */
   limitLabel: string;
   /** Issue label (normalized: trimmed, lowercase) → change type. */
@@ -228,6 +230,7 @@ export const DEFAULTS = {
   maxReviewRounds: 3,
   maxTestRounds: 2,
   maxSecurityRounds: 2,
+  maxCheckFailures: 3,
   /** `pipeline.test_paths` when unset: the usual places of test files (Laravel, Node, Jest/Vitest). */
   testPaths: ['tests/**', 'test/**', '**/*.test.*', '**/*Test.php'],
   /** `pipeline.security_paths` when unset: the places of a Laravel app where authorization, authentication and the schema live. */
@@ -275,6 +278,7 @@ const PIPELINE_KEYS = new Set([
   'max_review_rounds',
   'max_test_rounds',
   'max_security_rounds',
+  'max_check_failures',
   'limit_label',
   'type_labels',
   'default_type',
@@ -508,6 +512,7 @@ function readPipeline(reader: Reader, raw: Record<string, unknown>, roles: RoleC
     maxReviewRounds: reader.int(section, 'max_review_rounds', 'pipeline.max_review_rounds', DEFAULTS.maxReviewRounds, 1),
     maxTestRounds: reader.int(section, 'max_test_rounds', 'pipeline.max_test_rounds', DEFAULTS.maxTestRounds, 1),
     maxSecurityRounds: reader.int(section, 'max_security_rounds', 'pipeline.max_security_rounds', DEFAULTS.maxSecurityRounds, 1),
+    maxCheckFailures: reader.int(section, 'max_check_failures', 'pipeline.max_check_failures', DEFAULTS.maxCheckFailures, 1),
     limitLabel: nonEmpty('limit_label', DEFAULTS.pipelineLimitLabel),
     typeLabels,
     defaultType: nonEmpty('default_type', DEFAULTS.pipelineDefaultType),

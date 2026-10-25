@@ -213,6 +213,8 @@ export interface ResultMeta {
   checks: ResultChecks | null;
   /** Column the stage hands the issue to; null when it does not move it. */
   target: string | null;
+  /** Column whose entry check failed when the result went to `on_check_failed` instead; absent or null otherwise. */
+  check_failed_for?: string | null;
   /** ISO 8601 timestamp. */
   created_at: string;
 }
@@ -238,6 +240,7 @@ const metaSchema = z.object({
     })
     .nullable(),
   target: nullableText,
+  check_failed_for: nullableText.optional(),
   created_at: z.string(),
 }) satisfies z.ZodType<ResultMeta>;
 
