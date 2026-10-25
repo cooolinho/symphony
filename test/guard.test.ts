@@ -277,7 +277,7 @@ describe('check cache', () => {
 });
 
 describe('named entry checks', () => {
-  function named(entries: Array<{ name: string | null; command: string }>, extra: Partial<GuardParams> = {}) {
+  function named(entries: Array<{ name: string | null; command: string }>, extra: Partial<GuardParams> = {}, timeoutMs = 10_000) {
     const env = setup({ checks: { 'Agent review': 'exit 0' } });
     const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: env.workspacePath, stdio: 'ignore' });
     git('init', '-q');
@@ -286,7 +286,7 @@ describe('named entry checks', () => {
     git('commit', '-qm', 'one');
     const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: env.workspacePath, encoding: 'utf8' }).trim();
     const log = path.join(path.dirname(env.workspacePath), 'ran');
-    const checks = entries.map((entry) => ({ ...entry, command: `echo ${entry.name ?? 'plain'} >> ${log}; ${entry.command}`, timeoutMs: 10_000 }));
+    const checks = entries.map((entry) => ({ ...entry, command: `echo ${entry.name ?? 'plain'} >> ${log}; ${entry.command}`, timeoutMs }));
     const config = { ...env.params.config, checks: { ...env.params.config.checks, onEnter: new Map([['agent review', checks]]) } };
     const statuses: string[] = [];
     const cache: CheckCache = new Map();
@@ -360,6 +360,15 @@ describe('named entry checks', () => {
       assert.deepEqual(last.checks.map((c) => c.status), ['passed', 'skipped']);
       assert.notEqual(last.finishedAt, null);
       assert.equal(last.checks[0]?.timeoutMs, 10_000);
+    });
+
+    it('keeps the output of a check that ran into the timeout in the gate run', async () => {
+      const { seen, onGateUpdate } = gates();
+      const { guard } = named([{ name: 'ci', command: 'echo step-one-done; sleep 5' }], { onGateUpdate }, 500);
+      assert.equal(denied(await guard('Agent review'))?.category, 'check_timeout');
+      const last = seen[seen.length - 1]!;
+      assert.equal(last.checks[0]?.status, 'check_timeout');
+      assert.match(last.checks[0]?.output ?? '', /step-one-done/);
     });
 
     it('gives each failed check the output share the agent gets', async () => {

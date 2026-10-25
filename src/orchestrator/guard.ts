@@ -425,7 +425,7 @@ export function createGuard(params: GuardParams): TransitionGuard {
         entry.status = record.result;
         entry.durationMs = record.durationMs;
         entry.exitCode = record.exitCode;
-        if (record.result === 'check_failed') entry.output = checkOutput(result);
+        if (record.result === 'check_failed' || record.result === 'check_timeout') entry.output = checkOutput(result);
         else if (record.result === 'check_error') entry.output = checkOutput(result, ERROR_OUTPUT_LIMIT);
         publish(gate);
         emit('checks_finished', `entry check for ${label.replaceAll('"', '')} ${record.result}`, {

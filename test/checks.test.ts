@@ -141,6 +141,48 @@ describe('checks/laravel.sh', () => {
     assert.ok(names.includes('php artisan test'));
   });
 
+  it('prints load lines, the test setup and one step line each last, on success', () => {
+    const f = fixture({ phpstan: true });
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '3' });
+    assert.equal(result.status, 0, result.out);
+    assert.match(result.out, /host load at start \(1\/5\/15 min\): .*\d+ CPUs/);
+    assert.match(result.out, /host load at end \(1\/5\/15 min\): /);
+    assert.match(result.out, /tests: 1 process\(es\), database sqlite/);
+    const lines = result.out.trimEnd().split('\n');
+    const at = lines.lastIndexOf('steps:');
+    assert.ok(at > lines.indexOf('all checks passed'), 'steps come after the verdict');
+    assert.deepEqual(lines.slice(at + 1).map((l) => l.replace(/ {2}(\S.*?) {2}\d+s {2}(\S.*)$/, '$1|$2')), ['php -l|ok', 'pint|ok', 'phpstan|ok', 'php artisan test|ok']);
+  });
+
+  it('prints the steps last after a failing step, with the output and exit code unchanged', () => {
+    const f = fixture({ phpstan: true });
+    const result = run(f, { FAKE_TEST_FAIL: 'phpunit' });
+    assert.equal(result.status, 1);
+    const lines = result.out.trimEnd().split('\n');
+    assert.match(result.out, /php artisan test failed \(exit 1\):/);
+    const at = lines.lastIndexOf('steps:');
+    assert.ok(at > lines.indexOf('Failed tests:'));
+    assert.match(lines[lines.length - 1] ?? '', /^ {2}php artisan test {2}\d+s {2}failed$/);
+    assert.match(lines[at - 1] ?? '', /^host load at end/);
+    assert.equal(lines.length - at - 1, 4);
+  });
+
+  it('prints the steps and the load when the check is terminated, and still drops the MySQL databases', () => {
+    const f = fixture();
+    write(path.dirname(f.bin), 'bin/php-fake', FAKE_PHP, 0o755);
+    write(path.dirname(f.bin), 'bin/php', `#!/bin/sh\n[ "$2" = migrate ] && sleep 30\nexec "${f.bin}/php-fake" "$@"\n`, 0o755);
+    const result = spawnSync('bash', ['-c', `set -m; bash "$0" --full & pid=$!; sleep 2; kill -TERM -- -$pid; wait $pid`, SCRIPT], {
+      cwd: f.repo,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, SYMPHONY_CI_DB: 'mysql', SYMPHONY_MYSQL_USER: 'u' },
+    });
+    assert.equal(result.status, 143, result.stdout + result.stderr);
+    const lines = result.stdout.trimEnd().split('\n');
+    assert.match(lines[lines.length - 1] ?? '', /^ {2}php artisan migrate {2}\d+s {2}timed out/);
+    assert.ok(lines.includes('steps:'));
+    assert.ok(calls(f).some((c) => c[0] === 'mysql' && c.some((a) => a.includes('DROP DATABASE IF EXISTS'))));
+  });
+
   it('exits 0 with a message when there is no Laravel app', () => {
     const f = fixture();
     fs.rmSync(path.join(f.repo, 'artisan'));
@@ -240,7 +282,7 @@ describe('checks/laravel.sh', () => {
     const f = fixture();
     const result = run(f, { FAKE_TEST_FAIL: 'phpunit' });
     assert.equal(result.status, 1, result.out);
-    assert.match(result.out, /Tests: 3229, Errors: 1\.\x1b\[0m\n\nFailed tests:\n1\) Tests\\Feature\\ClubPageTest::test_color — QueryException: Data too long for column 'color'\n$/);
+    assert.match(result.out, /Tests: 3229, Errors: 1\.\x1b\[0m\n\nFailed tests:\n1\) Tests\\Feature\\ClubPageTest::test_color — QueryException: Data too long for column 'color'\nhost load at end/);
   });
 
   it('exits 1 on style and static analysis failures', () => {
