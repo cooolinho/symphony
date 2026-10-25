@@ -1254,6 +1254,79 @@ describe('shipped WORKFLOW.md security auditor', () => {
   });
 });
 
+describe('shipped WORKFLOW.md JSON hint for report_result (Claude Code rejects broken JSON before the tool runs)', () => {
+  /** The rendered prompt of every role that hands off with `report_result` must carry the escaping hint. */
+  const ROLES_WITH_RESULT = ['issue-analyst', 'architect', 'developer', 'docs', 'test-engineer', 'reviewer', 'security-auditor'];
+
+  it('puts the hint into the rendered prompt of every role that reports a result', async () => {
+    for (const role of ROLES_WITH_RESULT) {
+      const prompt = await render(role, null, undefined, 'develop', [], { result_required: true, round: 1 });
+      assert.match(prompt, /`report_result`/, role);
+      assert.match(prompt, /must be valid JSON/, role);
+      assert.ok(prompt.includes('escape `\\"` and `\\\\`'), `${role}: escaping of quote and backslash survives rendering`);
+      assert.match(prompt, /no raw tab characters/, role);
+      assert.match(prompt, /never Markdown bullet lines/, role);
+      assert.match(prompt, /write paths with `\/`/, role);
+      assert.match(prompt, /describe regexes in words/, role);
+      assert.match(prompt, /keep the summary short and put details in the array fields/, role);
+    }
+  });
+
+  it('puts the hint into the reviewer prompt of an integration review of split work packages as well', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const reviewerSources = ['roles/reviewer.md'].map((name) => definition.partials[name] ?? '');
+    for (const source of reviewerSources) {
+      const hints = source.match(/must be valid JSON/g) ?? [];
+      const reports = source.match(/Report exactly one result with `report_result`/g) ?? [];
+      assert.ok(reports.length >= 1);
+      assert.equal(hints.length, reports.length, 'every reviewer hand-off step has its own hint');
+    }
+  });
+
+  it('keeps the hint out of the prompts of roles that never call report_result', async () => {
+    for (const role of ['default']) {
+      assert.doesNotMatch(await render(role), /must be valid JSON/, role);
+    }
+  });
+
+  it('keeps the hint short: one line per role prompt, no more than 520 characters', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    for (const [name, source] of Object.entries(definition.partials)) {
+      for (const line of source.split('\n').filter((l) => l.includes('must be valid JSON'))) {
+        assert.ok(line.length <= 520, `${name}: hint line has ${line.length} characters`);
+      }
+    }
+  });
+});
+
+describe('shipped WORKFLOW.md JSON hint targets the main cause (list field written as Markdown list, 16 of 18 cases)', () => {
+  it('tells the docs role that files is a JSON array of strings, with an example', async () => {
+    const prompt = await render('docs', null, undefined, 'develop', [], { result_required: true, round: 1 });
+    assert.match(prompt, /`files`[^\n]*JSON array/);
+    assert.ok(prompt.includes('["README.md"]'));
+    assert.match(prompt, /never a bullet list/);
+  });
+
+  it('names the array fields and shows an array literal in every role prompt with a result step', async () => {
+    for (const role of ['issue-analyst', 'architect', 'developer', 'docs', 'test-engineer', 'reviewer', 'security-auditor']) {
+      const prompt = await render(role, null, undefined, 'develop', [], { result_required: true, round: 1 });
+      assert.match(prompt, /list fields \([^)]*`files`[^)]*\) are JSON arrays like `\["a\.md", "b\.md"\]`/, role);
+    }
+  });
+
+  it('covers the German quote case (ASCII quote after a German opening quote)', async () => {
+    const prompt = await render('developer', null, undefined, 'develop', [], { result_required: true, round: 1 });
+    assert.match(prompt, /ASCII quote after a German opening quote/);
+  });
+
+  it('does not push the agent towards Markdown lists any more', async () => {
+    for (const role of ['developer', 'docs', 'reviewer']) {
+      const prompt = await render(role, null, undefined, 'develop', [], { result_required: true, round: 1 });
+      assert.doesNotMatch(prompt, /put details in lists/, role);
+    }
+  });
+});
+
 describe('shipped prompts: result size budget', () => {
   for (const role of ['architect', 'issue-analyst', 'test-engineer']) {
     it(`${role} names the summary limit and the field budget`, async () => {

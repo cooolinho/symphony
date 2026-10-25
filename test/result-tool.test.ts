@@ -3,13 +3,14 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
+import { z } from 'zod';
 import { Logger } from '../src/log.ts';
 import { createGuard, guardTools, toolsForRole } from '../src/orchestrator/guard.ts';
-import { RESULT_RECORDED_NOTE, RESULT_TOOL, classificationLabels, createResultTool, type ResultToolParams } from '../src/orchestrator/result-tool.ts';
+import { JSON_ARGUMENT_HINT, RESULT_RECORDED_NOTE, RESULT_TOOL, classificationLabels, createResultTool, type ResultToolParams } from '../src/orchestrator/result-tool.ts';
 import { buildStageHistory } from '../src/orchestrator/stage-history.ts';
 import { changedFiles } from '../src/workspace/changes.ts';
 import type { Issue, StatusChange, ToolResult } from '../src/tracker/types.ts';
-import { RESULT_FIELD_BUDGET, SUMMARY_MAX, decodeMarker, parseResult, toolInputShape } from '../src/workflow/results.ts';
+import { RESULT_FIELD_BUDGET, SUMMARY_MAX, resultBudgetNote, decodeMarker, parseResult, toolInputShape } from '../src/workflow/results.ts';
 import { WorkspaceManager } from '../src/workspace/manager.ts';
 import { FakeTracker, baseFront, makeIssue, makeWorkflow, tempDir } from './helpers.ts';
 
@@ -354,6 +355,16 @@ describe('report_result', () => {
     assert.deepEqual(Object.keys(unguarded.inputSchema), Object.keys(toolInputShape('review')));
     assert.match(unguarded.description, /approved, changes_needed, blocked/);
     assert.equal(unguarded.mutates, true);
+  });
+
+  it('tells the agent to send valid JSON arguments (Claude Code rejects broken JSON before the tool runs)', () => {
+    const { unguarded } = setup();
+    assert.match(JSON_ARGUMENT_HINT, /valid JSON/);
+    assert.ok(unguarded.description.includes(JSON_ARGUMENT_HINT));
+    for (const file of fs.readdirSync('roles').filter((name) => name.endsWith('.md'))) {
+      const text = fs.readFileSync(path.join('roles', file), 'utf8');
+      if (/^\d+\. (Report|Hand off).*`report_result`.*Fields:/m.test(text)) assert.ok(text.includes(JSON_ARGUMENT_HINT), `${file} lacks the JSON hint`);
+    }
   });
 
   it('names the size budgets in its description', () => {
@@ -1045,6 +1056,57 @@ describe('report_result of a refactor review', () => {
   });
 });
 
+describe('report_result description: JSON hint', () => {
+  it('names every escaping rule from the issue and keeps the original wording of the description', () => {
+    const { unguarded } = setup();
+    const text = unguarded.description;
+    assert.match(text, /valid JSON/);
+    assert.ok(text.includes('escape `\\"` and `\\\\`'), 'quote and backslash escaping');
+    assert.match(text, /no raw tab characters/);
+    assert.match(text, /paths with `\/`/);
+    assert.match(text, /regexes in words/);
+    assert.match(text, /summary short/);
+    assert.match(text, /JSON arrays like `\["a\.md", "b\.md"\]`, never Markdown bullet lines/);
+    assert.match(text, /details in the array fields/);
+    assert.match(text, /nothing is recorded and the issue stays: do what the error message says and report again\./);
+    assert.match(text, /Report once, when the stage is complete, then end your turn\./);
+  });
+
+  it('gives every result kind a hint at the end of the description and leaves the schema keys of the kind alone', () => {
+    for (const role of ['reviewer', 'developer']) {
+      const { unguarded } = setup({ role });
+      assert.ok(unguarded.description.endsWith(JSON_ARGUMENT_HINT), role);
+      assert.ok(unguarded.description.split(JSON_ARGUMENT_HINT).length === 2, `${role}: hint appears once`);
+      assert.ok(Object.keys(unguarded.inputSchema).includes('verdict') && Object.keys(unguarded.inputSchema).includes('summary'), role);
+    }
+  });
+
+  it('the hint is one line without a raw control character', () => {
+    assert.doesNotMatch(JSON_ARGUMENT_HINT, /[\u0000-\u001f]/);
+    assert.ok(JSON_ARGUMENT_HINT.length < 520);
+  });
+});
+
+describe('report_result description: list fields are JSON arrays', () => {
+  it('names the main cause (Markdown bullet lines in an array field) and gives an array example', () => {
+    const { unguarded } = setup();
+    assert.match(unguarded.description, /list fields \(`files`, `changed_files`, `findings`/);
+    assert.match(unguarded.description, /JSON arrays like `\["a\.md", "b\.md"\]`/);
+    assert.match(unguarded.description, /never Markdown bullet lines/);
+    assert.match(unguarded.description, /ASCII quote after a German opening quote/);
+    assert.doesNotMatch(unguarded.description, /put details in lists/);
+  });
+
+  it('keeps list fields of the schema as arrays (schema unchanged)', () => {
+    const docs = z.object(setup({ role: 'docs' }).unguarded.inputSchema);
+    assert.equal(docs.safeParse({ verdict: 'done', summary: 's', files: ['README.md'] }).success, true);
+    assert.equal(docs.safeParse({ verdict: 'done', summary: 's', files: '- README.md' }).success, false);
+    const dev = z.object(setup({ role: 'developer' }).unguarded.inputSchema);
+    assert.equal(dev.safeParse({ verdict: 'done', summary: 's', changed_files: ['a.ts'] }).success, true);
+    assert.equal(dev.safeParse({ verdict: 'done', summary: 's', changed_files: '- a.ts' }).success, false);
+  });
+});
+
 describe('report_result: size budget (#284)', () => {
   const TOO_BIG = {
     verdict: 'passed',
@@ -1082,5 +1144,18 @@ describe('report_result: size budget (#284)', () => {
     const shortened = { ...TOO_BIG, uncovered_criteria: TOO_BIG.uncovered_criteria.map((entry) => entry.slice(0, 1000)) };
     data(await report(shortened));
     assert.equal(tracker.comments.get('1')?.length, 1);
+  });
+});
+
+describe('report_result description: size budget and JSON hint together', () => {
+  it('names the size budget first and ends with the JSON hint', () => {
+    for (const role of ['reviewer', 'developer']) {
+      const { unguarded } = setup({ role });
+      const budget = unguarded.description.indexOf(resultBudgetNote());
+      const hint = unguarded.description.indexOf(JSON_ARGUMENT_HINT);
+      assert.ok(budget >= 0, `${role}: size budget missing`);
+      assert.ok(hint > budget, `${role}: hint must follow the budget`);
+      assert.ok(unguarded.description.endsWith(JSON_ARGUMENT_HINT), role);
+    }
   });
 });
