@@ -1048,3 +1048,33 @@ describe('report_result of a refactor review', () => {
     assert.equal(data(await report(APPROVED)).target, 'In review');
   });
 });
+
+describe('report_result description: JSON hint', () => {
+  it('names every escaping rule from the issue and keeps the original wording of the description', () => {
+    const { unguarded } = setup();
+    const text = unguarded.description;
+    assert.match(text, /valid JSON/);
+    assert.ok(text.includes('escape `\\"` and `\\\\`'), 'quote and backslash escaping');
+    assert.match(text, /no raw tab characters/);
+    assert.match(text, /paths with `\/`/);
+    assert.match(text, /regexes in words/);
+    assert.match(text, /summary short/);
+    assert.match(text, /details in lists/);
+    assert.match(text, /nothing is recorded and the issue stays: do what the error message says and report again\./);
+    assert.match(text, /Report once, when the stage is complete, then end your turn\./);
+  });
+
+  it('gives every result kind a hint at the end of the description and leaves the schema keys of the kind alone', () => {
+    for (const role of ['reviewer', 'developer']) {
+      const { unguarded } = setup({ role });
+      assert.ok(unguarded.description.endsWith(JSON_ARGUMENT_HINT), role);
+      assert.ok(unguarded.description.split(JSON_ARGUMENT_HINT).length === 2, `${role}: hint appears once`);
+      assert.ok(Object.keys(unguarded.inputSchema).includes('verdict') && Object.keys(unguarded.inputSchema).includes('summary'), role);
+    }
+  });
+
+  it('the hint is one line without a raw control character', () => {
+    assert.doesNotMatch(JSON_ARGUMENT_HINT, /[\u0000-\u001f]/);
+    assert.ok(JSON_ARGUMENT_HINT.length < 400);
+  });
+});

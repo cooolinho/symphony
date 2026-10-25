@@ -1252,3 +1252,47 @@ describe('shipped WORKFLOW.md security auditor', () => {
     assert.match(text, /or first to "Security review" when the change is security-relevant/);
   });
 });
+
+describe('shipped WORKFLOW.md JSON hint for report_result (Claude Code rejects broken JSON before the tool runs)', () => {
+  /** The rendered prompt of every role that hands off with `report_result` must carry the escaping hint. */
+  const ROLES_WITH_RESULT = ['issue-analyst', 'architect', 'developer', 'docs', 'test-engineer', 'reviewer', 'security-auditor'];
+
+  it('puts the hint into the rendered prompt of every role that reports a result', async () => {
+    for (const role of ROLES_WITH_RESULT) {
+      const prompt = await render(role, null, undefined, 'develop', [], { result_required: true, round: 1 });
+      assert.match(prompt, /`report_result`/, role);
+      assert.match(prompt, /must be valid JSON/, role);
+      assert.ok(prompt.includes('escape `\\"` and `\\\\`'), `${role}: escaping of quote and backslash survives rendering`);
+      assert.match(prompt, /no raw tab characters/, role);
+      assert.match(prompt, /write paths with `\/`/, role);
+      assert.match(prompt, /describe regexes in words/, role);
+      assert.match(prompt, /keep the summary short and put details in lists/, role);
+    }
+  });
+
+  it('puts the hint into the reviewer prompt of an integration review of split work packages as well', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const reviewerSources = ['roles/reviewer.md'].map((name) => definition.partials[name] ?? '');
+    for (const source of reviewerSources) {
+      const hints = source.match(/must be valid JSON/g) ?? [];
+      const reports = source.match(/Report exactly one result with `report_result`/g) ?? [];
+      assert.ok(reports.length >= 1);
+      assert.equal(hints.length, reports.length, 'every reviewer hand-off step has its own hint');
+    }
+  });
+
+  it('keeps the hint out of the prompts of roles that never call report_result', async () => {
+    for (const role of ['default']) {
+      assert.doesNotMatch(await render(role), /must be valid JSON/, role);
+    }
+  });
+
+  it('keeps the hint short: one line per role prompt, no more than 400 characters', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    for (const [name, source] of Object.entries(definition.partials)) {
+      for (const line of source.split('\n').filter((l) => l.includes('must be valid JSON'))) {
+        assert.ok(line.length <= 400, `${name}: hint line has ${line.length} characters`);
+      }
+    }
+  });
+});
