@@ -155,8 +155,12 @@ A call runs these steps, one call at a time:
    (it cannot fix the code, so repeating the report is pointless) does not stop the call: the guard checks the
    `on_check_failed` column instead (`may_move_to`, that column's entry check), and the result is recorded with the
    agent's verdict, a note with the failed check's output appended to the summary, `checks` of the failed check and
-   `target` of the fallback column. The result then carries `check_failed_for` (the column whose check failed) and the
-   round limit label is neither added nor removed. If the fallback is the column that failed, or its own check fails,
+   `target` of the fallback column. The result then carries `check_failed_for` (the column whose check failed; it is
+   also in the marker's meta, optional, so older markers still read) and the round limit label is neither added nor
+   removed. These hand-offs are counted per issue (across rounds and roles, back to the last `reset`):
+   the one that reaches `pipeline.max_check_failures` (default 3) goes to `on_round_limit` (else the blocked column)
+   instead of `on_check_failed`, gets `pipeline.limit_label`, and the note in its summary names the checks that failed
+   repeatedly. If the fallback is the column that failed, or its own check fails,
    the agent gets the denial as before. `check_timeout` and `check_error` never redirect. A session whose newest entry
    check timed out ends after the turn without a reminder: a timeout is a runtime limit, not a missing result.
 4. **Confirm the column.** Right before writing, the tool re-reads the issue. If it has left the role's columns (a

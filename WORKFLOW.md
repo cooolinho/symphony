@@ -329,6 +329,9 @@ pipeline:
   max_test_rounds: 2
   # Security rounds (security review found issues -> developer fixes) before the issue goes to Blocked with needs-human.
   max_security_rounds: 2
+  # Hand-offs back to the developer over on_check_failed (a failed entry check, e.g. In review) per issue; the one that
+  # reaches the limit goes to on_round_limit (else Blocked) with needs-human. A reset result starts the count again.
+  max_check_failures: 3
   # always: the issue analyst runs for every issue in Ready. when_unlabeled: it is skipped without a session for issues that
   # already carry a Type: and a Complexity: label (they go straight to In progress).
   analysis: always

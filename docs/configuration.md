@@ -448,7 +448,7 @@ roles:
 | `on_result` | `{}` | Column per verdict of `result`, or `next` (the next active stage after the role's columns in board order). Needs `result`. See [Result-driven transitions](#result-driven-transitions). |
 | `on_check_failed` | none | Column for an issue whose entry check fails for a role that cannot fix it (a read-only role). When the check of the column a `report_result` leads to fails, the tool records the result anyway, adds a note with the check output to its summary and moves the issue here (through the transition guard, so this column's own entry check applies). Without it the agent gets `check_failed` and nothing is recorded. Ignored for roles that are not `read_only`. |
 | `on_missing_result` | `Blocked` with `result`, else none | Column for a session that ends without a result. Needs `result`. After the first turn without a result the session gets one reminder turn; if the turn limit comes first or the reminder fails too, Symphony re-fetches the issue and, only if it is still in the role's column, posts a plain comment ("Stage ended without a result") and moves it here. An issue someone moved meanwhile is left alone. See [Stages without a result](results.md#stages-without-a-result). |
-| `on_round_limit` | the blocked column | Column for a loop verdict (review `changes_needed`, test `failed`, security `issues_found`) that reaches `pipeline.max_review_rounds` / `max_test_rounds` / `max_security_rounds`. Needs `result: review`, `result: test` or `result: security`. See [Result-driven transitions](#result-driven-transitions). |
+| `on_round_limit` | the blocked column | Column for a loop verdict (review `changes_needed`, test `failed`, security `issues_found`) that reaches `pipeline.max_review_rounds` / `max_test_rounds` / `max_security_rounds`. Also the target of the hand-off that reaches `pipeline.max_check_failures` instead of `on_check_failed`. Needs `result: review`, `result: test` or `result: security`. See [Result-driven transitions](#result-driven-transitions). |
 | `model_label` | `apply`; `ignore` for read-only roles with a `result` | `ignore` keeps a `Model:` issue label from changing the role's model (`model_by_complexity` still applies). |
 | `effort_label` | `apply` | `ignore` keeps an `Effort:` issue label from changing the role's effort: the session runs with the role's `claude.effort`, else `claude.effort`. The shipped `WORKFLOW.md` sets it for the roles with a fixed task, so a label like `Effort: xhigh` raises the developer's effort, not the reviewer's or the docs agent's. |
 | `max_turns` | `agent.max_turns` | Integer >= 1. |
@@ -500,6 +500,10 @@ history at its start). The rules apply in this order:
    `pipeline.max_review_rounds` / `max_test_rounds` / `max_security_rounds` (with the defaults: the 3rd
    `changes_needed`, the 2nd `failed`, the 2nd `issues_found`), the issue goes to `on_round_limit` (else the blocked column)
    and gets `pipeline.limit_label`. Every other transition removes that label.
+   **Check failures.** A hand-off whose entry check failed and went to `on_check_failed` is no round, but it is counted
+   per issue, across rounds and roles, from the result markers (`check_failed_for`; a `reset` result starts again). The
+   hand-off that reaches `pipeline.max_check_failures` (default 3, so the 3rd) goes to `on_round_limit` (else the blocked
+   column) instead, gets `pipeline.limit_label`, and its comment names the repeatedly failing checks.
 3. **`on_result[verdict]`.** `next` is the first active column after the role's columns in board order whose role is
    not skipped by the issue's profile and whose stage condition holds. A verdict without a target goes to the blocked
    column. A reviewer's `approved` that leads out of the active columns (to `In review`) goes to the
@@ -1030,7 +1034,8 @@ like everywhere else (an unset variable counts as omitted). Unknown keys are ign
 | `max_review_rounds` | `3` | Integer >= 1. Review rounds before the issue goes to a human. |
 | `max_test_rounds` | `2` | Integer >= 1. Test rounds before the issue goes to a human. |
 | `max_security_rounds` | `2` | Integer >= 1. Security review rounds (`issues_found` → developer fixes) before the issue goes to a human. |
-| `limit_label` | `needs-human` | Label for an issue that hit a round limit. |
+| `max_check_failures` | `3` | Integer >= 1. Hand-offs per issue that went to a role's `on_check_failed` (the entry check of the column failed) before the issue goes to a human. |
+| `limit_label` | `needs-human` | Label for an issue that hit a round limit or `max_check_failures`. |
 | `type_labels` | `{}` | Map of issue label → change type, e.g. `{ bug: bug, enhancement: feature }` (labels are matched case-insensitively). |
 | `default_type` | `feature` | Type of an issue without a label in `type_labels`. |
 | `analysis` | `always` | `always` or `when_unlabeled`. With `when_unlabeled`, the analysis stage (the role whose `result` is `analysis`) is [skipped without a session](#skipping-stages-without-a-session) for issues that already carry a `Type:` and a `Complexity:` label. Needs a role with `result: analysis`. |
