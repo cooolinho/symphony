@@ -49,10 +49,10 @@ export async function projectAsksForScreenshots(facts: Pick<ScreenshotFacts, 'wo
  */
 export async function screenshotsMissing(facts: ScreenshotFacts): Promise<ScreenshotDecision> {
   if (facts.policy === 'never' || facts.uiPaths.length === 0) return { missing: false };
+  if (facts.policy === 'auto' && !(await projectAsksForScreenshots(facts))) return { missing: false };
   const files = await facts.changedFiles();
   const uiFiles = files.filter((file) => matchesAnyGlob(file, facts.uiPaths));
   if (uiFiles.length === 0) return { missing: false };
   if (files.some((file) => matchesAnyGlob(file, facts.screenshotPaths))) return { missing: false };
-  if (facts.policy === 'auto' && !(await projectAsksForScreenshots(facts))) return { missing: false };
   return { missing: true, uiFiles: uiFiles.slice(0, FILES_SHOWN), more: Math.max(0, uiFiles.length - FILES_SHOWN) };
 }
