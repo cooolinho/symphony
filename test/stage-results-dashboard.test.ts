@@ -257,6 +257,7 @@ class FakeNode {
   attrs: Record<string, string> = {};
   href?: string;
   hidden = false;
+  open = false;
   title = '';
   constructor(tag: string, text?: string | null, className?: string) {
     this.tag = tag;
@@ -275,6 +276,9 @@ class FakeNode {
   }
   find(predicate: (node: FakeNode) => boolean): FakeNode[] {
     return [...(predicate(this) ? [this] : []), ...this.children.flatMap((c) => c.find(predicate))];
+  }
+  querySelector(tag: string): FakeNode | null {
+    return this.find((n) => n.tag === tag && n !== this)[0] ?? null;
   }
 }
 

@@ -1254,10 +1254,26 @@ ${PIPELINE_JS}
       if (c.status === 'running') row.append(el('span', fmtMs(c.duration_ms) + ' / ' + fmtMs(c.timeout_ms), 'muted'));
       else if (c.duration_ms !== null && c.duration_ms !== undefined) row.append(el('span', fmtMs(c.duration_ms), 'muted'));
       if (c.cached) row.append(el('span', 'from cache', 'chip'));
-      if (c.output !== null && c.output !== undefined) row.append(el('pre', c.output || '(no output)', 'code err'));
+      if (c.output !== null && c.output !== undefined) {
+        const quiet = c.status === 'passed' || c.status === 'skipped';
+        const pre = el('pre', c.output || '(no output)', quiet ? 'code' : 'code err');
+        if (quiet) {
+          const details = el('details', null, 'gate-output');
+          details.append(el('summary', 'output (end)'), pre);
+          row.append(details);
+        } else row.append(pre);
+      }
       return row;
     });
-    patchChildren($('gate-checks'), rows);
+    // A refresh must not fold output the user has opened: carry the open state over to the new row.
+    const host = $('gate-checks');
+    rows.forEach((row, i) => {
+      const old = host.children[i];
+      const was = old && old.querySelector('details');
+      const now = row.querySelector('details');
+      if (was && now && was.open) now.open = true;
+    });
+    patchChildren(host, rows);
   }
 
   /** One card per recorded stage result: role, verdict with round, summary, findings, blockers and the comment's link. */

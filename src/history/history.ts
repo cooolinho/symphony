@@ -108,6 +108,9 @@ export interface CheckFinish {
   ok: boolean;
   /** `passed`, `skipped`, `check_failed`, `check_timeout` or `check_error`. */
   result: string;
+  /** Steps and host load the check script printed; omitted without them. */
+  steps?: unknown[];
+  load?: object;
   at: Date;
 }
 
@@ -326,6 +329,8 @@ export class HistoryLog {
       exit_code: check.exitCode,
       timed_out: check.timedOut || undefined,
       duration_ms: check.durationMs,
+      steps: check.steps,
+      load: check.load,
     });
   }
 

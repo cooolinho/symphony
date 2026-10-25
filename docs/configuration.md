@@ -1333,6 +1333,13 @@ they survive when the guard shortens the output from the front. On a timeout the
 143. The guard keeps the end of the output of a timed-out check in the gate run (`gate.checks[].output`, shown on the
 issue's detail page), as it does for a failed check.
 
+**Output of passed checks.** For a `passed` or `skipped` check the guard also keeps a short end of the output (at most
+400 characters) in `gate.checks[].output`, from the `host load at end` or `steps:` line on; output without them (another
+script) keeps just its last 400 characters, and empty output stays `null`. The agent page shows it collapsed in *Entry
+checks*. The `checks_finished` line of the [repository log](#repository-logs) carries the parsed `steps` and `load` (also for failed and timed-out runs, which print them too), so
+step durations can be compared across issues. The agent's answer to a passed check stays the short note without output.
+A cached result keeps the output of the original run.
+
 The fast gate (without `--full`) tests in parallel with `SYMPHONY_TEST_PARALLEL=<n>` in Symphony's environment
 (`php artisan test --parallel --processes=<n>`, on SQLite, so without `--drop-databases`), when `vendor/bin/paratest`
 exists. It never installs anything: without paratest the tests run in one process, with a note. An invalid value (not a
@@ -1380,7 +1387,7 @@ workflow directory, else `$XDG_STATE_HOME/symphony` or `~/.local/state/symphony`
 | `model_hold`, `model_hold_ended` | `model`, `since`, `until`; a limit hold also `issue`, `title`, `extended`, `text`; an operator hold (dashboard **Pause** on a model) `source=operator` with `stopped` or `requeued`, written to every repository with a claimed issue |
 | `worker_restarted` | `repo`, `issue`, `title`, `previous` (`retrying` or `paused`); written when an operator restarts a waiting or paused worker through the dashboard or `POST /api/v1/<identifier>/retry` |
 | `workspace_removed` | `repo`, `issue`, `state` |
-| `checks_finished` | `repo`, `issue`, `run`, `role`, `target`, `sha` (workspace commit; omitted outside git), `ok`, `result` (`passed`, `check_failed`, `check_timeout`, `check_error`), `exit_code` (`null` when the script did not exit normally), `timed_out` (only when `true`), `duration_ms` |
+| `checks_finished` | `repo`, `issue`, `run`, `role`, `target`, `sha` (workspace commit; omitted outside git), `ok`, `result` (`passed`, `skipped`, `check_failed`, `check_timeout`, `check_error`), `exit_code` (`null` when the script did not exit normally), `timed_out` (only when `true`), `duration_ms`, `steps` (JSON list of `{name, duration_s, result}` from the `steps:` block of `checks/laravel.sh`; omitted without one), `load` (JSON object `{1m, 5m, 15m, cpus}` (each a number or `null` when unknown) from the `host load at end` line; omitted without one) |
 | `transition_denied` | `repo`, `issue`, `run`, `role`, `target`, `reason` (the message the agent received) |
 
 `cost_usd` in a line uses the prices at the time it was written; the logs page and `/api/v1/history` recompute every
