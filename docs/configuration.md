@@ -1315,6 +1315,12 @@ With `SYMPHONY_CI_PARALLEL=<n>` the tests run in `n` processes (`php artisan tes
 `composer update brianium/paratest` first, but only when `composer.lock` is not tracked (the tree must stay clean).
 Without paratest the tests run in one process, with a note.
 
+The fast gate (without `--full`) tests in parallel with `SYMPHONY_TEST_PARALLEL=<n>` in Symphony's environment
+(`php artisan test --parallel --processes=<n>`, on SQLite, so without `--drop-databases`), when `vendor/bin/paratest`
+exists. It never installs anything: without paratest the tests run in one process, with a note. An invalid value (not a
+positive integer) is an environment problem (exit 2). A `test` script in `composer.json` takes precedence over both
+variables; `--full` reads only `SYMPHONY_CI_PARALLEL`.
+
 Composer scripts are detected with `composer run-script --list`, which lists exactly the scripts defined in
 `composer.json` (without Composer, none are used). A `test` script can run the suite in parallel, e.g.
 `@php artisan test --parallel` with `brianium/paratest`; start it with `Composer\Config::disableProcessTimeout`, or
