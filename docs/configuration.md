@@ -1320,6 +1320,16 @@ With `SYMPHONY_CI_PARALLEL=<n>` the tests run in `n` processes (`php artisan tes
 `composer update brianium/paratest` first, but only when `composer.lock` is not tracked (the tree must stay clean).
 Without paratest the tests run in one process, with a note.
 
+**Timings and host load.** Once the environment checks passed, the script prints `host load at start (1/5/15 min): …,
+<n> CPUs` (from `/proc/loadavg` and `nproc`; `unknown` where they are missing) and, before the tests, `tests: <n>
+process(es), database sqlite|mysql`. The last lines of the output are `host load at end …` and a `steps:` block with
+one line per step (`php -l`, style, static analysis, `php artisan config:clear`/`migrate`, tests) in the form
+`  <name>  <duration>  <ok|failed>`. They come last on every exit after the steps began, also after a failing step, so
+they survive when the guard shortens the output from the front. On a timeout the guard terminates the script
+(SIGTERM): it prints the same lines with the running step as `timed out (aborted)`, drops its MySQL databases and exits
+143. The guard keeps the end of the output of a timed-out check in the gate run (`gate.checks[].output`, shown on the
+issue's detail page), as it does for a failed check.
+
 The fast gate (without `--full`) tests in parallel with `SYMPHONY_TEST_PARALLEL=<n>` in Symphony's environment
 (`php artisan test --parallel --processes=<n>`, on SQLite, so without `--drop-databases`), when `vendor/bin/paratest`
 exists. It never installs anything: without paratest the tests run in one process, with a note. An invalid value (not a

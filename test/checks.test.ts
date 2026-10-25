@@ -141,6 +141,48 @@ describe('checks/laravel.sh', () => {
     assert.ok(names.includes('php artisan test'));
   });
 
+  it('prints load lines, the test setup and one step line each last, on success', () => {
+    const f = fixture({ phpstan: true });
+    const result = run(f, { SYMPHONY_TEST_PARALLEL: '3' });
+    assert.equal(result.status, 0, result.out);
+    assert.match(result.out, /host load at start \(1\/5\/15 min\): .*\d+ CPUs/);
+    assert.match(result.out, /host load at end \(1\/5\/15 min\): /);
+    assert.match(result.out, /tests: 1 process\(es\), database sqlite/);
+    const lines = result.out.trimEnd().split('\n');
+    const at = lines.lastIndexOf('steps:');
+    assert.ok(at > lines.indexOf('all checks passed'), 'steps come after the verdict');
+    assert.deepEqual(lines.slice(at + 1).map((l) => l.replace(/ {2}(\S.*?) {2}\d+s {2}(\S.*)$/, '$1|$2')), ['php -l|ok', 'pint|ok', 'phpstan|ok', 'php artisan test|ok']);
+  });
+
+  it('prints the steps last after a failing step, with the output and exit code unchanged', () => {
+    const f = fixture({ phpstan: true });
+    const result = run(f, { FAKE_TEST_FAIL: 'phpunit' });
+    assert.equal(result.status, 1);
+    const lines = result.out.trimEnd().split('\n');
+    assert.match(result.out, /php artisan test failed \(exit 1\):/);
+    const at = lines.lastIndexOf('steps:');
+    assert.ok(at > lines.indexOf('Failed tests:'));
+    assert.match(lines[lines.length - 1] ?? '', /^ {2}php artisan test {2}\d+s {2}failed$/);
+    assert.match(lines[at - 1] ?? '', /^host load at end/);
+    assert.equal(lines.length - at - 1, 4);
+  });
+
+  it('prints the steps and the load when the check is terminated, and still drops the MySQL databases', () => {
+    const f = fixture();
+    write(path.dirname(f.bin), 'bin/php-fake', FAKE_PHP, 0o755);
+    write(path.dirname(f.bin), 'bin/php', `#!/bin/sh\n[ "$2" = migrate ] && sleep 30\nexec "${f.bin}/php-fake" "$@"\n`, 0o755);
+    const result = spawnSync('bash', ['-c', `set -m; bash "$0" --full & pid=$!; sleep 2; kill -TERM -- -$pid; wait $pid`, SCRIPT], {
+      cwd: f.repo,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, SYMPHONY_CI_DB: 'mysql', SYMPHONY_MYSQL_USER: 'u' },
+    });
+    assert.equal(result.status, 143, result.stdout + result.stderr);
+    const lines = result.stdout.trimEnd().split('\n');
+    assert.match(lines[lines.length - 1] ?? '', /^ {2}php artisan migrate {2}\d+s {2}timed out/);
+    assert.ok(lines.includes('steps:'));
+    assert.ok(calls(f).some((c) => c[0] === 'mysql' && c.some((a) => a.includes('DROP DATABASE IF EXISTS'))));
+  });
+
   it('exits 0 with a message when there is no Laravel app', () => {
     const f = fixture();
     fs.rmSync(path.join(f.repo, 'artisan'));
@@ -240,7 +282,7 @@ describe('checks/laravel.sh', () => {
     const f = fixture();
     const result = run(f, { FAKE_TEST_FAIL: 'phpunit' });
     assert.equal(result.status, 1, result.out);
-    assert.match(result.out, /Tests: 3229, Errors: 1\.\x1b\[0m\n\nFailed tests:\n1\) Tests\\Feature\\ClubPageTest::test_color — QueryException: Data too long for column 'color'\n$/);
+    assert.match(result.out, /Tests: 3229, Errors: 1\.\x1b\[0m\n\nFailed tests:\n1\) Tests\\Feature\\ClubPageTest::test_color — QueryException: Data too long for column 'color'\nhost load at end/);
   });
 
   it('exits 1 on style and static analysis failures', () => {
@@ -621,5 +663,223 @@ describe('SYMPHONY_TEST_PARALLEL documentation', () => {
     }
     const docs = fs.readFileSync('docs/configuration.md', 'utf8');
     assert.match(docs.slice(docs.indexOf('SYMPHONY_TEST_PARALLEL') - 1500, docs.indexOf('SYMPHONY_TEST_PARALLEL') + 1500), /paratest/);
+  });
+});
+
+describe('checks/laravel.sh step lines and host load', () => {
+  // The container may set these; every test below states what it needs.
+  const CLEAN: NodeJS.ProcessEnv = {
+    SYMPHONY_TEST_PARALLEL: undefined,
+    SYMPHONY_CI_PARALLEL: undefined,
+    SYMPHONY_CI_DB: undefined,
+    SYMPHONY_MYSQL_USER: undefined,
+    SYMPHONY_MYSQL_HOST: undefined,
+    SYMPHONY_MYSQL_PORT: undefined,
+    SYMPHONY_MYSQL_PASSWORD: undefined,
+    SYMPHONY_LARAVEL_APP_PATH: undefined,
+    SYMPHONY_BASE_BRANCH: undefined,
+  };
+  const go = (f: Fixture, env: NodeJS.ProcessEnv = {}, args: string[] = []) => run(f, { ...CLEAN, ...env }, f.repo, args);
+
+  /** The lines after the last `steps:` line, parsed to [name, duration, result]. */
+  function steps(out: string): Array<[string, string, string]> {
+    const lines = out.trimEnd().split('\n');
+    const at = lines.lastIndexOf('steps:');
+    assert.notEqual(at, -1, `no steps: block in\n${out}`);
+    return lines.slice(at + 1).map((line) => {
+      const m = /^ {2}(\S.*?) {2}(\d+m \d+s|\d+s) {2}(\S.*)$/.exec(line);
+      assert.ok(m, `not a step line: '${line}'`);
+      return [m[1] as string, m[2] as string, m[3] as string];
+    });
+  }
+
+  it('ends the output with the steps block, one line per step, in order (fast gate with composer scripts)', () => {
+    const f = fixture({ scripts: { lint: 'x', analyse: 'x', test: 'x' } });
+    const result = go(f);
+    assert.equal(result.status, 0, result.out);
+    assert.deepEqual(steps(result.out).map(([name, , res]) => [name, res]), [
+      ['php -l', 'ok'],
+      ['composer lint', 'ok'],
+      ['composer analyse', 'ok'],
+      ['composer test', 'ok'],
+    ]);
+    assert.ok(result.out.indexOf('all checks passed') < result.out.lastIndexOf('steps:'));
+  });
+
+  it('lists php -l as a step even when no PHP file changed', () => {
+    const f = fixture();
+    git(f.repo, 'checkout', '-q', 'main');
+    const result = go(f);
+    assert.equal(result.status, 0, result.out);
+    assert.equal(calls(f).some((c) => c[0] === 'php' && c[1] === '-l'), false);
+    assert.equal(steps(result.out)[0]?.[0], 'php -l');
+    assert.equal(steps(result.out)[0]?.[2], 'ok');
+  });
+
+  it('lists every --full step with MySQL: config:clear, migrate and the tests with process count and database', () => {
+    const f = fixture({ phpstan: true });
+    write(f.repo, 'vendor/bin/paratest', FAKE_TOOL('paratest'), 0o755);
+    const result = go(f, { SYMPHONY_CI_DB: 'mysql', SYMPHONY_MYSQL_USER: 'u', SYMPHONY_CI_PARALLEL: '4' }, ['--full']);
+    assert.equal(result.status, 0, result.out);
+    assert.deepEqual(steps(result.out).map(([name, , res]) => [name, res]), [
+      ['php -l', 'ok'],
+      ['pint', 'ok'],
+      ['phpstan', 'ok'],
+      ['php artisan config:clear', 'ok'],
+      ['php artisan migrate', 'ok'],
+      ['php artisan test', 'ok'],
+    ]);
+    assert.match(result.out, /^tests: 4 process\(es\), database mysql$/m);
+    const lines = result.out.split('\n');
+    assert.ok(lines.indexOf(lines.find((l) => l.startsWith('tests: 4')) ?? '') < lines.indexOf('all checks passed'));
+    assert.ok(calls(f).some((c) => c[0] === 'mysql' && c.some((a) => a.includes('DROP DATABASE IF EXISTS'))), 'databases dropped');
+  });
+
+  it('names the process count of the fast gate and the sqlite default before the tests', () => {
+    const f = fixture();
+    write(f.repo, 'vendor/bin/paratest', FAKE_TOOL('paratest'), 0o755);
+    const parallel = go(f, { SYMPHONY_TEST_PARALLEL: '3' });
+    assert.equal(parallel.status, 0, parallel.out);
+    assert.match(parallel.out, /^tests: 3 process\(es\), database sqlite$/m);
+    const serial = go(f);
+    assert.match(serial.out, /^tests: 1 process\(es\), database sqlite$/m);
+  });
+
+  it('reports one process when paratest is missing even though a number was requested', () => {
+    const f = fixture();
+    const result = go(f, { SYMPHONY_TEST_PARALLEL: '5' });
+    assert.equal(result.status, 0, result.out);
+    assert.match(result.out, /^tests: 1 process\(es\), database sqlite$/m);
+  });
+
+  it('prints the host load and CPU count first and last, the end line right before the steps', () => {
+    const f = fixture();
+    const result = go(f);
+    const lines = result.out.trimEnd().split('\n');
+    const start = lines.findIndex((l) => l.startsWith('host load at start'));
+    const end = lines.findIndex((l) => l.startsWith('host load at end'));
+    assert.ok(start >= 0 && end > start, result.out);
+    assert.match(lines[start] as string, /^host load at start \(1\/5\/15 min\): \d+\.\d+ \d+\.\d+ \d+\.\d+, \d+ CPUs$/);
+    assert.match(lines[end] as string, /^host load at end \(1\/5\/15 min\): \d+\.\d+ \d+\.\d+ \d+\.\d+, \d+ CPUs$/);
+    assert.equal(lines[end + 1], 'steps:');
+    assert.ok(start < lines.indexOf('all checks passed'));
+  });
+
+  it('does not abort when the load or the CPU count cannot be read', () => {
+    const f = fixture();
+    write(path.dirname(f.bin), 'bin/nproc', '#!/bin/sh\nexit 1\n', 0o755);
+    const result = go(f);
+    assert.equal(result.status, 0, result.out);
+    assert.match(result.out, /host load at start .*, unknown CPUs$/m);
+    assert.match(result.out, /host load at end .*, unknown CPUs$/m);
+    assert.equal(steps(result.out).length, 3);
+  });
+
+  it('measures the duration of each step', () => {
+    const f = fixture();
+    write(path.dirname(f.bin), 'bin/php', `#!/bin/sh\n[ "$2" = test ] && sleep 2\nexec "${f.bin}/php-fake" "$@"\n`, 0o755);
+    write(path.dirname(f.bin), 'bin/php-fake', FAKE_PHP, 0o755);
+    const result = go(f);
+    assert.equal(result.status, 0, result.out);
+    const byName = new Map(steps(result.out).map(([name, dur]) => [name, dur]));
+    const [, min, sec] = /^(?:(\d+)m )?(\d+)s$/.exec(byName.get('php artisan test') ?? '') ?? [];
+    assert.ok(Number(min ?? 0) * 60 + Number(sec) >= 2, `duration ${byName.get('php artisan test')}`);
+  });
+
+  it('prints the steps last after a failing php -l, a failing style step and a failing tool, with the exit code 1', () => {
+    const syntax = fixture();
+    write(syntax.repo, 'app/Bad.php', 'SYNTAX_ERROR');
+    git(syntax.repo, 'add', '-A');
+    git(syntax.repo, 'commit', '-qm', 'bad');
+    git(syntax.repo, 'push', '-q');
+    const s = go(syntax);
+    assert.equal(s.status, 1);
+    assert.match(s.out, /PHP syntax errors:\nParse error in app\/Bad\.php/);
+    assert.deepEqual(steps(s.out).map(([name, , res]) => [name, res]), [['php -l', 'failed']]);
+
+    const style = fixture({ phpstan: true });
+    const p = go(style, { FAKE_FAIL: 'pint' });
+    assert.equal(p.status, 1);
+    assert.match(p.out, /pint failed \(exit 1\):\npint broke/);
+    assert.deepEqual(steps(p.out).map(([name, , res]) => [name, res]), [['php -l', 'ok'], ['pint', 'failed']]);
+    assert.match(p.out.trimEnd().split('\n').pop() as string, /^ {2}pint {2}\d+s {2}failed$/);
+
+    const analysis = fixture({ phpstan: true });
+    const a = go(analysis, { FAKE_FAIL: 'phpstan' });
+    assert.equal(a.status, 1);
+    assert.deepEqual(steps(a.out).map(([name, , res]) => [name, res]), [['php -l', 'ok'], ['pint', 'ok'], ['phpstan', 'failed']]);
+  });
+
+  it('prints the steps last after a failing migration with MySQL and still drops the databases', () => {
+    const f = fixture();
+    write(path.dirname(f.bin), 'bin/php', `#!/bin/sh\nif [ "$2" = migrate ]; then echo migrate exploded; exit 1; fi\nexec "${f.bin}/php-fake" "$@"\n`, 0o755);
+    write(path.dirname(f.bin), 'bin/php-fake', FAKE_PHP, 0o755);
+    const result = go(f, { SYMPHONY_CI_DB: 'mysql', SYMPHONY_MYSQL_USER: 'u' }, ['--full']);
+    assert.equal(result.status, 1, result.out);
+    assert.match(result.out, /php artisan migrate failed \(exit 1\):\nmigrate exploded/);
+    assert.deepEqual(steps(result.out).map(([name, , res]) => [name, res]), [
+      ['php -l', 'ok'],
+      ['pint', 'ok'],
+      ['php artisan config:clear', 'ok'],
+      ['php artisan migrate', 'failed'],
+    ]);
+    assert.ok(calls(f).some((c) => c[0] === 'mysql' && c.some((a) => a.includes('DROP DATABASE IF EXISTS'))));
+    assert.equal(calls(f).some((c) => c[0] === 'php' && c[2] === 'test'), false, 'tests did not run');
+  });
+
+  it('keeps the failed tests list and the tail of the failure before the load and steps lines', () => {
+    const f = fixture();
+    const result = go(f, { FAKE_TEST_FAIL: 'phpunit' });
+    assert.equal(result.status, 1);
+    const lines = result.out.trimEnd().split('\n');
+    const failedAt = lines.indexOf('Failed tests:');
+    assert.ok(failedAt > 0);
+    assert.ok(lines.findIndex((l) => l.startsWith('host load at end')) > failedAt);
+    assert.match(result.out, /Tests: 3229, Errors: 1\./);
+    assert.deepEqual(steps(result.out).map(([name, , res]) => [name, res]), [['php -l', 'ok'], ['pint', 'ok'], ['php artisan test', 'failed']]);
+  });
+
+  it('keeps the exit code 2 of an environment problem after the steps began, with its message', () => {
+    const f = fixture();
+    const result = go(f, { SYMPHONY_TEST_PARALLEL: 'many' });
+    assert.equal(result.status, 2, result.out);
+    assert.match(result.out, /environment: SYMPHONY_TEST_PARALLEL must be a number of processes/);
+  });
+
+  it('prints neither steps nor load when there is no Laravel app', () => {
+    const f = fixture();
+    fs.rmSync(path.join(f.repo, 'artisan'));
+    git(f.repo, 'commit', '-qam', 'no artisan');
+    const fast = go(f);
+    assert.equal(fast.status, 0, fast.out);
+    assert.equal(fast.out.trim(), 'no Laravel app; nothing to check');
+    const full = go(f, {}, ['--full']);
+    assert.equal(full.status, 78, full.out);
+    assert.equal(full.out.trim(), 'no Laravel app; nothing to check');
+  });
+
+  it('prints the steps and the load when the process group is terminated during a step, and exits 143', () => {
+    const f = fixture();
+    const started = path.join(path.dirname(f.bin), 'test-started');
+    write(path.dirname(f.bin), 'bin/php', `#!/bin/sh\nif [ "$2" = test ]; then touch "${started}"; exec sleep 30; fi\nexec "${f.bin}/php-fake" "$@"\n`, 0o755);
+    write(path.dirname(f.bin), 'bin/php-fake', FAKE_PHP, 0o755);
+    // Terminate once the test step runs (not after a fixed time, which a loaded host can miss) and has run for a second.
+    const wait = `i=0; while [ ! -e "${started}" ] && [ $i -lt 600 ]; do sleep 0.1; i=$((i+1)); done; sleep 1.2`;
+    const result = spawnSync('bash', ['-c', `set -m; bash "$0" & pid=$!; ${wait}; kill -TERM -- -$pid; wait $pid`, SCRIPT], {
+      cwd: f.repo,
+      encoding: 'utf8',
+      env: { ...process.env, ...CLEAN, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log },
+    });
+    assert.equal(result.status, 143, result.stdout + result.stderr);
+    const out = result.stdout;
+    assert.deepEqual(steps(out).map(([name, , res]) => [name, res.startsWith('timed out') ? 'timed out' : res]), [
+      ['php -l', 'ok'],
+      ['pint', 'ok'],
+      ['php artisan test', 'timed out'],
+    ]);
+    const lines = out.trimEnd().split('\n');
+    assert.match(lines[lines.lastIndexOf('steps:') - 1] as string, /^host load at end/);
+    assert.equal(out.includes('all checks passed'), false);
+    assert.match(steps(out)[2]?.[1] ?? '', /^[1-9]\d*s$/, 'the running step has its elapsed time');
   });
 });
