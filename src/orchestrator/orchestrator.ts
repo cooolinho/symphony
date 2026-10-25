@@ -18,6 +18,7 @@ import type { Issue, MergeWatch, TrackedResult, TrackerAdapter } from '../tracke
 import { SerialQueue, settledWithin } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { truncate } from '../util/text.ts';
+import { SYMPHONY_VERSION } from '../version.ts';
 import { describeHolder, type LockResult } from '../workspace/lock.ts';
 import { WorkspaceManager, type HookIssue, type Workspace } from '../workspace/manager.ts';
 import type { ServiceConfig } from '../workflow/config.ts';
@@ -3636,6 +3637,7 @@ export class Orchestrator {
       rate_limits: this.#rateLimits,
       health: {
         stopping: this.#stopping,
+        symphony_version: SYMPHONY_VERSION,
         workflow_path: this.#deps.workflow.path,
         workflow_version: workflow.version,
         workflow_loaded_at: workflow.loadedAt.toISOString(),
