@@ -1044,3 +1044,43 @@ describe('report_result of a refactor review', () => {
     assert.equal(data(await report(APPROVED)).target, 'In review');
   });
 });
+
+describe('report_result: size budget (#284)', () => {
+  const TOO_BIG = {
+    verdict: 'passed',
+    summary: 'Tested.',
+    uncovered_criteria: Array.from({ length: 8 }, (_, i) => `${i} ${'u'.repeat(3500)}`),
+    commands: ['npm test'],
+  };
+
+  it('names the summary limit and the field budget in the description of every result role', () => {
+    for (const [role, state] of [['reviewer', 'Agent review'], ['tester', 'Testing']] as const) {
+      const { unguarded } = setup({ role, state });
+      assert.ok(unguarded.description.includes(`at most ${SUMMARY_MAX} characters`), `${role}: ${unguarded.description}`);
+      assert.ok(unguarded.description.includes(`at most about ${RESULT_FIELD_BUDGET} characters`), role);
+      assert.ok(unguarded.description.includes('Report once, when the stage is complete'), 'the original text stays');
+    }
+  });
+
+  it('refuses a too large result as invalid_result with budget, size and largest fields, and records nothing', async () => {
+    const { report, tracker, events } = setup({ role: 'tester', state: 'Testing', checks: { 'Documentation': 'exit 0', 'Agent review': 'exit 0' } });
+    const refused = error(await report(TOO_BIG));
+    assert.equal(refused.category, 'invalid_result');
+    assert.match(refused.message, /too large for an issue comment/);
+    assert.ok(refused.message.includes(String(RESULT_FIELD_BUDGET)), refused.message);
+    assert.match(refused.message, /\d+ characters rendered/);
+    assert.match(refused.message, /fields hold \d+ characters/);
+    assert.match(refused.message, /uncovered_criteria \(\d+\)/);
+    assert.deepEqual(events, [], 'no entry check ran');
+    assert.equal(tracker.comments.get('1'), undefined);
+    assert.deepEqual(tracker.statusCalls, []);
+  });
+
+  it('one rejection is enough: the same result with shortened lists is recorded', async () => {
+    const { report, tracker } = setup({ role: 'tester', state: 'Testing', checks: { 'Documentation': 'exit 0', 'Agent review': 'exit 0' } });
+    assert.equal(error(await report(TOO_BIG)).category, 'invalid_result');
+    const shortened = { ...TOO_BIG, uncovered_criteria: TOO_BIG.uncovered_criteria.map((entry) => entry.slice(0, 1000)) };
+    data(await report(shortened));
+    assert.equal(tracker.comments.get('1')?.length, 1);
+  });
+});
