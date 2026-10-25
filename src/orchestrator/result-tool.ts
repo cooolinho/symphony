@@ -22,6 +22,7 @@ import { docsRoles, securityRoles } from '../workflow/validate.ts';
 import { fitCheckOutput } from './guard.ts';
 import { filesOutside } from './changed-files.ts';
 import { docsNeeded, type DocsFacts } from './docs.ts';
+import { screenshotsMissing, type ScreenshotFacts } from './screenshots.ts';
 import { securityNeeded, type SecurityFacts } from './security.ts';
 import { refactoringGoals, type PersistedResult, type StageHistory } from './stage-history.ts';
 import { checkFailedRoute, resolveTransition, type RoundHistory, type StageConditions, type Transition, type TransitionProfile } from './transitions.ts';
@@ -106,6 +107,11 @@ export interface ResultToolParams {
    * (see `docsNeeded`), looked up when the agent reports. Without it the hand-off keeps its configured target.
    */
   docs?: Pick<DocsFacts, 'docsNeeded' | 'docsPaths' | 'triggerPaths' | 'changedFiles'> | null;
+  /**
+   * For a developer's `done`: what decides whether a UI change owes screenshots (see `screenshotsMissing`), checked before the
+   * result is accepted. Without it nothing is checked.
+   */
+  screenshots?: ScreenshotFacts | null;
   config: Pick<ServiceConfig, 'tracker' | 'roles' | 'pipeline'>;
   /** The board's columns in board order; null when the tracker does not list them. */
   boardColumns: readonly string[] | null;
@@ -367,6 +373,38 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     );
   };
 
+  /** The refusal for a UI change without screenshots and without a `screenshots_problem`; null when the rule holds or does not apply. */
+  const screenshotViolation = async (args: Record<string, unknown>): Promise<ToolResult | null> => {
+    const facts = params.screenshots;
+    if (facts === undefined || facts === null || kind !== 'implementation' || args.verdict !== 'done') return null;
+    if (typeof args.screenshots_problem === 'string' && args.screenshots_problem.trim() !== '') return null;
+    let decision;
+    try {
+      decision = await screenshotsMissing(facts);
+    } catch (error) {
+      return fail(
+        'tool_error',
+        `Symphony could not check which files you changed (${errorMessage(error)}), so nothing was recorded. This is not a ` +
+          `problem with your change. Call ${RESULT_TOOL} again; if it fails again, describe the problem in an issue comment ` +
+          'and end your turn.',
+      );
+    }
+    if (!decision.missing) return null;
+    const shown = decision.uiFiles.map((file) => `- ${file}`);
+    const more = decision.more > 0 ? `\n- … and ${decision.more} more` : '';
+    return fail(
+      'invalid_result',
+      `The ${kind} result is invalid: your change touches the UI (files matching \`pipeline.ui_paths\`), the project asks for ` +
+        `screenshots, but no file matching \`pipeline.screenshot_paths\` (${facts.screenshotPaths.join(', ') || 'none configured'}) ` +
+        `changed and \`screenshots_problem\` is not set. UI files:\n${shown.join('\n')}${more}\n` +
+        'Nothing was recorded. Take the screenshots: build the frontend assets if the project needs them (install the dependencies, run the ' +
+        '`build` script), start the app from this workspace with its own SQLite file and seed data, run `symphony-screenshot <url> <out.png>` ' +
+        '(`symphony-screenshot --check` tests the browser), open the PNG with the Read tool to check it, commit it under the screenshot path, ' +
+        'push, embed it in the pull request description by commit SHA, and report again. "No browser" and "no frontend build" are not ' +
+        'reasons to skip them. If a step really fails, report again with `screenshots_problem`: the step that failed and its exact error message.',
+    );
+  };
+
   /**
    * The refusal for a `split` design whose work packages are not all sub-issues yet: the issue would go on to its
    * integration review with nothing to wait for. Read fresh, because the agent creates them in the same turn.
@@ -552,7 +590,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       if (recorded !== null || !role.readOnly) return null;
       return plan(args, looked.get(args)).ok ? (checkFailedRoute({ role, history: params.history, config: params.config })?.column ?? null) : null;
     },
-    precheck: (args, context) => queue.run(async () => (await pathViolation()) ?? (await splitViolation(args, context))),
+    precheck: (args, context) => queue.run(async () => (await pathViolation()) ?? (await screenshotViolation(args)) ?? (await splitViolation(args, context))),
     execute: (args, context) => queue.run(() => record(args, context)),
   };
 }

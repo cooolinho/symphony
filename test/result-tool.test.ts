@@ -58,6 +58,7 @@ interface SetupOptions {
   pathRule?: ResultToolParams['pathRule'];
   security?: ResultToolParams['security'];
   docs?: ResultToolParams['docs'];
+  screenshots?: ResultToolParams['screenshots'];
 }
 
 function setup(options: SetupOptions = {}) {
@@ -108,6 +109,7 @@ function setup(options: SetupOptions = {}) {
     ...(options.pathRule !== undefined ? { pathRule: options.pathRule } : {}),
     ...(options.security !== undefined ? { security: options.security } : {}),
     ...(options.docs !== undefined ? { docs: options.docs } : {}),
+    ...(options.screenshots !== undefined ? { screenshots: options.screenshots } : {}),
   };
   const unguarded = createResultTool(params);
   const tools = guardTools(toolsForRole(tracker.agentToolSpecs(), role, current(), unguarded), guard);
@@ -127,6 +129,65 @@ function error(result: ToolResult): { category: string; message: string } {
   assert.ok(!result.ok, 'expected a tool error');
   return result.error;
 }
+
+describe('report_result: screenshots for a UI change', () => {
+  const DONE = { verdict: 'done', summary: 'Implemented.' };
+  const facts = (files: string[] | Error, over: Partial<NonNullable<ResultToolParams['screenshots']>> = {}) => ({
+    uiPaths: ['resources/views/**', 'app/Filament/**'],
+    screenshotPaths: ['docs/screenshots/**'],
+    policy: 'always' as const,
+    workspace: tempDir('symphony-shots-'),
+    issueText: () => 'Add a page',
+    changedFiles: async () => {
+      if (files instanceof Error) throw files;
+      return files;
+    },
+    ...over,
+  });
+  const developer = (screenshots: ResultToolParams['screenshots']) => setup({ role: 'developer', state: 'In progress', screenshots });
+
+  it('refuses a UI change without screenshots and without screenshots_problem, and says what to do', async () => {
+    const { report, tracker } = developer(facts(['resources/views/a.blade.php', 'src/a.ts']));
+    const refused = error(await report(DONE));
+    assert.equal(refused.category, 'invalid_result');
+    assert.match(refused.message, /- resources\/views\/a\.blade\.php/);
+    for (const hint of [/build/, /symphony-screenshot/, /commit it/, /pull request description/, /screenshots_problem/]) assert.match(refused.message, hint);
+    assert.deepEqual(tracker.statusCalls, []);
+  });
+
+  it('accepts it with a changed screenshot, or with a screenshots_problem', async () => {
+    const shot = developer(facts(['app/Filament/A.php', 'docs/screenshots/a.png']));
+    assert.equal(data(await shot.report(DONE)).target, 'Agent review');
+    const problem = developer(facts(['app/Filament/A.php']));
+    assert.equal(data(await problem.report({ ...DONE, screenshots_problem: 'npm run build failed: ENOSPC' })).target, 'Agent review');
+    assert.match(problem.tracker.comments.get('1')?.[0]?.body ?? '', /npm run build failed: ENOSPC/);
+  });
+
+  it('checks nothing without a UI file, for policy never, or for the verdict blocked', async () => {
+    assert.equal(data(await developer(facts(['src/a.ts'])).report(DONE)).target, 'Agent review');
+    assert.equal(data(await developer(facts(['app/Filament/A.php'], { policy: 'never' })).report(DONE)).target, 'Agent review');
+    const blocked = developer(facts(['app/Filament/A.php']));
+    assert.equal(data(await blocked.report({ verdict: 'blocked', summary: 'Stuck.', blockers: [{ description: 'x', needs: 'human' }] })).target, 'Blocked');
+  });
+
+  it('policy auto: only when AGENTS.md, CLAUDE.md or the issue mention screenshots', async () => {
+    const none = facts(['app/Filament/A.php'], { policy: 'auto' });
+    assert.equal(data(await developer(none).report(DONE)).target, 'Agent review');
+    for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+      const withFile = facts(['app/Filament/A.php'], { policy: 'auto' });
+      fs.writeFileSync(path.join(withFile.workspace, name), 'Attach Screenshots of UI changes.');
+      assert.equal(error(await developer(withFile).report(DONE)).category, 'invalid_result', name);
+    }
+    const inIssue = facts(['app/Filament/A.php'], { policy: 'auto', issueText: () => 'Page\nPlease add a screenshot.' });
+    assert.equal(error(await developer(inIssue).report(DONE)).category, 'invalid_result');
+  });
+
+  it('a tool_error when the changed files cannot be determined', async () => {
+    const refused = error(await developer(facts(new Error('no base'))).report(DONE));
+    assert.equal(refused.category, 'tool_error');
+    assert.match(refused.message, /no base/);
+  });
+});
 
 describe('report_result: the documentation stage after the developer finished', () => {
   const facts = (files: string[] | Error, over: Partial<NonNullable<ResultToolParams['docs']>> = {}) => {

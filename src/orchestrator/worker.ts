@@ -225,6 +225,7 @@ async function loadResultSupport(
   pathRule: ((history: StageHistory) => PathRule) | null,
   security: ((history: StageHistory) => NonNullable<ResultToolParams['security']>) | null,
   docs: ((history: StageHistory) => NonNullable<ResultToolParams['docs']>) | null,
+  screenshots: ResultToolParams['screenshots'],
   report: (results: PersistedResult[]) => void,
   onRecorded: (entry: PersistedResult) => void,
   onMoved: () => void,
@@ -270,6 +271,7 @@ async function loadResultSupport(
     pathRule: pathRule?.(history) ?? null,
     security: security?.(history) ?? null,
     docs: docs?.(history) ?? null,
+    screenshots: screenshots ?? null,
   });
   return {
     tool,
@@ -521,6 +523,18 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
             changedFiles: () => changedFiles(activeWorkspace.path, securityBaseRef(issue.native_ref?.base_branch)),
           })
         : null;
+    // A developer's hand-off for a UI change needs screenshots (or the reason there are none), when the project asks for them.
+    const screenshots =
+      role?.result === 'implementation'
+        ? {
+            uiPaths: paths.uiPaths,
+            screenshotPaths: paths.screenshotPaths,
+            policy: params.workflow.config.pipeline.requireScreenshots,
+            workspace: activeWorkspace.path,
+            issueText: () => `${issue.title}\n${issue.description ?? ''}`,
+            changedFiles: () => changedFiles(activeWorkspace.path, securityBaseRef(issue.native_ref?.base_branch)),
+          }
+        : null;
     // A reviewer's approval needs the security review for a security label, a risk in the analysis or a changed security
     // path (for an integration review: a path the merged work packages changed).
     const security =
@@ -541,6 +555,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
             pathRule,
             security,
             docs,
+            screenshots,
             callbacks.results,
             (entry) => {
               resultRecorded = true;

@@ -17,7 +17,7 @@ export function expandForApps(globs: readonly string[], appDirs: readonly string
   return result;
 }
 
-export type EffectivePaths = Pick<PipelineConfig, 'testPaths' | 'docsPaths' | 'docsTriggerPaths' | 'securityPaths'>;
+export type EffectivePaths = Pick<PipelineConfig, 'testPaths' | 'docsPaths' | 'docsTriggerPaths' | 'securityPaths' | 'uiPaths' | 'screenshotPaths'>;
 
 /**
  * The pipeline path globs for a workspace whose project-type apps (see `WorkspaceIntegration.appDirs`) sit in `appDirs`:
@@ -30,5 +30,7 @@ export function effectivePaths(pipeline: PipelineConfig, appDirs: readonly strin
     docsPaths: pick('docs_paths', pipeline.docsPaths),
     docsTriggerPaths: pick('docs_trigger_paths', pipeline.docsTriggerPaths),
     securityPaths: pick('security_paths', pipeline.securityPaths),
+    uiPaths: pick('ui_paths', pipeline.uiPaths),
+    screenshotPaths: pick('screenshot_paths', pipeline.screenshotPaths),
   };
 }
