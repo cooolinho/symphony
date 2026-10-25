@@ -160,6 +160,12 @@ export interface PipelineConfig {
   docsPaths: string[];
   docsTriggerPaths: string[];
   securityPaths: string[];
+  /** `pipeline.ui_paths`: files whose change touches the UI; the developer then owes screenshots (see `screenshotsMissing`). */
+  uiPaths: string[];
+  /** `pipeline.screenshot_paths`: where screenshots are stored; a change in them means the developer delivered some. */
+  screenshotPaths: string[];
+  /** `pipeline.require_screenshots`: `auto` = when AGENTS.md, CLAUDE.md or the issue mention screenshots. */
+  requireScreenshots: ScreenshotPolicy;
   /**
    * The path settings that WORKFLOW.md set explicitly. The others hold the built-in defaults, which the worker extends
    * with the prefix of every Laravel app in a subdirectory (see `expandForApps`).
@@ -167,7 +173,10 @@ export interface PipelineConfig {
   explicitPaths: PathSetting[];
 }
 
-export type PathSetting = 'test_paths' | 'docs_paths' | 'docs_trigger_paths' | 'security_paths';
+export type PathSetting = 'test_paths' | 'docs_paths' | 'docs_trigger_paths' | 'security_paths' | 'ui_paths' | 'screenshot_paths';
+
+export type ScreenshotPolicy = 'auto' | 'always' | 'never';
+export const SCREENSHOT_POLICIES: readonly ScreenshotPolicy[] = ['auto', 'always', 'never'];
 
 export interface ServerConfig {
   port: number | null;
@@ -239,6 +248,10 @@ export const DEFAULTS = {
   /** `pipeline.docs_trigger_paths` when unset: configuration surfaces that need documenting. */
   docsTriggerPaths: ['.env.example', 'config/**', 'WORKFLOW.md'],
   securityPaths: ['app/Policies/**', 'app/Http/Middleware/**', 'config/auth.php', 'routes/**', 'database/migrations/**'],
+  /** `pipeline.ui_paths` when unset: the places of a Laravel/Filament app where the user interface lives. */
+  uiPaths: ['resources/views/**', 'app/Filament/**', 'app/Livewire/**', 'resources/css/**', 'resources/js/**'],
+  /** `pipeline.screenshot_paths` when unset. */
+  screenshotPaths: ['docs/screenshots/**'],
   pipelineLimitLabel: 'needs-human',
   pipelineDefaultType: 'feature',
   /** Column for a session that ends without the result its role has to report. */
@@ -287,6 +300,9 @@ const PIPELINE_KEYS = new Set([
   'docs_paths',
   'docs_trigger_paths',
   'security_paths',
+  'ui_paths',
+  'screenshot_paths',
+  'require_screenshots',
 ]);
 const PROFILE_KEYS = new Set(['skip', 'skip_when', 'on_result', 'max_review_rounds', 'max_test_rounds']);
 const ROLE_CLAUDE_KEYS = new Set(['model', 'effort', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'max_budget_usd', 'model_by_complexity']);
@@ -522,6 +538,9 @@ function readPipeline(reader: Reader, raw: Record<string, unknown>, roles: RoleC
     docsPaths: globs('docs_paths', DEFAULTS.docsPaths),
     docsTriggerPaths: globs('docs_trigger_paths', DEFAULTS.docsTriggerPaths),
     securityPaths: globs('security_paths', DEFAULTS.securityPaths),
+    uiPaths: globs('ui_paths', DEFAULTS.uiPaths),
+    screenshotPaths: globs('screenshot_paths', DEFAULTS.screenshotPaths),
+    requireScreenshots: reader.oneOf(section, 'require_screenshots', 'pipeline.require_screenshots', SCREENSHOT_POLICIES, 'auto'),
     explicitPaths,
   };
 }

@@ -856,6 +856,9 @@ describe('result-driven roles and the pipeline section', () => {
         docsPaths: ['docs/**', 'README*.md', 'CHANGELOG*.md'],
         docsTriggerPaths: ['.env.example', 'config/**', 'WORKFLOW.md'],
         securityPaths: ['app/Policies/**', 'app/Http/Middleware/**', 'config/auth.php', 'routes/**', 'database/migrations/**'],
+        uiPaths: ['resources/views/**', 'app/Filament/**', 'app/Livewire/**', 'resources/css/**', 'resources/js/**'],
+        screenshotPaths: ['docs/screenshots/**'],
+        requireScreenshots: 'auto',
         explicitPaths: [],
       },
     );
@@ -1032,6 +1035,16 @@ describe('result-driven roles and the pipeline section', () => {
       assert.match(messageOf({ ...base, pipeline: { max_security_rounds: 0 } }), /pipeline\.max_security_rounds must be an integer >= 1 \(got 0\)/);
       assert.match(messageOf({ ...base, pipeline: { security_paths: ['/abs/**'] } }), /pipeline\.security_paths\[0\] "\/abs\/\*\*" must be relative to the repository root/);
       assert.ok(!resolve({ ...base, pipeline: { max_security_rounds: 3 } }).warnings.some((warning) => /max_security_rounds/.test(warning)));
+    });
+
+    it('reads ui_paths, screenshot_paths and require_screenshots, validating them', () => {
+      const unset = resolve({ ...base, pipeline: {} }).pipeline;
+      assert.deepEqual([unset.uiPaths.length, unset.screenshotPaths, unset.requireScreenshots], [5, ['docs/screenshots/**'], 'auto']);
+      const set = resolve({ ...base, pipeline: { ui_paths: ['web/**'], screenshot_paths: ['shots/**'], require_screenshots: 'always' } }).pipeline;
+      assert.deepEqual([set.uiPaths, set.screenshotPaths, set.requireScreenshots], [['web/**'], ['shots/**'], 'always']);
+      assert.deepEqual(resolve({ ...base, pipeline: { ui_paths: [] } }).pipeline.uiPaths, [], 'an empty list turns the check off');
+      assert.match(messageOf({ ...base, pipeline: { ui_paths: ['/abs/**'] } }), /pipeline\.ui_paths\[0\]/);
+      assert.match(messageOf({ ...base, pipeline: { require_screenshots: 'sometimes' } }), /pipeline\.require_screenshots/);
     });
 
     it('keeps an explicit test_paths list as it is and validates the globs', () => {

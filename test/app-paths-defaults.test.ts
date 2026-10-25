@@ -39,6 +39,8 @@ describe('effective pipeline path globs (#283)', () => {
         docsPaths: pipeline.docsPaths,
         docsTriggerPaths: pipeline.docsTriggerPaths,
         securityPaths: pipeline.securityPaths,
+        uiPaths: pipeline.uiPaths,
+        screenshotPaths: pipeline.screenshotPaths,
       });
     }
   });
@@ -52,9 +54,9 @@ describe('effective pipeline path globs (#283)', () => {
   });
 
   it('explicit lists, including an empty one, are never extended', () => {
-    const explicit = { test_paths: ['tests/**'], docs_paths: ['docs/**'], docs_trigger_paths: [], security_paths: ['routes/**'] };
+    const explicit = { test_paths: ['tests/**'], docs_paths: ['docs/**'], docs_trigger_paths: [], security_paths: ['routes/**'], ui_paths: ['web/**'], screenshot_paths: ['shots/**'] };
     const paths = effectivePaths(pipelineOf(explicit), ['laravel']);
-    assert.deepEqual(paths, { testPaths: ['tests/**'], docsPaths: ['docs/**'], docsTriggerPaths: [], securityPaths: ['routes/**'] });
+    assert.deepEqual(paths, { testPaths: ['tests/**'], docsPaths: ['docs/**'], docsTriggerPaths: [], securityPaths: ['routes/**'], uiPaths: ['web/**'], screenshotPaths: ['shots/**'] });
     assert.ok(!matchesAnyGlob('laravel/tests/Fixtures/Foo.php', paths.testPaths));
     assert.ok(!matchesAnyGlob('laravel/routes/web.php', paths.securityPaths));
   });

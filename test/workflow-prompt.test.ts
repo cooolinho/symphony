@@ -1007,7 +1007,10 @@ describe('shipped WORKFLOW.md issue commands', () => {
 
   it('tells only the developer how to take, store and embed UI screenshots', async () => {
     const prompt = await render('developer');
-    assert.match(prompt, /## UI screenshots/);
+    assert.match(prompt, /^7\. UI screenshots\. /m, 'its own numbered step');
+    assert.ok(prompt.indexOf('7. UI screenshots.') < prompt.indexOf('8. Commit with'), 'before the commit and pull request step');
+    assert.doesNotMatch(prompt, /^## UI screenshots/m, 'no block behind the steps');
+    assert.match(prompt, /`screenshots_problem`/);
     assert.match(prompt, /`symphony-screenshot <url> <out\.png>`/);
     assert.match(prompt, /import \{ chromium \} from 'playwright'/);
     assert.match(prompt, /commit and push it on `symphony\/issue-42`/);
@@ -1016,7 +1019,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
     assert.match(prompt, /check it with `symphony-screenshot --check`/);
     assert.match(prompt, /`public\/build\/manifest\.json` is missing, install the dependencies and run the project's `build` script/);
     assert.match(prompt, /"No browser" and "no frontend build" are not reasons to skip them/);
-    for (const role of ['reviewer', 'docs', 'issue-analyst']) assert.doesNotMatch(await render(role), /## UI screenshots/, role);
+    for (const role of ['reviewer', 'docs', 'issue-analyst']) assert.doesNotMatch(await render(role), /UI screenshots\. When the project/, role);
   });
 
   it('tells the architect and the reviewer that missing screenshots are not acceptable for want of a browser', async () => {

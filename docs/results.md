@@ -26,7 +26,7 @@ reported to the agent instead of being dropped silently.
 |---|---|---|
 | `analysis` | `ready`, `needs_info` | `type`, `complexity` (S/M/L/XL), `components[]`, `acceptance_criteria[]`, `risks {security, data_migration, breaking_change}`, `docs_needed`, `open_questions[]`, `plan[]`, `refactoring_goals[]` (refactor issues: what the refactoring has to achieve) |
 | `design` | `ready`, `split`, `blocked` | `options[]`, `decision`, `components[]`, `interfaces[]`, `migrations[]`, `compatibility`, `work_packages[]` (optional; with `split` at least two), `plan[]` (implementation steps in order, each with its files), `tests[]` (one test per acceptance criterion) |
-| `implementation` | `done`, `blocked` | `changed_files[]`, `tests_added[]`, `notes`, `plan_deviations[]` |
+| `implementation` | `done`, `blocked` | `changed_files[]`, `tests_added[]`, `notes`, `plan_deviations[]`, `screenshots_problem` (a UI change without screenshots: the failed step and its error message) |
 | `test` | `passed`, `failed`, `blocked` | `cases[] {criterion, test, status: passed\|failed\|skipped}`, `commands[]`, `uncovered_criteria[]` |
 | `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, file, line, problem, fix}`, `checked[]`, `confirmed_goals[]` (refactor issues: the analysis's refactoring goals the review confirms) |
 | `security` | `passed`, `issues_found`, `blocked` | `findings[]` (as in `review`) |
@@ -193,6 +193,22 @@ outcome (`already_recorded: true` on success) without running the checks or touc
 after the turn that recorded the result; when the move led to another column of the same role, its stage starts in a
 new session. The tool writes only
 after the guard allowed exactly the computed target; called without the guard's approval it refuses (`tool_error`).
+
+## Screenshots for UI changes
+
+A developer's `implementation` result with the verdict `done` is refused with `invalid_result` when all three hold:
+
+1. The branch changes a file that matches `pipeline.ui_paths` (compared with the base branch, as for the documentation stage).
+2. The project asks for screenshots: `pipeline.require_screenshots` is `always`, or `auto` (the default) and `AGENTS.md` or
+   `CLAUDE.md` in the workspace root, or the issue title or description, mention "screenshot". `never` turns the rule off.
+3. No changed file matches `pipeline.screenshot_paths`, and the result has no `screenshots_problem`.
+
+The message lists the UI files and tells the developer what to do: build the frontend, start the app from the workspace,
+run `symphony-screenshot`, check and commit the image, embed it in the pull request description, and report again. If a
+step really fails, the developer reports again with `screenshots_problem`: the step and its exact error message; the
+result is then accepted and the reviewer sees the field. The verdict `blocked` is not checked. If git cannot list the
+changed files, the call fails with `tool_error` and nothing is recorded. Whether the screenshot fits the change is still
+the reviewer's call.
 
 ## Path rule of the test engineer
 

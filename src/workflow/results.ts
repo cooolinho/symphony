@@ -153,6 +153,7 @@ const kindShapes = {
     tests_added: list(text(NAME_MAX)),
     notes: text().optional(),
     plan_deviations: list(text()).describe('Where and why the implementation left the plan'),
+    screenshots_problem: text().optional().describe('UI change without screenshots: the step that failed and its error message; only when you could not take them'),
   },
   test: {
     cases: list(caseSchema).describe('One entry per acceptance criterion checked; "failed" needs a failed case'),
@@ -655,6 +656,7 @@ function kindSections(result: StageResult): (string | null)[] {
         bullets('Tests added', result.tests_added.map(code)),
         bullets('Plan deviations', result.plan_deviations.map(inline)),
         result.notes === undefined ? null : `**Notes**\n${block(result.notes)}`,
+        result.screenshots_problem === undefined ? null : `**Screenshots problem**\n${block(result.screenshots_problem)}`,
       ];
     case 'test':
       return [
