@@ -476,6 +476,7 @@ class Node {
   className: string;
   children: Node[] = [];
   hidden = false;
+  open = false;
   constructor(tag: string, text?: string | null, className?: string) {
     this.tag = tag;
     this.text = text ?? '';
@@ -486,6 +487,9 @@ class Node {
   }
   get all(): string {
     return [this.text, ...this.children.map((c) => c.all)].filter((t) => t !== '').join(' ');
+  }
+  querySelector(tag: string): Node | null {
+    return this.find((n) => n.tag === tag && n !== this)[0] ?? null;
   }
   find(predicate: (node: Node) => boolean): Node[] {
     return [...(predicate(this) ? [this] : []), ...this.children.flatMap((c) => c.find(predicate))];
@@ -498,8 +502,10 @@ function between(source: string, from: string, to: string): string {
   return source.slice(start, source.indexOf(to, start) + to.length);
 }
 
-function renderGate(detail: unknown) {
+function renderGate(detail: unknown, previous: Node[] = []) {
   const nodes = new Map<string, Node>();
+  nodes.set('gate-checks', new Node('ul'));
+  nodes.get('gate-checks')!.children = previous;
   const node = (id: string) => nodes.get(id) ?? nodes.set(id, new Node('div')).get(id)!;
   const context = vm.createContext({
     el: (tag: string, text?: string | null, cls?: string) => new Node(tag, text, cls),
@@ -609,6 +615,15 @@ describe('agent page: entry checks section', () => {
       assert.equal(pre[0]!.children.length, 0);
       assert.equal(rows[index]!.children.filter((n) => n.tag === 'pre').length, 0, 'not shown outside of the details element');
     }
+  });
+
+  it('keeps a details element open across a refresh', () => {
+    const detail = { gate: gate([check({ name: 'a', status: 'passed', output: 'steps:' }), check({ name: 'b', status: 'passed', output: 'x' })], { finished_at: '2026-10-25T10:01:00Z' }) };
+    const first = renderGate(detail).rows;
+    first[0]!.querySelector('details')!.open = true;
+    const again = renderGate(detail, first).rows;
+    assert.equal(again[0]!.querySelector('details')!.open, true, 'the opened output stays open');
+    assert.equal(again[1]!.querySelector('details')!.open, false);
   });
 
   it('shows no details element for a passed check without output, and keeps failed output outside of one', () => {

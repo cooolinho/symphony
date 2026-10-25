@@ -1333,7 +1333,7 @@ issue's detail page), as it does for a failed check.
 **Output of passed checks.** For a `passed` or `skipped` check the guard also keeps a short end of the output (at most
 400 characters) in `gate.checks[].output`, from the `host load at end` or `steps:` line on; output without them (another
 script) keeps just its last 400 characters, and empty output stays `null`. The agent page shows it collapsed in *Entry
-checks*. The `checks_finished` line of the [repository log](#repository-logs) carries the parsed `steps` and `load`, so
+checks*. The `checks_finished` line of the [repository log](#repository-logs) carries the parsed `steps` and `load` (also for failed and timed-out runs, which print them too), so
 step durations can be compared across issues. The agent's answer to a passed check stays the short note without output.
 A cached result keeps the output of the original run.
 

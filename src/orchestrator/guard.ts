@@ -484,8 +484,8 @@ export function createGuard(params: GuardParams): TransitionGuard {
             record.output = kept;
             entry.output = kept;
           }
-          Object.assign(record, parseCheckSteps(result.output));
         }
+        Object.assign(record, parseCheckSteps(result.output));
         entry.status = record.result;
         entry.durationMs = record.durationMs;
         entry.exitCode = record.exitCode;

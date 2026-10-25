@@ -1265,7 +1265,15 @@ ${PIPELINE_JS}
       }
       return row;
     });
-    patchChildren($('gate-checks'), rows);
+    // A refresh must not fold output the user has opened: carry the open state over to the new row.
+    const host = $('gate-checks');
+    rows.forEach((row, i) => {
+      const old = host.children[i];
+      const was = old && old.querySelector('details');
+      const now = row.querySelector('details');
+      if (was && now && was.open) now.open = true;
+    });
+    patchChildren(host, rows);
   }
 
   /** One card per recorded stage result: role, verdict with round, summary, findings, blockers and the comment's link. */

@@ -454,8 +454,15 @@ describe('named entry checks', () => {
     it('keeps the steps block a script prints on SIGTERM in the gate run of a timeout', async () => {
       const { seen, onGateUpdate } = gates();
       const script = "trap 'echo steps:; echo \"  php artisan test  1s  timed out (aborted)\"; exit 143' TERM; echo step-one-done; sleep 5 & wait";
-      const { guard } = named([{ name: 'ci', command: script }], { onGateUpdate }, 1500);
+      const finished: Array<Record<string, unknown> | undefined> = [];
+      const { guard } = named([{ name: 'ci', command: script }], {
+        onGateUpdate,
+        onEvent: (event, _message, detail) => {
+          if (event === 'checks_finished') finished.push(detail);
+        },
+      }, 1500);
       assert.equal(denied(await guard('Agent review'))?.category, 'check_timeout');
+      assert.deepEqual(finished[0]?.steps, [{ name: 'php artisan test', duration_s: 1, result: 'timed out (aborted)' }]);
       const output = seen[seen.length - 1]!.checks[0]?.output ?? '';
       assert.match(output, /step-one-done/);
       assert.ok(output.endsWith('  php artisan test  1s  timed out (aborted)'), output);
