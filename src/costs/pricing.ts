@@ -66,7 +66,7 @@ function parsePrice(value: unknown, key: string): ModelPrice {
       if (fallback !== undefined) return fallback;
       throw new SymphonyError('invalid_model_costs', `${key}.${field} is required (USD per million tokens)`);
     }
-    const parsed = typeof raw === 'number' ? raw : Number(raw);
+    const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\d+$/.test(raw.trim()) ? Number(raw) : Number.NaN;
     if (!Number.isFinite(parsed) || parsed < 0) {
       throw new SymphonyError('invalid_model_costs', `${key}.${field} must be a number >= 0 (got ${JSON.stringify(raw)})`);
     }

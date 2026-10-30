@@ -27,6 +27,22 @@ export interface TokenUsage {
   totalTokens: number;
 }
 
+export type SubagentStatus = 'running' | 'ok' | 'error';
+
+/** One subagent the session started with the Agent/Task tool. */
+export interface SubagentRun {
+  /** Id of the `tool_use` block that started it; its `tool_result` ends it. */
+  toolUseId: string;
+  subagentType: string;
+  /** The `description` of the call, else the start of its `prompt`. */
+  description: string;
+  startedAt: Date;
+  endedAt: Date | null;
+  status: SubagentStatus;
+  /** Tokens of the subagent's own model calls so far. */
+  tokens: ModelTokenUsage;
+}
+
 /** Structured update sent from a live agent session to the orchestrator (spec 10.4). */
 export interface AgentEvent {
   event: string;
@@ -48,6 +64,8 @@ export interface AgentEvent {
   /** Context fill level of the session, set on model calls and compactions. */
   context?: ContextSnapshot;
   rateLimits?: unknown;
+  /** Absolute snapshot (a copy) of the subagent this `subagent` event reports. */
+  subagent?: SubagentRun;
   detail?: Record<string, unknown>;
 }
 

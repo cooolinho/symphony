@@ -557,6 +557,72 @@ describe('claude agent runner', () => {
     assert.equal(calls[0]?.message, 'Agent: Review the diff');
   });
 
+  it('tracks parallel subagents: tokens, end and session end', async () => {
+    const usage = (input: number) => ({ input_tokens: input, output_tokens: 2, cache_read_input_tokens: 3, cache_creation_input_tokens: 4 });
+    const inner = (parent: string, id: string, input: number) =>
+      ({ type: 'assistant', message: { id, content: [{ type: 'text', text: 'x' }], usage: usage(input) }, parent_tool_use_id: parent });
+    const fake = fakeQuery((_prompt, _options, emit) => {
+      emit({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', id: 'toolu_a', name: 'Agent', input: { subagent_type: 'Explore', description: 'Find files' } },
+            { type: 'tool_use', id: 'toolu_b', name: 'Task', input: { prompt: `first line\n${'long '.repeat(100)}` } },
+          ],
+        },
+        parent_tool_use_id: null,
+      });
+      emit(inner('toolu_a', 'm1', 10));
+      emit(inner('toolu_a', 'm1', 10));
+      emit(inner('toolu_a', 'm2', 20));
+      emit(inner('toolu_b', 'm3', 7));
+      emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_x', content: 'ok' }] }, parent_tool_use_id: 'toolu_a' });
+      emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_a', content: 'done', is_error: false }] }, parent_tool_use_id: null });
+      emit(result(0.1, 10, 1));
+    });
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ events }));
+    await session.runTurn('go');
+    const snapshots = (id: string) => events.flatMap((event) => (event.subagent?.toolUseId === id ? [event.subagent] : []));
+    const [startA] = snapshots('toolu_a');
+    assert.equal(startA?.subagentType, 'Explore');
+    assert.equal(startA?.description, 'Find files');
+    assert.equal(startA?.status, 'running');
+    assert.ok(startA?.startedAt instanceof Date);
+    const [startB] = snapshots('toolu_b');
+    assert.equal(startB?.subagentType, 'general-purpose');
+    assert.ok(startB?.description.startsWith('first line long long'));
+    assert.equal(startB?.description.length, 200);
+    const lastA = snapshots('toolu_a').at(-1);
+    assert.equal(lastA?.status, 'ok');
+    assert.ok(lastA?.endedAt instanceof Date);
+    assert.deepEqual(lastA?.tokens, { inputTokens: 30, outputTokens: 4, cacheReadTokens: 6, cacheWriteTokens: 8 });
+    assert.equal(snapshots('toolu_a').filter((run) => run.status !== 'running').length, 1);
+    const beforeStop = snapshots('toolu_b').at(-1);
+    assert.equal(beforeStop?.status, 'running');
+    assert.equal(beforeStop?.tokens.inputTokens, 7);
+    await session.stop();
+    const lastB = snapshots('toolu_b').at(-1);
+    assert.equal(lastB?.status, 'error');
+    assert.ok(lastB?.endedAt instanceof Date);
+    // Only start and end reach the timeline; token updates carry no message.
+    assert.equal(events.filter((event) => event.event === 'subagent' && event.message !== undefined).length, 4);
+    assert.equal(events.filter((event) => event.event === 'tool_use').length, 2);
+  });
+
+  it('marks a subagent whose tool result is an error', async () => {
+    const fake = fakeQuery((_prompt, _options, emit) => {
+      emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_a', name: 'Agent', input: {} }] }, parent_tool_use_id: null });
+      emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_a', content: 'boom', is_error: true }] }, parent_tool_use_id: null });
+      emit(result(0.1, 10, 1));
+    });
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ events }));
+    await session.runTurn('go');
+    await session.stop();
+    assert.equal(events.filter((event) => event.subagent !== undefined).at(-1)?.subagent?.status, 'error');
+  });
+
   it('adds the read-only deny rules', async () => {
     const options = await sessionOptions({ policy: { readOnly: true } });
     for (const rule of READ_ONLY_DENY) assert.ok(options.disallowedTools?.includes(rule), rule);

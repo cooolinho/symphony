@@ -232,6 +232,49 @@ describe('workspace integrations', () => {
     assert.equal(seen[0]!.workspacePath, runner.sessions[0]!.params.cwd);
   });
 
+  it('shows the running and finished subagents of a running issue', async () => {
+    let live: unknown = null;
+    let s: Setup | null = null;
+    const runner = new FakeRunner((turn, params) => {
+      const send = (event: string, fields: Record<string, unknown>) =>
+        (params.onEvent as (event: unknown) => void)({ event, timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: 1, ...fields });
+      const run = (id: string, status: string, tokens: number, endedAt: Date | null) => ({
+        toolUseId: id,
+        subagentType: 'Explore',
+        description: 'Find files',
+        startedAt: new Date('2026-01-01T10:00:00Z'),
+        endedAt,
+        status,
+        tokens: { inputTokens: tokens, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 },
+      });
+      send('tool_use', { detail: { tool: 'Agent', agent: 'Explore' } });
+      send('subagent', { subagent: run('a', 'running', 0, null) });
+      send('subagent', { subagent: run('b', 'running', 0, null) });
+      send('subagent', { subagent: run('a', 'running', 5, null) });
+      send('subagent', { subagent: run('a', 'ok', 5, new Date('2026-01-01T10:01:00Z')) });
+      live = s?.orchestrator.snapshot().running[0];
+      s?.tracker.set('a', { state: 'In review' });
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    });
+    s = setup({ runner, issues: [makeIssue({ id: 'a' })] });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s!).running.length === 0 && runner.sessions.length === 1, 3_000, 'run finished');
+    const row = live as { agent_calls: unknown; subagents: { running: Array<{ tool_use_id: string }>; finished: unknown[] } };
+    assert.deepEqual(row.agent_calls, { Explore: 1 });
+    assert.deepEqual(row.subagents.running.map((run) => run.tool_use_id), ['b']);
+    assert.deepEqual(row.subagents.finished, [
+      {
+        tool_use_id: 'a',
+        subagent_type: 'Explore',
+        description: 'Find files',
+        status: 'ok',
+        started_at: '2026-01-01T10:00:00.000Z',
+        ended_at: '2026-01-01T10:01:00.000Z',
+        tokens: { input_tokens: 5, output_tokens: 2, cache_read_tokens: 3, cache_write_tokens: 4, total_tokens: 14 },
+      },
+    ]);
+  });
+
   it('attributes MCP tool and skill calls to the reports of the integrations', async () => {
     const report: IntegrationReport = {
       id: 'laravel-boost',
@@ -4352,5 +4395,33 @@ describe('result-driven roles', () => {
     await until(() => s.runner.sessions.length === 1, 3_000, 'second attempt');
     assert.equal(s.runner.sessions[0]?.turns[0], 'reviewer|required=true|round=1|latest=0|findings=0|cases=0');
     await s.orchestrator.shutdown(1_000);
+  });
+
+  it('keeps the latest rate-limit event per rateLimitType and logs every event', async () => {
+    const logDir = tempDir();
+    let s: Setup | null = null;
+    const before: unknown[] = [];
+    const runner = new FakeRunner((turn, params) => {
+      const emit = (info: Record<string, unknown>) => {
+        before.push(s?.orchestrator.snapshot().rate_limits);
+        (params.onEvent as (event: unknown) => void)({ event: 'rate_limit', timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: turn, rateLimits: info });
+      };
+      emit({ rateLimitType: 'five_hour', status: 'allowed' });
+      emit({ rateLimitType: 'seven_day', status: 'allowed' });
+      emit({ rateLimitType: 'five_hour', status: 'allowed_warning' });
+      return new Promise(() => undefined);
+    });
+    s = setup({ runner, logDir, issues: [makeIssue({ id: 'a' })] });
+    await s.orchestrator.tickNow();
+    await until(() => Object.keys(snapshot(s!).rate_limits as object).length === 2, 3_000, 'rate limits');
+    assert.deepEqual(before[0], {});
+    const limits = snapshot(s).rate_limits as Record<string, { issue: string; role: string; model: string | null; rate_limit_info: { status: string } }>;
+    assert.deepEqual(Object.keys(limits).sort(), ['five_hour', 'seven_day']);
+    assert.equal(limits.five_hour!.rate_limit_info.status, 'allowed_warning');
+    assert.equal(limits.seven_day!.rate_limit_info.status, 'allowed');
+    assert.equal(limits.five_hour!.issue, makeIssue({ id: 'a' }).identifier);
+    assert.equal(typeof limits.five_hour!.role, 'string');
+    const lines = fs.readFileSync(path.join(logDir, 'budget', 'rate-limits.jsonl'), 'utf8').trim().split('\n');
+    assert.equal(lines.length, 3);
   });
 });
