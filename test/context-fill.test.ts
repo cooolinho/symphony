@@ -190,6 +190,18 @@ describe('context_window in model-costs.yml', () => {
     assert.throws(() => parsePricing('default: { input: 1, output: 1, context_window: -1 }', null), { code: 'invalid_model_costs' });
   });
 
+  it('rejects non-numeric YAML values (boolean, array, map) instead of coercing them to a window of 1', () => {
+    for (const bad of ['true', 'false', '[1]', '[200000]', '{ a: 1 }']) {
+      assert.throws(() => parsePricing(`opus: { input: 1, output: 1, context_window: ${bad} }`, null), { code: 'invalid_model_costs' }, bad);
+    }
+    assert.throws(() => parsePricing('default: { input: 1, output: 1, context_window: true }', null), { code: 'invalid_model_costs' });
+  });
+
+  it('still accepts a whole number written as a digit-only string', () => {
+    const table = parsePricing('opus: { input: 1, output: 1, context_window: "300000" }', null);
+    assert.equal(contextWindowFor(table, 'claude-opus-5-5'), 300_000);
+  });
+
   it('keeps pricing untouched by the new field', () => {
     const table = parsePricing('default: { input: 5, output: 25, context_window: 200000 }', null);
     assert.deepEqual(table.defaultPrice, { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 });
