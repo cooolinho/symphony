@@ -1220,6 +1220,22 @@ describe('page shell (layout.ts, #342)', () => {
     for (const html of [DASHBOARD_HTML, LOGS_HTML]) assert.ok(!html.includes('aria-label="Brotkrumen"'));
   });
 
+  it('goes back in the history from the Übersicht crumb only when the dashboard was the previous page', () => {
+    const crumb = (page: ReturnType<typeof renderPage>) => page.query('nav[aria-label="Brotkrumen"] a[href="/"]')[0]!;
+    const from = renderPage(AGENT_HTML, { detail: issueDetail() }, { url: AGENT_URL, referrer: 'http://127.0.0.1/', historyLength: 2 });
+    from.click(crumb(from));
+    assert.equal(from.backs, 1);
+    const direct = renderPage(AGENT_HTML, { detail: issueDetail() }, { url: AGENT_URL, historyLength: 2 });
+    direct.click(crumb(direct));
+    assert.equal(direct.backs, 0, 'no referrer: the link navigates');
+    const other = renderPage(AGENT_HTML, { detail: issueDetail() }, { url: AGENT_URL, referrer: 'http://127.0.0.1/stats', historyLength: 2 });
+    other.click(crumb(other));
+    assert.equal(other.backs, 0, 'another page: the link navigates');
+    const fresh = renderPage(AGENT_HTML, { detail: issueDetail() }, { url: AGENT_URL, referrer: 'http://127.0.0.1/', historyLength: 1 });
+    fresh.click(crumb(fresh));
+    assert.equal(fresh.backs, 0, 'nothing to go back to');
+  });
+
   it('replaces the three copied top bars; the page actions live in <main>', () => {
     for (const [name, html] of Object.entries(PAGES)) {
       for (const old of ['class="topbar"', 'topbar-inner', 'brand-sub', 'AGENT ORCHESTRATOR', 'AGENT TRACE', 'STATISTICS &amp; ANALYTICS', 'id="back"', 'id="sys-version"', 'id="sys-updated"']) {
@@ -1464,6 +1480,28 @@ describe('dashboard page behaviour', () => {
     assert.equal(render([]).$('model-holds').hidden, true);
   });
 
+  const stagesOf = (verdictStage: Record<string, unknown>) => [
+    { id: 'dev', label: 'developer', kind: 'agent', columns: ['In progress'], status: 'active', sessions: [], verdict: null, round: null, ...verdictStage },
+    { id: 'rev', label: 'reviewer', kind: 'agent', columns: ['Review'], status: 'skipped', sessions: [], verdict: null, round: null },
+  ];
+
+  it('draws the pipeline of a card with its verdict, round and skipped stage', () => {
+    const page = render([issueRow({ stages: stagesOf({ verdict: 'changes_needed', round: 1 }) })]);
+    const nodes = page.$('running').querySelectorAll('.pipe-node');
+    assert.equal(nodes.length, 2);
+    assert.match(nodes[0]!.title, /verdict: changes needed · round 1/);
+    assert.match(nodes[1]!.className, /st-skipped/);
+    assert.equal(page.$('running').querySelectorAll('.pipe-node.st-skipped').length, 1);
+  });
+
+  it('shows the dispatch note of a waiting card and no generic waiting hint', () => {
+    const card = { retry: null, reason: null, section: 'next', status: 'queued', position: 1 };
+    const noted = render([waiting({ ...card, dispatch_note: 'Blocked by #9' })]);
+    assert.match(noted.$('next').textContent, /Blocked by #9/);
+    const plain = render([waiting({ ...card, dispatch_note: null })]);
+    assert.doesNotMatch(plain.root.textContent, /Waiting for a free agent slot or the next poll/);
+  });
+
   it('shows the dispatch gate only when the session limit paused the dispatch', () => {
     const gate = { until: '2026-10-30T14:00:00Z', window: 'five_hour', issue_identifier: ID };
     const page = render([], { health: { ...dashboardState().health, dispatch_gate: gate } });
@@ -1533,7 +1571,37 @@ describe('agent page behaviour', () => {
     assert.match(alert.textContent, /Session limit reached/);
     assert.match(alert.textContent, /five hour/);
     assert.match(alert.textContent, /Resets at/);
-    assert.match(page.$('main').textContent, /WAITING FOR RESET|Waiting for limit/i);
+    assert.match(page.$('main').textContent, /⏳ Waiting for limit/);
+    const event = { seq: 1, at: '2026-10-30T11:59:00Z', kind: 'orchestrator', event: 'retry_scheduled', level: 'info', message: 'x', detail: { kind: 'session_limit', attempt: 1, due_at: '2026-10-30T13:00:00Z', limit: sessionLimit.limit } };
+    const timeline = renderPage(AGENT_HTML, { detail: retrying(sessionLimit), events: [event], dirty: true }, opts);
+    assert.match(timeline.$('timeline').textContent, /WAITING FOR RESET/);
+  });
+
+  it('counts the session limit retries while the limit is not yet waiting', () => {
+    const limit = { ...sessionLimit.limit, waiting: false, hits: 1, max_retries: 3 };
+    const event = { seq: 1, at: '2026-10-30T11:59:00Z', kind: 'orchestrator', event: 'retry_scheduled', level: 'info', message: 'x', detail: { kind: 'session_limit', attempt: 1, due_at: '2026-10-30T13:00:00Z', limit } };
+    const page = renderPage(AGENT_HTML, { detail: retrying({ ...sessionLimit, limit }), events: [event], dirty: true }, opts);
+    assert.match(page.$('timeline').textContent, /SESSION LIMIT · RETRY 1\/3/);
+    assert.doesNotMatch(page.$('timeline').textContent, /WAITING FOR RESET/);
+    assert.match(page.$('main').textContent, /⏳ Session limit #1/);
+    assert.doesNotMatch(page.$('main').textContent, /Waiting for limit/);
+  });
+
+  it('labels a session that ended on the limit', () => {
+    const session = { run: 'r1', attempt: null, role: 'default', state: 'Todo', model: null, effort: null, started_at: '2026-10-30T11:00:00Z', finished_at: '2026-10-30T11:30:00Z', outcome: 'session_limit', transcript: null };
+    const page = renderPage(AGENT_HTML, { detail: issueDetail({ sessions: [session] }) }, opts);
+    assert.match(page.$('main').textContent, /session limit/);
+  });
+
+  it('draws the pipeline with verdict, round and the skipped stage', () => {
+    const pipeline = [
+      { id: 'dev', label: 'developer', kind: 'agent', columns: ['In progress'], status: 'done', sessions: [], verdict: 'changes_needed', round: 1 },
+      { id: 'rev', label: 'reviewer', kind: 'agent', columns: ['Review'], status: 'skipped', sessions: [], verdict: null, round: null },
+    ];
+    const page = renderPage(AGENT_HTML, { detail: issueDetail({ pipeline }) }, opts);
+    const verdict = page.$('pipeline').querySelector('.pipe-verdict.vd-warn')!;
+    assert.equal(verdict.textContent, 'changes needed · round 1');
+    assert.equal(page.$('pipeline').querySelectorAll('.pipe-node.st-skipped').length, 1);
   });
 
   it('pauses a running issue and shows Resume now for an operator pause', () => {

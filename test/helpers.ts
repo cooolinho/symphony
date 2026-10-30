@@ -416,6 +416,10 @@ export interface RenderOptions {
   fetch?: (url: string, init: { method: string; body?: unknown }) => unknown;
   /** Answer of confirm(); default true. */
   confirm?: boolean;
+  /** document.referrer of the page; default ''. */
+  referrer?: string;
+  /** history.length; default 1. */
+  historyLength?: number;
   /** The frozen clock (ms); default 2026-10-30T12:00:00Z. */
   now?: number;
 }
@@ -432,6 +436,8 @@ export interface RenderedPage {
   click(el: FakeElement): void;
   fetches: Array<{ url: string; method: string; body?: unknown }>;
   confirms: string[];
+  /** Number of history.back() calls. */
+  backs: number;
 }
 
 /**
@@ -453,7 +459,7 @@ export function renderPage(html: string, state?: unknown, opts: RenderOptions = 
   const sandbox: Record<string, unknown> = {
     document,
     location,
-    history: { length: 1, back: () => {}, replaceState: (_s: unknown, _t: string, u?: string) => u && setLocation(new URL(u, url)), pushState: () => {} },
+    history: { length: opts.historyLength ?? 1, back: () => { page.backs++; }, replaceState: (_s: unknown, _t: string, u?: string) => u && setLocation(new URL(u, url)), pushState: () => {} },
     localStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: unknown) => void store.set(k, String(v)), removeItem: (k: string) => void store.delete(k) },
     setTimeout: timer,
     setInterval: timer,
@@ -497,13 +503,15 @@ export function renderPage(html: string, state?: unknown, opts: RenderOptions = 
   const scripts = inlineScripts(html);
   assert.ok(scripts.length > 0, 'the page has inline scripts');
   scripts.forEach((code, i) => vm.runInContext(code, ctx, { filename: `page-script-${i}.js` }));
+  document.referrer = opts.referrer ?? '';
   const render = (next: unknown): void => {
     const hook = (ctx as { __render?: (s: unknown) => void }).__render;
     assert.equal(typeof hook, 'function', 'the page exposes window.__render under __SYMPHONY_TEST__');
     hook!(next);
   };
   if (state !== undefined) render(state);
-  return {
+  const page: RenderedPage = {
+    backs: 0,
     document,
     root,
     $: (id) => {
@@ -517,4 +525,5 @@ export function renderPage(html: string, state?: unknown, opts: RenderOptions = 
     fetches,
     confirms,
   };
+  return page;
 }
