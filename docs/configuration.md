@@ -755,16 +755,19 @@ checks:
   Symphony lists what differs from a baseline commit (commits since, uncommitted and untracked files, deletions and both
   ends of a renamed file; ignored files do not count) and refuses the result with `invalid_result` if a file matches
   none of the globs: the message names the offending files and the baseline, nothing is recorded and the entry check of
-  the target column does not run. Whatever the verdict, the engineer has to undo the changes it made itself
+  the target column does not run. For `passed` and `failed` the engineer has to undo the changes it made itself
   (`git checkout <baseline> -- <file>`, commit) and report again; a file it did not change (a commit already on the
-  branch, a push by someone else) it leaves alone and describes in an issue comment. If git cannot tell, or the
+  branch, a push by someone else) it leaves alone and reports `blocked` with a blocker, which is always accepted: the
+  result notes the files under its summary. If git cannot tell, or the
   workspace is no git checkout, the call fails with `tool_error` and nothing is recorded: the rule is never skipped.
   The baseline is the commit the developer's newest finished `implementation` result recorded (`head_sha`), as long as
-  `HEAD` descends from it when the engineer reports: it does not matter whether the workspace started on the base
-  branch, and a later session of the stage (after a `check_timeout`, say) cannot forgive what an earlier one changed.
+  `HEAD` descends from it when the engineer reports, and a later session of the stage (after a `check_timeout`, say) cannot forgive what an earlier one changed.
   Without such a result, or when it is no ancestor of `HEAD` (the branch was rebased), the baseline is the commit the
-  session started from. A commit someone else pushes to the branch after the developer's hand-off counts as the
-  engineer's, so the result is refused until a human sorts it out.
+  session started from. The exception: a session that started on the base branch (its start commit is an ancestor of
+  `origin/<base>`) after the hand-off measures from its start, so pull requests merged while there was no issue branch
+  (a spike) are not the engineer's. Local commits of an earlier session are not on `origin/<base>` and stay counted.
+  A commit someone else pushes to the issue branch after the hand-off counts as the engineer's: `passed` and `failed`
+  are refused, the engineer reports `blocked`.
 - **Failed cases reach the developer.** After a `failed` result the prompt of the developer lists the failed cases
   (`results.failed_cases`), the test engineer's summary and the commands it ran (`results.test`, see
   [Prompt template](#prompt-template)); the test engineer sees the same list in the next round and runs those cases
@@ -889,8 +892,8 @@ pipeline:
   `origin/<base_branch>`, else `origin/HEAD`). If git cannot tell, the stage is **needed**: a failure never skips it
   silently.
 - **Path rule.** The docs agent may only change files matching `pipeline.docs_paths`. `report_result` compares the
-  files that differ from the last hand-off of the developer or test engineer and refuses a result that comes with other
-  files with `invalid_result`, naming them; nothing is recorded. The prompt lists the paths as `docs_paths`.
+  files that differ from the last hand-off of the developer or test engineer and refuses a `done` or `not_needed` result that comes with other
+  files with `invalid_result`, naming them; nothing is recorded. `blocked` is always accepted and notes the files. The prompt lists the paths as `docs_paths`.
 - **Verdicts.** `done` (with the changed `files`) and `not_needed` lead to `Agent review`, `blocked` to `Blocked`.
 - **Haiku.** Haiku has no auto mode; `claude.by_model.haiku` in the shipped file holds the permission settings it needs.
 - **Board.** `Documentation` is one of `tracker.active_states`, so the board needs the column between `Testing` and

@@ -215,7 +215,11 @@ the reviewer's call.
 A role with `result: test` (the [test engineer](configuration.md#the-test-engineer)) may only change test files. Right
 before a result reaches the guard (step 3), `report_result` compares the workspace with a baseline commit: the head the
 developer's newest finished `implementation` result recorded (`head_sha`) when `HEAD` descends from it, else the commit
-the session started from. It looks at the files committed since, changed or deleted in the working tree or the index,
+the session started from. A session that started on the base branch (its start commit is on `origin/<base>`) and
+descends from that hand-off measures from its start instead: what lies between are pull requests merged meanwhile that
+`before_run` fetched (a developer hand-off without an issue branch, such as a spike), not the engineer's work. Commits an
+earlier session made locally are not on `origin/<base>`, so they stay counted. The value is fixed before the agent
+acts. It looks at the files committed since, changed or deleted in the working tree or the index,
 and untracked ones (ignored files do not count; a renamed file counts at both ends). Every file that matches none of the globs of
 `pipeline.test_paths` ([path globs](configuration.md#path-globs)) refuses the result: For a Laravel app in a subdirectory the default globs include its prefix (`laravel/tests/**`) and the message lists them.
 
@@ -226,16 +230,19 @@ hand-off, else where your session started) are outside them:
 - src/app.ts
 Nothing was recorded. Undo the changes you made yourself: restore a changed or deleted file with
 `git checkout 0123456789ab -- <file>`, delete a new one, commit, and report again. Leave a file alone that you did not
-change, … describe it in an issue comment and end your turn. …
+change, … report the verdict `blocked` with a blocker that names it … …
 ```
 
-- It applies to every verdict, `blocked` and `failed` included, and comes after the input check: an invalid result is
-  reported as `invalid_result` without looking at the files.
+- It applies to `passed` and `failed` and comes after the input check: an invalid result is reported as
+  `invalid_result` without looking at the files. `blocked` is always accepted, as the way out for an agent that cannot go
+  on (for example because of a commit it did not make): the result carries a note under its summary, "Pfadregel: N
+  Datei(en) außerhalb `<setting>` seit `<base>`: …" (cut to fit the summary limit), and the issue moves to `Blocked`.
 - Nothing is recorded or moved, and the entry check of the target column does not run, so the engineer does not wait
   for a check that cannot lead to a result. The call may be repeated in the same session once the files are restored.
 - Over 25 offending files, the message lists the first 25 and counts the rest.
 - If git cannot list the changes, or the session has no start commit (the workspace is no git checkout), the call fails
-  with `tool_error` and nothing is recorded; the rule is never skipped.
+  with `tool_error` and nothing is recorded; the rule is never skipped. A `blocked` result is recorded anyway, with a note
+  that the files could not be checked.
 - Roles with another `result` are not restricted.
 
 The tool declares the check as `precheck`, which `guardTools` runs for a call with a target before it asks the guard.

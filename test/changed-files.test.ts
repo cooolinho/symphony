@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { baselineCommit, changedFilesSince, filesOutside } from '../src/orchestrator/changed-files.ts';
+import { baselineCommit, changedFilesSince, filesOutside, isAncestor } from '../src/orchestrator/changed-files.ts';
 import { tempDir } from './helpers.ts';
 
 // The path rule of the test engineer (docs/configuration.md#the-test-engineer) against a real repository.
@@ -174,5 +174,42 @@ describe('baselineCommit', () => {
     assert.equal(await baselineCommit(repo, 'HEAD', rebased), rebased, 'a ref expression is not a commit name');
     assert.equal(await baselineCommit(repo, handoff, null), null);
     assert.equal(await baselineCommit(tempDir('symphony-no-repo-'), handoff, rebased), rebased);
+  });
+
+  describe('a session that started on the base branch', () => {
+    it('measures from its start, so fast-forwarded pull requests are not blamed', async () => {
+      const { repo, start } = repository();
+      write(repo, 'src/spike.ts', 'the developer\'s hand-off');
+      const handoff = commit(repo, 'developer');
+      write(repo, 'src/other.ts', 'a merged pull request');
+      const merged = commit(repo, 'merged pr');
+      git(repo, 'update-ref', 'refs/remotes/origin/main', merged);
+      assert.equal(await baselineCommit(repo, handoff, merged, await isAncestor(repo, merged, 'origin/main')), merged);
+      assert.equal(await baselineCommit(repo, handoff, start, true), handoff, 'a start before the hand-off is no ancestor of it');
+    });
+
+    it('keeps the hand-off when an earlier session committed locally, off origin/<base>', async () => {
+      const { repo } = repository();
+      write(repo, 'src/spike.ts', 'the developer');
+      const handoff = commit(repo, 'developer');
+      git(repo, 'update-ref', 'refs/remotes/origin/main', handoff);
+      write(repo, 'src/app.ts', 'an earlier session "fixed" it');
+      const local = commit(repo, 'earlier session');
+      const onBase = await isAncestor(repo, local, 'origin/main');
+      assert.equal(onBase, false);
+      assert.equal(await baselineCommit(repo, handoff, local, onBase), handoff);
+      assert.deepEqual(filesOutside(await changedFilesSince(repo, handoff), TEST_PATHS), ['src/app.ts']);
+    });
+
+    it('behaves as before for an unknown base ref', async () => {
+      const { repo } = repository();
+      write(repo, 'src/spike.ts');
+      const handoff = commit(repo, 'developer');
+      write(repo, 'src/other.ts');
+      const head = commit(repo, 'more');
+      const onBase = await isAncestor(repo, head, 'origin/nope');
+      assert.equal(onBase, false);
+      assert.equal(await baselineCommit(repo, handoff, head, onBase), handoff);
+    });
   });
 });

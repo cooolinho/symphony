@@ -885,7 +885,7 @@ describe('report_result', () => {
       assert.match(refused.message, /- src\/Total\.php\n- app\/Models\/Invoice\.php/);
       assert.doesNotMatch(refused.message, /tests\/TotalTest\.php\n/, 'files inside the paths are not listed');
       assert.match(refused.message, /Nothing was recorded\. Undo the changes you made yourself[\s\S]*git checkout 0123456789ab -- <file>/);
-      assert.match(refused.message, /Leave a file alone that you did not change[\s\S]*describe it in an issue comment and end your turn/);
+      assert.match(refused.message, /Leave a file alone that you did not change[\s\S]*report the verdict `blocked`/);
       assert.deepEqual(events, [], 'the entry check of Agent review did not run');
       assert.deepEqual(tracker.statusCalls, []);
       assert.equal(tracker.comments.get('1'), undefined);
@@ -895,12 +895,30 @@ describe('report_result', () => {
       assert.deepEqual(tracker.statusCalls, ['Agent review']);
     });
 
-    it('applies to every verdict: failed and blocked results may not leave production changes behind either', async () => {
+    it('refuses a failed result with production changes too', async () => {
       const { pathRule } = rule(['src/Total.php']);
       const { report, tracker } = setup({ role: 'tester', state: 'Testing', pathRule });
       assert.equal(error(await report(FAILED)).category, 'invalid_result');
-      assert.equal(error(await report({ verdict: 'blocked', summary: 'No database.', blockers: [{ description: 'No test database', needs: 'infra' }] })).category, 'invalid_result');
       assert.deepEqual(tracker.statusCalls, []);
+    });
+
+    it('always accepts blocked and names the files under the summary', async () => {
+      const { pathRule } = rule(['src/Total.php', 'tests/TotalTest.php']);
+      const { report, tracker } = setup({ role: 'tester', state: 'Testing', pathRule });
+      const result = data(await report({ verdict: 'blocked', summary: 'No database.', blockers: [{ description: 'No test database', needs: 'infra' }] }));
+      assert.equal(result.target, 'Blocked');
+      assert.deepEqual(tracker.statusCalls, ['Blocked']);
+      const comment = (tracker.comments.get('1')?.[0]?.body ?? '');
+      assert.match(comment, /Pfadregel:\*\* 1 Datei\(en\) außerhalb `pipeline\.test_paths` seit `0123456789ab`: `src\/Total\.php`/);
+      assert.doesNotMatch(comment, /tests\/TotalTest\.php/);
+    });
+
+    it('accepts blocked when git cannot tell, with a note', async () => {
+      const { state, pathRule } = rule([]);
+      state.failure = new Error('bad object');
+      const { report, tracker } = setup({ role: 'tester', state: 'Testing', pathRule });
+      assert.equal(data(await report({ verdict: 'blocked', summary: 'Stuck.', blockers: [{ description: 'x', needs: 'human' }] })).target, 'Blocked');
+      assert.match((tracker.comments.get('1')?.[0]?.body ?? ''), /konnte nicht prüfen[\s\S]*bad object/);
     });
 
     it('lets a result through that only touches the allowed paths', async () => {

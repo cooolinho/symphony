@@ -1087,7 +1087,7 @@ describe('test engineer stage', () => {
     assert.deepEqual(await testRuns(h), [['passed', 1, 'Agent review']]);
   });
 
-  it('rejects uncommitted and untracked changes outside the test paths too, whatever the verdict', async () => {
+  it('rejects uncommitted and untracked changes outside the test paths too: passed and failed are refused, blocked is accepted', async () => {
     const h = testingPipeline([
       done(implemented),
       async ({ turn, params, report }) => {
@@ -1103,9 +1103,10 @@ describe('test engineer stage', () => {
     const [, failedReport, blockedReport] = h.reports;
     assert.equal(denial(failedReport)?.category, 'invalid_result');
     assert.match(denial(failedReport)?.message ?? '', /2 file\(s\)[\s\S]*- src\/app\.ts\n- src\/helper\.ts/);
-    assert.equal(denial(blockedReport)?.category, 'invalid_result');
-    assert.deepEqual(await testRuns(h), []);
-    assert.deepEqual(h.tracker.statusCalls, ['Testing', 'Blocked'], 'the engineer never got a result through: the stage ended without one (on_missing_result)');
+    assert.equal(denial(blockedReport), null);
+    assert.equal(data(blockedReport).target, 'Blocked');
+    assert.deepEqual(await testRuns(h), [['blocked', 1, 'Blocked']]);
+    assert.deepEqual(h.tracker.statusCalls, ['Testing', 'Blocked'], 'blocked is always accepted, so the engineer ends the stage itself');
   });
 
   it('fails closed in a workspace that is no git checkout: the rule cannot be evaluated, so nothing is recorded', async () => {
