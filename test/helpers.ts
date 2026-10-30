@@ -435,6 +435,8 @@ export interface RenderedPage {
   /** Click that bubbles up to the document. */
   click(el: FakeElement): void;
   fetches: Array<{ url: string; method: string; body?: unknown }>;
+  /** The page's setInterval(fn, ms) calls (the timers never fire on their own). */
+  intervals: Array<{ fn: () => unknown; ms: number }>;
   confirms: string[];
   /** Number of history.back() calls. */
   backs: number;
@@ -456,13 +458,14 @@ export function renderPage(html: string, state?: unknown, opts: RenderOptions = 
   const store = new Map<string, string>();
   let timerId = 0;
   const timer = () => ++timerId;
+  const intervals: RenderedPage['intervals'] = [];
   const sandbox: Record<string, unknown> = {
     document,
     location,
     history: { length: opts.historyLength ?? 1, back: () => { page.backs++; }, replaceState: (_s: unknown, _t: string, u?: string) => u && setLocation(new URL(u, url)), pushState: () => {} },
     localStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: unknown) => void store.set(k, String(v)), removeItem: (k: string) => void store.delete(k) },
     setTimeout: timer,
-    setInterval: timer,
+    setInterval: (fn: () => unknown, ms: number) => (intervals.push({ fn, ms }), ++timerId),
     clearTimeout: () => {},
     clearInterval: () => {},
     requestAnimationFrame: timer,
@@ -523,6 +526,7 @@ export function renderPage(html: string, state?: unknown, opts: RenderOptions = 
     render,
     click: (el) => el.dispatch('click', { bubbles: true, button: 0 }),
     fetches,
+    intervals,
     confirms,
   };
   return page;

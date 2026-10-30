@@ -29,6 +29,18 @@ const DASHBOARD_CSS = `
   .sysinfo dt { font: 500 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
   .sysinfo dd { margin: 1px 0 0; font: 500 12.5px var(--mono); color: var(--text); white-space: nowrap; }
 
+  /* Tool calls of the last 30 minutes: one tick per call, coloured by role (.role-* sets --role). */
+  .act-chart { display: block; width: 100%; height: 64px; }
+  .act-chart[hidden] { display: none; }
+  .act-tick { stroke: var(--role, var(--role-symphony)); stroke-width: 2; vector-effect: non-scaling-stroke; }
+  .act-axis { stroke: var(--line-2); stroke-width: 1; vector-effect: non-scaling-stroke; }
+  .act-axis-labels { display: flex; justify-content: space-between; font: 10px var(--mono); color: var(--muted); }
+  .act-axis-labels[hidden] { display: none; }
+  .act-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 11px var(--mono); color: var(--muted); margin-top: 6px; }
+  .act-key { display: inline-flex; align-items: center; gap: 6px; }
+  .act-swatch { width: 8px; height: 8px; border-radius: 2px; background: var(--role, var(--role-symphony)); }
+  .act-empty { margin: 0; font: 12px var(--mono); color: var(--muted); }
+
   /* Running agents */
   .agents-section { border-color: var(--line-2); }
   .slots { display: flex; align-items: center; gap: 10px; font: 500 11px var(--mono); color: var(--muted); letter-spacing: .08em; }
@@ -279,6 +291,17 @@ export const DASHBOARD_HTML = page({
       <span class="meta">by the operator, after agent.max_continuations, or at agent.max_issue_cost_usd</span>
     </div>
     <div class="agents compact" id="paused"></div>
+  </section>
+
+  <section class="panel act-section" id="tool-activity" aria-labelledby="tool-activity-title">
+    <div class="section-head">
+      <h2 id="tool-activity-title">Tool calls</h2>
+      <span class="meta">last 30 min · by role</span>
+    </div>
+    <svg id="tool-activity-chart" class="act-chart" role="img" viewBox="0 0 600 64" preserveAspectRatio="none" aria-label="Tool calls in the last 30 minutes" hidden></svg>
+    <div class="act-axis-labels" id="tool-activity-axis" hidden aria-hidden="true"><span>-30 min</span><span>-15 min</span><span>now</span></div>
+    <div class="act-legend" id="tool-activity-legend"></div>
+    <p class="act-empty" id="tool-activity-empty" hidden>No activity in the last 30 minutes.</p>
   </section>
 
   <div class="lower">
@@ -1318,6 +1341,66 @@ ${PIPELINE_JS}
     else if (!drawer.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
   });
 
+  // ------------------------------------------------------------------ tool calls (last 30 minutes)
+
+  function renderToolActivity(data) {
+    const svg = $('tool-activity-chart');
+    const legend = $('tool-activity-legend');
+    const empty = $('tool-activity-empty');
+    const axis = $('tool-activity-axis');
+    const events = data && Array.isArray(data.events) ? data.events : [];
+    svg.replaceChildren();
+    legend.replaceChildren();
+    if (events.length === 0) {
+      svg.setAttribute('hidden', '');
+      axis.hidden = true;
+      empty.hidden = false;
+      return;
+    }
+    svg.removeAttribute('hidden');
+    axis.hidden = false;
+    empty.hidden = true;
+    const minutes = data.minutes > 0 ? data.minutes : 30;
+    const until = Number.isFinite(Date.parse(data.generated_at)) ? Date.parse(data.generated_at) : Date.now();
+    const since = Number.isFinite(Date.parse(data.since)) ? Date.parse(data.since) : until - minutes * 60000;
+    const width = 600;
+    svg.append(svgEl('line', { class: 'act-axis', x1: 0, y1: 50, x2: width, y2: 50 }));
+    const buckets = new Map();
+    const counts = new Map();
+    for (const e of events) {
+      const b = Math.floor((Date.parse(e.at) - since) / 60000);
+      if (!buckets.has(b)) buckets.set(b, []);
+      buckets.get(b).push(e);
+      counts.set(e.role, (counts.get(e.role) || 0) + 1);
+    }
+    const roleKey = (role) => (uiOwn(UI_ROLE_COLORS, role) ? role : 'symphony');
+    const roleName = (role) => uiOwn(UI_ROLE_NAMES, role) || String(role);
+    for (const [b, list] of buckets) {
+      list.forEach((e, i) => {
+        const x = Math.min(width, Math.max(0, (b + (i + 0.5) / list.length) * (width / minutes)));
+        const tick = svgEl('line', { class: 'act-tick role-' + roleKey(e.role), x1: x, y1: 6, x2: x, y2: 46 });
+        const title = svgEl('title', {});
+        title.textContent = roleName(e.role) + ' · ' + e.issue + ' · ' + fmtClock(e.at);
+        tick.append(title);
+        svg.append(tick);
+      });
+    }
+    const roles = [...counts].sort((a, b) => b[1] - a[1] || roleName(a[0]).localeCompare(roleName(b[0])));
+    for (const [role, n] of roles) {
+      const key = el('span', null, 'act-key role-' + roleKey(role));
+      key.append(el('span', null, 'act-swatch'), el('span', roleName(role) + ' ' + n));
+      legend.append(key);
+    }
+    svg.setAttribute('aria-label', events.length + ' tool call' + (events.length === 1 ? '' : 's') + ' in ' + minutes + ' minutes, '
+      + roles.map(([role, n]) => roleName(role) + ' ' + n).join(', '));
+  }
+  async function loadToolActivity() {
+    try {
+      const res = await fetch('/api/v1/activity?minutes=30', { cache: 'no-store' });
+      if (res.ok) renderToolActivity(await res.json());
+    } catch {}
+  }
+
   // ------------------------------------------------------------------ polling
 
   let historyTimer = null;
@@ -1426,8 +1509,10 @@ ${PIPELINE_JS}
   renderActivity();
   load();
   loadHistory();
+  loadToolActivity();
   setInterval(load, 2000);
   setInterval(loadHistory, 30000);
+  setInterval(loadToolActivity, 30000);
   // Tests load the page in a fake DOM and render a fixture through window.__render.
   if (window.__SYMPHONY_TEST__) window.__render = render;
 })();

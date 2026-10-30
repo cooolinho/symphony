@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { ACTIVITY_DEFAULT_MINUTES, ACTIVITY_MAX_MINUTES } from '../orchestrator/activity.ts';
 import type { AddressInfo } from 'node:net';
 import fs from 'node:fs';
 import type { PricingStore } from '../costs/pricing.ts';
@@ -152,7 +153,7 @@ const REDIRECTS: ReadonlyMap<string, string> = new Map([
  * Observability/control surface (spec 13.7): `/` dashboard, `/changes`, `/tasks` and `/brain` (placeholder pages),
  * `/issue?id=<identifier>` issue detail view (live, or archived once the orchestrator released the issue),
  * `/stats` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
- * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
+ * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/activity`, `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
  * `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker), `/force` (Start now in an extra slot),
  * `/pause` and `/resume` (operator pause of an issue), `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family), and
  * `PUT` / `DELETE /api/v1/settings/agents` (agent slots set on the dashboard; JSON body, `Content-Type:
@@ -258,6 +259,14 @@ export function startHttpServer(options: {
     }
     if (pathname === '/api/v1/budget') {
       allow(['GET'], () => sendJson(res, 200, orchestrator.budget()));
+      return;
+    }
+    if (pathname === '/api/v1/activity') {
+      allow(['GET'], () => {
+        const raw = Number(new URL(req.url ?? '/', 'http://localhost').searchParams.get('minutes'));
+        const minutes = Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), ACTIVITY_MAX_MINUTES) : ACTIVITY_DEFAULT_MINUTES;
+        sendJson(res, 200, orchestrator.activity(minutes));
+      });
       return;
     }
     if (pathname === '/api/v1/history/analytics' || pathname === '/api/v1/history/entries') {

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { type ActivitySource, collectActivity } from './activity.ts';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { BrainAccessLog } from '../brain/access-log.ts';
@@ -3958,6 +3959,22 @@ export class Orchestrator {
       // Older entries than the first one here were dropped (TIMELINE_EVENTS).
       first_seq: trace.timeline[0]?.seq ?? trace.nextSeq,
       events,
+    };
+  }
+
+  /** Tool calls of the last `minutes` minutes for GET /api/v1/activity: claimed issues first, then in-memory archives. */
+  activity(minutes: number) {
+    const now = this.#clock.now().getTime();
+    const sinceMs = now - minutes * 60_000;
+    const sources: ActivitySource[] = [...this.#records.values()].map((r) => ({ identifier: r.identifier, timeline: r.timeline, sessions: r.sessions }));
+    for (const a of this.#archive.recent()) {
+      if (Date.parse(a.archived_at) >= sinceMs) sources.push({ identifier: a.issue_identifier, timeline: a.timeline, sessions: a.sessions });
+    }
+    return {
+      generated_at: new Date(now).toISOString(),
+      minutes,
+      since: new Date(sinceMs).toISOString(),
+      events: collectActivity(sources, sinceMs, now),
     };
   }
 
