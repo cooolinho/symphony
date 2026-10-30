@@ -87,6 +87,8 @@ class FakeGithub {
   labelSpelling = new Map<string, string>();
   /** Comments by issue node id, oldest first; the comments query pages through them 100 at a time. */
   comments = new Map<string, Json[]>();
+  /** Issue node id -> its parent node, as the SymphonyIssueParent query returns it. */
+  parents = new Map<string, Json>();
   /** Login the viewer query returns. */
   viewer = 'symphony-bot';
   /** Numbers handed out to created issues. */
@@ -257,6 +259,8 @@ class FakeGithub {
         return { body: { data: { addBlockedBy: { issue: { number: 1 } } } } };
       case 'SymphonyAddProjectItem':
         return { body: { data: { addProjectV2ItemById: { item: { id: `PVTI_${variables.contentId}` } } } } };
+      case 'SymphonyIssueParent':
+        return { body: { data: { node: { parent: this.parents.get(String(variables.issueId)) ?? null } } } };
       case 'SymphonyAddComment':
         return { body: { data: { addComment: { commentEdge: { node: { url: 'https://github.com/acme/app/issues/1#issuecomment-1' } } } } } };
       case 'SymphonyUpdatePullRequest':
@@ -660,6 +664,78 @@ describe('github_project adapter operations', () => {
       }
       assert.equal(github.requests.filter((r) => r.op === 'SymphonyAddComment').length, 0);
       assert.equal((await addComment?.execute({ body: 'a <!-- note --> b' }, { issue }))?.ok, true);
+    });
+  });
+
+  describe('add_comment on ancestors', () => {
+    const parent = (id: string, number: number, repository = 'acme/app') => ({ id, number, title: `T${number}`, repository: { nameWithOwner: repository } });
+    async function chain() {
+      const ctx = await setup();
+      // #1 -> epic #2 -> concept #3
+      ctx.github.parents.set('I_A', parent('I_epic', 2));
+      ctx.github.parents.set('I_epic', parent('I_concept', 3));
+      const tool = ctx.tracker.agentToolSpecs().find((t) => t.name === 'add_comment');
+      assert.ok(tool);
+      const posts = () => ctx.github.requests.filter((r) => r.op === 'SymphonyAddComment').map((r) => r.variables);
+      return { ...ctx, tool, posts };
+    }
+
+    it('posts on the parent and the grandparent, with the origin line, and returns the URL', async () => {
+      const { tool, issue, posts } = await chain();
+      for (const [number, id] of [[2, 'I_epic'], [3, 'I_concept']] as const) {
+        assert.deepEqual(await tool.execute({ body: 'Result', issue: number }, { issue }), {
+          ok: true,
+          data: { url: 'https://github.com/acme/app/issues/1#issuecomment-1' },
+        });
+        assert.deepEqual(posts().at(-1), { subjectId: id, body: 'Result\n\n<sub>aus acme/app#1</sub>' });
+      }
+    });
+
+    it('rejects numbers outside the chain without posting, and names the allowed ones', async () => {
+      const { github, tool, issue, posts } = await chain();
+      github.parents.set('I_other', parent('I_x', 9, 'acme/other'));
+      for (const number of [4, 1000]) {
+        const result = await tool.execute({ body: 'x', issue: number }, { issue });
+        assert.equal(result.ok, false);
+        assert.equal(result.ok === false && result.error.category, 'invalid_argument');
+        assert.match(result.ok === false ? result.error.message : '', /allowed: #2, #3/);
+      }
+      assert.equal(posts().length, 0);
+    });
+
+    it('stops at a parent in another repository and at five levels', async () => {
+      const { github, tool, issue, posts } = await chain();
+      github.parents.set('I_concept', parent('I_foreign', 3, 'acme/other'));
+      assert.equal((await tool.execute({ body: 'x', issue: 3 }, { issue }))?.ok, true);
+      assert.equal((await tool.execute({ body: 'x', issue: 3 }, { issue })).ok, true);
+      posts().length = 0;
+      github.requests.length = 0;
+      github.parents.set('I_concept', parent('I_l4', 4));
+      github.parents.set('I_l4', parent('I_l5', 5));
+      github.parents.set('I_l5', parent('I_l6', 6));
+      github.parents.set('I_l6', parent('I_l7', 7));
+      assert.equal((await tool.execute({ body: 'x', issue: 6 }, { issue })).ok, true);
+      assert.equal((await tool.execute({ body: 'x', issue: 7 }, { issue })).ok, false);
+      assert.equal(posts().length, 1);
+    });
+
+    it('treats the session issue itself like no issue: no origin line, no parent query', async () => {
+      const { github, tool, issue, posts } = await chain();
+      assert.equal((await tool.execute({ body: 'Own', issue: 1 }, { issue })).ok, true);
+      assert.deepEqual(posts(), [{ subjectId: 'I_A', body: 'Own' }]);
+      assert.equal(github.requests.filter((r) => r.op === 'SymphonyIssueParent').length, 0);
+    });
+
+    it('rejects markers and concept headings before any request, but not normal text', async () => {
+      const { github, tool, issue, posts } = await chain();
+      const before = github.requests.length;
+      for (const body of ['<!-- symphony:result:v1 x -->', 'a <!--SYMPHONY:x', '## Concept Plan\nx', 'intro\n###   concept report']) {
+        const result = await tool.execute({ body, issue: 3 }, { issue });
+        assert.equal(result.ok === false && result.error.category, 'invalid_argument');
+      }
+      assert.equal(github.requests.length, before);
+      assert.equal(posts().length, 0);
+      assert.equal((await tool.execute({ body: 'See the concept plan above', issue: 3 }, { issue })).ok, true);
     });
   });
 

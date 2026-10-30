@@ -377,3 +377,13 @@ export const CLOSE_ISSUE_MUTATION = /* GraphQL */ `
     }
   }
 `;
+
+export const ISSUE_PARENT_QUERY = /* GraphQL */ `
+  query SymphonyIssueParent($issueId: ID!) {
+    node(id: $issueId) {
+      ... on Issue {
+        parent { id number title repository { nameWithOwner } }
+      }
+    }
+  }
+`;
