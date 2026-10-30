@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { VAULT_FOLDERS, ensureVault, prepareBrain, repoFolderName } from '../src/brain/vault.ts';
+import { parse } from 'yaml';
+import { CANDIDATE_REVIEW_BASE_FILE, LATEST_LESSONS_BASE_FILE, VAULT_FOLDERS, ensureVault, prepareBrain, repoFolderName } from '../src/brain/vault.ts';
 import { Logger } from '../src/log.ts';
 import { tempDir } from './helpers.ts';
 
@@ -31,7 +32,7 @@ describe('ensureVault', () => {
     for (const word of ['type', 'status', 'repo', 'issue', 'role', 'run', 'created', 'updated', 'sources', 'candidate', 'approved', 'deprecated', ...VAULT_FOLDERS]) {
       assert.ok(readme.includes(word), word);
     }
-    assert.deepEqual(created.sort(), ['README.md', ...VAULT_FOLDERS].sort());
+    assert.deepEqual(created.sort(), ['README.md', CANDIDATE_REVIEW_BASE_FILE, LATEST_LESSONS_BASE_FILE, ...VAULT_FOLDERS].sort());
     assert.equal(fs.existsSync(path.join(vault, '.obsidian')), false);
   });
 
@@ -43,6 +44,33 @@ describe('ensureVault', () => {
     assert.deepEqual(await ensureVault(vault, ['Acme/Shop']), []);
     assert.deepEqual(snapshot(vault), before);
     assert.equal(fs.statSync(vault).mtimeMs, rootMtime);
+  });
+
+  it('creates the Bases views with valid YAML, filters and sorting', async () => {
+    const vault = path.join(tempDir(), 'vault');
+    await ensureVault(vault, []);
+    const review = parse(fs.readFileSync(path.join(vault, CANDIDATE_REVIEW_BASE_FILE), 'utf8'));
+    assert.deepEqual(review.filters, { and: ['status == "candidate"'] });
+    assert.equal(review.views[0].type, 'table');
+    assert.deepEqual(review.views[0].order, ['file.name', 'type', 'repo', 'issue', 'role', 'created']);
+    assert.deepEqual(review.views[0].sort, [{ property: 'created', direction: 'ASC' }]);
+    const lessons = parse(fs.readFileSync(path.join(vault, LATEST_LESSONS_BASE_FILE), 'utf8'));
+    assert.deepEqual(lessons.filters, { and: ['type == "lesson"'] });
+    assert.deepEqual(lessons.views[0].order, ['file.name', 'status', 'repo', 'updated']);
+    assert.deepEqual(lessons.views[0].sort, [{ property: 'updated', direction: 'DESC' }]);
+    assert.equal(lessons.views[0].limit, 50);
+    const readme = fs.readFileSync(path.join(vault, 'README.md'), 'utf8');
+    assert.ok(readme.includes(CANDIDATE_REVIEW_BASE_FILE) && readme.includes(LATEST_LESSONS_BASE_FILE));
+  });
+
+  it('does not overwrite a changed Bases file', async () => {
+    const vault = path.join(tempDir(), 'vault');
+    fs.mkdirSync(vault);
+    fs.writeFileSync(path.join(vault, CANDIDATE_REVIEW_BASE_FILE), 'mine');
+    const created = await ensureVault(vault, []);
+    assert.equal(fs.readFileSync(path.join(vault, CANDIDATE_REVIEW_BASE_FILE), 'utf8'), 'mine');
+    assert.ok(!created.includes(CANDIDATE_REVIEW_BASE_FILE));
+    assert.ok(created.includes(LATEST_LESSONS_BASE_FILE));
   });
 
   it('keeps an existing README.md and index.md', async () => {
