@@ -1379,7 +1379,7 @@ describe('dashboard page behaviour', () => {
 
   it('loads the state and the history when the page opens', () => {
     const page = renderPage(DASHBOARD_HTML);
-    assert.deepEqual(page.fetches.map((f) => f.url), ['/api/v1/state', '/api/v1/history']);
+    assert.deepEqual(page.fetches.map((f) => f.url), ['/api/v1/state', '/api/v1/history', '/api/v1/activity?minutes=30']);
   });
 
   it('puts every card into its section with a count, and hides the empty queue sections', () => {
@@ -1422,7 +1422,7 @@ describe('dashboard page behaviour', () => {
     page.click(button(page, 'Retry now'));
     page.click(button(page, 'Start now'));
     page.click(button(page, 'Pause'));
-    assert.deepEqual(page.fetches.slice(2).map((f) => `${f.method} ${f.url}`), [
+    assert.deepEqual(page.fetches.slice(3).map((f) => `${f.method} ${f.url}`), [
       `POST /api/v1/${idPath}/retry`,
       `POST /api/v1/${idPath}/force`,
       `POST /api/v1/${idPath}/pause`,
