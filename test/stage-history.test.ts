@@ -423,6 +423,20 @@ describe('resultRows: the rows of the agent page', () => {
   });
 });
 
+describe('resultRows: changed_files', () => {
+  it('passes the files of an implementation result through and leaves other kinds empty', () => {
+    const implementation = parseResult('implementation', { verdict: 'done', summary: 'Done.', changed_files: ['src/a.ts', 'test/a.test.ts'] });
+    const review = parseResult('review', { verdict: 'approved', summary: 'Ok.' });
+    assert.ok(implementation.ok && review.ok);
+    const rows = resultRows([
+      { ...entry('implementation', 'done'), result: implementation.result },
+      { ...entry('review', 'approved'), result: review.result },
+    ]);
+    assert.deepEqual(rows[0]?.changed_files, ['src/a.ts', 'test/a.test.ts']);
+    assert.deepEqual(rows[1]?.changed_files, []);
+  });
+});
+
 describe('humanFeedback: what a human wrote since the last hand-off', () => {
   const at = (meta: PersistedResult) => new Date(meta.meta.created_at).getTime();
   const comment = (author: string | null, ms: number, body = `comment at ${ms}`) => ({ author, createdAt: new Date(ms), body, url: `u-${ms}` });

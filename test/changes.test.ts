@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { SymphonyError } from '../src/util/errors.ts';
-import { changedFiles } from '../src/workspace/changes.ts';
+import { changedFiles, diffStat } from '../src/workspace/changes.ts';
 import { tempDir } from './helpers.ts';
 
 // changedFiles(workspace, base): the whole branch diff against the base branch, for the security review trigger.
@@ -108,5 +108,52 @@ describe('changedFiles', () => {
     const dir = tempDir('symphony-changes-plain-');
     write(dir, 'routes/web.php');
     await assert.rejects(changedFiles(dir, 'main'), (error: unknown) => error instanceof SymphonyError && error.code === 'paths_unverifiable');
+  });
+});
+
+describe('diffStat', () => {
+  it('counts lines and tells changed, new and deleted files apart', async () => {
+    const repo = repository();
+    write(repo, 'README.md', 'changed\nmore\n');
+    write(repo, 'docs/guide.md', 'a\nb\nc\n');
+    git(repo, 'rm', '-q', 'app/Policies/PostPolicy.php');
+    commit(repo, 'change');
+    assert.deepEqual(await diffStat(repo, 'main'), [
+      { path: 'README.md', added: 2, deleted: 1, status: 'modified' },
+      { path: 'app/Policies/PostPolicy.php', added: 0, deleted: 20, status: 'deleted' },
+      { path: 'docs/guide.md', added: 3, deleted: 0, status: 'added' },
+    ]);
+  });
+
+  it('reports a binary file with null counts', async () => {
+    const repo = repository();
+    fs.writeFileSync(path.join(repo, 'logo.png'), Buffer.from([0, 1, 2, 0, 255]));
+    commit(repo, 'logo');
+    assert.deepEqual(await diffStat(repo, 'main'), [{ path: 'logo.png', added: null, deleted: null, status: 'binary' }]);
+  });
+
+  it('reports a rename as one entry with the new path', async () => {
+    const repo = repository();
+    fs.mkdirSync(path.join(repo, 'src'));
+    git(repo, 'mv', 'app/Policies/PostPolicy.php', 'src/PostPolicy.php');
+    commit(repo, 'move');
+    assert.deepEqual(await diffStat(repo, 'main'), [{ path: 'src/PostPolicy.php', added: 0, deleted: 0, status: 'renamed' }]);
+  });
+
+  it('measures from the merge base and includes uncommitted changes, but not untracked files', async () => {
+    const repo = repository();
+    git(repo, 'checkout', '-q', 'main');
+    write(repo, 'only-main.txt');
+    commit(repo, 'main moves on');
+    git(repo, 'checkout', '-q', 'symphony/issue-1');
+    write(repo, 'README.md', 'readme\nplus\n');
+    write(repo, 'untracked.txt');
+    assert.deepEqual(await diffStat(repo, 'main'), [{ path: 'README.md', added: 1, deleted: 0, status: 'modified' }]);
+  });
+
+  it('throws paths_unverifiable when git cannot tell', async () => {
+    for (const [dir, base] of [[repository(), 'origin/develop'], [tempDir('symphony-plain-'), 'main']] as const) {
+      await assert.rejects(diffStat(dir, base), (error: unknown) => error instanceof SymphonyError && error.code === 'paths_unverifiable' && error.message.includes(`against ${base}`));
+    }
   });
 });

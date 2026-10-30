@@ -366,6 +366,8 @@ export interface ResultRow {
   findings?: ResultFinding[];
   /** What blocks the stage, for a `blocked` verdict (empty otherwise). */
   blockers?: Array<{ description: string; needs: string }>;
+  /** The files an implementation result names (empty for other kinds). Absent in archives from before E6. */
+  changed_files?: string[];
 }
 
 export interface ResultFinding {
@@ -400,5 +402,6 @@ export function resultRows(results: readonly PersistedResult[]): ResultRow[] {
           }))
         : [],
     blockers: result.blockers.map((blocker) => ({ description: truncate(blocker.description, PROMPT_SUMMARY_LIMIT), needs: blocker.needs })),
+    changed_files: result.kind === 'implementation' ? [...result.changed_files] : [],
   }));
 }
