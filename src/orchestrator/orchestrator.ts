@@ -561,6 +561,7 @@ const LIFECYCLE_EVENTS = new Set([
   'approval_denied',
   'agent_exited',
   'tracker_tool',
+  'brain_tool',
   'transition_denied',
   'checks_started',
   'checks_cached',

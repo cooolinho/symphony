@@ -19,7 +19,7 @@ import {
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import { addUsage, emptyUsage, type ModelTokenUsage } from '../costs/pricing.ts';
-import type { Issue, ToolResult } from '../tracker/types.ts';
+import type { AgentToolSpec, Issue, ToolResult } from '../tracker/types.ts';
 import { AsyncQueue, settledWithin, sleep, withTimeout } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { oneLine, tail, truncate } from '../util/text.ts';
@@ -42,6 +42,7 @@ export type QueryFn = (params: { prompt: string | AsyncIterable<SDKUserMessage>;
 
 /** MCP server name for provider-native tools; the agent sees them as mcp__tracker__<name>. */
 export const TRACKER_SERVER = 'tracker';
+export const BRAIN_SERVER = 'brain';
 const ASK_USER_TOOL = 'AskUserQuestion';
 const STOP_GRACE_MS = 10_000;
 const STDERR_TAIL = 4_000;
@@ -171,7 +172,7 @@ function toCallToolResult(result: ToolResult): { content: Array<{ type: 'text'; 
   return { content: [{ type: 'text', text: JSON.stringify(payload ?? null, null, 2) }], isError: !result.ok };
 }
 
-function symphonyContext(issue: Issue, toolNames: string[], sections: string[], extra: string | null): string {
+function symphonyContext(issue: Issue, toolNames: string[], brainNames: string[], sections: string[], extra: string | null): string {
   const lines = [
     '# Symphony',
     `You are running unattended under the Symphony orchestrator, working on ${issue.identifier} in a dedicated ` +
@@ -182,6 +183,9 @@ function symphonyContext(issue: Issue, toolNames: string[], sections: string[], 
   ];
   if (toolNames.length > 0) {
     lines.push(`Read and update the issue on the tracker with these tools: ${toolNames.join(', ')}.`);
+  }
+  if (brainNames.length > 0) {
+    lines.push(`Search and read the knowledge vault (approved notes first) with these tools: ${brainNames.join(', ')}.`);
   }
   for (const section of sections) lines.push('', section);
   if (extra !== null) lines.push('', extra);
@@ -317,9 +321,13 @@ class ClaudeSession implements AgentSession {
   #options(): Options {
     const { config, issue, tools, env, cwd, extensions, policy } = this.#params;
     const toolNames = tools.map((spec) => `mcp__${TRACKER_SERVER}__${spec.name}`);
+    const brainTools = this.#params.brainTools ?? [];
+    const brainNames = brainTools.map((spec) => `mcp__${BRAIN_SERVER}__${spec.name}`);
     const extensionServers = Object.entries(extensions?.mcpServers ?? {});
-    if (extensionServers.some(([name]) => name === TRACKER_SERVER)) {
-      throw new SymphonyError('invalid_session_extensions', `MCP server name "${TRACKER_SERVER}" is reserved`);
+    for (const reserved of [TRACKER_SERVER, BRAIN_SERVER]) {
+      if (extensionServers.some(([name]) => name === reserved)) {
+        throw new SymphonyError('invalid_session_extensions', `MCP server name "${reserved}" is reserved`);
+      }
     }
     const extensionAllowed: string[] = [];
     const extensionDenied: string[] = [];
@@ -340,7 +348,7 @@ class ClaudeSession implements AgentSession {
       title: truncate(`${issue.identifier}: ${issue.title}`, 200),
       permissionMode: config.permissionMode,
       canUseTool: this.#canUseTool,
-      allowedTools: [...new Set([...config.allowedTools, ...toolNames, ...extensionAllowed])],
+      allowedTools: [...new Set([...config.allowedTools, ...toolNames, ...brainNames, ...extensionAllowed])],
       disallowedTools: [
         ...new Set([...config.disallowedTools, ASK_USER_TOOL, ...extensionDenied, ...readOnlyDenied, ...deniedAgents.map((name) => `Agent(${name})`)]),
       ],
@@ -349,7 +357,7 @@ class ClaudeSession implements AgentSession {
       systemPrompt: {
         type: 'preset',
         preset: 'claude_code',
-        append: symphonyContext(issue, toolNames, extensions?.contextSections ?? [], config.appendSystemPrompt),
+        append: symphonyContext(issue, toolNames, brainNames, extensions?.contextSections ?? [], config.appendSystemPrompt),
       },
       persistSession: config.persistSession,
       spawnClaudeCodeProcess: processGroupSpawner({
@@ -377,18 +385,20 @@ class ClaudeSession implements AgentSession {
     for (const [name, server] of Object.entries(extensions?.mcpServers ?? {})) {
       mcpServers[name] = { type: 'stdio', command: server.command, args: server.args, ...(server.env ? { env: server.env } : {}) };
     }
-    if (tools.length > 0) mcpServers[TRACKER_SERVER] = this.#trackerServer();
+    if (tools.length > 0) mcpServers[TRACKER_SERVER] = this.#sdkServer(TRACKER_SERVER, tools, 'tracker_tool');
+    if (brainTools.length > 0) mcpServers[BRAIN_SERVER] = this.#sdkServer(BRAIN_SERVER, brainTools, 'brain_tool');
     if (Object.keys(mcpServers).length > 0) options.mcpServers = mcpServers;
     return options;
   }
 
-  #trackerServer() {
-    const { tools, toolContext, toolTimeoutMs, config } = this.#params;
+  /** In-process MCP server for a set of tool specs; `event` is the agent event reported per call. */
+  #sdkServer(name: string, tools: AgentToolSpec[], event: string) {
+    const { toolContext, toolTimeoutMs, config } = this.#params;
     // Claude Code bounds a tool call by the server's `timeout`, else MCP_TOOL_TIMEOUT, else ~28 hours
     // (docs/agent-claude.md#timeouts). An explicit MCP_TOOL_TIMEOUT in claude.env wins over Symphony's value.
     const timeout = toolTimeoutMs !== undefined && config.env.MCP_TOOL_TIMEOUT === undefined ? toolTimeoutMs : undefined;
     return createSdkMcpServer({
-      name: TRACKER_SERVER,
+      name,
       version: '0.1.0',
       alwaysLoad: true,
       ...(timeout !== undefined ? { timeout } : {}),
@@ -401,7 +411,7 @@ class ClaudeSession implements AgentSession {
           } catch (error) {
             result = { ok: false, error: { category: 'tool_error', message: errorMessage(error) } };
           }
-          this.#emit('tracker_tool', {
+          this.#emit(event, {
             message: result.ok ? `${spec.name} ok` : `${spec.name} failed: ${truncate(result.error.message, 200)}`,
             detail: { tool: spec.name, ok: result.ok, mutates: spec.mutates, duration_ms: Date.now() - started },
           });
@@ -534,6 +544,10 @@ class ClaudeSession implements AgentSession {
     const tracker = message.mcp_servers.find((server) => server.name === TRACKER_SERVER);
     if (this.#params.tools.length > 0 && tracker?.status !== 'connected') {
       this.#params.logger.warn('tracker tools are not connected in the agent session', { status: tracker?.status ?? 'missing' });
+    }
+    const brain = message.mcp_servers.find((server) => server.name === BRAIN_SERVER);
+    if ((this.#params.brainTools?.length ?? 0) > 0 && brain?.status !== 'connected') {
+      this.#params.logger.warn('brain tools are not connected in the agent session', { status: brain?.status ?? 'missing' });
     }
     for (const failure of message.plugin_errors ?? []) {
       this.#params.logger.warn('a Claude Code plugin did not load', { plugin: failure.plugin, type: failure.type, error: failure.message });
