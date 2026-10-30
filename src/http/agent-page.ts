@@ -1,5 +1,6 @@
 import { PIPELINE_CSS, PIPELINE_JS } from './pipeline.ts';
-import { BASE_CSS, BASE_JS } from './styles.ts';
+import { TOKENS_CSS } from './ui/tokens.ts';
+import { BASE_JS } from './styles.ts';
 
 const AGENT_CSS = `
   /* Pipeline section: the topology strip plus one summary row per agent stage. */
@@ -221,7 +222,7 @@ export const AGENT_HTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <title>Agent · Symphony</title>
-<style>${BASE_CSS}${PIPELINE_CSS}${AGENT_CSS}${AGENT_PAGE_CSS}</style>
+<style>${TOKENS_CSS}${PIPELINE_CSS}${AGENT_CSS}${AGENT_PAGE_CSS}</style>
 </head>
 <body>
 <header class="topbar">

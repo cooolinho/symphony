@@ -3,7 +3,7 @@
  * columns) as a left-to-right chain of neon nodes joined by SVG connectors. Done stages are green with a
  * check, the active stage pulses in the tone of the issue's live status, and the connector feeding the
  * active stage runs an animated dash ("data flow"). Both the dashboard cards and the issue detail page
- * inline PIPELINE_CSS/PIPELINE_JS next to BASE_CSS/BASE_JS (like charts.ts on the logs page).
+ * inline PIPELINE_CSS/PIPELINE_JS next to TOKENS_CSS/BASE_JS (like charts.ts on the logs page).
  */
 export const PIPELINE_CSS = `
   .pipe { display: flex; align-items: flex-start; min-width: 0; overflow-x: auto; padding: 2px 0; scrollbar-width: thin; }

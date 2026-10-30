@@ -251,9 +251,17 @@ groups are killed too.
 Events sent to the orchestrator: `session_started`, `session_configured` (model, permission mode, Claude Code
 version, MCP server status, plugins, number of skills), `startup_failed`, `turn_started`, `turn_completed`, `turn_failed`, `turn_cancelled`, `turn_timeout`,
 `turn_input_required`, `approval_auto_approved`, `approval_denied`, `permission_denied`, `tool_use`, `tool_result`,
-`tracker_tool`, `assistant_message`, `api_retry`, `rate_limit`, `agent_error` (API or authentication errors),
+`subagent`, `tracker_tool`, `assistant_message`, `api_retry`, `rate_limit`, `agent_error` (API or authentication errors),
 `agent_exited`, `notification`, `other_message`. The worker adds the transition guard's `transition_denied`,
 `checks_started` and `checks_finished` (`target`, `sha`, `exit_code`, `duration_ms`, `ok`), logged at info level.
+
+The `subagent` event reports the subagents the session starts with the Agent/Task tool. Its `subagent` field is an
+absolute snapshot: tool call id, type (`general-purpose` when unset), description (the `description` of the call, else
+the start of its `prompt`), start, end, status (`running`, `ok`, `error`) and the tokens of the subagent's own model
+calls (input, output, cache read and write; messages with its `parent_tool_use_id`, counted once per message id). The
+`tool_result` with the same `tool_use_id` ends it (`is_error` gives `error`). A session that ends or is stopped closes the
+open ones as `error`. Only start and end carry a message; token updates do not appear in the timeline. The orchestrator
+keeps the running subagents and the last ten finished ones per running issue. `agent_calls` still counts the calls.
 
 A turn that fails because of a Claude subscription usage limit settles with the failure code `session_limit` (instead
 of `turn_failed`), carrying the window, the reset time and where it came from. Detection order:
@@ -281,6 +289,11 @@ the difference to the previous total, so nothing is counted twice. Cost is estim
 [configuration.md](configuration.md)); Claude Code's own estimate (`total_cost_usd`) is kept as
 `claude_estimate_usd` for comparison. Rate-limit snapshots come from `rate_limit_event` messages (subscription
 logins).
+Every event is appended as one JSON line to `<log-dir>/budget/rate-limits.jsonl`
+(`{at, run_id, issue, role, model, rate_limit_info}`, `rate_limit_info` is the raw SDK object). Symphony removes lines
+older than 30 days at startup and then once a day; write errors are only logged. `GET /api/v1/state` shows
+`rate_limits` as an object with the latest record per `rateLimitType` (`five_hour`, `seven_day`, ...), `{}` before the
+first event. Instances sharing a log directory share the file, which fits because limits apply per account.
 
 Every raw SDK message is also written as JSON lines to `<log-dir>/sessions/<workspace-key>/<timestamp>.jsonl`.
 

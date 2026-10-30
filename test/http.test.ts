@@ -10,6 +10,7 @@ import { AGENT_HTML } from '../src/http/agent-page.ts';
 import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
 import { BOOST_ICON_URI } from '../src/http/icons.ts';
 import { LOGS_HTML } from '../src/http/logs-page.ts';
+import { TOKENS_CSS } from '../src/http/ui/tokens.ts';
 import { startHttpServer, type HttpServerHandle } from '../src/http/server.ts';
 import { Logger } from '../src/log.ts';
 import { SystemCollector } from '../src/system/metrics.ts';
@@ -37,6 +38,53 @@ function request(
 }
 
 describe('dashboard pages', () => {
+  it('share the glass tokens CSS without external URLs', () => {
+    for (const [name, html] of Object.entries({ dashboard: DASHBOARD_HTML, agent: AGENT_HTML, logs: LOGS_HTML })) {
+      assert.ok(html.includes(TOKENS_CSS), `${name} embeds the tokens CSS`);
+      const styles = [...html.matchAll(/<style>([\s\S]*?)<\/style>/g)].map((match) => match[1] as string).join('\n');
+      assert.doesNotMatch(styles, /https?:\/\//, `${name} CSS has no external URL`);
+      assert.doesNotMatch(styles, /@import|@font-face|url\(/, `${name} CSS loads no resources`);
+    }
+    const block = (marker: string): string => {
+      const start = TOKENS_CSS.indexOf(marker);
+      assert.ok(start >= 0, marker);
+      let depth = 0;
+      for (let i = TOKENS_CSS.indexOf('{', start); i < TOKENS_CSS.length; i++) {
+        if (TOKENS_CSS[i] === '{') depth++;
+        if (TOKENS_CSS[i] === '}' && --depth === 0) return TOKENS_CSS.slice(start, i + 1);
+      }
+      throw new Error(`unbalanced ${marker}`);
+    };
+    const motion = block('@media (prefers-reduced-motion: reduce)');
+    assert.match(motion, /animation: none/);
+    assert.match(motion, /transition: none/);
+    const transparency = block('@media (prefers-reduced-transparency: reduce)');
+    assert.match(transparency, /var\(--solid\)/);
+    assert.match(transparency, /backdrop-filter: none/);
+    assert.match(TOKENS_CSS, /--solid: #111a2c/);
+
+    assert.ok(TOKENS_CSS.includes('#070b16'));
+    const roles = { analyst: '#38bdf8', architect: '#a78bfa', developer: '#34d399', tester: '#fbbf24', docs: '#cbd5e1', reviewer: '#f472b6', security: '#fb923c', symphony: '#94a3b8' };
+    for (const [role, hex] of Object.entries(roles)) assert.ok(TOKENS_CSS.includes(`--role-${role}: ${hex}`), role);
+    for (const token of ['--st-run', '--st-warn', '--st-error', '--st-wait']) assert.ok(TOKENS_CSS.includes(token + ':'), token);
+    assert.ok(TOKENS_CSS.includes('.g {') && TOKENS_CSS.includes('.gi {'));
+    assert.ok(TOKENS_CSS.includes('backdrop-filter: blur('));
+    assert.ok(TOKENS_CSS.includes('button:focus-visible') && TOKENS_CSS.includes('a:focus-visible'));
+    assert.ok(TOKENS_CSS.includes('min-height: 44px'));
+
+    // Animations and transitions only touch transform and opacity.
+    const keyframes = [...TOKENS_CSS.matchAll(/@keyframes [\w-]+/g)];
+    assert.ok(keyframes.length > 0);
+    for (const frame of keyframes) {
+      const body = block(frame[0]);
+      const props = [...body.matchAll(/([\w-]+)\s*:/g)].map((match) => match[1]);
+      for (const prop of props) assert.ok(['transform', 'opacity'].includes(prop as string), `${frame[0]} animates ${prop}`);
+    }
+    for (const match of TOKENS_CSS.matchAll(/transition:([^;}]*)/g)) {
+      assert.match((match[1] as string).replace(/\s*!important/, ""), /^\s*(none|(transform|opacity)\b[^,]*(,\s*(transform|opacity)\b[^,]*)*)\s*$/);
+    }
+  });
+
   it('ship inline scripts that parse and the Laravel Boost icon', () => {
     for (const [name, html] of Object.entries({ dashboard: DASHBOARD_HTML, agent: AGENT_HTML, logs: LOGS_HTML })) {
       const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1] as string);
@@ -98,6 +146,7 @@ describe('http extension', () => {
     const page = await request(server.port, 'GET', '/');
     assert.equal(page.status, 200);
     assert.match(page.body, /<title>Symphony<\/title>/);
+    assert.ok(page.body.includes(TOKENS_CSS), 'dashboard embeds the tokens CSS');
     assert.match(page.body, /AGENT ORCHESTRATOR/);
     // Issues render as cards with the pipeline topology strip in separate sections (Running, Up next, Waiting,
     // Paused), each with a count and hidden when empty; blocked issues collapse into a details panel.
@@ -198,6 +247,7 @@ describe('http extension', () => {
     const page = await request(server.port, 'GET', '/logs');
     assert.equal(page.status, 200);
     assert.match(page.body, /<title>Symphony logs<\/title>/);
+    assert.ok(page.body.includes(TOKENS_CSS), 'logs page embeds the tokens CSS');
   });
 
   it('serves history statistics for all repositories or one, and the raw log', async () => {
@@ -271,6 +321,7 @@ describe('http extension', () => {
     const page = await request(server.port, 'GET', '/agent?id=acme%2Fapp%231');
     assert.equal(page.status, 200);
     assert.match(page.body, /AGENT TRACE/);
+    assert.ok(page.body.includes(TOKENS_CSS), 'agent page embeds the tokens CSS');
     assert.match(page.body, /Back to agents/);
     assert.match(page.body, /id="timeline"/);
     // Pipeline topology section and the Issue sidebar (labels, blockers, sub-issues).

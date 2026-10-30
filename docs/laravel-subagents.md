@@ -71,6 +71,9 @@ up as the tool `Agent`:
 So even a run that used `symphony:code-reviewer` counts as "Agent: 1". The tool calls of a subagent itself
 (`parent_tool_use_id` set) are counted into the run like the main agent's.
 
+The orchestrator's `/api/v1/state` response now tracks individual subagent runs (start, end, tokens) alongside
+`agent_calls`; this data is available for the team view (E3-3) and team API (E3-2).
+
 ### Further issues
 
 - **`code-reviewer` lacked the Boost tools it asks for.** Its front matter allowed only `Read, Grep, Glob, Bash`,

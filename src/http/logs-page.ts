@@ -1,5 +1,6 @@
 import { CHART_CSS, CHART_JS } from './charts.ts';
-import { BASE_CSS, BASE_JS } from './styles.ts';
+import { TOKENS_CSS } from './ui/tokens.ts';
+import { BASE_JS } from './styles.ts';
 
 /**
  * Statistics page: analytics of the per-repository logs for one global filter (period, repository, model).
@@ -15,7 +16,7 @@ export const LOGS_HTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <title>Symphony logs</title>
-<style>${BASE_CSS}${CHART_CSS}
+<style>${TOKENS_CSS}${CHART_CSS}
   .filterbar { display: grid; gap: 12px; }
   .filters { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: flex-end; }
   .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
