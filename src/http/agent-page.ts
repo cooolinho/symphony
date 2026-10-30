@@ -204,7 +204,7 @@ const AGENT_PAGE_CSS = `
 `;
 
 /**
- * Agent detail view (`/agent?id=<identifier>`): an execution trace of one claimed issue. It polls
+ * Agent detail view (`/issue?id=<identifier>`): an execution trace of one claimed issue. It polls
  * /api/v1/<identifier> (state, sessions, usage), /timeline (orchestrator and agent events, incremental by
  * `seq`) and /transcript (prompts, model calls, tool calls and results of each session, incremental by byte
  * offset) on the dashboard's 2 s interval. Bodies of prompts, responses and tool payloads are only put into
@@ -213,7 +213,7 @@ const AGENT_PAGE_CSS = `
 export const AGENT_HTML = page({
   title: 'Agent · Symphony',
   nav: null,
-  crumbs: [{ label: 'Übersicht', href: '/' }, { label: 'Agent' }],
+  crumbs: [{ label: 'Übersicht', href: '/' }, { label: 'Issue' }],
   styles: PIPELINE_CSS + AGENT_CSS + AGENT_PAGE_CSS,
   body: `
   <section class="hero tone-gray" id="hero" aria-labelledby="hero-title">
@@ -866,7 +866,7 @@ ${PIPELINE_JS}
     const { repo, num } = splitId(identifier);
     const idBox = $('hero-id');
     idBox.replaceChildren(el('span', 'Agent '), el('b', num));
-    setText($('crumb-current'), 'Agent ' + num);
+    setText($('crumb-current'), 'Issue ' + num);
     document.title = num + ' · ' + labelText.replace(/^[^A-Za-z]+/, '') + ' · Symphony';
     setText($('hero-title'), (d && d.title) || identifier);
     setText($('hero-repo'), (d && d.repo && d.repo !== 'unknown' ? d.repo : repo) || '');

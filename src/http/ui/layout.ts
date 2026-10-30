@@ -14,13 +14,13 @@ import { TOKENS_CSS } from './tokens.ts';
 
 export type NavKey = 'overview' | 'changes' | 'tasks' | 'brain' | 'stats';
 
-/** Main navigation; Changes, Tasks and Brain link to routes that are served later (E1-4). */
+/** Main navigation. */
 export const NAV_ITEMS: ReadonlyArray<{ key: NavKey; label: string; href: string }> = [
   { key: 'overview', label: 'Übersicht', href: '/' },
   { key: 'changes', label: 'Changes', href: '/changes' },
   { key: 'tasks', label: 'Tasks', href: '/tasks' },
   { key: 'brain', label: 'Brain', href: '/brain' },
-  { key: 'stats', label: 'Statistik', href: '/logs' },
+  { key: 'stats', label: 'Statistik', href: '/stats' },
 ];
 
 export interface Crumb {
@@ -32,7 +32,7 @@ export interface Crumb {
 export interface PageOptions {
   /** Document title (escaped). */
   title: string;
-  /** Active main navigation entry, null on pages outside the navigation (e.g. the agent detail view). */
+  /** Active main navigation entry, null on pages outside the navigation (e.g. the issue detail view). */
   nav: NavKey | null;
   /** Breadcrumbs, rendered only when set. */
   crumbs?: ReadonlyArray<Crumb>;

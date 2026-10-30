@@ -935,7 +935,7 @@ ${CHART_JS}
         const box = el('div', null, 'row-actions');
         const log = el('button', 'Log', 'btn'); log.type = 'button'; log.title = 'Show the log entries of ' + r.issue;
         log.addEventListener('click', () => showIssueLog(r.issue));
-        const agent = link('Detail', '/agent?id=' + encodeURIComponent(r.issue)); agent.className = 'btn';
+        const agent = link('Detail', '/issue?id=' + encodeURIComponent(r.issue)); agent.className = 'btn';
         agent.title = 'Agent detail view: timeline, sessions and transcripts of the last claim, kept after the issue finished';
         box.append(log, agent); return box;
       } },

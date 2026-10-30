@@ -9,8 +9,11 @@ import type { Orchestrator } from '../orchestrator/orchestrator.ts';
 import type { SystemSource } from '../system/metrics.ts';
 import { errorMessage } from '../util/errors.ts';
 import { AGENT_HTML } from './agent-page.ts';
+import { BRAIN_HTML } from './brain-page.ts';
+import { CHANGES_HTML } from './changes-page.ts';
 import { DASHBOARD_HTML } from './dashboard.ts';
 import { LOGS_HTML } from './logs-page.ts';
+import { TASKS_HTML } from './tasks-page.ts';
 
 /** Where the per-repository logs live and how to price them. */
 export interface HistorySource {
@@ -129,15 +132,32 @@ function sameHost(origin: string, hostHeader: string | undefined): boolean {
   }
 }
 
+/** HTML pages by path; they share the host check and method handling of route(). */
+const PAGE_ROUTES: ReadonlyMap<string, string> = new Map([
+  ['/', DASHBOARD_HTML],
+  ['/changes', CHANGES_HTML],
+  ['/tasks', TASKS_HTML],
+  ['/brain', BRAIN_HTML],
+  ['/stats', LOGS_HTML],
+  ['/issue', AGENT_HTML],
+]);
+
+/** Former page paths, permanently redirected (301) with their query string. */
+const REDIRECTS: ReadonlyMap<string, string> = new Map([
+  ['/logs', '/stats'],
+  ['/agent', '/issue'],
+]);
+
 /**
- * Observability/control surface (spec 13.7): `/` dashboard, `/agent?id=<identifier>` agent detail view (live, or
- * archived once the orchestrator released the issue),
- * `/logs` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
+ * Observability/control surface (spec 13.7): `/` dashboard, `/changes`, `/tasks` and `/brain` (placeholder pages),
+ * `/issue?id=<identifier>` issue detail view (live, or archived once the orchestrator released the issue),
+ * `/stats` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
  * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
  * `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker), `/force` (Start now in an extra slot),
  * `/pause` and `/resume` (operator pause of an issue), `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family), and
  * `PUT` / `DELETE /api/v1/settings/agents` (agent slots set on the dashboard; JSON body, `Content-Type:
  * application/json` required).
+ * `/logs` and `/agent` redirect with 301 to `/stats` and `/issue` (query kept).
  * Read-only except refresh and these control routes. On a loopback bind, requests whose Host is not a loopback name are
  * rejected (DNS-rebinding guard), and cross-origin POSTs are refused. On any other bind the server has no
  * login of its own and belongs behind an authenticating reverse proxy: the control routes are disabled unless
@@ -211,17 +231,20 @@ export function startHttpServer(options: {
       else sendError(res, 405, 'method_not_allowed', `${method} is not supported on ${pathname}`, { allow: methods.join(', ') });
     };
 
-    if (pathname === '/') {
+    const pageHtml = PAGE_ROUTES.get(pathname);
+    if (pageHtml !== undefined) {
       allow(['GET', 'HEAD'], () => {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-        res.end(method === 'HEAD' ? undefined : DASHBOARD_HTML);
+        res.end(method === 'HEAD' ? undefined : pageHtml);
       });
       return;
     }
-    if (pathname === '/agent') {
+    const redirect = REDIRECTS.get(pathname);
+    if (redirect !== undefined) {
       allow(['GET', 'HEAD'], () => {
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-        res.end(method === 'HEAD' ? undefined : AGENT_HTML);
+        // The raw query string is carried over untouched (no decoding); the target is fixed, so this is no open redirect.
+        res.writeHead(301, { location: redirect + new URL(req.url ?? '/', 'http://localhost').search, 'cache-control': 'no-store' });
+        res.end();
       });
       return;
     }
@@ -235,13 +258,6 @@ export function startHttpServer(options: {
     }
     if (pathname === '/api/v1/budget') {
       allow(['GET'], () => sendJson(res, 200, orchestrator.budget()));
-      return;
-    }
-    if (pathname === '/logs') {
-      allow(['GET', 'HEAD'], () => {
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-        res.end(method === 'HEAD' ? undefined : LOGS_HTML);
-      });
       return;
     }
     if (pathname === '/api/v1/history/analytics' || pathname === '/api/v1/history/entries') {
