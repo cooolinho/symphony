@@ -45,3 +45,42 @@ export function resolveVaultPath(vault: string, input: unknown, options: { allow
   }
   return { ok: true, absolute, relative: segments.join('/') };
 }
+
+/**
+ * Stricter check for writes: on top of `resolveVaultPath` only `.md` notes, nothing hidden (`.obsidian`, `.git`, temp
+ * files), not the `README.md` in the vault root (Symphony's rules), no symlink as target and no symlinked folder out
+ * of the vault, also when the target does not exist yet.
+ */
+export function resolveVaultWritePath(vault: string, input: unknown): VaultPath {
+  const resolved = resolveVaultPath(vault, input);
+  if (!resolved.ok) return resolved;
+  const reject = (message: string): VaultPath => ({ ok: false, message });
+  const segments = resolved.relative.split('/');
+  if (resolved.relative.toLowerCase() === 'readme.md') return reject('README.md in the vault root belongs to Symphony and is not writable');
+  if (!resolved.relative.toLowerCase().endsWith('.md')) return reject('only .md notes are writable');
+  if (segments.some((segment) => segment.startsWith('.'))) return reject('hidden files and folders are not writable');
+  try {
+    if (fs.lstatSync(resolved.absolute).isSymbolicLink()) return reject('path is a symlink');
+  } catch {
+    // Missing target: fine, it is created below.
+  }
+  const lstatExists = (p: string): boolean => {
+    try {
+      fs.lstatSync(p);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  let ancestor = path.dirname(resolved.absolute);
+  while (!lstatExists(ancestor) && path.dirname(ancestor) !== ancestor) ancestor = path.dirname(ancestor);
+  try {
+    const realVault = fs.realpathSync(vault);
+    const realAncestor = fs.realpathSync(ancestor);
+    if (realAncestor !== realVault && !isStrictlyInside(realVault, realAncestor)) return reject('path leaves the vault through a symlink');
+    if (path.relative(realVault, realAncestor).split(path.sep).some(isObsidian)) return reject(OBSIDIAN_MESSAGE);
+  } catch {
+    return reject('path cannot be checked');
+  }
+  return resolved;
+}

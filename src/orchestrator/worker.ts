@@ -651,6 +651,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       ...(brainTools.length > 0 ? { brainTools } : {}),
       toolContext: () => ({
         issue,
+        role: name,
+        ...(params.runId !== null ? { runId: params.runId } : {}),
         ...(subIssues !== null ? { maxSubIssues: subIssues } : {}),
         ...(role?.subIssueStatus != null ? { subIssueStatus: role.subIssueStatus } : {}),
       }),

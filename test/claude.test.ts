@@ -152,7 +152,7 @@ describe('claude agent runner', () => {
     const dir = tempDir();
     const on = await sessionOptions({ brainTools: brainToolsFor({ enabled: true, path: dir }, Logger.silent()) });
     assert.ok(on.mcpServers?.brain !== undefined);
-    for (const name of ['brain_search', 'brain_read', 'brain_list']) assert.ok(on.allowedTools?.includes(`mcp__brain__${name}`));
+    for (const name of ['brain_search', 'brain_read', 'brain_list', 'brain_write', 'brain_append']) assert.ok(on.allowedTools?.includes(`mcp__brain__${name}`));
     const off = await sessionOptions({ brainTools: brainToolsFor({ enabled: false, path: dir }, Logger.silent()) });
     assert.equal(off.mcpServers?.brain, undefined);
     assert.ok(!off.allowedTools?.some((name) => name.startsWith('mcp__brain')));

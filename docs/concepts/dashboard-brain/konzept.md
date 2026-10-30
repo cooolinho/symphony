@@ -438,6 +438,7 @@ base_hash)`.
 - Das Frontmatter wird geprüft.
 - Neue Notizen bekommen `status: candidate`.
 - Die Suche läuft über Dateien (Titel, Frontmatter, Volltext), `approved` zuerst.
+- Nach jedem erfolgreichen Write ruft das Brain-Modul den Hook `onWrite(entry)` auf (`BrainWriteEntry`: Tool, Pfad, `purpose`, `hash`, `previousHash`, `created`, Issue, Rolle, Run); E7-3 (Commit) und E7-4 (Access-Log) hängen sich daran.
 
 Abnahme:
 - Tests für Pfad-Ausbruch, fehlenden `purpose` (Warnung im Log, kein Abbruch) und Suche mit Statusreihenfolge.

@@ -141,7 +141,7 @@ describe('brain tools', () => {
     const dir = vault();
     assert.deepEqual(brainToolsFor({ enabled: false, path: dir }, Logger.silent()), []);
     const tools = brainToolsFor({ enabled: true, path: dir }, Logger.silent());
-    assert.deepEqual(tools.map((t) => t.name), ['brain_search', 'brain_read', 'brain_list']);
-    assert.ok(tools.every((t) => !t.mutates));
+    assert.deepEqual(tools.map((t) => t.name), ['brain_search', 'brain_read', 'brain_list', 'brain_write', 'brain_append']);
+    assert.deepEqual(tools.map((t) => t.mutates), [false, false, false, true, true]);
   });
 });
