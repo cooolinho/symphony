@@ -1172,7 +1172,7 @@ Symphony samples CPU, memory, load and disk of the host every 10 s and keeps one
 
 ### `brain`
 
-The knowledge vault: one vault for all repositories. With `enabled: true` Symphony creates `README.md` (the rules), `Inbox/`, `Repos/`, `Decisions/`, `Lessons/`, `Issues/` and `Agents/` at startup, plus `Repos/<owner>-<name>/index.md` for each configured repository. Existing files and folders are never overwritten; `.obsidian/` is never touched. Restart to change it. With `enabled: true` agents also get the read tools `brain_search`, `brain_read` and `brain_list` (see [agent-claude.md](agent-claude.md#brain-tools)). An unknown key is an error.
+The knowledge vault: one vault for all repositories. With `enabled: true` Symphony creates `README.md` (the rules), `Inbox/`, `Repos/`, `Decisions/`, `Lessons/`, `Issues/` and `Agents/` folders at startup, plus `Kandidaten-Review.base` and `Neueste Lessons.base` as Obsidian Bases views, and `Repos/<owner>-<name>/index.md` for each configured repository. Existing files and folders are never overwritten; `.obsidian/` is never touched. Restart to change it. With `enabled: true` agents also get the read tools `brain_search`, `brain_read` and `brain_list` (see [agent-claude.md](agent-claude.md#brain-tools)). An unknown key is an error.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
