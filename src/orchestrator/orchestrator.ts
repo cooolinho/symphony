@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { RateLimitLog, rateLimitKey, type RateLimitRecord } from '../budget/rate-limit-log.ts';
 import { childEnvironment } from '../agent/env.ts';
 import { chooseRoleEffort, chooseRoleModel } from '../agent/model.ts';
 import { classify } from '../workflow/classify.ts';
@@ -649,6 +650,7 @@ export class Orchestrator {
   #retries = new Map<string, RetryEntry>();
   #completed = new Set<string>();
   #archive: IssueArchive;
+  #rateLimitLog: RateLimitLog;
   #records = new Map<string, IssueRecord>();
   #paused = new Map<string, PausedEntry>();
   /** Cap of the budget comment already posted per issue, so a Resume that pauses again does not comment twice. */
@@ -657,7 +659,8 @@ export class Orchestrator {
   #watched = new Map<string, string>();
   #cleanups = new Map<string, Promise<void>>();
   #totals = { inputTokens: 0, outputTokens: 0, totalTokens: 0, endedSeconds: 0, costUsd: 0, claudeEstimateUsd: 0 };
-  #rateLimits: unknown = null;
+  /** The latest rate-limit event per rateLimitType (five_hour, seven_day, ...). */
+  #rateLimits = new Map<string, RateLimitRecord>();
   /** The latest `turn_completed` of any run: session limits observed before it are gone. */
   #lastTurnSuccessAt: Date | null = null;
   /** The dispatch gate the last tick logged, to log its start and end once. */
@@ -696,6 +699,7 @@ export class Orchestrator {
     this.#createAdapter = deps.createAdapter ?? defaultAdapterFactory;
     this.#pollIntervalMs = deps.workflow.current.config.polling.intervalMs;
     this.#archive = new IssueArchive(deps.logDir === null ? null : path.join(deps.logDir, 'issues'), deps.logger);
+    this.#rateLimitLog = new RateLimitLog(deps.logDir === null ? null : path.join(deps.logDir, 'budget'), deps.logger);
     const tracker = deps.workflow.current.config.tracker;
     this.#runtimeState = new RuntimeStateStore(runtimeStateFile(deps.logDir, tracker, deps.env), deps.logger);
     const restored = this.#runtimeState.load(this.#clock.now());
@@ -738,6 +742,7 @@ export class Orchestrator {
     if (errors.length > 0) throw new SymphonyError('startup_validation_failed', errors.join('; '));
     this.#pollIntervalMs = workflow.config.polling.intervalMs;
     await this.#startupCleanup(workflow);
+    this.#rateLimitLog.pruneIfDue(this.#clock.now());
     this.#scheduleTick(0);
   }
 
@@ -1218,6 +1223,7 @@ export class Orchestrator {
   async #tick(): Promise<void> {
     if (this.#stopping) return;
     this.#refreshPending = false;
+    this.#rateLimitLog.pruneIfDue(this.#clock.now());
     try {
       await this.#deps.workflow.refreshIfChanged();
       const workflow = this.#deps.workflow.current;
@@ -3257,7 +3263,18 @@ export class Orchestrator {
       entry.costUsd = cost;
       entry.reportedCostUsd = cost;
     }
-    if (event.rateLimits !== undefined) this.#rateLimits = event.rateLimits;
+    if (event.rateLimits !== undefined) {
+      const record: RateLimitRecord = {
+        at: this.#clock.now().toISOString(),
+        run_id: entry.runId,
+        issue: entry.identifier,
+        role: entry.role,
+        model: entry.model ?? entry.requestedModel,
+        rate_limit_info: event.rateLimits,
+      };
+      this.#rateLimits.set(rateLimitKey(event.rateLimits), record);
+      this.#rateLimitLog.append(record);
+    }
     // Outside #serial: only the timestamp, the dispatch gate is derived from it on demand.
     if (event.event === 'turn_completed') this.#lastTurnSuccessAt = this.#clock.now();
 
@@ -3634,7 +3651,7 @@ export class Orchestrator {
         cost_usd: Math.round(this.#totals.costUsd * 10_000) / 10_000,
         claude_estimate_usd: Math.round(this.#totals.claudeEstimateUsd * 10_000) / 10_000,
       },
-      rate_limits: this.#rateLimits,
+      rate_limits: Object.fromEntries(this.#rateLimits),
       health: {
         stopping: this.#stopping,
         symphony_version: SYMPHONY_VERSION,
