@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { sessionClaudeConfig } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, AgentSession, IntegrationReport, SessionLimitInfo } from '../agent/types.ts';
+import { brainToolsFor } from '../brain/tools.ts';
 import { prepareIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
@@ -635,6 +636,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     // An architect files sub-issues only to split an issue it may split (XL, not a work package itself).
     const subIssues = subIssueLimit(role, issue);
     sessionStart = { sha: startSha };
+    const brainTools = brainToolsFor(params.workflow.config.brain, logger);
     session = await params.runner.startSession({
       ...(params.contextWindow ? { contextWindow: params.contextWindow } : {}),
       cwd: activeWorkspace.path,
@@ -646,6 +648,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       // Entry checks run inside the status tool call; leave a minute for the tracker call around them.
       toolTimeoutMs: Math.max(params.workflow.config.checks.timeoutMs, maxColumnCheckMs(params.workflow.config.checks)) + TOOL_TIMEOUT_MARGIN_MS,
       tools: guardTools(observeMerges(toolsForRole(params.adapter.agentToolSpecs(), role, issue, support?.tool ?? null), callbacks.merged), guard),
+      ...(brainTools.length > 0 ? { brainTools } : {}),
       toolContext: () => ({
         issue,
         ...(subIssues !== null ? { maxSubIssues: subIssues } : {}),

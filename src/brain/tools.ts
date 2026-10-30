@@ -1,0 +1,207 @@
+import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { z } from 'zod';
+import type { Logger } from '../log.ts';
+import type { AgentToolContext, AgentToolSpec, ToolResult } from '../tracker/types.ts';
+import { errorMessage } from '../util/errors.ts';
+import type { BrainConfig } from '../workflow/config.ts';
+import { noteStatus, noteTitle, parseNote } from './note.ts';
+import { resolveVaultPath } from './paths.ts';
+
+export const MAX_SEARCH_RESULTS = 20;
+const MAX_NOTE_BYTES = 1024 * 1024;
+const EXCERPT_CHARS = 200;
+
+function ok(data: unknown): ToolResult {
+  return { ok: true, data };
+}
+
+function fail(category: string, message: string): ToolResult {
+  return { ok: false, error: { category, message } };
+}
+
+function fsFailure(error: unknown): ToolResult {
+  if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return fail('not_found', 'no such file or folder in the vault');
+  return fail('tool_error', errorMessage(error));
+}
+
+/** Access log comes with E7-4; until then a call without `purpose` only leaves a warning. */
+function warnPurpose(logger: Logger, tool: string, args: Record<string, unknown>, context: AgentToolContext): void {
+  const purpose = args.purpose;
+  if (typeof purpose === 'string' && purpose.trim() !== '') return;
+  logger.warn('brain tool called without purpose', { tool, issue: context.issue.identifier });
+}
+
+const PURPOSE = z.string().optional().describe('Why you read the vault (a few words); logged, please always give it');
+
+/** All `.md` files below `dir` (vault-relative paths); hidden entries, symlinks and oversized files are skipped. */
+function walkNotes(vault: string, dir: string = vault): string[] {
+  const found: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) found.push(...walkNotes(vault, full));
+    else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+      if (fs.statSync(full).size <= MAX_NOTE_BYTES) found.push(path.relative(vault, full).split(path.sep).join('/'));
+    }
+  }
+  return found;
+}
+
+function excerptOf(body: string, words: string[]): string {
+  const flat = body.replace(/\s+/g, ' ').trim();
+  const lower = flat.toLowerCase();
+  const at = words.map((word) => lower.indexOf(word)).filter((i) => i >= 0).sort((a, b) => a - b)[0];
+  if (at === undefined) return flat.slice(0, EXCERPT_CHARS);
+  const start = Math.max(0, at - EXCERPT_CHARS / 2);
+  return `${start > 0 ? '…' : ''}${flat.slice(start, start + EXCERPT_CHARS)}`;
+}
+
+function statusRank(status: string | null): number {
+  return status === 'approved' ? 0 : status === 'candidate' ? 1 : 2;
+}
+
+function fieldEquals(value: unknown, wanted: string): boolean {
+  return typeof value === 'string' && value.trim().toLowerCase() === wanted.trim().toLowerCase();
+}
+
+/** Read tools of the knowledge vault. Everything runs synchronously on the file system; there is no index. */
+export function createBrainTools(vaultPath: string, logger: Logger): AgentToolSpec[] {
+  const guarded =
+    (tool: string, body: (args: Record<string, unknown>) => ToolResult): AgentToolSpec['execute'] =>
+    async (args, context) => {
+      warnPurpose(logger, tool, args, context);
+      try {
+        return body(args);
+      } catch (error) {
+        return fail('tool_error', errorMessage(error));
+      }
+    };
+
+  const search: AgentToolSpec = {
+    name: 'brain_search',
+    description:
+      'Search the knowledge vault (title, frontmatter and full text of all .md notes, case-insensitive; every word of the query must occur). ' +
+      'Notes with status approved come first, then candidate (not yet confirmed knowledge, treat with care); deprecated notes are never returned. ' +
+      `At most ${MAX_SEARCH_RESULTS} hits. Optional filters: repo (frontmatter repo, owner/name) and type (frontmatter type). ` +
+      'Returns {results: [{path, title, status, excerpt}], total}. Read a hit with brain_read.',
+    inputSchema: {
+      query: z.string().min(1).describe('Words to search for'),
+      repo: z.string().optional().describe('Only notes with this frontmatter repo'),
+      type: z.string().optional().describe('Only notes with this frontmatter type'),
+      purpose: PURPOSE,
+    },
+    mutates: false,
+    execute: guarded('brain_search', (args) => {
+      const words = String(args.query ?? '').toLowerCase().split(/\s+/).filter((word) => word !== '');
+      if (words.length === 0) return fail('invalid_argument', 'query must contain a word');
+      const repo = typeof args.repo === 'string' && args.repo !== '' ? args.repo : null;
+      const type = typeof args.type === 'string' && args.type !== '' ? args.type : null;
+      const hits: Array<{ path: string; title: string; status: string | null; excerpt: string; rank: number; score: number }> = [];
+      for (const rel of walkNotes(vaultPath)) {
+        const text = fs.readFileSync(path.join(vaultPath, ...rel.split('/')), 'utf8');
+        const note = parseNote(text);
+        const status = noteStatus(note.frontmatter);
+        if (status === 'deprecated') continue;
+        if (repo !== null && !fieldEquals(note.frontmatter.repo, repo)) continue;
+        if (type !== null && !fieldEquals(note.frontmatter.type, type)) continue;
+        const title = noteTitle(note.frontmatter, note.body, path.posix.basename(rel));
+        const titleLower = title.toLowerCase();
+        const frontLower = note.frontmatterText.toLowerCase();
+        const bodyLower = note.body.toLowerCase();
+        let score = 0;
+        let matchedAll = true;
+        for (const word of words) {
+          const inTitle = titleLower.includes(word);
+          const inFront = frontLower.includes(word);
+          const inBody = bodyLower.includes(word);
+          if (!inTitle && !inFront && !inBody) {
+            matchedAll = false;
+            break;
+          }
+          score += (inTitle ? 3 : 0) + (inFront ? 2 : 0) + (inBody ? 1 : 0);
+        }
+        if (!matchedAll) continue;
+        hits.push({ path: rel, title, status, excerpt: excerptOf(note.body, words), rank: statusRank(status), score });
+      }
+      hits.sort((a, b) => a.rank - b.rank || b.score - a.score || a.path.localeCompare(b.path));
+      const results = hits.slice(0, MAX_SEARCH_RESULTS).map(({ path: p, title, status, excerpt }) => ({ path: p, title, status, excerpt }));
+      return ok({ results, total: hits.length });
+    }),
+  };
+
+  const read: AgentToolSpec = {
+    name: 'brain_read',
+    description:
+      'Read one note of the knowledge vault. path is relative to the vault (no .., no absolute path, nothing under .obsidian/). ' +
+      'Returns {path, content, frontmatter, frontmatter_error, hash}; hash is the SHA-256 of the file and is needed for later writes.',
+    inputSchema: { path: z.string().describe('Path relative to the vault, e.g. Lessons/caching.md'), purpose: PURPOSE },
+    mutates: false,
+    execute: guarded('brain_read', (args) => {
+      const resolved = resolveVaultPath(vaultPath, args.path);
+      if (!resolved.ok) return fail('rejected', resolved.message);
+      try {
+        const stat = fs.statSync(resolved.absolute);
+        if (!stat.isFile()) return fail('invalid_argument', 'path is not a file');
+        if (stat.size > MAX_NOTE_BYTES) return fail('too_large', `note is larger than ${MAX_NOTE_BYTES} bytes`);
+        const buffer = fs.readFileSync(resolved.absolute);
+        const note = parseNote(buffer.toString('utf8'));
+        return ok({
+          path: resolved.relative,
+          content: buffer.toString('utf8'),
+          frontmatter: note.frontmatter,
+          frontmatter_error: note.frontmatterError,
+          hash: createHash('sha256').update(buffer).digest('hex'),
+        });
+      } catch (error) {
+        return fsFailure(error);
+      }
+    }),
+  };
+
+  const list: AgentToolSpec = {
+    name: 'brain_list',
+    description:
+      'List a folder of the knowledge vault. folder is relative to the vault; empty or missing means the vault root. ' +
+      'Returns {folder, entries: [{name, path, kind: folder|file, type, status}]}: folders first; type and status come from the frontmatter of .md files. ' +
+      'Hidden entries (.obsidian/ and others) are not listed.',
+    inputSchema: { folder: z.string().optional().describe('Folder relative to the vault; empty = root'), purpose: PURPOSE },
+    mutates: false,
+    execute: guarded('brain_list', (args) => {
+      const resolved = resolveVaultPath(vaultPath, args.folder ?? '', { allowRoot: true });
+      if (!resolved.ok) return fail('rejected', resolved.message);
+      try {
+        if (!fs.statSync(resolved.absolute).isDirectory()) return fail('invalid_argument', 'path is not a folder');
+        const entries = fs
+          .readdirSync(resolved.absolute, { withFileTypes: true })
+          .filter((entry) => !entry.name.startsWith('.') && !entry.isSymbolicLink() && (entry.isDirectory() || entry.isFile()))
+          .map((entry) => {
+            const rel = resolved.relative === '' ? entry.name : `${resolved.relative}/${entry.name}`;
+            let type: string | null = null;
+            let status: string | null = null;
+            if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+              const full = path.join(resolved.absolute, entry.name);
+              if (fs.statSync(full).size <= MAX_NOTE_BYTES) {
+                const { frontmatter } = parseNote(fs.readFileSync(full, 'utf8'));
+                type = typeof frontmatter.type === 'string' ? frontmatter.type : null;
+                status = noteStatus(frontmatter);
+              }
+            }
+            return { name: entry.name, path: rel, kind: entry.isDirectory() ? ('folder' as const) : ('file' as const), type, status };
+          })
+          .sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'folder' ? -1 : 1));
+        return ok({ folder: resolved.relative, entries });
+      } catch (error) {
+        return fsFailure(error);
+      }
+    }),
+  };
+
+  return [search, read, list];
+}
+
+/** The brain read tools of a session: none unless `brain.enabled` (the role switch follows with E7-5). */
+export function brainToolsFor(config: BrainConfig, logger: Logger): AgentToolSpec[] {
+  return config.enabled ? createBrainTools(config.path, logger) : [];
+}

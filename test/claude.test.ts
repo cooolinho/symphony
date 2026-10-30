@@ -7,6 +7,7 @@ import { ClaudeAgentRunner, type QueryFn } from '../src/agent/claude.ts';
 import { readTranscript } from '../src/agent/transcript.ts';
 import { boostToolPolicy } from '../src/laravel/boost.ts';
 import type { AgentEvent, SessionExtensions, SessionPolicy, StartSessionParams } from '../src/agent/types.ts';
+import { brainToolsFor } from '../src/brain/tools.ts';
 import { Logger } from '../src/log.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 import type { AgentToolSpec } from '../src/tracker/types.ts';
@@ -106,6 +107,7 @@ function params(
     toolTimeoutMs?: number;
     transcriptPath?: string;
     deniedAgents?: string[];
+    brainTools?: AgentToolSpec[];
     contextWindow?: (model: string) => number | null;
   } = {},
 ): StartSessionParams {
@@ -125,6 +127,7 @@ function params(
     ...(overrides.extensions ? { extensions: overrides.extensions } : {}),
     ...(overrides.policy ? { policy: overrides.policy } : {}),
     ...(overrides.toolTimeoutMs !== undefined ? { toolTimeoutMs: overrides.toolTimeoutMs } : {}),
+    ...(overrides.brainTools ? { brainTools: overrides.brainTools } : {}),
     ...(overrides.deniedAgents ? { deniedAgents: overrides.deniedAgents } : {}),
     ...(overrides.contextWindow ? { contextWindow: overrides.contextWindow } : {}),
   };
@@ -145,6 +148,22 @@ function serverExtensions(server: Partial<SessionExtensions['mcpServers'][string
 }
 
 describe('claude agent runner', () => {
+  it('registers the brain server only with brain tools', async () => {
+    const dir = tempDir();
+    const on = await sessionOptions({ brainTools: brainToolsFor({ enabled: true, path: dir }, Logger.silent()) });
+    assert.ok(on.mcpServers?.brain !== undefined);
+    for (const name of ['brain_search', 'brain_read', 'brain_list']) assert.ok(on.allowedTools?.includes(`mcp__brain__${name}`));
+    const off = await sessionOptions({ brainTools: brainToolsFor({ enabled: false, path: dir }, Logger.silent()) });
+    assert.equal(off.mcpServers?.brain, undefined);
+    assert.ok(!off.allowedTools?.some((name) => name.startsWith('mcp__brain')));
+    assert.equal((await sessionOptions({})).mcpServers?.brain, undefined);
+  });
+
+  it('reserves the brain server name for extensions', async () => {
+    const extensions: SessionExtensions = { mcpServers: { brain: { command: 'x', args: [] } }, contextSections: [], additionalDirectories: [], env: {} };
+    await assert.rejects(sessionOptions({ extensions }), /reserved/);
+  });
+
   it('runs several turns on one live session and reports absolute usage totals', async () => {
     let turn = 0;
     const fake = fakeQuery((_prompt, _options, emit) => {

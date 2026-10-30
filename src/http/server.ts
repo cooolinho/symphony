@@ -133,7 +133,7 @@ function sameHost(origin: string, hostHeader: string | undefined): boolean {
  * Observability/control surface (spec 13.7): `/` dashboard, `/agent?id=<identifier>` agent detail view (live, or
  * archived once the orchestrator released the issue),
  * `/logs` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
- * `/api/v1/state`, `/api/v1/system`, `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
+ * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
  * `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker), `/force` (Start now in an extra slot),
  * `/pause` and `/resume` (operator pause of an issue), `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family), and
  * `PUT` / `DELETE /api/v1/settings/agents` (agent slots set on the dashboard; JSON body, `Content-Type:
@@ -231,6 +231,10 @@ export function startHttpServer(options: {
     }
     if (pathname === '/api/v1/system') {
       allow(['GET'], () => sendJson(res, 200, system?.snapshot() ?? { current: null, history: [], gpu: null }));
+      return;
+    }
+    if (pathname === '/api/v1/budget') {
+      allow(['GET'], () => sendJson(res, 200, orchestrator.budget()));
       return;
     }
     if (pathname === '/logs') {
