@@ -1159,6 +1159,14 @@ one poll at a time. For example, with an analyst in `Ready` and `pipeline.analys
 | `allow_remote_control` | `false` | Allows the control routes (restart with `POST /api/v1/<identifier>/retry`, **Retry now** / **Resume now**; **Start now** with `/force`; pause and resume of issues and models, `/pause`, `/resume`, `/models/<model>/hold` and `/release`; agent slots with `PUT` / `DELETE /api/v1/settings/agents`) when `host` is not a loopback address; the shipped `WORKFLOW.md` reads it from `SYMPHONY_ALLOW_REMOTE_CONTROL`. On such a bind every restart request must carry an `Origin` header that matches its `Host` (CSRF guard, since the browser sends the proxy's credentials with every request); without it the API answers `403 forbidden_origin`. Has no effect on a loopback bind, where restart is always allowed. Only enable it behind an authenticating proxy. Restart to change it. |
 | `public_url` | none | The dashboard's address as people reach it (`https://symphony.example.com`); the shipped `WORKFLOW.md` reads it from `SYMPHONY_PUBLIC_URL`. Links in [commit statuses](#named-checks) point to its agent page. |
 
+### `system`
+
+Symphony samples CPU, memory, load and disk of the host every 10 s and keeps one hour of history in memory (`GET /api/v1/system`). Values that cannot be read are `null`.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `gpu` | `false` | Reads GPU utilization, memory and temperature from `nvidia-smi`; with `false` `nvidia-smi` is never called and `gpu` is `null`. Restart to change it. |
+
 ## Complete example: roles, checks and Laravel
 
 The shipped `WORKFLOW.md`, shortened to the parts that make up the developer → checks → reviewer → human flow
