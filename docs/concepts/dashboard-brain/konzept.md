@@ -79,7 +79,7 @@ Zielgruppe ist der Betreiber der Instanz (eine Person, Heimnetz, Desktop zuerst)
 |---|---|---|
 | `SystemSample` | Zeit, CPU %, RAM belegt/gesamt, Disk belegt/gesamt je Volume, Load 1/5/15, optional GPU | neuer Collector, Ringpuffer im Speicher (1 h bei 10-s-Takt) |
 | `ContextSnapshot` | Run, Modell, Fenstergröße, belegte Tokens (Input + Cache read + Cache write des letzten Model-Calls), Prozent, Anzahl Auto-Compacts | aus SDK-Nachrichten in `claude.ts`, im `RunningEntry` |
-| `RateLimitEvent` | Zeit, `status`, `rateLimitType`, `resetsAt`, weitere Felder des SDK roh | JSONL `<logDir>/budget/rate-limits.jsonl` |
+| `RateLimitEvent` | `at` (ISO), `run_id`, `issue`, `role`, `model`, `rate_limit_info` (SDK object) | JSONL `<logDir>/budget/rate-limits.jsonl`, rotated after 30 days at startup and once daily |
 | `BudgetForecast` | Fenster, Verbrauch im rollenden Fenster, Burn-Rate, geschätzte Grenze, ETA, Reset | berechnet aus History + Events |
 | `SubagentRun` | `tool_use_id`, Typ, Beschreibung, Start, Ende, Status, Tokens | aus SDK-Nachrichten (`parent_tool_use_id`) |
 | `TeamView` | Sitze (Rolle, Status, Verdict, Dauer, Modell), aktiver Sitz mit Aktion und Context, Subagents, Partitur-Blöcke, Übergaben | `stages[]`, `running`, Timeline |
@@ -339,10 +339,13 @@ Abnahme:
 
 **E4-2 Rate-Limit-Events speichern**
 
-Jedes `rate_limit_event` wird roh als JSONL geschrieben (`<logDir>/budget/rate-limits.jsonl`). `state.rate_limits`
-zeigt das jeweils letzte Event je `rateLimitType`.
+Jedes `rate_limit_event` wird als JSONL geschrieben (`<logDir>/budget/rate-limits.jsonl`) mit `at` (ISO), `run_id`, 
+`issue`, `role`, `model` und dem rohen `rate_limit_info`-Objekt des SDK. `state.rate_limits` zeigt ein Objekt mit dem 
+jeweils letzten Event je `rateLimitType` (`five_hour`, `seven_day` o. ä.), `{}` vor dem ersten Event. Zeilen älter als 
+30 Tage werden beim Start und danach einmal täglich entfernt (Konstante, kein Config-Schlüssel). Schreibfehler werden 
+nur geloggt.
 
-Abnahme: Rotation nach 30 Tagen (siehe offene Frage 7).
+Abnahme: JSONL mit Quellkontext (Run, Issue, Rolle, Modell), Rotation nach 30 Tagen, `state.rate_limits` je Typ.
 
 **E4-3 Spike: Auslastung aus dem SDK**
 
