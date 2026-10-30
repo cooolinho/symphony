@@ -232,6 +232,49 @@ describe('workspace integrations', () => {
     assert.equal(seen[0]!.workspacePath, runner.sessions[0]!.params.cwd);
   });
 
+  it('shows the running and finished subagents of a running issue', async () => {
+    let live: unknown = null;
+    let s: Setup | null = null;
+    const runner = new FakeRunner((turn, params) => {
+      const send = (event: string, fields: Record<string, unknown>) =>
+        (params.onEvent as (event: unknown) => void)({ event, timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: 1, ...fields });
+      const run = (id: string, status: string, tokens: number, endedAt: Date | null) => ({
+        toolUseId: id,
+        subagentType: 'Explore',
+        description: 'Find files',
+        startedAt: new Date('2026-01-01T10:00:00Z'),
+        endedAt,
+        status,
+        tokens: { inputTokens: tokens, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 },
+      });
+      send('tool_use', { detail: { tool: 'Agent', agent: 'Explore' } });
+      send('subagent', { subagent: run('a', 'running', 0, null) });
+      send('subagent', { subagent: run('b', 'running', 0, null) });
+      send('subagent', { subagent: run('a', 'running', 5, null) });
+      send('subagent', { subagent: run('a', 'ok', 5, new Date('2026-01-01T10:01:00Z')) });
+      live = s?.orchestrator.snapshot().running[0];
+      s?.tracker.set('a', { state: 'In review' });
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    });
+    s = setup({ runner, issues: [makeIssue({ id: 'a' })] });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s!).running.length === 0 && runner.sessions.length === 1, 3_000, 'run finished');
+    const row = live as { agent_calls: unknown; subagents: { running: Array<{ tool_use_id: string }>; finished: unknown[] } };
+    assert.deepEqual(row.agent_calls, { Explore: 1 });
+    assert.deepEqual(row.subagents.running.map((run) => run.tool_use_id), ['b']);
+    assert.deepEqual(row.subagents.finished, [
+      {
+        tool_use_id: 'a',
+        subagent_type: 'Explore',
+        description: 'Find files',
+        status: 'ok',
+        started_at: '2026-01-01T10:00:00.000Z',
+        ended_at: '2026-01-01T10:01:00.000Z',
+        tokens: { input_tokens: 5, output_tokens: 2, cache_read_tokens: 3, cache_write_tokens: 4, total_tokens: 14 },
+      },
+    ]);
+  });
+
   it('attributes MCP tool and skill calls to the reports of the integrations', async () => {
     const report: IntegrationReport = {
       id: 'laravel-boost',
