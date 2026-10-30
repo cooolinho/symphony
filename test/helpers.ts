@@ -491,7 +491,7 @@ export function renderPage(html: string, state?: unknown, opts: RenderOptions = 
   const ctx = vm.createContext(sandbox);
   const now = opts.now ?? Date.parse('2026-10-30T12:00:00Z');
   vm.runInContext(
-    `(() => { const Real = Date; class Frozen extends Real { constructor(...a) { if (a.length) super(...a); else super(${now}); } static now() { return ${now}; } } globalThis.Date = Frozen; })();`,
+    `(() => { const Real = Date; class Frozen extends Real { constructor(...a) { if (a.length) super(...a); else super(${now}); } static now() { return ${now}; } } globalThis.Date = Frozen; let seed = 12345; Math.random = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648); })();`,
     ctx,
   );
   const scripts = inlineScripts(html);
