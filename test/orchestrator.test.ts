@@ -4392,4 +4392,32 @@ describe('result-driven roles', () => {
     assert.equal(s.runner.sessions[0]?.turns[0], 'reviewer|required=true|round=1|latest=0|findings=0|cases=0');
     await s.orchestrator.shutdown(1_000);
   });
+
+  it('keeps the latest rate-limit event per rateLimitType and logs every event', async () => {
+    const logDir = tempDir();
+    let s: Setup | null = null;
+    const before: unknown[] = [];
+    const runner = new FakeRunner((turn, params) => {
+      const emit = (info: Record<string, unknown>) => {
+        before.push(s?.orchestrator.snapshot().rate_limits);
+        (params.onEvent as (event: unknown) => void)({ event: 'rate_limit', timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: turn, rateLimits: info });
+      };
+      emit({ rateLimitType: 'five_hour', status: 'allowed' });
+      emit({ rateLimitType: 'seven_day', status: 'allowed' });
+      emit({ rateLimitType: 'five_hour', status: 'allowed_warning' });
+      return new Promise(() => undefined);
+    });
+    s = setup({ runner, logDir, issues: [makeIssue({ id: 'a' })] });
+    await s.orchestrator.tickNow();
+    await until(() => Object.keys(snapshot(s!).rate_limits as object).length === 2, 3_000, 'rate limits');
+    assert.deepEqual(before[0], {});
+    const limits = snapshot(s).rate_limits as Record<string, { issue: string; role: string; model: string | null; rate_limit_info: { status: string } }>;
+    assert.deepEqual(Object.keys(limits).sort(), ['five_hour', 'seven_day']);
+    assert.equal(limits.five_hour!.rate_limit_info.status, 'allowed_warning');
+    assert.equal(limits.seven_day!.rate_limit_info.status, 'allowed');
+    assert.equal(limits.five_hour!.issue, makeIssue({ id: 'a' }).identifier);
+    assert.equal(typeof limits.five_hour!.role, 'string');
+    const lines = fs.readFileSync(path.join(logDir, 'budget', 'rate-limits.jsonl'), 'utf8').trim().split('\n');
+    assert.equal(lines.length, 3);
+  });
 });

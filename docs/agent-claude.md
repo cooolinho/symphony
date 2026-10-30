@@ -289,6 +289,11 @@ the difference to the previous total, so nothing is counted twice. Cost is estim
 [configuration.md](configuration.md)); Claude Code's own estimate (`total_cost_usd`) is kept as
 `claude_estimate_usd` for comparison. Rate-limit snapshots come from `rate_limit_event` messages (subscription
 logins).
+Every event is appended as one JSON line to `<log-dir>/budget/rate-limits.jsonl`
+(`{at, run_id, issue, role, model, rate_limit_info}`, `rate_limit_info` is the raw SDK object). Symphony removes lines
+older than 30 days at startup and then once a day; write errors are only logged. `GET /api/v1/state` shows
+`rate_limits` as an object with the latest record per `rateLimitType` (`five_hour`, `seven_day`, ...), `{}` before the
+first event. Instances sharing a log directory share the file, which fits because limits apply per account.
 
 Every raw SDK message is also written as JSON lines to `<log-dir>/sessions/<workspace-key>/<timestamp>.jsonl`.
 
