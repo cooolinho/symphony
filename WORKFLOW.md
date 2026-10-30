@@ -427,6 +427,7 @@ server:
 # brain:                                     # knowledge vault: one vault for all repositories, created at startup
 #   enabled: false                           # true = create the vault; false = no path is touched
 #   path: ~/brain                            # /home/symphony/brain is the brain volume in Docker
+#   clash_window_ms: 600000                  # another run that wrote a note within this window blocks a write (0 = off)
 # Existing files and folders are never overwritten; .obsidian/ is never touched. Changes apply after a restart.
 ---
 {% capture branch %}{% if issue.branch_name %}{{ issue.branch_name }}{% else %}symphony/issue-{{ issue.native_ref.number }}{% endif %}{% endcapture %}{% assign base = issue.native_ref.base_branch %}{% assign splittable = false %}{% if issue.complexity == "XL" and issue.native_ref.parent == nil %}{% assign splittable = true %}{% endif %}{% assign integration = false %}{% if issue.native_ref.sub_issues.size > 0 and results.implementation == nil %}{% assign integration = true %}{% endif %}{% capture agent_list %}{% for agent in agents %}
