@@ -1,155 +1,116 @@
-/**
- * Minimal fake DOM for running the inline client scripts (BASE_JS, UI components) in a node:vm context.
- * Covers element creation, children, text, attributes, classList, style, click listeners and tree queries.
- * innerHTML / insertAdjacentHTML throw on purpose, so a script that uses them for data fails its test.
- */
 import vm from 'node:vm';
 
-export class FakeText {
-  readonly nodeType = 3;
-  parentNode: FakeElement | null = null;
-  text: string;
-  constructor(text: string) {
-    this.text = text;
-  }
-  get textContent(): string {
-    return this.text;
-  }
-}
+const XHTML_NS = 'http://www.w3.org/1999/xhtml';
 
-export type FakeNode = FakeElement | FakeText;
-type Listener = (event: { type: string; target: FakeElement; currentTarget: FakeElement; preventDefault(): void }) => void;
-
+/** Minimal DOM element: attributes, classList, style custom properties, children and text; innerHTML is forbidden. */
 export class FakeElement {
-  readonly nodeType = 1;
-  readonly tagName: string;
-  namespaceURI = 'http://www.w3.org/1999/xhtml';
-  className = '';
-  style: Record<string, string> = {};
-  childNodes: FakeNode[] = [];
-  parentNode: FakeElement | null = null;
-  private attrs = new Map<string, string>();
-  private listeners = new Map<string, Listener[]>();
-
-  constructor(tag: string) {
-    this.tagName = tag.toUpperCase();
-  }
-
-  get children(): FakeElement[] {
-    return this.childNodes.filter((node): node is FakeElement => node instanceof FakeElement);
-  }
-
-  get textContent(): string {
-    return this.childNodes.map((node) => node.textContent).join('');
-  }
-
-  set textContent(value: unknown) {
-    for (const node of this.childNodes) node.parentNode = null;
-    this.childNodes = [];
-    if (value !== '' && value !== null && value !== undefined) this.append(String(value));
-  }
-
-  set innerHTML(_value: string) {
-    throw new Error('innerHTML is not allowed');
-  }
-
-  get innerHTML(): string {
-    throw new Error('innerHTML is not allowed');
-  }
-
-  insertAdjacentHTML(): never {
-    throw new Error('insertAdjacentHTML is not allowed');
-  }
-
-  append(...nodes: Array<FakeNode | string>): void {
-    for (const node of nodes) {
-      const child = typeof node === 'string' ? new FakeText(node) : node;
-      child.parentNode = this;
-      this.childNodes.push(child);
-    }
-  }
-
-  setAttribute(name: string, value: unknown): void {
-    this.attrs.set(name, String(value));
-  }
-
-  getAttribute(name: string): string | null {
-    return this.attrs.get(name) ?? null;
-  }
-
-  hasAttribute(name: string): boolean {
-    return this.attrs.has(name);
-  }
-
-  removeAttribute(name: string): void {
-    this.attrs.delete(name);
-  }
-
-  readonly classList = {
-    add: (...names: string[]): void => {
-      for (const name of names) if (!this.classList.contains(name)) this.className = `${this.className} ${name}`.trim();
-    },
-    remove: (...names: string[]): void => {
-      this.className = this.className.split(/\s+/).filter((c) => c && !names.includes(c)).join(' ');
-    },
-    contains: (name: string): boolean => this.className.split(/\s+/).includes(name),
-    toggle: (name: string): boolean => {
-      const has = this.classList.contains(name);
-      if (has) this.classList.remove(name);
-      else this.classList.add(name);
-      return !has;
-    },
+  tagName: string;
+  namespaceURI: string;
+  children: FakeElement[] = [];
+  attributes = new Map<string, string>();
+  private own = '';
+  private props = new Map<string, string>();
+  style: Record<string, unknown> & { setProperty(k: string, v: string): void; getPropertyValue(k: string): string };
+  classList = {
+    add: (...c: string[]) => this.setClasses([...new Set([...this.classes(), ...c])]),
+    remove: (...c: string[]) => this.setClasses(this.classes().filter((x) => !c.includes(x))),
+    contains: (c: string) => this.classes().includes(c),
+    toggle: (c: string) => (this.classList.contains(c) ? this.classList.remove(c) : this.classList.add(c)),
   };
 
-  addEventListener(type: string, fn: Listener): void {
+  constructor(tagName: string, namespaceURI = XHTML_NS) {
+    this.tagName = tagName;
+    this.namespaceURI = namespaceURI;
+    this.style = {
+      setProperty: (k: string, v: string) => void this.props.set(k, String(v)),
+      getPropertyValue: (k: string) => this.props.get(k) ?? '',
+    };
+  }
+  private classes(): string[] {
+    return (this.attributes.get('class') ?? '').split(/\s+/).filter(Boolean);
+  }
+  private setClasses(list: string[]): void {
+    this.attributes.set('class', list.join(' '));
+  }
+  get className(): string {
+    return this.attributes.get('class') ?? '';
+  }
+  set className(v: string) {
+    this.attributes.set('class', v);
+  }
+  get textContent(): string {
+    return this.own + this.children.map((c) => c.textContent).join('');
+  }
+  set textContent(v: string) {
+    this.children = [];
+    this.own = String(v);
+  }
+  set innerHTML(_v: string) {
+    throw new Error('innerHTML must not be used for data');
+  }
+  insertAdjacentHTML(): void {
+    throw new Error('insertAdjacentHTML must not be used for data');
+  }
+  setAttribute(k: string, v: unknown): void {
+    this.attributes.set(k, String(v));
+  }
+  getAttribute(k: string): string | null {
+    return this.attributes.get(k) ?? null;
+  }
+  hasAttribute(k: string): boolean {
+    return this.attributes.has(k);
+  }
+  removeAttribute(k: string): void {
+    this.attributes.delete(k);
+  }
+  append(...nodes: (FakeElement | string)[]): void {
+    for (const n of nodes) {
+      if (typeof n === 'string') this.own += n;
+      else this.children.push(n);
+    }
+  }
+  appendChild(n: FakeElement): FakeElement {
+    this.children.push(n);
+    return n;
+  }
+  replaceChildren(...nodes: (FakeElement | string)[]): void {
+    this.children = [];
+    this.own = '';
+    this.append(...nodes);
+  }
+  descendants(): FakeElement[] {
+    return this.children.flatMap((c) => [c, ...c.descendants()]);
+  }
+  find(pred: (e: FakeElement) => boolean): FakeElement[] {
+    return this.descendants().filter(pred);
+  }
+  byClass(name: string): FakeElement[] {
+    return this.find((e) => e.classList.contains(name));
+  }
+  private listeners = new Map<string, Array<(event: object) => void>>();
+  addEventListener(type: string, fn: (event: object) => void): void {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
   }
-
   click(): void {
-    for (const fn of this.listeners.get('click') ?? []) {
-      fn({ type: 'click', target: this, currentTarget: this, preventDefault: () => {} });
-    }
-  }
-
-  remove(): void {
-    const parent = this.parentNode;
-    if (parent) parent.childNodes = parent.childNodes.filter((node) => node !== this);
-    this.parentNode = null;
-  }
-
-  /** All descendant elements (depth-first) matching the predicate. */
-  find(pred: (el: FakeElement) => boolean): FakeElement[] {
-    const out: FakeElement[] = [];
-    for (const child of this.children) {
-      if (pred(child)) out.push(child);
-      out.push(...child.find(pred));
-    }
-    return out;
-  }
-
-  /** All descendant elements carrying the class. */
-  byClass(name: string): FakeElement[] {
-    return this.find((el) => el.classList.contains(name));
+    for (const fn of this.listeners.get("click") ?? []) fn({ type: "click", target: this, currentTarget: this, preventDefault: () => {} });
   }
 }
 
-export function createDocument() {
+/** A document with createElement (XHTML) and createElementNS. */
+export function createFakeDocument() {
   return {
     createElement: (tag: string) => new FakeElement(tag),
-    createElementNS: (ns: string, tag: string) => {
-      const el = new FakeElement(tag);
-      el.namespaceURI = ns;
-      return el;
-    },
-    createTextNode: (text: string) => new FakeText(text),
+    createElementNS: (ns: string, tag: string) => new FakeElement(tag, ns),
   };
 }
 
-/** vm context with a fake `document`; runs the sources in order (e.g. BASE_JS) in that shared scope. */
-export function domContext(...sources: string[]): vm.Context {
-  const ctx = vm.createContext({ document: createDocument() });
-  for (const source of sources) vm.runInContext(source, ctx);
+/** A vm context with the fake document in which the given scripts have run; function declarations land on it. */
+export function scriptContext(...sources: string[]): vm.Context {
+  const ctx = vm.createContext({ document: createFakeDocument() });
+  for (const src of sources) vm.runInContext(src, ctx);
   return ctx;
 }
 
+export const createDocument = createFakeDocument;
+export const domContext = scriptContext;
 export const run = (ctx: vm.Context, code: string): any => vm.runInContext(code, ctx);

@@ -2,7 +2,7 @@
  * Design tokens and base CSS of the dashboard pages: a navy "glass" theme with semantic colors
  * (green = running/healthy, cyan = information, amber = retry/warning, red = error, gray = waiting),
  * role colors, system font stacks (monospace for numbers, no external requests), glass panels (.g / .gi),
- * a visible focus ring and the reduced-motion / reduced-transparency media queries.
+ * a visible focus ring, the gauge, sparkline and avatar blocks and the reduced-motion / reduced-transparency media queries.
  * Animations and transitions only touch transform and opacity.
  *
  * All colour values come from the approved mockup (symphony-glass-dashboard.html) and live once in the typed
@@ -265,6 +265,31 @@ export const TOKENS_CSS = `
   td.nowrap { white-space: nowrap; }
 
   ${COMPONENTS_CSS}
+
+  /* Gauge, sparkline, avatar */
+  .gauge { display: inline-flex; flex-direction: column; align-items: center; gap: 6px; --p: 0; }
+  .gauge-ring { width: var(--gauge-size, 64px); aspect-ratio: 1; border-radius: 50%; position: relative; display: grid; place-items: center;
+    background: conic-gradient(var(--tone, var(--green)) calc(var(--p) * 1%), rgba(255,255,255,.08) 0); }
+  .gauge-ring::before { content: ""; position: absolute; inset: 6px; border-radius: 50%; background: var(--panel); }
+  .gauge-value { position: relative; font: 600 15px var(--mono); font-variant-numeric: tabular-nums; }
+  .gauge.is-empty .gauge-value { color: var(--muted); }
+  .gauge-label { font: 500 11px/1.3 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--fg-label); }
+  .spark { display: inline-block; vertical-align: middle; overflow: visible; }
+  .spark-line { stroke: var(--tone, var(--green)); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+  .avatar { position: relative; display: inline-grid; place-items: center; width: var(--av-size, 36px); height: var(--av-size, 36px);
+    border-radius: 50%; color: var(--role, var(--gray)); border: 1.5px solid currentColor; box-shadow: 0 0 14px -4px currentColor;
+    font: 600 calc(var(--av-size, 36px) * .42)/1 var(--mono); }
+  .avatar::before { content: ""; position: absolute; inset: 0; border-radius: 50%; background: currentColor; opacity: .16; }
+  .avatar-face { position: relative; }
+  .avatar-badge { position: absolute; right: -3px; bottom: -3px; display: grid; place-items: center; width: 36%; height: 36%;
+    border-radius: 50%; background: var(--green); color: var(--bg); font: 700 calc(var(--av-size, 36px) * .22)/1 var(--mono); }
+  .av-returned .avatar-badge { background: var(--red); }
+  .avatar .ring { inset: -4px; }
+  .avatar .eq { position: absolute; right: -2px; bottom: -2px; height: 10px; color: var(--green); }
+  .avatar .eq i { width: 2px; height: 10px; }
+  .av-waiting { border-style: dashed; box-shadow: none; }
+  .av-skipped { filter: grayscale(1); opacity: .45; box-shadow: none; }
+
   @media (max-width: 640px) {
     .topbar-inner, main { padding-left: 12px; padding-right: 12px; }
     main { gap: 14px; }

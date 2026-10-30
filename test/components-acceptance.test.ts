@@ -18,7 +18,7 @@ ctx.XSS = XSS;
 
 const all = (root: FakeElement): FakeElement[] => [root, ...root.find(() => true)];
 const noInjectedMarkup = (root: FakeElement): void => {
-  assert.equal(all(root).filter((e) => !['ARTICLE', 'DIV', 'SPAN', 'H3', 'BUTTON'].includes(e.tagName)).length, 0);
+  assert.equal(all(root).filter((e) => !['article', 'div', 'span', 'h3', 'button'].includes(e.tagName)).length, 0);
 };
 
 describe('E1-2a module and API', () => {
@@ -75,7 +75,7 @@ describe('E1-2a card', () => {
     const text = c.textContent;
     for (const part of ['T', 'M', 'B']) assert.ok(text.includes(part), part);
     const withNode = make('(() => { const p = document.createElement("p"); p.textContent = "node"; return card({ title: "T", body: p }); })()');
-    assert.equal(withNode.find((e) => e.tagName === 'P').length, 1);
+    assert.equal(withNode.find((e) => e.tagName === 'p').length, 1);
     assert.ok(withNode.textContent.includes('node'));
   });
 
@@ -98,9 +98,9 @@ describe('E1-2a statTile', () => {
 
   it('embeds the spark node only when given and keeps the existing .stat class free', () => {
     const none = make('statTile({ label: "L", value: 1 })');
-    assert.equal(none.find((e) => e.tagName === 'SVG').length, 0);
+    assert.equal(none.find((e) => e.tagName === 'svg').length, 0);
     const withSpark = make('statTile({ label: "L", value: 1, spark: document.createElement("svg") })');
-    assert.equal(withSpark.find((e) => e.tagName === 'SVG').length, 1);
+    assert.equal(withSpark.find((e) => e.tagName === 'svg').length, 1);
     assert.ok(!all(none).some((e) => e.classList.contains('stat')));
   });
 
@@ -127,7 +127,7 @@ describe('E1-2a progressBar', () => {
 
   it('forecast and fill widths reflect value/max; the forecast is wider than the fill when larger', () => {
     const b = make('progressBar({ value: 2, max: 10, forecast: 6 })');
-    const scale = (e: FakeElement): number => Number(/scaleX\(([\d.]+)\)/.exec(e.style.transform ?? "")![1]);
+    const scale = (e: FakeElement): number => Number(/scaleX\(([\d.]+)\)/.exec(String(e.style.transform ?? ""))![1]);
     const f = hatched(b)[0]!;
     const fill = b.children.find((e) => /fill/.test(e.className))!;
     assert.ok(Math.abs(scale(fill) - 0.2) < 1e-9);
@@ -144,7 +144,7 @@ describe('E1-2a progressBar', () => {
       const now = Number(n.getAttribute('aria-valuenow'));
       assert.ok(now >= 0 && now <= 100, String(now));
       for (const e of n.children) {
-        const m = /scaleX\(([\d.eE+-]+)\)/.exec(e.style.transform ?? "");
+        const m = /scaleX\(([\d.eE+-]+)\)/.exec(String(e.style.transform ?? ""));
         assert.ok(m, 'scaleX set');
         const s = Number(m![1]);
         assert.ok(Number.isFinite(s) && s >= 0 && s <= 1, String(s));
@@ -160,16 +160,16 @@ describe('E1-2a progressBar', () => {
 describe('E1-2a chip', () => {
   it('is a span, carries the tone, and icon is optional', () => {
     const c = make('chip({ text: "ok", tone: "green" })');
-    assert.equal(c.tagName, 'SPAN');
+    assert.equal(c.tagName, 'span');
     assert.ok(c.classList.contains('tone-green'));
     assert.equal(c.textContent, 'ok');
     const i = make('chip({ text: "ok", tone: "green", icon: "★" })');
-    assert.equal(i.tagName, 'SPAN');
+    assert.equal(i.tagName, 'span');
     assert.ok(i.textContent.includes('★') && i.textContent.includes('ok'));
   });
 
   it('is not interactive', () => {
-    assert.equal(all(make('chip({ text: "x", tone: "red" })')).filter((e) => e.tagName === 'BUTTON').length, 0);
+    assert.equal(all(make('chip({ text: "x", tone: "red" })')).filter((e) => e.tagName === 'button').length, 0);
   });
 });
 
@@ -177,8 +177,8 @@ describe('E1-2a filterChip', () => {
   it('is a real button with aria-pressed matching active, text and count', () => {
     const on = make('filterChip({ text: "Errors", count: 3, active: true, onToggle: () => {} })');
     const off = make('filterChip({ text: "Errors", count: 3, active: false, onToggle: () => {} })');
-    assert.equal(on.tagName, 'BUTTON');
-    assert.equal(off.tagName, 'BUTTON');
+    assert.equal(on.tagName, 'button');
+    assert.equal(off.tagName, 'button');
     assert.equal(on.getAttribute('type'), 'button');
     assert.equal(on.getAttribute('aria-pressed'), 'true');
     assert.equal(off.getAttribute('aria-pressed'), 'false');
@@ -251,7 +251,7 @@ describe('E1-2a fake DOM helper', () => {
     child.setAttribute('data-x', 1);
     assert.equal(root.children.length, 1);
     assert.equal(root.children[0], child);
-    assert.equal(child.tagName, 'SPAN');
+    assert.equal(child.tagName, 'span');
     assert.equal(root.textContent, 'hi');
     assert.equal(child.className, 'a b');
     assert.equal(child.getAttribute('data-x'), '1');

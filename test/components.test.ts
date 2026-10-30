@@ -47,22 +47,22 @@ describe('UI components wiring', () => {
     ctx.evil = '<img src=x onerror=alert(1)>';
     const c = make('card({ title: evil, meta: evil, body: evil })');
     assert.equal(first(c, 'ui-card-title')!.textContent, ctx.evil);
-    assert.equal(c.find((e) => e.tagName === 'IMG').length, 0);
+    assert.equal(c.find((e) => e.tagName === 'img').length, 0);
     const ch = make('chip({ text: evil, tone: "red" })');
     assert.equal(ch.textContent, ctx.evil);
-    assert.equal(ch.find((e) => e.tagName === 'IMG').length, 0);
+    assert.equal(ch.find((e) => e.tagName === 'img').length, 0);
   });
 });
 
 describe('card', () => {
   it('renders title, meta and body', () => {
     const c = make('card({ title: "Runs", meta: "last 24h", body: document.createElement("p") })');
-    assert.equal(c.tagName, 'ARTICLE');
+    assert.equal(c.tagName, 'article');
     assert.ok(c.classList.contains('ui-card') && c.classList.contains('g'));
-    assert.equal(first(c, 'ui-card-title')!.tagName, 'H3');
+    assert.equal(first(c, 'ui-card-title')!.tagName, 'h3');
     assert.equal(first(c, 'ui-card-title')!.textContent, 'Runs');
     assert.equal(first(c, 'ui-card-meta')!.textContent, 'last 24h');
-    assert.equal(first(c, 'ui-card-body')!.children[0]!.tagName, 'P');
+    assert.equal(first(c, 'ui-card-body')!.children[0]!.tagName, 'p');
     assert.equal(first(make('card({ body: "text" })'), 'ui-card-body')!.textContent, 'text');
   });
   it('omits head and body when empty', () => {
@@ -75,13 +75,13 @@ describe('card', () => {
 describe('statTile', () => {
   it('renders label, value, unit, tone and spark', () => {
     const t = make('statTile({ label: "Cost", value: 12, unit: "USD", tone: "green", spark: document.createElement("svg") })');
-    assert.equal(t.tagName, 'DIV');
+    assert.equal(t.tagName, 'div');
     for (const cls of ['ui-stat', 'gi', 'tone-green']) assert.ok(t.classList.contains(cls), cls);
     assert.equal(first(t, 'ui-stat-label')!.textContent, 'Cost');
-    assert.equal(first(t, 'dot')!.tagName, 'SPAN');
+    assert.equal(first(t, 'dot')!.tagName, 'span');
     assert.equal(first(t, 'ui-stat-value')!.textContent, '12USD');
     assert.equal(first(t, 'ui-stat-unit')!.textContent, 'USD');
-    assert.equal(first(t, 'ui-stat-spark')!.children[0]!.tagName, 'SVG');
+    assert.equal(first(t, 'ui-stat-spark')!.children[0]!.tagName, 'svg');
   });
   it('handles missing spark, unknown tone and null value', () => {
     const t = make('statTile({ label: "L", value: null, tone: "pink" })');
@@ -124,7 +124,7 @@ describe('progressBar', () => {
 describe('chip', () => {
   it('is a span with tone and optional icon', () => {
     const c = make('chip({ text: "Retry", tone: "amber", icon: "!" })');
-    assert.equal(c.tagName, 'SPAN');
+    assert.equal(c.tagName, 'span');
     assert.ok(c.classList.contains('ui-chip') && c.classList.contains('tone-amber'));
     assert.equal(first(c, 'ui-chip-text')!.textContent, 'Retry');
     assert.equal(first(c, 'ui-chip-icon')!.getAttribute('aria-hidden'), 'true');
@@ -136,7 +136,7 @@ describe('filterChip', () => {
   it('is a button with aria-pressed that toggles and calls onToggle', () => {
     ctx.calls = [];
     const b = make('filterChip({ text: "Errors", count: 1284, active: false, onToggle: (next) => calls.push(next) })');
-    assert.equal(b.tagName, 'BUTTON');
+    assert.equal(b.tagName, 'button');
     assert.equal(b.getAttribute('type'), 'button');
     assert.equal(b.getAttribute('aria-pressed'), 'false');
     assert.equal(first(b, 'ui-fchip-text')!.textContent, 'Errors');

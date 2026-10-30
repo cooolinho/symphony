@@ -133,7 +133,7 @@ function sameHost(origin: string, hostHeader: string | undefined): boolean {
  * Observability/control surface (spec 13.7): `/` dashboard, `/agent?id=<identifier>` agent detail view (live, or
  * archived once the orchestrator released the issue),
  * `/logs` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
- * `/api/v1/state`, `/api/v1/system`, `/api/v1/<identifier>` with its `/timeline` and `/transcript`, `POST /api/v1/refresh`
+ * `/api/v1/state`, `/api/v1/system`, `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
  * `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker), `/force` (Start now in an extra slot),
  * `/pause` and `/resume` (operator pause of an issue), `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family), and
  * `PUT` / `DELETE /api/v1/settings/agents` (agent slots set on the dashboard; JSON body, `Content-Type:
@@ -422,7 +422,7 @@ export function startHttpServer(options: {
       return;
     }
     // Sub-resources of an issue; the identifier is URL-encoded (owner%2Frepo%2312), so its slash cannot end it.
-    const sub = /^(.+)\/(timeline|transcript|retry|pause|resume|force)$/.exec(pathname.slice(API_PREFIX.length));
+    const sub = /^(.+)\/(timeline|team|transcript|retry|pause|resume|force)$/.exec(pathname.slice(API_PREFIX.length));
     if (pathname.startsWith(API_PREFIX) && sub !== null && (sub[2] === 'retry' || sub[2] === 'pause' || sub[2] === 'resume' || sub[2] === 'force')) {
       const action = sub[2];
       allow(['POST'], () => {
@@ -519,6 +519,12 @@ export function startHttpServer(options: {
           const timeline = orchestrator.issueTimeline(key, number('after'));
           if (timeline === null) sendError(res, 404, 'issue_not_found', `issue ${key} is neither tracked by the orchestrator nor archived`);
           else sendJson(res, 200, timeline);
+          return;
+        }
+        if (sub[2] === 'team') {
+          const team = orchestrator.issueTeam(key);
+          if (team === null) sendError(res, 404, 'issue_not_found', `issue ${key} is neither tracked by the orchestrator nor archived`);
+          else sendJson(res, 200, team);
           return;
         }
         const run = params.get('run') || null;
