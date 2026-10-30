@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { RateLimitLog, rateLimitKey, type RateLimitRecord } from '../budget/rate-limit-log.ts';
+import { ChangeStore } from '../changes/store.ts';
+import type { ChangeEntry, ChangeFile, ChangeFilter } from '../changes/types.ts';
 import { childEnvironment } from '../agent/env.ts';
 import { chooseRoleEffort, chooseRoleModel } from '../agent/model.ts';
 import { classify } from '../workflow/classify.ts';
@@ -16,11 +18,12 @@ import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
 import { configuredRepositories, isRepositoryName } from '../tracker/github-project/settings.ts';
 import { getTrackerFactory } from '../tracker/registry.ts';
-import type { Issue, MergeWatch, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
+import type { AutoMergeResult, Issue, MergeWatch, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
 import { SerialQueue, settledWithin } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { truncate } from '../util/text.ts';
 import { SYMPHONY_VERSION } from '../version.ts';
+import { diffStat, type CommitStat } from '../workspace/changes.ts';
 import { describeHolder, type LockResult } from '../workspace/lock.ts';
 import { WorkspaceManager, type HookIssue, type Workspace } from '../workspace/manager.ts';
 import type { ServiceConfig } from '../workflow/config.ts';
@@ -72,6 +75,7 @@ import { copyToolUsage, countToolUse, emptyToolUsage, integrationJson, integrati
 import { checkStatusReporter, runAgentAttempt, type RunPhase, type WorkerOutcome } from './worker.ts';
 import { interruptedLabels, interruptedTransition, statusUpdatedAt, type InterruptedTransition } from './recovery.ts';
 import { applyTransitionLabels, RESULT_TOOL } from './result-tool.ts';
+import { securityBaseRef } from './security.ts';
 
 export interface Clock {
   now(): Date;
@@ -659,6 +663,8 @@ export class Orchestrator {
   #completed = new Set<string>();
   #archive: IssueArchive;
   #rateLimitLog: RateLimitLog;
+  /** Commits and merges of the agent sessions (`<logDir>/changes/`). */
+  #changes: ChangeStore;
   #records = new Map<string, IssueRecord>();
   #paused = new Map<string, PausedEntry>();
   /** Cap of the budget comment already posted per issue, so a Resume that pauses again does not comment twice. */
@@ -708,6 +714,8 @@ export class Orchestrator {
     this.#pollIntervalMs = deps.workflow.current.config.polling.intervalMs;
     this.#archive = new IssueArchive(deps.logDir === null ? null : path.join(deps.logDir, 'issues'), deps.logger);
     this.#rateLimitLog = new RateLimitLog(deps.logDir === null ? null : path.join(deps.logDir, 'budget'), deps.logger);
+    this.#changes = new ChangeStore(deps.logDir === null ? null : path.join(deps.logDir, 'changes'), deps.logger);
+    this.#changes.load();
     const tracker = deps.workflow.current.config.tracker;
     this.#runtimeState = new RuntimeStateStore(runtimeStateFile(deps.logDir, tracker, deps.env), deps.logger);
     const restored = this.#runtimeState.load(this.#clock.now());
@@ -1313,6 +1321,13 @@ export class Orchestrator {
         try {
           const result = await watch.retry(issue);
           if (result.awaiting_checks === true) return;
+          if (result.merged) {
+            const workspace = await this.#workspaces(this.#deps.workflow.current)
+              .pathFor(issue.identifier)
+              .then((target) => target.path)
+              .catch(() => null);
+            await this.#recordMerge(issue, adapter.issueRepository?.(issue) ?? 'unknown', 'symphony', result, workspace);
+          }
           const record = this.#record(issue);
           record.meta = issueMeta(issue);
           this.#trace(record, {
@@ -2270,6 +2285,12 @@ export class Orchestrator {
               findings: result.kind === 'review' || result.kind === 'security' ? result.findings.length : 0,
               at: new Date(meta.created_at),
             });
+          },
+          commits: (commits) => this.#recordCommits(entry, adapter, commits),
+          merged: (result) => {
+            const work = this.#recordMerge(entry.issue, entry.repo, entry.role, result, entry.workspacePath);
+            this.#skips.add(work);
+            void work.finally(() => this.#skips.delete(work));
           },
           transitionDenied: (target, message) => {
             this.#deps.history?.transitionDenied({
@@ -3374,6 +3395,72 @@ export class Orchestrator {
   #findRecord(key: string): { issueId: string; record: IssueRecord } | null {
     for (const [issueId, record] of this.#records) if (issueId === key || record.identifier === key) return { issueId, record };
     return null;
+  }
+
+  /** One `code` change per commit of the session, with the branch's pull request when the tracker knows one. Never throws. */
+  async #recordCommits(entry: RunningEntry, adapter: TrackerAdapter, commits: CommitStat[]): Promise<void> {
+    const fresh = commits.filter((commit) => !this.#changes.has(`code:${entry.repo}:${commit.sha}`));
+    if (fresh.length === 0) return;
+    let pr: ChangeEntry['pr'] = null;
+    try {
+      const pull = (await adapter.branchPullRequest?.(entry.issue)) ?? null;
+      if (pull !== null) pr = { number: pull.number, status: pull.checks.state };
+    } catch (error) {
+      entry.runLog.warn('could not read the pull request of the branch', { error: errorMessage(error) });
+    }
+    for (const commit of fresh) {
+      this.#changes.append({
+        id: `code:${entry.repo}:${commit.sha}`,
+        type: 'code',
+        at: commit.at,
+        repo: entry.repo,
+        issue: entry.identifier,
+        role: entry.role,
+        title: commit.subject,
+        files: commit.files,
+        pr,
+        diff: commit.diff,
+        status: 'committed',
+      });
+    }
+    this.#notify();
+  }
+
+  /** A `code` change for a merged pull request, with the branch's files against its base (none without a workspace). Never throws. */
+  async #recordMerge(issue: Issue, repo: string, role: string, result: AutoMergeResult, workspacePath: string | null): Promise<void> {
+    if (!result.merged) return;
+    const log = this.#issueLogger(issue);
+    let files: ChangeFile[] = [];
+    if (workspacePath === null) {
+      log.warn('merge recorded without files: the issue has no workspace');
+    } else {
+      try {
+        files = await diffStat(workspacePath, securityBaseRef(issue.native_ref?.base_branch));
+      } catch (error) {
+        log.warn('merge recorded without files', { error: errorMessage(error) });
+      }
+    }
+    const at = this.#clock.now().toISOString();
+    const number = result.pull_request;
+    this.#changes.append({
+      id: number !== null ? `code:${repo}:merge:${number}` : `code:${repo}:merge:${issue.identifier}:${at}`,
+      type: 'code',
+      at,
+      repo,
+      issue: issue.identifier,
+      role,
+      title: number !== null ? `Merged #${number}: ${issue.title}` : issue.title,
+      files,
+      pr: number !== null ? { number, status: result.checks?.state ?? 'success' } : null,
+      diff: null,
+      status: 'merged',
+    });
+    this.#notify();
+  }
+
+  /** Recorded commits and merges, newest first, one page (`GET /api/v1/changes`, E6-3a). */
+  listChanges(filter: ChangeFilter = {}): ChangeEntry[] {
+    return this.#changes.list(filter);
   }
 
   #issueLogger(issue: Pick<Issue, 'id' | 'identifier'>): Logger {
