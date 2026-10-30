@@ -64,6 +64,7 @@ import {
   type AgentLimitOverride,
 } from './limits.ts';
 import { RuntimeStateStore, runtimeStateFile, type ModelHold, type OperatorHold } from './runtime-state.ts';
+import { buildTeamView, type TeamView } from '../http/team.ts';
 import { resultRows, type PersistedResult } from './stage-history.ts';
 import { blockedBucketColumns, derivePipeline, type PipelineStage, type StageSession } from './pipeline.ts';
 import { applySubagent, closeSubagents, emptySubagents, subagentsJson, type SubagentBoard } from './subagents.ts';
@@ -3853,6 +3854,20 @@ export class Orchestrator {
       first_seq: trace.timeline[0]?.seq ?? trace.nextSeq,
       events,
     };
+  }
+
+  /** Team view for GET /api/v1/<identifier>/team; null when the issue is unknown. */
+  issueTeam(key: string): TeamView | null {
+    const detail = this.issueDetail(key);
+    if (detail === null) return null;
+    return buildTeamView({
+      pipeline: detail.pipeline,
+      results: detail.results,
+      issueState: typeof detail.issue?.state === 'string' ? detail.issue.state : (detail.running?.state ?? null),
+      running: detail.running,
+      timeline: this.#findTrace(key)?.timeline ?? [],
+      now: this.#clock.now().getTime(),
+    });
   }
 
   /** The transcript file of a session (the latest when `run` is null), or null. */
