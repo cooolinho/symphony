@@ -147,6 +147,17 @@ addition says the same: use the results in the same turn and never end a turn to
 variable to `0`; if a session then ends without a result while tasks still run, the "Stage ended without a result"
 comment names them, and `turn_completed` carries them in `detail.background_tasks`.
 
+### Brain tools
+
+With `brain.enabled: true` a second in-process MCP server `brain` offers read access to the knowledge vault (the name `brain` is reserved for extensions, like `tracker`): `mcp__brain__brain_search`, `mcp__brain__brain_read` and `mcp__brain__brain_list`. Without `brain.enabled` the server is absent. Each call reports a `brain_tool` event.
+
+- `brain_search(query, repo?, type?)`: title, frontmatter and full text of all `.md` notes, case-insensitive, every word must occur. `approved` notes come first, then `candidate`; `deprecated` never. At most 20 hits with `path`, `title`, `status`, `excerpt`.
+- `brain_read(path)`: `content`, parsed `frontmatter` and `hash` (SHA-256 of the file, for later writes).
+- `brain_list(folder)`: files and subfolders with `type` and `status` from the frontmatter.
+- Paths are relative to the vault: no `..`, no absolute path, nothing under `.obsidian/`, no symlink out of the vault. A violation returns the error category `rejected`.
+- Every tool takes an optional `purpose`; without it a warning is logged and the call runs anyway.
+- All access is synchronous on the file system; there is no index.
+
 ### MCP server status
 
 Stdio servers such as Laravel Boost may still be `pending` after the handshake (Claude Code waits up to
@@ -251,7 +262,7 @@ groups are killed too.
 Events sent to the orchestrator: `session_started`, `session_configured` (model, permission mode, Claude Code
 version, MCP server status, plugins, number of skills), `startup_failed`, `turn_started`, `turn_completed`, `turn_failed`, `turn_cancelled`, `turn_timeout`,
 `turn_input_required`, `approval_auto_approved`, `approval_denied`, `permission_denied`, `tool_use`, `tool_result`,
-`subagent`, `tracker_tool`, `assistant_message`, `api_retry`, `rate_limit`, `agent_error` (API or authentication errors),
+`subagent`, `tracker_tool`, `brain_tool`, `assistant_message`, `api_retry`, `rate_limit`, `agent_error` (API or authentication errors),
 `agent_exited`, `notification`, `other_message`. The worker adds the transition guard's `transition_denied`,
 `checks_started` and `checks_finished` (`target`, `sha`, `exit_code`, `duration_ms`, `ok`), logged at info level.
 
