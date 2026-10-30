@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { sessionClaudeConfig } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, AgentSession, IntegrationReport, SessionLimitInfo } from '../agent/types.ts';
-import { brainToolsFor } from '../brain/tools.ts';
+import { brainToolsFor, createVaultGit } from '../brain/tools.ts';
 import { repoFolderName } from '../brain/vault.ts';
 import { isRepositoryName } from '../tracker/github-project/settings.ts';
 import { prepareIntegrations } from '../integrations/registry.ts';
@@ -642,7 +642,12 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     // An architect files sub-issues only to split an issue it may split (XL, not a work package itself).
     const subIssues = subIssueLimit(role, issue);
     sessionStart = { sha: startSha };
-    const brainTools = brainToolsFor(params.workflow.config.brain, brainMode, logger);
+    const brainTools = brainToolsFor(
+      params.workflow.config.brain,
+      brainMode,
+      logger,
+      brainMode !== 'off' ? { versioning: createVaultGit(params.workflow.config.brain.path, logger) } : {},
+    );
     session = await params.runner.startSession({
       ...(params.contextWindow ? { contextWindow: params.contextWindow } : {}),
       cwd: activeWorkspace.path,

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import YAML from 'yaml';
 import { brainToolsFor, type BrainWriteEntry } from '../src/brain/tools.ts';
+import { ensureVault } from '../src/brain/vault.ts';
 import { Logger } from '../src/log.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import type { AgentToolContext, AgentToolSpec, ToolResult } from '../src/tracker/types.ts';
@@ -522,6 +523,7 @@ describe('onWrite hook', () => {
 describe('worker wiring: role and run id reach the write tools', () => {
   async function sessionFor(brain: Record<string, unknown> | undefined) {
     const dir = newVault();
+    await ensureVault(dir, []);
     const rootDir = tempDir();
     const runner = new FakeRunner(() => new Promise(() => undefined));
     const workflow = new StaticWorkflow(makeWorkflow(baseFront(rootDir, { roles: { dev: { states: ['Todo', 'In Progress'], brain: 'write' } }, ...(brain === undefined ? {} : { brain: { path: dir, ...brain } }) })));
