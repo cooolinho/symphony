@@ -516,3 +516,58 @@ describe('E1-6 pages', () => {
     assert.equal(ctx.EventSource, undefined);
   });
 });
+
+describe('E1-6 pages without EventSource (vm)', () => {
+  const scripts = (html: string) => [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1] as string);
+
+  function run(html: string, search: string) {
+    const intervals: number[] = [];
+    const proxy = (): any =>
+      new Proxy(function () {}, {
+        get: (_t, k) => (k === Symbol.toPrimitive ? () => '' : k === 'length' ? 0 : proxy()),
+        apply: () => proxy(),
+        construct: () => proxy() as object,
+        set: () => true,
+      });
+    const ctx: Ctx = {
+      document: proxy(),
+      window: proxy(),
+      localStorage: proxy(),
+      location: { search, pathname: '/', href: '' },
+      fetch: () => new Promise(() => {}),
+      setInterval: (_fn: () => void, ms: number) => intervals.push(ms),
+      clearInterval: () => {},
+      setTimeout: () => 0,
+      clearTimeout: () => {},
+      requestAnimationFrame: () => 0,
+      URLSearchParams,
+      AbortController,
+      URL,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      history: proxy(),
+      Intl,
+      ResizeObserver: class { observe() {} disconnect() {} },
+      console,
+    };
+    vm.createContext(ctx);
+    let error: unknown;
+    try {
+      vm.runInContext(scripts(html).join('\n'), ctx);
+    } catch (e) {
+      error = e;
+    }
+    return { ctx, intervals, error };
+  }
+
+  it('team/issue view and statistics never throw on a missing EventSource and still poll', () => {
+    const agent = run(AGENT_HTML, '?id=abc');
+    assert.equal(agent.error, undefined);
+    assert.equal(agent.ctx.EventSource, undefined);
+    assert.ok(agent.intervals.filter((ms) => ms === 2000).length >= 1, 'team view polls every POLL_MS (2 s): ' + agent.intervals.join(', '));
+    const logs = run(LOGS_HTML, '');
+    if (logs.error) assert.doesNotMatch(String((logs.error as Error).message), /EventSource|live is not|pollEvery/);
+    assert.equal(logs.ctx.EventSource, undefined);
+    assert.ok(logs.intervals.includes(60000), 'statistics keeps its 60 s poll: ' + logs.intervals.join(', '));
+  });
+});
