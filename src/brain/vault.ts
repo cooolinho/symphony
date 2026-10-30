@@ -13,6 +13,10 @@ export const README_TEXT = `# Symphony brain
 The knowledge vault of Symphony: one vault for all repositories. Symphony creates the structure below at startup
 and never overwrites an existing file or folder.
 
+## Views
+
+\`Kandidaten-Review.base\` (inbox, oldest first) and \`Neueste Lessons.base\` (latest lessons) are Obsidian Bases views that Symphony creates once.
+
 ## Folders
 
 - \`Inbox/\`: new notes; every note starts here as \`candidate\`.
@@ -46,6 +50,44 @@ Every note starts with a YAML frontmatter block with these fields:
 
 - Symphony never overwrites existing files or folders.
 - \`.obsidian/\` belongs to the human editing the vault; Symphony never creates, reads or writes it.
+`;
+
+export const CANDIDATE_REVIEW_BASE_FILE = 'Kandidaten-Review.base';
+export const LATEST_LESSONS_BASE_FILE = 'Neueste Lessons.base';
+
+export const CANDIDATE_REVIEW_BASE = `filters:
+  and:
+    - status == "candidate"
+views:
+  - type: table
+    name: Kandidaten-Review
+    order:
+      - file.name
+      - type
+      - repo
+      - issue
+      - role
+      - created
+    sort:
+      - property: created
+        direction: ASC
+`;
+
+export const LATEST_LESSONS_BASE = `filters:
+  and:
+    - type == "lesson"
+views:
+  - type: table
+    name: Neueste Lessons
+    order:
+      - file.name
+      - status
+      - repo
+      - updated
+    sort:
+      - property: updated
+        direction: DESC
+    limit: 50
 `;
 
 /** `owner/name` becomes `owner-name`, lower case (GitHub names are case-insensitive). */
@@ -99,6 +141,13 @@ export async function ensureVault(root: string, repositories: readonly string[] 
   const created: string[] = [];
   await fs.mkdir(root, { recursive: true });
   if (await createFile(path.join(root, 'README.md'), README_TEXT)) created.push('README.md');
+  const baseFiles: [string, string][] = [
+    [CANDIDATE_REVIEW_BASE_FILE, CANDIDATE_REVIEW_BASE],
+    [LATEST_LESSONS_BASE_FILE, LATEST_LESSONS_BASE],
+  ];
+  for (const [name, text] of baseFiles) {
+    if (await createFile(path.join(root, name), text)) created.push(name);
+  }
   for (const folder of VAULT_FOLDERS) {
     if (await createDir(path.join(root, folder))) created.push(folder);
   }
