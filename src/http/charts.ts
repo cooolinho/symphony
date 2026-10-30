@@ -45,14 +45,14 @@ export const CHART_CSS = `
 
   /* One stacked bar for a distribution. */
   .dist { display: flex; height: 14px; border-radius: 4px; overflow: hidden; gap: 2px; background: rgba(255, 255, 255, .02); }
-  .dist span { background: var(--sw); min-width: 3px; }
+  .dist span { background: var(--sw, var(--gray)); min-width: 3px; }
 
   /* Heatmap: 24 hour columns × 7 weekday rows. */
   .heat { display: grid; grid-template-columns: 34px repeat(24, minmax(0, 1fr)); gap: 2px; }
   .heat .hl { font: 9.5px var(--mono); color: var(--muted); text-align: center; overflow: hidden; }
   .heat .dl { font: 10px var(--mono); color: var(--muted); align-self: center; }
   .heat .cell { aspect-ratio: 1; min-height: 8px; border-radius: 2px; background: rgba(255, 255, 255, .025); }
-  .heat .cell.on { background: rgba(61, 220, 132, var(--a)); box-shadow: 0 0 6px -2px rgba(61, 220, 132, var(--a)); }
+  .heat .cell.on { background: rgba(61, 220, 132, var(--a, .15)); box-shadow: 0 0 6px -2px rgba(61, 220, 132, var(--a, .15)); }
 `;
 
 export const CHART_JS = `
