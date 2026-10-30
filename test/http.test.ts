@@ -13,6 +13,7 @@ import { LOGS_HTML } from '../src/http/logs-page.ts';
 import { TOKENS_CSS } from '../src/http/ui/tokens.ts';
 import { startHttpServer, type HttpServerHandle } from '../src/http/server.ts';
 import { Logger } from '../src/log.ts';
+import { SystemCollector } from '../src/system/metrics.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import { FakeRunner, FakeTracker, ManualTimers, StaticWorkflow, baseFront, makeIssue, makeWorkflow, tempDir, until } from './helpers.ts';
 
@@ -133,6 +134,12 @@ describe('http extension', () => {
 
   after(async () => {
     await server.close();
+  });
+
+  it('answers /api/v1/system without a collector instead of an issue 404', async () => {
+    const res = await request(server.port, 'GET', '/api/v1/system');
+    assert.equal(res.status, 200);
+    assert.deepEqual(JSON.parse(res.body), { current: null, history: [], gpu: null });
   });
 
   it('serves the dashboard and the state snapshot', async () => {
@@ -992,6 +999,35 @@ describe('agent settings routes', () => {
       assert.equal(orchestrator.snapshot().limits.max_concurrent_agents.override, 4);
     } finally {
       await Promise.all([local.close(), remote.close(), proxied.close()]);
+    }
+  });
+});
+
+describe('system route', () => {
+  it('serves current, history and gpu', async () => {
+    const system = new SystemCollector({ procDir: path.join(tempDir(), 'none'), volumes: [], gpu: false, logger: Logger.silent() });
+    await system.collect();
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir()))),
+      runner: new FakeRunner(),
+      logger: Logger.silent(),
+      env: {},
+      logDir: null,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker(),
+    });
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent(), system });
+    try {
+      const res = await request(server.port, 'GET', '/api/v1/system');
+      assert.equal(res.status, 200);
+      const body = JSON.parse(res.body);
+      assert.deepEqual(Object.keys(body).sort(), ['current', 'gpu', 'history']);
+      assert.equal(body.gpu, null);
+      assert.equal(body.history.length, 1);
+      assert.deepEqual(Object.keys(body.current).sort(), ['at', 'cpu_percent', 'disks', 'gpu', 'load', 'memory']);
+      assert.equal((await request(server.port, 'POST', '/api/v1/system')).status, 405);
+    } finally {
+      await server.close();
     }
   });
 });
