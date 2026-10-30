@@ -3,13 +3,11 @@ import { SerialQueue } from '../../util/async.ts';
 import { errorMessage } from '../../util/errors.ts';
 import { TrackerError, type AgentToolContext, type AgentToolSpec, type Issue, type ToolResult } from '../types.ts';
 import type { GithubProjectAdapter } from './adapter.ts';
-import { evaluateRollup } from './checks.ts';
 import { assertNoGraphqlErrors } from './client.ts';
 import { issueRefOf, titleKey, type IssueRef } from './normalize.ts';
 import {
   ADD_BLOCKED_BY_MUTATION,
   ADD_PROJECT_ITEM_MUTATION,
-  BRANCH_PULL_REQUEST_QUERY,
   CREATE_PULL_REQUEST_MUTATION,
   CREATE_SUB_ISSUE_MUTATION,
   ISSUE_CONTEXT_QUERY,
@@ -139,7 +137,7 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
         const [meta, viewer] = await Promise.all([adapter.meta(), adapter.viewerLogin()]);
         const [response, branchPullRequest] = await Promise.all([
           client.request<Json>(ISSUE_CONTEXT_QUERY, { issueId: ref.issueId }),
-          readBranchPullRequest(ref.repository, fresh.branch_name ?? `symphony/issue-${ref.number}`),
+          adapter.branchPullRequest(fresh),
         ]);
         assertNoGraphqlErrors(response.errors);
         const node = obj(obj(response.data)?.node);
@@ -165,27 +163,6 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
         });
       }),
   };
-
-  /** The open pull request from `head` and the state of its checks; null without one, or when GitHub cannot say. */
-  async function readBranchPullRequest(repository: string, head: string): Promise<Json | null> {
-    try {
-      const [owner, name] = repository.split('/');
-      const response = await client.request<Json>(BRANCH_PULL_REQUEST_QUERY, { owner, name, head });
-      assertNoGraphqlErrors(response.errors);
-      const pr = nodes(obj(obj(response.data)?.repository)?.pullRequests)[0];
-      if (pr === undefined) return null;
-      const checks = evaluateRollup(pr.commits, repository, []);
-      return {
-        number: pr.number,
-        url: pr.url,
-        base: pr.baseRefName,
-        head_sha: pr.headRefOid,
-        checks: { state: checks.state, failing: checks.failing, pending: checks.pending.map((check) => check.name) },
-      };
-    } catch {
-      return null;
-    }
-  }
 
   const setStatus: AgentToolSpec = {
     name: 'set_status',

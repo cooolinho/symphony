@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { SymphonyError } from '../src/util/errors.ts';
-import { changedFiles, diffStat } from '../src/workspace/changes.ts';
+import { changedFiles, commitStats, diffExcerpt, diffStat } from '../src/workspace/changes.ts';
 import { tempDir } from './helpers.ts';
 
 // changedFiles(workspace, base): the whole branch diff against the base branch, for the security review trigger.
@@ -226,5 +226,92 @@ describe('diffStat', () => {
     for (const [dir, base] of [[repository(), 'origin/develop'], [tempDir('symphony-plain-'), 'main']] as const) {
       await assert.rejects(diffStat(dir, base), (error: unknown) => error instanceof SymphonyError && error.code === 'paths_unverifiable' && error.message.includes(`against ${base}`));
     }
+  });
+});
+
+// commitStats(workspace, { since, base }): the commits of one session, for the change log.
+
+describe('commitStats', () => {
+  const head = (repo: string) => git(repo, 'rev-parse', 'HEAD');
+
+  it('lists each new commit oldest first with subject, date, files and a diff excerpt', async () => {
+    const repo = repository();
+    const start = head(repo);
+    write(repo, 'README.md', 'readme\nmore\n');
+    write(repo, 'docs/guide.md', 'a\nb\n');
+    commit(repo, 'Add the guide');
+    git(repo, 'rm', '-q', 'app/Policies/PostPolicy.php');
+    fs.writeFileSync(path.join(repo, 'logo.png'), Buffer.from([0, 1, 2, 0, 255]));
+    commit(repo, 'Drop the policy\n\nwith a body');
+
+    const commits = await commitStats(repo, { since: start, base: 'main' });
+    assert.deepEqual(commits.map((c) => c.subject), ['Add the guide', 'Drop the policy']);
+    assert.equal(commits[1]?.sha, head(repo));
+    assert.match(commits[0]!.at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.000Z$/);
+    assert.deepEqual(commits[0]?.files, [
+      { path: 'README.md', added: 1, deleted: 0, status: 'modified' },
+      { path: 'docs/guide.md', added: 2, deleted: 0, status: 'added' },
+    ]);
+    assert.deepEqual(commits[1]?.files, [
+      { path: 'app/Policies/PostPolicy.php', added: 0, deleted: 20, status: 'deleted' },
+      { path: 'logo.png', added: null, deleted: null, status: 'binary' },
+    ]);
+    assert.equal(commits[0]?.diff, 'README.md\n+more\n\ndocs/guide.md\n+a\n+b');
+    assert.equal(commits[1]?.diff, `app/Policies/PostPolicy.php\n${'-policy v1\n'.repeat(5).trimEnd()}`, 'at most 5 lines per file, none for the binary file');
+  });
+
+  it('counts only what came after `since`, leaves out what the base has and merge commits, and keeps the newest `max`', async () => {
+    const repo = repository();
+    write(repo, 'one.txt');
+    commit(repo, 'one');
+    const afterOne = head(repo);
+    write(repo, 'two.txt');
+    commit(repo, 'two');
+    assert.deepEqual((await commitStats(repo, { since: afterOne, base: 'main' })).map((c) => c.subject), ['two']);
+
+    git(repo, 'checkout', '-q', 'main');
+    write(repo, 'base.txt');
+    commit(repo, 'base only');
+    git(repo, 'checkout', '-q', 'symphony/issue-1');
+    git(repo, 'merge', '-q', '--no-edit', 'main');
+    assert.deepEqual((await commitStats(repo, { since: afterOne, base: 'main' })).map((c) => c.subject), ['two'], 'neither the merge nor the base commit');
+
+    write(repo, 'three.txt');
+    commit(repo, 'three');
+    assert.deepEqual((await commitStats(repo, { since: null, base: 'main', max: 2 })).map((c) => c.subject), ['two', 'three']);
+    assert.deepEqual(await commitStats(repo, { since: head(repo), base: 'main' }), []);
+  });
+
+  it('lists nothing without `since` when the base does not resolve, and throws paths_unverifiable when git cannot tell', async () => {
+    assert.deepEqual(await commitStats(repository(), { since: null, base: 'origin/develop' }), []);
+    await assert.rejects(commitStats(tempDir('symphony-plain-'), { since: 'HEAD', base: 'main' }), (error: unknown) => error instanceof SymphonyError && error.code === 'paths_unverifiable');
+  });
+});
+
+describe('diffExcerpt', () => {
+  it('keeps at most 5 changed lines per file and nothing for binary files', () => {
+    const lines = Array.from({ length: 20 }, (_, i) => `+line ${i}`).join('\n');
+    const diff = [
+      'diff --git a/a.txt b/a.txt',
+      'index 1..2 100644',
+      '--- a/a.txt',
+      '+++ b/a.txt',
+      '@@ -0,0 +1,20 @@',
+      lines,
+      'diff --git a/logo.png b/logo.png',
+      'Binary files a/logo.png and b/logo.png differ',
+      'diff --git a/old.txt b/old.txt',
+      'deleted file mode 100644',
+      '--- a/old.txt',
+      '+++ /dev/null',
+      '@@ -1 +0,0 @@',
+      '--- not a header',
+    ].join('\n');
+    assert.equal(diffExcerpt(diff), 'a.txt\n+line 0\n+line 1\n+line 2\n+line 3\n+line 4\n\nold.txt\n--- not a header');
+  });
+
+  it('is null without changed lines', () => {
+    assert.equal(diffExcerpt(''), null);
+    assert.equal(diffExcerpt('diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n'), null);
   });
 });

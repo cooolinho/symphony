@@ -339,8 +339,8 @@ container from the server's image), checks that everything arrived and starts th
 Nothing the server recorded is lost, and running the script again adds nothing twice, so you can push after every
 local session. `--dry-run` transfers the history into a throwaway container and prints the numbers the merge would
 add; the server container keeps running. With `--replace`, `repositories/`, `sessions/` and `issues/` on the server are
-deleted first, so the server ends up with exactly the local history. Runtime state (`state/`), workspaces, Claude state
-and Composer cache are not transferred. A locally running Symphony must be stopped first.
+deleted first, so the server ends up with exactly the local history. Runtime state (`state/`), the change log
+(`changes/`), workspaces, Claude state and Composer cache are not transferred. A locally running Symphony must be stopped first.
 
 | Variable | Default | Meaning |
 |---|---|---|
