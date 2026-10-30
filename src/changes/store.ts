@@ -21,13 +21,6 @@ function parseEntry(line: string): ChangeEntry | null {
   }
 }
 
-/** Newest first: `at` descending, the id descending for the same time. */
-function newestFirst(a: ChangeEntry, b: ChangeEntry): number {
-  const diff = Date.parse(b.at) - Date.parse(a.at);
-  if (diff !== 0) return diff;
-  return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
-}
-
 /**
  * The changes Symphony recorded (commits and merges of agent sessions), in memory per repository (the newest
  * `CHANGES_LOAD_LIMIT`) and appended as JSONL to `<dir>/<owner>_<name>.jsonl`; `dir === null` keeps them in memory only.
@@ -39,6 +32,9 @@ export class ChangeStore {
   /** By repository, in append order. */
   #entries = new Map<string, ChangeEntry[]>();
   #ids = new Set<string>();
+  /** Append order of every remembered entry: commits of the same second keep their commit order. */
+  #order = new Map<string, number>();
+  #next = 0;
   #failing = false;
 
   constructor(dir: string | null, logger: Logger) {
@@ -109,9 +105,16 @@ export class ChangeStore {
     const matching = sources
       .flat()
       .filter((entry) => (filter.type === undefined || entry.type === filter.type) && (filter.issue === undefined || entry.issue === filter.issue))
-      .sort(newestFirst);
+      .sort((a, b) => this.#newestFirst(a, b));
     const start = filter.before === undefined ? 0 : matching.findIndex((entry) => entry.id === filter.before) + 1;
     return matching.slice(start, start + limit);
+  }
+
+  /** Newest first: `at` descending, the later appended entry first for the same time. */
+  #newestFirst(a: ChangeEntry, b: ChangeEntry): number {
+    const diff = Date.parse(b.at) - Date.parse(a.at);
+    if (diff !== 0) return diff;
+    return (this.#order.get(b.id) ?? 0) - (this.#order.get(a.id) ?? 0);
   }
 
   #remember(entry: ChangeEntry): void {
@@ -119,7 +122,12 @@ export class ChangeStore {
     const list = this.#entries.get(entry.repo) ?? [];
     list.push(entry);
     this.#ids.add(entry.id);
-    while (list.length > CHANGES_LOAD_LIMIT) this.#ids.delete(list.shift()!.id);
+    this.#order.set(entry.id, this.#next++);
+    while (list.length > CHANGES_LOAD_LIMIT) {
+      const dropped = list.shift()!.id;
+      this.#ids.delete(dropped);
+      this.#order.delete(dropped);
+    }
     this.#entries.set(entry.repo, list);
   }
 }

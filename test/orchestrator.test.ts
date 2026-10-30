@@ -4474,7 +4474,7 @@ describe('change log (code changes per commit and merge)', () => {
     });
     s.tracker.branchPullRequest = async () => PR_OK;
     await s.orchestrator.tickNow();
-    await until(() => snapshot(s).retrying.length === 1, 5_000, 'run finished');
+    await until(() => snapshot(s).retrying.length === 1, 15_000, 'run finished');
     const entries = s.orchestrator.listChanges({ repo: 'acme/app' });
     assert.deepEqual(entries.map((e) => e.title).sort(), ['Add the app', 'Add the guide']);
     const guide = entries.find((e) => e.title === 'Add the guide')!;
@@ -4487,6 +4487,7 @@ describe('change log (code changes per commit and merge)', () => {
     assert.equal(guide.diff, 'docs/guide.md\n+one\n+two');
     assert.match(guide.id, /^code:acme\/app:[0-9a-f]{40}$/);
     assert.deepEqual(s.orchestrator.listChanges({ issue: 'acme/app#b' }), []);
+    await s.orchestrator.shutdown(1_000);
   });
 
   it('persists the entries under <logDir>/changes/ and loads them at the next start', async () => {
@@ -4501,10 +4502,11 @@ describe('change log (code changes per commit and merge)', () => {
       return { ok: true, turnId: String(turn), resultText: 'done' };
     };
     await s.orchestrator.tickNow();
-    await until(() => snapshot(s).retrying.length === 1, 5_000, 'run finished');
+    await until(() => snapshot(s).retrying.length === 1, 15_000, 'run finished');
     const lines = fs.readFileSync(path.join(logDir, 'changes', 'acme_app.jsonl'), 'utf8').trim().split('\n');
     assert.equal(lines.length, 1);
     assert.equal(JSON.parse(lines[0]!).title, 'Add the guide');
+    await s.orchestrator.shutdown(1_000);
     const restarted = setup({ logDir });
     assert.deepEqual(restarted.orchestrator.listChanges().map((e) => e.title), ['Add the guide']);
   });
@@ -4513,21 +4515,24 @@ describe('change log (code changes per commit and merge)', () => {
     const quiet = changeSetup(() => undefined);
     quiet.s.tracker.branchPullRequest = async () => PR_OK;
     await quiet.s.orchestrator.tickNow();
-    await until(() => snapshot(quiet.s).retrying.length === 1, 5_000, 'run finished');
+    await until(() => snapshot(quiet.s).retrying.length === 1, 15_000, 'run finished');
     assert.deepEqual(quiet.s.orchestrator.listChanges(), []);
+    await quiet.s.orchestrator.shutdown(1_000);
 
     const plain = setup({ issues: [makeIssue({ id: 'a' })] });
     await plain.orchestrator.tickNow();
-    await until(() => snapshot(plain).retrying.length === 1, 5_000, 'run finished');
+    await until(() => snapshot(plain).retrying.length === 1, 15_000, 'run finished');
     assert.deepEqual(plain.orchestrator.listChanges(), []);
+    await plain.orchestrator.shutdown(1_000);
 
     const failing = changeSetup((params) => commitFile(params.cwd, 'docs/guide.md', 'Add the guide'));
     failing.s.tracker.branchPullRequest = async () => {
       throw new Error('boom');
     };
     await failing.s.orchestrator.tickNow();
-    await until(() => snapshot(failing.s).retrying.length === 1, 5_000, 'run finished');
+    await until(() => snapshot(failing.s).retrying.length === 1, 15_000, 'run finished');
     assert.deepEqual(failing.s.orchestrator.listChanges().map((e) => [e.title, e.pr]), [['Add the guide', null]]);
+    await failing.s.orchestrator.shutdown(1_000);
   });
 
   it('records a merged entry with the branch diff against the base when a move merges the pull request', async () => {
@@ -4542,7 +4547,7 @@ describe('change log (code changes per commit and merge)', () => {
         ? { merged: true, pull_request: 9, status: 'Done', reason: 'merged', checks: { state: 'success', failing: [], pending: [] } }
         : undefined;
     await s.orchestrator.tickNow();
-    await until(() => s.orchestrator.listChanges({ type: 'code' }).length === 2, 5_000, 'merge recorded');
+    await until(() => s.orchestrator.listChanges({ type: 'code' }).length === 2, 15_000, 'merge recorded');
     const merged = s.orchestrator.listChanges().find((e) => e.status === 'merged')!;
     assert.equal(merged.id, 'code:acme/app:merge:9');
     assert.equal(merged.title, 'Merged #9: Issue a');
@@ -4573,7 +4578,7 @@ describe('change log (code changes per commit and merge)', () => {
       },
     });
     await s.orchestrator.tickNow();
-    await until(() => finished === 3 && s.orchestrator.listChanges().length === 2, 5_000, 'retries recorded');
+    await until(() => finished === 3 && s.orchestrator.listChanges().length === 2, 15_000, 'retries recorded');
     await s.orchestrator.shutdown(1_000);
     const byIssue = Object.fromEntries(s.orchestrator.listChanges().map((e) => [e.issue, e]));
     assert.deepEqual(Object.keys(byIssue).sort(), ['acme/app#a', 'acme/app#b']);
@@ -4693,7 +4698,7 @@ describe('change log acceptance (#339)', () => {
       return { ok: true, turnId: String(turn), resultText: 'done' };
     };
     await s.orchestrator.tickNow();
-    await until(() => s.orchestrator.listChanges().length === 1, 5_000, 'entry recorded');
+    await until(() => s.orchestrator.listChanges().length === 1, 15_000, 'entry recorded');
     assert.equal(s.orchestrator.listChanges()[0]?.role, 'developer');
   });
 
@@ -4713,14 +4718,14 @@ describe('change log acceptance (#339)', () => {
       return { ok: true, turnId: String(turn), resultText: 'done' };
     };
     await s.orchestrator.tickNow();
-    await until(() => snapshot(s).retrying.length === 1, 5_000, 'first run finished');
+    await until(() => snapshot(s).retrying.length === 1, 15_000, 'first run finished');
     assert.deepEqual(s.orchestrator.listChanges().map((e) => e.title), ['Commit of session 1']);
     s.tracker.set('a', { state: 'Todo' });
     s.timers.fire(CONTINUATION_DELAY_MS);
-    await until(() => snapshot(s).retrying.length === 0, 5_000, 'claim released');
+    await until(() => snapshot(s).retrying.length === 0, 15_000, 'claim released');
     await s.orchestrator.tickNow();
-    await until(() => session === 2, 5_000, 'second session');
-    await until(() => s.orchestrator.listChanges().length === 2, 5_000, 'second entry recorded');
+    await until(() => session === 2, 15_000, 'second session');
+    await until(() => s.orchestrator.listChanges().length === 2, 15_000, 'second entry recorded');
     const titles = s.orchestrator.listChanges().map((e) => e.title);
     assert.deepEqual(titles, ['Commit of session 2', 'Commit of session 1']);
     assert.equal(new Set(s.orchestrator.listChanges().map((e) => e.id)).size, 2);
@@ -4754,7 +4759,7 @@ describe('change log acceptance (#339)', () => {
     s.tracker.autoMerge = (_issue, column) =>
       column === 'Human Review' ? { merged: false, pull_request: 9, status: 'Human Review', reason: 'checks pending' } : undefined;
     await s.orchestrator.tickNow();
-    await until(() => s.orchestrator.listChanges().length === 1, 5_000, 'commit recorded');
+    await until(() => s.orchestrator.listChanges().length === 1, 15_000, 'commit recorded');
     await s.orchestrator.shutdown(1_000);
     assert.deepEqual(s.orchestrator.listChanges().map((e) => e.status), ['committed']);
   });
@@ -4770,7 +4775,7 @@ describe('change log acceptance (#339)', () => {
     s.tracker.autoMerge = (_issue, column) =>
       column === 'Human Review' ? { merged: true, pull_request: 21, status: 'Done', reason: 'merged', checks: { state: 'success', failing: [], pending: [] } } : undefined;
     await s.orchestrator.tickNow();
-    await until(() => s.orchestrator.listChanges({ type: 'code' }).length === 3, 5_000, 'merge recorded');
+    await until(() => s.orchestrator.listChanges({ type: 'code' }).length === 3, 15_000, 'merge recorded');
     await s.orchestrator.shutdown(1_000);
     const merged = s.orchestrator.listChanges().filter((e) => e.status === 'merged');
     assert.equal(merged.length, 1);

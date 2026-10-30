@@ -21,7 +21,7 @@ export type ChangeStatus = 'committed' | 'merged';
 
 /** One change Symphony saw: a commit or merge (`code`), or a change to the brain (`brain`, E6-2). */
 export interface ChangeEntry {
-  /** Unique: `code:<repo>:<sha>` per commit, `code:<repo>:merge:<pull request>` (without one `merge:<head sha>`) per merge. */
+  /** Unique: `code:<repo>:<sha>` per commit, `code:<repo>:merge:<pull request>` (without one `code:<repo>:merge:<issue>:<at>`) per merge. */
   id: string;
   type: 'code' | 'brain';
   /** ISO timestamp (UTC). */

@@ -126,6 +126,21 @@ describe('ChangeStore', () => {
     assert.deepEqual(store.list({ limit: 2, before: 'unknown' }).map((e) => e.title), ['commit 5', 'commit 4'], 'an unknown cursor starts over');
   });
 
+  it('lists commits of the same second in commit order, not by their sha, also after a restart', () => {
+    const dir = tempDir();
+    const store = new ChangeStore(dir, Logger.silent());
+    const at = '2026-10-01T00:00:00.000Z';
+    // Shas are random: the later commit may have the smaller id.
+    store.append(entry(1, { at, id: 'code:acme/app:ffff' }));
+    store.append(entry(2, { at, id: 'code:acme/app:aaaa' }));
+    store.append(entry(3, { at, id: 'code:acme/app:cccc' }));
+    assert.deepEqual(store.list().map((e) => e.title), ['commit 3', 'commit 2', 'commit 1']);
+    const reloaded = new ChangeStore(dir, Logger.silent());
+    reloaded.load();
+    assert.deepEqual(reloaded.list().map((e) => e.title), ['commit 3', 'commit 2', 'commit 1']);
+    assert.deepEqual(reloaded.list({ before: 'code:acme/app:aaaa' }).map((e) => e.title), ['commit 1']);
+  });
+
   it('keeps the page size between 1 and 200, 50 by default', () => {
     const store = new ChangeStore(null, Logger.silent());
     for (let n = 0; n < 300; n++) store.append(entry(n));
