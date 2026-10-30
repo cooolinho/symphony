@@ -2,65 +2,18 @@
  * Design tokens and base CSS of the dashboard pages: a navy "glass" theme with semantic colors
  * (green = running/healthy, cyan = information, amber = retry/warning, red = error, gray = waiting),
  * role colors, system font stacks (monospace for numbers, no external requests), glass panels (.g / .gi),
- * a visible focus ring, the gauge, sparkline and avatar blocks and the reduced-motion / reduced-transparency media queries.
+ * a visible focus ring, the pulse ring and equalizer and the reduced-motion / reduced-transparency media queries.
  * Animations and transitions only touch transform and opacity.
  *
  * All colour values come from the approved mockup (symphony-glass-dashboard.html) and live once in the typed
- * tables below (text, roles, status scales, operations, trace kinds, task tones); TOKENS_CSS interpolates them.
+ * tables of palette.ts (text, roles, status scales, operations, trace kinds, task tones, ink), re-exported here;
+ * TOKENS_CSS interpolates them. The building blocks (COMPONENTS_CSS) are embedded below.
  */
 
 import { COMPONENTS_CSS } from './components.ts';
+import { INK, OP_COLORS, ROLE_COLORS, SCALES, TASK_TONES, TEXT, TRACE_COLORS, rgba } from './palette.ts';
 
-/** Text colours (--fg*), link colours and the focus ring colour. */
-export const TEXT = {
-  fg: '#e8eef9', fgStrong: '#f4f7fc', fg2: '#aab6cc', fg3: '#8b98b0', fgChip: '#c9d4e6', fgLabel: '#9aa8c0',
-  fgMute: '#5b6678', fgFaint: '#7c879b', link: '#7dd3fc', linkHover: '#bae6fd',
-} as const;
-
-/** Role colours; "human" is the colour of a person in the score. */
-export const ROLE_COLORS = {
-  analyst: '#38bdf8', architect: '#a78bfa', developer: '#34d399', tester: '#fbbf24', docs: '#cbd5e1',
-  reviewer: '#f472b6', security: '#fb923c', symphony: '#94a3b8', human: '#e8eef9',
-} as const;
-
-/** Status scales (Tailwind-style step numbers). */
-export const SCALES = {
-  green: { 400: '#34d399', 300: '#6ee7b7', 100: '#d1fae5' },
-  amber: { 400: '#fbbf24', 300: '#fcd34d', 200: '#fde68a' },
-  red: { 400: '#f87171', 300: '#fca5a5', 200: '#fecaca' },
-  violet: { 300: '#c4b5fd', 200: '#ddd6fe' },
-  sky: { 300: '#7dd3fc', 100: '#e0f2fe' },
-  gray: { 500: '#64748b', 400: '#94a3b8' },
-} as const;
-
-/** Operation colours (denied = ABGEWIESEN). */
-export const OP_COLORS = { read: SCALES.sky[300], write: SCALES.amber[400], search: SCALES.violet[300], denied: SCALES.red[400] } as const;
-
-/** Trace kinds. */
-export const TRACE_COLORS = { tool: SCALES.sky[300], brain: SCALES.amber[400], subagent: SCALES.green[300], model: SCALES.violet[300], result: SCALES.red[400] } as const;
-
-/**
- * Tints of a #rrggbb colour as `rgba(r, g, b, a)`. The mockup uses alpha .16/.32/.55/.6 for the avatar
- * and .24/.42 for score blocks.
- */
-export function rgba(hex: string, alpha: number): string {
-  const m = /^#([0-9a-f]{6})$/i.exec(hex);
-  if (!m) throw new Error(`rgba: expected #rrggbb, got "${hex}"`);
-  if (!(alpha >= 0 && alpha <= 1)) throw new Error(`rgba: alpha must be within [0, 1], got ${alpha}`);
-  const n = parseInt(m[1] as string, 16);
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
-}
-
-const WAIT_TONE = { fg: SCALES.amber[200], bg: rgba(SCALES.amber[400], .12) } as const;
-/** Task tones: text colour and background (pause looks like wait). */
-export const TASK_TONES = {
-  run: { fg: SCALES.green[100], bg: rgba(SCALES.green[400], .14) },
-  next: { fg: SCALES.sky[100], bg: rgba(SCALES.sky[300], .14) },
-  wait: WAIT_TONE,
-  pause: WAIT_TONE,
-  block: { fg: SCALES.red[200], bg: rgba(SCALES.red[400], .13) },
-  done: { fg: SCALES.violet[200], bg: rgba(SCALES.violet[300], .12) },
-} as const;
+export { CHIP_TONES, INK, OP_COLORS, ROLE_COLORS, SCALES, TASK_TONES, TEXT, TRACE_COLORS, rgba } from './palette.ts';
 
 const textVars = Object.entries({ fg: TEXT.fg, 'fg-strong': TEXT.fgStrong, 'fg-2': TEXT.fg2, 'fg-3': TEXT.fg3, 'fg-chip': TEXT.fgChip,
   'fg-label': TEXT.fgLabel, 'fg-mute': TEXT.fgMute, 'fg-faint': TEXT.fgFaint, link: TEXT.link, 'link-hover': TEXT.linkHover })
@@ -70,6 +23,7 @@ const opVars = Object.entries(OP_COLORS).map(([k, v]) => `--op-${k}: ${v};`).joi
 const traceVars = Object.entries(TRACE_COLORS).map(([k, v]) => `--trace-${k}: ${v};`).join(' ');
 const scaleVars = Object.entries(SCALES).map(([name, steps]) =>
   Object.entries(steps).map(([step, v]) => `--${name}-${step}: ${v};`).join(' ')).join(' ');
+const inkVars = Object.entries(INK).map(([k, v]) => `--ink-${k}: ${v};`).join(' ');
 const taskVars = Object.entries(TASK_TONES).map(([k, t]) => `--task-${k}: ${t.fg}; --task-${k}-bg: ${t.bg};`).join(' ');
 
 export const TOKENS_CSS = `
@@ -90,6 +44,8 @@ export const TOKENS_CSS = `
     ${opVars}
     ${traceVars}
     ${taskVars}
+    /* Ink: dark grounds and text on light grounds (segment, badges). */
+    ${inkVars}
     /* Role colors (analyst .. symphony, human). */
     ${roleVars}
     /* Status tones: running, warning, error, waiting. */
@@ -239,30 +195,6 @@ export const TOKENS_CSS = `
   td.nowrap { white-space: nowrap; }
 
   ${COMPONENTS_CSS}
-
-  /* Gauge, sparkline, avatar */
-  .gauge { display: inline-flex; flex-direction: column; align-items: center; gap: 6px; --p: 0; }
-  .gauge-ring { width: var(--gauge-size, 64px); aspect-ratio: 1; border-radius: 50%; position: relative; display: grid; place-items: center;
-    background: conic-gradient(var(--tone, var(--green)) calc(var(--p) * 1%), rgba(255,255,255,.08) 0); }
-  .gauge-ring::before { content: ""; position: absolute; inset: 6px; border-radius: 50%; background: var(--panel); }
-  .gauge-value { position: relative; font: 600 15px var(--mono); font-variant-numeric: tabular-nums; }
-  .gauge.is-empty .gauge-value { color: var(--muted); }
-  .gauge-label { font: 500 11px/1.3 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--fg-label); }
-  .spark { display: inline-block; vertical-align: middle; overflow: visible; }
-  .spark-line { stroke: var(--tone, var(--green)); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
-  .avatar { position: relative; display: inline-grid; place-items: center; width: var(--av-size, 36px); height: var(--av-size, 36px);
-    border-radius: 50%; color: var(--role, var(--gray)); border: 1.5px solid currentColor; box-shadow: 0 0 14px -4px currentColor;
-    font: 600 calc(var(--av-size, 36px) * .42)/1 var(--mono); }
-  .avatar::before { content: ""; position: absolute; inset: 0; border-radius: 50%; background: currentColor; opacity: .16; }
-  .avatar-face { position: relative; }
-  .avatar-badge { position: absolute; right: -3px; bottom: -3px; display: grid; place-items: center; width: 36%; height: 36%;
-    border-radius: 50%; background: var(--green); color: var(--bg); font: 700 calc(var(--av-size, 36px) * .22)/1 var(--mono); }
-  .av-returned .avatar-badge { background: var(--red); }
-  .avatar .ring { inset: -4px; }
-  .avatar .eq { position: absolute; right: -2px; bottom: -2px; height: 10px; color: var(--green); }
-  .avatar .eq i { width: 2px; height: 10px; }
-  .av-waiting { border-style: dashed; box-shadow: none; }
-  .av-skipped { filter: grayscale(1); opacity: .45; box-shadow: none; }
 
   @media (max-width: 640px) {
     main { padding-left: 12px; padding-right: 12px; }

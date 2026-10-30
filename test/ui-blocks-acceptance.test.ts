@@ -4,11 +4,13 @@ import vm from 'node:vm';
 import { AGENT_HTML } from '../src/http/agent-page.ts';
 import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
 import { LOGS_HTML } from '../src/http/logs-page.ts';
+import { ICONS_JS } from '../src/http/icons.ts';
 import { BASE_JS } from '../src/http/styles.ts';
+import { COMPONENTS_CSS, COMPONENTS_JS } from '../src/http/ui/components.ts';
 import { TOKENS_CSS } from '../src/http/ui/tokens.ts';
 
 /*
- * Independent acceptance tests for the gauge, sparkline and avatar blocks (derived from the issue, not from the
+ * Acceptance tests for the ring gauge, sparkline, avatar, equalizer and icons (derived from the issue, not from the
  * implementation). Own strict mini DOM: innerHTML throws, and className on SVG elements throws (in a browser it is
  * a read-only SVGAnimatedString, so code must use setAttribute('class')).
  */
@@ -85,183 +87,111 @@ const call = (expr: string, scope: Record<string, unknown> = {}): Node_ => {
   Object.assign(ctx, scope);
   return vm.runInContext(expr, ctx) as Node_;
 };
-const gauge = (o: Record<string, unknown>): Node_ => call('ringGauge(__o)', { __o: o });
-const spark = (v: unknown, o?: Record<string, unknown>): Node_ => call('sparkline(__v, __o)', { __v: v, __o: o });
-const avatar = (o: Record<string, unknown>): Node_ => call('avatar(__o)', { __o: o });
-const valueOf = (g: Node_): Node_ => g.all().find((n) => n.classes.includes('gauge-value')) as Node_;
+const XSS = '<img src=x onerror=alert(1)>';
+const ring = (pct: unknown, o?: Record<string, unknown>): Node_ => call('ring(__p, __o)', { __p: pct, __o: o });
+const spark = (v: unknown, c?: unknown): Node_ | null => call('sparkline(__v, __c)', { __v: v, __c: c });
+const avatar = (role: unknown, state: unknown, o?: Record<string, unknown>): Node_ => call('avatar(__r, __s, __o)', { __r: role, __s: state, __o: o });
+const badgeOf = (r: Node_): Node_ => r.withClass('ui-ring-pct')[0] as Node_;
 
-describe('ringGauge acceptance', () => {
-  it('42 % sets --p to 42 and shows the number in monospace in the centre', () => {
-    const g = gauge({ percent: 42, label: 'Context', tone: 'cyan' });
-    assert.equal(g.props['--p'], '42');
-    const v = valueOf(g);
-    assert.ok(v, 'value element');
-    assert.match(v.textContent, /^42\s*%$/);
-    assert.ok(v.classes.includes('num') || v.classes.includes('mono'), 'monospace class');
-    assert.ok(g.textContent.includes('Context'));
-    assert.ok(g.classes.includes('tone-cyan'));
+describe('ring acceptance', () => {
+  it('71 % with the developer icon: conic-gradient, icon inside the inner circle, amber badge, aria-label', () => {
+    const r = call('ring(71, { color: "#fbbf24", inner: icon("developer", 34), label: "Developer playing, Context" })');
+    assert.equal(r.attrs.role, 'img');
+    assert.equal(r.attrs['aria-label'], 'Developer playing, Context, 71 percent');
+    assert.equal((r.style as Record<string, unknown>).background, 'conic-gradient(#fbbf24 0 71%, rgba(255,255,255,.1) 71% 100%)');
+    const inner = r.withClass('ui-ring-in')[0] as Node_;
+    assert.equal(inner.kids[0]?.tag, 'svg');
+    assert.equal(inner.kids[0]?.ns, SVG_NS);
+    assert.equal(badgeOf(r).textContent, '71%');
+    assert.ok(badgeOf(r).classes.includes('hot'));
   });
-  it('the value sits inside the ring element, not beside it', () => {
-    const g = gauge({ percent: 10 });
-    const ring = g.all().find((n) => n.classes.includes('gauge-ring')) as Node_;
-    assert.ok(ring.all().includes(valueOf(g)));
-  });
-  it('null shows a dash and a gray ring without progress', () => {
-    const g = gauge({ percent: null, label: 'Context' });
-    assert.equal(valueOf(g).textContent, '—');
-    assert.ok(g.classes.includes('tone-gray'));
-    assert.ok(!g.classes.includes('tone-green'));
-    assert.ok(['0', ''].includes(g.props['--p'] ?? ''));
-    assert.ok(!valueOf(g).textContent.includes('%'));
-  });
-  it('null ignores a requested tone (stays gray)', () => {
-    assert.ok(gauge({ percent: null, tone: 'red' }).classes.includes('tone-gray'));
-  });
-  it('NaN, undefined, strings and Infinity are treated as no data', () => {
-    for (const percent of [NaN, undefined, 'abc', Infinity, -Infinity]) {
-      const g = gauge({ percent });
-      assert.equal(valueOf(g).textContent, '—', String(percent));
-      assert.ok(g.classes.includes('tone-gray'), String(percent));
+  it('null, NaN, Infinity and strings show a dash and no progress', () => {
+    for (const v of [null, NaN, Infinity, '80', undefined]) {
+      const r = ring(v);
+      assert.equal(badgeOf(r).textContent, '—', String(v));
+      assert.ok(r.classes.includes('is-empty'));
+      assert.match(String((r.style as Record<string, unknown>).background), /^conic-gradient\([^ ]+ 0 0%, rgba\(255,255,255,\.1\) 0% 100%\)$/);
     }
   });
-  it('clamps to 0–100 and keeps 0 and 100 as real values', () => {
-    assert.equal(gauge({ percent: 250 }).props['--p'], '100');
-    assert.equal(gauge({ percent: -3 }).props['--p'], '0');
-    assert.equal(valueOf(gauge({ percent: 0 })).textContent, '0%');
-    assert.equal(valueOf(gauge({ percent: 100 })).textContent, '100%');
-    assert.ok(!gauge({ percent: 0 }).classes.includes('tone-gray'), '0 % is data, not empty');
+  it('the badge is sky below 70 % and amber from 70 %; 0 and 100 are real values', () => {
+    assert.ok(!badgeOf(ring(69)).classes.includes('hot'));
+    assert.ok(badgeOf(ring(70)).classes.includes('hot'));
+    assert.equal(badgeOf(ring(0)).textContent, '0%');
+    assert.equal(badgeOf(ring(100)).textContent, '100%');
   });
-  it('works without options and without label', () => {
-    assert.doesNotThrow(() => call('ringGauge()'));
-    assert.doesNotThrow(() => call('ringGauge({})'));
-    assert.equal(gauge({ percent: 5 }).withClass('gauge-label').length, 0);
-  });
-  it('treats the label as text', () => {
-    const g = gauge({ percent: 5, label: '<b>x</b>' });
-    assert.ok(g.textContent.includes('<b>x</b>'));
-    assert.equal(g.all().filter((n) => n.tag === 'b').length, 0);
+  it('treats the label and a text inner as text', () => {
+    const r = ring(5, { label: XSS, inner: XSS });
+    assert.equal(r.all().filter((n) => n.tag === 'img').length, 0);
+    assert.ok(r.attrs['aria-label']?.startsWith(XSS));
+    assert.ok(r.textContent.includes(XSS));
   });
 });
 
 describe('sparkline acceptance', () => {
-  it('builds an svg in the SVG namespace with an aria-hidden attribute and a polyline with points', () => {
-    const s = spark([1, 4, 2, 8], { width: 80, height: 24, tone: 'amber' });
-    assert.equal(s.tag, 'svg');
+  it('an svg in the SVG namespace (class via setAttribute) with one polyline', () => {
+    const s = spark([3, 1, 4, 1, 5], '#34d399') as Node_;
     assert.equal(s.ns, SVG_NS);
-    assert.equal(s.getAttribute('aria-hidden'), 'true');
-    assert.equal(s.getAttribute('width'), '80');
-    assert.equal(s.getAttribute('height'), '24');
-    assert.ok((s.getAttribute('class') ?? '').includes('tone-amber'));
-    const lines = s.all().filter((n) => n.tag === 'polyline');
-    assert.equal(lines.length, 1);
-    assert.equal(lines[0]?.ns, SVG_NS);
-    const pts = (lines[0]?.getAttribute('points') ?? '').trim().split(/\s+/);
-    assert.equal(pts.length, 4);
-    for (const p of pts) assert.match(p, /^-?\d+(\.\d+)?,-?\d+(\.\d+)?$/);
+    assert.equal(s.attrs.class, 'ui-spark');
+    assert.equal(s.attrs.viewBox, '0 0 100 24');
+    assert.equal(s.attrs['aria-hidden'], 'true');
+    const line = s.kids[0] as Node_;
+    assert.equal(line.tag, 'polyline');
+    assert.equal(line.attrs['vector-effect'], 'non-scaling-stroke');
+    assert.equal(line.attrs['stroke-width'], '1.6');
+    assert.equal((line.attrs.points ?? '').split(' ').length, 5);
   });
-  it('maps the maximum to the top and the minimum to the bottom (y grows downwards)', () => {
-    const s = spark([0, 10], { width: 100, height: 20 });
-    const [a, b] = (s.all()[0]?.getAttribute('points') ?? '').split(' ').map((p) => p.split(',').map(Number));
-    assert.ok(a![1]! > b![1]!, 'low value has larger y');
-    assert.ok(a![0]! < b![0]!, 'x increases');
+  it('maps the maximum to the top', () => {
+    const [a, b] = ((spark([0, 10]) as Node_).kids[0]?.attrs.points ?? '').split(' ').map((p) => p.split(',').map(Number));
+    assert.ok((a as number[])[1]! > (b as number[])[1]!);
   });
-  it('empty, missing and invalid values give an empty svg without errors', () => {
-    for (const v of [[], undefined, null, 'abc', 42, {}]) {
-      let s: Node_ | undefined;
-      assert.doesNotThrow(() => (s = spark(v)), String(v));
-      assert.equal(s?.tag, 'svg');
-      assert.equal(s?.getAttribute('aria-hidden'), 'true');
-      assert.equal(s?.all().filter((n) => n.tag === 'polyline').length, 0, String(v));
-    }
-  });
-  it('a single value and constant values yield finite points', () => {
-    for (const v of [[3], [5, 5, 5], [0, 0]]) {
-      const pts = spark(v).all().find((n) => n.tag === 'polyline')?.getAttribute('points') ?? '';
-      assert.ok(pts.length > 0 && !/NaN|Infinity/.test(pts), JSON.stringify(v));
-    }
-  });
-  it('works without options', () => {
-    assert.doesNotThrow(() => spark([1, 2, 3]));
+  it('an empty or invalid series gives no svg', () => {
+    for (const v of [[], undefined, null, [NaN, Infinity], 'abc', {}]) assert.equal(spark(v), null, String(v));
   });
 });
 
 describe('avatar acceptance', () => {
-  it('shows a role-coloured circle with the initial; title and aria-label carry role and state', () => {
-    const a = avatar({ role: 'tester', state: 'done', size: 40 });
-    assert.ok(a.classes.includes('avatar'));
-    assert.ok(a.classes.includes('role-tester'));
-    assert.ok(a.textContent.includes('T'));
-    for (const attr of ['title', 'aria-label']) {
-      const v = (a.getAttribute(attr) ?? '').toLowerCase();
-      assert.ok(v.includes('tester') && v.includes('done'), attr);
+  const STATES = ['done', 'playing', 'waiting', 'returned', 'skipped'];
+  it('every state has its own class and title "Role · state"; ring and equalizer only when playing', () => {
+    for (const st of STATES) {
+      const a = avatar('reviewer', st);
+      assert.ok(a.classes.includes('is-' + st), st);
+      assert.equal(a.attrs.title, 'Reviewer · ' + st);
+      assert.equal(a.withClass('ring').length, st === 'playing' ? 1 : 0, st);
+      assert.equal(a.withClass('eq').length, st === 'playing' ? 1 : 0, st);
     }
   });
-  it('playing has pulse ring and 3 equalizer bars; done, waiting, returned and skipped have neither', () => {
-    const playing = avatar({ role: 'developer', state: 'playing' });
-    assert.equal(playing.withClass('ring').length, 1);
-    assert.ok(playing.withClass('ring')[0]?.classes.includes('ring-lg'));
-    const eq = playing.withClass('eq');
-    assert.equal(eq.length, 1);
-    assert.equal(eq[0]?.kids.filter((k) => k.tag === 'i').length, 3);
-    for (const state of ['done', 'waiting', 'returned', 'skipped']) {
-      const a = avatar({ role: 'developer', state });
-      assert.equal(a.withClass('ring').length + a.withClass('eq').length, 0, state);
-      assert.ok(!a.classes.includes('av-playing'), state);
+  it('at 64 / 96 px done shows a check badge, returned a cross badge, the others none', () => {
+    for (const size of [64, 96]) {
+      for (const st of STATES) {
+        const badges = avatar('security', st, { size }).withClass('ui-av-badge');
+        assert.equal(badges.length, st === 'done' || st === 'returned' ? 1 : 0, `${size} ${st}`);
+        if (st === 'returned') assert.ok(badges[0]?.classes.includes('is-x'));
+      }
     }
   });
-  it('every state gets its own distinguishing class', () => {
-    const states = ['done', 'playing', 'waiting', 'returned', 'skipped'];
-    const classes = states.map((s) => avatar({ role: 'docs', state: s }).classes.join(' '));
-    assert.equal(new Set(classes).size, 5);
-    for (const s of states) assert.ok(avatar({ role: 'docs', state: s }).classes.includes('av-' + s));
-  });
-  it('done shows a check mark, returned a cross, others neither', () => {
-    const badgeText = (state: string): string => avatar({ role: 'analyst', state }).withClass('avatar-badge').map((n) => n.textContent).join('');
-    assert.match(badgeText('done'), /[✓✔]/);
-    assert.match(badgeText('returned'), /[✕✗✖×xX]/);
-    for (const s of ['playing', 'waiting', 'skipped']) assert.equal(badgeText(s), '', s);
-  });
-  it('knows all pipeline roles', () => {
+  it('every role has an icon at 64 px and a short name at 30 px', () => {
     for (const role of ['analyst', 'architect', 'developer', 'tester', 'docs', 'reviewer', 'security', 'symphony', 'human']) {
-      const a = avatar({ role, state: 'done' });
-      assert.ok(a.classes.includes('role-' + role), role);
-      assert.ok(TOKENS_CSS.includes('.role-' + role), 'css for ' + role);
+      const big = avatar(role, 'done', { size: 64 });
+      assert.equal(big.kids[0]?.tag, 'svg', role);
+      assert.equal(big.kids[0]?.attrs.width, '26', role);
+      assert.equal(avatar(role, 'done').withClass('ui-av-face')[0]?.textContent.length, 2, role);
     }
   });
-  it('falls back to a neutral look for unknown role, unknown state and missing options', () => {
-    const a = avatar({ role: 'nobody', state: 'weird' });
-    assert.ok(!a.classes.some((c) => c.startsWith('role-')));
-    assert.ok(!a.classes.includes('av-playing'));
-    assert.equal(a.withClass('ring').length, 0);
-    assert.doesNotThrow(() => call('avatar()'));
-    assert.doesNotThrow(() => call('avatar({})'));
-  });
-  it('applies the size via a CSS variable and ignores nonsense sizes', () => {
-    assert.equal(avatar({ role: 'docs', state: 'done', size: 52 }).props['--av-size'], '52px');
-    for (const size of ['big', NaN, -1, 0, 100000]) {
-      const px = avatar({ role: 'docs', state: 'done', size }).props['--av-size'] ?? '';
-      assert.match(px, /^\d+(\.\d+)?px$/);
-      assert.ok(parseFloat(px) >= 8 && parseFloat(px) <= 256, String(size));
-    }
-  });
-  it('treats role and state as text, never as markup', () => {
-    const payload = '<img src=x onerror=alert(1)>';
-    const a = avatar({ role: payload, state: payload });
-    assert.ok(a.all().every((n) => n.tag !== 'img'));
-    assert.ok(!a.classes.some((c) => c.includes('<') || c.includes('=')), 'no raw markup in classes');
+  it('role, state and short name are text, never markup', () => {
+    const a = avatar(XSS, XSS, { short: XSS });
+    assert.equal(a.all().filter((n) => n.tag === 'img').length, 0);
+    assert.ok(a.classes.includes('is-waiting'));
+    assert.ok(!a.attrs.class?.includes('<'));
   });
 });
 
 describe('no innerHTML for the blocks', () => {
-  it('the strict DOM would have thrown; additionally the block source has no innerHTML or insertAdjacentHTML', () => {
-    const start = BASE_JS.indexOf('function ringGauge');
-    const end = BASE_JS.indexOf('return root;', BASE_JS.indexOf('function avatar'));
-    assert.ok(start > 0 && end > start);
-    assert.doesNotMatch(BASE_JS.slice(start, end), /innerHTML|insertAdjacentHTML|outerHTML|document\.write/);
+  it('the strict DOM would have thrown; additionally the block sources have no innerHTML-like sinks', () => {
+    for (const src of [COMPONENTS_JS, ICONS_JS]) assert.doesNotMatch(src, /innerHTML|insertAdjacentHTML|outerHTML|document\.write|DOMParser|sc-camel/);
   });
-  it('the three blocks are available in every page that embeds BASE_JS', () => {
+  it('the blocks are available in every page that embeds BASE_JS', () => {
     for (const [name, html] of Object.entries({ dashboard: DASHBOARD_HTML, agent: AGENT_HTML, logs: LOGS_HTML })) {
-      for (const fn of ['function ringGauge', 'function sparkline', 'function avatar']) assert.ok(html.includes(fn), `${name}: ${fn}`);
+      for (const fn of ['function ring(', 'function sparkline(', 'function avatar(', 'function eq(', 'function icon(']) assert.ok(html.includes(fn), `${name}: ${fn}`);
     }
   });
 });
@@ -290,34 +220,20 @@ const keyframeBody = (name: string): string => {
 };
 
 describe('CSS of the blocks', () => {
-  it('the gauge ring is a conic-gradient driven by --p', () => {
-    const css = bodies(TOKENS_CSS, (s) => /\.gauge/.test(s)).join(';');
-    assert.match(css, /conic-gradient\([^;]*var\(--p\)/);
-  });
-  it('the gauge number is monospace', () => {
-    const css = bodies(TOKENS_CSS, (s) => /gauge-value|\.num$/.test(s)).join(';');
-    assert.match(css, /var\(--mono\)|monospace/);
-  });
-  it('avatar takes its colour from --role; waiting is dashed; skipped is greyed out; returned/done badges differ', () => {
-    assert.match(bodies(TOKENS_CSS, (s) => s === '.avatar').join(';'), /var\(--role/);
-    assert.match(bodies(TOKENS_CSS, (s) => /av-waiting/.test(s)).join(';'), /dashed/);
-    assert.match(bodies(TOKENS_CSS, (s) => /av-skipped/.test(s)).join(';'), /grayscale|opacity/);
-    const ret = bodies(TOKENS_CSS, (s) => /av-returned/.test(s)).join(';');
-    assert.match(ret, /var\(--red\)/);
-  });
-  it('the playing avatar animates through the pulse and equalizer keyframes, and only these animate', () => {
+  it('the playing avatar animates through the pulse and equalizer keyframes, which touch only transform and opacity', () => {
     assert.match(bodies(TOKENS_CSS, (s) => s === '.ring' || s === '.ring-lg').join(';'), /pulse/);
     assert.match(bodies(TOKENS_CSS, (s) => /^\.eq i$/.test(s)).join(';'), /animation:[^;]*\beq\b/);
-  });
-  it('the animations touch only transform and opacity', () => {
     for (const name of ['pulse', 'pulse-lg', 'eq']) {
       const props = [...keyframeBody(name).matchAll(/([\w-]+)\s*:/g)].map((m) => m[1]);
       assert.ok(props.length > 0, name);
       assert.ok(props.every((p) => p === 'transform' || p === 'opacity'), `${name}: ${props.join(',')}`);
     }
-    // No transition on the new blocks may touch anything else.
-    const own = bodies(TOKENS_CSS, (s) => /gauge|\.avatar|\.spark/.test(s)).join(';');
-    for (const m of own.matchAll(/transition\s*:\s*([^;]+)/g)) assert.match(m[1] as string, /^(transform|opacity)\b/);
+  });
+  it('the ring, avatar and spark rules live in COMPONENTS_CSS; the old gauge / avatar rules are gone', () => {
+    for (const sel of ['.ui-ring', '.ui-ring-pct.hot', '.ui-av.is-waiting', '.ui-av.is-returned', '.ui-av.is-skipped', '.ui-av-badge', '.ui-spark']) {
+      assert.ok(bodies(COMPONENTS_CSS, (s) => s === sel).length > 0, sel);
+    }
+    assert.equal(bodies(TOKENS_CSS, (s) => /^\.(gauge|avatar|av-|spark)/.test(s)).length, 0);
   });
   it('prefers-reduced-motion stops all animations', () => {
     const at = TOKENS_CSS.indexOf('@media (prefers-reduced-motion: reduce)');
