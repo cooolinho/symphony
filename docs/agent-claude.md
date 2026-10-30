@@ -295,6 +295,21 @@ older than 30 days at startup and then once a day; write errors are only logged.
 `rate_limits` as an object with the latest record per `rateLimitType` (`five_hour`, `seven_day`, ...), `{}` before the
 first event. Instances sharing a log directory share the file, which fits because limits apply per account.
 
+### Limit forecast
+
+`GET /api/v1/budget` answers `{ five_hour, seven_day, generated_at }`. Each window holds `used_tokens` (tokens of
+`run_finished` lines in the rolling window of 5 hours or 7 days), `burn_rate_per_min` (tokens of the last 30 minutes
+/ 30), `resets_at` (`resetsAt` of the latest rate-limit event of that type, `null` when missing or in the past),
+`forecast`, `alert` and `by_role` (tokens per role in the window).
+
+`forecast` is `null` while the limit is unknown. The limit is taken from the SDK field `utilization` (share in (0, 1])
+of the latest event of the type (limit = usage at that time / `utilization`, `limit_source: "sdk"`) and otherwise
+calibrated: the usage in the window at the time of the latest `rejected` event of the same `rateLimitType`
+(`limit_source: "calibrated"`). `eta` = now + (limit − used) / burn rate, set only when it lies before `resets_at`
+(`now` once the limit is already reached); otherwise `null`. `alert` is `true` exactly when `eta` is set.
+`Orchestrator#budgetAlerts()` returns the windows with an alert for the alerts panel. The tokens of a run only count
+once it has finished, so running sessions are missing. Other methods than `GET` answer 405.
+
 Every raw SDK message is also written as JSON lines to `<log-dir>/sessions/<workspace-key>/<timestamp>.jsonl`.
 
 ## Authentication
