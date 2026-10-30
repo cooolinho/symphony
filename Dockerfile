@@ -128,6 +128,7 @@ RUN userdel --remove node \
         /home/symphony/.local/state \
         /home/symphony/.local/state/symphony \
         /home/symphony/.claude \
+        /home/symphony/brain \
         /home/symphony/.cache \
         /home/symphony/.cache/composer \
         /home/symphony/.cache/corepack

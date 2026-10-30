@@ -423,6 +423,32 @@ describe('system config', () => {
   });
 });
 
+describe('brain config', () => {
+  const base = { tracker: { kind: 'github-project' } };
+  const env = { HOME: '/home/u' };
+
+  it('defaults to disabled with ~/brain', () => {
+    assert.deepEqual(resolve(base, env).brain, { enabled: false, path: '/home/u/brain' });
+  });
+
+  it('reads enabled and path, expands ~ and resolves relative paths', () => {
+    assert.deepEqual(resolve({ ...base, brain: { enabled: true, path: '~/vault' } }, env).brain, { enabled: true, path: '/home/u/vault' });
+    assert.equal(resolve({ ...base, brain: { path: 'vault' } }, env).brain.path, '/srv/flows/vault');
+    assert.equal(resolve({ ...base, brain: { enabled: true } }, env).warnings.some((w) => /brain/.test(w)), false);
+  });
+
+  it('rejects unknown keys and wrong types', () => {
+    assert.throws(() => resolve({ ...base, brain: { extra: 1 } }, env), /brain\.extra is not a known key/);
+    assert.throws(() => resolve({ ...base, brain: { enabled: 'yes' } }, env), /brain\.enabled/);
+    assert.throws(() => resolve({ ...base, brain: { path: 3 } }, env), /brain\.path must be a string/);
+  });
+
+  it('documents the section commented out in the shipped WORKFLOW.md', () => {
+    const text = fs.readFileSync(path.join(import.meta.dirname, '..', 'WORKFLOW.md'), 'utf8');
+    assert.match(text, /^# brain:/m);
+  });
+});
+
 describe('prompt templates', () => {
   const issue = issueTemplateValue(makeIssue({ id: '7', labels: ['bug'] }));
 

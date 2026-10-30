@@ -1167,6 +1167,15 @@ Symphony samples CPU, memory, load and disk of the host every 10 s and keeps one
 | --- | --- | --- |
 | `gpu` | `false` | Reads GPU utilization, memory and temperature from `nvidia-smi`; with `false` `nvidia-smi` is never called and `gpu` is `null`. Restart to change it. |
 
+### `brain`
+
+The knowledge vault: one vault for all repositories. With `enabled: true` Symphony creates `README.md` (the rules), `Inbox/`, `Repos/`, `Decisions/`, `Lessons/`, `Issues/` and `Agents/` at startup, plus `Repos/<owner>-<name>/index.md` for each configured repository. Existing files and folders are never overwritten; `.obsidian/` is never touched. Restart to change it. An unknown key is an error.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Create the vault at startup; with `false` no path is touched. |
+| `path` | `~/brain` | Vault directory; `~` and `$VAR` are expanded, relative paths resolve against `WORKFLOW.md`. In Docker this is the `brain` volume. |
+
 ## Complete example: roles, checks and Laravel
 
 The shipped `WORKFLOW.md`, shortened to the parts that make up the developer → checks → reviewer → human flow
