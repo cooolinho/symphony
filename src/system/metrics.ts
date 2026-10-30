@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type { Logger } from '../log.ts';
 import { errorMessage } from '../util/errors.ts';
@@ -42,6 +43,8 @@ export interface SystemSnapshot {
   /** Oldest first, including `current`. */
   history: SystemSample[];
   gpu: GpuSample | null;
+  /** Logical CPUs of the host, the scale of the load average. */
+  cpu_count: number | null;
 }
 
 export type NvidiaSmiRunner = (args: readonly string[]) => Promise<string>;
@@ -110,6 +113,8 @@ export interface SystemCollectorOptions {
   intervalMs?: number;
   capacity?: number;
   now?: () => Date;
+  /** Logical CPUs reported in the snapshot; defaults to os.availableParallelism(). */
+  cpuCount?: number;
 }
 
 /**
@@ -203,6 +208,6 @@ export class SystemCollector {
 
   snapshot(): SystemSnapshot {
     const current = this.current();
-    return { current, history: this.history(), gpu: current?.gpu ?? null };
+    return { current, history: this.history(), gpu: current?.gpu ?? null, cpu_count: this.#options.cpuCount ?? os.availableParallelism() };
   }
 }
