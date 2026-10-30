@@ -38,6 +38,7 @@ export const TOKENS_CSS = `
       radial-gradient(900px 500px at 110% 0%, rgba(56, 189, 248, .08), transparent 60%),
       radial-gradient(900px 600px at 50% 120%, rgba(52, 211, 153, .06), transparent 60%), var(--bg);
     color: var(--text); font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+  body > * { position: relative; z-index: 1; }
   .mono, code, kbd { font-family: var(--mono); font-variant-ligatures: none; }
   .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
   a { color: var(--cyan); text-decoration: none; }
