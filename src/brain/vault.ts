@@ -5,8 +5,11 @@ import { isRepositoryName } from '../tracker/github-project/settings.ts';
 import { errorMessage } from '../util/errors.ts';
 import { isStrictlyInside } from '../util/paths.ts';
 import type { BrainConfig } from '../workflow/config.ts';
+import { initVaultGit } from './git.ts';
 
 export const VAULT_FOLDERS = ['Inbox', 'Repos', 'Decisions', 'Lessons', 'Issues', 'Agents'] as const;
+
+export const GITIGNORE_TEXT = `.obsidian/workspace*.json\n.trash/\n`;
 
 export const README_TEXT = `# Symphony brain
 
@@ -45,6 +48,12 @@ Every note starts with a YAML frontmatter block with these fields:
 - \`candidate\`: new and not reviewed yet.
 - \`approved\`: reviewed; preferred when searching.
 - \`deprecated\`: outdated; never used in searches.
+
+## Versioning
+
+The vault is a git repository. Every write by an agent is one commit: the author is \`symphony-<role>\`, the message is \`<issue> <run>: <purpose>\` with the path below it.
+Changes made in Obsidian are committed as \`human\` (\`Obsidian: <n> Dateien\`) before the next agent write; \`.obsidian/\` is never committed.
+Undo a change with \`git revert <sha>\`.
 
 ## Rules
 
@@ -141,6 +150,7 @@ export async function ensureVault(root: string, repositories: readonly string[] 
   const created: string[] = [];
   await fs.mkdir(root, { recursive: true });
   if (await createFile(path.join(root, 'README.md'), README_TEXT)) created.push('README.md');
+  if (await createFile(path.join(root, '.gitignore'), GITIGNORE_TEXT)) created.push('.gitignore');
   const baseFiles: [string, string][] = [
     [CANDIDATE_REVIEW_BASE_FILE, CANDIDATE_REVIEW_BASE],
     [LATEST_LESSONS_BASE_FILE, LATEST_LESSONS_BASE],
@@ -160,6 +170,7 @@ export async function ensureVault(root: string, repositories: readonly string[] 
     if (await createDir(dir)) created.push(relative);
     if (await createFile(path.join(dir, 'index.md'), indexText(repository, date))) created.push(path.join(relative, 'index.md'));
   }
+  await initVaultGit(root);
   return created;
 }
 

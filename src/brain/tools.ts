@@ -11,6 +11,9 @@ import { noteStatus, noteTitle, parseNote } from './note.ts';
 import { resolveVaultPath } from './paths.ts';
 import { createBrainWriteTools, type BrainWriteOptions } from './write.ts';
 
+export { createVaultGit, type VaultCommitHook } from './git.ts';
+export type { BrainVersioning } from './write.ts';
+
 export const MAX_SEARCH_RESULTS = 20;
 const EXCERPT_CHARS = 200;
 
@@ -222,6 +225,7 @@ export function brainToolsFor(
   options: BrainWriteOptions = {},
 ): AgentToolSpec[] {
   if (!config.enabled) return [];
-  const writeOptions: BrainWriteOptions = config.clashWindowMs === undefined ? options : { clashWindowMs: config.clashWindowMs, ...options };
+  const writeOptions: BrainWriteOptions =
+    config.clashWindowMs === undefined ? options : { ...options, clashWindowMs: options.clashWindowMs ?? config.clashWindowMs };
   return [...createBrainTools(config.path, logger, options.access ?? null), ...createBrainWriteTools(config.path, logger, writeOptions)];
 }
