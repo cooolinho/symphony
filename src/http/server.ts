@@ -260,7 +260,7 @@ export function startHttpServer(options: {
       return;
     }
     if (pathname === '/api/v1/system') {
-      allow(['GET'], () => sendJson(res, 200, system?.snapshot() ?? { current: null, history: [], gpu: null }));
+      allow(['GET'], () => sendJson(res, 200, system?.snapshot() ?? { current: null, history: [], gpu: null, cpu_count: null }));
       return;
     }
     if (pathname === '/api/v1/budget') {

@@ -19,6 +19,7 @@ import {
   type StatusChange,
   type TrackedResult,
   type TrackerAdapter,
+  type TrackerApiBudget,
 } from '../types.ts';
 import { downloadAttachments, extractAttachmentLinks, webOrigin, type AttachmentLink } from './attachments.ts';
 import { assertNoGraphqlErrors, type GithubGraphqlClient, type GraphqlError } from './client.ts';
@@ -133,6 +134,10 @@ export class GithubProjectAdapter implements TrackerAdapter {
     this.client = client;
     this.#logger = logger.child({ tracker: KIND });
     this.#fetch = fetchImpl;
+  }
+
+  apiBudget(): TrackerApiBudget | null {
+    return this.client.rateLimit();
   }
 
   /** Project id and field metadata, fetched once per adapter instance (refresh with force). */

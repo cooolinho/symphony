@@ -1648,6 +1648,8 @@ ${PIPELINE_JS}
 
   if (!ID) render();
   else { render(); poll(); live(poll, pollEvery(poll, POLL_MS)); }
+  // Tests load the page in a fake DOM and render a fixture through window.__render.
+  if (window.__SYMPHONY_TEST__) window.__render = (state) => { Object.assign(S, state); render(); };
 })();
 `,
 });

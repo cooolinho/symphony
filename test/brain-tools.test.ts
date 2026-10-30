@@ -137,10 +137,13 @@ describe('brain tools', () => {
     assert.ok(!lines.some((line) => line.includes('without purpose')));
   });
 
-  it('brainToolsFor offers the tools only when enabled', () => {
+  it('brainToolsFor offers the tools by mode, and only when enabled', () => {
     const dir = vault();
-    assert.deepEqual(brainToolsFor({ enabled: false, path: dir }, Logger.silent()), []);
-    const tools = brainToolsFor({ enabled: true, path: dir }, Logger.silent());
+    assert.deepEqual(brainToolsFor({ enabled: false, path: dir }, 'write', Logger.silent()), []);
+    assert.deepEqual(brainToolsFor({ enabled: true, path: dir }, 'off', Logger.silent()), []);
+    const names = (mode: 'read' | 'write') => brainToolsFor({ enabled: true, path: dir }, mode, Logger.silent()).map((t) => t.name);
+    assert.deepEqual(names('read'), ['brain_search', 'brain_read', 'brain_list']);
+    const tools = brainToolsFor({ enabled: true, path: dir }, 'write', Logger.silent());
     assert.deepEqual(tools.map((t) => t.name), ['brain_search', 'brain_read', 'brain_list', 'brain_write', 'brain_append']);
     assert.deepEqual(tools.map((t) => t.mutates), [false, false, false, true, true]);
   });

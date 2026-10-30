@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { startHttpServer } from '../src/http/server.ts';
@@ -135,7 +136,7 @@ describe('system collector acceptance', () => {
 
   it('nothing is collected before start()/collect(): current is null, history empty', () => {
     const c = new SystemCollector({ procDir: proc('cpu  1 1 1 1\n'), volumes: [], gpu: false, logger: silent().logger });
-    assert.deepEqual(c.snapshot(), { current: null, history: [], gpu: null });
+    assert.deepEqual(c.snapshot(), { current: null, history: [], gpu: null, cpu_count: os.availableParallelism() });
   });
 
   it('with an absent /proc prefix every field is null and nothing throws, gpu on or off', async () => {
@@ -308,7 +309,7 @@ describe('GET /api/v1/system', () => {
       const res = await get(server.port, 'GET', '/api/v1/system');
       assert.equal(res.status, 200);
       const body = JSON.parse(res.body);
-      assert.deepEqual(Object.keys(body).sort(), ['current', 'gpu', 'history']);
+      assert.deepEqual(Object.keys(body).sort(), ['cpu_count', 'current', 'gpu', 'history']);
       assert.equal(body.gpu, null);
       assert.equal(body.history.length, 3);
       assert.deepEqual(body.current, body.history.at(-1));

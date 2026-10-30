@@ -1,7 +1,8 @@
 /**
  * Shared client building blocks of the dashboard pages, styled after the mockup: card, kpi tile, bar (with a hatched
  * forecast and a marker), stacked bar, chip, filter chip, button, segmented control, tabs, sparkline, ring gauge,
- * avatar and equalizer. COMPONENTS_JS is appended to BASE_JS and uses its el() / svgEl() / fmtInt() and icon() from
+ * avatar and equalizer, plus the traffic-light helper trafficTone() (green below 80 %, amber from 80 %, red from 95 %)
+ * with its colours UI_TRAFFIC. COMPONENTS_JS is appended to BASE_JS and uses its el() / svgEl() / fmtInt() and icon() from
  * ICONS_JS; COMPONENTS_CSS is part of TOKENS_CSS. All classes carry the prefix "ui-" so they never collide with the
  * page-specific .card / .chip / .stat / .btn (only the shared .ring / .eq of TOKENS_CSS are reused).
  * Text is always set through el() / textContent and SVG attributes through setAttribute, never through innerHTML;
@@ -22,7 +23,7 @@ const ROLE_ICON = {
 
 export const COMPONENTS_JS = `
   // UI building blocks (card, kpi, bar, stackedBar, chip, filterChip, filterGroup, button, segmented, tabs,
-  // sparkline, ring, avatar, eq).
+  // sparkline, ring, avatar, eq) and the traffic-light helper trafficTone.
   const UI_CHIP_TONES = ${JSON.stringify(CHIP_TONES)};
   const UI_ROLE_COLORS = ${JSON.stringify(ROLE_COLORS)};
   const UI_ROLE_NAMES = ${JSON.stringify(ROLE_NAMES)};
@@ -73,6 +74,14 @@ export const COMPONENTS_JS = `
       box.append(b);
     }
     return box;
+  }
+
+  /** Traffic-light colours (#rrggbb) by tone name, for kpi / bar / sparkline. */
+  const UI_TRAFFIC = { green: UI_CHIP_TONES.green.c, amber: UI_CHIP_TONES.amber.c, red: UI_CHIP_TONES.red.c };
+  /** Traffic-light tone of a utilisation in percent: 'green' below 80, 'amber' from 80, 'red' from 95; null if not finite. */
+  function trafficTone(pct) {
+    if (typeof pct !== 'number' || !Number.isFinite(pct)) return null;
+    return pct >= 95 ? 'red' : pct >= 80 ? 'amber' : 'green';
   }
 
   /** Key figure tile: value in monospace (size 24, or 26 / 28), label and an optional line below; null shows "—". */

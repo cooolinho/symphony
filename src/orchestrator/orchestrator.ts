@@ -3804,6 +3804,8 @@ export class Orchestrator {
           ? { at: this.#lastTrackerError.at.toISOString(), message: this.#lastTrackerError.message }
           : null,
         tracker_kind: config.tracker.kind,
+        /** Remaining tracker API budget from its last response (GitHub: the rate-limit headers); null while unknown. */
+        tracker_api: adapter?.apiBudget?.() ?? null,
         /** Configured repositories (owner/name, deduplicated); null = no restriction, every repository on the board. */
         repositories: repositories.length > 0 ? repositories : null,
         active_states: config.tracker.activeStates,

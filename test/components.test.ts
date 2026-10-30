@@ -6,6 +6,7 @@ import { ICONS_JS } from '../src/http/icons.ts';
 import { LOGS_HTML } from '../src/http/logs-page.ts';
 import { BASE_JS } from '../src/http/styles.ts';
 import { COMPONENTS_CSS, COMPONENTS_JS } from '../src/http/ui/components.ts';
+import { CHIP_TONES } from '../src/http/ui/palette.ts';
 import { TOKENS_CSS } from '../src/http/ui/tokens.ts';
 import { FakeElement, createDocument, domContext, run } from './helpers/fake-dom.ts';
 
@@ -294,6 +295,22 @@ describe('tabs', () => {
     assert.ok(on.includes('background: rgba(255, 255, 255, .12)'));
     assert.ok(on.includes('color: var(--fg-strong)'));
     assert.ok(rule('.ui-tab').includes('min-height: 44px'));
+  });
+});
+
+describe('trafficTone', () => {
+  it('is green below 80, amber from 80, red from 95 and null for anything not finite', () => {
+    const tone = (v: string) => run(ctx, `trafficTone(${v})`);
+    assert.equal(tone('0'), 'green');
+    assert.equal(tone('79.9'), 'green');
+    assert.equal(tone('80'), 'amber');
+    assert.equal(tone('94.9'), 'amber');
+    assert.equal(tone('95'), 'red');
+    assert.equal(tone('120'), 'red');
+    for (const bad of ['null', 'undefined', 'NaN', 'Infinity', '"90"']) assert.equal(tone(bad), null, bad);
+  });
+  it('UI_TRAFFIC holds the chip tone colours', () => {
+    assert.deepEqual({ ...run(ctx, 'UI_TRAFFIC') }, { green: CHIP_TONES.green.c, amber: CHIP_TONES.amber.c, red: CHIP_TONES.red.c });
   });
 });
 

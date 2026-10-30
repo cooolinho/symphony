@@ -1035,6 +1035,8 @@ ${CHART_JS}
   }
   live(refreshOpen, pollEvery(refreshOpen, 60000), 10000);
   loadAll();
+  // Tests load the page in a fake DOM and render a fixture through window.__render.
+  if (window.__SYMPHONY_TEST__) window.__render = (d) => { data = d; render(d); };
 })();
 `,
 });
