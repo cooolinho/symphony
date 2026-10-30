@@ -243,7 +243,6 @@ export interface IssueAttachment {
   error: string | null;
 }
 
-/** The read kernel the orchestrator needs (spec 11.1), plus optional agent tools (spec 10.5). */
 /** Remaining request budget of the tracker API, as reported by its last response. */
 export interface TrackerApiBudget {
   remaining: number;
@@ -254,6 +253,7 @@ export interface TrackerApiBudget {
   observed_at: string;
 }
 
+/** The read kernel the orchestrator needs (spec 11.1), plus optional agent tools (spec 10.5). */
 export interface TrackerAdapter {
   readonly kind: string;
   fetchIssuesByStates(stateNames: string[]): Promise<Issue[]>;
