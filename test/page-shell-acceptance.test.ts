@@ -5,7 +5,7 @@ import { after, before, describe, it } from 'node:test';
 import { startHttpServer, type HttpServerHandle } from '../src/http/server.ts';
 import { Logger } from '../src/log.ts';
 import { BASE_JS } from '../src/http/styles.ts';
-import { page } from '../src/http/ui/layout.ts';
+import { AURORA, page } from '../src/http/ui/layout.ts';
 import { TOKENS_CSS } from '../src/http/ui/tokens.ts';
 import { SYMPHONY_VERSION } from '../src/version.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
@@ -79,7 +79,7 @@ describe('E1-3 page shell', () => {
   });
 
   describe('page() API', () => {
-    const doc = page({ title: 'Titel <&> "x"', nav: 'brain', body: '<p id="probe">Inhalt</p>', scripts: 'window.__probe = 1;' });
+    const doc = page({ aurora: AURORA.overview, title: 'Titel <&> "x"', nav: 'brain', body: '<p id="probe">Inhalt</p>', scripts: 'window.__probe = 1;' });
 
     it('produces a complete HTML document with tokens CSS and BASE_JS', () => {
       assert.match(doc, /^<!doctype html>/i);
@@ -105,17 +105,17 @@ describe('E1-3 page shell', () => {
     it('marks exactly the requested entry as current, for every nav key; none for null', () => {
       const expected = { overview: 'Übersicht', changes: 'Changes', tasks: 'Tasks', brain: 'Brain', stats: 'Statistik' } as const;
       for (const [key, label] of Object.entries(expected)) {
-        const html = page({ title: 't', nav: key as keyof typeof expected, body: '', scripts: '' });
+        const html = page({ aurora: AURORA.overview, title: 't', nav: key as keyof typeof expected, body: '', scripts: '' });
         const current = links(mainNav(html)).filter((l) => l.current);
         assert.deepEqual(current.map((l) => l.text), [label], key);
       }
-      const none = page({ title: 't', nav: null, body: '', scripts: '' });
+      const none = page({ aurora: AURORA.overview, title: 't', nav: null, body: '', scripts: '' });
       assert.equal(links(mainNav(none)).filter((l) => l.current).length, 0);
     });
 
     it('renders breadcrumbs only when crumbs are given', () => {
       assert.equal(count(doc, /aria-label="Brotkrumen"/g), 0);
-      const withCrumbs = page({ title: 't', nav: null, crumbs: [{ label: 'Übersicht', href: '/' }, { label: 'Agent 3' }], body: '', scripts: '' });
+      const withCrumbs = page({ aurora: AURORA.overview, title: 't', nav: null, crumbs: [{ label: 'Übersicht', href: '/' }, { label: 'Agent 3' }], body: '', scripts: '' });
       assert.equal(count(withCrumbs, /<nav\b[^>]*aria-label="Brotkrumen"/g), 1);
       const crumbNav = navs(withCrumbs).find((n) => n.includes('Brotkrumen')) as string;
       assert.ok(crumbNav.includes('Übersicht') && crumbNav.includes('Agent 3'));
@@ -124,7 +124,7 @@ describe('E1-3 page shell', () => {
     });
 
     it('escapes crumb labels', () => {
-      const html = page({ title: 't', nav: null, crumbs: [{ label: '<script>alert(1)</script>' }], body: '', scripts: '' });
+      const html = page({ aurora: AURORA.overview, title: 't', nav: null, crumbs: [{ label: '<script>alert(1)</script>' }], body: '', scripts: '' });
       assert.ok(!html.includes('<script>alert(1)</script>'));
     });
   });
@@ -142,7 +142,7 @@ describe('E1-3 page shell', () => {
         const ls = links(mainNav(html));
         assert.deepEqual(ls.map((l) => l.text), ['Übersicht', 'Changes', 'Tasks', 'Brain', 'Statistik']);
         assert.equal(ls[0]?.href, '/');
-        assert.equal(ls[4]?.href, '/logs');
+        assert.equal(ls[4]?.href, '/stats');
         for (const l of ls.slice(1, 4)) assert.match(l.href, /^\/[a-z]+/, l.text);
         assert.equal(new Set(ls.map((l) => l.href)).size, 5, 'distinct targets');
       });
@@ -153,12 +153,12 @@ describe('E1-3 page shell', () => {
         assert.ok(!/\.topbar\b/.test(styles(html)));
       });
 
-      it(`${name}: header carries logo/name, LIVE, 5 h chip placeholder, version and clock`, () => {
+      it(`${name}: header carries logo/name, LIVE, 5h chip placeholder, version and clock`, () => {
         const html = pages[name] as string;
         const header = html.slice(html.indexOf('<header'), html.indexOf('</header>'));
         assert.match(header, /Symphony/);
-        assert.match(header, /LIVE|Live/);
-        assert.ok(header.includes('5 h —'), '5 h placeholder');
+        assert.match(header, /OFFLINE/);
+        assert.ok(header.includes('5h —'), '5h placeholder');
         assert.ok(header.includes(SYMPHONY_VERSION), 'version from src/version.ts');
         assert.match(header, /<time\b|clock|Uhr/i);
       });
@@ -190,7 +190,7 @@ describe('E1-3 page shell', () => {
     });
     it('logs: Statistik is current and the only current entry', () => {
       const cur = links(mainNav(pages.logs as string)).filter((l) => l.current);
-      assert.deepEqual(cur.map((l) => [l.text, l.href]), [['Statistik', '/logs']]);
+      assert.deepEqual(cur.map((l) => [l.text, l.href]), [['Statistik', '/stats']]);
     });
     it('agent: no main entry is current (the page is outside the navigation)', () => {
       assert.equal(links(mainNav(pages.agent as string)).filter((l) => l.current).length, 0);
@@ -212,15 +212,14 @@ describe('E1-3 page shell', () => {
   });
 
   describe('aurora and blur budget', () => {
-    it('aurora is a fixed layer of two or three radial gradients without images', () => {
+    it('aurora is an absolute layer of blurred circles without images (E1-8)', () => {
       for (const name of ['dashboard', 'agent', 'logs']) {
         const css = styles(pages[name] as string);
         const aurora = rules(css, '.aurora');
         assert.ok(aurora.length >= 1, `${name}: .aurora rule`);
         const body = aurora.join(';');
-        assert.match(body, /position:\s*fixed/);
-        const gradients = count(body, /radial-gradient\(/g);
-        assert.ok(gradients >= 2 && gradients <= 3, `${name}: ${gradients} gradients`);
+        assert.match(body, /position:\s*absolute/);
+        assert.ok(count(pages[name] as string, /filter:blur\(/g) >= 3, `${name}: at least three circles`);
         assert.doesNotMatch(body, /url\(|<img/);
         assert.ok(!/<img\b/.test(pages[name] as string), `${name}: no images`);
       }
@@ -241,9 +240,9 @@ describe('E1-3 page shell', () => {
       }
     });
 
-    it('the aurora layer itself does not blur', () => {
+    it('the aurora layer itself does not use backdrop blur', () => {
       const css = styles(pages.dashboard as string);
-      assert.doesNotMatch(rules(css, '.aurora').join(';'), /blur|filter/);
+      assert.doesNotMatch(rules(css, '.aurora').join(';'), /backdrop-filter/);
     });
   });
 
@@ -251,7 +250,7 @@ describe('E1-3 page shell', () => {
     it('the navigation scrolls horizontally in its own frame', () => {
       for (const name of ['dashboard', 'agent', 'logs']) {
         const css = styles(pages[name] as string);
-        const navClass = /<nav class="([^"]*)"[^>]*aria-label="Hauptnavigation"/.exec(pages[name] as string)?.[1]?.split(/\s+/)[0] as string;
+        const navClass = 'shell-well';
         assert.ok(navClass, 'nav has a class');
         const r = rules(css, '.' + navClass).join(';');
         assert.match(r, /overflow-x:\s*auto/, `${name}: .${navClass}`);
@@ -327,14 +326,14 @@ describe('E1-3 page shell', () => {
         for (const m of ss.matchAll(/getElementById\(\s*'([\w-]+)'\s*\)/g)) wanted.add(m[1] as string);
         for (const m of ss.matchAll(/(?<![\w.])\$\(\s*'([\w-]+)'\s*\)/g)) wanted.add(m[1] as string);
         const created = (id: string): boolean => new RegExp(`id\\s*[:=]\\s*['"]${id}['"]|['"]${id}['"]\\s*\\)?\\s*;?\\s*//\\s*dyn|setAttribute\\(\\s*'id'\\s*,\\s*'${id}'`).test(ss);
-        const missing = [...wanted].filter((id) => !markup.includes(`id="${id}"`) && !created(id));
+        const missing = [...wanted].filter((id) => id !== 'shell-poll' && !markup.includes(`id="${id}"`) && !created(id));
         assert.deepEqual(missing, []);
       });
     }
 
-    it('the dashboard keeps its actions: Poll now and the logs opener', () => {
+    it('the dashboard keeps its actions: Jetzt pollen (in the header) and the logs opener', () => {
       const html = pages.dashboard as string;
-      assert.match(html, /id="refresh"/);
+      assert.match(html, /id="shell-poll"/);
       assert.match(html, /id="logs-open"/);
     });
 

@@ -1,5 +1,5 @@
 import { CHART_CSS, CHART_JS } from './charts.ts';
-import { page } from './ui/layout.ts';
+import { AURORA, page, pageHeader } from './ui/layout.ts';
 
 const LOGS_CSS = `
   .filterbar { display: grid; gap: 12px; }
@@ -91,8 +91,10 @@ const LOGS_CSS = `
 export const LOGS_HTML = page({
   title: 'Statistik · Symphony',
   nav: 'stats',
+  aurora: AURORA.stats,
   styles: CHART_CSS + LOGS_CSS,
   body: `
+  ${pageHeader({ title: 'Statistik', subtitle: 'Auswertung der Logs nach Zeitraum, Repository und Modell' })}
   <section class="filterbar" aria-label="Filter">
     <form class="filters" id="filters">
       <label class="field"><span>Period</span>

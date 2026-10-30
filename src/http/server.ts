@@ -237,7 +237,7 @@ export function startHttpServer(options: {
       allow(['GET'], () => sendJson(res, 200, orchestrator.budget()));
       return;
     }
-    if (pathname === '/logs') {
+    if (pathname === '/logs' || pathname === '/stats') {
       allow(['GET', 'HEAD'], () => {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
         res.end(method === 'HEAD' ? undefined : LOGS_HTML);

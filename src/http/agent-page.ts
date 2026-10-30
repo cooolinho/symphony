@@ -1,5 +1,5 @@
 import { PIPELINE_CSS, PIPELINE_JS } from './pipeline.ts';
-import { page } from './ui/layout.ts';
+import { AURORA, page } from './ui/layout.ts';
 
 const AGENT_CSS = `
   /* Pipeline section: the topology strip plus one summary row per agent stage. */
@@ -213,6 +213,8 @@ const AGENT_PAGE_CSS = `
 export const AGENT_HTML = page({
   title: 'Agent · Symphony',
   nav: null,
+  navHighlight: 'overview',
+  aurora: AURORA.team,
   crumbs: [{ label: 'Übersicht', href: '/' }, { label: 'Agent' }],
   styles: PIPELINE_CSS + AGENT_CSS + AGENT_PAGE_CSS,
   body: `

@@ -1,5 +1,5 @@
 import { PIPELINE_CSS, PIPELINE_JS } from './pipeline.ts';
-import { page } from './ui/layout.ts';
+import { AURORA, page, pageHeader } from './ui/layout.ts';
 
 const DASHBOARD_CSS = `
   /* Dispatch gate: new dispatches wait for an account-wide session limit (a notice, not an error). */
@@ -23,7 +23,6 @@ const DASHBOARD_CSS = `
   @media (max-width: 640px), (prefers-reduced-motion: reduce) { .rain { display: none; } }
 
   /* Page head: system info and the page actions (poll, logs drawer). */
-  .page-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; }
   .sysinfo { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 0; align-items: center; }
   .sysinfo div { display: flex; flex-direction: column; min-width: 0; }
   .sysinfo dt { font: 500 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
@@ -215,22 +214,22 @@ const DASHBOARD_CSS = `
 export const DASHBOARD_HTML = page({
   title: 'Symphony',
   nav: 'overview',
+  aurora: AURORA.overview,
+  pollNow: true,
   styles: PIPELINE_CSS + DASHBOARD_CSS,
   body: `
-  <div class="page-head">
-    <dl class="sysinfo" aria-live="polite">
+  ${pageHeader({
+    title: 'Übersicht',
+    subtitle: 'Agenten, Warteschlange und System auf einen Blick',
+    right: `<dl class="sysinfo" aria-live="polite">
       <div><dt>System</dt><dd id="sys-status"><span class="badge tone-gray"><span class="dot"></span><span>Connecting</span></span></dd></div>
       <div><dt>Workflow</dt><dd id="sys-workflow">—</dd></div>
       <div><dt>Polling</dt><dd id="sys-interval">—</dd></div>
       <div><dt>Last poll</dt><dd id="sys-lastpoll">—</dd></div>
     </dl>
-    <div class="actions">
-      <a class="btn" id="logs-open" href="/logs" aria-controls="logs-drawer" aria-expanded="false">
-        <svg class="btn-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 4h10M3 8h10M3 12h6"/></svg>Logs</a>
-      <button class="btn btn-primary" id="refresh" type="button">
-        <svg class="btn-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.5 2.5v3h-3"/></svg><span id="refresh-label">Poll now</span></button>
-    </div>
-  </div>
+    <a class="btn" id="logs-open" href="/logs" aria-controls="logs-drawer" aria-expanded="false">
+      <svg class="btn-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 4h10M3 8h10M3 12h6"/></svg>Logs</a>`,
+  })}
   <section id="repositories" class="repos" aria-label="Repositories" hidden><span class="repos-label">Repositories</span><div class="repo-list" id="repo-list"></div></section>
   <section id="problems" class="problems" role="alert" hidden>
     <h2><span class="dot tone-red"></span>Needs attention</h2>
@@ -1400,28 +1399,7 @@ ${PIPELINE_JS}
     }
   }
 
-  const refresh = $('refresh');
-  const refreshLabel = $('refresh-label');
-  refresh.addEventListener('click', async () => {
-    if (refresh.classList.contains('is-busy')) return;
-    refresh.classList.remove('is-done', 'is-failed');
-    refresh.classList.add('is-busy');
-    refresh.setAttribute('aria-busy', 'true');
-    refreshLabel.textContent = 'Polling…';
-    let outcome = 'failed';
-    try {
-      const res = await fetch('/api/v1/refresh', { method: 'POST' });
-      const body = await res.json();
-      outcome = res.ok ? (body.coalesced ? 'Already queued' : 'Poll queued') : 'failed';
-    } catch {}
-    refresh.classList.remove('is-busy');
-    refresh.removeAttribute('aria-busy');
-    refresh.classList.add(outcome === 'failed' ? 'is-failed' : 'is-done');
-    refreshLabel.textContent = outcome === 'failed' ? 'Poll failed' : outcome;
-    $('announce').textContent = refreshLabel.textContent;
-    setTimeout(load, 500);
-    setTimeout(() => { refresh.classList.remove('is-done', 'is-failed'); refreshLabel.textContent = 'Poll now'; }, 1800);
-  });
+  shellHooks.afterPoll = load;
 
   renderActivity();
   load();
