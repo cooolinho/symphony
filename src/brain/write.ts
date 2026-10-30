@@ -170,9 +170,16 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
         logger.error('brain vault commit failed', { tool, path: target.relative, error: errorMessage(error) });
         return fail('rejected', `vault git failed: ${errorMessage(error)}`);
       }
-      const now = current(target.absolute);
-      if (now !== null && 'ok' in now) return now;
-      if (now?.hash !== previous?.hash) return now === null ? fail('rejected', 'note was removed while writing; read it again') : conflict(now);
+      const found = current(target.absolute);
+      if (found !== null && 'ok' in found) return found;
+      if (found?.hash !== previous?.hash) {
+        if (found === null) return fail('rejected', 'note was removed while writing; read it again');
+        // A parallel writer won the queue: same rejection and clash as the checks outside of it.
+        return (
+          windowCheck(tool, args, context, audit, found) ??
+          clashResult(tool, args, context, audit, found, 'hash_mismatch', access?.lastWrite(target.relative) ?? { run: null, at: null })
+        );
+      }
       return commitAndReport(tool, args, context, audit, target, previous, frontmatter, text, versioning);
     });
   };
