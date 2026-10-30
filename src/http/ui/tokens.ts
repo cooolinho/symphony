@@ -9,6 +9,8 @@
  * tables below (text, roles, status scales, operations, trace kinds, task tones); TOKENS_CSS interpolates them.
  */
 
+import { COMPONENTS_CSS } from './components.ts';
+
 /** Text colours (--fg*), link colours and the focus ring colour. */
 export const TEXT = {
   fg: '#e8eef9', fgStrong: '#f4f7fc', fg2: '#aab6cc', fg3: '#8b98b0', fgChip: '#c9d4e6', fgLabel: '#9aa8c0',
@@ -262,6 +264,7 @@ export const TOKENS_CSS = `
   td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
   td.nowrap { white-space: nowrap; }
 
+  ${COMPONENTS_CSS}
   @media (max-width: 640px) {
     .topbar-inner, main { padding-left: 12px; padding-right: 12px; }
     main { gap: 14px; }
