@@ -373,7 +373,7 @@ another model to continue.`, or a weekly Opus or Sonnet limit). Model limits are
 
 - In the dashboard on the issue card: badge *Session limit*, window, reset time, `retry N of M` or
   *waiting for reset*, plus the original message. While waiting, the issue is not listed under *Paused*.
-- On the agent page (`/agent?id=<identifier>`) as the notice *Session limit reached* with window, reset and retries.
+- On the agent page (`/issue?id=<identifier>`) as the notice *Session limit reached* with window, reset and retries.
   The run appears as `run_finished` with the result `session_limit` and as the event `session_limit_wait`.
 - In `GET /api/v1/state` in the entry under `retrying[]`: `kind` is `session_limit`, and the field `limit` contains
   `window`, `resets_at`, `source`, `text`, `hits`, `max_retries`, `waiting`, `overage_disabled_reason` and
@@ -1108,7 +1108,7 @@ there (or by middle-clicking the button) a link leads to the full [logs page](#l
 
 ### Agent detail view (execution trace)
 
-Clicking an issue card opens `/agent?id=<identifier>`, the issue's run as an execution trace. At the top are state
+Clicking an issue card opens `/issue?id=<identifier>`, the issue's run as an execution trace. At the top are state
 (Running, Retrying, Paused, Completed, Failed …), issue, repository, role, model, phase, run time, turn, tokens and
 cost. Below the header, the **Pipeline** section shows the same topology as the dashboard card in full size, plus
 one row per agent station with its runs (count, last outcome, model, effort, times). Errors and retries appear as a
@@ -1147,8 +1147,10 @@ Where the data comes from and where the limits are:
 | Endpoint | Content |
 |---|---|
 | `GET /` | Dashboard |
-| `GET /agent?id=<identifier>` | Agent detail view (execution trace) |
-| `GET /logs` | Statistics and analytics page; filters in the URL: `?period=30d` (`today`, `yesterday`, `7d`, `14d`, `30d`, `90d`, `month`, `last_month`, `all` or `custom&from=YYYY-MM-DD&to=YYYY-MM-DD`), `&repo=owner/name`, `&model=<id>`, `&effort=<level>` |
+| `GET /changes`, `GET /tasks`, `GET /brain` | Placeholder pages in the page shell ("Diese Seite kommt in Kürze."); their content follows later |
+| `GET /issue?id=<identifier>` | Issue detail view (execution trace) |
+| `GET /agent?id=<identifier>`, `GET /logs` | Permanent redirect (`301`) to `/issue?id=<identifier>` and `/stats`; the query string is kept |
+| `GET /stats` | Statistics and analytics page; filters in the URL: `?period=30d` (`today`, `yesterday`, `7d`, `14d`, `30d`, `90d`, `month`, `last_month`, `all` or `custom&from=YYYY-MM-DD&to=YYYY-MM-DD`), `&repo=owner/name`, `&model=<id>`, `&effort=<level>` |
 | `GET /api/v1/history` | Overall statistics as JSON (no time range), optionally with `?repo=owner/name`; feeds the logs drawer in the dashboard |
 | `GET /api/v1/history/analytics?from=&to=&repo=&model=&effort=&tz=` | server-side aggregated analytics for a time range (`from` inclusive, `to` exclusive, ISO timestamps, both optional): metrics with previous period, time series, models, efforts, roles (`by_role`: runs, tokens, cost, agent time and outcomes per role), stage results from the `stage_result` history lines (`by_profile`: results, issues, verdicts as `<kind>:<verdict>` counts, complexities, highest round and the runs and cost of the profile's issues; `verdicts_by_role`: the verdict distribution per role; `stage_results`: their number), repositories, issues (with the cost per role, i.e. the pipeline cost across all stages), results, run times, tools and integrations (`tools`), heatmap, top runs and most expensive issue pipelines (`top.pipelines`), anomalies. `tz` (IANA zone) determines buckets, weekdays and hours |
 | `GET /api/v1/history/entries?from=&to=&repo=&issue=&event=&result=&order=desc&limit=200` | Log entries of a time range, filtered and sorted (at most 1,000) |
@@ -1286,7 +1288,7 @@ ts=2026-10-04T09:17:00.000Z event=model_usage repo=owner/repository issue=owner/
 | `transition_recovered` | An [interrupted transition](results.md#interrupted-transitions) was completed without a session: `issue`, `title`, `role`, `from` and `to` (the columns) and `comment_url` (the result it completes). |
 | `workspace_removed` | The workspace of an issue in `Done` was deleted. |
 
-The **statistics page** (`/logs`, button *Logs* in the dashboard) evaluates these files. At the top is a global
+The **statistics page** (`/stats`, button *Logs* in the dashboard) evaluates these files. At the top is a global
 filter: **period** (today, yesterday, last 7/14/30/90 days, this/last month, all or a custom date range),
 **repository**, **model** and **effort**. It applies to all sections and is kept in the URL. Clicking a model,
 effort or repository in the bar charts sets this filter; clicking a bar in the activity chart zooms into that

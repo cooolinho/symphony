@@ -67,7 +67,7 @@ describe('E1-3 page shell', () => {
       createAdapter: () => new FakeTracker(),
     });
     server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
-    for (const [name, path] of [['dashboard', '/'], ['agent', '/agent'], ['logs', '/logs']] as const) {
+    for (const [name, path] of [['dashboard', '/'], ['agent', '/issue'], ['logs', '/stats']] as const) {
       const res = await get(server.port, path);
       assert.equal(res.status, 200, path);
       pages[name] = res.body;
@@ -142,7 +142,7 @@ describe('E1-3 page shell', () => {
         const ls = links(mainNav(html));
         assert.deepEqual(ls.map((l) => l.text), ['Übersicht', 'Changes', 'Tasks', 'Brain', 'Statistik']);
         assert.equal(ls[0]?.href, '/');
-        assert.equal(ls[4]?.href, '/logs');
+        assert.equal(ls[4]?.href, '/stats');
         for (const l of ls.slice(1, 4)) assert.match(l.href, /^\/[a-z]+/, l.text);
         assert.equal(new Set(ls.map((l) => l.href)).size, 5, 'distinct targets');
       });
@@ -190,7 +190,7 @@ describe('E1-3 page shell', () => {
     });
     it('logs: Statistik is current and the only current entry', () => {
       const cur = links(mainNav(pages.logs as string)).filter((l) => l.current);
-      assert.deepEqual(cur.map((l) => [l.text, l.href]), [['Statistik', '/logs']]);
+      assert.deepEqual(cur.map((l) => [l.text, l.href]), [['Statistik', '/stats']]);
     });
     it('agent: no main entry is current (the page is outside the navigation)', () => {
       assert.equal(links(mainNav(pages.agent as string)).filter((l) => l.current).length, 0);
@@ -351,7 +351,7 @@ describe('E1-3 page shell', () => {
 
   describe('routes', () => {
     it('the pages still answer with HTML', async () => {
-      for (const path of ['/', '/agent', '/logs']) {
+      for (const path of ['/', '/changes', '/tasks', '/brain', '/issue', '/stats']) {
         const res = await get(server.port, path);
         assert.equal(res.status, 200);
         assert.match(res.body, /^<!doctype html>/i);
