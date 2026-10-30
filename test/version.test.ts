@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
 import { describe, it } from 'node:test';
+import { AGENT_HTML } from '../src/http/agent-page.ts';
 import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
+import { LOGS_HTML } from '../src/http/logs-page.ts';
 import { startHttpServer } from '../src/http/server.ts';
 import { Logger } from '../src/log.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
@@ -47,7 +49,7 @@ describe('release version', () => {
     } finally {
       await server.close();
     }
-    assert.match(DASHBOARD_HTML, /<dt>Version<\/dt><dd id="sys-version">/);
-    assert.match(DASHBOARD_HTML, /setText\(\$\('sys-version'\), h\.symphony_version \? 'v' \+ h\.symphony_version : '—'\)/);
+    // The page shell shows the version in the header of every page.
+    for (const html of [DASHBOARD_HTML, AGENT_HTML, LOGS_HTML]) assert.ok(html.includes(`id="shell-version" title="Symphony-Version">v${packageVersion}<`));
   });
 });
