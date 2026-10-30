@@ -101,7 +101,7 @@ describe('avatar', () => {
 
 describe('block sources and styles', () => {
   it('the block code does not use innerHTML', () => {
-    const start = BASE_JS.indexOf('const SVG_NS');
+    const start = BASE_JS.indexOf('const BLOCK_SVG_NS');
     const end = BASE_JS.indexOf('return root;', BASE_JS.indexOf('function avatar'));
     assert.ok(start > 0 && end > start);
     assert.ok(!BASE_JS.slice(start, end).includes('innerHTML'));

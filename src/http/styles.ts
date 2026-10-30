@@ -87,9 +87,9 @@ export const BASE_JS = `
     return b;
   }
 
-  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const BLOCK_SVG_NS = 'http://www.w3.org/2000/svg';
   const svgEl = (tag, attrs) => {
-    const node = document.createElementNS(SVG_NS, tag);
+    const node = document.createElementNS(BLOCK_SVG_NS, tag);
     for (const [k, v] of Object.entries(attrs || {})) node.setAttribute(k, String(v));
     return node;
   };
