@@ -5,7 +5,7 @@ import { AGENT_HTML } from '../src/http/agent-page.ts';
 import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
 import { LOGS_HTML } from '../src/http/logs-page.ts';
 import { BASE_JS } from '../src/http/styles.ts';
-import { TOKENS_CSS } from '../src/http/ui/tokens.ts';
+import { OP_COLORS, ROLE_COLORS, SCALES, TASK_TONES, TEXT, TOKENS_CSS, TRACE_COLORS, rgba } from '../src/http/ui/tokens.ts';
 
 const PAGES = { dashboard: DASHBOARD_HTML, agent: AGENT_HTML, logs: LOGS_HTML };
 
@@ -49,6 +49,9 @@ function parseCss(css: string): { rules: Rule[]; keyframes: Map<string, string> 
 const { rules, keyframes } = parseCss(TOKENS_CSS);
 const declsOf = (selector: string, media = ''): string =>
   rules.filter((r) => r.media === media && r.selector.split(',').map((s) => s.trim()).includes(selector)).map((r) => r.body).join(';');
+
+/** Normalizes a declaration for comparison with the issue strings: no spaces, no leading zeros, lower case. */
+const norm = (v: string): string => v.replace(/\s+/g, '').replace(/(^|[^\d])0\./g, '$1.').toLowerCase();
 
 function rootVar(name: string): string {
   const match = declsOf(':root').match(new RegExp(`--${name}:\\s*([^;]+);`));
@@ -132,23 +135,66 @@ describe('TOKENS_CSS module', () => {
     assert.match(declsOf('html'), /background:\s*var\(--bg\)/);
   });
 
-  it('defines .g and .gi as blurred glass panels, with the -webkit- prefix', () => {
-    for (const sel of ['.g', '.gi']) {
-      const d = declsOf(sel);
-      assert.match(d, /(^|[;\s])backdrop-filter:\s*blur\(/, `${sel} backdrop-filter`);
-      assert.match(d, /-webkit-backdrop-filter:\s*blur\(/, `${sel} -webkit-backdrop-filter`);
-      assert.match(d, /background:/, `${sel} background`);
-      assert.match(d, /border:/, `${sel} border`);
+  it('matches the mockup .g glass, with the -webkit- prefix', () => {
+    const d = norm(declsOf('.g'));
+    for (const want of ['background:rgba(255,255,255,.055)', 'border:1pxsolidrgba(255,255,255,.1)', 'border-radius:20px',
+      'backdrop-filter:blur(24px)saturate(150%)', '-webkit-backdrop-filter:blur(24px)saturate(150%)',
+      'box-shadow:inset01px0rgba(255,255,255,.08),024px48px-24pxrgba(0,0,0,.7)']) {
+      assert.ok(d.includes(want), want);
     }
+    assert.equal(norm(rootVar('glass')), 'rgba(255,255,255,.055)');
+  });
+
+  it('matches the mockup .gi, .row:hover and .well (no blur on .gi)', () => {
+    const gi = norm(declsOf('.gi'));
+    for (const want of ['background:rgba(255,255,255,.035)', 'border:1pxsolidrgba(255,255,255,.07)', 'border-radius:14px']) assert.ok(gi.includes(want), want);
+    assert.doesNotMatch(gi, /backdrop-filter/);
+    assert.ok(norm(declsOf('.row:hover')).includes('background:rgba(255,255,255,.035)'));
+    const well = norm(declsOf('.well'));
+    assert.ok(well.includes('background:rgba(0,0,0,.28)'));
+    assert.ok(well.includes('border:1pxsolidrgba(255,255,255,.08)'));
+  });
+
+  it('defines the text colors, links and the focus ring from the mockup', () => {
+    const want: Record<string, string> = { fg: '#e8eef9', 'fg-strong': '#f4f7fc', 'fg-2': '#aab6cc', 'fg-3': '#8b98b0', 'fg-chip': '#c9d4e6',
+      'fg-label': '#9aa8c0', 'fg-mute': '#5b6678', 'fg-faint': '#7c879b', link: '#7dd3fc', 'link-hover': '#bae6fd', focus: '#7dd3fc' };
+    for (const [k, v] of Object.entries(want)) assert.equal(rootVar(k), v, k);
+    assert.match(declsOf('a'), /color:\s*var\(--link\)/);
+    assert.match(declsOf('a:hover'), /color:\s*var\(--link-hover\)/);
+    assert.ok(Object.values(TEXT).includes('#aab6cc'));
+    const ring = declsOf(':focus-visible');
+    assert.match(ring, /outline:\s*2px solid var\(--focus\)/);
+    assert.match(ring, /outline-offset:\s*2px/);
   });
 
   it('defines the role colors as CSS variables', () => {
     const roles: Record<string, string> = { analyst: '#38bdf8', architect: '#a78bfa', developer: '#34d399', tester: '#fbbf24',
-      docs: '#cbd5e1', reviewer: '#f472b6', security: '#fb923c', symphony: '#94a3b8' };
+      docs: '#cbd5e1', reviewer: '#f472b6', security: '#fb923c', symphony: '#94a3b8', human: '#e8eef9' };
     for (const [role, hex] of Object.entries(roles)) {
       assert.equal(rootVar(`role-${role}`).toLowerCase(), hex, role);
       assert.match(declsOf(`.role-${role}`), new RegExp(`--role:\\s*var\\(--role-${role}\\)`), `.role-${role}`);
     }
+  });
+
+  it('exports the role colors as a typed table matching the CSS', () => {
+    for (const [role, hex] of Object.entries(ROLE_COLORS)) assert.equal(rootVar(`role-${role}`), hex);
+  });
+
+  it('carries the status scales, operation, trace and task tones from the mockup', () => {
+    const want: Record<string, string> = {
+      'green-400': '#34d399', 'green-300': '#6ee7b7', 'green-100': '#d1fae5', 'amber-400': '#fbbf24', 'amber-300': '#fcd34d', 'amber-200': '#fde68a',
+      'red-400': '#f87171', 'red-300': '#fca5a5', 'red-200': '#fecaca', 'violet-300': '#c4b5fd', 'violet-200': '#ddd6fe',
+      'sky-300': '#7dd3fc', 'sky-100': '#e0f2fe', 'gray-500': '#64748b', 'gray-400': '#94a3b8',
+      'op-read': '#7dd3fc', 'op-write': '#fbbf24', 'op-search': '#c4b5fd', 'op-denied': '#f87171',
+      'trace-tool': '#7dd3fc', 'trace-brain': '#fbbf24', 'trace-subagent': '#6ee7b7', 'trace-model': '#c4b5fd', 'trace-result': '#f87171',
+      'task-run': '#d1fae5', 'task-run-bg': 'rgba(52,211,153,.14)', 'task-next': '#e0f2fe', 'task-next-bg': 'rgba(125,211,252,.14)',
+      'task-wait': '#fde68a', 'task-wait-bg': 'rgba(251,191,36,.12)', 'task-pause': '#fde68a', 'task-pause-bg': 'rgba(251,191,36,.12)',
+      'task-block': '#fecaca', 'task-block-bg': 'rgba(248,113,113,.13)', 'task-done': '#ddd6fe', 'task-done-bg': 'rgba(196,181,253,.12)',
+    };
+    for (const [k, v] of Object.entries(want)) assert.equal(norm(rootVar(k)), norm(v), k);
+    assert.equal(OP_COLORS.denied, SCALES.red[400]);
+    assert.equal(TRACE_COLORS.subagent, '#6ee7b7');
+    assert.equal(TASK_TONES.pause, TASK_TONES.wait);
   });
 
   it('defines status tones: green running, amber warning, red error, gray waiting', () => {
@@ -167,6 +213,33 @@ describe('TOKENS_CSS module', () => {
       rootVar(`${t}-dim`);
       rootVar(`${t}-line`);
     }
+  });
+
+  it('uses the mockup typography', () => {
+    assert.equal(rootVar('sans'), 'Inter, system-ui, -apple-system, "Segoe UI", sans-serif');
+    assert.equal(rootVar('mono'), '"JetBrains Mono", ui-monospace, Menlo, monospace');
+    assert.match(declsOf('.mono'), /tabular-nums/);
+    assert.match(declsOf('body'), /font:\s*14px\/1\.5/);
+    const h1 = declsOf('h1');
+    assert.match(h1, /font-size:\s*var\(--fs-h1\)/);
+    assert.match(h1, /letter-spacing:\s*-\.02em/);
+    assert.equal(rootVar('fs-h1'), '34px');
+    assert.equal(rootVar('fs-h1-team'), '30px');
+    assert.match(declsOf('h1'), /font-weight:\s*600/);
+    const sub = declsOf('.subtitle');
+    assert.match(sub, /15px/);
+    assert.match(sub, /var\(--fg-2\)/);
+    const lbl = norm(declsOf('.lbl'));
+    for (const want of ['font:50011px/1.3var(--mono)', 'letter-spacing:.12em', 'text-transform:uppercase', 'color:var(--fg-label)']) assert.ok(lbl.includes(want), want);
+    for (const k of [22, 24, 26, 28]) assert.equal(rootVar(`fs-kpi-${k}`), `${k}px`);
+    assert.equal(rootVar('fs-meta'), '12px');
+    assert.equal(rootVar('fs-meta-lg'), '12.5px');
+  });
+
+  it('keeps tokens.ts free of URLs outside comments and of innerHTML', () => {
+    const src = fs.readFileSync('src/http/ui/tokens.ts', 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    assert.doesNotMatch(src, /https?:\/\//);
+    assert.doesNotMatch(src, /innerHTML/);
   });
 
   it('uses system font stacks and loads no external resources', () => {
@@ -226,6 +299,34 @@ describe('TOKENS_CSS module', () => {
     for (const sel of blurred) assert.ok(sels.includes(sel), `${sel} loses its blur under reduced transparency`);
   });
 
+  it('keeps --fg and --fg-2 at >= 4.5:1 on the effective panel ground #1a1f2c', () => {
+    const ground = rgb('#1a1f2c');
+    assert.ok(contrast(rgb(rootVar('fg')), ground) >= 4.5);
+    assert.ok(contrast(rgb(rootVar('fg-2')), ground) >= 4.5);
+    assert.ok(contrast(rgb(rootVar('fg-3')), ground) >= 4.5);
+    // The effective ground really is the .g glass over the page ground.
+    const eff = over([255, 255, 255], 0.055, rgb(rootVar('bg')));
+    assert.ok(contrast(rgb(rootVar('fg-2')), eff) >= 4.5);
+    assert.ok(luminance([0, 0, 0]) === 0 && Math.abs(luminance([255, 255, 255]) - 1) < 1e-9);
+  });
+
+  it('uses --fg-3 only for text of at least 12px', () => {
+    const sheets = [TOKENS_CSS, ...Object.values(PAGES).flatMap((html) => [...html.matchAll(/<style>([\s\S]*?)<\/style>/g)].map((m) => m[1] as string))];
+    let uses = 0;
+    for (const css of sheets) {
+      for (const r of parseCss(css).rules) {
+        if (!/(^|[^-\w])color:\s*var\(--fg-3\)/.test(r.body) && !/font:[^;]*var\(--fg-3\)/.test(r.body)) continue;
+        uses++;
+        let size = r.body.match(/font-size:\s*([^;]+)/)?.[1] ?? r.body.match(/font:\s*(?:[\w.]+\s+)*?(\d+(?:\.\d+)?px|var\(--fs-[\w-]+\))/)?.[1];
+        assert.ok(size, `"${r.selector}" sets a font size`);
+        const v = size.trim().match(/^var\(--(fs-[\w-]+)\)$/);
+        if (v) size = rootVar(v[1] as string);
+        assert.ok(parseFloat(size) >= 12, `"${r.selector}" uses --fg-3 at ${size}`);
+      }
+    }
+    assert.ok(uses > 0);
+  });
+
   it('keeps body text at >= 4.5:1 on the glass surfaces', () => {
     const bg = rgb(rootVar('bg'));
     const solid = rgb(rootVar('solid'));
@@ -282,9 +383,41 @@ describe('TOKENS_CSS module', () => {
     }
   });
 
+  it('defines the mockup keyframes and animation classes', () => {
+    const flat = (k: string): string => norm(keyframes.get(k) as string);
+    assert.ok(flat('pulse').includes('transform:scale(2)') && flat('pulse').includes('opacity:.65'));
+    assert.ok(flat('pulse-lg').includes('transform:scale(1.7)'));
+    assert.ok(flat('eq').includes('transform:scaleY(.3)'.toLowerCase()));
+    assert.ok(flat('breathe').includes('opacity:.75'));
+    assert.ok(norm(declsOf('.live::after')).includes('animation:pulse1.8sease-outinfinite'));
+    const ring = norm(declsOf('.ring'));
+    assert.ok(ring.includes('inset:-5px') && ring.includes('border:2pxsolidcurrentcolor'));
+    const bar = norm(declsOf('.eq i'));
+    for (const want of ['width:3px', 'height:14px', 'transform-origin:bottom', 'animation:eq1sease-in-outinfinite']) assert.ok(bar.includes(want), want);
+    const delays = ['-.3s', '-.6s', '-.15s', '-.45s'];
+    delays.forEach((d, i) => assert.ok(norm(declsOf(`.eq i:nth-child(${i + 2})`)).includes(`animation-delay:${d}`), d));
+    const lg = norm(declsOf('.eq-lg i'));
+    assert.ok(lg.includes('width:4px') && lg.includes('height:18px'));
+    assert.ok(norm(declsOf('.breathe')).includes('animation:breathe4sease-in-outinfinite'));
+  });
+
   it('keeps the CSS well-formed (balanced braces, every rule terminated)', () => {
     const stripped = TOKENS_CSS.replace(/\/\*[\s\S]*?\*\//g, '');
     assert.equal((stripped.match(/{/g) ?? []).length, (stripped.match(/}/g) ?? []).length);
     assert.doesNotMatch(TOKENS_CSS, /var\(--[\w-]*\s[\w-]*\)/);
+  });
+});
+
+describe('rgba()', () => {
+  it('converts #rrggbb to rgba()', () => {
+    assert.equal(rgba('#34d399', 0.14), 'rgba(52, 211, 153, 0.14)');
+    assert.equal(rgba('#ABCDEF', 1), 'rgba(171, 205, 239, 1)');
+    for (const a of [0.16, 0.32, 0.55, 0.6, 0.24, 0.42]) assert.equal(rgba(ROLE_COLORS.analyst, a), `rgba(56, 189, 248, ${a})`);
+  });
+  it('rejects invalid input', () => {
+    assert.throws(() => rgba('abc', 0.5));
+    assert.throws(() => rgba('#12345', 0.5));
+    assert.throws(() => rgba('#123456', 1.5));
+    assert.throws(() => rgba('#123456', -0.1));
   });
 });
