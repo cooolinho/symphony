@@ -1,4 +1,5 @@
 import { BOOST_ICON_URI } from './icons.ts';
+import { COMPONENTS_JS } from './ui/components.ts';
 
 /** Client helpers shared by both pages (plain functions, no framework). */
 export const BASE_JS = `
@@ -256,4 +257,4 @@ export const BASE_JS = `
       return box;
     }));
   }
-`;
+${COMPONENTS_JS}`;

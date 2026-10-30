@@ -84,6 +84,16 @@ export class FakeElement {
   find(pred: (e: FakeElement) => boolean): FakeElement[] {
     return this.descendants().filter(pred);
   }
+  byClass(name: string): FakeElement[] {
+    return this.find((e) => e.classList.contains(name));
+  }
+  private listeners = new Map<string, Array<(event: object) => void>>();
+  addEventListener(type: string, fn: (event: object) => void): void {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
+  }
+  click(): void {
+    for (const fn of this.listeners.get("click") ?? []) fn({ type: "click", target: this, currentTarget: this, preventDefault: () => {} });
+  }
 }
 
 /** A document with createElement (XHTML) and createElementNS. */
@@ -100,3 +110,7 @@ export function scriptContext(...sources: string[]): vm.Context {
   for (const src of sources) vm.runInContext(src, ctx);
   return ctx;
 }
+
+export const createDocument = createFakeDocument;
+export const domContext = scriptContext;
+export const run = (ctx: vm.Context, code: string): any => vm.runInContext(code, ctx);
