@@ -9,7 +9,8 @@ import { MODEL_FAMILIES, modelFamilyOf } from '../agent/rate-limit.ts';
 import { contextWindowSuffix } from '../agent/model-name.ts';
 import type { AgentEvent, AgentRunner, ContextSnapshot, IntegrationReport, TokenUsage } from '../agent/types.ts';
 import { contextWindowFor, estimateCost, totalTokens, type ModelTokenUsage, type PricingStore } from '../costs/pricing.ts';
-import type { HistoryLog, RunOutcome, RunStart } from '../history/history.ts';
+import { readHistory, type HistoryLog, type RunOutcome, type RunStart } from '../history/history.ts';
+import { budgetAlerts, budgetReport, usageFromHistory, type BudgetAlert, type BudgetReport } from '../budget/forecast.ts';
 import { readTranscript, type TranscriptChunk } from '../agent/transcript.ts';
 import { defaultIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
@@ -3616,6 +3617,17 @@ export class Orchestrator {
       forced: this.#forcedCount(),
       limit: effectiveAgentLimits(this.#deps.workflow.current.config, this.#limitOverride).maxConcurrentAgents,
     };
+  }
+
+  /** Limit forecast per subscription window for GET /api/v1/budget; tokens count from `run_finished` on. */
+  budget(): BudgetReport {
+    const entries = this.#deps.history ? readHistory(this.#deps.history.dir, null).entries : [];
+    return budgetReport({ now: this.#clock.now(), usage: usageFromHistory(entries), events: this.#rateLimitLog.readRateLimitEvents() });
+  }
+
+  /** Windows whose limit is forecast to be hit before the reset, for the dashboard alerts (E2-4a). */
+  budgetAlerts(): BudgetAlert[] {
+    return budgetAlerts(this.budget());
   }
 
   /** Runtime snapshot for GET /api/v1/state (spec 13.3). */
