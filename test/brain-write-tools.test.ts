@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { appendUnderHeading, prepareFrontmatter } from '../src/brain/note.ts';
@@ -86,10 +87,11 @@ describe('brain_write', () => {
     assert.equal(failure(demote).category, 'rejected');
     assert.equal(read(dir, 'Inbox/b.md'), approved);
 
-    data(await tools.brain_write!({ path: 'Inbox/b.md', content: note('type: lesson', 'New.'), base_hash: sha(approved) }));
-    const text = read(dir, 'Inbox/b.md');
-    assert.match(text, /^status: approved$/m);
-    assert.match(text, /^created: 2026-01-01$/m);
+    for (const content of [note('type: lesson', 'New.'), note('type: lesson\nstatus: approved', 'New.')]) {
+      const edit = await tools.brain_write!({ path: 'Inbox/b.md', content, base_hash: sha(approved) });
+      assert.equal(failure(edit).category, 'rejected');
+    }
+    assert.equal(read(dir, 'Inbox/b.md'), approved);
 
     const candidate = note('type: lesson\nstatus: candidate');
     fs.writeFileSync(path.join(dir, 'Inbox/c.md'), candidate);
@@ -205,13 +207,13 @@ describe('brain_append', () => {
     assert.equal(failure(await tools.brain_append!({ path: '.obsidian/x.md', heading: 'H', text: 't', base_hash: 'x' })).category, 'rejected');
   });
 
-  it('keeps an approved status', async () => {
+  it('rejects appending to an approved note', async () => {
     const dir = vault();
     const { tools } = setup(dir);
     const approved = note('type: lesson\nstatus: approved');
     fs.writeFileSync(path.join(dir, 'Inbox/p.md'), approved);
-    data(await tools.brain_append!({ path: 'Inbox/p.md', heading: 'H', text: 't', base_hash: sha(approved) }));
-    assert.match(read(dir, 'Inbox/p.md'), /^status: approved$/m);
+    assert.equal(failure(await tools.brain_append!({ path: 'Inbox/p.md', heading: 'H', text: 't', base_hash: sha(approved) })).category, 'rejected');
+    assert.equal(read(dir, 'Inbox/p.md'), approved);
   });
 });
 
@@ -223,5 +225,16 @@ describe('note helpers', () => {
     assert.equal(prepareFrontmatter({ type: 'lesson', status: 'weird' }, null, stamp).ok, false);
     assert.equal(appendUnderHeading('', 'A', 'x'), '## A\n\nx\n');
     assert.equal(appendUnderHeading('### Sub\n\nx\n', '### Sub', 'y'), '### Sub\n\nx\n\ny\n');
+  });
+});
+
+describe('dangling symlink folder', () => {
+  it('rejects without leaking the host path', async () => {
+    const dir = vault();
+    fs.symlinkSync(path.join(os.tmpdir(), 'brain-nowhere-xyz'), path.join(dir, 'Inbox/dangling'));
+    const { tools } = setup(dir);
+    const error = failure(await tools.brain_write!({ path: 'Inbox/dangling/x.md', content: note('type: lesson') }));
+    assert.equal(error.category, 'rejected');
+    assert.ok(!String(error.message).includes(dir));
   });
 });

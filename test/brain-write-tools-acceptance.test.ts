@@ -244,15 +244,14 @@ describe('brain_write: status', () => {
     assert.equal(get(dir, 'a.md'), original);
   });
 
-  it('lets an approved note be edited with status approved and keeps it approved', async () => {
+  it('rejects editing an approved note even with status approved', async () => {
     const dir = newVault();
     const original = note('type: lesson\nstatus: approved', 'Human text.');
     put(dir, 'a.md', original);
     const { write } = setup(dir);
     const result = await write({ path: 'a.md', content: note('type: lesson\nstatus: approved', 'Edited.'), base_hash: sha(original) });
-    data(result);
-    assert.equal(frontmatterOf(get(dir, 'a.md')).status, 'approved');
-    assert.ok(get(dir, 'a.md').includes('Edited.'));
+    assert.equal(err(result).category, 'rejected');
+    assert.equal(get(dir, 'a.md'), original);
   });
 
   it('does not let an agent promote a candidate note to approved', async () => {
@@ -380,14 +379,14 @@ describe('brain_append', () => {
     assert.ok(text.includes('Other text.'));
   });
 
-  it('sets updated, keeps created and the approved status, and stamps role and run', async () => {
+  it('sets updated, keeps created and the candidate status, and stamps role and run', async () => {
     const dir = newVault();
-    const approved = note('type: decision\nstatus: approved\ncreated: 2020-01-01\nupdated: 2020-01-01', '## Notes\n\nHuman.');
+    const approved = note('type: decision\nstatus: candidate\ncreated: 2020-01-01\nupdated: 2020-01-01', '## Notes\n\nHuman.');
     put(dir, 'a.md', approved);
     const { append } = setup(dir);
     data(await append({ path: 'a.md', heading: 'Notes', text: 'Agent.', base_hash: sha(approved) }));
     const fm = frontmatterOf(get(dir, 'a.md'));
-    assert.equal(fm.status, 'approved');
+    assert.equal(fm.status, 'candidate');
     assert.equal(String(fm.created).slice(0, 10), '2020-01-01');
     assert.notEqual(String(fm.updated).slice(0, 10), '2020-01-01');
     assert.equal(fm.type, 'decision');

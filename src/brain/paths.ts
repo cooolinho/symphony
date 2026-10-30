@@ -64,8 +64,16 @@ export function resolveVaultWritePath(vault: string, input: unknown): VaultPath 
   } catch {
     // Missing target: fine, it is created below.
   }
+  const lstatExists = (p: string): boolean => {
+    try {
+      fs.lstatSync(p);
+      return true;
+    } catch {
+      return false;
+    }
+  };
   let ancestor = path.dirname(resolved.absolute);
-  while (!fs.existsSync(ancestor) && path.dirname(ancestor) !== ancestor) ancestor = path.dirname(ancestor);
+  while (!lstatExists(ancestor) && path.dirname(ancestor) !== ancestor) ancestor = path.dirname(ancestor);
   try {
     const realVault = fs.realpathSync(vault);
     const realAncestor = fs.realpathSync(ancestor);

@@ -130,7 +130,7 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
     description:
       'Create or replace one note of the knowledge vault. path is relative, ends in .md (no .., nothing hidden such as .obsidian/, not README.md in the root). ' +
       'content is the whole file: a YAML frontmatter block with type (index|decision|lesson|issue|agent|note), optional repo (owner/name) and sources (list), then the body. ' +
-      'Symphony sets status, issue, role, run, created and updated: a new note is always candidate; you cannot create or promote approved notes, and an approved note stays approved. ' +
+      'Symphony sets status, issue, role, run, created and updated: a new note is always candidate; you cannot create or promote approved notes, and an existing approved note is read-only for agents (write a candidate note and link it). ' +
       'For an existing note pass base_hash (hash from brain_read); on a mismatch nothing is written and the error details hold the current content and hash. ' +
       'Returns {path, hash, created, frontmatter}. To add to a note, prefer brain_append.',
     inputSchema: {
@@ -172,7 +172,7 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
     description:
       'Append text to an existing note of the knowledge vault, at the end of the section under the heading (the heading is created at the end of the note if it is missing). ' +
       'base_hash (hash from brain_read) is required; on a mismatch nothing is written and the error details hold the current content and hash. ' +
-      'Symphony sets updated; the status stays. Returns {path, hash, created: false, frontmatter}.',
+      'Symphony sets updated; the status stays. Approved notes cannot be appended to (write a candidate note instead). Returns {path, hash, created: false, frontmatter}.',
     inputSchema: {
       path: z.string().describe('Path relative to the vault, e.g. Lessons/caching.md'),
       heading: z.string().min(1).describe('Heading of the section, e.g. "Findings" (taken as "## Findings"; "### Sub" keeps its level)'),

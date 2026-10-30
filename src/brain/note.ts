@@ -60,9 +60,11 @@ function dateOf(value: unknown): string | null {
   return null;
 }
 
+const APPROVED_READONLY = 'approved notes are read-only for agents; write your proposal as a candidate note (e.g. Inbox/…) and link it';
+
 /**
  * Checks the frontmatter an agent wrote and adds what Symphony knows: issue, role, run, created, updated. A new note is
- * always `candidate`; an agent neither creates nor promotes `approved` notes and cannot demote one. Unknown fields stay.
+ * always `candidate`; an agent neither creates nor promotes `approved` notes, and an existing `approved` note is read-only for it. Unknown fields stay.
  */
 export function prepareFrontmatter(
   input: Record<string, unknown>,
@@ -86,7 +88,7 @@ export function prepareFrontmatter(
   } else {
     const old = noteStatus(existing);
     next = status ?? old ?? 'candidate';
-    if (old === 'approved' && next !== 'approved') return reject('an approved note keeps status approved; only a human changes it');
+    if (old === 'approved') return reject(APPROVED_READONLY);
     if (old !== 'approved' && next === 'approved') return reject('only a human promotes a note to approved');
   }
   const frontmatter: Record<string, unknown> = { ...input, type, status: next, issue: stamp.issue, updated: stamp.date };
