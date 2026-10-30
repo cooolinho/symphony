@@ -64,6 +64,7 @@ import {
 import { RuntimeStateStore, runtimeStateFile, type ModelHold, type OperatorHold } from './runtime-state.ts';
 import { resultRows, type PersistedResult } from './stage-history.ts';
 import { blockedBucketColumns, derivePipeline, type PipelineStage, type StageSession } from './pipeline.ts';
+import { applySubagent, closeSubagents, emptySubagents, subagentsJson, type SubagentBoard } from './subagents.ts';
 import { copyToolUsage, countToolUse, emptyToolUsage, integrationJson, integrationUsage, type ToolUsage } from './tool-usage.ts';
 import { checkStatusReporter, runAgentAttempt, type RunPhase, type WorkerOutcome } from './worker.ts';
 import { interruptedLabels, interruptedTransition, statusUpdatedAt, type InterruptedTransition } from './recovery.ts';
@@ -211,6 +212,8 @@ interface RunningEntry {
   mcpToolCalls: Record<string, number>;
   /** `tool_use` events per tool and Skill tool calls per skill, built-in tools included. */
   toolUsage: ToolUsage;
+  /** The subagents of the session: those running and the last ten finished. */
+  subagents: SubagentBoard;
   /** What the workspace integrations (e.g. Laravel Boost) set up for the session. */
   integrations: IntegrationReport[];
   /** Skills Claude Code loaded at session start (`session_configured`); null until then. */
@@ -2040,6 +2043,7 @@ export class Orchestrator {
       pendingStart: null,
       mcpToolCalls: {},
       toolUsage: emptyToolUsage(),
+      subagents: emptySubagents(),
       integrations: [],
       sessionSkills: null,
       headSha: null,
@@ -2176,6 +2180,7 @@ export class Orchestrator {
                 detail: { from: entry.phase, to: phase },
               });
             }
+            if (phase === 'Finishing') closeSubagents(entry.subagents, this.#clock.now());
             entry.phase = phase;
           },
           transcript: (file) => {
@@ -3230,6 +3235,7 @@ export class Orchestrator {
         typeof event.detail.agent === 'string' ? event.detail.agent : null,
       );
     }
+    if (event.event === 'subagent' && event.subagent !== undefined) applySubagent(entry.subagents, event.subagent);
     if (event.event === 'session_configured' && typeof event.detail?.model === 'string') entry.model = event.detail.model;
     if (event.event === 'session_configured' && Array.isArray(event.detail?.skill_names)) {
       entry.sessionSkills = event.detail.skill_names.filter((name): name is string => typeof name === 'string');
@@ -3388,6 +3394,7 @@ export class Orchestrator {
       tool_calls: entry.toolUsage.tools,
       skill_calls: entry.toolUsage.skills,
       agent_calls: entry.toolUsage.agents,
+      subagents: subagentsJson(entry.subagents),
       integrations: entry.integrations.map((report) => integrationJson(report, entry.toolUsage, entry.sessionSkills, entry.mcpUnavailable)),
     };
   }
