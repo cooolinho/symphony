@@ -5,6 +5,8 @@ import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { sessionClaudeConfig } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, AgentSession, IntegrationReport, SessionLimitInfo } from '../agent/types.ts';
 import { brainToolsFor } from '../brain/tools.ts';
+import { repoFolderName } from '../brain/vault.ts';
+import { isRepositoryName } from '../tracker/github-project/settings.ts';
 import { prepareIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
@@ -15,7 +17,7 @@ import { describeFailure, type HookIssue, type Workspace, type WorkspaceManager 
 import { commandSkills, pluginAgents } from '../workflow/command.ts';
 import { classify } from '../workflow/classify.ts';
 import { profileFor } from '../workflow/profile.ts';
-import { roleName, sessionAgents, type RoleConfig } from '../workflow/roles.ts';
+import { roleName, sessionAgents, sessionBrainMode, type RoleConfig } from '../workflow/roles.ts';
 import type { EffectiveWorkflow } from '../workflow/store.ts';
 import { internalResult, renderResultComment, type ResultMeta } from '../workflow/results.ts';
 import { maxColumnCheckMs, normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
@@ -622,7 +624,11 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
           )
         : null;
     if (signal.aborted) return await finish(cancelled());
+    const brainMode = sessionBrainMode(params.workflow.config.brain.enabled, role);
+    const repository = params.adapter.issueRepository?.(issue) ?? null;
     const resultVariables = {
+      brain: brainMode,
+      brain_index: repository !== null && isRepositoryName(repository) ? `Repos/${repoFolderName(repository)}/index.md` : null,
       results: support?.results ?? EMPTY_RESULTS,
       human_feedback: support?.humanFeedback ?? [],
       round: support?.round ?? 1,
@@ -636,7 +642,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     // An architect files sub-issues only to split an issue it may split (XL, not a work package itself).
     const subIssues = subIssueLimit(role, issue);
     sessionStart = { sha: startSha };
-    const brainTools = brainToolsFor(params.workflow.config.brain, logger);
+    const brainTools = brainToolsFor(params.workflow.config.brain, brainMode, logger);
     session = await params.runner.startSession({
       ...(params.contextWindow ? { contextWindow: params.contextWindow } : {}),
       cwd: activeWorkspace.path,

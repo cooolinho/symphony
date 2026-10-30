@@ -5,6 +5,7 @@ import type { Logger } from '../log.ts';
 import type { AgentToolContext, AgentToolSpec, ToolResult } from '../tracker/types.ts';
 import { errorMessage } from '../util/errors.ts';
 import type { BrainConfig } from '../workflow/config.ts';
+import type { BrainMode } from '../workflow/roles.ts';
 import { fail, hashOf, MAX_NOTE_BYTES, ok, warnPurpose } from './common.ts';
 import { noteStatus, noteTitle, parseNote } from './note.ts';
 import { resolveVaultPath } from './paths.ts';
@@ -188,7 +189,9 @@ export function createBrainTools(vaultPath: string, logger: Logger): AgentToolSp
 
 export { createBrainWriteTools, type BrainWriteEntry, type BrainWriteOptions } from './write.ts';
 
-/** The brain tools of a session (read and write): none unless `brain.enabled` (the role switch follows with E7-5). */
-export function brainToolsFor(config: BrainConfig, logger: Logger, options: BrainWriteOptions = {}): AgentToolSpec[] {
-  return config.enabled ? [...createBrainTools(config.path, logger), ...createBrainWriteTools(config.path, logger, options)] : [];
+/** The brain tools of a session: none unless `brain.enabled` and the role's mode is not `off`; `read` has the read tools, `write` also the write tools. */
+export function brainToolsFor(config: BrainConfig, mode: BrainMode, logger: Logger, options: BrainWriteOptions = {}): AgentToolSpec[] {
+  if (!config.enabled || mode === 'off') return [];
+  const readTools = createBrainTools(config.path, logger);
+  return mode === 'read' ? readTools : [...readTools, ...createBrainWriteTools(config.path, logger, options)];
 }
