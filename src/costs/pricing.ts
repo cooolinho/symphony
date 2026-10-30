@@ -66,7 +66,7 @@ function parsePrice(value: unknown, key: string): ModelPrice {
       if (fallback !== undefined) return fallback;
       throw new SymphonyError('invalid_model_costs', `${key}.${field} is required (USD per million tokens)`);
     }
-    const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\d+$/.test(raw.trim()) ? Number(raw) : Number.NaN;
+    const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\d+(\.\d+)?$/.test(raw.trim()) ? Number(raw) : Number.NaN;
     if (!Number.isFinite(parsed) || parsed < 0) {
       throw new SymphonyError('invalid_model_costs', `${key}.${field} must be a number >= 0 (got ${JSON.stringify(raw)})`);
     }
@@ -85,7 +85,7 @@ function parseContextWindow(value: unknown, key: string): number | undefined {
   if (!isPlainObject(value)) return undefined;
   const raw = value.context_window;
   if (raw === undefined || raw === null) return undefined;
-  const parsed = typeof raw === 'number' ? raw : Number(raw);
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\d+$/.test(raw.trim()) ? Number(raw) : Number.NaN;
   if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new SymphonyError('invalid_model_costs', `${key}.context_window must be a positive whole number of tokens (got ${JSON.stringify(raw)})`);
   }
