@@ -112,9 +112,7 @@ export const TOKENS_CSS = `
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
   html { background: var(--bg); }
-  body { margin: 0; min-height: 100vh; background: radial-gradient(1100px 600px at 12% -10%, rgba(167, 139, 250, .10), transparent 60%),
-      radial-gradient(900px 500px at 110% 0%, rgba(56, 189, 248, .08), transparent 60%),
-      radial-gradient(900px 600px at 50% 120%, rgba(52, 211, 153, .06), transparent 60%), var(--bg);
+  body { margin: 0; min-height: 100vh; background: var(--bg);
     color: var(--text); font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; overflow-x: hidden; }
   body > * { position: relative; z-index: 1; }
   .mono, code, kbd { font-family: var(--mono); font-variant-ligatures: none; font-variant-numeric: tabular-nums; }
@@ -139,31 +137,7 @@ export const TOKENS_CSS = `
   .kpi { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: var(--fs-kpi-24); }
   ::selection { background: ${rgba(SCALES.green[400], .25)}; }
 
-  /* Top bar */
-  .topbar { position: sticky; top: 0; z-index: 20; border-bottom: 1px solid var(--line);
-    background: rgba(7, 11, 22, .82); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
-  .topbar-inner { max-width: 1480px; margin: 0 auto; padding: 14px 20px; display: flex; flex-wrap: wrap; gap: 14px 28px;
-    align-items: center; justify-content: space-between; }
-  .brand { display: flex; align-items: center; gap: 12px; min-width: 0; color: inherit; }
-  .brand:hover { text-decoration: none; color: inherit; }
-  .brand-mark { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; flex: none;
-    border: 1px solid var(--green-line); background: linear-gradient(145deg, ${rgba(SCALES.green[400], .16)}, ${rgba(SCALES.green[400], .02)});
-    box-shadow: 0 0 18px -6px ${rgba(SCALES.green[400], .55)}; color: var(--green); font: 600 15px var(--mono); }
-  .brand-text { display: flex; flex-direction: column; line-height: 1.15; min-width: 0; }
-  .brand-name { font: 700 15px var(--mono); letter-spacing: .32em; color: #eaf4ef; }
-  .brand-sub { font: 500 10.5px var(--mono); letter-spacing: .26em; color: var(--green); opacity: .8; margin-top: 3px; }
-  .brand-page { font: 500 10.5px var(--mono); letter-spacing: .2em; color: var(--muted); margin-left: 4px; }
-  .sysinfo { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 0; align-items: center; }
-  .sysinfo div { display: flex; flex-direction: column; min-width: 0; }
-  .sysinfo dt { font: 500 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
-  .sysinfo dd { margin: 1px 0 0; font: 500 12.5px var(--mono); color: var(--text); white-space: nowrap; }
-  .topbar .actions a { min-height: 44px; display: inline-flex; align-items: center; }
   .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  .progress { position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; overflow: hidden; pointer-events: none; }
-  .progress::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 30%; transform: translateX(-100%); opacity: 0;
-    background: linear-gradient(90deg, transparent, var(--green), transparent); }
-  .progress.tick::after { animation: sweep .9s var(--ease); }
-  @keyframes sweep { 0% { transform: translateX(-100%); opacity: 0; } 20% { opacity: .9; } 100% { transform: translateX(333%); opacity: 0; } }
 
   /* Controls */
   button, .btn, select, input[type="search"] { font: 500 12px var(--mono); letter-spacing: .08em; color: var(--text);
@@ -291,7 +265,7 @@ export const TOKENS_CSS = `
   .av-skipped { filter: grayscale(1); opacity: .45; box-shadow: none; }
 
   @media (max-width: 640px) {
-    .topbar-inner, main { padding-left: 12px; padding-right: 12px; }
+    main { padding-left: 12px; padding-right: 12px; }
     main { gap: 14px; }
     section, .panel { padding: 13px; }
     .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -301,7 +275,7 @@ export const TOKENS_CSS = `
     *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   }
   @media (prefers-reduced-transparency: reduce) {
-    .g, .gi, section, .panel, .stat, .topbar { background: var(--solid) !important; -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+    .g, .gi, section, .panel, .stat { background: var(--solid) !important; -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
     body { background: var(--bg); }
   }
 `;

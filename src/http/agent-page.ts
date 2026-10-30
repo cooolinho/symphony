@@ -1,6 +1,5 @@
 import { PIPELINE_CSS, PIPELINE_JS } from './pipeline.ts';
-import { TOKENS_CSS } from './ui/tokens.ts';
-import { BASE_JS } from './styles.ts';
+import { page } from './ui/layout.ts';
 
 const AGENT_CSS = `
   /* Pipeline section: the topology strip plus one summary row per agent stage. */
@@ -39,10 +38,6 @@ const AGENT_CSS = `
 `;
 
 const AGENT_PAGE_CSS = `
-  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
-  .back { display: inline-flex; align-items: center; gap: 8px; font: 600 11px var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--text-2); width: max-content; }
-  .back:hover { color: var(--green); text-decoration: none; }
-
   /* Header */
   .hero { position: relative; overflow: hidden; border-color: var(--line-2); padding: 18px 20px;
     background: linear-gradient(160deg, var(--tone-dim, transparent) 0%, rgba(11, 17, 21, .96) 42%), var(--panel); }
@@ -215,37 +210,12 @@ const AGENT_PAGE_CSS = `
  * offset) on the dashboard's 2 s interval. Bodies of prompts, responses and tool payloads are only put into
  * the DOM when an item is expanded. All agent and tracker text is inserted with textContent (untrusted).
  */
-export const AGENT_HTML = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
-<title>Agent · Symphony</title>
-<style>${TOKENS_CSS}${PIPELINE_CSS}${AGENT_CSS}${AGENT_PAGE_CSS}</style>
-</head>
-<body>
-<header class="topbar">
-  <div class="topbar-inner">
-    <a class="brand" href="/" aria-label="Symphony agent orchestrator">
-      <span class="brand-mark" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,12 6,12 8.5,6 11.5,18 14.5,4 17,15 19,12 22,12"/></svg></span>
-      <span class="brand-text"><span class="brand-name">SYMPHONY</span><span class="brand-sub">AGENT TRACE</span></span>
-    </a>
-    <dl class="sysinfo" aria-live="polite">
-      <div><dt>Connection</dt><dd id="sys-status"><span class="badge tone-gray"><span class="dot"></span><span>Connecting</span></span></dd></div>
-      <div><dt>Updated</dt><dd id="sys-updated">—</dd></div>
-    </dl>
-    <div class="actions">
-      <a class="btn" href="/">Dashboard</a>
-      <a class="btn" href="/logs">Logs</a>
-    </div>
-  </div>
-  <div class="progress" id="progress" aria-hidden="true"></div>
-</header>
-<p class="sr-only" id="announce" aria-live="polite"></p>
-<main>
-  <a class="back" href="/" id="back">← Back to agents</a>
-
+export const AGENT_HTML = page({
+  title: 'Agent · Symphony',
+  nav: null,
+  crumbs: [{ label: 'Übersicht', href: '/' }, { label: 'Agent' }],
+  styles: PIPELINE_CSS + AGENT_CSS + AGENT_PAGE_CSS,
+  body: `
   <section class="hero tone-gray" id="hero" aria-labelledby="hero-title">
     <div class="hero-top">
       <div class="tags"><span id="state-slot"><span class="badge tone-gray"><span class="dot"></span><span>Loading</span></span></span><span class="chip" id="attempt" hidden></span></div>
@@ -365,11 +335,9 @@ export const AGENT_HTML = `<!doctype html>
       </section>
     </aside>
   </div>
-</main>
-
-<script>
+`,
+  scripts: `
 (() => {
-${BASE_JS}
 ${PIPELINE_JS}
 
   const $ = (id) => document.getElementById(id);
@@ -898,6 +866,7 @@ ${PIPELINE_JS}
     const { repo, num } = splitId(identifier);
     const idBox = $('hero-id');
     idBox.replaceChildren(el('span', 'Agent '), el('b', num));
+    setText($('crumb-current'), 'Agent ' + num);
     document.title = num + ' · ' + labelText.replace(/^[^A-Za-z]+/, '') + ' · Symphony';
     setText($('hero-title'), (d && d.title) || identifier);
     setText($('hero-repo'), (d && d.repo && d.repo !== 'unknown' ? d.repo : repo) || '');
@@ -1541,11 +1510,7 @@ ${PIPELINE_JS}
   }
 
   function renderStatusbar() {
-    const holder = $('sys-status');
-    const b = S.online ? badge(isRunning() ? 'Live' : 'Online', isRunning() ? 'green' : 'cyan', isRunning()) : badge('Offline', 'red', false);
-    const cur = holder.firstChild;
-    if (!cur || cur.className !== b.className || cur.textContent !== b.textContent) holder.replaceChildren(b);
-    setText($('sys-updated'), S.fetchedAt ? fmtClock(new Date(S.fetchedAt).toISOString()) : '—');
+    setLive(S.online);
   }
 
   // ------------------------------------------------------------------ raw logs
@@ -1670,8 +1635,8 @@ ${PIPELINE_JS}
     renderRaw();
   });
   $('raw-q').addEventListener('input', (e) => { S.rawQ = e.target.value; renderRaw(); });
-  // Back keeps the dashboard's history entry when we came from it.
-  $('back').addEventListener('click', (e) => {
+  // The Übersicht breadcrumb keeps the dashboard's history entry when we came from it.
+  document.querySelector('nav[aria-label="Brotkrumen"] a[href="/"]').addEventListener('click', (e) => {
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
     try { if (document.referrer && new URL(document.referrer).origin === location.origin && new URL(document.referrer).pathname === '/' && history.length > 1) { e.preventDefault(); history.back(); } } catch {}
   });
@@ -1682,7 +1647,5 @@ ${PIPELINE_JS}
   if (!ID) render();
   else { render(); poll(); setInterval(poll, POLL_MS); }
 })();
-</script>
-</body>
-</html>
-`;
+`,
+});

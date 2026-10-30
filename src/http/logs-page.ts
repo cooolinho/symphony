@@ -1,23 +1,9 @@
 import { CHART_CSS, CHART_JS } from './charts.ts';
-import { TOKENS_CSS } from './ui/tokens.ts';
-import { BASE_JS } from './styles.ts';
+import { page } from './ui/layout.ts';
 
-/**
- * Statistics page: analytics of the per-repository logs for one global filter (period, repository, model).
- * The server aggregates (/api/v1/history/analytics); the log table is loaded separately
- * (/api/v1/history/entries) so a failure there leaves the charts intact. The filter lives in the URL
- * (?period=30d&repo=owner/name&model=…&effort=…, custom: ?period=custom&from=YYYY-MM-DD&to=YYYY-MM-DD), so every view
- * can be linked.
- */
-export const LOGS_HTML = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
-<title>Symphony logs</title>
-<style>${TOKENS_CSS}${CHART_CSS}
+const LOGS_CSS = `
   .filterbar { display: grid; gap: 12px; }
+  .filter-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
   .filters { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: flex-end; }
   .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .field > span { font: 600 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
@@ -93,23 +79,20 @@ export const LOGS_HTML = `<!doctype html>
     .filters > .field { flex: 1 1 140px; }
     .stats.primary .stat .value { font-size: 19px; }
   }
-</style>
-</head>
-<body>
-<header class="topbar">
-  <div class="topbar-inner">
-    <a class="brand" href="/" aria-label="Back to the Symphony dashboard">
-      <span class="brand-mark" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,12 6,12 8.5,6 11.5,18 14.5,4 17,15 19,12 22,12"/></svg></span>
-      <span class="brand-text"><span class="brand-name">SYMPHONY</span><span class="brand-sub">STATISTICS &amp; ANALYTICS</span></span>
-    </a>
-    <div class="actions">
-      <a class="btn" id="raw" href="#" hidden>Raw log</a>
-      <button class="btn" id="reload" type="button">Reload</button>
-      <a class="btn btn-primary" href="/">Dashboard</a>
-    </div>
-  </div>
-</header>
-<main id="main">
+`;
+
+/**
+ * Statistics page: analytics of the per-repository logs for one global filter (period, repository, model).
+ * The server aggregates (/api/v1/history/analytics); the log table is loaded separately
+ * (/api/v1/history/entries) so a failure there leaves the charts intact. The filter lives in the URL
+ * (?period=30d&repo=owner/name&model=…&effort=…, custom: ?period=custom&from=YYYY-MM-DD&to=YYYY-MM-DD), so every view
+ * can be linked.
+ */
+export const LOGS_HTML = page({
+  title: 'Statistik · Symphony',
+  nav: 'stats',
+  styles: CHART_CSS + LOGS_CSS,
+  body: `
   <section class="filterbar" aria-label="Filter">
     <form class="filters" id="filters">
       <label class="field"><span>Period</span>
@@ -132,7 +115,13 @@ export const LOGS_HTML = `<!doctype html>
       <label class="field"><span>Model</span><select id="model"><option value="">All models</option></select></label>
       <label class="field"><span>Effort</span><select id="effort"><option value="">All efforts</option></select></label>
     </form>
-    <div class="period" id="period-label" aria-live="polite"></div>
+    <div class="filter-foot">
+      <div class="period" id="period-label" aria-live="polite"></div>
+      <div class="actions">
+        <a class="btn" id="raw" href="#" hidden>Raw log</a>
+        <button class="btn" id="reload" type="button">Reload</button>
+      </div>
+    </div>
   </section>
 
   <section id="problems" class="problems" hidden><h2>Problems</h2><ul id="problem-list"></ul></section>
@@ -237,10 +226,9 @@ export const LOGS_HTML = `<!doctype html>
     <div id="log-body" style="margin-top: 14px"></div>
   </section>
   <p class="meta" id="footer"></p>
-</main>
-<script>
+`,
+  scripts: `
 (() => {
-${BASE_JS}
 ${CHART_JS}
 
   // ------------------------------------------------------------------------------------------------------------
@@ -384,8 +372,10 @@ ${CHART_JS}
       if (!res.ok) throw new Error(body.error ? body.error.message : 'HTTP ' + res.status);
       data = body;
       render(body);
+      setLive(true);
     } catch (error) {
       if (error.name === 'AbortError') return;
+      setLive(false);
       data = null;
       for (const name in bodies) setBody(name, stateBox('error', 'CANNOT LOAD STATISTICS', error.message, loadAnalytics));
     } finally {
@@ -1044,7 +1034,5 @@ ${CHART_JS}
   }, 60000);
   loadAll();
 })();
-</script>
-</body>
-</html>
-`;
+`,
+});

@@ -131,7 +131,7 @@ describe('dashboard page: repositories bar (#277)', () => {
   it('is served first in <main>, before the existing sections, which are all still there', async () => {
     const { page } = await serve(provider('$R'), { R: 'acme/app' });
     const bar = page.indexOf('id="repositories"');
-    assert.ok(bar > page.indexOf('<main>'), 'bar inside main');
+    assert.ok(bar > page.indexOf('<main id="main">'), 'bar inside main');
     for (const id of ['problems', 'dispatch-gate', 'model-holds', 'model-controls', 'running-section', 'next-section', 'waiting-section', 'paused-section']) {
       const at = page.indexOf(`id="${id}"`);
       assert.ok(at > bar, `${id} comes after the repositories bar`);

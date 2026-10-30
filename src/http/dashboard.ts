@@ -1,6 +1,5 @@
 import { PIPELINE_CSS, PIPELINE_JS } from './pipeline.ts';
-import { TOKENS_CSS } from './ui/tokens.ts';
-import { BASE_JS } from './styles.ts';
+import { page } from './ui/layout.ts';
 
 const DASHBOARD_CSS = `
   /* Dispatch gate: new dispatches wait for an account-wide session limit (a notice, not an error). */
@@ -23,7 +22,12 @@ const DASHBOARD_CSS = `
   @keyframes fall { to { transform: translateY(110vh); } }
   @media (max-width: 640px), (prefers-reduced-motion: reduce) { .rain { display: none; } }
 
-  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
+  /* Page head: system info and the page actions (poll, logs drawer). */
+  .page-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; }
+  .sysinfo { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 0; align-items: center; }
+  .sysinfo div { display: flex; flex-direction: column; min-width: 0; }
+  .sysinfo dt { font: 500 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  .sysinfo dd { margin: 1px 0 0; font: 500 12.5px var(--mono); color: var(--text); white-space: nowrap; }
 
   /* Running agents */
   .agents-section { border-color: var(--line-2); }
@@ -208,26 +212,14 @@ const DASHBOARD_CSS = `
  * repository logs (/api/v1/history), which also feed the logs drawer. All tracker text is inserted with
  * textContent (issue titles and agent messages are untrusted).
  */
-export const DASHBOARD_HTML = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
-<title>Symphony</title>
-<style>${TOKENS_CSS}${PIPELINE_CSS}${DASHBOARD_CSS}</style>
-</head>
-<body>
-<div class="rain" id="rain" aria-hidden="true"></div>
-<header class="topbar">
-  <div class="topbar-inner">
-    <a class="brand" href="/" aria-label="Symphony agent orchestrator">
-      <span class="brand-mark" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,12 6,12 8.5,6 11.5,18 14.5,4 17,15 19,12 22,12"/></svg></span>
-      <span class="brand-text"><span class="brand-name">SYMPHONY</span><span class="brand-sub">AGENT ORCHESTRATOR</span></span>
-    </a>
+export const DASHBOARD_HTML = page({
+  title: 'Symphony',
+  nav: 'overview',
+  styles: PIPELINE_CSS + DASHBOARD_CSS,
+  body: `
+  <div class="page-head">
     <dl class="sysinfo" aria-live="polite">
       <div><dt>System</dt><dd id="sys-status"><span class="badge tone-gray"><span class="dot"></span><span>Connecting</span></span></dd></div>
-      <div><dt>Version</dt><dd id="sys-version">—</dd></div>
       <div><dt>Workflow</dt><dd id="sys-workflow">—</dd></div>
       <div><dt>Polling</dt><dd id="sys-interval">—</dd></div>
       <div><dt>Last poll</dt><dd id="sys-lastpoll">—</dd></div>
@@ -239,10 +231,6 @@ export const DASHBOARD_HTML = `<!doctype html>
         <svg class="btn-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.5 2.5v3h-3"/></svg><span id="refresh-label">Poll now</span></button>
     </div>
   </div>
-  <div class="progress" id="progress" aria-hidden="true"></div>
-</header>
-<p class="sr-only" id="announce" aria-live="polite"></p>
-<main>
   <section id="repositories" class="repos" aria-label="Repositories" hidden><span class="repos-label">Repositories</span><div class="repo-list" id="repo-list"></div></section>
   <section id="problems" class="problems" role="alert" hidden>
     <h2><span class="dot tone-red"></span>Needs attention</h2>
@@ -313,8 +301,8 @@ export const DASHBOARD_HTML = `<!doctype html>
       </details>
     </div>
   </div>
-</main>
-
+`,
+  after: `<div class="rain" id="rain" aria-hidden="true"></div>
 <div class="scrim" id="logs-scrim"></div>
 <aside class="drawer" id="logs-drawer" role="dialog" aria-modal="true" aria-labelledby="logs-title">
   <div class="drawer-head">
@@ -341,11 +329,9 @@ export const DASHBOARD_HTML = `<!doctype html>
       <a class="btn" href="/logs">Statistics ↗</a>
     </div>
   </div>
-</aside>
-
-<script>
+</aside>`,
+  scripts: `
 (() => {
-${BASE_JS}
 ${PIPELINE_JS}
 
   const $ = (id) => document.getElementById(id);
@@ -421,6 +407,7 @@ ${PIPELINE_JS}
   }
 
   function renderHeader(h, problems, online) {
+    setLive(online);
     let status;
     if (!online) status = badge('Offline', 'red', false);
     else if (h.stopping) status = badge('Shutting down', 'amber', false);
@@ -430,7 +417,6 @@ ${PIPELINE_JS}
     const current = holder.firstChild;
     if (!current || current.className !== status.className || current.textContent !== status.textContent) holder.replaceChildren(status);
     if (!h) return;
-    setText($('sys-version'), h.symphony_version ? 'v' + h.symphony_version : '—');
     setText($('sys-workflow'), 'v' + h.workflow_version);
     setText($('sys-interval'), 'every ' + Math.round(h.poll_interval_ms / 1000) + 's');
     const last = $('sys-lastpoll');
@@ -1443,7 +1429,5 @@ ${PIPELINE_JS}
   setInterval(load, 2000);
   setInterval(loadHistory, 30000);
 })();
-</script>
-</body>
-</html>
-`;
+`,
+});

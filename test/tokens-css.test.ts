@@ -5,6 +5,7 @@ import { AGENT_HTML } from '../src/http/agent-page.ts';
 import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
 import { LOGS_HTML } from '../src/http/logs-page.ts';
 import { BASE_JS } from '../src/http/styles.ts';
+import { LAYOUT_CSS } from '../src/http/ui/layout.ts';
 import { OP_COLORS, ROLE_COLORS, SCALES, TASK_TONES, TEXT, TOKENS_CSS, TRACE_COLORS, rgba } from '../src/http/ui/tokens.ts';
 
 const PAGES = { dashboard: DASHBOARD_HTML, agent: AGENT_HTML, logs: LOGS_HTML };
@@ -115,7 +116,7 @@ describe('TOKENS_CSS module', () => {
       'green-line', 'cyan', 'amber', 'red', 'gray', 'accent', 'ok', 'warn', 'bad', 'chip', 'sans', 'mono']) {
       assert.match(rootDecls, new RegExp(`--${v}:`), `--${v}`);
     }
-    for (const cls of ['.tone-green', '.tone-cyan', '.tone-amber', '.tone-red', '.tone-gray', '.badge', '.btn', '.stat', '.topbar', '.dot', '.pulse', '.chip']) {
+    for (const cls of ['.tone-green', '.tone-cyan', '.tone-amber', '.tone-red', '.tone-gray', '.badge', '.btn', '.stat', '.dot', '.pulse', '.chip']) {
       assert.ok(TOKENS_CSS.includes(cls), cls);
     }
   });
@@ -294,7 +295,7 @@ describe('TOKENS_CSS module', () => {
     assert.match(body, /-webkit-backdrop-filter:\s*none/);
     assert.match(body, /background:\s*(var\(--solid\)|#111a2c)/);
     assert.equal(rootVar('solid').toLowerCase(), '#111a2c');
-    // Every element carrying a blur must be covered (not only .g/.gi, also the sticky topbar).
+    // Every element carrying a blur must be covered (not only .g/.gi).
     const blurred = rules.filter((r) => r.media === '' && /backdrop-filter/.test(r.body)).flatMap((r) => r.selector.split(',').map((s) => s.trim()));
     for (const sel of blurred) assert.ok(sels.includes(sel), `${sel} loses its blur under reduced transparency`);
   });
@@ -360,7 +361,8 @@ describe('TOKENS_CSS module', () => {
     const sel = controls.flatMap((r) => r.selector.split(',').map((s) => s.trim()));
     for (const s of ['button', '.btn', 'select']) assert.ok(sel.includes(s), s);
     assert.match(controls.map((r) => r.body).join(';'), /min-height:\s*44px/);
-    const nav = declsOf('.topbar .actions a');
+    // The main navigation pills of the page shell (layout.ts).
+    const nav = parseCss(LAYOUT_CSS).rules.filter((r) => r.media === '' && r.selector === '.nv').map((r) => r.body).join(';');
     assert.match(nav, /min-height:\s*44px/);
     assert.match(nav, /display:\s*inline-flex/);
   });
@@ -372,9 +374,10 @@ describe('TOKENS_CSS module', () => {
       assert.ok(props.length > 0, name);
       for (const p of props) assert.ok(['transform', 'opacity'].includes(p), `@keyframes ${name} animates ${p}`);
     }
-    // sweep used to animate "left".
-    assert.ok(keyframes.has('sweep'));
-    assert.doesNotMatch(keyframes.get('sweep') as string, /left/);
+    // sweep (the poll progress strip, now in the page shell) used to animate "left".
+    const shellKeyframes = parseCss(LAYOUT_CSS).keyframes;
+    assert.ok(shellKeyframes.has('sweep'));
+    assert.doesNotMatch(shellKeyframes.get('sweep') as string, /left/);
     for (const r of rules) {
       for (const m of r.body.matchAll(/(?:^|[;\s])transition(?:-property)?:\s*([^;]+)/g)) {
         const props = (m[1] as string).replace(/!important/, '').split(',').map((part) => part.trim().split(/\s+/)[0] as string);
