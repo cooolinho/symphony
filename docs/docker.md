@@ -203,6 +203,7 @@ Instead the dashboard is published on `127.0.0.1`.
 | Required in `.env` | steps 2 to 9 | steps 2 to 7: no `SYMPHONY_DOMAIN`, `TRAEFIK_*` or `SYMPHONY_BASIC_AUTH` |
 | `WORKFLOW.md`, `roles/`, `model-costs.yml` | in the image (mounts optional) | mounted read-only, reloaded live without a rebuild |
 | Container | `${COMPOSE_PROJECT_NAME:-symphony}` | `${COMPOSE_PROJECT_NAME:-symphony}-local` |
+| Obsidian (profile `brain`) | through Traefik at `BRAIN_DOMAIN`, same login as the dashboard | `http://127.0.0.1:<BRAIN_PORT>/` (default `3000`), no login |
 
 Like the production file, it overrides the host-specific values of `.env` (`SYMPHONY_PHP`, `SYMPHONY_LOG_DIR`,
 `SYMPHONY_HOST` …), so the same `.env` serves `npm start` and the container.
@@ -299,7 +300,8 @@ Structure and contents: [Logs, transcripts and workspaces](usage.md#logs-transcr
 | `claude` | `/home/symphony/.claude` | Claude Code state |
 | `workspaces` | `/home/symphony/symphony-workspaces` | one clone per issue, plus pnpm's shared store `.pnpm-store` |
 | `composer-cache` | `/home/symphony/.cache/composer` | Composer cache, replaceable |
-| `brain` | `/home/symphony/brain` | knowledge vault (`brain.enabled`) |
+| `brain` | `/home/symphony/brain` (also `/config/vault` in `obsidian`) | knowledge vault (`brain.enabled`) |
+| `obsidian-config` | `/config` (`obsidian` container) | Obsidian settings and desktop profile (profile `brain`) |
 
 Compose prefixes the project name (usually the directory name): the volume is named e.g. `symphony_state`. Check the
 names with `docker volume ls`. Backing up a volume:
@@ -314,6 +316,7 @@ What matters:
 - **`workspaces`:** can be cloned again, but contain **unfinished work** (unpushed commits, changes).
 - **`composer-cache`:** does not need a backup.
 - **`brain`:** back it up; it holds the knowledge vault.
+- **`obsidian-config`:** optional; only Obsidian's settings.
 
 ### Transferring existing history to the server
 
@@ -423,6 +426,24 @@ then `docker compose up -d`. `symphony` waits until both sidecars are healthy (`
 
 Security: see [Security](#security) below; a privileged daemon is effectively root on the host for whoever reaches it.
 
+### Obsidian (profile `brain`)
+
+The `obsidian` service (`lscr.io/linuxserver/obsidian`) lets a human open the brain vault in the browser. It mounts the
+`brain` volume at `/config/vault` and keeps its own settings in `obsidian-config` (`/config`).
+
+- **Enable:** add `brain` to `COMPOSE_PROFILES` (`brain`, or `ci,brain`), set `BRAIN_DOMAIN` (e.g. `brain.docker.lan`) in
+  `.env` and run `docker compose up -d`. Without the profile nothing starts; `docker compose up -d obsidian` works too.
+  `BRAIN_DOMAIN` is not enforced (compose interpolates inactive profiles too); if it is empty, Traefik builds no router.
+- **Access:** only through Traefik, with the same login as the dashboard (middleware `symphony-auth`, or
+  `SYMPHONY_TRAEFIK_MIDDLEWARES`). The router is always plain HTTP (`tls=false`), so use an HTTP entrypoint
+  (`TRAEFIK_ENTRYPOINT=web`, LAN). The service has no `ports:`.
+- **First start:** in Obsidian open the folder `/config/vault` as the vault. `.obsidian/` belongs to the human.
+- **File ownership:** `PUID`/`PGID` follow `UID`/`GID` (default 1000), the same user as Symphony, so both write into
+  the vault as one UID.
+- **Update:** `docker compose pull obsidian && docker compose up -d obsidian`. If the UI does not start, the image docs
+  suggest `security_opt: seccomp:unconfined` (not set by default, it weakens the isolation).
+- **Local setup:** `docker-compose.local.yml` publishes it on `127.0.0.1:<BRAIN_PORT>` (default `3000`), without a login.
+
 ### Resource limits
 
 As a rule of thumb, each parallel agent (Claude Code, Composer, tests) needs about 1 CPU and 2 GB RAM. Use
@@ -473,6 +494,8 @@ mem_limit: 4g
 - **HTTP only (`TRAEFIK_TLS=false`):** The BasicAuth password, the dashboard data and the retry request travel
   unencrypted over the network. Use this only in a trusted LAN, never over the internet; there HTTPS with a certificate
   remains mandatory.
+- **Obsidian (profile `brain`):** Only reachable through Traefik with the dashboard login, no `ports:`. It is plain HTTP, so
+  use it only in a trusted LAN. Whoever opens it can edit the whole vault.
 - **No Docker socket:** Do not mount `/var/run/docker.sock` into the container. Whoever can reach it has root on the
   host.
 - **Profile `ci` (Docker-in-Docker):** The `dind` sidecar runs `privileged`. Whoever reaches its daemon

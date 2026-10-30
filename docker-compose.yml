@@ -68,7 +68,7 @@ services:
             - state:/home/symphony/.local/state/symphony
             - claude:/home/symphony/.claude
             - composer-cache:/home/symphony/.cache/composer
-            # Brain vault (brain.enabled in WORKFLOW.md); Obsidian can open it later
+            # Brain vault (brain.enabled in WORKFLOW.md); the obsidian service (profile brain) opens it
             - brain:/home/symphony/brain
             # "ci" profile: client certs for the dind daemon. No DOCKER_HOST here: agents share this environment,
             # the check scripts map SYMPHONY_CI_DOCKER_HOST / SYMPHONY_CI_DOCKER_CERT_PATH to DOCKER_* themselves.
@@ -156,6 +156,40 @@ services:
         # The tmpfs counts against it: buffer pool plus up to 2 GB of data.
         mem_limit: 3g
 
+    # Compose profile "brain" (COMPOSE_PROFILES=brain, or docker compose up -d obsidian): Obsidian in the browser, opening
+    # the brain vault (docs/docker.md, "Obsidian"). Without the profile it does not start. Open /config/vault as the vault.
+    obsidian:
+        image: lscr.io/linuxserver/obsidian:latest
+        profiles: [brain]
+        restart: unless-stopped
+        # Chromium/Electron needs more shared memory than Docker's default. If the UI does not start, the image docs
+        # suggest security_opt: seccomp:unconfined; not set here because it weakens the isolation.
+        shm_size: "1gb"
+        environment:
+            # Same source as the UID/GID build args of symphony: both containers write into the vault as the same user.
+            PUID: ${UID:-1000}
+            PGID: ${GID:-1000}
+            TZ: ${TZ:-Europe/Berlin}
+        volumes:
+            - obsidian-config:/config
+            - brain:/config/vault
+        # No ports: Obsidian is reachable only through Traefik.
+        networks:
+            - traefik
+        labels:
+            - traefik.enable=true
+            - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}
+            # Not ${VAR:?}: compose interpolates every service, profile or not, so that would break setups without
+            # the profile. An empty host makes Traefik drop the router (fail closed).
+            - traefik.http.routers.obsidian.rule=Host(`${BRAIN_DOMAIN:-}`)
+            - traefik.http.routers.obsidian.entrypoints=${TRAEFIK_ENTRYPOINT:-web}
+            # Plain HTTP in the LAN (with TRAEFIK_ENTRYPOINT=web), no certificates.
+            - traefik.http.routers.obsidian.tls=false
+            # The login of the dashboard; the middleware symphony-auth is defined by the labels of the symphony service.
+            - traefik.http.routers.obsidian.middlewares=${SYMPHONY_TRAEFIK_MIDDLEWARES:-symphony-auth}
+            - traefik.http.routers.obsidian.service=obsidian
+            - traefik.http.services.obsidian.loadbalancer.server.port=3000
+
 networks:
     traefik:
         external: true
@@ -174,6 +208,8 @@ volumes:
     claude:
     composer-cache:
     brain:
+    # Profile "brain": Obsidian's settings (/config).
+    obsidian-config:
     # "ci" profile: dind's certificates and image store.
     dind-certs-ca:
     dind-certs-client:
