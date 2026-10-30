@@ -170,7 +170,7 @@ describe('brain vault acceptance', () => {
       const vault = path.join(base, 'vault');
       await ensureVault(vault, ['a/.', 'a/..', '-/..']);
       assert.deepEqual(fs.readdirSync(base), ['vault']);
-      assert.deepEqual(fs.readdirSync(vault).sort(), ['Agents', 'Decisions', 'Inbox', 'Issues', 'Lessons', 'README.md', 'Repos']);
+      assert.deepEqual(fs.readdirSync(vault).sort(), ['Agents', 'Decisions', 'Inbox', 'Issues', 'Kandidaten-Review.base', 'Lessons', 'Neueste Lessons.base', 'README.md', 'Repos']);
       for (const rel of walk(vault)) assert.ok(!rel.split(path.sep).some((part) => part === '..' || part === '.'), rel);
     });
   });
