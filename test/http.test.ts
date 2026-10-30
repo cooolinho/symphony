@@ -17,12 +17,13 @@ import { LAYOUT_CSS, LAYOUT_JS, NAV_ITEMS, page as shellPage } from '../src/http
 import { TOKENS_CSS } from '../src/http/ui/tokens.ts';
 import { BASE_JS } from '../src/http/styles.ts';
 import { SYMPHONY_VERSION } from '../src/version.ts';
+import { analyticsFixture, dashboardState, issueDetail, issueRow } from './helpers/page-fixtures.ts';
 import { FakeElement } from './helpers/fake-dom.ts';
 import { startHttpServer, type HttpServerHandle } from '../src/http/server.ts';
 import { Logger } from '../src/log.ts';
 import { SystemCollector } from '../src/system/metrics.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
-import { FakeRunner, FakeTracker, ManualTimers, StaticWorkflow, baseFront, makeIssue, makeWorkflow, tempDir, until } from './helpers.ts';
+import { FakeRunner, FakeTracker, ManualTimers, StaticWorkflow, baseFront, makeIssue, makeWorkflow, inlineScripts, reindentScripts, renderPage, tempDir, until } from './helpers.ts';
 
 /** Raw request so tests can set the Host header freely. */
 function request(
@@ -43,6 +44,8 @@ function request(
     req.end(body);
   });
 }
+
+const AGENT_URL = 'http://127.0.0.1/issue?id=acme%2Fapp%231';
 
 describe('dashboard pages', () => {
   it('share the glass tokens CSS without external URLs', () => {
@@ -92,11 +95,38 @@ describe('dashboard pages', () => {
     }
   });
 
+  const ALL_PAGES = { dashboard: DASHBOARD_HTML, agent: AGENT_HTML, logs: LOGS_HTML, changes: CHANGES_HTML, tasks: TASKS_HTML, brain: BRAIN_HTML };
+
+  it('load in a fake DOM without errors, every page', () => {
+    for (const [name, html] of Object.entries(ALL_PAGES)) {
+      const page = renderPage(html, undefined, name === 'agent' ? { url: AGENT_URL } : {});
+      assert.ok(page.$('main'), name);
+    }
+  });
+
+  it('behave the same when the inline scripts are indented differently', () => {
+    const fixtures: Array<[string, string, unknown, string?]> = [
+      ['dashboard', DASHBOARD_HTML, dashboardState({ issues: [issueRow({ labels: ['needs-human'], budget: { cost_usd: 9, max_issue_cost_usd: 10 } })], counts: { ...dashboardState().counts, running: 1 } })],
+      ['agent', AGENT_HTML, { detail: issueDetail({ results: [{ role: 'developer', kind: 'implementation', verdict: 'done', round: null, target: 'Agent review', summary: 'Done.', created_at: '2026-10-30T11:00:00Z', url: 'https://github.com/acme/app/issues/1#issuecomment-1', findings: [], blockers: [] }] }) }, AGENT_URL],
+      ['logs', LOGS_HTML, undefined],
+    ];
+    for (const [name, html, fixture, url] of fixtures) {
+      assert.notEqual(reindentScripts(html), html, name);
+      const opts = url ? { url } : {};
+      const a = renderPage(html, fixture, opts);
+      const b = renderPage(reindentScripts(html), fixture, opts);
+      assert.equal(b.$('main').outerHTML, a.$('main').outerHTML, name);
+      assert.deepEqual(b.fetches, a.fetches, name);
+    }
+  });
+
   it('ship inline scripts that parse and the Laravel Boost icon', () => {
-    for (const [name, html] of Object.entries({ dashboard: DASHBOARD_HTML, agent: AGENT_HTML, logs: LOGS_HTML })) {
-      const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1] as string);
+    for (const [name, html] of Object.entries(ALL_PAGES)) {
+      const scripts = inlineScripts(html);
       assert.ok(scripts.length > 0, name);
       for (const script of scripts) assert.doesNotThrow(() => new vm.Script(script, { filename: `${name}.js` }), name);
+    }
+    for (const [name, html] of Object.entries({ dashboard: DASHBOARD_HTML, agent: AGENT_HTML, logs: LOGS_HTML })) {
       assert.ok(html.includes(BOOST_ICON_URI), `${name} embeds the Boost icon`);
     }
     assert.match(BOOST_ICON_URI, /^data:image\/svg\+xml;base64,/);
@@ -155,64 +185,21 @@ describe('http extension', () => {
     assert.match(page.body, /<title>Symphony<\/title>/);
     assert.ok(page.body.includes(TOKENS_CSS), 'dashboard embeds the tokens CSS');
     assert.match(page.body, /<nav class="shell-nav" aria-label="Hauptnavigation">/);
-    // Issues render as cards with the pipeline topology strip in separate sections (Running, Up next, Waiting,
-    // Paused), each with a count and hidden when empty; blocked issues collapse into a details panel.
-    assert.match(page.body, /renderPipeline\(refs\.pipe, row\.stages/);
-    // Stages show the verdict and round of their newest result; skipped stages stay marked as skipped.
-    assert.match(page.body, /pipeVerdict\(stage\.verdict, stage\.round\)/);
-    assert.match(page.body, /\.pipe-verdict\.vd-warn/);
-    assert.match(page.body, /\.pipe-node\.st-skipped/);
-    assert.match(page.body, /state\.issues/);
+    // Markup of the sections; what the page script does with them is covered by 'dashboard page behaviour'.
     assert.doesNotMatch(page.body, /Issues in flight/);
     for (const name of ['running', 'next', 'waiting', 'paused']) {
       assert.match(page.body, new RegExp(`<div class="agents[^"]*" id="${name}"></div>`));
       assert.match(page.body, new RegExp(`<span class="count" id="${name}-count"></span>`));
     }
     for (const name of ['next', 'waiting', 'paused']) assert.match(page.body, new RegExp(`<section class="agents-section queue-section" id="${name}-section"[^>]*hidden>`));
-    assert.match(page.body, /const SECTIONS = \['running', 'next', 'waiting', 'paused'\]/);
-    assert.match(page.body, /\$\(name \+ '-section'\)\.hidden = ordered\.length === 0/);
-    // Up next is numbered and every waiting card names its reason; the board age sits next to Up next.
-    assert.match(page.body, /setText\(refs\.position, row\.position == null \? '' : '#' \+ row\.position\)/);
-    assert.match(page.body, /why\.append\(reasonChip\(row\.reason\)\)/);
-    assert.match(page.body, /'in start order · board as of ' \+ ago\(state\.board_fetched_at\)/);
-    assert.doesNotMatch(page.body, /Waiting for a free agent slot or the next poll/);
-    // Reason chips show the UTC times of the reason texts in local time.
-    assert.ok(page.body.includes(String.raw`const UTC_TIME = /(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) UTC/g;`));
     assert.match(page.body, /id="blocked-section"/);
-    assert.match(page.body, /setText\(refs\.model, r\.model/);
-    assert.match(page.body, /setText\(refs\.phase, r\.phase/);
     assert.match(page.body, /id="refresh"/);
-    assert.match(page.body, /Retry now/);
-    assert.match(page.body, /Resume now/);
-    assert.match(page.body, /'\/api\/v1\/' \+ encodeURIComponent\(identifier\) \+ '\/' \+ action/);
-    for (const route of ["'retry'", "'resume'", "'pause'", "'force'"]) assert.ok(page.body.includes(route), route);
-    // Start now: a button on waiting, queued and paused cards, a confirmation when every slot is taken, forced slots in the bar.
-    assert.match(page.body, /Force: 'Start now'/);
-    assert.match(page.body, /restartButton\(row\.issue_identifier, 'Force'\)/);
-    assert.match(page.body, /' busy\. Start ' \+ splitId\(identifier\)\.num \+ ' in an extra slot\?'/);
-    assert.match(page.body, /', ' \+ forced \+ ' forced'/);
-    assert.match(page.body, /'\/api\/v1\/models\/' \+ encodeURIComponent\(model\)/);
-    assert.match(page.body, /restartButton\(row\.issue_identifier, 'Pause'\)/);
-    assert.match(page.body, /paused by operator/);
-    assert.match(page.body, /model_controls/);
-    assert.match(page.body, /limit\.resets_at/);
-    assert.match(page.body, /waiting for reset/);
-    assert.match(page.body, /Session limit/);
-    assert.match(page.body, /Extra usage is off because credits are used up/);
-    // The dispatch gate is an amber status notice, hidden unless health.dispatch_gate is set.
+    assert.match(page.body, /\.pipe-verdict\.vd-warn/);
+    assert.match(page.body, /\.pipe-node\.st-skipped/);
     assert.match(page.body, /<section id="dispatch-gate" class="dispatch-gate" role="status" hidden>/);
-    assert.match(page.body, /\$\('dispatch-gate'\)\.hidden = !gate/);
-    assert.match(page.body, /'Dispatch paused until ' \+ fmtStamp\(gate\.until\) \+ ' · session limit \(' \+ gate\.window \+ '\) · started by ' \+ gate\.issue_identifier/);
-    // Model holds: a notice per held model, and waiting cards name the model they wait for.
     assert.match(page.body, /<section id="model-holds" class="dispatch-gate model-holds" role="status" hidden>/);
-    assert.match(page.body, /'Model ' \+ hold\.model \+ ' on hold until ' \+ fmtStamp\(hold\.until\)/);
-    assert.match(page.body, /'Waiting for model ' \+ hold\.model \+ ' \(limit until ' \+ fmtStamp\(hold\.until\) \+ '\)'/);
     assert.doesNotMatch(page.body, /\bonclick=/);
-    // Agent slots: − / value / + at the slot bar, Reset to WORKFLOW.md, and the note when lowered below the running count.
     assert.match(page.body, /<div class="slot-settings" id="slot-settings" role="group" aria-label="Agent slots" hidden><\/div>/);
-    assert.match(page.body, /fetch\('\/api\/v1\/settings\/agents', init\)/);
-    assert.match(page.body, /'Reset to WORKFLOW\.md \(' \+ total\.workflow \+ '\)'/);
-    assert.match(page.body, /' running, limit ' \+ total\.effective \+ ': no new starts until '/);
 
     const state = await request(server.port, 'GET', '/api/v1/state');
     assert.equal(state.status, 200);
@@ -250,7 +237,6 @@ describe('http extension', () => {
     assert.match(dashboard, /href="\/stats"/);
     // The Logs button opens a drawer fed by the history API; the link stays as a fallback.
     assert.match(dashboard, /role="dialog"[^>]*aria-labelledby="logs-title"/);
-    assert.match(dashboard, /fetch\('\/api\/v1\/history'/);
     const page = await request(server.port, 'GET', '/stats');
     assert.equal(page.status, 200);
     assert.match(page.body, /<title>Statistik · Symphony<\/title>/);
@@ -320,8 +306,15 @@ describe('http extension', () => {
     for (const html of [DASHBOARD_HTML, LOGS_HTML, AGENT_HTML]) {
       assert.doesNotMatch(html, /href="\/logs"|\/agent\?id=/);
     }
-    assert.ok(DASHBOARD_HTML.includes('href="/stats"') && DASHBOARD_HTML.includes("'/issue?id='"));
-    assert.ok(LOGS_HTML.includes("'/issue?id='"));
+    assert.ok(DASHBOARD_HTML.includes('href="/stats"'));
+    const hrefs = (page: { query(sel: string): Array<{ href: string }> }) => page.query('a').map((a) => a.href).filter(Boolean);
+    const dashboard = renderPage(DASHBOARD_HTML, dashboardState({ issues: [issueRow()] }));
+    assert.ok(hrefs(dashboard).includes('/issue?id=acme%2Fapp%231'), 'the dashboard card links the issue page');
+    assert.ok(hrefs(dashboard).every((href) => !/^\/(logs|agent)\b/.test(href)));
+    const logs = renderPage(LOGS_HTML, analyticsFixture());
+    const logHrefs = hrefs(logs);
+    assert.ok(logHrefs.some((href) => href.startsWith('/issue?id=')), 'the stats page links issues to /issue');
+    assert.ok(logHrefs.every((href) => !/^\/(logs|agent)\b/.test(href)));
   });
 
   it('serves history statistics for all repositories or one, and the raw log', async () => {
@@ -400,37 +393,10 @@ describe('http extension', () => {
     assert.match(page.body, /id="timeline"/);
     // Pipeline topology section and the Issue sidebar (labels, blockers, sub-issues).
     assert.match(page.body, /id="pipe-section"/);
-    assert.match(page.body, /renderPipeline\(\$\('pipeline'\)/);
     assert.match(page.body, /id="issue-section"/);
-    // Stage results: one card per result with its verdict, round, findings and the link to the comment.
     assert.match(page.body, /id="results-section"/);
     assert.match(page.body, /id="result-cards"/);
-    assert.match(page.body, /function renderResults\(\)/);
-    assert.match(page.body, /pipeVerdict\(r\.verdict, r\.round\)/);
-    assert.match(page.body, /'Comment ↗'/);
-    assert.match(page.body, /'\/timeline\?after='/);
-    assert.match(page.body, /'\/transcript\?run='/);
-    assert.match(page.body, /Waiting for limit/);
-    assert.match(page.body, /Session limit reached/);
-    assert.match(page.body, /Resets at/);
-    assert.match(page.body, /API \+ '\/' \+ action/);
-    assert.match(page.body, /restartButton\('Pause'\)/);
-    assert.match(page.body, /Paused by operator/);
-    assert.match(page.body, /Resume now/);
-    assert.match(page.body, /session_limit: \['⏳ Session limit', 'amber', 'session limit'\]/);
-    assert.match(page.body, /SESSION LIMIT · RETRY/);
-    assert.match(page.body, /WAITING FOR RESET/);
-    assert.match(page.body, /worker_restarted/);
-    assert.match(page.body, /worker_forced/);
-    assert.match(page.body, /restartButton\('Force'\)/);
-    assert.match(page.body, /' in an extra slot\?'/);
     assert.equal((await request(server.port, 'HEAD', '/issue')).status, 200);
-    const dashboard = (await request(server.port, 'GET', '/')).body;
-    assert.match(dashboard, /'\/issue\?id=' \+ encodeURIComponent\(row\.issue_identifier\)/);
-    // Cards flag needs-human issues and show the spent share of the cost budget.
-    assert.match(dashboard, /function flagChips\(row\)/);
-    assert.match(dashboard, /'needs human'/);
-    assert.match(dashboard, /row\.budget/);
   });
 
   it('returns a JSON 404 for unknown issues and routes', async () => {
@@ -1248,10 +1214,26 @@ describe('page shell (layout.ts, #342)', () => {
     assert.equal(count(mainNav(DASHBOARD_HTML), 'aria-current'), 1);
     assert.equal(count(AGENT_HTML, '<nav class="crumbs" aria-label="Brotkrumen">'), 1);
     assert.match(AGENT_HTML, /aria-label="Brotkrumen"><ol><li><a href="\/">Übersicht<\/a><\/li><li><span id="crumb-current" aria-current="page">Issue<\/span>/);
+    const agent = renderPage(AGENT_HTML, { detail: issueDetail() }, { url: AGENT_URL });
+    assert.equal(agent.$('crumb-current').textContent, 'Issue #1', 'the crumb names the issue');
+    assert.equal(agent.query('nav[aria-label="Brotkrumen"] a[href="/"]').length, 1);
     for (const html of [DASHBOARD_HTML, LOGS_HTML]) assert.ok(!html.includes('aria-label="Brotkrumen"'));
-    // The Übersicht crumb keeps the history.back() shortcut of the old back link; the crumb names the agent.
-    assert.match(AGENT_HTML, /document\.querySelector\('nav\[aria-label="Brotkrumen"\] a\[href="\/"\]'\)\.addEventListener\('click'/);
-    assert.match(AGENT_HTML, /setText\(\$\('crumb-current'\), 'Issue ' \+ num\)/);
+  });
+
+  it('goes back in the history from the Übersicht crumb only when the dashboard was the previous page', () => {
+    const crumb = (page: ReturnType<typeof renderPage>) => page.query('nav[aria-label="Brotkrumen"] a[href="/"]')[0]!;
+    const from = renderPage(AGENT_HTML, { detail: issueDetail() }, { url: AGENT_URL, referrer: 'http://127.0.0.1/', historyLength: 2 });
+    from.click(crumb(from));
+    assert.equal(from.backs, 1);
+    const direct = renderPage(AGENT_HTML, { detail: issueDetail() }, { url: AGENT_URL, historyLength: 2 });
+    direct.click(crumb(direct));
+    assert.equal(direct.backs, 0, 'no referrer: the link navigates');
+    const other = renderPage(AGENT_HTML, { detail: issueDetail() }, { url: AGENT_URL, referrer: 'http://127.0.0.1/stats', historyLength: 2 });
+    other.click(crumb(other));
+    assert.equal(other.backs, 0, 'another page: the link navigates');
+    const fresh = renderPage(AGENT_HTML, { detail: issueDetail() }, { url: AGENT_URL, referrer: 'http://127.0.0.1/', historyLength: 1 });
+    fresh.click(crumb(fresh));
+    assert.equal(fresh.backs, 0, 'nothing to go back to');
   });
 
   it('replaces the three copied top bars; the page actions live in <main>', () => {
@@ -1289,10 +1271,20 @@ describe('page shell (layout.ts, #342)', () => {
     assert.match(clock.textContent, /^clock:\d\d:\d\d:\d\d$/);
     assert.match(clock.getAttribute('datetime') ?? '', /^\d{4}-\d\d-\d\dT/);
     assert.deepEqual(timers.map((t) => t[1]), [1000]);
-    assert.match(DASHBOARD_HTML, /function renderHeader\(h, problems, online\) \{\n    setLive\(online\);/);
-    assert.match(AGENT_HTML, /function renderStatusbar\(\) \{\n    setLive\(S\.online\);/);
-    assert.match(LOGS_HTML, /render\(body\);\n      setLive\(true\);/);
-    assert.match(LOGS_HTML, /if \(error\.name === 'AbortError'\) return;\n      setLive\(false\);/);
+  });
+
+  it('every page switches LIVE: green with data, gray without', async () => {
+    const tone = (page: { $(id: string): { className: string } }) => page.$('shell-live').className;
+    const dashboard = renderPage(DASHBOARD_HTML, dashboardState());
+    assert.match(tone(dashboard), /tone-green/);
+    const agent = renderPage(AGENT_HTML, { detail: issueDetail(), online: true }, { url: AGENT_URL });
+    assert.match(tone(agent), /tone-green/);
+    agent.render({ online: false });
+    assert.match(tone(agent), /tone-gray/);
+    const logs = renderPage(LOGS_HTML, undefined, { fetch: () => analyticsFixture() });
+    await until(() => /tone-green/.test(tone(logs)), 3_000, 'logs LIVE green');
+    const broken = renderPage(LOGS_HTML, undefined, { fetch: () => { throw new Error('offline'); } });
+    await until(() => /tone-gray/.test(tone(broken)), 3_000, 'logs LIVE gray');
   });
 
   it('at 390 px the navigation scrolls inside its frame, the page does not; touch targets are at least 44px', () => {
@@ -1364,5 +1356,294 @@ describe('GET /api/v1/budget', () => {
 
   it('rejects other methods', async () => {
     assert.equal((await request(server.port, 'POST', '/api/v1/budget')).status, 405);
+  });
+});
+
+describe('dashboard page behaviour', () => {
+  const ID = 'acme/app#2';
+  const idPath = encodeURIComponent(ID);
+  const waiting = (over: Record<string, unknown> = {}) =>
+    issueRow({
+      issue_id: '2', issue_identifier: ID, title: 'Second', status: 'retrying', section: 'waiting', running: null, tracked: true, position: null,
+      reason: { code: 'backoff', text: 'Backoff until 2026-10-30 12:30 UTC' },
+      retry: { kind: 'failure', attempt: 2, due_at: '2026-10-30T12:30:00Z', due_in_ms: 1_800_000, error: 'boom', limit: null },
+      ...over,
+    });
+  const render = (issues: unknown[], over: Record<string, unknown> = {}, opts = {}) => renderPage(DASHBOARD_HTML, dashboardState({ issues, ...over }), opts);
+  const buttons = (page: ReturnType<typeof renderPage>) => page.query('button.restart');
+  const button = (page: ReturnType<typeof renderPage>, text: string) => {
+    const found = buttons(page).find((b) => b.textContent === text);
+    assert.ok(found, `button ${text}`);
+    return found;
+  };
+
+  it('loads the state and the history when the page opens', () => {
+    const page = renderPage(DASHBOARD_HTML);
+    assert.deepEqual(page.fetches.map((f) => f.url), ['/api/v1/state', '/api/v1/history']);
+  });
+
+  it('puts every card into its section with a count, and hides the empty queue sections', () => {
+    const page = render(
+      [issueRow(), waiting({ issue_id: '3', issue_identifier: 'acme/app#3', section: 'next', status: 'queued', retry: null, reason: { code: 'ready', text: 'Ready' }, position: 1 }), waiting()],
+      { counts: { ...dashboardState().counts, running: 1 }, board_fetched_at: '2026-10-30T11:59:00Z' },
+    );
+    assert.equal(page.$('running').children.length, 1);
+    assert.equal(page.$('next').children.length, 1);
+    assert.equal(page.$('waiting').children.length, 1);
+    assert.deepEqual(['running', 'next', 'waiting', 'paused'].map((n) => page.$(`${n}-count`).textContent), ['01', '01', '01', '00']);
+    assert.equal(page.$('next-section').hidden, false);
+    assert.equal(page.$('paused-section').hidden, true);
+    assert.equal(page.$('next-meta').textContent, 'in start order · board as of 1m 0s ago');
+    assert.equal(page.$('next').querySelector('.pos')!.textContent, '#1');
+    assert.equal(page.$('next').querySelector('.pos')!.hidden, false);
+    const empty = render([]);
+    for (const name of ['next', 'waiting', 'paused']) assert.equal(empty.$(`${name}-section`).hidden, true, name);
+  });
+
+  it('links the card title to the issue page and shows model and phase of a running issue', () => {
+    const page = render([issueRow()], { counts: { ...dashboardState().counts, running: 1 } });
+    assert.equal(page.$('running').querySelector('a.agent-link')!.href, '/issue?id=acme%2Fapp%231');
+    const fields = page.$('running').querySelectorAll('dd').map((d) => d.textContent);
+    assert.deepEqual(fields, ['claude-code-default', 'StreamingTurn']);
+  });
+
+  it('names the reason of a waiting card and shows its UTC time in local time', () => {
+    const page = render([waiting()]);
+    const chip = page.$('waiting').querySelector('.reason')!;
+    assert.match(chip.className, /tone-amber/);
+    assert.equal(chip.title, 'backoff: Backoff until 2026-10-30 12:30 UTC');
+    assert.doesNotMatch(chip.textContent, /UTC/, 'the shown time is local');
+    assert.match(chip.textContent, /^Backoff until /);
+  });
+
+  it('offers Retry now, Start now and Pause on a waiting card, and posts the click', () => {
+    const page = render([waiting()], { counts: { ...dashboardState().counts, running: 0 } });
+    assert.deepEqual(buttons(page).map((b) => b.textContent), ['Retry now', 'Start now', 'Pause']);
+    page.click(button(page, 'Retry now'));
+    page.click(button(page, 'Start now'));
+    page.click(button(page, 'Pause'));
+    assert.deepEqual(page.fetches.slice(2).map((f) => `${f.method} ${f.url}`), [
+      `POST /api/v1/${idPath}/retry`,
+      `POST /api/v1/${idPath}/force`,
+      `POST /api/v1/${idPath}/pause`,
+    ]);
+    assert.deepEqual(page.confirms, [], 'a free slot needs no confirmation');
+  });
+
+  it('offers Resume now on a paused card', () => {
+    const page = render([waiting({ status: 'paused', section: 'paused', retry: null, reason: { code: 'paused', text: 'Paused' }, paused: { source: 'operator', paused_at: '2026-10-30T11:50:00Z' } })]);
+    assert.equal(page.$('paused-section').hidden, false);
+    assert.match(page.$('paused').textContent, /paused by operator/);
+    page.click(button(page, 'Resume now'));
+    assert.equal(page.fetches.at(-1)!.url, `/api/v1/${idPath}/resume`);
+  });
+
+  it('asks before Start now when every slot is taken, and starts nothing when declined', () => {
+    const full = { counts: { ...dashboardState().counts, running: 1 }, health: { ...dashboardState().health, max_concurrent_agents: 1 } };
+    const declined = render([waiting()], full, { confirm: false });
+    const before = declined.fetches.length;
+    declined.click(button(declined, 'Start now'));
+    assert.deepEqual(declined.confirms, ['All 1 slot is busy. Start #2 in an extra slot?']);
+    assert.equal(declined.fetches.length, before);
+    const accepted = render([waiting()], full);
+    accepted.click(button(accepted, 'Start now'));
+    assert.equal(accepted.fetches.at(-1)!.url, `/api/v1/${idPath}/force`);
+  });
+
+  it('counts forced sessions in the slot bar and takes the Start now button away from held models', () => {
+    const page = render([], { counts: { ...dashboardState().counts, running: 2, forced: 1 } });
+    assert.match(page.$('slots').textContent, /02 \/ 10 agents, 1 forced/);
+    const held = render([waiting({ model_hold: { model: 'opus', until: '2026-10-30T14:00:00Z' }, reason: { code: 'model_hold', text: 'Model hold' } })]);
+    assert.ok(!buttons(held).some((b) => b.textContent === 'Start now'));
+  });
+
+  it('shows the model controls and posts a hold', () => {
+    const page = render([], { model_controls: [{ model: 'opus', paused: false, limit_until: null }] });
+    assert.equal(page.$('model-controls').hidden, false);
+    assert.match(page.$('model-controls').textContent, /opus.*running/);
+    const [control] = page.query('button.model-control');
+    assert.equal(control!.textContent, 'Pause');
+    page.click(control!);
+    assert.deepEqual(page.fetches.at(-1), { url: '/api/v1/models/opus/hold', method: 'POST' });
+    const resumed = render([], { model_controls: [{ model: 'opus', paused: true, limit_until: null }] });
+    assert.match(resumed.$('model-controls').textContent, /paused by operator/);
+    resumed.click(resumed.query('button.model-control')[0]!);
+    assert.equal(resumed.fetches.at(-1)!.url, '/api/v1/models/opus/release');
+  });
+
+  it('names held models and the cards that wait for them', () => {
+    const hold = { model: 'opus', source: 'limit', until: '2026-10-30T14:00:00Z', since: '2026-10-30T11:00:00Z', issue_identifier: ID, text: 'weekly limit' };
+    const page = render([waiting({ status: 'queued', retry: null, reason: null, model_hold: hold })], { model_holds: [hold] });
+    assert.equal(page.$('model-holds').hidden, false);
+    assert.match(page.$('model-hold-list').textContent, /^Model opus on hold until .* · hit by acme\/app#2 · weekly limit$/);
+    assert.match(page.$('waiting').textContent, /Waiting for model opus \(limit until /);
+    assert.equal(render([]).$('model-holds').hidden, true);
+  });
+
+  const stagesOf = (verdictStage: Record<string, unknown>) => [
+    { id: 'dev', label: 'developer', kind: 'agent', columns: ['In progress'], status: 'active', sessions: [], verdict: null, round: null, ...verdictStage },
+    { id: 'rev', label: 'reviewer', kind: 'agent', columns: ['Review'], status: 'skipped', sessions: [], verdict: null, round: null },
+  ];
+
+  it('draws the pipeline of a card with its verdict, round and skipped stage', () => {
+    const page = render([issueRow({ stages: stagesOf({ verdict: 'changes_needed', round: 1 }) })]);
+    const nodes = page.$('running').querySelectorAll('.pipe-node');
+    assert.equal(nodes.length, 2);
+    assert.match(nodes[0]!.title, /verdict: changes needed · round 1/);
+    assert.match(nodes[1]!.className, /st-skipped/);
+    assert.equal(page.$('running').querySelectorAll('.pipe-node.st-skipped').length, 1);
+  });
+
+  it('shows the dispatch note of a waiting card and no generic waiting hint', () => {
+    const card = { retry: null, reason: null, section: 'next', status: 'queued', position: 1 };
+    const noted = render([waiting({ ...card, dispatch_note: 'Blocked by #9' })]);
+    assert.match(noted.$('next').textContent, /Blocked by #9/);
+    const plain = render([waiting({ ...card, dispatch_note: null })]);
+    assert.doesNotMatch(plain.root.textContent, /Waiting for a free agent slot or the next poll/);
+  });
+
+  it('shows the dispatch gate only when the session limit paused the dispatch', () => {
+    const gate = { until: '2026-10-30T14:00:00Z', window: 'five_hour', issue_identifier: ID };
+    const page = render([], { health: { ...dashboardState().health, dispatch_gate: gate } });
+    assert.equal(page.$('dispatch-gate').hidden, false);
+    assert.match(page.$('dispatch-gate-text').textContent, /^Dispatch paused until .* · session limit \(five_hour\) · started by acme\/app#2$/);
+    assert.equal(render([]).$('dispatch-gate').hidden, true);
+  });
+
+  it('describes a session limit retry, also when the extra usage is off', () => {
+    const limit = { waiting: true, resets_at: '2026-10-30T14:00:00Z', window: 'five_hour', text: 'You hit your limit', hits: 1, max_retries: 3, overage_disabled_reason: 'out_of_credits' };
+    const retry = { kind: 'session_limit', attempt: 1, due_at: '2026-10-30T14:00:00Z', due_in_ms: 7_200_000, error: 'limit', limit };
+    const page = render([waiting({ retry, reason: null })]);
+    const text = page.$('waiting').textContent;
+    assert.match(text, /waiting for reset/);
+    assert.match(text, /five hour/);
+    assert.match(text, /You hit your limit/);
+    assert.match(text, /Extra usage is off because credits are used up\. Top up, then press Retry now\./);
+  });
+
+  it('lets the operator change and reset the agent slots', () => {
+    const limits = { ...dashboardState().limits, override_active: true, max_concurrent_agents: { effective: 3, workflow: 10, override: 3 } };
+    const page = render([], { limits });
+    const slots = page.$('slot-settings');
+    assert.equal(slots.hidden, false);
+    const reset = slots.querySelector('button.slot-reset')!;
+    assert.equal(reset.textContent, 'Reset to WORKFLOW.md (10)');
+    const more = page.query('button.slot-control').find((b) => b.getAttribute('aria-label') === 'More agent slots')!;
+    page.click(more);
+    assert.deepEqual(page.fetches.at(-1), { url: '/api/v1/settings/agents', method: 'PUT', body: { max_concurrent_agents: 4 } });
+    const again = render([], { limits });
+    again.click(again.$('slot-settings').querySelector('button.slot-reset')!);
+    assert.deepEqual([again.fetches.at(-1)!.url, again.fetches.at(-1)!.method], ['/api/v1/settings/agents', 'DELETE']);
+  });
+
+  it('warns when the limit is lowered below the running count', () => {
+    const limits = { ...dashboardState().limits, max_concurrent_agents: { effective: 1, workflow: 10, override: 1 } };
+    const page = render([], { limits, counts: { ...dashboardState().counts, running: 3 } });
+    assert.match(page.$('slot-settings').textContent, /3 running, limit 1: no new starts until 3 finish/);
+  });
+
+  it('disables every control on a bind that does not allow remote control', () => {
+    const page = render([waiting()], { controls: { retry: false } });
+    assert.equal(buttons(page).length, 0);
+    assert.match(page.$('waiting').textContent, /Controls disabled/);
+  });
+});
+
+describe('agent page behaviour', () => {
+  const opts = { url: AGENT_URL };
+  const retrying = (retry: Record<string, unknown>) => issueDetail({ status: 'retrying', running: null, retry });
+  const sessionLimit = { kind: 'session_limit', attempt: 1, due_at: '2026-10-30T13:00:00Z', due_in_ms: 3_600_000, error: 'limit', limit: { waiting: true, resets_at: '2026-10-30T13:00:00Z', window: 'five_hour', text: 'You hit the limit', hits: 1, max_retries: 3 } };
+
+  it('shows a stage result with a link to its comment', () => {
+    const results = [{ role: 'developer', kind: 'implementation', verdict: 'done', round: null, target: 'Agent review', summary: 'Done.', created_at: '2026-10-30T11:00:00Z', url: 'https://github.com/acme/app/issues/1#issuecomment-1', findings: [], blockers: [] }];
+    const page = renderPage(AGENT_HTML, { detail: issueDetail({ results }) }, opts);
+    const [link] = page.$('result-cards').querySelectorAll('a');
+    assert.equal(link!.textContent, 'Comment ↗');
+    assert.equal(link!.href, results[0]!.url);
+    assert.equal(page.$('results-section').hidden, false);
+  });
+
+  it('explains a session limit with the window and the reset time', () => {
+    const page = renderPage(AGENT_HTML, { detail: retrying(sessionLimit) }, opts);
+    const alert = page.$('alert');
+    assert.equal(alert.hidden, false);
+    assert.match(alert.className, /tone-amber/);
+    assert.match(alert.textContent, /Session limit reached/);
+    assert.match(alert.textContent, /five hour/);
+    assert.match(alert.textContent, /Resets at/);
+    assert.match(page.$('main').textContent, /⏳ Waiting for limit/);
+    const event = { seq: 1, at: '2026-10-30T11:59:00Z', kind: 'orchestrator', event: 'retry_scheduled', level: 'info', message: 'x', detail: { kind: 'session_limit', attempt: 1, due_at: '2026-10-30T13:00:00Z', limit: sessionLimit.limit } };
+    const timeline = renderPage(AGENT_HTML, { detail: retrying(sessionLimit), events: [event], dirty: true }, opts);
+    assert.match(timeline.$('timeline').textContent, /WAITING FOR RESET/);
+  });
+
+  it('counts the session limit retries while the limit is not yet waiting', () => {
+    const limit = { ...sessionLimit.limit, waiting: false, hits: 1, max_retries: 3 };
+    const event = { seq: 1, at: '2026-10-30T11:59:00Z', kind: 'orchestrator', event: 'retry_scheduled', level: 'info', message: 'x', detail: { kind: 'session_limit', attempt: 1, due_at: '2026-10-30T13:00:00Z', limit } };
+    const page = renderPage(AGENT_HTML, { detail: retrying({ ...sessionLimit, limit }), events: [event], dirty: true }, opts);
+    assert.match(page.$('timeline').textContent, /SESSION LIMIT · RETRY 1\/3/);
+    assert.doesNotMatch(page.$('timeline').textContent, /WAITING FOR RESET/);
+    assert.match(page.$('main').textContent, /⏳ Session limit #1/);
+    assert.doesNotMatch(page.$('main').textContent, /Waiting for limit/);
+  });
+
+  it('labels a session that ended on the limit', () => {
+    const session = { run: 'r1', attempt: null, role: 'default', state: 'Todo', model: null, effort: null, started_at: '2026-10-30T11:00:00Z', finished_at: '2026-10-30T11:30:00Z', outcome: 'session_limit', transcript: null };
+    const page = renderPage(AGENT_HTML, { detail: issueDetail({ sessions: [session] }) }, opts);
+    assert.match(page.$('main').textContent, /session limit/);
+  });
+
+  it('draws the pipeline with verdict, round and the skipped stage', () => {
+    const pipeline = [
+      { id: 'dev', label: 'developer', kind: 'agent', columns: ['In progress'], status: 'done', sessions: [], verdict: 'changes_needed', round: 1 },
+      { id: 'rev', label: 'reviewer', kind: 'agent', columns: ['Review'], status: 'skipped', sessions: [], verdict: null, round: null },
+    ];
+    const page = renderPage(AGENT_HTML, { detail: issueDetail({ pipeline }) }, opts);
+    const verdict = page.$('pipeline').querySelector('.pipe-verdict.vd-warn')!;
+    assert.equal(verdict.textContent, 'changes needed · round 1');
+    assert.equal(page.$('pipeline').querySelectorAll('.pipe-node.st-skipped').length, 1);
+  });
+
+  it('pauses a running issue and shows Resume now for an operator pause', () => {
+    const running = renderPage(AGENT_HTML, { detail: issueDetail() }, opts);
+    const pause = running.query('button.restart').find((b) => b.textContent === 'Pause')!;
+    running.click(pause);
+    assert.deepEqual(running.fetches.at(-1), { url: '/api/v1/acme%2Fapp%231/pause', method: 'POST' });
+    const paused = renderPage(AGENT_HTML, { detail: issueDetail({ status: 'paused', running: null, paused: { source: 'operator', paused_at: '2026-10-30T11:50:00Z', continuations: 0 } }) }, opts);
+    assert.match(paused.$('alert').textContent, /Paused by operator/);
+    const resume = paused.query('button.restart').find((b) => b.textContent === 'Resume now')!;
+    paused.click(resume);
+    assert.equal(paused.fetches.at(-1)!.url, '/api/v1/acme%2Fapp%231/resume');
+  });
+
+  it('asks before Start now when every slot is taken', () => {
+    const detail = retrying(sessionLimit);
+    detail.slots = { running: 1, forced: 0, limit: 1 };
+    const page = renderPage(AGENT_HTML, { detail }, { ...opts, confirm: false });
+    const force = page.query('button.restart').find((b) => b.textContent === 'Start now')!;
+    const before = page.fetches.length;
+    page.click(force);
+    assert.deepEqual(page.confirms, ['All 1 slot is busy. Start #1 in an extra slot?']);
+    assert.equal(page.fetches.length, before);
+  });
+
+  it('lists the restart and extra-slot events in the timeline', () => {
+    const event = (seq: number, name: string, message: string) => ({ seq, at: '2026-10-30T11:59:00Z', kind: 'orchestrator', event: name, level: 'info', message, detail: {} });
+    const page = renderPage(AGENT_HTML, { detail: issueDetail(), events: [event(1, 'worker_restarted', 'Restarted'), event(2, 'worker_forced', 'Forced')], dirty: true }, opts);
+    const text = page.$('timeline').textContent;
+    assert.match(text, /WORKER RESTARTED/);
+    assert.match(text, /STARTED IN AN EXTRA SLOT/);
+  });
+
+  it('fetches the incremental timeline and the session transcript while polling', async () => {
+    const detail = issueDetail({ timeline_seq: 1, sessions: [{ run: 'r1', attempt: null, role: 'default', state: 'Todo', model: null, effort: null, started_at: '2026-10-30T11:00:00Z', finished_at: null, outcome: null, transcript: '/t/r1.jsonl' }] });
+    const page = renderPage(AGENT_HTML, undefined, {
+      ...opts,
+      fetch: (url) => (url.includes('/timeline') ? { events: [], latest_seq: 1, first_seq: 1 } : url.includes('/transcript') ? { available: true, entries: [], next_offset: 0, more: false } : detail),
+    });
+    await until(() => page.fetches.some((f) => f.url.includes('/transcript?run=')), 3_000, 'transcript request');
+    const urls = page.fetches.map((f) => f.url);
+    assert.ok(urls.some((u) => u.endsWith('/timeline?after=0')), urls.join(' '));
+    assert.ok(urls.some((u) => u.includes('/transcript?run=r1')));
   });
 });
