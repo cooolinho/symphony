@@ -203,7 +203,7 @@ describe('system cards: values as in the API, German texts', () => {
 describe('system cards: own 10 s interval', () => {
   it('loads /api/v1/system every 10 s next to the 2 s state polling, and a failure empties the tiles', () => {
     assert.match(DASHBOARD_HTML, /setInterval\(loadSystem, 10000\);/);
-    assert.match(DASHBOARD_HTML, /setInterval\(load, 2000\);/);
+    assert.match(DASHBOARD_HTML, /live\(load, pollEvery\(load, 2000\)\);/);
     const source = DASHBOARD_HTML.slice(DASHBOARD_HTML.indexOf('async function loadSystem('));
     const body = source.slice(0, source.indexOf('\n  }\n'));
     assert.match(body, /fetch\('\/api\/v1\/system', \{ cache: 'no-store' \}\)/);

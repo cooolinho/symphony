@@ -1533,7 +1533,10 @@ ${PIPELINE_JS}
     renderActivity();
   }
 
+  let loading = false, reloadAgain = false;
   async function load() {
+    if (loading) { reloadAgain = true; return; }
+    loading = true;
     const progress = $('progress');
     progress.classList.remove('tick');
     void progress.offsetWidth;
@@ -1549,6 +1552,8 @@ ${PIPELINE_JS}
       $('problems').hidden = false;
       $('problem-list').replaceChildren(el('li', 'orchestrator unreachable: ' + error.message));
     }
+    loading = false;
+    if (reloadAgain) { reloadAgain = false; load(); }
   }
 
   const refresh = $('refresh');
@@ -1578,7 +1583,7 @@ ${PIPELINE_JS}
   load();
   loadHistory();
   loadSystem();
-  setInterval(load, 2000);
+  live(load, pollEvery(load, 2000));
   setInterval(loadSystem, 10000);
   setInterval(loadHistory, 30000);
   // Tests load the page in a fake DOM and render a fixture through window.__render.
