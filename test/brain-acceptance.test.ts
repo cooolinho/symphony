@@ -43,10 +43,10 @@ function walk(dir: string, base = dir): string[] {
 
 describe('brain vault acceptance', () => {
   describe('structure', () => {
-    it('creates exactly README.md and the six folders for an empty repository list', async () => {
+    it('creates exactly README.md, the two Bases views and the six folders for an empty repository list', async () => {
       const vault = path.join(tempDir(), 'vault');
       await ensureVault(vault, []);
-      assert.deepEqual(walk(vault), ['Agents', 'Decisions', 'Inbox', 'Issues', 'Lessons', 'README.md', 'Repos']);
+      assert.deepEqual(walk(vault), ['Agents', 'Decisions', 'Inbox', 'Issues', 'Kandidaten-Review.base', 'Lessons', 'Neueste Lessons.base', 'README.md', 'Repos']);
     });
 
     it('creates missing parent directories of the vault path', async () => {
