@@ -67,7 +67,7 @@ describe('E1-3 page shell', () => {
       createAdapter: () => new FakeTracker(),
     });
     server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
-    for (const [name, path] of [['dashboard', '/'], ['agent', '/agent'], ['logs', '/logs']] as const) {
+    for (const [name, path] of [['dashboard', '/'], ['agent', '/issue'], ['logs', '/stats']] as const) {
       const res = await get(server.port, path);
       assert.equal(res.status, 200, path);
       pages[name] = res.body;
@@ -350,7 +350,7 @@ describe('E1-3 page shell', () => {
 
   describe('routes', () => {
     it('the pages still answer with HTML', async () => {
-      for (const path of ['/', '/agent', '/logs']) {
+      for (const path of ['/', '/changes', '/tasks', '/brain', '/issue', '/stats']) {
         const res = await get(server.port, path);
         assert.equal(res.status, 200);
         assert.match(res.body, /^<!doctype html>/i);

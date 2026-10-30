@@ -10,6 +10,9 @@ import { AGENT_HTML } from '../src/http/agent-page.ts';
 import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
 import { BOOST_ICON_URI } from '../src/http/icons.ts';
 import { LOGS_HTML } from '../src/http/logs-page.ts';
+import { CHANGES_HTML } from '../src/http/changes-page.ts';
+import { TASKS_HTML } from '../src/http/tasks-page.ts';
+import { BRAIN_HTML } from '../src/http/brain-page.ts';
 import { AURORA, LAYOUT_CSS, LAYOUT_JS, NAV_ITEMS, page as shellPage } from '../src/http/ui/layout.ts';
 import { TOKENS_CSS } from '../src/http/ui/tokens.ts';
 import { BASE_JS } from '../src/http/styles.ts';
@@ -244,17 +247,84 @@ describe('http extension', () => {
 
   it('links the logs page from the dashboard and serves it', async () => {
     const dashboard = (await request(server.port, 'GET', '/')).body;
-    assert.match(dashboard, /href="\/logs"/);
+    assert.match(dashboard, /href="\/stats"/);
     // The Logs button opens a drawer fed by the history API; the link stays as a fallback.
     assert.match(dashboard, /role="dialog"[^>]*aria-labelledby="logs-title"/);
     assert.match(dashboard, /fetch\('\/api\/v1\/history'/);
-    const page = await request(server.port, 'GET', '/logs');
+    const page = await request(server.port, 'GET', '/stats');
     assert.equal(page.status, 200);
     assert.match(page.body, /<title>Statistik · Symphony<\/title>/);
     assert.ok(page.body.includes(TOKENS_CSS), 'logs page embeds the tokens CSS');
     const stats = await request(server.port, 'GET', '/stats');
     assert.equal(stats.status, 200);
     assert.equal(stats.body, page.body, '/stats serves the statistics page until #346 routes it');
+  });
+
+  it('serves all page routes in the shell (E1-4)', async () => {
+    const pages: Array<[string, string | null, string]> = [
+      ['/', 'href="/" aria-current="page"', 'Symphony'],
+      ['/changes', 'href="/changes" aria-current="page"', 'Changes'],
+      ['/tasks', 'href="/tasks" aria-current="page"', 'Tasks'],
+      ['/brain', 'href="/brain" aria-current="page"', 'Brain'],
+      ['/stats', 'href="/stats" aria-current="page"', 'Statistik'],
+      ['/issue?id=acme%2Fapp%231', null, 'Issue'],
+    ];
+    for (const [path, current, text] of pages) {
+      const res = await request(server.port, 'GET', path);
+      assert.equal(res.status, 200, path);
+      assert.match(res.headers['content-type'] ?? '', /text\/html/, path);
+      if (current !== null) assert.ok(res.body.includes(current), `${path} marks its navigation entry`);
+      assert.ok(res.body.includes(text), path);
+    }
+    const issue = (await request(server.port, 'GET', '/issue?id=acme%2Fapp%231')).body;
+    assert.ok(issue.includes('id="crumb-current">Issue<'));
+    const placeholders: Array<[string, string]> = [['/changes', 'Changes'], ['/tasks', 'Tasks'], ['/brain', 'Brain']];
+    for (const [path, title] of placeholders) {
+      const res = await request(server.port, 'GET', path);
+      assert.ok(res.body.includes('Diese Seite kommt in Kürze.'), path);
+      assert.ok(res.body.includes(`<h1 id="page-title">${title}</h1>`), path);
+      const head = await request(server.port, 'HEAD', path);
+      assert.equal(head.status, 200);
+      assert.equal(head.body, '');
+      const post = await request(server.port, 'POST', path);
+      assert.equal(post.status, 405);
+      assert.equal(post.headers.allow, 'GET, HEAD');
+    }
+  });
+
+  it('redirects the former page paths with 301 and keeps the query (E1-4)', async () => {
+    const cases: Array<[string, string]> = [
+      ['/logs', '/stats'],
+      ['/logs?period=7d', '/stats?period=7d'],
+      ['/agent?id=repo%2F1', '/issue?id=repo%2F1'],
+    ];
+    for (const [from, to] of cases) {
+      for (const method of ['GET', 'HEAD']) {
+        const res = await request(server.port, method, from);
+        assert.equal(res.status, 301, `${method} ${from}`);
+        assert.equal(res.headers.location, to);
+      }
+    }
+    assert.equal((await request(server.port, 'DELETE', '/logs')).status, 405);
+  });
+
+  it('applies the host check to every page route and redirect (E1-4)', async () => {
+    for (const path of ['/', '/changes', '/tasks', '/brain', '/stats', '/issue?id=x', '/logs', '/agent?id=x']) {
+      for (const host of ['evil.example:80', 'bad host']) {
+        const res = await request(server.port, 'GET', path, { host });
+        assert.equal(res.status, 403, `${path} with Host ${host}`);
+        assert.equal(JSON.parse(res.body).error.code, 'forbidden_host');
+        assert.equal(res.headers.location, undefined);
+      }
+    }
+  });
+
+  it('keeps the old routes out of the client links (E1-4)', () => {
+    for (const html of [DASHBOARD_HTML, LOGS_HTML, AGENT_HTML]) {
+      assert.doesNotMatch(html, /href="\/logs"|\/agent\?id=/);
+    }
+    assert.ok(DASHBOARD_HTML.includes('href="/stats"') && DASHBOARD_HTML.includes("'/issue?id='"));
+    assert.ok(LOGS_HTML.includes("'/issue?id='"));
   });
 
   it('serves history statistics for all repositories or one, and the raw log', async () => {
@@ -278,7 +348,7 @@ describe('http extension', () => {
   });
 
   it('serves analytics and log entries for one period, repository and model', async () => {
-    const page = (await request(server.port, 'GET', '/logs')).body;
+    const page = (await request(server.port, 'GET', '/stats')).body;
     assert.match(page, /\/api\/v1\/history\/analytics\?/);
     assert.match(page, /\/api\/v1\/history\/entries\?/);
     assert.match(page, /data-body="roles"/);
@@ -325,7 +395,7 @@ describe('http extension', () => {
   });
 
   it('serves the agent detail view and links the agent cards to it', async () => {
-    const page = await request(server.port, 'GET', '/agent?id=acme%2Fapp%231');
+    const page = await request(server.port, 'GET', '/issue?id=acme%2Fapp%231');
     assert.equal(page.status, 200);
     assert.match(page.body, /<nav class="crumbs" aria-label="Brotkrumen">/);
     assert.ok(page.body.includes(TOKENS_CSS), 'agent page embeds the tokens CSS');
@@ -357,9 +427,9 @@ describe('http extension', () => {
     assert.match(page.body, /worker_forced/);
     assert.match(page.body, /restartButton\('Force'\)/);
     assert.match(page.body, /' in an extra slot\?'/);
-    assert.equal((await request(server.port, 'HEAD', '/agent')).status, 200);
+    assert.equal((await request(server.port, 'HEAD', '/issue')).status, 200);
     const dashboard = (await request(server.port, 'GET', '/')).body;
-    assert.match(dashboard, /'\/agent\?id=' \+ encodeURIComponent\(row\.issue_identifier\)/);
+    assert.match(dashboard, /'\/issue\?id=' \+ encodeURIComponent\(row\.issue_identifier\)/);
     // Cards flag needs-human issues and show the spent share of the cost budget.
     assert.match(dashboard, /function flagChips\(row\)/);
     assert.match(dashboard, /'needs human'/);
@@ -1107,7 +1177,7 @@ describe('system route', () => {
 });
 
 describe('page shell (layout.ts, #342)', () => {
-  const PAGES = { dashboard: DASHBOARD_HTML, agent: AGENT_HTML, logs: LOGS_HTML };
+  const PAGES = { dashboard: DASHBOARD_HTML, agent: AGENT_HTML, logs: LOGS_HTML, changes: CHANGES_HTML, tasks: TASKS_HTML, brain: BRAIN_HTML };
   const header = (html: string): string => html.slice(html.indexOf('<header'), html.indexOf('</header>') + 9);
   const mainNav = (html: string): string => {
     const at = html.indexOf('aria-label="Hauptnavigation"');
@@ -1178,11 +1248,11 @@ describe('page shell (layout.ts, #342)', () => {
     assert.deepEqual(current(AGENT_HTML), []);
     assert.equal(count(mainNav(DASHBOARD_HTML), 'aria-current'), 1);
     assert.equal(count(AGENT_HTML, '<nav class="crumbs" aria-label="Brotkrumen">'), 1);
-    assert.match(AGENT_HTML, /aria-label="Brotkrumen"><ol><li><a href="\/">Übersicht<\/a><\/li><li><span class="crumb-current" id="crumb-current">Agent<\/span>/);
+    assert.match(AGENT_HTML, /aria-label="Brotkrumen"><ol><li><a href="\/">Übersicht<\/a><\/li><li><span class="crumb-current" id="crumb-current">Issue<\/span>/);
     for (const html of [DASHBOARD_HTML, LOGS_HTML]) assert.ok(!html.includes('aria-label="Brotkrumen"'));
     // The Übersicht crumb keeps the history.back() shortcut of the old back link; the crumb names the agent.
     assert.match(AGENT_HTML, /document\.querySelector\('nav\[aria-label="Brotkrumen"\] a\[href="\/"\]'\)\.addEventListener\('click'/);
-    assert.match(AGENT_HTML, /setText\(\$\('crumb-current'\), 'Agent ' \+ num\)/);
+    assert.match(AGENT_HTML, /setText\(\$\('crumb-current'\), 'Issue ' \+ num\)/);
   });
 
   it('replaces the three copied top bars; the page actions live in <main>', () => {

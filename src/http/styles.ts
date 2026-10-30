@@ -1,4 +1,4 @@
-import { BOOST_ICON_URI } from './icons.ts';
+import { BOOST_ICON_URI, ICONS_JS } from './icons.ts';
 import { COMPONENTS_JS } from './ui/components.ts';
 
 /** Client helpers shared by both pages (plain functions, no framework). */
@@ -94,83 +94,6 @@ export const BASE_JS = `
     for (const [k, v] of Object.entries(attrs || {})) node.setAttribute(k, String(v));
     return node;
   };
-  const TONES = ['green', 'cyan', 'amber', 'red', 'gray'];
-  const toneOf = (tone, fallback) => (TONES.includes(tone) ? tone : fallback);
-
-  /** Ring gauge: conic-gradient driven by --p (0-100), the percentage in monospace in the centre; null shows a gray "—". */
-  function ringGauge(opts) {
-    const { percent, label, tone } = opts || {};
-    const p = typeof percent === 'number' && Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : null;
-    const text = p === null ? '—' : Math.round(p) + '%';
-    const root = el('div', null, 'gauge tone-' + (p === null ? 'gray is-empty' : toneOf(tone, 'green')));
-    root.style.setProperty('--p', String(p === null ? 0 : p));
-    root.setAttribute('role', 'img');
-    root.setAttribute('aria-label', (label ? label + ': ' : '') + (p === null ? 'no data' : text));
-    const ring = el('div', null, 'gauge-ring');
-    ring.append(el('span', text, 'gauge-value num'));
-    root.append(ring);
-    if (label) root.append(el('span', label, 'gauge-label'));
-    return root;
-  }
-
-  /** Sparkline: one decorative svg with a polyline; no values give an empty svg. */
-  function sparkline(values, opts) {
-    const { width = 120, height = 28, tone = 'green' } = opts || {};
-    const svg = svgEl('svg', {
-      class: 'spark tone-' + toneOf(tone, 'green'), width, height, viewBox: '0 0 ' + width + ' ' + height,
-      preserveAspectRatio: 'none', 'aria-hidden': 'true', focusable: 'false',
-    });
-    const data = Array.isArray(values) ? values.filter((v) => typeof v === 'number' && Number.isFinite(v)) : [];
-    if (!data.length) return svg;
-    if (data.length === 1) data.push(data[0]);
-    const min = Math.min(...data);
-    const range = Math.max(...data) - min;
-    const pad = 1.5;
-    const points = data.map((v, i) => {
-      const x = (i * width) / (data.length - 1);
-      const y = range === 0 ? height / 2 : pad + (height - 2 * pad) * (1 - (v - min) / range);
-      return +x.toFixed(2) + ',' + +y.toFixed(2);
-    }).join(' ');
-    svg.append(svgEl('polyline', { class: 'spark-line', fill: 'none', points }));
-    return svg;
-  }
-
-  const AVATAR_ROLES = {
-    analyst: 'Analyst', architect: 'Architect', developer: 'Developer', tester: 'Tester', docs: 'Docs',
-    reviewer: 'Reviewer', security: 'Security', symphony: 'Symphony', human: 'Human',
-  };
-  const AVATAR_STATES = ['done', 'playing', 'waiting', 'returned', 'skipped'];
-
-  /** Role avatar: circle in the role colour with the initial; state is done, playing, waiting, returned or skipped. */
-  function avatar(opts) {
-    const { role, size } = opts || {};
-    const state = AVATAR_STATES.includes(opts && opts.state) ? opts.state : 'waiting';
-    const known = Object.prototype.hasOwnProperty.call(AVATAR_ROLES, role);
-    const name = known ? AVATAR_ROLES[role] : String(role || 'unknown');
-    const root = el('span', null, 'avatar av-' + state + (known ? ' role-' + role : ''));
-    const px = typeof size === 'number' && Number.isFinite(size) && size >= 16 && size <= 128 ? size : 36;
-    root.style.setProperty('--av-size', px + 'px');
-    root.setAttribute('role', 'img');
-    root.setAttribute('title', name + ' · ' + state);
-    root.setAttribute('aria-label', name + ' · ' + state);
-    const face = el('span', name.charAt(0).toUpperCase() || '?', 'avatar-face');
-    face.setAttribute('aria-hidden', 'true');
-    root.append(face);
-    if (state === 'done' || state === 'returned') {
-      const badgeEl = el('span', state === 'done' ? '✓' : '✕', 'avatar-badge');
-      badgeEl.setAttribute('aria-hidden', 'true');
-      root.append(badgeEl);
-    }
-    if (state === 'playing') {
-      const ring = el('span', null, 'ring ring-lg');
-      const eq = el('span', null, 'eq');
-      eq.append(el('i'), el('i'), el('i'));
-      ring.setAttribute('aria-hidden', 'true');
-      eq.setAttribute('aria-hidden', 'true');
-      root.append(ring, eq);
-    }
-    return root;
-  }
 
   // Entries of the per-repository logs (/api/v1/history): one-line description and severity.
   const OUTCOMES = {
@@ -257,4 +180,4 @@ export const BASE_JS = `
       return box;
     }));
   }
-${COMPONENTS_JS}`;
+${ICONS_JS}${COMPONENTS_JS}`;

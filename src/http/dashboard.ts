@@ -227,7 +227,7 @@ export const DASHBOARD_HTML = page({
       <div><dt>Polling</dt><dd id="sys-interval">—</dd></div>
       <div><dt>Last poll</dt><dd id="sys-lastpoll">—</dd></div>
     </dl>
-    <a class="btn" id="logs-open" href="/logs" aria-controls="logs-drawer" aria-expanded="false">
+    <a class="btn" id="logs-open" href="/stats" aria-controls="logs-drawer" aria-expanded="false">
       <svg class="btn-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 4h10M3 8h10M3 12h6"/></svg>Logs</a>`,
   })}
   <section id="repositories" class="repos" aria-label="Repositories" hidden><span class="repos-label">Repositories</span><div class="repo-list" id="repo-list"></div></section>
@@ -325,7 +325,7 @@ export const DASHBOARD_HTML = page({
     <div class="actions">
       <a class="btn" id="logs-raw" href="#" target="_blank" rel="noopener" hidden>Raw log</a>
       <button class="btn" id="logs-reload" type="button">Reload</button>
-      <a class="btn" href="/logs">Statistics ↗</a>
+      <a class="btn" href="/stats">Statistics ↗</a>
     </div>
   </div>
 </aside>`,
@@ -649,7 +649,7 @@ ${PIPELINE_JS}
     setText(refs.title, row.title || row.issue_identifier);
     // Only tracked issues have a trace; a queued issue without one links nowhere yet.
     if (row.tracked) {
-      const trace = '/agent?id=' + encodeURIComponent(row.issue_identifier);
+      const trace = '/issue?id=' + encodeURIComponent(row.issue_identifier);
       if (refs.title.getAttribute('href') !== trace) refs.title.href = trace;
     } else refs.title.removeAttribute('href');
     setText(refs.repo, row.repo && row.repo !== 'unknown' ? row.repo : repo);
@@ -795,7 +795,7 @@ ${PIPELINE_JS}
     else host.replaceChildren(list);
   }
 
-  const traceLink = (identifier) => link('trace →', '/agent?id=' + encodeURIComponent(identifier));
+  const traceLink = (identifier) => link('trace →', '/issue?id=' + encodeURIComponent(identifier));
 
   function emptyState(id, text, tone, sub) {
     const box = el('div', null, 'clear');

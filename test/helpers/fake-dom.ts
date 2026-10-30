@@ -48,6 +48,9 @@ export class FakeElement {
   set innerHTML(_v: string) {
     throw new Error('innerHTML must not be used for data');
   }
+  set outerHTML(_v: string) {
+    throw new Error('outerHTML must not be used for data');
+  }
   insertAdjacentHTML(): void {
     throw new Error('insertAdjacentHTML must not be used for data');
   }
@@ -91,8 +94,24 @@ export class FakeElement {
   addEventListener(type: string, fn: (event: object) => void): void {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
   }
+  /** Runs the listeners of type on this element; props (e.g. key, target) are merged into the event. */
+  dispatch(type: string, props: Record<string, unknown> = {}): void {
+    const event = { type, target: this, currentTarget: this, preventDefault: () => {}, ...props };
+    for (const fn of this.listeners.get(type) ?? []) fn(event);
+  }
   click(): void {
-    for (const fn of this.listeners.get("click") ?? []) fn({ type: "click", target: this, currentTarget: this, preventDefault: () => {} });
+    this.dispatch('click');
+  }
+  /** The element that got the focus last (focus() of any FakeElement). */
+  static active: FakeElement | null = null;
+  focus(): void {
+    FakeElement.active = this;
+  }
+  get tabIndex(): number {
+    return Number(this.attributes.get('tabindex') ?? -1);
+  }
+  set tabIndex(v: number) {
+    this.attributes.set('tabindex', String(v));
   }
 }
 

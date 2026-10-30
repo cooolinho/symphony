@@ -97,7 +97,7 @@ export interface Crumb {
 export interface PageOptions {
   /** Document title (escaped). */
   title: string;
-  /** Active main navigation entry, null on pages outside the navigation (e.g. the agent detail view). */
+  /** Active main navigation entry, null on pages outside the navigation (e.g. the issue detail view). */
   nav: NavKey | null;
   /** Entry highlighted as a pill without aria-current; only used when nav is null (the team view highlights Übersicht). */
   navHighlight?: NavKey;

@@ -244,7 +244,7 @@ export function checkStatusReporter(
   issue: Issue,
 ): Pick<GuardParams, 'reportStatus'> {
   if (!config.checks.reportStatus || adapter.reportCheckStatus === undefined) return {};
-  const targetUrl = config.server.publicUrl !== null ? `${config.server.publicUrl}/agent?id=${encodeURIComponent(issue.identifier)}` : null;
+  const targetUrl = config.server.publicUrl !== null ? `${config.server.publicUrl}/issue?id=${encodeURIComponent(issue.identifier)}` : null;
   return { reportStatus: (report) => adapter.reportCheckStatus?.(issue, { ...report, targetUrl }) ?? Promise.resolve() };
 }
 
@@ -651,6 +651,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       ...(brainTools.length > 0 ? { brainTools } : {}),
       toolContext: () => ({
         issue,
+        role: name,
+        ...(params.runId !== null ? { runId: params.runId } : {}),
         ...(subIssues !== null ? { maxSubIssues: subIssues } : {}),
         ...(role?.subIssueStatus != null ? { subIssueStatus: role.subIssueStatus } : {}),
       }),

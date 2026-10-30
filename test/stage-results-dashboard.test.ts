@@ -168,7 +168,7 @@ describe('bugfix issue through developer → reviewer, observed from outside', (
   });
 
   it('the agent page is served with the results section', async () => {
-    const page = await request(server.port, 'GET', '/agent');
+    const page = await request(server.port, 'GET', '/issue');
     assert.equal(page.status, 200);
     assert.match(page.body, /Stage results/);
     assert.match(page.body, /id="result-cards"/);

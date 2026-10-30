@@ -3607,7 +3607,7 @@ export class Orchestrator {
       model: plan?.model ?? rows.running?.requestedModel ?? null,
       labels: meta?.labels ?? [],
       priority: plan?.priority ?? meta?.priority ?? null,
-      /** True when the orchestrator holds debugging context, so /agent?id=… has something to show. */
+      /** True when the orchestrator holds debugging context, so /issue?id=… has something to show. */
       tracked: record !== undefined,
       /** The issue's cost against `agent.max_issue_cost_usd`; null without a cap or a repository. */
       budget: this.#budgetRow(issue, rows.running?.repo ?? record?.repo ?? null, workflow.config),

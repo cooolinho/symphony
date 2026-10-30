@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -6,31 +5,17 @@ import type { Logger } from '../log.ts';
 import type { AgentToolContext, AgentToolSpec, ToolResult } from '../tracker/types.ts';
 import { errorMessage } from '../util/errors.ts';
 import type { BrainConfig } from '../workflow/config.ts';
+import { fail, hashOf, MAX_NOTE_BYTES, ok, warnPurpose } from './common.ts';
 import { noteStatus, noteTitle, parseNote } from './note.ts';
 import { resolveVaultPath } from './paths.ts';
+import { createBrainWriteTools, type BrainWriteOptions } from './write.ts';
 
 export const MAX_SEARCH_RESULTS = 20;
-const MAX_NOTE_BYTES = 1024 * 1024;
 const EXCERPT_CHARS = 200;
-
-function ok(data: unknown): ToolResult {
-  return { ok: true, data };
-}
-
-function fail(category: string, message: string): ToolResult {
-  return { ok: false, error: { category, message } };
-}
 
 function fsFailure(error: unknown): ToolResult {
   if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return fail('not_found', 'no such file or folder in the vault');
   return fail('tool_error', errorMessage(error));
-}
-
-/** Access log comes with E7-4; until then a call without `purpose` only leaves a warning. */
-function warnPurpose(logger: Logger, tool: string, args: Record<string, unknown>, context: AgentToolContext): void {
-  const purpose = args.purpose;
-  if (typeof purpose === 'string' && purpose.trim() !== '') return;
-  logger.warn('brain tool called without purpose', { tool, issue: context.issue.identifier });
 }
 
 const PURPOSE = z.string().optional().describe('Why you read the vault (a few words); logged, please always give it');
@@ -152,7 +137,7 @@ export function createBrainTools(vaultPath: string, logger: Logger): AgentToolSp
           content: buffer.toString('utf8'),
           frontmatter: note.frontmatter,
           frontmatter_error: note.frontmatterError,
-          hash: createHash('sha256').update(buffer).digest('hex'),
+          hash: hashOf(buffer),
         });
       } catch (error) {
         return fsFailure(error);
@@ -201,7 +186,9 @@ export function createBrainTools(vaultPath: string, logger: Logger): AgentToolSp
   return [search, read, list];
 }
 
-/** The brain read tools of a session: none unless `brain.enabled` (the role switch follows with E7-5). */
-export function brainToolsFor(config: BrainConfig, logger: Logger): AgentToolSpec[] {
-  return config.enabled ? createBrainTools(config.path, logger) : [];
+export { createBrainWriteTools, type BrainWriteEntry, type BrainWriteOptions } from './write.ts';
+
+/** The brain tools of a session (read and write): none unless `brain.enabled` (the role switch follows with E7-5). */
+export function brainToolsFor(config: BrainConfig, logger: Logger, options: BrainWriteOptions = {}): AgentToolSpec[] {
+  return config.enabled ? [...createBrainTools(config.path, logger), ...createBrainWriteTools(config.path, logger, options)] : [];
 }

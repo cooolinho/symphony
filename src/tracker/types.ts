@@ -68,6 +68,10 @@ export interface AgentToolContext {
   subIssueStatus?: string;
   /** Set by the transition guard (`guardTools`) for a call it allowed; absent for every other call. */
   transition?: AllowedTransition;
+  /** Role name of the session. */
+  role?: string;
+  /** Run id; absent outside a run. */
+  runId?: string;
 }
 
 /** A move the transition guard allowed for one tool call. */
@@ -85,7 +89,7 @@ export interface AllowedTransition {
 
 export type ToolResult =
   | { ok: true; data: unknown }
-  | { ok: false; error: { category: string; message: string } };
+  | { ok: false; error: { category: string; message: string; /** Structured data for the agent, e.g. the current version of a note. */ details?: unknown } };
 
 /** A provider-native tool advertised to the agent and executed host-side by the adapter. */
 export interface AgentToolSpec {

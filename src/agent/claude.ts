@@ -185,7 +185,7 @@ function symphonyContext(issue: Issue, toolNames: string[], brainNames: string[]
     lines.push(`Read and update the issue on the tracker with these tools: ${toolNames.join(', ')}.`);
   }
   if (brainNames.length > 0) {
-    lines.push(`Search and read the knowledge vault (approved notes first) with these tools: ${brainNames.join(', ')}.`);
+    lines.push(`Search, read and write the knowledge vault (approved notes first; new notes start as candidate) with these tools: ${brainNames.join(', ')}.`);
   }
   for (const section of sections) lines.push('', section);
   if (extra !== null) lines.push('', extra);
