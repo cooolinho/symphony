@@ -299,6 +299,7 @@ Structure and contents: [Logs, transcripts and workspaces](usage.md#logs-transcr
 | `claude` | `/home/symphony/.claude` | Claude Code state |
 | `workspaces` | `/home/symphony/symphony-workspaces` | one clone per issue, plus pnpm's shared store `.pnpm-store` |
 | `composer-cache` | `/home/symphony/.cache/composer` | Composer cache, replaceable |
+| `brain` | `/home/symphony/brain` | knowledge vault (`brain.enabled`) |
 
 Compose prefixes the project name (usually the directory name): the volume is named e.g. `symphony_state`. Check the
 names with `docker volume ls`. Backing up a volume:
@@ -312,6 +313,7 @@ What matters:
 - **`state`** (statistics and logs) and **`claude`** (Claude state): back up.
 - **`workspaces`:** can be cloned again, but contain **unfinished work** (unpushed commits, changes).
 - **`composer-cache`:** does not need a backup.
+- **`brain`:** back it up; it holds the knowledge vault.
 
 ### Transferring existing history to the server
 

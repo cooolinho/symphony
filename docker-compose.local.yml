@@ -48,6 +48,8 @@ services:
             - state:/home/symphony/.local/state/symphony
             - claude:/home/symphony/.claude
             - composer-cache:/home/symphony/.cache/composer
+            # Brain vault (brain.enabled in WORKFLOW.md); Obsidian can open it later
+            - brain:/home/symphony/brain
             # "ci" profile: client certs for the dind daemon. No DOCKER_HOST here: agents share this environment,
             # the check scripts map SYMPHONY_CI_DOCKER_HOST / SYMPHONY_CI_DOCKER_CERT_PATH to DOCKER_* themselves.
             # Without the profile the volume stays empty.
@@ -146,6 +148,7 @@ volumes:
     state:
     claude:
     composer-cache:
+    brain:
     # "ci" profile: dind's certificates and image store.
     dind-certs-ca:
     dind-certs-client:

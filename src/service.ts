@@ -5,6 +5,7 @@ import { chooseRoleEffort, chooseRoleModel } from './agent/model.ts';
 import { PricingStore } from './costs/pricing.ts';
 import { HistoryLog } from './history/history.ts';
 import { killAllAgentProcessGroups } from './agent/spawn.ts';
+import { prepareBrain } from './brain/vault.ts';
 import { SystemCollector } from './system/metrics.ts';
 import { isLoopbackHost, startHttpServer, type HttpServerHandle } from './http/server.ts';
 import { defaultIntegrations } from './integrations/registry.ts';
@@ -15,6 +16,7 @@ import { waitingForSubIssues } from './orchestrator/eligibility.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
 import { RuntimeStateStore, runtimeStateFile } from './orchestrator/runtime-state.ts';
 import { hasLimitOverride, withAgentLimits } from './orchestrator/limits.ts';
+import { configuredRepositories } from './tracker/github-project/settings.ts';
 import { getTrackerFactory } from './tracker/registry.ts';
 import type { Issue, TrackerAdapter } from './tracker/types.ts';
 import type { LoadedEnvFile } from './util/env.ts';
@@ -107,6 +109,7 @@ export async function runService(options: ServiceOptions): Promise<number> {
   store.watch();
 
   const config = store.current.config;
+  await prepareBrain(config.brain, configuredRepositories(config.tracker.provider.repositories, env), logger);
   const system = new SystemCollector({
     volumes: [
       { name: 'state', path: options.logDir },

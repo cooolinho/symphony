@@ -208,6 +208,7 @@ export interface ServiceConfig {
   pipeline: PipelineConfig;
   server: ServerConfig;
   system: SystemConfig;
+  brain: BrainConfig;
   /** Non-fatal findings (ignored keys, ignored per-state limits) for operator logs. */
   warnings: string[];
 }
@@ -216,6 +217,14 @@ export interface ServiceConfig {
 export interface SystemConfig {
   /** Read GPU utilization, memory and temperature from nvidia-smi (default false: nvidia-smi is never called). */
   gpu: boolean;
+}
+
+/** Knowledge vault (`brain` section). */
+export interface BrainConfig {
+  /** Create and use the vault (default false: no path is touched). */
+  enabled: boolean;
+  /** Absolute vault directory, resolved from brain.path (default ~/brain). */
+  path: string;
 }
 
 export interface TrackerDefaults {
@@ -270,7 +279,8 @@ export const DEFAULTS = {
 const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'];
 export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
-const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server', 'system'];
+const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server', 'system', 'brain'];
+const BRAIN_KEYS = new Set(['enabled', 'path']);
 const ROLE_KEYS = new Set([
   'states',
   'read_only',
@@ -1170,6 +1180,19 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
   }
   const systemRaw = reader.section(raw, 'system');
   const system: SystemConfig = { gpu: reader.bool(systemRaw, 'gpu', 'system.gpu', false) };
+  const brainRaw = reader.section(raw, 'brain');
+  for (const key of Object.keys(brainRaw)) {
+    if (!BRAIN_KEYS.has(key)) reader.errors.push(`brain.${key} is not a known key (allowed: ${[...BRAIN_KEYS].join(', ')})`);
+  }
+  const brainEnabled = reader.bool(brainRaw, 'enabled', 'brain.enabled', false);
+  const brainPathValue = reader.string(brainRaw, 'path', 'brain.path')?.trim() || '~/brain';
+  let brainPath = '';
+  try {
+    brainPath = resolveConfigPath(brainPathValue, workflowDir, options.env, 'brain.path');
+  } catch (error) {
+    reader.errors.push(errorMessage(error));
+  }
+  const brain: BrainConfig = { enabled: brainEnabled, path: brainPath };
   if (server.port !== null && server.port > 65_535) reader.errors.push('server.port must be <= 65535');
 
   if (reader.errors.length > 0) {
@@ -1191,6 +1214,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     pipeline,
     server,
     system,
+    brain,
     warnings: reader.warnings,
   };
 }
