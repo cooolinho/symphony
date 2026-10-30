@@ -9,6 +9,7 @@ export const TOKENS_CSS = `
   :root {
     --bg: #070b16; --bg-2: #0a1020; --panel: #111a2c; --panel-2: #152036; --raise: #1a2640;
     --line: rgba(148, 163, 184, .14); --line-2: rgba(148, 163, 184, .24); --text: #e2e8f0; --text-2: #cbd5e1; --muted: #94a3b8; --faint: #8291a8;
+    --green: #3ddc84; --green-dim: rgba(61, 220, 132, .12); --green-line: rgba(61, 220, 132, .35);
     --cyan: #4fd1e8; --cyan-dim: rgba(79, 209, 232, .1); --cyan-line: rgba(79, 209, 232, .3);
     --amber: #f5b544; --amber-dim: rgba(245, 181, 68, .1); --amber-line: rgba(245, 181, 68, .35);
     --red: #ff5f6d; --red-dim: rgba(255, 95, 109, .1); --red-line: rgba(255, 95, 109, .4);
