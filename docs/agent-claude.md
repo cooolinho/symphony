@@ -149,11 +149,15 @@ comment names them, and `turn_completed` carries them in `detail.background_task
 
 ### Brain tools
 
-With `brain.enabled: true` a second in-process MCP server `brain` offers read access to the knowledge vault (the name `brain` is reserved for extensions, like `tracker`): `mcp__brain__brain_search`, `mcp__brain__brain_read` and `mcp__brain__brain_list`. Without `brain.enabled` the server is absent. Each call reports a `brain_tool` event.
+With `brain.enabled: true` a second in-process MCP server `brain` offers access to the knowledge vault (the name `brain` is reserved for extensions, like `tracker`): `mcp__brain__brain_search`, `mcp__brain__brain_read`, `mcp__brain__brain_list`, `mcp__brain__brain_write` and `mcp__brain__brain_append`. Without `brain.enabled` the server is absent. Each call reports a `brain_tool` event.
 
 - `brain_search(query, repo?, type?)`: title, frontmatter and full text of all `.md` notes, case-insensitive, every word must occur. `approved` notes come first, then `candidate`; `deprecated` never. At most 20 hits with `path`, `title`, `status`, `excerpt`.
 - `brain_read(path)`: `content`, parsed `frontmatter` and `hash` (SHA-256 of the file, for later writes).
 - `brain_list(folder)`: files and subfolders with `type` and `status` from the frontmatter.
+- `brain_write(path, content, purpose?, base_hash?)`: creates or replaces a note (`content` is the whole file). The frontmatter needs `type` (`index|decision|lesson|issue|agent|note`); `sources` must be a list, `repo` a string. Symphony sets `issue`, `role`, `run`, `created` and `updated` itself (`created` stays on an existing note); unknown fields stay. A new note is always `candidate`. Agents cannot create or promote `approved` notes, and an `approved` note keeps its status. Only `.md` files, nothing hidden (`.obsidian/`, `.git/`), and not `README.md` in the vault root. Parent folders are created; the file is written atomically.
+- `brain_append(path, heading, text, purpose?, base_hash)`: adds `text` at the end of the section under `## <heading>` (a heading starting with `#` keeps its level); the heading is created at the end of the note if missing. `base_hash` is required, the note must exist, `updated` is set.
+- `base_hash` is the `hash` of `brain_read`. Missing on an existing note in `brain_write`: warning in the log, the write runs. A mismatch returns `rejected` with `error.details = {content, hash}` (the current version) and writes nothing. Both write tools return `{path, hash, created, frontmatter}`.
+- After each successful write the `onWrite(entry)` option of `createBrainWriteTools`/`brainToolsFor` is called (`BrainWriteEntry`: `tool`, `path`, `purpose`, `hash`, `previousHash`, `created`, `issue`, `role`, `run`, `at`); an error in the hook is only logged. E7-3 (commit) and E7-4 (access log) attach there.
 - Paths are relative to the vault: no `..`, no absolute path, nothing under `.obsidian/`, no symlink out of the vault. A violation returns the error category `rejected`.
 - Every tool takes an optional `purpose`; without it a warning is logged and the call runs anyway.
 - All access is synchronous on the file system; there is no index.
