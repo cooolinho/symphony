@@ -80,7 +80,7 @@ export const ALERTS_JS = `
           kind: 'budget',
           at: budget.generated_at || null,
           title: BUDGET_TITLE[key],
-          text: 'Prognose: Limit um ' + fmtClock(w.forecast.eta) + ' erreicht, Reset um ' + fmtClock(w.resets_at),
+          text: 'Prognose: Limit um ' + fmtClock(w.forecast.eta) + ' erreicht' + (w.resets_at ? ', Reset um ' + fmtClock(w.resets_at) : ''),
           href: '/stats',
         });
       }
@@ -102,13 +102,14 @@ export const ALERTS_JS = `
   }
 
   function renderAlerts(list, host, countNode) {
-    countNode.textContent = String(list.length);
+    const n = String(list.length);
+    if (countNode.textContent !== n) countNode.textContent = n;
     if (!list.length) {
       const empty = el('li', null, 'alerts-empty');
       empty.append(el('span', null, 'dot tone-green'), el('span', 'Alles ruhig'));
-      host.replaceChildren(empty);
+      patchChildren(host, [empty]);
       return;
     }
-    host.replaceChildren(...list.map(alertItem));
+    patchChildren(host, list.map(alertItem));
   }
 `;

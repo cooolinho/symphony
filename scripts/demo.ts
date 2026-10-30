@@ -3,7 +3,8 @@
  * (Running; Up next with a continuation, a column limit, a model hold and a busy slot; Waiting with a backoff and
  * a model hold; Paused; Blocked with a blocked column, a dependency and a missing label) and serves the real pages
  * on http://127.0.0.1:4000. No GitHub access, no Claude sessions - the agent runner is faked. The queue changes
- * over the first seconds (fails, holds, pauses) and then settles.
+ * over the first seconds (fails, holds, pauses) and then settles. The system cards show this machine's metrics (sampled
+ * every 2 s) and a made-up GitHub API budget.
  *
  *   node scripts/demo.ts [port]
  */
@@ -14,6 +15,7 @@ import { Logger } from '../src/log.ts';
 import type { Issue } from '../src/tracker/types.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import { startHttpServer } from '../src/http/server.ts';
+import { SystemCollector } from '../src/system/metrics.ts';
 import { FakeRunner, FakeTracker, StaticWorkflow, baseFront, makeIssue, makeWorkflow, tempDir } from '../test/helpers.ts';
 
 const port = Number(process.argv[2] ?? 4000);
@@ -117,6 +119,12 @@ const orchestrator = new Orchestrator({
   createAdapter: () => tracker,
 });
 
+// System cards: host metrics of this machine and a GitHub API budget that shrinks with every poll.
+const system = new SystemCollector({ volumes: [{ name: 'state', path: root }], gpu: false, logger, intervalMs: 2_000 });
+system.start();
+let remaining = 4_812;
+tracker.apiBudget = () => ({ remaining: (remaining = Math.max(0, remaining - 3)), limit: 5_000, reset_at: new Date(Date.now() + 40 * 60_000).toISOString(), observed_at: new Date().toISOString() });
+
 await orchestrator.start();
-const server = await startHttpServer({ host: '127.0.0.1', port, orchestrator, logger });
+const server = await startHttpServer({ host: '127.0.0.1', port, orchestrator, logger, system });
 console.log(`Demo dashboard: ${server.url}`);

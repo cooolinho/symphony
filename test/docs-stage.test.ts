@@ -91,6 +91,7 @@ function role(overrides: Partial<RoleConfig> & Pick<RoleConfig, 'name' | 'states
     subIssueStatus: null,
     waitForSubIssues: false,
     agents: null,
+    brain: 'off',
     claude: {},
     ...overrides,
   };

@@ -24,7 +24,7 @@ import { errorCode, errorMessage } from './util/errors.ts';
 import { truncate } from './util/text.ts';
 import { commandSkills, pluginAgents, resolveIssueCommand } from './workflow/command.ts';
 import type { ModelClaudeOverrides, ServiceConfig } from './workflow/config.ts';
-import { roleFor, roleName, sessionAgents } from './workflow/roles.ts';
+import { roleFor, roleName, sessionAgents, sessionBrainMode } from './workflow/roles.ts';
 import { WorkflowStore } from './workflow/store.ts';
 import { issueTemplateValue, renderPrompt } from './workflow/template.ts';
 import { nextStageProblems, unknownBoardColumns, validateDispatch } from './workflow/validate.ts';
@@ -338,6 +338,8 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
           agents: agents.map((agent) => ({ name: agent.qualified, description: agent.description })),
           // The issue's stage history is not read here: the preview shows an issue without results.
           result_required: role?.result != null,
+          brain: sessionBrainMode(config.brain.enabled, role),
+          brain_index: null,
           test_paths: config.pipeline.testPaths,
           docs_paths: config.pipeline.docsPaths,
         });

@@ -6,14 +6,14 @@ import { defaultIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import { resolveEnvReference } from '../util/env.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
-import { resolveConfigPath } from '../util/paths.ts';
+import { isStrictlyInside, resolveConfigPath } from '../util/paths.ts';
 import { COMPLEXITIES, ISSUE_TYPES, type IssueComplexity } from './classify.ts';
 import { COMMAND_NAME } from './command.ts';
 import { globProblem } from './glob.ts';
 import { isPlainObject } from './loader.ts';
 import { DEFAULT_PROFILE, type WorkflowProfile } from './profile.ts';
 import { Reader, parseInteger } from './reader.ts';
-import { NEXT_STAGE, resultTargets, type EffortLabelPolicy, type ModelLabelPolicy, type RoleClaudeOverrides, type RoleConfig } from './roles.ts';
+import { BRAIN_MODES, NEXT_STAGE, resultTargets, type BrainMode, type EffortLabelPolicy, type ModelLabelPolicy, type RoleClaudeOverrides, type RoleConfig } from './roles.ts';
 import { AGENT_RESULT_KINDS, isLoopKind, LOOP_VERDICTS, RESULT_VERDICTS, SPLIT_VERDICT, type AgentResultKind } from './results.ts';
 
 export interface TrackerConfig {
@@ -284,6 +284,7 @@ const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
 const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server', 'system', 'brain'];
 const BRAIN_KEYS = new Set(['enabled', 'path', 'clash_window_ms']);
 const ROLE_KEYS = new Set([
+  'brain',
   'states',
   'read_only',
   'may_move_to',
@@ -413,6 +414,7 @@ function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: s
       subIssueStatus,
       waitForSubIssues: reader.bool(value, 'wait_for_sub_issues', `${field}.wait_for_sub_issues`, false),
       agents: readRoleAgents(reader, value, field),
+      brain: reader.oneOf<BrainMode>(value, 'brain', `${field}.brain`, BRAIN_MODES, 'off'),
       claude,
     });
   }
@@ -1193,6 +1195,9 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     brainPath = resolveConfigPath(brainPathValue, workflowDir, options.env, 'brain.path');
   } catch (error) {
     reader.errors.push(errorMessage(error));
+  }
+  if (brainEnabled && brainPath !== '' && (brainPath === root || isStrictlyInside(root, brainPath) || isStrictlyInside(brainPath, root))) {
+    reader.errors.push(`brain.path (${brainPath}) must not overlap workspace.root (${root}): agents must reach the vault only through the brain tools`);
   }
   const clashWindowMs = reader.int(brainRaw, 'clash_window_ms', 'brain.clash_window_ms', 600_000, 0);
   const brain: BrainConfig = { enabled: brainEnabled, path: brainPath, clashWindowMs };
