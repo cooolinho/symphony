@@ -1,6 +1,8 @@
+import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import type { AgentEvent, AgentRunner, AgentSession, StartSessionParams, TurnResult } from '../src/agent/types.ts';
 import type { Clock, Timers, WorkflowSource } from '../src/orchestrator/orchestrator.ts';
 import type { WorkspaceIntegration } from '../src/integrations/types.ts';
@@ -25,6 +27,7 @@ import { normalizeStateName, resolveConfig } from '../src/workflow/config.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../src/workflow/store.ts';
 import { compilePrompt, DEFAULT_CONTINUATION_PROMPT } from '../src/workflow/template.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
+import { createFakeDocument, FakeElement, parseHtml } from './helpers/fake-dom.ts';
 
 const created: string[] = [];
 process.on('exit', () => {
@@ -390,5 +393,128 @@ export function baseFront(root: string, overrides: Record<string, unknown> = {})
     tracker: { kind: 'github_project', provider: { owner: 'acme', project_number: 1, token: 'test-token' } },
     ...overrides,
     workspace: { root, ...workspace },
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Dashboard pages in a fake DOM
+
+/** The contents of the inline <script> blocks of a served page. */
+export function inlineScripts(html: string): string[] {
+  return [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1] as string);
+}
+
+/** The page with the indentation of every inline script changed (behaviour must not depend on it). */
+export function reindentScripts(html: string): string {
+  return html.replace(/<script>([\s\S]*?)<\/script>/g, (_all, code: string) => `<script>${code.replace(/^( *)/gm, (_m, sp: string) => '\t' + sp + sp)}</script>`);
+}
+
+export interface RenderOptions {
+  /** Page URL; the agent page needs `http://127.0.0.1/issue?id=acme%2Fapp%231`. */
+  url?: string;
+  /** Answers every fetch with this JSON body (status 200); throwing rejects the fetch. Without it fetches never settle. */
+  fetch?: (url: string, init: { method: string; body?: unknown }) => unknown;
+  /** Answer of confirm(); default true. */
+  confirm?: boolean;
+  /** The frozen clock (ms); default 2026-10-30T12:00:00Z. */
+  now?: number;
+}
+
+export interface RenderedPage {
+  document: ReturnType<typeof createFakeDocument>;
+  root: FakeElement;
+  /** The element with this id; throws when the page has none. */
+  $(id: string): FakeElement;
+  query(selector: string): FakeElement[];
+  /** Calls the page's render hook again with another state (a refresh). */
+  render(state: unknown): void;
+  /** Click that bubbles up to the document. */
+  click(el: FakeElement): void;
+  fetches: Array<{ url: string; method: string; body?: unknown }>;
+  confirms: string[];
+}
+
+/**
+ * Loads the inline scripts of a served page into a vm with a fake DOM parsed from the page (frozen clock, no-op
+ * timers, recording fetch and confirm), then renders `state` through the page's window.__render hook.
+ */
+export function renderPage(html: string, state?: unknown, opts: RenderOptions = {}): RenderedPage {
+  const root = parseHtml(html);
+  const document = createFakeDocument(root);
+  const fetches: RenderedPage['fetches'] = [];
+  const confirms: string[] = [];
+  const url = new URL(opts.url ?? 'http://127.0.0.1/');
+  const location: Record<string, unknown> = {};
+  const setLocation = (u: URL) => Object.assign(location, { href: u.href, origin: u.origin, pathname: u.pathname, search: u.search, hash: u.hash, host: u.host, hostname: u.hostname, protocol: u.protocol });
+  setLocation(url);
+  const store = new Map<string, string>();
+  let timerId = 0;
+  const timer = () => ++timerId;
+  const sandbox: Record<string, unknown> = {
+    document,
+    location,
+    history: { length: 1, back: () => {}, replaceState: (_s: unknown, _t: string, u?: string) => u && setLocation(new URL(u, url)), pushState: () => {} },
+    localStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: unknown) => void store.set(k, String(v)), removeItem: (k: string) => void store.delete(k) },
+    setTimeout: timer,
+    setInterval: timer,
+    clearTimeout: () => {},
+    clearInterval: () => {},
+    requestAnimationFrame: timer,
+    confirm: (question: string) => (confirms.push(question), opts.confirm ?? true),
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    Element: FakeElement,
+    Node: FakeElement,
+    HTMLElement: FakeElement,
+    ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
+    innerWidth: 1280,
+    innerHeight: 800,
+    matchMedia: () => ({ matches: false, addEventListener: () => {} }),
+    fetch: (target: string, init: { method?: string; body?: string } = {}) => {
+      const body = init.body === undefined ? undefined : (JSON.parse(init.body) as unknown);
+      fetches.push({ url: String(target), method: init.method ?? 'GET', ...(body === undefined ? {} : { body }) });
+      if (!opts.fetch) return new Promise(() => {});
+      try {
+        const json = opts.fetch(String(target), { method: init.method ?? 'GET', body });
+        return Promise.resolve({ ok: true, status: 200, json: async () => json, text: async () => JSON.stringify(json), headers: { get: () => null } });
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    },
+    URL,
+    URLSearchParams,
+    AbortController,
+    console,
+    __SYMPHONY_TEST__: true,
+  };
+  sandbox.window = sandbox;
+  const ctx = vm.createContext(sandbox);
+  const now = opts.now ?? Date.parse('2026-10-30T12:00:00Z');
+  vm.runInContext(
+    `(() => { const Real = Date; class Frozen extends Real { constructor(...a) { if (a.length) super(...a); else super(${now}); } static now() { return ${now}; } } globalThis.Date = Frozen; })();`,
+    ctx,
+  );
+  const scripts = inlineScripts(html);
+  assert.ok(scripts.length > 0, 'the page has inline scripts');
+  scripts.forEach((code, i) => vm.runInContext(code, ctx, { filename: `page-script-${i}.js` }));
+  const render = (next: unknown): void => {
+    const hook = (ctx as { __render?: (s: unknown) => void }).__render;
+    assert.equal(typeof hook, 'function', 'the page exposes window.__render under __SYMPHONY_TEST__');
+    hook!(next);
+  };
+  if (state !== undefined) render(state);
+  return {
+    document,
+    root,
+    $: (id) => {
+      const found = document.getElementById(id) as FakeElement | null;
+      assert.ok(found, `the page has no element #${id}`);
+      return found;
+    },
+    query: (selector) => root.querySelectorAll(selector),
+    render,
+    click: (el) => el.dispatch('click', { bubbles: true, button: 0 }),
+    fetches,
+    confirms,
   };
 }

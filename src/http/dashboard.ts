@@ -1428,6 +1428,8 @@ ${PIPELINE_JS}
   loadHistory();
   setInterval(load, 2000);
   setInterval(loadHistory, 30000);
+  // Tests load the page in a fake DOM and render a fixture through window.__render.
+  if (window.__SYMPHONY_TEST__) window.__render = render;
 })();
 `,
 });
