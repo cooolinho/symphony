@@ -43,6 +43,7 @@ import {
   ADD_LABELS_MUTATION,
   CREATE_LABEL_MUTATION,
   ISSUE_ATTACHMENTS_QUERY,
+  ISSUE_PARENT_QUERY,
   ISSUE_COMMENTS_QUERY,
   ITEM_DETAILS_QUERY,
   PROJECT_ITEMS_QUERY,
@@ -103,6 +104,14 @@ function chunk<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = [];
   for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
   return chunks;
+}
+
+/** An issue above another one in the parent chain. */
+export interface IssueAncestor {
+  id: string;
+  number: number;
+  title: string;
+  repository: string;
 }
 
 export class GithubProjectAdapter implements TrackerAdapter {
@@ -299,12 +308,33 @@ export class GithubProjectAdapter implements TrackerAdapter {
     await this.postComment(issue, body);
   }
 
-  async postComment(issue: Issue, body: string): Promise<PostedComment> {
-    const ref = this.#requireRef(issue, 'comment on');
-    const response = await this.client.request<Json>(ADD_COMMENT_MUTATION, { subjectId: ref.issueId, body });
+  async postComment(issue: Issue, body: string, subjectId?: string): Promise<PostedComment> {
+    const target = subjectId ?? this.#requireRef(issue, 'comment on').issueId;
+    const response = await this.client.request<Json>(ADD_COMMENT_MUTATION, { subjectId: target, body });
     assertNoGraphqlErrors(response.errors);
     const url = obj(obj(obj(obj(response.data)?.addComment)?.commentEdge)?.node)?.url;
     return { url: typeof url === 'string' ? url : null };
+  }
+
+  /**
+   * The parent chain of the issue (parent, its parent, …), read fresh: at most `maxDepth` levels, and it ends at the
+   * root or at the first parent that lives in another repository.
+   */
+  async ancestors(issue: Issue, maxDepth = 5): Promise<IssueAncestor[]> {
+    const ref = this.#requireRef(issue, 'read the parents of');
+    const chain: IssueAncestor[] = [];
+    let id = ref.issueId;
+    while (chain.length < maxDepth) {
+      const response = await this.client.request<Json>(ISSUE_PARENT_QUERY, { issueId: id });
+      assertNoGraphqlErrors(response.errors);
+      const parent = obj(obj(obj(response.data)?.node)?.parent);
+      const repository = obj(parent?.repository)?.nameWithOwner;
+      if (parent === null || typeof parent.id !== 'string' || typeof parent.number !== 'number') break;
+      if (typeof repository !== 'string' || repository.toLowerCase() !== ref.repository.toLowerCase()) break;
+      chain.push({ id: parent.id, number: parent.number, title: typeof parent.title === 'string' ? parent.title : '', repository });
+      id = parent.id;
+    }
+    return chain;
   }
 
   async readComments(issue: Issue): Promise<IssueComment[]> {

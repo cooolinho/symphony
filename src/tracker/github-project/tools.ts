@@ -34,6 +34,17 @@ function markerProblem(text: string | undefined): ToolResult | null {
   );
 }
 
+/** /concept looks for these headings on the concept issue; an agent comment must not pose as one. */
+const CONCEPT_HEADING = /^[ \t]*#{1,6}[ \t]*concept[ \t]+(plan|report)\b/im;
+
+function conceptHeadingProblem(text: string): ToolResult | null {
+  if (!CONCEPT_HEADING.test(text)) return null;
+  return fail(
+    'invalid_argument',
+    'a comment on a parent issue must not use the headings "Concept Plan" or "Concept Report"; they belong to the /concept workflow',
+  );
+}
+
 function obj(value: unknown): Json | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Json) : null;
 }
@@ -199,11 +210,37 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
     name: 'add_comment',
     description:
       'Post a Markdown comment on the GitHub issue this session is working on: a progress note, a summary of ' +
-      'the change with the pull request link, or a question that needs a human.',
-    inputSchema: { body: z.string().min(1).describe('Comment text (GitHub-flavored Markdown)') },
+      'the change with the pull request link, or a question that needs a human. With `issue` the comment goes to an ' +
+      'ancestor of this issue instead (its parent, the parent of that, … up to 5 levels, same repository), e.g. the ' +
+      'epic or the concept issue; it then ends with a line naming this issue. No other issue is allowed.',
+    inputSchema: {
+      body: z.string().min(1).describe('Comment text (GitHub-flavored Markdown)'),
+      issue: z.number().int().positive().optional().describe('Number of an ancestor issue (parent, epic, concept) to comment on'),
+    },
     mutates: true,
     execute: (args, context) =>
-      guarded(context, async () => markerProblem(String(args.body)) ?? ok(await adapter.postComment(context.issue, String(args.body)))),
+      guarded(context, async () => {
+        const body = String(args.body);
+        const problem = markerProblem(body);
+        if (problem !== null) return problem;
+        const ref = issueRefOf(context.issue);
+        if (args.issue === undefined || (ref !== null && args.issue === ref.number)) {
+          return ok(await adapter.postComment(context.issue, body));
+        }
+        const headingProblem = conceptHeadingProblem(body);
+        if (headingProblem !== null) return headingProblem;
+        const ancestors = await adapter.ancestors(context.issue);
+        const target = ancestors.find((a) => a.number === Number(args.issue));
+        if (target === undefined) {
+          const allowed = ancestors.map((a) => `#${a.number}`).join(', ');
+          return fail(
+            'invalid_argument',
+            `#${String(args.issue)} is not an ancestor of ${context.issue.identifier}; ` +
+              (allowed === '' ? 'this issue has no parent to comment on' : `allowed: ${allowed}`),
+          );
+        }
+        return ok(await adapter.postComment(context.issue, `${body}\n\n<sub>aus ${context.issue.identifier}</sub>`, target.id));
+      }),
   };
 
   const openPullRequest: AgentToolSpec = {
