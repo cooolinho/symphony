@@ -359,7 +359,7 @@ describe('bar', () => {
   });
   it('limits the forecast to the rest of the bar and clamps values; unknown heights fall back to 8', () => {
     assert.equal(first(make('bar(90, { forecastPct: 30 })'), 'ui-bar-forecast')!.style.width, '10%');
-    for (const [v, w] of [['150', '100%'], ['-5', '0%'], ['NaN', '0%']]) assert.equal(make(`bar(${v})`).children[0]!.style.width, w, v);
+    for (const [v, w] of [['150', '100%'], ['-5', '0%'], ['NaN', '0%']] as const) assert.equal(make(`bar(${v})`).children[0]!.style.width, w, v);
     assert.equal(make('bar(150)').getAttribute('aria-valuenow'), '100');
     for (const h of [5, 6, 8]) assert.ok(has(make(`bar(1, { height: ${h} })`), 'ui-bar-h' + h));
     assert.ok(has(make('bar(1, { height: 7 })'), 'ui-bar-h8'));
