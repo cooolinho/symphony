@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { GithubProjectAdapter } from '../src/tracker/github-project/adapter.ts';
 import { createGithubTools } from '../src/tracker/github-project/tools.ts';
 import type { AgentToolSpec } from '../src/tracker/types.ts';
 import { decodeMarker, internalResult, renderResultComment, type ResultMeta } from '../src/workflow/results.ts';
@@ -40,6 +41,7 @@ function tool(fixture: Fixture = {}): AgentToolSpec {
     settings: { baseBranch: null },
     fetchIssuesByIds: async () => [issue],
     viewerLogin: async () => 'cooolinho-bot',
+    branchPullRequest: GithubProjectAdapter.prototype.branchPullRequest,
     meta: async () => ({ statusOptions: (fixture.statusOptions ?? ['Todo', 'Testing']).map((name, i) => ({ id: `o${i}`, name })) }),
     client: {
       request: async () => ({

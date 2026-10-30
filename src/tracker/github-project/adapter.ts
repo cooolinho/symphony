@@ -7,6 +7,7 @@ import {
   type AddLabelsResult,
   type AgentToolSpec,
   type AutoMergeResult,
+  type BranchPullRequest,
   type CheckStatus,
   type Issue,
   type IssueAttachment,
@@ -21,6 +22,7 @@ import {
 } from '../types.ts';
 import { downloadAttachments, extractAttachmentLinks, webOrigin, type AttachmentLink } from './attachments.ts';
 import { assertNoGraphqlErrors, type GithubGraphqlClient, type GraphqlError } from './client.ts';
+import { evaluateRollup } from './checks.ts';
 import { AWAITING_CHECKS_LABEL, isCreatableLabel, labelDefinition } from './labels.ts';
 import { autoMerge, CHECKS_FAILED_MARKER, type MergeOptions } from './merge.ts';
 import {
@@ -41,6 +43,7 @@ import {
 import {
   ADD_COMMENT_MUTATION,
   ADD_LABELS_MUTATION,
+  BRANCH_PULL_REQUEST_QUERY,
   CREATE_LABEL_MUTATION,
   ISSUE_ATTACHMENTS_QUERY,
   ISSUE_PARENT_QUERY,
@@ -477,6 +480,31 @@ export class GithubProjectAdapter implements TrackerAdapter {
   async reportCheckStatus(issue: Issue, status: CheckStatus): Promise<void> {
     const ref = this.#requireRef(issue, 'report a check for');
     await postCommitStatus({ fetch: this.#fetch, endpoint: this.settings.endpoint, token: this.settings.token, timeoutMs: this.settings.requestTimeoutMs }, ref.repository, status);
+  }
+
+  /** The open pull request from the issue's branch (`branch_name`, else `symphony/issue-<n>`) and the state of its checks; null without one, or when GitHub cannot say. */
+  async branchPullRequest(issue: Issue): Promise<BranchPullRequest | null> {
+    const ref = issueRefOf(issue);
+    if (ref === null) return null;
+    try {
+      const [owner, name] = ref.repository.split('/');
+      const head = issue.branch_name ?? `symphony/issue-${ref.number}`;
+      const response = await this.client.request<Json>(BRANCH_PULL_REQUEST_QUERY, { owner, name, head });
+      assertNoGraphqlErrors(response.errors);
+      const list = obj(obj(obj(response.data)?.repository)?.pullRequests)?.nodes;
+      const pr = Array.isArray(list) ? obj(list[0]) : null;
+      if (pr === null || typeof pr.number !== 'number') return null;
+      const checks = evaluateRollup(pr.commits, ref.repository, []);
+      return {
+        number: pr.number,
+        url: typeof pr.url === 'string' ? pr.url : null,
+        base: typeof pr.baseRefName === 'string' ? pr.baseRefName : null,
+        head_sha: typeof pr.headRefOid === 'string' ? pr.headRefOid : null,
+        checks: { state: checks.state, failing: checks.failing, pending: checks.pending.map((check) => check.name) },
+      };
+    } catch {
+      return null;
+    }
   }
 
   /**

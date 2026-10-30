@@ -8,6 +8,8 @@ import { isCreatableLabel } from '../src/tracker/github-project/labels.ts';
 import type {
   AddLabelsResult,
   AgentToolSpec,
+  AutoMergeResult,
+  BranchPullRequest,
   Issue,
   IssueComment,
   MergeWatch,
@@ -78,6 +80,10 @@ export class FakeTracker implements TrackerAdapter {
   commentOnIssue?: (issue: Issue, body: string) => Promise<void>;
   /** Set to give the tracker issues that wait for pull request checks before auto_merge. */
   mergeWatch?: () => MergeWatch | null;
+  /** Set to report the open pull request of the issue's branch; trackers without it have none. */
+  branchPullRequest?: (issue: Issue) => Promise<BranchPullRequest | null>;
+  /** Set to make entering a column run `auto_merge`: its result is part of the move, undefined = no merge. */
+  autoMerge?: (issue: Issue, column: string) => AutoMergeResult | undefined;
 
   constructor(issues: Issue[] = []) {
     for (const issue of issues) this.issues.set(issue.id, issue);
@@ -172,8 +178,9 @@ export class FakeTracker implements TrackerAdapter {
   async setStatus(issue: Issue, column: string): Promise<StatusChange> {
     const previous = this.issues.get(issue.id)?.state ?? issue.state;
     this.statusCalls.push(column);
-    this.set(issue.id, { state: column });
-    return { previous, status: column };
+    const merge = this.autoMerge?.(issue, column);
+    this.set(issue.id, { state: merge?.status ?? column });
+    return { previous, status: merge?.status ?? column, ...(merge !== undefined ? { autoMerge: merge } : {}) };
   }
 
   async addLabels(issue: Issue, names: string[], { create = false }: { create?: boolean } = {}): Promise<AddLabelsResult> {
@@ -217,7 +224,7 @@ export class FakeTracker implements TrackerAdapter {
         transitionTarget: (args) => String(args.status),
         execute: async (args, context) => {
           const change = await this.setStatus(context.issue, String(args.status));
-          return { ok: true, data: { previous_status: change.previous, status: change.status } };
+          return { ok: true, data: { previous_status: change.previous, status: change.status, ...(change.autoMerge !== undefined ? { auto_merge: change.autoMerge } : {}) } };
         },
       },
     ];

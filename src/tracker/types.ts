@@ -168,6 +168,15 @@ export interface AutoMergeChecks {
   pending: string[];
 }
 
+/** The open pull request from the issue's branch and the state of its head commit's checks. */
+export interface BranchPullRequest {
+  number: number;
+  url: string | null;
+  base: string | null;
+  head_sha: string | null;
+  checks: AutoMergeChecks;
+}
+
 /** A named entry check's state, posted on the commit it ran on (GitHub: commit status `symphony/<name>`). */
 export interface CheckStatus {
   name: string;
@@ -281,6 +290,8 @@ export interface TrackerAdapter {
   reportCheckStatus?(issue: Issue, status: CheckStatus): Promise<void>;
   /** Issues waiting for pending pull request checks before `auto_merge`; null or absent when nothing waits. */
   mergeWatch?(): MergeWatch | null;
+  /** The open pull request from the issue's branch with its checks; null without one, or when the tracker cannot say. Never throws. */
+  branchPullRequest?(issue: Issue): Promise<BranchPullRequest | null>;
   /**
    * Adds labels to the issue. Labels that do not exist are reported in `unknown`; with `create` the missing ones of the
    * families `Type: …`, `Complexity: …` and `needs-human` are created first (other names are never created).
