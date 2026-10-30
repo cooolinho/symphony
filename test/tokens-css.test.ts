@@ -117,6 +117,16 @@ describe('TOKENS_CSS module', () => {
     }
   });
 
+  it('stacks body children above the fixed background layers (dashboard .rain, z-index 0)', () => {
+    const decls = declsOf('body > *');
+    assert.match(decls, /position:\s*relative/);
+    const z = decls.match(/z-index:\s*(\d+)/);
+    assert.ok(z && Number(z[1]) >= 1, 'body > * has z-index >= 1');
+    const rain = DASHBOARD_HTML.match(/\.rain\s*\{[^}]*z-index:\s*(\d+)/);
+    assert.ok(rain, 'dashboard defines .rain with z-index');
+    assert.ok(Number(z[1]) > Number(rain[1]), 'panels sit above .rain');
+  });
+
   it('uses the navy ground #070b16', () => {
     assert.equal(rootVar('bg').toLowerCase(), '#070b16');
     assert.match(declsOf('html'), /background:\s*var\(--bg\)/);
