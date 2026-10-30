@@ -21,7 +21,7 @@ import { maxColumnCheckMs, normalizeStateName, type ServiceConfig } from '../wor
 import { EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../workflow/template.ts';
 import { writeAttachments, type AttachmentFile } from '../workspace/attachments.ts';
 import { changedFiles } from '../workspace/changes.ts';
-import { baselineCommit, changedFilesSince } from './changed-files.ts';
+import { baselineCommit, changedFilesSince, isAncestor } from './changed-files.ts';
 import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord, type GateRun, type GuardParams } from './guard.ts';
 import { createResultTool, resultReminder, type PathRule, type ResultToolAdapter, type ResultToolParams } from './result-tool.ts';
 import { reviewedFiles, securityBaseRef } from './security.ts';
@@ -183,15 +183,16 @@ interface ResultSupport {
 /**
  * The path rule of a role with `result: test`: its session may only change files matching `pipeline.test_paths`,
  * measured from the developer's last hand-off (`handoffSha`) when HEAD descends from it, else from the commit the
- * session started from (`startSha`). Without a commit to measure from (not a git checkout, or git failed) the rule
+ * session started from (`startSha`); a session that started on the base branch (`startOnBase`) does not blame the merged
+ * pull requests between the hand-off and its start. Without a commit to measure from (not a git checkout, or git failed) the rule
  * cannot be evaluated: it refuses to guess, so the result is not accepted unchecked.
  */
-function testPathRule(workspacePath: string, testPaths: readonly string[], startSha: string | null, handoffSha: string | null, extra: Pick<PathRule, 'setting' | 'guidance'> = {}): PathRule {
+function testPathRule(workspacePath: string, testPaths: readonly string[], startSha: string | null, startOnBase: boolean, handoffSha: string | null, extra: Pick<PathRule, 'setting' | 'guidance'> = {}): PathRule {
   return {
     ...extra,
     allowed: testPaths,
     changedFiles: async () => {
-      const base = await baselineCommit(workspacePath, handoffSha, startSha);
+      const base = await baselineCommit(workspacePath, handoffSha, startSha, startOnBase);
       if (base === null) throw new SymphonyError('paths_unverifiable', 'the commit this session started from is unknown');
       return { base, files: await changedFilesSince(workspacePath, base) };
     },
@@ -505,12 +506,14 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     const paths = effectivePaths(params.workflow.config.pipeline, appDirs);
     // A test engineer's changes are measured from the developer's last hand-off, else from the workspace as this session found it.
     const startSha = role?.result === 'test' || role?.result === 'docs' ? ((await readGitHead(activeWorkspace.path))?.headSha ?? null) : null;
+    // Fixed before the agent acts, so a push of its own cannot move the baseline; false when git cannot tell.
+    const startOnBase = startSha !== null && (await isAncestor(activeWorkspace.path, startSha, securityBaseRef(issue.native_ref?.base_branch)));
     const pathRule =
       role?.result === 'test'
-        ? (history: StageHistory) => testPathRule(activeWorkspace.path, paths.testPaths, startSha, implementationHead(history))
+        ? (history: StageHistory) => testPathRule(activeWorkspace.path, paths.testPaths, startSha, startOnBase, implementationHead(history))
         : role?.result === 'docs'
           ? (history: StageHistory) =>
-              testPathRule(activeWorkspace.path, paths.docsPaths, startSha, docsBaseHead(history), {
+              testPathRule(activeWorkspace.path, paths.docsPaths, startSha, startOnBase, docsBaseHead(history), {
                 setting: 'pipeline.docs_paths',
                 guidance: 'Code and tests belong to the developer and the test engineer: leave them alone and report the verdict `blocked` if the documentation cannot be written without changing them.',
               })

@@ -180,6 +180,12 @@ function withCheckFailedNote(
   return { ...result, summary: `${summary}\n\n${note}${quoted}` };
 }
 
+/** The result with `note` under its summary; the summary is cut when the note would not fit within `SUMMARY_MAX`. */
+function withNote(result: StageResult, note: string): StageResult {
+  const kept = note.length > SUMMARY_MAX ? '' : truncate(result.summary, SUMMARY_MAX - note.length - 2);
+  return { ...result, summary: `${kept}\n\n${truncate(note, SUMMARY_MAX)}`.trim() };
+}
+
 /** Applies a transition's labels (removing only those the issue carries); failures become warnings. */
 export async function applyTransitionLabels(
   adapter: Pick<ResultToolAdapter, 'addLabels' | 'removeLabels'>,
@@ -338,24 +344,34 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     return { ok: true, result: parsed.result, transition };
   };
 
-  /** The refusal for a result that comes with changes outside the role's paths; null when the rule holds or does not apply. */
-  const pathViolation = async (): Promise<ToolResult | null> => {
+  /** The files outside the role's paths (with the commit they are measured from); null when no rule applies, `unverifiable` when git cannot tell. */
+  const pathFacts = async (): Promise<{ rule: PathRule; base: string; outside: string[] } | { rule: PathRule; unverifiable: string } | null> => {
     const rule = params.pathRule;
     if (rule === undefined || rule === null) return null;
-    let outside: string[];
-    let base: string;
     try {
       const changed = await rule.changedFiles();
-      base = changed.base;
-      outside = filesOutside(changed.files, rule.allowed);
+      return { rule, base: changed.base, outside: filesOutside(changed.files, rule.allowed) };
     } catch (error) {
+      return { rule, unverifiable: errorMessage(error) };
+    }
+  };
+
+  /**
+   * The refusal for a result that comes with changes outside the role's paths; null when the rule holds or does not apply.
+   * A `blocked` result is never refused: it is the way out for an agent that cannot go on, so `record` notes the files instead.
+   */
+  const pathViolation = async (args: Record<string, unknown>): Promise<ToolResult | null> => {
+    if (args.verdict === 'blocked') return null;
+    const facts = await pathFacts();
+    if (facts === null) return null;
+    if ('unverifiable' in facts) {
       return fail(
         'tool_error',
-        `Symphony could not check which files you changed (${errorMessage(error)}), so nothing was recorded. This is not a ` +
-          `problem with your change. Call ${RESULT_TOOL} again; if it fails again, describe the problem in an issue comment ` +
-          'and end your turn.',
+        `Symphony could not check which files you changed (${facts.unverifiable}), so nothing was recorded. This is not a ` +
+          `problem with your change. Call ${RESULT_TOOL} again; if it fails again, report the verdict \`blocked\` with the problem as the blocker.`,
       );
     }
+    const { rule, base, outside } = facts;
     if (outside.length === 0) return null;
     const shown = outside.slice(0, OFFENDING_FILES_SHOWN).map((file) => `- ${file}`);
     const more = outside.length > shown.length ? `\n- … and ${outside.length - shown.length} more` : '';
@@ -366,11 +382,23 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
         `commit ${base.slice(0, 12)} (the developer's last hand-off, else where your session started) are outside them:\n${shown.join('\n')}${more}\n` +
         'Nothing was recorded. Undo the changes you made yourself: restore a changed or deleted file with ' +
         `\`git checkout ${base.slice(0, 12)} -- <file>\`, delete a new one, commit, and report again. Leave a file alone that you did not ` +
-        'change, for example a commit that was already on the branch or a push by someone else: describe it in an issue comment and ' +
-        'end your turn. ' +
+        'change, for example a commit that was already on the branch or a push by someone else: report the verdict `blocked` with ' +
+        'a blocker that names it, which is always accepted. ' +
         (rule.guidance ??
           'Production code belongs to the developer: if the tests fail because of it, report the verdict `failed` with the failed cases instead of fixing it.'),
     );
+  };
+
+  /** The note for a `blocked` result recorded with files outside the role's paths, or because git could not tell; null when there is nothing to say. */
+  const pathNote = async (): Promise<string | null> => {
+    const facts = await pathFacts();
+    if (facts === null) return null;
+    const setting = facts.rule.setting ?? 'pipeline.test_paths';
+    if ('unverifiable' in facts) return `**Pfadregel:** Symphony konnte nicht prüfen, welche Dateien außerhalb \`${setting}\` geändert wurden (${facts.unverifiable}).`;
+    if (facts.outside.length === 0) return null;
+    const head = `**Pfadregel:** ${facts.outside.length} Datei(en) außerhalb \`${setting}\` seit \`${facts.base.slice(0, 12)}\`: `;
+    const shown = facts.outside.slice(0, OFFENDING_FILES_SHOWN).map((file) => `\`${file}\``).join(', ');
+    return `${head}${shown}${facts.outside.length > OFFENDING_FILES_SHOWN ? `, … und ${facts.outside.length - OFFENDING_FILES_SHOWN} weitere` : ''}`;
   };
 
   /** The refusal for a UI change without screenshots and without a `screenshots_problem`; null when the rule holds or does not apply. */
@@ -471,10 +499,12 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
             reason: `${planned.transition.reason}; entry check for "${failed.target}" failed → "${allowed.target}" (${route?.note ?? 'on_check_failed'})`,
           };
     const repeated = [...(params.history.failedChecks ?? []), ...(failed !== undefined ? [failed.target] : [])];
+    const note = planned.result.verdict === 'blocked' ? await pathNote() : null;
+    const noted = note === null ? planned.result : withNote(planned.result, note);
     const result =
       failed === undefined
-        ? planned.result
-        : withCheckFailedNote(planned.result, failed, allowed.target, limitReached ? { repeated, max: params.config.pipeline.maxCheckFailures } : null);
+        ? noted
+        : withCheckFailedNote(noted, failed, allowed.target, limitReached ? { repeated, max: params.config.pipeline.maxCheckFailures } : null);
 
     // The issue may have left the role's columns while the agent worked or the check ran (a human moved it): a result
     // for a column it is no longer in would move it back. Confirmed right before anything is written.
@@ -590,7 +620,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       if (recorded !== null || !role.readOnly) return null;
       return plan(args, looked.get(args)).ok ? (checkFailedRoute({ role, history: params.history, config: params.config })?.column ?? null) : null;
     },
-    precheck: (args, context) => queue.run(async () => (await pathViolation()) ?? (await screenshotViolation(args)) ?? (await splitViolation(args, context))),
+    precheck: (args, context) => queue.run(async () => (await pathViolation(args)) ?? (await screenshotViolation(args)) ?? (await splitViolation(args, context))),
     execute: (args, context) => queue.run(() => record(args, context)),
   };
 }

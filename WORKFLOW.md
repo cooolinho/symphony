@@ -97,7 +97,9 @@ hooks:
     git clone --quiet ${SYMPHONY_BASE_BRANCH:+--branch "$SYMPHONY_BASE_BRANCH"} "git@github.com:${SYMPHONY_ISSUE_REPOSITORY}.git" .
     bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-env.sh"   # own .env + SQLite per Laravel app; no-op otherwise
   # A workspace still on the base branch (no issue branch yet: the analysis, the design, the integration review of an
-  # issue split into work packages) follows origin/<base>, so the session and its entry checks see what was merged since.
+  # issue split into work packages, a developer hand-off without an issue branch such as a spike) follows origin/<base>, so the
+  # session and its entry checks see what was merged since. The path rule of the test and docs roles knows this: a session that
+  # starts on origin/<base> is not blamed for the pull requests merged between the hand-off and its start.
   before_run: |
     set -e                                               # a failed fetch must fail the hook (the attempt is retried), not run on stale refs
     git fetch --quiet --prune origin
