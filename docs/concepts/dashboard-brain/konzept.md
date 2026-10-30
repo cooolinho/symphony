@@ -2,7 +2,7 @@
 
 Status: Mockup abgenommen am 2026-10-27 · Version des Konzepts: 1
 
-Mockup (klickbarer Prototyp, sechs Ansichten): <https://claude.ai/artifact/MqwbTqhJFMQtc1b32Pbp5Y>
+Mockup (sechs Ansichten): [symphony-glass-dashboard.html](symphony-glass-dashboard.html)
 
 ## Ziel
 
