@@ -16,9 +16,21 @@ export function fail(category: string, message: string): ToolResult {
   return { ok: false, error: { category, message } };
 }
 
-/** Access log comes with E7-4; until then a call without `purpose` only leaves a warning. */
+/** A call without `purpose` leaves a warning (the access log records it as an empty string, see `purposeOf`). */
 export function warnPurpose(logger: Logger, tool: string, args: Record<string, unknown>, context: AgentToolContext): void {
   const purpose = args.purpose;
   if (typeof purpose === 'string' && purpose.trim() !== '') return;
   logger.warn('brain tool called without purpose', { tool, issue: context.issue.identifier });
+}
+
+/** The trimmed `purpose` argument; empty when missing. */
+export function purposeOf(args: Record<string, unknown>): string {
+  return typeof args.purpose === 'string' ? args.purpose.trim() : '';
+}
+
+/** Why a result was rejected: `details.reason` when it is a string, else the error category; undefined for ok. */
+export function reasonOf(result: ToolResult): string | undefined {
+  if (result.ok) return undefined;
+  const reason = (result.error.details as { reason?: unknown } | undefined)?.reason;
+  return typeof reason === 'string' ? reason : result.error.category;
 }

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { appendUnderHeading, prepareFrontmatter } from '../src/brain/note.ts';
+import { BrainAccessLog } from '../src/brain/access-log.ts';
 import { createBrainTools, createBrainWriteTools, type BrainWriteEntry } from '../src/brain/tools.ts';
 import { Logger } from '../src/log.ts';
 import type { AgentToolContext, ToolResult } from '../src/tracker/types.ts';
@@ -236,5 +237,66 @@ describe('dangling symlink folder', () => {
     const error = failure(await tools.brain_write!({ path: 'Inbox/dangling/x.md', content: note('type: lesson') }));
     assert.equal(error.category, 'rejected');
     assert.ok(!String(error.message).includes(dir));
+  });
+});
+
+describe('access log and clash window', () => {
+  function clashSetup() {
+    const dir = vault();
+    const clock = { now: new Date(NOW) };
+    const access = new BrainAccessLog(path.join(tempDir(), 'brain'), Logger.silent());
+    const specs = createBrainWriteTools(dir, Logger.silent(), { now: () => clock.now, access, clashWindowMs: 600_000 });
+    const as = (runId: string) => (name: string, args: Record<string, unknown>): Promise<ToolResult> =>
+      specs.find((s) => s.name === name)!.execute({ purpose: 'test', ...args }, { issue: makeIssue({ id: 'a' }), role: 'developer', runId });
+    return { dir, clock, access, run1: as('run1'), run2: as('run2') };
+  }
+  const first = note('type: note');
+
+  it('rejects another run within the window with the current version and one clash', async () => {
+    const { dir, clock, access, run1, run2 } = clashSetup();
+    const created = data(await run1('brain_write', { path: 'Inbox/a.md', content: first }));
+    const before = read(dir, 'Inbox/a.md');
+    clock.now = new Date(NOW.getTime() + 5 * 60_000);
+    const rejected = failure(await run2('brain_write', { path: 'Inbox/a.md', content: note('type: note', 'Other.'), base_hash: created.hash }));
+    assert.equal(rejected.details.reason, 'window');
+    assert.equal(rejected.details.content, before);
+    assert.equal(rejected.details.hash, sha(before));
+    assert.equal(read(dir, 'Inbox/a.md'), before);
+    const appended = failure(await run2('brain_append', { path: 'Inbox/a.md', heading: 'H', text: 'x', base_hash: created.hash }));
+    assert.equal(appended.details.reason, 'window');
+    const clashes = access.clashes();
+    assert.equal(clashes.length, 2);
+    assert.deepEqual([clashes[0]!.path, clashes[0]!.runs, clashes[0]!.reason, clashes[0]!.status], ['Inbox/a.md', ['run1', 'run2'], 'window', 'open']);
+    const logged = fs.readFileSync(access.file!, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    assert.equal(logged.filter((l) => l.result === 'rejected' && l.reason === 'window').length, 2);
+    assert.equal(logged.length, 3);
+  });
+
+  it('lets the same run write again at once', async () => {
+    const { run1 } = clashSetup();
+    const created = data(await run1('brain_write', { path: 'Inbox/a.md', content: first }));
+    data(await run1('brain_write', { path: 'Inbox/a.md', content: note('type: note', 'Again.'), base_hash: created.hash }));
+  });
+
+  it('lets another run write after the window', async () => {
+    const { clock, access, run1, run2 } = clashSetup();
+    const created = data(await run1('brain_write', { path: 'Inbox/a.md', content: first }));
+    clock.now = new Date(NOW.getTime() + 600_001);
+    data(await run2('brain_write', { path: 'Inbox/a.md', content: note('type: note', 'Later.'), base_hash: created.hash }));
+    assert.equal(access.clashes().length, 0);
+  });
+
+  it('rejects a stale base_hash after the window with hash_mismatch and a clash', async () => {
+    const { clock, access, run1, run2 } = clashSetup();
+    const created = data(await run1('brain_write', { path: 'Inbox/a.md', content: first }));
+    clock.now = new Date(NOW.getTime() + 11 * 60_000);
+    const rejected = failure(await run2('brain_write', { path: 'Inbox/a.md', content: note('type: note', 'X.'), base_hash: sha('stale') }));
+    assert.equal(rejected.details.reason, 'hash_mismatch');
+    const [clash] = access.clashes();
+    assert.deepEqual([clash!.runs, clash!.reason], [['run1', 'run2'], 'hash_mismatch']);
+    const last = fs.readFileSync(access.file!, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).at(-1);
+    assert.equal(last.result, 'rejected');
+    assert.equal(last.reason, 'hash_mismatch');
+    assert.equal(last.hash_before, created.hash);
   });
 });

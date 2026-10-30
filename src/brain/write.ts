@@ -5,7 +5,8 @@ import { z } from 'zod';
 import type { Logger } from '../log.ts';
 import type { AgentToolContext, AgentToolSpec, ToolResult } from '../tracker/types.ts';
 import { errorMessage } from '../util/errors.ts';
-import { fail, hashOf, MAX_NOTE_BYTES, ok, warnPurpose } from './common.ts';
+import type { BrainAccess, BrainAccessLog, BrainClashReason } from './access-log.ts';
+import { fail, hashOf, MAX_NOTE_BYTES, ok, purposeOf, reasonOf, warnPurpose } from './common.ts';
 import { appendUnderHeading, parseNote, prepareFrontmatter, serializeNote } from './note.ts';
 import { resolveVaultWritePath } from './paths.ts';
 
@@ -40,6 +41,18 @@ export interface BrainWriteOptions {
   onWrite?: (entry: BrainWriteEntry) => void | Promise<void>;
   /** Clock, for tests. */
   now?: () => Date;
+  /** Shared access log: logs every call and rejects a write when another run wrote the note within `clashWindowMs`. */
+  access?: BrainAccessLog | null;
+  /** Window of the clash check in ms (default 600000; 0 = off). */
+  clashWindowMs?: number;
+}
+
+/** What the audit line of a call needs besides the arguments; filled in by the tool body as it learns more. */
+interface Audit {
+  path: string;
+  hashBefore?: string;
+  /** The call already left its access line (success or clash). */
+  logged: boolean;
 }
 
 /** Writes through a temp file in the target folder and renames it, so a reader never sees half a note. */
@@ -58,6 +71,8 @@ function writeAtomic(absolute: string, text: string): void {
 /** Write tools of the knowledge vault: whole notes with `brain_write`, one section with `brain_append`. */
 export function createBrainWriteTools(vaultPath: string, logger: Logger, options: BrainWriteOptions = {}): AgentToolSpec[] {
   const now = options.now ?? (() => new Date());
+  const access = options.access ?? null;
+  const windowMs = options.clashWindowMs ?? 600_000;
 
   const tooLarge = (): ToolResult => fail('rejected', `note is larger than ${MAX_NOTE_BYTES} bytes`);
 
@@ -80,14 +95,65 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
     error: {
       category: 'rejected',
       message: 'base_hash does not match the current note; merge your change into the current version (details) and write again with its hash',
-      details: { content: found.text, hash: found.hash },
+      details: { reason: 'hash_mismatch', content: found.text, hash: found.hash },
     },
   });
+
+  const windowConflict = (found: { text: string; hash: string }, other: { run: string | null; at: string }): ToolResult => ({
+    ok: false,
+    error: {
+      category: 'rejected',
+      message: `another run (${other.run ?? 'unknown'}) wrote this note at ${other.at}, within brain.clash_window_ms; merge your change into the current version (details) and write again later`,
+      details: { reason: 'window', content: found.text, hash: found.hash, run: other.run, at: other.at },
+    },
+  });
+
+  /** Logs the rejection as a clash and builds the result. The window check goes first, then the hash. */
+  const clashResult = (
+    tool: BrainWriteEntry['tool'],
+    args: Record<string, unknown>,
+    context: AgentToolContext,
+    audit: Audit,
+    found: { text: string; hash: string },
+    reason: BrainClashReason,
+    other: { run: string | null; at: string | null },
+  ): ToolResult => {
+    audit.logged = true;
+    access?.recordClash(
+      {
+        at: now().toISOString(),
+        run: context.runId ?? null,
+        issue: context.issue.identifier,
+        role: context.role ?? null,
+        op: tool === 'brain_write' ? 'write' : 'append',
+        path_or_query: audit.path,
+        purpose: purposeOf(args),
+        result: 'rejected',
+        hash_before: found.hash,
+      },
+      other,
+      reason,
+    );
+    return reason === 'window' ? windowConflict(found, { run: other.run, at: other.at ?? '' }) : conflict(found);
+  };
+
+  /** Window check of a write to an existing note; null when the write may go on. */
+  const windowCheck = (
+    tool: BrainWriteEntry['tool'],
+    args: Record<string, unknown>,
+    context: AgentToolContext,
+    audit: Audit,
+    found: { text: string; hash: string },
+  ): ToolResult | null => {
+    const other = access?.recentWriteByOtherRun(audit.path, context.runId ?? null, now(), windowMs) ?? null;
+    return other === null ? null : clashResult(tool, args, context, audit, found, 'window', other);
+  };
 
   const finish = async (
     tool: BrainWriteEntry['tool'],
     args: Record<string, unknown>,
     context: AgentToolContext,
+    audit: Audit,
     target: { absolute: string; relative: string },
     previous: { text: string; hash: string } | null,
     frontmatter: Record<string, unknown>,
@@ -95,7 +161,7 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
   ): Promise<ToolResult> => {
     if (Buffer.byteLength(text) > MAX_NOTE_BYTES) return tooLarge();
     const versioning = options.versioning;
-    if (versioning === undefined) return commitAndReport(tool, args, context, target, previous, frontmatter, text);
+    if (versioning === undefined) return commitAndReport(tool, args, context, audit, target, previous, frontmatter, text);
     // One lock around take-over of manual changes, re-check, write and commit: no other session slips a file into this commit.
     return versioning.serial(async () => {
       try {
@@ -104,10 +170,17 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
         logger.error('brain vault commit failed', { tool, path: target.relative, error: errorMessage(error) });
         return fail('rejected', `vault git failed: ${errorMessage(error)}`);
       }
-      const now = current(target.absolute);
-      if (now !== null && 'ok' in now) return now;
-      if (now?.hash !== previous?.hash) return now === null ? fail('rejected', 'note was removed while writing; read it again') : conflict(now);
-      return commitAndReport(tool, args, context, target, previous, frontmatter, text, versioning);
+      const found = current(target.absolute);
+      if (found !== null && 'ok' in found) return found;
+      if (found?.hash !== previous?.hash) {
+        if (found === null) return fail('rejected', 'note was removed while writing; read it again');
+        // A parallel writer won the queue: same rejection and clash as the checks outside of it.
+        return (
+          windowCheck(tool, args, context, audit, found) ??
+          clashResult(tool, args, context, audit, found, 'hash_mismatch', access?.lastWrite(target.relative) ?? { run: null, at: null })
+        );
+      }
+      return commitAndReport(tool, args, context, audit, target, previous, frontmatter, text, versioning);
     });
   };
 
@@ -115,6 +188,7 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
     tool: BrainWriteEntry['tool'],
     args: Record<string, unknown>,
     context: AgentToolContext,
+    audit: Audit,
     target: { absolute: string; relative: string },
     previous: { text: string; hash: string } | null,
     frontmatter: Record<string, unknown>,
@@ -123,6 +197,21 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
   ): Promise<ToolResult> => {
     writeAtomic(target.absolute, text);
     const hash = hashOf(Buffer.from(text));
+    const at = now().toISOString();
+    // No await between the checks, the write and the index update: the next call sees this write.
+    audit.logged = true;
+    access?.recordWrite({
+      at,
+      run: context.runId ?? null,
+      issue: context.issue.identifier,
+      role: context.role ?? null,
+      op: tool === 'brain_write' ? 'write' : 'append',
+      path_or_query: target.relative,
+      purpose: purposeOf(args),
+      result: 'ok',
+      ...(previous !== null ? { hash_before: previous.hash } : {}),
+      hash_after: hash,
+    });
     const entry: BrainWriteEntry = {
       tool,
       path: target.relative,
@@ -133,7 +222,7 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
       issue: context.issue.identifier,
       role: context.role ?? null,
       run: context.runId ?? null,
-      at: now().toISOString(),
+      at,
     };
     if (versioning !== undefined) {
       try {
@@ -165,14 +254,33 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
   });
 
   const guardedAsync =
-    (tool: string, body: (args: Record<string, unknown>, context: AgentToolContext) => Promise<ToolResult>): AgentToolSpec['execute'] =>
+    (tool: string, body: (args: Record<string, unknown>, context: AgentToolContext, audit: Audit) => Promise<ToolResult>): AgentToolSpec['execute'] =>
     async (args, context) => {
       warnPurpose(logger, tool, args, context);
+      const audit: Audit = { path: String(args.path ?? ''), logged: false };
+      let result: ToolResult;
       try {
-        return await body(args, context);
+        result = await body(args, context, audit);
       } catch (error) {
-        return fail('tool_error', errorMessage(error));
+        result = fail('tool_error', errorMessage(error));
       }
+      if (access !== null && !audit.logged) {
+        const reason = reasonOf(result);
+        const line: BrainAccess = {
+          at: now().toISOString(),
+          run: context.runId ?? null,
+          issue: context.issue.identifier,
+          role: context.role ?? null,
+          op: tool === 'brain_write' ? 'write' : 'append',
+          path_or_query: audit.path,
+          purpose: purposeOf(args),
+          result: result.ok ? 'ok' : 'rejected',
+          ...(reason !== undefined ? { reason } : {}),
+          ...(audit.hashBefore !== undefined ? { hash_before: audit.hashBefore } : {}),
+        };
+        access.record(line);
+      }
+      return result;
     };
 
   const WRITE_PURPOSE = z.string().optional().describe('Why you write to the vault (a few words); logged, please always give it');
@@ -192,20 +300,26 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
       base_hash: z.string().optional().describe('Hash of the version you read; needed for an existing note'),
     },
     mutates: true,
-    execute: guardedAsync('brain_write', async (args, context) => {
+    execute: guardedAsync('brain_write', async (args, context, audit) => {
       const target = resolveVaultWritePath(vaultPath, args.path);
       if (!target.ok) return fail('rejected', target.message);
       if (typeof args.content !== 'string') return fail('invalid_argument', 'content must be a string');
       if (Buffer.byteLength(args.content) > MAX_NOTE_BYTES) return tooLarge();
       const found = current(target.absolute);
       if (found !== null && 'ok' in found) return found;
+      audit.path = target.relative;
+      if (found !== null) {
+        audit.hashBefore = found.hash;
+        const windowed = windowCheck('brain_write', args, context, audit, found);
+        if (windowed !== null) return windowed;
+      }
       const baseHash = typeof args.base_hash === 'string' && args.base_hash.trim() !== '' ? args.base_hash.trim().toLowerCase() : null;
       if (found === null) {
         if (baseHash !== null) return fail('rejected', 'note does not exist; omit base_hash to create it');
       } else if (baseHash === null) {
         logger.warn('brain write without base_hash', { tool: 'brain_write', path: target.relative, issue: context.issue.identifier });
       } else if (baseHash !== found.hash) {
-        return conflict(found);
+        return clashResult('brain_write', args, context, audit, found, 'hash_mismatch', access?.lastWrite(target.relative) ?? { run: null, at: null });
       }
       const parsed = parseNote(args.content);
       if (parsed.frontmatterError !== null) return fail('rejected', `frontmatter is not valid YAML: ${parsed.frontmatterError}`);
@@ -215,7 +329,7 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
       const existing = found === null ? null : parseNote(found.text).frontmatter;
       const prepared = prepareFrontmatter(parsed.frontmatter, existing, stampOf(context));
       if (!prepared.ok) return fail('rejected', prepared.message);
-      return finish('brain_write', args, context, target, found, prepared.frontmatter, serializeNote(prepared.frontmatter, parsed.body));
+      return finish('brain_write', args, context, audit, target, found, prepared.frontmatter, serializeNote(prepared.frontmatter, parsed.body));
     }),
   };
 
@@ -233,7 +347,7 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
       base_hash: z.string().describe('Hash of the version you read'),
     },
     mutates: true,
-    execute: guardedAsync('brain_append', async (args, context) => {
+    execute: guardedAsync('brain_append', async (args, context, audit) => {
       const baseHash = typeof args.base_hash === 'string' ? args.base_hash.trim().toLowerCase() : '';
       if (baseHash === '') return fail('invalid_argument', 'base_hash is required; read the note with brain_read first');
       if (typeof args.heading !== 'string' || args.heading.trim() === '') return fail('invalid_argument', 'heading must not be empty');
@@ -243,13 +357,19 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
       const found = current(target.absolute);
       if (found === null) return fail('not_found', 'brain_append needs an existing note; create it with brain_write');
       if ('ok' in found) return found;
-      if (baseHash !== found.hash) return conflict(found);
+      audit.path = target.relative;
+      audit.hashBefore = found.hash;
+      const windowed = windowCheck('brain_append', args, context, audit, found);
+      if (windowed !== null) return windowed;
+      if (baseHash !== found.hash) {
+        return clashResult('brain_append', args, context, audit, found, 'hash_mismatch', access?.lastWrite(target.relative) ?? { run: null, at: null });
+      }
       const parsed = parseNote(found.text);
       if (parsed.frontmatterError !== null) return fail('rejected', `frontmatter of the note is not valid YAML: ${parsed.frontmatterError}`);
       const prepared = prepareFrontmatter(parsed.frontmatter, parsed.frontmatter, stampOf(context));
       if (!prepared.ok) return fail('rejected', prepared.message);
       const body = appendUnderHeading(parsed.body, args.heading, args.text);
-      return finish('brain_append', args, context, target, found, prepared.frontmatter, serializeNote(prepared.frontmatter, body));
+      return finish('brain_append', args, context, audit, target, found, prepared.frontmatter, serializeNote(prepared.frontmatter, body));
     }),
   };
 
