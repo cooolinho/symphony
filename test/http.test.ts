@@ -363,7 +363,7 @@ describe('http extension', () => {
     const unknown = await request(server.port, 'GET', `/api/v1/${encodeURIComponent('acme/app#404')}`);
     assert.equal(unknown.status, 404);
     assert.equal(JSON.parse(unknown.body).error.code, 'issue_not_found');
-    for (const sub of ['timeline', 'transcript']) {
+    for (const sub of ['timeline', 'team', 'transcript']) {
       const missing = await request(server.port, 'GET', `/api/v1/${encodeURIComponent('acme/app#404')}/${sub}`);
       assert.equal(missing.status, 404);
       assert.equal(JSON.parse(missing.body).error.code, 'issue_not_found');
@@ -496,6 +496,73 @@ describe('issue details', () => {
       assert.equal(detail.last_check.exit_code, 0);
       assert.equal(typeof detail.last_check.duration_ms, 'number');
       assert.equal(typeof detail.last_check.finished_at, 'string');
+    } finally {
+      await orchestrator.shutdown(1_000);
+      await server.close();
+    }
+  });
+});
+
+describe('team API', () => {
+  const make = (logDir: string, issues: ReturnType<typeof makeIssue>[], runner = new FakeRunner(() => new Promise(() => undefined))) =>
+    new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir()))),
+      runner,
+      logger: Logger.silent(),
+      env: {},
+      logDir,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker(issues),
+    });
+
+  it('serves the team view of a running issue', async () => {
+    const runner = new FakeRunner((turn, params) => {
+      params.onEvent({ event: 'tool_use', timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: turn, message: 'Bash: ls', detail: { tool: 'Bash' } });
+      return new Promise(() => undefined);
+    });
+    const orchestrator = make(tempDir(), [makeIssue({ id: 't' })], runner);
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    const base = `/api/v1/${encodeURIComponent('acme/app#t')}/team`;
+    try {
+      await orchestrator.tickNow();
+      await until(() => (orchestrator.issueTimeline('t')?.events ?? []).some((e) => e.event === 'tool_use'), 3_000, 'tool event');
+      const res = await request(server.port, 'GET', base);
+      assert.equal(res.status, 200);
+      const team = JSON.parse(res.body);
+      assert.deepEqual(Object.keys(team).sort(), ['active', 'blocks', 'handoffs', 'seats', 'subagents']);
+      assert.equal(team.active.role, 'default');
+      assert.equal(team.active.recent_tools.at(-1).tool, 'Bash');
+      assert.equal(team.seats.at(-1).role, 'you');
+      assert.equal(team.blocks.length, 1);
+      assert.equal(team.blocks[0].ended_at, null);
+      assert.ok(team.blocks[0].tool_calls >= 1);
+      assert.equal((await request(server.port, 'POST', base)).status, 405);
+    } finally {
+      await orchestrator.shutdown(1_000);
+      await server.close();
+    }
+  });
+
+  it('serves the team view of an archived issue', async () => {
+    const logDir = tempDir();
+    const session = { run: 'r1', attempt: null, role: 'default', state: 'Todo', model: null, effort: null, started_at: '2026-10-03T12:00:00.000Z', finished_at: '2026-10-03T12:05:00.000Z', outcome: 'handed_off', verdict: null, round: null };
+    const stage = { id: 'default', label: 'default', kind: 'agent', columns: ['Todo'], status: 'done', sessions: [session], verdict: null, round: null };
+    const event = { seq: 1, at: '2026-10-03T12:01:00.000Z', kind: 'agent', event: 'tool_use', level: 'info', message: 'Bash: ls', run: 'r1', turn: 1, detail: { tool: 'Bash' } };
+    fs.mkdirSync(path.join(logDir, 'issues'), { recursive: true });
+    fs.writeFileSync(
+      path.join(logDir, 'issues', 'acme_app_old.json'),
+      JSON.stringify({ version: 1, pipeline: [stage], issue_id: 'old', issue_identifier: 'acme/app#old', issue_url: null, title: 'Old', repo: null, workspace_path: null, runs: 1, continuations: 0, last_error: null, archived_at: '2026-10-03T12:10:00.000Z', released: true, completed_before: false, timeline: [event], next_seq: 2, sessions: [], run_trace: null, last_check: null }),
+    );
+    const orchestrator = make(logDir, []);
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    try {
+      const res = await request(server.port, 'GET', `/api/v1/${encodeURIComponent('acme/app#old')}/team`);
+      assert.equal(res.status, 200);
+      const team = JSON.parse(res.body);
+      assert.equal(team.active, null);
+      assert.equal(team.blocks.length, 1);
+      assert.equal(team.blocks[0].tool_calls, 1);
+      assert.equal(team.seats[0].status, 'done');
     } finally {
       await orchestrator.shutdown(1_000);
       await server.close();
