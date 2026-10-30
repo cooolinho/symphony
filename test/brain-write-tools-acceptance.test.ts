@@ -40,7 +40,7 @@ function setup(dir: string, onWrite?: (entry: BrainWriteEntry) => void | Promise
   const lines: string[] = [];
   const logger = Logger.create({ sinks: [{ name: 'memory', write: (line: string) => lines.push(line) }], level: 'debug' } as never);
   const ctx: AgentToolContext = { issue: makeIssue({ id: 'a' }), role: 'developer', runId: 'run-77', ...context };
-  const specs: AgentToolSpec[] = brainToolsFor({ enabled: true, path: dir } as never, logger, onWrite ? { onWrite } : {});
+  const specs: AgentToolSpec[] = brainToolsFor({ enabled: true, path: dir } as never, 'write', logger, onWrite ? { onWrite } : {});
   const call = (name: string): Call => {
     const spec = specs.find((s) => s.name === name);
     assert.ok(spec, `tool ${name} exists`);
@@ -526,7 +526,7 @@ describe('worker wiring: role and run id reach the write tools', () => {
     await ensureVault(dir, []);
     const rootDir = tempDir();
     const runner = new FakeRunner(() => new Promise(() => undefined));
-    const workflow = new StaticWorkflow(makeWorkflow(baseFront(rootDir, brain === undefined ? {} : { brain: { path: dir, ...brain } })));
+    const workflow = new StaticWorkflow(makeWorkflow(baseFront(rootDir, { roles: { dev: { states: ['Todo', 'In Progress'], brain: 'write' } }, ...(brain === undefined ? {} : { brain: { path: dir, ...brain } }) })));
     const orchestrator = new Orchestrator({
       workflow,
       runner,

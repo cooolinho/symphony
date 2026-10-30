@@ -456,7 +456,7 @@ describe('worker wiring: brain tools only with brain.enabled', () => {
     put(dir, 'Lessons/a.md', front({ status: 'approved' }, 'wired'));
     const rootDir = tempDir();
     const runner = new FakeRunner(() => new Promise(() => undefined));
-    const workflow = new StaticWorkflow(makeWorkflow(baseFront(rootDir, brain === undefined ? {} : { brain: { path: dir, ...brain } })));
+    const workflow = new StaticWorkflow(makeWorkflow(baseFront(rootDir, { roles: { dev: { states: ['Todo', 'In Progress'], brain: 'write' } }, ...(brain === undefined ? {} : { brain: { path: dir, ...brain } }) })));
     const orchestrator = new Orchestrator({
       workflow,
       runner,
