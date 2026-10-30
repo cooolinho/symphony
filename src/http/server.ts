@@ -12,6 +12,7 @@ import { AGENT_HTML } from './agent-page.ts';
 import { BRAIN_HTML } from './brain-page.ts';
 import { CHANGES_HTML } from './changes-page.ts';
 import { DASHBOARD_HTML } from './dashboard.ts';
+import { ChangeEvents } from './events.ts';
 import { LOGS_HTML } from './logs-page.ts';
 import { TASKS_HTML } from './tasks-page.ts';
 
@@ -158,7 +159,8 @@ const REDIRECTS: ReadonlyMap<string, string> = new Map([
  * `PUT` / `DELETE /api/v1/settings/agents` (agent slots set on the dashboard; JSON body, `Content-Type:
  * application/json` required).
  * `/logs` and `/agent` redirect with 301 to `/stats` and `/issue` (query kept).
- * Read-only except refresh and these control routes. On a loopback bind, requests whose Host is not a loopback name are
+ * `/api/v1/events` is a Server-Sent Events stream (`event: change` with `{ at }`, at most every 500 ms, `: ping` every 25 s);
+ * the pages reload on it and keep polling as the fallback. Read-only except refresh and these control routes. On a loopback bind, requests whose Host is not a loopback name are
  * rejected (DNS-rebinding guard), and cross-origin POSTs are refused. On any other bind the server has no
  * login of its own and belongs behind an authenticating reverse proxy: the control routes are disabled unless
  * `allowRemoteControl` is set, and then requires an Origin header naming this host (CSRF guard, since a
@@ -184,6 +186,7 @@ export function startHttpServer(options: {
   const controls = { retry: loopbackBind || options.allowRemoteControl === true };
   // Analytics per filter, valid while the log files (append-only, so their sizes) and the price table are unchanged.
   const analyticsCache = new Map<string, { pricing: object; value: Analytics }>();
+  const events = new ChangeEvents(orchestrator);
 
   /**
    * The guard of every control route (retry, force, pause, resume, model hold and release, agent settings): loopback bind, or
@@ -250,6 +253,10 @@ export function startHttpServer(options: {
     }
     if (pathname === '/api/v1/state') {
       allow(['GET'], () => sendJson(res, 200, { ...orchestrator.snapshot(), controls }));
+      return;
+    }
+    if (pathname === '/api/v1/events') {
+      allow(['GET'], () => events.open(res));
       return;
     }
     if (pathname === '/api/v1/system') {
@@ -612,6 +619,7 @@ export function startHttpServer(options: {
         url: `http://${displayHost}:${address.port}/`,
         close: () =>
           new Promise<void>((done) => {
+            events.closeAll();
             server.closeAllConnections();
             server.close(() => done());
           }),

@@ -1026,12 +1026,14 @@ ${CHART_JS}
   for (const [id, draw] of [['model-sort', renderModels], ['repo-sort', renderRepos], ['issue-sort', renderIssues]]) {
     $(id).addEventListener('change', () => { if (data && data.totals.runs) draw(data); });
   }
-  // Periods that include now refresh once a minute while the page is visible; past periods never change.
-  setInterval(() => {
+  // Periods that include now refresh on change events (at most every 10 s) or once a minute while the page is
+  // visible; past periods never change.
+  function refreshOpen() {
     const r = range(filter);
     if (document.hidden || r.error || (r.to && r.to <= new Date())) return;
     loadAnalytics();
-  }, 60000);
+  }
+  live(refreshOpen, pollEvery(refreshOpen, 60000), 10000);
   loadAll();
 })();
 `,
