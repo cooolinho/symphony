@@ -2437,6 +2437,7 @@ describe('run history', () => {
       params.onEvent({
         event: 'model_call', timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: 1,
         modelUsage: { 'claude-fable-5-1': { inputTokens: 1_000_000, outputTokens: 100_000, cacheReadTokens: 0, cacheWriteTokens: 0 } },
+        context: { model: 'claude-fable-5-1', window: 200_000, tokens: 90_000, percent: 45, peakPercent: 60, compacts: 1, preTokens: 120_000 },
       });
       // The issue moves on the board during the turn: the orchestrator stops the agent before any turn result.
       tracker.set('a', { state: 'In review' });
@@ -2459,6 +2460,7 @@ describe('run history', () => {
     assert.equal(running?.model, 'claude-fable-5-1');
     assert.equal(running?.effort, 'xhigh');
     assert.equal(running?.cost_usd, 15);
+    assert.deepEqual(running?.context, { tokens: 90_000, window: 200_000, percent: 45, compacts: 1 });
     await orchestrator.tickNow();
     await until(() => orchestrator.snapshot().counts.claimed === 0, 3_000, 'stopped and released');
 
@@ -2468,6 +2470,8 @@ describe('run history', () => {
     assert.equal(entries[0]?.fields.effort, 'xhigh');
     const finished = entries[1]?.fields ?? {};
     assert.equal(finished.outcome, 'stopped');
+    assert.equal(finished.context_peak_percent, '60');
+    assert.equal(finished.context_compacts, '1');
     assert.equal(finished.model, 'claude-fable-5-1');
     assert.equal(finished.model_requested, 'fable');
     assert.equal(finished.effort, 'xhigh');

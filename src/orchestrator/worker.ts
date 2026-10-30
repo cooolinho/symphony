@@ -126,6 +126,8 @@ export interface WorkerCallbacks {
 }
 
 export interface WorkerParams {
+  /** Context window (tokens) of a model id; null when unknown. Passed on to the session. */
+  contextWindow?: (model: string) => number | null;
   issue: Issue;
   /** Id of this run, recorded in the meta of the results it reports; null when unknown. */
   runId: string | null;
@@ -583,6 +585,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     // An architect files sub-issues only to split an issue it may split (XL, not a work package itself).
     const subIssues = subIssueLimit(role, issue);
     session = await params.runner.startSession({
+      ...(params.contextWindow ? { contextWindow: params.contextWindow } : {}),
       cwd: activeWorkspace.path,
       issue,
       config: sessionClaudeConfig(params.workflow.config.claude, params.model, params.effort, role?.claude),

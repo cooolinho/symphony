@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { costOf, estimateCost, parsePricing, priceFor, PricingStore } from '../src/costs/pricing.ts';
+import { contextWindowSuffix } from '../src/agent/model-name.ts';
+import { contextWindowFor, costOf, estimateCost, parsePricing, priceFor, PricingStore } from '../src/costs/pricing.ts';
 import { computeHistoryStats, HistoryLog, parseCounts, parseHistoryLine, readHistory } from '../src/history/history.ts';
 import { Logger } from '../src/log.ts';
 import { tempDir } from './helpers.ts';
@@ -52,6 +53,18 @@ describe('model costs', () => {
     assert.notEqual(store.lastError, null);
   });
 
+  it('reads context_window and resolves it like a price, with the [1m] suffix first', () => {
+    const windows = parsePricing('default: { input: 5, output: 25, context_window: 200000 }\nopus: { input: 4, output: 20, context_window: 500000 }\nhaiku: { input: 1, output: 5 }', null);
+    assert.equal(contextWindowFor(windows, 'claude-opus-5-5'), 500_000);
+    assert.equal(contextWindowFor(windows, 'claude-haiku-4-5'), 200_000);
+    assert.equal(contextWindowFor(windows, 'claude-opus-5-5[1m]'), 1_000_000);
+    assert.equal(contextWindowFor(table, 'claude-opus-5-5'), null);
+    assert.equal(contextWindowSuffix('claude-opus-5-5[1m]'), 1_000_000);
+    assert.equal(contextWindowSuffix('opus'), null);
+    assert.throws(() => parsePricing('opus: { input: 1, output: 1, context_window: 0 }', null), { code: 'invalid_model_costs' });
+    assert.throws(() => parsePricing('opus: { input: 1, output: 1, context_window: abc }', null), /context_window/);
+  });
+
   it('falls back to the built-in default without a file', () => {
     const store = new PricingStore(path.join(tempDir(), 'missing.yml'), Logger.silent());
     assert.equal(priceFor(store.current(), 'claude-opus-5-5').key, 'default');
@@ -95,6 +108,16 @@ describe('repository history', () => {
     assert.equal(first?.fields.branch, 'symphony/issue-1');
     assert.equal(first?.fields.mcp_tool_calls, 'laravel-boost:2,tracker:1');
     for (const key of ['head_sha', 'branch', 'mcp_tool_calls']) assert.equal(key in (second?.fields ?? {}), false);
+  });
+
+  it('logs context_peak_percent and context_compacts of the run', () => {
+    const { log } = history();
+    log.runFinished(finish('acme/app#1', 'r1', '2026-10-04T08:01:00Z', { contextPeakPercent: 42.5, contextCompacts: 2 }));
+    log.runFinished(finish('acme/app#2', 'r2', '2026-10-04T09:01:00Z'));
+    const [first, second] = readHistory(log.dir, 'acme/app').entries.filter((e) => e.event === 'run_finished');
+    assert.equal(first?.fields.context_peak_percent, '42.5');
+    assert.equal(first?.fields.context_compacts, '2');
+    assert.equal('context_compacts' in (second?.fields ?? {}), false);
   });
 
   it('logs tool, skill, subagent and integration calls only when present and parses them back', () => {

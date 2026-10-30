@@ -25,9 +25,11 @@ import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { oneLine, tail, truncate } from '../util/text.ts';
 import { isWholeLimitMessage, limitScopeOf, parseLimitMessage } from './rate-limit.ts';
 import { forgetProcessGroup, killProcessGroup, processGroupSpawner } from './spawn.ts';
+import { contextWindowSuffix } from './model-name.ts';
 import type {
   AgentEvent,
   AgentRunner,
+  ContextSnapshot,
   AgentSession,
   SessionLimitInfo,
   StartSessionParams,
@@ -213,6 +215,10 @@ class ClaudeSession implements AgentSession {
   #resultUsage: Record<string, ModelTokenUsage> = {};
   /** Model calls since the last turn result, by message id (the blocks of one response share the id and usage). */
   #turnCalls = new Map<string, { model: string; usage: ModelTokenUsage }>();
+  /** Context fill level as of the latest main-conversation call; null before the first call or compaction. */
+  #context: ContextSnapshot | null = null;
+  /** Model of the session as Claude Code reports it at init (keeps a "[1m]" suffix the API ids lack). */
+  #sessionModel: string | null = null;
   /** The subagents still running, by the id of the tool call that started them, with their model calls by message id. */
   #subagents = new Map<string, { run: SubagentRun; calls: Map<string, ModelTokenUsage> }>();
   /** Descriptions of the live background tasks, as the latest `background_tasks_changed` lists them. */
@@ -483,6 +489,8 @@ class ClaudeSession implements AgentSession {
           });
         } else if (message.subtype === 'permission_denied') {
           this.#emit('permission_denied', { message: `${message.tool_name} denied: ${truncate(oneLine(message.message), 200)}` });
+        } else if (message.subtype === 'compact_boundary') {
+          this.#onCompact(message);
         } else {
           this.#emit('notification', { message: `system/${message.subtype}` });
         }
@@ -512,6 +520,7 @@ class ClaudeSession implements AgentSession {
   #onInit(message: SDKSystemMessage): void {
     if (this.#initSeen) return;
     this.#initSeen = true;
+    if (typeof message.model === 'string') this.#sessionModel = message.model;
     const requested = this.#params.config.permissionMode;
     if (message.permissionMode !== requested) {
       this.#params.logger.warn('Claude Code is not using the requested permission mode', {
@@ -676,7 +685,49 @@ class ClaudeSession implements AgentSession {
         cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
       },
     });
-    this.#emit('model_call', { modelUsage: this.#liveUsage() });
+    // Subagent calls run in their own context; only the main conversation fills the session's window.
+    if (message.parent_tool_use_id == null) {
+      const tokens = (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+      const window =
+        contextWindowSuffix(this.#sessionModel ?? '') ??
+        contextWindowSuffix(this.#params.config.model ?? '') ??
+        this.#params.contextWindow?.(body.model) ??
+        null;
+      const percent = window === null ? null : Math.round((tokens / window) * 1000) / 10;
+      const previous = this.#context;
+      this.#context = {
+        model: body.model,
+        window,
+        tokens,
+        percent,
+        peakPercent: percent === null ? (previous?.peakPercent ?? null) : Math.max(previous?.peakPercent ?? 0, percent),
+        compacts: previous?.compacts ?? 0,
+        preTokens: previous?.preTokens ?? null,
+      };
+    }
+    this.#emit('model_call', { modelUsage: this.#liveUsage(), ...(this.#context ? { context: { ...this.#context } } : {}) });
+  }
+
+  /** An automatic or manual compaction: counts it and remembers the size before it. */
+  #onCompact(message: SDKMessage & { subtype: 'compact_boundary' }): void {
+    const metadata: { trigger?: unknown; pre_tokens?: unknown } = (message as { compact_metadata?: object }).compact_metadata ?? {};
+    const preTokens = typeof metadata.pre_tokens === 'number' ? metadata.pre_tokens : null;
+    const trigger = typeof metadata.trigger === 'string' ? metadata.trigger : 'unknown';
+    const previous = this.#context;
+    this.#context = {
+      model: previous?.model ?? this.#sessionModel ?? this.#params.config.model ?? 'unknown',
+      window: previous?.window ?? null,
+      tokens: previous?.tokens ?? 0,
+      percent: previous?.percent ?? null,
+      peakPercent: previous?.peakPercent ?? null,
+      compacts: (previous?.compacts ?? 0) + 1,
+      preTokens,
+    };
+    this.#emit('context_compacted', {
+      message: `context compacted (${trigger}, ${preTokens ?? '?'} tokens before)`,
+      context: { ...this.#context },
+      detail: { trigger, pre_tokens: preTokens },
+    });
   }
 
   #startSubagent(toolUseId: string, subagentType: string, input: unknown): void {

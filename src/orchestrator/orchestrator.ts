@@ -6,8 +6,9 @@ import { childEnvironment } from '../agent/env.ts';
 import { chooseRoleEffort, chooseRoleModel } from '../agent/model.ts';
 import { classify } from '../workflow/classify.ts';
 import { MODEL_FAMILIES, modelFamilyOf } from '../agent/rate-limit.ts';
-import type { AgentEvent, AgentRunner, IntegrationReport, TokenUsage } from '../agent/types.ts';
-import { estimateCost, totalTokens, type ModelTokenUsage, type PricingStore } from '../costs/pricing.ts';
+import { contextWindowSuffix } from '../agent/model-name.ts';
+import type { AgentEvent, AgentRunner, ContextSnapshot, IntegrationReport, TokenUsage } from '../agent/types.ts';
+import { contextWindowFor, estimateCost, totalTokens, type ModelTokenUsage, type PricingStore } from '../costs/pricing.ts';
 import type { HistoryLog, RunOutcome, RunStart } from '../history/history.ts';
 import { readTranscript, type TranscriptChunk } from '../agent/transcript.ts';
 import { defaultIntegrations } from '../integrations/registry.ts';
@@ -205,6 +206,8 @@ interface RunningEntry {
   reportedCostUsd: number;
   claudeEstimateUsd: number;
   modelUsage: Record<string, ModelTokenUsage>;
+  /** Context fill level as of the latest model call; null before the first one. */
+  context: ContextSnapshot | null;
   /** MCP servers Symphony added that did not connect in the session. */
   mcpUnavailable: string[];
   /** `run_started` line waiting for the integrations' fields; written once they ran, or when the run ends first. */
@@ -544,6 +547,7 @@ const MAX_SESSIONS = 20;
 const ZERO_USAGE: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
 /** Lifecycle events logged at info level; everything else is debug. */
 const LIFECYCLE_EVENTS = new Set([
+  'context_compacted',
   'session_started',
   'session_configured',
   'startup_failed',
@@ -2045,6 +2049,7 @@ export class Orchestrator {
       reportedCostUsd: 0,
       claudeEstimateUsd: 0,
       modelUsage: {},
+      context: null,
       mcpUnavailable: [],
       pendingStart: null,
       mcpToolCalls: {},
@@ -2152,6 +2157,10 @@ export class Orchestrator {
         role,
         adapter,
         runner: this.#deps.runner,
+        contextWindow: (model) => {
+          const table = this.#deps.pricing?.current();
+          return table === undefined ? contextWindowSuffix(model) : contextWindowFor(table, model);
+        },
         integrations: this.#deps.integrations ?? defaultIntegrations(),
         workspaces: this.#workspaces(workflow),
         childEnv: this.#childEnv(config),
@@ -2331,6 +2340,8 @@ export class Orchestrator {
           state: entry.issue.state,
           turns: entry.turnCount,
           agent_seconds: Math.round(agentSeconds * 10) / 10,
+          context_peak_percent: entry.context?.peakPercent ?? null,
+          context_compacts: entry.context?.compacts ?? 0,
           tokens: tokensJson(entry.tokens),
           cost_usd: Math.round(entry.costUsd * 10_000) / 10_000,
           model: primaryModelOf(entry.modelUsage) ?? entry.model,
@@ -2615,6 +2626,8 @@ export class Orchestrator {
       startedAt: entry.startedAt,
       finishedAt: this.#clock.now(),
       agentSeconds,
+      contextPeakPercent: entry.context?.peakPercent ?? null,
+      contextCompacts: entry.context?.compacts ?? 0,
       modelRequested: entry.requestedModel,
       effort: entry.effort,
       usage: entry.modelUsage,
@@ -3262,6 +3275,7 @@ export class Orchestrator {
       entry.claudeEstimateUsd = event.costUsd;
     }
     if (event.modelUsage !== undefined) entry.modelUsage = event.modelUsage;
+    if (event.context !== undefined) entry.context = event.context;
     if (event.modelUsage !== undefined || event.costUsd !== undefined) {
       const pricing = this.#deps.pricing?.current();
       const cost = pricing !== undefined ? estimateCost(pricing, entry.modelUsage) : entry.claudeEstimateUsd;
@@ -3396,6 +3410,12 @@ export class Orchestrator {
       started_at: entry.startedAt.toISOString(),
       last_event_at: entry.lastEventAt?.toISOString() ?? null,
       seconds_running: Math.round((now - entry.startedAtMs) / 100) / 10,
+      context: {
+        tokens: entry.context?.tokens ?? 0,
+        window: entry.context?.window ?? null,
+        percent: entry.context?.percent ?? null,
+        compacts: entry.context?.compacts ?? 0,
+      },
       workspace: entry.workspacePath,
       tokens: tokensJson(entry.tokens),
       // The model that used the most tokens; until the first model call, the one the session started with.
