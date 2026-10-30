@@ -1172,7 +1172,7 @@ Symphony samples CPU, memory, load and disk of the host every 10 s and keeps one
 
 ### `brain`
 
-The knowledge vault: one vault for all repositories. With `enabled: true` Symphony creates `README.md` (the rules), `Inbox/`, `Repos/`, `Decisions/`, `Lessons/`, `Issues/` and `Agents/` folders at startup, plus `Kandidaten-Review.base` and `Neueste Lessons.base` as Obsidian Bases views, and `Repos/<owner>-<name>/index.md` for each configured repository. Existing files and folders are never overwritten; `.obsidian/` is never touched. Restart to change it. With `enabled: true` agents also get the tools `brain_search`, `brain_read`, `brain_list`, `brain_write` and `brain_append` (see [agent-claude.md](agent-claude.md#brain-tools)). An unknown key is an error.
+The knowledge vault: one vault for all repositories. With `enabled: true` Symphony creates `README.md` (the rules), `Inbox/`, `Repos/`, `Decisions/`, `Lessons/`, `Issues/` and `Agents/` folders at startup, plus `Kandidaten-Review.base` and `Neueste Lessons.base` as Obsidian Bases views, and `Repos/<owner>-<name>/index.md` for each configured repository. It also creates `.gitignore` (`.obsidian/workspace*.json`, `.trash/`) and, when `.git` is missing, runs `git init` with a first commit of the structure (never `.obsidian/`); every agent write is then one commit (see [agent-claude.md](agent-claude.md#brain-tools)). Existing files and folders are never overwritten; `.obsidian/` is never touched. Restart to change it. With `enabled: true` agents also get the tools `brain_search`, `brain_read`, `brain_list`, `brain_write` and `brain_append` (see [agent-claude.md](agent-claude.md#brain-tools)). An unknown key is an error.
 
 | Key | Default | Meaning |
 | --- | --- | --- |

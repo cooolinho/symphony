@@ -24,7 +24,18 @@ export interface BrainWriteEntry {
   at: string;
 }
 
+/** Vault versioning (E7-3): the whole write runs under `serial`; a failing `beforeWrite` or `commitWrite` rejects the write. */
+export interface BrainVersioning {
+  serial<T>(fn: () => Promise<T>): Promise<T>;
+  /** Takes over manual changes (Obsidian) before the file is written. */
+  beforeWrite(): Promise<void>;
+  /** Commits the written file; returns the sha. */
+  commitWrite(entry: BrainWriteEntry): Promise<string>;
+}
+
 export interface BrainWriteOptions {
+  /** Commits every write to the vault repository; without it nothing is versioned. */
+  versioning?: BrainVersioning;
   /** Called after every successful write; an error is only logged. */
   onWrite?: (entry: BrainWriteEntry) => void | Promise<void>;
   /** Clock, for tests. */
@@ -78,11 +89,38 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
     args: Record<string, unknown>,
     context: AgentToolContext,
     target: { absolute: string; relative: string },
-    previous: { hash: string } | null,
+    previous: { text: string; hash: string } | null,
     frontmatter: Record<string, unknown>,
     text: string,
   ): Promise<ToolResult> => {
     if (Buffer.byteLength(text) > MAX_NOTE_BYTES) return tooLarge();
+    const versioning = options.versioning;
+    if (versioning === undefined) return commitAndReport(tool, args, context, target, previous, frontmatter, text);
+    // One lock around take-over of manual changes, re-check, write and commit: no other session slips a file into this commit.
+    return versioning.serial(async () => {
+      try {
+        await versioning.beforeWrite();
+      } catch (error) {
+        logger.error('brain vault commit failed', { tool, path: target.relative, error: errorMessage(error) });
+        return fail('rejected', `vault git failed: ${errorMessage(error)}`);
+      }
+      const now = current(target.absolute);
+      if (now !== null && 'ok' in now) return now;
+      if (now?.hash !== previous?.hash) return now === null ? fail('rejected', 'note was removed while writing; read it again') : conflict(now);
+      return commitAndReport(tool, args, context, target, previous, frontmatter, text, versioning);
+    });
+  };
+
+  const commitAndReport = async (
+    tool: BrainWriteEntry['tool'],
+    args: Record<string, unknown>,
+    context: AgentToolContext,
+    target: { absolute: string; relative: string },
+    previous: { text: string; hash: string } | null,
+    frontmatter: Record<string, unknown>,
+    text: string,
+    versioning?: BrainVersioning,
+  ): Promise<ToolResult> => {
     writeAtomic(target.absolute, text);
     const hash = hashOf(Buffer.from(text));
     const entry: BrainWriteEntry = {
@@ -97,6 +135,20 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
       run: context.runId ?? null,
       at: now().toISOString(),
     };
+    if (versioning !== undefined) {
+      try {
+        await versioning.commitWrite(entry);
+      } catch (error) {
+        try {
+          if (previous === null) fs.rmSync(target.absolute, { force: true });
+          else writeAtomic(target.absolute, previous.text);
+        } catch (restoreError) {
+          logger.error('brain write could not be rolled back', { path: target.relative, error: errorMessage(restoreError) });
+        }
+        logger.error('brain vault commit failed', { tool, path: target.relative, error: errorMessage(error) });
+        return fail('rejected', `vault git failed: ${errorMessage(error)}`);
+      }
+    }
     try {
       await options.onWrite?.(entry);
     } catch (error) {
