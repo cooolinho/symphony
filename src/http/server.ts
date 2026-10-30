@@ -6,6 +6,7 @@ import { computeAnalytics, filterEntries, isValidTimeZone, type Analytics, type 
 import { computeHistoryStats, readHistory, repositoryFileName } from '../history/history.ts';
 import type { Logger } from '../log.ts';
 import type { Orchestrator } from '../orchestrator/orchestrator.ts';
+import type { SystemSource } from '../system/metrics.ts';
 import { errorMessage } from '../util/errors.ts';
 import { AGENT_HTML } from './agent-page.ts';
 import { DASHBOARD_HTML } from './dashboard.ts';
@@ -132,7 +133,7 @@ function sameHost(origin: string, hostHeader: string | undefined): boolean {
  * Observability/control surface (spec 13.7): `/` dashboard, `/agent?id=<identifier>` agent detail view (live, or
  * archived once the orchestrator released the issue),
  * `/logs` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
- * `/api/v1/state`, `/api/v1/<identifier>` with its `/timeline` and `/transcript`, `POST /api/v1/refresh`
+ * `/api/v1/state`, `/api/v1/system`, `/api/v1/<identifier>` with its `/timeline` and `/transcript`, `POST /api/v1/refresh`
  * `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker), `/force` (Start now in an extra slot),
  * `/pause` and `/resume` (operator pause of an issue), `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family), and
  * `PUT` / `DELETE /api/v1/settings/agents` (agent slots set on the dashboard; JSON body, `Content-Type:
@@ -151,11 +152,14 @@ export function startHttpServer(options: {
   orchestrator: Orchestrator;
   logger: Logger;
   history?: HistorySource | null;
+  /** Host metrics collector behind `/api/v1/system`. */
+  system?: SystemSource | null;
   /** Allow retry on a non-loopback bind (behind an authenticating reverse proxy). */
   allowRemoteControl?: boolean;
 }): Promise<HttpServerHandle> {
   const { orchestrator, logger } = options;
   const history = options.history ?? null;
+  const system = options.system ?? null;
   const loopbackBind = isLoopbackHost(options.host);
   const controls = { retry: loopbackBind || options.allowRemoteControl === true };
   // Analytics per filter, valid while the log files (append-only, so their sizes) and the price table are unchanged.
@@ -223,6 +227,10 @@ export function startHttpServer(options: {
     }
     if (pathname === '/api/v1/state') {
       allow(['GET'], () => sendJson(res, 200, { ...orchestrator.snapshot(), controls }));
+      return;
+    }
+    if (pathname === '/api/v1/system') {
+      allow(['GET'], () => sendJson(res, 200, system?.snapshot() ?? { current: null, history: [], gpu: null }));
       return;
     }
     if (pathname === '/logs') {
