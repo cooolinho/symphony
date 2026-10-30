@@ -1178,6 +1178,7 @@ The knowledge vault: one vault for all repositories. With `enabled: true` Sympho
 | --- | --- | --- |
 | `enabled` | `false` | Create the vault at startup; with `false` no path is touched. |
 | `path` | `~/brain` | Vault directory; `~` and `$VAR` are expanded, relative paths resolve against `WORKFLOW.md`. In Docker this is the `brain` volume. |
+| `clash_window_ms` | `600000` | Integer >= 0. A `brain_write` or `brain_append` is rejected with reason `window` when another run wrote the same note successfully within this many milliseconds; the result holds the current content and hash. The same run may write again at once. `0` turns the check off. Every call is logged to `<log-dir>/brain/access.jsonl` (lines older than 30 days are removed at startup, see [agent-claude.md](agent-claude.md#brain-tools)). |
 
 ## Complete example: roles, checks and Laravel
 

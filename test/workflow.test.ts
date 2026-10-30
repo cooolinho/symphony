@@ -428,13 +428,20 @@ describe('brain config', () => {
   const env = { HOME: '/home/u' };
 
   it('defaults to disabled with ~/brain', () => {
-    assert.deepEqual(resolve(base, env).brain, { enabled: false, path: '/home/u/brain' });
+    assert.deepEqual(resolve(base, env).brain, { enabled: false, path: '/home/u/brain', clashWindowMs: 600000 });
   });
 
   it('reads enabled and path, expands ~ and resolves relative paths', () => {
-    assert.deepEqual(resolve({ ...base, brain: { enabled: true, path: '~/vault' } }, env).brain, { enabled: true, path: '/home/u/vault' });
+    assert.deepEqual(resolve({ ...base, brain: { enabled: true, path: '~/vault' } }, env).brain, { enabled: true, path: '/home/u/vault', clashWindowMs: 600000 });
     assert.equal(resolve({ ...base, brain: { path: 'vault' } }, env).brain.path, '/srv/flows/vault');
     assert.equal(resolve({ ...base, brain: { enabled: true } }, env).warnings.some((w) => /brain/.test(w)), false);
+  });
+
+  it('reads clash_window_ms (integer >= 0)', () => {
+    assert.equal(resolve({ ...base, brain: { clash_window_ms: 0 } }, env).brain.clashWindowMs, 0);
+    assert.equal(resolve({ ...base, brain: { clash_window_ms: 5000 } }, env).brain.clashWindowMs, 5000);
+    assert.throws(() => resolve({ ...base, brain: { clash_window_ms: -1 } }, env), /brain\.clash_window_ms/);
+    assert.throws(() => resolve({ ...base, brain: { clash_window_ms: 'x' } }, env), /brain\.clash_window_ms/);
   });
 
   it('rejects unknown keys and wrong types', () => {

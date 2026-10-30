@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { sessionClaudeConfig } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, AgentSession, IntegrationReport, SessionLimitInfo } from '../agent/types.ts';
+import type { BrainAccessLog } from '../brain/access-log.ts';
 import { brainToolsFor } from '../brain/tools.ts';
 import { prepareIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
@@ -191,6 +192,8 @@ export interface WorkerParams {
   checkCache: CheckCache;
   /** Directory for per-session JSONL transcripts, or null to disable them. */
   transcriptDir: string | null;
+  /** Access log and clash list of the brain, shared by all sessions. */
+  brainAccess?: BrainAccessLog | null;
   /**
    * Live check after each turn (uses the current workflow config): null continues the session, a string ends it
    * normally with that reason (the issue left the active states, is no longer routable, or another role serves it).
@@ -636,7 +639,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     // An architect files sub-issues only to split an issue it may split (XL, not a work package itself).
     const subIssues = subIssueLimit(role, issue);
     sessionStart = { sha: startSha };
-    const brainTools = brainToolsFor(params.workflow.config.brain, logger);
+    const brainTools = brainToolsFor(params.workflow.config.brain, logger, { access: params.brainAccess ?? null });
     session = await params.runner.startSession({
       ...(params.contextWindow ? { contextWindow: params.contextWindow } : {}),
       cwd: activeWorkspace.path,
