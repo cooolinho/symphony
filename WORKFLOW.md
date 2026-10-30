@@ -435,6 +435,7 @@ server:
 # brain:                                     # knowledge vault: one vault for all repositories, created at startup
 #   enabled: false                           # true = create the vault; false = no path is touched
 #   path: ~/brain                            # /home/symphony/brain is the brain volume in Docker
+#   clash_window_ms: 600000                  # another run that wrote a note within this window blocks a write (0 = off)
 # Only roles with brain: read or write get the brain tools (see roles:).
 # Existing files and folders are never overwritten; .obsidian/ is never touched. Changes apply after a restart.
 ---

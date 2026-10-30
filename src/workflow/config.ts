@@ -225,6 +225,8 @@ export interface BrainConfig {
   enabled: boolean;
   /** Absolute vault directory, resolved from brain.path (default ~/brain). */
   path: string;
+  /** Another run that wrote a note within this many ms blocks a write to it (default 600000; 0 = off). */
+  clashWindowMs: number;
 }
 
 export interface TrackerDefaults {
@@ -280,7 +282,7 @@ const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', '
 export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
 const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server', 'system', 'brain'];
-const BRAIN_KEYS = new Set(['enabled', 'path']);
+const BRAIN_KEYS = new Set(['enabled', 'path', 'clash_window_ms']);
 const ROLE_KEYS = new Set([
   'brain',
   'states',
@@ -1197,7 +1199,8 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
   if (brainEnabled && brainPath !== '' && (brainPath === root || isStrictlyInside(root, brainPath) || isStrictlyInside(brainPath, root))) {
     reader.errors.push(`brain.path (${brainPath}) must not overlap workspace.root (${root}): agents must reach the vault only through the brain tools`);
   }
-  const brain: BrainConfig = { enabled: brainEnabled, path: brainPath };
+  const clashWindowMs = reader.int(brainRaw, 'clash_window_ms', 'brain.clash_window_ms', 600_000, 0);
+  const brain: BrainConfig = { enabled: brainEnabled, path: brainPath, clashWindowMs };
   if (server.port !== null && server.port > 65_535) reader.errors.push('server.port must be <= 65535');
 
   if (reader.errors.length > 0) {
