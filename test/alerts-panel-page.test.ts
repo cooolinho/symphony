@@ -1,0 +1,202 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
+import { renderPage } from './helpers.ts';
+import { dashboardState } from './helpers/page-fixtures.ts';
+
+// E2-4a (#354): the "Hinweise" panel, tested through the whole overview page (fake DOM, frozen clock 2026-10-30T12:00:00Z).
+const T = (hm: string) => `2026-10-30T${hm}:00Z`;
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+const budgetReport = (over: Record<string, unknown> = {}) => ({
+  generated_at: T('11:55'),
+  five_hour: { alert: true, resets_at: T('13:00'), forecast: { eta: T('12:30'), limit_tokens: 100 } },
+  seven_day: { alert: false, resets_at: null, forecast: null },
+  ...over,
+});
+const hold = { model: 'opus', source: 'limit', since: T('11:30'), until: T('14:00'), text: 'weekly limit', issue_identifier: 'acme/app#3' };
+const withHealth = (over: Record<string, unknown>) => ({ health: { ...dashboardState().health, ...over } });
+
+/** Page with a budget answer (or a failing budget fetch); the state is rendered once the budget has arrived. */
+async function open(state: Record<string, unknown>, budget: unknown) {
+  const page = renderPage(DASHBOARD_HTML, undefined, {
+    fetch: (url) => {
+      if (url.startsWith('/api/v1/budget')) {
+        if (budget instanceof Error) throw budget;
+        return budget;
+      }
+      return dashboardState();
+    },
+  });
+  await settle();
+  page.render(dashboardState(state));
+  await settle();
+  return page;
+}
+const items = (page: Awaited<ReturnType<typeof open>>) => page.$('alerts-list').children;
+
+describe('Hinweise panel on the overview', () => {
+  it('is the panel with counter in the head, aria-live on the counter, and replaces the old sections', () => {
+    assert.match(DASHBOARD_HTML, /<h2[^>]*>\s*Hinweise\s*<span class="count"[^>]*aria-live="polite"[^>]*>\s*0\s*<\/span>\s*<\/h2>/);
+    assert.doesNotMatch(DASHBOARD_HTML, /id="problems"|id="model-holds"|id="problem-list"|id="model-hold-list"|Needs attention/);
+    const page = renderPage(DASHBOARD_HTML, dashboardState());
+    assert.equal(page.$('alerts-count').getAttribute('aria-live'), 'polite');
+    assert.ok(page.$('alerts-count').classList.contains('count'));
+    assert.equal(page.$('alerts-count').parentNode!.tagName, 'h2');
+    assert.match(page.$('alerts-count').parentNode!.textContent, /^Hinweise\s*0$/);
+    assert.equal(page.query('#problems').length + page.query('#model-holds').length, 0);
+  });
+
+  it('three sources: three entries, counter 3, newest first, with icon, relative time, title, text and link', async () => {
+    const page = await open(
+      { ...withHealth({ last_tracker_error: { at: T('11:00'), message: 'tracker down' } }), model_holds: [hold] },
+      budgetReport(),
+    );
+    const rows = items(page);
+    assert.equal(page.$('alerts-count').textContent, '3');
+    assert.equal(rows.length, 3);
+    // budget 11:55 > hold 11:30 > tracker error 11:00
+    assert.match(rows[0]!.textContent, /Limit in Sicht/);
+    assert.match(rows[1]!.textContent, /opus/);
+    assert.match(rows[2]!.textContent, /Tracker/);
+    assert.match(rows[2]!.textContent, /tracker down/);
+    assert.deepEqual(rows.map((r) => r.querySelector('a')!.href), ['/stats', '/tasks', '/stats']);
+    assert.deepEqual(rows.map((r) => /vor \d+ (min|h)|gerade eben/.exec(r.textContent)?.[0]), ['vor 5 min', 'vor 30 min', 'vor 1 h']);
+    for (const r of rows) assert.ok(r.querySelector('svg'), 'icon');
+    assert.equal(new Set(rows.map((r) => r.querySelector('svg')!.outerHTML)).size, 3, 'icon differs by kind');
+  });
+
+  it('needs-human issues link to the issue page, also from the parked list, once per issue', async () => {
+    const row = { issue_identifier: 'acme/app#12', title: 'Frage an den Operator', labels: ['needs-human'], updated_at: T('11:50') };
+    const page = await open({ blocked: [row], issues: [row] }, budgetReport({ five_hour: null }));
+    const rows = items(page);
+    assert.equal(rows.length, 1);
+    assert.equal(page.$('alerts-count').textContent, '1');
+    assert.equal(rows[0]!.querySelector('a')!.href, '/issue?id=acme%2Fapp%2312');
+    assert.match(rows[0]!.textContent, /Frage an den Operator/);
+    assert.match(rows[0]!.textContent, /vor 10 min/);
+  });
+
+  it('shows the German empty state with a green dot and counter 0', async () => {
+    const calm = await open({}, budgetReport({ five_hour: null }));
+    assert.equal(calm.$('alerts-count').textContent, '0');
+    assert.equal(items(calm).length, 1);
+    assert.match(items(calm)[0]!.textContent, /Alles ruhig/);
+    assert.ok(calm.$('alerts-list').querySelector('.dot.tone-green'));
+    assert.equal(calm.query('#alerts-list a').length, 0);
+  });
+
+  it('rerendering replaces the entries instead of appending', async () => {
+    const page = await open({ model_holds: [hold] }, null);
+    assert.equal(items(page).length, 1);
+    page.render(dashboardState({ model_holds: [hold, { ...hold, model: 'sonnet', since: T('11:40') }] }));
+    assert.equal(items(page).length, 2);
+    assert.equal(page.$('alerts-count').textContent, '2');
+    page.render(dashboardState({ model_holds: [] }));
+    assert.equal(page.$('alerts-count').textContent, '0');
+    assert.match(page.$('alerts-list').textContent, /Alles ruhig/);
+  });
+
+  it('operator pause of a model is a hint linking to /tasks', async () => {
+    const page = await open({ model_holds: [{ model: 'opus', source: 'operator', since: T('11:00'), until: null, text: null, issue_identifier: null }] }, null);
+    assert.equal(items(page).length, 1);
+    assert.match(items(page)[0]!.textContent, /opus.*pausiert/);
+    assert.equal(items(page)[0]!.querySelector('a')!.href, '/tasks');
+  });
+
+  it('collects workflow, dispatch, tracker, pricing and slot problems as attention entries linking to /stats', async () => {
+    const page = await open(
+      {
+        ...withHealth({
+          workflow_error: { message: 'wf broken' },
+          dispatch_errors: ['WORKFLOW.md: wf broken', 'no token'],
+          last_tracker_error: { at: T('11:00'), message: 'tracker down' },
+          pricing_error: 'pricing broken',
+        }),
+        limits: { ...dashboardState().limits, reservation_problem: 'reserve broken', slot_problems: ['slot broken'] },
+      },
+      null,
+    );
+    const text = page.$('alerts-list').textContent;
+    for (const t of ['wf broken', 'no token', 'tracker down', 'pricing broken', 'reserve broken', 'slot broken']) assert.ok(text.includes(t), t);
+    assert.equal((text.match(/wf broken/g) ?? []).length, 1, 'workflow error is not repeated by the dispatch error');
+    assert.equal(page.$('alerts-count').textContent, '6');
+    for (const r of items(page)) assert.equal(r.querySelector('a')!.href, '/stats');
+  });
+
+  it('Degraded badge follows the attention entries only', async () => {
+    const badge = (p: Awaited<ReturnType<typeof open>>) => p.$('sys-status').textContent;
+    assert.match(badge(await open(withHealth({ pricing_error: 'x' }), null)), /Degraded/);
+    assert.match(badge(await open({ model_holds: [hold] }, budgetReport()) ), /Online/);
+    assert.match(badge(await open({}, null)), /Online/);
+  });
+
+  it('writes data as text, never as markup', async () => {
+    const evil = '<img src=x onerror=alert(1)>';
+    const page = await open(withHealth({ pricing_error: evil }), null);
+    const row = items(page)[0]!;
+    assert.ok(row.textContent.includes(evil));
+    assert.equal(row.descendants().filter((e) => e.tagName === 'img').length, 0);
+  });
+});
+
+describe('Hinweise panel: budget source', () => {
+  it('loads /api/v1/budget and shows a hint only for windows with an alert', async () => {
+    const page = renderPage(DASHBOARD_HTML, undefined, { fetch: (url) => (url.startsWith('/api/v1/budget') ? budgetReport({ seven_day: { alert: true, resets_at: T('23:00'), forecast: { eta: T('20:00'), limit_tokens: 5 } } }) : dashboardState()) });
+    assert.ok(page.fetches.some((f) => f.url.startsWith('/api/v1/budget')), 'budget is fetched');
+    await settle();
+    page.render(dashboardState());
+    await settle();
+    const rows = items(page);
+    assert.equal(rows.length, 2);
+    assert.ok(rows.every((r) => r.querySelector('a')!.href === '/stats'));
+    assert.match(page.$('alerts-list').textContent, /5-h|5 h|5-Stunden/i);
+    assert.match(page.$('alerts-list').textContent, /7/);
+  });
+
+  it('shows no budget hint without an alert', async () => {
+    const page = await open({}, budgetReport({ five_hour: { alert: false, resets_at: null, forecast: null } }));
+    assert.equal(page.$('alerts-count').textContent, '0');
+  });
+
+  it('a failing budget fetch only drops the budget hints; the rest of the panel keeps working', async () => {
+    const page = await open({ model_holds: [hold] }, new Error('budget down'));
+    assert.equal(items(page).length, 1);
+    assert.match(items(page)[0]!.textContent, /opus/);
+    assert.equal(page.$('alerts-count').textContent, '1');
+  });
+
+  it('a budget report without windows does not break the panel', async () => {
+    const page = await open({}, {});
+    assert.equal(page.$('alerts-count').textContent, '0');
+    assert.match(page.$('alerts-list').textContent, /Alles ruhig/);
+  });
+});
+
+describe('Hinweise panel: state fetch fails', () => {
+  it('shows the error in the panel and the Offline header instead of breaking', async () => {
+    const page = renderPage(DASHBOARD_HTML, undefined, {
+      fetch: (url) => {
+        if (url.startsWith('/api/v1/budget')) return budgetReport();
+        throw new Error('connection refused');
+      },
+    });
+    await settle();
+    assert.match(page.$('alerts-list').textContent, /connection refused/);
+    assert.ok(Number(page.$('alerts-count').textContent) >= 1);
+    assert.match(page.$('sys-status').textContent, /Offline/);
+  });
+});
+
+describe('model controls stay on the overview', () => {
+  it('shows Pause/Resume per model and posts hold and release', async () => {
+    const page = await open({ model_controls: [{ model: 'opus', paused: false, limit_until: null }] }, null);
+    assert.equal(page.$('model-controls').hidden, false);
+    page.click(page.query('button.model-control')[0]!);
+    assert.deepEqual(page.fetches.at(-1), { url: '/api/v1/models/opus/hold', method: 'POST' });
+    const paused = await open({ model_controls: [{ model: 'opus', paused: true, limit_until: null }] }, null);
+    assert.equal(paused.query('button.model-control')[0]!.textContent, 'Resume');
+    paused.click(paused.query('button.model-control')[0]!);
+    assert.equal(paused.fetches.at(-1)!.url, '/api/v1/models/opus/release');
+  });
+});
