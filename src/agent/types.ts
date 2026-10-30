@@ -198,6 +198,8 @@ export interface StartSessionParams {
   issue: Issue;
   config: ClaudeConfig;
   tools: AgentToolSpec[];
+  /** Read tools of the knowledge vault; absent or empty = no `brain` server in the session. */
+  brainTools?: AgentToolSpec[];
   /** Current tool context (the latest issue snapshot), read on every tool call. */
   toolContext: () => AgentToolContext;
   /** Child environment, already stripped of tracker secrets. */

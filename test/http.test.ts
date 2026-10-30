@@ -1247,3 +1247,52 @@ describe('page shell (layout.ts, #342)', () => {
     }
   });
 });
+
+describe('GET /api/v1/budget', () => {
+  let server: HttpServerHandle;
+
+  before(async () => {
+    const logDir = tempDir();
+    fs.mkdirSync(path.join(logDir, 'budget'));
+    fs.writeFileSync(
+      path.join(logDir, 'budget', 'rate-limits.jsonl'),
+      `${JSON.stringify({ at: new Date().toISOString(), run_id: 'r', issue: 'acme/app#1', role: 'developer', model: null, rate_limit_info: { rateLimitType: 'five_hour', status: 'allowed' } })}\n`,
+    );
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir()))),
+      runner: new FakeRunner(),
+      logger: Logger.silent(),
+      env: {},
+      logDir,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker(),
+    });
+    server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+  });
+
+  after(async () => {
+    await server.close();
+  });
+
+  it('answers both windows with usage, forecast and by_role', async () => {
+    const res = await request(server.port, 'GET', '/api/v1/budget');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.deepEqual(Object.keys(body).sort(), ['five_hour', 'generated_at', 'seven_day']);
+    assert.ok(!Number.isNaN(Date.parse(body.generated_at)));
+    for (const window of ['five_hour', 'seven_day']) {
+      const item = body[window];
+      assert.equal(item.window, window);
+      assert.equal(item.used_tokens, 0);
+      assert.equal(item.burn_rate_per_min, 0);
+      assert.equal(item.forecast, null);
+      assert.equal(item.alert, false);
+      assert.deepEqual(item.by_role, {});
+      assert.ok('resets_at' in item);
+    }
+  });
+
+  it('rejects other methods', async () => {
+    assert.equal((await request(server.port, 'POST', '/api/v1/budget')).status, 405);
+  });
+});

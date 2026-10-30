@@ -147,6 +147,17 @@ addition says the same: use the results in the same turn and never end a turn to
 variable to `0`; if a session then ends without a result while tasks still run, the "Stage ended without a result"
 comment names them, and `turn_completed` carries them in `detail.background_tasks`.
 
+### Brain tools
+
+With `brain.enabled: true` a second in-process MCP server `brain` offers read access to the knowledge vault (the name `brain` is reserved for extensions, like `tracker`): `mcp__brain__brain_search`, `mcp__brain__brain_read` and `mcp__brain__brain_list`. Without `brain.enabled` the server is absent. Each call reports a `brain_tool` event.
+
+- `brain_search(query, repo?, type?)`: title, frontmatter and full text of all `.md` notes, case-insensitive, every word must occur. `approved` notes come first, then `candidate`; `deprecated` never. At most 20 hits with `path`, `title`, `status`, `excerpt`.
+- `brain_read(path)`: `content`, parsed `frontmatter` and `hash` (SHA-256 of the file, for later writes).
+- `brain_list(folder)`: files and subfolders with `type` and `status` from the frontmatter.
+- Paths are relative to the vault: no `..`, no absolute path, nothing under `.obsidian/`, no symlink out of the vault. A violation returns the error category `rejected`.
+- Every tool takes an optional `purpose`; without it a warning is logged and the call runs anyway.
+- All access is synchronous on the file system; there is no index.
+
 ### MCP server status
 
 Stdio servers such as Laravel Boost may still be `pending` after the handshake (Claude Code waits up to
@@ -251,7 +262,7 @@ groups are killed too.
 Events sent to the orchestrator: `session_started`, `session_configured` (model, permission mode, Claude Code
 version, MCP server status, plugins, number of skills), `startup_failed`, `turn_started`, `turn_completed`, `turn_failed`, `turn_cancelled`, `turn_timeout`,
 `turn_input_required`, `approval_auto_approved`, `approval_denied`, `permission_denied`, `tool_use`, `tool_result`,
-`subagent`, `tracker_tool`, `assistant_message`, `api_retry`, `rate_limit`, `agent_error` (API or authentication errors),
+`subagent`, `tracker_tool`, `brain_tool`, `assistant_message`, `api_retry`, `rate_limit`, `agent_error` (API or authentication errors),
 `agent_exited`, `notification`, `other_message`. The worker adds the transition guard's `transition_denied`,
 `checks_started` and `checks_finished` (`target`, `sha`, `exit_code`, `duration_ms`, `ok`), logged at info level.
 
@@ -294,6 +305,21 @@ Every event is appended as one JSON line to `<log-dir>/budget/rate-limits.jsonl`
 older than 30 days at startup and then once a day; write errors are only logged. `GET /api/v1/state` shows
 `rate_limits` as an object with the latest record per `rateLimitType` (`five_hour`, `seven_day`, ...), `{}` before the
 first event. Instances sharing a log directory share the file, which fits because limits apply per account.
+
+### Limit forecast
+
+`GET /api/v1/budget` answers `{ five_hour, seven_day, generated_at }`. Each window holds `used_tokens` (tokens of
+`run_finished` lines in the rolling window of 5 hours or 7 days), `burn_rate_per_min` (tokens of the last 30 minutes
+/ 30), `resets_at` (`resetsAt` of the latest rate-limit event of that type, `null` when missing or in the past),
+`forecast`, `alert` and `by_role` (tokens per role in the window).
+
+`forecast` is `null` while the limit is unknown. The limit is taken from the SDK field `utilization` (share in (0, 1])
+of the latest event of the type (limit = usage at that time / `utilization`, `limit_source: "sdk"`) and otherwise
+calibrated: the usage in the window at the time of the latest `rejected` event of the same `rateLimitType`
+(`limit_source: "calibrated"`). `eta` = now + (limit − used) / burn rate, set only when it lies before `resets_at`
+(`now` once the limit is already reached); otherwise `null`. `alert` is `true` exactly when `eta` is set.
+`Orchestrator#budgetAlerts()` returns the windows with an alert for the alerts panel. The tokens of a run only count
+once it has finished, so running sessions are missing. Other methods than `GET` answer 405.
 
 Every raw SDK message is also written as JSON lines to `<log-dir>/sessions/<workspace-key>/<timestamp>.jsonl`.
 
