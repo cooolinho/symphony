@@ -413,6 +413,16 @@ describe('config layer', () => {
   });
 });
 
+describe('system config', () => {
+  it('reads system.gpu, default false', () => {
+    const base = { tracker: { kind: 'github-project' } };
+    assert.equal(resolve(base).system.gpu, false);
+    assert.equal(resolve({ ...base, system: { gpu: true } }).system.gpu, true);
+    assert.equal(resolve({ ...base, system: { gpu: true } }).warnings.some((w) => /system/.test(w)), false);
+    assert.throws(() => resolve({ ...base, system: { gpu: 'yes' } }), /system\.gpu/);
+  });
+});
+
 describe('prompt templates', () => {
   const issue = issueTemplateValue(makeIssue({ id: '7', labels: ['bug'] }));
 
