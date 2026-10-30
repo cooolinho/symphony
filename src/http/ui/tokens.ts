@@ -286,7 +286,6 @@ export const TOKENS_CSS = `
   .av-waiting { border-style: dashed; box-shadow: none; }
   .av-skipped { filter: grayscale(1); opacity: .45; box-shadow: none; }
 
-
   @media (max-width: 640px) {
     .topbar-inner, main { padding-left: 12px; padding-right: 12px; }
     main { gap: 14px; }
