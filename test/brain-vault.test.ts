@@ -32,7 +32,7 @@ describe('ensureVault', () => {
     for (const word of ['type', 'status', 'repo', 'issue', 'role', 'run', 'created', 'updated', 'sources', 'candidate', 'approved', 'deprecated', ...VAULT_FOLDERS]) {
       assert.ok(readme.includes(word), word);
     }
-    assert.deepEqual(created.sort(), ['README.md', CANDIDATE_REVIEW_BASE_FILE, LATEST_LESSONS_BASE_FILE, ...VAULT_FOLDERS].sort());
+    assert.deepEqual(created.sort(), ['README.md', '.gitignore', CANDIDATE_REVIEW_BASE_FILE, LATEST_LESSONS_BASE_FILE, ...VAULT_FOLDERS].sort());
     assert.equal(fs.existsSync(path.join(vault, '.obsidian')), false);
   });
 
