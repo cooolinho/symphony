@@ -559,3 +559,62 @@ describe('worker wiring: role and run id reach the write tools', () => {
     assert.deepEqual((await sessionFor(undefined)).params.brainTools ?? [], []);
   });
 });
+
+describe('approved notes are read-only for agents', () => {
+  it('rejects brain_write without a status field on an approved note and leaves the file unchanged', async () => {
+    const dir = newVault();
+    const original = note('type: lesson\nstatus: approved', 'Human text.');
+    put(dir, 'a.md', original);
+    const { write } = setup(dir);
+    const result = await write({ path: 'a.md', content: note('type: lesson', 'Poisoned.'), base_hash: sha(original) });
+    assert.equal(err(result).category, 'rejected');
+    assert.equal(get(dir, 'a.md'), original);
+  });
+
+  it('rejects brain_write on an approved note without base_hash too', async () => {
+    const dir = newVault();
+    const original = note('type: lesson\nstatus: approved', 'Human text.');
+    put(dir, 'a.md', original);
+    const { write } = setup(dir);
+    assert.equal(err(await write({ path: 'a.md', content: note('type: lesson\nstatus: approved', 'Poisoned.') })).category, 'rejected');
+    assert.equal(get(dir, 'a.md'), original);
+  });
+
+  it('rejects brain_append on an approved note, leaves it unchanged and does not call onWrite', async () => {
+    const dir = newVault();
+    const original = note('type: lesson\nstatus: approved', '## Notes\n\nHuman text.');
+    put(dir, 'a.md', original);
+    const entries: BrainWriteEntry[] = [];
+    const { append } = setup(dir, (entry) => void entries.push(entry));
+    const result = await append({ path: 'a.md', heading: 'Notes', text: 'Poisoned.', base_hash: sha(original) });
+    assert.equal(err(result).category, 'rejected');
+    assert.equal(get(dir, 'a.md'), original);
+    assert.deepEqual(entries, []);
+  });
+
+  it('still lets an agent write a candidate note next to it', async () => {
+    const dir = newVault();
+    put(dir, 'a.md', note('type: lesson\nstatus: approved', 'Human text.'));
+    const { write } = setup(dir);
+    const result = data(await write({ path: 'Inbox/proposal.md', content: note('type: lesson', 'See [[a]].') }));
+    assert.equal(result.created, true);
+    assert.equal(frontmatterOf(get(dir, 'Inbox/proposal.md')).status, 'candidate');
+  });
+});
+
+describe('dangling symlink folders', () => {
+  it('rejects a write through a dangling symlink folder without exposing host paths', async () => {
+    const dir = newVault();
+    const outside = tempDir();
+    const missing = path.join(outside, 'does-not-exist');
+    fs.mkdirSync(path.join(dir, 'Inbox'));
+    fs.symlinkSync(missing, path.join(dir, 'Inbox', 'link'));
+    const { write } = setup(dir);
+    const error = err(await write({ path: 'Inbox/link/new.md', content: note('type: lesson') }));
+    assert.equal(error.category, 'rejected');
+    assert.ok(!error.message.includes(dir), error.message);
+    assert.ok(!error.message.includes(outside), error.message);
+    assert.ok(!fs.existsSync(missing));
+    assert.deepEqual(fs.readdirSync(outside), []);
+  });
+});
