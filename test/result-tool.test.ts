@@ -921,6 +921,36 @@ describe('report_result', () => {
       assert.match((tracker.comments.get('1')?.[0]?.body ?? ''), /konnte nicht prüfen[\s\S]*bad object/);
     });
 
+    it('blocked with many files outside the paths: the note is cut, the result stays within the summary limit', async () => {
+      const files = Array.from({ length: 40 }, (_, i) => `src/file${i}.php`);
+      const { pathRule } = rule(files);
+      const { report, tracker } = setup({ role: 'tester', state: 'Testing', pathRule });
+      const result = data(await report({ verdict: 'blocked', summary: 'x'.repeat(3900), blockers: [{ description: 'No test database', needs: 'infra' }] }));
+      assert.equal(result.target, 'Blocked');
+      const comment = tracker.comments.get('1')?.[0]?.body ?? '';
+      assert.match(comment, /40 Datei\(en\) außerhalb/);
+      assert.match(comment, /src\/file0\.php/);
+      assert.doesNotMatch(comment, /src\/file39\.php/, 'only the first files are listed');
+      assert.match(comment, /15 weitere/);
+    });
+
+    it('blocked without files outside the paths carries no path note', async () => {
+      const { pathRule } = rule(['tests/TotalTest.php']);
+      const { report, tracker } = setup({ role: 'tester', state: 'Testing', pathRule });
+      assert.equal(data(await report({ verdict: 'blocked', summary: 'No database.', blockers: [{ description: 'No test database', needs: 'infra' }] })).target, 'Blocked');
+      assert.doesNotMatch(tracker.comments.get('1')?.[0]?.body ?? '', /Pfadregel/);
+    });
+
+    it('refuses passed when git cannot tell, but the refusal points at blocked', async () => {
+      const { state, pathRule } = rule([]);
+      state.failure = new Error('bad object');
+      const { report, tracker } = setup({ role: 'tester', state: 'Testing', pathRule });
+      const refused = error(await report(PASSED));
+      assert.equal(refused.category, 'tool_error');
+      assert.match(refused.message, /blocked/);
+      assert.deepEqual(tracker.statusCalls, []);
+    });
+
     it('lets a result through that only touches the allowed paths', async () => {
       const { pathRule } = rule(['tests/Feature/TotalTest.php', 'app/Domain/OrderTest.php']);
       const { report, tracker, markers } = setup({ role: 'tester', state: 'Testing', pathRule });

@@ -211,5 +211,27 @@ describe('baselineCommit', () => {
       assert.equal(onBase, false);
       assert.equal(await baselineCommit(repo, handoff, head, onBase), handoff);
     });
+
+    it('keeps the hand-off on the issue branch even when the start happens to be on origin/<base> (start does not descend from it)', async () => {
+      const { repo, start, handoff, human } = branch();
+      git(repo, 'update-ref', 'refs/remotes/origin/main', start);
+      git(repo, 'checkout', '-q', '--detach', human);
+      const onBase = await isAncestor(repo, start, 'origin/main');
+      assert.equal(onBase, true);
+      assert.equal(await baselineCommit(repo, handoff, start, onBase), handoff, 'a start before the hand-off cannot forgive the developer');
+    });
+
+    it('is the start when HEAD does not descend from the hand-off, whatever startOnBase says', async () => {
+      const { repo, start, handoff } = branch();
+      git(repo, 'checkout', '-q', '--detach', start);
+      assert.equal(await baselineCommit(repo, handoff, start, true), start);
+      assert.equal(await baselineCommit(repo, null, start, true), start);
+    });
+
+    it('stays at the hand-off when the session start is the hand-off itself', async () => {
+      const { repo, handoff } = branch();
+      git(repo, 'update-ref', 'refs/remotes/origin/main', handoff);
+      assert.equal(await baselineCommit(repo, handoff, handoff, true), handoff);
+    });
   });
 });
