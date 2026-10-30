@@ -9,6 +9,7 @@ describe('checkStatusReporter', () => {
   const config = (reportStatus: boolean, publicUrl: string | null) => ({
     checks: { timeoutMs: 1, retries: 0, onEnter: new Map(), reportStatus },
     server: { port: null, host: '127.0.0.1', allowRemoteControl: false, publicUrl },
+    system: { gpu: false },
   });
 
   it('reports only with checks.report_status and a tracker that can', () => {

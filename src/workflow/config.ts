@@ -207,8 +207,15 @@ export interface ServiceConfig {
   roles: RoleConfig[] | null;
   pipeline: PipelineConfig;
   server: ServerConfig;
+  system: SystemConfig;
   /** Non-fatal findings (ignored keys, ignored per-state limits) for operator logs. */
   warnings: string[];
+}
+
+/** Host metrics collector (`system` section). */
+export interface SystemConfig {
+  /** Read GPU utilization, memory and temperature from nvidia-smi (default false: nvidia-smi is never called). */
+  gpu: boolean;
 }
 
 export interface TrackerDefaults {
@@ -263,7 +270,7 @@ export const DEFAULTS = {
 const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'];
 export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
-const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server'];
+const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server', 'system'];
 const ROLE_KEYS = new Set([
   'states',
   'read_only',
@@ -1161,6 +1168,8 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     if (/^https?:\/\/[^\s/]+/.test(publicUrl)) server.publicUrl = publicUrl.replace(/\/+$/, '');
     else reader.errors.push('server.public_url must be an http(s) URL');
   }
+  const systemRaw = reader.section(raw, 'system');
+  const system: SystemConfig = { gpu: reader.bool(systemRaw, 'gpu', 'system.gpu', false) };
   if (server.port !== null && server.port > 65_535) reader.errors.push('server.port must be <= 65535');
 
   if (reader.errors.length > 0) {
@@ -1181,6 +1190,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     roles,
     pipeline,
     server,
+    system,
     warnings: reader.warnings,
   };
 }
