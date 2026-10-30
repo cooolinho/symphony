@@ -9,10 +9,14 @@
 #   2. else the longest key contained in the id, e.g. `opus:` matches every Opus model
 #   3. else `default`
 # Add exact ids when you use older models with other prices.
+#
+# `context_window` (optional, tokens) is the model's context window, used for the context fill level.
+# It is resolved like the price. A model name with the suffix `[1m]` always gets 1,000,000 tokens.
 
 default:
   input: 5.00
   output: 25.00
+  context_window: 200000
 
 fable:
   input: 10.00

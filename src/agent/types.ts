@@ -3,6 +3,24 @@ import type { Logger } from '../log.ts';
 import type { AgentToolContext, AgentToolSpec, Issue } from '../tracker/types.ts';
 import type { ClaudeConfig } from '../workflow/config.ts';
 
+/** How full the context window of a session is, as of the latest model call of the main conversation. */
+export interface ContextSnapshot {
+  /** Model id the latest call ran on. */
+  model: string;
+  /** Context window in tokens; null when no size can be determined for the model. */
+  window: number | null;
+  /** input + cache read + cache creation tokens of the latest call. */
+  tokens: number;
+  /** tokens / window in percent, one decimal; null without a window. */
+  percent: number | null;
+  /** Highest percent of the session so far; null while none could be computed. */
+  peakPercent: number | null;
+  /** Automatic compactions (`compact_boundary`) so far. */
+  compacts: number;
+  /** Tokens before the latest compaction; null while there was none. */
+  preTokens: number | null;
+}
+
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
@@ -27,6 +45,8 @@ export interface AgentEvent {
   modelUsage?: Record<string, ModelTokenUsage>;
   /** Absolute estimated cost for this session so far, in USD. */
   costUsd?: number;
+  /** Context fill level of the session, set on model calls and compactions. */
+  context?: ContextSnapshot;
   rateLimits?: unknown;
   detail?: Record<string, unknown>;
 }
@@ -177,6 +197,8 @@ export interface StartSessionParams {
   deniedAgents?: string[];
   /** Upper bound for one call of a Symphony tool (it may run an entry check); absent = the agent's default. */
   toolTimeoutMs?: number;
+  /** Context window (tokens) of a model id from the pricing table; null when unknown. Read on every call. */
+  contextWindow?: (model: string) => number | null;
 }
 
 export interface AgentRunner {

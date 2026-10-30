@@ -18,3 +18,14 @@ export function modelForLabelValue(value: string): string | null {
 export function bareModelName(model: string): string {
   return model.trim().toLowerCase().replace(/\[[^\]]*\]$/, '').replace(/^claude-/, '');
 }
+
+/**
+ * The context window a model name asks for with a "[<n>m]" suffix ("opus[1m]" → 1_000_000), or null without one.
+ * The suffix only exists on the model Symphony passes to Claude Code, not on the id the API reports.
+ */
+export function contextWindowSuffix(model: string): number | null {
+  const match = /\[(\d+)m\]$/i.exec(model.trim());
+  if (match === null) return null;
+  const millions = Number(match[1]);
+  return millions > 0 ? millions * 1_000_000 : null;
+}

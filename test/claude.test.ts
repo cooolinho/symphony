@@ -106,6 +106,7 @@ function params(
     toolTimeoutMs?: number;
     transcriptPath?: string;
     deniedAgents?: string[];
+    contextWindow?: (model: string) => number | null;
   } = {},
 ): StartSessionParams {
   const config = resolveConfig({ claude: { model: 'opus', ...overrides.claude } }, { workflowPath: '/w/WORKFLOW.md', env: {}, trackerDefaults }).claude;
@@ -125,6 +126,7 @@ function params(
     ...(overrides.policy ? { policy: overrides.policy } : {}),
     ...(overrides.toolTimeoutMs !== undefined ? { toolTimeoutMs: overrides.toolTimeoutMs } : {}),
     ...(overrides.deniedAgents ? { deniedAgents: overrides.deniedAgents } : {}),
+    ...(overrides.contextWindow ? { contextWindow: overrides.contextWindow } : {}),
   };
 }
 
@@ -257,6 +259,68 @@ describe('claude agent runner', () => {
     assert.deepEqual(completed[1]?.modelUsage, { 'claude-opus-5-5': opus, 'claude-fable-5-1': fable(200, 40) });
     assert.deepEqual(completed[1]?.usage, { inputTokens: 410, outputTokens: 65, totalTokens: 475 });
     assert.ok(!events.some((e) => e.event === 'model_call' && (e.message !== undefined || e.detail !== undefined)), 'model calls carry only the totals');
+  });
+
+  describe('context fill level', () => {
+    const ctxCall = (id: string, input: number, read: number, create: number, parent: string | null = null) => ({
+      type: 'assistant',
+      parent_tool_use_id: parent,
+      message: { id, model: 'claude-opus-5-5', content: [{ type: 'text', text: 'x' }], usage: { input_tokens: input, output_tokens: 1, cache_read_input_tokens: read, cache_creation_input_tokens: create } },
+    });
+    const run = async (overrides: Parameters<typeof params>[0], script: (emit: (m: Record<string, unknown>) => void) => void): Promise<AgentEvent[]> => {
+      const events: AgentEvent[] = [];
+      const fake = fakeQuery((_prompt, _options, emit) => {
+        script(emit as (m: Record<string, unknown>) => void);
+        emit(result(0.1, 10, 1));
+      });
+      const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ ...overrides, events }));
+      await session.runTurn('go');
+      await session.stop();
+      return events;
+    };
+    const contexts = (events: AgentEvent[]) => events.filter((e) => e.context !== undefined).map((e) => e.context);
+
+    it('relates input, cache read and cache creation of the latest call to a 200k window', async () => {
+      const events = await run({ contextWindow: () => 200_000 }, (emit) => emit(ctxCall('m1', 10_000, 30_000, 10_000)));
+      assert.deepEqual(contexts(events), [
+        { model: 'claude-opus-5-5', window: 200_000, tokens: 50_000, percent: 25, peakPercent: 25, compacts: 0, preTokens: null },
+      ]);
+    });
+
+    it('gives a [1m] model a 1M window ahead of the resolver', async () => {
+      const events = await run({ claude: { model: 'opus[1m]' }, contextWindow: () => 200_000 }, (emit) => emit(ctxCall('m1', 10_000, 30_000, 10_000)));
+      assert.equal(contexts(events)[0]?.window, 1_000_000);
+      assert.equal(contexts(events)[0]?.percent, 5);
+    });
+
+    it('has no percent when no window can be determined', async () => {
+      const events = await run({ contextWindow: () => null }, (emit) => emit(ctxCall('m1', 10, 20, 30)));
+      assert.deepEqual(contexts(events)[0], { model: 'claude-opus-5-5', window: null, tokens: 60, percent: null, peakPercent: null, compacts: 0, preTokens: null });
+    });
+
+    it('counts compactions, remembers pre_tokens and keeps the peak', async () => {
+      const events = await run({ contextWindow: () => 200_000 }, (emit) => {
+        emit(ctxCall('m1', 0, 180_000, 0));
+        emit({ type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'auto', pre_tokens: 180_000 }, uuid: 'u', session_id: 's' });
+        emit(ctxCall('m2', 0, 20_000, 0));
+      });
+      const compacted = events.filter((e) => e.event === 'context_compacted');
+      assert.equal(compacted.length, 1);
+      assert.equal(compacted[0]?.context?.compacts, 1);
+      assert.equal(compacted[0]?.context?.preTokens, 180_000);
+      const last = contexts(events).at(-1);
+      assert.equal(last?.percent, 10);
+      assert.equal(last?.peakPercent, 90);
+      assert.equal(last?.compacts, 1);
+    });
+
+    it('ignores subagent calls', async () => {
+      const events = await run({ contextWindow: () => 200_000 }, (emit) => {
+        emit(ctxCall('m1', 0, 20_000, 0));
+        emit(ctxCall('m2', 0, 150_000, 0, 'toolu_1'));
+      });
+      assert.equal(contexts(events).at(-1)?.tokens, 20_000);
+    });
   });
 
   it('writes each turn prompt and the agent messages to the transcript, readable by the transcript reader', async () => {
