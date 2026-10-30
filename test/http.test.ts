@@ -197,7 +197,9 @@ describe('http extension', () => {
     assert.match(page.body, /\.pipe-verdict\.vd-warn/);
     assert.match(page.body, /\.pipe-node\.st-skipped/);
     assert.match(page.body, /<section id="dispatch-gate" class="dispatch-gate" role="status" hidden>/);
-    assert.match(page.body, /<section id="model-holds" class="dispatch-gate model-holds" role="status" hidden>/);
+    assert.match(page.body, /<section id="alerts" class="panel alerts"/);
+    assert.match(page.body, /<span class="count" id="alerts-count" aria-live="polite">/);
+    assert.doesNotMatch(page.body, /id="model-holds"|id="problems"/);
     assert.doesNotMatch(page.body, /\bonclick=/);
     assert.match(page.body, /<div class="slot-settings" id="slot-settings" role="group" aria-label="Agent slots" hidden><\/div>/);
 
@@ -1377,9 +1379,9 @@ describe('dashboard page behaviour', () => {
     return found;
   };
 
-  it('loads the state and the history when the page opens', () => {
+  it('loads the state, the history and the budget when the page opens', () => {
     const page = renderPage(DASHBOARD_HTML);
-    assert.deepEqual(page.fetches.map((f) => f.url), ['/api/v1/state', '/api/v1/history']);
+    assert.deepEqual(page.fetches.map((f) => f.url), ['/api/v1/state', '/api/v1/history', '/api/v1/budget']);
   });
 
   it('puts every card into its section with a count, and hides the empty queue sections', () => {
@@ -1422,7 +1424,7 @@ describe('dashboard page behaviour', () => {
     page.click(button(page, 'Retry now'));
     page.click(button(page, 'Start now'));
     page.click(button(page, 'Pause'));
-    assert.deepEqual(page.fetches.slice(2).map((f) => `${f.method} ${f.url}`), [
+    assert.deepEqual(page.fetches.slice(3).map((f) => `${f.method} ${f.url}`), [
       `POST /api/v1/${idPath}/retry`,
       `POST /api/v1/${idPath}/force`,
       `POST /api/v1/${idPath}/pause`,
@@ -1474,10 +1476,10 @@ describe('dashboard page behaviour', () => {
   it('names held models and the cards that wait for them', () => {
     const hold = { model: 'opus', source: 'limit', until: '2026-10-30T14:00:00Z', since: '2026-10-30T11:00:00Z', issue_identifier: ID, text: 'weekly limit' };
     const page = render([waiting({ status: 'queued', retry: null, reason: null, model_hold: hold })], { model_holds: [hold] });
-    assert.equal(page.$('model-holds').hidden, false);
-    assert.match(page.$('model-hold-list').textContent, /^Model opus on hold until .* · hit by acme\/app#2 · weekly limit$/);
+    assert.match(page.$('alerts-list').textContent, /Modell opus im Limit bis .*weekly limit · ausgelöst von acme\/app#2/);
+    assert.equal(page.$('alerts-count').textContent, '1');
     assert.match(page.$('waiting').textContent, /Waiting for model opus \(limit until /);
-    assert.equal(render([]).$('model-holds').hidden, true);
+    assert.equal(render([]).$('alerts-count').textContent, '0');
   });
 
   const stagesOf = (verdictStage: Record<string, unknown>) => [

@@ -3649,6 +3649,8 @@ export class Orchestrator {
       reason,
       reason_code: code,
       blocked_by: issue.blocked_by,
+      labels: issue.labels,
+      updated_at: issue.updated_at?.toISOString() ?? null,
       tracked: this.#records.has(issue.id),
     });
     for (const item of plan) {
