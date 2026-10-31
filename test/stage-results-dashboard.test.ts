@@ -170,7 +170,7 @@ describe('bugfix issue through developer → reviewer, observed from outside', (
   it('the agent page is served with the results section', async () => {
     const page = await request(server.port, 'GET', '/issue');
     assert.equal(page.status, 200);
-    assert.match(page.body, /Stage results/);
+    assert.match(page.body, /Ergebnisse/);
     assert.match(page.body, /id="result-cards"/);
   });
 
@@ -272,9 +272,9 @@ describe('agent page: renderResults', () => {
     assert.equal(cards.length, 4);
     const texts = cards.map((c) => c.textContent);
     assert.match(texts[0]!, /developer.*implementation.*done/);
-    assert.match(texts[1]!, /reviewer.*review.*changes needed · round 1/);
+    assert.match(texts[1]!, /reviewer.*review.*changes needed.*Runde 1/);
     assert.match(texts[2]!, /developer.*blocked/);
-    assert.match(texts[3]!, /reviewer.*approved · round 2/);
+    assert.match(texts[3]!, /reviewer.*approved.*Runde 2/);
     for (const [i, c] of cards.entries()) assert.ok(c.textContent.includes(String(bugfixResults[i]!.summary)), `summary of card ${i}`);
   });
 

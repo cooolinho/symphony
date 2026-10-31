@@ -1496,7 +1496,7 @@ describe('agent page behaviour', () => {
     const results = [{ role: 'developer', kind: 'implementation', verdict: 'done', round: null, target: 'Agent review', summary: 'Done.', created_at: '2026-10-30T11:00:00Z', url: 'https://github.com/acme/app/issues/1#issuecomment-1', findings: [], blockers: [] }];
     const page = renderPage(AGENT_HTML, { detail: issueDetail({ results }) }, opts);
     const [link] = page.$('result-cards').querySelectorAll('a');
-    assert.equal(link!.textContent, 'Comment ↗');
+    assert.equal(link!.textContent, 'Kommentar ↗');
     assert.equal(link!.href, results[0]!.url);
     assert.equal(page.$('results-section').hidden, false);
   });
