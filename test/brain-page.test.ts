@@ -507,9 +507,9 @@ describe('Brain page write clashes (E7-8)', () => {
     assert.equal(text(hash!.querySelectorAll('.br-clash-path')[0]!), 'Lessons/x.md');
     assert.equal(text(hash!.querySelectorAll('.br-clash-time')[0]!), t1);
     assert.equal(text(hash!.querySelectorAll('.br-clash-text')[0]!),
-      `Architect #7 schrieb um ${t0}, Developer #9 um ${t1} mit altem Hash. Der zweite Schreibvorgang wurde abgewiesen; Developer #9 hat die aktuelle Fassung zurückbekommen.`);
+      `Architect #7 schrieb um ${t0}, Developer #9 um ${t1} mit altem Hash. Der zweite Schreibvorgang wurde abgewiesen; Developer hat die aktuelle Fassung zurückbekommen.`);
     assert.equal(text(win!.querySelectorAll('.br-clash-text')[0]!),
-      `Tester #3 schrieb um ${t0}, Reviewer #4 um ${t1} innerhalb des Schutzfensters von 10 min. Der zweite Schreibvorgang wurde abgewiesen; Reviewer #4 hat die aktuelle Fassung zurückbekommen.`);
+      `Tester #3 schrieb um ${t0}, Reviewer #4 um ${t1} innerhalb des Schutzfensters von 10 min. Der zweite Schreibvorgang wurde abgewiesen; Reviewer hat die aktuelle Fassung zurückbekommen.`);
     assert.ok(p.$('clashes').classList.contains('has-open'));
     assert.ok(p.$('clashes').classList.contains('g'));
     assert.equal(text(p.$('brain-clash-week')), 'Diese Woche: 3 Clashes, 1 gelöst · Schutzfenster 10 min');

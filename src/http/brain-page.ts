@@ -631,11 +631,16 @@ export const BRAIN_HTML = page({
     }
   }
 
+  /** "Developer": role name of run k of the clash. */
+  function clashRole(c, k) {
+    const role = (c.roles || [])[k];
+    return role ? uiOwn(UI_ROLE_NAMES, role) || role : 'Unbekannte Rolle';
+  }
+
   /** "Developer #7": role name and issue number of run k of the clash. */
   function clashWho(c, k) {
-    const role = (c.roles || [])[k];
     const issue = (c.issues || [])[k];
-    const name = role ? uiOwn(UI_ROLE_NAMES, role) || role : 'Unbekannte Rolle';
+    const name = clashRole(c, k);
     const hash = typeof issue === 'string' ? issue.lastIndexOf('#') : -1;
     const number = typeof issue === 'string' && issue !== '' ? (hash >= 0 ? issue.slice(hash + 1) : issue) : '';
     return number ? name + ' #' + number : name;
@@ -649,7 +654,7 @@ export const BRAIN_HTML = page({
       ? ' innerhalb des Schutzfensters' + (minutes === null ? '' : ' von ' + deInt(minutes) + ' min') + '.'
       : ' mit altem Hash.';
     return a + ' schrieb um ' + hm(at[0]) + ', ' + b + ' um ' + hm(at[1]) + how +
-      ' Der zweite Schreibvorgang wurde abgewiesen; ' + b + ' hat die aktuelle Fassung zurückbekommen.';
+      ' Der zweite Schreibvorgang wurde abgewiesen; ' + clashRole(c, 1) + ' hat die aktuelle Fassung zurückbekommen.';
   }
 
   function clashCard(c, resolved) {
