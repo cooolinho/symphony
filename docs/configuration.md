@@ -1166,7 +1166,7 @@ one poll at a time. For example, with an analyst in `Ready` and `pipeline.analys
 
 ### `system`
 
-Symphony samples CPU, memory, load and disk of the host every 10 s and keeps one hour of history in memory (`GET /api/v1/system`). Values that cannot be read are `null`.
+Symphony samples CPU, memory, load and disk of the host every 10 s and keeps one hour of history in memory (`GET /api/v1/system`). Values that cannot be read are `null`. The sizes of the workspace root and the transcripts (`<log-dir>/sessions`) come from `du -sk` every 10 minutes in the background; the optional `SYMPHONY_CONTAINER` names the container in the head of the System panel (fallback `HOSTNAME`).
 
 | Key | Default | Meaning |
 | --- | --- | --- |

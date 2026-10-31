@@ -2,6 +2,7 @@ import { ALERTS_CSS, ALERTS_JS } from './alerts.ts';
 import { PIPELINE_CSS, PIPELINE_JS } from './pipeline.ts';
 import { TEAMS_CSS, TEAMS_JS } from './overview-teams.ts';
 import { AURORA, page, pageHeader } from './ui/layout.ts';
+import { SYSTEM_COLORS } from './ui/palette.ts';
 
 const DASHBOARD_CSS = `
   /* Dispatch gate: new dispatches wait for an account-wide session limit (a notice, not an error). */
@@ -35,16 +36,18 @@ const DASHBOARD_CSS = `
   .act-swatch { width: 8px; height: 8px; border-radius: 2px; background: var(--role, var(--role-symphony)); }
   .act-empty { margin: 0; font: 12px var(--mono); color: var(--muted); }
   /* System cards: host metrics, agent slots and the tracker API budget, coloured by utilisation (traffic light). */
-  .syscards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
-  .syscard { position: relative; overflow: hidden; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 0 14px 12px 2px;
-    border: 1px solid var(--line); border-radius: var(--radius); background: rgba(17, 26, 44, .8); }
-  .syscard::before { content: ""; position: absolute; left: 0; top: 12px; bottom: 12px; width: 2px; border-radius: 2px; background: var(--tone, var(--faint)); opacity: .8; }
+  .syscards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+  .sys-host { margin-left: auto; font-size: 12.5px; color: var(--fg-3); }
+  .syscard { min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 14px 14px 10px; }
   .syscard:hover { border-color: var(--line-2); }
-  .syscard .ui-kpi { padding: 12px 0 2px 12px; background: none; border: 0; border-radius: 0; }
-  .syscard .ui-kpi-value { font-size: 16px; }
-  .syscard-bars { display: grid; gap: 4px; padding-left: 12px; }
-  .syscard-barlabel { font: 10.5px var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .syscard .ui-spark { margin: 4px 0 0 12px; width: calc(100% - 12px); color: var(--tone, var(--muted)); }
+  .syscard-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .syscard-label { font-size: 13px; color: var(--fg-2); }
+  .syscard-dot { background: var(--faint); }
+  .syscard-value { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+  .syscard-value .mono { font: 500 26px var(--mono); color: var(--fg-strong); }
+  .syscard-unit { font: 13px var(--mono); color: var(--fg-3); white-space: nowrap; }
+  .syscard .ui-spark { width: 100%; }
+  .syscard-sub { font-size: 12px; color: var(--fg-3); overflow-wrap: anywhere; }
 
   /* Running agents */
   .agents-section { border-color: var(--line-2); }
@@ -236,7 +239,10 @@ export const DASHBOARD_HTML = page({
     <span class="dot tone-amber"></span><span id="dispatch-gate-text"></span>
   </section>
 
-  <div class="syscards" id="system-cards" role="group" aria-label="System"></div>
+  <section class="panel" id="system-panel" aria-labelledby="system-title">
+    <div class="section-head"><h2 id="system-title">System</h2><span class="sys-host" id="system-host"></span></div>
+    <div class="syscards" id="system-cards" role="group" aria-label="System"></div>
+  </section>
   <div class="stats" id="stats" aria-label="Metrics"></div>
 
   <section class="budget" id="budget" aria-labelledby="budget-title" hidden>
@@ -245,7 +251,7 @@ export const DASHBOARD_HTML = page({
   </section>
 
   <section class="agents-section teams-section" id="teams-section" aria-labelledby="teams-title">
-    <div class="section-head"><h2 id="teams-title">Teams <span class="count" id="teams-count"></span></h2></div>
+    <div class="section-head"><h2 id="teams-title">Teams live <span class="count" id="teams-count"></span></h2><a class="teams-all" href="/tasks">Alle Tasks →</a></div>
     <div class="team-list" id="teams"></div>
   </section>
 
@@ -995,82 +1001,122 @@ ${ALERTS_JS}
     return typeof used === 'number' && typeof total === 'number' && total > 0 ? (used / total) * 100 : null;
   }
 
-  /**
-   * One tile: kpi value (null shows "—" without bars, sparkline or tone), bars [{ name, pct }] and a sparkline of
-   * history; the traffic-light tone follows tonePct, else the highest bar, and colours value, bars and sparkline.
-   */
-  function systemCard(label, value, opts) {
-    const { sub, bars, history, tonePct, title } = opts || {};
-    const empty = value === null || value === undefined;
-    const shown = empty ? [] : (bars || []).filter((b) => typeof b.pct === 'number' && Number.isFinite(b.pct));
-    const tone = empty ? null : trafficTone(tonePct !== undefined ? tonePct : shown.length ? Math.max(...shown.map((b) => b.pct)) : null);
-    const color = tone ? UI_TRAFFIC[tone] : undefined;
-    const box = el('article', null, 'syscard' + (tone ? ' tone-' + tone : empty ? ' is-empty' : ''));
-    if (title) box.setAttribute('title', title);
-    box.append(kpi(empty ? null : value, label, { sub, color }));
-    if (shown.length) {
-      const rows = el('div', null, 'syscard-bars');
-      for (const b of shown) {
-        if (b.name) rows.append(el('span', b.name, 'syscard-barlabel'));
-        const t = trafficTone(b.pct);
-        rows.append(bar(b.pct, { height: 6, color: t ? UI_TRAFFIC[t] : undefined }));
-      }
-      box.append(rows);
+  const SYS_COLORS = ${JSON.stringify(SYSTEM_COLORS)};
+  const GB = 1073741824;
+
+  /** German thousands separator by hand (toLocaleString depends on the browser locale). */
+  function fmtDe(n) {
+    const digits = String(Math.round(n));
+    let out = '';
+    for (let i = 0; i < digits.length; i++) {
+      if (i > 0 && (digits.length - i) % 3 === 0 && digits[i - 1] !== '-') out += '.';
+      out += digits[i];
     }
-    const spark = empty ? null : sparkline(history, color);
+    return out;
+  }
+
+  /** Process uptime: from one day "N d M h", else the usual duration. */
+  function sysUptime(sec) {
+    if (typeof sec !== 'number' || !Number.isFinite(sec)) return '—';
+    return sec >= 86400 ? Math.floor(sec / 86400) + ' d ' + Math.floor((sec % 86400) / 3600) + ' h' : fmtDuration(sec);
+  }
+
+  /**
+   * One card: label with traffic-light dot, value + unit, 5 px bar in the card colour (amber from 80 %, red from 95 %),
+   * sparkline and a line of text. A null value shows "—" and nothing else.
+   */
+  function systemCard(o) {
+    const { label, value, unit, pct: p, color, history, sub, title } = o;
+    const empty = value === null || value === undefined;
+    const tone = empty ? null : trafficTone(p);
+    const box = el('article', null, 'syscard gi');
+    if (title) box.setAttribute('title', title);
+    const head = el('div', null, 'syscard-head');
+    const dot = el('span', null, 'ui-dot syscard-dot');
+    dot.setAttribute('aria-hidden', 'true');
+    if (tone) dot.style.background = UI_TRAFFIC[tone];
+    head.append(el('span', label, 'syscard-label'), dot);
+    const val = el('div', null, 'syscard-value');
+    val.append(el('span', empty ? '—' : value, 'mono'));
+    if (!empty && unit) val.append(el('span', unit, 'syscard-unit'));
+    box.append(head, val);
+    if (empty) return box;
+    if (tone) box.append(bar(p, { height: 5, color: tone === 'green' ? color : UI_TRAFFIC[tone] }));
+    const spark = sparkline(history, color);
     if (spark) box.append(spark);
+    if (sub) box.append(el('div', sub, 'syscard-sub'));
     return box;
   }
 
-  /** The tiles in fixed order: CPU, RAM, disk, load, agent slots, GitHub API, and the GPU when the host reports one. */
+  function diskHistory(hist, name) {
+    return hist.map((s) => {
+      const d = (Array.isArray(s.disks) ? s.disks : []).find((v) => v.name === name);
+      return d ? pct(d.used_bytes, d.total_bytes) : null;
+    });
+  }
+
+  function diskCard(label, d, hist, sub) {
+    const p = d ? pct(d.used_bytes, d.total_bytes) : null;
+    return systemCard({
+      label, value: p === null ? null : String(Math.round(d.used_bytes / GB)), unit: p === null ? null : '/ ' + Math.round(d.total_bytes / GB) + ' GB',
+      pct: p, color: SYS_COLORS.disk, history: d ? diskHistory(hist, d.name) : [], sub: sub || (p === null ? null : Math.round(p) + ' % belegt'),
+    });
+  }
+
+  /** Cards in fixed order: CPU, RAM, Disk · State, [Disk · Workspaces], Load, Agent-Slots, GitHub API, [GPU]. */
   function systemCards(system, state, trend) {
     const cur = system && system.current ? system.current : null;
     const hist = system && Array.isArray(system.history) ? system.history : [];
     const cards = [];
+    const h = state && state.health ? state.health : null;
+    const counts = state && state.counts ? state.counts : null;
+    const cores = system && typeof system.cpu_count === 'number' && system.cpu_count > 0 ? system.cpu_count : null;
 
     const cpu = cur && typeof cur.cpu_percent === 'number' ? cur.cpu_percent : null;
-    cards.push(systemCard('CPU', cpu === null ? null : cpu + ' %', {
-      sub: 'Auslastung', bars: [{ pct: cpu }], history: hist.map((s) => s.cpu_percent),
+    cards.push(systemCard({
+      label: 'CPU', value: cpu === null ? null : String(Math.round(cpu)), unit: '%', pct: cpu, color: SYS_COLORS.cpu, history: hist.map((s) => s.cpu_percent),
+      sub: (cores ? cores + ' Kerne' : '') + (cores && counts ? ' · ' : '') + (counts ? counts.running + ' Agents aktiv' : ''),
     }));
 
     const mem = cur && cur.memory ? cur.memory : null;
     const memPct = mem ? pct(mem.used_bytes, mem.total_bytes) : null;
-    cards.push(systemCard('Arbeitsspeicher', memPct === null ? null : fmtGb(mem.used_bytes) + ' / ' + fmtGb(mem.total_bytes) + ' GB', {
-      sub: 'belegt / gesamt', bars: [{ pct: memPct }], history: hist.map((s) => (s.memory ? pct(s.memory.used_bytes, s.memory.total_bytes) : null)),
+    cards.push(systemCard({
+      label: 'RAM', value: memPct === null ? null : fmtGb(mem.used_bytes), unit: memPct === null ? null : '/ ' + fmtGb(mem.total_bytes) + ' GB', pct: memPct,
+      color: SYS_COLORS.ram, history: hist.map((s) => (s.memory ? pct(s.memory.used_bytes, s.memory.total_bytes) : null)),
+      sub: memPct === null ? null : Math.round(memPct) + ' % belegt',
     }));
 
-    const disks = (cur && Array.isArray(cur.disks) ? cur.disks : []).map((d) => ({ d, pct: pct(d.used_bytes, d.total_bytes) }));
-    const known = disks.filter((x) => x.pct !== null);
-    const top = known.length ? known.reduce((a, b) => (b.pct > a.pct ? b : a)) : null;
-    cards.push(systemCard('Festplatte', top ? fmtGb(top.d.used_bytes) + ' / ' + fmtGb(top.d.total_bytes) + ' GB' : null, {
-      sub: top && known.length > 1 ? top.d.name : 'belegt / gesamt',
-      bars: known.map((x) => ({ name: x.d.name, pct: x.pct })),
-      history: top ? hist.map((s) => {
-        const d = (Array.isArray(s.disks) ? s.disks : []).find((v) => v.name === top.d.name);
-        return d ? pct(d.used_bytes, d.total_bytes) : null;
-      }) : [],
-    }));
+    const disks = cur && Array.isArray(cur.disks) ? cur.disks : [];
+    const stateDisk = disks.find((d) => d.name === 'state') || disks[0] || null;
+    const usage = system && system.usage ? system.usage : null;
+    const usageParts = [];
+    if (usage && typeof usage.workspaces_bytes === 'number') usageParts.push('Workspaces ' + Math.round(usage.workspaces_bytes / GB) + ' GB');
+    if (usage && typeof usage.transcripts_bytes === 'number') usageParts.push('Transkripte ' + Math.round(usage.transcripts_bytes / GB) + ' GB');
+    cards.push(diskCard('Disk · State', stateDisk, hist, usageParts.join(' · ')));
+    const other = disks.find((d) => d !== stateDisk && stateDisk && (d.device !== null && d.device !== undefined && stateDisk.device !== null && stateDisk.device !== undefined
+      ? d.device !== stateDisk.device : d.total_bytes !== stateDisk.total_bytes));
+    if (other) cards.push(diskCard('Disk · Workspaces', other, hist));
 
     const load = cur && cur.load ? cur.load : null;
-    const cores = system && typeof system.cpu_count === 'number' && system.cpu_count > 0 ? system.cpu_count : null;
     const loadPct = load && cores ? (load.one / cores) * 100 : null;
-    cards.push(systemCard('Load 1/5/15', load ? load.one.toFixed(2) + ' / ' + load.five.toFixed(2) + ' / ' + load.fifteen.toFixed(2) : null, {
-      sub: cores ? cores + ' Kerne' : null, bars: [{ pct: loadPct }], tonePct: loadPct, history: hist.map((s) => (s.load ? s.load.one : null)),
+    cards.push(systemCard({
+      label: 'Load', value: load ? load.one.toFixed(2) : null, unit: '1 min', pct: loadPct, color: SYS_COLORS.load, history: hist.map((s) => (s.load ? s.load.one : null)),
+      sub: load ? '5 min ' + load.five.toFixed(2) + ' · 15 min ' + load.fifteen.toFixed(2) : null,
     }));
 
-    const h = state && state.health ? state.health : null;
-    const counts = state && state.counts ? state.counts : null;
     const max = h && typeof h.max_concurrent_agents === 'number' ? h.max_concurrent_agents : null;
-    const slotsPct = counts && max > 0 ? (counts.running / max) * 100 : null;
-    cards.push(systemCard('Agent-Slots', counts && max !== null ? counts.running + ' / ' + max : null, {
-      sub: counts ? 'Queue: ' + (counts.queued ?? 0) : null, bars: [{ pct: slotsPct }], history: trend.slots,
+    const slotsOk = counts && max !== null;
+    cards.push(systemCard({
+      label: 'Agent-Slots', value: slotsOk ? String(counts.running) : null, unit: '/ ' + max, pct: slotsOk && max > 0 ? (counts.running / max) * 100 : null,
+      color: SYS_COLORS.slots, history: trend.slots,
+      sub: slotsOk ? Math.max(0, max - counts.running) + ' frei · ' + (counts.queued ?? 0) + ' in der Queue' : null,
     }));
 
     const api = h && h.tracker_api ? h.tracker_api : null;
-    const apiPct = api && api.limit > 0 ? (1 - api.remaining / api.limit) * 100 : null;
-    cards.push(systemCard('GitHub-API', api ? fmtInt(api.remaining) + ' / ' + fmtInt(api.limit) : null, {
-      sub: h ? (h.last_tick_at ? 'letzter Poll vor ' + fmtDuration((Date.now() - Date.parse(h.last_tick_at)) / 1000) : 'noch kein Poll') : null,
-      bars: [{ pct: apiPct }], history: trend.github,
+    cards.push(systemCard({
+      label: 'GitHub API', value: api ? fmtDe(api.remaining) : null, unit: api ? '/ ' + fmtDe(api.limit) : null, pct: api && api.limit > 0 ? (1 - api.remaining / api.limit) * 100 : null,
+      color: SYS_COLORS.github, history: trend.github,
+      sub: h ? (h.last_tick_at ? 'Poll vor ' + fmtDuration((Date.now() - Date.parse(h.last_tick_at)) / 1000) + ' · ' + (h.last_tracker_error ? 'Fehler' : 'ok') : 'noch kein Poll') : null,
       title: api && api.reset_at ? 'Restbudget, zurückgesetzt um ' + fmtTime(api.reset_at) : null,
     }));
 
@@ -1080,14 +1126,22 @@ ${ALERTS_JS}
       const parts = [];
       if (typeof g.memory_used_mib === 'number' && typeof g.memory_total_mib === 'number') parts.push(g.memory_used_mib + ' / ' + g.memory_total_mib + ' MiB');
       if (typeof g.temperature_c === 'number') parts.push(g.temperature_c + ' °C');
-      cards.push(systemCard('GPU', util === null ? null : util + ' %', {
-        sub: parts.join(' · ') || null, bars: [{ pct: util }], history: hist.map((s) => (s.gpu ? s.gpu.utilization_percent : null)),
+      cards.push(systemCard({
+        label: 'GPU', value: util === null ? null : String(Math.round(util)), unit: '%', pct: util, color: SYS_COLORS.cpu,
+        history: hist.map((s) => (s.gpu ? s.gpu.utilization_percent : null)), sub: parts.join(' · ') || null,
       }));
     }
     return cards;
   }
 
+  function renderSystemHost() {
+    const host = systemData && systemData.host ? systemData.host : null;
+    const node = $('system-host');
+    if (node) node.textContent = host ? 'Host ' + host.hostname + ' · Container ' + (host.container || '—') + ' · seit ' + sysUptime(host.uptime_seconds) : '';
+  }
+
   function renderSystemCards() {
+    renderSystemHost();
     patchChildren($('system-cards'), systemCards(systemData, lastState, trend));
   }
 
