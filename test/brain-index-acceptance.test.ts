@@ -10,7 +10,7 @@ import { ensureVault } from '../src/brain/vault.ts';
 import { startHttpServer } from '../src/http/server.ts';
 import { Logger } from '../src/log.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
-import { FakeRunner, FakeTracker, ManualTimers, StaticWorkflow, baseFront, makeWorkflow, tempDir } from './helpers.ts';
+import { FakeRunner, FakeTracker, ManualTimers, StaticWorkflow, baseFront, makeIssue, makeWorkflow, tempDir, until } from './helpers.ts';
 
 // Acceptance tests for E7-6a, derived from the issue text (cooolinho/symphony#359).
 
@@ -308,6 +308,75 @@ describe('HTTP: /api/v1/brain/*', () => {
       }
     } finally {
       await server.close();
+    }
+  });
+});
+
+describe('fence kinds (follow-up of the review)', () => {
+  it('a tilde line inside a backtick fence does not close it, and vice versa', async () => {
+    const vault = tempDir();
+    put(vault, 'a.md', ['```', '~~~', '[[hidden-one]]', '```', '[[visible-one]]', '~~~', '```', '[[hidden-two]]', '~~~', '[[visible-two]]'].join('\n'));
+    const index = await buildIndex(vault);
+    assert.deepEqual([...(index.notes.get('a.md')?.links ?? [])].sort(), ['visible-one.md', 'visible-two.md']);
+  });
+});
+
+describe('index follows the issue summary commit (E8-3 x E7-6a)', () => {
+  it('a merge writes Issues/<repo>/<nr>.md and vitals/candidates see it without a restart, including a pending Obsidian edit', async () => {
+    const vault = path.join(tempDir(), 'vault');
+    await ensureVault(vault, ['acme/app']);
+    put(vault, 'Inbox/idea.md', note({ type: 'decision', status: 'candidate', created: '2026-10-01' }, 'idea'));
+    await initVaultGit(vault);
+    const tracker = new FakeTracker([
+      makeIssue({ id: 'r', identifier: 'acme/app#r', title: 'Retry me', description: 'Goal.', state: 'Human Review', labels: ['awaiting-checks'], native_ref: { base_branch: 'main' } }),
+    ]);
+    tracker.issueRepository = () => 'acme/app';
+    let finished = false;
+    tracker.mergeWatch = () => ({
+      column: 'Human Review',
+      awaiting: (issue) => issue.labels.includes('awaiting-checks'),
+      retry: async (issue) => {
+        tracker.set(issue.id, { state: 'Done', labels: [] });
+        // a human edit made in Obsidian right before the summary is written
+        put(vault, 'Inbox/idea.md', note({ type: 'decision', status: 'approved', created: '2026-10-01' }, 'idea edited'));
+        finished = true;
+        return { merged: true, pull_request: 9, status: 'Done', reason: 'merged', pull_request_url: 'https://github.com/acme/app/pull/9', checks: { state: 'success' as const, failing: [], pending: [] } };
+      },
+    });
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir(), { brain: { enabled: true, path: vault } }))),
+      runner: new FakeRunner(),
+      logger: Logger.silent(),
+      env: {},
+      logDir: null,
+      timers: new ManualTimers(),
+      createAdapter: () => tracker,
+    });
+    await orchestrator.buildBrainIndex();
+    const before = await orchestrator.brainVitals();
+    assert.ok(before);
+    assert.equal(before.notes_by_status.candidate, 1);
+    const total = (v: NonNullable<typeof before>) => Object.values(v.notes_by_status).reduce((a, b) => a + b, 0);
+    const approvedBefore = before.notes_by_status.approved ?? 0;
+    try {
+      await orchestrator.tickNow();
+      await until(() => finished && fs.existsSync(path.join(vault, 'Issues', 'acme-app', 'r.md')), 15_000, 'summary written');
+      const deadline = Date.now() + 15_000;
+      let after = await orchestrator.brainVitals();
+      while (Date.now() < deadline && (after === null || total(after) !== total(before) + 1)) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        after = await orchestrator.brainVitals();
+      }
+      assert.ok(after);
+      assert.equal(after.notes_by_status.candidate ?? 0, 0, 'the human edit committed by beforeWrite is indexed');
+      // the edited note and the summary note (status approved) both count
+      assert.equal(after.notes_by_status.approved, approvedBefore + 2);
+      assert.deepEqual(await orchestrator.brainCandidates(), []);
+      // the summary note links to Repos/acme-app/index, so the total grew by one and nothing is broken
+      assert.equal(after.broken_links, before.broken_links);
+      assert.equal(total(after), total(before) + 1);
+    } finally {
+      await orchestrator.shutdown(1_000);
     }
   });
 });
