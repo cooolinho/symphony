@@ -156,7 +156,7 @@ export const TASKS_JS = `
   /** The control verb of a card, or null (no button at all without permission). */
   function taskActionFor(row, col, state) {
     if (!taskAllowed) return null;
-    const code = row.reason ? row.reason.code : row.reason_code;
+    const code = (row.reason && typeof row.reason === 'object' ? row.reason.code : row.reason_code);
     if (col === 'running') return row.running && row.running.stopping ? null : 'pause';
     if (col === 'next') return row.model_hold || TASK_UNFORCEABLE.has(code) ? null : 'force';
     if (col === 'waiting') return row.retry ? 'retry' : null;
@@ -189,9 +189,9 @@ export const TASKS_JS = `
     else if (row.priority !== null && row.priority !== undefined) meta.push('P' + row.priority);
     card.append(num, a, el('span', meta.join(' · '), 'task-meta'));
     const chips = el('div', null, 'task-chips');
-    const code = row.reason ? row.reason.code : row.reason_code;
+    const code = (row.reason && typeof row.reason === 'object' ? row.reason.code : row.reason_code);
     if (code) {
-      const c = taskReasonChip(code, row.reason ? row.reason.text : row.reason);
+      const c = taskReasonChip(code, row.reason && typeof row.reason === 'object' ? row.reason.text : row.reason);
       c.setAttribute('title', code);
       chips.append(c);
     }
