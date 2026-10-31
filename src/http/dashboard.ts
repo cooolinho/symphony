@@ -1,5 +1,6 @@
 import { ALERTS_CSS, ALERTS_JS } from './alerts.ts';
 import { PIPELINE_CSS, PIPELINE_JS } from './pipeline.ts';
+import { TEAMS_CSS, TEAMS_JS } from './overview-teams.ts';
 import { page } from './ui/layout.ts';
 
 const DASHBOARD_CSS = `
@@ -237,7 +238,7 @@ const DASHBOARD_CSS = `
 export const DASHBOARD_HTML = page({
   title: 'Symphony',
   nav: 'overview',
-  styles: PIPELINE_CSS + ALERTS_CSS + DASHBOARD_CSS,
+  styles: PIPELINE_CSS + TEAMS_CSS + ALERTS_CSS + DASHBOARD_CSS,
   body: `
   <div class="page-head">
     <dl class="sysinfo" aria-live="polite">
@@ -265,6 +266,11 @@ export const DASHBOARD_HTML = page({
 
   <div class="syscards" id="system-cards" role="group" aria-label="System"></div>
   <div class="stats" id="stats" aria-label="Metrics"></div>
+
+  <section class="agents-section teams-section" id="teams-section" aria-labelledby="teams-title">
+    <div class="section-head"><h2 id="teams-title">Teams <span class="count" id="teams-count"></span></h2></div>
+    <div class="team-list" id="teams"></div>
+  </section>
 
   <section class="agents-section" id="running-section" aria-labelledby="running-title">
     <div class="section-head">
@@ -363,7 +369,7 @@ export const DASHBOARD_HTML = page({
 </aside>`,
   scripts: `
 (() => {
-${PIPELINE_JS}
+${PIPELINE_JS}${TEAMS_JS}
 ${ALERTS_JS}
 
   const $ = (id) => document.getElementById(id);
@@ -1600,6 +1606,7 @@ ${ALERTS_JS}
     retryAllowed = !state.controls || state.controls.retry !== false;
     renderModelControls(state);
     renderSlotSettings(state);
+    setText($('teams-count'), pad2(renderTeams($('teams'), state, Date.now())));
     renderIssues(state);
     renderBlocked(state);
     diffSnapshots(state);
@@ -1662,6 +1669,7 @@ ${ALERTS_JS}
   setInterval(loadSystem, 10000);
   setInterval(loadHistory, 30000);
   setInterval(loadToolActivity, 30000);
+  setInterval(() => tickTeams(Date.now()), 1000);
   setInterval(loadBudget, 30000);
   // Tests load the page in a fake DOM and render a fixture through window.__render.
   if (window.__SYMPHONY_TEST__) window.__render = render;
