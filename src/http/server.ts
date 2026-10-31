@@ -154,7 +154,7 @@ const REDIRECTS: ReadonlyMap<string, string> = new Map([
  * Observability/control surface (spec 13.7): `/` dashboard, `/changes` (the feed of code changes), `/tasks` and `/brain` (placeholder pages),
  * `/issue?id=<identifier>` issue detail view (live, or archived once the orchestrator released the issue),
  * `/stats` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
- * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/activity`, `/api/v1/changes` (filters type, repo, issue, limit, tz; `before` = id of the last entry of the previous page, `next_before` the id for the next), `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
+ * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/activity`, `/api/v1/brain/vitals`, `/api/v1/brain/candidates` (404 `brain_disabled` without `brain.enabled`), `/api/v1/changes` (filters type, repo, issue, limit, tz; `before` = id of the last entry of the previous page, `next_before` the id for the next), `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
  * `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker), `/force` (Start now in an extra slot),
  * `/pause` and `/resume` (operator pause of an issue), `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family), and
  * `PUT` / `DELETE /api/v1/settings/agents` (agent slots set on the dashboard; JSON body, `Content-Type:
@@ -266,6 +266,17 @@ export function startHttpServer(options: {
     }
     if (pathname === '/api/v1/budget') {
       allow(['GET'], () => sendJson(res, 200, orchestrator.budget()));
+      return;
+    }
+    if (pathname === '/api/v1/brain/vitals' || pathname === '/api/v1/brain/candidates') {
+      allow(['GET'], () =>
+        respond(
+          (pathname === '/api/v1/brain/vitals' ? orchestrator.brainVitals() : orchestrator.brainCandidates().then((list) => list && { candidates: list })).then((body) => {
+            if (body === null) sendError(res, 404, 'brain_disabled', 'the brain is not enabled (brain.enabled)');
+            else sendJson(res, 200, body);
+          }),
+        ),
+      );
       return;
     }
     if (pathname === '/api/v1/changes') {
