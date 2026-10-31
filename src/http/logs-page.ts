@@ -12,6 +12,42 @@ const LOGS_CSS = `
     border: 1px solid var(--glass-line); border-radius: var(--radius-sm); padding: 6px 10px; color-scheme: dark; min-width: 0; min-height: 44px; }
   .period { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font: 12px var(--mono); color: var(--fg-2); }
   .period strong { color: var(--green); font-weight: 600; letter-spacing: .04em; }
+  .sum-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .sum-card { border-radius: 18px; padding: 16px 18px; }
+  .sum-card .ui-kpi-label { font-size: 13px; color: var(--fg-2); }
+  .sum-delta, .sum-sub { font-size: 12.5px; color: var(--fg-2); margin-top: 4px; }
+  .sum-delta.is-down { color: var(--green); }
+  .sum-delta.is-up { color: var(--amber); }
+  .sum-sub.is-hit { color: var(--red-300); }
+  .sum-sub.is-none { font-size: 12.5px; color: var(--fg-3); }
+  .sum-panels { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
+  #bh-panel { flex: 999 1 620px; min-width: 0; }
+  #rs-panel { flex: 1 1 380px; min-width: 0; }
+  .bh-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--fg-2); }
+  .bh-key { display: inline-flex; align-items: center; gap: 6px; }
+  .bh-key::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--sky-300); }
+  .bh-key.is-hit::before { background: var(--red-400); }
+  .bh-chart { position: relative; padding-top: 14px; }
+  .bh-grid { display: grid; gap: 14px; height: 220px; align-items: end; border-bottom: 1px solid color-mix(in srgb, white 12%, transparent); }
+  .bh-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
+  .bh-bar { width: 100%; max-width: 54px; box-sizing: border-box; border-radius: 10px 10px 4px 4px;
+    background: color-mix(in srgb, var(--sky-300) 22%, transparent); border: 1px solid var(--sky-300); }
+  .bh-bar.is-hit { background: color-mix(in srgb, var(--red-400) 28%, transparent); border-color: var(--red-400); }
+  .bh-pct { font: 12px var(--mono); color: var(--sky-300); white-space: nowrap; }
+  .bh-col.is-hit .bh-pct { color: var(--red-400); }
+  .bh-limit { position: absolute; left: 0; right: 0; top: 14px; border-top: 1px dashed color-mix(in srgb, var(--red-400) 60%, transparent); pointer-events: none; }
+  .bh-limit span { position: absolute; right: 0; top: -16px; font: 11px var(--mono); color: var(--red-300); }
+  .bh-days { display: grid; gap: 14px; margin-top: 6px; }
+  .bh-day { font: 12px var(--mono); text-align: center; color: var(--fg-2); min-height: 1em; white-space: nowrap; }
+  .bh-text { font-size: 13px; color: var(--fg-2); margin: 12px 0 0; }
+  .rs-scroll { overflow-x: auto; }
+  #role-summary { font-size: 13px; width: 100%; }
+  #role-summary th { font-size: 13px; color: var(--fg-3); font-weight: 500; }
+  #role-summary td { border-bottom: 1px solid color-mix(in srgb, white 6%, transparent); }
+  #role-summary td.num, #role-summary th.num { font-family: var(--mono); text-align: right; }
+  .rs-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
+  .rs-ctx { color: var(--fg-2); }
+  .rs-ctx.is-high { color: var(--amber-300); }
   .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(520px, 100%), 1fr)); gap: 20px; }
   .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 20px; }
   .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
@@ -74,7 +110,9 @@ export const LOGS_HTML = page({
   aurora: AURORA.stats,
   styles: CHART_CSS + LOGS_CSS,
   body: `
-  ${pageHeader({ title: 'Statistik', subtitle: 'Auswertung der Logs nach Zeitraum, Repository und Modell' })}
+  ${pageHeader({ title: 'Statistik', subtitle: 'Kosten, Tokens und Budgets über die Zeit', right: `<div class="ui-seg" id="period-seg" role="group" aria-label="Zeitraum">
+    <button type="button" class="ui-seg-btn" data-v="today" aria-pressed="false">Heute</button><button type="button" class="ui-seg-btn" data-v="7d" aria-pressed="false">7 Tage</button><button type="button" class="ui-seg-btn" data-v="30d" aria-pressed="false">30 Tage</button>
+  </div>` })}
   <section class="filterbar g" aria-label="Filter">
     <form class="filters" id="filters">
       <label class="field"><span class="lbl">Zeitraum</span>
@@ -108,13 +146,28 @@ export const LOGS_HTML = page({
 
   <section id="problems" class="problems" hidden><h2>Probleme</h2><ul id="problem-list"></ul></section>
 
+  <div class="sum-row" id="summary-kpis" data-body="summary" aria-label="Kennzahlen im Überblick"></div>
+
+  <div class="sum-panels">
+    <section class="ui-card g" id="bh-panel" data-section aria-labelledby="h-budget-bars">
+      <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-budget-bars">Budget-Historie · Spitze im 5-h-Fenster je Tag</h2>
+        <div class="bh-legend"><span class="bh-key is-peak">Spitze</span><span class="bh-key is-hit">Limit getroffen</span></div>
+      </div>
+      <div class="ui-card-body" data-body="budget-bars"></div>
+    </section>
+    <section class="ui-card g" id="rs-panel" data-section aria-labelledby="h-role-summary">
+      <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-role-summary">Rollen</h2></div>
+      <div class="ui-card-body" data-body="role-summary"></div>
+    </section>
+  </div>
+
   <section class="ui-card g" data-section aria-labelledby="h-kpi">
-    <div class="ui-card-head"><h2 class="ui-card-title" id="h-kpi">Kennzahlen</h2></div>
+    <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-kpi">Kennzahlen</h2></div>
     <div class="ui-card-body" data-body="kpi"></div>
   </section>
 
   <section class="ui-card g" data-section aria-labelledby="h-activity">
-    <div class="ui-card-head"><h2 class="ui-card-title" id="h-activity">Aktivität</h2>
+    <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-activity">Aktivität</h2>
       <div class="ui-seg" id="activity-metric" role="group" aria-label="Kennzahl der Aktivität">
         <button type="button" class="ui-seg-btn" data-v="runs" aria-pressed="true">Runs</button><button type="button" class="ui-seg-btn" data-v="tokens" aria-pressed="false">Tokens</button>
         <button type="button" class="ui-seg-btn" data-v="cost" aria-pressed="false">Kosten</button><button type="button" class="ui-seg-btn" data-v="time" aria-pressed="false">Agentenzeit</button>
@@ -125,7 +178,7 @@ export const LOGS_HTML = page({
 
   <div class="grid-2">
     <section class="ui-card g" data-section aria-labelledby="h-cost">
-      <div class="ui-card-head"><h2 class="ui-card-title" id="h-cost">Geschätzte Kosten</h2>
+      <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-cost">Geschätzte Kosten</h2>
         <div class="ui-seg" id="cost-mode" role="group" aria-label="Ansicht der Kosten">
           <button type="button" class="ui-seg-btn" data-v="period" aria-pressed="true">Je Zeitraum</button><button type="button" class="ui-seg-btn" data-v="cumulative" aria-pressed="false">Kumuliert</button>
         </div>
@@ -133,24 +186,24 @@ export const LOGS_HTML = page({
       <div class="ui-card-body" data-body="cost"></div>
     </section>
     <section class="ui-card g" data-section aria-labelledby="h-tokens">
-      <div class="ui-card-head"><h2 class="ui-card-title" id="h-tokens">Tokens</h2></div>
+      <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-tokens">Tokens</h2></div>
       <div class="ui-card-body" data-body="tokens"></div>
     </section>
   </div>
 
   <div class="grid-2">
     <section class="ui-card g" data-section aria-labelledby="h-budget">
-      <div class="ui-card-head"><h2 class="ui-card-title" id="h-budget">5-h-Spitze je Tag</h2></div>
+      <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-budget">5-h-Spitze je Tag</h2></div>
       <div class="ui-card-body" data-body="budget"></div>
     </section>
     <section class="ui-card g" data-section aria-labelledby="h-compacts">
-      <div class="ui-card-head"><h2 class="ui-card-title" id="h-compacts">Auto-Compacts je Rolle</h2></div>
+      <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-compacts">Auto-Compacts je Rolle</h2></div>
       <div class="ui-card-body" data-body="compacts"></div>
     </section>
   </div>
 
   <section class="ui-card g" data-section aria-labelledby="h-models">
-    <div class="ui-card-head"><h2 class="ui-card-title" id="h-models">Modelle</h2>
+    <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-models">Modelle</h2>
       <label class="field"><span class="lbl">Sortieren nach</span><select id="model-sort">
         <option value="cost_usd">Gesamtkosten</option><option value="runs">Runs</option><option value="total_tokens">Tokens</option>
         <option value="avg_cost_per_run">Ø Kosten/Run</option><option value="avg_tokens_per_run">Ø Tokens/Run</option>
@@ -161,28 +214,28 @@ export const LOGS_HTML = page({
   </section>
 
   <section class="ui-card g" data-section aria-labelledby="h-efforts">
-    <div class="ui-card-head"><h2 class="ui-card-title" id="h-efforts">Effort</h2></div>
+    <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-efforts">Effort</h2></div>
     <div class="ui-card-body" data-body="efforts"></div>
   </section>
 
   <section class="ui-card g" data-section aria-labelledby="h-roles">
-    <div class="ui-card-head"><h2 class="ui-card-title" id="h-roles">Rollen</h2></div>
+    <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-roles">Rollen</h2></div>
     <div class="ui-card-body" data-body="roles"></div>
   </section>
 
   <div class="grid-2">
     <section class="ui-card g" data-section aria-labelledby="h-tools">
-      <div class="ui-card-head"><h2 class="ui-card-title" id="h-tools">Tools</h2></div>
+      <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-tools">Tools</h2></div>
       <div class="ui-card-body" data-body="tools"></div>
     </section>
     <section class="ui-card g" data-section aria-labelledby="h-integrations">
-      <div class="ui-card-head"><h2 class="ui-card-title" id="h-integrations">Laravel Boost &amp; Integrationen</h2></div>
+      <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-integrations">Laravel Boost &amp; Integrationen</h2></div>
       <div class="ui-card-body" data-body="integrations"></div>
     </section>
   </div>
 
   <section class="ui-card g" data-section aria-labelledby="h-repos">
-    <div class="ui-card-head"><h2 class="ui-card-title" id="h-repos">Repositories</h2>
+    <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-repos">Repositories</h2>
       <label class="field"><span class="lbl">Vergleichen nach</span><select id="repo-sort">
         <option value="runs">Runs</option><option value="cost_usd">Kosten</option><option value="total_tokens">Tokens</option>
         <option value="agent_seconds">Agentenzeit</option>
@@ -193,32 +246,32 @@ export const LOGS_HTML = page({
 
   <div class="grid-3">
     <section class="ui-card g" data-section aria-labelledby="h-outcomes">
-      <div class="ui-card-head"><h2 class="ui-card-title" id="h-outcomes">Run-Ergebnisse</h2></div>
+      <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-outcomes">Run-Ergebnisse</h2></div>
       <div class="ui-card-body" data-body="outcomes"></div>
     </section>
     <section class="ui-card g" data-section aria-labelledby="h-durations">
-      <div class="ui-card-head"><h2 class="ui-card-title" id="h-durations">Run-Dauer</h2></div>
+      <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-durations">Run-Dauer</h2></div>
       <div class="ui-card-body" data-body="durations"></div>
     </section>
     <section class="ui-card g" data-section aria-labelledby="h-heatmap">
-      <div class="ui-card-head"><h2 class="ui-card-title" id="h-heatmap">Wann Symphony läuft</h2></div>
+      <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-heatmap">Wann Symphony läuft</h2></div>
       <div class="ui-card-body" data-body="heatmap"></div>
     </section>
   </div>
 
   <div class="grid-2">
     <section class="ui-card g" data-section aria-labelledby="h-top">
-      <div class="ui-card-head"><h2 class="ui-card-title" id="h-top">Top-Runs</h2></div>
+      <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-top">Top-Runs</h2></div>
       <div class="ui-card-body" data-body="top"></div>
     </section>
     <section class="ui-card g" data-section aria-labelledby="h-attention">
-      <div class="ui-card-head"><h2 class="ui-card-title" id="h-attention">Auffälligkeiten</h2></div>
+      <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-attention">Auffälligkeiten</h2></div>
       <div class="ui-card-body" data-body="attention"></div>
     </section>
   </div>
 
   <section class="ui-card g" data-section aria-labelledby="h-issues">
-    <div class="ui-card-head"><h2 class="ui-card-title" id="h-issues">Issues <span class="count" id="issue-count"></span></h2>
+    <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-issues">Issues <span class="count" id="issue-count"></span></h2>
       <label class="field"><span class="lbl">Sortieren</span><select id="issue-sort">
         <option value="cost">Teuerste</option><option value="tokens">Meiste Tokens</option><option value="time">Längste Laufzeit</option>
         <option value="runs">Meiste Runs</option><option value="newest">Neueste</option><option value="completed">Zuletzt abgeschlossen</option>
@@ -229,7 +282,7 @@ export const LOGS_HTML = page({
   </section>
 
   <section class="ui-card g" id="logs" aria-labelledby="h-log">
-    <div class="ui-card-head"><h2 class="ui-card-title" id="h-log">Log <span class="count" id="log-count"></span></h2></div>
+    <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-log">Log <span class="count" id="log-count"></span></h2></div>
     <form class="filters" id="log-filters">
       <label class="field"><span class="lbl">Issue</span><input type="text" id="log-issue" placeholder="#76 oder owner/name#76"></label>
       <label class="field"><span class="lbl">Event</span><select id="log-event"><option value="">Alle Events</option></select></label>
@@ -255,9 +308,11 @@ ${CHART_JS}
 
   function readFilter() {
     const p = new URLSearchParams(location.search);
-    const period = PERIODS[p.get('period')] ? p.get('period') : '30d';
+    const raw = p.get('period');
+    const period = raw === null ? '7d' : PERIODS[raw] ? raw : '30d';
     return { period, from: p.get('from') || '', to: p.get('to') || '', repo: p.get('repo') || '', model: p.get('model') || '', effort: p.get('effort') || '' };
   }
+  const PERIOD_SHORT = { today: 'Heute', '7d': '7 Tage', '30d': '30 Tage' };
   let filter = readFilter();
 
   function setFilter(changes) {
@@ -400,6 +455,8 @@ ${CHART_JS}
 
   function renderPeriod(r) {
     $('period').value = filter.period;
+    for (const b of $('period-seg').querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.v === filter.period));
+    $('h-role-summary').textContent = 'Rollen · ' + (PERIOD_SHORT[filter.period] || PERIODS[filter.period]);
     const custom = filter.period === 'custom';
     if (!custom && r.from && r.to) { $('from').value = isoDate(r.from); $('to').value = isoDate(addDays(r.to, -1)); }
     else if (!custom) { $('from').value = ''; $('to').value = ''; }
@@ -442,11 +499,14 @@ ${CHART_JS}
       ' (Kosten werden aus den geloggten Tokens mit den aktuellen Preisen neu berechnet) · Zeitzone: ' + d.period.time_zone + ' · Aktualisiert ' + fmtTime(d.generated_at);
 
     renderKpis(d);
+    renderSummary(d);
+    renderBudgetBars(d);
     if (d.totals.runs === 0) {
-      for (const name of ['activity', 'cost', 'tokens', 'budget', 'compacts', 'models', 'efforts', 'roles', 'tools', 'integrations', 'repos', 'outcomes', 'durations', 'heatmap', 'top', 'attention', 'issues']) setBody(name, noData());
+      for (const name of ['role-summary', 'activity', 'cost', 'tokens', 'budget', 'compacts', 'models', 'efforts', 'roles', 'tools', 'integrations', 'repos', 'outcomes', 'durations', 'heatmap', 'top', 'attention', 'issues']) setBody(name, noData());
       $('issue-count').textContent = '';
       return;
     }
+    renderRoleSummary(d);
     renderActivity(d); renderCost(d); renderTokens(d); renderBudget(d); renderCompacts(d); renderModels(d); renderEfforts(d); renderRoles(d); renderTools(d); renderIntegrations(d); renderRepos(d);
     renderOutcomes(d); renderDurations(d); renderHeatmap(d); renderTop(d); renderAttention(d); renderIssues(d);
   }
@@ -502,6 +562,118 @@ ${CHART_JS}
     if (t.runs === 0) nodes.push(el('p', 'Für den gewählten Zeitraum wurden keine Agent-Runs aufgezeichnet.', 'note'));
     else if (!p && d.period.from) nodes.push(el('p', 'Kein Vergleich: Die Logs decken die Vorperiode gleicher Länge nicht ab.', 'note'));
     setBody('kpi', ...nodes);
+  }
+
+  // ---- Mockup sections: summary row, budget history columns, role table
+
+  /** Change against the previous period as { text, cls }, null without a previous period or a base of 0. */
+  function periodChange(now, before) {
+    if (!data || !data.previous || before === null || before === undefined || !before || now === null || now === undefined) return null;
+    const pct = Math.round(((now - before) / before) * 100);
+    return { text: (pct > 0 ? '+' : pct < 0 ? '−' : '±') + Math.abs(pct) + ' % zur Vorperiode', cls: pct > 0 ? 'is-up' : pct < 0 ? 'is-down' : 'is-flat' };
+  }
+  const weekdayShort = (date) => date.toLocaleDateString('de-DE', { weekday: 'short' }).replace('.', '');
+  const dayKeyDate = (key) => new Date(key + 'T12:00:00');
+  const hitTime = (iso) => { const t = new Date(iso); return weekdayShort(t) + ' ' + pad2(t.getHours()) + ':' + pad2(t.getMinutes()); };
+  const shortDate = (date) => date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+  function modelFamily(id) {
+    const m = /^claude-([a-z]+)/.exec(id || '');
+    return m ? m[1][0].toUpperCase() + m[1].slice(1) : id;
+  }
+  function returnsOf(d) {
+    let n = 0;
+    for (const r of d.verdicts_by_role || []) for (const k of ['review:changes_needed', 'test:failed', 'security:issues_found']) n += (r.verdicts && r.verdicts[k]) || 0;
+    return n;
+  }
+
+  function renderSummary(d) {
+    const t = d.totals, insights = d.budget_insights || {};
+    const hits = (d.budget ? d.budget.days : []).reduce((sum, x) => sum + x.limit_hits, 0);
+    const compacts = Object.values(d.budget ? d.budget.compacts_by_role : {}).reduce((sum, n) => sum + n, 0);
+    const card = (key, value, label, line) => {
+      const box = kpi(value, label, { size: 28 });
+      box.className = 'ui-kpi ui-kpi-28 g sum-card';
+      box.dataset.kpi = key;
+      if (line) box.append(el('div', line.text, 'sum-' + line.kind + ' ' + line.cls));
+      return box;
+    };
+    const change = (now, before) => { const c = periodChange(now, before); return c && { kind: 'delta', text: c.text, cls: c.cls }; };
+    const p = d.previous;
+    const hitList = (insights.limit_hits || []).slice(-4).map((h) => hitTime(h.at)).join(' · ');
+    const top = insights.top_compact;
+    setBody('summary',
+      card('cost', fmtUsd(t.cost_usd), 'Kosten (geschätzt)', change(t.cost_usd, p && p.cost_usd)),
+      card('tokens', fmtCompact(t.total_tokens), 'Tokens', change(t.total_tokens, p && p.total_tokens)),
+      card('runs', fmtInt(t.runs), 'Runs', { kind: 'sub', cls: '', text: fmtInt(t.successful) + ' ok · ' + fmtInt(returnsOf(d)) + ' Rückgaben · ' + fmtInt(t.failed) + ' Fehler' }),
+      card('limits', fmtInt(hits), 'Limit-Treffer', hits > 0 && hitList ? { kind: 'sub', cls: 'is-hit', text: hitList } : { kind: 'sub', cls: hits > 0 ? '' : 'is-none', text: hits > 0 ? '' : 'keine' }),
+      card('compacts', fmtInt(compacts), 'Auto-Compacts', top
+        ? { kind: 'sub', cls: '', text: 'meist ' + top.role + (top.round !== null && top.round !== undefined ? ', Runde ' + top.round : '') }
+        : { kind: 'sub', cls: 'is-none', text: 'keine' }),
+    );
+  }
+
+  /** Peak of the 5-hour window per day as columns, in percent of the calibrated limit; red on days with a limit hit. */
+  function renderBudgetBars(d) {
+    const days = d.budget ? d.budget.days : [];
+    if (!days.some((x) => x.peak_5h_tokens > 0 || x.limit_hits > 0)) { setBody('budget-bars', stateBox('empty', 'KEINE DATEN', 'Noch keine Budget-Daten')); return; }
+    const insights = d.budget_insights || {};
+    const limit = insights.limit_5h_tokens || null;
+    const maxPeak = Math.max(1, ...days.map((x) => x.peak_5h_tokens));
+    const n = days.length;
+    const grid = el('div', null, 'bh-grid');
+    grid.style.gridTemplateColumns = 'repeat(' + n + ', minmax(0, 1fr))';
+    const labels = el('div', null, 'bh-days');
+    labels.style.gridTemplateColumns = grid.style.gridTemplateColumns;
+    days.forEach((x, i) => {
+      const hit = x.limit_hits > 0;
+      const pct = limit ? Math.round((x.peak_5h_tokens / limit) * 100) : null;
+      const height = limit ? Math.min(pct, 100) : (x.peak_5h_tokens / maxPeak) * 100;
+      const col = el('div', null, 'bh-col' + (hit ? ' is-hit' : ''));
+      col.dataset.day = x.date;
+      const bar = el('div', null, 'bh-bar' + (hit ? ' is-hit' : ''));
+      bar.style.height = (x.peak_5h_tokens > 0 ? Math.max(2, Math.round((height / 100) * 180)) : 0) + 'px';
+      col.append(el('div', limit ? pct + ' %' : fmtCompact(x.peak_5h_tokens), 'bh-pct'), bar);
+      grid.append(col);
+      const date = dayKeyDate(x.date);
+      labels.append(el('div', n <= 14 ? weekdayShort(date) : i % 5 === 0 ? shortDate(date) : '', 'bh-day'));
+    });
+    const hitDays = days.filter((x) => x.limit_hits > 0).map((x) => weekdayShort(dayKeyDate(x.date)) + ' ' + shortDate(dayKeyDate(x.date)));
+    const chart = el('div', null, 'bh-chart');
+    chart.id = 'bh-chart';
+    chart.setAttribute('role', 'img');
+    chart.setAttribute('aria-label', 'Spitzenauslastung des 5-Stunden-Fensters der letzten ' + n + ' Tage' +
+      (hitDays.length ? '; am ' + hitDays.join(', ') + ' wurde das Limit erreicht' : '; kein Limit erreicht'));
+    if (limit) { const line = el('div', null, 'bh-limit'); line.append(el('span', '100 %')); chart.append(line); }
+    chart.append(grid, labels);
+    const total = days.reduce((sum, x) => sum + x.limit_hits, 0);
+    const models = [...new Set((insights.limit_hits || []).map((h) => h.model))];
+    const text = total > 0
+      ? fmtInt(total) + ' Limit-Treffer in diesem Zeitraum' + (models.length === 1 && models[0] ? ', alle nach ' + modelFamily(models[0]) + '-Sessions' : '') + '. Die Prognose kalibriert sich an diesen Treffern.'
+      : 'Kein Limit-Treffer in diesem Zeitraum.';
+    const nodes = [chart, el('p', text, 'bh-text')];
+    if (!limit) nodes.push(el('p', 'Noch kein Limit kalibriert: Höhen relativ zur höchsten Spitze.', 'note'));
+    setBody('budget-bars', ...nodes);
+  }
+
+  /** Roles of the period by tokens with the average context fill and the auto-compacts. */
+  function renderRoleSummary(d) {
+    const rows = [...d.by_role].sort((a, b) => b.total_tokens - a.total_tokens);
+    const tbl = el('table'); tbl.id = 'role-summary';
+    const wrap = el('div', null, 'rs-scroll'); wrap.append(tbl);
+    setBody('role-summary', wrap);
+    const budget = d.budget || {};
+    table('role-summary', [
+      { label: 'Rolle', className: 'nowrap', render: (r) => { const s = el('span'); const dot = el('span', null, 'rs-dot'); dot.style.background = roleColor(r.role); s.append(dot, r.role); return s; } },
+      { label: 'Runs', className: 'num', render: (r) => fmtInt(r.runs) },
+      { label: 'Tokens', className: 'num', render: (r) => fmtCompact(r.total_tokens) },
+      { label: 'Kosten', className: 'num', render: (r) => fmtUsd(r.cost_usd) },
+      { label: 'Ø Context', className: 'num', render: (r) => {
+        const v = budget.avg_context_by_role ? budget.avg_context_by_role[r.role] : undefined;
+        if (v === undefined || v === null) return '—';
+        return el('span', Math.round(v) + ' %', 'rs-ctx' + (v >= 60 ? ' is-high' : ''));
+      } },
+      { label: 'Compacts', className: 'num', render: (r) => { const c = budget.compacts_by_role ? budget.compacts_by_role[r.role] : undefined; return c === undefined ? '—' : fmtInt(c); } },
+    ], rows, 'Keine Runs in diesem Zeitraum.');
   }
 
   function chartHost(name) { const host = el('div', null, 'chart'); return host; }
@@ -1068,6 +1240,10 @@ ${CHART_JS}
     setFilter({ period: 'custom', from, to });
   });
   $('filters').addEventListener('submit', (event) => { event.preventDefault(); setFilter({ period: 'custom', from: $('from').value, to: $('to').value }); });
+  $('period-seg').addEventListener('click', (event) => {
+    const button = event.target.closest('button'); if (!button) return;
+    setFilter({ period: button.dataset.v });
+  });
   $('repo').addEventListener('change', () => setFilter({ repo: $('repo').value }));
   $('model').addEventListener('change', () => setFilter({ model: $('model').value }));
   $('effort').addEventListener('change', () => setFilter({ effort: $('effort').value }));
