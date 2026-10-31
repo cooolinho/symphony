@@ -150,6 +150,8 @@ export const LAYOUT_CSS = `
   .nv[aria-current="page"], .nv.on { background: rgba(255, 255, 255, .92); color: #0b1220; font-weight: 600; }
   .nv[aria-current="page"]:hover, .nv.on:hover { color: #0b1220; background: #fff; }
   .shell-meta { display: flex; align-items: center; gap: 8px; flex: none; margin-left: auto; }
+  .shell-budget { color: var(--fg-chip); }
+  a.shell-budget:hover { text-decoration: none; border-color: rgba(255, 255, 255, .24); }
   .budget-pct.tone-amber { color: var(--amber); }
   .budget-pct.tone-red { color: var(--red); }
   .shell-clock { font: 15px var(--mono); font-variant-numeric: tabular-nums; color: var(--fg); padding: 0 6px; min-width: 8ch; text-align: right; }
@@ -254,13 +256,23 @@ export const LAYOUT_JS = `
     const limit = w && w.forecast && w.forecast.limit_tokens;
     return typeof limit === 'number' && limit > 0 && typeof w.used_tokens === 'number' ? (w.used_tokens / limit) * 100 : null;
   }
-  /** Extra share of the limit (percent) the burn rate adds until the ETA, else until the reset; 0 when it cannot be told. */
-  function budgetForecastPercent(w, now) {
-    const limit = w && w.forecast && w.forecast.limit_tokens;
-    if (!(typeof limit === 'number' && limit > 0) || !(w.burn_rate_per_min > 0)) return 0;
-    const horizon = Date.parse(w.forecast.eta || w.resets_at || '');
-    if (!Number.isFinite(horizon)) return 0;
-    return ((w.burn_rate_per_min * Math.max(0, horizon - now)) / 60000 / limit) * 100;
+  /** HH:MM (24 h) of an ISO time, an em dash when it cannot be read. */
+  function budgetHm(iso) {
+    const t = Date.parse(iso || '');
+    return Number.isFinite(t) ? new Date(t).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) : '—';
+  }
+  /** Short weekday and HH:MM ("Mo 09:00"). */
+  function budgetDayHm(iso) {
+    const t = Date.parse(iso || '');
+    if (!Number.isFinite(t)) return '—';
+    return new Date(t).toLocaleDateString('de-DE', { weekday: 'short' }).replace('.', '') + ' ' + budgetHm(iso);
+  }
+  /** Compact token count: "1.2M", "640k", "950". */
+  function budgetTokens(n) {
+    if (!(typeof n === 'number' && Number.isFinite(n))) return '—';
+    if (n >= 1e6 || Math.round(n / 1e3) >= 1000) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return Math.round(n / 1e3) + 'k';
+    return String(Math.round(n));
   }
   /** 5 h chip: pct (null without a window, forecast or positive limit) and tone (red from 85 %, amber from 50 %, else null). */
   function budgetChip(report) {
@@ -282,6 +294,8 @@ export const LAYOUT_JS = `
     const node = document.getElementById('shell-budget');
     if (!node) return;
     const chip = budgetChip(report);
+    const w = report && report.five_hour;
+    node.setAttribute('title', '5-h-Fenster' + (w ? ' · Reset ' + (w.resets_at ? budgetHm(w.resets_at) : 'unbekannt') : ''));
     if (chip.pct === null) { node.textContent = '5h —'; return; }
     const pct = document.createElement('span');
     pct.className = 'budget-pct' + (chip.tone ? ' tone-' + chip.tone : '');
@@ -396,7 +410,7 @@ export function page(opts: PageOptions): string {
   <span class="sh-chip shell-live tone-gray" id="shell-live"><span class="dot" id="shell-live-dot"></span><span id="shell-live-text">OFFLINE</span></span>
   ${navHtml(opts.nav, opts.navHighlight)}
   <div class="shell-meta">
-    <span class="sh-chip mono" id="shell-budget" title="5-h-Fenster">5h —</span>
+    <a class="sh-chip mono shell-budget" href="/#budget" id="shell-budget" title="5-h-Fenster">5h —</a>
     <span class="sh-chip mono shell-version" id="shell-version" title="Symphony-Version">v${escapeHtml(SYMPHONY_VERSION)}</span>
     <time class="shell-clock mono" id="shell-clock" aria-label="Uhr" title="Uhr">--:--:--</time>${poll}
   </div>

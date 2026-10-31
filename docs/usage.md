@@ -1092,6 +1092,8 @@ The overview opens with a title block: the heading *Übersicht*, a subtitle (*n 
 
 The panel *Alerts* (next to *Budget*, in one wrapping row) collects everything that needs a look, newest first, with a round count badge in its head (no badge at 0): workflow, tracker, dispatch, pricing and slot problems (*Fehler*, red), issues with the label `needs-human` (*Nach n Review-Runden an dich übergeben.*, from `review_rounds` of `/api/v1/state`), model holds (*Model-Hold*) and the limit forecast (*Limit-Prognose*, from `/api/v1/budget`, polled every 30 s) in amber, and write clashes of the Brain (*Write-Clash*, red) as soon as `/api/v1/state` delivers the optional field `brain_clashes`. Each entry is a card with a coloured border, the kind as label, the relative time, a title and a text; the whole card links to its target (`/issue?id=…`, `/brain`, `/stats`). Without entries one card reads *Alles ruhig*.
 
+Next to it sits the panel *Context-Budget · heute*: two bars for the 5 h window and the week (percent in the window colour, red from 85 %), hatched from the current use up to the limit only when a forecast (ETA) exists, with burn rate, expected limit time and reset; below it *Tokens je Rolle* (from the 5 h window) and one amber card per running session from 70 % context. Without any usage it reads *Noch kein Verbrauch heute*. The header chip *5h n %* shows the 5 h window (amber from 50 %, red from 85 %) and links to `/#budget`.
+
 - **Running**: one card per agent session, with the slot bar (busy and free slots).
 - **Up next**: numbered in the order Symphony starts them (`#1` takes the next free slot), with the board's age
   (`board as of …`). Each card shows a reason chip (`waiting for a free slot`, `Agent review limit 1/1`,

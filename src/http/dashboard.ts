@@ -170,27 +170,25 @@ const DASHBOARD_CSS = `
     .logs .body { grid-column: 1 / -1; }
     .agent-foot { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 10px; }
     .syscards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .budget-windows { grid-template-columns: minmax(0, 1fr); }
   }
 
-  /* Budget: subscription windows, tokens per role, context hint */
+  /* Context budget panel next to the alerts: two window bars, tokens per role, hot-context cards */
   .ov-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 20px; margin: 18px 0; }
-  .ov-row .budget { margin: 0; flex: 1 1 340px; min-width: 0; }
-  .budget { margin: 18px 0; }
-  .budget-windows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-  .budget-window { padding: 12px 14px; border: 1px solid var(--line); border-radius: 14px; display: flex; flex-direction: column; gap: 8px; }
-  .budget-window h3 { margin: 0; font: 600 13px var(--sans); color: var(--text-2); }
-  .budget-value { font: 600 15px var(--mono); display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
-  .budget-value .of { font-weight: 400; font-size: 12px; color: var(--muted); }
-  .budget-meta { display: flex; flex-wrap: wrap; gap: 2px 14px; font: 11.5px var(--mono); color: var(--muted); }
-  .budget-hint { margin: 0; font-size: 12px; color: var(--muted); }
-  .budget-roles-title { margin: 14px 0 6px; font: 600 12.5px var(--sans); color: var(--text-2); }
-  .budget-roles { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 16px; }
-  .budget-roles li { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
-  .budget-roles .mono { color: var(--text-2); }
-  .budget-context { margin: 12px 0 0; padding: 8px 12px; border: 1px solid var(--amber-line); border-radius: 12px;
-    background: var(--amber-dim); color: var(--amber); font-size: 12.5px; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
-  .budget-context a { color: var(--amber); text-decoration: underline; }
+  .ov-row .budget { margin: 0; }
+  .budget { flex: 1 1 340px; min-width: 0; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+  .budget-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .budget-body { display: flex; flex-direction: column; gap: 14px; }
+  .budget-win { display: flex; flex-direction: column; gap: 8px; }
+  .budget-win-head { display: flex; justify-content: space-between; align-items: baseline; }
+  .budget-win-name { font-weight: 500; }
+  .budget-win-pct { font: 500 22px var(--mono); }
+  .budget-win-text { margin: 0; font-size: 12.5px; color: var(--fg-3); }
+  .budget-roles { border-top: 1px solid rgba(255, 255, 255, .08); padding-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .budget-role-grid { display: grid; grid-template-columns: 84px minmax(0, 1fr) 44px 52px; gap: 8px; align-items: center; font-size: 12.5px; }
+  .budget-role-name { display: flex; align-items: center; gap: 6px; color: var(--fg-chip); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .budget-role-pct { color: var(--fg-2); text-align: right; }
+  .budget-role-tok { color: var(--fg-3); font-size: 12.5px; text-align: right; }
+  .budget-hot { padding: 10px 12px; border-color: rgba(251, 191, 36, .35); display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
 `;
 
 /**
@@ -233,9 +231,9 @@ export const DASHBOARD_HTML = page({
       <div class="section-head"><h2 class="lbl" id="alerts-title">Alerts</h2><span class="alerts-badge" id="alerts-count" aria-live="polite" hidden>0</span></div>
       <ul class="alerts-list" id="alerts-list"></ul>
     </section>
-    <section class="budget" id="budget" aria-labelledby="budget-title" hidden>
-      <div class="section-head"><h2 id="budget-title">Budget</h2></div>
-      <div id="budget-body"></div>
+    <section class="g budget" id="budget" aria-labelledby="budget-title">
+      <div class="budget-head"><span class="lbl" id="budget-title">Context-Budget · heute</span><a class="budget-more" href="/stats">Verlauf →</a></div>
+      <div class="budget-body" id="budget-body"></div>
     </section>
   </div>
 
@@ -1088,6 +1086,7 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}
 
   let budgetData = null;
   let budgetAnswer = null;
+  const BUDGET_NO_DATA = 'Noch kein Verbrauch heute';
   // Open brain clashes and the candidate count for the alerts; null without a brain (404 brain_disabled) or on any error.
   let brainAnswer = null;
   async function loadBrainAlerts() {
@@ -1105,83 +1104,87 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}
     }
     if (lastState) renderAlerts(alerts(lastState, budgetAnswer, brainAnswer), $('alerts-list'), $('alerts-count'));
   }
-  const BUDGET_NO_LIMIT = '#6b7684';
 
-  function mono(text) { return el('span', text, 'mono'); }
+  function budgetWindowText(w, empty) {
+    if (empty) return BUDGET_NO_DATA;
+    const reset = w.resets_at ? budgetHm(w.resets_at) : 'unbekannt';
+    const burn = w.burn_rate_per_min > 0 ? 'Burn ' + budgetTokens(w.burn_rate_per_min * 60) + ' Tokens/h' : null;
+    if (w.forecast && w.forecast.eta) return (burn ? burn + ' · ' : '') + 'Limit ca. ' + budgetHm(w.forecast.eta) + ' · Reset ' + reset;
+    if (burn && w.forecast && w.resets_at) return 'Reset ' + budgetDayHm(w.resets_at) + ' · reicht bei aktuellem Tempo';
+    if (burn) return burn + ' · Reset ' + reset;
+    return 'Reset ' + reset;
+  }
 
-  function budgetWindow(w, title, label) {
-    const box = el('div', null, 'budget-window');
-    box.append(el('h3', title));
-    const pct = budgetPercent(w);
-    const value = el('div', null, 'budget-value');
-    const meta = el('div', null, 'budget-meta');
-    let barNode;
+  function budgetWindow(w, key, name, empty) {
+    const box = el('div', null, 'budget-win');
+    box.setAttribute('data-window', key);
+    const pct = empty ? 0 : budgetPercent(w);
+    const base = key === 'five_hour' ? UI_CHIP_TONES.amber.c : UI_CHIP_TONES.sky.c;
+    const color = pct !== null && pct >= 85 ? UI_TRAFFIC.red : base;
+    const head = el('div', null, 'budget-win-head');
+    const value = el('span', pct === null ? '—' : Math.round(pct) + ' %', 'budget-win-pct mono');
+    value.style.color = color;
+    head.append(el('span', name, 'budget-win-name'), value);
+    const hatch = !empty && pct !== null && w.forecast && w.forecast.eta;
+    const barNode = bar(pct === null ? 0 : pct, { height: 10, color, forecastPct: hatch ? 100 - pct : undefined });
+    barNode.setAttribute('aria-label', name);
     if (pct === null) {
-      value.append(mono(fmtCompact(w.used_tokens) + ' Tokens'));
-      barNode = bar(100, { height: 8, color: BUDGET_NO_LIMIT });
       barNode.removeAttribute('aria-valuenow');
       barNode.setAttribute('aria-valuetext', fmtCompact(w.used_tokens) + ' Tokens, Grenze unbekannt');
-    } else {
-      const color = w.alert ? UI_TRAFFIC.red : UI_TRAFFIC[trafficTone(pct)];
-      const of = el('span', null, 'of');
-      of.append(mono(fmtCompact(w.used_tokens) + ' / ' + fmtCompact(w.forecast.limit_tokens)), el('span', ' Tokens'));
-      value.append(mono(Math.round(pct) + ' %'), of);
-      barNode = bar(pct, { height: 8, color, forecastPct: budgetForecastPercent(w, Date.now()) });
     }
-    barNode.setAttribute('aria-label', label);
-    const reset = Date.parse(w.resets_at || '');
-    meta.append(el('span', Number.isFinite(reset) ? 'Reset in ' + fmtDuration((reset - Date.now()) / 1000) : 'Reset unbekannt'));
-    meta.append(el('span', 'Burn-Rate ' + fmtInt(Math.round(w.burn_rate_per_min || 0)) + ' Tokens/min'));
-    if (w.forecast && w.forecast.eta) meta.append(el('span', 'ETA ' + fmtStamp(w.forecast.eta)));
-    box.append(value, barNode, meta);
-    if (pct === null) box.append(el('p', 'Noch kein Limit-Treffer bekannt', 'budget-hint'));
+    box.append(head, barNode, el('p', budgetWindowText(w, empty), 'budget-win-text'));
     return box;
   }
 
+  /** Tokens per role of the 5 h window as a four-column grid; null without consumption. */
   function budgetRoles(byRole) {
-    const wrap = el('div', null, 'budget-roles-wrap');
-    wrap.append(el('h3', 'Tokens je Rolle (5 h)', 'budget-roles-title'));
     const entries = Object.entries(byRole || {}).filter(([, n]) => typeof n === 'number' && n > 0).sort((a, b) => b[1] - a[1]);
-    if (!entries.length) { wrap.append(el('p', 'Keine Tokens im 5-h-Fenster', 'budget-hint')); return wrap; }
-    const list = el('ul', null, 'budget-roles');
+    if (!entries.length) return null;
+    const total = entries.reduce((sum, [, n]) => sum + n, 0);
+    const wrap = el('div', null, 'budget-roles');
+    wrap.append(el('span', 'Tokens je Rolle', 'lbl'));
+    const grid = el('div', null, 'budget-role-grid');
     for (const [role, tokens] of entries) {
-      const li = el('li');
       const name = uiOwn(UI_ROLE_NAMES, role) || role.charAt(0).toUpperCase() + role.slice(1);
-      li.append(uiDot(uiOwn(UI_ROLE_COLORS, role) || UI_ROLE_COLORS.symphony), el('span', name), mono(fmtCompact(tokens)));
-      list.append(li);
+      const color = uiOwn(UI_ROLE_COLORS, role) || UI_ROLE_COLORS.symphony;
+      const label = el('span', null, 'budget-role-name');
+      label.append(uiDot(color), el('span', name));
+      grid.append(label, bar((tokens / total) * 100, { height: 6, color }), el('span', Math.round((tokens / total) * 100) + ' %', 'budget-role-pct mono'), el('span', budgetTokens(tokens), 'budget-role-tok mono'));
     }
-    wrap.append(list);
+    wrap.append(grid);
     return wrap;
   }
 
-  /** The hint for running sessions above 70 % context; null when there are none. */
-  function budgetContext(state) {
-    const hot = ((state && state.running) || []).filter((r) => r.context && typeof r.context.percent === 'number' && r.context.percent > 70);
-    if (!hot.length) return null;
-    const box = el('p', null, 'budget-context');
-    const head = el('span');
-    head.append(mono(String(hot.length)), el('span', (hot.length === 1 ? ' Session' : ' Sessions') + ' über 70 % Context'));
-    box.append(head);
-    for (const r of hot) {
-      const item = el('span');
-      item.append(link(r.issue_identifier, '/issue?id=' + encodeURIComponent(r.issue_identifier)), el('span', ' '), mono('(' + Math.round(r.context.percent) + ' %)'));
-      box.append(item);
-    }
-    return box;
+  /** One amber card per running session from 70 % context, fullest first. */
+  function budgetHot(state) {
+    const hot = ((state && state.running) || []).filter((r) => r.context && typeof r.context.percent === 'number' && r.context.percent >= 70)
+      .sort((a, b) => b.context.percent - a.context.percent);
+    return hot.map((r) => {
+      const card = el('div', null, 'gi budget-hot');
+      const id = String(r.issue_identifier || '');
+      const role = uiOwn(UI_ROLE_NAMES, r.role) || (r.role ? String(r.role).charAt(0).toUpperCase() + String(r.role).slice(1) : 'Session');
+      const text = el('span');
+      text.append(link('#' + id.slice(id.lastIndexOf('#') + 1), '/issue?id=' + encodeURIComponent(id)),
+        el('span', ' ' + role + ' bei ' + Math.round(r.context.percent) + ' % Context (' + Math.round((r.context.tokens || 0) / 1000) + 'k / ' + Math.round((r.context.window || 0) / 1000) + 'k) – Auto-Compact naht'));
+      card.append(el('span', null, 'dot tone-amber'), text);
+      return card;
+    });
   }
 
   function budgetSection(report, state) {
-    const windows = el('div', null, 'budget-windows');
-    windows.append(budgetWindow(report.five_hour, '5 Stunden', '5-Stunden-Fenster'), budgetWindow(report.seven_day, '7 Tage', '7-Tage-Fenster'));
-    const nodes = [windows, budgetRoles(report.five_hour.by_role)];
-    const context = budgetContext(state);
-    if (context) nodes.push(context);
+    const empty = !report || (report.five_hour.used_tokens === 0 && report.seven_day.used_tokens === 0);
+    const nodes = [
+      budgetWindow(report && report.five_hour, 'five_hour', '5-h-Fenster', empty),
+      budgetWindow(report && report.seven_day, 'seven_day', 'Woche', empty),
+    ];
+    const roles = empty ? null : budgetRoles(report.five_hour.by_role);
+    if (roles) nodes.push(roles);
+    nodes.push(...budgetHot(state));
     return nodes;
   }
 
   function renderBudget() {
-    $('budget').hidden = !budgetData;
-    if (budgetData) patchChildren($('budget-body'), budgetSection(budgetData, lastState));
+    patchChildren($('budget-body'), budgetSection(budgetData, lastState));
   }
 
   // ------------------------------------------------------------------ polling
