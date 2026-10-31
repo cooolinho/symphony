@@ -1,12 +1,15 @@
 import type { PlanReasonCode } from '../orchestrator/dispatch-plan.ts';
-import { AURORA, escapeHtml, page } from './ui/layout.ts';
+import { AURORA, escapeHtml, page, pageHeader } from './ui/layout.ts';
+import { SCALES } from './ui/palette.ts';
 
 /**
- * Tasks page: the dispatcher queue in six columns (Läuft, Als Nächstes, Wartet, Pausiert, Blockiert, Kürzlich
- * erledigt) with cards, reason chips and the control actions of the existing routes. Like overview-teams.ts the CSS
- * and the script are inlined (TASKS_CSS/TASKS_JS); all top-level script names start with `task`/`TASK_` so they
- * cannot collide with BASE_JS or the components. The head also holds the controls moved from the overview: agent slots
- * (PUT/DELETE /api/v1/settings/agents) and the model list with pause/resume (POST /api/v1/models/<m>/hold|release). The columns are pre-rendered, so empty ones show their text at once.
+ * Tasks page: the dispatcher queue in six glass columns (Läuft, Als Nächstes, Wartet, Pausiert, Blockiert, Kürzlich
+ * erledigt) with cards (number, priority/place, title, repo, reason chip in the column tone, owner, action) and the
+ * control actions of the existing routes. Like overview-teams.ts the CSS and the script are inlined
+ * (TASKS_CSS/TASKS_JS); all top-level script names start with `task`/`TASK_` so they cannot collide with BASE_JS or the
+ * components. The head holds a glass pill with the agent slots (PUT/DELETE /api/v1/settings/agents) and the model-hold
+ * chips; column limits, reservations, reset and the model pause (POST /api/v1/models/<m>/hold|release) sit in a
+ * details block below. The columns are pre-rendered, so empty ones show their text at once.
  */
 
 export interface TaskColumn {
@@ -14,15 +17,17 @@ export interface TaskColumn {
   title: string;
   empty: string;
   tone: 'run' | 'next' | 'wait' | 'pause' | 'block' | 'done';
+  /** #rrggbb of the column dot. */
+  color: string;
 }
 
 export const TASK_COLUMNS: ReadonlyArray<TaskColumn> = [
-  { key: 'running', title: 'Läuft', empty: 'Nichts läuft', tone: 'run' },
-  { key: 'next', title: 'Als Nächstes', empty: 'Nichts steht an', tone: 'next' },
-  { key: 'waiting', title: 'Wartet', empty: 'Nichts wartet', tone: 'wait' },
-  { key: 'paused', title: 'Pausiert', empty: 'Nichts pausiert', tone: 'pause' },
-  { key: 'blocked', title: 'Blockiert', empty: 'Nichts blockiert', tone: 'block' },
-  { key: 'done', title: 'Kürzlich erledigt', empty: 'Noch nichts erledigt', tone: 'done' },
+  { key: 'running', title: 'Läuft', empty: 'Nichts läuft', tone: 'run', color: SCALES.green[400] },
+  { key: 'next', title: 'Als Nächstes', empty: 'Nichts in der Warteschlange', tone: 'next', color: SCALES.sky[300] },
+  { key: 'waiting', title: 'Wartet', empty: 'Nichts wartet', tone: 'wait', color: SCALES.amber[400] },
+  { key: 'paused', title: 'Pausiert', empty: 'Nichts pausiert', tone: 'pause', color: SCALES.amber[400] },
+  { key: 'blocked', title: 'Blockiert', empty: 'Nichts blockiert', tone: 'block', color: SCALES.red[400] },
+  { key: 'done', title: 'Kürzlich erledigt', empty: 'Noch nichts erledigt', tone: 'done', color: SCALES.violet[300] },
 ];
 
 /** German text of every PlanReasonCode (the compiler enforces all codes); `column` is the blocked-column reason. */
@@ -42,22 +47,6 @@ export const REASON_LABELS: Record<PlanReasonCode | 'column', string> = {
   column: 'In Blockiert-Spalte',
 };
 
-const REASON_TONES: Record<PlanReasonCode | 'column', string> = {
-  ready: 'green',
-  no_free_slot: 'sky',
-  column_limit: 'amber',
-  reserved_for_role: 'sky',
-  backoff: 'amber',
-  session_limit: 'amber',
-  model_hold: 'amber',
-  waiting_for_sub_issues: 'gray',
-  inactive: 'gray',
-  paused: 'gray',
-  blocked: 'red',
-  missing_label: 'red',
-  column: 'red',
-};
-
 const OUTCOME_LABELS: Record<string, string> = {
   handed_off: 'Übergeben',
   continuing: 'Fortgesetzt',
@@ -71,65 +60,72 @@ const OUTCOME_LABELS: Record<string, string> = {
 export const CONTROLS_OFF = 'Steuerung deaktiviert: SYMPHONY_ALLOW_REMOTE_CONTROL=true hinter einem authentifizierenden Proxy setzen';
 
 export const TASKS_CSS = `
-  .tasks-head { margin-bottom: 16px; }
-  .tasks-meta { margin: 4px 0 0; color: var(--fg-3, var(--muted)); font-size: 13px; }
-  .task-off { margin: 0 0 14px; color: var(--fg-3, var(--muted)); font-size: 13px; }
-  .tasks-steer { display: grid; gap: 12px; margin: 0 0 16px; }
+  .tasks-page { display: grid; gap: 18px; }
+  .task-off { margin: 0; color: var(--fg-3, var(--muted)); font-size: 13px; }
+  .task-pill { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 8px 12px; border-radius: 999px; }
+  .task-pill-label { font-size: 13px; color: var(--fg-2, var(--muted)); }
+  .task-pill-step, .task-pill-chips { display: contents; }
+  .task-slot-count { font: 18px var(--mono); min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; color: var(--fg-strong, inherit); }
+  .task-slot-notes { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12px; color: var(--amber); }
+  .task-slot-notes .task-slot-error { color: var(--red); }
+  .task-more { padding: 4px 14px; }
+  .task-more summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; font-size: 13px; color: var(--fg-2, var(--muted)); }
+  .task-more-body { display: grid; gap: 12px; padding-bottom: 12px; }
   .task-slots, .task-hold-list { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 0; padding: 0;
     list-style: none; font: 12px var(--mono); color: var(--fg-3, var(--muted)); }
   .task-slot-item, .task-hold { display: inline-flex; align-items: center; gap: 6px; }
   .task-slot-item b, .task-hold b { color: var(--fg-strong, inherit); font-weight: 600; }
   .task-slot-item b { min-width: 2ch; text-align: center; }
   .task-slot-step:disabled, .task-slot-reset:disabled { opacity: .4; cursor: default; }
-  .task-slot-override, .task-slot-note { color: var(--amber); }
-  .task-slot-error { color: var(--red); }
-  .task-slot-bar { display: flex; gap: 3px; }
-  .task-slot-bar i { width: 14px; height: 6px; border-radius: 2px; background: rgba(255, 255, 255, .12); }
-  .task-slot-bar i.on { background: var(--green); box-shadow: 0 0 8px -2px var(--green); }
-  .task-slot-bar i.reserved { background: transparent; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .35); }
-  .task-slot-bar i.forced { background: var(--amber); box-shadow: 0 0 8px -2px var(--amber); }
+  .task-slot-override { color: var(--amber); }
   .task-holds-title { margin: 0 0 6px; font: 600 13px var(--sans); }
   .task-hold-reason { color: var(--amber); }
-  .tasks-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; align-items: start; }
-  .task-col { min-width: 0; padding: 12px; border-radius: 16px; border: 1px solid rgba(255, 255, 255, .08);
-    background: rgba(255, 255, 255, .03); display: grid; gap: 10px; }
-  .task-col-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px;
-    border-radius: 10px; }
-  .task-col-head h2 { margin: 0; font: 600 13px var(--sans); }
-  .task-count { font: 600 12px var(--mono); font-variant-numeric: tabular-nums; }
+  .tasks-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; align-items: start; }
+  .task-col { min-width: 0; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .task-col-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .task-col-name { display: inline-flex; align-items: center; gap: 8px; }
+  .task-col-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--col); flex: none; }
+  .task-col h2 { margin: 0; font: 600 14px var(--sans); letter-spacing: 0; text-transform: none; color: var(--fg-strong, inherit); }
+  .task-count { font: 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--fg-3, var(--muted)); }
   .task-tone-run { color: var(--task-run); background: var(--task-run-bg); }
   .task-tone-next { color: var(--task-next); background: var(--task-next-bg); }
   .task-tone-wait { color: var(--task-wait); background: var(--task-wait-bg); }
   .task-tone-pause { color: var(--task-pause); background: var(--task-pause-bg); }
   .task-tone-block { color: var(--task-block); background: var(--task-block-bg); }
   .task-tone-done { color: var(--task-done); background: var(--task-done-bg); }
-  .task-list { display: grid; gap: 8px; min-width: 0; }
-  .task-card { min-width: 0; display: grid; gap: 6px; padding: 10px 12px; border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, .08); background: rgba(255, 255, 255, .04); }
-  .task-num { font: 600 11px var(--mono); color: var(--fg-3, var(--muted)); }
-  .task-title { font-weight: 600; overflow-wrap: anywhere; color: var(--fg-strong, inherit); }
-  .task-meta, .task-note { font-size: 12px; color: var(--fg-3, var(--muted)); overflow-wrap: anywhere; }
-  .task-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-  .task-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-  .task-actions .ui-btn.is-busy { opacity: .6; }
-  .task-actions .ui-btn.is-failed { color: var(--red); }
-  .task-empty { margin: 0; padding: 4px 2px; color: var(--fg-3, var(--muted)); font-size: 13px; }
-  @media (max-width: 1280px) { .tasks-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-  @media (max-width: 900px) { .tasks-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-  @media (max-width: 640px) { .tasks-grid { grid-template-columns: minmax(0, 1fr); } }
+  .task-list { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .tasks-grid .card { min-width: 0; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .tasks-grid .card:hover { border-color: rgba(255, 255, 255, .18); }
+  .task-card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .task-num { font: 12.5px var(--mono); color: var(--fg-label, var(--muted)); }
+  .task-place { font: 11px var(--mono); color: var(--fg-3, var(--muted)); }
+  .task-title { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; color: var(--fg-strong, inherit); }
+  .task-repo { font: 11.5px var(--mono); color: var(--fg-3, var(--muted)); overflow-wrap: anywhere; }
+  .task-reason { align-self: flex-start; padding: 5px 10px; border-radius: 10px; font-size: 12px; overflow-wrap: anywhere; }
+  .task-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .task-owner { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-2, var(--muted)); }
+  .task-owner-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .task-foot .ui-btn.is-busy { opacity: .6; }
+  .task-foot .ui-btn.is-failed { color: var(--red); }
+  .task-empty { margin: 0; color: var(--fg-3, var(--muted)); font-size: 12.5px; }
 `;
 
 export const TASKS_JS = `
   const TASK_COLUMNS = ${JSON.stringify(TASK_COLUMNS)};
   const TASK_REASONS = ${JSON.stringify(REASON_LABELS)};
-  const TASK_REASON_TONES = ${JSON.stringify(REASON_TONES)};
   const TASK_OUTCOMES = ${JSON.stringify(OUTCOME_LABELS)};
+  const TASK_WAIT_CODES = new Set(['model_hold', 'session_limit', 'waiting_for_sub_issues']);
+  const TASK_READING = new Set(['analyst', 'architect']);
+  const TASK_REVIEWING = new Set(['reviewer', 'tester', 'security']);
+  const TASK_HUMAN = { label: 'Mensch', color: UI_ROLE_COLORS.human };
+  const TASK_SYMPHONY = { label: 'Symphony', color: UI_ROLE_COLORS.symphony };
+  const TASK_SLOT_MAX = 8;
   const TASK_UNFORCEABLE = new Set(['model_hold', 'waiting_for_sub_issues']);
   // Route, label, busy label and success label of each control verb.
   const TASK_CONTROL = {
     pause: ['Pausieren', 'Pausiere…', 'Pausiert'],
     force: ['Jetzt starten', 'Starte…', 'Gestartet'],
-    retry: ['Erneut versuchen', 'Starte neu…', 'Eingereiht'],
+    retry: ['Jetzt erneut', 'Starte neu…', 'Eingereiht'],
     resume: ['Fortsetzen', 'Setze fort…', 'Eingereiht'],
   };
   const TASK_DONE_LIMIT = 10;
@@ -161,25 +157,99 @@ export const TASKS_JS = `
     return match ? match.name : null;
   }
 
-  function taskReasonChip(code, text) {
-    const label = TASK_REASONS[code] || text || code;
-    return chip(label, { tone: TASK_REASON_TONES[code] || 'gray' });
+  const taskCap = (text) => String(text || '').charAt(0).toUpperCase() + String(text || '').slice(1);
+  const taskHm = (iso) => (iso ? new Date(iso).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) : '--:--');
+  const taskCode = (row) => (row.reason && typeof row.reason === 'object' ? row.reason.code : row.reason_code);
+
+  /** The column of a row: "next" rows that wait for a model, a session limit or sub-issues belong to "Wartet". */
+  function taskGroups(state) {
+    const groups = { running: [], next: [], waiting: [], paused: [], blocked: state.blocked || [] };
+    for (const r of state.issues || []) {
+      const key = r.section === 'next' && TASK_WAIT_CODES.has(taskCode(r)) ? 'waiting' : r.section;
+      if (groups[key]) groups[key].push(r);
+    }
+    groups.next.sort((a, b) => (a.position || 0) - (b.position || 0));
+    return groups;
   }
 
-  function taskRetryFor(row, state) {
-    return (state.retrying || []).find((r) => r.issue_id === row.issue_id) || null;
+  /** Blockers that are not in a terminal state (an unknown state counts as open). */
+  function taskOpenBlockers(row, state) {
+    const done = ((state.health && state.health.terminal_states) || []).map((s) => String(s).toLowerCase());
+    return (row.blocked_by || []).filter((b) => b && (!b.state || !done.includes(String(b.state).toLowerCase())));
+  }
+
+  function taskTitleOf(identifier, state) {
+    const row = [...(state.issues || []), ...(state.blocked || [])].find((r) => r.issue_identifier === identifier);
+    return row && row.title ? row.title : null;
+  }
+
+  function taskReason(row, col, state) {
+    const code = taskCode(row);
+    const fallback = TASK_REASONS[code] || (row.reason && row.reason.text) || (typeof row.reason === 'string' ? row.reason : '') || code || '';
+    if (col === 'running') {
+      const role = row.running && row.running.role;
+      const roles = (state.pipeline_config && state.pipeline_config.roles) || [];
+      const def = roles.find((r) => r.name === role);
+      const verb = TASK_REVIEWING.has(role) ? 'prüft' : TASK_READING.has(role) || (def && def.read_only) ? 'liest' : 'spielt';
+      return (UI_ROLE_NAMES[role] || role || 'Agent') + ' ' + verb + ' · Runde ' + ((row.review_rounds || 0) + 1) + ' · ' + fmtDuration(row.running ? row.running.seconds_running : 0);
+    }
+    if (col === 'next') return code === 'column_limit' ? 'Wartet auf Slot in ' + row.state : 'Startet, sobald ein Slot frei ist';
+    if (col === 'waiting') {
+      const retry = row.retry;
+      if (code === 'model_hold') {
+        const hold = row.model_hold || (retry && retry.limit ? { model: retry.limit.model, until: retry.due_at } : null);
+        if (!hold || !hold.model) return fallback;
+        return hold.until ? 'Modell-Limit: ' + taskCap(hold.model) + ' pausiert bis ' + taskHm(hold.until) : taskCap(hold.model) + ' von dir pausiert';
+      }
+      if ((code === 'backoff' || code === 'session_limit') && retry) return 'Retry in ' + Math.max(1, Math.ceil((retry.due_in_ms || 0) / 60000)) + ' min · ' + code;
+      if (code === 'waiting_for_sub_issues') return 'Wartet auf Blocker-Merge';
+      return fallback;
+    }
+    if (col === 'paused') {
+      const p = row.paused || {};
+      if ((row.labels || []).some((l) => String(l).toLowerCase() === 'needs-human')) return 'needs-human nach ' + (row.review_rounds || 0) + ' Review-Runden';
+      if (p.source === 'budget') return 'Kostenbudget erreicht · ' + fmtUsd(p.cost_usd) + ' von ' + fmtUsd(p.max_issue_cost_usd);
+      if (p.source === 'continuations') return 'Nach ' + (p.continuations || 0) + ' Fortsetzungen pausiert';
+      return 'Von dir pausiert';
+    }
+    if (col === 'blocked') {
+      const open = taskOpenBlockers(row, state);
+      if (!open.length) return code === 'column' ? 'In Spalte ' + row.state : fallback;
+      const short = open[0].identifier ? taskTitleOf(open[0].identifier, state) : null;
+      const cut = short && short.length > 32 ? short.slice(0, 31) + '…' : short;
+      return 'Blocked by ' + open.map((b) => (b.identifier ? taskNumber(b.identifier) : '#?')).join(', ') + (cut ? ' (' + cut + ')' : '');
+    }
+    return fallback;
+  }
+
+  function taskOwner(row, col, state) {
+    if (col === 'running' || col === 'next') {
+      const role = taskRole(row, state);
+      if (!role) return col === 'running' ? null : TASK_SYMPHONY;
+      return { label: UI_ROLE_NAMES[role] || role, color: UI_ROLE_COLORS[role] || UI_ROLE_COLORS.symphony };
+    }
+    if (col === 'paused') return TASK_HUMAN;
+    if (col === 'blocked') return taskOpenBlockers(row, state).length ? TASK_SYMPHONY : TASK_HUMAN;
+    return TASK_SYMPHONY;
   }
 
   /** The control verb of a card, or null (no button at all without permission). */
-  function taskActionFor(row, col, state) {
+  function taskActionFor(row, col, rank) {
     if (!taskAllowed) return null;
-    const code = (row.reason && typeof row.reason === 'object' ? row.reason.code : row.reason_code);
     if (col === 'running') return row.running && row.running.stopping ? null : 'pause';
-    if (col === 'next') return row.model_hold || TASK_UNFORCEABLE.has(code) ? null : 'force';
+    if (col === 'next') return rank === 1 && !row.model_hold && !TASK_UNFORCEABLE.has(taskCode(row)) ? 'force' : null;
     if (col === 'waiting') return row.retry ? 'retry' : null;
-    if (col === 'blocked') return taskRetryFor(row, state) ? 'retry' : null;
     if (col === 'paused') return 'resume';
     return null;
+  }
+
+  /** View model of a card; it is also the fingerprint of the card (the text changes with every poll). */
+  function taskView(row, col, rank, state) {
+    const id = String(row.issue_identifier || '');
+    const prio = row.priority !== null && row.priority !== undefined ? 'P' + row.priority : '';
+    const right = col === 'next' ? [prio, 'Platz ' + rank].filter(Boolean).join(' · ') : prio;
+    return { id, num: taskNumber(id), right, title: row.title || id, repo: row.repo || id.split('#')[0], tone: col === 'next' ? 'next' : TASK_COLUMNS.find((c) => c.key === col).tone,
+      code: taskCode(row) || '', reason: taskReason(row, col, state), owner: taskOwner(row, col, state), verb: taskActionFor(row, col, rank) };
   }
 
   function taskButton(identifier, verb) {
@@ -194,44 +264,36 @@ export const TASKS_JS = `
     return b;
   }
 
-  function taskCard(row, col, state) {
-    const id = String(row.issue_identifier || '');
-    const card = el('article', null, 'task-card');
-    const num = el('span', taskNumber(id), 'task-num');
-    num.setAttribute('title', id);
-    const a = el('a', row.title || id, 'task-title');
-    a.setAttribute('href', '/issue?id=' + encodeURIComponent(id));
-    const meta = [row.repo || id.split('#')[0]];
-    if (col === 'next') meta.push('Platz ' + row.position);
-    else if (row.priority !== null && row.priority !== undefined) meta.push('P' + row.priority);
-    card.append(num, a, el('span', meta.join(' · '), 'task-meta'));
-    const chips = el('div', null, 'task-chips');
-    const code = (row.reason && typeof row.reason === 'object' ? row.reason.code : row.reason_code);
-    if (code) {
-      const c = taskReasonChip(code, row.reason && typeof row.reason === 'object' ? row.reason.text : row.reason);
-      c.setAttribute('title', code);
-      chips.append(c);
+  function taskCard(v) {
+    const card = el('article', null, 'gi card task-card');
+    const head = el('div', null, 'task-card-head');
+    const num = el('span', v.num, 'task-num');
+    num.setAttribute('title', v.id);
+    head.append(num, el('span', v.right, 'task-place'));
+    const a = el('a', v.title, 'task-title');
+    a.setAttribute('href', '/issue?id=' + encodeURIComponent(v.id));
+    card.append(head, a, el('span', v.repo, 'task-repo'));
+    if (v.reason) {
+      const why = el('span', v.reason, 'task-reason task-tone-' + v.tone);
+      if (v.code) why.setAttribute('title', v.code);
+      card.append(why);
     }
-    const role = taskRole(row, state);
-    if (role) {
-      const r = chip(UI_ROLE_NAMES[role] || role, { tone: UI_ROLE_COLORS[role] || UI_ROLE_COLORS.symphony, dot: true });
-      r.classList.add('task-role');
-      chips.append(r);
+    const foot = el('div', null, 'task-foot');
+    const owner = el('span', null, 'task-owner');
+    if (v.owner) {
+      const dot = el('span', null, 'task-owner-dot');
+      if (uiHex(v.owner.color)) dot.style.background = v.owner.color;
+      dot.setAttribute('aria-hidden', 'true');
+      owner.append(dot, el('span', v.owner.label));
     }
-    if (chips.childNodes.length) card.append(chips);
-    const retry = row.retry || (col === 'blocked' ? taskRetryFor(row, state) : null);
-    if (retry && retry.attempt !== undefined && retry.attempt !== null) {
-      const due = typeof retry.due_in_ms === 'number' ? ' · in ' + fmtDuration(retry.due_in_ms / 1000) : '';
-      card.append(el('span', 'Versuch ' + retry.attempt + due, 'task-note'));
-    }
-    const verb = taskActionFor(row, col, state);
-    if (verb) {
-      const box = el('div', null, 'task-actions');
-      box.append(taskButton(id, verb));
-      card.append(box);
-    }
+    foot.append(owner);
+    if (v.verb) foot.append(taskButton(v.id, v.verb));
+    card.append(foot);
     return card;
   }
+
+  // Fingerprint of a view: the text of the card plus the outcome of the last click on its button.
+  const taskViewFp = (v) => JSON.stringify([v, v.verb ? taskButtons.get(v.id + ' ' + v.verb) || null : null]);
 
   function taskFill(key, count, fp, build) {
     const col = TASK_COLUMNS.find((c) => c.key === key);
@@ -239,18 +301,6 @@ export const TASKS_JS = `
     if (taskFps.get(key) === fp) return;
     taskFps.set(key, fp);
     taskById('col-' + key).replaceChildren(...(count ? build() : [el('p', col.empty, 'task-empty')]));
-  }
-
-  function taskRetryFp(r) {
-    return r ? [r.attempt, r.due_at, r.kind] : null;
-  }
-
-  function taskRowFp(row, col, state) {
-    return [row.issue_id, row.issue_identifier, row.title, row.repo, row.state, row.position, row.priority,
-      row.reason, row.reason_code, taskRetryFp(row.retry), row.model_hold, taskRole(row, state), taskActionFor(row, col, state),
-      row.running ? [row.running.role, row.running.stopping] : null,
-      taskActionFor(row, col, state) ? taskButtons.get(row.issue_identifier + ' ' + taskActionFor(row, col, state)) || null : null,
-      col === 'blocked' ? taskRetryFp(taskRetryFor(row, state)) : null];
   }
 
   // ---- Steuerung im Kopf: Agent-Slots (PUT/DELETE /api/v1/settings/agents) und Modelle (POST /api/v1/models/<m>/hold|release)
@@ -287,100 +337,90 @@ export const TASKS_JS = `
     return b;
   }
 
-  /** Occupancy bar and its text: "02 / 10 belegt, 1 erzwungen · developer 1/1 reserviert · 3 frei". */
-  function taskSlotBar(state) {
+  /** The pill: "<occupied> / <total>" (aria-live), − / + within 1..8 and one chip per model hold. */
+  function renderTaskPill(state) {
     const limits = state.limits;
-    const max = state.health ? state.health.max_concurrent_agents : 0;
+    const total = limits ? limits.max_concurrent_agents.effective : state.health ? state.health.max_concurrent_agents : 0;
     const counts = state.counts || {};
-    const forced = counts.forced || 0;
-    const slotted = (counts.running || 0) - forced;
-    const reservations = limits && !limits.reservation_problem
-      ? Object.entries(limits.reserved_slots_by_role || {}).filter(([, r]) => r.effective > 0)
-      : [];
-    let unused = 0;
-    for (const [, r] of reservations) unused += Math.max(r.effective - r.running, 0);
-    const free = Math.max(max - slotted - unused, 0);
-    const bar = el('span', null, 'task-slot-bar');
-    bar.setAttribute('aria-hidden', 'true');
-    for (let i = 0; i < Math.min(max, 24); i++) bar.append(el('i', null, i < slotted ? 'on' : i < slotted + unused ? 'reserved' : ''));
-    for (let i = 0; i < Math.min(forced, 8); i++) bar.append(el('i', null, 'forced'));
-    const used = pad2(counts.running || 0) + ' / ' + pad2(max) + ' belegt' + (forced > 0 ? ', ' + forced + ' erzwungen' : '');
-    const text = used + ' · ' + (reservations.length > 0
-      ? reservations.map(([role, r]) => role + ' ' + Math.min(r.running, r.effective) + '/' + r.effective).join(' · ') + ' reserviert · '
-      : '') + free + ' frei';
-    const wrap = el('span', null, 'task-slot-item');
-    wrap.append(bar, el('span', text));
-    return wrap;
+    const text = Math.max((counts.running || 0) - (counts.forced || 0), 0) + ' / ' + total;
+    const count = taskById('task-slot-count');
+    if (count.textContent !== text) count.textContent = text;
+    const steps = taskAllowed && limits;
+    const cap = limits ? Math.min(TASK_SLOT_MAX, limits.max) : TASK_SLOT_MAX;
+    patchChildren(taskById('task-slot-dec'), steps ? [taskSlotStep('−', 'Einen Slot weniger', { max_concurrent_agents: Math.min(total - 1, TASK_SLOT_MAX) }, total <= 1)] : []);
+    patchChildren(taskById('task-slot-inc'), steps ? [taskSlotStep('+', 'Einen Slot mehr', { max_concurrent_agents: total + 1 }, total >= cap)] : []);
+    const chips = (state.model_holds || []).map((h) => chip(taskCap(h.model) + ' pausiert' + (h.until ? ' · Limit bis ' + taskHm(h.until) : ''), { tone: 'amber' }));
+    const free = (state.model_controls || []).filter((m) => !m.paused && !m.limit_until).map((m) => taskCap(m.model));
+    if (free.length) chips.push(chip(free.join(' · ') + ' aktiv', { tone: 'green' }));
+    patchChildren(taskById('task-pill-chips'), chips);
   }
 
+  /** Column limits, reservations, reset and the hints about the total (the total itself is in the pill). */
   function renderTaskSlots(state) {
     const limits = state.limits;
     const host = taskById('task-slots');
-    host.hidden = !limits;
-    if (!limits) return;
-    const total = limits.max_concurrent_agents;
-    // Forced sessions run beside the limit; only the others hold its slots.
-    const running = (state.counts.running || 0) - (state.counts.forced || 0);
-    const nodes = [taskSlotBar(state)];
-    const item = el('span', null, 'task-slot-item');
-    item.append(el('span', 'Slots gesamt'));
-    if (taskAllowed) item.append(taskSlotStep('−', 'Weniger Agent-Slots', { max_concurrent_agents: Math.min(total.effective - 1, limits.max) }, total.effective <= 0));
-    item.append(el('b', total.effective));
-    if (taskAllowed) item.append(taskSlotStep('+', 'Mehr Agent-Slots', { max_concurrent_agents: total.effective + 1 }, total.effective >= limits.max));
-    if (total.override !== null && total.override !== total.workflow) item.append(el('span', 'hier gesetzt · WORKFLOW.md ' + total.workflow, 'task-slot-override'));
-    else if (total.override !== null) item.append(el('span', 'hier gesetzt', 'task-slot-override'));
-    nodes.push(item);
-    for (const [column, v] of Object.entries(limits.by_state || {})) {
-      const col = el('span', null, 'task-slot-item');
-      col.append(el('span', column));
-      if (taskAllowed && v.effective !== null) {
-        col.append(taskSlotStep('−', 'Limit von ' + column + ' senken', { max_concurrent_agents_by_state: { [column]: Math.min(v.effective - 1, limits.max) } }, v.effective <= 1));
+    const notes = [];
+    const nodes = [];
+    if (limits) {
+      const total = limits.max_concurrent_agents;
+      // Forced sessions run beside the limit; only the others hold its slots.
+      const running = (state.counts.running || 0) - (state.counts.forced || 0);
+      for (const [column, v] of Object.entries(limits.by_state || {})) {
+        const col = el('span', null, 'task-slot-item');
+        col.append(el('span', column));
+        if (taskAllowed && v.effective !== null) {
+          col.append(taskSlotStep('−', 'Limit von ' + column + ' senken', { max_concurrent_agents_by_state: { [column]: Math.min(v.effective - 1, limits.max) } }, v.effective <= 1));
+        }
+        col.append(el('b', v.effective === null ? '–' : v.effective));
+        if (taskAllowed) {
+          col.append(v.effective === null
+            ? taskSlotStep('+', 'Limit 1 für ' + column + ' setzen', { max_concurrent_agents_by_state: { [column]: 1 } }, false)
+            : taskSlotStep('+', 'Limit von ' + column + ' erhöhen', { max_concurrent_agents_by_state: { [column]: v.effective + 1 } }, v.effective >= limits.max));
+        }
+        if (v.override !== null) {
+          col.append(el('span', 'hier gesetzt · WORKFLOW.md ' + (v.workflow === null ? 'keins' : v.workflow), 'task-slot-override'));
+          if (taskAllowed) col.append(taskSlotStep('×', 'WORKFLOW.md-Limit für ' + column + ' verwenden', { max_concurrent_agents_by_state: { [column]: null } }, false));
+        }
+        nodes.push(col);
       }
-      col.append(el('b', v.effective === null ? '–' : v.effective));
-      if (taskAllowed) {
-        col.append(v.effective === null
-          ? taskSlotStep('+', 'Limit 1 für ' + column + ' setzen', { max_concurrent_agents_by_state: { [column]: 1 } }, false)
-          : taskSlotStep('+', 'Limit von ' + column + ' erhöhen', { max_concurrent_agents_by_state: { [column]: v.effective + 1 } }, v.effective >= limits.max));
+      for (const [role, r] of Object.entries(limits.reserved_slots_by_role || {})) {
+        const res = el('span', null, 'task-slot-item');
+        res.append(el('span', role + ' reserviert'));
+        if (taskAllowed) res.append(taskSlotStep('−', 'Weniger Slots für ' + role + ' reservieren', { reserved_slots_by_role: { [role]: r.effective - 1 } }, r.effective <= 0));
+        res.append(el('b', r.effective));
+        if (taskAllowed) res.append(taskSlotStep('+', 'Einen Slot mehr für ' + role + ' reservieren', { reserved_slots_by_role: { [role]: r.effective + 1 } }, r.effective >= limits.max));
+        if (r.override !== null) {
+          res.append(el('span', 'hier gesetzt · WORKFLOW.md ' + r.workflow, 'task-slot-override'));
+          if (taskAllowed) res.append(taskSlotStep('×', 'WORKFLOW.md-Reservierung für ' + role + ' verwenden', { reserved_slots_by_role: { [role]: null } }, false));
+        }
+        nodes.push(res);
       }
-      if (v.override !== null) {
-        col.append(el('span', 'hier gesetzt · WORKFLOW.md ' + (v.workflow === null ? 'keins' : v.workflow), 'task-slot-override'));
-        if (taskAllowed) col.append(taskSlotStep('×', 'WORKFLOW.md-Limit für ' + column + ' verwenden', { max_concurrent_agents_by_state: { [column]: null } }, false));
+      if (taskAllowed && limits.override_active) {
+        const reset = button('Auf WORKFLOW.md zurücksetzen (' + total.workflow + ')', { size: 36 });
+        reset.classList.add('task-slot-reset');
+        if (taskSlotBusy) reset.disabled = true;
+        nodes.push(reset);
       }
-      nodes.push(col);
-    }
-    for (const [role, r] of Object.entries(limits.reserved_slots_by_role || {})) {
-      const res = el('span', null, 'task-slot-item');
-      res.append(el('span', role + ' reserviert'));
-      if (taskAllowed) res.append(taskSlotStep('−', 'Weniger Slots für ' + role + ' reservieren', { reserved_slots_by_role: { [role]: r.effective - 1 } }, r.effective <= 0));
-      res.append(el('b', r.effective));
-      if (taskAllowed) res.append(taskSlotStep('+', 'Einen Slot mehr für ' + role + ' reservieren', { reserved_slots_by_role: { [role]: r.effective + 1 } }, r.effective >= limits.max));
-      if (r.override !== null) {
-        res.append(el('span', 'hier gesetzt · WORKFLOW.md ' + r.workflow, 'task-slot-override'));
-        if (taskAllowed) res.append(taskSlotStep('×', 'WORKFLOW.md-Reservierung für ' + role + ' verwenden', { reserved_slots_by_role: { [role]: null } }, false));
+      const reservedRoles = Object.entries(limits.reserved_slots_by_role || {});
+      let reservedSum = 0;
+      for (const [, r] of reservedRoles) reservedSum += r.effective;
+      const unreserved = reservedRoles.filter(([, r]) => r.effective === 0).map(([role]) => role);
+      if (!limits.reservation_problem && reservedSum > 0 && reservedSum >= total.effective && total.effective > 0 && unreserved.length > 0) {
+        notes.push(el('span', 'Alle Slots reserviert: ' + unreserved.join(', ') + ' starten nur mit mehr Slots', 'task-slot-note'));
       }
-      nodes.push(res);
+      if (total.effective === 0) {
+        notes.push(el('span', 'Limit 0: neue Starts pausiert' + (running > 0 ? ', ' + running + ' laufen weiter' : ''), 'task-slot-note'));
+      } else if (running > total.effective) {
+        const finish = running - total.effective + 1;
+        notes.push(el('span', running + ' laufen, Limit ' + total.effective + ': keine neuen Starts, bis ' + (finish === 1 ? 'einer fertig ist' : finish + ' fertig sind'), 'task-slot-note'));
+      }
     }
-    if (taskAllowed && limits.override_active) {
-      const reset = button('Auf WORKFLOW.md zurücksetzen (' + total.workflow + ')', { size: 36 });
-      reset.classList.add('task-slot-reset');
-      if (taskSlotBusy) reset.disabled = true;
-      nodes.push(reset);
-    }
-    const reservedRoles = Object.entries(limits.reserved_slots_by_role || {});
-    let reservedSum = 0;
-    for (const [, r] of reservedRoles) reservedSum += r.effective;
-    const unreserved = reservedRoles.filter(([, r]) => r.effective === 0).map(([role]) => role);
-    if (!limits.reservation_problem && reservedSum > 0 && reservedSum >= total.effective && total.effective > 0 && unreserved.length > 0) {
-      nodes.push(el('span', 'Alle Slots reserviert: ' + unreserved.join(', ') + ' starten nur mit mehr Slots', 'task-slot-note'));
-    }
-    if (total.effective === 0) {
-      nodes.push(el('span', 'Limit 0: neue Starts pausiert' + (running > 0 ? ', ' + running + ' laufen weiter' : ''), 'task-slot-note'));
-    } else if (running > total.effective) {
-      const finish = running - total.effective + 1;
-      nodes.push(el('span', running + ' laufen, Limit ' + total.effective + ': keine neuen Starts, bis ' + (finish === 1 ? 'einer fertig ist' : finish + ' fertig sind'), 'task-slot-note'));
-    }
-    if (taskSlotError) nodes.push(el('span', taskSlotError, 'task-slot-error'));
+    if (taskSlotError) notes.push(el('span', taskSlotError, 'task-slot-error'));
+    host.hidden = nodes.length === 0;
     patchChildren(host, nodes);
+    const noteHost = taskById('task-slot-notes');
+    noteHost.hidden = notes.length === 0;
+    patchChildren(noteHost, notes);
   }
 
   async function taskModel(model, hold) {
@@ -403,6 +443,7 @@ export const TASKS_JS = `
     const models = state.model_controls || [];
     const holds = state.model_holds || [];
     taskById('task-holds').hidden = models.length === 0;
+    taskById('task-more').hidden = taskById('task-slots').hidden && models.length === 0;
     const nodes = models.map((m) => {
       const li = el('li', null, 'task-hold');
       const parts = [];
@@ -439,50 +480,46 @@ export const TASKS_JS = `
     taskLast = state;
     taskAllowed = !state.controls || state.controls.retry !== false;
     taskById('tasks-controls-off').hidden = taskAllowed;
+    taskById('tasks-error').hidden = true;
     renderTaskSlots(state);
     renderTaskHolds(state);
+    renderTaskPill(state);
     const issues = state.issues || [];
-    const groups = { running: [], next: [], waiting: [], paused: [], blocked: state.blocked || [] };
-    for (const r of issues) if (groups[r.section]) groups[r.section].push(r);
-    groups.next.sort((a, b) => (a.position || 0) - (b.position || 0));
+    const groups = taskGroups(state);
     for (const c of TASK_COLUMNS) {
       if (c.key === 'done') continue;
-      const rows = groups[c.key];
-      const fp = JSON.stringify([taskAllowed, rows.map((r) => taskRowFp(r, c.key, state))]);
-      taskFill(c.key, rows.length, fp, () => rows.map((r) => taskCard(r, c.key, state)));
+      const views = groups[c.key].map((r, i) => taskView(r, c.key, i + 1, state));
+      taskFill(c.key, views.length, JSON.stringify(views.map(taskViewFp)), () => views.map(taskCard));
     }
     const ids = new Set([...issues, ...(state.blocked || [])].map((r) => r.issue_identifier));
     const left = [...taskIds].some((id) => !ids.has(id));
     taskIds = ids;
-    const total = issues.length + (state.blocked || []).length;
-    taskById('tasks-meta').textContent = total + (total === 1 ? ' Issue im Dispatcher' : ' Issues im Dispatcher');
     renderDone(state);
     if (left) taskLoadDone();
   }
 
-  function taskDoneCard(entry, verdict, state) {
-    const card = el('article', null, 'task-card');
+  /** A finished issue as a card: cost, duration and review rounds are summed over its runs in the history. */
+  function taskDoneView(entry, state) {
     const id = String(entry.issue || '');
-    const num = el('span', taskNumber(id), 'task-num');
-    num.setAttribute('title', id);
-    const a = el('a', entry.title || id, 'task-title');
-    a.setAttribute('href', '/issue?id=' + encodeURIComponent(id));
-    const today = new Date(entry.ts).toDateString() === new Date().toDateString();
-    const time = el('span', today ? fmtClock(entry.ts) : fmtTime(entry.ts), 'task-meta');
-    time.setAttribute('title', fmtTime(entry.ts));
-    card.append(num, a, el('span', entry.repo || id.split('#')[0], 'task-meta'), time);
-    const chips = el('div', null, 'task-chips');
-    chips.append(chip(verdict || TASK_OUTCOMES[entry.outcome] || entry.outcome || '—', { tone: verdict ? 'violet' : 'gray' }));
-    if (entry.state) {
-      const terminal = ((state.health && state.health.terminal_states) || []).includes(entry.state);
-      chips.append(chip('→ ' + entry.state, { tone: terminal ? 'green' : 'violet' }));
+    let cost = 0;
+    let seconds = 0;
+    for (const e of taskDone.entries) {
+      if (e.issue !== id) continue;
+      cost += Number(e.cost_usd) || 0;
+      seconds += Number(e.agent_seconds) || 0;
     }
-    card.append(chips);
-    return card;
+    const rounds = taskDone.rounds.get(id) || 0;
+    const terminal = ((state.health && state.health.terminal_states) || []).includes(entry.state);
+    const today = new Date(entry.ts).toDateString() === new Date().toDateString();
+    const when = today ? taskHm(entry.ts) : fmtTime(entry.ts);
+    const role = entry.role || null;
+    return { id, num: taskNumber(id), right: terminal ? 'gemerged ' + when : when, title: entry.title || id, repo: entry.repo || id.split('#')[0], tone: 'done',
+      reason: rounds + (rounds === 1 ? ' Review-Runde' : ' Review-Runden') + ' · ' + fmtUsd(cost) + ' · ' + fmtDuration(seconds),
+      owner: role ? { label: UI_ROLE_NAMES[role] || role, color: UI_ROLE_COLORS[role] || UI_ROLE_COLORS.symphony } : TASK_SYMPHONY, verb: null };
   }
 
   function renderDone(state) {
-    let nodes = [];
+    let views = [];
     let empty = null;
     if (taskDone === null) empty = 'Lade …';
     else if (taskDone.error) empty = taskDone.error === 'history_disabled' ? 'History ist nicht aktiviert' : 'History nicht erreichbar';
@@ -494,17 +531,16 @@ export const TASKS_JS = `
         if (!e.issue || seen.has(e.issue)) continue;
         seen.add(e.issue);
         if (active.has(e.issue)) continue;
-        nodes.push(taskDoneCard(e, taskDone.verdicts.get(e.run) || null, state));
-        if (nodes.length >= TASK_DONE_LIMIT) break;
+        views.push(taskDoneView(e, state));
+        if (views.length >= TASK_DONE_LIMIT) break;
       }
-      if (!nodes.length) empty = 'Noch nichts erledigt';
+      if (!views.length) empty = 'Noch nichts erledigt';
     }
-    const fp = JSON.stringify([empty, nodes.map((n) => n.textContent)]);
-    const col = taskById('col-done');
-    taskById('col-done-count').textContent = pad2(nodes.length);
+    const fp = JSON.stringify([empty, views]);
+    taskById('col-done-count').textContent = pad2(views.length);
     if (taskFps.get('done') === fp) return;
     taskFps.set('done', fp);
-    col.replaceChildren(...(empty ? [el('p', empty, 'task-empty')] : nodes));
+    taskById('col-done').replaceChildren(...(empty ? [el('p', empty, 'task-empty')] : views.map(taskCard)));
   }
 
   async function taskHistory(event) {
@@ -521,11 +557,11 @@ export const TASKS_JS = `
   async function taskLoadDone() {
     try {
       const [finished, results] = await Promise.all([taskHistory('run_finished'), taskHistory('stage_result')]);
-      const verdicts = new Map();
-      for (const r of results) if (r.run && r.verdict) verdicts.set(r.run, r.verdict);
-      taskDone = { entries: finished, verdicts, error: null };
+      const rounds = new Map();
+      for (const r of results) if (r.issue && r.kind === 'review') rounds.set(r.issue, (rounds.get(r.issue) || 0) + 1);
+      taskDone = { entries: finished, rounds, error: null };
     } catch (error) {
-      taskDone = { entries: [], verdicts: new Map(), error: String(error && error.message) };
+      taskDone = { entries: [], rounds: new Map(), error: String(error && error.message) };
     }
     if (taskLast) renderDone(taskLast);
   }
@@ -577,7 +613,9 @@ export const TASKS_JS = `
       if (!res.ok) throw new Error('state ' + res.status);
       renderTasks(await res.json());
     } catch {
-      taskById('tasks-meta').textContent = 'Orchestrator nicht erreichbar';
+      const error = taskById('tasks-error');
+      error.textContent = 'Orchestrator nicht erreichbar';
+      error.hidden = false;
     } finally {
       taskLoading = false;
       if (taskAgain) { taskAgain = false; taskLoad(); }
@@ -591,9 +629,17 @@ export const TASKS_JS = `
   setInterval(taskLoadDone, 30000);
 `;
 
+const PILL_HTML = `<div class="g task-pill" id="task-pill" role="group" aria-label="Agent-Slots">
+      <span class="task-pill-label">Agent-Slots</span>
+      <span class="task-pill-step" id="task-slot-dec"></span>
+      <span class="task-slot-count mono" id="task-slot-count" aria-live="polite">– / –</span>
+      <span class="task-pill-step" id="task-slot-inc"></span>
+      <span class="task-pill-chips" id="task-pill-chips"></span>
+    </div>`;
+
 const column = (c: TaskColumn): string => `
-    <section class="task-col" aria-labelledby="col-${c.key}-title">
-      <div class="task-col-head task-tone-${c.tone}"><h2 id="col-${c.key}-title">${escapeHtml(c.title)}</h2><span class="task-count" id="col-${c.key}-count">00</span></div>
+    <section class="g task-col" aria-label="${escapeHtml(c.title)}" style="--col: ${c.color}">
+      <div class="task-col-head"><span class="task-col-name"><span class="task-col-dot" aria-hidden="true"></span><h2 id="col-${c.key}-title">${escapeHtml(c.title)}</h2></span><span class="task-count" id="col-${c.key}-count">00</span></div>
       <div class="task-list" id="col-${c.key}"><p class="task-empty">${escapeHtml(c.empty)}</p></div>
     </section>`;
 
@@ -603,21 +649,23 @@ export const TASKS_HTML = page({
   aurora: AURORA.tasks,
   styles: TASKS_CSS,
   body: `
-  <section aria-labelledby="page-title">
-    <div class="tasks-head">
-      <h1 id="page-title">Tasks</h1>
-      <p class="tasks-meta" id="tasks-meta"></p>
-    </div>
+  <div class="tasks-page">
+    ${pageHeader({ title: 'Tasks', subtitle: 'Was läuft, was als Nächstes startet und warum ein Issue wartet', right: PILL_HTML })}
+    <p class="task-off" id="tasks-error" role="status" hidden></p>
     <p class="task-off" id="tasks-controls-off" hidden>${escapeHtml(CONTROLS_OFF)}</p>
-    <section class="tasks-steer" aria-label="Steuerung">
-      <div class="task-slots" id="task-slots" role="group" aria-label="Agent-Slots" hidden></div>
-      <div id="task-holds" hidden>
-        <p class="task-holds-title" id="task-holds-title">Modelle</p>
-        <ul class="task-hold-list" id="task-hold-list" aria-labelledby="task-holds-title"></ul>
+    <p class="task-slot-notes" id="task-slot-notes" hidden></p>
+    <details class="g task-more" id="task-more" hidden>
+      <summary>Spalten-Limits, Reservierungen und Modelle</summary>
+      <div class="task-more-body">
+        <div class="task-slots" id="task-slots" role="group" aria-label="Weitere Slot-Grenzen" hidden></div>
+        <div id="task-holds" hidden>
+          <p class="task-holds-title" id="task-holds-title">Modelle</p>
+          <ul class="task-hold-list" id="task-hold-list" aria-labelledby="task-holds-title"></ul>
+        </div>
       </div>
-    </section>
+    </details>
     <div class="tasks-grid">${TASK_COLUMNS.map(column).join('')}
     </div>
-  </section>`,
+  </div>`,
   scripts: TASKS_JS,
 });

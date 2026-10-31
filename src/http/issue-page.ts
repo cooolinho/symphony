@@ -294,25 +294,42 @@ const AGENT_PAGE_CSS = `
   .sub-right { flex: none; font: 12px var(--mono); color: var(--fg-3); white-space: nowrap; }
   .stage-subagent.is-running .sub-right { color: #6ee7b7; }
   .stage-empty { margin: 0; color: var(--fg-3); font-size: 13px; }
-  .score { min-width: 0; }
-  .score-frame { overflow-x: auto; overflow-y: hidden; max-width: 100%; padding: 8px 0; }
-  .score-frame svg { display: block; }
-  .score-lane rect { fill: transparent; } .score-lane.alt rect { fill: rgba(255, 255, 255, .03); }
-  .score-lane-label { font: 11px var(--mono); fill: var(--muted); }
-  .score-tick line { stroke: var(--line-2); stroke-width: 1; opacity: .5; }
-  .score-tick text { font: 10px var(--mono); fill: var(--faint); }
-  .score-block rect { rx: 3; ry: 3; }
-  .score-block:focus { outline: none; } .score-block:focus rect { stroke: var(--text); stroke-width: 1.5; }
-  .score-call { stroke: rgba(0, 0, 0, .35); stroke-width: 1; }
-  .score-handoff line { stroke: var(--muted); stroke-width: 1.5; } .score-handoff path { fill: var(--muted); }
-  .score-handoff text { font: 10px var(--mono); fill: var(--muted); }
-  .score-handoff.tone-green line { stroke: var(--green); } .score-handoff.tone-green path, .score-handoff.tone-green text { fill: var(--green); }
-  .score-handoff.tone-red line { stroke: var(--red); } .score-handoff.tone-red path, .score-handoff.tone-red text { fill: var(--red); }
-  .score-handoff.tone-gray line { stroke: var(--muted); } .score-handoff.tone-gray path, .score-handoff.tone-gray text { fill: var(--muted); }
-  .score-round line { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 4 4; }
-  .score-round text { font: 10px var(--mono); fill: var(--muted); }
-  .score-now line { stroke: var(--amber); stroke-width: 1.5; }
-  .score-now text { font: 10px var(--mono); fill: var(--amber); }
+  .score { padding: 20px 22px; min-width: 0; }
+  .score-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 14px; }
+  .score-head .lbl { margin: 0; }
+  .score-legend { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 0; padding: 0; list-style: none; font-size: 12px; color: var(--fg-2); }
+  .score-legend li + li::before { content: "·"; margin-right: 6px; }
+  .score-frame { overflow-x: auto; overflow-y: hidden; max-width: 100%; padding-top: 8px; }
+  .score-frame:focus-visible { outline: 2px solid var(--line-2); outline-offset: 2px; }
+  .score-body { display: flex; min-width: 760px; }
+  .score-lanes { width: 120px; flex: none; display: flex; flex-direction: column; }
+  .score-lane { height: 44px; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--fg-chip); white-space: nowrap; overflow: hidden; }
+  .score-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .score-plot { position: relative; flex: 1; border-left: 1px solid rgba(255,255,255,.1); }
+  .score-grid-v { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(255,255,255,.05); }
+  .score-grid-h { position: absolute; left: 0; right: 0; height: 1px; background: rgba(255,255,255,.05); }
+  .score-round { position: absolute; top: -6px; bottom: 0; width: 0; border-left: 1px dashed rgba(251,191,36,.6); }
+  .score-round-label { position: absolute; top: -4px; font: 11px var(--mono); color: #fcd34d; white-space: nowrap; }
+  .blk { position: absolute; height: 30px; border-radius: 9px; display: flex; align-items: center; padding: 0 10px; font: 500 12px var(--sans); white-space: nowrap; overflow: hidden; box-sizing: border-box; border: 1px solid transparent; color: var(--fg-strong); }
+  .blk > span { position: relative; min-width: 0; overflow: hidden; text-overflow: clip; }
+  .blk::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: repeating-linear-gradient(90deg, rgba(255,255,255,.16) 0 1px, transparent 1px var(--tick, 7px)); pointer-events: none; }
+  .blk.quiet::before { content: none; }
+  .blk:focus-visible { outline: 2px solid var(--fg-strong); outline-offset: 1px; }
+  .blk.now { overflow: visible; }
+  .blk.now::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: 0 0 22px var(--glow, transparent); animation: score-glow 2.4s ease-in-out infinite; pointer-events: none; }
+  @keyframes score-glow { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
+  .score-hand { position: absolute; width: 2px; }
+  .score-arrow { position: absolute; left: -4px; width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; }
+  .score-hand.down .score-arrow { bottom: -2px; border-top: 7px solid var(--c, currentColor); }
+  .score-hand.up .score-arrow { top: -2px; border-bottom: 7px solid var(--c, currentColor); }
+  .score-hand-label { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); font: 10.5px/1 var(--mono); white-space: nowrap; }
+  .score-hand.flip .score-hand-label { left: auto; right: 8px; }
+  .score-now-line { position: absolute; top: 0; bottom: 0; right: 0; width: 2px; background: #34d399; box-shadow: 0 0 12px #34d399; }
+  .score-axis { position: relative; height: 16px; margin-left: 120px; min-width: 640px; margin-top: 6px; font: 12px var(--mono); color: var(--fg-3); }
+  .score-axis span { position: absolute; top: 0; white-space: nowrap; transform: translateX(-50%); }
+  .score-axis span:first-child { transform: none; }
+  .score-axis span:last-child { left: auto; right: 0; transform: none; }
+  .score-axis .now { color: #6ee7b7; }
   @media (max-width: 900px) {
     .seats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
     .floor, .spot { display: none; }
@@ -377,9 +394,22 @@ export const AGENT_HTML = page({
     </div>
   </section>
 
-  <section class="score" id="score" aria-labelledby="score-title" hidden>
-    <div class="section-head"><h2 id="score-title">Partitur <span class="count" id="score-meta"></span></h2></div>
-    <div class="score-frame gi" id="score-frame" tabindex="0" aria-label="Partitur, horizontal scrollbar"></div>
+  <section class="g score" id="score" aria-labelledby="score-title" hidden>
+    <div class="score-head">
+      <h2 class="lbl" id="score-title">Partitur</h2>
+      <ul class="score-legend" aria-label="Legende">
+        <li>Block = Session</li>
+        <li>Striche = Tool-Aufrufe</li>
+        <li>Pfeil = Übergabe mit Verdict</li>
+      </ul>
+    </div>
+    <div class="score-frame" id="score-frame" tabindex="0" aria-label="Partitur, horizontal scrollbar">
+      <div class="score-body">
+        <div class="score-lanes" id="score-lanes"></div>
+        <div class="score-plot" id="score-plot"></div>
+      </div>
+      <div class="score-axis" id="score-axis"></div>
+    </div>
   </section>
 
   <section class="pipe-section" id="pipe-section" aria-labelledby="pipe-title" hidden>
@@ -2148,126 +2178,136 @@ ${PIPELINE_JS}
 
   // ------------------------------------------------------------------ score (Partitur)
 
-  const SVG_NS = 'http://www.w3.org/2000/svg';
-  const SCORE_LABEL_W = 96, SCORE_PAD_R = 40, SCORE_AXIS_H = 22, SCORE_LANE_H = 30, SCORE_BLOCK_H = 18;
-  const SCORE_MIN_W = 600, SCORE_PX_PER_TICK = 60, SCORE_MAX_CALLS_PER_MIN = 10;
-  function svgEl(tag, attrs, cls) {
-    const n = document.createElementNS(SVG_NS, tag);
-    if (cls) n.setAttribute('class', cls);
-    for (const k in attrs || {}) n.setAttribute(k, String(attrs[k]));
-    return n;
-  }
-  const svgText = (text, attrs, cls) => { const n = svgEl('text', attrs, cls); n.textContent = String(text); return n; };
-  const scoreTickMin = (ms) => (ms <= 60 * 60000 ? 5 : ms <= 240 * 60000 ? 15 : 60);
-  const scoreVerdictTone = (v) => (v === 'approve' ? 'green' : v === 'request_changes' ? 'red' : 'gray');
-  function scoreBlockTitle(b, endMs) {
-    const open = b.ended_at === null || b.ended_at === undefined;
-    const startMs = Date.parse(b.started_at);
-    return [seatName(b.role), b.round ? 'Runde ' + b.round : null, 'Dauer ' + fmtDuration(Math.max(0, endMs - startMs) / 1000), 'Modell ' + (b.model ?? '—'),
-      'Verdict ' + (b.verdict ?? (open ? 'läuft' : '—')), (b.tool_calls || 0) + ' Tool-Aufrufe'].filter(Boolean).join(' · ');
+  const SCORE_LANE_H = 44, SCORE_LANE_W = 120, SCORE_MIN_PLOT = 640, SCORE_MIN_TEXT_PX = 60;
+  const SCORE_FAIL = '#f87171';
+  // Handoff verdicts drawn in red; every other verdict takes the sender's role colour. Only a failed block turns red.
+  const SCORE_RED = new Set(['failed', 'request_changes', 'changes_needed', 'changes_requested', 'issues_found', 'blocked', 'needs_info']);
+  const scoreRed = (v) => typeof v === 'string' && SCORE_RED.has(v);
+  const scoreColor = (role) => uiHex(seatColor((S.team && Array.isArray(S.team.seats) && S.team.seats.find((x) => x.role === role)) || { role, kind: null })) || UI_ROLE_COLORS.symphony;
+  const scoreHm = (ms) => new Date(ms).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  /** Stroke period in px from the tool calls per minute: 14 px when quiet, 1 px denser per call and minute, at least 4 px. */
+  const scoreTick = (calls, ms) => Math.min(14, Math.max(4, Math.round(14 - calls / Math.max(ms / 60000, 1))));
+  function scoreBlockTitle(b, ms, running) {
+    return [seatName(b.role) + (b.round ? ' R' + b.round : ''), fmtDuration(Math.max(0, ms) / 1000), b.model ?? '—', b.verdict ?? (running ? 'läuft' : '—')].join(' · ');
   }
   const scoreMaxRound = (blocks) => blocks.reduce((m, b) => Math.max(m, b.round || 0), 0) || 1;
   const scoreSummary = (blocks, handoffs) => 'Partitur: ' + blocks.length + ' Sessions, ' + handoffs.length + ' Übergaben, Runde ' + scoreMaxRound(blocks);
+  function scoreDiv(cls, style) {
+    const n = el('div', null, cls);
+    for (const k in style || {}) n.style[k] = style[k];
+    return n;
+  }
 
   function renderScore() {
     const team = S.team;
     const blocks = team && Array.isArray(team.blocks) ? team.blocks.filter((b) => b && Number.isFinite(Date.parse(b.started_at))) : [];
     $('score').hidden = !blocks.length;
     if (!blocks.length) { S.scoreSig = ''; return; }
-    const handoffs = (Array.isArray(team.handoffs) ? team.handoffs : []).filter((h) => Number.isFinite(Date.parse(h.at)));
+    const handoffs = (Array.isArray(team.handoffs) ? team.handoffs : []).filter((h) => h && Number.isFinite(Date.parse(h.at)));
     const live = !S.ended && !S.notFound && !!team.active;
     const frame = $('score-frame');
     const width = frame.clientWidth || 0;
-    const toolEvents = new Map();
-    for (const e of S.events) if (e.kind === 'agent' && e.event === 'tool_use' && e.run) { const a = toolEvents.get(e.run) || []; a.push(e); toolEvents.set(e.run, a); }
-    const sig = JSON.stringify([blocks, handoffs, team.seats && team.seats.map((s) => s.role), live, live ? Math.floor(Date.now() / 60000) : 0, width, blocks.map((b) => (toolEvents.get(b.run) || []).length)]);
+    const sig = JSON.stringify([blocks, handoffs, team.seats && team.seats.map((s) => [s.role, s.kind]), live, live ? Math.floor(Date.now() / 60000) : 0, width]);
     if (sig === S.scoreSig) return;
     S.scoreSig = sig;
 
     const t0 = Math.min(...blocks.map((b) => Date.parse(b.started_at)));
     const endOf = (b) => (b.ended_at ? Date.parse(b.ended_at) : null);
     const lastEnd = Math.max(...blocks.map((b) => endOf(b) ?? Date.parse(b.started_at)), ...handoffs.map((h) => Date.parse(h.at)));
+    // Under a minute the axis still spans one minute, so short blocks stay visible.
     const t1 = Math.max(live ? Date.now() : lastEnd, t0 + 60000);
     const span = t1 - t0;
-    const tick = scoreTickMin(span);
-    const plot = Math.max((span / 60000 / tick) * SCORE_PX_PER_TICK, SCORE_MIN_W - SCORE_LABEL_W - SCORE_PAD_R, width - SCORE_LABEL_W - SCORE_PAD_R);
-    const x = (t) => SCORE_LABEL_W + ((t - t0) / span) * plot;
+    const frac = (t) => Math.min(1, Math.max(0, (t - t0) / span));
+    const pct = (t) => (frac(t) * 100).toFixed(2) + '%';
+    const plotPx = Math.max(SCORE_MIN_PLOT, width - SCORE_LANE_W);
     const roles = (team.seats || []).map((s) => s.role).filter((r) => r !== 'you');
     for (const b of blocks) if (!roles.includes(b.role)) roles.push(b.role);
-    const laneY = (role) => SCORE_AXIS_H + roles.indexOf(role) * SCORE_LANE_H;
-    const W = Math.round(SCORE_LABEL_W + plot + SCORE_PAD_R), H = SCORE_AXIS_H + roles.length * SCORE_LANE_H + 8;
-    const summary = scoreSummary(blocks, handoffs);
-    const svg = svgEl('svg', { width: W, height: H, viewBox: '0 0 ' + W + ' ' + H, role: 'group', 'aria-label': summary, 'data-tick-min': tick }, 'score-svg');
-    const svgTitle = svgEl('title', {});
-    svgTitle.textContent = summary;
-    svg.append(svgTitle);
+    const lane = (role) => roles.indexOf(role);
 
-    roles.forEach((r, i) => {
-      const g = svgEl('g', { 'data-role': r }, 'score-lane' + (i % 2 ? ' alt' : ''));
-      g.append(svgEl('rect', { x: 0, y: laneY(r), width: W, height: SCORE_LANE_H }), svgText(seatName(r), { x: 6, y: laneY(r) + SCORE_LANE_H / 2 + 4 }, 'score-lane-label'));
-      svg.append(g);
-    });
-    const step = tick * 60000;
-    for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
-      const g = svgEl('g', { 'data-t': t }, 'score-tick');
-      g.append(svgEl('line', { x1: x(t), x2: x(t), y1: SCORE_AXIS_H - 4, y2: H - 8 }),
-        svgText(new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }), { x: x(t), y: 12, 'text-anchor': 'middle' }));
-      svg.append(g);
-    }
+    setText($('score-title'), 'Partitur · Ablauf seit ' + scoreHm(t0));
+    frame.setAttribute('aria-label', scoreSummary(blocks, handoffs) + ', horizontal scrollbar');
+    $('score-lanes').replaceChildren(...roles.map((r) => {
+      const row = el('div', null, 'score-lane');
+      row.setAttribute('data-role', r);
+      const dot = el('i', null, 'score-dot');
+      dot.setAttribute('aria-hidden', 'true');
+      dot.style.background = scoreColor(r);
+      row.append(dot, el('span', seatName(r)));
+      return row;
+    }));
 
-    for (const b of blocks) {
-      const s = Date.parse(b.started_at), e = endOf(b) ?? t1;
-      const bx = x(s), bw = Math.max(3, x(Math.max(e, s)) - bx), by = laneY(b.role) + (SCORE_LANE_H - SCORE_BLOCK_H) / 2;
-      const title = scoreBlockTitle(b, Math.max(e, s));
-      const g = svgEl('g', { role: 'img', tabindex: 0, 'aria-label': title, 'data-role': b.role, 'data-run': b.run, 'data-calls': b.tool_calls || 0 }, 'score-block');
-      const tt = svgEl('title', {}); tt.textContent = title;
-      g.append(tt, svgEl('rect', { x: bx, y: by, width: bw, height: SCORE_BLOCK_H, fill: uiHex(uiOwn(UI_ROLE_COLORS, b.role)) || UI_ROLE_COLORS.symphony }));
-      const count = b.tool_calls || 0;
-      const times = (toolEvents.get(b.run) || []).map((ev) => Date.parse(ev.at)).filter(Number.isFinite).sort((a, c) => a - c);
-      const cap = Math.min(times.length || count, Math.max(1, Math.floor(((e - s) / 60000) * SCORE_MAX_CALLS_PER_MIN)), Math.floor(bw / 2));
-      const n = count > 0 ? cap : 0;
-      for (let i = 0; i < n; i++) {
-        const cx = times.length ? Math.min(bx + bw, Math.max(bx, x(times[Math.floor(((i + 0.5) * times.length) / n)]))) : bx + ((i + 0.5) / n) * bw;
-        g.append(svgEl('line', { x1: cx, x2: cx, y1: by + 3, y2: by + SCORE_BLOCK_H - 3 }, 'score-call'));
-      }
-      svg.append(g);
-    }
-
-    for (const h of handoffs) {
-      if (!roles.includes(h.from) || !roles.includes(h.to) || h.from === h.to) continue;
-      const hx = x(Date.parse(h.at));
-      const down = laneY(h.to) > laneY(h.from);
-      const y1 = laneY(h.from) + (down ? SCORE_LANE_H / 2 + SCORE_BLOCK_H / 2 : SCORE_LANE_H / 2 - SCORE_BLOCK_H / 2);
-      const y2 = laneY(h.to) + (down ? SCORE_LANE_H / 2 - SCORE_BLOCK_H / 2 : SCORE_LANE_H / 2 + SCORE_BLOCK_H / 2);
-      const d = down ? 1 : -1;
-      const g = svgEl('g', { 'data-from': h.from, 'data-to': h.to }, 'score-handoff tone-' + scoreVerdictTone(h.verdict));
-      g.append(svgEl('line', { x1: hx, x2: hx, y1, y2: y2 - d * 5 }),
-        svgEl('path', { d: 'M' + (hx - 4) + ' ' + (y2 - d * 6) + ' L' + (hx + 4) + ' ' + (y2 - d * 6) + ' L' + hx + ' ' + y2 + ' Z' }),
-        svgText(h.verdict || '—', hx > W - 110 ? { x: hx - 6, y: (y1 + y2) / 2 + 3, 'text-anchor': 'end' } : { x: hx + 6, y: (y1 + y2) / 2 + 3 }));
-      svg.append(g);
-    }
+    const plot = $('score-plot');
+    plot.style.height = roles.length * SCORE_LANE_H + 'px';
+    const parts = [];
+    for (const p of [25, 50, 75]) parts.push(scoreDiv('score-grid-v', { left: p + '%' }));
+    roles.forEach((_r, i) => parts.push(scoreDiv('score-grid-h', { top: (i + 1) * SCORE_LANE_H - 1 + 'px' })));
 
     let maxRound = 0;
     for (const b of [...blocks].sort((a, c) => Date.parse(a.started_at) - Date.parse(c.started_at))) {
       const r = b.round || 0;
       if (r > maxRound) {
         if (maxRound) {
-          const rx = x(Date.parse(b.started_at));
-          const g = svgEl('g', { 'data-round': r }, 'score-round');
-          g.append(svgEl('line', { x1: rx, x2: rx, y1: 0, y2: H }), svgText('Runde ' + r, rx > W - 70 ? { x: rx - 4, y: 12, 'text-anchor': 'end' } : { x: rx + 4, y: 12 }));
-          svg.append(g);
+          const x = pct(Date.parse(b.started_at));
+          const line = scoreDiv('score-round', { left: x });
+          line.setAttribute('data-round', r);
+          line.setAttribute('aria-hidden', 'true');
+          const label = el('span', 'Runde ' + r, 'score-round-label mono');
+          label.style.left = 'calc(' + x + ' + 6px)';
+          parts.push(line, label);
         }
         maxRound = r;
       }
     }
 
-    if (live) {
-      const g = svgEl('g', {}, 'score-now');
-      g.append(svgEl('line', { x1: x(t1), x2: x(t1), y1: 0, y2: H }), svgText('Jetzt', { x: x(t1) - 4, y: 12, 'text-anchor': 'end' }));
-      svg.append(g);
+    for (const b of blocks) {
+      const s = Date.parse(b.started_at), e = Math.max(endOf(b) ?? t1, s);
+      const running = live && (b.ended_at === null || b.ended_at === undefined);
+      const failed = b.verdict === 'failed';
+      const c = scoreColor(b.role);
+      const w = Math.max(0.4, (frac(e) - frac(s)) * 100);
+      const calls = Number(b.tool_calls) || 0;
+      const blk = scoreDiv('blk' + (running ? ' now' : '') + (failed ? ' failed' : '') + (calls > 0 ? '' : ' quiet'), {
+        left: pct(s), width: w.toFixed(2) + '%', top: lane(b.role) * SCORE_LANE_H + 7 + 'px',
+        background: failed ? 'rgba(248,113,113,.22)' : uiRgba(c, running ? '.42' : '.24'), borderColor: failed ? SCORE_FAIL : c,
+      });
+      if (failed) blk.style.color = '#fecaca';
+      if (calls > 0) blk.style.setProperty('--tick', scoreTick(calls, e - s) + 'px');
+      if (running) blk.style.setProperty('--glow', uiRgba(c, '.55'));
+      const title = scoreBlockTitle(b, e - s, running);
+      blk.title = title;
+      for (const [k, v] of [['role', 'img'], ['tabindex', '0'], ['aria-label', title], ['data-role', b.role], ['data-run', b.run], ['data-round', b.round || ''], ['data-calls', calls]]) blk.setAttribute(k, String(v ?? ''));
+      const text = running ? (b.round ? 'Runde ' + b.round + ' · spielt' : 'spielt') : (b.verdict ?? '—');
+      blk.append(el('span', (w / 100) * plotPx < SCORE_MIN_TEXT_PX ? '' : text));
+      parts.push(blk);
     }
-    frame.replaceChildren(svg);
-    setText($('score-meta'), blocks.length + ' Sessions · ' + handoffs.length + ' Übergaben · Runde ' + scoreMaxRound(blocks));
+
+    for (const h of handoffs) {
+      const a = lane(h.from), z = lane(h.to);
+      if (a < 0 || z < 0 || a === z) continue;
+      const x = pct(Date.parse(h.at));
+      const color = scoreRed(h.verdict) ? SCORE_FAIL : scoreColor(h.from);
+      const hand = scoreDiv('score-hand ' + (z > a ? 'down' : 'up') + (frac(Date.parse(h.at)) > 0.88 ? ' flip' : ''), {
+        left: 'calc(' + x + ' - 1px)', top: Math.min(a, z) * SCORE_LANE_H + 37 + 'px', height: Math.abs(z - a) * SCORE_LANE_H - 30 + 'px', background: color,
+      });
+      hand.style.setProperty('--c', color);
+      for (const [k, v] of [['data-from', h.from], ['data-to', h.to], ['data-verdict', h.verdict ?? '']]) hand.setAttribute(k, String(v));
+      const arrow = el('i', null, 'score-arrow');
+      arrow.setAttribute('aria-hidden', 'true');
+      const label = el('span', h.verdict || '—', 'score-hand-label');
+      label.style.color = color;
+      hand.append(arrow, label);
+      parts.push(hand);
+    }
+
+    if (live) { const now = scoreDiv('score-now-line'); now.setAttribute('aria-hidden', 'true'); parts.push(now); }
+    plot.replaceChildren(...parts);
+
+    $('score-axis').replaceChildren(...[0, 1, 2, 3, 4].map((k) => {
+      const t = scoreHm(t0 + (k * span) / 4);
+      const mark = k === 4 && live ? el('span', 'jetzt ' + t, 'now') : el('span', t);
+      if (k < 4) mark.style.left = k * 25 + '%';
+      return mark;
+    }));
   }
 
   // ------------------------------------------------------------------ panel row: Context-Verlauf, Brain-Zugriffe, Changes

@@ -44,8 +44,7 @@ describe('tasks page acceptance (E5-1)', () => {
     const headings = [...TASKS_HTML.matchAll(/<h2[^>]*>([^<]+)<\/h2>/g)].map((m) => m[1]);
     assert.deepEqual(headings, ['Läuft', 'Als Nächstes', 'Wartet', 'Pausiert', 'Blockiert', 'Kürzlich erledigt']);
     assert.match(TASKS_HTML, /display:\s*grid/);
-    assert.match(TASKS_HTML, /@media \(max-width: (3[89]\d|[4-6]\d\d)px\)/, 'a media query at or below 640px collapses the grid');
-    assert.match(TASKS_HTML, /@media \(max-width: 640px\)[^}]*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/);
+    assert.match(TASKS_HTML, /grid-template-columns:\s*repeat\(auto-fit, minmax\(230px, 1fr\)\)/, 'auto-fit collapses the grid on narrow screens');
   });
 
   it('shows the empty texts "Nichts läuft" and "Nichts wartet" before any data arrives', () => {
@@ -87,7 +86,7 @@ describe('tasks page acceptance (E5-1)', () => {
     const labels = new Set<string>();
     for (const [i, code] of ALL_CODES.entries()) {
       const card = p.query('#col-waiting .task-card')[i]!;
-      const chip = card.querySelectorAll('.ui-chip').find((c) => c.getAttribute('title') === code);
+      const chip = card.querySelectorAll('.task-reason').find((c) => c.getAttribute('title') === code);
       assert.ok(chip, `chip with title ${code}`);
       const label = text(chip);
       assert.notEqual(label, code, `${code} is translated`);
@@ -100,9 +99,9 @@ describe('tasks page acceptance (E5-1)', () => {
 
   it('shows the reason chip on cards of every column that carries a reason', () => {
     const p = renderPage(TASKS_HTML, state());
-    assert.ok(p.query('#col-next .ui-chip').some((c) => c.getAttribute('title') === 'ready'));
-    assert.ok(p.query('#col-waiting .ui-chip').some((c) => c.getAttribute('title') === 'backoff'));
-    assert.ok(p.query('#col-paused .ui-chip').some((c) => c.getAttribute('title') === 'paused'));
+    assert.ok(p.query('#col-next .task-reason').some((c) => c.getAttribute('title') === 'ready'));
+    assert.ok(p.query('#col-waiting .task-reason').some((c) => c.getAttribute('title') === 'backoff'));
+    assert.ok(p.query('#col-paused .task-reason').some((c) => c.getAttribute('title') === 'paused'));
   });
 
   it('shows the reason chip on blocked cards (real blocked[] rows carry reason as text and reason_code as code)', () => {
@@ -112,7 +111,7 @@ describe('tasks page acceptance (E5-1)', () => {
     const cards = p.query('#col-blocked .task-card');
     assert.equal(cards.length, 2);
     for (const [i, code] of codes.entries()) {
-      const chip = cards[i]!.querySelectorAll('.ui-chip').find((c) => c.getAttribute('title') === code);
+      const chip = cards[i]!.querySelectorAll('.task-reason').find((c) => c.getAttribute('title') === code);
       assert.ok(chip, `reason chip with title ${code} on the blocked card`);
       assert.ok(!text(chip).includes('english'), 'German text, not the server text');
     }
@@ -123,13 +122,14 @@ describe('tasks page acceptance (E5-1)', () => {
     const next = p.query('#col-next .task-card')[0]!;
     assert.ok(text(next).includes('#7'));
     assert.ok(text(next).includes('zeta/lib'));
-    assert.match(text(next), /3/, 'queue position');
+    assert.match(text(next), /Platz 1/, 'queue position (rank in the column)');
+    assert.match(text(next), /P1/, 'priority');
     const link = next.querySelectorAll('a').find((a) => text(a) === 'Titel 7')!;
     assert.ok(link, 'title is a link');
     assert.equal(link.getAttribute('href'), '/issue?id=zeta%2Flib%237');
     const waiting = p.query('#col-waiting .task-card')[0]!;
     assert.ok(text(waiting).includes('#8'));
-    assert.match(text(waiting), /4/, 'priority');
+    assert.match(text(waiting), /P4/, 'priority');
   });
 
   it('colours the role chip with the palette colour of the responsible role', () => {
@@ -138,24 +138,25 @@ describe('tasks page acceptance (E5-1)', () => {
       row(2, { running: { ...row(2).running, role: 'tester', issue_identifier: 'acme/app#2' } }),
     ];
     const p = renderPage(TASKS_HTML, state({ issues, blocked: [], retrying: [] }));
-    const [a, b] = p.query('#col-running .task-role');
+    const [a, b] = p.query('#col-running .task-owner-dot');
     assert.ok(a && b);
-    assert.equal(String(a.style.color).toLowerCase(), ROLE_COLORS.developer);
-    assert.equal(String(b.style.color).toLowerCase(), ROLE_COLORS.tester);
+    assert.equal(String(a.style.background).toLowerCase(), ROLE_COLORS.developer);
+    assert.equal(String(b.style.background).toLowerCase(), ROLE_COLORS.tester);
   });
 
   it('shows exactly the specified action per column, one button per card', () => {
     const p = renderPage(TASKS_HTML, state());
-    const expected: Record<string, string> = { running: 'Pausieren', next: 'Jetzt starten', waiting: 'Erneut versuchen', paused: 'Fortsetzen', blocked: 'Erneut versuchen' };
+    const expected: Record<string, string> = { running: 'Pausieren', next: 'Jetzt starten', waiting: 'Jetzt erneut', paused: 'Fortsetzen' };
     for (const [col, label] of Object.entries(expected)) {
       const buttons = p.query(`#col-${col} button`);
       assert.equal(buttons.length, 1, col);
       assert.equal(text(buttons[0]!), label, col);
     }
+    assert.equal(p.query('#col-blocked button').length, 0);
     assert.equal(p.query('#col-done button').length, 0);
   });
 
-  it('wait/blocked cards without a retry entry get no "Erneut versuchen" button', () => {
+  it('wait/blocked cards without a retry entry get no "Jetzt erneut" button', () => {
     const s = state({
       issues: [queued(3, 'waiting', { retry: null, reason: { code: 'inactive', text: 'x' } })],
       blocked: [{ issue_id: '5', issue_identifier: 'acme/app#5', title: 'Titel 5', repo: 'acme/app', state: 'Todo', reason: 'x', reason_code: 'blocked' }],
@@ -170,7 +171,7 @@ describe('tasks page acceptance (E5-1)', () => {
 
   it('posts each action to the existing endpoint POST /api/v1/<id>/<verb> without new routes', async () => {
     const p = renderPage(TASKS_HTML, state(), { fetch: withHistory([]) });
-    for (const [col, verb, n] of [['running', 'pause', 1], ['next', 'force', 2], ['waiting', 'retry', 3], ['paused', 'resume', 4], ['blocked', 'retry', 5]] as const) {
+    for (const [col, verb, n] of [['running', 'pause', 1], ['next', 'force', 2], ['waiting', 'retry', 3], ['paused', 'resume', 4]] as const) {
       p.click(p.query(`#col-${col} button`)[0]!);
       await settle();
       const posts = p.fetches.filter((f) => f.method === 'POST');
@@ -187,7 +188,7 @@ describe('tasks page acceptance (E5-1)', () => {
     assert.equal(p.query('.tasks-grid .task-card').length, 5);
     // and the buttons come back when the state allows control again
     p.render(state({ controls: { retry: true } }));
-    assert.equal(p.query('.tasks-grid button').length, 5);
+    assert.equal(p.query('.tasks-grid button').length, 4);
     p.render(state({ controls: { retry: false } }));
     assert.equal(p.query('.tasks-grid button').length, 0);
   });
@@ -196,7 +197,7 @@ describe('tasks page acceptance (E5-1)', () => {
     const s = state();
     delete s.controls;
     const p = renderPage(TASKS_HTML, s);
-    assert.equal(p.query('.tasks-grid button').length, 5);
+    assert.equal(p.query('.tasks-grid button').length, 4);
   });
 
   it('reports a successful action in the aria-live region', async () => {
@@ -221,7 +222,7 @@ describe('tasks page acceptance (E5-1)', () => {
   it('lists only the last 10 finished issues with number, title, repo, time and verdict', async () => {
     const entries: Obj[] = [];
     for (let n = 1; n <= 14; n++) entries.push(finished(200 + n, `2026-10-30T08:${String(n).padStart(2, '0')}:00.000Z`));
-    const p = renderPage(TASKS_HTML, state(), { fetch: withHistory(entries, [{ run: 'run214', verdict: 'approved' }]) });
+    const p = renderPage(TASKS_HTML, state(), { fetch: withHistory(entries, [{ issue: 'acme/app#214', kind: 'review', verdict: 'approved' }]) });
     await settle();
     const cards = p.query('#col-done .task-card');
     assert.equal(cards.length, 10);
@@ -232,7 +233,7 @@ describe('tasks page acceptance (E5-1)', () => {
     const newest = cards.find((c) => text(c).includes('#214'))!;
     assert.ok(text(newest).includes('Erledigt 214'));
     assert.ok(text(newest).includes('acme/app'));
-    assert.ok(text(newest).includes('approved'), 'verdict');
+    assert.ok(text(newest).includes('1 Review-Runde'), 'review rounds');
     assert.equal(newest.querySelectorAll('a').find((a) => text(a) === 'Erledigt 214')!.getAttribute('href'), '/issue?id=acme%2Fapp%23214');
     assert.match(text(newest), /\d{1,2}:\d{2}/, 'a time');
   });
@@ -262,7 +263,7 @@ describe('tasks page acceptance (E5-1)', () => {
     await settle();
     const cards = p.query('#col-done .task-card');
     assert.equal(cards.length, 2);
-    for (const c of cards) assert.ok(c.querySelectorAll('.ui-chip').length >= 1, 'each finished card shows an outcome');
+    for (const c of cards) assert.ok(c.querySelectorAll('.task-reason').length >= 1, 'each finished card shows its summary');
   });
 
   it('polls every 2 s via pollEvery and attaches to the live events', () => {
