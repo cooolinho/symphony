@@ -148,3 +148,26 @@ describe('BrainAccessLog.todayCounts', () => {
     assert.deepEqual(loaded.todayCounts(NOW), { reads: 2, writes: 2 });
   });
 });
+
+describe('Index und Issue-Zusammenfassung', () => {
+  it('Zaun-Arten werden nicht vermischt', async () => {
+    const vault = tempDir();
+    put(vault, 'a.md', '```\n~~~\n[[im-zaun]]\n```\n[[danach]]');
+    const index = await buildIndex(vault);
+    assert.deepEqual(index.notes.get('a.md')!.links, ['danach.md']);
+  });
+
+  it('ein Commit der Zusammenfassung mit Hook aktualisiert den Index', async () => {
+    const { ensureVault } = await import('../src/brain/vault.ts');
+    const { writeIssueSummary } = await import('../src/brain/issue-summary.ts');
+    const dir = path.join(tempDir(), 'vault');
+    await ensureVault(dir, ['acme/app'], new Date('2026-10-30T00:00:00Z'));
+    const brainIndex = new BrainIndex(Logger.silent());
+    await brainIndex.rebuild(dir);
+    const versioning = createVaultGit(dir, Logger.silent(), { onCommit: (_sha, paths) => brainIndex.update(dir, paths) });
+    const issue = { repo: 'acme/app', identifier: 'acme/app#7', number: '7', title: 'T', description: 'x', pullRequest: null, pullRequestUrl: null };
+    await writeIssueSummary(issue, [], null, { vaultPath: dir, versioning });
+    await brainIndex.current(dir);
+    assert.ok((await brainIndex.current(dir)).notes.has('Issues/acme-app/7.md'));
+  });
+});

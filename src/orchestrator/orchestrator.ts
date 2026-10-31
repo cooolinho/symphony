@@ -3498,7 +3498,7 @@ export class Orchestrator {
         },
         results,
         this.#deps.history ?? null,
-        { vaultPath: brain.path, versioning: createVaultGit(brain.path, log), extraCostUsd: this.#running.get(issue.id)?.costUsd ?? 0 },
+        { vaultPath: brain.path, versioning: createVaultGit(brain.path, log, { onCommit: (_sha, paths) => this.#brainIndex.update(brain.path, paths) }), extraCostUsd: this.#running.get(issue.id)?.costUsd ?? 0 },
       );
       log.info('issue summary written', { path: written.path, changed: written.changed });
     } catch (error) {

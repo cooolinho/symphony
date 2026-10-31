@@ -73,13 +73,15 @@ function lowerText(value: unknown): string | null {
 /** Link targets of a note body, normalized; skips code fences, attachments and pure section links. */
 export function extractLinks(body: string): string[] {
   const found = new Set<string>();
-  let fenced = false;
+  let fence: string | null = null;
   for (const line of body.split('\n')) {
-    if (/^\s*(```|~~~)/.test(line)) {
-      fenced = !fenced;
+    const marker = /^\s*(```|~~~)/.exec(line)?.[1];
+    if (marker !== undefined) {
+      if (fence === null) fence = marker;
+      else if (fence === marker) fence = null;
       continue;
     }
-    if (fenced) continue;
+    if (fence !== null) continue;
     for (const match of line.replace(/`[^`]*`/g, '').matchAll(/\[\[([^[\]]+)\]\]/g)) {
       let target = (match[1] ?? '').split('|')[0] ?? '';
       target = (target.split('#')[0] ?? '').trim().replace(/^\/+/, '');
