@@ -1,6 +1,6 @@
 import { bareModelName } from '../agent/model-name.ts';
 import { costOf, priceFor, totalTokens, type ModelTokenUsage, type PricingTable } from '../costs/pricing.ts';
-import { BUDGET_WINDOW_MS } from '../budget/forecast.ts';
+import { BUDGET_WINDOW_MS, forecastBudget } from '../budget/forecast.ts';
 import { isRejected, type RateLimitRecord } from '../budget/rate-limit-log.ts';
 import { parseCounts, type HistoryEntry } from './history.ts';
 
@@ -721,6 +721,45 @@ function budgetHistory(scoped: Run[], runs: Run[], rateLimits: RateLimitRecord[]
   };
 }
 
+/**
+ * Additions for the statistics page next to `budget`: the calibrated 5-hour limit (the same calibration as the
+ * forecast, over all runs of the account), the rate-limit hits of the period with time and model, and the role and
+ * round with the most auto-compacts (round of the run's `stage_result`).
+ */
+function budgetInsights(allRuns: Run[], runs: Run[], entries: HistoryEntry[], rateLimits: RateLimitRecord[], inPeriod: (ms: number) => boolean, toMs: number) {
+  const limit = forecastBudget({
+    now: new Date(toMs),
+    usage: allRuns.map((run) => ({ at: new Date(run.finishedMs), tokens: tokensOf(run), role: run.role ?? undefined })),
+    events: rateLimits,
+    window: 'five_hour',
+  }).forecast?.limit_tokens ?? null;
+
+  const limit_hits = rateLimits
+    .filter((event) => isRejected(event.rate_limit_info) && inPeriod(Date.parse(event.at)))
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+    .map((event) => ({ at: event.at, model: event.model, role: event.role }));
+
+  const rounds = new Map<string, number | null>();
+  for (const entry of entries) {
+    if (entry.event !== 'stage_result') continue;
+    const result = stageResultOf(entry);
+    if (result.run !== null) rounds.set(result.run, result.round);
+  }
+  const groups = new Map<string, { role: string; round: number | null; compacts: number }>();
+  for (const run of runs) {
+    if (run.contextCompacts === null || run.contextCompacts <= 0) continue;
+    const role = run.role ?? UNKNOWN_ROLE;
+    const round = rounds.get(run.run) ?? null;
+    const key = `${role}\u0000${round ?? ''}`;
+    const slot = groups.get(key) ?? { role, round, compacts: 0 };
+    slot.compacts += run.contextCompacts;
+    groups.set(key, slot);
+  }
+  const top_compact = [...groups.values()].sort((a, b) => b.compacts - a.compacts || a.role.localeCompare(b.role) || (a.round ?? -1) - (b.round ?? -1))[0] ?? null;
+
+  return { limit_5h_tokens: limit, limit_hits, top_compact };
+}
+
 export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable, filter: AnalyticsFilter, now = new Date(), rateLimits: RateLimitRecord[] = []) {
   const allRuns = collectRuns(entries, pricing);
   const scoped = narrow(allRuns, filter);
@@ -1024,6 +1063,7 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
     efforts: effortRows,
     by_role: roleRows,
     budget: budgetHistory(scoped, runs, rateLimits, inPeriod, startMs, toMs, filter.timeZone),
+    budget_insights: budgetInsights(allRuns, runs, entries, rateLimits, inPeriod, toMs),
     by_profile: stageStats.by_profile,
     verdicts_by_role: stageStats.verdicts_by_role,
     stage_results: stageStats.total,
