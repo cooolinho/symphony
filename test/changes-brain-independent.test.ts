@@ -367,3 +367,20 @@ describe('E6-2 (independent): Orchestrator at startup', () => {
     }
   });
 });
+
+describe('E6-2 (independent): init commit versus issue summary commits of author symphony', () => {
+  it('skips the init commit "Vault angelegt" but records a later commit of author symphony', async () => {
+    const vault = await newVault();
+    const log = sh(vault, 'log', '--format=%H', '--reverse').split('\n');
+    const initEntries = await brainCommitEntries(vault, log[0]!);
+    assert.deepEqual(initEntries, [], 'the init commit gives no entries');
+    put(vault, 'Issues/acme-shop-7.md', note('Summary of 7'));
+    const sha = commitAs(vault, 'symphony', 'acme/shop#7: Zusammenfassung');
+    const entries = await brainCommitEntries(vault, sha);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]!.type, 'brain');
+    assert.equal(entries[0]!.status, 'created');
+    assert.equal(entries[0]!.title, 'Summary of 7');
+    assert.equal(entries[0]!.id, `brain:${sha}:Issues/acme-shop-7.md`);
+  });
+});
