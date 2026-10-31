@@ -360,3 +360,109 @@ export class BrainIndex {
     return this.#enqueue(async () => (this.#vault === vault ? this.#derived : this.#rebuild(vault)));
   }
 }
+
+export const GRAPH_NODE_LIMIT = 150;
+
+export interface BrainGraphNode {
+  path: string;
+  title: string;
+  status: string | null;
+  type: string | null;
+  /** A broken link target: no note has this path. */
+  missing: boolean;
+  /** Distance to the root (root 0). */
+  depth: number;
+}
+
+export interface BrainGraphEdge {
+  from: string;
+  to: string;
+  /** The link does not resolve; `to` is a missing node. */
+  broken: boolean;
+}
+
+export interface BrainGraph {
+  root: string;
+  depth: number;
+  /** True when the node limit cut the graph. */
+  truncated: boolean;
+  /** Root first, then breadth-first. */
+  nodes: BrainGraphNode[];
+  /** Only between nodes of the graph, sorted by from, to. */
+  edges: BrainGraphEdge[];
+}
+
+/** The index key of a root path (`\` → `/`, leading `/` dropped, `.md` added when missing; exact, else case-insensitive). */
+function graphRootOf(index: VaultIndex, root: string): string | null {
+  let rel = root.trim().replace(/\\/g, '/').replace(/^\/+/, '');
+  if (rel === '') return null;
+  if (!/\.md$/i.test(rel)) rel = `${rel}.md`;
+  if (index.notes.has(rel)) return rel;
+  const lower = rel.toLowerCase();
+  for (const key of index.notes.keys()) if (key.toLowerCase() === lower) return key;
+  return null;
+}
+
+/**
+ * The neighbourhood of a note up to `depth` links away (outgoing links and backlinks), breadth-first with sorted
+ * neighbours. Broken links become nodes with `missing: true` and the link target as path. At most `limit` nodes; null
+ * when the root is not in the index.
+ */
+export function graphAround(index: VaultIndex, root: string, depth = 2, limit = GRAPH_NODE_LIMIT): BrainGraph | null {
+  const start = graphRootOf(index, root);
+  if (start === null) return null;
+  const neighbours = new Map<string, Set<string>>();
+  const edges = new Map<string, BrainGraphEdge>();
+  const connect = (a: string, b: string): void => {
+    neighbours.set(a, (neighbours.get(a) ?? new Set()).add(b));
+    neighbours.set(b, (neighbours.get(b) ?? new Set()).add(a));
+  };
+  for (const [target, sources] of index.backlinks) {
+    for (const source of sources) {
+      connect(source, target);
+      edges.set(`${source}\n${target}`, { from: source, to: target, broken: false });
+    }
+  }
+  const missing = new Set<string>();
+  for (const { from, link } of index.broken) {
+    // A broken link never equals a note path (it would resolve), so the missing node cannot collide with a note.
+    missing.add(link);
+    connect(from, link);
+    edges.set(`${from}\n${link}`, { from, to: link, broken: true });
+  }
+  const nodes: BrainGraphNode[] = [];
+  const seen = new Set<string>();
+  const add = (rel: string, at: number): void => {
+    seen.add(rel);
+    const note = index.notes.get(rel);
+    nodes.push(
+      note !== undefined
+        ? { path: rel, title: note.title, status: note.status, type: note.type, missing: false, depth: at }
+        : { path: rel, title: path.posix.basename(rel).replace(/\.md$/i, ''), status: null, type: null, missing: true, depth: at },
+    );
+  };
+  add(start, 0);
+  let truncated = false;
+  let frontier = [start];
+  for (let at = 1; at <= depth && frontier.length > 0 && !truncated; at++) {
+    const next: string[] = [];
+    for (const rel of frontier) {
+      for (const other of [...(neighbours.get(rel) ?? [])].sort()) {
+        if (seen.has(other)) continue;
+        if (nodes.length >= limit) {
+          truncated = true;
+          break;
+        }
+        add(other, at);
+        // Missing nodes have no links of their own.
+        if (!missing.has(other)) next.push(other);
+      }
+      if (truncated) break;
+    }
+    frontier = next;
+  }
+  const kept = [...edges.values()]
+    .filter((edge) => seen.has(edge.from) && seen.has(edge.to))
+    .sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to));
+  return { root: start, depth, truncated, nodes, edges: kept };
+}

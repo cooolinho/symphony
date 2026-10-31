@@ -61,13 +61,13 @@ describe('BrainAccessLog', () => {
     fs.writeFileSync(
       file,
       line({ at: ago(10 * DAY), result: 'rejected', reason: 'window', clash_id: 'old', other_run: 'run0', other_at: ago(10 * DAY + 1000), run: 'run2' }) +
-        line({ at: ago(3 * DAY), result: 'rejected', reason: 'window', clash_id: 'c1', other_run: 'run1', other_at: ago(3 * DAY + 60000), run: 'run2' }),
+        line({ at: ago(3 * DAY), result: 'rejected', reason: 'window', clash_id: 'c1', other_run: 'run1', other_at: ago(3 * DAY + 60000), other_role: 'tester', run: 'run2' }),
     );
     const log = new BrainAccessLog(dir, Logger.silent());
     log.load(NOW);
     const clashes = log.clashes();
     assert.equal(clashes.length, 1);
-    assert.deepEqual(clashes[0], { id: 'c1', path: 'Inbox/a.md', runs: ['run1', 'run2'], at: [ago(3 * DAY + 60000), ago(3 * DAY)], reason: 'window', status: 'open' });
+    assert.deepEqual(clashes[0], { id: 'c1', path: 'Inbox/a.md', runs: ['run1', 'run2'], roles: ['tester', 'developer'], at: [ago(3 * DAY + 60000), ago(3 * DAY)], reason: 'window', status: 'open' });
     assert.equal(log.markResolved('unknown'), false);
     assert.equal(log.markResolved('c1', NOW), true);
     assert.equal(log.markResolved('c1', NOW), false);
@@ -102,6 +102,22 @@ describe('BrainAccessLog', () => {
     assert.equal(new BrainAccessLog(path.join(dir, 'none'), Logger.silent()).prune(NOW), 0);
     log.load(NOW);
     assert.equal(fs.readFileSync(file, 'utf8'), fresh);
+  });
+
+  it('keeps the roles of both runs of a clash (E7-7b)', () => {
+    const dir = tempDir();
+    const log = new BrainAccessLog(dir, Logger.silent());
+    const first: BrainAccess = { at: ago(5000), run: 'run1', issue: null, role: 'architect', op: 'write', path_or_query: 'Inbox/a.md', purpose: '', result: 'ok' };
+    log.recordWrite(first);
+    const other = log.lastWrite('Inbox/a.md')!;
+    assert.equal(other.role, 'architect');
+    const clash = log.recordClash({ ...first, at: NOW.toISOString(), run: 'run2', role: 'developer' }, other, 'window');
+    assert.deepEqual(clash.roles, ['architect', 'developer']);
+    assert.equal(rows(path.join(dir, 'access.jsonl')).at(-1).other_role, 'architect');
+    const again = new BrainAccessLog(dir, Logger.silent());
+    again.load(NOW);
+    assert.deepEqual(again.clashes()[0]!.roles, ['architect', 'developer']);
+    assert.equal(again.lastWrite('Inbox/a.md')!.role, 'architect');
   });
 
   it('works in memory without a log directory', () => {

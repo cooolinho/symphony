@@ -164,7 +164,7 @@ describe('E6-2 (independent): .obsidian/ never appears', () => {
       at: NOW.toISOString(), run: 'r2', issue: 'acme/shop#1', role: 'developer', op: 'write', path_or_query: '.obsidian/app.json', purpose: '',
       result: 'rejected', reason: 'window', clash_id: 'c9', other_run: 'r1', other_at: null,
     } as const;
-    const clash = { id: 'c9', path: '.obsidian/app.json', runs: ['r1', 'r2'] as [string, string], at: [null, line.at] as [null, string], reason: 'window' as const, status: 'open' as const };
+    const clash = { id: 'c9', path: '.obsidian/app.json', runs: ['r1', 'r2'] as [string, string], roles: [null, null] as [null, null], at: [null, line.at] as [null, string], reason: 'window' as const, status: 'open' as const };
     assert.equal(brainConflictEntry(tempDir(), line, clash), null);
   });
 });
@@ -226,7 +226,7 @@ describe('E6-2 (independent): conflicts from the access log', () => {
   });
 
   it('does not make conflict entries from other rejections (e.g. not_found) or successful lines', () => {
-    const clash = { id: 'c1', path: 'Inbox/a.md', runs: [null, 'r'] as [null, string], at: [null, base.at] as [null, string], reason: 'window' as const, status: 'open' as const };
+    const clash = { id: 'c1', path: 'Inbox/a.md', runs: [null, 'r'] as [null, string], roles: [null, null] as [null, null], at: [null, base.at] as [null, string], reason: 'window' as const, status: 'open' as const };
     assert.equal(brainConflictEntry(tempDir(), { ...base, result: 'rejected', reason: 'forbidden', clash_id: 'c1' } as never, clash), null);
     assert.equal(brainConflictEntry(tempDir(), { ...base, result: 'ok' }, clash), null);
   });

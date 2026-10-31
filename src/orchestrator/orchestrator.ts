@@ -4,7 +4,7 @@ import { performance } from 'node:perf_hooks';
 import { BrainAccessLog, type BrainAccess, type BrainAccessPage, type BrainAccessQuery, type BrainClash } from '../brain/access-log.ts';
 import { listClashes, type BrainClashView } from '../brain/clashes.ts';
 import { createVaultGit, lastVaultCommit } from '../brain/git.ts';
-import { BrainIndex, candidatesOf, foldersOf, vitalsCounts, type BrainCandidate, type BrainVitals } from '../brain/index.ts';
+import { BrainIndex, candidatesOf, foldersOf, graphAround, vitalsCounts, type BrainCandidate, type BrainGraph, type BrainVitals } from '../brain/index.ts';
 import { writeIssueSummary } from '../brain/issue-summary.ts';
 import { approveCandidate, rejectCandidate, revertApprove, type PromoteOptions, type PromoteResult } from '../brain/promote.ts';
 import { RateLimitLog, rateLimitKey, type RateLimitRecord } from '../budget/rate-limit-log.ts';
@@ -3875,6 +3875,14 @@ export class Orchestrator {
     const brain = this.#deps.workflow.current.config.brain;
     if (!brain.enabled) return null;
     return candidatesOf(await this.#brainIndex.current(brain.path));
+  }
+
+  /** The graph around a note for GET /api/v1/brain/graph; null without `brain.enabled`. */
+  async brainGraph(root: string, depth: number): Promise<{ ok: true; graph: BrainGraph } | { ok: false; reason: 'root_not_found' } | null> {
+    const brain = this.#deps.workflow.current.config.brain;
+    if (!brain.enabled) return null;
+    const graph = graphAround(await this.#brainIndex.current(brain.path), root, depth);
+    return graph === null ? { ok: false, reason: 'root_not_found' } : { ok: true, graph };
   }
 
   /** Reads the brain access log (clashes of the last 7 days, daily counts); called by `start()`. */

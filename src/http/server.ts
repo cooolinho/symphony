@@ -154,7 +154,7 @@ const REDIRECTS: ReadonlyMap<string, string> = new Map([
  * Observability/control surface (spec 13.7): `/` dashboard, `/changes` (the feed of code changes), `/tasks` (queue columns with control actions), `/brain` (vitals, candidate review and folders),
  * `/issue?id=<identifier>` issue detail view (live, or archived once the orchestrator released the issue),
  * `/stats` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
- * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/activity`, `/api/v1/brain/vitals`, `/api/v1/brain/candidates`, `/api/v1/brain/access` (filters role, q, issue, limit; `before`/`next_before` page by line), `/api/v1/brain/clashes` (`status=open|resolved`, with the versions of each clash) (404 `brain_disabled` without `brain.enabled`), `/api/v1/changes` (filters type, repo, issue, limit, tz; `before` = id of the last entry of the previous page, `next_before` the id for the next), `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
+ * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/activity`, `/api/v1/brain/vitals`, `/api/v1/brain/candidates`, `/api/v1/brain/access` (filters role, q, issue, limit; `before`/`next_before` page by line), `/api/v1/brain/clashes` (`status=open|resolved`, with the versions of each clash), `/api/v1/brain/graph` (`root`, `depth` 1..3, at most 150 nodes) (404 `brain_disabled` without `brain.enabled`), `/api/v1/changes` (filters type, repo, issue, limit, tz; `before` = id of the last entry of the previous page, `next_before` the id for the next), `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
  * `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker), `/force` (Start now in an extra slot),
  * `/pause` and `/resume` (operator pause of an issue), `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family),
  * `POST /api/v1/brain/clashes/<id>/resolve`, `POST /api/v1/brain/candidates/<path>/approve`, `/reject` and `/revert` (the path URL-encoded), and
@@ -308,6 +308,30 @@ export function startHttpServer(options: {
           orchestrator.brainClashes(status).then((clashes) => {
             if (clashes === null) sendError(res, 404, 'brain_disabled', 'the brain is not enabled (brain.enabled)');
             else sendJson(res, 200, { clashes });
+          }),
+        );
+      });
+      return;
+    }
+    if (pathname === '/api/v1/brain/graph') {
+      allow(['GET'], () => {
+        const params = new URL(req.url ?? '/', 'http://localhost').searchParams;
+        const root = textParam(params, 'root');
+        const depthText = textParam(params, 'depth');
+        const depth = depthText === null ? 2 : Number(depthText);
+        if (root === null) {
+          sendError(res, 400, 'bad_request', 'root is required');
+          return;
+        }
+        if (!Number.isInteger(depth) || depth < 1 || depth > 3) {
+          sendError(res, 400, 'bad_request', 'depth must be 1 to 3');
+          return;
+        }
+        respond(
+          orchestrator.brainGraph(root, depth).then((result) => {
+            if (result === null) sendError(res, 404, 'brain_disabled', 'the brain is not enabled (brain.enabled)');
+            else if (!result.ok) sendError(res, 404, 'root_not_found', `no note ${root} in the brain index`);
+            else sendJson(res, 200, result.graph);
           }),
         );
       });

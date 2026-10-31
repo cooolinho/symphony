@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import { BRAIN_HTML } from '../src/http/brain-page.ts';
 import { startHttpServer } from '../src/http/server.ts';
 import { CONTROLS_OFF } from '../src/http/tasks-page.ts';
+import { CHIP_TONES } from '../src/http/ui/palette.ts';
 import { Logger } from '../src/log.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import { FakeRunner, FakeTracker, ManualTimers, StaticWorkflow, baseFront, makeWorkflow, renderPage, tempDir, until } from './helpers.ts';
@@ -38,6 +39,8 @@ function brainFetch(opts: Obj = {}): (url: string, init: { method: string; body?
     if (url.includes('/state')) return opts.state ?? dashboardState({ controls: { retry: true } });
     if (url.includes('/brain/vitals')) return opts.vitals ?? vitals();
     if (url.includes('/brain/candidates')) return opts.candidates ?? { candidates: [cand('a'), cand('b')] };
+    if (url.includes('/brain/graph')) return typeof opts.graph === 'function' ? opts.graph(url) : opts.graph ?? graphBody();
+    if (url.includes('/brain/clashes')) return typeof opts.clashes === 'function' ? opts.clashes() : opts.clashes ?? { clashes: [] };
     return {};
   };
 }
@@ -204,5 +207,229 @@ describe('Brain page (E7-7a)', () => {
     await until(() => p.query('#brain-candidates .br-cand').length === 1);
     assert.equal(p.query('#brain-candidates img').length, 0);
     assert.ok(text(p.query('#brain-candidates .br-title')[0]!).includes(title));
+  });
+});
+
+// E7-7b (#378): graph around a repository index and the write clashes with a side-by-side comparison.
+
+function graphBody(over: Obj = {}): Obj {
+  return {
+    root: 'Repos/acme-app/index.md', depth: 2, truncated: false,
+    nodes: [
+      { path: 'Repos/acme-app/index.md', title: 'Acme App', status: 'approved', type: 'index', missing: false, depth: 0 },
+      { path: 'Inbox/a.md', title: 'Titel a', status: 'candidate', type: 'lesson', missing: false, depth: 1 },
+      { path: 'Lessons/b.md', title: 'B', status: null, type: 'lesson', missing: false, depth: 1 },
+      { path: 'Lessons/fehlt.md', title: 'fehlt', status: null, type: null, missing: true, depth: 2 },
+    ],
+    edges: [
+      { from: 'Inbox/a.md', to: 'Lessons/fehlt.md', broken: true },
+      { from: 'Repos/acme-app/index.md', to: 'Inbox/a.md', broken: false },
+      { from: 'Repos/acme-app/index.md', to: 'Lessons/b.md', broken: false },
+    ],
+    ...over,
+  };
+}
+const clash = (id: string, over: Obj = {}): Obj => ({
+  id, path: 'Lessons/x.md', runs: ['run-a', 'run-b'], roles: ['architect', 'developer'],
+  at: ['2026-10-30T10:00:00Z', '2026-10-30T10:01:00Z'], reason: 'hash_mismatch', status: 'open',
+  base: { content: 'a\nb\nc', hash: 'h0' }, attempted: { content: 'a\nb\nc' }, current: { content: 'a\nx\nc', hash: 'h1' }, ...over,
+});
+const vitalsTwoRepos = () => vitals({ folders: [...vitals().folders, { path: 'Repos/beta', notes_by_status: { candidate: 0, approved: 1, deprecated: 0, none: 0 }, total: 1 }] });
+
+describe('Brain page graph (E7-7b)', () => {
+  it('offers one root per repository and loads its graph with depth 2', async () => {
+    const p = renderPage(BRAIN_HTML, undefined, { fetch: brainFetch({ vitals: vitalsTwoRepos() }) });
+    await until(() => p.query('#brain-graph svg').length === 1);
+    const options = p.query('#brain-graph-root option');
+    assert.deepEqual(options.map(text), ['acme-app', 'beta']);
+    assert.deepEqual(options.map((o) => o.getAttribute('value')), ['Repos/acme-app/index.md', 'Repos/beta/index.md']);
+    assert.ok(p.fetches.some((f) => f.url === '/api/v1/brain/graph?root=Repos%2Facme-app%2Findex.md&depth=2'));
+    const select = p.$('brain-graph-root');
+    select.value = 'Repos/beta/index.md';
+    select.dispatch('change');
+    await until(() => p.fetches.some((f) => f.url === '/api/v1/brain/graph?root=Repos%2Fbeta%2Findex.md&depth=2'));
+  });
+
+  it('draws nodes in status colours and the broken link red and dashed', async () => {
+    const p = renderPage(BRAIN_HTML, undefined, { fetch: brainFetch() });
+    await until(() => p.query('#brain-graph svg').length === 1);
+    const nodes = p.query('#brain-graph g.br-node');
+    assert.deepEqual(nodes.map((n) => n.dataset.path), ['Repos/acme-app/index.md', 'Inbox/a.md', 'Lessons/b.md', 'Lessons/fehlt.md']);
+    const fill = (i: number) => nodes[i]!.querySelectorAll('circle')[0]!.getAttribute('fill');
+    assert.equal(fill(0), CHIP_TONES.green.c);
+    assert.equal(fill(1), CHIP_TONES.amber.c);
+    assert.notEqual(fill(2), fill(0));
+    const broken = p.query('#brain-graph line.br-edge-broken');
+    assert.equal(broken.length, 1);
+    assert.equal(broken[0]!.getAttribute('stroke'), CHIP_TONES.red.c);
+    assert.ok(broken[0]!.getAttribute('stroke-dasharray'));
+    assert.equal(p.query('#brain-graph line.br-edge').length, 3);
+    const missing = p.query('#brain-graph g.br-node-missing');
+    assert.equal(missing.length, 1);
+    const ring = missing[0]!.querySelectorAll('circle')[0]!;
+    assert.equal(ring.getAttribute('fill'), 'none');
+    assert.equal(ring.getAttribute('stroke'), CHIP_TONES.red.c);
+    assert.ok(ring.getAttribute('stroke-dasharray'));
+    for (const n of nodes) assert.equal(n.getAttribute('role'), 'button');
+  });
+
+  it('has a text alternative with the numbers', async () => {
+    const p = renderPage(BRAIN_HTML, undefined, { fetch: brainFetch() });
+    await until(() => p.$('brain-graph-text').hidden === false);
+    const summary = text(p.$('brain-graph-text'));
+    assert.equal(summary, '4 Knoten, 3 Kanten, 1 kaputte Links');
+    assert.ok((p.query('#brain-graph svg')[0]!.getAttribute('aria-label') ?? '').includes(summary));
+    const cut = renderPage(BRAIN_HTML, undefined, { fetch: brainFetch({ graph: graphBody({ truncated: true }) }) });
+    await until(() => cut.$('brain-graph-text').hidden === false);
+    assert.ok(text(cut.$('brain-graph-text')).includes('gekürzt auf 4 Knoten'));
+  });
+
+  it('opens the preview of a node on click and on Enter', async () => {
+    const p = renderPage(BRAIN_HTML, undefined, { fetch: brainFetch({ vitals: vitals({ obsidian_url: 'obsidian://open?vault=b' }) }) });
+    await until(() => p.query('#brain-graph g.br-node').length === 4);
+    assert.equal(p.$('brain-graph-preview').hidden, true);
+    p.click(p.query('#brain-graph g.br-node')[1]!);
+    const preview = p.$('brain-graph-preview');
+    assert.equal(preview.hidden, false);
+    for (const part of ['Titel a', 'Inbox/a.md', 'candidate', '2 Links im Ausschnitt', 'zeile']) assert.ok(text(preview).includes(part), part);
+    assert.equal(preview.querySelectorAll('a')[0]!.getAttribute('href'), 'obsidian://open?vault=b&file=Inbox%2Fa');
+    p.query('#brain-graph g.br-node-missing')[0]!.dispatch('keydown', { key: 'Enter' });
+    assert.ok(text(preview).includes('Ziel fehlt – verlinkt von Inbox/a.md'));
+    assert.equal(preview.querySelectorAll('a').length, 0);
+  });
+
+  it('shows "Keine Links" without edges, without a repository or without an index note', async () => {
+    const lonely = renderPage(BRAIN_HTML, undefined, { fetch: brainFetch({ graph: graphBody({ nodes: graphBody().nodes.slice(0, 1), edges: [] }) }) });
+    await until(() => text(lonely.$('brain-graph')) !== '');
+    assert.equal(text(lonely.$('brain-graph')), 'Keine Links');
+    assert.equal(lonely.query('#brain-graph svg').length, 0);
+    assert.equal(lonely.$('brain-graph-text').hidden, true);
+    const none = renderPage(BRAIN_HTML, undefined, { fetch: brainFetch({ vitals: vitals({ folders: [] }) }) });
+    await until(() => text(none.$('brain-graph')) !== '');
+    assert.equal(text(none.$('brain-graph')), 'Keine Links');
+    assert.ok(!none.fetches.some((f) => f.url.includes('/brain/graph')));
+    const gone = renderPage(BRAIN_HTML, undefined, { fetch: brainFetch({ graph: { __status: 404, error: { code: 'root_not_found', message: 'x' } } }) });
+    await until(() => text(gone.$('brain-graph')) !== '');
+    assert.equal(text(gone.$('brain-graph')), 'Keine Links');
+  });
+});
+
+describe('Brain page write clashes (E7-7b)', () => {
+  it('shows an open clash with path, runs, roles, times and reason', async () => {
+    const p = renderPage(BRAIN_HTML, undefined, { fetch: brainFetch({ clashes: { clashes: [clash('c1')] } }) });
+    await until(() => p.query('#brain-clashes .br-clash').length === 1);
+    const card = p.query('#brain-clashes .br-clash')[0]!;
+    assert.equal(card.dataset.id, 'c1');
+    for (const part of ['Lessons/x.md', 'run-a', 'run-b', 'architect', 'developer', 'Hash-Konflikt', 'abgewiesen']) assert.ok(text(card).includes(part), part);
+    assert.equal(p.$('clashes').tagName.toLowerCase(), 'section');
+  });
+
+  it('compares both versions side by side with the differences marked', async () => {
+    const p = renderPage(BRAIN_HTML, undefined, { fetch: brainFetch({ clashes: { clashes: [clash('c1')] } }) });
+    await until(() => p.query('#brain-clashes .br-diff').length === 1);
+    const grid = p.query('#brain-clashes .br-diff')[0]!;
+    const cells = grid.querySelectorAll('.br-cell').filter((c) => !c.classList.contains('br-cell-head'));
+    assert.deepEqual(cells.map(text), ['a', 'a', 'b', 'x', 'c', 'c']);
+    assert.deepEqual(grid.querySelectorAll('.br-del').map(text), ['b']);
+    assert.deepEqual(grid.querySelectorAll('.br-add').map(text), ['x']);
+    assert.ok(!cells[0]!.classList.contains('br-del') && !cells[0]!.classList.contains('br-add'));
+    const heads = grid.querySelectorAll('.br-cell-head').map(text);
+    assert.deepEqual(heads, ['Abgewiesene Fassung', 'Aktuelle Fassung']);
+    assert.equal(p.query('#brain-clashes details.br-diff-wrap')[0]!.open, true);
+  });
+
+  it('marks inserted and removed lines against a gap', async () => {
+    const p = renderPage(BRAIN_HTML, undefined, { fetch: brainFetch({ clashes: { clashes: [clash('c1', { attempted: { content: 'a\nneu\nb' }, current: { content: 'a\nb\nende' } })] } }) });
+    await until(() => p.query('#brain-clashes .br-diff').length === 1);
+    const grid = p.query('#brain-clashes .br-diff')[0]!;
+    assert.deepEqual(grid.querySelectorAll('.br-del').map(text), ['neu']);
+    assert.deepEqual(grid.querySelectorAll('.br-add').map(text), ['ende']);
+    assert.equal(grid.querySelectorAll('.br-gap').length, 2);
+  });
+
+  it('inserts note contents as text only', async () => {
+    const evil = '<img src=x onerror=1>';
+    const p = renderPage(BRAIN_HTML, undefined, { fetch: brainFetch({ clashes: { clashes: [clash('c1', { path: evil, attempted: { content: evil }, current: { content: 'x' } })] } }) });
+    await until(() => p.query('#brain-clashes .br-clash').length === 1);
+    assert.equal(p.query('#brain-clashes img').length, 0);
+    assert.ok(p.query('#brain-clashes .br-del').map(text).includes(evil));
+  });
+
+  it('offers "gelöst" only with control allowed and resolves via POST', async () => {
+    let resolved = false;
+    const p = renderPage(BRAIN_HTML, undefined, {
+      fetch: brainFetch({
+        clashes: () => ({ clashes: [clash('c/1', { status: resolved ? 'resolved' : 'open' })] }),
+        post: () => { resolved = true; return { id: 'c/1', status: 'resolved' }; },
+      }),
+    });
+    await until(() => p.query('#brain-clashes .br-clash button').length === 1);
+    const b = p.query('#brain-clashes .br-clash button')[0]!;
+    assert.ok(text(b).includes('gelöst'));
+    assert.equal(p.$('brain-clash-controls-off').hidden, true);
+    const before = p.fetches.filter((f) => f.url.includes('/brain/clashes') && f.method === 'GET').length;
+    p.click(b);
+    await until(() => p.fetches.some((f) => f.method === 'POST'));
+    assert.equal(p.fetches.find((f) => f.method === 'POST')!.url, '/api/v1/brain/clashes/c%2F1/resolve');
+    await until(() => text(p.$('brain-clashes')) === 'Keine Konflikte');
+    assert.ok(p.fetches.filter((f) => f.url.includes('/brain/clashes') && f.method === 'GET').length > before);
+    assert.equal(p.$('brain-clashes-resolved').hidden, false);
+    assert.equal(p.query('#brain-clashes-resolved .br-clash').length, 1);
+
+    const off = renderPage(BRAIN_HTML, undefined, { fetch: brainFetch({ state: dashboardState({ controls: { retry: false } }), clashes: { clashes: [clash('c1')] } }) });
+    await until(() => off.query('#brain-clashes .br-clash').length === 1);
+    assert.equal(off.query('#brain-clashes button').length, 0);
+    assert.equal(off.$('brain-clash-controls-off').hidden, false);
+    assert.ok(text(off.$('brain-clash-controls-off')).includes(CONTROLS_OFF));
+  });
+
+  it('shows a failed resolve at the card', async () => {
+    const p = renderPage(BRAIN_HTML, undefined, { fetch: brainFetch({ clashes: { clashes: [clash('c1')] }, post: () => ({ __status: 500, error: { code: 'boom', message: 'kaputt' } }) }) });
+    await until(() => p.query('#brain-clashes .br-clash button').length === 1);
+    p.click(p.query('#brain-clashes .br-clash button')[0]!);
+    await until(() => text(p.query('#brain-clashes .br-msg')[0]!) !== '');
+    assert.ok(text(p.query('#brain-clashes .br-msg')[0]!).includes('kaputt'));
+  });
+
+  it('lists resolved clashes collapsible below, without a button', async () => {
+    const p = renderPage(BRAIN_HTML, undefined, { fetch: brainFetch({ clashes: { clashes: [clash('c1'), clash('c2', { status: 'resolved' })] } }) });
+    await until(() => p.query('#brain-clashes .br-clash').length === 1);
+    const details = p.$('brain-clashes-resolved');
+    assert.equal(details.tagName.toLowerCase(), 'details');
+    assert.equal(details.hidden, false);
+    assert.equal(details.open, false);
+    assert.equal(text(details.querySelectorAll('summary')[0]!), 'Gelöste Clashes (1)');
+    const card = details.querySelectorAll('.br-clash')[0]!;
+    assert.equal(card.dataset.id, 'c2');
+    assert.equal(card.querySelectorAll('button').length, 0);
+    assert.ok(text(card).includes('gelöst'));
+  });
+
+  it('shows "Keine Konflikte" without clashes', async () => {
+    const p = renderPage(BRAIN_HTML, undefined, { fetch: brainFetch() });
+    await until(() => text(p.$('brain-clashes')) !== '');
+    assert.equal(text(p.$('brain-clashes')), 'Keine Konflikte');
+    assert.equal(p.$('brain-clashes-resolved').hidden, true);
+  });
+});
+
+describe('Brain page motion (E7-7b)', () => {
+  const start = BRAIN_HTML.indexOf('.br-head {');
+  const brainCss = BRAIN_HTML.slice(start, BRAIN_HTML.indexOf('</style>', start));
+
+  it('animates only transform and opacity', () => {
+    assert.ok(brainCss.includes('.br-node'));
+    const transitions = [...brainCss.matchAll(/transition:\s*([^;}]+)/g)].map((m) => m[1]!.trim());
+    assert.ok(transitions.length > 0);
+    for (const t of transitions) assert.match(t, /^(none|(transform|opacity)\b[^,]*(,\s*(transform|opacity)\b[^,]*)*)$/, t);
+    const frames = /@keyframes br-in\s*\{([\s\S]*?\})\s*\}/.exec(brainCss)?.[1] ?? '';
+    assert.ok(frames !== '');
+    for (const prop of frames.matchAll(/([a-z-]+)\s*:/g)) assert.ok(['opacity', 'transform'].includes(prop[1]!), prop[1]!);
+  });
+
+  it('turns transitions and animations off under prefers-reduced-motion', () => {
+    const reduced = /@media \(prefers-reduced-motion: reduce\)\s*\{([\s\S]*?\})\s*\}/.exec(brainCss)?.[1] ?? '';
+    assert.match(reduced, /\.br-node circle \{ transition: none; \}/);
+    assert.match(reduced, /\.br-clash \{ animation: none; \}/);
   });
 });
