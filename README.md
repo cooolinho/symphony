@@ -273,6 +273,7 @@ Start at [docs/index.md](docs/index.md).
 - [docs/configuration.md](docs/configuration.md): every `WORKFLOW.md` option, `$VARIABLE` references, hooks and prompt variables
 - [docs/adapters/github-project.md](docs/adapters/github-project.md): the GitHub Projects adapter: settings, normalization, agent tools, errors
 - [docs/agent-claude.md](docs/agent-claude.md): Claude Code sessions, permissions, skills and plugins, Laravel Boost, timeouts, cost accounting
+- [docs/brain.md](docs/brain.md): the knowledge vault: layout, frontmatter, tools, role switch, clash rules, Obsidian, backup and reset
 - [docs/results.md](docs/results.md): result contracts of the pipeline stages: kinds, verdicts, the `report_result` tool, recovery
 - [docs/concepts/multi-agent.md](docs/concepts/multi-agent.md): the multi-agent pipeline: architecture, decisions and spike results
 - [docs/conformance.md](docs/conformance.md): differences from the specification and implementation-defined behavior
