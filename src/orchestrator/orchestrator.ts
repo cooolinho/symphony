@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { BrainAccessLog } from '../brain/access-log.ts';
+import { BrainAccessLog, type BrainAccessPage, type BrainAccessQuery } from '../brain/access-log.ts';
+import { listClashes, type BrainClashView } from '../brain/clashes.ts';
 import { createVaultGit, lastVaultCommit } from '../brain/git.ts';
 import { BrainIndex, candidatesOf, vitalsCounts, type BrainCandidate, type BrainVitals } from '../brain/index.ts';
 import { writeIssueSummary } from '../brain/issue-summary.ts';
+import { approveCandidate, rejectCandidate, revertApprove, type PromoteOptions, type PromoteResult } from '../brain/promote.ts';
 import { RateLimitLog, rateLimitKey, type RateLimitRecord } from '../budget/rate-limit-log.ts';
 import { ChangeStore } from '../changes/store.ts';
 import { buildChangesPage } from '../changes/feed.ts';
@@ -771,7 +773,7 @@ export class Orchestrator {
     this.#pollIntervalMs = workflow.config.polling.intervalMs;
     await this.#startupCleanup(workflow);
     this.#rateLimitLog.pruneIfDue(this.#clock.now());
-    this.#brainAccess.load(this.#clock.now());
+    this.loadBrainAccess();
     this.#scheduleTick(0);
   }
 
@@ -3785,6 +3787,63 @@ export class Orchestrator {
     const brain = this.#deps.workflow.current.config.brain;
     if (!brain.enabled) return null;
     return candidatesOf(await this.#brainIndex.current(brain.path));
+  }
+
+  /** Reads the brain access log (clashes of the last 7 days, daily counts); called by `start()`. */
+  loadBrainAccess(): void {
+    this.#brainAccess.load(this.#clock.now());
+  }
+
+  /** One page of the access log for GET /api/v1/brain/access; null without `brain.enabled`. */
+  brainAccess(query: BrainAccessQuery): BrainAccessPage | null {
+    if (!this.#deps.workflow.current.config.brain.enabled) return null;
+    return this.#brainAccess.readAccess(query);
+  }
+
+  /** Clashes with their versions for GET /api/v1/brain/clashes; null without `brain.enabled`. */
+  async brainClashes(status: 'open' | 'resolved' | null): Promise<BrainClashView[] | null> {
+    const brain = this.#deps.workflow.current.config.brain;
+    if (!brain.enabled) return null;
+    return listClashes(this.#brainAccess, brain.path, status);
+  }
+
+  /** Marks a clash resolved (POST /api/v1/brain/clashes/<id>/resolve); null without `brain.enabled`. */
+  brainResolveClash(id: string): { ok: true } | { ok: false; reason: 'not_found' | 'already_resolved' } | null {
+    if (!this.#deps.workflow.current.config.brain.enabled) return null;
+    const clash = this.#brainAccess.clash(id);
+    if (clash === null) return { ok: false, reason: 'not_found' };
+    if (clash.status === 'resolved' || !this.#brainAccess.markResolved(id, this.#clock.now())) return { ok: false, reason: 'already_resolved' };
+    return { ok: true };
+  }
+
+  #promoteOptions(): PromoteOptions | null {
+    const brain = this.#deps.workflow.current.config.brain;
+    if (!brain.enabled) return null;
+    return {
+      vault: brain.path,
+      git: createVaultGit(brain.path, this.#logger, { onCommit: (_sha, paths) => this.#brainIndex.update(brain.path, paths) }),
+      index: () => this.#brainIndex.current(brain.path),
+      logger: this.#logger,
+      now: () => this.#clock.now(),
+    };
+  }
+
+  /** Approves a candidate note (POST /api/v1/brain/candidates/<path>/approve); null without `brain.enabled`. */
+  async brainApprove(notePath: string): Promise<PromoteResult | null> {
+    const options = this.#promoteOptions();
+    return options === null ? null : approveCandidate(options, notePath);
+  }
+
+  /** Rejects a candidate note (POST …/reject); null without `brain.enabled`. */
+  async brainReject(notePath: string): Promise<PromoteResult | null> {
+    const options = this.#promoteOptions();
+    return options === null ? null : rejectCandidate(options, notePath);
+  }
+
+  /** Reverts the approve of the note at its new path (POST …/revert); null without `brain.enabled`. */
+  async brainRevert(notePath: string): Promise<PromoteResult | null> {
+    const options = this.#promoteOptions();
+    return options === null ? null : revertApprove(options, notePath);
   }
 
   /** Windows whose limit is forecast to be hit before the reset, for the dashboard alerts (E2-4a). */
