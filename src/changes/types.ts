@@ -50,6 +50,15 @@ export interface ChangeEntry {
   reason?: string;
   /** Brain `conflict` only: the clash of the access log. */
   clash_id?: string;
+  /** Code: the branch of the commit or merge. Absent in entries recorded before the field existed. */
+  branch?: string | null;
+  /** Brain: the `status` of the note's frontmatter (as of the commit; of the current note for `conflict`). */
+  note_status?: string | null;
+  /** Brain `conflict` only: role and time of the earlier writer of the clash. */
+  other_role?: string | null;
+  other_at?: string | null;
+  /** Brain `conflict` only, added when the page is built (never stored): state of the clash; null when it is no longer known. */
+  clash_status?: 'open' | 'resolved' | null;
 }
 
 /** Filter and page of `ChangeStore.list`: `before` is the id of the last entry of the previous page. */
@@ -75,11 +84,22 @@ export interface ChangeHotspot {
   count: number;
 }
 
+/** A note changed often in the last 7 days: `count` changes, `clashes` rejected writes. */
+export interface ChangeNoteHotspot {
+  path: string;
+  count: number;
+  clashes: number;
+}
+
 /** "Today in numbers" and the hotspots of the last 7 days. */
 export interface ChangeStats {
   /** `brain`: brain writes of the day (conflicts, i.e. rejected writes, excluded). */
   today: { commits: number; merges: number; files: number; added: number; deleted: number; brain: number };
   hotspots: ChangeHotspot[];
+  /** Rejected writes whose clash is still open (any day). */
+  conflicts_open: number;
+  /** Notes with the most brain changes of the last 7 days. */
+  note_hotspots: ChangeNoteHotspot[];
 }
 
 /** Query of one page of the feed. */

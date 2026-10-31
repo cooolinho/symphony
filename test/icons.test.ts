@@ -16,7 +16,7 @@ const shapes = (svg: FakeElement): string[] =>
 describe('icons', () => {
   it('knows the navigation, role and symbol icons, the logo and the arrow', () => {
     for (const n of ['home', 'changes', 'tasks', 'brain', 'stats', 'analyst', 'architect', 'developer', 'tester', 'docs', 'reviewer',
-      'security', 'human', 'check', 'cross', 'search', 'refresh', 'alert', 'pause', 'clock', 'logo', 'arrow']) assert.ok(ICON_NAMES.includes(n as never), n);
+      'security', 'human', 'check', 'cross', 'search', 'refresh', 'alert', 'pause', 'clock', 'logo', 'arrow', 'commit']) assert.ok(ICON_NAMES.includes(n as never), n);
   });
 
   it('every icon is an aria-hidden line svg 0 0 24 24 in currentColor with round caps', () => {

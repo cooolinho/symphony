@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, it } from 'node:test';
 import type { BrainAccess, BrainClash } from '../src/brain/access-log.ts';
 import { brainCommitStatus, brainConflictEntry, isObsidianPath } from '../src/changes/brain.ts';
@@ -46,6 +48,15 @@ describe('brainConflictEntry', () => {
     const entry = brainConflictEntry(tempDir(), line(), clash)!;
     assert.equal(entry.id, 'brain:conflict:c1');
     assert.deepEqual([entry.type, entry.status, entry.role, entry.run, entry.reason, entry.clash_id, entry.repo, entry.title], ['brain', 'conflict', 'developer', 'run2', 'hash_mismatch', 'c1', 'unknown', 'a']);
+  });
+  it('adds the note status and the earlier writer', () => {
+    const vault = tempDir();
+    fs.mkdirSync(path.join(vault, 'Inbox'));
+    fs.writeFileSync(path.join(vault, 'Inbox/a.md'), '---\nstatus: candidate\n---\n# A\n');
+    const earlier: BrainClash = { ...clash, roles: ['reviewer', 'developer'], at: ['2026-10-30T11:15:00.000Z', '2026-10-30T12:00:00.000Z'] };
+    const entry = brainConflictEntry(vault, line(), earlier)!;
+    assert.deepEqual([entry.note_status, entry.other_role, entry.other_at], ['candidate', 'reviewer', '2026-10-30T11:15:00.000Z']);
+    assert.equal(brainConflictEntry(tempDir(), line(), clash)!.note_status, null);
   });
   it('gives nothing for .obsidian/, other reasons or other results', () => {
     assert.equal(brainConflictEntry(tempDir(), line({ path_or_query: '.obsidian/app.json' }), clash), null);

@@ -81,7 +81,7 @@ Both return `rejected` with the current `content` and `hash` and write nothing. 
 
 To resolve a clash the agent merges its change into the returned current version and writes again with the new `hash` (after the window has passed, if the reason was `window`). A human can check the note in Obsidian or with `git log` in the vault. The dashboard API lists the clashes with three versions of the note: at the rejection, the rejected content and the current one. The first two are kept for 7 days in `<log-dir>/brain/clashes/<id>.json`; without that file the version at the rejection comes from git. The human marks a clash resolved there.
 
-The Changes page (`/changes`, filter "Brain") lists every brain write and every rejection as an entry; a rejected write appears there as a conflict with a link to `/brain#clashes`, and notes with `status: candidate` can be promoted or discarded from the feed.
+The Changes page (`/changes`, filter "Brain") lists every brain write and every rejection as an entry; a rejected write appears there as a conflict (red card, "Konflikt offen" until the clash is resolved), and notes with `status: candidate` can be promoted or discarded from the feed.
 
 ## Obsidian container
 

@@ -36,6 +36,7 @@ const ICON_DEFS: Record<string, { w: number; j?: true; s: (string | [number, num
   // Navigation
   home: { w: 1.9, j: true, s: ['M3 11l9-7 9 7', 'M5 10v10h14V10'] },
   changes: { w: 1.9, j: true, s: [[6, 6, 2.5], [18, 18, 2.5], 'M6 8.5v4a5 5 0 0 0 5 5h4.5'] },
+  commit: { w: 1.9, s: [[12, 12, 3.5], 'M3 12h5.5', 'M15.5 12H21'] },
   tasks: { w: 1.9, j: true, s: ['M4 6h1.5', 'M4 12h1.5', 'M4 18h1.5', 'M9 6h11', 'M9 12h11', 'M9 18h11'] },
   brain: { w: 1.9, j: true, s: ['M9.5 4A3 3 0 0 0 6.5 7a3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 3 3V4z', 'M14.5 4a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-3 3V4z'] },
   stats: { w: 1.9, j: true, s: ['M5 20V11', 'M12 20V4', 'M19 20v-7'] },

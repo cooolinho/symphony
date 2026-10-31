@@ -191,11 +191,11 @@ describe('changes page (E6-3a)', () => {
   it('takes the filter from the URL and reloads on a chip click', async () => {
     const page = open(() => changesFixture());
     await until(() => page.query('.chg').length === 1, 3_000, 'feed rendered');
-    const chips = page.query('#changes-types .ui-fchip');
-    assert.deepEqual(chips.map((c) => [c.getAttribute('data-type'), c.getAttribute('aria-pressed')]), [['all', 'false'], ['code', 'true'], ['brain', 'false']]);
+    const chips = page.query('#changes-types .ui-seg-btn');
+    assert.deepEqual(chips.map((c) => c.getAttribute('aria-pressed')), ['false', 'true', 'false']);
     assert.match(chips[0]!.textContent, /Alle\s*3/);
     assert.equal((page.$('changes-repo') as unknown as { value: string }).value, 'acme/app');
-    assert.deepEqual(page.query('#changes-repo option').map((o) => o.textContent), ['Alle Repositories', 'acme/app', 'acme/lib']);
+    assert.deepEqual(page.query('#changes-repo option').map((o) => o.textContent), ['Alle', 'acme/app', 'acme/lib']);
     const first = page.fetches.find((f) => f.url.startsWith('/api/v1/changes'))!;
     assert.match(first.url, /type=code/);
     assert.match(first.url, /repo=acme%2Fapp/);
@@ -210,7 +210,7 @@ describe('changes page (E6-3a)', () => {
       changesFixture({
         entries: [
           changeEntry({ title: '<b>bold</b>', status: 'merged' }),
-          changeEntry({ id: 'brain:1', type: 'brain', pr: null, title: 'Note', files: [{ path: 'brain/x.md', added: 1, deleted: 0, status: 'added' }], diff: '+hi' }),
+          changeEntry({ id: 'brain:1', type: 'brain', pr: null, title: 'Note', files: [{ path: 'brain/x.md', added: 1, deleted: 0, status: 'added' }], diff: 'brain/x.md\n+hi' }),
         ],
       }),
     );
@@ -220,21 +220,20 @@ describe('changes page (E6-3a)', () => {
     assert.equal(code!.querySelector('b'), null);
     assert.deepEqual(code!.querySelectorAll('.chg-bar-add').map((b) => b.style.width), ['100%', '20%']);
     assert.deepEqual(code!.querySelectorAll('.chg-bar-del').map((b) => b.style.width), ['0%', '30%']);
-    assert.ok(code!.querySelector('.chg-add')!.className.includes('mono'));
-    assert.ok(code!.querySelector('.chg-del')!.className.includes('mono'));
+    assert.ok(code!.querySelector('.chg-nums')!.className.includes('mono'));
+    assert.ok(code!.querySelector('.chg-nums')!.className.includes('mono'));
     assert.equal(code!.querySelector('a')!.getAttribute('href'), '/issue?id=acme%2Fapp%231');
-    assert.equal(code!.querySelector('.chg-pr')!.textContent, '#7');
-    assert.equal(code!.querySelector('.chg-status')!.textContent, 'merged');
-    assert.ok(brain!.querySelector('.chg-note'));
-    assert.equal(brain!.querySelector('.chg-pr'), null);
+    assert.equal(code!.querySelector('.chg-status')!.textContent, 'gemerged');
+    assert.ok(brain!.querySelector('.chg-diff'));
+    assert.equal(brain!.querySelector('.chg-file'), null);
   });
 
-  it('shows "Mehr laden" only with next_before and appends the next page', async () => {
+  it('shows "Ältere laden" only with next_before and appends the next page', async () => {
     const page = open((u) =>
       u.includes('before=') ? changesFixture({ entries: [changeEntry({ id: 'code:acme/app:def' })], next_before: null }) : changesFixture({ next_before: 'code:acme/app:abc' }),
     );
     await until(() => page.query('#changes-more button').length === 1, 3_000, 'more button');
-    assert.equal(page.query('#changes-more button')[0]!.textContent, 'Mehr laden');
+    assert.equal(page.query('#changes-more button')[0]!.textContent, 'Ältere laden');
     page.click(page.query('#changes-more button')[0]!);
     await until(() => page.query('.chg').length === 2, 3_000, 'second page');
     assert.match(page.fetches.at(-1)!.url, /before=code%3Aacme%2Fapp%3Aabc/);
@@ -243,12 +242,12 @@ describe('changes page (E6-3a)', () => {
 
   it('shows the empty state and the side figures', async () => {
     const empty = open(() => changesFixture({ entries: [], counts: { all: 0, code: 0, brain: 0 } }));
-    await until(() => /Noch keine Änderungen\./.test(feed(empty).textContent), 3_000, 'empty state');
+    await until(() => /Noch keine Änderungen für diesen Filter/.test(feed(empty).textContent), 3_000, 'empty state');
     assert.equal(empty.query('#changes-more button').length, 0);
     const page = open(() => changesFixture());
-    await until(() => /×5/.test(page.$('changes-hotspots').textContent), 3_000, 'hotspots');
+    await until(() => /5×/.test(page.$('changes-hotspots').textContent), 3_000, 'hotspots');
     assert.match(page.$('changes-hotspots').textContent, /src\/a\.ts/);
-    assert.match(page.$('changes-today').textContent, /Commits/);
-    assert.match(page.$('changes-today').textContent, /\+12/);
+    assert.match(page.$('changes-today').textContent, /Code-Commits/);
+    assert.match(page.$('changes-today').textContent, /PRs gemerged/);
   });
 });
