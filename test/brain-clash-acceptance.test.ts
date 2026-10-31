@@ -34,6 +34,7 @@ function env(options: { windowMs?: number; log?: BrainAccessLog; logDir?: string
     const context = { issue: makeIssue({ id: 'a' }), role, ...(run !== null ? { runId: run } : {}) } as AgentToolContext;
     const specs = brainToolsFor(
       { enabled: true, path: vault, ...(options.windowMs !== undefined ? { clashWindowMs: options.windowMs } : {}) },
+      'write',
       Logger.silent(),
       { access: log, now: () => new Date(clock.now) },
     );
@@ -429,7 +430,7 @@ describe('E7-4 robustness', () => {
   });
 
   it('keeps the tools off when the brain is disabled', () => {
-    assert.deepEqual(brainToolsFor({ enabled: false, path: tempDir() }, Logger.silent(), { access: new BrainAccessLog(null, Logger.silent()) }), []);
+    assert.deepEqual(brainToolsFor({ enabled: false, path: tempDir() }, 'write', Logger.silent(), { access: new BrainAccessLog(null, Logger.silent()) }), []);
   });
 });
 

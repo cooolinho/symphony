@@ -5,6 +5,7 @@ import type { Logger } from '../log.ts';
 import type { AgentToolContext, AgentToolSpec, ToolResult } from '../tracker/types.ts';
 import { errorMessage } from '../util/errors.ts';
 import type { BrainConfig } from '../workflow/config.ts';
+import type { BrainMode } from '../workflow/roles.ts';
 import type { BrainAccessLog, BrainAccessOp } from './access-log.ts';
 import { fail, hashOf, MAX_NOTE_BYTES, ok, purposeOf, reasonOf, warnPurpose } from './common.ts';
 import { noteStatus, noteTitle, parseNote } from './note.ts';
@@ -218,14 +219,17 @@ export function createBrainTools(vaultPath: string, logger: Logger, access: Brai
 
 export { createBrainWriteTools, type BrainWriteEntry, type BrainWriteOptions } from './write.ts';
 
-/** The brain tools of a session (read and write): none unless `brain.enabled` (the role switch follows with E7-5). */
+/** The brain tools of a session: none unless `brain.enabled` and the role's mode is not `off`; `read` has the read tools, `write` also the write tools. */
 export function brainToolsFor(
   config: Omit<BrainConfig, 'clashWindowMs'> & { clashWindowMs?: number },
+  mode: BrainMode,
   logger: Logger,
   options: BrainWriteOptions = {},
 ): AgentToolSpec[] {
-  if (!config.enabled) return [];
+  if (!config.enabled || mode === 'off') return [];
+  const readTools = createBrainTools(config.path, logger, options.access ?? null);
+  if (mode === 'read') return readTools;
   const writeOptions: BrainWriteOptions =
     config.clashWindowMs === undefined ? options : { ...options, clashWindowMs: options.clashWindowMs ?? config.clashWindowMs };
-  return [...createBrainTools(config.path, logger, options.access ?? null), ...createBrainWriteTools(config.path, logger, writeOptions)];
+  return [...readTools, ...createBrainWriteTools(config.path, logger, writeOptions)];
 }

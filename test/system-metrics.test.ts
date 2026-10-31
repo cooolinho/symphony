@@ -92,6 +92,16 @@ describe('SystemCollector', () => {
     assert.equal(calls.length, after);
   });
 
+  it('reports the CPU count: the option, else os.availableParallelism()', async () => {
+    const fixed = new SystemCollector({ procDir: procFixture(), volumes: [], gpu: false, logger: stub().logger, cpuCount: 4 });
+    assert.equal(fixed.snapshot().cpu_count, 4);
+    await fixed.collect();
+    assert.equal(fixed.snapshot().cpu_count, 4);
+    const host = new SystemCollector({ procDir: procFixture(), volumes: [], gpu: false, logger: stub().logger });
+    const count = host.snapshot().cpu_count;
+    assert.ok(Number.isInteger(count) && count! > 0, String(count));
+  });
+
   it('reads the GPU only when enabled', async () => {
     let runs = 0;
     const runNvidiaSmi = async (args: readonly string[]) => {

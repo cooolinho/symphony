@@ -40,6 +40,17 @@ const DASHBOARD_CSS = `
   .act-key { display: inline-flex; align-items: center; gap: 6px; }
   .act-swatch { width: 8px; height: 8px; border-radius: 2px; background: var(--role, var(--role-symphony)); }
   .act-empty { margin: 0; font: 12px var(--mono); color: var(--muted); }
+  /* System cards: host metrics, agent slots and the tracker API budget, coloured by utilisation (traffic light). */
+  .syscards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+  .syscard { position: relative; overflow: hidden; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 0 14px 12px 2px;
+    border: 1px solid var(--line); border-radius: var(--radius); background: rgba(17, 26, 44, .8); }
+  .syscard::before { content: ""; position: absolute; left: 0; top: 12px; bottom: 12px; width: 2px; border-radius: 2px; background: var(--tone, var(--faint)); opacity: .8; }
+  .syscard:hover { border-color: var(--line-2); }
+  .syscard .ui-kpi { padding: 12px 0 2px 12px; background: none; border: 0; border-radius: 0; }
+  .syscard .ui-kpi-value { font-size: 16px; }
+  .syscard-bars { display: grid; gap: 4px; padding-left: 12px; }
+  .syscard-barlabel { font: 10.5px var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .syscard .ui-spark { margin: 4px 0 0 12px; width: calc(100% - 12px); color: var(--tone, var(--muted)); }
 
   /* Running agents */
   .agents-section { border-color: var(--line-2); }
@@ -215,6 +226,7 @@ const DASHBOARD_CSS = `
     .logs .body { grid-column: 1 / -1; }
     .agent-foot { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 10px; }
     .sysinfo { gap: 6px 16px; }
+    .syscards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 `;
 
@@ -256,6 +268,7 @@ export const DASHBOARD_HTML = page({
   </section>
   <section id="model-controls" class="panel model-controls" aria-label="Models" hidden></section>
 
+  <div class="syscards" id="system-cards" role="group" aria-label="System"></div>
   <div class="stats" id="stats" aria-label="Metrics"></div>
 
   <section class="agents-section" id="running-section" aria-labelledby="running-title">
@@ -1401,6 +1414,139 @@ ${PIPELINE_JS}
     } catch {}
   }
 
+  // ------------------------------------------------------------------ system cards
+  // Host metrics from /api/v1/system (own 10 s interval, independent of the 2 s state polling) plus agent slots and the
+  // tracker API budget from the last state. Slots and GitHub API have no server-side history: their sparklines come
+  // from a client-side ring buffer filled every 10 s, so they grow from the moment the page was opened.
+
+  let systemData = null;
+  let lastState = null;
+  const TREND_MAX = 360;
+  const trend = { slots: [], github: [] };
+
+  function pushTrend(key, value) {
+    trend[key].push(typeof value === 'number' && Number.isFinite(value) ? value : null);
+    while (trend[key].length > TREND_MAX) trend[key].shift();
+  }
+
+  function fmtGb(bytes) {
+    return (bytes / 1073741824).toFixed(1);
+  }
+
+  function pct(used, total) {
+    return typeof used === 'number' && typeof total === 'number' && total > 0 ? (used / total) * 100 : null;
+  }
+
+  /**
+   * One tile: kpi value (null shows "—" without bars, sparkline or tone), bars [{ name, pct }] and a sparkline of
+   * history; the traffic-light tone follows tonePct, else the highest bar, and colours value, bars and sparkline.
+   */
+  function systemCard(label, value, opts) {
+    const { sub, bars, history, tonePct, title } = opts || {};
+    const empty = value === null || value === undefined;
+    const shown = empty ? [] : (bars || []).filter((b) => typeof b.pct === 'number' && Number.isFinite(b.pct));
+    const tone = empty ? null : trafficTone(tonePct !== undefined ? tonePct : shown.length ? Math.max(...shown.map((b) => b.pct)) : null);
+    const color = tone ? UI_TRAFFIC[tone] : undefined;
+    const box = el('article', null, 'syscard' + (tone ? ' tone-' + tone : empty ? ' is-empty' : ''));
+    if (title) box.setAttribute('title', title);
+    box.append(kpi(empty ? null : value, label, { sub, color }));
+    if (shown.length) {
+      const rows = el('div', null, 'syscard-bars');
+      for (const b of shown) {
+        if (b.name) rows.append(el('span', b.name, 'syscard-barlabel'));
+        const t = trafficTone(b.pct);
+        rows.append(bar(b.pct, { height: 6, color: t ? UI_TRAFFIC[t] : undefined }));
+      }
+      box.append(rows);
+    }
+    const spark = empty ? null : sparkline(history, color);
+    if (spark) box.append(spark);
+    return box;
+  }
+
+  /** The tiles in fixed order: CPU, RAM, disk, load, agent slots, GitHub API, and the GPU when the host reports one. */
+  function systemCards(system, state, trend) {
+    const cur = system && system.current ? system.current : null;
+    const hist = system && Array.isArray(system.history) ? system.history : [];
+    const cards = [];
+
+    const cpu = cur && typeof cur.cpu_percent === 'number' ? cur.cpu_percent : null;
+    cards.push(systemCard('CPU', cpu === null ? null : cpu + ' %', {
+      sub: 'Auslastung', bars: [{ pct: cpu }], history: hist.map((s) => s.cpu_percent),
+    }));
+
+    const mem = cur && cur.memory ? cur.memory : null;
+    const memPct = mem ? pct(mem.used_bytes, mem.total_bytes) : null;
+    cards.push(systemCard('Arbeitsspeicher', memPct === null ? null : fmtGb(mem.used_bytes) + ' / ' + fmtGb(mem.total_bytes) + ' GB', {
+      sub: 'belegt / gesamt', bars: [{ pct: memPct }], history: hist.map((s) => (s.memory ? pct(s.memory.used_bytes, s.memory.total_bytes) : null)),
+    }));
+
+    const disks = (cur && Array.isArray(cur.disks) ? cur.disks : []).map((d) => ({ d, pct: pct(d.used_bytes, d.total_bytes) }));
+    const known = disks.filter((x) => x.pct !== null);
+    const top = known.length ? known.reduce((a, b) => (b.pct > a.pct ? b : a)) : null;
+    cards.push(systemCard('Festplatte', top ? fmtGb(top.d.used_bytes) + ' / ' + fmtGb(top.d.total_bytes) + ' GB' : null, {
+      sub: top && known.length > 1 ? top.d.name : 'belegt / gesamt',
+      bars: known.map((x) => ({ name: x.d.name, pct: x.pct })),
+      history: top ? hist.map((s) => {
+        const d = (Array.isArray(s.disks) ? s.disks : []).find((v) => v.name === top.d.name);
+        return d ? pct(d.used_bytes, d.total_bytes) : null;
+      }) : [],
+    }));
+
+    const load = cur && cur.load ? cur.load : null;
+    const cores = system && typeof system.cpu_count === 'number' && system.cpu_count > 0 ? system.cpu_count : null;
+    const loadPct = load && cores ? (load.one / cores) * 100 : null;
+    cards.push(systemCard('Load 1/5/15', load ? load.one.toFixed(2) + ' / ' + load.five.toFixed(2) + ' / ' + load.fifteen.toFixed(2) : null, {
+      sub: cores ? cores + ' Kerne' : null, bars: [{ pct: loadPct }], tonePct: loadPct, history: hist.map((s) => (s.load ? s.load.one : null)),
+    }));
+
+    const h = state && state.health ? state.health : null;
+    const counts = state && state.counts ? state.counts : null;
+    const max = h && typeof h.max_concurrent_agents === 'number' ? h.max_concurrent_agents : null;
+    const slotsPct = counts && max > 0 ? (counts.running / max) * 100 : null;
+    cards.push(systemCard('Agent-Slots', counts && max !== null ? counts.running + ' / ' + max : null, {
+      sub: counts ? 'Queue: ' + (counts.queued ?? 0) : null, bars: [{ pct: slotsPct }], history: trend.slots,
+    }));
+
+    const api = h && h.tracker_api ? h.tracker_api : null;
+    const apiPct = api && api.limit > 0 ? (1 - api.remaining / api.limit) * 100 : null;
+    cards.push(systemCard('GitHub-API', api ? fmtInt(api.remaining) + ' / ' + fmtInt(api.limit) : null, {
+      sub: h ? (h.last_tick_at ? 'letzter Poll vor ' + fmtDuration((Date.now() - Date.parse(h.last_tick_at)) / 1000) : 'noch kein Poll') : null,
+      bars: [{ pct: apiPct }], history: trend.github,
+      title: api && api.reset_at ? 'Restbudget, zurückgesetzt um ' + fmtTime(api.reset_at) : null,
+    }));
+
+    if (system && system.gpu) {
+      const g = system.gpu;
+      const util = typeof g.utilization_percent === 'number' ? g.utilization_percent : null;
+      const parts = [];
+      if (typeof g.memory_used_mib === 'number' && typeof g.memory_total_mib === 'number') parts.push(g.memory_used_mib + ' / ' + g.memory_total_mib + ' MiB');
+      if (typeof g.temperature_c === 'number') parts.push(g.temperature_c + ' °C');
+      cards.push(systemCard('GPU', util === null ? null : util + ' %', {
+        sub: parts.join(' · ') || null, bars: [{ pct: util }], history: hist.map((s) => (s.gpu ? s.gpu.utilization_percent : null)),
+      }));
+    }
+    return cards;
+  }
+
+  function renderSystemCards() {
+    patchChildren($('system-cards'), systemCards(systemData, lastState, trend));
+  }
+
+  async function loadSystem() {
+    try {
+      const res = await fetch('/api/v1/system', { cache: 'no-store' });
+      systemData = res.ok ? await res.json() : null;
+    } catch {
+      systemData = null;
+    }
+    const h = lastState && lastState.health;
+    const api = h && h.tracker_api;
+    pushTrend('slots', lastState && h && h.max_concurrent_agents > 0 ? (lastState.counts.running / h.max_concurrent_agents) * 100 : null);
+    pushTrend('github', api && api.limit > 0 ? (1 - api.remaining / api.limit) * 100 : null);
+    renderSystemCards();
+  }
+
   // ------------------------------------------------------------------ polling
 
   let historyTimer = null;
@@ -1416,6 +1562,8 @@ ${PIPELINE_JS}
   }
 
   function render(state) {
+    lastState = state;
+    renderSystemCards();
     const h = state.health;
     const problems = [];
     if (h.workflow_error) problems.push('WORKFLOW.md: ' + h.workflow_error.message);
@@ -1467,7 +1615,10 @@ ${PIPELINE_JS}
     renderActivity();
   }
 
+  let loading = false, reloadAgain = false;
   async function load() {
+    if (loading) { reloadAgain = true; return; }
+    loading = true;
     const progress = $('progress');
     progress.classList.remove('tick');
     void progress.offsetWidth;
@@ -1476,11 +1627,15 @@ ${PIPELINE_JS}
       const res = await fetch('/api/v1/state', { cache: 'no-store' });
       render(await res.json());
     } catch (error) {
+      lastState = null;
+      renderSystemCards();
       renderHeader(null, [], false);
       setText($('sys-lastpoll'), 'unreachable');
       $('problems').hidden = false;
       $('problem-list').replaceChildren(el('li', 'orchestrator unreachable: ' + error.message));
     }
+    loading = false;
+    if (reloadAgain) { reloadAgain = false; load(); }
   }
 
   const refresh = $('refresh');
@@ -1510,7 +1665,9 @@ ${PIPELINE_JS}
   load();
   loadHistory();
   loadToolActivity();
-  setInterval(load, 2000);
+  loadSystem();
+  live(load, pollEvery(load, 2000));
+  setInterval(loadSystem, 10000);
   setInterval(loadHistory, 30000);
   setInterval(loadToolActivity, 30000);
   // Tests load the page in a fake DOM and render a fixture through window.__render.

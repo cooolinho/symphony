@@ -180,4 +180,46 @@ export const BASE_JS = `
       return box;
     }));
   }
+
+  // ------------------------------------------------------------------ live updates (SSE with polling fallback)
+  const LIVE_POLL_MS = 30000;
+  /** A polling interval whose period can change at runtime: { ms, current, set(next) }. */
+  function pollEvery(fn, ms) {
+    let timer = setInterval(fn, ms);
+    const poller = { ms, current: ms, set(next) {
+      if (next === poller.current) return;
+      clearInterval(timer);
+      timer = setInterval(fn, next);
+      poller.current = next;
+    } };
+    return poller;
+  }
+  /**
+   * Reloads the page on the server's change events (GET /api/v1/events). While the stream is connected the poller
+   * slows to 30 s; on an error it returns to its own period. Without EventSource nothing happens and polling goes on.
+   * gapMs > 0 spaces the reloads (leading and trailing edge). Returns the EventSource or null.
+   */
+  function live(onChange, poller, gapMs) {
+    if (typeof EventSource === 'undefined') return null;
+    const source = new EventSource('/api/v1/events');
+    const flag = (on) => { if (typeof setLive === 'function') setLive(on); };
+    let lost = false, last = 0, timer = null;
+    const fire = () => { timer = null; last = Date.now(); onChange(); };
+    source.addEventListener('open', () => {
+      flag(true);
+      if (poller) poller.set(Math.max(poller.ms, LIVE_POLL_MS));
+      if (lost) { lost = false; onChange(); }
+    });
+    source.addEventListener('change', () => {
+      const wait = gapMs > 0 ? last + gapMs - Date.now() : 0;
+      if (wait <= 0) fire();
+      else if (timer === null) timer = setTimeout(fire, wait);
+    });
+    source.addEventListener('error', () => {
+      lost = true;
+      flag(false);
+      if (poller) poller.set(poller.ms);
+    });
+    return source;
+  }
 ${ICONS_JS}${COMPONENTS_JS}`;

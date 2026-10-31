@@ -21,6 +21,7 @@ import type {
   ToolResult,
   TrackedResult,
   TrackerAdapter,
+  TrackerApiBudget,
 } from '../src/tracker/types.ts';
 import { decodeMarker } from '../src/workflow/results.ts';
 import { normalizeStateName, resolveConfig } from '../src/workflow/config.ts';
@@ -83,6 +84,8 @@ export class FakeTracker implements TrackerAdapter {
   commentOnIssue?: (issue: Issue, body: string) => Promise<void>;
   /** Set to give the tracker issues that wait for pull request checks before auto_merge. */
   mergeWatch?: () => MergeWatch | null;
+  /** Set to report a tracker API budget (health.tracker_api); trackers without it report null. */
+  apiBudget?: () => TrackerApiBudget | null;
   /** Set to report the open pull request of the issue's branch; trackers without it have none. */
   branchPullRequest?: (issue: Issue) => Promise<BranchPullRequest | null>;
   /** Set to make entering a column run `auto_merge`: its result is part of the move, undefined = no merge. */
