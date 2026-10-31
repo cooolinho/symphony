@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { type ActivitySource, collectActivity } from './activity.ts';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { BrainAccessLog } from '../brain/access-log.ts';
@@ -8,6 +7,7 @@ import { ChangeStore } from '../changes/store.ts';
 import type { ChangeEntry, ChangeFile, ChangeFilter } from '../changes/types.ts';
 import { childEnvironment } from '../agent/env.ts';
 import { chooseRoleEffort, chooseRoleModel } from '../agent/model.ts';
+import { type ActivitySource, collectActivity } from './activity.ts';
 import { classify } from '../workflow/classify.ts';
 import { MODEL_FAMILIES, modelFamilyOf } from '../agent/rate-limit.ts';
 import { contextWindowSuffix } from '../agent/model-name.ts';
@@ -3650,6 +3650,8 @@ export class Orchestrator {
       reason,
       reason_code: code,
       blocked_by: issue.blocked_by,
+      labels: issue.labels,
+      updated_at: issue.updated_at?.toISOString() ?? null,
       tracked: this.#records.has(issue.id),
     });
     for (const item of plan) {

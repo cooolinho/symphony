@@ -41,11 +41,14 @@ describe('collectActivity', () => {
     ]);
   });
 
-  it('falls back to symphony for an unknown run and counts an identifier once (first source wins)', () => {
+  it('falls back to symphony for an unknown run and counts an issue and run once (first source wins)', () => {
     const live: ActivitySource = { identifier: 'acme/app#1', sessions: [], timeline: [ev(ago(2), 'unknown'), ev(ago(1), null)] };
     const snapshot: ActivitySource = { identifier: 'acme/app#1', sessions: [{ run: 'r1', role: 'developer' }], timeline: [ev(ago(2), 'r1'), ev(ago(1), 'r1')] };
     const out = collectActivity([live, snapshot], NOW - 30 * 60_000, NOW);
-    assert.deepEqual(out.map((e) => e.role), ['symphony', 'symphony']);
+    // r1 comes from the snapshot only (another claim), the null/unknown runs from the live source; a repeated run is dropped.
+    assert.deepEqual(out.map((e) => e.role), ['symphony', 'developer', 'symphony', 'developer']);
+    const again = collectActivity([snapshot, snapshot], NOW - 30 * 60_000, NOW);
+    assert.equal(again.length, 2);
   });
 });
 

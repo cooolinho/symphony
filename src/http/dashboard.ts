@@ -1,3 +1,4 @@
+import { ALERTS_CSS, ALERTS_JS } from './alerts.ts';
 import { PIPELINE_CSS, PIPELINE_JS } from './pipeline.ts';
 import { page } from './ui/layout.ts';
 
@@ -5,9 +6,6 @@ const DASHBOARD_CSS = `
   /* Dispatch gate: new dispatches wait for an account-wide session limit (a notice, not an error). */
   .dispatch-gate { border-color: var(--amber-line); background: linear-gradient(180deg, var(--amber-dim), rgba(11, 17, 21, .8));
     display: flex; align-items: center; gap: 10px; padding: 12px 16px; color: var(--amber); font: 12.5px/1.6 var(--mono); overflow-wrap: anywhere; }
-  /* Model holds: one model hit its own limit; its issues wait, the other models keep running. */
-  .model-holds { align-items: flex-start; }
-  .model-holds ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
   /* Pause / Resume per model family in use. */
   .model-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 16px; font: 12px var(--mono); color: var(--muted); }
   .model-controls .model-control-item { display: inline-flex; align-items: center; gap: 8px; }
@@ -239,7 +237,7 @@ const DASHBOARD_CSS = `
 export const DASHBOARD_HTML = page({
   title: 'Symphony',
   nav: 'overview',
-  styles: PIPELINE_CSS + DASHBOARD_CSS,
+  styles: PIPELINE_CSS + ALERTS_CSS + DASHBOARD_CSS,
   body: `
   <div class="page-head">
     <dl class="sysinfo" aria-live="polite">
@@ -256,15 +254,12 @@ export const DASHBOARD_HTML = page({
     </div>
   </div>
   <section id="repositories" class="repos" aria-label="Repositories" hidden><span class="repos-label">Repositories</span><div class="repo-list" id="repo-list"></div></section>
-  <section id="problems" class="problems" role="alert" hidden>
-    <h2><span class="dot tone-red"></span>Needs attention</h2>
-    <ul id="problem-list"></ul>
+  <section id="alerts" class="panel alerts" aria-labelledby="alerts-title">
+    <div class="section-head"><h2 id="alerts-title">Hinweise <span class="count" id="alerts-count" aria-live="polite">0</span></h2></div>
+    <ul class="alerts-list" id="alerts-list"></ul>
   </section>
   <section id="dispatch-gate" class="dispatch-gate" role="status" hidden>
     <span class="dot tone-amber"></span><span id="dispatch-gate-text"></span>
-  </section>
-  <section id="model-holds" class="dispatch-gate model-holds" role="status" hidden>
-    <span class="dot tone-amber"></span><ul id="model-hold-list"></ul>
   </section>
   <section id="model-controls" class="panel model-controls" aria-label="Models" hidden></section>
 
@@ -369,6 +364,7 @@ export const DASHBOARD_HTML = page({
   scripts: `
 (() => {
 ${PIPELINE_JS}
+${ALERTS_JS}
 
   const $ = (id) => document.getElementById(id);
   const setText = (node, text) => { text = String(text ?? ''); if (node.textContent !== text) node.textContent = text; };
@@ -1561,32 +1557,28 @@ ${PIPELINE_JS}
     historyTimer = setTimeout(loadHistory, delay);
   }
 
+  let budgetReport = null;
+  async function loadBudget() {
+    try {
+      const res = await fetch('/api/v1/budget', { cache: 'no-store' });
+      budgetReport = res.ok ? await res.json() : null;
+    } catch { budgetReport = null; }
+    if (lastState) renderAlerts(alerts(lastState, budgetReport), $('alerts-list'), $('alerts-count'));
+  }
+
   function render(state) {
     lastState = state;
     renderSystemCards();
     const h = state.health;
-    const problems = [];
-    if (h.workflow_error) problems.push('WORKFLOW.md: ' + h.workflow_error.message);
-    for (const e of h.dispatch_errors) if (!h.workflow_error || !e.startsWith('WORKFLOW.md')) problems.push(e);
-    if (h.last_tracker_error) problems.push('Tracker: ' + h.last_tracker_error.message);
-    if (h.pricing_error) problems.push('model-costs.yml: ' + h.pricing_error);
-    if (state.limits && state.limits.reservation_problem) problems.push('Agent slots: ' + state.limits.reservation_problem);
-    if (state.limits) for (const p of state.limits.slot_problems || []) problems.push('Agent slots: ' + p);
-    $('problems').hidden = problems.length === 0;
-    $('problem-list').replaceChildren(...problems.map((p) => el('li', p)));
-    renderHeader(h, problems, true);
+    const list = alerts(state, budgetReport);
+    renderAlerts(list, $('alerts-list'), $('alerts-count'));
+    renderHeader(h, list.filter((a) => a.kind === 'attention'), true);
     renderRepositories(h);
     const gate = h.dispatch_gate;
     $('dispatch-gate').hidden = !gate;
     setText($('dispatch-gate-text'), gate
       ? 'Dispatch paused until ' + fmtStamp(gate.until) + ' · session limit (' + gate.window + ') · started by ' + gate.issue_identifier
       : '');
-    const holds = state.model_holds || [];
-    $('model-holds').hidden = holds.length === 0;
-    $('model-hold-list').replaceChildren(...holds.map((hold) => el('li', hold.source === 'operator'
-      ? 'Model ' + hold.model + ' paused by the operator since ' + fmtStamp(hold.since) + ' · its issues wait, none runs on another model'
-      : 'Model ' + hold.model + ' on hold until ' + fmtStamp(hold.until) + (hold.issue_identifier ? ' · hit by ' + hold.issue_identifier : '') +
-        (hold.text ? ' · ' + hold.text : ''))));
 
     const t = state.agent_totals;
     const running = state.counts.running;
@@ -1631,8 +1623,7 @@ ${PIPELINE_JS}
       renderSystemCards();
       renderHeader(null, [], false);
       setText($('sys-lastpoll'), 'unreachable');
-      $('problems').hidden = false;
-      $('problem-list').replaceChildren(el('li', 'orchestrator unreachable: ' + error.message));
+      renderAlerts([{ kind: 'attention', at: new Date().toISOString(), title: 'Orchestrator nicht erreichbar', text: error.message, href: '/stats' }], $('alerts-list'), $('alerts-count'));
     }
     loading = false;
     if (reloadAgain) { reloadAgain = false; load(); }
@@ -1665,11 +1656,13 @@ ${PIPELINE_JS}
   load();
   loadHistory();
   loadToolActivity();
+  loadBudget();
   loadSystem();
   live(load, pollEvery(load, 2000));
   setInterval(loadSystem, 10000);
   setInterval(loadHistory, 30000);
   setInterval(loadToolActivity, 30000);
+  setInterval(loadBudget, 30000);
   // Tests load the page in a fake DOM and render a fixture through window.__render.
   if (window.__SYMPHONY_TEST__) window.__render = render;
 })();
