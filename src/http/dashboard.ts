@@ -236,7 +236,7 @@ export const DASHBOARD_HTML = page({
       <div class="section-head"><h2 id="budget-title">Budget</h2></div>
       <div id="budget-body"></div>
     </section>
-    </div>
+  </div>
 
   <section class="agents-section teams-section" id="teams-section" aria-labelledby="teams-title">
     <div class="section-head"><h2 id="teams-title">Teams live <span class="count" id="teams-count"></span></h2><a class="teams-all" href="/tasks">Alle Tasks →</a></div>
