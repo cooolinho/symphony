@@ -6,9 +6,11 @@ import { lastVaultCommit } from '../brain/git.ts';
 import { BrainIndex, candidatesOf, vitalsCounts, type BrainCandidate, type BrainVitals } from '../brain/index.ts';
 import { RateLimitLog, rateLimitKey, type RateLimitRecord } from '../budget/rate-limit-log.ts';
 import { ChangeStore } from '../changes/store.ts';
-import type { ChangeEntry, ChangeFile, ChangeFilter } from '../changes/types.ts';
+import { buildChangesPage } from '../changes/feed.ts';
+import type { ChangeEntry, ChangeFile, ChangeFilter, ChangesPage, ChangesQuery } from '../changes/types.ts';
 import { childEnvironment } from '../agent/env.ts';
 import { chooseRoleEffort, chooseRoleModel } from '../agent/model.ts';
+import { type ActivitySource, collectActivity } from './activity.ts';
 import { classify } from '../workflow/classify.ts';
 import { MODEL_FAMILIES, modelFamilyOf } from '../agent/rate-limit.ts';
 import { contextWindowSuffix } from '../agent/model-name.ts';
@@ -3475,6 +3477,11 @@ export class Orchestrator {
     return this.#changes.list(filter);
   }
 
+  /** One page of the feed with counts and (first page) stats; "today" is the calendar day in `timeZone`. */
+  changesPage(query: ChangesQuery, timeZone: string): ChangesPage {
+    return buildChangesPage(this.#changes, query, this.#clock.now(), timeZone);
+  }
+
   #issueLogger(issue: Pick<Issue, 'id' | 'identifier'>): Logger {
     return this.#logger.child({ issue_id: issue.id, issue_identifier: issue.identifier });
   }
@@ -3989,6 +3996,22 @@ export class Orchestrator {
       // Older entries than the first one here were dropped (TIMELINE_EVENTS).
       first_seq: trace.timeline[0]?.seq ?? trace.nextSeq,
       events,
+    };
+  }
+
+  /** Tool calls of the last `minutes` minutes for GET /api/v1/activity: claimed issues first, then in-memory archives. */
+  activity(minutes: number) {
+    const now = this.#clock.now().getTime();
+    const sinceMs = now - minutes * 60_000;
+    const sources: ActivitySource[] = [...this.#records.values()].map((r) => ({ identifier: r.identifier, timeline: r.timeline, sessions: r.sessions }));
+    for (const a of this.#archive.recent()) {
+      if (Date.parse(a.archived_at) >= sinceMs) sources.push({ identifier: a.issue_identifier, timeline: a.timeline, sessions: a.sessions });
+    }
+    return {
+      generated_at: new Date(now).toISOString(),
+      minutes,
+      since: new Date(sinceMs).toISOString(),
+      events: collectActivity(sources, sinceMs, now),
     };
   }
 

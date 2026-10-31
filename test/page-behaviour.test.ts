@@ -14,7 +14,7 @@ import { TASKS_HTML } from '../src/http/tasks-page.ts';
 import { Logger } from '../src/log.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import { FakeRunner, FakeTracker, ManualTimers, StaticWorkflow, baseFront, inlineScripts, makeWorkflow, reindentScripts, renderPage, tempDir, until } from './helpers.ts';
-import { analyticsFixture, dashboardState, issueDetail, issueRow } from './helpers/page-fixtures.ts';
+import { analyticsFixture, changeEntry, changesFixture, dashboardState, issueDetail, issueRow } from './helpers/page-fixtures.ts';
 
 // Independent acceptance tests for E1-5 (#350): the page tests check behaviour in the fake DOM, not the page source.
 
@@ -179,5 +179,76 @@ describe('the four converted test files check the rendered result, not the page 
       assert.doesNotMatch(text, /vm\.runInContext\([^)]*_HTML/, `${name}: running page source directly`);
       assert.doesNotMatch(text, /(DASHBOARD|AGENT|LOGS)_HTML\.includes\(\s*['"`][^'"`]*(=>|const |function |\.textContent|\.className)/, `${name}: JS fragment asserts`);
     }
+  });
+});
+
+describe('changes page (E6-3a)', () => {
+  const URL_FILTERED = 'http://127.0.0.1/changes?type=code&repo=acme%2Fapp';
+  const open = (data: (url: string) => unknown, url = URL_FILTERED) =>
+    renderPage(CHANGES_HTML, undefined, { url, fetch: (u) => (u.startsWith('/api/v1/state') ? dashboardState({ health: { repositories: ['acme/app', 'acme/lib'] } }) : data(u)) });
+  const feed = (page: ReturnType<typeof renderPage>) => page.$('changes-feed');
+
+  it('takes the filter from the URL and reloads on a chip click', async () => {
+    const page = open(() => changesFixture());
+    await until(() => page.query('.chg').length === 1, 3_000, 'feed rendered');
+    const chips = page.query('#changes-types .ui-fchip');
+    assert.deepEqual(chips.map((c) => [c.getAttribute('data-type'), c.getAttribute('aria-pressed')]), [['all', 'false'], ['code', 'true'], ['brain', 'false']]);
+    assert.match(chips[0]!.textContent, /Alle\s*3/);
+    assert.equal((page.$('changes-repo') as unknown as { value: string }).value, 'acme/app');
+    assert.deepEqual(page.query('#changes-repo option').map((o) => o.textContent), ['Alle Repositories', 'acme/app', 'acme/lib']);
+    const first = page.fetches.find((f) => f.url.startsWith('/api/v1/changes'))!;
+    assert.match(first.url, /type=code/);
+    assert.match(first.url, /repo=acme%2Fapp/);
+    const before = page.fetches.length;
+    page.click(chips[2]!);
+    await until(() => page.fetches.length > before, 3_000, 'reload');
+    assert.match(page.fetches.at(-1)!.url, /type=brain/);
+  });
+
+  it('renders entries with bars, links and chips, and escapes the title', async () => {
+    const page = open(() =>
+      changesFixture({
+        entries: [
+          changeEntry({ title: '<b>bold</b>', status: 'merged' }),
+          changeEntry({ id: 'brain:1', type: 'brain', pr: null, title: 'Note', files: [{ path: 'brain/x.md', added: 1, deleted: 0, status: 'added' }], diff: '+hi' }),
+        ],
+      }),
+    );
+    await until(() => page.query('.chg').length === 2, 3_000, 'entries');
+    const [code, brain] = page.query('.chg');
+    assert.equal(code!.querySelector('.chg-title')!.textContent, '<b>bold</b>');
+    assert.equal(code!.querySelector('b'), null);
+    assert.deepEqual(code!.querySelectorAll('.chg-bar-add').map((b) => b.style.width), ['100%', '20%']);
+    assert.deepEqual(code!.querySelectorAll('.chg-bar-del').map((b) => b.style.width), ['0%', '30%']);
+    assert.ok(code!.querySelector('.chg-add')!.className.includes('mono'));
+    assert.ok(code!.querySelector('.chg-del')!.className.includes('mono'));
+    assert.equal(code!.querySelector('a')!.getAttribute('href'), '/issue?id=acme%2Fapp%231');
+    assert.equal(code!.querySelector('.chg-pr')!.textContent, '#7');
+    assert.equal(code!.querySelector('.chg-status')!.textContent, 'merged');
+    assert.ok(brain!.querySelector('.chg-note'));
+    assert.equal(brain!.querySelector('.chg-pr'), null);
+  });
+
+  it('shows "Mehr laden" only with next_before and appends the next page', async () => {
+    const page = open((u) =>
+      u.includes('before=') ? changesFixture({ entries: [changeEntry({ id: 'code:acme/app:def' })], next_before: null }) : changesFixture({ next_before: 'code:acme/app:abc' }),
+    );
+    await until(() => page.query('#changes-more button').length === 1, 3_000, 'more button');
+    assert.equal(page.query('#changes-more button')[0]!.textContent, 'Mehr laden');
+    page.click(page.query('#changes-more button')[0]!);
+    await until(() => page.query('.chg').length === 2, 3_000, 'second page');
+    assert.match(page.fetches.at(-1)!.url, /before=code%3Aacme%2Fapp%3Aabc/);
+    assert.equal(page.query('#changes-more button').length, 0);
+  });
+
+  it('shows the empty state and the side figures', async () => {
+    const empty = open(() => changesFixture({ entries: [], counts: { all: 0, code: 0, brain: 0 } }));
+    await until(() => /Noch keine Änderungen\./.test(feed(empty).textContent), 3_000, 'empty state');
+    assert.equal(empty.query('#changes-more button').length, 0);
+    const page = open(() => changesFixture());
+    await until(() => /×5/.test(page.$('changes-hotspots').textContent), 3_000, 'hotspots');
+    assert.match(page.$('changes-hotspots').textContent, /src\/a\.ts/);
+    assert.match(page.$('changes-today').textContent, /Commits/);
+    assert.match(page.$('changes-today').textContent, /\+12/);
   });
 });
