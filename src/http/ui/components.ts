@@ -9,13 +9,18 @@
  * colours come from palette.ts, runtime tints of a #rrggbb colour from uiRgba().
  */
 
-import { CHIP_TONES, ROLE_COLORS, SCALES, rgba } from './palette.ts';
+import { CHIP_TONES, ROLE_COLORS, ROLE_LIGHT, SCALES, rgba } from './palette.ts';
 
 const ROLE_NAMES = {
   analyst: 'Analyst', architect: 'Architect', developer: 'Developer', tester: 'Tester', docs: 'Docs',
   reviewer: 'Reviewer', security: 'Security', symphony: 'Symphony', human: 'Human',
 };
 const ROLE_SHORT = { analyst: 'AN', architect: 'AR', developer: 'DE', tester: 'TE', docs: 'DO', reviewer: 'RE', security: 'SE', symphony: 'SY', human: 'HU' };
+/** Palette role of a configured role's result kind (issue-analyst reports analysis, so it is drawn as the analyst). */
+const KIND_ROLE = {
+  analysis: 'analyst', design: 'architect', implementation: 'developer', test: 'tester', docs: 'docs', review: 'reviewer',
+  security: 'security', human: 'human',
+};
 const ROLE_ICON = {
   analyst: 'analyst', architect: 'architect', developer: 'developer', tester: 'tester', docs: 'docs',
   reviewer: 'reviewer', security: 'security', symphony: 'logo', human: 'human',
@@ -26,6 +31,8 @@ export const COMPONENTS_JS = `
   // sparkline, ring, avatar, eq) and the traffic-light helper trafficTone.
   const UI_CHIP_TONES = ${JSON.stringify(CHIP_TONES)};
   const UI_ROLE_COLORS = ${JSON.stringify(ROLE_COLORS)};
+  const UI_ROLE_LIGHT = ${JSON.stringify(ROLE_LIGHT)};
+  const UI_KIND_ROLE = ${JSON.stringify(KIND_ROLE)};
   const UI_ROLE_NAMES = ${JSON.stringify(ROLE_NAMES)};
   const UI_ROLE_SHORT = ${JSON.stringify(ROLE_SHORT)};
   const UI_ROLE_ICON = ${JSON.stringify(ROLE_ICON)};
@@ -39,6 +46,8 @@ export const COMPONENTS_JS = `
     const n = parseInt(hex.slice(1), 16);
     return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + alpha + ')';
   };
+  /** Palette key (a key of UI_ROLE_COLORS) of a role: the role itself when the palette has it, else by its result kind, else symphony. */
+  const uiRoleKey = (role, kind) => uiOwn(UI_ROLE_COLORS, role) ? role : uiOwn(UI_KIND_ROLE, kind) || 'symphony';
   /** A percentage clamped to 0..100; anything not finite gives 0. */
   const uiClamp = (pct) => (typeof pct === 'number' && Number.isFinite(pct) ? Math.min(100, Math.max(0, pct)) : 0);
   const uiGiven = (v) => v !== null && v !== undefined && v !== '';

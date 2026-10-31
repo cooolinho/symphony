@@ -209,6 +209,7 @@ export interface ServiceConfig {
   server: ServerConfig;
   system: SystemConfig;
   brain: BrainConfig;
+  budget: BudgetConfig;
   /** Non-fatal findings (ignored keys, ignored per-state limits) for operator logs. */
   warnings: string[];
 }
@@ -227,6 +228,12 @@ export interface BrainConfig {
   path: string;
   /** Another run that wrote a note within this many ms blocks a write to it (default 600000; 0 = off). */
   clashWindowMs: number;
+}
+
+/** Budget display settings (`budget` section). */
+export interface BudgetConfig {
+  /** Context fill in percent from which Claude Code compacts automatically; the team view marks it (default 80). */
+  compactThreshold: number;
 }
 
 export interface TrackerDefaults {
@@ -258,6 +265,7 @@ export const DEFAULTS = {
   maxTestRounds: 2,
   maxSecurityRounds: 2,
   maxCheckFailures: 3,
+  compactThreshold: 80,
   /** `pipeline.test_paths` when unset: the usual places of test files (Laravel, Node, Jest/Vitest). */
   testPaths: ['tests/**', 'test/**', '**/*.test.*', '**/*Test.php'],
   /** `pipeline.security_paths` when unset: the places of a Laravel app where authorization, authentication and the schema live. */
@@ -281,8 +289,9 @@ export const DEFAULTS = {
 const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'];
 export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
-const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server', 'system', 'brain'];
+const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server', 'system', 'brain', 'budget'];
 const BRAIN_KEYS = new Set(['enabled', 'path', 'clash_window_ms']);
+const BUDGET_KEYS = new Set(['compact_threshold']);
 const ROLE_KEYS = new Set([
   'brain',
   'states',
@@ -1201,6 +1210,12 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
   }
   const clashWindowMs = reader.int(brainRaw, 'clash_window_ms', 'brain.clash_window_ms', 600_000, 0);
   const brain: BrainConfig = { enabled: brainEnabled, path: brainPath, clashWindowMs };
+  const budgetRaw = reader.section(raw, 'budget');
+  for (const key of Object.keys(budgetRaw)) {
+    if (!BUDGET_KEYS.has(key)) reader.warnings.push(`budget.${key} ignored: not a known key (allowed: ${[...BUDGET_KEYS].join(', ')})`);
+  }
+  const budget: BudgetConfig = { compactThreshold: reader.int(budgetRaw, 'compact_threshold', 'budget.compact_threshold', DEFAULTS.compactThreshold, 1) };
+  if (budget.compactThreshold > 100) reader.errors.push('budget.compact_threshold must be <= 100');
   if (server.port !== null && server.port > 65_535) reader.errors.push('server.port must be <= 65535');
 
   if (reader.errors.length > 0) {
@@ -1223,6 +1238,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     server,
     system,
     brain,
+    budget,
     warnings: reader.warnings,
   };
 }
