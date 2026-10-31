@@ -72,10 +72,12 @@ describe('GET /api/v1/<id>/team', () => {
       const res = await request(server.port, 'GET', teamPath('live'));
       assert.equal(res.status, 200);
       const team = JSON.parse(res.body);
-      assert.deepEqual(Object.keys(team).sort(), ['active', 'blocks', 'handoffs', 'seats', 'subagents']);
+      assert.deepEqual(Object.keys(team).sort(), ['active', 'blocks', 'compact_threshold', 'handoffs', 'seats', 'subagents', 'trace']);
+      assert.equal(team.compact_threshold, 80);
+      assert.deepEqual(team.trace.map((x: { tool: string }) => x.tool), ['B', 'C', 'D', 'E']);
       assert.equal(team.active.role, 'default');
       assert.deepEqual(team.active.recent_tools.map((x: { tool: string }) => x.tool), ['B', 'C', 'D', 'E']);
-      for (const key of ['action', 'context', 'turn', 'model', 'tokens', 'cost_usd']) assert.ok(key in team.active, key);
+      for (const key of ['action', 'context', 'turn', 'max_turns', 'model', 'effort', 'tokens', 'cost_usd']) assert.ok(key in team.active, key);
       assert.deepEqual(team.seats.map((x: { role: string }) => x.role), ['default', 'you']);
       assert.equal(team.seats[0].status, 'playing');
       assert.equal(team.blocks.length, 1);
@@ -117,6 +119,9 @@ describe('GET /api/v1/<id>/team', () => {
       assert.deepEqual(team.seats.map((x: { role: string }) => x.role), ['developer', 'reviewer', 'you']);
       assert.equal(team.seats[0].status, 'done');
       assert.equal(team.seats.at(-1).status, 'waiting');
+      // Without a live session the trace is the newest session's last tool calls.
+      assert.deepEqual(team.trace.map((x: { tool: string }) => x.tool), ['Bash']);
+      assert.equal(team.compact_threshold, 80);
     } finally {
       await orchestrator.shutdown(1_000);
       await server.close();

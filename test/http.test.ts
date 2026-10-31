@@ -549,6 +549,42 @@ describe('issue details', () => {
   });
 });
 
+describe('issue details: head card fields (E3-6)', () => {
+  it('returns profile, round of max, branch_name and the pull request from the change log', async () => {
+    const logDir = tempDir();
+    fs.mkdirSync(path.join(logDir, 'changes'), { recursive: true });
+    const change = (sha: string, at: string, pr: number | null) => JSON.stringify({
+      id: `code:acme/app:${sha}`, type: 'code', at, repo: 'acme/app', issue: 'acme/app#h', role: 'developer', title: 'x', files: [],
+      pr: pr === null ? null : { number: pr, status: 'pending' }, diff: null, status: 'committed',
+    });
+    fs.writeFileSync(path.join(logDir, 'changes', 'acme_app.jsonl'), [change('a1', '2026-10-01T10:00:00.000Z', 6), change('a2', '2026-10-01T11:00:00.000Z', 7), change('a3', '2026-10-01T12:00:00.000Z', null)].join('\n') + '\n');
+    const front = baseFront(tempDir(), { pipeline: { profiles: { feature: { max_review_rounds: 2 } } } });
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(front)),
+      runner: new FakeRunner(() => new Promise(() => undefined)),
+      logger: Logger.silent(),
+      env: {},
+      logDir,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker([makeIssue({ id: 'h', labels: ['type: feature', 'complexity: l'], branch_name: 'symphony/issue-h' }), makeIssue({ id: 'p' })]),
+    });
+    try {
+      await orchestrator.tickNow();
+      const detail = orchestrator.issueDetail('acme/app#h');
+      assert.equal(detail?.profile, 'feature');
+      assert.deepEqual(detail?.rounds, { current: 1, max: 2 });
+      assert.equal(detail?.pull_request, 7, 'newest change that knows a pull request');
+      assert.equal(detail?.issue?.branch_name, 'symphony/issue-h');
+      const plain = orchestrator.issueDetail('acme/app#p');
+      assert.equal(plain?.pull_request, null);
+      assert.equal(plain?.issue?.branch_name, null);
+      assert.equal(plain?.rounds?.max, 3, 'pipeline.max_review_rounds without a profile override');
+    } finally {
+      await orchestrator.shutdown(1_000);
+    }
+  });
+});
+
 describe('team API', () => {
   const make = (logDir: string, issues: ReturnType<typeof makeIssue>[], runner = new FakeRunner(() => new Promise(() => undefined))) =>
     new Orchestrator({
@@ -575,7 +611,7 @@ describe('team API', () => {
       const res = await request(server.port, 'GET', base);
       assert.equal(res.status, 200);
       const team = JSON.parse(res.body);
-      assert.deepEqual(Object.keys(team).sort(), ['active', 'blocks', 'handoffs', 'seats', 'subagents']);
+      assert.deepEqual(Object.keys(team).sort(), ['active', 'blocks', 'compact_threshold', 'handoffs', 'seats', 'subagents', 'trace']);
       assert.equal(team.active.role, 'default');
       assert.equal(team.active.recent_tools.at(-1).tool, 'Bash');
       assert.equal(team.seats.at(-1).role, 'you');
@@ -1219,7 +1255,7 @@ describe('page shell (layout.ts, #342)', () => {
     assert.equal(count(AGENT_HTML, '<nav class="crumbs" aria-label="Brotkrumen">'), 1);
     assert.match(AGENT_HTML, /aria-label="Brotkrumen"><ol><li><a href="\/">Übersicht<\/a><\/li><li><span class="crumb-current" id="crumb-current">Issue<\/span>/);
     const agent = renderPage(AGENT_HTML, { detail: issueDetail() }, { url: AGENT_URL });
-    assert.equal(agent.$('crumb-current').textContent, 'Issue #1', 'the crumb names the issue');
+    assert.equal(agent.$('crumb-current').textContent, '#1 Issue one', 'the crumb names the issue: number and short title');
     assert.equal(agent.query('nav[aria-label="Brotkrumen"] a[href="/"]').length, 1);
     for (const html of [DASHBOARD_HTML, LOGS_HTML]) assert.ok(!html.includes('aria-label="Brotkrumen"'));
   });
@@ -1505,7 +1541,7 @@ describe('agent page behaviour', () => {
 
   it('pauses a running issue and shows Resume now for an operator pause', () => {
     const running = renderPage(AGENT_HTML, { detail: issueDetail() }, opts);
-    const pause = running.query('button.restart').find((b) => b.textContent === 'Pause')!;
+    const pause = running.query('#head-actions button.restart').find((b) => b.textContent === 'Pausieren')!;
     running.click(pause);
     assert.deepEqual(running.fetches.at(-1), { url: '/api/v1/acme%2Fapp%231/pause', method: 'POST' });
     const paused = renderPage(AGENT_HTML, { detail: issueDetail({ status: 'paused', running: null, paused: { source: 'operator', paused_at: '2026-10-30T11:50:00Z', continuations: 0 } }) }, opts);
@@ -1519,7 +1555,7 @@ describe('agent page behaviour', () => {
     const detail = retrying(sessionLimit);
     detail.slots = { running: 1, forced: 0, limit: 1 };
     const page = renderPage(AGENT_HTML, { detail }, { ...opts, confirm: false });
-    const force = page.query('button.restart').find((b) => b.textContent === 'Start now')!;
+    const force = page.query('#head-actions button.restart').find((b) => b.textContent === 'Jetzt starten')!;
     const before = page.fetches.length;
     page.click(force);
     assert.deepEqual(page.confirms, ['All 1 slot is busy. Start #1 in an extra slot?']);

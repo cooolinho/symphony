@@ -19,6 +19,7 @@ const running: TeamRunning = {
   last_message: 'Editing files',
   turn_count: 7,
   model: 'opus',
+  effort: 'high',
   tokens: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
   cost_usd: 0.5,
   context: { tokens: 100, window: 1000, percent: 10, compacts: 0 },
@@ -52,6 +53,9 @@ function fixture(over: Partial<TeamInput> = {}, finished = false): TeamInput {
     running: finished ? null : running,
     timeline: [tool(1, 'r1', '10:05'), tool(2, 'r1', '10:06'), tool(3, 'r2', '10:25'), ...[1, 2, 3, 4, 5].map((n) => tool(n, 'r3', '10:40'))],
     now: Date.parse(at('10:41')),
+    roles: null,
+    maxTurns: 50,
+    compactThreshold: 80,
     ...over,
   };
 }
