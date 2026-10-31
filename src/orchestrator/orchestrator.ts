@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { BrainAccessLog } from '../brain/access-log.ts';
+import { createVaultGit } from '../brain/git.ts';
+import { writeIssueSummary } from '../brain/issue-summary.ts';
 import { RateLimitLog, rateLimitKey, type RateLimitRecord } from '../budget/rate-limit-log.ts';
 import { ChangeStore } from '../changes/store.ts';
 import { buildChangesPage } from '../changes/feed.ts';
@@ -1334,7 +1336,7 @@ export class Orchestrator {
               .pathFor(issue.identifier)
               .then((target) => target.path)
               .catch(() => null);
-            await this.#recordMerge(issue, adapter.issueRepository?.(issue) ?? 'unknown', 'symphony', result, workspace);
+            await this.#recordMerge(issue, adapter.issueRepository?.(issue) ?? 'unknown', 'symphony', result, workspace, adapter);
           }
           const record = this.#record(issue);
           record.meta = issueMeta(issue);
@@ -2297,7 +2299,7 @@ export class Orchestrator {
           },
           commits: (commits) => this.#recordCommits(entry, adapter, commits),
           merged: (result) => {
-            const work = this.#recordMerge(entry.issue, entry.repo, entry.role, result, entry.workspacePath);
+            const work = this.#recordMerge(entry.issue, entry.repo, entry.role, result, entry.workspacePath, adapter);
             this.#skips.add(work);
             void work.finally(() => this.#skips.delete(work));
           },
@@ -3436,7 +3438,10 @@ export class Orchestrator {
   }
 
   /** A `code` change for a merged pull request, with the branch's files against its base (none without a workspace). Never throws. */
-  async #recordMerge(issue: Issue, repo: string, role: string, result: AutoMergeResult, workspacePath: string | null): Promise<void> {
+  async #recordMerge(issue: Issue, repo: string, role: string, result: AutoMergeResult,
+    workspacePath: string | null,
+    adapter: TrackerAdapter,
+  ): Promise<void> {
     if (!result.merged) return;
     const log = this.#issueLogger(issue);
     let files: ChangeFile[] = [];
@@ -3465,6 +3470,36 @@ export class Orchestrator {
       status: 'merged',
     });
     this.#notify();
+    await this.#writeIssueSummary(issue, repo, result, adapter, log);
+  }
+
+  /** `Issues/<repo>/<nr>.md` in the brain vault after a merge (E8-3); only with `brain.enabled`. Never throws. */
+  async #writeIssueSummary(issue: Issue, repo: string, result: AutoMergeResult, adapter: TrackerAdapter, log: Logger): Promise<void> {
+    const brain = this.#deps.workflow.current.config.brain;
+    if (!brain.enabled) return;
+    try {
+      const tracked = adapter.readResults ? await adapter.readResults(issue) : [];
+      const results = tracked.map(({ result: stage, meta, url }) => ({ result: stage, meta, url }));
+      const number = issue.identifier.slice(issue.identifier.lastIndexOf('#') + 1);
+      const pullRequest = result.pull_request;
+      const written = await writeIssueSummary(
+        {
+          repo,
+          identifier: issue.identifier,
+          number,
+          title: issue.title,
+          description: issue.description,
+          pullRequest,
+          pullRequestUrl: result.pull_request_url ?? (pullRequest !== null ? `https://github.com/${repo}/pull/${pullRequest}` : null),
+        },
+        results,
+        this.#deps.history ?? null,
+        { vaultPath: brain.path, versioning: createVaultGit(brain.path, log), extraCostUsd: this.#running.get(issue.id)?.costUsd ?? 0 },
+      );
+      log.info('issue summary written', { path: written.path, changed: written.changed });
+    } catch (error) {
+      log.warn('issue summary not written', { error: errorMessage(error) });
+    }
   }
 
   /** Recorded commits and merges, newest first, one page (`GET /api/v1/changes`, E6-3a). */
