@@ -77,7 +77,8 @@ export interface ChangeHotspot {
 
 /** "Today in numbers" and the hotspots of the last 7 days. */
 export interface ChangeStats {
-  today: { commits: number; merges: number; files: number; added: number; deleted: number };
+  /** `brain`: brain writes of the day (conflicts, i.e. rejected writes, excluded). */
+  today: { commits: number; merges: number; files: number; added: number; deleted: number; brain: number };
   hotspots: ChangeHotspot[];
 }
 

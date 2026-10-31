@@ -74,7 +74,7 @@ const getJson = async (port: number, query: string) => {
     entries: Array<{ id: string; type: string; repo: string; issue: string }>;
     next_before: string | null;
     counts: { all: number; code: number; brain: number };
-    stats: null | { today: { commits: number; merges: number; files: number; added: number; deleted: number }; hotspots: Array<{ path: string; repo: string; count: number }> };
+    stats: null | { today: { commits: number; merges: number; files: number; added: number; deleted: number; brain: number }; hotspots: Array<{ path: string; repo: string; count: number }> };
   };
 };
 const ids = (page: { entries: Array<{ id: string }> }) => page.entries.map((e) => e.id);

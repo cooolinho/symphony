@@ -15,6 +15,24 @@ function entry(id: string, at: string, over: Partial<ChangeEntry> = {}): ChangeE
 }
 
 describe('changeStats', () => {
+  it('counts brain writes of today (no conflicts) without touching code figures or hotspots', () => {
+    const brain = (id: string, at: string, status: ChangeEntry['status']) =>
+      entry(id, at, { type: 'brain', status, files: [{ path: 'Inbox/x.md', added: 3, deleted: 0, status: 'added' }] });
+    const stats = changeStats(
+      [
+        entry('c1', '2026-10-30T10:00:00Z'),
+        brain('b1', '2026-10-30T10:10:00Z', 'created'),
+        brain('b2', '2026-10-30T10:20:00Z', 'approved'),
+        brain('b3', '2026-10-30T10:30:00Z', 'conflict'),
+        brain('b4', '2026-10-29T10:30:00Z', 'created'),
+      ],
+      NOW,
+      'UTC',
+    );
+    assert.deepEqual(stats.today, { commits: 1, merges: 0, files: 1, added: 2, deleted: 1, brain: 2 });
+    assert.deepEqual(stats.hotspots.map((h) => h.path), ['a.ts']);
+  });
+
   it('counts commits and merges of today separately; merges add no files or lines', () => {
     const stats = changeStats(
       [
@@ -26,7 +44,7 @@ describe('changeStats', () => {
       NOW,
       'UTC',
     );
-    assert.deepEqual(stats.today, { commits: 2, merges: 1, files: 2, added: 3, deleted: 1 });
+    assert.deepEqual(stats.today, { commits: 2, merges: 1, files: 2, added: 3, deleted: 1, brain: 0 });
   });
 
   it('takes the calendar day in the time zone', () => {
