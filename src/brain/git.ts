@@ -15,6 +15,8 @@ export interface VaultGitOptions {
 export interface VaultGit extends BrainVersioning {
   /** Commits changes made outside Symphony (Obsidian) as one `human` commit; the sha, or null when there is nothing to take over. */
   commitHumanChanges(): Promise<string | null>;
+  /** Commits `path` as the system author `symphony` with `subject`; null when the file has no change. The caller holds `serial`. */
+  commitAs(path: string, subject: string): Promise<string | null>;
 }
 
 const EXCLUDE_OBSIDIAN = ':(exclude).obsidian';
@@ -137,12 +139,27 @@ export function createVaultGit(vaultPath: string, logger: Logger, options: Vault
     }
   };
 
+  const systemCommit = async (file: string, subject: string): Promise<string | null> => {
+    try {
+      await git(vaultPath, ['add', '--', file]);
+      const staged = names(await git(vaultPath, ['diff', '--cached', '--name-only', '-z', '--', file]));
+      if (staged.length === 0) return null;
+      const sha = await commit(vaultPath, { name: 'symphony', email: 'symphony@local' }, subject, file, [file]);
+      await notify(sha, [file]);
+      return sha;
+    } catch (error) {
+      await resetQuietly(vaultPath, [file]);
+      throw error;
+    }
+  };
+
   return {
     serial: (fn) => serialFor(vaultPath, fn),
     beforeWrite: async () => {
       await humanCommit();
     },
     commitWrite: (entry) => agentCommit(entry),
+    commitAs: systemCommit,
     commitHumanChanges: () => serialFor(vaultPath, humanCommit),
   };
 }

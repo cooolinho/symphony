@@ -1574,7 +1574,7 @@ describe('github_project auto_merge', () => {
     const { github, move, ops, statuses, comments } = await setup();
     const data = await move('Human Review');
     assert.equal(data.status, 'Done');
-    assert.deepEqual(data.auto_merge, { merged: true, pull_request: 7, status: 'Done', reason: 'merged into develop', checks: { state: 'none', failing: [], pending: [] } });
+    assert.deepEqual(data.auto_merge, { merged: true, pull_request: 7, status: 'Done', reason: 'merged into develop', pull_request_url: 'https://github.com/acme/app/pull/7', checks: { state: 'none', failing: [], pending: [] } });
     assert.deepEqual(ops(), ['SymphonySetStatus', 'SymphonyMergeCandidate', 'SymphonyMergePullRequest', 'SymphonyCloseIssue', 'SymphonySetStatus', 'SymphonyAddComment']);
     assert.deepEqual(statuses(), ['o3', 'o4']);
     const candidate = github.requests.find((r) => r.op === 'SymphonyMergeCandidate');
@@ -1593,7 +1593,7 @@ describe('github_project auto_merge', () => {
     assert.deepEqual(change, {
       previous: 'Todo',
       status: 'Done',
-      autoMerge: { merged: true, pull_request: 7, status: 'Done', reason: 'merged into develop', checks: { state: 'none', failing: [], pending: [] } },
+      autoMerge: { merged: true, pull_request: 7, status: 'Done', reason: 'merged into develop', pull_request_url: 'https://github.com/acme/app/pull/7', checks: { state: 'none', failing: [], pending: [] } },
     });
     assert.deepEqual(change?.autoMerge, toolData.auto_merge);
     assert.equal(change?.status, toolData.status);
