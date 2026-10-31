@@ -158,7 +158,7 @@ describe('QA system cards: values 1:1, German, slots and API', () => {
 describe('QA system cards: polling', () => {
   it('registers a separate 10 s interval and keeps the 2 s state polling', () => {
     assert.match(DASHBOARD_HTML, /setInterval\(\s*loadSystem\s*,\s*10000\s*\)/);
-    assert.match(DASHBOARD_HTML, /setInterval\(\s*load\s*,\s*2000\s*\)/);
+    assert.match(DASHBOARD_HTML, /live\(\s*load\s*,\s*pollEvery\(\s*load\s*,\s*2000\s*\)\s*\)/);
     assert.ok(DASHBOARD_HTML.indexOf('id="system-cards"') < DASHBOARD_HTML.indexOf('id="stats"'));
   });
   it('a failing or non-ok /api/v1/system does not throw and leaves "—"', async () => {

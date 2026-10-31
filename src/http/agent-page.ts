@@ -411,9 +411,10 @@ ${PIPELINE_JS}
     return changed;
   }
 
-  let polling = false;
+  let polling = false, pollAgain = false;
   async function poll() {
-    if (polling || !ID) return;
+    if (!ID) return;
+    if (polling) { pollAgain = true; return; }
     polling = true;
     const progress = $('progress');
     progress.classList.remove('tick'); void progress.offsetWidth; progress.classList.add('tick');
@@ -444,6 +445,7 @@ ${PIPELINE_JS}
     }
     polling = false;
     render();
+    if (pollAgain) { pollAgain = false; poll(); }
   }
 
   // ------------------------------------------------------------------ timeline model
@@ -1645,7 +1647,7 @@ ${PIPELINE_JS}
   setInterval(() => { if (S.detail && !S.ended) { renderHeader(); renderAlert(); } }, 1000);
 
   if (!ID) render();
-  else { render(); poll(); setInterval(poll, POLL_MS); }
+  else { render(); poll(); live(poll, pollEvery(poll, POLL_MS)); }
   // Tests load the page in a fake DOM and render a fixture through window.__render.
   if (window.__SYMPHONY_TEST__) window.__render = (state) => { Object.assign(S, state); render(); };
 })();
