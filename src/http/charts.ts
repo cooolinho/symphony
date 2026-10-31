@@ -1,10 +1,10 @@
 /**
- * Small chart kit for the statistics page: plain SVG/HTML, no library. Colors are the semantic Symphony tokens
- * (green = activity/success, cyan = information, amber = warning, red = failure, gray = secondary); series that
- * only need an identity use the fixed order green, cyan, violet, gray ("Other" is always gray).
+ * Small chart kit for the statistics page: plain SVG/HTML, no library. Every color is a token of the shell
+ * (green = activity/success, cyan = information, amber = warning, red = failure, gray = secondary, --role-* for roles,
+ * --st-* for status tones); series that only need an identity use the fixed order green, cyan, violet, gray ("Other"
+ * is always gray).
  */
 export const CHART_CSS = `
-  :root { --violet: #b394f5; --violet-dim: rgba(179, 148, 245, .12); }
   .chart { position: relative; width: 100%; min-width: 0; }
   .chart svg { display: block; width: 100%; overflow: visible; }
   .chart .axis text, .chart .tick { font: 10px var(--mono); fill: var(--muted); font-variant-numeric: tabular-nums; }
@@ -12,11 +12,11 @@ export const CHART_CSS = `
   .chart .base { stroke: var(--line-2); stroke-width: 1; }
   .chart .band { fill: transparent; cursor: default; }
   .chart .band.click { cursor: zoom-in; }
-  .chart .hover-band { fill: rgba(255, 255, 255, .035); pointer-events: none; }
+  .chart .hover-band { fill: var(--glass-in); pointer-events: none; }
   .chart .cross { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
   .chart-tip { position: fixed; z-index: 60; pointer-events: none; min-width: 150px; max-width: 280px; padding: 8px 10px;
-    border: 1px solid var(--line-2); border-radius: var(--radius-sm); background: rgba(8, 13, 16, .97);
-    box-shadow: 0 10px 30px -12px rgba(0, 0, 0, .9), 0 0 0 1px rgba(61, 220, 132, .05); font: 11.5px/1.5 var(--mono); color: var(--text); }
+    border: 1px solid var(--glass-line); border-radius: var(--radius-sm); background: var(--solid);
+    box-shadow: var(--shadow); font: 11.5px/1.5 var(--mono); color: var(--text); }
   .chart-tip .tip-title { color: var(--text-2); font-weight: 600; margin-bottom: 4px; letter-spacing: .04em; overflow-wrap: anywhere; }
   .chart-tip .tip-row { display: flex; justify-content: space-between; gap: 14px; }
   .chart-tip .tip-row span:first-child { color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
@@ -30,10 +30,10 @@ export const CHART_CSS = `
   .hbar { display: grid; grid-template-columns: minmax(90px, 32%) minmax(0, 1fr) auto; gap: 10px; align-items: center;
     padding: 3px 6px; margin: 0 -6px; border-radius: var(--radius-sm); }
   .hbar.click { cursor: pointer; }
-  .hbar.click:hover, .hbar:focus-visible { background: rgba(255, 255, 255, .03); }
+  .hbar.click:hover, .hbar:focus-visible { background: var(--glass-in); }
   .hbar.active { background: var(--green-dim); }
   .hbar .name { font: 12px var(--mono); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .hbar .track { height: 10px; border-radius: 3px; background: rgba(255, 255, 255, .025); overflow: hidden; }
+  .hbar .track { height: 10px; border-radius: 3px; background: var(--glass-in); overflow: hidden; }
   .hbar .fill { height: 100%; border-radius: 0 3px 3px 0; background: var(--sw, var(--green)); min-width: 2px;
     box-shadow: 0 0 10px -3px var(--sw, var(--green)); transition: width .4s var(--ease); }
   .hbar .val { font: 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--text); text-align: right; white-space: nowrap; }
@@ -44,15 +44,15 @@ export const CHART_CSS = `
   }
 
   /* One stacked bar for a distribution. */
-  .dist { display: flex; height: 14px; border-radius: 4px; overflow: hidden; gap: 2px; background: rgba(255, 255, 255, .02); }
+  .dist { display: flex; height: 14px; border-radius: 4px; overflow: hidden; gap: 2px; background: var(--glass-in); }
   .dist span { background: var(--sw, var(--gray)); min-width: 3px; }
 
   /* Heatmap: 24 hour columns × 7 weekday rows. */
   .heat { display: grid; grid-template-columns: 34px repeat(24, minmax(0, 1fr)); gap: 2px; }
   .heat .hl { font: 9.5px var(--mono); color: var(--muted); text-align: center; overflow: hidden; }
   .heat .dl { font: 10px var(--mono); color: var(--muted); align-self: center; }
-  .heat .cell { aspect-ratio: 1; min-height: 8px; border-radius: 2px; background: rgba(255, 255, 255, .025); }
-  .heat .cell.on { background: rgba(61, 220, 132, var(--a, .15)); box-shadow: 0 0 6px -2px rgba(61, 220, 132, var(--a, .15)); }
+  .heat .cell { aspect-ratio: 1; min-height: 8px; border-radius: 2px; background: var(--glass-in); }
+  .heat .cell.on { background: var(--green); opacity: var(--a, .15); }
 `;
 
 export const CHART_JS = `
@@ -210,7 +210,7 @@ export const CHART_JS = `
       }
       if (r.onClick) {
         row.tabIndex = 0; row.setAttribute('role', 'button');
-        row.setAttribute('aria-label', (title ? title + ': ' : '') + r.label + ' ' + r.text + (r.active ? ' (active filter)' : ''));
+        row.setAttribute('aria-label', (title ? title + ': ' : '') + r.label + ' ' + r.text + (r.active ? ' (aktiver Filter)' : ''));
         row.addEventListener('click', () => { hideTip(); r.onClick(); });
         row.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); r.onClick(); } });
       }
@@ -226,7 +226,7 @@ export const CHART_JS = `
     for (const p of parts) {
       if (!(p.value > 0)) continue;
       const seg = el('span'); seg.style.flex = String(p.value); seg.style.setProperty('--sw', p.color);
-      seg.addEventListener('mousemove', (event) => showTip(event, p.label, [['Runs', fmtInt(p.value)], ['Share', fmtPct(p.value / total)]]));
+      seg.addEventListener('mousemove', (event) => showTip(event, p.label, [['Runs', fmtInt(p.value)], ['Anteil', fmtPct(p.value / total)]]));
       seg.addEventListener('mouseleave', hideTip);
       bar.append(seg);
     }
@@ -235,9 +235,9 @@ export const CHART_JS = `
 
   /** Weekday × hour heatmap of counts (grid[weekday 0 = Monday][hour]). */
   function heatmap(host, grid, max) {
-    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const days = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
     const wrap = el('div', null, 'heat'); wrap.setAttribute('role', 'img');
-    wrap.setAttribute('aria-label', 'Run starts by weekday and hour');
+    wrap.setAttribute('aria-label', 'Run-Starts nach Wochentag und Stunde');
     wrap.append(el('span'));
     for (let h = 0; h < 24; h++) wrap.append(el('span', h % 3 === 0 ? pad2(h) : '', 'hl'));
     grid.forEach((hours, d) => {
@@ -245,7 +245,7 @@ export const CHART_JS = `
       hours.forEach((count, h) => {
         const cell = el('span', null, 'cell' + (count > 0 ? ' on' : ''));
         if (count > 0) cell.style.setProperty('--a', (0.15 + 0.85 * (count / max)).toFixed(2));
-        cell.addEventListener('mousemove', (event) => showTip(event, days[d] + ' ' + pad2(h) + ':00–' + pad2((h + 1) % 24) + ':00', [['Run starts', fmtInt(count)]]));
+        cell.addEventListener('mousemove', (event) => showTip(event, days[d] + ' ' + pad2(h) + ':00–' + pad2((h + 1) % 24) + ':00', [['Run-Starts', fmtInt(count)]]));
         cell.addEventListener('mouseleave', hideTip);
         wrap.append(cell);
       });

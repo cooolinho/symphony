@@ -5,6 +5,7 @@ import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { sessionClaudeConfig } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, AgentSession, IntegrationReport, SessionLimitInfo } from '../agent/types.ts';
 import type { BrainAccessLog } from '../brain/access-log.ts';
+import type { BrainIndex } from '../brain/index.ts';
 import { brainToolsFor, createVaultGit } from '../brain/tools.ts';
 import { repoFolderName } from '../brain/vault.ts';
 import { isRepositoryName } from '../tracker/github-project/settings.ts';
@@ -196,6 +197,8 @@ export interface WorkerParams {
   transcriptDir: string | null;
   /** Access log and clash list of the brain, shared by all sessions. */
   brainAccess?: BrainAccessLog | null;
+  /** Index of the vault, updated after every vault commit. */
+  brainIndex?: BrainIndex | null;
   /** Called after every commit to the vault (`createVaultGit` `onCommit`) with the vault path; errors are logged, never thrown. */
   onBrainCommit?: (vault: string, sha: string, paths: string[]) => void | Promise<void>;
   /**
@@ -397,6 +400,19 @@ async function prepareAttachments(adapter: TrackerAdapter, issue: Issue, workspa
     await writeAttachments(workspacePath, []).catch(() => undefined);
     return [{ path: null, label: '', source: 'description and comments', error: errorMessage(error) }];
   }
+}
+
+/** `onCommit` of the vault git of a session: updates the brain index and records the brain changes. */
+export function vaultGitHooks(
+  vault: string,
+  params: Pick<WorkerParams, 'brainIndex' | 'onBrainCommit'>,
+): { onCommit: (sha: string, paths: string[]) => Promise<void> } {
+  return {
+    onCommit: async (sha, paths) => {
+      params.brainIndex?.update(vault, paths);
+      await params.onBrainCommit?.(vault, sha, paths);
+    },
+  };
 }
 
 /**
@@ -647,11 +663,11 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     // An architect files sub-issues only to split an issue it may split (XL, not a work package itself).
     const subIssues = subIssueLimit(role, issue);
     sessionStart = { sha: startSha };
+    const brainPath = params.workflow.config.brain.path;
+    const vaultGitOptions = vaultGitHooks(brainPath, params);
     const brainTools = brainToolsFor(params.workflow.config.brain, brainMode, logger, {
       access: params.brainAccess ?? null,
-      ...(brainMode !== 'off' ? { versioning: createVaultGit(params.workflow.config.brain.path, logger, {
-              ...(params.onBrainCommit ? { onCommit: (sha, paths) => params.onBrainCommit!(params.workflow.config.brain.path, sha, paths) } : {}),
-            }) } : {}),
+      ...(brainMode !== 'off' ? { versioning: createVaultGit(brainPath, logger, vaultGitOptions) } : {}),
     });
     session = await params.runner.startSession({
       ...(params.contextWindow ? { contextWindow: params.contextWindow } : {}),

@@ -237,6 +237,25 @@ const AGENT_PAGE_CSS = `
   .stage-subagent .dot.pulse { animation: stage-pulse 1.4s ease-in-out infinite; }
   @keyframes stage-pulse { 50% { opacity: .35; } }
   .stage-empty { margin: 0; color: var(--muted); font: 13px var(--mono); }
+  .score { margin-top: 18px; min-width: 0; }
+  .score-frame { overflow-x: auto; overflow-y: hidden; max-width: 100%; padding: 8px 0; }
+  .score-frame svg { display: block; }
+  .score-lane rect { fill: transparent; } .score-lane.alt rect { fill: rgba(255, 255, 255, .03); }
+  .score-lane-label { font: 11px var(--mono); fill: var(--muted); }
+  .score-tick line { stroke: var(--line-2); stroke-width: 1; opacity: .5; }
+  .score-tick text { font: 10px var(--mono); fill: var(--faint); }
+  .score-block rect { rx: 3; ry: 3; }
+  .score-block:focus { outline: none; } .score-block:focus rect { stroke: var(--text); stroke-width: 1.5; }
+  .score-call { stroke: rgba(0, 0, 0, .35); stroke-width: 1; }
+  .score-handoff line { stroke: var(--muted); stroke-width: 1.5; } .score-handoff path { fill: var(--muted); }
+  .score-handoff text { font: 10px var(--mono); fill: var(--muted); }
+  .score-handoff.tone-green line { stroke: var(--green); } .score-handoff.tone-green path, .score-handoff.tone-green text { fill: var(--green); }
+  .score-handoff.tone-red line { stroke: var(--red); } .score-handoff.tone-red path, .score-handoff.tone-red text { fill: var(--red); }
+  .score-handoff.tone-gray line { stroke: var(--muted); } .score-handoff.tone-gray path, .score-handoff.tone-gray text { fill: var(--muted); }
+  .score-round line { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 4 4; }
+  .score-round text { font: 10px var(--mono); fill: var(--muted); }
+  .score-now line { stroke: var(--amber); stroke-width: 1.5; }
+  .score-now text { font: 10px var(--mono); fill: var(--amber); }
   @media (min-width: 1280px) {
     .stage-body { grid-template-columns: minmax(0, 3fr) minmax(340px, 2fr); }
     .stage-fields { flex-direction: column; flex-wrap: nowrap; }
@@ -290,6 +309,11 @@ export const AGENT_HTML = page({
         <article class="stage-field gi" id="stage-subs"><h3><span>Subagents</span><span id="stage-subs-meta"></span></h3><div id="stage-subs-body"></div></article>
       </div>
     </div>
+  </section>
+
+  <section class="score" id="score" aria-labelledby="score-title" hidden>
+    <div class="section-head"><h2 id="score-title">Partitur <span class="count" id="score-meta"></span></h2></div>
+    <div class="score-frame gi" id="score-frame" tabindex="0" aria-label="Partitur, horizontal scrollbar"></div>
   </section>
 
   <section class="pipe-section" id="pipe-section" aria-labelledby="pipe-title" hidden>
@@ -445,7 +469,7 @@ ${PIPELINE_JS}
     items: [], filter: 'all', q: '', expanded: new Set(), collapsed: new Set(), limit: RENDER_LIMIT,
     rendered: false, nodes: new Map(), listSig: '', unseen: 0, known: new Set(), fresh: new Set(),
     rawOpen: false, rawSev: '', rawQ: '',
-    team: null, stageSig: '', stagePct: undefined, subsSig: '',
+    team: null, stageSig: '', stagePct: undefined, subsSig: '', scoreSig: '',
   };
 
   // ------------------------------------------------------------------ data loading (one poll loop)
@@ -1754,6 +1778,130 @@ ${PIPELINE_JS}
     renderStageSubs(active, team.subagents);
   }
 
+  // ------------------------------------------------------------------ score (Partitur)
+
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const SCORE_LABEL_W = 96, SCORE_PAD_R = 40, SCORE_AXIS_H = 22, SCORE_LANE_H = 30, SCORE_BLOCK_H = 18;
+  const SCORE_MIN_W = 600, SCORE_PX_PER_TICK = 60, SCORE_MAX_CALLS_PER_MIN = 10;
+  function svgEl(tag, attrs, cls) {
+    const n = document.createElementNS(SVG_NS, tag);
+    if (cls) n.setAttribute('class', cls);
+    for (const k in attrs || {}) n.setAttribute(k, String(attrs[k]));
+    return n;
+  }
+  const svgText = (text, attrs, cls) => { const n = svgEl('text', attrs, cls); n.textContent = String(text); return n; };
+  const scoreTickMin = (ms) => (ms <= 60 * 60000 ? 5 : ms <= 240 * 60000 ? 15 : 60);
+  const scoreVerdictTone = (v) => (v === 'approve' ? 'green' : v === 'request_changes' ? 'red' : 'gray');
+  function scoreBlockTitle(b, endMs) {
+    const open = b.ended_at === null || b.ended_at === undefined;
+    const startMs = Date.parse(b.started_at);
+    return [seatName(b.role), b.round ? 'Runde ' + b.round : null, 'Dauer ' + fmtDuration(Math.max(0, endMs - startMs) / 1000), 'Modell ' + (b.model ?? '—'),
+      'Verdict ' + (b.verdict ?? (open ? 'läuft' : '—')), (b.tool_calls || 0) + ' Tool-Aufrufe'].filter(Boolean).join(' · ');
+  }
+  const scoreMaxRound = (blocks) => blocks.reduce((m, b) => Math.max(m, b.round || 0), 0) || 1;
+  const scoreSummary = (blocks, handoffs) => 'Partitur: ' + blocks.length + ' Sessions, ' + handoffs.length + ' Übergaben, Runde ' + scoreMaxRound(blocks);
+
+  function renderScore() {
+    const team = S.team;
+    const blocks = team && Array.isArray(team.blocks) ? team.blocks.filter((b) => b && Number.isFinite(Date.parse(b.started_at))) : [];
+    $('score').hidden = !blocks.length;
+    if (!blocks.length) { S.scoreSig = ''; return; }
+    const handoffs = (Array.isArray(team.handoffs) ? team.handoffs : []).filter((h) => Number.isFinite(Date.parse(h.at)));
+    const live = !S.ended && !S.notFound && !!team.active;
+    const frame = $('score-frame');
+    const width = frame.clientWidth || 0;
+    const toolEvents = new Map();
+    for (const e of S.events) if (e.kind === 'agent' && e.event === 'tool_use' && e.run) { const a = toolEvents.get(e.run) || []; a.push(e); toolEvents.set(e.run, a); }
+    const sig = JSON.stringify([blocks, handoffs, team.seats && team.seats.map((s) => s.role), live, live ? Math.floor(Date.now() / 60000) : 0, width, blocks.map((b) => (toolEvents.get(b.run) || []).length)]);
+    if (sig === S.scoreSig) return;
+    S.scoreSig = sig;
+
+    const t0 = Math.min(...blocks.map((b) => Date.parse(b.started_at)));
+    const endOf = (b) => (b.ended_at ? Date.parse(b.ended_at) : null);
+    const lastEnd = Math.max(...blocks.map((b) => endOf(b) ?? Date.parse(b.started_at)), ...handoffs.map((h) => Date.parse(h.at)));
+    const t1 = Math.max(live ? Date.now() : lastEnd, t0 + 60000);
+    const span = t1 - t0;
+    const tick = scoreTickMin(span);
+    const plot = Math.max((span / 60000 / tick) * SCORE_PX_PER_TICK, SCORE_MIN_W - SCORE_LABEL_W - SCORE_PAD_R, width - SCORE_LABEL_W - SCORE_PAD_R);
+    const x = (t) => SCORE_LABEL_W + ((t - t0) / span) * plot;
+    const roles = (team.seats || []).map((s) => s.role).filter((r) => r !== 'you');
+    for (const b of blocks) if (!roles.includes(b.role)) roles.push(b.role);
+    const laneY = (role) => SCORE_AXIS_H + roles.indexOf(role) * SCORE_LANE_H;
+    const W = Math.round(SCORE_LABEL_W + plot + SCORE_PAD_R), H = SCORE_AXIS_H + roles.length * SCORE_LANE_H + 8;
+    const summary = scoreSummary(blocks, handoffs);
+    const svg = svgEl('svg', { width: W, height: H, viewBox: '0 0 ' + W + ' ' + H, role: 'group', 'aria-label': summary, 'data-tick-min': tick }, 'score-svg');
+    const svgTitle = svgEl('title', {});
+    svgTitle.textContent = summary;
+    svg.append(svgTitle);
+
+    roles.forEach((r, i) => {
+      const g = svgEl('g', { 'data-role': r }, 'score-lane' + (i % 2 ? ' alt' : ''));
+      g.append(svgEl('rect', { x: 0, y: laneY(r), width: W, height: SCORE_LANE_H }), svgText(seatName(r), { x: 6, y: laneY(r) + SCORE_LANE_H / 2 + 4 }, 'score-lane-label'));
+      svg.append(g);
+    });
+    const step = tick * 60000;
+    for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+      const g = svgEl('g', { 'data-t': t }, 'score-tick');
+      g.append(svgEl('line', { x1: x(t), x2: x(t), y1: SCORE_AXIS_H - 4, y2: H - 8 }),
+        svgText(new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }), { x: x(t), y: 12, 'text-anchor': 'middle' }));
+      svg.append(g);
+    }
+
+    for (const b of blocks) {
+      const s = Date.parse(b.started_at), e = endOf(b) ?? t1;
+      const bx = x(s), bw = Math.max(3, x(Math.max(e, s)) - bx), by = laneY(b.role) + (SCORE_LANE_H - SCORE_BLOCK_H) / 2;
+      const title = scoreBlockTitle(b, Math.max(e, s));
+      const g = svgEl('g', { role: 'img', tabindex: 0, 'aria-label': title, 'data-role': b.role, 'data-run': b.run, 'data-calls': b.tool_calls || 0 }, 'score-block');
+      const tt = svgEl('title', {}); tt.textContent = title;
+      g.append(tt, svgEl('rect', { x: bx, y: by, width: bw, height: SCORE_BLOCK_H, fill: uiHex(uiOwn(UI_ROLE_COLORS, b.role)) || UI_ROLE_COLORS.symphony }));
+      const count = b.tool_calls || 0;
+      const times = (toolEvents.get(b.run) || []).map((ev) => Date.parse(ev.at)).filter(Number.isFinite).sort((a, c) => a - c);
+      const cap = Math.min(times.length || count, Math.max(1, Math.floor(((e - s) / 60000) * SCORE_MAX_CALLS_PER_MIN)), Math.floor(bw / 2));
+      const n = count > 0 ? cap : 0;
+      for (let i = 0; i < n; i++) {
+        const cx = times.length ? Math.min(bx + bw, Math.max(bx, x(times[Math.floor(((i + 0.5) * times.length) / n)]))) : bx + ((i + 0.5) / n) * bw;
+        g.append(svgEl('line', { x1: cx, x2: cx, y1: by + 3, y2: by + SCORE_BLOCK_H - 3 }, 'score-call'));
+      }
+      svg.append(g);
+    }
+
+    for (const h of handoffs) {
+      if (!roles.includes(h.from) || !roles.includes(h.to) || h.from === h.to) continue;
+      const hx = x(Date.parse(h.at));
+      const down = laneY(h.to) > laneY(h.from);
+      const y1 = laneY(h.from) + (down ? SCORE_LANE_H / 2 + SCORE_BLOCK_H / 2 : SCORE_LANE_H / 2 - SCORE_BLOCK_H / 2);
+      const y2 = laneY(h.to) + (down ? SCORE_LANE_H / 2 - SCORE_BLOCK_H / 2 : SCORE_LANE_H / 2 + SCORE_BLOCK_H / 2);
+      const d = down ? 1 : -1;
+      const g = svgEl('g', { 'data-from': h.from, 'data-to': h.to }, 'score-handoff tone-' + scoreVerdictTone(h.verdict));
+      g.append(svgEl('line', { x1: hx, x2: hx, y1, y2: y2 - d * 5 }),
+        svgEl('path', { d: 'M' + (hx - 4) + ' ' + (y2 - d * 6) + ' L' + (hx + 4) + ' ' + (y2 - d * 6) + ' L' + hx + ' ' + y2 + ' Z' }),
+        svgText(h.verdict || '—', hx > W - 110 ? { x: hx - 6, y: (y1 + y2) / 2 + 3, 'text-anchor': 'end' } : { x: hx + 6, y: (y1 + y2) / 2 + 3 }));
+      svg.append(g);
+    }
+
+    let maxRound = 0;
+    for (const b of [...blocks].sort((a, c) => Date.parse(a.started_at) - Date.parse(c.started_at))) {
+      const r = b.round || 0;
+      if (r > maxRound) {
+        if (maxRound) {
+          const rx = x(Date.parse(b.started_at));
+          const g = svgEl('g', { 'data-round': r }, 'score-round');
+          g.append(svgEl('line', { x1: rx, x2: rx, y1: 0, y2: H }), svgText('Runde ' + r, rx > W - 70 ? { x: rx - 4, y: 12, 'text-anchor': 'end' } : { x: rx + 4, y: 12 }));
+          svg.append(g);
+        }
+        maxRound = r;
+      }
+    }
+
+    if (live) {
+      const g = svgEl('g', {}, 'score-now');
+      g.append(svgEl('line', { x1: x(t1), x2: x(t1), y1: 0, y2: H }), svgText('Jetzt', { x: x(t1) - 4, y: 12, 'text-anchor': 'end' }));
+      svg.append(g);
+    }
+    frame.replaceChildren(svg);
+    setText($('score-meta'), blocks.length + ' Sessions · ' + handoffs.length + ' Übergaben · Runde ' + scoreMaxRound(blocks));
+  }
+
   // ------------------------------------------------------------------ render + interactions
 
   function render() {
@@ -1765,6 +1913,7 @@ ${PIPELINE_JS}
     if (S.detail || S.ended || S.notFound) {
       renderHeader();
       renderStage();
+      renderScore();
       renderPipelineSection();
       renderResults();
       renderGate();

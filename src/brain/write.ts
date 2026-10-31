@@ -56,7 +56,7 @@ interface Audit {
 }
 
 /** Writes through a temp file in the target folder and renames it, so a reader never sees half a note. */
-function writeAtomic(absolute: string, text: string): void {
+export function writeAtomic(absolute: string, text: string): void {
   fs.mkdirSync(path.dirname(absolute), { recursive: true });
   const temp = path.join(path.dirname(absolute), `.${path.basename(absolute)}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`);
   try {

@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { BrainAccessLog, type BrainAccess, type BrainClash } from '../brain/access-log.ts';
+import { createVaultGit, lastVaultCommit } from '../brain/git.ts';
+import { BrainIndex, candidatesOf, vitalsCounts, type BrainCandidate, type BrainVitals } from '../brain/index.ts';
+import { writeIssueSummary } from '../brain/issue-summary.ts';
 import { RateLimitLog, rateLimitKey, type RateLimitRecord } from '../budget/rate-limit-log.ts';
 import { BRAIN_BACKFILL_COMMITS, brainCommitEntries, brainConflictEntry, recentVaultCommits } from '../changes/brain.ts';
 import { ChangeStore } from '../changes/store.ts';
@@ -670,6 +673,7 @@ export class Orchestrator {
   #archive: IssueArchive;
   #rateLimitLog: RateLimitLog;
   readonly #brainAccess: BrainAccessLog;
+  readonly #brainIndex: BrainIndex;
   /** Commits and merges of the agent sessions and the changes to the brain (`<logDir>/changes/`). */
   #changes: ChangeStore;
   #records = new Map<string, IssueRecord>();
@@ -720,6 +724,7 @@ export class Orchestrator {
     this.#createAdapter = deps.createAdapter ?? defaultAdapterFactory;
     this.#pollIntervalMs = deps.workflow.current.config.polling.intervalMs;
     this.#archive = new IssueArchive(deps.logDir === null ? null : path.join(deps.logDir, 'issues'), deps.logger);
+    this.#brainIndex = new BrainIndex(deps.logger);
     this.#brainAccess = new BrainAccessLog(deps.logDir === null ? null : path.join(deps.logDir, 'brain'), deps.logger, {
       onClash: (line, clash) => this.#recordBrainClash(line, clash),
     });
@@ -1337,7 +1342,7 @@ export class Orchestrator {
               .pathFor(issue.identifier)
               .then((target) => target.path)
               .catch(() => null);
-            await this.#recordMerge(issue, adapter.issueRepository?.(issue) ?? 'unknown', 'symphony', result, workspace);
+            await this.#recordMerge(issue, adapter.issueRepository?.(issue) ?? 'unknown', 'symphony', result, workspace, adapter);
           }
           const record = this.#record(issue);
           record.meta = issueMeta(issue);
@@ -2197,6 +2202,7 @@ export class Orchestrator {
         transcriptDir: this.#deps.logDir === null ? null : path.join(this.#deps.logDir, 'sessions'),
         brainAccess: this.#brainAccess,
         onBrainCommit: (vault, sha, paths) => this.#recordBrainCommit(vault, sha, paths),
+        brainIndex: this.#brainIndex,
         continueWith: (fresh) => {
           const current = this.#deps.workflow.current.config;
           if (!isActiveState(fresh.state, current.tracker)) return `issue left the active states ("${fresh.state}")`;
@@ -2301,7 +2307,7 @@ export class Orchestrator {
           },
           commits: (commits) => this.#recordCommits(entry, adapter, commits),
           merged: (result) => {
-            const work = this.#recordMerge(entry.issue, entry.repo, entry.role, result, entry.workspacePath);
+            const work = this.#recordMerge(entry.issue, entry.repo, entry.role, result, entry.workspacePath, adapter);
             this.#skips.add(work);
             void work.finally(() => this.#skips.delete(work));
           },
@@ -3440,7 +3446,10 @@ export class Orchestrator {
   }
 
   /** A `code` change for a merged pull request, with the branch's files against its base (none without a workspace). Never throws. */
-  async #recordMerge(issue: Issue, repo: string, role: string, result: AutoMergeResult, workspacePath: string | null): Promise<void> {
+  async #recordMerge(issue: Issue, repo: string, role: string, result: AutoMergeResult,
+    workspacePath: string | null,
+    adapter: TrackerAdapter,
+  ): Promise<void> {
     if (!result.merged) return;
     const log = this.#issueLogger(issue);
     let files: ChangeFile[] = [];
@@ -3469,6 +3478,36 @@ export class Orchestrator {
       status: 'merged',
     });
     this.#notify();
+    await this.#writeIssueSummary(issue, repo, result, adapter, log);
+  }
+
+  /** `Issues/<repo>/<nr>.md` in the brain vault after a merge (E8-3); only with `brain.enabled`. Never throws. */
+  async #writeIssueSummary(issue: Issue, repo: string, result: AutoMergeResult, adapter: TrackerAdapter, log: Logger): Promise<void> {
+    const brain = this.#deps.workflow.current.config.brain;
+    if (!brain.enabled) return;
+    try {
+      const tracked = adapter.readResults ? await adapter.readResults(issue) : [];
+      const results = tracked.map(({ result: stage, meta, url }) => ({ result: stage, meta, url }));
+      const number = issue.identifier.slice(issue.identifier.lastIndexOf('#') + 1);
+      const pullRequest = result.pull_request;
+      const written = await writeIssueSummary(
+        {
+          repo,
+          identifier: issue.identifier,
+          number,
+          title: issue.title,
+          description: issue.description,
+          pullRequest,
+          pullRequestUrl: result.pull_request_url ?? (pullRequest !== null ? `https://github.com/${repo}/pull/${pullRequest}` : null),
+        },
+        results,
+        this.#deps.history ?? null,
+        { vaultPath: brain.path, versioning: createVaultGit(brain.path, log, { onCommit: (_sha, paths) => this.#brainIndex.update(brain.path, paths) }), extraCostUsd: this.#running.get(issue.id)?.costUsd ?? 0 },
+      );
+      log.info('issue summary written', { path: written.path, changed: written.changed });
+    } catch (error) {
+      log.warn('issue summary not written', { error: errorMessage(error) });
+    }
   }
 
   /** One `brain` change per path of a vault commit. Never throws. */
@@ -3765,6 +3804,28 @@ export class Orchestrator {
   budget(): BudgetReport {
     const entries = this.#deps.history ? readHistory(this.#deps.history.dir, null).entries : [];
     return budgetReport({ now: this.#clock.now(), usage: usageFromHistory(entries), events: this.#rateLimitLog.readRateLimitEvents() });
+  }
+
+  /** Builds the brain index at startup; does nothing without `brain.enabled`. */
+  async buildBrainIndex(): Promise<void> {
+    const brain = this.#deps.workflow.current.config.brain;
+    if (brain.enabled) await this.#brainIndex.rebuild(brain.path);
+  }
+
+  /** Vitals for GET /api/v1/brain/vitals; null without `brain.enabled`. */
+  async brainVitals(): Promise<BrainVitals | null> {
+    const brain = this.#deps.workflow.current.config.brain;
+    if (!brain.enabled) return null;
+    const index = await this.#brainIndex.current(brain.path);
+    const today = this.#brainAccess.todayCounts(this.#clock.now());
+    return { ...vitalsCounts(index), writes_today: today.writes, reads_today: today.reads, last_commit: await lastVaultCommit(brain.path) };
+  }
+
+  /** Candidate notes for GET /api/v1/brain/candidates; null without `brain.enabled`. */
+  async brainCandidates(): Promise<BrainCandidate[] | null> {
+    const brain = this.#deps.workflow.current.config.brain;
+    if (!brain.enabled) return null;
+    return candidatesOf(await this.#brainIndex.current(brain.path));
   }
 
   /** Windows whose limit is forecast to be hit before the reset, for the dashboard alerts (E2-4a). */

@@ -10,8 +10,9 @@ import type { ChangeEntry } from './types.ts';
 /** Vault commits `recentVaultCommits` reads at startup. */
 export const BRAIN_BACKFILL_COMMITS = 200;
 
-/** Author of the init commit of the vault (`initVaultGit`): no change of a note. */
+/** Author and subject of the init commit of the vault (`initVaultGit`): no change of a note. */
 const INIT_AUTHOR = 'symphony';
+const INIT_SUBJECT = 'Vault angelegt';
 const HUMAN_AUTHOR = 'human';
 
 /** True for `.obsidian` and everything below it: Obsidian's own settings are never a brain change. */
@@ -68,7 +69,7 @@ export async function brainCommitEntries(
   options: { paths?: string[]; known?: (id: string) => boolean } = {},
 ): Promise<ChangeEntry[]> {
   const [date = '', author = '', ...subjectLines] = (await git(vault, ['show', '-s', '--format=%cI%n%an%n%s', sha])).replace(/\n+$/, '').split('\n');
-  if (author === INIT_AUTHOR) return [];
+  if (author === INIT_AUTHOR && subjectLines.join(' ') === INIT_SUBJECT) return [];
   const subject = subjectLines.join(' ');
   const time = Date.parse(date);
   const at = Number.isNaN(time) ? new Date(0).toISOString() : new Date(time).toISOString();

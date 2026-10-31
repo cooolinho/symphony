@@ -76,6 +76,8 @@ export class BrainAccessLog {
   readonly #lastWrite = new Map<string, LastWrite>();
   #clashes: BrainClash[] = [];
   readonly #onClash: BrainClashListener | undefined;
+  /** Successful reads and writes per UTC day (YYYY-MM-DD). */
+  readonly #daily = new Map<string, { reads: number; writes: number }>();
   #failing = false;
 
   constructor(dir: string | null, logger: Logger, options: { onClash?: BrainClashListener } = {}) {
@@ -96,6 +98,7 @@ export class BrainAccessLog {
   load(now: Date): void {
     this.prune(now);
     this.#lastWrite.clear();
+    this.#daily.clear();
     this.#clashes = [];
     if (this.file === null) return;
     let text: string;
@@ -108,6 +111,7 @@ export class BrainAccessLog {
     for (const line of text.split('\n')) {
       const entry = parseLine(line);
       if (entry === null) continue;
+      this.#count(entry);
       if (entry.result === 'ok' && (entry.op === 'write' || entry.op === 'append')) {
         this.#lastWrite.set(entry.path_or_query, { run: entry.run ?? null, at: entry.at });
       } else if (entry.result === 'rejected' && typeof entry.clash_id === 'string' && entry.time >= since) {
@@ -160,6 +164,7 @@ export class BrainAccessLog {
 
   /** Appends one line. */
   record(entry: BrainAccess): void {
+    this.#count(entry);
     if (this.file === null) return;
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
@@ -169,6 +174,24 @@ export class BrainAccessLog {
       if (!this.#failing) this.#logger.warn('cannot write the brain access log', { file: this.file, error: errorMessage(error) });
       this.#failing = true;
     }
+  }
+
+  #count(entry: BrainAccess): void {
+    if (entry.result !== 'ok' || typeof entry.at !== 'string') return;
+    const reads = entry.op === 'read' || entry.op === 'search' || entry.op === 'list';
+    const writes = entry.op === 'write' || entry.op === 'append';
+    if (!reads && !writes) return;
+    const day = entry.at.slice(0, 10);
+    const counts = this.#daily.get(day) ?? { reads: 0, writes: 0 };
+    if (reads) counts.reads++;
+    else counts.writes++;
+    this.#daily.set(day, counts);
+  }
+
+  /** Successful reads (read, search, list) and writes (write, append) of the UTC day of `now`. */
+  todayCounts(now: Date): { reads: number; writes: number } {
+    const counts = this.#daily.get(now.toISOString().slice(0, 10));
+    return { reads: counts?.reads ?? 0, writes: counts?.writes ?? 0 };
   }
 
   /** Appends the line of a successful write and remembers the writer of the note. */

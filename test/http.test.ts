@@ -20,6 +20,7 @@ import { SYMPHONY_VERSION } from '../src/version.ts';
 import { analyticsFixture, dashboardState, issueDetail, issueRow } from './helpers/page-fixtures.ts';
 import { FakeElement } from './helpers/fake-dom.ts';
 import { startHttpServer, type HttpServerHandle } from '../src/http/server.ts';
+import { ensureVault } from '../src/brain/vault.ts';
 import { Logger } from '../src/log.ts';
 import { SystemCollector } from '../src/system/metrics.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
@@ -263,7 +264,7 @@ describe('http extension', () => {
     }
     const issue = (await request(server.port, 'GET', '/issue?id=acme%2Fapp%231')).body;
     assert.ok(issue.includes('id="crumb-current" aria-current="page">Issue<'));
-    const placeholders: Array<[string, string]> = [['/tasks', 'Tasks'], ['/brain', 'Brain']];
+    const placeholders: Array<[string, string]> = [['/brain', 'Brain']];
     for (const [path, title] of placeholders) {
       const res = await request(server.port, 'GET', path);
       assert.ok(res.body.includes('Diese Seite kommt in Kürze.'), path);
@@ -344,7 +345,7 @@ describe('http extension', () => {
     assert.match(page, /\/api\/v1\/history\/analytics\?/);
     assert.match(page, /\/api\/v1\/history\/entries\?/);
     assert.match(page, /data-body="roles"/);
-    assert.match(page, /Most expensive issue pipelines/);
+    assert.match(page, /Teuerste Issue-Pipelines/);
 
     const week = '/api/v1/history/analytics?from=2026-09-28T00:00:00Z&to=2026-10-05T00:00:00Z&tz=Europe%2FBerlin';
     const a = JSON.parse((await request(server.port, 'GET', week)).body);
@@ -1647,6 +1648,64 @@ describe('agent page behaviour', () => {
     const urls = page.fetches.map((f) => f.url);
     assert.ok(urls.some((u) => u.endsWith('/timeline?after=0')), urls.join(' '));
     assert.ok(urls.some((u) => u.includes('/transcript?run=r1')));
+  });
+});
+
+describe('brain routes', () => {
+  async function start(brain: { enabled: boolean; path: string } | null) {
+    const front = baseFront(tempDir(), brain ? { brain } : {});
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(front)),
+      runner: new FakeRunner(),
+      logger: Logger.silent(),
+      env: {},
+      logDir: null,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker(),
+    });
+    await orchestrator.buildBrainIndex();
+    return { orchestrator, server: await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() }) };
+  }
+
+  it('answers 404 brain_disabled without the brain', async () => {
+    const { server } = await start(null);
+    try {
+      for (const route of ['vitals', 'candidates']) {
+        const res = await request(server.port, 'GET', `/api/v1/brain/${route}`);
+        assert.equal(res.status, 404);
+        assert.equal(JSON.parse(res.body).error.code, 'brain_disabled');
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('serves vitals and candidates', async () => {
+    const vault = path.join(tempDir(), 'vault');
+    await ensureVault(vault, ['acme/app'], new Date('2026-10-01T00:00:00Z'));
+    const note = (created: string) => `---\ntype: lesson\nstatus: candidate\ncreated: ${created}\n---\n# L${created}\n`;
+    fs.writeFileSync(path.join(vault, 'Inbox/new.md'), note('2026-10-05'));
+    fs.writeFileSync(path.join(vault, 'Inbox/old.md'), note('2026-10-02'));
+    const { server } = await start({ enabled: true, path: vault });
+    try {
+      const vitals = await request(server.port, 'GET', '/api/v1/brain/vitals');
+      assert.equal(vitals.status, 200);
+      const body = JSON.parse(vitals.body);
+      assert.deepEqual(Object.keys(body).sort(), ['broken_links', 'candidates', 'last_commit', 'links', 'notes_by_status', 'orphans', 'reads_today', 'writes_today']);
+      assert.equal(body.notes_by_status.candidate, 2);
+      assert.equal(body.candidates, 2);
+      assert.equal(body.writes_today, 0);
+      assert.equal(body.reads_today, 0);
+      assert.equal(body.last_commit.sha.length, 40);
+      assert.equal(body.last_commit.author, 'symphony');
+      const candidates = JSON.parse((await request(server.port, 'GET', '/api/v1/brain/candidates')).body).candidates;
+      assert.deepEqual(candidates.map((c: { path: string }) => c.path), ['Inbox/old.md', 'Inbox/new.md']);
+      assert.equal(candidates[0].target, 'Lessons/');
+      const post = await request(server.port, 'POST', '/api/v1/brain/vitals');
+      assert.equal(post.status, 405);
+    } finally {
+      await server.close();
+    }
   });
 });
 
