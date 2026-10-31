@@ -20,7 +20,7 @@ import { analyticsFixture, dashboardState, issueDetail, issueRow } from './helpe
 
 const AGENT_URL = 'http://127.0.0.1/issue?id=acme%2Fapp%231';
 const PAGES: Record<string, string> = { dashboard: DASHBOARD_HTML, agent: AGENT_HTML, logs: LOGS_HTML, changes: CHANGES_HTML, tasks: TASKS_HTML, brain: BRAIN_HTML };
-const HOOKED = ['dashboard', 'agent', 'logs'];
+const HOOKED = ['dashboard', 'agent', 'logs', 'tasks'];
 
 /** The same page with the layout of its scripts changed: CRLF line ends, tabs, trailing blanks, blank lines. */
 function reflowScripts(html: string): string {
@@ -77,7 +77,7 @@ describe('renderPage (#350)', () => {
 });
 
 describe('the render hook is inert without the test flag (#350)', () => {
-  it('only dashboard, agent and logs carry a hook, and every hook is guarded by the same flag', () => {
+  it('only dashboard, agent, logs and tasks carry a hook, and every hook is guarded by the same flag', () => {
     for (const [name, html] of Object.entries(PAGES)) {
       const hits = (html.match(/__SYMPHONY_TEST__/g) ?? []).length;
       assert.equal(hits, HOOKED.includes(name) ? 1 : 0, name);

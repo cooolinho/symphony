@@ -224,12 +224,16 @@ export const TASKS_JS = `
     taskById('col-' + key).replaceChildren(...(count ? build() : [el('p', col.empty, 'task-empty')]));
   }
 
+  function taskRetryFp(r) {
+    return r ? [r.attempt, r.due_at, r.kind] : null;
+  }
+
   function taskRowFp(row, col, state) {
     return [row.issue_id, row.issue_identifier, row.title, row.repo, row.state, row.position, row.priority,
-      row.reason, row.reason_code, row.retry, row.model_hold, taskRole(row, state), taskActionFor(row, col, state),
+      row.reason, row.reason_code, taskRetryFp(row.retry), row.model_hold, taskRole(row, state), taskActionFor(row, col, state),
       row.running ? [row.running.role, row.running.stopping] : null,
       taskActionFor(row, col, state) ? taskButtons.get(row.issue_identifier + ' ' + taskActionFor(row, col, state)) || null : null,
-      col === 'blocked' ? taskRetryFor(row, state) : null];
+      col === 'blocked' ? taskRetryFp(taskRetryFor(row, state)) : null];
   }
 
   function renderTasks(state) {
@@ -262,7 +266,8 @@ export const TASKS_JS = `
     num.setAttribute('title', id);
     const a = el('a', entry.title || id, 'task-title');
     a.setAttribute('href', '/issue?id=' + encodeURIComponent(id));
-    const time = el('span', fmtClock(entry.ts), 'task-meta');
+    const today = new Date(entry.ts).toDateString() === new Date().toDateString();
+    const time = el('span', today ? fmtClock(entry.ts) : fmtTime(entry.ts), 'task-meta');
     time.setAttribute('title', fmtTime(entry.ts));
     card.append(num, a, el('span', entry.repo || id.split('#')[0], 'task-meta'), time);
     const chips = el('div', null, 'task-chips');
