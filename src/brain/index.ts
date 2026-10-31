@@ -18,6 +18,8 @@ export interface IndexedNote {
   created: string | null;
   updated: string | null;
   target: string | null;
+  /** First lines of the body; only set for candidates. */
+  preview?: string;
   /** Normalized link targets (`Folder/name.md`, as written), without duplicates. */
   links: string[];
 }
@@ -41,7 +43,16 @@ export interface BrainVitalCounts {
   candidates: number;
 }
 
+export interface BrainFolder {
+  /** Relative to the vault, without a trailing slash. */
+  path: string;
+  notes_by_status: { candidate: number; approved: number; deprecated: number; none: number };
+  total: number;
+}
+
 export interface BrainVitals extends BrainVitalCounts {
+  obsidian_url: string | null;
+  folders: BrainFolder[];
   writes_today: number;
   reads_today: number;
   last_commit: { sha: string; at: string; author: string } | null;
@@ -56,6 +67,8 @@ export interface BrainCandidate {
   role: string | null;
   created: string | null;
   target: string;
+  /** The first lines of the body, without frontmatter. */
+  preview: string;
 }
 
 /** Text of a frontmatter value: a trimmed non-empty string, a number, or a date as YYYY-MM-DD; otherwise null. */
@@ -95,6 +108,15 @@ export function extractLinks(body: string): string[] {
   return [...found];
 }
 
+const PREVIEW_LINES = 10;
+
+/** The first lines of a body without leading blank lines, at most 2000 characters. */
+function previewOf(body: string): string {
+  const lines = body.replace(/\r\n?/g, '\n').split('\n');
+  while (lines.length > 0 && (lines[0] ?? '').trim() === '') lines.shift();
+  return lines.slice(0, PREVIEW_LINES).join('\n').slice(0, 2000).trimEnd();
+}
+
 const EMPTY_FIELDS = { type: null, status: null, repo: null, issue: null, role: null, created: null, updated: null, target: null };
 
 /** Reads one note; null when the file does not exist. An unreadable or too large file gives a note without fields and links. */
@@ -106,10 +128,11 @@ function readNoteSync(vault: string, rel: string): IndexedNote | null {
     if (!stat.isFile()) return null;
     if (stat.size > MAX_NOTE_BYTES) return fallback();
     const { frontmatter, body } = parseNote(fs.readFileSync(file, 'utf8'));
+    const status = noteStatus(frontmatter);
     return {
       title: noteTitle(frontmatter, body, path.posix.basename(rel)),
       type: lowerText(frontmatter.type),
-      status: noteStatus(frontmatter),
+      status,
       repo: textOf(frontmatter.repo),
       issue: textOf(frontmatter.issue),
       role: textOf(frontmatter.role),
@@ -117,6 +140,7 @@ function readNoteSync(vault: string, rel: string): IndexedNote | null {
       updated: textOf(frontmatter.updated),
       target: textOf(frontmatter.target),
       links: extractLinks(body),
+      ...(status === 'candidate' ? { preview: previewOf(body) } : {}),
     };
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : fallback();
@@ -215,6 +239,26 @@ export function vitalsCounts(index: VaultIndex): BrainVitalCounts {
   };
 }
 
+/** One entry per folder with notes (also in subfolders) and per parent folder; counts are recursive, notes in the vault root count nowhere. */
+export function foldersOf(index: VaultIndex): BrainFolder[] {
+  const folders = new Map<string, BrainFolder>();
+  for (const [rel, note] of index.notes) {
+    const segments = rel.split('/').slice(0, -1);
+    const key = note.status === 'candidate' || note.status === 'approved' || note.status === 'deprecated' ? note.status : 'none';
+    for (let depth = 1; depth <= segments.length; depth++) {
+      const folder = segments.slice(0, depth).join('/');
+      let entry = folders.get(folder);
+      if (entry === undefined) {
+        entry = { path: folder, notes_by_status: { candidate: 0, approved: 0, deprecated: 0, none: 0 }, total: 0 };
+        folders.set(folder, entry);
+      }
+      entry.notes_by_status[key]++;
+      entry.total++;
+    }
+  }
+  return [...folders.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+}
+
 /** Groups of two or more non-deprecated notes with the same title (trimmed, lower case, white space collapsed), sorted. */
 export function sameTitleGroups(index: VaultIndex): { title: string; paths: string[] }[] {
   const groups = new Map<string, string[]>();
@@ -244,7 +288,7 @@ export function candidatesOf(index: VaultIndex): BrainCandidate[] {
   const result: BrainCandidate[] = [];
   for (const [rel, note] of index.notes) {
     if (note.status !== 'candidate') continue;
-    result.push({ path: rel, title: note.title, type: note.type, repo: note.repo, issue: note.issue, role: note.role, created: note.created, target: targetOf(note) });
+    result.push({ path: rel, title: note.title, type: note.type, repo: note.repo, issue: note.issue, role: note.role, created: note.created, target: targetOf(note), preview: note.preview ?? '' });
   }
   return result.sort((a, b) => {
     if (a.created !== b.created) {

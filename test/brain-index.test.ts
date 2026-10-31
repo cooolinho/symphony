@@ -5,7 +5,7 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import { BrainAccessLog, type BrainAccess } from '../src/brain/access-log.ts';
 import { createVaultGit, initVaultGit, lastVaultCommit } from '../src/brain/git.ts';
-import { BrainIndex, buildIndex, candidatesOf, vitalsCounts } from '../src/brain/index.ts';
+import { BrainIndex, buildIndex, candidatesOf, foldersOf, vitalsCounts } from '../src/brain/index.ts';
 import { Logger } from '../src/log.ts';
 import { tempDir } from './helpers.ts';
 
@@ -169,5 +169,35 @@ describe('Index und Issue-Zusammenfassung', () => {
     await writeIssueSummary(issue, [], null, { vaultPath: dir, versioning });
     await brainIndex.current(dir);
     assert.ok((await brainIndex.current(dir)).notes.has('Issues/acme-app/7.md'));
+  });
+});
+
+describe('foldersOf and the candidate preview (E7-7a)', () => {
+  it('counts notes per status recursively per folder, the root counts nowhere', async () => {
+    const vault = path.join(tempDir(), 'vault');
+    put(vault, 'Inbox/a.md', fm({ status: 'candidate' }));
+    put(vault, 'Repos/acme-app/index.md', fm({ status: 'approved' }));
+    put(vault, 'Repos/acme-app/x.md', fm({ status: 'deprecated' }));
+    put(vault, 'README.md', fm({ status: 'approved' }));
+    const folders = foldersOf(await buildIndex(vault));
+    assert.deepEqual(folders.map((f) => f.path), ['Inbox', 'Repos', 'Repos/acme-app']);
+    const repos = folders[1]!;
+    assert.deepEqual(repos.notes_by_status, { candidate: 0, approved: 1, deprecated: 1, none: 0 });
+    assert.equal(repos.total, 2);
+    assert.deepEqual(folders[2], { ...repos, path: 'Repos/acme-app' });
+    assert.equal(folders[0]!.notes_by_status.candidate, 1);
+  });
+
+  it('keeps at most 10 lines of the body as preview, for candidates only', async () => {
+    const vault = path.join(tempDir(), 'vault');
+    const body = '\n\n' + Array.from({ length: 15 }, (_, i) => `Zeile ${i + 1}`).join('\n');
+    put(vault, 'Inbox/a.md', fm({ status: 'candidate' }, body));
+    put(vault, 'Lessons/b.md', fm({ status: 'approved' }, body));
+    const index = await buildIndex(vault);
+    const preview = candidatesOf(index)[0]!.preview;
+    assert.equal(preview.split('\n').length, 10);
+    assert.ok(preview.startsWith('Zeile 1\n'));
+    assert.ok(!preview.includes('status:'));
+    assert.equal(index.notes.get('Lessons/b.md')!.preview, undefined);
   });
 });

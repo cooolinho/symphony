@@ -68,7 +68,7 @@ const OUTCOME_LABELS: Record<string, string> = {
   session_limit: 'Session-Limit',
 };
 
-const CONTROLS_OFF = 'Steuerung deaktiviert: SYMPHONY_ALLOW_REMOTE_CONTROL=true hinter einem authentifizierenden Proxy setzen';
+export const CONTROLS_OFF = 'Steuerung deaktiviert: SYMPHONY_ALLOW_REMOTE_CONTROL=true hinter einem authentifizierenden Proxy setzen';
 
 export const TASKS_CSS = `
   .tasks-head { margin-bottom: 16px; }

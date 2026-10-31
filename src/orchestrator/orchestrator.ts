@@ -4,7 +4,7 @@ import { performance } from 'node:perf_hooks';
 import { BrainAccessLog, type BrainAccess, type BrainAccessPage, type BrainAccessQuery, type BrainClash } from '../brain/access-log.ts';
 import { listClashes, type BrainClashView } from '../brain/clashes.ts';
 import { createVaultGit, lastVaultCommit } from '../brain/git.ts';
-import { BrainIndex, candidatesOf, vitalsCounts, type BrainCandidate, type BrainVitals } from '../brain/index.ts';
+import { BrainIndex, candidatesOf, foldersOf, vitalsCounts, type BrainCandidate, type BrainVitals } from '../brain/index.ts';
 import { writeIssueSummary } from '../brain/issue-summary.ts';
 import { approveCandidate, rejectCandidate, revertApprove, type PromoteOptions, type PromoteResult } from '../brain/promote.ts';
 import { RateLimitLog, rateLimitKey, type RateLimitRecord } from '../budget/rate-limit-log.ts';
@@ -3860,7 +3860,14 @@ export class Orchestrator {
     if (!brain.enabled) return null;
     const index = await this.#brainIndex.current(brain.path);
     const today = this.#brainAccess.todayCounts(this.#clock.now());
-    return { ...vitalsCounts(index), writes_today: today.writes, reads_today: today.reads, last_commit: await lastVaultCommit(brain.path) };
+    return {
+      ...vitalsCounts(index),
+      obsidian_url: brain.obsidianUrl === '' ? null : brain.obsidianUrl,
+      folders: foldersOf(index),
+      writes_today: today.writes,
+      reads_today: today.reads,
+      last_commit: await lastVaultCommit(brain.path),
+    };
   }
 
   /** Candidate notes for GET /api/v1/brain/candidates; null without `brain.enabled`. */

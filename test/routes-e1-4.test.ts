@@ -35,7 +35,7 @@ function mainNav(body: string): string {
 }
 
 const NEW_ROUTES = ['/', '/changes', '/tasks', '/brain', '/stats', '/issue?id=repo%2F1'];
-const PLACEHOLDERS: Array<[string, string]> = [['/brain', 'brain']];
+const BRAIN_PAGES: Array<[string, string]> = [['/brain', 'brain']];
 
 describe('E1-4 routes and redirects (independent acceptance tests)', () => {
   let server: HttpServerHandle;
@@ -100,14 +100,14 @@ describe('E1-4 routes and redirects (independent acceptance tests)', () => {
     assert.match(body, /\/api\/v1\//);
   });
 
-  it('placeholder pages: title, active navigation entry, empty text, in the shell', async () => {
-    for (const [url, key] of PLACEHOLDERS) {
+  it('the Brain page: title, active navigation entry, content, in the shell', async () => {
+    for (const [url, key] of BRAIN_PAGES) {
       const { body } = await request(server.port, 'GET', url);
       const label = NAV_ITEMS.find((i) => i.key === key)!.label;
       assert.match(body, new RegExp(`<title>[^<]*${label}[^<]*</title>`), url);
       assert.ok(body.includes(`href="${url}" aria-current="page"`), `${url} marks its entry`);
       assert.equal((mainNav(body).match(/aria-current="page"/g) ?? []).length, 1, url);
-      assert.ok(body.includes('Diese Seite kommt in Kürze.'), url);
+      assert.ok(body.includes('id="candidates"'), url);
       assert.match(body, /<h1[^>]*>/, url);
       assert.ok(body.includes('aria-label="Hauptnavigation"'), `${url} is rendered in the shell`);
       assert.ok(body.includes('<header'), url);

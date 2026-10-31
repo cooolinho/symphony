@@ -112,20 +112,20 @@ describe('ensureVault', () => {
 describe('prepareBrain', () => {
   it('touches no path when disabled', async () => {
     const missing = path.join(tempDir(), 'missing');
-    await prepareBrain({ enabled: false, path: missing, clashWindowMs: 600000 }, ['a/b'], Logger.silent());
+    await prepareBrain({ enabled: false, path: missing, clashWindowMs: 600000, obsidianUrl: '' }, ['a/b'], Logger.silent());
     assert.equal(fs.existsSync(missing), false);
   });
 
   it('creates the vault when enabled', async () => {
     const vault = path.join(tempDir(), 'vault');
-    await prepareBrain({ enabled: true, path: vault, clashWindowMs: 600000 }, [], Logger.silent());
+    await prepareBrain({ enabled: true, path: vault, clashWindowMs: 600000, obsidianUrl: '' }, [], Logger.silent());
     assert.ok(fs.existsSync(path.join(vault, 'README.md')));
   });
 
   it('logs instead of throwing on failure', async () => {
     const file = path.join(tempDir(), 'file');
     fs.writeFileSync(file, 'x');
-    await prepareBrain({ enabled: true, path: path.join(file, 'vault'), clashWindowMs: 600000 }, [], Logger.silent());
+    await prepareBrain({ enabled: true, path: path.join(file, 'vault'), clashWindowMs: 600000, obsidianUrl: '' }, [], Logger.silent());
   });
 });
 

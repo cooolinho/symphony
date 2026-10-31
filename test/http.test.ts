@@ -267,10 +267,10 @@ describe('http extension', () => {
     }
     const issue = (await request(server.port, 'GET', '/issue?id=acme%2Fapp%231')).body;
     assert.ok(issue.includes('id="crumb-current">Issue<'));
-    const placeholders: Array<[string, string]> = [['/brain', 'Brain']];
-    for (const [path, title] of placeholders) {
+    const brainPages: Array<[string, string]> = [['/brain', 'Brain']];
+    for (const [path, title] of brainPages) {
       const res = await request(server.port, 'GET', path);
-      assert.ok(res.body.includes('Diese Seite kommt in Kürze.'), path);
+      assert.ok(res.body.includes('id="candidates"'), path);
       assert.ok(res.body.includes(`<h1 id="page-title">${title}</h1>`), path);
       const head = await request(server.port, 'HEAD', path);
       assert.equal(head.status, 200);
@@ -1627,9 +1627,12 @@ describe('brain routes', () => {
       const vitals = await request(server.port, 'GET', '/api/v1/brain/vitals');
       assert.equal(vitals.status, 200);
       const body = JSON.parse(vitals.body);
-      assert.deepEqual(Object.keys(body).sort(), ['broken_links', 'candidates', 'last_commit', 'links', 'notes_by_status', 'orphans', 'reads_today', 'writes_today']);
+      assert.deepEqual(Object.keys(body).sort(), ['broken_links', 'candidates', 'folders', 'last_commit', 'links', 'notes_by_status', 'obsidian_url', 'orphans', 'reads_today', 'writes_today']);
       assert.equal(body.notes_by_status.candidate, 2);
       assert.equal(body.candidates, 2);
+      assert.equal(body.obsidian_url, null);
+      const inbox = body.folders.find((f: { path: string }) => f.path === 'Inbox');
+      assert.equal(inbox.notes_by_status.candidate, 2);
       assert.equal(body.writes_today, 0);
       assert.equal(body.reads_today, 0);
       assert.equal(body.last_commit.sha.length, 40);
@@ -1637,6 +1640,7 @@ describe('brain routes', () => {
       const candidates = JSON.parse((await request(server.port, 'GET', '/api/v1/brain/candidates')).body).candidates;
       assert.deepEqual(candidates.map((c: { path: string }) => c.path), ['Inbox/old.md', 'Inbox/new.md']);
       assert.equal(candidates[0].target, 'Lessons/');
+      assert.equal(candidates[0].preview, '# L2026-10-02');
       const post = await request(server.port, 'POST', '/api/v1/brain/vitals');
       assert.equal(post.status, 405);
     } finally {

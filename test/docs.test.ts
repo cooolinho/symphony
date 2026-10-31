@@ -466,9 +466,9 @@ describe('docs: brain', () => {
     }
   });
 
-  it('brain.obsidian_url is not a key yet and only mentioned as coming (remove with E7-7a)', () => {
-    assert.ok(!brainKeys.includes('obsidian_url'));
-    assert.ok(!configuration.includes('obsidian_url'));
-    for (const line of read('docs/brain.md').split('\n').filter((l) => l.includes('obsidian_url'))) assert.match(line, /coming with/);
+  it('brain.obsidian_url is a documented key and brain.md no longer announces it', () => {
+    assert.ok(brainKeys.includes('obsidian_url'));
+    assert.ok(configuration.includes('`obsidian_url`'));
+    assert.ok(!read('docs/brain.md').includes('coming with E7-7a'));
   });
 });
