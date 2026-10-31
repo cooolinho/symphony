@@ -22,7 +22,7 @@ export const TEAMS_CSS = `
   .team-actline { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .team-role { font-size: 13px; font-weight: 500; flex: none; }
   .team-action { font: 12.5px var(--mono); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-  .team-action.muted { color: var(--fg-3); }
+  .team-action.muted { font-size: 12.5px; color: var(--fg-3); }
   .team-ctx { display: grid; grid-template-columns: 52px 1fr 36px; align-items: center; gap: 8px; }
   .team-ctx-label { font-size: 12px; color: var(--fg-3); }
   .team-ctx-pct { font: 12px var(--mono); text-align: right; }
