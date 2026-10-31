@@ -261,7 +261,7 @@ describe('http extension', () => {
     }
     const issue = (await request(server.port, 'GET', '/issue?id=acme%2Fapp%231')).body;
     assert.ok(issue.includes('id="crumb-current" aria-current="page">Issue<'));
-    const placeholders: Array<[string, string]> = [['/changes', 'Changes'], ['/tasks', 'Tasks'], ['/brain', 'Brain']];
+    const placeholders: Array<[string, string]> = [['/tasks', 'Tasks'], ['/brain', 'Brain']];
     for (const [path, title] of placeholders) {
       const res = await request(server.port, 'GET', path);
       assert.ok(res.body.includes('Diese Seite kommt in Kürze.'), path);
@@ -1645,5 +1645,82 @@ describe('agent page behaviour', () => {
     const urls = page.fetches.map((f) => f.url);
     assert.ok(urls.some((u) => u.endsWith('/timeline?after=0')), urls.join(' '));
     assert.ok(urls.some((u) => u.includes('/transcript?run=r1')));
+  });
+});
+
+describe('GET /api/v1/changes (E6-3a)', () => {
+  const line = (id: string, at: string, over: Record<string, unknown> = {}) =>
+    JSON.stringify({ id, type: 'code', at, repo: 'acme/app', issue: 'acme/app#1', role: 'developer', title: id, files: [{ path: 'a.ts', added: 1, deleted: 0, status: 'modified' }], pr: null, diff: null, status: 'committed', ...over });
+
+  async function withServer(run: (port: number) => Promise<void>): Promise<void> {
+    const logDir = tempDir();
+    fs.mkdirSync(path.join(logDir, 'changes'), { recursive: true });
+    fs.writeFileSync(
+      path.join(logDir, 'changes', 'acme_app.jsonl'),
+      [line('code:acme/app:1', '2026-10-30T10:01:00Z'), line('code:acme/app:2', '2026-10-30T10:02:00Z'), line('brain:acme/app:3', '2026-10-30T10:03:00Z', { type: 'brain' }), line('code:acme/app:4', '2026-10-30T10:04:00Z')].join('\n') + '\n',
+    );
+    fs.writeFileSync(path.join(logDir, 'changes', 'acme_lib.jsonl'), line('code:acme/lib:1', '2026-10-30T10:05:00Z', { repo: 'acme/lib', issue: 'acme/lib#2' }) + '\n');
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir()))),
+      runner: new FakeRunner(),
+      logger: Logger.silent(),
+      env: {},
+      logDir,
+      timers: new ManualTimers(),
+      clock: { now: () => new Date('2026-10-30T12:00:00Z'), monotonicMs: () => 0 },
+      createAdapter: () => new FakeTracker([]),
+    });
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    try {
+      await run(server.port);
+    } finally {
+      await orchestrator.shutdown(1_000);
+      await server.close();
+    }
+  }
+  const get = async (port: number, query: string) => JSON.parse((await request(port, 'GET', `/api/v1/changes?${query}&tz=UTC`)).body);
+
+  it('filters by type and repo; counts ignore the type', async () => {
+    await withServer(async (port) => {
+      const code = await get(port, 'type=code');
+      assert.deepEqual(code.entries.map((e: { id: string }) => e.id), ['code:acme/lib:1', 'code:acme/app:4', 'code:acme/app:2', 'code:acme/app:1']);
+      assert.deepEqual(code.counts, { all: 5, code: 4, brain: 1 });
+      const lib = await get(port, 'repo=acme%2Flib');
+      assert.deepEqual(lib.entries.map((e: { id: string }) => e.id), ['code:acme/lib:1']);
+      assert.deepEqual(lib.counts, { all: 1, code: 1, brain: 0 });
+    });
+  });
+
+  it('pages over before without gaps or duplicates; stats only on the first page', async () => {
+    await withServer(async (port) => {
+      const ids: string[] = [];
+      let before: string | null = null;
+      let pages = 0;
+      do {
+        const page = await get(port, `limit=2${before === null ? '' : `&before=${encodeURIComponent(before)}`}`);
+        assert.equal(page.stats === null, before !== null);
+        ids.push(...page.entries.map((e: { id: string }) => e.id));
+        before = page.next_before;
+        pages++;
+      } while (before !== null);
+      assert.equal(pages, 3);
+      assert.deepEqual(ids, ['code:acme/lib:1', 'code:acme/app:4', 'brain:acme/app:3', 'code:acme/app:2', 'code:acme/app:1']);
+      const first = await get(port, 'limit=2');
+      assert.deepEqual(first.stats.today, { commits: 4, merges: 0, files: 2, added: 4, deleted: 0 });
+    });
+  });
+
+  it('rejects a bad type, other methods and foreign hosts', async () => {
+    await withServer(async (port) => {
+      const bad = await request(port, 'GET', '/api/v1/changes?type=x');
+      assert.equal(bad.status, 400);
+      assert.match(bad.body, /type must be code or brain/);
+      const post = await request(port, 'POST', '/api/v1/changes');
+      assert.equal(post.status, 405);
+      assert.equal(post.headers.allow, 'GET');
+      const host = await request(port, 'GET', '/api/v1/changes', { host: 'evil.example' });
+      assert.equal(host.status, 403);
+      assert.match(host.body, /forbidden_host/);
+    });
   });
 });
