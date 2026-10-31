@@ -17,7 +17,7 @@
     "repo-init": "node repo-init.ts",
     "e2e": "node scripts/e2e/run.ts",
     "test:laravel": "node scripts/laravel-smoke/run.ts",
-    "test": "node --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "test": "node --test --test-concurrency=1 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./test/gh-annotate-reporter.mjs --test-reporter-destination=stdout \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit -p .",
     "check": "npm run typecheck && npm test"
   },
