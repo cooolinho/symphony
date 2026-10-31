@@ -3,10 +3,10 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { BrainAccessLog, type BrainAccess, type BrainAccessPage, type BrainAccessQuery, type BrainClash } from '../brain/access-log.ts';
 import { listClashes, type BrainClashView } from '../brain/clashes.ts';
-import { createVaultGit, lastVaultCommit } from '../brain/git.ts';
-import { BrainIndex, candidatesOf, foldersOf, graphAround, vitalsCounts, type BrainCandidate, type BrainGraph, type BrainVitals } from '../brain/index.ts';
+import { createVaultGit, lastVaultCommit, vaultCommitCount } from '../brain/git.ts';
+import { BrainIndex, candidatesOf, foldersOf, graphAround, vitalsCounts, vitalsDerived, type BrainCandidate, type BrainGraph, type BrainVitals } from '../brain/index.ts';
 import { writeIssueSummary } from '../brain/issue-summary.ts';
-import { approveCandidate, rejectCandidate, revertApprove, type PromoteOptions, type PromoteResult } from '../brain/promote.ts';
+import { approveCandidate, rejectCandidate, revertDecision, type PromoteOptions, type PromoteResult } from '../brain/promote.ts';
 import { RateLimitLog, rateLimitKey, type RateLimitRecord } from '../budget/rate-limit-log.ts';
 import { BRAIN_BACKFILL_COMMITS, brainCommitEntries, brainConflictEntry, recentVaultCommits } from '../changes/brain.ts';
 import { ChangeStore } from '../changes/store.ts';
@@ -3866,14 +3866,22 @@ export class Orchestrator {
     const brain = this.#deps.workflow.current.config.brain;
     if (!brain.enabled) return null;
     const index = await this.#brainIndex.current(brain.path);
-    const today = this.#brainAccess.todayCounts(this.#clock.now());
+    const now = this.#clock.now();
+    const today = this.#brainAccess.todayCounts(now);
+    const counts = vitalsCounts(index);
+    const [lastCommit, commitCount] = await Promise.all([lastVaultCommit(brain.path), vaultCommitCount(brain.path)]);
     return {
-      ...vitalsCounts(index),
+      ...counts,
+      ...vitalsDerived(counts),
+      path: brain.path,
       obsidian_url: brain.obsidianUrl === '' ? null : brain.obsidianUrl,
       folders: foldersOf(index),
       writes_today: today.writes,
-      reads_today: today.reads,
-      last_commit: await lastVaultCommit(brain.path),
+      reads_today: { total: today.reads, by_folder: today.by_folder },
+      clashes: { week: this.#brainAccess.weekClashes(now) },
+      commits: { total: commitCount ?? 0 },
+      clash_window_min: Math.round(brain.clashWindowMs / 60_000),
+      last_commit: lastCommit,
     };
   }
 
@@ -3943,10 +3951,10 @@ export class Orchestrator {
     return options === null ? null : rejectCandidate(options, notePath);
   }
 
-  /** Reverts the approve of the note at its new path (POST …/revert); null without `brain.enabled`. */
+  /** Reverts the last approve (at the new path) or reject of the note (POST …/revert); null without `brain.enabled`. */
   async brainRevert(notePath: string): Promise<PromoteResult | null> {
     const options = this.#promoteOptions();
-    return options === null ? null : revertApprove(options, notePath);
+    return options === null ? null : revertDecision(options, notePath);
   }
 
   /** Windows whose limit is forecast to be hit before the reset, for the dashboard alerts (E2-4a). */

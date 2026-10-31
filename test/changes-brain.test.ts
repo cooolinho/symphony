@@ -42,7 +42,7 @@ describe('brainConflictEntry', () => {
     clash_id: 'c1',
     ...over,
   });
-  const clash: BrainClash = { id: 'c1', path: 'Inbox/a.md', runs: ['run1', 'run2'], roles: [null, null], at: [null, '2026-10-30T12:00:00.000Z'], reason: 'hash_mismatch', status: 'open' };
+  const clash: BrainClash = { id: 'c1', path: 'Inbox/a.md', runs: ['run1', 'run2'], roles: [null, null], issues: [null, null], at: [null, '2026-10-30T12:00:00.000Z'], reason: 'hash_mismatch', status: 'open' };
 
   it('builds a conflict entry with role, run, reason and clash', () => {
     const entry = brainConflictEntry(tempDir(), line(), clash)!;

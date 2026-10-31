@@ -143,7 +143,7 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
     audit: Audit,
     found: { text: string; hash: string },
     reason: BrainClashReason,
-    other: { run: string | null; at: string | null; role: string | null },
+    other: { run: string | null; at: string | null; role: string | null; issue: string | null },
   ): ToolResult => {
     audit.logged = true;
     access?.recordClash(
@@ -205,7 +205,7 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
         // A parallel writer won the queue: same rejection and clash as the checks outside of it.
         return (
           windowCheck(tool, args, context, audit, found) ??
-          clashResult(tool, args, context, audit, found, 'hash_mismatch', access?.lastWrite(target.relative) ?? { run: null, at: null, role: null })
+          clashResult(tool, args, context, audit, found, 'hash_mismatch', access?.lastWrite(target.relative) ?? { run: null, at: null, role: null, issue: null })
         );
       }
       return commitAndReport(tool, args, context, audit, target, previous, frontmatter, text, versioning);
@@ -348,7 +348,7 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
       } else if (baseHash === null) {
         logger.warn('brain write without base_hash', { tool: 'brain_write', path: target.relative, issue: context.issue.identifier });
       } else if (baseHash !== found.hash) {
-        return clashResult('brain_write', args, context, audit, found, 'hash_mismatch', access?.lastWrite(target.relative) ?? { run: null, at: null, role: null });
+        return clashResult('brain_write', args, context, audit, found, 'hash_mismatch', access?.lastWrite(target.relative) ?? { run: null, at: null, role: null, issue: null });
       }
       const parsed = parseNote(args.content);
       if (parsed.frontmatterError !== null) return fail('rejected', `frontmatter is not valid YAML: ${parsed.frontmatterError}`);
@@ -393,7 +393,7 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
       const windowed = windowCheck('brain_append', args, context, audit, found);
       if (windowed !== null) return windowed;
       if (baseHash !== found.hash) {
-        return clashResult('brain_append', args, context, audit, found, 'hash_mismatch', access?.lastWrite(target.relative) ?? { run: null, at: null, role: null });
+        return clashResult('brain_append', args, context, audit, found, 'hash_mismatch', access?.lastWrite(target.relative) ?? { run: null, at: null, role: null, issue: null });
       }
       const parsed = parseNote(found.text);
       if (parsed.frontmatterError !== null) return fail('rejected', `frontmatter of the note is not valid YAML: ${parsed.frontmatterError}`);

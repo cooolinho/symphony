@@ -16,7 +16,7 @@ const settle = () => new Promise((r) => setImmediate(r));
 
 const vitals = {
   notes_by_status: { candidate: 4, approved: 10, deprecated: 2, none: 4 },
-  links: 31, orphans: 5, broken_links: 0, candidates: 4, writes_today: 12, reads_today: 77,
+  links: { total: 31, per_note: 1 }, orphans: 5, broken_links: 0, candidates: 4, writes_today: 12, reads_today: { total: 77, by_folder: [] },
   last_commit: { sha: '0123456789abcdef', at: new Date(NOW - 2 * 3600_000).toISOString(), author: 'Ada Lovelace' },
 };
 type Entry = { at: string; role: string; op: string; path_or_query: string; purpose: string; result: 'ok' | 'rejected'; reason?: string };

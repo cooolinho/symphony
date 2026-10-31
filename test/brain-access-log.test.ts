@@ -67,7 +67,7 @@ describe('BrainAccessLog', () => {
     log.load(NOW);
     const clashes = log.clashes();
     assert.equal(clashes.length, 1);
-    assert.deepEqual(clashes[0], { id: 'c1', path: 'Inbox/a.md', runs: ['run1', 'run2'], roles: ['tester', 'developer'], at: [ago(3 * DAY + 60000), ago(3 * DAY)], reason: 'window', status: 'open' });
+    assert.deepEqual(clashes[0], { id: 'c1', path: 'Inbox/a.md', runs: ['run1', 'run2'], roles: ['tester', 'developer'], issues: [null, 'a/b#1'], at: [ago(3 * DAY + 60000), ago(3 * DAY)], reason: 'window', status: 'open' });
     assert.equal(log.markResolved('unknown'), false);
     assert.equal(log.markResolved('c1', NOW), true);
     assert.equal(log.markResolved('c1', NOW), false);
@@ -107,12 +107,14 @@ describe('BrainAccessLog', () => {
   it('keeps the roles of both runs of a clash (E7-7b)', () => {
     const dir = tempDir();
     const log = new BrainAccessLog(dir, Logger.silent());
-    const first: BrainAccess = { at: ago(5000), run: 'run1', issue: null, role: 'architect', op: 'write', path_or_query: 'Inbox/a.md', purpose: '', result: 'ok' };
+    const first: BrainAccess = { at: ago(5000), run: 'run1', issue: 'a/b#1', role: 'architect', op: 'write', path_or_query: 'Inbox/a.md', purpose: '', result: 'ok' };
     log.recordWrite(first);
     const other = log.lastWrite('Inbox/a.md')!;
     assert.equal(other.role, 'architect');
-    const clash = log.recordClash({ ...first, at: NOW.toISOString(), run: 'run2', role: 'developer' }, other, 'window');
+    const clash = log.recordClash({ ...first, at: NOW.toISOString(), run: 'run2', issue: 'a/b#2', role: 'developer' }, other, 'window');
     assert.deepEqual(clash.roles, ['architect', 'developer']);
+    assert.deepEqual(clash.issues, ['a/b#1', 'a/b#2']);
+    assert.equal(rows(path.join(dir, 'access.jsonl')).at(-1).other_issue, 'a/b#1');
     assert.equal(rows(path.join(dir, 'access.jsonl')).at(-1).other_role, 'architect');
     const again = new BrainAccessLog(dir, Logger.silent());
     again.load(NOW);
