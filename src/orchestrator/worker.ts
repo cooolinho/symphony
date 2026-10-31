@@ -199,6 +199,8 @@ export interface WorkerParams {
   brainAccess?: BrainAccessLog | null;
   /** Index of the vault, updated after every vault commit. */
   brainIndex?: BrainIndex | null;
+  /** Called after every commit to the vault (`createVaultGit` `onCommit`) with the vault path; errors are logged, never thrown. */
+  onBrainCommit?: (vault: string, sha: string, paths: string[]) => void | Promise<void>;
   /**
    * Live check after each turn (uses the current workflow config): null continues the session, a string ends it
    * normally with that reason (the issue left the active states, is no longer routable, or another role serves it).
@@ -398,6 +400,19 @@ async function prepareAttachments(adapter: TrackerAdapter, issue: Issue, workspa
     await writeAttachments(workspacePath, []).catch(() => undefined);
     return [{ path: null, label: '', source: 'description and comments', error: errorMessage(error) }];
   }
+}
+
+/** `onCommit` of the vault git of a session: updates the brain index and records the brain changes. */
+export function vaultGitHooks(
+  vault: string,
+  params: Pick<WorkerParams, 'brainIndex' | 'onBrainCommit'>,
+): { onCommit: (sha: string, paths: string[]) => Promise<void> } {
+  return {
+    onCommit: async (sha, paths) => {
+      params.brainIndex?.update(vault, paths);
+      await params.onBrainCommit?.(vault, sha, paths);
+    },
+  };
 }
 
 /**
@@ -649,9 +664,10 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     const subIssues = subIssueLimit(role, issue);
     sessionStart = { sha: startSha };
     const brainPath = params.workflow.config.brain.path;
+    const vaultGitOptions = vaultGitHooks(brainPath, params);
     const brainTools = brainToolsFor(params.workflow.config.brain, brainMode, logger, {
       access: params.brainAccess ?? null,
-      ...(brainMode !== 'off' ? { versioning: createVaultGit(brainPath, logger, { onCommit: (_sha, paths) => params.brainIndex?.update(brainPath, paths) }) } : {}),
+      ...(brainMode !== 'off' ? { versioning: createVaultGit(brainPath, logger, vaultGitOptions) } : {}),
     });
     session = await params.runner.startSession({
       ...(params.contextWindow ? { contextWindow: params.contextWindow } : {}),

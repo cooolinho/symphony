@@ -110,6 +110,7 @@ export async function runService(options: ServiceOptions): Promise<number> {
 
   const config = store.current.config;
   await prepareBrain(config.brain, configuredRepositories(config.tracker.provider.repositories, env), logger);
+  if (config.brain.enabled) await orchestrator.loadBrainChanges();
   await orchestrator.buildBrainIndex();
   const system = new SystemCollector({
     volumes: [

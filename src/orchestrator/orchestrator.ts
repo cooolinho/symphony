@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { BrainAccessLog, type BrainAccessPage, type BrainAccessQuery } from '../brain/access-log.ts';
+import { BrainAccessLog, type BrainAccess, type BrainAccessPage, type BrainAccessQuery, type BrainClash } from '../brain/access-log.ts';
 import { listClashes, type BrainClashView } from '../brain/clashes.ts';
 import { createVaultGit, lastVaultCommit } from '../brain/git.ts';
 import { BrainIndex, candidatesOf, vitalsCounts, type BrainCandidate, type BrainVitals } from '../brain/index.ts';
 import { writeIssueSummary } from '../brain/issue-summary.ts';
 import { approveCandidate, rejectCandidate, revertApprove, type PromoteOptions, type PromoteResult } from '../brain/promote.ts';
 import { RateLimitLog, rateLimitKey, type RateLimitRecord } from '../budget/rate-limit-log.ts';
+import { BRAIN_BACKFILL_COMMITS, brainCommitEntries, brainConflictEntry, recentVaultCommits } from '../changes/brain.ts';
 import { ChangeStore } from '../changes/store.ts';
 import { buildChangesPage } from '../changes/feed.ts';
 import type { ChangeEntry, ChangeFile, ChangeFilter, ChangesPage, ChangesQuery } from '../changes/types.ts';
@@ -679,7 +680,7 @@ export class Orchestrator {
   #rateLimitLog: RateLimitLog;
   readonly #brainAccess: BrainAccessLog;
   readonly #brainIndex: BrainIndex;
-  /** Commits and merges of the agent sessions (`<logDir>/changes/`). */
+  /** Commits and merges of the agent sessions and the changes to the brain (`<logDir>/changes/`). */
   #changes: ChangeStore;
   #records = new Map<string, IssueRecord>();
   #paused = new Map<string, PausedEntry>();
@@ -730,7 +731,9 @@ export class Orchestrator {
     this.#pollIntervalMs = deps.workflow.current.config.polling.intervalMs;
     this.#archive = new IssueArchive(deps.logDir === null ? null : path.join(deps.logDir, 'issues'), deps.logger);
     this.#brainIndex = new BrainIndex(deps.logger);
-    this.#brainAccess = new BrainAccessLog(deps.logDir === null ? null : path.join(deps.logDir, 'brain'), deps.logger);
+    this.#brainAccess = new BrainAccessLog(deps.logDir === null ? null : path.join(deps.logDir, 'brain'), deps.logger, {
+      onClash: (line, clash) => this.#recordBrainClash(line, clash),
+    });
     this.#rateLimitLog = new RateLimitLog(deps.logDir === null ? null : path.join(deps.logDir, 'budget'), deps.logger);
     this.#changes = new ChangeStore(deps.logDir === null ? null : path.join(deps.logDir, 'changes'), deps.logger);
     this.#changes.load();
@@ -2204,6 +2207,7 @@ export class Orchestrator {
         checkCache: record.checkCache,
         transcriptDir: this.#deps.logDir === null ? null : path.join(this.#deps.logDir, 'sessions'),
         brainAccess: this.#brainAccess,
+        onBrainCommit: (vault, sha, paths) => this.#recordBrainCommit(vault, sha, paths),
         brainIndex: this.#brainIndex,
         continueWith: (fresh) => {
           const current = this.#deps.workflow.current.config;
@@ -3521,11 +3525,54 @@ export class Orchestrator {
         },
         results,
         this.#deps.history ?? null,
-        { vaultPath: brain.path, versioning: createVaultGit(brain.path, log, { onCommit: (_sha, paths) => this.#brainIndex.update(brain.path, paths) }), extraCostUsd: this.#running.get(issue.id)?.costUsd ?? 0 },
+        { vaultPath: brain.path, versioning: createVaultGit(brain.path, log, { onCommit: (sha, paths) => this.#onVaultCommit(brain.path, sha, paths) }), extraCostUsd: this.#running.get(issue.id)?.costUsd ?? 0 },
       );
       log.info('issue summary written', { path: written.path, changed: written.changed });
     } catch (error) {
       log.warn('issue summary not written', { error: errorMessage(error) });
+    }
+  }
+
+  /** Index update plus brain changes for a commit of the orchestrator's own vault git (promote, issue summary). */
+  async #onVaultCommit(vault: string, sha: string, paths: string[]): Promise<void> {
+    await this.#brainIndex.update(vault, paths);
+    await this.#recordBrainCommit(vault, sha, paths);
+  }
+
+  /** One `brain` change per path of a vault commit. Never throws. */
+  async #recordBrainCommit(vault: string, sha: string, paths: string[]): Promise<void> {
+    try {
+      const entries = await brainCommitEntries(vault, sha, { paths, known: (id) => this.#changes.has(id) });
+      let added = false;
+      for (const entry of entries) added = this.#changes.append(entry) || added;
+      if (added) this.#notify();
+    } catch (error) {
+      this.#deps.logger.warn('cannot record the brain change', { sha, error: errorMessage(error) });
+    }
+  }
+
+  /** The `conflict` change of a rejected brain write. Never throws. */
+  #recordBrainClash(line: BrainAccess, clash: BrainClash): void {
+    try {
+      const brain = this.#deps.workflow.current.config.brain;
+      const entry = brain.enabled ? brainConflictEntry(brain.path, line, clash) : null;
+      if (entry !== null && this.#changes.append(entry)) this.#notify();
+    } catch (error) {
+      this.#deps.logger.warn('cannot record the brain conflict', { clash: clash.id, error: errorMessage(error) });
+    }
+  }
+
+  /** Adds the changes of the newest vault commits (oldest first) that are not recorded yet. Warns instead of throwing. */
+  async loadBrainChanges(): Promise<void> {
+    const brain = this.#deps.workflow.current.config.brain;
+    if (!brain.enabled) return;
+    try {
+      for (const sha of await recentVaultCommits(brain.path, BRAIN_BACKFILL_COMMITS)) {
+        for (const entry of await brainCommitEntries(brain.path, sha, { known: (id) => this.#changes.has(id) })) this.#changes.append(entry);
+      }
+      this.#notify();
+    } catch (error) {
+      this.#deps.logger.warn('cannot load the brain changes', { path: brain.path, error: errorMessage(error) });
     }
   }
 
@@ -3842,7 +3889,7 @@ export class Orchestrator {
     if (!brain.enabled) return null;
     return {
       vault: brain.path,
-      git: createVaultGit(brain.path, this.#logger, { onCommit: (_sha, paths) => this.#brainIndex.update(brain.path, paths) }),
+      git: createVaultGit(brain.path, this.#logger, { onCommit: (sha, paths) => this.#onVaultCommit(brain.path, sha, paths) }),
       index: () => this.#brainIndex.current(brain.path),
       logger: this.#logger,
       now: () => this.#clock.now(),
