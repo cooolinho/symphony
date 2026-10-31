@@ -186,7 +186,7 @@ export const LAYOUT_CSS = `
   .panel-head h2 { margin: 0; }
   .panel-link { font-size: 13px; }
 
-  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
+  .sr-only, .sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
 
   @media (max-width: 640px) {
     .shell-wrap { padding-left: 12px; padding-right: 12px; }

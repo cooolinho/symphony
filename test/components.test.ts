@@ -441,3 +441,12 @@ describe('role palette keys and light role colours (E3-6)', () => {
     assert.equal(run(ctx, 'UI_ROLE_LIGHT.developer'), '#d1fae5');
   });
 });
+
+describe('button obsidian link', () => {
+  it('treats obsidian:// as an external link and keeps javascript: a button', () => {
+    const a = make('button("x", { href: "obsidian://open?vault=v" })');
+    assert.equal(a.tagName, 'a');
+    assert.equal(a.getAttribute('target'), '_blank');
+    assert.equal(make('button("x", { href: "javascript:alert(1)" })').tagName, 'button');
+  });
+});

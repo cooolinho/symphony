@@ -201,7 +201,7 @@ export const COMPONENTS_JS = `
   }
 
   /**
-   * Pill button (size 44 default, 40, 38, 36; tone approve, danger, obsidian). With href (http(s) or a local path)
+   * Pill button (size 44 default, 40, 38, 36; tone approve, danger, obsidian). With href (http(s), obsidian:// or a local path)
    * it is a link styled as a button. A button without a visible label needs ariaLabel, otherwise this throws.
    */
   function button(label, opts) {
@@ -210,7 +210,7 @@ export const COMPONENTS_JS = `
     if (!hasLabel && !uiGiven(ariaLabel)) throw new Error('button: an icon-only button needs an ariaLabel');
     const cls = 'ui-btn' + ([40, 38, 36].includes(size) ? ' ui-btn-' + size : '') +
       (['approve', 'danger', 'obsidian'].includes(tone) ? ' ui-btn-' + tone : '') + (hasLabel ? '' : ' is-icon');
-    const isLink = typeof href === 'string' && (href.startsWith('https://') || href.startsWith('http://') || (href.startsWith('/') && !href.startsWith('//')));
+    const isLink = typeof href === 'string' && (href.startsWith('https://') || href.startsWith('http://') || (href.startsWith('/') && !href.startsWith('//')) || href.toLowerCase().startsWith('obsidian://'));
     let b;
     if (isLink) {
       b = el('a', null, cls);

@@ -1211,6 +1211,7 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}
     setLive(true);
     renderHead(state, Date.now(), true);
     renderActivityLegend($('tool-activity-legend'), actRoles(state, activityData ? activityData.events : []));
+    brainSetProfile(state);
     renderRepositories(h);
     const gate = h.dispatch_gate;
     $('dispatch-gate').hidden = !gate;
