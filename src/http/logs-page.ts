@@ -300,7 +300,7 @@ ${CHART_JS}
     runs: { label: 'Runs', key: 'runs', fmt: fmtInt, axis: fmtCompact, color: 'var(--green)' },
     tokens: { label: 'Tokens', key: 'total_tokens', fmt: fmtCompact, axis: fmtCompact, color: 'var(--cyan)' },
     cost: { label: 'Kosten (geschätzt)', key: 'cost_usd', fmt: fmtUsd, axis: fmtAxisUsd, color: 'var(--green)' },
-    time: { label: 'Agentenzenzeit', key: 'agent_seconds', fmt: fmtDuration, axis: fmtDuration, color: 'var(--cyan)' },
+    time: { label: 'Agentenzeit', key: 'agent_seconds', fmt: fmtDuration, axis: fmtDuration, color: 'var(--cyan)' },
   };
   const OUTCOME_TONE = { handed_off: 'green', continuing: 'cyan', failed: 'red', stalled: 'red', stopped: 'gray', shutdown: 'gray' };
   const chipTone = (t) => (t === 'cyan' ? 'sky' : t);

@@ -47,3 +47,36 @@ export interface ChangeFilter {
   before?: string;
   limit?: number;
 }
+
+/** Entries per type of everything matching `repo` and `issue`. */
+export interface ChangeCounts {
+  all: number;
+  code: number;
+  brain: number;
+}
+
+/** A file changed often in the last 7 days. */
+export interface ChangeHotspot {
+  path: string;
+  repo: string;
+  count: number;
+}
+
+/** "Today in numbers" and the hotspots of the last 7 days. */
+export interface ChangeStats {
+  today: { commits: number; merges: number; files: number; added: number; deleted: number };
+  hotspots: ChangeHotspot[];
+}
+
+/** Query of one page of the feed. */
+export type ChangesQuery = ChangeFilter;
+
+/** One page of the feed (`GET /api/v1/changes`). */
+export interface ChangesPage {
+  entries: ChangeEntry[];
+  /** Id of the last entry of `entries` when another page follows, else null. */
+  next_before: string | null;
+  counts: ChangeCounts;
+  /** Only on the first page (no `before`), else null. */
+  stats: ChangeStats | null;
+}

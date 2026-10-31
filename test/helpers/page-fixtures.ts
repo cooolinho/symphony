@@ -43,6 +43,24 @@ export function entriesFixture(over: Obj = {}): Obj {
   };
 }
 
+/** One entry of GET /api/v1/changes; `over` replaces keys. */
+export function changeEntry(over: Obj = {}): Obj {
+  return {
+    id: 'code:acme/app:abc', type: 'code', at: '2026-10-30T11:00:00.000Z', repo: 'acme/app', issue: 'acme/app#1', role: 'developer', title: 'Add feed',
+    files: [{ path: 'src/a.ts', added: 10, deleted: 0, status: 'modified' }, { path: 'src/b.ts', added: 2, deleted: 3, status: 'modified' }],
+    pr: { number: 7, status: 'success' }, diff: null, status: 'committed', ...over,
+  };
+}
+
+/** GET /api/v1/changes with one entry; `over` replaces top-level keys. */
+export function changesFixture(over: Obj = {}): Obj {
+  return {
+    generated_at: '2026-10-30T12:00:00.000Z', entries: [changeEntry()], next_before: null, counts: { all: 3, code: 2, brain: 1 },
+    stats: { today: { commits: 2, merges: 1, files: 4, added: 12, deleted: 3 }, hotspots: [{ path: 'src/a.ts', repo: 'acme/app', count: 5 }] },
+    ...over,
+  };
+}
+
 /** GET /api/v1/<identifier>/team while the developer plays; `over` replaces top-level keys. */
 export function teamView(over: Obj = {}): Obj {
   const seat = (role: string, status: string, verdict: string | null, duration_ms: number | null, model: string | null) => ({ role, status, verdict, duration_ms, model });
