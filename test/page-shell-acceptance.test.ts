@@ -332,7 +332,7 @@ describe('E1-3 page shell', () => {
       });
     }
 
-    it('the dashboard keeps its actions: Poll now and the logs opener', () => {
+    it('the dashboard keeps its actions: Jetzt pollen and the logs opener', () => {
       const html = pages.dashboard as string;
       assert.match(html, /id="refresh"/);
       assert.match(html, /id="logs-open"/);

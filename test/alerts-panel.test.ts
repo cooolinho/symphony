@@ -37,7 +37,7 @@ describe('alerts(state, budget)', () => {
   it('builds attention, hold and budget entries, newest first', () => {
     const l = list(state, budget);
     assert.deepEqual(l.map((a) => a.kind), ['budget', 'attention', 'model_hold']);
-    assert.deepEqual(l.map((a) => a.href), ['/stats', '/stats', '/tasks']);
+    assert.deepEqual(l.map((a) => a.href), ['/stats', '/stats', '/issue?id=acme%2Fapp%233']);
     for (const a of l) assert.ok(a.at && a.title && a.text);
   });
 
@@ -56,15 +56,14 @@ describe('alerts(state, budget)', () => {
 });
 
 describe('renderAlerts', () => {
-  it('shows count, icon, relative time, title, text and link', () => {
+  it('shows count, kind label, relative time, title, text and link', () => {
     const { host, count } = render(list(state, budget));
     assert.equal(count.textContent, '3');
     assert.equal(host.children.length, 3);
     const hold = host.children[2]!;
-    assert.ok(hold.querySelector('svg'));
-    assert.equal(hold.querySelector('a')!.href, '/tasks');
-    assert.match(hold.textContent, /Modell fable im Limit bis/);
-    assert.match(hold.textContent, /ausgelöst von acme\/app#3/);
+    assert.equal(hold.querySelector('.alert-kind')!.textContent, 'Model-Hold');
+    assert.equal(hold.querySelector('a')!.href, '/issue?id=acme%2Fapp%233');
+    assert.match(hold.textContent, /fable pausiert · Limit bis \d\d:\d\d/);
     assert.match(hold.querySelector('.alert-time')!.textContent, /^vor \d+ (min|h|d)$|^gerade eben$/);
   });
 
@@ -72,7 +71,7 @@ describe('renderAlerts', () => {
     const { host, count } = render(list({ health: { dispatch_errors: [] }, issues: [], blocked: [], model_holds: [] }, null));
     assert.equal(count.textContent, '0');
     assert.equal(host.children.length, 1);
-    assert.ok(host.children[0]!.classList.contains('alerts-empty'));
+    assert.ok(host.children[0]!.querySelector('.gi.alerts-empty'));
     assert.equal(host.children[0]!.textContent, 'Alles ruhig');
     assert.ok(host.querySelector('.dot.tone-green'));
   });
@@ -89,11 +88,11 @@ describe('renderAlerts', () => {
 
 describe('overview page', () => {
   it('has the panel, aria-live counter and German texts; old sections are gone', () => {
-    assert.match(DASHBOARD_HTML, /<h2 id="alerts-title">Hinweise <span class="count" id="alerts-count" aria-live="polite">/);
+    assert.match(DASHBOARD_HTML, /<h2 class="lbl" id="alerts-title">Alerts<\/h2><span class="alerts-badge" id="alerts-count" aria-live="polite" hidden>/);
     assert.doesNotMatch(DASHBOARD_HTML, /id="problems"|id="model-holds"|Needs attention|model-hold-list/);
     assert.match(DASHBOARD_HTML, /id="model-controls"/);
     assert.match(DASHBOARD_HTML, /renderModelControls\(state\)/);
-    for (const t of ['Alles ruhig', 'braucht einen Menschen', 'Limit in Sicht', 'pausiert', 'vor ']) assert.ok(ALERTS_JS.includes(t), t);
+    for (const t of ['Alles ruhig', 'An dich übergeben', 'Limit in Sicht', 'pausiert', 'vor ']) assert.ok(ALERTS_JS.includes(t), t);
     assert.ok(!ALERTS_JS.includes('innerHTML'));
   });
 });

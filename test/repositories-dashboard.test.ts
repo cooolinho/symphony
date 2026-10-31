@@ -135,7 +135,7 @@ describe('dashboard page: repositories bar (#277)', () => {
       const at = page.indexOf(`id="${id}"`);
       assert.ok(at > bar, `${id} comes after the repositories bar`);
     }
-    assert.match(page, /<dl class="sysinfo"/);
+    assert.match(page, /class="page-head ov-head"/);
     assert.match(page, /id="repo-list"/);
   });
 

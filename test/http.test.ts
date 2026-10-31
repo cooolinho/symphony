@@ -198,7 +198,7 @@ describe('http extension', () => {
     assert.match(page.body, /\.pipe-node\.st-skipped/);
     assert.match(page.body, /<section id="dispatch-gate" class="dispatch-gate" role="status" hidden>/);
     assert.match(page.body, /<section id="alerts" class="panel alerts"/);
-    assert.match(page.body, /<span class="count" id="alerts-count" aria-live="polite">/);
+    assert.match(page.body, /<span class="alerts-badge" id="alerts-count" aria-live="polite" hidden>/);
     assert.doesNotMatch(page.body, /id="model-holds"|id="problems"/);
     assert.doesNotMatch(page.body, /\bonclick=/);
     assert.match(page.body, /<div class="slot-settings" id="slot-settings" role="group" aria-label="Agent slots" hidden><\/div>/);
@@ -1248,8 +1248,9 @@ describe('page shell (layout.ts, #342)', () => {
     }
     assert.doesNotMatch(TOKENS_CSS, /\.topbar|\.brand|\.sysinfo|@keyframes sweep/);
     const main = (html: string): string => html.slice(html.indexOf('<main id="main">'), html.indexOf('</main>'));
-    for (const id of ['logs-open', 'refresh', 'sys-status', 'sys-workflow', 'sys-interval', 'sys-lastpoll']) assert.ok(main(DASHBOARD_HTML).includes(`id="${id}"`), id);
-    assert.match(main(DASHBOARD_HTML), /<dl class="sysinfo"/);
+    for (const id of ['logs-open', 'refresh', 'page-title', 'ov-subtitle', 'ov-chips']) assert.ok(main(DASHBOARD_HTML).includes(`id="${id}"`), id);
+    assert.match(main(DASHBOARD_HTML), /<h1 id="page-title">Übersicht<\/h1>/);
+    assert.doesNotMatch(main(DASHBOARD_HTML), /class="sysinfo"/);
     for (const id of ['raw', 'reload']) assert.ok(main(LOGS_HTML).includes(`id="${id}"`), id);
   });
 
@@ -1476,7 +1477,7 @@ describe('dashboard page behaviour', () => {
   it('names held models and the cards that wait for them', () => {
     const hold = { model: 'opus', source: 'limit', until: '2026-10-30T14:00:00Z', since: '2026-10-30T11:00:00Z', issue_identifier: ID, text: 'weekly limit' };
     const page = render([waiting({ status: 'queued', retry: null, reason: null, model_hold: hold })], { model_holds: [hold] });
-    assert.match(page.$('alerts-list').textContent, /Modell opus im Limit bis .*weekly limit · ausgelöst von acme\/app#2/);
+    assert.match(page.$('alerts-list').textContent, /Model-Hold.*opus pausiert · Limit bis \d\d:\d\d/);
     assert.equal(page.$('alerts-count').textContent, '1');
     assert.match(page.$('waiting').textContent, /Waiting for model opus \(limit until /);
     assert.equal(render([]).$('alerts-count').textContent, '0');

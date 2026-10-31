@@ -37,17 +37,18 @@ const items = (page: Awaited<ReturnType<typeof open>>) => page.$('alerts-list').
 
 describe('Hinweise panel on the overview', () => {
   it('is the panel with counter in the head, aria-live on the counter, and replaces the old sections', () => {
-    assert.match(DASHBOARD_HTML, /<h2[^>]*>\s*Hinweise\s*<span class="count"[^>]*aria-live="polite"[^>]*>\s*0\s*<\/span>\s*<\/h2>/);
+    assert.match(DASHBOARD_HTML, /<h2 class="lbl" id="alerts-title">Alerts<\/h2><span class="alerts-badge" id="alerts-count" aria-live="polite" hidden>/);
+    assert.doesNotMatch(DASHBOARD_HTML, /Hinweise/);
     assert.doesNotMatch(DASHBOARD_HTML, /id="problems"|id="model-holds"|id="problem-list"|id="model-hold-list"|Needs attention/);
     const page = renderPage(DASHBOARD_HTML, dashboardState());
     assert.equal(page.$('alerts-count').getAttribute('aria-live'), 'polite');
-    assert.ok(page.$('alerts-count').classList.contains('count'));
-    assert.equal(page.$('alerts-count').parentNode!.tagName, 'h2');
-    assert.match(page.$('alerts-count').parentNode!.textContent, /^Hinweise\s*0$/);
+    assert.ok(page.$('alerts-count').classList.contains('alerts-badge'));
+    assert.match(page.$('alerts-title').textContent, /^Alerts$/);
+    assert.ok(page.$('alerts-title').classList.contains('lbl'));
     assert.equal(page.query('#problems').length + page.query('#model-holds').length, 0);
   });
 
-  it('three sources: three entries, counter 3, newest first, with icon, relative time, title, text and link', async () => {
+  it('three sources: three entries, counter 3, newest first, with kind label, relative time, title, text and link', async () => {
     const page = await open(
       { ...withHealth({ last_tracker_error: { at: T('11:00'), message: 'tracker down' } }), model_holds: [hold] },
       budgetReport(),
@@ -60,10 +61,9 @@ describe('Hinweise panel on the overview', () => {
     assert.match(rows[1]!.textContent, /opus/);
     assert.match(rows[2]!.textContent, /Tracker/);
     assert.match(rows[2]!.textContent, /tracker down/);
-    assert.deepEqual(rows.map((r) => r.querySelector('a')!.href), ['/stats', '/tasks', '/stats']);
+    assert.deepEqual(rows.map((r) => r.querySelector('a')!.href), ['/stats', '/issue?id=acme%2Fapp%233', '/stats']);
     assert.deepEqual(rows.map((r) => /vor \d+ (min|h)|gerade eben/.exec(r.textContent)?.[0]), ['vor 5 min', 'vor 30 min', 'vor 1 h']);
-    for (const r of rows) assert.ok(r.querySelector('svg'), 'icon');
-    assert.equal(new Set(rows.map((r) => r.querySelector('svg')!.outerHTML)).size, 3, 'icon differs by kind');
+    assert.deepEqual(rows.map((r) => r.querySelector('.alert-kind')!.textContent), ['Limit-Prognose', 'Model-Hold', 'Fehler']);
   });
 
   it('needs-human issues link to the issue page, also from the parked list, once per issue', async () => {
@@ -97,11 +97,11 @@ describe('Hinweise panel on the overview', () => {
     assert.match(page.$('alerts-list').textContent, /Alles ruhig/);
   });
 
-  it('operator pause of a model is a hint linking to /tasks', async () => {
+  it('operator pause of a model is a hint linking to /stats without an issue', async () => {
     const page = await open({ model_holds: [{ model: 'opus', source: 'operator', since: T('11:00'), until: null, text: null, issue_identifier: null }] }, null);
     assert.equal(items(page).length, 1);
-    assert.match(items(page)[0]!.textContent, /opus.*pausiert/);
-    assert.equal(items(page)[0]!.querySelector('a')!.href, '/tasks');
+    assert.match(items(page)[0]!.textContent, /opus pausiert · vom Operator angehalten/);
+    assert.equal(items(page)[0]!.querySelector('a')!.href, '/stats');
   });
 
   it('collects workflow, dispatch, tracker, pricing and slot problems as attention entries linking to /stats', async () => {
@@ -124,11 +124,11 @@ describe('Hinweise panel on the overview', () => {
     for (const r of items(page)) assert.equal(r.querySelector('a')!.href, '/stats');
   });
 
-  it('Degraded badge follows the attention entries only', async () => {
-    const badge = (p: Awaited<ReturnType<typeof open>>) => p.$('sys-status').textContent;
-    assert.match(badge(await open(withHealth({ pricing_error: 'x' }), null)), /Degraded/);
-    assert.match(badge(await open({ model_holds: [hold] }, budgetReport()) ), /Online/);
-    assert.match(badge(await open({}, null)), /Online/);
+  it('status chips in the title block follow tracker and workflow errors', async () => {
+    const chips = (p: Awaited<ReturnType<typeof open>>) => p.$('ov-chips').textContent;
+    assert.match(chips(await open(withHealth({ last_tracker_error: { at: T('11:00'), message: 'x' } }), null)), /Tracker Fehler/);
+    assert.match(chips(await open(withHealth({ workflow_error: { message: 'x' } }), null)), /Workflow ungültig/);
+    assert.match(chips(await open({ model_holds: [hold] }, budgetReport())), /Tracker ok.*Workflow gültig/);
   });
 
   it('writes data as text, never as markup', async () => {
@@ -184,7 +184,7 @@ describe('Hinweise panel: state fetch fails', () => {
     await settle();
     assert.match(page.$('alerts-list').textContent, /connection refused/);
     assert.ok(Number(page.$('alerts-count').textContent) >= 1);
-    assert.match(page.$('sys-status').textContent, /Offline/);
+    assert.match(page.$('ov-subtitle').textContent, /Orchestrator nicht erreichbar/);
   });
 });
 

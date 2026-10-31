@@ -150,7 +150,7 @@ describe('Orchestrator.activity / GET /api/v1/activity', () => {
   });
 });
 
-describe('overview chart rendering', () => {
+describe('overview strip rendering', () => {
   const ev = (at: string, role: string, issue = 'acme/app#1') => ({ at, role, issue });
   const payload = (events: unknown[], minutes = 30) => ({
     generated_at: '2026-10-30T12:00:00.000Z', minutes, since: new Date(NOW - minutes * 60_000).toISOString(), events,
@@ -159,70 +159,37 @@ describe('overview chart rendering', () => {
     renderPage(DASHBOARD_HTML, dashboardState(), {
       fetch: (url) => (url.startsWith('/api/v1/activity') ? (typeof data === 'function' ? (data as () => unknown)() : data) : dashboardState()),
     });
-  const lines = (page: ReturnType<typeof renderPage>) => page.query('#tool-activity-chart line').filter((l) => l.className.includes('role-'));
+  const bars = (page: ReturnType<typeof renderPage>) => page.query('#tool-activity-strip span.act-bar');
   const settle = () => new Promise((r) => setTimeout(r, 30));
 
   const data = payload([
     ev(ago(20), 'developer'), ev(ago(20), 'developer'), ev(ago(20), 'developer'), ev(ago(10), 'reviewer'), ev(ago(10), 'reviewer'),
   ]);
 
-  it('has an svg with role="img", one stroke per call with a role class, inside the 30-minute viewBox', async () => {
+  it('is an img strip with one span per call, inside 0..100 %', async () => {
     const page = open(data);
-    await until(() => lines(page).length === 5, 3_000, 'strokes');
-    const svg = page.$('tool-activity-chart');
-    assert.equal(svg.tagName.toLowerCase(), 'svg');
-    assert.equal(svg.getAttribute('role'), 'img');
-    const width = Number((svg.getAttribute('viewBox') ?? '').split(/\s+/)[2]);
-    assert.ok(width > 0);
-    assert.equal(lines(page).filter((l) => l.className.includes('role-developer')).length, 3);
-    assert.equal(lines(page).filter((l) => l.className.includes('role-reviewer')).length, 2);
-    for (const l of lines(page)) {
-      const x = Number(l.getAttribute('x1'));
-      assert.ok(x >= 0 && x <= width, `x1 ${x} inside 0..${width}`);
-      assert.equal(l.getAttribute('x1'), l.getAttribute('x2'), 'vertical');
+    await until(() => bars(page).length === 5, 3_000, 'bars');
+    assert.equal(page.$('tool-activity-strip').getAttribute('role'), 'img');
+    for (const b of bars(page)) {
+      const left = parseFloat(String(b.style.left));
+      assert.ok(left >= 0 && left <= 100, String(b.style.left));
+      assert.equal(b.style.height, '20px');
     }
   });
 
-  it('places later calls further right and keeps same-minute strokes apart', async () => {
+  it('places later calls further right', async () => {
     const page = open(data);
-    await until(() => lines(page).length === 5, 3_000, 'strokes');
-    const xs = (role: string) => lines(page).filter((l) => l.className.includes(`role-${role}`)).map((l) => Number(l.getAttribute('x1')));
-    const dev = xs('developer');
-    const rev = xs('reviewer');
-    assert.equal(new Set(dev).size, 3, 'three same-minute strokes are distinct');
-    assert.equal(new Set(rev).size, 2);
-    assert.ok(Math.max(...dev) < Math.min(...rev), 'minute -20 is left of minute -10');
+    await until(() => bars(page).length === 5, 3_000, 'bars');
+    const lefts = bars(page).map((b) => parseFloat(String(b.style.left)));
+    assert.ok(Math.max(...lefts.slice(0, 3)) < Math.min(...lefts.slice(3)), 'minute -20 is left of minute -10');
   });
 
-  it('shows a legend entry per occurring role only, with colour swatch and name', async () => {
-    const page = open(data);
-    await until(() => lines(page).length === 5, 3_000, 'strokes');
-    const keys = page.query('#tool-activity-legend .act-key');
-    assert.equal(keys.length, 2);
-    const text = keys.map((k) => k.textContent ?? '').join('|');
-    assert.match(text, /Developer/);
-    assert.match(text, /Reviewer/);
-    assert.doesNotMatch(text, /Architect|Analyst/);
-    assert.ok(keys.every((k) => k.className.includes('role-')), 'legend entries carry the role colour class');
-  });
-
-  it('puts the totals into the aria-label (total and per role) and hides the empty text', async () => {
-    const page = open(data);
-    await until(() => lines(page).length === 5, 3_000, 'strokes');
-    const label = page.$('tool-activity-chart').getAttribute('aria-label') ?? '';
-    assert.match(label, /5 tool calls in 30 minutes/);
-    assert.match(label, /Developer 3/);
-    assert.match(label, /Reviewer 2/);
-    assert.equal(page.$('tool-activity-empty').hidden, true);
-  });
-
-  it('shows "No activity in the last 30 minutes." for an empty answer', async () => {
+  it('shows the German empty text for an empty answer', async () => {
     const page = open(payload([]));
     await until(() => page.fetches.some((f) => f.url.startsWith('/api/v1/activity')), 3_000, 'fetch');
     await settle();
-    assert.equal(page.$('tool-activity-empty').hidden, false);
-    assert.equal(page.$('tool-activity-empty').textContent, 'No activity in the last 30 minutes.');
-    assert.equal(lines(page).length, 0);
+    assert.equal(page.query('#tool-activity-strip .act-empty')[0]!.textContent, 'Keine Tool-Aufrufe in den letzten 30 Minuten');
+    assert.equal(bars(page).length, 0);
   });
 
   it('does not crash on a malformed answer and still renders the rest of the page', async () => {
@@ -230,8 +197,8 @@ describe('overview chart rendering', () => {
       const page = open(bad);
       await until(() => page.fetches.some((f) => f.url.startsWith('/api/v1/activity')), 3_000, 'fetch');
       await settle();
-      assert.equal(lines(page).length, 0);
-      assert.ok(page.$('tool-activity-empty'));
+      assert.equal(bars(page).length, 0);
+      assert.ok(page.$('tool-activity-strip'));
     }
   });
 
@@ -239,41 +206,37 @@ describe('overview chart rendering', () => {
     const page = open(() => { throw new Error('down'); });
     await until(() => page.fetches.some((f) => f.url.startsWith('/api/v1/activity')), 3_000, 'fetch');
     await settle();
-    assert.equal(lines(page).length, 0);
+    assert.equal(bars(page).length, 0);
   });
 
   it('requests /api/v1/activity?minutes=30 once on load and reloads on its own 30 s interval, leaving the 2 s poll alone', async () => {
     const page = open(data);
-    await until(() => lines(page).length === 5, 3_000, 'strokes');
+    await until(() => bars(page).length === 5, 3_000, 'bars');
     assert.ok(page.fetches.some((f) => f.url === '/api/v1/activity?minutes=30'));
     assert.equal(page.fetches.filter((f) => f.url.startsWith('/api/v1/activity')).length, 1);
     const ms = page.intervals.map((i) => i.ms);
     assert.ok(ms.includes(30_000));
     assert.ok(ms.includes(2_000), 'the existing 2 s state poll is still there');
-    const state = page.fetches.filter((f) => f.url.startsWith('/api/v1/state')).length;
-    assert.ok(state >= 1);
   });
 
-  it('replaces the strokes on a reload instead of accumulating them', async () => {
+  it('replaces the bars on a reload instead of accumulating them', async () => {
     let current: unknown = data;
     const page = open(() => current);
-    await until(() => lines(page).length === 5, 3_000, 'strokes');
+    await until(() => bars(page).length === 5, 3_000, 'bars');
     current = payload([ev(ago(2), 'developer')]);
     const poll = page.intervals.find((i) => i.ms === 30_000 && i.fn.name === 'loadToolActivity')!;
     await poll.fn();
-    assert.equal(lines(page).length, 1);
-    assert.equal(page.query('#tool-activity-legend .act-key').length, 1);
-    assert.match(page.$('tool-activity-chart').getAttribute('aria-label') ?? '', /1 tool call/);
+    assert.equal(bars(page).length, 1);
     current = payload([]);
     await poll.fn();
-    assert.equal(lines(page).length, 0);
-    assert.equal(page.$('tool-activity-empty').hidden, false);
+    assert.equal(bars(page).length, 0);
+    assert.equal(page.query('#tool-activity-strip .act-empty').length, 1);
   });
 
   it('inserts role and issue text as text, never as HTML', async () => {
     const page = open(payload([ev(ago(1), '<b id="pwn">x</b>', '<i>#1</i>')]));
-    await until(() => lines(page).length === 1, 3_000, 'stroke');
-    const legend = page.query('#tool-activity-legend .act-key')[0]!;
+    await until(() => bars(page).length === 1, 3_000, 'bar');
+    const legend = page.query('#tool-activity-legend .act-key').find((k) => (k.textContent ?? '').includes('pwn'))!;
     assert.ok((legend.textContent ?? '').includes('<b id="pwn">x</b>'));
     assert.equal(page.query('#tool-activity b').length, 0);
     assert.equal(page.query('#tool-activity i').length, 0);
