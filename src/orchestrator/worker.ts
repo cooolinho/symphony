@@ -667,6 +667,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     const vaultGitOptions = vaultGitHooks(brainPath, params);
     const brainTools = brainToolsFor(params.workflow.config.brain, brainMode, logger, {
       access: params.brainAccess ?? null,
+      approvedWrites: role?.brainApprovedWrites ?? true,
+      index: params.brainIndex ?? null,
       ...(brainMode !== 'off' ? { versioning: createVaultGit(brainPath, logger, vaultGitOptions) } : {}),
     });
     session = await params.runner.startSession({

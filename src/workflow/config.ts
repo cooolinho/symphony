@@ -294,6 +294,7 @@ const BRAIN_KEYS = new Set(['enabled', 'path', 'clash_window_ms']);
 const BUDGET_KEYS = new Set(['compact_threshold']);
 const ROLE_KEYS = new Set([
   'brain',
+  'brain_approved_writes',
   'states',
   'read_only',
   'may_move_to',
@@ -424,6 +425,7 @@ function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: s
       waitForSubIssues: reader.bool(value, 'wait_for_sub_issues', `${field}.wait_for_sub_issues`, false),
       agents: readRoleAgents(reader, value, field),
       brain: reader.oneOf<BrainMode>(value, 'brain', `${field}.brain`, BRAIN_MODES, 'off'),
+      brainApprovedWrites: reader.bool(value, 'brain_approved_writes', `${field}.brain_approved_writes`, true),
       claude,
     });
   }

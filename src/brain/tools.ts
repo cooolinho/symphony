@@ -8,6 +8,7 @@ import type { BrainConfig } from '../workflow/config.ts';
 import type { BrainMode } from '../workflow/roles.ts';
 import type { BrainAccessLog, BrainAccessOp } from './access-log.ts';
 import { fail, hashOf, MAX_NOTE_BYTES, ok, purposeOf, reasonOf, warnPurpose } from './common.ts';
+import { buildIndex, sameTitleGroups, vitalsCounts } from './index.ts';
 import { noteStatus, noteTitle, parseNote } from './note.ts';
 import { resolveVaultPath } from './paths.ts';
 import { createBrainWriteTools, type BrainWriteOptions } from './write.ts';
@@ -56,39 +57,45 @@ function fieldEquals(value: unknown, wanted: string): boolean {
   return typeof value === 'string' && value.trim().toLowerCase() === wanted.trim().toLowerCase();
 }
 
+/** Wraps a read tool body: warns without purpose, turns a throw into tool_error and writes the access line. */
+function guardedRead(
+  logger: Logger,
+  access: BrainAccessLog | null,
+  tool: string,
+  op: BrainAccessOp,
+  subject: (args: Record<string, unknown>) => string,
+  body: (args: Record<string, unknown>) => ToolResult | Promise<ToolResult>,
+): AgentToolSpec['execute'] {
+  return async (args, context) => {
+    warnPurpose(logger, tool, args, context);
+    let result: ToolResult;
+    try {
+      result = await body(args);
+    } catch (error) {
+      result = fail('tool_error', errorMessage(error));
+    }
+    if (access !== null) {
+      const reason = reasonOf(result);
+      access.record({
+        at: new Date().toISOString(),
+        run: context.runId ?? null,
+        issue: context.issue.identifier,
+        role: context.role ?? null,
+        op,
+        path_or_query: subject(args),
+        purpose: purposeOf(args),
+        result: result.ok ? 'ok' : 'rejected',
+        ...(reason !== undefined ? { reason } : {}),
+      });
+    }
+    return result;
+  };
+}
+
 /** Read tools of the knowledge vault. Everything runs synchronously on the file system; there is no index. */
 export function createBrainTools(vaultPath: string, logger: Logger, access: BrainAccessLog | null = null): AgentToolSpec[] {
-  const guarded =
-    (
-      tool: string,
-      op: BrainAccessOp,
-      subject: (args: Record<string, unknown>) => string,
-      body: (args: Record<string, unknown>) => ToolResult,
-    ): AgentToolSpec['execute'] =>
-    async (args, context) => {
-      warnPurpose(logger, tool, args, context);
-      let result: ToolResult;
-      try {
-        result = body(args);
-      } catch (error) {
-        result = fail('tool_error', errorMessage(error));
-      }
-      if (access !== null) {
-        const reason = reasonOf(result);
-        access.record({
-          at: new Date().toISOString(),
-          run: context.runId ?? null,
-          issue: context.issue.identifier,
-          role: context.role ?? null,
-          op,
-          path_or_query: subject(args),
-          purpose: purposeOf(args),
-          result: result.ok ? 'ok' : 'rejected',
-          ...(reason !== undefined ? { reason } : {}),
-        });
-      }
-      return result;
-    };
+  const guarded = (tool: string, op: BrainAccessOp, subject: (args: Record<string, unknown>) => string, body: (args: Record<string, unknown>) => ToolResult) =>
+    guardedRead(logger, access, tool, op, subject, body);
 
   const pathSubject = (args: Record<string, unknown>, key: string, allowRoot: boolean): string => {
     const resolved = resolveVaultPath(vaultPath, args[key] ?? '', { allowRoot });
@@ -217,9 +224,39 @@ export function createBrainTools(vaultPath: string, logger: Logger, access: Brai
   return [search, read, list];
 }
 
+const VITALS_LIST_MAX = 200;
+
+/** brain_vitals: orphans, broken links and same-title groups from the index (read only). */
+export function createBrainVitalsTool(vaultPath: string, logger: Logger, access: BrainAccessLog | null, index: BrainWriteOptions['index']): AgentToolSpec {
+  const cap = <T>(list: T[]): T[] => list.slice(0, VITALS_LIST_MAX);
+  return {
+    name: 'brain_vitals',
+    description:
+      'Health of the knowledge vault from its link index. Returns {notes_by_status, links, orphans, broken_links, candidates, ' +
+      'orphan_paths: notes without incoming links (Repos/*/index.md and the root README.md are exempt), ' +
+      'broken: [{from, link}] links that resolve to no note (a link resolves by full path, or by a unique file name), ' +
+      'same_title: [{title, paths}] groups of non-deprecated notes with the same title, truncated}. Each list holds at most ' +
+      `${VITALS_LIST_MAX} entries; truncated is true when one was cut. Read-only.`,
+    inputSchema: { purpose: PURPOSE },
+    mutates: false,
+    execute: guardedRead(logger, access, 'brain_vitals', 'vitals', () => '', async () => {
+      const idx = index ? await index.current(vaultPath) : await buildIndex(vaultPath);
+      const groups = sameTitleGroups(idx);
+      const lists = [idx.orphans, idx.broken, groups];
+      return ok({
+        ...vitalsCounts(idx),
+        orphan_paths: cap(idx.orphans),
+        broken: cap(idx.broken),
+        same_title: cap(groups),
+        truncated: lists.some((list) => list.length > VITALS_LIST_MAX),
+      });
+    }),
+  };
+}
+
 export { createBrainWriteTools, type BrainWriteEntry, type BrainWriteOptions } from './write.ts';
 
-/** The brain tools of a session: none unless `brain.enabled` and the role's mode is not `off`; `read` has the read tools, `write` also the write tools. */
+/** The brain tools of a session: none unless `brain.enabled` and the role's mode is not `off`; `read` has the four read tools (search, read, list, vitals), `write` also the two write tools. */
 export function brainToolsFor(
   config: Omit<BrainConfig, 'clashWindowMs'> & { clashWindowMs?: number },
   mode: BrainMode,
@@ -227,7 +264,10 @@ export function brainToolsFor(
   options: BrainWriteOptions = {},
 ): AgentToolSpec[] {
   if (!config.enabled || mode === 'off') return [];
-  const readTools = createBrainTools(config.path, logger, options.access ?? null);
+  const readTools = [
+    ...createBrainTools(config.path, logger, options.access ?? null),
+    createBrainVitalsTool(config.path, logger, options.access ?? null, options.index ?? null),
+  ];
   if (mode === 'read') return readTools;
   const writeOptions: BrainWriteOptions =
     config.clashWindowMs === undefined ? options : { ...options, clashWindowMs: options.clashWindowMs ?? config.clashWindowMs };

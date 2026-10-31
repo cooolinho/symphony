@@ -215,6 +215,21 @@ export function vitalsCounts(index: VaultIndex): BrainVitalCounts {
   };
 }
 
+/** Groups of two or more non-deprecated notes with the same title (trimmed, lower case, white space collapsed), sorted. */
+export function sameTitleGroups(index: VaultIndex): { title: string; paths: string[] }[] {
+  const groups = new Map<string, string[]>();
+  for (const [rel, note] of index.notes) {
+    if (note.status === 'deprecated') continue;
+    const key = note.title.trim().toLowerCase().replace(/\s+/g, ' ');
+    if (key === '') continue;
+    groups.set(key, [...(groups.get(key) ?? []), rel]);
+  }
+  return [...groups]
+    .filter(([, paths]) => paths.length >= 2)
+    .map(([title, paths]) => ({ title, paths: paths.sort() }))
+    .sort((a, b) => a.title.localeCompare(b.title));
+}
+
 const TYPE_FOLDERS: Record<string, string> = { decision: 'Decisions/', lesson: 'Lessons/', issue: 'Issues/', agent: 'Agents/' };
 
 /** Destination of a note when it is approved: `target`, else the folder of its type. */

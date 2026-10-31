@@ -11,7 +11,7 @@ export const BRAIN_CLASH_LOOKBACK_DAYS = 7;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export type BrainAccessOp = 'read' | 'search' | 'list' | 'write' | 'append' | 'resolve';
+export type BrainAccessOp = 'read' | 'search' | 'list' | 'write' | 'append' | 'resolve' | 'vitals';
 export type BrainClashReason = 'window' | 'hash_mismatch';
 
 /** One line of `access.jsonl`: one brain tool call. */
@@ -274,7 +274,7 @@ export class BrainAccessLog {
 
   #count(entry: BrainAccess): void {
     if (entry.result !== 'ok' || typeof entry.at !== 'string') return;
-    const reads = entry.op === 'read' || entry.op === 'search' || entry.op === 'list';
+    const reads = entry.op === 'read' || entry.op === 'search' || entry.op === 'list' || entry.op === 'vitals';
     const writes = entry.op === 'write' || entry.op === 'append';
     if (!reads && !writes) return;
     const day = entry.at.slice(0, 10);
