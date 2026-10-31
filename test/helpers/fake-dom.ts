@@ -16,7 +16,12 @@ export class FakeElement {
     remove: (...c: string[]) => this.setClasses(this.classes().filter((x) => !c.includes(x))),
     contains: (c: string) => this.classes().includes(c),
     [Symbol.iterator]: () => this.classes()[Symbol.iterator](),
-    toggle: (c: string) => (this.classList.contains(c) ? this.classList.remove(c) : this.classList.add(c)),
+    toggle: (c: string, force?: boolean): boolean => {
+      const on = force === undefined ? !this.classList.contains(c) : !!force;
+      if (on) this.classList.add(c);
+      else this.classList.remove(c);
+      return on;
+    },
   };
 
   constructor(tagName: string, namespaceURI = XHTML_NS) {

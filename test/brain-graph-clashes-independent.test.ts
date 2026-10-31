@@ -12,6 +12,7 @@ import { FakeRunner, FakeTracker, ManualTimers, StaticWorkflow, baseFront, makeW
 import { dashboardState } from './helpers/page-fixtures.ts';
 
 // E7-7b (#378), independent tests derived from the issue text: GET /api/v1/brain/graph, section #graph, section #clashes.
+// Adjusted for E7-8 (#391): folder colours instead of status colours, role="img" without node preview, mockup clash texts.
 
 type Obj = Record<string, any>;
 
@@ -255,7 +256,9 @@ const GRAPH = {
 
 const folder = (p: string) => ({ path: p, notes_by_status: { candidate: 0, approved: 1, deprecated: 0, none: 0 }, total: 1 });
 const VITALS = {
-  notes_by_status: { candidate: 1, approved: 2, deprecated: 1, none: 0 }, links: 3, orphans: 0, broken_links: 1, candidates: 1, writes_today: 0, reads_today: 0,
+  notes_by_status: { candidate: 1, approved: 2, deprecated: 1, none: 0 }, notes: { total: 4, candidate: 1, approved: 2, deprecated: 1, none: 0 },
+  links: { total: 3, per_note: 0.8 }, orphans: 0, broken_links: 1, candidates: 1, writes_today: 0, reads_today: { total: 0, by_folder: [] },
+  clashes: { week: { total: 0, resolved: 0 } }, commits: { total: 1 }, clash_window_min: 10, path: '/vault',
   last_commit: null, obsidian_url: null, folders: [folder('Repos'), folder('Repos/acme-app'), folder('Repos/beta')],
 };
 
@@ -276,6 +279,8 @@ function fetcher(opts: Obj = {}): (url: string, init: { method: string; body?: u
   };
 }
 const text = (n: { textContent: string }) => n.textContent;
+const circleOf = (p: ReturnType<typeof renderPage>, notePath: string) =>
+  p.query('#brain-graph circle').find((c) => text(c.querySelectorAll('title')[0]!) === notePath)!;
 
 describe('Brain page: section #graph (independent)', () => {
   it('has sections with the ids graph and clashes', () => {
@@ -311,13 +316,13 @@ describe('Brain page: section #graph (independent)', () => {
     assert.ok(!/<script[^>]+src=/i.test(BRAIN_HTML));
   });
 
-  it('colours nodes by status: different statuses get different fills', async () => {
+  it('colours nodes by folder: different folders get different fills, the same folder the same fill', async () => {
     const p = renderPage(BRAIN_HTML, undefined, { fetch: fetcher() });
     await until(() => p.query('#brain-graph svg').length === 1);
-    const fillOf = (path: string) => p.query('#brain-graph .br-node').find((n) => n.dataset.path === path)!.querySelectorAll('circle')[0]!.getAttribute('fill');
-    const fills = ['Repos/acme-app/index.md', 'Lessons/a.md', 'Lessons/old.md'].map(fillOf);
-    assert.equal(new Set(fills).size, 3, fills.join(','));
-    assert.equal(fillOf('Lessons/deep.md'), fillOf('Repos/acme-app/index.md'), 'same status, same colour');
+    const fillOf = (notePath: string) => circleOf(p, notePath).getAttribute('fill');
+    assert.notEqual(fillOf('Repos/acme-app/index.md'), fillOf('Lessons/a.md'));
+    assert.equal(fillOf('Lessons/a.md'), fillOf('Lessons/old.md'), 'same folder, same colour');
+    assert.equal(fillOf('Lessons/deep.md'), fillOf('Lessons/a.md'));
   });
 
   it('draws a broken link red and dashed, other links neither', async () => {
@@ -331,21 +336,15 @@ describe('Brain page: section #graph (independent)', () => {
     const normal = lines.filter((l) => (l.getAttribute('stroke-dasharray') ?? '') === '');
     assert.equal(normal.length, 3);
     for (const l of normal) assert.notEqual((l.getAttribute('stroke') ?? '').toLowerCase(), red);
-    const missingNode = p.query('#brain-graph .br-node').find((n) => n.dataset.path === 'Lessons/fehlt.md')!;
-    assert.equal((missingNode.querySelectorAll('circle')[0]!.getAttribute('stroke') ?? '').toLowerCase(), red);
+    assert.equal((circleOf(p, 'Lessons/fehlt.md').getAttribute('stroke') ?? '').toLowerCase(), red);
   });
 
-  it('opens a preview when a node is clicked', async () => {
+  it('is one image for assistive technology; each node names its path in a <title>', async () => {
     const p = renderPage(BRAIN_HTML, undefined, { fetch: fetcher() });
     await until(() => p.query('#brain-graph svg').length === 1);
-    assert.equal(p.$('brain-graph-preview').hidden, true);
-    p.click(p.query('#brain-graph .br-node').find((n) => n.dataset.path === 'Lessons/a.md')!);
-    assert.equal(p.$('brain-graph-preview').hidden, false);
-    assert.ok(text(p.$('brain-graph-preview')).includes('Alpha'));
-    assert.ok(text(p.$('brain-graph-preview')).includes('Lessons/a.md'));
-    p.click(p.query('#brain-graph .br-node').find((n) => n.dataset.path === 'Lessons/deep.md')!);
-    assert.ok(text(p.$('brain-graph-preview')).includes('Deep'));
-    assert.ok(!text(p.$('brain-graph-preview')).includes('Alpha'));
+    assert.equal(p.query('#brain-graph svg')[0]!.getAttribute('role'), 'img');
+    assert.deepEqual(p.query('#brain-graph circle').map((c) => text(c.querySelectorAll('title')[0]!)).sort(), GRAPH.nodes.map((n) => n.path).sort());
+    assert.equal(p.query('#brain-graph [tabindex]').length, 0);
   });
 
   it('gives the text alternative with the numbers of nodes, edges and broken links', async () => {
@@ -356,7 +355,7 @@ describe('Brain page: section #graph (independent)', () => {
     assert.match(t, /\b5\b.*Knoten/);
     assert.match(t, /\b4\b.*Kanten/);
     assert.match(t, /\b1\b.*kaputte/i);
-    assert.ok((p.query('#brain-graph svg')[0]!.getAttribute('aria-label') ?? '').includes('5'));
+    assert.equal(p.query('#brain-graph svg')[0]!.getAttribute('aria-label'), 'Ausschnitt des Notiz-Graphen rund um Repos/acme-app/index');
   });
 
   it('shows "Keine Links" for a graph without edges', async () => {
@@ -371,17 +370,17 @@ describe('Brain page: section #graph (independent)', () => {
     const graph = { ...GRAPH, nodes: GRAPH.nodes.map((n, i) => (i === 1 ? { ...n, title: evil } : n)) };
     const p = renderPage(BRAIN_HTML, undefined, { fetch: fetcher({ graph }) });
     await until(() => p.query('#brain-graph svg').length === 1);
-    p.click(p.query('#brain-graph .br-node').find((n) => n.dataset.path === 'Lessons/a.md')!);
     assert.equal(p.query('#graph img').length, 0);
+    assert.ok(p.query('#brain-graph text').map(text).some((t) => t.startsWith('<img')));
   });
 });
 
 describe('Brain page: section #clashes (independent)', () => {
-  it('shows path, both runs and roles, both times and the reason for an open clash', async () => {
+  it('shows path, both roles, both times and the reason for an open clash', async () => {
     const p = renderPage(BRAIN_HTML, undefined, { fetch: fetcher({ clashes: { clashes: [clash('k1')] } }) });
     await until(() => p.query('#brain-clashes .br-clash').length === 1);
     const t = text(p.query('#brain-clashes .br-clash')[0]!);
-    for (const part of ['Lessons/x.md', 'run-first', 'run-second', 'architect', 'developer']) assert.ok(t.includes(part), part);
+    for (const part of ['Lessons/x.md', 'Architect', 'Developer']) assert.ok(t.includes(part), part);
     assert.ok(/10:00/.test(t) || /1[0-2]:00/.test(t), 'first time shown: ' + t);
     assert.ok(/10:05/.test(t) || /1[0-2]:05/.test(t), 'second time shown: ' + t);
     assert.ok(/Hash|Schutz|hash/.test(t), 'reason shown');
@@ -398,7 +397,7 @@ describe('Brain page: section #clashes (independent)', () => {
     const p = renderPage(BRAIN_HTML, undefined, { fetch: fetcher({ clashes: { clashes: [clash('k1', { runs: [null, 'run-second'], roles: [null, null], at: [null, '2026-10-30T10:05:00Z'] })] } }) });
     await until(() => p.query('#brain-clashes .br-clash').length === 1);
     const t = text(p.query('#brain-clashes .br-clash')[0]!);
-    assert.ok(t.includes('run-second'));
+    assert.ok(t.includes('Unbekannte Rolle'));
     assert.ok(!t.includes('null') && !t.includes('undefined'));
   });
 
@@ -444,9 +443,8 @@ describe('Brain page: section #clashes (independent)', () => {
 
   it('shows "gelöst" only with control_allowed and posts to the resolve route', async () => {
     const p = renderPage(BRAIN_HTML, undefined, { fetch: fetcher({ clashes: { clashes: [clash('k1')] } }) });
-    await until(() => p.query('#brain-clashes .br-clash button').length === 1);
-    const b = p.query('#brain-clashes .br-clash button')[0]!;
-    assert.match(text(b), /gelöst/);
+    await until(() => p.query('#brain-clashes .br-clash button').length === 2);
+    const b = p.query('#brain-clashes .br-clash button').find((x) => /gelöst/.test(text(x)))!;
     p.click(b);
     await until(() => p.fetches.some((f) => f.method === 'POST'));
     const post = p.fetches.find((f) => f.method === 'POST')!;
@@ -455,7 +453,7 @@ describe('Brain page: section #clashes (independent)', () => {
     for (const controls of [{ retry: false }, { retry: false, pause: false }]) {
       const off = renderPage(BRAIN_HTML, undefined, { fetch: fetcher({ state: dashboardState({ controls }), clashes: { clashes: [clash('k1')] } }) });
       await until(() => off.query('#brain-clashes .br-clash').length === 1);
-      assert.equal(off.query('#brain-clashes button').length, 0);
+      assert.ok(!off.query('#brain-clashes button').some((x) => /gelöst/.test(text(x))));
       assert.ok(!off.fetches.some((f) => f.method === 'POST'));
     }
   });
@@ -468,16 +466,16 @@ describe('Brain page: section #clashes (independent)', () => {
     assert.equal(details.tagName.toLowerCase(), 'details');
     assert.equal(details.open, false);
     assert.deepEqual(details.querySelectorAll('.br-clash').map((c) => c.dataset.id).sort(), ['done1', 'done2']);
-    assert.equal(details.querySelectorAll('button').length, 0);
+    assert.ok(!details.querySelectorAll('button').some((x) => /gelöst/.test(text(x))));
   });
 
-  it('shows "Keine Konflikte" when there are no open clashes, also when only resolved ones exist', async () => {
+  it('shows "Keine offenen Clashes" when there are no open clashes, also when only resolved ones exist', async () => {
     const none = renderPage(BRAIN_HTML, undefined, { fetch: fetcher() });
     await until(() => text(none.$('brain-clashes')) !== '');
-    assert.equal(text(none.$('brain-clashes')), 'Keine Konflikte');
+    assert.equal(text(none.$('brain-clashes')), 'Keine offenen Clashes');
     const onlyDone = renderPage(BRAIN_HTML, undefined, { fetch: fetcher({ clashes: { clashes: [clash('d', { status: 'resolved' })] } }) });
     await until(() => text(onlyDone.$('brain-clashes')) !== '');
-    assert.equal(text(onlyDone.$('brain-clashes')), 'Keine Konflikte');
+    assert.equal(text(onlyDone.$('brain-clashes')), 'Keine offenen Clashes');
     assert.equal(onlyDone.query('#brain-clashes-resolved .br-clash').length, 1);
   });
 
