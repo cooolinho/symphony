@@ -53,6 +53,7 @@ Every note starts with a YAML frontmatter block with these fields:
 
 The vault is a git repository. Every write by an agent is one commit: the author is \`symphony-<role>\`, the message is \`<issue> <run>: <purpose>\` with the path below it.
 Changes made in Obsidian are committed as \`human\` (\`Obsidian: <n> Dateien\`) before the next agent write; \`.obsidian/\` is never committed.
+After every merge Symphony itself writes \`Issues/<owner>-<name>/<number>.md\` (goal, result per stage, rounds, cost, changed files, links) as \`approved\`, committed as \`symphony\` with the subject \`<repo>#<number>: issue summary\`.
 Undo a change with \`git revert <sha>\`.
 
 ## Rules

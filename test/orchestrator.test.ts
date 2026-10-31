@@ -3,6 +3,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
+import { parseNote } from '../src/brain/note.ts';
+import { ensureVault } from '../src/brain/vault.ts';
 import { PricingStore } from '../src/costs/pricing.ts';
 import { HistoryLog, readHistory } from '../src/history/history.ts';
 import type { IntegrationReport } from '../src/agent/types.ts';
@@ -4560,6 +4562,64 @@ describe('change log (code changes per commit and merge)', () => {
     await s.orchestrator.shutdown(1_000);
   });
 
+  describe('issue summary after the merge (E8-3)', () => {
+    const mergeResult = { merged: true, pull_request: 9, status: 'Done', reason: 'merged', checks: { state: 'success' as const, failing: [], pending: [] } };
+
+    function brainSetup(brainFront: Record<string, unknown> | null) {
+      const from = origin();
+      const runner = new FakeRunner();
+      const front: Record<string, unknown> = { hooks: { after_create: `git clone -q "${from}" . && git checkout -q -b symphony/issue-a` } };
+      if (brainFront !== null) front.brain = brainFront;
+      const s = setup({ runner, issues: [makeIssue({ id: 'a', native_ref: { base_branch: 'main' } })], front });
+      s.tracker.issueRepository = () => 'acme/app';
+      s.tracker.autoMerge = (_issue, column) => (column === 'Human Review' ? mergeResult : undefined);
+      runner.script = async (turn, params) => {
+        commitFile(params.cwd, 'docs/guide.md', 'Add the guide');
+        const result = await callTool(params, 'set_status', { status: 'Human Review' });
+        assert.equal(result.ok, true);
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      };
+      return s;
+    }
+
+    it('writes Issues/<repo>/<nr>.md into the vault as symphony after the merge', async () => {
+      const vault = path.join(tempDir(), 'vault');
+      await ensureVault(vault, ['acme/app']);
+      const s = brainSetup({ enabled: true, path: vault });
+      await s.orchestrator.tickNow();
+      const file = path.join(vault, 'Issues', 'acme-app', 'a.md');
+      const last = (format: string): string => execFileSync('git', ['log', '-1', `--format=${format}`], { cwd: vault, encoding: 'utf8' }).trim();
+      await until(() => fs.existsSync(file) && last('%s') === 'acme/app#a: issue summary', 15_000, 'summary committed');
+      const note = parseNote(fs.readFileSync(file, 'utf8'));
+      assert.equal(note.frontmatter.status, 'approved');
+      assert.equal(note.frontmatter.role, 'symphony');
+      assert.deepEqual(note.frontmatter.sources, ['https://github.com/acme/app/pull/9']);
+      assert.equal(last('%an'), 'symphony');
+      await s.orchestrator.shutdown(1_000);
+    });
+
+    it('writes nothing without brain.enabled', async () => {
+      const vault = path.join(tempDir(), 'vault');
+      await ensureVault(vault, ['acme/app']);
+      const s = brainSetup({ enabled: false, path: vault });
+      await s.orchestrator.tickNow();
+      await until(() => s.orchestrator.listChanges({ type: 'code' }).some((e) => e.status === 'merged'), 15_000, 'merge recorded');
+      await s.orchestrator.shutdown(1_000);
+      assert.deepEqual(fs.readdirSync(path.join(vault, 'Issues')), []);
+    });
+
+    it('a failing vault only warns: the merge is recorded and the issue is done', async () => {
+      const vault = path.join(tempDir(), 'not-a-vault');
+      fs.mkdirSync(vault, { recursive: true });
+      const s = brainSetup({ enabled: true, path: vault });
+      await s.orchestrator.tickNow();
+      await until(() => s.orchestrator.listChanges({ type: 'code' }).some((e) => e.status === 'merged'), 15_000, 'merge recorded');
+      assert.equal(s.tracker.issues.get('a')?.state, 'Done');
+      assert.equal(fs.existsSync(path.join(vault, 'Issues')), false);
+      await s.orchestrator.shutdown(1_000);
+    });
+  });
+
   it('records a merged entry when a merge retry succeeds, without files when the issue has no workspace, and nothing when it fails', async () => {
     const issues = ['a', 'b', 'c'].map((id) => makeIssue({ id, identifier: `acme/app#${id}`, state: 'Human Review', labels: ['awaiting-checks'], native_ref: { base_branch: 'main' } }));
     const s = setup({ issues });
@@ -4791,5 +4851,137 @@ describe('change log acceptance (#339)', () => {
     if (merged[0]?.diff !== null && merged[0]?.diff !== undefined) {
       for (const block of merged[0].diff.split('\n\n')) assert.ok(block.split('\n').length - 1 <= 5);
     }
+  });
+});
+
+// Independent acceptance tests for the issue summary after the merge (#360): the issue text is the specification.
+describe('issue summary acceptance (#360)', () => {
+  const mergeOk = { merged: true, pull_request: 9, status: 'Done', reason: 'merged', checks: { state: 'success' as const, failing: [], pending: [] } };
+
+  async function newVault(): Promise<string> {
+    const vault = path.join(tempDir(), 'vault');
+    await ensureVault(vault, ['acme/app']);
+    return vault;
+  }
+
+  /** A stored stage result of the tracker's own account, as the GitHub adapter reads it back. */
+  function persistResult(s: Setup, issueId: string, result: Record<string, unknown>, role: string, round: number | null, at: string): void {
+    const meta: ResultMeta = { role, run: `run-${role}-${at}`, round, profile: null, workflow_hash: null, head_sha: null, checks: null, target: null, created_at: at };
+    const body = renderResultComment({ schema: 'symphony.result/v1', blockers: [], follow_ups: [], ...result } as never, meta);
+    assert.notEqual(decodeMarker(body), null, 'the fixture result is a valid stored result');
+    const list = s.tracker.comments.get(issueId) ?? [];
+    list.push({
+      author: s.tracker.viewer,
+      createdAt: new Date(at),
+      body,
+      url: `https://github.com/acme/app/issues/${issueId}#c${list.length}`,
+    });
+    s.tracker.comments.set(issueId, list);
+  }
+
+  const lastCommit = (vault: string, format: string): string => execFileSync('git', ['log', '-1', `--format=${format}`], { cwd: vault, encoding: 'utf8' }).trim();
+
+  function retrySetup(front: Record<string, unknown>, logger?: Logger) {
+    const issues = [makeIssue({ id: 'r', identifier: 'acme/app#r', title: 'Retry me', description: 'Goal of r.', state: 'Human Review', labels: ['awaiting-checks'], native_ref: { base_branch: 'main' } })];
+    const s = setup({ issues, front, ...(logger !== undefined ? { logger } : {}) });
+    s.tracker.issueRepository = () => 'acme/app';
+    let finished = false;
+    s.tracker.mergeWatch = () => ({
+      column: 'Human Review',
+      awaiting: (issue) => issue.labels.includes('awaiting-checks'),
+      retry: async (issue) => {
+        s.tracker.set(issue.id, { state: 'Done', labels: [] });
+        finished = true;
+        return { ...mergeOk, pull_request_url: 'https://github.com/acme/app/pull/9' };
+      },
+    });
+    return { s, done: () => finished };
+  }
+
+  it('the merge retry path writes the summary too, with stage results from the tracker, as symphony', async () => {
+    const vault = await newVault();
+    const { s, done } = retrySetup({ brain: { enabled: true, path: vault } });
+    persistResult(s, 'r', { kind: 'implementation', verdict: 'done', summary: 'Built the retry thing', changed_files: ['src/retry.ts'], tests_added: [], plan_deviations: [] }, 'developer', 1, '2026-10-30T10:00:00Z');
+    persistResult(s, 'r', { kind: 'review', verdict: 'approved', summary: 'Reviewed fine', findings: [], checked: [], confirmed_goals: [] }, 'reviewer', 1, '2026-10-30T11:00:00Z');
+    await s.orchestrator.tickNow();
+    await until(() => done(), 15_000, 'retry finished');
+    const file = path.join(vault, 'Issues', 'acme-app', 'r.md');
+    await until(() => fs.existsSync(file) && lastCommit(vault, '%s') === 'acme/app#r: issue summary', 15_000, 'summary committed');
+    await s.orchestrator.shutdown(1_000);
+    const note = parseNote(fs.readFileSync(file, 'utf8'));
+    assert.equal(note.frontmatter.type, 'issue');
+    assert.equal(note.frontmatter.status, 'approved');
+    assert.equal(note.frontmatter.role, 'symphony');
+    assert.equal(note.frontmatter.repo, 'acme/app');
+    assert.equal(note.frontmatter.issue, 'acme/app#r');
+    assert.deepEqual(note.frontmatter.sources, ['https://github.com/acme/app/pull/9']);
+    assert.match(note.body, /Retry me/);
+    assert.match(note.body, /Goal of r\./);
+    assert.match(note.body, /\| developer \| done \| 1 \| Built the retry thing \|/);
+    assert.match(note.body, /\| reviewer \| approved \| 1 \| Reviewed fine \|/);
+    assert.match(note.body, /`src\/retry\.ts`/);
+    assert.match(note.body, /\[\[Repos\/acme-app\/index\]\]/);
+    assert.match(note.body, /https:\/\/github\.com\/acme\/app\/pull\/9/);
+    assert.equal(lastCommit(vault, '%an'), 'symphony');
+    assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: vault, encoding: 'utf8' }), '');
+  });
+
+  it('the merge retry path writes nothing without brain.enabled', async () => {
+    const vault = await newVault();
+    const { s, done } = retrySetup({ brain: { enabled: false, path: vault } });
+    await s.orchestrator.tickNow();
+    await until(() => done() && s.orchestrator.listChanges().some((e) => e.status === 'merged'), 15_000, 'retry recorded');
+    await s.orchestrator.shutdown(1_000);
+    assert.deepEqual(fs.readdirSync(path.join(vault, 'Issues')), []);
+  });
+
+  it('writes nothing when the merge did not happen', async () => {
+    const vault = await newVault();
+    const { s } = retrySetup({ brain: { enabled: true, path: vault } });
+    s.tracker.mergeWatch = () => ({
+      column: 'Human Review',
+      awaiting: (issue) => issue.labels.includes('awaiting-checks'),
+      retry: async (issue) => {
+        s.tracker.set(issue.id, { state: 'Human Review', labels: [] });
+        return { merged: false, pull_request: 9, status: 'Human Review', reason: 'conflict' };
+      },
+    });
+    await s.orchestrator.tickNow();
+    await until(() => s.tracker.issues.get('r')?.labels.length === 0, 15_000, 'retry ran');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await s.orchestrator.shutdown(1_000);
+    assert.deepEqual(fs.readdirSync(path.join(vault, 'Issues')), []);
+    assert.equal(s.orchestrator.listChanges().length, 0);
+  });
+
+  function memoryLogger(): { logger: Logger; lines: string[] } {
+    const lines: string[] = [];
+    return { lines, logger: Logger.create({ sinks: [{ name: 'memory', write: (line: string) => void lines.push(line) }], level: 'debug' }) };
+  }
+
+  it('an unreadable result history only logs a warning: the merge is recorded and no file is written', async () => {
+    const vault = await newVault();
+    const { logger, lines } = memoryLogger();
+    const { s, done } = retrySetup({ brain: { enabled: true, path: vault } }, logger);
+    s.tracker.failReadResults = new Error('tracker down');
+    await s.orchestrator.tickNow();
+    await until(() => done() && s.orchestrator.listChanges().some((e) => e.status === 'merged'), 15_000, 'merge recorded');
+    await until(() => lines.some((line) => line.includes('level=warn') && /summary/i.test(line)), 5_000, 'warning logged');
+    await s.orchestrator.shutdown(1_000);
+    assert.equal(s.tracker.issues.get('r')?.state, 'Done');
+    assert.deepEqual(fs.readdirSync(path.join(vault, 'Issues')), []);
+  });
+
+  it('a broken vault logs a warning (not an error) and the merge flow completes', async () => {
+    const vault = path.join(tempDir(), 'plain-dir');
+    fs.mkdirSync(vault, { recursive: true });
+    const { logger, lines } = memoryLogger();
+    const { s, done } = retrySetup({ brain: { enabled: true, path: vault } }, logger);
+    await s.orchestrator.tickNow();
+    await until(() => done() && s.orchestrator.listChanges().some((e) => e.status === 'merged'), 15_000, 'merge recorded');
+    await until(() => lines.some((line) => line.includes('level=warn') && /summary/i.test(line)), 5_000, 'warning logged');
+    await s.orchestrator.shutdown(1_000);
+    assert.equal(s.tracker.issues.get('r')?.state, 'Done');
+    assert.equal(lines.some((line) => line.includes('level=error') && /summary/i.test(line)), false);
   });
 });
