@@ -1145,24 +1145,40 @@ one row per agent station with its runs (count, last outcome, model, effort, tim
 banner with the reason, the failed tool and the next attempt; *View details* jumps to the spot in the timeline.
 The **Entry checks** section lists the newest entry gate (the `checks.on_enter` checks of a move) with every check of the column: pending, running (elapsed time against its timeout), passed, skipped, failed, timed out or broken, with a *from cache* label for reused results and the end of the output of a failed check as the agent got it. The commit statuses `symphony/<name>` link here. The section stays until the next gate or run starts.
 
-Below the head card the page has two columns: the main column with Bühne, Partitur, Pipeline, Entry checks and
-three tabs, and a sidebar on the right (below the main column on narrow screens such as a 390 px phone). The tabs
-**Trace**, **Sessions** and **Transkript** follow the URL hash (`#trace`, `#sessions`, `#transkript`; without or with an
-unknown hash the trace shows). **Sessions** lists every session with role, column, model, times and a link to its
-JSONL transcript; **Transkript** reads the prompts, responses, thinking, model and tool calls of one session chosen in a
-list. The sidebar starts with **Ergebnisse**, one row per recorded stage result (role, verdict chip, round, the summary
-cut to one line, **Kommentar ↗** to the result comment; findings and blockers fold out), and **Context-Verlauf**, one
-bar per developer round with the session's context peak and a ⇣ mark with the number of Auto-Compacts, read from the
-`run_finished` lines of the [repository logs](#logs-and-statistics) (`GET /api/v1/history/entries`); without logged
-values or without a history it shows “—”.
-Below that come **Brain-Zugriffe** (the last 10 brain tool calls of the issue: time, role, operation, path or search term,
-result chip; a rejected write is red and links to `/brain#clashes`; hidden without `brain.enabled`) and **Changes** (the
-last 10 recorded changes of the issue with role, title, files with +/− and the PR chip; “Alle Changes” opens
-`/changes?issue=<identifier>`; “Noch keine Änderungen.” without any). Both reload with the page's poll.
+Below the head card the page has two columns: the main column with Bühne, Partitur, Pipeline and Entry checks, and a
+sidebar on the right (below the main column on narrow screens such as a 390 px phone). Under both columns a row of four
+panels follows (they wrap below each other on narrow screens):
 
-The **Trace** tab shows all sessions of the issue since the claim in chronological order: lifecycle (session started,
-finished, retry scheduled, paused), phase changes, prompts, model calls (model, tokens, estimated cost, time since
-the previous step), responses, thinking and tool calls with arguments, result, status and duration. Filters
+- **Ergebnisse**: one card per recorded stage result with the role dot, role and round (“Developer R1”), a verdict pill
+  (green for ready, done, approved; red for failed and changes needed; amber for needs human or blocked), the summary
+  cut to one line, **Kommentar ↗** to the result comment; findings and blockers fold out. Without results it says
+  “Noch keine Stage abgeschlossen”.
+- **Context-Verlauf · <role>** for the role with the most sessions (usually the developer): one line per round in the
+  role colour (later rounds lighter), drawn from the context tokens of each model call in the session transcripts,
+  a red dot with “compact” at each Auto-Compact, an amber dot at the current value of the running round, and a dashed
+  red line at the Auto-Compact threshold of the team view. Rounds without a transcript are drawn from the context peak
+  of their `run_finished` line in the [repository logs](#logs-and-statistics) (`GET /api/v1/history/entries`). The
+  caption reads e.g. “R1: 1 Auto-Compact bei 84 % · R2 jetzt 48 %, Trend +0.8 %/min”; without any data it says
+  “Kein Context-Verlauf verfügbar”.
+- **Brain-Zugriffe · #<nr>** (hidden without `brain.enabled`): the six newest brain tool calls of the issue with time,
+  operation in its colour, the note or search term and below it the purpose (“Zweck fehlt” without one); a rejected
+  write is red with its reason and links to `/brain#clashes`. With more accesses “alle <n> →” opens
+  `/brain?issue=<identifier>`; without any it says “Keine Brain-Zugriffe in diesem Issue”. **Brain →** opens the brain.
+- **Changes · #<nr>**: up to eight files changed by the issue's commits (newest first, lines added and deleted summed
+  per path), **Alle →** opens `/changes?issue=<identifier>`, and a card with the pull request (“PR #n · offen” or
+  “gemerged”) and its checks (“Checks laufen”, “Checks grün”, “Checks rot”), or “noch keine PR”.
+
+Panels and the sidebar reload with the page's poll. Below the panels the **Details** section holds three tabs
+**Execution-Trace**, **Sessions (n)** and **Transkript**; they switch without a reload and follow the URL hash
+(`#trace`, `#sessions`, `#transcript`; older `#transkript` links still open the transcript; without or with an unknown
+hash the trace shows). **Sessions** lists every session with role, column, model, times and a link to its JSONL
+transcript; **Transkript** reads the prompts, responses, thinking, model and tool calls of one session chosen in a list.
+
+The **Execution-Trace** tab shows all sessions of the issue since the claim in chronological order, one row per entry
+with time, kind and text: TOOL (“Edit src/http/ui/tokens.ts”), BRAIN (“brain_read Decisions/Glass-Tokens · Zweck:
+Rollenfarben prüfen”), SUBAGENT (“Explore gestartet: liest test/http.test.ts”), MODEL (“opus · 18.2k in / 1.4k out ·
+$0.09”, prompts, responses and thinking), RESULT (finished runs such as “Tester R1: failed → Developer”, errors) and
+PHASE (phase changes and lifecycle: session started, retry scheduled, paused). Filters
 (lifecycle, phases, model, tools, errors) and a search narrow it down. Prompts, responses and tool data are collapsed
 and only rendered when expanded; errors are always visible in the entry. In the sidebar, Lebenszyklus, Token
 (with a small chart per model call), Kosten per model and Run-Kontext (workspace, branch, commit, last entry
