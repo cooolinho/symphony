@@ -200,3 +200,55 @@ describe('model controls stay on the overview', () => {
     assert.equal(paused.fetches.at(-1)!.url, '/api/v1/models/opus/release');
   });
 });
+
+describe('Hinweise panel: stable refresh (focus and aria-live survive the 2-s poll)', () => {
+  it('an unchanged list keeps the very same entry nodes and does not rewrite the counter', async () => {
+    const page = await open({ model_holds: [hold] }, budgetReport());
+    const before = [...items(page)];
+    assert.equal(before.length, 2);
+    const counter = page.$('alerts-count');
+    let writes = 0;
+    const text = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(counter), 'textContent');
+    assert.ok(text?.set, 'textContent setter is observable in the fake DOM');
+    {
+      Object.defineProperty(counter, 'textContent', { get: () => text.get!.call(counter), set: (v) => { writes++; text.set!.call(counter, v); }, configurable: true });
+    }
+    page.render(dashboardState({ model_holds: [hold] }));
+    const after = [...items(page)];
+    assert.equal(after.length, 2);
+    assert.ok(after.every((node, i) => node === before[i]), 'entry nodes are reused, a focused link keeps focus');
+    assert.equal(writes, 0, 'counter is not rewritten when unchanged');
+    assert.equal(counter.textContent, '2');
+  });
+
+  it('a changed list updates counter and entries', async () => {
+    const page = await open({ model_holds: [hold] }, budgetReport());
+    page.render(dashboardState({ model_holds: [] }));
+    assert.equal(page.$('alerts-count').textContent, '1');
+    assert.equal(items(page).length, 1);
+    page.render(dashboardState({ model_holds: [hold, { ...hold, model: 'sonnet', since: T('11:40') }] }));
+    assert.equal(page.$('alerts-count').textContent, '3');
+    assert.equal(items(page).length, 3);
+  });
+
+  it('switching to the empty state and back leaves no stale entries', async () => {
+    const page = await open({}, null);
+    assert.match(page.$('alerts-list').textContent, /Alles ruhig/);
+    page.render(dashboardState({ model_holds: [hold] }));
+    assert.equal(items(page).length, 1);
+    assert.doesNotMatch(page.$('alerts-list').textContent, /Alles ruhig/);
+    page.render(dashboardState());
+    assert.equal(items(page).length, 1);
+    assert.match(page.$('alerts-list').textContent, /Alles ruhig/);
+    assert.equal(page.$('alerts-count').textContent, '0');
+  });
+
+  it('budget hint mentions the reset only when the window has resets_at', async () => {
+    const withReset = await open({}, budgetReport());
+    assert.match(withReset.$('alerts-list').textContent, /Reset/);
+    const without = await open({}, budgetReport({ five_hour: { alert: true, resets_at: null, forecast: { eta: T('12:30'), limit_tokens: 100 } } }));
+    assert.equal(items(without).length, 1);
+    assert.doesNotMatch(without.$('alerts-list').textContent, /Reset/);
+    assert.doesNotMatch(without.$('alerts-list').textContent, /undefined|null|NaN|Invalid/);
+  });
+});
