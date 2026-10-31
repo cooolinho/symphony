@@ -28,6 +28,17 @@ const DASHBOARD_CSS = `
   .sysinfo dt { font: 500 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
   .sysinfo dd { margin: 1px 0 0; font: 500 12.5px var(--mono); color: var(--text); white-space: nowrap; }
 
+  /* Tool calls of the last 30 minutes: one tick per call, coloured by role (.role-* sets --role). */
+  .act-chart { display: block; width: 100%; height: 64px; }
+  .act-chart[hidden] { display: none; }
+  .act-tick { stroke: var(--role, var(--role-symphony)); stroke-width: 2; vector-effect: non-scaling-stroke; }
+  .act-axis { stroke: var(--line-2); stroke-width: 1; vector-effect: non-scaling-stroke; }
+  .act-axis-labels { display: flex; justify-content: space-between; font: 10px var(--mono); color: var(--muted); }
+  .act-axis-labels[hidden] { display: none; }
+  .act-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 11px var(--mono); color: var(--muted); margin-top: 6px; }
+  .act-key { display: inline-flex; align-items: center; gap: 6px; }
+  .act-swatch { width: 8px; height: 8px; border-radius: 2px; background: var(--role, var(--role-symphony)); }
+  .act-empty { margin: 0; font: 12px var(--mono); color: var(--muted); }
   /* System cards: host metrics, agent slots and the tracker API budget, coloured by utilisation (traffic light). */
   .syscards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
   .syscard { position: relative; overflow: hidden; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 0 14px 12px 2px;
@@ -216,7 +227,25 @@ const DASHBOARD_CSS = `
     .agent-foot { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 10px; }
     .sysinfo { gap: 6px 16px; }
     .syscards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .budget-windows { grid-template-columns: minmax(0, 1fr); }
   }
+
+  /* Budget: subscription windows, tokens per role, context hint */
+  .budget { margin: 18px 0; }
+  .budget-windows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .budget-window { padding: 12px 14px; border: 1px solid var(--line); border-radius: 14px; display: flex; flex-direction: column; gap: 8px; }
+  .budget-window h3 { margin: 0; font: 600 13px var(--sans); color: var(--text-2); }
+  .budget-value { font: 600 15px var(--mono); display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+  .budget-value .of { font-weight: 400; font-size: 12px; color: var(--muted); }
+  .budget-meta { display: flex; flex-wrap: wrap; gap: 2px 14px; font: 11.5px var(--mono); color: var(--muted); }
+  .budget-hint { margin: 0; font-size: 12px; color: var(--muted); }
+  .budget-roles-title { margin: 14px 0 6px; font: 600 12.5px var(--sans); color: var(--text-2); }
+  .budget-roles { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 16px; }
+  .budget-roles li { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
+  .budget-roles .mono { color: var(--text-2); }
+  .budget-context { margin: 12px 0 0; padding: 8px 12px; border: 1px solid var(--amber-line); border-radius: 12px;
+    background: var(--amber-dim); color: var(--amber); font-size: 12.5px; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
+  .budget-context a { color: var(--amber); text-decoration: underline; }
 `;
 
 /**
@@ -257,6 +286,11 @@ export const DASHBOARD_HTML = page({
   <div class="syscards" id="system-cards" role="group" aria-label="System"></div>
   <div class="stats" id="stats" aria-label="Metrics"></div>
 
+  <section class="budget" id="budget" aria-labelledby="budget-title" hidden>
+    <div class="section-head"><h2 id="budget-title">Budget</h2></div>
+    <div id="budget-body"></div>
+  </section>
+
   <section class="agents-section teams-section" id="teams-section" aria-labelledby="teams-title">
     <div class="section-head"><h2 id="teams-title">Teams <span class="count" id="teams-count"></span></h2></div>
     <div class="team-list" id="teams"></div>
@@ -296,6 +330,17 @@ export const DASHBOARD_HTML = page({
       <span class="meta">by the operator, after agent.max_continuations, or at agent.max_issue_cost_usd</span>
     </div>
     <div class="agents compact" id="paused"></div>
+  </section>
+
+  <section class="panel act-section" id="tool-activity" aria-labelledby="tool-activity-title">
+    <div class="section-head">
+      <h2 id="tool-activity-title">Tool calls</h2>
+      <span class="meta">last 30 min · by role</span>
+    </div>
+    <svg id="tool-activity-chart" class="act-chart" role="img" viewBox="0 0 600 64" preserveAspectRatio="none" aria-label="Tool calls in the last 30 minutes" hidden></svg>
+    <div class="act-axis-labels" id="tool-activity-axis" hidden aria-hidden="true"><span>-30 min</span><span>-15 min</span><span>now</span></div>
+    <div class="act-legend" id="tool-activity-legend"></div>
+    <p class="act-empty" id="tool-activity-empty" hidden>No activity in the last 30 minutes.</p>
   </section>
 
   <div class="lower">
@@ -1336,6 +1381,66 @@ ${ALERTS_JS}
     else if (!drawer.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
   });
 
+  // ------------------------------------------------------------------ tool calls (last 30 minutes)
+
+  function renderToolActivity(data) {
+    const svg = $('tool-activity-chart');
+    const legend = $('tool-activity-legend');
+    const empty = $('tool-activity-empty');
+    const axis = $('tool-activity-axis');
+    const events = data && Array.isArray(data.events) ? data.events : [];
+    svg.replaceChildren();
+    legend.replaceChildren();
+    if (events.length === 0) {
+      svg.setAttribute('hidden', '');
+      axis.hidden = true;
+      empty.hidden = false;
+      return;
+    }
+    svg.removeAttribute('hidden');
+    axis.hidden = false;
+    empty.hidden = true;
+    const minutes = data.minutes > 0 ? data.minutes : 30;
+    const until = Number.isFinite(Date.parse(data.generated_at)) ? Date.parse(data.generated_at) : Date.now();
+    const since = Number.isFinite(Date.parse(data.since)) ? Date.parse(data.since) : until - minutes * 60000;
+    const width = 600;
+    svg.append(svgEl('line', { class: 'act-axis', x1: 0, y1: 50, x2: width, y2: 50 }));
+    const buckets = new Map();
+    const counts = new Map();
+    for (const e of events) {
+      const b = Math.floor((Date.parse(e.at) - since) / 60000);
+      if (!buckets.has(b)) buckets.set(b, []);
+      buckets.get(b).push(e);
+      counts.set(e.role, (counts.get(e.role) || 0) + 1);
+    }
+    const roleKey = (role) => (uiOwn(UI_ROLE_COLORS, role) ? role : 'symphony');
+    const roleName = (role) => uiOwn(UI_ROLE_NAMES, role) || String(role);
+    for (const [b, list] of buckets) {
+      list.forEach((e, i) => {
+        const x = Math.min(width, Math.max(0, (b + (i + 0.5) / list.length) * (width / minutes)));
+        const tick = svgEl('line', { class: 'act-tick role-' + roleKey(e.role), x1: x, y1: 6, x2: x, y2: 46 });
+        const title = svgEl('title', {});
+        title.textContent = roleName(e.role) + ' · ' + e.issue + ' · ' + fmtClock(e.at);
+        tick.append(title);
+        svg.append(tick);
+      });
+    }
+    const roles = [...counts].sort((a, b) => b[1] - a[1] || roleName(a[0]).localeCompare(roleName(b[0])));
+    for (const [role, n] of roles) {
+      const key = el('span', null, 'act-key role-' + roleKey(role));
+      key.append(el('span', null, 'act-swatch'), el('span', roleName(role) + ' ' + n));
+      legend.append(key);
+    }
+    svg.setAttribute('aria-label', events.length + ' tool call' + (events.length === 1 ? '' : 's') + ' in ' + minutes + ' minutes, '
+      + roles.map(([role, n]) => roleName(role) + ' ' + n).join(', '));
+  }
+  async function loadToolActivity() {
+    try {
+      const res = await fetch('/api/v1/activity?minutes=30', { cache: 'no-store' });
+      if (res.ok) renderToolActivity(await res.json());
+    } catch {}
+  }
+
   // ------------------------------------------------------------------ system cards
   // Host metrics from /api/v1/system (own 10 s interval, independent of the 2 s state polling) plus agent slots and the
   // tracker API budget from the last state. Slots and GitHub API have no server-side history: their sparklines come
@@ -1469,6 +1574,91 @@ ${ALERTS_JS}
     renderSystemCards();
   }
 
+  // ------------------------------------------------------------------ budget
+  // The subscription windows of GET /api/v1/budget (loaded by the shell, see onBudget below) plus the running
+  // sessions above 70 % context from the last state.
+
+  let budgetData = null;
+  let budgetAnswer = null;
+  const BUDGET_NO_LIMIT = '#6b7684';
+
+  function mono(text) { return el('span', text, 'mono'); }
+
+  function budgetWindow(w, title, label) {
+    const box = el('div', null, 'budget-window');
+    box.append(el('h3', title));
+    const pct = budgetPercent(w);
+    const value = el('div', null, 'budget-value');
+    const meta = el('div', null, 'budget-meta');
+    let barNode;
+    if (pct === null) {
+      value.append(mono(fmtCompact(w.used_tokens) + ' Tokens'));
+      barNode = bar(100, { height: 8, color: BUDGET_NO_LIMIT });
+      barNode.removeAttribute('aria-valuenow');
+      barNode.setAttribute('aria-valuetext', fmtCompact(w.used_tokens) + ' Tokens, Grenze unbekannt');
+    } else {
+      const color = w.alert ? UI_TRAFFIC.red : UI_TRAFFIC[trafficTone(pct)];
+      const of = el('span', null, 'of');
+      of.append(mono(fmtCompact(w.used_tokens) + ' / ' + fmtCompact(w.forecast.limit_tokens)), el('span', ' Tokens'));
+      value.append(mono(Math.round(pct) + ' %'), of);
+      barNode = bar(pct, { height: 8, color, forecastPct: budgetForecastPercent(w, Date.now()) });
+    }
+    barNode.setAttribute('aria-label', label);
+    const reset = Date.parse(w.resets_at || '');
+    meta.append(el('span', Number.isFinite(reset) ? 'Reset in ' + fmtDuration((reset - Date.now()) / 1000) : 'Reset unbekannt'));
+    meta.append(el('span', 'Burn-Rate ' + fmtInt(Math.round(w.burn_rate_per_min || 0)) + ' Tokens/min'));
+    if (w.forecast && w.forecast.eta) meta.append(el('span', 'ETA ' + fmtStamp(w.forecast.eta)));
+    box.append(value, barNode, meta);
+    if (pct === null) box.append(el('p', 'Noch kein Limit-Treffer bekannt', 'budget-hint'));
+    return box;
+  }
+
+  function budgetRoles(byRole) {
+    const wrap = el('div', null, 'budget-roles-wrap');
+    wrap.append(el('h3', 'Tokens je Rolle (5 h)', 'budget-roles-title'));
+    const entries = Object.entries(byRole || {}).filter(([, n]) => typeof n === 'number' && n > 0).sort((a, b) => b[1] - a[1]);
+    if (!entries.length) { wrap.append(el('p', 'Keine Tokens im 5-h-Fenster', 'budget-hint')); return wrap; }
+    const list = el('ul', null, 'budget-roles');
+    for (const [role, tokens] of entries) {
+      const li = el('li');
+      const name = uiOwn(UI_ROLE_NAMES, role) || role.charAt(0).toUpperCase() + role.slice(1);
+      li.append(uiDot(uiOwn(UI_ROLE_COLORS, role) || UI_ROLE_COLORS.symphony), el('span', name), mono(fmtCompact(tokens)));
+      list.append(li);
+    }
+    wrap.append(list);
+    return wrap;
+  }
+
+  /** The hint for running sessions above 70 % context; null when there are none. */
+  function budgetContext(state) {
+    const hot = ((state && state.running) || []).filter((r) => r.context && typeof r.context.percent === 'number' && r.context.percent > 70);
+    if (!hot.length) return null;
+    const box = el('p', null, 'budget-context');
+    const head = el('span');
+    head.append(mono(String(hot.length)), el('span', (hot.length === 1 ? ' Session' : ' Sessions') + ' über 70 % Context'));
+    box.append(head);
+    for (const r of hot) {
+      const item = el('span');
+      item.append(link(r.issue_identifier, '/issue?id=' + encodeURIComponent(r.issue_identifier)), el('span', ' '), mono('(' + Math.round(r.context.percent) + ' %)'));
+      box.append(item);
+    }
+    return box;
+  }
+
+  function budgetSection(report, state) {
+    const windows = el('div', null, 'budget-windows');
+    windows.append(budgetWindow(report.five_hour, '5 Stunden', '5-Stunden-Fenster'), budgetWindow(report.seven_day, '7 Tage', '7-Tage-Fenster'));
+    const nodes = [windows, budgetRoles(report.five_hour.by_role)];
+    const context = budgetContext(state);
+    if (context) nodes.push(context);
+    return nodes;
+  }
+
+  function renderBudget() {
+    $('budget').hidden = !budgetData;
+    if (budgetData) patchChildren($('budget-body'), budgetSection(budgetData, lastState));
+  }
+
   // ------------------------------------------------------------------ polling
 
   let historyTimer = null;
@@ -1483,20 +1673,12 @@ ${ALERTS_JS}
     historyTimer = setTimeout(loadHistory, delay);
   }
 
-  let budgetReport = null;
-  async function loadBudget() {
-    try {
-      const res = await fetch('/api/v1/budget', { cache: 'no-store' });
-      budgetReport = res.ok ? await res.json() : null;
-    } catch { budgetReport = null; }
-    if (lastState) renderAlerts(alerts(lastState, budgetReport), $('alerts-list'), $('alerts-count'));
-  }
-
   function render(state) {
     lastState = state;
     renderSystemCards();
+    renderBudget();
     const h = state.health;
-    const list = alerts(state, budgetReport);
+    const list = alerts(state, budgetAnswer);
     renderAlerts(list, $('alerts-list'), $('alerts-count'));
     renderHeader(h, list.filter((a) => a.kind === 'attention'), true);
     renderRepositories(h);
@@ -1548,6 +1730,7 @@ ${ALERTS_JS}
     } catch (error) {
       lastState = null;
       renderSystemCards();
+      renderBudget();
       renderHeader(null, [], false);
       setText($('sys-lastpoll'), 'unreachable');
       renderAlerts([{ kind: 'attention', at: new Date().toISOString(), title: 'Orchestrator nicht erreichbar', text: error.message, href: '/stats' }], $('alerts-list'), $('alerts-count'));
@@ -1580,15 +1763,21 @@ ${ALERTS_JS}
   });
 
   renderActivity();
+  onBudget((report, raw) => {
+    budgetData = report;
+    budgetAnswer = raw;
+    renderBudget();
+    if (lastState) renderAlerts(alerts(lastState, budgetAnswer), $('alerts-list'), $('alerts-count'));
+  });
   load();
   loadHistory();
-  loadBudget();
+  loadToolActivity();
   loadSystem();
   live(load, pollEvery(load, 2000));
   setInterval(loadSystem, 10000);
   setInterval(loadHistory, 30000);
+  setInterval(loadToolActivity, 30000);
   setInterval(() => tickTeams(Date.now()), 1000);
-  setInterval(loadBudget, 30000);
   // Tests load the page in a fake DOM and render a fixture through window.__render.
   if (window.__SYMPHONY_TEST__) window.__render = render;
 })();

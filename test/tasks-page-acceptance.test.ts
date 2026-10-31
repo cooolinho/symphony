@@ -177,7 +177,7 @@ describe('tasks page acceptance (E5-1)', () => {
       assert.equal(posts.at(-1)!.url, `/api/v1/acme%2Fapp%23${n}/${verb}`, col);
     }
     for (const f of p.fetches) {
-      if (f.method === 'GET') assert.match(f.url, /^\/api\/v1\/(state|history\/entries)/, f.url);
+      if (f.method === 'GET') assert.match(f.url, /^\/api\/v1\/(state|budget|history\/entries)/, f.url);
     }
   });
 

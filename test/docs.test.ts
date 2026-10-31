@@ -4,6 +4,8 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import { parse } from 'yaml';
 import { trackerDefaults } from '../src/tracker/registry.ts';
+import { NOTE_STATUSES } from '../src/brain/note.ts';
+import { VAULT_FOLDERS } from '../src/brain/vault.ts';
 import { resolveConfig } from '../src/workflow/config.ts';
 
 /**
@@ -237,7 +239,7 @@ describe('docs: configuration keys', () => {
 });
 
 describe('docs: YAML examples match the config schema', () => {
-  const known = new Set(['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server', 'laravel']);
+  const known = new Set(['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server', 'laravel', 'system', 'brain']);
   let checked = 0;
 
   for (const file of markdownFiles) {
@@ -388,5 +390,85 @@ describe('docs: multi-agent pipeline content', () => {
     it('does not claim the phase-4 stages are documented here', () => {
       assert.match(text, /phase 4/i);
     });
+  });
+});
+
+describe('docs: brain', () => {
+  const source = read('src/workflow/config.ts');
+  const brainKeys = [...(/const BRAIN_KEYS = new Set\(\[([\s\S]*?)\]\)/.exec(source)?.[1] ?? '').matchAll(/'([a-z_]+)'/g)].map((m) => m[1] ?? '');
+  const roleKeys = [...(/const ROLE_KEYS = new Set\(\[([\s\S]*?)\]\)/.exec(source)?.[1] ?? '').matchAll(/'([a-z_]+)'/g)].map((m) => m[1] ?? '');
+  const configuration = read('docs/configuration.md');
+  const brainSection = section('docs/configuration.md', /^### `brain`/);
+  const rows = [...brainSection.matchAll(/^\| `([a-z_]+)` \|(.*)\|\s*$/gm)].map((m) => ({ key: m[1] ?? '', cells: (m[0] ?? '').split(/(?<!\\)\|/).slice(1, -1).map((c) => c.trim()) }));
+
+  it('brain.md has the sections', () => {
+    const found = anchors('docs/brain.md');
+    for (const name of ['purpose', 'vault-layout', 'frontmatter', 'tools', 'role-switch', 'clash-rules', 'obsidian-container', 'backup', 'reset']) assert.ok(found.has(name), name);
+  });
+
+  it('brain.md section contents', () => {
+    const layout = section('docs/brain.md', /^## Vault layout/);
+    assert.match(layout, /Repos\/<owner>-<name>\/index\.md/);
+    for (const folder of VAULT_FOLDERS) assert.ok(layout.includes(`${folder}/`), folder);
+    const frontmatter = section('docs/brain.md', /^## Frontmatter/);
+    for (const status of NOTE_STATUSES) assert.ok(frontmatter.includes(status), status);
+    assert.match(frontmatter, /candidate`? → `?approved`? → `?deprecated/);
+    const tools = section('docs/brain.md', /^## Tools/);
+    for (const word of ['brain_search', 'brain_read', 'brain_list', 'brain_write', 'brain_append', 'purpose', 'base_hash']) assert.ok(tools.includes(word), word);
+    const role = section('docs/brain.md', /^## Role switch/);
+    for (const word of ['off', 'read', 'write']) assert.ok(role.includes(word), word);
+    const clash = section('docs/brain.md', /^## Clash rules/);
+    for (const word of ['clash_window_ms', 'window', 'hash_mismatch']) assert.ok(clash.includes(word), word);
+    const obsidian = section('docs/brain.md', /^## Obsidian container/);
+    assert.ok(obsidian.includes('BRAIN_DOMAIN'));
+    assert.match(obsidian, /basic ?auth/i);
+    assert.match(obsidian, /LAN/);
+    const backup = section('docs/brain.md', /^## Backup/);
+    assert.ok(backup.includes('git') && backup.includes('log') && backup.includes('revert'));
+    assert.ok(section('docs/brain.md', /^## Reset/).includes('.obsidian/'));
+  });
+
+  it('every BRAIN_KEYS key has a typed row in configuration.md and vice versa', () => {
+    assert.deepEqual(rows.map((r) => r.key).sort(), [...brainKeys].sort());
+    for (const row of rows) {
+      assert.equal(row.cells.length, 4, row.key);
+      assert.ok(row.cells.every((c) => c.length > 0), row.key);
+    }
+    const mentioned = [...configuration.matchAll(/`brain\.([a-z_]+)`/g)].map((m) => m[1] ?? '');
+    for (const key of mentioned) assert.ok(brainKeys.includes(key), `brain.${key} is not in BRAIN_KEYS`);
+    assert.match(brainSection, /\]\(brain\.md\)/);
+  });
+
+  it('the documented defaults equal the resolved ones', () => {
+    const config = resolveConfig({}, { workflowPath: '/w/WORKFLOW.md', env: {}, trackerDefaults });
+    const cell = (key: string): string => rows.find((r) => r.key === key)?.cells[2] ?? '';
+    assert.equal(cell('enabled'), `\`${config.brain.enabled}\``);
+    assert.equal(cell('clash_window_ms'), `\`${config.brain.clashWindowMs}\``);
+    assert.equal(cell('path'), '`~/brain`');
+  });
+
+  it('the role field is documented', () => {
+    assert.ok(roleKeys.includes('brain'));
+    const row = section('docs/configuration.md', /^### `roles`/).split('\n').find((line) => line.startsWith('| `brain` |')) ?? '';
+    assert.match(row, /^\| `brain` \| `off` \|/);
+    for (const word of ['off', 'read', 'write']) assert.ok(row.includes(word), word);
+    assert.ok(row.includes('brain.md#role-switch'));
+  });
+
+  it('brain.md is linked from the index and the READMEs', () => {
+    assert.match(read('docs/index.md'), /\]\(brain\.md\)/);
+    for (const [file, heading] of [['README.md', /^## 📚 Documentation/m], ['README.de.md', /^## 📚 Dokumentation/m]] as const) {
+      const text = read(file);
+      const start = text.search(heading);
+      assert.ok(start >= 0);
+      const rest = text.slice(start + 5);
+      assert.match(text.slice(start, start + 5 + rest.search(/^## /m)), /\]\(docs\/brain\.md\)/, file);
+    }
+  });
+
+  it('brain.obsidian_url is not a key yet and only mentioned as coming (remove with E7-7a)', () => {
+    assert.ok(!brainKeys.includes('obsidian_url'));
+    assert.ok(!configuration.includes('obsidian_url'));
+    for (const line of read('docs/brain.md').split('\n').filter((l) => l.includes('obsidian_url'))) assert.match(line, /coming with/);
   });
 });

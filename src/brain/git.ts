@@ -15,6 +15,8 @@ export interface VaultGitOptions {
 export interface VaultGit extends BrainVersioning {
   /** Commits changes made outside Symphony (Obsidian) as one `human` commit; the sha, or null when there is nothing to take over. */
   commitHumanChanges(): Promise<string | null>;
+  /** Commits `path` as the system author `symphony` with `subject`; null when the file has no change. The caller holds `serial`. */
+  commitAs(path: string, subject: string): Promise<string | null>;
 }
 
 const EXCLUDE_OBSIDIAN = ':(exclude).obsidian';
@@ -84,6 +86,17 @@ export async function initVaultGit(root: string): Promise<boolean> {
   return true;
 }
 
+/** The last commit of the vault repository; null without its own `.git`, without a commit or on an error. */
+export async function lastVaultCommit(vault: string): Promise<{ sha: string; at: string; author: string } | null> {
+  try {
+    await fs.stat(path.join(vault, '.git'));
+    const [sha, at, author] = (await git(vault, ['log', '-1', '--format=%H%x00%aI%x00%an'])).trim().split('\0');
+    return sha && at && author ? { sha, at, author } : null;
+  } catch {
+    return null;
+  }
+}
+
 export function createVaultGit(vaultPath: string, logger: Logger, options: VaultGitOptions = {}): VaultGit {
   const notify = async (sha: string, paths: string[]): Promise<void> => {
     try {
@@ -99,7 +112,7 @@ export function createVaultGit(vaultPath: string, logger: Logger, options: Vault
     if (status.trim() === '') return null;
     try {
       await git(vaultPath, ['add', '-A', '--', '.', EXCLUDE_OBSIDIAN]);
-      const paths = names(await git(vaultPath, ['diff', '--cached', '--name-only', '-z']));
+      const paths = names(await git(vaultPath, ['diff', '--cached', '--name-only', '--no-renames', '-z']));
       if (paths.length === 0) return null;
       const sha = await commit(vaultPath, { name: 'human', email: 'human@local' }, `Obsidian: ${paths.length} Dateien`, null, ['.', EXCLUDE_OBSIDIAN]);
       await notify(sha, paths);
@@ -126,12 +139,27 @@ export function createVaultGit(vaultPath: string, logger: Logger, options: Vault
     }
   };
 
+  const systemCommit = async (file: string, subject: string): Promise<string | null> => {
+    try {
+      await git(vaultPath, ['add', '--', file]);
+      const staged = names(await git(vaultPath, ['diff', '--cached', '--name-only', '-z', '--', file]));
+      if (staged.length === 0) return null;
+      const sha = await commit(vaultPath, { name: 'symphony', email: 'symphony@local' }, subject, file, [file]);
+      await notify(sha, [file]);
+      return sha;
+    } catch (error) {
+      await resetQuietly(vaultPath, [file]);
+      throw error;
+    }
+  };
+
   return {
     serial: (fn) => serialFor(vaultPath, fn),
     beforeWrite: async () => {
       await humanCommit();
     },
     commitWrite: (entry) => agentCommit(entry),
+    commitAs: systemCommit,
     commitHumanChanges: () => serialFor(vaultPath, humanCommit),
   };
 }

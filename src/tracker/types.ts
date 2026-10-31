@@ -151,6 +151,8 @@ export interface PostedComment {
 export interface AutoMergeResult {
   merged: boolean;
   pull_request: number | null;
+  /** URL of the merged pull request, when the tracker knows it. */
+  pull_request_url?: string | null;
   /** Column the issue is in afterwards. */
   status: string;
   reason: string;

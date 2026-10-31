@@ -118,6 +118,11 @@ export class IssueArchive {
     }
   }
 
+  /** The archived issues held in memory, newest last; files on disk that were never loaded are not included. */
+  recent(): ArchivedIssue[] {
+    return [...this.#byIdentifier.values()];
+  }
+
   /** The archived issue for an identifier or issue id; from memory, else from disk (by identifier). Null when unknown. */
   get(key: string): ArchivedIssue | null {
     const inMemory = this.#byIdentifier.get(key);
