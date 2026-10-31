@@ -2446,6 +2446,13 @@ ${PIPELINE_JS}
   const CTX_X0 = 8, CTX_X1 = 312, CTX_BASE = 140, CTX_GAP = 10;
   const ctxY = (p) => +(CTX_BASE - (120 * Math.min(100, Math.max(0, p))) / 100).toFixed(1);
   const ctxPct = (p) => Math.round(p);
+  function ctxSvgEl(tag, attrs, cls) {
+    const n = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    if (cls) n.setAttribute('class', cls);
+    for (const k in attrs || {}) n.setAttribute(k, String(attrs[k]));
+    return n;
+  }
+  const ctxSvgText = (text, attrs, cls) => { const n = ctxSvgEl('text', attrs, cls); n.textContent = String(text); return n; };
 
   /** The role of the chart: the one with the most sessions (on a tie the one that started first), else the most frequent in the history. */
   function ctxRole() {
@@ -2558,11 +2565,11 @@ ${PIPELINE_JS}
   }
 
   function ctxSvg(name, key, series, threshold) {
-    const svg = svgEl('svg', { viewBox: '0 0 320 150', role: 'img', 'aria-label': ctxLabel(name, series) }, 'ctx-svg');
-    svg.append(svgEl('line', { x1: CTX_X0, x2: CTX_X1, y1: CTX_BASE, y2: CTX_BASE, stroke: 'rgba(255,255,255,.15)', 'stroke-width': 1 }, 'ctx-base'));
+    const svg = ctxSvgEl('svg', { viewBox: '0 0 320 150', role: 'img', 'aria-label': ctxLabel(name, series) }, 'ctx-svg');
+    svg.append(ctxSvgEl('line', { x1: CTX_X0, x2: CTX_X1, y1: CTX_BASE, y2: CTX_BASE, stroke: 'rgba(255,255,255,.15)', 'stroke-width': 1 }, 'ctx-base'));
     const ty = ctxY(threshold);
-    svg.append(svgEl('line', { x1: CTX_X0, x2: CTX_X1, y1: ty, y2: ty, stroke: '#f87171', 'stroke-width': 1, 'stroke-dasharray': '4 4' }, 'ctx-thr'),
-      svgText('Auto-Compact ' + threshold + ' %', { x: CTX_X1, y: ty - 4, 'text-anchor': 'end' }, 'ctx-thr-label'));
+    svg.append(ctxSvgEl('line', { x1: CTX_X0, x2: CTX_X1, y1: ty, y2: ty, stroke: '#f87171', 'stroke-width': 1, 'stroke-dasharray': '4 4' }, 'ctx-thr'),
+      ctxSvgText('Auto-Compact ' + threshold + ' %', { x: CTX_X1, y: ty - 4, 'text-anchor': 'end' }, 'ctx-thr-label'));
     const n = series.length;
     const w = (CTX_X1 - CTX_X0 - CTX_GAP * (n - 1)) / n;
     series.forEach((r, i) => {
@@ -2571,16 +2578,16 @@ ${PIPELINE_JS}
       const t1 = Math.max(r.live ? Date.now() : r.points[r.points.length - 1].t, t0 + 1);
       const x = (t) => +(x0 + (Math.min(t1, Math.max(t0, t)) - t0) / (t1 - t0) * w).toFixed(1);
       const color = (i === 0 ? UI_ROLE_COLORS[key] : UI_ROLE_LIGHT[key]) || UI_ROLE_COLORS.symphony;
-      svg.append(svgEl('polyline', { points: r.points.map((p) => x(p.t) + ',' + ctxY(p.pct)).join(' '), fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'data-round': r.round }, 'ctx-line'));
+      svg.append(ctxSvgEl('polyline', { points: r.points.map((p) => x(p.t) + ',' + ctxY(p.pct)).join(' '), fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'data-round': r.round }, 'ctx-line'));
       for (const c of r.compacts) {
-        svg.append(svgEl('circle', { cx: x(c.t), cy: ctxY(c.before), r: 4, fill: '#f87171' }, 'ctx-compact-dot'),
-          svgText('compact', { x: x(c.t) + 6, y: ctxY(c.before) - 6 }, 'ctx-compact-label'));
+        svg.append(ctxSvgEl('circle', { cx: x(c.t), cy: ctxY(c.before), r: 4, fill: '#f87171' }, 'ctx-compact-dot'),
+          ctxSvgText('compact', { x: x(c.t) + 6, y: ctxY(c.before) - 6 }, 'ctx-compact-label'));
       }
       if (r.live) {
         const p = r.points[r.points.length - 1];
-        svg.append(svgEl('circle', { cx: x(p.t), cy: ctxY(p.pct), r: 4, fill: '#fbbf24' }, 'ctx-now-dot'));
+        svg.append(ctxSvgEl('circle', { cx: x(p.t), cy: ctxY(p.pct), r: 4, fill: '#fbbf24' }, 'ctx-now-dot'));
       }
-      svg.append(svgText('R' + r.round, { x: x0, y: 149 }, 'ctx-round-label'));
+      svg.append(ctxSvgText('R' + r.round, { x: x0, y: 149 }, 'ctx-round-label'));
     });
     return svg;
   }
