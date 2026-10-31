@@ -1085,6 +1085,23 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}
   let budgetData = null;
   let budgetAnswer = null;
   const BUDGET_NO_DATA = 'Noch kein Verbrauch heute';
+  // Open brain clashes and the candidate count for the alerts; null without a brain (404 brain_disabled) or on any error.
+  let brainAnswer = null;
+  async function loadBrainAlerts() {
+    try {
+      const [clashes, vitals] = await Promise.all([
+        fetch('/api/v1/brain/clashes?status=open', { cache: 'no-store' }),
+        fetch('/api/v1/brain/vitals', { cache: 'no-store' }),
+      ]);
+      if (!clashes.ok || !vitals.ok) throw new Error('no brain');
+      const c = await clashes.json();
+      const v = await vitals.json();
+      brainAnswer = { clashes: Array.isArray(c.clashes) ? c.clashes : [], candidates: Number(v.candidates) };
+    } catch {
+      brainAnswer = null;
+    }
+    if (lastState) renderAlerts(alerts(lastState, budgetAnswer, brainAnswer), $('alerts-list'), $('alerts-count'));
+  }
 
   function budgetWindowText(w, empty) {
     if (empty) return BUDGET_NO_DATA;
@@ -1187,7 +1204,7 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}
     renderSystemCards();
     renderBudget();
     const h = state.health;
-    const list = alerts(state, budgetAnswer);
+    const list = alerts(state, budgetAnswer, brainAnswer);
     renderAlerts(list, $('alerts-list'), $('alerts-count'));
     setLive(true);
     renderHead(state, Date.now(), true);
@@ -1254,14 +1271,16 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}
     budgetData = report;
     budgetAnswer = raw;
     renderBudget();
-    if (lastState) renderAlerts(alerts(lastState, budgetAnswer), $('alerts-list'), $('alerts-count'));
+    if (lastState) renderAlerts(alerts(lastState, budgetAnswer, brainAnswer), $('alerts-list'), $('alerts-count'));
   });
   load();
   loadHistory();
   loadToolActivity();
   loadSystem();
+  loadBrainAlerts();
   live(load, pollEvery(load, 2000));
   setInterval(loadSystem, 10000);
+  setInterval(loadBrainAlerts, 10000);
   setInterval(loadHistory, 30000);
   setInterval(loadToolActivity, 30000);
   setInterval(() => {
