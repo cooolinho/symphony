@@ -210,6 +210,7 @@ const AGENT_PAGE_CSS = `
   .stage-seat::before { content: ""; position: absolute; top: 47px; left: -4px; right: -4px; height: 2px; background: rgba(255, 255, 255, .12); }
   .stage-spot { position: relative; z-index: 1; height: 96px; display: grid; place-items: center; }
   .stage-gauge { position: relative; width: 96px; height: 96px; }
+  .stage-seat.is-active .stage-spot { margin-bottom: 12px; }
   .stage-gauge > .ui-av { position: absolute; left: 16px; top: 16px; }
   .stage-seat.is-active::after { content: ""; position: absolute; z-index: 0; left: 50%; top: -90px; width: 240px; height: 300px; margin-left: -120px; background: radial-gradient(closest-side, var(--seat-glow, rgba(120, 160, 255, .28)), transparent); pointer-events: none; }
   .stage-seat.is-skipped { opacity: .45; }
@@ -239,6 +240,7 @@ const AGENT_PAGE_CSS = `
   @media (min-width: 1280px) {
     .stage-body { grid-template-columns: minmax(0, 3fr) minmax(340px, 2fr); }
     .stage-fields { flex-direction: column; flex-wrap: nowrap; }
+    .stage-field, .stage-field.is-now { flex: 0 0 auto; }
   }
   @media (max-width: 900px) {
     .stage-seats { grid-auto-flow: row; grid-template-columns: repeat(var(--stage-cols, 4), minmax(0, 1fr)); }
@@ -443,7 +445,7 @@ ${PIPELINE_JS}
     items: [], filter: 'all', q: '', expanded: new Set(), collapsed: new Set(), limit: RENDER_LIMIT,
     rendered: false, nodes: new Map(), listSig: '', unseen: 0, known: new Set(), fresh: new Set(),
     rawOpen: false, rawSev: '', rawQ: '',
-    team: null, stageSig: '', stagePct: undefined,
+    team: null, stageSig: '', stagePct: undefined, subsSig: '',
   };
 
   // ------------------------------------------------------------------ data loading (one poll loop)
@@ -1716,15 +1718,27 @@ ${PIPELINE_JS}
     setText($('stage-subs-meta'), active ? running.length + ' laufen · ' + finished.length + ' fertig' : '');
     if (!active) return stageEmpty(box);
     if (!running.length && !finished.length) return box.replaceChildren(el('p', 'Keine Subagents', 'stage-empty'));
-    box.replaceChildren(...[...running, ...finished].map((s) => {
-      const isRun = s.status === 'running';
-      const row = el('div', null, 'stage-subagent ' + (isRun ? 'is-running' : 'is-done'));
-      const end = s.ended_at ? Date.parse(s.ended_at) : Date.now();
-      row.append(el('span', null, 'dot' + (isRun ? ' pulse' : '')), el('b', s.subagent_type, 'mono'),
-        el('span', fmtDuration((end - Date.parse(s.started_at)) / 1000)), el('span', fmtCompact(s.tokens && s.tokens.total_tokens) + ' Tokens'),
-        el('span', oneLine(s.description, 80), 'desc'));
-      return row;
-    }));
+    const all = [...running, ...finished];
+    const sig = all.map((x, i) => (x.tool_use_id || i) + ':' + (x.status === 'running' ? 'r' : 'd')).join(',');
+    const timing = (x) => fmtDuration(((x.ended_at ? Date.parse(x.ended_at) : Date.now()) - Date.parse(x.started_at)) / 1000);
+    const tokensOf = (x) => fmtCompact(x.tokens && x.tokens.total_tokens) + ' Tokens';
+    // Rebuild only when the set or state changes, so the running pulse is not restarted by every poll.
+    if (sig !== S.subsSig || box.querySelector('.stage-empty')) {
+      S.subsSig = sig;
+      box.replaceChildren(...all.map((x) => {
+        const isRun = x.status === 'running';
+        const row = el('div', null, 'stage-subagent ' + (isRun ? 'is-running' : 'is-done'));
+        row.append(el('span', null, 'dot' + (isRun ? ' pulse' : '')), el('b', x.subagent_type, 'mono'),
+          el('span', timing(x), 'dur'), el('span', tokensOf(x), 'tok'), el('span', oneLine(x.description, 80), 'desc'));
+        return row;
+      }));
+      return;
+    }
+    all.forEach((x, i) => {
+      const row = box.children[i];
+      setText(row.querySelector('.dur'), timing(x));
+      setText(row.querySelector('.tok'), tokensOf(x));
+    });
   }
 
   function renderStage() {
@@ -1732,7 +1746,8 @@ ${PIPELINE_JS}
     const ok = !!(team && Array.isArray(team.seats));
     $('stage').hidden = !ok;
     if (!ok) return;
-    const active = team.active || null;
+    // A finished run has no live session, whatever the last /team said.
+    const active = S.ended || S.notFound ? null : team.active || null;
     renderStageSeats(team.seats, active);
     renderStageNow(active);
     renderStageSession(active);

@@ -73,6 +73,16 @@ describe('stage of the team view', () => {
     for (const id of ['stage-now-body', 'stage-session-body', 'stage-subs-body']) assert.ok(text(page, id).includes('Keine Session'), id);
   });
 
+  it('shows no live session once the run has ended', () => {
+    const page = renderPage(AGENT_HTML, { detail: issueDetail(), team: teamView(), ended: true }, { url: AGENT_URL });
+    for (const sel of ['.ring', '.eq', '.is-active', '.ui-ring']) assert.equal(page.query('#stage ' + sel).length, 0, sel);
+    assert.ok(text(page, 'stage-now-body').includes('Keine Session'));
+  });
+
+  it('resets the flex basis of the fields in the wide column layout', () => {
+    assert.match(AGENT_HTML, /@media \(min-width: 1280px\) \{[^@]*\.stage-field, \.stage-field\.is-now \{ flex: 0 0 auto/);
+  });
+
   it('puts the seats into two rows and keeps the stage from overflowing', () => {
     const cols = (n: number) => {
       const team = teamView();
