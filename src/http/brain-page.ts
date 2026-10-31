@@ -1,60 +1,69 @@
 import { CONTROLS_OFF } from './tasks-page.ts';
 import { AURORA, escapeHtml, page } from './ui/layout.ts';
 
+/** Where the disabled page points to; the dashboard does not serve the documentation itself. */
+export const BRAIN_DOCS_URL = 'https://github.com/cooolinho/symphony/blob/main/docs/brain.md';
+
 const BRAIN_CSS = `
-  .br-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; }
-  #brain-vitals { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 14px 0; }
-  #brain-status { display: grid; gap: 8px; margin-bottom: 22px; }
-  .br-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--text-2); }
-  #candidates, #folders, #graph, #clashes { margin-top: 22px; }
-  #candidates h2, #folders h2, #graph h2, #clashes h2 { margin: 0 0 10px; font: 600 10.5px var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+  #brain-sub code { font: 500 13.5px var(--mono); color: var(--fg-chip); overflow-wrap: anywhere; }
+  #brain-off { margin: 14px 4px 0; font-size: 14px; color: var(--fg-2); }
+  #brain-off code { font: 500 13px var(--mono); color: var(--fg-chip); }
+  #brain-main { display: flex; flex-direction: column; gap: 18px; margin-top: 18px; }
+  .br-vitals { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; padding: 14px; }
+  .br-notes { grid-column: span 2; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .br-notes-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .br-notes-label { font-size: 13px; color: var(--fg-2); }
+  .br-notes-value { font: 500 26px/1.2 var(--mono); font-variant-numeric: tabular-nums; color: var(--fg-strong); }
+  .br-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 12px; color: var(--fg-2); }
+  .br-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+  @media (max-width: 380px) { .br-notes { grid-column: auto; } }
+  .br-columns { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+  .br-cands { flex: 999 1 620px; min-width: 0; padding: 18px; }
+  .br-side { flex: 1 1 380px; min-width: 0; display: flex; flex-direction: column; gap: 18px; }
+  .br-side > section, .br-clashes { padding: 18px; }
+  .br-count { font: 500 12px var(--mono); color: var(--fg-2); }
+  .br-intro { margin: -4px 0 12px; font-size: 13px; color: var(--fg-3); }
   #brain-candidates { display: grid; gap: 12px; }
-  #brain-undo { display: grid; gap: 8px; margin-bottom: 10px; }
-  .br-undo { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 12px; }
-  .br-cand { padding: 14px 16px; border: 1px solid var(--line-2); border-radius: var(--radius-sm); background: var(--panel-2); display: grid; gap: 8px; min-width: 0; }
-  .br-title { margin: 0; font: 600 14px var(--sans); color: var(--text); overflow-wrap: anywhere; }
-  .br-path { font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; }
-  .br-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-  .br-meta { font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; }
-  .br-preview summary { cursor: pointer; font-size: 12px; color: var(--text-2); }
-  .br-preview pre { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; color: var(--text-2); }
-  .br-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .br-cand { padding: 14px 16px; display: grid; gap: 8px; min-width: 0; }
+  .br-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: 12px; color: var(--fg-2); }
+  .br-meta .mono { font-size: 12px; }
+  .br-role { display: inline-flex; align-items: center; gap: 6px; }
+  .br-type.ui-chip { font-size: 11px; }
+  .br-title { margin: 0; font: 600 15px/1.35 var(--sans); color: var(--fg-strong); overflow-wrap: anywhere; }
+  .br-target { font: 500 12px var(--mono); color: var(--fg-3); overflow-wrap: anywhere; }
+  .br-excerpt { margin: 0; font-size: 13px; line-height: 1.5; color: var(--fg-chip); overflow-wrap: anywhere; }
+  .br-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .br-msg { margin: 0; font-size: 12px; color: var(--red); }
   .br-msg:empty { display: none; }
-  .br-folder { margin: 4px 0; }
-  .br-folder > summary, .br-folder.br-leaf { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 4px 0; font-size: 13px; }
-  .br-folder > summary { cursor: pointer; }
-  .br-children { margin-left: 18px; border-left: 1px solid var(--line-2); padding-left: 10px; }
-  .br-total { font: 500 12px var(--mono); color: var(--text-2); }
-  .br-columns { display: flex; flex-wrap: wrap; gap: 0 18px; align-items: flex-start; }
-  .br-columns > #candidates { flex: 999 1 620px; min-width: 0; }
-  .br-side { flex: 1 1 380px; min-width: 0; }
-  .br-graph-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-  .br-graph-head h2 { margin: 0 !important; }
-  #brain-graph-root { font: 500 12px var(--mono); color: var(--text); background: var(--panel-2); border: 1px solid var(--line-2); border-radius: var(--radius-sm); padding: 4px 8px; }
-  #brain-graph { border: 1px solid var(--line-2); border-radius: var(--radius-sm); background: var(--panel-2); }
-  #brain-graph .empty { margin: 0; padding: 14px 16px; }
-  .br-graph { display: block; width: 100%; height: auto; color: var(--text-2); }
-  .br-node { cursor: pointer; outline: none; }
-  .br-node circle { pointer-events: all; transition: transform .15s ease-out; transform-box: fill-box; transform-origin: center; }
-  .br-node:hover circle, .br-node:focus-visible circle, .br-node.is-selected circle { transform: scale(1.3); }
-  .br-node:focus-visible circle { stroke: var(--text); stroke-width: 1.5; }
-  .br-node text { font: 500 9px var(--mono); fill: var(--text-2); pointer-events: none; }
-  #brain-graph-text { margin: 6px 0 0; font-size: 12px; color: var(--text-2); }
-  #brain-graph-legend { margin-top: 6px; }
-  .br-legend-dash { display: inline-block; width: 16px; border-top: 1.5px dashed var(--red); vertical-align: middle; margin-right: 6px; }
-  #brain-graph-preview { margin-top: 10px; padding: 12px 14px; border: 1px solid var(--line-2); border-radius: var(--radius-sm); background: var(--panel-2); display: grid; gap: 6px; }
-  #brain-graph-preview[hidden] { display: none; }
-  .br-pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; color: var(--text-2); }
+  #brain-graph-repo { color: var(--fg-chip); }
+  #brain-graph-root { font: 500 12px var(--mono); color: var(--text); background: var(--panel-2); border: 1px solid var(--line-2); border-radius: var(--radius-sm); padding: 4px 8px; min-height: 32px; }
+  #brain-graph .empty { margin: 0; padding: 14px 0; }
+  .br-graph { display: block; width: 100%; height: auto; }
+  .br-graph text { font-family: var(--mono); fill: var(--fg-2); }
+  .node { animation: breathe 4s ease-in-out infinite; }
+  #brain-graph-text { margin: 8px 0 0; font-size: 12px; color: var(--fg-3); }
+  #brain-graph-legend { margin-top: 8px; }
+  .br-legend-dash { display: inline-block; width: 16px; border-top: 1.5px dashed #f87171; }
+  .br-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 8px 0; border-top: 1px solid rgba(255, 255, 255, .06); }
+  .br-row-path { font: 500 13px var(--mono); overflow-wrap: anywhere; }
+  .br-row-count { font: 500 12.5px var(--mono); color: var(--fg-2); text-align: right; }
+  .br-row-desc { grid-column: 1 / -1; font-size: 12px; color: var(--fg-3); }
+  .br-clashes.has-open { border-color: rgba(248, 113, 113, .35); }
+  .br-clashes .lbl { color: #fca5a5; }
   #brain-clashes, #brain-clashes-resolved > div { display: grid; gap: 12px; }
+  #brain-clashes .empty { margin: 0; }
+  .br-clash { padding: 14px 16px; display: grid; gap: 8px; min-width: 0; border-color: rgba(248, 113, 113, .4); animation: br-in .2s ease-out both; }
+  .br-clash.is-resolved { border-color: rgba(255, 255, 255, .07); }
+  .br-clash-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; }
+  .br-clash-path { font-weight: 600; color: var(--fg-strong); overflow-wrap: anywhere; }
+  .br-clash-time { font: 500 12px var(--mono); color: var(--fg-2); }
+  .br-clash-text { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--fg-chip); }
+  .br-week { margin: 12px 0 0; font-size: 12px; color: var(--fg-3); }
   #brain-clashes-resolved { margin-top: 12px; }
-  #brain-clashes-resolved > summary { cursor: pointer; font-size: 12px; color: var(--text-2); margin-bottom: 10px; }
-  .br-clash { padding: 14px 16px; border: 1px solid var(--red-line); border-radius: var(--radius-sm); background: var(--panel-2); display: grid; gap: 8px; min-width: 0; animation: br-in .2s ease-out both; }
-  .br-clash.is-resolved { border-color: var(--line-2); }
-  .br-clash-path { font-weight: 600; color: var(--text); }
+  #brain-clashes-resolved > summary { cursor: pointer; font-size: 12px; color: var(--fg-2); margin-bottom: 10px; }
   @keyframes br-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-  .br-diff-wrap > summary { cursor: pointer; font-size: 12px; color: var(--text-2); }
-  .br-diff { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin-top: 6px; border: 1px solid var(--line-2); border-radius: var(--radius-sm); overflow: hidden; font: 11px/1.5 var(--mono); }
+  .br-diff { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); border: 1px solid var(--line-2); border-radius: var(--radius-sm); overflow: hidden; font: 11px/1.5 var(--mono); }
+  .br-diff[hidden], .br-diff-wrap[hidden] { display: none; }
   .br-cell { padding: 0 8px; min-height: 1.5em; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-2); }
   .br-cell:nth-child(odd) { border-right: 1px solid var(--line-2); }
   .br-cell-head { padding: 4px 8px; font: 600 10.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line-2); }
@@ -65,14 +74,15 @@ const BRAIN_CSS = `
   .br-gap { background: repeating-linear-gradient(135deg, transparent 0 4px, var(--line-2) 4px 5px); }
   .br-more { grid-column: 1 / -1; padding: 4px 8px; color: var(--muted); }
   @media (prefers-reduced-motion: reduce) {
-    .br-node circle { transition: none; }
+    .node { animation: none; }
     .br-clash { animation: none; }
   }
 `;
 
 /**
- * The Brain page: vitals with status bar, candidate review (promote, discard, undo), the graph around a repository index
- * (ring layout by link distance), the folder tree of the vault and the write clashes with a side-by-side line diff.
+ * The Brain page: title block with vault path, commit count and Obsidian link; vitals (status bar and four tiles); candidate
+ * review (promote, edit in Obsidian, discard, undo per card); the graph around a repository index (ring layout, folder
+ * colours, at most 24 nodes); the vault structure; the write clashes with a side-by-side line diff and the week's balance.
  */
 export const BRAIN_HTML = page({
   title: 'Brain · Symphony',
@@ -80,120 +90,167 @@ export const BRAIN_HTML = page({
   aurora: AURORA.brain,
   styles: BRAIN_CSS,
   body: `
-  <section aria-labelledby="page-title">
-    <div class="br-head">
-      <h1 id="page-title">Brain</h1>
-      <span id="brain-open"></span>
-    </div>
-    <p id="brain-off" class="empty" hidden>Das Brain ist nicht aktiviert (brain.enabled in WORKFLOW.md).</p>
-    <p id="brain-error" class="empty" hidden></p>
-    <div id="brain-main">
-      <div id="brain-vitals"></div>
-      <div id="brain-status"></div>
-      <div class="br-columns">
-      <section id="candidates" aria-labelledby="candidates-title">
-        <h2 id="candidates-title">Kandidaten</h2>
+  <div class="page-title">
+    <div><h1 id="page-title">Brain</h1><p class="page-sub" id="brain-sub">Das gemeinsame Gedächtnis der Agents</p></div>
+    <div class="page-title-right" id="brain-open"></div>
+  </div>
+  <p id="brain-off" hidden><span>Das Brain ist nicht aktiviert (</span><code>brain.enabled</code><span>). Einrichtung: </span><a href="${escapeHtml(BRAIN_DOCS_URL)}" target="_blank" rel="noopener noreferrer">docs/brain.md</a></p>
+  <p id="brain-error" class="empty" hidden></p>
+  <div id="brain-main">
+    <section class="g br-vitals" id="brain-vitals" aria-label="Vitalwerte"></section>
+    <div class="br-columns">
+      <section class="g br-cands" id="candidates" aria-labelledby="candidates-title">
+        <div class="panel-head"><h2 class="lbl" id="candidates-title">Kandidaten-Review</h2><span class="br-count" id="brain-cand-count" aria-live="polite"></span></div>
+        <p class="br-intro">Neue Notizen der Agents. Erst nach dem Befördern bevorzugen Agents sie beim Lesen.</p>
         <p class="task-off" id="brain-controls-off" hidden>${escapeHtml(CONTROLS_OFF)}</p>
-        <div id="brain-undo"></div>
         <div id="brain-candidates"></div>
       </section>
       <div class="br-side">
-      <section id="graph" aria-labelledby="graph-title">
-        <div class="br-graph-head">
-          <h2 id="graph-title">Graph</h2>
-          <select id="brain-graph-root" aria-label="Repository"></select>
-        </div>
-        <div id="brain-graph"></div>
-        <p id="brain-graph-text" hidden></p>
-        <div id="brain-graph-legend" class="br-legend"></div>
-        <div id="brain-graph-preview" aria-live="polite" hidden></div>
-      </section>
-      <section id="folders" aria-labelledby="folders-title">
-        <h2 id="folders-title">Ordner</h2>
-        <div id="brain-folders"></div>
-      </section>
+        <section class="g" id="graph" aria-labelledby="graph-title">
+          <div class="panel-head">
+            <h2 class="lbl" id="graph-title">Graph · Ausschnitt <span id="brain-graph-repo"></span></h2>
+            <select id="brain-graph-root" aria-label="Repository" hidden></select>
+          </div>
+          <div id="brain-graph"></div>
+          <div id="brain-graph-legend" class="br-legend"></div>
+          <p id="brain-graph-text" hidden></p>
+        </section>
+        <section class="g" id="folders" aria-labelledby="folders-title">
+          <div class="panel-head"><h2 class="lbl" id="folders-title">Struktur</h2></div>
+          <div id="brain-folders"></div>
+        </section>
       </div>
-      </div>
-      <section id="clashes" aria-labelledby="clashes-title">
-        <h2 id="clashes-title">Write-Clashes</h2>
-        <p class="task-off" id="brain-clash-controls-off" hidden>${escapeHtml(CONTROLS_OFF)}</p>
-        <div id="brain-clashes"></div>
-        <details id="brain-clashes-resolved" hidden><summary></summary><div></div></details>
-      </section>
     </div>
-  </section>`,
+    <section class="g br-clashes" id="clashes" aria-labelledby="clashes-title">
+      <div class="panel-head"><h2 class="lbl" id="clashes-title">Write-Clashes</h2></div>
+      <p class="task-off" id="brain-clash-controls-off" hidden>${escapeHtml(CONTROLS_OFF)}</p>
+      <div id="brain-clashes"></div>
+      <p class="br-week" id="brain-clash-week"></p>
+      <details id="brain-clashes-resolved" hidden><summary></summary><div></div></details>
+    </section>
+  </div>`,
   scripts: `
 (() => {
   const $ = (id) => document.getElementById(id);
   const CONTROLS_OFF = ${JSON.stringify(CONTROLS_OFF)};
-  const UNDO_MS = 10000;
-  const STATUS_TONES = { approved: UI_TRAFFIC.green, candidate: UI_TRAFFIC.amber, deprecated: '#6b7280' };
   const SAFE_URL = /^(https?|obsidian):\\/\\/\\S/i;
+  const SUB = 'Das gemeinsame Gedächtnis der Agents';
+  const STATUS_COLORS = { approved: '#34d399', candidate: '#fbbf24', deprecated: '#64748b' };
+  const TYPE_NAMES = { lesson: 'Lesson', index: 'Repo-Wissen', decision: 'Entscheidung', agent: 'Agent-Notiz' };
+  const FOLDER_COLORS = { Repos: '#38bdf8', Decisions: '#a78bfa', Lessons: '#34d399', Inbox: '#fbbf24', Agents: '#f472b6', Issues: '#94a3b8' };
+  const FOLDER_FALLBACK = '#94a3b8';
+  const BROKEN = '#f87171';
+  const GRAPH_MAX = 24;
+  const STRUCTURE = [
+    ['README.md', null, 'Regeln für Menschen und Agents', 'var(--fg-strong)'],
+    ['Inbox/', 'Inbox', 'Kandidaten, warten auf Review', '#fbbf24'],
+    ['Repos/<repo>/', 'Repos', 'Wissen je Repository, Einstieg index.md', '#38bdf8'],
+    ['Decisions/', 'Decisions', 'Entscheidungen im ADR-Stil', '#a78bfa'],
+    ['Lessons/', 'Lessons', 'Gelerntes aus Fehlern und Reviews', '#34d399'],
+    ['Issues/<repo>/', 'Issues', 'Zusammenfassungen nach dem Merge, von Symphony', '#94a3b8'],
+    ['Agents/<rolle>.md', 'Agents', 'Gedächtnis je Rolle', '#f9a8d4'],
+  ];
   let allowed = false;
   let vitals = null;
   let candidates = [];
-  let undo = [];
+  /** Candidates decided on this page: path → { c, action, path (where the note is now) }; shown with a chip and "Rückgängig". */
+  const decided = new Map();
   let fingerprint = '';
-  const openKeys = new Set();
   let clashes = [];
   /** Open state of the clash comparisons the user toggled (key c:<id>). */
   const diffOpen = new Map();
   let graph = null;
   let graphRoot = null;
-  let graphSelected = null;
   let graphPrint = '';
   let graphSeq = 0;
 
-  function ageOf(created) {
+  const deInt = (n) => (typeof n === 'number' && Number.isFinite(n) ? n : 0).toLocaleString('de-DE');
+  const deOne = (n) => (typeof n === 'number' && Number.isFinite(n) ? n : 0).toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  const hm = (iso) => {
+    const d = new Date(iso || '');
+    return Number.isNaN(d.getTime()) ? '—' : pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  };
+
+  /** "gerade eben", "vor 4 min", "vor 1 h", "vor 1 Tag", "vor 2 Tagen"; "—" without a date. */
+  function ageDe(created) {
     if (!created) return '—';
     const iso = /^\\d{4}-\\d{2}-\\d{2}$/.test(created) ? created + 'T00:00:00Z' : created;
     const ms = Date.parse(iso);
-    return Number.isNaN(ms) ? '—' : 'vor ' + fmtDuration((Date.now() - ms) / 1000);
+    if (Number.isNaN(ms)) return '—';
+    const s = Math.max(0, (Date.now() - ms) / 1000);
+    if (s < 60) return 'gerade eben';
+    if (s < 3600) return 'vor ' + Math.floor(s / 60) + ' min';
+    if (s < 86400) return 'vor ' + Math.floor(s / 3600) + ' h';
+    const days = Math.floor(s / 86400);
+    return days === 1 ? 'vor 1 Tag' : 'vor ' + days + ' Tagen';
   }
 
-  /** Link to Obsidian; only http(s):// and obsidian:// URLs are ever rendered. */
-  function obsidianLink(label, href, title) {
-    if (typeof href !== 'string' || !SAFE_URL.test(href)) return null;
-    const a = el('a', null, 'ui-btn ui-btn-36 ui-btn-obsidian');
-    a.setAttribute('href', href);
-    a.setAttribute('target', '_blank');
-    a.setAttribute('rel', 'noopener');
-    if (title) a.setAttribute('title', title);
-    a.append(el('span', label, 'ui-btn-label'));
-    return a;
+  const typeName = (type) => uiOwn(TYPE_NAMES, String(type || '').toLowerCase()) || 'Sonstiges';
+  const folderOf = (path) => {
+    const i = String(path).lastIndexOf('/');
+    return i < 0 ? '' : String(path).slice(0, i + 1);
+  };
+  /** "Inbox/ → Lessons/": the folder of the candidate and the folder it moves to (from target or the type folder). */
+  function targetLine(c) {
+    const target = String(c.target || '');
+    const to = target.endsWith('/') ? target : /\\.md$/i.test(target) ? folderOf(target) : target ? target + '/' : '';
+    return (folderOf(c.path) || '/') + ' → ' + (to || '?');
   }
+  /** The first 200 characters of the body (the API sends it without frontmatter), line breaks as spaces. */
+  function excerpt(text) {
+    const flat = String(text || '').replace(/\\s+/g, ' ').trim();
+    return flat.length > 200 ? flat.slice(0, 200).trimEnd() + '…' : flat;
+  }
+  const safeUrl = (href) => (typeof href === 'string' && SAFE_URL.test(href) ? href : null);
 
   function editHref(path) {
-    const base = vitals && vitals.obsidian_url;
-    if (typeof base !== 'string' || base === '') return null;
+    const base = safeUrl(vitals && vitals.obsidian_url);
+    if (!base) return null;
     if (!/^obsidian:/i.test(base)) return base;
     return base + (base.includes('?') ? '&' : '?') + 'file=' + encodeURIComponent(path.replace(/\\.md$/i, ''));
   }
 
   function renderHead() {
     const v = vitals;
-    const by = v.notes_by_status;
-    const total = by.approved + by.candidate + by.deprecated + by.none;
-    const last = v.last_commit;
-    $('brain-vitals').replaceChildren(
-      kpi(fmtInt(total), 'Notizen'),
-      kpi(fmtInt(by.approved), 'Approved'),
-      kpi(fmtInt(by.candidate), 'Kandidaten'),
-      kpi(fmtInt(by.deprecated), 'Deprecated'),
-      kpi(fmtInt(v.links), 'Links'),
-      kpi(fmtInt(v.orphans), 'Waisen'),
-      kpi(fmtInt(v.broken_links), 'Kaputte Links'),
-      kpi(fmtInt(v.writes_today), 'Schreibzugriffe heute'),
-      kpi(fmtInt(v.reads_today), 'Lesezugriffe heute'),
-      last ? kpi(String(last.sha).slice(0, 7), 'Letzter Commit', { sub: last.author + ' · ' + ageOf(last.at) }) : kpi(null, 'Letzter Commit'),
-    );
-    const parts = ['approved', 'candidate', 'deprecated'].map((s) => ({ value: by[s], label: s, color: STATUS_TONES[s] }));
-    const sum = parts.reduce((acc, p) => acc + p.value, 0);
+    const sub = $('brain-sub');
+    const commits = v.commits && typeof v.commits.total === 'number' ? v.commits.total : 0;
+    sub.replaceChildren(el('span', SUB + ' · Vault '), el('code', v.path || '—'), el('span', ' · ' + deInt(commits) + (commits === 1 ? ' Commit' : ' Commits')));
+    const url = safeUrl(v.obsidian_url);
+    $('brain-open').replaceChildren(...(url ? [button('In Obsidian öffnen ↗', { size: 40, tone: 'obsidian', href: url })] : []));
+  }
+
+  function notesCard(v) {
+    const by = v.notes || v.notes_by_status || {};
+    const n = (k) => (typeof by[k] === 'number' ? by[k] : 0);
+    const total = typeof by.total === 'number' ? by.total : n('approved') + n('candidate') + n('deprecated') + n('none');
+    const box = el('div', null, 'gi br-notes');
+    const head = el('div', null, 'br-notes-head');
+    head.append(el('span', 'Notizen', 'br-notes-label'), el('span', deInt(total), 'br-notes-value mono'));
+    const parts = [['approved', 'approved'], ['candidate', 'Kandidaten'], ['deprecated', 'veraltet']].map(([k, label]) => ({ value: n(k), label, color: STATUS_COLORS[k] }));
     const legend = el('div', null, 'br-legend');
-    for (const p of parts) legend.append(el('span', p.label + ' ' + (sum ? Math.round((p.value / sum) * 100) : 0) + ' %'));
-    $('brain-status').replaceChildren(stackedBar(parts), legend);
-    const open = obsidianLink('In Obsidian öffnen', v.obsidian_url);
-    $('brain-open').replaceChildren(...(open ? [open] : []));
+    for (const p of parts) {
+      const s = el('span', null, 'br-legend-item');
+      s.append(uiDot(p.color), el('span', deInt(p.value) + ' ' + p.label));
+      legend.append(s);
+    }
+    box.append(head, stackedBar(parts), legend);
+    return box;
+  }
+
+  function renderVitals() {
+    const v = vitals;
+    const links = v.links && typeof v.links === 'object' ? v.links : { total: v.links, per_note: 0 };
+    const reads = v.reads_today && typeof v.reads_today === 'object' ? v.reads_today : { total: v.reads_today, by_folder: [] };
+    const top = Array.isArray(reads.by_folder) && reads.by_folder.length ? reads.by_folder[0] : null;
+    $('brain-vitals').replaceChildren(
+      notesCard(v),
+      kpi(deInt(links.total), 'Links', { color: '#38bdf8', sub: deOne(links.per_note) + ' je Notiz' }),
+      kpi(deInt(v.orphans), 'Waisen', { color: '#a78bfa', sub: 'ohne ein- und ausgehende Links' }),
+      kpi(deInt(v.broken_links), 'Kaputte Links', { color: BROKEN, sub: 'Ziel fehlt' }),
+      kpi(deInt(v.writes_today) + ' / ' + deInt(reads.total), 'Writes / Reads heute', {
+        sub: top ? deInt(top.pct) + ' % der Reads aus ' + top.folder + '/' : 'keine Reads heute',
+      }),
+    );
   }
 
   async function post(path, action) {
@@ -210,18 +267,20 @@ export const BRAIN_HTML = page({
     return 'Fehlgeschlagen (' + res.status + '): ' + (e.message || e.code || '');
   }
 
+  /** Runs approve, reject or revert from a card; on success the decision (or its undo) is kept and the page reloads. */
   async function act(card, c, action) {
     const buttons = [...card.querySelectorAll('button')];
     const msg = card.querySelector('.br-msg');
     for (const b of buttons) b.disabled = true;
     msg.textContent = '';
     try {
-      const { res, body } = await post(c.path, action);
+      const d = decided.get(c.path);
+      const { res, body } = await post(action === 'revert' ? d.path : c.path, action);
       if (!res.ok) { msg.textContent = failure(res, body); for (const b of buttons) b.disabled = false; return; }
-      if (action === 'approve') {
-        undo.push({ path: body.path, title: c.title, until: Date.now() + UNDO_MS });
-        setTimeout(() => { fingerprint = ''; render(); }, UNDO_MS + 50);
-      }
+      if (action === 'revert') decided.delete(c.path);
+      else decided.set(c.path, { c, action, path: typeof body.path === 'string' ? body.path : c.path });
+      fingerprint = '';
+      render();
       await load();
     } catch (error) {
       msg.textContent = 'Fehlgeschlagen: ' + error.message;
@@ -229,104 +288,88 @@ export const BRAIN_HTML = page({
     }
   }
 
-  function candidateCard(c) {
-    const card = el('article', null, 'br-cand');
+  function issueNode(c) {
+    if (!c.issue) return null;
+    const issue = String(c.issue);
+    const hash = issue.lastIndexOf('#');
+    const id = /^\\d+$/.test(issue) && c.repo ? c.repo + '#' + issue : hash > 0 ? issue : null;
+    const label = /^\\d+$/.test(issue) ? '#' + issue : hash > 0 ? issue.slice(hash) : issue;
+    if (!id) return el('span', label, 'mono');
+    const a = el('a', label, 'mono');
+    a.href = '/issue?id=' + encodeURIComponent(id);
+    return a;
+  }
+
+  function candidateCard(c, decision) {
+    const card = el('article', null, 'gi br-cand' + (decision ? ' is-decided' : ''));
     card.dataset.path = c.path;
-    card.append(el('h3', c.title, 'br-title'), el('div', c.path, 'br-path mono'));
-    const chips = el('div', null, 'br-chips');
-    if (c.type) chips.append(chip(c.type, { tone: 'violet' }));
-    if (c.repo) chips.append(chip(c.repo, { mono: true }));
-    if (c.issue) {
-      if (c.repo && /^\\d+$/.test(c.issue)) {
-        const a = el('a', '#' + c.issue);
-        a.href = '/issue?id=' + encodeURIComponent(c.repo + '#' + c.issue);
-        chips.append(a);
-      } else chips.append(chip(c.issue, { mono: true }));
+    const meta = el('div', null, 'br-meta');
+    if (c.role) {
+      const color = uiOwn(UI_ROLE_COLORS, c.role) || FOLDER_FALLBACK;
+      const role = el('span', null, 'br-role');
+      role.style.color = color;
+      role.append(uiDot(color), el('span', uiOwn(UI_ROLE_NAMES, c.role) || c.role));
+      meta.append(role);
     }
-    if (c.role) chips.append(chip(c.role, { tone: uiOwn(UI_ROLE_COLORS, c.role) || 'gray', dot: true }));
-    card.append(chips, el('div', 'Alter ' + ageOf(c.created) + ' · → ' + c.target, 'br-meta'));
-    if (c.preview) {
-      const d = el('details', null, 'br-preview');
-      d.dataset.key = 'p:' + c.path;
-      if (openKeys.has(d.dataset.key)) d.open = true;
-      d.addEventListener('toggle', () => { if (d.open) openKeys.add(d.dataset.key); else openKeys.delete(d.dataset.key); });
-      d.append(el('summary', 'Vorschau'), el('pre', c.preview, 'mono'));
-      card.append(d);
-    }
+    const issue = issueNode(c);
+    if (issue) meta.append(issue);
+    meta.append(el('span', ageDe(c.created), 'mono br-age'));
+    const type = chip(typeName(c.type), { tone: 'violet' });
+    type.classList.add('br-type');
+    meta.append(type);
+    card.append(meta, el('h3', c.title, 'br-title'), el('div', targetLine(c), 'br-target mono'));
+    const text = excerpt(c.preview);
+    if (text) card.append(el('p', text, 'br-excerpt'));
     const note = el('p', null, 'br-msg');
     note.setAttribute('role', 'status');
-    card.append(note);
-    if (allowed) {
-      const actions = el('div', null, 'br-actions');
-      actions.append(
-        button('Befördern', { size: 36, tone: 'approve', onClick: () => act(card, c, 'approve') }),
-        button('Verwerfen', { size: 36, tone: 'danger', onClick: () => { if (confirm('Kandidat ' + c.path + ' verwerfen?')) act(card, c, 'reject'); } }),
-      );
-      const edit = obsidianLink('In Obsidian bearbeiten', editHref(c.path), c.path);
-      if (edit) actions.append(edit);
-      card.append(actions);
+    const actions = el('div', null, 'br-actions');
+    if (decision) {
+      actions.append(decision.action === 'approve'
+        ? chip('Befördert · approved', { tone: 'green', dot: true })
+        : chip('Verworfen · deprecated', { tone: 'red', dot: true }));
+      if (allowed) actions.append(button('Rückgängig', { size: 36, onClick: () => act(card, c, 'revert') }));
+    } else if (allowed) {
+      actions.append(button('Befördern', { size: 40, tone: 'approve', onClick: () => act(card, c, 'approve') }));
+      const edit = editHref(c.path);
+      if (edit) actions.append(button('In Obsidian bearbeiten ↗', { size: 40, tone: 'obsidian', href: edit }));
+      actions.append(button('Verwerfen', { size: 40, tone: 'danger', onClick: () => { if (confirm('Kandidat ' + c.path + ' verwerfen?')) act(card, c, 'reject'); } }));
     }
+    if (actions.children.length) card.append(actions);
+    card.append(note);
     return card;
   }
 
-  function renderUndo() {
-    const now = Date.now();
-    undo = undo.filter((u) => u.until > now);
-    $('brain-undo').replaceChildren(...undo.map((u) => {
-      const row = el('div', null, 'br-undo');
-      const msg = el('span', '„' + u.title + '“ nach ' + u.path + ' befördert.');
-      const note = el('span', null, 'br-msg');
-      note.setAttribute('role', 'status');
-      const b = button('Rückgängig', { size: 36, onClick: async () => {
-        b.disabled = true;
-        try {
-          const { res, body } = await post(u.path, 'revert');
-          if (!res.ok) { note.textContent = failure(res, body); b.disabled = false; return; }
-          undo = undo.filter((x) => x !== u);
-          await load();
-        } catch (error) { note.textContent = 'Fehlgeschlagen: ' + error.message; b.disabled = false; }
-      } });
-      row.append(msg, b, note);
+  const byAge = (a, b) => {
+    const x = a.created || null, y = b.created || null;
+    if (x !== y) { if (x === null) return 1; if (y === null) return -1; return x < y ? -1 : 1; }
+    return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+  };
+
+  function renderCandidates() {
+    const open = candidates.filter((c) => !decided.has(c.path));
+    const list = [...open.map((c) => ({ c, d: null })), ...[...decided.values()].map((d) => ({ c: d.c, d }))].sort((a, b) => byAge(a.c, b.c));
+    $('brain-cand-count').textContent = deInt(open.length) + ' offen von ' + deInt(open.length + decided.size);
+    $('brain-controls-off').hidden = allowed || open.length === 0;
+    const cards = list.map((x) => candidateCard(x.c, x.d));
+    if (open.length === 0) cards.unshift(el('p', 'Keine Kandidaten offen – alles gesichtet', 'empty'));
+    $('brain-candidates').replaceChildren(...cards);
+  }
+
+  function renderStructure(folders) {
+    const totals = new Map((folders || []).map((f) => [f.path, f.total]));
+    $('brain-folders').replaceChildren(...STRUCTURE.map(([label, key, desc, color]) => {
+      const row = el('div', null, 'br-row');
+      const path = el('span', label, 'br-row-path mono');
+      path.style.color = color;
+      row.append(path, el('span', key === null ? '' : deInt(totals.get(key) || 0), 'br-row-count mono'), el('span', desc, 'br-row-desc'));
       return row;
     }));
   }
 
-  function folderTree(folders) {
-    const nodes = new Map(folders.map((f) => [f.path, { f, children: [] }]));
-    const roots = [];
-    for (const n of nodes.values()) {
-      const parent = nodes.get(n.f.path.slice(0, Math.max(0, n.f.path.lastIndexOf('/'))));
-      if (n.f.path.includes('/') && parent) parent.children.push(n); else roots.push(n);
-    }
-    const LABELS = [['approved', 'approved', 'green'], ['candidate', 'candidate', 'amber'], ['deprecated', 'deprecated', 'gray'], ['none', 'ohne Status', 'gray']];
-    const build = (n) => {
-      const head = [el('span', n.f.path.split('/').pop(), 'mono'), el('span', String(n.f.total), 'br-total')];
-      for (const [key, label, tone] of LABELS) if (n.f.notes_by_status[key] > 0) head.push(chip(label + ' ' + n.f.notes_by_status[key], { tone }));
-      if (!n.children.length) {
-        const leaf = el('div', null, 'br-folder br-leaf');
-        leaf.append(...head);
-        return leaf;
-      }
-      const d = el('details', null, 'br-folder');
-      d.dataset.key = 'f:' + n.f.path;
-      if (openKeys.has(d.dataset.key)) d.open = true;
-      d.addEventListener('toggle', () => { if (d.open) openKeys.add(d.dataset.key); else openKeys.delete(d.dataset.key); });
-      const s = el('summary');
-      s.append(...head);
-      const kids = el('div', null, 'br-children');
-      kids.append(...n.children.map(build));
-      d.append(s, kids);
-      return d;
-    };
-    return roots.map(build);
-  }
-
   // Graph: ring layout by distance to the root (no physics, nothing animates positions).
-  const GW = 400, GH = 280;
-  const RADII = [0, 64, 104, 128];
-  const NODE_R = [12, 8, 6, 5];
-  const NO_STATUS = UI_CHIP_TONES.gray.c;
-  const statusColor = (n) => (n.missing ? UI_TRAFFIC.red : uiOwn(STATUS_TONES, n.status) || NO_STATUS);
+  const GW = 360, GH = 220;
+  const RADII = [0, 58, 92];
+  const folderColor = (path) => uiOwn(FOLDER_COLORS, String(path).split('/')[0]) || FOLDER_FALLBACK;
   const short = (s) => (s.length > 18 ? s.slice(0, 17) + '…' : s);
 
   /** One root per Repos/<repo> folder of the vitals. */
@@ -348,11 +391,55 @@ export const BRAIN_HTML = page({
         return o;
       }));
     }
-    select.hidden = roots.length === 0;
+    select.hidden = roots.length < 2;
     if (graphRoot) select.value = graphRoot;
+    const current = roots.find((r) => r.root === graphRoot);
+    $('brain-graph-repo').textContent = current ? current.label : '';
   }
 
-  /** Path to { x, y, r }: the root in the centre, each ring a link further out, children inside the sector of their parent. */
+  /**
+   * The shown part of the graph: notes two links away are grouped by their first folder ("Inbox (3)") when there are two or
+   * more, then at most GRAPH_MAX nodes (root, nearer first, most links first); radius 13 for the root, else 5..11 by links.
+   */
+  function graphView(g) {
+    const degree = new Map();
+    for (const e of g.edges) for (const p of [e.from, e.to]) degree.set(p, (degree.get(p) || 0) + 1);
+    const members = new Map();
+    for (const n of g.nodes) {
+      if (n.depth !== 2 || n.missing) continue;
+      const folder = String(n.path).split('/')[0];
+      if (!members.has(folder)) members.set(folder, []);
+      members.get(folder).push(n);
+    }
+    const rename = new Map();
+    const nodes = g.nodes.filter((n) => !(n.depth === 2 && !n.missing && members.get(String(n.path).split('/')[0]).length >= 2));
+    for (const [folder, list] of members) {
+      if (list.length < 2) continue;
+      const path = 'group:' + folder;
+      for (const n of list) rename.set(n.path, path);
+      nodes.push({ path, title: folder + ' (' + list.length + ')', folder, group: true, count: list.length, depth: 2 });
+    }
+    const seen = new Set();
+    const edges = [];
+    for (const e of g.edges) {
+      const from = rename.get(e.from) || e.from, to = rename.get(e.to) || e.to;
+      const key = from + '\\n' + to;
+      if (from === to || seen.has(key)) continue;
+      seen.add(key);
+      edges.push({ from, to, broken: !!e.broken });
+    }
+    const weight = (n) => (n.group ? n.count : degree.get(n.path) || 0);
+    nodes.sort((a, b) => (a.path === g.root ? -1 : b.path === g.root ? 1 : 0) || a.depth - b.depth || weight(b) - weight(a) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    const kept = nodes.slice(0, GRAPH_MAX);
+    const keep = new Set(kept.map((n) => n.path));
+    for (const n of kept) {
+      n.r = n.path === g.root ? 13 : n.missing ? 5 : n.group ? Math.min(11, 5 + n.count) : Math.min(11, 5 + 2 * Math.max(0, (degree.get(n.path) || 1) - 1));
+      n.color = n.group ? folderColor(n.folder) : folderColor(n.path);
+    }
+    return { root: g.root, nodes: kept, edges: edges.filter((e) => keep.has(e.from) && keep.has(e.to)), cut: nodes.length - kept.length };
+  }
+
+  /** Path to { x, y }: the root in the centre, each ring a link further out, children inside the sector of their parent. */
   function ringLayout(g) {
     const depthOf = new Map(g.nodes.map((n) => [n.path, n.depth]));
     const near = new Map();
@@ -364,15 +451,15 @@ export const BRAIN_HTML = page({
     }
     const kids = new Map();
     for (const n of g.nodes) {
-      if (n.depth === 0) continue;
-      const parent = n.depth === 1 ? g.root : (near.get(n.path) || []).filter((p) => depthOf.get(p) === n.depth - 1).sort()[0] || g.root;
+      if (n.path === g.root) continue;
+      const parent = n.depth <= 1 ? g.root : (near.get(n.path) || []).filter((p) => depthOf.get(p) === n.depth - 1).sort()[0] || g.root;
       if (!kids.has(parent)) kids.set(parent, []);
       kids.get(parent).push(n);
     }
     const pos = new Map();
     const place = (path, depth, angle, width) => {
       const ring = RADII[Math.min(depth, RADII.length - 1)];
-      pos.set(path, { x: GW / 2 + ring * 1.4 * Math.cos(angle), y: GH / 2 + ring * 0.95 * Math.sin(angle), r: NODE_R[Math.min(depth, NODE_R.length - 1)] });
+      pos.set(path, { x: +(GW / 2 + ring * 1.4 * Math.cos(angle)).toFixed(1), y: +(GH / 2 + ring * 0.95 * Math.sin(angle)).toFixed(1) });
       const list = kids.get(path) || [];
       list.forEach((child, i) => {
         if (pos.has(child.path)) return;
@@ -383,45 +470,26 @@ export const BRAIN_HTML = page({
     return pos;
   }
 
-  function graphSummary(g) {
-    const broken = g.edges.filter((e) => e.broken).length;
-    return fmtInt(g.nodes.length) + ' Knoten, ' + fmtInt(g.edges.length) + ' Kanten, ' + fmtInt(broken) + ' kaputte Links' +
-      (g.truncated ? ' · gekürzt auf ' + fmtInt(g.nodes.length) + ' Knoten' : '');
-  }
-
-  function showNode(n) {
-    graphSelected = n.path;
-    for (const node of $('brain-graph').querySelectorAll('.br-node')) node.classList.toggle('is-selected', node.dataset.path === n.path);
-    const linked = graph.edges.filter((e) => e.from === n.path || e.to === n.path);
-    const chips = el('div', null, 'br-chips');
-    chips.append(n.missing ? chip('fehlt', { tone: 'red' }) : chip(n.status || 'ohne Status', { dot: statusColor(n) }));
-    if (n.type) chips.append(chip(n.type, { tone: 'violet' }));
-    const parts = [el('h3', n.title, 'br-title'), el('div', n.path, 'br-path mono'), chips];
-    parts.push(n.missing
-      ? el('div', 'Ziel fehlt – verlinkt von ' + linked.map((e) => e.from).join(', '), 'br-meta')
-      : el('div', linked.length + ' Links im Ausschnitt', 'br-meta'));
-    const c = candidates.find((x) => x.path === n.path);
-    if (c && c.preview) parts.push(el('pre', c.preview, 'mono br-pre'));
-    const open = n.missing ? null : obsidianLink('In Obsidian öffnen', editHref(n.path), n.path);
-    if (open) parts.push(open);
-    $('brain-graph-preview').replaceChildren(...parts);
-    $('brain-graph-preview').hidden = false;
+  function graphSummary(g, view) {
+    const broken = view.edges.filter((e) => e.broken).length;
+    return fmtInt(view.nodes.length) + ' Knoten, ' + fmtInt(view.edges.length) + ' Kanten, ' + fmtInt(broken) + ' kaputte Links' +
+      (view.cut > 0 || g.truncated ? ' · Ausschnitt, höchstens ' + GRAPH_MAX + ' Knoten' : '');
   }
 
   function graphLegend() {
-    const items = [['approved', STATUS_TONES.approved], ['candidate', STATUS_TONES.candidate], ['deprecated', STATUS_TONES.deprecated], ['ohne Status', NO_STATUS]].map(([label, color]) => {
-      const s = el('span');
-      s.append(uiDot(color), el('span', ' ' + label));
+    const items = Object.entries(FOLDER_COLORS).map(([label, color]) => {
+      const s = el('span', null, 'br-legend-item');
+      s.append(uiDot(color), el('span', label));
       return s;
     });
-    const broken = el('span');
+    const broken = el('span', null, 'br-legend-item');
     broken.append(el('span', null, 'br-legend-dash'), el('span', 'kaputter Link'));
     return [...items, broken];
   }
 
   function renderGraph() {
     const g = graph;
-    const print = JSON.stringify([graphRoot, g, vitals && vitals.obsidian_url]);
+    const print = JSON.stringify([graphRoot, g]);
     if (print === graphPrint) return;
     graphPrint = print;
     const box = $('brain-graph');
@@ -430,48 +498,40 @@ export const BRAIN_HTML = page({
       box.replaceChildren(el('p', 'Keine Links', 'empty'));
       text.hidden = true;
       $('brain-graph-legend').replaceChildren();
-      $('brain-graph-preview').hidden = true;
       return;
     }
-    const summary = graphSummary(g);
-    const pos = ringLayout(g);
-    const svg = svgEl('svg', { viewBox: '0 0 ' + GW + ' ' + GH, class: 'br-graph', role: 'group', 'aria-label': 'Graph um ' + g.root + ': ' + summary });
-    for (const e of g.edges) {
+    const view = graphView(g);
+    const pos = ringLayout(view);
+    const summary = graphSummary(g, view);
+    const svg = svgEl('svg', { viewBox: '0 0 ' + GW + ' ' + GH, class: 'br-graph', role: 'img', 'aria-label': 'Ausschnitt des Notiz-Graphen rund um ' + String(g.root).replace(/\\.md$/i, '') });
+    for (const e of view.edges) {
       const a = pos.get(e.from), b = pos.get(e.to);
       if (!a || !b) continue;
       svg.append(svgEl('line', e.broken
-        ? { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: 'br-edge br-edge-broken', stroke: UI_TRAFFIC.red, 'stroke-width': 1.5, 'stroke-dasharray': '3 3' }
-        : { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: 'br-edge', stroke: 'currentColor', 'stroke-width': 1, 'stroke-opacity': 0.35 }));
+        ? { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: 'br-edge br-edge-broken', stroke: BROKEN, 'stroke-width': 1.5, 'stroke-dasharray': '3 3' }
+        : { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: 'br-edge', stroke: 'rgba(255,255,255,.18)', 'stroke-width': 1 }));
     }
-    for (const n of g.nodes) {
+    const labelled = new Set([view.root, ...view.nodes.filter((n) => n.path !== view.root).sort((a, b) => b.r - a.r || (a.path < b.path ? -1 : 1)).slice(0, 4).map((n) => n.path)]);
+    for (const n of view.nodes) {
       const p = pos.get(n.path);
       if (!p) continue;
-      const node = svgEl('g', { class: 'br-node' + (n.missing ? ' br-node-missing' : ''), role: 'button', tabindex: 0, 'aria-label': n.title + ' (' + n.path + ')' });
-      node.dataset.path = n.path;
-      node.append(svgEl('circle', n.missing
-        ? { cx: p.x, cy: p.y, r: p.r, fill: 'none', stroke: UI_TRAFFIC.red, 'stroke-width': 1.5, 'stroke-dasharray': '2 2' }
-        : { cx: p.x, cy: p.y, r: p.r, fill: statusColor(n) }));
+      const circle = svgEl('circle', n.missing
+        ? { cx: p.x, cy: p.y, r: n.r, class: 'node br-node-missing', fill: 'none', stroke: BROKEN, 'stroke-width': 1.5, 'stroke-dasharray': '2 2' }
+        : { cx: p.x, cy: p.y, r: n.r, class: 'node' + (n.group ? ' br-node-group' : ''), fill: n.color });
       const title = svgEl('title');
-      title.textContent = n.path;
-      node.append(title);
-      if (n.depth <= 1) {
-        const label = svgEl('text', { x: p.x, y: p.y + p.r + 10, 'text-anchor': 'middle' });
-        label.textContent = short(n.title);
-        node.append(label);
+      title.textContent = n.group ? n.title : n.path;
+      circle.append(title);
+      svg.append(circle);
+      if (labelled.has(n.path)) {
+        const label = svgEl('text', { x: p.x, y: +(p.y + n.r + 11).toFixed(1), 'text-anchor': 'middle', 'font-size': n.path === view.root ? 11 : 10 });
+        label.textContent = short(n.group ? n.title : n.title || n.path);
+        svg.append(label);
       }
-      node.addEventListener('click', () => showNode(n));
-      node.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showNode(n); }
-      });
-      svg.append(node);
     }
     box.replaceChildren(svg);
     text.textContent = summary;
     text.hidden = false;
     $('brain-graph-legend').replaceChildren(...graphLegend());
-    const still = g.nodes.find((n) => n.path === graphSelected);
-    if (still) showNode(still);
-    else { graphSelected = null; $('brain-graph-preview').hidden = true; }
   }
 
   async function loadGraph() {
@@ -493,12 +553,10 @@ export const BRAIN_HTML = page({
 
   $('brain-graph-root').addEventListener('change', () => {
     graphRoot = $('brain-graph-root').value;
-    graphSelected = null;
     loadGraph();
   });
 
   // Write clashes: both versions side by side with an own line diff (LCS).
-  const CLASH_REASONS = { hash_mismatch: 'Hash-Konflikt', window: 'Schutzfenster' };
   const DIFF_CELLS = 4000000;
   const DIFF_ROWS = 2000;
 
@@ -555,8 +613,7 @@ export const BRAIN_HTML = page({
     return grid;
   }
 
-  async function resolveClash(card, c) {
-    const b = card.querySelector('button');
+  async function resolveClash(card, b, c) {
     const msg = card.querySelector('.br-msg');
     b.disabled = true;
     msg.textContent = '';
@@ -574,42 +631,79 @@ export const BRAIN_HTML = page({
     }
   }
 
+  /** "Developer": role name of run k of the clash. */
+  function clashRole(c, k) {
+    const role = (c.roles || [])[k];
+    return role ? uiOwn(UI_ROLE_NAMES, role) || role : 'Unbekannte Rolle';
+  }
+
+  /** "Developer #7": role name and issue number of run k of the clash. */
+  function clashWho(c, k) {
+    const issue = (c.issues || [])[k];
+    const name = clashRole(c, k);
+    const hash = typeof issue === 'string' ? issue.lastIndexOf('#') : -1;
+    const number = typeof issue === 'string' && issue !== '' ? (hash >= 0 ? issue.slice(hash + 1) : issue) : '';
+    return number ? name + ' #' + number : name;
+  }
+
+  function clashText(c) {
+    const at = c.at || [];
+    const a = clashWho(c, 0), b = clashWho(c, 1);
+    const minutes = vitals && typeof vitals.clash_window_min === 'number' ? vitals.clash_window_min : null;
+    const how = c.reason === 'window'
+      ? ' innerhalb des Schutzfensters' + (minutes === null ? '' : ' von ' + deInt(minutes) + ' min') + '.'
+      : ' mit altem Hash.';
+    return a + ' schrieb um ' + hm(at[0]) + ', ' + b + ' um ' + hm(at[1]) + how +
+      ' Der zweite Schreibvorgang wurde abgewiesen; ' + clashRole(c, 1) + ' hat die aktuelle Fassung zurückbekommen.';
+  }
+
   function clashCard(c, resolved) {
-    const card = el('article', null, 'br-clash' + (resolved ? ' is-resolved' : ''));
+    const card = el('article', null, 'gi br-clash' + (resolved ? ' is-resolved' : ''));
     card.dataset.id = c.id;
-    const runs = c.runs || [], roles = c.roles || [], at = c.at || [];
-    const head = el('div', null, 'br-chips');
-    head.append(el('span', c.path, 'br-path mono br-clash-path'), chip(uiOwn(CLASH_REASONS, c.reason) || String(c.reason), { tone: 'red' }));
-    if (resolved) head.append(chip('gelöst', { tone: 'green' }));
-    head.append(el('span', fmtTime(at[1]), 'br-meta mono'));
-    const who = (k) => (runs[k] || 'unbekannter Run') + ' (' + (roles[k] || 'Rolle unbekannt') + ')';
-    const when = (k) => (at[k] ? fmtTime(at[k]) : 'unbekannt');
-    card.append(head, el('div', who(0) + ' schrieb um ' + when(0) + ', ' + who(1) + ' um ' + when(1) + ' – abgewiesen.', 'br-meta'));
+    const head = el('div', null, 'br-clash-head');
+    const path = el('span', c.path, 'br-clash-path');
+    if (resolved) {
+      const wrap = el('span');
+      wrap.append(path, ' ', chip('gelöst', { tone: 'green' }));
+      head.append(wrap);
+    } else head.append(path);
+    head.append(el('span', hm((c.at || [])[1]), 'br-clash-time mono'));
+    card.append(head, el('p', clashText(c), 'br-clash-text'));
     const left = c.attempted ? ['Abgewiesene Fassung', c.attempted.content] : c.base ? ['Fassung bei der Abweisung', c.base.content] : null;
     const right = c.current ? ['Aktuelle Fassung', c.current.content] : ['Aktuelle Fassung (Notiz fehlt)', ''];
-    const d = el('details', null, 'br-diff-wrap');
-    d.dataset.key = 'c:' + c.id;
-    d.open = diffOpen.has(d.dataset.key) ? diffOpen.get(d.dataset.key) : !resolved;
-    d.addEventListener('toggle', () => diffOpen.set(d.dataset.key, d.open));
-    d.append(el('summary', 'Fassungen vergleichen'), left
-      ? diffGrid(left[0], right[0], lineDiff(left[1], right[1]))
-      : el('p', 'Keine Fassung des abgewiesenen Runs gespeichert.', 'br-meta'));
+    const key = 'c:' + c.id;
+    const diff = el('div', null, 'br-diff-wrap');
+    diff.append(left ? diffGrid(left[0], right[0], lineDiff(left[1], right[1])) : el('p', 'Keine Fassung des abgewiesenen Runs gespeichert.', 'br-clash-text'));
+    diff.hidden = !diffOpen.get(key);
+    const actions = el('div', null, 'br-actions');
+    const compare = button('Fassungen vergleichen', { size: 38, onClick: () => {
+      const open = diff.hidden;
+      diffOpen.set(key, open);
+      diff.hidden = !open;
+      compare.setAttribute('aria-expanded', String(open));
+    } });
+    compare.setAttribute('aria-expanded', String(!diff.hidden));
+    actions.append(compare);
+    if (allowed && !resolved) {
+      const done = button('Als gelöst markieren', { size: 38, tone: 'approve', onClick: () => resolveClash(card, done, c) });
+      actions.append(done);
+    }
     const note = el('p', null, 'br-msg');
     note.setAttribute('role', 'status');
-    card.append(d, note);
-    if (allowed && !resolved) {
-      const actions = el('div', null, 'br-actions');
-      actions.append(button('Als gelöst markieren', { size: 36, tone: 'approve', onClick: () => resolveClash(card, c) }));
-      card.append(actions);
-    }
+    card.append(actions, diff, note);
     return card;
   }
 
   function renderClashes() {
     const open = clashes.filter((c) => c.status !== 'resolved');
     const done = clashes.filter((c) => c.status === 'resolved');
+    $('clashes').classList.toggle('has-open', open.length > 0);
     $('brain-clash-controls-off').hidden = allowed || open.length === 0;
-    $('brain-clashes').replaceChildren(...(open.length ? open.map((c) => clashCard(c, false)) : [el('p', 'Keine Konflikte', 'empty')]));
+    $('brain-clashes').replaceChildren(...(open.length ? open.map((c) => clashCard(c, false)) : [el('p', 'Keine offenen Clashes', 'empty')]));
+    const week = (vitals.clashes && vitals.clashes.week) || { total: 0, resolved: 0 };
+    const minutes = typeof vitals.clash_window_min === 'number' ? vitals.clash_window_min : null;
+    $('brain-clash-week').textContent = 'Diese Woche: ' + deInt(week.total) + (week.total === 1 ? ' Clash, ' : ' Clashes, ') + deInt(week.resolved) + ' gelöst · ' +
+      (minutes === null ? 'Schutzfenster unbekannt' : minutes === 0 ? 'Schutzfenster aus' : 'Schutzfenster ' + deInt(minutes) + ' min');
     const resolved = $('brain-clashes-resolved');
     resolved.hidden = done.length === 0;
     resolved.querySelector('summary').textContent = 'Gelöste Clashes (' + done.length + ')';
@@ -617,17 +711,13 @@ export const BRAIN_HTML = page({
   }
 
   function render() {
-    const print = JSON.stringify([vitals, candidates, clashes, allowed, undo.map((u) => u.path)]);
-    if (print === fingerprint) { renderUndo(); return; }
+    const print = JSON.stringify([vitals, candidates, clashes, allowed, [...decided.keys()]]);
+    if (print === fingerprint) return;
     fingerprint = print;
     renderHead();
-    renderUndo();
-    $('brain-controls-off').hidden = allowed;
-    $('brain-candidates').replaceChildren(...(candidates.length
-      ? candidates.map(candidateCard)
-      : [el('p', 'Keine Kandidaten. Alles ist gesichtet.', 'empty')]));
-    const tree = folderTree(vitals.folders || []);
-    $('brain-folders').replaceChildren(...(tree.length ? tree : [el('p', 'Noch keine Notizen.', 'empty')]));
+    renderVitals();
+    renderCandidates();
+    renderStructure(vitals.folders);
     renderClashes();
   }
 
@@ -650,6 +740,9 @@ export const BRAIN_HTML = page({
         $('brain-off').hidden = false;
         $('brain-error').hidden = true;
         $('brain-main').hidden = true;
+        $('brain-sub').replaceChildren(SUB);
+        $('brain-open').replaceChildren();
+        fingerprint = '';
         setLive(true);
         return;
       }

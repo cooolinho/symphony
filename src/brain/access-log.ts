@@ -35,6 +35,8 @@ export interface BrainAccess {
   other_at?: string | null;
   /** Role of the earlier writer; only on rejected lines. */
   other_role?: string | null;
+  /** Issue of the earlier writer; only on rejected lines. */
+  other_issue?: string | null;
 }
 
 export interface BrainClash {
@@ -44,6 +46,8 @@ export interface BrainClash {
   runs: [string | null, string | null];
   /** Roles of the two runs, in the order of `runs`. */
   roles: [string | null, string | null];
+  /** Issues of the two runs, in the order of `runs`; null when unknown (lines logged before they were kept). */
+  issues: [string | null, string | null];
   at: [string | null, string];
   reason: BrainClashReason;
   status: 'open' | 'resolved';
@@ -84,6 +88,18 @@ interface LastWrite {
   run: string | null;
   at: string;
   role: string | null;
+  issue: string | null;
+}
+
+/** Reads of one first-level folder today; `pct` is the share of all reads of the day (rounded). */
+export interface BrainFolderReads {
+  folder: string;
+  reads: number;
+  pct: number;
+}
+
+function copyClash(clash: BrainClash): BrainClash {
+  return { ...clash, runs: [...clash.runs], roles: [...clash.roles], issues: [...clash.issues], at: [...clash.at] };
 }
 
 function parseLine(line: string): (BrainAccess & { time: number }) | null {
@@ -112,8 +128,8 @@ export class BrainAccessLog {
   readonly #versions = new Map<string, BrainClashVersions>();
   /** Sidecars with the versions of each clash; null without a log dir. */
   readonly #clashDir: string | null;
-  /** Successful reads and writes per UTC day (YYYY-MM-DD). */
-  readonly #daily = new Map<string, { reads: number; writes: number }>();
+  /** Successful reads and writes per UTC day (YYYY-MM-DD); `folders` counts `op: read` by first-level folder. */
+  readonly #daily = new Map<string, { reads: number; writes: number; folders: Map<string, number> }>();
   #failing = false;
 
   constructor(dir: string | null, logger: Logger, options: { onClash?: BrainClashListener } = {}) {
@@ -125,7 +141,7 @@ export class BrainAccessLog {
 
   #notifyClash(line: BrainAccess, clash: BrainClash): void {
     try {
-      this.#onClash?.(line, { ...clash, runs: [...clash.runs], roles: [...clash.roles], at: [...clash.at] });
+      this.#onClash?.(line, copyClash(clash));
     } catch (error) {
       this.#logger.warn('brain clash listener failed', { clash: clash.id, error: errorMessage(error) });
     }
@@ -151,7 +167,7 @@ export class BrainAccessLog {
       if (entry === null) continue;
       this.#count(entry);
       if (entry.result === 'ok' && (entry.op === 'write' || entry.op === 'append')) {
-        this.#lastWrite.set(entry.path_or_query, { run: entry.run ?? null, at: entry.at, role: entry.role ?? null });
+        this.#lastWrite.set(entry.path_or_query, { run: entry.run ?? null, at: entry.at, role: entry.role ?? null, issue: entry.issue ?? null });
       } else if (entry.result === 'rejected' && typeof entry.clash_id === 'string' && entry.time >= since) {
         if (entry.reason !== 'window' && entry.reason !== 'hash_mismatch') continue;
         const clash: BrainClash = {
@@ -159,6 +175,7 @@ export class BrainAccessLog {
           path: entry.path_or_query,
           runs: [entry.other_run ?? null, entry.run ?? null],
           roles: [entry.other_role ?? null, entry.role ?? null],
+          issues: [entry.other_issue ?? null, entry.issue ?? null],
           at: [entry.other_at ?? null, entry.at],
           reason: entry.reason,
           status: 'open',
@@ -288,21 +305,41 @@ export class BrainAccessLog {
     const writes = entry.op === 'write' || entry.op === 'append';
     if (!reads && !writes) return;
     const day = entry.at.slice(0, 10);
-    const counts = this.#daily.get(day) ?? { reads: 0, writes: 0 };
+    const counts = this.#daily.get(day) ?? { reads: 0, writes: 0, folders: new Map<string, number>() };
     if (reads) counts.reads++;
     else counts.writes++;
+    const target = typeof entry.path_or_query === 'string' ? entry.path_or_query : '';
+    const slash = target.indexOf('/');
+    if (entry.op === 'read' && slash > 0) {
+      const folder = target.slice(0, slash);
+      counts.folders.set(folder, (counts.folders.get(folder) ?? 0) + 1);
+    }
     this.#daily.set(day, counts);
   }
 
-  /** Successful reads (read, search, list) and writes (write, append) of the UTC day of `now`. */
-  todayCounts(now: Date): { reads: number; writes: number } {
+  /**
+   * Successful reads (read, search, list, vitals) and writes (write, append) of the UTC day of `now`; `by_folder` are the
+   * `op: read` calls per first-level folder (notes in the vault root count nowhere), most reads first.
+   */
+  todayCounts(now: Date): { reads: number; writes: number; by_folder: BrainFolderReads[] } {
     const counts = this.#daily.get(now.toISOString().slice(0, 10));
-    return { reads: counts?.reads ?? 0, writes: counts?.writes ?? 0 };
+    const reads = counts?.reads ?? 0;
+    const byFolder = [...(counts?.folders ?? new Map<string, number>())]
+      .map(([folder, n]) => ({ folder, reads: n, pct: reads === 0 ? 0 : Math.round((n / reads) * 100) }))
+      .sort((a, b) => b.reads - a.reads || (a.folder < b.folder ? -1 : a.folder > b.folder ? 1 : 0));
+    return { reads, writes: counts?.writes ?? 0, by_folder: byFolder };
+  }
+
+  /** Clashes rejected in the last 7 days before `now` and how many of them are resolved. */
+  weekClashes(now: Date): { total: number; resolved: number } {
+    const since = now.getTime() - BRAIN_CLASH_LOOKBACK_DAYS * DAY_MS;
+    const week = this.#clashes.filter((clash) => Date.parse(clash.at[1]) >= since);
+    return { total: week.length, resolved: week.filter((clash) => clash.status === 'resolved').length };
   }
 
   /** Appends the line of a successful write and remembers the writer of the note. */
   recordWrite(entry: BrainAccess): void {
-    this.#lastWrite.set(entry.path_or_query, { run: entry.run, at: entry.at, role: entry.role });
+    this.#lastWrite.set(entry.path_or_query, { run: entry.run, at: entry.at, role: entry.role, issue: entry.issue });
     this.record(entry);
   }
 
@@ -322,7 +359,7 @@ export class BrainAccessLog {
   /** Logs a rejected write, adds the clash to the list and keeps its versions in `<dir>/clashes/<id>.json`. */
   recordClash(
     entry: BrainAccess,
-    other: { run: string | null; at: string | null; role?: string | null },
+    other: { run: string | null; at: string | null; role?: string | null; issue?: string | null },
     reason: BrainClashReason,
     versions: BrainClashVersions = { base: null, attempted: null },
   ): BrainClash {
@@ -331,6 +368,7 @@ export class BrainAccessLog {
       path: entry.path_or_query,
       runs: [other.run, entry.run],
       roles: [other.role ?? null, entry.role ?? null],
+      issues: [other.issue ?? null, entry.issue ?? null],
       at: [other.at, entry.at],
       reason,
       status: 'open',
@@ -338,7 +376,7 @@ export class BrainAccessLog {
     this.#clashes.push(clash);
     this.#versions.set(clash.id, versions);
     this.#writeVersions(clash, versions);
-    const line: BrainAccess = { ...entry, result: 'rejected', reason, clash_id: clash.id, other_run: other.run, other_at: other.at, other_role: other.role ?? null };
+    const line: BrainAccess = { ...entry, result: 'rejected', reason, clash_id: clash.id, other_run: other.run, other_at: other.at, other_role: other.role ?? null, other_issue: other.issue ?? null };
     this.record(line);
     this.#notifyClash(line, clash);
     return clash;
@@ -365,7 +403,7 @@ export class BrainAccessLog {
   }
 
   clashes(): BrainClash[] {
-    return this.#clashes.map((clash) => ({ ...clash, runs: [...clash.runs], roles: [...clash.roles], at: [...clash.at] }));
+    return this.#clashes.map(copyClash);
   }
 
   /** Marks a clash resolved and logs `op: resolve`; false for an unknown or already resolved id. */

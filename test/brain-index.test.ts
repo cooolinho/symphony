@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { BrainAccessLog, type BrainAccess } from '../src/brain/access-log.ts';
-import { createVaultGit, initVaultGit, lastVaultCommit } from '../src/brain/git.ts';
-import { BrainIndex, buildIndex, candidatesOf, deriveIndex, foldersOf, graphAround, vitalsCounts, type IndexedNote } from '../src/brain/index.ts';
+import { createVaultGit, initVaultGit, lastVaultCommit, vaultCommitCount } from '../src/brain/git.ts';
+import { BrainIndex, buildIndex, candidatesOf, deriveIndex, foldersOf, graphAround, vitalsCounts, vitalsDerived, type IndexedNote } from '../src/brain/index.ts';
 import { Logger } from '../src/log.ts';
 import { tempDir } from './helpers.ts';
 
@@ -141,11 +141,89 @@ describe('BrainAccessLog.todayCounts', () => {
     for (const target of [dir, null]) {
       const log = new BrainAccessLog(target, Logger.silent());
       for (const e of [entry('read'), entry('search'), entry('write'), entry('append'), entry('write', { result: 'rejected' }), entry('read', { at: '2026-10-29T23:59:00Z' })]) log.record(e);
-      assert.deepEqual(log.todayCounts(NOW), { reads: 2, writes: 2 });
+      assert.deepEqual(log.todayCounts(NOW), { reads: 2, writes: 2, by_folder: [] });
     }
     const loaded = new BrainAccessLog(dir, Logger.silent());
     loaded.load(NOW);
-    assert.deepEqual(loaded.todayCounts(NOW), { reads: 2, writes: 2 });
+    assert.deepEqual(loaded.todayCounts(NOW), { reads: 2, writes: 2, by_folder: [] });
+  });
+
+  it('counts the reads per first-level folder with their share, in memory and after load (E7-8)', () => {
+    const dir = path.join(tempDir(), 'brain');
+    const log = new BrainAccessLog(dir, Logger.silent());
+    const reads = ['Repos/a/x.md', 'Repos/a/y.md', 'Lessons/l.md', 'README.md'].map((p) => entry('read', { path_or_query: p }));
+    for (const e of [...reads, entry('search', { path_or_query: 'Repos/q' }), entry('read', { path_or_query: 'Lessons/x.md', result: 'rejected' })]) log.record(e);
+    const expected = {
+      reads: 5,
+      writes: 0,
+      by_folder: [
+        { folder: 'Repos', reads: 2, pct: 40 },
+        { folder: 'Lessons', reads: 1, pct: 20 },
+      ],
+    };
+    assert.deepEqual(log.todayCounts(NOW), expected);
+    const loaded = new BrainAccessLog(dir, Logger.silent());
+    loaded.load(NOW);
+    assert.deepEqual(loaded.todayCounts(NOW), expected);
+    assert.deepEqual(loaded.todayCounts(new Date('2026-10-31T12:00:00Z')), { reads: 0, writes: 0, by_folder: [] });
+  });
+});
+
+describe('BrainAccessLog.weekClashes (E7-8)', () => {
+  const NOW = new Date('2026-10-30T12:00:00Z');
+  const DAY = 24 * 60 * 60 * 1000;
+  const rejected = (id: string, ago: number): string =>
+    `${JSON.stringify({ at: new Date(NOW.getTime() - ago).toISOString(), run: 'r2', issue: 'a/b#2', role: 'tester', op: 'write', path_or_query: 'Inbox/a.md', purpose: '', result: 'rejected', reason: 'hash_mismatch', clash_id: id, other_run: 'r1', other_at: null, other_issue: 'a/b#1' })}\n`;
+  it('counts the clashes of the last 7 days and the resolved ones; keeps the issues of both runs', () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'access.jsonl'), rejected('old', 8 * DAY) + rejected('c1', 3 * DAY) + rejected('c2', DAY));
+    const log = new BrainAccessLog(dir, Logger.silent());
+    log.load(NOW);
+    assert.deepEqual(log.weekClashes(NOW), { total: 2, resolved: 0 });
+    assert.ok(log.markResolved('c1', NOW));
+    assert.deepEqual(log.weekClashes(NOW), { total: 2, resolved: 1 });
+    assert.deepEqual(log.clash('c2')?.issues, ['a/b#1', 'a/b#2']);
+    const clash = log.recordClash(
+      { at: NOW.toISOString(), run: 'r4', issue: 'a/b#4', role: 'developer', op: 'write', path_or_query: 'Inbox/b.md', purpose: '', result: 'rejected' },
+      { run: 'r3', at: NOW.toISOString(), role: 'tester', issue: 'a/b#3' },
+      'window',
+    );
+    assert.deepEqual(clash.issues, ['a/b#3', 'a/b#4']);
+    assert.deepEqual(log.weekClashes(NOW), { total: 3, resolved: 1 });
+    const again = new BrainAccessLog(dir, Logger.silent());
+    again.load(NOW);
+    assert.deepEqual(again.clash(clash.id)?.issues, ['a/b#3', 'a/b#4']);
+    assert.deepEqual(again.weekClashes(NOW), { total: 3, resolved: 1 });
+  });
+});
+
+describe('vitalsDerived (E7-8)', () => {
+  it('gives notes by status with the total and the links per note with one decimal', async () => {
+    const vault = path.join(tempDir(), 'vault');
+    put(vault, 'Lessons/a.md', fm({ type: 'lesson', status: 'approved' }, '[[Lessons/b]] [[Lessons/c]] [[Lessons/d]]'));
+    put(vault, 'Lessons/b.md', fm({ type: 'lesson', status: 'approved' }, '[[Lessons/a]] [[Lessons/c]]'));
+    put(vault, 'Lessons/c.md', fm({ type: 'lesson', status: 'candidate' }, ''));
+    put(vault, 'Lessons/d.md', fm({ type: 'lesson', status: 'deprecated' }, ''));
+    const derived = vitalsDerived(vitalsCounts(await buildIndex(vault)));
+    assert.deepEqual(derived.notes, { total: 4, approved: 2, candidate: 1, deprecated: 1, none: 0 });
+    assert.deepEqual(derived.links, { total: 5, per_note: 1.3 });
+  });
+
+  it('gives 0 links per note in an empty vault', async () => {
+    const derived = vitalsDerived(vitalsCounts(await buildIndex(path.join(tempDir(), 'none'))));
+    assert.deepEqual(derived, { notes: { total: 0, approved: 0, candidate: 0, deprecated: 0, none: 0 }, links: { total: 0, per_note: 0 } });
+  });
+});
+
+describe('vaultCommitCount (E7-8)', () => {
+  it('counts the vault commits, null without a repository', async () => {
+    const vault = fixture();
+    assert.equal(await vaultCommitCount(vault), null);
+    await initVaultGit(vault);
+    assert.equal(await vaultCommitCount(vault), 1);
+    put(vault, 'Inbox/new.md', fm({ type: 'note', status: 'candidate' }));
+    assert.ok(await createVaultGit(vault, Logger.silent()).commitHumanChanges());
+    assert.equal(await vaultCommitCount(vault), 2);
   });
 });
 

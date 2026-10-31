@@ -13,7 +13,7 @@ import { dashboardState } from './helpers/page-fixtures.ts';
 const NOW = Date.parse('2026-10-31T12:00:00Z');
 const vitals = {
   notes_by_status: { approved: 3, candidate: 2, deprecated: 1, none: 0 },
-  links: 7, orphans: 2, broken_links: 1, candidates: 2, writes_today: 4, reads_today: 9,
+  links: { total: 7, per_note: 1 }, orphans: 2, broken_links: 1, candidates: 2, writes_today: 4, reads_today: { total: 9, by_folder: [] },
   last_commit: { sha: 'abcdef1234', at: new Date(NOW - 5 * 60000).toISOString(), author: 'symphony' },
 };
 const access = [
@@ -53,7 +53,7 @@ const dayText = (d: number) => new Date(d).toLocaleDateString('de-DE', { weekday
 
 describe('Brain-Vitals', () => {
   it('shows four tiles with de-DE numbers and the colours of the mockup', async () => {
-    const s = setup(undefined, { vitals: { ...vitals, notes_by_status: { approved: 1000, candidate: 284, deprecated: 0, none: 0 }, links: 1284 }, access });
+    const s = setup(undefined, { vitals: { ...vitals, notes_by_status: { approved: 1000, candidate: 284, deprecated: 0, none: 0 }, links: { total: 1284, per_note: 1 } }, access });
     await run(s.ctx, 'loadBrain()');
     const tiles = s.$('brain-tiles');
     assert.deepEqual(tiles.querySelectorAll('.ui-kpi-label').map((e) => e.textContent), ['Notizen', 'Kandidaten warten', 'Links', 'Waisen ohne Links']);

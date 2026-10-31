@@ -270,7 +270,8 @@ describe('HTTP: /api/v1/brain/*', () => {
       assert.equal(body.candidates, 1);
       assert.equal(body.broken_links, 1);
       assert.ok(body.orphans >= 2, 'a.md and lonely.md are orphans');
-      assert.ok(body.links >= 1);
+      assert.ok(body.links.total >= 1);
+      assert.equal(body.notes.deprecated, 1);
       assert.ok(body.last_commit === null || (typeof body.last_commit.sha === 'string' && typeof body.last_commit.at === 'string' && typeof body.last_commit.author === 'string'));
     } finally {
       await server.close();

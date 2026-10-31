@@ -102,15 +102,27 @@ export async function lastVaultCommit(vault: string): Promise<{ sha: string; at:
   }
 }
 
+/** The number of commits of the vault repository (`git rev-list --count HEAD`); null without its own `.git` or on an error. */
+export async function vaultCommitCount(vault: string): Promise<number | null> {
+  try {
+    await fs.stat(path.join(vault, '.git'));
+    const count = Number.parseInt((await git(vault, ['rev-list', '--count', 'HEAD'])).trim(), 10);
+    return Number.isNaN(count) ? null : count;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * The newest commit touching `file` whose subject starts with `prefix` and whose body is `file` (the path a promotion
- * wrote to); null when there is none or on an error.
+ * The newest commit touching `file` whose subject starts with one of `prefixes` and whose body is `file` (the path a
+ * promotion wrote to); null when there is none or on an error. `prefix` is the one that matched.
  */
-export async function lastCommitWithSubject(vault: string, file: string, prefix: string): Promise<{ sha: string; subject: string } | null> {
+export async function lastCommitWithSubject(vault: string, file: string, prefixes: string[]): Promise<{ sha: string; subject: string; prefix: string } | null> {
   try {
     for (const record of (await git(vault, ['log', '--format=%H%x00%s%x00%b%x1e', '--', file])).split('\x1e')) {
       const [sha, subject, body] = record.trim().split('\0');
-      if (sha && subject?.startsWith(prefix) && body?.trim() === file) return { sha, subject };
+      const prefix = prefixes.find((candidate) => subject?.startsWith(candidate));
+      if (sha && subject && prefix !== undefined && body?.trim() === file) return { sha, subject, prefix };
     }
     return null;
   } catch {
