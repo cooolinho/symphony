@@ -151,10 +151,10 @@ const REDIRECTS: ReadonlyMap<string, string> = new Map([
 ]);
 
 /**
- * Observability/control surface (spec 13.7): `/` dashboard, `/changes`, `/tasks` and `/brain` (placeholder pages),
+ * Observability/control surface (spec 13.7): `/` dashboard, `/changes` (the feed of code changes), `/tasks` and `/brain` (placeholder pages),
  * `/issue?id=<identifier>` issue detail view (live, or archived once the orchestrator released the issue),
  * `/stats` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
- * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/activity`, `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
+ * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/activity`, `/api/v1/changes` (filters type, repo, issue, limit, tz; `before` = id of the last entry of the previous page, `next_before` the id for the next), `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
  * `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker), `/force` (Start now in an extra slot),
  * `/pause` and `/resume` (operator pause of an issue), `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family), and
  * `PUT` / `DELETE /api/v1/settings/agents` (agent slots set on the dashboard; JSON body, `Content-Type:
@@ -266,6 +266,30 @@ export function startHttpServer(options: {
     }
     if (pathname === '/api/v1/budget') {
       allow(['GET'], () => sendJson(res, 200, orchestrator.budget()));
+      return;
+    }
+    if (pathname === '/api/v1/changes') {
+      allow(['GET'], () => {
+        const params = new URL(req.url ?? '/', 'http://localhost').searchParams;
+        const type = textParam(params, 'type');
+        if (type !== null && type !== 'code' && type !== 'brain') {
+          sendError(res, 400, 'bad_request', 'type must be code or brain');
+          return;
+        }
+        const limit = Number(params.get('limit'));
+        const zone = textParam(params, 'tz');
+        const page = orchestrator.changesPage(
+          {
+            type: type ?? undefined,
+            repo: textParam(params, 'repo') ?? undefined,
+            issue: textParam(params, 'issue') ?? undefined,
+            before: textParam(params, 'before') ?? undefined,
+            limit: Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : undefined,
+          },
+          zone !== null && isValidTimeZone(zone) ? zone : Intl.DateTimeFormat().resolvedOptions().timeZone,
+        );
+        sendJson(res, 200, { generated_at: new Date().toISOString(), ...page });
+      });
       return;
     }
     if (pathname === '/api/v1/activity') {

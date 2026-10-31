@@ -4,7 +4,8 @@ import { performance } from 'node:perf_hooks';
 import { BrainAccessLog } from '../brain/access-log.ts';
 import { RateLimitLog, rateLimitKey, type RateLimitRecord } from '../budget/rate-limit-log.ts';
 import { ChangeStore } from '../changes/store.ts';
-import type { ChangeEntry, ChangeFile, ChangeFilter } from '../changes/types.ts';
+import { buildChangesPage } from '../changes/feed.ts';
+import type { ChangeEntry, ChangeFile, ChangeFilter, ChangesPage, ChangesQuery } from '../changes/types.ts';
 import { childEnvironment } from '../agent/env.ts';
 import { chooseRoleEffort, chooseRoleModel } from '../agent/model.ts';
 import { type ActivitySource, collectActivity } from './activity.ts';
@@ -3469,6 +3470,11 @@ export class Orchestrator {
   /** Recorded commits and merges, newest first, one page (`GET /api/v1/changes`, E6-3a). */
   listChanges(filter: ChangeFilter = {}): ChangeEntry[] {
     return this.#changes.list(filter);
+  }
+
+  /** One page of the feed with counts and (first page) stats; "today" is the calendar day in `timeZone`. */
+  changesPage(query: ChangesQuery, timeZone: string): ChangesPage {
+    return buildChangesPage(this.#changes, query, this.#clock.now(), timeZone);
   }
 
   #issueLogger(issue: Pick<Issue, 'id' | 'identifier'>): Logger {
