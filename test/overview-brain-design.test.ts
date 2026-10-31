@@ -11,7 +11,7 @@ import { createFakeDocument, parseHtml, run, type FakeElement } from './helpers/
 const NOW = Date.parse('2026-10-31T12:00:00Z');
 const vitals = {
   notes_by_status: { approved: 1000, candidate: 284, deprecated: 0, none: 0 },
-  links: 31, orphans: 5, broken_links: 0, candidates: 4, writes_today: 12, reads_today: 1234567,
+  links: { total: 31, per_note: 1 }, orphans: 5, broken_links: 0, candidates: 4, writes_today: 12, reads_today: { total: 1234567, by_folder: [] },
   obsidian_url: null as string | null,
   last_commit: { sha: 'abc', at: new Date(NOW - 2 * 3600_000).toISOString(), author: 'x' } as { sha: string; at: string; author: string } | null,
 };
@@ -118,7 +118,7 @@ describe('Brain styles from the mockup (inlined in the overview)', () => {
 
 describe('Brain-Vitals: Kacheln, Button, Fußzeile', () => {
   it('formats with de-DE thousands separators in all four tiles and in the footer', async () => {
-    const s = setup({ vitals: { ...vitals, links: 12345, orphans: 1000 } });
+    const s = setup({ vitals: { ...vitals, links: { total: 12345, per_note: 1 }, orphans: 1000 } });
     await run(s.ctx, 'loadBrain()');
     assert.deepEqual(s.$('brain-tiles').querySelectorAll('.ui-kpi-value').map((e) => e.textContent), ['1.284', '4', '12.345', '1.000']);
     assert.ok(s.$('brain-foot').textContent.includes('1.234.567 Reads'));

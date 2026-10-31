@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 import { createVaultGit } from '../src/brain/git.ts';
 import { BrainIndex } from '../src/brain/index.ts';
 import { parseNote } from '../src/brain/note.ts';
-import { approveCandidate, rejectCandidate, revertApprove, targetPath, type PromoteOptions } from '../src/brain/promote.ts';
+import { approveCandidate, rejectCandidate, revertDecision, targetPath, type PromoteOptions } from '../src/brain/promote.ts';
 import { ensureVault } from '../src/brain/vault.ts';
 import { Logger } from '../src/log.ts';
 import { tempDir } from './helpers.ts';
@@ -123,12 +123,12 @@ describe('rejectCandidate', () => {
   });
 });
 
-describe('revertApprove', () => {
+describe('revertDecision', () => {
   it('reverts the approve commit: the candidate is back at its old path', async () => {
     const { dir, options, index } = await setup({ 'Inbox/x.md': candidate() });
     const original = fs.readFileSync(path.join(dir, 'Inbox/x.md'), 'utf8');
     assert.ok((await approveCandidate(options, 'Inbox/x.md')).ok);
-    const result = await revertApprove(options, 'Lessons/x.md');
+    const result = await revertDecision(options, 'Lessons/x.md');
     assert.ok(result.ok && result.path === 'Inbox/x.md' && result.previousPath === 'Lessons/x.md', JSON.stringify(result));
     assert.equal(fs.readFileSync(path.join(dir, 'Inbox/x.md'), 'utf8'), original);
     assert.equal(fs.existsSync(path.join(dir, 'Lessons/x.md')), false);
@@ -136,17 +136,30 @@ describe('revertApprove', () => {
     assert.equal((await index.current(dir)).notes.get('Inbox/x.md')?.status, 'candidate');
   });
 
+  it('reverts the reject commit: the note is a candidate again, as a new commit (E7-8)', async () => {
+    const { dir, options, index } = await setup({ 'Inbox/x.md': candidate() });
+    const original = fs.readFileSync(path.join(dir, 'Inbox/x.md'), 'utf8');
+    assert.ok((await rejectCandidate(options, 'Inbox/x.md')).ok);
+    const count = Number(sh(dir, 'rev-list', '--count', 'HEAD'));
+    const result = await revertDecision(options, 'Inbox/x.md');
+    assert.ok(result.ok && result.path === 'Inbox/x.md' && result.previousPath === 'Inbox/x.md', JSON.stringify(result));
+    assert.equal(fs.readFileSync(path.join(dir, 'Inbox/x.md'), 'utf8'), original);
+    assert.equal(sh(dir, 'log', '-1', '--format=%an|%s'), 'human|Revert "reject: Inbox/x.md"');
+    assert.equal(Number(sh(dir, 'rev-list', '--count', 'HEAD')), count + 1);
+    assert.equal((await index.current(dir)).notes.get('Inbox/x.md')?.status, 'candidate');
+  });
+
   it('answers no_approve_commit, not_found and revert_conflict', async () => {
     const { dir, options } = await setup({ 'Inbox/x.md': candidate(), 'Lessons/plain.md': '---\ntype: lesson\n---\nP.\n' });
-    const none = await revertApprove(options, 'Lessons/plain.md');
+    const none = await revertDecision(options, 'Lessons/plain.md');
     assert.ok(!none.ok && none.reason === 'no_approve_commit', JSON.stringify(none));
-    const missing = await revertApprove(options, 'Lessons/none.md');
+    const missing = await revertDecision(options, 'Lessons/none.md');
     assert.ok(!missing.ok && missing.reason === 'not_found', JSON.stringify(missing));
     assert.ok((await approveCandidate(options, 'Inbox/x.md')).ok);
     // A human changed the same frontmatter lines in Obsidian since the approve.
     const file = path.join(dir, 'Lessons/x.md');
     fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('status: approved', 'status: deprecated'));
-    const conflict = await revertApprove(options, 'Lessons/x.md');
+    const conflict = await revertDecision(options, 'Lessons/x.md');
     assert.ok(!conflict.ok && conflict.reason === 'revert_conflict', JSON.stringify(conflict));
     assert.equal(sh(dir, 'status', '--porcelain'), '');
   });

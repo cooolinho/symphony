@@ -50,11 +50,27 @@ export interface BrainFolder {
   total: number;
 }
 
-export interface BrainVitals extends BrainVitalCounts {
+/** Vitals derived from the counts: notes by status with their total, links with the links per note. */
+export interface BrainVitalsDerived {
+  notes: { total: number; approved: number; candidate: number; deprecated: number; none: number };
+  /** `per_note` is links / notes with one decimal; 0 without notes. */
+  links: { total: number; per_note: number };
+}
+
+export interface BrainVitals extends Omit<BrainVitalCounts, 'links'>, BrainVitalsDerived {
+  /** `brain.path`. */
+  path: string;
   obsidian_url: string | null;
   folders: BrainFolder[];
   writes_today: number;
-  reads_today: number;
+  /** `by_folder`: `op: read` calls per first-level folder, most first; `pct` relative to `total`. */
+  reads_today: { total: number; by_folder: { folder: string; reads: number; pct: number }[] };
+  /** Clashes rejected in the last 7 days and how many of them are resolved. */
+  clashes: { week: { total: number; resolved: number } };
+  /** Number of vault commits; 0 without git. */
+  commits: { total: number };
+  /** `brain.clash_window_ms` in minutes (rounded). */
+  clash_window_min: number;
   last_commit: { sha: string; at: string; author: string } | null;
 }
 
@@ -236,6 +252,16 @@ export function vitalsCounts(index: VaultIndex): BrainVitalCounts {
     orphans: index.orphans.length,
     broken_links: index.broken.length,
     candidates: notesByStatus.candidate,
+  };
+}
+
+/** `notes` and `links` of the vitals, from the counts of the index (no second pass over the files). */
+export function vitalsDerived(counts: BrainVitalCounts): BrainVitalsDerived {
+  const byStatus = counts.notes_by_status;
+  const total = byStatus.approved + byStatus.candidate + byStatus.deprecated + byStatus.none;
+  return {
+    notes: { total, ...byStatus },
+    links: { total: counts.links, per_note: total === 0 ? 0 : Math.round((counts.links / total) * 10) / 10 },
   };
 }
 

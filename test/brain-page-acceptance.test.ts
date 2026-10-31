@@ -15,6 +15,7 @@ import { FakeRunner, FakeTracker, ManualTimers, StaticWorkflow, baseFront, makeW
 import { dashboardState } from './helpers/page-fixtures.ts';
 
 // E7-7a (#375), independent acceptance tests derived from the issue text: Brain page, brain.obsidian_url, folder counts, candidate preview.
+// Adjusted for E7-8 (#391): mockup card (type names, target line, decision chip), structure with seven entries, new vitals shape.
 
 type Obj = Record<string, any>;
 
@@ -184,8 +185,8 @@ describe('Brain API and page against a real vault', () => {
       const cards = real.query('#brain-candidates .br-cand');
       assert.deepEqual(cards.map((c) => c.dataset.path), ['Inbox/alt.md', 'Inbox/neu.md']);
       const first = text(cards[0]!);
-      for (const part of ['Alt', 'decision', 'acme/app', '12', 'developer', 'Inbox/alt.md']) assert.ok(first.includes(part), part);
-      assert.ok(text(cards[1]!).includes('Lessons/neu.md'), 'target path of the frontmatter');
+      for (const part of ['Alt', 'Entscheidung', '#12', 'Developer', 'Inbox/ → Decisions/']) assert.ok(first.includes(part), part);
+      assert.ok(text(cards[1]!).includes('Inbox/ → Lessons/'), 'target folder of the frontmatter');
       assert.ok(text(real.$('brain-folders')).includes('Inbox'));
       assert.equal(real.query('#brain-open a').length, 1);
       assert.equal(real.query('#brain-open a')[0]!.getAttribute('href'), 'obsidian://open?vault=brain');
@@ -238,12 +239,12 @@ describe('Brain API and page against a real vault', () => {
         },
       });
       await until(() => real.query('#brain-graph svg').length === 1);
-      const paths = real.query('#brain-graph g.br-node').map((n) => n.dataset.path);
+      const paths = real.query('#brain-graph circle').map((n) => text(n.querySelectorAll('title')[0]!));
       for (const p of ['Repos/acme-app/index.md', 'Inbox/alt.md', 'Lessons/gibtsnicht.md']) assert.ok(paths.includes(p), p);
-      assert.equal(real.query('#brain-graph g.br-node-missing')[0]!.dataset.path, 'Lessons/gibtsnicht.md');
+      assert.equal(text(real.query('#brain-graph circle.br-node-missing')[0]!.querySelectorAll('title')[0]!), 'Lessons/gibtsnicht.md');
       assert.equal(real.query('#brain-graph line.br-edge-broken').length, 1);
       assert.match(text(real.$('brain-graph-text')), /1 kaputte Links/);
-      assert.equal(text(real.$('brain-clashes')), 'Keine Konflikte');
+      assert.equal(text(real.$('brain-clashes')), 'Keine offenen Clashes');
     } finally {
       await server.close();
     }
@@ -255,7 +256,7 @@ describe('Brain API and page against a real vault', () => {
       const res = await call(server.port, 'GET', '/brain');
       assert.equal(res.status, 200);
       assert.ok(res.body.startsWith('<!doctype html>') || res.body.toLowerCase().includes('<html'));
-      for (const part of ['id="candidates"', 'Kandidaten', 'Ordner', 'Das Brain ist nicht aktiviert (brain.enabled in WORKFLOW.md).', 'Keine Kandidaten. Alles ist gesichtet.']) {
+      for (const part of ['id="candidates"', 'Kandidaten-Review', 'Struktur', 'Das Brain ist nicht aktiviert (', 'docs/brain.md', 'Keine Kandidaten offen – alles gesichtet']) {
         assert.ok(res.body.includes(part), part);
       }
       assert.ok(!res.body.includes('Diese Seite kommt in Kürze'));
@@ -268,7 +269,9 @@ describe('Brain API and page against a real vault', () => {
 describe('Brain page behaviour (fake fetch)', () => {
   const vitals = (over: Obj = {}): Obj => ({
     notes_by_status: { candidate: 1, approved: 3, deprecated: 0, none: 0 },
-    links: 0, orphans: 0, broken_links: 0, candidates: 1, writes_today: 0, reads_today: 0, last_commit: null, obsidian_url: null,
+    notes: { total: 4, candidate: 1, approved: 3, deprecated: 0, none: 0 },
+    links: { total: 0, per_note: 0 }, orphans: 0, broken_links: 0, candidates: 1, writes_today: 0, reads_today: { total: 0, by_folder: [] },
+    clashes: { week: { total: 0, resolved: 0 } }, commits: { total: 1 }, clash_window_min: 10, path: '/vault', last_commit: null, obsidian_url: null,
     folders: [{ path: 'Inbox', notes_by_status: { candidate: 1, approved: 0, deprecated: 0, none: 0 }, total: 1 }],
     ...over,
   });
@@ -295,9 +298,9 @@ describe('Brain page behaviour (fake fetch)', () => {
     const p = renderPage(BRAIN_HTML, undefined, { fetch: fetcher() });
     await until(() => p.query('#brain-candidates .br-cand').length === 1);
     p.click(btn(p, 'Befördern'));
-    await until(() => p.query('#brain-undo button').length === 1);
+    await until(() => p.query('#brain-candidates .is-decided button').length === 1);
     assert.equal(p.fetches.find((f) => f.method === 'POST')!.url, '/api/v1/brain/candidates/Inbox%2Fa%20b.md/approve');
-    p.click(p.query('#brain-undo button')[0]!);
+    p.click(p.query('#brain-candidates .is-decided button')[0]!);
     await until(() => p.fetches.filter((f) => f.method === 'POST').length === 2);
     assert.equal(p.fetches.filter((f) => f.method === 'POST')[1]!.url, '/api/v1/brain/candidates/Lessons%2Fa%20b.md/revert');
   });
@@ -317,7 +320,7 @@ describe('Brain page behaviour (fake fetch)', () => {
     await until(() => text(p.query('#brain-candidates .br-msg')[0]!) !== '');
     assert.ok(text(p.query('#brain-candidates .br-msg')[0]!).includes('Notiz nicht gültig'));
     assert.equal(p.query('#brain-candidates .br-cand').length, 1);
-    assert.equal(p.query('#brain-undo button').length, 0);
+    assert.equal(p.query('#brain-candidates .is-decided').length, 0);
   });
 
   it('reloads the candidate list after reject', async () => {
@@ -333,13 +336,13 @@ describe('Brain page behaviour (fake fetch)', () => {
   it('links to the base URL for the https edit link and appends file= with ? for a bare obsidian URL', async () => {
     const https = renderPage(BRAIN_HTML, undefined, { fetch: fetcher({ vitals: vitals({ obsidian_url: 'https://brain.lan/' }) }) });
     await until(() => https.query('#brain-candidates .br-cand').length === 1);
-    const a = https.query('#brain-candidates a').find((x) => text(x) === 'In Obsidian bearbeiten')!;
+    const a = https.query('#brain-candidates a').find((x) => text(x) === 'In Obsidian bearbeiten ↗')!;
     assert.ok(a.getAttribute('href')!.startsWith('https://brain.lan/'));
     assert.equal(a.getAttribute('target'), '_blank');
     assert.match(a.getAttribute('rel') ?? '', /noopener/);
     const obs = renderPage(BRAIN_HTML, undefined, { fetch: fetcher({ vitals: vitals({ obsidian_url: 'obsidian://vault/brain' }) }) });
     await until(() => obs.query('#brain-candidates .br-cand').length === 1);
-    const href = obs.query('#brain-candidates a').find((x) => text(x) === 'In Obsidian bearbeiten')!.getAttribute('href')!;
+    const href = obs.query('#brain-candidates a').find((x) => text(x) === 'In Obsidian bearbeiten ↗')!.getAttribute('href')!;
     assert.ok(href.startsWith('obsidian://vault/brain') && href.includes('file=') && href.includes(encodeURIComponent('Inbox/a b')), href);
   });
 
@@ -354,18 +357,18 @@ describe('Brain page behaviour (fake fetch)', () => {
 
   it('computes status bar shares and survives all-zero vitals and an empty folder list', async () => {
     const p = renderPage(BRAIN_HTML, undefined, { fetch: fetcher({
-      vitals: vitals({ notes_by_status: { candidate: 0, approved: 0, deprecated: 0, none: 0 }, candidates: 0, folders: [] }),
+      vitals: vitals({ notes_by_status: { candidate: 0, approved: 0, deprecated: 0, none: 0 }, notes: { total: 0, candidate: 0, approved: 0, deprecated: 0, none: 0 }, candidates: 0, folders: [] }),
       candidates: { candidates: [] },
     }) });
     await until(() => text(p.$('brain-candidates')) !== '');
-    assert.equal(text(p.$('brain-candidates')), 'Keine Kandidaten. Alles ist gesichtet.');
+    assert.equal(text(p.$('brain-candidates')), 'Keine Kandidaten offen – alles gesichtet');
     assert.equal(p.$('brain-off').hidden, true);
     assert.ok(p.query('#brain-vitals .ui-kpi').length > 0);
 
-    const half = renderPage(BRAIN_HTML, undefined, { fetch: fetcher({ vitals: vitals({ notes_by_status: { candidate: 1, approved: 1, deprecated: 2, none: 0 } }) }) });
-    await until(() => half.query('#brain-status .ui-stack').length === 1);
-    const t = text(half.$('brain-status'));
-    assert.ok(t.includes('50') || (half.query('#brain-status .ui-stack')[0]!.getAttribute('aria-label') ?? '').includes('2'), t);
+    const half = renderPage(BRAIN_HTML, undefined, { fetch: fetcher({ vitals: vitals({ notes_by_status: { candidate: 1, approved: 1, deprecated: 2, none: 0 }, notes: { total: 4, candidate: 1, approved: 1, deprecated: 2, none: 0 } }) }) });
+    await until(() => half.query('#brain-vitals .ui-stack').length === 1);
+    assert.equal(half.query('#brain-vitals .ui-stack')[0]!.getAttribute('aria-label'), '1 approved, 1 Kandidaten, 2 veraltet');
+    assert.deepEqual(half.query('#brain-vitals .ui-stack-part').map((x) => x.style.width), ['25%', '25%', '50%']);
   });
 
   it('shows an error text instead of the brain notice for non-404 failures', async () => {
@@ -379,7 +382,7 @@ describe('Brain page behaviour (fake fetch)', () => {
     const gone = { __status: 404, error: { code: 'brain_disabled' } };
     const p = renderPage(BRAIN_HTML, undefined, { fetch: fetcher({ candidates: gone }) });
     await until(() => p.$('brain-off').hidden === false);
-    assert.equal(text(p.$('brain-off')), 'Das Brain ist nicht aktiviert (brain.enabled in WORKFLOW.md).');
+    assert.equal(text(p.$('brain-off')), 'Das Brain ist nicht aktiviert (brain.enabled). Einrichtung: docs/brain.md');
     assert.equal(p.query('#brain-candidates .br-cand').length, 0);
   });
 
@@ -397,7 +400,8 @@ describe('Brain page behaviour (fake fetch)', () => {
     }) });
     await until(() => p.query('#brain-candidates .br-cand').length === 1);
     assert.equal(p.query('img').length, 0);
-    assert.ok(text(p.$('brain-folders')).includes(evil));
+    assert.ok(text(p.query('#brain-candidates .br-title')[0]!).includes(evil));
+    assert.ok(!text(p.$('brain-folders')).includes(evil), 'the structure lists the fixed entries, not folder names');
   });
 
   it('links the issue only for numeric issue numbers', async () => {
@@ -408,15 +412,14 @@ describe('Brain page behaviour (fake fetch)', () => {
     assert.ok(!hrefs.some((h) => h.startsWith('javascript')));
   });
 
-  it('builds the folder tree with nesting and per-status counts', async () => {
+  it('counts the notes of each top folder in the structure (subfolders included)', async () => {
     const f = (p: string, c: number, a: number, d: number) => ({ path: p, notes_by_status: { candidate: c, approved: a, deprecated: d, none: 0 }, total: c + a + d });
-    const p = renderPage(BRAIN_HTML, undefined, { fetch: fetcher({ vitals: vitals({ folders: [f('Repos', 0, 3, 1), f('Repos/a', 0, 2, 0), f('Repos/b', 0, 1, 1), f('Repos/b/deep', 0, 0, 1), f('Inbox', 4, 0, 0)] }) }) });
-    await until(() => p.query('#brain-folders .br-folder').length > 0);
-    const root = p.query('#brain-folders details').filter((d) => text(d.querySelectorAll('summary')[0]!).includes('Repos'))[0]!;
-    const sum = text(root.querySelectorAll('summary')[0]!);
-    assert.ok(sum.includes('4') && sum.includes('approved 3') && sum.includes('deprecated 1'), sum);
-    const t = text(root);
-    for (const name of ['a', 'b', 'deep']) assert.ok(t.includes(name), name);
-    assert.ok(text(p.$('brain-folders')).includes('candidate 4'));
+    const p = renderPage(BRAIN_HTML, undefined, { fetch: fetcher({ vitals: vitals({ folders: [f('Repos', 0, 3, 1), f('Repos/a', 0, 2, 0), f('Repos/b', 0, 1, 1), f('Repos/b/deep', 0, 0, 1), f('Inbox', 4, 0, 0), f('Agents', 0, 1234, 0)] }) }) });
+    await until(() => p.query('#brain-folders .br-row').length === 7);
+    const count = (label: string) => text(p.query('#brain-folders .br-row').find((r) => text(r.querySelectorAll('.br-row-path')[0]!) === label)!.querySelectorAll('.br-row-count')[0]!);
+    assert.equal(count('Repos/<repo>/'), '4');
+    assert.equal(count('Inbox/'), '4');
+    assert.equal(count('Agents/<rolle>.md'), '1.234');
+    assert.equal(count('Lessons/'), '0');
   });
 });

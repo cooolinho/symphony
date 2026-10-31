@@ -80,7 +80,8 @@ export const BRAIN_JS = `
 
   function brainValidVitals(v) {
     if (!v || typeof v !== 'object' || !v.notes_by_status || typeof v.notes_by_status !== 'object') return false;
-    return ['links', 'orphans', 'candidates', 'writes_today', 'reads_today'].every((k) => typeof v[k] === 'number');
+    if (!v.links || typeof v.links.total !== 'number' || !v.reads_today || typeof v.reads_today.total !== 'number') return false;
+    return ['orphans', 'candidates', 'writes_today'].every((k) => typeof v[k] === 'number');
   }
 
   function brainInt(n) {
@@ -167,7 +168,7 @@ export const BRAIN_JS = `
   }
 
   function brainFooter(v, conflicts, now) {
-    const parts = [brainInt(v.writes_today) + ' Writes heute', brainInt(v.reads_today) + ' Reads'];
+    const parts = [brainInt(v.writes_today) + ' Writes heute', brainInt(v.reads_today.total) + ' Reads'];
     if (conflicts > 0) parts.push(conflicts === 1 ? '1 Konflikt' : brainInt(conflicts) + ' Konflikte');
     const last = v.last_commit;
     parts.push(last && typeof last === 'object' ? 'letzter Commit ' + agoDe(last.at, now) : 'noch kein Commit');
@@ -191,7 +192,7 @@ export const BRAIN_JS = `
     patchChildren(document.getElementById('brain-tiles'), [
       kpi(brainInt(total), 'Notizen'),
       kpi(brainInt(v.candidates), 'Kandidaten warten', { color: BRAIN_AMBER }),
-      kpi(brainInt(v.links), 'Links', { color: BRAIN_SKY }),
+      kpi(brainInt(v.links.total), 'Links', { color: BRAIN_SKY }),
       kpi(brainInt(v.orphans), 'Waisen ohne Links', { color: BRAIN_VIOLET }),
     ]);
     const foot = document.getElementById('brain-foot');

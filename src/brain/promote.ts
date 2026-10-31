@@ -26,6 +26,7 @@ export interface PromoteOptions {
 }
 
 const APPROVE_PREFIX = 'approve: ';
+const REJECT_PREFIX = 'reject: ';
 const MAX_SUFFIX = 99;
 
 const failure = (reason: PromoteFailure, message: string): PromoteResult => ({ ok: false, reason, message });
@@ -159,24 +160,28 @@ export function rejectCandidate(options: PromoteOptions, input: string): Promise
     const candidate = readCandidate(source.absolute, source.relative);
     if ('ok' in candidate) return candidate;
     const text = serializeNote({ ...candidate.frontmatter, status: 'deprecated', updated: today(options) }, candidate.body);
-    return writeAndCommit(options, candidate, source, text, `reject: ${candidate.relative}`);
+    return writeAndCommit(options, candidate, source, text, `${REJECT_PREFIX}${candidate.relative}`);
   });
 }
 
-/** Takes back the last approve of the note at its new path with `git revert` (as `human`); the candidate is back at its old path. */
-export function revertApprove(options: PromoteOptions, input: string): Promise<PromoteResult> {
+/**
+ * Takes back the last decision on the note with `git revert` (as `human`, a new commit): an approve (`input` is the new
+ * path; the candidate is back at its old path) or a reject (the note is a candidate again).
+ */
+export function revertDecision(options: PromoteOptions, input: string): Promise<PromoteResult> {
   return inQueue(options, input, async (source) => {
     if (!exists(source.absolute)) return failure('not_found', `${source.relative} does not exist`);
-    const approve = await lastCommitWithSubject(options.vault, source.relative, APPROVE_PREFIX);
-    if (approve === null) return failure('no_approve_commit', `${source.relative} has no approve commit`);
-    const previous = resolveVaultWritePath(options.vault, approve.subject.slice(APPROVE_PREFIX.length));
-    if (!previous.ok) return failure('no_approve_commit', `the approve commit of ${source.relative} names no valid path`);
+    const decision = await lastCommitWithSubject(options.vault, source.relative, [APPROVE_PREFIX, REJECT_PREFIX]);
+    if (decision === null) return failure('no_approve_commit', `${source.relative} has no approve or reject commit`);
+    const kind = decision.prefix.trim().slice(0, -1);
+    const previous = resolveVaultWritePath(options.vault, decision.subject.slice(decision.prefix.length));
+    if (!previous.ok) return failure('no_approve_commit', `the ${kind} commit of ${source.relative} names no valid path`);
     let sha: string;
     try {
-      sha = await options.git.revert(approve.sha, [...new Set([previous.relative, source.relative])]);
+      sha = await options.git.revert(decision.sha, [...new Set([previous.relative, source.relative])]);
     } catch (error) {
-      options.logger.warn('brain approve revert failed', { path: source.relative, sha: approve.sha, error: errorMessage(error) });
-      return failure('revert_conflict', `the approve commit cannot be reverted (the note changed since?): ${errorMessage(error)}`);
+      options.logger.warn('brain decision revert failed', { path: source.relative, sha: decision.sha, error: errorMessage(error) });
+      return failure('revert_conflict', `the ${kind} commit cannot be reverted (the note changed since?): ${errorMessage(error)}`);
     }
     let hash = '';
     try {
