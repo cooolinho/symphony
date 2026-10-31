@@ -166,6 +166,21 @@ describe('BrainAccessLog.readAccess (E7-6b)', () => {
     assert.equal(third.next_before, null);
   });
 
+  it('filters by the exact issue before the limit', () => {
+    const dir = tempDir();
+    fs.writeFileSync(
+      path.join(dir, 'access.jsonl'),
+      line({ at: ago(3000), issue: 'acme/app#1', path_or_query: 'A.md' }) + line({ at: ago(2000), issue: 'acme/app#10', path_or_query: 'B.md' }) + line({ at: ago(1000), issue: 'acme/app#1', path_or_query: 'C.md' }),
+    );
+    const log = new BrainAccessLog(dir, Logger.silent());
+    assert.deepEqual(log.readAccess({ issue: 'acme/app#1' }).access.map((a) => a.path_or_query), ['C.md', 'A.md']);
+    const first = log.readAccess({ issue: 'acme/app#1', limit: 1 });
+    assert.deepEqual(first.access.map((a) => a.path_or_query), ['C.md']);
+    assert.deepEqual(log.readAccess({ issue: 'acme/app#1', limit: 1, before: first.next_before }).access.map((a) => a.path_or_query), ['A.md']);
+    assert.equal(log.readAccess().access.length, 3);
+    assert.equal(log.readAccess({ issue: '  ' }).access.length, 3);
+  });
+
   it('caps the page at 500 lines', () => {
     const dir = tempDir();
     fs.writeFileSync(path.join(dir, 'access.jsonl'), Array.from({ length: 600 }, () => line({})).join(''));

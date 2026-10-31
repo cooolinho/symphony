@@ -84,6 +84,21 @@ const AGENT_PAGE_CSS = `
   /* Layout: main column (stage, score, tabs) and the sidebar of the shell's .cols; the sidebar wraps below on narrow screens */
   .side section { padding: 14px 16px; }
   .side h2 { margin-bottom: 12px; }
+  .side-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .side-head h2 { margin: 0; }
+  .side-head a { font-size: 12.5px; }
+  .side-feed { list-style: none; margin: 0; padding: 0; display: grid; }
+  .side-feed > li { padding: 8px 0; border-top: 1px solid var(--line-2); font-size: 12.5px; min-width: 0; }
+  .side-chg-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+  .side-chg-title { margin-top: 4px; overflow-wrap: anywhere; }
+  .side-files { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 2px; font-size: 12px; color: var(--text-2); }
+  .side-files li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; }
+  .side-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .side-add { color: var(--green-400); }
+  .side-del { color: var(--red-400); }
+  .side-acc { display: grid; grid-template-columns: auto auto auto minmax(0, 1fr); gap: 4px 8px; align-items: center; }
+  .side-acc > .ui-chip:last-of-type, .side-acc > .side-clash { grid-column: 1 / -1; justify-self: start; }
+  .side-acc.rejected { border-left: 2px solid var(--red-400); padding-left: 8px; color: var(--red-200); }
   .kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 7px 14px; margin: 0; font: 12.5px var(--mono); }
   .kv dt { color: var(--muted); white-space: nowrap; }
   .kv dd { margin: 0; color: var(--text); text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
@@ -443,6 +458,16 @@ export const AGENT_HTML = page({
       <ol class="ctx-runs" id="ctx-runs" aria-label="Context-Peak des Developers je Runde"></ol>
       <div class="muted" id="ctx-empty">—</div>
     </section>
+    <section id="access-section" aria-labelledby="access-title" hidden>
+      <div class="side-head"><h2 id="access-title">Brain-Zugriffe</h2><a id="access-link" href="/brain">Brain →</a></div>
+      <ol class="side-feed" id="access-list"></ol>
+      <div class="muted" id="access-empty" hidden>Keine Zugriffe.</div>
+    </section>
+    <section id="changes-section" aria-labelledby="changes-title">
+      <div class="side-head"><h2 id="changes-title">Changes</h2><a id="changes-all" href="/changes">Alle Changes</a></div>
+      <ol class="side-feed" id="changes-list"></ol>
+      <div class="muted" id="changes-empty" hidden>Noch keine Änderungen.</div>
+    </section>
     <section aria-labelledby="int-title" id="int-section" hidden>
       <h2 id="int-title"><span>Integrationen</span></h2>
       <div id="int-body"></div>
@@ -526,6 +551,7 @@ ${PIPELINE_JS}
     rawOpen: false, rawSev: '', rawQ: '',
     team: null, stageSig: '', stagePct: undefined, subsSig: '', scoreSig: '',
     tab: 'trace', ctxEntries: null, ctxFinished: 0, txRun: '', txSig: '',
+    changes: null, access: null, brainOff: false, accessSeen: false,
   };
 
   // ------------------------------------------------------------------ data loading (one poll loop)
@@ -585,6 +611,7 @@ ${PIPELINE_JS}
         const tm = await getJson(API + '/team').catch(() => null);
         if (tm && tm.ok && tm.body && Array.isArray(tm.body.seats)) S.team = tm.body;
         maybeLoadContextHistory();
+        await loadSideFeeds();
       }
     } catch (error) {
       S.online = false;
@@ -2182,6 +2209,75 @@ ${PIPELINE_JS}
     if (!S.detail || S.ended) return;
     if (S.ctxEntries === null || finishedSessions() > S.ctxFinished) loadContextHistory();
   }
+  /** Changes and Brain-Zugriffe of this issue, reloaded with every poll; a failing call keeps what was shown. */
+  const PR_TONES = { success: 'green', pending: 'amber', failure: 'red', none: 'gray' };
+  async function loadSideFeeds() {
+    const q = encodeURIComponent((S.detail && S.detail.issue_identifier) || ID);
+    const [c, a] = await Promise.all([
+      getJson('/api/v1/changes?issue=' + q + '&limit=10').catch(() => null),
+      getJson('/api/v1/brain/access?issue=' + q + '&limit=10').catch(() => null),
+    ]);
+    if (c && c.ok && c.body && Array.isArray(c.body.entries)) S.changes = c.body.entries.slice(0, 10);
+    if (a && a.status === 404) S.brainOff = true;
+    else if (a && a.ok && a.body && Array.isArray(a.body.access)) { S.brainOff = false; S.accessSeen = true; S.access = a.body.access.slice(0, 10); }
+  }
+  const sideRole = (role) => (role ? chip(role, { tone: uiOwn(UI_ROLE_COLORS, role) || 'gray', dot: true }) : chip('—'));
+
+  function renderChanges() {
+    const identifier = (S.detail && S.detail.issue_identifier) || ID;
+    $('changes-all').href = '/changes?issue=' + encodeURIComponent(identifier);
+    const rows = (S.changes || []).map((e) => {
+      const li = el('li', null, 'side-chg');
+      li.dataset.id = String(e.id || '');
+      const head = el('div', null, 'side-chg-head');
+      head.append(el('time', fmtStamp(e.at), 'mono muted'), sideRole(e.role));
+      if (e.pr) {
+        const pr = chip('#' + e.pr.number, { tone: PR_TONES[e.pr.status] || 'gray', dot: true, mono: true });
+        pr.classList.add('side-pr');
+        pr.title = 'Checks: ' + e.pr.status;
+        head.append(pr);
+      }
+      li.append(head, el('div', e.title, 'side-chg-title'));
+      const files = Array.isArray(e.files) ? e.files : [];
+      if (files.length) {
+        const ul = el('ul', null, 'side-files');
+        for (const file of files.slice(0, 3)) {
+          const row = el('li');
+          const path = el('span', file.path, 'mono side-path');
+          path.title = file.path;
+          row.append(path);
+          if (typeof file.added === 'number' && typeof file.deleted === 'number') row.append(el('span', '+' + file.added, 'mono side-add'), el('span', '\\u2212' + file.deleted, 'mono side-del'));
+          ul.append(row);
+        }
+        if (files.length > 3) ul.append(el('li', '+' + (files.length - 3) + ' weitere', 'muted'));
+        li.append(ul);
+      }
+      return li;
+    });
+    patchChildren($('changes-list'), rows);
+    $('changes-empty').hidden = !(S.changes && S.changes.length === 0);
+  }
+
+  function renderAccess() {
+    $('access-section').hidden = S.brainOff || !S.accessSeen;
+    const rows = (S.access || []).map((a) => {
+      const rejected = a.result === 'rejected';
+      const li = el('li', null, 'side-acc' + (rejected ? ' rejected' : ''));
+      const path = el('span', a.path_or_query, 'mono side-path');
+      path.title = a.purpose || a.path_or_query || '';
+      li.append(el('time', fmtStamp(a.at), 'mono muted'), sideRole(a.role), el('span', a.op, 'mono side-op'), path);
+      li.append(rejected ? chip('abgewiesen' + (a.reason ? ' · ' + a.reason : ''), { tone: 'red' }) : chip(String(a.result || 'ok'), { tone: 'green' }));
+      if (rejected && (a.op === 'write' || a.op === 'append')) {
+        const link = el('a', 'Clash ansehen', 'side-clash');
+        link.href = '/brain#clashes';
+        li.append(link);
+      }
+      return li;
+    });
+    patchChildren($('access-list'), rows);
+    $('access-empty').hidden = !(S.access && S.access.length === 0);
+  }
+
   /** A history field as a number; null for a missing or logged-as-null value. */
   const historyNumber = (v) => (v === undefined || v === null || v === '' || v === 'null' ? null : Number.isFinite(Number(v)) ? Number(v) : null);
 
@@ -2314,6 +2410,8 @@ ${PIPELINE_JS}
       renderSummary();
     }
     renderContextHistory();
+    renderAccess();
+    renderChanges();
     if (S.tab === 'transkript') renderTranscript();
     renderNotice();
     renderTimeline();

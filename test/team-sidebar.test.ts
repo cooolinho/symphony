@@ -20,7 +20,7 @@ describe('team view: layout (#372)', () => {
     const page = renderPage(AGENT_HTML, { detail: issueDetail() }, opts);
     assert.ok(AGENT_HTML.indexOf('class="col-main"') < AGENT_HTML.indexOf('class="col-side'));
     for (const id of ['stage', 'score', 'tabs', 'pipe-section', 'gate-section']) assert.ok(inside(page.$(id), '.col-main'), id);
-    for (const id of ['results-section', 'ctx-history', 'tok-kv', 'cost-kv', 'life-kv', 'ctx-kv', 'issue-section', 'int-section']) assert.ok(inside(page.$(id), '.col-side'), id);
+    for (const id of ['results-section', 'ctx-history', 'tok-kv', 'cost-kv', 'life-kv', 'ctx-kv', 'issue-section', 'int-section', 'access-section', 'changes-section']) assert.ok(inside(page.$(id), '.col-side'), id);
   });
 
   it('lets the sidebar wrap below the main column on narrow screens (390 px)', () => {

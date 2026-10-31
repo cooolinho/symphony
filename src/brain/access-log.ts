@@ -59,6 +59,8 @@ export interface BrainClashVersions {
 }
 
 export interface BrainAccessQuery {
+  /** Exact issue identifier (`owner/name#123`). */
+  issue?: string | null;
   /** Exact role (case-insensitive). */
   role?: string | null;
   /** Substring of `path_or_query` or `purpose` (case-insensitive). */
@@ -217,6 +219,7 @@ export class BrainAccessLog {
       return { access: [], next_before: null };
     }
     const role = query.role?.trim().toLowerCase() || null;
+    const issue = query.issue?.trim() || null;
     const q = query.q?.trim().toLowerCase() || null;
     const lines = text.split('\n');
     const access: BrainAccess[] = [];
@@ -228,6 +231,7 @@ export class BrainAccessLog {
       const { time: _time, ...entry } = parsed;
       const purpose = typeof entry.purpose === 'string' ? entry.purpose : '';
       if (role !== null && (typeof entry.role !== 'string' || entry.role.trim().toLowerCase() !== role)) continue;
+      if (issue !== null && entry.issue !== issue) continue;
       if (q !== null && !String(entry.path_or_query ?? '').toLowerCase().includes(q) && !purpose.toLowerCase().includes(q)) continue;
       if (access.length === limit) return { access, next_before: number + 1 };
       access.push({ ...entry, purpose });
