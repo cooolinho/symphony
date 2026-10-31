@@ -279,3 +279,41 @@ describe('overview chart rendering', () => {
     assert.equal(page.query('#tool-activity i').length, 0);
   });
 });
+
+describe('activity collection: the same issue from several sources (live record and archive snapshot)', () => {
+  const since = NOW - 30 * 60_000;
+
+  it('counts a call once when record and archive snapshot hold the same run', () => {
+    const call = tl(ago(5), 'a');
+    const record: ActivitySource = { identifier: 'acme/app#1', sessions: [{ run: 'a', role: 'developer' }], timeline: [call] };
+    const snapshot: ActivitySource = { identifier: 'acme/app#1', sessions: [{ run: 'a', role: 'developer' }], timeline: [call] };
+    assert.deepEqual(collectActivity([record, snapshot], since, NOW), [{ at: ago(5), role: 'developer', issue: 'acme/app#1' }]);
+    assert.deepEqual(collectActivity([snapshot, record], since, NOW), [{ at: ago(5), role: 'developer', issue: 'acme/app#1' }]);
+  });
+
+  it('keeps the calls of an earlier claim (other run) from the snapshot when the issue was claimed again', () => {
+    const record: ActivitySource = { identifier: 'acme/app#1', sessions: [{ run: 'new', role: 'reviewer' }], timeline: [tl(ago(2), 'new')] };
+    const snapshot: ActivitySource = { identifier: 'acme/app#1', sessions: [{ run: 'old', role: 'developer' }], timeline: [tl(ago(20), 'old'), tl(ago(15), 'old')] };
+    assert.deepEqual(collectActivity([record, snapshot], since, NOW), [
+      { at: ago(20), role: 'developer', issue: 'acme/app#1' },
+      { at: ago(15), role: 'developer', issue: 'acme/app#1' },
+      { at: ago(2), role: 'reviewer', issue: 'acme/app#1' },
+    ]);
+  });
+
+  it('counts several calls of one run in one source all, not just the first', () => {
+    const record: ActivitySource = { identifier: 'acme/app#1', sessions: [{ run: 'a', role: 'developer' }], timeline: [tl(ago(9), 'a'), tl(ago(8), 'a'), tl(ago(8), 'a')] };
+    assert.equal(collectActivity([record], since, NOW).length, 3);
+  });
+
+  it('does not merge equal run ids of different issues', () => {
+    const one: ActivitySource = { identifier: 'acme/app#1', sessions: [{ run: 'r', role: 'developer' }], timeline: [tl(ago(9), 'r')] };
+    const two: ActivitySource = { identifier: 'acme/app#2', sessions: [{ run: 'r', role: 'reviewer' }], timeline: [tl(ago(8), 'r')] };
+    assert.deepEqual(collectActivity([one, two], since, NOW).map((e) => e.issue), ['acme/app#1', 'acme/app#2']);
+  });
+
+  it('falls back to the symphony role for calls without a run or without a matching session', () => {
+    const src: ActivitySource = { identifier: 'acme/app#1', sessions: [{ run: 'a', role: 'developer' }], timeline: [tl(ago(9), null), tl(ago(8), 'zzz')] };
+    assert.deepEqual(collectActivity([src], since, NOW).map((e) => e.role), ['symphony', 'symphony']);
+  });
+});
