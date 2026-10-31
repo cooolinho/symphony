@@ -179,7 +179,7 @@ describe('brain vault acceptance', () => {
     it('with enabled: false touches no filesystem path at all', async () => {
       const base = tempDir();
       const target = path.join(base, 'missing', 'brain');
-      const touched = await traceFs(() => prepareBrain({ enabled: false, path: target, clashWindowMs: 600000 }, ['acme/shop'], Logger.silent()));
+      const touched = await traceFs(() => prepareBrain({ enabled: false, path: target, clashWindowMs: 600000, obsidianUrl: '' }, ['acme/shop'], Logger.silent()));
       assert.deepEqual(touched, []);
       assert.equal(fs.existsSync(path.join(base, 'missing')), false);
       assert.deepEqual(fs.readdirSync(base), []);
@@ -188,13 +188,13 @@ describe('brain vault acceptance', () => {
     it('with enabled: false leaves an existing directory untouched', async () => {
       const dir = tempDir();
       fs.writeFileSync(path.join(dir, 'x'), 'x');
-      await prepareBrain({ enabled: false, path: dir, clashWindowMs: 600000 }, ['acme/shop'], Logger.silent());
+      await prepareBrain({ enabled: false, path: dir, clashWindowMs: 600000, obsidianUrl: '' }, ['acme/shop'], Logger.silent());
       assert.deepEqual(fs.readdirSync(dir), ['x']);
     });
 
     it('with enabled: true builds the vault including repository indexes', async () => {
       const vault = path.join(tempDir(), 'brain');
-      await prepareBrain({ enabled: true, path: vault, clashWindowMs: 600000 }, ['acme/shop'], Logger.silent());
+      await prepareBrain({ enabled: true, path: vault, clashWindowMs: 600000, obsidianUrl: '' }, ['acme/shop'], Logger.silent());
       assert.ok(fs.existsSync(path.join(vault, 'README.md')));
       assert.ok(fs.existsSync(path.join(vault, 'Repos', 'acme-shop', 'index.md')));
     });
@@ -204,7 +204,7 @@ describe('brain vault acceptance', () => {
       fs.writeFileSync(file, 'x');
       const errors: unknown[][] = [];
       const logger = { info: () => undefined, warn: () => undefined, error: (...a: unknown[]) => void errors.push(a) } as unknown as Logger;
-      await assert.doesNotReject(prepareBrain({ enabled: true, path: path.join(file, 'brain'), clashWindowMs: 600000 }, [], logger));
+      await assert.doesNotReject(prepareBrain({ enabled: true, path: path.join(file, 'brain'), clashWindowMs: 600000, obsidianUrl: '' }, [], logger));
       assert.equal(errors.length, 1);
     });
   });

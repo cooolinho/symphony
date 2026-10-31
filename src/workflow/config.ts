@@ -228,6 +228,8 @@ export interface BrainConfig {
   path: string;
   /** Another run that wrote a note within this many ms blocks a write to it (default 600000; 0 = off). */
   clashWindowMs: number;
+  /** Link target of "In Obsidian öffnen" on the Brain page: http(s):// or obsidian:// (default empty: the links are hidden). */
+  obsidianUrl: string;
 }
 
 /** Budget display settings (`budget` section). */
@@ -290,7 +292,7 @@ const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', '
 export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
 const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server', 'system', 'brain', 'budget'];
-const BRAIN_KEYS = new Set(['enabled', 'path', 'clash_window_ms']);
+const BRAIN_KEYS = new Set(['enabled', 'path', 'clash_window_ms', 'obsidian_url']);
 const BUDGET_KEYS = new Set(['compact_threshold']);
 const ROLE_KEYS = new Set([
   'brain',
@@ -1211,7 +1213,11 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     reader.errors.push(`brain.path (${brainPath}) must not overlap workspace.root (${root}): agents must reach the vault only through the brain tools`);
   }
   const clashWindowMs = reader.int(brainRaw, 'clash_window_ms', 'brain.clash_window_ms', 600_000, 0);
-  const brain: BrainConfig = { enabled: brainEnabled, path: brainPath, clashWindowMs };
+  const obsidianUrl = reader.string(brainRaw, 'obsidian_url', 'brain.obsidian_url')?.trim() ?? '';
+  if (obsidianUrl !== '' && !/^(https?|obsidian):\/\/\S/i.test(obsidianUrl)) {
+    reader.errors.push('brain.obsidian_url must start with http://, https:// or obsidian://');
+  }
+  const brain: BrainConfig = { enabled: brainEnabled, path: brainPath, clashWindowMs, obsidianUrl };
   const budgetRaw = reader.section(raw, 'budget');
   for (const key of Object.keys(budgetRaw)) {
     if (!BUDGET_KEYS.has(key)) reader.warnings.push(`budget.${key} ignored: not a known key (allowed: ${[...BUDGET_KEYS].join(', ')})`);

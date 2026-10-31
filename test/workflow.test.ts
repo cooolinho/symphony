@@ -440,13 +440,23 @@ describe('brain config', () => {
   const env = { HOME: '/home/u' };
 
   it('defaults to disabled with ~/brain', () => {
-    assert.deepEqual(resolve(base, env).brain, { enabled: false, path: '/home/u/brain', clashWindowMs: 600000 });
+    assert.deepEqual(resolve(base, env).brain, { enabled: false, path: '/home/u/brain', clashWindowMs: 600000, obsidianUrl: '' });
   });
 
   it('reads enabled and path, expands ~ and resolves relative paths', () => {
-    assert.deepEqual(resolve({ ...base, brain: { enabled: true, path: '~/vault' } }, env).brain, { enabled: true, path: '/home/u/vault', clashWindowMs: 600000 });
+    assert.deepEqual(resolve({ ...base, brain: { enabled: true, path: '~/vault' } }, env).brain, { enabled: true, path: '/home/u/vault', clashWindowMs: 600000, obsidianUrl: '' });
     assert.equal(resolve({ ...base, brain: { path: 'vault' } }, env).brain.path, '/srv/flows/vault');
     assert.equal(resolve({ ...base, brain: { enabled: true } }, env).warnings.some((w) => /brain/.test(w)), false);
+  });
+
+  it('reads brain.obsidian_url, trimmed, and rejects other schemes', () => {
+    for (const url of ['https://brain.lan', 'obsidian://open?vault=brain']) {
+      assert.equal(resolve({ ...base, brain: { obsidian_url: `  ${url} ` } }, env).brain.obsidianUrl, url);
+    }
+    for (const url of ['javascript:alert(1)', 'ftp://x']) {
+      assert.throws(() => resolve({ ...base, brain: { obsidian_url: url } }, env), /brain\.obsidian_url/, url);
+    }
+    assert.throws(() => resolve({ ...base, brain: { nope: 1 } }, env), /brain\.nope/);
   });
 
   it('keeps the vault and workspace.root apart', () => {

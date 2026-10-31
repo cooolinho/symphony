@@ -1181,6 +1181,7 @@ The knowledge vault: one vault for all repositories. With `enabled: true` Sympho
 | `enabled` | boolean | `false` | Create the vault at startup; with `false` no path is touched. |
 | `path` | string | `~/brain` | Vault directory; `~` and `$VAR` are expanded, relative paths resolve against `WORKFLOW.md`. In Docker this is the `brain` volume. |
 | `clash_window_ms` | integer >= 0 | `600000` | A `brain_write` or `brain_append` is rejected with reason `window` when another run wrote the same note successfully within this many milliseconds; the result holds the current content and hash. The same run may write again at once. `0` turns the check off. Every call is logged to `<log-dir>/brain/access.jsonl` (lines older than 30 days are removed at startup, see [agent-claude.md](agent-claude.md#brain-tools)). |
+| `obsidian_url` | string | `""` (empty) | Target URL for the "Open in Obsidian" and "Edit in Obsidian" links on the Brain page (`/brain`). Must start with `http://`, `https://` or `obsidian://`, otherwise the workflow is invalid. Empty hides both links. An `http(s)` URL (for example the web container of the `brain` profile, see [brain.md](brain.md#obsidian-container)) is used as-is for both links. An `obsidian://` URL such as `obsidian://open?vault=brain` gets `&file=<note path without .md>` (URL-encoded) appended for the edit link of a candidate. |
 
 ### `budget`
 

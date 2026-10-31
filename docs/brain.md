@@ -85,7 +85,7 @@ To resolve a clash the agent merges its change into the returned current version
 
 The compose profile `brain` starts an Obsidian web UI on the `brain` volume. Add `brain` to `COMPOSE_PROFILES` and set `BRAIN_DOMAIN` (for example `brain.docker.lan`) in `.env`. It is reachable only through Traefik with the same Basic auth login as the dashboard, over plain HTTP, so it is for the LAN only; do not expose it to the internet. On first start open the folder `/config/vault` as the vault. Details: [docker.md](docker.md#obsidian-profile-brain).
 
-A `brain.obsidian_url` key for the dashboard's "Open in Obsidian" link is coming with E7-7a.
+The dashboard page `/brain` shows the vitals with a status bar, the candidates for review (promote, discard, edit in Obsidian, undo for 10 seconds after a promotion) and the folder tree with counts per status. The key `brain.obsidian_url` (see [configuration.md](configuration.md#brain)) sets the target of the two Obsidian links on that page; empty hides them.
 
 ## Backup
 

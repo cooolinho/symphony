@@ -258,7 +258,7 @@ export { createBrainWriteTools, type BrainWriteEntry, type BrainWriteOptions } f
 
 /** The brain tools of a session: none unless `brain.enabled` and the role's mode is not `off`; `read` has the four read tools (search, read, list, vitals), `write` also the two write tools. */
 export function brainToolsFor(
-  config: Omit<BrainConfig, 'clashWindowMs'> & { clashWindowMs?: number },
+  config: Pick<BrainConfig, 'enabled' | 'path'> & { clashWindowMs?: number },
   mode: BrainMode,
   logger: Logger,
   options: BrainWriteOptions = {},
