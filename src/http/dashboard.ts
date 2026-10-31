@@ -1,6 +1,7 @@
 import { ALERTS_CSS, ALERTS_JS } from './alerts.ts';
 import { PIPELINE_CSS, PIPELINE_JS } from './pipeline.ts';
 import { ACTIVITY_CSS, ACTIVITY_JS } from './overview-activity.ts';
+import { BRAIN_CSS, BRAIN_JS, BRAIN_PANELS_HTML } from './overview-brain.ts';
 import { HEAD_CSS, HEAD_JS } from './overview-head.ts';
 import { TEAMS_CSS, TEAMS_JS } from './overview-teams.ts';
 import { AURORA, page } from './ui/layout.ts';
@@ -203,7 +204,7 @@ export const DASHBOARD_HTML = page({
   nav: 'overview',
   aurora: AURORA.overview,
   pollNow: true,
-  styles: PIPELINE_CSS + TEAMS_CSS + ALERTS_CSS + HEAD_CSS + ACTIVITY_CSS + DASHBOARD_CSS,
+  styles: PIPELINE_CSS + TEAMS_CSS + ALERTS_CSS + HEAD_CSS + ACTIVITY_CSS + BRAIN_CSS + DASHBOARD_CSS,
   body: `
   <div class="page-title ov-head">
     <div class="ov-title">
@@ -265,6 +266,7 @@ export const DASHBOARD_HTML = page({
     <div class="act-axis" aria-hidden="true"><span>−30 min</span><span>−20 min</span><span>−10 min</span><span>jetzt</span></div>
   </section>
 
+${BRAIN_PANELS_HTML}
   <div class="lower">
     <section aria-labelledby="activity-title">
       <div class="section-head">
@@ -306,7 +308,7 @@ export const DASHBOARD_HTML = page({
   scripts: `
 (() => {
 ${PIPELINE_JS}${TEAMS_JS}
-${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}
+${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}
 
   const $ = (id) => document.getElementById(id);
   const setText = (node, text) => { text = String(text ?? ''); if (node.textContent !== text) node.textContent = text; };
@@ -1256,11 +1258,14 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}
   load();
   loadHistory();
   loadToolActivity();
+  brainBind($('brain-q'));
+  loadBrain();
   loadSystem();
   live(load, pollEvery(load, 2000));
   setInterval(loadSystem, 10000);
   setInterval(loadHistory, 30000);
   setInterval(loadToolActivity, 30000);
+  setInterval(loadBrain, 30000);
   setInterval(() => {
     tickTeams(Date.now());
     if (lastState) renderHead(lastState, Date.now(), true);
