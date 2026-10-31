@@ -196,6 +196,8 @@ export interface WorkerParams {
   transcriptDir: string | null;
   /** Access log and clash list of the brain, shared by all sessions. */
   brainAccess?: BrainAccessLog | null;
+  /** Called after every commit to the vault (`createVaultGit` `onCommit`) with the vault path; errors are logged, never thrown. */
+  onBrainCommit?: (vault: string, sha: string, paths: string[]) => void | Promise<void>;
   /**
    * Live check after each turn (uses the current workflow config): null continues the session, a string ends it
    * normally with that reason (the issue left the active states, is no longer routable, or another role serves it).
@@ -647,7 +649,9 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     sessionStart = { sha: startSha };
     const brainTools = brainToolsFor(params.workflow.config.brain, brainMode, logger, {
       access: params.brainAccess ?? null,
-      ...(brainMode !== 'off' ? { versioning: createVaultGit(params.workflow.config.brain.path, logger) } : {}),
+      ...(brainMode !== 'off' ? { versioning: createVaultGit(params.workflow.config.brain.path, logger, {
+              ...(params.onBrainCommit ? { onCommit: (sha, paths) => params.onBrainCommit!(params.workflow.config.brain.path, sha, paths) } : {}),
+            }) } : {}),
     });
     session = await params.runner.startSession({
       ...(params.contextWindow ? { contextWindow: params.contextWindow } : {}),

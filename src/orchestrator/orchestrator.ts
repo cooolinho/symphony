@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { BrainAccessLog } from '../brain/access-log.ts';
+import { BrainAccessLog, type BrainAccess, type BrainClash } from '../brain/access-log.ts';
 import { RateLimitLog, rateLimitKey, type RateLimitRecord } from '../budget/rate-limit-log.ts';
+import { BRAIN_BACKFILL_COMMITS, brainCommitEntries, brainConflictEntry, recentVaultCommits } from '../changes/brain.ts';
 import { ChangeStore } from '../changes/store.ts';
 import { buildChangesPage } from '../changes/feed.ts';
 import type { ChangeEntry, ChangeFile, ChangeFilter, ChangesPage, ChangesQuery } from '../changes/types.ts';
@@ -669,7 +670,7 @@ export class Orchestrator {
   #archive: IssueArchive;
   #rateLimitLog: RateLimitLog;
   readonly #brainAccess: BrainAccessLog;
-  /** Commits and merges of the agent sessions (`<logDir>/changes/`). */
+  /** Commits and merges of the agent sessions and the changes to the brain (`<logDir>/changes/`). */
   #changes: ChangeStore;
   #records = new Map<string, IssueRecord>();
   #paused = new Map<string, PausedEntry>();
@@ -719,7 +720,9 @@ export class Orchestrator {
     this.#createAdapter = deps.createAdapter ?? defaultAdapterFactory;
     this.#pollIntervalMs = deps.workflow.current.config.polling.intervalMs;
     this.#archive = new IssueArchive(deps.logDir === null ? null : path.join(deps.logDir, 'issues'), deps.logger);
-    this.#brainAccess = new BrainAccessLog(deps.logDir === null ? null : path.join(deps.logDir, 'brain'), deps.logger);
+    this.#brainAccess = new BrainAccessLog(deps.logDir === null ? null : path.join(deps.logDir, 'brain'), deps.logger, {
+      onClash: (line, clash) => this.#recordBrainClash(line, clash),
+    });
     this.#rateLimitLog = new RateLimitLog(deps.logDir === null ? null : path.join(deps.logDir, 'budget'), deps.logger);
     this.#changes = new ChangeStore(deps.logDir === null ? null : path.join(deps.logDir, 'changes'), deps.logger);
     this.#changes.load();
@@ -2193,6 +2196,7 @@ export class Orchestrator {
         checkCache: record.checkCache,
         transcriptDir: this.#deps.logDir === null ? null : path.join(this.#deps.logDir, 'sessions'),
         brainAccess: this.#brainAccess,
+        onBrainCommit: (vault, sha, paths) => this.#recordBrainCommit(vault, sha, paths),
         continueWith: (fresh) => {
           const current = this.#deps.workflow.current.config;
           if (!isActiveState(fresh.state, current.tracker)) return `issue left the active states ("${fresh.state}")`;
@@ -3465,6 +3469,43 @@ export class Orchestrator {
       status: 'merged',
     });
     this.#notify();
+  }
+
+  /** One `brain` change per path of a vault commit. Never throws. */
+  async #recordBrainCommit(vault: string, sha: string, paths: string[]): Promise<void> {
+    try {
+      const entries = await brainCommitEntries(vault, sha, { paths, known: (id) => this.#changes.has(id) });
+      let added = false;
+      for (const entry of entries) added = this.#changes.append(entry) || added;
+      if (added) this.#notify();
+    } catch (error) {
+      this.#deps.logger.warn('cannot record the brain change', { sha, error: errorMessage(error) });
+    }
+  }
+
+  /** The `conflict` change of a rejected brain write. Never throws. */
+  #recordBrainClash(line: BrainAccess, clash: BrainClash): void {
+    try {
+      const brain = this.#deps.workflow.current.config.brain;
+      const entry = brain.enabled ? brainConflictEntry(brain.path, line, clash) : null;
+      if (entry !== null && this.#changes.append(entry)) this.#notify();
+    } catch (error) {
+      this.#deps.logger.warn('cannot record the brain conflict', { clash: clash.id, error: errorMessage(error) });
+    }
+  }
+
+  /** Adds the changes of the newest vault commits (oldest first) that are not recorded yet. Warns instead of throwing. */
+  async loadBrainChanges(): Promise<void> {
+    const brain = this.#deps.workflow.current.config.brain;
+    if (!brain.enabled) return;
+    try {
+      for (const sha of await recentVaultCommits(brain.path, BRAIN_BACKFILL_COMMITS)) {
+        for (const entry of await brainCommitEntries(brain.path, sha, { known: (id) => this.#changes.has(id) })) this.#changes.append(entry);
+      }
+      this.#notify();
+    } catch (error) {
+      this.#deps.logger.warn('cannot load the brain changes', { path: brain.path, error: errorMessage(error) });
+    }
   }
 
   /** Recorded commits and merges, newest first, one page (`GET /api/v1/changes`, E6-3a). */
