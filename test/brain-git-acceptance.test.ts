@@ -437,7 +437,7 @@ describe('without versioning the tools behave as before', () => {
     const dir = tempDir('symphony-vault-');
     put(dir, 'README.md', '# Rules\n');
     const logger = Logger.silent();
-    const tools = brainToolsFor({ enabled: true, path: dir } as never, logger, {});
+    const tools = brainToolsFor({ enabled: true, path: dir } as never, 'write', logger, {});
     const ctx: AgentToolContext = { issue: makeIssue({ id: 'a' }), role: 'developer', runId: 'r' };
     const r = await tools.find((t) => t.name === 'brain_write')!.execute({ path: 'Inbox/a.md', content: note(), purpose: 'p' }, ctx);
     assert.ok(r.ok, JSON.stringify(r));
@@ -451,7 +451,7 @@ describe('worker wiring: a real agent session commits its writes', () => {
     await ensureVault(dir, []);
     const rootDir = tempDir();
     const runner = new FakeRunner(() => new Promise(() => undefined));
-    const workflow = new StaticWorkflow(makeWorkflow(baseFront(rootDir, { brain: { path: dir, enabled: true } })));
+    const workflow = new StaticWorkflow(makeWorkflow(baseFront(rootDir, { roles: { dev: { states: ['Todo', 'In Progress'], brain: 'write' } }, brain: { path: dir, enabled: true } })));
     const orchestrator = new Orchestrator({
       workflow,
       runner,

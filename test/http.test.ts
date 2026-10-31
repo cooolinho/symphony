@@ -176,7 +176,7 @@ describe('http extension', () => {
   it('answers /api/v1/system without a collector instead of an issue 404', async () => {
     const res = await request(server.port, 'GET', '/api/v1/system');
     assert.equal(res.status, 200);
-    assert.deepEqual(JSON.parse(res.body), { current: null, history: [], gpu: null });
+    assert.deepEqual(JSON.parse(res.body), { current: null, history: [], gpu: null, cpu_count: null });
   });
 
   it('serves the dashboard and the state snapshot', async () => {
@@ -1128,7 +1128,7 @@ describe('system route', () => {
       const res = await request(server.port, 'GET', '/api/v1/system');
       assert.equal(res.status, 200);
       const body = JSON.parse(res.body);
-      assert.deepEqual(Object.keys(body).sort(), ['current', 'gpu', 'history']);
+      assert.deepEqual(Object.keys(body).sort(), ['cpu_count', 'current', 'gpu', 'history']);
       assert.equal(body.gpu, null);
       assert.equal(body.history.length, 1);
       assert.deepEqual(Object.keys(body.current).sort(), ['at', 'cpu_percent', 'disks', 'gpu', 'load', 'memory']);
@@ -1377,9 +1377,9 @@ describe('dashboard page behaviour', () => {
     return found;
   };
 
-  it('loads the state and the history when the page opens', () => {
+  it('loads the state, the history and the system cards when the page opens', () => {
     const page = renderPage(DASHBOARD_HTML);
-    assert.deepEqual(page.fetches.map((f) => f.url), ['/api/v1/state', '/api/v1/history']);
+    assert.deepEqual(page.fetches.map((f) => f.url), ['/api/v1/state', '/api/v1/history', '/api/v1/system']);
   });
 
   it('puts every card into its section with a count, and hides the empty queue sections', () => {
@@ -1422,7 +1422,7 @@ describe('dashboard page behaviour', () => {
     page.click(button(page, 'Retry now'));
     page.click(button(page, 'Start now'));
     page.click(button(page, 'Pause'));
-    assert.deepEqual(page.fetches.slice(2).map((f) => `${f.method} ${f.url}`), [
+    assert.deepEqual(page.fetches.filter((f) => f.method === 'POST').map((f) => `${f.method} ${f.url}`), [
       `POST /api/v1/${idPath}/retry`,
       `POST /api/v1/${idPath}/force`,
       `POST /api/v1/${idPath}/pause`,

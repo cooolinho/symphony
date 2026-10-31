@@ -109,7 +109,7 @@ describe('shipped role prompts', () => {
     const files = fs
       .readdirSync(path.join(path.dirname(shipped), 'roles'))
       .map((file) => file.replace(/\.md$/, ''))
-      .filter((name) => name !== 'default')
+      .filter((name) => name !== 'default' && name !== 'brain')
       .sort();
     const branches = [...definition.promptTemplate.matchAll(/\{%-? when "([a-z-]+)" %\}\{% include "roles\/([a-z-]+)\.md" %\}/g)];
     assert.deepEqual(files, roles, 'one roles/<role>.md per role');

@@ -150,13 +150,34 @@ function serverExtensions(server: Partial<SessionExtensions['mcpServers'][string
 describe('claude agent runner', () => {
   it('registers the brain server only with brain tools', async () => {
     const dir = tempDir();
-    const on = await sessionOptions({ brainTools: brainToolsFor({ enabled: true, path: dir }, Logger.silent()) });
+    const on = await sessionOptions({ brainTools: brainToolsFor({ enabled: true, path: dir }, 'write', Logger.silent()) });
     assert.ok(on.mcpServers?.brain !== undefined);
     for (const name of ['brain_search', 'brain_read', 'brain_list', 'brain_write', 'brain_append']) assert.ok(on.allowedTools?.includes(`mcp__brain__${name}`));
-    const off = await sessionOptions({ brainTools: brainToolsFor({ enabled: false, path: dir }, Logger.silent()) });
+    const off = await sessionOptions({ brainTools: brainToolsFor({ enabled: true, path: dir }, 'off', Logger.silent()) });
     assert.equal(off.mcpServers?.brain, undefined);
     assert.ok(!off.allowedTools?.some((name) => name.startsWith('mcp__brain')));
+    const disabled = await sessionOptions({ brainTools: brainToolsFor({ enabled: false, path: dir }, 'write', Logger.silent()) });
+    assert.equal(disabled.mcpServers?.brain, undefined);
     assert.equal((await sessionOptions({})).mcpServers?.brain, undefined);
+  });
+
+  it('registers only the read tools for brain read', async () => {
+    const dir = tempDir();
+    const read = await sessionOptions({ brainTools: brainToolsFor({ enabled: true, path: dir }, 'read', Logger.silent()) });
+    assert.ok(read.mcpServers?.brain !== undefined);
+    assert.deepEqual(read.allowedTools?.filter((name) => name.startsWith('mcp__brain')).sort(), ['mcp__brain__brain_list', 'mcp__brain__brain_read', 'mcp__brain__brain_search']);
+    const append = JSON.stringify(read.systemPrompt);
+    assert.ok(append.includes('Search and read the knowledge vault'));
+    assert.ok(!append.includes('brain_write'));
+  });
+
+  it('keeps the vault out of additionalDirectories and cwd', async () => {
+    const dir = tempDir();
+    const extensions: SessionExtensions = { mcpServers: {}, contextSections: [], additionalDirectories: ['/ws/laravel'], env: {} };
+    const options = await sessionOptions({ extensions, brainTools: brainToolsFor({ enabled: true, path: dir }, 'write', Logger.silent()) });
+    const inside = (parent: string, child: string) => child === parent || child.startsWith(`${parent}/`);
+    for (const extra of options.additionalDirectories ?? []) assert.ok(!inside(dir, extra) && !inside(extra, dir), extra);
+    assert.notEqual(options.cwd, dir);
   });
 
   it('reserves the brain server name for extensions', async () => {

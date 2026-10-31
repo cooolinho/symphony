@@ -38,7 +38,8 @@ export const TEAMS_JS = `
 
   function teamTrunc(s, max) {
     s = String(s || '');
-    return s.length > max ? s.slice(0, max - 1) + '…' : s;
+    const cp = Array.from(s);
+    return cp.length > max ? cp.slice(0, max - 1).join('') + '…' : s;
   }
 
   function teamClock(sec) {
@@ -103,7 +104,7 @@ export const TEAMS_JS = `
       ctx.append(b, el('span', Math.round(p) + ' %', 'team-ctx-pct'));
     }
     const time = el('span', teamClock(run.seconds_running), 'team-time');
-    teamTimes.set(row.issue_id, { node: time, since: now - (run.seconds_running || 0) * 1000 });
+    teamTimes.set(row.issue_id, { node: time, action, since: now - (run.seconds_running || 0) * 1000 });
     stats.append(ctx, time, el('span', teamSubs(run) + ' Subagents', 'team-subs'));
     a.append(head, cast, stats);
     return a;
@@ -120,11 +121,15 @@ export const TEAMS_JS = `
     const rows = (state.issues || []).filter((r) => r.running);
     const fp = JSON.stringify(rows.map((r) => [r.issue_id, r.issue_identifier, r.title, r.repo, r.state,
       teamAgents(r).map((s) => [s.id, s.status, s.verdict, s.round, (s.sessions || []).length]),
-      r.running.role, !!r.running.session_id, teamAction(r.running), teamPercent(r.running), teamSubs(r.running)]));
+      r.running.role, !!r.running.session_id, teamPercent(r.running), teamSubs(r.running)]));
     if (fp === teamFp) {
       for (const r of rows) {
         const t = teamTimes.get(r.issue_id);
-        if (t) t.since = now - (r.running.seconds_running || 0) * 1000;
+        if (!t) continue;
+        t.since = now - (r.running.seconds_running || 0) * 1000;
+        const text = teamAction(r.running);
+        if (t.action.textContent !== text) t.action.textContent = text;
+        t.action.setAttribute('title', String(r.running.last_message || r.running.last_event || ''));
       }
       tickTeams(now);
       return rows.length;
