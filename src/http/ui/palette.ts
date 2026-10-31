@@ -29,8 +29,13 @@ export const SCALES = {
   amber: { 400: '#fbbf24', 300: '#fcd34d', 200: '#fde68a' },
   red: { 400: '#f87171', 300: '#fca5a5', 200: '#fecaca' },
   violet: { 400: '#a78bfa', 300: '#c4b5fd', 200: '#ddd6fe', 100: '#ede9fe' },
-  sky: { 300: '#7dd3fc', 100: '#e0f2fe' },
+  sky: { 400: '#38bdf8', 300: '#7dd3fc', 100: '#e0f2fe' },
   gray: { 500: '#64748b', 400: '#94a3b8' },
+} as const;
+
+/** Colours of the system cards on the overview. */
+export const SYSTEM_COLORS = {
+  cpu: SCALES.sky[400], ram: SCALES.violet[400], disk: SCALES.green[400], load: SCALES.amber[400], slots: SCALES.green[400], github: '#cbd5e1',
 } as const;
 
 /** Operation colours (denied = ABGEWIESEN). */

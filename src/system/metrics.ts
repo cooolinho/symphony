@@ -20,6 +20,8 @@ export interface DiskSample {
   path: string;
   used_bytes: number | null;
   total_bytes: number | null;
+  /** st_dev of the path, tells apart volumes on one filesystem. */
+  device: number | null;
 }
 
 export interface GpuSample {
@@ -45,7 +47,34 @@ export interface SystemSnapshot {
   gpu: GpuSample | null;
   /** Logical CPUs of the host, the scale of the load average. */
   cpu_count: number | null;
+  host: HostInfo | null;
+  usage: UsageInfo | null;
 }
+
+export interface HostInfo {
+  hostname: string;
+  container: string | null;
+  uptime_seconds: number;
+}
+
+export interface UsageInfo {
+  workspaces_bytes: number | null;
+  transcripts_bytes: number | null;
+  at: string | null;
+}
+
+export type DuRunner = (path: string) => Promise<string>;
+
+/** First number of `du -sk` output in bytes. */
+export function parseDu(text: string): number | null {
+  const match = /^\s*(\d+)/.exec(text);
+  return match ? Number(match[1]) * 1024 : null;
+}
+
+export const defaultDuRunner: DuRunner = (target) =>
+  new Promise((resolve, reject) => {
+    execFile('du', ['-sk', target], { timeout: 60_000, encoding: 'utf8' }, (error, stdout) => (error ? reject(error) : resolve(stdout)));
+  });
 
 export type NvidiaSmiRunner = (args: readonly string[]) => Promise<string>;
 export type SystemSource = Pick<SystemCollector, 'snapshot'>;
@@ -115,6 +144,12 @@ export interface SystemCollectorOptions {
   now?: () => Date;
   /** Logical CPUs reported in the snapshot; defaults to os.availableParallelism(). */
   cpuCount?: number;
+  hostname?: string;
+  container?: string | null;
+  uptime?: () => number;
+  usagePaths?: { workspaces?: string; transcripts?: string };
+  runDu?: DuRunner;
+  usageIntervalMs?: number;
 }
 
 /**
@@ -128,6 +163,9 @@ export class SystemCollector {
   #prevCpu: CpuTimes | null = null;
   #timer: NodeJS.Timeout | null = null;
   #busy = false;
+  #usageBusy = false;
+  #usageTimer: NodeJS.Timeout | null = null;
+  #usage: UsageInfo | null = null;
 
   constructor(options: SystemCollectorOptions) {
     this.#options = options;
@@ -173,9 +211,28 @@ export class SystemCollector {
   async #disk(volume: { name: string; path: string }): Promise<DiskSample> {
     const stats = await this.#read(`disk:${volume.name}`, async () => {
       const s = await fs.promises.statfs(volume.path);
-      return { total: Number(s.blocks) * Number(s.bsize), used: (Number(s.blocks) - Number(s.bfree)) * Number(s.bsize) };
+      const dev = await fs.promises.stat(volume.path).then((st) => Number(st.dev), () => null);
+      return { total: Number(s.blocks) * Number(s.bsize), used: (Number(s.blocks) - Number(s.bfree)) * Number(s.bsize), dev };
     });
-    return { name: volume.name, path: volume.path, used_bytes: stats?.used ?? null, total_bytes: stats?.total ?? null };
+    return { name: volume.name, path: volume.path, used_bytes: stats?.used ?? null, total_bytes: stats?.total ?? null, device: stats?.dev ?? null };
+  }
+
+  /** Re-reads the directory sizes with `du`; sources that fail become null. */
+  async refreshUsage(): Promise<void> {
+    const paths = this.#options.usagePaths;
+    if (paths === undefined || this.#usageBusy) return;
+    this.#usageBusy = true;
+    try {
+      const run = this.#options.runDu ?? defaultDuRunner;
+      const size = async (key: 'workspaces' | 'transcripts') => {
+        const p = paths[key];
+        return p === undefined ? null : this.#read(`du:${key}`, async () => parseDu(await run(p)));
+      };
+      const [workspaces, transcripts] = await Promise.all([size('workspaces'), size('transcripts')]);
+      this.#usage = { workspaces_bytes: workspaces, transcripts_bytes: transcripts, at: (this.#options.now?.() ?? new Date()).toISOString() };
+    } finally {
+      this.#usageBusy = false;
+    }
   }
 
   start(): void {
@@ -191,11 +248,18 @@ export class SystemCollector {
     tick();
     this.#timer = setInterval(tick, this.#options.intervalMs ?? DEFAULT_INTERVAL_MS);
     this.#timer.unref();
+    if (this.#options.usagePaths !== undefined) {
+      void this.refreshUsage();
+      this.#usageTimer = setInterval(() => void this.refreshUsage(), this.#options.usageIntervalMs ?? 600_000);
+      this.#usageTimer.unref();
+    }
   }
 
   stop(): void {
     if (this.#timer !== null) clearInterval(this.#timer);
     this.#timer = null;
+    if (this.#usageTimer !== null) clearInterval(this.#usageTimer);
+    this.#usageTimer = null;
   }
 
   current(): SystemSample | null {
@@ -208,6 +272,9 @@ export class SystemCollector {
 
   snapshot(): SystemSnapshot {
     const current = this.current();
-    return { current, history: this.history(), gpu: current?.gpu ?? null, cpu_count: this.#options.cpuCount ?? os.availableParallelism() };
+    return { current, history: this.history(), gpu: current?.gpu ?? null, cpu_count: this.#options.cpuCount ?? os.availableParallelism(),
+      host: { hostname: this.#options.hostname ?? os.hostname(), container: this.#options.container ?? null, uptime_seconds: Math.round((this.#options.uptime ?? process.uptime)()) },
+      usage: this.#usage,
+    };
   }
 }
