@@ -64,7 +64,7 @@ export function brainChangeEntry(over: Obj = {}): Obj {
 export function changesFixture(over: Obj = {}): Obj {
   return {
     generated_at: '2026-10-30T12:00:00.000Z', entries: [changeEntry()], next_before: null, counts: { all: 3, code: 2, brain: 1 },
-    stats: { today: { commits: 2, merges: 1, files: 4, added: 12, deleted: 3, brain: 5 }, hotspots: [{ path: 'src/a.ts', repo: 'acme/app', count: 5 }] },
+    stats: { today: { commits: 2, merges: 1, files: 4, added: 12, deleted: 3, brain: 5 }, hotspots: [{ path: 'src/a.ts', repo: 'acme/app', count: 5 }], conflicts_open: 1, note_hotspots: [{ path: 'Inbox/idea.md', count: 2, clashes: 1 }] },
     ...over,
   };
 }

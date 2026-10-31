@@ -32,6 +32,7 @@ interface Opts {
   counts?: unknown;
   stats?: unknown;
   confirm?: boolean;
+  noBrain?: boolean;
 }
 function open(o: Opts = {}): Page {
   const state = dashboardState(o.noControlsKey ? {} : { controls: o.controls ?? { retry: true } });
@@ -42,6 +43,7 @@ function open(o: Opts = {}): Page {
     fetch: (u, init) => {
       if (init.method === 'POST') return o.post ? o.post() : {};
       if (u.startsWith('/api/v1/state')) return state;
+      if (u.startsWith('/api/v1/brain/vitals')) return o.noBrain ? { __status: 404, error: { code: 'brain_disabled' } } : { obsidian_url: null };
       if (u.startsWith('/api/v1/brain/candidates')) return o.candidates ? o.candidates() : { candidates: [CAND] };
       return changesFixture({ entries: o.entries ?? [], ...(o.counts ? { counts: o.counts } : {}), ...(o.stats ? { stats: o.stats } : {}) });
     },
@@ -54,9 +56,9 @@ const feedLoaded = (p: Page, n: number) => until(() => cards(p).length === n, 3_
 const changesCalls = (p: Page) => p.fetches.filter((f) => f.url.startsWith('/api/v1/changes'));
 
 describe('#376 Brain entries: content', () => {
-  it('shows title, path, role, issue and the German status chip for every status', async () => {
+  it('shows title, path, role, issue and the kind chip for every status', async () => {
     const statuses: Array<[string, string]> = [
-      ['created', 'erstellt'], ['updated', 'geändert'], ['approved', 'befördert'], ['rejected_candidate', 'verworfen'], ['human', 'Obsidian'], ['conflict', 'Konflikt'],
+      ['created', 'Notiz neu'], ['updated', 'Notiz geändert'], ['approved', 'Befördert'], ['rejected_candidate', 'Verworfen'], ['human', 'Notiz geändert'], ['conflict', 'Schreiben abgewiesen'],
     ];
     const entries = statuses.map(([status], i) =>
       note({ id: `n${i}`, status, title: `Titel ${status}`, files: [{ path: `Area/${status}.md`, added: 1, deleted: 0, status: 'added' }], ...(status === 'conflict' ? { reason: 'window', diff: null } : {}) }),
@@ -65,9 +67,9 @@ describe('#376 Brain entries: content', () => {
     await feedLoaded(p, 6);
     statuses.forEach(([status, label], i) => {
       const c = cardOf(p, `n${i}`);
-      assert.equal(c.querySelector('.chg-status')!.textContent, label, status);
+      assert.equal(c.querySelector('.chg-kind')!.textContent, label, status);
       assert.ok(c.textContent.includes(`Titel ${status}`));
-      assert.ok(c.textContent.includes(`Area/${status}.md`));
+      if (status !== 'conflict') assert.ok(c.textContent.includes('Area'));
       assert.ok(c.textContent.includes('developer'));
       assert.ok(c.textContent.includes('acme/app#1'));
     });
@@ -108,27 +110,24 @@ describe('#376 Brain entries: content', () => {
 });
 
 describe('#376 Conflicts', () => {
-  it('shows conflicts in red with reason and link to /brain#clashes; other entries stay neutral', async () => {
+  it('shows conflicts in red with reason; other entries stay neutral', async () => {
     const entries = [conflict('hash_mismatch'), conflict('window'), note({ id: 'plain' }), changeEntry({ id: 'code1' })];
     const p = open({ entries, candidates: () => ({ candidates: [] }) });
     await feedLoaded(p, 4);
     for (const reason of ['hash_mismatch', 'window']) {
       const c = cardOf(p, `brain:conflict:${reason}`);
       assert.ok(c.classList.contains('chg-conflict'), `${reason} is red`);
-      assert.ok(c.textContent.includes(reason), `${reason} named`);
-      const link = c.querySelectorAll('a').find((a) => a.getAttribute('href') === '/brain#clashes');
-      assert.ok(link, `${reason} links to /brain#clashes`);
+      assert.match(c.querySelector('.chg-meta')!.textContent, reason === 'window' ? /Schutzfenster/ : /Hash-Konflikt/);
       assert.equal(c.querySelector('.chg-status')!.textContent, 'Konflikt');
     }
     assert.ok(!cardOf(p, 'plain').classList.contains('chg-conflict'));
     assert.ok(!cardOf(p, 'code1').classList.contains('chg-conflict'));
-    assert.equal(cardOf(p, 'plain').querySelectorAll('a').filter((a) => a.getAttribute('href') === '/brain#clashes').length, 0);
   });
 
   it('does not crash on a conflict with an unknown or missing reason', async () => {
     const p = open({ entries: [conflict('weird_reason', 'x1'), note({ id: 'x2', status: 'conflict', diff: null })], candidates: () => ({ candidates: [] }) });
     await feedLoaded(p, 2);
-    assert.ok(cardOf(p, 'x1').textContent.includes('weird_reason'));
+    assert.match(cardOf(p, 'x1').querySelector('.chg-meta')!.textContent, /Hash-Konflikt/);
     assert.ok(cardOf(p, 'x2').classList.contains('chg-conflict'));
   });
 });
@@ -180,7 +179,7 @@ describe('#376 Candidate actions', () => {
     }
   });
 
-  it('approve: POST to the URL-encoded path, then the feed is reloaded from the first page and the candidate list is refreshed', async () => {
+  it('approve: POST to the URL-encoded path, then the chip changes without reloading the feed', async () => {
     let approved = false;
     const p = open({
       entries: MIXED,
@@ -190,14 +189,12 @@ describe('#376 Candidate actions', () => {
     await until(() => buttonLabels(p).length === 2, 3_000, 'buttons');
     const before = changesCalls(p).length;
     p.click(cardOf(p, 'cand').querySelectorAll('button').find((b) => b.textContent === 'Befördern')!);
-    await until(() => changesCalls(p).length > before, 3_000, 'reload');
+    await until(() => cardOf(p, 'cand').querySelector('.chg-status')!.textContent === 'approved', 3_000, 'chip');
     const posts = p.fetches.filter((f) => f.method === 'POST');
     assert.equal(posts.length, 1);
     assert.equal(posts[0]!.url, '/api/v1/brain/candidates/Inbox%2Fidea.md/approve');
-    assert.doesNotMatch(changesCalls(p).at(-1)!.url, /before=/);
-    // after the reload the note is no candidate any more: no buttons remain
-    await until(() => buttonLabels(p).length === 0, 3_000, 'buttons gone after reload');
-    assert.ok(p.fetches.filter((f) => f.url.startsWith('/api/v1/brain/candidates') && f.method === 'GET').length >= 2, 'candidate list reloaded');
+    assert.equal(changesCalls(p).length, before, 'the feed is not loaded again');
+    assert.equal(buttonLabels(p).length, 0, 'no buttons remain');
   });
 
   it('reject: asks for confirmation, then POSTs to /reject', async () => {
@@ -243,7 +240,7 @@ describe('#376 Filter, counter and stats', () => {
     await feedLoaded(p, 3);
     assert.match(changesCalls(p)[0]!.url, /type=brain/);
     assert.equal(p.query('.chg-file').length, 0, 'no code file rows');
-    const chips = p.query('#changes-types .ui-fchip');
+    const chips = p.query('#changes-types .ui-seg-btn');
     assert.match(chips[0]!.textContent, /Alle\s*9/);
     assert.match(chips[1]!.textContent, /Code\s*6/);
     assert.match(chips[2]!.textContent, /Brain\s*3/);
@@ -252,19 +249,19 @@ describe('#376 Filter, counter and stats', () => {
   it('clicking the Brain filter chip requests type=brain and keeps it in the URL', async () => {
     const p = open({ entries: [changeEntry()], counts: { all: 3, code: 2, brain: 1 } });
     await feedLoaded(p, 1);
-    p.click(p.query('#changes-types .ui-fchip')[2]!);
+    p.click(p.query('#changes-types .ui-seg-btn')[2]!);
     await until(() => changesCalls(p).some((c) => /type=brain/.test(c.url)), 3_000, 'brain request');
     assert.match(String(p.location.search), /type=brain/);
   });
 
   it('shows the brain writes of today as a tile next to the existing tiles', async () => {
-    const stats = { today: { commits: 2, merges: 1, files: 4, added: 12, deleted: 3, brain: 7 }, hotspots: [] };
+    const stats = { today: { commits: 2, merges: 1, files: 4, added: 12, deleted: 3, brain: 7 }, hotspots: [], conflicts_open: 0, note_hotspots: [] };
     const p = open({ entries: [changeEntry()], stats });
     await feedLoaded(p, 1);
     const text = p.$('changes-today').textContent;
-    assert.match(text, /Brain/);
+    assert.match(text, /Brain-Änderungen/);
     assert.match(text, /7/);
-    for (const t of ['Commits', 'Merges', 'Dateien', 'Zeilen']) assert.ok(text.includes(t), t);
+    for (const t of ['Code-Commits', 'PRs gemerged', 'Konflikte offen']) assert.ok(text.includes(t), t);
   });
 
   it('copes with an older server whose stats.today has no brain field', async () => {
@@ -276,15 +273,15 @@ describe('#376 Filter, counter and stats', () => {
 
   it('without brain: counter 0, no error text, no buttons, brain filter shows the empty message', async () => {
     const gone = () => ({ __status: 404, error: { code: 'brain_disabled' } });
-    const p = open({ entries: [changeEntry()], candidates: gone, counts: { all: 1, code: 1, brain: 0 } });
+    const p = open({ entries: [changeEntry()], candidates: gone, noBrain: true, counts: { all: 1, code: 1, brain: 0 } });
     await feedLoaded(p, 1);
-    assert.match(p.query('#changes-types .ui-fchip')[2]!.textContent, /Brain\s*0/);
+    assert.equal(p.query('#changes-types .ui-seg-btn').length, 2, 'no Brain segment');
     assert.doesNotMatch(p.root.textContent, /konnten nicht geladen werden|Fehler/i);
     assert.equal(buttonLabels(p).length, 0);
 
-    const empty = open({ entries: [], candidates: gone, url: 'http://127.0.0.1/changes?type=brain', counts: { all: 1, code: 1, brain: 0 } });
-    await until(() => /Noch keine Änderungen\./.test(empty.$('changes-feed').textContent), 3_000, 'empty message');
-    assert.match(empty.query('#changes-types .ui-fchip')[2]!.textContent, /Brain\s*0/);
+    const empty = open({ entries: [], candidates: gone, noBrain: true, url: 'http://127.0.0.1/changes?type=brain', counts: { all: 1, code: 1, brain: 0 } });
+    await until(() => /Noch keine Änderungen für diesen Filter/.test(empty.$('changes-feed').textContent), 3_000, 'empty message');
+    assert.equal(empty.query('#changes-types .ui-seg-btn').length, 2);
   });
 });
 

@@ -65,6 +65,49 @@ describe('changeStats', () => {
   });
 });
 
+describe('note hotspots and open conflicts', () => {
+  const note = (id: string, at: string, notePath: string, status: ChangeEntry['status'] = 'created', over: Partial<ChangeEntry> = {}) =>
+    entry(id, at, { type: 'brain', status, files: [{ path: notePath, added: 1, deleted: 0, status: 'modified' }], ...over });
+
+  it('counts the brain changes of the last 7 days per path, rejected writes as clashes, sorted and limited to 10', () => {
+    const rows = [
+      note('b1', '2026-10-30T10:00:00Z', 'Inbox/a.md'),
+      note('b2', '2026-10-29T10:00:00Z', 'Inbox/a.md', 'updated'),
+      note('b3', '2026-10-28T10:00:00Z', 'Inbox/a.md', 'conflict', { clash_id: 'k1' }),
+      note('b4', '2026-10-30T09:00:00Z', 'Inbox/b.md'),
+      note('b5', '2026-10-10T09:00:00Z', 'Inbox/old.md'),
+      entry('c1', '2026-10-30T10:00:00Z'),
+    ];
+    const stats = changeStats(rows, NOW, 'UTC');
+    assert.deepEqual(stats.note_hotspots, [{ path: 'Inbox/a.md', count: 2, clashes: 1 }, { path: 'Inbox/b.md', count: 1, clashes: 0 }]);
+    const many = Array.from({ length: 12 }, (_, i) => note(`n${i}`, '2026-10-30T10:00:00Z', `Inbox/n${String(i).padStart(2, '0')}.md`));
+    assert.equal(changeStats(many, NOW, 'UTC').note_hotspots.length, 10);
+    assert.deepEqual(stats.today, { commits: 1, merges: 0, files: 1, added: 2, deleted: 1, brain: 2 });
+  });
+
+  it('counts only conflicts whose clash is open', () => {
+    const rows = [
+      note('x1', '2026-10-01T10:00:00Z', 'Inbox/a.md', 'conflict', { clash_id: 'open' }),
+      note('x2', '2026-10-30T10:00:00Z', 'Inbox/a.md', 'conflict', { clash_id: 'done' }),
+      note('x3', '2026-10-30T10:00:00Z', 'Inbox/a.md', 'conflict', { clash_id: 'gone' }),
+    ];
+    const status = (id: string) => (id === 'open' ? 'open' : id === 'done' ? 'resolved' : null);
+    assert.equal(changeStats(rows, NOW, 'UTC', status).conflicts_open, 1);
+    assert.equal(changeStats(rows, NOW, 'UTC').conflicts_open, 0);
+  });
+
+  it('adds clash_status to conflict entries of a page only', () => {
+    const store = new ChangeStore(null, Logger.silent());
+    store.append(note('x1', '2026-10-30T10:00:00Z', 'Inbox/a.md', 'conflict', { clash_id: 'open' }));
+    store.append(note('b1', '2026-10-30T10:01:00Z', 'Inbox/a.md'));
+    const page = buildChangesPage(store, {}, NOW, 'UTC', (id) => (id === 'open' ? 'open' : null));
+    const byId = new Map(page.entries.map((e) => [e.id, e]));
+    assert.equal(byId.get('x1')!.clash_status, 'open');
+    assert.ok(!('clash_status' in byId.get('b1')!));
+    assert.equal(page.stats!.conflicts_open, 1);
+  });
+});
+
 describe('buildChangesPage', () => {
   const store = new ChangeStore(null, Logger.silent());
   for (let i = 1; i <= 4; i++) store.append(entry(`code:${i}`, `2026-10-30T10:0${i}:00Z`));

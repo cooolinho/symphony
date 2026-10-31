@@ -54,6 +54,11 @@ function titleOf(frontmatter: Record<string, unknown>, body: string, notePath: s
   return notePath.toLowerCase().endsWith('.md') ? noteTitle(frontmatter, body, base) : base;
 }
 
+function statusOf(frontmatter: Record<string, unknown>): string | null {
+  const status = frontmatter.status;
+  return typeof status === 'string' && status.trim() !== '' ? status.trim() : null;
+}
+
 function repoOf(frontmatter: Record<string, unknown>): string {
   const repo = frontmatter.repo;
   return typeof repo === 'string' && isRepositoryName(repo.trim()) ? repo.trim() : 'unknown';
@@ -97,6 +102,7 @@ export async function brainCommitEntries(
       pr: null,
       diff: diffExcerpt(patch),
       status: brainCommitStatus({ subject, author }, file),
+      note_status: statusOf(frontmatter),
       ...(typeof run === 'string' ? { run } : {}),
     });
   }
@@ -138,5 +144,8 @@ export function brainConflictEntry(vault: string, line: BrainAccess, clash: Brai
     run: line.run,
     reason: line.reason,
     clash_id: clash.id,
+    note_status: statusOf(frontmatter),
+    other_role: clash.roles[0],
+    other_at: clash.at[0],
   };
 }

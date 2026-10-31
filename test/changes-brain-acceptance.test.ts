@@ -117,6 +117,13 @@ describe('E6-2 brain changes from the vault git', () => {
     assert.equal((await brainCommitEntries(vault, sh(vault, 'rev-parse', 'HEAD')))[0]!.status, 'rejected_candidate');
   });
 
+  it('takes note_status from the frontmatter status of the commit', async () => {
+    const { vault, session } = await setup({ hook: false });
+    await session('run1')('brain_write')({ path: 'Inbox/s.md', content: '---\ntype: lesson\nrepo: acme/shop\nstatus: candidate\n---\n# S\n' });
+    const withStatus = await brainCommitEntries(vault, sh(vault, 'rev-parse', 'HEAD'));
+    assert.equal(withStatus[0]!.note_status, 'candidate');
+  });
+
   it('records the Obsidian commit as human', async () => {
     const { vault, store, session, versioning } = await setup();
     fs.writeFileSync(path.join(vault, 'Inbox/h.md'), note('by hand'));

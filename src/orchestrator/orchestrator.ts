@@ -10,7 +10,7 @@ import { approveCandidate, rejectCandidate, revertApprove, type PromoteOptions, 
 import { RateLimitLog, rateLimitKey, type RateLimitRecord } from '../budget/rate-limit-log.ts';
 import { BRAIN_BACKFILL_COMMITS, brainCommitEntries, brainConflictEntry, recentVaultCommits } from '../changes/brain.ts';
 import { ChangeStore } from '../changes/store.ts';
-import { buildChangesPage } from '../changes/feed.ts';
+import { buildChangesPage, type ClashStatus } from '../changes/feed.ts';
 import type { ChangeEntry, ChangeFile, ChangeFilter, ChangesPage, ChangesQuery } from '../changes/types.ts';
 import { childEnvironment } from '../agent/env.ts';
 import { chooseRoleEffort, chooseRoleModel } from '../agent/model.ts';
@@ -3463,6 +3463,7 @@ export class Orchestrator {
         pr,
         diff: commit.diff,
         status: 'committed',
+        branch: entry.branch,
       });
     }
     this.#notify();
@@ -3499,6 +3500,7 @@ export class Orchestrator {
       pr: number !== null ? { number, status: result.checks?.state ?? 'success' } : null,
       diff: null,
       status: 'merged',
+      branch: issue.branch_name ?? null,
     });
     this.#notify();
     await this.#writeIssueSummary(issue, repo, result, adapter, log);
@@ -3583,7 +3585,12 @@ export class Orchestrator {
 
   /** One page of the feed with counts and (first page) stats; "today" is the calendar day in `timeZone`. */
   changesPage(query: ChangesQuery, timeZone: string): ChangesPage {
-    return buildChangesPage(this.#changes, query, this.#clock.now(), timeZone);
+    let clashStatus: ClashStatus = () => null;
+    if (this.#deps.workflow.current.config.brain.enabled) {
+      const clashes = new Map(this.#brainAccess.clashes().map((clash) => [clash.id, clash.status] as const));
+      clashStatus = (id) => clashes.get(id) ?? null;
+    }
+    return buildChangesPage(this.#changes, query, this.#clock.now(), timeZone, clashStatus);
   }
 
   #issueLogger(issue: Pick<Issue, 'id' | 'identifier'>): Logger {
