@@ -117,6 +117,8 @@ export async function runService(options: ServiceOptions): Promise<number> {
     ],
     gpu: config.system.gpu,
     logger,
+    container: env.SYMPHONY_CONTAINER || env.HOSTNAME || null,
+    usagePaths: { workspaces: config.workspace.root, transcripts: path.join(options.logDir, 'sessions') },
   });
   system.start();
   let http: HttpServerHandle | null = null;

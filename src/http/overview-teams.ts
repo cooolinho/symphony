@@ -1,34 +1,35 @@
 import { LOOP_VERDICTS } from '../workflow/results.ts';
 
 /**
- * "Teams" section of the overview: one link row per running issue with the role avatars of its pipeline,
+ * "Teams live" section of the overview: one link row per running issue with the role avatars of its pipeline,
  * the action of the active role, context bar, live run time and subagent count. Like pipeline.ts it is
  * inlined into the page (TEAMS_CSS/TEAMS_JS next to BASE_JS) and unit-testable in a vm; all top-level
  * names start with `team`/`TEAM_` so they cannot collide with the dashboard script.
  */
 export const TEAMS_CSS = `
-  .team-list { display: grid; gap: 8px; }
-  .team-row { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.6fr) auto; align-items: center; gap: 10px 18px;
-    min-height: 44px; padding: 12px 16px; border-radius: 16px; border: 1px solid rgba(255, 255, 255, .08);
-    background: rgba(255, 255, 255, .03); color: inherit; text-decoration: none; }
+  .teams-all { font-size: 13px; }
+  .team-list { display: flex; flex-direction: column; gap: 10px; }
+  .team-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; padding: 14px 16px; color: inherit; text-decoration: none; }
   .team-row:hover { background: rgba(255, 255, 255, .06); text-decoration: none; }
   .team-row:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-  .team-head, .team-cast { min-width: 0; display: grid; gap: 4px; }
-  .team-num { font: 600 11px var(--mono); color: var(--fg-3, var(--muted)); }
-  .team-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-  .team-meta, .team-action { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--fg-3, var(--muted)); }
-  .team-action { color: var(--fg-2, var(--text-2)); }
-  .team-action.muted { color: var(--fg-3, var(--muted)); }
+  .team-head { flex: 1 1 260px; min-width: 0; display: grid; gap: 4px; }
+  .team-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .team-num { font: 13px var(--mono); color: var(--fg-label); flex: none; }
+  .team-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: 600; }
+  .team-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--fg-3); }
   .team-avs { display: flex; flex-wrap: wrap; gap: 6px; }
-  .team-stats { display: grid; grid-template-columns: 120px auto auto; gap: 14px; align-items: center;
-    font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
-  .team-ctx { display: flex; align-items: center; gap: 8px; }
-  .team-ctx .ui-bar { flex: 1; }
-  .team-empty { color: var(--fg-3, var(--muted)); margin: 0; }
-  @media (max-width: 640px) {
-    .team-row { grid-template-columns: minmax(0, 1fr); }
-    .team-stats { grid-template-columns: 1fr auto auto; }
-  }
+  .team-cast { flex: 1 1 250px; min-width: 0; display: grid; gap: 6px; }
+  .team-actline { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .team-role { font-size: 13px; font-weight: 500; flex: none; }
+  .team-action { font: 12.5px var(--mono); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .team-action.muted { color: var(--fg-3); }
+  .team-ctx { display: grid; grid-template-columns: 52px 1fr 36px; align-items: center; gap: 8px; }
+  .team-ctx-label { font-size: 12px; color: var(--fg-3); }
+  .team-ctx-pct { font: 12px var(--mono); text-align: right; }
+  .team-end { margin-left: auto; min-width: 86px; text-align: right; display: grid; gap: 2px; }
+  .team-time { font: 15px var(--mono); font-variant-numeric: tabular-nums; }
+  .team-subs { font-size: 12px; color: var(--fg-3); }
+  .team-empty { font-size: 13px; color: var(--fg-2); margin: 0; }
 `;
 
 export const TEAMS_JS = `
@@ -60,14 +61,31 @@ export const TEAMS_JS = `
     return (row.stages || []).filter((s) => s.kind === 'agent');
   }
 
-  function teamAction(run) {
-    return run.session_id ? teamTrunc(run.last_message || run.last_event || '', 80) : 'Wartet auf Session';
+  /** "Tool · argument": last_message "Name: arg" with the workspace prefix cut off the path. */
+  function teamActionText(run) {
+    if (!run.session_id) return 'Wartet auf Session';
+    const msg = String(run.last_message || run.last_event || '');
+    const at = msg.indexOf(': ');
+    if (at <= 0) return teamTrunc(msg, 80);
+    let arg = msg.slice(at + 2);
+    const ws = run.workspace ? String(run.workspace).replace(/[/]+$/, '') + '/' : '';
+    if (ws && arg.startsWith(ws)) arg = arg.slice(ws.length);
+    return teamTrunc(msg.slice(0, at) + ' · ' + arg, 80);
   }
 
-  function teamSubs(run) {
-    const sub = run.subagents || {};
-    const live = (sub.running || []).length;
-    return live + '/' + (live + (sub.finished || []).length);
+  const TEAM_STATE_WORDS = { done: 'fertig', playing: 'spielt', waiting: 'wartet', returned: 'Rückgabe', skipped: 'übersprungen' };
+
+  function teamAria(agents, run) {
+    return 'Team: ' + agents.map((s) => (UI_ROLE_NAMES[s.id] || s.id) + ' ' + TEAM_STATE_WORDS[teamAvatarState(s, run)]).join(', ');
+  }
+
+  function teamSubsText(run) {
+    const n = ((run.subagents || {}).running || []).length;
+    return n === 0 ? 'keine Subagents' : n === 1 ? '1 Subagent' : n + ' Subagents';
+  }
+
+  function teamCtxColor(p) {
+    return p >= 70 ? '#fbbf24' : '#38bdf8';
   }
 
   function teamPercent(run) {
@@ -78,35 +96,43 @@ export const TEAMS_JS = `
   function teamRow(row, now) {
     const run = row.running;
     const id = String(row.issue_identifier || '');
-    const a = el('a', null, 'team-row');
+    const a = el('a', null, 'gi row team-row');
     a.setAttribute('href', '/issue?id=' + encodeURIComponent(id));
     const agents = teamAgents(row);
     const round = Math.max(1, ...agents.map((s) => s.round || 0));
     const head = el('div', null, 'team-head');
-    head.append(
-      el('span', '#' + id.slice(id.lastIndexOf('#') + 1), 'team-num'),
-      el('span', row.title || id, 'team-title'),
-      el('span', (row.repo || id.split('#')[0]) + ' · ' + (row.state || '') + ' · Runde ' + round, 'team-meta'),
-    );
-    const cast = el('div', null, 'team-cast');
+    const line = el('div', null, 'team-line');
+    line.append(el('span', '#' + id.slice(id.lastIndexOf('#') + 1), 'team-num'), el('span', row.title || id, 'team-title'));
+    head.append(line, el('span', (row.repo || id.split('#')[0]) + ' · ' + (row.state || '') + ' · Runde ' + round, 'team-meta'));
     const avs = el('div', null, 'team-avs');
+    avs.setAttribute('role', 'group');
+    avs.setAttribute('aria-label', teamAria(agents, run));
     for (const s of agents) avs.append(avatar(s.id, teamAvatarState(s, run)));
-    const action = el('span', teamAction(run), 'team-action' + (run.session_id ? '' : ' muted'));
+    const cast = el('div', null, 'team-cast');
+    const actline = el('div', null, 'team-actline');
+    if (run.session_id) {
+      const e = eq();
+      e.style.color = UI_ROLE_COLORS[run.role] || UI_ROLE_COLORS.symphony;
+      actline.append(e);
+    }
+    const action = el('span', teamActionText(run), 'team-action' + (run.session_id ? '' : ' muted'));
     action.setAttribute('title', String(run.last_message || run.last_event || ''));
-    cast.append(avs, action);
-    const stats = el('div', null, 'team-stats');
-    const ctx = el('span', null, 'team-ctx');
+    actline.append(el('span', UI_ROLE_NAMES[run.role] || run.role || '', 'team-role'), action);
+    const ctx = el('div', null, 'team-ctx');
     const p = teamPercent(run);
-    if (p === null) ctx.append(el('span', '—', 'team-ctx-pct'));
+    ctx.append(el('span', 'Context', 'team-ctx-label'));
+    if (p === null) ctx.append(el('span'), el('span', '—', 'team-ctx-pct'));
     else {
-      const b = bar(p, { height: 6 });
+      const b = bar(p, { height: 6, color: teamCtxColor(p) });
       b.setAttribute('aria-label', 'Context');
       ctx.append(b, el('span', Math.round(p) + ' %', 'team-ctx-pct'));
     }
+    cast.append(actline, ctx);
     const time = el('span', teamClock(run.seconds_running), 'team-time');
+    const end = el('div', null, 'team-end');
+    end.append(time, el('span', teamSubsText(run), 'team-subs'));
     teamTimes.set(row.issue_id, { node: time, action, since: now - (run.seconds_running || 0) * 1000 });
-    stats.append(ctx, time, el('span', teamSubs(run) + ' Subagents', 'team-subs'));
-    a.append(head, cast, stats);
+    a.append(head, avs, cast, end);
     return a;
   }
 
@@ -121,13 +147,13 @@ export const TEAMS_JS = `
     const rows = (state.issues || []).filter((r) => r.running);
     const fp = JSON.stringify(rows.map((r) => [r.issue_id, r.issue_identifier, r.title, r.repo, r.state,
       teamAgents(r).map((s) => [s.id, s.status, s.verdict, s.round, (s.sessions || []).length]),
-      r.running.role, !!r.running.session_id, teamPercent(r.running), teamSubs(r.running)]));
+      r.running.role, !!r.running.session_id, teamPercent(r.running), teamSubsText(r.running)]));
     if (fp === teamFp) {
       for (const r of rows) {
         const t = teamTimes.get(r.issue_id);
         if (!t) continue;
         t.since = now - (r.running.seconds_running || 0) * 1000;
-        const text = teamAction(r.running);
+        const text = teamActionText(r.running);
         if (t.action.textContent !== text) t.action.textContent = text;
         t.action.setAttribute('title', String(r.running.last_message || r.running.last_event || ''));
       }
@@ -136,7 +162,7 @@ export const TEAMS_JS = `
     }
     teamFp = fp;
     teamTimes.clear();
-    if (!rows.length) host.replaceChildren(el('p', 'Kein Team arbeitet gerade.', 'team-empty'));
+    if (!rows.length) host.replaceChildren(el('p', 'Kein Team spielt gerade', 'team-empty'));
     else host.replaceChildren(...rows.map((r) => teamRow(r, now)));
     return rows.length;
   }
