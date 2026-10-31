@@ -3,6 +3,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
+import { parseNote } from '../src/brain/note.ts';
+import { ensureVault } from '../src/brain/vault.ts';
 import { PricingStore } from '../src/costs/pricing.ts';
 import { HistoryLog, readHistory } from '../src/history/history.ts';
 import type { IntegrationReport } from '../src/agent/types.ts';
@@ -4558,6 +4560,64 @@ describe('change log (code changes per commit and merge)', () => {
     assert.equal(merged.diff, null);
     assert.equal(merged.role, 'default');
     await s.orchestrator.shutdown(1_000);
+  });
+
+  describe('issue summary after the merge (E8-3)', () => {
+    const mergeResult = { merged: true, pull_request: 9, status: 'Done', reason: 'merged', checks: { state: 'success' as const, failing: [], pending: [] } };
+
+    function brainSetup(brainFront: Record<string, unknown> | null) {
+      const from = origin();
+      const runner = new FakeRunner();
+      const front: Record<string, unknown> = { hooks: { after_create: `git clone -q "${from}" . && git checkout -q -b symphony/issue-a` } };
+      if (brainFront !== null) front.brain = brainFront;
+      const s = setup({ runner, issues: [makeIssue({ id: 'a', native_ref: { base_branch: 'main' } })], front });
+      s.tracker.issueRepository = () => 'acme/app';
+      s.tracker.autoMerge = (_issue, column) => (column === 'Human Review' ? mergeResult : undefined);
+      runner.script = async (turn, params) => {
+        commitFile(params.cwd, 'docs/guide.md', 'Add the guide');
+        const result = await callTool(params, 'set_status', { status: 'Human Review' });
+        assert.equal(result.ok, true);
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      };
+      return s;
+    }
+
+    it('writes Issues/<repo>/<nr>.md into the vault as symphony after the merge', async () => {
+      const vault = path.join(tempDir(), 'vault');
+      await ensureVault(vault, ['acme/app']);
+      const s = brainSetup({ enabled: true, path: vault });
+      await s.orchestrator.tickNow();
+      const file = path.join(vault, 'Issues', 'acme-app', 'a.md');
+      const last = (format: string): string => execFileSync('git', ['log', '-1', `--format=${format}`], { cwd: vault, encoding: 'utf8' }).trim();
+      await until(() => fs.existsSync(file) && last('%s') === 'acme/app#a: issue summary', 15_000, 'summary committed');
+      const note = parseNote(fs.readFileSync(file, 'utf8'));
+      assert.equal(note.frontmatter.status, 'approved');
+      assert.equal(note.frontmatter.role, 'symphony');
+      assert.deepEqual(note.frontmatter.sources, ['https://github.com/acme/app/pull/9']);
+      assert.equal(last('%an'), 'symphony');
+      await s.orchestrator.shutdown(1_000);
+    });
+
+    it('writes nothing without brain.enabled', async () => {
+      const vault = path.join(tempDir(), 'vault');
+      await ensureVault(vault, ['acme/app']);
+      const s = brainSetup({ enabled: false, path: vault });
+      await s.orchestrator.tickNow();
+      await until(() => s.orchestrator.listChanges({ type: 'code' }).some((e) => e.status === 'merged'), 15_000, 'merge recorded');
+      await s.orchestrator.shutdown(1_000);
+      assert.deepEqual(fs.readdirSync(path.join(vault, 'Issues')), []);
+    });
+
+    it('a failing vault only warns: the merge is recorded and the issue is done', async () => {
+      const vault = path.join(tempDir(), 'not-a-vault');
+      fs.mkdirSync(vault, { recursive: true });
+      const s = brainSetup({ enabled: true, path: vault });
+      await s.orchestrator.tickNow();
+      await until(() => s.orchestrator.listChanges({ type: 'code' }).some((e) => e.status === 'merged'), 15_000, 'merge recorded');
+      assert.equal(s.tracker.issues.get('a')?.state, 'Done');
+      assert.equal(fs.existsSync(path.join(vault, 'Issues')), false);
+      await s.orchestrator.shutdown(1_000);
+    });
   });
 
   it('records a merged entry when a merge retry succeeds, without files when the issue has no workspace, and nothing when it fails', async () => {
