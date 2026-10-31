@@ -122,3 +122,26 @@ export function scoreTeam(opts: { live?: boolean } = {}, over: Obj = {}): Obj {
   if (!opts.live) { base.active = null; base.subagents = { running: [], finished: [] }; }
   return { ...base, ...clone(over) };
 }
+
+/**
+ * Team view of the mockup score ("Partitur · Ablauf seit 10:54", UTC): analyst, architect, developer and tester in round 1,
+ * the developer again in round 2 after the tester failed; five blocks, four handoffs. `live` leaves the last block open.
+ */
+export function scoreTeamFive(opts: { live?: boolean } = {}, over: Obj = {}): Obj {
+  const at = (hm: string) => `2026-10-30T${hm}:00.000Z`;
+  const block = (role: string, run: string, from: string, to: string | null, verdict: string | null, round: number, model: string, tool_calls: number) =>
+    ({ role, run, started_at: at(from), ended_at: to === null ? null : at(to), verdict, round, model, tool_calls });
+  const hand = (from: string, to: string, verdict: string | null, hm: string) => ({ from, to, verdict, at: at(hm) });
+  const base = teamView({
+    blocks: [
+      block('analyst', 'run-1', '10:54', '10:57', 'ready', 1, 'sonnet', 6),
+      block('architect', 'run-2', '10:57', '11:06', 'ready', 1, 'opus', 20),
+      block('developer', 'run-3', '11:06', '11:16', 'done', 1, 'opus', 60),
+      block('tester', 'run-4', '11:16', '11:20', 'failed', 1, 'sonnet', 4),
+      block('developer', 'run-5', '11:20', opts.live ? null : '11:34', opts.live ? null : 'done', 2, 'opus', 30),
+    ],
+    handoffs: [hand('analyst', 'architect', 'ready', '10:57'), hand('architect', 'developer', 'ready', '11:06'), hand('developer', 'tester', 'done', '11:16'), hand('tester', 'developer', 'failed', '11:20')],
+  });
+  if (!opts.live) { base.active = null; base.subagents = { running: [], finished: [] }; }
+  return { ...base, ...clone(over) };
+}
