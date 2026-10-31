@@ -236,9 +236,10 @@ describe('#386 "Jetzt" line and time axis', () => {
     assert.match(c, /box-shadow:\s*0 0 12px #34d399/i);
   });
 
-  it('axis: Mono 11.5px --fg-3, margin-left 120px', () => {
+  // #379 allows --fg-3 only for text of at least 12px, so the axis uses 12px instead of the mockup's 11.5px.
+  it('axis: Mono 12px --fg-3 (#379 hygiene rule), margin-left 120px', () => {
     const c = css('.score-axis');
-    assert.match(c, /11\.5px/);
+    assert.match(c, /font:\s*12px var\(--mono\)/);
     assert.match(c, /var\(--mono\)/);
     assert.match(c, /var\(--fg-3\)/);
     assert.match(c, /margin-left:\s*120px/);

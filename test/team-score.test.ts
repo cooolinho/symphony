@@ -157,8 +157,11 @@ describe('score: time axis', () => {
     const ended = score(scoreTeamFive({ live: true }), { ended: true }).query('#score-axis span');
     assert.ok(!String(ended[4]!.textContent).startsWith('jetzt'));
     const css = rule('.score-axis');
-    for (const part of ['margin-left: 120px', '11.5px var(--mono)', 'var(--fg-3)']) assert.ok(css.includes(part), part);
+    for (const part of ['margin-left: 120px', '12px var(--mono)', 'var(--fg-3)']) assert.ok(css.includes(part), part);
     assert.ok(rule('.score-axis .now').includes('#6ee7b7'));
+    // The marks sit at 0/25/50/75 % so they line up with the grid lines; the last one is right-aligned.
+    assert.deepEqual(axis.slice(0, 4).map((s) => String(s.style.left)), ['0%', '25%', '50%', '75%']);
+    assert.ok(rule('.score-axis span:last-child').includes('right: 0'));
   });
 
   it('spans at least one minute so a short block stays visible', () => {

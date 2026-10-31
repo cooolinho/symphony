@@ -308,7 +308,10 @@ const AGENT_PAGE_CSS = `
   .score-hand-label { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); font: 10.5px/1 var(--mono); white-space: nowrap; }
   .score-hand.flip .score-hand-label { left: auto; right: 8px; }
   .score-now-line { position: absolute; top: 0; bottom: 0; right: 0; width: 2px; background: #34d399; box-shadow: 0 0 12px #34d399; }
-  .score-axis { display: flex; justify-content: space-between; margin-left: 120px; min-width: 640px; margin-top: 6px; font: 11.5px var(--mono); color: var(--fg-3); }
+  .score-axis { position: relative; height: 16px; margin-left: 120px; min-width: 640px; margin-top: 6px; font: 12px var(--mono); color: var(--fg-3); }
+  .score-axis span { position: absolute; top: 0; white-space: nowrap; transform: translateX(-50%); }
+  .score-axis span:first-child { transform: none; }
+  .score-axis span:last-child { left: auto; right: 0; transform: none; }
   .score-axis .now { color: #6ee7b7; }
   @media (max-width: 900px) {
     .seats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -2215,7 +2218,9 @@ ${PIPELINE_JS}
 
     $('score-axis').replaceChildren(...[0, 1, 2, 3, 4].map((k) => {
       const t = scoreHm(t0 + (k * span) / 4);
-      return k === 4 && live ? el('span', 'jetzt ' + t, 'now') : el('span', t);
+      const mark = k === 4 && live ? el('span', 'jetzt ' + t, 'now') : el('span', t);
+      if (k < 4) mark.style.left = k * 25 + '%';
+      return mark;
     }));
   }
 
