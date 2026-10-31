@@ -7,7 +7,7 @@
 export const CHART_CSS = `
   .chart { position: relative; width: 100%; min-width: 0; }
   .chart svg { display: block; width: 100%; overflow: visible; }
-  .chart .axis text, .chart .tick { font: 10px var(--mono); fill: var(--muted); font-variant-numeric: tabular-nums; }
+  .chart .axis text, .chart .tick { font: 10px var(--mono); fill: var(--fg-label); font-variant-numeric: tabular-nums; }
   .chart .grid line { stroke: var(--line); stroke-width: 1; }
   .chart .base { stroke: var(--line-2); stroke-width: 1; }
   .chart .band { fill: transparent; cursor: default; }
@@ -16,13 +16,13 @@ export const CHART_CSS = `
   .chart .cross { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
   .chart-tip { position: fixed; z-index: 60; pointer-events: none; min-width: 150px; max-width: 280px; padding: 8px 10px;
     border: 1px solid var(--glass-line); border-radius: var(--radius-sm); background: var(--solid);
-    box-shadow: var(--shadow); font: 11.5px/1.5 var(--mono); color: var(--text); }
-  .chart-tip .tip-title { color: var(--text-2); font-weight: 600; margin-bottom: 4px; letter-spacing: .04em; overflow-wrap: anywhere; }
+    box-shadow: var(--shadow); font: 11.5px/1.5 var(--mono); color: var(--fg); }
+  .chart-tip .tip-title { color: var(--fg-chip); font-weight: 600; margin-bottom: 4px; letter-spacing: .04em; overflow-wrap: anywhere; }
   .chart-tip .tip-row { display: flex; justify-content: space-between; gap: 14px; }
-  .chart-tip .tip-row span:first-child { color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .chart-tip .tip-row span:first-child { color: var(--fg-label); display: inline-flex; align-items: center; gap: 6px; }
   .chart-tip .tip-row span:last-child { font-variant-numeric: tabular-nums; }
   .swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px; flex: none; background: var(--sw, var(--gray)); }
-  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 10px; font: 11px var(--mono); color: var(--text-2); }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 10px; font: 11px var(--mono); color: var(--fg-chip); }
   .legend span { display: inline-flex; align-items: center; gap: 6px; }
 
   /* Horizontal bars (HTML, so long names wrap and stay readable). */
@@ -32,12 +32,12 @@ export const CHART_CSS = `
   .hbar.click { cursor: pointer; }
   .hbar.click:hover, .hbar:focus-visible { background: var(--glass-in); }
   .hbar.active { background: var(--green-dim); }
-  .hbar .name { font: 12px var(--mono); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hbar .name { font: 12px var(--mono); color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .hbar .track { height: 10px; border-radius: 3px; background: var(--glass-in); overflow: hidden; }
   .hbar .fill { height: 100%; border-radius: 0 3px 3px 0; background: var(--sw, var(--green)); min-width: 2px;
     box-shadow: 0 0 10px -3px var(--sw, var(--green)); transition: width .4s var(--ease); }
-  .hbar .val { font: 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--text); text-align: right; white-space: nowrap; }
-  .hbar .val small { color: var(--muted); font-size: 11px; margin-left: 6px; }
+  .hbar .val { font: 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--fg); text-align: right; white-space: nowrap; }
+  .hbar .val small { color: var(--fg-label); font-size: 11px; margin-left: 6px; }
   @media (max-width: 640px) {
     .hbar { grid-template-columns: minmax(0, 1fr) auto; }
     .hbar .name { grid-column: 1 / -1; }
@@ -49,8 +49,8 @@ export const CHART_CSS = `
 
   /* Heatmap: 24 hour columns × 7 weekday rows. */
   .heat { display: grid; grid-template-columns: 34px repeat(24, minmax(0, 1fr)); gap: 2px; }
-  .heat .hl { font: 9.5px var(--mono); color: var(--muted); text-align: center; overflow: hidden; }
-  .heat .dl { font: 10px var(--mono); color: var(--muted); align-self: center; }
+  .heat .hl { font: 9.5px var(--mono); color: var(--fg-label); text-align: center; overflow: hidden; }
+  .heat .dl { font: 10px var(--mono); color: var(--fg-label); align-self: center; }
   .heat .cell { aspect-ratio: 1; min-height: 8px; border-radius: 2px; background: var(--glass-in); }
   .heat .cell.on { background: var(--green); opacity: var(--a, .15); }
 `;
