@@ -190,12 +190,11 @@ describe('http extension', () => {
     assert.match(page.body, /<nav class="shell-nav" aria-label="Hauptnavigation">/);
     // Markup of the sections; what the page script does with them is covered by 'dashboard page behaviour'.
     assert.doesNotMatch(page.body, /Issues in flight/);
-    for (const name of ['running', 'next', 'waiting', 'paused']) {
-      assert.match(page.body, new RegExp(`<div class="agents[^"]*" id="${name}"></div>`));
-      assert.match(page.body, new RegExp(`<span class="count" id="${name}-count"></span>`));
-    }
-    for (const name of ['next', 'waiting', 'paused']) assert.match(page.body, new RegExp(`<section class="agents-section queue-section" id="${name}-section"[^>]*hidden>`));
-    assert.match(page.body, /id="blocked-section"/);
+    assert.match(page.body, /<div class="agents" id="running"><\/div>/);
+    assert.match(page.body, /<span class="count" id="running-count"><\/span>/);
+    // Slots, queue and blocked moved to the Tasks page (E5-2); the overview keeps a compact line that links there.
+    assert.doesNotMatch(page.body, /id="(slot-settings|slots|model-controls|next-section|waiting-section|paused-section|blocked-section)"/);
+    assert.match(page.body, /<p class="tasks-line" id="tasks-line">[^]*<a class="section-link" href="\/tasks">Alle Tasks<\/a>/);
     assert.match(page.body, /\.pipe-verdict\.vd-warn/);
     assert.match(page.body, /\.pipe-node\.st-skipped/);
     assert.match(page.body, /id="shell-poll"/);
@@ -204,7 +203,6 @@ describe('http extension', () => {
     assert.match(page.body, /<span class="count" id="alerts-count" aria-live="polite">/);
     assert.doesNotMatch(page.body, /id="model-holds"|id="problems"/);
     assert.doesNotMatch(page.body, /\bonclick=/);
-    assert.match(page.body, /<div class="slot-settings" id="slot-settings" role="group" aria-label="Agent slots" hidden><\/div>/);
 
     const state = await request(server.port, 'GET', '/api/v1/state');
     assert.equal(state.status, 200);
@@ -1423,22 +1421,16 @@ describe('dashboard page behaviour', () => {
     assert.deepEqual(page.fetches.map((f) => f.url), ['/api/v1/budget', '/api/v1/state', '/api/v1/history', '/api/v1/activity?minutes=30', '/api/v1/system']);
   });
 
-  it('puts every card into its section with a count, and hides the empty queue sections', () => {
+  it('shows only running cards and the compact line to /tasks; the dispatch plan lives on the Tasks page', () => {
     const page = render(
       [issueRow(), waiting({ issue_id: '3', issue_identifier: 'acme/app#3', section: 'next', status: 'queued', retry: null, reason: { code: 'ready', text: 'Ready' }, position: 1 }), waiting()],
-      { counts: { ...dashboardState().counts, running: 1 }, board_fetched_at: '2026-10-30T11:59:00Z' },
+      { counts: { ...dashboardState().counts, running: 1, queued: 4 } },
     );
     assert.equal(page.$('running').children.length, 1);
-    assert.equal(page.$('next').children.length, 1);
-    assert.equal(page.$('waiting').children.length, 1);
-    assert.deepEqual(['running', 'next', 'waiting', 'paused'].map((n) => page.$(`${n}-count`).textContent), ['01', '01', '01', '00']);
-    assert.equal(page.$('next-section').hidden, false);
-    assert.equal(page.$('paused-section').hidden, true);
-    assert.equal(page.$('next-meta').textContent, 'in start order · board as of 1m 0s ago');
-    assert.equal(page.$('next').querySelector('.pos')!.textContent, '#1');
-    assert.equal(page.$('next').querySelector('.pos')!.hidden, false);
-    const empty = render([]);
-    for (const name of ['next', 'waiting', 'paused']) assert.equal(empty.$(`${name}-section`).hidden, true, name);
+    assert.equal(page.$('running-count').textContent, '01');
+    assert.equal(page.$('tasks-line-text').textContent, '1 Slot belegt · 4 in der Queue');
+    const idle = render([], { counts: { ...dashboardState().counts, running: 3, queued: 0 } });
+    assert.equal(idle.$('tasks-line-text').textContent, '3 Slots belegt · 0 in der Queue');
   });
 
   it('links the card title to the issue page and shows model and phase of a running issue', () => {
@@ -1448,76 +1440,18 @@ describe('dashboard page behaviour', () => {
     assert.deepEqual(fields, ['claude-code-default', 'StreamingTurn']);
   });
 
-  it('names the reason of a waiting card and shows its UTC time in local time', () => {
-    const page = render([waiting()]);
-    const chip = page.$('waiting').querySelector('.reason')!;
-    assert.match(chip.className, /tone-amber/);
-    assert.equal(chip.title, 'backoff: Backoff until 2026-10-30 12:30 UTC');
-    assert.doesNotMatch(chip.textContent, /UTC/, 'the shown time is local');
-    assert.match(chip.textContent, /^Backoff until /);
-  });
-
-  it('offers Retry now, Start now and Pause on a waiting card, and posts the click', () => {
-    const page = render([waiting()], { counts: { ...dashboardState().counts, running: 0 } });
-    assert.deepEqual(buttons(page).map((b) => b.textContent), ['Retry now', 'Start now', 'Pause']);
-    page.click(button(page, 'Retry now'));
-    page.click(button(page, 'Start now'));
+  it('offers Pause on a running card and posts the click', () => {
+    const page = render([issueRow()], { counts: { ...dashboardState().counts, running: 1 } });
+    assert.deepEqual(buttons(page).map((b) => b.textContent), ['Pause']);
     page.click(button(page, 'Pause'));
-    assert.deepEqual(page.fetches.filter((f) => f.method === 'POST').map((f) => `${f.method} ${f.url}`), [
-      `POST /api/v1/${idPath}/retry`,
-      `POST /api/v1/${idPath}/force`,
-      `POST /api/v1/${idPath}/pause`,
-    ]);
-    assert.deepEqual(page.confirms, [], 'a free slot needs no confirmation');
+    assert.deepEqual(page.fetches.filter((f) => f.method === 'POST').map((f) => `${f.method} ${f.url}`), [`POST /api/v1/acme%2Fapp%231/pause`]);
   });
 
-  it('offers Resume now on a paused card', () => {
-    const page = render([waiting({ status: 'paused', section: 'paused', retry: null, reason: { code: 'paused', text: 'Paused' }, paused: { source: 'operator', paused_at: '2026-10-30T11:50:00Z' } })]);
-    assert.equal(page.$('paused-section').hidden, false);
-    assert.match(page.$('paused').textContent, /paused by operator/);
-    page.click(button(page, 'Resume now'));
-    assert.equal(page.fetches.at(-1)!.url, `/api/v1/${idPath}/resume`);
-  });
-
-  it('asks before Start now when every slot is taken, and starts nothing when declined', () => {
-    const full = { counts: { ...dashboardState().counts, running: 1 }, health: { ...dashboardState().health, max_concurrent_agents: 1 } };
-    const declined = render([waiting()], full, { confirm: false });
-    const before = declined.fetches.length;
-    declined.click(button(declined, 'Start now'));
-    assert.deepEqual(declined.confirms, ['All 1 slot is busy. Start #2 in an extra slot?']);
-    assert.equal(declined.fetches.length, before);
-    const accepted = render([waiting()], full);
-    accepted.click(button(accepted, 'Start now'));
-    assert.equal(accepted.fetches.at(-1)!.url, `/api/v1/${idPath}/force`);
-  });
-
-  it('counts forced sessions in the slot bar and takes the Start now button away from held models', () => {
-    const page = render([], { counts: { ...dashboardState().counts, running: 2, forced: 1 } });
-    assert.match(page.$('slots').textContent, /02 \/ 10 agents, 1 forced/);
-    const held = render([waiting({ model_hold: { model: 'opus', until: '2026-10-30T14:00:00Z' }, reason: { code: 'model_hold', text: 'Model hold' } })]);
-    assert.ok(!buttons(held).some((b) => b.textContent === 'Start now'));
-  });
-
-  it('shows the model controls and posts a hold', () => {
-    const page = render([], { model_controls: [{ model: 'opus', paused: false, limit_until: null }] });
-    assert.equal(page.$('model-controls').hidden, false);
-    assert.match(page.$('model-controls').textContent, /opus.*running/);
-    const [control] = page.query('button.model-control');
-    assert.equal(control!.textContent, 'Pause');
-    page.click(control!);
-    assert.deepEqual(page.fetches.at(-1), { url: '/api/v1/models/opus/hold', method: 'POST' });
-    const resumed = render([], { model_controls: [{ model: 'opus', paused: true, limit_until: null }] });
-    assert.match(resumed.$('model-controls').textContent, /paused by operator/);
-    resumed.click(resumed.query('button.model-control')[0]!);
-    assert.equal(resumed.fetches.at(-1)!.url, '/api/v1/models/opus/release');
-  });
-
-  it('names held models and the cards that wait for them', () => {
+  it('names held models in the alerts panel only', () => {
     const hold = { model: 'opus', source: 'limit', until: '2026-10-30T14:00:00Z', since: '2026-10-30T11:00:00Z', issue_identifier: ID, text: 'weekly limit' };
-    const page = render([waiting({ status: 'queued', retry: null, reason: null, model_hold: hold })], { model_holds: [hold] });
+    const page = render([], { model_holds: [hold] });
     assert.match(page.$('alerts-list').textContent, /Modell opus im Limit bis .*weekly limit · ausgelöst von acme\/app#2/);
     assert.equal(page.$('alerts-count').textContent, '1');
-    assert.match(page.$('waiting').textContent, /Waiting for model opus \(limit until /);
     assert.equal(render([]).$('alerts-count').textContent, '0');
   });
 
@@ -1535,14 +1469,6 @@ describe('dashboard page behaviour', () => {
     assert.equal(page.$('running').querySelectorAll('.pipe-node.st-skipped').length, 1);
   });
 
-  it('shows the dispatch note of a waiting card and no generic waiting hint', () => {
-    const card = { retry: null, reason: null, section: 'next', status: 'queued', position: 1 };
-    const noted = render([waiting({ ...card, dispatch_note: 'Blocked by #9' })]);
-    assert.match(noted.$('next').textContent, /Blocked by #9/);
-    const plain = render([waiting({ ...card, dispatch_note: null })]);
-    assert.doesNotMatch(plain.root.textContent, /Waiting for a free agent slot or the next poll/);
-  });
-
   it('shows the dispatch gate only when the session limit paused the dispatch', () => {
     const gate = { until: '2026-10-30T14:00:00Z', window: 'five_hour', issue_identifier: ID };
     const page = render([], { health: { ...dashboardState().health, dispatch_gate: gate } });
@@ -1551,42 +1477,10 @@ describe('dashboard page behaviour', () => {
     assert.equal(render([]).$('dispatch-gate').hidden, true);
   });
 
-  it('describes a session limit retry, also when the extra usage is off', () => {
-    const limit = { waiting: true, resets_at: '2026-10-30T14:00:00Z', window: 'five_hour', text: 'You hit your limit', hits: 1, max_retries: 3, overage_disabled_reason: 'out_of_credits' };
-    const retry = { kind: 'session_limit', attempt: 1, due_at: '2026-10-30T14:00:00Z', due_in_ms: 7_200_000, error: 'limit', limit };
-    const page = render([waiting({ retry, reason: null })]);
-    const text = page.$('waiting').textContent;
-    assert.match(text, /waiting for reset/);
-    assert.match(text, /five hour/);
-    assert.match(text, /You hit your limit/);
-    assert.match(text, /Extra usage is off because credits are used up\. Top up, then press Retry now\./);
-  });
-
-  it('lets the operator change and reset the agent slots', () => {
-    const limits = { ...dashboardState().limits, override_active: true, max_concurrent_agents: { effective: 3, workflow: 10, override: 3 } };
-    const page = render([], { limits });
-    const slots = page.$('slot-settings');
-    assert.equal(slots.hidden, false);
-    const reset = slots.querySelector('button.slot-reset')!;
-    assert.equal(reset.textContent, 'Reset to WORKFLOW.md (10)');
-    const more = page.query('button.slot-control').find((b) => b.getAttribute('aria-label') === 'More agent slots')!;
-    page.click(more);
-    assert.deepEqual(page.fetches.at(-1), { url: '/api/v1/settings/agents', method: 'PUT', body: { max_concurrent_agents: 4 } });
-    const again = render([], { limits });
-    again.click(again.$('slot-settings').querySelector('button.slot-reset')!);
-    assert.deepEqual([again.fetches.at(-1)!.url, again.fetches.at(-1)!.method], ['/api/v1/settings/agents', 'DELETE']);
-  });
-
-  it('warns when the limit is lowered below the running count', () => {
-    const limits = { ...dashboardState().limits, max_concurrent_agents: { effective: 1, workflow: 10, override: 1 } };
-    const page = render([], { limits, counts: { ...dashboardState().counts, running: 3 } });
-    assert.match(page.$('slot-settings').textContent, /3 running, limit 1: no new starts until 3 finish/);
-  });
-
   it('disables every control on a bind that does not allow remote control', () => {
-    const page = render([waiting()], { controls: { retry: false } });
+    const page = render([issueRow()], { controls: { retry: false }, counts: { ...dashboardState().counts, running: 1 } });
     assert.equal(buttons(page).length, 0);
-    assert.match(page.$('waiting').textContent, /Controls disabled/);
+    assert.match(page.$('running').textContent, /Controls disabled/);
   });
 });
 

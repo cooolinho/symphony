@@ -312,11 +312,11 @@ start; the dashboard notes it at the slot settings. When a result leads issues t
 
 #### Agent slots set on the dashboard
 
-`max_concurrent_agents`, `max_concurrent_agents_by_state` and `reserved_slots_by_role` can also be changed at runtime, on the dashboard or with
+`max_concurrent_agents`, `max_concurrent_agents_by_state` and `reserved_slots_by_role` can also be changed at runtime, in the head of the Tasks page or with
 `PUT /api/v1/settings/agents` (see [Dashboard and API](usage.md#dashboard-and-api)). The value in force comes from the
 first of:
 
-1. the dashboard override (stored as `settings` in the runtime state file under `<logDir>/state/`, so it survives a
+1. the override from the Tasks page (stored as `settings` in the runtime state file under `<logDir>/state/`, so it survives a
    restart),
 2. `WORKFLOW.md`,
 3. the `${VAR:-default}` fallback inside `WORKFLOW.md` (e.g. `SYMPHONY_MAX_CONCURRENT_AGENTS`, read once at start).
