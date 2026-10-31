@@ -1,7 +1,9 @@
 import { ALERTS_CSS, ALERTS_JS } from './alerts.ts';
 import { PIPELINE_CSS, PIPELINE_JS } from './pipeline.ts';
+import { ACTIVITY_CSS, ACTIVITY_JS } from './overview-activity.ts';
+import { HEAD_CSS, HEAD_JS } from './overview-head.ts';
 import { TEAMS_CSS, TEAMS_JS } from './overview-teams.ts';
-import { AURORA, page, pageHeader } from './ui/layout.ts';
+import { AURORA, page } from './ui/layout.ts';
 import { SYSTEM_COLORS } from './ui/palette.ts';
 
 const DASHBOARD_CSS = `
@@ -18,23 +20,7 @@ const DASHBOARD_CSS = `
   @keyframes fall { to { transform: translateY(110vh); } }
   @media (max-width: 640px), (prefers-reduced-motion: reduce) { .rain { display: none; } }
 
-  /* Page head: system info and the page actions (poll, logs drawer). */
-  .sysinfo { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 0; align-items: center; }
-  .sysinfo div { display: flex; flex-direction: column; min-width: 0; }
-  .sysinfo dt { font: 500 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
-  .sysinfo dd { margin: 1px 0 0; font: 500 12.5px var(--mono); color: var(--text); white-space: nowrap; }
 
-  /* Tool calls of the last 30 minutes: one tick per call, coloured by role (.role-* sets --role). */
-  .act-chart { display: block; width: 100%; height: 64px; }
-  .act-chart[hidden] { display: none; }
-  .act-tick { stroke: var(--role, var(--role-symphony)); stroke-width: 2; vector-effect: non-scaling-stroke; }
-  .act-axis { stroke: var(--line-2); stroke-width: 1; vector-effect: non-scaling-stroke; }
-  .act-axis-labels { display: flex; justify-content: space-between; font: 10px var(--mono); color: var(--muted); }
-  .act-axis-labels[hidden] { display: none; }
-  .act-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 11px var(--mono); color: var(--muted); margin-top: 6px; }
-  .act-key { display: inline-flex; align-items: center; gap: 6px; }
-  .act-swatch { width: 8px; height: 8px; border-radius: 2px; background: var(--role, var(--role-symphony)); }
-  .act-empty { margin: 0; font: 12px var(--mono); color: var(--muted); }
   /* System cards: host metrics, agent slots and the tracker API budget, coloured by utilisation (traffic light). */
   .syscards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
   .sys-host { margin-left: auto; font-size: 12.5px; color: var(--fg-3); }
@@ -182,12 +168,13 @@ const DASHBOARD_CSS = `
     .logs li { grid-template-columns: auto 1fr; }
     .logs .body { grid-column: 1 / -1; }
     .agent-foot { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 10px; }
-    .sysinfo { gap: 6px 16px; }
     .syscards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .budget-windows { grid-template-columns: minmax(0, 1fr); }
   }
 
   /* Budget: subscription windows, tokens per role, context hint */
+  .ov-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 20px; margin: 18px 0; }
+  .ov-row .budget { margin: 0; flex: 1 1 340px; min-width: 0; }
   .budget { margin: 18px 0; }
   .budget-windows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .budget-window { padding: 12px 14px; border: 1px solid var(--line); border-radius: 14px; display: flex; flex-direction: column; gap: 8px; }
@@ -216,25 +203,20 @@ export const DASHBOARD_HTML = page({
   nav: 'overview',
   aurora: AURORA.overview,
   pollNow: true,
-  styles: PIPELINE_CSS + TEAMS_CSS + ALERTS_CSS + DASHBOARD_CSS,
+  styles: PIPELINE_CSS + TEAMS_CSS + ALERTS_CSS + HEAD_CSS + ACTIVITY_CSS + DASHBOARD_CSS,
   body: `
-  ${pageHeader({
-    title: 'Übersicht',
-    subtitle: 'Agenten, Warteschlange und System auf einen Blick',
-    right: `<dl class="sysinfo" aria-live="polite">
-      <div><dt>System</dt><dd id="sys-status"><span class="badge tone-gray"><span class="dot"></span><span>Connecting</span></span></dd></div>
-      <div><dt>Workflow</dt><dd id="sys-workflow">—</dd></div>
-      <div><dt>Polling</dt><dd id="sys-interval">—</dd></div>
-      <div><dt>Last poll</dt><dd id="sys-lastpoll">—</dd></div>
-    </dl>
-    <a class="btn" id="logs-open" href="/stats" aria-controls="logs-drawer" aria-expanded="false">
-      <svg class="btn-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 4h10M3 8h10M3 12h6"/></svg>Logs</a>`,
-  })}
+  <div class="page-title ov-head">
+    <div class="ov-title">
+      <h1 id="page-title">Übersicht</h1>
+      <p class="page-sub" id="ov-subtitle" aria-live="polite">noch kein Poll</p>
+    </div>
+    <div class="page-title-right ov-side">
+      <div class="ov-chips" id="ov-chips" role="group" aria-label="Status"></div>
+      <a class="btn" id="logs-open" href="/stats" aria-controls="logs-drawer" aria-expanded="false">
+        <svg class="btn-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 4h10M3 8h10M3 12h6"/></svg>Logs</a>
+    </div>
+  </div>
   <section id="repositories" class="repos" aria-label="Repositories" hidden><span class="repos-label">Repositories</span><div class="repo-list" id="repo-list"></div></section>
-  <section id="alerts" class="panel alerts" aria-labelledby="alerts-title">
-    <div class="section-head"><h2 id="alerts-title">Hinweise <span class="count" id="alerts-count" aria-live="polite">0</span></h2></div>
-    <ul class="alerts-list" id="alerts-list"></ul>
-  </section>
   <section id="dispatch-gate" class="dispatch-gate" role="status" hidden>
     <span class="dot tone-amber"></span><span id="dispatch-gate-text"></span>
   </section>
@@ -245,10 +227,16 @@ export const DASHBOARD_HTML = page({
   </section>
   <div class="stats" id="stats" aria-label="Metrics"></div>
 
-  <section class="budget" id="budget" aria-labelledby="budget-title" hidden>
-    <div class="section-head"><h2 id="budget-title">Budget</h2></div>
-    <div id="budget-body"></div>
-  </section>
+  <div class="ov-row">
+    <section id="alerts" class="panel alerts" aria-labelledby="alerts-title">
+      <div class="section-head"><h2 class="lbl" id="alerts-title">Alerts</h2><span class="alerts-badge" id="alerts-count" aria-live="polite" hidden>0</span></div>
+      <ul class="alerts-list" id="alerts-list"></ul>
+    </section>
+    <section class="budget" id="budget" aria-labelledby="budget-title" hidden>
+      <div class="section-head"><h2 id="budget-title">Budget</h2></div>
+      <div id="budget-body"></div>
+    </section>
+  </div>
 
   <section class="agents-section teams-section" id="teams-section" aria-labelledby="teams-title">
     <div class="section-head"><h2 id="teams-title">Teams live <span class="count" id="teams-count"></span></h2><a class="teams-all" href="/tasks">Alle Tasks →</a></div>
@@ -270,13 +258,11 @@ export const DASHBOARD_HTML = page({
 
   <section class="panel act-section" id="tool-activity" aria-labelledby="tool-activity-title">
     <div class="section-head">
-      <h2 id="tool-activity-title">Tool calls</h2>
-      <span class="meta">last 30 min · by role</span>
+      <h2 class="lbl" id="tool-activity-title">Agent-Aktivität · letzte 30 min</h2>
+      <div class="act-legend" id="tool-activity-legend"></div>
     </div>
-    <svg id="tool-activity-chart" class="act-chart" role="img" viewBox="0 0 600 64" preserveAspectRatio="none" aria-label="Tool calls in the last 30 minutes" hidden></svg>
-    <div class="act-axis-labels" id="tool-activity-axis" hidden aria-hidden="true"><span>-30 min</span><span>-15 min</span><span>now</span></div>
-    <div class="act-legend" id="tool-activity-legend"></div>
-    <p class="act-empty" id="tool-activity-empty" hidden>No activity in the last 30 minutes.</p>
+    <div class="act-strip" id="tool-activity-strip" role="img" aria-label="Tool-Aufrufe der letzten 30 Minuten, farbig je Rolle"></div>
+    <div class="act-axis" aria-hidden="true"><span>−30 min</span><span>−20 min</span><span>−10 min</span><span>jetzt</span></div>
   </section>
 
   <div class="lower">
@@ -320,7 +306,7 @@ export const DASHBOARD_HTML = page({
   scripts: `
 (() => {
 ${PIPELINE_JS}${TEAMS_JS}
-${ALERTS_JS}
+${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}
 
   const $ = (id) => document.getElementById(id);
   const setText = (node, text) => { text = String(text ?? ''); if (node.textContent !== text) node.textContent = text; };
@@ -392,25 +378,6 @@ ${ALERTS_JS}
       nodes = [el('span', 'all repositories on the board', 'chip repo-chip all')];
     }
     patchChildren($('repo-list'), nodes);
-  }
-
-  function renderHeader(h, problems, online) {
-    setLive(online);
-    let status;
-    if (!online) status = badge('Offline', 'red', false);
-    else if (h.stopping) status = badge('Shutting down', 'amber', false);
-    else if (problems.length) status = badge('Degraded', 'amber', true);
-    else status = badge('Online', 'green', true);
-    const holder = $('sys-status');
-    const current = holder.firstChild;
-    if (!current || current.className !== status.className || current.textContent !== status.textContent) holder.replaceChildren(status);
-    if (!h) return;
-    setText($('sys-workflow'), 'v' + h.workflow_version);
-    setText($('sys-interval'), 'every ' + Math.round(h.poll_interval_ms / 1000) + 's');
-    const last = $('sys-lastpoll');
-    setText(last, h.last_tick_at ? ago(h.last_tick_at) : 'never');
-    const stale = h.last_tick_at && Date.now() - Date.parse(h.last_tick_at) > Math.max(3 * h.poll_interval_ms, 30000);
-    last.style.color = stale ? 'var(--amber)' : '';
   }
 
   // ------------------------------------------------------------------ agent cards
@@ -920,61 +887,15 @@ ${ALERTS_JS}
 
   // ------------------------------------------------------------------ tool calls (last 30 minutes)
 
-  function renderToolActivity(data) {
-    const svg = $('tool-activity-chart');
-    const legend = $('tool-activity-legend');
-    const empty = $('tool-activity-empty');
-    const axis = $('tool-activity-axis');
-    const events = data && Array.isArray(data.events) ? data.events : [];
-    svg.replaceChildren();
-    legend.replaceChildren();
-    if (events.length === 0) {
-      svg.setAttribute('hidden', '');
-      axis.hidden = true;
-      empty.hidden = false;
-      return;
-    }
-    svg.removeAttribute('hidden');
-    axis.hidden = false;
-    empty.hidden = true;
-    const minutes = data.minutes > 0 ? data.minutes : 30;
-    const until = Number.isFinite(Date.parse(data.generated_at)) ? Date.parse(data.generated_at) : Date.now();
-    const since = Number.isFinite(Date.parse(data.since)) ? Date.parse(data.since) : until - minutes * 60000;
-    const width = 600;
-    svg.append(svgEl('line', { class: 'act-axis', x1: 0, y1: 50, x2: width, y2: 50 }));
-    const buckets = new Map();
-    const counts = new Map();
-    for (const e of events) {
-      const b = Math.floor((Date.parse(e.at) - since) / 60000);
-      if (!buckets.has(b)) buckets.set(b, []);
-      buckets.get(b).push(e);
-      counts.set(e.role, (counts.get(e.role) || 0) + 1);
-    }
-    const roleKey = (role) => (uiOwn(UI_ROLE_COLORS, role) ? role : 'symphony');
-    const roleName = (role) => uiOwn(UI_ROLE_NAMES, role) || String(role);
-    for (const [b, list] of buckets) {
-      list.forEach((e, i) => {
-        const x = Math.min(width, Math.max(0, (b + (i + 0.5) / list.length) * (width / minutes)));
-        const tick = svgEl('line', { class: 'act-tick role-' + roleKey(e.role), x1: x, y1: 6, x2: x, y2: 46 });
-        const title = svgEl('title', {});
-        title.textContent = roleName(e.role) + ' · ' + e.issue + ' · ' + fmtClock(e.at);
-        tick.append(title);
-        svg.append(tick);
-      });
-    }
-    const roles = [...counts].sort((a, b) => b[1] - a[1] || roleName(a[0]).localeCompare(roleName(b[0])));
-    for (const [role, n] of roles) {
-      const key = el('span', null, 'act-key role-' + roleKey(role));
-      key.append(el('span', null, 'act-swatch'), el('span', roleName(role) + ' ' + n));
-      legend.append(key);
-    }
-    svg.setAttribute('aria-label', events.length + ' tool call' + (events.length === 1 ? '' : 's') + ' in ' + minutes + ' minutes, '
-      + roles.map(([role, n]) => roleName(role) + ' ' + n).join(', '));
-  }
+  let activityData = null;
   async function loadToolActivity() {
     try {
       const res = await fetch('/api/v1/activity?minutes=30', { cache: 'no-store' });
-      if (res.ok) renderToolActivity(await res.json());
+      if (res.ok) {
+        activityData = await res.json();
+        renderActivityStrip($('tool-activity-strip'), activityData);
+        renderActivityLegend($('tool-activity-legend'), actRoles(lastState || {}, activityData.events || []));
+      }
     } catch {}
   }
 
@@ -1265,7 +1186,9 @@ ${ALERTS_JS}
     const h = state.health;
     const list = alerts(state, budgetAnswer);
     renderAlerts(list, $('alerts-list'), $('alerts-count'));
-    renderHeader(h, list.filter((a) => a.kind === 'attention'), true);
+    setLive(true);
+    renderHead(state, Date.now(), true);
+    renderActivityLegend($('tool-activity-legend'), actRoles(state, activityData ? activityData.events : []));
     renderRepositories(h);
     const gate = h.dispatch_gate;
     $('dispatch-gate').hidden = !gate;
@@ -1313,8 +1236,8 @@ ${ALERTS_JS}
       lastState = null;
       renderSystemCards();
       renderBudget();
-      renderHeader(null, [], false);
-      setText($('sys-lastpoll'), 'unreachable');
+      setLive(false);
+      renderHead(null, Date.now(), false);
       renderAlerts([{ kind: 'attention', at: new Date().toISOString(), title: 'Orchestrator nicht erreichbar', text: error.message, href: '/stats' }], $('alerts-list'), $('alerts-count'));
     }
     loading = false;
@@ -1338,7 +1261,10 @@ ${ALERTS_JS}
   setInterval(loadSystem, 10000);
   setInterval(loadHistory, 30000);
   setInterval(loadToolActivity, 30000);
-  setInterval(() => tickTeams(Date.now()), 1000);
+  setInterval(() => {
+    tickTeams(Date.now());
+    if (lastState) renderHead(lastState, Date.now(), true);
+  }, 1000);
   // Tests load the page in a fake DOM and render a fixture through window.__render.
   if (window.__SYMPHONY_TEST__) window.__render = render;
 })();

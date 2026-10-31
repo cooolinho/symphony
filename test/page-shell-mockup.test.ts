@@ -248,7 +248,7 @@ describe('E1-8 page shell after the mockup', () => {
     for (const d of ['font-size: 34px', 'font-weight: 600', 'letter-spacing: -.02em']) assert.ok(h1.includes(d), d);
     const sub = ruleOf(LAYOUT_CSS, '.page-sub');
     assert.ok(sub.includes('15px') && sub.includes('var(--fg-2)'));
-    assert.equal(count(DASHBOARD_HTML, '<h1>'), 1);
+    assert.equal(count(DASHBOARD_HTML, '<h1'), 1);
     assert.equal(count(LOGS_HTML, '<h1>'), 1);
   });
 

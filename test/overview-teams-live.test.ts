@@ -106,7 +106,7 @@ describe('overview teams: live updates (round 2)', () => {
 
   it('is wired next to the SSE live updates: render calls renderTeams, a 1 s ticker runs tickTeams', () => {
     assert.match(DASHBOARD_HTML, /live\(load, pollEvery\(load, 2000\)\)/);
-    assert.match(DASHBOARD_HTML, /setInterval\(\(\) => tickTeams\(Date\.now\(\)\), 1000\)/);
+    assert.match(DASHBOARD_HTML, /setInterval\(\(\) => \{\s*tickTeams\(Date\.now\(\)\);[^}]*\}, 1000\)/);
     assert.match(DASHBOARD_HTML, /renderTeams\(\$\('teams'\), state, Date\.now\(\)\)/);
     assert.ok(!DASHBOARD_HTML.includes('<<<<<<<') && !DASHBOARD_HTML.includes('>>>>>>>'));
   });

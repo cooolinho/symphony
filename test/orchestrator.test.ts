@@ -3316,6 +3316,11 @@ describe('issue-centric snapshot', () => {
     );
     assert.deepEqual(snap.blocked[0]!.labels, issues.find((i) => i.id === 'unlabeled')!.labels);
     assert.ok('updated_at' in snap.blocked[0]!);
+    // review_rounds is additive: a number for tracked issues, null without a record (E2-8).
+    assert.ok(snap.issues.every((row) => 'review_rounds' in row));
+    assert.equal(snap.blocked[0]!.review_rounds, null);
+    assert.equal(snap.issues.find((row) => row.issue_id === 'later')?.review_rounds, null);
+    assert.equal(snap.issues.find((row) => row.issue_id === 'run')?.review_rounds, 0);
     assert.equal(snap.counts.queued, 4);
 
     // The dry run starts with nothing running: it starts what the tick started and gives the rest the same reasons.

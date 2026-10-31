@@ -45,7 +45,7 @@ describe('E2-3 Teams next to Alerts on the overview', () => {
   it('keeps the SSE wiring, the 1 s Teams ticker and the budget poll together in the start block', () => {
     const s = script();
     assert.match(s, /live\(load, pollEvery\(load, 2000\)\)/);
-    assert.match(s, /setInterval\(\(\) => tickTeams\(Date\.now\(\)\), 1000\)/);
+    assert.match(s, /setInterval\(\(\) => \{\s*tickTeams\(Date\.now\(\)\);[^}]*\}, 1000\)/);
     assert.match(s, /setInterval\(loadBudget, 30000\)/);
   });
 });
