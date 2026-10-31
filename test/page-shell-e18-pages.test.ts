@@ -2,7 +2,7 @@
 // Unabhängig aus den Abnahmekriterien abgeleitet; prüft das ausgelieferte HTML.
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { AGENT_HTML } from '../src/http/agent-page.ts';
+import { AGENT_HTML } from '../src/http/issue-page.ts';
 import { BRAIN_HTML } from '../src/http/brain-page.ts';
 import { CHANGES_HTML } from '../src/http/changes-page.ts';
 import { DASHBOARD_HTML } from '../src/http/dashboard.ts';

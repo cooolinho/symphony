@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import fs from 'node:fs';
-import { AGENT_HTML } from '../src/http/agent-page.ts';
+import { AGENT_HTML } from '../src/http/issue-page.ts';
 import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
 import { LOGS_HTML } from '../src/http/logs-page.ts';
 import { TOKENS_CSS, rgba } from '../src/http/ui/tokens.ts';

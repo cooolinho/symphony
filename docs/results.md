@@ -309,8 +309,8 @@ and the stage runs again in a continuation session. Roles without `result` are n
 
 Every recorded result is also written to the repository history as a `stage_result` line (see
 [configuration.md](configuration.md#repository-logs)); `/api/v1/history/analytics` groups them as `by_profile` and
-`verdicts_by_role`. The agent page lists each result as a card in "Stage results" (role, verdict with round,
-summary, findings, blockers and a link to the comment), fed by `results` of `GET /api/v1/<identifier>`. A dashboard
+`verdicts_by_role`. The team view lists each result as a row in the sidebar "Ergebnisse" (role, verdict chip, round,
+shortened summary, findings and blockers to fold out, and a link to the comment), fed by `results` of `GET /api/v1/<identifier>`. A dashboard
 card shows a `needs human` chip for an issue with the `needs-human` label and, with `agent.max_issue_cost_usd` set, the
 spent share of the budget (`budget` of `issues[]` in `GET /api/v1/state`).
 

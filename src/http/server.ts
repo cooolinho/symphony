@@ -9,7 +9,7 @@ import { ACTIVITY_DEFAULT_MINUTES, ACTIVITY_MAX_MINUTES } from '../orchestrator/
 import type { Orchestrator } from '../orchestrator/orchestrator.ts';
 import type { SystemSource } from '../system/metrics.ts';
 import { errorMessage } from '../util/errors.ts';
-import { AGENT_HTML } from './agent-page.ts';
+import { AGENT_HTML } from './issue-page.ts';
 import { BRAIN_HTML } from './brain-page.ts';
 import { CHANGES_HTML } from './changes-page.ts';
 import { DASHBOARD_HTML } from './dashboard.ts';

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import vm from 'node:vm';
 import { describe, it } from 'node:test';
-import { AGENT_HTML } from '../src/http/agent-page.ts';
+import { AGENT_HTML } from '../src/http/issue-page.ts';
 import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
 import { ChangeEvents } from '../src/http/events.ts';
 import { LOGS_HTML } from '../src/http/logs-page.ts';

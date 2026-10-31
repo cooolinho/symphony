@@ -51,8 +51,8 @@ describe('E4-6 panel structure', () => {
     const panel = page.$('budget');
     assert.match(panel.className, /\bg\b/);
     assert.equal(panel.hidden, false);
-    assert.equal(panel.parentElement?.className, 'ov-pair');
-    assert.equal(page.$('alerts').parentElement?.className, 'ov-pair');
+    assert.equal(panel.parentElement?.className, 'ov-row');
+    assert.equal(page.$('alerts').parentElement?.className, 'ov-row');
     assert.match(page.$('budget-title').className, /\blbl\b/);
     assert.equal(text(page.$('budget-title')), 'Context-Budget · heute');
     const more = panel.querySelectorAll('a').find((a) => text(a) === 'Verlauf →');
