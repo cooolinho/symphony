@@ -92,3 +92,22 @@ export function teamView(over: Obj = {}): Obj {
     ...clone(over),
   };
 }
+
+/** Team view with two rounds: developer, reviewer (request_changes), developer again; `live` leaves the last block open. */
+export function scoreTeam(opts: { live?: boolean } = {}, over: Obj = {}): Obj {
+  const block = (role: string, run: string, started_at: string, ended_at: string | null, verdict: string | null, round: number, model: string, tool_calls: number) =>
+    ({ role, run, started_at, ended_at, verdict, round, model, tool_calls });
+  const base = teamView({
+    blocks: [
+      block('developer', 'run-1', '2026-10-30T11:00:00.000Z', '2026-10-30T11:20:00.000Z', 'done', 1, 'opus', 30),
+      block('reviewer', 'run-2', '2026-10-30T11:20:00.000Z', '2026-10-30T11:30:00.000Z', 'request_changes', 1, 'sonnet', 8),
+      block('developer', 'run-3', '2026-10-30T11:31:00.000Z', opts.live ? null : '2026-10-30T11:50:00.000Z', null, 2, 'opus', 12),
+    ],
+    handoffs: [
+      { from: 'developer', to: 'reviewer', verdict: 'done', at: '2026-10-30T11:20:00.000Z' },
+      { from: 'reviewer', to: 'developer', verdict: 'request_changes', at: '2026-10-30T11:30:00.000Z' },
+    ],
+  });
+  if (!opts.live) { base.active = null; base.subagents = { running: [], finished: [] }; }
+  return { ...base, ...clone(over) };
+}
