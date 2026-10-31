@@ -1,83 +1,63 @@
 import { CHART_CSS, CHART_JS } from './charts.ts';
-import { page } from './ui/layout.ts';
+import { AURORA, page, pageHeader } from './ui/layout.ts';
 
 const LOGS_CSS = `
-  .filterbar { display: grid; gap: 12px; }
+  .filterbar { display: grid; gap: 12px; padding: 16px 18px; }
   .filter-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
   .filters { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: flex-end; }
   .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-  .field > span { font: 600 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
   .field select { min-width: 150px; }
   .custom { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  input[type="date"], input[type="text"] { font: 500 12px var(--mono); color: var(--text); background: var(--panel-2);
-    border: 1px solid var(--line-2); border-radius: var(--radius-sm); padding: 6px 10px; color-scheme: dark; min-width: 0; }
-  .period { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; font: 12px var(--mono); color: var(--text-2); }
+  input[type="date"], input[type="text"] { font: 500 12px var(--mono); color: var(--fg); background: var(--glass-in);
+    border: 1px solid var(--glass-line); border-radius: var(--radius-sm); padding: 6px 10px; color-scheme: dark; min-width: 0; min-height: 44px; }
+  .period { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font: 12px var(--mono); color: var(--fg-2); }
   .period strong { color: var(--green); font-weight: 600; letter-spacing: .04em; }
-  .period .chip.on { border-color: var(--cyan-line); color: var(--cyan); background: var(--cyan-dim); cursor: pointer; }
-  .seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: var(--radius-sm); overflow: hidden; }
-  .seg button { border: 0; border-radius: 0; padding: 6px 10px; background: transparent; color: var(--muted); font-size: 11px; }
-  .seg button + button { border-left: 1px solid var(--line-2); }
-  .seg button[aria-pressed="true"] { background: var(--raise); color: var(--green); }
   .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(520px, 100%), 1fr)); gap: 20px; }
   .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 20px; }
-  .stats.primary .stat .value { font-size: 24px; }
-  .stats.secondary { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
-  .stats.secondary .stat { padding: 9px 12px 9px 14px; }
-  .stats.secondary .stat .value { font-size: 16px; margin-top: 3px; }
-  .delta { font: 11px var(--mono); color: var(--muted); margin-top: 3px; }
-  .delta b { font-weight: 600; color: var(--text-2); }
-  .delta.up b { color: var(--cyan); } .delta.down b { color: var(--text-2); }
+  .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .kpi-grid.secondary { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); margin-top: 10px; }
+  .kpi-grid .ui-spark { margin-top: 4px; }
+  .delta { font: 12px var(--mono); color: var(--fg-3); }
+  .delta b { font-weight: 600; color: var(--fg-2); }
+  .delta.up b { color: var(--cyan); }
   .delta.bad b { color: var(--amber); }
-  .note { color: var(--muted); font-size: 11.5px; margin: 10px 0 0; }
-  .sub-h { font: 600 10.5px var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); margin: 18px 0 10px; }
-  .state { display: grid; place-items: center; text-align: center; gap: 6px; padding: 34px 12px; border: 1px dashed var(--line-2);
-    border-radius: var(--radius-sm); color: var(--muted); font-size: 12.5px; }
-  .state b { font: 600 11px var(--mono); letter-spacing: .2em; color: var(--text-2); }
-  .state.error { border-color: var(--red-line); background: var(--red-dim); }
-  .state.error b { color: var(--red); }
-  .state.loading b { color: var(--green); animation: blink 1.2s steps(2) infinite; }
-  @keyframes blink { 50% { opacity: .35; } }
+  .sub-h { font: 600 12px var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--fg-3); margin: 18px 0 10px; }
+  .state { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; text-align: center; gap: 8px 12px; padding: 28px 12px;
+    color: var(--fg-3); font-size: 12.5px; }
   main.busy [data-section] { opacity: .55; transition: opacity .2s var(--ease); }
-  .kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px 16px; margin: 0 0 14px; }
-  .kv div { min-width: 0; }
-  .kv dt { font: 600 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
-  .kv dd { margin: 2px 0 0; font: 600 15px var(--mono); font-variant-numeric: tabular-nums; color: var(--text); overflow-wrap: anywhere; }
-  .kv dd small { display: block; font: 400 11px var(--sans); color: var(--muted); }
   .outcomes { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 4px; }
   .outcomes li { display: flex; justify-content: space-between; gap: 12px; font: 12px var(--mono); }
-  .outcomes li span:first-child { display: inline-flex; align-items: center; gap: 8px; color: var(--text-2); }
+  .outcomes li span:first-child { display: inline-flex; align-items: center; gap: 8px; color: var(--fg-2); }
   .outcomes li span:last-child { font-variant-numeric: tabular-nums; }
   .rank { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; counter-reset: rank; }
   .rank li { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 2px 8px; padding: 5px 6px; margin: 0 -6px;
     border-radius: var(--radius-sm); counter-increment: rank; cursor: pointer; }
-  .rank li:hover, .rank li:focus-visible { background: rgba(255, 255, 255, .03); }
-  .rank li::before { content: counter(rank); font: 11px var(--mono); color: var(--muted); }
-  .rank .who { font: 12px var(--mono); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rank li:hover, .rank li:focus-visible { background: var(--glass-in); }
+  .rank li::before { content: counter(rank); font: 12px var(--mono); color: var(--fg-3); }
+  .rank .who { font: 12px var(--mono); color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rank .val { font: 600 12px var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
-  .rank .meta { grid-column: 2 / -1; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rank .meta { grid-column: 2 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; }
   .attention { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
   .attention li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 2px 10px; padding: 8px 10px; cursor: pointer;
-    border: 1px solid var(--amber-line); border-radius: var(--radius-sm); background: var(--amber-dim); }
-  .attention li.red { border-color: var(--red-line); background: var(--red-dim); }
-  .attention .ico { color: var(--amber); font: 600 13px var(--mono); }
-  .attention li.red .ico { color: var(--red); }
+    border: 1px solid var(--tone-line); border-radius: var(--radius-sm); background: var(--tone-dim); }
+  .attention .ico { color: var(--tone); font: 600 13px var(--mono); }
   .attention .who { font: 12px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .attention .val { font: 600 12px var(--mono); text-align: right; }
-  .attention .why { grid-column: 2 / -1; color: var(--text-2); font-size: 11.5px; }
+  .attention .why { grid-column: 2 / -1; color: var(--fg-2); font-size: 12px; }
   .int-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 12px; }
-  .int-head b { font: 600 14px var(--mono); color: var(--text); }
-  .int-block + .int-block { margin-top: 18px; padding-top: 14px; border-top: 1px dashed var(--line-2); }
+  .int-head b { font: 600 14px var(--mono); color: var(--fg); }
+  .int-block { padding: 14px; }
+  .int-block + .int-block { margin-top: 12px; }
+  .role-chips { display: flex; flex-wrap: wrap; gap: 4px; }
   td.event { white-space: nowrap; }
-  td.event .chip[class*="tone-"], .chip[class*="tone-"] { color: var(--tone); border-color: var(--tone-line); background: var(--tone-dim); }
   tr.click { cursor: pointer; }
   .issue-cell .meta { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row-actions { display: flex; gap: 6px; }
-  .row-actions .btn, .more { padding: 3px 8px; font-size: 10.5px; }
   .more { margin-top: 10px; }
+  .note { color: var(--fg-3); font-size: 12px; margin: 10px 0 0; }
   @media (max-width: 640px) {
     .field select { min-width: 0; width: 100%; }
     .filters > .field { flex: 1 1 140px; }
-    .stats.primary .stat .value { font-size: 19px; }
   }
 `;
 
@@ -91,139 +71,173 @@ const LOGS_CSS = `
 export const LOGS_HTML = page({
   title: 'Statistik · Symphony',
   nav: 'stats',
+  aurora: AURORA.stats,
   styles: CHART_CSS + LOGS_CSS,
   body: `
-  <section class="filterbar" aria-label="Filter">
+  ${pageHeader({ title: 'Statistik', subtitle: 'Auswertung der Logs nach Zeitraum, Repository und Modell' })}
+  <section class="filterbar g" aria-label="Filter">
     <form class="filters" id="filters">
-      <label class="field"><span>Period</span>
+      <label class="field"><span class="lbl">Zeitraum</span>
         <select id="period">
-          <option value="today">Today</option><option value="yesterday">Yesterday</option>
-          <option value="7d">Last 7 days</option><option value="14d">Last 14 days</option>
-          <option value="30d">Last 30 days</option><option value="90d">Last 90 days</option>
-          <option value="month">This month</option><option value="last_month">Last month</option>
-          <option value="all">All time</option><option value="custom">Custom range…</option>
+          <option value="today">Heute</option><option value="yesterday">Gestern</option>
+          <option value="7d">Letzte 7 Tage</option><option value="14d">Letzte 14 Tage</option>
+          <option value="30d">Letzte 30 Tage</option><option value="90d">Letzte 90 Tage</option>
+          <option value="month">Dieser Monat</option><option value="last_month">Letzter Monat</option>
+          <option value="all">Gesamter Zeitraum</option><option value="custom">Eigener Zeitraum…</option>
         </select>
       </label>
-      <div class="field"><span>Custom</span>
+      <div class="field"><span class="lbl">Eigener Zeitraum</span>
         <div class="custom">
-          <input type="date" id="from" aria-label="From (inclusive)"> <span class="meta">→</span>
-          <input type="date" id="to" aria-label="To (inclusive)">
-          <button class="btn btn-primary" type="submit" id="apply">Apply</button>
+          <input type="date" id="from" aria-label="Von (inklusive)"> <span class="meta">→</span>
+          <input type="date" id="to" aria-label="Bis (inklusive)">
+          <button class="ui-btn ui-btn-approve" type="submit" id="apply">Anwenden</button>
         </div>
       </div>
-      <label class="field"><span>Repository</span><select id="repo"><option value="">All repositories</option></select></label>
-      <label class="field"><span>Model</span><select id="model"><option value="">All models</option></select></label>
-      <label class="field"><span>Effort</span><select id="effort"><option value="">All efforts</option></select></label>
+      <label class="field"><span class="lbl">Repository</span><select id="repo"><option value="">Alle Repositories</option></select></label>
+      <label class="field"><span class="lbl">Modell</span><select id="model"><option value="">Alle Modelle</option></select></label>
+      <label class="field"><span class="lbl">Effort</span><select id="effort"><option value="">Alle Efforts</option></select></label>
     </form>
     <div class="filter-foot">
       <div class="period" id="period-label" aria-live="polite"></div>
       <div class="actions">
-        <a class="btn" id="raw" href="#" hidden>Raw log</a>
-        <button class="btn" id="reload" type="button">Reload</button>
+        <a class="ui-btn" id="raw" href="#" hidden>Rohlog</a>
+        <button class="ui-btn" id="reload" type="button">Neu laden</button>
       </div>
     </div>
   </section>
 
-  <section id="problems" class="problems" hidden><h2>Problems</h2><ul id="problem-list"></ul></section>
+  <section id="problems" class="problems" hidden><h2>Probleme</h2><ul id="problem-list"></ul></section>
 
-  <section data-section aria-labelledby="h-kpi">
-    <h2 id="h-kpi">Overview</h2>
-    <div data-body="kpi"></div>
+  <section class="ui-card g" data-section aria-labelledby="h-kpi">
+    <div class="ui-card-head"><h2 class="ui-card-title" id="h-kpi">Kennzahlen</h2></div>
+    <div class="ui-card-body" data-body="kpi"></div>
   </section>
 
-  <section data-section>
-    <div class="section-head"><h2>Activity</h2>
-      <div class="seg" id="activity-metric" role="group" aria-label="Activity metric">
-        <button type="button" data-v="runs" aria-pressed="true">Runs</button><button type="button" data-v="tokens">Tokens</button>
-        <button type="button" data-v="cost">Cost</button><button type="button" data-v="time">Agent time</button>
+  <section class="ui-card g" data-section aria-labelledby="h-activity">
+    <div class="ui-card-head"><h2 class="ui-card-title" id="h-activity">Aktivität</h2>
+      <div class="ui-seg" id="activity-metric" role="group" aria-label="Kennzahl der Aktivität">
+        <button type="button" class="ui-seg-btn" data-v="runs" aria-pressed="true">Runs</button><button type="button" class="ui-seg-btn" data-v="tokens" aria-pressed="false">Tokens</button>
+        <button type="button" class="ui-seg-btn" data-v="cost" aria-pressed="false">Kosten</button><button type="button" class="ui-seg-btn" data-v="time" aria-pressed="false">Agentenzeit</button>
       </div>
     </div>
-    <div data-body="activity"></div>
+    <div class="ui-card-body" data-body="activity"></div>
   </section>
 
   <div class="grid-2">
-    <section data-section>
-      <div class="section-head"><h2>Estimated cost</h2>
-        <div class="seg" id="cost-mode" role="group" aria-label="Cost view">
-          <button type="button" data-v="period" aria-pressed="true">Per bucket</button><button type="button" data-v="cumulative">Cumulative</button>
+    <section class="ui-card g" data-section aria-labelledby="h-cost">
+      <div class="ui-card-head"><h2 class="ui-card-title" id="h-cost">Geschätzte Kosten</h2>
+        <div class="ui-seg" id="cost-mode" role="group" aria-label="Ansicht der Kosten">
+          <button type="button" class="ui-seg-btn" data-v="period" aria-pressed="true">Je Zeitraum</button><button type="button" class="ui-seg-btn" data-v="cumulative" aria-pressed="false">Kumuliert</button>
         </div>
       </div>
-      <div data-body="cost"></div>
+      <div class="ui-card-body" data-body="cost"></div>
     </section>
-    <section data-section>
-      <div class="section-head"><h2>Tokens</h2></div>
-      <div data-body="tokens"></div>
+    <section class="ui-card g" data-section aria-labelledby="h-tokens">
+      <div class="ui-card-head"><h2 class="ui-card-title" id="h-tokens">Tokens</h2></div>
+      <div class="ui-card-body" data-body="tokens"></div>
     </section>
   </div>
 
-  <section data-section>
-    <div class="section-head"><h2>Models</h2>
-      <label class="field"><span>Sort by</span><select id="model-sort">
-        <option value="cost_usd">Total cost</option><option value="runs">Runs</option><option value="total_tokens">Tokens</option>
-        <option value="avg_cost_per_run">Avg cost / run</option><option value="avg_tokens_per_run">Avg tokens / run</option>
-        <option value="agent_seconds">Agent time</option>
+  <div class="grid-2">
+    <section class="ui-card g" data-section aria-labelledby="h-budget">
+      <div class="ui-card-head"><h2 class="ui-card-title" id="h-budget">5-h-Spitze je Tag</h2></div>
+      <div class="ui-card-body" data-body="budget"></div>
+    </section>
+    <section class="ui-card g" data-section aria-labelledby="h-compacts">
+      <div class="ui-card-head"><h2 class="ui-card-title" id="h-compacts">Auto-Compacts je Rolle</h2></div>
+      <div class="ui-card-body" data-body="compacts"></div>
+    </section>
+  </div>
+
+  <section class="ui-card g" data-section aria-labelledby="h-models">
+    <div class="ui-card-head"><h2 class="ui-card-title" id="h-models">Modelle</h2>
+      <label class="field"><span class="lbl">Sortieren nach</span><select id="model-sort">
+        <option value="cost_usd">Gesamtkosten</option><option value="runs">Runs</option><option value="total_tokens">Tokens</option>
+        <option value="avg_cost_per_run">Ø Kosten/Run</option><option value="avg_tokens_per_run">Ø Tokens/Run</option>
+        <option value="agent_seconds">Agentenzeit</option>
       </select></label>
     </div>
-    <div data-body="models"></div>
+    <div class="ui-card-body" data-body="models"></div>
   </section>
 
-  <section data-section>
-    <div class="section-head"><h2>Effort</h2></div>
-    <div data-body="efforts"></div>
+  <section class="ui-card g" data-section aria-labelledby="h-efforts">
+    <div class="ui-card-head"><h2 class="ui-card-title" id="h-efforts">Effort</h2></div>
+    <div class="ui-card-body" data-body="efforts"></div>
   </section>
 
-  <section data-section>
-    <div class="section-head"><h2>Roles</h2></div>
-    <div data-body="roles"></div>
+  <section class="ui-card g" data-section aria-labelledby="h-roles">
+    <div class="ui-card-head"><h2 class="ui-card-title" id="h-roles">Rollen</h2></div>
+    <div class="ui-card-body" data-body="roles"></div>
   </section>
 
   <div class="grid-2">
-    <section data-section><h2>Tools</h2><div data-body="tools"></div></section>
-    <section data-section><h2>Laravel Boost &amp; integrations</h2><div data-body="integrations"></div></section>
+    <section class="ui-card g" data-section aria-labelledby="h-tools">
+      <div class="ui-card-head"><h2 class="ui-card-title" id="h-tools">Tools</h2></div>
+      <div class="ui-card-body" data-body="tools"></div>
+    </section>
+    <section class="ui-card g" data-section aria-labelledby="h-integrations">
+      <div class="ui-card-head"><h2 class="ui-card-title" id="h-integrations">Laravel Boost &amp; Integrationen</h2></div>
+      <div class="ui-card-body" data-body="integrations"></div>
+    </section>
   </div>
 
-  <section data-section>
-    <div class="section-head"><h2>Repositories</h2>
-      <label class="field"><span>Compare</span><select id="repo-sort">
-        <option value="runs">Runs</option><option value="cost_usd">Cost</option><option value="total_tokens">Tokens</option>
-        <option value="agent_seconds">Agent time</option>
+  <section class="ui-card g" data-section aria-labelledby="h-repos">
+    <div class="ui-card-head"><h2 class="ui-card-title" id="h-repos">Repositories</h2>
+      <label class="field"><span class="lbl">Vergleichen nach</span><select id="repo-sort">
+        <option value="runs">Runs</option><option value="cost_usd">Kosten</option><option value="total_tokens">Tokens</option>
+        <option value="agent_seconds">Agentenzeit</option>
       </select></label>
     </div>
-    <div data-body="repos"></div>
+    <div class="ui-card-body" data-body="repos"></div>
   </section>
 
   <div class="grid-3">
-    <section data-section><h2>Run outcomes</h2><div data-body="outcomes"></div></section>
-    <section data-section><h2>Run duration</h2><div data-body="durations"></div></section>
-    <section data-section><h2>When Symphony runs</h2><div data-body="heatmap"></div></section>
+    <section class="ui-card g" data-section aria-labelledby="h-outcomes">
+      <div class="ui-card-head"><h2 class="ui-card-title" id="h-outcomes">Run-Ergebnisse</h2></div>
+      <div class="ui-card-body" data-body="outcomes"></div>
+    </section>
+    <section class="ui-card g" data-section aria-labelledby="h-durations">
+      <div class="ui-card-head"><h2 class="ui-card-title" id="h-durations">Run-Dauer</h2></div>
+      <div class="ui-card-body" data-body="durations"></div>
+    </section>
+    <section class="ui-card g" data-section aria-labelledby="h-heatmap">
+      <div class="ui-card-head"><h2 class="ui-card-title" id="h-heatmap">Wann Symphony läuft</h2></div>
+      <div class="ui-card-body" data-body="heatmap"></div>
+    </section>
   </div>
 
   <div class="grid-2">
-    <section data-section><h2>Top runs</h2><div data-body="top"></div></section>
-    <section data-section><h2>Needs attention</h2><div data-body="attention"></div></section>
+    <section class="ui-card g" data-section aria-labelledby="h-top">
+      <div class="ui-card-head"><h2 class="ui-card-title" id="h-top">Top-Runs</h2></div>
+      <div class="ui-card-body" data-body="top"></div>
+    </section>
+    <section class="ui-card g" data-section aria-labelledby="h-attention">
+      <div class="ui-card-head"><h2 class="ui-card-title" id="h-attention">Auffälligkeiten</h2></div>
+      <div class="ui-card-body" data-body="attention"></div>
+    </section>
   </div>
 
-  <section data-section>
-    <div class="section-head"><h2>Issues <span class="count" id="issue-count"></span></h2>
-      <label class="field"><span>Sort</span><select id="issue-sort">
-        <option value="cost">Most expensive</option><option value="tokens">Most tokens</option><option value="time">Longest runtime</option>
-        <option value="runs">Most runs</option><option value="newest">Newest</option><option value="completed">Recently completed</option>
-        <option value="failed">Failed</option>
+  <section class="ui-card g" data-section aria-labelledby="h-issues">
+    <div class="ui-card-head"><h2 class="ui-card-title" id="h-issues">Issues <span class="count" id="issue-count"></span></h2>
+      <label class="field"><span class="lbl">Sortieren</span><select id="issue-sort">
+        <option value="cost">Teuerste</option><option value="tokens">Meiste Tokens</option><option value="time">Längste Laufzeit</option>
+        <option value="runs">Meiste Runs</option><option value="newest">Neueste</option><option value="completed">Zuletzt abgeschlossen</option>
+        <option value="failed">Fehlgeschlagen</option>
       </select></label>
     </div>
-    <div data-body="issues"></div>
+    <div class="ui-card-body" data-body="issues"></div>
   </section>
 
-  <section id="logs">
-    <div class="section-head"><h2>Log <span class="count" id="log-count"></span></h2></div>
+  <section class="ui-card g" id="logs" aria-labelledby="h-log">
+    <div class="ui-card-head"><h2 class="ui-card-title" id="h-log">Log <span class="count" id="log-count"></span></h2></div>
     <form class="filters" id="log-filters">
-      <label class="field"><span>Issue</span><input type="text" id="log-issue" placeholder="#76 or owner/name#76"></label>
-      <label class="field"><span>Event</span><select id="log-event"><option value="">All events</option></select></label>
-      <label class="field"><span>Result</span><select id="log-result"><option value="">All results</option></select></label>
-      <label class="field"><span>Order</span><select id="log-order"><option value="desc">Newest first</option><option value="asc">Oldest first</option></select></label>
-      <button class="btn" type="submit">Filter</button>
+      <label class="field"><span class="lbl">Issue</span><input type="text" id="log-issue" placeholder="#76 oder owner/name#76"></label>
+      <label class="field"><span class="lbl">Event</span><select id="log-event"><option value="">Alle Events</option></select></label>
+      <label class="field"><span class="lbl">Ergebnis</span><select id="log-result"><option value="">Alle Ergebnisse</option></select></label>
+      <label class="field"><span class="lbl">Reihenfolge</span><select id="log-order"><option value="desc">Neueste zuerst</option><option value="asc">Älteste zuerst</option></select></label>
+      <button class="ui-btn" type="submit">Filtern</button>
     </form>
-    <div id="log-body" style="margin-top: 14px"></div>
+    <div class="ui-card-body" id="log-body" style="margin-top: 14px"></div>
   </section>
   <p class="meta" id="footer"></p>
 `,
@@ -234,8 +248,8 @@ ${CHART_JS}
   // ------------------------------------------------------------------------------------------------------------
   // Central filter state: everything below reads the period from range() and never computes dates itself.
 
-  const PERIODS = { today: 'Today', yesterday: 'Yesterday', '7d': 'Last 7 days', '14d': 'Last 14 days', '30d': 'Last 30 days',
-    '90d': 'Last 90 days', month: 'This month', last_month: 'Last month', all: 'All time', custom: 'Custom range' };
+  const PERIODS = { today: 'Heute', yesterday: 'Gestern', '7d': 'Letzte 7 Tage', '14d': 'Letzte 14 Tage', '30d': 'Letzte 30 Tage',
+    '90d': 'Letzte 90 Tage', month: 'Dieser Monat', last_month: 'Letzter Monat', all: 'Gesamter Zeitraum', custom: 'Eigener Zeitraum' };
   const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const $ = (id) => document.getElementById(id);
 
@@ -273,8 +287,8 @@ ${CHART_JS}
       case 'all': return { from: null, to: null };
       default: {
         const from = parseDate(f.from), to = parseDate(f.to);
-        if (!from || !to) return { error: 'Choose a start and an end date.' };
-        if (to < from) return { error: 'The end date is before the start date.' };
+        if (!from || !to) return { error: 'Start- und Enddatum wählen.' };
+        if (to < from) return { error: 'Das Enddatum liegt vor dem Startdatum.' };
         return { from, to: addDays(to, 1) };
       }
     }
@@ -298,10 +312,11 @@ ${CHART_JS}
   const METRICS = {
     runs: { label: 'Runs', key: 'runs', fmt: fmtInt, axis: fmtCompact, color: 'var(--green)' },
     tokens: { label: 'Tokens', key: 'total_tokens', fmt: fmtCompact, axis: fmtCompact, color: 'var(--cyan)' },
-    cost: { label: 'Est. cost', key: 'cost_usd', fmt: fmtUsd, axis: fmtAxisUsd, color: 'var(--green)' },
-    time: { label: 'Agent time', key: 'agent_seconds', fmt: fmtDuration, axis: fmtDuration, color: 'var(--cyan)' },
+    cost: { label: 'Kosten (geschätzt)', key: 'cost_usd', fmt: fmtUsd, axis: fmtAxisUsd, color: 'var(--green)' },
+    time: { label: 'Agentenzeit', key: 'agent_seconds', fmt: fmtDuration, axis: fmtDuration, color: 'var(--cyan)' },
   };
   const OUTCOME_TONE = { handed_off: 'green', continuing: 'cyan', failed: 'red', stalled: 'red', stopped: 'gray', shutdown: 'gray' };
+  const chipTone = (t) => (t === 'cyan' ? 'sky' : t);
   const shortRepo = (r) => (r || '').split('/').pop();
 
   // Buckets: keys as the server builds them in our time zone (hour 2026-10-05T14, day 2026-10-05, week = its Monday, month 2026-10).
@@ -314,7 +329,7 @@ ${CHART_JS}
     if (g === 'hour') return long ? d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) + ', ' + pad2(d.getHours()) + ':00–' + pad2((d.getHours() + 1) % 24) + ':00' : pad2(d.getHours()) + ':00';
     if (g === 'month') return d.toLocaleDateString(undefined, long ? { month: 'long', year: 'numeric' } : { month: 'short', year: '2-digit' });
     const day = d.toLocaleDateString(undefined, long ? { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' } : { month: 'short', day: 'numeric' });
-    return g === 'week' ? (long ? 'Week of ' : '') + day : day;
+    return g === 'week' ? (long ? 'Woche ab ' : '') + day : day;
   }
   /** Zooming into a bucket narrows the global period to it (day → hourly, week → daily, month → daily). */
   function zoomInto(key, g) {
@@ -323,7 +338,7 @@ ${CHART_JS}
     const end = g === 'day' ? start : g === 'week' ? addDays(start, 6) : new Date(start.getFullYear(), start.getMonth() + 1, 0);
     setFilter({ period: 'custom', from: isoDate(start), to: isoDate(end) });
   }
-  const bucketTip = (b) => [['Runs', fmtInt(b.runs)], ['Tokens', fmtCompact(b.total_tokens)], ['Est. cost', fmtUsd(b.cost_usd)], ['Agent time', fmtDuration(b.agent_seconds)]];
+  const bucketTip = (b) => [['Runs', fmtInt(b.runs)], ['Tokens', fmtCompact(b.total_tokens)], ['Kosten', fmtUsd(b.cost_usd)], ['Agentenzeit', fmtDuration(b.agent_seconds)]];
 
   // ------------------------------------------------------------------------------------------------------------
   // Section states
@@ -331,16 +346,16 @@ ${CHART_JS}
   const bodies = {};
   for (const node of document.querySelectorAll('[data-body]')) bodies[node.dataset.body] = node;
   function stateBox(kind, title, text, retry) {
-    const box = el('div', null, 'state ' + kind);
-    box.append(el('b', title), el('span', text));
-    if (retry) { const b = el('button', 'Retry'); b.type = 'button'; b.className = 'btn'; b.addEventListener('click', retry); box.append(b); }
+    const box = el('div', null, 'state gi ' + kind);
+    box.append(chip(title, { tone: { empty: 'gray', loading: 'sky', error: 'red' }[kind] }), el('span', text));
+    if (retry) box.append(button('Erneut versuchen', { size: 36, onClick: retry }));
     return box;
   }
   function setBody(name, ...nodes) {
     for (const host of bodies[name].querySelectorAll('.chart')) unmount(host);
     bodies[name].replaceChildren(...nodes);
   }
-  const noData = (text) => stateBox('empty', 'NO DATA', text || 'No agent runs were recorded for the selected period.');
+  const noData = (text) => stateBox('empty', 'KEINE DATEN', text || 'Für den gewählten Zeitraum wurden keine Agent-Runs aufgezeichnet.');
 
   // ------------------------------------------------------------------------------------------------------------
   // Analytics
@@ -352,11 +367,11 @@ ${CHART_JS}
   async function loadAnalytics() {
     const r = range(filter);
     renderPeriod(r);
-    if (r.error) { for (const name in bodies) setBody(name, stateBox('error', 'INVALID PERIOD', r.error)); return; }
+    if (r.error) { for (const name in bodies) setBody(name, stateBox('error', 'UNGÜLTIGER ZEITRAUM', r.error)); return; }
     analyticsRequest?.abort();
     const controller = new AbortController();
     analyticsRequest = controller;
-    if (data === null) for (const name in bodies) setBody(name, stateBox('loading', 'LOADING', 'Aggregating the logs…'));
+    if (data === null) for (const name in bodies) setBody(name, stateBox('loading', 'LÄDT', 'Die Logs werden ausgewertet…'));
     $('main').classList.add('busy');
     const params = new URLSearchParams({ tz: TZ });
     const to = effectiveEnd(r.to);
@@ -366,7 +381,7 @@ ${CHART_JS}
     if (filter.model) params.set('model', filter.model);
     if (filter.effort) params.set('effort', filter.effort);
     try {
-      if (r.from && to && r.from >= to) throw new Error('The period starts in the future.');
+      if (r.from && to && r.from >= to) throw new Error('Der Zeitraum beginnt in der Zukunft.');
       const res = await fetch('/api/v1/history/analytics?' + params, { cache: 'no-store', signal: controller.signal });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ? body.error.message : 'HTTP ' + res.status);
@@ -377,7 +392,7 @@ ${CHART_JS}
       if (error.name === 'AbortError') return;
       setLive(false);
       data = null;
-      for (const name in bodies) setBody(name, stateBox('error', 'CANNOT LOAD STATISTICS', error.message, loadAnalytics));
+      for (const name in bodies) setBody(name, stateBox('error', 'STATISTIK NICHT LADBAR', error.message, loadAnalytics));
     } finally {
       if (analyticsRequest === controller) { analyticsRequest = null; $('main').classList.remove('busy'); }
     }
@@ -391,21 +406,18 @@ ${CHART_JS}
     else { $('from').value = filter.from; $('to').value = filter.to; }
     const parts = [el('strong', PERIODS[filter.period])];
     if (r.from && r.to) parts.push(el('span', fmtDay(r.from) + ' → ' + fmtDay(addDays(r.to, -1))));
-    else if (!r.error) parts.push(el('span', data && data.period.start ? 'since ' + fmtDay(new Date(data.period.start)) : 'everything logged'));
+    else if (!r.error) parts.push(el('span', data && data.period.start ? 'seit ' + fmtDay(new Date(data.period.start)) : 'alles Geloggte'));
     if (data && !r.error) {
-      parts.push(el('span', { hour: 'hourly', day: 'daily', week: 'weekly', month: 'monthly' }[data.period.granularity] + ' buckets', 'meta'));
-      if (data.previous) parts.push(el('span', 'compared with ' + fmtDay(new Date(data.previous.from)) + ' → ' + fmtDay(new Date(Date.parse(data.previous.to) - 1)), 'meta'));
+      parts.push(el('span', { hour: 'stündliche', day: 'tägliche', week: 'wöchentliche', month: 'monatliche' }[data.period.granularity] + ' Balken', 'meta'));
+      if (data.previous) parts.push(el('span', 'verglichen mit ' + fmtDay(new Date(data.previous.from)) + ' → ' + fmtDay(new Date(Date.parse(data.previous.to) - 1)), 'meta'));
     }
-    for (const [key, label] of [['repo', 'Repository'], ['model', 'Model'], ['effort', 'Effort']]) {
+    for (const [key, label] of [['repo', 'Repository'], ['model', 'Modell'], ['effort', 'Effort']]) {
       if (!filter[key]) continue;
-      const chip = el('span', label + ': ' + filter[key] + ' ✕', 'chip on'); chip.tabIndex = 0; chip.setAttribute('role', 'button');
-      chip.title = 'Remove the ' + label.toLowerCase() + ' filter';
-      const clear = () => setFilter({ [key]: '' });
-      chip.addEventListener('click', clear);
-      chip.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); clear(); } });
-      parts.push(chip);
+      const fc = filterChip(label + ': ' + filter[key] + ' ✕', { pressed: true, onClick: () => setFilter({ [key]: '' }) });
+      fc.title = 'Filter „' + label + '“ entfernen';
+      parts.push(fc);
     }
-    if (filter.model) parts.push(el('span', 'tokens and cost count only this model', 'meta'));
+    if (filter.model) parts.push(el('span', 'Tokens und Kosten zählen nur dieses Modell', 'meta'));
     $('period-label').replaceChildren(...parts);
   }
 
@@ -417,77 +429,78 @@ ${CHART_JS}
 
   function render(d) {
     renderPeriod(range(filter));
-    options($('repo'), d.repositories_available, 'All repositories', filter.repo);
-    options($('model'), d.models_available, 'All models', filter.model);
-    options($('effort'), d.efforts_available, 'All efforts', filter.effort);
+    options($('repo'), d.repositories_available, 'Alle Repositories', filter.repo);
+    options($('model'), d.models_available, 'Alle Modelle', filter.model);
+    options($('effort'), d.efforts_available, 'Alle Efforts', filter.effort);
     $('raw').hidden = !filter.repo;
     $('raw').href = '/api/v1/history/raw?repo=' + encodeURIComponent(filter.repo);
     const problems = [];
-    if (d.pricing_error) problems.push('model-costs.yml: ' + d.pricing_error + ' (using the previous prices)');
+    if (d.pricing_error) problems.push('model-costs.yml: ' + d.pricing_error + ' (es gelten die bisherigen Preise)');
     $('problems').hidden = problems.length === 0;
     $('problem-list').replaceChildren(...problems.map((p) => el('li', p)));
-    $('footer').textContent = 'Logs: ' + d.history_dir + ' · Prices: ' + d.pricing_file +
-      ' (costs are recalculated from the logged tokens with the current prices) · Time zone: ' + d.period.time_zone + ' · Updated ' + fmtTime(d.generated_at);
+    $('footer').textContent = 'Logs: ' + d.history_dir + ' · Preise: ' + d.pricing_file +
+      ' (Kosten werden aus den geloggten Tokens mit den aktuellen Preisen neu berechnet) · Zeitzone: ' + d.period.time_zone + ' · Aktualisiert ' + fmtTime(d.generated_at);
 
     renderKpis(d);
     if (d.totals.runs === 0) {
-      for (const name of ['activity', 'cost', 'tokens', 'models', 'efforts', 'roles', 'tools', 'integrations', 'repos', 'outcomes', 'durations', 'heatmap', 'top', 'attention', 'issues']) setBody(name, noData());
+      for (const name of ['activity', 'cost', 'tokens', 'budget', 'compacts', 'models', 'efforts', 'roles', 'tools', 'integrations', 'repos', 'outcomes', 'durations', 'heatmap', 'top', 'attention', 'issues']) setBody(name, noData());
       $('issue-count').textContent = '';
       return;
     }
-    renderActivity(d); renderCost(d); renderTokens(d); renderModels(d); renderEfforts(d); renderRoles(d); renderTools(d); renderIntegrations(d); renderRepos(d);
+    renderActivity(d); renderCost(d); renderTokens(d); renderBudget(d); renderCompacts(d); renderModels(d); renderEfforts(d); renderRoles(d); renderTools(d); renderIntegrations(d); renderRepos(d);
     renderOutcomes(d); renderDurations(d); renderHeatmap(d); renderTop(d); renderAttention(d); renderIssues(d);
   }
 
-  /** "↑ 12.4% vs previous period", only when the logs cover the previous period. */
+  /** "↑ 12.4% ggü. Vorperiode", only when the logs cover the previous period. */
   function delta(current, previous, key, opts) {
     if (!previous) return null;
     const before = previous[key], now = current[key];
     if (before === null || before === undefined || now === null || now === undefined) return null;
     const box = el('div', null, 'delta');
-    if (before === 0 && now === 0) { box.append(el('b', '±0'), ' vs previous period'); return box; }
-    if (before === 0) { box.append(el('b', 'new'), ' · previous period: 0'); return box; }
+    if (before === 0 && now === 0) { box.append(el('b', '±0'), ' ggü. Vorperiode'); return box; }
+    if (before === 0) { box.append(el('b', 'neu'), ' · Vorperiode: 0'); return box; }
     const change = (now - before) / before;
     const up = change > 0;
     box.className = 'delta ' + (Math.abs(change) < 0.0005 ? '' : up ? 'up' : 'down') + (opts && opts.badWhenUp && up && change > 0 ? ' bad' : '');
-    box.append(el('b', (Math.abs(change) < 0.0005 ? '±' : up ? '↑ ' : '↓ ') + (Math.abs(change) * 100).toFixed(1) + '%'), ' vs previous period');
-    box.title = 'Previous period: ' + (opts && opts.fmt ? opts.fmt(before) : before);
+    box.append(el('b', (Math.abs(change) < 0.0005 ? '±' : up ? '↑ ' : '↓ ') + (Math.abs(change) * 100).toFixed(1) + '%'), ' ggü. Vorperiode');
+    box.title = 'Vorperiode: ' + (opts && opts.fmt ? opts.fmt(before) : before);
     return box;
   }
 
-  function kpiTile(label, value, sub, deltaNode, tone, hero) {
-    const box = el('div', null, 'stat' + (tone ? ' tone-' + tone : '') + (hero ? ' hero' : ''));
-    const head = el('div', null, 'label'); head.append(el('span', label));
-    box.append(head, el('div', value, 'value'));
-    if (sub) box.append(el('div', sub, 'sub'));
-    if (deltaNode) box.append(deltaNode);
+  const toneHex = (t) => UI_CHIP_TONES[t].c;
+  /** A key figure tile with the change against the previous period and, for the main figures, a sparkline of the buckets. */
+  function tile(value, label, opts) {
+    const { sub, color, size, change, trend } = opts || {};
+    const box = kpi(value, label, { sub, color: color ? toneHex(color) : null, size });
+    if (change) box.append(change);
+    if (trend && trend.length > 1) { const sp = sparkline(trend, toneHex(color || 'sky')); if (sp) box.append(sp); }
     return box;
   }
 
   function renderKpis(d) {
     const t = d.totals, p = d.previous;
-    const primary = el('div', null, 'stats primary');
+    const trend = (key) => d.series.map((b) => b[key]);
+    const primary = el('div', null, 'kpi-grid primary');
     primary.append(
-      kpiTile('Runs', fmtInt(t.runs), fmtInt(t.repositories) + ' repositor' + (t.repositories === 1 ? 'y' : 'ies'), delta(t, p, 'runs', { fmt: fmtInt }), 'green'),
-      kpiTile('Issues', fmtInt(t.issues), null, delta(t, p, 'issues', { fmt: fmtInt }), 'green'),
-      kpiTile('Tokens', fmtCompact(t.total_tokens), fmtCompact(t.output_tokens) + ' output', delta(t, p, 'total_tokens', { fmt: fmtCompact }), 'cyan'),
-      kpiTile('Est. cost', fmtUsd(t.cost_usd), null, delta(t, p, 'cost_usd', { fmt: fmtUsd }), 'green', true),
-      kpiTile('Agent time', fmtDuration(t.agent_seconds), null, delta(t, p, 'agent_seconds', { fmt: fmtDuration }), 'cyan'),
-      kpiTile('Avg run', orDash(t.avg_run_seconds, fmtDuration), null, delta(t, p, 'avg_run_seconds', { fmt: fmtDuration, badWhenUp: true }), 'cyan'),
+      tile(fmtInt(t.runs), 'Runs', { sub: fmtInt(t.repositories) + ' Repositor' + (t.repositories === 1 ? 'y' : 'ies'), change: delta(t, p, 'runs', { fmt: fmtInt }), trend: trend('runs') }),
+      tile(fmtInt(t.issues), 'Issues', { change: delta(t, p, 'issues', { fmt: fmtInt }) }),
+      tile(fmtCompact(t.total_tokens), 'Tokens', { sub: fmtCompact(t.output_tokens) + ' Output', change: delta(t, p, 'total_tokens', { fmt: fmtCompact }), trend: trend('total_tokens') }),
+      tile(fmtUsd(t.cost_usd), 'Kosten (geschätzt)', { size: 28, change: delta(t, p, 'cost_usd', { fmt: fmtUsd }), trend: trend('cost_usd') }),
+      tile(fmtDuration(t.agent_seconds), 'Agentenzeit', { change: delta(t, p, 'agent_seconds', { fmt: fmtDuration }), trend: trend('agent_seconds') }),
+      tile(orDash(t.avg_run_seconds, fmtDuration), 'Ø Run', { change: delta(t, p, 'avg_run_seconds', { fmt: fmtDuration, badWhenUp: true }) }),
     );
-    const secondary = el('div', null, 'stats secondary');
+    const secondary = el('div', null, 'kpi-grid secondary');
     secondary.append(
-      kpiTile('Cost / run', orDash(t.avg_cost_per_run, fmtUsd), null, delta(t, p, 'avg_cost_per_run', { fmt: fmtUsd })),
-      kpiTile('Tokens / run', orDash(t.avg_tokens_per_run, fmtCompact), null, delta(t, p, 'avg_tokens_per_run', { fmt: fmtCompact })),
-      kpiTile('Successful', fmtInt(t.successful), t.runs ? fmtPct(t.successful / t.runs) + ' of runs' : null, null, 'green'),
-      kpiTile('Failed', fmtInt(t.failed), t.runs ? fmtPct(t.failure_rate) + ' of runs' : null, delta(t, p, 'failed', { fmt: fmtInt, badWhenUp: true }), t.failed ? 'red' : null),
-      kpiTile('Retry rate', fmtPct(t.retry_rate), fmtInt(t.retries) + ' retried run' + (t.retries === 1 ? '' : 's'), null, t.retries ? 'amber' : null),
+      tile(orDash(t.avg_cost_per_run, fmtUsd), 'Kosten/Run', { change: delta(t, p, 'avg_cost_per_run', { fmt: fmtUsd }) }),
+      tile(orDash(t.avg_tokens_per_run, fmtCompact), 'Tokens/Run', { change: delta(t, p, 'avg_tokens_per_run', { fmt: fmtCompact }) }),
+      tile(fmtInt(t.successful), 'Erfolgreich', { sub: t.runs ? fmtPct(t.successful / t.runs) + ' der Runs' : null, color: 'green' }),
+      tile(fmtInt(t.failed), 'Fehlgeschlagen', { sub: t.runs ? fmtPct(t.failure_rate) + ' der Runs' : null, change: delta(t, p, 'failed', { fmt: fmtInt, badWhenUp: true }), color: t.failed ? 'red' : null }),
+      tile(fmtPct(t.retry_rate), 'Retry-Quote', { sub: fmtInt(t.retries) + ' wiederholte Run' + (t.retries === 1 ? '' : 's'), color: t.retries ? 'amber' : null }),
     );
-    if (t.paused !== null) secondary.append(kpiTile('Paused', fmtInt(t.paused), 'issues paused', null, t.paused ? 'amber' : null));
-    secondary.style.marginTop = '10px';
+    if (t.paused !== null) secondary.append(tile(fmtInt(t.paused), 'Pausiert', { sub: 'Issues pausiert', color: t.paused ? 'amber' : null }));
     const nodes = [primary, secondary];
-    if (t.runs === 0) nodes.push(el('p', 'No agent runs were recorded for the selected period.', 'note'));
-    else if (!p && d.period.from) nodes.push(el('p', 'No comparison: the logs do not cover the previous period of the same length.', 'note'));
+    if (t.runs === 0) nodes.push(el('p', 'Für den gewählten Zeitraum wurden keine Agent-Runs aufgezeichnet.', 'note'));
+    else if (!p && d.period.from) nodes.push(el('p', 'Kein Vergleich: Die Logs decken die Vorperiode gleicher Länge nicht ab.', 'note'));
     setBody('kpi', ...nodes);
   }
 
@@ -505,9 +518,9 @@ ${CHART_JS}
       kind: 'bar', fmt: metric.axis, height: 240, integer: view.activity === 'runs',
       tip: (i) => bucketTip(d.series[i]),
       onClick: g === 'hour' ? null : (i) => zoomInto(d.series[i].key, g),
-      ariaLabel: metric.label + ' per ' + g,
+      ariaLabel: metric.label + ' je ' + ({ hour: 'Stunde', day: 'Tag', week: 'Woche', month: 'Monat' }[g]),
     });
-    if (g !== 'hour') bodies.activity.append(el('p', 'Click a bar to zoom into it.', 'note'));
+    if (g !== 'hour') bodies.activity.append(el('p', 'Ein Balken lässt sich anklicken, um hineinzuzoomen.', 'note'));
   }
 
   function renderCost(d) {
@@ -520,11 +533,48 @@ ${CHART_JS}
     timeChart(host, {
       labels: d.series.map((b) => bucketLabel(b.key, g)),
       title: (i) => bucketLabel(d.series[i].key, g, true),
-      series: [{ label: 'Est. cost', color: 'var(--green)', values }],
+      series: [{ label: 'Kosten', color: 'var(--green)', values }],
       kind: view.cost === 'cumulative' || d.series.length > 1 ? 'area' : 'bar', fmt: fmtAxisUsd,
-      tip: (i) => [...bucketTip(d.series[i]), ['Cumulative', fmtUsd(cumulative[i])]],
-      ariaLabel: 'Estimated cost over time',
+      tip: (i) => [...bucketTip(d.series[i]), ['Kumuliert', fmtUsd(cumulative[i])]],
+      ariaLabel: 'Geschätzte Kosten im Zeitverlauf',
     });
+  }
+
+  const roleColor = (role) => (uiOwn(UI_ROLE_COLORS, role) ? 'var(--role-' + role + ')' : 'var(--gray)');
+
+  /** Peak token use of a rolling 5-hour window per day; a red mark on days with a rate-limit hit. */
+  function renderBudget(d) {
+    const days = d.budget ? d.budget.days : [];
+    if (!days.some((x) => x.peak_5h_tokens > 0 || x.limit_hits > 0)) {
+      setBody('budget', noData('Keine Token-Verbräuche und keine Limit-Treffer im gewählten Zeitraum.'));
+      return;
+    }
+    const host = chartHost(); const lg = el('div', null, 'legend');
+    setBody('budget', lg, host,
+      el('p', 'Die Spitze ist der höchste Token-Verbrauch eines rollenden 5-h-Fensters, das am Tag endet (Runs nach Filter). Limit-Treffer sind abgelehnte Anfragen des ganzen Accounts, unabhängig vom Repository-Filter; das Rate-Limit-Log reicht 30 Tage zurück.', 'note'));
+    legend(lg, [['5-h-Spitze', 'var(--cyan)'], ['Limit-Treffer', 'var(--red)']]);
+    const hitDays = days.filter((x) => x.limit_hits > 0).length;
+    timeChart(host, {
+      labels: days.map((x) => bucketLabel(x.date, 'day')),
+      title: (i) => bucketLabel(days[i].date, 'day', true),
+      series: [{ label: '5-h-Spitze', color: 'var(--cyan)', values: days.map((x) => x.peak_5h_tokens) }],
+      kind: 'bar', fmt: fmtCompact,
+      marks: days.map((x) => x.limit_hits > 0),
+      tip: (i) => [['5-h-Spitze', fmtCompact(days[i].peak_5h_tokens) + ' Tokens', 'var(--cyan)'], ['Limit-Treffer', fmtInt(days[i].limit_hits), days[i].limit_hits ? 'var(--red)' : null]],
+      ariaLabel: '5-h-Spitze je Tag' + (hitDays ? ', ' + hitDays + ' Tag(e) mit Limit-Treffer' : ''),
+    });
+  }
+
+  /** Auto-compacts of the context window per role in the period. */
+  function renderCompacts(d) {
+    const rows = Object.entries(d.budget ? d.budget.compacts_by_role : {});
+    if (rows.length === 0) {
+      setBody('compacts', noData('Kein Run in diesem Zeitraum hat Context-Daten geloggt.'));
+      return;
+    }
+    const bars = el('div', null, 'hbars');
+    hbars(bars, rows.map(([role, n]) => ({ label: role, value: n, text: fmtInt(n), color: roleColor(role), tip: [['Auto-Compacts', fmtInt(n)]] })), null);
+    setBody('compacts', bars, el('p', 'Runs vor der Aufzeichnung des Contexts fehlen.', 'note'));
   }
 
   function renderTokens(d) {
@@ -534,7 +584,7 @@ ${CHART_JS}
     const series = [
       { label: 'Input', color: 'var(--cyan)', values: d.series.map((b) => b.input_tokens) },
       { label: 'Output', color: 'var(--green)', values: d.series.map((b) => b.output_tokens) },
-      { label: 'Cache read + write', color: 'var(--gray)', values: d.series.map((b) => b.cache_read_tokens + b.cache_write_tokens) },
+      { label: 'Cache lesen + schreiben', color: 'var(--gray)', values: d.series.map((b) => b.cache_read_tokens + b.cache_write_tokens) },
     ];
     legend(lg, series.map((s) => [s.label, s.color]));
     timeChart(host, {
@@ -544,15 +594,15 @@ ${CHART_JS}
       tip: (i) => {
         const b = d.series[i];
         return [['Input', fmtCompact(b.input_tokens), 'var(--cyan)'], ['Output', fmtCompact(b.output_tokens), 'var(--green)'],
-          ['Cache read', fmtCompact(b.cache_read_tokens), 'var(--gray)'], ['Cache write', fmtCompact(b.cache_write_tokens), 'var(--gray)'],
-          ['Total', fmtCompact(b.total_tokens)], ['Runs', fmtInt(b.runs)]];
+          ['Cache lesen', fmtCompact(b.cache_read_tokens), 'var(--gray)'], ['Cache schreiben', fmtCompact(b.cache_write_tokens), 'var(--gray)'],
+          ['Gesamt', fmtCompact(b.total_tokens)], ['Runs', fmtInt(b.runs)]];
       },
-      ariaLabel: 'Tokens over time, stacked by kind',
+      ariaLabel: 'Tokens im Zeitverlauf, gestapelt nach Art',
     });
   }
 
   const MODEL_SORT = {
-    cost_usd: [fmtUsd, (r) => fmtPct(r.cost_share) + ' of cost'], runs: [fmtInt, null], total_tokens: [fmtCompact, (r) => fmtPct(r.token_share) + ' of tokens'],
+    cost_usd: [fmtUsd, (r) => fmtPct(r.cost_share) + ' der Kosten'], runs: [fmtInt, null], total_tokens: [fmtCompact, (r) => fmtPct(r.token_share) + ' der Tokens'],
     avg_cost_per_run: [(v) => orDash(v, fmtUsd), null], avg_tokens_per_run: [(v) => orDash(v, fmtCompact), null], agent_seconds: [fmtDuration, null],
   };
   function renderModels(d) {
@@ -564,28 +614,28 @@ ${CHART_JS}
       label: r.model, value: r[key] || 0, text: fmt(r[key]), sub: sub ? sub(r) : null,
       color: filter.model === r.model ? 'var(--green)' : 'var(--cyan)', active: filter.model === r.model,
       tip: [['Runs', fmtInt(r.runs)], ['Input', fmtCompact(r.input_tokens)], ['Output', fmtCompact(r.output_tokens)],
-        ['Cache read', fmtCompact(r.cache_read_tokens)], ['Cache write', fmtCompact(r.cache_write_tokens)], ['Total tokens', fmtCompact(r.total_tokens)],
-        ['Est. cost', fmtUsd(r.cost_usd)], ['Agent time', fmtDuration(r.agent_seconds)], ['Price entry', r.price]],
+        ['Cache lesen', fmtCompact(r.cache_read_tokens)], ['Cache schreiben', fmtCompact(r.cache_write_tokens)], ['Tokens gesamt', fmtCompact(r.total_tokens)],
+        ['Kosten', fmtUsd(r.cost_usd)], ['Agentenzeit', fmtDuration(r.agent_seconds)], ['Preiseintrag', r.price]],
       onClick: () => setFilter({ model: filter.model === r.model ? '' : r.model }),
-    })), 'Filter by model');
+    })), 'Nach Modell filtern');
     const tbl = el('table'); tbl.id = 'models-table';
     const wrap = el('div', null, 'scroll'); wrap.append(tbl);
-    setBody('models', bars, el('p', 'Click a model to filter the whole page by it.', 'note'), el('h3', 'Efficiency', 'sub-h'), wrap,
-      el('p', 'A run can use several models: runs and tokens count every model used; agent time and average run count the run for its main model (most tokens). Cost per 1M tokens includes cache tokens; output/input compares output with all input tokens incl. cache. A run that ended before any usage was logged counts under the model it was started with (an alias such as "opus" under the reported id of that family), with 0 tokens.', 'note'));
+    setBody('models', bars, el('p', 'Ein Modell anklicken, um die ganze Seite danach zu filtern.', 'note'), el('h3', 'Effizienz', 'sub-h'), wrap,
+      el('p', 'Ein Run kann mehrere Modelle nutzen: Runs und Tokens zählen jedes genutzte Modell; Agentenzeit und Ø Run zählen den Run für sein Hauptmodell (meiste Tokens). Kosten je 1 Mio. Tokens enthalten Cache-Tokens; Out/In vergleicht den Output mit allen Input-Tokens inkl. Cache. Ein Run, der endete, bevor Nutzung geloggt wurde, zählt unter dem Modell, mit dem er gestartet wurde (ein Alias wie „opus“ unter der gemeldeten ID dieser Familie), mit 0 Tokens.', 'note'));
     table('models-table', [
-      { label: 'Model', className: 'nowrap', render: (r) => r.model },
+      { label: 'Modell', className: 'nowrap', render: (r) => r.model },
       { label: 'Runs', className: 'num', render: (r) => fmtInt(r.runs) },
       { label: 'Input', className: 'num', render: (r) => fmtCompact(r.input_tokens) },
       { label: 'Output', className: 'num', render: (r) => fmtCompact(r.output_tokens) },
-      { label: 'Cache r/w', className: 'num', render: (r) => fmtCompact(r.cache_read_tokens) + ' / ' + fmtCompact(r.cache_write_tokens) },
-      { label: 'Est. cost', className: 'num', render: (r) => fmtUsd(r.cost_usd) },
-      { label: 'Agent time', className: 'num', render: (r) => fmtDuration(r.agent_seconds) },
-      { label: 'Avg run', className: 'num', render: (r) => orDash(r.avg_run_seconds, fmtDuration) },
-      { label: 'Cost/run', className: 'num', render: (r) => orDash(r.avg_cost_per_run, fmtUsd) },
-      { label: 'Tokens/run', className: 'num', render: (r) => orDash(r.avg_tokens_per_run, fmtCompact) },
-      { label: 'Cost/1M tok', className: 'num', render: (r) => orDash(r.cost_per_million_tokens, fmtUsd) },
-      { label: 'Out/in', className: 'num', render: (r) => fmtRatio(r.output_input_ratio) },
-    ], rows, 'No model usage in this period.');
+      { label: 'Cache L/S', className: 'num', render: (r) => fmtCompact(r.cache_read_tokens) + ' / ' + fmtCompact(r.cache_write_tokens) },
+      { label: 'Kosten', className: 'num', render: (r) => fmtUsd(r.cost_usd) },
+      { label: 'Agentenzeit', className: 'num', render: (r) => fmtDuration(r.agent_seconds) },
+      { label: 'Ø Run', className: 'num', render: (r) => orDash(r.avg_run_seconds, fmtDuration) },
+      { label: 'Kosten/Run', className: 'num', render: (r) => orDash(r.avg_cost_per_run, fmtUsd) },
+      { label: 'Tokens/Run', className: 'num', render: (r) => orDash(r.avg_tokens_per_run, fmtCompact) },
+      { label: 'Kosten/1 Mio. Tok.', className: 'num', render: (r) => orDash(r.cost_per_million_tokens, fmtUsd) },
+      { label: 'Out/In', className: 'num', render: (r) => fmtRatio(r.output_input_ratio) },
+    ], rows, 'Keine Modellnutzung in diesem Zeitraum.');
   }
 
   /** Runs, tokens and cost by the effort requested for the run, with the models that ran at that effort. */
@@ -593,29 +643,29 @@ ${CHART_JS}
     const rows = d.efforts;
     const bars = el('div', null, 'hbars');
     hbars(bars, rows.map((r) => ({
-      label: r.effort, value: r.cost_usd || 0, text: fmtUsd(r.cost_usd), sub: fmtInt(r.runs) + ' run' + (r.runs === 1 ? '' : 's') + (r.cost_share !== null ? ' · ' + fmtPct(r.cost_share) + ' of cost' : ''),
+      label: r.effort, value: r.cost_usd || 0, text: fmtUsd(r.cost_usd), sub: fmtInt(r.runs) + ' Run' + (r.runs === 1 ? '' : 's') + (r.cost_share !== null ? ' · ' + fmtPct(r.cost_share) + ' der Kosten' : ''),
       color: filter.effort === r.effort ? 'var(--green)' : 'var(--amber)', active: filter.effort === r.effort,
-      tip: [['Runs', fmtInt(r.runs)], ['Successful', fmtInt(r.successful)], ['Failed', fmtInt(r.failed)], ['Tokens', fmtCompact(r.total_tokens)],
-        ['Est. cost', fmtUsd(r.cost_usd)], ['Agent time', fmtDuration(r.agent_seconds)], ['Models', countsText(r.models) || '—']],
+      tip: [['Runs', fmtInt(r.runs)], ['Erfolgreich', fmtInt(r.successful)], ['Fehlgeschlagen', fmtInt(r.failed)], ['Tokens', fmtCompact(r.total_tokens)],
+        ['Kosten', fmtUsd(r.cost_usd)], ['Agentenzeit', fmtDuration(r.agent_seconds)], ['Modelle', countsText(r.models) || '—']],
       onClick: () => setFilter({ effort: filter.effort === r.effort ? '' : r.effort }),
-    })), 'Filter by effort');
+    })), 'Nach Effort filtern');
     const tbl = el('table'); tbl.id = 'efforts-table';
     const wrap = el('div', null, 'scroll'); wrap.append(tbl);
-    setBody('efforts', bars, el('p', 'Click an effort to filter the whole page by it.', 'note'), wrap,
-      el('p', 'The effort requested for the run: the label Effort: …, else the role\\'s effort or CLAUDE_EFFORT; "default" means Claude Code\\'s own default. Runs logged before the effort was recorded count as "unknown". Models: the main model of the runs at this effort.', 'note'));
+    setBody('efforts', bars, el('p', 'Einen Effort anklicken, um die ganze Seite danach zu filtern.', 'note'), wrap,
+      el('p', 'Der für den Run angeforderte Effort: das Label Effort: …, sonst der Effort der Rolle oder CLAUDE_EFFORT; „default“ ist der Standard von Claude Code. Runs, die vor der Aufzeichnung des Efforts geloggt wurden, zählen als „unknown“. Modelle: das Hauptmodell der Runs mit diesem Effort.', 'note'));
     table('efforts-table', [
       { label: 'Effort', className: 'nowrap', render: (r) => r.effort },
       { label: 'Runs', className: 'num', render: (r) => fmtInt(r.runs) },
-      { label: 'Successful', className: 'num', render: (r) => fmtInt(r.successful) + (r.success_rate !== null ? ' (' + fmtPct(r.success_rate) + ')' : '') },
-      { label: 'Failed', className: 'num', render: (r) => fmtInt(r.failed) },
+      { label: 'Erfolgreich', className: 'num', render: (r) => fmtInt(r.successful) + (r.success_rate !== null ? ' (' + fmtPct(r.success_rate) + ')' : '') },
+      { label: 'Fehlgeschlagen', className: 'num', render: (r) => fmtInt(r.failed) },
       { label: 'Tokens', className: 'num', render: (r) => fmtCompact(r.total_tokens) },
-      { label: 'Est. cost', className: 'num', render: (r) => fmtUsd(r.cost_usd) },
-      { label: 'Agent time', className: 'num', render: (r) => fmtDuration(r.agent_seconds) },
-      { label: 'Avg run', className: 'num', render: (r) => orDash(r.avg_run_seconds, fmtDuration) },
-      { label: 'Cost/run', className: 'num', render: (r) => orDash(r.avg_cost_per_run, fmtUsd) },
-      { label: 'Tokens/run', className: 'num', render: (r) => orDash(r.avg_tokens_per_run, fmtCompact) },
-      { label: 'Models', render: (r) => countsText(r.models) || '—' },
-    ], rows, 'No runs in this period.');
+      { label: 'Kosten', className: 'num', render: (r) => fmtUsd(r.cost_usd) },
+      { label: 'Agentenzeit', className: 'num', render: (r) => fmtDuration(r.agent_seconds) },
+      { label: 'Ø Run', className: 'num', render: (r) => orDash(r.avg_run_seconds, fmtDuration) },
+      { label: 'Kosten/Run', className: 'num', render: (r) => orDash(r.avg_cost_per_run, fmtUsd) },
+      { label: 'Tokens/Run', className: 'num', render: (r) => orDash(r.avg_tokens_per_run, fmtCompact) },
+      { label: 'Modelle', render: (r) => countsText(r.models) || '—' },
+    ], rows, 'Keine Runs in diesem Zeitraum.');
   }
 
   /** Runs, tokens, cost, agent time and outcomes by the agent role that served the run. */
@@ -623,64 +673,65 @@ ${CHART_JS}
     const rows = d.by_role;
     const bars = el('div', null, 'hbars');
     hbars(bars, rows.map((r) => ({
-      label: r.role, value: r.cost_usd || 0, text: fmtUsd(r.cost_usd), sub: fmtInt(r.runs) + ' run' + (r.runs === 1 ? '' : 's') + (r.cost_share !== null ? ' · ' + fmtPct(r.cost_share) + ' of cost' : ''),
-      color: 'var(--amber)',
-      tip: [['Runs', fmtInt(r.runs)], ['Issues', fmtInt(r.issues)], ['Successful', fmtInt(r.successful)], ['Failed', fmtInt(r.failed)], ['Tokens', fmtCompact(r.total_tokens)],
-        ['Est. cost', fmtUsd(r.cost_usd)], ['Agent time', fmtDuration(r.agent_seconds)], ['Outcomes', countsText(r.by_outcome) || '—']],
+      label: r.role, value: r.cost_usd || 0, text: fmtUsd(r.cost_usd), sub: fmtInt(r.runs) + ' Run' + (r.runs === 1 ? '' : 's') + (r.cost_share !== null ? ' · ' + fmtPct(r.cost_share) + ' der Kosten' : ''),
+      color: roleColor(r.role),
+      tip: [['Runs', fmtInt(r.runs)], ['Issues', fmtInt(r.issues)], ['Erfolgreich', fmtInt(r.successful)], ['Fehlgeschlagen', fmtInt(r.failed)], ['Tokens', fmtCompact(r.total_tokens)],
+        ['Kosten', fmtUsd(r.cost_usd)], ['Agentenzeit', fmtDuration(r.agent_seconds)], ['Ergebnisse', countsText(r.by_outcome) || '—']],
     })), null);
     const tbl = el('table'); tbl.id = 'roles-table';
     const wrap = el('div', null, 'scroll'); wrap.append(tbl);
     setBody('roles', bars, wrap,
-      el('p', 'The role that served the run (the stage of the issue pipeline). Runs logged before the role was recorded count as "unknown".', 'note'));
+      el('p', 'Die Rolle, die den Run ausgeführt hat (die Stufe der Issue-Pipeline). Runs, die vor der Aufzeichnung der Rolle geloggt wurden, zählen als „unknown“.', 'note'));
     table('roles-table', [
-      { label: 'Role', className: 'nowrap', render: (r) => r.role },
+      { label: 'Rolle', className: 'nowrap', render: (r) => r.role },
       { label: 'Runs', className: 'num', render: (r) => fmtInt(r.runs) },
       { label: 'Issues', className: 'num', render: (r) => fmtInt(r.issues) },
-      { label: 'Successful', className: 'num', render: (r) => fmtInt(r.successful) + (r.success_rate !== null ? ' (' + fmtPct(r.success_rate) + ')' : '') },
-      { label: 'Failed', className: 'num', render: (r) => fmtInt(r.failed) },
+      { label: 'Erfolgreich', className: 'num', render: (r) => fmtInt(r.successful) + (r.success_rate !== null ? ' (' + fmtPct(r.success_rate) + ')' : '') },
+      { label: 'Fehlgeschlagen', className: 'num', render: (r) => fmtInt(r.failed) },
       { label: 'Tokens', className: 'num', render: (r) => fmtCompact(r.total_tokens) },
-      { label: 'Est. cost', className: 'num', render: (r) => fmtUsd(r.cost_usd) + (r.cost_share !== null ? ' (' + fmtPct(r.cost_share) + ')' : '') },
-      { label: 'Agent time', className: 'num', render: (r) => fmtDuration(r.agent_seconds) },
-      { label: 'Avg run', className: 'num', render: (r) => orDash(r.avg_run_seconds, fmtDuration) },
-      { label: 'Cost/run', className: 'num', render: (r) => orDash(r.avg_cost_per_run, fmtUsd) },
-      { label: 'Outcomes', render: (r) => countsText(r.by_outcome) || '—' },
-    ], rows, 'No runs in this period.');
+      { label: 'Kosten', className: 'num', render: (r) => fmtUsd(r.cost_usd) + (r.cost_share !== null ? ' (' + fmtPct(r.cost_share) + ')' : '') },
+      { label: 'Agentenzeit', className: 'num', render: (r) => fmtDuration(r.agent_seconds) },
+      { label: 'Ø Run', className: 'num', render: (r) => orDash(r.avg_run_seconds, fmtDuration) },
+      { label: 'Kosten/Run', className: 'num', render: (r) => orDash(r.avg_cost_per_run, fmtUsd) },
+      { label: 'Ø Context', className: 'num', render: (r) => orDash(d.budget ? d.budget.avg_context_by_role[r.role] : null, (v) => fmtPct(v / 100)) },
+      { label: 'Ergebnisse', render: (r) => countsText(r.by_outcome) || '—' },
+    ], rows, 'Keine Runs in diesem Zeitraum.');
   }
 
   function statList(items) {
-    const kv = el('dl', null, 'kv');
-    for (const [label, value, note] of items) { const box = el('div'); const dd = el('dd', value); if (note) dd.append(el('small', note)); box.append(el('dt', label), dd); kv.append(box); }
-    return kv;
+    const grid = el('div', null, 'kpi-grid');
+    for (const [label, value, note] of items) grid.append(kpi(value, label, { sub: note }));
+    return grid;
   }
-  const TOOL_NOTE = 'Tool calls are logged per run since Symphony records them; older runs count as runs without tool calls.';
+  const TOOL_NOTE = 'Tool-Aufrufe werden je Run geloggt, seit Symphony sie aufzeichnet; ältere Runs zählen als Runs ohne Tool-Aufrufe.';
 
   /** Calls per tool (built-in and MCP) and per skill in the period. */
   function renderTools(d) {
     const t = d.tools;
-    if (!t.calls) { setBody('tools', stateBox('empty', 'NO TOOL CALLS', 'No run in this period logged tool calls.'), el('p', TOOL_NOTE, 'note')); return; }
+    if (!t.calls) { setBody('tools', stateBox('empty', 'KEINE TOOL-AUFRUFE', 'Kein Run in diesem Zeitraum hat Tool-Aufrufe geloggt.'), el('p', TOOL_NOTE, 'note')); return; }
     const kv = statList([
-      ['Tool calls', fmtInt(t.calls)],
-      ['Runs with calls', fmtInt(t.runs_with_calls), 'of ' + fmtInt(t.runs) + ' runs'],
-      ['Calls / run', orDash(t.avg_calls_per_run, (v) => String(v))],
-      ['Distinct tools', fmtInt(t.distinct_tools)],
+      ['Tool-Aufrufe', fmtInt(t.calls)],
+      ['Runs mit Aufrufen', fmtInt(t.runs_with_calls), 'von ' + fmtInt(t.runs) + ' Runs'],
+      ['Aufrufe/Run', orDash(t.avg_calls_per_run, (v) => String(v))],
+      ['Verschiedene Tools', fmtInt(t.distinct_tools)],
     ]);
     const bars = el('div', null, 'hbars');
     hbars(bars, t.tools.slice(0, 15).map((r) => ({
       label: r.server ? r.server + ' · ' + r.name : r.name, value: r.calls, text: fmtInt(r.calls), sub: fmtPct(r.calls / t.calls),
-      color: r.server ? 'var(--cyan)' : 'var(--green)', tip: [['Calls', fmtInt(r.calls)], ['Runs', fmtInt(r.runs)], ['Tool', r.tool]],
+      color: r.server ? 'var(--cyan)' : 'var(--green)', tip: [['Aufrufe', fmtInt(r.calls)], ['Runs', fmtInt(r.runs)], ['Tool', r.tool]],
     })));
-    const nodes = [kv, el('h3', 'Most used tools', 'sub-h'), bars];
+    const nodes = [kv, el('h3', 'Meistgenutzte Tools', 'sub-h'), bars];
     if (t.skills.length) {
       const skills = el('div', null, 'hbars');
-      hbars(skills, t.skills.slice(0, 10).map((r) => ({ label: r.skill, value: r.calls, text: fmtInt(r.calls), sub: fmtInt(r.runs) + ' run' + (r.runs === 1 ? '' : 's'), color: 'var(--amber)', tip: [['Loaded', fmtInt(r.calls) + '×'], ['Runs', fmtInt(r.runs)]] })));
-      nodes.push(el('h3', 'Skills loaded', 'sub-h'), skills);
+      hbars(skills, t.skills.slice(0, 10).map((r) => ({ label: r.skill, value: r.calls, text: fmtInt(r.calls), sub: fmtInt(r.runs) + ' Run' + (r.runs === 1 ? '' : 's'), color: 'var(--amber)', tip: [['Geladen', fmtInt(r.calls) + '×'], ['Runs', fmtInt(r.runs)]] })));
+      nodes.push(el('h3', 'Geladene Skills', 'sub-h'), skills);
     }
     if (t.agents && t.agents.length) {
       const agents = el('div', null, 'hbars');
-      hbars(agents, t.agents.slice(0, 10).map((r) => ({ label: r.agent, value: r.calls, text: fmtInt(r.calls), sub: fmtInt(r.runs) + ' run' + (r.runs === 1 ? '' : 's'), color: 'var(--violet, var(--cyan))', tip: [['Started', fmtInt(r.calls) + '×'], ['Runs', fmtInt(r.runs)]] })));
-      nodes.push(el('h3', 'Subagents used', 'sub-h'), agents);
+      hbars(agents, t.agents.slice(0, 10).map((r) => ({ label: r.agent, value: r.calls, text: fmtInt(r.calls), sub: fmtInt(r.runs) + ' Run' + (r.runs === 1 ? '' : 's'), color: 'var(--violet)', tip: [['Gestartet', fmtInt(r.calls) + '×'], ['Runs', fmtInt(r.runs)]] })));
+      nodes.push(el('h3', 'Genutzte Subagents', 'sub-h'), agents);
     }
-    nodes.push(el('p', 'Green: built-in tools, cyan: MCP tools (server · tool). Subagents count the Agent tool calls by subagent type. ' + TOOL_NOTE, 'note'));
+    nodes.push(el('p', 'Grün: eingebaute Tools, Cyan: MCP-Tools (Server · Tool). Subagents zählen die Aufrufe des Agent-Tools nach Subagent-Typ. ' + TOOL_NOTE, 'note'));
     setBody('tools', ...nodes);
   }
 
@@ -688,39 +739,40 @@ ${CHART_JS}
   function renderIntegrations(d) {
     const list = d.tools.integrations;
     if (!list.length) {
-      setBody('integrations', stateBox('empty', 'NO INTEGRATIONS', 'No run in this period worked on a project with a workspace integration such as Laravel Boost.'));
+      setBody('integrations', stateBox('empty', 'KEINE INTEGRATIONEN', 'Kein Run in diesem Zeitraum arbeitete an einem Projekt mit einer Workspace-Integration wie Laravel Boost.'));
       return;
     }
     const nodes = list.map((x) => {
-      const box = el('div', null, 'int-block');
+      const box = el('div', null, 'int-block gi');
       const head = el('div', null, 'int-head');
       head.append(integrationIcon(x.id, 22, x.ready_runs === 0), el('b', integrationLabel(x.id)));
       const statuses = Object.entries(x.by_status).sort((a, b) => b[1] - a[1]);
-      for (const [status, n] of statuses) { const s = INTEGRATION_STATUS[status] || [status, 'gray']; head.append(badge(s[0] + ' ' + fmtInt(n), s[1], false)); }
+      for (const [status, n] of statuses) { const s = INTEGRATION_STATUS[status] || [status, 'gray']; head.append(chip(s[0] + ' ' + fmtInt(n), { tone: chipTone(s[1]), dot: true })); }
       const kv = statList([
-        ['Runs', fmtInt(x.runs), 'on projects that use it'],
-        ['Ready', fmtInt(x.ready_runs), 'available to the agent'],
-        ['Used', fmtInt(x.used_runs), x.use_rate === null ? null : fmtPct(x.use_rate) + ' of ready runs'],
-        ['Calls', fmtInt(x.calls), x.avg_calls_per_used_run === null ? null : x.avg_calls_per_used_run + ' per using run'],
+        ['Runs', fmtInt(x.runs), 'auf Projekten, die sie nutzen'],
+        ['Bereit', fmtInt(x.ready_runs), 'für den Agenten verfügbar'],
+        ['Genutzt', fmtInt(x.used_runs), x.use_rate === null ? null : fmtPct(x.use_rate) + ' der bereiten Runs'],
+        ['Aufrufe', fmtInt(x.calls), x.avg_calls_per_used_run === null ? null : x.avg_calls_per_used_run + ' je nutzendem Run'],
       ]);
       box.append(head, kv);
       if (x.tools.length) {
         const bars = el('div', null, 'hbars');
-        hbars(bars, x.tools.map((r) => ({ label: r.tool, value: r.calls, text: fmtInt(r.calls), sub: fmtInt(r.runs) + ' run' + (r.runs === 1 ? '' : 's'), color: 'rgb(178, 159, 244)', tip: [['Calls', fmtInt(r.calls)], ['Runs', fmtInt(r.runs)]] })));
-        box.append(el('h3', 'MCP tools', 'sub-h'), bars);
+        hbars(bars, x.tools.map((r) => ({ label: r.tool, value: r.calls, text: fmtInt(r.calls), sub: fmtInt(r.runs) + ' Run' + (r.runs === 1 ? '' : 's'), color: 'var(--violet)', tip: [['Aufrufe', fmtInt(r.calls)], ['Runs', fmtInt(r.runs)]] })));
+        box.append(el('h3', 'MCP-Tools', 'sub-h'), bars);
       }
       if (x.skills.length) {
         const bars = el('div', null, 'hbars');
-        hbars(bars, x.skills.map((r) => ({ label: r.skill, value: r.calls, text: fmtInt(r.calls), sub: fmtInt(r.runs) + ' run' + (r.runs === 1 ? '' : 's'), color: 'var(--amber)', tip: [['Loaded', fmtInt(r.calls) + '×'], ['Runs', fmtInt(r.runs)]] })));
+        hbars(bars, x.skills.map((r) => ({ label: r.skill, value: r.calls, text: fmtInt(r.calls), sub: fmtInt(r.runs) + ' Run' + (r.runs === 1 ? '' : 's'), color: 'var(--amber)', tip: [['Geladen', fmtInt(r.calls) + '×'], ['Runs', fmtInt(r.runs)]] })));
         box.append(el('h3', 'Skills', 'sub-h'), bars);
       }
-      if (!x.calls) box.append(el('p', x.ready_runs ? 'Available, but no agent called its tools or skills in this period.' : 'Not available to the agents in this period.', 'note'));
+      if (!x.calls) box.append(el('p', x.ready_runs ? 'Verfügbar, aber kein Agent hat in diesem Zeitraum ihre Tools oder Skills genutzt.' : 'Den Agenten in diesem Zeitraum nicht verfügbar.', 'note'));
       return box;
     });
-    setBody('integrations', ...nodes, el('p', 'Ready: the integration was set up for the session. Used: the agent called at least one of its MCP tools or loaded one of its skills. Guidelines are part of every ready session and are not counted.', 'note'));
+    setBody('integrations', ...nodes, el('p', 'Bereit: Die Integration war für die Session eingerichtet. Genutzt: Der Agent hat mindestens eines ihrer MCP-Tools aufgerufen oder einen ihrer Skills geladen. Guidelines gehören zu jeder bereiten Session und werden nicht gezählt.', 'note'));
   }
 
-  const REPO_METRIC = { runs: [fmtInt, 'runs'], cost_usd: [fmtUsd, 'cost'], total_tokens: [fmtCompact, 'tokens'], agent_seconds: [fmtDuration, 'time'] };
+  const REPO_METRIC = { runs: [fmtInt, 'runs'], cost_usd: [fmtUsd, 'cost'], total_tokens: [fmtCompact, 'tokens'], agent_seconds: [fmtDuration, 'time'] }
+  const REPO_METRIC_TEXT = { runs: 'Runs', cost: 'Kosten', tokens: 'Tokens', time: 'Agentenzeit' };;
   function renderRepos(d) {
     const key = $('repo-sort').value;
     const [fmt, metricName] = REPO_METRIC[key];
@@ -730,21 +782,21 @@ ${CHART_JS}
     hbars(bars, rows.map((r) => ({
       label: r.repo, value: r[key], text: fmt(r[key]), sub: total ? fmtPct(r[key] / total) : null,
       color: 'var(--green)', active: filter.repo.toLowerCase() === r.repo.toLowerCase(),
-      tip: [['Runs', fmtInt(r.runs)], ['Issues', fmtInt(r.issues)], ['Tokens', fmtCompact(r.total_tokens)], ['Est. cost', fmtUsd(r.cost_usd)], ['Agent time', fmtDuration(r.agent_seconds)]],
+      tip: [['Runs', fmtInt(r.runs)], ['Issues', fmtInt(r.issues)], ['Tokens', fmtCompact(r.total_tokens)], ['Kosten', fmtUsd(r.cost_usd)], ['Agentenzeit', fmtDuration(r.agent_seconds)]],
       onClick: () => setFilter({ repo: filter.repo.toLowerCase() === r.repo.toLowerCase() ? '' : r.repo }),
-    })), 'Filter by repository');
+    })), 'Nach Repository filtern');
 
     // Activity over time, stacked: the three busiest repositories plus "Other".
     const g = d.period.granularity;
     const metric = METRICS[REPO_METRIC[key][1]];
     const leaders = rows.slice(0, 3).map((r) => r.repo);
     const series = leaders.map((repo, i) => ({ label: repo, color: SERIES_COLORS[i], values: d.series.map((b) => (b.by_repo[repo] || {})[metric.key] || 0) }));
-    if (rows.length > 3) series.push({ label: 'Other', color: SERIES_COLORS[3], values: d.series.map((b) => Object.entries(b.by_repo).filter(([r]) => !leaders.includes(r)).reduce((s, [, v]) => s + (v[metric.key] || 0), 0)) });
+    if (rows.length > 3) series.push({ label: 'Sonstige', color: SERIES_COLORS[3], values: d.series.map((b) => Object.entries(b.by_repo).filter(([r]) => !leaders.includes(r)).reduce((s, [, v]) => s + (v[metric.key] || 0), 0)) });
     const lg = el('div', null, 'legend'); const host = chartHost();
     const tbl = el('table'); tbl.id = 'repos-table'; const wrap = el('div', null, 'scroll'); wrap.append(tbl);
     const grid = el('div', null, 'grid-2');
-    const left = el('div'); left.append(el('h3', 'By ' + metricName, 'sub-h'), bars, el('p', 'Click a repository to filter the whole page by it.', 'note'));
-    const right = el('div'); right.append(el('h3', metric.label + ' over time', 'sub-h'), lg, host);
+    const left = el('div'); left.append(el('h3', 'Nach ' + REPO_METRIC_TEXT[metricName], 'sub-h'), bars, el('p', 'Ein Repository anklicken, um die ganze Seite danach zu filtern.', 'note'));
+    const right = el('div'); right.append(el('h3', metric.label + ' im Zeitverlauf', 'sub-h'), lg, host);
     grid.append(left, right);
     setBody('repos', grid, wrap);
     legend(lg, series.map((s) => [s.label, s.color]));
@@ -752,30 +804,30 @@ ${CHART_JS}
       labels: d.series.map((b) => bucketLabel(b.key, g)),
       title: (i) => bucketLabel(d.series[i].key, g, true),
       series, kind: 'bar', stacked: true, fmt: metric.axis, height: 200, integer: key === 'runs',
-      tip: (i) => series.filter((s) => s.values[i] > 0).map((s) => [shortRepo(s.label), metric.fmt(s.values[i]), s.color]).concat([['Total', metric.fmt(d.series[i][metric.key])]]),
-      ariaLabel: metric.label + ' by repository over time',
+      tip: (i) => series.filter((s) => s.values[i] > 0).map((s) => [shortRepo(s.label), metric.fmt(s.values[i]), s.color]).concat([['Gesamt', metric.fmt(d.series[i][metric.key])]]),
+      ariaLabel: metric.label + ' je Repository im Zeitverlauf',
     });
     table('repos-table', [
       { label: 'Repository', className: 'nowrap', render: (r) => r.repo },
       { label: 'Runs', className: 'num', render: (r) => fmtInt(r.runs) },
       { label: 'Issues', className: 'num', render: (r) => fmtInt(r.issues) },
       { label: 'Tokens', className: 'num', render: (r) => fmtCompact(r.total_tokens) },
-      { label: 'Est. cost', className: 'num', render: (r) => fmtUsd(r.cost_usd) },
-      { label: 'Agent time', className: 'num', render: (r) => fmtDuration(r.agent_seconds) },
-      { label: 'Avg run', className: 'num', render: (r) => orDash(r.avg_run_seconds, fmtDuration) },
-      { label: 'Cost/run', className: 'num', render: (r) => orDash(r.avg_cost_per_run, fmtUsd) },
-      { label: 'Last activity', className: 'nowrap', render: (r) => { const s = el('span', ago(r.last_at)); s.title = fmtTime(r.last_at); return s; } },
-    ], rows, 'No runs in this period.');
+      { label: 'Kosten', className: 'num', render: (r) => fmtUsd(r.cost_usd) },
+      { label: 'Agentenzeit', className: 'num', render: (r) => fmtDuration(r.agent_seconds) },
+      { label: 'Ø Run', className: 'num', render: (r) => orDash(r.avg_run_seconds, fmtDuration) },
+      { label: 'Kosten/Run', className: 'num', render: (r) => orDash(r.avg_cost_per_run, fmtUsd) },
+      { label: 'Letzte Aktivität', className: 'nowrap', render: (r) => { const s = el('span', ago(r.last_at)); s.title = fmtTime(r.last_at); return s; } },
+    ], rows, 'Keine Runs in diesem Zeitraum.');
   }
 
   function renderOutcomes(d) {
     const o = d.outcomes, t = d.totals;
     const other = t.runs - o.successful - o.failed - o.stopped;
     const parts = [
-      { label: '✓ Successful (handed off, continuing)', value: o.successful, color: 'var(--green)' },
-      { label: '✕ Failed (failed, stalled)', value: o.failed, color: 'var(--red)' },
-      { label: '■ Stopped (stopped, shutdown)', value: o.stopped, color: 'var(--gray)' },
-      { label: '? Other', value: other, color: 'var(--faint)' },
+      { label: '✓ Erfolgreich (übergeben, läuft weiter)', value: o.successful, color: 'var(--st-run)' },
+      { label: '✕ Fehlgeschlagen (fehlgeschlagen, hängengeblieben)', value: o.failed, color: 'var(--st-error)' },
+      { label: '■ Gestoppt (gestoppt, beendet)', value: o.stopped, color: 'var(--st-wait)' },
+      { label: '? Sonstige', value: other, color: 'var(--faint)' },
     ];
     const bar = el('div'); distBar(bar, parts);
     const list = el('ul', null, 'outcomes');
@@ -786,58 +838,58 @@ ${CHART_JS}
     }
     const extra = el('ul', null, 'outcomes');
     const li = (label, value) => { const item = el('li'); item.append(el('span', label), el('span', value)); extra.append(item); };
-    li('↻ Retried runs (after a failed/stalled run)', fmtInt(o.retried) + ' · ' + fmtPct(t.retry_rate));
-    if (o.paused !== null) li('⏸ Issues paused', fmtInt(o.paused));
+    li('↻ Wiederholte Runs (nach einem fehlgeschlagenen/hängengebliebenen Run)', fmtInt(o.retried) + ' · ' + fmtPct(t.retry_rate));
+    if (o.paused !== null) li('⏸ Pausierte Issues', fmtInt(o.paused));
     const host = chartHost();
     const g = d.period.granularity;
     const series = [
-      { label: 'Successful', color: 'var(--green)', values: d.series.map((b) => b.successful) },
-      { label: 'Failed', color: 'var(--red)', values: d.series.map((b) => b.failed) },
-      { label: 'Stopped', color: 'var(--gray)', values: d.series.map((b) => b.stopped) },
-      { label: 'Other', color: 'var(--faint)', values: d.series.map((b) => b.runs - b.successful - b.failed - b.stopped) },
+      { label: 'Erfolgreich', color: 'var(--st-run)', values: d.series.map((b) => b.successful) },
+      { label: 'Fehlgeschlagen', color: 'var(--st-error)', values: d.series.map((b) => b.failed) },
+      { label: 'Gestoppt', color: 'var(--st-wait)', values: d.series.map((b) => b.stopped) },
+      { label: 'Sonstige', color: 'var(--faint)', values: d.series.map((b) => b.runs - b.successful - b.failed - b.stopped) },
     ];
-    setBody('outcomes', bar, list, extra, el('h3', 'Trend', 'sub-h'), host);
+    setBody('outcomes', bar, list, extra, el('h3', 'Verlauf', 'sub-h'), host);
     timeChart(host, {
       labels: d.series.map((b) => bucketLabel(b.key, g)),
       title: (i) => bucketLabel(d.series[i].key, g, true),
       series, kind: 'bar', stacked: true, fmt: fmtCompact, height: 150, integer: true,
-      tip: (i) => { const b = d.series[i]; return series.map((s) => [s.label, fmtInt(s.values[i]), s.color]).concat([['Retried', fmtInt(b.retries)], ['Success rate', b.runs ? fmtPct(b.successful / b.runs) : '—']]); },
-      ariaLabel: 'Run outcomes over time',
+      tip: (i) => { const b = d.series[i]; return series.map((s) => [s.label, fmtInt(s.values[i]), s.color]).concat([['Wiederholt', fmtInt(b.retries)], ['Erfolgsquote', b.runs ? fmtPct(b.successful / b.runs) : '—']]); },
+      ariaLabel: 'Run-Ergebnisse im Zeitverlauf',
     });
   }
 
   function renderDurations(d) {
     const s = d.durations;
-    const kv = el('dl', null, 'kv');
-    const item = (label, value, note) => { const box = el('div'); const dd = el('dd', value); if (note) dd.append(el('small', note)); box.append(el('dt', label), dd); kv.append(box); };
-    item('Average', orDash(s.avg_seconds, fmtDuration));
-    item('Median (p50)', orDash(s.p50_seconds, fmtDuration), s.p50_seconds === null ? 'needs ≥ 3 runs' : null);
-    item('p90 / p95', s.p90_seconds === null ? '—' : fmtDuration(s.p90_seconds) + ' / ' + fmtDuration(s.p95_seconds), s.p90_seconds === null ? 'needs ≥ 20 runs' : null);
-    item('Shortest', orDash(s.min_seconds, fmtDuration), s.shortest ? s.shortest.issue : null);
-    item('Longest', orDash(s.max_seconds, fmtDuration), s.longest ? s.longest.issue : null);
-    item('Total agent time', fmtDuration(s.total_seconds));
+    const kv = statList([
+      ['Durchschnitt', orDash(s.avg_seconds, fmtDuration)],
+      ['Median (p50)', orDash(s.p50_seconds, fmtDuration), s.p50_seconds === null ? 'braucht ≥ 3 Runs' : null],
+      ['p90 / p95', s.p90_seconds === null ? '—' : fmtDuration(s.p90_seconds) + ' / ' + fmtDuration(s.p95_seconds), s.p90_seconds === null ? 'braucht ≥ 20 Runs' : null],
+      ['Kürzester', orDash(s.min_seconds, fmtDuration), s.shortest ? s.shortest.issue : null],
+      ['Längster', orDash(s.max_seconds, fmtDuration), s.longest ? s.longest.issue : null],
+      ['Agentenzeit gesamt', fmtDuration(s.total_seconds)],
+    ]);
     const bars = el('div', null, 'hbars');
     hbars(bars, s.histogram.map((b, i) => ({
       label: b.label, value: b.runs, text: fmtInt(b.runs), sub: s.runs ? fmtPct(b.runs / s.runs) : null,
-      color: i >= 4 ? 'var(--amber)' : 'var(--cyan)', tip: [['Runs', fmtInt(b.runs)], ['Share', s.runs ? fmtPct(b.runs / s.runs) : '—']],
+      color: i >= 4 ? 'var(--amber)' : 'var(--cyan)', tip: [['Runs', fmtInt(b.runs)], ['Anteil', s.runs ? fmtPct(b.runs / s.runs) : '—']],
     })));
     const host = chartHost();
     const g = d.period.granularity;
-    setBody('durations', kv, el('h3', 'Distribution', 'sub-h'), bars, el('h3', 'Average run over time', 'sub-h'), host);
+    setBody('durations', kv, el('h3', 'Verteilung', 'sub-h'), bars, el('h3', 'Ø Run im Zeitverlauf', 'sub-h'), host);
     timeChart(host, {
       labels: d.series.map((b) => bucketLabel(b.key, g)),
       title: (i) => bucketLabel(d.series[i].key, g, true),
-      series: [{ label: 'Avg run', color: 'var(--cyan)', values: d.series.map((b) => b.avg_run_seconds || 0) }],
+      series: [{ label: 'Ø Run', color: 'var(--cyan)', values: d.series.map((b) => b.avg_run_seconds || 0) }],
       kind: 'bar', fmt: fmtDuration, height: 130,
-      tip: (i) => [['Avg run', orDash(d.series[i].avg_run_seconds, fmtDuration)], ['Runs', fmtInt(d.series[i].runs)], ['Agent time', fmtDuration(d.series[i].agent_seconds)]],
-      ariaLabel: 'Average run duration over time',
+      tip: (i) => [['Ø Run', orDash(d.series[i].avg_run_seconds, fmtDuration)], ['Runs', fmtInt(d.series[i].runs)], ['Agentenzeit', fmtDuration(d.series[i].agent_seconds)]],
+      ariaLabel: 'Durchschnittliche Run-Dauer im Zeitverlauf',
     });
   }
 
   function renderHeatmap(d) {
     if (!d.heatmap.max) { setBody('heatmap', noData()); return; }
     const host = el('div');
-    setBody('heatmap', host, el('p', 'Run starts by weekday and hour (' + d.period.time_zone + '). Darker cells had more starts; the busiest had ' + fmtInt(d.heatmap.max) + '.', 'note'));
+    setBody('heatmap', host, el('p', 'Run-Starts nach Wochentag und Stunde (' + d.period.time_zone + '). Hellere Zellen hatten mehr Starts; die stärkste hatte ' + fmtInt(d.heatmap.max) + '.', 'note'));
     heatmap(host, d.heatmap.start_times, d.heatmap.max);
   }
 
@@ -849,57 +901,65 @@ ${CHART_JS}
     $('logs').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
   function clickable(node, issue) {
-    node.tabIndex = 0; node.setAttribute('role', 'button'); node.title = 'Show the log of ' + issue;
+    node.tabIndex = 0; node.setAttribute('role', 'button'); node.title = 'Log von ' + issue + ' anzeigen';
     node.addEventListener('click', () => showIssueLog(issue));
     node.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); showIssueLog(issue); } });
   }
+  /** The meta line of a ranked entry: a role chip per role of a pipeline, plain text otherwise. */
+  function rankMeta(meta) {
+    if (typeof meta === 'string') return el('span', meta, 'meta');
+    const box = el('span', null, 'meta');
+    box.append(...meta);
+    return box;
+  }
+  const roleChip = (role, v) => chip(role + ' ' + fmtUsd(v.cost_usd), { tone: uiOwn(UI_ROLE_COLORS, role) || 'gray' });
   function rankList(rows, value, meta) {
-    if (!rows.length) return el('p', 'Nothing in this period.', 'empty');
+    if (!rows.length) return el('p', 'Nichts in diesem Zeitraum.', 'empty');
     const list = el('ol', null, 'rank');
     for (const r of rows) {
-      const li = el('li'); li.append(el('span', r.issue + (r.title ? ' — ' + r.title : ''), 'who'), el('span', value(r), 'val'), el('span', meta(r), 'meta'));
+      const li = el('li'); li.append(el('span', r.issue + (r.title ? ' — ' + r.title : ''), 'who'), el('span', value(r), 'val'), rankMeta(meta(r)));
       clickable(li, r.issue); list.append(li);
     }
     return list;
   }
   function renderTop(d) {
-    const runMeta = (r) => [r.repo, r.model, r.effort && r.effort !== 'default' ? 'effort ' + r.effort : null, fmtTime(r.finished_at), OUTCOMES[r.outcome] || r.outcome].filter(Boolean).join(' · ');
+    const runMeta = (r) => [r.repo, r.model, r.effort && r.effort !== 'default' ? 'Effort ' + r.effort : null, fmtTime(r.finished_at), OUTCOMES[r.outcome] || r.outcome].filter(Boolean).join(' · ');
     const grid = el('div', null, 'grid-2');
     grid.style.gap = '4px 20px';
     const block = (title, node) => { const box = el('div'); box.append(el('h3', title, 'sub-h'), node); return box; };
     grid.append(
-      block('Top cost', rankList(d.top.cost, (r) => fmtUsd(r.cost_usd), runMeta)),
-      block('Top token usage', rankList(d.top.tokens, (r) => fmtCompact(r.total_tokens), runMeta)),
-      block('Longest runs', rankList(d.top.duration, (r) => fmtDuration(r.agent_seconds), runMeta)),
-      block('Most expensive issue pipelines', rankList(d.top.pipelines, (r) => fmtUsd(r.cost_usd),
-        (r) => r.repo + ' · ' + fmtInt(r.runs) + ' runs · ' + Object.entries(r.roles).map(([role, v]) => role + ' ' + fmtUsd(v.cost_usd)).join(', '))),
-      block('Most retried issues', rankList(d.top.retried, (r) => fmtInt(r.retries) + '×', (r) => r.repo + ' · ' + fmtInt(r.runs) + ' runs · ' + fmtInt(r.failed) + ' failed')),
+      block('Höchste Kosten', rankList(d.top.cost, (r) => fmtUsd(r.cost_usd), runMeta)),
+      block('Meiste Tokens', rankList(d.top.tokens, (r) => fmtCompact(r.total_tokens), runMeta)),
+      block('Längste Runs', rankList(d.top.duration, (r) => fmtDuration(r.agent_seconds), runMeta)),
+      block('Teuerste Issue-Pipelines', rankList(d.top.pipelines, (r) => fmtUsd(r.cost_usd),
+        (r) => [r.repo + ' · ' + fmtInt(r.runs) + ' Runs', ...Object.entries(r.roles).map(([role, v]) => roleChip(role, v))])),
+      block('Meist wiederholte Issues', rankList(d.top.retried, (r) => fmtInt(r.retries) + '×', (r) => r.repo + ' · ' + fmtInt(r.runs) + ' Runs · ' + fmtInt(r.failed) + ' fehlgeschlagen')),
     );
-    setBody('top', grid, el('p', 'Click an entry to see its log.', 'note'));
+    setBody('top', grid, el('p', 'Einen Eintrag anklicken, um sein Log zu sehen.', 'note'));
   }
 
   function renderAttention(d) {
     const rules = d.attention.rules;
-    const ruleText = 'Flags single runs with at least ' + rules.factor + '× the period\\'s average run cost, duration or tokens (needs ≥ ' + rules.minRuns +
-      ' runs), and issues with ≥ ' + rules.repeated + ' failed or retried runs.';
+    const ruleText = 'Markiert einzelne Runs mit mindestens dem ' + rules.factor + '-Fachen der durchschnittlichen Kosten, Dauer oder Tokens des Zeitraums (braucht ≥ ' + rules.minRuns +
+      ' Runs) sowie Issues mit ≥ ' + rules.repeated + ' fehlgeschlagenen oder wiederholten Runs.';
     if (!d.attention.items.length) {
-      setBody('attention', stateBox('empty', 'ALL CLEAR', d.totals.runs < rules.minRuns ? 'Too few runs for averages; only repeated failures are checked.' : 'Nothing unusual in this period.'), el('p', ruleText, 'note'));
+      setBody('attention', stateBox('empty', 'UNAUFFÄLLIG', d.totals.runs < rules.minRuns ? 'Zu wenige Runs für Durchschnitte; geprüft werden nur wiederholte Fehlschläge.' : 'Nichts Ungewöhnliches in diesem Zeitraum.'), el('p', ruleText, 'note'));
       return;
     }
     const list = el('ul', null, 'attention');
     for (const a of d.attention.items) {
       const red = a.kind === 'failures';
-      const li = el('li', null, red ? 'red' : '');
+      const li = el('li', null, 'gi ' + (red ? 'tone-red' : 'tone-amber'));
       const value = a.kind === 'cost' ? fmtUsd(a.value) : a.kind === 'duration' ? fmtDuration(a.value) : a.kind === 'tokens' ? fmtCompact(a.value) : fmtInt(a.value) + '×';
       const avg = a.kind === 'cost' ? fmtUsd(a.average) : a.kind === 'duration' ? fmtDuration(a.average) : fmtCompact(a.average);
-      const why = { cost: a.factor + '× average run cost (' + avg + ')', duration: a.factor + '× average runtime (' + avg + ')',
-        tokens: a.factor + '× average tokens per run (' + avg + ')', failures: a.value + ' failed runs in this period', retries: a.value + ' retried runs in this period' }[a.kind];
+      const why = { cost: a.factor + '× Ø Run-Kosten (' + avg + ')', duration: a.factor + '× Ø Laufzeit (' + avg + ')',
+        tokens: a.factor + '× Ø Tokens je Run (' + avg + ')', failures: a.value + ' fehlgeschlagene Runs in diesem Zeitraum', retries: a.value + ' wiederholte Runs in diesem Zeitraum' }[a.kind];
       li.append(el('span', red ? '✕' : '⚠', 'ico'), el('span', a.issue + (a.title ? ' — ' + a.title : ''), 'who'), el('span', value, 'val'),
         el('span', why + (a.at ? ' · ' + fmtTime(a.at) : ''), 'why'));
       clickable(li, a.issue); list.append(li);
     }
     const nodes = [list];
-    if (d.attention.total > d.attention.items.length) nodes.push(el('p', (d.attention.total - d.attention.items.length) + ' more not shown.', 'note'));
+    if (d.attention.total > d.attention.items.length) nodes.push(el('p', (d.attention.total - d.attention.items.length) + ' weitere nicht angezeigt.', 'note'));
     setBody('attention', ...nodes, el('p', ruleText, 'note'));
   }
 
@@ -915,7 +975,7 @@ ${CHART_JS}
     const tbl = el('table'); tbl.id = 'issues-table'; const wrap = el('div', null, 'scroll'); wrap.append(tbl);
     const nodes = [wrap];
     if (rows.length > view.issueLimit) {
-      const more = el('button', 'Show all ' + fmtInt(rows.length), 'btn more'); more.type = 'button';
+      const more = el('button', 'Alle ' + fmtInt(rows.length) + ' zeigen', 'ui-btn ui-btn-36 more'); more.type = 'button';
       more.addEventListener('click', () => { view.issueLimit = Infinity; renderIssues(data); });
       nodes.push(more);
     }
@@ -924,23 +984,22 @@ ${CHART_JS}
     if (!filter.repo) columns.push({ label: 'Repository', className: 'nowrap', render: (r) => shortRepo(r.repo) });
     columns.push(
       { label: 'Runs', className: 'num', render: (r) => fmtInt(r.runs) + (r.failed ? ' (' + r.failed + ' ✕)' : '') },
-      { label: 'Result', className: 'event', render: (r) => el('span', (OUTCOMES[r.last_outcome] || r.last_outcome || '—') + ' → ' + (r.last_state || '—'), 'chip tone-' + (OUTCOME_TONE[r.last_outcome] || 'gray')) },
+      { label: 'Ergebnis', className: 'event', render: (r) => chip((OUTCOMES[r.last_outcome] || r.last_outcome || '—') + ' → ' + (r.last_state || '—'), { tone: chipTone(OUTCOME_TONE[r.last_outcome] || 'gray'), mono: true }) },
       { label: 'Tokens', className: 'num', render: (r) => fmtCompact(r.total_tokens) },
-      { label: 'Est. cost', className: 'num', render: (r) => fmtUsd(r.cost_usd) },
-      { label: 'Cost by role', render: (r) => Object.entries(r.roles).map(([role, v]) => role + ' ' + fmtUsd(v.cost_usd)).join(', ') || '—' },
-      { label: 'Agent time', className: 'num', render: (r) => fmtDuration(r.agent_seconds) },
-      { label: 'First started', className: 'nowrap', render: (r) => fmtTime(r.first_started_at) },
-      { label: 'Last finished', className: 'nowrap', render: (r) => fmtTime(r.last_finished_at) },
+      { label: 'Kosten', className: 'num', render: (r) => fmtUsd(r.cost_usd) },
+      { label: 'Kosten nach Rolle', render: (r) => { const entries = Object.entries(r.roles); if (!entries.length) return '—'; const box = el('div', null, 'role-chips'); box.append(...entries.map(([role, v]) => roleChip(role, v))); return box; } },
+      { label: 'Agentenzeit', className: 'num', render: (r) => fmtDuration(r.agent_seconds) },
+      { label: 'Erster Start', className: 'nowrap', render: (r) => fmtTime(r.first_started_at) },
+      { label: 'Zuletzt beendet', className: 'nowrap', render: (r) => fmtTime(r.last_finished_at) },
       { label: '', render: (r) => {
         const box = el('div', null, 'row-actions');
-        const log = el('button', 'Log', 'btn'); log.type = 'button'; log.title = 'Show the log entries of ' + r.issue;
-        log.addEventListener('click', () => showIssueLog(r.issue));
-        const agent = link('Detail', '/issue?id=' + encodeURIComponent(r.issue)); agent.className = 'btn';
-        agent.title = 'Agent detail view: timeline, sessions and transcripts of the last claim, kept after the issue finished';
+        const log = button('Log', { size: 36, onClick: () => showIssueLog(r.issue) }); log.title = 'Log-Einträge von ' + r.issue + ' anzeigen';
+        const agent = button('Detail', { size: 36, href: '/issue?id=' + encodeURIComponent(r.issue) });
+        agent.title = 'Agent-Detailansicht: Verlauf, Sessions und Transkripte des letzten Claims, auch nach Abschluss des Issues erhalten';
         box.append(log, agent); return box;
       } },
     );
-    table('issues-table', columns, rows.slice(0, view.issueLimit), sort === 'failed' ? 'No issue had a failed run in this period.' : 'No issues in this period.');
+    table('issues-table', columns, rows.slice(0, view.issueLimit), sort === 'failed' ? 'Kein Issue hatte in diesem Zeitraum einen fehlgeschlagenen Run.' : 'Keine Issues in diesem Zeitraum.');
   }
 
   // ------------------------------------------------------------------------------------------------------------
@@ -949,7 +1008,7 @@ ${CHART_JS}
   let logRequest = null;
   async function loadLogs() {
     const r = range(filter);
-    if (r.error) { $('log-body').replaceChildren(stateBox('error', 'INVALID PERIOD', r.error)); return; }
+    if (r.error) { $('log-body').replaceChildren(stateBox('error', 'UNGÜLTIGER ZEITRAUM', r.error)); return; }
     logRequest?.abort();
     const controller = new AbortController(); logRequest = controller;
     const params = new URLSearchParams({ order: $('log-order').value, limit: '200' });
@@ -958,7 +1017,7 @@ ${CHART_JS}
     if (to) params.set('to', to.toISOString());
     if (filter.repo) params.set('repo', filter.repo);
     for (const [key, id] of [['issue', 'log-issue'], ['event', 'log-event'], ['result', 'log-result']]) if ($(id).value.trim()) params.set(key, $(id).value.trim());
-    if (!$('log-body').firstChild) $('log-body').replaceChildren(stateBox('loading', 'LOADING', 'Reading the log…'));
+    if (!$('log-body').firstChild) $('log-body').replaceChildren(stateBox('loading', 'LÄDT', 'Das Log wird gelesen…'));
     try {
       const res = await fetch('/api/v1/history/entries?' + params, { cache: 'no-store', signal: controller.signal });
       const body = await res.json().catch(() => ({}));
@@ -967,27 +1026,27 @@ ${CHART_JS}
     } catch (error) {
       if (error.name === 'AbortError') return;
       $('log-count').textContent = '';
-      $('log-body').replaceChildren(stateBox('error', 'CANNOT LOAD THE LOG', error.message + ' — the statistics above are not affected.', loadLogs));
+      $('log-body').replaceChildren(stateBox('error', 'LOG NICHT LADBAR', error.message + ' — die Statistik oben ist nicht betroffen.', loadLogs));
     } finally {
       if (logRequest === controller) logRequest = null;
     }
   }
   function renderLogs(body) {
-    options($('log-event'), body.events_available, 'All events', $('log-event').value);
-    options($('log-result'), body.results_available, 'All results', $('log-result').value);
+    options($('log-event'), body.events_available, 'Alle Events', $('log-event').value);
+    options($('log-result'), body.results_available, 'Alle Ergebnisse', $('log-result').value);
     for (const o of $('log-event').options) if (o.value) o.textContent = o.value.replace(/_/g, ' ');
     for (const o of $('log-result').options) if (o.value) o.textContent = OUTCOMES[o.value] || o.value;
-    $('log-count').textContent = body.truncated ? fmtInt(body.entries.length) + ' of ' + fmtInt(body.total) : fmtInt(body.total);
-    if (!body.entries.length) { $('log-body').replaceChildren(noData('No log entries match the filter in the selected period.')); return; }
+    $('log-count').textContent = body.truncated ? fmtInt(body.entries.length) + ' von ' + fmtInt(body.total) : fmtInt(body.total);
+    if (!body.entries.length) { $('log-body').replaceChildren(noData('Im gewählten Zeitraum passt kein Log-Eintrag zum Filter.')); return; }
     const tbl = el('table'); tbl.id = 'entries'; const wrap = el('div', null, 'scroll'); wrap.append(tbl);
     const nodes = [wrap];
-    if (body.truncated) nodes.push(el('p', 'Showing the ' + (($('log-order').value === 'asc') ? 'oldest ' : 'newest ') + fmtInt(body.entries.length) + ' entries; narrow the period or filter to see the rest.', 'note'));
+    if (body.truncated) nodes.push(el('p', 'Angezeigt werden die ' + (($('log-order').value === 'asc') ? 'ältesten ' : 'neuesten ') + fmtInt(body.entries.length) + ' Einträge; Zeitraum oder Filter eingrenzen, um den Rest zu sehen.', 'note'));
     $('log-body').replaceChildren(...nodes);
-    const columns = [{ label: 'Time', className: 'event', render: (r) => fmtTime(r.ts) }];
+    const columns = [{ label: 'Zeit', className: 'event', render: (r) => fmtTime(r.ts) }];
     if (!filter.repo) columns.push({ label: 'Repository', className: 'nowrap', render: (r) => r.repo || '—' });
     columns.push(
       { label: 'Issue', className: 'event', render: (r) => r.issue || '—' },
-      { label: 'Event', className: 'event', render: (r) => el('span', r.event.replace(/_/g, ' '), 'chip tone-' + SEVERITY_TONE[logSeverity(r)]) },
+      { label: 'Event', className: 'event', render: (r) => chip(r.event.replace(/_/g, ' '), { tone: chipTone(SEVERITY_TONE[logSeverity(r)]), mono: true }) },
       { label: 'Details', render: (r) => el('div', describeLogEntry(r), 'msg') },
     );
     table('entries', columns, body.entries, '');

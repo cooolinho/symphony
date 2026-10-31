@@ -475,7 +475,7 @@ describe('worker wiring: brain tools only with brain.enabled', () => {
   it('hands the session the read and write tools when brain.enabled is true', async () => {
     const params = await sessionFor({ enabled: true });
     const names = (params.brainTools ?? []).map((t) => t.name).sort();
-    assert.deepEqual(names, ['brain_append', 'brain_list', 'brain_read', 'brain_search', 'brain_write']);
+    assert.deepEqual(names, ['brain_append', 'brain_list', 'brain_read', 'brain_search', 'brain_vitals', 'brain_write']);
     assert.ok(!params.tools.some((t) => t.name.startsWith('brain_')), 'brain tools are not mixed into the tracker tools');
     const search = params.brainTools!.find((t) => t.name === 'brain_search')!;
     const result = await search.execute({ query: 'wired', purpose: 'test' }, params.toolContext());

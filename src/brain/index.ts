@@ -59,7 +59,7 @@ export interface BrainCandidate {
 }
 
 /** Text of a frontmatter value: a trimmed non-empty string, a number, or a date as YYYY-MM-DD; otherwise null. */
-function textOf(value: unknown): string | null {
+export function textOf(value: unknown): string | null {
   if (typeof value === 'string') return value.trim() === '' ? null : value.trim();
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
@@ -215,9 +215,25 @@ export function vitalsCounts(index: VaultIndex): BrainVitalCounts {
   };
 }
 
+/** Groups of two or more non-deprecated notes with the same title (trimmed, lower case, white space collapsed), sorted. */
+export function sameTitleGroups(index: VaultIndex): { title: string; paths: string[] }[] {
+  const groups = new Map<string, string[]>();
+  for (const [rel, note] of index.notes) {
+    if (note.status === 'deprecated') continue;
+    const key = note.title.trim().toLowerCase().replace(/\s+/g, ' ');
+    if (key === '') continue;
+    groups.set(key, [...(groups.get(key) ?? []), rel]);
+  }
+  return [...groups]
+    .filter(([, paths]) => paths.length >= 2)
+    .map(([title, paths]) => ({ title, paths: paths.sort() }))
+    .sort((a, b) => a.title.localeCompare(b.title));
+}
+
 const TYPE_FOLDERS: Record<string, string> = { decision: 'Decisions/', lesson: 'Lessons/', issue: 'Issues/', agent: 'Agents/' };
 
-function targetOf(note: IndexedNote): string {
+/** Destination of a note when it is approved: `target`, else the folder of its type. */
+export function targetOf(note: Pick<IndexedNote, 'target' | 'type' | 'repo'>): string {
   if (note.target !== null) return note.target;
   if (note.type === 'index') return note.repo !== null && isRepositoryName(note.repo) ? `Repos/${repoFolderName(note.repo)}/` : 'Repos/';
   return (note.type !== null ? TYPE_FOLDERS[note.type] : undefined) ?? 'Inbox/';

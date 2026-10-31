@@ -151,12 +151,13 @@ const REDIRECTS: ReadonlyMap<string, string> = new Map([
 ]);
 
 /**
- * Observability/control surface (spec 13.7): `/` dashboard, `/changes` (the feed of code changes), `/tasks` and `/brain` (placeholder pages),
+ * Observability/control surface (spec 13.7): `/` dashboard, `/changes` (the feed of code changes), `/tasks` (queue columns with control actions), `/brain` (placeholder page),
  * `/issue?id=<identifier>` issue detail view (live, or archived once the orchestrator released the issue),
  * `/stats` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
- * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/activity`, `/api/v1/brain/vitals`, `/api/v1/brain/candidates` (404 `brain_disabled` without `brain.enabled`), `/api/v1/changes` (filters type, repo, issue, limit, tz; `before` = id of the last entry of the previous page, `next_before` the id for the next), `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
+ * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/activity`, `/api/v1/brain/vitals`, `/api/v1/brain/candidates`, `/api/v1/brain/access` (filters role, q, limit; `before`/`next_before` page by line), `/api/v1/brain/clashes` (`status=open|resolved`, with the versions of each clash) (404 `brain_disabled` without `brain.enabled`), `/api/v1/changes` (filters type, repo, issue, limit, tz; `before` = id of the last entry of the previous page, `next_before` the id for the next), `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
  * `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker), `/force` (Start now in an extra slot),
- * `/pause` and `/resume` (operator pause of an issue), `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family), and
+ * `/pause` and `/resume` (operator pause of an issue), `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family),
+ * `POST /api/v1/brain/clashes/<id>/resolve`, `POST /api/v1/brain/candidates/<path>/approve`, `/reject` and `/revert` (the path URL-encoded), and
  * `PUT` / `DELETE /api/v1/settings/agents` (agent slots set on the dashboard; JSON body, `Content-Type:
  * application/json` required).
  * `/logs` and `/agent` redirect with 301 to `/stats` and `/issue` (query kept).
@@ -190,7 +191,7 @@ export function startHttpServer(options: {
   const events = new ChangeEvents(orchestrator);
 
   /**
-   * The guard of every control route (retry, force, pause, resume, model hold and release, agent settings): loopback bind, or
+   * The guard of every control route (retry, force, pause, resume, model hold and release, agent settings, brain clash resolve and candidate approve, reject, revert): loopback bind, or
    * `allowRemoteControl` plus an Origin header naming this host. Sends the 403 and returns false when refused.
    */
   const controlAllowed = (req: http.IncomingMessage, res: http.ServerResponse): boolean => {
@@ -261,7 +262,7 @@ export function startHttpServer(options: {
       return;
     }
     if (pathname === '/api/v1/system') {
-      allow(['GET'], () => sendJson(res, 200, system?.snapshot() ?? { current: null, history: [], gpu: null, cpu_count: null }));
+      allow(['GET'], () => sendJson(res, 200, system?.snapshot() ?? { current: null, history: [], gpu: null, cpu_count: null, host: null, usage: null }));
       return;
     }
     if (pathname === '/api/v1/budget') {
@@ -277,6 +278,85 @@ export function startHttpServer(options: {
           }),
         ),
       );
+      return;
+    }
+    if (pathname === '/api/v1/brain/access') {
+      allow(['GET'], () => {
+        const params = new URL(req.url ?? '/', 'http://localhost').searchParams;
+        const before = Number(params.get('before'));
+        const limit = Number(params.get('limit'));
+        const page = orchestrator.brainAccess({
+          role: textParam(params, 'role'),
+          q: textParam(params, 'q'),
+          before: textParam(params, 'before') !== null && Number.isInteger(before) && before >= 0 ? before : null,
+          limit: Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : null,
+        });
+        if (page === null) sendError(res, 404, 'brain_disabled', 'the brain is not enabled (brain.enabled)');
+        else sendJson(res, 200, page);
+      });
+      return;
+    }
+    if (pathname === '/api/v1/brain/clashes') {
+      allow(['GET'], () => {
+        const status = textParam(new URL(req.url ?? '/', 'http://localhost').searchParams, 'status');
+        if (status !== null && status !== 'open' && status !== 'resolved') {
+          sendError(res, 400, 'bad_request', 'status must be open or resolved');
+          return;
+        }
+        respond(
+          orchestrator.brainClashes(status).then((clashes) => {
+            if (clashes === null) sendError(res, 404, 'brain_disabled', 'the brain is not enabled (brain.enabled)');
+            else sendJson(res, 200, { clashes });
+          }),
+        );
+      });
+      return;
+    }
+    // Resolve a clash: POST /api/v1/brain/clashes/<id>/resolve.
+    const clashRoute = /^brain\/clashes\/([^/]+)\/resolve$/.exec(pathname.slice(API_PREFIX.length));
+    if (pathname.startsWith(API_PREFIX) && clashRoute !== null) {
+      allow(['POST'], () => {
+        if (!controlAllowed(req, res)) return;
+        let id: string;
+        try {
+          id = decodeURIComponent(clashRoute[1] as string);
+        } catch {
+          sendError(res, 400, 'bad_request', 'malformed clash id');
+          return;
+        }
+        const result = orchestrator.brainResolveClash(id);
+        if (result === null) sendError(res, 404, 'brain_disabled', 'the brain is not enabled (brain.enabled)');
+        else if (result.ok) sendJson(res, 200, { id, status: 'resolved' });
+        else if (result.reason === 'not_found') sendError(res, 404, 'clash_not_found', `no clash ${id}`);
+        else sendError(res, 409, 'already_resolved', `clash ${id} is already resolved`);
+      });
+      return;
+    }
+    // Promote, discard or un-promote a candidate note; the path is URL-encoded (Inbox%2Fx.md) and checked like the brain tools.
+    const candidateRoute = /^brain\/candidates\/(.+)\/(approve|reject|revert)$/.exec(pathname.slice(API_PREFIX.length));
+    if (pathname.startsWith(API_PREFIX) && candidateRoute !== null) {
+      allow(['POST'], () => {
+        if (!controlAllowed(req, res)) return;
+        let notePath: string;
+        try {
+          notePath = decodeURIComponent(candidateRoute[1] as string);
+        } catch {
+          sendError(res, 400, 'bad_request', 'malformed note path');
+          return;
+        }
+        const action = candidateRoute[2];
+        const pending = action === 'approve' ? orchestrator.brainApprove(notePath) : action === 'reject' ? orchestrator.brainReject(notePath) : orchestrator.brainRevert(notePath);
+        respond(
+          pending.then((result) => {
+            if (result === null) sendError(res, 404, 'brain_disabled', 'the brain is not enabled (brain.enabled)');
+            else if (result.ok) sendJson(res, 200, { path: result.path, previous_path: result.previousPath, hash: result.hash, sha: result.sha });
+            else if (result.reason === 'invalid_path') sendError(res, 400, 'bad_request', result.message);
+            else if (result.reason === 'not_found') sendError(res, 404, 'note_not_found', result.message);
+            else if (result.reason === 'git_failed') sendError(res, 500, 'vault_git_failed', result.message);
+            else sendError(res, 409, result.reason, result.message);
+          }),
+        );
+      });
       return;
     }
     if (pathname === '/api/v1/changes') {
@@ -357,14 +437,15 @@ export function startHttpServer(options: {
           timeZone: zone !== null && isValidTimeZone(zone) ? zone : Intl.DateTimeFormat().resolvedOptions().timeZone,
         };
         const pricing = history.pricing.current();
+        const rateLimits = orchestrator.rateLimitEvents(from ?? undefined);
         let value: Analytics;
         // An open end moves with the clock, so only bounded periods are cached.
-        const key = to === null ? null : JSON.stringify([filter, files.map((f) => [f.file, f.bytes])]);
+        const key = to === null ? null : JSON.stringify([filter, files.map((f) => [f.file, f.bytes]), rateLimits.length, rateLimits.at(-1)?.at ?? null]);
         const cached = key === null ? undefined : analyticsCache.get(key);
         if (cached !== undefined && cached.pricing === pricing) {
           value = cached.value;
         } else {
-          value = computeAnalytics(entries, pricing, filter);
+          value = computeAnalytics(entries, pricing, filter, new Date(), rateLimits);
           if (key !== null) {
             analyticsCache.delete(key);
             analyticsCache.set(key, { pricing, value });

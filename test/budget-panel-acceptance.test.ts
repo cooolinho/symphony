@@ -244,7 +244,7 @@ describe('E4-6 acceptance: 5h chip', () => {
     return page;
   };
   const chipAt = async (pct: number) => chipPage(report({ used: pct * 10_000 }));
-  const toneOf = (page: Awaited<ReturnType<typeof chipPage>>) => page.$('shell-budget-pct').className;
+  const toneOf = (page: Awaited<ReturnType<typeof chipPage>>) => (page.$('shell-budget').children.map((c) => c.className).join(' '));
 
   it('— without data (error and malformed)', async () => {
     for (const b of [new Error('x'), {}, { five_hour: null }]) {

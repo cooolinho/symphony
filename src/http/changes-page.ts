@@ -1,4 +1,4 @@
-import { page } from './ui/layout.ts';
+import { AURORA, page } from './ui/layout.ts';
 
 const CHANGES_CSS = `
   .chg-bar-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin: 14px 0 18px; }
@@ -36,6 +36,7 @@ const CHANGES_CSS = `
 export const CHANGES_HTML = page({
   title: 'Changes · Symphony',
   nav: 'changes',
+  aurora: AURORA.changes,
   styles: CHANGES_CSS,
   body: `
   <section aria-labelledby="page-title">

@@ -110,6 +110,7 @@ export async function runService(options: ServiceOptions): Promise<number> {
 
   const config = store.current.config;
   await prepareBrain(config.brain, configuredRepositories(config.tracker.provider.repositories, env), logger);
+  if (config.brain.enabled) await orchestrator.loadBrainChanges();
   await orchestrator.buildBrainIndex();
   const system = new SystemCollector({
     volumes: [
@@ -118,6 +119,8 @@ export async function runService(options: ServiceOptions): Promise<number> {
     ],
     gpu: config.system.gpu,
     logger,
+    container: env.SYMPHONY_CONTAINER || env.HOSTNAME || null,
+    usagePaths: { workspaces: config.workspace.root, transcripts: path.join(options.logDir, 'sessions') },
   });
   system.start();
   let http: HttpServerHandle | null = null;

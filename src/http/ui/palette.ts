@@ -17,14 +17,25 @@ export const ROLE_COLORS = {
   reviewer: '#f472b6', security: '#fb923c', symphony: '#94a3b8', human: '#e8eef9',
 } as const;
 
+/** Light role colours: the name of the playing seat, its tool argument and the tinted last trace chip. */
+export const ROLE_LIGHT = {
+  analyst: '#e0f2fe', architect: '#ede9fe', developer: '#d1fae5', tester: '#fef3c7', docs: '#f1f5f9',
+  reviewer: '#fce7f3', security: '#ffedd5', symphony: '#f1f5f9', human: '#f8fafc',
+} as const;
+
 /** Status scales (Tailwind-style step numbers). */
 export const SCALES = {
   green: { 400: '#34d399', 300: '#6ee7b7', 100: '#d1fae5' },
   amber: { 400: '#fbbf24', 300: '#fcd34d', 200: '#fde68a' },
   red: { 400: '#f87171', 300: '#fca5a5', 200: '#fecaca' },
   violet: { 400: '#a78bfa', 300: '#c4b5fd', 200: '#ddd6fe', 100: '#ede9fe' },
-  sky: { 300: '#7dd3fc', 100: '#e0f2fe' },
+  sky: { 400: '#38bdf8', 300: '#7dd3fc', 100: '#e0f2fe' },
   gray: { 500: '#64748b', 400: '#94a3b8' },
+} as const;
+
+/** Colours of the system cards on the overview. */
+export const SYSTEM_COLORS = {
+  cpu: SCALES.sky[400], ram: SCALES.violet[400], disk: SCALES.green[400], load: SCALES.amber[400], slots: SCALES.green[400], github: '#cbd5e1',
 } as const;
 
 /** Operation colours (denied = ABGEWIESEN). */

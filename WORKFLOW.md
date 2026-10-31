@@ -74,6 +74,8 @@ tracker:
   #   start in Ready right away, stays in "In progress" and runs again once all sub-issues of the wave are closed.
   #   An issue whose description starts with "/concept <file.md>" is served by the analyst: it turns the concept into
   #   epics and sub-issues (with "blocked by", Model and Effort labels) in Backlog; a human moves them to Ready.
+  #   An issue whose description starts with "/brain-garden" is served by the brain gardener: it looks for duplicates,
+  #   orphans and broken links in the knowledge vault and writes proposals as candidate notes (it never promotes).
   #   An issue whose description starts with "/plan [file]" is served by the planner: every item of the list (the file,
   #   or the description below the command line) becomes one planned sub-issue in Backlog; a human moves them to Ready.
   # If your board names its columns differently, adjust these lists, roles, checks, the prompt below and the role
@@ -160,8 +162,9 @@ claude:
 roles:
   # agents: plugin subagents (.claude/agents) the role may start; unset = all. Read-only roles only get read-only
   # ones, and laravel-* subagents only exist in workspaces with a Laravel app.
-  # brain: which brain tools the role gets (off = none, read = search/read/list, write = also write/append); only with
-  # brain.enabled; unset = off.
+  # brain: which brain tools the role gets (off = none, read = search/read/list/vitals, write = also write/append); only with
+  # brain.enabled; unset = off. brain_approved_writes: false (only with brain: write) makes brain_write/brain_append reject
+  # every approved note and every status: approved; unset = true (no extra gate).
   # Models and effort follow "plan strong, implement cheaper": the architect designs larger changes with the strongest
   # model, the developer implements the design with a cheaper one, and the roles with a fixed task (analysis, tests,
   # docs, review, security) run with a fixed model and effort. model_by_complexity picks the model by the issue's
@@ -330,6 +333,16 @@ roles:
     may_move_to: [In progress, In review, Blocked]
     agents: [laravel-architect]
     claude: { model: fable, effort: high, max_budget_usd: 20 }
+  brain-gardener:
+    commands: [brain-garden]                                # served only for issues whose description starts with /brain-garden
+    states: [Ready, In progress]
+    read_only: true                                         # the repository stays untouched; the proposals become candidate notes in the vault
+    run_checks: false
+    max_turns: 2
+    may_move_to: [In progress, In review, Blocked]
+    brain: write
+    brain_approved_writes: false                            # never writes an approved note, never sets status approved
+    claude: { model: opus, max_budget_usd: 5, disallowed_tools: [mcp__tracker__open_pull_request] }
 
 pipeline:
   # A third review with changes_needed does not go back to the developer: the issue moves to Blocked with the
@@ -431,6 +444,9 @@ server:
   host: ${SYMPHONY_HOST:-127.0.0.1}          # bind address; non-loopback only behind an authenticating proxy
   allow_remote_control: ${SYMPHONY_ALLOW_REMOTE_CONTROL:-false}  # Retry/Resume now on a non-loopback bind
   public_url: ${SYMPHONY_PUBLIC_URL:-}       # the dashboard as people reach it (https://symphony.example.com); links in commit statuses
+
+# budget:
+#   compact_threshold: 80                    # context percent of Claude Code's auto-compact; the team view marks it
 
 # brain:                                     # knowledge vault: one vault for all repositories, created at startup
 #   enabled: false                           # true = create the vault; false = no path is touched
@@ -569,5 +585,6 @@ The description starts with the command `/{{ issue.command.name }}`{% if issue.c
 {%- when "autopilot" %}{% include "roles/autopilot.md" %}
 {%- when "analyst" %}{% include "roles/analyst.md" %}
 {%- when "planner" %}{% include "roles/planner.md" %}
+{%- when "brain-gardener" %}{% include "roles/brain-gardener.md" %}
 {%- else %}{% include "roles/default.md" %}
 {%- endcase %}

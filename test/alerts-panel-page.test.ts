@@ -188,19 +188,6 @@ describe('Hinweise panel: state fetch fails', () => {
   });
 });
 
-describe('model controls stay on the overview', () => {
-  it('shows Pause/Resume per model and posts hold and release', async () => {
-    const page = await open({ model_controls: [{ model: 'opus', paused: false, limit_until: null }] }, null);
-    assert.equal(page.$('model-controls').hidden, false);
-    page.click(page.query('button.model-control')[0]!);
-    assert.deepEqual(page.fetches.at(-1), { url: '/api/v1/models/opus/hold', method: 'POST' });
-    const paused = await open({ model_controls: [{ model: 'opus', paused: true, limit_until: null }] }, null);
-    assert.equal(paused.query('button.model-control')[0]!.textContent, 'Resume');
-    paused.click(paused.query('button.model-control')[0]!);
-    assert.equal(paused.fetches.at(-1)!.url, '/api/v1/models/opus/release');
-  });
-});
-
 describe('Hinweise panel: stable refresh (focus and aria-live survive the 2-s poll)', () => {
   it('an unchanged list keeps the very same entry nodes and does not rewrite the counter', async () => {
     const page = await open({ model_holds: [hold] }, budgetReport());

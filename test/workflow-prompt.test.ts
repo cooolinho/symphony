@@ -111,7 +111,7 @@ describe('shipped WORKFLOW.md', () => {
     assert.deepEqual(modes, {
       'issue-analyst': 'write', architect: 'write', reviewer: 'write',
       developer: 'read', 'test-engineer': 'read', 'security-auditor': 'read',
-      docs: 'off', auditor: 'off', autopilot: 'off', analyst: 'off', planner: 'off',
+      docs: 'off', auditor: 'off', autopilot: 'off', analyst: 'off', planner: 'off', 'brain-gardener': 'write',
     });
   });
 
@@ -1021,6 +1021,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
       autopilot: ['laravel-architect'],
       analyst: ['laravel-architect'],
       planner: ['laravel-architect'],
+      'brain-gardener': null,
     });
     for (const role of config.roles ?? []) {
       for (const name of role.agents ?? []) {
@@ -1082,6 +1083,7 @@ describe('Symphony toolbox skills', () => {
   it('ships the skills the shipped roles and templates refer to', async () => {
     assert.deepEqual([...commandSkills([toolbox])].sort(), [
       ['auto-code', 'symphony:auto-code'],
+      ['brain-garden', 'symphony:brain-garden'],
       ['concept', 'symphony:concept'],
       ['plan', 'symphony:plan'],
       ['refactor-safely', 'symphony:refactor-safely'],

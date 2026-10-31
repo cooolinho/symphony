@@ -25,7 +25,7 @@ const report = (used: number, limit: number | null, extra: Record<string, unknow
 });
 
 const settle = () => new Promise((r) => setTimeout(r, 30));
-const chipOf = (page: ReturnType<typeof renderPage>) => ({ text: page.$('shell-budget').textContent.trim(), cls: page.$('shell-budget-pct').className });
+const chipOf = (page: ReturnType<typeof renderPage>) => ({ text: page.$('shell-budget').textContent.trim(), cls: page.$('shell-budget').children.map((c) => c.className).join(' ') });
 const budgetFetches = (page: ReturnType<typeof renderPage>) => page.fetches.filter((f) => f.url === '/api/v1/budget').length;
 
 async function fire(page: ReturnType<typeof renderPage>) {
@@ -39,21 +39,19 @@ async function fire(page: ReturnType<typeof renderPage>) {
 
 describe('E4-5 budget reload', () => {
   it('the chip follows new answers on every 30 s tick', async () => {
-    const answers = [report(800_000, 2_000_000), report(1_100_000, 2_000_000), report(1_800_000, 2_000_000)];
+    const answers = [report(1_240_000, 2_000_000), report(1_700_000, 2_000_000), report(1_700_000, 2_000_000, { alert: true })];
     let n = 0;
     const page = renderPage(TASKS_HTML, undefined, { fetch: (u) => (u === '/api/v1/budget' ? answers[Math.min(n++, answers.length - 1)] : {}) });
     await until(() => budgetFetches(page) === 1);
     await settle();
-    assert.equal(chipOf(page).text, '5h 40 %');
-    assert.doesNotMatch(chipOf(page).cls, /amber|red/);
-    await fire(page);
-    assert.equal(chipOf(page).text, '5h 55 %');
+    assert.equal(chipOf(page).text, '5h 62 %');
     assert.match(chipOf(page).cls, /amber/);
     await fire(page);
+    assert.equal(chipOf(page).text, '5h 85 %');
     assert.match(chipOf(page).cls, /red/);
   });
 
-  it('the chip falls back to "5 h —" when a reload fails and recovers on the next one', async () => {
+  it('the chip falls back to "5h —" when a reload fails and recovers on the next one', async () => {
     let mode: 'ok' | 'fail' = 'ok';
     const page = renderPage(TASKS_HTML, undefined, {
       fetch: (u) => {

@@ -312,11 +312,11 @@ start; the dashboard notes it at the slot settings. When a result leads issues t
 
 #### Agent slots set on the dashboard
 
-`max_concurrent_agents`, `max_concurrent_agents_by_state` and `reserved_slots_by_role` can also be changed at runtime, on the dashboard or with
+`max_concurrent_agents`, `max_concurrent_agents_by_state` and `reserved_slots_by_role` can also be changed at runtime, in the head of the Tasks page or with
 `PUT /api/v1/settings/agents` (see [Dashboard and API](usage.md#dashboard-and-api)). The value in force comes from the
 first of:
 
-1. the dashboard override (stored as `settings` in the runtime state file under `<logDir>/state/`, so it survives a
+1. the override from the Tasks page (stored as `settings` in the runtime state file under `<logDir>/state/`, so it survives a
    restart),
 2. `WORKFLOW.md`,
 3. the `${VAR:-default}` fallback inside `WORKFLOW.md` (e.g. `SYMPHONY_MAX_CONCURRENT_AGENTS`, read once at start).
@@ -457,7 +457,8 @@ roles:
 | `max_sub_issues` | none | Integer 1–100 (GitHub's limit): how many sub-issues the role may have open under its issue at once, counting the sub-issues of those (the whole tree when the role creates epics with `parent`). Setting it gives the role the GitHub tool `create_sub_issue` ([github-project.md](adapters/github-project.md#agent-tools)). |
 | `sub_issue_status` | `tracker.provider.sub_issue_status` | Column for the sub-issues this role creates. Unlike the provider setting it may be an active column, so the sub-issues start without a human; this is the deliberate opt-in for autonomous roles such as the autopilot. Never a terminal column; needs `max_sub_issues`. Checked against the board like the other columns. |
 | `wait_for_sub_issues` | `false` | `true` dispatches the role's issues only while none of their sub-issues is open. See [Waves](#waves-wait_for_sub_issues). |
-| `brain` | `off` | String, one of `off`, `read`, `write`. Brain tools of the role's sessions: `off` none, `read` only `brain_search`, `brain_read`, `brain_list`, `write` also `brain_write` and `brain_append`. Only has an effect with [`brain.enabled`](#brain); without it no role gets brain tools. Roles are never given the vault as a directory. The shipped `WORKFLOW.md` sets `write` for `issue-analyst`, `architect` and `reviewer`, `read` for `developer`, `test-engineer` and `security-auditor`; `docs` and the command roles stay `off`. An existing `WORKFLOW.md` without the field gives no role brain tools anymore. Roles with `read` or `write` get the prompt section `roles/brain.md`. See [brain.md](brain.md#role-switch). |
+| `brain_approved_writes` | `true` | Boolean, only with `brain: write`. `false` makes `brain_write` and `brain_append` reject an approved note and any `status: approved` (reason `approved_readonly` / `approved_status`); `true` adds no gate (approved notes stay read-only for agents by the general rule). The shipped `brain-gardener` sets `false`. See [brain.md](brain.md#gardener). |
+| `brain` | `off` | String, one of `off`, `read`, `write`. Brain tools of the role's sessions: `off` none, `read` only `brain_search`, `brain_read`, `brain_list`, `brain_vitals`, `write` also `brain_write` and `brain_append`. Only has an effect with [`brain.enabled`](#brain); without it no role gets brain tools. Roles are never given the vault as a directory. The shipped `WORKFLOW.md` sets `write` for `issue-analyst`, `architect`, `reviewer` and `brain-gardener`, `read` for `developer`, `test-engineer` and `security-auditor`; `docs` and the command roles stay `off`. An existing `WORKFLOW.md` without the field gives no role brain tools anymore. Roles with `read` or `write` get the prompt section `roles/brain.md`. See [brain.md](brain.md#role-switch). |
 | `agents` | all | Plugin subagents (`agents/<name>.md` in [`claude.plugins`](#claude), names without the plugin prefix, e.g. `[laravel-code-reviewer]`) the role may start; `[]` allows none. See [Subagents per role](#subagents-per-role). |
 | `claude` | `{}` | Overrides of `model`, `effort`, `allowed_tools`, `disallowed_tools`, `append_system_prompt`, `max_budget_usd` (same meaning as in [`claude`](#claude)). |
 
@@ -1165,7 +1166,7 @@ one poll at a time. For example, with an analyst in `Ready` and `pipeline.analys
 
 ### `system`
 
-Symphony samples CPU, memory, load and disk of the host every 10 s and keeps one hour of history in memory (`GET /api/v1/system`). Values that cannot be read are `null`.
+Symphony samples CPU, memory, load and disk of the host every 10 s and keeps one hour of history in memory (`GET /api/v1/system`). Values that cannot be read are `null`. The sizes of the workspace root and the transcripts (`<log-dir>/sessions`) come from `du -sk` every 10 minutes in the background; the optional `SYMPHONY_CONTAINER` names the container in the head of the System panel (fallback `HOSTNAME`).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -1173,13 +1174,21 @@ Symphony samples CPU, memory, load and disk of the host every 10 s and keeps one
 
 ### `brain`
 
-The knowledge vault: one vault for all repositories. With `enabled: true` Symphony creates `README.md` (the rules), `Inbox/`, `Repos/`, `Decisions/`, `Lessons/`, `Issues/` and `Agents/` folders at startup, plus `Kandidaten-Review.base` and `Neueste Lessons.base` as Obsidian Bases views, and `Repos/<owner>-<name>/index.md` for each configured repository. It also creates `.gitignore` (`.obsidian/workspace*.json`, `.trash/`) and, when `.git` is missing, runs `git init` with a first commit of the structure (never `.obsidian/`); every agent write is then one commit (see [agent-claude.md](agent-claude.md#brain-tools)). After every successful merge Symphony itself (no agent) writes `Issues/<owner>-<name>/<number>.md` with the goal, the result per stage, rounds, cost, changed files and links to the pull request and `[[Repos/<owner>-<name>/index]]` (`status: approved`, `role: symphony`) and commits it as `symphony` with the subject `<repo>#<number>: issue summary`; a second run for the same issue changes nothing, and a failure only logs a warning. Existing files and folders are never overwritten; `.obsidian/` is never touched. Restart to change it. With `enabled: true` the sessions of roles with `brain: read` get the tools `brain_search`, `brain_read` and `brain_list`, those with `brain: write` also `brain_write` and `brain_append` (see [agent-claude.md](agent-claude.md#brain-tools)); roles without the field get none. How to run and look after the vault: [brain.md](brain.md). `path` must not overlap `workspace.root` (same directory, vault inside the root or root inside the vault): agents reach the vault only through the tools. An unknown key is an error.
+The knowledge vault: one vault for all repositories. With `enabled: true` Symphony creates `README.md` (the rules), `Inbox/`, `Repos/`, `Decisions/`, `Lessons/`, `Issues/` and `Agents/` folders at startup, plus `Kandidaten-Review.base` and `Neueste Lessons.base` as Obsidian Bases views, and `Repos/<owner>-<name>/index.md` for each configured repository. It also creates `.gitignore` (`.obsidian/workspace*.json`, `.trash/`) and, when `.git` is missing, runs `git init` with a first commit of the structure (never `.obsidian/`); every agent write is then one commit (see [agent-claude.md](agent-claude.md#brain-tools)). Each vault commit and each rejected write also appears in the change log as a `brain` entry; the newest 200 commits are loaded at startup (see the Brain changes bullet there). After every successful merge Symphony itself (no agent) writes `Issues/<owner>-<name>/<number>.md` with the goal, the result per stage, rounds, cost, changed files and links to the pull request and `[[Repos/<owner>-<name>/index]]` (`status: approved`, `role: symphony`) and commits it as `symphony` with the subject `<repo>#<number>: issue summary`; a second run for the same issue changes nothing, and a failure only logs a warning. Existing files and folders are never overwritten; `.obsidian/` is never touched. Restart to change it. With `enabled: true` the sessions of roles with `brain: read` get the tools `brain_search`, `brain_read`, `brain_list` and `brain_vitals`, those with `brain: write` also `brain_write` and `brain_append` (see [agent-claude.md](agent-claude.md#brain-tools)); roles without the field get none. How to run and look after the vault: [brain.md](brain.md). `path` must not overlap `workspace.root` (same directory, vault inside the root or root inside the vault): agents reach the vault only through the tools. An unknown key is an error.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `enabled` | boolean | `false` | Create the vault at startup; with `false` no path is touched. |
 | `path` | string | `~/brain` | Vault directory; `~` and `$VAR` are expanded, relative paths resolve against `WORKFLOW.md`. In Docker this is the `brain` volume. |
 | `clash_window_ms` | integer >= 0 | `600000` | A `brain_write` or `brain_append` is rejected with reason `window` when another run wrote the same note successfully within this many milliseconds; the result holds the current content and hash. The same run may write again at once. `0` turns the check off. Every call is logged to `<log-dir>/brain/access.jsonl` (lines older than 30 days are removed at startup, see [agent-claude.md](agent-claude.md#brain-tools)). |
+
+### `budget`
+
+Display settings of the budget and context views. An unknown key is ignored with a warning.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `compact_threshold` | integer 1–100 | `80` | Context fill in percent from which Claude Code compacts automatically. The **Session** field of the team view (`/issue?id=`) draws its red Auto-Compact mark there; `GET /api/v1/<identifier>/team` returns it as `compact_threshold`. Only a display value: it does not change when Claude Code compacts. |
 
 ## Complete example: roles, checks and Laravel
 

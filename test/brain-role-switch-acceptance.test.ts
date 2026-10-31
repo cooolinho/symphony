@@ -19,7 +19,7 @@ import { FakeRunner, FakeTracker, ManualClock, ManualTimers, StaticWorkflow, bas
 // Independent acceptance tests for the role switch `brain: off | read | write` (E7-5), derived from the issue.
 
 const shipped = path.join(import.meta.dirname, '..', 'WORKFLOW.md');
-const READ_TOOLS = ['brain_list', 'brain_read', 'brain_search'];
+const READ_TOOLS = ['brain_list', 'brain_read', 'brain_search', 'brain_vitals'];
 const WRITE_TOOLS = ['brain_append', 'brain_write'];
 const env = { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' };
 

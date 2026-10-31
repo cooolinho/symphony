@@ -30,6 +30,7 @@ const live: TeamRunning = {
   last_message: 'Fixing the review findings',
   turn_count: 12,
   model: 'opus',
+  effort: 'high',
   tokens: { input_tokens: 10, output_tokens: 20, total_tokens: 30 },
   cost_usd: 1.25,
   context: { tokens: 50_000, window: 200_000, percent: 25, compacts: 1 },
@@ -65,13 +66,16 @@ function input(over: Partial<TeamInput> = {}): TeamInput {
       ev('d2', '10:35:00', 'tool_use', 'Bash'),
     ],
     now: Date.parse(t('10:36:00')),
+    roles: null,
+    maxTurns: 50,
+    compactThreshold: 80,
     ...over,
   };
 }
 
 describe('team view (independent fixture)', () => {
-  it('returns exactly seats, active, subagents, blocks, handoffs', () => {
-    assert.deepEqual(Object.keys(buildTeamView(input())).sort(), ['active', 'blocks', 'handoffs', 'seats', 'subagents']);
+  it('returns exactly seats, active, subagents, blocks, handoffs, trace, compact_threshold', () => {
+    assert.deepEqual(Object.keys(buildTeamView(input())).sort(), ['active', 'blocks', 'compact_threshold', 'handoffs', 'seats', 'subagents', 'trace']);
   });
 
   it('has one seat per agent role in pipeline order plus a trailing "you" seat; human/terminal stages are no role seats', () => {
@@ -230,5 +234,44 @@ describe('team view (independent fixture)', () => {
     const source = fs.readFileSync(new URL('../src/http/team.ts', import.meta.url), 'utf8');
     assert.doesNotMatch(source, /from '(node:http|\.\/server\.ts)'/);
     assert.doesNotMatch(source, /import\s+(?!type)[^;]*from '\.\.\/orchestrator\/orchestrator\.ts'/);
+  });
+});
+
+describe('team view: fields of the E3-6 stage', () => {
+  const roles = [
+    { name: 'developer', result: 'implementation', maxTurns: 80 },
+    { name: 'reviewer', result: 'review', maxTurns: null },
+  ];
+
+  it('gives each seat the round of its newest result and the result kind of its role; "you" is human', () => {
+    const { seats } = buildTeamView(input({ roles }));
+    assert.deepEqual(seats.map((s) => [s.role, s.kind]), [['developer', 'implementation'], ['reviewer', 'review'], ['you', 'human']]);
+    assert.equal(seats[1]?.round, 1);
+    assert.equal(seats[2]?.round, null);
+  });
+
+  it('has no kind for agent seats without configured roles', () => {
+    assert.deepEqual(buildTeamView(input()).seats.map((s) => s.kind), [null, null, 'human']);
+  });
+
+  it('adds effort and the role turn limit (else agent.max_turns) to the active session', () => {
+    assert.equal(buildTeamView(input({ roles })).active?.max_turns, 80);
+    assert.equal(buildTeamView(input()).active?.max_turns, 50);
+    assert.equal(buildTeamView(input()).active?.effort, 'high');
+  });
+
+  it('carries compact_threshold from the input', () => {
+    assert.equal(buildTeamView(input({ compactThreshold: 70 })).compact_threshold, 70);
+  });
+
+  it('trace: the live tools while running, the last four tool calls of the newest session without one', () => {
+    assert.deepEqual(buildTeamView(input()).trace.map((x) => x.tool), ['Edit', 'Grep', 'Write', 'Bash']);
+    const base = input();
+    const pipeline = base.pipeline.map((s) => ({ ...s, sessions: s.sessions.map((x) => (x.finished_at === null ? { ...x, finished_at: t('10:36:00') } : x)) }));
+    const view = buildTeamView({ ...base, pipeline, running: null });
+    assert.equal(view.active, null);
+    assert.deepEqual(view.trace.map((x) => x.tool), ['Edit', 'Grep', 'Write', 'Bash']);
+    const none = buildTeamView({ ...base, pipeline: base.pipeline.map((s) => ({ ...s, sessions: [] })), running: null });
+    assert.deepEqual(none.trace, []);
   });
 });

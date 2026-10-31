@@ -5,7 +5,9 @@ import { renderPage, until } from './helpers.ts';
 import { issueDetail } from './helpers/page-fixtures.ts';
 
 // Independent acceptance tests for E3-3 (#356): the stage of the team view. The fixture is built here from the
-// documented /team shape (seats, active, subagents), not taken from the developer's helper.
+// documented /team shape (seats, active, subagents), not taken from the developer's helper. Adapted to the mockup
+// layout of E3-6 (#385): stage title with the issue number, .floor edge, #stage-spot spotlight, tool-name trace
+// chips, Auto-Compact mark instead of compact strokes, subagent avatars with a pulse ring.
 
 const URL_ = 'http://127.0.0.1/issue?id=acme%2Fapp%231';
 type Obj = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -50,12 +52,12 @@ describe('E3-3 stage: seats', () => {
   it('has a "Bühne" section above Pipeline, with a stage edge line', () => {
     const p = page(team());
     assert.equal(p.$('stage').hidden, false);
-    assert.equal(p.$('stage-title').textContent, 'Bühne');
+    assert.equal(p.$('stage-title').textContent, 'Bühne · das Team von #1');
     const html = AGENT_HTML;
     assert.ok(html.indexOf('id="stage"') < html.indexOf('id="pipe-section"'), 'stage comes before the pipeline section');
     assert.ok(html.indexOf('id="stage"') > html.indexOf('id="hero"'), 'stage comes after the hero');
     // The stage edge is drawn as a 2px line behind the seats.
-    assert.match(html, /\.stage-seat::before\s*\{[^}]*height:\s*2px/);
+    assert.match(html, /\.floor\s*\{[^}]*height:\s*2px/);
   });
 
   it('keeps the API order and puts "Du" last', () => {
@@ -70,10 +72,13 @@ describe('E3-3 stage: seats', () => {
     assert.deepEqual(page(t).query('#stage-seats .stage-seat').map((li) => li.getAttribute('data-role')), ['reviewer', 'analyst', 'you']);
   });
 
-  it('renders one avatar per seat', () => {
+  it('renders one avatar per seat, the active one as its context ring', () => {
     const p = page(team());
     assert.equal(p.query('#stage-seats .stage-seat').length, 6);
-    for (const li of p.query('#stage-seats .stage-seat')) assert.equal(li.querySelectorAll('.ui-av').length, 1, li.getAttribute('data-role') ?? '');
+    for (const li of p.query('#stage-seats .stage-seat')) {
+      const active = li.className.includes('is-active');
+      assert.equal(li.querySelectorAll(active ? '.ui-ring' : '.ui-av').length, 1, li.getAttribute('data-role') ?? '');
+    }
   });
 
   it('shows a check for done, a red cross for returned, none for waiting/skipped', () => {
@@ -90,7 +95,7 @@ describe('E3-3 stage: seats', () => {
     assert.ok(seatOf(p, 'reviewer').querySelector('.ui-av.is-waiting'));
     assert.ok(seatOf(p, 'docs').querySelector('.ui-av.is-skipped') || /is-skipped/.test(seatOf(p, 'docs').className));
     assert.match(AGENT_HTML, /\.ui-av\.is-waiting\s*\{[^}]*dashed/);
-    assert.match(AGENT_HTML, /\.stage-seat\.is-skipped\s*\{[^}]*opacity:\s*\.\d+/);
+    assert.match(AGENT_HTML, /\.stage-seat\.is-skipped \.ui-av\s*\{[^}]*dashed #5b6678/);
   });
 
   it('puts role, verdict, duration and model into the title; missing values are "—"', () => {
@@ -115,7 +120,7 @@ describe('E3-3 stage: active seat', () => {
     const p = page(team());
     assert.equal(p.query('#stage-seats li.is-active').length, 1);
     assert.equal(seatOf(p, 'developer').className.includes('is-active'), true);
-    assert.equal(p.query('#stage .ring').length, 1);
+    assert.equal(p.query('#stage-seats .ring').length, 1);
     assert.equal(p.query('#stage .eq').length, 1);
     assert.equal(seatOf(p, 'developer').querySelectorAll('.ring').length, 1);
     assert.equal(p.query('#stage .ui-ring').length, 1);
@@ -132,7 +137,7 @@ describe('E3-3 stage: active seat', () => {
   });
 
   it('has a soft spotlight made of a radial-gradient', () => {
-    assert.match(AGENT_HTML, /\.stage-seat\.is-active::after\s*\{[^}]*radial-gradient\(/);
+    assert.match(String(page(team()).$('stage-spot').style.background), /^radial-gradient\(/);
   });
 
   it('shows "—" for an unknown context percent and rounds fractions', () => {
@@ -151,7 +156,7 @@ describe('E3-3 stage: active seat', () => {
     const t = team();
     t.seats[2].status = 'playing';
     const p = page(t);
-    assert.equal(p.query('#stage .ring').length, 1);
+    assert.equal(p.query('#stage-seats .ring').length, 1);
     assert.equal(p.query('#stage .eq').length, 1);
     assert.equal(p.query('#stage-seats li.is-active').length, 1);
   });
@@ -171,22 +176,22 @@ describe('E3-3 stage: active seat', () => {
     assert.equal(p.query('#stage-seats li.is-active').length, 1);
     assert.ok(seatOf(p, 'reviewer').className.includes('is-active'));
     assert.equal(seatOf(p, 'developer').querySelector('.ring'), null);
-    assert.equal(p.query('#stage .ring').length, 1);
+    assert.equal(p.query('#stage-seats .ring').length, 1);
   });
 });
 
 describe('E3-3 stage: fields', () => {
-  it('"Jetzt" shows the action and the last four tool calls as a trace, oldest first', () => {
+  it('"Jetzt" shows the newest call as the action and the last four tool calls as a trace, oldest first', () => {
     const p = page(team());
-    assert.ok(txt(p, 'stage-now-body').includes('Reading the file'));
+    assert.ok(txt(p, 'stage-now-body').includes('t6 call'));
     const chips = p.query('#stage-now-body .ui-chip').map((c) => c.textContent);
-    assert.deepEqual(chips, ['t3 call', 't4 call', 't5 call', 't6 call']);
+    assert.deepEqual(chips, ['t3', 't4', 't5', 't6']);
   });
 
   it('"Jetzt" shows fewer tool calls when there are fewer, and a placeholder without any', () => {
     const t = team();
     t.active.recent_tools = [tool('only')];
-    assert.deepEqual(page(t).query('#stage-now-body .ui-chip').map((c) => c.textContent), ['only call']);
+    assert.deepEqual(page(t).query('#stage-now-body .ui-chip').map((c) => c.textContent), ['only']);
     const e = team();
     e.active.recent_tools = [];
     const p = page(e);
@@ -194,10 +199,10 @@ describe('E3-3 stage: fields', () => {
     assert.ok(txt(p, 'stage-now-body').includes('Reading the file'));
   });
 
-  it('"Session" shows a context bar, one compact mark per compact, turn, duration, model and tokens', () => {
+  it('"Session" shows a context bar with the Auto-Compact mark, turn, duration, model and tokens', () => {
     const p = page(team());
     assert.equal(p.query('#stage-session-body .ui-bar')[0]!.getAttribute('aria-valuenow'), '42');
-    assert.equal(p.query('#stage-session-body .stage-compact').length, 3);
+    assert.equal(p.query('#stage-session-body .ui-bar-mark').length, 1);
     const s = txt(p, 'stage-session-body');
     for (const part of ['17', 'opus', '750', '42']) assert.ok(s.includes(part), `${part} in "${s}"`);
     assert.match(s, /Dauer/);
@@ -206,19 +211,12 @@ describe('E3-3 stage: fields', () => {
     assert.match(s, /Tokens/);
   });
 
-  it('"Session" shows no compact marks without compacts and handles a missing percent', () => {
+  it('"Session" handles a missing window and percent', () => {
     const t = team();
     t.active.context = { tokens: null, window: null, percent: null, compacts: 0 };
     const p = page(t);
-    assert.equal(p.query('#stage-session-body .stage-compact').length, 0);
+    assert.equal(p.query('#stage-session-body .ui-bar-mark').length, 1);
     assert.ok(txt(p, 'stage-session-body').includes('—'));
-  });
-
-  it('"Session" caps the compact marks so they cannot overflow', () => {
-    const t = team();
-    t.active.context.compacts = 40;
-    const n = page(t).query('#stage-session-body .stage-compact').length;
-    assert.ok(n >= 1 && n <= 20, `${n} marks`);
   });
 
   it('"Subagents": running ones pulse, finished ones are still, with type, description, duration and tokens', () => {
@@ -227,12 +225,13 @@ describe('E3-3 stage: fields', () => {
     const done = p.query('#stage-subs-body .stage-subagent.is-done');
     assert.equal(run.length, 1);
     assert.equal(done.length, 1);
-    assert.equal(run[0]!.querySelectorAll('.pulse').length, 1);
-    assert.equal(done[0]!.querySelectorAll('.pulse').length, 0);
-    assert.equal(p.query('#stage-subs-body .pulse').length, 1);
+    assert.equal(run[0]!.querySelectorAll('.ring').length, 1);
+    assert.equal(done[0]!.querySelectorAll('.ring').length, 0);
+    assert.equal(p.query('#stage-subs-body .ring').length, 1);
     assert.ok((run[0]!.textContent ?? '').includes('Explore') && (run[0]!.textContent ?? '').includes('Look around'));
     assert.ok((done[0]!.textContent ?? '').includes('Plan') && (done[0]!.textContent ?? '').includes('Draft'));
-    assert.ok((done[0]!.textContent ?? '').includes('2m 0s'), done[0]!.textContent ?? '');
+    assert.ok((done[0]!.textContent ?? '').includes('fertig'), done[0]!.textContent ?? '');
+    assert.ok((run[0]!.textContent ?? '').includes('2m 0s'), run[0]!.textContent ?? '');
     assert.match(done[0]!.textContent ?? '', /7,000|7(\.0)?k/);
     assert.match(run[0]!.textContent ?? '', /5,000|5(\.0)?k/);
   });
@@ -243,10 +242,10 @@ describe('E3-3 stage: fields', () => {
     assert.ok(txt(p, 'stage-subs-body').trim().length > 0);
   });
 
-  it('only animates through .pulse and the playing avatar; nothing else in the stage runs an animation', () => {
+  it('animates only through the shared .ring / .eq / .live; no stage rule runs an animation of its own', () => {
     const css = AGENT_HTML.match(/<style[^>]*>([\s\S]*?)<\/style>/g)?.join('\n') ?? AGENT_HTML;
-    const stageRules = css.split('}').filter((r) => /\.stage[-\s{.:]/.test(r) && /animation\s*:/.test(r));
-    for (const r of stageRules) assert.match(r, /\.pulse/, `animated rule must be .pulse: ${r.trim()}`);
+    const stageRules = css.split('}').filter((r) => /\.(stage|seats|floor|spot|sub-)[-\s{.:]/.test(r) && /animation\s*:/.test(r));
+    assert.deepEqual(stageRules, []);
   });
 });
 
@@ -267,13 +266,13 @@ describe('E3-3 stage: no session', () => {
 
   it('switches from live to "Keine Session" and back on later renders', () => {
     const p = page(team());
-    assert.equal(p.query('#stage .ring').length, 1);
+    assert.equal(p.query('#stage-seats .ring').length, 1);
     p.render({ detail: issueDetail(), team: team(IDLE) });
     assert.equal(p.query('#stage .ring').length, 0);
     assert.equal(p.query('#stage .eq').length, 0);
     assert.ok(txt(p, 'stage-now-body').includes('Keine Session'));
     p.render({ detail: issueDetail(), team: team() });
-    assert.equal(p.query('#stage .ring').length, 1);
+    assert.equal(p.query('#stage-seats .ring').length, 1);
     assert.equal(p.query('#stage .ui-ring-pct')[0]!.textContent, '42%');
     assert.ok(!txt(p, 'stage-now-body').includes('Keine Session'));
   });
@@ -283,19 +282,17 @@ describe('E3-3 stage: 390 px', () => {
   const cols = (n: number) => {
     const t = team();
     t.seats = Array.from({ length: n }, (_, i) => seat(i === n - 1 ? 'you' : `role${i}`, 'waiting'));
-    return page(t).$('stage-seats').style.getPropertyValue('--stage-cols');
+    return page(t).$('stage-seats').style.getPropertyValue('--seats');
   };
 
-  it('arranges the seats in two rows', () => {
-    assert.equal(cols(8), '4');
-    assert.equal(cols(7), '4');
-    assert.equal(cols(6), '3');
-    assert.equal(cols(2), '1');
+  it('has one column per seat on wide screens', () => {
+    assert.equal(cols(8), '8');
+    assert.equal(cols(6), '6');
   });
 
-  it('uses the column variable in a narrow-viewport media query', () => {
-    const m = AGENT_HTML.match(/@media \(max-width: (\d+)px\) \{\s*\.stage-seats \{[^}]*repeat\(var\(--stage-cols[^}]*\}/);
-    assert.ok(m, 'media query with .stage-seats repeat(var(--stage-cols');
+  it('arranges eight seats in two rows of four in a narrow-viewport media query', () => {
+    const m = AGENT_HTML.match(/@media \(max-width: (\d+)px\) \{\s*\.seats \{[^}]*repeat\(4, minmax\(0, 1fr\)\)[^}]*\}/);
+    assert.ok(m, 'media query with .seats repeat(4, …)');
     assert.ok(Number(m[1]) >= 390, `breakpoint ${m[1]} covers 390 px`);
   });
 
@@ -303,7 +300,7 @@ describe('E3-3 stage: 390 px', () => {
     assert.match(AGENT_HTML, /\.stage\s*\{[^}]*overflow:\s*hidden/);
     assert.match(AGENT_HTML, /\.stage-seat\s*\{[^}]*min-width:\s*0/);
     assert.match(AGENT_HTML, /\.stage-field\s*\{[^}]*min-width:\s*0/);
-    assert.match(AGENT_HTML, /\.stage-seats\s*\{[^}]*minmax\(0,\s*1fr\)/);
+    assert.match(AGENT_HTML, /\.seats\s*\{[^}]*minmax\(0,\s*1fr\)/);
     // The fixed 96 px gauge shrinks on phones so that four columns fit in 390 px.
     const small = AGENT_HTML.match(/@media \(max-width: (\d+)px\) \{[^@]*?\.stage-gauge[^}]*width:\s*(\d+)px/);
     assert.ok(small && Number(small[1]) >= 390 && Number(small[2]) * 4 <= 390, 'gauge shrinks for 390 px');
@@ -356,7 +353,7 @@ describe('E3-3 stage: polling and safety', () => {
     t.active.model = '<s>m</s>';
     const p = page(t);
     for (const sel of ['img', 'script', 'b[onclick]', 'u', 's']) assert.equal(p.query(`#stage ${sel}`).length, 0, sel);
-    assert.ok(txt(p, 'stage-now-body').includes('<img src=x onerror=alert(1)>'));
+    assert.ok(txt(p, 'stage-now-body').includes('<script>alert(2)</script>'));
     assert.ok(txt(p, 'stage-subs-body').includes('<b onclick=x>bold</b>'));
     assert.ok(txt(p, 'stage-session-body').includes('<s>m</s>'));
     assert.ok(txt(p, 'stage-subs-body').includes('<i>type</i>'));
@@ -386,20 +383,13 @@ describe('E3-3 stage: round 2 (review fixes)', () => {
     for (const sel of ['.ring', '.eq', '.is-playing', '.pulse']) assert.equal(p.query(`#stage ${sel}`).length, 0, sel);
   });
 
-  it('does not stretch the field cards in the wide column layout (flex-basis would become a height)', () => {
-    const m = AGENT_HTML.match(/@media \(min-width: 1280px\) \{([^@]*)\}/);
-    assert.ok(m, '1280px media query');
-    assert.match(m[1]!, /flex-direction:\s*column/);
-    assert.match(m[1]!, /\.stage-field[^{]*\{\s*flex:\s*0 0 auto/);
-  });
-
   it('leaves room for the percent badge below the active gauge', () => {
     assert.match(AGENT_HTML, /\.stage-seat\.is-active \.stage-spot\s*\{[^}]*margin-bottom:\s*\d+px/);
   });
 
   it('keeps the running subagent row (and its pulse) in place across polls while its numbers update', () => {
     const p = page(team());
-    const dot = () => p.query('#stage-subs-body .dot.pulse');
+    const dot = () => p.query('#stage-subs-body .sub-av .ring');
     assert.equal(dot().length, 1);
     const before = dot()[0]!;
     const t = team();
@@ -412,12 +402,12 @@ describe('E3-3 stage: round 2 (review fixes)', () => {
 
   it('stops the pulse when the running subagent finishes', () => {
     const p = page(team());
-    assert.equal(p.query('#stage-subs-body .dot.pulse').length, 1);
+    assert.equal(p.query('#stage-subs-body .sub-av .ring').length, 1);
     const t = team();
     const done = { ...t.subagents.running[0], status: 'done', ended_at: '2026-10-30T11:59:00.000Z' };
     t.subagents = { running: [], finished: [done, ...t.subagents.finished] };
     p.render({ detail: issueDetail(), team: t });
-    assert.equal(p.query('#stage-subs-body .dot.pulse').length, 0);
+    assert.equal(p.query('#stage-subs-body .sub-av .ring').length, 0);
     assert.ok(txt(p, 'stage-subs-body').includes('Plan'));
   });
 });

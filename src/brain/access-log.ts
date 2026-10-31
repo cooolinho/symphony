@@ -11,7 +11,7 @@ export const BRAIN_CLASH_LOOKBACK_DAYS = 7;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export type BrainAccessOp = 'read' | 'search' | 'list' | 'write' | 'append' | 'resolve';
+export type BrainAccessOp = 'read' | 'search' | 'list' | 'write' | 'append' | 'resolve' | 'vitals';
 export type BrainClashReason = 'window' | 'hash_mismatch';
 
 /** One line of `access.jsonl`: one brain tool call. */
@@ -45,6 +45,35 @@ export interface BrainClash {
   status: 'open' | 'resolved';
 }
 
+/** Called for every clash: when it is recorded and for each clash `load` restores. */
+export type BrainClashListener = (line: BrainAccess, clash: BrainClash) => void;
+
+/** The note as it was when the write was rejected (`base`) and the content the run tried to write (`attempted`). */
+export interface BrainClashVersions {
+  base: { content: string; hash: string } | null;
+  attempted: { content: string } | null;
+}
+
+export interface BrainAccessQuery {
+  /** Exact role (case-insensitive). */
+  role?: string | null;
+  /** Substring of `path_or_query` or `purpose` (case-insensitive). */
+  q?: string | null;
+  /** `next_before` of the previous page: only lines before this line number. */
+  before?: number | null;
+  limit?: number | null;
+}
+
+export interface BrainAccessPage {
+  /** Newest first; `purpose` is always a string. */
+  access: BrainAccess[];
+  /** Cursor of the next page; null on the last page. */
+  next_before: number | null;
+}
+
+export const BRAIN_ACCESS_PAGE_DEFAULT = 100;
+export const BRAIN_ACCESS_PAGE_MAX = 500;
+
 interface LastWrite {
   run: string | null;
   at: string;
@@ -72,13 +101,27 @@ export class BrainAccessLog {
   readonly #logger: Logger;
   readonly #lastWrite = new Map<string, LastWrite>();
   #clashes: BrainClash[] = [];
+  readonly #onClash: BrainClashListener | undefined;
+  readonly #versions = new Map<string, BrainClashVersions>();
+  /** Sidecars with the versions of each clash; null without a log dir. */
+  readonly #clashDir: string | null;
   /** Successful reads and writes per UTC day (YYYY-MM-DD). */
   readonly #daily = new Map<string, { reads: number; writes: number }>();
   #failing = false;
 
-  constructor(dir: string | null, logger: Logger) {
+  constructor(dir: string | null, logger: Logger, options: { onClash?: BrainClashListener } = {}) {
     this.file = dir === null ? null : path.join(dir, 'access.jsonl');
+    this.#clashDir = dir === null ? null : path.join(dir, 'clashes');
     this.#logger = logger;
+    this.#onClash = options.onClash;
+  }
+
+  #notifyClash(line: BrainAccess, clash: BrainClash): void {
+    try {
+      this.#onClash?.(line, { ...clash, runs: [...clash.runs], at: [...clash.at] });
+    } catch (error) {
+      this.#logger.warn('brain clash listener failed', { clash: clash.id, error: errorMessage(error) });
+    }
   }
 
   /** Prunes the file, then rebuilds the last-writer index and the clashes of the last 7 days from it. */
@@ -87,6 +130,7 @@ export class BrainAccessLog {
     this.#lastWrite.clear();
     this.#daily.clear();
     this.#clashes = [];
+    this.#loadVersions(now);
     if (this.file === null) return;
     let text: string;
     try {
@@ -103,19 +147,86 @@ export class BrainAccessLog {
         this.#lastWrite.set(entry.path_or_query, { run: entry.run ?? null, at: entry.at });
       } else if (entry.result === 'rejected' && typeof entry.clash_id === 'string' && entry.time >= since) {
         if (entry.reason !== 'window' && entry.reason !== 'hash_mismatch') continue;
-        this.#clashes.push({
+        const clash: BrainClash = {
           id: entry.clash_id,
           path: entry.path_or_query,
           runs: [entry.other_run ?? null, entry.run ?? null],
           at: [entry.other_at ?? null, entry.at],
           reason: entry.reason,
           status: 'open',
-        });
+        };
+        this.#clashes.push(clash);
+        this.#notifyClash(entry, clash);
       } else if (entry.op === 'resolve' && typeof entry.clash_id === 'string') {
         const clash = this.#clashes.find((candidate) => candidate.id === entry.clash_id);
         if (clash !== undefined) clash.status = 'resolved';
       }
     }
+  }
+
+  /** Reads the clash sidecars of the last 7 days; deletes older and unreadable ones. */
+  #loadVersions(now: Date): void {
+    this.#versions.clear();
+    if (this.#clashDir === null) return;
+    let files: string[];
+    try {
+      files = fs.readdirSync(this.#clashDir);
+    } catch {
+      return;
+    }
+    const since = now.getTime() - BRAIN_CLASH_LOOKBACK_DAYS * DAY_MS;
+    for (const name of files) {
+      if (!name.endsWith('.json')) continue;
+      const file = path.join(this.#clashDir, name);
+      try {
+        const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { id?: unknown; at?: unknown } & BrainClashVersions;
+        const time = typeof parsed.at === 'string' ? Date.parse(parsed.at) : NaN;
+        if (typeof parsed.id === 'string' && !Number.isNaN(time) && time >= since) {
+          this.#versions.set(parsed.id, { base: parsed.base ?? null, attempted: parsed.attempted ?? null });
+          continue;
+        }
+      } catch {
+        // unreadable: removed below
+      }
+      try {
+        fs.rmSync(file, { force: true });
+      } catch (error) {
+        this.#logger.warn('cannot remove an old brain clash file', { file, error: errorMessage(error) });
+      }
+    }
+  }
+
+  /**
+   * One page of the log, newest first, read from the file on every call. `before` and `next_before` are line numbers of
+   * the file (append-only; they only shift when the startup prune removes lines).
+   */
+  readAccess(query: BrainAccessQuery = {}): BrainAccessPage {
+    const limit = Math.min(Math.max(1, Math.floor(query.limit ?? BRAIN_ACCESS_PAGE_DEFAULT)), BRAIN_ACCESS_PAGE_MAX);
+    if (this.file === null) return { access: [], next_before: null };
+    let text: string;
+    try {
+      text = fs.readFileSync(this.file, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.#logger.warn('cannot read the brain access log', { file: this.file, error: errorMessage(error) });
+      return { access: [], next_before: null };
+    }
+    const role = query.role?.trim().toLowerCase() || null;
+    const q = query.q?.trim().toLowerCase() || null;
+    const lines = text.split('\n');
+    const access: BrainAccess[] = [];
+    let start = lines.length - 1;
+    if (query.before !== null && query.before !== undefined) start = Math.min(start, query.before - 1);
+    for (let number = start; number >= 0; number--) {
+      const parsed = parseLine(lines[number] ?? '');
+      if (parsed === null) continue;
+      const { time: _time, ...entry } = parsed;
+      const purpose = typeof entry.purpose === 'string' ? entry.purpose : '';
+      if (role !== null && (typeof entry.role !== 'string' || entry.role.trim().toLowerCase() !== role)) continue;
+      if (q !== null && !String(entry.path_or_query ?? '').toLowerCase().includes(q) && !purpose.toLowerCase().includes(q)) continue;
+      if (access.length === limit) return { access, next_before: number + 1 };
+      access.push({ ...entry, purpose });
+    }
+    return { access, next_before: null };
   }
 
   /** Drops lines older than the retention (and unreadable ones). Returns the number of removed lines. */
@@ -163,7 +274,7 @@ export class BrainAccessLog {
 
   #count(entry: BrainAccess): void {
     if (entry.result !== 'ok' || typeof entry.at !== 'string') return;
-    const reads = entry.op === 'read' || entry.op === 'search' || entry.op === 'list';
+    const reads = entry.op === 'read' || entry.op === 'search' || entry.op === 'list' || entry.op === 'vitals';
     const writes = entry.op === 'write' || entry.op === 'append';
     if (!reads && !writes) return;
     const day = entry.at.slice(0, 10);
@@ -198,8 +309,13 @@ export class BrainAccessLog {
     return now.getTime() - Date.parse(last.at) < windowMs ? last : null;
   }
 
-  /** Logs a rejected write and adds the clash to the list. */
-  recordClash(entry: BrainAccess, other: { run: string | null; at: string | null }, reason: BrainClashReason): BrainClash {
+  /** Logs a rejected write, adds the clash to the list and keeps its versions in `<dir>/clashes/<id>.json`. */
+  recordClash(
+    entry: BrainAccess,
+    other: { run: string | null; at: string | null },
+    reason: BrainClashReason,
+    versions: BrainClashVersions = { base: null, attempted: null },
+  ): BrainClash {
     const clash: BrainClash = {
       id: randomUUID(),
       path: entry.path_or_query,
@@ -209,8 +325,32 @@ export class BrainAccessLog {
       status: 'open',
     };
     this.#clashes.push(clash);
-    this.record({ ...entry, result: 'rejected', reason, clash_id: clash.id, other_run: other.run, other_at: other.at });
+this.#versions.set(clash.id, versions);
+    this.#writeVersions(clash, versions);
+    const line: BrainAccess = { ...entry, result: 'rejected', reason, clash_id: clash.id, other_run: other.run, other_at: other.at };
+    this.record(line);
+    this.#notifyClash(line, clash);
     return clash;
+  }
+
+  #writeVersions(clash: BrainClash, versions: BrainClashVersions): void {
+    if (this.#clashDir === null) return;
+    const file = path.join(this.#clashDir, `${clash.id}.json`);
+    try {
+      fs.mkdirSync(this.#clashDir, { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ id: clash.id, path: clash.path, at: clash.at[1], ...versions }));
+    } catch (error) {
+      this.#logger.warn('cannot write the brain clash versions', { file, error: errorMessage(error) });
+    }
+  }
+
+  /** The stored versions of a clash; both null when none were kept (e.g. a clash from before they were stored). */
+  clashVersions(id: string): BrainClashVersions {
+    return this.#versions.get(id) ?? { base: null, attempted: null };
+  }
+
+  clash(id: string): BrainClash | null {
+    return this.clashes().find((clash) => clash.id === id) ?? null;
   }
 
   clashes(): BrainClash[] {

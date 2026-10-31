@@ -136,7 +136,11 @@ describe('system collector acceptance', () => {
 
   it('nothing is collected before start()/collect(): current is null, history empty', () => {
     const c = new SystemCollector({ procDir: proc('cpu  1 1 1 1\n'), volumes: [], gpu: false, logger: silent().logger });
-    assert.deepEqual(c.snapshot(), { current: null, history: [], gpu: null, cpu_count: os.availableParallelism() });
+    const { host, usage, ...rest } = c.snapshot();
+    assert.deepEqual(rest, { current: null, history: [], gpu: null, cpu_count: os.availableParallelism() });
+    // E2-7 (#382): additive host info for the System panel head; no directory sizes before they are measured
+    assert.equal(host?.hostname, os.hostname());
+    assert.equal(usage, null);
   });
 
   it('with an absent /proc prefix every field is null and nothing throws, gpu on or off', async () => {
@@ -309,7 +313,7 @@ describe('GET /api/v1/system', () => {
       const res = await get(server.port, 'GET', '/api/v1/system');
       assert.equal(res.status, 200);
       const body = JSON.parse(res.body);
-      assert.deepEqual(Object.keys(body).sort(), ['cpu_count', 'current', 'gpu', 'history']);
+      assert.deepEqual(Object.keys(body).sort(), ['cpu_count', 'current', 'gpu', 'history', 'host', 'usage']);
       assert.equal(body.gpu, null);
       assert.equal(body.history.length, 3);
       assert.deepEqual(body.current, body.history.at(-1));

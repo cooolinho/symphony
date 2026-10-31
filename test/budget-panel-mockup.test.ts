@@ -178,19 +178,19 @@ describe('E4-6 5h chip', () => {
     for (const b of [new Error('x'), { nope: 1 }]) {
       const page = await chip(b);
       assert.equal(text(page.$('shell-budget')), '5h —');
-      assert.doesNotMatch(page.$('shell-budget-pct').className, /tone-/);
+      assert.doesNotMatch((page.$('shell-budget').children.map((c) => c.className).join(' ')), /tone-/);
     }
   });
   it('40 % neutral, 62 % amber, 90 % red, alert alone stays neutral', async () => {
     const at = async (used: number, alert = false) => chip(report({ used, alert }));
     const p40 = await at(800_000, true);
     assert.equal(text(p40.$('shell-budget')), '5h 40 %');
-    assert.doesNotMatch(p40.$('shell-budget-pct').className, /tone-/);
+    assert.doesNotMatch((p40.$('shell-budget').children.map((c) => c.className).join(' ')), /tone-/);
     const p62 = await at(1_240_000);
     assert.equal(text(p62.$('shell-budget')), '5h 62 %');
-    assert.match(p62.$('shell-budget-pct').className, /tone-amber/);
+    assert.match((p62.$('shell-budget').children.map((c) => c.className).join(' ')), /tone-amber/);
     const p90 = await at(1_800_000);
-    assert.match(p90.$('shell-budget-pct').className, /tone-red/);
+    assert.match((p90.$('shell-budget').children.map((c) => c.className).join(' ')), /tone-red/);
   });
   it('title with reset time and link to /#budget', async () => {
     const page = await chip(report());
