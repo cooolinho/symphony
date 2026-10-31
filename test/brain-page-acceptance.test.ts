@@ -120,12 +120,13 @@ describe('foldersOf and preview', () => {
 });
 
 describe('Brain API and page against a real vault', () => {
-  async function start(obsidianUrl: string | null) {
+  async function start(obsidianUrl: string | null, extra: (vault: string) => void = () => {}) {
     const vault = path.join(tempDir(), 'vault');
     await ensureVault(vault, ['acme/app'], new Date('2026-10-01T00:00:00Z'));
     const body = Array.from({ length: 14 }, (_, i) => `zeile ${i + 1}`).join('\n');
     put(vault, 'Inbox/neu.md', note({ type: 'lesson', status: 'candidate', created: '2026-10-05', title: 'Neu', target: 'Lessons/neu.md' }, body));
     put(vault, 'Inbox/alt.md', note({ type: 'decision', status: 'candidate', created: '2026-10-02', title: 'Alt', repo: 'acme/app', issue: '12', role: 'developer' }, 'kurz'));
+    extra(vault);
     const brain: Obj = { enabled: true, path: vault, ...(obsidianUrl === null ? {} : { obsidian_url: obsidianUrl }) };
     const orchestrator = new Orchestrator({
       workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir(), { brain }))),
@@ -203,6 +204,46 @@ describe('Brain API and page against a real vault', () => {
       const lessons = after.folders.find((f: Obj) => f.path === path.posix.dirname(moved));
       assert.equal(lessons.notes_by_status.approved >= 1, true);
       assert.deepEqual((await get('/api/v1/brain/candidates')).candidates.map((c: Obj) => c.path), ['Inbox/alt.md']);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('renders the real graph around the repository index with the broken link (E7-7b)', async () => {
+    const { server } = await start(null, (vault) => {
+      put(vault, 'Repos/acme-app/index.md', note({ type: 'index', status: 'approved', repo: 'acme/app' }, '# Acme\n[[Inbox/alt]] [[Lessons/gibtsnicht]]'));
+    });
+    try {
+      const get = async (url: string) => JSON.parse((await call(server.port, 'GET', url)).body);
+      const vitals = await get('/api/v1/brain/vitals');
+      const candidates = await get('/api/v1/brain/candidates');
+      const clashes = await get('/api/v1/brain/clashes');
+      const graphs = new Map<string, unknown>();
+      for (const f of vitals.folders as Obj[]) {
+        const m = /^Repos\/([^/]+)$/.exec(f.path);
+        if (m) {
+          const url = `/api/v1/brain/graph?root=${encodeURIComponent(`Repos/${m[1]}/index.md`)}&depth=2`;
+          graphs.set(url, await get(url));
+        }
+      }
+      assert.ok(graphs.size >= 1);
+      const real = renderPage(BRAIN_HTML, undefined, {
+        fetch: (url) => {
+          if (url.includes('/state')) return dashboardState({ controls: { retry: true } });
+          if (url.includes('/brain/vitals')) return vitals;
+          if (url.includes('/brain/candidates')) return candidates;
+          if (url.includes('/brain/clashes')) return clashes;
+          if (url.includes('/brain/graph')) return graphs.get(url) ?? { __status: 404, error: { code: 'root_not_found', message: 'x' } };
+          return {};
+        },
+      });
+      await until(() => real.query('#brain-graph svg').length === 1);
+      const paths = real.query('#brain-graph g.br-node').map((n) => n.dataset.path);
+      for (const p of ['Repos/acme-app/index.md', 'Inbox/alt.md', 'Lessons/gibtsnicht.md']) assert.ok(paths.includes(p), p);
+      assert.equal(real.query('#brain-graph g.br-node-missing')[0]!.dataset.path, 'Lessons/gibtsnicht.md');
+      assert.equal(real.query('#brain-graph line.br-edge-broken').length, 1);
+      assert.match(text(real.$('brain-graph-text')), /1 kaputte Links/);
+      assert.equal(text(real.$('brain-clashes')), 'Keine Konflikte');
     } finally {
       await server.close();
     }

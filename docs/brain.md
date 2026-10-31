@@ -87,7 +87,7 @@ The Changes page (`/changes`, filter "Brain") lists every brain write and every 
 
 The compose profile `brain` starts an Obsidian web UI on the `brain` volume. Add `brain` to `COMPOSE_PROFILES` and set `BRAIN_DOMAIN` (for example `brain.docker.lan`) in `.env`. It is reachable only through Traefik with the same Basic auth login as the dashboard, over plain HTTP, so it is for the LAN only; do not expose it to the internet. On first start open the folder `/config/vault` as the vault. Details: [docker.md](docker.md#obsidian-profile-brain).
 
-The dashboard page `/brain` shows the vitals with a status bar, the candidates for review (promote, discard, edit in Obsidian, undo for 10 seconds after a promotion) and the folder tree with counts per status. The key `brain.obsidian_url` (see [configuration.md](configuration.md#brain)) sets the target of the two Obsidian links on that page; empty hides them.
+The dashboard page `/brain` shows the vitals with a status bar, the candidates for review (promote, discard, edit in Obsidian, undo for 10 seconds after a promotion) the graph around `Repos/<repo>/index.md` (one root per repository; nodes in the colour of their status, broken links red and dashed, a click shows the note), the folder tree with counts per status, and the write clashes: each open clash with path, both runs and roles, times and reason, the rejected and the current version side by side with the changed lines marked, and a button to mark it resolved (only where control actions are allowed); resolved clashes are listed collapsed below. The key `brain.obsidian_url` (see [configuration.md](configuration.md#brain)) sets the target of the two Obsidian links on that page; empty hides them.
 
 ## Backup
 
