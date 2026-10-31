@@ -437,14 +437,15 @@ export function startHttpServer(options: {
           timeZone: zone !== null && isValidTimeZone(zone) ? zone : Intl.DateTimeFormat().resolvedOptions().timeZone,
         };
         const pricing = history.pricing.current();
+        const rateLimits = orchestrator.rateLimitEvents(from ?? undefined);
         let value: Analytics;
         // An open end moves with the clock, so only bounded periods are cached.
-        const key = to === null ? null : JSON.stringify([filter, files.map((f) => [f.file, f.bytes])]);
+        const key = to === null ? null : JSON.stringify([filter, files.map((f) => [f.file, f.bytes]), rateLimits.length, rateLimits.at(-1)?.at ?? null]);
         const cached = key === null ? undefined : analyticsCache.get(key);
         if (cached !== undefined && cached.pricing === pricing) {
           value = cached.value;
         } else {
-          value = computeAnalytics(entries, pricing, filter);
+          value = computeAnalytics(entries, pricing, filter, new Date(), rateLimits);
           if (key !== null) {
             analyticsCache.delete(key);
             analyticsCache.set(key, { pricing, value });
