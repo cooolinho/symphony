@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import vm from 'node:vm';
 import { iconSvg } from '../src/http/icons.ts';
 import { BASE_JS } from '../src/http/styles.ts';
-import { AGENT_HTML } from '../src/http/agent-page.ts';
+import { AGENT_HTML } from '../src/http/issue-page.ts';
 import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
 import { LOGS_HTML } from '../src/http/logs-page.ts';
 import { TOKENS_CSS } from '../src/http/ui/tokens.ts';
@@ -248,7 +248,7 @@ describe('E1-8 page shell after the mockup', () => {
     for (const d of ['font-size: 34px', 'font-weight: 600', 'letter-spacing: -.02em']) assert.ok(h1.includes(d), d);
     const sub = ruleOf(LAYOUT_CSS, '.page-sub');
     assert.ok(sub.includes('15px') && sub.includes('var(--fg-2)'));
-    assert.equal(count(DASHBOARD_HTML, '<h1>'), 1);
+    assert.equal(count(DASHBOARD_HTML, '<h1'), 1);
     assert.equal(count(LOGS_HTML, '<h1>'), 1);
   });
 

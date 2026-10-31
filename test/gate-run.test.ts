@@ -4,7 +4,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { describe, it } from 'node:test';
-import { AGENT_HTML } from '../src/http/agent-page.ts';
+import { AGENT_HTML } from '../src/http/issue-page.ts';
 import { startHttpServer } from '../src/http/server.ts';
 import { HistoryLog, readHistory } from '../src/history/history.ts';
 import { PricingStore } from '../src/costs/pricing.ts';

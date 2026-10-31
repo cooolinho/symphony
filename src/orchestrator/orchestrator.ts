@@ -3691,6 +3691,12 @@ export class Orchestrator {
     });
   }
 
+  /** Review rounds (changes_needed since the last reset) of an issue; null without a record. */
+  #reviewRounds(issueId: string): number | null {
+    const record = this.#records.get(issueId);
+    return record === undefined ? null : buildStageHistory(record.results ?? []).reviewRounds;
+  }
+
   /** Spent and allowed cost of an issue (finished runs of every role plus the running one); null without a cap. */
   #budgetRow(issue: Pick<Issue, 'id' | 'identifier'>, repo: string | null, config: ServiceConfig): { cost_usd: number; max_issue_cost_usd: number } | null {
     const limit = config.agent.maxIssueCostUsd;
@@ -3733,6 +3739,7 @@ export class Orchestrator {
       /** The issue's cost against `agent.max_issue_cost_usd`; null without a cap or a repository. */
       budget: this.#budgetRow(issue, rows.running?.repo ?? record?.repo ?? null, workflow.config),
       stages: this.#pipelineFor({ state: issue.state, description: issue.description, labels: issue.labels }, issue.id, workflow),
+      review_rounds: this.#reviewRounds(issue.id),
       running: rows.running === undefined ? null : this.#runningRow(rows.running, now),
       retry: rows.retry === undefined ? null : this.#retryRow(rows.retry, now),
       paused: rows.paused === undefined ? null : this.#pausedRow(rows.paused),
@@ -3768,6 +3775,7 @@ export class Orchestrator {
       labels: issue.labels,
       updated_at: issue.updated_at?.toISOString() ?? null,
       tracked: this.#records.has(issue.id),
+      review_rounds: this.#reviewRounds(issue.id),
     });
     for (const item of plan) {
       const board = byId.get(item.issueId);
