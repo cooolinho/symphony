@@ -35,6 +35,7 @@ function api(data: Entry[], seen: string[] = []) {
     if (!url.startsWith('/api/v1/brain/')) return dashboardState();
     seen.push(url);
     if (url.startsWith('/api/v1/brain/vitals')) return vitals;
+    if (url.startsWith('/api/v1/brain/clashes')) return { clashes: [] };
     const p = new URL(url, 'http://x').searchParams;
     const role = p.get('role');
     const q = (p.get('q') ?? '').toLowerCase();
@@ -52,227 +53,112 @@ const rowsOf = (page: Awaited<ReturnType<typeof open>>) => page.$('brain-access-
 const chipsOf = (page: Awaited<ReturnType<typeof open>>) => page.$('brain-roles').querySelectorAll('button');
 const pressed = (page: Awaited<ReturnType<typeof open>>) => chipsOf(page).filter((c) => c.getAttribute('aria-pressed') === 'true');
 
-describe('Brain panel (vitals)', () => {
-  it('is visible and shows every vital with its label and value', async () => {
+describe('Brain-Vitals', () => {
+  it('is visible and shows the four tiles, the footer and no /brain link', async () => {
     const page = await open(api(fixture));
     assert.equal(page.$('brain-panel').hidden, false);
-    assert.match(page.$('brain-title').textContent, /^Brain$/);
-    const text = page.$('brain-panel').textContent;
-    for (const label of ['Notizen', 'Kandidaten', 'Links', 'Waisen', 'Writes heute', 'Reads heute']) assert.ok(text.includes(label), label);
-    const values = page.$('brain-tiles').querySelectorAll('.ui-kpi-value').map((e) => e.textContent);
-    for (const v of ['4', '31', '5', '12', '77']) assert.ok(values.includes(v), `value ${v} in ${values}`);
-    assert.ok(text.includes('20'), 'total of notes (4+10+2+4)');
+    assert.equal(page.$('brain-title').textContent, 'Brain-Vitals');
+    assert.deepEqual(page.$('brain-tiles').querySelectorAll('.ui-kpi-label').map((e) => e.textContent), ['Notizen', 'Kandidaten warten', 'Links', 'Waisen ohne Links']);
+    assert.deepEqual(page.$('brain-tiles').querySelectorAll('.ui-kpi-value').map((e) => e.textContent), ['20', '4', '31', '5']);
+    assert.deepEqual(page.$('brain-foot').querySelectorAll('.brain-foot-part').map((e) => e.textContent), ['12 Writes heute', '77 Reads', 'letzter Commit vor 2 h']);
   });
 
-  it('draws one bar per status, proportional to the note count', async () => {
-    const page = await open(api(fixture));
-    const bars = page.$('brain-tiles').querySelectorAll('.ui-bar').map((b) => Number(b.getAttribute('aria-valuenow')));
-    assert.equal(bars.length, 4);
-    // 4/20, 10/20, 2/20, 4/20 in some fixed order
-    assert.deepEqual([...bars].sort((a, b) => a - b), [10, 20, 20, 50]);
+  it('shows the conflicts from the open clashes', async () => {
+    const f = api(fixture);
+    const page = await open((u) => (u.startsWith('/api/v1/brain/clashes') ? { clashes: [{}, {}] } : f(u)));
+    assert.ok(page.$('brain-foot').textContent.includes('2 Konflikte'));
   });
 
-  it('shows the last commit line with relative time and author, and links to /brain', async () => {
-    const page = await open(api(fixture));
-    const line = page.$('brain-commit');
-    assert.equal(line.hidden, false);
-    assert.match(line.textContent, /^Letzter Commit vor 2 (h|Std\.?|Stunden?)/);
-    assert.ok(line.textContent.endsWith('von Ada Lovelace'));
-    const link = page.query('a').find((a) => a.getAttribute('href') === '/brain' && /Brain öffnen/.test(a.textContent));
-    assert.ok(link, 'link "Brain öffnen" to /brain');
-  });
-
-  it('omits the commit line without a last commit', async () => {
+  it('shows "noch kein Commit" without a last commit and renders agent text as text', async () => {
     const f = api(fixture);
     const page = await open((u) => (u.startsWith('/api/v1/brain/vitals') ? { ...vitals, last_commit: null } : f(u)));
     assert.equal(page.$('brain-panel').hidden, false);
-    assert.ok(page.$('brain-commit').hidden || page.$('brain-commit').textContent === '');
-  });
-
-  it('does not interpret agent text (author) as HTML', async () => {
-    const f = api(fixture);
-    const page = await open((u) => (u.startsWith('/api/v1/brain/vitals') ? { ...vitals, last_commit: { ...vitals.last_commit, author: '<img src=x onerror=1>' } } : f(u)));
-    assert.ok(page.$('brain-commit').textContent.includes('<img src=x onerror=1>'));
-    assert.equal(page.$('brain-commit').querySelectorAll('img').length, 0);
+    assert.ok(page.$('brain-foot').textContent.includes('noch kein Commit'));
   });
 });
 
-describe('Zugriffe panel (access log)', () => {
-  it('requests the last 50 entries and lists all rows with time, role, op, path, purpose and result', async () => {
+describe('Brain-Zugriffe', () => {
+  it('requests the last 50 entries once and lists all rows with role, op, note and purpose', async () => {
     const seen: string[] = [];
     const page = await open(api(fixture, seen));
-    assert.ok(seen.some((u) => u.startsWith('/api/v1/brain/access') && new URL(u, 'http://x').searchParams.get('limit') === '50'));
-    assert.equal(page.$('brain-access').hidden, false);
-    assert.match(page.$('brain-access-title').textContent, /^Zugriffe$/);
-    const rows = rowsOf(page);
-    assert.equal(rows.length, 4);
-    const first = rows[0]!.textContent;
-    for (const part of ['read', 'Notes/alpha.md', 'Kontext holen', 'ok']) assert.ok(first.includes(part), `${part} in "${first}"`);
-    assert.match(first, /\d\d:\d\d/);
-    const third = rows[2]!.textContent;
-    for (const part of ['write', 'Notes/beta.md', 'Review Ergebnis', 'abgewiesen']) assert.ok(third.includes(part), `${part} in "${third}"`);
-    assert.ok(!rows[0]!.textContent.includes('abgewiesen'));
-  });
-
-  it('colours the role per role (different roles, different dots)', async () => {
-    const page = await open(api(fixture));
-    const colours = rowsOf(page).slice(0, 3).map((r) => r.querySelector('.ui-dot')!.style.background);
-    assert.ok(colours.every((c) => String(c).length > 0));
-    assert.equal(new Set(colours).size, 3);
-  });
-
-  it('shows "Zweck fehlt" in amber for empty and blank purposes only', async () => {
-    const page = await open(api(fixture));
-    const rows = rowsOf(page);
-    for (const i of [1, 3]) {
-      assert.ok(rows[i]!.textContent.includes('Zweck fehlt'), `row ${i}`);
-    }
-    for (const i of [0, 2]) assert.ok(!rows[i]!.textContent.includes('Zweck fehlt'), `row ${i}`);
-    const missing = rows[1]!.querySelectorAll('.ui-chip').find((e) => e.textContent === 'Zweck fehlt')!;
-    assert.ok(missing, 'element carrying the text');
-    const style = `${missing.style.color} ${missing.style.background} ${missing.style.borderColor}`.toLowerCase();
-    assert.ok(/amber|#f[0-9a-f]{5}|rgb|var\(--(amber|warn|yellow)/.test(style) || missing.className.includes('amber'), `amber style: ${style} / ${missing.className}`);
-  });
-
-  it('renders agent-written texts (path, purpose) as text, never as markup', async () => {
-    const evil = [entry(1, { path_or_query: '<b>x</b>', purpose: '<script>alert(1)</script>' })];
-    const page = await open(api(evil));
-    const row = rowsOf(page)[0]!;
-    assert.ok(row.textContent.includes('<b>x</b>') && row.textContent.includes('<script>alert(1)</script>'));
-    assert.equal(row.querySelectorAll('b').length + row.querySelectorAll('script').length, 0);
-  });
-
-  it('has one chip per occurring role, all unpressed at the start, with aria-pressed', async () => {
-    const page = await open(api(fixture));
-    const chips = chipsOf(page);
-    assert.equal(chips.length, 3);
-    assert.ok(chips.every((c) => c.getAttribute('aria-pressed') === 'false'));
-    const labels = chips.map((c) => c.textContent.toLowerCase()).join('|');
-    for (const role of ['developer', 'architect', 'reviewer']) assert.ok(labels.includes(role), role);
-  });
-
-  it('a role chip filters on the server via role=, keeps the chip set, and a second click clears the filter', async () => {
-    const seen: string[] = [];
-    const page = await open(api(fixture, seen));
-    const arch = () => chipsOf(page).find((c) => /architect/i.test(c.textContent))!;
-    arch().click();
-    await settle();
-    assert.ok(new URL(seen.at(-1)!, 'http://x').searchParams.get('role') === 'architect', String(seen.at(-1)));
-    assert.equal(rowsOf(page).length, 1);
-    assert.ok(rowsOf(page)[0]!.textContent.includes('zebra'));
-    assert.equal(chipsOf(page).length, 3, 'chip set stays stable');
-    assert.equal(pressed(page).length, 1);
-    assert.match(pressed(page)[0]!.textContent, /architect/i);
-    arch().click();
-    await settle();
-    assert.equal(new URL(seen.at(-1)!, 'http://x').searchParams.get('role'), null);
+    assert.ok(seen.some((u) => u.startsWith('/api/v1/brain/access?') && u.includes('limit=50')));
     assert.equal(rowsOf(page).length, 4);
-    assert.equal(pressed(page).length, 0);
+    assert.equal(page.$('brain-count').textContent, '4 von 4');
+    const first = rowsOf(page)[0]!;
+    assert.equal(first.querySelector('.brain-role')!.textContent, 'Developer');
+    assert.equal(first.querySelector('.brain-op')!.textContent, 'READ');
+    assert.equal(first.querySelector('.brain-name')!.textContent, 'alpha.md');
+    assert.equal(first.querySelector('.brain-purpose')!.textContent, 'Kontext holen');
   });
 
-  it('switching from one role chip to another shows only the new role', async () => {
+  it('shows "Zweck fehlt" for empty and blank purposes only', async () => {
     const page = await open(api(fixture));
-    chipsOf(page).find((c) => /developer/i.test(c.textContent))!.click();
-    await settle();
-    assert.equal(rowsOf(page).length, 2);
-    chipsOf(page).find((c) => /reviewer/i.test(c.textContent))!.click();
-    await settle();
-    assert.equal(rowsOf(page).length, 1);
+    assert.equal(page.$('brain-access-list').querySelectorAll('.brain-nopurpose').length, 2);
+  });
+
+  it('renders agent-written texts as text, never as markup', async () => {
+    const page = await open(api([entry(1, { path_or_query: 'Notes/<img src=x>.md', purpose: '<b>x</b>' })]));
+    assert.equal(page.$('brain-access-list').querySelectorAll('img, b').length, 0);
+    assert.ok(page.$('brain-access-list').textContent.includes('<b>x</b>'));
+  });
+
+  it('has Alle, the profile roles, seen roles and Symphony as chips, one pressed', async () => {
+    const page = await open(api(fixture));
+    const labels = chipsOf(page).map((c) => c.textContent);
+    assert.equal(labels[0], 'Alle');
+    assert.equal(labels.at(-1), 'Symphony');
+    assert.ok(!labels.includes('Docs'));
+    assert.ok(['Developer', 'Architect', 'Reviewer'].every((l) => labels.includes(l)));
     assert.equal(pressed(page).length, 1);
-    assert.match(pressed(page)[0]!.textContent, /reviewer/i);
+    assert.equal(pressed(page)[0]!.textContent, 'Alle');
+  });
+
+  it('a role chip filters client side without any request', async () => {
+    const seen: string[] = [];
+    const page = await open(api(fixture, seen));
+    const n = seen.length;
+    chipsOf(page).find((c) => c.textContent === 'Developer')!.click();
+    assert.equal(rowsOf(page).length, 2);
+    assert.equal(page.$('brain-count').textContent, '2 von 4');
+    assert.equal(pressed(page).length, 1);
+    chipsOf(page).find((c) => c.textContent === 'Reviewer')!.click();
+    assert.equal(rowsOf(page).length, 1);
+    assert.equal(seen.length, n);
   });
 
   it('the role filter survives the 30 s reload', async () => {
-    const seen: string[] = [];
-    const page = await open(api(fixture, seen));
-    chipsOf(page).find((c) => /reviewer/i.test(c.textContent))!.click();
+    const page = await open(api(fixture));
+    chipsOf(page).find((c) => c.textContent === 'Reviewer')!.click();
+    for (const t of page.intervals.filter((i) => i.ms === 30000)) await t.fn();
     await settle();
-    const tick = page.intervals.find((i) => i.ms === 30000 && i.fn.name === 'loadBrain')!;
-    assert.ok(tick);
-    await tick.fn();
-    await settle();
-    assert.equal(new URL(seen.at(-1)!, 'http://x').searchParams.get('role'), 'reviewer');
     assert.equal(rowsOf(page).length, 1);
+    assert.equal(pressed(page)[0]!.textContent, 'Reviewer');
   });
 
-  it('shows an empty state instead of rows when nothing matches', async () => {
+  it('shows the empty states', async () => {
     const page = await open(api([]));
-    assert.equal(page.$('brain-access').hidden, false);
-    assert.equal(rowsOf(page).filter((r) => r.classList.contains('brain-acc')).length, 0);
+    assert.equal(page.$('brain-access-list').querySelector('.brain-empty')!.textContent, 'Noch keine Brain-Zugriffe heute');
+    const full = await open(api(fixture));
+    chipsOf(full).find((c) => c.textContent === 'Symphony')!.click();
+    assert.equal(full.$('brain-access-list').querySelector('.brain-empty')!.textContent, 'Keine Zugriffe für diesen Filter');
   });
 });
 
-describe('search field (q)', () => {
-  // The page stubs setTimeout, so the debounce is driven in an isolated context with a manual timer queue.
-  function bound(data: Entry[] = fixture) {
-    const root = parseHtml(BRAIN_PANELS_HTML);
-    const urls: string[] = [];
-    const timers: Array<{ fn: () => void; ms: number }> = [];
-    const f = api(data);
-    const fetch = async (url: string) => {
-      urls.push(url);
-      const json = f(url);
-      return { ok: true, status: 200, json: async () => json };
-    };
-    const ctx = vm.createContext({
-      document: createFakeDocument(root), fetch,
-      setTimeout: (fn: () => void, ms: number) => (timers.push({ fn, ms }), timers.length),
-      clearTimeout: (id: number) => { if (timers[id - 1]) timers[id - 1]!.fn = () => {}; },
-    });
-    for (const src of [BASE_JS, ALERTS_JS, BRAIN_JS]) vm.runInContext(src, ctx);
-    const $ = (id: string) => root.querySelector(`#${id}`) as FakeElement;
-    return { ctx, urls, timers, $ };
-  }
-
-  it('has an accessible search input', () => {
-    const page = renderPage(DASHBOARD_HTML, dashboardState());
+describe('search field', () => {
+  it('has a label with a screen reader text and filters path and purpose without a request', async () => {
+    const seen: string[] = [];
+    const page = await open(api(fixture, seen));
+    assert.equal(page.$('brain-q').getAttribute('type'), 'search');
+    assert.ok(page.query('label').some((l) => l.getAttribute('for') === 'brain-q' && l.textContent.includes('Zugriffe durchsuchen')));
+    const n = seen.length;
     const input = page.$('brain-q');
-    assert.ok(input.getAttribute('aria-label') || page.query('label').some((l) => l.getAttribute('for') === 'brain-q'));
-  });
-
-  it('sends q to the server only after a debounce delay and filters path and purpose', async () => {
-    const s = bound();
-    await run(s.ctx, 'brainBind(document.getElementById("brain-q")); loadBrain()');
-    const before = s.urls.length;
-    const input = s.$('brain-q');
-    input.value = 'zeb';
+    input.value = 'ZEBRA';
     input.dispatch('input');
-    input.value = 'zebra';
+    assert.equal(rowsOf(page).length, 1);
+    input.value = 'review ergebnis';
     input.dispatch('input');
-    assert.equal(s.urls.length, before, 'no request before the debounce fires');
-    assert.ok(s.timers.length > 0 && s.timers.every((t) => t.ms > 0));
-    for (const t of s.timers) t.fn();
-    await settle();
-    const qUrls = s.urls.slice(before).filter((u) => u.includes('access'));
-    assert.equal(qUrls.length, 1, 'cancelled earlier keystroke');
-    assert.equal(new URL(qUrls[0]!, 'http://x').searchParams.get('q'), 'zebra');
-    assert.equal(s.$('brain-access-list').querySelectorAll('li').length, 1);
-  });
-
-  it('matches the purpose as well as the path', async () => {
-    const s = bound();
-    await run(s.ctx, 'brainBind(document.getElementById("brain-q")); loadBrain()');
-    const input = s.$('brain-q');
-    input.value = 'Review Ergebnis';
-    input.dispatch('input');
-    for (const t of s.timers) t.fn();
-    await settle();
-    const li = s.$('brain-access-list').querySelectorAll('li');
-    assert.equal(li.length, 1);
-    assert.ok(li[0]!.textContent.includes('Notes/beta.md'));
-  });
-
-  it('combines role and q and url-encodes the search term', async () => {
-    const s = bound();
-    await run(s.ctx, 'brainBind(document.getElementById("brain-q")); loadBrain()');
-    const input = s.$('brain-q');
-    input.value = 'a&b=c d';
-    input.dispatch('input');
-    for (const t of s.timers) t.fn();
-    await settle();
-    const params = new URL(s.urls.at(-1)!, 'http://x').searchParams;
-    assert.equal(params.get('q'), 'a&b=c d');
-    assert.equal(params.get('limit'), '50');
+    assert.equal(rowsOf(page).length, 1);
+    assert.equal(seen.length, n);
   });
 });
 
@@ -351,10 +237,10 @@ describe('reload and wiring', () => {
     assert.equal(rowsOf(page).length, 5);
   });
 
-  it('the page markup carries both panels with their headings and the link to /brain', () => {
+  it('the page markup carries both panels with their headings and Brain-Zugriffe', () => {
     assert.match(DASHBOARD_HTML, /id="brain-panel"/);
     assert.match(DASHBOARD_HTML, /id="brain-access"/);
-    assert.match(DASHBOARD_HTML, /href="\/brain"/);
+    assert.match(DASHBOARD_HTML, /Brain-Zugriffe/);
   });
 
   it('the Brain code never writes innerHTML', () => {
