@@ -23,28 +23,27 @@ describe('tasks page: review fixes (E5-1)', () => {
     const p = renderPage(TASKS_HTML, st());
     const card = p.query('#col-waiting .task-card')[0]!;
     const btn = p.query('#col-waiting button')[0]!;
-    assert.equal(text(btn), 'Erneut versuchen');
+    assert.equal(text(btn), 'Jetzt erneut');
     p.render(st({ issues: [waitingRow(58000)] }));
     assert.equal(p.query('#col-waiting .task-card')[0], card);
     assert.equal(p.query('#col-waiting button')[0], btn);
   });
 
-  it('keeps the blocked card and its button when only the retrying entry countdown ticks', () => {
+  it('keeps the blocked card (which has no button) when only the retrying entry countdown ticks', () => {
     const p = renderPage(TASKS_HTML, st());
     const card = p.query('#col-blocked .task-card')[0]!;
-    const btn = p.query('#col-blocked button')[0]!;
+    assert.equal(p.query('#col-blocked button').length, 0);
     p.render(st({ retrying: [{ issue_id: '5', attempt: 1, due_in_ms: 1000, due_at: '2026-10-31T10:00:00.000Z', kind: 'failure' }] }));
     assert.equal(p.query('#col-blocked .task-card')[0], card);
-    assert.equal(p.query('#col-blocked button')[0], btn);
   });
 
-  it('still rebuilds the waiting card when the retry attempt changes', () => {
+  it('still rebuilds the waiting card when the retry minute count changes', () => {
     const p = renderPage(TASKS_HTML, st());
     const card = p.query('#col-waiting .task-card')[0]!;
-    p.render(st({ issues: [waitingRow(60000, 2)] }));
+    p.render(st({ issues: [waitingRow(120000, 2)] }));
     const now = p.query('#col-waiting .task-card')[0]!;
     assert.notEqual(now, card);
-    assert.match(text(now), /2/);
+    assert.match(text(now), /Retry in 2 min · backoff/);
   });
 
   it('shows date and time for older finished entries, only the time for today', async () => {
@@ -65,6 +64,6 @@ describe('tasks page: review fixes (E5-1)', () => {
     const todayText = text(cards.find((c) => text(c).includes('#90'))!);
     assert.ok(oldText.includes(old.toLocaleString()), `older entry shows full date: ${oldText}`);
     assert.ok(!todayText.includes(today.toLocaleString()), `today shows only the time: ${todayText}`);
-    assert.match(todayText, /12:34:56/);
+    assert.match(todayText, /gemerged 12:34/);
   });
 });
