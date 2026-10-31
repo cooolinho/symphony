@@ -1606,7 +1606,7 @@ describe('brain routes', () => {
   it('answers 404 brain_disabled without the brain', async () => {
     const { server } = await start(null);
     try {
-      for (const route of ['vitals', 'candidates']) {
+      for (const route of ['vitals', 'candidates', 'graph?root=Repos%2Facme-app%2Findex.md']) {
         const res = await request(server.port, 'GET', `/api/v1/brain/${route}`);
         assert.equal(res.status, 404);
         assert.equal(JSON.parse(res.body).error.code, 'brain_disabled');
@@ -1643,6 +1643,58 @@ describe('brain routes', () => {
       assert.equal(candidates[0].preview, '# L2026-10-02');
       const post = await request(server.port, 'POST', '/api/v1/brain/vitals');
       assert.equal(post.status, 405);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('serves the graph around a repository index with depth, limit and broken links (E7-7b)', async () => {
+    const vault = path.join(tempDir(), 'vault');
+    await ensureVault(vault, ['acme/app', 'acme/big'], new Date('2026-10-01T00:00:00Z'));
+    const put = (rel: string, text: string) => fs.writeFileSync(path.join(vault, rel), text);
+    put('Repos/acme-app/index.md', '---\ntype: index\nstatus: approved\n---\n# App\n[[Lessons/a]] [[Lessons/fehlt]]\n');
+    put('Lessons/a.md', '---\nstatus: candidate\n---\n# A\n[[Lessons/b]]\n');
+    put('Lessons/b.md', '---\nstatus: approved\n---\n# B\n');
+    put('Repos/acme-big/index.md', `# Big\n${Array.from({ length: 160 }, (_, i) => `[[Lessons/n${i}]]`).join(' ')}\n`);
+    for (let i = 0; i < 160; i++) put(`Lessons/n${i}.md`, `# N${i}\n`);
+    const { server } = await start({ enabled: true, path: vault });
+    try {
+      const res = await request(server.port, 'GET', '/api/v1/brain/graph?root=Repos%2Facme-app%2Findex&depth=2');
+      assert.equal(res.status, 200);
+      const graph = JSON.parse(res.body);
+      assert.equal(graph.root, 'Repos/acme-app/index.md');
+      assert.equal(graph.truncated, false);
+      const node = (p: string) => graph.nodes.find((n: { path: string }) => n.path === p);
+      assert.deepEqual(node('Repos/acme-app/index.md'), { path: 'Repos/acme-app/index.md', title: 'App', status: 'approved', type: 'index', missing: false, depth: 0 });
+      assert.equal(node('Lessons/a.md').status, 'candidate');
+      assert.equal(node('Lessons/b.md').depth, 2);
+      assert.deepEqual(node('Lessons/fehlt.md'), { path: 'Lessons/fehlt.md', title: 'fehlt', status: null, type: null, missing: true, depth: 1 });
+      assert.deepEqual(graph.edges.find((e: { to: string }) => e.to === 'Lessons/fehlt.md'), { from: 'Repos/acme-app/index.md', to: 'Lessons/fehlt.md', broken: true });
+      assert.ok(graph.edges.some((e: { from: string; to: string; broken: boolean }) => e.from === 'Lessons/a.md' && e.to === 'Lessons/b.md' && !e.broken));
+
+      const shallow = JSON.parse((await request(server.port, 'GET', '/api/v1/brain/graph?root=Repos/acme-app/index.md&depth=1')).body);
+      assert.equal(shallow.depth, 1);
+      assert.ok(shallow.nodes.every((n: { path: string }) => n.path !== 'Lessons/b.md'));
+      assert.ok(shallow.nodes.some((n: { path: string }) => n.path === 'Lessons/a.md'));
+
+      const big = JSON.parse((await request(server.port, 'GET', '/api/v1/brain/graph?root=Repos/acme-big/index.md')).body);
+      assert.equal(big.depth, 2);
+      assert.equal(big.nodes.length, 150);
+      assert.equal(big.truncated, true);
+      const kept = new Set(big.nodes.map((n: { path: string }) => n.path));
+      assert.ok(big.edges.every((e: { from: string; to: string }) => kept.has(e.from) && kept.has(e.to)));
+
+      for (const [url, status, code] of [
+        ['/api/v1/brain/graph', 400, 'bad_request'],
+        ['/api/v1/brain/graph?root=Repos/acme-app/index.md&depth=9', 400, 'bad_request'],
+        ['/api/v1/brain/graph?root=Repos/acme-app/index.md&depth=x', 400, 'bad_request'],
+        ['/api/v1/brain/graph?root=Nope.md', 404, 'root_not_found'],
+      ] as const) {
+        const failed = await request(server.port, 'GET', url);
+        assert.equal(failed.status, status, url);
+        assert.equal(JSON.parse(failed.body).error.code, code, url);
+      }
+      assert.equal((await request(server.port, 'POST', '/api/v1/brain/graph?root=Repos/acme-app/index.md')).status, 405);
     } finally {
       await server.close();
     }

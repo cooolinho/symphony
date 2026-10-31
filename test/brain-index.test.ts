@@ -5,7 +5,7 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import { BrainAccessLog, type BrainAccess } from '../src/brain/access-log.ts';
 import { createVaultGit, initVaultGit, lastVaultCommit } from '../src/brain/git.ts';
-import { BrainIndex, buildIndex, candidatesOf, foldersOf, vitalsCounts } from '../src/brain/index.ts';
+import { BrainIndex, buildIndex, candidatesOf, deriveIndex, foldersOf, graphAround, vitalsCounts, type IndexedNote } from '../src/brain/index.ts';
 import { Logger } from '../src/log.ts';
 import { tempDir } from './helpers.ts';
 
@@ -199,5 +199,55 @@ describe('foldersOf and the candidate preview (E7-7a)', () => {
     assert.ok(preview.startsWith('Zeile 1\n'));
     assert.ok(!preview.includes('status:'));
     assert.equal(index.notes.get('Lessons/b.md')!.preview, undefined);
+  });
+});
+
+describe('graphAround (E7-7b)', () => {
+  async function graphFixture() {
+    const vault = fixture();
+    put(vault, 'Agents/dev.md', fm({ status: 'approved' }, 'see [[Repos/acme-app/index]]'));
+    return buildIndex(vault);
+  }
+  const paths = (graph: { nodes: { path: string }[] }) => graph.nodes.map((n) => n.path);
+
+  it('walks links and backlinks up to the depth, broken links as missing nodes', async () => {
+    const index = await graphFixture();
+    const one = graphAround(index, 'Repos/acme-app/index.md', 1)!;
+    assert.deepEqual(paths(one), ['Repos/acme-app/index.md', 'Agents/dev.md', 'Decisions/a.md']);
+    assert.deepEqual(one.nodes.map((n) => n.depth), [0, 1, 1]);
+    const two = graphAround(index, 'Repos/acme-app/index.md')!;
+    assert.equal(two.depth, 2);
+    assert.equal(two.truncated, false);
+    assert.deepEqual(paths(two), ['Repos/acme-app/index.md', 'Agents/dev.md', 'Decisions/a.md', 'Lessons/b.md', 'Lessons/fehlt.md']);
+    assert.deepEqual(two.nodes[0], { path: 'Repos/acme-app/index.md', title: 'index', status: 'approved', type: 'index', missing: false, depth: 0 });
+    assert.deepEqual(two.nodes.at(-1), { path: 'Lessons/fehlt.md', title: 'fehlt', status: null, type: null, missing: true, depth: 2 });
+    assert.deepEqual(two.edges, [
+      { from: 'Agents/dev.md', to: 'Repos/acme-app/index.md', broken: false },
+      { from: 'Decisions/a.md', to: 'Lessons/b.md', broken: false },
+      { from: 'Decisions/a.md', to: 'Lessons/fehlt.md', broken: true },
+      { from: 'Repos/acme-app/index.md', to: 'Decisions/a.md', broken: false },
+    ]);
+  });
+
+  it('finds the root without .md and in another case; null for an unknown root', async () => {
+    const index = await graphFixture();
+    assert.equal(graphAround(index, 'repos/ACME-app/index')!.root, 'Repos/acme-app/index.md');
+    assert.equal(graphAround(index, '/Repos/acme-app/index.md')!.root, 'Repos/acme-app/index.md');
+    assert.equal(graphAround(index, 'Repos/nope/index.md'), null);
+    assert.equal(graphAround(index, ''), null);
+  });
+
+  it('stops at the node limit and keeps only edges between kept nodes', () => {
+    const notes = new Map<string, IndexedNote>();
+    const empty = { type: null, status: null, repo: null, issue: null, role: null, created: null, updated: null, target: null };
+    notes.set('Repos/x/index.md', { ...empty, title: 'x', links: Array.from({ length: 200 }, (_, i) => `Lessons/n${String(i).padStart(3, '0')}.md`) });
+    for (let i = 0; i < 200; i++) notes.set(`Lessons/n${String(i).padStart(3, '0')}.md`, { ...empty, title: `n${i}`, links: [] });
+    const graph = graphAround(deriveIndex(notes), 'Repos/x/index.md')!;
+    assert.equal(graph.nodes.length, 150);
+    assert.equal(graph.truncated, true);
+    assert.equal(graph.edges.length, 149);
+    const kept = new Set(paths(graph));
+    assert.ok(graph.edges.every((e) => kept.has(e.from) && kept.has(e.to)));
+    assert.equal(graphAround(deriveIndex(notes), 'Repos/x/index.md', 2, 201)!.truncated, false);
   });
 });

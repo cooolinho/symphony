@@ -33,6 +33,8 @@ export interface BrainAccess {
   clash_id?: string;
   other_run?: string | null;
   other_at?: string | null;
+  /** Role of the earlier writer; only on rejected lines. */
+  other_role?: string | null;
 }
 
 export interface BrainClash {
@@ -40,6 +42,8 @@ export interface BrainClash {
   path: string;
   /** The earlier writer first, then the rejected run. */
   runs: [string | null, string | null];
+  /** Roles of the two runs, in the order of `runs`. */
+  roles: [string | null, string | null];
   at: [string | null, string];
   reason: BrainClashReason;
   status: 'open' | 'resolved';
@@ -77,6 +81,7 @@ export const BRAIN_ACCESS_PAGE_MAX = 500;
 interface LastWrite {
   run: string | null;
   at: string;
+  role: string | null;
 }
 
 function parseLine(line: string): (BrainAccess & { time: number }) | null {
@@ -118,7 +123,7 @@ export class BrainAccessLog {
 
   #notifyClash(line: BrainAccess, clash: BrainClash): void {
     try {
-      this.#onClash?.(line, { ...clash, runs: [...clash.runs], at: [...clash.at] });
+      this.#onClash?.(line, { ...clash, runs: [...clash.runs], roles: [...clash.roles], at: [...clash.at] });
     } catch (error) {
       this.#logger.warn('brain clash listener failed', { clash: clash.id, error: errorMessage(error) });
     }
@@ -144,13 +149,14 @@ export class BrainAccessLog {
       if (entry === null) continue;
       this.#count(entry);
       if (entry.result === 'ok' && (entry.op === 'write' || entry.op === 'append')) {
-        this.#lastWrite.set(entry.path_or_query, { run: entry.run ?? null, at: entry.at });
+        this.#lastWrite.set(entry.path_or_query, { run: entry.run ?? null, at: entry.at, role: entry.role ?? null });
       } else if (entry.result === 'rejected' && typeof entry.clash_id === 'string' && entry.time >= since) {
         if (entry.reason !== 'window' && entry.reason !== 'hash_mismatch') continue;
         const clash: BrainClash = {
           id: entry.clash_id,
           path: entry.path_or_query,
           runs: [entry.other_run ?? null, entry.run ?? null],
+          roles: [entry.other_role ?? null, entry.role ?? null],
           at: [entry.other_at ?? null, entry.at],
           reason: entry.reason,
           status: 'open',
@@ -292,7 +298,7 @@ export class BrainAccessLog {
 
   /** Appends the line of a successful write and remembers the writer of the note. */
   recordWrite(entry: BrainAccess): void {
-    this.#lastWrite.set(entry.path_or_query, { run: entry.run, at: entry.at });
+    this.#lastWrite.set(entry.path_or_query, { run: entry.run, at: entry.at, role: entry.role });
     this.record(entry);
   }
 
@@ -312,7 +318,7 @@ export class BrainAccessLog {
   /** Logs a rejected write, adds the clash to the list and keeps its versions in `<dir>/clashes/<id>.json`. */
   recordClash(
     entry: BrainAccess,
-    other: { run: string | null; at: string | null },
+    other: { run: string | null; at: string | null; role?: string | null },
     reason: BrainClashReason,
     versions: BrainClashVersions = { base: null, attempted: null },
   ): BrainClash {
@@ -320,14 +326,15 @@ export class BrainAccessLog {
       id: randomUUID(),
       path: entry.path_or_query,
       runs: [other.run, entry.run],
+      roles: [other.role ?? null, entry.role ?? null],
       at: [other.at, entry.at],
       reason,
       status: 'open',
     };
     this.#clashes.push(clash);
-this.#versions.set(clash.id, versions);
+    this.#versions.set(clash.id, versions);
     this.#writeVersions(clash, versions);
-    const line: BrainAccess = { ...entry, result: 'rejected', reason, clash_id: clash.id, other_run: other.run, other_at: other.at };
+    const line: BrainAccess = { ...entry, result: 'rejected', reason, clash_id: clash.id, other_run: other.run, other_at: other.at, other_role: other.role ?? null };
     this.record(line);
     this.#notifyClash(line, clash);
     return clash;
@@ -354,7 +361,7 @@ this.#versions.set(clash.id, versions);
   }
 
   clashes(): BrainClash[] {
-    return this.#clashes.map((clash) => ({ ...clash, runs: [...clash.runs], at: [...clash.at] }));
+    return this.#clashes.map((clash) => ({ ...clash, runs: [...clash.runs], roles: [...clash.roles], at: [...clash.at] }));
   }
 
   /** Marks a clash resolved and logs `op: resolve`; false for an unknown or already resolved id. */
