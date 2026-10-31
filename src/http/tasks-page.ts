@@ -5,7 +5,8 @@ import { AURORA, escapeHtml, page } from './ui/layout.ts';
  * Tasks page: the dispatcher queue in six columns (Läuft, Als Nächstes, Wartet, Pausiert, Blockiert, Kürzlich
  * erledigt) with cards, reason chips and the control actions of the existing routes. Like overview-teams.ts the CSS
  * and the script are inlined (TASKS_CSS/TASKS_JS); all top-level script names start with `task`/`TASK_` so they
- * cannot collide with BASE_JS or the components. The columns are pre-rendered, so empty ones show their text at once.
+ * cannot collide with BASE_JS or the components. The head also holds the controls moved from the overview: agent slots
+ * (PUT/DELETE /api/v1/settings/agents) and the model list with pause/resume (POST /api/v1/models/<m>/hold|release). The columns are pre-rendered, so empty ones show their text at once.
  */
 
 export interface TaskColumn {
@@ -73,6 +74,22 @@ export const TASKS_CSS = `
   .tasks-head { margin-bottom: 16px; }
   .tasks-meta { margin: 4px 0 0; color: var(--fg-3, var(--muted)); font-size: 13px; }
   .task-off { margin: 0 0 14px; color: var(--fg-3, var(--muted)); font-size: 13px; }
+  .tasks-steer { display: grid; gap: 12px; margin: 0 0 16px; }
+  .task-slots, .task-hold-list { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 0; padding: 0;
+    list-style: none; font: 12px var(--mono); color: var(--fg-3, var(--muted)); }
+  .task-slot-item, .task-hold { display: inline-flex; align-items: center; gap: 6px; }
+  .task-slot-item b, .task-hold b { color: var(--fg-strong, inherit); font-weight: 600; }
+  .task-slot-item b { min-width: 2ch; text-align: center; }
+  .task-slot-step:disabled, .task-slot-reset:disabled { opacity: .4; cursor: default; }
+  .task-slot-override, .task-slot-note { color: var(--amber); }
+  .task-slot-error { color: var(--red); }
+  .task-slot-bar { display: flex; gap: 3px; }
+  .task-slot-bar i { width: 14px; height: 6px; border-radius: 2px; background: rgba(255, 255, 255, .12); }
+  .task-slot-bar i.on { background: var(--green); box-shadow: 0 0 8px -2px var(--green); }
+  .task-slot-bar i.reserved { background: transparent; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .35); }
+  .task-slot-bar i.forced { background: var(--amber); box-shadow: 0 0 8px -2px var(--amber); }
+  .task-holds-title { margin: 0 0 6px; font: 600 13px var(--sans); }
+  .task-hold-reason { color: var(--amber); }
   .tasks-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; align-items: start; }
   .task-col { min-width: 0; padding: 12px; border-radius: 16px; border: 1px solid rgba(255, 255, 255, .08);
     background: rgba(255, 255, 255, .03); display: grid; gap: 10px; }
@@ -236,10 +253,194 @@ export const TASKS_JS = `
       col === 'blocked' ? taskRetryFp(taskRetryFor(row, state)) : null];
   }
 
+  // ---- Steuerung im Kopf: Agent-Slots (PUT/DELETE /api/v1/settings/agents) und Modelle (POST /api/v1/models/<m>/hold|release)
+  let taskSlotBusy = false;
+  let taskSlotError = '';
+  const taskModelBusy = new Set();
+
+  async function taskSlots(method, body) {
+    if (taskSlotBusy) return;
+    taskSlotBusy = true;
+    let label = 'fehlgeschlagen';
+    try {
+      const init = { method, headers: { 'content-type': 'application/json' } };
+      if (body !== null) init.body = JSON.stringify(body);
+      const res = await fetch('/api/v1/settings/agents', init);
+      let data = null;
+      try { data = await res.json(); } catch {}
+      label = res.ok ? (method === 'DELETE' ? 'auf WORKFLOW.md zurückgesetzt' : 'gespeichert') : (data && data.error && data.error.message) || 'fehlgeschlagen (' + res.status + ')';
+      taskSlotError = res.ok ? '' : label;
+    } catch {
+      taskSlotError = label;
+    }
+    taskSlotBusy = false;
+    if (taskSlotError) setTimeout(() => { taskSlotError = ''; }, 8000);
+    taskById('announce').textContent = 'Agent-Slots: ' + label;
+    setTimeout(taskLoad, 300);
+  }
+
+  function taskSlotStep(text, ariaLabel, body, disabled) {
+    const b = button(text, { size: 36, ariaLabel });
+    b.classList.add('task-slot-step');
+    b.dataset.body = JSON.stringify(body);
+    if (disabled || taskSlotBusy) b.disabled = true;
+    return b;
+  }
+
+  /** Occupancy bar and its text: "02 / 10 belegt, 1 erzwungen · developer 1/1 reserviert · 3 frei". */
+  function taskSlotBar(state) {
+    const limits = state.limits;
+    const max = state.health ? state.health.max_concurrent_agents : 0;
+    const counts = state.counts || {};
+    const forced = counts.forced || 0;
+    const slotted = (counts.running || 0) - forced;
+    const reservations = limits && !limits.reservation_problem
+      ? Object.entries(limits.reserved_slots_by_role || {}).filter(([, r]) => r.effective > 0)
+      : [];
+    let unused = 0;
+    for (const [, r] of reservations) unused += Math.max(r.effective - r.running, 0);
+    const free = Math.max(max - slotted - unused, 0);
+    const bar = el('span', null, 'task-slot-bar');
+    bar.setAttribute('aria-hidden', 'true');
+    for (let i = 0; i < Math.min(max, 24); i++) bar.append(el('i', null, i < slotted ? 'on' : i < slotted + unused ? 'reserved' : ''));
+    for (let i = 0; i < Math.min(forced, 8); i++) bar.append(el('i', null, 'forced'));
+    const used = pad2(counts.running || 0) + ' / ' + pad2(max) + ' belegt' + (forced > 0 ? ', ' + forced + ' erzwungen' : '');
+    const text = used + ' · ' + (reservations.length > 0
+      ? reservations.map(([role, r]) => role + ' ' + Math.min(r.running, r.effective) + '/' + r.effective).join(' · ') + ' reserviert · '
+      : '') + free + ' frei';
+    const wrap = el('span', null, 'task-slot-item');
+    wrap.append(bar, el('span', text));
+    return wrap;
+  }
+
+  function renderTaskSlots(state) {
+    const limits = state.limits;
+    const host = taskById('task-slots');
+    host.hidden = !limits;
+    if (!limits) return;
+    const total = limits.max_concurrent_agents;
+    // Forced sessions run beside the limit; only the others hold its slots.
+    const running = (state.counts.running || 0) - (state.counts.forced || 0);
+    const nodes = [taskSlotBar(state)];
+    const item = el('span', null, 'task-slot-item');
+    item.append(el('span', 'Slots gesamt'));
+    if (taskAllowed) item.append(taskSlotStep('−', 'Weniger Agent-Slots', { max_concurrent_agents: Math.min(total.effective - 1, limits.max) }, total.effective <= 0));
+    item.append(el('b', total.effective));
+    if (taskAllowed) item.append(taskSlotStep('+', 'Mehr Agent-Slots', { max_concurrent_agents: total.effective + 1 }, total.effective >= limits.max));
+    if (total.override !== null && total.override !== total.workflow) item.append(el('span', 'hier gesetzt · WORKFLOW.md ' + total.workflow, 'task-slot-override'));
+    else if (total.override !== null) item.append(el('span', 'hier gesetzt', 'task-slot-override'));
+    nodes.push(item);
+    for (const [column, v] of Object.entries(limits.by_state || {})) {
+      const col = el('span', null, 'task-slot-item');
+      col.append(el('span', column));
+      if (taskAllowed && v.effective !== null) {
+        col.append(taskSlotStep('−', 'Limit von ' + column + ' senken', { max_concurrent_agents_by_state: { [column]: Math.min(v.effective - 1, limits.max) } }, v.effective <= 1));
+      }
+      col.append(el('b', v.effective === null ? '–' : v.effective));
+      if (taskAllowed) {
+        col.append(v.effective === null
+          ? taskSlotStep('+', 'Limit 1 für ' + column + ' setzen', { max_concurrent_agents_by_state: { [column]: 1 } }, false)
+          : taskSlotStep('+', 'Limit von ' + column + ' erhöhen', { max_concurrent_agents_by_state: { [column]: v.effective + 1 } }, v.effective >= limits.max));
+      }
+      if (v.override !== null) {
+        col.append(el('span', 'hier gesetzt · WORKFLOW.md ' + (v.workflow === null ? 'keins' : v.workflow), 'task-slot-override'));
+        if (taskAllowed) col.append(taskSlotStep('×', 'WORKFLOW.md-Limit für ' + column + ' verwenden', { max_concurrent_agents_by_state: { [column]: null } }, false));
+      }
+      nodes.push(col);
+    }
+    for (const [role, r] of Object.entries(limits.reserved_slots_by_role || {})) {
+      const res = el('span', null, 'task-slot-item');
+      res.append(el('span', role + ' reserviert'));
+      if (taskAllowed) res.append(taskSlotStep('−', 'Weniger Slots für ' + role + ' reservieren', { reserved_slots_by_role: { [role]: r.effective - 1 } }, r.effective <= 0));
+      res.append(el('b', r.effective));
+      if (taskAllowed) res.append(taskSlotStep('+', 'Einen Slot mehr für ' + role + ' reservieren', { reserved_slots_by_role: { [role]: r.effective + 1 } }, r.effective >= limits.max));
+      if (r.override !== null) {
+        res.append(el('span', 'hier gesetzt · WORKFLOW.md ' + r.workflow, 'task-slot-override'));
+        if (taskAllowed) res.append(taskSlotStep('×', 'WORKFLOW.md-Reservierung für ' + role + ' verwenden', { reserved_slots_by_role: { [role]: null } }, false));
+      }
+      nodes.push(res);
+    }
+    if (taskAllowed && limits.override_active) {
+      const reset = button('Auf WORKFLOW.md zurücksetzen (' + total.workflow + ')', { size: 36 });
+      reset.classList.add('task-slot-reset');
+      if (taskSlotBusy) reset.disabled = true;
+      nodes.push(reset);
+    }
+    const reservedRoles = Object.entries(limits.reserved_slots_by_role || {});
+    let reservedSum = 0;
+    for (const [, r] of reservedRoles) reservedSum += r.effective;
+    const unreserved = reservedRoles.filter(([, r]) => r.effective === 0).map(([role]) => role);
+    if (!limits.reservation_problem && reservedSum > 0 && reservedSum >= total.effective && total.effective > 0 && unreserved.length > 0) {
+      nodes.push(el('span', 'Alle Slots reserviert: ' + unreserved.join(', ') + ' starten nur mit mehr Slots', 'task-slot-note'));
+    }
+    if (total.effective === 0) {
+      nodes.push(el('span', 'Limit 0: neue Starts pausiert' + (running > 0 ? ', ' + running + ' laufen weiter' : ''), 'task-slot-note'));
+    } else if (running > total.effective) {
+      const finish = running - total.effective + 1;
+      nodes.push(el('span', running + ' laufen, Limit ' + total.effective + ': keine neuen Starts, bis ' + (finish === 1 ? 'einer fertig ist' : finish + ' fertig sind'), 'task-slot-note'));
+    }
+    if (taskSlotError) nodes.push(el('span', taskSlotError, 'task-slot-error'));
+    patchChildren(host, nodes);
+  }
+
+  async function taskModel(model, hold) {
+    if (taskModelBusy.has(model)) return;
+    taskModelBusy.add(model);
+    let label = 'fehlgeschlagen';
+    try {
+      const res = await fetch('/api/v1/models/' + encodeURIComponent(model) + '/' + (hold ? 'hold' : 'release'), { method: 'POST' });
+      let body = null;
+      try { body = await res.json(); } catch {}
+      label = res.ok ? (hold ? 'pausiert' : 'fortgesetzt') : (body && body.error && body.error.message) || 'fehlgeschlagen (' + res.status + ')';
+    } catch {}
+    taskModelBusy.delete(model);
+    taskById('announce').textContent = 'Modell ' + model + ': ' + label;
+    setTimeout(taskLoad, 300);
+  }
+
+  /** One row per model family: reason (operator pause and/or limit hold with its issue) and reset time. */
+  function renderTaskHolds(state) {
+    const models = state.model_controls || [];
+    const holds = state.model_holds || [];
+    taskById('task-holds').hidden = models.length === 0;
+    const nodes = models.map((m) => {
+      const li = el('li', null, 'task-hold');
+      const parts = [];
+      if (m.paused) parts.push('vom Operator pausiert');
+      const limit = holds.find((h) => h.model === m.model && h.source === 'limit');
+      if (limit) parts.push((limit.text || 'Modell-Limit') + (limit.issue_identifier ? ' · ausgelöst von ' + limit.issue_identifier : ''));
+      li.append(el('b', m.model), el('span', parts.length ? parts.join(' · ') : 'läuft', parts.length ? 'task-hold-reason' : ''));
+      if (m.limit_until) li.append(el('span', 'Reset ' + fmtTime(m.limit_until)));
+      else if (m.paused) li.append(el('span', 'bis zur Freigabe'));
+      if (taskAllowed) {
+        const b = button(m.paused ? 'Fortsetzen' : 'Pausieren', { size: 36, ariaLabel: 'Modell ' + m.model + (m.paused ? ' fortsetzen' : ' pausieren') });
+        b.classList.add('task-model');
+        b.dataset.model = m.model;
+        b.dataset.hold = m.paused ? '0' : '1';
+        if (taskModelBusy.has(m.model)) b.setAttribute('aria-busy', 'true');
+        li.append(b);
+      }
+      return li;
+    });
+    patchChildren(taskById('task-hold-list'), nodes);
+  }
+
+  document.addEventListener('click', (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const step = target ? target.closest('button.task-slot-step') : null;
+    if (step && !step.disabled) taskSlots('PUT', JSON.parse(step.dataset.body));
+    const reset = target ? target.closest('button.task-slot-reset') : null;
+    if (reset && !reset.disabled) taskSlots('DELETE', null);
+    const model = target ? target.closest('button.task-model') : null;
+    if (model) taskModel(model.dataset.model, model.dataset.hold === '1');
+  });
+
   function renderTasks(state) {
     taskLast = state;
     taskAllowed = !state.controls || state.controls.retry !== false;
     taskById('tasks-controls-off').hidden = taskAllowed;
+    renderTaskSlots(state);
+    renderTaskHolds(state);
     const issues = state.issues || [];
     const groups = { running: [], next: [], waiting: [], paused: [], blocked: state.blocked || [] };
     for (const r of issues) if (groups[r.section]) groups[r.section].push(r);
@@ -408,6 +609,13 @@ export const TASKS_HTML = page({
       <p class="tasks-meta" id="tasks-meta"></p>
     </div>
     <p class="task-off" id="tasks-controls-off" hidden>${escapeHtml(CONTROLS_OFF)}</p>
+    <section class="tasks-steer" aria-label="Steuerung">
+      <div class="task-slots" id="task-slots" role="group" aria-label="Agent-Slots" hidden></div>
+      <div id="task-holds" hidden>
+        <p class="task-holds-title" id="task-holds-title">Modelle</p>
+        <ul class="task-hold-list" id="task-hold-list" aria-labelledby="task-holds-title"></ul>
+      </div>
+    </section>
     <div class="tasks-grid">${TASK_COLUMNS.map(column).join('')}
     </div>
   </section>`,

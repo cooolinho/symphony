@@ -172,9 +172,9 @@ describe('tasks page (E5-1)', () => {
     assert.ok(TASKS_HTML.includes('live(taskLoad'));
   });
 
-  it('is linked from the overview, whose queue and blocked sections stay', () => {
+  it('is linked from the overview, whose queue, blocked and slot sections moved here (E5-2)', () => {
     assert.ok(DASHBOARD_HTML.includes('<a class="section-link" href="/tasks">Alle Tasks</a>'));
-    for (const id of ['next-section', 'waiting-section', 'paused-section', 'blocked-section']) assert.ok(DASHBOARD_HTML.includes(`id="${id}"`), id);
+    assert.doesNotMatch(DASHBOARD_HTML, /id="(slot-settings|slots|model-controls|next-section|waiting-section|paused-section|blocked-section)"/);
   });
 
   describe('GET /tasks', () => {
@@ -201,5 +201,97 @@ describe('tasks page (E5-1)', () => {
       for (const c of TASK_COLUMNS) assert.ok(res.body.includes(`>${c.title}</h2>`), c.title);
       assert.ok(!res.body.includes('Diese Seite kommt in Kürze.'));
     });
+  });
+});
+
+describe('Steuerung im Kopf (E5-2)', () => {
+  const limits = (over: Obj = {}): Obj => ({ ...dashboardState().limits, override_active: true, max_concurrent_agents: { effective: 3, workflow: 10, override: 3 }, ...over });
+  const open = async (over: Obj = {}) => {
+    const p = renderPage(TASKS_HTML, fixture(over), { fetch: historyFetch([]) });
+    await settle();
+    p.render(fixture(over));
+    return p;
+  };
+  const last = (p: Awaited<ReturnType<typeof open>>) => p.fetches.at(-1)!;
+
+  it('lets the operator step the total, reset to WORKFLOW.md and announces the result', async () => {
+    const p = await open({ limits: limits() });
+    assert.equal(p.$('task-slots').hidden, false);
+    assert.equal(text(p.query('#task-slots button.task-slot-reset')[0]!), 'Auf WORKFLOW.md zurücksetzen (10)');
+    assert.match(text(p.$('task-slots')), /Slots gesamt/);
+    const more = p.query('button.task-slot-step').find((b) => b.getAttribute('aria-label') === 'Mehr Agent-Slots')!;
+    p.click(more);
+    assert.deepEqual(last(p), { url: '/api/v1/settings/agents', method: 'PUT', body: { max_concurrent_agents: 4 } });
+    await settle();
+    assert.equal(text(p.$('announce')), 'Agent-Slots: gespeichert');
+    const again = await open({ limits: limits() });
+    again.click(again.query('button.task-slot-reset')[0]!);
+    assert.deepEqual([last(again).url, last(again).method], ['/api/v1/settings/agents', 'DELETE']);
+    await settle();
+    assert.equal(text(again.$('announce')), 'Agent-Slots: auf WORKFLOW.md zurückgesetzt');
+  });
+
+  it('steps columns and reserved roles with the unchanged request bodies', async () => {
+    const p = await open({
+      limits: limits({
+        by_state: { 'In progress': { effective: 2, workflow: 4, override: 2 } },
+        reserved_slots_by_role: { reviewer: { effective: 1, workflow: 0, override: 1, running: 0 } },
+      }),
+    });
+    const click = async (label: string) => { p.click(p.query('button.task-slot-step').find((b) => b.getAttribute('aria-label') === label)!); await settle(); };
+    await click('Limit von In progress erhöhen');
+    assert.deepEqual(last(p).body, { max_concurrent_agents_by_state: { 'In progress': 3 } });
+    await click('WORKFLOW.md-Limit für In progress verwenden');
+    assert.deepEqual(last(p).body, { max_concurrent_agents_by_state: { 'In progress': null } });
+    await click('Einen Slot mehr für reviewer reservieren');
+    assert.deepEqual(last(p).body, { reserved_slots_by_role: { reviewer: 2 } });
+    await click('WORKFLOW.md-Reservierung für reviewer verwenden');
+    assert.deepEqual(last(p).body, { reserved_slots_by_role: { reviewer: null } });
+    assert.match(text(p.$('task-slots')), /reviewer reserviert/);
+  });
+
+  it('shows the values but no buttons without control_allowed', async () => {
+    const p = await open({ limits: limits(), controls: { retry: false }, model_controls: [{ model: 'opus', paused: false, limit_until: null }] });
+    assert.equal(p.query('button.task-slot-step').length, 0);
+    assert.equal(p.query('button.task-slot-reset').length, 0);
+    assert.equal(p.query('button.task-model').length, 0);
+    assert.match(text(p.$('task-slots')), /Slots gesamt\s*3/);
+    assert.equal(p.$('tasks-controls-off').hidden, false);
+    assert.equal(p.query('#task-hold-list li').length, 1);
+  });
+
+  it('warns when the limit is lowered below the running count and counts forced sessions', async () => {
+    const low = await open({ limits: limits({ max_concurrent_agents: { effective: 1, workflow: 10, override: 1 } }), counts: { ...dashboardState().counts, running: 3 } });
+    assert.match(text(low.$('task-slots')), /3 laufen, Limit 1: keine neuen Starts, bis 3 fertig sind/);
+    const forced = await open({ counts: { ...dashboardState().counts, running: 2, forced: 1 } });
+    assert.match(text(forced.$('task-slots')), /02 \/ 10 belegt, 1 erzwungen/);
+  });
+
+  it('hides the slot group without limits and the model block without models', async () => {
+    const p = await open({ limits: null });
+    assert.equal(p.$('task-slots').hidden, true);
+    assert.equal(p.$('task-holds').hidden, true);
+  });
+
+  it('lists family, reason and reset time of a held model and posts pause and resume', async () => {
+    const until = '2026-10-30T14:00:00Z';
+    const hold = { model: 'opus', source: 'limit', until, since: '2026-10-30T11:00:00Z', issue_identifier: 'acme/app#2', text: 'weekly limit' };
+    const p = await open({ model_controls: [{ model: 'opus', paused: false, limit_until: until }], model_holds: [hold] });
+    assert.equal(p.$('task-holds').hidden, false);
+    const [li] = p.query('#task-hold-list li');
+    assert.match(text(li!), /opus.*weekly limit · ausgelöst von acme\/app#2.*Reset /);
+    p.click(p.query('button.task-model')[0]!);
+    assert.deepEqual(last(p), { url: '/api/v1/models/opus/hold', method: 'POST' });
+    await settle();
+    assert.equal(text(p.$('announce')), 'Modell opus: pausiert');
+    const paused = await open({ model_controls: [{ model: 'opus', paused: true, limit_until: null }] });
+    assert.match(text(paused.query('#task-hold-list li')[0]!), /vom Operator pausiert.*bis zur Freigabe/);
+    assert.equal(text(paused.query('button.task-model')[0]!), 'Fortsetzen');
+    paused.click(paused.query('button.task-model')[0]!);
+    assert.equal(last(paused).url, '/api/v1/models/opus/release');
+  });
+
+  it('uses German texts only', () => {
+    for (const old of ['Reset to WORKFLOW.md', 'More agent slots', 'set here', 'Fewer agent slots']) assert.ok(!TASKS_HTML.includes(old), old);
   });
 });

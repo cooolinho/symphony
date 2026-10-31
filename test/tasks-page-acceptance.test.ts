@@ -290,9 +290,9 @@ describe('tasks page acceptance (E5-1)', () => {
     assert.equal(p.query('#col-next .task-empty').length, 1);
   });
 
-  it('the overview links to /tasks and keeps its queue and blocked sections', () => {
+  it('the overview links to /tasks; its queue, blocked and slot sections are gone (E5-2)', () => {
     assert.match(DASHBOARD_HTML, /<a[^>]*href="\/tasks"[^>]*>\s*Alle Tasks\s*<\/a>/);
-    for (const id of ['next-section', 'waiting-section', 'paused-section', 'blocked-section']) assert.ok(DASHBOARD_HTML.includes(`id="${id}"`), id);
-    for (const label of ['Retry', 'Resume']) assert.ok(DASHBOARD_HTML.includes(`restartButton(row.issue_identifier, '${label}')`), label);
+    assert.doesNotMatch(DASHBOARD_HTML, /id="(slot-settings|slots|model-controls|next-section|waiting-section|paused-section|blocked-section)"/);
+    for (const label of ['Retry', 'Resume']) assert.ok(!DASHBOARD_HTML.includes(`restartButton(row.issue_identifier, '${label}')`), label);
   });
 });
