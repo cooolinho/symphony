@@ -312,7 +312,7 @@ start; the dashboard notes it at the slot settings. When a result leads issues t
 
 #### Agent slots set on the dashboard
 
-`max_concurrent_agents`, `max_concurrent_agents_by_state` and `reserved_slots_by_role` can also be changed at runtime, in the head of the Tasks page or with
+`max_concurrent_agents`, `max_concurrent_agents_by_state` and `reserved_slots_by_role` can also be changed at runtime, in the Tasks page (the pill for the total, 1 to 8, and a collapsible block for the rest) or with
 `PUT /api/v1/settings/agents` (see [Dashboard and API](usage.md#dashboard-and-api)). The value in force comes from the
 first of:
 

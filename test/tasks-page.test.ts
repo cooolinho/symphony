@@ -49,12 +49,12 @@ const historyFetch = (finished: Obj[], results: Obj[] = []) => (url: string) => 
 const text = (n: { textContent: string }) => n.textContent;
 
 describe('tasks page (E5-1)', () => {
-  it('has six columns in order and a one-column layout at 640px', () => {
+  it('has six columns in order in an auto-fit grid', () => {
     const titles = [...TASKS_HTML.matchAll(/<h2 id="col-\w+-title">([^<]+)<\/h2>/g)].map((m) => m[1]);
     assert.deepEqual(titles, ['Läuft', 'Als Nächstes', 'Wartet', 'Pausiert', 'Blockiert', 'Kürzlich erledigt']);
-    assert.equal((TASKS_HTML.match(/class="task-col"/g) ?? []).length, 6);
-    assert.ok(TASKS_CSS.includes('repeat(6'));
-    assert.match(TASKS_CSS, /@media \(max-width: 640px\) \{ \.tasks-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/);
+    assert.equal((TASKS_HTML.match(/<section class="g task-col"/g) ?? []).length, 6);
+    assert.ok(TASKS_CSS.includes('repeat(auto-fit, minmax(230px, 1fr))'));
+    assert.doesNotMatch(TASKS_CSS, /@media[^{]*\{\s*\.tasks-grid/);
   });
 
   it('covers every plan reason code with a German text', () => {
@@ -77,10 +77,11 @@ describe('tasks page (E5-1)', () => {
   it('renders one card per column with the right action and posts to the existing routes', async () => {
     const p = renderPage(TASKS_HTML, fixture(), { fetch: historyFetch([]) });
     const expected: Array<[string, string, string]> = [
-      ['running', 'Pausieren', 'pause'], ['next', 'Jetzt starten', 'force'], ['waiting', 'Erneut versuchen', 'retry'],
-      ['paused', 'Fortsetzen', 'resume'], ['blocked', 'Erneut versuchen', 'retry'],
+      ['running', 'Pausieren', 'pause'], ['next', 'Jetzt starten', 'force'], ['waiting', 'Jetzt erneut', 'retry'],
+      ['paused', 'Fortsetzen', 'resume'],
     ];
-    const ids = [1, 2, 3, 4, 5];
+    const ids = [1, 2, 3, 4];
+    assert.equal(p.query('#col-blocked button').length, 0);
     for (const [i, [col, label, verb]] of expected.entries()) {
       assert.equal(p.query(`#col-${col} .task-card`).length, 1, col);
       const buttons = p.query(`#col-${col} button`);
@@ -93,18 +94,19 @@ describe('tasks page (E5-1)', () => {
     }
   });
 
-  it('shows number, title link, repo, place, reason chip with code title and role', () => {
+  it('shows number, title link, repo, place, reason chip with code title and owner', () => {
     const p = renderPage(TASKS_HTML, fixture());
     const card = p.query('#col-next .task-card')[0]!;
     assert.ok(text(card).includes('#2'));
     const link = p.query('#col-next .task-title')[0]!;
     assert.equal(link.getAttribute('href'), '/issue?id=acme%2Fapp%232');
     assert.ok(text(card).includes('acme/app'));
-    assert.ok(text(card).includes('Platz 1'));
-    const chip = p.query('#col-next .ui-chip').find((c) => text(c).includes('Kein freier Slot'))!;
+    assert.equal(text(p.query('#col-next .task-place')[0]!), 'P2 · Platz 1');
+    const chip = p.query('#col-next .task-reason')[0]!;
     assert.equal(chip.getAttribute('title'), 'no_free_slot');
-    assert.ok(text(p.query('#col-running .task-role')[0]!).length > 0);
-    assert.ok(text(p.query('#col-waiting .task-note')[0]!).includes('Versuch 2'));
+    assert.equal(text(chip), 'Startet, sobald ein Slot frei ist');
+    assert.ok(text(p.query('#col-running .task-owner')[0]!).length > 0);
+    assert.equal(text(p.query('#col-waiting .task-reason')[0]!), 'Retry in 1 min · backoff');
   });
 
   it('offers no button for waiting without retry and next on model hold', () => {
@@ -142,13 +144,13 @@ describe('tasks page (E5-1)', () => {
     for (let n = 10; n < 22; n++) finished.push({ ts: `2026-10-30T10:${String(n).padStart(2, '0')}:00.000Z`, event: 'run_finished', issue: `acme/app#${n}`, run: `r${n}`, title: `T${n}`, repo: 'acme/app', outcome: 'handed_off', state: 'Done' });
     finished.push({ ts: '2026-10-30T09:00:00.000Z', event: 'run_finished', issue: 'acme/app#21', run: 'old', title: 'T21', repo: 'acme/app', outcome: 'failed', state: 'Todo' });
     finished.push({ ts: '2026-10-30T11:59:00.000Z', event: 'run_finished', issue: 'acme/app#1', run: 'act', title: 'Issue 1', repo: 'acme/app', outcome: 'continuing', state: 'In progress' });
-    const p = renderPage(TASKS_HTML, undefined, { fetch: (u) => (u.includes('event=run_finished') ? { entries: finished } : u.includes('event=stage_result') ? { entries: [{ run: 'r21', verdict: 'approved' }] } : fixture()) });
+    const p = renderPage(TASKS_HTML, undefined, { fetch: (u) => (u.includes('event=run_finished') ? { entries: finished } : u.includes('event=stage_result') ? { entries: [{ issue: 'acme/app#21', kind: 'review', verdict: 'approved' }] } : fixture()) });
     await settle();
     const cards = p.query('#col-done .task-card');
     assert.equal(cards.length, 10);
     assert.ok(text(cards[0]!).includes('#21'));
-    assert.ok(text(cards[0]!).includes('approved'));
-    assert.ok(text(cards[0]!).includes('→ Done'));
+    assert.ok(text(cards[0]!).includes('1 Review-Runde'));
+    assert.ok(text(cards[0]!).includes('gemerged'));
     assert.ok(!p.query('#col-done .task-title').some((t) => text(t) === 'Issue 1'));
     assert.equal(new Set(p.query('#col-done .task-num').map(text)).size, 10);
   });
@@ -218,8 +220,8 @@ describe('Steuerung im Kopf (E5-2)', () => {
     const p = await open({ limits: limits() });
     assert.equal(p.$('task-slots').hidden, false);
     assert.equal(text(p.query('#task-slots button.task-slot-reset')[0]!), 'Auf WORKFLOW.md zurücksetzen (10)');
-    assert.match(text(p.$('task-slots')), /Slots gesamt/);
-    const more = p.query('button.task-slot-step').find((b) => b.getAttribute('aria-label') === 'Mehr Agent-Slots')!;
+    assert.equal(text(p.$('task-slot-count')), '1 / 3');
+    const more = p.query('#task-pill button.task-slot-step').find((b) => b.getAttribute('aria-label') === 'Einen Slot mehr')!;
     p.click(more);
     assert.deepEqual(last(p), { url: '/api/v1/settings/agents', method: 'PUT', body: { max_concurrent_agents: 4 } });
     await settle();
@@ -255,16 +257,17 @@ describe('Steuerung im Kopf (E5-2)', () => {
     assert.equal(p.query('button.task-slot-step').length, 0);
     assert.equal(p.query('button.task-slot-reset').length, 0);
     assert.equal(p.query('button.task-model').length, 0);
-    assert.match(text(p.$('task-slots')), /Slots gesamt\s*3/);
+    assert.equal(p.query('#task-pill button').length, 0);
+    assert.equal(text(p.$('task-slot-count')), '1 / 3');
     assert.equal(p.$('tasks-controls-off').hidden, false);
     assert.equal(p.query('#task-hold-list li').length, 1);
   });
 
   it('warns when the limit is lowered below the running count and counts forced sessions', async () => {
     const low = await open({ limits: limits({ max_concurrent_agents: { effective: 1, workflow: 10, override: 1 } }), counts: { ...dashboardState().counts, running: 3 } });
-    assert.match(text(low.$('task-slots')), /3 laufen, Limit 1: keine neuen Starts, bis 3 fertig sind/);
+    assert.match(text(low.$('task-slot-notes')), /3 laufen, Limit 1: keine neuen Starts, bis 3 fertig sind/);
     const forced = await open({ counts: { ...dashboardState().counts, running: 2, forced: 1 } });
-    assert.match(text(forced.$('task-slots')), /02 \/ 10 belegt, 1 erzwungen/);
+    assert.equal(text(forced.$('task-slot-count')), '1 / 10');
   });
 
   it('hides the slot group without limits and the model block without models', async () => {

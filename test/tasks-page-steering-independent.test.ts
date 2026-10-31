@@ -109,7 +109,6 @@ describe('tasks page head: slot controls (E5-2)', () => {
     const items = p.query('#task-slots .task-slot-item');
     const withLabel = (needle: string) => items.find((i) => text(i).startsWith(needle))!;
     for (const [needle, minus, plus] of [
-      ['Slots gesamt', 'Weniger Agent-Slots', 'Mehr Agent-Slots'],
       ['In progress', 'Limit von In progress senken', 'Limit von In progress erhöhen'],
       ['reviewer reserviert', 'Weniger Slots für reviewer reservieren', 'Einen Slot mehr für reviewer reservieren'],
     ] as const) {
@@ -120,7 +119,8 @@ describe('tasks page head: slot controls (E5-2)', () => {
       assert.ok(labels.includes(plus), plus);
       assert.equal(item.querySelectorAll('b').length, 1, `${needle} shows one value`);
     }
-    assert.match(text(withLabel('Slots gesamt')), /3/);
+    assert.equal(text(p.$('task-slot-count')), '1 / 3');
+    assert.deepEqual(p.query('#task-pill button').map((b: any) => b.getAttribute('aria-label')), ['Einen Slot weniger', 'Einen Slot mehr']);
     assert.match(text(withLabel('reviewer')), /reviewer reserviert/);
     assert.match(text(withLabel('Review')), /–/, 'an unlimited column shows a dash');
   });
@@ -128,8 +128,8 @@ describe('tasks page head: slot controls (E5-2)', () => {
   it('sends the unchanged bodies for the total, a column, an unset column and a role', async () => {
     const p = await open();
     const cases: Array<[string, Obj]> = [
-      ['Weniger Agent-Slots', { max_concurrent_agents: 2 }],
-      ['Mehr Agent-Slots', { max_concurrent_agents: 4 }],
+      ['Einen Slot weniger', { max_concurrent_agents: 2 }],
+      ['Einen Slot mehr', { max_concurrent_agents: 4 }],
       ['Limit von In progress senken', { max_concurrent_agents_by_state: { 'In progress': 1 } }],
       ['Limit 1 für Review setzen', { max_concurrent_agents_by_state: { Review: 1 } }],
       ['Weniger Slots für reviewer reservieren', { reserved_slots_by_role: { reviewer: 0 } }],
@@ -151,14 +151,14 @@ describe('tasks page head: slot controls (E5-2)', () => {
         reserved_slots_by_role: { reviewer: { effective: 0, workflow: 0, override: null, running: 0 } },
       }),
     });
-    for (const label of ['Weniger Agent-Slots', 'Limit von In progress senken', 'Weniger Slots für reviewer reservieren']) {
+    for (const label of ['Einen Slot weniger', 'Limit von In progress senken', 'Weniger Slots für reviewer reservieren']) {
       const b = stepByLabel(p, label)!;
       assert.equal(b.disabled, true, label);
       p.click(b);
     }
     assert.equal(posts(p).length, 0);
     const top = await open({ limits: limits({ max_concurrent_agents: { effective: 50, workflow: 10, override: 50 } }) });
-    assert.equal(stepByLabel(top, 'Mehr Agent-Slots')!.disabled, true);
+    assert.equal(stepByLabel(top, 'Einen Slot mehr')!.disabled, true);
   });
 
   it('resets with DELETE and no body, only while an override is active', async () => {
@@ -171,7 +171,7 @@ describe('tasks page head: slot controls (E5-2)', () => {
     assert.deepEqual(posts(p).at(-1), { url: '/api/v1/settings/agents', method: 'DELETE' });
     const plain = await open({ limits: limits({ override_active: false, max_concurrent_agents: { effective: 10, workflow: 10, override: null }, by_state: {}, reserved_slots_by_role: {} }) });
     assert.equal(plain.query('button.task-slot-reset').length, 0);
-    assert.match(text(plain.$('task-slots')), /Slots gesamt\D*10/);
+    assert.equal(text(plain.$('task-slot-count')), '1 / 10');
   });
 
   it('shows the override hint and the × to fall back to WORKFLOW.md per entry', async () => {
@@ -187,7 +187,8 @@ describe('tasks page head: slot controls (E5-2)', () => {
     assert.equal(p.query('#task-slots button').length, 0);
     assert.equal(p.$('tasks-controls-off').hidden, false);
     const t = text(p.$('task-slots'));
-    assert.match(t, /Slots gesamt\s*3/);
+    assert.equal(text(p.$('task-slot-count')), '1 / 3');
+    assert.equal(p.query('#task-pill button').length, 0);
     assert.match(t, /In progress\s*2/);
     assert.match(t, /reviewer reserviert\s*1/);
     p.click(p.$('task-slots'));
@@ -208,27 +209,27 @@ describe('tasks page head: slot controls (E5-2)', () => {
   it('announces success and failure in German through the aria-live region', async () => {
     assert.match(TASKS_HTML, /id="announce"[^>]*aria-live="polite"/);
     const ok = await open();
-    ok.click(stepByLabel(ok, 'Mehr Agent-Slots')!);
+    ok.click(stepByLabel(ok, 'Einen Slot mehr')!);
     await settle();
     assert.equal(text(ok.$('announce')), 'Agent-Slots: gespeichert');
     const failing = await open({}, { fetch: (url: string) => { if (url === '/api/v1/settings/agents') throw new Error('offline'); return { entries: [] }; } });
-    failing.click(stepByLabel(failing, 'Mehr Agent-Slots')!);
+    failing.click(stepByLabel(failing, 'Einen Slot mehr')!);
     await settle();
     assert.equal(text(failing.$('announce')), 'Agent-Slots: fehlgeschlagen');
   });
 
   it('warns about a total of 0, below the running count and about all-reserved slots', async () => {
     const zero = await open({ limits: limits({ max_concurrent_agents: { effective: 0, workflow: 10, override: 0 } }), counts: { ...dashboardState().counts, running: 0 } });
-    assert.match(text(zero.$('task-slots')), /Limit 0: neue Starts pausiert/);
+    assert.match(text(zero.$('task-slot-notes')), /Limit 0: neue Starts pausiert/);
     const one = await open({ limits: limits({ max_concurrent_agents: { effective: 2, workflow: 10, override: 2 } }), counts: { ...dashboardState().counts, running: 3 } });
-    assert.match(text(one.$('task-slots')), /3 laufen, Limit 2: keine neuen Starts, bis 2 fertig sind/);
+    assert.match(text(one.$('task-slot-notes')), /3 laufen, Limit 2: keine neuen Starts, bis 2 fertig sind/);
     const all = await open({
       limits: limits({
         max_concurrent_agents: { effective: 2, workflow: 2, override: null },
         reserved_slots_by_role: { reviewer: { effective: 2, workflow: 2, override: null, running: 0 }, developer: { effective: 0, workflow: 0, override: null, running: 0 } },
       }),
     });
-    assert.match(text(all.$('task-slots')), /Alle Slots reserviert: developer starten nur mit mehr Slots/);
+    assert.match(text(all.$('task-slot-notes')), /Alle Slots reserviert: developer starten nur mit mehr Slots/);
   });
 
   it('hides the group without limits', async () => {
@@ -240,9 +241,9 @@ describe('tasks page head: slot controls (E5-2)', () => {
     const slots = TASKS_HTML.indexOf('id="task-slots"');
     const holds = TASKS_HTML.indexOf('id="task-holds"');
     const grid = TASKS_HTML.indexOf('class="tasks-grid"');
-    assert.ok(slots > TASKS_HTML.indexOf('id="tasks-meta"'), 'after the title');
+    assert.ok(slots > TASKS_HTML.indexOf('id="task-pill"'), 'after the pill');
     assert.ok(slots < grid && holds < grid, 'before the grid');
-    assert.match(TASKS_HTML, /id="task-slots"[^>]*aria-label="Agent-Slots"/);
+    assert.match(TASKS_HTML, /id="task-slots"[^>]*aria-label="Weitere Slot-Grenzen"/);
   });
 });
 
