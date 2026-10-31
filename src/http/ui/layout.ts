@@ -163,7 +163,9 @@ export const LAYOUT_JS = `
     node.setAttribute('title', chip.title);
   }
   const isBudgetWindow = (w) => !!w && typeof w === 'object' && typeof w.used_tokens === 'number';
+  let budgetSeq = 0;
   async function loadBudget() {
+    const seq = ++budgetSeq;
     let report = null;
     let raw = null;
     try {
@@ -172,10 +174,13 @@ export const LAYOUT_JS = `
       raw = body;
       if (body && isBudgetWindow(body.five_hour) && isBudgetWindow(body.seven_day)) report = body;
     } catch {}
+    if (seq !== budgetSeq) return;
     budgetReport = report;
     budgetRaw = raw;
     paintBudgetChip(report);
-    for (const fn of budgetListeners) fn(report, raw);
+    for (const fn of budgetListeners) {
+      try { fn(report, raw); } catch {}
+    }
   }
   loadBudget();
   setInterval(loadBudget, 30000);
