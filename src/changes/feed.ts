@@ -30,16 +30,20 @@ export function changeCounts(entries: readonly ChangeEntry[]): ChangeCounts {
 
 /**
  * Today (the calendar day of `now` in `timeZone`): commits and merges by status; files (distinct repo + path) and lines of
- * the commits only, as merges repeat them. Hotspots: the files of the commits of the last 7 days by number of commits.
+ * the commits only, as merges repeat them; brain writes (no conflicts) separately. Hotspots: the files of the commits of the last 7 days by number of commits.
  */
 export function changeStats(entries: readonly ChangeEntry[], now: Date, timeZone: string): ChangeStats {
   const today = dayKey(now.getTime(), timeZone);
   const since = now.getTime() - HOTSPOT_DAYS * 24 * 3600 * 1000;
-  const result: ChangeStats = { today: { commits: 0, merges: 0, files: 0, added: 0, deleted: 0 }, hotspots: [] };
+  const result: ChangeStats = { today: { commits: 0, merges: 0, files: 0, added: 0, deleted: 0, brain: 0 }, hotspots: [] };
   const todayFiles = new Set<string>();
   const counts = new Map<string, { path: string; repo: string; count: number }>();
   for (const entry of entries) {
     const at = Date.parse(entry.at);
+    if (entry.type === 'brain') {
+      if (dayKey(at, timeZone) === today && entry.status !== 'conflict') result.today.brain++;
+      continue;
+    }
     if (dayKey(at, timeZone) === today) {
       if (entry.status === 'merged') result.today.merges++;
       else if (entry.status === 'committed') {
@@ -77,6 +81,6 @@ export function buildChangesPage(store: Pick<ChangeStore, 'list' | 'matching'>, 
     entries,
     next_before: rows.length > limit ? entries[entries.length - 1]!.id : null,
     counts: changeCounts(base),
-    stats: query.before === undefined ? changeStats(base.filter((entry) => entry.type === 'code'), now, timeZone) : null,
+    stats: query.before === undefined ? changeStats(base, now, timeZone) : null,
   };
 }

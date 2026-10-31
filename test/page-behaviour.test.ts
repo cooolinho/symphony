@@ -202,7 +202,7 @@ describe('changes page (E6-3a)', () => {
     const before = page.fetches.length;
     page.click(chips[2]!);
     await until(() => page.fetches.length > before, 3_000, 'reload');
-    assert.match(page.fetches.at(-1)!.url, /type=brain/);
+    assert.match(page.fetches.filter((f) => f.url.startsWith('/api/v1/changes')).at(-1)!.url, /type=brain/);
   });
 
   it('renders entries with bars, links and chips, and escapes the title', async () => {
