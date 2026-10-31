@@ -271,10 +271,10 @@ describe('agent page: renderResults', () => {
     assert.equal(count.textContent, '4');
     assert.equal(cards.length, 4);
     const texts = cards.map((c) => c.textContent);
-    assert.match(texts[0]!, /developer.*implementation.*done/);
-    assert.match(texts[1]!, /reviewer.*review.*changes needed.*Runde 1/);
-    assert.match(texts[2]!, /developer.*blocked/);
-    assert.match(texts[3]!, /reviewer.*approved.*Runde 2/);
+    assert.match(texts[0]!, /Developer.*done/);
+    assert.match(texts[1]!, /Reviewer R1.*changes needed/);
+    assert.match(texts[2]!, /Developer.*blocked/);
+    assert.match(texts[3]!, /Reviewer R2.*approved/);
     for (const [i, c] of cards.entries()) assert.ok(c.textContent.includes(String(bugfixResults[i]!.summary)), `summary of card ${i}`);
   });
 
@@ -304,9 +304,10 @@ describe('agent page: renderResults', () => {
     assert.equal(links(cards[3]!).length, 0, 'a javascript: URL is never linked');
   });
 
-  it('hides the section without results, and for an archive row from before the fields existed', () => {
-    assert.equal(render([]).section.hidden, true);
-    assert.equal(render(undefined).section.hidden, true);
+  it('keeps the panel with its empty note without results, and renders an archive row from before the fields existed', () => {
+    assert.equal(render([]).section.hidden, false);
+    assert.equal(render([]).cards.length, 0);
+    assert.equal(render(undefined).section.hidden, false);
     const legacy = { role: 'developer', kind: 'implementation', verdict: 'done', round: null, target: 'Agent review', summary: 'Old.', created_at: '2026-10-01T00:00:00Z' };
     const { cards } = render([legacy]);
     assert.equal(cards.length, 1);

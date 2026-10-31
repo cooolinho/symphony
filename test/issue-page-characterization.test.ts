@@ -66,7 +66,7 @@ describe('team view characterization: sessions (#372)', () => {
     assert.equal(rows[0]!.querySelectorAll('a').length, 0);
     const [link] = rows[1]!.querySelectorAll('a');
     assert.equal(link!.href, '/api/v1/acme%2Fapp%231/transcript?run=r1&format=raw');
-    assert.equal(page.$('runs-count').textContent, '02');
+    assert.equal(page.$('runs-count').textContent, '(2)');
   });
 });
 

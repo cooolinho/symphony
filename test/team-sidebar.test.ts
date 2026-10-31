@@ -6,8 +6,9 @@ import { renderPage, until } from './helpers.ts';
 import type { FakeElement } from './helpers/fake-dom.ts';
 import { issueDetail, scoreTeam } from './helpers/page-fixtures.ts';
 
-// Team view (E3-5a, #372): main column with stage, score and the tabs Trace, Sessions, Transkript; sidebar with
-// Ergebnisse and Context-Verlauf. The page runs in the fake DOM; what the user sees is asserted.
+// Team view (E3-5a, #372; panels and details since E3-8, #387): main column with stage and score, sidebar, then a row
+// with Ergebnisse, Context-Verlauf, Brain-Zugriffe and Changes, then the Details tabs Execution-Trace, Sessions and
+// Transkript. The page runs in the fake DOM; what the user sees is asserted.
 
 const AGENT_URL = 'http://127.0.0.1/issue?id=acme%2Fapp%231';
 const opts = { url: AGENT_URL };
@@ -16,11 +17,13 @@ const finished = (run: string, pct: string, compacts: string, over: Record<strin
 const inside = (node: FakeElement, selector: string) => node.closest(selector) !== null;
 
 describe('team view: layout (#372)', () => {
-  it('puts stage, score and tabs into the main column and the sidebar blocks into the side column', () => {
+  it('puts stage and score into the main column, the run blocks into the sidebar, the four panels and the tabs below both', () => {
     const page = renderPage(AGENT_HTML, { detail: issueDetail() }, opts);
     assert.ok(AGENT_HTML.indexOf('class="col-main"') < AGENT_HTML.indexOf('class="col-side'));
-    for (const id of ['stage', 'score', 'tabs', 'pipe-section', 'gate-section']) assert.ok(inside(page.$(id), '.col-main'), id);
-    for (const id of ['results-section', 'ctx-history', 'tok-kv', 'cost-kv', 'life-kv', 'ctx-kv', 'issue-section', 'int-section', 'access-section', 'changes-section']) assert.ok(inside(page.$(id), '.col-side'), id);
+    for (const id of ['stage', 'score', 'pipe-section', 'gate-section']) assert.ok(inside(page.$(id), '.col-main'), id);
+    for (const id of ['tok-kv', 'cost-kv', 'life-kv', 'ctx-kv', 'issue-section', 'int-section']) assert.ok(inside(page.$(id), '.col-side'), id);
+    for (const id of ['results-section', 'ctx-history', 'access-section', 'changes-section']) assert.ok(inside(page.$(id), '.panel-row') && !inside(page.$(id), '.cols'), id);
+    assert.ok(inside(page.$('tabs'), 'section.details') && !inside(page.$('tabs'), '.cols'));
   });
 
   it('lets the sidebar wrap below the main column on narrow screens (390 px)', () => {
@@ -41,13 +44,13 @@ describe('team view: layout (#372)', () => {
 });
 
 describe('team view: tabs (#372)', () => {
-  const selected = (page: ReturnType<typeof renderPage>) => ['trace', 'sessions', 'transkript'].filter((id) => page.$('tab-' + id).getAttribute('aria-selected') === 'true');
-  const visible = (page: ReturnType<typeof renderPage>) => ['trace', 'sessions', 'transkript'].filter((id) => !page.$('panel-' + id).hidden);
+  const selected = (page: ReturnType<typeof renderPage>) => ['trace', 'sessions', 'transcript'].filter((id) => page.$('tab-' + id).getAttribute('aria-selected') === 'true');
+  const visible = (page: ReturnType<typeof renderPage>) => ['trace', 'sessions', 'transcript'].filter((id) => !page.$('panel-' + id).hidden);
 
   it('has three real tab buttons with aria-controls', () => {
     const tabs = renderPage(AGENT_HTML, undefined, opts).query('button[role="tab"]');
-    assert.deepEqual(tabs.map((t) => t.dataset.id), ['trace', 'sessions', 'transkript']);
-    assert.deepEqual(tabs.map((t) => t.textContent.trim().split(' ')[0]), ['Trace', 'Sessions', 'Transkript']);
+    assert.deepEqual(tabs.map((t) => t.dataset.id), ['trace', 'sessions', 'transcript']);
+    assert.deepEqual(tabs.map((t) => t.textContent.trim().split(' ')[0]), ['Execution-Trace', 'Sessions', 'Transkript']);
     for (const t of tabs) assert.equal(t.getAttribute('aria-controls'), 'panel-' + t.dataset.id);
   });
 
@@ -70,10 +73,10 @@ describe('team view: tabs (#372)', () => {
 
   it('switches on click and writes the tab into the hash', () => {
     const page = renderPage(AGENT_HTML, { detail: issueDetail() }, opts);
-    page.click(page.$('tab-transkript'));
-    assert.deepEqual(selected(page), ['transkript']);
-    assert.deepEqual(visible(page), ['transkript']);
-    assert.equal(page.location.hash, '#transkript');
+    page.click(page.$('tab-transcript'));
+    assert.deepEqual(selected(page), ['transcript']);
+    assert.deepEqual(visible(page), ['transcript']);
+    assert.equal(page.location.hash, '#transcript');
     assert.equal(page.location.pathname, '/issue');
   });
 
@@ -82,31 +85,29 @@ describe('team view: tabs (#372)', () => {
     page.$('tab-trace').dispatch('keydown', { bubbles: true, key: 'ArrowRight', preventDefault: () => {} });
     assert.deepEqual(selected(page), ['sessions']);
     page.$('tab-sessions').dispatch('keydown', { bubbles: true, key: 'End', preventDefault: () => {} });
-    assert.deepEqual(selected(page), ['transkript']);
-    page.$('tab-transkript').dispatch('keydown', { bubbles: true, key: 'ArrowRight', preventDefault: () => {} });
+    assert.deepEqual(selected(page), ['transcript']);
+    page.$('tab-transcript').dispatch('keydown', { bubbles: true, key: 'ArrowRight', preventDefault: () => {} });
     assert.deepEqual(selected(page), ['trace']);
   });
 });
 
-describe('team view: sidebar Ergebnisse (#372)', () => {
+describe('team view: panel Ergebnisse (#372, #387)', () => {
   const long = 'Lange Zusammenfassung '.repeat(14) + '<img src=x onerror=alert(1)>';
   const results = [
     { role: 'developer', kind: 'implementation', verdict: 'done', round: null, target: 'Agent review', summary: 'Fertig.', created_at: '2026-10-30T11:00:00Z', url: 'javascript:alert(1)', findings: [], blockers: [] },
     { role: 'reviewer', kind: 'review', verdict: 'changes_needed', round: 2, target: 'In progress', summary: long, created_at: '2026-10-30T11:10:00Z', url: 'https://github.com/acme/app/issues/1#issuecomment-2', findings: [{ severity: 'major', file: 'src/a.ts', line: 3, problem: 'Guard fehlt', fix: null }], blockers: [] },
   ];
 
-  it('shows one row per result with role, verdict chip, round, short summary and the comment link', () => {
+  it('shows one card per result with role and round, verdict pill, short summary and the comment link', () => {
     const page = renderPage(AGENT_HTML, { detail: issueDetail({ results }) }, opts);
     assert.equal(page.$('results-section').hidden, false);
     assert.equal(page.$('results-count').textContent, '2');
     const rows = page.$('result-cards').children;
     assert.equal(rows.length, 2);
     assert.equal(rows[0]!.tagName.toLowerCase(), 'li');
-    assert.equal(rows[0]!.querySelector('b')!.textContent, 'developer');
-    assert.equal(rows[1]!.querySelector('b')!.textContent, 'reviewer');
-    assert.equal(rows[1]!.querySelector('.ui-chip')!.textContent, 'changes needed');
-    assert.match(rows[1]!.textContent, /Runde 2/);
-    assert.doesNotMatch(rows[0]!.textContent, /Runde/);
+    assert.equal(rows[0]!.querySelector('.res-name')!.textContent, 'Developer');
+    assert.equal(rows[1]!.querySelector('.res-name')!.textContent, 'Reviewer R2');
+    assert.equal(rows[1]!.querySelector('.res-pill')!.textContent, 'changes needed');
     const summary = rows[1]!.querySelector('.result-summary')!.textContent;
     assert.ok(summary.endsWith('…') && summary.length <= 140, summary);
     assert.equal(rows[0]!.querySelectorAll('a').length, 0, 'a javascript: URL is never linked');
@@ -127,48 +128,51 @@ describe('team view: sidebar Ergebnisse (#372)', () => {
     assert.equal(page.$('result-cards').querySelectorAll('img').length, 0);
   });
 
-  it('is hidden without results', () => {
+  it('stays visible without results and says so', () => {
     const page = renderPage(AGENT_HTML, { detail: issueDetail({ results: [] }) }, opts);
-    assert.equal(page.$('results-section').hidden, true);
+    assert.equal(page.$('results-section').hidden, false);
+    assert.equal(page.$('results-empty').hidden, false);
+    assert.equal(page.$('results-empty').textContent, 'Noch keine Stage abgeschlossen');
   });
 });
 
-describe('team view: sidebar Context-Verlauf (#372)', () => {
-  it('draws a bar per developer round with its peak and a compact marker', () => {
+describe('team view: panel Context-Verlauf (#372, #387)', () => {
+  const label = (page: ReturnType<typeof renderPage>) => page.$('ctx-chart').querySelector('svg')?.getAttribute('aria-label') ?? null;
+
+  it('draws a line per round of the role from the logged peaks when no transcript exists', () => {
     const ctxEntries = [finished('run-1', '45', '0'), finished('run-3', '82', '2')];
-    const page = renderPage(AGENT_HTML, { detail: issueDetail(), team: scoreTeam(), ctxEntries }, opts);
-    const rows = page.$('ctx-runs').querySelectorAll('li.ctx-run');
-    assert.equal(rows.length, 2);
-    assert.deepEqual(rows.map((r) => r.querySelector('.ctx-round')!.textContent), ['R1', 'R2']);
-    assert.deepEqual(rows.map((r) => r.querySelector('[role="progressbar"]')!.getAttribute('aria-valuenow')), ['45', '82']);
-    assert.equal(rows[1]!.querySelector('.ctx-pct')!.textContent, '82 %');
-    const marks = page.$('ctx-runs').querySelectorAll('.ctx-compact');
-    assert.equal(marks.length, 1);
-    assert.equal(marks[0]!.title, '2 Auto-Compacts');
+    const sessions = [session('run-1'), session('run-2', { role: 'reviewer' }), session('run-3', { started_at: '2026-10-30T11:31:00Z', finished_at: '2026-10-30T11:50:00Z' })];
+    const page = renderPage(AGENT_HTML, { detail: issueDetail({ status: 'paused', running: null, sessions }), team: scoreTeam(), ctxEntries }, opts);
+    assert.equal(page.$('ctx-history-title').textContent, 'Context-Verlauf · Developer');
+    const lines = page.$('ctx-chart').querySelectorAll('polyline');
+    assert.equal(lines.length, 2);
+    assert.equal(lines[0]!.getAttribute('points')!.split(' ').length, 2, 'two points: start and peak');
+    assert.equal(label(page), 'Context-Füllstand des Developer: Runde 1 steigt bis 45 Prozent, Runde 2 steigt bis 82 Prozent');
+    assert.equal(page.$('ctx-chart').querySelectorAll('circle.ctx-compact-dot').length, 1, 'the logged compacts of R2');
+    assert.equal(page.$('ctx-chart').querySelectorAll('circle.ctx-now-dot').length, 0, 'no running round');
+    assert.equal(page.$('ctx-caption').textContent, 'R1: Peak 45 % · R2: 2 Auto-Compacts bei 82 %');
     assert.equal(page.$('ctx-empty').hidden, true);
   });
 
-  it('shows — without data, and skips runs without a logged peak', () => {
+  it('says "Kein Context-Verlauf verfügbar" without data, and skips runs without a logged peak', () => {
     for (const ctxEntries of [null, [], [finished('run-1', 'null', '0'), finished('run-3', '', '')]]) {
-      const page = renderPage(AGENT_HTML, { detail: issueDetail(), ctxEntries }, opts);
-      assert.equal(page.$('ctx-runs').children.length, 0, JSON.stringify(ctxEntries));
+      const page = renderPage(AGENT_HTML, { detail: issueDetail({ status: 'paused', running: null, sessions: [session('run-1')] }), ctxEntries }, opts);
+      assert.equal(page.$('ctx-chart').querySelectorAll('svg').length, 0, JSON.stringify(ctxEntries));
       assert.equal(page.$('ctx-empty').hidden, false);
-      assert.equal(page.$('ctx-empty').textContent, '—');
+      assert.equal(page.$('ctx-empty').textContent, 'Kein Context-Verlauf verfügbar');
     }
   });
 
   it('loads the run_finished lines of exactly this issue once, and again only after another finished session', async () => {
-    let detail = issueDetail({ timeline_seq: 0, sessions: [session('run-1')] });
+    let detail = issueDetail({ timeline_seq: 0, status: 'paused', running: null, sessions: [session('run-1')] });
     const entries = { entries: [finished('run-1', '45', '1'), finished('run-1', '90', '0', { issue: 'acme/app#10' }), finished('run-2', '50', '0', { role: 'reviewer' })] };
     const page = renderPage(AGENT_HTML, undefined, { ...opts, fetch: (url) => (url.startsWith('/api/v1/history/entries') ? entries : url.endsWith('/team') ? scoreTeam() : detail) });
-    await until(() => page.$('ctx-runs').children.length > 0, 3_000, 'context rows');
+    await until(() => page.$('ctx-chart').querySelectorAll('svg').length > 0, 3_000, 'context chart');
     const loads = () => page.fetches.filter((f) => f.url.startsWith('/api/v1/history/entries?'));
     assert.equal(loads().length, 1);
     const url = loads()[0]!.url;
     for (const part of ['issue=acme%2Fapp%231', 'event=run_finished', 'order=asc']) assert.ok(url.includes(part), url);
-    const rows = page.$('ctx-runs').querySelectorAll('li.ctx-run');
-    assert.equal(rows.length, 1, 'neither #10 nor the reviewer');
-    assert.equal(rows[0]!.querySelector('.ctx-pct')!.textContent, '45 %');
+    assert.equal(label(page), 'Context-Füllstand des Developer: Runde 1 steigt bis 45 Prozent', 'neither #10 nor the reviewer');
 
     const poll = page.intervals.find((i) => i.ms === 2000 && i.fn.name === 'poll')!.fn;
     const before = page.fetches.length;
@@ -177,7 +181,7 @@ describe('team view: sidebar Context-Verlauf (#372)', () => {
     await new Promise((r) => setImmediate(r));
     assert.equal(loads().length, 1, 'no new finished session, no new load');
 
-    detail = issueDetail({ timeline_seq: 0, sessions: [session('run-1'), session('run-2')] });
+    detail = issueDetail({ timeline_seq: 0, status: 'paused', running: null, sessions: [session('run-1'), session('run-2')] });
     await poll();
     await until(() => loads().length === 2, 3_000, 'reload after a finished session');
   });
@@ -192,9 +196,9 @@ describe('team view: Transkript tab (#372)', () => {
 
   it('lists the transcript items of the chosen session with a JSONL link', () => {
     const tx = new Map([['r1', { available: true, entries, offset: 0, done: true, reason: null }]]);
-    const page = renderPage(AGENT_HTML, { detail: issueDetail({ status: 'paused', running: null, sessions }), tx, dirty: true, tab: 'transkript', txRun: 'r1' }, opts);
-    assert.equal(page.$('panel-transkript').hidden, false);
-    const labels = page.$('transcript').querySelectorAll('li.item .label').map((l) => l.textContent);
+    const page = renderPage(AGENT_HTML, { detail: issueDetail({ status: 'paused', running: null, sessions }), tx, dirty: true, tab: 'transcript', txRun: 'r1' }, opts);
+    assert.equal(page.$('panel-transcript').hidden, false);
+    const labels = page.$('transcript').querySelectorAll('li.item .text').map((l) => l.textContent);
     assert.ok(labels.includes('PROMPT · TURN 1'), labels.join());
     assert.ok(labels.includes('ASSISTANT RESPONSE'), labels.join());
     assert.equal(page.$('tx-run').value, 'r1');
@@ -204,7 +208,7 @@ describe('team view: Transkript tab (#372)', () => {
   });
 
   it('says so for a session without a transcript', () => {
-    const page = renderPage(AGENT_HTML, { detail: issueDetail({ status: 'paused', running: null, sessions }), tab: 'transkript', txRun: 'r2' }, opts);
+    const page = renderPage(AGENT_HTML, { detail: issueDetail({ status: 'paused', running: null, sessions }), tab: 'transcript', txRun: 'r2' }, opts);
     assert.match(page.$('transcript').textContent, /Kein Transkript/);
     assert.equal(page.$('tx-links').querySelectorAll('a').length, 0);
   });

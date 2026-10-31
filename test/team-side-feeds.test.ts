@@ -4,7 +4,7 @@ import { AGENT_HTML } from '../src/http/issue-page.ts';
 import { renderPage, until } from './helpers.ts';
 import { issueDetail, scoreTeam } from './helpers/page-fixtures.ts';
 
-// Team view sidebar (E3-5b, #377): Brain-Zugriffe and Changes of the issue, loaded with the page's poll.
+// Team view panels (E3-5b, #377; rows since E3-8, #387): Brain-Zugriffe and Changes of the issue, loaded with the page's poll.
 
 const opts = { url: 'http://127.0.0.1/issue?id=acme%2Fapp%231' };
 const change = (i: number, over: Record<string, unknown> = {}) => ({
@@ -29,23 +29,23 @@ function fixture(over: { changes?: unknown[]; brain?: boolean; failChanges?: () 
   };
 }
 
-describe('team view sidebar: Brain-Zugriffe and Changes (#377)', () => {
-  it('lists ten changes with role, title, files, PR chip and the link to all changes', async () => {
+describe('team view panels: Brain-Zugriffe and Changes (#377, #387)', () => {
+  it('lists the changed files with +/−, the pull request card and the link to all changes', async () => {
     const page = renderPage(AGENT_HTML, undefined, { ...opts, fetch: fixture() });
     assert.equal(page.$('changes-empty').hidden, true);
-    await until(() => page.$('changes-list').children.length === 10, 3_000, 'changes');
+    await until(() => page.$('changes-list').children.length === 8, 3_000, 'changes');
     const first = page.$('changes-list').children[0]!;
-    assert.match(first.textContent, /developer/);
-    assert.match(first.textContent, /<img src=x>/);
-    assert.match(first.textContent, /\+1 weitere/);
-    assert.match(first.textContent, /\+1/);
-    assert.match(first.textContent, /−0/);
-    assert.match(first.textContent, /#7/);
-    assert.equal(first.querySelectorAll('.side-files li').length, 4);
-    assert.equal(page.$('changes-all').textContent, 'Alle Changes');
+    assert.equal(first.querySelector('.chg-path')!.textContent, 'f1.ts');
+    assert.equal(first.querySelector('.chg-add')!.textContent, '+1');
+    assert.equal(first.querySelector('.chg-del')!.textContent, '−0');
+    assert.match(first.title, /<img src=x> · developer/);
+    assert.equal(page.$('changes-pr').querySelector('.chg-pr-state')!.textContent, 'PR #7 · offen');
+    assert.equal(page.$('changes-pr').querySelector('.chg-pr-checks')!.textContent, 'Checks grün');
+    assert.equal(page.$('changes-all').textContent, 'Alle →');
     assert.equal(page.$('changes-all').getAttribute('href'), '/changes?issue=acme%2Fapp%231');
-    const urls = page.fetches.map((f) => f.url).filter((u) => u.startsWith('/api/v1/changes?') || u.startsWith('/api/v1/brain/access?'));
-    for (const u of urls) assert.ok(u.includes('issue=acme%2Fapp%231&limit=10'), u);
+    const urls = page.fetches.map((f) => f.url);
+    assert.ok(urls.some((u) => u.startsWith('/api/v1/changes?') && u.includes('issue=acme%2Fapp%231&limit=10')), urls.join(' '));
+    assert.ok(urls.some((u) => u.startsWith('/api/v1/brain/access?') && u.includes('issue=acme%2Fapp%231&limit=100')), urls.join(' '));
     assert.equal(page.query('#changes-section img').length, 0, 'titles are text');
   });
 
@@ -53,7 +53,7 @@ describe('team view sidebar: Brain-Zugriffe and Changes (#377)', () => {
     const page = renderPage(AGENT_HTML, undefined, { ...opts, fetch: fixture() });
     await until(() => page.$('access-list').children.length === 2, 3_000, 'access');
     assert.equal(page.$('access-section').hidden, false);
-    const rejected = page.$('access-list').querySelectorAll('li.side-acc.rejected');
+    const rejected = page.$('access-list').querySelectorAll('li.acc-row.rejected');
     assert.equal(rejected.length, 1);
     assert.match(rejected[0]!.textContent, /write/);
     assert.match(rejected[0]!.textContent, /Inbox\/a\.md/);
@@ -65,7 +65,7 @@ describe('team view sidebar: Brain-Zugriffe and Changes (#377)', () => {
 
   it('hides the Brain-Zugriffe without a brain (404) but keeps the changes', async () => {
     const page = renderPage(AGENT_HTML, undefined, { ...opts, fetch: fixture({ brain: false }) });
-    await until(() => page.$('changes-list').children.length === 10, 3_000, 'changes');
+    await until(() => page.$('changes-list').children.length === 8, 3_000, 'changes');
     assert.equal(page.$('access-section').hidden, true);
     assert.equal(page.$('access-list').children.length, 0);
     assert.equal(page.$('changes-section').hidden, false);
@@ -82,7 +82,7 @@ describe('team view sidebar: Brain-Zugriffe and Changes (#377)', () => {
   it('reloads with the poll and keeps the shown entries when a call fails', async () => {
     let fail = false;
     const page = renderPage(AGENT_HTML, undefined, { ...opts, fetch: fixture({ failChanges: () => fail }) });
-    await until(() => page.$('changes-list').children.length === 10, 3_000, 'changes');
+    await until(() => page.$('changes-list').children.length === 8, 3_000, 'changes');
     const loads = () => page.fetches.filter((f) => f.url.startsWith('/api/v1/changes?')).length;
     const n = loads();
     const poll = page.intervals.find((i) => i.ms === 2000 && i.fn.name === 'poll')!.fn;
@@ -93,6 +93,6 @@ describe('team view sidebar: Brain-Zugriffe and Changes (#377)', () => {
     await poll();
     await until(() => loads() > m, 3_000, 'failing reload');
     await new Promise((r) => setImmediate(r));
-    assert.equal(page.$('changes-list').children.length, 10);
+    assert.equal(page.$('changes-list').children.length, 8);
   });
 });
