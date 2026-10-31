@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import fs from 'node:fs';
-import { AGENT_HTML } from '../src/http/agent-page.ts';
+import { AGENT_HTML } from '../src/http/issue-page.ts';
 import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
 import { LOGS_HTML } from '../src/http/logs-page.ts';
 import { BASE_JS } from '../src/http/styles.ts';
@@ -86,7 +86,7 @@ describe('TOKENS_CSS module', () => {
     const styles = fs.readFileSync('src/http/styles.ts', 'utf8');
     assert.doesNotMatch(styles, /BASE_CSS/);
     assert.ok(BASE_JS.length > 0);
-    for (const file of ['dashboard', 'agent-page', 'logs-page', 'pipeline']) {
+    for (const file of ['dashboard', 'issue-page', 'logs-page', 'pipeline']) {
       assert.doesNotMatch(fs.readFileSync(`src/http/${file}.ts`, 'utf8'), /BASE_CSS/, file);
     }
     for (const [name, html] of Object.entries(PAGES)) {

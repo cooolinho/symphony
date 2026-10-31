@@ -165,7 +165,7 @@ official runtime, without conflicting with any terms.
 6. Boost: `src/laravel/boost.ts` also writes the Copilot agent into `boost.json` when a Copilot backend is configured
    (`AGENTS.md` / `.github/copilot-instructions.md`).
 7. Tool names: assumptions like `mcp__<server>__<tool>`, `Skill` and `AskUserQuestion` (`src/agent/claude.ts`,
-   `src/orchestrator/tool-usage.ts`, `src/http/agent-page.ts`) go through a small per-runner `toolNaming` function.
+   `src/orchestrator/tool-usage.ts`, `src/http/issue-page.ts`) go through a small per-runner `toolNaming` function.
 8. Typical chain: `backend_order: [claude, copilot, omniroute]`.
 
 Outlook (stage 3, optional): an OpenCode runner (`opencode run --format json`, plugin `@omniroute/opencode-provider`)

@@ -8,7 +8,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { PricingStore } from '../src/costs/pricing.ts';
 import { HistoryLog } from '../src/history/history.ts';
-import { AGENT_HTML } from '../src/http/agent-page.ts';
+import { AGENT_HTML } from '../src/http/issue-page.ts';
 import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
 import { BOOST_ICON_URI } from '../src/http/icons.ts';
 import { LOGS_HTML } from '../src/http/logs-page.ts';

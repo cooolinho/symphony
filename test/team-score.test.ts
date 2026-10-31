@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { AGENT_HTML } from '../src/http/agent-page.ts';
+import { AGENT_HTML } from '../src/http/issue-page.ts';
 import { ROLE_COLORS } from '../src/http/ui/tokens.ts';
 import { renderPage } from './helpers.ts';
 import { issueDetail, scoreTeam, teamView } from './helpers/page-fixtures.ts';

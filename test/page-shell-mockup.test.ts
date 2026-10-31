@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import vm from 'node:vm';
 import { iconSvg } from '../src/http/icons.ts';
 import { BASE_JS } from '../src/http/styles.ts';
-import { AGENT_HTML } from '../src/http/agent-page.ts';
+import { AGENT_HTML } from '../src/http/issue-page.ts';
 import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
 import { LOGS_HTML } from '../src/http/logs-page.ts';
 import { TOKENS_CSS } from '../src/http/ui/tokens.ts';
