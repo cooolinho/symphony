@@ -1,6 +1,6 @@
 /**
- * Alerts panel ("Hinweise") of the overview: one list for everything that needs a look. alerts(state, budget) is a
- * pure function over the /api/v1/state snapshot and the /api/v1/budget report; renderAlerts() builds the panel from
+ * Alerts panel ("Hinweise") of the overview: one list for everything that needs a look. alerts(state, budget, brain) is a
+ * pure function over the /api/v1/state snapshot, the /api/v1/budget report and the brain data (open clashes, candidates); renderAlerts() builds the panel from
  * its result. Both run in the page script after BASE_JS (they use el(), icon() and fmtClock()).
  *
  * Time of an entry: attention problems use their own timestamp, else health.last_tick_at; needs-human uses the
@@ -10,7 +10,7 @@
 export const ALERTS_CSS = `
   .alerts-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
   .alert { --alert-tone: var(--amber); display: grid; grid-template-columns: 16px auto minmax(0, 1fr); gap: 4px 10px; align-items: center; }
-  .alert.kind-attention, .alert.kind-needs_human { --alert-tone: var(--red); }
+  .alert.kind-attention, .alert.kind-needs_human, .alert.kind-brain_clash { --alert-tone: var(--red); }
   .alert > svg { color: var(--alert-tone); }
   .alert-time { font: 500 11px var(--mono); color: var(--muted); white-space: nowrap; }
   .alert-title { font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
@@ -19,7 +19,8 @@ export const ALERTS_CSS = `
 `;
 
 export const ALERTS_JS = `
-  const ALERT_ICON = { attention: 'alert', needs_human: 'human', model_hold: 'pause', budget: 'clock' };
+  const ALERT_ICON = { attention: 'alert', needs_human: 'human', model_hold: 'pause', budget: 'clock', brain_clash: 'brain', brain_backlog: 'brain' };
+  const BRAIN_BACKLOG_THRESHOLD = 25;
   const BUDGET_TITLE = { five_hour: '5-h-Limit in Sicht', seven_day: '7-Tage-Limit in Sicht' };
 
   // Relative German time: "gerade eben", "vor 5 min", "vor 2 h", "vor 3 d"; "—" without a valid time.
@@ -33,7 +34,7 @@ export const ALERTS_JS = `
     return 'vor ' + Math.floor(s / 86400) + ' d';
   }
 
-  function alerts(state, budget) {
+  function alerts(state, budget, brain) {
     state = state || {};
     const h = state.health || {};
     const out = [];
@@ -83,6 +84,24 @@ export const ALERTS_JS = `
           text: 'Prognose: Limit um ' + fmtClock(w.forecast.eta) + ' erreicht' + (w.resets_at ? ', Reset um ' + fmtClock(w.resets_at) : ''),
           href: '/stats',
         });
+      }
+    }
+
+    // Brain: brain = { clashes: open clashes of /api/v1/brain/clashes, candidates: count of /api/v1/brain/vitals }; null without a brain.
+    if (brain) {
+      for (const c of brain.clashes || []) {
+        const runs = c.runs || [];
+        const run = (r) => (r === null || r === undefined ? '—' : r);
+        out.push({
+          kind: 'brain_clash',
+          at: (c.at || [])[1] || null,
+          title: 'Write-Clash: ' + c.path,
+          text: 'Runs ' + run(runs[0]) + ' / ' + run(runs[1]) + ' · ' + (c.reason || ''),
+          href: '/brain#clashes',
+        });
+      }
+      if (Number.isFinite(brain.candidates) && brain.candidates >= BRAIN_BACKLOG_THRESHOLD) {
+        out.push({ kind: 'brain_backlog', at: null, title: brain.candidates + ' Kandidaten warten auf Review', text: 'Rückstau ab ' + BRAIN_BACKLOG_THRESHOLD + ' Kandidaten', href: '/brain#candidates' });
       }
     }
 

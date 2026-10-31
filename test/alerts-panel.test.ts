@@ -18,10 +18,11 @@ const budget = {
   five_hour: { alert: true, resets_at: T('13:00'), forecast: { eta: T('12:00'), limit_tokens: 1 } },
   seven_day: { alert: false, resets_at: null, forecast: null },
 };
-const list = (s: unknown, b: unknown): any[] => {
+const list = (s: unknown, b: unknown, brain?: unknown): any[] => {
   ctx.__s = s;
   ctx.__b = b;
-  return JSON.parse(JSON.stringify(run(ctx, 'alerts(__s, __b)')));
+  ctx.__r = brain;
+  return JSON.parse(JSON.stringify(run(ctx, 'alerts(__s, __b, __r)')));
 };
 const render = (l: unknown) => {
   const host = new FakeElement('ul');
@@ -52,6 +53,34 @@ describe('alerts(state, budget)', () => {
   it('copes with missing fields', () => {
     assert.deepEqual(list({ health: {} }, null), []);
     assert.deepEqual(list({ health: { dispatch_errors: [] } }, undefined), []);
+  });
+});
+
+describe('alerts(state, budget, brain)', () => {
+  const clash = { id: 'c1', path: 'Wiki/a.md', runs: ['acme/app#1', 'acme/app#2'], at: [T('08:00'), T('09:30')], reason: 'stale base', status: 'open' };
+
+  it('one brain_clash per open clash with path, both runs, reason, time of the rejected write and link', () => {
+    const l = list({ health: {} }, null, { clashes: [clash, { ...clash, id: 'c2', runs: [null, 'acme/app#3'], at: [null, T('09:40')] }], candidates: 0 });
+    assert.deepEqual(l.map((a) => a.kind), ['brain_clash', 'brain_clash']);
+    assert.equal(l[0].at, T('09:40'));
+    assert.match(l[1].title, /Wiki\/a\.md/);
+    assert.match(l[1].text, /acme\/app#1.*acme\/app#2.*stale base/);
+    assert.match(l[0].text, /—.*acme\/app#3/);
+    assert.deepEqual(l.map((a) => a.href), ['/brain#clashes', '/brain#clashes']);
+  });
+
+  it('brain_backlog from 25 candidates, none at 24', () => {
+    const l = list({ health: {} }, null, { clashes: [], candidates: 25 });
+    assert.equal(l.length, 1);
+    assert.equal(l[0].kind, 'brain_backlog');
+    assert.equal(l[0].title, '25 Kandidaten warten auf Review');
+    assert.equal(l[0].href, '/brain#candidates');
+    assert.deepEqual(list({ health: {} }, null, { clashes: [], candidates: 24 }), []);
+    assert.equal(run(ctx, 'BRAIN_BACKLOG_THRESHOLD'), 25);
+  });
+
+  it('null brain adds nothing', () => {
+    assert.deepEqual(list({ health: {} }, null, null), []);
   });
 });
 
