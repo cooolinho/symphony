@@ -266,7 +266,7 @@ describe('http extension', () => {
     }
     const issue = (await request(server.port, 'GET', '/issue?id=acme%2Fapp%231')).body;
     assert.ok(issue.includes('id="crumb-current" aria-current="page">Issue<'));
-    const placeholders: Array<[string, string]> = [['/tasks', 'Tasks'], ['/brain', 'Brain']];
+    const placeholders: Array<[string, string]> = [['/brain', 'Brain']];
     for (const [path, title] of placeholders) {
       const res = await request(server.port, 'GET', path);
       assert.ok(res.body.includes('Diese Seite kommt in Kürze.'), path);
