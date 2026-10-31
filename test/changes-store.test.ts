@@ -149,3 +149,15 @@ describe('ChangeStore', () => {
     assert.equal(store.list({ limit: 0 }).length, 1);
   });
 });
+
+describe('ChangeStore.matching', () => {
+  it('returns every match newest first, beyond the page limit', () => {
+    const store = new ChangeStore(null, Logger.silent());
+    for (let n = 0; n < 250; n++) store.append(entry(n));
+    store.append(entry(1000, { repo: 'acme/lib', id: 'code:acme/lib:x' }));
+    const all = store.matching({ repo: 'acme/app' });
+    assert.equal(all.length, 250);
+    assert.equal(all[0]!.id, entry(249).id);
+    assert.equal(store.list({ repo: 'acme/app', limit: 500 }).length, 200);
+  });
+});

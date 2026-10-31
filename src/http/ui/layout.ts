@@ -5,7 +5,7 @@
  *
  * The aurora is one fixed layer of soft radial gradients without images or blur; the header is the only blurred
  * element the shell adds (.g), so a page stays within four stacked blur layers. LIVE and the clock are set on the
- * client (setLive() and a one-second timer); the 5 h chip is a placeholder until the budget data exists.
+ * client (setLive() and a one-second timer); the 5 h chip shows the budget of GET /api/v1/budget (loaded on every page, refreshed every 30 s; onBudget() hands the report to the page script).
  */
 
 import { BASE_JS } from '../styles.ts';
@@ -70,6 +70,7 @@ export const LAYOUT_CSS = `
   .nv[aria-current="page"] { background: var(--fg); color: var(--bg); font-weight: 600; }
   .nv[aria-current="page"]:hover { color: var(--bg); background: var(--fg-strong); }
   .shell-meta { display: flex; align-items: center; gap: 8px; flex: none; margin-left: auto; }
+  .shell-budget.tone-amber, .shell-budget.tone-red { color: var(--tone); border-color: var(--tone-line); background: var(--tone-dim); }
   .shell-clock { min-width: 8ch; text-align: right; font-size: 13px; color: var(--fg-2); }
   .progress { position: absolute; left: 20px; right: 20px; bottom: -1px; height: 1px; overflow: hidden; pointer-events: none; }
   .progress::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 30%; transform: translateX(-100%); opacity: 0;
@@ -121,6 +122,68 @@ export const LAYOUT_JS = `
     tick();
     setInterval(tick, 1000);
   })();
+
+  // 5 h chip and budget loader: one GET /api/v1/budget on load and every 30 s, shared by the chip and the page script.
+  /** used / limit in percent, null without a window, a forecast or a positive limit. */
+  function budgetPercent(w) {
+    const limit = w && w.forecast && w.forecast.limit_tokens;
+    return typeof limit === 'number' && limit > 0 && typeof w.used_tokens === 'number' ? (w.used_tokens / limit) * 100 : null;
+  }
+  /** Extra share of the limit (percent) the burn rate adds until the ETA, else until the reset; 0 when it cannot be told. */
+  function budgetForecastPercent(w, now) {
+    const limit = w && w.forecast && w.forecast.limit_tokens;
+    if (!(typeof limit === 'number' && limit > 0) || !(w.burn_rate_per_min > 0)) return 0;
+    const horizon = Date.parse(w.forecast.eta || w.resets_at || '');
+    if (!Number.isFinite(horizon)) return 0;
+    return ((w.burn_rate_per_min * Math.max(0, horizon - now)) / 60000 / limit) * 100;
+  }
+  /** Text, tone (red on alert, amber from 80 %, else null) and title of the 5 h chip. */
+  function budgetChip(report) {
+    const w = report && report.five_hour;
+    if (!w) return { text: '5 h —', tone: null, title: '5-Stunden-Budget: keine Daten' };
+    const pct = budgetPercent(w);
+    if (pct === null) return { text: '5 h —', tone: null, title: '5-Stunden-Budget: ' + fmtInt(w.used_tokens) + ' Tokens, noch kein Limit-Treffer bekannt' };
+    const tone = w.alert === true ? 'red' : pct >= 80 ? 'amber' : null;
+    return { text: '5 h ' + Math.round(pct) + ' %', tone, title: '5-Stunden-Budget: ' + fmtInt(w.used_tokens) + ' von ' + fmtInt(w.forecast.limit_tokens) + ' Tokens' };
+  }
+  let budgetReport = null;
+  let budgetRaw = null;
+  const budgetListeners = [];
+  /** Registers fn(report | null, raw), called after every load (raw: the parsed answer without the shape check, null on failure); right away when a report is already there. */
+  function onBudget(fn) {
+    budgetListeners.push(fn);
+    if (budgetReport || budgetRaw) fn(budgetReport, budgetRaw);
+  }
+  function paintBudgetChip(report) {
+    const node = document.getElementById('shell-budget');
+    if (!node) return;
+    const chip = budgetChip(report);
+    node.className = 'chip mono shell-budget' + (chip.tone ? ' tone-' + chip.tone : '');
+    node.textContent = chip.text;
+    node.setAttribute('title', chip.title);
+  }
+  const isBudgetWindow = (w) => !!w && typeof w === 'object' && typeof w.used_tokens === 'number';
+  let budgetSeq = 0;
+  async function loadBudget() {
+    const seq = ++budgetSeq;
+    let report = null;
+    let raw = null;
+    try {
+      const res = await fetch('/api/v1/budget', { cache: 'no-store' });
+      const body = res.ok ? await res.json() : null;
+      raw = body;
+      if (body && isBudgetWindow(body.five_hour) && isBudgetWindow(body.seven_day)) report = body;
+    } catch {}
+    if (seq !== budgetSeq) return;
+    budgetReport = report;
+    budgetRaw = raw;
+    paintBudgetChip(report);
+    for (const fn of budgetListeners) {
+      try { fn(report, raw); } catch {}
+    }
+  }
+  loadBudget();
+  setInterval(loadBudget, 30000);
 `;
 
 const ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -168,7 +231,7 @@ export function page(opts: PageOptions): string {
   <span class="badge tone-gray" id="shell-live" title="Live: Verbindung wird aufgebaut"><span class="dot"></span><span aria-hidden="true">Live</span><span class="sr-only" id="shell-live-text">Live: Verbindung wird aufgebaut</span></span>
   ${navHtml(opts.nav)}
   <div class="shell-meta">
-    <span class="chip mono" id="shell-budget" title="5-Stunden-Budget">5 h —</span>
+    <span class="chip mono shell-budget" id="shell-budget" title="5-Stunden-Budget">5 h —</span>
     <span class="chip mono shell-version" id="shell-version" title="Symphony-Version">v${escapeHtml(SYMPHONY_VERSION)}</span>
     <time class="shell-clock mono" id="shell-clock" aria-label="Uhr" title="Uhr">--:--:--</time>
   </div>
