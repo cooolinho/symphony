@@ -1,5 +1,5 @@
 import type { PlanReasonCode } from '../orchestrator/dispatch-plan.ts';
-import { escapeHtml, page } from './ui/layout.ts';
+import { AURORA, escapeHtml, page } from './ui/layout.ts';
 
 /**
  * Tasks page: the dispatcher queue in six columns (Läuft, Als Nächstes, Wartet, Pausiert, Blockiert, Kürzlich
@@ -399,6 +399,7 @@ const column = (c: TaskColumn): string => `
 export const TASKS_HTML = page({
   title: 'Tasks · Symphony',
   nav: 'tasks',
+  aurora: AURORA.tasks,
   styles: TASKS_CSS,
   body: `
   <section aria-labelledby="page-title">

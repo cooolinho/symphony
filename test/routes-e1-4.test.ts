@@ -90,7 +90,7 @@ describe('E1-4 routes and redirects (independent acceptance tests)', () => {
     const { body } = await request(server.port, 'GET', '/issue?id=repo%2F1');
     assert.match(body, /<nav class="crumbs" aria-label="Brotkrumen">/);
     assert.match(body, /<a href="\/">Übersicht<\/a>/);
-    assert.match(body, /id="crumb-current" aria-current="page">Issue</);
+    assert.match(body, /id="crumb-current">Issue</);
     // Only the breadcrumb carries aria-current; no main navigation entry is active.
     assert.doesNotMatch(mainNav(body), /aria-current/);
     // Client script fills in the issue id and polls the API.

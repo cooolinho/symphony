@@ -87,3 +87,12 @@ export const ICONS_JS = `
     return svg;
   }
 `;
+
+/** Server-side counterpart of icon(): the same icon as an aria-hidden <svg> string, or '' for an unknown name. */
+export function iconSvg(name: string, size = 16): string {
+  const def = Object.prototype.hasOwnProperty.call(ICON_DEFS, name) ? ICON_DEFS[name] : undefined;
+  if (!def) return '';
+  const shapes = def.s.map((s) => (typeof s === 'string' ? `<path d="${s}"/>` : `<circle cx="${s[0]}" cy="${s[1]}" r="${s[2]}"/>`)).join('');
+  const join = def.j ? ' stroke-linejoin="round"' : '';
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${def.w}" stroke-linecap="round"${join} aria-hidden="true" focusable="false">${shapes}</svg>`;
+}
