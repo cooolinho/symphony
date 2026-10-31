@@ -1198,7 +1198,7 @@ describe('page shell (layout.ts, #342)', () => {
       assert.match(head, /<header class="shell-head g">/);
       assert.match(head, /<a class="brand" href="\/"[^>]*>[\s\S]*<span class="brand-name">Symphony<\/span>/);
       assert.match(head, /id="shell-live"/);
-      assert.match(head, /id="shell-budget"[^>]*>5 h —</);
+      assert.match(head, /id="shell-budget"[^>]*>5h <span[^>]*id="shell-budget-pct"[^>]*>—<\/span><\/a>/);
       assert.ok(head.includes(`id="shell-version" title="Symphony-Version">v${SYMPHONY_VERSION}<`), name);
       assert.match(head, /<time class="shell-clock mono" id="shell-clock" aria-label="Uhr"/);
       assert.match(head, /id="progress"/);
@@ -1307,7 +1307,7 @@ describe('page shell (layout.ts, #342)', () => {
   it('shows German shell texts (Übersicht, Statistik, Uhr, Brotkrumen); Changes, Tasks and Brain stay', () => {
     for (const [name, html] of Object.entries(PAGES)) {
       const head = header(html);
-      for (const text of ['Übersicht', 'Changes', 'Tasks', 'Brain', 'Statistik', 'aria-label="Uhr"', 'title="5-Stunden-Budget"']) assert.ok(head.includes(text), `${name}: ${text}`);
+      for (const text of ['Übersicht', 'Changes', 'Tasks', 'Brain', 'Statistik', 'aria-label="Uhr"', 'title="5-h-Fenster"']) assert.ok(head.includes(text), `${name}: ${text}`);
       for (const text of ['>Overview<', '>Dashboard<', '>Logs<', 'Statistics', 'Clock']) assert.ok(!head.includes(text), `${name}: ${text}`);
     }
   });

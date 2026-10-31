@@ -1090,6 +1090,8 @@ column appear in separate sections, each with a count; empty sections are hidden
 
 The panel *Hinweise* (right below *Repositories*) collects everything that needs a look, newest first, with a count in its head: workflow, tracker, dispatch, pricing and slot problems, issues with the label `needs-human`, model holds and the limit forecast (`/api/v1/budget`, polled every 30 s). Each entry has an icon, the relative time, a title, a text and a link; without entries it reads *Alles ruhig*.
 
+Next to it sits the panel *Context-Budget · heute*: two bars for the 5 h window and the week (percent in the window colour, red from 85 %), hatched from the current use up to the limit only when a forecast (ETA) exists, with burn rate, expected limit time and reset; below it *Tokens je Rolle* (from the 5 h window) and one amber card per running session from 70 % context. Without any usage it reads *Noch kein Verbrauch heute*. The header chip *5h n %* shows the 5 h window (amber from 50 %, red from 85 %) and links to `/#budget`.
+
 - **Running**: one card per agent session, with the slot bar (busy and free slots).
 - **Up next**: numbered in the order Symphony starts them (`#1` takes the next free slot), with the board's age
   (`board as of …`). Each card shows a reason chip (`waiting for a free slot`, `Agent review limit 1/1`,

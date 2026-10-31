@@ -158,7 +158,7 @@ describe('E1-3 page shell', () => {
         const header = html.slice(html.indexOf('<header'), html.indexOf('</header>'));
         assert.match(header, /Symphony/);
         assert.match(header, /LIVE|Live/);
-        assert.ok(header.includes('5 h —'), '5 h placeholder');
+        assert.ok(header.includes('5h <span') && header.includes('—</span>'), '5h placeholder');
         assert.ok(header.includes(SYMPHONY_VERSION), 'version from src/version.ts');
         assert.match(header, /<time\b|clock|Uhr/i);
       });

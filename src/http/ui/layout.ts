@@ -5,7 +5,7 @@
  *
  * The aurora is one fixed layer of soft radial gradients without images or blur; the header is the only blurred
  * element the shell adds (.g), so a page stays within four stacked blur layers. LIVE and the clock are set on the
- * client (setLive() and a one-second timer); the 5 h chip shows the budget of GET /api/v1/budget (loaded on every page, refreshed every 30 s; onBudget() hands the report to the page script).
+ * client (setLive() and a one-second timer); the 5h chip (a link to /#budget) shows the budget of GET /api/v1/budget (loaded on every page, refreshed every 30 s; onBudget() hands the report to the page script).
  */
 
 import { BASE_JS } from '../styles.ts';
@@ -70,7 +70,10 @@ export const LAYOUT_CSS = `
   .nv[aria-current="page"] { background: var(--fg); color: var(--bg); font-weight: 600; }
   .nv[aria-current="page"]:hover { color: var(--bg); background: var(--fg-strong); }
   .shell-meta { display: flex; align-items: center; gap: 8px; flex: none; margin-left: auto; }
-  .shell-budget.tone-amber, .shell-budget.tone-red { color: var(--tone); border-color: var(--tone-line); background: var(--tone-dim); }
+  .shell-budget { color: var(--fg-chip); }
+  a.shell-budget:hover { text-decoration: none; border-color: rgba(255, 255, 255, .24); }
+  .shell-budget-pct.tone-amber { color: var(--amber); }
+  .shell-budget-pct.tone-red { color: var(--red); }
   .shell-clock { min-width: 8ch; text-align: right; font-size: 13px; color: var(--fg-2); }
   .progress { position: absolute; left: 20px; right: 20px; bottom: -1px; height: 1px; overflow: hidden; pointer-events: none; }
   .progress::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 30%; transform: translateX(-100%); opacity: 0;
@@ -137,14 +140,32 @@ export const LAYOUT_JS = `
     if (!Number.isFinite(horizon)) return 0;
     return ((w.burn_rate_per_min * Math.max(0, horizon - now)) / 60000 / limit) * 100;
   }
-  /** Text, tone (red on alert, amber from 80 %, else null) and title of the 5 h chip. */
+  /** HH:MM (24 h) of an ISO time, an em dash when it cannot be read. */
+  function budgetHm(iso) {
+    const t = Date.parse(iso || '');
+    return Number.isFinite(t) ? new Date(t).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) : '—';
+  }
+  /** Short weekday and HH:MM ("Mo 09:00"). */
+  function budgetDayHm(iso) {
+    const t = Date.parse(iso || '');
+    if (!Number.isFinite(t)) return '—';
+    return new Date(t).toLocaleDateString('de-DE', { weekday: 'short' }).replace('.', '') + ' ' + budgetHm(iso);
+  }
+  /** Compact token count: "1.2M", "640k", "950". */
+  function budgetTokens(n) {
+    if (!(typeof n === 'number' && Number.isFinite(n))) return '—';
+    if (n >= 1e6 || Math.round(n / 1e3) >= 1000) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return Math.round(n / 1e3) + 'k';
+    return String(Math.round(n));
+  }
+  /** Percent text, tone (red from 85 %, amber from 50 %, else null) and title of the 5 h chip. */
   function budgetChip(report) {
     const w = report && report.five_hour;
-    if (!w) return { text: '5 h —', tone: null, title: '5-Stunden-Budget: keine Daten' };
-    const pct = budgetPercent(w);
-    if (pct === null) return { text: '5 h —', tone: null, title: '5-Stunden-Budget: ' + fmtInt(w.used_tokens) + ' Tokens, noch kein Limit-Treffer bekannt' };
-    const tone = w.alert === true ? 'red' : pct >= 80 ? 'amber' : null;
-    return { text: '5 h ' + Math.round(pct) + ' %', tone, title: '5-Stunden-Budget: ' + fmtInt(w.used_tokens) + ' von ' + fmtInt(w.forecast.limit_tokens) + ' Tokens' };
+    if (!w) return { pct: '—', tone: null, title: '5-h-Fenster · keine Daten' };
+    const title = '5-h-Fenster · Reset ' + (w.resets_at ? budgetHm(w.resets_at) : 'unbekannt');
+    const p = budgetPercent(w);
+    if (p === null) return { pct: '—', tone: null, title };
+    return { pct: Math.round(p) + ' %', tone: p >= 85 ? 'red' : p >= 50 ? 'amber' : null, title };
   }
   let budgetReport = null;
   let budgetRaw = null;
@@ -158,8 +179,11 @@ export const LAYOUT_JS = `
     const node = document.getElementById('shell-budget');
     if (!node) return;
     const chip = budgetChip(report);
-    node.className = 'chip mono shell-budget' + (chip.tone ? ' tone-' + chip.tone : '');
-    node.textContent = chip.text;
+    const pct = document.getElementById('shell-budget-pct');
+    if (pct) {
+      pct.className = 'shell-budget-pct' + (chip.tone ? ' tone-' + chip.tone : '');
+      pct.textContent = chip.pct;
+    }
     node.setAttribute('title', chip.title);
   }
   const isBudgetWindow = (w) => !!w && typeof w === 'object' && typeof w.used_tokens === 'number';
@@ -231,7 +255,7 @@ export function page(opts: PageOptions): string {
   <span class="badge tone-gray" id="shell-live" title="Live: Verbindung wird aufgebaut"><span class="dot"></span><span aria-hidden="true">Live</span><span class="sr-only" id="shell-live-text">Live: Verbindung wird aufgebaut</span></span>
   ${navHtml(opts.nav)}
   <div class="shell-meta">
-    <span class="chip mono shell-budget" id="shell-budget" title="5-Stunden-Budget">5 h —</span>
+    <a class="chip mono shell-budget" id="shell-budget" href="/#budget" title="5-h-Fenster">5h <span class="shell-budget-pct" id="shell-budget-pct">—</span></a>
     <span class="chip mono shell-version" id="shell-version" title="Symphony-Version">v${escapeHtml(SYMPHONY_VERSION)}</span>
     <time class="shell-clock mono" id="shell-clock" aria-label="Uhr" title="Uhr">--:--:--</time>
   </div>
