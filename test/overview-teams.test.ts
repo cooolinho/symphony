@@ -120,6 +120,7 @@ describe('overview teams', () => {
       ...['analyst', 'architect', 'developer', 'tester', 'reviewer', 'docs', 'security'].map((id) => stage(id, id === 'developer' ? 'active' : 'pending')),
     ]));
     const state = { issues };
+    setup().render(state); // Warm-up (JIT) auf separatem Host, nicht gemessen
     const t0 = performance.now();
     render(state);
     const ms = performance.now() - t0;
