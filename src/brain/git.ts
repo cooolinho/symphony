@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { Logger } from '../log.ts';
+import { hashOf } from './common.ts';
 import { errorMessage } from '../util/errors.ts';
 import { git, names } from '../workspace/git.ts';
 import type { BrainVersioning, BrainWriteEntry } from './write.ts';
@@ -17,6 +18,10 @@ export interface VaultGit extends BrainVersioning {
   commitHumanChanges(): Promise<string | null>;
   /** Commits `path` as the system author `symphony` with `subject`; null when the file has no change. The caller holds `serial`. */
   commitAs(path: string, subject: string): Promise<string | null>;
+  /** Commits `paths` (added, changed or removed) as `human`; null when nothing changed. The caller holds `serial`. */
+  commitHuman(paths: string[], subject: string, body: string | null): Promise<string | null>;
+  /** Reverts commit `sha` as `human` (`git revert --no-edit`); aborts and throws on a conflict. The caller holds `serial`. */
+  revert(sha: string, paths: string[]): Promise<string>;
 }
 
 const EXCLUDE_OBSIDIAN = ':(exclude).obsidian';
@@ -97,6 +102,34 @@ export async function lastVaultCommit(vault: string): Promise<{ sha: string; at:
   }
 }
 
+/**
+ * The newest commit touching `file` whose subject starts with `prefix` and whose body is `file` (the path a promotion
+ * wrote to); null when there is none or on an error.
+ */
+export async function lastCommitWithSubject(vault: string, file: string, prefix: string): Promise<{ sha: string; subject: string } | null> {
+  try {
+    for (const record of (await git(vault, ['log', '--format=%H%x00%s%x00%b%x1e', '--', file])).split('\x1e')) {
+      const [sha, subject, body] = record.trim().split('\0');
+      if (sha && subject?.startsWith(prefix) && body?.trim() === file) return { sha, subject };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** The note `file` as committed last before `atIso`; null when it did not exist then or on an error. */
+export async function noteBefore(vault: string, file: string, atIso: string): Promise<{ content: string; hash: string } | null> {
+  try {
+    const sha = (await git(vault, ['rev-list', '-1', `--before=${atIso}`, 'HEAD', '--', file])).trim();
+    if (sha === '') return null;
+    const content = await git(vault, ['show', `${sha}:${file}`]);
+    return { content, hash: hashOf(Buffer.from(content)) };
+  } catch {
+    return null;
+  }
+}
+
 export function createVaultGit(vaultPath: string, logger: Logger, options: VaultGitOptions = {}): VaultGit {
   const notify = async (sha: string, paths: string[]): Promise<void> => {
     try {
@@ -153,6 +186,36 @@ export function createVaultGit(vaultPath: string, logger: Logger, options: Vault
     }
   };
 
+  const pathsCommit = async (paths: string[], subject: string, body: string | null): Promise<string | null> => {
+    try {
+      await git(vaultPath, ['add', '-A', '--', ...paths]);
+      const staged = names(await git(vaultPath, ['diff', '--cached', '--name-only', '--no-renames', '-z', '--', ...paths]));
+      if (staged.length === 0) return null;
+      const sha = await commit(vaultPath, { name: 'human', email: 'human@local' }, subject, body, paths);
+      await notify(sha, paths);
+      return sha;
+    } catch (error) {
+      await resetQuietly(vaultPath, paths);
+      throw error;
+    }
+  };
+
+  const revert = async (sha: string, paths: string[]): Promise<string> => {
+    try {
+      await git(vaultPath, [...authorArgs('human', 'human@local'), 'revert', '--no-edit', sha]);
+    } catch (error) {
+      try {
+        await git(vaultPath, ['revert', '--abort']);
+      } catch {
+        // best effort: the original error is the one that matters
+      }
+      throw error;
+    }
+    const head = await headSha(vaultPath);
+    await notify(head, paths);
+    return head;
+  };
+
   return {
     serial: (fn) => serialFor(vaultPath, fn),
     beforeWrite: async () => {
@@ -161,5 +224,7 @@ export function createVaultGit(vaultPath: string, logger: Logger, options: Vault
     commitWrite: (entry) => agentCommit(entry),
     commitAs: systemCommit,
     commitHumanChanges: () => serialFor(vaultPath, humanCommit),
+    commitHuman: pathsCommit,
+    revert,
   };
 }
