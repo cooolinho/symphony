@@ -1155,8 +1155,9 @@ Where the data comes from and where the limits are:
 | Endpoint | Content |
 |---|---|
 | `GET /` | Dashboard |
+| `GET /tasks` | Tasks page: the dispatcher queue in six columns (Läuft, Als Nächstes, Wartet, Pausiert, Blockiert, Kürzlich erledigt) with reason chips and the actions Pausieren, Jetzt starten, Erneut versuchen, Fortsetzen (the existing control routes; no buttons without `controls.retry`); polls `/api/v1/state` every 2 s |
 | `GET /changes` | Feed of the recorded code changes (commits and merges) with "Today in numbers" and the hotspots of the last 7 days; filters in the URL: `?type=code\|brain`, `&repo=owner/name`; "Mehr laden" loads the next page |
-| `GET /tasks`, `GET /brain` | Placeholder pages in the page shell ("Diese Seite kommt in Kürze."); their content follows later |
+| `GET /brain` | Placeholder page in the page shell ("Diese Seite kommt in Kürze."); its content follows later |
 | `GET /api/v1/changes` | One page of the change feed as JSON: `?type=code\|brain&repo=owner/name&issue=<identifier>&limit=50&tz=<IANA zone>&before=<id>`. `before` is the `id` of the last entry of the previous page (not a timestamp: commits of one second would be ambiguous); `limit` is 1 to 199. Answers `{ generated_at, entries, next_before, counts: { all, code, brain }, stats }`: `next_before` is the id for the next page or `null`; `counts` count all matches of `repo` and `issue` whatever `type` is; `stats` (`today`: commits, merges, files, added, deleted of the calendar day in `tz`; `hotspots`: the 10 most often committed files of the last 7 days) is `null` when `before` is set |
 | `GET /issue?id=<identifier>` | Issue detail view (execution trace) |
 | `GET /agent?id=<identifier>`, `GET /logs` | Permanent redirect (`301`) to `/issue?id=<identifier>` and `/stats`; the query string is kept |
