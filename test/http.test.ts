@@ -1696,6 +1696,8 @@ describe('brain routes', () => {
       assert.equal(body.candidates, 2);
       assert.equal(body.writes_today, 0);
       assert.equal(body.reads_today, 0);
+      assert.equal(body.last_commit.sha.length, 40);
+      assert.equal(body.last_commit.author, 'symphony');
       const candidates = JSON.parse((await request(server.port, 'GET', '/api/v1/brain/candidates')).body).candidates;
       assert.deepEqual(candidates.map((c: { path: string }) => c.path), ['Inbox/old.md', 'Inbox/new.md']);
       assert.equal(candidates[0].target, 'Lessons/');

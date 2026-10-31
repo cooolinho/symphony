@@ -1,4 +1,4 @@
-import fs from 'node:fs/promises';
+import fs from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import type { Logger } from '../log.ts';
@@ -58,8 +58,6 @@ export interface BrainCandidate {
   target: string;
 }
 
-const READ_CHUNK = 64;
-
 /** Text of a frontmatter value: a trimmed non-empty string, a number, or a date as YYYY-MM-DD; otherwise null. */
 function textOf(value: unknown): string | null {
   if (typeof value === 'string') return value.trim() === '' ? null : value.trim();
@@ -77,12 +75,12 @@ export function extractLinks(body: string): string[] {
   const found = new Set<string>();
   let fenced = false;
   for (const line of body.split('\n')) {
-    if (/^\s*```/.test(line)) {
+    if (/^\s*(```|~~~)/.test(line)) {
       fenced = !fenced;
       continue;
     }
     if (fenced) continue;
-    for (const match of line.matchAll(/\[\[([^[\]]+)\]\]/g)) {
+    for (const match of line.replace(/`[^`]*`/g, '').matchAll(/\[\[([^[\]]+)\]\]/g)) {
       let target = (match[1] ?? '').split('|')[0] ?? '';
       target = (target.split('#')[0] ?? '').trim().replace(/^\/+/, '');
       if (target === '') continue;
@@ -98,14 +96,14 @@ export function extractLinks(body: string): string[] {
 const EMPTY_FIELDS = { type: null, status: null, repo: null, issue: null, role: null, created: null, updated: null, target: null };
 
 /** Reads one note; null when the file does not exist. An unreadable or too large file gives a note without fields and links. */
-export async function readIndexedNote(vault: string, rel: string): Promise<IndexedNote | null> {
+function readNoteSync(vault: string, rel: string): IndexedNote | null {
   const file = path.join(vault, ...rel.split('/'));
   const fallback = (): IndexedNote => ({ ...EMPTY_FIELDS, title: path.posix.basename(rel).replace(/\.md$/i, ''), links: [] });
   try {
-    const stat = await fs.stat(file);
+    const stat = fs.statSync(file);
     if (!stat.isFile()) return null;
     if (stat.size > MAX_NOTE_BYTES) return fallback();
-    const { frontmatter, body } = parseNote(await fs.readFile(file, 'utf8'));
+    const { frontmatter, body } = parseNote(fs.readFileSync(file, 'utf8'));
     return {
       title: noteTitle(frontmatter, body, path.posix.basename(rel)),
       type: lowerText(frontmatter.type),
@@ -123,30 +121,26 @@ export async function readIndexedNote(vault: string, rel: string): Promise<Index
   }
 }
 
-async function walk(root: string, rel: string, out: string[]): Promise<void> {
+function walk(root: string, rel: string, out: string[]): void {
   let entries;
   try {
-    entries = await fs.readdir(path.join(root, ...(rel === '' ? [] : rel.split('/'))), { withFileTypes: true });
+    entries = fs.readdirSync(path.join(root, ...(rel === '' ? [] : rel.split('/'))), { withFileTypes: true });
   } catch {
     return;
   }
   for (const entry of entries) {
     if (entry.name.startsWith('.')) continue;
     const child = rel === '' ? entry.name : `${rel}/${entry.name}`;
-    if (entry.isDirectory()) await walk(root, child, out);
+    if (entry.isDirectory()) walk(root, child, out);
     else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) out.push(child);
   }
 }
 
-async function readAll(vault: string, paths: string[], notes: Map<string, IndexedNote>): Promise<void> {
-  for (let i = 0; i < paths.length; i += READ_CHUNK) {
-    const chunk = paths.slice(i, i + READ_CHUNK);
-    const read = await Promise.all(chunk.map((rel) => readIndexedNote(vault, rel)));
-    chunk.forEach((rel, at) => {
-      const note = read[at];
-      if (note) notes.set(rel, note);
-      else notes.delete(rel);
-    });
+function readAll(vault: string, paths: string[], notes: Map<string, IndexedNote>): void {
+  for (const rel of paths) {
+    const note = readNoteSync(vault, rel);
+    if (note) notes.set(rel, note);
+    else notes.delete(rel);
   }
 }
 
@@ -196,10 +190,10 @@ export function deriveIndex(notes: Map<string, IndexedNote>): VaultIndex {
 /** Reads every `.md` of the vault (not below a folder or file starting with `.`). Never throws; a missing vault is empty. */
 export async function buildIndex(vault: string): Promise<VaultIndex> {
   const paths: string[] = [];
-  await walk(vault, '', paths);
+  walk(vault, '', paths);
   paths.sort();
   const notes = new Map<string, IndexedNote>();
-  await readAll(vault, paths, notes);
+  readAll(vault, paths, notes);
   return deriveIndex(notes);
 }
 
@@ -290,7 +284,7 @@ export class BrainIndex {
       if (relevant.length === 0) return;
       try {
         const notes = new Map(this.#notes);
-        await readAll(vault, relevant, notes);
+        readAll(vault, relevant, notes);
         this.#notes = notes;
         this.#derived = deriveIndex(notes);
       } catch (error) {
