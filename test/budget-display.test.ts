@@ -144,29 +144,30 @@ describe('5 h chip (E4-5)', () => {
     return page.$('shell-budget');
   };
 
-  it('62 % is neutral, 85 % amber, an alert red', async () => {
-    const neutral = await chipOn(TASKS_HTML, budgetFixture());
-    assert.equal(text(neutral), '5 h 62 %');
-    assert.equal(neutral.className, 'chip mono shell-budget');
-    const amber = await chipOn(TASKS_HTML, budgetFixture({ used: 1_700_000 }));
-    assert.equal(text(amber), '5 h 85 %');
-    assert.match(amber.className, /\btone-amber\b/);
-    const red = await chipOn(TASKS_HTML, budgetFixture({ alert: true }));
-    assert.equal(text(red), '5 h 62 %');
-    assert.match(red.className, /\btone-red\b/);
+  it('62 % is amber, 85 % red, 40 % neutral', async () => {
+    const tone = (n: { children: Array<{ className: string }> }) => n.children.map((c) => c.className).join(' ');
+    const amber = await chipOn(TASKS_HTML, budgetFixture());
+    assert.equal(text(amber), '5h 62 %');
+    assert.match(tone(amber), /\btone-amber\b/);
+    const red = await chipOn(TASKS_HTML, budgetFixture({ used: 1_700_000 }));
+    assert.equal(text(red), '5h 85 %');
+    assert.match(tone(red), /\btone-red\b/);
+    const neutral = await chipOn(TASKS_HTML, budgetFixture({ used: 800_000 }));
+    assert.equal(text(neutral), '5h 40 %');
+    assert.doesNotMatch(tone(neutral), /tone-/);
   });
 
   it('shows 5 h — without data, without forecast and on errors', async () => {
     for (const budget of [budgetFixture({ noForecast: true }), new Error('offline'), { nope: 1 }]) {
       const chip = await chipOn(TASKS_HTML, budget);
-      assert.equal(text(chip), '5 h —');
+      assert.equal(text(chip), '5h —');
       assert.doesNotMatch(chip.className, /tone-/);
     }
   });
 
   it('is loaded on every page', async () => {
-    assert.equal(text(await chipOn(AGENT_HTML, budgetFixture(), { url: 'http://127.0.0.1/issue?id=acme%2Fapp%231' })), '5 h 62 %');
-    assert.equal(text(await chipOn(DASHBOARD_HTML, budgetFixture())), '5 h 62 %');
+    assert.equal(text(await chipOn(AGENT_HTML, budgetFixture(), { url: 'http://127.0.0.1/issue?id=acme%2Fapp%231' })), '5h 62 %');
+    assert.equal(text(await chipOn(DASHBOARD_HTML, budgetFixture())), '5h 62 %');
   });
 
   it('reloads every 30 seconds', () => {

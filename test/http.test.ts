@@ -15,7 +15,7 @@ import { LOGS_HTML } from '../src/http/logs-page.ts';
 import { CHANGES_HTML } from '../src/http/changes-page.ts';
 import { TASKS_HTML } from '../src/http/tasks-page.ts';
 import { BRAIN_HTML } from '../src/http/brain-page.ts';
-import { LAYOUT_CSS, LAYOUT_JS, NAV_ITEMS, page as shellPage } from '../src/http/ui/layout.ts';
+import { AURORA, LAYOUT_CSS, LAYOUT_JS, NAV_ITEMS, page as shellPage } from '../src/http/ui/layout.ts';
 import { TOKENS_CSS } from '../src/http/ui/tokens.ts';
 import { BASE_JS } from '../src/http/styles.ts';
 import { SYMPHONY_VERSION } from '../src/version.ts';
@@ -196,9 +196,9 @@ describe('http extension', () => {
     }
     for (const name of ['next', 'waiting', 'paused']) assert.match(page.body, new RegExp(`<section class="agents-section queue-section" id="${name}-section"[^>]*hidden>`));
     assert.match(page.body, /id="blocked-section"/);
-    assert.match(page.body, /id="refresh"/);
     assert.match(page.body, /\.pipe-verdict\.vd-warn/);
     assert.match(page.body, /\.pipe-node\.st-skipped/);
+    assert.match(page.body, /id="shell-poll"/);
     assert.match(page.body, /<section id="dispatch-gate" class="dispatch-gate" role="status" hidden>/);
     assert.match(page.body, /<section id="alerts" class="panel alerts"/);
     assert.match(page.body, /<span class="count" id="alerts-count" aria-live="polite">/);
@@ -246,6 +246,9 @@ describe('http extension', () => {
     assert.equal(page.status, 200);
     assert.match(page.body, /<title>Statistik · Symphony<\/title>/);
     assert.ok(page.body.includes(TOKENS_CSS), 'logs page embeds the tokens CSS');
+    const stats = await request(server.port, 'GET', '/stats');
+    assert.equal(stats.status, 200);
+    assert.equal(stats.body, page.body, '/stats serves the statistics page until #346 routes it');
   });
 
   it('serves all page routes in the shell (E1-4)', async () => {
@@ -265,7 +268,7 @@ describe('http extension', () => {
       assert.ok(res.body.includes(text), path);
     }
     const issue = (await request(server.port, 'GET', '/issue?id=acme%2Fapp%231')).body;
-    assert.ok(issue.includes('id="crumb-current" aria-current="page">Issue<'));
+    assert.ok(issue.includes('id="crumb-current">Issue<'));
     const placeholders: Array<[string, string]> = [['/brain', 'Brain']];
     for (const [path, title] of placeholders) {
       const res = await request(server.port, 'GET', path);
@@ -1160,31 +1163,29 @@ describe('page shell (layout.ts, #342)', () => {
   };
 
   it('page() builds the complete document with the tokens CSS, BASE_JS and the shell', () => {
-    const html = shellPage({ title: 'A<b', nav: null, body: '<p>x</p>', scripts: 'pageScript();' });
+    const html = shellPage({ aurora: AURORA.overview, title: 'A<b', nav: null, body: '<p>x</p>', scripts: 'pageScript();' });
     assert.ok(html.startsWith('<!doctype html>\n<html lang="de">'));
     assert.match(html, /<title>A&lt;b<\/title>/);
     for (const part of [TOKENS_CSS, LAYOUT_CSS, BASE_JS, LAYOUT_JS]) assert.ok(html.includes(part));
     assert.match(html, /function setLive\(/);
-    assert.ok(html.includes('<main id="main"><p>x</p></main>'));
+    assert.ok(html.includes('<main id="main" class="shell-main"><p>x</p></main>'));
     assert.ok(html.indexOf('pageScript();') > html.indexOf('function setLive('), 'the page script runs after the shell script');
     assert.equal(count(html, '<script>'), 1);
     assert.ok(!html.includes('Brotkrumen'), 'no breadcrumbs without crumbs');
-    const withCrumbs = shellPage({ title: 'T', nav: null, crumbs: [{ label: 'Übersicht', href: '/' }, { label: 'X<y' }], body: '', scripts: '' });
-    assert.match(withCrumbs, /<nav class="crumbs" aria-label="Brotkrumen"><ol><li><a href="\/">Übersicht<\/a><\/li><li><span id="crumb-current" aria-current="page">X&lt;y<\/span><\/li><\/ol><\/nav>/);
+    const withCrumbs = shellPage({ aurora: AURORA.overview, title: 'T', nav: null, crumbs: [{ label: 'Übersicht', href: '/' }, { label: 'X<y' }], body: '', scripts: '' });
+    assert.match(withCrumbs, /<nav class="crumbs" aria-label="Brotkrumen"><ol><li><a href="\/">Übersicht<\/a><\/li><li><span class="crumb-current" id="crumb-current">X&lt;y<\/span><\/li><\/ol><\/nav>/);
   });
 
-  it('draws the aurora as one fixed layer of radial gradients and keeps every page at most 4 blur layers', () => {
+  it('draws the aurora as blurred circles under a dot grid and keeps every page at most 4 blur layers', () => {
     const aurora = ruleOf(LAYOUT_CSS, '.aurora');
-    assert.match(aurora, /position: fixed/);
-    assert.match(aurora, /z-index: 0/);
+    assert.match(aurora, /position: absolute/);
     assert.match(aurora, /pointer-events: none/);
-    const gradients = count(aurora, 'radial-gradient(');
-    assert.ok(gradients >= 2 && gradients <= 3, `${gradients} colour fields`);
-    assert.doesNotMatch(aurora, /url\(|filter:/);
+    assert.match(ruleOf(LAYOUT_CSS, '.aurora > i'), /border-radius: 50%/);
     assert.doesNotMatch(LAYOUT_CSS, /backdrop-filter/);
     assert.doesNotMatch(TOKENS_CSS, /radial-gradient/, 'the body ground no longer carries the gradients');
     for (const [name, html] of Object.entries(PAGES)) {
-      assert.equal(count(html, '<div class="aurora" aria-hidden="true"></div>'), 1, name);
+      assert.equal(count(html, '<div class="aurora" aria-hidden="true">'), 1, name);
+      assert.ok(count(html, 'filter:blur(') >= 3, `${name}: at least three aurora circles`);
       const blurs = styleOf(html).match(/(?<!-webkit-)backdrop-filter:\s*blur\(/g) ?? [];
       assert.ok(blurs.length >= 1 && blurs.length <= 4, `${name}: ${blurs.length} blur layers`);
     }
@@ -1200,12 +1201,12 @@ describe('page shell (layout.ts, #342)', () => {
       assert.match(head, /<header class="shell-head g">/);
       assert.match(head, /<a class="brand" href="\/"[^>]*>[\s\S]*<span class="brand-name">Symphony<\/span>/);
       assert.match(head, /id="shell-live"/);
-      assert.match(head, /id="shell-budget"[^>]*>5 h —</);
+      assert.match(head, /id="shell-budget"[^>]*>5h —</);
       assert.ok(head.includes(`id="shell-version" title="Symphony-Version">v${SYMPHONY_VERSION}<`), name);
       assert.match(head, /<time class="shell-clock mono" id="shell-clock" aria-label="Uhr"/);
       assert.match(head, /id="progress"/);
       const nav = mainNav(html);
-      const links = [...nav.matchAll(/<a class="nv" href="([^"]+)"[^>]*>([^<]+)<\/a>/g)].map((m) => [m[1], m[2]]);
+      const links = [...nav.matchAll(/<a class="nv(?: on)?" href="([^"]+)"[^>]*><svg[\s\S]*?<\/svg>([^<]+)<\/a>/g)].map((m) => [m[1], m[2]]);
       assert.deepEqual(links, [['/', 'Übersicht'], ['/changes', 'Changes'], ['/tasks', 'Tasks'], ['/brain', 'Brain'], ['/stats', 'Statistik']], name);
     }
     assert.deepEqual(NAV_ITEMS.map((i) => i.key), ['overview', 'changes', 'tasks', 'brain', 'stats']);
@@ -1218,7 +1219,7 @@ describe('page shell (layout.ts, #342)', () => {
     assert.deepEqual(current(AGENT_HTML), []);
     assert.equal(count(mainNav(DASHBOARD_HTML), 'aria-current'), 1);
     assert.equal(count(AGENT_HTML, '<nav class="crumbs" aria-label="Brotkrumen">'), 1);
-    assert.match(AGENT_HTML, /aria-label="Brotkrumen"><ol><li><a href="\/">Übersicht<\/a><\/li><li><span id="crumb-current" aria-current="page">Issue<\/span>/);
+    assert.match(AGENT_HTML, /aria-label="Brotkrumen"><ol><li><a href="\/">Übersicht<\/a><\/li><li><span class="crumb-current" id="crumb-current">Issue<\/span>/);
     const agent = renderPage(AGENT_HTML, { detail: issueDetail() }, { url: AGENT_URL });
     assert.equal(agent.$('crumb-current').textContent, 'Issue #1', 'the crumb names the issue');
     assert.equal(agent.query('nav[aria-label="Brotkrumen"] a[href="/"]').length, 1);
@@ -1246,12 +1247,12 @@ describe('page shell (layout.ts, #342)', () => {
       for (const old of ['class="topbar"', 'topbar-inner', 'brand-sub', 'AGENT ORCHESTRATOR', 'AGENT TRACE', 'STATISTICS &amp; ANALYTICS', 'id="back"', 'id="sys-version"', 'id="sys-updated"']) {
         assert.ok(!html.includes(old), `${name} still has ${old}`);
       }
-      assert.equal(count(html, '<main id="main">'), 1, name);
+      assert.equal(count(html, '<main id="main" class="shell-main">'), 1, name);
       assert.equal(count(html, 'id="announce"'), 1, name);
     }
     assert.doesNotMatch(TOKENS_CSS, /\.topbar|\.brand|\.sysinfo|@keyframes sweep/);
-    const main = (html: string): string => html.slice(html.indexOf('<main id="main">'), html.indexOf('</main>'));
-    for (const id of ['logs-open', 'refresh', 'sys-status', 'sys-workflow', 'sys-interval', 'sys-lastpoll']) assert.ok(main(DASHBOARD_HTML).includes(`id="${id}"`), id);
+    const main = (html: string): string => html.slice(html.indexOf('<main id="main" class="shell-main">'), html.indexOf('</main>'));
+    for (const id of ['logs-open', 'sys-status', 'sys-workflow', 'sys-interval', 'sys-lastpoll']) assert.ok(main(DASHBOARD_HTML).includes(`id="${id}"`), id);
     assert.match(main(DASHBOARD_HTML), /<dl class="sysinfo"/);
     for (const id of ['raw', 'reload']) assert.ok(main(LOGS_HTML).includes(`id="${id}"`), id);
   });
@@ -1267,11 +1268,11 @@ describe('page shell (layout.ts, #342)', () => {
     vm.runInContext(LAYOUT_JS, ctx);
     const live = nodes.get('shell-live') as FakeElement & { title?: string };
     vm.runInContext('setLive(true)', ctx);
-    assert.deepEqual(live.className.split(' ').sort(), ['badge', 'pulse', 'tone-green']);
-    assert.equal(nodes.get('shell-live-text')?.textContent, 'Live: verbunden');
+    assert.deepEqual(live.className.split(' ').sort(), ['sh-chip', 'shell-live', 'tone-green']);
+    assert.equal(nodes.get('shell-live-text')?.textContent, 'LIVE');
     vm.runInContext('setLive(false)', ctx);
-    assert.equal(live.className, 'badge tone-gray');
-    assert.equal(nodes.get('shell-live-text')?.textContent, 'Live: keine Verbindung');
+    assert.equal(live.className, 'sh-chip shell-live tone-gray');
+    assert.equal(nodes.get('shell-live-text')?.textContent, 'OFFLINE');
     const clock = nodes.get('shell-clock') as FakeElement;
     assert.match(clock.textContent, /^clock:\d\d:\d\d:\d\d$/);
     assert.match(clock.getAttribute('datetime') ?? '', /^\d{4}-\d\d-\d\dT/);
@@ -1293,9 +1294,8 @@ describe('page shell (layout.ts, #342)', () => {
   });
 
   it('at 390 px the navigation scrolls inside its frame, the page does not; touch targets are at least 44px', () => {
-    const nav = ruleOf(LAYOUT_CSS, '.shell-nav');
-    assert.match(nav, /overflow-x: auto/);
-    assert.match(nav, /min-width: 0/);
+    assert.match(ruleOf(LAYOUT_CSS, '.shell-well'), /overflow-x: auto/);
+    assert.match(ruleOf(LAYOUT_CSS, '.shell-nav'), /min-width: 0/);
     const pill = ruleOf(LAYOUT_CSS, '.nv');
     assert.match(pill, /min-height: 44px/);
     assert.match(pill, /display: inline-flex/);
@@ -1309,7 +1309,7 @@ describe('page shell (layout.ts, #342)', () => {
   it('shows German shell texts (Übersicht, Statistik, Uhr, Brotkrumen); Changes, Tasks and Brain stay', () => {
     for (const [name, html] of Object.entries(PAGES)) {
       const head = header(html);
-      for (const text of ['Übersicht', 'Changes', 'Tasks', 'Brain', 'Statistik', 'aria-label="Uhr"', 'title="5-Stunden-Budget"']) assert.ok(head.includes(text), `${name}: ${text}`);
+      for (const text of ['Übersicht', 'Changes', 'Tasks', 'Brain', 'Statistik', 'aria-label="Uhr"', 'title="5-h-Fenster"']) assert.ok(head.includes(text), `${name}: ${text}`);
       for (const text of ['>Overview<', '>Dashboard<', '>Logs<', 'Statistics', 'Clock']) assert.ok(!head.includes(text), `${name}: ${text}`);
     }
   });
