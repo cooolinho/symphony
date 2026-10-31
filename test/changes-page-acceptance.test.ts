@@ -535,6 +535,47 @@ describe('Changes page render (#358 acceptance)', () => {
     assert.match(page.$('changes-hotspots').textContent, /src\/a\.ts/);
   });
 
+  it("disables \"Mehr laden\" on click, so a double click loads the next page only once without duplicates", async () => {
+    const page = open((u) =>
+      u.includes("before=") ? changesFixture({ entries: [changeEntry({ id: "code:acme/app:2", title: "Second page" })], next_before: null }) : changesFixture({ next_before: "cursor-1" }),
+    );
+    await until(() => page.query("#changes-more button").length === 1, 3_000, "more");
+    const more = page.query("#changes-more button")[0]! as unknown as { disabled?: boolean };
+    page.click(more as never);
+    assert.equal(more.disabled, true, "the button is disabled right after the click");
+    // a real browser does not dispatch clicks on a disabled button
+    if (!more.disabled) page.click(more as never);
+    await until(() => page.query(".chg").length === 2, 3_000, "second page appended");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(changesCalls(page).filter((f) => f.url.includes("before=")).length, 1);
+    assert.equal(page.query(".chg").length, 2, "no entry appears twice");
+  });
+
+  it("keeps the loaded entries when a further page fails, shows the error and a retry in #changes-more", async () => {
+    let failing = true;
+    const page = open((u) => {
+      if (!u.includes("before=")) return changesFixture({ next_before: "cursor-1" });
+      if (failing) throw new Error("boom");
+      return changesFixture({ entries: [changeEntry({ id: "code:acme/app:2", title: "Second page" })], next_before: null });
+    });
+    await until(() => page.query("#changes-more button").length === 1, 3_000, "more");
+    page.click(page.query("#changes-more button")[0]!);
+    await until(() => /boom/.test(page.$("changes-more").textContent), 3_000, "error in more");
+    assert.equal(page.query(".chg").length, 1, "the first page stays in the feed");
+    assert.match(page.$("changes-feed").textContent, /Add feed/);
+    assert.doesNotMatch(page.$("changes-feed").textContent, /boom/);
+    const retry = page.query("#changes-more button");
+    assert.equal(retry.length, 1, "a retry button is offered");
+    failing = false;
+    page.click(retry[0]!);
+    await until(() => page.query(".chg").length === 2, 3_000, "retry appended");
+    const calls = changesCalls(page).filter((f) => f.url.includes("before="));
+    assert.equal(calls.length, 2);
+    assert.match(calls[1]!.url, /before=cursor-1/);
+    assert.equal(page.query("#changes-more button").length, 0);
+    assert.match(page.$("changes-hotspots").textContent, /src\/a\.ts/, "the side figures stay");
+  });
+
   it('shows a message and no crash when the API fails', async () => {
     const page = renderPage(CHANGES_HTML, undefined, {
       url: 'http://127.0.0.1/changes',
