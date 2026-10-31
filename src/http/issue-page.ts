@@ -308,7 +308,7 @@ const AGENT_PAGE_CSS = `
   .score-hand-label { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); font: 10.5px/1 var(--mono); white-space: nowrap; }
   .score-hand.flip .score-hand-label { left: auto; right: 8px; }
   .score-now-line { position: absolute; top: 0; bottom: 0; right: 0; width: 2px; background: #34d399; box-shadow: 0 0 12px #34d399; }
-  .score-axis { display: flex; justify-content: space-between; margin-left: 120px; min-width: 640px; margin-top: 6px; font: 12px var(--mono); color: var(--fg-3); }
+  .score-axis { display: flex; justify-content: space-between; margin-left: 120px; min-width: 640px; margin-top: 6px; font: 11.5px var(--mono); color: var(--fg-3); }
   .score-axis .now { color: #6ee7b7; }
   @media (max-width: 900px) {
     .seats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
