@@ -415,7 +415,7 @@ export function reindentScripts(html: string): string {
 export interface RenderOptions {
   /** Page URL; the agent page needs `http://127.0.0.1/issue?id=acme%2Fapp%231`. */
   url?: string;
-  /** Answers every fetch with this JSON body (status 200); throwing rejects the fetch. Without it fetches never settle. */
+  /** Answers every fetch with this JSON body (status 200, or `{ __status: 404 }` for an error status); throwing rejects the fetch. Without it fetches never settle. */
   fetch?: (url: string, init: { method: string; body?: unknown }) => unknown;
   /** Answer of confirm(); default true. */
   confirm?: boolean;
@@ -490,7 +490,8 @@ export function renderPage(html: string, state?: unknown, opts: RenderOptions = 
       if (!opts.fetch) return new Promise(() => {});
       try {
         const json = opts.fetch(String(target), { method: init.method ?? 'GET', body });
-        return Promise.resolve({ ok: true, status: 200, json: async () => json, text: async () => JSON.stringify(json), headers: { get: () => null } });
+        const failed = typeof json === 'object' && json !== null && typeof (json as { __status?: unknown }).__status === 'number' ? (json as { __status: number }).__status : 200;
+        return Promise.resolve({ ok: failed < 400, status: failed, json: async () => json, text: async () => JSON.stringify(json), headers: { get: () => null } });
       } catch (error) {
         return Promise.reject(error);
       }
