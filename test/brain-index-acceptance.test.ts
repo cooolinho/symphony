@@ -118,6 +118,26 @@ describe('buildIndex: four-note fixture', () => {
     assert.equal(index.notes.get('Inbox/ok.md')?.status, 'candidate');
   });
 
+  it('ignores links in inline code and in backtick or tilde fences, but counts them in plain text', async () => {
+    const vault = tempDir();
+    put(vault, 'Inbox/a.md', note({ status: 'candidate' }, [
+      'real [[Inbox/real]]',
+      'inline `[[Inbox/inline]]` code',
+      '```',
+      '[[Inbox/fenced]]',
+      '```',
+      '~~~',
+      '[[Inbox/tilde]]',
+      '~~~',
+      'after [[Inbox/after]]',
+    ].join('\n')));
+    put(vault, 'Inbox/real.md', note({}, 'x'));
+    put(vault, 'Inbox/after.md', note({}, 'x'));
+    const index = await buildIndex(vault);
+    assert.deepEqual([...(index.notes.get('Inbox/a.md')?.links ?? [])].sort(), ['Inbox/after.md', 'Inbox/real.md']);
+    assert.deepEqual(index.broken, []);
+  });
+
   it('indexes 2,000 generated notes in under 2 s', async () => {
     const vault = tempDir();
     for (let i = 0; i < 2000; i++) {
