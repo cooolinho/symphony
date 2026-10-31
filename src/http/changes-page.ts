@@ -203,12 +203,19 @@ export const CHANGES_HTML = page({
       for (const entry of data.entries) $('changes-feed').append(renderEntry(entry));
       if (!loaded.length) $('changes-feed').replaceChildren(el('p', 'Noch keine Änderungen.', 'empty'));
       $('changes-more').replaceChildren();
-      if (data.next_before) $('changes-more').append(button('Mehr laden', { onClick: () => loadPage(data.next_before) }));
+      if (data.next_before) {
+        const more = button('Mehr laden', { onClick: () => { more.disabled = true; loadPage(data.next_before); } });
+        $('changes-more').append(more);
+      }
     } catch (error) {
       if (mine !== generation) return;
       setLive(false);
-      $('changes-feed').replaceChildren(el('p', 'Änderungen konnten nicht geladen werden: ' + error.message, 'empty'));
-      $('changes-more').replaceChildren();
+      const failed = el('p', 'Änderungen konnten nicht geladen werden: ' + error.message, 'empty');
+      if (before === null) { $('changes-feed').replaceChildren(failed); $('changes-more').replaceChildren(); }
+      else {
+        const retry = button('Erneut versuchen', { onClick: () => { retry.disabled = true; loadPage(before); } });
+        $('changes-more').replaceChildren(failed, retry);
+      }
     }
   }
 

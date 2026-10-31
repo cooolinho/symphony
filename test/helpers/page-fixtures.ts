@@ -44,3 +44,35 @@ export function changesFixture(over: Obj = {}): Obj {
     ...over,
   };
 }
+
+/** GET /api/v1/<identifier>/team while the developer plays; `over` replaces top-level keys. */
+export function teamView(over: Obj = {}): Obj {
+  const seat = (role: string, status: string, verdict: string | null, duration_ms: number | null, model: string | null) => ({ role, status, verdict, duration_ms, model });
+  const tool = (n: string) => ({ tool: n, message: `${n}: x`, at: '2026-10-30T11:59:50.000Z' });
+  const sub = (type: string, description: string, status: string, started_at: string, ended_at: string | null, total_tokens: number) => ({
+    tool_use_id: type, subagent_type: type, description, status, started_at, ended_at,
+    tokens: { input_tokens: total_tokens, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens },
+  });
+  return {
+    ...clone({
+      seats: [
+        seat('analyst', 'done', 'ready', 180000, 'sonnet'), seat('architect', 'done', 'ready', 540000, 'opus'),
+        seat('developer', 'playing', null, 720000, 'opus'), seat('tester', 'returned', 'failed', 240000, 'sonnet'),
+        seat('docs', 'skipped', null, null, null), seat('reviewer', 'waiting', null, null, null),
+        seat('security', 'waiting', null, null, null), seat('you', 'waiting', null, null, null),
+      ],
+      active: {
+        role: 'developer', action: 'Edit src/http/ui/tokens.ts', recent_tools: ['A', 'B', 'C', 'D', 'E'].map(tool),
+        context: { tokens: 84000, window: 200000, percent: 42, compacts: 2 }, turn: 23, model: 'opus',
+        tokens: { input_tokens: 800000, output_tokens: 300000, total_tokens: 1100000 }, cost_usd: 1.4,
+      },
+      subagents: {
+        running: [sub('Explore', 'Find callers', 'running', '2026-10-30T11:58:00.000Z', null, 12000)],
+        finished: [sub('Plan', 'Draft plan', 'done', '2026-10-30T11:50:00.000Z', '2026-10-30T11:52:00.000Z', 30000)],
+      },
+      blocks: [],
+      handoffs: [],
+    }),
+    ...clone(over),
+  };
+}
