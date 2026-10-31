@@ -239,3 +239,52 @@ describe('Hinweise panel: stable refresh (focus and aria-live survive the 2-s po
     assert.doesNotMatch(without.$('alerts-list').textContent, /undefined|null|NaN|Invalid/);
   });
 });
+
+describe('Hinweise panel: brain source', () => {
+  const clash = { id: 'c1', path: 'Wiki/a.md', runs: ['acme/app#1', 'acme/app#2'], at: [T('11:00'), T('11:30')], reason: 'stale base', status: 'open' };
+  async function openBrain(clashes: unknown, vitals: unknown) {
+    const page = renderPage(DASHBOARD_HTML, undefined, {
+      fetch: (url) => {
+        if (url.startsWith('/api/v1/brain/clashes')) {
+          if (clashes instanceof Error) throw clashes;
+          return clashes;
+        }
+        if (url.startsWith('/api/v1/brain/vitals')) return vitals;
+        return dashboardState();
+      },
+    });
+    await settle();
+    page.render(dashboardState());
+    await settle();
+    return page;
+  }
+
+  it('one open clash and 25 candidates: two new entries, counted, linking to the brain page', async () => {
+    const page = await openBrain({ clashes: [clash] }, { candidates: 25 });
+    assert.ok(page.fetches.some((f) => f.url === '/api/v1/brain/clashes?status=open'));
+    assert.equal(items(page).length, 2);
+    assert.equal(page.$('alerts-count').textContent, '2');
+    assert.deepEqual(items(page).map((r) => r.querySelector('a')!.href).sort(), ['/brain#candidates', '/brain#clashes']);
+    assert.match(page.$('alerts-list').textContent, /Wiki\/a\.md/);
+    assert.match(page.$('alerts-list').textContent, /25 Kandidaten warten auf Review/);
+    assert.doesNotMatch(page.$('alerts-list').textContent, /Alles ruhig/);
+  });
+
+  it('24 candidates and no clash: no brain entry', async () => {
+    const page = await openBrain({ clashes: [] }, { candidates: 24 });
+    assert.equal(page.$('alerts-count').textContent, '0');
+    assert.match(page.$('alerts-list').textContent, /Alles ruhig/);
+  });
+
+  it('404 brain_disabled: no brain entries and no error', async () => {
+    const page = await openBrain({ __status: 404, error: { code: 'brain_disabled' } }, { __status: 404, error: { code: 'brain_disabled' } });
+    assert.equal(page.$('alerts-count').textContent, '0');
+    assert.match(page.$('alerts-list').textContent, /Alles ruhig/);
+    assert.doesNotMatch(page.$('alerts-list').textContent, /nicht erreichbar|brain/i);
+  });
+
+  it('a failing brain fetch is skipped silently', async () => {
+    const page = await openBrain(new Error('down'), { candidates: 30 });
+    assert.equal(page.$('alerts-count').textContent, '0');
+  });
+});

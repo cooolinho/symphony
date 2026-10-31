@@ -1,11 +1,11 @@
 import { SCALES, rgba } from './ui/palette.ts';
 
 /**
- * Alerts panel ("Alerts") of the overview: one list for everything that needs a look. alerts(state, budget) is a
- * pure function over the /api/v1/state snapshot and the /api/v1/budget report; renderAlerts() builds the panel from
+ * Alerts panel ("Alerts") of the overview: one list for everything that needs a look. alerts(state, budget, brain) is a
+ * pure function over the /api/v1/state snapshot, the /api/v1/budget report and the brain data (open clashes, candidates); renderAlerts() builds the panel from
  * its result. Both run in the page script after BASE_JS (they use el(), pad2(), uiOwn() and UI_ROLE_NAMES).
  *
- * Kinds: clash (state.brain_clashes, optional, open ones only), attention, needs_human, model_hold, budget. Each card is
+ * Kinds: clash (state.brain_clashes, optional, open ones only), attention, needs_human, model_hold, budget, brain_clash, brain_backlog (the last two from /api/v1/brain/*, see loadBrainAlerts). Each card is
  * a link; red cards (clash, attention) and amber cards (the rest) differ in border and label colour.
  *
  * Time of an entry: attention problems use their own timestamp, else health.last_tick_at; needs-human uses the
@@ -35,8 +35,9 @@ export const ALERTS_CSS = `
 `;
 
 export const ALERTS_JS = `
-  const ALERT_KIND = { clash: 'Write-Clash', budget: 'Limit-Prognose', needs_human: 'needs-human', model_hold: 'Model-Hold', attention: 'Fehler' };
-  const ALERT_TONE = { clash: 'red', attention: 'red', budget: 'amber', needs_human: 'amber', model_hold: 'amber' };
+  const ALERT_KIND = { clash: 'Write-Clash', brain_clash: 'Write-Clash', brain_backlog: 'Kandidaten-Rückstau', budget: 'Limit-Prognose', needs_human: 'needs-human', model_hold: 'Model-Hold', attention: 'Fehler' };
+  const ALERT_TONE = { clash: 'red', brain_clash: 'red', brain_backlog: 'amber', attention: 'red', budget: 'amber', needs_human: 'amber', model_hold: 'amber' };
+  const BRAIN_BACKLOG_THRESHOLD = 25;
   const BUDGET_TITLE = { five_hour: '5-h-Limit in Sicht', seven_day: '7-Tage-Limit in Sicht' };
 
   // HH:MM in local time.
@@ -73,7 +74,7 @@ export const ALERTS_JS = `
     return alertWho(clash, 1) + ' wollte ' + min + ' min nach ' + alertWho(clash, 0) + ' schreiben – abgewiesen, Hash passt nicht. Beide Fassungen prüfen.';
   }
 
-  function alerts(state, budget) {
+  function alerts(state, budget, brain) {
     state = state || {};
     const h = state.health || {};
     const out = [];
@@ -124,6 +125,24 @@ export const ALERTS_JS = `
           text: 'Beim aktuellen Verbrauch ist das Limit gegen ' + alertClock(w.forecast.eta) + ' erreicht' + (w.resets_at ? ', Reset um ' + alertClock(w.resets_at) + '.' : '.'),
           href: '/stats',
         });
+      }
+    }
+
+    // Brain: brain = { clashes: open clashes of /api/v1/brain/clashes, candidates: count of /api/v1/brain/vitals }; null without a brain.
+    if (brain) {
+      const run = (r) => (r === null || r === undefined ? '—' : r);
+      for (const c of brain.clashes || []) {
+        const runs = c.runs || [];
+        out.push({
+          kind: 'brain_clash',
+          at: (c.at || [])[1] || null,
+          title: c.path,
+          text: 'Runs ' + run(runs[0]) + ' / ' + run(runs[1]) + ' · ' + (c.reason || ''),
+          href: '/brain#clashes',
+        });
+      }
+      if (Number.isFinite(brain.candidates) && brain.candidates >= BRAIN_BACKLOG_THRESHOLD) {
+        out.push({ kind: 'brain_backlog', at: null, title: brain.candidates + ' Kandidaten warten auf Review', text: 'Rückstau ab ' + BRAIN_BACKLOG_THRESHOLD + ' Kandidaten.', href: '/brain#candidates' });
       }
     }
 
