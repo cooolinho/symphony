@@ -201,6 +201,57 @@ const AGENT_PAGE_CSS = `
     .logs .d { grid-column: 1 / -1; }
   }
   .t-inline { display: none; font: 11px var(--mono); color: var(--faint); }
+
+  /* Stage (Bühne) */
+  .stage { position: relative; overflow: hidden; margin-top: 18px; }
+  .stage-body { display: grid; gap: 18px; }
+  .stage-seats { list-style: none; margin: 0; padding: 0; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 18px 8px; align-content: start; }
+  .stage-seat { position: relative; display: flex; flex-direction: column; align-items: center; text-align: center; min-width: 0; gap: 6px; }
+  .stage-seat::before { content: ""; position: absolute; top: 47px; left: -4px; right: -4px; height: 2px; background: rgba(255, 255, 255, .12); }
+  .stage-spot { position: relative; z-index: 1; height: 96px; display: grid; place-items: center; }
+  .stage-gauge { position: relative; width: 96px; height: 96px; }
+  .stage-seat.is-active .stage-spot { margin-bottom: 12px; }
+  .stage-gauge > .ui-av { position: absolute; left: 16px; top: 16px; }
+  .stage-seat.is-active::after { content: ""; position: absolute; z-index: 0; left: 50%; top: -90px; width: 240px; height: 300px; margin-left: -120px; background: radial-gradient(closest-side, var(--seat-glow, rgba(120, 160, 255, .28)), transparent); pointer-events: none; }
+  .stage-seat.is-skipped { opacity: .45; }
+  .stage-name { position: relative; z-index: 1; font: 600 12.5px var(--sans); color: var(--text); overflow-wrap: anywhere; }
+  .stage-sub { position: relative; z-index: 1; font: 11px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+  .stage-fields { display: flex; flex-wrap: wrap; gap: 14px; min-width: 0; }
+  .stage-field { flex: 1 1 260px; min-width: 0; padding: 14px 16px; }
+  .stage-field.is-now { flex: 2 1 380px; }
+  .stage-field h3 { margin: 0 0 8px; display: flex; justify-content: space-between; gap: 8px; font: 600 11px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  .stage-action { font: 13px/1.45 var(--mono); color: var(--text); overflow-wrap: anywhere; }
+  .stage-trace { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .stage-trace .ui-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stage-arrow { color: var(--faint); }
+  .stage-ctx { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 6px; font: 12px var(--mono); color: var(--text-2); }
+  .stage-compacts { margin: 8px 0; display: flex; flex-wrap: wrap; align-items: center; gap: 3px; font: 11px var(--mono); color: var(--muted); }
+  .stage-compact { display: inline-block; width: 2px; height: 12px; background: var(--red, #ff6b6b); }
+  .stage-compacts .txt { margin-left: 6px; }
+  .stage-subagent { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; padding: 6px 0; border-top: 1px dashed var(--line-2); font: 12px var(--mono); color: var(--text-2); }
+  .stage-subagent:first-of-type { border-top: 0; }
+  .stage-subagent .desc { flex: 1 1 100%; min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
+  .stage-subagent.is-done { opacity: .7; }
+  .stage-subagent .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+  .stage-subagent.is-running .dot { background: var(--green, #3ddc84); }
+  .stage-subagent .dot.pulse { animation: stage-pulse 1.4s ease-in-out infinite; }
+  @keyframes stage-pulse { 50% { opacity: .35; } }
+  .stage-empty { margin: 0; color: var(--muted); font: 13px var(--mono); }
+  @media (min-width: 1280px) {
+    .stage-body { grid-template-columns: minmax(0, 3fr) minmax(340px, 2fr); }
+    .stage-fields { flex-direction: column; flex-wrap: nowrap; }
+    .stage-field, .stage-field.is-now { flex: 0 0 auto; }
+  }
+  @media (max-width: 900px) {
+    .stage-seats { grid-auto-flow: row; grid-template-columns: repeat(var(--stage-cols, 4), minmax(0, 1fr)); }
+  }
+  @media (max-width: 640px) {
+    .stage-spot { height: 80px; }
+    .stage-seat::before { top: 39px; }
+    .stage-gauge, .stage-gauge .ui-ring { width: 80px !important; height: 80px !important; }
+    .stage-gauge > .ui-av { left: 8px; top: 8px; }
+    .stage-sub { display: none; }
+  }
 `;
 
 /**
@@ -227,6 +278,18 @@ export const AGENT_HTML = page({
     <div class="hero-metrics" id="hero-metrics"></div>
     <div class="hero-actions" id="hero-actions" hidden></div>
     <div class="live-line" id="live-line" hidden><span class="k">Now</span><span class="ev" id="live-ev"></span><span class="age" id="live-age"></span><span class="msg" id="live-msg"></span></div>
+  </section>
+
+  <section class="stage" id="stage" aria-labelledby="stage-title" hidden>
+    <div class="section-head"><h2 id="stage-title">Bühne</h2></div>
+    <div class="stage-body">
+      <ol class="stage-seats" id="stage-seats" aria-label="Sitze in Pipeline-Reihenfolge"></ol>
+      <div class="stage-fields">
+        <article class="stage-field gi is-now" id="stage-now"><h3><span>Jetzt</span><span id="stage-now-meta"></span></h3><div id="stage-now-body"></div></article>
+        <article class="stage-field gi" id="stage-session"><h3><span>Session</span></h3><div id="stage-session-body"></div></article>
+        <article class="stage-field gi" id="stage-subs"><h3><span>Subagents</span><span id="stage-subs-meta"></span></h3><div id="stage-subs-body"></div></article>
+      </div>
+    </div>
   </section>
 
   <section class="pipe-section" id="pipe-section" aria-labelledby="pipe-title" hidden>
@@ -382,6 +445,7 @@ ${PIPELINE_JS}
     items: [], filter: 'all', q: '', expanded: new Set(), collapsed: new Set(), limit: RENDER_LIMIT,
     rendered: false, nodes: new Map(), listSig: '', unseen: 0, known: new Set(), fresh: new Set(),
     rawOpen: false, rawSev: '', rawQ: '',
+    team: null, stageSig: '', stagePct: undefined, subsSig: '',
   };
 
   // ------------------------------------------------------------------ data loading (one poll loop)
@@ -438,6 +502,8 @@ ${PIPELINE_JS}
           }
         }
         for (const session of r.body.sessions) if (await loadTranscript(session)) S.dirty = true;
+        const tm = await getJson(API + '/team').catch(() => null);
+        if (tm && tm.ok && tm.body && Array.isArray(tm.body.seats)) S.team = tm.body;
       }
     } catch (error) {
       S.online = false;
@@ -1541,6 +1607,153 @@ ${PIPELINE_JS}
     patchChildren($('raw-links'), links);
   }
 
+  // ------------------------------------------------------------------ stage (Bühne)
+
+  const STAGE_WORDS = { done: 'fertig', playing: 'spielt', waiting: 'wartet', returned: 'Rückgabe', skipped: 'übersprungen' };
+  const AUTO_COMPACT_PCT = 80;
+  const seatName = (role) => (role === 'you' ? 'Du' : uiOwn(UI_ROLE_NAMES, role) || String(role).charAt(0).toUpperCase() + String(role).slice(1));
+  const seatAvatarRole = (role) => (role === 'you' ? 'human' : role);
+  const seatDuration = (s) => (s.duration_ms === null || s.duration_ms === undefined ? '—' : fmtDuration(s.duration_ms / 1000));
+  function seatTitle(seat, status) {
+    return [seatName(seat.role), STAGE_WORDS[status], 'Verdict ' + (seat.verdict ?? '—'), 'Dauer ' + seatDuration(seat), 'Modell ' + (seat.model ?? '—')].join(' · ');
+  }
+  // Without a session nothing plays; with one only its own seat does.
+  function seatStatuses(seats, active) {
+    let found = false;
+    return seats.map((s) => {
+      if (s.status === 'playing') {
+        if (active && !found && s.role === active.role) { found = true; return 'playing'; }
+        return 'waiting';
+      }
+      return STAGE_WORDS[s.status] ? s.status : 'waiting';
+    });
+  }
+
+  function renderStageSeats(seats, active) {
+    const list = $('stage-seats');
+    const statuses = seatStatuses(seats, active);
+    const sig = seats.map((s, i) => s.role + ':' + statuses[i]).join(',');
+    const pct = active && active.context && typeof active.context.percent === 'number' ? Math.round(active.context.percent) : null;
+    if (sig !== S.stageSig) {
+      S.stageSig = sig;
+      S.stagePct = undefined;
+      list.style.setProperty('--stage-cols', String(Math.ceil(seats.length / 2)));
+      list.replaceChildren(...seats.map((s, i) => {
+        const st = statuses[i];
+        const li = el('li', null, 'stage-seat is-' + st + (st === 'playing' ? ' is-active' : ''));
+        li.setAttribute('data-role', s.role);
+        li.style.setProperty('--seat-glow', uiRgba(uiOwn(UI_ROLE_COLORS, s.role) || UI_ROLE_COLORS.symphony, '.28'));
+        const spot = el('div', null, 'stage-spot');
+        if (st === 'playing') {
+          const gauge = el('div', null, 'stage-gauge');
+          gauge.append(ring(pct, { size: 96, label: 'Context' }), avatar(seatAvatarRole(s.role), 'playing', { size: 64 }));
+          spot.append(gauge);
+        } else spot.append(avatar(seatAvatarRole(s.role), st, { size: 64 }));
+        li.append(spot, el('div', seatName(s.role), 'stage-name'), el('div', null, 'stage-sub'));
+        return li;
+      }));
+    }
+    const items = list.children;
+    seats.forEach((s, i) => {
+      const li = items[i];
+      const st = statuses[i];
+      const title = seatTitle(s, st);
+      li.setAttribute('title', title);
+      const av = li.querySelector('.ui-av');
+      if (av) { av.setAttribute('title', title); av.setAttribute('aria-label', title); }
+      const sub = [STAGE_WORDS[st]];
+      if (s.verdict) sub.push(s.verdict);
+      if (s.duration_ms !== null && s.duration_ms !== undefined) sub.push(seatDuration(s));
+      setText(li.querySelector('.stage-sub'), sub.join(' · '));
+    });
+    if (S.stagePct !== pct) {
+      const gauge = list.querySelector('.stage-gauge');
+      if (gauge) gauge.replaceChild(ring(pct, { size: 96, label: 'Context' }), gauge.querySelector('.ui-ring'));
+      S.stagePct = pct;
+    }
+  }
+
+  function stageEmpty(box) { box.replaceChildren(el('p', 'Keine Session', 'stage-empty')); }
+
+  function renderStageNow(active) {
+    const box = $('stage-now-body');
+    setText($('stage-now-meta'), active ? seatName(active.role) : '');
+    if (!active) return stageEmpty(box);
+    const trace = el('div', null, 'stage-trace');
+    const tools = (active.recent_tools || []).slice(-4);
+    tools.forEach((t, i) => {
+      if (i) trace.append(el('span', '→', 'stage-arrow'));
+      const c = chip(oneLine(t.message || t.tool, 48), { mono: true, tone: i === tools.length - 1 ? 'green' : undefined });
+      c.setAttribute('title', String(t.message || t.tool || ''));
+      trace.append(c);
+    });
+    if (!tools.length) trace.append(el('span', 'Noch keine Tool-Aufrufe', 'stage-empty'));
+    box.replaceChildren(el('div', oneLine(active.action, 200) || '—', 'stage-action'), trace);
+  }
+
+  function renderStageSession(active) {
+    const box = $('stage-session-body');
+    if (!active) return stageEmpty(box);
+    const c = active.context || {};
+    const pct = typeof c.percent === 'number' ? c.percent : null;
+    const head = el('div', null, 'stage-ctx');
+    head.append(el('span', 'Context ' + (c.window ? fmtCompact(c.tokens) + ' / ' + fmtCompact(c.window) : '—')), el('span', pct === null ? '—' : Math.round(pct) + ' %'));
+    const compacts = el('div', null, 'stage-compacts');
+    const n = c.compacts || 0;
+    for (let i = 0; i < Math.min(n, 12); i++) { const m = el('span', null, 'stage-compact'); m.setAttribute('title', 'Auto-Compact ' + (i + 1)); compacts.append(m); }
+    compacts.append(el('span', n ? n + '× Auto-Compact' : 'kein Auto-Compact', 'txt'));
+    const kv = el('dl', null, 'kv');
+    const started = S.detail && S.detail.running && S.detail.running.started_at ? Date.parse(S.detail.running.started_at) : NaN;
+    const seat = ((S.team && S.team.seats) || []).find((s) => s.role === active.role);
+    const dur = Number.isFinite(started) ? fmtDuration((Date.now() - started) / 1000) : seat && seat.duration_ms !== null && seat.duration_ms !== undefined ? seatDuration(seat) : '—';
+    const tk = active.tokens || {};
+    for (const [k, v] of [['Turn', active.turn ?? '—'], ['Dauer', dur], ['Modell', active.model ?? '—'], ['Tokens', fmtCompact(tk.total_tokens) + ' · ' + fmtCost(active.cost_usd)]]) kv.append(el('dt', k), el('dd', v));
+    box.replaceChildren(head, bar(pct ?? 0, { height: 8, color: UI_TRAFFIC[trafficTone(pct)], marker: { pct: AUTO_COMPACT_PCT, title: 'Auto-Compact ab ca. 80 %' } }), compacts, kv);
+  }
+
+  function renderStageSubs(active, subs) {
+    const box = $('stage-subs-body');
+    const running = (subs && subs.running) || [];
+    const finished = ((subs && subs.finished) || []).slice().reverse();
+    setText($('stage-subs-meta'), active ? running.length + ' laufen · ' + finished.length + ' fertig' : '');
+    if (!active) return stageEmpty(box);
+    if (!running.length && !finished.length) return box.replaceChildren(el('p', 'Keine Subagents', 'stage-empty'));
+    const all = [...running, ...finished];
+    const sig = all.map((x, i) => (x.tool_use_id || i) + ':' + (x.status === 'running' ? 'r' : 'd')).join(',');
+    const timing = (x) => fmtDuration(((x.ended_at ? Date.parse(x.ended_at) : Date.now()) - Date.parse(x.started_at)) / 1000);
+    const tokensOf = (x) => fmtCompact(x.tokens && x.tokens.total_tokens) + ' Tokens';
+    // Rebuild only when the set or state changes, so the running pulse is not restarted by every poll.
+    if (sig !== S.subsSig || box.querySelector('.stage-empty')) {
+      S.subsSig = sig;
+      box.replaceChildren(...all.map((x) => {
+        const isRun = x.status === 'running';
+        const row = el('div', null, 'stage-subagent ' + (isRun ? 'is-running' : 'is-done'));
+        row.append(el('span', null, 'dot' + (isRun ? ' pulse' : '')), el('b', x.subagent_type, 'mono'),
+          el('span', timing(x), 'dur'), el('span', tokensOf(x), 'tok'), el('span', oneLine(x.description, 80), 'desc'));
+        return row;
+      }));
+      return;
+    }
+    all.forEach((x, i) => {
+      const row = box.children[i];
+      setText(row.querySelector('.dur'), timing(x));
+      setText(row.querySelector('.tok'), tokensOf(x));
+    });
+  }
+
+  function renderStage() {
+    const team = S.team;
+    const ok = !!(team && Array.isArray(team.seats));
+    $('stage').hidden = !ok;
+    if (!ok) return;
+    // A finished run has no live session, whatever the last /team said.
+    const active = S.ended || S.notFound ? null : team.active || null;
+    renderStageSeats(team.seats, active);
+    renderStageNow(active);
+    renderStageSession(active);
+    renderStageSubs(active, team.subagents);
+  }
+
   // ------------------------------------------------------------------ render + interactions
 
   function render() {
@@ -1551,6 +1764,7 @@ ${PIPELINE_JS}
     for (const it of S.items) if (!S.known.has(it.key)) { S.known.add(it.key); if (S.rendered) S.fresh.add(it.key); }
     if (S.detail || S.ended || S.notFound) {
       renderHeader();
+      renderStage();
       renderPipelineSection();
       renderResults();
       renderGate();
