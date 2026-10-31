@@ -1181,6 +1181,14 @@ The knowledge vault: one vault for all repositories. With `enabled: true` Sympho
 | `path` | string | `~/brain` | Vault directory; `~` and `$VAR` are expanded, relative paths resolve against `WORKFLOW.md`. In Docker this is the `brain` volume. |
 | `clash_window_ms` | integer >= 0 | `600000` | A `brain_write` or `brain_append` is rejected with reason `window` when another run wrote the same note successfully within this many milliseconds; the result holds the current content and hash. The same run may write again at once. `0` turns the check off. Every call is logged to `<log-dir>/brain/access.jsonl` (lines older than 30 days are removed at startup, see [agent-claude.md](agent-claude.md#brain-tools)). |
 
+### `budget`
+
+Display settings of the budget and context views. An unknown key is ignored with a warning.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `compact_threshold` | integer 1–100 | `80` | Context fill in percent from which Claude Code compacts automatically. The **Session** field of the team view (`/issue?id=`) draws its red Auto-Compact mark there; `GET /api/v1/<identifier>/team` returns it as `compact_threshold`. Only a display value: it does not change when Claude Code compacts. |
+
 ## Complete example: roles, checks and Laravel
 
 The shipped `WORKFLOW.md`, shortened to the parts that make up the developer → checks → reviewer → human flow

@@ -74,7 +74,7 @@ import {
 } from './limits.ts';
 import { RuntimeStateStore, runtimeStateFile, type ModelHold, type OperatorHold } from './runtime-state.ts';
 import { buildTeamView, type TeamView } from '../http/team.ts';
-import { resultRows, type PersistedResult } from './stage-history.ts';
+import { buildStageHistory, resultRows, type PersistedResult } from './stage-history.ts';
 import { blockedBucketColumns, derivePipeline, type PipelineStage, type StageSession } from './pipeline.ts';
 import { applySubagent, closeSubagents, emptySubagents, subagentsJson, type SubagentBoard } from './subagents.ts';
 import { copyToolUsage, countToolUse, emptyToolUsage, integrationJson, integrationUsage, type ToolUsage } from './tool-usage.ts';
@@ -342,6 +342,8 @@ interface IssueMeta {
   dispatchNote: string | null;
   parent: unknown;
   subIssues: unknown[];
+  /** Branch the tracker links to the issue; null when none. */
+  branchName: string | null;
 }
 
 /** First non-empty line of a description; what command detection and the pipeline need. */
@@ -375,6 +377,7 @@ function issueMeta(issue: Issue): IssueMeta {
     dispatchNote: typeof issue.native_ref?.dispatch_note === 'string' ? issue.native_ref.dispatch_note : null,
     parent: issue.native_ref?.parent ?? null,
     subIssues: Array.isArray(issue.native_ref?.sub_issues) ? issue.native_ref.sub_issues : [],
+    branchName: issue.branch_name,
   };
 }
 
@@ -389,6 +392,7 @@ function metaJson(meta: IssueMeta | null) {
     dispatch_note: meta.dispatchNote,
     parent: meta.parent,
     sub_issues: meta.subIssues,
+    branch_name: meta.branchName ?? null,
   };
 }
 
@@ -2922,7 +2926,24 @@ export class Orchestrator {
       results: resultRows(record.results),
       run_trace: traceJson(record.lastRun),
       last_check: checkJson(record.lastCheck),
+      ...this.#roundsOf(record.meta?.labels ?? [], record.results),
     };
+  }
+
+  /** Workflow profile of the issue and its loop round: 1 + the review, test and security rounds sent back so far, of the review limit. */
+  #roundsOf(labels: readonly string[], results: readonly PersistedResult[]): { profile: string | null; rounds: { current: number; max: number } } {
+    const pipeline = this.#deps.workflow.current.config.pipeline;
+    const profile = profileFor(pipeline, classify(labels).type);
+    const history = buildStageHistory(results);
+    return {
+      profile: profile?.name ?? null,
+      rounds: { current: 1 + history.reviewRounds + history.testRounds + history.securityRounds, max: profile?.maxReviewRounds ?? pipeline.maxReviewRounds },
+    };
+  }
+
+  /** Number of the issue's pull request from the newest recorded code change that knows one; null without. */
+  #pullRequestOf(identifier: string): number | null {
+    return this.#changes.matching({ type: 'code', issue: identifier }).find((entry) => entry.pr !== null)?.pr?.number ?? null;
   }
 
   #sessionJson(session: SessionInfo) {
@@ -3901,6 +3922,8 @@ export class Orchestrator {
         entry !== undefined ? (entry.stop !== null ? 'stopping' : 'running') : retry !== undefined ? 'retrying' : paused !== undefined ? 'paused' : 'claimed',
       role: entry?.role ?? null,
       issue: metaJson(meta),
+      ...this.#roundsOf(meta?.labels ?? [], record?.results ?? []),
+      pull_request: this.#pullRequestOf(identifier),
       pipeline: this.#pipelineFor({ state, description: meta?.description ?? null, labels: meta?.labels }, issueId, this.#deps.workflow.current),
       results: resultRows(record?.results ?? []),
       workspace: { path: entry?.workspacePath ?? record?.workspacePath ?? null },
@@ -3957,6 +3980,9 @@ export class Orchestrator {
       status: 'finished',
       role: lastSession?.role ?? null,
       issue: archived.issue_meta ?? null,
+      profile: archived.profile ?? null,
+      rounds: archived.rounds ?? null,
+      pull_request: this.#pullRequestOf(archived.issue_identifier),
       pipeline: archived.pipeline ?? [],
       results: archived.results,
       workspace: { path: archived.workspace_path },
@@ -4027,6 +4053,7 @@ export class Orchestrator {
   issueTeam(key: string): TeamView | null {
     const detail = this.issueDetail(key);
     if (detail === null) return null;
+    const config = this.#deps.workflow.current.config;
     return buildTeamView({
       pipeline: detail.pipeline,
       results: detail.results,
@@ -4034,6 +4061,9 @@ export class Orchestrator {
       running: detail.running,
       timeline: this.#findTrace(key)?.timeline ?? [],
       now: this.#clock.now().getTime(),
+      roles: config.roles?.map((role) => ({ name: role.name, result: role.result, maxTurns: role.maxTurns })) ?? null,
+      maxTurns: config.agent.maxTurns,
+      compactThreshold: config.budget.compactThreshold,
     });
   }
 

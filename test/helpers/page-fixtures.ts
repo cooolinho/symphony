@@ -19,7 +19,7 @@ export function issueRow(over: Obj = {}): Obj {
 
 /** GET /api/v1/<identifier> of a running issue acme/app#1; `over` replaces top-level keys. */
 export function issueDetail(over: Obj = {}): Obj {
-  return { ...clone({"issue_identifier":"acme/app#1","issue_id":"1","issue_url":null,"title":"Issue one","repo":"acme/app","status":"running","role":"default","issue":{"state":"In progress","labels":[],"priority":null,"blocked_by":[],"dispatch_note":null,"parent":null,"sub_issues":[]},"pipeline":[{"id":"default","label":"default","kind":"agent","columns":["In progress","In Progress"],"status":"active","sessions":[{"run":"d0bc2a2d5f92","attempt":null,"role":"default","state":"In progress","model":null,"effort":null,"started_at":"2026-10-30T11:59:00.000Z","finished_at":null,"outcome":null,"transcript":null,"verdict":null,"round":null}],"verdict":null,"round":null},{"id":"terminal:done","label":"Done","kind":"terminal","columns":["Done"],"status":"pending","sessions":[],"verdict":null,"round":null}],"results":[],"workspace":{"path":"/work/acme_app_1"},"attempts":{"runs":1,"continuations":0,"restart_count":0,"current_retry_attempt":null},"run_trace":{"head_sha":null,"branch":null,"mcp_tool_calls":{},"tool_calls":{},"skill_calls":{},"agent_calls":{},"integrations":[]},"running":{"issue_id":"1","issue_identifier":"acme/app#1","issue_url":null,"title":"Issue one","state":"In progress","role":"default","forced":false,"phase":"StreamingTurn","attempt":null,"session_id":"thread-1-1","thread_id":"thread-1","turn_count":1,"pid":4242,"last_event":"turn_started","last_message":"","started_at":"2026-10-30T11:59:00.000Z","last_event_at":"2026-10-30T11:59:00.000Z","seconds_running":0.2,"context":{"tokens":0,"window":null,"percent":null,"compacts":0},"workspace":"/work/acme_app_1","tokens":{"input_tokens":0,"output_tokens":0,"total_tokens":0},"model":"claude-code-default","effort":null,"cost_usd":0,"claude_estimate_usd":0,"repo":"acme/app","stopping":null,"head_sha":null,"branch":null,"mcp_tool_calls":{},"tool_calls":{},"skill_calls":{},"agent_calls":{},"subagents":{"running":[],"finished":[]},"integrations":[]},"retry":null,"paused":null,"logs":{"session_transcripts_dir":null},"usage_by_model":{},"sessions":[{"run":"d0bc2a2d5f92","attempt":null,"role":"default","state":"In progress","model":null,"effort":null,"started_at":"2026-10-30T11:59:00.000Z","finished_at":null,"outcome":null,"transcript":null}],"timeline_seq":5,"recent_events":[],"last_error":null,"last_check":null,"gate":null,"tracked":{"completed_before":false},"slots":{"running":1,"forced":0,"limit":10},"archived":null,"controls":{"retry":true}}), ...over };
+  return { ...clone({"issue_identifier":"acme/app#1","issue_id":"1","issue_url":null,"title":"Issue one","repo":"acme/app","status":"running","role":"default","profile":null,"rounds":null,"pull_request":null,"issue":{"state":"In progress","labels":[],"branch_name":null,"priority":null,"blocked_by":[],"dispatch_note":null,"parent":null,"sub_issues":[]},"pipeline":[{"id":"default","label":"default","kind":"agent","columns":["In progress","In Progress"],"status":"active","sessions":[{"run":"d0bc2a2d5f92","attempt":null,"role":"default","state":"In progress","model":null,"effort":null,"started_at":"2026-10-30T11:59:00.000Z","finished_at":null,"outcome":null,"transcript":null,"verdict":null,"round":null}],"verdict":null,"round":null},{"id":"terminal:done","label":"Done","kind":"terminal","columns":["Done"],"status":"pending","sessions":[],"verdict":null,"round":null}],"results":[],"workspace":{"path":"/work/acme_app_1"},"attempts":{"runs":1,"continuations":0,"restart_count":0,"current_retry_attempt":null},"run_trace":{"head_sha":null,"branch":null,"mcp_tool_calls":{},"tool_calls":{},"skill_calls":{},"agent_calls":{},"integrations":[]},"running":{"issue_id":"1","issue_identifier":"acme/app#1","issue_url":null,"title":"Issue one","state":"In progress","role":"default","forced":false,"phase":"StreamingTurn","attempt":null,"session_id":"thread-1-1","thread_id":"thread-1","turn_count":1,"pid":4242,"last_event":"turn_started","last_message":"","started_at":"2026-10-30T11:59:00.000Z","last_event_at":"2026-10-30T11:59:00.000Z","seconds_running":0.2,"context":{"tokens":0,"window":null,"percent":null,"compacts":0},"workspace":"/work/acme_app_1","tokens":{"input_tokens":0,"output_tokens":0,"total_tokens":0},"model":"claude-code-default","effort":null,"cost_usd":0,"claude_estimate_usd":0,"repo":"acme/app","stopping":null,"head_sha":null,"branch":null,"mcp_tool_calls":{},"tool_calls":{},"skill_calls":{},"agent_calls":{},"subagents":{"running":[],"finished":[]},"integrations":[]},"retry":null,"paused":null,"logs":{"session_transcripts_dir":null},"usage_by_model":{},"sessions":[{"run":"d0bc2a2d5f92","attempt":null,"role":"default","state":"In progress","model":null,"effort":null,"started_at":"2026-10-30T11:59:00.000Z","finished_at":null,"outcome":null,"transcript":null}],"timeline_seq":5,"recent_events":[],"last_error":null,"last_check":null,"gate":null,"tracked":{"completed_before":false},"slots":{"running":1,"forced":0,"limit":10},"archived":null,"controls":{"retry":true}}), ...over };
 }
 
 /** GET /api/v1/history/analytics for one finished run of acme/app#1 (the stats page renders it). */
@@ -47,23 +47,24 @@ export function changesFixture(over: Obj = {}): Obj {
 
 /** GET /api/v1/<identifier>/team while the developer plays; `over` replaces top-level keys. */
 export function teamView(over: Obj = {}): Obj {
-  const seat = (role: string, status: string, verdict: string | null, duration_ms: number | null, model: string | null) => ({ role, status, verdict, duration_ms, model });
-  const tool = (n: string) => ({ tool: n, message: `${n}: x`, at: '2026-10-30T11:59:50.000Z' });
+  const seat = (role: string, status: string, verdict: string | null, duration_ms: number | null, model: string | null, kind: string | null, round: number | null = null) => ({ role, status, verdict, duration_ms, model, round, kind });
+  const tool = (n: string, arg: string, at: string) => ({ tool: n, message: `${n}: ${arg}`, at: `2026-10-30T${at}.000Z` });
   const sub = (type: string, description: string, status: string, started_at: string, ended_at: string | null, total_tokens: number) => ({
     tool_use_id: type, subagent_type: type, description, status, started_at, ended_at,
     tokens: { input_tokens: total_tokens, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens },
   });
+  const tools = [tool('Read', 'src/http/ui/palette.ts', '11:59:10'), tool('Grep', 'ROLE_LIGHT', '11:59:20'), tool('Bash', 'npm test', '11:59:30'), tool('Write', 'test/x.test.ts', '11:59:40'), tool('Edit', 'src/http/ui/tokens.ts', '11:59:50')];
   return {
     ...clone({
       seats: [
-        seat('analyst', 'done', 'ready', 180000, 'sonnet'), seat('architect', 'done', 'ready', 540000, 'opus'),
-        seat('developer', 'playing', null, 720000, 'opus'), seat('tester', 'returned', 'failed', 240000, 'sonnet'),
-        seat('docs', 'skipped', null, null, null), seat('reviewer', 'waiting', null, null, null),
-        seat('security', 'waiting', null, null, null), seat('you', 'waiting', null, null, null),
+        seat('analyst', 'done', 'ready', 180000, 'sonnet', 'analysis', 1), seat('architect', 'done', 'ready', 540000, 'opus', 'design', 1),
+        seat('developer', 'playing', null, 720000, 'opus', 'implementation', 1), seat('tester', 'returned', 'failed', 240000, 'sonnet', 'test', 1),
+        seat('docs', 'skipped', null, null, null, 'docs'), seat('reviewer', 'waiting', null, null, null, 'review'),
+        seat('security', 'waiting', null, null, null, 'security'), seat('you', 'waiting', null, null, null, 'human'),
       ],
       active: {
-        role: 'developer', action: 'Edit src/http/ui/tokens.ts', recent_tools: ['A', 'B', 'C', 'D', 'E'].map(tool),
-        context: { tokens: 84000, window: 200000, percent: 42, compacts: 2 }, turn: 23, model: 'opus',
+        role: 'developer', action: 'Edit src/http/ui/tokens.ts', recent_tools: tools.slice(-4),
+        context: { tokens: 84000, window: 200000, percent: 42, compacts: 2 }, turn: 23, max_turns: 50, model: 'opus', effort: 'high',
         tokens: { input_tokens: 800000, output_tokens: 300000, total_tokens: 1100000 }, cost_usd: 1.4,
       },
       subagents: {
@@ -72,6 +73,8 @@ export function teamView(over: Obj = {}): Obj {
       },
       blocks: [],
       handoffs: [],
+      trace: tools.slice(-4),
+      compact_threshold: 80,
     }),
     ...clone(over),
   };

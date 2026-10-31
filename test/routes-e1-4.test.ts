@@ -94,7 +94,8 @@ describe('E1-4 routes and redirects (independent acceptance tests)', () => {
     // Only the breadcrumb carries aria-current; no main navigation entry is active.
     assert.doesNotMatch(mainNav(body), /aria-current/);
     // Client script fills in the issue id and polls the API.
-    assert.match(body, /'Issue ' \+ num/);
+    // E3-6: the crumb becomes "#<nr> <short title>" once the details are loaded.
+    assert.match(body, /num \+ ' ' \+ oneLine\(d\.title, 40\)/);
     assert.doesNotMatch(body, /'Agent ' \+ num\)[^;]*crumb/);
     assert.match(body, /\/api\/v1\//);
   });

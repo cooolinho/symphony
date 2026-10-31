@@ -38,30 +38,24 @@ const AGENT_CSS = `
 `;
 
 const AGENT_PAGE_CSS = `
-  /* Header */
-  .hero { position: relative; overflow: hidden; border-color: var(--line-2); padding: 18px 20px;
-    background: linear-gradient(160deg, var(--tone-dim, transparent) 0%, rgba(11, 17, 21, .96) 42%), var(--panel); }
-  .hero::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px; background: linear-gradient(90deg, var(--tone, var(--faint)), transparent 75%); }
-  .hero-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
-  .hero-top .tags { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-  .hero-id { font: 600 13px var(--mono); letter-spacing: .14em; color: var(--text-2); text-transform: uppercase; }
-  .hero-id b { color: var(--text); font-size: 15px; letter-spacing: .04em; }
-  .hero h1 { margin: 12px 0 4px; font: 600 22px/1.3 var(--sans); color: #f0f6f3; letter-spacing: -.01em; overflow-wrap: anywhere; }
-  .hero-repo { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 12.5px var(--mono); color: var(--muted); }
-  .hero-repo span { overflow-wrap: anywhere; }
-  .hero-meta { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 4px 10px; font: 500 13px var(--mono); color: var(--cyan); }
-  .hero-meta .sep { color: var(--faint); }
-  .hero-meta .role { color: var(--text); }
-  .hero-metrics { margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--line-2); display: grid; gap: 12px 18px;
-    grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); }
-  .hero-metrics div { min-width: 0; }
+  /* Head card (Kopfkarte): chips, title, meta line, key figures and actions */
+  .head { padding: 20px 22px; display: flex; flex-wrap: wrap; gap: 18px 28px; justify-content: space-between; align-items: flex-start; }
+  .head-main { flex: 1 1 420px; min-width: 0; display: grid; gap: 10px; }
+  .head-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .head-chips > span:empty { display: none; }
+  #head-tags { display: contents; }
+  .head h1 { margin: 0; font: 600 var(--fs-h1-team)/1.2 var(--sans); letter-spacing: -.02em; color: var(--fg-strong); overflow-wrap: anywhere; }
+  .head-meta { font: 12.5px var(--mono); color: var(--fg-3); overflow-wrap: anywhere; }
+  .head-meta:empty { display: none; }
+  .head-kpis { display: grid; grid-template-columns: repeat(4, minmax(84px, auto)); gap: 6px 18px; align-self: center; }
+  .head-kpis .lbl { display: block; }
+  .head-kpi-v { display: block; margin-top: 4px; font: 500 var(--fs-kpi-22)/1.2 var(--mono); font-variant-numeric: tabular-nums; color: var(--fg-strong); white-space: nowrap; }
+  .head-actions { display: flex; flex-wrap: wrap; gap: 8px; align-self: center; }
+  .head-actions:empty { display: none; }
+  .stage-head .lbl { margin: 0; }
+  /* Key/value tiles of the timeline (model call metrics, panes) */
   .k { font: 600 10px var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); display: block; }
   .v { display: block; margin-top: 3px; font: 600 15px var(--mono); font-variant-numeric: tabular-nums; color: var(--text); overflow-wrap: anywhere; }
-  .v.small { font-size: 12.5px; font-weight: 500; color: var(--text-2); }
-  .live-line { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 4px 10px; font: 12.5px var(--mono); color: var(--text-2); min-width: 0; }
-  .live-line .ev { color: var(--text); }
-  .live-line .age { color: var(--muted); }
-  .live-line .msg { flex-basis: 100%; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 
   /* Alert (failure, retry, pause) */
   .alert { border-color: var(--tone-line); background: linear-gradient(180deg, var(--tone-dim), rgba(11, 17, 21, .85)); display: grid; gap: 8px; }
@@ -70,8 +64,6 @@ const AGENT_PAGE_CSS = `
   .alert .sub { font: 12px var(--mono); color: var(--text-2); display: flex; flex-wrap: wrap; gap: 4px 16px; }
   .alert .sub b { color: var(--text); font-weight: 600; }
   .alert .actions { margin-top: 2px; }
-  .hero-actions { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
-  .hero-actions[hidden] { display: none; }
   .notice { font: 12.5px var(--mono); color: var(--text-2); padding: 10px 14px; border: 1px dashed var(--line-2); border-radius: var(--radius-sm); background: rgba(0, 0, 0, .2); }
 
   /* Layout: timeline dominant, summary on the side */
@@ -186,8 +178,6 @@ const AGENT_PAGE_CSS = `
   .logs .note { display: block; padding: 14px; color: var(--muted); }
 
   @media (max-width: 640px) {
-    .hero { padding: 14px; }
-    .hero h1 { font-size: 18px; }
     .item { --rail: 18px; }
     .item.sub { --rail: 30px; }
     .item .when { display: none; }
@@ -202,55 +192,76 @@ const AGENT_PAGE_CSS = `
   }
   .t-inline { display: none; font: 11px var(--mono); color: var(--faint); }
 
-  /* Stage (Bühne) */
-  .stage { position: relative; overflow: hidden; margin-top: 18px; }
-  .stage-body { display: grid; gap: 18px; }
-  .stage-seats { list-style: none; margin: 0; padding: 0; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 18px 8px; align-content: start; }
-  .stage-seat { position: relative; display: flex; flex-direction: column; align-items: center; text-align: center; min-width: 0; gap: 6px; }
-  .stage-seat::before { content: ""; position: absolute; top: 47px; left: -4px; right: -4px; height: 2px; background: rgba(255, 255, 255, .12); }
-  .stage-spot { position: relative; z-index: 1; height: 96px; display: grid; place-items: center; }
+  /* Stage (Bühne): spotlight, stage edge, one column per seat, then the fields Jetzt, Session and Subagents */
+  .stage { position: relative; overflow: hidden; padding: 20px 22px 22px; display: grid; gap: 20px; }
+  .stage-head { position: relative; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+  .stage-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--fg-3); }
+  .stage-legend li { display: inline-flex; align-items: center; gap: 6px; }
+  .stage-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+  .stage-legend .lg-play { background: #34d399; }
+  .stage-legend .lg-done { background: #94a3b8; }
+  .stage-legend .lg-back { background: #f87171; }
+  .stage-legend .lg-wait { width: 10px; height: 10px; box-sizing: border-box; border: 1px dashed rgba(255, 255, 255, .5); }
+  .seats-wrap { position: relative; }
+  .spot { position: absolute; z-index: 0; top: -150px; width: 320px; height: 420px; pointer-events: none; }
+  .floor { position: absolute; z-index: 0; top: 47px; left: 6%; right: 6%; height: 2px; border-radius: 1px; background: rgba(255, 255, 255, .14); }
+  .seats { position: relative; z-index: 1; list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(var(--seats, 8), minmax(0, 1fr)); gap: 18px 8px; }
+  .stage-seat { position: relative; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; }
+  .stage-spot { height: 96px; display: grid; place-items: center; }
+  .stage-seat.is-active .stage-spot { margin-bottom: 8px; }
+  .stage-seat.is-returned .ui-av { background: #2a1414; }
+  .stage-seat.is-skipped .ui-av { background: transparent; color: #5b6678; border: 1px dashed #5b6678; }
+  .stage-seat .ui-av.is-you { border-radius: 18px; }
   .stage-gauge { position: relative; width: 96px; height: 96px; }
-  .stage-seat.is-active .stage-spot { margin-bottom: 12px; }
-  .stage-gauge > .ui-av { position: absolute; left: 16px; top: 16px; }
-  .stage-seat.is-active::after { content: ""; position: absolute; z-index: 0; left: 50%; top: -90px; width: 240px; height: 300px; margin-left: -120px; background: radial-gradient(closest-side, var(--seat-glow, rgba(120, 160, 255, .28)), transparent); pointer-events: none; }
-  .stage-seat.is-skipped { opacity: .45; }
-  .stage-name { position: relative; z-index: 1; font: 600 12.5px var(--sans); color: var(--text); overflow-wrap: anywhere; }
-  .stage-sub { position: relative; z-index: 1; font: 11px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
-  .stage-fields { display: flex; flex-wrap: wrap; gap: 14px; min-width: 0; }
-  .stage-field { flex: 1 1 260px; min-width: 0; padding: 14px 16px; }
-  .stage-field.is-now { flex: 2 1 380px; }
-  .stage-field h3 { margin: 0 0 8px; display: flex; justify-content: space-between; gap: 8px; font: 600 11px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
-  .stage-action { font: 13px/1.45 var(--mono); color: var(--text); overflow-wrap: anywhere; }
-  .stage-trace { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-  .stage-trace .ui-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .stage-arrow { color: var(--faint); }
-  .stage-ctx { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 6px; font: 12px var(--mono); color: var(--text-2); }
-  .stage-compacts { margin: 8px 0; display: flex; flex-wrap: wrap; align-items: center; gap: 3px; font: 11px var(--mono); color: var(--muted); }
-  .stage-compact { display: inline-block; width: 2px; height: 12px; background: var(--red, #ff6b6b); }
-  .stage-compacts .txt { margin-left: 6px; }
-  .stage-subagent { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; padding: 6px 0; border-top: 1px dashed var(--line-2); font: 12px var(--mono); color: var(--text-2); }
-  .stage-subagent:first-of-type { border-top: 0; }
-  .stage-subagent .desc { flex: 1 1 100%; min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
-  .stage-subagent.is-done { opacity: .7; }
-  .stage-subagent .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
-  .stage-subagent.is-running .dot { background: var(--green, #3ddc84); }
-  .stage-subagent .dot.pulse { animation: stage-pulse 1.4s ease-in-out infinite; }
-  @keyframes stage-pulse { 50% { opacity: .35; } }
-  .stage-empty { margin: 0; color: var(--muted); font: 13px var(--mono); }
-  @media (min-width: 1280px) {
-    .stage-body { grid-template-columns: minmax(0, 3fr) minmax(340px, 2fr); }
-    .stage-fields { flex-direction: column; flex-wrap: nowrap; }
-    .stage-field, .stage-field.is-now { flex: 0 0 auto; }
-  }
+  .stage-gauge > .ring { inset: -9px; }
+  .stage-name { font: 600 13.5px/1.3 var(--sans); color: var(--fg); overflow-wrap: anywhere; }
+  .stage-seat.is-returned .stage-name, .stage-seat.is-waiting .stage-name, .stage-seat.is-skipped .stage-name { color: var(--fg-chip); }
+  .stage-sub { font-size: 12px; line-height: 1.35; color: var(--fg-3); overflow-wrap: anywhere; }
+  .stage-seat.is-returned .stage-sub { color: #fca5a5; }
+  .stage-seat.is-active .stage-sub { color: var(--fg-chip); }
+  .stage-fields { position: relative; z-index: 1; display: flex; flex-wrap: wrap; gap: 14px; min-width: 0; }
+  .stage-field { min-width: 0; padding: 16px 18px; display: grid; gap: 10px; align-content: start; }
+  #stage-now { flex: 2 1 380px; }
+  #stage-session { flex: 1 1 260px; }
+  #stage-subs { flex: 1 1 300px; }
+  .field-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .field-ago { font: 12px var(--mono); color: var(--fg-3); white-space: nowrap; }
+  .field-body { display: grid; gap: 10px; min-width: 0; }
+  .stage-action { font: 19px/1.35 var(--mono); color: var(--fg); overflow-wrap: anywhere; }
+  .stage-desc { font-size: 13px; color: var(--fg-2); overflow-wrap: anywhere; }
+  .stage-trace { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .stage-trace .ui-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .stage-arrow { color: #5b6678; }
+  .stage-ctx { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--fg-2); }
+  .stage-ctx .mono.hot { color: var(--amber-400); }
+  .stage-session .ui-bar-fill { background: linear-gradient(90deg, #34d399, #fbbf24); }
+  .stage-hint { font-size: 11.5px; color: var(--fg-2); }
+  .stage-kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; font: 13px var(--mono); }
+  .stage-kv dt { color: var(--fg-3); font-size: 13px; }
+  .stage-kv dd { margin: 0; color: var(--fg); overflow-wrap: anywhere; }
+  .stage-subagent { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .sub-av { position: relative; flex: none; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; font: 600 10.5px/1 var(--mono);
+    color: #6ee7b7; background: rgba(52, 211, 153, .14); border: 1px solid rgba(52, 211, 153, .5); }
+  .sub-av .ring { inset: -4px; color: #34d399; }
+  .stage-subagent.is-done .sub-av { color: var(--fg-2); background: rgba(255, 255, 255, .04); border-color: rgba(255, 255, 255, .14); }
+  .sub-main { flex: 1 1 auto; min-width: 0; display: grid; gap: 2px; }
+  .sub-name { font-size: 13px; font-weight: 500; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sub-task { font-size: 12px; color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sub-right { flex: none; font: 12px var(--mono); color: var(--fg-3); white-space: nowrap; }
+  .stage-subagent.is-running .sub-right { color: #6ee7b7; }
+  .stage-empty { margin: 0; color: var(--fg-3); font-size: 13px; }
   @media (max-width: 900px) {
-    .stage-seats { grid-auto-flow: row; grid-template-columns: repeat(var(--stage-cols, 4), minmax(0, 1fr)); }
+    .seats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .floor, .spot { display: none; }
   }
   @media (max-width: 640px) {
+    .head, .stage { padding: 16px; }
+    .head h1 { font-size: 22px; }
+    .head-kpis { grid-template-columns: repeat(2, minmax(84px, auto)); }
     .stage-spot { height: 80px; }
-    .stage-seat::before { top: 39px; }
     .stage-gauge, .stage-gauge .ui-ring { width: 80px !important; height: 80px !important; }
-    .stage-gauge > .ui-av { left: 8px; top: 8px; }
     .stage-sub { display: none; }
+    .stage-name { font-size: 12px; overflow-wrap: normal; }
   }
 `;
 
@@ -267,28 +278,35 @@ export const AGENT_HTML = page({
   crumbs: [{ label: 'Übersicht', href: '/' }, { label: 'Issue' }],
   styles: PIPELINE_CSS + AGENT_CSS + AGENT_PAGE_CSS,
   body: `
-  <section class="hero tone-gray" id="hero" aria-labelledby="hero-title">
-    <div class="hero-top">
-      <div class="tags"><span id="state-slot"><span class="badge tone-gray"><span class="dot"></span><span>Loading</span></span></span><span class="chip" id="attempt" hidden></span></div>
-      <div class="hero-id" id="hero-id">Agent</div>
+  <section class="g head" id="hero" aria-labelledby="hero-title">
+    <div class="head-main">
+      <div class="head-chips" id="head-chips"><span class="ui-chip mono" id="head-num">#</span><span id="state-slot"><span class="ui-chip"><span class="ui-dot" aria-hidden="true"></span><span class="ui-chip-text">Loading</span></span></span><span id="head-tags"></span><span class="ui-chip" id="attempt" hidden></span></div>
+      <h1 id="hero-title">Loading agent trace…</h1>
+      <div class="head-meta" id="head-meta"></div>
     </div>
-    <h1 id="hero-title">Loading agent trace…</h1>
-    <div class="hero-repo"><span id="hero-repo"></span><span id="hero-branch" hidden></span><a id="hero-issue" hidden target="_blank" rel="noopener noreferrer">Open issue ↗</a></div>
-    <div class="hero-meta" id="hero-meta"></div>
-    <div class="hero-metrics" id="hero-metrics"></div>
-    <div class="hero-actions" id="hero-actions" hidden></div>
-    <div class="live-line" id="live-line" hidden><span class="k">Now</span><span class="ev" id="live-ev"></span><span class="age" id="live-age"></span><span class="msg" id="live-msg"></span></div>
+    <div class="head-kpis" id="head-kpis"></div>
+    <div class="head-actions" id="head-actions"></div>
   </section>
 
-  <section class="stage" id="stage" aria-labelledby="stage-title" hidden>
-    <div class="section-head"><h2 id="stage-title">Bühne</h2></div>
-    <div class="stage-body">
-      <ol class="stage-seats" id="stage-seats" aria-label="Sitze in Pipeline-Reihenfolge"></ol>
-      <div class="stage-fields">
-        <article class="stage-field gi is-now" id="stage-now"><h3><span>Jetzt</span><span id="stage-now-meta"></span></h3><div id="stage-now-body"></div></article>
-        <article class="stage-field gi" id="stage-session"><h3><span>Session</span></h3><div id="stage-session-body"></div></article>
-        <article class="stage-field gi" id="stage-subs"><h3><span>Subagents</span><span id="stage-subs-meta"></span></h3><div id="stage-subs-body"></div></article>
-      </div>
+  <section class="g stage" id="stage" aria-labelledby="stage-title" hidden>
+    <div class="stage-head">
+      <h2 class="lbl" id="stage-title">Bühne</h2>
+      <ul class="stage-legend" aria-label="Legende">
+        <li><i class="lg-play" aria-hidden="true"></i>spielt</li>
+        <li><i class="lg-done" aria-hidden="true"></i>fertig</li>
+        <li><i class="lg-back" aria-hidden="true"></i>Rückgabe</li>
+        <li><i class="lg-wait" aria-hidden="true"></i>wartet</li>
+      </ul>
+    </div>
+    <div class="seats-wrap">
+      <div class="spot" id="stage-spot" aria-hidden="true" hidden></div>
+      <div class="floor" id="stage-floor" aria-hidden="true"></div>
+      <ol class="seats" id="stage-seats" aria-label="Sitze in Pipeline-Reihenfolge"></ol>
+    </div>
+    <div class="stage-fields">
+      <article class="stage-field gi" id="stage-now"><div class="field-head"><h3 class="lbl" id="stage-now-meta">Jetzt</h3><span class="field-ago" id="stage-now-ago"></span></div><div class="field-body" id="stage-now-body"></div></article>
+      <article class="stage-field stage-session gi" id="stage-session"><div class="field-head"><h3 class="lbl">Session</h3></div><div class="field-body" id="stage-session-body"></div></article>
+      <article class="stage-field gi" id="stage-subs"><div class="field-head"><h3 class="lbl">Subagents</h3><span class="field-ago" id="stage-subs-meta"></span></div><div class="field-body" id="stage-subs-body"></div></article>
     </div>
   </section>
 
@@ -918,81 +936,100 @@ ${PIPELINE_JS}
     return { tokens: f.tokens, cost: f.cost_usd, claude: null, turns: f.turns, runtime: f.agent_seconds, model: f.model, live: false };
   }
 
-  let lastStateLabel = '';
-  function renderHeader() {
-    const d = S.detail;
-    const [labelText, tone, pulse] = deriveState();
-    const hero = $('hero');
-    hero.className = 'hero tone-' + tone;
-    const slot = $('state-slot');
-    if (lastStateLabel !== labelText + tone) {
-      slot.replaceChildren(badge(labelText, tone, pulse));
-      if (lastStateLabel) $('announce').textContent = 'Agent state: ' + labelText;
-      lastStateLabel = labelText + tone;
+  // Head card (Kopfkarte): state chip with a live dot, round, profile, complexity, meta line, key figures, actions.
+  const LIVE_GREEN = '#34d399';
+  const IDLE_GRAY = '#94a3b8';
+  const HEAD_LABELS = { Pause: 'Pausieren', Resume: 'Fortsetzen', Force: 'Jetzt starten' };
+  /** "L" of a "Complexity: L" label; null without one. */
+  function complexityOf(labels) {
+    for (const label of labels || []) {
+      const m = /^complexity:\\s*(s|m|l|xl)$/i.exec(String(label).trim());
+      if (m) return m[1].toUpperCase();
     }
+    return null;
+  }
+  /** Seconds of all sessions together; the running one counts up to now. */
+  function runtimeTotal(sessions) {
+    let sum = 0;
+    for (const s of sessions) {
+      const start = Date.parse(s.started_at);
+      const end = s.finished_at ? Date.parse(s.finished_at) : isRunning() ? Date.now() : start;
+      if (Number.isFinite(start) && Number.isFinite(end)) sum += Math.max(0, end - start);
+    }
+    return sum / 1000;
+  }
+
+  let lastStateLabel = '';
+  let lastStateChip = '';
+  function renderHead() {
+    const d = S.detail;
+    const [labelText] = deriveState();
     const identifier = (d && d.issue_identifier) || ID;
     const { repo, num } = splitId(identifier);
-    const idBox = $('hero-id');
-    idBox.replaceChildren(el('span', 'Agent '), el('b', num));
-    setText($('crumb-current'), 'Issue ' + num);
-    document.title = num + ' · ' + labelText.replace(/^[^A-Za-z]+/, '') + ' · Symphony';
+    const words = labelText.replace(/^[^A-Za-z]+/, '');
+    setText($('crumb-current'), d && d.title ? num + ' ' + oneLine(d.title, 40) : num);
+    document.title = num + ' · ' + words + ' · Symphony';
     setText($('hero-title'), (d && d.title) || identifier);
-    setText($('hero-repo'), (d && d.repo && d.repo !== 'unknown' ? d.repo : repo) || '');
-    const run = isRunning() ? d.running : null;
-    const branch = (run && run.branch) || (d && d.run_trace && d.run_trace.branch);
-    $('hero-branch').hidden = !branch;
-    setText($('hero-branch'), branch ? '⎇ ' + branch : '');
-    const issueLink = $('hero-issue');
-    const url = d && d.issue_url;
-    issueLink.hidden = !(typeof url === 'string' && /^https?:/.test(url));
-    if (!issueLink.hidden && issueLink.getAttribute('href') !== url) issueLink.href = url;
+    setText($('head-num'), num);
+
+    // The column with a dot: green and pulsing while a session runs, gray otherwise.
+    const live = isRunning();
+    const column = (d && d.issue && d.issue.state) || (d && d.running && d.running.state) || '';
+    const chipKey = [column, labelText, live].join('|');
+    if (lastStateChip !== chipKey) {
+      const c = el('span', null, 'ui-chip state-chip');
+      const dot = el('span', null, 'ui-dot' + (live ? ' live' : ''));
+      dot.style.background = live ? LIVE_GREEN : IDLE_GRAY;
+      dot.setAttribute('aria-hidden', 'true');
+      // Outside a live session the state (retrying, paused, failed …) follows the column.
+      c.append(dot, el('span', live || !column ? column || labelText : column + ' · ' + labelText, 'ui-chip-text'));
+      c.setAttribute('title', labelText);
+      $('state-slot').replaceChildren(c);
+      lastStateChip = chipKey;
+    }
+    if (lastStateLabel !== labelText) {
+      if (lastStateLabel) $('announce').textContent = 'Agent state: ' + labelText;
+      lastStateLabel = labelText;
+    }
+    const tags = [];
+    const rounds = d && d.rounds;
+    if (rounds && rounds.current) tags.push(chip('Runde ' + rounds.current + ' von ' + rounds.max, rounds.current >= 2 ? { tone: 'amber' } : {}));
+    if (d && d.profile) tags.push(chip('Profil ' + d.profile));
+    const complexity = complexityOf(d && d.issue && d.issue.labels);
+    if (complexity) tags.push(chip('Komplexität ' + complexity));
+    patchChildren($('head-tags'), tags);
     const attempt = $('attempt');
     const att = d && d.attempts && d.attempts.current_retry_attempt;
     attempt.hidden = !att;
     setText(attempt, 'attempt ' + (att || ''));
 
+    // Meta line: repo · branch · HEAD · PR, missing parts left out.
+    const run = live ? d.running : null;
+    const trace = d && d.run_trace;
+    const branch = (run && run.branch) || (trace && trace.branch) || (d && d.issue && d.issue.branch_name);
+    const sha = (run && run.head_sha) || (trace && trace.head_sha);
+    const parts = [(d && d.repo && d.repo !== 'unknown' ? d.repo : repo) || '', branch || '', sha ? 'HEAD ' + String(sha).slice(0, 7) : '', d && d.pull_request ? 'PR #' + d.pull_request : ''];
+    setText($('head-meta'), parts.filter(Boolean).join(' · '));
+
     const sessions = (d && d.sessions) || [];
-    const lastSession = sessions[sessions.length - 1];
     const t = totals();
-    const meta = [];
-    meta.push(['role', (d && d.role) || (lastSession && lastSession.role) || 'role N/A']);
-    meta.push(['', (t && t.model) || (lastSession && lastSession.model) || 'model N/A']);
-    const effort = (run && run.effort) || (lastSession && lastSession.effort);
-    if (effort) meta.push(['', 'effort ' + effort]);
-    meta.push(['', run ? run.phase : d && d.status === 'retrying' ? 'waiting for retry' : d && d.status === 'paused' ? 'paused' : d && d.status === 'finished' ? 'finished' : S.ended ? 'ended' : '—']);
-    if (run && run.state) meta.push(['', 'column ' + run.state]);
-    const metaBox = $('hero-meta');
-    const metaNodes = [];
-    meta.forEach(([cls, text], i) => { if (i) metaNodes.push(el('span', '·', 'sep')); metaNodes.push(el('span', text, cls)); });
-    patchChildren(metaBox, metaNodes);
+    patchChildren($('head-kpis'), [
+      ['Laufzeit', sessions.length ? fmtDuration(runtimeTotal(sessions)) : '—'],
+      ['Tokens', t && t.tokens ? fmtCompact(t.tokens.total_tokens) : '—'],
+      ['Kosten', t && t.cost !== null && t.cost !== undefined ? fmtCost(t.cost) : '—'],
+      ['Sessions', String(sessions.length)],
+    ].map(([k, v]) => { const box = el('div', null, 'head-kpi'); box.append(el('span', k, 'lbl'), el('span', v, 'head-kpi-v')); return box; }));
 
-    tilesInto($('hero-metrics'), [
-      ['Runtime', t && t.runtime !== null ? fmtDuration(t.runtime) : 'N/A'],
-      ['Turn', t ? pad2(t.turns) : 'N/A'],
-      ['Tokens', t && t.tokens ? fmtCompact(t.tokens.total_tokens) : 'N/A'],
-      ['Est. cost', t ? fmtCost(t.cost) : 'N/A'],
-      ['Sessions', pad2(sessions.length)],
-      ['Started', lastSession ? fmtClock(lastSession.started_at) : '—'],
-    ]);
-
-    // Pause of a running or retrying issue; a paused issue gets Resume in its alert. Start now for a waiting or paused one.
-    const actionsBox = $('hero-actions');
-    const pausable = d && !S.ended && (d.status === 'running' || d.status === 'retrying');
-    const forceable = d && !S.ended && (d.status === 'retrying' || d.status === 'paused') && retryAllowed();
-    actionsBox.hidden = !pausable && !forceable;
-    patchChildren(actionsBox, [...(forceable ? [restartButton('Force')] : []), ...(pausable ? [restartButton('Pause')] : [])]);
-
-    const live = $('live-line');
-    live.hidden = !run;
-    if (run) {
-      setText($('live-ev'), run.last_event ? label(run.last_event) : 'waiting for first event');
-      setText($('live-age'), run.last_event_at ? '· ' + ago(run.last_event_at) : '');
-      setText($('live-msg'), run.stopping ? 'Stopping: ' + run.stopping : run.last_message);
+    // Pause a running or retrying issue, resume a paused one, start a waiting one now; only where controls are allowed.
+    const actions = [];
+    if (d && !S.ended && retryAllowed()) {
+      if (d.status === 'retrying' || d.status === 'paused') actions.push(restartButton('Force', HEAD_LABELS.Force));
+      if (d.status === 'paused') actions.push(restartButton('Resume', HEAD_LABELS.Resume));
+      if (d.status === 'running' || d.status === 'retrying') actions.push(restartButton('Pause', HEAD_LABELS.Pause));
     }
-  }
-
-  function tilesInto(host, items) {
-    patchChildren(host, items.map(([k, v, cls]) => { const d = el('div'); d.append(el('span', k, 'k'), el('span', v, 'v' + (cls ? ' ' + cls : ''))); return d; }));
+    const url = d && d.issue_url;
+    if (typeof url === 'string' && /^https?:/.test(url)) actions.push(button('GitHub ↗', { size: 38, href: url }));
+    patchChildren($('head-actions'), actions);
   }
 
   function lastErrorItem() {
@@ -1015,10 +1052,11 @@ ${PIPELINE_JS}
   // controls.retry from /api/v1/<identifier>; false on a non-loopback bind without server.allow_remote_control.
   const retryAllowed = () => !S.detail || !S.detail.controls || S.detail.controls.retry !== false;
 
-  function restartButton(verb) {
+  /** A control button; with a label it is the head card's pill button (German label), else the alert's. */
+  function restartButton(verb, label) {
     if (!retryAllowed()) return el('span', RESTART_DISABLED, 'muted restart-off');
     const st = restartState && restartState.verb === verb ? restartState : null;
-    const b = el('button', st ? st.label : RESTART_LABELS[verb], 'btn restart' + (st && st.cls ? ' ' + st.cls : ''));
+    const b = el('button', st ? st.label : label || RESTART_LABELS[verb], (label ? 'ui-btn ui-btn-38' : 'btn') + ' restart' + (st && st.cls ? ' ' + st.cls : ''));
     b.type = 'button';
     b.dataset.verb = verb;
     b.setAttribute('aria-label', RESTART_LABELS[verb] + ' ' + ID);
@@ -1028,7 +1066,7 @@ ${PIPELINE_JS}
 
   function repaintControls() {
     renderAlert();
-    if (S.detail) renderHeader();
+    if (S.detail) renderHead();
   }
 
   async function restart(verb) {
@@ -1610,12 +1648,38 @@ ${PIPELINE_JS}
   // ------------------------------------------------------------------ stage (Bühne)
 
   const STAGE_WORDS = { done: 'fertig', playing: 'spielt', waiting: 'wartet', returned: 'Rückgabe', skipped: 'übersprungen' };
-  const AUTO_COMPACT_PCT = 80;
-  const seatName = (role) => (role === 'you' ? 'Du' : uiOwn(UI_ROLE_NAMES, role) || String(role).charAt(0).toUpperCase() + String(role).slice(1));
-  const seatAvatarRole = (role) => (role === 'you' ? 'human' : role);
+  // Dark seat grounds of the mockup; other roles get their colour at .16.
+  const SEAT_GROUND = { analyst: '#0d2433', architect: '#1d1838', developer: '#0c2e25' };
+  const RETURNED_GROUND = '#2a1414';
+  const RETURNED_RED = '#f87171';
+  const FLOOR_BASE = 'rgba(255,255,255,.14)';
+  const seatKey = (s) => uiRoleKey(s.role === 'you' ? 'human' : s.role, s.kind);
+  const seatColor = (s) => UI_ROLE_COLORS[seatKey(s)];
+  function seatName(s) {
+    if (s.role === 'you') return 'Du';
+    const own = uiOwn(UI_ROLE_NAMES, s.role) || (uiOwn(UI_KIND_ROLE, s.kind) ? UI_ROLE_NAMES[seatKey(s)] : null);
+    return own || String(s.role).charAt(0).toUpperCase() + String(s.role).slice(1);
+  }
   const seatDuration = (s) => (s.duration_ms === null || s.duration_ms === undefined ? '—' : fmtDuration(s.duration_ms / 1000));
+  const fmtK = (n) => (typeof n === 'number' && Number.isFinite(n) ? Math.round(n / 1000) + 'k' : '—');
+  const stagePct = (n) => +Math.min(100, Math.max(0, n)).toFixed(2) + '%';
+  const liveStart = () => (isRunning() && S.detail.running.started_at ? Date.parse(S.detail.running.started_at) : NaN);
   function seatTitle(seat, status) {
-    return [seatName(seat.role), STAGE_WORDS[status], 'Verdict ' + (seat.verdict ?? '—'), 'Dauer ' + seatDuration(seat), 'Modell ' + (seat.model ?? '—')].join(' · ');
+    return [seatName(seat), STAGE_WORDS[status], 'Verdict ' + (seat.verdict ?? '—'), 'Dauer ' + seatDuration(seat), 'Modell ' + (seat.model ?? '—')].join(' · ');
+  }
+  /** The line below a seat's name. */
+  function seatSub(s, status) {
+    if (s.role === 'you') return s.status === 'done' ? 'Done' : 'In review · Merge';
+    if (status === 'playing') {
+      const rounds = S.detail && S.detail.rounds;
+      const start = liveStart();
+      return 'spielt · Runde ' + ((rounds && rounds.current) || s.round || 1) + ' · ' + (Number.isFinite(start) ? fmtDuration((Date.now() - start) / 1000) : seatDuration(s));
+    }
+    if (status === 'done') return [s.verdict, s.duration_ms === null || s.duration_ms === undefined ? null : seatDuration(s), s.model].filter(Boolean).join(' · ') || '—';
+    if (status === 'returned') { const n = s.round || 1; return 'R' + n + ' ' + (s.verdict || 'failed') + ' · wartet auf R' + (n + 1); }
+    if (status === 'skipped') return 'übersprungen';
+    const key = seatKey(s);
+    return key === 'docs' ? 'wartet · nur bei Doku-Bedarf' : key === 'security' ? 'wartet · bei Sicherheitsbezug' : 'wartet';
   }
   // Without a session nothing plays; with one only its own seat does.
   function seatStatuses(seats, active) {
@@ -1629,86 +1693,200 @@ ${PIPELINE_JS}
     });
   }
 
-  function renderStageSeats(seats, active) {
+  /** The context ring of the playing seat: role icon inside, role glow around, an accessible name with the percent. */
+  function contextRing(s, pct) {
+    const key = seatKey(s);
+    const glyph = el('span', null, 'stage-glyph');
+    glyph.style.color = UI_ROLE_COLORS[key];
+    const svg = icon(UI_ROLE_ICON[key], 34);
+    if (svg) glyph.append(svg);
+    const r = ring(pct, { size: 96, inner: glyph });
+    r.setAttribute('aria-label', seatName(s) + ' spielt, Context ' + (pct === null ? 'unbekannt' : pct + ' Prozent'));
+    r.style.boxShadow = '0 0 44px ' + uiRgba(UI_ROLE_COLORS[key], '.45');
+    return r;
+  }
+
+  function buildSeat(s, status, pct) {
+    const key = seatKey(s);
+    const c = UI_ROLE_COLORS[key];
+    const li = el('li', null, 'stage-seat is-' + status + (status === 'playing' ? ' is-active' : '') + (s.role === 'you' ? ' is-you' : ''));
+    li.setAttribute('data-role', s.role);
+    li.setAttribute('data-key', key);
+    const spot = el('div', null, 'stage-spot');
+    const name = el('div', seatName(s), 'stage-name');
+    if (status === 'playing') {
+      const gauge = el('div', null, 'stage-gauge');
+      const pulse = el('span', null, 'ring ring-lg');
+      pulse.style.color = c;
+      pulse.setAttribute('aria-hidden', 'true');
+      gauge.append(contextRing(s, pct), pulse);
+      spot.append(gauge);
+      const bars = eq({ large: true });
+      bars.style.color = c;
+      name.style.color = UI_ROLE_LIGHT[key];
+      li.append(spot, bars, name, el('div', null, 'stage-sub'));
+      return li;
+    }
+    const av = avatar(key, status, { size: 64 });
+    if (s.role === 'you') av.classList.add('is-you');
+    if (status === 'done') {
+      av.style.background = uiOwn(SEAT_GROUND, key) || uiRgba(c, '.16');
+      av.style.borderColor = uiRgba(c, '.6');
+    }
+    if (status === 'returned') av.style.background = RETURNED_GROUND;
+    spot.append(av);
+    li.append(spot, name, el('div', null, 'stage-sub'));
+    return li;
+  }
+
+  function renderStageSeats(seats, statuses, active) {
     const list = $('stage-seats');
-    const statuses = seatStatuses(seats, active);
-    const sig = seats.map((s, i) => s.role + ':' + statuses[i]).join(',');
+    const sig = seats.map((s, i) => [s.role, statuses[i], s.status, s.kind].join(':')).join(',');
     const pct = active && active.context && typeof active.context.percent === 'number' ? Math.round(active.context.percent) : null;
     if (sig !== S.stageSig) {
       S.stageSig = sig;
-      S.stagePct = undefined;
-      list.style.setProperty('--stage-cols', String(Math.ceil(seats.length / 2)));
-      list.replaceChildren(...seats.map((s, i) => {
-        const st = statuses[i];
-        const li = el('li', null, 'stage-seat is-' + st + (st === 'playing' ? ' is-active' : ''));
-        li.setAttribute('data-role', s.role);
-        li.style.setProperty('--seat-glow', uiRgba(uiOwn(UI_ROLE_COLORS, s.role) || UI_ROLE_COLORS.symphony, '.28'));
-        const spot = el('div', null, 'stage-spot');
-        if (st === 'playing') {
-          const gauge = el('div', null, 'stage-gauge');
-          gauge.append(ring(pct, { size: 96, label: 'Context' }), avatar(seatAvatarRole(s.role), 'playing', { size: 64 }));
-          spot.append(gauge);
-        } else spot.append(avatar(seatAvatarRole(s.role), st, { size: 64 }));
-        li.append(spot, el('div', seatName(s.role), 'stage-name'), el('div', null, 'stage-sub'));
-        return li;
-      }));
+      S.stagePct = pct;
+      list.style.setProperty('--seats', String(seats.length));
+      list.replaceChildren(...seats.map((s, i) => buildSeat(s, statuses[i], pct)));
     }
-    const items = list.children;
     seats.forEach((s, i) => {
-      const li = items[i];
-      const st = statuses[i];
-      const title = seatTitle(s, st);
+      const li = list.children[i];
+      const title = seatTitle(s, statuses[i]);
       li.setAttribute('title', title);
       const av = li.querySelector('.ui-av');
       if (av) { av.setAttribute('title', title); av.setAttribute('aria-label', title); }
-      const sub = [STAGE_WORDS[st]];
-      if (s.verdict) sub.push(s.verdict);
-      if (s.duration_ms !== null && s.duration_ms !== undefined) sub.push(seatDuration(s));
-      setText(li.querySelector('.stage-sub'), sub.join(' · '));
+      setText(li.querySelector('.stage-sub'), seatSub(s, statuses[i]));
     });
+    // Only the ring is swapped when the context changes; pulse and equalizer keep running.
     if (S.stagePct !== pct) {
+      const k = statuses.indexOf('playing');
       const gauge = list.querySelector('.stage-gauge');
-      if (gauge) gauge.replaceChild(ring(pct, { size: 96, label: 'Context' }), gauge.querySelector('.ui-ring'));
+      if (gauge && k >= 0) gauge.replaceChild(contextRing(seats[k], pct), gauge.querySelector('.ui-ring'));
       S.stagePct = pct;
     }
   }
 
-  function stageEmpty(box) { box.replaceChildren(el('p', 'Keine Session', 'stage-empty')); }
-
-  function renderStageNow(active) {
-    const box = $('stage-now-body');
-    setText($('stage-now-meta'), active ? seatName(active.role) : '');
-    if (!active) return stageEmpty(box);
-    const trace = el('div', null, 'stage-trace');
-    const tools = (active.recent_tools || []).slice(-4);
-    tools.forEach((t, i) => {
-      if (i) trace.append(el('span', '→', 'stage-arrow'));
-      const c = chip(oneLine(t.message || t.tool, 48), { mono: true, tone: i === tools.length - 1 ? 'green' : undefined });
-      c.setAttribute('title', String(t.message || t.tool || ''));
-      trace.append(c);
-    });
-    if (!tools.length) trace.append(el('span', 'Noch keine Tool-Aufrufe', 'stage-empty'));
-    box.replaceChildren(el('div', oneLine(active.action, 200) || '—', 'stage-action'), trace);
+  /** Stage edge in the colours of the finished seats up to the playing one, and the spotlight above that seat. */
+  function renderStageFloor(seats, statuses) {
+    const n = seats.length;
+    const k = statuses.indexOf('playing');
+    let end = k;
+    if (end < 0) statuses.forEach((st, i) => { if (st === 'done' || st === 'returned') end = i; });
+    // Seat centres in percent of the edge, which runs from 6 % to 94 % of the row.
+    const at = (i) => ((((i + 0.5) / n) * 100 - 6) / 88) * 100;
+    const stops = [];
+    for (let i = 0; i <= end; i++) {
+      const st = statuses[i];
+      if (st === 'done' || st === 'playing') stops.push(seatColor(seats[i]) + ' ' + stagePct(at(i)));
+      else if (st === 'returned') stops.push(RETURNED_RED + ' ' + stagePct(at(i)));
+    }
+    const floor = $('stage-floor');
+    const bg = stops.length ? 'linear-gradient(90deg, ' + stops.join(', ') + ', ' + FLOOR_BASE + ' ' + stagePct(at(end)) + ', ' + FLOOR_BASE + ' 100%)' : FLOOR_BASE;
+    if (floor.style.background !== bg) floor.style.background = bg;
+    const spot = $('stage-spot');
+    spot.hidden = k < 0;
+    if (k >= 0) {
+      spot.style.left = 'calc(' + stagePct(((k + 0.5) / n) * 100) + ' - 160px)';
+      spot.style.background = 'radial-gradient(closest-side, ' + uiRgba(seatColor(seats[k]), '.22') + ', transparent)';
+    }
   }
 
-  function renderStageSession(active) {
+  /** The argument of a tool call: its message without the "Tool: " prefix. */
+  function toolArg(t) {
+    const msg = String(t.message || '');
+    const prefix = t.tool + ': ';
+    return oneLine(msg.startsWith(prefix) ? msg.slice(prefix.length) : msg === t.tool ? '' : msg, 200);
+  }
+  /** Short form of the newest tool result of the live session (from its transcript); '' without one. */
+  function lastToolResult() {
+    const sessions = (S.detail && S.detail.sessions) || [];
+    const live = sessions.length && !sessions[sessions.length - 1].finished_at ? sessions[sessions.length - 1].run : null;
+    if (!live) return '';
+    for (let i = S.items.length - 1; i >= 0; i--) {
+      const it = S.items[i];
+      if (it.type === 'toolcall' && it.run === live && !it.sub && it.result) return (it.result.is_error ? 'Fehler: ' : '') + oneLine(it.result.text, 120);
+    }
+    return '';
+  }
+  const stageEmpty = (text) => el('p', text, 'stage-empty');
+
+  function renderStageNow(active, seat, trace) {
+    const key = seat ? seatKey(seat) : active ? uiRoleKey(active.role, null) : null;
+    const c = key ? UI_ROLE_COLORS[key] : null;
+    $('stage-now').style.borderColor = active && c ? uiRgba(c, '.35') : '';
+    setText($('stage-now-meta'), active ? 'Jetzt · ' + (seat ? seatName(seat) : seatName({ role: active.role, kind: null })) : 'Jetzt');
+    const tools = ((active ? active.recent_tools : trace) || []).slice(-4);
+    const last = tools[tools.length - 1];
+    const since = last ? last.at : active && S.detail && S.detail.running ? S.detail.running.last_event_at : null;
+    const secs = since ? Math.max(0, Math.round((Date.now() - Date.parse(since)) / 1000)) : NaN;
+    setText($('stage-now-ago'), active && Number.isFinite(secs) ? 'vor ' + secs + ' s' : '');
+    const nodes = [];
+    if (active) {
+      const action = el('div', null, 'stage-action');
+      if (last) {
+        action.append(el('span', last.tool, 'tool'));
+        const arg = toolArg(last);
+        if (arg) {
+          const a = el('span', arg, 'arg');
+          a.style.color = UI_ROLE_LIGHT[key];
+          action.append(el('span', ' '), a);
+        }
+      } else action.append(el('span', oneLine(active.action, 200) || '—'));
+      nodes.push(action);
+      const desc = lastToolResult();
+      if (desc) nodes.push(el('div', desc, 'stage-desc'));
+    } else nodes.push(stageEmpty('Keine Session aktiv'));
+    if (tools.length) {
+      const row = el('div', null, 'stage-trace');
+      tools.forEach((t, i) => {
+        if (i) row.append(el('span', '→', 'stage-arrow'));
+        const c2 = chip(t.tool, { mono: true });
+        c2.setAttribute('title', String(t.message || t.tool || ''));
+        // Only the live session's newest call is tinted in the role colour.
+        if (active && c && i === tools.length - 1) {
+          c2.classList.add('is-last');
+          c2.style.color = UI_ROLE_LIGHT[key];
+          c2.style.borderColor = uiRgba(c, '.6');
+          c2.style.background = uiRgba(c, '.16');
+        }
+        row.append(c2);
+      });
+      nodes.push(row);
+    } else if (active) nodes.push(stageEmpty('Noch keine Tool-Aufrufe'));
+    patchChildren($('stage-now-body'), nodes);
+  }
+
+  function renderStageSession(active, threshold) {
     const box = $('stage-session-body');
-    if (!active) return stageEmpty(box);
+    if (!active) return patchChildren(box, [stageEmpty('Keine Session aktiv')]);
     const c = active.context || {};
-    const pct = typeof c.percent === 'number' ? c.percent : null;
+    const known = typeof c.window === 'number' && c.window > 0;
+    const pct = known && typeof c.percent === 'number' && Number.isFinite(c.percent) ? c.percent : null;
     const head = el('div', null, 'stage-ctx');
-    head.append(el('span', 'Context ' + (c.window ? fmtCompact(c.tokens) + ' / ' + fmtCompact(c.window) : '—')), el('span', pct === null ? '—' : Math.round(pct) + ' %'));
-    const compacts = el('div', null, 'stage-compacts');
-    const n = c.compacts || 0;
-    for (let i = 0; i < Math.min(n, 12); i++) { const m = el('span', null, 'stage-compact'); m.setAttribute('title', 'Auto-Compact ' + (i + 1)); compacts.append(m); }
-    compacts.append(el('span', n ? n + '× Auto-Compact' : 'kein Auto-Compact', 'txt'));
-    const kv = el('dl', null, 'kv');
-    const started = S.detail && S.detail.running && S.detail.running.started_at ? Date.parse(S.detail.running.started_at) : NaN;
-    const seat = ((S.team && S.team.seats) || []).find((s) => s.role === active.role);
-    const dur = Number.isFinite(started) ? fmtDuration((Date.now() - started) / 1000) : seat && seat.duration_ms !== null && seat.duration_ms !== undefined ? seatDuration(seat) : '—';
+    const value = known ? fmtK(c.tokens) + ' / ' + fmtK(c.window) + ' · ' + (pct === null ? '—' : Math.round(pct) + ' %') : '—';
+    head.append(el('span', 'Context'), el('span', value, 'mono' + (pct !== null && pct >= 70 ? ' hot' : '')));
+    const limit = typeof threshold === 'number' && Number.isFinite(threshold) ? threshold : 80;
+    const start = liveStart();
     const tk = active.tokens || {};
-    for (const [k, v] of [['Turn', active.turn ?? '—'], ['Dauer', dur], ['Modell', active.model ?? '—'], ['Tokens', fmtCompact(tk.total_tokens) + ' · ' + fmtCost(active.cost_usd)]]) kv.append(el('dt', k), el('dd', v));
-    box.replaceChildren(head, bar(pct ?? 0, { height: 8, color: UI_TRAFFIC[trafficTone(pct)], marker: { pct: AUTO_COMPACT_PCT, title: 'Auto-Compact ab ca. 80 %' } }), compacts, kv);
+    const kv = el('dl', null, 'stage-kv');
+    for (const [k, v] of [
+      ['Turn', (active.turn ?? '—') + (active.max_turns ? ' / ' + active.max_turns : '')],
+      ['Dauer', Number.isFinite(start) ? fmtDuration((Date.now() - start) / 1000) : '—'],
+      ['Modell', (active.model ?? '—') + (active.effort ? ' · effort ' + active.effort : '')],
+      ['Tokens', fmtCompact(tk.total_tokens) + ' · ' + fmtCost(active.cost_usd)],
+    ]) kv.append(el('dt', k), el('dd', v));
+    patchChildren(box, [
+      head,
+      bar(pct ?? 0, { height: 8, marker: { pct: limit, title: 'Auto-Compact' } }),
+      el('div', 'rote Marke: Auto-Compact ab ca. ' + limit + ' %', 'stage-hint'),
+      kv,
+    ]);
+  }
+
+  /** Two capitals of a subagent type: the initials of its first two words (test-runner → TR), else its first two letters (Explore → EX). */
+  function subAbbr(type) {
+    const words = String(type || '').split(/[^A-Za-z0-9]+/).filter(Boolean);
+    return (words.length > 1 ? words[0].charAt(0) + words[1].charAt(0) : (words[0] || '?').slice(0, 2)).toUpperCase();
   }
 
   function renderStageSubs(active, subs) {
@@ -1716,29 +1894,36 @@ ${PIPELINE_JS}
     const running = (subs && subs.running) || [];
     const finished = ((subs && subs.finished) || []).slice().reverse();
     setText($('stage-subs-meta'), active ? running.length + ' laufen · ' + finished.length + ' fertig' : '');
-    if (!active) return stageEmpty(box);
-    if (!running.length && !finished.length) return box.replaceChildren(el('p', 'Keine Subagents', 'stage-empty'));
-    const all = [...running, ...finished];
+    const all = active ? [...running, ...finished] : [];
+    if (!all.length) {
+      S.subsSig = '';
+      return patchChildren(box, [stageEmpty(active ? 'Keine Subagents in dieser Session' : 'Keine Session aktiv')]);
+    }
     const sig = all.map((x, i) => (x.tool_use_id || i) + ':' + (x.status === 'running' ? 'r' : 'd')).join(',');
-    const timing = (x) => fmtDuration(((x.ended_at ? Date.parse(x.ended_at) : Date.now()) - Date.parse(x.started_at)) / 1000);
-    const tokensOf = (x) => fmtCompact(x.tokens && x.tokens.total_tokens) + ' Tokens';
-    // Rebuild only when the set or state changes, so the running pulse is not restarted by every poll.
-    if (sig !== S.subsSig || box.querySelector('.stage-empty')) {
+    const right = (x) => {
+      const k = fmtK(x.tokens && x.tokens.total_tokens);
+      return x.status === 'running' ? fmtDuration((Date.now() - Date.parse(x.started_at)) / 1000) + ' · ' + k : 'fertig · ' + k;
+    };
+    // Rebuild only when the set or a state changes, so the running pulse is not restarted by every poll.
+    if (sig !== S.subsSig) {
       S.subsSig = sig;
       box.replaceChildren(...all.map((x) => {
         const isRun = x.status === 'running';
         const row = el('div', null, 'stage-subagent ' + (isRun ? 'is-running' : 'is-done'));
-        row.append(el('span', null, 'dot' + (isRun ? ' pulse' : '')), el('b', x.subagent_type, 'mono'),
-          el('span', timing(x), 'dur'), el('span', tokensOf(x), 'tok'), el('span', oneLine(x.description, 80), 'desc'));
+        const av = el('span', null, 'sub-av');
+        av.setAttribute('role', 'img');
+        av.setAttribute('aria-label', String(x.subagent_type || '?') + ' · ' + (isRun ? 'läuft' : 'fertig'));
+        const face = el('span', subAbbr(x.subagent_type), 'sub-abbr');
+        face.setAttribute('aria-hidden', 'true');
+        av.append(face);
+        if (isRun) { const pulse = el('span', null, 'ring'); pulse.setAttribute('aria-hidden', 'true'); av.append(pulse); }
+        const main = el('div', null, 'sub-main');
+        main.append(el('span', x.subagent_type, 'sub-name'), el('span', oneLine(x.description, 160), 'sub-task'));
+        row.append(av, main, el('span', right(x), 'sub-right'));
         return row;
       }));
-      return;
     }
-    all.forEach((x, i) => {
-      const row = box.children[i];
-      setText(row.querySelector('.dur'), timing(x));
-      setText(row.querySelector('.tok'), tokensOf(x));
-    });
+    all.forEach((x, i) => setText(box.children[i].querySelector('.sub-right'), right(x)));
   }
 
   function renderStage() {
@@ -1748,9 +1933,13 @@ ${PIPELINE_JS}
     if (!ok) return;
     // A finished run has no live session, whatever the last /team said.
     const active = S.ended || S.notFound ? null : team.active || null;
-    renderStageSeats(team.seats, active);
-    renderStageNow(active);
-    renderStageSession(active);
+    const statuses = seatStatuses(team.seats, active);
+    const k = statuses.indexOf('playing');
+    setText($('stage-title'), 'Bühne · das Team von ' + splitId((S.detail && S.detail.issue_identifier) || ID).num);
+    renderStageSeats(team.seats, statuses, active);
+    renderStageFloor(team.seats, statuses);
+    renderStageNow(active, k >= 0 ? team.seats[k] : null, team.trace);
+    renderStageSession(active, team.compact_threshold);
     renderStageSubs(active, team.subagents);
   }
 
@@ -1763,7 +1952,7 @@ ${PIPELINE_JS}
     // Items that arrived with this poll get a short highlight (not ones re-rendered after a filter change).
     for (const it of S.items) if (!S.known.has(it.key)) { S.known.add(it.key); if (S.rendered) S.fresh.add(it.key); }
     if (S.detail || S.ended || S.notFound) {
-      renderHeader();
+      renderHead();
       renderStage();
       renderPipelineSection();
       renderResults();
@@ -1858,7 +2047,7 @@ ${PIPELINE_JS}
   });
 
   // Runtime and countdowns tick between polls.
-  setInterval(() => { if (S.detail && !S.ended) { renderHeader(); renderAlert(); } }, 1000);
+  setInterval(() => { if (S.detail && !S.ended) { renderHead(); renderAlert(); renderStage(); } }, 1000);
 
   if (!ID) render();
   else { render(); poll(); live(poll, pollEvery(poll, POLL_MS)); }
