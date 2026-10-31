@@ -33,7 +33,8 @@ Every note starts with YAML frontmatter.
 Unknown fields are kept. Status lifecycle: `candidate` → `approved` → `deprecated`.
 
 - A new note is always `candidate`. Agents cannot create or promote `approved` notes.
-- Only a human promotes a note to `approved` (in Obsidian). An `approved` note is read-only for agents; they write a candidate note and link it.
+- Only a human promotes a note to `approved` (in Obsidian or on the dashboard). An `approved` note is read-only for agents; they write a candidate note and link it.
+- On the dashboard, approve sets `approved` and `updated` and moves the note to its `target` (else the folder of its `type`; `-2`, `-3`, … when the file exists). Links are not rewritten, so approve refuses a file name that would not be unique in the vault. Reject sets `deprecated` and leaves the file in place. Both commit as `human` (`approve: <path>`, `reject: <path>`); revert takes the approve commit back with `git revert`.
 - `deprecated` notes never show up in `brain_search`.
 
 ## Tools
@@ -69,7 +70,7 @@ Several runs may write the same note. Two checks reject a write, in this order:
 
 Both return `rejected` with the current `content` and `hash` and write nothing. Each rejection is recorded as a clash (`open`) and logged in the access log.
 
-To resolve a clash the agent merges its change into the returned current version and writes again with the new `hash` (after the window has passed, if the reason was `window`). A human can check the note in Obsidian or with `git log` in the vault.
+To resolve a clash the agent merges its change into the returned current version and writes again with the new `hash` (after the window has passed, if the reason was `window`). A human can check the note in Obsidian or with `git log` in the vault. The dashboard API lists the clashes with three versions of the note: at the rejection, the rejected content and the current one. The first two are kept for 7 days in `<log-dir>/brain/clashes/<id>.json`; without that file the version at the rejection comes from git. The human marks a clash resolved there.
 
 ## Obsidian container
 

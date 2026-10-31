@@ -5,6 +5,7 @@ import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { sessionClaudeConfig } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, AgentSession, IntegrationReport, SessionLimitInfo } from '../agent/types.ts';
 import type { BrainAccessLog } from '../brain/access-log.ts';
+import type { BrainIndex } from '../brain/index.ts';
 import { brainToolsFor, createVaultGit } from '../brain/tools.ts';
 import { repoFolderName } from '../brain/vault.ts';
 import { isRepositoryName } from '../tracker/github-project/settings.ts';
@@ -196,6 +197,8 @@ export interface WorkerParams {
   transcriptDir: string | null;
   /** Access log and clash list of the brain, shared by all sessions. */
   brainAccess?: BrainAccessLog | null;
+  /** Index of the vault, updated after every vault commit. */
+  brainIndex?: BrainIndex | null;
   /**
    * Live check after each turn (uses the current workflow config): null continues the session, a string ends it
    * normally with that reason (the issue left the active states, is no longer routable, or another role serves it).
@@ -645,9 +648,10 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     // An architect files sub-issues only to split an issue it may split (XL, not a work package itself).
     const subIssues = subIssueLimit(role, issue);
     sessionStart = { sha: startSha };
+    const brainPath = params.workflow.config.brain.path;
     const brainTools = brainToolsFor(params.workflow.config.brain, brainMode, logger, {
       access: params.brainAccess ?? null,
-      ...(brainMode !== 'off' ? { versioning: createVaultGit(params.workflow.config.brain.path, logger) } : {}),
+      ...(brainMode !== 'off' ? { versioning: createVaultGit(brainPath, logger, { onCommit: (_sha, paths) => params.brainIndex?.update(brainPath, paths) }) } : {}),
     });
     session = await params.runner.startSession({
       ...(params.contextWindow ? { contextWindow: params.contextWindow } : {}),
