@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { BrainAccessLog } from '../brain/access-log.ts';
+import { lastVaultCommit } from '../brain/git.ts';
+import { BrainIndex, candidatesOf, vitalsCounts, type BrainCandidate, type BrainVitals } from '../brain/index.ts';
 import { RateLimitLog, rateLimitKey, type RateLimitRecord } from '../budget/rate-limit-log.ts';
 import { ChangeStore } from '../changes/store.ts';
 import type { ChangeEntry, ChangeFile, ChangeFilter } from '../changes/types.ts';
@@ -667,6 +669,7 @@ export class Orchestrator {
   #archive: IssueArchive;
   #rateLimitLog: RateLimitLog;
   readonly #brainAccess: BrainAccessLog;
+  readonly #brainIndex: BrainIndex;
   /** Commits and merges of the agent sessions (`<logDir>/changes/`). */
   #changes: ChangeStore;
   #records = new Map<string, IssueRecord>();
@@ -717,6 +720,7 @@ export class Orchestrator {
     this.#createAdapter = deps.createAdapter ?? defaultAdapterFactory;
     this.#pollIntervalMs = deps.workflow.current.config.polling.intervalMs;
     this.#archive = new IssueArchive(deps.logDir === null ? null : path.join(deps.logDir, 'issues'), deps.logger);
+    this.#brainIndex = new BrainIndex(deps.logger);
     this.#brainAccess = new BrainAccessLog(deps.logDir === null ? null : path.join(deps.logDir, 'brain'), deps.logger);
     this.#rateLimitLog = new RateLimitLog(deps.logDir === null ? null : path.join(deps.logDir, 'budget'), deps.logger);
     this.#changes = new ChangeStore(deps.logDir === null ? null : path.join(deps.logDir, 'changes'), deps.logger);
@@ -2191,6 +2195,7 @@ export class Orchestrator {
         checkCache: record.checkCache,
         transcriptDir: this.#deps.logDir === null ? null : path.join(this.#deps.logDir, 'sessions'),
         brainAccess: this.#brainAccess,
+        brainIndex: this.#brainIndex,
         continueWith: (fresh) => {
           const current = this.#deps.workflow.current.config;
           if (!isActiveState(fresh.state, current.tracker)) return `issue left the active states ("${fresh.state}")`;
@@ -3717,6 +3722,28 @@ export class Orchestrator {
   budget(): BudgetReport {
     const entries = this.#deps.history ? readHistory(this.#deps.history.dir, null).entries : [];
     return budgetReport({ now: this.#clock.now(), usage: usageFromHistory(entries), events: this.#rateLimitLog.readRateLimitEvents() });
+  }
+
+  /** Builds the brain index at startup; does nothing without `brain.enabled`. */
+  async buildBrainIndex(): Promise<void> {
+    const brain = this.#deps.workflow.current.config.brain;
+    if (brain.enabled) await this.#brainIndex.rebuild(brain.path);
+  }
+
+  /** Vitals for GET /api/v1/brain/vitals; null without `brain.enabled`. */
+  async brainVitals(): Promise<BrainVitals | null> {
+    const brain = this.#deps.workflow.current.config.brain;
+    if (!brain.enabled) return null;
+    const index = await this.#brainIndex.current(brain.path);
+    const today = this.#brainAccess.todayCounts(this.#clock.now());
+    return { ...vitalsCounts(index), writes_today: today.writes, reads_today: today.reads, last_commit: await lastVaultCommit(brain.path) };
+  }
+
+  /** Candidate notes for GET /api/v1/brain/candidates; null without `brain.enabled`. */
+  async brainCandidates(): Promise<BrainCandidate[] | null> {
+    const brain = this.#deps.workflow.current.config.brain;
+    if (!brain.enabled) return null;
+    return candidatesOf(await this.#brainIndex.current(brain.path));
   }
 
   /** Windows whose limit is forecast to be hit before the reset, for the dashboard alerts (E2-4a). */

@@ -84,6 +84,17 @@ export async function initVaultGit(root: string): Promise<boolean> {
   return true;
 }
 
+/** The last commit of the vault repository; null without its own `.git`, without a commit or on an error. */
+export async function lastVaultCommit(vault: string): Promise<{ sha: string; at: string; author: string } | null> {
+  try {
+    await fs.stat(path.join(vault, '.git'));
+    const [sha, at, author] = (await git(vault, ['log', '-1', '--format=%H%x00%aI%x00%an'])).trim().split('\0');
+    return sha && at && author ? { sha, at, author } : null;
+  } catch {
+    return null;
+  }
+}
+
 export function createVaultGit(vaultPath: string, logger: Logger, options: VaultGitOptions = {}): VaultGit {
   const notify = async (sha: string, paths: string[]): Promise<void> => {
     try {
@@ -99,7 +110,7 @@ export function createVaultGit(vaultPath: string, logger: Logger, options: Vault
     if (status.trim() === '') return null;
     try {
       await git(vaultPath, ['add', '-A', '--', '.', EXCLUDE_OBSIDIAN]);
-      const paths = names(await git(vaultPath, ['diff', '--cached', '--name-only', '-z']));
+      const paths = names(await git(vaultPath, ['diff', '--cached', '--name-only', '--no-renames', '-z']));
       if (paths.length === 0) return null;
       const sha = await commit(vaultPath, { name: 'human', email: 'human@local' }, `Obsidian: ${paths.length} Dateien`, null, ['.', EXCLUDE_OBSIDIAN]);
       await notify(sha, paths);
