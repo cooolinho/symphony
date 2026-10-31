@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { BrainAccessLog, type BrainAccessPage, type BrainAccessQuery } from '../brain/access-log.ts';
+import { BrainAccessLog, type BrainAccess, type BrainAccessPage, type BrainAccessQuery, type BrainClash } from '../brain/access-log.ts';
 import { listClashes, type BrainClashView } from '../brain/clashes.ts';
 import { createVaultGit, lastVaultCommit } from '../brain/git.ts';
 import { BrainIndex, candidatesOf, vitalsCounts, type BrainCandidate, type BrainVitals } from '../brain/index.ts';
 import { writeIssueSummary } from '../brain/issue-summary.ts';
 import { approveCandidate, rejectCandidate, revertApprove, type PromoteOptions, type PromoteResult } from '../brain/promote.ts';
 import { RateLimitLog, rateLimitKey, type RateLimitRecord } from '../budget/rate-limit-log.ts';
+import { BRAIN_BACKFILL_COMMITS, brainCommitEntries, brainConflictEntry, recentVaultCommits } from '../changes/brain.ts';
 import { ChangeStore } from '../changes/store.ts';
 import { buildChangesPage } from '../changes/feed.ts';
 import type { ChangeEntry, ChangeFile, ChangeFilter, ChangesPage, ChangesQuery } from '../changes/types.ts';
@@ -77,7 +78,7 @@ import {
 } from './limits.ts';
 import { RuntimeStateStore, runtimeStateFile, type ModelHold, type OperatorHold } from './runtime-state.ts';
 import { buildTeamView, type TeamView } from '../http/team.ts';
-import { resultRows, type PersistedResult } from './stage-history.ts';
+import { buildStageHistory, resultRows, type PersistedResult } from './stage-history.ts';
 import { blockedBucketColumns, derivePipeline, type PipelineStage, type StageSession } from './pipeline.ts';
 import { applySubagent, closeSubagents, emptySubagents, subagentsJson, type SubagentBoard } from './subagents.ts';
 import { copyToolUsage, countToolUse, emptyToolUsage, integrationJson, integrationUsage, type ToolUsage } from './tool-usage.ts';
@@ -345,6 +346,8 @@ interface IssueMeta {
   dispatchNote: string | null;
   parent: unknown;
   subIssues: unknown[];
+  /** Branch the tracker links to the issue; null when none. */
+  branchName: string | null;
 }
 
 /** First non-empty line of a description; what command detection and the pipeline need. */
@@ -378,6 +381,7 @@ function issueMeta(issue: Issue): IssueMeta {
     dispatchNote: typeof issue.native_ref?.dispatch_note === 'string' ? issue.native_ref.dispatch_note : null,
     parent: issue.native_ref?.parent ?? null,
     subIssues: Array.isArray(issue.native_ref?.sub_issues) ? issue.native_ref.sub_issues : [],
+    branchName: issue.branch_name,
   };
 }
 
@@ -392,6 +396,7 @@ function metaJson(meta: IssueMeta | null) {
     dispatch_note: meta.dispatchNote,
     parent: meta.parent,
     sub_issues: meta.subIssues,
+    branch_name: meta.branchName ?? null,
   };
 }
 
@@ -675,7 +680,7 @@ export class Orchestrator {
   #rateLimitLog: RateLimitLog;
   readonly #brainAccess: BrainAccessLog;
   readonly #brainIndex: BrainIndex;
-  /** Commits and merges of the agent sessions (`<logDir>/changes/`). */
+  /** Commits and merges of the agent sessions and the changes to the brain (`<logDir>/changes/`). */
   #changes: ChangeStore;
   #records = new Map<string, IssueRecord>();
   #paused = new Map<string, PausedEntry>();
@@ -726,7 +731,9 @@ export class Orchestrator {
     this.#pollIntervalMs = deps.workflow.current.config.polling.intervalMs;
     this.#archive = new IssueArchive(deps.logDir === null ? null : path.join(deps.logDir, 'issues'), deps.logger);
     this.#brainIndex = new BrainIndex(deps.logger);
-    this.#brainAccess = new BrainAccessLog(deps.logDir === null ? null : path.join(deps.logDir, 'brain'), deps.logger);
+    this.#brainAccess = new BrainAccessLog(deps.logDir === null ? null : path.join(deps.logDir, 'brain'), deps.logger, {
+      onClash: (line, clash) => this.#recordBrainClash(line, clash),
+    });
     this.#rateLimitLog = new RateLimitLog(deps.logDir === null ? null : path.join(deps.logDir, 'budget'), deps.logger);
     this.#changes = new ChangeStore(deps.logDir === null ? null : path.join(deps.logDir, 'changes'), deps.logger);
     this.#changes.load();
@@ -2200,6 +2207,7 @@ export class Orchestrator {
         checkCache: record.checkCache,
         transcriptDir: this.#deps.logDir === null ? null : path.join(this.#deps.logDir, 'sessions'),
         brainAccess: this.#brainAccess,
+        onBrainCommit: (vault, sha, paths) => this.#recordBrainCommit(vault, sha, paths),
         brainIndex: this.#brainIndex,
         continueWith: (fresh) => {
           const current = this.#deps.workflow.current.config;
@@ -2928,7 +2936,24 @@ export class Orchestrator {
       results: resultRows(record.results),
       run_trace: traceJson(record.lastRun),
       last_check: checkJson(record.lastCheck),
+      ...this.#roundsOf(record.meta?.labels ?? [], record.results),
     };
+  }
+
+  /** Workflow profile of the issue and its loop round: 1 + the review, test and security rounds sent back so far, of the review limit. */
+  #roundsOf(labels: readonly string[], results: readonly PersistedResult[]): { profile: string | null; rounds: { current: number; max: number } } {
+    const pipeline = this.#deps.workflow.current.config.pipeline;
+    const profile = profileFor(pipeline, classify(labels).type);
+    const history = buildStageHistory(results);
+    return {
+      profile: profile?.name ?? null,
+      rounds: { current: 1 + history.reviewRounds + history.testRounds + history.securityRounds, max: profile?.maxReviewRounds ?? pipeline.maxReviewRounds },
+    };
+  }
+
+  /** Number of the issue's pull request from the newest recorded code change that knows one; null without. */
+  #pullRequestOf(identifier: string): number | null {
+    return this.#changes.matching({ type: 'code', issue: identifier }).find((entry) => entry.pr !== null)?.pr?.number ?? null;
   }
 
   #sessionJson(session: SessionInfo) {
@@ -3500,11 +3525,54 @@ export class Orchestrator {
         },
         results,
         this.#deps.history ?? null,
-        { vaultPath: brain.path, versioning: createVaultGit(brain.path, log, { onCommit: (_sha, paths) => this.#brainIndex.update(brain.path, paths) }), extraCostUsd: this.#running.get(issue.id)?.costUsd ?? 0 },
+        { vaultPath: brain.path, versioning: createVaultGit(brain.path, log, { onCommit: (sha, paths) => this.#onVaultCommit(brain.path, sha, paths) }), extraCostUsd: this.#running.get(issue.id)?.costUsd ?? 0 },
       );
       log.info('issue summary written', { path: written.path, changed: written.changed });
     } catch (error) {
       log.warn('issue summary not written', { error: errorMessage(error) });
+    }
+  }
+
+  /** Index update plus brain changes for a commit of the orchestrator's own vault git (promote, issue summary). */
+  async #onVaultCommit(vault: string, sha: string, paths: string[]): Promise<void> {
+    await this.#brainIndex.update(vault, paths);
+    await this.#recordBrainCommit(vault, sha, paths);
+  }
+
+  /** One `brain` change per path of a vault commit. Never throws. */
+  async #recordBrainCommit(vault: string, sha: string, paths: string[]): Promise<void> {
+    try {
+      const entries = await brainCommitEntries(vault, sha, { paths, known: (id) => this.#changes.has(id) });
+      let added = false;
+      for (const entry of entries) added = this.#changes.append(entry) || added;
+      if (added) this.#notify();
+    } catch (error) {
+      this.#deps.logger.warn('cannot record the brain change', { sha, error: errorMessage(error) });
+    }
+  }
+
+  /** The `conflict` change of a rejected brain write. Never throws. */
+  #recordBrainClash(line: BrainAccess, clash: BrainClash): void {
+    try {
+      const brain = this.#deps.workflow.current.config.brain;
+      const entry = brain.enabled ? brainConflictEntry(brain.path, line, clash) : null;
+      if (entry !== null && this.#changes.append(entry)) this.#notify();
+    } catch (error) {
+      this.#deps.logger.warn('cannot record the brain conflict', { clash: clash.id, error: errorMessage(error) });
+    }
+  }
+
+  /** Adds the changes of the newest vault commits (oldest first) that are not recorded yet. Warns instead of throwing. */
+  async loadBrainChanges(): Promise<void> {
+    const brain = this.#deps.workflow.current.config.brain;
+    if (!brain.enabled) return;
+    try {
+      for (const sha of await recentVaultCommits(brain.path, BRAIN_BACKFILL_COMMITS)) {
+        for (const entry of await brainCommitEntries(brain.path, sha, { known: (id) => this.#changes.has(id) })) this.#changes.append(entry);
+      }
+      this.#notify();
+    } catch (error) {
+      this.#deps.logger.warn('cannot load the brain changes', { path: brain.path, error: errorMessage(error) });
     }
   }
 
@@ -3821,7 +3889,7 @@ export class Orchestrator {
     if (!brain.enabled) return null;
     return {
       vault: brain.path,
-      git: createVaultGit(brain.path, this.#logger, { onCommit: (_sha, paths) => this.#brainIndex.update(brain.path, paths) }),
+      git: createVaultGit(brain.path, this.#logger, { onCommit: (sha, paths) => this.#onVaultCommit(brain.path, sha, paths) }),
       index: () => this.#brainIndex.current(brain.path),
       logger: this.#logger,
       now: () => this.#clock.now(),
@@ -3986,6 +4054,8 @@ export class Orchestrator {
         entry !== undefined ? (entry.stop !== null ? 'stopping' : 'running') : retry !== undefined ? 'retrying' : paused !== undefined ? 'paused' : 'claimed',
       role: entry?.role ?? null,
       issue: metaJson(meta),
+      ...this.#roundsOf(meta?.labels ?? [], record?.results ?? []),
+      pull_request: this.#pullRequestOf(identifier),
       pipeline: this.#pipelineFor({ state, description: meta?.description ?? null, labels: meta?.labels }, issueId, this.#deps.workflow.current),
       results: resultRows(record?.results ?? []),
       workspace: { path: entry?.workspacePath ?? record?.workspacePath ?? null },
@@ -4042,6 +4112,9 @@ export class Orchestrator {
       status: 'finished',
       role: lastSession?.role ?? null,
       issue: archived.issue_meta ?? null,
+      profile: archived.profile ?? null,
+      rounds: archived.rounds ?? null,
+      pull_request: this.#pullRequestOf(archived.issue_identifier),
       pipeline: archived.pipeline ?? [],
       results: archived.results,
       workspace: { path: archived.workspace_path },
@@ -4112,6 +4185,7 @@ export class Orchestrator {
   issueTeam(key: string): TeamView | null {
     const detail = this.issueDetail(key);
     if (detail === null) return null;
+    const config = this.#deps.workflow.current.config;
     return buildTeamView({
       pipeline: detail.pipeline,
       results: detail.results,
@@ -4119,6 +4193,9 @@ export class Orchestrator {
       running: detail.running,
       timeline: this.#findTrace(key)?.timeline ?? [],
       now: this.#clock.now().getTime(),
+      roles: config.roles?.map((role) => ({ name: role.name, result: role.result, maxTurns: role.maxTurns })) ?? null,
+      maxTurns: config.agent.maxTurns,
+      compactThreshold: config.budget.compactThreshold,
     });
   }
 

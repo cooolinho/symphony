@@ -424,3 +424,20 @@ describe('component CSS', () => {
     }
   });
 });
+
+describe('role palette keys and light role colours (E3-6)', () => {
+  it('maps a configured role to the palette by its own name, else by its result kind, else symphony', () => {
+    assert.equal(run(ctx, `uiRoleKey('developer', null)`), 'developer');
+    assert.equal(run(ctx, `uiRoleKey('issue-analyst', 'analysis')`), 'analyst');
+    assert.equal(run(ctx, `uiRoleKey('test-engineer', 'test')`), 'tester');
+    assert.equal(run(ctx, `uiRoleKey('security-auditor', 'security')`), 'security');
+    assert.equal(run(ctx, `uiRoleKey('you', 'human')`), 'human');
+    assert.equal(run(ctx, `uiRoleKey('default', null)`), 'symphony');
+    assert.equal(run(ctx, `uiRoleKey('toString', 'constructor')`), 'symphony');
+  });
+
+  it('has a light colour for every role colour', () => {
+    assert.deepEqual(Object.keys(run(ctx, 'UI_ROLE_LIGHT')).sort(), Object.keys(run(ctx, 'UI_ROLE_COLORS')).sort());
+    assert.equal(run(ctx, 'UI_ROLE_LIGHT.developer'), '#d1fae5');
+  });
+});

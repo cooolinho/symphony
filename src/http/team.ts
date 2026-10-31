@@ -11,6 +11,7 @@ export interface TeamRunning {
   last_message: string;
   turn_count: number;
   model: string | null;
+  effort: string | null;
   tokens: { input_tokens: number; output_tokens: number; total_tokens: number };
   cost_usd: number;
   context: { tokens: number; window: number | null; percent: number | null; compacts: number };
@@ -26,6 +27,12 @@ export interface TeamInput {
   timeline: Array<Pick<TimelineEvent, 'at' | 'kind' | 'event' | 'run' | 'message' | 'detail'>>;
   /** Current time in epoch ms; the module never reads the clock itself. */
   now: number;
+  /** Configured roles: result kind and turn limit per role name; null without a `roles` section. */
+  roles: ReadonlyArray<{ name: string; result: string | null; maxTurns: number | null }> | null;
+  /** `agent.max_turns`, the turn limit of roles without their own. */
+  maxTurns: number | null;
+  /** `budget.compact_threshold`: context percent of Claude Code's auto-compact. */
+  compactThreshold: number;
 }
 
 export type SeatStatus = 'done' | 'playing' | 'waiting' | 'returned' | 'skipped';
@@ -36,6 +43,10 @@ export interface TeamSeat {
   verdict: string | null;
   duration_ms: number | null;
   model: string | null;
+  /** Round of the role's newest result; null when not counted. */
+  round: number | null;
+  /** Result kind of the role (analysis, design, implementation, test, docs, review, security), `human` for "you"; null when unknown. */
+  kind: string | null;
 }
 
 export interface TeamTool {
@@ -50,7 +61,10 @@ export interface TeamActive {
   recent_tools: TeamTool[];
   context: TeamRunning['context'];
   turn: number;
+  /** Turn limit of the running role; null when unknown. */
+  max_turns: number | null;
   model: string | null;
+  effort: string | null;
   tokens: TeamRunning['tokens'];
   cost_usd: number;
 }
@@ -79,12 +93,18 @@ export interface TeamView {
   subagents: ReturnType<typeof subagentsJson>;
   blocks: TeamBlock[];
   handoffs: TeamHandoff[];
+  /** The last four tool calls of the newest session, running or finished; empty without a session. */
+  trace: TeamTool[];
+  /** `budget.compact_threshold` in percent. */
+  compact_threshold: number;
 }
 
 const RECENT_TOOLS = 4;
 const HUMAN_COLUMNS = new Set(['in review', 'human review']);
 
 const isToolUse = (event: TeamInput['timeline'][number]) => event.kind === 'agent' && event.event === 'tool_use';
+const toolOf = (event: TeamInput['timeline'][number]): TeamTool => ({ tool: event.detail?.tool as string, message: event.message, at: event.at });
+const hasTool = (event: TeamInput['timeline'][number]) => isToolUse(event) && typeof event.detail?.tool === 'string';
 
 /** The newest unfinished session of the running role: the run the live session writes its events under. */
 function activeRun(input: TeamInput, agents: PipelineStage[]): string | null {
@@ -155,26 +175,31 @@ export function buildTeamView(input: TeamInput): TeamView {
         verdict: stage.verdict,
         duration_ms: stage.sessions.length === 0 ? null : duration,
         model: playing ? (input.running?.model ?? null) : (stage.sessions.at(-1)?.model ?? null),
+        round: stage.round,
+        kind: input.roles?.find((role) => role.name === stage.id)?.result ?? null,
       },
     ];
   });
-  seats.push({ role: 'you', status: youStatus(input), verdict: null, duration_ms: null, model: null });
+  seats.push({ role: 'you', status: youStatus(input), verdict: null, duration_ms: null, model: null, round: null, kind: 'human' });
 
   let active: TeamActive | null = null;
   if (input.running !== null) {
     const running = input.running;
     const since = Date.parse(running.started_at);
     const tools = input.timeline
-      .filter((event) => isToolUse(event) && typeof event.detail?.tool === 'string' && (run !== null ? event.run === run : Date.parse(event.at) >= since))
+      .filter((event) => hasTool(event) && (run !== null ? event.run === run : Date.parse(event.at) >= since))
       .slice(-RECENT_TOOLS)
-      .map((event) => ({ tool: event.detail?.tool as string, message: event.message, at: event.at }));
+      .map(toolOf);
+    const role = input.roles?.find((candidate) => candidate.name === running.role);
     active = {
       role: running.role,
       action: running.last_message,
       recent_tools: tools,
       context: running.context,
       turn: running.turn_count,
+      max_turns: role?.maxTurns ?? input.maxTurns,
       model: running.model,
+      effort: running.effort,
       tokens: running.tokens,
       cost_usd: running.cost_usd,
     };
@@ -201,5 +226,17 @@ export function buildTeamView(input: TeamInput): TeamView {
     if (prev.role !== next.role) handoffs.push({ from: prev.role, to: next.role, verdict: prev.verdict, at: prev.ended_at ?? next.started_at });
   }
 
-  return { seats, active, subagents: input.running?.subagents ?? { running: [], finished: [] }, blocks, handoffs };
+  // The trace of the live session, else of the newest session of any role.
+  const newest = blocks.at(-1)?.run ?? null;
+  const trace = active !== null ? active.recent_tools : newest === null ? [] : input.timeline.filter((event) => hasTool(event) && event.run === newest).slice(-RECENT_TOOLS).map(toolOf);
+
+  return {
+    seats,
+    active,
+    subagents: input.running?.subagents ?? { running: [], finished: [] },
+    blocks,
+    handoffs,
+    trace,
+    compact_threshold: input.compactThreshold,
+  };
 }

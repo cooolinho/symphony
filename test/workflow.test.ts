@@ -85,6 +85,18 @@ describe('config layer', () => {
     assert.equal(config.server.allowRemoteControl, false);
   });
 
+  it('reads budget.compact_threshold: 80 by default, 1..100, unknown keys warn', () => {
+    const base = { tracker: { kind: 'github_project' } };
+    assert.equal(resolve(base).budget.compactThreshold, 80);
+    assert.equal(resolve({ ...base, budget: { compact_threshold: 75 } }).budget.compactThreshold, 75);
+    for (const bad of [0, 101, 'x']) {
+      assert.throws(() => resolve({ ...base, budget: { compact_threshold: bad } }), (error: unknown) => error instanceof SymphonyError && /budget\.compact_threshold/.test(error.message));
+    }
+    const warned = resolve({ ...base, budget: { compact_threshold: 70, other: 1 } });
+    assert.ok(warned.warnings.some((w) => w.includes('budget.other')), warned.warnings.join('; '));
+    assert.ok(!resolve({ ...base, budget: {} }).warnings.some((w) => w.includes('budget')));
+  });
+
   it('uses the adapter-documented state defaults', () => {
     const config = resolve({ tracker: { kind: 'github_project' } });
     assert.deepEqual(config.tracker.activeStates, ['Todo', 'In Progress']);

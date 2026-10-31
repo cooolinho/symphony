@@ -45,6 +45,9 @@ export interface BrainClash {
   status: 'open' | 'resolved';
 }
 
+/** Called for every clash: when it is recorded and for each clash `load` restores. */
+export type BrainClashListener = (line: BrainAccess, clash: BrainClash) => void;
+
 /** The note as it was when the write was rejected (`base`) and the content the run tried to write (`attempted`). */
 export interface BrainClashVersions {
   base: { content: string; hash: string } | null;
@@ -98,6 +101,7 @@ export class BrainAccessLog {
   readonly #logger: Logger;
   readonly #lastWrite = new Map<string, LastWrite>();
   #clashes: BrainClash[] = [];
+  readonly #onClash: BrainClashListener | undefined;
   readonly #versions = new Map<string, BrainClashVersions>();
   /** Sidecars with the versions of each clash; null without a log dir. */
   readonly #clashDir: string | null;
@@ -105,10 +109,19 @@ export class BrainAccessLog {
   readonly #daily = new Map<string, { reads: number; writes: number }>();
   #failing = false;
 
-  constructor(dir: string | null, logger: Logger) {
+  constructor(dir: string | null, logger: Logger, options: { onClash?: BrainClashListener } = {}) {
     this.file = dir === null ? null : path.join(dir, 'access.jsonl');
     this.#clashDir = dir === null ? null : path.join(dir, 'clashes');
     this.#logger = logger;
+    this.#onClash = options.onClash;
+  }
+
+  #notifyClash(line: BrainAccess, clash: BrainClash): void {
+    try {
+      this.#onClash?.(line, { ...clash, runs: [...clash.runs], at: [...clash.at] });
+    } catch (error) {
+      this.#logger.warn('brain clash listener failed', { clash: clash.id, error: errorMessage(error) });
+    }
   }
 
   /** Prunes the file, then rebuilds the last-writer index and the clashes of the last 7 days from it. */
@@ -134,14 +147,16 @@ export class BrainAccessLog {
         this.#lastWrite.set(entry.path_or_query, { run: entry.run ?? null, at: entry.at });
       } else if (entry.result === 'rejected' && typeof entry.clash_id === 'string' && entry.time >= since) {
         if (entry.reason !== 'window' && entry.reason !== 'hash_mismatch') continue;
-        this.#clashes.push({
+        const clash: BrainClash = {
           id: entry.clash_id,
           path: entry.path_or_query,
           runs: [entry.other_run ?? null, entry.run ?? null],
           at: [entry.other_at ?? null, entry.at],
           reason: entry.reason,
           status: 'open',
-        });
+        };
+        this.#clashes.push(clash);
+        this.#notifyClash(entry, clash);
       } else if (entry.op === 'resolve' && typeof entry.clash_id === 'string') {
         const clash = this.#clashes.find((candidate) => candidate.id === entry.clash_id);
         if (clash !== undefined) clash.status = 'resolved';
@@ -310,9 +325,11 @@ export class BrainAccessLog {
       status: 'open',
     };
     this.#clashes.push(clash);
-    this.#versions.set(clash.id, versions);
+this.#versions.set(clash.id, versions);
     this.#writeVersions(clash, versions);
-    this.record({ ...entry, result: 'rejected', reason, clash_id: clash.id, other_run: other.run, other_at: other.at });
+    const line: BrainAccess = { ...entry, result: 'rejected', reason, clash_id: clash.id, other_run: other.run, other_at: other.at };
+    this.record(line);
+    this.#notifyClash(line, clash);
     return clash;
   }
 

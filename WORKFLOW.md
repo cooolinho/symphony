@@ -445,6 +445,9 @@ server:
   allow_remote_control: ${SYMPHONY_ALLOW_REMOTE_CONTROL:-false}  # Retry/Resume now on a non-loopback bind
   public_url: ${SYMPHONY_PUBLIC_URL:-}       # the dashboard as people reach it (https://symphony.example.com); links in commit statuses
 
+# budget:
+#   compact_threshold: 80                    # context percent of Claude Code's auto-compact; the team view marks it
+
 # brain:                                     # knowledge vault: one vault for all repositories, created at startup
 #   enabled: false                           # true = create the vault; false = no path is touched
 #   path: ~/brain                            # /home/symphony/brain is the brain volume in Docker

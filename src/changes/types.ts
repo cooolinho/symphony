@@ -16,12 +16,19 @@ export interface ChangePullRequest {
   status: 'none' | 'pending' | 'success' | 'failure';
 }
 
-/** `committed`: a commit of an agent session; `merged`: the merge of the issue's pull request. Brain values follow in E6-2. */
-export type ChangeStatus = 'committed' | 'merged';
+/**
+ * `committed`: a commit of an agent session; `merged`: the merge of the issue's pull request. Brain values: `created`,
+ * `updated`, `approved` (subject `approve:`), `rejected_candidate` (subject `reject:`), `human` (Obsidian commit) and
+ * `conflict` (a rejected write).
+ */
+export type ChangeStatus = 'committed' | 'merged' | 'created' | 'updated' | 'approved' | 'rejected_candidate' | 'human' | 'conflict';
 
-/** One change Symphony saw: a commit or merge (`code`), or a change to the brain (`brain`, E6-2). */
+/** One change Symphony saw: a commit or merge (`code`), or a change to the brain (`brain`). */
 export interface ChangeEntry {
-  /** Unique: `code:<repo>:<sha>` per commit, `code:<repo>:merge:<pull request>` (without one `code:<repo>:merge:<issue>:<at>`) per merge. */
+  /**
+   * Unique: `code:<repo>:<sha>` per commit, `code:<repo>:merge:<pull request>` (without one `code:<repo>:merge:<issue>:<at>`)
+   * per merge, `brain:<sha>:<path>` per path of a vault commit, `brain:conflict:<clash id>` per rejected write.
+   */
   id: string;
   type: 'code' | 'brain';
   /** ISO timestamp (UTC). */
@@ -37,6 +44,12 @@ export interface ChangeEntry {
   /** At most 5 changed lines per file; null when there is no excerpt. */
   diff: string | null;
   status: ChangeStatus;
+  /** Brain: the run of the write (of the rejected write for `conflict`). */
+  run?: string | null;
+  /** Brain `conflict` only: `hash_mismatch` or `window`. */
+  reason?: string;
+  /** Brain `conflict` only: the clash of the access log. */
+  clash_id?: string;
 }
 
 /** Filter and page of `ChangeStore.list`: `before` is the id of the last entry of the previous page. */
