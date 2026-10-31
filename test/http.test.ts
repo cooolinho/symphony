@@ -8,7 +8,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { PricingStore } from '../src/costs/pricing.ts';
 import { HistoryLog } from '../src/history/history.ts';
-import { AGENT_HTML } from '../src/http/agent-page.ts';
+import { AGENT_HTML } from '../src/http/issue-page.ts';
 import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
 import { BOOST_ICON_URI } from '../src/http/icons.ts';
 import { LOGS_HTML } from '../src/http/logs-page.ts';
@@ -1496,7 +1496,7 @@ describe('agent page behaviour', () => {
     const results = [{ role: 'developer', kind: 'implementation', verdict: 'done', round: null, target: 'Agent review', summary: 'Done.', created_at: '2026-10-30T11:00:00Z', url: 'https://github.com/acme/app/issues/1#issuecomment-1', findings: [], blockers: [] }];
     const page = renderPage(AGENT_HTML, { detail: issueDetail({ results }) }, opts);
     const [link] = page.$('result-cards').querySelectorAll('a');
-    assert.equal(link!.textContent, 'Comment ↗');
+    assert.equal(link!.textContent, 'Kommentar ↗');
     assert.equal(link!.href, results[0]!.url);
     assert.equal(page.$('results-section').hidden, false);
   });

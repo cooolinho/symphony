@@ -1139,17 +1139,28 @@ one row per agent station with its runs (count, last outcome, model, effort, tim
 banner with the reason, the failed tool and the next attempt; *View details* jumps to the spot in the timeline.
 The **Entry checks** section lists the newest entry gate (the `checks.on_enter` checks of a move) with every check of the column: pending, running (elapsed time against its timeout), passed, skipped, failed, timed out or broken, with a *from cache* label for reused results and the end of the output of a failed check as the agent got it. The commit statuses `symphony/<name>` link here. The section stays until the next gate or run starts.
 
-The **timeline** shows all sessions of the issue since the claim in chronological order: lifecycle (session started,
+Below the head card the page has two columns: the main column with Bühne, Partitur, Pipeline, Entry checks and
+three tabs, and a sidebar on the right (below the main column on narrow screens such as a 390 px phone). The tabs
+**Trace**, **Sessions** and **Transkript** follow the URL hash (`#trace`, `#sessions`, `#transkript`; without or with an
+unknown hash the trace shows). **Sessions** lists every session with role, column, model, times and a link to its
+JSONL transcript; **Transkript** reads the prompts, responses, thinking, model and tool calls of one session chosen in a
+list. The sidebar starts with **Ergebnisse**, one row per recorded stage result (role, verdict chip, round, the summary
+cut to one line, **Kommentar ↗** to the result comment; findings and blockers fold out), and **Context-Verlauf**, one
+bar per developer round with the session's context peak and a ⇣ mark with the number of Auto-Compacts, read from the
+`run_finished` lines of the [repository logs](#logs-and-statistics) (`GET /api/v1/history/entries`); without logged
+values or without a history it shows “—”.
+
+The **Trace** tab shows all sessions of the issue since the claim in chronological order: lifecycle (session started,
 finished, retry scheduled, paused), phase changes, prompts, model calls (model, tokens, estimated cost, time since
 the previous step), responses, thinking and tool calls with arguments, result, status and duration. Filters
 (lifecycle, phases, model, tools, errors) and a search narrow it down. Prompts, responses and tool data are collapsed
-and only rendered when expanded; errors are always visible in the entry. Next to the timeline, lifecycle, token usage
-(with a small chart per model call), cost per model, sessions and run context (workspace, branch, commit, last entry
-check) summarize the state. For Laravel projects the **Laravel Boost** section sits above it: whether the agent used
+and only rendered when expanded; errors are always visible in the entry. In the sidebar, Lebenszyklus, Token
+(with a small chart per model call), Kosten per model and Run-Kontext (workspace, branch, commit, last entry
+check) summarize the state. For Laravel projects the **Laravel Boost** section sits above them: whether the agent used
 Boost (e.g. *The agent used Laravel Boost in this session: 3 MCP tool calls and 1 skill loaded*), which Boost tools
 and skills how often, and what Boost provided: versions, guidelines (from which file, and whether Claude Code loads
 them itself or they are in the system prompt), the skills and how many of them Claude Code actually loaded, the MCP
-server with its allowed tools, and warnings if `boost:install` did not write guidelines or skills. Boost calls carry the Boost icon in the timeline. *Show raw logs* opens all events as a terminal log with
+server with its allowed tools, and warnings if `boost:install` did not write guidelines or skills. Boost calls carry the Boost icon in the timeline. *Raw-Logs anzeigen* opens all events as a terminal log with
 a severity filter. The page reloads on change events (`GET /api/v1/events`) and polls every 2 s as the fallback, and appends new entries without losing the scroll position.
 
 Where the data comes from and where the limits are:

@@ -17,19 +17,34 @@ const AGENT_CSS = `
   .gate-row b { color: var(--text); font-weight: 600; }
   .gate-row pre.code { flex: 1 0 100%; }
 
-  /* Stage results: one card per result, newest last. */
-  .result-cards { display: grid; gap: 8px; }
-  .result-card { display: grid; gap: 6px; padding: 9px 12px; font: 12px var(--mono); border: 1px solid var(--line);
+  /* Sidebar Ergebnisse: one compact row per result, newest last. */
+  .result-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  .result-row { display: grid; gap: 6px; padding: 8px 10px; font: 12px var(--mono); border: 1px solid var(--line);
     border-left: 2px solid var(--tone, var(--faint)); border-radius: var(--radius-sm); background: rgba(0, 0, 0, .2); }
-  .result-card.vd-good { --tone: var(--green); } .result-card.vd-warn { --tone: var(--amber); } .result-card.vd-bad { --tone: var(--red); }
+  .result-row.vd-good { --tone: var(--green); } .result-row.vd-warn { --tone: var(--amber); } .result-row.vd-bad { --tone: var(--red); }
   .result-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
   .result-head b { color: var(--text); font-weight: 600; }
-  .result-head .verdict { color: var(--tone, var(--muted)); font-weight: 600; }
+  .result-head .ui-chip { font-size: 11px; min-height: 0; }
   .result-summary { color: var(--text-2); overflow-wrap: anywhere; white-space: pre-wrap; }
   .result-findings { margin: 0; padding-left: 18px; display: grid; gap: 3px; color: var(--text-2); overflow-wrap: anywhere; }
   .result-findings .sev { font-weight: 600; text-transform: uppercase; }
   .result-findings .sev.blocker, .result-findings .sev.major { color: var(--red); }
   .result-findings .sev.minor, .result-findings .sev.nit { color: var(--muted); }
+  .result-more summary { color: var(--muted); cursor: pointer; }
+  .result-more .result-findings { margin-top: 6px; }
+
+  /* Sidebar Context-Verlauf: one bar per developer round, compact marker on the right. */
+  .ctx-runs { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  .ctx-runs:empty { display: none; }
+  .ctx-run { display: grid; grid-template-columns: 28px minmax(0, 1fr) 44px 28px; gap: 8px; align-items: center; font: 12px var(--mono); color: var(--text-2); }
+  .ctx-pct { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
+  .ctx-compact { color: var(--amber); }
+
+  /* Tabs Trace, Sessions, Transkript */
+  .tabs-bar { margin-bottom: 12px; }
+  [role="tabpanel"][hidden] { display: none; }
+  .tx-tools { margin-bottom: 8px; }
+  .tx-tools label { font: 12px var(--mono); color: var(--muted); }
 
   /* Issue sidebar section: labels, blockers, sub-issues. */
   .issue-labels { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
@@ -66,10 +81,7 @@ const AGENT_PAGE_CSS = `
   .alert .actions { margin-top: 2px; }
   .notice { font: 12.5px var(--mono); color: var(--text-2); padding: 10px 14px; border: 1px dashed var(--line-2); border-radius: var(--radius-sm); background: rgba(0, 0, 0, .2); }
 
-  /* Layout: timeline dominant, summary on the side */
-  .trace { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
-  @media (min-width: 1100px) { .trace { grid-template-columns: minmax(0, 2.1fr) minmax(300px, 1fr); } .side { position: sticky; top: 86px; } }
-  .side { display: grid; gap: 16px; min-width: 0; }
+  /* Layout: main column (stage, score, tabs) and the sidebar of the shell's .cols; the sidebar wraps below on narrow screens */
   .side section { padding: 14px 16px; }
   .side h2 { margin-bottom: 12px; }
   .kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 7px 14px; margin: 0; font: 12.5px var(--mono); }
@@ -250,7 +262,7 @@ const AGENT_PAGE_CSS = `
   .sub-right { flex: none; font: 12px var(--mono); color: var(--fg-3); white-space: nowrap; }
   .stage-subagent.is-running .sub-right { color: #6ee7b7; }
   .stage-empty { margin: 0; color: var(--fg-3); font-size: 13px; }
-  .score { margin-top: 18px; min-width: 0; }
+  .score { min-width: 0; }
   .score-frame { overflow-x: auto; overflow-y: hidden; max-width: 100%; padding: 8px 0; }
   .score-frame svg { display: block; }
   .score-lane rect { fill: transparent; } .score-lane.alt rect { fill: rgba(255, 255, 255, .03); }
@@ -309,6 +321,8 @@ export const AGENT_HTML = page({
     <div class="head-actions" id="head-actions"></div>
   </section>
 
+  <div class="cols">
+  <div class="col-main">
   <section class="g stage" id="stage" aria-labelledby="stage-title" hidden>
     <div class="stage-head">
       <h2 class="lbl" id="stage-title">Bühne</h2>
@@ -342,11 +356,6 @@ export const AGENT_HTML = page({
     <div class="pipe-rows" id="pipe-rows"></div>
   </section>
 
-  <section class="results-section" id="results-section" aria-labelledby="results-title" hidden>
-    <div class="section-head"><h2 id="results-title">Stage results <span class="count" id="results-count"></span></h2></div>
-    <div class="result-cards" id="result-cards"></div>
-  </section>
-
   <section class="gate-section" id="gate-section" aria-labelledby="gate-title" hidden>
     <div class="section-head"><h2 id="gate-title">Entry checks <span class="count" id="gate-meta"></span></h2></div>
     <ol class="gate-checks" id="gate-checks"></ol>
@@ -355,92 +364,118 @@ export const AGENT_HTML = page({
   <section class="alert" id="alert" role="alert" hidden></section>
   <div class="notice" id="notice" hidden></div>
 
-  <div class="trace" id="trace">
-    <section aria-labelledby="tl-title">
+  <div class="tabs-block" id="tabs-block">
+    <div class="ui-tabs tabs-bar" role="tablist" aria-label="Verlauf" id="tabs">
+      <button type="button" class="ui-tab" role="tab" id="tab-trace" data-id="trace" aria-controls="panel-trace" aria-selected="true" tabindex="0">Trace</button>
+      <button type="button" class="ui-tab" role="tab" id="tab-sessions" data-id="sessions" aria-controls="panel-sessions" aria-selected="false" tabindex="-1">Sessions <span class="ui-tab-count" id="runs-count"></span></button>
+      <button type="button" class="ui-tab" role="tab" id="tab-transkript" data-id="transkript" aria-controls="panel-transkript" aria-selected="false" tabindex="-1">Transkript</button>
+    </div>
+
+    <section role="tabpanel" id="panel-trace" aria-labelledby="tab-trace">
       <div class="tl-head">
         <div class="section-head">
-          <h2 id="tl-title">Execution timeline <span class="count" id="tl-count"></span></h2>
+          <h2 id="tl-title">Trace <span class="count" id="tl-count"></span></h2>
           <div class="actions">
-            <button type="button" id="expand-all">Expand all</button>
-            <button type="button" id="collapse-all">Collapse</button>
+            <button type="button" id="expand-all">Alles aufklappen</button>
+            <button type="button" id="collapse-all">Zuklappen</button>
           </div>
         </div>
         <div class="tl-tools">
-          <div class="seg" id="filters" role="group" aria-label="Event filter">
-            <button type="button" data-f="all" aria-pressed="true">All<span class="n"></span></button>
+          <div class="seg" id="filters" role="group" aria-label="Event-Filter">
+            <button type="button" data-f="all" aria-pressed="true">Alle<span class="n"></span></button>
             <button type="button" data-f="lifecycle" class="tone-green" aria-pressed="false">Lifecycle<span class="n"></span></button>
-            <button type="button" data-f="phase" class="tone-cyan" aria-pressed="false">Phases<span class="n"></span></button>
-            <button type="button" data-f="model" class="tone-cyan" aria-pressed="false">Model<span class="n"></span></button>
+            <button type="button" data-f="phase" class="tone-cyan" aria-pressed="false">Phasen<span class="n"></span></button>
+            <button type="button" data-f="model" class="tone-cyan" aria-pressed="false">Modell<span class="n"></span></button>
             <button type="button" data-f="tools" class="tone-green" aria-pressed="false">Tools<span class="n"></span></button>
-            <button type="button" data-f="errors" class="tone-red" aria-pressed="false">Errors<span class="n"></span></button>
+            <button type="button" data-f="errors" class="tone-red" aria-pressed="false">Fehler<span class="n"></span></button>
           </div>
-          <input type="search" id="tl-q" placeholder="Search events, tools, text…" aria-label="Search the timeline">
+          <input type="search" id="tl-q" placeholder="Events, Tools, Text suchen…" aria-label="Trace durchsuchen">
         </div>
         <div class="meta" id="tl-meta"></div>
       </div>
       <div class="tl-wrap">
         <button type="button" class="earlier" id="earlier" hidden></button>
-        <ol class="timeline" id="timeline" aria-live="off"><li class="note">$ loading trace …</li></ol>
-        <button type="button" class="btn-primary jump" id="jump" hidden>↓ Latest</button>
+        <ol class="timeline" id="timeline" aria-live="off"><li class="note">$ Trace wird geladen …</li></ol>
+        <button type="button" class="btn-primary jump" id="jump" hidden>↓ Neueste</button>
       </div>
       <div class="tl-foot">
-        <span class="meta" id="tl-follow">Following live events</span>
-        <button type="button" id="raw-toggle" aria-expanded="false" aria-controls="rawlog">Show raw logs</button>
+        <span class="meta" id="tl-follow">Folgt den Live-Events</span>
+        <button type="button" id="raw-toggle" aria-expanded="false" aria-controls="rawlog">Raw-Logs anzeigen</button>
       </div>
       <div class="rawlog" id="rawlog" hidden>
         <div class="tl-tools">
-          <div class="seg" id="raw-sev" role="group" aria-label="Severity">
-            <button type="button" data-sev="" aria-pressed="true">All</button>
+          <div class="seg" id="raw-sev" role="group" aria-label="Schweregrad">
+            <button type="button" data-sev="" aria-pressed="true">Alle</button>
             <button type="button" data-sev="debug" class="tone-gray" aria-pressed="false">Debug</button>
             <button type="button" data-sev="info" class="tone-cyan" aria-pressed="false">Info</button>
             <button type="button" data-sev="warn" class="tone-amber" aria-pressed="false">Warn</button>
             <button type="button" data-sev="error" class="tone-red" aria-pressed="false">Error</button>
           </div>
-          <input type="search" id="raw-q" placeholder="Filter event or message…" aria-label="Filter raw logs">
+          <input type="search" id="raw-q" placeholder="Event oder Meldung filtern…" aria-label="Raw-Logs filtern">
         </div>
         <ol class="logs" id="raw-list"></ol>
         <div class="tl-foot"><span class="meta" id="raw-count"></span><span class="actions" id="raw-links"></span></div>
       </div>
     </section>
 
-    <aside class="side" aria-label="Agent summary">
-      <section aria-labelledby="int-title" id="int-section" hidden>
-        <h2 id="int-title"><span>Integrations</span></h2>
-        <div id="int-body"></div>
-      </section>
-      <section aria-labelledby="life-title">
-        <h2 id="life-title">Agent lifecycle</h2>
-        <ul class="milestones" id="milestones"></ul>
-        <dl class="kv" id="life-kv"></dl>
-      </section>
-      <section aria-labelledby="tok-title">
-        <h2 id="tok-title">Token usage</h2>
-        <div class="big" id="tok-total">—</div>
-        <div class="big-sub" id="tok-sub"></div>
-        <dl class="kv" id="tok-kv"></dl>
-        <div class="chart" id="tok-chart" hidden></div>
-      </section>
-      <section aria-labelledby="cost-title">
-        <h2 id="cost-title">Estimated cost</h2>
-        <div class="big" id="cost-total">—</div>
-        <div class="big-sub" id="cost-sub"></div>
-        <dl class="kv" id="cost-kv"></dl>
-      </section>
-      <section aria-labelledby="runs-title">
-        <h2 id="runs-title">Sessions <span class="count" id="runs-count"></span></h2>
-        <ul class="runs" id="runs"></ul>
-      </section>
-      <section aria-labelledby="issue-title" id="issue-section" hidden>
-        <h2 id="issue-title">Issue</h2>
-        <div class="issue-labels" id="issue-labels"></div>
-        <dl class="kv" id="issue-kv"></dl>
-        <div id="issue-extra"></div>
-      </section>
-      <section aria-labelledby="ctx-title">
-        <h2 id="ctx-title">Run context</h2>
-        <dl class="kv" id="ctx-kv"></dl>
-      </section>
-    </aside>
+    <section role="tabpanel" id="panel-sessions" aria-labelledby="tab-sessions" hidden>
+      <ul class="runs" id="runs"></ul>
+    </section>
+
+    <section role="tabpanel" id="panel-transkript" aria-labelledby="tab-transkript" hidden>
+      <div class="tl-tools tx-tools">
+        <label for="tx-run">Session</label>
+        <select id="tx-run"></select>
+        <span class="actions" id="tx-links"></span>
+      </div>
+      <ol class="timeline" id="transcript"><li class="note">Kein Transkript</li></ol>
+    </section>
+  </div>
+  </div>
+
+  <aside class="col-side side" aria-label="Seitenleiste">
+    <section class="results-section" id="results-section" aria-labelledby="results-title" hidden>
+      <h2 id="results-title">Ergebnisse <span class="count" id="results-count"></span></h2>
+      <ol class="result-list" id="result-cards"></ol>
+    </section>
+    <section id="ctx-history" aria-labelledby="ctx-history-title">
+      <h2 id="ctx-history-title">Context-Verlauf</h2>
+      <ol class="ctx-runs" id="ctx-runs" aria-label="Context-Peak des Developers je Runde"></ol>
+      <div class="muted" id="ctx-empty">—</div>
+    </section>
+    <section aria-labelledby="int-title" id="int-section" hidden>
+      <h2 id="int-title"><span>Integrationen</span></h2>
+      <div id="int-body"></div>
+    </section>
+    <section aria-labelledby="life-title">
+      <h2 id="life-title">Lebenszyklus</h2>
+      <ul class="milestones" id="milestones"></ul>
+      <dl class="kv" id="life-kv"></dl>
+    </section>
+    <section aria-labelledby="tok-title">
+      <h2 id="tok-title">Token</h2>
+      <div class="big" id="tok-total">—</div>
+      <div class="big-sub" id="tok-sub"></div>
+      <dl class="kv" id="tok-kv"></dl>
+      <div class="chart" id="tok-chart" hidden></div>
+    </section>
+    <section aria-labelledby="cost-title">
+      <h2 id="cost-title">Kosten</h2>
+      <div class="big" id="cost-total">—</div>
+      <div class="big-sub" id="cost-sub"></div>
+      <dl class="kv" id="cost-kv"></dl>
+    </section>
+    <section aria-labelledby="issue-title" id="issue-section" hidden>
+      <h2 id="issue-title">Issue</h2>
+      <div class="issue-labels" id="issue-labels"></div>
+      <dl class="kv" id="issue-kv"></dl>
+      <div id="issue-extra"></div>
+    </section>
+    <section aria-labelledby="ctx-title">
+      <h2 id="ctx-title">Run-Kontext</h2>
+      <dl class="kv" id="ctx-kv"></dl>
+    </section>
+  </aside>
   </div>
 `,
   scripts: `
@@ -490,6 +525,7 @@ ${PIPELINE_JS}
     rendered: false, nodes: new Map(), listSig: '', unseen: 0, known: new Set(), fresh: new Set(),
     rawOpen: false, rawSev: '', rawQ: '',
     team: null, stageSig: '', stagePct: undefined, subsSig: '', scoreSig: '',
+    tab: 'trace', ctxEntries: null, ctxFinished: 0, txRun: '', txSig: '',
   };
 
   // ------------------------------------------------------------------ data loading (one poll loop)
@@ -548,6 +584,7 @@ ${PIPELINE_JS}
         for (const session of r.body.sessions) if (await loadTranscript(session)) S.dirty = true;
         const tm = await getJson(API + '/team').catch(() => null);
         if (tm && tm.ok && tm.body && Array.isArray(tm.body.seats)) S.team = tm.body;
+        maybeLoadContextHistory();
       }
     } catch (error) {
       S.online = false;
@@ -868,13 +905,13 @@ ${PIPELINE_JS}
     const counts = { all: 0, lifecycle: 0, phase: 0, model: 0, tools: 0, errors: 0 };
     for (const it of S.items) { counts.all++; if (counts[it.cat] !== undefined) counts[it.cat]++; if (it.err) counts.errors++; }
     for (const b of $('filters').querySelectorAll('button')) setText(b.querySelector('.n'), counts[b.dataset.f] ? counts[b.dataset.f] : '');
-    setText($('tl-count'), S.items.length ? fmtInt(S.items.length) + ' events' : '');
+    setText($('tl-count'), S.items.length ? fmtInt(S.items.length) + ' Events' : '');
 
     const visible = S.items.filter(matches);
     const shown = visible.slice(-S.limit);
     const earlier = $('earlier');
     earlier.hidden = visible.length <= shown.length;
-    setText(earlier, 'Show ' + fmtInt(Math.min(RENDER_LIMIT, visible.length - shown.length)) + ' earlier events (' + fmtInt(visible.length - shown.length) + ' hidden)');
+    setText(earlier, fmtInt(Math.min(RENDER_LIMIT, visible.length - shown.length)) + ' frühere Events anzeigen (' + fmtInt(visible.length - shown.length) + ' verborgen)');
 
     const sig = shown.map((it) => it.key + '~' + it.sig + (isOpen(it) ? '+' : '-')).join(',');
     if (sig === S.listSig) return;
@@ -903,7 +940,7 @@ ${PIPELINE_JS}
     });
     S.nodes = next;
     if (!nodes.length) {
-      list.replaceChildren(el('li', S.items.length ? 'No events match the filter.' : S.detail || S.ended ? '$ no events recorded yet …' : '$ loading trace …', 'note'));
+      list.replaceChildren(el('li', S.items.length ? 'Kein Event passt zum Filter.' : S.detail || S.ended ? '$ noch keine Events …' : '$ Trace wird geladen …', 'note'));
     } else list.replaceChildren(...nodes);
 
     if (!S.rendered || atBottom) list.scrollTop = list.scrollHeight;
@@ -922,8 +959,8 @@ ${PIPELINE_JS}
     const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 48;
     if (atBottom) S.unseen = 0;
     $('jump').hidden = atBottom;
-    setText($('jump'), S.unseen ? '↓ ' + S.unseen + ' new' : '↓ Latest');
-    setText($('tl-follow'), atBottom ? (isRunning() ? 'Following live events' : 'At the latest event') : 'Paused following · scroll to the bottom to follow');
+    setText($('jump'), S.unseen ? '↓ ' + S.unseen + ' neu' : '↓ Neueste');
+    setText($('tl-follow'), atBottom ? (isRunning() ? 'Folgt den Live-Events' : 'Am neuesten Event') : 'Folgen pausiert · zum Ende scrollen');
   }
 
   // ------------------------------------------------------------------ header, alert, summary
@@ -1286,14 +1323,14 @@ ${PIPELINE_JS}
       li.append(row, el('div', s.role + ' · ' + s.state + (s.attempt ? ' · attempt ' + s.attempt : '') + (s.model ? ' · ' + s.model : '') + (s.effort ? ' · effort ' + s.effort : ''), 'muted'),
         el('div', fmtStamp(s.started_at) + (s.finished_at ? ' → ' + fmtClock(s.finished_at) : ''), 'muted'));
       if (s.transcript) {
-        const a = el('a', 'Transcript (JSONL) ↗');
+        const a = el('a', 'Transkript (JSONL) ↗');
         a.href = API + '/transcript?run=' + encodeURIComponent(s.run) + '&format=raw';
         a.target = '_blank'; a.rel = 'noopener';
         li.append(a);
-      } else li.append(el('div', 'no transcript', 'muted'));
+      } else li.append(el('div', 'kein Transkript', 'muted'));
       return li;
     });
-    patchChildren($('runs'), runNodes.length ? runNodes : [el('li', 'No sessions recorded.', 'muted')]);
+    patchChildren($('runs'), runNodes.length ? runNodes : [el('li', 'Keine Sessions', 'muted')]);
 
     // Context
     const trace = d && d.run_trace;
@@ -1378,46 +1415,71 @@ ${PIPELINE_JS}
     patchChildren(host, rows);
   }
 
-  /** One card per recorded stage result: role, verdict with round, summary, findings, blockers and the comment's link. */
+  const RESULT_CHIP_TONE = { good: 'green', warn: 'amber', bad: 'red' };
+  /** Sidebar Ergebnisse: one row per recorded stage result with role, verdict chip, round, short summary and the comment's link; findings and blockers fold away. */
   function renderResults() {
     const d = S.detail;
     const results = (d && d.results) || [];
     $('results-section').hidden = !results.length;
     setText($('results-count'), results.length ? String(results.length) : '');
-    const cards = results.map((r) => {
-      const card = el('article', null, 'result-card vd-' + (PIPE_VERDICT_TONE[r.verdict] || 'muted'));
+    const rows = results.map((r) => {
+      const tone = PIPE_VERDICT_TONE[r.verdict] || 'muted';
+      const row = el('li', null, 'result-row vd-' + tone);
       const head = el('div', null, 'result-head');
-      head.append(el('b', r.role), el('span', r.kind, 'muted'), el('span', pipeVerdict(r.verdict, r.round), 'verdict'));
+      head.append(el('b', r.role), el('span', r.kind, 'muted'));
+      if (r.verdict) head.append(chip(pipeVerdict(r.verdict, null), RESULT_CHIP_TONE[tone] ? { tone: RESULT_CHIP_TONE[tone] } : {}));
+      if (r.round) head.append(el('span', 'Runde ' + r.round, 'muted'));
       if (r.target) head.append(el('span', '→ ' + r.target, 'muted'));
-      head.append(el('span', fmtStamp(r.created_at), 'muted'));
       if (typeof r.url === 'string' && /^https?:/.test(r.url)) {
-        const link = el('a', 'Comment ↗');
+        const link = el('a', 'Kommentar ↗');
         link.href = r.url; link.target = '_blank'; link.rel = 'noopener noreferrer';
         head.append(link);
       }
-      card.append(head);
-      if (r.summary) card.append(el('div', r.summary, 'result-summary'));
-      if (r.findings && r.findings.length) {
-        const list = el('ul', null, 'result-findings');
-        for (const f of r.findings) {
-          const li = el('li');
-          li.append(el('span', f.severity, 'sev ' + f.severity), ' ' + (f.file ? f.file + (f.line ? ':' + f.line : '') + ' — ' : '') + f.problem + (f.fix ? ' → ' + f.fix : ''));
-          list.append(li);
-        }
-        card.append(list);
+      row.append(head);
+      if (r.summary) {
+        const summary = el('div', oneLine(r.summary, 140), 'result-summary');
+        summary.title = String(r.summary);
+        row.append(summary);
       }
-      if (r.blockers && r.blockers.length) {
-        const list = el('ul', null, 'result-findings');
-        for (const b of r.blockers) {
-          const li = el('li');
-          li.append(el('span', b.needs, 'sev blocker'), ' ' + b.description);
-          list.append(li);
+      const findings = r.findings || [];
+      const blockers = r.blockers || [];
+      if (findings.length || blockers.length) {
+        const more = el('details', null, 'result-more');
+        const parts = [];
+        if (findings.length) parts.push(findings.length + (findings.length === 1 ? ' Finding' : ' Findings'));
+        if (blockers.length) parts.push(blockers.length + ' Blocker');
+        more.append(el('summary', parts.join(' · ')));
+        if (findings.length) {
+          const list = el('ul', null, 'result-findings');
+          for (const f of findings) {
+            const li = el('li');
+            li.append(el('span', f.severity, 'sev ' + f.severity), ' ' + (f.file ? f.file + (f.line ? ':' + f.line : '') + ' — ' : '') + f.problem + (f.fix ? ' → ' + f.fix : ''));
+            list.append(li);
+          }
+          more.append(list);
         }
-        card.append(list);
+        if (blockers.length) {
+          const list = el('ul', null, 'result-findings');
+          for (const b of blockers) {
+            const li = el('li');
+            li.append(el('span', b.needs, 'sev blocker'), ' ' + b.description);
+            list.append(li);
+          }
+          more.append(list);
+        }
+        row.append(more);
       }
-      return card;
+      return row;
     });
-    patchChildren($('result-cards'), cards);
+    // A refresh must not fold a details element the user has opened.
+    const host = $('result-cards');
+    rows.forEach((row, i) => {
+      const old = host.children[i];
+      const was = old && old.querySelector('details');
+      const now = row.querySelector('details');
+      if (was && now && was.open) now.open = true;
+    });
+    patchChildren(host, rows);
   }
 
   /** Board fields of the issue: labels, priority, parent, blockers, sub-issues, dispatch note. */
@@ -1485,7 +1547,7 @@ ${PIPELINE_JS}
     $('int-section').hidden = list.length === 0;
     if (!list.length) return;
     const single = list.length === 1 ? list[0] : null;
-    patchChildren($('int-title'), single ? [integrationIcon(single.id, 18, single.status !== 'ready'), el('span', single.label)] : [el('span', 'Integrations')]);
+    patchChildren($('int-title'), single ? [integrationIcon(single.id, 18, single.status !== 'ready'), el('span', single.label)] : [el('span', 'Integrationen')]);
     patchChildren($('int-body'), list.flatMap((x) => integrationBlock(x, !single)));
   }
 
@@ -1638,7 +1700,7 @@ ${PIPELINE_JS}
     if (sessions.length && missing === sessions.length) meta = 'Session transcripts are not available' + (reasons[0] ? ' (' + reasons[0] + ')' : '') + ': prompts, full responses, tool arguments and results cannot be shown; the timeline lists the agent events instead.';
     else if (S.firstSeq > 1) meta = 'Older orchestrator events were dropped (the issue keeps its newest events).';
     setText($('tl-meta'), meta);
-    $('trace').hidden = !!(S.notFound || !ID);
+    $('tabs-block').hidden = !!(S.notFound || !ID);
   }
 
   function renderStatusbar() {
@@ -2095,6 +2157,142 @@ ${PIPELINE_JS}
     setText($('score-meta'), blocks.length + ' Sessions · ' + handoffs.length + ' Übergaben · Runde ' + scoreMaxRound(blocks));
   }
 
+  // ------------------------------------------------------------------ sidebar Context-Verlauf
+
+  // Context peak of every developer run from its run_finished line in the repository history (GET /api/v1/history/entries).
+  // Loaded once after the first detail poll and again when another session has finished; without history it shows "—".
+  let ctxLoading = false;
+  const finishedSessions = () => ((S.detail && S.detail.sessions) || []).filter((s) => s.finished_at).length;
+  async function loadContextHistory() {
+    if (ctxLoading) return;
+    const identifier = (S.detail && S.detail.issue_identifier) || ID;
+    ctxLoading = true;
+    S.ctxFinished = finishedSessions();
+    let rows = [];
+    try {
+      const r = await getJson('/api/v1/history/entries?issue=' + encodeURIComponent(identifier) + '&event=run_finished&order=asc&limit=200');
+      // The server matches the issue as a substring (#1 also finds #10): compare exactly here.
+      if (r.ok && r.body && Array.isArray(r.body.entries)) rows = r.body.entries.filter((e) => e && e.issue === identifier && e.role === 'developer');
+    } catch {}
+    S.ctxEntries = rows;
+    ctxLoading = false;
+    renderContextHistory();
+  }
+  function maybeLoadContextHistory() {
+    if (!S.detail || S.ended) return;
+    if (S.ctxEntries === null || finishedSessions() > S.ctxFinished) loadContextHistory();
+  }
+  /** A history field as a number; null for a missing or logged-as-null value. */
+  const historyNumber = (v) => (v === undefined || v === null || v === '' || v === 'null' ? null : Number.isFinite(Number(v)) ? Number(v) : null);
+
+  function renderContextHistory() {
+    const entries = (S.ctxEntries || []).filter((e) => historyNumber(e.context_peak_percent) !== null);
+    const blocks = (S.team && Array.isArray(S.team.blocks)) ? S.team.blocks : [];
+    const rows = entries.map((e, i) => {
+      const pct = historyNumber(e.context_peak_percent);
+      const compacts = historyNumber(e.context_compacts) || 0;
+      const block = blocks.find((b) => b.run === e.run);
+      const round = block && block.round ? block.round : i + 1;
+      const li = el('li', null, 'ctx-run');
+      li.dataset.run = String(e.run || '');
+      li.title = 'Runde ' + round + ' · Context-Peak ' + Math.round(pct) + ' %' + (compacts ? ' · ' + compacts + ' Auto-Compacts' : '');
+      li.append(el('span', 'R' + round, 'ctx-round'), bar(pct, { height: 6, color: pct >= 70 ? UI_TRAFFIC.amber : UI_TRAFFIC.green }), el('span', Math.round(pct) + ' %', 'ctx-pct mono'));
+      if (compacts > 0) {
+        const mark = el('span', '⇣' + compacts, 'ctx-compact');
+        mark.title = compacts + ' Auto-Compacts';
+        li.append(mark);
+      } else li.append(el('span'));
+      return li;
+    });
+    patchChildren($('ctx-runs'), rows);
+    $('ctx-empty').hidden = rows.length > 0;
+  }
+
+  // ------------------------------------------------------------------ tabs Trace, Sessions, Transkript
+
+  const TABS = ['trace', 'sessions', 'transkript'];
+  /** Shows one tab panel; the hash (#trace, #sessions, #transkript) follows without a new history entry. */
+  function selectTab(id, opts) {
+    if (!TABS.includes(id)) id = 'trace';
+    S.tab = id;
+    for (const t of TABS) {
+      const tab = $('tab-' + t);
+      tab.setAttribute('aria-selected', String(t === id));
+      tab.setAttribute('tabindex', t === id ? '0' : '-1');
+      $('panel-' + t).hidden = t !== id;
+    }
+    if (opts && opts.focus) $('tab-' + id).focus();
+    if (opts && opts.hash && location.hash !== '#' + id) history.replaceState(null, '', '#' + id);
+    if (id === 'trace') {
+      const list = $('timeline');
+      if (!S.unseen) list.scrollTop = list.scrollHeight;
+      updateJump();
+    } else if (id === 'transkript') renderTranscript();
+  }
+  const applyHash = () => selectTab(String(location.hash || '').slice(1));
+
+  $('tabs').addEventListener('click', (e) => {
+    const b = e.target.closest('button[role="tab"]');
+    if (b) selectTab(b.dataset.id, { hash: true });
+  });
+  $('tabs').addEventListener('keydown', (e) => {
+    const i = TABS.indexOf(S.tab);
+    const next = e.key === 'ArrowRight' ? (i + 1) % TABS.length : e.key === 'ArrowLeft' ? (i - 1 + TABS.length) % TABS.length : e.key === 'Home' ? 0 : e.key === 'End' ? TABS.length - 1 : -1;
+    if (next < 0) return;
+    e.preventDefault();
+    selectTab(TABS[next], { focus: true, hash: true });
+  });
+  window.addEventListener('hashchange', applyHash);
+
+  // Transkript: prompts, responses, thinking, model and tool calls of one session, newest session with a transcript first.
+  const TX_TYPES = new Set(['prompt', 'response', 'thinking', 'toolcall', 'model']);
+  function renderTranscript() {
+    const sessions = ((S.detail && S.detail.sessions) || []).slice().reverse();
+    if (!S.txRun || !sessions.some((s) => s.run === S.txRun)) {
+      const withTx = sessions.find((s) => s.transcript);
+      S.txRun = withTx ? withTx.run : sessions.length ? sessions[0].run : '';
+    }
+    const select = $('tx-run');
+    const options = sessions.map((s) => {
+      const o = el('option', s.run + ' · ' + s.role + ' · ' + s.state);
+      o.value = s.run;
+      if (s.run === S.txRun) o.selected = true;
+      return o;
+    });
+    patchChildren(select, options);
+    select.value = S.txRun;
+    const session = sessions.find((s) => s.run === S.txRun);
+    const links = [];
+    if (session && session.transcript) {
+      const a = el('a', 'Transkript (JSONL) ↗');
+      a.href = API + '/transcript?run=' + encodeURIComponent(session.run) + '&format=raw';
+      a.target = '_blank'; a.rel = 'noopener';
+      links.push(a);
+    }
+    patchChildren($('tx-links'), links);
+    const items = S.items.filter((it) => it.run === S.txRun && TX_TYPES.has(it.type));
+    const sig = S.txRun + '|' + items.map((it) => it.key + '~' + it.sig + (isOpen(it) ? '+' : '-')).join(',');
+    if (sig === S.txSig) return;
+    S.txSig = sig;
+    const list = $('transcript');
+    if (!items.length) {
+      const t = S.tx.get(S.txRun);
+      list.replaceChildren(el('li', 'Kein Transkript für diese Session' + (t && t.reason ? ' (' + t.reason + ')' : ''), 'note'));
+      return;
+    }
+    list.replaceChildren(...items.map((it) => buildItem(it, false)));
+  }
+  $('tx-run').addEventListener('change', (e) => { S.txRun = e.target.value; S.txSig = ''; renderTranscript(); });
+  $('transcript').addEventListener('click', (e) => {
+    const toggle = e.target.closest('button.toggle');
+    if (!toggle) return;
+    const key = toggle.closest('li.item').dataset.key;
+    if (S.expanded.has(key)) S.expanded.delete(key); else S.expanded.add(key);
+    S.txSig = ''; S.listSig = '';
+    renderTranscript();
+    renderTimeline();
+  });
+
   // ------------------------------------------------------------------ render + interactions
 
   function render() {
@@ -2115,6 +2313,8 @@ ${PIPELINE_JS}
       renderIntegrations();
       renderSummary();
     }
+    renderContextHistory();
+    if (S.tab === 'transkript') renderTranscript();
     renderNotice();
     renderTimeline();
     renderRaw();
@@ -2182,7 +2382,7 @@ ${PIPELINE_JS}
     S.rawOpen = !S.rawOpen;
     $('rawlog').hidden = !S.rawOpen;
     $('raw-toggle').setAttribute('aria-expanded', String(S.rawOpen));
-    setText($('raw-toggle'), S.rawOpen ? 'Hide raw logs' : 'Show raw logs');
+    setText($('raw-toggle'), S.rawOpen ? 'Raw-Logs ausblenden' : 'Raw-Logs anzeigen');
     if (S.rawOpen) { renderRaw(); const l = $('raw-list'); l.scrollTop = l.scrollHeight; }
   });
   $('raw-sev').addEventListener('click', (e) => {
@@ -2202,10 +2402,11 @@ ${PIPELINE_JS}
   // Runtime and countdowns tick between polls.
   setInterval(() => { if (S.detail && !S.ended) { renderHead(); renderAlert(); renderStage(); } }, 1000);
 
+  applyHash();
   if (!ID) render();
   else { render(); poll(); live(poll, pollEvery(poll, POLL_MS)); }
   // Tests load the page in a fake DOM and render a fixture through window.__render.
-  if (window.__SYMPHONY_TEST__) window.__render = (state) => { Object.assign(S, state); render(); };
+  if (window.__SYMPHONY_TEST__) window.__render = (state) => { Object.assign(S, state); if (state && state.tab) selectTab(state.tab); render(); };
 })();
 `,
 });

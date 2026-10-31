@@ -443,6 +443,8 @@ export interface RenderedPage {
   confirms: string[];
   /** Number of history.back() calls. */
   backs: number;
+  /** The page's location (history.replaceState updates it). */
+  location: Record<string, unknown>;
 }
 
 /**
@@ -531,6 +533,7 @@ export function renderPage(html: string, state?: unknown, opts: RenderOptions = 
     fetches,
     intervals,
     confirms,
+    location,
   };
   return page;
 }

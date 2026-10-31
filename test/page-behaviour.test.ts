@@ -4,7 +4,7 @@ import http from 'node:http';
 import path from 'node:path';
 import vm from 'node:vm';
 import { after, before, describe, it } from 'node:test';
-import { AGENT_HTML } from '../src/http/agent-page.ts';
+import { AGENT_HTML } from '../src/http/issue-page.ts';
 import { BRAIN_HTML } from '../src/http/brain-page.ts';
 import { CHANGES_HTML } from '../src/http/changes-page.ts';
 import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
