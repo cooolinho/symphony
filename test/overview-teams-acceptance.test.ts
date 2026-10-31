@@ -103,9 +103,11 @@ describe('overview teams (acceptance)', () => {
     assert.equal(host.byClass('is-playing').length, 1);
     assert.equal(rows[0]!.byClass('is-playing').length, 1);
     assert.equal(rows[0]!.byClass('is-playing')[0]!.getAttribute('aria-label')!.toLowerCase().includes('developer'), true);
-    assert.equal(rows[0]!.byClass('eq').length, 1);
+    assert.equal(rows[0]!.byClass('team-actline')[0]!.byClass('eq').length, 1);
     assert.equal(rows[1]!.byClass('is-playing').length, 0);
     assert.equal(rows[1]!.byClass('eq').length, 0);
+    assert.equal(rows[1]!.byClass('ring').length, 0);
+    assert.equal(rows[0]!.byClass('ring').length, 1);
     assert.equal(rows[2]!.byClass('is-playing').length, 0);
   });
 
@@ -171,15 +173,15 @@ describe('overview teams (acceptance)', () => {
     assert.ok(host.textContent.includes('00:12'), host.textContent);
   });
 
-  it('shows the subagent count as running/total', () => {
+  it('shows the running subagents as text', () => {
     const { host, render } = setup();
     render({ issues: [
       issue(1, runInfo({ subagents: { running: [{ id: 'a' }], finished: [{ id: 'b' }, { id: 'c' }] } })),
       issue(2, runInfo({ subagents: { running: [], finished: [] } })),
     ] });
     const rows = host.byClass('team-row');
-    assert.match(rows[0]!.textContent, /1\s*\/\s*3\s*Subagents/);
-    assert.match(rows[1]!.textContent, /0\s*\/\s*0\s*Subagents/);
+    assert.equal(rows[0]!.byClass('team-subs')[0]!.textContent, '1 Subagent');
+    assert.equal(rows[1]!.byClass('team-subs')[0]!.textContent, 'keine Subagents');
   });
 
   it('every row is one link to /issue?id=… with the encoded identifier', () => {
@@ -202,24 +204,24 @@ describe('overview teams (acceptance)', () => {
     assert.doesNotMatch(TEAMS_CSS, /\.team-row[^{]*\{[^}]*outline:\s*(none|0)/);
   });
 
-  it('empty state: "Kein Team arbeitet gerade." and it is replaced once a team runs', () => {
+  it('empty state: "Kein Team spielt gerade" and it is replaced once a team runs', () => {
     const { host, render } = setup();
     render({ issues: [] });
-    assert.equal(host.textContent, 'Kein Team arbeitet gerade.');
+    assert.equal(host.textContent, 'Kein Team spielt gerade');
     render({ issues: [issue(1, null)] });
-    assert.equal(host.textContent, 'Kein Team arbeitet gerade.');
+    assert.equal(host.textContent, 'Kein Team spielt gerade');
     render({ issues: [issue(1, runInfo())] });
-    assert.ok(!host.textContent.includes('Kein Team arbeitet gerade.'));
+    assert.ok(!host.textContent.includes('Kein Team spielt gerade'));
     assert.equal(host.byClass('team-row').length, 1);
     render({ issues: [] });
     assert.equal(host.byClass('team-row').length, 0);
-    assert.equal(host.textContent, 'Kein Team arbeitet gerade.');
+    assert.equal(host.textContent, 'Kein Team spielt gerade');
   });
 
   it('a state without issues array does not throw', () => {
     const { host, render } = setup();
     assert.doesNotThrow(() => render({}));
-    assert.equal(host.textContent, 'Kein Team arbeitet gerade.');
+    assert.equal(host.textContent, 'Kein Team spielt gerade');
   });
 
   it('renders 20 running issues in under 50 ms using one replaceChildren call', () => {
@@ -249,5 +251,71 @@ describe('overview teams (acceptance)', () => {
     assert.ok(DASHBOARD_HTML.indexOf('>Teams') < DASHBOARD_HTML.indexOf('>Running'), 'Teams before Running');
     assert.ok(DASHBOARD_HTML.includes('renderTeams('));
     assert.ok(DASHBOARD_HTML.includes('.team-row'));
+  });
+});
+
+describe('overview teams: "Teams live" row of the mockup', () => {
+  const roles = ['analyst', 'architect', 'developer', 'tester', 'reviewer', 'docs', 'security'];
+  const full = (active: string): Rec[] => roles.map((r, i) => agent(r, r === active ? 'active' : i < roles.indexOf(active) ? 'done' : 'pending'));
+
+  it('panel head with "Alle Tasks →" link to /tasks and the title "Teams live"', () => {
+    assert.match(DASHBOARD_HTML, /<h2 id="teams-title">Teams live <span class="count" id="teams-count">/);
+    assert.match(DASHBOARD_HTML, /<a class="teams-all" href="\/tasks">Alle Tasks →<\/a>/);
+  });
+
+  it('row is a flex-wrap link .gi.row with the mockup paddings and block sizes', () => {
+    assert.match(TEAMS_CSS, /\.team-list \{ display: flex; flex-direction: column; gap: 10px; \}/);
+    assert.match(TEAMS_CSS, /\.team-row \{[^}]*flex-wrap: wrap;[^}]*gap: 12px 18px; padding: 14px 16px;/);
+    assert.match(TEAMS_CSS, /\.team-head \{ flex: 1 1 260px;/);
+    assert.match(TEAMS_CSS, /\.team-cast \{ flex: 1 1 250px;/);
+    assert.match(TEAMS_CSS, /\.team-end \{[^}]*min-width: 86px;/);
+    const { host, render } = setup();
+    render({ issues: [issue(12, runInfo())] });
+    const row = host.byClass('team-row')[0]!;
+    assert.equal(row.tagName, 'a');
+    assert.ok(row.classList.contains('gi') && row.classList.contains('row'));
+    assert.equal(row.getAttribute('href'), '/issue?id=acme%2Fapp%2312');
+  });
+
+  it('avatars in pipeline order with one aria-label, one ring', () => {
+    const { host, render } = setup();
+    render({ issues: [issue(1, runInfo(), full('developer'))] });
+    const row = host.byClass('team-row')[0]!;
+    assert.deepEqual(avatarStates(row), ['done', 'done', 'playing', 'waiting', 'waiting', 'waiting', 'waiting']);
+    assert.equal(row.byClass('ring').length, 1);
+    const label = row.byClass('team-avs')[0]!.getAttribute('aria-label')!;
+    assert.ok(label.startsWith('Team: Analyst fertig, Architect fertig, Developer spielt, '), label);
+    assert.equal(label.split(', ').length, 7);
+  });
+
+  it('action is "Tool · path relative to the workspace"', () => {
+    const { host, render } = setup();
+    render({ issues: [issue(1, runInfo({ last_message: 'Edit: /ws/x/src/http/ui/tokens.ts', workspace: '/ws/x' }))] });
+    assert.equal(host.byClass('team-action')[0]!.textContent, 'Edit · src/http/ui/tokens.ts');
+    assert.equal(host.byClass('team-role')[0]!.textContent, 'Developer');
+  });
+
+  it('context is sky below 70 %, amber from 70 %, a dash without data', () => {
+    const { host, render } = setup();
+    const ctxOf = (percent: number | null) => {
+      render({ issues: [issue(1, runInfo({ context: percent === null ? null : { tokens: 1, window: 2, percent, compacts: 0 } }))] });
+      return host.byClass('team-ctx')[0]!;
+    };
+    assert.equal(ctxOf(42).byClass('ui-bar-fill')[0]!.style.background, '#38bdf8');
+    const hot = ctxOf(71);
+    assert.equal(hot.byClass('ui-bar-fill')[0]!.style.background, '#fbbf24');
+    assert.equal(hot.byClass('team-ctx-pct')[0]!.textContent, '71 %');
+    const none = ctxOf(null);
+    assert.equal(none.byClass('ui-bar').length, 0);
+    assert.equal(none.byClass('team-ctx-pct')[0]!.textContent, '—');
+  });
+
+  it('subagent text for 0, 1 and 2 running', () => {
+    const { host, render } = setup();
+    const text = (n: number) => {
+      render({ issues: [issue(1, runInfo({ subagents: { running: Array.from({ length: n }, () => ({})), finished: [] } }))] });
+      return host.byClass('team-subs')[0]!.textContent;
+    };
+    assert.deepEqual([0, 1, 2].map(text), ['keine Subagents', '1 Subagent', '2 Subagents']);
   });
 });

@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
 import { startHttpServer } from '../src/http/server.ts';
 import { BASE_JS } from '../src/http/styles.ts';
+import { CHIP_TONES } from '../src/http/ui/palette.ts';
 import { Logger } from '../src/log.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import { SystemCollector } from '../src/system/metrics.ts';
@@ -31,9 +32,9 @@ function cardsOf(ctx: any, system: unknown, state: unknown): FakeElement[] {
   return Array.from(run(ctx, 'systemCards(fx.system, fx.state, fx.trend)')) as FakeElement[];
 }
 
-const label = (c: FakeElement) => c.byClass('ui-kpi-label')[0]!.textContent;
-const val = (c: FakeElement) => c.byClass('ui-kpi-value')[0]!.textContent;
-const tone = (c: FakeElement) => /tone-(green|amber|red)/.exec(c.className)?.[1] ?? null;
+const label = (c: FakeElement) => c.byClass('syscard-label')[0]!.textContent;
+const val = (c: FakeElement) => c.byClass('mono')[0]!.textContent;
+const tone = (c: FakeElement) => (['green', 'amber', 'red'] as const).find((t) => c.byClass('syscard-dot')[0]!.style.background === CHIP_TONES[t].c) ?? null;
 const named = (l: FakeElement[], n: string) => l.find((c) => label(c) === n)!;
 
 function system(over: { cpu?: number | null; memUsed?: number; load?: number; disks?: [string, number][]; gpu?: unknown } = {}) {
@@ -63,12 +64,12 @@ describe('QA system cards: traffic light boundaries', () => {
     for (const [pct, t] of cases) assert.equal(tone(named(cardsOf(ctx, system({ cpu: pct }), state()), 'CPU')), t, String(pct));
   });
   it('memory: exact boundaries (8 / 10 GB = 80 %)', () => {
-    for (const [pct, t] of cases) assert.equal(tone(named(cardsOf(ctx, system({ memUsed: (pct / 10) * GB }), state()), 'Arbeitsspeicher')), t, String(pct));
+    for (const [pct, t] of cases) assert.equal(tone(named(cardsOf(ctx, system({ memUsed: (pct / 10) * GB }), state()), 'RAM')), t, String(pct));
   });
-  it('disk: the fullest volume decides', () => {
+  it('disk: State card follows the state volume', () => {
     for (const [pct, t] of cases) {
-      const l = cardsOf(ctx, system({ disks: [['a', 5], ['b', pct]] }), state());
-      assert.equal(tone(named(l, 'Festplatte')), t, String(pct));
+      const l = cardsOf(ctx, system({ disks: [['state', pct]] }), state());
+      assert.equal(tone(named(l, 'Disk · State')), t, String(pct));
     }
   });
   it('slots follow running / max, GitHub API follows the used share', () => {
@@ -77,20 +78,14 @@ describe('QA system cards: traffic light boundaries', () => {
     }
     for (const [remaining, t] of [[1001, 'green'], [1000, 'amber'], [251, 'amber'], [250, 'red'], [0, 'red']] as const) {
       const api = { remaining, limit: 5000, reset_at: null, observed_at: 'x' };
-      assert.equal(tone(named(cardsOf(ctx, system(), state(1, 4, 0, api)), 'GitHub-API')), t, 'remaining ' + remaining);
+      assert.equal(tone(named(cardsOf(ctx, system(), state(1, 4, 0, api)), 'GitHub API')), t, 'remaining ' + remaining);
     }
   });
-  it('value text and bar share the colour of the tile at 85 % and 96 %', () => {
-    for (const pct of [85, 96]) {
-      const c = named(cardsOf(ctx, system({ cpu: pct }), state()), 'CPU');
-      const color = c.byClass('ui-kpi-value')[0]!.style.color;
-      assert.ok(color, 'value coloured');
-      assert.equal(c.byClass('ui-bar-fill')[0]!.style.background, color);
-    }
-    const amber = named(cardsOf(ctx, system({ cpu: 85 }), state()), 'CPU').byClass('ui-kpi-value')[0]!.style.color;
-    const red = named(cardsOf(ctx, system({ cpu: 96 }), state()), 'CPU').byClass('ui-kpi-value')[0]!.style.color;
-    const green = named(cardsOf(ctx, system({ cpu: 10 }), state()), 'CPU').byClass('ui-kpi-value')[0]!.style.color;
-    assert.equal(new Set([amber, red, green]).size, 3);
+  it('the bar takes the card colour below 80 %, amber from 80 % and red from 95 %', () => {
+    const fill = (pct: number) => named(cardsOf(ctx, system({ cpu: pct }), state()), 'CPU').byClass('ui-bar-fill')[0]!.style.background;
+    assert.equal(fill(10), '#38bdf8');
+    assert.equal(fill(85), CHIP_TONES.amber.c);
+    assert.equal(fill(96), CHIP_TONES.red.c);
   });
 });
 
@@ -100,7 +95,7 @@ describe('QA system cards: "—" and GPU', () => {
     for (const sys of [null, { current: null, history: [], gpu: null, cpu_count: null }]) {
       const l = cardsOf(ctx, sys, state());
       assert.equal(l.length, 6);
-      for (const n of ['CPU', 'Arbeitsspeicher', 'Festplatte', 'Load 1/5/15']) {
+      for (const n of ['CPU', 'RAM', 'Disk · State', 'Load']) {
         assert.equal(val(named(l, n)), '—', n);
         assert.equal(named(l, n).byClass('ui-bar').length, 0, n);
         assert.equal(tone(named(l, n)), null, n);
@@ -113,9 +108,9 @@ describe('QA system cards: "—" and GPU', () => {
     (s.current as any).load = null;
     const l = cardsOf(ctx, s, state());
     assert.equal(val(named(l, 'CPU')), '—');
-    assert.equal(val(named(l, 'Load 1/5/15')), '—');
-    assert.notEqual(val(named(l, 'Arbeitsspeicher')), '—');
-    assert.notEqual(val(named(l, 'Festplatte')), '—');
+    assert.equal(val(named(l, 'Load')), '—');
+    assert.notEqual(val(named(l, 'RAM')), '—');
+    assert.notEqual(val(named(l, 'Disk · State')), '—');
   });
   it('GPU tile only for a non-null gpu', () => {
     assert.equal(cardsOf(ctx, system(), state()).some((c) => label(c) === 'GPU'), false);
@@ -124,11 +119,9 @@ describe('QA system cards: "—" and GPU', () => {
     assert.equal(l.length, 7);
     assert.equal(tone(named(l, 'GPU')), 'red');
   });
-  it('untrusted names reach the page as text only', () => {
-    const l = cardsOf(ctx, system({ disks: [['<img src=x onerror=1>', 10], ['b', 20]] }), state());
-    const labels = named(l, 'Festplatte').byClass('syscard-barlabel');
-    assert.equal(labels[0]!.textContent, '<img src=x onerror=1>');
-    assert.equal(labels[0]!.children.length, 0);
+  it('untrusted host names reach the page as text only', () => {
+    const l = cardsOf(ctx, system({ disks: [['state', 10], ['<img src=x onerror=1>', 20]] }), state());
+    assert.ok(l.every((c) => c.find((e) => e.tagName === 'img').length === 0));
   });
 });
 
@@ -136,16 +129,20 @@ describe('QA system cards: values 1:1, German, slots and API', () => {
   const ctx = pageContext();
   it('shows the counts and the poll age', () => {
     const l = cardsOf(ctx, system(), state(2, 5, 7, { remaining: 1234, limit: 5000, reset_at: null, observed_at: 'x' }));
-    assert.equal(val(named(l, 'Agent-Slots')), '2 / 5');
-    assert.match(named(l, 'Agent-Slots').textContent, /Queue: 7/);
-    assert.match(named(l, 'GitHub-API').textContent, /1,234/);
-    assert.match(named(l, 'GitHub-API').textContent, /letzter Poll vor \d+\s?(s|m|min)/);
-    assert.match(named(l, 'Arbeitsspeicher').textContent, /4\.0 \/ 10\.0 GB/);
+    assert.equal(val(named(l, 'Agent-Slots')), '2');
+    assert.match(named(l, 'Agent-Slots').textContent, /\/ 5/);
+    assert.match(named(l, 'Agent-Slots').textContent, /3 frei · 7 in der Queue/);
+    assert.match(named(l, 'GitHub API').textContent, /1\.234/);
+    assert.match(named(l, 'GitHub API').textContent, /Poll vor \d+\s?(s|m|min).* · ok/);
+    assert.match(named(l, 'RAM').textContent, /4\.0.*\/ 10\.0 GB/);
   });
-  it('one bar per volume with the right percent', () => {
-    const l = cardsOf(ctx, system({ disks: [['a', 10], ['b', 55], ['c', 99]] }), state());
-    const bars = named(l, 'Festplatte').byClass('ui-bar');
-    assert.deepEqual(bars.map((b) => b.getAttribute('aria-valuenow')), ['10', '55', '99']);
+  it('the State card reads the state volume, a second device adds Disk · Workspaces', () => {
+    const s = system({ disks: [['state', 10], ['workspace', 55]] });
+    (s.current as any).disks[0].device = 1;
+    (s.current as any).disks[1].device = 2;
+    const l = cardsOf(ctx, s, state());
+    assert.equal(named(l, 'Disk · State').byClass('ui-bar')[0]!.getAttribute('aria-valuenow'), '10');
+    assert.equal(named(l, 'Disk · Workspaces').byClass('ui-bar')[0]!.getAttribute('aria-valuenow'), '55');
   });
   it('sparkline carries one point per history sample', () => {
     const c = named(cardsOf(ctx, system(), state()), 'CPU');
@@ -185,7 +182,7 @@ describe('QA system cards: polling', () => {
     await run(ctx, 'loadSystem()');
     ctx.fetch = async () => ({ ok: true, json: async () => system({ cpu: 97 }) });
     await run(ctx, 'loadSystem()');
-    assert.equal(val(host.children[0]!), '97 %');
+    assert.equal(val(host.children[0]!), '97');
     assert.equal(tone(host.children[0]!), 'red');
   });
 });
@@ -210,9 +207,11 @@ describe('QA GET /api/v1/system and /api/v1/state feed the cards', () => {
       assert.equal(st.health.tracker_api, null);
       const l = cardsOf(pageContext(), sys, st);
       assert.equal(l.length, 6);
-      assert.equal(val(named(l, 'Load 1/5/15')), '3.00 / 2.00 / 1.00');
-      assert.match(val(named(l, 'Arbeitsspeicher')), /^0\.8 \/ 1\.0 GB$/);
-      assert.equal(val(named(l, 'GitHub-API')), '—');
+      assert.equal(val(named(l, 'Load')), '3.00');
+      assert.match(named(l, 'Load').textContent, /5 min 2\.00 · 15 min 1\.00/);
+      assert.equal(val(named(l, 'RAM')), '0.8');
+      assert.match(named(l, 'RAM').textContent, /\/ 1\.0 GB/);
+      assert.equal(val(named(l, 'GitHub API')), '—');
       // one reading only: no CPU delta yet, so the API says null and the tile shows the dash
       assert.equal(sys.current.cpu_percent, null);
       assert.equal(val(named(l, 'CPU')), '—');

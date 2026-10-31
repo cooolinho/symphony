@@ -9,6 +9,7 @@ import {
   SystemCollector,
   cpuPercent,
   parseCpuTimes,
+  parseDu,
   parseMeminfo,
   parseNvidiaSmi,
 } from '../src/system/metrics.ts';
@@ -145,5 +146,49 @@ describe('SystemCollector', () => {
     const size = collector.history().length;
     await new Promise((r) => setTimeout(r, 80));
     assert.equal(collector.history().length, size);
+  });
+});
+
+describe('SystemCollector: host and usage', () => {
+  it('reports hostname, container and process uptime; the container is null by default', () => {
+    const given = new SystemCollector({ procDir: procFixture(), volumes: [], gpu: false, logger: stub().logger, hostname: 'h1', container: 'symphony', uptime: () => 3600.4 });
+    assert.deepEqual(given.snapshot().host, { hostname: 'h1', container: 'symphony', uptime_seconds: 3600 });
+    const bare = new SystemCollector({ procDir: procFixture(), volumes: [], gpu: false, logger: stub().logger });
+    assert.equal(bare.snapshot().host!.container, null);
+    assert.ok(bare.snapshot().host!.hostname.length > 0);
+    assert.equal(bare.snapshot().usage, null);
+  });
+
+  it('adds the st_dev of every volume', async () => {
+    const dir = tempDir();
+    const collector = new SystemCollector({ procDir: procFixture(), volumes: [{ name: 'state', path: dir }], gpu: false, logger: stub().logger });
+    assert.equal(typeof (await collector.collect()).disks[0]!.device, 'number');
+  });
+
+  it('parseDu reads the first number of du -sk in bytes', () => {
+    assert.equal(parseDu('42\t/x\n'), 43008);
+    assert.equal(parseDu('garbage'), null);
+    assert.equal(parseDu(''), null);
+  });
+
+  it('refreshUsage fills the sizes, a failing runner gives null and one log line', async () => {
+    const { calls, logger } = stub();
+    const ok = new SystemCollector({
+      procDir: procFixture(), volumes: [], gpu: false, logger, usagePaths: { workspaces: '/ws', transcripts: '/tr' },
+      runDu: async (p) => (p === '/ws' ? '10\t/ws\n' : '2\t/tr\n'),
+    });
+    await ok.refreshUsage();
+    assert.deepEqual({ ...ok.snapshot().usage!, at: null }, { workspaces_bytes: 10240, transcripts_bytes: 2048, at: null });
+    const bad = new SystemCollector({
+      procDir: procFixture(), volumes: [], gpu: false, logger, usagePaths: { workspaces: '/ws' },
+      runDu: async () => {
+        throw new Error('du missing');
+      },
+    });
+    await bad.refreshUsage();
+    await bad.refreshUsage();
+    assert.equal(bad.snapshot().usage!.workspaces_bytes, null);
+    assert.equal(bad.snapshot().usage!.transcripts_bytes, null);
+    assert.equal(calls.length, 1);
   });
 });

@@ -68,11 +68,11 @@ describe('overview teams', () => {
     ] });
     const rows = host.byClass('team-row');
     assert.equal(host.byClass('is-playing').length, 1);
-    assert.equal(host.byClass('eq').length, 1);
+    assert.equal(host.byClass('team-actline').flatMap((l) => l.byClass('eq')).length, 1);
     assert.equal(rows[0]!.byClass('is-playing').length, 1);
     assert.equal(rows[1]!.byClass('is-playing').length, 0);
     assert.equal(rows[1]!.byClass('team-action')[0]!.textContent, 'Wartet auf Session');
-    assert.equal(rows[1]!.byClass('team-ctx')[0]!.textContent, '—');
+    assert.equal(rows[1]!.byClass('team-ctx')[0]!.textContent, 'Context—');
     assert.equal(rows[1]!.byClass('ui-bar').length, 0);
   });
 
@@ -92,19 +92,19 @@ describe('overview teams', () => {
     const bars = host.byClass('ui-bar');
     assert.equal(bars.length, 1);
     assert.equal(bars[0]!.getAttribute('aria-valuenow'), '42');
-    assert.equal(host.byClass('team-ctx')[0]!.textContent, '42 %');
+    assert.equal(host.byClass('team-ctx-pct')[0]!.textContent, '42 %');
     assert.equal(host.byClass('team-time')[0]!.textContent, '01:05');
     run(ctx, `tickTeams(${NOW + 5000})`);
     assert.equal(host.byClass('team-time')[0]!.textContent, '01:10');
-    assert.equal(host.byClass('team-subs')[0]!.textContent, '1/3 Subagents');
+    assert.equal(host.byClass('team-subs')[0]!.textContent, '1 Subagent');
   });
 
   it('shows the empty state', () => {
     const { host, render } = setup();
     assert.equal(render({ issues: [] }), 0);
-    assert.equal(host.textContent, 'Kein Team arbeitet gerade.');
+    assert.equal(host.textContent, 'Kein Team spielt gerade');
     assert.equal(render({ issues: [issue(1, null)] }), 0);
-    assert.equal(host.textContent, 'Kein Team arbeitet gerade.');
+    assert.equal(host.textContent, 'Kein Team spielt gerade');
   });
 
   it('keeps the focus ring in the styles', () => {
