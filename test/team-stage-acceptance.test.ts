@@ -373,3 +373,51 @@ describe('E3-3 stage: polling and safety', () => {
     for (const id of ['hero-title', 'pipe-section', 'filters', 'raw-toggle', 'rawlog', 'raw-list']) assert.ok(p.$(id), id);
   });
 });
+
+describe('E3-3 stage: round 2 (review fixes)', () => {
+  it('shows "Keine Session" in all three fields and animates nothing once the run has ended', () => {
+    const p = renderPage(AGENT_HTML, { detail: issueDetail(), team: team(), ended: true }, { url: URL_ });
+    for (const sel of ['.ring', '.eq', '.is-playing', '.is-active', '.ui-ring', '.pulse']) assert.equal(p.query(`#stage ${sel}`).length, 0, sel);
+    for (const id of ['stage-now-body', 'stage-session-body', 'stage-subs-body']) assert.ok(txt(p, id).includes('Keine Session'), id);
+  });
+
+  it('shows "Keine Session" and animates nothing for an untracked issue', () => {
+    const p = renderPage(AGENT_HTML, { detail: null, notFound: true, team: team() }, { url: URL_ });
+    for (const sel of ['.ring', '.eq', '.is-playing', '.pulse']) assert.equal(p.query(`#stage ${sel}`).length, 0, sel);
+  });
+
+  it('does not stretch the field cards in the wide column layout (flex-basis would become a height)', () => {
+    const m = AGENT_HTML.match(/@media \(min-width: 1280px\) \{([^@]*)\}/);
+    assert.ok(m, '1280px media query');
+    assert.match(m[1]!, /flex-direction:\s*column/);
+    assert.match(m[1]!, /\.stage-field[^{]*\{\s*flex:\s*0 0 auto/);
+  });
+
+  it('leaves room for the percent badge below the active gauge', () => {
+    assert.match(AGENT_HTML, /\.stage-seat\.is-active \.stage-spot\s*\{[^}]*margin-bottom:\s*\d+px/);
+  });
+
+  it('keeps the running subagent row (and its pulse) in place across polls while its numbers update', () => {
+    const p = page(team());
+    const dot = () => p.query('#stage-subs-body .dot.pulse');
+    assert.equal(dot().length, 1);
+    const before = dot()[0]!;
+    const t = team();
+    t.subagents.running[0].tokens.total_tokens = 9_000;
+    p.render({ detail: issueDetail(), team: t });
+    assert.equal(dot().length, 1);
+    assert.equal(dot()[0], before, 'pulsing dot is the same node, so the animation does not restart');
+    assert.ok(txt(p, 'stage-subs-body').includes('Explore'));
+  });
+
+  it('stops the pulse when the running subagent finishes', () => {
+    const p = page(team());
+    assert.equal(p.query('#stage-subs-body .dot.pulse').length, 1);
+    const t = team();
+    const done = { ...t.subagents.running[0], status: 'done', ended_at: '2026-10-30T11:59:00.000Z' };
+    t.subagents = { running: [], finished: [done, ...t.subagents.finished] };
+    p.render({ detail: issueDetail(), team: t });
+    assert.equal(p.query('#stage-subs-body .dot.pulse').length, 0);
+    assert.ok(txt(p, 'stage-subs-body').includes('Plan'));
+  });
+});
