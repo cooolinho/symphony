@@ -17,31 +17,66 @@ const AGENT_CSS = `
   .gate-row b { color: var(--text); font-weight: 600; }
   .gate-row pre.code { flex: 1 0 100%; }
 
-  /* Sidebar Ergebnisse: one compact row per result, newest last. */
+  /* Panel row below the columns: Ergebnisse, Context-Verlauf, Brain-Zugriffe, Changes (wraps on narrow screens). */
+  .panel-row { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+  .panel-row > .g { flex: 1 1 320px; min-width: 0; padding: 18px; }
+  .panel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 12px; }
+  .panel-head h2 { margin: 0; }
+  .panel-head a { font-size: 12.5px; white-space: nowrap; }
+  .panel-empty { font-size: 12.5px; color: var(--fg-3); }
+
+  /* Ergebnisse: one card per stage result with role dot, "Developer R1" and the verdict pill. */
   .result-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-  .result-row { display: grid; gap: 6px; padding: 8px 10px; font: 12px var(--mono); border: 1px solid var(--line);
-    border-left: 2px solid var(--tone, var(--faint)); border-radius: var(--radius-sm); background: rgba(0, 0, 0, .2); }
-  .result-row.vd-good { --tone: var(--green); } .result-row.vd-warn { --tone: var(--amber); } .result-row.vd-bad { --tone: var(--red); }
-  .result-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
-  .result-head b { color: var(--text); font-weight: 600; }
-  .result-head .ui-chip { font-size: 11px; min-height: 0; }
-  .result-summary { color: var(--text-2); overflow-wrap: anywhere; white-space: pre-wrap; }
-  .result-findings { margin: 0; padding-left: 18px; display: grid; gap: 3px; color: var(--text-2); overflow-wrap: anywhere; }
-  .result-findings .sev { font-weight: 600; text-transform: uppercase; }
+  .res-card { display: grid; gap: 6px; padding: 10px 12px; min-width: 0; }
+  .res-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .res-name { flex: 1 1 auto; min-width: 0; font-weight: 500; font-size: 13px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .res-pill { flex: none; font: 11.5px var(--mono); padding: 1px 8px; border-radius: 99px; border: 1px solid currentColor; white-space: nowrap; }
+  .result-summary { font-size: 12.5px; color: var(--fg-2); overflow-wrap: anywhere; }
+  .res-card a { font-size: 12px; justify-self: start; }
+  .result-findings { margin: 0; padding-left: 18px; display: grid; gap: 3px; font-size: 12px; color: var(--fg-2); overflow-wrap: anywhere; }
+  .result-findings .sev { font: 600 11px var(--mono); text-transform: uppercase; }
   .result-findings .sev.blocker, .result-findings .sev.major { color: var(--red); }
   .result-findings .sev.minor, .result-findings .sev.nit { color: var(--muted); }
-  .result-more summary { color: var(--muted); cursor: pointer; }
+  .result-more summary { font-size: 12px; color: var(--muted); cursor: pointer; }
   .result-more .result-findings { margin-top: 6px; }
 
-  /* Sidebar Context-Verlauf: one bar per developer round, compact marker on the right. */
-  .ctx-runs { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-  .ctx-runs:empty { display: none; }
-  .ctx-run { display: grid; grid-template-columns: 28px minmax(0, 1fr) 44px 28px; gap: 8px; align-items: center; font: 12px var(--mono); color: var(--text-2); }
-  .ctx-pct { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
-  .ctx-compact { color: var(--amber); }
+  /* Context-Verlauf: SVG line per round of the role with the most sessions, compact marker and threshold. */
+  .ctx-chart svg { display: block; width: 100%; height: auto; }
+  .ctx-thr-label, .ctx-compact-label { font: 10px var(--mono); fill: #fca5a5; }
+  /* 10 px labels use --fg-2: --fg-3 is reserved for text of at least 12 px (#379). */
+  .ctx-round-label { font: 10px var(--mono); fill: var(--fg-2); }
+  .ctx-caption { margin-top: 8px; font-size: 12.5px; color: var(--fg-2); overflow-wrap: anywhere; }
 
-  /* Tabs Trace, Sessions, Transkript */
-  .tabs-bar { margin-bottom: 12px; }
+  /* Brain-Zugriffe: time, operation, note over its purpose. */
+  .acc-list, .chg-list { list-style: none; margin: 0; padding: 0; display: grid; }
+  .acc-row { display: grid; grid-template-columns: 62px 64px minmax(0,1fr); gap: 8px; padding: 8px 0; border-top: 1px solid rgba(255,255,255,.06); font-size: 12.5px; align-items: baseline; }
+  .acc-time { font: 12.5px var(--mono); color: var(--fg-3); font-variant-numeric: tabular-nums; }
+  .acc-op { font: 12.5px var(--mono); color: var(--fg-3); }
+  .acc-op.op-read { color: var(--op-read); } .acc-op.op-write { color: var(--op-write); } .acc-op.op-search { color: var(--op-search); } .acc-op.op-denied { color: var(--op-denied); }
+  .acc-main { display: grid; gap: 2px; min-width: 0; }
+  .acc-note { font-weight: 500; color: var(--fg); overflow-wrap: anywhere; }
+  .acc-purpose { font-style: italic; font-size: 12.5px; color: var(--fg-3); overflow-wrap: anywhere; }
+  .acc-row.rejected .acc-purpose { color: #fca5a5; font-style: normal; }
+  .side-clash { font-size: 12px; justify-self: start; }
+  .panel-more { padding-top: 8px; border-top: 1px solid rgba(255,255,255,.06); font-size: 12.5px; }
+
+  /* Changes: one row per changed file, then the pull request card. */
+  .chg-row { display: grid; grid-template-columns: minmax(0,1fr) 92px; gap: 8px; padding: 7px 0; border-top: 1px solid rgba(255,255,255,.06); font-size: 12.5px; align-items: baseline; }
+  .chg-path { font-family: var(--mono); color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .chg-stat { display: flex; justify-content: flex-end; gap: 8px; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .chg-add { color: #6ee7b7; }
+  .chg-del { color: #fca5a5; }
+  .chg-pr { margin-top: 12px; padding: 10px 12px; display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; font-size: 12.5px; color: var(--fg-2); }
+  .chg-pr-state { color: var(--fg); }
+  .chg-pr-checks { font-family: var(--mono); font-size: 12px; }
+
+  /* Details: tab pill with Execution-Trace, Sessions, Transkript */
+  .details { padding: 14px 18px 18px; min-width: 0; }
+  .tabs-pill { display: inline-flex; flex-wrap: wrap; padding: 4px; gap: 4px; border-radius: 999px; background: rgba(0,0,0,.25); margin-bottom: 14px; }
+  .tabs-pill .ui-tab { min-height: 36px; }
+  .details [role="tabpanel"] { padding: 0; border: 0; background: none; box-shadow: none; }
+  .tabs-pill .ui-tab[aria-selected="true"] { background: rgba(255,255,255,.12); color: #fff; }
+
   [role="tabpanel"][hidden] { display: none; }
   .tx-tools { margin-bottom: 8px; }
   .tx-tools label { font: 12px var(--mono); color: var(--muted); }
@@ -84,21 +119,6 @@ const AGENT_PAGE_CSS = `
   /* Layout: main column (stage, score, tabs) and the sidebar of the shell's .cols; the sidebar wraps below on narrow screens */
   .side section { padding: 14px 16px; }
   .side h2 { margin-bottom: 12px; }
-  .side-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; }
-  .side-head h2 { margin: 0; }
-  .side-head a { font-size: 12.5px; }
-  .side-feed { list-style: none; margin: 0; padding: 0; display: grid; }
-  .side-feed > li { padding: 8px 0; border-top: 1px solid var(--line-2); font-size: 12.5px; min-width: 0; }
-  .side-chg-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
-  .side-chg-title { margin-top: 4px; overflow-wrap: anywhere; }
-  .side-files { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 2px; font-size: 12px; color: var(--text-2); }
-  .side-files li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; }
-  .side-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-  .side-add { color: var(--green-400); }
-  .side-del { color: var(--red-400); }
-  .side-acc { display: grid; grid-template-columns: auto auto auto minmax(0, 1fr); gap: 4px 8px; align-items: center; }
-  .side-acc > .ui-chip:last-of-type, .side-acc > .side-clash { grid-column: 1 / -1; justify-self: start; }
-  .side-acc.rejected { border-left: 2px solid var(--red-400); padding-left: 8px; color: var(--red-200); }
   .kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 7px 14px; margin: 0; font: 12.5px var(--mono); }
   .kv dt { color: var(--muted); white-space: nowrap; }
   .kv dd { margin: 0; color: var(--text); text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
@@ -143,22 +163,23 @@ const AGENT_PAGE_CSS = `
   .timeline { list-style: none; margin: 0; padding: 6px 4px 6px 0; max-height: 76vh; overflow-y: auto; overscroll-behavior: contain;
     border-radius: var(--radius-sm); background: rgba(0, 0, 0, .22); border: 1px solid var(--line); }
   .timeline > li.note { padding: 18px; color: var(--muted); font: 12.5px var(--mono); }
-  .item { --rail: 98px; position: relative; display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); padding: 0 12px 0 0; content-visibility: auto; contain-intrinsic-size: auto 44px; }
-  .item::before { content: ""; position: absolute; left: calc(var(--rail) - 12px); top: 0; bottom: 0; width: 1px; background: var(--line-2); }
-  .item .when { padding: 9px 22px 0 12px; text-align: right; font: 11.5px var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .item .mark { position: absolute; left: calc(var(--rail) - 17px); top: 10px; width: 11px; height: 11px; display: grid; place-items: center;
-    font: 10px/1 var(--mono); color: var(--tone, var(--gray)); background: var(--bg-2); border-radius: 50%; }
-  .item .mark.dot::after { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--tone, var(--gray)); box-shadow: 0 0 6px -1px var(--tone, transparent); }
-  .item .card { min-width: 0; margin: 4px 0; padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid transparent; }
-  .item.boxed .card { border-color: var(--line); background: rgba(15, 23, 28, .55); }
-  .item.boxed .card:hover { border-color: var(--line-2); }
-  .item.err .card { border-color: var(--red-line); background: linear-gradient(90deg, var(--red-dim), rgba(15, 23, 28, .6) 70%); }
-  .item.warn .card { border-color: var(--amber-line); }
-  .item.fresh .card { animation: item-in 1.6s var(--ease); }
-  @keyframes item-in { from { background: rgba(61, 220, 132, .13); border-color: var(--green-line); } }
-  .item.focus .card { box-shadow: 0 0 0 1px var(--cyan); }
-  .item.sub { --rail: 122px; }
-  .head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; }
+  /* Trace row: time · kind · text (with chips, preview and the expandable body below the text). */
+  .item { display: grid; grid-template-columns: 76px 96px minmax(0, 1fr); gap: 10px; padding: 9px 4px; border-top: 1px solid rgba(255, 255, 255, .06); font-size: 13px; align-items: baseline;
+    content-visibility: auto; contain-intrinsic-size: auto 40px; }
+  .timeline > .item:first-child { border-top: 0; }
+  .item .when { font-family: var(--mono); color: var(--fg-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .item .kind { font: 11px var(--mono); letter-spacing: .08em; color: var(--gray); white-space: nowrap; }
+  .kind-tool .kind { color: var(--trace-tool); } .kind-brain .kind { color: var(--trace-brain); } .kind-subagent .kind { color: var(--trace-subagent); }
+  .kind-model .kind { color: var(--trace-model); } .kind-result .kind { color: var(--trace-result); } .kind-phase .kind { color: var(--gray); }
+  .item .text { font-family: var(--mono); color: #dbe3f0; overflow-wrap: anywhere; }
+  .item .card { min-width: 0; }
+  .item.err { background: linear-gradient(90deg, var(--red-dim), transparent 70%); }
+  .item.warn .text { color: #fcd34d; }
+  .item.fresh { animation: item-in 1.6s var(--ease); }
+  @keyframes item-in { from { background: rgba(61, 220, 132, .13); } }
+  .item.focus { box-shadow: inset 0 0 0 1px var(--cyan); }
+  .item.sub .text::before { content: "↳ "; font-size: 13px; color: var(--fg-3); }
+  .item .head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: flex-start; gap: 4px 10px; min-width: 0; padding: 0; }
   .head button.toggle { all: unset; cursor: pointer; display: inline-flex; align-items: baseline; gap: 8px; min-width: 0; }
   .head button.toggle:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; border-radius: 3px; }
   .head .caret { font: 10px var(--mono); color: var(--muted); width: 8px; display: inline-block; transition: transform .15s var(--ease); }
@@ -185,8 +206,7 @@ const AGENT_PAGE_CSS = `
   .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px 14px; font: 12px var(--mono); }
   .metrics .k { font-size: 9.5px; }
   .metrics .v { font-size: 12.5px; margin-top: 1px; }
-  .run-sep .card { padding-top: 10px; }
-  .run-sep .name { font-size: 13px; }
+  .run-sep .text { color: var(--fg-strong); }
   .tl-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-top: 10px; }
   .jump { position: absolute; right: 16px; bottom: 14px; z-index: 3; box-shadow: var(--shadow); }
   .earlier { width: 100%; justify-content: center; margin-bottom: 4px; }
@@ -205,19 +225,16 @@ const AGENT_PAGE_CSS = `
   .logs .note { display: block; padding: 14px; color: var(--muted); }
 
   @media (max-width: 640px) {
-    .item { --rail: 18px; }
-    .item.sub { --rail: 30px; }
-    .item .when { display: none; }
-    .item .mark { left: 2px; }
-    .item.sub .mark { left: 14px; }
-    .item::before { left: 7px; }
-    .item .head .t-inline { display: inline; }
+    .item { grid-template-columns: 76px minmax(0, 1fr); gap: 4px 10px; }
+    .item .card { grid-column: 1 / -1; }
+    .details { padding: 12px; }
+    .tabs-pill { display: flex; flex-wrap: nowrap; overflow-x: auto; max-width: 100%; }
+    .tabs-pill .ui-tab { flex: none; padding: 0 10px; }
     .timeline { max-height: 70vh; }
     .logs li { grid-template-columns: auto auto minmax(0, 1fr); }
     .logs .who { display: none; }
     .logs .d { grid-column: 1 / -1; }
   }
-  .t-inline { display: none; font: 11px var(--mono); color: var(--faint); }
 
   /* Stage (Bühne): spotlight, stage edge, one column per seat, then the fields Jetzt, Session and Subagents */
   .stage { position: relative; overflow: hidden; padding: 20px 22px 22px; display: grid; gap: 20px; }
@@ -409,95 +426,9 @@ export const AGENT_HTML = page({
   <section class="alert" id="alert" role="alert" hidden></section>
   <div class="notice" id="notice" hidden></div>
 
-  <div class="tabs-block" id="tabs-block">
-    <div class="ui-tabs tabs-bar" role="tablist" aria-label="Verlauf" id="tabs">
-      <button type="button" class="ui-tab" role="tab" id="tab-trace" data-id="trace" aria-controls="panel-trace" aria-selected="true" tabindex="0">Trace</button>
-      <button type="button" class="ui-tab" role="tab" id="tab-sessions" data-id="sessions" aria-controls="panel-sessions" aria-selected="false" tabindex="-1">Sessions <span class="ui-tab-count" id="runs-count"></span></button>
-      <button type="button" class="ui-tab" role="tab" id="tab-transkript" data-id="transkript" aria-controls="panel-transkript" aria-selected="false" tabindex="-1">Transkript</button>
-    </div>
-
-    <section role="tabpanel" id="panel-trace" aria-labelledby="tab-trace">
-      <div class="tl-head">
-        <div class="section-head">
-          <h2 id="tl-title">Trace <span class="count" id="tl-count"></span></h2>
-          <div class="actions">
-            <button type="button" id="expand-all">Alles aufklappen</button>
-            <button type="button" id="collapse-all">Zuklappen</button>
-          </div>
-        </div>
-        <div class="tl-tools">
-          <div class="seg" id="filters" role="group" aria-label="Event-Filter">
-            <button type="button" data-f="all" aria-pressed="true">Alle<span class="n"></span></button>
-            <button type="button" data-f="lifecycle" class="tone-green" aria-pressed="false">Lifecycle<span class="n"></span></button>
-            <button type="button" data-f="phase" class="tone-cyan" aria-pressed="false">Phasen<span class="n"></span></button>
-            <button type="button" data-f="model" class="tone-cyan" aria-pressed="false">Modell<span class="n"></span></button>
-            <button type="button" data-f="tools" class="tone-green" aria-pressed="false">Tools<span class="n"></span></button>
-            <button type="button" data-f="errors" class="tone-red" aria-pressed="false">Fehler<span class="n"></span></button>
-          </div>
-          <input type="search" id="tl-q" placeholder="Events, Tools, Text suchen…" aria-label="Trace durchsuchen">
-        </div>
-        <div class="meta" id="tl-meta"></div>
-      </div>
-      <div class="tl-wrap">
-        <button type="button" class="earlier" id="earlier" hidden></button>
-        <ol class="timeline" id="timeline" aria-live="off"><li class="note">$ Trace wird geladen …</li></ol>
-        <button type="button" class="btn-primary jump" id="jump" hidden>↓ Neueste</button>
-      </div>
-      <div class="tl-foot">
-        <span class="meta" id="tl-follow">Folgt den Live-Events</span>
-        <button type="button" id="raw-toggle" aria-expanded="false" aria-controls="rawlog">Raw-Logs anzeigen</button>
-      </div>
-      <div class="rawlog" id="rawlog" hidden>
-        <div class="tl-tools">
-          <div class="seg" id="raw-sev" role="group" aria-label="Schweregrad">
-            <button type="button" data-sev="" aria-pressed="true">Alle</button>
-            <button type="button" data-sev="debug" class="tone-gray" aria-pressed="false">Debug</button>
-            <button type="button" data-sev="info" class="tone-cyan" aria-pressed="false">Info</button>
-            <button type="button" data-sev="warn" class="tone-amber" aria-pressed="false">Warn</button>
-            <button type="button" data-sev="error" class="tone-red" aria-pressed="false">Error</button>
-          </div>
-          <input type="search" id="raw-q" placeholder="Event oder Meldung filtern…" aria-label="Raw-Logs filtern">
-        </div>
-        <ol class="logs" id="raw-list"></ol>
-        <div class="tl-foot"><span class="meta" id="raw-count"></span><span class="actions" id="raw-links"></span></div>
-      </div>
-    </section>
-
-    <section role="tabpanel" id="panel-sessions" aria-labelledby="tab-sessions" hidden>
-      <ul class="runs" id="runs"></ul>
-    </section>
-
-    <section role="tabpanel" id="panel-transkript" aria-labelledby="tab-transkript" hidden>
-      <div class="tl-tools tx-tools">
-        <label for="tx-run">Session</label>
-        <select id="tx-run"></select>
-        <span class="actions" id="tx-links"></span>
-      </div>
-      <ol class="timeline" id="transcript"><li class="note">Kein Transkript</li></ol>
-    </section>
-  </div>
   </div>
 
   <aside class="col-side side" aria-label="Seitenleiste">
-    <section class="results-section" id="results-section" aria-labelledby="results-title" hidden>
-      <h2 id="results-title">Ergebnisse <span class="count" id="results-count"></span></h2>
-      <ol class="result-list" id="result-cards"></ol>
-    </section>
-    <section id="ctx-history" aria-labelledby="ctx-history-title">
-      <h2 id="ctx-history-title">Context-Verlauf</h2>
-      <ol class="ctx-runs" id="ctx-runs" aria-label="Context-Peak des Developers je Runde"></ol>
-      <div class="muted" id="ctx-empty">—</div>
-    </section>
-    <section id="access-section" aria-labelledby="access-title" hidden>
-      <div class="side-head"><h2 id="access-title">Brain-Zugriffe</h2><a id="access-link" href="/brain">Brain →</a></div>
-      <ol class="side-feed" id="access-list"></ol>
-      <div class="muted" id="access-empty" hidden>Keine Zugriffe.</div>
-    </section>
-    <section id="changes-section" aria-labelledby="changes-title">
-      <div class="side-head"><h2 id="changes-title">Changes</h2><a id="changes-all" href="/changes">Alle Changes</a></div>
-      <ol class="side-feed" id="changes-list"></ol>
-      <div class="muted" id="changes-empty" hidden>Noch keine Änderungen.</div>
-    </section>
     <section aria-labelledby="int-title" id="int-section" hidden>
       <h2 id="int-title"><span>Integrationen</span></h2>
       <div id="int-body"></div>
@@ -532,6 +463,102 @@ export const AGENT_HTML = page({
     </section>
   </aside>
   </div>
+
+  <div class="panel-row" id="panel-row">
+    <section class="g" id="results-section" aria-labelledby="results-title">
+      <div class="panel-head"><h2 id="results-title">Ergebnisse <span class="count" id="results-count"></span></h2></div>
+      <ol class="result-list" id="result-cards"></ol>
+      <div class="panel-empty" id="results-empty">Noch keine Stage abgeschlossen</div>
+    </section>
+    <section class="g" id="ctx-history" aria-labelledby="ctx-history-title">
+      <div class="panel-head"><h2 id="ctx-history-title">Context-Verlauf</h2></div>
+      <div class="ctx-chart" id="ctx-chart"></div>
+      <div class="ctx-caption" id="ctx-caption" hidden></div>
+      <div class="panel-empty" id="ctx-empty">Kein Context-Verlauf verfügbar</div>
+    </section>
+    <section class="g" id="access-section" aria-labelledby="access-title" hidden>
+      <div class="panel-head"><h2 id="access-title">Brain-Zugriffe</h2><a id="access-link" href="/brain">Brain →</a></div>
+      <ol class="acc-list" id="access-list"></ol>
+      <div class="panel-more" id="access-more" hidden></div>
+      <div class="panel-empty" id="access-empty" hidden>Keine Brain-Zugriffe in diesem Issue</div>
+    </section>
+    <section class="g" id="changes-section" aria-labelledby="changes-title">
+      <div class="panel-head"><h2 id="changes-title">Changes</h2><a id="changes-all" href="/changes">Alle →</a></div>
+      <ol class="chg-list" id="changes-list"></ol>
+      <div class="panel-empty" id="changes-empty" hidden>Noch keine Änderungen.</div>
+      <div class="gi chg-pr" id="changes-pr"><span class="chg-pr-state">noch keine PR</span></div>
+    </section>
+  </div>
+
+  <section class="g details" id="details" aria-label="Details">
+    <div class="tabs-block" id="tabs-block">
+      <div class="ui-tabs tabs-pill" role="tablist" aria-label="Details" id="tabs">
+        <button type="button" class="ui-tab" role="tab" id="tab-trace" data-id="trace" aria-controls="panel-trace" aria-selected="true" tabindex="0">Execution-Trace</button>
+        <button type="button" class="ui-tab" role="tab" id="tab-sessions" data-id="sessions" aria-controls="panel-sessions" aria-selected="false" tabindex="-1">Sessions <span class="ui-tab-count" id="runs-count">(0)</span></button>
+        <button type="button" class="ui-tab" role="tab" id="tab-transcript" data-id="transcript" aria-controls="panel-transcript" aria-selected="false" tabindex="-1">Transkript</button>
+      </div>
+
+      <section role="tabpanel" id="panel-trace" aria-labelledby="tab-trace">
+        <div class="tl-head">
+          <div class="section-head">
+            <h2 id="tl-title">Trace <span class="count" id="tl-count"></span></h2>
+            <div class="actions">
+              <button type="button" id="expand-all">Alles aufklappen</button>
+              <button type="button" id="collapse-all">Zuklappen</button>
+            </div>
+          </div>
+          <div class="tl-tools">
+            <div class="seg" id="filters" role="group" aria-label="Event-Filter">
+              <button type="button" data-f="all" aria-pressed="true">Alle<span class="n"></span></button>
+              <button type="button" data-f="lifecycle" class="tone-green" aria-pressed="false">Lifecycle<span class="n"></span></button>
+              <button type="button" data-f="phase" class="tone-cyan" aria-pressed="false">Phasen<span class="n"></span></button>
+              <button type="button" data-f="model" class="tone-cyan" aria-pressed="false">Modell<span class="n"></span></button>
+              <button type="button" data-f="tools" class="tone-green" aria-pressed="false">Tools<span class="n"></span></button>
+              <button type="button" data-f="errors" class="tone-red" aria-pressed="false">Fehler<span class="n"></span></button>
+            </div>
+            <input type="search" id="tl-q" placeholder="Events, Tools, Text suchen…" aria-label="Trace durchsuchen">
+          </div>
+          <div class="meta" id="tl-meta"></div>
+        </div>
+        <div class="tl-wrap">
+          <button type="button" class="earlier" id="earlier" hidden></button>
+          <ol class="timeline" id="timeline" aria-live="off"><li class="note">$ Trace wird geladen …</li></ol>
+          <button type="button" class="btn-primary jump" id="jump" hidden>↓ Neueste</button>
+        </div>
+        <div class="tl-foot">
+          <span class="meta" id="tl-follow">Folgt den Live-Events</span>
+          <button type="button" id="raw-toggle" aria-expanded="false" aria-controls="rawlog">Raw-Logs anzeigen</button>
+        </div>
+        <div class="rawlog" id="rawlog" hidden>
+          <div class="tl-tools">
+            <div class="seg" id="raw-sev" role="group" aria-label="Schweregrad">
+              <button type="button" data-sev="" aria-pressed="true">Alle</button>
+              <button type="button" data-sev="debug" class="tone-gray" aria-pressed="false">Debug</button>
+              <button type="button" data-sev="info" class="tone-cyan" aria-pressed="false">Info</button>
+              <button type="button" data-sev="warn" class="tone-amber" aria-pressed="false">Warn</button>
+              <button type="button" data-sev="error" class="tone-red" aria-pressed="false">Error</button>
+            </div>
+            <input type="search" id="raw-q" placeholder="Event oder Meldung filtern…" aria-label="Raw-Logs filtern">
+          </div>
+          <ol class="logs" id="raw-list"></ol>
+          <div class="tl-foot"><span class="meta" id="raw-count"></span><span class="actions" id="raw-links"></span></div>
+        </div>
+      </section>
+
+      <section role="tabpanel" id="panel-sessions" aria-labelledby="tab-sessions" hidden>
+        <ul class="runs" id="runs"></ul>
+      </section>
+
+      <section role="tabpanel" id="panel-transcript" aria-labelledby="tab-transcript" hidden>
+        <div class="tl-tools tx-tools">
+          <label for="tx-run">Session</label>
+          <select id="tx-run"></select>
+          <span class="actions" id="tx-links"></span>
+        </div>
+        <ol class="timeline" id="transcript"><li class="note">Kein Transkript</li></ol>
+      </section>
+    </div>
+  </section>
 `,
   scripts: `
 (() => {
@@ -581,7 +608,7 @@ ${PIPELINE_JS}
     rawOpen: false, rawSev: '', rawQ: '',
     team: null, stageSig: '', stagePct: undefined, subsSig: '', scoreSig: '',
     tab: 'trace', ctxEntries: null, ctxFinished: 0, txRun: '', txSig: '',
-    changes: null, access: null, brainOff: false, accessSeen: false,
+    changes: null, access: null, accessMore: false, brainOff: false, accessSeen: false, ctxSig: '',
   };
 
   // ------------------------------------------------------------------ data loading (one poll loop)
@@ -684,7 +711,7 @@ ${PIPELINE_JS}
         const o = OUTCOME[d.outcome] || [d.outcome, 'gray'];
         const failed = d.outcome === 'failed' || d.outcome === 'stalled';
         const limited = d.outcome === 'session_limit';
-        return { ...base, type: 'finish', tone: o[1], glyph: failed ? '✕' : limited ? '⏳' : '■', err: failed, title: 'RUN ' + String(o[2] || d.outcome).toUpperCase(),
+        return { ...base, type: 'finish', tone: o[1], glyph: failed ? '✕' : limited ? '⏳' : '■', err: failed, title: 'RUN ' + String(o[2] || d.outcome).toUpperCase(), outcome: d.outcome, next: d.next_role || null,
           name: d.next_role ? '→ ' + d.next_role : '', line: failed ? '' : d.reason || '', errText: failed ? d.reason : '',
           chips: [[pad2(d.turns) + ' turns'], [fmtCompact(d.tokens && d.tokens.total_tokens) + ' tokens'], [fmtCost(d.cost_usd)], [fmtDuration(d.agent_seconds)]] };
       }
@@ -886,14 +913,73 @@ ${PIPELINE_JS}
   const expandable = (it) => ['prompt', 'response', 'thinking', 'toolcall', 'model'].includes(it.type) || (it.errText && it.errText.length > 300);
   const isOpen = (it) => S.expanded.has(it.key);
 
+  // Kind of a trace row (its colour and the label in the second column).
+  const TRACE_KIND_LABEL = { tool: 'TOOL', brain: 'BRAIN', subagent: 'SUBAGENT', model: 'MODEL', result: 'RESULT', phase: 'PHASE' };
+  const isBrainTool = (name) => /^brain_/.test(name || '') || String(name || '').includes('mcp__brain__');
+  const isAgentTool = (name) => name === 'Agent' || name === 'Task';
+  function traceKind(it) {
+    if (it.type === 'finish') return 'result';
+    if (it.type === 'tool') return /report_result$/.test(it.name || '') ? 'result' : 'tool';
+    if (it.type === 'toolcall' || it.cat === 'tools' && it.title === 'TOOL CALL') {
+      if (isBrainTool(it.name)) return 'brain';
+      if (isAgentTool(it.name) || it.sub) return 'subagent';
+      return 'tool';
+    }
+    if (it.cat === 'tools') return 'tool';
+    if (it.type === 'model' || it.type === 'prompt' || it.type === 'response' || it.type === 'thinking') return it.sub ? 'subagent' : 'model';
+    if (it.err && it.tone === 'red') return 'result';
+    return 'phase';
+  }
+  /** Parsed arguments of a tool call; {} for anything that is not a JSON object. */
+  function toolInput(it) {
+    if (it._args !== undefined) return it._args;
+    let v = {};
+    try { const p = JSON.parse(it.input || '{}'); if (p && typeof p === 'object' && !Array.isArray(p)) v = p; } catch {}
+    it._args = v;
+    return v;
+  }
+  const ARG_KEYS = ['file_path', 'path', 'command', 'pattern', 'query', 'description', 'url', 'skill'];
+  const shortTool = (name) => String(name || '').replace(/^mcp__.+?__/, '');
+  const shortModel = (m) => { const x = /^claude-([a-z]+)/.exec(String(m || '')); return x ? x[1] : m || 'model'; };
+  const fmtKilo = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n || 0));
+  const fmtShortCost = (n) => (n === null || n === undefined ? '' : n >= 0.01 ? '$' + n.toFixed(2) : fmtCost(n));
+  /** Text of a trace row: "Edit src/x.ts", "brain_read Notes/a · Zweck: …", "Explore gestartet: …", "opus · 18.2k in / 1.4k out · $0.09". */
+  function traceText(it, kind) {
+    if (it.type === 'toolcall') {
+      const args = toolInput(it);
+      if (kind === 'brain') {
+        const subject = args.path ?? args.query ?? '';
+        return [shortTool(it.name) + (subject ? ' ' + oneLine(subject, 160) : ''), args.purpose ? 'Zweck: ' + oneLine(args.purpose, 160) : ''].filter(Boolean).join(' · ');
+      }
+      if (isAgentTool(it.name)) return (args.subagent_type || it.name) + ' gestartet' + (args.description ? ': ' + oneLine(args.description, 160) : '');
+      const key = ARG_KEYS.find((k) => typeof args[k] === 'string' && args[k]);
+      const arg = key ? oneLine(args[key], 160) : Object.keys(args).length ? oneLine(it.input, 120) : '';
+      return it.name + (arg ? ' ' + arg : '');
+    }
+    if (it.type === 'event' && it.cat === 'tools' && it.title === 'TOOL CALL' && it.name) {
+      const arg = toolArg({ tool: it.name, message: it.line });
+      return it.name + (arg ? ' ' + arg : '');
+    }
+    if (it.type === 'model') {
+      const u = it.usage;
+      return [shortModel(it.model), u ? fmtKilo(u.input_tokens + u.cache_read_tokens + u.cache_write_tokens) + ' in / ' + fmtKilo(u.output_tokens) + ' out' : 'tokens N/A', fmtShortCost(it.cost)].filter(Boolean).join(' · ');
+    }
+    if (it.type === 'phase') return (it.from || '?') + ' → ' + (it.to || '?');
+    if (it.type === 'finish') {
+      // "Tester R1: failed → Developer" when the session of the run is known.
+      const s = ((S.detail && S.detail.sessions) || []).find((x) => x.run === it.run);
+      const b = s && S.team && Array.isArray(S.team.blocks) ? S.team.blocks.find((x) => x.run === it.run) : null;
+      if (s) return seatName(s.role) + (b && b.round ? ' R' + b.round : '') + ': ' + String(it.outcome || '').replace(/_/g, ' ') + (it.next ? ' → ' + seatName(it.next) : '');
+    }
+    return it.title + (it.name ? ' ' + it.name : '');
+  }
+
   function buildItem(it, fresh) {
-    const li = el('li', null, 'item tone-' + it.tone + (it.type === 'phase' ? ' phase' : ' boxed') + (it.err ? (it.level === 'error' || it.tone === 'red' ? ' err' : ' warn') : '') +
+    const kind = traceKind(it);
+    const li = el('li', null, 'item kind-' + kind + ' tone-' + it.tone + (it.err ? (it.level === 'error' || it.tone === 'red' ? ' err' : ' warn') : '') +
       (it.sub ? ' sub' : '') + (it.type === 'run' ? ' run-sep' : '') + (fresh ? ' fresh' : ''));
     li.dataset.key = it.key;
-    li.append(el('time', fmtClock(it.at), 'when'));
-    const mark = el('span', it.glyph === '●' ? '' : it.glyph, 'mark' + (it.glyph === '●' ? ' dot' : ''));
-    mark.setAttribute('aria-hidden', 'true');
-    li.append(mark);
+    li.append(el('time', fmtClock(it.at), 'when'), el('span', TRACE_KIND_LABEL[kind], 'kind'));
     const card = el('div', null, 'card');
     const head = el('div', null, 'head');
     const open = isOpen(it);
@@ -906,41 +992,28 @@ ${PIPELINE_JS}
       head.append(b);
       titleHost = b;
     }
-    titleHost.append(el('span', fmtClock(it.at), 't-inline'), el('span', it.title, 'label'));
-    if (it.type === 'model') {
-      titleHost.append(el('span', it.model || 'model N/A', 'name'));
-      const chips = el('span', null, 'chips');
-      chips.append(el('span', it.usage ? fmtInt(callTokens(it.usage)) + ' tokens' : 'tokens N/A', 'chip'));
-      if (it.usage) chips.append(el('span', '↑' + fmtCompact(it.usage.input_tokens + it.usage.cache_read_tokens + it.usage.cache_write_tokens) + ' ↓' + fmtCompact(it.usage.output_tokens), 'chip'));
-      if (it.cost !== null && it.cost !== undefined) chips.append(el('span', fmtCost(it.cost), 'chip'));
-      if (it.wait !== null) chips.append(el('span', '~' + fmtMs(it.wait), 'chip'));
-      head.append(chips);
-    } else if (it.type === 'toolcall') {
+    if (it.type === 'toolcall') {
       const owner = toolIntegration(it);
       if (owner) { const icon = integrationIcon(owner.id, 14); icon.title = owner.label; icon.removeAttribute('aria-hidden'); icon.alt = owner.label; titleHost.append(icon); }
-      titleHost.append(el('span', it.name, 'name'));
-      const chips = el('span', null, 'chips');
+    }
+    titleHost.append(el('span', traceText(it, kind), 'text'));
+    const chips = el('span', null, 'chips');
+    if (it.type === 'model') {
+      chips.append(el('span', it.usage ? fmtInt(callTokens(it.usage)) + ' tokens' : 'tokens N/A', 'chip'));
+      if (it.wait !== null) chips.append(el('span', '~' + fmtMs(it.wait), 'chip'));
+    } else if (it.type === 'toolcall') {
       chips.append(el('span', it.status, 'chip tone-' + (it.status === 'running' ? 'amber' : it.status === 'failed' ? 'red' : 'green')));
       if (it.duration !== null) chips.append(el('span', fmtMs(it.duration), 'chip'));
-      head.append(chips);
-    } else if (it.type === 'phase') {
-      const line = el('span', null, 'line');
-      line.append(el('span', it.from || '?'), el('span', '→', 'arrow'), el('span', it.to || '?'));
-      head.append(line);
-    } else {
-      if (it.name) titleHost.append(el('span', it.name, 'name'));
-      if (it.chips && it.chips.length) {
-        const chips = el('span', null, 'chips');
-        for (const [text, tone] of it.chips) chips.append(el('span', text, 'chip' + (tone ? ' tone-' + tone : '')));
-        head.append(chips);
-      }
+    } else if (it.chips && it.chips.length) {
+      for (const [text, tone] of it.chips) chips.append(el('span', text, 'chip' + (tone ? ' tone-' + tone : '')));
     }
+    if (chips.children.length) head.append(chips);
     card.append(head);
     if (it.type === 'prompt' || it.type === 'response' || it.type === 'thinking') {
       if (!open) card.append(el('div', oneLine(it.text, 320), 'preview' + (it.type === 'prompt' ? ' mono' : '')));
     } else if (it.type === 'toolcall') {
-      if (!open && !it.err) card.append(el('div', oneLine(it.input, 200), 'preview mono'));
-    } else if (it.line) card.append(el('div', it.line, 'line'));
+      if (!open && !it.err && kind === 'tool' && !ARG_KEYS.some((k) => typeof toolInput(it)[k] === 'string')) card.append(el('div', oneLine(it.input, 200), 'preview mono'));
+    } else if (it.line && !(it.type === 'event' && it.cat === 'tools' && it.title === 'TOOL CALL' && it.name)) card.append(el('div', it.line, 'line'));
     if (it.err && it.errText && !open) card.append(el('div', it.errText.length > 600 ? it.errText.slice(0, 600) + '…' : it.errText, 'errline'));
     if (open) card.append(buildBody(it));
     li.append(card);
@@ -1370,7 +1443,7 @@ ${PIPELINE_JS}
     kv($('cost-kv'), costRows.length ? costRows : [['Breakdown', 'N/A']]);
 
     // Sessions
-    setText($('runs-count'), pad2(sessions.length));
+    setText($('runs-count'), '(' + sessions.length + ')');
     const runNodes = sessions.slice().reverse().map((s) => {
       const o = s.outcome ? OUTCOME[s.outcome] || [s.outcome, 'gray', s.outcome] : null;
       const tone = o ? o[1] : run && run.started_at === s.started_at ? 'green' : 'cyan';
@@ -1472,31 +1545,44 @@ ${PIPELINE_JS}
     patchChildren(host, rows);
   }
 
-  const RESULT_CHIP_TONE = { good: 'green', warn: 'amber', bad: 'red' };
-  /** Sidebar Ergebnisse: one row per recorded stage result with role, verdict chip, round, short summary and the comment's link; findings and blockers fold away. */
+  // Verdict colours of the Ergebnisse pills: green done, red sent back, amber needs a human.
+  const VERDICT_GREEN = '#34d399', VERDICT_RED = '#f87171', VERDICT_AMBER = '#fbbf24', VERDICT_GRAY = '#94a3b8';
+  const VERDICT_COLOR = {
+    ready: VERDICT_GREEN, split: VERDICT_GREEN, approved: VERDICT_GREEN, passed: VERDICT_GREEN, done: VERDICT_GREEN, implemented: VERDICT_GREEN, not_needed: VERDICT_GREEN,
+    failed: VERDICT_RED, changes_requested: VERDICT_RED, changes_needed: VERDICT_RED, issues_found: VERDICT_RED, rejected: VERDICT_RED,
+    needs_human: VERDICT_AMBER, needs_info: VERDICT_AMBER, blocked: VERDICT_AMBER,
+  };
+  /** Ergebnisse: one card per recorded stage result with role dot, "Developer R1", verdict pill, short summary and the comment's link; findings and blockers fold away. */
   function renderResults() {
     const d = S.detail;
     const results = (d && d.results) || [];
-    $('results-section').hidden = !results.length;
     setText($('results-count'), results.length ? String(results.length) : '');
+    $('results-empty').hidden = results.length > 0;
     const rows = results.map((r) => {
       const tone = PIPE_VERDICT_TONE[r.verdict] || 'muted';
-      const row = el('li', null, 'result-row vd-' + tone);
-      const head = el('div', null, 'result-head');
-      head.append(el('b', r.role), el('span', r.kind, 'muted'));
-      if (r.verdict) head.append(chip(pipeVerdict(r.verdict, null), RESULT_CHIP_TONE[tone] ? { tone: RESULT_CHIP_TONE[tone] } : {}));
-      if (r.round) head.append(el('span', 'Runde ' + r.round, 'muted'));
-      if (r.target) head.append(el('span', '→ ' + r.target, 'muted'));
-      if (typeof r.url === 'string' && /^https?:/.test(r.url)) {
-        const link = el('a', 'Kommentar ↗');
-        link.href = r.url; link.target = '_blank'; link.rel = 'noopener noreferrer';
-        head.append(link);
+      const row = el('li', null, 'res-card gi vd-' + tone);
+      const head = el('div', null, 'res-head');
+      const dot = uiDot(UI_ROLE_COLORS[uiRoleKey(r.role, r.kind)]);
+      dot.classList.add('res-dot');
+      head.append(dot, el('span', seatName({ role: r.role, kind: r.kind }) + (r.round ? ' R' + r.round : ''), 'res-name'));
+      if (r.verdict) {
+        const pill = el('span', pipeVerdict(r.verdict, null), 'res-pill');
+        const color = uiOwn(VERDICT_COLOR, r.verdict) || VERDICT_GRAY;
+        pill.style.color = color;
+        pill.style.borderColor = color;
+        head.append(pill);
       }
+      row.title = [r.kind, r.target ? '→ ' + r.target : ''].filter(Boolean).join(' ');
       row.append(head);
       if (r.summary) {
         const summary = el('div', oneLine(r.summary, 140), 'result-summary');
         summary.title = String(r.summary);
         row.append(summary);
+      }
+      if (typeof r.url === 'string' && /^https?:/.test(r.url)) {
+        const link = el('a', 'Kommentar ↗');
+        link.href = r.url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+        row.append(link);
       }
       const findings = r.findings || [];
       const blockers = r.blockers || [];
@@ -1757,7 +1843,7 @@ ${PIPELINE_JS}
     if (sessions.length && missing === sessions.length) meta = 'Session transcripts are not available' + (reasons[0] ? ' (' + reasons[0] + ')' : '') + ': prompts, full responses, tool arguments and results cannot be shown; the timeline lists the agent events instead.';
     else if (S.firstSeq > 1) meta = 'Older orchestrator events were dropped (the issue keeps its newest events).';
     setText($('tl-meta'), meta);
-    $('tabs-block').hidden = !!(S.notFound || !ID);
+    $('details').hidden = !!(S.notFound || !ID);
   }
 
   function renderStatusbar() {
@@ -2224,10 +2310,10 @@ ${PIPELINE_JS}
     }));
   }
 
-  // ------------------------------------------------------------------ sidebar Context-Verlauf
+  // ------------------------------------------------------------------ panel row: Context-Verlauf, Brain-Zugriffe, Changes
 
-  // Context peak of every developer run from its run_finished line in the repository history (GET /api/v1/history/entries).
-  // Loaded once after the first detail poll and again when another session has finished; without history it shows "—".
+  // Context peak and compacts of every run from its run_finished line in the repository history (GET /api/v1/history/entries).
+  // Loaded once after the first detail poll and again when another session has finished; the curve itself comes from the transcripts.
   let ctxLoading = false;
   const finishedSessions = () => ((S.detail && S.detail.sessions) || []).filter((s) => s.finished_at).length;
   async function loadContextHistory() {
@@ -2239,7 +2325,7 @@ ${PIPELINE_JS}
     try {
       const r = await getJson('/api/v1/history/entries?issue=' + encodeURIComponent(identifier) + '&event=run_finished&order=asc&limit=200');
       // The server matches the issue as a substring (#1 also finds #10): compare exactly here.
-      if (r.ok && r.body && Array.isArray(r.body.entries)) rows = r.body.entries.filter((e) => e && e.issue === identifier && e.role === 'developer');
+      if (r.ok && r.body && Array.isArray(r.body.entries)) rows = r.body.entries.filter((e) => e && e.issue === identifier);
     } catch {}
     S.ctxEntries = rows;
     ctxLoading = false;
@@ -2250,105 +2336,287 @@ ${PIPELINE_JS}
     if (S.ctxEntries === null || finishedSessions() > S.ctxFinished) loadContextHistory();
   }
   /** Changes and Brain-Zugriffe of this issue, reloaded with every poll; a failing call keeps what was shown. */
-  const PR_TONES = { success: 'green', pending: 'amber', failure: 'red', none: 'gray' };
+  const ACCESS_ROWS = 6, CHANGE_ROWS = 8;
   async function loadSideFeeds() {
     const q = encodeURIComponent((S.detail && S.detail.issue_identifier) || ID);
     const [c, a] = await Promise.all([
       getJson('/api/v1/changes?issue=' + q + '&limit=10').catch(() => null),
-      getJson('/api/v1/brain/access?issue=' + q + '&limit=10').catch(() => null),
+      getJson('/api/v1/brain/access?issue=' + q + '&limit=100').catch(() => null),
     ]);
     if (c && c.ok && c.body && Array.isArray(c.body.entries)) S.changes = c.body.entries.slice(0, 10);
     if (a && a.status === 404) S.brainOff = true;
-    else if (a && a.ok && a.body && Array.isArray(a.body.access)) { S.brainOff = false; S.accessSeen = true; S.access = a.body.access.slice(0, 10); }
+    else if (a && a.ok && a.body && Array.isArray(a.body.access)) {
+      S.brainOff = false; S.accessSeen = true; S.access = a.body.access; S.accessMore = a.body.next_before !== null && a.body.next_before !== undefined;
+    }
   }
-  const sideRole = (role) => (role ? chip(role, { tone: uiOwn(UI_ROLE_COLORS, role) || 'gray', dot: true }) : chip('—'));
+  const issueNum = () => splitId((S.detail && S.detail.issue_identifier) || ID).num;
+  const fmtHm = (iso) => (iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) : '--:--');
 
+  // Pull request card of the Changes panel: state and checks of the newest pull request of the issue.
+  const PR_CHECKS = { pending: ['Checks laufen', '#fbbf24'], success: ['Checks grün', '#34d399'], failure: ['Checks rot', '#f87171'], none: ['keine Checks', ''] };
+  function renderPullRequest(changes) {
+    const box = $('changes-pr');
+    const withPr = changes.find((e) => e.pr && typeof e.pr.number === 'number');
+    const number = withPr ? withPr.pr.number : S.detail && typeof S.detail.pull_request === 'number' ? S.detail.pull_request : null;
+    const nodes = [];
+    if (number === null) nodes.push(el('span', 'noch keine PR', 'chg-pr-state'));
+    else {
+      const merged = changes.some((e) => e.status === 'merged' && (!e.pr || e.pr.number === number));
+      nodes.push(el('span', 'PR #' + number + ' · ' + (merged ? 'gemerged' : 'offen'), 'chg-pr-state'));
+      const checks = withPr ? uiOwn(PR_CHECKS, withPr.pr.status) : null;
+      if (checks) {
+        const c = el('span', checks[0], 'chg-pr-checks');
+        if (checks[1]) c.style.color = checks[1];
+        nodes.push(c);
+      }
+    }
+    patchChildren(box, nodes);
+  }
+
+  /** Changes · #<nr>: the files of the issue's commits (newest first, one row per path), then the pull request card. */
   function renderChanges() {
     const identifier = (S.detail && S.detail.issue_identifier) || ID;
+    setText($('changes-title'), 'Changes · ' + issueNum());
     $('changes-all').href = '/changes?issue=' + encodeURIComponent(identifier);
-    const rows = (S.changes || []).map((e) => {
-      const li = el('li', null, 'side-chg');
-      li.dataset.id = String(e.id || '');
-      const head = el('div', null, 'side-chg-head');
-      head.append(el('time', fmtStamp(e.at), 'mono muted'), sideRole(e.role));
-      if (e.pr) {
-        const pr = chip('#' + e.pr.number, { tone: PR_TONES[e.pr.status] || 'gray', dot: true, mono: true });
-        pr.classList.add('side-pr');
-        pr.title = 'Checks: ' + e.pr.status;
-        head.append(pr);
+    const changes = (S.changes || []).filter((e) => e && e.type !== 'brain');
+    const byPath = new Map();
+    for (const e of changes) {
+      for (const file of Array.isArray(e.files) ? e.files : []) {
+        if (!file || !file.path) continue;
+        const row = byPath.get(file.path) || { path: file.path, added: null, deleted: null, change: e };
+        if (typeof file.added === 'number') row.added = (row.added || 0) + file.added;
+        if (typeof file.deleted === 'number') row.deleted = (row.deleted || 0) + file.deleted;
+        byPath.set(file.path, row);
       }
-      li.append(head, el('div', e.title, 'side-chg-title'));
-      const files = Array.isArray(e.files) ? e.files : [];
-      if (files.length) {
-        const ul = el('ul', null, 'side-files');
-        for (const file of files.slice(0, 3)) {
-          const row = el('li');
-          const path = el('span', file.path, 'mono side-path');
-          path.title = file.path;
-          row.append(path);
-          if (typeof file.added === 'number' && typeof file.deleted === 'number') row.append(el('span', '+' + file.added, 'mono side-add'), el('span', '\\u2212' + file.deleted, 'mono side-del'));
-          ul.append(row);
-        }
-        if (files.length > 3) ul.append(el('li', '+' + (files.length - 3) + ' weitere', 'muted'));
-        li.append(ul);
-      }
+    }
+    const rows = [...byPath.values()].slice(0, CHANGE_ROWS).map((f) => {
+      const li = el('li', null, 'chg-row');
+      li.title = [f.change.title, f.change.role, fmtStamp(f.change.at)].filter(Boolean).join(' · ');
+      const path = el('span', f.path, 'chg-path');
+      path.title = f.path;
+      const stat = el('span', null, 'chg-stat');
+      if (f.added !== null) stat.append(el('span', '+' + f.added, 'chg-add'));
+      if (f.deleted !== null) stat.append(el('span', '−' + f.deleted, 'chg-del'));
+      li.append(path, stat);
       return li;
     });
     patchChildren($('changes-list'), rows);
-    $('changes-empty').hidden = !(S.changes && S.changes.length === 0);
+    $('changes-empty').hidden = !(S.changes && rows.length === 0);
+    renderPullRequest(S.changes || []);
   }
 
+  const ACCESS_OP = { read: 'op-read', write: 'op-write', append: 'op-write', search: 'op-search' };
+  /** Brain-Zugriffe · #<nr>: the newest six accesses (time, operation, note over its purpose) and a link to all of them. */
   function renderAccess() {
+    const identifier = (S.detail && S.detail.issue_identifier) || ID;
     $('access-section').hidden = S.brainOff || !S.accessSeen;
-    const rows = (S.access || []).map((a) => {
+    setText($('access-title'), 'Brain-Zugriffe · ' + issueNum());
+    const all = S.access || [];
+    const rows = all.slice(0, ACCESS_ROWS).map((a) => {
       const rejected = a.result === 'rejected';
-      const li = el('li', null, 'side-acc' + (rejected ? ' rejected' : ''));
-      const path = el('span', a.path_or_query, 'mono side-path');
-      path.title = a.purpose || a.path_or_query || '';
-      li.append(el('time', fmtStamp(a.at), 'mono muted'), sideRole(a.role), el('span', a.op, 'mono side-op'), path);
-      li.append(rejected ? chip('abgewiesen' + (a.reason ? ' · ' + a.reason : ''), { tone: 'red' }) : chip(String(a.result || 'ok'), { tone: 'green' }));
+      const li = el('li', null, 'acc-row' + (rejected ? ' rejected' : ''));
+      const main = el('div', null, 'acc-main');
+      main.append(el('span', a.path_or_query, 'acc-note'));
+      main.append(el('span', rejected ? 'abgewiesen' + (a.reason ? ' · ' + a.reason : '') : a.purpose || 'Zweck fehlt', 'acc-purpose'));
       if (rejected && (a.op === 'write' || a.op === 'append')) {
         const link = el('a', 'Clash ansehen', 'side-clash');
         link.href = '/brain#clashes';
-        li.append(link);
+        main.append(link);
       }
+      const time = el('time', fmtHm(a.at), 'acc-time');
+      time.title = fmtStamp(a.at) + (a.role ? ' · ' + a.role : '');
+      li.append(time, el('span', a.op, 'acc-op ' + (rejected ? 'op-denied' : uiOwn(ACCESS_OP, a.op) || 'op-other')), main);
       return li;
     });
     patchChildren($('access-list'), rows);
-    $('access-empty').hidden = !(S.access && S.access.length === 0);
+    const more = $('access-more');
+    more.hidden = !(all.length > ACCESS_ROWS || S.accessMore);
+    if (!more.hidden) {
+      const link = el('a', 'alle ' + all.length + (S.accessMore ? '+' : '') + ' →');
+      link.href = '/brain?issue=' + encodeURIComponent(identifier);
+      patchChildren(more, [link]);
+    }
+    $('access-empty').hidden = !(S.accessSeen && all.length === 0);
   }
 
   /** A history field as a number; null for a missing or logged-as-null value. */
   const historyNumber = (v) => (v === undefined || v === null || v === '' || v === 'null' ? null : Number.isFinite(Number(v)) ? Number(v) : null);
 
-  function renderContextHistory() {
-    const entries = (S.ctxEntries || []).filter((e) => historyNumber(e.context_peak_percent) !== null);
-    const blocks = (S.team && Array.isArray(S.team.blocks)) ? S.team.blocks : [];
-    const rows = entries.map((e, i) => {
-      const pct = historyNumber(e.context_peak_percent);
-      const compacts = historyNumber(e.context_compacts) || 0;
-      const block = blocks.find((b) => b.run === e.run);
-      const round = block && block.round ? block.round : i + 1;
-      const li = el('li', null, 'ctx-run');
-      li.dataset.run = String(e.run || '');
-      li.title = 'Runde ' + round + ' · Context-Peak ' + Math.round(pct) + ' %' + (compacts ? ' · ' + compacts + ' Auto-Compacts' : '');
-      li.append(el('span', 'R' + round, 'ctx-round'), bar(pct, { height: 6, color: pct >= 70 ? UI_TRAFFIC.amber : UI_TRAFFIC.green }), el('span', Math.round(pct) + ' %', 'ctx-pct mono'));
-      if (compacts > 0) {
-        const mark = el('span', '⇣' + compacts, 'ctx-compact');
-        mark.title = compacts + ' Auto-Compacts';
-        li.append(mark);
-      } else li.append(el('span'));
-      return li;
-    });
-    patchChildren($('ctx-runs'), rows);
-    $('ctx-empty').hidden = rows.length > 0;
+  // Context-Verlauf: chart geometry (viewBox 0 0 320 150, plot from x 8 to 312, 0 % at y 140, 100 % at y 20).
+  const CTX_X0 = 8, CTX_X1 = 312, CTX_BASE = 140, CTX_GAP = 10;
+  const ctxY = (p) => +(CTX_BASE - (120 * Math.min(100, Math.max(0, p))) / 100).toFixed(1);
+  const ctxPct = (p) => Math.round(p);
+  function ctxSvgEl(tag, attrs, cls) {
+    const n = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    if (cls) n.setAttribute('class', cls);
+    for (const k in attrs || {}) n.setAttribute(k, String(attrs[k]));
+    return n;
+  }
+  const ctxSvgText = (text, attrs, cls) => { const n = ctxSvgEl('text', attrs, cls); n.textContent = String(text); return n; };
+
+  /** The role of the chart: the one with the most sessions (on a tie the one that started first), else the most frequent in the history. */
+  function ctxRole() {
+    const count = new Map();
+    for (const s of (S.detail && S.detail.sessions) || []) count.set(s.role, (count.get(s.role) || 0) + 1);
+    if (!count.size) for (const e of S.ctxEntries || []) if (e.role) count.set(e.role, (count.get(e.role) || 0) + 1);
+    let best = null, n = 0;
+    for (const [role, c] of count) if (c > n) { best = role; n = c; }
+    return best;
   }
 
-  // ------------------------------------------------------------------ tabs Trace, Sessions, Transkript
+  /** The runs of a role in start order: { run, round, start, end, live, entry }. */
+  function ctxRuns(role) {
+    const sessions = ((S.detail && S.detail.sessions) || []).filter((s) => s.role === role);
+    const entries = (S.ctxEntries || []).filter((e) => e.role === role || (!e.role && sessions.some((s) => s.run === e.run)));
+    const blocks = S.team && Array.isArray(S.team.blocks) ? S.team.blocks : [];
+    const runs = sessions.map((s) => ({ run: s.run, start: Date.parse(s.started_at), end: s.finished_at ? Date.parse(s.finished_at) : null, live: !s.finished_at && isRunning() }));
+    for (const e of entries) if (!runs.some((r) => r.run === e.run)) runs.push({ run: e.run, start: NaN, end: Date.parse(e.ts), live: false });
+    runs.sort((a, b) => (Number.isFinite(a.start) ? a.start : a.end) - (Number.isFinite(b.start) ? b.start : b.end));
+    return runs.map((r, i) => {
+      const block = blocks.find((b) => b.run === r.run);
+      return { ...r, round: block && block.round ? block.round : i + 1, entry: entries.find((e) => e.run === r.run) || null };
+    });
+  }
 
-  const TABS = ['trace', 'sessions', 'transkript'];
-  /** Shows one tab panel; the hash (#trace, #sessions, #transkript) follows without a new history entry. */
+  /** Context tokens of each main-conversation model call of a run (input + cache read + cache write) and its compactions. */
+  function ctxRaw(run) {
+    const t = S.tx.get(run);
+    const calls = [], compacts = [];
+    if (!t || !t.available) return { calls, compacts };
+    let last = null;
+    for (const x of t.entries) {
+      if (x.type === 'model_call' && x.usage && !x.parent_tool_use_id) {
+        const tokens = (x.usage.input_tokens || 0) + (x.usage.cache_read_tokens || 0) + (x.usage.cache_write_tokens || 0);
+        if (last && x.message_id && last.id === x.message_id) { last.tokens = tokens; continue; }
+        last = { id: x.message_id, t: Date.parse(x.at), tokens };
+        calls.push(last);
+      } else if (x.type === 'system' && x.subtype === 'compact_boundary') compacts.push(Date.parse(x.at));
+    }
+    return { calls, compacts };
+  }
+
+  /** Points { t, pct }, compactions { t, before, after } and peak of each run; the window comes from the live session or the logged peak. */
+  function ctxSeries(runs) {
+    const live = S.detail && S.detail.running && S.detail.running.context;
+    const raws = runs.map((r) => ctxRaw(r.run));
+    const windowOf = (r, raw) => {
+      if (r.live && live && typeof live.window === 'number' && live.window > 0) return live.window;
+      const peak = r.entry ? historyNumber(r.entry.context_peak_percent) : null;
+      const max = Math.max(0, ...raw.calls.map((c) => c.tokens));
+      return peak && max ? (max * 100) / peak : null;
+    };
+    const windows = runs.map((r, i) => windowOf(r, raws[i]));
+    const shared = windows.find((w) => w) || null;
+    return runs.map((r, i) => {
+      const raw = raws[i];
+      const win = windows[i] || shared;
+      const peak = r.entry ? historyNumber(r.entry.context_peak_percent) : null;
+      const logged = r.entry ? historyNumber(r.entry.context_compacts) : null;
+      let points = win ? raw.calls.filter((c) => Number.isFinite(c.t)).map((c) => ({ t: c.t, pct: Math.min(100, (c.tokens / win) * 100) })) : [];
+      let compacts = [];
+      if (points.length) {
+        compacts = raw.compacts.filter(Number.isFinite).map((t) => {
+          const before = [...points].reverse().find((p) => p.t <= t);
+          const after = points.find((p) => p.t > t);
+          return { t, before: before ? before.pct : 0, after: after ? after.pct : null };
+        });
+      } else if (r.live && live && typeof live.percent === 'number' && Number.isFinite(r.start)) {
+        points = [{ t: r.start, pct: 0 }, { t: Date.now(), pct: Math.min(100, live.percent) }];
+      } else if (peak !== null) {
+        const end = r.end ?? Date.now();
+        points = [{ t: Number.isFinite(r.start) ? r.start : end - 60000, pct: 0 }, { t: end, pct: Math.min(100, peak) }];
+        if (logged) compacts = [{ t: end, before: peak, after: null }];
+      }
+      const count = Math.max(logged ?? 0, compacts.length, r.live && live ? live.compacts || 0 : 0);
+      const max = Math.max(peak ?? 0, ...points.map((p) => p.pct));
+      return { ...r, points, compacts, count, max };
+    }).filter((r) => r.points.length);
+  }
+
+  const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
+  /** Change of the live round in percent per minute between its last two points; null with fewer points. */
+  function ctxTrend(r) {
+    const [a, b] = r.points.slice(-2);
+    if (!a || !b || b.t <= a.t) return null;
+    const v = ((b.pct - a.pct) / (b.t - a.t)) * 60000;
+    return (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(1);
+  }
+  function ctxLabel(name, series) {
+    const parts = [];
+    for (const r of series) {
+      const now = r.points[r.points.length - 1].pct;
+      if (!r.live || r.compacts.length) parts.push('Runde ' + r.round + ' steigt bis ' + ctxPct(r.max) + ' Prozent');
+      for (const c of r.compacts) if (c.after !== null) parts.push('Auto-Compact fällt auf ' + ctxPct(c.after) + ' Prozent');
+      if (r.live) parts.push('Runde ' + r.round + ' steht bei ' + ctxPct(now) + ' Prozent');
+    }
+    return 'Context-Füllstand des ' + name + ': ' + parts.join(', ');
+  }
+  function ctxCaption(series) {
+    const parts = [];
+    for (const r of series) {
+      if (r.count > 0) parts.push('R' + r.round + ': ' + plural(r.count, 'Auto-Compact', 'Auto-Compacts') + ' bei ' + ctxPct(r.compacts.length ? Math.max(...r.compacts.map((c) => c.before)) : r.max) + ' %');
+      else if (!r.live) parts.push('R' + r.round + ': Peak ' + ctxPct(r.max) + ' %');
+      if (r.live) {
+        const trend = ctxTrend(r);
+        parts.push('R' + r.round + ' jetzt ' + ctxPct(r.points[r.points.length - 1].pct) + ' %' + (trend ? ', Trend ' + trend + ' %/min' : ''));
+      }
+    }
+    return parts.join(' · ');
+  }
+
+  function ctxSvg(name, key, series, threshold) {
+    const svg = ctxSvgEl('svg', { viewBox: '0 0 320 150', role: 'img', 'aria-label': ctxLabel(name, series) }, 'ctx-svg');
+    svg.append(ctxSvgEl('line', { x1: CTX_X0, x2: CTX_X1, y1: CTX_BASE, y2: CTX_BASE, stroke: 'rgba(255,255,255,.15)', 'stroke-width': 1 }, 'ctx-base'));
+    const ty = ctxY(threshold);
+    svg.append(ctxSvgEl('line', { x1: CTX_X0, x2: CTX_X1, y1: ty, y2: ty, stroke: '#f87171', 'stroke-width': 1, 'stroke-dasharray': '4 4' }, 'ctx-thr'),
+      ctxSvgText('Auto-Compact ' + threshold + ' %', { x: CTX_X1, y: ty - 4, 'text-anchor': 'end' }, 'ctx-thr-label'));
+    const n = series.length;
+    const w = (CTX_X1 - CTX_X0 - CTX_GAP * (n - 1)) / n;
+    series.forEach((r, i) => {
+      const x0 = CTX_X0 + i * (w + CTX_GAP);
+      const t0 = r.points[0].t;
+      const t1 = Math.max(r.live ? Date.now() : r.points[r.points.length - 1].t, t0 + 1);
+      const x = (t) => +(x0 + (Math.min(t1, Math.max(t0, t)) - t0) / (t1 - t0) * w).toFixed(1);
+      const color = (i === 0 ? UI_ROLE_COLORS[key] : UI_ROLE_LIGHT[key]) || UI_ROLE_COLORS.symphony;
+      svg.append(ctxSvgEl('polyline', { points: r.points.map((p) => x(p.t) + ',' + ctxY(p.pct)).join(' '), fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'data-round': r.round }, 'ctx-line'));
+      for (const c of r.compacts) {
+        svg.append(ctxSvgEl('circle', { cx: x(c.t), cy: ctxY(c.before), r: 4, fill: '#f87171' }, 'ctx-compact-dot'),
+          ctxSvgText('compact', { x: x(c.t) + 6, y: ctxY(c.before) - 6 }, 'ctx-compact-label'));
+      }
+      if (r.live) {
+        const p = r.points[r.points.length - 1];
+        svg.append(ctxSvgEl('circle', { cx: x(p.t), cy: ctxY(p.pct), r: 4, fill: '#fbbf24' }, 'ctx-now-dot'));
+      }
+      svg.append(ctxSvgText('R' + r.round, { x: x0, y: 149 }, 'ctx-round-label'));
+    });
+    return svg;
+  }
+
+  /** Context-Verlauf · <role>: one line per round of the role with the most sessions, built from the transcripts and the history. */
+  function renderContextHistory() {
+    const role = ctxRole();
+    const name = role ? seatName(role) : 'Developer';
+    setText($('ctx-history-title'), 'Context-Verlauf · ' + name);
+    const series = role ? ctxSeries(ctxRuns(role)) : [];
+    const threshold = S.team && typeof S.team.compact_threshold === 'number' && Number.isFinite(S.team.compact_threshold) ? S.team.compact_threshold : 80;
+    const key = uiRoleKey(role, null);
+    const sig = JSON.stringify([name, key, threshold, series.map((r) => [r.round, r.live, r.count, r.points.length, r.points[r.points.length - 1], r.compacts.length]),
+      series.some((r) => r.live) ? Math.floor(Date.now() / 10000) : 0]);
+    $('ctx-empty').hidden = series.length > 0;
+    $('ctx-caption').hidden = !series.length;
+    if (sig === S.ctxSig) return;
+    S.ctxSig = sig;
+    if (!series.length) { $('ctx-chart').replaceChildren(); setText($('ctx-caption'), ''); return; }
+    $('ctx-chart').replaceChildren(ctxSvg(name, key, series, threshold));
+    setText($('ctx-caption'), ctxCaption(series));
+  }
+
+  // ------------------------------------------------------------------ details tabs Execution-Trace, Sessions, Transkript
+
+  const TABS = ['trace', 'sessions', 'transcript'];
+  /** Shows one tab panel; the hash (#trace, #sessions, #transcript; #transkript of older links too) follows without a new history entry. */
   function selectTab(id, opts) {
+    if (id === 'transkript') id = 'transcript';
     if (!TABS.includes(id)) id = 'trace';
     S.tab = id;
     for (const t of TABS) {
@@ -2363,9 +2631,9 @@ ${PIPELINE_JS}
       const list = $('timeline');
       if (!S.unseen) list.scrollTop = list.scrollHeight;
       updateJump();
-    } else if (id === 'transkript') renderTranscript();
+    } else if (id === 'transcript') renderTranscript();
   }
-  const applyHash = () => selectTab(String(location.hash || '').slice(1));
+  const applyHash = () => { const id = String(location.hash || '').slice(1); selectTab(id, { hash: id === 'transkript' }); };
 
   $('tabs').addEventListener('click', (e) => {
     const b = e.target.closest('button[role="tab"]');
@@ -2452,7 +2720,7 @@ ${PIPELINE_JS}
     renderContextHistory();
     renderAccess();
     renderChanges();
-    if (S.tab === 'transkript') renderTranscript();
+    if (S.tab === 'transcript') renderTranscript();
     renderNotice();
     renderTimeline();
     renderRaw();
