@@ -32,7 +32,7 @@ describe('ensureVault', () => {
     for (const word of ['type', 'status', 'repo', 'issue', 'role', 'run', 'created', 'updated', 'sources', 'candidate', 'approved', 'deprecated', ...VAULT_FOLDERS]) {
       assert.ok(readme.includes(word), word);
     }
-    assert.deepEqual(created.sort(), ['README.md', CANDIDATE_REVIEW_BASE_FILE, LATEST_LESSONS_BASE_FILE, ...VAULT_FOLDERS].sort());
+    assert.deepEqual(created.sort(), ['README.md', '.gitignore', CANDIDATE_REVIEW_BASE_FILE, LATEST_LESSONS_BASE_FILE, ...VAULT_FOLDERS].sort());
     assert.equal(fs.existsSync(path.join(vault, '.obsidian')), false);
   });
 
@@ -112,20 +112,20 @@ describe('ensureVault', () => {
 describe('prepareBrain', () => {
   it('touches no path when disabled', async () => {
     const missing = path.join(tempDir(), 'missing');
-    await prepareBrain({ enabled: false, path: missing }, ['a/b'], Logger.silent());
+    await prepareBrain({ enabled: false, path: missing, clashWindowMs: 600000 }, ['a/b'], Logger.silent());
     assert.equal(fs.existsSync(missing), false);
   });
 
   it('creates the vault when enabled', async () => {
     const vault = path.join(tempDir(), 'vault');
-    await prepareBrain({ enabled: true, path: vault }, [], Logger.silent());
+    await prepareBrain({ enabled: true, path: vault, clashWindowMs: 600000 }, [], Logger.silent());
     assert.ok(fs.existsSync(path.join(vault, 'README.md')));
   });
 
   it('logs instead of throwing on failure', async () => {
     const file = path.join(tempDir(), 'file');
     fs.writeFileSync(file, 'x');
-    await prepareBrain({ enabled: true, path: path.join(file, 'vault') }, [], Logger.silent());
+    await prepareBrain({ enabled: true, path: path.join(file, 'vault'), clashWindowMs: 600000 }, [], Logger.silent());
   });
 });
 

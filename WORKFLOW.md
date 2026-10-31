@@ -160,6 +160,8 @@ claude:
 roles:
   # agents: plugin subagents (.claude/agents) the role may start; unset = all. Read-only roles only get read-only
   # ones, and laravel-* subagents only exist in workspaces with a Laravel app.
+  # brain: which brain tools the role gets (off = none, read = search/read/list, write = also write/append); only with
+  # brain.enabled; unset = off.
   # Models and effort follow "plan strong, implement cheaper": the architect designs larger changes with the strongest
   # model, the developer implements the design with a cheaper one, and the roles with a fixed task (analysis, tests,
   # docs, review, security) run with a fixed model and effort. model_by_complexity picks the model by the issue's
@@ -183,6 +185,7 @@ roles:
     model_label: ignore                      # sonnet, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # medium, whatever the issue's Effort: label says
     agents: [laravel-architect]
+    brain: write
     claude: { model: sonnet, effort: medium }
   # The architect decides on the approach of larger changes before the developer starts: a short read-only session that
   # reports a `design` result. `ready` (decision, components and interfaces are required) moves the issue to In progress,
@@ -206,6 +209,7 @@ roles:
     may_move_to: [In progress, Agent review, Blocked]
     model_label: ignore                      # opus, fable at complexity L and XL, whatever the issue's Model: label picks
     agents: [laravel-architect]
+    brain: write
     claude: { model: opus, effort: high, model_by_complexity: { L: fable, XL: fable } }   # a short session: thinking pays off here
   developer:
     states: [In progress]
@@ -215,6 +219,7 @@ roles:
       blocked: Blocked
     may_move_to: [In progress, Testing, Documentation, Agent review, Blocked]
     agents: [laravel-architect, laravel-database-engineer, laravel-filament-developer, laravel-test-engineer, laravel-code-reviewer]
+    brain: read
     # claude.model (CLAUDE_MODEL), opus at complexity L and XL, which implement the architect's design; a Model: label
     # on the issue wins, and an Effort: label sets the effort.
     claude: { model_by_complexity: { L: opus, XL: opus } }
@@ -230,6 +235,7 @@ roles:
     model_label: ignore                      # sonnet, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # high, whatever the issue's Effort: label says
     agents: [laravel-test-engineer]
+    brain: read
     claude: { model: sonnet, effort: high }
   # The docs agent is conditional: Symphony sends a finished implementation (or passed tests) here only when it needs
   # documentation (`docs_needed` in the analysis, or a changed file matching pipeline.docs_trigger_paths without any change in
@@ -258,6 +264,7 @@ roles:
     model_label: ignore                      # opus, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # high, whatever the issue's Effort: label says: the review keeps a cheaper developer safe
     agents: [laravel-code-reviewer]
+    brain: write
     claude: { model: opus, effort: high }
   # The security auditor is conditional: Symphony sends an approved issue here only when it needs the audit (a `security`
   # label, `risks.security` in the analysis, or a changed file matching pipeline.security_paths; when the changed files
@@ -279,6 +286,7 @@ roles:
     model_label: ignore                      # opus, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # high, whatever the issue's Effort: label says
     agents: [laravel-code-reviewer]
+    brain: read
     claude: { model: opus, effort: high }
   auditor:
     commands: [refactoring]                                 # served only for issues whose description starts with /refactoring
@@ -427,6 +435,8 @@ server:
 # brain:                                     # knowledge vault: one vault for all repositories, created at startup
 #   enabled: false                           # true = create the vault; false = no path is touched
 #   path: ~/brain                            # /home/symphony/brain is the brain volume in Docker
+#   clash_window_ms: 600000                  # another run that wrote a note within this window blocks a write (0 = off)
+# Only roles with brain: read or write get the brain tools (see roles:).
 # Existing files and folders are never overwritten; .obsidian/ is never touched. Changes apply after a restart.
 ---
 {% capture branch %}{% if issue.branch_name %}{{ issue.branch_name }}{% else %}symphony/issue-{{ issue.native_ref.number }}{% endif %}{% endcapture %}{% assign base = issue.native_ref.base_branch %}{% assign splittable = false %}{% if issue.complexity == "XL" and issue.native_ref.parent == nil %}{% assign splittable = true %}{% endif %}{% assign integration = false %}{% if issue.native_ref.sub_issues.size > 0 and results.implementation == nil %}{% assign integration = true %}{% endif %}{% capture agent_list %}{% for agent in agents %}
@@ -544,6 +554,8 @@ A mockup or screenshot is part of the requirements: layout, order, labels and te
 {% endif %}{% if issue.command %}## Issue command: /{{ issue.command.name }}
 
 The description starts with the command `/{{ issue.command.name }}`{% if issue.command.args != "" %} and the argument `{{ issue.command.args }}`{% endif %}. Before anything else, load the skill `{{ issue.command.skill }}` with the Skill tool{% if issue.command.args != "" %} and pass it the argument{% endif %}, then follow it. Where the skill and the steps of your role below disagree, the skill wins. What your role may do (read-only access, allowed status changes, available tools) still applies.
+
+{% endif %}{% if brain != "off" %}{% include "roles/brain.md" %}
 
 {% endif %}{% comment %}Role prompts: roles/<role>.md next to this file. New role: add the file and a when line.{% endcomment %}{% case role %}
 {%- when "developer" %}{% include "roles/developer.md" %}

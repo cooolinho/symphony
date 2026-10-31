@@ -5,6 +5,7 @@ import type { PricingStore } from '../costs/pricing.ts';
 import { computeAnalytics, filterEntries, isValidTimeZone, type Analytics, type AnalyticsFilter } from '../history/analytics.ts';
 import { computeHistoryStats, readHistory, repositoryFileName } from '../history/history.ts';
 import type { Logger } from '../log.ts';
+import { ACTIVITY_DEFAULT_MINUTES, ACTIVITY_MAX_MINUTES } from '../orchestrator/activity.ts';
 import type { Orchestrator } from '../orchestrator/orchestrator.ts';
 import type { SystemSource } from '../system/metrics.ts';
 import { errorMessage } from '../util/errors.ts';
@@ -12,6 +13,7 @@ import { AGENT_HTML } from './agent-page.ts';
 import { BRAIN_HTML } from './brain-page.ts';
 import { CHANGES_HTML } from './changes-page.ts';
 import { DASHBOARD_HTML } from './dashboard.ts';
+import { ChangeEvents } from './events.ts';
 import { LOGS_HTML } from './logs-page.ts';
 import { TASKS_HTML } from './tasks-page.ts';
 
@@ -149,16 +151,17 @@ const REDIRECTS: ReadonlyMap<string, string> = new Map([
 ]);
 
 /**
- * Observability/control surface (spec 13.7): `/` dashboard, `/changes`, `/tasks` and `/brain` (placeholder pages),
+ * Observability/control surface (spec 13.7): `/` dashboard, `/changes` (the feed of code changes), `/tasks` (queue columns with control actions), `/brain` (placeholder page),
  * `/issue?id=<identifier>` issue detail view (live, or archived once the orchestrator released the issue),
  * `/stats` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
- * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
+ * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/activity`, `/api/v1/brain/vitals`, `/api/v1/brain/candidates` (404 `brain_disabled` without `brain.enabled`), `/api/v1/changes` (filters type, repo, issue, limit, tz; `before` = id of the last entry of the previous page, `next_before` the id for the next), `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
  * `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker), `/force` (Start now in an extra slot),
  * `/pause` and `/resume` (operator pause of an issue), `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family), and
  * `PUT` / `DELETE /api/v1/settings/agents` (agent slots set on the dashboard; JSON body, `Content-Type:
  * application/json` required).
  * `/logs` and `/agent` redirect with 301 to `/stats` and `/issue` (query kept).
- * Read-only except refresh and these control routes. On a loopback bind, requests whose Host is not a loopback name are
+ * `/api/v1/events` is a Server-Sent Events stream (`event: change` with `{ at }`, at most every 500 ms, `: ping` every 25 s);
+ * the pages reload on it and keep polling as the fallback. Read-only except refresh and these control routes. On a loopback bind, requests whose Host is not a loopback name are
  * rejected (DNS-rebinding guard), and cross-origin POSTs are refused. On any other bind the server has no
  * login of its own and belongs behind an authenticating reverse proxy: the control routes are disabled unless
  * `allowRemoteControl` is set, and then requires an Origin header naming this host (CSRF guard, since a
@@ -184,6 +187,7 @@ export function startHttpServer(options: {
   const controls = { retry: loopbackBind || options.allowRemoteControl === true };
   // Analytics per filter, valid while the log files (append-only, so their sizes) and the price table are unchanged.
   const analyticsCache = new Map<string, { pricing: object; value: Analytics }>();
+  const events = new ChangeEvents(orchestrator);
 
   /**
    * The guard of every control route (retry, force, pause, resume, model hold and release, agent settings): loopback bind, or
@@ -252,12 +256,59 @@ export function startHttpServer(options: {
       allow(['GET'], () => sendJson(res, 200, { ...orchestrator.snapshot(), controls }));
       return;
     }
+    if (pathname === '/api/v1/events') {
+      allow(['GET'], () => events.open(res));
+      return;
+    }
     if (pathname === '/api/v1/system') {
-      allow(['GET'], () => sendJson(res, 200, system?.snapshot() ?? { current: null, history: [], gpu: null }));
+      allow(['GET'], () => sendJson(res, 200, system?.snapshot() ?? { current: null, history: [], gpu: null, cpu_count: null }));
       return;
     }
     if (pathname === '/api/v1/budget') {
       allow(['GET'], () => sendJson(res, 200, orchestrator.budget()));
+      return;
+    }
+    if (pathname === '/api/v1/brain/vitals' || pathname === '/api/v1/brain/candidates') {
+      allow(['GET'], () =>
+        respond(
+          (pathname === '/api/v1/brain/vitals' ? orchestrator.brainVitals() : orchestrator.brainCandidates().then((list) => list && { candidates: list })).then((body) => {
+            if (body === null) sendError(res, 404, 'brain_disabled', 'the brain is not enabled (brain.enabled)');
+            else sendJson(res, 200, body);
+          }),
+        ),
+      );
+      return;
+    }
+    if (pathname === '/api/v1/changes') {
+      allow(['GET'], () => {
+        const params = new URL(req.url ?? '/', 'http://localhost').searchParams;
+        const type = textParam(params, 'type');
+        if (type !== null && type !== 'code' && type !== 'brain') {
+          sendError(res, 400, 'bad_request', 'type must be code or brain');
+          return;
+        }
+        const limit = Number(params.get('limit'));
+        const zone = textParam(params, 'tz');
+        const page = orchestrator.changesPage(
+          {
+            type: type ?? undefined,
+            repo: textParam(params, 'repo') ?? undefined,
+            issue: textParam(params, 'issue') ?? undefined,
+            before: textParam(params, 'before') ?? undefined,
+            limit: Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : undefined,
+          },
+          zone !== null && isValidTimeZone(zone) ? zone : Intl.DateTimeFormat().resolvedOptions().timeZone,
+        );
+        sendJson(res, 200, { generated_at: new Date().toISOString(), ...page });
+      });
+      return;
+    }
+    if (pathname === '/api/v1/activity') {
+      allow(['GET'], () => {
+        const raw = Number(new URL(req.url ?? '/', 'http://localhost').searchParams.get('minutes'));
+        const minutes = Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), ACTIVITY_MAX_MINUTES) : ACTIVITY_DEFAULT_MINUTES;
+        sendJson(res, 200, orchestrator.activity(minutes));
+      });
       return;
     }
     if (pathname === '/api/v1/history/analytics' || pathname === '/api/v1/history/entries') {
@@ -612,6 +663,7 @@ export function startHttpServer(options: {
         url: `http://${displayHost}:${address.port}/`,
         close: () =>
           new Promise<void>((done) => {
+            events.closeAll();
             server.closeAllConnections();
             server.close(() => done());
           }),

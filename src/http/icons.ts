@@ -53,6 +53,9 @@ const ICON_DEFS: Record<string, { w: number; j?: true; s: (string | [number, num
   cross: { w: 3.4, s: ['M6 6l12 12', 'M18 6L6 18'] },
   search: { w: 1.9, s: [[11, 11, 6.5], 'M20 20l-4-4'] },
   refresh: { w: 1.9, j: true, s: ['M20 11a8 8 0 1 0-2.3 5.7', 'M20 4v7h-7'] },
+  alert: { w: 1.9, j: true, s: ['M12 3l10 18H2z', 'M12 10v4', 'M12 17.5v.01'] },
+  pause: { w: 1.9, s: ['M9 5v14', 'M15 5v14'] },
+  clock: { w: 1.9, j: true, s: [[12, 12, 9], 'M12 7v5l3 2'] },
   logo: { w: 2.2, s: ['M4 10v4', 'M8 7v10', 'M12 4v16', 'M16 8v8', 'M20 11v2'] },
 };
 
@@ -84,3 +87,12 @@ export const ICONS_JS = `
     return svg;
   }
 `;
+
+/** Server-side counterpart of icon(): the same icon as an aria-hidden <svg> string, or '' for an unknown name. */
+export function iconSvg(name: string, size = 16): string {
+  const def = Object.prototype.hasOwnProperty.call(ICON_DEFS, name) ? ICON_DEFS[name] : undefined;
+  if (!def) return '';
+  const shapes = def.s.map((s) => (typeof s === 'string' ? `<path d="${s}"/>` : `<circle cx="${s[0]}" cy="${s[1]}" r="${s[2]}"/>`)).join('');
+  const join = def.j ? ' stroke-linejoin="round"' : '';
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${def.w}" stroke-linecap="round"${join} aria-hidden="true" focusable="false">${shapes}</svg>`;
+}

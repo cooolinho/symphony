@@ -95,17 +95,22 @@ export class ChangeStore {
     return true;
   }
 
+  /** Every remembered entry matching `type`, `repo` and `issue`, newest first, without paging. */
+  matching(filter: Pick<ChangeFilter, 'type' | 'repo' | 'issue'> = {}): ChangeEntry[] {
+    const sources = filter.repo !== undefined ? [this.#entries.get(filter.repo) ?? []] : [...this.#entries.values()];
+    return sources
+      .flat()
+      .filter((entry) => (filter.type === undefined || entry.type === filter.type) && (filter.issue === undefined || entry.issue === filter.issue))
+      .sort((a, b) => this.#newestFirst(a, b));
+  }
+
   /**
    * One page of the entries matching `type`, `repo` and `issue`, newest first. `before` is the id of the last entry of
    * the previous page (an unknown id gives the first page); `limit` defaults to 50 and is kept between 1 and 200.
    */
   list(filter: ChangeFilter = {}): ChangeEntry[] {
     const limit = Math.min(CHANGES_PAGE_LIMIT, Math.max(1, Math.floor(filter.limit ?? CHANGES_PAGE_DEFAULT)));
-    const sources = filter.repo !== undefined ? [this.#entries.get(filter.repo) ?? []] : [...this.#entries.values()];
-    const matching = sources
-      .flat()
-      .filter((entry) => (filter.type === undefined || entry.type === filter.type) && (filter.issue === undefined || entry.issue === filter.issue))
-      .sort((a, b) => this.#newestFirst(a, b));
+    const matching = this.matching(filter);
     const start = filter.before === undefined ? 0 : matching.findIndex((entry) => entry.id === filter.before) + 1;
     return matching.slice(start, start + limit);
   }

@@ -4,7 +4,11 @@ import path from 'node:path';
 import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { sessionClaudeConfig } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, AgentSession, IntegrationReport, SessionLimitInfo } from '../agent/types.ts';
-import { brainToolsFor } from '../brain/tools.ts';
+import type { BrainAccessLog } from '../brain/access-log.ts';
+import type { BrainIndex } from '../brain/index.ts';
+import { brainToolsFor, createVaultGit } from '../brain/tools.ts';
+import { repoFolderName } from '../brain/vault.ts';
+import { isRepositoryName } from '../tracker/github-project/settings.ts';
 import { prepareIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
@@ -15,7 +19,7 @@ import { describeFailure, type HookIssue, type Workspace, type WorkspaceManager 
 import { commandSkills, pluginAgents } from '../workflow/command.ts';
 import { classify } from '../workflow/classify.ts';
 import { profileFor } from '../workflow/profile.ts';
-import { roleName, sessionAgents, type RoleConfig } from '../workflow/roles.ts';
+import { roleName, sessionAgents, sessionBrainMode, type RoleConfig } from '../workflow/roles.ts';
 import type { EffectiveWorkflow } from '../workflow/store.ts';
 import { internalResult, renderResultComment, type ResultMeta } from '../workflow/results.ts';
 import { maxColumnCheckMs, normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
@@ -191,6 +195,10 @@ export interface WorkerParams {
   checkCache: CheckCache;
   /** Directory for per-session JSONL transcripts, or null to disable them. */
   transcriptDir: string | null;
+  /** Access log and clash list of the brain, shared by all sessions. */
+  brainAccess?: BrainAccessLog | null;
+  /** Index of the vault, updated after every vault commit. */
+  brainIndex?: BrainIndex | null;
   /**
    * Live check after each turn (uses the current workflow config): null continues the session, a string ends it
    * normally with that reason (the issue left the active states, is no longer routable, or another role serves it).
@@ -622,7 +630,11 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
           )
         : null;
     if (signal.aborted) return await finish(cancelled());
+    const brainMode = sessionBrainMode(params.workflow.config.brain.enabled, role);
+    const repository = params.adapter.issueRepository?.(issue) ?? null;
     const resultVariables = {
+      brain: brainMode,
+      brain_index: repository !== null && isRepositoryName(repository) ? `Repos/${repoFolderName(repository)}/index.md` : null,
       results: support?.results ?? EMPTY_RESULTS,
       human_feedback: support?.humanFeedback ?? [],
       round: support?.round ?? 1,
@@ -636,7 +648,11 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     // An architect files sub-issues only to split an issue it may split (XL, not a work package itself).
     const subIssues = subIssueLimit(role, issue);
     sessionStart = { sha: startSha };
-    const brainTools = brainToolsFor(params.workflow.config.brain, logger);
+    const brainPath = params.workflow.config.brain.path;
+    const brainTools = brainToolsFor(params.workflow.config.brain, brainMode, logger, {
+      access: params.brainAccess ?? null,
+      ...(brainMode !== 'off' ? { versioning: createVaultGit(brainPath, logger, { onCommit: (_sha, paths) => params.brainIndex?.update(brainPath, paths) }) } : {}),
+    });
     session = await params.runner.startSession({
       ...(params.contextWindow ? { contextWindow: params.contextWindow } : {}),
       cwd: activeWorkspace.path,

@@ -151,6 +151,8 @@ export interface PostedComment {
 export interface AutoMergeResult {
   merged: boolean;
   pull_request: number | null;
+  /** URL of the merged pull request, when the tracker knows it. */
+  pull_request_url?: string | null;
   /** Column the issue is in afterwards. */
   status: string;
   reason: string;
@@ -243,6 +245,16 @@ export interface IssueAttachment {
   error: string | null;
 }
 
+/** Remaining request budget of the tracker API, as reported by its last response. */
+export interface TrackerApiBudget {
+  remaining: number;
+  limit: number;
+  /** When the budget resets (ISO 8601), null when the tracker does not say. */
+  reset_at: string | null;
+  /** When the budget was read (ISO 8601). */
+  observed_at: string;
+}
+
 /** The read kernel the orchestrator needs (spec 11.1), plus optional agent tools (spec 10.5). */
 export interface TrackerAdapter {
   readonly kind: string;
@@ -298,6 +310,8 @@ export interface TrackerAdapter {
    */
   addLabels?(issue: Issue, names: string[], options?: { create?: boolean }): Promise<AddLabelsResult>;
   removeLabels?(issue: Issue, names: string[]): Promise<RemoveLabelsResult>;
+  /** Remaining budget of the tracker API from the last response; null while unknown, absent when the tracker has none. */
+  apiBudget?(): TrackerApiBudget | null;
 }
 
 export interface TrackerAdapterParams {

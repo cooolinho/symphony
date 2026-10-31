@@ -5,10 +5,15 @@ import type { Logger } from '../log.ts';
 import type { AgentToolContext, AgentToolSpec, ToolResult } from '../tracker/types.ts';
 import { errorMessage } from '../util/errors.ts';
 import type { BrainConfig } from '../workflow/config.ts';
-import { fail, hashOf, MAX_NOTE_BYTES, ok, warnPurpose } from './common.ts';
+import type { BrainMode } from '../workflow/roles.ts';
+import type { BrainAccessLog, BrainAccessOp } from './access-log.ts';
+import { fail, hashOf, MAX_NOTE_BYTES, ok, purposeOf, reasonOf, warnPurpose } from './common.ts';
 import { noteStatus, noteTitle, parseNote } from './note.ts';
 import { resolveVaultPath } from './paths.ts';
 import { createBrainWriteTools, type BrainWriteOptions } from './write.ts';
+
+export { createVaultGit, type VaultCommitHook } from './git.ts';
+export type { BrainVersioning } from './write.ts';
 
 export const MAX_SEARCH_RESULTS = 20;
 const EXCERPT_CHARS = 200;
@@ -52,17 +57,43 @@ function fieldEquals(value: unknown, wanted: string): boolean {
 }
 
 /** Read tools of the knowledge vault. Everything runs synchronously on the file system; there is no index. */
-export function createBrainTools(vaultPath: string, logger: Logger): AgentToolSpec[] {
+export function createBrainTools(vaultPath: string, logger: Logger, access: BrainAccessLog | null = null): AgentToolSpec[] {
   const guarded =
-    (tool: string, body: (args: Record<string, unknown>) => ToolResult): AgentToolSpec['execute'] =>
+    (
+      tool: string,
+      op: BrainAccessOp,
+      subject: (args: Record<string, unknown>) => string,
+      body: (args: Record<string, unknown>) => ToolResult,
+    ): AgentToolSpec['execute'] =>
     async (args, context) => {
       warnPurpose(logger, tool, args, context);
+      let result: ToolResult;
       try {
-        return body(args);
+        result = body(args);
       } catch (error) {
-        return fail('tool_error', errorMessage(error));
+        result = fail('tool_error', errorMessage(error));
       }
+      if (access !== null) {
+        const reason = reasonOf(result);
+        access.record({
+          at: new Date().toISOString(),
+          run: context.runId ?? null,
+          issue: context.issue.identifier,
+          role: context.role ?? null,
+          op,
+          path_or_query: subject(args),
+          purpose: purposeOf(args),
+          result: result.ok ? 'ok' : 'rejected',
+          ...(reason !== undefined ? { reason } : {}),
+        });
+      }
+      return result;
     };
+
+  const pathSubject = (args: Record<string, unknown>, key: string, allowRoot: boolean): string => {
+    const resolved = resolveVaultPath(vaultPath, args[key] ?? '', { allowRoot });
+    return resolved.ok ? resolved.relative : String(args[key] ?? '');
+  };
 
   const search: AgentToolSpec = {
     name: 'brain_search',
@@ -78,7 +109,7 @@ export function createBrainTools(vaultPath: string, logger: Logger): AgentToolSp
       purpose: PURPOSE,
     },
     mutates: false,
-    execute: guarded('brain_search', (args) => {
+    execute: guarded('brain_search', 'search', (args) => String(args.query ?? ''), (args) => {
       const words = String(args.query ?? '').toLowerCase().split(/\s+/).filter((word) => word !== '');
       if (words.length === 0) return fail('invalid_argument', 'query must contain a word');
       const repo = typeof args.repo === 'string' && args.repo !== '' ? args.repo : null;
@@ -123,7 +154,7 @@ export function createBrainTools(vaultPath: string, logger: Logger): AgentToolSp
       'Returns {path, content, frontmatter, frontmatter_error, hash}; hash is the SHA-256 of the file and is needed for later writes.',
     inputSchema: { path: z.string().describe('Path relative to the vault, e.g. Lessons/caching.md'), purpose: PURPOSE },
     mutates: false,
-    execute: guarded('brain_read', (args) => {
+    execute: guarded('brain_read', 'read', (args) => pathSubject(args, 'path', false), (args) => {
       const resolved = resolveVaultPath(vaultPath, args.path);
       if (!resolved.ok) return fail('rejected', resolved.message);
       try {
@@ -153,7 +184,7 @@ export function createBrainTools(vaultPath: string, logger: Logger): AgentToolSp
       'Hidden entries (.obsidian/ and others) are not listed.',
     inputSchema: { folder: z.string().optional().describe('Folder relative to the vault; empty = root'), purpose: PURPOSE },
     mutates: false,
-    execute: guarded('brain_list', (args) => {
+    execute: guarded('brain_list', 'list', (args) => pathSubject(args, 'folder', true), (args) => {
       const resolved = resolveVaultPath(vaultPath, args.folder ?? '', { allowRoot: true });
       if (!resolved.ok) return fail('rejected', resolved.message);
       try {
@@ -188,7 +219,17 @@ export function createBrainTools(vaultPath: string, logger: Logger): AgentToolSp
 
 export { createBrainWriteTools, type BrainWriteEntry, type BrainWriteOptions } from './write.ts';
 
-/** The brain tools of a session (read and write): none unless `brain.enabled` (the role switch follows with E7-5). */
-export function brainToolsFor(config: BrainConfig, logger: Logger, options: BrainWriteOptions = {}): AgentToolSpec[] {
-  return config.enabled ? [...createBrainTools(config.path, logger), ...createBrainWriteTools(config.path, logger, options)] : [];
+/** The brain tools of a session: none unless `brain.enabled` and the role's mode is not `off`; `read` has the read tools, `write` also the write tools. */
+export function brainToolsFor(
+  config: Omit<BrainConfig, 'clashWindowMs'> & { clashWindowMs?: number },
+  mode: BrainMode,
+  logger: Logger,
+  options: BrainWriteOptions = {},
+): AgentToolSpec[] {
+  if (!config.enabled || mode === 'off') return [];
+  const readTools = createBrainTools(config.path, logger, options.access ?? null);
+  if (mode === 'read') return readTools;
+  const writeOptions: BrainWriteOptions =
+    config.clashWindowMs === undefined ? options : { ...options, clashWindowMs: options.clashWindowMs ?? config.clashWindowMs };
+  return [...readTools, ...createBrainWriteTools(config.path, logger, writeOptions)];
 }

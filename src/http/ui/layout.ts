@@ -5,36 +5,30 @@
  * markup, CSS and script. pageHeader(), breadcrumbs(), twoColumns(), panel() and sectionLink() are pure markup builders.
  *
  * The aurora circles are plain filter-blurred elements (no backdrop-filter); the header is the only glass element the
- * shell adds (.g) and the shell never nests a .g in a .g, so a page stays within four stacked blur layers. LIVE, the
- * 5 h chip and the clock are set on the client (setLive(), loadBudget(), a one-second timer).
+ * shell adds (.g) and the shell never nests a .g in a .g, so a page stays within four stacked blur layers. The clock is
+ * set on the client (one-second timer), LIVE by setLive(); the 5 h chip shows the budget of GET /api/v1/budget (loaded on
+ * every page, refreshed every 30 s; onBudget() hands the report to the page script).
  */
 
 import { BASE_JS } from '../styles.ts';
 import { SYMPHONY_VERSION } from '../../version.ts';
+import { iconSvg } from '../icons.ts';
 import { TOKENS_CSS } from './tokens.ts';
 
 export type NavKey = 'overview' | 'changes' | 'tasks' | 'brain' | 'stats';
 
-// The icons move to the shared icon module of #380 once it is merged.
-const svg = (size: number, sw: number, inner: string): string =>
-  `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
-const LOGO_ICON = svg(20, 2.2, '<path d="M4 10v4"/><path d="M8 7v10"/><path d="M12 4v16"/><path d="M16 8v8"/><path d="M20 11v2"/>').replace('stroke="currentColor"', 'stroke="#fff"');
-const REFRESH_ICON = svg(16, 1.9, '<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>');
-const NAV_ICONS: Record<NavKey, string> = {
-  overview: svg(16, 1.9, '<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/>'),
-  changes: svg(16, 1.9, '<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5v4a5 5 0 0 0 5 5h4.5"/>'),
-  tasks: svg(16, 1.9, '<path d="M4 6h2"/><path d="M4 12h2"/><path d="M4 18h2"/><path d="M10 6h10"/><path d="M10 12h10"/><path d="M10 18h10"/>'),
-  brain: svg(16, 1.9, '<path d="M12 5a3 3 0 0 0-5.6-1.5A3.5 3.5 0 0 0 4 9a3.5 3.5 0 0 0 .5 6.3A3 3 0 0 0 10 17.5 2.5 2.5 0 0 0 12 20z"/><path d="M12 5a3 3 0 0 1 5.6-1.5A3.5 3.5 0 0 1 20 9a3.5 3.5 0 0 1-.5 6.3A3 3 0 0 1 14 17.5 2.5 2.5 0 0 1 12 20z"/>'),
-  stats: svg(16, 1.9, '<path d="M5 20V11"/><path d="M12 20V4"/><path d="M19 20v-7"/>'),
-};
+const LOGO_ICON = iconSvg('logo', 20).replace('stroke="currentColor"', 'stroke="#fff"');
+const REFRESH_ICON = iconSvg('refresh', 16);
+const NAV_ICON_NAMES: Record<NavKey, string> = { overview: 'home', changes: 'changes', tasks: 'tasks', brain: 'brain', stats: 'stats' };
+const navIcon = (key: NavKey): string => iconSvg(NAV_ICON_NAMES[key], 16);
 
 /** Main navigation; Changes, Tasks and Brain link to routes that are served later (E1-4). */
 export const NAV_ITEMS: ReadonlyArray<{ key: NavKey; label: string; href: string; icon: string }> = [
-  { key: 'overview', label: 'Übersicht', href: '/', icon: NAV_ICONS.overview },
-  { key: 'changes', label: 'Changes', href: '/changes', icon: NAV_ICONS.changes },
-  { key: 'tasks', label: 'Tasks', href: '/tasks', icon: NAV_ICONS.tasks },
-  { key: 'brain', label: 'Brain', href: '/brain', icon: NAV_ICONS.brain },
-  { key: 'stats', label: 'Statistik', href: '/stats', icon: NAV_ICONS.stats },
+  { key: 'overview', label: 'Übersicht', href: '/', icon: navIcon('overview') },
+  { key: 'changes', label: 'Changes', href: '/changes', icon: navIcon('changes') },
+  { key: 'tasks', label: 'Tasks', href: '/tasks', icon: navIcon('tasks') },
+  { key: 'brain', label: 'Brain', href: '/brain', icon: navIcon('brain') },
+  { key: 'stats', label: 'Statistik', href: '/stats', icon: navIcon('stats') },
 ];
 
 export interface AuroraCircle {
@@ -119,6 +113,9 @@ export interface PageOptions {
 
 export const LAYOUT_CSS = `
   .shell-root { position: relative; min-height: 100vh; overflow: hidden; background: var(--bg); color: var(--fg); font-size: 14px; line-height: 1.5; }
+
+  /* clip (unlike hidden) does not make the root a scroll container, so position: sticky inside keeps working. */
+  @supports (overflow: clip) { .shell-root { overflow: clip; } }
 
   /* Aurora: blurred colour circles behind the page, a dot grid on top. Only .g blurs. */
   .aurora { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
@@ -214,33 +211,6 @@ export const LAYOUT_JS = `
     const text = document.getElementById('shell-live-text');
     if (text) text.textContent = fresh ? 'LIVE' : 'OFFLINE';
   }
-  // 5 h chip: share of the 5 h token limit already used; amber from 50 %, red from 85 %.
-  function fiveHourChip(report) {
-    const f = report && report.five_hour && report.five_hour.forecast;
-    const limit = f && Number(f.limit_tokens);
-    if (!(limit > 0)) return { pct: null, tone: null };
-    const pct = Math.round((Number(report.five_hour.used_tokens) || 0) / limit * 100);
-    return { pct, tone: pct >= 85 ? 'red' : pct >= 50 ? 'amber' : null };
-  }
-  function setBudget(report) {
-    const node = document.getElementById('shell-budget');
-    if (!node) return;
-    const chip = fiveHourChip(report);
-    if (chip.pct === null) { node.textContent = '5h —'; return; }
-    const pct = document.createElement('span');
-    pct.className = 'budget-pct' + (chip.tone ? ' tone-' + chip.tone : '');
-    pct.textContent = chip.pct + ' %';
-    node.replaceChildren('5h ', pct);
-  }
-  async function loadBudget() {
-    try {
-      const res = await fetch('/api/v1/budget');
-      if (!res.ok) throw new Error('budget ' + res.status);
-      setBudget(await res.json());
-    } catch { setBudget(null); }
-  }
-  loadBudget();
-  setInterval(loadBudget, 60000);
   (function clock() {
     const node = document.getElementById('shell-clock');
     if (!node) return;
@@ -260,18 +230,86 @@ export const LAYOUT_JS = `
       button.classList.add('is-busy');
       button.setAttribute('aria-busy', 'true');
       let message = 'Poll fehlgeschlagen';
+      let ok = false;
       try {
         const res = await fetch('/api/v1/refresh', { method: 'POST' });
         const body = await res.json();
-        if (res.ok) message = body && body.coalesced ? 'Poll bereits eingereiht' : 'Poll eingereiht';
+        ok = res.ok;
+        if (ok) message = body && body.coalesced ? 'Poll bereits eingereiht' : 'Poll eingereiht';
       } catch {}
       button.classList.remove('is-busy');
       button.removeAttribute('aria-busy');
+      button.classList.add(ok ? 'is-done' : 'is-failed');
+      setTimeout(() => button.classList.remove('is-done', 'is-failed'), 1800);
       const announce = document.getElementById('announce');
       if (announce) announce.textContent = message;
       setTimeout(() => { if (shellHooks.afterPoll) shellHooks.afterPoll(); }, 500);
     });
   })();
+
+
+  // 5 h chip and budget loader: one GET /api/v1/budget on load and every 30 s, shared by the chip and the page script.
+  /** used / limit in percent, null without a window, a forecast or a positive limit. */
+  function budgetPercent(w) {
+    const limit = w && w.forecast && w.forecast.limit_tokens;
+    return typeof limit === 'number' && limit > 0 && typeof w.used_tokens === 'number' ? (w.used_tokens / limit) * 100 : null;
+  }
+  /** Extra share of the limit (percent) the burn rate adds until the ETA, else until the reset; 0 when it cannot be told. */
+  function budgetForecastPercent(w, now) {
+    const limit = w && w.forecast && w.forecast.limit_tokens;
+    if (!(typeof limit === 'number' && limit > 0) || !(w.burn_rate_per_min > 0)) return 0;
+    const horizon = Date.parse(w.forecast.eta || w.resets_at || '');
+    if (!Number.isFinite(horizon)) return 0;
+    return ((w.burn_rate_per_min * Math.max(0, horizon - now)) / 60000 / limit) * 100;
+  }
+  /** 5 h chip: pct (null without a window, forecast or positive limit) and tone (red from 85 %, amber from 50 %, else null). */
+  function budgetChip(report) {
+    const w = report && report.five_hour;
+    const pct = budgetPercent(w);
+    if (pct === null) return { pct: null, tone: null };
+    const rounded = Math.round(pct);
+    return { pct: rounded, tone: rounded >= 85 ? 'red' : rounded >= 50 ? 'amber' : null };
+  }
+  let budgetReport = null;
+  let budgetRaw = null;
+  const budgetListeners = [];
+  /** Registers fn(report | null, raw), called after every load (raw: the parsed answer without the shape check, null on failure); right away when a report is already there. */
+  function onBudget(fn) {
+    budgetListeners.push(fn);
+    if (budgetReport || budgetRaw) fn(budgetReport, budgetRaw);
+  }
+  function paintBudgetChip(report) {
+    const node = document.getElementById('shell-budget');
+    if (!node) return;
+    const chip = budgetChip(report);
+    if (chip.pct === null) { node.textContent = '5h —'; return; }
+    const pct = document.createElement('span');
+    pct.className = 'budget-pct' + (chip.tone ? ' tone-' + chip.tone : '');
+    pct.textContent = chip.pct + ' %';
+    node.replaceChildren('5h ', pct);
+  }
+  const isBudgetWindow = (w) => !!w && typeof w === 'object' && typeof w.used_tokens === 'number';
+  let budgetSeq = 0;
+  async function loadBudget() {
+    const seq = ++budgetSeq;
+    let report = null;
+    let raw = null;
+    try {
+      const res = await fetch('/api/v1/budget', { cache: 'no-store' });
+      const body = res.ok ? await res.json() : null;
+      raw = body;
+      if (body && isBudgetWindow(body.five_hour) && isBudgetWindow(body.seven_day)) report = body;
+    } catch {}
+    if (seq !== budgetSeq) return;
+    budgetReport = report;
+    budgetRaw = raw;
+    paintBudgetChip(report);
+    for (const fn of budgetListeners) {
+      try { fn(report, raw); } catch {}
+    }
+  }
+  loadBudget();
+  setInterval(loadBudget, 30000);
 `;
 
 const ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };

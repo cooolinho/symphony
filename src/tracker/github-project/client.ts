@@ -24,6 +24,16 @@ export interface GraphqlClientOptions {
   fetch?: typeof fetch;
 }
 
+/** Rate-limit budget from the `x-ratelimit-*` headers of the last GitHub response that carried them. */
+export interface GithubRateLimit {
+  remaining: number;
+  limit: number;
+  /** When the budget resets (ISO 8601), null without an `x-ratelimit-reset` header. */
+  reset_at: string | null;
+  /** When the response was received (ISO 8601). */
+  observed_at: string;
+}
+
 const USER_AGENT = 'symphony-orchestrator/0.1';
 const TRANSIENT_STATUS = new Set([502, 503, 504]);
 
@@ -39,10 +49,16 @@ function isTransient(error: unknown): boolean {
 export class GithubGraphqlClient {
   #options: GraphqlClientOptions;
   #fetch: typeof fetch;
+  #rateLimit: GithubRateLimit | null = null;
 
   constructor(options: GraphqlClientOptions) {
     this.#options = options;
     this.#fetch = options.fetch ?? fetch;
+  }
+
+  /** Rate-limit budget of the last response with `x-ratelimit-remaining` and `-limit` headers; null before one. */
+  rateLimit(): GithubRateLimit | null {
+    return this.#rateLimit;
   }
 
   /**
@@ -85,6 +101,7 @@ export class GithubGraphqlClient {
       );
     }
 
+    this.#rateLimit = parseRateLimit(response.headers) ?? this.#rateLimit;
     const text = await response.text().catch(() => '');
     if (!response.ok) throw httpError(response, text);
 
@@ -141,6 +158,19 @@ function httpError(response: Response, text: string): TrackerError {
     });
   }
   return new TrackerError('tracker_status', `GitHub returned HTTP ${response.status}: ${detail}`, { status: response.status });
+}
+
+function parseRateLimit(headers: Headers | undefined): GithubRateLimit | null {
+  const remaining = headers?.get('x-ratelimit-remaining') ?? null;
+  const limit = headers?.get('x-ratelimit-limit') ?? null;
+  if (remaining === null || limit === null || !/^\d+$/.test(remaining) || !/^\d+$/.test(limit)) return null;
+  const reset = headers?.get('x-ratelimit-reset') ?? null;
+  return {
+    remaining: Number(remaining),
+    limit: Number(limit),
+    reset_at: reset !== null && /^\d+$/.test(reset) ? new Date(Number(reset) * 1000).toISOString() : null,
+    observed_at: new Date().toISOString(),
+  };
 }
 
 function resetDelayMs(headers: Headers): number | null {

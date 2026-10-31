@@ -201,6 +201,76 @@ const AGENT_PAGE_CSS = `
     .logs .d { grid-column: 1 / -1; }
   }
   .t-inline { display: none; font: 11px var(--mono); color: var(--faint); }
+
+  /* Stage (Bühne) */
+  .stage { position: relative; overflow: hidden; margin-top: 18px; }
+  .stage-body { display: grid; gap: 18px; }
+  .stage-seats { list-style: none; margin: 0; padding: 0; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 18px 8px; align-content: start; }
+  .stage-seat { position: relative; display: flex; flex-direction: column; align-items: center; text-align: center; min-width: 0; gap: 6px; }
+  .stage-seat::before { content: ""; position: absolute; top: 47px; left: -4px; right: -4px; height: 2px; background: rgba(255, 255, 255, .12); }
+  .stage-spot { position: relative; z-index: 1; height: 96px; display: grid; place-items: center; }
+  .stage-gauge { position: relative; width: 96px; height: 96px; }
+  .stage-seat.is-active .stage-spot { margin-bottom: 12px; }
+  .stage-gauge > .ui-av { position: absolute; left: 16px; top: 16px; }
+  .stage-seat.is-active::after { content: ""; position: absolute; z-index: 0; left: 50%; top: -90px; width: 240px; height: 300px; margin-left: -120px; background: radial-gradient(closest-side, var(--seat-glow, rgba(120, 160, 255, .28)), transparent); pointer-events: none; }
+  .stage-seat.is-skipped { opacity: .45; }
+  .stage-name { position: relative; z-index: 1; font: 600 12.5px var(--sans); color: var(--text); overflow-wrap: anywhere; }
+  .stage-sub { position: relative; z-index: 1; font: 11px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+  .stage-fields { display: flex; flex-wrap: wrap; gap: 14px; min-width: 0; }
+  .stage-field { flex: 1 1 260px; min-width: 0; padding: 14px 16px; }
+  .stage-field.is-now { flex: 2 1 380px; }
+  .stage-field h3 { margin: 0 0 8px; display: flex; justify-content: space-between; gap: 8px; font: 600 11px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  .stage-action { font: 13px/1.45 var(--mono); color: var(--text); overflow-wrap: anywhere; }
+  .stage-trace { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .stage-trace .ui-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stage-arrow { color: var(--faint); }
+  .stage-ctx { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 6px; font: 12px var(--mono); color: var(--text-2); }
+  .stage-compacts { margin: 8px 0; display: flex; flex-wrap: wrap; align-items: center; gap: 3px; font: 11px var(--mono); color: var(--muted); }
+  .stage-compact { display: inline-block; width: 2px; height: 12px; background: var(--red, #ff6b6b); }
+  .stage-compacts .txt { margin-left: 6px; }
+  .stage-subagent { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; padding: 6px 0; border-top: 1px dashed var(--line-2); font: 12px var(--mono); color: var(--text-2); }
+  .stage-subagent:first-of-type { border-top: 0; }
+  .stage-subagent .desc { flex: 1 1 100%; min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
+  .stage-subagent.is-done { opacity: .7; }
+  .stage-subagent .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+  .stage-subagent.is-running .dot { background: var(--green, #3ddc84); }
+  .stage-subagent .dot.pulse { animation: stage-pulse 1.4s ease-in-out infinite; }
+  @keyframes stage-pulse { 50% { opacity: .35; } }
+  .stage-empty { margin: 0; color: var(--muted); font: 13px var(--mono); }
+  .score { margin-top: 18px; min-width: 0; }
+  .score-frame { overflow-x: auto; overflow-y: hidden; max-width: 100%; padding: 8px 0; }
+  .score-frame svg { display: block; }
+  .score-lane rect { fill: transparent; } .score-lane.alt rect { fill: rgba(255, 255, 255, .03); }
+  .score-lane-label { font: 11px var(--mono); fill: var(--muted); }
+  .score-tick line { stroke: var(--line-2); stroke-width: 1; opacity: .5; }
+  .score-tick text { font: 10px var(--mono); fill: var(--faint); }
+  .score-block rect { rx: 3; ry: 3; }
+  .score-block:focus { outline: none; } .score-block:focus rect { stroke: var(--text); stroke-width: 1.5; }
+  .score-call { stroke: rgba(0, 0, 0, .35); stroke-width: 1; }
+  .score-handoff line { stroke: var(--muted); stroke-width: 1.5; } .score-handoff path { fill: var(--muted); }
+  .score-handoff text { font: 10px var(--mono); fill: var(--muted); }
+  .score-handoff.tone-green line { stroke: var(--green); } .score-handoff.tone-green path, .score-handoff.tone-green text { fill: var(--green); }
+  .score-handoff.tone-red line { stroke: var(--red); } .score-handoff.tone-red path, .score-handoff.tone-red text { fill: var(--red); }
+  .score-handoff.tone-gray line { stroke: var(--muted); } .score-handoff.tone-gray path, .score-handoff.tone-gray text { fill: var(--muted); }
+  .score-round line { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 4 4; }
+  .score-round text { font: 10px var(--mono); fill: var(--muted); }
+  .score-now line { stroke: var(--amber); stroke-width: 1.5; }
+  .score-now text { font: 10px var(--mono); fill: var(--amber); }
+  @media (min-width: 1280px) {
+    .stage-body { grid-template-columns: minmax(0, 3fr) minmax(340px, 2fr); }
+    .stage-fields { flex-direction: column; flex-wrap: nowrap; }
+    .stage-field, .stage-field.is-now { flex: 0 0 auto; }
+  }
+  @media (max-width: 900px) {
+    .stage-seats { grid-auto-flow: row; grid-template-columns: repeat(var(--stage-cols, 4), minmax(0, 1fr)); }
+  }
+  @media (max-width: 640px) {
+    .stage-spot { height: 80px; }
+    .stage-seat::before { top: 39px; }
+    .stage-gauge, .stage-gauge .ui-ring { width: 80px !important; height: 80px !important; }
+    .stage-gauge > .ui-av { left: 8px; top: 8px; }
+    .stage-sub { display: none; }
+  }
 `;
 
 /**
@@ -229,6 +299,23 @@ export const AGENT_HTML = page({
     <div class="hero-metrics" id="hero-metrics"></div>
     <div class="hero-actions" id="hero-actions" hidden></div>
     <div class="live-line" id="live-line" hidden><span class="k">Now</span><span class="ev" id="live-ev"></span><span class="age" id="live-age"></span><span class="msg" id="live-msg"></span></div>
+  </section>
+
+  <section class="stage" id="stage" aria-labelledby="stage-title" hidden>
+    <div class="section-head"><h2 id="stage-title">Bühne</h2></div>
+    <div class="stage-body">
+      <ol class="stage-seats" id="stage-seats" aria-label="Sitze in Pipeline-Reihenfolge"></ol>
+      <div class="stage-fields">
+        <article class="stage-field gi is-now" id="stage-now"><h3><span>Jetzt</span><span id="stage-now-meta"></span></h3><div id="stage-now-body"></div></article>
+        <article class="stage-field gi" id="stage-session"><h3><span>Session</span></h3><div id="stage-session-body"></div></article>
+        <article class="stage-field gi" id="stage-subs"><h3><span>Subagents</span><span id="stage-subs-meta"></span></h3><div id="stage-subs-body"></div></article>
+      </div>
+    </div>
+  </section>
+
+  <section class="score" id="score" aria-labelledby="score-title" hidden>
+    <div class="section-head"><h2 id="score-title">Partitur <span class="count" id="score-meta"></span></h2></div>
+    <div class="score-frame gi" id="score-frame" tabindex="0" aria-label="Partitur, horizontal scrollbar"></div>
   </section>
 
   <section class="pipe-section" id="pipe-section" aria-labelledby="pipe-title" hidden>
@@ -384,6 +471,7 @@ ${PIPELINE_JS}
     items: [], filter: 'all', q: '', expanded: new Set(), collapsed: new Set(), limit: RENDER_LIMIT,
     rendered: false, nodes: new Map(), listSig: '', unseen: 0, known: new Set(), fresh: new Set(),
     rawOpen: false, rawSev: '', rawQ: '',
+    team: null, stageSig: '', stagePct: undefined, subsSig: '', scoreSig: '',
   };
 
   // ------------------------------------------------------------------ data loading (one poll loop)
@@ -413,9 +501,10 @@ ${PIPELINE_JS}
     return changed;
   }
 
-  let polling = false;
+  let polling = false, pollAgain = false;
   async function poll() {
-    if (polling || !ID) return;
+    if (!ID) return;
+    if (polling) { pollAgain = true; return; }
     polling = true;
     const progress = $('progress');
     progress.classList.remove('tick'); void progress.offsetWidth; progress.classList.add('tick');
@@ -439,6 +528,8 @@ ${PIPELINE_JS}
           }
         }
         for (const session of r.body.sessions) if (await loadTranscript(session)) S.dirty = true;
+        const tm = await getJson(API + '/team').catch(() => null);
+        if (tm && tm.ok && tm.body && Array.isArray(tm.body.seats)) S.team = tm.body;
       }
     } catch (error) {
       S.online = false;
@@ -446,6 +537,7 @@ ${PIPELINE_JS}
     }
     polling = false;
     render();
+    if (pollAgain) { pollAgain = false; poll(); }
   }
 
   // ------------------------------------------------------------------ timeline model
@@ -1541,6 +1633,277 @@ ${PIPELINE_JS}
     patchChildren($('raw-links'), links);
   }
 
+  // ------------------------------------------------------------------ stage (Bühne)
+
+  const STAGE_WORDS = { done: 'fertig', playing: 'spielt', waiting: 'wartet', returned: 'Rückgabe', skipped: 'übersprungen' };
+  const AUTO_COMPACT_PCT = 80;
+  const seatName = (role) => (role === 'you' ? 'Du' : uiOwn(UI_ROLE_NAMES, role) || String(role).charAt(0).toUpperCase() + String(role).slice(1));
+  const seatAvatarRole = (role) => (role === 'you' ? 'human' : role);
+  const seatDuration = (s) => (s.duration_ms === null || s.duration_ms === undefined ? '—' : fmtDuration(s.duration_ms / 1000));
+  function seatTitle(seat, status) {
+    return [seatName(seat.role), STAGE_WORDS[status], 'Verdict ' + (seat.verdict ?? '—'), 'Dauer ' + seatDuration(seat), 'Modell ' + (seat.model ?? '—')].join(' · ');
+  }
+  // Without a session nothing plays; with one only its own seat does.
+  function seatStatuses(seats, active) {
+    let found = false;
+    return seats.map((s) => {
+      if (s.status === 'playing') {
+        if (active && !found && s.role === active.role) { found = true; return 'playing'; }
+        return 'waiting';
+      }
+      return STAGE_WORDS[s.status] ? s.status : 'waiting';
+    });
+  }
+
+  function renderStageSeats(seats, active) {
+    const list = $('stage-seats');
+    const statuses = seatStatuses(seats, active);
+    const sig = seats.map((s, i) => s.role + ':' + statuses[i]).join(',');
+    const pct = active && active.context && typeof active.context.percent === 'number' ? Math.round(active.context.percent) : null;
+    if (sig !== S.stageSig) {
+      S.stageSig = sig;
+      S.stagePct = undefined;
+      list.style.setProperty('--stage-cols', String(Math.ceil(seats.length / 2)));
+      list.replaceChildren(...seats.map((s, i) => {
+        const st = statuses[i];
+        const li = el('li', null, 'stage-seat is-' + st + (st === 'playing' ? ' is-active' : ''));
+        li.setAttribute('data-role', s.role);
+        li.style.setProperty('--seat-glow', uiRgba(uiOwn(UI_ROLE_COLORS, s.role) || UI_ROLE_COLORS.symphony, '.28'));
+        const spot = el('div', null, 'stage-spot');
+        if (st === 'playing') {
+          const gauge = el('div', null, 'stage-gauge');
+          gauge.append(ring(pct, { size: 96, label: 'Context' }), avatar(seatAvatarRole(s.role), 'playing', { size: 64 }));
+          spot.append(gauge);
+        } else spot.append(avatar(seatAvatarRole(s.role), st, { size: 64 }));
+        li.append(spot, el('div', seatName(s.role), 'stage-name'), el('div', null, 'stage-sub'));
+        return li;
+      }));
+    }
+    const items = list.children;
+    seats.forEach((s, i) => {
+      const li = items[i];
+      const st = statuses[i];
+      const title = seatTitle(s, st);
+      li.setAttribute('title', title);
+      const av = li.querySelector('.ui-av');
+      if (av) { av.setAttribute('title', title); av.setAttribute('aria-label', title); }
+      const sub = [STAGE_WORDS[st]];
+      if (s.verdict) sub.push(s.verdict);
+      if (s.duration_ms !== null && s.duration_ms !== undefined) sub.push(seatDuration(s));
+      setText(li.querySelector('.stage-sub'), sub.join(' · '));
+    });
+    if (S.stagePct !== pct) {
+      const gauge = list.querySelector('.stage-gauge');
+      if (gauge) gauge.replaceChild(ring(pct, { size: 96, label: 'Context' }), gauge.querySelector('.ui-ring'));
+      S.stagePct = pct;
+    }
+  }
+
+  function stageEmpty(box) { box.replaceChildren(el('p', 'Keine Session', 'stage-empty')); }
+
+  function renderStageNow(active) {
+    const box = $('stage-now-body');
+    setText($('stage-now-meta'), active ? seatName(active.role) : '');
+    if (!active) return stageEmpty(box);
+    const trace = el('div', null, 'stage-trace');
+    const tools = (active.recent_tools || []).slice(-4);
+    tools.forEach((t, i) => {
+      if (i) trace.append(el('span', '→', 'stage-arrow'));
+      const c = chip(oneLine(t.message || t.tool, 48), { mono: true, tone: i === tools.length - 1 ? 'green' : undefined });
+      c.setAttribute('title', String(t.message || t.tool || ''));
+      trace.append(c);
+    });
+    if (!tools.length) trace.append(el('span', 'Noch keine Tool-Aufrufe', 'stage-empty'));
+    box.replaceChildren(el('div', oneLine(active.action, 200) || '—', 'stage-action'), trace);
+  }
+
+  function renderStageSession(active) {
+    const box = $('stage-session-body');
+    if (!active) return stageEmpty(box);
+    const c = active.context || {};
+    const pct = typeof c.percent === 'number' ? c.percent : null;
+    const head = el('div', null, 'stage-ctx');
+    head.append(el('span', 'Context ' + (c.window ? fmtCompact(c.tokens) + ' / ' + fmtCompact(c.window) : '—')), el('span', pct === null ? '—' : Math.round(pct) + ' %'));
+    const compacts = el('div', null, 'stage-compacts');
+    const n = c.compacts || 0;
+    for (let i = 0; i < Math.min(n, 12); i++) { const m = el('span', null, 'stage-compact'); m.setAttribute('title', 'Auto-Compact ' + (i + 1)); compacts.append(m); }
+    compacts.append(el('span', n ? n + '× Auto-Compact' : 'kein Auto-Compact', 'txt'));
+    const kv = el('dl', null, 'kv');
+    const started = S.detail && S.detail.running && S.detail.running.started_at ? Date.parse(S.detail.running.started_at) : NaN;
+    const seat = ((S.team && S.team.seats) || []).find((s) => s.role === active.role);
+    const dur = Number.isFinite(started) ? fmtDuration((Date.now() - started) / 1000) : seat && seat.duration_ms !== null && seat.duration_ms !== undefined ? seatDuration(seat) : '—';
+    const tk = active.tokens || {};
+    for (const [k, v] of [['Turn', active.turn ?? '—'], ['Dauer', dur], ['Modell', active.model ?? '—'], ['Tokens', fmtCompact(tk.total_tokens) + ' · ' + fmtCost(active.cost_usd)]]) kv.append(el('dt', k), el('dd', v));
+    box.replaceChildren(head, bar(pct ?? 0, { height: 8, color: UI_TRAFFIC[trafficTone(pct)], marker: { pct: AUTO_COMPACT_PCT, title: 'Auto-Compact ab ca. 80 %' } }), compacts, kv);
+  }
+
+  function renderStageSubs(active, subs) {
+    const box = $('stage-subs-body');
+    const running = (subs && subs.running) || [];
+    const finished = ((subs && subs.finished) || []).slice().reverse();
+    setText($('stage-subs-meta'), active ? running.length + ' laufen · ' + finished.length + ' fertig' : '');
+    if (!active) return stageEmpty(box);
+    if (!running.length && !finished.length) return box.replaceChildren(el('p', 'Keine Subagents', 'stage-empty'));
+    const all = [...running, ...finished];
+    const sig = all.map((x, i) => (x.tool_use_id || i) + ':' + (x.status === 'running' ? 'r' : 'd')).join(',');
+    const timing = (x) => fmtDuration(((x.ended_at ? Date.parse(x.ended_at) : Date.now()) - Date.parse(x.started_at)) / 1000);
+    const tokensOf = (x) => fmtCompact(x.tokens && x.tokens.total_tokens) + ' Tokens';
+    // Rebuild only when the set or state changes, so the running pulse is not restarted by every poll.
+    if (sig !== S.subsSig || box.querySelector('.stage-empty')) {
+      S.subsSig = sig;
+      box.replaceChildren(...all.map((x) => {
+        const isRun = x.status === 'running';
+        const row = el('div', null, 'stage-subagent ' + (isRun ? 'is-running' : 'is-done'));
+        row.append(el('span', null, 'dot' + (isRun ? ' pulse' : '')), el('b', x.subagent_type, 'mono'),
+          el('span', timing(x), 'dur'), el('span', tokensOf(x), 'tok'), el('span', oneLine(x.description, 80), 'desc'));
+        return row;
+      }));
+      return;
+    }
+    all.forEach((x, i) => {
+      const row = box.children[i];
+      setText(row.querySelector('.dur'), timing(x));
+      setText(row.querySelector('.tok'), tokensOf(x));
+    });
+  }
+
+  function renderStage() {
+    const team = S.team;
+    const ok = !!(team && Array.isArray(team.seats));
+    $('stage').hidden = !ok;
+    if (!ok) return;
+    // A finished run has no live session, whatever the last /team said.
+    const active = S.ended || S.notFound ? null : team.active || null;
+    renderStageSeats(team.seats, active);
+    renderStageNow(active);
+    renderStageSession(active);
+    renderStageSubs(active, team.subagents);
+  }
+
+  // ------------------------------------------------------------------ score (Partitur)
+
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const SCORE_LABEL_W = 96, SCORE_PAD_R = 40, SCORE_AXIS_H = 22, SCORE_LANE_H = 30, SCORE_BLOCK_H = 18;
+  const SCORE_MIN_W = 600, SCORE_PX_PER_TICK = 60, SCORE_MAX_CALLS_PER_MIN = 10;
+  function svgEl(tag, attrs, cls) {
+    const n = document.createElementNS(SVG_NS, tag);
+    if (cls) n.setAttribute('class', cls);
+    for (const k in attrs || {}) n.setAttribute(k, String(attrs[k]));
+    return n;
+  }
+  const svgText = (text, attrs, cls) => { const n = svgEl('text', attrs, cls); n.textContent = String(text); return n; };
+  const scoreTickMin = (ms) => (ms <= 60 * 60000 ? 5 : ms <= 240 * 60000 ? 15 : 60);
+  const scoreVerdictTone = (v) => (v === 'approve' ? 'green' : v === 'request_changes' ? 'red' : 'gray');
+  function scoreBlockTitle(b, endMs) {
+    const open = b.ended_at === null || b.ended_at === undefined;
+    const startMs = Date.parse(b.started_at);
+    return [seatName(b.role), b.round ? 'Runde ' + b.round : null, 'Dauer ' + fmtDuration(Math.max(0, endMs - startMs) / 1000), 'Modell ' + (b.model ?? '—'),
+      'Verdict ' + (b.verdict ?? (open ? 'läuft' : '—')), (b.tool_calls || 0) + ' Tool-Aufrufe'].filter(Boolean).join(' · ');
+  }
+  const scoreMaxRound = (blocks) => blocks.reduce((m, b) => Math.max(m, b.round || 0), 0) || 1;
+  const scoreSummary = (blocks, handoffs) => 'Partitur: ' + blocks.length + ' Sessions, ' + handoffs.length + ' Übergaben, Runde ' + scoreMaxRound(blocks);
+
+  function renderScore() {
+    const team = S.team;
+    const blocks = team && Array.isArray(team.blocks) ? team.blocks.filter((b) => b && Number.isFinite(Date.parse(b.started_at))) : [];
+    $('score').hidden = !blocks.length;
+    if (!blocks.length) { S.scoreSig = ''; return; }
+    const handoffs = (Array.isArray(team.handoffs) ? team.handoffs : []).filter((h) => Number.isFinite(Date.parse(h.at)));
+    const live = !S.ended && !S.notFound && !!team.active;
+    const frame = $('score-frame');
+    const width = frame.clientWidth || 0;
+    const toolEvents = new Map();
+    for (const e of S.events) if (e.kind === 'agent' && e.event === 'tool_use' && e.run) { const a = toolEvents.get(e.run) || []; a.push(e); toolEvents.set(e.run, a); }
+    const sig = JSON.stringify([blocks, handoffs, team.seats && team.seats.map((s) => s.role), live, live ? Math.floor(Date.now() / 60000) : 0, width, blocks.map((b) => (toolEvents.get(b.run) || []).length)]);
+    if (sig === S.scoreSig) return;
+    S.scoreSig = sig;
+
+    const t0 = Math.min(...blocks.map((b) => Date.parse(b.started_at)));
+    const endOf = (b) => (b.ended_at ? Date.parse(b.ended_at) : null);
+    const lastEnd = Math.max(...blocks.map((b) => endOf(b) ?? Date.parse(b.started_at)), ...handoffs.map((h) => Date.parse(h.at)));
+    const t1 = Math.max(live ? Date.now() : lastEnd, t0 + 60000);
+    const span = t1 - t0;
+    const tick = scoreTickMin(span);
+    const plot = Math.max((span / 60000 / tick) * SCORE_PX_PER_TICK, SCORE_MIN_W - SCORE_LABEL_W - SCORE_PAD_R, width - SCORE_LABEL_W - SCORE_PAD_R);
+    const x = (t) => SCORE_LABEL_W + ((t - t0) / span) * plot;
+    const roles = (team.seats || []).map((s) => s.role).filter((r) => r !== 'you');
+    for (const b of blocks) if (!roles.includes(b.role)) roles.push(b.role);
+    const laneY = (role) => SCORE_AXIS_H + roles.indexOf(role) * SCORE_LANE_H;
+    const W = Math.round(SCORE_LABEL_W + plot + SCORE_PAD_R), H = SCORE_AXIS_H + roles.length * SCORE_LANE_H + 8;
+    const summary = scoreSummary(blocks, handoffs);
+    const svg = svgEl('svg', { width: W, height: H, viewBox: '0 0 ' + W + ' ' + H, role: 'group', 'aria-label': summary, 'data-tick-min': tick }, 'score-svg');
+    const svgTitle = svgEl('title', {});
+    svgTitle.textContent = summary;
+    svg.append(svgTitle);
+
+    roles.forEach((r, i) => {
+      const g = svgEl('g', { 'data-role': r }, 'score-lane' + (i % 2 ? ' alt' : ''));
+      g.append(svgEl('rect', { x: 0, y: laneY(r), width: W, height: SCORE_LANE_H }), svgText(seatName(r), { x: 6, y: laneY(r) + SCORE_LANE_H / 2 + 4 }, 'score-lane-label'));
+      svg.append(g);
+    });
+    const step = tick * 60000;
+    for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+      const g = svgEl('g', { 'data-t': t }, 'score-tick');
+      g.append(svgEl('line', { x1: x(t), x2: x(t), y1: SCORE_AXIS_H - 4, y2: H - 8 }),
+        svgText(new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }), { x: x(t), y: 12, 'text-anchor': 'middle' }));
+      svg.append(g);
+    }
+
+    for (const b of blocks) {
+      const s = Date.parse(b.started_at), e = endOf(b) ?? t1;
+      const bx = x(s), bw = Math.max(3, x(Math.max(e, s)) - bx), by = laneY(b.role) + (SCORE_LANE_H - SCORE_BLOCK_H) / 2;
+      const title = scoreBlockTitle(b, Math.max(e, s));
+      const g = svgEl('g', { role: 'img', tabindex: 0, 'aria-label': title, 'data-role': b.role, 'data-run': b.run, 'data-calls': b.tool_calls || 0 }, 'score-block');
+      const tt = svgEl('title', {}); tt.textContent = title;
+      g.append(tt, svgEl('rect', { x: bx, y: by, width: bw, height: SCORE_BLOCK_H, fill: uiHex(uiOwn(UI_ROLE_COLORS, b.role)) || UI_ROLE_COLORS.symphony }));
+      const count = b.tool_calls || 0;
+      const times = (toolEvents.get(b.run) || []).map((ev) => Date.parse(ev.at)).filter(Number.isFinite).sort((a, c) => a - c);
+      const cap = Math.min(times.length || count, Math.max(1, Math.floor(((e - s) / 60000) * SCORE_MAX_CALLS_PER_MIN)), Math.floor(bw / 2));
+      const n = count > 0 ? cap : 0;
+      for (let i = 0; i < n; i++) {
+        const cx = times.length ? Math.min(bx + bw, Math.max(bx, x(times[Math.floor(((i + 0.5) * times.length) / n)]))) : bx + ((i + 0.5) / n) * bw;
+        g.append(svgEl('line', { x1: cx, x2: cx, y1: by + 3, y2: by + SCORE_BLOCK_H - 3 }, 'score-call'));
+      }
+      svg.append(g);
+    }
+
+    for (const h of handoffs) {
+      if (!roles.includes(h.from) || !roles.includes(h.to) || h.from === h.to) continue;
+      const hx = x(Date.parse(h.at));
+      const down = laneY(h.to) > laneY(h.from);
+      const y1 = laneY(h.from) + (down ? SCORE_LANE_H / 2 + SCORE_BLOCK_H / 2 : SCORE_LANE_H / 2 - SCORE_BLOCK_H / 2);
+      const y2 = laneY(h.to) + (down ? SCORE_LANE_H / 2 - SCORE_BLOCK_H / 2 : SCORE_LANE_H / 2 + SCORE_BLOCK_H / 2);
+      const d = down ? 1 : -1;
+      const g = svgEl('g', { 'data-from': h.from, 'data-to': h.to }, 'score-handoff tone-' + scoreVerdictTone(h.verdict));
+      g.append(svgEl('line', { x1: hx, x2: hx, y1, y2: y2 - d * 5 }),
+        svgEl('path', { d: 'M' + (hx - 4) + ' ' + (y2 - d * 6) + ' L' + (hx + 4) + ' ' + (y2 - d * 6) + ' L' + hx + ' ' + y2 + ' Z' }),
+        svgText(h.verdict || '—', hx > W - 110 ? { x: hx - 6, y: (y1 + y2) / 2 + 3, 'text-anchor': 'end' } : { x: hx + 6, y: (y1 + y2) / 2 + 3 }));
+      svg.append(g);
+    }
+
+    let maxRound = 0;
+    for (const b of [...blocks].sort((a, c) => Date.parse(a.started_at) - Date.parse(c.started_at))) {
+      const r = b.round || 0;
+      if (r > maxRound) {
+        if (maxRound) {
+          const rx = x(Date.parse(b.started_at));
+          const g = svgEl('g', { 'data-round': r }, 'score-round');
+          g.append(svgEl('line', { x1: rx, x2: rx, y1: 0, y2: H }), svgText('Runde ' + r, rx > W - 70 ? { x: rx - 4, y: 12, 'text-anchor': 'end' } : { x: rx + 4, y: 12 }));
+          svg.append(g);
+        }
+        maxRound = r;
+      }
+    }
+
+    if (live) {
+      const g = svgEl('g', {}, 'score-now');
+      g.append(svgEl('line', { x1: x(t1), x2: x(t1), y1: 0, y2: H }), svgText('Jetzt', { x: x(t1) - 4, y: 12, 'text-anchor': 'end' }));
+      svg.append(g);
+    }
+    frame.replaceChildren(svg);
+    setText($('score-meta'), blocks.length + ' Sessions · ' + handoffs.length + ' Übergaben · Runde ' + scoreMaxRound(blocks));
+  }
+
   // ------------------------------------------------------------------ render + interactions
 
   function render() {
@@ -1551,6 +1914,8 @@ ${PIPELINE_JS}
     for (const it of S.items) if (!S.known.has(it.key)) { S.known.add(it.key); if (S.rendered) S.fresh.add(it.key); }
     if (S.detail || S.ended || S.notFound) {
       renderHeader();
+      renderStage();
+      renderScore();
       renderPipelineSection();
       renderResults();
       renderGate();
@@ -1647,7 +2012,9 @@ ${PIPELINE_JS}
   setInterval(() => { if (S.detail && !S.ended) { renderHeader(); renderAlert(); } }, 1000);
 
   if (!ID) render();
-  else { render(); poll(); setInterval(poll, POLL_MS); }
+  else { render(); poll(); live(poll, pollEvery(poll, POLL_MS)); }
+  // Tests load the page in a fake DOM and render a fixture through window.__render.
+  if (window.__SYMPHONY_TEST__) window.__render = (state) => { Object.assign(S, state); render(); };
 })();
 `,
 });

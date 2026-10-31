@@ -46,7 +46,7 @@ describe('brain vault acceptance', () => {
     it('creates exactly README.md, the two Bases views and the six folders for an empty repository list', async () => {
       const vault = path.join(tempDir(), 'vault');
       await ensureVault(vault, []);
-      assert.deepEqual(walk(vault), ['Agents', 'Decisions', 'Inbox', 'Issues', 'Kandidaten-Review.base', 'Lessons', 'Neueste Lessons.base', 'README.md', 'Repos']);
+      assert.deepEqual(walk(vault).filter((p) => p !== '.git' && !p.startsWith(`.git${path.sep}`)), ['.gitignore', 'Agents', 'Decisions', 'Inbox', 'Issues', 'Kandidaten-Review.base', 'Lessons', 'Neueste Lessons.base', 'README.md', 'Repos']);
     });
 
     it('creates missing parent directories of the vault path', async () => {
@@ -122,7 +122,7 @@ describe('brain vault acceptance', () => {
       const vault = path.join(tempDir(), 'vault');
       await ensureVault(vault, ['acme/.obsidian', 'acme/..']);
       assert.equal(fs.existsSync(path.join(vault, '.obsidian')), false);
-      for (const rel of walk(vault)) assert.ok(!rel.split(path.sep).includes('.obsidian'), rel);
+      for (const rel of walk(vault).filter((p) => !p.startsWith(`.git${path.sep}`))) assert.ok(!rel.split(path.sep).includes('.obsidian'), rel);
     });
   });
 
@@ -170,7 +170,7 @@ describe('brain vault acceptance', () => {
       const vault = path.join(base, 'vault');
       await ensureVault(vault, ['a/.', 'a/..', '-/..']);
       assert.deepEqual(fs.readdirSync(base), ['vault']);
-      assert.deepEqual(fs.readdirSync(vault).sort(), ['Agents', 'Decisions', 'Inbox', 'Issues', 'Kandidaten-Review.base', 'Lessons', 'Neueste Lessons.base', 'README.md', 'Repos']);
+      assert.deepEqual(fs.readdirSync(vault).sort(), ['.git', '.gitignore', 'Agents', 'Decisions', 'Inbox', 'Issues', 'Kandidaten-Review.base', 'Lessons', 'Neueste Lessons.base', 'README.md', 'Repos']);
       for (const rel of walk(vault)) assert.ok(!rel.split(path.sep).some((part) => part === '..' || part === '.'), rel);
     });
   });
@@ -179,7 +179,7 @@ describe('brain vault acceptance', () => {
     it('with enabled: false touches no filesystem path at all', async () => {
       const base = tempDir();
       const target = path.join(base, 'missing', 'brain');
-      const touched = await traceFs(() => prepareBrain({ enabled: false, path: target }, ['acme/shop'], Logger.silent()));
+      const touched = await traceFs(() => prepareBrain({ enabled: false, path: target, clashWindowMs: 600000 }, ['acme/shop'], Logger.silent()));
       assert.deepEqual(touched, []);
       assert.equal(fs.existsSync(path.join(base, 'missing')), false);
       assert.deepEqual(fs.readdirSync(base), []);
@@ -188,13 +188,13 @@ describe('brain vault acceptance', () => {
     it('with enabled: false leaves an existing directory untouched', async () => {
       const dir = tempDir();
       fs.writeFileSync(path.join(dir, 'x'), 'x');
-      await prepareBrain({ enabled: false, path: dir }, ['acme/shop'], Logger.silent());
+      await prepareBrain({ enabled: false, path: dir, clashWindowMs: 600000 }, ['acme/shop'], Logger.silent());
       assert.deepEqual(fs.readdirSync(dir), ['x']);
     });
 
     it('with enabled: true builds the vault including repository indexes', async () => {
       const vault = path.join(tempDir(), 'brain');
-      await prepareBrain({ enabled: true, path: vault }, ['acme/shop'], Logger.silent());
+      await prepareBrain({ enabled: true, path: vault, clashWindowMs: 600000 }, ['acme/shop'], Logger.silent());
       assert.ok(fs.existsSync(path.join(vault, 'README.md')));
       assert.ok(fs.existsSync(path.join(vault, 'Repos', 'acme-shop', 'index.md')));
     });
@@ -204,7 +204,7 @@ describe('brain vault acceptance', () => {
       fs.writeFileSync(file, 'x');
       const errors: unknown[][] = [];
       const logger = { info: () => undefined, warn: () => undefined, error: (...a: unknown[]) => void errors.push(a) } as unknown as Logger;
-      await assert.doesNotReject(prepareBrain({ enabled: true, path: path.join(file, 'brain') }, [], logger));
+      await assert.doesNotReject(prepareBrain({ enabled: true, path: path.join(file, 'brain'), clashWindowMs: 600000 }, [], logger));
       assert.equal(errors.length, 1);
     });
   });

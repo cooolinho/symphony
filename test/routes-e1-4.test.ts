@@ -35,7 +35,7 @@ function mainNav(body: string): string {
 }
 
 const NEW_ROUTES = ['/', '/changes', '/tasks', '/brain', '/stats', '/issue?id=repo%2F1'];
-const PLACEHOLDERS: Array<[string, string]> = [['/changes', 'changes'], ['/tasks', 'tasks'], ['/brain', 'brain']];
+const PLACEHOLDERS: Array<[string, string]> = [['/brain', 'brain']];
 
 describe('E1-4 routes and redirects (independent acceptance tests)', () => {
   let server: HttpServerHandle;

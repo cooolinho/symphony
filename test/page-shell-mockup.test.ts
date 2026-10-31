@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import vm from 'node:vm';
+import { iconSvg } from '../src/http/icons.ts';
 import { BASE_JS } from '../src/http/styles.ts';
 import { AGENT_HTML } from '../src/http/agent-page.ts';
 import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
@@ -173,35 +174,35 @@ describe('E1-8 page shell after the mockup', () => {
     assert.match(shell(), /id="shell-budget" title="5-h-Fenster">5h —</);
     const { ctx, node } = shellContext(reject);
     const report = (used: number) => ({ five_hour: { used_tokens: used, forecast: { limit_tokens: 100 } } });
-    const chip = (r: unknown): { pct: number | null; tone: string | null } => { ctx.r = r; return JSON.parse(vm.runInContext('JSON.stringify(fiveHourChip(r))', ctx) as string); };
+    const chip = (r: unknown): { pct: number | null; tone: string | null } => { ctx.r = r; return JSON.parse(vm.runInContext('JSON.stringify(budgetChip(r))', ctx) as string); };
     assert.deepEqual(chip(null), { pct: null, tone: null });
     assert.deepEqual(chip({ five_hour: { used_tokens: 5, forecast: null } }), { pct: null, tone: null });
     assert.deepEqual(chip(report(30)), { pct: 30, tone: null });
     assert.deepEqual(chip(report(50)), { pct: 50, tone: 'amber' });
     assert.deepEqual(chip(report(84)), { pct: 84, tone: 'amber' });
     assert.deepEqual(chip(report(85)), { pct: 85, tone: 'red' });
-    vm.runInContext('setBudget(null)', ctx);
+    vm.runInContext('paintBudgetChip(null)', ctx);
     assert.equal(node('shell-budget').textContent, '5h —');
     ctx.r = report(62);
-    vm.runInContext('setBudget(r)', ctx);
+    vm.runInContext('paintBudgetChip(r)', ctx);
     assert.equal(node('shell-budget').textContent, '5h 62 %');
     assert.equal((node('shell-budget').children[1] as FakeElement).className, 'budget-pct tone-amber');
     ctx.r = report(90);
-    vm.runInContext('setBudget(r)', ctx);
+    vm.runInContext('paintBudgetChip(r)', ctx);
     assert.equal((node('shell-budget').children[1] as FakeElement).className, 'budget-pct tone-red');
     assert.match(ruleOf(LAYOUT_CSS, '.budget-pct.tone-amber'), /var\(--amber\)/);
     assert.match(ruleOf(LAYOUT_CSS, '.budget-pct.tone-red'), /var\(--red\)/);
   });
 
   it('5 h chip: loads /api/v1/budget, a failure ends at "5h —"', async () => {
-    const ok = shellContext(() => Promise.resolve({ ok: true, json: async () => ({ five_hour: { used_tokens: 62, forecast: { limit_tokens: 100 } } }) }));
+    const ok = shellContext(() => Promise.resolve({ ok: true, json: async () => ({ five_hour: { used_tokens: 62, forecast: { limit_tokens: 100 } }, seven_day: { used_tokens: 1 } }) }));
     await new Promise((r) => setImmediate(r));
     assert.deepEqual(ok.fetched[0], ['/api/v1/budget', undefined]);
     assert.equal(ok.node('shell-budget').textContent, '5h 62 %');
     const bad = shellContext(reject);
     await new Promise((r) => setImmediate(r));
     assert.equal(bad.node('shell-budget').textContent, '5h —');
-    assert.ok(bad.timers.some((t) => t[1] === 60000));
+    assert.ok(bad.timers.some((t) => t[1] === 30000));
   });
 
   it('version and clock', () => {
@@ -312,5 +313,17 @@ describe('E1-8 page shell after the mockup', () => {
         stack.push(isG);
       }
     }
+  });
+});
+
+describe('E1-8 Hülle: sticky Seitenspalte', () => {
+  it('overflow: clip an .shell-root (hidden bleibt als Fallback), damit position: sticky greift', () => {
+    assert.match(ruleOf(LAYOUT_CSS, '.shell-root'), /overflow: hidden/);
+    assert.match(LAYOUT_CSS, /@supports \(overflow: clip\) \{ \.shell-root \{ overflow: clip; \} \}/);
+  });
+  it('Icons kommen aus dem Icon-Modul (#380)', () => {
+    assert.equal(iconSvg('logo', 20), iconSvg('logo', 20));
+    assert.match(shell(), new RegExp(iconSvg('tasks', 16).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.equal(iconSvg('gibt-es-nicht'), '');
   });
 });

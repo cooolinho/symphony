@@ -9,7 +9,7 @@ import { SymphonyError } from '../src/util/errors.ts';
 import { loadEnvFile } from '../src/util/env.ts';
 import type { LaravelConfig } from '../src/laravel/integration.ts';
 import { DEFAULTS, maxColumnCheckMs, resolveConfig, type ServiceConfig } from '../src/workflow/config.ts';
-import { roleFor, sessionAgents, type RoleConfig } from '../src/workflow/roles.ts';
+import { roleFor, sessionAgents, sessionBrainMode, type RoleConfig } from '../src/workflow/roles.ts';
 import { pluginAgents } from '../src/workflow/command.ts';
 import { loadWorkflowFile, parseWorkflow } from '../src/workflow/loader.ts';
 import { type EffectiveWorkflow, WorkflowStore } from '../src/workflow/store.ts';
@@ -428,13 +428,46 @@ describe('brain config', () => {
   const env = { HOME: '/home/u' };
 
   it('defaults to disabled with ~/brain', () => {
-    assert.deepEqual(resolve(base, env).brain, { enabled: false, path: '/home/u/brain' });
+    assert.deepEqual(resolve(base, env).brain, { enabled: false, path: '/home/u/brain', clashWindowMs: 600000 });
   });
 
   it('reads enabled and path, expands ~ and resolves relative paths', () => {
-    assert.deepEqual(resolve({ ...base, brain: { enabled: true, path: '~/vault' } }, env).brain, { enabled: true, path: '/home/u/vault' });
+    assert.deepEqual(resolve({ ...base, brain: { enabled: true, path: '~/vault' } }, env).brain, { enabled: true, path: '/home/u/vault', clashWindowMs: 600000 });
     assert.equal(resolve({ ...base, brain: { path: 'vault' } }, env).brain.path, '/srv/flows/vault');
     assert.equal(resolve({ ...base, brain: { enabled: true } }, env).warnings.some((w) => /brain/.test(w)), false);
+  });
+
+  it('keeps the vault and workspace.root apart', () => {
+    const front = (root: string, path: string, enabled = true) => ({ ...base, workspace: { root }, brain: { enabled, path } });
+    assert.throws(() => resolve(front('/srv/ws', '/srv/ws'), env), /must not overlap workspace\.root/);
+    assert.throws(() => resolve(front('/srv/ws', '/srv/ws/vault'), env), /must not overlap workspace\.root/);
+    assert.throws(() => resolve(front('/srv/ws', '/srv'), env), /must not overlap workspace\.root/);
+    assert.equal(resolve(front('/srv/ws', '/srv/vault'), env).brain.path, '/srv/vault');
+    assert.equal(resolve(front('/srv/ws', '/srv/ws/vault', false), env).brain.enabled, false);
+  });
+
+  it('reads the role field brain, default off, and rejects other values', () => {
+    const roles = (brain?: unknown) => ({ ...base, tracker: { kind: 'github', active_states: ['In progress'] }, roles: { reviewer: { states: ['In progress'], ...(brain !== undefined ? { brain } : {}) } } });
+    const mode = (brain?: unknown) => resolve(roles(brain), env).roles?.find((r) => r.name === 'reviewer')?.brain;
+    assert.equal(mode(), 'off');
+    assert.equal(mode('read'), 'read');
+    assert.equal(mode('write'), 'write');
+    assert.throws(() => mode('maybe'), /roles\.reviewer\.brain/);
+  });
+
+  it('sessionBrainMode needs brain.enabled and a role', () => {
+    const role = { brain: 'write' } as RoleConfig;
+    assert.equal(sessionBrainMode(false, role), 'off');
+    assert.equal(sessionBrainMode(true, null), 'off');
+    assert.equal(sessionBrainMode(true, { brain: 'read' } as RoleConfig), 'read');
+    assert.equal(sessionBrainMode(true, role), 'write');
+  });
+
+  it('reads clash_window_ms (integer >= 0)', () => {
+    assert.equal(resolve({ ...base, brain: { clash_window_ms: 0 } }, env).brain.clashWindowMs, 0);
+    assert.equal(resolve({ ...base, brain: { clash_window_ms: 5000 } }, env).brain.clashWindowMs, 5000);
+    assert.throws(() => resolve({ ...base, brain: { clash_window_ms: -1 } }, env), /brain\.clash_window_ms/);
+    assert.throws(() => resolve({ ...base, brain: { clash_window_ms: 'x' } }, env), /brain\.clash_window_ms/);
   });
 
   it('rejects unknown keys and wrong types', () => {
@@ -1345,7 +1378,7 @@ describe('role subagents', () => {
 
   it('splits the subagents by role list, read-only policy and integration prefix', () => {
     const agents = pluginAgents([path.join(dir, '.claude')]);
-    const role = (overrides: Partial<RoleConfig>) => ({ name: 'r', states: [], readOnly: false, mayMoveTo: null, result: null, onResult: {}, onCheckFailed: null, onMissingResult: null, onRoundLimit: null, modelLabel: 'apply' as const, effortLabel: 'apply' as const, maxTurns: null, commands: null, runChecks: true, maxSubIssues: null, subIssueStatus: null, waitForSubIssues: false, agents: null, claude: {}, ...overrides });
+    const role = (overrides: Partial<RoleConfig>) => ({ name: 'r', states: [], readOnly: false, mayMoveTo: null, result: null, onResult: {}, onCheckFailed: null, onMissingResult: null, onRoundLimit: null, modelLabel: 'apply' as const, effortLabel: 'apply' as const, maxTurns: null, commands: null, runChecks: true, maxSubIssues: null, subIssueStatus: null, waitForSubIssues: false, agents: null, brain: 'off' as const, claude: {}, ...overrides });
     const names = (split: { allowed: Array<{ name: string }>; denied: Array<{ name: string }> }) => [split.allowed.map((a) => a.name), split.denied.map((a) => a.name)];
     assert.deepEqual(names(sessionAgents(agents, null, ['laravel-'], ['laravel-'])), [['laravel-architect', 'laravel-filament-developer', 'reader'], []]);
     assert.deepEqual(names(sessionAgents(agents, null, ['laravel-'], [])), [['reader'], ['laravel-architect', 'laravel-filament-developer']]);

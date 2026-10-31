@@ -436,6 +436,41 @@ describe('github_project error mapping', () => {
     assert.equal(github.requests.filter((r) => r.op === 'SymphonySetStatus').length, 1);
   });
 
+  it('remembers the rate-limit budget of every response, also of a 403, and keeps it over responses without headers', async () => {
+    const github = new FakeGithub().add(itemNode('A'));
+    const tracker = adapter(github);
+    assert.equal(tracker.apiBudget?.(), null);
+    github.overrides.set('SymphonyProjectMeta', () => ({ status: 200, headers: {}, body: { data: null } }));
+    await tracker.fetchIssuesByStates(['Todo']).catch(() => {});
+    assert.equal(tracker.apiBudget?.(), null, 'no headers, no budget');
+
+    github.overrides.clear();
+    const headers = { 'x-ratelimit-remaining': '4321', 'x-ratelimit-limit': '5000', 'x-ratelimit-reset': '1798000000' };
+    const real = github.fetch;
+    github.fetch = async (url, init) => {
+      const res = await real(url, init);
+      return new Response(await res.text(), { status: res.status, headers });
+    };
+    const withHeaders = adapter(github);
+    const before = Date.now();
+    await withHeaders.fetchIssuesByStates(['Todo']);
+    const budget = withHeaders.apiBudget?.();
+    assert.equal(budget?.remaining, 4321);
+    assert.equal(budget?.limit, 5000);
+    assert.equal(budget?.reset_at, new Date(1798000000 * 1000).toISOString());
+    assert.ok(Date.parse(budget!.observed_at) >= before - 1000);
+
+    github.fetch = real;
+    await withHeaders.fetchIssuesByStates(['Todo']);
+    assert.equal(withHeaders.apiBudget?.()?.remaining, 4321, 'a response without headers keeps the last budget');
+
+    const limited = new FakeGithub();
+    limited.overrides.set('SymphonyProjectMeta', () => ({ status: 403, headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-limit': '5000' }, body: {} }));
+    const tracker403 = adapter(limited);
+    await assert.rejects(tracker403.fetchIssuesByStates(['Todo']));
+    assert.deepEqual({ ...tracker403.apiBudget?.(), observed_at: 'x' }, { remaining: 0, limit: 5000, reset_at: null, observed_at: 'x' });
+  });
+
   it('keeps the retry-after hint on rate-limit errors', async () => {
     const github = new FakeGithub();
     github.overrides.set('SymphonyProjectMeta', () => ({ status: 429, headers: { 'retry-after': '30' }, body: {} }));
@@ -1539,7 +1574,7 @@ describe('github_project auto_merge', () => {
     const { github, move, ops, statuses, comments } = await setup();
     const data = await move('Human Review');
     assert.equal(data.status, 'Done');
-    assert.deepEqual(data.auto_merge, { merged: true, pull_request: 7, status: 'Done', reason: 'merged into develop', checks: { state: 'none', failing: [], pending: [] } });
+    assert.deepEqual(data.auto_merge, { merged: true, pull_request: 7, status: 'Done', reason: 'merged into develop', pull_request_url: 'https://github.com/acme/app/pull/7', checks: { state: 'none', failing: [], pending: [] } });
     assert.deepEqual(ops(), ['SymphonySetStatus', 'SymphonyMergeCandidate', 'SymphonyMergePullRequest', 'SymphonyCloseIssue', 'SymphonySetStatus', 'SymphonyAddComment']);
     assert.deepEqual(statuses(), ['o3', 'o4']);
     const candidate = github.requests.find((r) => r.op === 'SymphonyMergeCandidate');
@@ -1558,7 +1593,7 @@ describe('github_project auto_merge', () => {
     assert.deepEqual(change, {
       previous: 'Todo',
       status: 'Done',
-      autoMerge: { merged: true, pull_request: 7, status: 'Done', reason: 'merged into develop', checks: { state: 'none', failing: [], pending: [] } },
+      autoMerge: { merged: true, pull_request: 7, status: 'Done', reason: 'merged into develop', pull_request_url: 'https://github.com/acme/app/pull/7', checks: { state: 'none', failing: [], pending: [] } },
     });
     assert.deepEqual(change?.autoMerge, toolData.auto_merge);
     assert.equal(change?.status, toolData.status);
