@@ -147,11 +147,12 @@ export const LAYOUT_JS = `
     return { text: '5 h ' + Math.round(pct) + ' %', tone, title: '5-Stunden-Budget: ' + fmtInt(w.used_tokens) + ' von ' + fmtInt(w.forecast.limit_tokens) + ' Tokens' };
   }
   let budgetReport = null;
+  let budgetRaw = null;
   const budgetListeners = [];
-  /** Registers fn(report | null), called after every load; right away when a report is already there. */
+  /** Registers fn(report | null, raw), called after every load (raw: the parsed answer without the shape check, null on failure); right away when a report is already there. */
   function onBudget(fn) {
     budgetListeners.push(fn);
-    if (budgetReport) fn(budgetReport);
+    if (budgetReport || budgetRaw) fn(budgetReport, budgetRaw);
   }
   function paintBudgetChip(report) {
     const node = document.getElementById('shell-budget');
@@ -164,14 +165,17 @@ export const LAYOUT_JS = `
   const isBudgetWindow = (w) => !!w && typeof w === 'object' && typeof w.used_tokens === 'number';
   async function loadBudget() {
     let report = null;
+    let raw = null;
     try {
       const res = await fetch('/api/v1/budget', { cache: 'no-store' });
       const body = res.ok ? await res.json() : null;
+      raw = body;
       if (body && isBudgetWindow(body.five_hour) && isBudgetWindow(body.seven_day)) report = body;
     } catch {}
     budgetReport = report;
+    budgetRaw = raw;
     paintBudgetChip(report);
-    for (const fn of budgetListeners) fn(report);
+    for (const fn of budgetListeners) fn(report, raw);
   }
   loadBudget();
   setInterval(loadBudget, 30000);
