@@ -588,3 +588,14 @@ describe('Changes page render (#358 acceptance)', () => {
     assert.equal(page.query('.chg').length, 0);
   });
 });
+
+describe('Changes page: issue filter from the URL (#377)', () => {
+  it('passes ?issue= to the API and keeps it when the type changes', async () => {
+    const page = renderPage(CHANGES_HTML, undefined, { url: 'http://127.0.0.1/changes?issue=acme%2Fapp%231', fetch: () => changesFixture() });
+    await until(() => page.fetches.some((f) => f.url.startsWith('/api/v1/changes?')), 3_000, 'first load');
+    assert.ok(page.fetches.find((f) => f.url.startsWith('/api/v1/changes?'))!.url.includes('issue=acme%2Fapp%231'));
+    page.query('button[data-type="code"]')[0]!.click();
+    await until(() => page.fetches.filter((f) => f.url.startsWith('/api/v1/changes?')).length > 1, 3_000, 'second load');
+    assert.ok(page.fetches.filter((f) => f.url.startsWith('/api/v1/changes?')).at(-1)!.url.includes('issue=acme%2Fapp%231'));
+  });
+});

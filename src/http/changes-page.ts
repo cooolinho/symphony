@@ -66,7 +66,7 @@ export const CHANGES_HTML = page({
   function readFilter() {
     const p = new URLSearchParams(location.search);
     const type = p.get('type');
-    return { type: type === 'code' || type === 'brain' ? type : 'all', repo: p.get('repo') || '' };
+    return { type: type === 'code' || type === 'brain' ? type : 'all', repo: p.get('repo') || '', issue: p.get('issue') || '' };
   }
   let filter = readFilter();
   let counts = { all: 0, code: 0, brain: 0 };
@@ -79,6 +79,7 @@ export const CHANGES_HTML = page({
     url.search = '';
     if (filter.type !== 'all') url.searchParams.set('type', filter.type);
     if (filter.repo) url.searchParams.set('repo', filter.repo);
+    if (filter.issue) url.searchParams.set('issue', filter.issue);
     history.replaceState(null, '', url);
   }
   function setFilter(changes) {
@@ -185,6 +186,7 @@ export const CHANGES_HTML = page({
     const query = new URLSearchParams({ limit: '50', tz: TZ });
     if (filter.type !== 'all') query.set('type', filter.type);
     if (filter.repo) query.set('repo', filter.repo);
+    if (filter.issue) query.set('issue', filter.issue);
     if (before) query.set('before', before);
     try {
       const res = await fetch('/api/v1/changes?' + query, { cache: 'no-store' });

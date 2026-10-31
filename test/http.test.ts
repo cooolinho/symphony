@@ -1781,6 +1781,18 @@ describe('brain access, clashes and promotion routes (E7-6b)', () => {
     }
   });
 
+  it('GET /access filters by the exact issue', async () => {
+    const row = (issue: string, p: string) => `${JSON.stringify({ at: '2026-10-30T10:00:00.000Z', run: 'r', issue, role: 'developer', op: 'read', path_or_query: p, result: 'ok' })}\n`;
+    const { server } = await start({ access: row('acme/app#1', 'a.md') + row('acme/app#10', 'b.md') });
+    try {
+      const res = await request(server.port, 'GET', '/api/v1/brain/access?issue=acme%2Fapp%231');
+      assert.deepEqual(json(res).access.map((a: { path_or_query: string }) => a.path_or_query), ['a.md']);
+      assert.equal(json(await request(server.port, 'GET', '/api/v1/brain/access')).access.length, 2);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('GET /access filters by role and q, newest first, purpose as a string, pages with before', async () => {
     const row = (at: string, role: string, pathOrQuery: string, purpose?: string) =>
       `${JSON.stringify({ at, run: 'r', issue: 'acme/app#1', role, op: 'read', path_or_query: pathOrQuery, ...(purpose !== undefined ? { purpose } : {}), result: 'ok' })}\n`;
