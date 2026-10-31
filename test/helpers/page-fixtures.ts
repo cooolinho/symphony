@@ -52,11 +52,19 @@ export function changeEntry(over: Obj = {}): Obj {
   };
 }
 
+/** One brain entry of GET /api/v1/changes (a created note); `over` replaces keys. */
+export function brainChangeEntry(over: Obj = {}): Obj {
+  return {
+    id: 'brain:abc:Inbox/idea.md', type: 'brain', at: '2026-10-30T11:30:00.000Z', repo: 'acme/app', issue: 'acme/app#1', role: 'developer', title: 'Idee',
+    files: [{ path: 'Inbox/idea.md', added: 3, deleted: 0, status: 'added' }], pr: null, diff: 'Inbox/idea.md\n+# Idee\n+zwei\n-alt', status: 'created', ...over,
+  };
+}
+
 /** GET /api/v1/changes with one entry; `over` replaces top-level keys. */
 export function changesFixture(over: Obj = {}): Obj {
   return {
     generated_at: '2026-10-30T12:00:00.000Z', entries: [changeEntry()], next_before: null, counts: { all: 3, code: 2, brain: 1 },
-    stats: { today: { commits: 2, merges: 1, files: 4, added: 12, deleted: 3 }, hotspots: [{ path: 'src/a.ts', repo: 'acme/app', count: 5 }] },
+    stats: { today: { commits: 2, merges: 1, files: 4, added: 12, deleted: 3, brain: 5 }, hotspots: [{ path: 'src/a.ts', repo: 'acme/app', count: 5 }] },
     ...over,
   };
 }

@@ -1922,7 +1922,7 @@ describe('GET /api/v1/changes (E6-3a)', () => {
       assert.equal(pages, 3);
       assert.deepEqual(ids, ['code:acme/lib:1', 'code:acme/app:4', 'brain:acme/app:3', 'code:acme/app:2', 'code:acme/app:1']);
       const first = await get(port, 'limit=2');
-      assert.deepEqual(first.stats.today, { commits: 4, merges: 0, files: 2, added: 4, deleted: 0 });
+      assert.deepEqual(first.stats.today, { commits: 4, merges: 0, files: 2, added: 4, deleted: 0, brain: 1 });
     });
   });
 
