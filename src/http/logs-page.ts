@@ -138,6 +138,17 @@ export const LOGS_HTML = page({
     </section>
   </div>
 
+  <div class="grid-2">
+    <section class="ui-card g" data-section aria-labelledby="h-budget">
+      <div class="ui-card-head"><h2 class="ui-card-title" id="h-budget">5-h-Spitze je Tag</h2></div>
+      <div class="ui-card-body" data-body="budget"></div>
+    </section>
+    <section class="ui-card g" data-section aria-labelledby="h-compacts">
+      <div class="ui-card-head"><h2 class="ui-card-title" id="h-compacts">Auto-Compacts je Rolle</h2></div>
+      <div class="ui-card-body" data-body="compacts"></div>
+    </section>
+  </div>
+
   <section class="ui-card g" data-section aria-labelledby="h-models">
     <div class="ui-card-head"><h2 class="ui-card-title" id="h-models">Modelle</h2>
       <label class="field"><span class="lbl">Sortieren nach</span><select id="model-sort">
@@ -432,11 +443,11 @@ ${CHART_JS}
 
     renderKpis(d);
     if (d.totals.runs === 0) {
-      for (const name of ['activity', 'cost', 'tokens', 'models', 'efforts', 'roles', 'tools', 'integrations', 'repos', 'outcomes', 'durations', 'heatmap', 'top', 'attention', 'issues']) setBody(name, noData());
+      for (const name of ['activity', 'cost', 'tokens', 'budget', 'compacts', 'models', 'efforts', 'roles', 'tools', 'integrations', 'repos', 'outcomes', 'durations', 'heatmap', 'top', 'attention', 'issues']) setBody(name, noData());
       $('issue-count').textContent = '';
       return;
     }
-    renderActivity(d); renderCost(d); renderTokens(d); renderModels(d); renderEfforts(d); renderRoles(d); renderTools(d); renderIntegrations(d); renderRepos(d);
+    renderActivity(d); renderCost(d); renderTokens(d); renderBudget(d); renderCompacts(d); renderModels(d); renderEfforts(d); renderRoles(d); renderTools(d); renderIntegrations(d); renderRepos(d);
     renderOutcomes(d); renderDurations(d); renderHeatmap(d); renderTop(d); renderAttention(d); renderIssues(d);
   }
 
@@ -527,6 +538,43 @@ ${CHART_JS}
       tip: (i) => [...bucketTip(d.series[i]), ['Kumuliert', fmtUsd(cumulative[i])]],
       ariaLabel: 'Geschätzte Kosten im Zeitverlauf',
     });
+  }
+
+  const roleColor = (role) => (uiOwn(UI_ROLE_COLORS, role) ? 'var(--role-' + role + ')' : 'var(--gray)');
+
+  /** Peak token use of a rolling 5-hour window per day; a red mark on days with a rate-limit hit. */
+  function renderBudget(d) {
+    const days = d.budget ? d.budget.days : [];
+    if (!days.some((x) => x.peak_5h_tokens > 0 || x.limit_hits > 0)) {
+      setBody('budget', noData('Keine Token-Verbräuche und keine Limit-Treffer im gewählten Zeitraum.'));
+      return;
+    }
+    const host = chartHost(); const lg = el('div', null, 'legend');
+    setBody('budget', lg, host,
+      el('p', 'Die Spitze ist der höchste Token-Verbrauch eines rollenden 5-h-Fensters, das am Tag endet (Runs nach Filter). Limit-Treffer sind abgelehnte Anfragen des ganzen Accounts, unabhängig vom Repository-Filter; das Rate-Limit-Log reicht 30 Tage zurück.', 'note'));
+    legend(lg, [['5-h-Spitze', 'var(--cyan)'], ['Limit-Treffer', 'var(--red)']]);
+    const hitDays = days.filter((x) => x.limit_hits > 0).length;
+    timeChart(host, {
+      labels: days.map((x) => bucketLabel(x.date, 'day')),
+      title: (i) => bucketLabel(days[i].date, 'day', true),
+      series: [{ label: '5-h-Spitze', color: 'var(--cyan)', values: days.map((x) => x.peak_5h_tokens) }],
+      kind: 'bar', fmt: fmtCompact,
+      marks: days.map((x) => x.limit_hits > 0),
+      tip: (i) => [['5-h-Spitze', fmtCompact(days[i].peak_5h_tokens) + ' Tokens', 'var(--cyan)'], ['Limit-Treffer', fmtInt(days[i].limit_hits), days[i].limit_hits ? 'var(--red)' : null]],
+      ariaLabel: '5-h-Spitze je Tag' + (hitDays ? ', ' + hitDays + ' Tag(e) mit Limit-Treffer' : ''),
+    });
+  }
+
+  /** Auto-compacts of the context window per role in the period. */
+  function renderCompacts(d) {
+    const rows = Object.entries(d.budget ? d.budget.compacts_by_role : {});
+    if (rows.length === 0) {
+      setBody('compacts', noData('Kein Run in diesem Zeitraum hat Context-Daten geloggt.'));
+      return;
+    }
+    const bars = el('div', null, 'hbars');
+    hbars(bars, rows.map(([role, n]) => ({ label: role, value: n, text: fmtInt(n), color: roleColor(role), tip: [['Auto-Compacts', fmtInt(n)]] })), null);
+    setBody('compacts', bars, el('p', 'Runs vor der Aufzeichnung des Contexts fehlen.', 'note'));
   }
 
   function renderTokens(d) {
@@ -626,7 +674,7 @@ ${CHART_JS}
     const bars = el('div', null, 'hbars');
     hbars(bars, rows.map((r) => ({
       label: r.role, value: r.cost_usd || 0, text: fmtUsd(r.cost_usd), sub: fmtInt(r.runs) + ' Run' + (r.runs === 1 ? '' : 's') + (r.cost_share !== null ? ' · ' + fmtPct(r.cost_share) + ' der Kosten' : ''),
-      color: uiOwn(UI_ROLE_COLORS, r.role) ? 'var(--role-' + r.role + ')' : 'var(--gray)',
+      color: roleColor(r.role),
       tip: [['Runs', fmtInt(r.runs)], ['Issues', fmtInt(r.issues)], ['Erfolgreich', fmtInt(r.successful)], ['Fehlgeschlagen', fmtInt(r.failed)], ['Tokens', fmtCompact(r.total_tokens)],
         ['Kosten', fmtUsd(r.cost_usd)], ['Agentenzeit', fmtDuration(r.agent_seconds)], ['Ergebnisse', countsText(r.by_outcome) || '—']],
     })), null);
@@ -645,6 +693,7 @@ ${CHART_JS}
       { label: 'Agentenzeit', className: 'num', render: (r) => fmtDuration(r.agent_seconds) },
       { label: 'Ø Run', className: 'num', render: (r) => orDash(r.avg_run_seconds, fmtDuration) },
       { label: 'Kosten/Run', className: 'num', render: (r) => orDash(r.avg_cost_per_run, fmtUsd) },
+      { label: 'Ø Context', className: 'num', render: (r) => orDash(d.budget ? d.budget.avg_context_by_role[r.role] : null, (v) => fmtPct(v / 100)) },
       { label: 'Ergebnisse', render: (r) => countsText(r.by_outcome) || '—' },
     ], rows, 'Keine Runs in diesem Zeitraum.');
   }

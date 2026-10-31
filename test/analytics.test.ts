@@ -57,6 +57,41 @@ describe('statistics analytics', () => {
     return { ...h, entries: readHistory(h.log.dir, null).entries };
   }
 
+  describe('budget history', () => {
+    const event = (at: string, status: string) => ({ at, run_id: 'x', issue: 'acme/app#1', role: 'developer', model: null, rate_limit_info: { status, rateLimitType: 'five_hour' } });
+    const per = 1000 + 2000 + 100_000 + 10_000;
+
+    function seedBudget() {
+      const h = history();
+      h.log.runFinished(finish('acme/app#1', 'b1', '2026-10-03T10:00:00Z', { role: 'developer', contextPeakPercent: 40, contextCompacts: 1 }));
+      h.log.runFinished(finish('acme/app#1', 'b2', '2026-10-03T12:00:00Z', { role: 'developer', contextPeakPercent: 60, contextCompacts: 2 }));
+      h.log.runFinished(finish('acme/app#2', 'b3', '2026-10-04T08:00:00Z', { role: 'reviewer', contextPeakPercent: 30, contextCompacts: 0 }));
+      h.log.runFinished(finish('acme/app#3', 'b4', '2026-10-04T09:00:00Z', { role: 'tester' }));
+      return readHistory(h.log.dir, null).entries;
+    }
+
+    it('computes the 5-hour peak and the limit hits per day, compacts and average context per role', () => {
+      const events = [event('2026-10-04T09:30:00Z', 'rejected'), event('2026-10-03T11:00:00Z', 'allowed_warning'), event('2026-10-06T01:00:00Z', 'rejected')];
+      const a = computeAnalytics(seedBudget(), history().pricing.current(), filter({ from: new Date('2026-10-03T00:00:00Z'), to: new Date('2026-10-05T00:00:00Z') }), NOW, events);
+      assert.deepEqual(a.budget.days, [
+        { date: '2026-10-03', peak_5h_tokens: 2 * per, limit_hits: 0 },
+        { date: '2026-10-04', peak_5h_tokens: 2 * per, limit_hits: 1 },
+      ]);
+      assert.deepEqual(a.budget.compacts_by_role, { developer: 3, reviewer: 0 });
+      assert.deepEqual(a.budget.avg_context_by_role, { developer: 50, reviewer: 30 });
+    });
+
+    it('copes without events and with history that has no context fields', () => {
+      const s = seed();
+      const a = computeAnalytics(s.entries, s.pricing.current(), filter({ from: new Date('2026-10-03T00:00:00Z'), to: new Date('2026-10-06T00:00:00Z') }), NOW);
+      assert.equal(a.budget.days.length, 3);
+      assert.ok(a.budget.days.every((d) => d.limit_hits === 0));
+      assert.ok(a.budget.days.some((d) => d.peak_5h_tokens > 0));
+      assert.deepEqual(a.budget.avg_context_by_role, {});
+      assert.deepEqual(computeAnalytics([], s.pricing.current(), filter(), NOW).budget, { days: [], compacts_by_role: {}, avg_context_by_role: {} });
+    });
+  });
+
   describe('stage results', () => {
     const result = (issue: string, role: string, kind: string, verdict: string, at: string, over: Record<string, unknown> = {}) => ({
       repo: 'acme/app', issue, run: null, role, kind, verdict, round: null, target: null, profile: 'bugfix', complexity: 'S', findings: 0, at: new Date(at), ...over,

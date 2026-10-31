@@ -3835,6 +3835,11 @@ export class Orchestrator {
     return budgetReport({ now: this.#clock.now(), usage: usageFromHistory(entries), events: this.#rateLimitLog.readRateLimitEvents() });
   }
 
+  /** Rate-limit events (optionally since a date) for the statistics page. */
+  rateLimitEvents(since?: Date): RateLimitRecord[] {
+    return this.#rateLimitLog.readRateLimitEvents(since);
+  }
+
   /** Builds the brain index at startup; does nothing without `brain.enabled`. */
   async buildBrainIndex(): Promise<void> {
     const brain = this.#deps.workflow.current.config.brain;

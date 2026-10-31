@@ -373,6 +373,9 @@ describe('http extension', () => {
       ['reviewer', { 'review:approved': 1 }],
     ]);
     assert.equal(a.filter.effort, null);
+    assert.ok(Array.isArray(a.budget.days) && a.budget.days.length > 0);
+    assert.equal(typeof a.budget.days[0].peak_5h_tokens, 'number');
+    assert.equal(typeof a.budget.compacts_by_role, 'object');
     // A second identical request is served from the cache with the same figures.
     assert.deepEqual(JSON.parse((await request(server.port, 'GET', week)).body).series, a.series);
     const effort = JSON.parse((await request(server.port, 'GET', `${week}&effort=high`)).body);

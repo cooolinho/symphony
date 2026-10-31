@@ -111,7 +111,7 @@ export const CHART_JS = `
 
   /**
    * Time series over buckets. opts: { labels, title(i), series: [{ label, color, values }], kind: 'bar' | 'area',
-   * stacked, integer (counts: whole-number ticks), fmt(value), tip(i) -> rows, onClick(i), height, ariaLabel }.
+   * stacked, integer (counts: whole-number ticks), marks (boolean per bucket: red dot above the column), fmt(value), tip(i) -> rows, onClick(i), height, ariaLabel }.
    */
   function timeChart(host, opts) {
     mount(host, () => {
@@ -126,7 +126,8 @@ export const CHART_JS = `
       const top = Math.max(step, Math.ceil(Math.max(...totals, 0) / step) * step);
       const ticks = []; for (let v = 0; v <= top + step / 2; v += step) ticks.push(v);
       const left = Math.min(80, 10 + Math.max(...ticks.map((v) => opts.fmt(v).length)) * 6.2);
-      const m = { top: 8, right: 6, bottom: 22, left };
+      const marked = (opts.marks || []).some(Boolean);
+      const m = { top: marked ? 18 : 8, right: 6, bottom: 22, left };
       const pw = width - m.left - m.right, ph = height - m.top - m.bottom;
       const band = pw / Math.max(1, n);
       const x = (i) => m.left + band * i + band / 2;
@@ -173,6 +174,7 @@ export const CHART_JS = `
         });
       }
       root.append(svg('line', { class: 'base', x1: m.left, x2: width - m.right, y1: y(0), y2: y(0) }));
+      if (marked) opts.marks.forEach((on, i) => { if (on) root.append(svg('circle', { class: 'mark', 'data-mark': String(i), cx: x(i), cy: 9, r: 4 }, 'fill:var(--red)')); });
       const cross = svg('line', { class: 'cross', y1: m.top, y2: m.top + ph, visibility: 'hidden' });
       root.append(cross);
 

@@ -1,5 +1,7 @@
 import { bareModelName } from '../agent/model-name.ts';
 import { costOf, priceFor, totalTokens, type ModelTokenUsage, type PricingTable } from '../costs/pricing.ts';
+import { BUDGET_WINDOW_MS } from '../budget/forecast.ts';
+import { isRejected, type RateLimitRecord } from '../budget/rate-limit-log.ts';
 import { parseCounts, type HistoryEntry } from './history.ts';
 
 /**
@@ -105,6 +107,10 @@ interface Run {
   effort: string | null;
   /** Role that served the run (`role` of run_finished, else of run_started); null when not logged. */
   role: string | null;
+  /** Peak context fill of the run in percent (`context_peak_percent`); null when not logged (older history). */
+  contextPeakPercent: number | null;
+  /** Auto-compacts of the run (`context_compacts`); null when not logged. */
+  contextCompacts: number | null;
   /** Dispatched after a failed or stalled run of the same issue. */
   retry: boolean;
   parts: UsagePart[];
@@ -289,6 +295,14 @@ function fieldOrNull(value: string | undefined): string | null {
   return value === undefined || value === '' || value === 'null' ? null : value;
 }
 
+/** A logged numeric field; absent, empty, `null` or non-numeric → null (never 0). */
+function numberOrNull(value: string | undefined): number | null {
+  const text = fieldOrNull(value);
+  if (text === null) return null;
+  const n = Number(text);
+  return Number.isFinite(n) ? n : null;
+}
+
 /**
  * Maps a requested model to the id Claude Code reported for it, so a run without logged usage lands in the same
  * row as the runs of that model: an alias (`opus`) becomes the reported id of its family with the most runs
@@ -362,6 +376,8 @@ function collectRuns(entries: HistoryEntry[], pricing: PricingTable): Run[] {
       primaryModel: model,
       effort: fieldOrNull(entry.fields.effort) ?? start?.effort ?? null,
       role: fieldOrNull(entry.fields.role) ?? start?.role ?? null,
+      contextPeakPercent: numberOrNull(entry.fields.context_peak_percent),
+      contextCompacts: numberOrNull(entry.fields.context_compacts),
       retry: FAILURE.has(lastOutcome.get(issue) ?? ''),
       parts,
       tools: parseCounts(entry.fields.tool_calls),
@@ -656,7 +672,56 @@ function stageResultStats(entries: HistoryEntry[], inScope: (entry: HistoryEntry
 /**
  * Everything the statistics page shows for one filter. `now` is the end of an open period (`to` = null).
  */
-export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable, filter: AnalyticsFilter, now = new Date()) {
+/** Peak of a rolling 5-hour window per day, rate-limit hits per day, auto-compacts and average context per role. */
+function budgetHistory(scoped: Run[], runs: Run[], rateLimits: RateLimitRecord[], inPeriod: (ms: number) => boolean, startMs: number | null, toMs: number, timeZone: string) {
+  const days = new Map<string, { date: string; peak_5h_tokens: number; limit_hits: number }>();
+  if (startMs !== null) for (const date of bucketKeys(startMs, toMs, 'day', timeZone)) days.set(date, { date, peak_5h_tokens: 0, limit_hits: 0 });
+
+  // Window (t - 5 h, t] ending at each run_finished; runs before the period still fill the window.
+  const sorted = [...scoped].sort((a, b) => a.finishedMs - b.finishedMs);
+  let left = 0;
+  let sum = 0;
+  for (const run of sorted) {
+    sum += tokensOf(run);
+    while ((sorted[left] as Run).finishedMs <= run.finishedMs - BUDGET_WINDOW_MS.five_hour) {
+      sum -= tokensOf(sorted[left] as Run);
+      left += 1;
+    }
+    if (!inPeriod(run.finishedMs)) continue;
+    const day = days.get(bucketKey(run.finishedMs, 'day', timeZone));
+    if (day !== undefined) day.peak_5h_tokens = Math.max(day.peak_5h_tokens, sum);
+  }
+
+  for (const event of rateLimits) {
+    if (!isRejected(event.rate_limit_info)) continue;
+    const ms = Date.parse(event.at);
+    if (!Number.isFinite(ms) || !inPeriod(ms)) continue;
+    const day = days.get(bucketKey(ms, 'day', timeZone));
+    if (day !== undefined) day.limit_hits += 1;
+  }
+
+  const compacts = new Map<string, number>();
+  const context = new Map<string, { sum: number; n: number }>();
+  for (const run of runs) {
+    const role = run.role ?? UNKNOWN_ROLE;
+    if (run.contextCompacts !== null) compacts.set(role, (compacts.get(role) ?? 0) + run.contextCompacts);
+    if (run.contextPeakPercent !== null) {
+      const slot = context.get(role) ?? { sum: 0, n: 0 };
+      slot.sum += run.contextPeakPercent;
+      slot.n += 1;
+      context.set(role, slot);
+    }
+  }
+  const sortedRecord = (map: Map<string, number>): Record<string, number> =>
+    Object.fromEntries([...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])));
+  return {
+    days: [...days.values()],
+    compacts_by_role: sortedRecord(compacts),
+    avg_context_by_role: sortedRecord(new Map([...context.entries()].map(([role, v]) => [role, round(v.sum / v.n, 1)]))),
+  };
+}
+
+export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable, filter: AnalyticsFilter, now = new Date(), rateLimits: RateLimitRecord[] = []) {
   const allRuns = collectRuns(entries, pricing);
   const scoped = narrow(allRuns, filter);
   const toMs = filter.to?.getTime() ?? now.getTime();
@@ -958,6 +1023,7 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
     models: modelRows,
     efforts: effortRows,
     by_role: roleRows,
+    budget: budgetHistory(scoped, runs, rateLimits, inPeriod, startMs, toMs, filter.timeZone),
     by_profile: stageStats.by_profile,
     verdicts_by_role: stageStats.verdicts_by_role,
     stage_results: stageStats.total,
