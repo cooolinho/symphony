@@ -1381,7 +1381,7 @@ describe('dashboard page behaviour', () => {
 
   it('loads the state, the history and the system cards and the budget when the page opens', () => {
     const page = renderPage(DASHBOARD_HTML);
-    assert.deepEqual(page.fetches.map((f) => f.url), ['/api/v1/state', '/api/v1/history', '/api/v1/budget', '/api/v1/system']);
+    assert.deepEqual(page.fetches.map((f) => f.url), ['/api/v1/state', '/api/v1/history', '/api/v1/activity?minutes=30', '/api/v1/budget', '/api/v1/system']);
   });
 
   it('puts every card into its section with a count, and hides the empty queue sections', () => {
