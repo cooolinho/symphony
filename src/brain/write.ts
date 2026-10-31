@@ -7,7 +7,8 @@ import type { AgentToolContext, AgentToolSpec, ToolResult } from '../tracker/typ
 import { errorMessage } from '../util/errors.ts';
 import type { BrainAccess, BrainAccessLog, BrainClashReason } from './access-log.ts';
 import { fail, hashOf, MAX_NOTE_BYTES, ok, purposeOf, reasonOf, warnPurpose } from './common.ts';
-import { appendUnderHeading, parseNote, prepareFrontmatter, serializeNote } from './note.ts';
+import type { VaultIndex } from './index.ts';
+import { appendUnderHeading, noteStatus, parseNote, prepareFrontmatter, serializeNote } from './note.ts';
 import { resolveVaultWritePath } from './paths.ts';
 
 /** What a successful write reports to `onWrite` (E7-3 commits, E7-4 logs). */
@@ -45,6 +46,10 @@ export interface BrainWriteOptions {
   access?: BrainAccessLog | null;
   /** Window of the clash check in ms (default 600000; 0 = off). */
   clashWindowMs?: number;
+  /** Default true (no extra gate). false: never write or append to an approved note and never set status approved (role flag brain_approved_writes). */
+  approvedWrites?: boolean;
+  /** Index for brain_vitals; without it the tool builds a fresh one on every call. */
+  index?: { current(vault: string): Promise<VaultIndex> } | null;
 }
 
 /** What the audit line of a call needs besides the arguments; filled in by the tool body as it learns more. */
@@ -68,11 +73,33 @@ export function writeAtomic(absolute: string, text: string): void {
   }
 }
 
+/** The content a rejected write tried to store: the given note, or the found note with the appended section; null when unknown. */
+function attemptedOf(tool: BrainWriteEntry['tool'], args: Record<string, unknown>, found: { text: string }): { content: string } | null {
+  if (tool === 'brain_write') return typeof args.content === 'string' ? { content: args.content } : null;
+  if (typeof args.heading !== 'string' || typeof args.text !== 'string') return null;
+  const parsed = parseNote(found.text);
+  if (parsed.frontmatterError !== null) return null;
+  return { content: serializeNote(parsed.frontmatter, appendUnderHeading(parsed.body, args.heading, args.text)) };
+}
+
 /** Write tools of the knowledge vault: whole notes with `brain_write`, one section with `brain_append`. */
 export function createBrainWriteTools(vaultPath: string, logger: Logger, options: BrainWriteOptions = {}): AgentToolSpec[] {
   const now = options.now ?? (() => new Date());
   const access = options.access ?? null;
   const windowMs = options.clashWindowMs ?? 600_000;
+  const approvedGate = options.approvedWrites === false;
+
+  const approvedRejected = (reason: 'approved_readonly' | 'approved_status'): ToolResult => ({
+    ok: false,
+    error: {
+      category: 'rejected',
+      message:
+        reason === 'approved_readonly'
+          ? 'this role never writes approved notes; write a candidate note in Inbox/ that links to it'
+          : 'this role never sets status approved',
+      details: { reason },
+    },
+  });
 
   const tooLarge = (): ToolResult => fail('rejected', `note is larger than ${MAX_NOTE_BYTES} bytes`);
 
@@ -133,6 +160,7 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
       },
       other,
       reason,
+      { base: { content: found.text, hash: found.hash }, attempted: attemptedOf(tool, args, found) },
     );
     return reason === 'window' ? windowConflict(found, { run: other.run, at: other.at ?? '' }) : conflict(found);
   };
@@ -308,6 +336,7 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
       const found = current(target.absolute);
       if (found !== null && 'ok' in found) return found;
       audit.path = target.relative;
+      if (approvedGate && found !== null && noteStatus(parseNote(found.text).frontmatter) === 'approved') return approvedRejected('approved_readonly');
       if (found !== null) {
         audit.hashBefore = found.hash;
         const windowed = windowCheck('brain_write', args, context, audit, found);
@@ -326,6 +355,7 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
       if (parsed.frontmatterText === '' && Object.keys(parsed.frontmatter).length === 0) {
         return fail('rejected', 'note needs a YAML frontmatter block (--- … ---) with type');
       }
+      if (approvedGate && noteStatus(parsed.frontmatter) === 'approved') return approvedRejected('approved_status');
       const existing = found === null ? null : parseNote(found.text).frontmatter;
       const prepared = prepareFrontmatter(parsed.frontmatter, existing, stampOf(context));
       if (!prepared.ok) return fail('rejected', prepared.message);
@@ -358,6 +388,7 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
       if (found === null) return fail('not_found', 'brain_append needs an existing note; create it with brain_write');
       if ('ok' in found) return found;
       audit.path = target.relative;
+      if (approvedGate && noteStatus(parseNote(found.text).frontmatter) === 'approved') return approvedRejected('approved_readonly');
       audit.hashBefore = found.hash;
       const windowed = windowCheck('brain_append', args, context, audit, found);
       if (windowed !== null) return windowed;

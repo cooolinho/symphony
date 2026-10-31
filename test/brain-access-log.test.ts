@@ -115,3 +115,96 @@ describe('BrainAccessLog', () => {
     log.load(NOW);
   });
 });
+
+describe('BrainAccessLog.readAccess (E7-6b)', () => {
+  it('is empty without a file or without a log dir', () => {
+    assert.deepEqual(new BrainAccessLog(tempDir(), Logger.silent()).readAccess(), { access: [], next_before: null });
+    assert.deepEqual(new BrainAccessLog(null, Logger.silent()).readAccess(), { access: [], next_before: null });
+  });
+
+  it('lists newest first, filters by role and q, gives purpose as a string and pages by line', () => {
+    const dir = tempDir();
+    const missing = JSON.stringify({ at: ago(1000), run: 'r', issue: null, role: 'developer', op: 'read', path_or_query: 'Lessons/x.md', result: 'ok' });
+    fs.writeFileSync(
+      path.join(dir, 'access.jsonl'),
+      line({ at: ago(3000), role: 'developer', path_or_query: 'Inbox/caching.md', purpose: 'p' }) +
+        line({ at: ago(2000), role: 'Architect', path_or_query: 'Decisions/d.md', purpose: 'about caching' }) +
+        'not json\n' +
+        `${missing}\n`,
+    );
+    const log = new BrainAccessLog(dir, Logger.silent());
+    const all = log.readAccess();
+    assert.deepEqual(all.access.map((a) => a.at), [ago(1000), ago(2000), ago(3000)]);
+    assert.equal(all.access[0]!.purpose, '');
+    assert.equal(all.next_before, null);
+    assert.deepEqual(log.readAccess({ role: 'developer' }).access.map((a) => a.path_or_query), ['Lessons/x.md', 'Inbox/caching.md']);
+    assert.deepEqual(log.readAccess({ role: 'architect' }).access.map((a) => a.path_or_query), ['Decisions/d.md']);
+    assert.deepEqual(log.readAccess({ q: 'CACHING' }).access.map((a) => a.path_or_query), ['Decisions/d.md', 'Inbox/caching.md']);
+    const first = log.readAccess({ limit: 1 });
+    assert.deepEqual(first.access.map((a) => a.at), [ago(1000)]);
+    assert.notEqual(first.next_before, null);
+    const second = log.readAccess({ limit: 1, before: first.next_before });
+    assert.deepEqual(second.access.map((a) => a.at), [ago(2000)]);
+    const third = log.readAccess({ limit: 1, before: second.next_before });
+    assert.deepEqual(third.access.map((a) => a.at), [ago(3000)]);
+    assert.equal(third.next_before, null);
+  });
+
+  it('caps the page at 500 lines', () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'access.jsonl'), Array.from({ length: 600 }, () => line({})).join(''));
+    const page = new BrainAccessLog(dir, Logger.silent()).readAccess({ limit: 10_000 });
+    assert.equal(page.access.length, 500);
+    assert.notEqual(page.next_before, null);
+  });
+});
+
+describe('clash versions (E7-6b)', () => {
+  const context: AgentToolContext = { issue: makeIssue({ id: 'a' }), role: 'developer', runId: 'run1' };
+
+  it('keeps the note at the rejection and the rejected content in a sidecar that survives a restart', async () => {
+    const vaultDir = tempDir();
+    fs.mkdirSync(path.join(vaultDir, 'Inbox'));
+    const dir = path.join(tempDir(), 'brain');
+    const log = new BrainAccessLog(dir, Logger.silent());
+    const specs = createBrainWriteTools(vaultDir, Logger.silent(), { access: log, now: () => NOW });
+    const call = (name: string, args: Record<string, unknown>): Promise<ToolResult> => specs.find((s) => s.name === name)!.execute({ purpose: 'p', ...args }, context);
+    assert.ok((await call('brain_write', { path: 'Inbox/a.md', content: '---\ntype: note\n---\nOne.\n' })).ok);
+    const stored = fs.readFileSync(path.join(vaultDir, 'Inbox/a.md'), 'utf8');
+    const attempted = '---\ntype: note\n---\nTwo.\n';
+    const rejected = await call('brain_write', { path: 'Inbox/a.md', content: attempted, base_hash: 'f'.repeat(64) });
+    assert.equal(rejected.ok, false);
+    const appended = await call('brain_append', { path: 'Inbox/a.md', heading: 'H', text: 'more', base_hash: 'f'.repeat(64) });
+    assert.equal(appended.ok, false);
+    const [write, append] = log.clashes();
+    const versions = log.clashVersions(write!.id);
+    assert.equal(versions.base!.content, stored);
+    assert.equal(versions.base!.hash, (rejected as any).error.details.hash);
+    assert.equal(versions.attempted!.content, attempted);
+    assert.match(log.clashVersions(append!.id).attempted!.content, /One\.\n\n## H\n\nmore\n$/);
+    const sidecar = JSON.parse(fs.readFileSync(path.join(dir, 'clashes', `${write!.id}.json`), 'utf8'));
+    assert.equal(sidecar.attempted.content, attempted);
+    assert.ok(!fs.readFileSync(log.file!, 'utf8').includes('Two.'), 'the content stays out of access.jsonl');
+    const again = new BrainAccessLog(dir, Logger.silent());
+    again.load(NOW);
+    assert.deepEqual(again.clashVersions(write!.id), versions);
+    assert.deepEqual(again.clashVersions('unknown'), { base: null, attempted: null });
+  });
+
+  it('removes sidecars older than 7 days at load', () => {
+    const dir = tempDir();
+    fs.mkdirSync(path.join(dir, 'clashes'));
+    const old = path.join(dir, 'clashes', 'old.json');
+    const fresh = path.join(dir, 'clashes', 'fresh.json');
+    fs.writeFileSync(old, JSON.stringify({ id: 'old', path: 'Inbox/a.md', at: ago(8 * DAY), base: null, attempted: { content: 'x' } }));
+    fs.writeFileSync(fresh, JSON.stringify({ id: 'fresh', path: 'Inbox/a.md', at: ago(DAY), base: null, attempted: { content: 'y' } }));
+    fs.writeFileSync(path.join(dir, 'clashes', 'broken.json'), '{');
+    const log = new BrainAccessLog(dir, Logger.silent());
+    log.load(NOW);
+    assert.equal(fs.existsSync(old), false);
+    assert.equal(fs.existsSync(path.join(dir, 'clashes', 'broken.json')), false);
+    assert.equal(fs.existsSync(fresh), true);
+    assert.deepEqual(log.clashVersions('fresh'), { base: null, attempted: { content: 'y' } });
+    assert.deepEqual(log.clashVersions('old'), { base: null, attempted: null });
+  });
+});

@@ -76,7 +76,7 @@ describe('title block on the page', () => {
     assert.equal(h1[0]!.textContent, 'Übersicht');
     assert.match(page.$('ov-subtitle').textContent, /Teams? spiel.* · .* · (letzter Poll vor \d+ s|noch kein Poll)/);
     assert.match(page.$('ov-chips').textContent, /Tracker ok/);
-    assert.equal(page.$('refresh-label').textContent, 'Jetzt pollen');
+    assert.match(DASHBOARD_HTML, /id="shell-poll"[^>]*aria-label="Jetzt pollen"/);
     assert.equal(page.query('dl.sysinfo').length, 0);
   });
 

@@ -25,7 +25,7 @@ const report = (used: number, limit: number | null, extra: Record<string, unknow
 });
 
 const settle = () => new Promise((r) => setTimeout(r, 30));
-const chipOf = (page: ReturnType<typeof renderPage>) => ({ text: page.$('shell-budget').textContent.trim(), cls: page.$('shell-budget').className });
+const chipOf = (page: ReturnType<typeof renderPage>) => ({ text: page.$('shell-budget').textContent.trim(), cls: page.$('shell-budget').children.map((c) => c.className).join(' ') });
 const budgetFetches = (page: ReturnType<typeof renderPage>) => page.fetches.filter((f) => f.url === '/api/v1/budget').length;
 
 async function fire(page: ReturnType<typeof renderPage>) {
@@ -44,16 +44,14 @@ describe('E4-5 budget reload', () => {
     const page = renderPage(TASKS_HTML, undefined, { fetch: (u) => (u === '/api/v1/budget' ? answers[Math.min(n++, answers.length - 1)] : {}) });
     await until(() => budgetFetches(page) === 1);
     await settle();
-    assert.equal(chipOf(page).text, '5 h 62 %');
-    assert.doesNotMatch(chipOf(page).cls, /amber|red/);
-    await fire(page);
-    assert.equal(chipOf(page).text, '5 h 85 %');
+    assert.equal(chipOf(page).text, '5h 62 %');
     assert.match(chipOf(page).cls, /amber/);
     await fire(page);
+    assert.equal(chipOf(page).text, '5h 85 %');
     assert.match(chipOf(page).cls, /red/);
   });
 
-  it('the chip falls back to "5 h —" when a reload fails and recovers on the next one', async () => {
+  it('the chip falls back to "5h —" when a reload fails and recovers on the next one', async () => {
     let mode: 'ok' | 'fail' = 'ok';
     const page = renderPage(TASKS_HTML, undefined, {
       fetch: (u) => {
@@ -64,14 +62,14 @@ describe('E4-5 budget reload', () => {
     });
     await until(() => budgetFetches(page) === 1);
     await settle();
-    assert.equal(chipOf(page).text, '5 h 62 %');
+    assert.equal(chipOf(page).text, '5h 62 %');
     mode = 'fail';
     await fire(page);
-    assert.equal(chipOf(page).text, '5 h —');
+    assert.equal(chipOf(page).text, '5h —');
     assert.doesNotMatch(chipOf(page).cls, /amber|red/);
     mode = 'ok';
     await fire(page);
-    assert.equal(chipOf(page).text, '5 h 62 %');
+    assert.equal(chipOf(page).text, '5h 62 %');
   });
 
   it('a slow older answer does not overwrite a newer one', async () => {
@@ -87,10 +85,10 @@ describe('E4-5 budget reload', () => {
     });
     await until(() => budgetFetches(page) === 1);
     await fire(page);
-    assert.equal(chipOf(page).text, '5 h 85 %');
+    assert.equal(chipOf(page).text, '5h 85 %');
     release(report(200_000, 2_000_000)); // the old answer (10 %) arrives late
     await settle();
-    assert.equal(chipOf(page).text, '5 h 85 %');
+    assert.equal(chipOf(page).text, '5h 85 %');
   });
 
   it('the overview section is redrawn from the new answer and does not fetch the budget twice per tick', async () => {

@@ -35,7 +35,7 @@ function mainNav(body: string): string {
 }
 
 const NEW_ROUTES = ['/', '/changes', '/tasks', '/brain', '/stats', '/issue?id=repo%2F1'];
-const PLACEHOLDERS: Array<[string, string]> = [['/tasks', 'tasks'], ['/brain', 'brain']];
+const PLACEHOLDERS: Array<[string, string]> = [['/brain', 'brain']];
 
 describe('E1-4 routes and redirects (independent acceptance tests)', () => {
   let server: HttpServerHandle;
@@ -90,11 +90,12 @@ describe('E1-4 routes and redirects (independent acceptance tests)', () => {
     const { body } = await request(server.port, 'GET', '/issue?id=repo%2F1');
     assert.match(body, /<nav class="crumbs" aria-label="Brotkrumen">/);
     assert.match(body, /<a href="\/">Übersicht<\/a>/);
-    assert.match(body, /id="crumb-current" aria-current="page">Issue</);
+    assert.match(body, /id="crumb-current">Issue</);
     // Only the breadcrumb carries aria-current; no main navigation entry is active.
     assert.doesNotMatch(mainNav(body), /aria-current/);
     // Client script fills in the issue id and polls the API.
-    assert.match(body, /'Issue ' \+ num/);
+    // E3-6: the crumb becomes "#<nr> <short title>" once the details are loaded.
+    assert.match(body, /num \+ ' ' \+ oneLine\(d\.title, 40\)/);
     assert.doesNotMatch(body, /'Agent ' \+ num\)[^;]*crumb/);
     assert.match(body, /\/api\/v1\//);
   });

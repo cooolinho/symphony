@@ -17,6 +17,12 @@ export const ROLE_COLORS = {
   reviewer: '#f472b6', security: '#fb923c', symphony: '#94a3b8', human: '#e8eef9',
 } as const;
 
+/** Light role colours: the name of the playing seat, its tool argument and the tinted last trace chip. */
+export const ROLE_LIGHT = {
+  analyst: '#e0f2fe', architect: '#ede9fe', developer: '#d1fae5', tester: '#fef3c7', docs: '#f1f5f9',
+  reviewer: '#fce7f3', security: '#ffedd5', symphony: '#f1f5f9', human: '#f8fafc',
+} as const;
+
 /** Status scales (Tailwind-style step numbers). */
 export const SCALES = {
   green: { 400: '#34d399', 300: '#6ee7b7', 100: '#d1fae5' },

@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import http from 'node:http';
 import { after, before, describe, it } from 'node:test';
 import fs from 'node:fs';
@@ -13,13 +15,14 @@ import { LOGS_HTML } from '../src/http/logs-page.ts';
 import { CHANGES_HTML } from '../src/http/changes-page.ts';
 import { TASKS_HTML } from '../src/http/tasks-page.ts';
 import { BRAIN_HTML } from '../src/http/brain-page.ts';
-import { LAYOUT_CSS, LAYOUT_JS, NAV_ITEMS, page as shellPage } from '../src/http/ui/layout.ts';
+import { AURORA, LAYOUT_CSS, LAYOUT_JS, NAV_ITEMS, page as shellPage } from '../src/http/ui/layout.ts';
 import { TOKENS_CSS } from '../src/http/ui/tokens.ts';
 import { BASE_JS } from '../src/http/styles.ts';
 import { SYMPHONY_VERSION } from '../src/version.ts';
 import { analyticsFixture, dashboardState, issueDetail, issueRow } from './helpers/page-fixtures.ts';
 import { FakeElement } from './helpers/fake-dom.ts';
 import { startHttpServer, type HttpServerHandle } from '../src/http/server.ts';
+import { ensureVault } from '../src/brain/vault.ts';
 import { Logger } from '../src/log.ts';
 import { SystemCollector } from '../src/system/metrics.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
@@ -187,21 +190,19 @@ describe('http extension', () => {
     assert.match(page.body, /<nav class="shell-nav" aria-label="Hauptnavigation">/);
     // Markup of the sections; what the page script does with them is covered by 'dashboard page behaviour'.
     assert.doesNotMatch(page.body, /Issues in flight/);
-    for (const name of ['running', 'next', 'waiting', 'paused']) {
-      assert.match(page.body, new RegExp(`<div class="agents[^"]*" id="${name}"></div>`));
-      assert.match(page.body, new RegExp(`<span class="count" id="${name}-count"></span>`));
-    }
-    for (const name of ['next', 'waiting', 'paused']) assert.match(page.body, new RegExp(`<section class="agents-section queue-section" id="${name}-section"[^>]*hidden>`));
-    assert.match(page.body, /id="blocked-section"/);
-    assert.match(page.body, /id="refresh"/);
+    assert.match(page.body, /<div class="agents" id="running"><\/div>/);
+    assert.match(page.body, /<span class="count" id="running-count"><\/span>/);
+    // Slots, queue and blocked moved to the Tasks page (E5-2); the overview keeps a compact line that links there.
+    assert.doesNotMatch(page.body, /id="(slot-settings|slots|model-controls|next-section|waiting-section|paused-section|blocked-section)"/);
+    assert.match(page.body, /<p class="tasks-line" id="tasks-line">[^]*<a class="section-link" href="\/tasks">Alle Tasks<\/a>/);
     assert.match(page.body, /\.pipe-verdict\.vd-warn/);
     assert.match(page.body, /\.pipe-node\.st-skipped/);
+    assert.match(page.body, /id="shell-poll"/);
     assert.match(page.body, /<section id="dispatch-gate" class="dispatch-gate" role="status" hidden>/);
     assert.match(page.body, /<section id="alerts" class="panel alerts"/);
     assert.match(page.body, /<span class="alerts-badge" id="alerts-count" aria-live="polite" hidden>/);
     assert.doesNotMatch(page.body, /id="model-holds"|id="problems"/);
     assert.doesNotMatch(page.body, /\bonclick=/);
-    assert.match(page.body, /<div class="slot-settings" id="slot-settings" role="group" aria-label="Agent slots" hidden><\/div>/);
 
     const state = await request(server.port, 'GET', '/api/v1/state');
     assert.equal(state.status, 200);
@@ -243,6 +244,9 @@ describe('http extension', () => {
     assert.equal(page.status, 200);
     assert.match(page.body, /<title>Statistik · Symphony<\/title>/);
     assert.ok(page.body.includes(TOKENS_CSS), 'logs page embeds the tokens CSS');
+    const stats = await request(server.port, 'GET', '/stats');
+    assert.equal(stats.status, 200);
+    assert.equal(stats.body, page.body, '/stats serves the statistics page until #346 routes it');
   });
 
   it('serves all page routes in the shell (E1-4)', async () => {
@@ -262,8 +266,8 @@ describe('http extension', () => {
       assert.ok(res.body.includes(text), path);
     }
     const issue = (await request(server.port, 'GET', '/issue?id=acme%2Fapp%231')).body;
-    assert.ok(issue.includes('id="crumb-current" aria-current="page">Issue<'));
-    const placeholders: Array<[string, string]> = [['/tasks', 'Tasks'], ['/brain', 'Brain']];
+    assert.ok(issue.includes('id="crumb-current">Issue<'));
+    const placeholders: Array<[string, string]> = [['/brain', 'Brain']];
     for (const [path, title] of placeholders) {
       const res = await request(server.port, 'GET', path);
       assert.ok(res.body.includes('Diese Seite kommt in Kürze.'), path);
@@ -344,7 +348,7 @@ describe('http extension', () => {
     assert.match(page, /\/api\/v1\/history\/analytics\?/);
     assert.match(page, /\/api\/v1\/history\/entries\?/);
     assert.match(page, /data-body="roles"/);
-    assert.match(page, /Most expensive issue pipelines/);
+    assert.match(page, /Teuerste Issue-Pipelines/);
 
     const week = '/api/v1/history/analytics?from=2026-09-28T00:00:00Z&to=2026-10-05T00:00:00Z&tz=Europe%2FBerlin';
     const a = JSON.parse((await request(server.port, 'GET', week)).body);
@@ -367,6 +371,9 @@ describe('http extension', () => {
       ['reviewer', { 'review:approved': 1 }],
     ]);
     assert.equal(a.filter.effort, null);
+    assert.ok(Array.isArray(a.budget.days) && a.budget.days.length > 0);
+    assert.equal(typeof a.budget.days[0].peak_5h_tokens, 'number');
+    assert.equal(typeof a.budget.compacts_by_role, 'object');
     // A second identical request is served from the cache with the same figures.
     assert.deepEqual(JSON.parse((await request(server.port, 'GET', week)).body).series, a.series);
     const effort = JSON.parse((await request(server.port, 'GET', `${week}&effort=high`)).body);
@@ -545,6 +552,42 @@ describe('issue details', () => {
   });
 });
 
+describe('issue details: head card fields (E3-6)', () => {
+  it('returns profile, round of max, branch_name and the pull request from the change log', async () => {
+    const logDir = tempDir();
+    fs.mkdirSync(path.join(logDir, 'changes'), { recursive: true });
+    const change = (sha: string, at: string, pr: number | null) => JSON.stringify({
+      id: `code:acme/app:${sha}`, type: 'code', at, repo: 'acme/app', issue: 'acme/app#h', role: 'developer', title: 'x', files: [],
+      pr: pr === null ? null : { number: pr, status: 'pending' }, diff: null, status: 'committed',
+    });
+    fs.writeFileSync(path.join(logDir, 'changes', 'acme_app.jsonl'), [change('a1', '2026-10-01T10:00:00.000Z', 6), change('a2', '2026-10-01T11:00:00.000Z', 7), change('a3', '2026-10-01T12:00:00.000Z', null)].join('\n') + '\n');
+    const front = baseFront(tempDir(), { pipeline: { profiles: { feature: { max_review_rounds: 2 } } } });
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(front)),
+      runner: new FakeRunner(() => new Promise(() => undefined)),
+      logger: Logger.silent(),
+      env: {},
+      logDir,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker([makeIssue({ id: 'h', labels: ['type: feature', 'complexity: l'], branch_name: 'symphony/issue-h' }), makeIssue({ id: 'p' })]),
+    });
+    try {
+      await orchestrator.tickNow();
+      const detail = orchestrator.issueDetail('acme/app#h');
+      assert.equal(detail?.profile, 'feature');
+      assert.deepEqual(detail?.rounds, { current: 1, max: 2 });
+      assert.equal(detail?.pull_request, 7, 'newest change that knows a pull request');
+      assert.equal(detail?.issue?.branch_name, 'symphony/issue-h');
+      const plain = orchestrator.issueDetail('acme/app#p');
+      assert.equal(plain?.pull_request, null);
+      assert.equal(plain?.issue?.branch_name, null);
+      assert.equal(plain?.rounds?.max, 3, 'pipeline.max_review_rounds without a profile override');
+    } finally {
+      await orchestrator.shutdown(1_000);
+    }
+  });
+});
+
 describe('team API', () => {
   const make = (logDir: string, issues: ReturnType<typeof makeIssue>[], runner = new FakeRunner(() => new Promise(() => undefined))) =>
     new Orchestrator({
@@ -571,7 +614,7 @@ describe('team API', () => {
       const res = await request(server.port, 'GET', base);
       assert.equal(res.status, 200);
       const team = JSON.parse(res.body);
-      assert.deepEqual(Object.keys(team).sort(), ['active', 'blocks', 'handoffs', 'seats', 'subagents']);
+      assert.deepEqual(Object.keys(team).sort(), ['active', 'blocks', 'compact_threshold', 'handoffs', 'seats', 'subagents', 'trace']);
       assert.equal(team.active.role, 'default');
       assert.equal(team.active.recent_tools.at(-1).tool, 'Bash');
       assert.equal(team.seats.at(-1).role, 'you');
@@ -1157,31 +1200,29 @@ describe('page shell (layout.ts, #342)', () => {
   };
 
   it('page() builds the complete document with the tokens CSS, BASE_JS and the shell', () => {
-    const html = shellPage({ title: 'A<b', nav: null, body: '<p>x</p>', scripts: 'pageScript();' });
+    const html = shellPage({ aurora: AURORA.overview, title: 'A<b', nav: null, body: '<p>x</p>', scripts: 'pageScript();' });
     assert.ok(html.startsWith('<!doctype html>\n<html lang="de">'));
     assert.match(html, /<title>A&lt;b<\/title>/);
     for (const part of [TOKENS_CSS, LAYOUT_CSS, BASE_JS, LAYOUT_JS]) assert.ok(html.includes(part));
     assert.match(html, /function setLive\(/);
-    assert.ok(html.includes('<main id="main"><p>x</p></main>'));
+    assert.ok(html.includes('<main id="main" class="shell-main"><p>x</p></main>'));
     assert.ok(html.indexOf('pageScript();') > html.indexOf('function setLive('), 'the page script runs after the shell script');
     assert.equal(count(html, '<script>'), 1);
     assert.ok(!html.includes('Brotkrumen'), 'no breadcrumbs without crumbs');
-    const withCrumbs = shellPage({ title: 'T', nav: null, crumbs: [{ label: 'Übersicht', href: '/' }, { label: 'X<y' }], body: '', scripts: '' });
-    assert.match(withCrumbs, /<nav class="crumbs" aria-label="Brotkrumen"><ol><li><a href="\/">Übersicht<\/a><\/li><li><span id="crumb-current" aria-current="page">X&lt;y<\/span><\/li><\/ol><\/nav>/);
+    const withCrumbs = shellPage({ aurora: AURORA.overview, title: 'T', nav: null, crumbs: [{ label: 'Übersicht', href: '/' }, { label: 'X<y' }], body: '', scripts: '' });
+    assert.match(withCrumbs, /<nav class="crumbs" aria-label="Brotkrumen"><ol><li><a href="\/">Übersicht<\/a><\/li><li><span class="crumb-current" id="crumb-current">X&lt;y<\/span><\/li><\/ol><\/nav>/);
   });
 
-  it('draws the aurora as one fixed layer of radial gradients and keeps every page at most 4 blur layers', () => {
+  it('draws the aurora as blurred circles under a dot grid and keeps every page at most 4 blur layers', () => {
     const aurora = ruleOf(LAYOUT_CSS, '.aurora');
-    assert.match(aurora, /position: fixed/);
-    assert.match(aurora, /z-index: 0/);
+    assert.match(aurora, /position: absolute/);
     assert.match(aurora, /pointer-events: none/);
-    const gradients = count(aurora, 'radial-gradient(');
-    assert.ok(gradients >= 2 && gradients <= 3, `${gradients} colour fields`);
-    assert.doesNotMatch(aurora, /url\(|filter:/);
+    assert.match(ruleOf(LAYOUT_CSS, '.aurora > i'), /border-radius: 50%/);
     assert.doesNotMatch(LAYOUT_CSS, /backdrop-filter/);
     assert.doesNotMatch(TOKENS_CSS, /radial-gradient/, 'the body ground no longer carries the gradients');
     for (const [name, html] of Object.entries(PAGES)) {
-      assert.equal(count(html, '<div class="aurora" aria-hidden="true"></div>'), 1, name);
+      assert.equal(count(html, '<div class="aurora" aria-hidden="true">'), 1, name);
+      assert.ok(count(html, 'filter:blur(') >= 3, `${name}: at least three aurora circles`);
       const blurs = styleOf(html).match(/(?<!-webkit-)backdrop-filter:\s*blur\(/g) ?? [];
       assert.ok(blurs.length >= 1 && blurs.length <= 4, `${name}: ${blurs.length} blur layers`);
     }
@@ -1197,12 +1238,12 @@ describe('page shell (layout.ts, #342)', () => {
       assert.match(head, /<header class="shell-head g">/);
       assert.match(head, /<a class="brand" href="\/"[^>]*>[\s\S]*<span class="brand-name">Symphony<\/span>/);
       assert.match(head, /id="shell-live"/);
-      assert.match(head, /id="shell-budget"[^>]*>5 h —</);
+      assert.match(head, /id="shell-budget"[^>]*>5h —</);
       assert.ok(head.includes(`id="shell-version" title="Symphony-Version">v${SYMPHONY_VERSION}<`), name);
       assert.match(head, /<time class="shell-clock mono" id="shell-clock" aria-label="Uhr"/);
       assert.match(head, /id="progress"/);
       const nav = mainNav(html);
-      const links = [...nav.matchAll(/<a class="nv" href="([^"]+)"[^>]*>([^<]+)<\/a>/g)].map((m) => [m[1], m[2]]);
+      const links = [...nav.matchAll(/<a class="nv(?: on)?" href="([^"]+)"[^>]*><svg[\s\S]*?<\/svg>([^<]+)<\/a>/g)].map((m) => [m[1], m[2]]);
       assert.deepEqual(links, [['/', 'Übersicht'], ['/changes', 'Changes'], ['/tasks', 'Tasks'], ['/brain', 'Brain'], ['/stats', 'Statistik']], name);
     }
     assert.deepEqual(NAV_ITEMS.map((i) => i.key), ['overview', 'changes', 'tasks', 'brain', 'stats']);
@@ -1215,9 +1256,9 @@ describe('page shell (layout.ts, #342)', () => {
     assert.deepEqual(current(AGENT_HTML), []);
     assert.equal(count(mainNav(DASHBOARD_HTML), 'aria-current'), 1);
     assert.equal(count(AGENT_HTML, '<nav class="crumbs" aria-label="Brotkrumen">'), 1);
-    assert.match(AGENT_HTML, /aria-label="Brotkrumen"><ol><li><a href="\/">Übersicht<\/a><\/li><li><span id="crumb-current" aria-current="page">Issue<\/span>/);
+    assert.match(AGENT_HTML, /aria-label="Brotkrumen"><ol><li><a href="\/">Übersicht<\/a><\/li><li><span class="crumb-current" id="crumb-current">Issue<\/span>/);
     const agent = renderPage(AGENT_HTML, { detail: issueDetail() }, { url: AGENT_URL });
-    assert.equal(agent.$('crumb-current').textContent, 'Issue #1', 'the crumb names the issue');
+    assert.equal(agent.$('crumb-current').textContent, '#1 Issue one', 'the crumb names the issue: number and short title');
     assert.equal(agent.query('nav[aria-label="Brotkrumen"] a[href="/"]').length, 1);
     for (const html of [DASHBOARD_HTML, LOGS_HTML]) assert.ok(!html.includes('aria-label="Brotkrumen"'));
   });
@@ -1243,12 +1284,12 @@ describe('page shell (layout.ts, #342)', () => {
       for (const old of ['class="topbar"', 'topbar-inner', 'brand-sub', 'AGENT ORCHESTRATOR', 'AGENT TRACE', 'STATISTICS &amp; ANALYTICS', 'id="back"', 'id="sys-version"', 'id="sys-updated"']) {
         assert.ok(!html.includes(old), `${name} still has ${old}`);
       }
-      assert.equal(count(html, '<main id="main">'), 1, name);
+      assert.equal(count(html, '<main id="main" class="shell-main">'), 1, name);
       assert.equal(count(html, 'id="announce"'), 1, name);
     }
     assert.doesNotMatch(TOKENS_CSS, /\.topbar|\.brand|\.sysinfo|@keyframes sweep/);
-    const main = (html: string): string => html.slice(html.indexOf('<main id="main">'), html.indexOf('</main>'));
-    for (const id of ['logs-open', 'refresh', 'page-title', 'ov-subtitle', 'ov-chips']) assert.ok(main(DASHBOARD_HTML).includes(`id="${id}"`), id);
+    const main = (html: string): string => html.slice(html.indexOf('<main id="main" class="shell-main">'), html.indexOf('</main>'));
+    for (const id of ['logs-open', 'page-title', 'ov-subtitle', 'ov-chips']) assert.ok(main(DASHBOARD_HTML).includes(`id="${id}"`), id);
     assert.match(main(DASHBOARD_HTML), /<h1 id="page-title">Übersicht<\/h1>/);
     assert.doesNotMatch(main(DASHBOARD_HTML), /class="sysinfo"/);
     for (const id of ['raw', 'reload']) assert.ok(main(LOGS_HTML).includes(`id="${id}"`), id);
@@ -1265,11 +1306,11 @@ describe('page shell (layout.ts, #342)', () => {
     vm.runInContext(LAYOUT_JS, ctx);
     const live = nodes.get('shell-live') as FakeElement & { title?: string };
     vm.runInContext('setLive(true)', ctx);
-    assert.deepEqual(live.className.split(' ').sort(), ['badge', 'pulse', 'tone-green']);
-    assert.equal(nodes.get('shell-live-text')?.textContent, 'Live: verbunden');
+    assert.deepEqual(live.className.split(' ').sort(), ['sh-chip', 'shell-live', 'tone-green']);
+    assert.equal(nodes.get('shell-live-text')?.textContent, 'LIVE');
     vm.runInContext('setLive(false)', ctx);
-    assert.equal(live.className, 'badge tone-gray');
-    assert.equal(nodes.get('shell-live-text')?.textContent, 'Live: keine Verbindung');
+    assert.equal(live.className, 'sh-chip shell-live tone-gray');
+    assert.equal(nodes.get('shell-live-text')?.textContent, 'OFFLINE');
     const clock = nodes.get('shell-clock') as FakeElement;
     assert.match(clock.textContent, /^clock:\d\d:\d\d:\d\d$/);
     assert.match(clock.getAttribute('datetime') ?? '', /^\d{4}-\d\d-\d\dT/);
@@ -1291,9 +1332,8 @@ describe('page shell (layout.ts, #342)', () => {
   });
 
   it('at 390 px the navigation scrolls inside its frame, the page does not; touch targets are at least 44px', () => {
-    const nav = ruleOf(LAYOUT_CSS, '.shell-nav');
-    assert.match(nav, /overflow-x: auto/);
-    assert.match(nav, /min-width: 0/);
+    assert.match(ruleOf(LAYOUT_CSS, '.shell-well'), /overflow-x: auto/);
+    assert.match(ruleOf(LAYOUT_CSS, '.shell-nav'), /min-width: 0/);
     const pill = ruleOf(LAYOUT_CSS, '.nv');
     assert.match(pill, /min-height: 44px/);
     assert.match(pill, /display: inline-flex/);
@@ -1307,7 +1347,7 @@ describe('page shell (layout.ts, #342)', () => {
   it('shows German shell texts (Übersicht, Statistik, Uhr, Brotkrumen); Changes, Tasks and Brain stay', () => {
     for (const [name, html] of Object.entries(PAGES)) {
       const head = header(html);
-      for (const text of ['Übersicht', 'Changes', 'Tasks', 'Brain', 'Statistik', 'aria-label="Uhr"', 'title="5-Stunden-Budget"']) assert.ok(head.includes(text), `${name}: ${text}`);
+      for (const text of ['Übersicht', 'Changes', 'Tasks', 'Brain', 'Statistik', 'aria-label="Uhr"', 'title="5-h-Fenster"']) assert.ok(head.includes(text), `${name}: ${text}`);
       for (const text of ['>Overview<', '>Dashboard<', '>Logs<', 'Statistics', 'Clock']) assert.ok(!head.includes(text), `${name}: ${text}`);
     }
   });
@@ -1385,22 +1425,16 @@ describe('dashboard page behaviour', () => {
     assert.deepEqual(page.fetches.map((f) => f.url), ['/api/v1/budget', '/api/v1/state', '/api/v1/history', '/api/v1/activity?minutes=30', '/api/v1/system']);
   });
 
-  it('puts every card into its section with a count, and hides the empty queue sections', () => {
+  it('shows only running cards and the compact line to /tasks; the dispatch plan lives on the Tasks page', () => {
     const page = render(
       [issueRow(), waiting({ issue_id: '3', issue_identifier: 'acme/app#3', section: 'next', status: 'queued', retry: null, reason: { code: 'ready', text: 'Ready' }, position: 1 }), waiting()],
-      { counts: { ...dashboardState().counts, running: 1 }, board_fetched_at: '2026-10-30T11:59:00Z' },
+      { counts: { ...dashboardState().counts, running: 1, queued: 4 } },
     );
     assert.equal(page.$('running').children.length, 1);
-    assert.equal(page.$('next').children.length, 1);
-    assert.equal(page.$('waiting').children.length, 1);
-    assert.deepEqual(['running', 'next', 'waiting', 'paused'].map((n) => page.$(`${n}-count`).textContent), ['01', '01', '01', '00']);
-    assert.equal(page.$('next-section').hidden, false);
-    assert.equal(page.$('paused-section').hidden, true);
-    assert.equal(page.$('next-meta').textContent, 'in start order · board as of 1m 0s ago');
-    assert.equal(page.$('next').querySelector('.pos')!.textContent, '#1');
-    assert.equal(page.$('next').querySelector('.pos')!.hidden, false);
-    const empty = render([]);
-    for (const name of ['next', 'waiting', 'paused']) assert.equal(empty.$(`${name}-section`).hidden, true, name);
+    assert.equal(page.$('running-count').textContent, '01');
+    assert.equal(page.$('tasks-line-text').textContent, '1 Slot belegt · 4 in der Queue');
+    const idle = render([], { counts: { ...dashboardState().counts, running: 3, queued: 0 } });
+    assert.equal(idle.$('tasks-line-text').textContent, '3 Slots belegt · 0 in der Queue');
   });
 
   it('links the card title to the issue page and shows model and phase of a running issue', () => {
@@ -1410,76 +1444,18 @@ describe('dashboard page behaviour', () => {
     assert.deepEqual(fields, ['claude-code-default', 'StreamingTurn']);
   });
 
-  it('names the reason of a waiting card and shows its UTC time in local time', () => {
-    const page = render([waiting()]);
-    const chip = page.$('waiting').querySelector('.reason')!;
-    assert.match(chip.className, /tone-amber/);
-    assert.equal(chip.title, 'backoff: Backoff until 2026-10-30 12:30 UTC');
-    assert.doesNotMatch(chip.textContent, /UTC/, 'the shown time is local');
-    assert.match(chip.textContent, /^Backoff until /);
-  });
-
-  it('offers Retry now, Start now and Pause on a waiting card, and posts the click', () => {
-    const page = render([waiting()], { counts: { ...dashboardState().counts, running: 0 } });
-    assert.deepEqual(buttons(page).map((b) => b.textContent), ['Retry now', 'Start now', 'Pause']);
-    page.click(button(page, 'Retry now'));
-    page.click(button(page, 'Start now'));
+  it('offers Pause on a running card and posts the click', () => {
+    const page = render([issueRow()], { counts: { ...dashboardState().counts, running: 1 } });
+    assert.deepEqual(buttons(page).map((b) => b.textContent), ['Pause']);
     page.click(button(page, 'Pause'));
-    assert.deepEqual(page.fetches.filter((f) => f.method === 'POST').map((f) => `${f.method} ${f.url}`), [
-      `POST /api/v1/${idPath}/retry`,
-      `POST /api/v1/${idPath}/force`,
-      `POST /api/v1/${idPath}/pause`,
-    ]);
-    assert.deepEqual(page.confirms, [], 'a free slot needs no confirmation');
+    assert.deepEqual(page.fetches.filter((f) => f.method === 'POST').map((f) => `${f.method} ${f.url}`), [`POST /api/v1/acme%2Fapp%231/pause`]);
   });
 
-  it('offers Resume now on a paused card', () => {
-    const page = render([waiting({ status: 'paused', section: 'paused', retry: null, reason: { code: 'paused', text: 'Paused' }, paused: { source: 'operator', paused_at: '2026-10-30T11:50:00Z' } })]);
-    assert.equal(page.$('paused-section').hidden, false);
-    assert.match(page.$('paused').textContent, /paused by operator/);
-    page.click(button(page, 'Resume now'));
-    assert.equal(page.fetches.at(-1)!.url, `/api/v1/${idPath}/resume`);
-  });
-
-  it('asks before Start now when every slot is taken, and starts nothing when declined', () => {
-    const full = { counts: { ...dashboardState().counts, running: 1 }, health: { ...dashboardState().health, max_concurrent_agents: 1 } };
-    const declined = render([waiting()], full, { confirm: false });
-    const before = declined.fetches.length;
-    declined.click(button(declined, 'Start now'));
-    assert.deepEqual(declined.confirms, ['All 1 slot is busy. Start #2 in an extra slot?']);
-    assert.equal(declined.fetches.length, before);
-    const accepted = render([waiting()], full);
-    accepted.click(button(accepted, 'Start now'));
-    assert.equal(accepted.fetches.at(-1)!.url, `/api/v1/${idPath}/force`);
-  });
-
-  it('counts forced sessions in the slot bar and takes the Start now button away from held models', () => {
-    const page = render([], { counts: { ...dashboardState().counts, running: 2, forced: 1 } });
-    assert.match(page.$('slots').textContent, /02 \/ 10 agents, 1 forced/);
-    const held = render([waiting({ model_hold: { model: 'opus', until: '2026-10-30T14:00:00Z' }, reason: { code: 'model_hold', text: 'Model hold' } })]);
-    assert.ok(!buttons(held).some((b) => b.textContent === 'Start now'));
-  });
-
-  it('shows the model controls and posts a hold', () => {
-    const page = render([], { model_controls: [{ model: 'opus', paused: false, limit_until: null }] });
-    assert.equal(page.$('model-controls').hidden, false);
-    assert.match(page.$('model-controls').textContent, /opus.*running/);
-    const [control] = page.query('button.model-control');
-    assert.equal(control!.textContent, 'Pause');
-    page.click(control!);
-    assert.deepEqual(page.fetches.at(-1), { url: '/api/v1/models/opus/hold', method: 'POST' });
-    const resumed = render([], { model_controls: [{ model: 'opus', paused: true, limit_until: null }] });
-    assert.match(resumed.$('model-controls').textContent, /paused by operator/);
-    resumed.click(resumed.query('button.model-control')[0]!);
-    assert.equal(resumed.fetches.at(-1)!.url, '/api/v1/models/opus/release');
-  });
-
-  it('names held models and the cards that wait for them', () => {
+  it('names held models in the alerts panel only', () => {
     const hold = { model: 'opus', source: 'limit', until: '2026-10-30T14:00:00Z', since: '2026-10-30T11:00:00Z', issue_identifier: ID, text: 'weekly limit' };
     const page = render([waiting({ status: 'queued', retry: null, reason: null, model_hold: hold })], { model_holds: [hold] });
     assert.match(page.$('alerts-list').textContent, /Model-Hold.*opus pausiert · Limit bis \d\d:\d\d/);
     assert.equal(page.$('alerts-count').textContent, '1');
-    assert.match(page.$('waiting').textContent, /Waiting for model opus \(limit until /);
     assert.equal(render([]).$('alerts-count').textContent, '0');
   });
 
@@ -1497,14 +1473,6 @@ describe('dashboard page behaviour', () => {
     assert.equal(page.$('running').querySelectorAll('.pipe-node.st-skipped').length, 1);
   });
 
-  it('shows the dispatch note of a waiting card and no generic waiting hint', () => {
-    const card = { retry: null, reason: null, section: 'next', status: 'queued', position: 1 };
-    const noted = render([waiting({ ...card, dispatch_note: 'Blocked by #9' })]);
-    assert.match(noted.$('next').textContent, /Blocked by #9/);
-    const plain = render([waiting({ ...card, dispatch_note: null })]);
-    assert.doesNotMatch(plain.root.textContent, /Waiting for a free agent slot or the next poll/);
-  });
-
   it('shows the dispatch gate only when the session limit paused the dispatch', () => {
     const gate = { until: '2026-10-30T14:00:00Z', window: 'five_hour', issue_identifier: ID };
     const page = render([], { health: { ...dashboardState().health, dispatch_gate: gate } });
@@ -1513,42 +1481,10 @@ describe('dashboard page behaviour', () => {
     assert.equal(render([]).$('dispatch-gate').hidden, true);
   });
 
-  it('describes a session limit retry, also when the extra usage is off', () => {
-    const limit = { waiting: true, resets_at: '2026-10-30T14:00:00Z', window: 'five_hour', text: 'You hit your limit', hits: 1, max_retries: 3, overage_disabled_reason: 'out_of_credits' };
-    const retry = { kind: 'session_limit', attempt: 1, due_at: '2026-10-30T14:00:00Z', due_in_ms: 7_200_000, error: 'limit', limit };
-    const page = render([waiting({ retry, reason: null })]);
-    const text = page.$('waiting').textContent;
-    assert.match(text, /waiting for reset/);
-    assert.match(text, /five hour/);
-    assert.match(text, /You hit your limit/);
-    assert.match(text, /Extra usage is off because credits are used up\. Top up, then press Retry now\./);
-  });
-
-  it('lets the operator change and reset the agent slots', () => {
-    const limits = { ...dashboardState().limits, override_active: true, max_concurrent_agents: { effective: 3, workflow: 10, override: 3 } };
-    const page = render([], { limits });
-    const slots = page.$('slot-settings');
-    assert.equal(slots.hidden, false);
-    const reset = slots.querySelector('button.slot-reset')!;
-    assert.equal(reset.textContent, 'Reset to WORKFLOW.md (10)');
-    const more = page.query('button.slot-control').find((b) => b.getAttribute('aria-label') === 'More agent slots')!;
-    page.click(more);
-    assert.deepEqual(page.fetches.at(-1), { url: '/api/v1/settings/agents', method: 'PUT', body: { max_concurrent_agents: 4 } });
-    const again = render([], { limits });
-    again.click(again.$('slot-settings').querySelector('button.slot-reset')!);
-    assert.deepEqual([again.fetches.at(-1)!.url, again.fetches.at(-1)!.method], ['/api/v1/settings/agents', 'DELETE']);
-  });
-
-  it('warns when the limit is lowered below the running count', () => {
-    const limits = { ...dashboardState().limits, max_concurrent_agents: { effective: 1, workflow: 10, override: 1 } };
-    const page = render([], { limits, counts: { ...dashboardState().counts, running: 3 } });
-    assert.match(page.$('slot-settings').textContent, /3 running, limit 1: no new starts until 3 finish/);
-  });
-
   it('disables every control on a bind that does not allow remote control', () => {
-    const page = render([waiting()], { controls: { retry: false } });
+    const page = render([issueRow()], { controls: { retry: false }, counts: { ...dashboardState().counts, running: 1 } });
     assert.equal(buttons(page).length, 0);
-    assert.match(page.$('waiting').textContent, /Controls disabled/);
+    assert.match(page.$('running').textContent, /Controls disabled/);
   });
 });
 
@@ -1609,7 +1545,7 @@ describe('agent page behaviour', () => {
 
   it('pauses a running issue and shows Resume now for an operator pause', () => {
     const running = renderPage(AGENT_HTML, { detail: issueDetail() }, opts);
-    const pause = running.query('button.restart').find((b) => b.textContent === 'Pause')!;
+    const pause = running.query('#head-actions button.restart').find((b) => b.textContent === 'Pausieren')!;
     running.click(pause);
     assert.deepEqual(running.fetches.at(-1), { url: '/api/v1/acme%2Fapp%231/pause', method: 'POST' });
     const paused = renderPage(AGENT_HTML, { detail: issueDetail({ status: 'paused', running: null, paused: { source: 'operator', paused_at: '2026-10-30T11:50:00Z', continuations: 0 } }) }, opts);
@@ -1623,7 +1559,7 @@ describe('agent page behaviour', () => {
     const detail = retrying(sessionLimit);
     detail.slots = { running: 1, forced: 0, limit: 1 };
     const page = renderPage(AGENT_HTML, { detail }, { ...opts, confirm: false });
-    const force = page.query('button.restart').find((b) => b.textContent === 'Start now')!;
+    const force = page.query('#head-actions button.restart').find((b) => b.textContent === 'Jetzt starten')!;
     const before = page.fetches.length;
     page.click(force);
     assert.deepEqual(page.confirms, ['All 1 slot is busy. Start #1 in an extra slot?']);
@@ -1648,6 +1584,279 @@ describe('agent page behaviour', () => {
     const urls = page.fetches.map((f) => f.url);
     assert.ok(urls.some((u) => u.endsWith('/timeline?after=0')), urls.join(' '));
     assert.ok(urls.some((u) => u.includes('/transcript?run=r1')));
+  });
+});
+
+describe('brain routes', () => {
+  async function start(brain: { enabled: boolean; path: string } | null) {
+    const front = baseFront(tempDir(), brain ? { brain } : {});
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(front)),
+      runner: new FakeRunner(),
+      logger: Logger.silent(),
+      env: {},
+      logDir: null,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker(),
+    });
+    await orchestrator.buildBrainIndex();
+    return { orchestrator, server: await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() }) };
+  }
+
+  it('answers 404 brain_disabled without the brain', async () => {
+    const { server } = await start(null);
+    try {
+      for (const route of ['vitals', 'candidates']) {
+        const res = await request(server.port, 'GET', `/api/v1/brain/${route}`);
+        assert.equal(res.status, 404);
+        assert.equal(JSON.parse(res.body).error.code, 'brain_disabled');
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('serves vitals and candidates', async () => {
+    const vault = path.join(tempDir(), 'vault');
+    await ensureVault(vault, ['acme/app'], new Date('2026-10-01T00:00:00Z'));
+    const note = (created: string) => `---\ntype: lesson\nstatus: candidate\ncreated: ${created}\n---\n# L${created}\n`;
+    fs.writeFileSync(path.join(vault, 'Inbox/new.md'), note('2026-10-05'));
+    fs.writeFileSync(path.join(vault, 'Inbox/old.md'), note('2026-10-02'));
+    const { server } = await start({ enabled: true, path: vault });
+    try {
+      const vitals = await request(server.port, 'GET', '/api/v1/brain/vitals');
+      assert.equal(vitals.status, 200);
+      const body = JSON.parse(vitals.body);
+      assert.deepEqual(Object.keys(body).sort(), ['broken_links', 'candidates', 'last_commit', 'links', 'notes_by_status', 'orphans', 'reads_today', 'writes_today']);
+      assert.equal(body.notes_by_status.candidate, 2);
+      assert.equal(body.candidates, 2);
+      assert.equal(body.writes_today, 0);
+      assert.equal(body.reads_today, 0);
+      assert.equal(body.last_commit.sha.length, 40);
+      assert.equal(body.last_commit.author, 'symphony');
+      const candidates = JSON.parse((await request(server.port, 'GET', '/api/v1/brain/candidates')).body).candidates;
+      assert.deepEqual(candidates.map((c: { path: string }) => c.path), ['Inbox/old.md', 'Inbox/new.md']);
+      assert.equal(candidates[0].target, 'Lessons/');
+      const post = await request(server.port, 'POST', '/api/v1/brain/vitals');
+      assert.equal(post.status, 405);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe('brain access, clashes and promotion routes (E7-6b)', () => {
+  const sh = (dir: string, ...args: string[]): string => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+  const candidate = '---\ntype: lesson\nstatus: candidate\ncreated: 2026-10-20\n---\n# X\n';
+
+  async function start(options: { brain?: boolean; host?: string; allowRemoteControl?: boolean; access?: string } = {}) {
+    const vault = path.join(tempDir(), 'vault');
+    await ensureVault(vault, ['acme/app'], new Date('2026-10-01T00:00:00Z'));
+    fs.writeFileSync(path.join(vault, 'Inbox/x.md'), candidate);
+    sh(vault, '-c', 'user.name=t', '-c', 'user.email=t@local', 'add', '-A');
+    sh(vault, '-c', 'user.name=t', '-c', 'user.email=t@local', 'commit', '-q', '-m', 'candidate');
+    const logDir = tempDir();
+    if (options.access !== undefined) {
+      fs.mkdirSync(path.join(logDir, 'brain'));
+      fs.writeFileSync(path.join(logDir, 'brain', 'access.jsonl'), options.access);
+    }
+    const front = baseFront(tempDir(), options.brain === false ? {} : { brain: { enabled: true, path: vault } });
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(front)),
+      runner: new FakeRunner(),
+      logger: Logger.silent(),
+      env: {},
+      logDir,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker(),
+    });
+    await orchestrator.buildBrainIndex();
+    orchestrator.loadBrainAccess();
+    const server = await startHttpServer({
+      host: options.host ?? '127.0.0.1',
+      port: 0,
+      orchestrator,
+      logger: Logger.silent(),
+      ...(options.allowRemoteControl ? { allowRemoteControl: true } : {}),
+    });
+    return { vault, server };
+  }
+  const json = (res: { body: string }) => JSON.parse(res.body);
+  const candidates = async (port: number): Promise<string[]> => json(await request(port, 'GET', '/api/v1/brain/candidates')).candidates.map((c: { path: string }) => c.path);
+
+  it('approve moves and commits as human, the candidate leaves /candidates, revert brings it back', async () => {
+    const { vault, server } = await start();
+    try {
+      assert.deepEqual(await candidates(server.port), ['Inbox/x.md']);
+      const approved = await request(server.port, 'POST', '/api/v1/brain/candidates/Inbox%2Fx.md/approve');
+      assert.equal(approved.status, 200, approved.body);
+      const body = json(approved);
+      assert.equal(body.path, 'Lessons/x.md');
+      assert.equal(body.previous_path, 'Inbox/x.md');
+      assert.equal(body.hash, createHash('sha256').update(fs.readFileSync(path.join(vault, 'Lessons/x.md'))).digest('hex'));
+      assert.match(body.sha, /^[0-9a-f]{40}$/);
+      assert.equal(fs.existsSync(path.join(vault, 'Inbox/x.md')), false);
+      assert.match(fs.readFileSync(path.join(vault, 'Lessons/x.md'), 'utf8'), /status: approved\n[\s\S]*updated: /);
+      assert.equal(sh(vault, 'log', '-1', '--format=%an|%s'), 'human|approve: Inbox/x.md');
+      assert.deepEqual(await candidates(server.port), []);
+
+      const reverted = await request(server.port, 'POST', '/api/v1/brain/candidates/Lessons%2Fx.md/revert');
+      assert.equal(reverted.status, 200, reverted.body);
+      assert.equal(json(reverted).path, 'Inbox/x.md');
+      assert.equal(json(reverted).previous_path, 'Lessons/x.md');
+      assert.equal(fs.readFileSync(path.join(vault, 'Inbox/x.md'), 'utf8'), candidate);
+      assert.equal(fs.existsSync(path.join(vault, 'Lessons/x.md')), false);
+      assert.equal(sh(vault, 'log', '-1', '--format=%an'), 'human');
+      assert.deepEqual(await candidates(server.port), ['Inbox/x.md']);
+
+      const again = await request(server.port, 'POST', '/api/v1/brain/candidates/Inbox%2Fx.md/revert');
+      assert.equal(again.status, 409);
+      assert.equal(json(again).error.code, 'no_approve_commit');
+      const missing = await request(server.port, 'POST', '/api/v1/brain/candidates/Lessons%2Fnone.md/revert');
+      assert.equal(missing.status, 404);
+      assert.equal(json(missing).error.code, 'note_not_found');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('reject sets deprecated, leaves the file and commits reject: <path>', async () => {
+    const { vault, server } = await start();
+    try {
+      const res = await request(server.port, 'POST', '/api/v1/brain/candidates/Inbox%2Fx.md/reject');
+      assert.equal(res.status, 200, res.body);
+      assert.equal(json(res).path, 'Inbox/x.md');
+      const text = fs.readFileSync(path.join(vault, 'Inbox/x.md'), 'utf8');
+      assert.match(text, /status: deprecated/);
+      assert.match(text, /updated: /);
+      assert.equal(sh(vault, 'log', '-1', '--format=%an|%s'), 'human|reject: Inbox/x.md');
+      assert.deepEqual(await candidates(server.port), []);
+      const twice = await request(server.port, 'POST', '/api/v1/brain/candidates/Inbox%2Fx.md/reject');
+      assert.equal(twice.status, 409);
+      assert.equal(json(twice).error.code, 'not_candidate');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('answers 400 for a path out of the vault, into .obsidian, not .md or badly encoded', async () => {
+    const { server } = await start();
+    try {
+      for (const bad of ['..%2F..%2Fetc%2Fpasswd.md', '.obsidian%2Fx.md', 'Inbox%2Fx.txt', '%E0%A4%A']) {
+        for (const action of ['approve', 'reject', 'revert']) {
+          const res = await request(server.port, 'POST', `/api/v1/brain/candidates/${bad}/${action}`);
+          assert.equal(res.status, 400, `${bad} ${action}: ${res.body}`);
+          assert.equal(json(res).error.code, 'bad_request');
+        }
+      }
+      const get = await request(server.port, 'GET', '/api/v1/brain/candidates/Inbox%2Fx.md/approve');
+      assert.equal(get.status, 405);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('refuses the POST routes without controlAllowed (403)', async () => {
+    const routes = ['candidates/Inbox%2Fx.md/approve', 'candidates/Inbox%2Fx.md/reject', 'candidates/Lessons%2Fx.md/revert', 'clashes/c1/resolve'];
+    const remote = await start({ host: '0.0.0.0' });
+    const proxied = await start({ host: '0.0.0.0', allowRemoteControl: true });
+    try {
+      for (const route of routes) {
+        const off = await request(remote.server.port, 'POST', `/api/v1/brain/${route}`);
+        assert.equal(off.status, 403);
+        assert.equal(json(off).error.code, 'control_disabled');
+        const foreign = await request(proxied.server.port, 'POST', `/api/v1/brain/${route}`, { origin: 'https://evil.example' });
+        assert.equal(foreign.status, 403);
+        assert.equal(json(foreign).error.code, 'forbidden_origin');
+      }
+      assert.ok(fs.existsSync(path.join(remote.vault, 'Inbox/x.md')));
+      assert.match(fs.readFileSync(path.join(proxied.vault, 'Inbox/x.md'), 'utf8'), /status: candidate/);
+    } finally {
+      await remote.server.close();
+      await proxied.server.close();
+    }
+  });
+
+  it('GET /access filters by role and q, newest first, purpose as a string, pages with before', async () => {
+    const row = (at: string, role: string, pathOrQuery: string, purpose?: string) =>
+      `${JSON.stringify({ at, run: 'r', issue: 'acme/app#1', role, op: 'read', path_or_query: pathOrQuery, ...(purpose !== undefined ? { purpose } : {}), result: 'ok' })}\n`;
+    const { server } = await start({
+      access:
+        row('2026-10-30T10:00:00.000Z', 'developer', 'Lessons/caching.md', 'p') +
+        row('2026-10-30T11:00:00.000Z', 'architect', 'Decisions/d.md', 'about caching') +
+        row('2026-10-30T12:00:00.000Z', 'developer', 'Inbox/x.md'),
+    });
+    try {
+      const byRole = await request(server.port, 'GET', '/api/v1/brain/access?role=developer');
+      assert.equal(byRole.status, 200);
+      assert.deepEqual(json(byRole).access.map((a: { path_or_query: string }) => a.path_or_query), ['Inbox/x.md', 'Lessons/caching.md']);
+      assert.equal(json(byRole).access[0].purpose, '');
+      assert.equal(json(byRole).next_before, null);
+      const byQ = json(await request(server.port, 'GET', '/api/v1/brain/access?q=caching')).access;
+      assert.deepEqual(byQ.map((a: { path_or_query: string }) => a.path_or_query), ['Decisions/d.md', 'Lessons/caching.md']);
+      const first = json(await request(server.port, 'GET', '/api/v1/brain/access?limit=1'));
+      assert.deepEqual(first.access.map((a: { at: string }) => a.at), ['2026-10-30T12:00:00.000Z']);
+      const second = json(await request(server.port, 'GET', `/api/v1/brain/access?limit=1&before=${first.next_before}`));
+      assert.deepEqual(second.access.map((a: { at: string }) => a.at), ['2026-10-30T11:00:00.000Z']);
+      assert.equal((await request(server.port, 'POST', '/api/v1/brain/access')).status, 405);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('GET /clashes lists a clash from the E7-4 log with both versions; resolve marks it', async () => {
+    // The rejection came after the commit of the candidate.
+    const at = new Date(Date.now() + 60_000).toISOString();
+    const fixture = `${JSON.stringify({ at, run: 'run2', issue: 'acme/app#1', role: 'developer', op: 'write', path_or_query: 'Inbox/x.md', purpose: '', result: 'rejected', reason: 'window', clash_id: 'c1', other_run: 'run1', other_at: at })}\n`;
+    const { vault, server } = await start({ access: fixture });
+    try {
+      const res = await request(server.port, 'GET', '/api/v1/brain/clashes');
+      assert.equal(res.status, 200, res.body);
+      const [clash] = json(res).clashes;
+      assert.equal(clash.id, 'c1');
+      assert.equal(clash.status, 'open');
+      assert.equal(clash.path, 'Inbox/x.md');
+      // No stored versions for a clash from the log: base from git (last commit before the rejection), attempted unknown.
+      assert.equal(clash.base.content, candidate);
+      assert.equal(clash.attempted, null);
+      assert.equal(clash.current.content, fs.readFileSync(path.join(vault, 'Inbox/x.md'), 'utf8'));
+      assert.equal(json(await request(server.port, 'GET', '/api/v1/brain/clashes?status=open')).clashes.length, 1);
+      assert.deepEqual(json(await request(server.port, 'GET', '/api/v1/brain/clashes?status=resolved')).clashes, []);
+      assert.equal((await request(server.port, 'GET', '/api/v1/brain/clashes?status=foo')).status, 400);
+
+      const resolved = await request(server.port, 'POST', '/api/v1/brain/clashes/c1/resolve');
+      assert.equal(resolved.status, 200, resolved.body);
+      assert.deepEqual(json(resolved), { id: 'c1', status: 'resolved' });
+      const twice = await request(server.port, 'POST', '/api/v1/brain/clashes/c1/resolve');
+      assert.equal(twice.status, 409);
+      assert.equal(json(twice).error.code, 'already_resolved');
+      const unknown = await request(server.port, 'POST', '/api/v1/brain/clashes/nope/resolve');
+      assert.equal(unknown.status, 404);
+      assert.equal(json(unknown).error.code, 'clash_not_found');
+      assert.equal(json(await request(server.port, 'GET', '/api/v1/brain/clashes?status=resolved')).clashes.length, 1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('answers 404 brain_disabled without the brain', async () => {
+    const { server } = await start({ brain: false });
+    try {
+      for (const [method, route] of [
+        ['GET', 'access'],
+        ['GET', 'clashes'],
+        ['POST', 'clashes/c1/resolve'],
+        ['POST', 'candidates/Inbox%2Fx.md/approve'],
+        ['POST', 'candidates/Inbox%2Fx.md/reject'],
+        ['POST', 'candidates/Inbox%2Fx.md/revert'],
+      ] as const) {
+        const res = await request(server.port, method, `/api/v1/brain/${route}`);
+        assert.equal(res.status, 404, route);
+        assert.equal(json(res).error.code, 'brain_disabled');
+      }
+    } finally {
+      await server.close();
+    }
   });
 });
 

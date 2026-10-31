@@ -15,6 +15,7 @@ Central overview of all Symphony documents. For an overview of the project, see 
 - [configuration.md](configuration.md): every `WORKFLOW.md` option, `$VARIABLE` references, hooks and prompt variables
 - [adapters/github-project.md](adapters/github-project.md): the GitHub Projects adapter: settings, normalization, agent tools and errors
 - [agent-claude.md](agent-claude.md): Claude Code sessions, permissions, skills and plugins, Laravel Boost, timeouts and cost accounting
+- [brain.md](brain.md): the knowledge vault: layout, frontmatter, tools, role switch, clash rules, Obsidian, backup and reset
 - [results.md](results.md): result contracts of the pipeline stages: kinds, verdicts, consistency rules, comment marker, size cap and the `report_result` tool
 - [concepts/multi-agent.md](concepts/multi-agent.md): the multi-agent pipeline: architecture, decisions and the GitHub spike results
 - [concepts/multi-backend.md](concepts/multi-backend.md): concept for several agent backends with failover on session limits

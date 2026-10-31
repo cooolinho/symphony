@@ -90,8 +90,7 @@ describe('overview page', () => {
   it('has the panel, aria-live counter and German texts; old sections are gone', () => {
     assert.match(DASHBOARD_HTML, /<h2 class="lbl" id="alerts-title">Alerts<\/h2><span class="alerts-badge" id="alerts-count" aria-live="polite" hidden>/);
     assert.doesNotMatch(DASHBOARD_HTML, /id="problems"|id="model-holds"|Needs attention|model-hold-list/);
-    assert.match(DASHBOARD_HTML, /id="model-controls"/);
-    assert.match(DASHBOARD_HTML, /renderModelControls\(state\)/);
+    assert.doesNotMatch(DASHBOARD_HTML, /id="model-controls"|renderModelControls/);
     for (const t of ['Alles ruhig', 'An dich übergeben', 'Limit in Sicht', 'pausiert', 'vor ']) assert.ok(ALERTS_JS.includes(t), t);
     assert.ok(!ALERTS_JS.includes('innerHTML'));
   });

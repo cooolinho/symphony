@@ -90,8 +90,8 @@ describe('E2-8 title block', () => {
 
   it('action bar has the "Jetzt pollen" button which still posts /api/v1/refresh', () => {
     const page = renderPage(DASHBOARD_HTML, dashboardState(), { fetch: () => ({ ok: true, coalesced: false }) });
-    assert.equal(page.$('refresh').textContent.trim(), 'Jetzt pollen');
-    page.click(page.$('refresh'));
+    assert.equal(page.$('shell-poll').getAttribute('aria-label'), 'Jetzt pollen');
+    page.click(page.$('shell-poll'));
     assert.ok(page.fetches.some((f) => f.url === '/api/v1/refresh' && f.method === 'POST'));
   });
 });

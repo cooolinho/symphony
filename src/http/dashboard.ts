@@ -3,16 +3,12 @@ import { PIPELINE_CSS, PIPELINE_JS } from './pipeline.ts';
 import { ACTIVITY_CSS, ACTIVITY_JS } from './overview-activity.ts';
 import { HEAD_CSS, HEAD_JS } from './overview-head.ts';
 import { TEAMS_CSS, TEAMS_JS } from './overview-teams.ts';
-import { page } from './ui/layout.ts';
+import { AURORA, page } from './ui/layout.ts';
 
 const DASHBOARD_CSS = `
   /* Dispatch gate: new dispatches wait for an account-wide session limit (a notice, not an error). */
   .dispatch-gate { border-color: var(--amber-line); background: linear-gradient(180deg, var(--amber-dim), rgba(11, 17, 21, .8));
     display: flex; align-items: center; gap: 10px; padding: 12px 16px; color: var(--amber); font: 12.5px/1.6 var(--mono); overflow-wrap: anywhere; }
-  /* Pause / Resume per model family in use. */
-  .model-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 16px; font: 12px var(--mono); color: var(--muted); }
-  .model-controls .model-control-item { display: inline-flex; align-items: center; gap: 8px; }
-  .model-controls .model-control-item b { color: var(--text); font-weight: 600; }
   .card-actions { display: flex; flex-wrap: wrap; gap: 8px; }
   /* Matrix rain: a few faint glyph columns behind everything, disabled for small screens and reduced motion. */
   .rain { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
@@ -23,10 +19,7 @@ const DASHBOARD_CSS = `
   @keyframes fall { to { transform: translateY(110vh); } }
   @media (max-width: 640px), (prefers-reduced-motion: reduce) { .rain { display: none; } }
 
-  /* Page head: title block (HEAD_CSS) and the page actions (poll, logs drawer). */
-  .page-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; }
 
-  /* Tool calls of the last 30 minutes: one tick per call, coloured by role (.role-* sets --role). */
   /* System cards: host metrics, agent slots and the tracker API budget, coloured by utilisation (traffic light). */
   .syscards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
   .syscard { position: relative; overflow: hidden; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 0 14px 12px 2px;
@@ -41,22 +34,6 @@ const DASHBOARD_CSS = `
 
   /* Running agents */
   .agents-section { border-color: var(--line-2); }
-  .slots { display: flex; align-items: center; gap: 10px; font: 500 11px var(--mono); color: var(--muted); letter-spacing: .08em; }
-  .slots-bar { display: flex; gap: 3px; }
-  .slots-bar i { width: 14px; height: 6px; border-radius: 2px; background: var(--line-2); transition: background .3s var(--ease), box-shadow .3s var(--ease); }
-  .slots-bar i.on { background: var(--green); box-shadow: 0 0 8px -2px var(--green); }
-  /* A slot kept free for a role (agent.reserved_slots_by_role) that runs fewer sessions than reserved. */
-  .slots-bar i.reserved { background: transparent; box-shadow: inset 0 0 0 1px var(--cyan-line); }
-  /* An extra slot of a session started with Start now, beyond the limit. */
-  .slots-bar i.forced { background: var(--amber); box-shadow: 0 0 8px -2px var(--amber); }
-  /* Agent slots set on the dashboard: − / value / + for the total, each active column and each role's reserved slots. */
-  .slot-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 0 0 14px; font: 12px var(--mono); color: var(--muted); }
-  .slot-item { display: inline-flex; align-items: center; gap: 6px; }
-  .slot-item b { min-width: 2ch; color: var(--text); font-weight: 600; text-align: center; }
-  .slot-control { justify-content: center; min-width: 28px; padding: 2px 6px; }
-  .slot-control:disabled { opacity: .4; cursor: default; }
-  .slot-override, .slot-note { color: var(--amber); }
-  .slot-error { color: var(--red); }
   .agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); gap: 14px; }
   .agent { position: relative; display: flex; flex-direction: column; gap: 14px; min-width: 0; padding: 16px 16px 14px;
     border: 1px solid var(--line-2); border-radius: var(--radius); overflow: hidden;
@@ -123,10 +100,8 @@ const DASHBOARD_CSS = `
   .cursor { display: inline-block; width: 8px; height: 15px; background: var(--green); vertical-align: -2px; margin-left: 4px; animation: blink 1.1s steps(1) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
 
-  /* Lower area: activity stream next to the queues */
+  /* Lower area: activity stream */
   .lower { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
-  @media (min-width: 1100px) { .lower { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); } }
-  .side { display: grid; gap: 20px; align-content: start; min-width: 0; }
   .feed { list-style: none; margin: 0; padding: 10px 0; max-height: 360px; overflow-y: auto; border-radius: var(--radius-sm);
     background: rgba(0, 0, 0, .35); border: 1px solid var(--line); font: 12.5px/1.65 var(--mono); }
   .feed li { display: grid; grid-template-columns: 72px minmax(0, 9.5em) minmax(0, 1fr); gap: 12px; padding: 1px 14px; color: var(--muted);
@@ -149,35 +124,13 @@ const DASHBOARD_CSS = `
     .feed .what { grid-column: 1 / -1; padding-left: 74px; }
   }
 
-  /* Issue cards: the pipeline strip and the status box of waiting issues */
+  /* Issue cards: the pipeline strip */
   .agent .pipe { margin: -2px 0; }
   .agent [hidden] { display: none; }
-  /* Dispatch plan: Up next is numbered in start order; every waiting card names its reason. */
-  .queue-section[hidden] { display: none; }
-  .agents.compact { grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr)); }
-  .chip.pos { color: var(--text); border-color: var(--cyan-line); background: var(--cyan-dim); font-weight: 600; }
-  .chip.reason { white-space: normal; overflow-wrap: anywhere; color: var(--tone, var(--text-2));
-    border-color: var(--tone-line, var(--line-2)); background: var(--tone-dim, var(--panel-2)); }
 
-  /* Blocked issues (a collapsed details panel) and other queue-style lists */
-  details.blocked-section summary { list-style: none; cursor: pointer; }
-  details.blocked-section summary::-webkit-details-marker { display: none; }
-  details.blocked-section summary .chev { display: inline-block; font-style: normal; transition: transform .2s var(--ease); color: var(--muted); }
-  details.blocked-section[open] summary .chev { transform: rotate(90deg); }
-  details.blocked-section .section-head { margin-bottom: 0; }
-  details.blocked-section[open] .section-head { margin-bottom: 14px; }
-  .queue { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-  .qitem { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-left: 2px solid var(--tone); border-radius: var(--radius-sm);
-    background: rgba(0, 0, 0, .22); transition: border-color .2s var(--ease); }
-  .qitem:hover { border-color: var(--tone-line); border-left-color: var(--tone); }
+  .section-link { display: inline-flex; align-items: center; min-height: 44px; font-size: 13px; }
+  .tasks-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 0 0 14px; font-size: 13px; color: var(--muted); }
   .qrow { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
-  .qrow .id { font: 600 13px var(--mono); overflow-wrap: anywhere; }
-  .qmeta { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 11.5px var(--mono); color: var(--muted); }
-  .qmeta b { color: var(--text); font-weight: 600; }
-  .qitem .msg { font-size: 12.5px; }
-  .qitem button.restart { justify-self: start; }
-  .clear { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
-  .clear .muted { font-size: 12.5px; }
 
   /* Logs drawer */
   .scrim { position: fixed; inset: 0; z-index: 40; background: rgba(2, 4, 5, .5);
@@ -245,28 +198,25 @@ const DASHBOARD_CSS = `
 export const DASHBOARD_HTML = page({
   title: 'Symphony',
   nav: 'overview',
+  aurora: AURORA.overview,
+  pollNow: true,
   styles: PIPELINE_CSS + TEAMS_CSS + ALERTS_CSS + HEAD_CSS + ACTIVITY_CSS + DASHBOARD_CSS,
   body: `
-  <div class="page-head ov-head">
+  <div class="page-title ov-head">
     <div class="ov-title">
       <h1 id="page-title">Übersicht</h1>
-      <p class="subtitle" id="ov-subtitle" aria-live="polite">noch kein Poll</p>
+      <p class="page-sub" id="ov-subtitle" aria-live="polite">noch kein Poll</p>
     </div>
-    <div class="ov-side">
+    <div class="page-title-right ov-side">
       <div class="ov-chips" id="ov-chips" role="group" aria-label="Status"></div>
-      <div class="actions">
-        <a class="btn" id="logs-open" href="/stats" aria-controls="logs-drawer" aria-expanded="false">
-          <svg class="btn-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 4h10M3 8h10M3 12h6"/></svg>Logs</a>
-        <button class="btn btn-primary" id="refresh" type="button">
-          <svg class="btn-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.5 2.5v3h-3"/></svg><span id="refresh-label">Jetzt pollen</span></button>
-      </div>
+      <a class="btn" id="logs-open" href="/stats" aria-controls="logs-drawer" aria-expanded="false">
+        <svg class="btn-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 4h10M3 8h10M3 12h6"/></svg>Logs</a>
     </div>
   </div>
   <section id="repositories" class="repos" aria-label="Repositories" hidden><span class="repos-label">Repositories</span><div class="repo-list" id="repo-list"></div></section>
   <section id="dispatch-gate" class="dispatch-gate" role="status" hidden>
     <span class="dot tone-amber"></span><span id="dispatch-gate-text"></span>
   </section>
-  <section id="model-controls" class="panel model-controls" aria-label="Models" hidden></section>
 
   <div class="syscards" id="system-cards" role="group" aria-label="System"></div>
   <div class="stats" id="stats" aria-label="Metrics"></div>
@@ -290,36 +240,14 @@ export const DASHBOARD_HTML = page({
   <section class="agents-section" id="running-section" aria-labelledby="running-title">
     <div class="section-head">
       <h2 id="running-title">Running <span class="count" id="running-count"></span></h2>
-      <div class="slots" id="slots" aria-hidden="true"></div>
     </div>
-    <div class="slot-settings" id="slot-settings" role="group" aria-label="Agent slots" hidden></div>
+    <p class="tasks-line" id="tasks-line"><span id="tasks-line-text"></span> · <a class="section-link" href="/tasks">Alle Tasks</a></p>
     <div class="agents" id="running"></div>
     <div class="agents-empty" id="issues-empty" hidden>
       <span class="badge tone-gray"><span class="dot"></span><span>Idle</span></span>
       <div><div class="big">No agents running<span class="cursor" aria-hidden="true"></span></div>
         <div class="muted" id="issues-empty-sub">Waiting for issues in an active column.</div></div>
     </div>
-  </section>
-  <section class="agents-section queue-section" id="next-section" aria-labelledby="next-title" hidden>
-    <div class="section-head">
-      <h2 id="next-title">Up next <span class="count" id="next-count"></span></h2>
-      <span class="meta" id="next-meta"></span>
-    </div>
-    <div class="agents compact" id="next"></div>
-  </section>
-  <section class="agents-section queue-section" id="waiting-section" aria-labelledby="waiting-title" hidden>
-    <div class="section-head">
-      <h2 id="waiting-title">Waiting <span class="count" id="waiting-count"></span></h2>
-      <span class="meta">backoff, session limits and model holds · soonest first</span>
-    </div>
-    <div class="agents compact" id="waiting"></div>
-  </section>
-  <section class="agents-section queue-section" id="paused-section" aria-labelledby="paused-title" hidden>
-    <div class="section-head">
-      <h2 id="paused-title">Paused <span class="count" id="paused-count"></span></h2>
-      <span class="meta">by the operator, after agent.max_continuations, or at agent.max_issue_cost_usd</span>
-    </div>
-    <div class="agents compact" id="paused"></div>
   </section>
 
   <section class="panel act-section" id="tool-activity" aria-labelledby="tool-activity-title">
@@ -339,17 +267,6 @@ export const DASHBOARD_HTML = page({
       </div>
       <ol class="feed" id="feed" aria-live="off"></ol>
     </section>
-    <div class="side">
-      <details class="panel blocked-section" id="blocked-section">
-        <summary>
-          <div class="section-head">
-            <h2 id="blocked-title"><span class="chev" aria-hidden="true">▸</span>Blocked <span class="count" id="blocked-count"></span></h2>
-            <span class="meta" id="blocked-meta"></span>
-          </div>
-        </summary>
-        <div id="blocked"></div>
-      </details>
-    </div>
   </div>
 `,
   after: `<div class="rain" id="rain" aria-hidden="true"></div>
@@ -519,9 +436,6 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}
     actHead.append(el('span', 'Last activity', 'k'), el('span', 'Trace →', 'agent-open'));
     act.append(actHead, line, refs.message);
 
-    // Status box of waiting issues (retrying, paused, queued): meta line, message, Retry/Resume button.
-    refs.info = el('div', null, 'activity-box');
-
     const foot = el('div', null, 'agent-foot');
     refs.foot = foot;
     refs.turn = metric(foot, 'Turn');
@@ -529,124 +443,11 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}
     refs.tokens = metric(foot, 'Tokens');
     refs.cost = metric(foot, 'Est. cost');
 
-    // Pause of a running issue (hidden on the other cards; their status box carries their buttons).
+    // Pause of a running issue (running cards only).
     refs.controls = el('div', null, 'card-actions');
 
-    card.append(head, titleWrap, pipe, dl, act, refs.controls, refs.info, foot);
+    card.append(head, titleWrap, pipe, dl, act, refs.controls, foot);
     return refs;
-  }
-
-  // Tone of the reason chip per dispatch plan reason code (docs/usage.md#dispatch-order).
-  const REASON_TONE = {
-    ready: 'green', no_free_slot: 'cyan', reserved_for_role: 'cyan', column_limit: 'amber', backoff: 'amber', session_limit: 'amber', model_hold: 'amber',
-    waiting_for_sub_issues: 'gray', inactive: 'gray', paused: 'gray',
-  };
-  // Reason texts carry UTC times (the same text as --dry-run); the chip shows them in local time, the tooltip as sent.
-  const UTC_TIME = /(\\d{4}-\\d{2}-\\d{2}) (\\d{2}:\\d{2}) UTC/g;
-  function reasonChip(reason) {
-    const text = reason.text.replace(UTC_TIME, (_, day, time) => fmtStamp(day + 'T' + time + ':00Z'));
-    const chip = el('span', text, 'chip reason tone-' + (REASON_TONE[reason.code] || 'gray'));
-    chip.title = reason.code + ': ' + reason.text;
-    return chip;
-  }
-
-  /** Meta line, message and action of a waiting issue card (status box children, diffed by patchChildren). */
-  function infoChildren(row) {
-    const nodes = [];
-    if (row.reason) {
-      const why = el('div', null, 'qmeta');
-      why.append(reasonChip(row.reason));
-      if (row.priority != null) { const p = el('span', 'priority '); p.append(el('b', 'P' + row.priority)); why.append(p); }
-      const m = el('span', 'model '); m.append(el('b', row.model || 'default')); why.append(m);
-      nodes.push(why);
-    }
-    const meta = el('div', null, 'qmeta');
-    nodes.push(meta);
-    if (row.status === 'retrying' && row.retry) {
-      const r = row.retry;
-      // The issue's own model, else the model whose limit it hit (an issue on the default model is never held).
-      const hold = row.model_hold || (r.limit && r.limit.scope === 'model' && r.limit.model ? { model: r.limit.model, until: r.due_at } : null);
-      if (hold) {
-        // The reason chip already names the hold.
-        if (!row.reason || row.reason.code !== 'model_hold') {
-          meta.append(...modelHoldBits(hold));
-          nodes.push(el('div', waitingForModel(hold), 'msg'));
-        }
-        if (r.limit && r.limit.text) nodes.push(el('div', r.limit.text, 'msg'));
-      } else if (r.kind === 'session_limit' && r.limit) {
-        meta.append(...sessionLimitBits(r));
-        nodes.push(el('div', r.limit.text || r.error || '—', 'msg'));
-        if (r.limit.overage_disabled_reason === 'out_of_credits') {
-          nodes.push(el('div', 'Extra usage is off because credits are used up. Top up' + (retryAllowed ? ', then press Retry now.' : '.'), 'msg'));
-        }
-      } else {
-        const attempt = el('span', 'attempt '); attempt.append(el('b', pad2(r.attempt)));
-        const due = el('span', 'next in '); due.append(el('b', fmtDuration(r.due_in_ms / 1000)));
-        meta.append(attempt, due);
-        // A requeued retry's error is its reason, already in the chip.
-        const text = r.error && (!row.reason || r.error !== row.reason.text) ? r.error : r.kind === 'continuation' ? 'Continues the session after a clean exit.' : '';
-        if (text) nodes.push(el('div', text, 'msg'));
-      }
-      // Up next starts it with the next free slot anyway; Retry now skips a wait, Start now also the slot limits.
-      nodes.push(actions([...(row.section !== 'next' ? [restartButton(row.issue_identifier, 'Retry')] : []), ...forceButtons(row)], row.issue_identifier));
-    } else if (row.status === 'paused' && row.paused) {
-      if (row.paused.source === 'operator') {
-        meta.append(el('span', 'paused by operator'), el('span', ago(row.paused.paused_at)));
-        nodes.push(el('div', 'Board changes do not lift this pause; it ends with Resume, Done or leaving the board.', 'msg'));
-      } else if (row.paused.source === 'budget') {
-        meta.append(el('span', 'cost budget used up'), el('span', '$' + row.paused.cost_usd.toFixed(2) + ' of $' + row.paused.max_issue_cost_usd.toFixed(2)), el('span', ago(row.paused.paused_at)));
-        nodes.push(el('div', 'Board changes do not lift this pause; it ends with Resume, a higher agent.max_issue_cost_usd, Done or leaving the board.', 'msg'));
-      } else {
-        const cont = el('span', 'paused after '); cont.append(el('b', row.paused.continuations), ' continuations');
-        meta.append(cont, el('span', ago(row.paused.paused_at)));
-        nodes.push(el('div', 'Resume: change the issue on the board (status, comment or labels)' + (retryAllowed ? ', or press Resume now.' : '.'), 'msg'));
-      }
-      if (retryAllowed) {
-        const box = el('div', null, 'card-actions');
-        box.append(restartButton(row.issue_identifier, 'Resume'), ...forceButtons(row));
-        nodes.push(box);
-      } else nodes.push(restartButton(row.issue_identifier, 'Resume'));
-    } else {
-      if (row.model_hold && (!row.reason || row.reason.code !== 'model_hold')) {
-        meta.append(...modelHoldBits(row.model_hold));
-        nodes.push(el('div', waitingForModel(row.model_hold), 'msg'));
-      } else if (row.dispatch_note) {
-        nodes.push(el('div', row.dispatch_note, 'msg'));
-      }
-      if (row.status === 'queued') nodes.push(actions(forceButtons(row), row.issue_identifier));
-    }
-    return nodes.filter((node) => node.childNodes.length > 0);
-  }
-
-  // Start now never starts an issue whose model is held or that waits for its sub-issues: the button would only fail.
-  const UNFORCEABLE = new Set(['model_hold', 'waiting_for_sub_issues']);
-  function forceButtons(row) {
-    if (!retryAllowed || row.model_hold || (row.reason && UNFORCEABLE.has(row.reason.code))) return [];
-    return [restartButton(row.issue_identifier, 'Force')];
-  }
-
-  /** Buttons of a card that can be paused: the given ones, then Pause (or the controls-disabled notice once). */
-  function actions(buttons, identifier) {
-    const box = el('div', null, 'card-actions');
-    if (!retryAllowed) {
-      if (buttons.length === 0) box.append(el('div', RESTART_DISABLED, 'msg muted restart-off'));
-      else box.append(...buttons);
-      return box;
-    }
-    box.append(...buttons, restartButton(identifier, 'Pause'));
-    return box;
-  }
-
-  // A waiting issue whose model is on hold: it starts when the hold ends, never on another model.
-  function waitingForModel(hold) {
-    if (!hold.until) return 'Waiting for model ' + hold.model + ' (paused by the operator)';
-    return 'Waiting for model ' + hold.model + ' (limit until ' + fmtStamp(hold.until) + ')';
-  }
-  function modelHoldBits(hold) {
-    const model = el('span', 'waiting for model '); model.append(el('b', hold.model));
-    if (!hold.until) return [model, el('span', 'paused by the operator')];
-    const until = el('span', 'until '); until.append(el('b', fmtStamp(hold.until)));
-    return [model, until];
   }
 
   function updateCard(refs, row, maxTurns) {
@@ -696,7 +497,6 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}
     refs.controls.hidden = !r || !!r.stopping;
     if (r && !r.stopping) patchChildren(refs.controls, [retryAllowed ? restartButton(row.issue_identifier, 'Pause') : el('div', RESTART_DISABLED, 'msg muted restart-off')]);
     refs.foot.hidden = !r;
-    refs.info.hidden = !!r;
     if (r) {
       setText(refs.model, r.model || '—');
       setText(refs.phase, r.phase);
@@ -708,8 +508,6 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}
       setText(refs.runtime, fmtDuration(r.seconds_running));
       setText(refs.tokens, fmtCompact(r.tokens.total_tokens));
       setText(refs.cost, fmtUsd(r.cost_usd));
-    } else {
-      patchChildren(refs.info, infoChildren(row));
     }
   }
 
@@ -755,20 +553,19 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}
     return chip;
   }
 
-  // Dashboard sections in page order; each row of state.issues names its own (running, then the dispatch plan).
-  const SECTIONS = ['running', 'next', 'waiting', 'paused'];
-
   function renderIssues(state) {
     const h = state.health;
     const rows = state.issues || [];
     const live = new Set();
-    const bySection = Object.fromEntries(SECTIONS.map((name) => [name, []]));
+    const running = [];
+    // Only running issues get a card here; the dispatch plan (next, waiting, paused, blocked) lives on /tasks.
     for (const row of rows) {
+      if (row.section !== 'running') continue;
       live.add(row.issue_id);
       let refs = cards.get(row.issue_id);
       if (!refs) { refs = createCard(); cards.set(row.issue_id, refs); }
       updateCard(refs, row, h.max_turns);
-      (bySection[row.section] || bySection.next).push(refs.card);
+      running.push(refs.card);
     }
     for (const [id, refs] of cards) {
       if (live.has(id)) continue;
@@ -777,85 +574,34 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}
       refs.card.classList.add('leave');
       setTimeout(() => refs.card.remove(), 320);
     }
-    for (const name of SECTIONS) {
-      const host = $(name);
-      const ordered = bySection[name];
-      ordered.forEach((card, i) => {
-        const active = [...host.children].filter((c) => !c.classList.contains('leave'));
-        if (active[i] !== card) host.insertBefore(card, active[i] || null);
-      });
-      setText($(name + '-count'), pad2(ordered.length));
-      if (name !== 'running') $(name + '-section').hidden = ordered.length === 0;
-    }
-    setText($('next-meta'), state.board_fetched_at ? 'in start order · board as of ' + ago(state.board_fetched_at) : 'in start order · board not fetched yet');
-
-    const running = state.counts.running;
-    // Sessions started with Start now run in an extra slot each: "04 / 03 agents, 1 forced".
-    const forced = state.counts.forced || 0;
-    const slotted = running - forced;
-    const max = h.max_concurrent_agents;
-    slotUse = { slotted, max };
-    // Reserved slots a role does not use yet stay free for it: "developer 1/1 · reviewer 0/1 reserved · 1 free".
-    const reservations = state.limits && !state.limits.reservation_problem
-      ? Object.entries(state.limits.reserved_slots_by_role || {}).filter(([, r]) => r.effective > 0)
-      : [];
-    let unused = 0;
-    for (const [, r] of reservations) unused += Math.max(r.effective - r.running, 0);
-    const free = Math.max(max - slotted - unused, 0);
-    const bar = el('div', null, 'slots-bar');
-    for (let i = 0; i < Math.min(max, 24); i++) bar.append(el('i', null, i < slotted ? 'on' : i < slotted + unused ? 'reserved' : ''));
-    for (let i = 0; i < Math.min(forced, 8); i++) bar.append(el('i', null, 'forced'));
-    const slots = $('slots');
-    const agents = pad2(running) + ' / ' + pad2(max) + ' agents' + (forced > 0 ? ', ' + forced + ' forced' : '');
-    const slotText = reservations.length > 0
-      ? agents + ' · ' + reservations.map(([role, r]) => role + ' ' + Math.min(r.running, r.effective) + '/' + r.effective).join(' · ') + ' reserved · ' + free + ' free'
-      : agents + ' · ' + free + ' free slot' + (free === 1 ? '' : 's');
-    slots.replaceChildren(bar, el('span', slotText));
-    $('issues-empty').hidden = bySection.running.length > 0;
+    const host = $('running');
+    running.forEach((card, i) => {
+      const active = [...host.children].filter((c) => !c.classList.contains('leave'));
+      if (active[i] !== card) host.insertBefore(card, active[i] || null);
+    });
+    setText($('running-count'), pad2(running.length));
+    const queued = state.counts.queued ?? 0;
+    setText($('tasks-line-text'), state.counts.running + (state.counts.running === 1 ? ' Slot belegt' : ' Slots belegt') + ' · ' + queued + ' in der Queue');
+    $('issues-empty').hidden = running.length > 0;
     setText($('issues-empty-sub'), rows.length
-      ? 'Nothing running right now · ' + (rows.length) + ' issue' + (rows.length === 1 ? '' : 's') + ' below'
+      ? 'Nothing running right now · ' + queued + ' in the queue'
       : 'Waiting for issues in ' + (h.active_states && h.active_states.length ? h.active_states.join(', ') : 'an active column') +
         ' · next poll within ' + Math.round(h.poll_interval_ms / 1000) + 's');
   }
 
-  // ------------------------------------------------------------------ queues
-
-  // Keep the <ul> and only swap the items that changed.
-  function patchList(id, list) {
-    const host = $(id);
-    const current = host.firstElementChild;
-    if (current && current.tagName === 'UL') patchChildren(current, [...list.children]);
-    else host.replaceChildren(list);
-  }
-
-  const traceLink = (identifier) => link('trace →', '/issue?id=' + encodeURIComponent(identifier));
-
-  function emptyState(id, text, tone, sub) {
-    const box = el('div', null, 'clear');
-    box.append(badge(text, tone, false), el('div', sub, 'muted'));
-    patchChildren($(id), [box]);
-  }
-
-  const WINDOW_WORDS = { five_hour: 'five hour', seven_day: 'seven day', seven_day_opus: 'seven day Opus', seven_day_sonnet: 'seven day Sonnet' };
-  const windowWords = (w) => WINDOW_WORDS[w] || String(w || '').replace(/_/g, ' ');
-
   // Per-identifier outcome of a control click (Retry, Pause, Resume); a poll rebuilds the rows, so the button state
   // is drawn from here.
   const restartStates = new Map();
-  const RESTART_LABELS = { Retry: 'Retry now', Resume: 'Resume now', Pause: 'Pause', Force: 'Start now' };
+  const RESTART_LABELS = { Retry: 'Retry now', Resume: 'Resume now', Pause: 'Pause' };
   // Route, busy label and success label of each control button.
   const CONTROL = {
     Retry: ['retry', 'Restarting…', 'Queued'],
-    Force: ['force', 'Starting…', 'Started'],
     Resume: ['resume', 'Resuming…', 'Queued'],
     Pause: ['pause', 'Pausing…', 'Paused'],
   };
   const RESTART_DISABLED = 'Controls disabled: set SYMPHONY_ALLOW_REMOTE_CONTROL=true behind an authenticating proxy';
   // From /api/v1/state; false on a non-loopback bind without server.allow_remote_control.
   let retryAllowed = true;
-  // Sessions holding a slot and the limit, from the last state; Start now asks first when no slot is free.
-  let slotUse = { slotted: 0, max: 0 };
-
   function restartButton(identifier, verb) {
     if (!retryAllowed) return el('div', RESTART_DISABLED, 'msg muted restart-off');
     const st = restartStates.get(identifier + ' ' + verb);
@@ -884,10 +630,6 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}
     const [action, busy, done] = CONTROL[verb] || CONTROL.Retry;
     const current = restartStates.get(key);
     if (current && current.cls === 'is-busy') return;
-    if (verb === 'Force' && slotUse.slotted >= slotUse.max) {
-      const question = 'All ' + slotUse.max + ' slot' + (slotUse.max === 1 ? ' is' : 's are') + ' busy. Start ' + splitId(identifier).num + ' in an extra slot?';
-      if (!window.confirm(question)) return;
-    }
     restartStates.set(key, { cls: 'is-busy', label: busy });
     paintRestart(identifier, verb);
     let ok = false;
@@ -906,224 +648,11 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}
     setTimeout(() => { restartStates.delete(key); paintRestart(identifier, verb); }, ok ? 1800 : 5000);
   }
 
-  // Pause / Resume of a model family (POST /api/v1/models/<model>/hold or /release).
-  const modelStates = new Map();
-  async function controlModel(model, hold) {
-    if (modelStates.get(model) === 'busy') return;
-    modelStates.set(model, 'busy');
-    let label = 'failed';
-    try {
-      const res = await fetch('/api/v1/models/' + encodeURIComponent(model) + '/' + (hold ? 'hold' : 'release'), { method: 'POST' });
-      let body = null;
-      try { body = await res.json(); } catch {}
-      label = res.ok ? (hold ? 'paused' : 'resumed') : (body && body.error && body.error.message) || 'failed (' + res.status + ')';
-    } catch {}
-    modelStates.delete(model);
-    $('announce').textContent = 'Model ' + model + ': ' + label;
-    setTimeout(load, 300);
-  }
-
-  function renderModelControls(state) {
-    const models = state.model_controls || [];
-    const host = $('model-controls');
-    host.hidden = models.length === 0;
-    const nodes = [el('span', 'Models')];
-    for (const m of models) {
-      const item = el('span', null, 'model-control-item');
-      const name = el('b', m.model);
-      item.append(name, el('span', m.paused ? 'paused by operator' : m.limit_until ? 'limit until ' + fmtStamp(m.limit_until) : 'running'));
-      if (retryAllowed) {
-        const b = el('button', m.paused ? 'Resume' : 'Pause', 'btn model-control');
-        b.type = 'button';
-        b.dataset.model = m.model;
-        b.dataset.hold = m.paused ? '0' : '1';
-        b.setAttribute('aria-label', (m.paused ? 'Resume' : 'Pause') + ' model ' + m.model);
-        if (modelStates.get(m.model) === 'busy') b.setAttribute('aria-busy', 'true');
-        item.append(b);
-      }
-      nodes.push(item);
-    }
-    if (!retryAllowed && models.length > 0) nodes.push(el('span', RESTART_DISABLED, 'muted restart-off'));
-    patchChildren(host, nodes);
-  }
-
   document.addEventListener('click', (event) => {
     const target = event.target instanceof Element ? event.target : null;
     const b = target ? target.closest('button.restart') : null;
     if (b) restart(b.dataset.identifier, b.dataset.verb);
-    const m = target ? target.closest('button.model-control') : null;
-    if (m) controlModel(m.dataset.model, m.dataset.hold === '1');
   });
-
-  // Agent slots set on the dashboard (PUT /api/v1/settings/agents; DELETE resets to WORKFLOW.md).
-  let slotBusy = false;
-  let slotError = '';
-  async function changeSlots(method, body) {
-    if (slotBusy) return;
-    slotBusy = true;
-    let label = 'failed';
-    try {
-      const init = { method, headers: { 'content-type': 'application/json' } };
-      if (body !== null) init.body = JSON.stringify(body);
-      const res = await fetch('/api/v1/settings/agents', init);
-      let data = null;
-      try { data = await res.json(); } catch {}
-      label = res.ok ? (method === 'DELETE' ? 'reset to WORKFLOW.md' : 'saved') : (data && data.error && data.error.message) || 'failed (' + res.status + ')';
-      slotError = res.ok ? '' : label;
-    } catch {
-      slotError = label;
-    }
-    slotBusy = false;
-    if (slotError) setTimeout(() => { slotError = ''; }, 8000);
-    $('announce').textContent = 'Agent slots: ' + label;
-    setTimeout(load, 300);
-  }
-
-  function slotButton(text, label, body, disabled) {
-    const b = el('button', text, 'btn slot-control');
-    b.type = 'button';
-    b.dataset.body = JSON.stringify(body);
-    b.setAttribute('aria-label', label);
-    if (disabled || slotBusy) b.disabled = true;
-    return b;
-  }
-
-  function renderSlotSettings(state) {
-    const limits = state.limits;
-    const host = $('slot-settings');
-    host.hidden = !limits;
-    if (!limits) return;
-    const total = limits.max_concurrent_agents;
-    // Forced sessions run beside the limit; only the others hold its slots.
-    const running = state.counts.running - (state.counts.forced || 0);
-    const nodes = [];
-    const item = el('span', null, 'slot-item');
-    item.append(el('span', 'Slots'));
-    if (retryAllowed) item.append(slotButton('−', 'Fewer agent slots', { max_concurrent_agents: Math.min(total.effective - 1, limits.max) }, total.effective <= 0));
-    item.append(el('b', total.effective));
-    if (retryAllowed) item.append(slotButton('+', 'More agent slots', { max_concurrent_agents: total.effective + 1 }, total.effective >= limits.max));
-    if (total.override !== null && total.override !== total.workflow) item.append(el('span', 'set here · WORKFLOW.md ' + total.workflow, 'slot-override'));
-    else if (total.override !== null) item.append(el('span', 'set here', 'slot-override'));
-    nodes.push(item);
-    for (const [column, v] of Object.entries(limits.by_state || {})) {
-      const col = el('span', null, 'slot-item');
-      col.append(el('span', column));
-      if (retryAllowed && v.effective !== null) {
-        col.append(slotButton('−', 'Lower the limit of ' + column, { max_concurrent_agents_by_state: { [column]: Math.min(v.effective - 1, limits.max) } }, v.effective <= 1));
-      }
-      col.append(el('b', v.effective === null ? '–' : v.effective));
-      if (retryAllowed) {
-        col.append(v.effective === null
-          ? slotButton('+', 'Set a limit of 1 for ' + column, { max_concurrent_agents_by_state: { [column]: 1 } }, false)
-          : slotButton('+', 'Raise the limit of ' + column, { max_concurrent_agents_by_state: { [column]: v.effective + 1 } }, v.effective >= limits.max));
-      }
-      if (v.override !== null) {
-        col.append(el('span', 'set here · WORKFLOW.md ' + (v.workflow === null ? 'none' : v.workflow), 'slot-override'));
-        if (retryAllowed) col.append(slotButton('×', 'Use the WORKFLOW.md limit of ' + column, { max_concurrent_agents_by_state: { [column]: null } }, false));
-      }
-      nodes.push(col);
-    }
-    for (const [role, r] of Object.entries(limits.reserved_slots_by_role || {})) {
-      const res = el('span', null, 'slot-item');
-      res.append(el('span', role + ' reserved'));
-      if (retryAllowed) res.append(slotButton('−', 'Reserve fewer slots for ' + role, { reserved_slots_by_role: { [role]: r.effective - 1 } }, r.effective <= 0));
-      res.append(el('b', r.effective));
-      if (retryAllowed) res.append(slotButton('+', 'Reserve one more slot for ' + role, { reserved_slots_by_role: { [role]: r.effective + 1 } }, r.effective >= limits.max));
-      if (r.override !== null) {
-        res.append(el('span', 'set here · WORKFLOW.md ' + r.workflow, 'slot-override'));
-        if (retryAllowed) res.append(slotButton('×', 'Use the WORKFLOW.md reservation of ' + role, { reserved_slots_by_role: { [role]: null } }, false));
-      }
-      nodes.push(res);
-    }
-    if (retryAllowed && limits.override_active) {
-      const reset = el('button', 'Reset to WORKFLOW.md (' + total.workflow + ')', 'btn slot-reset');
-      reset.type = 'button';
-      if (slotBusy) reset.disabled = true;
-      nodes.push(reset);
-    }
-    const reservedRoles = Object.entries(limits.reserved_slots_by_role || {});
-    let reservedSum = 0;
-    for (const [, r] of reservedRoles) reservedSum += r.effective;
-    const unreserved = reservedRoles.filter(([, r]) => r.effective === 0).map(([role]) => role);
-    if (!limits.reservation_problem && reservedSum > 0 && reservedSum >= total.effective && total.effective > 0 && unreserved.length > 0) {
-      nodes.push(el('span', 'every slot is reserved: ' + unreserved.join(', ') + ' start only with more slots', 'slot-note'));
-    }
-    if (total.effective === 0) {
-      nodes.push(el('span', 'limit 0: new dispatches paused' + (running > 0 ? ', ' + running + ' running keep working' : ''), 'slot-note'));
-    } else if (running > total.effective) {
-      const finish = running - total.effective + 1;
-      nodes.push(el('span', running + ' running, limit ' + total.effective + ': no new starts until ' + (finish === 1 ? 'one finishes' : finish + ' finish'), 'slot-note'));
-    }
-    if (!retryAllowed) nodes.push(el('span', RESTART_DISABLED, 'muted restart-off'));
-    if (slotError) nodes.push(el('span', slotError, 'slot-error'));
-    patchChildren(host, nodes);
-  }
-
-  document.addEventListener('click', (event) => {
-    const target = event.target instanceof Element ? event.target : null;
-    const step = target ? target.closest('button.slot-control') : null;
-    if (step && !step.disabled) changeSlots('PUT', JSON.parse(step.dataset.body));
-    const reset = target ? target.closest('button.slot-reset') : null;
-    if (reset && !reset.disabled) changeSlots('DELETE', null);
-  });
-
-  function sessionLimitBits(r) {
-    const limit = r.limit;
-    const bits = [];
-    if (limit.waiting) {
-      bits.push(el('span', 'waiting for reset'));
-      const resets = el('span', 'resets '); resets.append(el('b', fmtStamp(limit.resets_at)));
-      if (limit.window) resets.append(' (' + windowWords(limit.window) + ')');
-      bits.push(resets);
-      const at = el('span', 'retry at '); at.append(el('b', fmtStamp(r.due_at)), ' (in ' + fmtDuration(r.due_in_ms / 1000) + ')');
-      bits.push(at);
-    } else {
-      if (limit.hits <= limit.max_retries) {
-        const n = el('span', 'retry '); n.append(el('b', limit.hits), ' of ' + limit.max_retries);
-        bits.push(n);
-      } else bits.push(el('span', 'retrying with backoff'));
-      const due = el('span', 'next in '); due.append(el('b', fmtDuration(r.due_in_ms / 1000)));
-      bits.push(due);
-    }
-    return bits;
-  }
-
-  // Blocked issues (collapsed by default); the open state survives polls and reloads via localStorage.
-  const blockedDetails = $('blocked-section');
-  try { blockedDetails.open = localStorage.getItem('symphony.blockedOpen') === '1'; } catch {}
-  blockedDetails.addEventListener('toggle', () => {
-    try { localStorage.setItem('symphony.blockedOpen', blockedDetails.open ? '1' : '0'); } catch {}
-  });
-
-  function renderBlocked(state) {
-    const rows = state.blocked || [];
-    setText($('blocked-count'), pad2(rows.length));
-    setText($('blocked-meta'), state.board_fetched_at ? 'board as of ' + fmtClock(state.board_fetched_at) : '');
-    if (!rows.length) return emptyState('blocked', 'None', 'green', 'No blocked issues on the board.');
-    const list = el('ul', null, 'queue');
-    for (const r of rows) {
-      const li = el('li', null, 'qitem tone-red');
-      const row = el('div', null, 'qrow');
-      const id = link(r.issue_identifier, r.issue_url); id.classList.add('id');
-      row.append(id, badge(r.state || 'Blocked', 'red', false));
-      li.append(row);
-      if (r.title) li.append(el('div', r.title, 'msg'));
-      const meta = el('div', null, 'qmeta');
-      // The blocker list below already carries a "blocked by …" reason, with the blockers' states.
-      const hasBlockers = r.blocked_by && r.blocked_by.length;
-      if (!(hasBlockers && /^blocked by/.test(r.reason))) meta.append(el('span', r.reason));
-      if (r.tracked) meta.append(traceLink(r.issue_identifier));
-      if (meta.childNodes.length) li.append(meta);
-      if (hasBlockers) {
-        const blockers = el('div', null, 'qmeta');
-        blockers.append(el('span', 'blocked by'));
-        for (const b of r.blocked_by) blockers.append(el('b', (b.identifier || b.id || 'unknown') + (b.state ? ' (' + b.state + ')' : '')));
-        li.append(blockers);
-      }
-      list.append(li);
-    }
-    patchList('blocked', list);
-  }
 
   // ------------------------------------------------------------------ activity stream
 
@@ -1631,11 +1160,8 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}
     ]);
 
     retryAllowed = !state.controls || state.controls.retry !== false;
-    renderModelControls(state);
-    renderSlotSettings(state);
     setText($('teams-count'), pad2(renderTeams($('teams'), state, Date.now())));
     renderIssues(state);
-    renderBlocked(state);
     diffSnapshots(state);
     fetchDetails(state);
     renderActivity();
@@ -1664,28 +1190,7 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}
     if (reloadAgain) { reloadAgain = false; load(); }
   }
 
-  const refresh = $('refresh');
-  const refreshLabel = $('refresh-label');
-  refresh.addEventListener('click', async () => {
-    if (refresh.classList.contains('is-busy')) return;
-    refresh.classList.remove('is-done', 'is-failed');
-    refresh.classList.add('is-busy');
-    refresh.setAttribute('aria-busy', 'true');
-    refreshLabel.textContent = 'Poll läuft…';
-    let outcome = 'failed';
-    try {
-      const res = await fetch('/api/v1/refresh', { method: 'POST' });
-      const body = await res.json();
-      outcome = res.ok ? (body.coalesced ? 'Bereits angefordert' : 'Poll angefordert') : 'failed';
-    } catch {}
-    refresh.classList.remove('is-busy');
-    refresh.removeAttribute('aria-busy');
-    refresh.classList.add(outcome === 'failed' ? 'is-failed' : 'is-done');
-    refreshLabel.textContent = outcome === 'failed' ? 'Poll fehlgeschlagen' : outcome;
-    $('announce').textContent = refreshLabel.textContent;
-    setTimeout(load, 500);
-    setTimeout(() => { refresh.classList.remove('is-done', 'is-failed'); refreshLabel.textContent = 'Jetzt pollen'; }, 1800);
-  });
+  shellHooks.afterPoll = load;
 
   renderActivity();
   onBudget((report, raw) => {

@@ -7,7 +7,7 @@ export const HEAD_CSS = `
   .ov-head { align-items: flex-end; }
   .ov-title { display: grid; gap: 6px; min-width: 0; }
   .ov-title h1 { margin: 0; }
-  .ov-title .subtitle { margin: 0; font-size: 13px; color: var(--fg-2, var(--text-2)); }
+  .ov-title .page-sub { margin: 0; font-size: 13px; color: var(--fg-2, var(--text-2)); }
   #ov-subtitle.is-stale { color: var(--amber); }
   .ov-side { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
   .ov-chips { display: flex; flex-wrap: wrap; gap: 8px; }

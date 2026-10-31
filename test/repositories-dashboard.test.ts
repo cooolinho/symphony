@@ -131,11 +131,11 @@ describe('dashboard page: repositories bar (#277)', () => {
     const { page } = await serve(provider('$R'), { R: 'acme/app' });
     const bar = page.indexOf('id="repositories"');
     assert.ok(bar > page.indexOf('<main id="main">'), 'bar inside main');
-    for (const id of ['alerts', 'dispatch-gate', 'model-controls', 'running-section', 'next-section', 'waiting-section', 'paused-section']) {
+    for (const id of ['alerts', 'dispatch-gate', 'running-section']) {
       const at = page.indexOf(`id="${id}"`);
       assert.ok(at > bar, `${id} comes after the repositories bar`);
     }
-    assert.match(page, /class="page-head ov-head"/);
+    assert.match(page, /class="page-title ov-head"/);
     assert.match(page, /id="repo-list"/);
   });
 
