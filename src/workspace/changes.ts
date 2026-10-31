@@ -54,7 +54,7 @@ export async function diffStat(workspace: string, base: string): Promise<FileSta
  * The files of a diff command (`['diff', <from>]` or `['show', '--format=', <sha>]`) with lines added and deleted and
  * their status, sorted by path; renames are one entry with the new path, binary files have null counts.
  */
-async function fileStats(workspace: string, command: string[]): Promise<FileStat[]> {
+export async function fileStats(workspace: string, command: string[]): Promise<FileStat[]> {
   const [numstat, nameStatus] = await Promise.all([
     git(workspace, [...command, '-z', '--numstat', '--diff-filter=ADMR', '-M', '--']),
     git(workspace, [...command, '-z', '--name-status', '--diff-filter=ADMR', '-M', '--']),

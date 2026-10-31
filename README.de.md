@@ -279,6 +279,7 @@ Einstieg ist [docs/index.md](docs/index.md) (auf Englisch).
 - [docs/configuration.md](docs/configuration.md): alle Optionen der `WORKFLOW.md`, `$VARIABLE`-Verweise, Hooks und Prompt-Variablen
 - [docs/adapters/github-project.md](docs/adapters/github-project.md): GitHub-Projects-Adapter: Einstellungen, Normalisierung, Agenten-Tools, Fehler
 - [docs/agent-claude.md](docs/agent-claude.md): Claude-Code-Sessions, Berechtigungen, Skills und Plugins, Laravel Boost, Zeitlimits, Kostenzählung
+- [docs/brain.md](docs/brain.md): der Wissens-Vault: Aufbau, Frontmatter, Tools, Rollenschalter, Clash-Regeln, Obsidian, Backup und Zurücksetzen
 - [docs/results.md](docs/results.md): Ergebnis-Verträge der Pipeline-Stages: Arten, Urteile, das Tool `report_result`, Recovery
 - [docs/concepts/multi-agent.md](docs/concepts/multi-agent.md): die Multi-Agent-Pipeline: Architektur, Entscheidungen und Spike-Ergebnisse
 - [docs/conformance.md](docs/conformance.md): Abweichungen von der Spezifikation und eigene Festlegungen

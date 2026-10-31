@@ -208,6 +208,10 @@ export class FakeElement {
   set value(v: string) {
     this.typed = String(v);
   }
+  /** The <option> elements of a <select>. */
+  get options(): FakeElement[] {
+    return this.querySelectorAll('option');
+  }
   scrollTop = 0;
   offsetWidth = 0;
   scrollHeight = 0;

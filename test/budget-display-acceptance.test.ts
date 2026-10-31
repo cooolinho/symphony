@@ -77,7 +77,7 @@ async function chip(html: string, budget: unknown, url?: string): Promise<{ text
   await until(() => page.fetches.some((f) => f.url === '/api/v1/budget'), 3_000, 'budget fetch');
   await new Promise((r) => setTimeout(r, 30));
   const node = page.$('shell-budget');
-  return { text: text(node), cls: node.className };
+  return { text: text(node), cls: node.children.map((c) => c.className).join(' ') };
 }
 
 describe('E4-5 budget section: known limit hit', () => {
@@ -233,35 +233,32 @@ describe('E4-5 5 h chip', () => {
     ['agent', AGENT_HTML, 'http://127.0.0.1/issue?id=acme%2Fapp%231'],
   ];
 
-  it('reads "5 h 62 %" with a neutral look at 62 %', async () => {
+  it('reads "5h 62 %" in amber at 62 % (from 50 %)', async () => {
     const c = await chip(TASKS_HTML, report({ used: 1_240_000, limit: 2_000_000 }));
-    assert.equal(c.text, '5 h 62 %');
-    assert.doesNotMatch(c.cls, /amber|red/);
-  });
-
-  it('turns amber at 85 %', async () => {
-    const c = await chip(TASKS_HTML, report({ used: 1_700_000, limit: 2_000_000 }));
-    assert.equal(c.text, '5 h 85 %');
+    assert.equal(c.text, '5h 62 %');
     assert.match(c.cls, /amber/);
     assert.doesNotMatch(c.cls, /red/);
   });
 
-  it('is amber from exactly 80 % and still neutral at 79 %', async () => {
-    const at80 = await chip(TASKS_HTML, report({ used: 800_000, limit: 1_000_000 }));
-    assert.equal(at80.text, '5 h 80 %');
-    assert.match(at80.cls, /amber/);
-    const at79 = await chip(TASKS_HTML, report({ used: 790_000, limit: 1_000_000 }));
-    assert.equal(at79.text, '5 h 79 %');
-    assert.doesNotMatch(at79.cls, /amber|red/);
+  it('is neutral below 50 %, amber from 50 %, red from 85 %', async () => {
+    const at49 = await chip(TASKS_HTML, report({ used: 490_000, limit: 1_000_000 }));
+    assert.equal(at49.text, '5h 49 %');
+    assert.doesNotMatch(at49.cls, /amber|red/);
+    const at50 = await chip(TASKS_HTML, report({ used: 500_000, limit: 1_000_000 }));
+    assert.match(at50.cls, /amber/);
+    const at84 = await chip(TASKS_HTML, report({ used: 840_000, limit: 1_000_000 }));
+    assert.match(at84.cls, /amber/);
+    assert.doesNotMatch(at84.cls, /red/);
+    const at85 = await chip(TASKS_HTML, report({ used: 1_700_000, limit: 2_000_000 }));
+    assert.equal(at85.text, '5h 85 %');
+    assert.match(at85.cls, /red/);
+    const at90 = await chip(TASKS_HTML, report({ used: 900_000, limit: 1_000_000 }));
+    assert.match(at90.cls, /red/);
   });
 
-  it('is red on alert (ETA before the reset), also below 80 %', async () => {
-    const c = await chip(TASKS_HTML, report({ used: 1_240_000, limit: 2_000_000, eta: ETA, alert: true }));
-    assert.equal(c.text, '5 h 62 %');
-    assert.match(c.cls, /red/);
-    const hot = await chip(TASKS_HTML, report({ used: 1_900_000, limit: 2_000_000, eta: ETA, alert: true }));
-    assert.match(hot.cls, /red/);
-    assert.doesNotMatch(hot.cls, /amber/);
+  it('an alert flag alone does not colour the chip below 50 %', async () => {
+    const c = await chip(TASKS_HTML, report({ used: 400_000, limit: 2_000_000, eta: ETA, alert: true }));
+    assert.doesNotMatch(c.cls, /red|amber/);
   });
 
   it('a 7 day alert alone does not colour the 5 h chip', async () => {
@@ -269,10 +266,10 @@ describe('E4-5 5 h chip', () => {
     assert.doesNotMatch(c.cls, /red|amber/);
   });
 
-  it('shows "5 h —" on error, malformed answer and without a forecast', async () => {
+  it('shows "5h —" on error, malformed answer and without a forecast', async () => {
     for (const b of [new Error('offline'), { nope: true }, report({ used: 5, limit: null }, { limit: null })]) {
       const c = await chip(TASKS_HTML, b);
-      assert.equal(c.text, '5 h —');
+      assert.equal(c.text, '5h —');
       assert.doesNotMatch(c.cls, /amber|red/);
     }
   });
@@ -280,7 +277,7 @@ describe('E4-5 5 h chip', () => {
   it('is filled on every page', async () => {
     for (const [name, html, url] of pages) {
       const c = await chip(html, report({ used: 1_240_000, limit: 2_000_000 }), url);
-      assert.equal(c.text, '5 h 62 %', `chip on ${name}`);
+      assert.equal(c.text, '5h 62 %', `chip on ${name}`);
     }
   });
 

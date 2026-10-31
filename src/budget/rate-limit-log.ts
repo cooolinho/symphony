@@ -31,6 +31,11 @@ export function rateLimitKey(info: unknown): string {
   return 'unknown';
 }
 
+/** True when the raw `rate_limit_info` reports a rejected request (`status === 'rejected'`), i.e. a limit hit. */
+export function isRejected(info: unknown): boolean {
+  return typeof info === 'object' && info !== null && (info as { status?: unknown }).status === 'rejected';
+}
+
 function timeOf(line: string): number | null {
   try {
     const parsed: unknown = JSON.parse(line);

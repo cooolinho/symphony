@@ -157,3 +157,42 @@ describe('vault git', () => {
     assert.equal(sh(dir, 'status', '--porcelain'), '');
   });
 });
+
+describe('vault git: human commits and revert (E7-6b)', () => {
+  it('commitHuman commits added and removed paths as human and calls onCommit with both', async () => {
+    const calls: [string, string[]][] = [];
+    const { dir, logger } = await setup();
+    const vaultGit = createVaultGit(dir, logger, { onCommit: (sha, paths) => void calls.push([sha, paths]) });
+    fs.writeFileSync(path.join(dir, 'Inbox/x.md'), note());
+    await vaultGit.serial(() => vaultGit.commitHuman(['Inbox/x.md'], 'add', null));
+    fs.renameSync(path.join(dir, 'Inbox/x.md'), path.join(dir, 'Lessons/x.md'));
+    const sha = await vaultGit.serial(() => vaultGit.commitHuman(['Inbox/x.md', 'Lessons/x.md'], 'approve: Inbox/x.md', 'Lessons/x.md'));
+    assert.equal(sha, sh(dir, 'rev-parse', 'HEAD'));
+    assert.equal(sh(dir, 'log', '-1', '--format=%an|%ae|%s|%b'), 'human|human@local|approve: Inbox/x.md|Lessons/x.md');
+    assert.deepEqual(calls.at(-1), [sha, ['Inbox/x.md', 'Lessons/x.md']]);
+    assert.equal(sh(dir, 'status', '--porcelain'), '');
+    assert.equal(await vaultGit.serial(() => vaultGit.commitHuman(['Lessons/x.md'], 'nothing', null)), null);
+  });
+
+  it('revert takes a commit back as human; a conflict aborts and leaves the tree clean', async () => {
+    const calls: string[][] = [];
+    const { dir, logger } = await setup();
+    const vaultGit = createVaultGit(dir, logger, { onCommit: (_sha, paths) => void calls.push(paths) });
+    fs.writeFileSync(path.join(dir, 'Inbox/x.md'), note('One.'));
+    await vaultGit.serial(() => vaultGit.commitHuman(['Inbox/x.md'], 'add', null));
+    fs.writeFileSync(path.join(dir, 'Inbox/x.md'), note('Two.'));
+    const changed = (await vaultGit.serial(() => vaultGit.commitHuman(['Inbox/x.md'], 'change', null)))!;
+    const sha = await vaultGit.serial(() => vaultGit.revert(changed, ['Inbox/x.md']));
+    assert.equal(sh(dir, 'log', '-1', '--format=%an|%s'), 'human|Revert "change"');
+    assert.equal(sha, sh(dir, 'rev-parse', 'HEAD'));
+    assert.equal(fs.readFileSync(path.join(dir, 'Inbox/x.md'), 'utf8'), note('One.'));
+    assert.deepEqual(calls.at(-1), ['Inbox/x.md']);
+
+    fs.writeFileSync(path.join(dir, 'Inbox/x.md'), note('Three.'));
+    await vaultGit.serial(() => vaultGit.commitHuman(['Inbox/x.md'], 'three', null));
+    const head = sh(dir, 'rev-parse', 'HEAD');
+    await assert.rejects(vaultGit.serial(() => vaultGit.revert(changed, ['Inbox/x.md'])));
+    assert.equal(sh(dir, 'rev-parse', 'HEAD'), head);
+    assert.equal(sh(dir, 'status', '--porcelain'), '');
+  });
+});
