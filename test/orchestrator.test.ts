@@ -4711,7 +4711,7 @@ describe('change log acceptance (#339)', () => {
     assert.equal(entries.length, 2);
     assert.deepEqual(entries.map((e) => e.title), ['Rewrite old', 'Add big file'], 'newest first, the title is the subject only');
     for (const entry of entries) {
-      assert.deepEqual(Object.keys(entry).sort(), ['at', 'diff', 'files', 'id', 'issue', 'pr', 'repo', 'role', 'status', 'title', 'type']);
+      assert.deepEqual(Object.keys(entry).sort(), ['at', 'branch', 'diff', 'files', 'id', 'issue', 'pr', 'repo', 'role', 'status', 'title', 'type']);
       assert.equal(Number.isNaN(Date.parse(entry.at)), false);
       assert.equal(entry.repo, 'acme/app');
       assert.deepEqual(entry.pr, { number: 12, status: 'pending' });
