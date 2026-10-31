@@ -152,7 +152,7 @@ describe('claude agent runner', () => {
     const dir = tempDir();
     const on = await sessionOptions({ brainTools: brainToolsFor({ enabled: true, path: dir }, 'write', Logger.silent()) });
     assert.ok(on.mcpServers?.brain !== undefined);
-    for (const name of ['brain_search', 'brain_read', 'brain_list', 'brain_write', 'brain_append']) assert.ok(on.allowedTools?.includes(`mcp__brain__${name}`));
+    for (const name of ['brain_search', 'brain_read', 'brain_list', 'brain_vitals', 'brain_write', 'brain_append']) assert.ok(on.allowedTools?.includes(`mcp__brain__${name}`));
     const off = await sessionOptions({ brainTools: brainToolsFor({ enabled: true, path: dir }, 'off', Logger.silent()) });
     assert.equal(off.mcpServers?.brain, undefined);
     assert.ok(!off.allowedTools?.some((name) => name.startsWith('mcp__brain')));
@@ -165,7 +165,7 @@ describe('claude agent runner', () => {
     const dir = tempDir();
     const read = await sessionOptions({ brainTools: brainToolsFor({ enabled: true, path: dir }, 'read', Logger.silent()) });
     assert.ok(read.mcpServers?.brain !== undefined);
-    assert.deepEqual(read.allowedTools?.filter((name) => name.startsWith('mcp__brain')).sort(), ['mcp__brain__brain_list', 'mcp__brain__brain_read', 'mcp__brain__brain_search']);
+    assert.deepEqual(read.allowedTools?.filter((name) => name.startsWith('mcp__brain')).sort(), ['mcp__brain__brain_list', 'mcp__brain__brain_read', 'mcp__brain__brain_search', 'mcp__brain__brain_vitals']);
     const append = JSON.stringify(read.systemPrompt);
     assert.ok(append.includes('Search and read the knowledge vault'));
     assert.ok(!append.includes('brain_write'));

@@ -44,6 +44,7 @@ Roles with a brain mode get these tools (MCP server `brain`); the full signature
 - `brain_search`: full-text search over title, frontmatter and body; `approved` notes first, then `candidate`.
 - `brain_read`: returns `content`, parsed frontmatter and `hash`.
 - `brain_list`: lists the files and subfolders of a folder.
+- `brain_vitals`: orphans, broken links and groups of notes with the same title, from the link index (read only).
 - `brain_write`: creates or replaces a whole note.
 - `brain_append`: adds text under a heading of an existing note.
 
@@ -51,15 +52,23 @@ Every call takes an optional `purpose`: one sentence on why the call is made. It
 
 ## Role switch
 
-The field `brain` of a role in `WORKFLOW.md` decides what the role's sessions may do: `off` (default) no tools, `read` only `brain_search`, `brain_read`, `brain_list`, `write` all five. It only has an effect with `brain.enabled: true`; roles with `read` or `write` also get the prompt section `roles/brain.md`.
+The field `brain` of a role in `WORKFLOW.md` decides what the role's sessions may do: `off` (default) no tools, `read` only `brain_search`, `brain_read`, `brain_list`, `brain_vitals`, `write` all six. The role flag `brain_approved_writes: false` (only with `write`) makes `brain_write` and `brain_append` reject every approved note. It only has an effect with `brain.enabled: true`; roles with `read` or `write` also get the prompt section `roles/brain.md`.
 
 | Mode | Roles in the shipped `WORKFLOW.md` |
 | --- | --- |
-| `write` | `issue-analyst`, `architect`, `reviewer` |
+| `write` | `issue-analyst`, `architect`, `reviewer`, `brain-gardener` |
 | `read` | `developer`, `test-engineer`, `security-auditor` |
 | `off` | `docs` and the command roles |
 
 An existing `WORKFLOW.md` without the field gives no role brain tools. See [configuration.md](configuration.md#roles).
+
+## Gardener
+
+The command `/brain-garden` (first line of an issue description) is served by the role `brain-gardener` with the skill `brain-garden`. The role has `brain: write`, `brain_approved_writes: false` and `read_only: true`; of the tracker tools it uses only `get_issue`, `add_comment` and `set_status` (`open_pull_request` is denied).
+
+The skill reads `Repos/<repo>/index.md`, calls `brain_vitals` (orphans, broken links, groups with the same title) and looks for notes with strongly overlapping content. For each finding it writes a candidate note `Inbox/garden-<date>-<slug>.md` (`type: note`) that links the affected notes and gives the reason and the proposal, for example "merge B into A". It repairs a broken link only in a `candidate` note. At the end it posts one comment with the list of the proposals and moves the issue to "In review". At most 20 proposals per run.
+
+Limits: the gardener never promotes a note, never merges or deletes notes (a merge stays a proposal for a human) and never writes to an `approved` note or sets `status: approved`. Approved notes are read-only for all agents anyway; `brain_approved_writes: false` is an additional gate in the write tools, so the guarantee does not depend on the general rule. A rejected attempt is logged in the access log with the reason `approved_readonly` or `approved_status`.
 
 ## Clash rules
 

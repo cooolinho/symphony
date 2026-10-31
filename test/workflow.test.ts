@@ -1378,12 +1378,25 @@ describe('role subagents', () => {
 
   it('splits the subagents by role list, read-only policy and integration prefix', () => {
     const agents = pluginAgents([path.join(dir, '.claude')]);
-    const role = (overrides: Partial<RoleConfig>) => ({ name: 'r', states: [], readOnly: false, mayMoveTo: null, result: null, onResult: {}, onCheckFailed: null, onMissingResult: null, onRoundLimit: null, modelLabel: 'apply' as const, effortLabel: 'apply' as const, maxTurns: null, commands: null, runChecks: true, maxSubIssues: null, subIssueStatus: null, waitForSubIssues: false, agents: null, brain: 'off' as const, claude: {}, ...overrides });
+    const role = (overrides: Partial<RoleConfig>) => ({ name: 'r', states: [], readOnly: false, mayMoveTo: null, result: null, onResult: {}, onCheckFailed: null, onMissingResult: null, onRoundLimit: null, modelLabel: 'apply' as const, effortLabel: 'apply' as const, maxTurns: null, commands: null, runChecks: true, maxSubIssues: null, subIssueStatus: null, waitForSubIssues: false, agents: null, brain: 'off' as const, brainApprovedWrites: true, claude: {}, ...overrides });
     const names = (split: { allowed: Array<{ name: string }>; denied: Array<{ name: string }> }) => [split.allowed.map((a) => a.name), split.denied.map((a) => a.name)];
     assert.deepEqual(names(sessionAgents(agents, null, ['laravel-'], ['laravel-'])), [['laravel-architect', 'laravel-filament-developer', 'reader'], []]);
     assert.deepEqual(names(sessionAgents(agents, null, ['laravel-'], [])), [['reader'], ['laravel-architect', 'laravel-filament-developer']]);
     assert.deepEqual(names(sessionAgents(agents, role({ readOnly: true }), ['laravel-'], ['laravel-'])), [['laravel-architect', 'reader'], ['laravel-filament-developer']]);
     assert.deepEqual(names(sessionAgents(agents, role({ agents: ['laravel-architect'] }), ['laravel-'], ['laravel-'])), [['laravel-architect'], ['laravel-filament-developer', 'reader']]);
     assert.deepEqual(names(sessionAgents(agents, role({ agents: [] }), [], [])), [[], ['laravel-architect', 'laravel-filament-developer', 'reader']]);
+  });
+});
+
+describe('role flag brain_approved_writes', () => {
+  const front = (role: Record<string, unknown>) => ({
+    tracker: { kind: 'github_project', active_states: ['Todo'] },
+    roles: { developer: { states: ['Todo'], ...role } },
+  });
+  it('defaults to true, reads false, and rejects other values', () => {
+    const flag = (role: Record<string, unknown>) => (resolve(front(role)).roles ?? []).find((r) => r.name === 'developer')?.brainApprovedWrites;
+    assert.equal(flag({}), true);
+    assert.equal(flag({ brain_approved_writes: false }), false);
+    assert.throws(() => resolve(front({ brain_approved_writes: 'nein' })), /roles\.developer\.brain_approved_writes/);
   });
 });

@@ -88,8 +88,10 @@ export interface RoleConfig {
    * session may use. Read-only roles never get subagents that can edit files.
    */
   agents: string[] | null;
-  /** Brain tools of the role's sessions: `off` none, `read` search/read/list, `write` also write/append. Only with `brain.enabled`. */
+  /** Brain tools of the role's sessions: `off` none, `read` search/read/list/vitals, `write` also write/append. Only with `brain.enabled`. */
   brain: BrainMode;
+  /** Only with `brain: write`: false = brain_write/brain_append never touch an approved note and never set status approved (default true: no extra gate). */
+  brainApprovedWrites: boolean;
   claude: RoleClaudeOverrides;
 }
 
