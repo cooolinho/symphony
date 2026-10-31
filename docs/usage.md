@@ -1155,7 +1155,8 @@ Where the data comes from and where the limits are:
 | Endpoint | Content |
 |---|---|
 | `GET /` | Dashboard |
-| `GET /changes`, `GET /tasks`, `GET /brain` | Placeholder pages in the page shell ("Diese Seite kommt in Kürze."); their content follows later |
+| `GET /tasks` | Tasks page: the dispatcher queue in six columns (Läuft, Als Nächstes, Wartet, Pausiert, Blockiert, Kürzlich erledigt) with reason chips and the actions Pausieren, Jetzt starten, Erneut versuchen, Fortsetzen (the existing control routes; no buttons without `controls.retry`); polls `/api/v1/state` every 2 s |
+| `GET /changes`, `GET /brain` | Placeholder pages in the page shell ("Diese Seite kommt in Kürze."); their content follows later |
 | `GET /issue?id=<identifier>` | Issue detail view (execution trace) |
 | `GET /agent?id=<identifier>`, `GET /logs` | Permanent redirect (`301`) to `/issue?id=<identifier>` and `/stats`; the query string is kept |
 | `GET /stats` | Statistics and analytics page; filters in the URL: `?period=30d` (`today`, `yesterday`, `7d`, `14d`, `30d`, `90d`, `month`, `last_month`, `all` or `custom&from=YYYY-MM-DD&to=YYYY-MM-DD`), `&repo=owner/name`, `&model=<id>`, `&effort=<level>` |

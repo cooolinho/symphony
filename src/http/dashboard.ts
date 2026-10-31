@@ -165,6 +165,7 @@ const DASHBOARD_CSS = `
   details.blocked-section summary::-webkit-details-marker { display: none; }
   details.blocked-section summary .chev { display: inline-block; font-style: normal; transition: transform .2s var(--ease); color: var(--muted); }
   details.blocked-section[open] summary .chev { transform: rotate(90deg); }
+  .section-link { display: inline-flex; align-items: center; min-height: 44px; font-size: 13px; }
   details.blocked-section .section-head { margin-bottom: 0; }
   details.blocked-section[open] .section-head { margin-bottom: 14px; }
   .queue { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
@@ -264,6 +265,7 @@ export const DASHBOARD_HTML = page({
   <section class="agents-section" id="running-section" aria-labelledby="running-title">
     <div class="section-head">
       <h2 id="running-title">Running <span class="count" id="running-count"></span></h2>
+      <a class="section-link" href="/tasks">Alle Tasks</a>
       <div class="slots" id="slots" aria-hidden="true"></div>
     </div>
     <div class="slot-settings" id="slot-settings" role="group" aria-label="Agent slots" hidden></div>

@@ -150,7 +150,7 @@ const REDIRECTS: ReadonlyMap<string, string> = new Map([
 ]);
 
 /**
- * Observability/control surface (spec 13.7): `/` dashboard, `/changes`, `/tasks` and `/brain` (placeholder pages),
+ * Observability/control surface (spec 13.7): `/` dashboard, `/tasks` (queue columns with control actions), `/changes` and `/brain` (placeholder pages),
  * `/issue?id=<identifier>` issue detail view (live, or archived once the orchestrator released the issue),
  * `/stats` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
  * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
