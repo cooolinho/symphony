@@ -345,7 +345,7 @@ describe('http extension', () => {
     assert.match(page, /\/api\/v1\/history\/analytics\?/);
     assert.match(page, /\/api\/v1\/history\/entries\?/);
     assert.match(page, /data-body="roles"/);
-    assert.match(page, /Most expensive issue pipelines/);
+    assert.match(page, /Teuerste Issue-Pipelines/);
 
     const week = '/api/v1/history/analytics?from=2026-09-28T00:00:00Z&to=2026-10-05T00:00:00Z&tz=Europe%2FBerlin';
     const a = JSON.parse((await request(server.port, 'GET', week)).body);
