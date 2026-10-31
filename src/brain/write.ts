@@ -68,6 +68,15 @@ export function writeAtomic(absolute: string, text: string): void {
   }
 }
 
+/** The content a rejected write tried to store: the given note, or the found note with the appended section; null when unknown. */
+function attemptedOf(tool: BrainWriteEntry['tool'], args: Record<string, unknown>, found: { text: string }): { content: string } | null {
+  if (tool === 'brain_write') return typeof args.content === 'string' ? { content: args.content } : null;
+  if (typeof args.heading !== 'string' || typeof args.text !== 'string') return null;
+  const parsed = parseNote(found.text);
+  if (parsed.frontmatterError !== null) return null;
+  return { content: serializeNote(parsed.frontmatter, appendUnderHeading(parsed.body, args.heading, args.text)) };
+}
+
 /** Write tools of the knowledge vault: whole notes with `brain_write`, one section with `brain_append`. */
 export function createBrainWriteTools(vaultPath: string, logger: Logger, options: BrainWriteOptions = {}): AgentToolSpec[] {
   const now = options.now ?? (() => new Date());
@@ -133,6 +142,7 @@ export function createBrainWriteTools(vaultPath: string, logger: Logger, options
       },
       other,
       reason,
+      { base: { content: found.text, hash: found.hash }, attempted: attemptedOf(tool, args, found) },
     );
     return reason === 'window' ? windowConflict(found, { run: other.run, at: other.at ?? '' }) : conflict(found);
   };

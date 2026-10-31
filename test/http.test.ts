@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import http from 'node:http';
 import { after, before, describe, it } from 'node:test';
 import fs from 'node:fs';
@@ -1703,6 +1705,221 @@ describe('brain routes', () => {
       assert.equal(candidates[0].target, 'Lessons/');
       const post = await request(server.port, 'POST', '/api/v1/brain/vitals');
       assert.equal(post.status, 405);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe('brain access, clashes and promotion routes (E7-6b)', () => {
+  const sh = (dir: string, ...args: string[]): string => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+  const candidate = '---\ntype: lesson\nstatus: candidate\ncreated: 2026-10-20\n---\n# X\n';
+
+  async function start(options: { brain?: boolean; host?: string; allowRemoteControl?: boolean; access?: string } = {}) {
+    const vault = path.join(tempDir(), 'vault');
+    await ensureVault(vault, ['acme/app'], new Date('2026-10-01T00:00:00Z'));
+    fs.writeFileSync(path.join(vault, 'Inbox/x.md'), candidate);
+    sh(vault, '-c', 'user.name=t', '-c', 'user.email=t@local', 'add', '-A');
+    sh(vault, '-c', 'user.name=t', '-c', 'user.email=t@local', 'commit', '-q', '-m', 'candidate');
+    const logDir = tempDir();
+    if (options.access !== undefined) {
+      fs.mkdirSync(path.join(logDir, 'brain'));
+      fs.writeFileSync(path.join(logDir, 'brain', 'access.jsonl'), options.access);
+    }
+    const front = baseFront(tempDir(), options.brain === false ? {} : { brain: { enabled: true, path: vault } });
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(front)),
+      runner: new FakeRunner(),
+      logger: Logger.silent(),
+      env: {},
+      logDir,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker(),
+    });
+    await orchestrator.buildBrainIndex();
+    orchestrator.loadBrainAccess();
+    const server = await startHttpServer({
+      host: options.host ?? '127.0.0.1',
+      port: 0,
+      orchestrator,
+      logger: Logger.silent(),
+      ...(options.allowRemoteControl ? { allowRemoteControl: true } : {}),
+    });
+    return { vault, server };
+  }
+  const json = (res: { body: string }) => JSON.parse(res.body);
+  const candidates = async (port: number): Promise<string[]> => json(await request(port, 'GET', '/api/v1/brain/candidates')).candidates.map((c: { path: string }) => c.path);
+
+  it('approve moves and commits as human, the candidate leaves /candidates, revert brings it back', async () => {
+    const { vault, server } = await start();
+    try {
+      assert.deepEqual(await candidates(server.port), ['Inbox/x.md']);
+      const approved = await request(server.port, 'POST', '/api/v1/brain/candidates/Inbox%2Fx.md/approve');
+      assert.equal(approved.status, 200, approved.body);
+      const body = json(approved);
+      assert.equal(body.path, 'Lessons/x.md');
+      assert.equal(body.previous_path, 'Inbox/x.md');
+      assert.equal(body.hash, createHash('sha256').update(fs.readFileSync(path.join(vault, 'Lessons/x.md'))).digest('hex'));
+      assert.match(body.sha, /^[0-9a-f]{40}$/);
+      assert.equal(fs.existsSync(path.join(vault, 'Inbox/x.md')), false);
+      assert.match(fs.readFileSync(path.join(vault, 'Lessons/x.md'), 'utf8'), /status: approved\n[\s\S]*updated: /);
+      assert.equal(sh(vault, 'log', '-1', '--format=%an|%s'), 'human|approve: Inbox/x.md');
+      assert.deepEqual(await candidates(server.port), []);
+
+      const reverted = await request(server.port, 'POST', '/api/v1/brain/candidates/Lessons%2Fx.md/revert');
+      assert.equal(reverted.status, 200, reverted.body);
+      assert.equal(json(reverted).path, 'Inbox/x.md');
+      assert.equal(json(reverted).previous_path, 'Lessons/x.md');
+      assert.equal(fs.readFileSync(path.join(vault, 'Inbox/x.md'), 'utf8'), candidate);
+      assert.equal(fs.existsSync(path.join(vault, 'Lessons/x.md')), false);
+      assert.equal(sh(vault, 'log', '-1', '--format=%an'), 'human');
+      assert.deepEqual(await candidates(server.port), ['Inbox/x.md']);
+
+      const again = await request(server.port, 'POST', '/api/v1/brain/candidates/Inbox%2Fx.md/revert');
+      assert.equal(again.status, 409);
+      assert.equal(json(again).error.code, 'no_approve_commit');
+      const missing = await request(server.port, 'POST', '/api/v1/brain/candidates/Lessons%2Fnone.md/revert');
+      assert.equal(missing.status, 404);
+      assert.equal(json(missing).error.code, 'note_not_found');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('reject sets deprecated, leaves the file and commits reject: <path>', async () => {
+    const { vault, server } = await start();
+    try {
+      const res = await request(server.port, 'POST', '/api/v1/brain/candidates/Inbox%2Fx.md/reject');
+      assert.equal(res.status, 200, res.body);
+      assert.equal(json(res).path, 'Inbox/x.md');
+      const text = fs.readFileSync(path.join(vault, 'Inbox/x.md'), 'utf8');
+      assert.match(text, /status: deprecated/);
+      assert.match(text, /updated: /);
+      assert.equal(sh(vault, 'log', '-1', '--format=%an|%s'), 'human|reject: Inbox/x.md');
+      assert.deepEqual(await candidates(server.port), []);
+      const twice = await request(server.port, 'POST', '/api/v1/brain/candidates/Inbox%2Fx.md/reject');
+      assert.equal(twice.status, 409);
+      assert.equal(json(twice).error.code, 'not_candidate');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('answers 400 for a path out of the vault, into .obsidian, not .md or badly encoded', async () => {
+    const { server } = await start();
+    try {
+      for (const bad of ['..%2F..%2Fetc%2Fpasswd.md', '.obsidian%2Fx.md', 'Inbox%2Fx.txt', '%E0%A4%A']) {
+        for (const action of ['approve', 'reject', 'revert']) {
+          const res = await request(server.port, 'POST', `/api/v1/brain/candidates/${bad}/${action}`);
+          assert.equal(res.status, 400, `${bad} ${action}: ${res.body}`);
+          assert.equal(json(res).error.code, 'bad_request');
+        }
+      }
+      const get = await request(server.port, 'GET', '/api/v1/brain/candidates/Inbox%2Fx.md/approve');
+      assert.equal(get.status, 405);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('refuses the POST routes without controlAllowed (403)', async () => {
+    const routes = ['candidates/Inbox%2Fx.md/approve', 'candidates/Inbox%2Fx.md/reject', 'candidates/Lessons%2Fx.md/revert', 'clashes/c1/resolve'];
+    const remote = await start({ host: '0.0.0.0' });
+    const proxied = await start({ host: '0.0.0.0', allowRemoteControl: true });
+    try {
+      for (const route of routes) {
+        const off = await request(remote.server.port, 'POST', `/api/v1/brain/${route}`);
+        assert.equal(off.status, 403);
+        assert.equal(json(off).error.code, 'control_disabled');
+        const foreign = await request(proxied.server.port, 'POST', `/api/v1/brain/${route}`, { origin: 'https://evil.example' });
+        assert.equal(foreign.status, 403);
+        assert.equal(json(foreign).error.code, 'forbidden_origin');
+      }
+      assert.ok(fs.existsSync(path.join(remote.vault, 'Inbox/x.md')));
+      assert.match(fs.readFileSync(path.join(proxied.vault, 'Inbox/x.md'), 'utf8'), /status: candidate/);
+    } finally {
+      await remote.server.close();
+      await proxied.server.close();
+    }
+  });
+
+  it('GET /access filters by role and q, newest first, purpose as a string, pages with before', async () => {
+    const row = (at: string, role: string, pathOrQuery: string, purpose?: string) =>
+      `${JSON.stringify({ at, run: 'r', issue: 'acme/app#1', role, op: 'read', path_or_query: pathOrQuery, ...(purpose !== undefined ? { purpose } : {}), result: 'ok' })}\n`;
+    const { server } = await start({
+      access:
+        row('2026-10-30T10:00:00.000Z', 'developer', 'Lessons/caching.md', 'p') +
+        row('2026-10-30T11:00:00.000Z', 'architect', 'Decisions/d.md', 'about caching') +
+        row('2026-10-30T12:00:00.000Z', 'developer', 'Inbox/x.md'),
+    });
+    try {
+      const byRole = await request(server.port, 'GET', '/api/v1/brain/access?role=developer');
+      assert.equal(byRole.status, 200);
+      assert.deepEqual(json(byRole).access.map((a: { path_or_query: string }) => a.path_or_query), ['Inbox/x.md', 'Lessons/caching.md']);
+      assert.equal(json(byRole).access[0].purpose, '');
+      assert.equal(json(byRole).next_before, null);
+      const byQ = json(await request(server.port, 'GET', '/api/v1/brain/access?q=caching')).access;
+      assert.deepEqual(byQ.map((a: { path_or_query: string }) => a.path_or_query), ['Decisions/d.md', 'Lessons/caching.md']);
+      const first = json(await request(server.port, 'GET', '/api/v1/brain/access?limit=1'));
+      assert.deepEqual(first.access.map((a: { at: string }) => a.at), ['2026-10-30T12:00:00.000Z']);
+      const second = json(await request(server.port, 'GET', `/api/v1/brain/access?limit=1&before=${first.next_before}`));
+      assert.deepEqual(second.access.map((a: { at: string }) => a.at), ['2026-10-30T11:00:00.000Z']);
+      assert.equal((await request(server.port, 'POST', '/api/v1/brain/access')).status, 405);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('GET /clashes lists a clash from the E7-4 log with both versions; resolve marks it', async () => {
+    // The rejection came after the commit of the candidate.
+    const at = new Date(Date.now() + 60_000).toISOString();
+    const fixture = `${JSON.stringify({ at, run: 'run2', issue: 'acme/app#1', role: 'developer', op: 'write', path_or_query: 'Inbox/x.md', purpose: '', result: 'rejected', reason: 'window', clash_id: 'c1', other_run: 'run1', other_at: at })}\n`;
+    const { vault, server } = await start({ access: fixture });
+    try {
+      const res = await request(server.port, 'GET', '/api/v1/brain/clashes');
+      assert.equal(res.status, 200, res.body);
+      const [clash] = json(res).clashes;
+      assert.equal(clash.id, 'c1');
+      assert.equal(clash.status, 'open');
+      assert.equal(clash.path, 'Inbox/x.md');
+      // No stored versions for a clash from the log: base from git (last commit before the rejection), attempted unknown.
+      assert.equal(clash.base.content, candidate);
+      assert.equal(clash.attempted, null);
+      assert.equal(clash.current.content, fs.readFileSync(path.join(vault, 'Inbox/x.md'), 'utf8'));
+      assert.equal(json(await request(server.port, 'GET', '/api/v1/brain/clashes?status=open')).clashes.length, 1);
+      assert.deepEqual(json(await request(server.port, 'GET', '/api/v1/brain/clashes?status=resolved')).clashes, []);
+      assert.equal((await request(server.port, 'GET', '/api/v1/brain/clashes?status=foo')).status, 400);
+
+      const resolved = await request(server.port, 'POST', '/api/v1/brain/clashes/c1/resolve');
+      assert.equal(resolved.status, 200, resolved.body);
+      assert.deepEqual(json(resolved), { id: 'c1', status: 'resolved' });
+      const twice = await request(server.port, 'POST', '/api/v1/brain/clashes/c1/resolve');
+      assert.equal(twice.status, 409);
+      assert.equal(json(twice).error.code, 'already_resolved');
+      const unknown = await request(server.port, 'POST', '/api/v1/brain/clashes/nope/resolve');
+      assert.equal(unknown.status, 404);
+      assert.equal(json(unknown).error.code, 'clash_not_found');
+      assert.equal(json(await request(server.port, 'GET', '/api/v1/brain/clashes?status=resolved')).clashes.length, 1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('answers 404 brain_disabled without the brain', async () => {
+    const { server } = await start({ brain: false });
+    try {
+      for (const [method, route] of [
+        ['GET', 'access'],
+        ['GET', 'clashes'],
+        ['POST', 'clashes/c1/resolve'],
+        ['POST', 'candidates/Inbox%2Fx.md/approve'],
+        ['POST', 'candidates/Inbox%2Fx.md/reject'],
+        ['POST', 'candidates/Inbox%2Fx.md/revert'],
+      ] as const) {
+        const res = await request(server.port, method, `/api/v1/brain/${route}`);
+        assert.equal(res.status, 404, route);
+        assert.equal(json(res).error.code, 'brain_disabled');
+      }
     } finally {
       await server.close();
     }
