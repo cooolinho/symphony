@@ -3312,6 +3312,8 @@ describe('issue-centric snapshot', () => {
       snap.blocked.map((row) => [row.issue_id, row.reason_code, row.reason]),
       [['unlabeled', 'missing_label', 'missing required label ai']],
     );
+    assert.deepEqual(snap.blocked[0]!.labels, issues.find((i) => i.id === 'unlabeled')!.labels);
+    assert.ok('updated_at' in snap.blocked[0]!);
     assert.equal(snap.counts.queued, 4);
 
     // The dry run starts with nothing running: it starts what the tick started and gives the rest the same reasons.
