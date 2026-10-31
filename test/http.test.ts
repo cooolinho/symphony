@@ -1270,7 +1270,7 @@ describe('page shell (layout.ts, #342)', () => {
     const clock = nodes.get('shell-clock') as FakeElement;
     assert.match(clock.textContent, /^clock:\d\d:\d\d:\d\d$/);
     assert.match(clock.getAttribute('datetime') ?? '', /^\d{4}-\d\d-\d\dT/);
-    assert.deepEqual(timers.map((t) => t[1]), [1000]);
+    assert.deepEqual(timers.map((t) => t[1]), [1000, 30000]);
   });
 
   it('every page switches LIVE: green with data, gray without', async () => {
@@ -1379,7 +1379,7 @@ describe('dashboard page behaviour', () => {
 
   it('loads the state, the history and the system cards when the page opens', () => {
     const page = renderPage(DASHBOARD_HTML);
-    assert.deepEqual(page.fetches.map((f) => f.url), ['/api/v1/state', '/api/v1/history', '/api/v1/system']);
+    assert.deepEqual(page.fetches.map((f) => f.url), ['/api/v1/budget', '/api/v1/state', '/api/v1/history', '/api/v1/system']);
   });
 
   it('puts every card into its section with a count, and hides the empty queue sections', () => {
