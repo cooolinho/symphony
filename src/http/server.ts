@@ -5,6 +5,7 @@ import type { PricingStore } from '../costs/pricing.ts';
 import { computeAnalytics, filterEntries, isValidTimeZone, type Analytics, type AnalyticsFilter } from '../history/analytics.ts';
 import { computeHistoryStats, readHistory, repositoryFileName } from '../history/history.ts';
 import type { Logger } from '../log.ts';
+import { ACTIVITY_DEFAULT_MINUTES, ACTIVITY_MAX_MINUTES } from '../orchestrator/activity.ts';
 import type { Orchestrator } from '../orchestrator/orchestrator.ts';
 import type { SystemSource } from '../system/metrics.ts';
 import { errorMessage } from '../util/errors.ts';
@@ -153,7 +154,7 @@ const REDIRECTS: ReadonlyMap<string, string> = new Map([
  * Observability/control surface (spec 13.7): `/` dashboard, `/changes` (the feed of code changes), `/tasks` and `/brain` (placeholder pages),
  * `/issue?id=<identifier>` issue detail view (live, or archived once the orchestrator released the issue),
  * `/stats` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
- * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/changes` (filters type, repo, issue, limit, tz; `before` = id of the last entry of the previous page, `next_before` the id for the next), `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
+ * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/activity`, `/api/v1/changes` (filters type, repo, issue, limit, tz; `before` = id of the last entry of the previous page, `next_before` the id for the next), `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
  * `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker), `/force` (Start now in an extra slot),
  * `/pause` and `/resume` (operator pause of an issue), `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family), and
  * `PUT` / `DELETE /api/v1/settings/agents` (agent slots set on the dashboard; JSON body, `Content-Type:
@@ -288,6 +289,14 @@ export function startHttpServer(options: {
           zone !== null && isValidTimeZone(zone) ? zone : Intl.DateTimeFormat().resolvedOptions().timeZone,
         );
         sendJson(res, 200, { generated_at: new Date().toISOString(), ...page });
+      });
+      return;
+    }
+    if (pathname === '/api/v1/activity') {
+      allow(['GET'], () => {
+        const raw = Number(new URL(req.url ?? '/', 'http://localhost').searchParams.get('minutes'));
+        const minutes = Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), ACTIVITY_MAX_MINUTES) : ACTIVITY_DEFAULT_MINUTES;
+        sendJson(res, 200, orchestrator.activity(minutes));
       });
       return;
     }
