@@ -115,8 +115,10 @@ gespeicherten Stage-Ergebnissen.
 **Limit-Prognose**
 
 Jedes `rate_limit_event` wird gespeichert. Aus dem Token-Verbrauch im rollenden 5-h- und 7-Tage-Fenster ergibt sich die
-Burn-Rate (gleitend über die letzten 30 min). Die Grenze kommt bevorzugt aus der Auslastung des SDK, falls es sie
-liefert (offene Frage 5). Sonst wird sie aus dem Verbrauch zum Zeitpunkt früherer `session_limit`-Treffer kalibriert.
+Burn-Rate (gleitend über die letzten 30 min). Das SDK liefert die Auslastung: Je Fenster steht sie in
+`unifiedWindows` des neuesten Events, und die Grenze ergibt sich aus Verbrauch / Auslastung. Nur ohne SDK-Wert
+(Fenster fehlt, Event `rejected`) ist die Kalibrierung aus dem Verbrauch zum Zeitpunkt früherer
+`session_limit`-Treffer der Fallback.
 ETA = (Grenze − Verbrauch) / Burn-Rate, angezeigt nur, wenn sie vor dem Reset liegt.
 
 ## Funktionsbereiche
@@ -353,6 +355,9 @@ Prüfen, ob `rate_limit_info` eine Auslastung oder Schwelle liefert (`utilizatio
 Ergebnis kommt als Kommentar in dieses Konzept zurück.
 
 Abnahme: Beispiel-Payloads aus echten Sessions dokumentiert.
+
+Erfüllt: Ergebnis in #332 und im Spike-Kommentar von cooolinho vom 2026-11-01 auf #320; die Payloads und Befunde stehen
+in `docs/agent-claude.md` (E4-10, #465).
 
 **E4-4 Prognose und API**
 
@@ -597,15 +602,17 @@ Jede offene Frage hat eine Standardannahme, mit der gebaut wird, solange keine A
 3. **Ein Vault für alles:** ja, mit einem Ordner je Repo.
 6. **Obsidian über reines HTTP:** reicht, kein eigenes Zertifikat.
 
+**Entschieden am 2026-11-01**
+
+5. **Liefert das SDK eine Auslastung?** Ja. `rate_limit_event` trägt `utilization` und `surpassedThreshold`, und
+   `unifiedWindows` nennt in jedem Event die Auslastung aller Fenster (Spike E4-3, #332; Kommentar von cooolinho vom
+   2026-11-01 auf #320). Die Kalibrierung aus `session_limit`-Treffern ist nur noch Fallback ohne SDK-Wert.
+
 **Noch offen**
 
 4. **Was schreibt Symphony automatisch?**
    - **Annahme:** nur Issue-Zusammenfassungen nach dem Merge (E8-3).
    - Auch Check-Fehlschläge automatisch als Lesson? Das wäre schnell Lärm.
-5. **Liefert das SDK eine Auslastung?**
-   - Ohne Auslastung ist die Prognose eine Schätzung aus früheren Limit-Treffern. Bis zum ersten Treffer gibt es
-     keine Prognose.
-   - E4-3 klärt das. **Annahme:** Kalibrierung reicht für den Anfang.
 7. **Retention.**
    - Transkripte und History rotieren heute nie; Budget- und Access-Logs kommen dazu.
    - **Annahme:** neue JSONL-Dateien 30 Tage, Rest unverändert. Für die alten Logs ein eigenes Issue.
