@@ -337,19 +337,19 @@ What the payloads show:
 4. The windows are fixed blocks, not rolling: the 5-hour window resets in steps of five hours, the week always on
    Wednesday 09:00 UTC. After a reset the utilization starts at `0`.
 
-Abridged real payloads (`…` marks values left out):
+Abridged real payloads:
 
 ```jsonc
 // allowed_warning / seven_day
 {
   "status": "allowed_warning",
   "rateLimitType": "seven_day",
-  "resetsAt": …,
-  "utilization": …,
+  "resetsAt": 1793782800,
+  "utilization": 0.77,
   "surpassedThreshold": 0.75,
   "unifiedWindows": {
-    "five_hour": { "utilization": …, "resetsAt": … },
-    "seven_day": { "utilization": …, "resetsAt": … }
+    "five_hour": { "utilization": 0, "resetsAt": 1793497800 },
+    "seven_day": { "utilization": 0.77, "resetsAt": 1793782800 }
   }
 }
 
@@ -357,10 +357,11 @@ Abridged real payloads (`…` marks values left out):
 {
   "status": "rejected",
   "rateLimitType": "five_hour",
-  "resetsAt": …,
+  "resetsAt": 1793537400,
   "unifiedWindows": {
-    "five_hour": { "utilization": …, "resetsAt": … },
-    "seven_day": { "utilization": …, "resetsAt": … }
+    "five_hour": { "utilization": 1.01, "resetsAt": 1793537400 },
+    "seven_day": { "utilization": 0.91, "resetsAt": 1793782800 },
+    "seven_day_overage_included": { "utilization": 0.7, "resetsAt": 1793782800 }
   }
 }
 ```
