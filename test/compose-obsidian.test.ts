@@ -73,17 +73,22 @@ describe('compose: obsidian service', () => {
     });
   }
 
-  it('docker-compose.yml: Traefik labels, same login as the dashboard, plain HTTP', () => {
+  // The web client (Selkies) needs a secure context: over plain HTTP it refuses to start.
+  it('docker-compose.yml: Traefik labels, same login as the dashboard, always HTTPS', () => {
     const svc = obsidian('docker-compose.yml');
     for (const l of [
       'traefik.enable=true',
       'traefik.http.routers.obsidian.rule=Host(`${BRAIN_DOMAIN:-}`)',
-      'traefik.http.routers.obsidian.entrypoints=${TRAEFIK_ENTRYPOINT:-web}',
-      'traefik.http.routers.obsidian.tls=false',
+      'traefik.http.routers.obsidian.entrypoints=${BRAIN_TRAEFIK_ENTRYPOINT:-websecure}',
+      'traefik.http.routers.obsidian.tls=true',
       'traefik.http.services.obsidian.loadbalancer.server.port=3000',
     ]) {
       assert.ok(svc.labels?.includes(l), l);
     }
+    assert.equal(
+      label(svc, 'traefik.http.routers.obsidian.tls.certresolver'),
+      label(symphony('docker-compose.yml'), 'traefik.http.routers.symphony.tls.certresolver'),
+    );
     const middlewares = label(svc, 'traefik.http.routers.obsidian.middlewares');
     assert.equal(middlewares, label(symphony('docker-compose.yml'), 'traefik.http.routers.symphony.middlewares'));
     assert.match(middlewares ?? '', /symphony-auth/);

@@ -150,7 +150,8 @@ services:
         volumes:
             - obsidian-config:/config
             - brain:/config/vault
-        # Local only, no login: bound to 127.0.0.1, never to 0.0.0.0.
+        # Local only, no login: bound to 127.0.0.1, never to 0.0.0.0. Plain HTTP is enough here: the web client needs a
+        # secure context, and http://127.0.0.1 is one (a LAN host name over HTTP is not).
         ports:
             - "127.0.0.1:${BRAIN_PORT:-3000}:3000"
 

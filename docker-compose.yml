@@ -46,7 +46,9 @@ services:
             # Traefik then ignores the whole tls.* block, the cert resolver included. A router with tls=true
             # answers TLS connections only, so on an HTTP entrypoint it would return 404.
             - traefik.http.routers.symphony.tls=${TRAEFIK_TLS:-true}
-            - traefik.http.routers.symphony.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}
+            # Set but empty (TRAEFIK_CERTRESOLVER=): no resolver, Traefik serves its default certificate, e.g. a
+            # wildcard from a local CA (mkcert) in its file provider. Hence "-" and not ":-".
+            - traefik.http.routers.symphony.tls.certresolver=${TRAEFIK_CERTRESOLVER-letsencrypt}
             - traefik.http.routers.symphony.middlewares=${SYMPHONY_TRAEFIK_MIDDLEWARES:-symphony-auth}
             - traefik.http.routers.symphony.service=symphony
             # htpasswd line(s), bcrypt recommended (htpasswd -nB admin). In .env in single quotes and with single $:
@@ -182,9 +184,12 @@ services:
             # Not ${VAR:?}: compose interpolates every service, profile or not, so that would break setups without
             # the profile. An empty host makes Traefik drop the router (fail closed).
             - traefik.http.routers.obsidian.rule=Host(`${BRAIN_DOMAIN:-}`)
-            - traefik.http.routers.obsidian.entrypoints=${TRAEFIK_ENTRYPOINT:-web}
-            # Plain HTTP in the LAN (with TRAEFIK_ENTRYPOINT=web), no certificates.
-            - traefik.http.routers.obsidian.tls=false
+            # Always HTTPS: the web client (Selkies) needs a secure context for WebCodecs and stops over plain HTTP
+            # ("This application requires a secure connection"). Its own entrypoint, so the dashboard may stay on
+            # HTTP (TRAEFIK_TLS=false) while Obsidian runs on the HTTPS entrypoint.
+            - traefik.http.routers.obsidian.entrypoints=${BRAIN_TRAEFIK_ENTRYPOINT:-websecure}
+            - traefik.http.routers.obsidian.tls=true
+            - traefik.http.routers.obsidian.tls.certresolver=${TRAEFIK_CERTRESOLVER-letsencrypt}
             # The login of the dashboard; the middleware symphony-auth is defined by the labels of the symphony service.
             - traefik.http.routers.obsidian.middlewares=${SYMPHONY_TRAEFIK_MIDDLEWARES:-symphony-auth}
             - traefik.http.routers.obsidian.service=obsidian

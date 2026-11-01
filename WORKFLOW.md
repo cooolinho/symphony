@@ -448,10 +448,11 @@ server:
 # budget:
 #   compact_threshold: 80                    # context percent of Claude Code's auto-compact; the team view marks it
 
-# brain:                                     # knowledge vault: one vault for all repositories, created at startup
-#   enabled: false                           # true = create the vault; false = no path is touched
-#   path: ~/brain                            # /home/symphony/brain is the brain volume in Docker
-#   clash_window_ms: 600000                  # another run that wrote a note within this window blocks a write (0 = off)
+brain:                                       # knowledge vault: one vault for all repositories, created at startup
+  enabled: ${SYMPHONY_BRAIN_ENABLED:-false}  # true = create the vault; false = no path is touched
+  path: ~/brain                              # /home/symphony/brain is the brain volume in Docker
+  # clash_window_ms: 600000                  # another run that wrote a note within this window blocks a write (0 = off)
+  obsidian_url: ${SYMPHONY_BRAIN_OBSIDIAN_URL:-}  # "In Obsidian öffnen" on /brain (e.g. https://brain.docker.lan); empty hides it
 # Only roles with brain: read or write get the brain tools (see roles:).
 # Existing files and folders are never overwritten; .obsidian/ is never touched. Changes apply after a restart.
 ---

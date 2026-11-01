@@ -4,22 +4,29 @@
  * a model hold; Paused; Blocked with a blocked column, a dependency and a missing label) and serves the real pages
  * on http://127.0.0.1:4000. No GitHub access, no Claude sessions - the agent runner is faked. The queue changes
  * over the first seconds (fails, holds, pauses) and then settles. The system cards show this machine's metrics (sampled
- * every 2 s) and a made-up GitHub API budget.
+ * every 2 s) and a made-up GitHub API budget. Changes, Brain and Statistik show the made-up history of scripts/demo-seed.ts
+ * (runs of two weeks, commits and merges, a knowledge vault). docs/preview.gif is recorded from this demo.
  *
  *   node scripts/demo.ts [port]
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { limitScopeOf } from '../src/agent/rate-limit.ts';
+import { prepareBrain } from '../src/brain/vault.ts';
+import { PricingStore } from '../src/costs/pricing.ts';
+import { HistoryLog } from '../src/history/history.ts';
 import { Logger } from '../src/log.ts';
 import type { Issue } from '../src/tracker/types.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import { startHttpServer } from '../src/http/server.ts';
 import { SystemCollector } from '../src/system/metrics.ts';
 import { FakeRunner, FakeTracker, StaticWorkflow, baseFront, makeIssue, makeWorkflow, tempDir } from '../test/helpers.ts';
+import { seedBrain, seedChanges, seedHistory } from './demo-seed.ts';
 
 const port = Number(process.argv[2] ?? 4000);
 const root = tempDir('symphony-demo-');
+const logDir = path.join(root, 'state');
+const vault = path.join(root, 'brain');
 
 // The auditor's /refactoring command must exist as a plugin skill to pass startup validation.
 const plugin = path.join(root, 'plugin');
@@ -48,6 +55,9 @@ const front = baseFront(root, {
     max_retry_backoff_ms: 60_000,
   },
   polling: { interval_ms: 5_000 },
+  // The vault must not lie inside workspace.root.
+  workspace: { root: path.join(root, 'workspaces') },
+  brain: { enabled: true, path: vault, obsidian_url: 'https://brain.example.lan' },
 });
 
 const issue = (id: string, state: string, title: string, overrides: Partial<Issue> = {}) =>
@@ -110,12 +120,29 @@ const runner = new FakeRunner(async (turn, params) => {
 });
 
 const logger = Logger.create();
+const workflow = new StaticWorkflow(makeWorkflow(front));
+
+// History before the start: the orchestrator loads the change log and the brain access log when it starts.
+const now = Date.now();
+const pricing = new PricingStore(path.join(import.meta.dirname, '..', 'model-costs.yml'), logger);
+const history = new HistoryLog(path.join(logDir, 'repositories'), pricing, logger);
+seedHistory(history, now);
+seedChanges(logDir, now);
+// The vault's init commit dates from the morning, before the seeded agent commits.
+process.env.GIT_AUTHOR_DATE = process.env.GIT_COMMITTER_DATE = new Date(now - 12 * 3_600_000).toISOString();
+await prepareBrain(workflow.current.config.brain, ['acme/app'], logger);
+delete process.env.GIT_AUTHOR_DATE;
+delete process.env.GIT_COMMITTER_DATE;
+seedBrain(vault, logDir, now);
+
 const orchestrator = new Orchestrator({
-  workflow: new StaticWorkflow(makeWorkflow(front)),
+  workflow,
   runner,
   logger,
   env: {},
-  logDir: null,
+  logDir,
+  pricing,
+  history,
   createAdapter: () => tracker,
 });
 
@@ -126,5 +153,7 @@ let remaining = 4_812;
 tracker.apiBudget = () => ({ remaining: (remaining = Math.max(0, remaining - 3)), limit: 5_000, reset_at: new Date(Date.now() + 40 * 60_000).toISOString(), observed_at: new Date().toISOString() });
 
 await orchestrator.start();
-const server = await startHttpServer({ host: '127.0.0.1', port, orchestrator, logger, system });
+await orchestrator.loadBrainChanges();
+await orchestrator.buildBrainIndex();
+const server = await startHttpServer({ host: '127.0.0.1', port, orchestrator, logger, history: { dir: history.dir, pricing }, system });
 console.log(`Demo dashboard: ${server.url}`);

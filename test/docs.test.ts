@@ -122,41 +122,28 @@ describe('docs: README structure', () => {
   const emoji = (heading: string): string => [...heading][0] ?? '';
   const wanted = english.map(emoji);
 
-  // The READMEs predate the fixed structure and open with "Origin", "Built for Laravel" and "How it works" instead of
-  // "📖 About"; the issue only asks that its change leaves the structure as it is (see the comparison below).
-  const present = wanted.slice(1);
-
-  it('README.md keeps the sections that exist in the fixed order, each with its emoji and name', () => {
-    const found = h2('README.md').filter((heading) => present.includes(emoji(heading)));
-    assert.deepEqual(found.map(emoji), present);
+  // Further sections (How it works, models, tech stack, development, contributing) may sit between them.
+  it('README.md has the sections of the fixed structure in order, each with its emoji and name', () => {
+    const found = h2('README.md').filter((heading) => wanted.includes(emoji(heading)));
+    assert.deepEqual(found.map(emoji), wanted);
     assert.deepEqual(
       found.map((heading) => heading.toLowerCase()),
-      english.slice(1).map((heading) => heading.toLowerCase()),
+      english.map((heading) => heading.toLowerCase()),
     );
   });
 
   it('README.de.md has the same emojis in the same order', () => {
-    const found = h2('README.de.md').filter((heading) => present.includes(emoji(heading)));
-    assert.deepEqual(found.map(emoji), present);
+    const found = h2('README.de.md').filter((heading) => wanted.includes(emoji(heading)));
+    assert.deepEqual(found.map(emoji), wanted);
     assert.ok(found.every((heading) => /^\S+ \S/.test(heading)));
   });
 
-  it('README.md and README.de.md have the same number of top-level sections', () => {
-    assert.equal(h2('README.de.md').length, h2('README.md').length);
+  it('README.md and README.de.md have the same sections, by emoji', () => {
+    assert.deepEqual(h2('README.de.md').map(emoji), h2('README.md').map(emoji));
   });
 
-  it('the section structure equals the one before the change (commit ea08ab0)', { skip: !fs.existsSync(path.join(root, '.git')) }, () => {
-    const { execFileSync } = require_child_process();
-    for (const file of ['README.md', 'README.de.md']) {
-      let before: string;
-      try {
-        before = execFileSync('git', ['show', `ea08ab0:${file}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-      } catch {
-        return; // shallow clone without that commit
-      }
-      const headings = (text: string): string[] => [...stripFences(text).matchAll(/^#{1,6} (.+?)\s*$/gm)].map((match) => match[1] ?? '');
-      assert.deepEqual(headings(read(file)), headings(before), `${file}: headings changed`);
-    }
+  it('both READMEs show the dashboard preview', () => {
+    for (const file of ['README.md', 'README.de.md']) assert.match(read(file), /!\[[^\]]+\]\(docs\/preview\.gif\)/, file);
   });
 
   for (const [file, features, documentation] of [
@@ -178,10 +165,6 @@ describe('docs: README structure', () => {
     });
   }
 });
-
-function require_child_process(): typeof import('node:child_process') {
-  return process.getBuiltinModule('node:child_process');
-}
 
 describe('docs: configuration keys', () => {
   const configuration = read('docs/configuration.md');
