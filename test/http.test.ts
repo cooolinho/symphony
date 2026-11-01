@@ -1361,7 +1361,7 @@ describe('GET /api/v1/budget', () => {
     fs.mkdirSync(path.join(logDir, 'budget'));
     fs.writeFileSync(
       path.join(logDir, 'budget', 'rate-limits.jsonl'),
-      `${JSON.stringify({ at: new Date().toISOString(), run_id: 'r', issue: 'acme/app#1', role: 'developer', model: null, rate_limit_info: { rateLimitType: 'five_hour', status: 'allowed' } })}\n`,
+      `${JSON.stringify({ at: new Date().toISOString(), run_id: 'r', issue: 'acme/app#1', role: 'developer', model: null, rate_limit_info: { rateLimitType: 'five_hour', status: 'allowed', unifiedWindows: { five_hour: { utilization: 0.4, resetsAt: Math.floor(Date.now() / 1000) + 3600 } } } })}\n`,
     );
     const orchestrator = new Orchestrator({
       workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir()))),
@@ -1395,6 +1395,12 @@ describe('GET /api/v1/budget', () => {
       assert.deepEqual(item.by_role, {});
       assert.ok('resets_at' in item);
     }
+    assert.equal(body.five_hour.percent, 40);
+    assert.equal(body.five_hour.percent_source, 'sdk');
+    assert.equal(body.five_hour.sdk.utilization, 0.4);
+    assert.equal(body.seven_day.sdk, null);
+    assert.equal(body.seven_day.percent, null);
+    assert.equal(body.seven_day.percent_source, 'none');
   });
 
   it('rejects other methods', async () => {

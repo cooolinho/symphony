@@ -192,14 +192,23 @@ describe('forecastBudget: limit and ETA', () => {
     assert.equal(result.alert, true);
   });
 
-  it('ignores the SDK utilisation when absent or unusable and falls back to calibration', () => {
+  it('falls back to calibration when the SDK utilisation is 0 or unusable', () => {
     const usage = [use(6 * HOUR, 1000), use(10 * MIN, 300)];
-    for (const utilization of [0, 1.5, -1, 'x', null]) {
-      const events = [ev(5 * HOUR + 30 * MIN, 'five_hour', { status: 'rejected', utilization, resetsAt: unix(HOUR * 3) })];
+    const reject = ev(5 * HOUR + 30 * MIN, 'five_hour', { status: 'rejected' });
+    for (const utilization of [0, -1, 'x', null]) {
+      const events = [reject, ev(10 * MIN, 'five_hour', { status: 'allowed_warning', utilization, resetsAt: unix(HOUR * 3) })];
       const result = forecastBudget({ now: NOW, usage, events, window: 'five_hour' });
       assert.equal(result.forecast?.limit_source, 'calibrated', `utilization ${String(utilization)}`);
       assert.equal(result.forecast?.limit_tokens, 1000);
     }
+  });
+
+  it('takes SDK utilisation above 1 as it is', () => {
+    const usage = [use(HOUR, 600)];
+    const events = [ev(10 * MIN, 'five_hour', { status: 'allowed_warning', utilization: 1.5, resetsAt: unix(HOUR * 3) })];
+    const result = forecastBudget({ now: NOW, usage, events, window: 'five_hour' });
+    assert.equal(result.forecast?.limit_source, 'sdk');
+    assert.equal(result.percent, 150);
   });
 
   it('prefers the SDK utilisation when the event carries it', () => {

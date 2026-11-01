@@ -112,7 +112,7 @@ describe('usageFromHistory', () => {
 });
 
 describe('Orchestrator budget', () => {
-  function build(withEvents: boolean) {
+  function build(withEvents: boolean, extra: RateLimitRecord[] = []) {
     const dir = tempDir();
     fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
     const history = new HistoryLog(path.join(dir, 'repositories'), new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent()), Logger.silent());
@@ -127,7 +127,7 @@ describe('Orchestrator budget', () => {
     const logDir = tempDir();
     if (withEvents) {
       fs.mkdirSync(path.join(logDir, 'budget'));
-      const lines = [event(4 * HOUR, { status: 'rejected' }), event(MIN, { status: 'allowed', resetsAt: resets(2 * HOUR) })];
+      const lines = [event(4 * HOUR, { status: 'rejected' }), event(MIN, { status: 'allowed', resetsAt: resets(2 * HOUR) }), ...extra];
       fs.writeFileSync(path.join(logDir, 'budget', 'rate-limits.jsonl'), lines.map((l) => `${JSON.stringify(l)}\n`).join(''));
     }
     const clock = new ManualClock();
@@ -147,7 +147,95 @@ describe('Orchestrator budget', () => {
     assert.deepEqual(budgetAlerts(orchestrator.budget()), alerts);
   });
 
+  it('delivers the SDK utilisation of unifiedWindows', () => {
+    const extra = event(30_000, { rateLimitType: 'seven_day', status: 'allowed_warning', unifiedWindows: { five_hour: { utilization: 0.72, resetsAt: resets(HOUR) } } });
+    const item = build(true, [extra]).budget().five_hour;
+    assert.equal(item.percent, 72);
+    assert.equal(item.percent_source, 'sdk');
+  });
+
   it('has no alerts without events', () => {
     assert.deepEqual(build(false).budgetAlerts(), []);
+  });
+});
+
+describe('forecastBudget: SDK utilisation per window', () => {
+  const warning = (five: unknown, seven: unknown = { utilization: 0.77, resetsAt: resets(3 * 24 * HOUR) }) => ({
+    status: 'allowed_warning', rateLimitType: 'seven_day', resetsAt: resets(3 * 24 * HOUR), utilization: 0.77,
+    unifiedWindows: { five_hour: five, seven_day: seven },
+  });
+
+  it('(a) a seven_day event gives five_hour from unifiedWindows', () => {
+    const ev = event(MIN, warning({ utilization: 0.72, resetsAt: resets(2 * HOUR) }));
+    const result = run([], [ev]);
+    assert.equal(result.percent, 72);
+    assert.equal(result.percent_source, 'sdk');
+    assert.equal(result.sdk?.event_at, ev.at);
+    assert.equal(result.sdk?.status, 'allowed_warning');
+    assert.equal(result.sdk?.utilization, 0.72);
+    assert.equal(result.resets_at, result.sdk?.resets_at);
+    assert.equal(result.resets_at, new Date(resets(2 * HOUR) * 1000).toISOString());
+    assert.equal(run([], [ev], 'seven_day').percent, 77);
+  });
+
+  it('(b) rejected with 1.01 gives at least 100 %, rejected without any utilisation gives 100 %', () => {
+    const over = event(MIN, { status: 'rejected', resetsAt: resets(HOUR), unifiedWindows: { five_hour: { utilization: 1.01, resetsAt: resets(HOUR) }, seven_day: { utilization: 0.91, resetsAt: resets(3 * 24 * HOUR) } } });
+    assert.equal(run([], [over]).percent, 101);
+    assert.equal(run([], [over], 'seven_day').percent, 91);
+    const bare = event(MIN, { status: 'rejected', resetsAt: resets(HOUR) });
+    assert.equal(run([], [bare]).percent, 100);
+    assert.equal(run([], [bare], 'seven_day').percent, null);
+  });
+
+  it('(c) after the reset the SDK value is unknown, not 0 and not the old value', () => {
+    const old = event(2 * HOUR, { status: 'rejected', resetsAt: resets(-HOUR), unifiedWindows: { five_hour: { utilization: 1.01, resetsAt: resets(-HOUR) } } });
+    const result = run([], [old]);
+    assert.equal(result.sdk, null);
+    assert.equal(result.resets_at, null);
+    assert.notEqual(result.percent_source, 'sdk');
+    assert.equal(result.percent, null);
+    assert.equal(result.percent_source, 'none');
+    assert.equal(result.forecast, null);
+  });
+
+  it('after the reset the calibration from a rejected without reset is the fallback', () => {
+    const old = event(2 * HOUR, { status: 'rejected', resetsAt: resets(-HOUR) });
+    const hit = event(4 * HOUR, { status: 'rejected' });
+    const result = run(hitUsage, [hit, old]);
+    assert.equal(result.sdk, null);
+    assert.equal(result.percent_source, 'calibrated');
+    assert.equal(result.forecast?.limit_source, 'calibrated');
+  });
+
+  it('the newest event of any type wins, in any array order', () => {
+    const older = event(2 * HOUR, { status: 'allowed_warning', utilization: 0.9, resetsAt: resets(HOUR) });
+    const newer = event(MIN, warning({ utilization: 0.3, resetsAt: resets(HOUR) }));
+    assert.equal(run([], [older, newer]).percent, 30);
+    assert.equal(run([], [newer, older]).percent, 30);
+  });
+
+  it('the limit is tokens at the event time / utilisation', () => {
+    const ev = event(HOUR, warning({ utilization: 0.5, resetsAt: resets(2 * HOUR) }));
+    const result = run([use(2 * HOUR, 400), use(10 * MIN, 100)], [ev]);
+    assert.equal(result.forecast?.limit_tokens, 800);
+    assert.equal(result.forecast?.limit_source, 'sdk');
+    assert.equal(result.used_tokens, 500);
+  });
+
+  it('utilisation 0 gives 0 %, not unknown', () => {
+    const result = run([], [event(MIN, warning({ utilization: 0, resetsAt: resets(HOUR) }))]);
+    assert.equal(result.percent, 0);
+    assert.equal(result.percent_source, 'sdk');
+    assert.equal(result.forecast, null);
+  });
+
+  it('unusable unifiedWindows never throw and the calibration is the fallback', () => {
+    const hit = event(4 * HOUR, { status: 'rejected' });
+    for (const unifiedWindows of ['text', null, 5, [], { five_hour: {} }, { five_hour: 'x' }, { five_hour: { utilization: 0.4, resetsAt: 'soon' } }, { five_hour: { utilization: Infinity, resetsAt: resets(HOUR) } }]) {
+      const bad = event(MIN, { rateLimitType: 'seven_day', status: 'allowed', unifiedWindows });
+      const result = run(hitUsage, [hit, bad]);
+      assert.equal(result.sdk, null, JSON.stringify(unifiedWindows));
+      assert.equal(result.percent_source, 'calibrated', JSON.stringify(unifiedWindows));
+    }
   });
 });
