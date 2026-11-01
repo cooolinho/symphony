@@ -498,9 +498,11 @@ describe('brain config', () => {
     assert.throws(() => resolve({ ...base, brain: { path: 3 } }, env), /brain\.path must be a string/);
   });
 
-  it('documents the section commented out in the shipped WORKFLOW.md', () => {
+  it('ships the section off by default, switched by SYMPHONY_BRAIN_ENABLED and SYMPHONY_BRAIN_OBSIDIAN_URL', () => {
     const text = fs.readFileSync(path.join(import.meta.dirname, '..', 'WORKFLOW.md'), 'utf8');
-    assert.match(text, /^# brain:/m);
+    assert.match(text, /^brain:/m);
+    assert.match(text, /^ {2}enabled: \$\{SYMPHONY_BRAIN_ENABLED:-false\}/m);
+    assert.match(text, /^ {2}obsidian_url: \$\{SYMPHONY_BRAIN_OBSIDIAN_URL:-\}/m);
   });
 });
 

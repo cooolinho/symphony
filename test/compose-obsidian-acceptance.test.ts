@@ -56,17 +56,16 @@ describe('E8-1 acceptance: raw compose files', () => {
     assert.deepEqual(obs.networks, ['traefik']);
   });
 
-  it('Traefik labels: router obsidian, host BRAIN_DOMAIN, entrypoint, tls=false, port 3000', () => {
+  it('Traefik labels: router obsidian, host BRAIN_DOMAIN, HTTPS entrypoint, tls=true, port 3000', () => {
     const labels = obs.labels ?? [];
     const get = (k: string): string | undefined => labels.find((l) => l.startsWith(`${k}=`))?.slice(k.length + 1);
     assert.equal(get('traefik.enable'), 'true');
     assert.match(get('traefik.http.routers.obsidian.rule') ?? '', /^Host\(`\$\{BRAIN_DOMAIN(:-)?\}`\)$/);
-    assert.equal(get('traefik.http.routers.obsidian.entrypoints'), '${TRAEFIK_ENTRYPOINT:-web}');
-    assert.equal(get('traefik.http.routers.obsidian.tls'), 'false');
+    assert.equal(get('traefik.http.routers.obsidian.entrypoints'), '${BRAIN_TRAEFIK_ENTRYPOINT:-websecure}');
+    assert.equal(get('traefik.http.routers.obsidian.tls'), 'true');
+    assert.equal(get('traefik.http.routers.obsidian.tls.certresolver'), '${TRAEFIK_CERTRESOLVER-letsencrypt}');
     assert.equal(get('traefik.http.services.obsidian.loadbalancer.server.port'), '3000');
     assert.equal(get('traefik.http.routers.obsidian.service'), 'obsidian');
-    // no certresolver / TLS options on a plain HTTP router
-    assert.ok(!labels.some((l) => l.startsWith('traefik.http.routers.obsidian.tls.')));
   });
 
   it('uses the same auth middleware as the dashboard, and symphony-auth is defined by the dashboard', () => {
@@ -140,13 +139,14 @@ describe('E8-1 acceptance: resolved compose model', { skip: hasCompose ? false :
     assert.ok(!('obsidian' in r.json.services));
   });
 
-  it('with profile brain and BRAIN_DOMAIN: router host, plain HTTP on web, dashboard middleware, UID 1000, no ports', () => {
+  it('with profile brain and BRAIN_DOMAIN: router host, HTTPS on websecure, dashboard middleware, UID 1000, no ports', () => {
     const r = config(['--profile', 'brain'], { ...base, BRAIN_DOMAIN: 'brain.lan' });
     assert.equal(r.status, 0, r.stderr);
     const o = r.json.services.obsidian;
     assert.equal(o.labels['traefik.http.routers.obsidian.rule'], 'Host(`brain.lan`)');
-    assert.equal(o.labels['traefik.http.routers.obsidian.entrypoints'], 'web');
-    assert.equal(o.labels['traefik.http.routers.obsidian.tls'], 'false');
+    assert.equal(o.labels['traefik.http.routers.obsidian.entrypoints'], 'websecure');
+    assert.equal(o.labels['traefik.http.routers.obsidian.tls'], 'true');
+    assert.equal(o.labels['traefik.http.routers.obsidian.tls.certresolver'], 'letsencrypt');
     assert.equal(o.labels['traefik.http.routers.obsidian.middlewares'], 'symphony-auth');
     assert.equal(o.labels['traefik.http.services.obsidian.loadbalancer.server.port'], '3000');
     assert.equal(String(o.environment.PUID), '1000');
@@ -157,11 +157,23 @@ describe('E8-1 acceptance: resolved compose model', { skip: hasCompose ? false :
     assert.ok(sources.includes('obsidian-config:/config'));
   });
 
-  it('TRAEFIK_ENTRYPOINT override is honoured; tls stays false', () => {
-    const r = config(['--profile', 'brain'], { ...base, BRAIN_DOMAIN: 'b.lan', TRAEFIK_ENTRYPOINT: 'lan' });
-    assert.equal(r.json.services.obsidian.labels['traefik.http.routers.obsidian.entrypoints'], 'lan');
-    const r2 = config(['--profile', 'brain'], { ...base, BRAIN_DOMAIN: 'b.lan', TRAEFIK_TLS: 'true' });
-    assert.equal(r2.json.services.obsidian.labels['traefik.http.routers.obsidian.tls'], 'false');
+  it('BRAIN_TRAEFIK_ENTRYPOINT is honoured; an HTTP dashboard (TRAEFIK_TLS=false on web) leaves Obsidian on HTTPS', () => {
+    const r = config(['--profile', 'brain'], { ...base, BRAIN_DOMAIN: 'b.lan', BRAIN_TRAEFIK_ENTRYPOINT: 'lan-tls' });
+    assert.equal(r.json.services.obsidian.labels['traefik.http.routers.obsidian.entrypoints'], 'lan-tls');
+    const r2 = config(['--profile', 'brain'], { ...base, BRAIN_DOMAIN: 'b.lan', TRAEFIK_TLS: 'false', TRAEFIK_ENTRYPOINT: 'web' });
+    assert.equal(r2.json.services.obsidian.labels['traefik.http.routers.obsidian.entrypoints'], 'websecure');
+    assert.equal(r2.json.services.obsidian.labels['traefik.http.routers.obsidian.tls'], 'true');
+    assert.equal(r2.json.services.symphony.labels['traefik.http.routers.symphony.tls'], 'false');
+  });
+
+  it('TRAEFIK_CERTRESOLVER set but empty: no resolver on either router (Traefik default certificate)', () => {
+    const r = config(['--profile', 'brain'], { ...base, BRAIN_DOMAIN: 'b.lan', TRAEFIK_CERTRESOLVER: '' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.json.services.obsidian.labels['traefik.http.routers.obsidian.tls.certresolver'], '');
+    assert.equal(r.json.services.symphony.labels['traefik.http.routers.symphony.tls.certresolver'], '');
+    const r2 = config(['--profile', 'brain'], { ...base, BRAIN_DOMAIN: 'b.lan', TRAEFIK_CERTRESOLVER: 'le' });
+    assert.equal(r2.json.services.obsidian.labels['traefik.http.routers.obsidian.tls.certresolver'], 'le');
+    assert.equal(r2.json.services.symphony.labels['traefik.http.routers.symphony.tls.certresolver'], 'le');
   });
 
   it('SYMPHONY_TRAEFIK_MIDDLEWARES replaces the login for obsidian exactly like for the dashboard', () => {

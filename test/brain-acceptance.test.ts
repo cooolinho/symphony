@@ -5,6 +5,8 @@ import path from 'node:path';
 import { describe, it, mock } from 'node:test';
 import { ensureVault, prepareBrain } from '../src/brain/vault.ts';
 import { Logger } from '../src/log.ts';
+import { trackerDefaults } from '../src/tracker/registry.ts';
+import { resolveConfig } from '../src/workflow/config.ts';
 import { parseWorkflow } from '../src/workflow/loader.ts';
 import { tempDir } from './helpers.ts';
 
@@ -247,27 +249,27 @@ describe('brain vault acceptance', () => {
   });
 
   describe('WORKFLOW.md', () => {
-    it('contains the brain section commented out, with enabled and path, and explanations', () => {
+    // The shipped section is active but switched by .env, so Docker setups turn the brain on without editing the image.
+    const shippedBrain = (env: NodeJS.ProcessEnv) =>
+      resolveConfig({ brain: parseWorkflow(read('WORKFLOW.md')).config.brain }, { workflowPath: '/w/WORKFLOW.md', env: { HOME: '/home/u', ...env }, trackerDefaults }).brain;
+
+    it('contains the brain section with enabled, path and obsidian_url from .env, and explanations', () => {
       const text = read('WORKFLOW.md');
       const front = text.split(/^---$/m)[1]!;
-      assert.match(front, /^# brain:/m);
-      assert.match(front, /^#\s+enabled: false/m);
-      assert.match(front, /^#\s+path: ~\/brain/m);
-      assert.doesNotMatch(front, /^brain:/m, 'not active by default');
+      assert.match(front, /^brain:\s+#/m);
+      assert.match(front, /^\s+enabled: \$\{SYMPHONY_BRAIN_ENABLED:-false\}\s+#/m);
+      assert.match(front, /^\s+path: ~\/brain\s+#/m);
+      assert.match(front, /^\s+obsidian_url: \$\{SYMPHONY_BRAIN_OBSIDIAN_URL:-\}\s+#/m);
     });
 
-    it('still parses, and the brain section stays out of the parsed front matter', () => {
-      const definition = parseWorkflow(read('WORKFLOW.md'));
-      assert.equal('brain' in definition.config, false);
+    it('is off without SYMPHONY_BRAIN_ENABLED, with the documented defaults', () => {
+      assert.deepEqual(shippedBrain({}), { enabled: false, path: '/home/u/brain', clashWindowMs: 600_000, obsidianUrl: '' });
     });
 
-    it('uncommenting the block yields the documented defaults', () => {
-      const text = read('WORKFLOW.md')
-        .replace(/^# brain:.*$/m, 'brain:')
-        .replace(/^#(\s+enabled: false).*$/m, '$1')
-        .replace(/^#(\s+path: ~\/brain).*$/m, '$1');
-      const definition = parseWorkflow(text);
-      assert.deepEqual(definition.config.brain, { enabled: false, path: '~/brain' });
+    it('SYMPHONY_BRAIN_ENABLED and SYMPHONY_BRAIN_OBSIDIAN_URL switch it on and set the Obsidian link', () => {
+      const brain = shippedBrain({ SYMPHONY_BRAIN_ENABLED: 'true', SYMPHONY_BRAIN_OBSIDIAN_URL: 'https://brain.example.lan' });
+      assert.equal(brain.enabled, true);
+      assert.equal(brain.obsidianUrl, 'https://brain.example.lan');
     });
   });
 });
