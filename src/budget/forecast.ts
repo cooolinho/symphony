@@ -1,6 +1,6 @@
 import type { LimitWindow } from '../agent/rate-limit.ts';
 import type { HistoryEntry } from '../history/history.ts';
-import { rateLimitKey, type RateLimitRecord } from './rate-limit-log.ts';
+import { rateLimitKey, windowUtilization, type RateLimitRecord } from './rate-limit-log.ts';
 
 export type BudgetWindow = Extract<LimitWindow, 'five_hour' | 'seven_day'>;
 
@@ -27,10 +27,15 @@ export interface BudgetForecast {
   used_tokens: number;
   /** Tokens of the last 30 minutes / 30, one decimal. */
   burn_rate_per_min: number;
-  /** `resetsAt` of the latest event of this type; null when missing, invalid or not in the future. */
+  /** `resetsAt` of the event that gives `sdk`, else of the latest event that gives a reset for the window; null when missing or not in the future. */
   resets_at: string | null;
   /** Null without a known limit (no SDK utilisation and no `rejected` hit). */
   forecast: { limit_tokens: number; limit_source: 'sdk' | 'calibrated'; eta: string | null } | null;
+  /** Utilisation the SDK reported in the latest event (of any type) for this window; null when unknown or its reset has passed. */
+  sdk: { utilization: number; resets_at: string | null; event_at: string; status: 'allowed' | 'allowed_warning' | 'rejected' | null } | null;
+  /** Utilisation in percent (SDK, else used / limit); may exceed 100; null when unknown. */
+  percent: number | null;
+  percent_source: 'sdk' | 'calibrated' | 'none';
   /** True when the ETA is set, i.e. the limit is reached before the reset. */
   alert: boolean;
   /** Tokens per role in the window. */
@@ -65,20 +70,11 @@ function infoField(info: unknown, key: string): unknown {
   return typeof info === 'object' && info !== null ? (info as Record<string, unknown>)[key] : undefined;
 }
 
-function resetTime(info: unknown): number | null {
-  const value = infoField(info, 'resetsAt');
-  if (typeof value === 'number' && Number.isFinite(value)) return value >= 1e12 ? value : value * 1000;
-  if (typeof value === 'string' && value !== '') {
-    const time = Date.parse(value);
-    return Number.isNaN(time) ? null : time;
-  }
-  return null;
-}
-
 /**
  * Consumption, burn rate, limit estimate and ETA of one rolling window. Pure: no I/O, no clock.
- * The limit comes from the SDK `utilization` (share in (0, 1]) of the latest event of this type, else it is
- * calibrated as the usage in the window at the time of the latest `rejected` event of this type.
+ * The SDK utilisation is the one of the latest event of any type (`unifiedWindows.<window>`, else the top level of an event
+ * of this type) up to `now`; once its reset has passed it is unknown (null), not 0. The limit is then the tokens in the window
+ * at that event / utilisation, else calibrated as the usage in the window at the latest `rejected` event of this type.
  */
 export function forecastBudget(input: { now: Date; usage: BudgetUsage[]; events: RateLimitRecord[]; window: BudgetWindow }): BudgetForecast {
   const { usage, window } = input;
@@ -96,23 +92,39 @@ export function forecastBudget(input: { now: Date; usage: BudgetUsage[]; events:
     }
   }
 
-  const events = input.events
-    .filter((event) => rateLimitKey(event.rate_limit_info) === window)
+  const all = input.events
     .map((event) => ({ event, time: Date.parse(event.at) }))
     .filter((item) => !Number.isNaN(item.time))
     .sort((a, b) => a.time - b.time);
-  const last = events.at(-1);
-  const resetMs = last === undefined ? null : resetTime(last.event.rate_limit_info);
+  const known = all
+    .filter((item) => item.time <= now)
+    .map((item) => ({ ...item, ...windowUtilization(item.event.rate_limit_info, window) }));
+  const pick = known.findLast((item) => item.utilization !== null && item.resetsAt !== null);
+  const live = pick !== undefined && pick.utilization !== null && pick.resetsAt !== null && pick.resetsAt > now ? pick : undefined;
+  const status = infoField(live?.event.rate_limit_info, 'status');
+  const sdk: BudgetForecast['sdk'] =
+    live === undefined || live.utilization === null || live.resetsAt === null
+      ? null
+      : {
+          utilization: live.utilization,
+          resets_at: new Date(live.resetsAt).toISOString(),
+          event_at: live.event.at,
+          status: status === 'allowed' || status === 'allowed_warning' || status === 'rejected' ? status : null,
+        };
+  const resetMs = live?.resetsAt ?? known.findLast((item) => item.resetsAt !== null)?.resetsAt ?? null;
   const resetsAt = resetMs !== null && resetMs > now ? resetMs : null;
 
   let limit: number | null = null;
   let source: 'sdk' | 'calibrated' = 'calibrated';
-  const utilization = last === undefined ? undefined : infoField(last.event.rate_limit_info, 'utilization');
-  if (last !== undefined && typeof utilization === 'number' && utilization > 0 && utilization <= 1) {
-    limit = sumTokens(usage, last.time - span, last.time) / utilization;
-    source = 'sdk';
-  } else {
-    const hit = events.findLast((item) => infoField(item.event.rate_limit_info, 'status') === 'rejected');
+  if (live !== undefined && sdk !== null && sdk.utilization > 0) {
+    const tokens = sumTokens(usage, live.time - span, live.time);
+    if (tokens > 0) {
+      limit = tokens / sdk.utilization;
+      source = 'sdk';
+    }
+  }
+  if (limit === null) {
+    const hit = all.findLast((item) => rateLimitKey(item.event.rate_limit_info) === window && infoField(item.event.rate_limit_info, 'status') === 'rejected');
     if (hit !== undefined) limit = sumTokens(usage, hit.time - span, hit.time);
   }
   if (limit !== null && !(limit > 0)) limit = null;
@@ -127,11 +139,25 @@ export function forecastBudget(input: { now: Date; usage: BudgetUsage[]; events:
     forecast = { limit_tokens: Math.round(limit), limit_source: source, eta: eta === null ? null : new Date(eta).toISOString() };
   }
 
+  const round1 = (value: number): number => Math.round(value * 10) / 10;
+  let percent: number | null = null;
+  let percentSource: BudgetForecast['percent_source'] = 'none';
+  if (sdk !== null) {
+    percent = round1(sdk.utilization * 100);
+    percentSource = 'sdk';
+  } else if (forecast !== null) {
+    percent = round1((used / forecast.limit_tokens) * 100);
+    percentSource = 'calibrated';
+  }
+
   return {
     window,
     used_tokens: used,
     burn_rate_per_min: Math.round(burn * 10) / 10,
     resets_at: resetsAt === null ? null : new Date(resetsAt).toISOString(),
+    sdk,
+    percent,
+    percent_source: percentSource,
     forecast,
     alert: forecast?.eta != null,
     by_role: byRole,

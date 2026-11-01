@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { RATE_LIMIT_PRUNE_INTERVAL_MS, RateLimitLog, rateLimitKey, type RateLimitRecord } from '../src/budget/rate-limit-log.ts';
+import { RATE_LIMIT_PRUNE_INTERVAL_MS, RateLimitLog, rateLimitKey, resetTimeMs, windowUtilization, type RateLimitRecord } from '../src/budget/rate-limit-log.ts';
 import { Logger } from '../src/log.ts';
 import { tempDir } from './helpers.ts';
 
@@ -84,5 +84,48 @@ describe('RateLimitLog', () => {
     assert.equal(rateLimitKey({ rateLimitType: 'seven_day' }), 'seven_day');
     assert.equal(rateLimitKey({ status: 'allowed' }), 'unknown');
     assert.equal(rateLimitKey(null), 'unknown');
+  });
+});
+
+describe('windowUtilization', () => {
+  const warning = { status: 'allowed_warning', resetsAt: 1793782800, rateLimitType: 'seven_day', utilization: 0.77, surpassedThreshold: 0.75, unifiedWindows: { five_hour: { utilization: 0, resetsAt: 1793497800 }, seven_day: { utilization: 0.77, resetsAt: 1793782800 } } };
+  const rejected = { status: 'rejected', resetsAt: 1793537400, rateLimitType: 'five_hour', unifiedWindows: { five_hour: { utilization: 1.01, resetsAt: 1793537400 }, seven_day: { utilization: 0.91, resetsAt: 1793782800 } } };
+  const none = { utilization: null, resetsAt: null };
+
+  it('reads the real payloads per window, values above 1 are kept', () => {
+    assert.deepEqual(windowUtilization(warning, 'five_hour'), { utilization: 0, resetsAt: 1793497800000 });
+    assert.equal(windowUtilization(warning, 'seven_day').utilization, 0.77);
+    assert.equal(windowUtilization(rejected, 'five_hour').utilization, 1.01);
+    assert.equal(windowUtilization(rejected, 'seven_day').utilization, 0.91);
+  });
+
+  it('uses the top level without unifiedWindows, only for the matching rateLimitType', () => {
+    const info = { rateLimitType: 'five_hour', utilization: 0.5, resetsAt: 1793497800 };
+    assert.deepEqual(windowUtilization(info, 'five_hour'), { utilization: 0.5, resetsAt: 1793497800000 });
+    assert.deepEqual(windowUtilization(info, 'seven_day'), none);
+    assert.deepEqual(windowUtilization({ ...info, unifiedWindows: 'text' }, 'five_hour').utilization, 0.5);
+  });
+
+  it('a rejected without utilisation counts as 1 for its own window only', () => {
+    const info = { status: 'rejected', rateLimitType: 'five_hour', resetsAt: 1793537400 };
+    assert.deepEqual(windowUtilization(info, 'five_hour'), { utilization: 1, resetsAt: 1793537400000 });
+    assert.deepEqual(windowUtilization(info, 'seven_day'), none);
+  });
+
+  it('is defensive and never throws', () => {
+    for (const info of [null, undefined, 'x', 3, []]) assert.deepEqual(windowUtilization(info, 'five_hour'), none);
+    const base = { rateLimitType: 'seven_day' };
+    assert.deepEqual(windowUtilization({ ...base, unifiedWindows: { five_hour: {} } }, 'five_hour'), none);
+    for (const utilization of [Infinity, NaN, '0.5', -1, null]) assert.equal(windowUtilization({ ...base, unifiedWindows: { five_hour: { utilization, resetsAt: 1 } } }, 'five_hour').utilization, null);
+    assert.equal(windowUtilization({ ...base, unifiedWindows: { five_hour: { utilization: 0.1, resetsAt: 'soon' } } }, 'five_hour').resetsAt, null);
+    assert.equal(windowUtilization({ ...base, unifiedWindows: { five_hour: { utilization: 0.1, resetsAt: 1793497800000 } } }, 'five_hour').resetsAt, 1793497800000);
+  });
+
+  it('resetTimeMs tells seconds, milliseconds and ISO strings apart', () => {
+    assert.equal(resetTimeMs(1793497800), 1793497800000);
+    assert.equal(resetTimeMs(1793497800000), 1793497800000);
+    assert.equal(resetTimeMs('2026-10-30T12:00:00Z'), Date.parse('2026-10-30T12:00:00Z'));
+    assert.equal(resetTimeMs(''), null);
+    assert.equal(resetTimeMs(NaN), null);
   });
 });

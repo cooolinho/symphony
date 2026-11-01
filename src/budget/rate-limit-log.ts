@@ -36,6 +36,53 @@ export function isRejected(info: unknown): boolean {
   return typeof info === 'object' && info !== null && (info as { status?: unknown }).status === 'rejected';
 }
 
+/** Epoch ms of a `resetsAt` value: numbers >= 1e12 are ms, smaller ones seconds, non-empty strings are parsed as dates; else null. */
+export function resetTimeMs(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value >= 1e12 ? value : value * 1000;
+  if (typeof value === 'string' && value !== '') {
+    const time = Date.parse(value);
+    return Number.isNaN(time) ? null : time;
+  }
+  return null;
+}
+
+/** Utilisation (1 = limit reached, may exceed 1) and reset (epoch ms) of one window; null for what is missing or unusable. */
+export interface WindowUtilization {
+  utilization: number | null;
+  resetsAt: number | null;
+}
+
+function field(obj: unknown, key: string): unknown {
+  return typeof obj === 'object' && obj !== null && !Array.isArray(obj) ? (obj as Record<string, unknown>)[key] : undefined;
+}
+
+function isObject(value: unknown): value is object {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Utilisation and reset of `window` from a raw `rate_limit_info`. Never throws.
+ * Source is `unifiedWindows.<window>`, else the top level when `rateLimitType` is the window.
+ * Values above 1 are kept. A `rejected` of this window counts as at least 1.0 and may take the top-level `resetsAt`.
+ */
+export function windowUtilization(info: unknown, window: string): WindowUtilization {
+  if (!isObject(info)) return { utilization: null, resetsAt: null };
+  const own = field(field(info, 'unifiedWindows'), window);
+  const source = isObject(own) ? own : rateLimitKey(info) === window ? info : null;
+  let utilization: number | null = null;
+  let resetsAt: number | null = null;
+  if (source !== null) {
+    const value = field(source, 'utilization');
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) utilization = value;
+    resetsAt = resetTimeMs(field(source, 'resetsAt'));
+  }
+  if (isRejected(info) && rateLimitKey(info) === window) {
+    utilization = Math.max(utilization ?? 1, 1);
+    resetsAt ??= resetTimeMs(field(info, 'resetsAt'));
+  }
+  return { utilization, resetsAt };
+}
+
 function timeOf(line: string): number | null {
   try {
     const parsed: unknown = JSON.parse(line);
