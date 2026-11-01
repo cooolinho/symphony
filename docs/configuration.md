@@ -290,7 +290,7 @@ write a `transition_denied` line.
 | `max_retry_backoff_ms` | `300000` | Cap for failure retries (10 s, 20 s, 40 s, …). |
 | `max_concurrent_agents_by_state` | `{}` | Per-status limits, e.g. `{ "In Progress": 1 }`. Invalid entries are ignored with a warning. |
 | `reserved_slots_by_role` | `{}` | Slots kept free for a [role](#roles), e.g. `{ developer: 1, reviewer: 1 }`, so a developer and a reviewer can always run side by side. An issue of role R starts only while the free slots exceed the unused reservations of the other roles (Σ max(0, reserved − running)); a reserved slot stays empty while its role has nothing to do. Command roles (`planner`, `auditor`, …) count as their own roles and never use the developer's reservation. Column limits still apply. Names that are not roles, and values that are not integers of `0` or more, are ignored with a warning. If the reservations add up to more than `max_concurrent_agents`, they are ignored and the dashboard shows a problem. See [Reserved slots](#reserved-slots). |
-| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `agents`, `results`, `round`, `result_required`, `test_paths`, `attachments`, `human_feedback`, `turn_number`, `max_turns`). |
+| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `agents`, `brain`, `brain_index`, `results`, `round`, `result_required`, `test_paths`, `attachments`, `human_feedback`, `turn_number`, `max_turns`). |
 
 #### Reserved slots
 
@@ -312,11 +312,11 @@ start; the dashboard notes it at the slot settings. When a result leads issues t
 
 #### Agent slots set on the dashboard
 
-`max_concurrent_agents`, `max_concurrent_agents_by_state` and `reserved_slots_by_role` can also be changed at runtime, on the dashboard or with
+`max_concurrent_agents`, `max_concurrent_agents_by_state` and `reserved_slots_by_role` can also be changed at runtime, in the Tasks page (the pill for the total, 1 to 8, and a collapsible block for the rest) or with
 `PUT /api/v1/settings/agents` (see [Dashboard and API](usage.md#dashboard-and-api)). The value in force comes from the
 first of:
 
-1. the dashboard override (stored as `settings` in the runtime state file under `<logDir>/state/`, so it survives a
+1. the override from the Tasks page (stored as `settings` in the runtime state file under `<logDir>/state/`, so it survives a
    restart),
 2. `WORKFLOW.md`,
 3. the `${VAR:-default}` fallback inside `WORKFLOW.md` (e.g. `SYMPHONY_MAX_CONCURRENT_AGENTS`, read once at start).
@@ -457,6 +457,8 @@ roles:
 | `max_sub_issues` | none | Integer 1–100 (GitHub's limit): how many sub-issues the role may have open under its issue at once, counting the sub-issues of those (the whole tree when the role creates epics with `parent`). Setting it gives the role the GitHub tool `create_sub_issue` ([github-project.md](adapters/github-project.md#agent-tools)). |
 | `sub_issue_status` | `tracker.provider.sub_issue_status` | Column for the sub-issues this role creates. Unlike the provider setting it may be an active column, so the sub-issues start without a human; this is the deliberate opt-in for autonomous roles such as the autopilot. Never a terminal column; needs `max_sub_issues`. Checked against the board like the other columns. |
 | `wait_for_sub_issues` | `false` | `true` dispatches the role's issues only while none of their sub-issues is open. See [Waves](#waves-wait_for_sub_issues). |
+| `brain_approved_writes` | `true` | Boolean, only with `brain: write`. `false` makes `brain_write` and `brain_append` reject an approved note and any `status: approved` (reason `approved_readonly` / `approved_status`); `true` adds no gate (approved notes stay read-only for agents by the general rule). The shipped `brain-gardener` sets `false`. See [brain.md](brain.md#gardener). |
+| `brain` | `off` | String, one of `off`, `read`, `write`. Brain tools of the role's sessions: `off` none, `read` only `brain_search`, `brain_read`, `brain_list`, `brain_vitals`, `write` also `brain_write` and `brain_append`. Only has an effect with [`brain.enabled`](#brain); without it no role gets brain tools. Roles are never given the vault as a directory. The shipped `WORKFLOW.md` sets `write` for `issue-analyst`, `architect`, `reviewer` and `brain-gardener`, `read` for `developer`, `test-engineer` and `security-auditor`; `docs` and the command roles stay `off`. An existing `WORKFLOW.md` without the field gives no role brain tools anymore. Roles with `read` or `write` get the prompt section `roles/brain.md`. See [brain.md](brain.md#role-switch). |
 | `agents` | all | Plugin subagents (`agents/<name>.md` in [`claude.plugins`](#claude), names without the plugin prefix, e.g. `[laravel-code-reviewer]`) the role may start; `[]` allows none. See [Subagents per role](#subagents-per-role). |
 | `claude` | `{}` | Overrides of `model`, `effort`, `allowed_tools`, `disallowed_tools`, `append_system_prompt`, `max_budget_usd` (same meaning as in [`claude`](#claude)). |
 
@@ -755,16 +757,19 @@ checks:
   Symphony lists what differs from a baseline commit (commits since, uncommitted and untracked files, deletions and both
   ends of a renamed file; ignored files do not count) and refuses the result with `invalid_result` if a file matches
   none of the globs: the message names the offending files and the baseline, nothing is recorded and the entry check of
-  the target column does not run. Whatever the verdict, the engineer has to undo the changes it made itself
+  the target column does not run. For `passed` and `failed` the engineer has to undo the changes it made itself
   (`git checkout <baseline> -- <file>`, commit) and report again; a file it did not change (a commit already on the
-  branch, a push by someone else) it leaves alone and describes in an issue comment. If git cannot tell, or the
+  branch, a push by someone else) it leaves alone and reports `blocked` with a blocker, which is always accepted: the
+  result notes the files under its summary. If git cannot tell, or the
   workspace is no git checkout, the call fails with `tool_error` and nothing is recorded: the rule is never skipped.
   The baseline is the commit the developer's newest finished `implementation` result recorded (`head_sha`), as long as
-  `HEAD` descends from it when the engineer reports: it does not matter whether the workspace started on the base
-  branch, and a later session of the stage (after a `check_timeout`, say) cannot forgive what an earlier one changed.
+  `HEAD` descends from it when the engineer reports, and a later session of the stage (after a `check_timeout`, say) cannot forgive what an earlier one changed.
   Without such a result, or when it is no ancestor of `HEAD` (the branch was rebased), the baseline is the commit the
-  session started from. A commit someone else pushes to the branch after the developer's hand-off counts as the
-  engineer's, so the result is refused until a human sorts it out.
+  session started from. The exception: a session that started on the base branch (its start commit is an ancestor of
+  `origin/<base>`) after the hand-off measures from its start, so pull requests merged while there was no issue branch
+  (a spike) are not the engineer's. Local commits of an earlier session are not on `origin/<base>` and stay counted.
+  A commit someone else pushes to the issue branch after the hand-off counts as the engineer's: `passed` and `failed`
+  are refused, the engineer reports `blocked`.
 - **Failed cases reach the developer.** After a `failed` result the prompt of the developer lists the failed cases
   (`results.failed_cases`), the test engineer's summary and the commands it ran (`results.test`, see
   [Prompt template](#prompt-template)); the test engineer sees the same list in the next round and runs those cases
@@ -889,8 +894,8 @@ pipeline:
   `origin/<base_branch>`, else `origin/HEAD`). If git cannot tell, the stage is **needed**: a failure never skips it
   silently.
 - **Path rule.** The docs agent may only change files matching `pipeline.docs_paths`. `report_result` compares the
-  files that differ from the last hand-off of the developer or test engineer and refuses a result that comes with other
-  files with `invalid_result`, naming them; nothing is recorded. The prompt lists the paths as `docs_paths`.
+  files that differ from the last hand-off of the developer or test engineer and refuses a `done` or `not_needed` result that comes with other
+  files with `invalid_result`, naming them; nothing is recorded. `blocked` is always accepted and notes the files. The prompt lists the paths as `docs_paths`.
 - **Verdicts.** `done` (with the changed `files`) and `not_needed` lead to `Agent review`, `blocked` to `Blocked`.
 - **Haiku.** Haiku has no auto mode; `claude.by_model.haiku` in the shipped file holds the permission settings it needs.
 - **Board.** `Documentation` is one of `tracker.active_states`, so the board needs the column between `Testing` and
@@ -1159,6 +1164,33 @@ one poll at a time. For example, with an analyst in `Ready` and `pipeline.analys
 | `allow_remote_control` | `false` | Allows the control routes (restart with `POST /api/v1/<identifier>/retry`, **Retry now** / **Resume now**; **Start now** with `/force`; pause and resume of issues and models, `/pause`, `/resume`, `/models/<model>/hold` and `/release`; agent slots with `PUT` / `DELETE /api/v1/settings/agents`) when `host` is not a loopback address; the shipped `WORKFLOW.md` reads it from `SYMPHONY_ALLOW_REMOTE_CONTROL`. On such a bind every restart request must carry an `Origin` header that matches its `Host` (CSRF guard, since the browser sends the proxy's credentials with every request); without it the API answers `403 forbidden_origin`. Has no effect on a loopback bind, where restart is always allowed. Only enable it behind an authenticating proxy. Restart to change it. |
 | `public_url` | none | The dashboard's address as people reach it (`https://symphony.example.com`); the shipped `WORKFLOW.md` reads it from `SYMPHONY_PUBLIC_URL`. Links in [commit statuses](#named-checks) point to its agent page. |
 
+### `system`
+
+Symphony samples CPU, memory, load and disk of the host every 10 s and keeps one hour of history in memory (`GET /api/v1/system`). Values that cannot be read are `null`. The sizes of the workspace root and the transcripts (`<log-dir>/sessions`) come from `du -sk` every 10 minutes in the background; the optional `SYMPHONY_CONTAINER` names the container in the head of the System panel (fallback `HOSTNAME`).
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `gpu` | `false` | Reads GPU utilization, memory and temperature from `nvidia-smi`; with `false` `nvidia-smi` is never called and `gpu` is `null`. Restart to change it. |
+
+### `brain`
+
+The knowledge vault: one vault for all repositories. With `enabled: true` Symphony creates `README.md` (the rules), `Inbox/`, `Repos/`, `Decisions/`, `Lessons/`, `Issues/` and `Agents/` folders at startup, plus `Kandidaten-Review.base` and `Neueste Lessons.base` as Obsidian Bases views, and `Repos/<owner>-<name>/index.md` for each configured repository. It also creates `.gitignore` (`.obsidian/workspace*.json`, `.trash/`) and, when `.git` is missing, runs `git init` with a first commit of the structure (never `.obsidian/`); every agent write is then one commit (see [agent-claude.md](agent-claude.md#brain-tools)). Each vault commit and each rejected write also appears in the change log as a `brain` entry; the newest 200 commits are loaded at startup (see the Brain changes bullet there). After every successful merge Symphony itself (no agent) writes `Issues/<owner>-<name>/<number>.md` with the goal, the result per stage, rounds, cost, changed files and links to the pull request and `[[Repos/<owner>-<name>/index]]` (`status: approved`, `role: symphony`) and commits it as `symphony` with the subject `<repo>#<number>: issue summary`; a second run for the same issue changes nothing, and a failure only logs a warning. Existing files and folders are never overwritten; `.obsidian/` is never touched. Restart to change it. With `enabled: true` the sessions of roles with `brain: read` get the tools `brain_search`, `brain_read`, `brain_list` and `brain_vitals`, those with `brain: write` also `brain_write` and `brain_append` (see [agent-claude.md](agent-claude.md#brain-tools)); roles without the field get none. How to run and look after the vault: [brain.md](brain.md). `path` must not overlap `workspace.root` (same directory, vault inside the root or root inside the vault): agents reach the vault only through the tools. An unknown key is an error.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `enabled` | boolean | `false` | Create the vault at startup; with `false` no path is touched. The shipped `WORKFLOW.md` reads it from `SYMPHONY_BRAIN_ENABLED`. |
+| `path` | string | `~/brain` | Vault directory; `~` and `$VAR` are expanded, relative paths resolve against `WORKFLOW.md`. In Docker this is the `brain` volume. |
+| `clash_window_ms` | integer >= 0 | `600000` | A `brain_write` or `brain_append` is rejected with reason `window` when another run wrote the same note successfully within this many milliseconds; the result holds the current content and hash. The same run may write again at once. `0` turns the check off. Every call is logged to `<log-dir>/brain/access.jsonl` (lines older than 30 days are removed at startup, see [agent-claude.md](agent-claude.md#brain-tools)). |
+| `obsidian_url` | string | `""` (empty) | Target URL for the "Open in Obsidian" and "Edit in Obsidian" links on the Brain page (`/brain`). Must start with `http://`, `https://` or `obsidian://`, otherwise the workflow is invalid. Empty hides both links. The shipped `WORKFLOW.md` reads it from `SYMPHONY_BRAIN_OBSIDIAN_URL`. An `http(s)` URL (for example `https://brain.docker.lan`, the web container of the `brain` profile, see [brain.md](brain.md#obsidian-container)) is used as-is for both links. An `obsidian://` URL such as `obsidian://open?vault=brain` gets `&file=<note path without .md>` (URL-encoded) appended for the edit link of a candidate. |
+
+### `budget`
+
+Display settings of the budget and context views. An unknown key is ignored with a warning.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `compact_threshold` | integer 1–100 | `80` | Context fill in percent from which Claude Code compacts automatically. The **Session** field of the team view (`/issue?id=`) draws its red Auto-Compact mark there; `GET /api/v1/<identifier>/team` returns it as `compact_threshold`. Only a display value: it does not change when Claude Code compacts. |
+
 ## Complete example: roles, checks and Laravel
 
 The shipped `WORKFLOW.md`, shortened to the parts that make up the developer → checks → reviewer → human flow
@@ -1360,7 +1392,7 @@ Prices for the cost estimates (dashboard, repository logs, logs page), next to `
 changes; an invalid edit keeps the previous prices and is reported on the dashboard.
 
 ```yaml
-default: { input: 5.00, output: 25.00 }           # USD per million tokens
+default: { input: 5.00, output: 25.00, context_window: 200000 }   # USD per million tokens; window in tokens
 opus:    { input: 4.00, output: 20.00, cache_read: 0.20 }
 claude-opus-4-8: { input: 5.00, output: 25.00 }
 ```
@@ -1368,6 +1400,14 @@ claude-opus-4-8: { input: 5.00, output: 25.00 }
 - Each entry needs `input` and `output`; `cache_read` defaults to 10% and `cache_write` to 125% of `input`.
 - A model id reported by Claude Code (e.g. `claude-opus-5-5`) uses the exact entry if there is one, else the longest
   key contained in the id (`opus`), else `default`. Without the file, every model is priced at 5 / 25.
+- `context_window` (optional, a positive whole number of tokens) is the model's context window. It is looked up like the
+  price (exact entry, else longest contained key, else `default`); the shipped file sets `default: 200000`. A model
+  name with the suffix `[1m]` (e.g. `opus[1m]`) always gets 1,000,000 tokens, ahead of any entry. Symphony relates
+  `input + cache_read + cache_creation` tokens of the latest call of the main conversation (subagents excluded) to this
+  window: `running[].context` in `GET /api/v1/state` is `{ tokens, window, percent, compacts }`, with `window` and
+  `percent` `null` when no window can be determined (no `context_window` on the entry or on `default`). Automatic
+  compactions (`compact_boundary`) are counted in `compacts`. Add `context_window` to a custom `model-costs.yml`, e.g. a
+  Docker mount, to get percentages.
 - Cost = input × input price + output × output price + cache reads × cache_read + cache writes × cache_write.
 
 ## Repository logs
@@ -1378,7 +1418,7 @@ workflow directory, else `$XDG_STATE_HOME/symphony` or `~/.local/state/symphony`
 | Event | Fields |
 |---|---|
 | `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested: from a `Model: …` label, else the role's model, else `claude.model`), `effort` (requested: from an `Effort: …` label, else the role's effort, else `claude.effort`; `default` when none), `role` (`default` without roles), `laravel` and `boost` (only for workspaces with [`laravel`](#laravel) apps: `<app dir>:<laravel/framework version from composer.lock, or unknown>` and the Boost status `ready`, `failed`, `skipped` or `absent`, e.g. `laravel=laravel/:v13.1.0 boost=ready`; several apps give comma-separated entries, each status prefixed by its directory) |
-| `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `session_limit` (the run ended with a session limit; see `agent-claude.md`), `stopped`, `stalled`, `shutdown`), `role` (the [role](#roles) that served the run; `default` without roles; logs from before it was written have none and count as `unknown` in the analytics) and `next_role` (only when the run handed off to another role), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `head_sha` and `branch` (final commit of a git workspace; omitted otherwise), `mcp_tool_calls` (`<server>:<n>,…` per MCP server; omitted when no MCP tool was used), `tool_calls` (`<tool>:<n>,…` per tool, built-in and `mcp__<server>__<tool>`; omitted without tool calls), `skill_calls` (`<skill>:<n>,…` per skill the Skill tool loaded; the count follows the last colon, so `symphony:handoff:1` is the skill `symphony:handoff`), `agent_calls` (`<subagent>:<n>,…` per subagent the Agent tool started, by `subagent_type`, `general-purpose` when unset; omitted without such calls), `integrations` (`<id>:<status>,…` of the workspace integrations, e.g. `laravel-boost:ready`; status `ready`, `unavailable`, `absent` or `off`), `integration_tools` and `integration_skills` (calls attributed to an integration: `<id>/<tool or skill>:<n>,…`, e.g. `laravel-boost/search-docs:3`), `started_at`, `mcp_unavailable` (comma-separated MCP servers Symphony added that did not connect; only when there are any), running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` |
+| `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `session_limit` (the run ended with a session limit; see `agent-claude.md`), `stopped`, `stalled`, `shutdown`), `role` (the [role](#roles) that served the run; `default` without roles; logs from before it was written have none and count as `unknown` in the analytics) and `next_role` (only when the run handed off to another role), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `context_peak_percent` (highest context fill of the session in percent; `null` without a known window; older lines have none) and `context_compacts` (automatic compactions), `head_sha` and `branch` (final commit of a git workspace; omitted otherwise), `mcp_tool_calls` (`<server>:<n>,…` per MCP server; omitted when no MCP tool was used), `tool_calls` (`<tool>:<n>,…` per tool, built-in and `mcp__<server>__<tool>`; omitted without tool calls), `skill_calls` (`<skill>:<n>,…` per skill the Skill tool loaded; the count follows the last colon, so `symphony:handoff:1` is the skill `symphony:handoff`), `agent_calls` (`<subagent>:<n>,…` per subagent the Agent tool started, by `subagent_type`, `general-purpose` when unset; omitted without such calls), `integrations` (`<id>:<status>,…` of the workspace integrations, e.g. `laravel-boost:ready`; status `ready`, `unavailable`, `absent` or `off`), `integration_tools` and `integration_skills` (calls attributed to an integration: `<id>/<tool or skill>:<n>,…`, e.g. `laravel-boost/search-docs:3`), `started_at`, `mcp_unavailable` (comma-separated MCP servers Symphony added that did not connect; only when there are any), running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` |
 | `model_usage` | `repo`, `issue`, `run`, `model`, `price` (matched entry), token counts, `cost_usd` |
 | `stage_result` | `repo`, `issue`, `run`, `role`, `kind` (result kind, e.g. `review`), `verdict`, `round` (review and test loops; omitted otherwise), `target` (column the result handed the issue to), `profile` (workflow profile; omitted without one), `complexity` (`S` … `XL` from the issue's `Complexity:` label; omitted without one), `findings` (number of findings of a review or security result; omitted when 0). Written when `report_result` has posted the result comment; the analytics group these lines by profile and role |
 | `session_limit_wait` | `repo`, `issue`, `title`, `state`, `window`, `resets_at`, `retry_at` (reset + 60 s), `hits`, `max_retries`, `source` (`event` or `message`); written when the session-limit retries are used up and the worker waits for the reset |
@@ -1408,6 +1448,7 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
 - `attempt`: `null` on the first run of an issue, then `1`, `2`, … on continuation runs and retries.
 - `role`: name of the [role](#roles) running the issue (e.g. `developer`, `reviewer`), or `default` without `roles`.
   Always defined, so one prompt can branch per role: `{% if role == "reviewer" %}…{% endif %}`.
+- `brain`, `brain_index`: the session's brain mode (`off`, `read` or `write`: the role's [`brain`](#roles) with `brain.enabled`, else `off`) and the path of the repository's index note in the vault (`Repos/<owner>-<name>/index.md`, `null` when the tracker has no repository). Always defined. The shipped `WORKFLOW.md` includes `roles/brain.md` unless `brain` is `off`.
 - `agents`: the plugin subagents this session may start (see [Subagents per role](#subagents-per-role)), each with
   `name` (what the Agent tool takes as `subagent_type`, e.g. `symphony:laravel-architect`) and `description`. Always
   defined; empty when the session may start none: `{% if agents.size > 0 %}…{% endif %}`.

@@ -3,6 +3,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
+import { parseNote } from '../src/brain/note.ts';
+import { ensureVault } from '../src/brain/vault.ts';
 import { PricingStore } from '../src/costs/pricing.ts';
 import { HistoryLog, readHistory } from '../src/history/history.ts';
 import type { IntegrationReport } from '../src/agent/types.ts';
@@ -230,6 +232,49 @@ describe('workspace integrations', () => {
     });
     assert.deepEqual(seen.map((entry) => entry.config), [{ greeting: 'hello' }]);
     assert.equal(seen[0]!.workspacePath, runner.sessions[0]!.params.cwd);
+  });
+
+  it('shows the running and finished subagents of a running issue', async () => {
+    let live: unknown = null;
+    let s: Setup | null = null;
+    const runner = new FakeRunner((turn, params) => {
+      const send = (event: string, fields: Record<string, unknown>) =>
+        (params.onEvent as (event: unknown) => void)({ event, timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: 1, ...fields });
+      const run = (id: string, status: string, tokens: number, endedAt: Date | null) => ({
+        toolUseId: id,
+        subagentType: 'Explore',
+        description: 'Find files',
+        startedAt: new Date('2026-01-01T10:00:00Z'),
+        endedAt,
+        status,
+        tokens: { inputTokens: tokens, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 },
+      });
+      send('tool_use', { detail: { tool: 'Agent', agent: 'Explore' } });
+      send('subagent', { subagent: run('a', 'running', 0, null) });
+      send('subagent', { subagent: run('b', 'running', 0, null) });
+      send('subagent', { subagent: run('a', 'running', 5, null) });
+      send('subagent', { subagent: run('a', 'ok', 5, new Date('2026-01-01T10:01:00Z')) });
+      live = s?.orchestrator.snapshot().running[0];
+      s?.tracker.set('a', { state: 'In review' });
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    });
+    s = setup({ runner, issues: [makeIssue({ id: 'a' })] });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s!).running.length === 0 && runner.sessions.length === 1, 3_000, 'run finished');
+    const row = live as { agent_calls: unknown; subagents: { running: Array<{ tool_use_id: string }>; finished: unknown[] } };
+    assert.deepEqual(row.agent_calls, { Explore: 1 });
+    assert.deepEqual(row.subagents.running.map((run) => run.tool_use_id), ['b']);
+    assert.deepEqual(row.subagents.finished, [
+      {
+        tool_use_id: 'a',
+        subagent_type: 'Explore',
+        description: 'Find files',
+        status: 'ok',
+        started_at: '2026-01-01T10:00:00.000Z',
+        ended_at: '2026-01-01T10:01:00.000Z',
+        tokens: { input_tokens: 5, output_tokens: 2, cache_read_tokens: 3, cache_write_tokens: 4, total_tokens: 14 },
+      },
+    ]);
   });
 
   it('attributes MCP tool and skill calls to the reports of the integrations', async () => {
@@ -2394,6 +2439,7 @@ describe('run history', () => {
       params.onEvent({
         event: 'model_call', timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: 1,
         modelUsage: { 'claude-fable-5-1': { inputTokens: 1_000_000, outputTokens: 100_000, cacheReadTokens: 0, cacheWriteTokens: 0 } },
+        context: { model: 'claude-fable-5-1', window: 200_000, tokens: 90_000, percent: 45, peakPercent: 60, compacts: 1, preTokens: 120_000 },
       });
       // The issue moves on the board during the turn: the orchestrator stops the agent before any turn result.
       tracker.set('a', { state: 'In review' });
@@ -2416,6 +2462,7 @@ describe('run history', () => {
     assert.equal(running?.model, 'claude-fable-5-1');
     assert.equal(running?.effort, 'xhigh');
     assert.equal(running?.cost_usd, 15);
+    assert.deepEqual(running?.context, { tokens: 90_000, window: 200_000, percent: 45, compacts: 1 });
     await orchestrator.tickNow();
     await until(() => orchestrator.snapshot().counts.claimed === 0, 3_000, 'stopped and released');
 
@@ -2425,6 +2472,8 @@ describe('run history', () => {
     assert.equal(entries[0]?.fields.effort, 'xhigh');
     const finished = entries[1]?.fields ?? {};
     assert.equal(finished.outcome, 'stopped');
+    assert.equal(finished.context_peak_percent, '60');
+    assert.equal(finished.context_compacts, '1');
     assert.equal(finished.model, 'claude-fable-5-1');
     assert.equal(finished.model_requested, 'fable');
     assert.equal(finished.effort, 'xhigh');
@@ -3265,6 +3314,13 @@ describe('issue-centric snapshot', () => {
       snap.blocked.map((row) => [row.issue_id, row.reason_code, row.reason]),
       [['unlabeled', 'missing_label', 'missing required label ai']],
     );
+    assert.deepEqual(snap.blocked[0]!.labels, issues.find((i) => i.id === 'unlabeled')!.labels);
+    assert.ok('updated_at' in snap.blocked[0]!);
+    // review_rounds is additive: a number for tracked issues, null without a record (E2-8).
+    assert.ok(snap.issues.every((row) => 'review_rounds' in row));
+    assert.equal(snap.blocked[0]!.review_rounds, null);
+    assert.equal(snap.issues.find((row) => row.issue_id === 'later')?.review_rounds, null);
+    assert.equal(snap.issues.find((row) => row.issue_id === 'run')?.review_rounds, 0);
     assert.equal(snap.counts.queued, 4);
 
     // The dry run starts with nothing running: it starts what the tick started and gives the rest the same reasons.
@@ -4348,5 +4404,589 @@ describe('result-driven roles', () => {
     await until(() => s.runner.sessions.length === 1, 3_000, 'second attempt');
     assert.equal(s.runner.sessions[0]?.turns[0], 'reviewer|required=true|round=1|latest=0|findings=0|cases=0');
     await s.orchestrator.shutdown(1_000);
+  });
+
+  it('keeps the latest rate-limit event per rateLimitType and logs every event', async () => {
+    const logDir = tempDir();
+    let s: Setup | null = null;
+    const before: unknown[] = [];
+    const runner = new FakeRunner((turn, params) => {
+      const emit = (info: Record<string, unknown>) => {
+        before.push(s?.orchestrator.snapshot().rate_limits);
+        (params.onEvent as (event: unknown) => void)({ event: 'rate_limit', timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: turn, rateLimits: info });
+      };
+      emit({ rateLimitType: 'five_hour', status: 'allowed' });
+      emit({ rateLimitType: 'seven_day', status: 'allowed' });
+      emit({ rateLimitType: 'five_hour', status: 'allowed_warning' });
+      return new Promise(() => undefined);
+    });
+    s = setup({ runner, logDir, issues: [makeIssue({ id: 'a' })] });
+    await s.orchestrator.tickNow();
+    await until(() => Object.keys(snapshot(s!).rate_limits as object).length === 2, 3_000, 'rate limits');
+    assert.deepEqual(before[0], {});
+    const limits = snapshot(s).rate_limits as Record<string, { issue: string; role: string; model: string | null; rate_limit_info: { status: string } }>;
+    assert.deepEqual(Object.keys(limits).sort(), ['five_hour', 'seven_day']);
+    assert.equal(limits.five_hour!.rate_limit_info.status, 'allowed_warning');
+    assert.equal(limits.seven_day!.rate_limit_info.status, 'allowed');
+    assert.equal(limits.five_hour!.issue, makeIssue({ id: 'a' }).identifier);
+    assert.equal(typeof limits.five_hour!.role, 'string');
+    const lines = fs.readFileSync(path.join(logDir, 'budget', 'rate-limits.jsonl'), 'utf8').trim().split('\n');
+    assert.equal(lines.length, 3);
+  });
+});
+
+describe('change log (code changes per commit and merge)', () => {
+  const run = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=T', ...args], { cwd, encoding: 'utf8' }).trim();
+  const PR_OK = { number: 7, url: null, base: 'main', head_sha: null, checks: { state: 'success' as const, failing: [], pending: [] } };
+
+  /** An `origin` repository on `main`; issue workspaces clone it and work on a branch, so `origin/main` is the base. */
+  function origin(): string {
+    const dir = tempDir('symphony-origin-');
+    run(dir, 'init', '-q', '-b', 'main');
+    fs.writeFileSync(path.join(dir, 'README.md'), 'readme\n');
+    run(dir, 'add', '-A');
+    run(dir, 'commit', '-q', '-m', 'init');
+    return dir;
+  }
+
+  function cloneInto(dir: string, from: string): void {
+    fs.mkdirSync(dir, { recursive: true });
+    run(dir, 'clone', '-q', from, '.');
+    run(dir, 'checkout', '-q', '-b', 'symphony/issue-a');
+  }
+
+  function commitFile(cwd: string, file: string, message: string): void {
+    fs.mkdirSync(path.dirname(path.join(cwd, file)), { recursive: true });
+    fs.writeFileSync(path.join(cwd, file), 'one\ntwo\n');
+    run(cwd, 'add', '-A');
+    run(cwd, 'commit', '-q', '-m', message);
+  }
+
+  function changeSetup(script: (params: Parameters<FakeRunner['script']>[1], s: Setup) => Promise<void> | void, issues = [makeIssue({ id: 'a', native_ref: { base_branch: 'main' } })]) {
+    const from = origin();
+    const runner = new FakeRunner();
+    const s = setup({ runner, issues, front: { hooks: { after_create: `git clone -q "${from}" . && git checkout -q -b symphony/issue-a` } } });
+    s.tracker.issueRepository = () => 'acme/app';
+    runner.script = async (turn, params) => {
+      await script(params, s);
+      if (s.tracker.issues.get('a')?.state === 'Todo') s.tracker.set('a', { state: 'In review' });
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    };
+    return { s, from };
+  }
+
+  it('records one code entry per commit of a session, with files, role, diff excerpt and the pull request', async () => {
+    const { s } = changeSetup((params) => {
+      commitFile(params.cwd, 'docs/guide.md', 'Add the guide');
+      commitFile(params.cwd, 'src/app.ts', 'Add the app');
+    });
+    s.tracker.branchPullRequest = async () => PR_OK;
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 15_000, 'run finished');
+    const entries = s.orchestrator.listChanges({ repo: 'acme/app' });
+    assert.deepEqual(entries.map((e) => e.title).sort(), ['Add the app', 'Add the guide']);
+    const guide = entries.find((e) => e.title === 'Add the guide')!;
+    assert.equal(guide.type, 'code');
+    assert.equal(guide.status, 'committed');
+    assert.equal(guide.issue, 'acme/app#a');
+    assert.equal(guide.role, 'default');
+    assert.deepEqual(guide.files, [{ path: 'docs/guide.md', added: 2, deleted: 0, status: 'added' }]);
+    assert.deepEqual(guide.pr, { number: 7, status: 'success' });
+    assert.equal(guide.diff, 'docs/guide.md\n+one\n+two');
+    assert.match(guide.id, /^code:acme\/app:[0-9a-f]{40}$/);
+    assert.deepEqual(s.orchestrator.listChanges({ issue: 'acme/app#b' }), []);
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  it('persists the entries under <logDir>/changes/ and loads them at the next start', async () => {
+    const logDir = tempDir();
+    const from = origin();
+    const runner = new FakeRunner();
+    const s = setup({ runner, logDir, issues: [makeIssue({ id: 'a', native_ref: { base_branch: 'main' } })], front: { hooks: { after_create: `git clone -q "${from}" . && git checkout -q -b symphony/issue-a` } } });
+    s.tracker.issueRepository = () => 'acme/app';
+    runner.script = (turn, params) => {
+      commitFile(params.cwd, 'docs/guide.md', 'Add the guide');
+      s.tracker.set('a', { state: 'In review' });
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    };
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 15_000, 'run finished');
+    const lines = fs.readFileSync(path.join(logDir, 'changes', 'acme_app.jsonl'), 'utf8').trim().split('\n');
+    assert.equal(lines.length, 1);
+    assert.equal(JSON.parse(lines[0]!).title, 'Add the guide');
+    await s.orchestrator.shutdown(1_000);
+    const restarted = setup({ logDir });
+    assert.deepEqual(restarted.orchestrator.listChanges().map((e) => e.title), ['Add the guide']);
+  });
+
+  it('records nothing for a session without commits or without git, and a pull request lookup that fails gives pr null', async () => {
+    const quiet = changeSetup(() => undefined);
+    quiet.s.tracker.branchPullRequest = async () => PR_OK;
+    await quiet.s.orchestrator.tickNow();
+    await until(() => snapshot(quiet.s).retrying.length === 1, 15_000, 'run finished');
+    assert.deepEqual(quiet.s.orchestrator.listChanges(), []);
+    await quiet.s.orchestrator.shutdown(1_000);
+
+    const plain = setup({ issues: [makeIssue({ id: 'a' })] });
+    await plain.orchestrator.tickNow();
+    await until(() => snapshot(plain).retrying.length === 1, 15_000, 'run finished');
+    assert.deepEqual(plain.orchestrator.listChanges(), []);
+    await plain.orchestrator.shutdown(1_000);
+
+    const failing = changeSetup((params) => commitFile(params.cwd, 'docs/guide.md', 'Add the guide'));
+    failing.s.tracker.branchPullRequest = async () => {
+      throw new Error('boom');
+    };
+    await failing.s.orchestrator.tickNow();
+    await until(() => snapshot(failing.s).retrying.length === 1, 15_000, 'run finished');
+    assert.deepEqual(failing.s.orchestrator.listChanges().map((e) => [e.title, e.pr]), [['Add the guide', null]]);
+    await failing.s.orchestrator.shutdown(1_000);
+  });
+
+  it('records a merged entry with the branch diff against the base when a move merges the pull request', async () => {
+    const { s } = changeSetup(async (params, setup) => {
+      commitFile(params.cwd, 'docs/guide.md', 'Add the guide');
+      const result = await callTool(params, 'set_status', { status: 'Human Review' });
+      assert.equal(result.ok, true);
+      assert.equal(setup.tracker.issues.get('a')?.state, 'Done');
+    });
+    s.tracker.autoMerge = (_issue, column) =>
+      column === 'Human Review'
+        ? { merged: true, pull_request: 9, status: 'Done', reason: 'merged', checks: { state: 'success', failing: [], pending: [] } }
+        : undefined;
+    await s.orchestrator.tickNow();
+    await until(() => s.orchestrator.listChanges({ type: 'code' }).length === 2, 15_000, 'merge recorded');
+    const merged = s.orchestrator.listChanges().find((e) => e.status === 'merged')!;
+    assert.equal(merged.id, 'code:acme/app:merge:9');
+    assert.equal(merged.title, 'Merged #9: Issue a');
+    assert.deepEqual(merged.pr, { number: 9, status: 'success' });
+    assert.deepEqual(merged.files, [{ path: 'docs/guide.md', added: 2, deleted: 0, status: 'added' }]);
+    assert.equal(merged.diff, null);
+    assert.equal(merged.role, 'default');
+    await s.orchestrator.shutdown(1_000);
+  });
+
+  describe('issue summary after the merge (E8-3)', () => {
+    const mergeResult = { merged: true, pull_request: 9, status: 'Done', reason: 'merged', checks: { state: 'success' as const, failing: [], pending: [] } };
+
+    function brainSetup(brainFront: Record<string, unknown> | null) {
+      const from = origin();
+      const runner = new FakeRunner();
+      const front: Record<string, unknown> = { hooks: { after_create: `git clone -q "${from}" . && git checkout -q -b symphony/issue-a` } };
+      if (brainFront !== null) front.brain = brainFront;
+      const s = setup({ runner, issues: [makeIssue({ id: 'a', native_ref: { base_branch: 'main' } })], front });
+      s.tracker.issueRepository = () => 'acme/app';
+      s.tracker.autoMerge = (_issue, column) => (column === 'Human Review' ? mergeResult : undefined);
+      runner.script = async (turn, params) => {
+        commitFile(params.cwd, 'docs/guide.md', 'Add the guide');
+        const result = await callTool(params, 'set_status', { status: 'Human Review' });
+        assert.equal(result.ok, true);
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      };
+      return s;
+    }
+
+    it('writes Issues/<repo>/<nr>.md into the vault as symphony after the merge', async () => {
+      const vault = path.join(tempDir(), 'vault');
+      await ensureVault(vault, ['acme/app']);
+      const s = brainSetup({ enabled: true, path: vault });
+      await s.orchestrator.tickNow();
+      const file = path.join(vault, 'Issues', 'acme-app', 'a.md');
+      const last = (format: string): string => execFileSync('git', ['log', '-1', `--format=${format}`], { cwd: vault, encoding: 'utf8' }).trim();
+      await until(() => fs.existsSync(file) && last('%s') === 'acme/app#a: issue summary', 15_000, 'summary committed');
+      const note = parseNote(fs.readFileSync(file, 'utf8'));
+      assert.equal(note.frontmatter.status, 'approved');
+      assert.equal(note.frontmatter.role, 'symphony');
+      assert.deepEqual(note.frontmatter.sources, ['https://github.com/acme/app/pull/9']);
+      assert.equal(last('%an'), 'symphony');
+      await s.orchestrator.shutdown(1_000);
+    });
+
+    it('writes nothing without brain.enabled', async () => {
+      const vault = path.join(tempDir(), 'vault');
+      await ensureVault(vault, ['acme/app']);
+      const s = brainSetup({ enabled: false, path: vault });
+      await s.orchestrator.tickNow();
+      await until(() => s.orchestrator.listChanges({ type: 'code' }).some((e) => e.status === 'merged'), 15_000, 'merge recorded');
+      await s.orchestrator.shutdown(1_000);
+      assert.deepEqual(fs.readdirSync(path.join(vault, 'Issues')), []);
+    });
+
+    it('a failing vault only warns: the merge is recorded and the issue is done', async () => {
+      const vault = path.join(tempDir(), 'not-a-vault');
+      fs.mkdirSync(vault, { recursive: true });
+      const s = brainSetup({ enabled: true, path: vault });
+      await s.orchestrator.tickNow();
+      await until(() => s.orchestrator.listChanges({ type: 'code' }).some((e) => e.status === 'merged'), 15_000, 'merge recorded');
+      assert.equal(s.tracker.issues.get('a')?.state, 'Done');
+      assert.equal(fs.existsSync(path.join(vault, 'Issues')), false);
+      await s.orchestrator.shutdown(1_000);
+    });
+  });
+
+  it('records a merged entry when a merge retry succeeds, without files when the issue has no workspace, and nothing when it fails', async () => {
+    const issues = ['a', 'b', 'c'].map((id) => makeIssue({ id, identifier: `acme/app#${id}`, state: 'Human Review', labels: ['awaiting-checks'], native_ref: { base_branch: 'main' } }));
+    const s = setup({ issues });
+    s.tracker.issueRepository = () => 'acme/app';
+    const from = origin();
+    const workspace = path.join(s.root, workspaceKey('acme/app#a'));
+    cloneInto(workspace, from);
+    commitFile(workspace, 'docs/guide.md', 'Add the guide');
+    let finished = 0;
+    s.tracker.mergeWatch = () => ({
+      column: 'Human Review',
+      awaiting: (issue) => issue.labels.includes('awaiting-checks'),
+      retry: async (issue) => {
+        const merged = issue.id !== 'c';
+        s.tracker.set(issue.id, { state: merged ? 'Done' : 'Human Review', labels: [] });
+        finished++;
+        return { merged, pull_request: issue.id === 'a' ? 7 : 8, status: merged ? 'Done' : 'Human Review', reason: merged ? 'merged' : 'conflict' };
+      },
+    });
+    await s.orchestrator.tickNow();
+    await until(() => finished === 3 && s.orchestrator.listChanges().length === 2, 15_000, 'retries recorded');
+    await s.orchestrator.shutdown(1_000);
+    const byIssue = Object.fromEntries(s.orchestrator.listChanges().map((e) => [e.issue, e]));
+    assert.deepEqual(Object.keys(byIssue).sort(), ['acme/app#a', 'acme/app#b']);
+    assert.equal(byIssue['acme/app#a']?.status, 'merged');
+    assert.equal(byIssue['acme/app#a']?.role, 'symphony');
+    assert.deepEqual(byIssue['acme/app#a']?.pr, { number: 7, status: 'success' });
+    assert.deepEqual(byIssue['acme/app#a']?.files, [{ path: 'docs/guide.md', added: 2, deleted: 0, status: 'added' }]);
+    assert.deepEqual(byIssue['acme/app#b']?.files, []);
+  });
+});
+
+// Independent acceptance tests for the change log (#339): the issue text is the specification.
+describe('change log acceptance (#339)', () => {
+  const run = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=T', ...args], { cwd, encoding: 'utf8' }).trim();
+  const clone = (from: string) => `git clone -q "${from}" . && git checkout -q -b symphony/issue-a`;
+
+  function origin(): string {
+    const dir = tempDir('symphony-origin-');
+    run(dir, 'init', '-q', '-b', 'main');
+    fs.writeFileSync(path.join(dir, 'README.md'), 'readme\n');
+    fs.writeFileSync(path.join(dir, 'old.txt'), 'keep me\n'.repeat(12));
+    run(dir, 'add', '-A');
+    run(dir, 'commit', '-q', '-m', 'init');
+    return dir;
+  }
+
+  function commitFile(cwd: string, file: string, content: string, message: string): void {
+    fs.mkdirSync(path.dirname(path.join(cwd, file)), { recursive: true });
+    fs.writeFileSync(path.join(cwd, file), content);
+    run(cwd, 'add', '-A');
+    run(cwd, 'commit', '-q', '-m', message);
+  }
+
+  const lines = (n: number, prefix = 'line') => Array.from({ length: n }, (_, i) => `${prefix} ${i}\n`).join('');
+
+  function prepared(front: Record<string, unknown> = {}, issue = makeIssue({ id: 'a', native_ref: { base_branch: 'main' } }), logDir?: string) {
+    const from = origin();
+    const runner = new FakeRunner();
+    const s = setup({ runner, issues: [issue], ...(logDir !== undefined ? { logDir } : {}), front: { ...front, hooks: { after_create: clone(from) } } });
+    s.tracker.issueRepository = () => 'acme/app';
+    return { s, runner, from };
+  }
+
+  it('gives every code entry exactly the fields of the ChangeEntry type, with a diff of at most 5 lines per file', async () => {
+    const { s, runner } = prepared();
+    runner.script = (turn, params) => {
+      // Distinct commit seconds: commits of the same second have no defined order among each other.
+      commitFile(params.cwd, 'big.txt', lines(30), 'Add big file\n\nlong body');
+      fs.writeFileSync(path.join(params.cwd, 'old.txt'), lines(12, 'new'));
+      run(params.cwd, 'add', '-A');
+      execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=T', 'commit', '-q', '-m', 'Rewrite old'], {
+        cwd: params.cwd,
+        env: { ...process.env, GIT_COMMITTER_DATE: new Date(Date.now() + 60_000).toISOString() },
+      });
+      s.tracker.set('a', { state: 'In review' });
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    };
+    s.tracker.branchPullRequest = async () => ({ number: 12, url: null, base: 'main', head_sha: null, checks: { state: 'pending' as const, failing: [], pending: ['ci'] } });
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 10_000, 'run finished');
+    const entries = s.orchestrator.listChanges({ type: 'code', repo: 'acme/app', limit: 10 });
+    assert.equal(entries.length, 2);
+    assert.deepEqual(entries.map((e) => e.title), ['Rewrite old', 'Add big file'], 'newest first, the title is the subject only');
+    for (const entry of entries) {
+      assert.deepEqual(Object.keys(entry).sort(), ['at', 'branch', 'diff', 'files', 'id', 'issue', 'pr', 'repo', 'role', 'status', 'title', 'type']);
+      assert.equal(Number.isNaN(Date.parse(entry.at)), false);
+      assert.equal(entry.repo, 'acme/app');
+      assert.deepEqual(entry.pr, { number: 12, status: 'pending' });
+      for (const file of entry.files) assert.deepEqual(Object.keys(file).sort(), ['added', 'deleted', 'path', 'status']);
+      if (entry.diff !== null) {
+        for (const block of entry.diff.split('\n\n')) {
+          const [name, ...changed] = block.split('\n');
+          assert.ok(entry.files.some((f) => f.path === name), `block starts with a file path: ${name}`);
+          assert.ok(changed.length <= 5, `at most 5 lines for ${name}, got ${changed.length}`);
+        }
+      }
+    }
+    const big = entries.find((e) => e.title === 'Add big file')!;
+    assert.deepEqual(big.files, [{ path: 'big.txt', added: 30, deleted: 0, status: 'added' }]);
+    const rewrite = entries.find((e) => e.title === 'Rewrite old')!;
+    assert.deepEqual(rewrite.files, [{ path: 'old.txt', added: 12, deleted: 12, status: 'modified' }]);
+  });
+
+  it('records a binary file with null counts and a rename as one file', async () => {
+    const { s, runner } = prepared();
+    runner.script = (turn, params) => {
+      fs.writeFileSync(path.join(params.cwd, 'logo.png'), Buffer.from([0, 1, 2, 0, 255, 0]));
+      run(params.cwd, 'add', '-A');
+      run(params.cwd, 'commit', '-q', '-m', 'Add logo');
+      run(params.cwd, 'mv', 'old.txt', 'renamed.txt');
+      run(params.cwd, 'commit', '-q', '-m', 'Rename old');
+      s.tracker.set('a', { state: 'In review' });
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    };
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 10_000, 'run finished');
+    const byTitle = Object.fromEntries(s.orchestrator.listChanges().map((e) => [e.title, e]));
+    assert.deepEqual(byTitle['Add logo']?.files, [{ path: 'logo.png', added: null, deleted: null, status: 'binary' }]);
+    assert.equal(byTitle['Rename old']?.files.length, 1);
+    assert.equal(byTitle['Rename old']?.files[0]?.path, 'renamed.txt');
+    assert.equal(byTitle['Rename old']?.files[0]?.status, 'renamed');
+    assert.equal(byTitle['Add logo']?.pr, null, 'no pull request known: null');
+  });
+
+  it('uses the role of the session as the role of the entry', async () => {
+    const { s, runner } = prepared(
+      {
+        tracker: { kind: 'github_project', provider: { owner: 'acme', project_number: 1, token: 'test-token' }, active_states: ['Ready'] },
+        roles: { developer: { states: ['Ready'] } },
+      },
+      makeIssue({ id: 'a', state: 'Ready', native_ref: { base_branch: 'main' } }),
+    );
+    runner.script = (turn, params) => {
+      commitFile(params.cwd, 'x.txt', 'x\n', 'Do x');
+      s.tracker.set('a', { state: 'In review' });
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    };
+    await s.orchestrator.tickNow();
+    await until(() => s.orchestrator.listChanges().length === 1, 15_000, 'entry recorded');
+    assert.equal(s.orchestrator.listChanges()[0]?.role, 'developer');
+  });
+
+  it('records no duplicates when a later session adds one more commit', async () => {
+    const { s, runner } = prepared();
+    let session = 0;
+    runner.script = (turn, params) => {
+      session++;
+      fs.writeFileSync(path.join(params.cwd, `f${session}.txt`), `${session}\n`);
+      run(params.cwd, 'add', '-A');
+      // Distinct commit seconds: commits of the same second have no defined order among each other.
+      execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=T', 'commit', '-q', '-m', `Commit of session ${session}`], {
+        cwd: params.cwd,
+        env: { ...process.env, GIT_COMMITTER_DATE: new Date(Date.now() + session * 60_000).toISOString() },
+      });
+      s.tracker.set('a', { state: 'In review' });
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    };
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 15_000, 'first run finished');
+    assert.deepEqual(s.orchestrator.listChanges().map((e) => e.title), ['Commit of session 1']);
+    s.tracker.set('a', { state: 'Todo' });
+    s.timers.fire(CONTINUATION_DELAY_MS);
+    await until(() => snapshot(s).retrying.length === 0, 15_000, 'claim released');
+    await s.orchestrator.tickNow();
+    await until(() => session === 2, 15_000, 'second session');
+    await until(() => s.orchestrator.listChanges().length === 2, 15_000, 'second entry recorded');
+    const titles = s.orchestrator.listChanges().map((e) => e.title);
+    assert.deepEqual(titles, ['Commit of session 2', 'Commit of session 1']);
+    assert.equal(new Set(s.orchestrator.listChanges().map((e) => e.id)).size, 2);
+  });
+
+  it('does not fail the run when the pull request lookup or the change log write fails', async () => {
+    const logDir = tempDir();
+    fs.writeFileSync(path.join(logDir, 'changes'), 'a file where the directory should be');
+    const { s, runner } = prepared({}, undefined, logDir);
+    runner.script = (turn, params) => {
+      commitFile(params.cwd, 'x.txt', 'x\n', 'Do x');
+      s.tracker.set('a', { state: 'In review' });
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    };
+    s.tracker.branchPullRequest = async () => {
+      throw new Error('tracker down');
+    };
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s).retrying.length === 1, 10_000, 'run finished');
+    assert.equal(s.tracker.issues.get('a')?.state, 'In review');
+    assert.deepEqual(s.orchestrator.listChanges().map((e) => [e.title, e.pr]), [['Do x', null]]);
+  });
+
+  it('records no merged entry when the merge did not happen', async () => {
+    const { s, runner } = prepared();
+    runner.script = async (turn, params) => {
+      commitFile(params.cwd, 'x.txt', 'x\n', 'Do x');
+      await callTool(params, 'set_status', { status: 'Human Review' });
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    };
+    s.tracker.autoMerge = (_issue, column) =>
+      column === 'Human Review' ? { merged: false, pull_request: 9, status: 'Human Review', reason: 'checks pending' } : undefined;
+    await s.orchestrator.tickNow();
+    await until(() => s.orchestrator.listChanges().length === 1, 15_000, 'commit recorded');
+    await s.orchestrator.shutdown(1_000);
+    assert.deepEqual(s.orchestrator.listChanges().map((e) => e.status), ['committed']);
+  });
+
+  it('records the merged entry with diffStat files and the pull request number, one per merge', async () => {
+    const { s, runner } = prepared();
+    runner.script = async (turn, params) => {
+      commitFile(params.cwd, 'a.txt', 'a\nb\n', 'Add a');
+      commitFile(params.cwd, 'b.txt', 'b\n', 'Add b');
+      await callTool(params, 'set_status', { status: 'Human Review' });
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    };
+    s.tracker.autoMerge = (_issue, column) =>
+      column === 'Human Review' ? { merged: true, pull_request: 21, status: 'Done', reason: 'merged', checks: { state: 'success', failing: [], pending: [] } } : undefined;
+    await s.orchestrator.tickNow();
+    await until(() => s.orchestrator.listChanges({ type: 'code' }).length === 3, 15_000, 'merge recorded');
+    await s.orchestrator.shutdown(1_000);
+    const merged = s.orchestrator.listChanges().filter((e) => e.status === 'merged');
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0]?.type, 'code');
+    assert.equal(merged[0]?.pr?.number, 21);
+    assert.equal(merged[0]?.issue, 'acme/app#a');
+    assert.deepEqual(merged[0]?.files, [
+      { path: 'a.txt', added: 2, deleted: 0, status: 'added' },
+      { path: 'b.txt', added: 1, deleted: 0, status: 'added' },
+    ]);
+    if (merged[0]?.diff !== null && merged[0]?.diff !== undefined) {
+      for (const block of merged[0].diff.split('\n\n')) assert.ok(block.split('\n').length - 1 <= 5);
+    }
+  });
+});
+
+// Independent acceptance tests for the issue summary after the merge (#360): the issue text is the specification.
+describe('issue summary acceptance (#360)', () => {
+  const mergeOk = { merged: true, pull_request: 9, status: 'Done', reason: 'merged', checks: { state: 'success' as const, failing: [], pending: [] } };
+
+  async function newVault(): Promise<string> {
+    const vault = path.join(tempDir(), 'vault');
+    await ensureVault(vault, ['acme/app']);
+    return vault;
+  }
+
+  /** A stored stage result of the tracker's own account, as the GitHub adapter reads it back. */
+  function persistResult(s: Setup, issueId: string, result: Record<string, unknown>, role: string, round: number | null, at: string): void {
+    const meta: ResultMeta = { role, run: `run-${role}-${at}`, round, profile: null, workflow_hash: null, head_sha: null, checks: null, target: null, created_at: at };
+    const body = renderResultComment({ schema: 'symphony.result/v1', blockers: [], follow_ups: [], ...result } as never, meta);
+    assert.notEqual(decodeMarker(body), null, 'the fixture result is a valid stored result');
+    const list = s.tracker.comments.get(issueId) ?? [];
+    list.push({
+      author: s.tracker.viewer,
+      createdAt: new Date(at),
+      body,
+      url: `https://github.com/acme/app/issues/${issueId}#c${list.length}`,
+    });
+    s.tracker.comments.set(issueId, list);
+  }
+
+  const lastCommit = (vault: string, format: string): string => execFileSync('git', ['log', '-1', `--format=${format}`], { cwd: vault, encoding: 'utf8' }).trim();
+
+  function retrySetup(front: Record<string, unknown>, logger?: Logger) {
+    const issues = [makeIssue({ id: 'r', identifier: 'acme/app#r', title: 'Retry me', description: 'Goal of r.', state: 'Human Review', labels: ['awaiting-checks'], native_ref: { base_branch: 'main' } })];
+    const s = setup({ issues, front, ...(logger !== undefined ? { logger } : {}) });
+    s.tracker.issueRepository = () => 'acme/app';
+    let finished = false;
+    s.tracker.mergeWatch = () => ({
+      column: 'Human Review',
+      awaiting: (issue) => issue.labels.includes('awaiting-checks'),
+      retry: async (issue) => {
+        s.tracker.set(issue.id, { state: 'Done', labels: [] });
+        finished = true;
+        return { ...mergeOk, pull_request_url: 'https://github.com/acme/app/pull/9' };
+      },
+    });
+    return { s, done: () => finished };
+  }
+
+  it('the merge retry path writes the summary too, with stage results from the tracker, as symphony', async () => {
+    const vault = await newVault();
+    const { s, done } = retrySetup({ brain: { enabled: true, path: vault } });
+    persistResult(s, 'r', { kind: 'implementation', verdict: 'done', summary: 'Built the retry thing', changed_files: ['src/retry.ts'], tests_added: [], plan_deviations: [] }, 'developer', 1, '2026-10-30T10:00:00Z');
+    persistResult(s, 'r', { kind: 'review', verdict: 'approved', summary: 'Reviewed fine', findings: [], checked: [], confirmed_goals: [] }, 'reviewer', 1, '2026-10-30T11:00:00Z');
+    await s.orchestrator.tickNow();
+    await until(() => done(), 15_000, 'retry finished');
+    const file = path.join(vault, 'Issues', 'acme-app', 'r.md');
+    await until(() => fs.existsSync(file) && lastCommit(vault, '%s') === 'acme/app#r: issue summary', 15_000, 'summary committed');
+    await s.orchestrator.shutdown(1_000);
+    const note = parseNote(fs.readFileSync(file, 'utf8'));
+    assert.equal(note.frontmatter.type, 'issue');
+    assert.equal(note.frontmatter.status, 'approved');
+    assert.equal(note.frontmatter.role, 'symphony');
+    assert.equal(note.frontmatter.repo, 'acme/app');
+    assert.equal(note.frontmatter.issue, 'acme/app#r');
+    assert.deepEqual(note.frontmatter.sources, ['https://github.com/acme/app/pull/9']);
+    assert.match(note.body, /Retry me/);
+    assert.match(note.body, /Goal of r\./);
+    assert.match(note.body, /\| developer \| done \| 1 \| Built the retry thing \|/);
+    assert.match(note.body, /\| reviewer \| approved \| 1 \| Reviewed fine \|/);
+    assert.match(note.body, /`src\/retry\.ts`/);
+    assert.match(note.body, /\[\[Repos\/acme-app\/index\]\]/);
+    assert.match(note.body, /https:\/\/github\.com\/acme\/app\/pull\/9/);
+    assert.equal(lastCommit(vault, '%an'), 'symphony');
+    assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: vault, encoding: 'utf8' }), '');
+  });
+
+  it('the merge retry path writes nothing without brain.enabled', async () => {
+    const vault = await newVault();
+    const { s, done } = retrySetup({ brain: { enabled: false, path: vault } });
+    await s.orchestrator.tickNow();
+    await until(() => done() && s.orchestrator.listChanges().some((e) => e.status === 'merged'), 15_000, 'retry recorded');
+    await s.orchestrator.shutdown(1_000);
+    assert.deepEqual(fs.readdirSync(path.join(vault, 'Issues')), []);
+  });
+
+  it('writes nothing when the merge did not happen', async () => {
+    const vault = await newVault();
+    const { s } = retrySetup({ brain: { enabled: true, path: vault } });
+    s.tracker.mergeWatch = () => ({
+      column: 'Human Review',
+      awaiting: (issue) => issue.labels.includes('awaiting-checks'),
+      retry: async (issue) => {
+        s.tracker.set(issue.id, { state: 'Human Review', labels: [] });
+        return { merged: false, pull_request: 9, status: 'Human Review', reason: 'conflict' };
+      },
+    });
+    await s.orchestrator.tickNow();
+    await until(() => s.tracker.issues.get('r')?.labels.length === 0, 15_000, 'retry ran');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await s.orchestrator.shutdown(1_000);
+    assert.deepEqual(fs.readdirSync(path.join(vault, 'Issues')), []);
+    assert.equal(s.orchestrator.listChanges().length, 0);
+  });
+
+  function memoryLogger(): { logger: Logger; lines: string[] } {
+    const lines: string[] = [];
+    return { lines, logger: Logger.create({ sinks: [{ name: 'memory', write: (line: string) => void lines.push(line) }], level: 'debug' }) };
+  }
+
+  it('an unreadable result history only logs a warning: the merge is recorded and no file is written', async () => {
+    const vault = await newVault();
+    const { logger, lines } = memoryLogger();
+    const { s, done } = retrySetup({ brain: { enabled: true, path: vault } }, logger);
+    s.tracker.failReadResults = new Error('tracker down');
+    await s.orchestrator.tickNow();
+    await until(() => done() && s.orchestrator.listChanges().some((e) => e.status === 'merged'), 15_000, 'merge recorded');
+    await until(() => lines.some((line) => line.includes('level=warn') && /summary/i.test(line)), 5_000, 'warning logged');
+    await s.orchestrator.shutdown(1_000);
+    assert.equal(s.tracker.issues.get('r')?.state, 'Done');
+    assert.deepEqual(fs.readdirSync(path.join(vault, 'Issues')), []);
+  });
+
+  it('a broken vault logs a warning (not an error) and the merge flow completes', async () => {
+    const vault = path.join(tempDir(), 'plain-dir');
+    fs.mkdirSync(vault, { recursive: true });
+    const { logger, lines } = memoryLogger();
+    const { s, done } = retrySetup({ brain: { enabled: true, path: vault } }, logger);
+    await s.orchestrator.tickNow();
+    await until(() => done() && s.orchestrator.listChanges().some((e) => e.status === 'merged'), 15_000, 'merge recorded');
+    await until(() => lines.some((line) => line.includes('level=warn') && /summary/i.test(line)), 5_000, 'warning logged');
+    await s.orchestrator.shutdown(1_000);
+    assert.equal(s.tracker.issues.get('r')?.state, 'Done');
+    assert.equal(lines.some((line) => line.includes('level=error') && /summary/i.test(line)), false);
   });
 });

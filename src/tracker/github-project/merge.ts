@@ -179,7 +179,9 @@ export async function autoMerge(
     } catch (error) {
       warnings.push(`could not comment on the issue: ${errorMessage(error)}`);
     }
-    return result(true, number, status, `merged into ${baseBranch}`);
+    return result(true, number, status, `merged into ${baseBranch}`, {
+      pull_request_url: typeof pullRequest.url === 'string' ? pullRequest.url : null,
+    });
   } catch (error) {
     const number = typeof pullRequest?.number === 'number' ? pullRequest.number : null;
     return stay(`auto-merge failed: ${errorMessage(error)}`, number);

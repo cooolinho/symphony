@@ -423,6 +423,36 @@ describe('resultRows: the rows of the agent page', () => {
   });
 });
 
+describe('resultRows: changed_files', () => {
+  it('passes the files of an implementation result through and leaves other kinds empty', () => {
+    const implementation = parseResult('implementation', { verdict: 'done', summary: 'Done.', changed_files: ['src/a.ts', 'test/a.test.ts'] });
+    const review = parseResult('review', { verdict: 'approved', summary: 'Ok.' });
+    assert.ok(implementation.ok && review.ok);
+    const rows = resultRows([
+      { ...entry('implementation', 'done'), result: implementation.result },
+      { ...entry('review', 'approved'), result: review.result },
+    ]);
+    assert.deepEqual(rows[0]?.changed_files, ['src/a.ts', 'test/a.test.ts']);
+    assert.deepEqual(rows[1]?.changed_files, []);
+  });
+
+  it('keeps an implementation without files empty, also when it is blocked', () => {
+    const blocked = parseResult('implementation', { verdict: 'blocked', summary: 'Stuck.', blockers: [{ description: 'No token', needs: 'access' }] });
+    assert.ok(blocked.ok);
+    const rows = resultRows([{ ...entry('implementation', 'blocked'), result: blocked.result }]);
+    assert.deepEqual(rows[0]?.changed_files, []);
+  });
+
+  it('survives the JSON round trip of the API and does not alias the result', () => {
+    const implementation = parseResult('implementation', { verdict: 'done', summary: 'Done.', changed_files: ['src/a.ts'] });
+    assert.ok(implementation.ok);
+    const rows = resultRows([{ ...entry('implementation', 'done'), result: implementation.result }]);
+    assert.deepEqual((JSON.parse(JSON.stringify(rows)) as Array<{ changed_files: string[] }>)[0]?.changed_files, ['src/a.ts']);
+    rows[0]?.changed_files?.push('mutated.ts');
+    assert.deepEqual(implementation.result.kind === 'implementation' ? implementation.result.changed_files : null, ['src/a.ts']);
+  });
+});
+
 describe('humanFeedback: what a human wrote since the last hand-off', () => {
   const at = (meta: PersistedResult) => new Date(meta.meta.created_at).getTime();
   const comment = (author: string | null, ms: number, body = `comment at ${ms}`) => ({ author, createdAt: new Date(ms), body, url: `u-${ms}` });

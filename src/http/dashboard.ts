@@ -1,17 +1,16 @@
+import { ALERTS_CSS, ALERTS_JS } from './alerts.ts';
 import { PIPELINE_CSS, PIPELINE_JS } from './pipeline.ts';
-import { BASE_CSS, BASE_JS } from './styles.ts';
+import { ACTIVITY_CSS, ACTIVITY_JS } from './overview-activity.ts';
+import { BRAIN_CSS, BRAIN_JS, BRAIN_PANELS_HTML } from './overview-brain.ts';
+import { HEAD_CSS, HEAD_JS } from './overview-head.ts';
+import { TEAMS_CSS, TEAMS_JS } from './overview-teams.ts';
+import { AURORA, page } from './ui/layout.ts';
+import { SYSTEM_COLORS } from './ui/palette.ts';
 
 const DASHBOARD_CSS = `
   /* Dispatch gate: new dispatches wait for an account-wide session limit (a notice, not an error). */
   .dispatch-gate { border-color: var(--amber-line); background: linear-gradient(180deg, var(--amber-dim), rgba(11, 17, 21, .8));
     display: flex; align-items: center; gap: 10px; padding: 12px 16px; color: var(--amber); font: 12.5px/1.6 var(--mono); overflow-wrap: anywhere; }
-  /* Model holds: one model hit its own limit; its issues wait, the other models keep running. */
-  .model-holds { align-items: flex-start; }
-  .model-holds ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
-  /* Pause / Resume per model family in use. */
-  .model-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 16px; font: 12px var(--mono); color: var(--muted); }
-  .model-controls .model-control-item { display: inline-flex; align-items: center; gap: 8px; }
-  .model-controls .model-control-item b { color: var(--text); font-weight: 600; }
   .card-actions { display: flex; flex-wrap: wrap; gap: 8px; }
   /* Matrix rain: a few faint glyph columns behind everything, disabled for small screens and reduced motion. */
   .rain { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
@@ -22,26 +21,23 @@ const DASHBOARD_CSS = `
   @keyframes fall { to { transform: translateY(110vh); } }
   @media (max-width: 640px), (prefers-reduced-motion: reduce) { .rain { display: none; } }
 
-  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
+
+  /* System cards: host metrics, agent slots and the tracker API budget, coloured by utilisation (traffic light). */
+  .syscards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+  .sys-host { margin-left: auto; font-size: 12.5px; color: var(--fg-3); }
+  .syscard { min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 14px 14px 10px; }
+  .syscard:hover { border-color: var(--line-2); }
+  .syscard-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .syscard-label { font-size: 13px; color: var(--fg-2); }
+  .syscard-dot { background: var(--faint); }
+  .syscard-value { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+  .syscard-value .mono { font: 500 26px var(--mono); color: var(--fg-strong); }
+  .syscard-unit { font: 13px var(--mono); color: var(--fg-3); white-space: nowrap; }
+  .syscard .ui-spark { width: 100%; }
+  .syscard-sub { font-size: 12px; color: var(--fg-3); overflow-wrap: anywhere; }
 
   /* Running agents */
   .agents-section { border-color: var(--line-2); }
-  .slots { display: flex; align-items: center; gap: 10px; font: 500 11px var(--mono); color: var(--muted); letter-spacing: .08em; }
-  .slots-bar { display: flex; gap: 3px; }
-  .slots-bar i { width: 14px; height: 6px; border-radius: 2px; background: var(--line-2); transition: background .3s var(--ease), box-shadow .3s var(--ease); }
-  .slots-bar i.on { background: var(--green); box-shadow: 0 0 8px -2px var(--green); }
-  /* A slot kept free for a role (agent.reserved_slots_by_role) that runs fewer sessions than reserved. */
-  .slots-bar i.reserved { background: transparent; box-shadow: inset 0 0 0 1px var(--cyan-line); }
-  /* An extra slot of a session started with Start now, beyond the limit. */
-  .slots-bar i.forced { background: var(--amber); box-shadow: 0 0 8px -2px var(--amber); }
-  /* Agent slots set on the dashboard: − / value / + for the total, each active column and each role's reserved slots. */
-  .slot-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 0 0 14px; font: 12px var(--mono); color: var(--muted); }
-  .slot-item { display: inline-flex; align-items: center; gap: 6px; }
-  .slot-item b { min-width: 2ch; color: var(--text); font-weight: 600; text-align: center; }
-  .slot-control { justify-content: center; min-width: 28px; padding: 2px 6px; }
-  .slot-control:disabled { opacity: .4; cursor: default; }
-  .slot-override, .slot-note { color: var(--amber); }
-  .slot-error { color: var(--red); }
   .agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); gap: 14px; }
   .agent { position: relative; display: flex; flex-direction: column; gap: 14px; min-width: 0; padding: 16px 16px 14px;
     border: 1px solid var(--line-2); border-radius: var(--radius); overflow: hidden;
@@ -108,10 +104,8 @@ const DASHBOARD_CSS = `
   .cursor { display: inline-block; width: 8px; height: 15px; background: var(--green); vertical-align: -2px; margin-left: 4px; animation: blink 1.1s steps(1) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
 
-  /* Lower area: activity stream next to the queues */
+  /* Lower area: activity stream */
   .lower { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
-  @media (min-width: 1100px) { .lower { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); } }
-  .side { display: grid; gap: 20px; align-content: start; min-width: 0; }
   .feed { list-style: none; margin: 0; padding: 10px 0; max-height: 360px; overflow-y: auto; border-radius: var(--radius-sm);
     background: rgba(0, 0, 0, .35); border: 1px solid var(--line); font: 12.5px/1.65 var(--mono); }
   .feed li { display: grid; grid-template-columns: 72px minmax(0, 9.5em) minmax(0, 1fr); gap: 12px; padding: 1px 14px; color: var(--muted);
@@ -134,35 +128,13 @@ const DASHBOARD_CSS = `
     .feed .what { grid-column: 1 / -1; padding-left: 74px; }
   }
 
-  /* Issue cards: the pipeline strip and the status box of waiting issues */
+  /* Issue cards: the pipeline strip */
   .agent .pipe { margin: -2px 0; }
   .agent [hidden] { display: none; }
-  /* Dispatch plan: Up next is numbered in start order; every waiting card names its reason. */
-  .queue-section[hidden] { display: none; }
-  .agents.compact { grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr)); }
-  .chip.pos { color: var(--text); border-color: var(--cyan-line); background: var(--cyan-dim); font-weight: 600; }
-  .chip.reason { white-space: normal; overflow-wrap: anywhere; color: var(--tone, var(--text-2));
-    border-color: var(--tone-line, var(--line-2)); background: var(--tone-dim, var(--panel-2)); }
 
-  /* Blocked issues (a collapsed details panel) and other queue-style lists */
-  details.blocked-section summary { list-style: none; cursor: pointer; }
-  details.blocked-section summary::-webkit-details-marker { display: none; }
-  details.blocked-section summary .chev { display: inline-block; font-style: normal; transition: transform .2s var(--ease); color: var(--muted); }
-  details.blocked-section[open] summary .chev { transform: rotate(90deg); }
-  details.blocked-section .section-head { margin-bottom: 0; }
-  details.blocked-section[open] .section-head { margin-bottom: 14px; }
-  .queue { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-  .qitem { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-left: 2px solid var(--tone); border-radius: var(--radius-sm);
-    background: rgba(0, 0, 0, .22); transition: border-color .2s var(--ease); }
-  .qitem:hover { border-color: var(--tone-line); border-left-color: var(--tone); }
+  .section-link { display: inline-flex; align-items: center; min-height: 44px; font-size: 13px; }
+  .tasks-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 0 0 14px; font-size: 13px; color: var(--muted); }
   .qrow { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
-  .qrow .id { font: 600 13px var(--mono); overflow-wrap: anywhere; }
-  .qmeta { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 11.5px var(--mono); color: var(--muted); }
-  .qmeta b { color: var(--text); font-weight: 600; }
-  .qitem .msg { font-size: 12.5px; }
-  .qitem button.restart { justify-self: start; }
-  .clear { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
-  .clear .muted { font-size: 12.5px; }
 
   /* Logs drawer */
   .scrim { position: fixed; inset: 0; z-index: 40; background: rgba(2, 4, 5, .5);
@@ -197,8 +169,26 @@ const DASHBOARD_CSS = `
     .logs li { grid-template-columns: auto 1fr; }
     .logs .body { grid-column: 1 / -1; }
     .agent-foot { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 10px; }
-    .sysinfo { gap: 6px 16px; }
+    .syscards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
+
+  /* Context budget panel next to the alerts: two window bars, tokens per role, hot-context cards */
+  .ov-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 20px; margin: 18px 0; }
+  .ov-row .budget { margin: 0; }
+  .budget { flex: 1 1 340px; min-width: 0; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+  .budget-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .budget-body { display: flex; flex-direction: column; gap: 14px; }
+  .budget-win { display: flex; flex-direction: column; gap: 8px; }
+  .budget-win-head { display: flex; justify-content: space-between; align-items: baseline; }
+  .budget-win-name { font-weight: 500; }
+  .budget-win-pct { font: 500 22px var(--mono); }
+  .budget-win-text { margin: 0; font-size: 12.5px; color: var(--fg-3); }
+  .budget-roles { border-top: 1px solid rgba(255, 255, 255, .08); padding-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .budget-role-grid { display: grid; grid-template-columns: 84px minmax(0, 1fr) 44px 52px; gap: 8px; align-items: center; font-size: 12.5px; }
+  .budget-role-name { display: flex; align-items: center; gap: 6px; color: var(--fg-chip); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .budget-role-pct { color: var(--fg-2); text-align: right; }
+  .budget-role-tok { color: var(--fg-3); font-size: 12.5px; text-align: right; }
+  .budget-hot { padding: 10px 12px; border-color: rgba(251, 191, 36, .35); display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
 `;
 
 /**
@@ -207,62 +197,56 @@ const DASHBOARD_CSS = `
  * repository logs (/api/v1/history), which also feed the logs drawer. All tracker text is inserted with
  * textContent (issue titles and agent messages are untrusted).
  */
-export const DASHBOARD_HTML = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
-<title>Symphony</title>
-<style>${BASE_CSS}${PIPELINE_CSS}${DASHBOARD_CSS}</style>
-</head>
-<body>
-<div class="rain" id="rain" aria-hidden="true"></div>
-<header class="topbar">
-  <div class="topbar-inner">
-    <a class="brand" href="/" aria-label="Symphony agent orchestrator">
-      <span class="brand-mark" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,12 6,12 8.5,6 11.5,18 14.5,4 17,15 19,12 22,12"/></svg></span>
-      <span class="brand-text"><span class="brand-name">SYMPHONY</span><span class="brand-sub">AGENT ORCHESTRATOR</span></span>
-    </a>
-    <dl class="sysinfo" aria-live="polite">
-      <div><dt>System</dt><dd id="sys-status"><span class="badge tone-gray"><span class="dot"></span><span>Connecting</span></span></dd></div>
-      <div><dt>Version</dt><dd id="sys-version">—</dd></div>
-      <div><dt>Workflow</dt><dd id="sys-workflow">—</dd></div>
-      <div><dt>Polling</dt><dd id="sys-interval">—</dd></div>
-      <div><dt>Last poll</dt><dd id="sys-lastpoll">—</dd></div>
-    </dl>
-    <div class="actions">
-      <a class="btn" id="logs-open" href="/logs" aria-controls="logs-drawer" aria-expanded="false">
+export const DASHBOARD_HTML = page({
+  title: 'Symphony',
+  nav: 'overview',
+  aurora: AURORA.overview,
+  pollNow: true,
+  styles: PIPELINE_CSS + TEAMS_CSS + ALERTS_CSS + HEAD_CSS + ACTIVITY_CSS + BRAIN_CSS + DASHBOARD_CSS,
+  body: `
+  <div class="page-title ov-head">
+    <div class="ov-title">
+      <h1 id="page-title">Übersicht</h1>
+      <p class="page-sub" id="ov-subtitle" aria-live="polite">noch kein Poll</p>
+    </div>
+    <div class="page-title-right ov-side">
+      <div class="ov-chips" id="ov-chips" role="group" aria-label="Status"></div>
+      <a class="btn" id="logs-open" href="/stats" aria-controls="logs-drawer" aria-expanded="false">
         <svg class="btn-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 4h10M3 8h10M3 12h6"/></svg>Logs</a>
-      <button class="btn btn-primary" id="refresh" type="button">
-        <svg class="btn-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.5 2.5v3h-3"/></svg><span id="refresh-label">Poll now</span></button>
     </div>
   </div>
-  <div class="progress" id="progress" aria-hidden="true"></div>
-</header>
-<p class="sr-only" id="announce" aria-live="polite"></p>
-<main>
   <section id="repositories" class="repos" aria-label="Repositories" hidden><span class="repos-label">Repositories</span><div class="repo-list" id="repo-list"></div></section>
-  <section id="problems" class="problems" role="alert" hidden>
-    <h2><span class="dot tone-red"></span>Needs attention</h2>
-    <ul id="problem-list"></ul>
-  </section>
   <section id="dispatch-gate" class="dispatch-gate" role="status" hidden>
     <span class="dot tone-amber"></span><span id="dispatch-gate-text"></span>
   </section>
-  <section id="model-holds" class="dispatch-gate model-holds" role="status" hidden>
-    <span class="dot tone-amber"></span><ul id="model-hold-list"></ul>
-  </section>
-  <section id="model-controls" class="panel model-controls" aria-label="Models" hidden></section>
 
+  <section class="panel" id="system-panel" aria-labelledby="system-title">
+    <div class="section-head"><h2 id="system-title">System</h2><span class="sys-host" id="system-host"></span></div>
+    <div class="syscards" id="system-cards" role="group" aria-label="System"></div>
+  </section>
   <div class="stats" id="stats" aria-label="Metrics"></div>
+
+  <div class="ov-row">
+    <section id="alerts" class="panel alerts" aria-labelledby="alerts-title">
+      <div class="section-head"><h2 class="lbl" id="alerts-title">Alerts</h2><span class="alerts-badge" id="alerts-count" aria-live="polite" hidden>0</span></div>
+      <ul class="alerts-list" id="alerts-list"></ul>
+    </section>
+    <section class="g budget" id="budget" aria-labelledby="budget-title">
+      <div class="budget-head"><span class="lbl" id="budget-title">Context-Budget · heute</span><a class="budget-more" href="/stats">Verlauf →</a></div>
+      <div class="budget-body" id="budget-body"></div>
+    </section>
+  </div>
+
+  <section class="agents-section teams-section" id="teams-section" aria-labelledby="teams-title">
+    <div class="section-head"><h2 id="teams-title">Teams live <span class="count" id="teams-count"></span></h2><a class="teams-all" href="/tasks">Alle Tasks →</a></div>
+    <div class="team-list" id="teams"></div>
+  </section>
 
   <section class="agents-section" id="running-section" aria-labelledby="running-title">
     <div class="section-head">
       <h2 id="running-title">Running <span class="count" id="running-count"></span></h2>
-      <div class="slots" id="slots" aria-hidden="true"></div>
     </div>
-    <div class="slot-settings" id="slot-settings" role="group" aria-label="Agent slots" hidden></div>
+    <p class="tasks-line" id="tasks-line"><span id="tasks-line-text"></span> · <a class="section-link" href="/tasks">Alle Tasks</a></p>
     <div class="agents" id="running"></div>
     <div class="agents-empty" id="issues-empty" hidden>
       <span class="badge tone-gray"><span class="dot"></span><span>Idle</span></span>
@@ -270,28 +254,17 @@ export const DASHBOARD_HTML = `<!doctype html>
         <div class="muted" id="issues-empty-sub">Waiting for issues in an active column.</div></div>
     </div>
   </section>
-  <section class="agents-section queue-section" id="next-section" aria-labelledby="next-title" hidden>
+
+  <section class="panel act-section" id="tool-activity" aria-labelledby="tool-activity-title">
     <div class="section-head">
-      <h2 id="next-title">Up next <span class="count" id="next-count"></span></h2>
-      <span class="meta" id="next-meta"></span>
+      <h2 class="lbl" id="tool-activity-title">Agent-Aktivität · letzte 30 min</h2>
+      <div class="act-legend" id="tool-activity-legend"></div>
     </div>
-    <div class="agents compact" id="next"></div>
-  </section>
-  <section class="agents-section queue-section" id="waiting-section" aria-labelledby="waiting-title" hidden>
-    <div class="section-head">
-      <h2 id="waiting-title">Waiting <span class="count" id="waiting-count"></span></h2>
-      <span class="meta">backoff, session limits and model holds · soonest first</span>
-    </div>
-    <div class="agents compact" id="waiting"></div>
-  </section>
-  <section class="agents-section queue-section" id="paused-section" aria-labelledby="paused-title" hidden>
-    <div class="section-head">
-      <h2 id="paused-title">Paused <span class="count" id="paused-count"></span></h2>
-      <span class="meta">by the operator, after agent.max_continuations, or at agent.max_issue_cost_usd</span>
-    </div>
-    <div class="agents compact" id="paused"></div>
+    <div class="act-strip" id="tool-activity-strip" role="img" aria-label="Tool-Aufrufe der letzten 30 Minuten, farbig je Rolle"></div>
+    <div class="act-axis" aria-hidden="true"><span>−30 min</span><span>−20 min</span><span>−10 min</span><span>jetzt</span></div>
   </section>
 
+${BRAIN_PANELS_HTML}
   <div class="lower">
     <section aria-labelledby="activity-title">
       <div class="section-head">
@@ -300,20 +273,9 @@ export const DASHBOARD_HTML = `<!doctype html>
       </div>
       <ol class="feed" id="feed" aria-live="off"></ol>
     </section>
-    <div class="side">
-      <details class="panel blocked-section" id="blocked-section">
-        <summary>
-          <div class="section-head">
-            <h2 id="blocked-title"><span class="chev" aria-hidden="true">▸</span>Blocked <span class="count" id="blocked-count"></span></h2>
-            <span class="meta" id="blocked-meta"></span>
-          </div>
-        </summary>
-        <div id="blocked"></div>
-      </details>
-    </div>
   </div>
-</main>
-
+`,
+  after: `<div class="rain" id="rain" aria-hidden="true"></div>
 <div class="scrim" id="logs-scrim"></div>
 <aside class="drawer" id="logs-drawer" role="dialog" aria-modal="true" aria-labelledby="logs-title">
   <div class="drawer-head">
@@ -337,15 +299,14 @@ export const DASHBOARD_HTML = `<!doctype html>
     <div class="actions">
       <a class="btn" id="logs-raw" href="#" target="_blank" rel="noopener" hidden>Raw log</a>
       <button class="btn" id="logs-reload" type="button">Reload</button>
-      <a class="btn" href="/logs">Statistics ↗</a>
+      <a class="btn" href="/stats">Statistics ↗</a>
     </div>
   </div>
-</aside>
-
-<script>
+</aside>`,
+  scripts: `
 (() => {
-${BASE_JS}
-${PIPELINE_JS}
+${PIPELINE_JS}${TEAMS_JS}
+${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}
 
   const $ = (id) => document.getElementById(id);
   const setText = (node, text) => { text = String(text ?? ''); if (node.textContent !== text) node.textContent = text; };
@@ -419,25 +380,6 @@ ${PIPELINE_JS}
     patchChildren($('repo-list'), nodes);
   }
 
-  function renderHeader(h, problems, online) {
-    let status;
-    if (!online) status = badge('Offline', 'red', false);
-    else if (h.stopping) status = badge('Shutting down', 'amber', false);
-    else if (problems.length) status = badge('Degraded', 'amber', true);
-    else status = badge('Online', 'green', true);
-    const holder = $('sys-status');
-    const current = holder.firstChild;
-    if (!current || current.className !== status.className || current.textContent !== status.textContent) holder.replaceChildren(status);
-    if (!h) return;
-    setText($('sys-version'), h.symphony_version ? 'v' + h.symphony_version : '—');
-    setText($('sys-workflow'), 'v' + h.workflow_version);
-    setText($('sys-interval'), 'every ' + Math.round(h.poll_interval_ms / 1000) + 's');
-    const last = $('sys-lastpoll');
-    setText(last, h.last_tick_at ? ago(h.last_tick_at) : 'never');
-    const stale = h.last_tick_at && Date.now() - Date.parse(h.last_tick_at) > Math.max(3 * h.poll_interval_ms, 30000);
-    last.style.color = stale ? 'var(--amber)' : '';
-  }
-
   // ------------------------------------------------------------------ agent cards
 
   const cards = new Map();
@@ -500,9 +442,6 @@ ${PIPELINE_JS}
     actHead.append(el('span', 'Last activity', 'k'), el('span', 'Trace →', 'agent-open'));
     act.append(actHead, line, refs.message);
 
-    // Status box of waiting issues (retrying, paused, queued): meta line, message, Retry/Resume button.
-    refs.info = el('div', null, 'activity-box');
-
     const foot = el('div', null, 'agent-foot');
     refs.foot = foot;
     refs.turn = metric(foot, 'Turn');
@@ -510,124 +449,11 @@ ${PIPELINE_JS}
     refs.tokens = metric(foot, 'Tokens');
     refs.cost = metric(foot, 'Est. cost');
 
-    // Pause of a running issue (hidden on the other cards; their status box carries their buttons).
+    // Pause of a running issue (running cards only).
     refs.controls = el('div', null, 'card-actions');
 
-    card.append(head, titleWrap, pipe, dl, act, refs.controls, refs.info, foot);
+    card.append(head, titleWrap, pipe, dl, act, refs.controls, foot);
     return refs;
-  }
-
-  // Tone of the reason chip per dispatch plan reason code (docs/usage.md#dispatch-order).
-  const REASON_TONE = {
-    ready: 'green', no_free_slot: 'cyan', reserved_for_role: 'cyan', column_limit: 'amber', backoff: 'amber', session_limit: 'amber', model_hold: 'amber',
-    waiting_for_sub_issues: 'gray', inactive: 'gray', paused: 'gray',
-  };
-  // Reason texts carry UTC times (the same text as --dry-run); the chip shows them in local time, the tooltip as sent.
-  const UTC_TIME = /(\\d{4}-\\d{2}-\\d{2}) (\\d{2}:\\d{2}) UTC/g;
-  function reasonChip(reason) {
-    const text = reason.text.replace(UTC_TIME, (_, day, time) => fmtStamp(day + 'T' + time + ':00Z'));
-    const chip = el('span', text, 'chip reason tone-' + (REASON_TONE[reason.code] || 'gray'));
-    chip.title = reason.code + ': ' + reason.text;
-    return chip;
-  }
-
-  /** Meta line, message and action of a waiting issue card (status box children, diffed by patchChildren). */
-  function infoChildren(row) {
-    const nodes = [];
-    if (row.reason) {
-      const why = el('div', null, 'qmeta');
-      why.append(reasonChip(row.reason));
-      if (row.priority != null) { const p = el('span', 'priority '); p.append(el('b', 'P' + row.priority)); why.append(p); }
-      const m = el('span', 'model '); m.append(el('b', row.model || 'default')); why.append(m);
-      nodes.push(why);
-    }
-    const meta = el('div', null, 'qmeta');
-    nodes.push(meta);
-    if (row.status === 'retrying' && row.retry) {
-      const r = row.retry;
-      // The issue's own model, else the model whose limit it hit (an issue on the default model is never held).
-      const hold = row.model_hold || (r.limit && r.limit.scope === 'model' && r.limit.model ? { model: r.limit.model, until: r.due_at } : null);
-      if (hold) {
-        // The reason chip already names the hold.
-        if (!row.reason || row.reason.code !== 'model_hold') {
-          meta.append(...modelHoldBits(hold));
-          nodes.push(el('div', waitingForModel(hold), 'msg'));
-        }
-        if (r.limit && r.limit.text) nodes.push(el('div', r.limit.text, 'msg'));
-      } else if (r.kind === 'session_limit' && r.limit) {
-        meta.append(...sessionLimitBits(r));
-        nodes.push(el('div', r.limit.text || r.error || '—', 'msg'));
-        if (r.limit.overage_disabled_reason === 'out_of_credits') {
-          nodes.push(el('div', 'Extra usage is off because credits are used up. Top up' + (retryAllowed ? ', then press Retry now.' : '.'), 'msg'));
-        }
-      } else {
-        const attempt = el('span', 'attempt '); attempt.append(el('b', pad2(r.attempt)));
-        const due = el('span', 'next in '); due.append(el('b', fmtDuration(r.due_in_ms / 1000)));
-        meta.append(attempt, due);
-        // A requeued retry's error is its reason, already in the chip.
-        const text = r.error && (!row.reason || r.error !== row.reason.text) ? r.error : r.kind === 'continuation' ? 'Continues the session after a clean exit.' : '';
-        if (text) nodes.push(el('div', text, 'msg'));
-      }
-      // Up next starts it with the next free slot anyway; Retry now skips a wait, Start now also the slot limits.
-      nodes.push(actions([...(row.section !== 'next' ? [restartButton(row.issue_identifier, 'Retry')] : []), ...forceButtons(row)], row.issue_identifier));
-    } else if (row.status === 'paused' && row.paused) {
-      if (row.paused.source === 'operator') {
-        meta.append(el('span', 'paused by operator'), el('span', ago(row.paused.paused_at)));
-        nodes.push(el('div', 'Board changes do not lift this pause; it ends with Resume, Done or leaving the board.', 'msg'));
-      } else if (row.paused.source === 'budget') {
-        meta.append(el('span', 'cost budget used up'), el('span', '$' + row.paused.cost_usd.toFixed(2) + ' of $' + row.paused.max_issue_cost_usd.toFixed(2)), el('span', ago(row.paused.paused_at)));
-        nodes.push(el('div', 'Board changes do not lift this pause; it ends with Resume, a higher agent.max_issue_cost_usd, Done or leaving the board.', 'msg'));
-      } else {
-        const cont = el('span', 'paused after '); cont.append(el('b', row.paused.continuations), ' continuations');
-        meta.append(cont, el('span', ago(row.paused.paused_at)));
-        nodes.push(el('div', 'Resume: change the issue on the board (status, comment or labels)' + (retryAllowed ? ', or press Resume now.' : '.'), 'msg'));
-      }
-      if (retryAllowed) {
-        const box = el('div', null, 'card-actions');
-        box.append(restartButton(row.issue_identifier, 'Resume'), ...forceButtons(row));
-        nodes.push(box);
-      } else nodes.push(restartButton(row.issue_identifier, 'Resume'));
-    } else {
-      if (row.model_hold && (!row.reason || row.reason.code !== 'model_hold')) {
-        meta.append(...modelHoldBits(row.model_hold));
-        nodes.push(el('div', waitingForModel(row.model_hold), 'msg'));
-      } else if (row.dispatch_note) {
-        nodes.push(el('div', row.dispatch_note, 'msg'));
-      }
-      if (row.status === 'queued') nodes.push(actions(forceButtons(row), row.issue_identifier));
-    }
-    return nodes.filter((node) => node.childNodes.length > 0);
-  }
-
-  // Start now never starts an issue whose model is held or that waits for its sub-issues: the button would only fail.
-  const UNFORCEABLE = new Set(['model_hold', 'waiting_for_sub_issues']);
-  function forceButtons(row) {
-    if (!retryAllowed || row.model_hold || (row.reason && UNFORCEABLE.has(row.reason.code))) return [];
-    return [restartButton(row.issue_identifier, 'Force')];
-  }
-
-  /** Buttons of a card that can be paused: the given ones, then Pause (or the controls-disabled notice once). */
-  function actions(buttons, identifier) {
-    const box = el('div', null, 'card-actions');
-    if (!retryAllowed) {
-      if (buttons.length === 0) box.append(el('div', RESTART_DISABLED, 'msg muted restart-off'));
-      else box.append(...buttons);
-      return box;
-    }
-    box.append(...buttons, restartButton(identifier, 'Pause'));
-    return box;
-  }
-
-  // A waiting issue whose model is on hold: it starts when the hold ends, never on another model.
-  function waitingForModel(hold) {
-    if (!hold.until) return 'Waiting for model ' + hold.model + ' (paused by the operator)';
-    return 'Waiting for model ' + hold.model + ' (limit until ' + fmtStamp(hold.until) + ')';
-  }
-  function modelHoldBits(hold) {
-    const model = el('span', 'waiting for model '); model.append(el('b', hold.model));
-    if (!hold.until) return [model, el('span', 'paused by the operator')];
-    const until = el('span', 'until '); until.append(el('b', fmtStamp(hold.until)));
-    return [model, until];
   }
 
   function updateCard(refs, row, maxTurns) {
@@ -663,7 +489,7 @@ ${PIPELINE_JS}
     setText(refs.title, row.title || row.issue_identifier);
     // Only tracked issues have a trace; a queued issue without one links nowhere yet.
     if (row.tracked) {
-      const trace = '/agent?id=' + encodeURIComponent(row.issue_identifier);
+      const trace = '/issue?id=' + encodeURIComponent(row.issue_identifier);
       if (refs.title.getAttribute('href') !== trace) refs.title.href = trace;
     } else refs.title.removeAttribute('href');
     setText(refs.repo, row.repo && row.repo !== 'unknown' ? row.repo : repo);
@@ -677,7 +503,6 @@ ${PIPELINE_JS}
     refs.controls.hidden = !r || !!r.stopping;
     if (r && !r.stopping) patchChildren(refs.controls, [retryAllowed ? restartButton(row.issue_identifier, 'Pause') : el('div', RESTART_DISABLED, 'msg muted restart-off')]);
     refs.foot.hidden = !r;
-    refs.info.hidden = !!r;
     if (r) {
       setText(refs.model, r.model || '—');
       setText(refs.phase, r.phase);
@@ -689,8 +514,6 @@ ${PIPELINE_JS}
       setText(refs.runtime, fmtDuration(r.seconds_running));
       setText(refs.tokens, fmtCompact(r.tokens.total_tokens));
       setText(refs.cost, fmtUsd(r.cost_usd));
-    } else {
-      patchChildren(refs.info, infoChildren(row));
     }
   }
 
@@ -736,20 +559,19 @@ ${PIPELINE_JS}
     return chip;
   }
 
-  // Dashboard sections in page order; each row of state.issues names its own (running, then the dispatch plan).
-  const SECTIONS = ['running', 'next', 'waiting', 'paused'];
-
   function renderIssues(state) {
     const h = state.health;
     const rows = state.issues || [];
     const live = new Set();
-    const bySection = Object.fromEntries(SECTIONS.map((name) => [name, []]));
+    const running = [];
+    // Only running issues get a card here; the dispatch plan (next, waiting, paused, blocked) lives on /tasks.
     for (const row of rows) {
+      if (row.section !== 'running') continue;
       live.add(row.issue_id);
       let refs = cards.get(row.issue_id);
       if (!refs) { refs = createCard(); cards.set(row.issue_id, refs); }
       updateCard(refs, row, h.max_turns);
-      (bySection[row.section] || bySection.next).push(refs.card);
+      running.push(refs.card);
     }
     for (const [id, refs] of cards) {
       if (live.has(id)) continue;
@@ -758,85 +580,34 @@ ${PIPELINE_JS}
       refs.card.classList.add('leave');
       setTimeout(() => refs.card.remove(), 320);
     }
-    for (const name of SECTIONS) {
-      const host = $(name);
-      const ordered = bySection[name];
-      ordered.forEach((card, i) => {
-        const active = [...host.children].filter((c) => !c.classList.contains('leave'));
-        if (active[i] !== card) host.insertBefore(card, active[i] || null);
-      });
-      setText($(name + '-count'), pad2(ordered.length));
-      if (name !== 'running') $(name + '-section').hidden = ordered.length === 0;
-    }
-    setText($('next-meta'), state.board_fetched_at ? 'in start order · board as of ' + ago(state.board_fetched_at) : 'in start order · board not fetched yet');
-
-    const running = state.counts.running;
-    // Sessions started with Start now run in an extra slot each: "04 / 03 agents, 1 forced".
-    const forced = state.counts.forced || 0;
-    const slotted = running - forced;
-    const max = h.max_concurrent_agents;
-    slotUse = { slotted, max };
-    // Reserved slots a role does not use yet stay free for it: "developer 1/1 · reviewer 0/1 reserved · 1 free".
-    const reservations = state.limits && !state.limits.reservation_problem
-      ? Object.entries(state.limits.reserved_slots_by_role || {}).filter(([, r]) => r.effective > 0)
-      : [];
-    let unused = 0;
-    for (const [, r] of reservations) unused += Math.max(r.effective - r.running, 0);
-    const free = Math.max(max - slotted - unused, 0);
-    const bar = el('div', null, 'slots-bar');
-    for (let i = 0; i < Math.min(max, 24); i++) bar.append(el('i', null, i < slotted ? 'on' : i < slotted + unused ? 'reserved' : ''));
-    for (let i = 0; i < Math.min(forced, 8); i++) bar.append(el('i', null, 'forced'));
-    const slots = $('slots');
-    const agents = pad2(running) + ' / ' + pad2(max) + ' agents' + (forced > 0 ? ', ' + forced + ' forced' : '');
-    const slotText = reservations.length > 0
-      ? agents + ' · ' + reservations.map(([role, r]) => role + ' ' + Math.min(r.running, r.effective) + '/' + r.effective).join(' · ') + ' reserved · ' + free + ' free'
-      : agents + ' · ' + free + ' free slot' + (free === 1 ? '' : 's');
-    slots.replaceChildren(bar, el('span', slotText));
-    $('issues-empty').hidden = bySection.running.length > 0;
+    const host = $('running');
+    running.forEach((card, i) => {
+      const active = [...host.children].filter((c) => !c.classList.contains('leave'));
+      if (active[i] !== card) host.insertBefore(card, active[i] || null);
+    });
+    setText($('running-count'), pad2(running.length));
+    const queued = state.counts.queued ?? 0;
+    setText($('tasks-line-text'), state.counts.running + (state.counts.running === 1 ? ' Slot belegt' : ' Slots belegt') + ' · ' + queued + ' in der Queue');
+    $('issues-empty').hidden = running.length > 0;
     setText($('issues-empty-sub'), rows.length
-      ? 'Nothing running right now · ' + (rows.length) + ' issue' + (rows.length === 1 ? '' : 's') + ' below'
+      ? 'Nothing running right now · ' + queued + ' in the queue'
       : 'Waiting for issues in ' + (h.active_states && h.active_states.length ? h.active_states.join(', ') : 'an active column') +
         ' · next poll within ' + Math.round(h.poll_interval_ms / 1000) + 's');
   }
 
-  // ------------------------------------------------------------------ queues
-
-  // Keep the <ul> and only swap the items that changed.
-  function patchList(id, list) {
-    const host = $(id);
-    const current = host.firstElementChild;
-    if (current && current.tagName === 'UL') patchChildren(current, [...list.children]);
-    else host.replaceChildren(list);
-  }
-
-  const traceLink = (identifier) => link('trace →', '/agent?id=' + encodeURIComponent(identifier));
-
-  function emptyState(id, text, tone, sub) {
-    const box = el('div', null, 'clear');
-    box.append(badge(text, tone, false), el('div', sub, 'muted'));
-    patchChildren($(id), [box]);
-  }
-
-  const WINDOW_WORDS = { five_hour: 'five hour', seven_day: 'seven day', seven_day_opus: 'seven day Opus', seven_day_sonnet: 'seven day Sonnet' };
-  const windowWords = (w) => WINDOW_WORDS[w] || String(w || '').replace(/_/g, ' ');
-
   // Per-identifier outcome of a control click (Retry, Pause, Resume); a poll rebuilds the rows, so the button state
   // is drawn from here.
   const restartStates = new Map();
-  const RESTART_LABELS = { Retry: 'Retry now', Resume: 'Resume now', Pause: 'Pause', Force: 'Start now' };
+  const RESTART_LABELS = { Retry: 'Retry now', Resume: 'Resume now', Pause: 'Pause' };
   // Route, busy label and success label of each control button.
   const CONTROL = {
     Retry: ['retry', 'Restarting…', 'Queued'],
-    Force: ['force', 'Starting…', 'Started'],
     Resume: ['resume', 'Resuming…', 'Queued'],
     Pause: ['pause', 'Pausing…', 'Paused'],
   };
   const RESTART_DISABLED = 'Controls disabled: set SYMPHONY_ALLOW_REMOTE_CONTROL=true behind an authenticating proxy';
   // From /api/v1/state; false on a non-loopback bind without server.allow_remote_control.
   let retryAllowed = true;
-  // Sessions holding a slot and the limit, from the last state; Start now asks first when no slot is free.
-  let slotUse = { slotted: 0, max: 0 };
-
   function restartButton(identifier, verb) {
     if (!retryAllowed) return el('div', RESTART_DISABLED, 'msg muted restart-off');
     const st = restartStates.get(identifier + ' ' + verb);
@@ -865,10 +636,6 @@ ${PIPELINE_JS}
     const [action, busy, done] = CONTROL[verb] || CONTROL.Retry;
     const current = restartStates.get(key);
     if (current && current.cls === 'is-busy') return;
-    if (verb === 'Force' && slotUse.slotted >= slotUse.max) {
-      const question = 'All ' + slotUse.max + ' slot' + (slotUse.max === 1 ? ' is' : 's are') + ' busy. Start ' + splitId(identifier).num + ' in an extra slot?';
-      if (!window.confirm(question)) return;
-    }
     restartStates.set(key, { cls: 'is-busy', label: busy });
     paintRestart(identifier, verb);
     let ok = false;
@@ -887,224 +654,11 @@ ${PIPELINE_JS}
     setTimeout(() => { restartStates.delete(key); paintRestart(identifier, verb); }, ok ? 1800 : 5000);
   }
 
-  // Pause / Resume of a model family (POST /api/v1/models/<model>/hold or /release).
-  const modelStates = new Map();
-  async function controlModel(model, hold) {
-    if (modelStates.get(model) === 'busy') return;
-    modelStates.set(model, 'busy');
-    let label = 'failed';
-    try {
-      const res = await fetch('/api/v1/models/' + encodeURIComponent(model) + '/' + (hold ? 'hold' : 'release'), { method: 'POST' });
-      let body = null;
-      try { body = await res.json(); } catch {}
-      label = res.ok ? (hold ? 'paused' : 'resumed') : (body && body.error && body.error.message) || 'failed (' + res.status + ')';
-    } catch {}
-    modelStates.delete(model);
-    $('announce').textContent = 'Model ' + model + ': ' + label;
-    setTimeout(load, 300);
-  }
-
-  function renderModelControls(state) {
-    const models = state.model_controls || [];
-    const host = $('model-controls');
-    host.hidden = models.length === 0;
-    const nodes = [el('span', 'Models')];
-    for (const m of models) {
-      const item = el('span', null, 'model-control-item');
-      const name = el('b', m.model);
-      item.append(name, el('span', m.paused ? 'paused by operator' : m.limit_until ? 'limit until ' + fmtStamp(m.limit_until) : 'running'));
-      if (retryAllowed) {
-        const b = el('button', m.paused ? 'Resume' : 'Pause', 'btn model-control');
-        b.type = 'button';
-        b.dataset.model = m.model;
-        b.dataset.hold = m.paused ? '0' : '1';
-        b.setAttribute('aria-label', (m.paused ? 'Resume' : 'Pause') + ' model ' + m.model);
-        if (modelStates.get(m.model) === 'busy') b.setAttribute('aria-busy', 'true');
-        item.append(b);
-      }
-      nodes.push(item);
-    }
-    if (!retryAllowed && models.length > 0) nodes.push(el('span', RESTART_DISABLED, 'muted restart-off'));
-    patchChildren(host, nodes);
-  }
-
   document.addEventListener('click', (event) => {
     const target = event.target instanceof Element ? event.target : null;
     const b = target ? target.closest('button.restart') : null;
     if (b) restart(b.dataset.identifier, b.dataset.verb);
-    const m = target ? target.closest('button.model-control') : null;
-    if (m) controlModel(m.dataset.model, m.dataset.hold === '1');
   });
-
-  // Agent slots set on the dashboard (PUT /api/v1/settings/agents; DELETE resets to WORKFLOW.md).
-  let slotBusy = false;
-  let slotError = '';
-  async function changeSlots(method, body) {
-    if (slotBusy) return;
-    slotBusy = true;
-    let label = 'failed';
-    try {
-      const init = { method, headers: { 'content-type': 'application/json' } };
-      if (body !== null) init.body = JSON.stringify(body);
-      const res = await fetch('/api/v1/settings/agents', init);
-      let data = null;
-      try { data = await res.json(); } catch {}
-      label = res.ok ? (method === 'DELETE' ? 'reset to WORKFLOW.md' : 'saved') : (data && data.error && data.error.message) || 'failed (' + res.status + ')';
-      slotError = res.ok ? '' : label;
-    } catch {
-      slotError = label;
-    }
-    slotBusy = false;
-    if (slotError) setTimeout(() => { slotError = ''; }, 8000);
-    $('announce').textContent = 'Agent slots: ' + label;
-    setTimeout(load, 300);
-  }
-
-  function slotButton(text, label, body, disabled) {
-    const b = el('button', text, 'btn slot-control');
-    b.type = 'button';
-    b.dataset.body = JSON.stringify(body);
-    b.setAttribute('aria-label', label);
-    if (disabled || slotBusy) b.disabled = true;
-    return b;
-  }
-
-  function renderSlotSettings(state) {
-    const limits = state.limits;
-    const host = $('slot-settings');
-    host.hidden = !limits;
-    if (!limits) return;
-    const total = limits.max_concurrent_agents;
-    // Forced sessions run beside the limit; only the others hold its slots.
-    const running = state.counts.running - (state.counts.forced || 0);
-    const nodes = [];
-    const item = el('span', null, 'slot-item');
-    item.append(el('span', 'Slots'));
-    if (retryAllowed) item.append(slotButton('−', 'Fewer agent slots', { max_concurrent_agents: Math.min(total.effective - 1, limits.max) }, total.effective <= 0));
-    item.append(el('b', total.effective));
-    if (retryAllowed) item.append(slotButton('+', 'More agent slots', { max_concurrent_agents: total.effective + 1 }, total.effective >= limits.max));
-    if (total.override !== null && total.override !== total.workflow) item.append(el('span', 'set here · WORKFLOW.md ' + total.workflow, 'slot-override'));
-    else if (total.override !== null) item.append(el('span', 'set here', 'slot-override'));
-    nodes.push(item);
-    for (const [column, v] of Object.entries(limits.by_state || {})) {
-      const col = el('span', null, 'slot-item');
-      col.append(el('span', column));
-      if (retryAllowed && v.effective !== null) {
-        col.append(slotButton('−', 'Lower the limit of ' + column, { max_concurrent_agents_by_state: { [column]: Math.min(v.effective - 1, limits.max) } }, v.effective <= 1));
-      }
-      col.append(el('b', v.effective === null ? '–' : v.effective));
-      if (retryAllowed) {
-        col.append(v.effective === null
-          ? slotButton('+', 'Set a limit of 1 for ' + column, { max_concurrent_agents_by_state: { [column]: 1 } }, false)
-          : slotButton('+', 'Raise the limit of ' + column, { max_concurrent_agents_by_state: { [column]: v.effective + 1 } }, v.effective >= limits.max));
-      }
-      if (v.override !== null) {
-        col.append(el('span', 'set here · WORKFLOW.md ' + (v.workflow === null ? 'none' : v.workflow), 'slot-override'));
-        if (retryAllowed) col.append(slotButton('×', 'Use the WORKFLOW.md limit of ' + column, { max_concurrent_agents_by_state: { [column]: null } }, false));
-      }
-      nodes.push(col);
-    }
-    for (const [role, r] of Object.entries(limits.reserved_slots_by_role || {})) {
-      const res = el('span', null, 'slot-item');
-      res.append(el('span', role + ' reserved'));
-      if (retryAllowed) res.append(slotButton('−', 'Reserve fewer slots for ' + role, { reserved_slots_by_role: { [role]: r.effective - 1 } }, r.effective <= 0));
-      res.append(el('b', r.effective));
-      if (retryAllowed) res.append(slotButton('+', 'Reserve one more slot for ' + role, { reserved_slots_by_role: { [role]: r.effective + 1 } }, r.effective >= limits.max));
-      if (r.override !== null) {
-        res.append(el('span', 'set here · WORKFLOW.md ' + r.workflow, 'slot-override'));
-        if (retryAllowed) res.append(slotButton('×', 'Use the WORKFLOW.md reservation of ' + role, { reserved_slots_by_role: { [role]: null } }, false));
-      }
-      nodes.push(res);
-    }
-    if (retryAllowed && limits.override_active) {
-      const reset = el('button', 'Reset to WORKFLOW.md (' + total.workflow + ')', 'btn slot-reset');
-      reset.type = 'button';
-      if (slotBusy) reset.disabled = true;
-      nodes.push(reset);
-    }
-    const reservedRoles = Object.entries(limits.reserved_slots_by_role || {});
-    let reservedSum = 0;
-    for (const [, r] of reservedRoles) reservedSum += r.effective;
-    const unreserved = reservedRoles.filter(([, r]) => r.effective === 0).map(([role]) => role);
-    if (!limits.reservation_problem && reservedSum > 0 && reservedSum >= total.effective && total.effective > 0 && unreserved.length > 0) {
-      nodes.push(el('span', 'every slot is reserved: ' + unreserved.join(', ') + ' start only with more slots', 'slot-note'));
-    }
-    if (total.effective === 0) {
-      nodes.push(el('span', 'limit 0: new dispatches paused' + (running > 0 ? ', ' + running + ' running keep working' : ''), 'slot-note'));
-    } else if (running > total.effective) {
-      const finish = running - total.effective + 1;
-      nodes.push(el('span', running + ' running, limit ' + total.effective + ': no new starts until ' + (finish === 1 ? 'one finishes' : finish + ' finish'), 'slot-note'));
-    }
-    if (!retryAllowed) nodes.push(el('span', RESTART_DISABLED, 'muted restart-off'));
-    if (slotError) nodes.push(el('span', slotError, 'slot-error'));
-    patchChildren(host, nodes);
-  }
-
-  document.addEventListener('click', (event) => {
-    const target = event.target instanceof Element ? event.target : null;
-    const step = target ? target.closest('button.slot-control') : null;
-    if (step && !step.disabled) changeSlots('PUT', JSON.parse(step.dataset.body));
-    const reset = target ? target.closest('button.slot-reset') : null;
-    if (reset && !reset.disabled) changeSlots('DELETE', null);
-  });
-
-  function sessionLimitBits(r) {
-    const limit = r.limit;
-    const bits = [];
-    if (limit.waiting) {
-      bits.push(el('span', 'waiting for reset'));
-      const resets = el('span', 'resets '); resets.append(el('b', fmtStamp(limit.resets_at)));
-      if (limit.window) resets.append(' (' + windowWords(limit.window) + ')');
-      bits.push(resets);
-      const at = el('span', 'retry at '); at.append(el('b', fmtStamp(r.due_at)), ' (in ' + fmtDuration(r.due_in_ms / 1000) + ')');
-      bits.push(at);
-    } else {
-      if (limit.hits <= limit.max_retries) {
-        const n = el('span', 'retry '); n.append(el('b', limit.hits), ' of ' + limit.max_retries);
-        bits.push(n);
-      } else bits.push(el('span', 'retrying with backoff'));
-      const due = el('span', 'next in '); due.append(el('b', fmtDuration(r.due_in_ms / 1000)));
-      bits.push(due);
-    }
-    return bits;
-  }
-
-  // Blocked issues (collapsed by default); the open state survives polls and reloads via localStorage.
-  const blockedDetails = $('blocked-section');
-  try { blockedDetails.open = localStorage.getItem('symphony.blockedOpen') === '1'; } catch {}
-  blockedDetails.addEventListener('toggle', () => {
-    try { localStorage.setItem('symphony.blockedOpen', blockedDetails.open ? '1' : '0'); } catch {}
-  });
-
-  function renderBlocked(state) {
-    const rows = state.blocked || [];
-    setText($('blocked-count'), pad2(rows.length));
-    setText($('blocked-meta'), state.board_fetched_at ? 'board as of ' + fmtClock(state.board_fetched_at) : '');
-    if (!rows.length) return emptyState('blocked', 'None', 'green', 'No blocked issues on the board.');
-    const list = el('ul', null, 'queue');
-    for (const r of rows) {
-      const li = el('li', null, 'qitem tone-red');
-      const row = el('div', null, 'qrow');
-      const id = link(r.issue_identifier, r.issue_url); id.classList.add('id');
-      row.append(id, badge(r.state || 'Blocked', 'red', false));
-      li.append(row);
-      if (r.title) li.append(el('div', r.title, 'msg'));
-      const meta = el('div', null, 'qmeta');
-      // The blocker list below already carries a "blocked by …" reason, with the blockers' states.
-      const hasBlockers = r.blocked_by && r.blocked_by.length;
-      if (!(hasBlockers && /^blocked by/.test(r.reason))) meta.append(el('span', r.reason));
-      if (r.tracked) meta.append(traceLink(r.issue_identifier));
-      if (meta.childNodes.length) li.append(meta);
-      if (hasBlockers) {
-        const blockers = el('div', null, 'qmeta');
-        blockers.append(el('span', 'blocked by'));
-        for (const b of r.blocked_by) blockers.append(el('b', (b.identifier || b.id || 'unknown') + (b.state ? ' (' + b.state + ')' : '')));
-        li.append(blockers);
-      }
-      list.append(li);
-    }
-    patchList('blocked', list);
-  }
 
   // ------------------------------------------------------------------ activity stream
 
@@ -1331,6 +885,308 @@ ${PIPELINE_JS}
     else if (!drawer.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
   });
 
+  // ------------------------------------------------------------------ tool calls (last 30 minutes)
+
+  let activityData = null;
+  async function loadToolActivity() {
+    try {
+      const res = await fetch('/api/v1/activity?minutes=30', { cache: 'no-store' });
+      if (res.ok) {
+        activityData = await res.json();
+        renderActivityStrip($('tool-activity-strip'), activityData);
+        renderActivityLegend($('tool-activity-legend'), actRoles(lastState || {}, activityData.events || []));
+      }
+    } catch {}
+  }
+
+  // ------------------------------------------------------------------ system cards
+  // Host metrics from /api/v1/system (own 10 s interval, independent of the 2 s state polling) plus agent slots and the
+  // tracker API budget from the last state. Slots and GitHub API have no server-side history: their sparklines come
+  // from a client-side ring buffer filled every 10 s, so they grow from the moment the page was opened.
+
+  let systemData = null;
+  let lastState = null;
+  const TREND_MAX = 360;
+  const trend = { slots: [], github: [] };
+
+  function pushTrend(key, value) {
+    trend[key].push(typeof value === 'number' && Number.isFinite(value) ? value : null);
+    while (trend[key].length > TREND_MAX) trend[key].shift();
+  }
+
+  function fmtGb(bytes) {
+    return (bytes / 1073741824).toFixed(1);
+  }
+
+  function pct(used, total) {
+    return typeof used === 'number' && typeof total === 'number' && total > 0 ? (used / total) * 100 : null;
+  }
+
+  const SYS_COLORS = ${JSON.stringify(SYSTEM_COLORS)};
+  const GB = 1073741824;
+
+  /** German thousands separator by hand (toLocaleString depends on the browser locale). */
+  function fmtDe(n) {
+    const digits = String(Math.round(n));
+    let out = '';
+    for (let i = 0; i < digits.length; i++) {
+      if (i > 0 && (digits.length - i) % 3 === 0 && digits[i - 1] !== '-') out += '.';
+      out += digits[i];
+    }
+    return out;
+  }
+
+  /** Process uptime: from one day "N d M h", else the usual duration. */
+  function sysUptime(sec) {
+    if (typeof sec !== 'number' || !Number.isFinite(sec)) return '—';
+    return sec >= 86400 ? Math.floor(sec / 86400) + ' d ' + Math.floor((sec % 86400) / 3600) + ' h' : fmtDuration(sec);
+  }
+
+  /**
+   * One card: label with traffic-light dot, value + unit, 5 px bar in the card colour (amber from 80 %, red from 95 %),
+   * sparkline and a line of text. A null value shows "—" and nothing else.
+   */
+  function systemCard(o) {
+    const { label, value, unit, pct: p, color, history, sub, title } = o;
+    const empty = value === null || value === undefined;
+    const tone = empty ? null : trafficTone(p);
+    const box = el('article', null, 'syscard gi');
+    if (title) box.setAttribute('title', title);
+    const head = el('div', null, 'syscard-head');
+    const dot = el('span', null, 'ui-dot syscard-dot');
+    dot.setAttribute('aria-hidden', 'true');
+    if (tone) dot.style.background = UI_TRAFFIC[tone];
+    head.append(el('span', label, 'syscard-label'), dot);
+    const val = el('div', null, 'syscard-value');
+    val.append(el('span', empty ? '—' : value, 'mono'));
+    if (!empty && unit) val.append(el('span', unit, 'syscard-unit'));
+    box.append(head, val);
+    if (empty) return box;
+    if (tone) box.append(bar(p, { height: 5, color: tone === 'green' ? color : UI_TRAFFIC[tone] }));
+    const spark = sparkline(history, color);
+    if (spark) box.append(spark);
+    if (sub) box.append(el('div', sub, 'syscard-sub'));
+    return box;
+  }
+
+  function diskHistory(hist, name) {
+    return hist.map((s) => {
+      const d = (Array.isArray(s.disks) ? s.disks : []).find((v) => v.name === name);
+      return d ? pct(d.used_bytes, d.total_bytes) : null;
+    });
+  }
+
+  function diskCard(label, d, hist, sub) {
+    const p = d ? pct(d.used_bytes, d.total_bytes) : null;
+    return systemCard({
+      label, value: p === null ? null : String(Math.round(d.used_bytes / GB)), unit: p === null ? null : '/ ' + Math.round(d.total_bytes / GB) + ' GB',
+      pct: p, color: SYS_COLORS.disk, history: d ? diskHistory(hist, d.name) : [], sub: sub || (p === null ? null : Math.round(p) + ' % belegt'),
+    });
+  }
+
+  /** Cards in fixed order: CPU, RAM, Disk · State, [Disk · Workspaces], Load, Agent-Slots, GitHub API, [GPU]. */
+  function systemCards(system, state, trend) {
+    const cur = system && system.current ? system.current : null;
+    const hist = system && Array.isArray(system.history) ? system.history : [];
+    const cards = [];
+    const h = state && state.health ? state.health : null;
+    const counts = state && state.counts ? state.counts : null;
+    const cores = system && typeof system.cpu_count === 'number' && system.cpu_count > 0 ? system.cpu_count : null;
+
+    const cpu = cur && typeof cur.cpu_percent === 'number' ? cur.cpu_percent : null;
+    cards.push(systemCard({
+      label: 'CPU', value: cpu === null ? null : String(Math.round(cpu)), unit: '%', pct: cpu, color: SYS_COLORS.cpu, history: hist.map((s) => s.cpu_percent),
+      sub: (cores ? cores + ' Kerne' : '') + (cores && counts ? ' · ' : '') + (counts ? counts.running + ' Agents aktiv' : ''),
+    }));
+
+    const mem = cur && cur.memory ? cur.memory : null;
+    const memPct = mem ? pct(mem.used_bytes, mem.total_bytes) : null;
+    cards.push(systemCard({
+      label: 'RAM', value: memPct === null ? null : fmtGb(mem.used_bytes), unit: memPct === null ? null : '/ ' + fmtGb(mem.total_bytes) + ' GB', pct: memPct,
+      color: SYS_COLORS.ram, history: hist.map((s) => (s.memory ? pct(s.memory.used_bytes, s.memory.total_bytes) : null)),
+      sub: memPct === null ? null : Math.round(memPct) + ' % belegt',
+    }));
+
+    const disks = cur && Array.isArray(cur.disks) ? cur.disks : [];
+    const stateDisk = disks.find((d) => d.name === 'state') || disks[0] || null;
+    const usage = system && system.usage ? system.usage : null;
+    const usageParts = [];
+    if (usage && typeof usage.workspaces_bytes === 'number') usageParts.push('Workspaces ' + Math.round(usage.workspaces_bytes / GB) + ' GB');
+    if (usage && typeof usage.transcripts_bytes === 'number') usageParts.push('Transkripte ' + Math.round(usage.transcripts_bytes / GB) + ' GB');
+    cards.push(diskCard('Disk · State', stateDisk, hist, usageParts.join(' · ')));
+    const other = disks.find((d) => d !== stateDisk && stateDisk && (d.device !== null && d.device !== undefined && stateDisk.device !== null && stateDisk.device !== undefined
+      ? d.device !== stateDisk.device : d.total_bytes !== stateDisk.total_bytes));
+    if (other) cards.push(diskCard('Disk · Workspaces', other, hist));
+
+    const load = cur && cur.load ? cur.load : null;
+    const loadPct = load && cores ? (load.one / cores) * 100 : null;
+    cards.push(systemCard({
+      label: 'Load', value: load ? load.one.toFixed(2) : null, unit: '1 min', pct: loadPct, color: SYS_COLORS.load, history: hist.map((s) => (s.load ? s.load.one : null)),
+      sub: load ? '5 min ' + load.five.toFixed(2) + ' · 15 min ' + load.fifteen.toFixed(2) : null,
+    }));
+
+    const max = h && typeof h.max_concurrent_agents === 'number' ? h.max_concurrent_agents : null;
+    const slotsOk = counts && max !== null;
+    cards.push(systemCard({
+      label: 'Agent-Slots', value: slotsOk ? String(counts.running) : null, unit: '/ ' + max, pct: slotsOk && max > 0 ? (counts.running / max) * 100 : null,
+      color: SYS_COLORS.slots, history: trend.slots,
+      sub: slotsOk ? Math.max(0, max - counts.running) + ' frei · ' + (counts.queued ?? 0) + ' in der Queue' : null,
+    }));
+
+    const api = h && h.tracker_api ? h.tracker_api : null;
+    cards.push(systemCard({
+      label: 'GitHub API', value: api ? fmtDe(api.remaining) : null, unit: api ? '/ ' + fmtDe(api.limit) : null, pct: api && api.limit > 0 ? (1 - api.remaining / api.limit) * 100 : null,
+      color: SYS_COLORS.github, history: trend.github,
+      sub: h ? (h.last_tick_at ? 'Poll vor ' + fmtDuration((Date.now() - Date.parse(h.last_tick_at)) / 1000) + ' · ' + (h.last_tracker_error ? 'Fehler' : 'ok') : 'noch kein Poll') : null,
+      title: api && api.reset_at ? 'Restbudget, zurückgesetzt um ' + fmtTime(api.reset_at) : null,
+    }));
+
+    if (system && system.gpu) {
+      const g = system.gpu;
+      const util = typeof g.utilization_percent === 'number' ? g.utilization_percent : null;
+      const parts = [];
+      if (typeof g.memory_used_mib === 'number' && typeof g.memory_total_mib === 'number') parts.push(g.memory_used_mib + ' / ' + g.memory_total_mib + ' MiB');
+      if (typeof g.temperature_c === 'number') parts.push(g.temperature_c + ' °C');
+      cards.push(systemCard({
+        label: 'GPU', value: util === null ? null : String(Math.round(util)), unit: '%', pct: util, color: SYS_COLORS.cpu,
+        history: hist.map((s) => (s.gpu ? s.gpu.utilization_percent : null)), sub: parts.join(' · ') || null,
+      }));
+    }
+    return cards;
+  }
+
+  function renderSystemHost() {
+    const host = systemData && systemData.host ? systemData.host : null;
+    const node = $('system-host');
+    if (node) node.textContent = host ? 'Host ' + host.hostname + ' · Container ' + (host.container || '—') + ' · seit ' + sysUptime(host.uptime_seconds) : '';
+  }
+
+  function renderSystemCards() {
+    renderSystemHost();
+    patchChildren($('system-cards'), systemCards(systemData, lastState, trend));
+  }
+
+  async function loadSystem() {
+    try {
+      const res = await fetch('/api/v1/system', { cache: 'no-store' });
+      systemData = res.ok ? await res.json() : null;
+    } catch {
+      systemData = null;
+    }
+    const h = lastState && lastState.health;
+    const api = h && h.tracker_api;
+    pushTrend('slots', lastState && h && h.max_concurrent_agents > 0 ? (lastState.counts.running / h.max_concurrent_agents) * 100 : null);
+    pushTrend('github', api && api.limit > 0 ? (1 - api.remaining / api.limit) * 100 : null);
+    renderSystemCards();
+  }
+
+  // ------------------------------------------------------------------ budget
+  // The subscription windows of GET /api/v1/budget (loaded by the shell, see onBudget below) plus the running
+  // sessions above 70 % context from the last state.
+
+  let budgetData = null;
+  let budgetAnswer = null;
+  const BUDGET_NO_DATA = 'Noch kein Verbrauch heute';
+  // Open brain clashes and the candidate count for the alerts; null without a brain (404 brain_disabled) or on any error.
+  let brainAnswer = null;
+  async function loadBrainAlerts() {
+    try {
+      const [clashes, vitals] = await Promise.all([
+        fetch('/api/v1/brain/clashes?status=open', { cache: 'no-store' }),
+        fetch('/api/v1/brain/vitals', { cache: 'no-store' }),
+      ]);
+      if (!clashes.ok || !vitals.ok) throw new Error('no brain');
+      const c = await clashes.json();
+      const v = await vitals.json();
+      brainAnswer = { clashes: Array.isArray(c.clashes) ? c.clashes : [], candidates: Number(v.candidates) };
+    } catch {
+      brainAnswer = null;
+    }
+    if (lastState) renderAlerts(alerts(lastState, budgetAnswer, brainAnswer), $('alerts-list'), $('alerts-count'));
+  }
+
+  function budgetWindowText(w, empty) {
+    if (empty) return BUDGET_NO_DATA;
+    const reset = w.resets_at ? budgetHm(w.resets_at) : 'unbekannt';
+    const burn = w.burn_rate_per_min > 0 ? 'Burn ' + budgetTokens(w.burn_rate_per_min * 60) + ' Tokens/h' : null;
+    if (w.forecast && w.forecast.eta) return (burn ? burn + ' · ' : '') + 'Limit ca. ' + budgetHm(w.forecast.eta) + ' · Reset ' + reset;
+    if (burn && w.forecast && w.resets_at) return 'Reset ' + budgetDayHm(w.resets_at) + ' · reicht bei aktuellem Tempo';
+    if (burn) return burn + ' · Reset ' + reset;
+    return 'Reset ' + reset;
+  }
+
+  function budgetWindow(w, key, name, empty) {
+    const box = el('div', null, 'budget-win');
+    box.setAttribute('data-window', key);
+    const pct = empty ? 0 : budgetPercent(w);
+    const base = key === 'five_hour' ? UI_CHIP_TONES.amber.c : UI_CHIP_TONES.sky.c;
+    const color = pct !== null && pct >= 85 ? UI_TRAFFIC.red : base;
+    const head = el('div', null, 'budget-win-head');
+    const value = el('span', pct === null ? '—' : Math.round(pct) + ' %', 'budget-win-pct mono');
+    value.style.color = color;
+    head.append(el('span', name, 'budget-win-name'), value);
+    const hatch = !empty && pct !== null && w.forecast && w.forecast.eta;
+    const barNode = bar(pct === null ? 0 : pct, { height: 10, color, forecastPct: hatch ? 100 - pct : undefined });
+    barNode.setAttribute('aria-label', name);
+    if (pct === null) {
+      barNode.removeAttribute('aria-valuenow');
+      barNode.setAttribute('aria-valuetext', fmtCompact(w.used_tokens) + ' Tokens, Grenze unbekannt');
+    }
+    box.append(head, barNode, el('p', budgetWindowText(w, empty), 'budget-win-text'));
+    return box;
+  }
+
+  /** Tokens per role of the 5 h window as a four-column grid; null without consumption. */
+  function budgetRoles(byRole) {
+    const entries = Object.entries(byRole || {}).filter(([, n]) => typeof n === 'number' && n > 0).sort((a, b) => b[1] - a[1]);
+    if (!entries.length) return null;
+    const total = entries.reduce((sum, [, n]) => sum + n, 0);
+    const wrap = el('div', null, 'budget-roles');
+    wrap.append(el('span', 'Tokens je Rolle', 'lbl'));
+    const grid = el('div', null, 'budget-role-grid');
+    for (const [role, tokens] of entries) {
+      const name = uiOwn(UI_ROLE_NAMES, role) || role.charAt(0).toUpperCase() + role.slice(1);
+      const color = uiOwn(UI_ROLE_COLORS, role) || UI_ROLE_COLORS.symphony;
+      const label = el('span', null, 'budget-role-name');
+      label.append(uiDot(color), el('span', name));
+      grid.append(label, bar((tokens / total) * 100, { height: 6, color }), el('span', Math.round((tokens / total) * 100) + ' %', 'budget-role-pct mono'), el('span', budgetTokens(tokens), 'budget-role-tok mono'));
+    }
+    wrap.append(grid);
+    return wrap;
+  }
+
+  /** One amber card per running session from 70 % context, fullest first. */
+  function budgetHot(state) {
+    const hot = ((state && state.running) || []).filter((r) => r.context && typeof r.context.percent === 'number' && r.context.percent >= 70)
+      .sort((a, b) => b.context.percent - a.context.percent);
+    return hot.map((r) => {
+      const card = el('div', null, 'gi budget-hot');
+      const id = String(r.issue_identifier || '');
+      const role = uiOwn(UI_ROLE_NAMES, r.role) || (r.role ? String(r.role).charAt(0).toUpperCase() + String(r.role).slice(1) : 'Session');
+      const text = el('span');
+      text.append(link('#' + id.slice(id.lastIndexOf('#') + 1), '/issue?id=' + encodeURIComponent(id)),
+        el('span', ' ' + role + ' bei ' + Math.round(r.context.percent) + ' % Context (' + Math.round((r.context.tokens || 0) / 1000) + 'k / ' + Math.round((r.context.window || 0) / 1000) + 'k) – Auto-Compact naht'));
+      card.append(el('span', null, 'dot tone-amber'), text);
+      return card;
+    });
+  }
+
+  function budgetSection(report, state) {
+    const empty = !report || (report.five_hour.used_tokens === 0 && report.seven_day.used_tokens === 0);
+    const nodes = [
+      budgetWindow(report && report.five_hour, 'five_hour', '5-h-Fenster', empty),
+      budgetWindow(report && report.seven_day, 'seven_day', 'Woche', empty),
+    ];
+    const roles = empty ? null : budgetRoles(report.five_hour.by_role);
+    if (roles) nodes.push(roles);
+    nodes.push(...budgetHot(state));
+    return nodes;
+  }
+
+  function renderBudget() {
+    patchChildren($('budget-body'), budgetSection(budgetData, lastState));
+  }
+
   // ------------------------------------------------------------------ polling
 
   let historyTimer = null;
@@ -1346,29 +1202,22 @@ ${PIPELINE_JS}
   }
 
   function render(state) {
+    lastState = state;
+    renderSystemCards();
+    renderBudget();
     const h = state.health;
-    const problems = [];
-    if (h.workflow_error) problems.push('WORKFLOW.md: ' + h.workflow_error.message);
-    for (const e of h.dispatch_errors) if (!h.workflow_error || !e.startsWith('WORKFLOW.md')) problems.push(e);
-    if (h.last_tracker_error) problems.push('Tracker: ' + h.last_tracker_error.message);
-    if (h.pricing_error) problems.push('model-costs.yml: ' + h.pricing_error);
-    if (state.limits && state.limits.reservation_problem) problems.push('Agent slots: ' + state.limits.reservation_problem);
-    if (state.limits) for (const p of state.limits.slot_problems || []) problems.push('Agent slots: ' + p);
-    $('problems').hidden = problems.length === 0;
-    $('problem-list').replaceChildren(...problems.map((p) => el('li', p)));
-    renderHeader(h, problems, true);
+    const list = alerts(state, budgetAnswer, brainAnswer);
+    renderAlerts(list, $('alerts-list'), $('alerts-count'));
+    setLive(true);
+    renderHead(state, Date.now(), true);
+    renderActivityLegend($('tool-activity-legend'), actRoles(state, activityData ? activityData.events : []));
+    brainSetProfile(state);
     renderRepositories(h);
     const gate = h.dispatch_gate;
     $('dispatch-gate').hidden = !gate;
     setText($('dispatch-gate-text'), gate
       ? 'Dispatch paused until ' + fmtStamp(gate.until) + ' · session limit (' + gate.window + ') · started by ' + gate.issue_identifier
       : '');
-    const holds = state.model_holds || [];
-    $('model-holds').hidden = holds.length === 0;
-    $('model-hold-list').replaceChildren(...holds.map((hold) => el('li', hold.source === 'operator'
-      ? 'Model ' + hold.model + ' paused by the operator since ' + fmtStamp(hold.since) + ' · its issues wait, none runs on another model'
-      : 'Model ' + hold.model + ' on hold until ' + fmtStamp(hold.until) + (hold.issue_identifier ? ' · hit by ' + hold.issue_identifier : '') +
-        (hold.text ? ' · ' + hold.text : ''))));
 
     const t = state.agent_totals;
     const running = state.counts.running;
@@ -1388,16 +1237,17 @@ ${PIPELINE_JS}
     ]);
 
     retryAllowed = !state.controls || state.controls.retry !== false;
-    renderModelControls(state);
-    renderSlotSettings(state);
+    setText($('teams-count'), pad2(renderTeams($('teams'), state, Date.now())));
     renderIssues(state);
-    renderBlocked(state);
     diffSnapshots(state);
     fetchDetails(state);
     renderActivity();
   }
 
+  let loading = false, reloadAgain = false;
   async function load() {
+    if (loading) { reloadAgain = true; return; }
+    loading = true;
     const progress = $('progress');
     progress.classList.remove('tick');
     void progress.offsetWidth;
@@ -1406,43 +1256,45 @@ ${PIPELINE_JS}
       const res = await fetch('/api/v1/state', { cache: 'no-store' });
       render(await res.json());
     } catch (error) {
-      renderHeader(null, [], false);
-      setText($('sys-lastpoll'), 'unreachable');
-      $('problems').hidden = false;
-      $('problem-list').replaceChildren(el('li', 'orchestrator unreachable: ' + error.message));
+      lastState = null;
+      renderSystemCards();
+      renderBudget();
+      setLive(false);
+      renderHead(null, Date.now(), false);
+      renderAlerts([{ kind: 'attention', at: new Date().toISOString(), title: 'Orchestrator nicht erreichbar', text: error.message, href: '/stats' }], $('alerts-list'), $('alerts-count'));
     }
+    loading = false;
+    if (reloadAgain) { reloadAgain = false; load(); }
   }
 
-  const refresh = $('refresh');
-  const refreshLabel = $('refresh-label');
-  refresh.addEventListener('click', async () => {
-    if (refresh.classList.contains('is-busy')) return;
-    refresh.classList.remove('is-done', 'is-failed');
-    refresh.classList.add('is-busy');
-    refresh.setAttribute('aria-busy', 'true');
-    refreshLabel.textContent = 'Polling…';
-    let outcome = 'failed';
-    try {
-      const res = await fetch('/api/v1/refresh', { method: 'POST' });
-      const body = await res.json();
-      outcome = res.ok ? (body.coalesced ? 'Already queued' : 'Poll queued') : 'failed';
-    } catch {}
-    refresh.classList.remove('is-busy');
-    refresh.removeAttribute('aria-busy');
-    refresh.classList.add(outcome === 'failed' ? 'is-failed' : 'is-done');
-    refreshLabel.textContent = outcome === 'failed' ? 'Poll failed' : outcome;
-    $('announce').textContent = refreshLabel.textContent;
-    setTimeout(load, 500);
-    setTimeout(() => { refresh.classList.remove('is-done', 'is-failed'); refreshLabel.textContent = 'Poll now'; }, 1800);
-  });
+  shellHooks.afterPoll = load;
 
   renderActivity();
+  onBudget((report, raw) => {
+    budgetData = report;
+    budgetAnswer = raw;
+    renderBudget();
+    if (lastState) renderAlerts(alerts(lastState, budgetAnswer, brainAnswer), $('alerts-list'), $('alerts-count'));
+  });
   load();
   loadHistory();
-  setInterval(load, 2000);
+  loadToolActivity();
+  brainBind($('brain-q'));
+  loadBrain();
+  loadSystem();
+  loadBrainAlerts();
+  live(load, pollEvery(load, 2000));
+  setInterval(loadSystem, 10000);
+  setInterval(loadBrainAlerts, 10000);
   setInterval(loadHistory, 30000);
+  setInterval(loadToolActivity, 30000);
+  setInterval(loadBrain, 30000);
+  setInterval(() => {
+    tickTeams(Date.now());
+    if (lastState) renderHead(lastState, Date.now(), true);
+  }, 1000);
+  // Tests load the page in a fake DOM and render a fixture through window.__render.
+  if (window.__SYMPHONY_TEST__) window.__render = render;
 })();
-</script>
-</body>
-</html>
-`;
+`,
+});

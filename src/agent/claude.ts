@@ -19,18 +19,30 @@ import {
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import { addUsage, emptyUsage, type ModelTokenUsage } from '../costs/pricing.ts';
-import type { Issue, ToolResult } from '../tracker/types.ts';
+import type { AgentToolSpec, Issue, ToolResult } from '../tracker/types.ts';
 import { AsyncQueue, settledWithin, sleep, withTimeout } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { oneLine, tail, truncate } from '../util/text.ts';
 import { isWholeLimitMessage, limitScopeOf, parseLimitMessage } from './rate-limit.ts';
 import { forgetProcessGroup, killProcessGroup, processGroupSpawner } from './spawn.ts';
-import type { AgentEvent, AgentRunner, AgentSession, SessionLimitInfo, StartSessionParams, TokenUsage, TurnResult } from './types.ts';
+import { contextWindowSuffix } from './model-name.ts';
+import type {
+  AgentEvent,
+  AgentRunner,
+  ContextSnapshot,
+  AgentSession,
+  SessionLimitInfo,
+  StartSessionParams,
+  SubagentRun,
+  TokenUsage,
+  TurnResult,
+} from './types.ts';
 
 export type QueryFn = (params: { prompt: string | AsyncIterable<SDKUserMessage>; options?: Options }) => Query;
 
 /** MCP server name for provider-native tools; the agent sees them as mcp__tracker__<name>. */
 export const TRACKER_SERVER = 'tracker';
+export const BRAIN_SERVER = 'brain';
 const ASK_USER_TOOL = 'AskUserQuestion';
 const STOP_GRACE_MS = 10_000;
 const STDERR_TAIL = 4_000;
@@ -55,6 +67,13 @@ const AGENT_TOOLS = ['Agent', 'Task'];
 function subagentOf(input: unknown): string {
   const value = typeof input === 'object' && input !== null ? (input as Record<string, unknown>).subagent_type : undefined;
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : 'general-purpose';
+}
+
+/** The `description` of an Agent tool call, else the start of its `prompt`, on one line. */
+function subagentDescriptionOf(input: unknown): string {
+  const record = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {};
+  const text = [record.description, record.prompt].find((value) => typeof value === 'string' && value.trim() !== '');
+  return typeof text === 'string' ? truncate(oneLine(text), 200) : '';
 }
 
 const NO_HUMAN_ANSWER =
@@ -153,7 +172,7 @@ function toCallToolResult(result: ToolResult): { content: Array<{ type: 'text'; 
   return { content: [{ type: 'text', text: JSON.stringify(payload ?? null, null, 2) }], isError: !result.ok };
 }
 
-function symphonyContext(issue: Issue, toolNames: string[], sections: string[], extra: string | null): string {
+function symphonyContext(issue: Issue, toolNames: string[], brainNames: string[], sections: string[], extra: string | null): string {
   const lines = [
     '# Symphony',
     `You are running unattended under the Symphony orchestrator, working on ${issue.identifier} in a dedicated ` +
@@ -164,6 +183,13 @@ function symphonyContext(issue: Issue, toolNames: string[], sections: string[], 
   ];
   if (toolNames.length > 0) {
     lines.push(`Read and update the issue on the tracker with these tools: ${toolNames.join(', ')}.`);
+  }
+  if (brainNames.length > 0) {
+    lines.push(
+      brainNames.some((name) => name.endsWith('brain_write'))
+        ? `Search, read and write the knowledge vault (approved notes first; new notes start as candidate) with these tools: ${brainNames.join(', ')}.`
+        : `Search and read the knowledge vault (approved notes first; candidate notes are unreviewed) with these tools: ${brainNames.join(', ')}.`,
+    );
   }
   for (const section of sections) lines.push('', section);
   if (extra !== null) lines.push('', extra);
@@ -197,6 +223,12 @@ class ClaudeSession implements AgentSession {
   #resultUsage: Record<string, ModelTokenUsage> = {};
   /** Model calls since the last turn result, by message id (the blocks of one response share the id and usage). */
   #turnCalls = new Map<string, { model: string; usage: ModelTokenUsage }>();
+  /** Context fill level as of the latest main-conversation call; null before the first call or compaction. */
+  #context: ContextSnapshot | null = null;
+  /** Model of the session as Claude Code reports it at init (keeps a "[1m]" suffix the API ids lack). */
+  #sessionModel: string | null = null;
+  /** The subagents still running, by the id of the tool call that started them, with their model calls by message id. */
+  #subagents = new Map<string, { run: SubagentRun; calls: Map<string, ModelTokenUsage> }>();
   /** Descriptions of the live background tasks, as the latest `background_tasks_changed` lists them. */
   #backgroundTasks: string[] = [];
 
@@ -275,6 +307,7 @@ class ClaudeSession implements AgentSession {
       if (this.#pending !== null) {
         this.#settle({ ok: false, turnId: this.#pending.turnId, code: 'turn_cancelled', message: 'session stopped' });
       }
+      this.#closeSubagents();
       this.#input.close();
       if (this.#reader !== null && !(await settledWithin(this.#reader, STOP_GRACE_MS))) {
         this.#query?.close();
@@ -292,9 +325,13 @@ class ClaudeSession implements AgentSession {
   #options(): Options {
     const { config, issue, tools, env, cwd, extensions, policy } = this.#params;
     const toolNames = tools.map((spec) => `mcp__${TRACKER_SERVER}__${spec.name}`);
+    const brainTools = this.#params.brainTools ?? [];
+    const brainNames = brainTools.map((spec) => `mcp__${BRAIN_SERVER}__${spec.name}`);
     const extensionServers = Object.entries(extensions?.mcpServers ?? {});
-    if (extensionServers.some(([name]) => name === TRACKER_SERVER)) {
-      throw new SymphonyError('invalid_session_extensions', `MCP server name "${TRACKER_SERVER}" is reserved`);
+    for (const reserved of [TRACKER_SERVER, BRAIN_SERVER]) {
+      if (extensionServers.some(([name]) => name === reserved)) {
+        throw new SymphonyError('invalid_session_extensions', `MCP server name "${reserved}" is reserved`);
+      }
     }
     const extensionAllowed: string[] = [];
     const extensionDenied: string[] = [];
@@ -315,7 +352,7 @@ class ClaudeSession implements AgentSession {
       title: truncate(`${issue.identifier}: ${issue.title}`, 200),
       permissionMode: config.permissionMode,
       canUseTool: this.#canUseTool,
-      allowedTools: [...new Set([...config.allowedTools, ...toolNames, ...extensionAllowed])],
+      allowedTools: [...new Set([...config.allowedTools, ...toolNames, ...brainNames, ...extensionAllowed])],
       disallowedTools: [
         ...new Set([...config.disallowedTools, ASK_USER_TOOL, ...extensionDenied, ...readOnlyDenied, ...deniedAgents.map((name) => `Agent(${name})`)]),
       ],
@@ -324,7 +361,7 @@ class ClaudeSession implements AgentSession {
       systemPrompt: {
         type: 'preset',
         preset: 'claude_code',
-        append: symphonyContext(issue, toolNames, extensions?.contextSections ?? [], config.appendSystemPrompt),
+        append: symphonyContext(issue, toolNames, brainNames, extensions?.contextSections ?? [], config.appendSystemPrompt),
       },
       persistSession: config.persistSession,
       spawnClaudeCodeProcess: processGroupSpawner({
@@ -352,18 +389,20 @@ class ClaudeSession implements AgentSession {
     for (const [name, server] of Object.entries(extensions?.mcpServers ?? {})) {
       mcpServers[name] = { type: 'stdio', command: server.command, args: server.args, ...(server.env ? { env: server.env } : {}) };
     }
-    if (tools.length > 0) mcpServers[TRACKER_SERVER] = this.#trackerServer();
+    if (tools.length > 0) mcpServers[TRACKER_SERVER] = this.#sdkServer(TRACKER_SERVER, tools, 'tracker_tool');
+    if (brainTools.length > 0) mcpServers[BRAIN_SERVER] = this.#sdkServer(BRAIN_SERVER, brainTools, 'brain_tool');
     if (Object.keys(mcpServers).length > 0) options.mcpServers = mcpServers;
     return options;
   }
 
-  #trackerServer() {
-    const { tools, toolContext, toolTimeoutMs, config } = this.#params;
+  /** In-process MCP server for a set of tool specs; `event` is the agent event reported per call. */
+  #sdkServer(name: string, tools: AgentToolSpec[], event: string) {
+    const { toolContext, toolTimeoutMs, config } = this.#params;
     // Claude Code bounds a tool call by the server's `timeout`, else MCP_TOOL_TIMEOUT, else ~28 hours
     // (docs/agent-claude.md#timeouts). An explicit MCP_TOOL_TIMEOUT in claude.env wins over Symphony's value.
     const timeout = toolTimeoutMs !== undefined && config.env.MCP_TOOL_TIMEOUT === undefined ? toolTimeoutMs : undefined;
     return createSdkMcpServer({
-      name: TRACKER_SERVER,
+      name,
       version: '0.1.0',
       alwaysLoad: true,
       ...(timeout !== undefined ? { timeout } : {}),
@@ -376,7 +415,7 @@ class ClaudeSession implements AgentSession {
           } catch (error) {
             result = { ok: false, error: { category: 'tool_error', message: errorMessage(error) } };
           }
-          this.#emit('tracker_tool', {
+          this.#emit(event, {
             message: result.ok ? `${spec.name} ok` : `${spec.name} failed: ${truncate(result.error.message, 200)}`,
             detail: { tool: spec.name, ok: result.ok, mutates: spec.mutates, duration_ms: Date.now() - started },
           });
@@ -436,6 +475,7 @@ class ClaudeSession implements AgentSession {
 
   #finish(error: unknown): void {
     this.#ended = true;
+    this.#closeSubagents();
     const cancelled = this.#abort.signal.aborted;
     const stderr = this.#stderr.trim() === '' ? '' : ` (stderr: ${tail(oneLine(this.#stderr), 500)})`;
     if (cancelled) this.#endReason = this.#cancelReason ?? 'cancelled';
@@ -463,6 +503,8 @@ class ClaudeSession implements AgentSession {
           });
         } else if (message.subtype === 'permission_denied') {
           this.#emit('permission_denied', { message: `${message.tool_name} denied: ${truncate(oneLine(message.message), 200)}` });
+        } else if (message.subtype === 'compact_boundary') {
+          this.#onCompact(message);
         } else {
           this.#emit('notification', { message: `system/${message.subtype}` });
         }
@@ -481,6 +523,7 @@ class ClaudeSession implements AgentSession {
         if (message.error !== undefined) this.#emit('agent_error', { message: `authentication: ${message.error}` });
         return;
       case 'user':
+        this.#endSubagents(message);
         this.#emit('tool_result', {});
         return;
       default:
@@ -491,6 +534,7 @@ class ClaudeSession implements AgentSession {
   #onInit(message: SDKSystemMessage): void {
     if (this.#initSeen) return;
     this.#initSeen = true;
+    if (typeof message.model === 'string') this.#sessionModel = message.model;
     const requested = this.#params.config.permissionMode;
     if (message.permissionMode !== requested) {
       this.#params.logger.warn('Claude Code is not using the requested permission mode', {
@@ -504,6 +548,10 @@ class ClaudeSession implements AgentSession {
     const tracker = message.mcp_servers.find((server) => server.name === TRACKER_SERVER);
     if (this.#params.tools.length > 0 && tracker?.status !== 'connected') {
       this.#params.logger.warn('tracker tools are not connected in the agent session', { status: tracker?.status ?? 'missing' });
+    }
+    const brain = message.mcp_servers.find((server) => server.name === BRAIN_SERVER);
+    if ((this.#params.brainTools?.length ?? 0) > 0 && brain?.status !== 'connected') {
+      this.#params.logger.warn('brain tools are not connected in the agent session', { status: brain?.status ?? 'missing' });
     }
     for (const failure of message.plugin_errors ?? []) {
       this.#params.logger.warn('a Claude Code plugin did not load', { plugin: failure.plugin, type: failure.type, error: failure.message });
@@ -613,6 +661,7 @@ class ClaudeSession implements AgentSession {
       return;
     }
     this.#trackCall(message);
+    this.#addSubagentUsage(message);
     // One event per tool call (a message may call several tools in parallel); a text event only without tool calls.
     let calls = 0;
     for (const block of message.message.content) {
@@ -624,6 +673,7 @@ class ClaudeSession implements AgentSession {
         message: summarizeToolInput(block.name, block.input),
         detail: { tool: block.name, ...(skill !== null ? { skill } : {}), ...(agent !== null ? { agent } : {}) },
       });
+      if (agent !== null && typeof block.id === 'string') this.#startSubagent(block.id, agent, block.input);
     }
     if (calls > 0) return;
     for (const block of message.message.content) {
@@ -653,7 +703,121 @@ class ClaudeSession implements AgentSession {
         cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
       },
     });
-    this.#emit('model_call', { modelUsage: this.#liveUsage() });
+    // Subagent calls run in their own context; only the main conversation fills the session's window.
+    if (message.parent_tool_use_id == null) {
+      const tokens = (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+      const window =
+        contextWindowSuffix(this.#sessionModel ?? '') ??
+        contextWindowSuffix(this.#params.config.model ?? '') ??
+        this.#params.contextWindow?.(body.model) ??
+        null;
+      const percent = window === null ? null : Math.round((tokens / window) * 1000) / 10;
+      const previous = this.#context;
+      this.#context = {
+        model: body.model,
+        window,
+        tokens,
+        percent,
+        peakPercent: percent === null ? (previous?.peakPercent ?? null) : Math.max(previous?.peakPercent ?? 0, percent),
+        compacts: previous?.compacts ?? 0,
+        preTokens: previous?.preTokens ?? null,
+      };
+    }
+    this.#emit('model_call', { modelUsage: this.#liveUsage(), ...(this.#context ? { context: { ...this.#context } } : {}) });
+  }
+
+  /** An automatic or manual compaction: counts it and remembers the size before it. */
+  #onCompact(message: SDKMessage & { subtype: 'compact_boundary' }): void {
+    const metadata: { trigger?: unknown; pre_tokens?: unknown } = (message as { compact_metadata?: object }).compact_metadata ?? {};
+    const preTokens = typeof metadata.pre_tokens === 'number' ? metadata.pre_tokens : null;
+    const trigger = typeof metadata.trigger === 'string' ? metadata.trigger : 'unknown';
+    const previous = this.#context;
+    this.#context = {
+      model: previous?.model ?? this.#sessionModel ?? this.#params.config.model ?? 'unknown',
+      window: previous?.window ?? null,
+      tokens: previous?.tokens ?? 0,
+      percent: previous?.percent ?? null,
+      peakPercent: previous?.peakPercent ?? null,
+      compacts: (previous?.compacts ?? 0) + 1,
+      preTokens,
+    };
+    this.#emit('context_compacted', {
+      message: `context compacted (${trigger}, ${preTokens ?? '?'} tokens before)`,
+      context: { ...this.#context },
+      detail: { trigger, pre_tokens: preTokens },
+    });
+  }
+
+  #startSubagent(toolUseId: string, subagentType: string, input: unknown): void {
+    const run: SubagentRun = {
+      toolUseId,
+      subagentType,
+      description: subagentDescriptionOf(input),
+      startedAt: new Date(),
+      endedAt: null,
+      status: 'running',
+      tokens: emptyUsage(),
+    };
+    this.#subagents.set(toolUseId, { run, calls: new Map() });
+    this.#emitSubagent(run, `subagent ${subagentType} started${run.description === '' ? '' : `: ${run.description}`}`, {
+      tool_use_id: toolUseId,
+      subagent_type: subagentType,
+      status: 'running',
+    });
+  }
+
+  /** Adds the model call of a message from inside a subagent to that subagent; the last state per message id counts. */
+  #addSubagentUsage(message: SDKAssistantMessage): void {
+    const parent = message.parent_tool_use_id;
+    const entry = typeof parent === 'string' ? this.#subagents.get(parent) : undefined;
+    const usage = message.message.usage;
+    if (entry === undefined || usage === undefined || usage === null) return;
+    entry.calls.set(message.message.id ?? `${parent}:${entry.calls.size}`, {
+      inputTokens: usage.input_tokens ?? 0,
+      outputTokens: usage.output_tokens ?? 0,
+      cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+      cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
+    });
+    entry.run.tokens = emptyUsage();
+    for (const call of entry.calls.values()) addUsage(entry.run.tokens, call);
+    this.#emitSubagent(entry.run);
+  }
+
+  /** Ends the subagents whose Agent tool call a `tool_result` block answers; results of their own tools are ignored. */
+  #endSubagents(message: SDKUserMessage): void {
+    const content: unknown = message.message.content;
+    if (!Array.isArray(content)) return;
+    for (const block of content as Array<Record<string, unknown>>) {
+      if (block?.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue;
+      const entry = this.#subagents.get(block.tool_use_id);
+      if (entry !== undefined) this.#endSubagent(entry.run, block.is_error === true ? 'error' : 'ok');
+    }
+  }
+
+  /** A session that ends leaves no subagent running. */
+  #closeSubagents(): void {
+    for (const { run } of [...this.#subagents.values()]) this.#endSubagent(run, 'error');
+  }
+
+  #endSubagent(run: SubagentRun, status: 'ok' | 'error'): void {
+    run.endedAt = new Date();
+    run.status = status;
+    this.#subagents.delete(run.toolUseId);
+    this.#emitSubagent(run, `subagent ${run.subagentType} ${status}`, {
+      tool_use_id: run.toolUseId,
+      subagent_type: run.subagentType,
+      status,
+      duration_ms: run.endedAt.getTime() - run.startedAt.getTime(),
+    });
+  }
+
+  /** Reports a copy of the run; without a message the update (tokens) stays out of the timeline and the trace. */
+  #emitSubagent(run: SubagentRun, message?: string, detail?: Record<string, unknown>): void {
+    this.#emit('subagent', {
+      subagent: { ...run, tokens: { ...run.tokens } },
+      ...(message !== undefined ? { message } : {}),
+      ...(detail !== undefined ? { detail } : {}),
+    });
   }
 
   /** Session totals per model so far: the last turn result plus the model calls since. */

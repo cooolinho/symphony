@@ -7,6 +7,7 @@ import { ClaudeAgentRunner, type QueryFn } from '../src/agent/claude.ts';
 import { readTranscript } from '../src/agent/transcript.ts';
 import { boostToolPolicy } from '../src/laravel/boost.ts';
 import type { AgentEvent, SessionExtensions, SessionPolicy, StartSessionParams } from '../src/agent/types.ts';
+import { brainToolsFor } from '../src/brain/tools.ts';
 import { Logger } from '../src/log.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 import type { AgentToolSpec } from '../src/tracker/types.ts';
@@ -106,6 +107,8 @@ function params(
     toolTimeoutMs?: number;
     transcriptPath?: string;
     deniedAgents?: string[];
+    brainTools?: AgentToolSpec[];
+    contextWindow?: (model: string) => number | null;
   } = {},
 ): StartSessionParams {
   const config = resolveConfig({ claude: { model: 'opus', ...overrides.claude } }, { workflowPath: '/w/WORKFLOW.md', env: {}, trackerDefaults }).claude;
@@ -124,7 +127,9 @@ function params(
     ...(overrides.extensions ? { extensions: overrides.extensions } : {}),
     ...(overrides.policy ? { policy: overrides.policy } : {}),
     ...(overrides.toolTimeoutMs !== undefined ? { toolTimeoutMs: overrides.toolTimeoutMs } : {}),
+    ...(overrides.brainTools ? { brainTools: overrides.brainTools } : {}),
     ...(overrides.deniedAgents ? { deniedAgents: overrides.deniedAgents } : {}),
+    ...(overrides.contextWindow ? { contextWindow: overrides.contextWindow } : {}),
   };
 }
 
@@ -143,6 +148,43 @@ function serverExtensions(server: Partial<SessionExtensions['mcpServers'][string
 }
 
 describe('claude agent runner', () => {
+  it('registers the brain server only with brain tools', async () => {
+    const dir = tempDir();
+    const on = await sessionOptions({ brainTools: brainToolsFor({ enabled: true, path: dir }, 'write', Logger.silent()) });
+    assert.ok(on.mcpServers?.brain !== undefined);
+    for (const name of ['brain_search', 'brain_read', 'brain_list', 'brain_vitals', 'brain_write', 'brain_append']) assert.ok(on.allowedTools?.includes(`mcp__brain__${name}`));
+    const off = await sessionOptions({ brainTools: brainToolsFor({ enabled: true, path: dir }, 'off', Logger.silent()) });
+    assert.equal(off.mcpServers?.brain, undefined);
+    assert.ok(!off.allowedTools?.some((name) => name.startsWith('mcp__brain')));
+    const disabled = await sessionOptions({ brainTools: brainToolsFor({ enabled: false, path: dir }, 'write', Logger.silent()) });
+    assert.equal(disabled.mcpServers?.brain, undefined);
+    assert.equal((await sessionOptions({})).mcpServers?.brain, undefined);
+  });
+
+  it('registers only the read tools for brain read', async () => {
+    const dir = tempDir();
+    const read = await sessionOptions({ brainTools: brainToolsFor({ enabled: true, path: dir }, 'read', Logger.silent()) });
+    assert.ok(read.mcpServers?.brain !== undefined);
+    assert.deepEqual(read.allowedTools?.filter((name) => name.startsWith('mcp__brain')).sort(), ['mcp__brain__brain_list', 'mcp__brain__brain_read', 'mcp__brain__brain_search', 'mcp__brain__brain_vitals']);
+    const append = JSON.stringify(read.systemPrompt);
+    assert.ok(append.includes('Search and read the knowledge vault'));
+    assert.ok(!append.includes('brain_write'));
+  });
+
+  it('keeps the vault out of additionalDirectories and cwd', async () => {
+    const dir = tempDir();
+    const extensions: SessionExtensions = { mcpServers: {}, contextSections: [], additionalDirectories: ['/ws/laravel'], env: {} };
+    const options = await sessionOptions({ extensions, brainTools: brainToolsFor({ enabled: true, path: dir }, 'write', Logger.silent()) });
+    const inside = (parent: string, child: string) => child === parent || child.startsWith(`${parent}/`);
+    for (const extra of options.additionalDirectories ?? []) assert.ok(!inside(dir, extra) && !inside(extra, dir), extra);
+    assert.notEqual(options.cwd, dir);
+  });
+
+  it('reserves the brain server name for extensions', async () => {
+    const extensions: SessionExtensions = { mcpServers: { brain: { command: 'x', args: [] } }, contextSections: [], additionalDirectories: [], env: {} };
+    await assert.rejects(sessionOptions({ extensions }), /reserved/);
+  });
+
   it('runs several turns on one live session and reports absolute usage totals', async () => {
     let turn = 0;
     const fake = fakeQuery((_prompt, _options, emit) => {
@@ -257,6 +299,68 @@ describe('claude agent runner', () => {
     assert.deepEqual(completed[1]?.modelUsage, { 'claude-opus-5-5': opus, 'claude-fable-5-1': fable(200, 40) });
     assert.deepEqual(completed[1]?.usage, { inputTokens: 410, outputTokens: 65, totalTokens: 475 });
     assert.ok(!events.some((e) => e.event === 'model_call' && (e.message !== undefined || e.detail !== undefined)), 'model calls carry only the totals');
+  });
+
+  describe('context fill level', () => {
+    const ctxCall = (id: string, input: number, read: number, create: number, parent: string | null = null) => ({
+      type: 'assistant',
+      parent_tool_use_id: parent,
+      message: { id, model: 'claude-opus-5-5', content: [{ type: 'text', text: 'x' }], usage: { input_tokens: input, output_tokens: 1, cache_read_input_tokens: read, cache_creation_input_tokens: create } },
+    });
+    const run = async (overrides: Parameters<typeof params>[0], script: (emit: (m: Record<string, unknown>) => void) => void): Promise<AgentEvent[]> => {
+      const events: AgentEvent[] = [];
+      const fake = fakeQuery((_prompt, _options, emit) => {
+        script(emit as (m: Record<string, unknown>) => void);
+        emit(result(0.1, 10, 1));
+      });
+      const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ ...overrides, events }));
+      await session.runTurn('go');
+      await session.stop();
+      return events;
+    };
+    const contexts = (events: AgentEvent[]) => events.filter((e) => e.context !== undefined).map((e) => e.context);
+
+    it('relates input, cache read and cache creation of the latest call to a 200k window', async () => {
+      const events = await run({ contextWindow: () => 200_000 }, (emit) => emit(ctxCall('m1', 10_000, 30_000, 10_000)));
+      assert.deepEqual(contexts(events), [
+        { model: 'claude-opus-5-5', window: 200_000, tokens: 50_000, percent: 25, peakPercent: 25, compacts: 0, preTokens: null },
+      ]);
+    });
+
+    it('gives a [1m] model a 1M window ahead of the resolver', async () => {
+      const events = await run({ claude: { model: 'opus[1m]' }, contextWindow: () => 200_000 }, (emit) => emit(ctxCall('m1', 10_000, 30_000, 10_000)));
+      assert.equal(contexts(events)[0]?.window, 1_000_000);
+      assert.equal(contexts(events)[0]?.percent, 5);
+    });
+
+    it('has no percent when no window can be determined', async () => {
+      const events = await run({ contextWindow: () => null }, (emit) => emit(ctxCall('m1', 10, 20, 30)));
+      assert.deepEqual(contexts(events)[0], { model: 'claude-opus-5-5', window: null, tokens: 60, percent: null, peakPercent: null, compacts: 0, preTokens: null });
+    });
+
+    it('counts compactions, remembers pre_tokens and keeps the peak', async () => {
+      const events = await run({ contextWindow: () => 200_000 }, (emit) => {
+        emit(ctxCall('m1', 0, 180_000, 0));
+        emit({ type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'auto', pre_tokens: 180_000 }, uuid: 'u', session_id: 's' });
+        emit(ctxCall('m2', 0, 20_000, 0));
+      });
+      const compacted = events.filter((e) => e.event === 'context_compacted');
+      assert.equal(compacted.length, 1);
+      assert.equal(compacted[0]?.context?.compacts, 1);
+      assert.equal(compacted[0]?.context?.preTokens, 180_000);
+      const last = contexts(events).at(-1);
+      assert.equal(last?.percent, 10);
+      assert.equal(last?.peakPercent, 90);
+      assert.equal(last?.compacts, 1);
+    });
+
+    it('ignores subagent calls', async () => {
+      const events = await run({ contextWindow: () => 200_000 }, (emit) => {
+        emit(ctxCall('m1', 0, 20_000, 0));
+        emit(ctxCall('m2', 0, 150_000, 0, 'toolu_1'));
+      });
+      assert.equal(contexts(events).at(-1)?.tokens, 20_000);
+    });
   });
 
   it('writes each turn prompt and the agent messages to the transcript, readable by the transcript reader', async () => {
@@ -491,6 +595,72 @@ describe('claude agent runner', () => {
       { tool: 'Task', agent: 'general-purpose' },
     ]);
     assert.equal(calls[0]?.message, 'Agent: Review the diff');
+  });
+
+  it('tracks parallel subagents: tokens, end and session end', async () => {
+    const usage = (input: number) => ({ input_tokens: input, output_tokens: 2, cache_read_input_tokens: 3, cache_creation_input_tokens: 4 });
+    const inner = (parent: string, id: string, input: number) =>
+      ({ type: 'assistant', message: { id, content: [{ type: 'text', text: 'x' }], usage: usage(input) }, parent_tool_use_id: parent });
+    const fake = fakeQuery((_prompt, _options, emit) => {
+      emit({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', id: 'toolu_a', name: 'Agent', input: { subagent_type: 'Explore', description: 'Find files' } },
+            { type: 'tool_use', id: 'toolu_b', name: 'Task', input: { prompt: `first line\n${'long '.repeat(100)}` } },
+          ],
+        },
+        parent_tool_use_id: null,
+      });
+      emit(inner('toolu_a', 'm1', 10));
+      emit(inner('toolu_a', 'm1', 10));
+      emit(inner('toolu_a', 'm2', 20));
+      emit(inner('toolu_b', 'm3', 7));
+      emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_x', content: 'ok' }] }, parent_tool_use_id: 'toolu_a' });
+      emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_a', content: 'done', is_error: false }] }, parent_tool_use_id: null });
+      emit(result(0.1, 10, 1));
+    });
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ events }));
+    await session.runTurn('go');
+    const snapshots = (id: string) => events.flatMap((event) => (event.subagent?.toolUseId === id ? [event.subagent] : []));
+    const [startA] = snapshots('toolu_a');
+    assert.equal(startA?.subagentType, 'Explore');
+    assert.equal(startA?.description, 'Find files');
+    assert.equal(startA?.status, 'running');
+    assert.ok(startA?.startedAt instanceof Date);
+    const [startB] = snapshots('toolu_b');
+    assert.equal(startB?.subagentType, 'general-purpose');
+    assert.ok(startB?.description.startsWith('first line long long'));
+    assert.equal(startB?.description.length, 200);
+    const lastA = snapshots('toolu_a').at(-1);
+    assert.equal(lastA?.status, 'ok');
+    assert.ok(lastA?.endedAt instanceof Date);
+    assert.deepEqual(lastA?.tokens, { inputTokens: 30, outputTokens: 4, cacheReadTokens: 6, cacheWriteTokens: 8 });
+    assert.equal(snapshots('toolu_a').filter((run) => run.status !== 'running').length, 1);
+    const beforeStop = snapshots('toolu_b').at(-1);
+    assert.equal(beforeStop?.status, 'running');
+    assert.equal(beforeStop?.tokens.inputTokens, 7);
+    await session.stop();
+    const lastB = snapshots('toolu_b').at(-1);
+    assert.equal(lastB?.status, 'error');
+    assert.ok(lastB?.endedAt instanceof Date);
+    // Only start and end reach the timeline; token updates carry no message.
+    assert.equal(events.filter((event) => event.event === 'subagent' && event.message !== undefined).length, 4);
+    assert.equal(events.filter((event) => event.event === 'tool_use').length, 2);
+  });
+
+  it('marks a subagent whose tool result is an error', async () => {
+    const fake = fakeQuery((_prompt, _options, emit) => {
+      emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_a', name: 'Agent', input: {} }] }, parent_tool_use_id: null });
+      emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_a', content: 'boom', is_error: true }] }, parent_tool_use_id: null });
+      emit(result(0.1, 10, 1));
+    });
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ events }));
+    await session.runTurn('go');
+    await session.stop();
+    assert.equal(events.filter((event) => event.subagent !== undefined).at(-1)?.subagent?.status, 'error');
   });
 
   it('adds the read-only deny rules', async () => {

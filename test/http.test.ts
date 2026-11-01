@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import http from 'node:http';
 import { after, before, describe, it } from 'node:test';
 import fs from 'node:fs';
@@ -6,14 +8,25 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { PricingStore } from '../src/costs/pricing.ts';
 import { HistoryLog } from '../src/history/history.ts';
-import { AGENT_HTML } from '../src/http/agent-page.ts';
+import { AGENT_HTML } from '../src/http/issue-page.ts';
 import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
 import { BOOST_ICON_URI } from '../src/http/icons.ts';
 import { LOGS_HTML } from '../src/http/logs-page.ts';
+import { CHANGES_HTML } from '../src/http/changes-page.ts';
+import { TASKS_HTML } from '../src/http/tasks-page.ts';
+import { BRAIN_HTML } from '../src/http/brain-page.ts';
+import { AURORA, LAYOUT_CSS, LAYOUT_JS, NAV_ITEMS, page as shellPage } from '../src/http/ui/layout.ts';
+import { TOKENS_CSS } from '../src/http/ui/tokens.ts';
+import { BASE_JS } from '../src/http/styles.ts';
+import { SYMPHONY_VERSION } from '../src/version.ts';
+import { analyticsFixture, dashboardState, issueDetail, issueRow } from './helpers/page-fixtures.ts';
+import { FakeElement } from './helpers/fake-dom.ts';
 import { startHttpServer, type HttpServerHandle } from '../src/http/server.ts';
+import { ensureVault } from '../src/brain/vault.ts';
 import { Logger } from '../src/log.ts';
+import { SystemCollector } from '../src/system/metrics.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
-import { FakeRunner, FakeTracker, ManualTimers, StaticWorkflow, baseFront, makeIssue, makeWorkflow, tempDir, until } from './helpers.ts';
+import { FakeRunner, FakeTracker, ManualTimers, StaticWorkflow, baseFront, makeIssue, makeWorkflow, inlineScripts, reindentScripts, renderPage, tempDir, until } from './helpers.ts';
 
 /** Raw request so tests can set the Host header freely. */
 function request(
@@ -35,12 +48,88 @@ function request(
   });
 }
 
+const AGENT_URL = 'http://127.0.0.1/issue?id=acme%2Fapp%231';
+
 describe('dashboard pages', () => {
-  it('ship inline scripts that parse and the Laravel Boost icon', () => {
+  it('share the glass tokens CSS without external URLs', () => {
     for (const [name, html] of Object.entries({ dashboard: DASHBOARD_HTML, agent: AGENT_HTML, logs: LOGS_HTML })) {
-      const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1] as string);
+      assert.ok(html.includes(TOKENS_CSS), `${name} embeds the tokens CSS`);
+      const styles = [...html.matchAll(/<style>([\s\S]*?)<\/style>/g)].map((match) => match[1] as string).join('\n');
+      assert.doesNotMatch(styles, /https?:\/\//, `${name} CSS has no external URL`);
+      assert.doesNotMatch(styles, /@import|@font-face|url\(/, `${name} CSS loads no resources`);
+    }
+    const block = (marker: string): string => {
+      const start = TOKENS_CSS.indexOf(marker);
+      assert.ok(start >= 0, marker);
+      let depth = 0;
+      for (let i = TOKENS_CSS.indexOf('{', start); i < TOKENS_CSS.length; i++) {
+        if (TOKENS_CSS[i] === '{') depth++;
+        if (TOKENS_CSS[i] === '}' && --depth === 0) return TOKENS_CSS.slice(start, i + 1);
+      }
+      throw new Error(`unbalanced ${marker}`);
+    };
+    const motion = block('@media (prefers-reduced-motion: reduce)');
+    assert.match(motion, /animation: none/);
+    assert.match(motion, /transition: none/);
+    const transparency = block('@media (prefers-reduced-transparency: reduce)');
+    assert.match(transparency, /var\(--solid\)/);
+    assert.match(transparency, /backdrop-filter: none/);
+    assert.match(TOKENS_CSS, /--solid: #111a2c/);
+
+    assert.ok(TOKENS_CSS.includes('#070b16'));
+    const roles = { analyst: '#38bdf8', architect: '#a78bfa', developer: '#34d399', tester: '#fbbf24', docs: '#cbd5e1', reviewer: '#f472b6', security: '#fb923c', symphony: '#94a3b8' };
+    for (const [role, hex] of Object.entries(roles)) assert.ok(TOKENS_CSS.includes(`--role-${role}: ${hex}`), role);
+    for (const token of ['--st-run', '--st-warn', '--st-error', '--st-wait']) assert.ok(TOKENS_CSS.includes(token + ':'), token);
+    assert.ok(TOKENS_CSS.includes('.g {') && TOKENS_CSS.includes('.gi {'));
+    assert.ok(TOKENS_CSS.includes('backdrop-filter: blur('));
+    assert.ok(TOKENS_CSS.includes('button:focus-visible') && TOKENS_CSS.includes('a:focus-visible'));
+    assert.ok(TOKENS_CSS.includes('min-height: 44px'));
+
+    // Animations and transitions only touch transform and opacity.
+    const keyframes = [...TOKENS_CSS.matchAll(/@keyframes [\w-]+/g)];
+    assert.ok(keyframes.length > 0);
+    for (const frame of keyframes) {
+      const body = block(frame[0]);
+      const props = [...body.matchAll(/([\w-]+)\s*:/g)].map((match) => match[1]);
+      for (const prop of props) assert.ok(['transform', 'opacity'].includes(prop as string), `${frame[0]} animates ${prop}`);
+    }
+    for (const match of TOKENS_CSS.matchAll(/transition:([^;}]*)/g)) {
+      assert.match((match[1] as string).replace(/\s*!important/, ""), /^\s*(none|(transform|opacity)\b[^,]*(,\s*(transform|opacity)\b[^,]*)*)\s*$/);
+    }
+  });
+
+  const ALL_PAGES = { dashboard: DASHBOARD_HTML, agent: AGENT_HTML, logs: LOGS_HTML, changes: CHANGES_HTML, tasks: TASKS_HTML, brain: BRAIN_HTML };
+
+  it('load in a fake DOM without errors, every page', () => {
+    for (const [name, html] of Object.entries(ALL_PAGES)) {
+      const page = renderPage(html, undefined, name === 'agent' ? { url: AGENT_URL } : {});
+      assert.ok(page.$('main'), name);
+    }
+  });
+
+  it('behave the same when the inline scripts are indented differently', () => {
+    const fixtures: Array<[string, string, unknown, string?]> = [
+      ['dashboard', DASHBOARD_HTML, dashboardState({ issues: [issueRow({ labels: ['needs-human'], budget: { cost_usd: 9, max_issue_cost_usd: 10 } })], counts: { ...dashboardState().counts, running: 1 } })],
+      ['agent', AGENT_HTML, { detail: issueDetail({ results: [{ role: 'developer', kind: 'implementation', verdict: 'done', round: null, target: 'Agent review', summary: 'Done.', created_at: '2026-10-30T11:00:00Z', url: 'https://github.com/acme/app/issues/1#issuecomment-1', findings: [], blockers: [] }] }) }, AGENT_URL],
+      ['logs', LOGS_HTML, undefined],
+    ];
+    for (const [name, html, fixture, url] of fixtures) {
+      assert.notEqual(reindentScripts(html), html, name);
+      const opts = url ? { url } : {};
+      const a = renderPage(html, fixture, opts);
+      const b = renderPage(reindentScripts(html), fixture, opts);
+      assert.equal(b.$('main').outerHTML, a.$('main').outerHTML, name);
+      assert.deepEqual(b.fetches, a.fetches, name);
+    }
+  });
+
+  it('ship inline scripts that parse and the Laravel Boost icon', () => {
+    for (const [name, html] of Object.entries(ALL_PAGES)) {
+      const scripts = inlineScripts(html);
       assert.ok(scripts.length > 0, name);
       for (const script of scripts) assert.doesNotThrow(() => new vm.Script(script, { filename: `${name}.js` }), name);
+    }
+    for (const [name, html] of Object.entries({ dashboard: DASHBOARD_HTML, agent: AGENT_HTML, logs: LOGS_HTML })) {
       assert.ok(html.includes(BOOST_ICON_URI), `${name} embeds the Boost icon`);
     }
     assert.match(BOOST_ICON_URI, /^data:image\/svg\+xml;base64,/);
@@ -87,69 +176,33 @@ describe('http extension', () => {
     await server.close();
   });
 
+  it('answers /api/v1/system without a collector instead of an issue 404', async () => {
+    const res = await request(server.port, 'GET', '/api/v1/system');
+    assert.equal(res.status, 200);
+    assert.deepEqual(JSON.parse(res.body), { current: null, history: [], gpu: null, cpu_count: null, host: null, usage: null });
+  });
+
   it('serves the dashboard and the state snapshot', async () => {
     const page = await request(server.port, 'GET', '/');
     assert.equal(page.status, 200);
     assert.match(page.body, /<title>Symphony<\/title>/);
-    assert.match(page.body, /AGENT ORCHESTRATOR/);
-    // Issues render as cards with the pipeline topology strip in separate sections (Running, Up next, Waiting,
-    // Paused), each with a count and hidden when empty; blocked issues collapse into a details panel.
-    assert.match(page.body, /renderPipeline\(refs\.pipe, row\.stages/);
-    // Stages show the verdict and round of their newest result; skipped stages stay marked as skipped.
-    assert.match(page.body, /pipeVerdict\(stage\.verdict, stage\.round\)/);
+    assert.ok(page.body.includes(TOKENS_CSS), 'dashboard embeds the tokens CSS');
+    assert.match(page.body, /<nav class="shell-nav" aria-label="Hauptnavigation">/);
+    // Markup of the sections; what the page script does with them is covered by 'dashboard page behaviour'.
+    assert.doesNotMatch(page.body, /Issues in flight/);
+    assert.match(page.body, /<div class="agents" id="running"><\/div>/);
+    assert.match(page.body, /<span class="count" id="running-count"><\/span>/);
+    // Slots, queue and blocked moved to the Tasks page (E5-2); the overview keeps a compact line that links there.
+    assert.doesNotMatch(page.body, /id="(slot-settings|slots|model-controls|next-section|waiting-section|paused-section|blocked-section)"/);
+    assert.match(page.body, /<p class="tasks-line" id="tasks-line">[^]*<a class="section-link" href="\/tasks">Alle Tasks<\/a>/);
     assert.match(page.body, /\.pipe-verdict\.vd-warn/);
     assert.match(page.body, /\.pipe-node\.st-skipped/);
-    assert.match(page.body, /state\.issues/);
-    assert.doesNotMatch(page.body, /Issues in flight/);
-    for (const name of ['running', 'next', 'waiting', 'paused']) {
-      assert.match(page.body, new RegExp(`<div class="agents[^"]*" id="${name}"></div>`));
-      assert.match(page.body, new RegExp(`<span class="count" id="${name}-count"></span>`));
-    }
-    for (const name of ['next', 'waiting', 'paused']) assert.match(page.body, new RegExp(`<section class="agents-section queue-section" id="${name}-section"[^>]*hidden>`));
-    assert.match(page.body, /const SECTIONS = \['running', 'next', 'waiting', 'paused'\]/);
-    assert.match(page.body, /\$\(name \+ '-section'\)\.hidden = ordered\.length === 0/);
-    // Up next is numbered and every waiting card names its reason; the board age sits next to Up next.
-    assert.match(page.body, /setText\(refs\.position, row\.position == null \? '' : '#' \+ row\.position\)/);
-    assert.match(page.body, /why\.append\(reasonChip\(row\.reason\)\)/);
-    assert.match(page.body, /'in start order · board as of ' \+ ago\(state\.board_fetched_at\)/);
-    assert.doesNotMatch(page.body, /Waiting for a free agent slot or the next poll/);
-    // Reason chips show the UTC times of the reason texts in local time.
-    assert.ok(page.body.includes(String.raw`const UTC_TIME = /(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) UTC/g;`));
-    assert.match(page.body, /id="blocked-section"/);
-    assert.match(page.body, /setText\(refs\.model, r\.model/);
-    assert.match(page.body, /setText\(refs\.phase, r\.phase/);
-    assert.match(page.body, /id="refresh"/);
-    assert.match(page.body, /Retry now/);
-    assert.match(page.body, /Resume now/);
-    assert.match(page.body, /'\/api\/v1\/' \+ encodeURIComponent\(identifier\) \+ '\/' \+ action/);
-    for (const route of ["'retry'", "'resume'", "'pause'", "'force'"]) assert.ok(page.body.includes(route), route);
-    // Start now: a button on waiting, queued and paused cards, a confirmation when every slot is taken, forced slots in the bar.
-    assert.match(page.body, /Force: 'Start now'/);
-    assert.match(page.body, /restartButton\(row\.issue_identifier, 'Force'\)/);
-    assert.match(page.body, /' busy\. Start ' \+ splitId\(identifier\)\.num \+ ' in an extra slot\?'/);
-    assert.match(page.body, /', ' \+ forced \+ ' forced'/);
-    assert.match(page.body, /'\/api\/v1\/models\/' \+ encodeURIComponent\(model\)/);
-    assert.match(page.body, /restartButton\(row\.issue_identifier, 'Pause'\)/);
-    assert.match(page.body, /paused by operator/);
-    assert.match(page.body, /model_controls/);
-    assert.match(page.body, /limit\.resets_at/);
-    assert.match(page.body, /waiting for reset/);
-    assert.match(page.body, /Session limit/);
-    assert.match(page.body, /Extra usage is off because credits are used up/);
-    // The dispatch gate is an amber status notice, hidden unless health.dispatch_gate is set.
+    assert.match(page.body, /id="shell-poll"/);
     assert.match(page.body, /<section id="dispatch-gate" class="dispatch-gate" role="status" hidden>/);
-    assert.match(page.body, /\$\('dispatch-gate'\)\.hidden = !gate/);
-    assert.match(page.body, /'Dispatch paused until ' \+ fmtStamp\(gate\.until\) \+ ' · session limit \(' \+ gate\.window \+ '\) · started by ' \+ gate\.issue_identifier/);
-    // Model holds: a notice per held model, and waiting cards name the model they wait for.
-    assert.match(page.body, /<section id="model-holds" class="dispatch-gate model-holds" role="status" hidden>/);
-    assert.match(page.body, /'Model ' \+ hold\.model \+ ' on hold until ' \+ fmtStamp\(hold\.until\)/);
-    assert.match(page.body, /'Waiting for model ' \+ hold\.model \+ ' \(limit until ' \+ fmtStamp\(hold\.until\) \+ '\)'/);
+    assert.match(page.body, /<section id="alerts" class="panel alerts"/);
+    assert.match(page.body, /<span class="alerts-badge" id="alerts-count" aria-live="polite" hidden>/);
+    assert.doesNotMatch(page.body, /id="model-holds"|id="problems"/);
     assert.doesNotMatch(page.body, /\bonclick=/);
-    // Agent slots: − / value / + at the slot bar, Reset to WORKFLOW.md, and the note when lowered below the running count.
-    assert.match(page.body, /<div class="slot-settings" id="slot-settings" role="group" aria-label="Agent slots" hidden><\/div>/);
-    assert.match(page.body, /fetch\('\/api\/v1\/settings\/agents', init\)/);
-    assert.match(page.body, /'Reset to WORKFLOW\.md \(' \+ total\.workflow \+ '\)'/);
-    assert.match(page.body, /' running, limit ' \+ total\.effective \+ ': no new starts until '/);
 
     const state = await request(server.port, 'GET', '/api/v1/state');
     assert.equal(state.status, 200);
@@ -184,13 +237,90 @@ describe('http extension', () => {
 
   it('links the logs page from the dashboard and serves it', async () => {
     const dashboard = (await request(server.port, 'GET', '/')).body;
-    assert.match(dashboard, /href="\/logs"/);
+    assert.match(dashboard, /href="\/stats"/);
     // The Logs button opens a drawer fed by the history API; the link stays as a fallback.
     assert.match(dashboard, /role="dialog"[^>]*aria-labelledby="logs-title"/);
-    assert.match(dashboard, /fetch\('\/api\/v1\/history'/);
-    const page = await request(server.port, 'GET', '/logs');
+    const page = await request(server.port, 'GET', '/stats');
     assert.equal(page.status, 200);
-    assert.match(page.body, /<title>Symphony logs<\/title>/);
+    assert.match(page.body, /<title>Statistik · Symphony<\/title>/);
+    assert.ok(page.body.includes(TOKENS_CSS), 'logs page embeds the tokens CSS');
+    const stats = await request(server.port, 'GET', '/stats');
+    assert.equal(stats.status, 200);
+    assert.equal(stats.body, page.body, '/stats serves the statistics page until #346 routes it');
+  });
+
+  it('serves all page routes in the shell (E1-4)', async () => {
+    const pages: Array<[string, string | null, string]> = [
+      ['/', 'href="/" aria-current="page"', 'Symphony'],
+      ['/changes', 'href="/changes" aria-current="page"', 'Changes'],
+      ['/tasks', 'href="/tasks" aria-current="page"', 'Tasks'],
+      ['/brain', 'href="/brain" aria-current="page"', 'Brain'],
+      ['/stats', 'href="/stats" aria-current="page"', 'Statistik'],
+      ['/issue?id=acme%2Fapp%231', null, 'Issue'],
+    ];
+    for (const [path, current, text] of pages) {
+      const res = await request(server.port, 'GET', path);
+      assert.equal(res.status, 200, path);
+      assert.match(res.headers['content-type'] ?? '', /text\/html/, path);
+      if (current !== null) assert.ok(res.body.includes(current), `${path} marks its navigation entry`);
+      assert.ok(res.body.includes(text), path);
+    }
+    const issue = (await request(server.port, 'GET', '/issue?id=acme%2Fapp%231')).body;
+    assert.ok(issue.includes('id="crumb-current">Issue<'));
+    const brainPages: Array<[string, string]> = [['/brain', 'Brain']];
+    for (const [path, title] of brainPages) {
+      const res = await request(server.port, 'GET', path);
+      assert.ok(res.body.includes('id="candidates"'), path);
+      assert.ok(res.body.includes(`<h1 id="page-title">${title}</h1>`), path);
+      const head = await request(server.port, 'HEAD', path);
+      assert.equal(head.status, 200);
+      assert.equal(head.body, '');
+      const post = await request(server.port, 'POST', path);
+      assert.equal(post.status, 405);
+      assert.equal(post.headers.allow, 'GET, HEAD');
+    }
+  });
+
+  it('redirects the former page paths with 301 and keeps the query (E1-4)', async () => {
+    const cases: Array<[string, string]> = [
+      ['/logs', '/stats'],
+      ['/logs?period=7d', '/stats?period=7d'],
+      ['/agent?id=repo%2F1', '/issue?id=repo%2F1'],
+    ];
+    for (const [from, to] of cases) {
+      for (const method of ['GET', 'HEAD']) {
+        const res = await request(server.port, method, from);
+        assert.equal(res.status, 301, `${method} ${from}`);
+        assert.equal(res.headers.location, to);
+      }
+    }
+    assert.equal((await request(server.port, 'DELETE', '/logs')).status, 405);
+  });
+
+  it('applies the host check to every page route and redirect (E1-4)', async () => {
+    for (const path of ['/', '/changes', '/tasks', '/brain', '/stats', '/issue?id=x', '/logs', '/agent?id=x']) {
+      for (const host of ['evil.example:80', 'bad host']) {
+        const res = await request(server.port, 'GET', path, { host });
+        assert.equal(res.status, 403, `${path} with Host ${host}`);
+        assert.equal(JSON.parse(res.body).error.code, 'forbidden_host');
+        assert.equal(res.headers.location, undefined);
+      }
+    }
+  });
+
+  it('keeps the old routes out of the client links (E1-4)', () => {
+    for (const html of [DASHBOARD_HTML, LOGS_HTML, AGENT_HTML]) {
+      assert.doesNotMatch(html, /href="\/logs"|\/agent\?id=/);
+    }
+    assert.ok(DASHBOARD_HTML.includes('href="/stats"'));
+    const hrefs = (page: { query(sel: string): Array<{ href: string }> }) => page.query('a').map((a) => a.href).filter(Boolean);
+    const dashboard = renderPage(DASHBOARD_HTML, dashboardState({ issues: [issueRow()] }));
+    assert.ok(hrefs(dashboard).includes('/issue?id=acme%2Fapp%231'), 'the dashboard card links the issue page');
+    assert.ok(hrefs(dashboard).every((href) => !/^\/(logs|agent)\b/.test(href)));
+    const logs = renderPage(LOGS_HTML, analyticsFixture());
+    const logHrefs = hrefs(logs);
+    assert.ok(logHrefs.some((href) => href.startsWith('/issue?id=')), 'the stats page links issues to /issue');
+    assert.ok(logHrefs.every((href) => !/^\/(logs|agent)\b/.test(href)));
   });
 
   it('serves history statistics for all repositories or one, and the raw log', async () => {
@@ -214,11 +344,11 @@ describe('http extension', () => {
   });
 
   it('serves analytics and log entries for one period, repository and model', async () => {
-    const page = (await request(server.port, 'GET', '/logs')).body;
+    const page = (await request(server.port, 'GET', '/stats')).body;
     assert.match(page, /\/api\/v1\/history\/analytics\?/);
     assert.match(page, /\/api\/v1\/history\/entries\?/);
     assert.match(page, /data-body="roles"/);
-    assert.match(page, /Most expensive issue pipelines/);
+    assert.match(page, /Teuerste Issue-Pipelines/);
 
     const week = '/api/v1/history/analytics?from=2026-09-28T00:00:00Z&to=2026-10-05T00:00:00Z&tz=Europe%2FBerlin';
     const a = JSON.parse((await request(server.port, 'GET', week)).body);
@@ -241,6 +371,9 @@ describe('http extension', () => {
       ['reviewer', { 'review:approved': 1 }],
     ]);
     assert.equal(a.filter.effort, null);
+    assert.ok(Array.isArray(a.budget.days) && a.budget.days.length > 0);
+    assert.equal(typeof a.budget.days[0].peak_5h_tokens, 'number');
+    assert.equal(typeof a.budget.compacts_by_role, 'object');
     // A second identical request is served from the cache with the same figures.
     assert.deepEqual(JSON.parse((await request(server.port, 'GET', week)).body).series, a.series);
     const effort = JSON.parse((await request(server.port, 'GET', `${week}&effort=high`)).body);
@@ -261,51 +394,25 @@ describe('http extension', () => {
   });
 
   it('serves the agent detail view and links the agent cards to it', async () => {
-    const page = await request(server.port, 'GET', '/agent?id=acme%2Fapp%231');
+    const page = await request(server.port, 'GET', '/issue?id=acme%2Fapp%231');
     assert.equal(page.status, 200);
-    assert.match(page.body, /AGENT TRACE/);
-    assert.match(page.body, /Back to agents/);
+    assert.match(page.body, /<nav class="crumbs" aria-label="Brotkrumen">/);
+    assert.ok(page.body.includes(TOKENS_CSS), 'agent page embeds the tokens CSS');
+    assert.match(page.body, /<li><a href="\/">Übersicht<\/a><\/li>/);
     assert.match(page.body, /id="timeline"/);
     // Pipeline topology section and the Issue sidebar (labels, blockers, sub-issues).
     assert.match(page.body, /id="pipe-section"/);
-    assert.match(page.body, /renderPipeline\(\$\('pipeline'\)/);
     assert.match(page.body, /id="issue-section"/);
-    // Stage results: one card per result with its verdict, round, findings and the link to the comment.
     assert.match(page.body, /id="results-section"/);
     assert.match(page.body, /id="result-cards"/);
-    assert.match(page.body, /function renderResults\(\)/);
-    assert.match(page.body, /pipeVerdict\(r\.verdict, r\.round\)/);
-    assert.match(page.body, /'Comment ↗'/);
-    assert.match(page.body, /'\/timeline\?after='/);
-    assert.match(page.body, /'\/transcript\?run='/);
-    assert.match(page.body, /Waiting for limit/);
-    assert.match(page.body, /Session limit reached/);
-    assert.match(page.body, /Resets at/);
-    assert.match(page.body, /API \+ '\/' \+ action/);
-    assert.match(page.body, /restartButton\('Pause'\)/);
-    assert.match(page.body, /Paused by operator/);
-    assert.match(page.body, /Resume now/);
-    assert.match(page.body, /session_limit: \['⏳ Session limit', 'amber', 'session limit'\]/);
-    assert.match(page.body, /SESSION LIMIT · RETRY/);
-    assert.match(page.body, /WAITING FOR RESET/);
-    assert.match(page.body, /worker_restarted/);
-    assert.match(page.body, /worker_forced/);
-    assert.match(page.body, /restartButton\('Force'\)/);
-    assert.match(page.body, /' in an extra slot\?'/);
-    assert.equal((await request(server.port, 'HEAD', '/agent')).status, 200);
-    const dashboard = (await request(server.port, 'GET', '/')).body;
-    assert.match(dashboard, /'\/agent\?id=' \+ encodeURIComponent\(row\.issue_identifier\)/);
-    // Cards flag needs-human issues and show the spent share of the cost budget.
-    assert.match(dashboard, /function flagChips\(row\)/);
-    assert.match(dashboard, /'needs human'/);
-    assert.match(dashboard, /row\.budget/);
+    assert.equal((await request(server.port, 'HEAD', '/issue')).status, 200);
   });
 
   it('returns a JSON 404 for unknown issues and routes', async () => {
     const unknown = await request(server.port, 'GET', `/api/v1/${encodeURIComponent('acme/app#404')}`);
     assert.equal(unknown.status, 404);
     assert.equal(JSON.parse(unknown.body).error.code, 'issue_not_found');
-    for (const sub of ['timeline', 'transcript']) {
+    for (const sub of ['timeline', 'team', 'transcript']) {
       const missing = await request(server.port, 'GET', `/api/v1/${encodeURIComponent('acme/app#404')}/${sub}`);
       assert.equal(missing.status, 404);
       assert.equal(JSON.parse(missing.body).error.code, 'issue_not_found');
@@ -438,6 +545,109 @@ describe('issue details', () => {
       assert.equal(detail.last_check.exit_code, 0);
       assert.equal(typeof detail.last_check.duration_ms, 'number');
       assert.equal(typeof detail.last_check.finished_at, 'string');
+    } finally {
+      await orchestrator.shutdown(1_000);
+      await server.close();
+    }
+  });
+});
+
+describe('issue details: head card fields (E3-6)', () => {
+  it('returns profile, round of max, branch_name and the pull request from the change log', async () => {
+    const logDir = tempDir();
+    fs.mkdirSync(path.join(logDir, 'changes'), { recursive: true });
+    const change = (sha: string, at: string, pr: number | null) => JSON.stringify({
+      id: `code:acme/app:${sha}`, type: 'code', at, repo: 'acme/app', issue: 'acme/app#h', role: 'developer', title: 'x', files: [],
+      pr: pr === null ? null : { number: pr, status: 'pending' }, diff: null, status: 'committed',
+    });
+    fs.writeFileSync(path.join(logDir, 'changes', 'acme_app.jsonl'), [change('a1', '2026-10-01T10:00:00.000Z', 6), change('a2', '2026-10-01T11:00:00.000Z', 7), change('a3', '2026-10-01T12:00:00.000Z', null)].join('\n') + '\n');
+    const front = baseFront(tempDir(), { pipeline: { profiles: { feature: { max_review_rounds: 2 } } } });
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(front)),
+      runner: new FakeRunner(() => new Promise(() => undefined)),
+      logger: Logger.silent(),
+      env: {},
+      logDir,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker([makeIssue({ id: 'h', labels: ['type: feature', 'complexity: l'], branch_name: 'symphony/issue-h' }), makeIssue({ id: 'p' })]),
+    });
+    try {
+      await orchestrator.tickNow();
+      const detail = orchestrator.issueDetail('acme/app#h');
+      assert.equal(detail?.profile, 'feature');
+      assert.deepEqual(detail?.rounds, { current: 1, max: 2 });
+      assert.equal(detail?.pull_request, 7, 'newest change that knows a pull request');
+      assert.equal(detail?.issue?.branch_name, 'symphony/issue-h');
+      const plain = orchestrator.issueDetail('acme/app#p');
+      assert.equal(plain?.pull_request, null);
+      assert.equal(plain?.issue?.branch_name, null);
+      assert.equal(plain?.rounds?.max, 3, 'pipeline.max_review_rounds without a profile override');
+    } finally {
+      await orchestrator.shutdown(1_000);
+    }
+  });
+});
+
+describe('team API', () => {
+  const make = (logDir: string, issues: ReturnType<typeof makeIssue>[], runner = new FakeRunner(() => new Promise(() => undefined))) =>
+    new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir()))),
+      runner,
+      logger: Logger.silent(),
+      env: {},
+      logDir,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker(issues),
+    });
+
+  it('serves the team view of a running issue', async () => {
+    const runner = new FakeRunner((turn, params) => {
+      params.onEvent({ event: 'tool_use', timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: turn, message: 'Bash: ls', detail: { tool: 'Bash' } });
+      return new Promise(() => undefined);
+    });
+    const orchestrator = make(tempDir(), [makeIssue({ id: 't' })], runner);
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    const base = `/api/v1/${encodeURIComponent('acme/app#t')}/team`;
+    try {
+      await orchestrator.tickNow();
+      await until(() => (orchestrator.issueTimeline('t')?.events ?? []).some((e) => e.event === 'tool_use'), 3_000, 'tool event');
+      const res = await request(server.port, 'GET', base);
+      assert.equal(res.status, 200);
+      const team = JSON.parse(res.body);
+      assert.deepEqual(Object.keys(team).sort(), ['active', 'blocks', 'compact_threshold', 'handoffs', 'seats', 'subagents', 'trace']);
+      assert.equal(team.active.role, 'default');
+      assert.equal(team.active.recent_tools.at(-1).tool, 'Bash');
+      assert.equal(team.seats.at(-1).role, 'you');
+      assert.equal(team.blocks.length, 1);
+      assert.equal(team.blocks[0].ended_at, null);
+      assert.ok(team.blocks[0].tool_calls >= 1);
+      assert.equal((await request(server.port, 'POST', base)).status, 405);
+    } finally {
+      await orchestrator.shutdown(1_000);
+      await server.close();
+    }
+  });
+
+  it('serves the team view of an archived issue', async () => {
+    const logDir = tempDir();
+    const session = { run: 'r1', attempt: null, role: 'default', state: 'Todo', model: null, effort: null, started_at: '2026-10-03T12:00:00.000Z', finished_at: '2026-10-03T12:05:00.000Z', outcome: 'handed_off', verdict: null, round: null };
+    const stage = { id: 'default', label: 'default', kind: 'agent', columns: ['Todo'], status: 'done', sessions: [session], verdict: null, round: null };
+    const event = { seq: 1, at: '2026-10-03T12:01:00.000Z', kind: 'agent', event: 'tool_use', level: 'info', message: 'Bash: ls', run: 'r1', turn: 1, detail: { tool: 'Bash' } };
+    fs.mkdirSync(path.join(logDir, 'issues'), { recursive: true });
+    fs.writeFileSync(
+      path.join(logDir, 'issues', 'acme_app_old.json'),
+      JSON.stringify({ version: 1, pipeline: [stage], issue_id: 'old', issue_identifier: 'acme/app#old', issue_url: null, title: 'Old', repo: null, workspace_path: null, runs: 1, continuations: 0, last_error: null, archived_at: '2026-10-03T12:10:00.000Z', released: true, completed_before: false, timeline: [event], next_seq: 2, sessions: [], run_trace: null, last_check: null }),
+    );
+    const orchestrator = make(logDir, []);
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    try {
+      const res = await request(server.port, 'GET', `/api/v1/${encodeURIComponent('acme/app#old')}/team`);
+      assert.equal(res.status, 200);
+      const team = JSON.parse(res.body);
+      assert.equal(team.active, null);
+      assert.equal(team.blocks.length, 1);
+      assert.equal(team.blocks[0].tool_calls, 1);
+      assert.equal(team.seats[0].status, 'done');
     } finally {
       await orchestrator.shutdown(1_000);
       await server.close();
@@ -942,5 +1152,862 @@ describe('agent settings routes', () => {
     } finally {
       await Promise.all([local.close(), remote.close(), proxied.close()]);
     }
+  });
+});
+
+describe('system route', () => {
+  it('serves current, history and gpu', async () => {
+    const system = new SystemCollector({ procDir: path.join(tempDir(), 'none'), volumes: [], gpu: false, logger: Logger.silent() });
+    await system.collect();
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir()))),
+      runner: new FakeRunner(),
+      logger: Logger.silent(),
+      env: {},
+      logDir: null,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker(),
+    });
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent(), system });
+    try {
+      const res = await request(server.port, 'GET', '/api/v1/system');
+      assert.equal(res.status, 200);
+      const body = JSON.parse(res.body);
+      assert.deepEqual(Object.keys(body).sort(), ['cpu_count', 'current', 'gpu', 'history', 'host', 'usage']);
+      assert.equal(body.gpu, null);
+      assert.equal(body.history.length, 1);
+      assert.deepEqual(Object.keys(body.current).sort(), ['at', 'cpu_percent', 'disks', 'gpu', 'load', 'memory']);
+      assert.equal((await request(server.port, 'POST', '/api/v1/system')).status, 405);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe('page shell (layout.ts, #342)', () => {
+  const PAGES = { dashboard: DASHBOARD_HTML, agent: AGENT_HTML, logs: LOGS_HTML, changes: CHANGES_HTML, tasks: TASKS_HTML, brain: BRAIN_HTML };
+  const header = (html: string): string => html.slice(html.indexOf('<header'), html.indexOf('</header>') + 9);
+  const mainNav = (html: string): string => {
+    const at = html.indexOf('aria-label="Hauptnavigation"');
+    return html.slice(at, html.indexOf('</nav>', at));
+  };
+  const styleOf = (html: string): string => html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+  const count = (text: string, needle: string): number => text.split(needle).length - 1;
+  const ruleOf = (css: string, selector: string): string => {
+    const at = css.indexOf(`\n  ${selector} {`);
+    assert.ok(at >= 0, `${selector} rule`);
+    return css.slice(at, css.indexOf('}', at));
+  };
+
+  it('page() builds the complete document with the tokens CSS, BASE_JS and the shell', () => {
+    const html = shellPage({ aurora: AURORA.overview, title: 'A<b', nav: null, body: '<p>x</p>', scripts: 'pageScript();' });
+    assert.ok(html.startsWith('<!doctype html>\n<html lang="de">'));
+    assert.match(html, /<title>A&lt;b<\/title>/);
+    for (const part of [TOKENS_CSS, LAYOUT_CSS, BASE_JS, LAYOUT_JS]) assert.ok(html.includes(part));
+    assert.match(html, /function setLive\(/);
+    assert.ok(html.includes('<main id="main" class="shell-main"><p>x</p></main>'));
+    assert.ok(html.indexOf('pageScript();') > html.indexOf('function setLive('), 'the page script runs after the shell script');
+    assert.equal(count(html, '<script>'), 1);
+    assert.ok(!html.includes('Brotkrumen'), 'no breadcrumbs without crumbs');
+    const withCrumbs = shellPage({ aurora: AURORA.overview, title: 'T', nav: null, crumbs: [{ label: 'Übersicht', href: '/' }, { label: 'X<y' }], body: '', scripts: '' });
+    assert.match(withCrumbs, /<nav class="crumbs" aria-label="Brotkrumen"><ol><li><a href="\/">Übersicht<\/a><\/li><li><span class="crumb-current" id="crumb-current">X&lt;y<\/span><\/li><\/ol><\/nav>/);
+  });
+
+  it('draws the aurora as blurred circles under a dot grid and keeps every page at most 4 blur layers', () => {
+    const aurora = ruleOf(LAYOUT_CSS, '.aurora');
+    assert.match(aurora, /position: absolute/);
+    assert.match(aurora, /pointer-events: none/);
+    assert.match(ruleOf(LAYOUT_CSS, '.aurora > i'), /border-radius: 50%/);
+    assert.doesNotMatch(LAYOUT_CSS, /backdrop-filter/);
+    assert.doesNotMatch(TOKENS_CSS, /radial-gradient/, 'the body ground no longer carries the gradients');
+    for (const [name, html] of Object.entries(PAGES)) {
+      assert.equal(count(html, '<div class="aurora" aria-hidden="true">'), 1, name);
+      assert.ok(count(html, 'filter:blur(') >= 3, `${name}: at least three aurora circles`);
+      const blurs = styleOf(html).match(/(?<!-webkit-)backdrop-filter:\s*blur\(/g) ?? [];
+      assert.ok(blurs.length >= 1 && blurs.length <= 4, `${name}: ${blurs.length} blur layers`);
+    }
+    // Reduced transparency drops the aurora too.
+    assert.match(LAYOUT_CSS, /@media \(prefers-reduced-transparency: reduce\) \{\s*\.aurora \{ display: none; \}/);
+  });
+
+  it('renders exactly one header with logo, LIVE, the main navigation, 5 h chip, version and clock on every page', () => {
+    for (const [name, html] of Object.entries(PAGES)) {
+      assert.equal(count(html, '<header'), 1, name);
+      assert.equal(count(html, 'aria-label="Hauptnavigation"'), 1, `${name}: one main navigation`);
+      const head = header(html);
+      assert.match(head, /<header class="shell-head g">/);
+      assert.match(head, /<a class="brand" href="\/"[^>]*>[\s\S]*<span class="brand-name">Symphony<\/span>/);
+      assert.match(head, /id="shell-live"/);
+      assert.match(head, /id="shell-budget"[^>]*>5h —</);
+      assert.ok(head.includes(`id="shell-version" title="Symphony-Version">v${SYMPHONY_VERSION}<`), name);
+      assert.match(head, /<time class="shell-clock mono" id="shell-clock" aria-label="Uhr"/);
+      assert.match(head, /id="progress"/);
+      const nav = mainNav(html);
+      const links = [...nav.matchAll(/<a class="nv(?: on)?" href="([^"]+)"[^>]*><svg[\s\S]*?<\/svg>([^<]+)<\/a>/g)].map((m) => [m[1], m[2]]);
+      assert.deepEqual(links, [['/', 'Übersicht'], ['/changes', 'Changes'], ['/tasks', 'Tasks'], ['/brain', 'Brain'], ['/stats', 'Statistik']], name);
+    }
+    assert.deepEqual(NAV_ITEMS.map((i) => i.key), ['overview', 'changes', 'tasks', 'brain', 'stats']);
+  });
+
+  it('marks the active entry with aria-current="page" and shows breadcrumbs only on the agent page', () => {
+    const current = (html: string): string[] => [...mainNav(html).matchAll(/href="([^"]+)" aria-current="page"/g)].map((m) => m[1] as string);
+    assert.deepEqual(current(DASHBOARD_HTML), ['/']);
+    assert.deepEqual(current(LOGS_HTML), ['/stats']);
+    assert.deepEqual(current(AGENT_HTML), []);
+    assert.equal(count(mainNav(DASHBOARD_HTML), 'aria-current'), 1);
+    assert.equal(count(AGENT_HTML, '<nav class="crumbs" aria-label="Brotkrumen">'), 1);
+    assert.match(AGENT_HTML, /aria-label="Brotkrumen"><ol><li><a href="\/">Übersicht<\/a><\/li><li><span class="crumb-current" id="crumb-current">Issue<\/span>/);
+    const agent = renderPage(AGENT_HTML, { detail: issueDetail() }, { url: AGENT_URL });
+    assert.equal(agent.$('crumb-current').textContent, '#1 Issue one', 'the crumb names the issue: number and short title');
+    assert.equal(agent.query('nav[aria-label="Brotkrumen"] a[href="/"]').length, 1);
+    for (const html of [DASHBOARD_HTML, LOGS_HTML]) assert.ok(!html.includes('aria-label="Brotkrumen"'));
+  });
+
+  it('goes back in the history from the Übersicht crumb only when the dashboard was the previous page', () => {
+    const crumb = (page: ReturnType<typeof renderPage>) => page.query('nav[aria-label="Brotkrumen"] a[href="/"]')[0]!;
+    const from = renderPage(AGENT_HTML, { detail: issueDetail() }, { url: AGENT_URL, referrer: 'http://127.0.0.1/', historyLength: 2 });
+    from.click(crumb(from));
+    assert.equal(from.backs, 1);
+    const direct = renderPage(AGENT_HTML, { detail: issueDetail() }, { url: AGENT_URL, historyLength: 2 });
+    direct.click(crumb(direct));
+    assert.equal(direct.backs, 0, 'no referrer: the link navigates');
+    const other = renderPage(AGENT_HTML, { detail: issueDetail() }, { url: AGENT_URL, referrer: 'http://127.0.0.1/stats', historyLength: 2 });
+    other.click(crumb(other));
+    assert.equal(other.backs, 0, 'another page: the link navigates');
+    const fresh = renderPage(AGENT_HTML, { detail: issueDetail() }, { url: AGENT_URL, referrer: 'http://127.0.0.1/', historyLength: 1 });
+    fresh.click(crumb(fresh));
+    assert.equal(fresh.backs, 0, 'nothing to go back to');
+  });
+
+  it('replaces the three copied top bars; the page actions live in <main>', () => {
+    for (const [name, html] of Object.entries(PAGES)) {
+      for (const old of ['class="topbar"', 'topbar-inner', 'brand-sub', 'AGENT ORCHESTRATOR', 'AGENT TRACE', 'STATISTICS &amp; ANALYTICS', 'id="back"', 'id="sys-version"', 'id="sys-updated"']) {
+        assert.ok(!html.includes(old), `${name} still has ${old}`);
+      }
+      assert.equal(count(html, '<main id="main" class="shell-main">'), 1, name);
+      assert.equal(count(html, 'id="announce"'), 1, name);
+    }
+    assert.doesNotMatch(TOKENS_CSS, /\.topbar|\.brand|\.sysinfo|@keyframes sweep/);
+    const main = (html: string): string => html.slice(html.indexOf('<main id="main" class="shell-main">'), html.indexOf('</main>'));
+    for (const id of ['logs-open', 'page-title', 'ov-subtitle', 'ov-chips']) assert.ok(main(DASHBOARD_HTML).includes(`id="${id}"`), id);
+    assert.match(main(DASHBOARD_HTML), /<h1 id="page-title">Übersicht<\/h1>/);
+    assert.doesNotMatch(main(DASHBOARD_HTML), /class="sysinfo"/);
+    for (const id of ['raw', 'reload']) assert.ok(main(LOGS_HTML).includes(`id="${id}"`), id);
+  });
+
+  it('LIVE is set by the client: setLive() switches green/pulse and gray, every page calls it; the clock ticks', () => {
+    const nodes = new Map<string, FakeElement>([['shell-live', new FakeElement('span')], ['shell-live-text', new FakeElement('span')], ['shell-clock', new FakeElement('time')]]);
+    const timers: Array<[() => void, number]> = [];
+    const ctx = vm.createContext({
+      document: { getElementById: (id: string) => nodes.get(id) ?? null },
+      setInterval: (fn: () => void, ms: number) => timers.push([fn, ms]),
+      fmtClock: (iso: string) => 'clock:' + iso.slice(11, 19),
+    });
+    vm.runInContext(LAYOUT_JS, ctx);
+    const live = nodes.get('shell-live') as FakeElement & { title?: string };
+    vm.runInContext('setLive(true)', ctx);
+    assert.deepEqual(live.className.split(' ').sort(), ['sh-chip', 'shell-live', 'tone-green']);
+    assert.equal(nodes.get('shell-live-text')?.textContent, 'LIVE');
+    vm.runInContext('setLive(false)', ctx);
+    assert.equal(live.className, 'sh-chip shell-live tone-gray');
+    assert.equal(nodes.get('shell-live-text')?.textContent, 'OFFLINE');
+    const clock = nodes.get('shell-clock') as FakeElement;
+    assert.match(clock.textContent, /^clock:\d\d:\d\d:\d\d$/);
+    assert.match(clock.getAttribute('datetime') ?? '', /^\d{4}-\d\d-\d\dT/);
+    assert.deepEqual(timers.map((t) => t[1]), [1000, 30000]);
+  });
+
+  it('every page switches LIVE: green with data, gray without', async () => {
+    const tone = (page: { $(id: string): { className: string } }) => page.$('shell-live').className;
+    const dashboard = renderPage(DASHBOARD_HTML, dashboardState());
+    assert.match(tone(dashboard), /tone-green/);
+    const agent = renderPage(AGENT_HTML, { detail: issueDetail(), online: true }, { url: AGENT_URL });
+    assert.match(tone(agent), /tone-green/);
+    agent.render({ online: false });
+    assert.match(tone(agent), /tone-gray/);
+    const logs = renderPage(LOGS_HTML, undefined, { fetch: () => analyticsFixture() });
+    await until(() => /tone-green/.test(tone(logs)), 3_000, 'logs LIVE green');
+    const broken = renderPage(LOGS_HTML, undefined, { fetch: () => { throw new Error('offline'); } });
+    await until(() => /tone-gray/.test(tone(broken)), 3_000, 'logs LIVE gray');
+  });
+
+  it('at 390 px the navigation scrolls inside its frame, the page does not; touch targets are at least 44px', () => {
+    assert.match(ruleOf(LAYOUT_CSS, '.shell-well'), /overflow-x: auto/);
+    assert.match(ruleOf(LAYOUT_CSS, '.shell-nav'), /min-width: 0/);
+    const pill = ruleOf(LAYOUT_CSS, '.nv');
+    assert.match(pill, /min-height: 44px/);
+    assert.match(pill, /display: inline-flex/);
+    assert.match(pill, /white-space: nowrap/);
+    assert.match(ruleOf(LAYOUT_CSS, '.brand'), /min-height: 44px/);
+    assert.match(ruleOf(LAYOUT_CSS, '.crumbs a'), /min-height: 44px/);
+    assert.match(LAYOUT_CSS, /@media \(max-width: 640px\) \{[^@]*\.shell-nav \{ order: 3; flex-basis: 100%; \}/);
+    assert.match(TOKENS_CSS, /body \{[^}]*overflow-x: hidden/);
+  });
+
+  it('shows German shell texts (Übersicht, Statistik, Uhr, Brotkrumen); Changes, Tasks and Brain stay', () => {
+    for (const [name, html] of Object.entries(PAGES)) {
+      const head = header(html);
+      for (const text of ['Übersicht', 'Changes', 'Tasks', 'Brain', 'Statistik', 'aria-label="Uhr"', 'title="5-h-Fenster"']) assert.ok(head.includes(text), `${name}: ${text}`);
+      for (const text of ['>Overview<', '>Dashboard<', '>Logs<', 'Statistics', 'Clock']) assert.ok(!head.includes(text), `${name}: ${text}`);
+    }
+  });
+});
+
+describe('GET /api/v1/budget', () => {
+  let server: HttpServerHandle;
+
+  before(async () => {
+    const logDir = tempDir();
+    fs.mkdirSync(path.join(logDir, 'budget'));
+    fs.writeFileSync(
+      path.join(logDir, 'budget', 'rate-limits.jsonl'),
+      `${JSON.stringify({ at: new Date().toISOString(), run_id: 'r', issue: 'acme/app#1', role: 'developer', model: null, rate_limit_info: { rateLimitType: 'five_hour', status: 'allowed' } })}\n`,
+    );
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir()))),
+      runner: new FakeRunner(),
+      logger: Logger.silent(),
+      env: {},
+      logDir,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker(),
+    });
+    server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+  });
+
+  after(async () => {
+    await server.close();
+  });
+
+  it('answers both windows with usage, forecast and by_role', async () => {
+    const res = await request(server.port, 'GET', '/api/v1/budget');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.deepEqual(Object.keys(body).sort(), ['five_hour', 'generated_at', 'seven_day']);
+    assert.ok(!Number.isNaN(Date.parse(body.generated_at)));
+    for (const window of ['five_hour', 'seven_day']) {
+      const item = body[window];
+      assert.equal(item.window, window);
+      assert.equal(item.used_tokens, 0);
+      assert.equal(item.burn_rate_per_min, 0);
+      assert.equal(item.forecast, null);
+      assert.equal(item.alert, false);
+      assert.deepEqual(item.by_role, {});
+      assert.ok('resets_at' in item);
+    }
+  });
+
+  it('rejects other methods', async () => {
+    assert.equal((await request(server.port, 'POST', '/api/v1/budget')).status, 405);
+  });
+});
+
+describe('dashboard page behaviour', () => {
+  const ID = 'acme/app#2';
+  const idPath = encodeURIComponent(ID);
+  const waiting = (over: Record<string, unknown> = {}) =>
+    issueRow({
+      issue_id: '2', issue_identifier: ID, title: 'Second', status: 'retrying', section: 'waiting', running: null, tracked: true, position: null,
+      reason: { code: 'backoff', text: 'Backoff until 2026-10-30 12:30 UTC' },
+      retry: { kind: 'failure', attempt: 2, due_at: '2026-10-30T12:30:00Z', due_in_ms: 1_800_000, error: 'boom', limit: null },
+      ...over,
+    });
+  const render = (issues: unknown[], over: Record<string, unknown> = {}, opts = {}) => renderPage(DASHBOARD_HTML, dashboardState({ issues, ...over }), opts);
+  const buttons = (page: ReturnType<typeof renderPage>) => page.query('button.restart');
+  const button = (page: ReturnType<typeof renderPage>, text: string) => {
+    const found = buttons(page).find((b) => b.textContent === text);
+    assert.ok(found, `button ${text}`);
+    return found;
+  };
+
+  it('loads the state, the history and the system cards and the budget when the page opens', () => {
+    const page = renderPage(DASHBOARD_HTML);
+    assert.deepEqual(page.fetches.map((f) => f.url), ['/api/v1/budget', '/api/v1/state', '/api/v1/history', '/api/v1/activity?minutes=30', '/api/v1/brain/vitals', '/api/v1/brain/access?limit=50', '/api/v1/brain/clashes?status=open', '/api/v1/system', '/api/v1/brain/clashes?status=open', '/api/v1/brain/vitals']);
+  });
+
+  it('shows only running cards and the compact line to /tasks; the dispatch plan lives on the Tasks page', () => {
+    const page = render(
+      [issueRow(), waiting({ issue_id: '3', issue_identifier: 'acme/app#3', section: 'next', status: 'queued', retry: null, reason: { code: 'ready', text: 'Ready' }, position: 1 }), waiting()],
+      { counts: { ...dashboardState().counts, running: 1, queued: 4 } },
+    );
+    assert.equal(page.$('running').children.length, 1);
+    assert.equal(page.$('running-count').textContent, '01');
+    assert.equal(page.$('tasks-line-text').textContent, '1 Slot belegt · 4 in der Queue');
+    const idle = render([], { counts: { ...dashboardState().counts, running: 3, queued: 0 } });
+    assert.equal(idle.$('tasks-line-text').textContent, '3 Slots belegt · 0 in der Queue');
+  });
+
+  it('links the card title to the issue page and shows model and phase of a running issue', () => {
+    const page = render([issueRow()], { counts: { ...dashboardState().counts, running: 1 } });
+    assert.equal(page.$('running').querySelector('a.agent-link')!.href, '/issue?id=acme%2Fapp%231');
+    const fields = page.$('running').querySelectorAll('dd').map((d) => d.textContent);
+    assert.deepEqual(fields, ['claude-code-default', 'StreamingTurn']);
+  });
+
+  it('offers Pause on a running card and posts the click', () => {
+    const page = render([issueRow()], { counts: { ...dashboardState().counts, running: 1 } });
+    assert.deepEqual(buttons(page).map((b) => b.textContent), ['Pause']);
+    page.click(button(page, 'Pause'));
+    assert.deepEqual(page.fetches.filter((f) => f.method === 'POST').map((f) => `${f.method} ${f.url}`), [`POST /api/v1/acme%2Fapp%231/pause`]);
+  });
+
+  it('names held models in the alerts panel only', () => {
+    const hold = { model: 'opus', source: 'limit', until: '2026-10-30T14:00:00Z', since: '2026-10-30T11:00:00Z', issue_identifier: ID, text: 'weekly limit' };
+    const page = render([waiting({ status: 'queued', retry: null, reason: null, model_hold: hold })], { model_holds: [hold] });
+    assert.match(page.$('alerts-list').textContent, /Model-Hold.*opus pausiert · Limit bis \d\d:\d\d/);
+    assert.equal(page.$('alerts-count').textContent, '1');
+    assert.equal(render([]).$('alerts-count').textContent, '0');
+  });
+
+  const stagesOf = (verdictStage: Record<string, unknown>) => [
+    { id: 'dev', label: 'developer', kind: 'agent', columns: ['In progress'], status: 'active', sessions: [], verdict: null, round: null, ...verdictStage },
+    { id: 'rev', label: 'reviewer', kind: 'agent', columns: ['Review'], status: 'skipped', sessions: [], verdict: null, round: null },
+  ];
+
+  it('draws the pipeline of a card with its verdict, round and skipped stage', () => {
+    const page = render([issueRow({ stages: stagesOf({ verdict: 'changes_needed', round: 1 }) })]);
+    const nodes = page.$('running').querySelectorAll('.pipe-node');
+    assert.equal(nodes.length, 2);
+    assert.match(nodes[0]!.title, /verdict: changes needed · round 1/);
+    assert.match(nodes[1]!.className, /st-skipped/);
+    assert.equal(page.$('running').querySelectorAll('.pipe-node.st-skipped').length, 1);
+  });
+
+  it('shows the dispatch gate only when the session limit paused the dispatch', () => {
+    const gate = { until: '2026-10-30T14:00:00Z', window: 'five_hour', issue_identifier: ID };
+    const page = render([], { health: { ...dashboardState().health, dispatch_gate: gate } });
+    assert.equal(page.$('dispatch-gate').hidden, false);
+    assert.match(page.$('dispatch-gate-text').textContent, /^Dispatch paused until .* · session limit \(five_hour\) · started by acme\/app#2$/);
+    assert.equal(render([]).$('dispatch-gate').hidden, true);
+  });
+
+  it('disables every control on a bind that does not allow remote control', () => {
+    const page = render([issueRow()], { controls: { retry: false }, counts: { ...dashboardState().counts, running: 1 } });
+    assert.equal(buttons(page).length, 0);
+    assert.match(page.$('running').textContent, /Controls disabled/);
+  });
+});
+
+describe('agent page behaviour', () => {
+  const opts = { url: AGENT_URL };
+  const retrying = (retry: Record<string, unknown>) => issueDetail({ status: 'retrying', running: null, retry });
+  const sessionLimit = { kind: 'session_limit', attempt: 1, due_at: '2026-10-30T13:00:00Z', due_in_ms: 3_600_000, error: 'limit', limit: { waiting: true, resets_at: '2026-10-30T13:00:00Z', window: 'five_hour', text: 'You hit the limit', hits: 1, max_retries: 3 } };
+
+  it('shows a stage result with a link to its comment', () => {
+    const results = [{ role: 'developer', kind: 'implementation', verdict: 'done', round: null, target: 'Agent review', summary: 'Done.', created_at: '2026-10-30T11:00:00Z', url: 'https://github.com/acme/app/issues/1#issuecomment-1', findings: [], blockers: [] }];
+    const page = renderPage(AGENT_HTML, { detail: issueDetail({ results }) }, opts);
+    const [link] = page.$('result-cards').querySelectorAll('a');
+    assert.equal(link!.textContent, 'Kommentar ↗');
+    assert.equal(link!.href, results[0]!.url);
+    assert.equal(page.$('results-section').hidden, false);
+  });
+
+  it('explains a session limit with the window and the reset time', () => {
+    const page = renderPage(AGENT_HTML, { detail: retrying(sessionLimit) }, opts);
+    const alert = page.$('alert');
+    assert.equal(alert.hidden, false);
+    assert.match(alert.className, /tone-amber/);
+    assert.match(alert.textContent, /Session limit reached/);
+    assert.match(alert.textContent, /five hour/);
+    assert.match(alert.textContent, /Resets at/);
+    assert.match(page.$('main').textContent, /⏳ Waiting for limit/);
+    const event = { seq: 1, at: '2026-10-30T11:59:00Z', kind: 'orchestrator', event: 'retry_scheduled', level: 'info', message: 'x', detail: { kind: 'session_limit', attempt: 1, due_at: '2026-10-30T13:00:00Z', limit: sessionLimit.limit } };
+    const timeline = renderPage(AGENT_HTML, { detail: retrying(sessionLimit), events: [event], dirty: true }, opts);
+    assert.match(timeline.$('timeline').textContent, /WAITING FOR RESET/);
+  });
+
+  it('counts the session limit retries while the limit is not yet waiting', () => {
+    const limit = { ...sessionLimit.limit, waiting: false, hits: 1, max_retries: 3 };
+    const event = { seq: 1, at: '2026-10-30T11:59:00Z', kind: 'orchestrator', event: 'retry_scheduled', level: 'info', message: 'x', detail: { kind: 'session_limit', attempt: 1, due_at: '2026-10-30T13:00:00Z', limit } };
+    const page = renderPage(AGENT_HTML, { detail: retrying({ ...sessionLimit, limit }), events: [event], dirty: true }, opts);
+    assert.match(page.$('timeline').textContent, /SESSION LIMIT · RETRY 1\/3/);
+    assert.doesNotMatch(page.$('timeline').textContent, /WAITING FOR RESET/);
+    assert.match(page.$('main').textContent, /⏳ Session limit #1/);
+    assert.doesNotMatch(page.$('main').textContent, /Waiting for limit/);
+  });
+
+  it('labels a session that ended on the limit', () => {
+    const session = { run: 'r1', attempt: null, role: 'default', state: 'Todo', model: null, effort: null, started_at: '2026-10-30T11:00:00Z', finished_at: '2026-10-30T11:30:00Z', outcome: 'session_limit', transcript: null };
+    const page = renderPage(AGENT_HTML, { detail: issueDetail({ sessions: [session] }) }, opts);
+    assert.match(page.$('main').textContent, /session limit/);
+  });
+
+  it('draws the pipeline with verdict, round and the skipped stage', () => {
+    const pipeline = [
+      { id: 'dev', label: 'developer', kind: 'agent', columns: ['In progress'], status: 'done', sessions: [], verdict: 'changes_needed', round: 1 },
+      { id: 'rev', label: 'reviewer', kind: 'agent', columns: ['Review'], status: 'skipped', sessions: [], verdict: null, round: null },
+    ];
+    const page = renderPage(AGENT_HTML, { detail: issueDetail({ pipeline }) }, opts);
+    const verdict = page.$('pipeline').querySelector('.pipe-verdict.vd-warn')!;
+    assert.equal(verdict.textContent, 'changes needed · round 1');
+    assert.equal(page.$('pipeline').querySelectorAll('.pipe-node.st-skipped').length, 1);
+  });
+
+  it('pauses a running issue and shows Resume now for an operator pause', () => {
+    const running = renderPage(AGENT_HTML, { detail: issueDetail() }, opts);
+    const pause = running.query('#head-actions button.restart').find((b) => b.textContent === 'Pausieren')!;
+    running.click(pause);
+    assert.deepEqual(running.fetches.at(-1), { url: '/api/v1/acme%2Fapp%231/pause', method: 'POST' });
+    const paused = renderPage(AGENT_HTML, { detail: issueDetail({ status: 'paused', running: null, paused: { source: 'operator', paused_at: '2026-10-30T11:50:00Z', continuations: 0 } }) }, opts);
+    assert.match(paused.$('alert').textContent, /Paused by operator/);
+    const resume = paused.query('button.restart').find((b) => b.textContent === 'Resume now')!;
+    paused.click(resume);
+    assert.equal(paused.fetches.at(-1)!.url, '/api/v1/acme%2Fapp%231/resume');
+  });
+
+  it('asks before Start now when every slot is taken', () => {
+    const detail = retrying(sessionLimit);
+    detail.slots = { running: 1, forced: 0, limit: 1 };
+    const page = renderPage(AGENT_HTML, { detail }, { ...opts, confirm: false });
+    const force = page.query('#head-actions button.restart').find((b) => b.textContent === 'Jetzt starten')!;
+    const before = page.fetches.length;
+    page.click(force);
+    assert.deepEqual(page.confirms, ['All 1 slot is busy. Start #1 in an extra slot?']);
+    assert.equal(page.fetches.length, before);
+  });
+
+  it('lists the restart and extra-slot events in the timeline', () => {
+    const event = (seq: number, name: string, message: string) => ({ seq, at: '2026-10-30T11:59:00Z', kind: 'orchestrator', event: name, level: 'info', message, detail: {} });
+    const page = renderPage(AGENT_HTML, { detail: issueDetail(), events: [event(1, 'worker_restarted', 'Restarted'), event(2, 'worker_forced', 'Forced')], dirty: true }, opts);
+    const text = page.$('timeline').textContent;
+    assert.match(text, /WORKER RESTARTED/);
+    assert.match(text, /STARTED IN AN EXTRA SLOT/);
+  });
+
+  it('fetches the incremental timeline and the session transcript while polling', async () => {
+    const detail = issueDetail({ timeline_seq: 1, sessions: [{ run: 'r1', attempt: null, role: 'default', state: 'Todo', model: null, effort: null, started_at: '2026-10-30T11:00:00Z', finished_at: null, outcome: null, transcript: '/t/r1.jsonl' }] });
+    const page = renderPage(AGENT_HTML, undefined, {
+      ...opts,
+      fetch: (url) => (url.includes('/timeline') ? { events: [], latest_seq: 1, first_seq: 1 } : url.includes('/transcript') ? { available: true, entries: [], next_offset: 0, more: false } : detail),
+    });
+    await until(() => page.fetches.some((f) => f.url.includes('/transcript?run=')), 3_000, 'transcript request');
+    const urls = page.fetches.map((f) => f.url);
+    assert.ok(urls.some((u) => u.endsWith('/timeline?after=0')), urls.join(' '));
+    assert.ok(urls.some((u) => u.includes('/transcript?run=r1')));
+  });
+});
+
+describe('brain routes', () => {
+  async function start(brain: { enabled: boolean; path: string } | null) {
+    const front = baseFront(tempDir(), brain ? { brain } : {});
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(front)),
+      runner: new FakeRunner(),
+      logger: Logger.silent(),
+      env: {},
+      logDir: null,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker(),
+    });
+    await orchestrator.buildBrainIndex();
+    return { orchestrator, server: await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() }) };
+  }
+
+  it('answers 404 brain_disabled without the brain', async () => {
+    const { server } = await start(null);
+    try {
+      for (const route of ['vitals', 'candidates', 'graph?root=Repos%2Facme-app%2Findex.md']) {
+        const res = await request(server.port, 'GET', `/api/v1/brain/${route}`);
+        assert.equal(res.status, 404);
+        assert.equal(JSON.parse(res.body).error.code, 'brain_disabled');
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('serves vitals and candidates', async () => {
+    const vault = path.join(tempDir(), 'vault');
+    await ensureVault(vault, ['acme/app'], new Date('2026-10-01T00:00:00Z'));
+    const note = (created: string) => `---\ntype: lesson\nstatus: candidate\ncreated: ${created}\n---\n# L${created}\n`;
+    fs.writeFileSync(path.join(vault, 'Inbox/new.md'), note('2026-10-05'));
+    fs.writeFileSync(path.join(vault, 'Inbox/old.md'), note('2026-10-02'));
+    const { server } = await start({ enabled: true, path: vault });
+    try {
+      const vitals = await request(server.port, 'GET', '/api/v1/brain/vitals');
+      assert.equal(vitals.status, 200);
+      const body = JSON.parse(vitals.body);
+      assert.deepEqual(Object.keys(body).sort(), ['broken_links', 'candidates', 'clash_window_min', 'clashes', 'commits', 'folders', 'last_commit', 'links', 'notes', 'notes_by_status', 'obsidian_url', 'orphans', 'path', 'reads_today', 'writes_today']);
+      assert.equal(body.notes_by_status.candidate, 2);
+      assert.equal(body.candidates, 2);
+      assert.equal(body.obsidian_url, null);
+      const inbox = body.folders.find((f: { path: string }) => f.path === 'Inbox');
+      assert.equal(inbox.notes_by_status.candidate, 2);
+      assert.equal(body.writes_today, 0);
+      assert.deepEqual(body.reads_today, { total: 0, by_folder: [] });
+      assert.deepEqual(body.clashes, { week: { total: 0, resolved: 0 } });
+      assert.ok(body.commits.total >= 1);
+      assert.equal(body.clash_window_min, 10);
+      assert.equal(body.path, vault);
+      assert.equal(body.notes.candidate, 2);
+      assert.equal(body.notes.total, body.notes_by_status.approved + body.notes_by_status.candidate + body.notes_by_status.deprecated + body.notes_by_status.none);
+      assert.equal(typeof body.links.per_note, 'number');
+      assert.equal(body.last_commit.sha.length, 40);
+      assert.equal(body.last_commit.author, 'symphony');
+      const candidates = JSON.parse((await request(server.port, 'GET', '/api/v1/brain/candidates')).body).candidates;
+      assert.deepEqual(candidates.map((c: { path: string }) => c.path), ['Inbox/old.md', 'Inbox/new.md']);
+      assert.equal(candidates[0].target, 'Lessons/');
+      assert.equal(candidates[0].preview, '# L2026-10-02');
+      const post = await request(server.port, 'POST', '/api/v1/brain/vitals');
+      assert.equal(post.status, 405);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('serves the graph around a repository index with depth, limit and broken links (E7-7b)', async () => {
+    const vault = path.join(tempDir(), 'vault');
+    await ensureVault(vault, ['acme/app', 'acme/big'], new Date('2026-10-01T00:00:00Z'));
+    const put = (rel: string, text: string) => fs.writeFileSync(path.join(vault, rel), text);
+    put('Repos/acme-app/index.md', '---\ntype: index\nstatus: approved\n---\n# App\n[[Lessons/a]] [[Lessons/fehlt]]\n');
+    put('Lessons/a.md', '---\nstatus: candidate\n---\n# A\n[[Lessons/b]]\n');
+    put('Lessons/b.md', '---\nstatus: approved\n---\n# B\n');
+    put('Repos/acme-big/index.md', `# Big\n${Array.from({ length: 160 }, (_, i) => `[[Lessons/n${i}]]`).join(' ')}\n`);
+    for (let i = 0; i < 160; i++) put(`Lessons/n${i}.md`, `# N${i}\n`);
+    const { server } = await start({ enabled: true, path: vault });
+    try {
+      const res = await request(server.port, 'GET', '/api/v1/brain/graph?root=Repos%2Facme-app%2Findex&depth=2');
+      assert.equal(res.status, 200);
+      const graph = JSON.parse(res.body);
+      assert.equal(graph.root, 'Repos/acme-app/index.md');
+      assert.equal(graph.truncated, false);
+      const node = (p: string) => graph.nodes.find((n: { path: string }) => n.path === p);
+      assert.deepEqual(node('Repos/acme-app/index.md'), { path: 'Repos/acme-app/index.md', title: 'App', status: 'approved', type: 'index', missing: false, depth: 0 });
+      assert.equal(node('Lessons/a.md').status, 'candidate');
+      assert.equal(node('Lessons/b.md').depth, 2);
+      assert.deepEqual(node('Lessons/fehlt.md'), { path: 'Lessons/fehlt.md', title: 'fehlt', status: null, type: null, missing: true, depth: 1 });
+      assert.deepEqual(graph.edges.find((e: { to: string }) => e.to === 'Lessons/fehlt.md'), { from: 'Repos/acme-app/index.md', to: 'Lessons/fehlt.md', broken: true });
+      assert.ok(graph.edges.some((e: { from: string; to: string; broken: boolean }) => e.from === 'Lessons/a.md' && e.to === 'Lessons/b.md' && !e.broken));
+
+      const shallow = JSON.parse((await request(server.port, 'GET', '/api/v1/brain/graph?root=Repos/acme-app/index.md&depth=1')).body);
+      assert.equal(shallow.depth, 1);
+      assert.ok(shallow.nodes.every((n: { path: string }) => n.path !== 'Lessons/b.md'));
+      assert.ok(shallow.nodes.some((n: { path: string }) => n.path === 'Lessons/a.md'));
+
+      const big = JSON.parse((await request(server.port, 'GET', '/api/v1/brain/graph?root=Repos/acme-big/index.md')).body);
+      assert.equal(big.depth, 2);
+      assert.equal(big.nodes.length, 150);
+      assert.equal(big.truncated, true);
+      const kept = new Set(big.nodes.map((n: { path: string }) => n.path));
+      assert.ok(big.edges.every((e: { from: string; to: string }) => kept.has(e.from) && kept.has(e.to)));
+
+      for (const [url, status, code] of [
+        ['/api/v1/brain/graph', 400, 'bad_request'],
+        ['/api/v1/brain/graph?root=Repos/acme-app/index.md&depth=9', 400, 'bad_request'],
+        ['/api/v1/brain/graph?root=Repos/acme-app/index.md&depth=x', 400, 'bad_request'],
+        ['/api/v1/brain/graph?root=Nope.md', 404, 'root_not_found'],
+      ] as const) {
+        const failed = await request(server.port, 'GET', url);
+        assert.equal(failed.status, status, url);
+        assert.equal(JSON.parse(failed.body).error.code, code, url);
+      }
+      assert.equal((await request(server.port, 'POST', '/api/v1/brain/graph?root=Repos/acme-app/index.md')).status, 405);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe('brain access, clashes and promotion routes (E7-6b)', () => {
+  const sh = (dir: string, ...args: string[]): string => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+  const candidate = '---\ntype: lesson\nstatus: candidate\ncreated: 2026-10-20\n---\n# X\n';
+
+  async function start(options: { brain?: boolean; host?: string; allowRemoteControl?: boolean; access?: string } = {}) {
+    const vault = path.join(tempDir(), 'vault');
+    await ensureVault(vault, ['acme/app'], new Date('2026-10-01T00:00:00Z'));
+    fs.writeFileSync(path.join(vault, 'Inbox/x.md'), candidate);
+    sh(vault, '-c', 'user.name=t', '-c', 'user.email=t@local', 'add', '-A');
+    sh(vault, '-c', 'user.name=t', '-c', 'user.email=t@local', 'commit', '-q', '-m', 'candidate');
+    const logDir = tempDir();
+    if (options.access !== undefined) {
+      fs.mkdirSync(path.join(logDir, 'brain'));
+      fs.writeFileSync(path.join(logDir, 'brain', 'access.jsonl'), options.access);
+    }
+    const front = baseFront(tempDir(), options.brain === false ? {} : { brain: { enabled: true, path: vault } });
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(front)),
+      runner: new FakeRunner(),
+      logger: Logger.silent(),
+      env: {},
+      logDir,
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker(),
+    });
+    await orchestrator.buildBrainIndex();
+    orchestrator.loadBrainAccess();
+    const server = await startHttpServer({
+      host: options.host ?? '127.0.0.1',
+      port: 0,
+      orchestrator,
+      logger: Logger.silent(),
+      ...(options.allowRemoteControl ? { allowRemoteControl: true } : {}),
+    });
+    return { vault, server };
+  }
+  const json = (res: { body: string }) => JSON.parse(res.body);
+  const candidates = async (port: number): Promise<string[]> => json(await request(port, 'GET', '/api/v1/brain/candidates')).candidates.map((c: { path: string }) => c.path);
+
+  it('approve moves and commits as human, the candidate leaves /candidates, revert brings it back', async () => {
+    const { vault, server } = await start();
+    try {
+      assert.deepEqual(await candidates(server.port), ['Inbox/x.md']);
+      const approved = await request(server.port, 'POST', '/api/v1/brain/candidates/Inbox%2Fx.md/approve');
+      assert.equal(approved.status, 200, approved.body);
+      const body = json(approved);
+      assert.equal(body.path, 'Lessons/x.md');
+      assert.equal(body.previous_path, 'Inbox/x.md');
+      assert.equal(body.hash, createHash('sha256').update(fs.readFileSync(path.join(vault, 'Lessons/x.md'))).digest('hex'));
+      assert.match(body.sha, /^[0-9a-f]{40}$/);
+      assert.equal(fs.existsSync(path.join(vault, 'Inbox/x.md')), false);
+      assert.match(fs.readFileSync(path.join(vault, 'Lessons/x.md'), 'utf8'), /status: approved\n[\s\S]*updated: /);
+      assert.equal(sh(vault, 'log', '-1', '--format=%an|%s'), 'human|approve: Inbox/x.md');
+      assert.deepEqual(await candidates(server.port), []);
+
+      const reverted = await request(server.port, 'POST', '/api/v1/brain/candidates/Lessons%2Fx.md/revert');
+      assert.equal(reverted.status, 200, reverted.body);
+      assert.equal(json(reverted).path, 'Inbox/x.md');
+      assert.equal(json(reverted).previous_path, 'Lessons/x.md');
+      assert.equal(fs.readFileSync(path.join(vault, 'Inbox/x.md'), 'utf8'), candidate);
+      assert.equal(fs.existsSync(path.join(vault, 'Lessons/x.md')), false);
+      assert.equal(sh(vault, 'log', '-1', '--format=%an'), 'human');
+      assert.deepEqual(await candidates(server.port), ['Inbox/x.md']);
+
+      const again = await request(server.port, 'POST', '/api/v1/brain/candidates/Inbox%2Fx.md/revert');
+      assert.equal(again.status, 409);
+      assert.equal(json(again).error.code, 'no_approve_commit');
+      const missing = await request(server.port, 'POST', '/api/v1/brain/candidates/Lessons%2Fnone.md/revert');
+      assert.equal(missing.status, 404);
+      assert.equal(json(missing).error.code, 'note_not_found');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('reject sets deprecated, leaves the file and commits reject: <path>', async () => {
+    const { vault, server } = await start();
+    try {
+      const res = await request(server.port, 'POST', '/api/v1/brain/candidates/Inbox%2Fx.md/reject');
+      assert.equal(res.status, 200, res.body);
+      assert.equal(json(res).path, 'Inbox/x.md');
+      const text = fs.readFileSync(path.join(vault, 'Inbox/x.md'), 'utf8');
+      assert.match(text, /status: deprecated/);
+      assert.match(text, /updated: /);
+      assert.equal(sh(vault, 'log', '-1', '--format=%an|%s'), 'human|reject: Inbox/x.md');
+      assert.deepEqual(await candidates(server.port), []);
+      const twice = await request(server.port, 'POST', '/api/v1/brain/candidates/Inbox%2Fx.md/reject');
+      assert.equal(twice.status, 409);
+      assert.equal(json(twice).error.code, 'not_candidate');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('answers 400 for a path out of the vault, into .obsidian, not .md or badly encoded', async () => {
+    const { server } = await start();
+    try {
+      for (const bad of ['..%2F..%2Fetc%2Fpasswd.md', '.obsidian%2Fx.md', 'Inbox%2Fx.txt', '%E0%A4%A']) {
+        for (const action of ['approve', 'reject', 'revert']) {
+          const res = await request(server.port, 'POST', `/api/v1/brain/candidates/${bad}/${action}`);
+          assert.equal(res.status, 400, `${bad} ${action}: ${res.body}`);
+          assert.equal(json(res).error.code, 'bad_request');
+        }
+      }
+      const get = await request(server.port, 'GET', '/api/v1/brain/candidates/Inbox%2Fx.md/approve');
+      assert.equal(get.status, 405);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('refuses the POST routes without controlAllowed (403)', async () => {
+    const routes = ['candidates/Inbox%2Fx.md/approve', 'candidates/Inbox%2Fx.md/reject', 'candidates/Lessons%2Fx.md/revert', 'clashes/c1/resolve'];
+    const remote = await start({ host: '0.0.0.0' });
+    const proxied = await start({ host: '0.0.0.0', allowRemoteControl: true });
+    try {
+      for (const route of routes) {
+        const off = await request(remote.server.port, 'POST', `/api/v1/brain/${route}`);
+        assert.equal(off.status, 403);
+        assert.equal(json(off).error.code, 'control_disabled');
+        const foreign = await request(proxied.server.port, 'POST', `/api/v1/brain/${route}`, { origin: 'https://evil.example' });
+        assert.equal(foreign.status, 403);
+        assert.equal(json(foreign).error.code, 'forbidden_origin');
+      }
+      assert.ok(fs.existsSync(path.join(remote.vault, 'Inbox/x.md')));
+      assert.match(fs.readFileSync(path.join(proxied.vault, 'Inbox/x.md'), 'utf8'), /status: candidate/);
+    } finally {
+      await remote.server.close();
+      await proxied.server.close();
+    }
+  });
+
+  it('GET /access filters by the exact issue', async () => {
+    const row = (issue: string, p: string) => `${JSON.stringify({ at: '2026-10-30T10:00:00.000Z', run: 'r', issue, role: 'developer', op: 'read', path_or_query: p, result: 'ok' })}\n`;
+    const { server } = await start({ access: row('acme/app#1', 'a.md') + row('acme/app#10', 'b.md') });
+    try {
+      const res = await request(server.port, 'GET', '/api/v1/brain/access?issue=acme%2Fapp%231');
+      assert.deepEqual(json(res).access.map((a: { path_or_query: string }) => a.path_or_query), ['a.md']);
+      assert.equal(json(await request(server.port, 'GET', '/api/v1/brain/access')).access.length, 2);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('GET /access filters by role and q, newest first, purpose as a string, pages with before', async () => {
+    const row = (at: string, role: string, pathOrQuery: string, purpose?: string) =>
+      `${JSON.stringify({ at, run: 'r', issue: 'acme/app#1', role, op: 'read', path_or_query: pathOrQuery, ...(purpose !== undefined ? { purpose } : {}), result: 'ok' })}\n`;
+    const { server } = await start({
+      access:
+        row('2026-10-30T10:00:00.000Z', 'developer', 'Lessons/caching.md', 'p') +
+        row('2026-10-30T11:00:00.000Z', 'architect', 'Decisions/d.md', 'about caching') +
+        row('2026-10-30T12:00:00.000Z', 'developer', 'Inbox/x.md'),
+    });
+    try {
+      const byRole = await request(server.port, 'GET', '/api/v1/brain/access?role=developer');
+      assert.equal(byRole.status, 200);
+      assert.deepEqual(json(byRole).access.map((a: { path_or_query: string }) => a.path_or_query), ['Inbox/x.md', 'Lessons/caching.md']);
+      assert.equal(json(byRole).access[0].purpose, '');
+      assert.equal(json(byRole).next_before, null);
+      const byQ = json(await request(server.port, 'GET', '/api/v1/brain/access?q=caching')).access;
+      assert.deepEqual(byQ.map((a: { path_or_query: string }) => a.path_or_query), ['Decisions/d.md', 'Lessons/caching.md']);
+      const first = json(await request(server.port, 'GET', '/api/v1/brain/access?limit=1'));
+      assert.deepEqual(first.access.map((a: { at: string }) => a.at), ['2026-10-30T12:00:00.000Z']);
+      const second = json(await request(server.port, 'GET', `/api/v1/brain/access?limit=1&before=${first.next_before}`));
+      assert.deepEqual(second.access.map((a: { at: string }) => a.at), ['2026-10-30T11:00:00.000Z']);
+      assert.equal((await request(server.port, 'POST', '/api/v1/brain/access')).status, 405);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('GET /clashes lists a clash from the E7-4 log with both versions; resolve marks it', async () => {
+    // The rejection came after the commit of the candidate.
+    const at = new Date(Date.now() + 60_000).toISOString();
+    const fixture = `${JSON.stringify({ at, run: 'run2', issue: 'acme/app#1', role: 'developer', op: 'write', path_or_query: 'Inbox/x.md', purpose: '', result: 'rejected', reason: 'window', clash_id: 'c1', other_run: 'run1', other_at: at })}\n`;
+    const { vault, server } = await start({ access: fixture });
+    try {
+      const res = await request(server.port, 'GET', '/api/v1/brain/clashes');
+      assert.equal(res.status, 200, res.body);
+      const [clash] = json(res).clashes;
+      assert.equal(clash.id, 'c1');
+      assert.equal(clash.status, 'open');
+      assert.equal(clash.path, 'Inbox/x.md');
+      // No stored versions for a clash from the log: base from git (last commit before the rejection), attempted unknown.
+      assert.equal(clash.base.content, candidate);
+      assert.equal(clash.attempted, null);
+      assert.equal(clash.current.content, fs.readFileSync(path.join(vault, 'Inbox/x.md'), 'utf8'));
+      assert.equal(json(await request(server.port, 'GET', '/api/v1/brain/clashes?status=open')).clashes.length, 1);
+      assert.deepEqual(json(await request(server.port, 'GET', '/api/v1/brain/clashes?status=resolved')).clashes, []);
+      assert.equal((await request(server.port, 'GET', '/api/v1/brain/clashes?status=foo')).status, 400);
+
+      const resolved = await request(server.port, 'POST', '/api/v1/brain/clashes/c1/resolve');
+      assert.equal(resolved.status, 200, resolved.body);
+      assert.deepEqual(json(resolved), { id: 'c1', status: 'resolved' });
+      const twice = await request(server.port, 'POST', '/api/v1/brain/clashes/c1/resolve');
+      assert.equal(twice.status, 409);
+      assert.equal(json(twice).error.code, 'already_resolved');
+      const unknown = await request(server.port, 'POST', '/api/v1/brain/clashes/nope/resolve');
+      assert.equal(unknown.status, 404);
+      assert.equal(json(unknown).error.code, 'clash_not_found');
+      assert.equal(json(await request(server.port, 'GET', '/api/v1/brain/clashes?status=resolved')).clashes.length, 1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('answers 404 brain_disabled without the brain', async () => {
+    const { server } = await start({ brain: false });
+    try {
+      for (const [method, route] of [
+        ['GET', 'access'],
+        ['GET', 'clashes'],
+        ['POST', 'clashes/c1/resolve'],
+        ['POST', 'candidates/Inbox%2Fx.md/approve'],
+        ['POST', 'candidates/Inbox%2Fx.md/reject'],
+        ['POST', 'candidates/Inbox%2Fx.md/revert'],
+      ] as const) {
+        const res = await request(server.port, method, `/api/v1/brain/${route}`);
+        assert.equal(res.status, 404, route);
+        assert.equal(json(res).error.code, 'brain_disabled');
+      }
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe('GET /api/v1/changes (E6-3a)', () => {
+  const line = (id: string, at: string, over: Record<string, unknown> = {}) =>
+    JSON.stringify({ id, type: 'code', at, repo: 'acme/app', issue: 'acme/app#1', role: 'developer', title: id, files: [{ path: 'a.ts', added: 1, deleted: 0, status: 'modified' }], pr: null, diff: null, status: 'committed', ...over });
+
+  async function withServer(run: (port: number) => Promise<void>): Promise<void> {
+    const logDir = tempDir();
+    fs.mkdirSync(path.join(logDir, 'changes'), { recursive: true });
+    fs.writeFileSync(
+      path.join(logDir, 'changes', 'acme_app.jsonl'),
+      [line('code:acme/app:1', '2026-10-30T10:01:00Z'), line('code:acme/app:2', '2026-10-30T10:02:00Z'), line('brain:acme/app:3', '2026-10-30T10:03:00Z', { type: 'brain' }), line('code:acme/app:4', '2026-10-30T10:04:00Z')].join('\n') + '\n',
+    );
+    fs.writeFileSync(path.join(logDir, 'changes', 'acme_lib.jsonl'), line('code:acme/lib:1', '2026-10-30T10:05:00Z', { repo: 'acme/lib', issue: 'acme/lib#2' }) + '\n');
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir()))),
+      runner: new FakeRunner(),
+      logger: Logger.silent(),
+      env: {},
+      logDir,
+      timers: new ManualTimers(),
+      clock: { now: () => new Date('2026-10-30T12:00:00Z'), monotonicMs: () => 0 },
+      createAdapter: () => new FakeTracker([]),
+    });
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    try {
+      await run(server.port);
+    } finally {
+      await orchestrator.shutdown(1_000);
+      await server.close();
+    }
+  }
+  const get = async (port: number, query: string) => JSON.parse((await request(port, 'GET', `/api/v1/changes?${query}&tz=UTC`)).body);
+
+  it('filters by type and repo; counts ignore the type', async () => {
+    await withServer(async (port) => {
+      const code = await get(port, 'type=code');
+      assert.deepEqual(code.entries.map((e: { id: string }) => e.id), ['code:acme/lib:1', 'code:acme/app:4', 'code:acme/app:2', 'code:acme/app:1']);
+      assert.deepEqual(code.counts, { all: 5, code: 4, brain: 1 });
+      const lib = await get(port, 'repo=acme%2Flib');
+      assert.deepEqual(lib.entries.map((e: { id: string }) => e.id), ['code:acme/lib:1']);
+      assert.deepEqual(lib.counts, { all: 1, code: 1, brain: 0 });
+    });
+  });
+
+  it('pages over before without gaps or duplicates; stats only on the first page', async () => {
+    await withServer(async (port) => {
+      const ids: string[] = [];
+      let before: string | null = null;
+      let pages = 0;
+      do {
+        const page = await get(port, `limit=2${before === null ? '' : `&before=${encodeURIComponent(before)}`}`);
+        assert.equal(page.stats === null, before !== null);
+        ids.push(...page.entries.map((e: { id: string }) => e.id));
+        before = page.next_before;
+        pages++;
+      } while (before !== null);
+      assert.equal(pages, 3);
+      assert.deepEqual(ids, ['code:acme/lib:1', 'code:acme/app:4', 'brain:acme/app:3', 'code:acme/app:2', 'code:acme/app:1']);
+      const first = await get(port, 'limit=2');
+      assert.deepEqual(first.stats.today, { commits: 4, merges: 0, files: 2, added: 4, deleted: 0, brain: 1 });
+    });
+  });
+
+  it('rejects a bad type, other methods and foreign hosts', async () => {
+    await withServer(async (port) => {
+      const bad = await request(port, 'GET', '/api/v1/changes?type=x');
+      assert.equal(bad.status, 400);
+      assert.match(bad.body, /type must be code or brain/);
+      const post = await request(port, 'POST', '/api/v1/changes');
+      assert.equal(post.status, 405);
+      assert.equal(post.headers.allow, 'GET');
+      const host = await request(port, 'GET', '/api/v1/changes', { host: 'evil.example' });
+      assert.equal(host.status, 403);
+      assert.match(host.body, /forbidden_host/);
+    });
   });
 });

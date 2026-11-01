@@ -6,7 +6,7 @@ import { git, names } from '../workspace/git.ts';
 const COMMIT_NAME = /^[0-9a-f]{7,64}$/i;
 
 /** Whether `ancestor` is `descendant` or one of its ancestors; false when git cannot tell (an unknown commit). */
-async function isAncestor(cwd: string, ancestor: string, descendant: string): Promise<boolean> {
+export async function isAncestor(cwd: string, ancestor: string, descendant: string): Promise<boolean> {
   try {
     await git(cwd, ['merge-base', '--is-ancestor', ancestor, descendant]);
     return true;
@@ -20,10 +20,16 @@ async function isAncestor(cwd: string, ancestor: string, descendant: string): Pr
  * implementation result recorded) when HEAD descends from it: everything up to there is the developer's, however the
  * workspace got to the branch, and a later session of the stage cannot forgive what an earlier one changed. Otherwise
  * the commit the session started from (`start`), which is also where a workspace that is not a git checkout leaves
- * it null. Checked when the agent reports: the workspace may reach the branch only after the session started.
+ * it null. One exception: a session that started on the base branch (`startOnBase`, `start` is on `origin/<base>`) and
+ * descends from the hand-off measures from `start`: what lies between is merged pull requests that `before_run`
+ * fetched (a hand-off without an issue branch, a spike), not the engineer's work. Local commits of an earlier session
+ * are not on `origin/<base>`, so they stay counted. Checked when the agent reports: the workspace may reach the branch only after the session started.
  */
-export async function baselineCommit(cwd: string, handoff: string | null, start: string | null): Promise<string | null> {
-  if (handoff !== null && COMMIT_NAME.test(handoff) && (await isAncestor(cwd, handoff, 'HEAD'))) return handoff;
+export async function baselineCommit(cwd: string, handoff: string | null, start: string | null, startOnBase = false): Promise<string | null> {
+  if (handoff !== null && COMMIT_NAME.test(handoff) && (await isAncestor(cwd, handoff, 'HEAD'))) {
+    if (startOnBase && start !== null && COMMIT_NAME.test(start) && (await isAncestor(cwd, handoff, start))) return start;
+    return handoff;
+  }
   return start;
 }
 

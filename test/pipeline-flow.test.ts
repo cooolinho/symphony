@@ -1087,7 +1087,7 @@ describe('test engineer stage', () => {
     assert.deepEqual(await testRuns(h), [['passed', 1, 'Agent review']]);
   });
 
-  it('rejects uncommitted and untracked changes outside the test paths too, whatever the verdict', async () => {
+  it('rejects uncommitted and untracked changes outside the test paths too: passed and failed are refused, blocked is accepted', async () => {
     const h = testingPipeline([
       done(implemented),
       async ({ turn, params, report }) => {
@@ -1103,9 +1103,84 @@ describe('test engineer stage', () => {
     const [, failedReport, blockedReport] = h.reports;
     assert.equal(denial(failedReport)?.category, 'invalid_result');
     assert.match(denial(failedReport)?.message ?? '', /2 file\(s\)[\s\S]*- src\/app\.ts\n- src\/helper\.ts/);
-    assert.equal(denial(blockedReport)?.category, 'invalid_result');
-    assert.deepEqual(await testRuns(h), []);
-    assert.deepEqual(h.tracker.statusCalls, ['Testing', 'Blocked'], 'the engineer never got a result through: the stage ended without one (on_missing_result)');
+    assert.equal(denial(blockedReport), null);
+    assert.equal(data(blockedReport).target, 'Blocked');
+    assert.deepEqual(await testRuns(h), [['blocked', 1, 'Blocked']]);
+    assert.deepEqual(h.tracker.statusCalls, ['Testing', 'Blocked'], 'blocked is always accepted, so the engineer ends the stage itself');
+  });
+
+  describe('a hand-off without an issue branch (spike) while pull requests are merged into the base branch', () => {
+    const SPIKE_FRONT = {
+      hooks: {
+        ...TESTING_FRONT.hooks,
+        // Like the shipped before_run: a workspace on the base branch is fast-forwarded before every run.
+        before_run: 'if [ -f .git/ff ]; then git merge -q --ff-only origin/main && rm .git/ff; fi',
+      },
+    };
+    /** The developer changes nothing; meanwhile a pull request (production code) is merged into origin/main. */
+    const spike = (workspace: string) =>
+      sh(
+        workspace,
+        [
+          'H=$(git rev-parse HEAD)',
+          'git checkout -q -b upstream',
+          "printf 'export const merged = 1;\\n' > src/merged.ts && git add -A && git commit -q -m 'Merged pull request'",
+          'git update-ref refs/remotes/origin/main HEAD',
+          'git checkout -q --detach $H',
+          'touch .git/ff',
+        ].join('\n'),
+      );
+    const spikePipeline = (stages: Stage[]): Pipeline => {
+      const tracker = new FakeTracker([makeIssue({ id: ISSUE, state: 'Ready', native_ref: { base_branch: 'main' } })]);
+      tracker.statusOptions = async () => BOARD_TESTING;
+      return pipeline(stages, { tracker, front: { ...TESTING_FRONT, ...SPIKE_FRONT } });
+    };
+
+    it('passed is recorded when the engineer changed nothing, although the fast-forward brought production code', async () => {
+      const h = spikePipeline([
+        done(spike),
+        async ({ turn, params, report }) => {
+          if (turn !== 1) return undefined;
+          assert.ok(sh(params.cwd, 'ls src').includes('merged.ts'), 'the workspace was fast-forwarded before the test engineer ran');
+          await report(TESTS_PASSED);
+          return undefined;
+        },
+        approved(),
+      ]);
+      await run(h);
+
+      assert.equal(denial(h.reports[1]), null);
+      assert.equal(data(h.reports[1]).target, 'Agent review');
+      assert.deepEqual(await testRuns(h), [['passed', 1, 'Agent review']]);
+    });
+
+    it('a committed test file is accepted; a changed src/ file is refused and only that file is named', async () => {
+      let handoff = '';
+      const h = spikePipeline([
+        done((workspace) => {
+          spike(workspace);
+          handoff = sh(workspace, 'git rev-parse HEAD');
+        }),
+        async ({ turn, params, report }) => {
+          if (turn !== 1) return undefined;
+          sh(params.cwd, "printf '// independent tests\\n' > tests/total.test.ts && printf 'export const total = 9;\\n' > src/app.ts && git add -A && git commit -q -m 'Tests, and a fix'");
+          await report(TESTS_PASSED);
+          sh(params.cwd, `git checkout ${handoff} -- src/app.ts && git commit -q -m 'Undo the fix'`);
+          await report(TESTS_PASSED);
+          return undefined;
+        },
+        approved(),
+      ]);
+      await run(h);
+
+      const refused = denial(h.reports[1]);
+      assert.equal(refused?.category, 'invalid_result');
+      assert.match(refused?.message ?? '', /1 file\(s\)[\s\S]*- src\/app\.ts\n/);
+      assert.ok(!(refused?.message ?? '').includes('src/merged.ts'), 'the merged pull request is not blamed');
+      assert.ok(!(refused?.message ?? '').includes('tests/total.test.ts'));
+      assert.equal(data(h.reports[2]).target, 'Agent review');
+      assert.deepEqual(await testRuns(h), [['passed', 1, 'Agent review']]);
+    });
   });
 
   it('fails closed in a workspace that is no git checkout: the rule cannot be evaluated, so nothing is recorded', async () => {

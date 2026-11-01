@@ -72,3 +72,10 @@ describe('resolveIssueCommand', () => {
     assert.equal(resolveIssueCommand(null, skills), null);
   });
 });
+
+describe('/brain-garden', () => {
+  it('is parsed as a command and its skill ships in the toolbox', () => {
+    assert.deepEqual(parseIssueCommand('/brain-garden'), { name: 'brain-garden', args: '' });
+    assert.equal(commandSkills([path.join(import.meta.dirname, '..', '.claude')]).get('brain-garden'), 'symphony:brain-garden');
+  });
+});

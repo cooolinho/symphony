@@ -112,7 +112,7 @@ every MCP server; a plugin that fails to load is logged as a warning.
 An issue whose description starts with `/<name>` asks for the skill of that name (see
 [issue commands](configuration.md#issue-commands)). Symphony does not rely on Claude Code to recognise the slash in the
 middle of its own prompt: it resolves the command against `skills/<name>/SKILL.md` in `claude.plugins` and the shipped
-prompt tells the agent to load `symphony:<name>` with the Skill tool first. The toolbox ships five:
+prompt tells the agent to load `symphony:<name>` with the Skill tool first. The toolbox ships six:
 
 | Command | Skill | Role | What it does |
 |---|---|---|---|
@@ -121,6 +121,7 @@ prompt tells the agent to load `symphony:<name>` with the Skill tool first. The 
 | `/auto-code [description] [wave=3] [checkpoint=5] [issue-models=auto]` | `symphony:auto-code` | `autopilot` (read-only, no entry checks, waits for its sub-issues) | Autopilot: reads the project description, roadmap, code on the base branch and the human's comments on the epic, and files the next wave of features, design, quality and maintenance work as sub-issues that start in `Ready` right away (with `issue-models=auto|opus|sonnet|haiku` each one also gets a `Model: …` label, so it does not run with the default model). The epic stays active and runs again when the wave is closed; every few waves it stops at a checkpoint with a report and a release pull request. See [usage.md](usage.md#autopilot-auto-code). |
 | `/concept <file.md> [issue-models=auto]` | `symphony:concept` | `analyst` (read-only, no entry checks) | Reads a concept document from the repository, checks what the code already has, and files the work as a tree in `Backlog`: epics as sub-issues of the concept issue and the work items as sub-issues of the epics (`create_sub_issue` with `parent`). Each item gets `Blocked by` dependencies (text line and GitHub relationship via `blocked_by`), a category, one `Effort: …` and, unless `issue-models=off`, one `Model: …` label. It posts a plan comment before creating anything and a report afterwards, then moves the issue to `In review`. A human moves the items to `Ready` one by one. See [usage.md](usage.md#concept-to-backlog-concept). |
 | `/plan [<file>] [issue-models=auto]` | `symphony:plan` | `planner` (read-only, no entry checks) | Takes a list, either a file in the repository or the list below the command line in the issue description, and files every top-level item as exactly one sub-issue of the plan issue in `Backlog`, without epics. Each issue gets the quoted item, the starting point in the code, a numbered implementation plan, acceptance criteria and tests, `Blocked by` dependencies between items (text line and `blocked_by`), the `plan` label, a category, one `Effort: …` and, unless `issue-models=off`, one `Model: …` label. It posts an outline comment before creating anything and a report afterwards, then moves the issue to `In review`. See [usage.md](usage.md#list-to-backlog-plan). |
+| `/brain-garden` | `symphony:brain-garden` | `brain-gardener` (read-only, no entry checks) | Tends the knowledge vault: reads the repository index, calls `brain_vitals`, looks for duplicates, orphans and broken links and writes each proposal as a candidate note in `Inbox/`. It never promotes and never writes to approved notes (`brain_approved_writes: false`), posts one comment with the proposals and moves the issue to `In review`. See [brain.md](brain.md#gardener). |
 
 A role stays read-only after the skill is loaded: `read_only: true` denies Edit, Write, `git commit` and `git push`,
 but the tracker tools stay available, so the auditor can file sub-issues. Skill instructions that Bash could still
@@ -146,6 +147,25 @@ background code review would then lose the review and the stage would end withou
 addition says the same: use the results in the same turn and never end a turn to wait. `claude.env` can set the
 variable to `0`; if a session then ends without a result while tasks still run, the "Stage ended without a result"
 comment names them, and `turn_completed` carries them in `detail.background_tasks`.
+
+### Brain tools
+
+With `brain.enabled: true` and a role with `brain: read` or `brain: write` ([`roles.*.brain`](configuration.md#roles)) a second in-process MCP server `brain` offers access to the knowledge vault (the name `brain` is reserved for extensions, like `tracker`): `mcp__brain__brain_search`, `mcp__brain__brain_read`, `mcp__brain__brain_list`, `mcp__brain__brain_vitals`, `mcp__brain__brain_write` and `mcp__brain__brain_append`. `read` registers only `brain_search`, `brain_read`, `brain_list` and `brain_vitals`, `write` all six. Without `brain.enabled` or with `brain: off` (the default) the server is absent. The vault is never in `additionalDirectories` or the workspace. Each call reports a `brain_tool` event.
+
+- `brain_search(query, repo?, type?)`: title, frontmatter and full text of all `.md` notes, case-insensitive, every word must occur. `approved` notes come first, then `candidate`; `deprecated` never. At most 20 hits with `path`, `title`, `status`, `excerpt`.
+- `brain_read(path)`: `content`, parsed `frontmatter` and `hash` (SHA-256 of the file, for later writes).
+- `brain_list(folder)`: files and subfolders with `type` and `status` from the frontmatter.
+- `brain_vitals(purpose?)`: `{notes_by_status, links, orphans, broken_links, candidates, orphan_paths, broken: [{from, link}], same_title: [{title, paths}], truncated}` from the link index (lists capped at 200).
+- `brain_write(path, content, purpose?, base_hash?)`: creates or replaces a note (`content` is the whole file). The frontmatter needs `type` (`index|decision|lesson|issue|agent|note`); `sources` must be a list, `repo` a string. Symphony sets `issue`, `role`, `run`, `created` and `updated` itself (`created` stays on an existing note); unknown fields stay. A new note is always `candidate`. Agents cannot create or promote `approved` notes, and an existing `approved` note is read-only for agents (`rejected`; write a candidate note and link it). `brain_append` rejects `approved` notes too. Only `.md` files, nothing hidden (`.obsidian/`, `.git/`), and not `README.md` in the vault root. Parent folders are created; the file is written atomically.
+- `brain_append(path, heading, text, purpose?, base_hash)`: adds `text` at the end of the section under `## <heading>` (a heading starting with `#` keeps its level); the heading is created at the end of the note if missing. `base_hash` is required, the note must exist, `updated` is set.
+- `base_hash` is the `hash` of `brain_read`. Missing on an existing note in `brain_write`: warning in the log, the write runs. A mismatch returns `rejected` with `error.details = {reason: 'hash_mismatch', content, hash}` (the current version) and writes nothing. If another run wrote the same note within `brain.clash_window_ms` (default 10 minutes; the same run is exempt), the write is `rejected` with `error.details = {reason: 'window', content, hash, run, at}` before the hash is compared. Each rejection creates a `BrainClash` (`{id, path, runs: [earlier, rejected], at, reason, status: open|resolved}`) in the memory of the shared `BrainAccessLog`. Both write tools return `{path, hash, created, frontmatter}`.
+- After each successful write the `onWrite(entry)` option of `createBrainWriteTools`/`brainToolsFor` is called (`BrainWriteEntry`: `tool`, `path`, `purpose`, `hash`, `previousHash`, `created`, `issue`, `role`, `run`, `at`); an error in the hook is only logged.
+- Versioning (E7-3): the vault is a git repository. With the `versioning` option (`createVaultGit(path, logger, {onCommit})`, wired by the worker) the whole write runs in one serial queue per vault: manual changes (Obsidian, not `.obsidian/`) are first committed as `human <human@local>` (`Obsidian: <n> Dateien`), then the note is written and committed as `symphony-<role> <symphony-<role>@local>` with the subject `<issue> <run>: <purpose>` and the path as body. Plain commits only, so `git revert <sha>` restores the previous version. `onCommit(sha, paths)` is called after every commit (an error is only logged). The one system note, the issue summary `Issues/<owner>-<name>/<number>.md` after a merge, is committed as `symphony <symphony@local>` with the subject `<repo>#<number>: issue summary` (`VaultGit.commitAs`, same queue, no commit when nothing changed). A git error returns `rejected`, is logged, and the note is put back to its previous state (a new note is removed).
+- Brain changes (E6-2): every vault commit becomes one Changes entry of type `brain` per path (`brain:<sha>:<path>`, never `.obsidian/`, the init commit is skipped, the system author `symphony` otherwise counts) with repo and issue from the frontmatter, role from the author, the note title, the file counts and a diff excerpt of at most 5 lines. `status` is the first match of: subject `approve:` = `approved`, subject `reject:` = `rejected_candidate` (the contract for promoting and discarding candidates), author `human` = `human`, new file = `created`, else `updated`. A rejected write (`window`, `hash_mismatch`) becomes an entry `brain:conflict:<clash id>` with status `conflict`, role, run, `reason` and `clash_id`. At startup the newest 200 vault commits and the clashes of the last 7 days are loaded; entries already known (same id) are not added twice.
+- Paths are relative to the vault: no `..`, no absolute path, nothing under `.obsidian/`, no symlink out of the vault. A violation returns the error category `rejected`.
+- Every tool takes an optional `purpose`; without it a warning is logged and the call runs anyway.
+- Access log: every call is appended as one JSON line to `<log-dir>/brain/access.jsonl` (`{at, run, issue, role, op, path_or_query, purpose, result: ok|rejected, reason?, hash_before?, hash_after?}`; `op` is `read|search|list|write|append|resolve`, a missing `purpose` is logged as `''`; rejections by the clash check also carry `clash_id`, `other_run`, `other_at`). Symphony removes lines older than 30 days at startup, rebuilds the clash list from the last 7 days and the last writer per note from the file; write errors are only logged. `markResolved(id)` sets a clash to `resolved` and logs `op: resolve`.
+- All access is synchronous on the file system; there is no index.
 
 ### MCP server status
 
@@ -251,9 +271,17 @@ groups are killed too.
 Events sent to the orchestrator: `session_started`, `session_configured` (model, permission mode, Claude Code
 version, MCP server status, plugins, number of skills), `startup_failed`, `turn_started`, `turn_completed`, `turn_failed`, `turn_cancelled`, `turn_timeout`,
 `turn_input_required`, `approval_auto_approved`, `approval_denied`, `permission_denied`, `tool_use`, `tool_result`,
-`tracker_tool`, `assistant_message`, `api_retry`, `rate_limit`, `agent_error` (API or authentication errors),
+`subagent`, `tracker_tool`, `brain_tool`, `assistant_message`, `api_retry`, `rate_limit`, `agent_error` (API or authentication errors),
 `agent_exited`, `notification`, `other_message`. The worker adds the transition guard's `transition_denied`,
 `checks_started` and `checks_finished` (`target`, `sha`, `exit_code`, `duration_ms`, `ok`), logged at info level.
+
+The `subagent` event reports the subagents the session starts with the Agent/Task tool. Its `subagent` field is an
+absolute snapshot: tool call id, type (`general-purpose` when unset), description (the `description` of the call, else
+the start of its `prompt`), start, end, status (`running`, `ok`, `error`) and the tokens of the subagent's own model
+calls (input, output, cache read and write; messages with its `parent_tool_use_id`, counted once per message id). The
+`tool_result` with the same `tool_use_id` ends it (`is_error` gives `error`). A session that ends or is stopped closes the
+open ones as `error`. Only start and end carry a message; token updates do not appear in the timeline. The orchestrator
+keeps the running subagents and the last ten finished ones per running issue. `agent_calls` still counts the calls.
 
 A turn that fails because of a Claude subscription usage limit settles with the failure code `session_limit` (instead
 of `turn_failed`), carrying the window, the reset time and where it came from. Detection order:
@@ -281,6 +309,26 @@ the difference to the previous total, so nothing is counted twice. Cost is estim
 [configuration.md](configuration.md)); Claude Code's own estimate (`total_cost_usd`) is kept as
 `claude_estimate_usd` for comparison. Rate-limit snapshots come from `rate_limit_event` messages (subscription
 logins).
+Every event is appended as one JSON line to `<log-dir>/budget/rate-limits.jsonl`
+(`{at, run_id, issue, role, model, rate_limit_info}`, `rate_limit_info` is the raw SDK object). Symphony removes lines
+older than 30 days at startup and then once a day; write errors are only logged. `GET /api/v1/state` shows
+`rate_limits` as an object with the latest record per `rateLimitType` (`five_hour`, `seven_day`, ...), `{}` before the
+first event. Instances sharing a log directory share the file, which fits because limits apply per account.
+
+### Limit forecast
+
+`GET /api/v1/budget` answers `{ five_hour, seven_day, generated_at }`. Each window holds `used_tokens` (tokens of
+`run_finished` lines in the rolling window of 5 hours or 7 days), `burn_rate_per_min` (tokens of the last 30 minutes
+/ 30), `resets_at` (`resetsAt` of the latest rate-limit event of that type, `null` when missing or in the past),
+`forecast`, `alert` and `by_role` (tokens per role in the window).
+
+`forecast` is `null` while the limit is unknown. The limit is taken from the SDK field `utilization` (share in (0, 1])
+of the latest event of the type (limit = usage at that time / `utilization`, `limit_source: "sdk"`) and otherwise
+calibrated: the usage in the window at the time of the latest `rejected` event of the same `rateLimitType`
+(`limit_source: "calibrated"`). `eta` = now + (limit − used) / burn rate, set only when it lies before `resets_at`
+(`now` once the limit is already reached); otherwise `null`. `alert` is `true` exactly when `eta` is set.
+`Orchestrator#budgetAlerts()` returns the windows with an alert for the alerts panel. The tokens of a run only count
+once it has finished, so running sessions are missing. Other methods than `GET` answer 405.
 
 Every raw SDK message is also written as JSON lines to `<log-dir>/sessions/<workspace-key>/<timestamp>.jsonl`.
 

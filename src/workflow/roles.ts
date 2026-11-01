@@ -24,6 +24,16 @@ export type ModelLabelPolicy = 'apply' | 'ignore';
 /** Whether an `Effort:` issue label picks the effort of a role's sessions. */
 export type EffortLabelPolicy = 'apply' | 'ignore';
 
+/** Which brain tools a role's session gets. */
+export type BrainMode = 'off' | 'read' | 'write';
+
+export const BRAIN_MODES: readonly BrainMode[] = ['off', 'read', 'write'];
+
+/** Brain mode of a session: the role's `brain` with `brain.enabled`, else `off`; the implicit role has none. */
+export function sessionBrainMode(enabled: boolean, role: RoleConfig | null): BrainMode {
+  return enabled ? (role?.brain ?? 'off') : 'off';
+}
+
 /** A column-scoped agent role (the `roles` front matter section). */
 export interface RoleConfig {
   name: string;
@@ -78,6 +88,10 @@ export interface RoleConfig {
    * session may use. Read-only roles never get subagents that can edit files.
    */
   agents: string[] | null;
+  /** Brain tools of the role's sessions: `off` none, `read` search/read/list/vitals, `write` also write/append. Only with `brain.enabled`. */
+  brain: BrainMode;
+  /** Only with `brain: write`: false = brain_write/brain_append never touch an approved note and never set status approved (default true: no extra gate). */
+  brainApprovedWrites: boolean;
   claude: RoleClaudeOverrides;
 }
 

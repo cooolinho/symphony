@@ -3,10 +3,44 @@ import type { Logger } from '../log.ts';
 import type { AgentToolContext, AgentToolSpec, Issue } from '../tracker/types.ts';
 import type { ClaudeConfig } from '../workflow/config.ts';
 
+/** How full the context window of a session is, as of the latest model call of the main conversation. */
+export interface ContextSnapshot {
+  /** Model id the latest call ran on. */
+  model: string;
+  /** Context window in tokens; null when no size can be determined for the model. */
+  window: number | null;
+  /** input + cache read + cache creation tokens of the latest call. */
+  tokens: number;
+  /** tokens / window in percent, one decimal; null without a window. */
+  percent: number | null;
+  /** Highest percent of the session so far; null while none could be computed. */
+  peakPercent: number | null;
+  /** Automatic compactions (`compact_boundary`) so far. */
+  compacts: number;
+  /** Tokens before the latest compaction; null while there was none. */
+  preTokens: number | null;
+}
+
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+}
+
+export type SubagentStatus = 'running' | 'ok' | 'error';
+
+/** One subagent the session started with the Agent/Task tool. */
+export interface SubagentRun {
+  /** Id of the `tool_use` block that started it; its `tool_result` ends it. */
+  toolUseId: string;
+  subagentType: string;
+  /** The `description` of the call, else the start of its `prompt`. */
+  description: string;
+  startedAt: Date;
+  endedAt: Date | null;
+  status: SubagentStatus;
+  /** Tokens of the subagent's own model calls so far. */
+  tokens: ModelTokenUsage;
 }
 
 /** Structured update sent from a live agent session to the orchestrator (spec 10.4). */
@@ -27,7 +61,11 @@ export interface AgentEvent {
   modelUsage?: Record<string, ModelTokenUsage>;
   /** Absolute estimated cost for this session so far, in USD. */
   costUsd?: number;
+  /** Context fill level of the session, set on model calls and compactions. */
+  context?: ContextSnapshot;
   rateLimits?: unknown;
+  /** Absolute snapshot (a copy) of the subagent this `subagent` event reports. */
+  subagent?: SubagentRun;
   detail?: Record<string, unknown>;
 }
 
@@ -160,6 +198,8 @@ export interface StartSessionParams {
   issue: Issue;
   config: ClaudeConfig;
   tools: AgentToolSpec[];
+  /** Read tools of the knowledge vault; absent or empty = no `brain` server in the session. */
+  brainTools?: AgentToolSpec[];
   /** Current tool context (the latest issue snapshot), read on every tool call. */
   toolContext: () => AgentToolContext;
   /** Child environment, already stripped of tracker secrets. */
@@ -177,6 +217,8 @@ export interface StartSessionParams {
   deniedAgents?: string[];
   /** Upper bound for one call of a Symphony tool (it may run an entry check); absent = the agent's default. */
   toolTimeoutMs?: number;
+  /** Context window (tokens) of a model id from the pricing table; null when unknown. Read on every call. */
+  contextWindow?: (model: string) => number | null;
 }
 
 export interface AgentRunner {

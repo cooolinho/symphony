@@ -90,7 +90,7 @@ export async function renderPrompt(template: PromptTemplate, scope: Record<strin
   }
   try {
     // `agents` (the session's subagents), `test_paths`, `attachments`, `human_feedback` and the stage-history variables are optional for callers that render without a session, e.g. tests.
-    const defaults = { agents: [], results: EMPTY_RESULTS, human_feedback: [], round: 1, result_required: false, test_paths: [], docs_paths: [], attachments: [], summary_max: SUMMARY_MAX, result_budget: RESULT_FIELD_BUDGET };
+    const defaults = { brain: 'off', brain_index: null, agents: [], results: EMPTY_RESULTS, human_feedback: [], round: 1, result_required: false, test_paths: [], docs_paths: [], attachments: [], summary_max: SUMMARY_MAX, result_budget: RESULT_FIELD_BUDGET };
     const results = typeof scope.results === 'object' && scope.results !== null ? { ...EMPTY_RESULTS, ...scope.results } : defaults.results;
     return (await template.engine.render(template.parsed, { ...defaults, ...scope, results })).trim();
   } catch (error) {

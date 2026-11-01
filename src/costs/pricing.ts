@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import YAML from 'yaml';
+import { contextWindowSuffix } from '../agent/model-name.ts';
 import type { Logger } from '../log.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { isPlainObject } from '../workflow/loader.ts';
@@ -24,6 +25,10 @@ export interface PricingTable {
   defaultPrice: ModelPrice;
   /** Lowercased model keys from model-costs.yml (ids like `claude-opus-5-5` or names like `opus`). */
   models: Map<string, ModelPrice>;
+  /** `context_window` of the `default` entry (tokens), or null when the file sets none. */
+  defaultContextWindow: number | null;
+  /** `context_window` per model key, only for entries that set it. */
+  contextWindows: Map<string, number>;
   /** File the table came from, or null for the built-in fallback. */
   source: string | null;
 }
@@ -61,7 +66,7 @@ function parsePrice(value: unknown, key: string): ModelPrice {
       if (fallback !== undefined) return fallback;
       throw new SymphonyError('invalid_model_costs', `${key}.${field} is required (USD per million tokens)`);
     }
-    const parsed = typeof raw === 'number' ? raw : Number(raw);
+    const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\d+(\.\d+)?$/.test(raw.trim()) ? Number(raw) : Number.NaN;
     if (!Number.isFinite(parsed) || parsed < 0) {
       throw new SymphonyError('invalid_model_costs', `${key}.${field} must be a number >= 0 (got ${JSON.stringify(raw)})`);
     }
@@ -74,6 +79,17 @@ function parsePrice(value: unknown, key: string): ModelPrice {
     cacheRead: number('cache_read', input * CACHE_READ_FACTOR),
     cacheWrite: number('cache_write', input * CACHE_WRITE_FACTOR),
   };
+}
+
+function parseContextWindow(value: unknown, key: string): number | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const raw = value.context_window;
+  if (raw === undefined || raw === null) return undefined;
+  const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\d+$/.test(raw.trim()) ? Number(raw) : Number.NaN;
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new SymphonyError('invalid_model_costs', `${key}.context_window must be a positive whole number of tokens (got ${JSON.stringify(raw)})`);
+  }
+  return parsed;
 }
 
 /** Parses model-costs.yml: a `default` entry plus one entry per model id or model name. */
@@ -89,13 +105,21 @@ export function parsePricing(text: string, source: string | null): PricingTable 
 
   let defaultPrice = FALLBACK_PRICE;
   const models = new Map<string, ModelPrice>();
+  const contextWindows = new Map<string, number>();
+  let defaultContextWindow: number | null = null;
   for (const [key, value] of Object.entries(raw)) {
     const name = key.trim().toLowerCase();
     if (name === '') continue;
-    if (name === 'default') defaultPrice = parsePrice(value, key);
-    else models.set(name, parsePrice(value, key));
+    const contextWindow = parseContextWindow(value, key);
+    if (name === 'default') {
+      defaultPrice = parsePrice(value, key);
+      defaultContextWindow = contextWindow ?? null;
+    } else {
+      models.set(name, parsePrice(value, key));
+      if (contextWindow !== undefined) contextWindows.set(name, contextWindow);
+    }
   }
-  return { defaultPrice, models, source };
+  return { defaultPrice, models, defaultContextWindow, contextWindows, source };
 }
 
 /**
@@ -103,15 +127,32 @@ export function parsePricing(text: string, source: string | null): PricingTable 
  * then the longest key contained in the id (`opus`, `sonnet`, …), then `default`.
  */
 export function priceFor(table: PricingTable, model: string): { price: ModelPrice; key: string } {
+  const key = matchKey(table, model);
+  if (key !== null) return { price: table.models.get(key) as ModelPrice, key };
+  return { price: table.defaultPrice, key: 'default' };
+}
+
+/** The table key for a model id: an exact key, else the longest key contained in the id, else null. */
+function matchKey(table: PricingTable, model: string): string | null {
   const id = model.trim().toLowerCase();
-  const exact = table.models.get(id);
-  if (exact !== undefined) return { price: exact, key: id };
+  if (table.models.has(id)) return id;
   let best: string | null = null;
   for (const key of table.models.keys()) {
     if (id.includes(key) && (best === null || key.length > best.length)) best = key;
   }
-  if (best !== null) return { price: table.models.get(best) as ModelPrice, key: best };
-  return { price: table.defaultPrice, key: 'default' };
+  return best;
+}
+
+/**
+ * Context window (tokens) of a model: a "[1m]" suffix wins, then the `context_window` of the entry
+ * matched like a price, then the `default` entry. Null when none of them sets a size.
+ */
+export function contextWindowFor(table: PricingTable, model: string): number | null {
+  const suffix = contextWindowSuffix(model);
+  if (suffix !== null) return suffix;
+  const key = matchKey(table, model);
+  const own = key === null ? undefined : table.contextWindows.get(key);
+  return own ?? table.defaultContextWindow;
 }
 
 export function costOf(usage: ModelTokenUsage, price: ModelPrice): number {
@@ -138,7 +179,7 @@ export function estimateCost(table: PricingTable, usageByModel: Record<string, M
 export class PricingStore {
   readonly path: string;
   #logger: Logger;
-  #table: PricingTable = { defaultPrice: FALLBACK_PRICE, models: new Map(), source: null };
+  #table: PricingTable = { defaultPrice: FALLBACK_PRICE, models: new Map(), defaultContextWindow: null, contextWindows: new Map(), source: null };
   #stamp: string | null = null;
   #lastError: string | null = null;
 
@@ -159,7 +200,7 @@ export class PricingStore {
     } catch {
       if (this.#stamp !== 'missing') {
         this.#stamp = 'missing';
-        this.#table = { defaultPrice: FALLBACK_PRICE, models: new Map(), source: null };
+        this.#table = { defaultPrice: FALLBACK_PRICE, models: new Map(), defaultContextWindow: null, contextWindows: new Map(), source: null };
         this.#logger.warn('model-costs.yml not found; estimating every model at the built-in default price', { path: this.path });
       }
       return this.#table;

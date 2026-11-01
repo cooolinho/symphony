@@ -5,6 +5,8 @@ import { chooseRoleEffort, chooseRoleModel } from './agent/model.ts';
 import { PricingStore } from './costs/pricing.ts';
 import { HistoryLog } from './history/history.ts';
 import { killAllAgentProcessGroups } from './agent/spawn.ts';
+import { prepareBrain } from './brain/vault.ts';
+import { SystemCollector } from './system/metrics.ts';
 import { isLoopbackHost, startHttpServer, type HttpServerHandle } from './http/server.ts';
 import { defaultIntegrations } from './integrations/registry.ts';
 import type { WorkspaceIntegration } from './integrations/types.ts';
@@ -14,6 +16,7 @@ import { waitingForSubIssues } from './orchestrator/eligibility.ts';
 import { Orchestrator } from './orchestrator/orchestrator.ts';
 import { RuntimeStateStore, runtimeStateFile } from './orchestrator/runtime-state.ts';
 import { hasLimitOverride, withAgentLimits } from './orchestrator/limits.ts';
+import { configuredRepositories } from './tracker/github-project/settings.ts';
 import { getTrackerFactory } from './tracker/registry.ts';
 import type { Issue, TrackerAdapter } from './tracker/types.ts';
 import type { LoadedEnvFile } from './util/env.ts';
@@ -21,7 +24,7 @@ import { errorCode, errorMessage } from './util/errors.ts';
 import { truncate } from './util/text.ts';
 import { commandSkills, pluginAgents, resolveIssueCommand } from './workflow/command.ts';
 import type { ModelClaudeOverrides, ServiceConfig } from './workflow/config.ts';
-import { roleFor, roleName, sessionAgents } from './workflow/roles.ts';
+import { roleFor, roleName, sessionAgents, sessionBrainMode } from './workflow/roles.ts';
 import { WorkflowStore } from './workflow/store.ts';
 import { issueTemplateValue, renderPrompt } from './workflow/template.ts';
 import { nextStageProblems, unknownBoardColumns, validateDispatch } from './workflow/validate.ts';
@@ -106,12 +109,26 @@ export async function runService(options: ServiceOptions): Promise<number> {
   store.watch();
 
   const config = store.current.config;
+  await prepareBrain(config.brain, configuredRepositories(config.tracker.provider.repositories, env), logger);
+  if (config.brain.enabled) await orchestrator.loadBrainChanges();
+  await orchestrator.buildBrainIndex();
+  const system = new SystemCollector({
+    volumes: [
+      { name: 'state', path: options.logDir },
+      { name: 'workspace', path: config.workspace.root },
+    ],
+    gpu: config.system.gpu,
+    logger,
+    container: env.SYMPHONY_CONTAINER || env.HOSTNAME || null,
+    usagePaths: { workspaces: config.workspace.root, transcripts: path.join(options.logDir, 'sessions') },
+  });
+  system.start();
   let http: HttpServerHandle | null = null;
   const port = options.port ?? config.server.port;
   if (port !== null) {
     try {
       const { host, allowRemoteControl } = config.server;
-      http = await startHttpServer({ host, port, orchestrator, logger, history: { dir: history.dir, pricing }, allowRemoteControl });
+      http = await startHttpServer({ host, port, orchestrator, logger, history: { dir: history.dir, pricing }, system, allowRemoteControl });
       logger.info('dashboard listening', { url: http.url });
       if (!isLoopbackHost(host)) {
         logger.warn('dashboard listens on a non-loopback address; it has no login of its own, put an authenticating reverse proxy in front', {
@@ -152,6 +169,7 @@ export async function runService(options: ServiceOptions): Promise<number> {
   });
 
   await orchestrator.shutdown(store.current.config.hooks.timeoutMs + 30_000);
+  system.stop();
   await http?.close();
   store.close();
   logger.info('symphony stopped');
@@ -324,6 +342,8 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
           agents: agents.map((agent) => ({ name: agent.qualified, description: agent.description })),
           // The issue's stage history is not read here: the preview shows an issue without results.
           result_required: role?.result != null,
+          brain: sessionBrainMode(config.brain.enabled, role),
+          brain_index: null,
           test_paths: config.pipeline.testPaths,
           docs_paths: config.pipeline.docsPaths,
         });

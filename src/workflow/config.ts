@@ -6,14 +6,14 @@ import { defaultIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import { resolveEnvReference } from '../util/env.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
-import { resolveConfigPath } from '../util/paths.ts';
+import { isStrictlyInside, resolveConfigPath } from '../util/paths.ts';
 import { COMPLEXITIES, ISSUE_TYPES, type IssueComplexity } from './classify.ts';
 import { COMMAND_NAME } from './command.ts';
 import { globProblem } from './glob.ts';
 import { isPlainObject } from './loader.ts';
 import { DEFAULT_PROFILE, type WorkflowProfile } from './profile.ts';
 import { Reader, parseInteger } from './reader.ts';
-import { NEXT_STAGE, resultTargets, type EffortLabelPolicy, type ModelLabelPolicy, type RoleClaudeOverrides, type RoleConfig } from './roles.ts';
+import { BRAIN_MODES, NEXT_STAGE, resultTargets, type BrainMode, type EffortLabelPolicy, type ModelLabelPolicy, type RoleClaudeOverrides, type RoleConfig } from './roles.ts';
 import { AGENT_RESULT_KINDS, isLoopKind, LOOP_VERDICTS, RESULT_VERDICTS, SPLIT_VERDICT, type AgentResultKind } from './results.ts';
 
 export interface TrackerConfig {
@@ -207,8 +207,35 @@ export interface ServiceConfig {
   roles: RoleConfig[] | null;
   pipeline: PipelineConfig;
   server: ServerConfig;
+  system: SystemConfig;
+  brain: BrainConfig;
+  budget: BudgetConfig;
   /** Non-fatal findings (ignored keys, ignored per-state limits) for operator logs. */
   warnings: string[];
+}
+
+/** Host metrics collector (`system` section). */
+export interface SystemConfig {
+  /** Read GPU utilization, memory and temperature from nvidia-smi (default false: nvidia-smi is never called). */
+  gpu: boolean;
+}
+
+/** Knowledge vault (`brain` section). */
+export interface BrainConfig {
+  /** Create and use the vault (default false: no path is touched). */
+  enabled: boolean;
+  /** Absolute vault directory, resolved from brain.path (default ~/brain). */
+  path: string;
+  /** Another run that wrote a note within this many ms blocks a write to it (default 600000; 0 = off). */
+  clashWindowMs: number;
+  /** Link target of "In Obsidian öffnen" on the Brain page: http(s):// or obsidian:// (default empty: the links are hidden). */
+  obsidianUrl: string;
+}
+
+/** Budget display settings (`budget` section). */
+export interface BudgetConfig {
+  /** Context fill in percent from which Claude Code compacts automatically; the team view marks it (default 80). */
+  compactThreshold: number;
 }
 
 export interface TrackerDefaults {
@@ -240,6 +267,7 @@ export const DEFAULTS = {
   maxTestRounds: 2,
   maxSecurityRounds: 2,
   maxCheckFailures: 3,
+  compactThreshold: 80,
   /** `pipeline.test_paths` when unset: the usual places of test files (Laravel, Node, Jest/Vitest). */
   testPaths: ['tests/**', 'test/**', '**/*.test.*', '**/*Test.php'],
   /** `pipeline.security_paths` when unset: the places of a Laravel app where authorization, authentication and the schema live. */
@@ -263,8 +291,12 @@ export const DEFAULTS = {
 const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'];
 export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
-const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server'];
+const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server', 'system', 'brain', 'budget'];
+const BRAIN_KEYS = new Set(['enabled', 'path', 'clash_window_ms', 'obsidian_url']);
+const BUDGET_KEYS = new Set(['compact_threshold']);
 const ROLE_KEYS = new Set([
+  'brain',
+  'brain_approved_writes',
   'states',
   'read_only',
   'may_move_to',
@@ -394,6 +426,8 @@ function readRoles(reader: Reader, raw: Record<string, unknown>, activeStates: s
       subIssueStatus,
       waitForSubIssues: reader.bool(value, 'wait_for_sub_issues', `${field}.wait_for_sub_issues`, false),
       agents: readRoleAgents(reader, value, field),
+      brain: reader.oneOf<BrainMode>(value, 'brain', `${field}.brain`, BRAIN_MODES, 'off'),
+      brainApprovedWrites: reader.bool(value, 'brain_approved_writes', `${field}.brain_approved_writes`, true),
       claude,
     });
   }
@@ -1161,6 +1195,35 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     if (/^https?:\/\/[^\s/]+/.test(publicUrl)) server.publicUrl = publicUrl.replace(/\/+$/, '');
     else reader.errors.push('server.public_url must be an http(s) URL');
   }
+  const systemRaw = reader.section(raw, 'system');
+  const system: SystemConfig = { gpu: reader.bool(systemRaw, 'gpu', 'system.gpu', false) };
+  const brainRaw = reader.section(raw, 'brain');
+  for (const key of Object.keys(brainRaw)) {
+    if (!BRAIN_KEYS.has(key)) reader.errors.push(`brain.${key} is not a known key (allowed: ${[...BRAIN_KEYS].join(', ')})`);
+  }
+  const brainEnabled = reader.bool(brainRaw, 'enabled', 'brain.enabled', false);
+  const brainPathValue = reader.string(brainRaw, 'path', 'brain.path')?.trim() || '~/brain';
+  let brainPath = '';
+  try {
+    brainPath = resolveConfigPath(brainPathValue, workflowDir, options.env, 'brain.path');
+  } catch (error) {
+    reader.errors.push(errorMessage(error));
+  }
+  if (brainEnabled && brainPath !== '' && (brainPath === root || isStrictlyInside(root, brainPath) || isStrictlyInside(brainPath, root))) {
+    reader.errors.push(`brain.path (${brainPath}) must not overlap workspace.root (${root}): agents must reach the vault only through the brain tools`);
+  }
+  const clashWindowMs = reader.int(brainRaw, 'clash_window_ms', 'brain.clash_window_ms', 600_000, 0);
+  const obsidianUrl = reader.string(brainRaw, 'obsidian_url', 'brain.obsidian_url')?.trim() ?? '';
+  if (obsidianUrl !== '' && !/^(https?|obsidian):\/\/\S/i.test(obsidianUrl)) {
+    reader.errors.push('brain.obsidian_url must start with http://, https:// or obsidian://');
+  }
+  const brain: BrainConfig = { enabled: brainEnabled, path: brainPath, clashWindowMs, obsidianUrl };
+  const budgetRaw = reader.section(raw, 'budget');
+  for (const key of Object.keys(budgetRaw)) {
+    if (!BUDGET_KEYS.has(key)) reader.warnings.push(`budget.${key} ignored: not a known key (allowed: ${[...BUDGET_KEYS].join(', ')})`);
+  }
+  const budget: BudgetConfig = { compactThreshold: reader.int(budgetRaw, 'compact_threshold', 'budget.compact_threshold', DEFAULTS.compactThreshold, 1) };
+  if (budget.compactThreshold > 100) reader.errors.push('budget.compact_threshold must be <= 100');
   if (server.port !== null && server.port > 65_535) reader.errors.push('server.port must be <= 65535');
 
   if (reader.errors.length > 0) {
@@ -1181,6 +1244,9 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     roles,
     pipeline,
     server,
+    system,
+    brain,
+    budget,
     warnings: reader.warnings,
   };
 }

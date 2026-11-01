@@ -74,6 +74,8 @@ tracker:
   #   start in Ready right away, stays in "In progress" and runs again once all sub-issues of the wave are closed.
   #   An issue whose description starts with "/concept <file.md>" is served by the analyst: it turns the concept into
   #   epics and sub-issues (with "blocked by", Model and Effort labels) in Backlog; a human moves them to Ready.
+  #   An issue whose description starts with "/brain-garden" is served by the brain gardener: it looks for duplicates,
+  #   orphans and broken links in the knowledge vault and writes proposals as candidate notes (it never promotes).
   #   An issue whose description starts with "/plan [file]" is served by the planner: every item of the list (the file,
   #   or the description below the command line) becomes one planned sub-issue in Backlog; a human moves them to Ready.
   # If your board names its columns differently, adjust these lists, roles, checks, the prompt below and the role
@@ -97,7 +99,9 @@ hooks:
     git clone --quiet ${SYMPHONY_BASE_BRANCH:+--branch "$SYMPHONY_BASE_BRANCH"} "git@github.com:${SYMPHONY_ISSUE_REPOSITORY}.git" .
     bash "$SYMPHONY_WORKFLOW_DIR/hooks/laravel-env.sh"   # own .env + SQLite per Laravel app; no-op otherwise
   # A workspace still on the base branch (no issue branch yet: the analysis, the design, the integration review of an
-  # issue split into work packages) follows origin/<base>, so the session and its entry checks see what was merged since.
+  # issue split into work packages, a developer hand-off without an issue branch such as a spike) follows origin/<base>, so the
+  # session and its entry checks see what was merged since. The path rule of the test and docs roles knows this: a session that
+  # starts on origin/<base> is not blamed for the pull requests merged between the hand-off and its start.
   before_run: |
     set -e                                               # a failed fetch must fail the hook (the attempt is retried), not run on stale refs
     git fetch --quiet --prune origin
@@ -158,6 +162,9 @@ claude:
 roles:
   # agents: plugin subagents (.claude/agents) the role may start; unset = all. Read-only roles only get read-only
   # ones, and laravel-* subagents only exist in workspaces with a Laravel app.
+  # brain: which brain tools the role gets (off = none, read = search/read/list/vitals, write = also write/append); only with
+  # brain.enabled; unset = off. brain_approved_writes: false (only with brain: write) makes brain_write/brain_append reject
+  # every approved note and every status: approved; unset = true (no extra gate).
   # Models and effort follow "plan strong, implement cheaper": the architect designs larger changes with the strongest
   # model, the developer implements the design with a cheaper one, and the roles with a fixed task (analysis, tests,
   # docs, review, security) run with a fixed model and effort. model_by_complexity picks the model by the issue's
@@ -181,6 +188,7 @@ roles:
     model_label: ignore                      # sonnet, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # medium, whatever the issue's Effort: label says
     agents: [laravel-architect]
+    brain: write
     claude: { model: sonnet, effort: medium }
   # The architect decides on the approach of larger changes before the developer starts: a short read-only session that
   # reports a `design` result. `ready` (decision, components and interfaces are required) moves the issue to In progress,
@@ -204,6 +212,7 @@ roles:
     may_move_to: [In progress, Agent review, Blocked]
     model_label: ignore                      # opus, fable at complexity L and XL, whatever the issue's Model: label picks
     agents: [laravel-architect]
+    brain: write
     claude: { model: opus, effort: high, model_by_complexity: { L: fable, XL: fable } }   # a short session: thinking pays off here
   developer:
     states: [In progress]
@@ -213,6 +222,7 @@ roles:
       blocked: Blocked
     may_move_to: [In progress, Testing, Documentation, Agent review, Blocked]
     agents: [laravel-architect, laravel-database-engineer, laravel-filament-developer, laravel-test-engineer, laravel-code-reviewer]
+    brain: read
     # claude.model (CLAUDE_MODEL), opus at complexity L and XL, which implement the architect's design; a Model: label
     # on the issue wins, and an Effort: label sets the effort.
     claude: { model_by_complexity: { L: opus, XL: opus } }
@@ -228,6 +238,7 @@ roles:
     model_label: ignore                      # sonnet, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # high, whatever the issue's Effort: label says
     agents: [laravel-test-engineer]
+    brain: read
     claude: { model: sonnet, effort: high }
   # The docs agent is conditional: Symphony sends a finished implementation (or passed tests) here only when it needs
   # documentation (`docs_needed` in the analysis, or a changed file matching pipeline.docs_trigger_paths without any change in
@@ -256,6 +267,7 @@ roles:
     model_label: ignore                      # opus, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # high, whatever the issue's Effort: label says: the review keeps a cheaper developer safe
     agents: [laravel-code-reviewer]
+    brain: write
     claude: { model: opus, effort: high }
   # The security auditor is conditional: Symphony sends an approved issue here only when it needs the audit (a `security`
   # label, `risks.security` in the analysis, or a changed file matching pipeline.security_paths; when the changed files
@@ -277,6 +289,7 @@ roles:
     model_label: ignore                      # opus, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # high, whatever the issue's Effort: label says
     agents: [laravel-code-reviewer]
+    brain: read
     claude: { model: opus, effort: high }
   auditor:
     commands: [refactoring]                                 # served only for issues whose description starts with /refactoring
@@ -320,6 +333,16 @@ roles:
     may_move_to: [In progress, In review, Blocked]
     agents: [laravel-architect]
     claude: { model: fable, effort: high, max_budget_usd: 20 }
+  brain-gardener:
+    commands: [brain-garden]                                # served only for issues whose description starts with /brain-garden
+    states: [Ready, In progress]
+    read_only: true                                         # the repository stays untouched; the proposals become candidate notes in the vault
+    run_checks: false
+    max_turns: 2
+    may_move_to: [In progress, In review, Blocked]
+    brain: write
+    brain_approved_writes: false                            # never writes an approved note, never sets status approved
+    claude: { model: opus, max_budget_usd: 5, disallowed_tools: [mcp__tracker__open_pull_request] }
 
 pipeline:
   # A third review with changes_needed does not go back to the developer: the issue moves to Blocked with the
@@ -421,6 +444,17 @@ server:
   host: ${SYMPHONY_HOST:-127.0.0.1}          # bind address; non-loopback only behind an authenticating proxy
   allow_remote_control: ${SYMPHONY_ALLOW_REMOTE_CONTROL:-false}  # Retry/Resume now on a non-loopback bind
   public_url: ${SYMPHONY_PUBLIC_URL:-}       # the dashboard as people reach it (https://symphony.example.com); links in commit statuses
+
+# budget:
+#   compact_threshold: 80                    # context percent of Claude Code's auto-compact; the team view marks it
+
+brain:                                       # knowledge vault: one vault for all repositories, created at startup
+  enabled: ${SYMPHONY_BRAIN_ENABLED:-false}  # true = create the vault; false = no path is touched
+  path: ~/brain                              # /home/symphony/brain is the brain volume in Docker
+  # clash_window_ms: 600000                  # another run that wrote a note within this window blocks a write (0 = off)
+  obsidian_url: ${SYMPHONY_BRAIN_OBSIDIAN_URL:-}  # "In Obsidian öffnen" on /brain (e.g. https://brain.docker.lan); empty hides it
+# Only roles with brain: read or write get the brain tools (see roles:).
+# Existing files and folders are never overwritten; .obsidian/ is never touched. Changes apply after a restart.
 ---
 {% capture branch %}{% if issue.branch_name %}{{ issue.branch_name }}{% else %}symphony/issue-{{ issue.native_ref.number }}{% endif %}{% endcapture %}{% assign base = issue.native_ref.base_branch %}{% assign splittable = false %}{% if issue.complexity == "XL" and issue.native_ref.parent == nil %}{% assign splittable = true %}{% endif %}{% assign integration = false %}{% if issue.native_ref.sub_issues.size > 0 and results.implementation == nil %}{% assign integration = true %}{% endif %}{% capture agent_list %}{% for agent in agents %}
 - `{{ agent.name }}`: {{ agent.description }}{% endfor %}{% endcapture %}{% capture agent_intro %}Subagents you may start with the Agent tool (`subagent_type` is the name). They are optional: each one works in its own context and costs tokens, so use them where they pay off. You stay responsible for their results; check them before you rely on them.{{ agent_list }}{% endcapture %}{% capture analysis_block %}{% if results.analysis %}
@@ -538,6 +572,8 @@ A mockup or screenshot is part of the requirements: layout, order, labels and te
 
 The description starts with the command `/{{ issue.command.name }}`{% if issue.command.args != "" %} and the argument `{{ issue.command.args }}`{% endif %}. Before anything else, load the skill `{{ issue.command.skill }}` with the Skill tool{% if issue.command.args != "" %} and pass it the argument{% endif %}, then follow it. Where the skill and the steps of your role below disagree, the skill wins. What your role may do (read-only access, allowed status changes, available tools) still applies.
 
+{% endif %}{% if brain != "off" %}{% include "roles/brain.md" %}
+
 {% endif %}{% comment %}Role prompts: roles/<role>.md next to this file. New role: add the file and a when line.{% endcomment %}{% case role %}
 {%- when "developer" %}{% include "roles/developer.md" %}
 {%- when "issue-analyst" %}{% include "roles/issue-analyst.md" %}
@@ -550,5 +586,6 @@ The description starts with the command `/{{ issue.command.name }}`{% if issue.c
 {%- when "autopilot" %}{% include "roles/autopilot.md" %}
 {%- when "analyst" %}{% include "roles/analyst.md" %}
 {%- when "planner" %}{% include "roles/planner.md" %}
+{%- when "brain-gardener" %}{% include "roles/brain-gardener.md" %}
 {%- else %}{% include "roles/default.md" %}
 {%- endcase %}

@@ -2,11 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import vm from 'node:vm';
 import { execFileSync } from 'node:child_process';
 import { describe, it } from 'node:test';
-import { AGENT_HTML } from '../src/http/agent-page.ts';
-import { BASE_JS } from '../src/http/styles.ts';
+import { AGENT_HTML } from '../src/http/issue-page.ts';
 import { startHttpServer } from '../src/http/server.ts';
 import { HistoryLog, readHistory } from '../src/history/history.ts';
 import { PricingStore } from '../src/costs/pricing.ts';
@@ -14,7 +12,8 @@ import { Logger } from '../src/log.ts';
 import { CHECK_OUTPUT_LIMIT, CHECK_PASSED_NOTE, createGuard, type CheckCache, type GateRun, type GuardDecision, type GuardParams } from '../src/orchestrator/guard.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import { WorkspaceManager } from '../src/workspace/manager.ts';
-import { FakeRunner, FakeTracker, ManualTimers, StaticWorkflow, baseFront, callTool, makeIssue, makeWorkflow, tempDir, until } from './helpers.ts';
+import { FakeRunner, FakeTracker, ManualTimers, StaticWorkflow, baseFront, callTool, makeIssue, makeWorkflow, renderPage, tempDir, until } from './helpers.ts';
+import { issueDetail } from './helpers/page-fixtures.ts';
 
 // Acceptance tests of #301 (entry gate on the agent page), derived from the issue text: guard state, API, page.
 
@@ -499,64 +498,12 @@ describe('API: GET /api/v1/<identifier> gate', () => {
 
 // ---------------------------------------------------------------- page
 
-class Node {
-  tag: string;
-  text: string;
-  className: string;
-  children: Node[] = [];
-  hidden = false;
-  open = false;
-  constructor(tag: string, text?: string | null, className?: string) {
-    this.tag = tag;
-    this.text = text ?? '';
-    this.className = className ?? '';
-  }
-  append(...items: Array<Node | string>): void {
-    for (const item of items) this.children.push(typeof item === 'string' ? new Node('#text', item) : item);
-  }
-  get all(): string {
-    return [this.text, ...this.children.map((c) => c.all)].filter((t) => t !== '').join(' ');
-  }
-  querySelector(tag: string): Node | null {
-    return this.find((n) => n.tag === tag && n !== this)[0] ?? null;
-  }
-  find(predicate: (node: Node) => boolean): Node[] {
-    return [...(predicate(this) ? [this] : []), ...this.children.flatMap((c) => c.find(predicate))];
-  }
-}
+const AGENT_URL = 'http://127.0.0.1/issue?id=acme%2Fapp%231';
 
-function between(source: string, from: string, to: string): string {
-  const start = source.indexOf(from);
-  assert.notEqual(start, -1, `${from} exists`);
-  return source.slice(start, source.indexOf(to, start) + to.length);
-}
-
-function renderGate(detail: unknown, previous: Node[] = []) {
-  const nodes = new Map<string, Node>();
-  nodes.set('gate-checks', new Node('ul'));
-  nodes.get('gate-checks')!.children = previous;
-  const node = (id: string) => nodes.get(id) ?? nodes.set(id, new Node('div')).get(id)!;
-  const context = vm.createContext({
-    el: (tag: string, text?: string | null, cls?: string) => new Node(tag, text, cls),
-    $: node,
-    setText: (n: Node, text: string) => {
-      n.text = text;
-    },
-    patchChildren: (host: Node, children: Node[]) => {
-      host.children = children;
-    },
-    S: { detail },
-  });
-  // The real formatters and the real gate renderer of the page.
-  vm.runInContext(between(BASE_JS, 'const fmtDuration = ', '};\n'), context);
-  vm.runInContext(between(BASE_JS, 'const fmtClock = ', ';\n'), context);
-  vm.runInContext(between(AGENT_HTML, 'const fmtMs = ', ';\n'), context);
-  vm.runInContext(between(AGENT_HTML, 'const GATE_STATUS', '};\n'), context);
-  const start = AGENT_HTML.indexOf('function renderGate(');
-  assert.notEqual(start, -1);
-  vm.runInContext(AGENT_HTML.slice(start, AGENT_HTML.indexOf('\n  }\n', start) + 5), context);
-  vm.runInContext('renderGate()', context);
-  return { section: node('gate-section'), meta: node('gate-meta'), rows: node('gate-checks').children };
+/** Renders the agent page for a detail (null: no detail yet); `detail` keys replace those of the fixture. */
+function renderGate(detail: Record<string, unknown> | null) {
+  const page = renderPage(AGENT_HTML, { detail: detail === null ? null : issueDetail(detail) }, { url: AGENT_URL });
+  return { page, section: page.$('gate-section'), meta: page.$('gate-meta'), rows: page.$('gate-checks').children };
 }
 
 const check = (over: Record<string, unknown>) => ({ name: 'x', status: 'passed', started_at: null, duration_ms: 1000, timeout_ms: 60000, cached: false, exit_code: 0, output: null, ...over });
@@ -564,9 +511,10 @@ const gate = (checks: unknown[], over: Record<string, unknown> = {}) => ({ targe
 
 describe('agent page: entry checks section', () => {
   it('has the section markup, hidden until there is a gate', () => {
+    const { section, rows } = renderGate(null);
+    assert.equal(section.hidden, true);
+    assert.equal(rows.length, 0);
     assert.match(AGENT_HTML, /id="gate-section"[^>]*hidden/);
-    assert.match(AGENT_HTML, /id="gate-checks"/);
-    assert.match(AGENT_HTML, /renderGate\(\);/);
   });
 
   it('lists the checks in order with name and state, elapsed time against the timeout, and the commit', () => {
@@ -578,17 +526,17 @@ describe('agent page: entry checks section', () => {
       ]),
     });
     assert.equal(section.hidden, false);
-    assert.match(meta.text, /Agent review/);
-    assert.match(meta.text, /0123456789ab/);
+    assert.match(meta.textContent, /Agent review/);
+    assert.match(meta.textContent, /0123456789ab/);
     assert.equal(rows.length, 3);
-    assert.match(rows[0]!.all, /lint/);
-    assert.match(rows[0]!.all, /passed/);
-    assert.match(rows[1]!.all, /ci/);
-    assert.match(rows[1]!.all, /running/);
-    assert.match(rows[1]!.all, /12\.0s \/ 2m 0s/);
-    assert.match(rows[2]!.all, /smoke/);
-    assert.match(rows[2]!.all, /pending/);
-    assert.doesNotMatch(rows[2]!.all, /\d+(\.\d)?s/);
+    assert.match(rows[0]!.textContent, /lint/);
+    assert.match(rows[0]!.textContent, /passed/);
+    assert.match(rows[1]!.textContent, /ci/);
+    assert.match(rows[1]!.textContent, /running/);
+    assert.match(rows[1]!.textContent, /12\.0s \/ 2m 0s/);
+    assert.match(rows[2]!.textContent, /smoke/);
+    assert.match(rows[2]!.textContent, /pending/);
+    assert.doesNotMatch(rows[2]!.textContent, /\d+(\.\d)?s/);
   });
 
   it('shows every status of a finished gate with its own wording', () => {
@@ -604,11 +552,11 @@ describe('agent page: entry checks section', () => {
         { finished_at: '2026-10-25T10:01:00Z' },
       ),
     });
-    assert.match(rows[0]!.all, /skipped/);
-    assert.match(rows[1]!.all, /failed/);
-    assert.match(rows[2]!.all, /timed out/);
-    assert.match(rows[3]!.all, /error/);
-    assert.match(rows[4]!.all, /not run/);
+    assert.match(rows[0]!.textContent, /skipped/);
+    assert.match(rows[1]!.textContent, /failed/);
+    assert.match(rows[2]!.textContent, /timed out/);
+    assert.match(rows[3]!.textContent, /error/);
+    assert.match(rows[4]!.textContent, /not run/);
   });
 
   it('renders the output of failed checks as text, never as markup, and an empty output as a placeholder', () => {
@@ -616,18 +564,18 @@ describe('agent page: entry checks section', () => {
     const { rows } = renderGate({
       gate: gate([check({ name: 'ci', status: 'check_failed', exit_code: 1, output: evil }), check({ name: 'q', status: 'check_failed', exit_code: 1, output: '' })], { finished_at: '2026-10-25T10:01:00Z' }),
     });
-    const pre = rows[0]!.find((n) => n.tag === 'pre');
+    const pre = rows[0]!.querySelectorAll('pre');
     assert.equal(pre.length, 1);
-    assert.equal(pre[0]!.text, evil);
+    assert.equal(pre[0]!.textContent, evil);
     assert.equal(pre[0]!.children.length, 0);
-    const empty = rows[1]!.find((n) => n.tag === 'pre');
+    const empty = rows[1]!.querySelectorAll('pre');
     assert.equal(empty.length, 1);
-    assert.notEqual(empty[0]!.text, '');
+    assert.notEqual(empty[0]!.textContent, '');
   });
 
   it('shows no output block for passed, running or timed out checks', () => {
     const { rows } = renderGate({ gate: gate([check({ status: 'passed' }), check({ status: 'running', exit_code: null }), check({ status: 'check_timeout', exit_code: null })]) });
-    for (const row of rows) assert.equal(row.find((n) => n.tag === 'pre').length, 0);
+    for (const row of rows) assert.equal(row.querySelectorAll('pre').length, 0);
   });
 
   it('folds the output of passed and skipped checks into a details element, as text', () => {
@@ -636,21 +584,22 @@ describe('agent page: entry checks section', () => {
       gate: gate([check({ name: 'a', status: 'passed', output: out }), check({ name: 'b', status: 'skipped', exit_code: 78, output: 'not applicable' })], { finished_at: '2026-10-25T10:01:00Z' }),
     });
     for (const [index, text] of [out, 'not applicable'].entries()) {
-      const details = rows[index]!.find((n) => n.tag === 'details');
+      const details = rows[index]!.querySelectorAll('details');
       assert.equal(details.length, 1, 'the output sits in a collapsed details element');
-      const pre = details[0]!.find((n) => n.tag === 'pre');
+      const pre = details[0]!.querySelectorAll('pre');
       assert.equal(pre.length, 1);
-      assert.equal(pre[0]!.text, text);
+      assert.equal(pre[0]!.textContent, text);
       assert.equal(pre[0]!.children.length, 0);
-      assert.equal(rows[index]!.children.filter((n) => n.tag === 'pre').length, 0, 'not shown outside of the details element');
+      assert.equal(rows[index]!.children.filter((n) => n.tagName === 'pre').length, 0, 'not shown outside of the details element');
     }
   });
 
   it('keeps a details element open across a refresh', () => {
     const detail = { gate: gate([check({ name: 'a', status: 'passed', output: 'steps:' }), check({ name: 'b', status: 'passed', output: 'x' })], { finished_at: '2026-10-25T10:01:00Z' }) };
-    const first = renderGate(detail).rows;
-    first[0]!.querySelector('details')!.open = true;
-    const again = renderGate(detail, first).rows;
+    const { page, rows } = renderGate(detail);
+    rows[0]!.querySelector('details')!.open = true;
+    page.render({ detail: issueDetail(detail) });
+    const again = page.$('gate-checks').children;
     assert.equal(again[0]!.querySelector('details')!.open, true, 'the opened output stays open');
     assert.equal(again[1]!.querySelector('details')!.open, false);
   });
@@ -659,15 +608,15 @@ describe('agent page: entry checks section', () => {
     const { rows } = renderGate({
       gate: gate([check({ status: 'passed', output: null }), check({ status: 'check_failed', exit_code: 1, output: 'boom' })], { finished_at: '2026-10-25T10:01:00Z' }),
     });
-    assert.equal(rows[0]!.find((n) => n.tag === 'details' || n.tag === 'pre').length, 0);
-    assert.equal(rows[1]!.find((n) => n.tag === 'details').length, 0);
-    assert.equal(rows[1]!.children.filter((n) => n.tag === 'pre').length, 1);
+    assert.equal(rows[0]!.querySelectorAll('details, pre').length, 0);
+    assert.equal(rows[1]!.querySelectorAll('details').length, 0);
+    assert.equal(rows[1]!.children.filter((n) => n.tagName === 'pre').length, 1);
   });
 
   it('labels cached checks "from cache" and nothing else', () => {
     const { rows } = renderGate({ gate: gate([check({ name: 'a', cached: true }), check({ name: 'b', cached: false })], { finished_at: '2026-10-25T10:01:00Z' }) });
-    assert.match(rows[0]!.all, /from cache/);
-    assert.doesNotMatch(rows[1]!.all, /cache/);
+    assert.match(rows[0]!.textContent, /from cache/);
+    assert.doesNotMatch(rows[1]!.textContent, /cache/);
   });
 
   it('stays hidden and empty without a gate, so only "Last check" shows', () => {
@@ -675,11 +624,13 @@ describe('agent page: entry checks section', () => {
       const { section, rows, meta } = renderGate(detail);
       assert.equal(section.hidden, true);
       assert.equal(rows.length, 0);
-      assert.equal(meta.text, '');
+      assert.equal(meta.textContent, '');
     }
   });
 
-  it('keeps the "Last check" line of the context in the page', () => {
-    assert.match(AGENT_HTML, /Last check/);
+  it('shows the "Last check" line of the context', () => {
+    const { page } = renderGate({ last_check: { ok: true, target: 'Agent review', duration_ms: 5000 } });
+    assert.match(page.$('main').textContent, /Last check/);
+    assert.match(page.$('main').textContent, /✓ Agent review/);
   });
 });

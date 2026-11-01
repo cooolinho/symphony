@@ -99,14 +99,14 @@ before it reports. A new session still waits until they are closed.
 
 ## Agent tools
 
-Exposed to Claude Code as `mcp__tracker__<name>`. They act on the session's own issue and repository; the only issues
+Exposed to Claude Code as `mcp__tracker__<name>`. They act on the session's own issue and repository (`add_comment` may also reach its ancestors); the only issues
 they create are sub-issues of that issue (`create_sub_issue`).
 
 | Tool | Input | Mutates | Result |
 |---|---|---|---|
 | `get_issue` | `max_comment_chars?` | no | JSON `{issue, status_options: string[], comments: [{author, created_at, url, body}], total_comments, linked_pull_requests: [{number, url, state, title, head}], branch_pull_request}` (the list may be empty): issue fields, valid status names, the latest 20 comments, linked pull requests, and the open pull request from the issue branch with the state of its checks (`{number, url, base, head_sha, checks: {state, failing, pending}}`, or null). Stage-result markers in comment bodies are shown as `<!-- symphony:result -->` without the base64 payload (the comments on GitHub and `readResults` are unchanged). `max_comment_chars` cuts each body and notes the number of cut characters. |
 | `set_status` | `status` | yes | Moves the board item; the name is matched case-insensitively. An unknown name returns the valid options. Guarded: see below. Entering `auto_merge.on_enter` triggers the [auto-merge](#auto-merge); the result then carries `auto_merge` and the final `status`. Not offered to [roles](../configuration.md#roles) with `result`: they hand off with Symphony's [`report_result`](../results.md#the-report_result-tool), which moves the issue through the same adapter operation. |
-| `add_comment` | `body` | yes | Posts a comment on the issue; returns its URL. Text containing `<!-- symphony:` is rejected (`invalid_argument`), see [Stage-result markers](#stage-result-markers-and-the-bot-account). |
+| `add_comment` | `body`, `issue?` | yes | Posts a comment on the issue; returns its URL. With `issue` (a number) the comment goes to an ancestor of the session's issue instead: its parent, that issue's parent and so on, at most 5 levels, same repository (e.g. epic or concept issue). The chain is read fresh on each call; any other number (sibling, sub-issue, pull request, unknown, other repository) is rejected with `invalid_argument` naming the allowed numbers, and nothing is posted. A comment on an ancestor ends with `<sub>aus owner/repo#N</sub>` naming the session's issue, and must not use the headings `Concept Plan` or `Concept Report` (used by /concept). Text containing `<!-- symphony:` is rejected (`invalid_argument`), see [Stage-result markers](#stage-result-markers-and-the-bot-account). |
 | `open_pull_request` | `head`, `title`, `body?`, `base?`, `draft?` | yes | Opens a PR from an already pushed branch (base defaults to `base_branch`, else the default branch). An open PR for the same branch is returned instead of a duplicate (`created: false`). |
 | `create_sub_issue` | `title`, `body?`, `labels?`, `parent?`, `blocked_by?` | yes | Creates a sub-issue of the session's issue (or, with `parent`, of one of its open sub-issues) in the same repository, adds it to the board in the `sub_issue_status` column (the role's, else the provider's) and returns `{created, number, identifier, url, status, on_board, unknown_labels, remaining, warnings?}`; with `parent` it also returns `parent`, with `blocked_by` also `blocked_by` and `unknown_blockers`. Only offered to [roles](../configuration.md#roles) with `max_sub_issues`. Title and body with `<!-- symphony:` are rejected like in `add_comment`. See below. |
 
@@ -260,7 +260,8 @@ Without the variable (or with any other value) the jobs run again and the gate w
 `ci` and `prod-smoke` (the final gate of `In review`, see [named checks](../configuration.md#named-checks)) are
 reported as commit statuses `symphony/ci` and `symphony/prod-smoke` with `checks.report_status`, so the gate and branch
 rules see them like any other check. `get_issue` shows the developer the checks of the branch's pull request
-(`branch_pull_request`).
+(`branch_pull_request`). Symphony reads the same pull request after each session with new commits for its change log
+(`changes/<owner>_<repo>.jsonl`, see [usage](../usage.md#logs-transcripts-and-workspaces)).
 
 Validation: `auto_merge` needs `base_branch` and `on_enter`; `on_enter` must not be an active or terminal state (it
 is entered after the agents are done), `done_state` must be terminal and neither `on_conflict` nor `on_checks_failed`

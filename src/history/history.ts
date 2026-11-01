@@ -57,6 +57,10 @@ export interface RunFinish {
   startedAt: Date;
   finishedAt: Date;
   agentSeconds: number;
+  /** Highest context fill of the session in percent; null when no window was known. Absent = not logged. */
+  contextPeakPercent?: number | null;
+  /** Automatic context compactions in the session. Absent = not logged. */
+  contextCompacts?: number;
   /** Model requested for the run (label, role or claude.model); null = Claude Code default. Absent = not logged. */
   modelRequested?: string | null;
   /** Effort requested for the run (label, role or claude.effort); null = Claude Code default. Absent = not logged. */
@@ -282,6 +286,8 @@ export class HistoryLog {
       cost_usd: round(cost, 4),
       claude_estimate_usd: finish.claudeEstimateUsd === null ? null : round(finish.claudeEstimateUsd, 4),
       agent_seconds: round(finish.agentSeconds, 1),
+      context_peak_percent: finish.contextPeakPercent,
+      context_compacts: finish.contextCompacts,
       head_sha: finish.headSha ?? undefined,
       branch: finish.branch ?? undefined,
       mcp_tool_calls: formatToolCalls(finish.mcpToolCalls),

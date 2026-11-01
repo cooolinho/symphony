@@ -2,20 +2,20 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import vm from 'node:vm';
 import { after, before, describe, it } from 'node:test';
 import type { StartSessionParams, TurnResult } from '../src/agent/types.ts';
 import { PricingStore } from '../src/costs/pricing.ts';
 import { HistoryLog, readHistory } from '../src/history/history.ts';
-import { AGENT_HTML } from '../src/http/agent-page.ts';
+import { AGENT_HTML } from '../src/http/issue-page.ts';
 import { DASHBOARD_HTML } from '../src/http/dashboard.ts';
-import { PIPELINE_JS } from '../src/http/pipeline.ts';
 import { startHttpServer, type HttpServerHandle } from '../src/http/server.ts';
 import { Logger } from '../src/log.ts';
 import { CONTINUATION_DELAY_MS } from '../src/orchestrator/eligibility.ts';
 import { Orchestrator } from '../src/orchestrator/orchestrator.ts';
 import type { ToolResult } from '../src/tracker/types.ts';
-import { FakeRunner, FakeTracker, ManualClock, ManualTimers, StaticWorkflow, baseFront, callTool, makeIssue, makeWorkflow, tempDir, until } from './helpers.ts';
+import { FakeRunner, FakeTracker, ManualClock, ManualTimers, StaticWorkflow, baseFront, callTool, makeIssue, makeWorkflow, renderPage, tempDir, until } from './helpers.ts';
+import { dashboardState, issueDetail, issueRow } from './helpers/page-fixtures.ts';
+import type { FakeElement } from './helpers/fake-dom.ts';
 
 // Acceptance tests of #212, derived from the issue: the agent page of a bugfix issue shows every stage with its
 // verdict, /api/v1/history/analytics returns by_profile, and every stage result lands in the history log.
@@ -168,9 +168,9 @@ describe('bugfix issue through developer → reviewer, observed from outside', (
   });
 
   it('the agent page is served with the results section', async () => {
-    const page = await request(server.port, 'GET', '/agent');
+    const page = await request(server.port, 'GET', '/issue');
     assert.equal(page.status, 200);
-    assert.match(page.body, /Stage results/);
+    assert.match(page.body, /Ergebnisse/);
     assert.match(page.body, /id="result-cards"/);
   });
 
@@ -247,67 +247,10 @@ describe('analytics by_profile: empty and legacy history', () => {
   });
 });
 
-// The page scripts are plain browser code in template strings. These tests run the real functions against a tiny
-// fake DOM, so what the user sees (text, classes, links) is asserted instead of source fragments.
-class FakeNode {
-  tag: string;
-  text: string;
-  className: string;
-  children: FakeNode[] = [];
-  attrs: Record<string, string> = {};
-  href?: string;
-  hidden = false;
-  open = false;
-  title = '';
-  constructor(tag: string, text?: string | null, className?: string) {
-    this.tag = tag;
-    this.text = text ?? '';
-    this.className = className ?? '';
-  }
-  append(...items: Array<FakeNode | string>): void {
-    for (const item of items) this.children.push(typeof item === 'string' ? new FakeNode('#text', item) : item);
-  }
-  get outerHTML(): string {
-    return `<${this.tag} class="${this.className}" href="${this.href ?? ''}">${this.text}${this.children.map((c) => c.outerHTML).join('')}</${this.tag}>`;
-  }
-  /** All visible text below this node. */
-  get all(): string {
-    return [this.text, ...this.children.map((c) => c.all)].filter((t) => t !== '').join(' ');
-  }
-  find(predicate: (node: FakeNode) => boolean): FakeNode[] {
-    return [...(predicate(this) ? [this] : []), ...this.children.flatMap((c) => c.find(predicate))];
-  }
-  querySelector(tag: string): FakeNode | null {
-    return this.find((n) => n.tag === tag && n !== this)[0] ?? null;
-  }
-}
-
-function functionSource(html: string, name: string): string {
-  const start = html.indexOf(`function ${name}(`);
-  assert.notEqual(start, -1, `${name} exists in the page script`);
-  const end = html.indexOf('\n  }\n', start);
-  return html.slice(start, end + 5);
-}
-
-function pageContext(html: string, names: string[], extra: Record<string, unknown> = {}) {
-  const nodes = new Map<string, FakeNode>();
-  const node = (id: string) => nodes.get(id) ?? nodes.set(id, new FakeNode('div')).get(id)!;
-  const context = vm.createContext({
-    el: (tag: string, text?: string | null, cls?: string) => new FakeNode(tag, text, cls),
-    $: node,
-    setText: (n: FakeNode, text: string) => {
-      n.text = text;
-    },
-    patchChildren: (host: FakeNode, children: FakeNode[]) => {
-      host.children = children;
-    },
-    fmtStamp: (iso: string) => iso,
-    ...extra,
-  });
-  vm.runInContext(PIPELINE_JS.replace(/<\/?script>/g, ''), context);
-  for (const name of names) vm.runInContext(functionSource(html, name), context);
-  return { context, node };
-}
+// The page scripts run in a fake DOM (renderPage); what the user sees (text, classes, links) is asserted.
+const AGENT_URL = 'http://127.0.0.1/issue?id=acme%2Fapp%231';
+const agentPage = (detail: unknown) => renderPage(AGENT_HTML, { detail }, { url: AGENT_URL });
+const links = (node: FakeElement) => node.querySelectorAll('a');
 
 describe('agent page: renderResults', () => {
   const bugfixResults = [
@@ -318,22 +261,21 @@ describe('agent page: renderResults', () => {
   ];
 
   const render = (results: unknown[] | undefined) => {
-    const { context, node } = pageContext(AGENT_HTML, ['renderResults'], { S: { detail: results === undefined ? null : { results } } });
-    vm.runInContext('renderResults()', context);
-    return { cards: node('result-cards').children, section: node('results-section'), count: node('results-count') };
+    const page = agentPage(results === undefined ? null : issueDetail({ results }));
+    return { cards: page.$('result-cards').children, section: page.$('results-section'), count: page.$('results-count') };
   };
 
   it('shows a card per stage result, in order, with role, verdict and round', () => {
     const { cards, section, count } = render(bugfixResults);
     assert.equal(section.hidden, false);
-    assert.equal(count.text, '4');
+    assert.equal(count.textContent, '4');
     assert.equal(cards.length, 4);
-    const texts = cards.map((c) => c.all);
-    assert.match(texts[0]!, /developer.*implementation.*done/);
-    assert.match(texts[1]!, /reviewer.*review.*changes needed · round 1/);
-    assert.match(texts[2]!, /developer.*blocked/);
-    assert.match(texts[3]!, /reviewer.*approved · round 2/);
-    for (const [i, c] of cards.entries()) assert.ok(c.all.includes(String(bugfixResults[i]!.summary)), `summary of card ${i}`);
+    const texts = cards.map((c) => c.textContent);
+    assert.match(texts[0]!, /Developer.*done/);
+    assert.match(texts[1]!, /Reviewer R1.*changes needed/);
+    assert.match(texts[2]!, /Developer.*blocked/);
+    assert.match(texts[3]!, /Reviewer R2.*approved/);
+    for (const [i, c] of cards.entries()) assert.ok(c.textContent.includes(String(bugfixResults[i]!.summary)), `summary of card ${i}`);
   });
 
   it('tones the card by verdict', () => {
@@ -346,45 +288,44 @@ describe('agent page: renderResults', () => {
 
   it('lists findings with severity, location, problem and fix, and blockers with what they need', () => {
     const { cards } = render(bugfixResults);
-    assert.match(cards[1]!.all, /major/);
-    assert.match(cards[1]!.all, /src\/app\.ts:12/);
-    assert.match(cards[1]!.all, /Missing null guard/);
-    assert.match(cards[1]!.all, /Add the guard/);
-    assert.match(cards[2]!.all, /access/);
-    assert.match(cards[2]!.all, /No token/);
+    assert.match(cards[1]!.textContent, /major/);
+    assert.match(cards[1]!.textContent, /src\/app\.ts:12/);
+    assert.match(cards[1]!.textContent, /Missing null guard/);
+    assert.match(cards[1]!.textContent, /Add the guard/);
+    assert.match(cards[2]!.textContent, /access/);
+    assert.match(cards[2]!.textContent, /No token/);
   });
 
   it('links to the result comment only for http(s) URLs', () => {
     const { cards } = render(bugfixResults);
-    const links = (c: FakeNode) => c.find((n) => n.tag === 'a');
     assert.equal(links(cards[1]!).length, 1);
     assert.equal(links(cards[1]!)[0]!.href, 'https://github.com/acme/app/issues/7#issuecomment-2');
     assert.equal(links(cards[2]!).length, 0, 'no URL, no link');
     assert.equal(links(cards[3]!).length, 0, 'a javascript: URL is never linked');
   });
 
-  it('hides the section without results, and for an archive row from before the fields existed', () => {
-    assert.equal(render([]).section.hidden, true);
-    assert.equal(render(undefined).section.hidden, true);
+  it('keeps the panel with its empty note without results, and renders an archive row from before the fields existed', () => {
+    assert.equal(render([]).section.hidden, false);
+    assert.equal(render([]).cards.length, 0);
+    assert.equal(render(undefined).section.hidden, false);
     const legacy = { role: 'developer', kind: 'implementation', verdict: 'done', round: null, target: 'Agent review', summary: 'Old.', created_at: '2026-10-01T00:00:00Z' };
     const { cards } = render([legacy]);
     assert.equal(cards.length, 1);
-    assert.equal(cards[0]!.find((n) => n.tag === 'a').length, 0);
+    assert.equal(links(cards[0]!).length, 0);
   });
 });
 
 describe('dashboard card: flagChips', () => {
-  const chips = (row: Record<string, unknown>) => {
-    const { context } = pageContext(DASHBOARD_HTML, ['flagChips']);
-    context.row = row;
-    return vm.runInContext('flagChips(row)', context) as FakeNode[];
+  const chips = (row: Record<string, unknown>): FakeElement[] => {
+    const page = renderPage(DASHBOARD_HTML, dashboardState({ issues: [issueRow(row)] }));
+    return page.$('running').querySelectorAll('.chip.flag-human, .chip.flag-budget');
   };
 
   it('shows a needs human badge for the needs-human label, whatever its case', () => {
     for (const label of ['needs-human', 'Needs-Human', ' needs-human ']) {
       const result = chips({ labels: ['bug', label], budget: null });
       assert.equal(result.length, 1, label);
-      assert.match(result[0]!.text, /needs human/);
+      assert.match(result[0]!.textContent, /needs human/);
     }
     assert.equal(chips({ labels: ['bug'], budget: null }).length, 0);
     assert.equal(chips({ labels: undefined, budget: undefined }).length, 0);
@@ -392,7 +333,7 @@ describe('dashboard card: flagChips', () => {
 
   it('shows the budget used against the cap, and warns near and over it', () => {
     const [ok] = chips({ labels: [], budget: { cost_usd: 1, max_issue_cost_usd: 10 } });
-    assert.equal(ok!.text, '$1.00 / $10.00');
+    assert.equal(ok!.textContent, '$1.00 / $10.00');
     assert.doesNotMatch(ok!.className, /near|over/);
     const [near] = chips({ labels: [], budget: { cost_usd: 8.5, max_issue_cost_usd: 10 } });
     assert.match(near!.className, /near/);
@@ -421,42 +362,36 @@ describe('agent page: renderGate', () => {
     ],
   };
 
-  const render = (detail: unknown) => {
-    const { context, node } = pageContext(AGENT_HTML, ['renderGate'], {
-      S: { detail },
-      fmtMs: (ms: number) => (ms < 60000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms / 60000)}m`),
-      fmtClock: (iso: string) => iso,
-    });
-    const start = AGENT_HTML.indexOf('const GATE_STATUS');
-    vm.runInContext(AGENT_HTML.slice(start, AGENT_HTML.indexOf('};\n', start) + 2), context);
-    vm.runInContext('renderGate()', context);
-    return { rows: node('gate-checks').children, section: node('gate-section'), meta: node('gate-meta') };
+  const render = (detail: Record<string, unknown> | null) => {
+    const page = agentPage(detail === null ? null : issueDetail(detail));
+    return { rows: page.$('gate-checks').children, section: page.$('gate-section'), meta: page.$('gate-meta') };
   };
 
   it('lists every check with its state, elapsed time against the timeout and the cache flag', () => {
     const { rows, section, meta } = render({ gate });
     assert.equal(section.hidden, false);
-    assert.match(meta.text, /In review · abcdef012345 · running/);
+    assert.match(meta.textContent, /In review · abcdef012345 · running/);
     assert.equal(rows.length, 4);
-    assert.match(rows[0]!.all, /lint.*passed.*3\.0s.*from cache/);
-    assert.match(rows[1]!.all, /ci.*running.*12\.0s \/ 2m/);
+    assert.match(rows[0]!.textContent, /lint.*passed.*3\.0s.*from cache/);
+    assert.match(rows[1]!.textContent, /ci.*running.*12\.0s \/ 2m/);
     assert.ok(rows[1]!.className.includes('tone-cyan'));
-    assert.match(rows[3]!.all, /smoke.*pending/);
+    assert.match(rows[3]!.textContent, /smoke.*pending/);
   });
 
   it('shows the output of a failed check as plain text', () => {
     const { rows } = render({ gate });
     assert.ok(rows[2]!.className.includes('tone-red'));
-    assert.match(rows[2]!.all, /failed \(exit 1\)/);
-    const pre = rows[2]!.find((n) => n.tag === 'pre');
+    assert.match(rows[2]!.textContent, /failed \(exit 1\)/);
+    const pre = rows[2]!.querySelectorAll('pre');
     assert.equal(pre.length, 1);
-    assert.equal(pre[0]!.text, '<b>boom</b>');
+    assert.equal(pre[0]!.textContent, '<b>boom</b>');
+    assert.equal(pre[0]!.children.length, 0);
   });
 
   it('marks checks that never ran in a finished gate', () => {
     const { rows, meta } = render({ gate: { ...gate, finished_at: '2026-10-25T10:01:00Z' } });
-    assert.match(meta.text, /finished/);
-    assert.match(rows[3]!.all, /not run/);
+    assert.match(meta.textContent, /finished/);
+    assert.match(rows[3]!.textContent, /not run/);
   });
 
   it('is hidden without a gate', () => {
@@ -468,29 +403,27 @@ describe('agent page: renderGate', () => {
   });
 });
 
-describe('dashboard: renderRepositories', () => {
+describe('dashboard: repositories bar', () => {
   const render = (repositories: unknown) => {
-    const { context, node } = pageContext(DASHBOARD_HTML, ['renderRepositories']);
-    context.h = { repositories };
-    vm.runInContext('renderRepositories(h)', context);
-    return node;
+    const page = renderPage(DASHBOARD_HTML, dashboardState({ health: { ...dashboardState().health, repositories } }));
+    return page;
   };
 
   it('renders one text-only link per repository', () => {
-    const node = render(['acme/app', 'other/<img onerror=x>']);
-    const chips = node('repo-list').children;
+    const page = render(['acme/app', 'other/<img onerror=x>']);
+    const chips = page.$('repo-list').children;
     assert.equal(chips.length, 2);
-    assert.equal(chips[0]!.text, 'acme/app');
+    assert.equal(chips[0]!.textContent, 'acme/app');
     assert.equal(chips[0]!.href, 'https://github.com/acme/app');
-    assert.equal(chips[1]!.text, 'other/<img onerror=x>');
+    assert.equal(chips[1]!.textContent, 'other/<img onerror=x>');
     assert.equal(chips[1]!.children.length, 0);
-    assert.equal(node('repositories').hidden, false);
+    assert.equal(page.$('repositories').hidden, false);
   });
 
   it('says all repositories without a restriction', () => {
-    const chips = render(null)('repo-list').children;
+    const chips = render(null).$('repo-list').children;
     assert.equal(chips.length, 1);
-    assert.equal(chips[0]!.text, 'all repositories on the board');
+    assert.equal(chips[0]!.textContent, 'all repositories on the board');
   });
 
   it('ships the bar and wraps the chips', () => {

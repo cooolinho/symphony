@@ -4,24 +4,29 @@ import path from 'node:path';
 import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { sessionClaudeConfig } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, AgentSession, IntegrationReport, SessionLimitInfo } from '../agent/types.ts';
+import type { BrainAccessLog } from '../brain/access-log.ts';
+import type { BrainIndex } from '../brain/index.ts';
+import { brainToolsFor, createVaultGit } from '../brain/tools.ts';
+import { repoFolderName } from '../brain/vault.ts';
+import { isRepositoryName } from '../tracker/github-project/settings.ts';
 import { prepareIntegrations } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
-import type { AgentToolSpec, Issue, IssueComment, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
+import type { AgentToolSpec, AutoMergeResult, Issue, IssueComment, ToolResult, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { describeHolder, type LockResult } from '../workspace/lock.ts';
 import { describeFailure, type HookIssue, type Workspace, type WorkspaceManager } from '../workspace/manager.ts';
 import { commandSkills, pluginAgents } from '../workflow/command.ts';
 import { classify } from '../workflow/classify.ts';
 import { profileFor } from '../workflow/profile.ts';
-import { roleName, sessionAgents, type RoleConfig } from '../workflow/roles.ts';
+import { roleName, sessionAgents, sessionBrainMode, type RoleConfig } from '../workflow/roles.ts';
 import type { EffectiveWorkflow } from '../workflow/store.ts';
 import { internalResult, renderResultComment, type ResultMeta } from '../workflow/results.ts';
 import { maxColumnCheckMs, normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
 import { EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../workflow/template.ts';
 import { writeAttachments, type AttachmentFile } from '../workspace/attachments.ts';
-import { changedFiles } from '../workspace/changes.ts';
-import { baselineCommit, changedFilesSince } from './changed-files.ts';
+import { changedFiles, commitStats, type CommitStat } from '../workspace/changes.ts';
+import { baselineCommit, changedFilesSince, isAncestor } from './changed-files.ts';
 import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord, type GateRun, type GuardParams } from './guard.ts';
 import { createResultTool, resultReminder, type PathRule, type ResultToolAdapter, type ResultToolParams } from './result-tool.ts';
 import { reviewedFiles, securityBaseRef } from './security.ts';
@@ -123,9 +128,45 @@ export interface WorkerCallbacks {
   transitionDenied(target: string, message: string): void;
   /** JSONL transcript of this attempt's agent session, reported before the session starts. */
   transcript(path: string): void;
+  /** The commits the session added to the workspace's branch, oldest first: once while the attempt finishes, only with at least one. */
+  commits(commits: CommitStat[]): Promise<void> | void;
+  /** A tool call (`set_status`, `report_result`) whose `auto_merge` merged the issue's pull request. */
+  merged(result: AutoMergeResult): void;
+}
+
+/** The `auto_merge` of a successful tool result, when it merged. */
+function mergedBy(result: ToolResult): AutoMergeResult | null {
+  if (!result.ok || typeof result.data !== 'object' || result.data === null) return null;
+  const merge = (result.data as { auto_merge?: unknown }).auto_merge;
+  if (typeof merge !== 'object' || merge === null || (merge as AutoMergeResult).merged !== true) return null;
+  return merge as AutoMergeResult;
+}
+
+/** Wraps every spec that moves the issue so a call whose `auto_merge` merged reports it; the result stays unchanged. */
+export function observeMerges(specs: AgentToolSpec[], onMerged: (result: AutoMergeResult) => void): AgentToolSpec[] {
+  return specs.map((spec) => {
+    if (spec.transitionTarget === undefined) return spec;
+    return {
+      ...spec,
+      execute: async (args, context) => {
+        const result = await spec.execute(args, context);
+        const merge = mergedBy(result);
+        if (merge !== null) {
+          try {
+            onMerged(merge);
+          } catch {
+            // Recording the merge never fails the tool call.
+          }
+        }
+        return result;
+      },
+    };
+  });
 }
 
 export interface WorkerParams {
+  /** Context window (tokens) of a model id; null when unknown. Passed on to the session. */
+  contextWindow?: (model: string) => number | null;
   issue: Issue;
   /** Id of this run, recorded in the meta of the results it reports; null when unknown. */
   runId: string | null;
@@ -154,6 +195,12 @@ export interface WorkerParams {
   checkCache: CheckCache;
   /** Directory for per-session JSONL transcripts, or null to disable them. */
   transcriptDir: string | null;
+  /** Access log and clash list of the brain, shared by all sessions. */
+  brainAccess?: BrainAccessLog | null;
+  /** Index of the vault, updated after every vault commit. */
+  brainIndex?: BrainIndex | null;
+  /** Called after every commit to the vault (`createVaultGit` `onCommit`) with the vault path; errors are logged, never thrown. */
+  onBrainCommit?: (vault: string, sha: string, paths: string[]) => void | Promise<void>;
   /**
    * Live check after each turn (uses the current workflow config): null continues the session, a string ends it
    * normally with that reason (the issue left the active states, is no longer routable, or another role serves it).
@@ -181,15 +228,16 @@ interface ResultSupport {
 /**
  * The path rule of a role with `result: test`: its session may only change files matching `pipeline.test_paths`,
  * measured from the developer's last hand-off (`handoffSha`) when HEAD descends from it, else from the commit the
- * session started from (`startSha`). Without a commit to measure from (not a git checkout, or git failed) the rule
+ * session started from (`startSha`); a session that started on the base branch (`startOnBase`) does not blame the merged
+ * pull requests between the hand-off and its start. Without a commit to measure from (not a git checkout, or git failed) the rule
  * cannot be evaluated: it refuses to guess, so the result is not accepted unchecked.
  */
-function testPathRule(workspacePath: string, testPaths: readonly string[], startSha: string | null, handoffSha: string | null, extra: Pick<PathRule, 'setting' | 'guidance'> = {}): PathRule {
+function testPathRule(workspacePath: string, testPaths: readonly string[], startSha: string | null, startOnBase: boolean, handoffSha: string | null, extra: Pick<PathRule, 'setting' | 'guidance'> = {}): PathRule {
   return {
     ...extra,
     allowed: testPaths,
     changedFiles: async () => {
-      const base = await baselineCommit(workspacePath, handoffSha, startSha);
+      const base = await baselineCommit(workspacePath, handoffSha, startSha, startOnBase);
       if (base === null) throw new SymphonyError('paths_unverifiable', 'the commit this session started from is unknown');
       return { base, files: await changedFilesSince(workspacePath, base) };
     },
@@ -206,7 +254,7 @@ export function checkStatusReporter(
   issue: Issue,
 ): Pick<GuardParams, 'reportStatus'> {
   if (!config.checks.reportStatus || adapter.reportCheckStatus === undefined) return {};
-  const targetUrl = config.server.publicUrl !== null ? `${config.server.publicUrl}/agent?id=${encodeURIComponent(issue.identifier)}` : null;
+  const targetUrl = config.server.publicUrl !== null ? `${config.server.publicUrl}/issue?id=${encodeURIComponent(issue.identifier)}` : null;
   return { reportStatus: (report) => adapter.reportCheckStatus?.(issue, { ...report, targetUrl }) ?? Promise.resolve() };
 }
 
@@ -354,6 +402,19 @@ async function prepareAttachments(adapter: TrackerAdapter, issue: Issue, workspa
   }
 }
 
+/** `onCommit` of the vault git of a session: updates the brain index and records the brain changes. */
+export function vaultGitHooks(
+  vault: string,
+  params: Pick<WorkerParams, 'brainIndex' | 'onBrainCommit'>,
+): { onCommit: (sha: string, paths: string[]) => Promise<void> } {
+  return {
+    onCommit: async (sha, paths) => {
+      params.brainIndex?.update(vault, paths);
+      await params.onBrainCommit?.(vault, sha, paths);
+    },
+  };
+}
+
 /**
  * One run attempt (spec 16.5): workspace, before_run, one live agent session with up to
  * max_turns turns while the issue stays active, then after_run. Never throws.
@@ -369,6 +430,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
   let session: AgentSession | null = null;
   let phase: RunPhase = 'PreparingWorkspace';
   let lock: Extract<LockResult, { ok: true }> | null = null;
+  // HEAD before the agent acted; set once the session is about to start (undefined: no session, no commits to report).
+  let sessionStart: { sha: string | null } | undefined;
 
   const setPhase = (next: RunPhase) => {
     phase = next;
@@ -395,12 +458,22 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
         .catch((error: unknown) => logger.warn('after_run hook could not run', { error: errorMessage(error) }));
       const head = await readGitHead(workspace.path);
       if (head !== null) callbacks.gitHead(head);
+      if (head !== null && sessionStart !== undefined && head.headSha !== sessionStart.sha) await reportCommits(workspace.path, sessionStart.sha);
     }
     if (lock !== null) {
       await lock.release().catch((error: unknown) => logger.warn('workspace lock could not be released', { error: errorMessage(error) }));
       lock = null;
     }
     return outcome;
+  };
+
+  const reportCommits = async (workspacePath: string, since: string | null) => {
+    try {
+      const commits = await commitStats(workspacePath, { since, base: securityBaseRef(issue.native_ref?.base_branch) });
+      if (commits.length > 0) await callbacks.commits(commits);
+    } catch (error) {
+      logger.warn('could not list the commits of the session', { error: errorMessage(error) });
+    }
   };
 
   try {
@@ -502,13 +575,16 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     const appDirs = (await Promise.all(params.integrations.map((integration) => integration.appDirs?.(activeWorkspace.path) ?? []))).flat();
     const paths = effectivePaths(params.workflow.config.pipeline, appDirs);
     // A test engineer's changes are measured from the developer's last hand-off, else from the workspace as this session found it.
-    const startSha = role?.result === 'test' || role?.result === 'docs' ? ((await readGitHead(activeWorkspace.path))?.headSha ?? null) : null;
+    // Also where the session's commits start (change log).
+    const startSha = (await readGitHead(activeWorkspace.path))?.headSha ?? null;
+    // Fixed before the agent acts, so a push of its own cannot move the baseline; false when git cannot tell.
+    const startOnBase = (role?.result === 'test' || role?.result === 'docs') && startSha !== null && (await isAncestor(activeWorkspace.path, startSha, securityBaseRef(issue.native_ref?.base_branch)));
     const pathRule =
       role?.result === 'test'
-        ? (history: StageHistory) => testPathRule(activeWorkspace.path, paths.testPaths, startSha, implementationHead(history))
+        ? (history: StageHistory) => testPathRule(activeWorkspace.path, paths.testPaths, startSha, startOnBase, implementationHead(history))
         : role?.result === 'docs'
           ? (history: StageHistory) =>
-              testPathRule(activeWorkspace.path, paths.docsPaths, startSha, docsBaseHead(history), {
+              testPathRule(activeWorkspace.path, paths.docsPaths, startSha, startOnBase, docsBaseHead(history), {
                 setting: 'pipeline.docs_paths',
                 guidance: 'Code and tests belong to the developer and the test engineer: leave them alone and report the verdict `blocked` if the documentation cannot be written without changing them.',
               })
@@ -569,7 +645,11 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
           )
         : null;
     if (signal.aborted) return await finish(cancelled());
+    const brainMode = sessionBrainMode(params.workflow.config.brain.enabled, role);
+    const repository = params.adapter.issueRepository?.(issue) ?? null;
     const resultVariables = {
+      brain: brainMode,
+      brain_index: repository !== null && isRepositoryName(repository) ? `Repos/${repoFolderName(repository)}/index.md` : null,
       results: support?.results ?? EMPTY_RESULTS,
       human_feedback: support?.humanFeedback ?? [],
       round: support?.round ?? 1,
@@ -582,7 +662,17 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     if (transcript !== null) callbacks.transcript(transcript);
     // An architect files sub-issues only to split an issue it may split (XL, not a work package itself).
     const subIssues = subIssueLimit(role, issue);
+    sessionStart = { sha: startSha };
+    const brainPath = params.workflow.config.brain.path;
+    const vaultGitOptions = vaultGitHooks(brainPath, params);
+    const brainTools = brainToolsFor(params.workflow.config.brain, brainMode, logger, {
+      access: params.brainAccess ?? null,
+      approvedWrites: role?.brainApprovedWrites ?? true,
+      index: params.brainIndex ?? null,
+      ...(brainMode !== 'off' ? { versioning: createVaultGit(brainPath, logger, vaultGitOptions) } : {}),
+    });
     session = await params.runner.startSession({
+      ...(params.contextWindow ? { contextWindow: params.contextWindow } : {}),
       cwd: activeWorkspace.path,
       issue,
       config: sessionClaudeConfig(params.workflow.config.claude, params.model, params.effort, role?.claude),
@@ -591,9 +681,12 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       deniedAgents: agents.denied.flatMap((agent) => [agent.qualified, agent.name]),
       // Entry checks run inside the status tool call; leave a minute for the tracker call around them.
       toolTimeoutMs: Math.max(params.workflow.config.checks.timeoutMs, maxColumnCheckMs(params.workflow.config.checks)) + TOOL_TIMEOUT_MARGIN_MS,
-      tools: guardTools(toolsForRole(params.adapter.agentToolSpecs(), role, issue, support?.tool ?? null), guard),
+      tools: guardTools(observeMerges(toolsForRole(params.adapter.agentToolSpecs(), role, issue, support?.tool ?? null), callbacks.merged), guard),
+      ...(brainTools.length > 0 ? { brainTools } : {}),
       toolContext: () => ({
         issue,
+        role: name,
+        ...(params.runId !== null ? { runId: params.runId } : {}),
         ...(subIssues !== null ? { maxSubIssues: subIssues } : {}),
         ...(role?.subIssueStatus != null ? { subIssueStatus: role.subIssueStatus } : {}),
       }),

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { GithubProjectAdapter } from '../src/tracker/github-project/adapter.ts';
 import { createGithubTools } from '../src/tracker/github-project/tools.ts';
 import type { AgentToolSpec } from '../src/tracker/types.ts';
 import { makeIssue } from './helpers.ts';
@@ -16,6 +17,7 @@ function getIssueTool(comments: Array<{ body: string }>): AgentToolSpec {
     fetchIssuesByIds: async () => [issue],
     meta: async () => ({ statusOptions: [{ id: 'a', name: 'Todo' }] }),
     viewerLogin: async () => 'bot',
+    branchPullRequest: GithubProjectAdapter.prototype.branchPullRequest,
     client: {
       request: async () => ({
         errors: [],
@@ -48,6 +50,7 @@ describe('get_issue branch_pull_request', () => {
       fetchIssuesByIds: async () => [issue],
       meta: async () => ({ statusOptions: [] }),
       viewerLogin: async () => 'bot',
+      branchPullRequest: GithubProjectAdapter.prototype.branchPullRequest,
       client: {
         request: async (query: string, variables: Record<string, unknown>) => {
           if (!query.includes('SymphonyBranchPullRequest')) return { errors: [], data: { node: { comments: { totalCount: 0, nodes: [] }, closedByPullRequestsReferences: { nodes: [] } } } };

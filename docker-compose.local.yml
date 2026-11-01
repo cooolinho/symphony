@@ -48,6 +48,8 @@ services:
             - state:/home/symphony/.local/state/symphony
             - claude:/home/symphony/.claude
             - composer-cache:/home/symphony/.cache/composer
+            # Brain vault (brain.enabled in WORKFLOW.md); the obsidian service (profile brain) opens it
+            - brain:/home/symphony/brain
             # "ci" profile: client certs for the dind daemon. No DOCKER_HOST here: agents share this environment,
             # the check scripts map SYMPHONY_CI_DOCKER_HOST / SYMPHONY_CI_DOCKER_CERT_PATH to DOCKER_* themselves.
             # Without the profile the volume stays empty.
@@ -132,6 +134,27 @@ services:
         # The tmpfs counts against it: buffer pool plus up to 2 GB of data.
         mem_limit: 3g
 
+    # Compose profile "brain" (COMPOSE_PROFILES=brain, or docker compose -f docker-compose.local.yml up -d obsidian):
+    # Obsidian in the browser, opening the brain vault (docs/docker.md, "Obsidian"). Open /config/vault as the vault.
+    obsidian:
+        image: lscr.io/linuxserver/obsidian:latest
+        profiles: [brain]
+        restart: unless-stopped
+        # Chromium/Electron needs more shared memory than Docker's default.
+        shm_size: "1gb"
+        environment:
+            # Same source as the UID/GID build args of symphony: both containers write into the vault as the same user.
+            PUID: ${UID:-1000}
+            PGID: ${GID:-1000}
+            TZ: ${TZ:-Europe/Berlin}
+        volumes:
+            - obsidian-config:/config
+            - brain:/config/vault
+        # Local only, no login: bound to 127.0.0.1, never to 0.0.0.0. Plain HTTP is enough here: the web client needs a
+        # secure context, and http://127.0.0.1 is one (a LAN host name over HTTP is not).
+        ports:
+            - "127.0.0.1:${BRAIN_PORT:-3000}:3000"
+
 networks:
     # Network of the "ci" profile (dind, mysql). Pinned subnet: Docker's default pool could otherwise hand out a range
     # that collides with networks a project creates inside dind (bandenhub's smoke test uses 172.30.250.0/24).
@@ -146,6 +169,9 @@ volumes:
     state:
     claude:
     composer-cache:
+    brain:
+    # Profile "brain": Obsidian's settings (/config).
+    obsidian-config:
     # "ci" profile: dind's certificates and image store.
     dind-certs-ca:
     dind-certs-client:

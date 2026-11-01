@@ -104,6 +104,31 @@ describe('shipped WORKFLOW.md', () => {
     assert.doesNotMatch(await render('issue-analyst'), /## Newest human comments/);
   });
 
+  it('sets brain per role: write, read or off', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const config = resolveConfig(definition.config, { workflowPath: shipped, env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' }, trackerDefaults });
+    const modes = Object.fromEntries((config.roles ?? []).map((role) => [role.name, role.brain]));
+    assert.deepEqual(modes, {
+      'issue-analyst': 'write', architect: 'write', reviewer: 'write',
+      developer: 'read', 'test-engineer': 'read', 'security-auditor': 'read',
+      docs: 'off', auditor: 'off', autopilot: 'off', analyst: 'off', planner: 'off', 'brain-gardener': 'write',
+    });
+  });
+
+  it('includes the knowledge vault section only for brain read or write', async () => {
+    const index = 'Repos/acme-app/index.md';
+    for (const history of [{}, { brain: 'off', brain_index: index }]) {
+      assert.ok(!(await render('developer', null, undefined, null, [], history)).includes('Knowledge vault'));
+    }
+    const read = await render('developer', null, undefined, null, [], { brain: 'read', brain_index: index });
+    for (const part of ['Knowledge vault', index, 'brain_search', 'purpose', 'candidate', 'You cannot write', 'repeatable insight']) assert.ok(read.includes(part), part);
+    assert.ok(!read.includes('base_hash') && !read.includes('brain_write'));
+    const write = await render('reviewer', null, undefined, null, [], { brain: 'write', brain_index: index });
+    for (const part of [index, 'base_hash', 'brain_write', 'brain_append', 'repeatable insight', 'no lesson']) assert.ok(write.includes(part), part);
+    assert.ok(!write.includes('You cannot write'));
+    assert.ok((await render('developer', null, undefined, null, [], { brain: 'read', brain_index: null })).includes('brain_list'));
+  });
+
   it('resolves to the developer and reviewer roles with entry checks', async () => {
     const { definition } = await loadWorkflowFile(shipped);
     const config = resolveConfig(definition.config, {
@@ -996,6 +1021,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
       autopilot: ['laravel-architect'],
       analyst: ['laravel-architect'],
       planner: ['laravel-architect'],
+      'brain-gardener': null,
     });
     for (const role of config.roles ?? []) {
       for (const name of role.agents ?? []) {
@@ -1057,6 +1083,7 @@ describe('Symphony toolbox skills', () => {
   it('ships the skills the shipped roles and templates refer to', async () => {
     assert.deepEqual([...commandSkills([toolbox])].sort(), [
       ['auto-code', 'symphony:auto-code'],
+      ['brain-garden', 'symphony:brain-garden'],
       ['concept', 'symphony:concept'],
       ['plan', 'symphony:plan'],
       ['refactor-safely', 'symphony:refactor-safely'],

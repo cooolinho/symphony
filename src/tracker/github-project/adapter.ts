@@ -7,6 +7,7 @@ import {
   type AddLabelsResult,
   type AgentToolSpec,
   type AutoMergeResult,
+  type BranchPullRequest,
   type CheckStatus,
   type Issue,
   type IssueAttachment,
@@ -18,9 +19,11 @@ import {
   type StatusChange,
   type TrackedResult,
   type TrackerAdapter,
+  type TrackerApiBudget,
 } from '../types.ts';
 import { downloadAttachments, extractAttachmentLinks, webOrigin, type AttachmentLink } from './attachments.ts';
 import { assertNoGraphqlErrors, type GithubGraphqlClient, type GraphqlError } from './client.ts';
+import { evaluateRollup } from './checks.ts';
 import { AWAITING_CHECKS_LABEL, isCreatableLabel, labelDefinition } from './labels.ts';
 import { autoMerge, CHECKS_FAILED_MARKER, type MergeOptions } from './merge.ts';
 import {
@@ -41,8 +44,10 @@ import {
 import {
   ADD_COMMENT_MUTATION,
   ADD_LABELS_MUTATION,
+  BRANCH_PULL_REQUEST_QUERY,
   CREATE_LABEL_MUTATION,
   ISSUE_ATTACHMENTS_QUERY,
+  ISSUE_PARENT_QUERY,
   ISSUE_COMMENTS_QUERY,
   ITEM_DETAILS_QUERY,
   PROJECT_ITEMS_QUERY,
@@ -105,6 +110,14 @@ function chunk<T>(items: T[], size: number): T[][] {
   return chunks;
 }
 
+/** An issue above another one in the parent chain. */
+export interface IssueAncestor {
+  id: string;
+  number: number;
+  title: string;
+  repository: string;
+}
+
 export class GithubProjectAdapter implements TrackerAdapter {
   readonly kind = KIND;
   readonly settings: GithubProjectSettings;
@@ -121,6 +134,10 @@ export class GithubProjectAdapter implements TrackerAdapter {
     this.client = client;
     this.#logger = logger.child({ tracker: KIND });
     this.#fetch = fetchImpl;
+  }
+
+  apiBudget(): TrackerApiBudget | null {
+    return this.client.rateLimit();
   }
 
   /** Project id and field metadata, fetched once per adapter instance (refresh with force). */
@@ -299,12 +316,33 @@ export class GithubProjectAdapter implements TrackerAdapter {
     await this.postComment(issue, body);
   }
 
-  async postComment(issue: Issue, body: string): Promise<PostedComment> {
-    const ref = this.#requireRef(issue, 'comment on');
-    const response = await this.client.request<Json>(ADD_COMMENT_MUTATION, { subjectId: ref.issueId, body });
+  async postComment(issue: Issue, body: string, subjectId?: string): Promise<PostedComment> {
+    const target = subjectId ?? this.#requireRef(issue, 'comment on').issueId;
+    const response = await this.client.request<Json>(ADD_COMMENT_MUTATION, { subjectId: target, body });
     assertNoGraphqlErrors(response.errors);
     const url = obj(obj(obj(obj(response.data)?.addComment)?.commentEdge)?.node)?.url;
     return { url: typeof url === 'string' ? url : null };
+  }
+
+  /**
+   * The parent chain of the issue (parent, its parent, …), read fresh: at most `maxDepth` levels, and it ends at the
+   * root or at the first parent that lives in another repository.
+   */
+  async ancestors(issue: Issue, maxDepth = 5): Promise<IssueAncestor[]> {
+    const ref = this.#requireRef(issue, 'read the parents of');
+    const chain: IssueAncestor[] = [];
+    let id = ref.issueId;
+    while (chain.length < maxDepth) {
+      const response = await this.client.request<Json>(ISSUE_PARENT_QUERY, { issueId: id });
+      assertNoGraphqlErrors(response.errors);
+      const parent = obj(obj(obj(response.data)?.node)?.parent);
+      const repository = obj(parent?.repository)?.nameWithOwner;
+      if (parent === null || typeof parent.id !== 'string' || typeof parent.number !== 'number') break;
+      if (typeof repository !== 'string' || repository.toLowerCase() !== ref.repository.toLowerCase()) break;
+      chain.push({ id: parent.id, number: parent.number, title: typeof parent.title === 'string' ? parent.title : '', repository });
+      id = parent.id;
+    }
+    return chain;
   }
 
   async readComments(issue: Issue): Promise<IssueComment[]> {
@@ -447,6 +485,31 @@ export class GithubProjectAdapter implements TrackerAdapter {
   async reportCheckStatus(issue: Issue, status: CheckStatus): Promise<void> {
     const ref = this.#requireRef(issue, 'report a check for');
     await postCommitStatus({ fetch: this.#fetch, endpoint: this.settings.endpoint, token: this.settings.token, timeoutMs: this.settings.requestTimeoutMs }, ref.repository, status);
+  }
+
+  /** The open pull request from the issue's branch (`branch_name`, else `symphony/issue-<n>`) and the state of its checks; null without one, or when GitHub cannot say. */
+  async branchPullRequest(issue: Issue): Promise<BranchPullRequest | null> {
+    const ref = issueRefOf(issue);
+    if (ref === null) return null;
+    try {
+      const [owner, name] = ref.repository.split('/');
+      const head = issue.branch_name ?? `symphony/issue-${ref.number}`;
+      const response = await this.client.request<Json>(BRANCH_PULL_REQUEST_QUERY, { owner, name, head });
+      assertNoGraphqlErrors(response.errors);
+      const list = obj(obj(obj(response.data)?.repository)?.pullRequests)?.nodes;
+      const pr = Array.isArray(list) ? obj(list[0]) : null;
+      if (pr === null || typeof pr.number !== 'number') return null;
+      const checks = evaluateRollup(pr.commits, ref.repository, []);
+      return {
+        number: pr.number,
+        url: typeof pr.url === 'string' ? pr.url : null,
+        base: typeof pr.baseRefName === 'string' ? pr.baseRefName : null,
+        head_sha: typeof pr.headRefOid === 'string' ? pr.headRefOid : null,
+        checks: { state: checks.state, failing: checks.failing, pending: checks.pending.map((check) => check.name) },
+      };
+    } catch {
+      return null;
+    }
   }
 
   /**

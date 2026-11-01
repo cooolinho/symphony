@@ -5,11 +5,17 @@ import type { PricingStore } from '../costs/pricing.ts';
 import { computeAnalytics, filterEntries, isValidTimeZone, type Analytics, type AnalyticsFilter } from '../history/analytics.ts';
 import { computeHistoryStats, readHistory, repositoryFileName } from '../history/history.ts';
 import type { Logger } from '../log.ts';
+import { ACTIVITY_DEFAULT_MINUTES, ACTIVITY_MAX_MINUTES } from '../orchestrator/activity.ts';
 import type { Orchestrator } from '../orchestrator/orchestrator.ts';
+import type { SystemSource } from '../system/metrics.ts';
 import { errorMessage } from '../util/errors.ts';
-import { AGENT_HTML } from './agent-page.ts';
+import { AGENT_HTML } from './issue-page.ts';
+import { BRAIN_HTML } from './brain-page.ts';
+import { CHANGES_HTML } from './changes-page.ts';
 import { DASHBOARD_HTML } from './dashboard.ts';
+import { ChangeEvents } from './events.ts';
 import { LOGS_HTML } from './logs-page.ts';
+import { TASKS_HTML } from './tasks-page.ts';
 
 /** Where the per-repository logs live and how to price them. */
 export interface HistorySource {
@@ -128,16 +134,35 @@ function sameHost(origin: string, hostHeader: string | undefined): boolean {
   }
 }
 
+/** HTML pages by path; they share the host check and method handling of route(). */
+const PAGE_ROUTES: ReadonlyMap<string, string> = new Map([
+  ['/', DASHBOARD_HTML],
+  ['/changes', CHANGES_HTML],
+  ['/tasks', TASKS_HTML],
+  ['/brain', BRAIN_HTML],
+  ['/stats', LOGS_HTML],
+  ['/issue', AGENT_HTML],
+]);
+
+/** Former page paths, permanently redirected (301) with their query string. */
+const REDIRECTS: ReadonlyMap<string, string> = new Map([
+  ['/logs', '/stats'],
+  ['/agent', '/issue'],
+]);
+
 /**
- * Observability/control surface (spec 13.7): `/` dashboard, `/agent?id=<identifier>` agent detail view (live, or
- * archived once the orchestrator released the issue),
- * `/logs` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
- * `/api/v1/state`, `/api/v1/<identifier>` with its `/timeline` and `/transcript`, `POST /api/v1/refresh`
+ * Observability/control surface (spec 13.7): `/` dashboard, `/changes` (the feed of code changes), `/tasks` (queue columns with control actions), `/brain` (vitals, candidate review and folders),
+ * `/issue?id=<identifier>` issue detail view (live, or archived once the orchestrator released the issue),
+ * `/stats` statistics page with `/api/v1/history`, `/api/v1/history/analytics` and `/api/v1/history/entries`,
+ * `/api/v1/state`, `/api/v1/system`, `/api/v1/budget`, `/api/v1/activity`, `/api/v1/brain/vitals` (with the derived `notes`, `links.per_note`, `reads_today.by_folder`, `clashes.week`, `commits.total`, `clash_window_min`), `/api/v1/brain/candidates`, `/api/v1/brain/access` (filters role, q, issue, limit; `before`/`next_before` page by line), `/api/v1/brain/clashes` (`status=open|resolved`, with the versions of each clash), `/api/v1/brain/graph` (`root`, `depth` 1..3, at most 150 nodes) (404 `brain_disabled` without `brain.enabled`), `/api/v1/changes` (filters type, repo, issue, limit, tz; `before` = id of the last entry of the previous page, `next_before` the id for the next), `/api/v1/<identifier>` with its `/timeline`, `/team` and `/transcript`, `POST /api/v1/refresh`
  * `POST /api/v1/<identifier>/retry` (restart a waiting or paused worker), `/force` (Start now in an extra slot),
- * `/pause` and `/resume` (operator pause of an issue), `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family), and
+ * `/pause` and `/resume` (operator pause of an issue), `POST /api/v1/models/<model>/hold` and `/release` (operator pause of a model family),
+ * `POST /api/v1/brain/clashes/<id>/resolve`, `POST /api/v1/brain/candidates/<path>/approve`, `/reject` and `/revert` (the path URL-encoded; revert takes back an approve or a reject), and
  * `PUT` / `DELETE /api/v1/settings/agents` (agent slots set on the dashboard; JSON body, `Content-Type:
  * application/json` required).
- * Read-only except refresh and these control routes. On a loopback bind, requests whose Host is not a loopback name are
+ * `/logs` and `/agent` redirect with 301 to `/stats` and `/issue` (query kept).
+ * `/api/v1/events` is a Server-Sent Events stream (`event: change` with `{ at }`, at most every 500 ms, `: ping` every 25 s);
+ * the pages reload on it and keep polling as the fallback. Read-only except refresh and these control routes. On a loopback bind, requests whose Host is not a loopback name are
  * rejected (DNS-rebinding guard), and cross-origin POSTs are refused. On any other bind the server has no
  * login of its own and belongs behind an authenticating reverse proxy: the control routes are disabled unless
  * `allowRemoteControl` is set, and then requires an Origin header naming this host (CSRF guard, since a
@@ -151,18 +176,22 @@ export function startHttpServer(options: {
   orchestrator: Orchestrator;
   logger: Logger;
   history?: HistorySource | null;
+  /** Host metrics collector behind `/api/v1/system`. */
+  system?: SystemSource | null;
   /** Allow retry on a non-loopback bind (behind an authenticating reverse proxy). */
   allowRemoteControl?: boolean;
 }): Promise<HttpServerHandle> {
   const { orchestrator, logger } = options;
   const history = options.history ?? null;
+  const system = options.system ?? null;
   const loopbackBind = isLoopbackHost(options.host);
   const controls = { retry: loopbackBind || options.allowRemoteControl === true };
   // Analytics per filter, valid while the log files (append-only, so their sizes) and the price table are unchanged.
   const analyticsCache = new Map<string, { pricing: object; value: Analytics }>();
+  const events = new ChangeEvents(orchestrator);
 
   /**
-   * The guard of every control route (retry, force, pause, resume, model hold and release, agent settings): loopback bind, or
+   * The guard of every control route (retry, force, pause, resume, model hold and release, agent settings, brain clash resolve and candidate approve, reject, revert): loopback bind, or
    * `allowRemoteControl` plus an Origin header naming this host. Sends the 403 and returns false when refused.
    */
   const controlAllowed = (req: http.IncomingMessage, res: http.ServerResponse): boolean => {
@@ -207,17 +236,20 @@ export function startHttpServer(options: {
       else sendError(res, 405, 'method_not_allowed', `${method} is not supported on ${pathname}`, { allow: methods.join(', ') });
     };
 
-    if (pathname === '/') {
+    const pageHtml = PAGE_ROUTES.get(pathname);
+    if (pageHtml !== undefined) {
       allow(['GET', 'HEAD'], () => {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-        res.end(method === 'HEAD' ? undefined : DASHBOARD_HTML);
+        res.end(method === 'HEAD' ? undefined : pageHtml);
       });
       return;
     }
-    if (pathname === '/agent') {
+    const redirect = REDIRECTS.get(pathname);
+    if (redirect !== undefined) {
       allow(['GET', 'HEAD'], () => {
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-        res.end(method === 'HEAD' ? undefined : AGENT_HTML);
+        // The raw query string is carried over untouched (no decoding); the target is fixed, so this is no open redirect.
+        res.writeHead(301, { location: redirect + new URL(req.url ?? '/', 'http://localhost').search, 'cache-control': 'no-store' });
+        res.end();
       });
       return;
     }
@@ -225,10 +257,162 @@ export function startHttpServer(options: {
       allow(['GET'], () => sendJson(res, 200, { ...orchestrator.snapshot(), controls }));
       return;
     }
-    if (pathname === '/logs') {
-      allow(['GET', 'HEAD'], () => {
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-        res.end(method === 'HEAD' ? undefined : LOGS_HTML);
+    if (pathname === '/api/v1/events') {
+      allow(['GET'], () => events.open(res));
+      return;
+    }
+    if (pathname === '/api/v1/system') {
+      allow(['GET'], () => sendJson(res, 200, system?.snapshot() ?? { current: null, history: [], gpu: null, cpu_count: null, host: null, usage: null }));
+      return;
+    }
+    if (pathname === '/api/v1/budget') {
+      allow(['GET'], () => sendJson(res, 200, orchestrator.budget()));
+      return;
+    }
+    if (pathname === '/api/v1/brain/vitals' || pathname === '/api/v1/brain/candidates') {
+      allow(['GET'], () =>
+        respond(
+          (pathname === '/api/v1/brain/vitals' ? orchestrator.brainVitals() : orchestrator.brainCandidates().then((list) => list && { candidates: list })).then((body) => {
+            if (body === null) sendError(res, 404, 'brain_disabled', 'the brain is not enabled (brain.enabled)');
+            else sendJson(res, 200, body);
+          }),
+        ),
+      );
+      return;
+    }
+    if (pathname === '/api/v1/brain/access') {
+      allow(['GET'], () => {
+        const params = new URL(req.url ?? '/', 'http://localhost').searchParams;
+        const before = Number(params.get('before'));
+        const limit = Number(params.get('limit'));
+        const page = orchestrator.brainAccess({
+          role: textParam(params, 'role'),
+          q: textParam(params, 'q'),
+          issue: textParam(params, 'issue'),
+          before: textParam(params, 'before') !== null && Number.isInteger(before) && before >= 0 ? before : null,
+          limit: Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : null,
+        });
+        if (page === null) sendError(res, 404, 'brain_disabled', 'the brain is not enabled (brain.enabled)');
+        else sendJson(res, 200, page);
+      });
+      return;
+    }
+    if (pathname === '/api/v1/brain/clashes') {
+      allow(['GET'], () => {
+        const status = textParam(new URL(req.url ?? '/', 'http://localhost').searchParams, 'status');
+        if (status !== null && status !== 'open' && status !== 'resolved') {
+          sendError(res, 400, 'bad_request', 'status must be open or resolved');
+          return;
+        }
+        respond(
+          orchestrator.brainClashes(status).then((clashes) => {
+            if (clashes === null) sendError(res, 404, 'brain_disabled', 'the brain is not enabled (brain.enabled)');
+            else sendJson(res, 200, { clashes });
+          }),
+        );
+      });
+      return;
+    }
+    if (pathname === '/api/v1/brain/graph') {
+      allow(['GET'], () => {
+        const params = new URL(req.url ?? '/', 'http://localhost').searchParams;
+        const root = textParam(params, 'root');
+        const depthText = textParam(params, 'depth');
+        const depth = depthText === null ? 2 : Number(depthText);
+        if (root === null) {
+          sendError(res, 400, 'bad_request', 'root is required');
+          return;
+        }
+        if (!Number.isInteger(depth) || depth < 1 || depth > 3) {
+          sendError(res, 400, 'bad_request', 'depth must be 1 to 3');
+          return;
+        }
+        respond(
+          orchestrator.brainGraph(root, depth).then((result) => {
+            if (result === null) sendError(res, 404, 'brain_disabled', 'the brain is not enabled (brain.enabled)');
+            else if (!result.ok) sendError(res, 404, 'root_not_found', `no note ${root} in the brain index`);
+            else sendJson(res, 200, result.graph);
+          }),
+        );
+      });
+      return;
+    }
+    // Resolve a clash: POST /api/v1/brain/clashes/<id>/resolve.
+    const clashRoute = /^brain\/clashes\/([^/]+)\/resolve$/.exec(pathname.slice(API_PREFIX.length));
+    if (pathname.startsWith(API_PREFIX) && clashRoute !== null) {
+      allow(['POST'], () => {
+        if (!controlAllowed(req, res)) return;
+        let id: string;
+        try {
+          id = decodeURIComponent(clashRoute[1] as string);
+        } catch {
+          sendError(res, 400, 'bad_request', 'malformed clash id');
+          return;
+        }
+        const result = orchestrator.brainResolveClash(id);
+        if (result === null) sendError(res, 404, 'brain_disabled', 'the brain is not enabled (brain.enabled)');
+        else if (result.ok) sendJson(res, 200, { id, status: 'resolved' });
+        else if (result.reason === 'not_found') sendError(res, 404, 'clash_not_found', `no clash ${id}`);
+        else sendError(res, 409, 'already_resolved', `clash ${id} is already resolved`);
+      });
+      return;
+    }
+    // Promote, discard or un-promote a candidate note; the path is URL-encoded (Inbox%2Fx.md) and checked like the brain tools.
+    const candidateRoute = /^brain\/candidates\/(.+)\/(approve|reject|revert)$/.exec(pathname.slice(API_PREFIX.length));
+    if (pathname.startsWith(API_PREFIX) && candidateRoute !== null) {
+      allow(['POST'], () => {
+        if (!controlAllowed(req, res)) return;
+        let notePath: string;
+        try {
+          notePath = decodeURIComponent(candidateRoute[1] as string);
+        } catch {
+          sendError(res, 400, 'bad_request', 'malformed note path');
+          return;
+        }
+        const action = candidateRoute[2];
+        const pending = action === 'approve' ? orchestrator.brainApprove(notePath) : action === 'reject' ? orchestrator.brainReject(notePath) : orchestrator.brainRevert(notePath);
+        respond(
+          pending.then((result) => {
+            if (result === null) sendError(res, 404, 'brain_disabled', 'the brain is not enabled (brain.enabled)');
+            else if (result.ok) sendJson(res, 200, { path: result.path, previous_path: result.previousPath, hash: result.hash, sha: result.sha });
+            else if (result.reason === 'invalid_path') sendError(res, 400, 'bad_request', result.message);
+            else if (result.reason === 'not_found') sendError(res, 404, 'note_not_found', result.message);
+            else if (result.reason === 'git_failed') sendError(res, 500, 'vault_git_failed', result.message);
+            else sendError(res, 409, result.reason, result.message);
+          }),
+        );
+      });
+      return;
+    }
+    if (pathname === '/api/v1/changes') {
+      allow(['GET'], () => {
+        const params = new URL(req.url ?? '/', 'http://localhost').searchParams;
+        const type = textParam(params, 'type');
+        if (type !== null && type !== 'code' && type !== 'brain') {
+          sendError(res, 400, 'bad_request', 'type must be code or brain');
+          return;
+        }
+        const limit = Number(params.get('limit'));
+        const zone = textParam(params, 'tz');
+        const page = orchestrator.changesPage(
+          {
+            type: type ?? undefined,
+            repo: textParam(params, 'repo') ?? undefined,
+            issue: textParam(params, 'issue') ?? undefined,
+            before: textParam(params, 'before') ?? undefined,
+            limit: Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : undefined,
+          },
+          zone !== null && isValidTimeZone(zone) ? zone : Intl.DateTimeFormat().resolvedOptions().timeZone,
+        );
+        sendJson(res, 200, { generated_at: new Date().toISOString(), ...page });
+      });
+      return;
+    }
+    if (pathname === '/api/v1/activity') {
+      allow(['GET'], () => {
+        const raw = Number(new URL(req.url ?? '/', 'http://localhost').searchParams.get('minutes'));
+        const minutes = Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), ACTIVITY_MAX_MINUTES) : ACTIVITY_DEFAULT_MINUTES;
+        sendJson(res, 200, orchestrator.activity(minutes));
       });
       return;
     }
@@ -278,14 +462,15 @@ export function startHttpServer(options: {
           timeZone: zone !== null && isValidTimeZone(zone) ? zone : Intl.DateTimeFormat().resolvedOptions().timeZone,
         };
         const pricing = history.pricing.current();
+        const rateLimits = orchestrator.rateLimitEvents(from ?? undefined);
         let value: Analytics;
         // An open end moves with the clock, so only bounded periods are cached.
-        const key = to === null ? null : JSON.stringify([filter, files.map((f) => [f.file, f.bytes])]);
+        const key = to === null ? null : JSON.stringify([filter, files.map((f) => [f.file, f.bytes]), rateLimits.length, rateLimits.at(-1)?.at ?? null]);
         const cached = key === null ? undefined : analyticsCache.get(key);
         if (cached !== undefined && cached.pricing === pricing) {
           value = cached.value;
         } else {
-          value = computeAnalytics(entries, pricing, filter);
+          value = computeAnalytics(entries, pricing, filter, new Date(), rateLimits);
           if (key !== null) {
             analyticsCache.delete(key);
             analyticsCache.set(key, { pricing, value });
@@ -414,7 +599,7 @@ export function startHttpServer(options: {
       return;
     }
     // Sub-resources of an issue; the identifier is URL-encoded (owner%2Frepo%2312), so its slash cannot end it.
-    const sub = /^(.+)\/(timeline|transcript|retry|pause|resume|force)$/.exec(pathname.slice(API_PREFIX.length));
+    const sub = /^(.+)\/(timeline|team|transcript|retry|pause|resume|force)$/.exec(pathname.slice(API_PREFIX.length));
     if (pathname.startsWith(API_PREFIX) && sub !== null && (sub[2] === 'retry' || sub[2] === 'pause' || sub[2] === 'resume' || sub[2] === 'force')) {
       const action = sub[2];
       allow(['POST'], () => {
@@ -513,6 +698,12 @@ export function startHttpServer(options: {
           else sendJson(res, 200, timeline);
           return;
         }
+        if (sub[2] === 'team') {
+          const team = orchestrator.issueTeam(key);
+          if (team === null) sendError(res, 404, 'issue_not_found', `issue ${key} is neither tracked by the orchestrator nor archived`);
+          else sendJson(res, 200, team);
+          return;
+        }
         const run = params.get('run') || null;
         if (params.get('format') === 'raw') {
           const file = orchestrator.issueTranscriptFile(key, run);
@@ -578,6 +769,7 @@ export function startHttpServer(options: {
         url: `http://${displayHost}:${address.port}/`,
         close: () =>
           new Promise<void>((done) => {
+            events.closeAll();
             server.closeAllConnections();
             server.close(() => done());
           }),

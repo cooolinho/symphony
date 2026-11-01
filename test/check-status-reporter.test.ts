@@ -9,6 +9,7 @@ describe('checkStatusReporter', () => {
   const config = (reportStatus: boolean, publicUrl: string | null) => ({
     checks: { timeoutMs: 1, retries: 0, onEnter: new Map(), reportStatus },
     server: { port: null, host: '127.0.0.1', allowRemoteControl: false, publicUrl },
+    system: { gpu: false },
   });
 
   it('reports only with checks.report_status and a tracker that can', () => {
@@ -24,7 +25,7 @@ describe('checkStatusReporter', () => {
     await checkStatusReporter(config(true, 'https://symphony.example'), adapter, issue).reportStatus?.({ name: 'ci', sha: 'abc', state: 'success', description: 'ok' });
     await checkStatusReporter(config(true, null), adapter, issue).reportStatus?.({ name: 'ci', sha: 'abc', state: 'failure', description: 'no' });
     assert.deepEqual(posted, [
-      { name: 'ci', sha: 'abc', state: 'success', description: 'ok', targetUrl: 'https://symphony.example/agent?id=acme%2Fapp%237' },
+      { name: 'ci', sha: 'abc', state: 'success', description: 'ok', targetUrl: 'https://symphony.example/issue?id=acme%2Fapp%237' },
       { name: 'ci', sha: 'abc', state: 'failure', description: 'no', targetUrl: null },
     ]);
   });

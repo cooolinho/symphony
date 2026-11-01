@@ -13,7 +13,7 @@ without Traefik, use `docker-compose.local.yml`: see [Local test setup without T
 | What | Check with |
 |---|---|
 | **Docker Engine** with **Compose v2** | `docker --version`, `docker compose version` |
-| **Traefik** running, with an **external Docker network**, an **HTTPS entrypoint** and a **cert resolver** (the last two only for HTTPS; in a trusted LAN plain HTTP works too, see step 9) | `docker network ls`, Traefik configuration |
+| **Traefik** running, with an **external Docker network**, an **HTTPS entrypoint** and a **cert resolver** or a **default certificate** (the last two only for HTTPS; in a trusted LAN plain HTTP works for the dashboard, not for Obsidian, see step 9) | `docker network ls`, Traefik configuration |
 | **DNS record** for the dashboard domain pointing to the server | `dig symphony.example.com` |
 | **GitHub Project board** and **GitHub token** with the scopes `repo` and `project` | [Getting Started](getting-started.md), steps 2 and 3 |
 
@@ -148,7 +148,24 @@ TRAEFIK_TLS=false                      # no TLS on the router; TRAEFIK_CERTRESOL
 
 `TRAEFIK_TLS=false` is required: a router with TLS (the default) only answers TLS connections, even on the HTTP
 entrypoint. Without this line `http://<SYMPHONY_DOMAIN>/` returns a 404 although the container is running. Note the
-remarks under [Security](#security): over HTTP, login and data travel unencrypted.
+remarks under [Security](#security): over HTTP, login and data travel unencrypted. Obsidian (profile `brain`) does not
+work over plain HTTP; for it you need the next variant.
+
+**HTTPS in a LAN with a local CA:** Let's Encrypt cannot issue certificates for `.lan` names, but a wildcard
+certificate from a local CA works, e.g. `mkcert docker.lan '*.docker.lan'`. Load it into Traefik as the default
+certificate (file provider: `tls.stores.default.defaultCertificate`) and install the CA's `rootCA.pem` as a trusted CA
+on every client. Then leave `TRAEFIK_CERTRESOLVER` set but empty, so the routers use the default certificate:
+
+```dotenv
+SYMPHONY_DOMAIN=symphony.docker.lan
+TRAEFIK_NETWORK=docker_lan_network
+TRAEFIK_ENTRYPOINT=websecure           # HTTPS entrypoint (port 443)
+TRAEFIK_TLS=true
+TRAEFIK_CERTRESOLVER=                  # empty: Traefik's default certificate, no resolver
+```
+
+`http://` then returns a 404 unless Traefik redirects it to `https://` (a `redirectScheme` middleware, or the
+redirection of the HTTP entrypoint).
 
 `UID` and `GID` (default `1000`) are build args. They determine the owner of the volumes and of the file
 `./secrets/ssh_key`. Adjust them if your server user has a different ID (`id -u`, `id -g`):
@@ -203,6 +220,7 @@ Instead the dashboard is published on `127.0.0.1`.
 | Required in `.env` | steps 2 to 9 | steps 2 to 7: no `SYMPHONY_DOMAIN`, `TRAEFIK_*` or `SYMPHONY_BASIC_AUTH` |
 | `WORKFLOW.md`, `roles/`, `model-costs.yml` | in the image (mounts optional) | mounted read-only, reloaded live without a rebuild |
 | Container | `${COMPOSE_PROJECT_NAME:-symphony}` | `${COMPOSE_PROJECT_NAME:-symphony}-local` |
+| Obsidian (profile `brain`) | through Traefik at `BRAIN_DOMAIN`, same login as the dashboard | `http://127.0.0.1:<BRAIN_PORT>/` (default `3000`), no login |
 
 Like the production file, it overrides the host-specific values of `.env` (`SYMPHONY_PHP`, `SYMPHONY_LOG_DIR`,
 `SYMPHONY_HOST` …), so the same `.env` serves `npm start` and the container.
@@ -299,6 +317,8 @@ Structure and contents: [Logs, transcripts and workspaces](usage.md#logs-transcr
 | `claude` | `/home/symphony/.claude` | Claude Code state |
 | `workspaces` | `/home/symphony/symphony-workspaces` | one clone per issue, plus pnpm's shared store `.pnpm-store` |
 | `composer-cache` | `/home/symphony/.cache/composer` | Composer cache, replaceable |
+| `brain` | `/home/symphony/brain` (also `/config/vault` in `obsidian`) | knowledge vault (`brain.enabled`) |
+| `obsidian-config` | `/config` (`obsidian` container) | Obsidian settings and desktop profile (profile `brain`) |
 
 Compose prefixes the project name (usually the directory name): the volume is named e.g. `symphony_state`. Check the
 names with `docker volume ls`. Backing up a volume:
@@ -312,6 +332,8 @@ What matters:
 - **`state`** (statistics and logs) and **`claude`** (Claude state): back up.
 - **`workspaces`:** can be cloned again, but contain **unfinished work** (unpushed commits, changes).
 - **`composer-cache`:** does not need a backup.
+- **`brain`:** back it up; it holds the knowledge vault.
+- **`obsidian-config`:** optional; only Obsidian's settings.
 
 ### Transferring existing history to the server
 
@@ -337,8 +359,8 @@ container from the server's image), checks that everything arrived and starts th
 Nothing the server recorded is lost, and running the script again adds nothing twice, so you can push after every
 local session. `--dry-run` transfers the history into a throwaway container and prints the numbers the merge would
 add; the server container keeps running. With `--replace`, `repositories/`, `sessions/` and `issues/` on the server are
-deleted first, so the server ends up with exactly the local history. Runtime state (`state/`), workspaces, Claude state
-and Composer cache are not transferred. A locally running Symphony must be stopped first.
+deleted first, so the server ends up with exactly the local history. Runtime state (`state/`), the change log
+(`changes/`), workspaces, Claude state and Composer cache are not transferred. A locally running Symphony must be stopped first.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -421,6 +443,32 @@ then `docker compose up -d`. `symphony` waits until both sidecars are healthy (`
 
 Security: see [Security](#security) below; a privileged daemon is effectively root on the host for whoever reaches it.
 
+### Obsidian (profile `brain`)
+
+The `obsidian` service (`lscr.io/linuxserver/obsidian`) lets a human open the brain vault in the browser. It mounts the
+`brain` volume at `/config/vault` and keeps its own settings in `obsidian-config` (`/config`).
+
+- **Enable:** add `brain` to `COMPOSE_PROFILES` (`brain`, or `ci,brain`), set `BRAIN_DOMAIN` (e.g. `brain.docker.lan`) in
+  `.env` and run `docker compose up -d`. Without the profile nothing starts; `docker compose up -d obsidian` works too.
+  `BRAIN_DOMAIN` is not enforced (compose interpolates inactive profiles too); if it is empty, Traefik builds no router.
+  The profile only starts Obsidian: Symphony fills the vault with `SYMPHONY_BRAIN_ENABLED=true` (`brain.enabled`), and
+  `SYMPHONY_BRAIN_OBSIDIAN_URL=https://<BRAIN_DOMAIN>` links it from the dashboard page `/brain`.
+- **Access:** only through Traefik, with the same login as the dashboard (middleware `symphony-auth`, or
+  `SYMPHONY_TRAEFIK_MIDDLEWARES`). The service has no `ports:`.
+- **HTTPS required:** the image's web client (Selkies) decodes the stream with WebCodecs, which browsers allow only in a
+  secure context: `https://`, or `http://localhost`. Over `http://<BRAIN_DOMAIN>/` it stops with "This application
+  requires a secure connection (HTTPS)". So the router always has `tls=true`, on its own entrypoint
+  `BRAIN_TRAEFIK_ENTRYPOINT` (default `websecure`), with the same certificate source as the dashboard
+  (`TRAEFIK_CERTRESOLVER`; empty for Traefik's default certificate, see step 9). The dashboard may stay on HTTP
+  (`TRAEFIK_TLS=false`) meanwhile.
+- **First start:** in Obsidian open the folder `/config/vault` as the vault. `.obsidian/` belongs to the human.
+- **File ownership:** `PUID`/`PGID` follow `UID`/`GID` (default 1000), the same user as Symphony, so both write into
+  the vault as one UID.
+- **Update:** `docker compose pull obsidian && docker compose up -d obsidian`. If the UI does not start, the image docs
+  suggest `security_opt: seccomp:unconfined` (not set by default, it weakens the isolation).
+- **Local setup:** `docker-compose.local.yml` publishes it on `127.0.0.1:<BRAIN_PORT>` (default `3000`), without a login.
+  `http://127.0.0.1` counts as a secure context, so no certificate is needed there.
+
 ### Resource limits
 
 As a rule of thumb, each parallel agent (Claude Code, Composer, tests) needs about 1 CPU and 2 GB RAM. Use
@@ -442,7 +490,8 @@ mem_limit: 4g
 | `network … declared as external, but could not be found` | The network from `TRAEFIK_NETWORK` does not exist. Check the name with `docker network ls` and set it in `.env`. |
 | 404 or 502 via the domain | The container is not attached to the Traefik network: `TRAEFIK_NETWORK` must be the network Traefik is attached to as well (`docker network inspect <network>`). Also compare `SYMPHONY_DOMAIN`, `TRAEFIK_ENTRYPOINT` and `TRAEFIK_CERTRESOLVER` with the Traefik configuration and check the container status (`docker compose ps`). |
 | 404 via `http://` although the container is `healthy` | The router has TLS (the default) but is attached to an HTTP entrypoint (`TRAEFIK_ENTRYPOINT=web`): it only answers TLS connections. For plain HTTP set `TRAEFIK_TLS=false` (step 9), otherwise use an HTTPS entrypoint. Then run `docker compose up -d`. |
-| Traefik log: `the router symphony@docker uses a non-existent resolver: letsencrypt` | `TRAEFIK_CERTRESOLVER` names a resolver Traefik does not know (`docker logs traefik`). Set the name from the Traefik configuration, or turn off TLS with `TRAEFIK_TLS=false` if your Traefik does not issue certificates. |
+| Traefik log: `the router symphony@docker uses a non-existent resolver: letsencrypt` | `TRAEFIK_CERTRESOLVER` names a resolver Traefik does not know (`docker logs traefik`). Set the name from the Traefik configuration, set it empty (`TRAEFIK_CERTRESOLVER=`) if Traefik serves a default certificate (step 9), or turn off TLS with `TRAEFIK_TLS=false` if your Traefik does not issue certificates. |
+| Obsidian shows `Error: This application requires a secure connection (HTTPS). Please check the URL.` | It was opened over plain HTTP. Its web client needs a secure context, see [Obsidian](#obsidian-profile-brain): open `https://<BRAIN_DOMAIN>/`, with an HTTPS entrypoint in `BRAIN_TRAEFIK_ENTRYPOINT` and a certificate Traefik can serve (step 9), then run `docker compose up -d`. |
 | `403 control_disabled` on retry | With a non-loopback binding, restarting is only allowed with `SYMPHONY_ALLOW_REMOTE_CONTROL=true`. `docker-compose.yml` sets it; if the container runs differently (e.g. with its own environment), set it there. |
 | `403 forbidden_origin` on retry | The `Origin` header is missing or does not match the `Host`. The browser sets it itself; with `curl` you pass it: `-H 'Origin: https://<SYMPHONY_DOMAIN>'`, see [Dashboard and API](usage.md#dashboard-and-api). |
 | `Permission denied` on volumes after changing `UID`/`GID` | The volumes still belong to the old ID. Change the owner in the volume, then restart: `docker run --rm -v <volume>:/data debian:stable-slim chown -R <UID>:<GID> /data` for each volume from the table above. `secrets/ssh_key` must also be readable by the new UID. |
@@ -471,6 +520,8 @@ mem_limit: 4g
 - **HTTP only (`TRAEFIK_TLS=false`):** The BasicAuth password, the dashboard data and the retry request travel
   unencrypted over the network. Use this only in a trusted LAN, never over the internet; there HTTPS with a certificate
   remains mandatory.
+- **Obsidian (profile `brain`):** Only reachable through Traefik over HTTPS with the dashboard login, no `ports:`. It is a
+  whole desktop in the browser, so keep it in a trusted LAN. Whoever opens it can edit the whole vault.
 - **No Docker socket:** Do not mount `/var/run/docker.sock` into the container. Whoever can reach it has root on the
   host.
 - **Profile `ci` (Docker-in-Docker):** The `dind` sidecar runs `privileged`. Whoever reaches its daemon

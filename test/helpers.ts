@@ -1,6 +1,8 @@
+import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import type { AgentEvent, AgentRunner, AgentSession, StartSessionParams, TurnResult } from '../src/agent/types.ts';
 import type { Clock, Timers, WorkflowSource } from '../src/orchestrator/orchestrator.ts';
 import type { WorkspaceIntegration } from '../src/integrations/types.ts';
@@ -8,6 +10,8 @@ import { isCreatableLabel } from '../src/tracker/github-project/labels.ts';
 import type {
   AddLabelsResult,
   AgentToolSpec,
+  AutoMergeResult,
+  BranchPullRequest,
   Issue,
   IssueComment,
   MergeWatch,
@@ -17,12 +21,14 @@ import type {
   ToolResult,
   TrackedResult,
   TrackerAdapter,
+  TrackerApiBudget,
 } from '../src/tracker/types.ts';
 import { decodeMarker } from '../src/workflow/results.ts';
 import { normalizeStateName, resolveConfig } from '../src/workflow/config.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../src/workflow/store.ts';
 import { compilePrompt, DEFAULT_CONTINUATION_PROMPT } from '../src/workflow/template.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
+import { createFakeDocument, FakeElement, parseHtml } from './helpers/fake-dom.ts';
 
 const created: string[] = [];
 process.on('exit', () => {
@@ -78,6 +84,12 @@ export class FakeTracker implements TrackerAdapter {
   commentOnIssue?: (issue: Issue, body: string) => Promise<void>;
   /** Set to give the tracker issues that wait for pull request checks before auto_merge. */
   mergeWatch?: () => MergeWatch | null;
+  /** Set to report a tracker API budget (health.tracker_api); trackers without it report null. */
+  apiBudget?: () => TrackerApiBudget | null;
+  /** Set to report the open pull request of the issue's branch; trackers without it have none. */
+  branchPullRequest?: (issue: Issue) => Promise<BranchPullRequest | null>;
+  /** Set to make entering a column run `auto_merge`: its result is part of the move, undefined = no merge. */
+  autoMerge?: (issue: Issue, column: string) => AutoMergeResult | undefined;
 
   constructor(issues: Issue[] = []) {
     for (const issue of issues) this.issues.set(issue.id, issue);
@@ -172,8 +184,9 @@ export class FakeTracker implements TrackerAdapter {
   async setStatus(issue: Issue, column: string): Promise<StatusChange> {
     const previous = this.issues.get(issue.id)?.state ?? issue.state;
     this.statusCalls.push(column);
-    this.set(issue.id, { state: column });
-    return { previous, status: column };
+    const merge = this.autoMerge?.(issue, column);
+    this.set(issue.id, { state: merge?.status ?? column });
+    return { previous, status: merge?.status ?? column, ...(merge !== undefined ? { autoMerge: merge } : {}) };
   }
 
   async addLabels(issue: Issue, names: string[], { create = false }: { create?: boolean } = {}): Promise<AddLabelsResult> {
@@ -217,7 +230,7 @@ export class FakeTracker implements TrackerAdapter {
         transitionTarget: (args) => String(args.status),
         execute: async (args, context) => {
           const change = await this.setStatus(context.issue, String(args.status));
-          return { ok: true, data: { previous_status: change.previous, status: change.status } };
+          return { ok: true, data: { previous_status: change.previous, status: change.status, ...(change.autoMerge !== undefined ? { auto_merge: change.autoMerge } : {}) } };
         },
       },
     ];
@@ -384,4 +397,144 @@ export function baseFront(root: string, overrides: Record<string, unknown> = {})
     ...overrides,
     workspace: { root, ...workspace },
   };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Dashboard pages in a fake DOM
+
+/** The contents of the inline <script> blocks of a served page. */
+export function inlineScripts(html: string): string[] {
+  return [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1] as string);
+}
+
+/** The page with the indentation of every inline script changed (behaviour must not depend on it). */
+export function reindentScripts(html: string): string {
+  return html.replace(/<script>([\s\S]*?)<\/script>/g, (_all, code: string) => `<script>${code.replace(/^( *)/gm, (_m, sp: string) => '\t' + sp + sp)}</script>`);
+}
+
+export interface RenderOptions {
+  /** Page URL; the agent page needs `http://127.0.0.1/issue?id=acme%2Fapp%231`. */
+  url?: string;
+  /** Answers every fetch with this JSON body (status 200, or `{ __status: 404 }` for an error status); throwing rejects the fetch. Without it fetches never settle. */
+  fetch?: (url: string, init: { method: string; body?: unknown }) => unknown;
+  /** Answer of confirm(); default true. */
+  confirm?: boolean;
+  /** document.referrer of the page; default ''. */
+  referrer?: string;
+  /** history.length; default 1. */
+  historyLength?: number;
+  /** The frozen clock (ms); default 2026-10-30T12:00:00Z. */
+  now?: number;
+}
+
+export interface RenderedPage {
+  document: ReturnType<typeof createFakeDocument>;
+  root: FakeElement;
+  /** The element with this id; throws when the page has none. */
+  $(id: string): FakeElement;
+  query(selector: string): FakeElement[];
+  /** Calls the page's render hook again with another state (a refresh). */
+  render(state: unknown): void;
+  /** Click that bubbles up to the document. */
+  click(el: FakeElement): void;
+  fetches: Array<{ url: string; method: string; body?: unknown }>;
+  /** The page's setInterval(fn, ms) calls (the timers never fire on their own). */
+  intervals: Array<{ fn: () => unknown; ms: number }>;
+  confirms: string[];
+  /** Number of history.back() calls. */
+  backs: number;
+  /** The page's location (history.replaceState updates it). */
+  location: Record<string, unknown>;
+}
+
+/**
+ * Loads the inline scripts of a served page into a vm with a fake DOM parsed from the page (frozen clock, no-op
+ * timers, recording fetch and confirm), then renders `state` through the page's window.__render hook.
+ */
+export function renderPage(html: string, state?: unknown, opts: RenderOptions = {}): RenderedPage {
+  const root = parseHtml(html);
+  const document = createFakeDocument(root);
+  const fetches: RenderedPage['fetches'] = [];
+  const confirms: string[] = [];
+  const url = new URL(opts.url ?? 'http://127.0.0.1/');
+  const location: Record<string, unknown> = {};
+  const setLocation = (u: URL) => Object.assign(location, { href: u.href, origin: u.origin, pathname: u.pathname, search: u.search, hash: u.hash, host: u.host, hostname: u.hostname, protocol: u.protocol });
+  setLocation(url);
+  const store = new Map<string, string>();
+  let timerId = 0;
+  const timer = () => ++timerId;
+  const intervals: RenderedPage['intervals'] = [];
+  const sandbox: Record<string, unknown> = {
+    document,
+    location,
+    history: { length: opts.historyLength ?? 1, back: () => { page.backs++; }, replaceState: (_s: unknown, _t: string, u?: string) => u && setLocation(new URL(u, url)), pushState: () => {} },
+    localStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: unknown) => void store.set(k, String(v)), removeItem: (k: string) => void store.delete(k) },
+    setTimeout: timer,
+    setInterval: (fn: () => unknown, ms: number) => (intervals.push({ fn, ms }), ++timerId),
+    clearTimeout: () => {},
+    clearInterval: () => {},
+    requestAnimationFrame: timer,
+    confirm: (question: string) => (confirms.push(question), opts.confirm ?? true),
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    Element: FakeElement,
+    Node: FakeElement,
+    HTMLElement: FakeElement,
+    ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
+    innerWidth: 1280,
+    innerHeight: 800,
+    matchMedia: () => ({ matches: false, addEventListener: () => {} }),
+    fetch: (target: string, init: { method?: string; body?: string } = {}) => {
+      const body = init.body === undefined ? undefined : (JSON.parse(init.body) as unknown);
+      fetches.push({ url: String(target), method: init.method ?? 'GET', ...(body === undefined ? {} : { body }) });
+      if (!opts.fetch) return new Promise(() => {});
+      try {
+        const json = opts.fetch(String(target), { method: init.method ?? 'GET', body });
+        const failed = typeof json === 'object' && json !== null && typeof (json as { __status?: unknown }).__status === 'number' ? (json as { __status: number }).__status : 200;
+        return Promise.resolve({ ok: failed < 400, status: failed, json: async () => json, text: async () => JSON.stringify(json), headers: { get: () => null } });
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    },
+    URL,
+    URLSearchParams,
+    AbortController,
+    console,
+    __SYMPHONY_TEST__: true,
+  };
+  sandbox.window = sandbox;
+  const ctx = vm.createContext(sandbox);
+  const now = opts.now ?? Date.parse('2026-10-30T12:00:00Z');
+  vm.runInContext(
+    `(() => { const Real = Date; class Frozen extends Real { constructor(...a) { if (a.length) super(...a); else super(${now}); } static now() { return ${now}; } } globalThis.Date = Frozen; let seed = 12345; Math.random = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648); })();`,
+    ctx,
+  );
+  const scripts = inlineScripts(html);
+  assert.ok(scripts.length > 0, 'the page has inline scripts');
+  scripts.forEach((code, i) => vm.runInContext(code, ctx, { filename: `page-script-${i}.js` }));
+  document.referrer = opts.referrer ?? '';
+  const render = (next: unknown): void => {
+    const hook = (ctx as { __render?: (s: unknown) => void }).__render;
+    assert.equal(typeof hook, 'function', 'the page exposes window.__render under __SYMPHONY_TEST__');
+    hook!(next);
+  };
+  if (state !== undefined) render(state);
+  const page: RenderedPage = {
+    backs: 0,
+    document,
+    root,
+    $: (id) => {
+      const found = document.getElementById(id) as FakeElement | null;
+      assert.ok(found, `the page has no element #${id}`);
+      return found;
+    },
+    query: (selector) => root.querySelectorAll(selector),
+    render,
+    click: (el) => el.dispatch('click', { bubbles: true, button: 0 }),
+    fetches,
+    intervals,
+    confirms,
+    location,
+  };
+  return page;
 }

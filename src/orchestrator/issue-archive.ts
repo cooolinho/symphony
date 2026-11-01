@@ -50,6 +50,10 @@ export interface ArchivedIssue {
   results: ResultRow[];
   run_trace: Record<string, unknown> | null;
   last_check: Record<string, unknown> | null;
+  /** Workflow profile of the issue when it was archived; absent in older archives. */
+  profile?: string | null;
+  /** Loop round of the issue when it was archived; absent in older archives. */
+  rounds?: { current: number; max: number } | null;
 }
 
 /** Reads an archive of version 1 or 2 as version 2: fields version 1 lacks get their empty value. */
@@ -116,6 +120,11 @@ export class IssueArchive {
       if (!this.#failing) this.#logger.warn('cannot write the issue archive', { file, error: errorMessage(error) });
       this.#failing = true;
     }
+  }
+
+  /** The archived issues held in memory, newest last; files on disk that were never loaded are not included. */
+  recent(): ArchivedIssue[] {
+    return [...this.#byIdentifier.values()];
   }
 
   /** The archived issue for an identifier or issue id; from memory, else from disk (by identifier). Null when unknown. */

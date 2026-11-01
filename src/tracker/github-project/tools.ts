@@ -3,13 +3,11 @@ import { SerialQueue } from '../../util/async.ts';
 import { errorMessage } from '../../util/errors.ts';
 import { TrackerError, type AgentToolContext, type AgentToolSpec, type Issue, type ToolResult } from '../types.ts';
 import type { GithubProjectAdapter } from './adapter.ts';
-import { evaluateRollup } from './checks.ts';
 import { assertNoGraphqlErrors } from './client.ts';
 import { issueRefOf, titleKey, type IssueRef } from './normalize.ts';
 import {
   ADD_BLOCKED_BY_MUTATION,
   ADD_PROJECT_ITEM_MUTATION,
-  BRANCH_PULL_REQUEST_QUERY,
   CREATE_PULL_REQUEST_MUTATION,
   CREATE_SUB_ISSUE_MUTATION,
   ISSUE_CONTEXT_QUERY,
@@ -31,6 +29,17 @@ function markerProblem(text: string | undefined): ToolResult | null {
   return fail(
     'invalid_argument',
     'the text contains "<!-- symphony:", which is reserved for the result markers Symphony writes itself; remove that HTML comment and post again',
+  );
+}
+
+/** /concept looks for these headings on the concept issue; an agent comment must not pose as one. */
+const CONCEPT_HEADING = /^[ \t]*#{1,6}[ \t]*concept[ \t]+(plan|report)\b/im;
+
+function conceptHeadingProblem(text: string): ToolResult | null {
+  if (!CONCEPT_HEADING.test(text)) return null;
+  return fail(
+    'invalid_argument',
+    'a comment on a parent issue must not use the headings "Concept Plan" or "Concept Report"; they belong to the /concept workflow',
   );
 }
 
@@ -128,7 +137,7 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
         const [meta, viewer] = await Promise.all([adapter.meta(), adapter.viewerLogin()]);
         const [response, branchPullRequest] = await Promise.all([
           client.request<Json>(ISSUE_CONTEXT_QUERY, { issueId: ref.issueId }),
-          readBranchPullRequest(ref.repository, fresh.branch_name ?? `symphony/issue-${ref.number}`),
+          adapter.branchPullRequest(fresh),
         ]);
         assertNoGraphqlErrors(response.errors);
         const node = obj(obj(response.data)?.node);
@@ -155,27 +164,6 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
       }),
   };
 
-  /** The open pull request from `head` and the state of its checks; null without one, or when GitHub cannot say. */
-  async function readBranchPullRequest(repository: string, head: string): Promise<Json | null> {
-    try {
-      const [owner, name] = repository.split('/');
-      const response = await client.request<Json>(BRANCH_PULL_REQUEST_QUERY, { owner, name, head });
-      assertNoGraphqlErrors(response.errors);
-      const pr = nodes(obj(obj(response.data)?.repository)?.pullRequests)[0];
-      if (pr === undefined) return null;
-      const checks = evaluateRollup(pr.commits, repository, []);
-      return {
-        number: pr.number,
-        url: pr.url,
-        base: pr.baseRefName,
-        head_sha: pr.headRefOid,
-        checks: { state: checks.state, failing: checks.failing, pending: checks.pending.map((check) => check.name) },
-      };
-    } catch {
-      return null;
-    }
-  }
-
   const setStatus: AgentToolSpec = {
     name: 'set_status',
     description:
@@ -199,11 +187,37 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
     name: 'add_comment',
     description:
       'Post a Markdown comment on the GitHub issue this session is working on: a progress note, a summary of ' +
-      'the change with the pull request link, or a question that needs a human.',
-    inputSchema: { body: z.string().min(1).describe('Comment text (GitHub-flavored Markdown)') },
+      'the change with the pull request link, or a question that needs a human. With `issue` the comment goes to an ' +
+      'ancestor of this issue instead (its parent, the parent of that, … up to 5 levels, same repository), e.g. the ' +
+      'epic or the concept issue; it then ends with a line naming this issue. No other issue is allowed.',
+    inputSchema: {
+      body: z.string().min(1).describe('Comment text (GitHub-flavored Markdown)'),
+      issue: z.number().int().positive().optional().describe('Number of an ancestor issue (parent, epic, concept) to comment on'),
+    },
     mutates: true,
     execute: (args, context) =>
-      guarded(context, async () => markerProblem(String(args.body)) ?? ok(await adapter.postComment(context.issue, String(args.body)))),
+      guarded(context, async () => {
+        const body = String(args.body);
+        const problem = markerProblem(body);
+        if (problem !== null) return problem;
+        const ref = issueRefOf(context.issue);
+        if (args.issue === undefined || (ref !== null && args.issue === ref.number)) {
+          return ok(await adapter.postComment(context.issue, body));
+        }
+        const headingProblem = conceptHeadingProblem(body);
+        if (headingProblem !== null) return headingProblem;
+        const ancestors = await adapter.ancestors(context.issue);
+        const target = ancestors.find((a) => a.number === Number(args.issue));
+        if (target === undefined) {
+          const allowed = ancestors.map((a) => `#${a.number}`).join(', ');
+          return fail(
+            'invalid_argument',
+            `#${String(args.issue)} is not an ancestor of ${context.issue.identifier}; ` +
+              (allowed === '' ? 'this issue has no parent to comment on' : `allowed: ${allowed}`),
+          );
+        }
+        return ok(await adapter.postComment(context.issue, `${body}\n\n<sub>aus ${context.issue.identifier}</sub>`, target.id));
+      }),
   };
 
   const openPullRequest: AgentToolSpec = {

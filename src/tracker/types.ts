@@ -68,6 +68,10 @@ export interface AgentToolContext {
   subIssueStatus?: string;
   /** Set by the transition guard (`guardTools`) for a call it allowed; absent for every other call. */
   transition?: AllowedTransition;
+  /** Role name of the session. */
+  role?: string;
+  /** Run id; absent outside a run. */
+  runId?: string;
 }
 
 /** A move the transition guard allowed for one tool call. */
@@ -85,7 +89,7 @@ export interface AllowedTransition {
 
 export type ToolResult =
   | { ok: true; data: unknown }
-  | { ok: false; error: { category: string; message: string } };
+  | { ok: false; error: { category: string; message: string; /** Structured data for the agent, e.g. the current version of a note. */ details?: unknown } };
 
 /** A provider-native tool advertised to the agent and executed host-side by the adapter. */
 export interface AgentToolSpec {
@@ -147,6 +151,8 @@ export interface PostedComment {
 export interface AutoMergeResult {
   merged: boolean;
   pull_request: number | null;
+  /** URL of the merged pull request, when the tracker knows it. */
+  pull_request_url?: string | null;
   /** Column the issue is in afterwards. */
   status: string;
   reason: string;
@@ -162,6 +168,15 @@ export interface AutoMergeChecks {
   state: 'none' | 'success' | 'pending' | 'failure';
   failing: Array<{ name: string; state: string; url: string | null }>;
   pending: string[];
+}
+
+/** The open pull request from the issue's branch and the state of its head commit's checks. */
+export interface BranchPullRequest {
+  number: number;
+  url: string | null;
+  base: string | null;
+  head_sha: string | null;
+  checks: AutoMergeChecks;
 }
 
 /** A named entry check's state, posted on the commit it ran on (GitHub: commit status `symphony/<name>`). */
@@ -230,6 +245,16 @@ export interface IssueAttachment {
   error: string | null;
 }
 
+/** Remaining request budget of the tracker API, as reported by its last response. */
+export interface TrackerApiBudget {
+  remaining: number;
+  limit: number;
+  /** When the budget resets (ISO 8601), null when the tracker does not say. */
+  reset_at: string | null;
+  /** When the budget was read (ISO 8601). */
+  observed_at: string;
+}
+
 /** The read kernel the orchestrator needs (spec 11.1), plus optional agent tools (spec 10.5). */
 export interface TrackerAdapter {
   readonly kind: string;
@@ -277,12 +302,16 @@ export interface TrackerAdapter {
   reportCheckStatus?(issue: Issue, status: CheckStatus): Promise<void>;
   /** Issues waiting for pending pull request checks before `auto_merge`; null or absent when nothing waits. */
   mergeWatch?(): MergeWatch | null;
+  /** The open pull request from the issue's branch with its checks; null without one, or when the tracker cannot say. Never throws. */
+  branchPullRequest?(issue: Issue): Promise<BranchPullRequest | null>;
   /**
    * Adds labels to the issue. Labels that do not exist are reported in `unknown`; with `create` the missing ones of the
    * families `Type: …`, `Complexity: …` and `needs-human` are created first (other names are never created).
    */
   addLabels?(issue: Issue, names: string[], options?: { create?: boolean }): Promise<AddLabelsResult>;
   removeLabels?(issue: Issue, names: string[]): Promise<RemoveLabelsResult>;
+  /** Remaining budget of the tracker API from the last response; null while unknown, absent when the tracker has none. */
+  apiBudget?(): TrackerApiBudget | null;
 }
 
 export interface TrackerAdapterParams {
