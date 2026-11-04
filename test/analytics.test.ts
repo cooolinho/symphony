@@ -74,8 +74,8 @@ describe('statistics analytics', () => {
       const events = [event('2026-10-04T09:30:00Z', 'rejected'), event('2026-10-03T11:00:00Z', 'allowed_warning'), event('2026-10-06T01:00:00Z', 'rejected')];
       const a = computeAnalytics(seedBudget(), history().pricing.current(), filter({ from: new Date('2026-10-03T00:00:00Z'), to: new Date('2026-10-05T00:00:00Z') }), NOW, events);
       assert.deepEqual(a.budget.days, [
-        { date: '2026-10-03', peak_5h_tokens: 2 * per, limit_hits: 0 },
-        { date: '2026-10-04', peak_5h_tokens: 2 * per, limit_hits: 1 },
+        { date: '2026-10-03', peak_5h_tokens: 2 * per, limit_hits: 0, peak_5h_percent: null },
+        { date: '2026-10-04', peak_5h_tokens: 2 * per, limit_hits: 1, peak_5h_percent: 100 },
       ]);
       assert.deepEqual(a.budget.compacts_by_role, { developer: 3, reviewer: 0 });
       assert.deepEqual(a.budget.avg_context_by_role, { developer: 50, reviewer: 30 });
