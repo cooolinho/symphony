@@ -1,7 +1,7 @@
 import { bareModelName } from '../agent/model-name.ts';
 import { costOf, priceFor, totalTokens, type ModelTokenUsage, type PricingTable } from '../costs/pricing.ts';
 import { BUDGET_WINDOW_MS, forecastBudget } from '../budget/forecast.ts';
-import { isRejected, type RateLimitRecord } from '../budget/rate-limit-log.ts';
+import { isRejected, windowUtilization, type RateLimitRecord } from '../budget/rate-limit-log.ts';
 import { parseCounts, type HistoryEntry } from './history.ts';
 
 /**
@@ -672,10 +672,10 @@ function stageResultStats(entries: HistoryEntry[], inScope: (entry: HistoryEntry
 /**
  * Everything the statistics page shows for one filter. `now` is the end of an open period (`to` = null).
  */
-/** Peak of a rolling 5-hour window per day, rate-limit hits per day, auto-compacts and average context per role. */
+/** Peak of a rolling 5-hour window per day (tokens and the SDK's `five_hour` utilization in percent), rate-limit hits per day, auto-compacts and average context per role. */
 function budgetHistory(scoped: Run[], runs: Run[], rateLimits: RateLimitRecord[], inPeriod: (ms: number) => boolean, startMs: number | null, toMs: number, timeZone: string) {
-  const days = new Map<string, { date: string; peak_5h_tokens: number; limit_hits: number }>();
-  if (startMs !== null) for (const date of bucketKeys(startMs, toMs, 'day', timeZone)) days.set(date, { date, peak_5h_tokens: 0, limit_hits: 0 });
+  const days = new Map<string, { date: string; peak_5h_tokens: number; limit_hits: number; peak_5h_percent: number | null }>();
+  if (startMs !== null) for (const date of bucketKeys(startMs, toMs, 'day', timeZone)) days.set(date, { date, peak_5h_tokens: 0, limit_hits: 0, peak_5h_percent: null });
 
   // Window (t - 5 h, t] ending at each run_finished; runs before the period still fill the window.
   const sorted = [...scoped].sort((a, b) => a.finishedMs - b.finishedMs);
@@ -693,11 +693,13 @@ function budgetHistory(scoped: Run[], runs: Run[], rateLimits: RateLimitRecord[]
   }
 
   for (const event of rateLimits) {
-    if (!isRejected(event.rate_limit_info)) continue;
     const ms = Date.parse(event.at);
     if (!Number.isFinite(ms) || !inPeriod(ms)) continue;
     const day = days.get(bucketKey(ms, 'day', timeZone));
-    if (day !== undefined) day.limit_hits += 1;
+    if (day === undefined) continue;
+    if (isRejected(event.rate_limit_info)) day.limit_hits += 1;
+    const utilization = windowUtilization(event.rate_limit_info, 'five_hour').utilization;
+    if (utilization !== null) day.peak_5h_percent = Math.max(day.peak_5h_percent ?? 0, round(utilization * 100, 1));
   }
 
   const compacts = new Map<string, number>();
@@ -724,9 +726,9 @@ function budgetHistory(scoped: Run[], runs: Run[], rateLimits: RateLimitRecord[]
 /**
  * Additions for the statistics page next to `budget`: the calibrated 5-hour limit (the same calibration as the
  * forecast, over all runs of the account), the rate-limit hits of the period with time and model, and the role and
- * round with the most auto-compacts (round of the run's `stage_result`).
+ * round with the most auto-compacts (round of the run's `stage_result`). `peak_source` says whether the days carry the SDK utilization (`sdk`) or only tokens.
  */
-function budgetInsights(allRuns: Run[], runs: Run[], entries: HistoryEntry[], rateLimits: RateLimitRecord[], inPeriod: (ms: number) => boolean, toMs: number) {
+function budgetInsights(allRuns: Run[], runs: Run[], entries: HistoryEntry[], rateLimits: RateLimitRecord[], inPeriod: (ms: number) => boolean, toMs: number, days: Array<{ peak_5h_percent: number | null }>) {
   const limit = forecastBudget({
     now: new Date(toMs),
     usage: allRuns.map((run) => ({ at: new Date(run.finishedMs), tokens: tokensOf(run), role: run.role ?? undefined })),
@@ -757,7 +759,8 @@ function budgetInsights(allRuns: Run[], runs: Run[], entries: HistoryEntry[], ra
   }
   const top_compact = [...groups.values()].sort((a, b) => b.compacts - a.compacts || a.role.localeCompare(b.role) || (a.round ?? -1) - (b.round ?? -1))[0] ?? null;
 
-  return { limit_5h_tokens: limit, limit_hits, top_compact };
+  const peak_source: 'sdk' | 'tokens' = days.some((day) => day.peak_5h_percent !== null) ? 'sdk' : 'tokens';
+  return { limit_5h_tokens: limit, limit_hits, top_compact, peak_source };
 }
 
 export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable, filter: AnalyticsFilter, now = new Date(), rateLimits: RateLimitRecord[] = []) {
@@ -1041,6 +1044,7 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
     effortsAvailable.add(run.effort ?? UNKNOWN_EFFORT);
   }
 
+  const budget = budgetHistory(scoped, runs, rateLimits, inPeriod, startMs, toMs, filter.timeZone);
   return {
     period: {
       from: fromMs === null ? null : new Date(fromMs).toISOString(),
@@ -1062,8 +1066,8 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
     models: modelRows,
     efforts: effortRows,
     by_role: roleRows,
-    budget: budgetHistory(scoped, runs, rateLimits, inPeriod, startMs, toMs, filter.timeZone),
-    budget_insights: budgetInsights(allRuns, runs, entries, rateLimits, inPeriod, toMs),
+    budget,
+    budget_insights: budgetInsights(allRuns, runs, entries, rateLimits, inPeriod, toMs, budget.days),
     by_profile: stageStats.by_profile,
     verdicts_by_role: stageStats.verdicts_by_role,
     stage_results: stageStats.total,

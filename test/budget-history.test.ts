@@ -65,7 +65,7 @@ describe('budget history: computation', () => {
   it('lists every day of the period, days without usage with 0 peak and 0 hits', () => {
     const a = analyze([['acme/app#1', '2026-10-01T10:00:00Z'], ['acme/app#1', '2026-10-05T10:00:00Z']], [], period('2026-10-01T00:00:00Z', '2026-10-06T00:00:00Z'));
     assert.deepEqual(a.budget.days.map((d) => d.date), ['2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05']);
-    assert.deepEqual(a.budget.days[2], { date: '2026-10-03', peak_5h_tokens: 0, limit_hits: 0 });
+    assert.deepEqual(a.budget.days[2], { date: '2026-10-03', peak_5h_tokens: 0, limit_hits: 0, peak_5h_percent: null });
   });
 
   it('counts only rejected events inside the period, per day, and survives odd event payloads', () => {
@@ -81,17 +81,17 @@ describe('budget history: computation', () => {
 
   it('shows a hit on a day without any run', () => {
     const a = analyze([['acme/app#1', '2026-10-01T09:00:00Z']], [event('2026-10-02T09:00:00Z')], period('2026-10-01T00:00:00Z', '2026-10-03T00:00:00Z'));
-    assert.deepEqual(a.budget.days[1], { date: '2026-10-02', peak_5h_tokens: 0, limit_hits: 1 });
+    assert.deepEqual(a.budget.days[1], { date: '2026-10-02', peak_5h_tokens: 0, limit_hits: 1, peak_5h_percent: 100 });
   });
 
   it('assigns days in the time zone of the filter', () => {
     const at = '2026-10-03T22:30:00Z'; // 2026-10-04 00:30 in Berlin (CEST)
     const berlin = analyze([['acme/app#1', at]], [event(at)], period('2026-10-03T22:00:00Z', '2026-10-05T22:00:00Z', { timeZone: 'Europe/Berlin' }));
     const day = berlin.budget.days.find((d) => d.date === '2026-10-04')!;
-    assert.deepEqual(day, { date: '2026-10-04', peak_5h_tokens: PER_RUN, limit_hits: 1 });
+    assert.deepEqual(day, { date: '2026-10-04', peak_5h_tokens: PER_RUN, limit_hits: 1, peak_5h_percent: 100 });
     assert.ok(!berlin.budget.days.some((d) => d.date === '2026-10-03' && (d.peak_5h_tokens > 0 || d.limit_hits > 0)));
     const utc = analyze([['acme/app#1', at]], [event(at)], period('2026-10-03T00:00:00Z', '2026-10-05T00:00:00Z'));
-    assert.deepEqual(utc.budget.days.find((d) => d.date === '2026-10-03'), { date: '2026-10-03', peak_5h_tokens: PER_RUN, limit_hits: 1 });
+    assert.deepEqual(utc.budget.days.find((d) => d.date === '2026-10-03'), { date: '2026-10-03', peak_5h_tokens: PER_RUN, limit_hits: 1, peak_5h_percent: 100 });
   });
 
   it('applies the repository filter to the tokens but not to the account-wide limit hits', () => {
@@ -101,8 +101,8 @@ describe('budget history: computation', () => {
     const events = [event('2026-10-03T11:30:00Z')];
     const all = analyze(runs, events, period('2026-10-03T00:00:00Z', '2026-10-04T00:00:00Z'));
     const one = analyze(runs, events, period('2026-10-03T00:00:00Z', '2026-10-04T00:00:00Z', { repo: 'acme/app' }));
-    assert.deepEqual(all.budget.days, [{ date: '2026-10-03', peak_5h_tokens: 2 * PER_RUN, limit_hits: 1 }]);
-    assert.deepEqual(one.budget.days, [{ date: '2026-10-03', peak_5h_tokens: PER_RUN, limit_hits: 1 }]);
+    assert.deepEqual(all.budget.days, [{ date: '2026-10-03', peak_5h_tokens: 2 * PER_RUN, limit_hits: 1, peak_5h_percent: 100 }]);
+    assert.deepEqual(one.budget.days, [{ date: '2026-10-03', peak_5h_tokens: PER_RUN, limit_hits: 1, peak_5h_percent: 100 }]);
   });
 
   it('sums compacts and averages context per role over runs in the period only', () => {
@@ -125,7 +125,7 @@ describe('budget history: computation', () => {
     const a = analyze([['acme/app#1', '2026-10-03T10:00:00Z', { role: 'developer' }]], [], period('2026-10-03T00:00:00Z', '2026-10-04T00:00:00Z'));
     assert.deepEqual(a.budget.compacts_by_role, {});
     assert.deepEqual(a.budget.avg_context_by_role, {});
-    assert.deepEqual(a.budget.days, [{ date: '2026-10-03', peak_5h_tokens: PER_RUN, limit_hits: 0 }]);
+    assert.deepEqual(a.budget.days, [{ date: '2026-10-03', peak_5h_tokens: PER_RUN, limit_hits: 0, peak_5h_percent: null }]);
   });
 });
 
@@ -168,7 +168,7 @@ describe('budget history: API and cache', () => {
     assert.equal(hits(a), 1);
     const raw = JSON.parse((await get(`/api/v1/history/analytics?from=${encodeURIComponent(hour(-48))}&to=${encodeURIComponent(hour(24))}`)).body);
     assert.deepEqual(Object.keys(raw.budget).sort(), ['avg_context_by_role', 'compacts_by_role', 'days']);
-    assert.deepEqual(Object.keys(raw.budget.days[0]).sort(), ['date', 'limit_hits', 'peak_5h_tokens']);
+    assert.deepEqual(Object.keys(raw.budget.days[0]).sort(), ['date', 'limit_hits', 'peak_5h_percent', 'peak_5h_tokens']);
     assert.deepEqual(raw.budget.compacts_by_role, { developer: 2 });
     assert.deepEqual(raw.budget.avg_context_by_role, { developer: 42 });
     assert.ok(raw.budget.days.some((d: { peak_5h_tokens: number }) => d.peak_5h_tokens === PER_RUN));
@@ -235,5 +235,56 @@ describe('budget history: page', () => {
     assert.ok(page.query('[data-body="budget"]')[0]!.textContent.includes('KEINE DATEN'));
     assert.ok(page.query('[data-body="compacts"]')[0]!.textContent.includes('KEINE DATEN'));
     assert.equal(contextOf(page, 'developer'), '—');
+  });
+});
+
+// E4-11 (#468): daily peak of the SDK utilization.
+describe('budget history: SDK peak', () => {
+  const sdk = (at: string, info: Record<string, unknown>) => ({ at, run_id: 'x', issue: 'acme/app#1', role: 'developer', model: null, rate_limit_info: info });
+  const five = (at: string, utilization: number, over: Record<string, unknown> = {}) =>
+    sdk(at, { status: 'allowed', rateLimitType: 'five_hour', unifiedWindows: { five_hour: { utilization } }, ...over });
+  const p = period('2026-10-03T00:00:00Z', '2026-10-06T00:00:00Z');
+  const percents = (a: ReturnType<typeof analyze>) => Object.fromEntries(a.budget.days.map((d) => [d.date, d.peak_5h_percent]));
+
+  it('takes the highest utilization of the day, also from other limit types, and rounds', () => {
+    const a = analyze([['acme/app#1', '2026-10-05T10:00:00Z']], [
+      five('2026-10-03T08:00:00Z', 0.72), five('2026-10-03T09:00:00Z', 0.9),
+      five('2026-10-04T08:00:00Z', 0.3, { rateLimitType: 'seven_day' }),
+      sdk('2026-10-05T08:00:00Z', { status: 'rejected', rateLimitType: 'five_hour', unifiedWindows: { five_hour: { utilization: 1.01 } } }),
+    ], p);
+    assert.deepEqual(percents(a), { '2026-10-03': 90, '2026-10-04': 30, '2026-10-05': 101 });
+    assert.equal(a.budget.days[2]!.peak_5h_tokens, PER_RUN);
+  });
+
+  it('gives null for days without a five_hour value, and nothing for a seven_day event without unifiedWindows', () => {
+    const a = analyze([['acme/app#1', '2026-10-03T10:00:00Z']], [sdk('2026-10-04T08:00:00Z', { status: 'allowed', rateLimitType: 'seven_day', utilization: 0.5 })], p);
+    assert.deepEqual(percents(a), { '2026-10-03': null, '2026-10-04': null, '2026-10-05': null });
+    assert.equal(a.budget.days[0]!.peak_5h_tokens, PER_RUN);
+    assert.equal(a.budget_insights.peak_source, 'tokens');
+  });
+
+  it('reads the top-level utilization of a five_hour event and sets peak_source sdk', () => {
+    const a = analyze([], [sdk('2026-10-04T08:00:00Z', { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.4 })], p);
+    assert.equal(a.budget.days[1]!.peak_5h_percent, 40);
+    assert.equal(a.budget_insights.peak_source, 'sdk');
+  });
+
+  it('assigns the day in the time zone of the filter', () => {
+    const at = '2026-10-03T22:30:00Z';
+    const berlin = analyze([], [five(at, 0.5)], period('2026-10-03T00:00:00Z', '2026-10-05T22:00:00Z', { timeZone: 'Europe/Berlin' }));
+    assert.equal(berlin.budget.days.find((d) => d.date === '2026-10-04')!.peak_5h_percent, 50);
+    assert.equal(berlin.budget.days.find((d) => d.date === '2026-10-03')!.peak_5h_percent, null);
+    assert.equal(analyze([], [five(at, 0.5)], p).budget.days.find((d) => d.date === '2026-10-03')!.peak_5h_percent, 50);
+  });
+
+  it('is account-wide: the repository filter does not touch it, and the limit stays as before', () => {
+    const runs: Array<[string, string, Record<string, unknown>?]> = [['acme/app#1', '2026-10-03T10:00:00Z'], ['other/repo#2', '2026-10-03T11:00:00Z', { repo: 'other/repo' }]];
+    const events = [five('2026-10-03T11:30:00Z', 0.8)];
+    const f = period('2026-10-03T00:00:00Z', '2026-10-04T00:00:00Z');
+    const all = analyze(runs, events, f);
+    const one = analyze(runs, events, { ...f, repo: 'acme/app' });
+    assert.equal(all.budget.days[0]!.peak_5h_percent, 80);
+    assert.equal(one.budget.days[0]!.peak_5h_percent, 80);
+    assert.equal(all.budget_insights.limit_5h_tokens, analyze(runs, [], f).budget_insights.limit_5h_tokens);
   });
 });

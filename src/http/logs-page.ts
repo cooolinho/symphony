@@ -32,6 +32,7 @@ const LOGS_CSS = `
   .bh-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
   .bh-bar { width: 100%; max-width: 54px; box-sizing: border-box; border-radius: 10px 10px 4px 4px;
     background: color-mix(in srgb, var(--sky-300) 22%, transparent); border: 1px solid var(--sky-300); }
+  .bh-bar.is-estimate { border-style: dashed; }
   .bh-bar.is-hit { background: color-mix(in srgb, var(--red-400) 28%, transparent); border-color: var(--red-400); }
   .bh-pct { font: 12px var(--mono); color: var(--sky-300); white-space: nowrap; }
   .bh-col.is-hit .bh-pct { color: var(--red-400); }
@@ -39,6 +40,7 @@ const LOGS_CSS = `
   .bh-limit span { position: absolute; right: 0; top: -16px; font: 11px var(--mono); color: var(--red-300); }
   .bh-days { display: grid; gap: 14px; margin-top: 6px; }
   .bh-day { font: 12px var(--mono); text-align: center; color: var(--fg-2); min-height: 1em; white-space: nowrap; }
+  .bh-source { font-size: 12.5px; color: var(--fg-2); margin: 0 0 8px; }
   .bh-text { font-size: 13px; color: var(--fg-2); margin: 12px 0 0; }
   .rs-scroll { overflow-x: auto; }
   #role-summary { font-size: 13px; width: 100%; }
@@ -612,12 +614,16 @@ ${CHART_JS}
     );
   }
 
-  /** Peak of the 5-hour window per day as columns, in percent of the calibrated limit; red on days with a limit hit. */
+  /**
+   * Peak of the 5-hour window per day as columns; red on days with a limit hit. Days with the SDK utilization
+   * (peak_5h_percent) show it in percent; days without fall back to tokens (percent of the calibrated limit) and are dashed.
+   */
   function renderBudgetBars(d) {
     const days = d.budget ? d.budget.days : [];
-    if (!days.some((x) => x.peak_5h_tokens > 0 || x.limit_hits > 0)) { setBody('budget-bars', stateBox('empty', 'KEINE DATEN', 'Noch keine Budget-Daten')); return; }
+    if (!days.some((x) => x.peak_5h_tokens > 0 || x.limit_hits > 0 || typeof x.peak_5h_percent === 'number')) { setBody('budget-bars', stateBox('empty', 'KEINE DATEN', 'Noch keine Budget-Daten')); return; }
     const insights = d.budget_insights || {};
     const limit = insights.limit_5h_tokens || null;
+    const sdkMode = insights.peak_source === 'sdk';
     const maxPeak = Math.max(1, ...days.map((x) => x.peak_5h_tokens));
     const n = days.length;
     const grid = el('div', null, 'bh-grid');
@@ -626,13 +632,19 @@ ${CHART_JS}
     labels.style.gridTemplateColumns = grid.style.gridTemplateColumns;
     days.forEach((x, i) => {
       const hit = x.limit_hits > 0;
+      const sdk = typeof x.peak_5h_percent === 'number';
+      const sdkPct = sdk ? Math.round(x.peak_5h_percent) : null;
       const pct = limit ? Math.round((x.peak_5h_tokens / limit) * 100) : null;
-      const height = limit ? Math.min(pct, 100) : (x.peak_5h_tokens / maxPeak) * 100;
+      const height = sdk ? Math.min(sdkPct, 100) : limit ? Math.min(pct, 100) : (x.peak_5h_tokens / maxPeak) * 100;
+      const estimate = !sdk && sdkMode && x.peak_5h_tokens > 0;
       const col = el('div', null, 'bh-col' + (hit ? ' is-hit' : ''));
       col.dataset.day = x.date;
-      const bar = el('div', null, 'bh-bar' + (hit ? ' is-hit' : ''));
-      bar.style.height = (x.peak_5h_tokens > 0 ? Math.max(2, Math.round((height / 100) * 180)) : 0) + 'px';
-      col.append(el('div', limit ? pct + ' %' : fmtCompact(x.peak_5h_tokens), 'bh-pct'), bar);
+      const bar = el('div', null, 'bh-bar' + (hit ? ' is-hit' : '') + (estimate ? ' is-estimate' : ''));
+      bar.style.height = ((sdk ? sdkPct > 0 : x.peak_5h_tokens > 0) ? Math.max(2, Math.round((height / 100) * 180)) : 0) + 'px';
+      const label = sdk ? (n <= 14 ? 'Spitze ' : '') + sdkPct + ' %' : limit ? pct + ' %' : fmtCompact(x.peak_5h_tokens);
+      if (sdk) col.title = 'Spitze ' + sdkPct + ' % laut SDK';
+      else if (x.peak_5h_tokens > 0) col.title = 'geschätzt aus Tokens: ' + label + ' (' + fmtCompact(x.peak_5h_tokens) + ' Tokens)';
+      col.append(el('div', label, 'bh-pct'), bar);
       grid.append(col);
       const date = dayKeyDate(x.date);
       labels.append(el('div', n <= 14 ? weekdayShort(date) : i % 5 === 0 ? shortDate(date) : '', 'bh-day'));
@@ -643,15 +655,26 @@ ${CHART_JS}
     chart.setAttribute('role', 'img');
     chart.setAttribute('aria-label', 'Spitzenauslastung des 5-Stunden-Fensters der letzten ' + n + ' Tage' +
       (hitDays.length ? '; am ' + hitDays.join(', ') + ' wurde das Limit erreicht' : '; kein Limit erreicht'));
-    if (limit) { const line = el('div', null, 'bh-limit'); line.append(el('span', '100 %')); chart.append(line); }
+    if (limit || sdkMode) { const line = el('div', null, 'bh-limit'); line.append(el('span', '100 %')); chart.append(line); }
     chart.append(grid, labels);
     const total = days.reduce((sum, x) => sum + x.limit_hits, 0);
     const models = [...new Set((insights.limit_hits || []).map((h) => h.model))];
     const text = total > 0
       ? fmtInt(total) + ' Limit-Treffer in diesem Zeitraum' + (models.length === 1 && models[0] ? ', alle nach ' + modelFamily(models[0]) + '-Sessions' : '') + '. Die Prognose kalibriert sich an diesen Treffern.'
       : 'Kein Limit-Treffer in diesem Zeitraum.';
-    const nodes = [chart, el('p', text, 'bh-text')];
-    if (!limit) nodes.push(el('p', 'Noch kein Limit kalibriert: Höhen relativ zur höchsten Spitze.', 'note'));
+    const sdkDays = days.filter((x) => typeof x.peak_5h_percent === 'number');
+    let peakText = '';
+    if (sdkMode && sdkDays.length) {
+      const top = sdkDays.reduce((best, x) => (x.peak_5h_percent > best.peak_5h_percent ? x : best));
+      const topDate = dayKeyDate(top.date);
+      peakText = 'Höchste Spitze laut SDK: ' + Math.round(top.peak_5h_percent) + ' % am ' + weekdayShort(topDate) + ' ' + shortDate(topDate) + '. ';
+    }
+    const fallback = sdkMode && days.some((x) => typeof x.peak_5h_percent !== 'number' && x.peak_5h_tokens > 0);
+    const source = sdkMode
+      ? 'Quelle: Auslastung laut SDK' + (fallback ? '; Tage ohne SDK-Wert aus Tokens geschätzt (gestrichelt).' : '.')
+      : 'Quelle: aus Tokens geschätzt' + (limit ? ' (kalibrierte 5-h-Grenze).' : '.');
+    const nodes = [el('p', source, 'bh-source'), chart, el('p', peakText + text, 'bh-text')];
+    if (!limit && !sdkMode) nodes.push(el('p', 'Noch kein Limit kalibriert: Höhen relativ zur höchsten Spitze.', 'note'));
     setBody('budget-bars', ...nodes);
   }
 
