@@ -148,7 +148,8 @@ describe('forecastBudget: limit and ETA', () => {
 
   it('burn rate 0 never divides by zero: ETA null, no alert', () => {
     const usage = [use(6 * HOUR, 1000), use(2 * HOUR, 100)];
-    const events = [ev(5 * HOUR + 30 * MIN, 'five_hour', { status: 'rejected', resetsAt: unix(2 * HOUR) })];
+    // calibrated hit without an SDK utilisation: a rejected event with a live reset would count as utilisation 1 (E4-8)
+    const events = [ev(5 * HOUR + 30 * MIN, 'five_hour', { status: 'rejected' }), ev(MIN, 'five_hour', { status: 'allowed', resetsAt: unix(2 * HOUR) })];
     const result = forecastBudget({ now: NOW, usage, events, window: 'five_hour' });
     assert.equal(result.burn_rate_per_min, 0);
     assert.equal(result.forecast?.eta, null);

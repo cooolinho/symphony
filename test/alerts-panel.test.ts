@@ -124,3 +124,21 @@ describe('overview page', () => {
     assert.ok(!ALERTS_JS.includes('innerHTML'));
   });
 });
+
+describe('alerts(state, budget): card text per source', () => {
+  const clock = (iso: string) => {
+    const d = new Date(iso);
+    return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  };
+  const card = (extra: Record<string, unknown>, key = 'five_hour') =>
+    list(state, { generated_at: T('11:00'), [key]: { alert: true, resets_at: T('13:00'), forecast: { eta: T('12:00'), limit_tokens: null }, ...extra } }).find((a) => a.kind === 'budget');
+
+  it('SDK source names window, percent, limit time and reset', () => {
+    assert.equal(card({ percent_source: 'sdk', percent: 87.4 }).text, '5-h-Fenster bei 87 % · Limit ca. ' + clock(T('12:00')) + ' · Reset ' + clock(T('13:00')));
+    assert.match(card({ percent_source: 'sdk', percent: 87.4 }, 'seven_day').text, /^7-Tage-Fenster bei 87 % /);
+  });
+
+  it('calibrated source keeps the old text', () => {
+    assert.match(card({ percent_source: 'calibrated', percent: 60 }).text, /^Beim aktuellen Verbrauch ist das Limit gegen /);
+  });
+});

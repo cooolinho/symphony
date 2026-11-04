@@ -39,6 +39,7 @@ export const ALERTS_JS = `
   const ALERT_TONE = { clash: 'red', brain_clash: 'red', brain_backlog: 'amber', attention: 'red', budget: 'amber', needs_human: 'amber', model_hold: 'amber' };
   const BRAIN_BACKLOG_THRESHOLD = 25;
   const BUDGET_TITLE = { five_hour: '5-h-Limit in Sicht', seven_day: '7-Tage-Limit in Sicht' };
+  const BUDGET_WINDOW_NAME = { five_hour: '5-h-Fenster', seven_day: '7-Tage-Fenster' };
 
   // HH:MM in local time.
   function alertClock(iso) {
@@ -122,7 +123,9 @@ export const ALERTS_JS = `
           kind: 'budget',
           at: budget.generated_at || null,
           title: BUDGET_TITLE[key],
-          text: 'Beim aktuellen Verbrauch ist das Limit gegen ' + alertClock(w.forecast.eta) + ' erreicht' + (w.resets_at ? ', Reset um ' + alertClock(w.resets_at) + '.' : '.'),
+          text: w.percent_source === 'sdk' && typeof w.percent === 'number'
+            ? BUDGET_WINDOW_NAME[key] + ' bei ' + Math.round(w.percent) + ' % · Limit ca. ' + alertClock(w.forecast.eta) + (w.resets_at ? ' · Reset ' + alertClock(w.resets_at) : '')
+            : 'Beim aktuellen Verbrauch ist das Limit gegen ' + alertClock(w.forecast.eta) + ' erreicht' + (w.resets_at ? ', Reset um ' + alertClock(w.resets_at) + '.' : '.'),
           href: '/stats',
         });
       }

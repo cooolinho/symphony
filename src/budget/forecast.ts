@@ -27,10 +27,12 @@ export interface BudgetForecast {
   used_tokens: number;
   /** Tokens of the last 30 minutes / 30, one decimal. */
   burn_rate_per_min: number;
+  /** Change of the SDK utilisation per minute (a share, not percent) over the events of the last 30 minutes, four decimals; null without a slope. */
+  utilization_rate_per_min: number | null;
   /** `resetsAt` of the event that gives `sdk`, else of the latest event that gives a reset for the window; null when missing or not in the future. */
   resets_at: string | null;
-  /** Null without a known limit (no SDK utilisation and no `rejected` hit). */
-  forecast: { limit_tokens: number; limit_source: 'sdk' | 'calibrated'; eta: string | null } | null;
+  /** Null without a known limit and without an SDK ETA; `limit_tokens` is null only for an SDK ETA without a token limit. */
+  forecast: { limit_tokens: number | null; limit_source: 'sdk' | 'calibrated'; eta: string | null } | null;
   /** Utilisation the SDK reported in the latest event (of any type) for this window; null when unknown or its reset has passed. */
   sdk: { utilization: number; resets_at: string | null; event_at: string; status: 'allowed' | 'allowed_warning' | 'rejected' | null } | null;
   /** Utilisation in percent (SDK, else used / limit); may exceed 100; null when unknown. */
@@ -53,7 +55,9 @@ export interface BudgetAlert {
   eta: string;
   resets_at: string;
   used_tokens: number;
-  limit_tokens: number;
+  limit_tokens: number | null;
+  percent: number | null;
+  source: 'sdk' | 'calibrated';
 }
 
 /** Tokens with `from < at <= to`,. */
@@ -71,10 +75,29 @@ function infoField(info: unknown, key: string): unknown {
 }
 
 /**
+ * Slope of the SDK utilisation per minute: (last − first) / Δt over the events with time in (now − BURN_RATE_WINDOW_MS, now]
+ * that give a utilisation for the window, sorted by time. Null with fewer than two such events, Δt ≤ 0, or when the
+ * utilisation drops between two consecutive events (a reset inside the 30 minutes).
+ */
+function utilizationRate(points: { time: number; utilization: number | null }[], now: number): number | null {
+  const used: { time: number; utilization: number }[] = [];
+  for (const point of points) {
+    if (point.utilization !== null && point.time > now - BURN_RATE_WINDOW_MS && point.time <= now) used.push({ time: point.time, utilization: point.utilization });
+  }
+  if (used.length < 2) return null;
+  for (let i = 1; i < used.length; i++) if (used[i]!.utilization < used[i - 1]!.utilization) return null;
+  const dt = (used[used.length - 1]!.time - used[0]!.time) / MINUTE_MS;
+  if (!(dt > 0)) return null;
+  return (used[used.length - 1]!.utilization - used[0]!.utilization) / dt;
+}
+
+/**
  * Consumption, burn rate, limit estimate and ETA of one rolling window. Pure: no I/O, no clock.
  * The SDK utilisation is the one of the latest event of any type (`unifiedWindows.<window>`, else the top level of an event
  * of this type) up to `now`; once its reset has passed it is unknown (null), not 0. The limit is then the tokens in the window
  * at that event / utilisation, else calibrated as the usage in the window at the latest `rejected` event of this type.
+ * With an SDK utilisation the ETA comes from its slope (`utilizationRate`): now + (1 − utilisation) / slope, now at utilisation ≥ 1,
+ * only before the reset; without it the ETA is the token calculation (limit − used) / burn rate.
  */
 export function forecastBudget(input: { now: Date; usage: BudgetUsage[]; events: RateLimitRecord[]; window: BudgetWindow }): BudgetForecast {
   const { usage, window } = input;
@@ -129,14 +152,22 @@ export function forecastBudget(input: { now: Date; usage: BudgetUsage[]; events:
   }
   if (limit !== null && !(limit > 0)) limit = null;
 
+  const rate = utilizationRate(known, now);
   let forecast: BudgetForecast['forecast'] = null;
-  if (limit !== null) {
+  if (limit !== null || sdk !== null) {
     let eta: number | null = null;
-    const remaining = limit - used;
-    if (remaining <= 0) eta = now;
-    else if (burn > 0) eta = now + (remaining / burn) * MINUTE_MS;
+    if (sdk !== null) {
+      if (sdk.utilization >= 1) eta = now;
+      else if (rate !== null && rate > 0) eta = now + ((1 - sdk.utilization) / rate) * MINUTE_MS;
+    } else if (limit !== null) {
+      const remaining = limit - used;
+      if (remaining <= 0) eta = now;
+      else if (burn > 0) eta = now + (remaining / burn) * MINUTE_MS;
+    }
     if (eta !== null && (resetsAt === null || eta >= resetsAt)) eta = null;
-    forecast = { limit_tokens: Math.round(limit), limit_source: source, eta: eta === null ? null : new Date(eta).toISOString() };
+    const etaText = eta === null ? null : new Date(eta).toISOString();
+    if (limit !== null) forecast = { limit_tokens: Math.round(limit), limit_source: source, eta: etaText };
+    else if (etaText !== null) forecast = { limit_tokens: null, limit_source: 'sdk', eta: etaText };
   }
 
   const round1 = (value: number): number => Math.round(value * 10) / 10;
@@ -145,8 +176,8 @@ export function forecastBudget(input: { now: Date; usage: BudgetUsage[]; events:
   if (sdk !== null) {
     percent = round1(sdk.utilization * 100);
     percentSource = 'sdk';
-  } else if (forecast !== null) {
-    percent = round1((used / forecast.limit_tokens) * 100);
+  } else if (forecast !== null && limit !== null) {
+    percent = round1((used / Math.round(limit)) * 100);
     percentSource = 'calibrated';
   }
 
@@ -154,6 +185,7 @@ export function forecastBudget(input: { now: Date; usage: BudgetUsage[]; events:
     window,
     used_tokens: used,
     burn_rate_per_min: Math.round(burn * 10) / 10,
+    utilization_rate_per_min: rate === null ? null : Math.round(rate * 10000) / 10000,
     resets_at: resetsAt === null ? null : new Date(resetsAt).toISOString(),
     sdk,
     percent,
@@ -190,7 +222,7 @@ export function budgetAlerts(report: BudgetReport): BudgetAlert[] {
   for (const window of ['five_hour', 'seven_day'] as const) {
     const item = report[window];
     if (item.alert && item.forecast?.eta != null && item.resets_at !== null) {
-      alerts.push({ window, eta: item.forecast.eta, resets_at: item.resets_at, used_tokens: item.used_tokens, limit_tokens: item.forecast.limit_tokens });
+      alerts.push({ window, eta: item.forecast.eta, resets_at: item.resets_at, used_tokens: item.used_tokens, limit_tokens: item.forecast.limit_tokens, percent: item.percent, source: item.percent_source === 'sdk' ? 'sdk' : 'calibrated' });
     }
   }
   return alerts;
