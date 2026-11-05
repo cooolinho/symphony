@@ -139,6 +139,49 @@ workspace's project type ([Subagents per role](configuration.md#subagents-per-ro
 refuses a call. Every Agent tool call carries its subagent in the `tool_use` event (`detail.agent`), so the statistics
 count subagents like skills. Background and usage figures: [laravel-subagents.md](laravel-subagents.md).
 
+#### Delegation line of the `claude_code` preset (spike E0-1)
+
+Checked in Claude Code 2.1.288, bundled with SDK 0.3.288 as the native binary
+`node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude` (there is no `cli.js`; the JavaScript is minified inside
+the binary, found with `rg -a`; line numbers are those of `rg -a -n`).
+
+- The line is the system prompt section `opus5_reduced_delegation` (line 1410307, `jf("opus5_reduced_delegation", …)`).
+  Its text, defined at line 1410261 (`QPt`): "Do not use the Agent tool, workflows, or deep-research unless the user, a
+  CLAUDE.md file, or a skill asks for it". It is skipped when the project's own prompt (`JPt()`) already contains that
+  text or the older "Do not call the AgentTool unless the user".
+- The gate is `Sbn(model)` (line 1404855): the resolved model needs the capability **`opus_5_prompt_bundle`** in the
+  model table (line 1401403) and the feature flag `tengu_fennel_godwit` must be off (it is off by default); the flag
+  `tengu_slate_bittern` (default on) must be on as well. The capability is not derived from the model name.
+
+| Model | Capabilities relevant here | Delegation line |
+|---|---|---|
+| `claude-opus-5-5` | `opus_5_5_prompt_bundle`, no `opus_5_prompt_bundle` | **no** |
+| `claude-sonnet-5-5` | neither prompt-bundle capability | **no** |
+| `claude-fable-5-1` | `fable_5_1_prompt_bundle`, no `opus_5_prompt_bundle` | **no** |
+| `claude-opus-5` (for comparison) | `opus_5_prompt_bundle` | yes |
+
+Limit: the capability table is the static one of this build; Claude Code can also take capabilities from the server
+(`servedCapabilityLookup`, client data), which a static reading cannot see. The result holds for 2.1.288 as bundled.
+
+**Probe runs (Agent calls without and with a delegation sentence): not executed.** The attempt to run `query()` with
+`systemPrompt: { type: 'preset', preset: 'claude_code', append }` and a test subagent (`options.agents`) in the
+spike's workspace ended with `Not logged in · Please run /login`: the session has no API access. The planned set-up,
+for whoever repeats it with credentials: task "Count the words in the sentence "the quick brown fox jumps over the lazy
+dog" using the word-counter subagent, then tell me the number."; delegation sentence in `append`: "When a task names a
+subagent, delegate it with the Agent tool."; per model once without and once with the sentence; count the `Agent`
+`tool_use` blocks of the main agent; record the session ids.
+
+| Model | Agent calls without | Agent calls with | Session ids |
+|---|---|---|---|
+| `claude-opus-5-5` | not run | not run | – |
+| `claude-sonnet-5-5` | not run | not run | – |
+| `claude-fable-5-1` | not run | not run | – |
+
+**Conclusion for E2-2 (open question 1):** the preset does not carry the "do not call the Agent tool unless asked" line
+for any of the three models, so it is not the cause of low delegation for them, and the E2-2 wording does not need to
+work around it. Whether an explicit delegation sentence raises the number of Agent calls stays open until the runs above
+are done.
+
 Subagents and commands run in the **foreground**: every session starts with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`,
 so the Agent and Bash tools offer no `run_in_background` and nothing is moved to the background automatically. A
 background task only reports back in a later turn, but Symphony ends a result-driven session after the one reminder
