@@ -7,7 +7,8 @@
  * The aurora circles are plain filter-blurred elements (no backdrop-filter); the header is the only glass element the
  * shell adds (.g) and the shell never nests a .g in a .g, so a page stays within four stacked blur layers. The clock is
  * set on the client (one-second timer), LIVE by setLive(); the 5 h chip shows the budget of GET /api/v1/budget (loaded on
- * every page, refreshed every 30 s; onBudget() hands the report to the page script).
+ * every page, refreshed every 30 s; onBudget() hands the report to the page script; setBudgetGate() hands the dispatch
+ * pause of a polled state to the chip).
  */
 
 import { BASE_JS } from '../styles.ts';
@@ -251,8 +252,9 @@ export const LAYOUT_JS = `
 
 
   // 5 h chip and budget loader: one GET /api/v1/budget on load and every 30 s, shared by the chip and the page script.
-  /** used / limit in percent, null without a window, a forecast or a positive limit. */
+  /** Utilisation in percent: the window's percent (SDK value or calibrated, may exceed 100), else used / limit, null without either. */
   function budgetPercent(w) {
+    if (w && typeof w.percent === 'number' && Number.isFinite(w.percent)) return w.percent;
     const limit = w && w.forecast && w.forecast.limit_tokens;
     return typeof limit === 'number' && limit > 0 && typeof w.used_tokens === 'number' ? (w.used_tokens / limit) * 100 : null;
   }
@@ -267,6 +269,30 @@ export const LAYOUT_JS = `
     if (!Number.isFinite(t)) return '—';
     return new Date(t).toLocaleDateString('de-DE', { weekday: 'short' }).replace('.', '') + ' ' + budgetHm(iso);
   }
+  /** Reset time of a window: weekday and HH:MM for the week, HH:MM for the 5 h window, "unbekannt" without a reset. */
+  function budgetResetHm(w, key) {
+    if (!w || !w.resets_at) return 'unbekannt';
+    return key === 'seven_day' ? budgetDayHm(w.resets_at) : budgetHm(w.resets_at);
+  }
+  const budgetSdkSeen = { five_hour: false, seven_day: false };
+  /** Text for a window without SDK value: a reset is known (or an SDK event was seen on this page) = "since the reset", else never. */
+  function budgetNoEventText(w, key) {
+    return w && (w.resets_at || budgetSdkSeen[key]) ? 'Noch kein Event seit dem Reset' : 'Noch kein Rate-Limit-Event';
+  }
+  /** Where the percentage comes from; null for an answer without percent_source (older server). */
+  function budgetSourceText(w, key) {
+    const source = w && w.percent_source;
+    if (source === 'sdk') return 'laut SDK · Stand ' + budgetHm(w.sdk && w.sdk.event_at);
+    if (source === 'calibrated') return 'geschätzt aus Tokens';
+    if (source === 'none') return budgetNoEventText(w, key);
+    return null;
+  }
+  /** until (ISO) of the active dispatch pause of this window, null when the gate is not set, ended or for another window. */
+  function budgetPause(gate, key) {
+    if (!gate || typeof gate !== 'object' || gate.window !== key) return null;
+    const until = Date.parse(gate.until || '');
+    return Number.isFinite(until) && until > Date.now() ? gate.until : null;
+  }
   /** Compact token count: "1.2M", "640k", "950". */
   function budgetTokens(n) {
     if (!(typeof n === 'number' && Number.isFinite(n))) return '—';
@@ -274,16 +300,24 @@ export const LAYOUT_JS = `
     if (n >= 1e3) return Math.round(n / 1e3) + 'k';
     return String(Math.round(n));
   }
-  /** 5 h chip: pct (null without a window, forecast or positive limit) and tone (red from 85 %, amber from 50 %, else null). */
+  let budgetReport = null;
+  let budgetRaw = null;
+  let budgetGate = null;
+  /** 5 h chip: pct (null without a value), tone (red from 85 %, amber from 50 %, else null) and paused (until of a five_hour dispatch pause, only then set). */
   function budgetChip(report) {
     const w = report && report.five_hour;
-    const pct = budgetPercent(w);
+    const paused = budgetPause(budgetGate, 'five_hour');
+    if (paused) return { pct: Math.round(Math.max(100, budgetPercent(w) ?? 0)), tone: 'red', paused };
+    const pct = w && w.percent_source === 'none' ? null : budgetPercent(w);
     if (pct === null) return { pct: null, tone: null };
     const rounded = Math.round(pct);
     return { pct: rounded, tone: rounded >= 85 ? 'red' : rounded >= 50 ? 'amber' : null };
   }
-  let budgetReport = null;
-  let budgetRaw = null;
+  /** Sets the dispatch gate (health.dispatch_gate of the state, null when there is none) and redraws the chip. */
+  function setBudgetGate(gate) {
+    budgetGate = gate || null;
+    paintBudgetChip(budgetReport);
+  }
   const budgetListeners = [];
   /** Registers fn(report | null, raw), called after every load (raw: the parsed answer without the shape check, null on failure); right away when a report is already there. */
   function onBudget(fn) {
@@ -295,7 +329,14 @@ export const LAYOUT_JS = `
     if (!node) return;
     const chip = budgetChip(report);
     const w = report && report.five_hour;
-    node.setAttribute('title', '5-h-Fenster' + (w ? ' · Reset ' + (w.resets_at ? budgetHm(w.resets_at) : 'unbekannt') : ''));
+    const reset = budgetResetHm(w, 'five_hour');
+    const source = w && w.percent_source;
+    let title = '5-h-Fenster' + (w ? ' · Reset ' + reset : '');
+    if (chip.paused) title = '5-h-Fenster · Limit erreicht · pausiert bis ' + budgetHm(chip.paused);
+    else if (source === 'sdk' && chip.pct !== null) title = '5-h-Fenster · ' + chip.pct + ' % laut SDK (Stand ' + budgetHm(w.sdk && w.sdk.event_at) + ') · Reset ' + reset;
+    else if (source === 'calibrated' && chip.pct !== null) title = '5-h-Fenster · ' + chip.pct + ' % geschätzt aus Tokens · Reset ' + reset;
+    else if (source === 'none') title = '5-h-Fenster · Auslastung unbekannt';
+    node.setAttribute('title', title);
     if (chip.pct === null) { node.textContent = '5h —'; return; }
     const pct = document.createElement('span');
     pct.className = 'budget-pct' + (chip.tone ? ' tone-' + chip.tone : '');
@@ -317,6 +358,7 @@ export const LAYOUT_JS = `
     if (seq !== budgetSeq) return;
     budgetReport = report;
     budgetRaw = raw;
+    if (report) for (const k of ['five_hour', 'seven_day']) if (report[k].sdk && typeof report[k].sdk === 'object') budgetSdkSeen[k] = true;
     paintBudgetChip(report);
     for (const fn of budgetListeners) {
       try { fn(report, raw); } catch {}

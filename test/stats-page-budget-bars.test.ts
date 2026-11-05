@@ -66,3 +66,51 @@ describe('statistics page: budget history columns', () => {
     assert.ok(page.query('[data-body="budget"] svg').length > 0);
   });
 });
+
+// E4-11 (#468): the SDK utilization per day, tokens only as a fallback.
+describe('statistics page: budget history from the SDK utilization', () => {
+  const sdkDays = (n: number, percents: Array<number | null>, hits: number[] = []) =>
+    run(n, hits).map((d, i) => ({ ...d, peak_5h_percent: percents[i] ?? null }));
+  const height = (col: { querySelector(s: string): { style: Record<string, unknown> } | null }) => String(col.querySelector('.bh-bar')!.style.height);
+
+  it('uses the percent as height and label, caps at 100 and marks the fallback days as estimated', async () => {
+    const page = await load({ budget: budget(sdkDays(7, [101, 45])), budget_insights: insights({ peak_source: 'sdk' }) });
+    const cols = page.query('#bh-chart .bh-col');
+    assert.equal(cols[0]!.querySelector('.bh-pct')!.textContent, 'Spitze 101 %');
+    assert.equal(height(cols[0]!), '180px');
+    assert.ok(cols[0]!.getAttribute('title')!.includes('101 %') && cols[0]!.getAttribute('title')!.includes('laut SDK'));
+    assert.ok(!cols[0]!.querySelector('.bh-bar')!.classList.contains('is-estimate'));
+    assert.equal(cols[1]!.querySelector('.bh-pct')!.textContent, 'Spitze 45 %');
+    assert.equal(height(cols[1]!), '81px');
+    for (const col of cols.slice(2)) {
+      assert.ok(col.querySelector('.bh-bar')!.classList.contains('is-estimate'));
+      assert.ok(col.getAttribute('title')!.includes('geschätzt'));
+    }
+    const source = page.query('#bh-panel .bh-source')[0]!.textContent;
+    assert.ok(source.includes('laut SDK') && source.includes('aus Tokens geschätzt'));
+    assert.ok(page.query('#bh-panel .bh-text')[0]!.textContent.startsWith('Höchste Spitze laut SDK: 101 %'));
+    assert.equal(page.query('#bh-chart .bh-limit').length, 1);
+  });
+
+  it('keeps the limit markers and treats 0 percent as an SDK day', async () => {
+    const page = await load({ budget: budget(sdkDays(3, [0, 30, 100], [2])), budget_insights: insights({ peak_source: 'sdk' }) });
+    const cols = page.query('#bh-chart .bh-col');
+    assert.deepEqual(cols.map((c) => c.querySelector('.bh-bar')!.classList.contains('is-hit')), [false, false, true]);
+    assert.equal(height(cols[0]!), '0px');
+    assert.ok(!page.$('bh-chart').parentElement!.textContent.includes('Noch keine Budget-Daten'));
+    const zero = await load({ budget: budget([{ date: '2026-10-30', peak_5h_tokens: 0, limit_hits: 0, peak_5h_percent: 0 }]), budget_insights: insights({ peak_source: 'sdk' }) });
+    assert.equal(zero.query('#bh-chart .bh-col').length, 1);
+  });
+
+  it('drops the word Spitze from the label for 30 days', async () => {
+    const page = await load({ budget: budget(sdkDays(30, [60])), budget_insights: insights({ peak_source: 'sdk' }) });
+    assert.equal(page.query('#bh-chart .bh-pct')[0]!.textContent, '60 %');
+  });
+
+  it('shows the token view as before without peak_source', async () => {
+    const page = await load({ budget: budget(run(3)), budget_insights: insights() });
+    assert.ok(page.query('#bh-panel .bh-source')[0]!.textContent.includes('aus Tokens geschätzt'));
+    assert.equal(page.query('#bh-chart .bh-bar.is-estimate').length, 0);
+    assert.equal(page.query('#bh-panel .bh-text')[0]!.textContent, 'Kein Limit-Treffer in diesem Zeitraum.');
+  });
+});
