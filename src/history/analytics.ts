@@ -8,7 +8,7 @@ import { parseCounts, type HistoryEntry } from './history.ts';
  * Analytics for the statistics page, aggregated on the server for one central filter. Every figure comes from
  * the repository logs: `run_finished` lines (outcome, attempt, timing), their `model_usage` lines (tokens per
  * model, priced with the current model-costs.yml exactly like computeHistoryStats) and `issue_paused` notes. Tool
- * usage comes from `tool_calls`, `skill_calls`, `agent_calls` and the integration fields of `run_finished` (runs logged before these
+ * usage comes from `tool_calls`, `skill_calls`, `agent_calls`, `subagent_tool_calls` (the part of `tool_calls` made inside subagents; main-thread calls are the difference) and the integration fields of `run_finished` (runs logged before these
  * fields existed count as runs without tool calls).
  */
 export interface AnalyticsFilter {
@@ -116,6 +116,8 @@ interface Run {
   parts: UsagePart[];
   /** Tool calls by tool name (built-in and `mcp__<server>__<tool>`). */
   tools: Record<string, number>;
+  /** The part of `tools` called inside subagents (`subagent_tool_calls`); empty for older lines. */
+  subagentTools: Record<string, number>;
   /** Skill tool calls by skill. */
   skills: Record<string, number>;
   /** Agent tool calls by subagent (`subagent_type`). */
@@ -381,6 +383,7 @@ function collectRuns(entries: HistoryEntry[], pricing: PricingTable): Run[] {
       retry: FAILURE.has(lastOutcome.get(issue) ?? ''),
       parts,
       tools: parseCounts(entry.fields.tool_calls),
+      subagentTools: parseCounts(entry.fields.subagent_tool_calls),
       skills: parseCounts(entry.fields.skill_calls),
       agents: parseCounts(entry.fields.agent_calls),
       integrations: runIntegrations(entry.fields),
@@ -465,16 +468,20 @@ const sumCalls = (calls: Record<string, number>): number => Object.values(calls)
  */
 function toolStats(runs: Run[]) {
   const tools = new Map<string, CallRow>();
+  const subagentTools = new Map<string, CallRow>();
   const skills = new Map<string, CallRow>();
   const agents = new Map<string, CallRow>();
   const integrations = new Map<string, { runs: number; by_status: Record<string, number>; ready_runs: number; used_runs: number; calls: number; tools: Map<string, CallRow>; skills: Map<string, CallRow> }>();
   let calls = 0;
+  let subagentCalls = 0;
   let runsWithCalls = 0;
   for (const run of runs) {
     const runCalls = sumCalls(run.tools);
     calls += runCalls;
+    subagentCalls += sumCalls(run.subagentTools);
     if (runCalls > 0) runsWithCalls += 1;
     addCalls(tools, run.tools);
+    addCalls(subagentTools, run.subagentTools);
     addCalls(skills, run.skills);
     addCalls(agents, run.agents);
     for (const [id, entry] of run.integrations) {
@@ -497,11 +504,14 @@ function toolStats(runs: Run[]) {
     runs: runs.length,
     runs_with_calls: runsWithCalls,
     calls,
+    subagent_calls: subagentCalls,
+    main_calls: Math.max(0, calls - subagentCalls),
     avg_calls_per_run: ratio(calls, runsWithCalls, 1),
     distinct_tools: tools.size,
     tools: ranking(tools, 'tool').map((row) => {
       const mcp = /^mcp__(.+?)__(.+)$/.exec(row.tool);
-      return { ...row, server: mcp?.[1] ?? null, name: mcp?.[2] ?? row.tool };
+      const subagentRow = subagentTools.get(row.tool)?.calls ?? 0;
+      return { ...row, subagent_calls: subagentRow, main_calls: Math.max(0, row.calls - subagentRow), server: mcp?.[1] ?? null, name: mcp?.[2] ?? row.tool };
     }),
     skills: ranking(skills, 'skill'),
     agents: ranking(agents, 'agent'),

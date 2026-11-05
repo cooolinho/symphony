@@ -79,6 +79,8 @@ export interface RunFinish {
   mcpToolCalls?: Record<string, number>;
   /** `tool_use` events per tool (built-in and MCP). */
   toolCalls?: Record<string, number>;
+  /** The `toolCalls` made inside subagents (`parent_tool_use_id` set); `toolCalls` stays the total. */
+  subagentToolCalls?: Record<string, number>;
   /** Skill tool calls per skill. */
   skillCalls?: Record<string, number>;
   /** Agent tool calls by subagent (`subagent_type`). */
@@ -297,6 +299,7 @@ export class HistoryLog {
       branch: finish.branch ?? undefined,
       mcp_tool_calls: formatToolCalls(finish.mcpToolCalls),
       tool_calls: formatToolCalls(finish.toolCalls),
+      subagent_tool_calls: formatToolCalls(finish.subagentToolCalls),
       skill_calls: formatToolCalls(finish.skillCalls),
       agent_calls: formatToolCalls(finish.agentCalls),
       subagents: finish.subagents?.length ? finish.subagents.map(compactSubagent) : undefined,
@@ -466,7 +469,7 @@ function formatIntegrationCalls(integrations: RunIntegration[] | undefined, kind
 }
 
 /**
- * Parses a `name:count,…` field (tool_calls, skill_calls, agent_calls, mcp_tool_calls, integration_tools); the count follows the
+ * Parses a `name:count,…` field (tool_calls, subagent_tool_calls, skill_calls, agent_calls, mcp_tool_calls, integration_tools); the count follows the
  * last colon, so names may contain colons (`plugin:skill`). Malformed parts are skipped.
  */
 export function parseCounts(value: string | undefined): Record<string, number> {

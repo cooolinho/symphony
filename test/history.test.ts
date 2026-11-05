@@ -124,20 +124,23 @@ describe('repository history', () => {
     const { log } = history();
     log.runFinished(finish('acme/app#1', 'r1', '2026-10-04T08:01:00Z', {
       toolCalls: { Bash: 3, 'mcp__laravel-boost__search-docs': 2 },
+      subagentToolCalls: { Bash: 11, SubagentHandback: 1 },
       skillCalls: { 'pest-testing': 1, 'symphony:handoff': 1 },
       agentCalls: { 'symphony:laravel-architect': 1 },
       integrations: [{ id: 'laravel-boost', status: 'ready', tools: { 'search-docs': 2 }, skills: { 'pest-testing': 1 } }],
     }));
-    log.runFinished(finish('acme/app#2', 'r2', '2026-10-04T09:01:00Z', { toolCalls: {}, skillCalls: {}, agentCalls: {}, integrations: [] }));
+    log.runFinished(finish('acme/app#2', 'r2', '2026-10-04T09:01:00Z', { toolCalls: {}, subagentToolCalls: {}, skillCalls: {}, agentCalls: {}, integrations: [] }));
     const [first, second] = readHistory(log.dir, 'acme/app').entries.filter((e) => e.event === 'run_finished');
     assert.equal(first?.fields.tool_calls, 'Bash:3,mcp__laravel-boost__search-docs:2');
+    assert.equal(first?.fields.subagent_tool_calls, 'Bash:11,SubagentHandback:1');
+    assert.deepEqual(parseCounts(first?.fields.subagent_tool_calls), { Bash: 11, SubagentHandback: 1 });
     assert.equal(first?.fields.skill_calls, 'pest-testing:1,symphony:handoff:1');
     assert.equal(first?.fields.integrations, 'laravel-boost:ready');
     assert.equal(first?.fields.integration_tools, 'laravel-boost/search-docs:2');
     assert.equal(first?.fields.integration_skills, 'laravel-boost/pest-testing:1');
     assert.deepEqual(parseCounts(first?.fields.skill_calls), { 'pest-testing': 1, 'symphony:handoff': 1 });
     assert.deepEqual(parseCounts(first?.fields.agent_calls), { 'symphony:laravel-architect': 1 });
-    for (const key of ['tool_calls', 'skill_calls', 'agent_calls', 'integrations', 'integration_tools', 'integration_skills']) assert.equal(key in (second?.fields ?? {}), false);
+    for (const key of ['tool_calls', 'subagent_tool_calls', 'skill_calls', 'agent_calls', 'integrations', 'integration_tools', 'integration_skills']) assert.equal(key in (second?.fields ?? {}), false);
     assert.deepEqual(parseCounts(undefined), {});
     assert.deepEqual(parseCounts('broken,:3,x:y,ok:2'), { ok: 2 });
   });

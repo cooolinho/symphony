@@ -1393,7 +1393,7 @@ period. The page shows:
 - **Run times**: average, median (from 3 runs), p90/p95 (from 20 runs), shortest and longest run, distribution; a
   **heatmap** of start times by weekday and hour.
 - **Tools**: tool calls in the period, runs with calls, calls per run, the most used tools (built-in ones like
-  `Bash` or `Edit` and MCP tools as `server · tool`) and the loaded skills.
+  `Bash` or `Edit` and MCP tools as `server · tool`) and the loaded skills. Main-thread calls are shown as the total minus the calls made inside subagents (`subagent_tool_calls`).
 - **Laravel Boost & integrations**: per integration, the runs on projects that use it, how often it was available
   and how often the agent actually used it (share of the runs where it was available), the calls and the most used
   Boost tools and skills. Guidelines belong to every session where Boost is available and do not count as a call.
