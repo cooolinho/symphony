@@ -293,6 +293,7 @@ const AGENT_PAGE_CSS = `
   .sub-model { font-family: var(--mono); font-size: 12px; color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .sub-task { font-size: 12px; color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .sub-right { flex: none; font: 12px var(--mono); color: var(--fg-3); white-space: nowrap; }
+  .stage-subagent.is-error .sub-right { color: #fca5a5; }
   .stage-subagent.is-running .sub-right { color: #6ee7b7; }
   .stage-empty { margin: 0; color: var(--fg-3); font-size: 13px; }
   .score { padding: 20px 22px; min-width: 0; }
@@ -2133,10 +2134,10 @@ ${PIPELINE_JS}
       S.subsSig = '';
       return patchChildren(box, [stageEmpty(active ? 'Keine Subagents in dieser Session' : 'Keine Session aktiv')]);
     }
-    const sig = all.map((x, i) => (x.tool_use_id || i) + ':' + (x.status === 'running' ? 'r' : 'd')).join(',');
+    const sig = all.map((x, i) => (x.tool_use_id || i) + ':' + (x.status === 'running' ? 'r' : x.status === 'error' ? 'e' : 'd')).join(',');
     const right = (x) => {
       const k = 'Kontext ' + fmtK(x.context_tokens) + ' · abgerechnet ' + fmtK(x.tokens && x.tokens.total_tokens);
-      return x.status === 'running' ? fmtDuration((Date.now() - Date.parse(x.started_at)) / 1000) + ' · ' + k : 'fertig · ' + k;
+      return x.status === 'running' ? fmtDuration((Date.now() - Date.parse(x.started_at)) / 1000) + ' · ' + k : (x.status === 'error' ? 'Fehler' + (x.reason ? ': ' + oneLine(x.reason, 80) : '') : 'fertig') + ' · ' + k;
     };
     const model = (x) => (Array.isArray(x.models) ? x.models.join(', ') : '');
     // Rebuild only when the set or a state changes, so the running pulse is not restarted by every poll.
@@ -2144,10 +2145,10 @@ ${PIPELINE_JS}
       S.subsSig = sig;
       box.replaceChildren(...all.map((x) => {
         const isRun = x.status === 'running';
-        const row = el('div', null, 'stage-subagent ' + (isRun ? 'is-running' : 'is-done'));
+        const row = el('div', null, 'stage-subagent ' + (isRun ? 'is-running' : x.status === 'error' ? 'is-done is-error' : 'is-done'));
         const av = el('span', null, 'sub-av');
         av.setAttribute('role', 'img');
-        av.setAttribute('aria-label', String(x.subagent_type || '?') + ' · ' + (isRun ? 'läuft' : 'fertig'));
+        av.setAttribute('aria-label', String(x.subagent_type || '?') + ' · ' + (isRun ? 'läuft' : x.status === 'error' ? 'Fehler' : 'fertig'));
         const face = el('span', subAbbr(x.subagent_type), 'sub-abbr');
         face.setAttribute('aria-hidden', 'true');
         av.append(face);

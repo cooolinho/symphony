@@ -334,7 +334,7 @@ Depends on: none · Size: M · Category: quality
 reason when the `tool_result` text starts with "Agent terminated early due to an API error" or the `task_notification`
 reports `failed` or `stopped`.
 **Why:** the #205 architect subagent killed by the weekly limit on 2026-11-02 counted as `ok`.
-- [ ] A fixture of that case gives `error` with the limit text as reason; a normal review stays `ok`.
+- [x] A fixture of that case gives `error` with the limit text as reason; a normal review stays `ok`.
 
 Depends on: E0-4 (same code) · Size: S · Category: quality
 

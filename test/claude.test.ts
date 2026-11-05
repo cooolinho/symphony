@@ -694,6 +694,51 @@ describe('claude agent runner', () => {
       assert.equal(snap?.contextTokens, 65819);
     });
 
+    describe('status from the result text and the task status (#486)', () => {
+      const LIMIT = 'Agent terminated early due to an API error: You have hit your weekly limit · resets Nov 9';
+      const resultOf = (content: unknown, isError?: boolean) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: ID, content, ...(isError ? { is_error: true } : {}) }] }, parent_tool_use_id: null });
+
+      it('records the #205 architect killed by the weekly limit as error with the limit text', async () => {
+        const events = await run([call, inner('m1', 2, 5, 0, 0), resultOf(LIMIT)]);
+        const snap = last(events);
+        assert.equal(snap?.status, 'error');
+        assert.match(snap?.reason ?? '', /^Agent terminated early due to an API error: You have hit your weekly limit/);
+        assert.match(String(events.filter((e) => e.event === 'subagent' && e.message !== undefined).at(-1)?.message), /error: Agent terminated early/);
+      });
+
+      it('reads the text of a text-block result', async () => {
+        const snap = last(await run([call, resultOf([{ type: 'text', text: LIMIT }])]));
+        assert.equal(snap?.status, 'error');
+        assert.equal(snap?.reason, LIMIT);
+      });
+
+      it('gives an is_error result a reason', async () => {
+        const snap = last(await run([call, resultOf('boom', true)]));
+        assert.deepEqual([snap?.status, snap?.reason], ['error', 'boom']);
+      });
+
+      it('takes the reported reason of a failed or stopped notification', async () => {
+        for (const status of ['failed', 'stopped']) {
+          const snap = last(await run([call, { ...notification, status, summary: `it ${status}` }, toolResult]));
+          assert.deepEqual([snap?.status, snap?.reason], ['error', `it ${status}`]);
+        }
+      });
+
+      it('corrects a run already ended ok when a failed notification arrives later', async () => {
+        const events = await run([call, toolResult, { ...notification, status: 'failed', summary: 'API error' }]);
+        const snap = last(events);
+        assert.deepEqual([snap?.status, snap?.reason], ['error', 'API error']);
+        assert.equal(events.filter((e) => e.event === 'subagent' && e.message !== undefined).length, 3);
+      });
+
+      it('keeps a normal review ok and a completed notification never clears an error', async () => {
+        const ok = last(await run([call, notification, toolResult]));
+        assert.deepEqual([ok?.status, ok?.reason], ['ok', null]);
+        const bad = last(await run([call, resultOf(LIMIT), notification]));
+        assert.equal(bad?.status, 'error');
+      });
+    });
+
     it('keeps notifications of unknown tool calls as notification', async () => {
       const events = await run([call, { ...progress, tool_use_id: 'toolu_other' }]);
       assert.equal(events.filter((e) => e.event === 'notification' && e.message === 'system/task_progress').length, 1);

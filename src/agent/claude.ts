@@ -26,6 +26,16 @@ import type { AgentToolSpec, Issue, ToolResult } from '../tracker/types.ts';
 import { AsyncQueue, settledWithin, sleep, withTimeout } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { oneLine, tail, truncate } from '../util/text.ts';
+
+/** Start of the plain-text `tool_result` of a foreground subagent that an API error or the usage limit killed. */
+const API_ERROR_PREFIX = 'Agent terminated early due to an API error';
+
+/** The text of a `tool_result` content: a string or an array of text blocks. */
+function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.map((part) => (part !== null && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string' ? (part as { text: string }).text : '')).join('\n').trim();
+}
 import { isWholeLimitMessage, limitScopeOf, parseLimitMessage } from './rate-limit.ts';
 import { forgetProcessGroup, killProcessGroup, processGroupSpawner } from './spawn.ts';
 import { contextWindowSuffix } from './model-name.ts';
@@ -773,6 +783,7 @@ class ClaudeSession implements AgentSession {
       toolUses: null,
       durationMs: null,
       models: [],
+      reason: null,
     };
     this.#subagents.set(toolUseId, { run, calls: new Map() });
     this.#emitSubagent(run, `subagent ${subagentType} started${run.description === '' ? '' : `: ${run.description}`}`, {
@@ -817,6 +828,18 @@ class ClaudeSession implements AgentSession {
         if (Number.isFinite(usage.duration_ms)) run.durationMs = usage.duration_ms;
       }
     }
+    if (message.subtype === 'task_notification' && (message.status === 'failed' || message.status === 'stopped')) {
+      const summary = typeof message.summary === 'string' ? truncate(oneLine(message.summary), 200) : '';
+      const reason = summary === '' ? `task ${message.status}` : summary;
+      if (run.status === 'running') {
+        run.reason = reason; // the tool_result that follows ends it as error
+      } else {
+        run.status = 'error';
+        run.reason = reason;
+        this.#emitEnded(run);
+        return true;
+      }
+    }
     this.#emitSubagent(run);
     return true;
   }
@@ -828,25 +851,36 @@ class ClaudeSession implements AgentSession {
     for (const block of content as Array<Record<string, unknown>>) {
       if (block?.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue;
       const entry = this.#subagents.get(block.tool_use_id);
-      if (entry !== undefined) this.#endSubagent(entry.run, block.is_error === true ? 'error' : 'ok');
+      if (entry === undefined) continue;
+      const text = toolResultText(block.content);
+      const reason = block.is_error === true || text.startsWith(API_ERROR_PREFIX) ? truncate(oneLine(text), 200) || 'error' : (entry.run.reason ?? null);
+      this.#endSubagent(entry.run, reason === null ? 'ok' : 'error', reason);
     }
   }
 
   /** A session that ends leaves no subagent running. */
   #closeSubagents(): void {
-    for (const { run } of [...this.#subagents.values()]) this.#endSubagent(run, 'error');
+    for (const { run } of [...this.#subagents.values()]) this.#endSubagent(run, 'error', run.reason ?? 'session ended');
   }
 
-  #endSubagent(run: SubagentRun, status: 'ok' | 'error'): void {
+  #endSubagent(run: SubagentRun, status: 'ok' | 'error', reason: string | null = null): void {
     run.endedAt = new Date();
     run.status = status;
+    run.reason = reason;
     this.#subagents.delete(run.toolUseId);
     this.#endedSubagents.set(run.toolUseId, run);
-    this.#emitSubagent(run, `subagent ${run.subagentType} ${status}`, {
+    this.#emitEnded(run);
+  }
+
+  /** The timeline and trace entry of a finished subagent; the reason of a failed one is part of it. */
+  #emitEnded(run: SubagentRun): void {
+    const suffix = (run.reason ?? null) === null ? '' : `: ${run.reason}`;
+    this.#emitSubagent(run, `subagent ${run.subagentType} ${run.status}${suffix}`, {
       tool_use_id: run.toolUseId,
       subagent_type: run.subagentType,
-      status,
-      duration_ms: run.endedAt.getTime() - run.startedAt.getTime(),
+      status: run.status,
+      ...((run.reason ?? null) === null ? {} : { reason: run.reason }),
+      duration_ms: (run.endedAt ?? new Date()).getTime() - run.startedAt.getTime(),
     });
   }
 
