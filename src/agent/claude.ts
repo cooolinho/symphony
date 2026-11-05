@@ -674,6 +674,7 @@ class ClaudeSession implements AgentSession {
     this.#addSubagentUsage(message);
     // One event per tool call (a message may call several tools in parallel); a text event only without tool calls.
     let calls = 0;
+    const subagent = message.parent_tool_use_id != null;
     for (const block of message.message.content) {
       if (block.type !== 'tool_use') continue;
       calls++;
@@ -681,7 +682,7 @@ class ClaudeSession implements AgentSession {
       const agent = AGENT_TOOLS.includes(block.name) ? subagentOf(block.input) : null;
       this.#emit('tool_use', {
         message: summarizeToolInput(block.name, block.input),
-        detail: { tool: block.name, ...(skill !== null ? { skill } : {}), ...(agent !== null ? { agent } : {}) },
+        detail: { tool: block.name, ...(skill !== null ? { skill } : {}), ...(agent !== null ? { agent } : {}), ...(subagent ? { subagent: true } : {}) },
       });
       if (agent !== null && typeof block.id === 'string') this.#startSubagent(block.id, agent, block.input);
     }

@@ -170,10 +170,10 @@ describe('statistics analytics', () => {
     assert.equal(a.tools.avg_calls_per_run, 3.7);
     assert.equal(a.tools.distinct_tools, 4);
     assert.deepEqual(a.tools.tools, [
-      { tool: 'Bash', calls: 5, runs: 2, server: null, name: 'Bash' },
-      { tool: 'mcp__laravel-boost__search-docs', calls: 3, runs: 2, server: 'laravel-boost', name: 'search-docs' },
-      { tool: 'Edit', calls: 2, runs: 1, server: null, name: 'Edit' },
-      { tool: 'Skill', calls: 1, runs: 1, server: null, name: 'Skill' },
+      { tool: 'Bash', calls: 5, runs: 2, subagent_calls: 0, main_calls: 5, server: null, name: 'Bash' },
+      { tool: 'mcp__laravel-boost__search-docs', calls: 3, runs: 2, subagent_calls: 0, main_calls: 3, server: 'laravel-boost', name: 'search-docs' },
+      { tool: 'Edit', calls: 2, runs: 1, subagent_calls: 0, main_calls: 2, server: null, name: 'Edit' },
+      { tool: 'Skill', calls: 1, runs: 1, subagent_calls: 0, main_calls: 1, server: null, name: 'Skill' },
     ]);
     assert.deepEqual(a.tools.skills, [{ skill: 'pest-testing', calls: 1, runs: 1 }]);
     assert.deepEqual(a.tools.agents, [
@@ -194,7 +194,24 @@ describe('statistics analytics', () => {
     }]);
 
     const none = computeAnalytics([], h.pricing.current(), filter(), NOW);
-    assert.deepEqual(none.tools, { runs: 0, runs_with_calls: 0, calls: 0, avg_calls_per_run: null, distinct_tools: 0, tools: [], skills: [], agents: [], integrations: [] });
+    assert.deepEqual(none.tools, { runs: 0, runs_with_calls: 0, calls: 0, subagent_calls: 0, main_calls: 0, avg_calls_per_run: null, distinct_tools: 0, tools: [], skills: [], agents: [], integrations: [] });
+  });
+
+  it('shows main-thread calls as the total minus the calls made inside subagents', () => {
+    const h = history();
+    h.log.runFinished(finish('acme/app#1', 'r1', '2026-10-04T10:00:00Z', {
+      toolCalls: { Bash: 95, Read: 16, SubagentHandback: 1 },
+      subagentToolCalls: { Bash: 11, SubagentHandback: 1 },
+    }));
+    // Logged before subagent_tool_calls existed.
+    h.log.runFinished(finish('acme/app#2', 'r2', '2026-10-05T10:00:00Z', { toolCalls: { Edit: 2 } }));
+    const a = computeAnalytics(readHistory(h.log.dir, null).entries, h.pricing.current(), filter(), NOW);
+    assert.equal(a.tools.calls, 114);
+    assert.equal(a.tools.subagent_calls, 12);
+    assert.equal(a.tools.main_calls, 102);
+    const row = (tool: string) => a.tools.tools.find((r) => r.tool === tool);
+    assert.deepEqual([row('Bash')?.calls, row('Bash')?.subagent_calls, row('Bash')?.main_calls], [95, 11, 84]);
+    assert.deepEqual([row('Edit')?.subagent_calls, row('Edit')?.main_calls], [0, 2]);
   });
 
   it('breaks runs down by effort, filters by it and lists runs without usage under their requested model', () => {

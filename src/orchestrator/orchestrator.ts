@@ -462,6 +462,7 @@ function traceJson(trace: RunTrace | null) {
     branch: trace.branch,
     mcp_tool_calls: trace.mcpToolCalls,
     tool_calls: trace.toolUsage.tools,
+    subagent_tool_calls: trace.toolUsage.subagentTools,
     skill_calls: trace.toolUsage.skills,
     agent_calls: trace.toolUsage.agents,
     integrations: trace.integrations.map((report) => integrationJson(report, trace.toolUsage, trace.sessionSkills, trace.mcpUnavailable)),
@@ -2684,6 +2685,7 @@ export class Orchestrator {
       branch: entry.branch,
       mcpToolCalls: entry.mcpToolCalls,
       toolCalls: entry.toolUsage.tools,
+      subagentToolCalls: entry.toolUsage.subagentTools,
       skillCalls: entry.toolUsage.skills,
       agentCalls: entry.toolUsage.agents,
       integrations: entry.integrations.map((report) => ({ id: report.id, status: report.status, ...integrationUsage(report, entry.toolUsage) })),
@@ -3316,6 +3318,7 @@ export class Orchestrator {
         event.detail.tool,
         typeof event.detail.skill === 'string' ? event.detail.skill : null,
         typeof event.detail.agent === 'string' ? event.detail.agent : null,
+        event.detail.subagent === true,
       );
     }
     if (event.event === 'subagent' && event.subagent !== undefined) applySubagent(entry.subagents, event.subagent);
@@ -3647,6 +3650,7 @@ export class Orchestrator {
       branch: entry.branch,
       mcp_tool_calls: entry.mcpToolCalls,
       tool_calls: entry.toolUsage.tools,
+      subagent_tool_calls: entry.toolUsage.subagentTools,
       skill_calls: entry.toolUsage.skills,
       agent_calls: entry.toolUsage.agents,
       subagents: subagentsJson(entry.subagents),
