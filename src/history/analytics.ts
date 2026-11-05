@@ -2,7 +2,7 @@ import { bareModelName } from '../agent/model-name.ts';
 import { costOf, priceFor, totalTokens, type ModelTokenUsage, type PricingTable } from '../costs/pricing.ts';
 import { BUDGET_WINDOW_MS, forecastBudget } from '../budget/forecast.ts';
 import { isRejected, windowUtilization, type RateLimitRecord } from '../budget/rate-limit-log.ts';
-import { parseCounts, type HistoryEntry } from './history.ts';
+import { parseCounts, parseSubagents, type HistoryEntry, type LoggedSubagent } from './history.ts';
 
 /**
  * Analytics for the statistics page, aggregated on the server for one central filter. Every figure comes from
@@ -22,6 +22,10 @@ export interface AnalyticsFilter {
   model: string | null;
   /** Effort requested for the run (`low` … `max`, `default`); null = all efforts. */
   effort?: string | null;
+  /** Role that served the run (`unknown` = role not logged); null = all roles. */
+  role?: string | null;
+  /** Complexity of the issue (`S`/`M`/`L`/`XL`/`unknown`), from its newest `stage_result`; null = all. */
+  complexity?: string | null;
   /** IANA time zone for buckets, weekdays and hours (the browser's). */
   timeZone: string;
 }
@@ -44,6 +48,12 @@ const UNKNOWN_ROLE = 'unknown';
 
 /** Profile of a stage result logged without one (the issue ran on the pipeline's default route). */
 const DEFAULT_PROFILE = 'default';
+
+/** Complexity of an issue without a `stage_result` that names one. */
+const UNKNOWN_COMPLEXITY = 'unknown';
+
+/** `target` values of a stage result that end the pipeline at the human: the issue counts as finished. */
+const FINISHED_TARGETS = new Set(['in review', 'done']);
 
 export type Granularity = 'hour' | 'day' | 'week' | 'month';
 
@@ -114,6 +124,10 @@ interface Run {
   /** Dispatched after a failed or stalled run of the same issue. */
   retry: boolean;
   parts: UsagePart[];
+  /** Tokens of all models of the run, before a model filter narrows `parts`. */
+  billedTokens: number;
+  /** Persisted subagent runs (`subagents` of run_finished); empty for older lines. */
+  subagents: LoggedSubagent[];
   /** Tool calls by tool name (built-in and `mcp__<server>__<tool>`). */
   tools: Record<string, number>;
   /** The part of `tools` called inside subagents (`subagent_tool_calls`); empty for older lines. */
@@ -382,6 +396,8 @@ function collectRuns(entries: HistoryEntry[], pricing: PricingTable): Run[] {
       contextCompacts: numberOrNull(entry.fields.context_compacts),
       retry: FAILURE.has(lastOutcome.get(issue) ?? ''),
       parts,
+      billedTokens: parts.reduce((sum, part) => sum + totalTokens(part.usage), 0),
+      subagents: parseSubagents(entry.fields.subagents),
       tools: parseCounts(entry.fields.tool_calls),
       subagentTools: parseCounts(entry.fields.subagent_tool_calls),
       skills: parseCounts(entry.fields.skill_calls),
@@ -533,16 +549,18 @@ function toolStats(runs: Run[]) {
 }
 
 /**
- * Repository, model and effort filter; with a model filter, each run keeps only that model's usage (a run
+ * Repository, complexity, model and effort filter; with a model filter, each run keeps only that model's usage (a run
  * without logged usage matches by its requested model).
  */
-function narrow(runs: Run[], filter: AnalyticsFilter): Run[] {
+function narrow(runs: Run[], filter: AnalyticsFilter, complexityOf: (issue: string) => string): Run[] {
   const repo = filter.repo?.toLowerCase() ?? null;
   const model = filter.model;
   const effort = filter.effort ?? null;
+  const complexity = filter.complexity?.toLowerCase() ?? null;
   const result: Run[] = [];
   for (const run of runs) {
     if (repo !== null && run.repo.toLowerCase() !== repo) continue;
+    if (complexity !== null && complexityOf(run.issue).toLowerCase() !== complexity) continue;
     if (effort !== null && (run.effort ?? UNKNOWN_EFFORT) !== effort) continue;
     if (model === null) {
       result.push(run);
@@ -592,6 +610,11 @@ interface StageResultEntry {
   round: number | null;
   profile: string;
   complexity: string | null;
+  /** Board column the result hands the issue to (`target`); null when not logged. */
+  target: string | null;
+  /** Confirmed/refuted findings (filled from E3-4 on); null when the line does not carry them. */
+  findingsConfirmed: number | null;
+  findingsRefuted: number | null;
   ms: number;
 }
 
@@ -607,7 +630,10 @@ function stageResultOf(entry: HistoryEntry): StageResultEntry {
     verdict: fields.verdict ?? 'unknown',
     round: fields.round !== undefined && Number.isFinite(round) ? round : null,
     profile: fields.profile ?? DEFAULT_PROFILE,
-    complexity: fields.complexity ?? null,
+    complexity: fieldOrNull(fields.complexity),
+    target: fieldOrNull(fields.target),
+    findingsConfirmed: numberOrNull(fields.findings_confirmed),
+    findingsRefuted: numberOrNull(fields.findings_refuted),
     ms: Date.parse(entry.ts),
   };
 }
@@ -677,6 +703,155 @@ function stageResultStats(entries: HistoryEntry[], inScope: (entry: HistoryEntry
     .map(({ issues, ...rest }) => ({ ...rest, issues: issues.size }))
     .sort((a, b) => b.results - a.results || a.role.localeCompare(b.role));
   return { by_profile, verdicts_by_role, total: inWindow.length };
+}
+
+
+/** Order of the complexity values: S, M, L, XL, anything else, `unknown` last. */
+const COMPLEXITY_ORDER = ['S', 'M', 'L', 'XL'];
+
+function complexityRank(complexity: string): number {
+  if (complexity === UNKNOWN_COMPLEXITY) return COMPLEXITY_ORDER.length + 1;
+  const index = COMPLEXITY_ORDER.indexOf(complexity);
+  return index === -1 ? COMPLEXITY_ORDER.length : index;
+}
+
+const byComplexity = (a: string, b: string): number => complexityRank(a) - complexityRank(b) || a.localeCompare(b);
+
+/** Issue → complexity of its newest non-null `stage_result` (upper-cased); `run_finished` carries no complexity. */
+function issueComplexities(entries: HistoryEntry[]): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const entry of entries) {
+    if (entry.event !== 'stage_result') continue;
+    const complexity = fieldOrNull(entry.fields.complexity);
+    if (complexity !== null) result.set(entry.fields.issue ?? 'unknown', complexity.toUpperCase());
+  }
+  return result;
+}
+
+/**
+ * Subagent evaluation (E0-9): one row per role × primary model of the runs in scope.
+ *
+ * - Delegating run: the sum of its `agent_calls` is above 0. `delegation_rate` = delegating runs / runs.
+ * - Main-thread Bash: max(0, `tool_calls`.Bash − `subagent_tool_calls`.Bash) per run; median needs ${MEDIAN_MIN_RUNS} runs, p90 ${PERCENTILE_MIN_RUNS}.
+ * - Token share: Σ persisted subagent tokens / Σ billed tokens of the runs (all models of the run, even with a model
+ *   filter), capped at 1, null without billed tokens. The session's `model_usage` already contains the subagents' calls.
+ * - Finished issue: an issue with a `stage_result` in the period whose `target` is In review or Done (the hand-over to
+ *   the human). Cost per finished issue = all roles' runs on those issues in the period / finished issues; the
+ *   `own_` variant counts only the row's runs.
+ * - Returns: `review:changes_needed` and `test:failed` results on the issues the row's runs worked on (they come from
+ *   reviewer and tester runs, so they are attributed by issue, not by the run named in the result), per issue.
+ * - Findings (E3-4): sums of the optional `findings_confirmed`/`findings_refuted` of the row's issues; null when absent.
+ */
+function subagentEvaluation(runs: Run[], pipelineRuns: Run[], results: StageResultEntry[]) {
+  const finished = new Set<string>();
+  const returns = new Map<string, { review: number; test: number }>();
+  const findings = new Map<string, { confirmed: number | null; refuted: number | null }>();
+  for (const result of results) {
+    if (result.target !== null && FINISHED_TARGETS.has(result.target.toLowerCase())) finished.add(result.issue);
+    if (result.kind === 'review' && result.verdict === 'changes_needed') {
+      const slot = returns.get(result.issue) ?? { review: 0, test: 0 };
+      slot.review += 1;
+      returns.set(result.issue, slot);
+    } else if (result.kind === 'test' && result.verdict === 'failed') {
+      const slot = returns.get(result.issue) ?? { review: 0, test: 0 };
+      slot.test += 1;
+      returns.set(result.issue, slot);
+    }
+    if (result.findingsConfirmed !== null || result.findingsRefuted !== null) {
+      const slot = findings.get(result.issue) ?? { confirmed: null, refuted: null };
+      if (result.findingsConfirmed !== null) slot.confirmed = (slot.confirmed ?? 0) + result.findingsConfirmed;
+      if (result.findingsRefuted !== null) slot.refuted = (slot.refuted ?? 0) + result.findingsRefuted;
+      findings.set(result.issue, slot);
+    }
+  }
+  const pipelineCost = new Map<string, number>();
+  for (const run of pipelineRuns) pipelineCost.set(run.issue, (pipelineCost.get(run.issue) ?? 0) + costOfRun(run));
+
+  interface Group {
+    role: string;
+    model: string;
+    runs: Run[];
+    delegating: number;
+    agents: Map<string, CallRow>;
+    bash: number[];
+  }
+  const groups = new Map<string, Group>();
+  for (const run of runs) {
+    const role = run.role ?? UNKNOWN_ROLE;
+    const model = run.primaryModel ?? 'unknown';
+    const key = `${role}\u0000${model}`;
+    const group: Group = groups.get(key) ?? { role, model, runs: [], delegating: 0, agents: new Map<string, CallRow>(), bash: [] as number[] };
+    groups.set(key, group);
+    group.runs.push(run);
+    if (sumCalls(run.agents) > 0) group.delegating += 1;
+    addCalls(group.agents, run.agents);
+    group.bash.push(Math.max(0, (run.tools.Bash ?? 0) - (run.subagentTools.Bash ?? 0)));
+  }
+
+  const rows = [...groups.values()].map((group) => {
+    const issues = new Set(group.runs.map((run) => run.issue));
+    const finishedIssues = [...issues].filter((issue) => finished.has(issue));
+    let billed = 0;
+    let subagentTokens = 0;
+    let cost = 0;
+    let ownFinishedCost = 0;
+    let reviewReturns = 0;
+    let testReturns = 0;
+    for (const run of group.runs) {
+      billed += run.billedTokens;
+      for (const sub of run.subagents) subagentTokens += sub.tokens;
+      cost += costOfRun(run);
+      if (finished.has(run.issue)) ownFinishedCost += costOfRun(run);
+    }
+    let confirmed: number | null = null;
+    let refuted: number | null = null;
+    for (const issue of issues) {
+      reviewReturns += returns.get(issue)?.review ?? 0;
+      testReturns += returns.get(issue)?.test ?? 0;
+      const found = findings.get(issue);
+      if (found?.confirmed != null) confirmed = (confirmed ?? 0) + found.confirmed;
+      if (found?.refuted != null) refuted = (refuted ?? 0) + found.refuted;
+    }
+    const allStagesCost = finishedIssues.reduce((sum, issue) => sum + (pipelineCost.get(issue) ?? 0), 0);
+    const sorted = [...group.bash].sort((a, b) => a - b);
+    const bashTotal = sorted.reduce((sum, n) => sum + n, 0);
+    return {
+      role: group.role,
+      model: group.model,
+      runs: group.runs.length,
+      runs_with_subagent: group.delegating,
+      delegation_rate: ratio(group.delegating, group.runs.length) ?? 0,
+      subagent_calls: [...group.agents.values()].reduce((sum, row) => sum + row.calls, 0),
+      agents: ranking(group.agents, 'agent'),
+      main_bash: {
+        total: bashTotal,
+        avg: ratio(bashTotal, sorted.length, 2),
+        p50: sorted.length >= MEDIAN_MIN_RUNS ? percentile(sorted, 50) : null,
+        p90: sorted.length >= PERCENTILE_MIN_RUNS ? percentile(sorted, 90) : null,
+      },
+      billed_tokens: billed,
+      subagent_tokens: subagentTokens,
+      subagent_token_share: billed > 0 ? round(Math.min(1, subagentTokens / billed), 4) : null,
+      issues: issues.size,
+      finished_issues: finishedIssues.length,
+      cost_usd: round(cost, 4),
+      own_cost_per_finished_issue: ratio(ownFinishedCost, finishedIssues.length),
+      cost_per_finished_issue: ratio(allStagesCost, finishedIssues.length),
+      returns: {
+        review_changes_needed: reviewReturns,
+        test_failed: testReturns,
+        total: reviewReturns + testReturns,
+        per_issue: ratio(reviewReturns + testReturns, issues.size) ?? 0,
+      },
+      findings: { confirmed, refuted },
+    };
+  });
+  rows.sort((a, b) => a.role.localeCompare(b.role) || b.runs - a.runs || a.model.localeCompare(b.model));
+  return {
+    note: 'Delegierender Run: mindestens ein Agent-Aufruf. Bash im Hauptthread = Bash-Aufrufe minus die der Subagents. Token-Anteil = Tokens der Subagents / abgerechnete Tokens der Runs (die Subagents sind darin enthalten, der Anteil ist höchstens 100 %). Fertiges Issue = ein Stage-Ergebnis mit Ziel In review oder Done im Zeitraum; Kosten je fertigem Issue summieren alle Rollen (alle Stages), „eigene“ nur die Runs der Zeile. Rückläufer = Agent-review-Ergebnisse changes_needed und Testing-Ergebnisse failed auf den Issues der Zeile, je Issue. Findings (bestätigt/widerlegt) sind leer, bis die Stage-Ergebnisse sie liefern.',
+    rules: { median_min_runs: MEDIAN_MIN_RUNS, percentile_min_runs: PERCENTILE_MIN_RUNS },
+    rows,
+  };
 }
 
 /**
@@ -775,14 +950,22 @@ function budgetInsights(allRuns: Run[], runs: Run[], entries: HistoryEntry[], ra
 
 export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable, filter: AnalyticsFilter, now = new Date(), rateLimits: RateLimitRecord[] = []) {
   const allRuns = collectRuns(entries, pricing);
-  const scoped = narrow(allRuns, filter);
+  const issueComplexity = issueComplexities(entries);
+  const complexityOf = (issue: string) => issueComplexity.get(issue) ?? UNKNOWN_COMPLEXITY;
+  const scopedAllRoles = narrow(allRuns, filter, complexityOf);
+  const roleFilter = filter.role ?? null;
+  const scoped = roleFilter === null ? scopedAllRoles : scopedAllRoles.filter((run) => (run.role ?? UNKNOWN_ROLE) === roleFilter);
   const toMs = filter.to?.getTime() ?? now.getTime();
   const fromMs = filter.from?.getTime() ?? null;
   const inPeriod = (ms: number) => (fromMs === null || ms >= fromMs) && ms < toMs;
   const runs = scoped.filter((run) => inPeriod(run.finishedMs));
+  const pipelineRuns = scopedAllRoles.filter((run) => inPeriod(run.finishedMs));
 
   const repoFilter = filter.repo?.toLowerCase() ?? null;
-  const inScope = (entry: HistoryEntry) => repoFilter === null || (entry.fields.repo ?? '').toLowerCase() === repoFilter;
+  const complexityFilter = filter.complexity?.toLowerCase() ?? null;
+  const inScope = (entry: HistoryEntry) =>
+    (repoFilter === null || (entry.fields.repo ?? '').toLowerCase() === repoFilter) &&
+    (complexityFilter === null || complexityOf(entry.fields.issue ?? 'unknown').toLowerCase() === complexityFilter);
   const firstEntryMs = (() => {
     for (const entry of entries) if (inScope(entry)) return Date.parse(entry.ts);
     return null;
@@ -1044,15 +1227,23 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
   }
   attention.sort((a, b) => (b.factor ?? b.value) - (a.factor ?? a.value));
 
-  const stageStats = stageResultStats(entries, inScope, inPeriod, scoped, runs, filter.model !== null || (filter.effort ?? null) !== null);
+  const stageStats = stageResultStats(entries, inScope, inPeriod, scoped, runs, filter.model !== null || (filter.effort ?? null) !== null || roleFilter !== null);
 
+  const rolesAvailable = new Set<string>();
+  const complexitiesAvailable = new Set<string>();
   const modelsAvailable = new Set<string>();
   const effortsAvailable = new Set<string>();
   for (const run of allRuns) {
     for (const part of run.parts) modelsAvailable.add(part.model);
     if (run.parts.length === 0 && run.primaryModel !== null) modelsAvailable.add(run.primaryModel);
     effortsAvailable.add(run.effort ?? UNKNOWN_EFFORT);
+    rolesAvailable.add(run.role ?? UNKNOWN_ROLE);
+    complexitiesAvailable.add(complexityOf(run.issue));
   }
+  const stageResultsInScope = entries
+    .filter((entry) => entry.event === 'stage_result' && inScope(entry))
+    .map(stageResultOf)
+    .filter((result) => inPeriod(result.ms));
 
   const budget = budgetHistory(scoped, runs, rateLimits, inPeriod, startMs, toMs, filter.timeZone);
   return {
@@ -1063,9 +1254,11 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
       time_zone: filter.timeZone,
       granularity,
     },
-    filter: { repo: filter.repo, model: filter.model, effort: filter.effort ?? null },
+    filter: { repo: filter.repo, model: filter.model, effort: filter.effort ?? null, role: roleFilter, complexity: filter.complexity ?? null },
     models_available: [...modelsAvailable].sort(),
     efforts_available: [...effortsAvailable].sort(byEffort),
+    roles_available: [...rolesAvailable].sort(),
+    complexities_available: [...complexitiesAvailable].sort(byComplexity),
     history: {
       first_at: firstEntryMs === null ? null : new Date(firstEntryMs).toISOString(),
       runs_logged: scoped.length,
@@ -1093,6 +1286,7 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
     },
     durations,
     tools: toolStats(runs),
+    subagent_evaluation: subagentEvaluation(runs, pipelineRuns, stageResultsInScope),
     heatmap: { start_times: heatmap, max: Math.max(0, ...heatmap.flat()) },
     top,
     attention: { rules: ATTENTION_RULES, items: attention.slice(0, ATTENTION_LIMIT), total: attention.length },

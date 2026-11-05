@@ -323,6 +323,25 @@ describe('http extension', () => {
     assert.ok(logHrefs.every((href) => !/^\/(logs|agent)\b/.test(href)));
   });
 
+  it('shows the subagent evaluation on the statistics page with a JSON export', () => {
+    const page = renderPage(LOGS_HTML, analyticsFixture());
+    assert.ok(page.query('#role').length === 1 && page.query('#complexity').length === 1);
+    const rows = page.query('#subagent-eval-table tr');
+    assert.equal(rows.length, 2, 'header and one row');
+    assert.match(rows[1]!.textContent ?? '', /developer.*claude-opus-5-5/);
+    assert.match(rows[1]!.textContent ?? '', /75/);
+    const link = page.query('#subagent-eval-export')[0] as unknown as { hidden: boolean; href: string; hasAttribute(n: string): boolean };
+    assert.equal(link.hidden, false);
+    assert.ok(link.hasAttribute('download'));
+    assert.ok(link.href.startsWith('data:application/json'));
+    assert.match(decodeURIComponent(link.href), /"subagent_evaluation"/);
+    const old = analyticsFixture();
+    delete old.subagent_evaluation;
+    const bare = renderPage(LOGS_HTML, old);
+    assert.equal(bare.query('#subagent-eval-table').length, 0);
+    assert.equal((bare.query("#subagent-eval-export")[0] as { hidden: boolean }).hidden, true);
+  });
+
   it('serves history statistics for all repositories or one, and the raw log', async () => {
     const all = JSON.parse((await request(server.port, 'GET', '/api/v1/history')).body);
     assert.deepEqual(all.repositories_available.map((r: { repo: string }) => r.repo), ['acme/app', 'other/repo']);
@@ -371,6 +390,15 @@ describe('http extension', () => {
       ['reviewer', { 'review:approved': 1 }],
     ]);
     assert.equal(a.filter.effort, null);
+    assert.equal(a.filter.role, null);
+    assert.deepEqual(a.subagent_evaluation.rows.map((r: { role: string; runs: number }) => [r.role, r.runs]), [['default', 1]]);
+    const roleParams = JSON.parse((await request(server.port, 'GET', `${week}&role=default&complexity=S`)).body);
+    assert.equal(roleParams.filter.role, 'default');
+    assert.equal(roleParams.filter.complexity, 'S');
+    assert.ok(Array.isArray(roleParams.subagent_evaluation.rows));
+    const noRole = await request(server.port, 'GET', `${week}&role=nobody`);
+    assert.equal(noRole.status, 200);
+    assert.deepEqual(JSON.parse(noRole.body).subagent_evaluation.rows, []);
     assert.ok(Array.isArray(a.budget.days) && a.budget.days.length > 0);
     assert.equal(typeof a.budget.days[0].peak_5h_tokens, 'number');
     assert.equal(typeof a.budget.compacts_by_role, 'object');
@@ -735,7 +763,7 @@ describe('subagent measures: team API and tile (#485)', () => {
     const page = tile({ subagents: { running: [old, { ...entry('running', {}, 7000), context_tokens: null, models: [] }], finished: [] } });
     const rows = page.query('#stage-subs-body .stage-subagent');
     assert.equal(rows.length, 2);
-    assert.match(rows[0]!.textContent ?? '', /Kontext —/);
+    assert.match(rows[1]!.textContent ?? '', /Kontext —/);
     assert.match(rows[1]!.textContent ?? '', /Kontext — · abgerechnet 7\.0k|Kontext — · abgerechnet 7k/);
   });
 
