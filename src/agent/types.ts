@@ -41,8 +41,16 @@ export interface SubagentRun {
   startedAt: Date;
   endedAt: Date | null;
   status: SubagentStatus;
-  /** Tokens of the subagent's own model calls so far. */
+  /** Billed tokens of the subagent's own model calls so far: input + output + cache read + cache write. */
   tokens: ModelTokenUsage;
+  /** Claude Code's `usage.total_tokens`: the context of the subagent's latest request; null until a `task_*` message reports it. */
+  contextTokens: number | null;
+  /** Tool calls of the subagent as Claude Code counts them; null until reported. */
+  toolUses: number | null;
+  /** Duration as Claude Code measures it, in milliseconds; null until reported. */
+  durationMs: number | null;
+  /** Models of the subagent's own calls, in first-seen order, without duplicates. */
+  models: string[];
 }
 
 /** Structured update sent from a live agent session to the orchestrator (spec 10.4). */

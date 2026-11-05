@@ -19,7 +19,7 @@ import { AURORA, LAYOUT_CSS, LAYOUT_JS, NAV_ITEMS, page as shellPage } from '../
 import { TOKENS_CSS } from '../src/http/ui/tokens.ts';
 import { BASE_JS } from '../src/http/styles.ts';
 import { SYMPHONY_VERSION } from '../src/version.ts';
-import { analyticsFixture, dashboardState, issueDetail, issueRow } from './helpers/page-fixtures.ts';
+import { analyticsFixture, dashboardState, issueDetail, issueRow, teamView } from './helpers/page-fixtures.ts';
 import { FakeElement } from './helpers/fake-dom.ts';
 import { startHttpServer, type HttpServerHandle } from '../src/http/server.ts';
 import { ensureVault } from '../src/brain/vault.ts';
@@ -652,6 +652,101 @@ describe('team API', () => {
       await orchestrator.shutdown(1_000);
       await server.close();
     }
+  });
+});
+
+describe('subagent measures: team API and tile (#485)', () => {
+  type Obj = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const snapshot = (over: Obj = {}) => ({
+    toolUseId: 'toolu_01F26xAyjMN8Q1WtbZpUMo8j',
+    subagentType: 'symphony:laravel-code-reviewer',
+    description: 'Review issue 205 diff',
+    startedAt: new Date('2026-10-30T11:58:00.000Z'),
+    endedAt: null,
+    status: 'running',
+    tokens: { inputTokens: 4, outputTokens: 2578, cacheReadTokens: 515041, cacheWriteTokens: 11065 },
+    contextTokens: 65819,
+    toolUses: 12,
+    durationMs: 110436,
+    models: ['claude-opus-5-5'],
+    ...over,
+  });
+  const entry = (status: string, extra: Obj = {}, total = 12000) => ({
+    tool_use_id: `${status}-${total}`, subagent_type: 'Reviewer', description: 'd', status, started_at: '2026-10-30T11:58:00.000Z',
+    ended_at: status === 'done' ? '2026-10-30T11:59:50.000Z' : null,
+    tokens: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: total },
+    ...extra,
+  });
+  const tile = (team: Obj) => renderPage(AGENT_HTML, { detail: issueDetail(), team: teamView(team) }, { url: AGENT_URL });
+
+  it('serves context, tool uses, duration, models and the billed sum of a running subagent', async () => {
+    const runner = new FakeRunner((turn, params) => {
+      params.onEvent({ event: 'subagent', timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: turn, subagent: snapshot() } as never);
+      return new Promise(() => undefined);
+    });
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir()))),
+      runner,
+      logger: Logger.silent(),
+      env: {},
+      logDir: tempDir(),
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker([makeIssue({ id: 't' })]),
+    });
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    try {
+      await orchestrator.tickNow();
+      const url = `/api/v1/${encodeURIComponent('acme/app#t')}/team`;
+      let team: Obj = {};
+      for (let i = 0; i < 400 && !(team.subagents?.running?.length === 1); i++) {
+        const res = await request(server.port, 'GET', url);
+        team = res.status === 200 ? JSON.parse(res.body) : {};
+        if (!team.subagents?.running?.length) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(team.subagents?.running?.length, 1, 'subagent on the board');
+      const sub = team.subagents.running[0];
+      assert.equal(sub.context_tokens, 65819);
+      assert.equal(sub.tool_uses, 12);
+      assert.equal(sub.duration_ms, 110436);
+      assert.deepEqual(sub.models, ['claude-opus-5-5']);
+      assert.equal(sub.tokens.total_tokens, 528688);
+    } finally {
+      await orchestrator.shutdown(1_000);
+      await server.close();
+    }
+  });
+
+  it('shows "Kontext 66k · abgerechnet 529k" and the model of a finished subagent', () => {
+    const page = tile({ subagents: { running: [], finished: [entry('done', { context_tokens: 65819, tool_uses: 12, duration_ms: 110436, models: ['claude-opus-5-5'] }, 528688)] } });
+    const row = page.query('#stage-subs-body .stage-subagent')[0]!;
+    assert.match(row.textContent ?? '', /Kontext 66k · abgerechnet 529k/);
+    assert.match(row.textContent ?? '', /claude-opus-5-5/);
+  });
+
+  it('shows "Kontext —" with the billed figure for a run without task_* data and no model', () => {
+    const page = tile({ subagents: { running: [entry('running')], finished: [] } });
+    const row = page.query('#stage-subs-body .stage-subagent')[0]!;
+    assert.match(row.textContent ?? '', /Kontext — · abgerechnet 12k/);
+    assert.equal(row.querySelector('.sub-model')!.textContent, '');
+  });
+
+  it('tolerates a null context and JSON from an older server without the new keys', () => {
+    const old = entry('running');
+    const page = tile({ subagents: { running: [old, { ...entry('running', {}, 7000), context_tokens: null, models: [] }], finished: [] } });
+    const rows = page.query('#stage-subs-body .stage-subagent');
+    assert.equal(rows.length, 2);
+    assert.match(rows[0]!.textContent ?? '', /Kontext —/);
+    assert.match(rows[1]!.textContent ?? '', /Kontext — · abgerechnet 7\.0k|Kontext — · abgerechnet 7k/);
+  });
+
+  it('joins several models and refreshes the figures and the model on the next poll', () => {
+    const page = tile({ subagents: { running: [entry('running')], finished: [] } });
+    const next = teamView({ subagents: { running: [entry('running', { context_tokens: 30000, models: ['claude-opus-5-5', 'claude-sonnet-5-5'] }, 20000)], finished: [] } });
+    next.subagents.running[0].tool_use_id = 'running-12000';
+    page.render({ detail: issueDetail(), team: next });
+    const row = page.query('#stage-subs-body .stage-subagent')[0]!;
+    assert.match(row.querySelector('.sub-right')!.textContent ?? '', /Kontext 30k · abgerechnet 20k/);
+    assert.equal(row.querySelector('.sub-model')!.textContent, 'claude-opus-5-5, claude-sonnet-5-5');
   });
 });
 
