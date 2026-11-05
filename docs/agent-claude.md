@@ -148,6 +148,11 @@ addition says the same: use the results in the same turn and never end a turn to
 variable to `0`; if a session then ends without a result while tasks still run, the "Stage ended without a result"
 comment names them, and `turn_completed` carries them in `detail.background_tasks`.
 
+Subagent nesting is capped at one level: every session starts with `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`, so a
+subagent has no Agent tool of its own. Claude Code allows three levels by default, which would let a lens fan-out
+multiply, and no planned pattern nests; the SDK docs advise limits over instructions. `claude.env` can set another
+value (e.g. `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "2"`). `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` keeps its default.
+
 ### Brain tools
 
 With `brain.enabled: true` and a role with `brain: read` or `brain: write` ([`roles.*.brain`](configuration.md#roles)) a second in-process MCP server `brain` offers access to the knowledge vault (the name `brain` is reserved for extensions, like `tracker`): `mcp__brain__brain_search`, `mcp__brain__brain_read`, `mcp__brain__brain_list`, `mcp__brain__brain_vitals`, `mcp__brain__brain_write` and `mcp__brain__brain_append`. `read` registers only `brain_search`, `brain_read`, `brain_list` and `brain_vitals`, `write` all six. Without `brain.enabled` or with `brain: off` (the default) the server is absent. The vault is never in `additionalDirectories` or the workspace. Each call reports a `brain_tool` event.

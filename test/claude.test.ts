@@ -235,6 +235,13 @@ describe('claude agent runner', () => {
     assert.equal(allowed.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '0');
   });
 
+  it('caps subagent nesting at one level unless claude.env raises it', async () => {
+    const options = await sessionOptions({});
+    assert.equal(options.env?.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, '1');
+    const raised = await sessionOptions({ claude: { env: { CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '2' } } });
+    assert.equal(raised.env?.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, '2');
+  });
+
   it('reports the background tasks still running when a turn ends', async () => {
     let turn = 0;
     const fake = fakeQuery((_prompt, _options, emit) => {
