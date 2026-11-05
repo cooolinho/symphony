@@ -14,7 +14,7 @@ import { loadWorkflowFile } from '../src/workflow/loader.ts';
 import { profileFor } from '../src/workflow/profile.ts';
 import { roleFor, roleName, sessionAgents } from '../src/workflow/roles.ts';
 import { unknownBoardColumns } from '../src/workflow/validate.ts';
-import { compilePrompt, issueTemplateValue, renderPrompt } from '../src/workflow/template.ts';
+import { compilePrompt, EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../src/workflow/template.ts';
 import { RESULT_FIELD_BUDGET, SUMMARY_MAX } from '../src/workflow/results.ts';
 import { makeIssue } from './helpers.ts';
 
@@ -1003,6 +1003,66 @@ describe('shipped WORKFLOW.md issue commands', () => {
     for (const role of ['issue-analyst', 'test-engineer', 'reviewer', 'security-auditor']) {
       assert.doesNotMatch(await render(role), /Subagents you may start/, role);
     }
+  });
+
+  it('resolves no subagent for the four roles that only repeated their persona, so a Laravel workspace renders no intro', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const config = resolveConfig(definition.config, {
+      workflowPath: shipped,
+      env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' },
+      trackerDefaults,
+    });
+    const all = pluginAgents([toolbox]);
+    assert.equal(all.filter((agent) => agent.name.startsWith('laravel-')).length, 5);
+    for (const name of ['issue-analyst', 'test-engineer', 'reviewer', 'security-auditor']) {
+      const role = (config.roles ?? []).find((entry) => entry.name === name) ?? null;
+      assert.deepEqual(role?.agents, [], name);
+      const { allowed, denied } = sessionAgents(all, role, ['laravel-'], ['laravel-']);
+      const listed = allowed.map((agent) => ({ name: agent.qualified, description: agent.description }));
+      assert.equal(allowed.length, 0, name);
+      assert.ok(denied.some((agent) => agent.name === 'laravel-code-reviewer'), name);
+      const prompt = await render(name, null, undefined, null, listed);
+      assert.doesNotMatch(prompt, /Subagents you may start/, name);
+    }
+    // The roles that keep their subagents are untouched.
+    for (const name of ['architect', 'developer', 'auditor']) {
+      assert.ok((config.roles ?? []).find((entry) => entry.name === name)?.agents?.length, name);
+    }
+  });
+
+  it('keeps the agent intro scaffold in the four role files but drops the lines that named a persona', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const agents = [{ name: 'symphony:laravel-code-reviewer', description: 'Reviews a diff.' }];
+    const expectedBlocks: Record<string, number> = { 'issue-analyst': 1, 'test-engineer': 1, reviewer: 2, 'security-auditor': 1 };
+    for (const [role, blocks] of Object.entries(expectedBlocks)) {
+      const source = definition.partials[`roles/${role}.md`] ?? '';
+      assert.equal(source.match(/\{% if agents\.size > 0 %\}/g)?.length, blocks, role);
+      assert.equal(source.match(/\{\{ agent_intro \}\}/g)?.length, blocks, role);
+      assert.doesNotMatch(source, /Use the architect to check the feasibility/, role);
+      assert.doesNotMatch(source, /Good use: the test engineer subagent/, role);
+      assert.doesNotMatch(source, /Use a reviewer subagent only for a second pass/, role);
+      assert.doesNotMatch(source, /laravel-(architect|test-engineer|code-reviewer)/, role);
+      // A role that is given subagents anyway still gets the intro, without any persona guidance after it.
+      const prompt = await render(role, null, undefined, null, agents);
+      assert.match(prompt, /Subagents you may start with the Agent tool/, role);
+      assert.match(prompt, /- `symphony:laravel-code-reviewer`: Reviews a diff\./, role);
+      assert.doesNotMatch(prompt, /second pass over a large diff|Use the architect|Good use: the test engineer/, role);
+    }
+    // The integration variant of the reviewer prompt has no guidance line either.
+    const template = compilePrompt(definition.promptTemplate, definition.partials);
+    const split = { ...issue, native_ref: { ...issue.native_ref, sub_issues: [{ identifier: 'acme/app#43', title: 'CSV writer', state: 'CLOSED', state_reason: 'COMPLETED' }] } };
+    const integration = await renderPrompt(template, {
+      issue: issueTemplateValue(split, new Map()),
+      attempt: null,
+      role: 'reviewer',
+      agents,
+      result_required: true,
+      round: 1,
+      results: { ...EMPTY_RESULTS },
+    });
+    assert.match(integration, /integration review/);
+    assert.match(integration, /Subagents you may start with the Agent tool/);
+    assert.doesNotMatch(integration, /second pass over a large diff/);
   });
 
   it('gives the shipped roles only subagents the toolbox ships, read-only ones to read-only roles', async () => {
