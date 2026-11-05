@@ -363,7 +363,7 @@ Depends on: E0-4, E0-5 · Size: M · Category: feature
 
 #### E0-8 Issue page: subagents per stage, also after the run
 
-**Change:** `renderStageSubs` ([issue-page.ts:2125-2134](../../src/http/issue-page.ts#L2125-L2134)) shows each finished
+**Change:** `renderStageSubs` ([issue-page.ts:2132](../../src/http/issue-page.ts#L2132)) shows each finished
 stage run with its persisted subagents (E0-7: type, description, status with reason, duration, both token figures,
 model) and the running run's live board as today. Empty texts: "Diese Session hat (noch) keinen Subagent gestartet"
 while running, "Keine Subagents in diesem Lauf" for a finished run.
