@@ -650,6 +650,66 @@ describe('claude agent runner', () => {
     assert.equal(events.filter((event) => event.event === 'tool_use').length, 2);
   });
 
+  describe('subagent measures from task_* messages (#485)', () => {
+    const ID = 'toolu_01F26xAyjMN8Q1WtbZpUMo8j';
+    const call = { type: 'assistant', message: { content: [{ type: 'tool_use', id: ID, name: 'Agent', input: { subagent_type: 'symphony:laravel-code-reviewer', description: 'Review issue 205 diff' } }] }, parent_tool_use_id: null };
+    const inner = (id: string, input: number, output: number, read: number, write: number) => ({
+      type: 'assistant',
+      message: { id, model: 'claude-opus-5-5', content: [{ type: 'text', text: 'x' }], usage: { input_tokens: input, output_tokens: output, cache_read_input_tokens: read, cache_creation_input_tokens: write } },
+      parent_tool_use_id: ID,
+    });
+    const toolResult = { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: ID, content: 'done' }] }, parent_tool_use_id: null };
+    const notification = { type: 'system', subtype: 'task_notification', task_id: 't1', tool_use_id: ID, status: 'completed', output_file: '', summary: '', usage: { total_tokens: 65819, tool_uses: 12, duration_ms: 110436 } };
+    async function run(messages: Array<Record<string, unknown>>): Promise<AgentEvent[]> {
+      const fake = fakeQuery((_prompt, _options, emit) => {
+        for (const message of messages) emit(message);
+        emit(result(0.1, 10, 1));
+      });
+      const events: AgentEvent[] = [];
+      const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ events }));
+      await session.runTurn('go');
+      return events;
+    }
+    const last = (events: AgentEvent[]) => events.flatMap((event) => (event.subagent?.toolUseId === ID ? [event.subagent] : [])).at(-1);
+    const started = { type: 'system', subtype: 'task_started', task_id: 't1', tool_use_id: ID, description: 'd', task_type: 'local_agent' };
+    const progress = { type: 'system', subtype: 'task_progress', task_id: 't1', tool_use_id: ID, description: 'd', usage: { total_tokens: 30000, tool_uses: 6, duration_ms: 50000 } };
+
+    it('reports context, billed tokens, tool uses, duration and model of the marktausschuss#205 reviewer', async () => {
+      const events = await run([call, started, inner('m1', 2, 990, 451649, 10228), progress, inner('m2', 2, 1588, 63392, 837), notification, toolResult]);
+      const snap = last(events);
+      assert.equal(snap?.status, 'ok');
+      assert.equal(snap?.contextTokens, 65819);
+      assert.equal(snap?.toolUses, 12);
+      assert.equal(snap?.durationMs, 110436);
+      assert.deepEqual(snap?.models, ['claude-opus-5-5']);
+      const t = snap!.tokens;
+      assert.equal(t.inputTokens + t.outputTokens + t.cacheReadTokens + t.cacheWriteTokens, 528688);
+      assert.equal(events.filter((e) => e.event === 'notification' && String(e.message).startsWith('system/task_')).length, 0);
+      assert.equal(events.filter((e) => e.event === 'subagent' && e.message !== undefined).length, 2);
+    });
+
+    it('still updates a run whose task_notification arrives after the tool_result', async () => {
+      const snap = last(await run([call, inner('m1', 2, 990, 0, 0), toolResult, notification]));
+      assert.equal(snap?.status, 'ok');
+      assert.equal(snap?.contextTokens, 65819);
+    });
+
+    it('keeps notifications of unknown tool calls as notification', async () => {
+      const events = await run([call, { ...progress, tool_use_id: 'toolu_other' }]);
+      assert.equal(events.filter((e) => e.event === 'notification' && e.message === 'system/task_progress').length, 1);
+    });
+
+    it('works without task_* messages: context stays null', async () => {
+      const snap = last(await run([call, inner('m1', 2, 990, 3, 4), toolResult]));
+      assert.equal(snap?.status, 'ok');
+      assert.equal(snap?.contextTokens, null);
+      assert.equal(snap?.toolUses, null);
+      assert.equal(snap?.durationMs, null);
+      assert.deepEqual(snap?.models, ['claude-opus-5-5']);
+      assert.equal(snap?.tokens.inputTokens, 2);
+    });
+  });
+
   it('marks a subagent whose tool result is an error', async () => {
     const fake = fakeQuery((_prompt, _options, emit) => {
       emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_a', name: 'Agent', input: {} }] }, parent_tool_use_id: null });

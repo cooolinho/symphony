@@ -16,6 +16,9 @@ import {
   type SDKRateLimitInfo,
   type SDKResultMessage,
   type SDKSystemMessage,
+  type SDKTaskNotificationMessage,
+  type SDKTaskProgressMessage,
+  type SDKTaskStartedMessage,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import { addUsage, emptyUsage, type ModelTokenUsage } from '../costs/pricing.ts';
@@ -229,6 +232,8 @@ class ClaudeSession implements AgentSession {
   #sessionModel: string | null = null;
   /** The subagents still running, by the id of the tool call that started them, with their model calls by message id. */
   #subagents = new Map<string, { run: SubagentRun; calls: Map<string, ModelTokenUsage> }>();
+  /** The subagents that ended, by tool call id: a `task_notification` may arrive after the `tool_result`. */
+  #endedSubagents = new Map<string, SubagentRun>();
   /** Descriptions of the live background tasks, as the latest `background_tasks_changed` lists them. */
   #backgroundTasks: string[] = [];
 
@@ -505,6 +510,11 @@ class ClaudeSession implements AgentSession {
           this.#emit('permission_denied', { message: `${message.tool_name} denied: ${truncate(oneLine(message.message), 200)}` });
         } else if (message.subtype === 'compact_boundary') {
           this.#onCompact(message);
+        } else if (
+          (message.subtype === 'task_started' || message.subtype === 'task_progress' || message.subtype === 'task_notification') &&
+          this.#onTask(message)
+        ) {
+          // Matched to a subagent by its tool call id: the figures are on the board, not in the timeline.
         } else {
           this.#emit('notification', { message: `system/${message.subtype}` });
         }
@@ -757,6 +767,10 @@ class ClaudeSession implements AgentSession {
       endedAt: null,
       status: 'running',
       tokens: emptyUsage(),
+      contextTokens: null,
+      toolUses: null,
+      durationMs: null,
+      models: [],
     };
     this.#subagents.set(toolUseId, { run, calls: new Map() });
     this.#emitSubagent(run, `subagent ${subagentType} started${run.description === '' ? '' : `: ${run.description}`}`, {
@@ -772,6 +786,8 @@ class ClaudeSession implements AgentSession {
     const entry = typeof parent === 'string' ? this.#subagents.get(parent) : undefined;
     const usage = message.message.usage;
     if (entry === undefined || usage === undefined || usage === null) return;
+    const model: unknown = message.message.model;
+    if (typeof model === 'string' && !entry.run.models.includes(model)) entry.run.models.push(model);
     entry.calls.set(message.message.id ?? `${parent}:${entry.calls.size}`, {
       inputTokens: usage.input_tokens ?? 0,
       outputTokens: usage.output_tokens ?? 0,
@@ -781,6 +797,26 @@ class ClaudeSession implements AgentSession {
     entry.run.tokens = emptyUsage();
     for (const call of entry.calls.values()) addUsage(entry.run.tokens, call);
     this.#emitSubagent(entry.run);
+  }
+
+  /**
+   * Takes Claude Code's own figures of a subagent from its `task_*` message, found by the tool call id; false when no
+   * subagent matches. The notification may come after the `tool_result`, so ended runs are searched too.
+   */
+  #onTask(message: SDKTaskStartedMessage | SDKTaskProgressMessage | SDKTaskNotificationMessage): boolean {
+    const id = message.tool_use_id;
+    const run = typeof id === 'string' ? (this.#subagents.get(id)?.run ?? this.#endedSubagents.get(id)) : undefined;
+    if (run === undefined) return false;
+    if (message.subtype !== 'task_started') {
+      const usage = message.usage;
+      if (usage !== undefined && usage !== null) {
+        if (Number.isFinite(usage.total_tokens)) run.contextTokens = usage.total_tokens;
+        if (Number.isFinite(usage.tool_uses)) run.toolUses = usage.tool_uses;
+        if (Number.isFinite(usage.duration_ms)) run.durationMs = usage.duration_ms;
+      }
+    }
+    this.#emitSubagent(run);
+    return true;
   }
 
   /** Ends the subagents whose Agent tool call a `tool_result` block answers; results of their own tools are ignored. */
@@ -803,6 +839,7 @@ class ClaudeSession implements AgentSession {
     run.endedAt = new Date();
     run.status = status;
     this.#subagents.delete(run.toolUseId);
+    this.#endedSubagents.set(run.toolUseId, run);
     this.#emitSubagent(run, `subagent ${run.subagentType} ${status}`, {
       tool_use_id: run.toolUseId,
       subagent_type: run.subagentType,
@@ -814,7 +851,7 @@ class ClaudeSession implements AgentSession {
   /** Reports a copy of the run; without a message the update (tokens) stays out of the timeline and the trace. */
   #emitSubagent(run: SubagentRun, message?: string, detail?: Record<string, unknown>): void {
     this.#emit('subagent', {
-      subagent: { ...run, tokens: { ...run.tokens } },
+      subagent: { ...run, tokens: { ...run.tokens }, models: [...run.models] },
       ...(message !== undefined ? { message } : {}),
       ...(detail !== undefined ? { detail } : {}),
     });

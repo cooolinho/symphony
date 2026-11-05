@@ -164,14 +164,36 @@ describe('E3-6 field "Subagents"', () => {
     assert.deepEqual(avatars, ['TR', 'GP']);
   });
 
+  it('shows context, billed tokens and the model; "—" and no model without the measures (#485)', () => {
+    const entry = (status: string, extra: Obj) => ({
+      tool_use_id: status, subagent_type: 'Reviewer', description: 'd', status, started_at: '2026-10-30T11:58:00.000Z',
+      ended_at: status === 'done' ? '2026-10-30T11:59:50.000Z' : null,
+      tokens: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: status === 'done' ? 528688 : 12000 },
+      ...extra,
+    });
+    const page = fields(teamView({
+      subagents: {
+        running: [entry('running', {})],
+        finished: [entry('done', { context_tokens: 65819, tool_uses: 12, duration_ms: 110436, models: ['claude-opus-5-5'] })],
+      },
+    }));
+    const run = page.query('#stage-subs-body .stage-subagent.is-running')[0]!;
+    const done = page.query('#stage-subs-body .stage-subagent.is-done')[0]!;
+    assert.equal(done.querySelector('.sub-right')!.textContent, 'fertig · Kontext 66k · abgerechnet 529k');
+    assert.equal(done.querySelector('.sub-model')!.textContent, 'claude-opus-5-5');
+    assert.equal(run.querySelector('.sub-right')!.textContent, '2m 0s · Kontext — · abgerechnet 12k');
+    assert.equal(run.querySelector('.sub-model')!.textContent, '');
+    assert.equal((run.querySelector('.sub-model') as unknown as { hidden: boolean }).hidden, true);
+  });
+
   it('shows name, one-line task and "<Dauer> · <k>k" in green while running, "fertig · <k>k" when done', () => {
     const page = fields(teamView());
     const run = page.query('#stage-subs-body .stage-subagent.is-running')[0]!;
     const done = page.query('#stage-subs-body .stage-subagent.is-done')[0]!;
     assert.equal(run.querySelector('.sub-name')!.textContent, 'Explore');
     assert.equal(run.querySelector('.sub-task')!.textContent, 'Find callers');
-    assert.equal(run.querySelector('.sub-right')!.textContent, '2m 0s · 12k');
-    assert.equal(done.querySelector('.sub-right')!.textContent, 'fertig · 30k');
+    assert.equal(run.querySelector('.sub-right')!.textContent, '2m 0s · Kontext — · abgerechnet 12k');
+    assert.equal(done.querySelector('.sub-right')!.textContent, 'fertig · Kontext — · abgerechnet 30k');
     assert.match(rule('.stage-subagent.is-running .sub-right'), /#6ee7b7/);
     assert.match(rule('.sub-task'), /font-size: 12px; color: var\(--fg-3\); white-space: nowrap; overflow: hidden; text-overflow: ellipsis/);
     assert.match(rule('.sub-name'), /font-size: 13px; font-weight: 500/);
@@ -184,7 +206,7 @@ describe('E3-6 field "Subagents"', () => {
     next.subagents.running[0].tokens.total_tokens = 15000;
     page.render({ detail: issueDetail(), team: next });
     assert.equal(page.query('#stage-subs-body .sub-av .ring')[0], ring);
-    assert.equal(page.query('#stage-subs-body .stage-subagent.is-running .sub-right')[0]!.textContent, '2m 0s · 15k');
+    assert.equal(page.query('#stage-subs-body .stage-subagent.is-running .sub-right')[0]!.textContent, '2m 0s · Kontext — · abgerechnet 15k');
   });
 
   it('says "Keine Subagents in dieser Session" without subagents and "Keine Session aktiv" without a session', () => {

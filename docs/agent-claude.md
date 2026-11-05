@@ -278,9 +278,15 @@ version, MCP server status, plugins, number of skills), `startup_failed`, `turn_
 The `subagent` event reports the subagents the session starts with the Agent/Task tool. Its `subagent` field is an
 absolute snapshot: tool call id, type (`general-purpose` when unset), description (the `description` of the call, else
 the start of its `prompt`), start, end, status (`running`, `ok`, `error`) and the tokens of the subagent's own model
-calls (input, output, cache read and write; messages with its `parent_tool_use_id`, counted once per message id). The
+calls (input, output, cache read and write; messages with its `parent_tool_use_id`, counted once per message id). This
+`tokens` is the billed load, not the context size. Claude Code's own figures come from the `task_progress` and
+`task_notification` messages, matched by `tool_use_id`: `contextTokens` (`usage.total_tokens`, the context of the latest
+request), `toolUses` and `durationMs`. They are `null` until such a message arrives and stay `null` for runs without
+`task_*` messages (the page shows "—"). A `task_notification` after the `tool_result` still updates the ended run.
+`task_started`, `task_progress` and `task_notification` that match a subagent no longer appear as `notification`;
+unmatched ones still do. `models` lists the models of the subagent's own calls (first seen first, no duplicates). The
 `tool_result` with the same `tool_use_id` ends it (`is_error` gives `error`). A session that ends or is stopped closes the
-open ones as `error`. Only start and end carry a message; token updates do not appear in the timeline. The orchestrator
+open ones as `error`. Only start and end carry a message; figure updates do not appear in the timeline. The orchestrator
 keeps the running subagents and the last ten finished ones per running issue. `agent_calls` still counts the calls.
 
 A turn that fails because of a Claude subscription usage limit settles with the failure code `session_limit` (instead
