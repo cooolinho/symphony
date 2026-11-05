@@ -110,6 +110,12 @@ prefix states the scope at a glance and lets Symphony switch the whole group off
 Rule for new agents: a subagent that only makes sense for one framework carries that framework as prefix
 (`laravel-…`); framework-neutral subagents carry none.
 
+The first framework-neutral subagent is `explorer` (`symphony:explorer`): read-only, `model: sonnet`, `effort: low`,
+`maxTurns: 25`. It returns 5–10 key files as `file:line` and a summary of at most about 300 words, so expensive roles can
+move exploration out of their own thread. It is available in every workspace, also without a Laravel app (where the
+`laravel-*` subagents stay denied), and `WORKFLOW.md` lists it for developer, architect, analyst, planner, autopilot and
+auditor.
+
 ## Phase 2: roles choose their subagents (done)
 
 ### Configuration: `roles.<role>.agents`

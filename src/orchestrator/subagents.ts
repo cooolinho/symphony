@@ -13,7 +13,7 @@ export function emptySubagents(): SubagentBoard {
   return { running: new Map(), finished: [] };
 }
 
-const copyOf = (run: SubagentRun): SubagentRun => ({ ...run, tokens: { ...run.tokens }, models: [...run.models] });
+export const copyOf = (run: SubagentRun): SubagentRun => ({ ...run, tokens: { ...run.tokens }, models: [...run.models] });
 
 /** Takes over the absolute snapshot of a subagent; a late `running` snapshot of a finished one is ignored. */
 export function applySubagent(board: SubagentBoard, run: SubagentRun): void {
@@ -33,7 +33,7 @@ export function closeSubagents(board: SubagentBoard, at: Date): void {
   for (const run of [...board.running.values()]) applySubagent(board, { ...run, status: 'error', endedAt: at });
 }
 
-function subagentJson(run: SubagentRun) {
+export function subagentJson(run: SubagentRun) {
   const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } = run.tokens;
   return {
     tool_use_id: run.toolUseId,

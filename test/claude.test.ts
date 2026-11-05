@@ -235,6 +235,21 @@ describe('claude agent runner', () => {
     assert.equal(allowed.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '0');
   });
 
+  it('denies fork subagents and switches them off in every session unless claude.env allows them', async () => {
+    const sessions = [
+      await sessionOptions({ policy: { readOnly: false }, deniedAgents: ['symphony:a'] }),
+      await sessionOptions({ policy: { readOnly: true }, deniedAgents: ['symphony:a'] }),
+      await sessionOptions({}),
+    ];
+    for (const options of sessions) {
+      assert.equal(options.disallowedTools?.filter((rule) => rule === 'Agent(fork)').length, 1);
+      assert.equal(options.env?.CLAUDE_CODE_FORK_SUBAGENT, '0');
+    }
+    const allowed = await sessionOptions({ claude: { env: { CLAUDE_CODE_FORK_SUBAGENT: '1' } } });
+    assert.equal(allowed.env?.CLAUDE_CODE_FORK_SUBAGENT, '1');
+    assert.ok(allowed.disallowedTools?.includes('Agent(fork)'));
+  });
+
   it('caps subagent nesting at one level unless claude.env raises it', async () => {
     const options = await sessionOptions({});
     assert.equal(options.env?.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, '1');
@@ -290,6 +305,22 @@ describe('claude agent runner', () => {
     const completed = events.filter((e) => e.event === 'turn_completed');
     assert.deepEqual(completed[0]?.detail?.background_tasks, ['Review the diff']);
     assert.equal(completed[1]?.detail?.background_tasks, undefined);
+  });
+
+  it('keeps the numeric entries of the undocumented subagent_stats of a result', async () => {
+    let turn = 0;
+    const fake = fakeQuery((_prompt, _options, emit) => {
+      turn++;
+      emit(result(0.1, 10, 1, turn === 1 ? { subagent_stats: { spawned: 2, refused: 'x', started_in_background: 0 } } : {}));
+    });
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ events }));
+    await session.runTurn('first');
+    await session.runTurn('second');
+    await session.stop();
+    const completed = events.filter((e) => e.event === 'turn_completed');
+    assert.deepEqual(completed[0]?.detail?.subagent_stats, { spawned: 2, started_in_background: 0 });
+    assert.equal('subagent_stats' in (completed[1]?.detail ?? {}), false);
   });
 
   it('counts model calls live per model until the turn result replaces the totals', async () => {
@@ -585,7 +616,7 @@ describe('claude agent runner', () => {
   it('keeps the default tool rules without a policy and with default servers', async () => {
     const options = await sessionOptions({ extensions: serverExtensions({}) });
     assert.deepEqual(options.allowedTools, ['mcp__tracker__get_issue', 'mcp__srv']);
-    assert.deepEqual(options.disallowedTools, ['AskUserQuestion']);
+    assert.deepEqual(options.disallowedTools, ['AskUserQuestion', 'Agent(fork)']);
     const notReadOnly = await sessionOptions({ policy: { readOnly: false } });
     const noPolicy = await sessionOptions({});
     assert.deepEqual(notReadOnly.allowedTools, noPolicy.allowedTools);
@@ -664,7 +695,7 @@ describe('claude agent runner', () => {
 
     const open = await sessionOptions({});
     assert.equal(open.hooks, undefined);
-    assert.ok(!open.disallowedTools?.some((rule) => rule.startsWith('Agent(')));
+    assert.ok(!open.disallowedTools?.some((rule) => rule.startsWith('Agent(') && rule !== 'Agent(fork)'));
   });
 
   it('reports the subagent of an Agent tool call', async () => {

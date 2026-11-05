@@ -168,6 +168,11 @@ subagent has no Agent tool of its own. Claude Code allows three levels by defaul
 multiply, and no planned pattern nests; the SDK docs advise limits over instructions. `claude.env` can set another
 value (e.g. `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "2"`). `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` keeps its default.
 
+**Forks are denied.** A fork subagent inherits the whole context and the role's tools, so it bypasses the
+`Agent(symphony:*)` denies. From SDK 0.3.302 forks are on by default, while `package.json` allows `^0.3.288`. Every
+session therefore carries the rule `Agent(fork)` in `disallowedTools` (read-only or not, with or without denied agents)
+and starts with `CLAUDE_CODE_FORK_SUBAGENT=0`. `claude.env` can override the variable; the deny rule stays.
+
 ### Brain tools
 
 With `brain.enabled: true` and a role with `brain: read` or `brain: write` ([`roles.*.brain`](configuration.md#roles)) a second in-process MCP server `brain` offers access to the knowledge vault (the name `brain` is reserved for extensions, like `tracker`): `mcp__brain__brain_search`, `mcp__brain__brain_read`, `mcp__brain__brain_list`, `mcp__brain__brain_vitals`, `mcp__brain__brain_write` and `mcp__brain__brain_append`. `read` registers only `brain_search`, `brain_read`, `brain_list` and `brain_vitals`, `write` all six. Without `brain.enabled` or with `brain: off` (the default) the server is absent. The vault is never in `additionalDirectories` or the workspace. Each call reports a `brain_tool` event.
@@ -311,6 +316,11 @@ after the `tool_result`. When status is `error`, a `reason` field contains a sho
 task failure summary); the tile shows "Fehler: <reason>". A session that ends or is stopped closes the open ones as `error`
 (without `reason` if none was set). Only start and end carry a message; figure updates do not appear in the timeline. The
 orchestrator keeps the running subagents and the last ten finished ones per running issue. `agent_calls` still counts the calls.
+The subagents survive the run: `run_finished` carries them in the JSON field `subagents` (format in
+[configuration.md](configuration.md#repository-logs)), `sessions[].subagents` in `GET /api/v1/<identifier>` lists them per
+run, and `run_trace.subagents` holds those of the current or last run. Claude Code (2.1.288) also puts an undocumented
+`subagent_stats` object (spawned, refused, ...) in the result; its numeric entries are kept as `subagent_stats` in
+`run_finished` and `run_trace` as an extra signal that may change. The subagent lists never depend on it.
 
 A turn that fails because of a Claude subscription usage limit settles with the failure code `session_limit` (instead
 of `turn_failed`), carrying the window, the reset time and where it came from. Detection order:
