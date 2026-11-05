@@ -79,9 +79,24 @@ Symphony runs agents **unattended**. Nobody watches a session, so every decision
   `Bash(git commit:*)` and `Bash(git push:*)` added to `disallowedTools`. Deny rules beat allow rules, so this also
   overrides `claude.allowed_tools: ["Bash(git push:*)"]`. The orchestrator sets `readOnly` from the run's role
   (`roles.<role>.read_only`); without a policy, or for the `default` role, a session is not read-only. This is a
-  policy, not a sandbox: Bash can still write files, so callers that need a hard guarantee must enforce it elsewhere
-  (for example in the transition guard, or with `claude.sandbox`). Both inputs are agent-neutral; another runner
-  maps them to its own mechanism.
+  policy, not a sandbox. Both inputs are agent-neutral; another runner maps them to its own mechanism.
+  - *Covered, also inside subagents:* `Edit`, `Write`, `NotebookEdit`, `git commit` and `git push`. The deny rules
+    are session-wide: Claude Code applies deny rules and the `PreToolUse` hook to a subagent's tool calls, and
+    `canUseTool` answers a subagent's request (`agentID`) like a main-thread one. So a read-only role's subagent
+    cannot edit files, and a denied subagent cannot be spawned from inside another subagent either. Locked in by
+    the tests "refuses a denied subagent spawned from inside a subagent", "treats a subagent permission request like
+    a main-thread one" and "keeps the read-only deny rules whatever subagents are denied" in `test/claude.test.ts`.
+  - *Not covered:* shell writes through Bash (`sed -i`, `perl -pi`, redirection, `node -e` with file writes), in the
+    main thread and in subagents. Callers that need a hard guarantee must enforce it elsewhere (for example in the
+    transition guard, or with `claude.sandbox`). Blocking them is open question 5 in
+    [concepts/subagents.md](concepts/subagents.md#open-questions-and-spikes); the current assumption is (a),
+    document and keep.
+  - *Live check:* **not executed yet.** The workspace of E4-1 had no Claude login (`Not logged in · Please run
+    /login`, Claude Code 2.1.288). To run it: in a temp git repo with `target.txt`, start `claude -p "<ask a
+    general-purpose subagent to edit target.txt>" --output-format stream-json --verbose --model haiku
+    --permission-mode acceptEdits --disallowedTools Edit Write NotebookEdit "Bash(git commit:*)" "Bash(git push:*)"
+    AskUserQuestion`, then expect an error `tool_result` for the subagent's Edit/Write (`parent_tool_use_id` set)
+    and an unchanged file. Record the session id here.
 - **Sandboxing:** off by default. `claude.sandbox` passes Claude Code's sandbox settings through (filesystem and
   network restrictions for shell commands).
 
