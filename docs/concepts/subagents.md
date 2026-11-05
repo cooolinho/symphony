@@ -356,8 +356,8 @@ Depends on: E0-4 (same code in `claude.ts`) · Size: M · Category: quality
 tokens, model; `<name>:<n>`-style or a JSON field, as the PR decides), and the run trace in `GET /api/v1/<identifier>`
 lists them per run. `subagent_stats` from the result, when present, is kept as an extra signal marked undocumented.
 **Why:** the review of #205 on 2026-11-04 is visible nowhere; the evaluation needs per-run subagent data.
-- [ ] After a run ends, `GET /api/v1/<identifier>` still lists its subagents; older lines parse as before.
-- [ ] Tests in `test/history.test.ts` and `test/orchestrator.test.ts`.
+- [x] After a run ends, `GET /api/v1/<identifier>` still lists its subagents (`sessions[].subagents`, `run_trace.subagents`); older lines parse as before. Decision: one JSON field `subagents` in `run_finished`.
+- [x] Tests in `test/history.test.ts` and `test/orchestrator.test.ts`.
 
 Depends on: E0-4, E0-5 · Size: M · Category: feature
 

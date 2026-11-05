@@ -292,6 +292,22 @@ describe('claude agent runner', () => {
     assert.equal(completed[1]?.detail?.background_tasks, undefined);
   });
 
+  it('keeps the numeric entries of the undocumented subagent_stats of a result', async () => {
+    let turn = 0;
+    const fake = fakeQuery((_prompt, _options, emit) => {
+      turn++;
+      emit(result(0.1, 10, 1, turn === 1 ? { subagent_stats: { spawned: 2, refused: 'x', started_in_background: 0 } } : {}));
+    });
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ events }));
+    await session.runTurn('first');
+    await session.runTurn('second');
+    await session.stop();
+    const completed = events.filter((e) => e.event === 'turn_completed');
+    assert.deepEqual(completed[0]?.detail?.subagent_stats, { spawned: 2, started_in_background: 0 });
+    assert.equal('subagent_stats' in (completed[1]?.detail ?? {}), false);
+  });
+
   it('counts model calls live per model until the turn result replaces the totals', async () => {
     const call = (id: string, model: string, input: number, output: number) => ({
       type: 'assistant',

@@ -18,7 +18,7 @@ import { type ActivitySource, collectActivity } from './activity.ts';
 import { classify } from '../workflow/classify.ts';
 import { MODEL_FAMILIES, modelFamilyOf } from '../agent/rate-limit.ts';
 import { contextWindowSuffix } from '../agent/model-name.ts';
-import type { AgentEvent, AgentRunner, ContextSnapshot, IntegrationReport, TokenUsage } from '../agent/types.ts';
+import type { AgentEvent, AgentRunner, ContextSnapshot, IntegrationReport, SubagentRun, TokenUsage } from '../agent/types.ts';
 import { contextWindowFor, estimateCost, totalTokens, type ModelTokenUsage, type PricingStore } from '../costs/pricing.ts';
 import { readHistory, type HistoryLog, type RunOutcome, type RunStart } from '../history/history.ts';
 import { budgetAlerts, budgetReport, usageFromHistory, type BudgetAlert, type BudgetReport } from '../budget/forecast.ts';
@@ -31,7 +31,7 @@ import { getTrackerFactory } from '../tracker/registry.ts';
 import type { AutoMergeResult, Issue, MergeWatch, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
 import { SerialQueue, settledWithin } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
-import { truncate } from '../util/text.ts';
+import { numericEntries, truncate } from '../util/text.ts';
 import { SYMPHONY_VERSION } from '../version.ts';
 import { diffStat, type CommitStat } from '../workspace/changes.ts';
 import { describeHolder, type LockResult } from '../workspace/lock.ts';
@@ -80,7 +80,7 @@ import { RuntimeStateStore, runtimeStateFile, type ModelHold, type OperatorHold 
 import { buildTeamView, type TeamView } from '../http/team.ts';
 import { buildStageHistory, resultRows, type PersistedResult } from './stage-history.ts';
 import { blockedBucketColumns, derivePipeline, type PipelineStage, type StageSession } from './pipeline.ts';
-import { applySubagent, closeSubagents, emptySubagents, subagentsJson, type SubagentBoard } from './subagents.ts';
+import { applySubagent, closeSubagents, copyOf, emptySubagents, subagentJson, subagentsJson, type SubagentBoard } from './subagents.ts';
 import { copyToolUsage, countToolUse, emptyToolUsage, integrationJson, integrationUsage, type ToolUsage } from './tool-usage.ts';
 import { checkStatusReporter, runAgentAttempt, type RunPhase, type WorkerOutcome } from './worker.ts';
 import { interruptedLabels, interruptedTransition, statusUpdatedAt, type InterruptedTransition } from './recovery.ts';
@@ -233,6 +233,8 @@ interface RunningEntry {
   toolUsage: ToolUsage;
   /** The subagents of the session: those running and the last ten finished. */
   subagents: SubagentBoard;
+  /** Numeric `subagent_stats` of the latest result (undocumented in Claude Code); null = none seen. */
+  subagentStats: Record<string, number> | null;
   /** What the workspace integrations (e.g. Laravel Boost) set up for the session. */
   integrations: IntegrationReport[];
   /** Skills Claude Code loaded at session start (`session_configured`); null until then. */
@@ -332,6 +334,8 @@ interface SessionInfo {
   outcome: RunOutcome | null;
   /** JSONL transcript of the session, or null when transcripts are disabled. */
   transcript: string | null;
+  /** The subagents of the run (the last finished ones); filled when the run ends, empty while it runs. */
+  subagents: SubagentRun[];
 }
 
 /** Board fields of an issue kept while it is claimed, so retrying and paused issues keep their context. */
@@ -441,6 +445,8 @@ interface RunTrace {
   sessionSkills: string[] | null;
   /** MCP servers that did not connect at session start. */
   mcpUnavailable: string[];
+  subagents: SubagentBoard;
+  subagentStats: Record<string, number> | null;
 }
 
 function traceOf(entry: RunningEntry): RunTrace {
@@ -452,6 +458,8 @@ function traceOf(entry: RunningEntry): RunTrace {
     integrations: entry.integrations,
     sessionSkills: entry.sessionSkills,
     mcpUnavailable: [...entry.mcpUnavailable],
+    subagents: { running: new Map(entry.subagents.running), finished: [...entry.subagents.finished] },
+    subagentStats: entry.subagentStats === null ? null : { ...entry.subagentStats },
   };
 }
 
@@ -465,6 +473,8 @@ function traceJson(trace: RunTrace | null) {
     subagent_tool_calls: trace.toolUsage.subagentTools,
     skill_calls: trace.toolUsage.skills,
     agent_calls: trace.toolUsage.agents,
+    subagents: subagentsJson(trace.subagents),
+    subagent_stats: trace.subagentStats,
     integrations: trace.integrations.map((report) => integrationJson(report, trace.toolUsage, trace.sessionSkills, trace.mcpUnavailable)),
   };
 }
@@ -2094,6 +2104,7 @@ export class Orchestrator {
       mcpToolCalls: {},
       toolUsage: emptyToolUsage(),
       subagents: emptySubagents(),
+      subagentStats: null,
       integrations: [],
       sessionSkills: null,
       headSha: null,
@@ -2129,6 +2140,7 @@ export class Orchestrator {
       finishedAt: null,
       outcome: null,
       transcript: null,
+      subagents: [],
     });
     if (record.sessions.length > MAX_SESSIONS) record.sessions.shift();
     this.#trace(record, {
@@ -2359,6 +2371,8 @@ export class Orchestrator {
     const agentSeconds = (this.#clock.monotonicMs() - entry.startedAtMs) / 1000;
     this.#totals.endedSeconds += agentSeconds;
     const result = this.#runResult(entry, outcome);
+    // A crashed or stopped worker never reaches `Finishing`: what still runs ended with the session.
+    closeSubagents(entry.subagents, this.#clock.now());
     this.#recordRun(entry, result, agentSeconds);
     const finished = this.#records.get(entry.issueId);
     if (finished) {
@@ -2372,6 +2386,7 @@ export class Orchestrator {
       if (session !== undefined) {
         session.finishedAt = this.#clock.now();
         session.outcome = result.result;
+        session.subagents = entry.subagents.finished.map(copyOf);
       }
       this.#trace(finished, {
         kind: 'lifecycle',
@@ -2688,6 +2703,8 @@ export class Orchestrator {
       subagentToolCalls: entry.toolUsage.subagentTools,
       skillCalls: entry.toolUsage.skills,
       agentCalls: entry.toolUsage.agents,
+      subagents: entry.subagents.finished,
+      subagentStats: entry.subagentStats,
       integrations: entry.integrations.map((report) => ({ id: report.id, status: report.status, ...integrationUsage(report, entry.toolUsage) })),
     });
   }
@@ -2970,6 +2987,7 @@ export class Orchestrator {
       finished_at: session.finishedAt?.toISOString() ?? null,
       outcome: session.outcome,
       transcript: session.transcript,
+      subagents: session.subagents.map(subagentJson),
     };
   }
 
@@ -3322,6 +3340,10 @@ export class Orchestrator {
       );
     }
     if (event.event === 'subagent' && event.subagent !== undefined) applySubagent(entry.subagents, event.subagent);
+    if (event.event === 'turn_completed' || event.event === 'turn_failed') {
+      const stats = numericEntries(event.detail?.subagent_stats);
+      if (stats !== null) entry.subagentStats = stats;
+    }
     if (event.event === 'session_configured' && typeof event.detail?.model === 'string') entry.model = event.detail.model;
     if (event.event === 'session_configured' && Array.isArray(event.detail?.skill_names)) {
       entry.sessionSkills = event.detail.skill_names.filter((name): name is string => typeof name === 'string');
@@ -3688,7 +3710,11 @@ export class Orchestrator {
   /** The issue's stations across the board, with the sessions of its claim attributed to them. */
   #pipelineFor(issue: { state: string; description: string | null; labels?: readonly string[] }, issueId: string, workflow: EffectiveWorkflow): PipelineStage[] {
     const config = workflow.config;
-    const sessions: StageSession[] = (this.#records.get(issueId)?.sessions ?? []).map((session) => this.#sessionJson(session));
+    // The subagents stay out of the stages: they are listed on the sessions of the detail.
+    const sessions: StageSession[] = (this.#records.get(issueId)?.sessions ?? []).map((session) => {
+      const { subagents: _subagents, ...rest } = this.#sessionJson(session);
+      return rest;
+    });
     return derivePipeline({
       issue,
       roles: config.roles,

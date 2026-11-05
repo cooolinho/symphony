@@ -25,7 +25,7 @@ import { addUsage, emptyUsage, type ModelTokenUsage } from '../costs/pricing.ts'
 import type { AgentToolSpec, Issue, ToolResult } from '../tracker/types.ts';
 import { AsyncQueue, settledWithin, sleep, withTimeout } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
-import { oneLine, tail, truncate } from '../util/text.ts';
+import { numericEntries, oneLine, tail, truncate } from '../util/text.ts';
 
 /** Start of the plain-text `tool_result` of a foreground subagent that an API error or the usage limit killed. */
 const API_ERROR_PREFIX = 'Agent terminated early due to an API error';
@@ -932,6 +932,8 @@ class ClaudeSession implements AgentSession {
     const succeeded = reportedSuccess && sessionLimit === null;
     const failure = reportedSuccess ? `turn ended with a usage limit: ${truncate(oneLine(sessionLimit?.text ?? ''), 500)}` : describeResult(message);
     const backgroundTasks = [...this.#backgroundTasks];
+    // `subagent_stats` (spawned, refused, ...) is undocumented, seen in Claude Code 2.1.288: an extra signal, read defensively.
+    const subagentStats = numericEntries((message as unknown as Record<string, unknown>).subagent_stats);
     this.#applyReportedWindow(message);
     this.#emit(succeeded ? 'turn_completed' : 'turn_failed', {
       message: succeeded ? `turn completed (${message.num_turns} model calls)` : failure,
@@ -944,6 +946,7 @@ class ClaudeSession implements AgentSession {
         stop_reason: message.stop_reason,
         duration_ms: message.duration_ms,
         ...(backgroundTasks.length > 0 ? { background_tasks: backgroundTasks } : {}),
+        ...(subagentStats ? { subagent_stats: subagentStats } : {}),
         ...(sessionLimit
           ? {
               session_limit: {

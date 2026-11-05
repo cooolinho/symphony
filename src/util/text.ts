@@ -14,3 +14,10 @@ export function tail(text: string, max: number): string {
 export function oneLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
+
+/** The finite-number entries of a plain object; null when `value` is no object or has none. */
+export function numericEntries(value: unknown): Record<string, number> | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const entries = Object.entries(value).filter((entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1]));
+  return entries.length === 0 ? null : Object.fromEntries(entries);
+}
