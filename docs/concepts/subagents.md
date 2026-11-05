@@ -93,7 +93,7 @@ available everywhere (:145-146), but none ships yet.
   ([claude.ts:345-358](../../src/agent/claude.ts#L345-L358), [worker.ts:680-681](../../src/orchestrator/worker.ts#L680-L681)),
   and a `PreToolUse` hook on `Agent|Task` that refuses with its own reason and emits `approval_denied`
   ([claude.ts:385-386](../../src/agent/claude.ts#L385-L386), [:428-441](../../src/agent/claude.ts#L428-L441)). A denied
-  agent still appears in `init.agents`; the comment "The deny rules hide the subagents" (:385) is wrong.
+  agent still appears in `init.agents`, but the model's agent list (`agent_listing_delta`) leaves it out, so the comment "The deny rules hide the subagents" (:385) is right for the model. Answered (E0-2): [agent-claude.md](../agent-claude.md#mechanics-spike-e0-2-claude-code-21288).
 - An unknown agent name, or a writing agent in a read-only role, is a config error
   ([validate.ts:59-67](../../src/workflow/validate.ts#L59-L67)).
 - "Read-only" means `Edit`, `Write`, `NotebookEdit`, `git commit` and `git push` (`READ_ONLY_DENY`,
@@ -131,7 +131,7 @@ available everywhere (:145-146), but none ships yet.
   `CLAUDE_CODE_SUBAGENT_MODEL`, then the main model. Symphony sets none of these
   ([claude.ts:346-397](../../src/agent/claude.ts#L346-L397)), so a subagent always inherits the parent's model.
   Verified live: `laravel-code-reviewer` ran on `claude-opus-5-5` inside opus developers and on `claude-fable-5-1`
-  inside the fable developer of bandenhub#11. Effort inheritance is not documented (spike E0-2).
+  inside the fable developer of bandenhub#11. Effort is inherited (answered in E0-2: [agent-claude.md](../agent-claude.md#mechanics-spike-e0-2-claude-code-21288)).
 - "Plan strong, implement cheaper" ([WORKFLOW.md:168-170](../../WORKFLOW.md#L168-L170)) cannot be expressed for
   subagents: neither a cheap explorer under an opus developer nor a strong reviewer under a sonnet developer.
 - A front-matter `model` is not a hard pin; the per-invocation parameter wins. A hard pin needs a `PreToolUse` hook that
@@ -148,7 +148,7 @@ available everywhere (:145-146), but none ships yet.
 | Status | `ok` or `error` ([claude.ts:786-795](../../src/agent/claude.ts#L786-L795)), with a short reason in `SubagentRun.reason` and on the tile | Records `error` when the result has `is_error`, when `tool_result` text starts with "Agent terminated early due to an API error", or when the `task_notification` reports `failed` or `stopped` ([E0-5](#e0-5-subagent-status-from-the-result-text-and-the-task-status)). The tile shows "Fehler: <reason>" instead of "fertig". A late `failed`/`stopped` notification corrects an ok run and re-emits it to the timeline. |
 | Context fill | `default.context_window: 200000`; opus, sonnet and fable set none ([model-costs.yml:16-38](../../model-costs.yml#L16-L38)); main thread only ([claude.ts:706-724](../../src/agent/claude.ts#L706-L724)) | Claude Code reports `contextWindow: 1000000` for `claude-opus-5-5` and `claude-sonnet-5-5` (200000 for `claude-haiku-4-5`). The #205 developer's "125.5 %" is 25.1 % (250,996 tokens); every peak above 80 % on opus, sonnet and fable (developer 5 of 42, architect 7 of 20 runs with the field) is an artefact. |
 | `tool_calls` | `tool_use` events also for subagent messages ([claude.ts:664-678](../../src/agent/claude.ts#L664-L678), [orchestrator.ts:3310-3319](../../src/orchestrator/orchestrator.ts#L3310-L3319)) | #205: 100 main-thread plus 12 reviewer calls make the logged 112 (Bash 95 = 84 + 11) |
-| SDK data | `task_started` / `task_progress` / `task_notification` (tokens, tool uses, duration) become a generic `notification` ([claude.ts:494-509](../../src/agent/claude.ts#L494-L509)) | `subagent_stats` in the result (spawned, refused, started in background) is delivered by Claude Code 2.1.288 but documented neither in the TypeScript reference nor in the changelog |
+| SDK data | `task_started` / `task_progress` / `task_notification` (tokens, tool uses, duration) become a generic `notification` ([claude.ts:494-509](../../src/agent/claude.ts#L494-L509)) | `subagent_stats` in the result (spawned, refused, started in background) is delivered by Claude Code 2.1.288 but documented neither in the TypeScript reference nor in the changelog; fields measured in E0-2 ([agent-claude.md](../agent-claude.md#mechanics-spike-e0-2-claude-code-21288)): a call refused by a hook counts nowhere |
 | Cost | `modelUsage` of the result includes the subagents ([claude.ts:831-848](../../src/agent/claude.ts#L831-L848)) | Correct: #205 developer 17,679,661 main + 528,688 subagent ≈ 18,296,438 reported |
 
 ### Live usage and value of the calls
@@ -240,7 +240,7 @@ Vendor figures are marked **[vendor]**: self-reported, not independently replica
 |---|---|---|
 | Second-level subagents only for cheap reading, an information boundary or verified parallel lenses | Evidence above; personas that repeat the role were not called once in 349 + 330 + 128 runs | More personas per role |
 | Size gate = the issue's `Complexity:` label `L` or `XL` | Available today in the prompt (`issue.complexity`) and to `report_result`; the benefit of review scales with size | A diff-size prompt variable (open question 8) |
-| New helpers are plugin files without a prefix | The mechanism exists; how `options.agents` ranks against plugin agents is undocumented | Programmatic `options.agents` (only if E0-2 settles the ranking) |
+| New helpers are plugin files without a prefix | The mechanism exists; `options.agents` under the qualified name `<plugin>:<name>` overrides the plugin agent (E0-2); a bare key is a separate agent | Programmatic `options.agents` (possible, E2-3) |
 | Model in the front matter; a hard pin through the existing `PreToolUse` hook only where needed | The per-invocation parameter wins over the front matter; Symphony already owns a hook on `Agent` | `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` (global, ignores per-agent models) |
 | `tool_calls` stays the total; subagent calls get their own field | Comparability with 2,745 logged runs | Redefining `tool_calls` as main-thread only |
 | Writers stay single | Cognition 2026, Google/MIT | Parallel writers in worktrees |
@@ -766,19 +766,19 @@ Each question has a default assumption that the requirements build on until it i
    documented for Opus 5 only and may be the main cause of the low delegation. **Spike E0-1.** Assumption: it applies;
    E2-2 names the agents explicitly either way.
 2. **Do subagents inherit the session's effort?** **Spike E0-2.** Assumption: yes; personas that need another effort set
-   it in the front matter.
+   it in the front matter. **Answered (E0-2): yes**, [agent-claude.md](../agent-claude.md#mechanics-spike-e0-2-claude-code-21288).
 3. **How do `options.agents` rank against plugin agents of the same name?** The docs place them only above "filesystem"
-   agents. **Spike E0-2.** Assumption: unknown, so new helpers are plugin files.
+   agents. **Spike E0-2.** Assumption: unknown, so new helpers are plugin files. **Answered (E0-2):** the same full name `<plugin>:<name>` wins; a bare key is a separate agent, [agent-claude.md](../agent-claude.md#mechanics-spike-e0-2-claude-code-21288).
 4. **Do foreground subagents run in parallel while background tasks are disabled?** **Spike E0-2.** Assumption:
-   possibly not; lenses and explorers still work sequentially, with higher latency. E3-3 waits for the answer.
+   possibly not; lenses and explorers still work sequentially, with higher latency. E3-3 waits for the answer. **Answered (E0-2): yes, they run in parallel**, [agent-claude.md](../agent-claude.md#mechanics-spike-e0-2-claude-code-21288).
 5. **Bash writes in read-only roles and read-only subagents.** Options: (a) document and keep, (b) deny patterns for
    common write commands (incomplete by nature), (c) a sandbox or read-only mount. **Decision for a human.**
    Assumption: (a), documented in E4-1.
 6. **Can `subagent_stats` be relied on?** Claude Code 2.1.288 delivers it, but it is undocumented. **Spike E0-2.**
-   Assumption: extra signal only (E0-7), never the only source.
+   Assumption: extra signal only (E0-7), never the only source. **Answered (E0-2):** field meanings in [agent-claude.md](../agent-claude.md#mechanics-spike-e0-2-claude-code-21288); a hook-refused call is not counted, so keep it an extra signal.
 7. **Further mechanics for E0-2**: do denied agents disappear from the model's agent list; is `canUseTool` called inside
    subagents; does the `SubagentStart` callback hook work in SDK sessions? Assumption: the agents stay listed (the deny
-   happens at call time); the other two work, as the SDK typing suggests.
+   happens at call time); the other two work, as the SDK typing suggests. **Answered (E0-2):** denied agents are hidden from the model's list (still in `init.agents`); `canUseTool` is called inside subagents with `agentID`; `SubagentStart` with `additionalContext` works; a `PreToolUse` `updatedInput.model` rewrite also works ([agent-claude.md](../agent-claude.md#mechanics-spike-e0-2-claude-code-21288)).
 8. **Size gate**: complexity L/XL or the diff size? Code Review's figures are about lines changed, but the prompt has
    no diff-size variable. Assumption: complexity L/XL only; a diff-size variable would be its own requirement.
 9. **Panel rule for security findings** (E3-5): how many of the three lenses must fail to refute a finding?

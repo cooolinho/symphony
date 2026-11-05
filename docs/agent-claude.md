@@ -242,6 +242,39 @@ issue-command session, e.g. a skill). Record the session ids here.
 - 2.1.311, `SubagentStop` no longer fires twice a minute: `--settings` with a `SubagentStop` hook appending to a file; it
   must fire once per subagent, not every ~30 s. _pending_
 
+#### Mechanics (spike E0-2, Claude Code 2.1.288)
+
+Seven questions, answered with controlled SDK sessions (SDK 0.3.288 / Claude Code 2.1.288, 2026-11-05 22:13–22:19 UTC)
+that ran outside the agent sandbox with a login. The options are those of `#options()` in `src/agent/claude.ts`:
+`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`, `CLAUDE_CODE_FORK_SUBAGENT=0`,
+the plugin, preset `claude_code`, `settingSources: []`, `model: sonnet`, `effort: low`, `permissionMode: default`, plus a
+logging `canUseTool` and `PreToolUse`/`SubagentStart`/`SubagentStop` hooks. Evidence paths are relative to
+`$CLAUDE_CONFIG_DIR/projects/-tmp-spike-e0-2-ws/`: `<session>.jsonl` is the main transcript,
+`<session>/subagents/agent-<id>.jsonl` (with `.meta.json`) a subagent, `spike-logs/<case>.jsonl` the SDK stream with the
+hook and callback log. The findings hold for this version only; the SDK upgrade (E4) re-runs the spike.
+
+| # | Question | Answer | Evidence (session, line) | Consequence |
+|---|----------|--------|--------------------------|-------------|
+| 1 | Does a subagent inherit the session's `effort`? | Yes | `stats1` `14de2a7a-2216-4f2e-be04-97261e9e7f56`: main L18 and `agent-a2180c850630b00b3.jsonl` L10 both carry `"effort":"low"`. Production agrees: about 30 parent/subagent pairs (e.g. `70354e52-5187-4069-adf2-389d86d23a14` fable xhigh, `a98e3eb3-b740-45fc-ad36-93cf2ffdc918` opus medium) always match. A `haiku` subagent carries no `effort`. | E4-6: personas get their effort from the session; one that needs another sets it in the front matter |
+| 2 | Do two Agent calls in one message run in parallel with background tasks disabled? | Yes | `stats2` `c94e3799-cab9-4301-b0d2-fa1fa415cd43`: main L18+L19 hold two Agent calls of one message (`msg_011CgkYuE5chQgusCEt9nHc2`); `spike-logs/stats2.jsonl` L5/L10 `task_started` 22:13:47.5 and 22:13:48.4, L23/L28 `task_notification`; the `sleep 20` Bash windows 1793916832.08–852.08 and 844.93–864.93 overlap; both `requestShape: foreground` | E3-3: lenses and explorers can run in one message, no sequential latency to plan for |
+| 3 | Do denied agents disappear from the agent list the model sees? | Yes, from the model's list only | The `agent_listing_delta` attachment lists only allowed plugin agents: reviewer `7c8fedec-cfdd-494d-b802-db992d2ab7a1` shows `symphony:laravel-code-reviewer` alone, developer `21982277-ab36-419f-94b4-241a17873ea9` all five. `init.agents` still lists the denied ones. Taken from production transcripts, not re-run. | Enforcement: the `disallowedTools` rule hides the agent, the hook is the second layer; the comment "The deny rules hide the subagents" in `claude.ts` is right for the model's list |
+| 4 | What do the fields of `subagent_stats` count? | See below | `stats0` `210845bb-2fd3-403d-bf7d-e9db6e69171b` `spike-logs/stats0.jsonl` L4 (0 calls), `stats1` L16 (1 call), `stats2` L31 (2 calls), `statsDenied` `58a6ab0e-5797-4c3b-ac47-f32d074a6457` L9 (1 call denied by the hook) | E0-7: usable as an extra signal; it does not see refused calls |
+| 5 | Does an `options.agents` entry override a plugin agent of the same name? | Yes, by the full name | `override-a` `261a8bde-fcdb-4b19-93bb-d3f06a691d09` vs `override-b` `32f15e95-318f-47b7-88bf-327faa1a0acf`, `spike-logs/override-{a,b}.jsonl` L1 (`init.agents`), subagent L10 `message.model`. Key `symphony:laravel-architect` replaces the plugin agent (one entry; haiku; reply starts `OPTIONS-AGENT`). Key `laravel-architect` is a separate agent, and `symphony:laravel-architect` still runs the plugin one (sonnet, no marker). | E2-3: `options.agents` can override a persona, but only under the qualified name `<plugin>:<name>` |
+| 6 | Can a `PreToolUse` hook rewrite `tool_input.model` with `updatedInput`? | Yes | `rewrite` `2bbceefe-a047-4fa4-a59e-2d3b29034623`: `spike-logs/rewrite.jsonl` L5 (hook output), `agent-a3169d7ec395a2ff6.jsonl` L10 and `.meta.json` `"model":"haiku"`. Under a sonnet session the subagent ran `claude-haiku-4-5-20251001` (control `stats1`: sonnet); the alias `haiku` resolves to Haiku 4.5. | E1-3: the existing `Agent|Task` hook can pin a model per invocation |
+| 7a | Is `canUseTool` called for tool calls inside a subagent? | Yes, with `agentID` | `canuse2` `394763a3-0222-4def-ae09-2d26f5ce1a03`: `spike-logs/canuse2.jsonl` L4 (Write, `agentID: null`) and L13 (Write, `agentID: aedfa01af1f238e4b`, i.e. `agent-aedfa01af1f238e4b.jsonl` L10). Case `canuse` (`e244e8e4-b170-4d01-aa6a-6b0a4c495092`) is no evidence: `echo` and the Agent call need no permission, so the callback never fired. | E2-4: a subagent's tool calls can be judged in `canUseTool` by `agentID` |
+| 7b | Does a `SubagentStart` callback hook with `additionalContext` work? | Yes | `substart` `2945d925-cfb1-42e6-afce-07500d90447d`: `spike-logs/substart.jsonl` L7 (hook output), `agent-a46d7db348df821a3.jsonl` L2 (`hook_additional_context`) and L11 (reply `PAPAYA-7`) | E2-4: context can be injected into a subagent from the SDK |
+
+`subagent_stats` fields as observed (0, 1 and 2 foreground calls; one denied call):
+
+- `spawned`: subagents actually started (0/1/2). `completed` follows (0/1/2); `by_type` counts them per `subagent_type`.
+- `requested.{background,foreground,unset}`: how the call asked to run. With background tasks disabled every call counts
+  as `unset` (0/1/2).
+- `max_depth`: deepest nesting reached (0/1/1); `started_in_background`, `failed`, `killed.*` and `spawned_by_subagents`
+  stayed 0.
+- `refused.{depth_limit,concurrency_limit,budget}`: limits of the runtime only. A call denied by a `PreToolUse` hook
+  counts **nowhere**: `spawned`, `requested` and `refused.*` were all 0. It shows only in `permission_denials` (tool name
+  `Task`) of the result and in the transcript (`statsDenied` main L18, L24).
+
 ### Brain tools
 
 With `brain.enabled: true` and a role with `brain: read` or `brain: write` ([`roles.*.brain`](configuration.md#roles)) a second in-process MCP server `brain` offers access to the knowledge vault (the name `brain` is reserved for extensions, like `tracker`): `mcp__brain__brain_search`, `mcp__brain__brain_read`, `mcp__brain__brain_list`, `mcp__brain__brain_vitals`, `mcp__brain__brain_write` and `mcp__brain__brain_append`. `read` registers only `brain_search`, `brain_read`, `brain_list` and `brain_vitals`, `write` all six. Without `brain.enabled` or with `brain: off` (the default) the server is absent. The vault is never in `additionalDirectories` or the workspace. Each call reports a `brain_tool` event.
