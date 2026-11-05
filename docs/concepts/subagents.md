@@ -83,9 +83,7 @@ available everywhere (:145-146), but none ships yet.
 - "Unset = all" is the documented default ([config.ts:730-742](../../src/workflow/config.ts#L730-L742)) for custom
   workflows; the shipped roles list their agents explicitly. `docs` and `brain-gardener` now set `agents: []`
   in [WORKFLOW.md:249-256, 336-345](../../WORKFLOW.md#L249-L256), denying all Laravel subagents in [workflow-prompt.test.ts:1012-1025](../../test/workflow-prompt.test.ts#L1012-L1025).
-- **Built-in agents are never filtered**: `claude`, `Explore`, `general-purpose`, `Plan` and `statusline-setup` are in
-  every `init.agents`, `general-purpose` with all tools also in read-only roles. No prompt mentions them; they were last
-  used on 2026-10-11.
+- **Built-in agents are off** (E4-3): `claude`, `Explore`, `general-purpose`, `Plan` and `statusline-setup` no longer appear in `init.agents`. Every session starts with `CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS=1`, which is overridable via `claude.env`. Plugin agents denied by the role still appear in `init.agents` and are refused at call time (see [agent-claude.md](../agent-claude.md#subagents)).
 
 ### Enforcement
 

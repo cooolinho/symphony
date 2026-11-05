@@ -131,7 +131,7 @@ roles:
 - Names are the plugin agents' names without the plugin prefix.
 - Omitted: every plugin agent (the current behaviour). `[]`: none.
 - `src/workflow/validate.ts` rejects names no plugin ships, like it rejects unknown `roles.<role>.commands`.
-- Built-in agents (`Explore`, `Plan`, `general-purpose`) are not affected.
+- Built-in agents (`claude`, `Explore`, `general-purpose`, `Plan`, `statusline-setup`) are not affected by role filtering because they are disabled by default (E4-3; every session starts with `CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS=1`, overridable via `claude.env`).
 
 ### Enforcement
 
