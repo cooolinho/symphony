@@ -161,7 +161,7 @@ claude:
 
 roles:
   # agents: plugin subagents (.claude/agents) the role may start; unset = all (the default for custom workflows; every role
-  # below lists its agents explicitly, [] = none). Read-only roles only get read-only ones, and laravel-* subagents only exist in workspaces with a Laravel app.
+  # below lists its agents explicitly, [] = none). Read-only roles only get read-only ones, and the framework-neutral `explorer` exists everywhere, laravel-* subagents only exist in workspaces with a Laravel app.
   # brain: which brain tools the role gets (off = none, read = search/read/list/vitals, write = also write/append); only with
   # brain.enabled; unset = off. brain_approved_writes: false (only with brain: write) makes brain_write/brain_append reject
   # every approved note and every status: approved; unset = true (no extra gate).
@@ -211,7 +211,7 @@ roles:
     on_result: { ready: In progress, split: Agent review, blocked: Blocked }
     may_move_to: [In progress, Agent review, Blocked]
     model_label: ignore                      # opus, fable at complexity L and XL, whatever the issue's Model: label picks
-    agents: [laravel-architect]
+    agents: [explorer, laravel-architect]
     brain: write
     claude: { model: opus, effort: high, model_by_complexity: { L: fable, XL: fable } }   # a short session: thinking pays off here
   developer:
@@ -221,7 +221,7 @@ roles:
       done: ${SYMPHONY_AFTER_IMPLEMENTATION:-Agent review}   # Agent review, or Testing to run the test engineer first (bug, feature and refactor issues: pipeline.profiles)
       blocked: Blocked
     may_move_to: [In progress, Testing, Documentation, Agent review, Blocked]
-    agents: [laravel-architect, laravel-database-engineer, laravel-filament-developer, laravel-test-engineer, laravel-code-reviewer]
+    agents: [explorer, laravel-architect, laravel-database-engineer, laravel-filament-developer, laravel-test-engineer, laravel-code-reviewer]
     brain: read
     # claude.model (CLAUDE_MODEL), opus at complexity L and XL, which implement the architect's design; a Model: label
     # on the issue wins, and an Effort: label sets the effort.
@@ -300,7 +300,7 @@ roles:
     max_sub_issues: ${SYMPHONY_AUDITOR_MAX_SUB_ISSUES:-20}  # open sub-issues at once; also what grants the create_sub_issue tool
     max_turns: 2
     may_move_to: [In progress, In review, Blocked]
-    agents: [laravel-architect, laravel-code-reviewer]
+    agents: [explorer, laravel-architect, laravel-code-reviewer]
     claude: { model: fable, max_budget_usd: 15 }
   autopilot:
     commands: [auto-code]                                   # served only for issues whose description starts with /auto-code
@@ -312,7 +312,7 @@ roles:
     wait_for_sub_issues: true                               # the epic runs again only once all sub-issues of its wave are closed
     max_turns: 2
     may_move_to: [In progress, In review, Blocked]
-    agents: [laravel-architect]
+    agents: [explorer, laravel-architect]
     claude: { model: fable, max_budget_usd: 10 }
   analyst:
     commands: [concept]                                     # served only for issues whose description starts with /concept
@@ -322,7 +322,7 @@ roles:
     max_sub_issues: ${SYMPHONY_ANALYST_MAX_SUB_ISSUES:-60}  # open epics and sub-issues under the concept issue at once (the whole tree)
     max_turns: 3
     may_move_to: [In progress, In review, Blocked]
-    agents: [laravel-architect]
+    agents: [explorer, laravel-architect]
     claude: { model: fable, effort: high, max_budget_usd: 20 }
   planner:
     commands: [plan]                                        # served only for issues whose description starts with /plan
@@ -332,7 +332,7 @@ roles:
     max_sub_issues: ${SYMPHONY_PLANNER_MAX_SUB_ISSUES:-30}  # open sub-issues under the plan issue at once
     max_turns: 3
     may_move_to: [In progress, In review, Blocked]
-    agents: [laravel-architect]
+    agents: [explorer, laravel-architect]
     claude: { model: fable, effort: high, max_budget_usd: 20 }
   brain-gardener:
     commands: [brain-garden]                                # served only for issues whose description starts with /brain-garden
