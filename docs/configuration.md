@@ -571,7 +571,7 @@ roles:
     on_result: { ready: next, needs_info: Blocked }
     may_move_to: [Design, In progress, Blocked]
     model_label: ignore               # sonnet, whatever the issue's Model: label picks for the developer
-    agents: [laravel-architect]
+    agents: []                        # reads the code itself; no laravel-* persona
     claude: { model: sonnet }
 ```
 
@@ -712,7 +712,7 @@ roles:
     on_result: { passed: Agent review, failed: In progress, blocked: Blocked }
     may_move_to: [Agent review, In progress, Blocked]
     model_label: ignore               # sonnet, whatever the issue's Model: label picks for the developer
-    agents: [laravel-test-engineer]
+    agents: []                        # is the independent tester itself; no laravel-* persona
     claude: { model: sonnet }
 pipeline:
   max_test_rounds: 2
@@ -808,7 +808,7 @@ roles:
     on_check_failed: In progress
     may_move_to: [In review, In progress, Blocked]
     model_label: ignore
-    agents: [laravel-code-reviewer]
+    agents: []                        # reads the diff itself; no laravel-* persona
     claude: { model: opus }
 pipeline:
   max_security_rounds: 2
@@ -935,7 +935,7 @@ The plugins in `claude.plugins` ship subagents (`agents/<name>.md`; Symphony's t
 [laravel-subagents.md](laravel-subagents.md)). Claude Code offers them as `<plugin>:<name>`, e.g.
 `symphony:laravel-architect`. For each session Symphony decides which of them the agent may start:
 
-1. **The role's list.** `agents` unset allows every plugin subagent, a list only those, `[]` none. "Unset = all" stays the default for custom workflows and for workflows without `roles`; every role of the shipped `WORKFLOW.md` lists its agents explicitly (`docs` and `brain-gardener` with `[]`, so they never start a `laravel-*` persona).
+1. **The role's list.** `agents` unset allows every plugin subagent, a list only those, `[]` none. "Unset = all" stays the default for custom workflows and for workflows without `roles`; every role of the shipped `WORKFLOW.md` lists its agents explicitly (`docs`, `brain-gardener`, `issue-analyst`, `test-engineer`, `reviewer` and `security-auditor` with `[]`, so they never start a `laravel-*` persona).
 2. **Read-only roles** only get subagents that cannot edit files: their front matter denies `Edit` and `Write`
    (`disallowedTools: Edit, Write, NotebookEdit`) or lists `tools` without them. This applies with `agents` unset too.
 3. **Project type.** A subagent whose name starts with a workspace integration's prefix belongs to it: `laravel-*`

@@ -14,7 +14,7 @@ import { loadWorkflowFile } from '../src/workflow/loader.ts';
 import { profileFor } from '../src/workflow/profile.ts';
 import { roleFor, roleName, sessionAgents } from '../src/workflow/roles.ts';
 import { unknownBoardColumns } from '../src/workflow/validate.ts';
-import { compilePrompt, issueTemplateValue, renderPrompt } from '../src/workflow/template.ts';
+import { compilePrompt, EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../src/workflow/template.ts';
 import { RESULT_FIELD_BUDGET, SUMMARY_MAX } from '../src/workflow/results.ts';
 import { makeIssue } from './helpers.ts';
 
@@ -173,7 +173,7 @@ describe('shipped WORKFLOW.md', () => {
     assert.deepEqual(config.tracker.activeStates, ['Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review']);
     assert.deepEqual(
       [tester?.result, tester?.onResult, tester?.readOnly, tester?.modelLabel, tester?.claude.model, tester?.agents],
-      ['test', { passed: 'Agent review', failed: 'In progress', blocked: 'Blocked' }, false, 'ignore', 'sonnet', ['laravel-test-engineer']],
+      ['test', { passed: 'Agent review', failed: 'In progress', blocked: 'Blocked' }, false, 'ignore', 'sonnet', []],
     );
     assert.deepEqual(tester?.mayMoveTo, ['Documentation', 'Agent review', 'In progress', 'Blocked']);
     assert.deepEqual([config.pipeline.maxTestRounds, config.pipeline.testPaths], [2, ['tests/**', 'test/**', '**/*.test.*', '**/*Test.php']]);
@@ -315,7 +315,7 @@ describe('shipped WORKFLOW.md', () => {
     assert.deepEqual(analyst?.states, ['ready']);
     assert.deepEqual(
       [analyst?.readOnly, analyst?.result, analyst?.onResult, analyst?.maxTurns, analyst?.modelLabel, analyst?.claude.model, analyst?.agents, analyst?.commands],
-      [true, 'analysis', { ready: 'next', needs_info: 'Blocked' }, 3, 'ignore', 'sonnet', ['laravel-architect'], null],
+      [true, 'analysis', { ready: 'next', needs_info: 'Blocked' }, 3, 'ignore', 'sonnet', [], null],
     );
     assert.deepEqual(analyst?.mayMoveTo, ['Design', 'In progress', 'Blocked']);
     // The developer serves only In progress, so a Ready issue never reaches it without the analysis.
@@ -997,7 +997,72 @@ describe('shipped WORKFLOW.md issue commands', () => {
       assert.match(prompt, /- `symphony:laravel-code-reviewer`: Reviews a diff\./, role);
     }
     assert.match(await render('developer', null, undefined, null, agents), /before you report the result/);
-    assert.match(await render('reviewer', null, undefined, null, agents), /second pass over a large diff/);
+  });
+
+  it('renders no agent intro for the roles without subagents in a Laravel workspace', async () => {
+    for (const role of ['issue-analyst', 'test-engineer', 'reviewer', 'security-auditor']) {
+      assert.doesNotMatch(await render(role), /Subagents you may start/, role);
+    }
+  });
+
+  it('resolves no subagent for the four roles that only repeated their persona, so a Laravel workspace renders no intro', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const config = resolveConfig(definition.config, {
+      workflowPath: shipped,
+      env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' },
+      trackerDefaults,
+    });
+    const all = pluginAgents([toolbox]);
+    assert.equal(all.filter((agent) => agent.name.startsWith('laravel-')).length, 5);
+    for (const name of ['issue-analyst', 'test-engineer', 'reviewer', 'security-auditor']) {
+      const role = (config.roles ?? []).find((entry) => entry.name === name) ?? null;
+      assert.deepEqual(role?.agents, [], name);
+      const { allowed, denied } = sessionAgents(all, role, ['laravel-'], ['laravel-']);
+      const listed = allowed.map((agent) => ({ name: agent.qualified, description: agent.description }));
+      assert.equal(allowed.length, 0, name);
+      assert.ok(denied.some((agent) => agent.name === 'laravel-code-reviewer'), name);
+      const prompt = await render(name, null, undefined, null, listed);
+      assert.doesNotMatch(prompt, /Subagents you may start/, name);
+    }
+    // The roles that keep their subagents are untouched.
+    for (const name of ['architect', 'developer', 'auditor']) {
+      assert.ok((config.roles ?? []).find((entry) => entry.name === name)?.agents?.length, name);
+    }
+  });
+
+  it('keeps the agent intro scaffold in the four role files but drops the lines that named a persona', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const agents = [{ name: 'symphony:laravel-code-reviewer', description: 'Reviews a diff.' }];
+    const expectedBlocks: Record<string, number> = { 'issue-analyst': 1, 'test-engineer': 1, reviewer: 2, 'security-auditor': 1 };
+    for (const [role, blocks] of Object.entries(expectedBlocks)) {
+      const source = definition.partials[`roles/${role}.md`] ?? '';
+      assert.equal(source.match(/\{% if agents\.size > 0 %\}/g)?.length, blocks, role);
+      assert.equal(source.match(/\{\{ agent_intro \}\}/g)?.length, blocks, role);
+      assert.doesNotMatch(source, /Use the architect to check the feasibility/, role);
+      assert.doesNotMatch(source, /Good use: the test engineer subagent/, role);
+      assert.doesNotMatch(source, /Use a reviewer subagent only for a second pass/, role);
+      assert.doesNotMatch(source, /laravel-(architect|test-engineer|code-reviewer)/, role);
+      // A role that is given subagents anyway still gets the intro, without any persona guidance after it.
+      const prompt = await render(role, null, undefined, null, agents);
+      assert.match(prompt, /Subagents you may start with the Agent tool/, role);
+      assert.match(prompt, /- `symphony:laravel-code-reviewer`: Reviews a diff\./, role);
+      assert.doesNotMatch(prompt, /second pass over a large diff|Use the architect|Good use: the test engineer/, role);
+    }
+    // The integration variant of the reviewer prompt has no guidance line either.
+    const template = compilePrompt(definition.promptTemplate, definition.partials);
+    const split = { ...issue, native_ref: { ...issue.native_ref, sub_issues: [{ identifier: 'acme/app#43', title: 'CSV writer', state: 'CLOSED', state_reason: 'COMPLETED' }] } };
+    const integration = await renderPrompt(template, {
+      issue: issueTemplateValue(split, new Map()),
+      attempt: null,
+      role: 'reviewer',
+      agents,
+      result_required: true,
+      round: 1,
+      results: { ...EMPTY_RESULTS },
+    });
+    assert.match(integration, /integration review/);
+    assert.match(integration, /Subagents you may start with the Agent tool/);
+    assert.doesNotMatch(integration, /second pass over a large diff/);
   });
 
   it('gives the shipped roles only subagents the toolbox ships, read-only ones to read-only roles', async () => {
@@ -1010,13 +1075,13 @@ describe('shipped WORKFLOW.md issue commands', () => {
     const agents = new Map(pluginAgents([toolbox]).map((agent) => [agent.name, agent]));
     const byRole = Object.fromEntries((config.roles ?? []).map((role) => [role.name, role.agents]));
     assert.deepEqual(byRole, {
-      'issue-analyst': ['laravel-architect'],
+      'issue-analyst': [],
       architect: ['laravel-architect'],
       developer: ['laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer'],
-      'test-engineer': ['laravel-test-engineer'],
+      'test-engineer': [],
       docs: [],
-      reviewer: ['laravel-code-reviewer'],
-      'security-auditor': ['laravel-code-reviewer'],
+      reviewer: [],
+      'security-auditor': [],
       auditor: ['laravel-architect', 'laravel-code-reviewer'],
       autopilot: ['laravel-architect'],
       analyst: ['laravel-architect'],
@@ -1371,7 +1436,7 @@ describe('shipped WORKFLOW.md security auditor', () => {
     assert.equal(auditor?.name, 'security-auditor');
     assert.deepEqual(
       [auditor?.result, auditor?.readOnly, auditor?.onResult, auditor?.onCheckFailed, auditor?.modelLabel, auditor?.claude.model, auditor?.agents],
-      ['security', true, { passed: 'In review', issues_found: 'In progress', blocked: 'Blocked' }, 'In progress', 'ignore', 'opus', ['laravel-code-reviewer']],
+      ['security', true, { passed: 'In review', issues_found: 'In progress', blocked: 'Blocked' }, 'In progress', 'ignore', 'opus', []],
     );
     assert.ok(resolved.tracker.activeStates.includes('Security review'));
     assert.ok(roleFor({ state: 'Agent review', description: null }, resolved.roles)?.mayMoveTo?.includes('Security review'));

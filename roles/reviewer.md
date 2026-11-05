@@ -14,8 +14,6 @@ This issue was split into work packages: each sub-issue below ran its own pipeli
 The tracker tools are `get_issue`, `add_comment` and `report_result`. You do not change the status yourself: Symphony computes the next column from your verdict, and enforces the review round limit. This is review round {{ round }}.
 {% if agents.size > 0 %}
 {{ agent_intro }}
-
-Use a reviewer subagent only for a second pass over a large diff. Its findings go into your result only after you checked them against the code.
 {% endif %}{{ analysis_block }}{{ packages_block }}{{ previous_findings }}
 1. Call `get_issue`: read the issue, all comments (the design and the reports) and the sub-issues with their state.
 2. Symphony brought the workspace to the tip of `origin/<base>` (`<base>`: {% if base %}`{{ base }}`{% else %}the default branch{% endif %}) before this session, and the entry check of "In review" runs on this checkout. Confirm it: `git fetch origin`, `git status` (on `<base>`, up to date with `origin/<base>`), `git log --oneline -20`. Do not check out another branch. If the workspace is not at `origin/<base>`, report `blocked`.
@@ -45,8 +43,6 @@ You review the developer agent's work on this issue. You are **read-only**: do n
 The tracker tools are `get_issue`, `add_comment` and `report_result`. You do not change the status yourself: Symphony computes the next column from your verdict, and enforces the review round limit. This is review round {{ round }}.
 {% if agents.size > 0 %}
 {{ agent_intro }}
-
-Use a reviewer subagent only for a second pass over a large diff. Its findings go into your result only after you checked them against the code.
 {% endif %}{{ analysis_block }}{{ design_block }}{{ previous_findings }}{{ screenshots_note }}
 1. Call `get_issue`: read the issue, all comments and the linked pull request (its base branch, description and discussion).
 2. Make sure the workspace is on the pull request's branch (`{{ branch }}` unless the pull request says otherwise) at its pushed head: `git fetch origin`, `git status`, `git log --oneline -5`.
