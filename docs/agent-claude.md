@@ -150,9 +150,29 @@ the `init` message of the transcript lists them under `agents`. Symphony's toolb
 (`laravel-architect`, `laravel-code-reviewer`, `laravel-database-engineer`, `laravel-filament-developer`,
 `laravel-test-engineer`) and the framework-neutral `test-designer`. Which of them a session may start depends on the role's `agents`, read-only roles and the
 workspace's project type ([Subagents per role](configuration.md#subagents-per-role)); the rest are denied by an
-`Agent(<plugin>:<name>)` rule in `disallowedTools` and by a `PreToolUse` hook, which emits `approval_denied` when it
-refuses a call. Every Agent tool call carries its subagent in the `tool_use` event (`detail.agent`), so the statistics
+`Agent(<plugin>:<name>)` rule in `disallowedTools` and by a `PreToolUse` hook on `Agent|Task`, which emits `approval_denied` when it
+refuses a call. The hook is registered for every session, not only when agents are denied (it also pins the explorer's model, below). Every Agent tool call carries its subagent in the `tool_use` event (`detail.agent`), so the statistics
 count subagents like skills. Background and usage figures: [laravel-subagents.md](laravel-subagents.md).
+
+#### Explorer model (E2-3)
+
+The `symphony:explorer` is always cheaper than its parent. The agent hook rewrites `tool_input.model` of an explorer call
+from the session model (the `init` model, else `claude.model`; aliases, `[1m]` suffixes and full ids all match):
+
+| Session model | Explorer model |
+| --- | --- |
+| sonnet | haiku |
+| opus, fable | sonnet |
+| haiku | haiku |
+| other or unknown | no rewrite (front matter: `sonnet`) |
+
+The front matter's `model` is no hard pin: a per-invocation `model` of the Agent call wins over it. So the hook returns
+`permissionDecision: 'allow'` with `updatedInput` (the original input plus `model`), the form the E0-2 spike verified
+(question 6). The deny check runs first, so a denied explorer is refused and never rewritten. Only the qualified
+`symphony:explorer` is pinned; other agents (the `laravel-*` personas, `general-purpose`, a project agent named `explorer`)
+are untouched. `options.agents` could override the plugin agent by its qualified name (question 5), but that would copy
+the persona into code per session model; the hook keeps `agents/explorer.md` the single definition. No
+`CLAUDE_CODE_SUBAGENT_MODEL_FORCE`: it would pin every subagent.
 
 #### Delegation line of the `claude_code` preset (spike E0-1)
 

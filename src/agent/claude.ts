@@ -38,7 +38,7 @@ function toolResultText(content: unknown): string {
 }
 import { isWholeLimitMessage, limitScopeOf, parseLimitMessage } from './rate-limit.ts';
 import { forgetProcessGroup, killProcessGroup, processGroupSpawner } from './spawn.ts';
-import { contextWindowSuffix } from './model-name.ts';
+import { contextWindowSuffix, explorerModelFor } from './model-name.ts';
 import type {
   AgentEvent,
   AgentRunner,
@@ -81,6 +81,8 @@ const READ_ONLY_DENY = ['Edit', 'Write', 'NotebookEdit', 'Bash(git commit:*)', '
 
 /** The tool that starts a subagent; older Claude Code versions call it `Task`. */
 const AGENT_TOOLS = ['Agent', 'Task'];
+/** The plugin explorer, whose model the Agent hook pins below the parent (the front matter is no hard pin). */
+const EXPLORER_AGENT = 'symphony:explorer';
 
 /** `subagent_type` of an Agent tool call; Claude Code's default when unset is `general-purpose`. */
 function subagentOf(input: unknown): string {
@@ -404,7 +406,8 @@ class ClaudeSession implements AgentSession {
     if (config.plugins.length > 0) options.plugins = config.plugins.map((plugin) => ({ type: 'local' as const, path: plugin }));
     if (config.skills !== null) options.skills = config.skills;
     // The deny rules refuse the call, but the denied agents still appear in `init.agents`; the hook also refuses a call that names one.
-    if (deniedAgents.length > 0) options.hooks = { PreToolUse: [{ matcher: AGENT_TOOLS.join('|'), hooks: [this.#refuseDeniedAgents] }] };
+    // It also pins the explorer's model in every session (docs/agent-claude.md#subagents).
+    options.hooks = { PreToolUse: [{ matcher: AGENT_TOOLS.join('|'), hooks: [this.#agentPolicy] }] };
     if ((extensions?.additionalDirectories.length ?? 0) > 0) options.additionalDirectories = extensions?.additionalDirectories;
     const mcpServers: NonNullable<Options['mcpServers']> = {};
     for (const [name, server] of Object.entries(extensions?.mcpServers ?? {})) {
@@ -446,17 +449,28 @@ class ClaudeSession implements AgentSession {
     });
   }
 
-  /** Refuses an Agent tool call for a subagent the role or workspace does not allow (`deniedAgents`). */
-  #refuseDeniedAgents: HookCallback = async (input) => {
+  /** Refuses an Agent tool call for a subagent the role or workspace does not allow (`deniedAgents`); pins the explorer's model. */
+  #agentPolicy: HookCallback = async (input) => {
     if (input.hook_event_name !== 'PreToolUse' || !AGENT_TOOLS.includes(input.tool_name)) return {};
     const agent = subagentOf(input.tool_input);
-    if (!(this.#params.deniedAgents ?? []).includes(agent)) return {};
-    this.#emit('approval_denied', { message: `subagent ${agent} denied by policy`, detail: { tool: input.tool_name, agent } });
+    if ((this.#params.deniedAgents ?? []).includes(agent)) {
+      this.#emit('approval_denied', { message: `subagent ${agent} denied by policy`, detail: { tool: input.tool_name, agent } });
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: `The subagent ${agent} is not available to this role in this workspace. Do the work yourself or use another subagent.`,
+        },
+      };
+    }
+    if (agent !== EXPLORER_AGENT) return {};
+    const model = explorerModelFor(this.#sessionModel ?? this.#params.config.model);
+    if (model === null) return {};
     return {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason: `The subagent ${agent} is not available to this role in this workspace. Do the work yourself or use another subagent.`,
+        permissionDecision: 'allow',
+        updatedInput: { ...(input.tool_input as Record<string, unknown>), model },
       },
     };
   };

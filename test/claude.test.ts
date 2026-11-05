@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import type { Options, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { ClaudeAgentRunner, type QueryFn } from '../src/agent/claude.ts';
+import { explorerModelFor } from '../src/agent/model-name.ts';
 import { readTranscript } from '../src/agent/transcript.ts';
 import { boostToolPolicy } from '../src/laravel/boost.ts';
 import type { AgentEvent, SessionExtensions, SessionPolicy, StartSessionParams } from '../src/agent/types.ts';
@@ -694,8 +695,83 @@ describe('claude agent runner', () => {
     assert.ok(events.some((event) => event.event === 'approval_denied' && event.detail?.agent === 'symphony:laravel-filament-developer'));
 
     const open = await sessionOptions({});
-    assert.equal(open.hooks, undefined);
+    assert.equal(open.hooks?.PreToolUse?.[0]?.matcher, 'Agent|Task');
     assert.ok(!open.disallowedTools?.some((rule) => rule.startsWith('Agent(') && rule !== 'Agent(fork)'));
+  });
+
+
+  describe('explorer model pin', () => {
+    const explorer = { subagent_type: 'symphony:explorer', description: 'd', prompt: 'p' };
+    const hookOf = (options: Options) => {
+      const hook = options.hooks?.PreToolUse?.[0]?.hooks[0];
+      assert.ok(hook !== undefined);
+      return (tool: string, input: unknown) =>
+        hook({ hook_event_name: 'PreToolUse', tool_name: tool, tool_input: input, tool_use_id: 't1', session_id: 's', transcript_path: '', cwd: '/tmp' } as never, 't1', {
+          signal: new AbortController().signal,
+        });
+    };
+    const pinned = (model: string) => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', updatedInput: { ...explorer, model } } });
+
+    it('registers the Agent hook in every session', async () => {
+      for (const overrides of [{}, { policy: { readOnly: true } }, { policy: { readOnly: false } }]) {
+        const hooks = (await sessionOptions(overrides as never)).hooks?.PreToolUse;
+        assert.equal(hooks?.length, 1);
+        assert.equal(hooks?.[0]?.matcher, 'Agent|Task');
+        assert.equal(hooks?.[0]?.hooks.length, 1);
+      }
+    });
+
+    it('pins the explorer below the session model', async () => {
+      const table: Array<[string, string]> = [['sonnet', 'haiku'], ['claude-sonnet-5-5', 'haiku'], ['opus', 'sonnet'], ['opus[1m]', 'sonnet'], ['fable', 'sonnet'], ['haiku', 'haiku']];
+      for (const [model, expected] of table) {
+        const call = hookOf(await sessionOptions({ claude: { model } }));
+        assert.deepEqual(await call('Agent', explorer), pinned(expected), model);
+        assert.deepEqual(await call('Task', explorer), pinned(expected), model);
+      }
+      const call = hookOf(await sessionOptions({ claude: { model: 'sonnet' } }));
+      assert.deepEqual(await call('Agent', { ...explorer, model: 'opus' }), pinned('haiku'));
+    });
+
+    it('prefers the model of the init message over the configured one', async () => {
+      let pinnedResult: unknown;
+      const fake = fakeQuery(async (_prompt, options, emit) => {
+        emit({ type: 'system', subtype: 'init', model: 'claude-sonnet-5-5', permissionMode: 'auto', claude_code_version: '3.0.0', apiKeySource: 'none', mcp_servers: [], plugins: [], skills: [] });
+        await new Promise((resolve) => setTimeout(resolve, 20)); // the runner reads the init message asynchronously
+        pinnedResult = await hookOf(options)('Agent', explorer);
+        emit(result(0.1, 10, 1));
+      });
+      const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ claude: { model: 'opus' } }));
+      await session.runTurn('go');
+      await session.stop();
+      assert.deepEqual(pinnedResult, pinned('haiku'));
+    });
+
+    it('leaves an unknown model, other agents and other tools alone', async () => {
+      const unknown = hookOf(await sessionOptions({ claude: { model: 'custom-model' } }));
+      assert.deepEqual(await unknown('Agent', explorer), {});
+      const call = hookOf(await sessionOptions({ claude: { model: 'sonnet' } }));
+      assert.deepEqual(await call('Agent', { subagent_type: 'symphony:laravel-code-reviewer', model: 'opus' }), {});
+      assert.deepEqual(await call('Agent', { prompt: 'untyped' }), {});
+      assert.deepEqual(await call('Agent', { ...explorer, subagent_type: 'explorer' }), {});
+      assert.deepEqual(await call('Edit', explorer), {});
+    });
+
+    it('refuses a denied explorer instead of pinning it', async () => {
+      const events: AgentEvent[] = [];
+      const call = hookOf(await sessionOptions({ claude: { model: 'sonnet' }, deniedAgents: ['symphony:explorer'], events }));
+      assert.deepEqual(await call('Agent', explorer), {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: 'The subagent symphony:explorer is not available to this role in this workspace. Do the work yourself or use another subagent.',
+        },
+      });
+      assert.ok(events.some((event) => event.event === 'approval_denied' && event.detail?.agent === 'symphony:explorer'));
+    });
+
+    it('maps only known session models', () => {
+      for (const model of [null, undefined, '', 'gpt-x']) assert.equal(explorerModelFor(model), null);
+    });
   });
 
   it('reports the subagent of an Agent tool call', async () => {
