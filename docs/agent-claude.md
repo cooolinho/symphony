@@ -163,24 +163,29 @@ the binary, found with `rg -a`; line numbers are those of `rg -a -n`).
 Limit: the capability table is the static one of this build; Claude Code can also take capabilities from the server
 (`servedCapabilityLookup`, client data), which a static reading cannot see. The result holds for 2.1.288 as bundled.
 
-**Probe runs (Agent calls without and with a delegation sentence): not executed.** The attempt to run `query()` with
-`systemPrompt: { type: 'preset', preset: 'claude_code', append }` and a test subagent (`options.agents`) in the
-spike's workspace ended with `Not logged in · Please run /login`: the session has no API access. The planned set-up,
-for whoever repeats it with credentials: task "Count the words in the sentence "the quick brown fox jumps over the lazy
-dog" using the word-counter subagent, then tell me the number."; delegation sentence in `append`: "When a task names a
-subagent, delegate it with the Agent tool."; per model once without and once with the sentence; count the `Agent`
-`tool_use` blocks of the main agent; record the session ids.
+**Probe runs (Agent calls without and with a delegation sentence).** Run on 2026-11-05, 21:50–21:57 UTC, in the
+`symphony` container with SDK 0.3.288 / Claude Code 2.1.288; each combination 3 times (18 runs). Set-up:
+`systemPrompt: { type: 'preset', preset: 'claude_code', append }`, default tool set, `permissionMode: 'dontAsk'` with
+only `Agent` allowed, `settingSources: []`, `maxTurns: 8`, `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, subagent
+`word-counter` (no tools) via `options.agents`. Task: "Count the words in the sentence "the quick brown fox jumps over
+the lazy dog" using the word-counter subagent, then tell me the number." `append` without: "Context: this is a test
+session."; with the delegation sentence: "When a task names a subagent, delegate it with the Agent tool." Counted: the
+`Agent` `tool_use` blocks of the main agent.
 
-| Model | Agent calls without | Agent calls with | Session ids |
-|---|---|---|---|
-| `claude-opus-5-5` | not run | not run | – |
-| `claude-sonnet-5-5` | not run | not run | – |
-| `claude-fable-5-1` | not run | not run | – |
+| Model | Agent calls without (3 runs) | Agent calls with (3 runs) | Session ids without | Session ids with |
+|---|---|---|---|---|
+| `claude-opus-5-5` | 1, 1, 1 | 1, 1, 1 | `b5683081-d15c-422a-859d-9fe899acc4c4`<br>`fc9adb95-15bf-46a7-8850-58f80511a032`<br>`d702b01d-b0ab-4c89-b1b8-9b8db21baf90` | `436a7174-c2a2-4541-8317-cbc734b55eba`<br>`b6847b8a-0dde-4880-aeac-cc485d85b690`<br>`e50b5db9-9403-44d5-8140-c14ecfbee7d9` |
+| `claude-sonnet-5-5` | 1, 1, 1 | 1, 1, 1 | `e1891d34-370d-432a-8f63-063b2c18184b`<br>`49c6854b-117d-407f-8ff1-50e778856357`<br>`27e4b04b-059e-41b0-8e1e-19f10b84291e` | `88165b66-c91f-45f7-8b1a-cf77071a4127`<br>`796e2fd8-e1ea-46ae-b138-ef502f4f3799`<br>`4187eec4-ee69-4815-b38b-6ac8093f965a` |
+| `claude-fable-5-1` | 1, 1, 1 | 1, 1, 1 | `4e63278a-e3a4-4280-87e9-bdc3ea9bd907`<br>`8b42863e-8b02-4cd4-9d4d-f4a52f54d668`<br>`8fcdb8ad-a5ca-4744-9a03-4c549586b8fd` | `a6c0f736-4ce8-4e35-9627-fa3fa9494fbc`<br>`9a2fa59e-73a2-4ba7-8af7-d43e1142281b`<br>`56f58c54-e000-427c-b7b4-6f0a06762144` |
+
+Every call went to `subagent_type: word-counter`, every answer was "9", `realModel` always matched the requested model,
+no run failed.
 
 **Conclusion for E2-2 (open question 1):** the preset does not carry the "do not call the Agent tool unless asked" line
-for any of the three models, so it is not the cause of low delegation for them, and the E2-2 wording does not need to
-work around it. Whether an explicit delegation sentence raises the number of Agent calls stays open until the runs above
-are done.
+for any of the three models, and when the task names a subagent all three delegate in every run, with or without an
+explicit delegation sentence; the sentence does not change the number of calls. E2-2 does not need to write against the
+preset: its own delegation sentence is unnecessary, naming concretely the occasions where a subagent fits is enough.
+Not checked: delegation when the task does not name the subagent (the test task is trivial).
 
 Subagents and commands run in the **foreground**: every session starts with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`,
 so the Agent and Bash tools offer no `run_in_background` and nothing is moved to the background automatically. A

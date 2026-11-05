@@ -119,7 +119,7 @@ available everywhere (:145-146), but none ships yet.
   subagent sees only its persona, the CLAUDE.md hierarchy (not Explore and Plan) and the brief the main agent writes.
 - For Opus 5 the `claude_code` preset adds a line telling Claude not to call the Agent tool unless asked. It does not
   apply to Opus 5.5, Sonnet 5.5 or Fable 5.1 in Claude Code 2.1.288 (spike E0-1, see
-  [agent-claude.md](../agent-claude.md#subagents); the delegation probe runs are still open).
+  [agent-claude.md](../agent-claude.md#subagents); with a task that names a subagent they delegate with or without an explicit delegation sentence).
 
 ### Model resolution
 
