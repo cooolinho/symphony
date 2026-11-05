@@ -387,7 +387,7 @@ class ClaudeSession implements AgentSession {
     if (config.executable !== null) options.pathToClaudeCodeExecutable = config.executable;
     if (config.plugins.length > 0) options.plugins = config.plugins.map((plugin) => ({ type: 'local' as const, path: plugin }));
     if (config.skills !== null) options.skills = config.skills;
-    // The deny rules hide the subagents; the hook refuses a call that names one anyway.
+    // The deny rules refuse the call, but the denied agents still appear in `init.agents`; the hook also refuses a call that names one.
     if (deniedAgents.length > 0) options.hooks = { PreToolUse: [{ matcher: AGENT_TOOLS.join('|'), hooks: [this.#refuseDeniedAgents] }] };
     if ((extensions?.additionalDirectories.length ?? 0) > 0) options.additionalDirectories = extensions?.additionalDirectories;
     const mcpServers: NonNullable<Options['mcpServers']> = {};
