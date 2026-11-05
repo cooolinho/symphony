@@ -1076,16 +1076,16 @@ describe('shipped WORKFLOW.md issue commands', () => {
     const byRole = Object.fromEntries((config.roles ?? []).map((role) => [role.name, role.agents]));
     assert.deepEqual(byRole, {
       'issue-analyst': [],
-      architect: ['laravel-architect'],
-      developer: ['laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer'],
+      architect: ['explorer', 'laravel-architect'],
+      developer: ['explorer', 'laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer'],
       'test-engineer': [],
       docs: [],
       reviewer: [],
       'security-auditor': [],
-      auditor: ['laravel-architect', 'laravel-code-reviewer'],
-      autopilot: ['laravel-architect'],
-      analyst: ['laravel-architect'],
-      planner: ['laravel-architect'],
+      auditor: ['explorer', 'laravel-architect', 'laravel-code-reviewer'],
+      autopilot: ['explorer', 'laravel-architect'],
+      analyst: ['explorer', 'laravel-architect'],
+      planner: ['explorer', 'laravel-architect'],
       'brain-gardener': [],
     });
     for (const role of config.roles ?? []) {
@@ -1268,8 +1268,9 @@ describe('Symphony toolbox subagents', () => {
   const agentsDir = path.join(toolbox, 'agents');
   const files = fs.readdirSync(agentsDir).filter((file) => file.endsWith('.md'));
 
-  it('ships the Laravel subagents', () => {
+  it('ships the Laravel subagents and the framework-neutral explorer', () => {
     assert.deepEqual(files.map((file) => file.slice(0, -3)).sort(), [
+      'explorer',
       'laravel-architect',
       'laravel-code-reviewer',
       'laravel-database-engineer',
@@ -1314,6 +1315,7 @@ describe('Symphony toolbox subagents', () => {
     it('pluginAgents() still marks the architect and the reviewer read-only and the other personas as writers', () => {
       const readOnly = Object.fromEntries(pluginAgents([toolbox]).map((agent) => [agent.name, agent.readOnly]));
       assert.deepEqual(readOnly, {
+        explorer: true,
         'laravel-architect': true,
         'laravel-code-reviewer': true,
         'laravel-database-engineer': false,
@@ -1323,15 +1325,78 @@ describe('Symphony toolbox subagents', () => {
     });
   });
 
+  describe('explorer', () => {
+    const text = fs.readFileSync(path.join(agentsDir, 'explorer.md'), 'utf8');
+    const front = /^---\n([\s\S]*?)\n---\n/.exec(text)?.[1] ?? '';
+
+    it('is parsed by pluginAgents(), read-only, and routes by trigger and exclusion', () => {
+      const agent = pluginAgents([toolbox]).find((entry) => entry.name === 'explorer');
+      assert.ok(agent);
+      assert.equal(agent.qualified, 'symphony:explorer');
+      assert.equal(agent.readOnly, true);
+      assert.match(agent.description, /Use before reading more than about ten files to find your way/);
+      assert.match(agent.description, /Not for a change you can finish in a handful of tool calls/);
+    });
+
+    it('has one-line front matter with model sonnet, effort low, maxTurns around 25 and the read-only deny list', () => {
+      for (const line of front.split('\n')) assert.match(line, /^[A-Za-z][\w-]*: \S.*$/, line);
+      assert.match(front, /^model: sonnet$/m);
+      assert.match(front, /^effort: low$/m);
+      assert.match(front, /^maxTurns: 25$/m);
+      assert.match(front, /^disallowedTools: Edit, Write, NotebookEdit$/m);
+      assert.doesNotMatch(front, /^tools:/m);
+    });
+
+    it('asks for 5 to 10 file:line pointers, about 300 words and no file contents, and notes CLAUDE.md', () => {
+      assert.match(text, /5 to 10 key files/);
+      assert.match(text, /file:line|path\/to\/file:line/);
+      assert.match(text, /300 words/);
+      assert.match(text, /No file contents/);
+      assert.match(text, /CLAUDE\.md/);
+    });
+
+    it('is listed for developer, architect, analyst, planner, autopilot and auditor in the shipped WORKFLOW.md', async () => {
+      const { definition } = await loadWorkflowFile(shipped);
+      const config = resolveConfig(definition.config, {
+        workflowPath: shipped,
+        env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' },
+        trackerDefaults,
+      });
+      const withExplorer = (config.roles ?? []).filter((role) => role.agents?.includes('explorer')).map((role) => role.name).sort();
+      assert.deepEqual(withExplorer, ['analyst', 'architect', 'auditor', 'autopilot', 'developer', 'planner']);
+    });
+
+    it('is allowed in a workspace without the Laravel integration, for every listed role, while laravel-* stays denied', async () => {
+      const { definition } = await loadWorkflowFile(shipped);
+      const config = resolveConfig(definition.config, {
+        workflowPath: shipped,
+        env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' },
+        trackerDefaults,
+      });
+      const all = pluginAgents([toolbox]);
+      for (const name of ['analyst', 'architect', 'auditor', 'autopilot', 'developer', 'planner']) {
+        const role = (config.roles ?? []).find((entry) => entry.name === name) ?? null;
+        const { allowed, denied } = sessionAgents(all, role, ['laravel-'], []);
+        assert.deepEqual(allowed.map((agent) => agent.qualified), ['symphony:explorer'], name);
+        assert.equal(denied.filter((agent) => agent.name.startsWith('laravel-')).length, 5, name);
+        const listed = allowed.map((agent) => ({ name: agent.qualified, description: agent.description }));
+        const prompt = await render(name, null, undefined, null, listed);
+        assert.match(prompt, /symphony:explorer/, name);
+        assert.doesNotMatch(prompt, /symphony:laravel-/, name);
+      }
+    });
+  });
+
   describe('models and turn limits (independent of the persona files)', () => {
     const expected = {
+      explorer: { model: 'sonnet', readOnly: true, minTurns: 1 },
       'laravel-architect': { model: undefined, readOnly: true, minTurns: 55 },
       'laravel-code-reviewer': { model: 'opus', readOnly: true, minTurns: 22 },
       'laravel-database-engineer': { model: 'sonnet', readOnly: false, minTurns: 1 },
       'laravel-filament-developer': { model: 'sonnet', readOnly: false, minTurns: 1 },
       'laravel-test-engineer': { model: undefined, readOnly: false, minTurns: 1 },
     } as const;
-    const allowedKeys = new Set(['name', 'description', 'model', 'maxTurns', 'disallowedTools']);
+    const allowedKeys = new Set(['name', 'description', 'model', 'effort', 'maxTurns', 'disallowedTools']);
     const lines = (name: string) => {
       const text = fs.readFileSync(path.join(agentsDir, `${name}.md`), 'utf8');
       assert.ok(text.startsWith('---\n'), `${name}: starts with front matter`);

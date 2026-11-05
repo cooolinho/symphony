@@ -947,6 +947,12 @@ repository that ships the same agent as a project agent) and a `PreToolUse` hook
 naming one of them. The allowed ones reach the prompt as the variable [`agents`](#prompt-template); the shipped
 `WORKFLOW.md` lists them in each role section, phrased as optional.
 
+The toolbox also ships one framework-neutral subagent without a prefix: `explorer` (`symphony:explorer`). It is
+read-only (`disallowedTools: Edit, Write, NotebookEdit`, `model: sonnet`, `effort: low`, `maxTurns: 25`) and returns key
+files as `file:line` plus a short summary instead of file contents. Because it has no integration prefix it is available
+in every workspace, Laravel or not, and the shipped `WORKFLOW.md` lists it for `developer`, `architect`, `analyst`,
+`planner`, `autopilot` and `auditor`.
+
 #### Waves (`wait_for_sub_issues`)
 
 A role with `wait_for_sub_issues: true` works in waves: it creates sub-issues, ends, and runs again once all of them are
