@@ -1180,6 +1180,38 @@ describe('Symphony toolbox subagents', () => {
     });
   }
 
+  describe('models and turn limits', () => {
+    const front = (name: string) => /^---\n([\s\S]*?)\n---\n/.exec(fs.readFileSync(path.join(agentsDir, `${name}.md`), 'utf8'))?.[1] ?? '';
+    const models: Record<string, string | undefined> = {
+      'laravel-architect': undefined,
+      'laravel-code-reviewer': 'opus',
+      'laravel-database-engineer': 'sonnet',
+      'laravel-filament-developer': 'sonnet',
+      'laravel-test-engineer': undefined,
+    };
+
+    for (const [name, model] of Object.entries(models)) {
+      it(`${name}: one-line maxTurns${model ? ` and model ${model}` : ''}, no effort, no YAML list`, () => {
+        const text = front(name);
+        assert.match(text, /^maxTurns: [1-9]\d*$/m);
+        assert.equal(/^model: (.+)$/m.exec(text)?.[1], model);
+        assert.doesNotMatch(text, /^effort:/m);
+        assert.doesNotMatch(text, /^\s*-\s/m);
+      });
+    }
+
+    it('pluginAgents() still marks the architect and the reviewer read-only and the other personas as writers', () => {
+      const readOnly = Object.fromEntries(pluginAgents([toolbox]).map((agent) => [agent.name, agent.readOnly]));
+      assert.deepEqual(readOnly, {
+        'laravel-architect': true,
+        'laravel-code-reviewer': true,
+        'laravel-database-engineer': false,
+        'laravel-filament-developer': false,
+        'laravel-test-engineer': false,
+      });
+    });
+  });
+
   it('the toolbox only refers to subagents it ships', () => {
     const shipped = new Set(files.map((file) => `symphony:${file.slice(0, -3)}`));
     const texts = [path.join(toolbox, 'README.md'), ...fs.readdirSync(path.join(toolbox, 'skills'), { recursive: true, encoding: 'utf8' })
