@@ -459,6 +459,8 @@ export function startHttpServer(options: {
           repo,
           model: textParam(params, 'model'),
           effort: textParam(params, 'effort'),
+          role: textParam(params, 'role'),
+          complexity: textParam(params, 'complexity'),
           timeZone: zone !== null && isValidTimeZone(zone) ? zone : Intl.DateTimeFormat().resolvedOptions().timeZone,
         };
         const pricing = history.pricing.current();

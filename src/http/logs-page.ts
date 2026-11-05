@@ -103,7 +103,7 @@ const LOGS_CSS = `
  * Statistics page: analytics of the per-repository logs for one global filter (period, repository, model).
  * The server aggregates (/api/v1/history/analytics); the log table is loaded separately
  * (/api/v1/history/entries) so a failure there leaves the charts intact. The filter lives in the URL
- * (?period=30d&repo=owner/name&model=…&effort=…, custom: ?period=custom&from=YYYY-MM-DD&to=YYYY-MM-DD), so every view
+ * (?period=30d&repo=owner/name&model=…&effort=…&role=…&complexity=…, custom: ?period=custom&from=YYYY-MM-DD&to=YYYY-MM-DD), so every view
  * can be linked.
  */
 export const LOGS_HTML = page({
@@ -136,6 +136,8 @@ export const LOGS_HTML = page({
       <label class="field"><span class="lbl">Repository</span><select id="repo"><option value="">Alle Repositories</option></select></label>
       <label class="field"><span class="lbl">Modell</span><select id="model"><option value="">Alle Modelle</option></select></label>
       <label class="field"><span class="lbl">Effort</span><select id="effort"><option value="">Alle Efforts</option></select></label>
+      <label class="field"><span class="lbl">Rolle</span><select id="role"><option value="">Alle Rollen</option></select></label>
+      <label class="field"><span class="lbl">Komplexität</span><select id="complexity"><option value="">Alle Komplexitäten</option></select></label>
     </form>
     <div class="filter-foot">
       <div class="period" id="period-label" aria-live="polite"></div>
@@ -236,6 +238,13 @@ export const LOGS_HTML = page({
     </section>
   </div>
 
+  <section class="ui-card g" data-section aria-labelledby="h-subagent-eval">
+    <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-subagent-eval">Subagent-Auswertung</h2>
+      <a class="ui-btn" id="subagent-eval-export" download hidden>JSON exportieren</a>
+    </div>
+    <div class="ui-card-body" data-body="subagent-eval"></div>
+  </section>
+
   <section class="ui-card g" data-section aria-labelledby="h-repos">
     <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-repos">Repositories</h2>
       <label class="field"><span class="lbl">Vergleichen nach</span><select id="repo-sort">
@@ -312,7 +321,7 @@ ${CHART_JS}
     const p = new URLSearchParams(location.search);
     const raw = p.get('period');
     const period = raw === null ? '7d' : PERIODS[raw] ? raw : '30d';
-    return { period, from: p.get('from') || '', to: p.get('to') || '', repo: p.get('repo') || '', model: p.get('model') || '', effort: p.get('effort') || '' };
+    return { period, from: p.get('from') || '', to: p.get('to') || '', repo: p.get('repo') || '', model: p.get('model') || '', effort: p.get('effort') || '', role: p.get('role') || '', complexity: p.get('complexity') || '' };
   }
   const PERIOD_SHORT = { today: 'Heute', '7d': '7 Tage', '30d': '30 Tage' };
   let filter = readFilter();
@@ -322,7 +331,7 @@ ${CHART_JS}
     if (filter.period !== 'custom') { filter.from = ''; filter.to = ''; }
     const url = new URL(location.href);
     url.search = '';
-    for (const key of ['period', 'from', 'to', 'repo', 'model', 'effort']) if (filter[key]) url.searchParams.set(key, filter[key]);
+    for (const key of ['period', 'from', 'to', 'repo', 'model', 'effort', 'role', 'complexity']) if (filter[key]) url.searchParams.set(key, filter[key]);
     history.replaceState(null, '', url);
     loadAll();
   }
@@ -437,6 +446,8 @@ ${CHART_JS}
     if (filter.repo) params.set('repo', filter.repo);
     if (filter.model) params.set('model', filter.model);
     if (filter.effort) params.set('effort', filter.effort);
+    if (filter.role) params.set('role', filter.role);
+    if (filter.complexity) params.set('complexity', filter.complexity);
     try {
       if (r.from && to && r.from >= to) throw new Error('Der Zeitraum beginnt in der Zukunft.');
       const res = await fetch('/api/v1/history/analytics?' + params, { cache: 'no-store', signal: controller.signal });
@@ -470,7 +481,7 @@ ${CHART_JS}
       parts.push(el('span', { hour: 'stündliche', day: 'tägliche', week: 'wöchentliche', month: 'monatliche' }[data.period.granularity] + ' Balken', 'meta'));
       if (data.previous) parts.push(el('span', 'verglichen mit ' + fmtDay(new Date(data.previous.from)) + ' → ' + fmtDay(new Date(Date.parse(data.previous.to) - 1)), 'meta'));
     }
-    for (const [key, label] of [['repo', 'Repository'], ['model', 'Modell'], ['effort', 'Effort']]) {
+    for (const [key, label] of [['repo', 'Repository'], ['model', 'Modell'], ['effort', 'Effort'], ['role', 'Rolle'], ['complexity', 'Komplexität']]) {
       if (!filter[key]) continue;
       const fc = filterChip(label + ': ' + filter[key] + ' ✕', { pressed: true, onClick: () => setFilter({ [key]: '' }) });
       fc.title = 'Filter „' + label + '“ entfernen';
@@ -491,6 +502,8 @@ ${CHART_JS}
     options($('repo'), d.repositories_available, 'Alle Repositories', filter.repo);
     options($('model'), d.models_available, 'Alle Modelle', filter.model);
     options($('effort'), d.efforts_available, 'Alle Efforts', filter.effort);
+    options($('role'), d.roles_available || [], 'Alle Rollen', filter.role);
+    options($('complexity'), d.complexities_available || [], 'Alle Komplexitäten', filter.complexity);
     $('raw').hidden = !filter.repo;
     $('raw').href = '/api/v1/history/raw?repo=' + encodeURIComponent(filter.repo);
     const problems = [];
@@ -504,12 +517,12 @@ ${CHART_JS}
     renderSummary(d);
     renderBudgetBars(d);
     if (d.totals.runs === 0) {
-      for (const name of ['role-summary', 'activity', 'cost', 'tokens', 'budget', 'compacts', 'models', 'efforts', 'roles', 'tools', 'integrations', 'repos', 'outcomes', 'durations', 'heatmap', 'top', 'attention', 'issues']) setBody(name, noData());
+      for (const name of ['role-summary', 'activity', 'cost', 'tokens', 'budget', 'compacts', 'models', 'efforts', 'roles', 'tools', 'integrations', 'subagent-eval', 'repos', 'outcomes', 'durations', 'heatmap', 'top', 'attention', 'issues']) setBody(name, noData());
       $('issue-count').textContent = '';
       return;
     }
     renderRoleSummary(d);
-    renderActivity(d); renderCost(d); renderTokens(d); renderBudget(d); renderCompacts(d); renderModels(d); renderEfforts(d); renderRoles(d); renderTools(d); renderIntegrations(d); renderRepos(d);
+    renderActivity(d); renderCost(d); renderTokens(d); renderBudget(d); renderCompacts(d); renderModels(d); renderEfforts(d); renderRoles(d); renderTools(d); renderIntegrations(d); renderSubagentEval(d); renderRepos(d);
     renderOutcomes(d); renderDurations(d); renderHeatmap(d); renderTop(d); renderAttention(d); renderIssues(d);
   }
 
@@ -861,6 +874,37 @@ ${CHART_JS}
       { label: 'Tokens/Run', className: 'num', render: (r) => orDash(r.avg_tokens_per_run, fmtCompact) },
       { label: 'Modelle', render: (r) => countsText(r.models) || '—' },
     ], rows, 'Keine Runs in diesem Zeitraum.');
+  }
+
+  /** Subagent evaluation per role × model (E0-9), with a JSON export of the section and the active filters. */
+  function renderSubagentEval(d) {
+    const section = d.subagent_evaluation;
+    const link = $('subagent-eval-export');
+    if (!section || !Array.isArray(section.rows) || section.rows.length === 0) {
+      link.hidden = true;
+      setBody('subagent-eval', noData('Keine Runs für die Subagent-Auswertung.'));
+      return;
+    }
+    const payload = { generated_at: d.generated_at, period: d.period, filter: d.filter, subagent_evaluation: section };
+    link.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(payload, null, 2));
+    link.download = 'subagent-evaluation-' + (d.period.from ? d.period.from.slice(0, 10) : 'all') + '-' + d.period.to.slice(0, 10) + '.json';
+    link.hidden = false;
+    const tbl = el('table'); tbl.id = 'subagent-eval-table';
+    const wrap = el('div', null, 'scroll'); wrap.append(tbl);
+    setBody('subagent-eval', wrap, el('p', section.note, 'note'));
+    const p = (r) => (r === null || r === undefined ? '—' : fmtPct(r));
+    table('subagent-eval-table', [
+      { label: 'Rolle', className: 'nowrap', render: (r) => r.role },
+      { label: 'Modell', className: 'nowrap', render: (r) => r.model },
+      { label: 'Runs', className: 'num', render: (r) => fmtInt(r.runs) },
+      { label: 'Mit Subagent', className: 'num', render: (r) => fmtInt(r.runs_with_subagent) + ' (' + p(r.delegation_rate) + ')' },
+      { label: 'Subagents', render: (r) => r.agents.map((a) => a.agent + ' ×' + fmtInt(a.calls)).join(', ') || '—' },
+      { label: 'Bash Hauptthread Ø / Median / p90', className: 'num', render: (r) => orDash(r.main_bash.avg, (v) => String(v)) + ' / ' + orDash(r.main_bash.p50, (v) => String(v)) + ' / ' + orDash(r.main_bash.p90, (v) => String(v)) },
+      { label: 'Token-Anteil Subagents', className: 'num', render: (r) => p(r.subagent_token_share) },
+      { label: 'Kosten/fertiges Issue', className: 'num', render: (r) => orDash(r.cost_per_finished_issue, fmtUsd) + (r.own_cost_per_finished_issue !== null ? ' (eigene ' + fmtUsd(r.own_cost_per_finished_issue) + ')' : '') + ' · ' + fmtInt(r.finished_issues) + ' fertig' },
+      { label: 'Rückläufer/Issue', className: 'num', render: (r) => r.returns.per_issue + ' (Review ' + fmtInt(r.returns.review_changes_needed) + ', Test ' + fmtInt(r.returns.test_failed) + ')' },
+      { label: 'Findings bestätigt / widerlegt', className: 'num', render: (r) => orDash(r.findings && r.findings.confirmed, fmtInt) + ' / ' + orDash(r.findings && r.findings.refuted, fmtInt) },
+    ], section.rows, 'Keine Runs.');
   }
 
   /** Runs, tokens, cost, agent time and outcomes by the agent role that served the run. */
@@ -1275,6 +1319,8 @@ ${CHART_JS}
   $('repo').addEventListener('change', () => setFilter({ repo: $('repo').value }));
   $('model').addEventListener('change', () => setFilter({ model: $('model').value }));
   $('effort').addEventListener('change', () => setFilter({ effort: $('effort').value }));
+  $('role').addEventListener('change', () => setFilter({ role: $('role').value }));
+  $('complexity').addEventListener('change', () => setFilter({ complexity: $('complexity').value }));
   $('log-filters').addEventListener('submit', (event) => { event.preventDefault(); loadLogs(); });
   for (const id of ['log-event', 'log-result', 'log-order']) $(id).addEventListener('change', loadLogs);
   $('reload').addEventListener('click', loadAll);

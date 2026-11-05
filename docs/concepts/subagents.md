@@ -381,7 +381,16 @@ subagent type, main-thread Bash per run (median, p90; E0-6), subagents' share of
 issue, returns per issue from Agent review (`changes_needed`) and Testing (`failed`), and from E3-4 on confirmed and
 refuted findings. Shown on the statistics page and in `GET /api/v1/history/analytics`, exportable as JSON.
 **Why:** every change from E2 on is judged by these figures (see Evaluation).
-- [ ] Tests with fixture logs.
+- [x] Tests with fixture logs.
+
+**Implemented as** `subagent_evaluation` (one row per role × primary model; filters `role`, `complexity`, repository, period).
+Definitions: a *delegating run* has at least one `agent_calls` entry; *main-thread Bash* is `max(0, Bash − subagent Bash)`
+per run; the *token share* is Σ persisted subagent tokens ÷ Σ billed tokens of the runs (subagents are part of the
+billed total, so at most 100 %); a *finished issue* has a `stage_result` in the period with `target` In review or Done,
+and the cost per finished issue sums all roles (the `own_` variant only the row's runs); *returns* are the
+`review:changes_needed` and `test:failed` results on the row's issues, per issue; complexity comes from the issue's
+newest `stage_result`. The row's `findings` stay `null` until `stage_result` lines carry `findings_confirmed` and
+`findings_refuted` (E3-4).
 - [ ] On the live logs since 2026-10-20 the section reproduces the research figures: developer 371 runs, 28 delegating,
   0 of 252 on sonnet; architect 170 with 19.
 
