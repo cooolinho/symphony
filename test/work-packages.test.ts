@@ -287,7 +287,7 @@ describe('work packages as sub-issues (#211)', () => {
       await report({ verdict: 'done', summary: 'Added the PdfExporter behind the Exporter interface.', changed_files: ['src/export/PdfExporter.ts'] });
     };
     const tests: Script = async ({ report }) => {
-      await report({ verdict: 'passed', summary: 'The PDF export is covered.', cases: [{ criterion: 'Export invoices as PDF', test: 'tests/export.test.ts::pdf', status: 'passed' }] });
+      await report({ verdict: 'passed', summary: 'The PDF export is covered.', cases: [{ criterion: 'Export invoices as PDF', test: 'tests/export.test.ts::pdf', status: 'passed', existing: true }] });
     };
     const prReview: Script = async ({ report }) => {
       await report({ verdict: 'approved', summary: 'The PDF export is in and the command picks it.' });

@@ -27,7 +27,7 @@ reported to the agent instead of being dropped silently.
 | `analysis` | `ready`, `needs_info` | `type`, `complexity` (S/M/L/XL), `components[]`, `acceptance_criteria[]`, `risks {security, data_migration, breaking_change}`, `docs_needed`, `open_questions[]`, `plan[]`, `refactoring_goals[]` (refactor issues: what the refactoring has to achieve) |
 | `design` | `ready`, `split`, `blocked` | `options[]`, `decision`, `components[]`, `interfaces[]`, `migrations[]`, `compatibility`, `work_packages[]` (optional; with `split` at least two), `plan[]` (implementation steps in order, each with its files), `tests[]` (one test per acceptance criterion) |
 | `implementation` | `done`, `blocked` | `changed_files[]`, `tests_added[]`, `notes`, `plan_deviations[]`, `screenshots_problem` (a UI change without screenshots: the failed step and its error message) |
-| `test` | `passed`, `failed`, `blocked` | `cases[] {criterion, test, status: passed\|failed\|skipped}`, `commands[]`, `uncovered_criteria[]` |
+| `test` | `passed`, `failed`, `blocked` | `cases[] {criterion, test, status: passed\|failed\|skipped, red_at_base?: {command, output?}, existing?}`, `commands[]`, `uncovered_criteria[]`, `mutation_score` (0–100), `mutation_command`, `mutation_problem` (see [Test evidence at L/XL](#test-evidence-at-lxl)) |
 | `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, file, line, problem, fix}`, `checked[]`, `confirmed_goals[]` (refactor issues: the analysis's refactoring goals the review confirms) |
 | `security` | `passed`, `issues_found`, `blocked` | `findings[]` (as in `review`) |
 | `docs` | `done`, `not_needed`, `blocked` | `files[]` |
@@ -55,6 +55,9 @@ see them):
 - `approved` (review) and `passed` (security) allow no `blocker` or `major` findings; `changes_needed` and
   `issues_found` need at least one finding.
 - `failed` (test) needs a case with status `failed`; `passed` allows none.
+- `mutation_score` (test) needs `mutation_command`, the `pest --mutate --covered-only` call.
+- A `passed` or `failed` test result of an **L/XL issue that is not a refactor** needs `red_at_base` for every new case
+  (see [Test evidence at L/XL](#test-evidence-at-lxl)).
 - `needs_info` (analysis) needs at least one open question.
 - `approved` (review) of a **refactor issue whose analysis has `refactoring_goals`** needs every goal in
   `confirmed_goals`, compared trimmed and case-insensitive (the reviewer copies each goal verbatim); the message lists
@@ -209,6 +212,32 @@ step really fails, the developer reports again with `screenshots_problem`: the s
 result is then accepted and the reviewer sees the field. The verdict `blocked` is not checked. If git cannot list the
 changed files, the call fails with `tool_error` and nothing is recorded. Whether the screenshot fits the change is still
 the reviewer's call.
+
+## Test evidence at L/XL
+
+The test designer's information boundary (it writes tests from the criteria alone) is checked by two pieces of evidence in
+the `test` result. They apply to issues of complexity **L or XL that are not refactors** (a refactor writes
+characterization tests, which must be GREEN at the base commit). S/M results and results read back from a marker are not
+checked; the fields are optional there.
+
+- **RED at base.** Every case that was run (status not `skipped`) and is new needs `red_at_base: {command, output?}`: the
+  command that showed the case failing at the base commit, with an output excerpt (at most 1000 characters). A test that was
+  already on the base commit is marked `existing: true` instead. The refusal (`invalid_result`) names the cases
+  (`cases[i]`, criterion and test). `blocked` is never refused. The comment shows the command next to each case.
+- **Mutation score.** A `passed` result needs `mutation_score` (percent, 0–100) with `mutation_command` (the
+  `pest --mutate --covered-only` call over the changed classes) **where Pest mutation testing is available**, or
+  `mutation_problem` (the step and error) when the run really fails. Availability is detected lazily, only for such a
+  result without a score: a Laravel app in the workspace (`artisan` and `composer.json` with `laravel/framework`), `pestphp/pest`
+  3 or newer in that app's `composer.lock`, and PCOV or Xdebug 3+ loaded in `php` (`php -r` in the app directory). If
+  detection fails or one condition is missing, no score is required (TypeScript mutation testing is not part of this). The
+  Symphony image provides neither PCOV nor Xdebug, see [docker.md](docker.md#php-and-mutation-testing), so the rule is
+  inactive there until an image or a project provides one.
+
+The mutation check runs after the path rule and the screenshot check, before the split check. The score per issue (the
+newest one) appears in the statistics page, in the subagent evaluation, as `subagent_evaluation.mutation_scores`.
+
+If you prefer to keep the evidence optional (decision D1 option A on #480), turn `testEvidence` off in `resultContext` and
+drop `mutationViolation`; the fields stay.
 
 ## Path rule of the test engineer
 
