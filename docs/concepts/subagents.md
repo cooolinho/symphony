@@ -137,8 +137,8 @@ available everywhere (:145-146), but none ships yet.
 
 | What | Today | Effect |
 |---|---|---|
-| Board | A fresh `SubagentBoard` per running entry ([orchestrator.ts:2095](../../src/orchestrator/orchestrator.ts#L2095)), closed at `Finishing` ([:2239](../../src/orchestrator/orchestrator.ts#L2239)), running runs plus the last 10 finished ([subagents.ts](../../src/orchestrator/subagents.ts)); the team API passes only `input.running?.subagents` ([team.ts:236](../../src/http/team.ts#L236)) | After the run the page says "Keine Session aktiv"; earlier subagents are visible nowhere on the issue page. Only the statistics page ranks subagents over all runs ([logs-page.ts:924-927](../../src/http/logs-page.ts#L924-L927)). |
-| Empty text | `renderStageSubs` shows "Keine Subagents in dieser Session" for an active session with an empty board ([issue-page.ts:2125-2134](../../src/http/issue-page.ts#L2125-L2134)) | Correct, but it shows in every run that has not (yet) delegated |
+| Board | A fresh `SubagentBoard` per running entry ([orchestrator.ts:2095](../../src/orchestrator/orchestrator.ts#L2095)), closed at `Finishing` ([:2239](../../src/orchestrator/orchestrator.ts#L2239)), running runs plus the last 10 finished ([subagents.ts](../../src/orchestrator/subagents.ts)); the team API passes the live board as `subagents` and, since E0-8, the persisted subagents of each run as `blocks[].subagents` | Since E0-8 the issue page lists them per stage and run. Only the statistics page ranks subagents over all runs ([logs-page.ts:924-927](../../src/http/logs-page.ts#L924-L927)). |
+| Empty text | Since E0-8 `renderStageSubs` shows "Diese Session hat (noch) keinen Subagent gestartet" for a running run and "Keine Subagents in diesem Lauf" for a finished one | — |
 | Tokens | Input + output + cache read + cache write over all the subagent's calls ([claude.ts:769-784](../../src/agent/claude.ts#L769-L784)) | #205 reviewer: "fertig · 529k" (528,688) against Claude Code's `total_tokens: 65819`; bandenhub#57 1,397,775 vs 92,786. Billed load, not context size. |
 | Status | `ok` or `error` ([claude.ts:786-795](../../src/agent/claude.ts#L786-L795)), with a short reason in `SubagentRun.reason` and on the tile | Records `error` when the result has `is_error`, when `tool_result` text starts with "Agent terminated early due to an API error", or when the `task_notification` reports `failed` or `stopped` ([E0-5](#e0-5-subagent-status-from-the-result-text-and-the-task-status)). The tile shows "Fehler: <reason>" instead of "fertig". A late `failed`/`stopped` notification corrects an ok run and re-emits it to the timeline. |
 | Context fill | `default.context_window: 200000`; opus, sonnet and fable set none ([model-costs.yml:16-38](../../model-costs.yml#L16-L38)); main thread only ([claude.ts:706-724](../../src/agent/claude.ts#L706-L724)) | Claude Code reports `contextWindow: 1000000` for `claude-opus-5-5` and `claude-sonnet-5-5` (200000 for `claude-haiku-4-5`). The #205 developer's "125.5 %" is 25.1 % (250,996 tokens); every peak above 80 % on opus, sonnet and fable (developer 5 of 42, architect 7 of 20 runs with the field) is an artefact. |
@@ -363,12 +363,12 @@ Depends on: E0-4, E0-5 · Size: M · Category: feature
 
 #### E0-8 Issue page: subagents per stage, also after the run
 
-**Change:** `renderStageSubs` ([issue-page.ts:2125-2134](../../src/http/issue-page.ts#L2125-L2134)) shows each finished
+**Change:** `renderStageSubs` ([issue-page.ts:2132](../../src/http/issue-page.ts#L2132)) shows each finished
 stage run with its persisted subagents (E0-7: type, description, status with reason, duration, both token figures,
 model) and the running run's live board as today. Empty texts: "Diese Session hat (noch) keinen Subagent gestartet"
 while running, "Keine Subagents in diesem Lauf" for a finished run.
 **Why:** "Keine Session aktiv" hides earlier calls.
-- [ ] For an issue like #205 the developer stage shows the review of an earlier run after that run ended; an `error`
+- [x] For an issue like #205 the developer stage shows the review of an earlier run after that run ended; an `error`
   subagent shows its reason. Page tests in `test/http.test.ts`.
 
 Depends on: E0-7 · Size: M · Category: design

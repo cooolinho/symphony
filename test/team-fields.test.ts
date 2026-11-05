@@ -209,8 +209,10 @@ describe('E3-6 field "Subagents"', () => {
     assert.equal(page.query('#stage-subs-body .stage-subagent.is-running .sub-right')[0]!.textContent, '2m 0s · Kontext — · abgerechnet 15k');
   });
 
-  it('says "Keine Subagents in dieser Session" without subagents and "Keine Session aktiv" without a session', () => {
-    assert.equal(txt(fields(teamView({ subagents: { running: [], finished: [] } })), 'stage-subs-body'), 'Keine Subagents in dieser Session');
-    assert.equal(txt(fields(teamView(NO_SESSION)), 'stage-subs-body'), 'Keine Session aktiv');
+  it('says the session has not started a subagent yet, and hides the card without a run', () => {
+    assert.ok(txt(fields(teamView({ subagents: { running: [], finished: [] } })), 'stage-subs-body').includes('Diese Session hat (noch) keinen Subagent gestartet'));
+    const idle = fields(teamView({ ...NO_SESSION, blocks: [] }));
+    assert.equal(idle.$('stage-subs').hidden, true);
+    assert.ok(!txt(idle, 'stage-subs-body').includes('Keine Session aktiv'));
   });
 });

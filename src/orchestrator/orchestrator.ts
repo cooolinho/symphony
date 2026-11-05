@@ -77,7 +77,7 @@ import {
   type AgentLimitOverride,
 } from './limits.ts';
 import { RuntimeStateStore, runtimeStateFile, type ModelHold, type OperatorHold } from './runtime-state.ts';
-import { buildTeamView, type TeamView } from '../http/team.ts';
+import { buildTeamView, type TeamSubagent, type TeamView } from '../http/team.ts';
 import { buildStageHistory, resultRows, type PersistedResult } from './stage-history.ts';
 import { blockedBucketColumns, derivePipeline, type PipelineStage, type StageSession } from './pipeline.ts';
 import { applySubagent, closeSubagents, copyOf, emptySubagents, subagentJson, subagentsJson, type SubagentBoard } from './subagents.ts';
@@ -4264,6 +4264,7 @@ export class Orchestrator {
       results: detail.results,
       issueState: typeof detail.issue?.state === 'string' ? detail.issue.state : (detail.running?.state ?? null),
       running: detail.running,
+      runSubagents: new Map(detail.sessions.map((session) => [session.run, (session.subagents ?? []) as TeamSubagent[]])),
       timeline: this.#findTrace(key)?.timeline ?? [],
       now: this.#clock.now().getTime(),
       roles: config.roles?.map((role) => ({ name: role.name, result: role.result, maxTurns: role.maxTurns })) ?? null,

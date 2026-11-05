@@ -351,7 +351,7 @@ describe('E3-6 independent: fields', () => {
   });
 
   it('Subagents: empty list says so, and foreign text stays text', () => {
-    assert.equal(text(page(team()), 'stage-subs-body'), 'Keine Subagents in dieser Session');
+    assert.ok(text(page(team()), 'stage-subs-body').includes('Diese Session hat (noch) keinen Subagent gestartet'));
     const t = team({ subagents: { running: [sub('Explore', '<img src=x onerror=alert(1)>', 'running', '2026-10-30T11:58:00.000Z', null, 1000)], finished: [] } });
     const p = page(t);
     assert.equal(p.query('#stage-subs-body img').length, 0);

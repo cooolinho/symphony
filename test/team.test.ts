@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { buildTeamView, type TeamInput, type TeamRunning } from '../src/http/team.ts';
+import { buildTeamView, type TeamInput, type TeamRunning, type TeamSubagent } from '../src/http/team.ts';
 import type { PipelineSession, PipelineStage } from '../src/orchestrator/pipeline.ts';
 
 const at = (hhmm: string) => `2026-10-03T${hhmm}:00.000Z`;
@@ -61,6 +61,12 @@ function fixture(over: Partial<TeamInput> = {}, finished = false): TeamInput {
 }
 
 describe('buildTeamView', () => {
+  it('attaches the persisted subagents of each run to its block, empty without data (E0-8)', () => {
+    const x = { tool_use_id: 't1', subagent_type: 'reviewer' } as unknown as TeamSubagent;
+    assert.deepEqual(buildTeamView(fixture({ runSubagents: new Map([['r1', [x]]]) })).blocks.map((b) => b.subagents), [[x], [], []]);
+    assert.deepEqual(buildTeamView(fixture()).blocks.map((b) => b.subagents), [[], [], []]);
+  });
+
   it('builds seats, blocks and handoffs for a running second round', () => {
     const view = buildTeamView(fixture());
     assert.deepEqual(view.seats.map((s) => s.role), ['architect', 'developer', 'reviewer', 'you']);

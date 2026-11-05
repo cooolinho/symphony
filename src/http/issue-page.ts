@@ -295,6 +295,11 @@ const AGENT_PAGE_CSS = `
   .sub-right { flex: none; font: 12px var(--mono); color: var(--fg-3); white-space: nowrap; }
   .stage-subagent.is-error .sub-right { color: #fca5a5; }
   .stage-subagent.is-running .sub-right { color: #6ee7b7; }
+  .sub-stage { display: grid; gap: 8px; }
+  .sub-stage + .sub-stage { margin-top: 12px; }
+  .sub-stage-name { margin: 0; font-size: 13px; font-weight: 600; color: var(--fg-2); }
+  .sub-run { display: grid; gap: 6px; }
+  .sub-run-head { font: 12px var(--mono); color: var(--fg-3); }
   .stage-empty { margin: 0; color: var(--fg-3); font-size: 13px; }
   .score { padding: 20px 22px; min-width: 0; }
   .score-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 14px; }
@@ -2124,44 +2129,92 @@ ${PIPELINE_JS}
     return (words.length > 1 ? words[0].charAt(0) + words[1].charAt(0) : (words[0] || '?').slice(0, 2)).toUpperCase();
   }
 
-  function renderStageSubs(active, subs) {
+  function renderStageSubs(active, subs, blocks, seats) {
+    const card = $('stage-subs');
     const box = $('stage-subs-body');
     const running = (subs && subs.running) || [];
     const finished = ((subs && subs.finished) || []).slice().reverse();
     setText($('stage-subs-meta'), active ? running.length + ' laufen · ' + finished.length + ' fertig' : '');
-    const all = active ? [...running, ...finished] : [];
-    if (!all.length) {
-      S.subsSig = '';
-      return patchChildren(box, [stageEmpty(active ? 'Keine Subagents in dieser Session' : 'Keine Session aktiv')]);
+    const liveRole = active ? active.role : null;
+    const all = Array.isArray(blocks) ? blocks : [];
+    const liveBlock = liveRole === null ? null : all.filter((b) => b.ended_at === null && b.role === liveRole).at(-1) || null;
+    const roles = [];
+    for (const r of [liveRole, ...(Array.isArray(seats) ? seats : []).filter((s) => s.role !== 'you').map((s) => s.role), ...all.map((b) => b.role)]) {
+      if (r !== null && r !== undefined && !roles.includes(r)) roles.push(r);
     }
-    const sig = all.map((x, i) => (x.tool_use_id || i) + ':' + (x.status === 'running' ? 'r' : x.status === 'error' ? 'e' : 'd')).join(',');
-    const right = (x) => {
+    const sections = [];
+    for (const role of roles) {
+      const done = all.filter((b) => b.role === role && b.ended_at !== null).sort((a, b) => String(b.started_at).localeCompare(String(a.started_at)));
+      const live = role === liveRole;
+      if (!live && !done.length) continue;
+      const runs = [];
+      if (live) runs.push({ id: 'L' + (liveBlock ? liveBlock.run : 'live'), live: true, block: liveBlock, rows: [...running, ...finished] });
+      for (const b of done) runs.push({ id: b.run, live: false, block: b, rows: ((Array.isArray(b.subagents) ? b.subagents : []).slice().reverse()) });
+      sections.push({ role, runs });
+    }
+    if (!sections.length) {
+      card.hidden = true;
+      S.subsSig = '';
+      return box.replaceChildren();
+    }
+    card.hidden = false;
+    const code = (x) => (x.status === 'running' ? 'r' : x.status === 'error' ? 'e' : 'd');
+    const sig = sections.map((s) => s.role + '>' + s.runs.map((r) => r.id + '[' + r.rows.map((x, i) => (x.tool_use_id || i) + ':' + code(x)).join(',') + ']').join(';')).join('|');
+    const duration = (x) => {
+      if (typeof x.duration_ms === 'number' && Number.isFinite(x.duration_ms)) return fmtDuration(x.duration_ms / 1000);
+      const ms = Date.parse(x.ended_at) - Date.parse(x.started_at);
+      return Number.isFinite(ms) ? fmtDuration(ms / 1000) : '—';
+    };
+    const right = (x, persisted) => {
       const k = 'Kontext ' + fmtK(x.context_tokens) + ' · abgerechnet ' + fmtK(x.tokens && x.tokens.total_tokens);
-      return x.status === 'running' ? fmtDuration((Date.now() - Date.parse(x.started_at)) / 1000) + ' · ' + k : (x.status === 'error' ? 'Fehler' + (x.reason ? ': ' + oneLine(x.reason, 80) : '') : 'fertig') + ' · ' + k;
+      if (x.status === 'running') return fmtDuration((Date.now() - Date.parse(x.started_at)) / 1000) + ' · ' + k;
+      return (x.status === 'error' ? 'Fehler' + (x.reason ? ': ' + oneLine(x.reason, 80) : '') : 'fertig') + (persisted ? ' · ' + duration(x) : '') + ' · ' + k;
     };
     const model = (x) => (Array.isArray(x.models) ? x.models.join(', ') : '');
+    const hm = (iso) => { const t = new Date(iso); return Number.isFinite(t.getTime()) ? t.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) : '—'; };
+    const subRow = (x) => {
+      const isRun = x.status === 'running';
+      const row = el('div', null, 'stage-subagent ' + (isRun ? 'is-running' : x.status === 'error' ? 'is-done is-error' : 'is-done'));
+      const av = el('span', null, 'sub-av');
+      av.setAttribute('role', 'img');
+      av.setAttribute('aria-label', String(x.subagent_type || '?') + ' · ' + (isRun ? 'läuft' : x.status === 'error' ? 'Fehler' : 'fertig'));
+      const face = el('span', subAbbr(x.subagent_type), 'sub-abbr');
+      face.setAttribute('aria-hidden', 'true');
+      av.append(face);
+      if (isRun) { const pulse = el('span', null, 'ring'); pulse.setAttribute('aria-hidden', 'true'); av.append(pulse); }
+      const main = el('div', null, 'sub-main');
+      main.append(el('span', x.subagent_type, 'sub-name'), el('span', oneLine(x.description, 160), 'sub-task'), el('span', model(x), 'sub-model'));
+      const r = el('span', null, 'sub-right');
+      if (x.status === 'error' && x.reason) row.title = String(x.reason);
+      row.append(av, main, r);
+      return row;
+    };
+    const flat = [];
+    for (const s of sections) for (const r of s.runs) for (const x of r.rows) flat.push({ x, persisted: !r.live });
     // Rebuild only when the set or a state changes, so the running pulse is not restarted by every poll.
     if (sig !== S.subsSig) {
       S.subsSig = sig;
-      box.replaceChildren(...all.map((x) => {
-        const isRun = x.status === 'running';
-        const row = el('div', null, 'stage-subagent ' + (isRun ? 'is-running' : x.status === 'error' ? 'is-done is-error' : 'is-done'));
-        const av = el('span', null, 'sub-av');
-        av.setAttribute('role', 'img');
-        av.setAttribute('aria-label', String(x.subagent_type || '?') + ' · ' + (isRun ? 'läuft' : x.status === 'error' ? 'Fehler' : 'fertig'));
-        const face = el('span', subAbbr(x.subagent_type), 'sub-abbr');
-        face.setAttribute('aria-hidden', 'true');
-        av.append(face);
-        if (isRun) { const pulse = el('span', null, 'ring'); pulse.setAttribute('aria-hidden', 'true'); av.append(pulse); }
-        const main = el('div', null, 'sub-main');
-        main.append(el('span', x.subagent_type, 'sub-name'), el('span', oneLine(x.description, 160), 'sub-task'), el('span', model(x), 'sub-model'));
-        row.append(av, main, el('span', right(x), 'sub-right'));
-        return row;
+      box.replaceChildren(...sections.map((s) => {
+        const sec = el('div', null, 'sub-stage');
+        sec.dataset.role = s.role;
+        sec.append(el('h4', seatName(s.role), 'sub-stage-name'));
+        for (const r of s.runs) {
+          const run = el('div', null, 'sub-run' + (r.live ? ' is-live' : ''));
+          run.dataset.run = r.live ? (r.block ? r.block.run : 'live') : r.block.run;
+          const round = r.block && r.block.round ? ' · R' + r.block.round : '';
+          const head = r.live ? 'läuft' + round : hm(r.block.started_at) + '–' + hm(r.block.ended_at) + round;
+          run.append(el('div', head, 'sub-run-head'));
+          if (r.rows.length) run.append(...r.rows.map(subRow));
+          else run.append(stageEmpty(r.live ? 'Diese Session hat (noch) keinen Subagent gestartet' : 'Keine Subagents in diesem Lauf'));
+          sec.append(run);
+        }
+        return sec;
       }));
     }
-    all.forEach((x, i) => {
-      const row = box.children[i];
-      setText(row.querySelector('.sub-right'), right(x));
+    const rows = box.querySelectorAll('.stage-subagent');
+    flat.forEach(({ x, persisted }, i) => {
+      const row = rows[i];
+      setText(row.querySelector('.sub-right'), right(x, persisted));
       const m = row.querySelector('.sub-model');
       setText(m, model(x));
       m.hidden = !model(x);
@@ -2182,7 +2235,7 @@ ${PIPELINE_JS}
     renderStageFloor(team.seats, statuses);
     renderStageNow(active, k >= 0 ? team.seats[k] : null, team.trace);
     renderStageSession(active, team.compact_threshold);
-    renderStageSubs(active, team.subagents);
+    renderStageSubs(active, team.subagents, Array.isArray(team.blocks) ? team.blocks : [], team.seats);
   }
 
   // ------------------------------------------------------------------ score (Partitur)
