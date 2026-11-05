@@ -712,7 +712,7 @@ roles:
     on_result: { passed: Agent review, failed: In progress, blocked: Blocked }
     may_move_to: [Agent review, In progress, Blocked]
     model_label: ignore               # sonnet, whatever the issue's Model: label picks for the developer
-    agents: []                        # is the independent tester itself; no laravel-* persona
+    agents: [test-designer]           # at complexity L/XL writes the tests from the criteria and the public interface only
     claude: { model: sonnet }
 pipeline:
   max_test_rounds: 2
@@ -722,6 +722,20 @@ checks:
     Testing: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
 ```
 
+- **Test designer at L/XL.** On a feature or bug issue of complexity L or XL (not a refactoring, whose tests must be green
+  at the base commit) the test engineer delegates the writing of the tests to the framework-neutral `test-designer`
+  subagent (`symphony:test-designer`, sonnet, `maxTurns: 50`), one sequential call per group of acceptance criteria. The
+  brief holds the criteria, the public interface (`results.design.interfaces` when the architect ran, else described by
+  the test engineer), the absolute workspace path, the base commit (`git merge-base HEAD origin/<base>`), the test
+  paths, the test file names and the test command. It holds no diff, no changed files and no implementation paths
+  beyond the public interface, so the tests are independent of the implementation (the strongest evidence in
+  [concepts/subagents.md](concepts/subagents.md)). The designer shows its tests RED in a detached worktree of the base
+  commit and GREEN on the branch; the test engineer puts both commands with an output excerpt into `commands`. The
+  designer runs in the same session, so `pipeline.test_paths` and the `invalid_result` check cover its writes too.
+  **The boundary is soft:** it rests on the brief alone. Nothing stops the designer from reading the diff; an enforced
+  read boundary (a `PreToolUse` hook, open question 11) is not built, and neither is RED-at-base evidence in the result
+  contract. At complexity S and M, without a complexity label, or for a refactoring the prompt is unchanged and does
+  not mention the designer. A custom workflow without `test-designer` in the role's `agents` gets no delegation.
 - **On for bug, feature and refactor issues, off by default for the rest.** The shipped
   `pipeline.profiles.{bugfix,feature,refactor}.on_result` send the developer's `done` of a bug, feature or refactor issue
   to `Testing`. For every other issue the developer's `done` leads to `Agent review`
@@ -931,11 +945,11 @@ The shipped `WORKFLOW.md` defines the `auditor` role for `/refactoring`, the `au
 
 #### Subagents per role
 
-The plugins in `claude.plugins` ship subagents (`agents/<name>.md`; Symphony's toolbox ships the `laravel-*` ones, see
+The plugins in `claude.plugins` ship subagents (`agents/<name>.md`; Symphony's toolbox ships the `laravel-*` ones and the framework-neutral `test-designer`, see
 [laravel-subagents.md](laravel-subagents.md)). Claude Code offers them as `<plugin>:<name>`, e.g.
 `symphony:laravel-architect`. For each session Symphony decides which of them the agent may start:
 
-1. **The role's list.** `agents` unset allows every plugin subagent, a list only those, `[]` none. "Unset = all" stays the default for custom workflows and for workflows without `roles`; every role of the shipped `WORKFLOW.md` lists its agents explicitly (`docs`, `brain-gardener`, `issue-analyst`, `test-engineer`, `reviewer` and `security-auditor` with `[]`, so they never start a `laravel-*` persona).
+1. **The role's list.** `agents` unset allows every plugin subagent, a list only those, `[]` none. "Unset = all" stays the default for custom workflows and for workflows without `roles`; every role of the shipped `WORKFLOW.md` lists its agents explicitly (`docs`, `brain-gardener`, `issue-analyst`, `reviewer` and `security-auditor` with `[]`, so they never start a `laravel-*` persona; `test-engineer` lists `test-designer`, which carries no prefix).
 2. **Read-only roles** only get subagents that cannot edit files: their front matter denies `Edit` and `Write`
    (`disallowedTools: Edit, Write, NotebookEdit`) or lists `tools` without them. This applies with `agents` unset too.
 3. **Project type.** A subagent whose name starts with a workspace integration's prefix belongs to it: `laravel-*`
