@@ -1105,34 +1105,46 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}
     if (lastState) renderAlerts(alerts(lastState, budgetAnswer, brainAnswer), $('alerts-list'), $('alerts-count'));
   }
 
-  function budgetWindowText(w, empty) {
+  /** Active dispatch pause (until, ISO) of a window from the last state, else null. */
+  function windowPause(key) {
+    return budgetPause(lastState && lastState.health && lastState.health.dispatch_gate, key);
+  }
+
+  function budgetWindowText(w, key, empty) {
+    const paused = windowPause(key);
+    if (paused) return 'Limit erreicht · pausiert bis ' + budgetHm(paused);
     if (empty) return BUDGET_NO_DATA;
-    const reset = w.resets_at ? budgetHm(w.resets_at) : 'unbekannt';
+    const reset = budgetResetHm(w, key);
     const burn = w.burn_rate_per_min > 0 ? 'Burn ' + budgetTokens(w.burn_rate_per_min * 60) + ' Tokens/h' : null;
-    if (w.forecast && w.forecast.eta) return (burn ? burn + ' · ' : '') + 'Limit ca. ' + budgetHm(w.forecast.eta) + ' · Reset ' + reset;
-    if (burn && w.forecast && w.resets_at) return 'Reset ' + budgetDayHm(w.resets_at) + ' · reicht bei aktuellem Tempo';
-    if (burn) return burn + ' · Reset ' + reset;
-    return 'Reset ' + reset;
+    let base = 'Reset ' + reset;
+    if (w.forecast && w.forecast.eta) base = (burn ? burn + ' · ' : '') + 'Limit ca. ' + budgetHm(w.forecast.eta) + ' · Reset ' + reset;
+    else if (burn && w.forecast && w.resets_at) base = 'Reset ' + reset + ' · reicht bei aktuellem Tempo';
+    else if (burn) base = burn + ' · Reset ' + reset;
+    const src = budgetSourceText(w, key);
+    return src ? src + ' · ' + base : base;
   }
 
   function budgetWindow(w, key, name, empty) {
     const box = el('div', null, 'budget-win');
     box.setAttribute('data-window', key);
-    const pct = empty ? 0 : budgetPercent(w);
+    const paused = windowPause(key);
+    const raw = empty && !paused ? 0 : budgetPercent(w);
+    let pct = w && w.percent_source === 'none' && !paused ? null : raw;
+    if (paused) pct = Math.max(100, pct === null ? 0 : pct);
     const base = key === 'five_hour' ? UI_CHIP_TONES.amber.c : UI_CHIP_TONES.sky.c;
-    const color = pct !== null && pct >= 85 ? UI_TRAFFIC.red : base;
+    const color = paused || (pct !== null && pct >= 85) ? UI_TRAFFIC.red : base;
     const head = el('div', null, 'budget-win-head');
     const value = el('span', pct === null ? '—' : Math.round(pct) + ' %', 'budget-win-pct mono');
     value.style.color = color;
     head.append(el('span', name, 'budget-win-name'), value);
-    const hatch = !empty && pct !== null && w.forecast && w.forecast.eta;
+    const hatch = !empty && !paused && pct !== null && pct < 100 && w.forecast && w.forecast.eta;
     const barNode = bar(pct === null ? 0 : pct, { height: 10, color, forecastPct: hatch ? 100 - pct : undefined });
     barNode.setAttribute('aria-label', name);
     if (pct === null) {
       barNode.removeAttribute('aria-valuenow');
       barNode.setAttribute('aria-valuetext', fmtCompact(w.used_tokens) + ' Tokens, Grenze unbekannt');
     }
-    box.append(head, barNode, el('p', budgetWindowText(w, empty), 'budget-win-text'));
+    box.append(head, barNode, el('p', budgetWindowText(w, key, empty), 'budget-win-text'));
     return box;
   }
 
@@ -1172,7 +1184,8 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}
   }
 
   function budgetSection(report, state) {
-    const empty = !report || (report.five_hour.used_tokens === 0 && report.seven_day.used_tokens === 0);
+    const idle = (w) => w.used_tokens === 0 && !(typeof w.percent === 'number' && Number.isFinite(w.percent));
+    const empty = !report || (idle(report.five_hour) && idle(report.seven_day));
     const nodes = [
       budgetWindow(report && report.five_hour, 'five_hour', '5-h-Fenster', empty),
       budgetWindow(report && report.seven_day, 'seven_day', 'Woche', empty),
@@ -1203,6 +1216,7 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}
 
   function render(state) {
     lastState = state;
+    setBudgetGate(state.health ? state.health.dispatch_gate : null);
     renderSystemCards();
     renderBudget();
     const h = state.health;
@@ -1257,6 +1271,7 @@ ${ALERTS_JS}${HEAD_JS}${ACTIVITY_JS}${BRAIN_JS}
       render(await res.json());
     } catch (error) {
       lastState = null;
+      setBudgetGate(null);
       renderSystemCards();
       renderBudget();
       setLive(false);

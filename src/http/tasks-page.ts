@@ -478,6 +478,7 @@ export const TASKS_JS = `
 
   function renderTasks(state) {
     taskLast = state;
+    setBudgetGate(state.health ? state.health.dispatch_gate : null);
     taskAllowed = !state.controls || state.controls.retry !== false;
     taskById('tasks-controls-off').hidden = taskAllowed;
     taskById('tasks-error').hidden = true;

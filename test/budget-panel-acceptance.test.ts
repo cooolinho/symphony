@@ -135,7 +135,7 @@ describe('E4-6 acceptance: forecast hatch and text', () => {
     const page = await overview(report({ used: 100_000, burn: 500, eta: null }));
     assert.equal(panel(page).querySelectorAll('.ui-bar-forecast').length, 0);
     const t = text(panel(page));
-    assert.match(t, /Reset \S+ \d\d:\d\d · reicht bei aktuellem Tempo/);
+    assert.match(t, /Reset \d\d:\d\d · reicht bei aktuellem Tempo/);
     assert.ok(!t.includes('Limit ca.'));
   });
 

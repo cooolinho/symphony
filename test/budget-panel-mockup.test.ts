@@ -95,7 +95,7 @@ describe('E4-6 windows', () => {
     const five = page.query('.budget-win')[0]!;
     assert.equal(five.querySelectorAll('.ui-bar-forecast').length, 0);
     const t = text(five.querySelectorAll('.budget-win-text')[0]!);
-    assert.match(t, /^Reset .+ \d\d:\d\d · reicht bei aktuellem Tempo$/);
+    assert.match(t, /^Reset \d\d:\d\d · reicht bei aktuellem Tempo$/);
     const still = await overview(report({ eta: null, burn: 0 }));
     assert.equal(text(still.query('.budget-win-text')[0]!), `Reset ${hm(RESET)}`);
     assert.equal(still.query('.ui-bar-forecast').length, 0);
@@ -196,5 +196,128 @@ describe('E4-6 5h chip', () => {
     const page = await chip(report());
     assert.equal(page.$('shell-budget').getAttribute('title'), `5-h-Fenster · Reset ${hm(RESET)}`);
     assert.equal(page.$('shell-budget').getAttribute('href'), '/#budget');
+  });
+});
+
+// E4-9 (#467): SDK utilisation, dispatch pause and weekday.
+describe('E4-9 SDK utilisation, pause and weekday', () => {
+  const EVENT = '2026-10-30T11:57:00.000Z';
+  const WEEK_RESET = '2026-11-04T10:00:00.000Z';
+  const weekday = (iso: string) => `${new Date(iso).toLocaleDateString('de-DE', { weekday: 'short' }).replace('.', '')} ${hm(iso)}`;
+  const sdkWin = (percent: number, over: Record<string, unknown> = {}) => ({
+    ...win({ used: 720_000 }),
+    percent,
+    percent_source: 'sdk',
+    sdk: { utilization: percent / 100, resets_at: RESET, event_at: EVENT, status: 'allowed' },
+    ...over,
+  });
+  const rep = (five: Record<string, unknown>, seven: Record<string, unknown> = {}) => ({
+    ...report(),
+    five_hour: five,
+    seven_day: { ...win({ used: 18_000_000, limit: 20_000_000, eta: null }), window: 'seven_day', ...seven },
+  });
+  const chipOf = (page: { $: (id: string) => { textContent: string; children: { className: string }[]; getAttribute: (n: string) => string | null } }) => {
+    const n = page.$('shell-budget');
+    return { text: text(n), tone: n.children.map((c) => c.className).join(' '), title: n.getAttribute('title') };
+  };
+  const gateState = (until: string, window = 'five_hour') => {
+    const s = dashboardState();
+    (s.health as Record<string, unknown>).dispatch_gate = { reason: 'session_limit', window, until, issue_identifier: 'acme/app#1' };
+    return s;
+  };
+
+  it('SDK percent wins over used / limit in panel and chip', async () => {
+    const page = await overview(rep(sdkWin(72)));
+    const five = page.query('.budget-win')[0]!;
+    assert.equal(text(five.querySelectorAll('.budget-win-pct')[0]!), '72 %');
+    assert.match(text(five.querySelectorAll('.budget-win-text')[0]!), new RegExp(`^laut SDK · Stand ${hm(EVENT)} · Burn`));
+    const c = chipOf(page);
+    assert.equal(c.text, '5h 72 %');
+    assert.match(c.tone, /tone-amber/);
+    assert.equal(c.title, `5-h-Fenster · 72 % laut SDK (Stand ${hm(EVENT)}) · Reset ${hm(RESET)}`);
+  });
+
+  it('above 100 %: full bar, real number, red, no hatch; chip red', async () => {
+    const page = await overview(rep(sdkWin(101)));
+    const five = page.query('.budget-win')[0]!;
+    const bar = five.querySelectorAll('.ui-bar')[0]!;
+    assert.equal(bar.getAttribute('aria-valuenow'), '100');
+    const pct = five.querySelectorAll('.budget-win-pct')[0]!;
+    assert.equal(text(pct), '101 %');
+    assert.equal(pct.style.color, UI_RED);
+    assert.equal(five.querySelectorAll('.ui-bar-forecast').length, 0);
+    const c = chipOf(page);
+    assert.equal(c.text, '5h 101 %');
+    assert.match(c.tone, /tone-red/);
+  });
+
+  it('active five_hour pause: 100 %, red, no hatch, pause text, chip 100 % red; week untouched', async () => {
+    const until = '2026-10-30T13:30:00.000Z';
+    const page = await overview(rep(sdkWin(60)), gateState(until));
+    const [five, seven] = page.query('.budget-win');
+    assert.equal(text(five!.querySelectorAll('.budget-win-pct')[0]!), '100 %');
+    assert.equal(five!.querySelectorAll('.budget-win-pct')[0]!.style.color, UI_RED);
+    assert.equal(five!.querySelectorAll('.ui-bar-forecast').length, 0);
+    assert.equal(text(five!.querySelectorAll('.budget-win-text')[0]!), `Limit erreicht · pausiert bis ${hm(until)}`);
+    assert.doesNotMatch(text(seven!), /pausiert/);
+    const c = chipOf(page);
+    assert.equal(c.text, '5h 100 %');
+    assert.match(c.tone, /tone-red/);
+  });
+
+  it('gate with until in the past: no pause text, chip keeps its value', async () => {
+    const page = await overview(rep(sdkWin(60)), gateState('2026-10-30T11:00:00.000Z'));
+    assert.doesNotMatch(text(page.query('.budget-win')[0]!), /pausiert/);
+    assert.equal(chipOf(page).text, '5h 60 %');
+  });
+
+  it('seven_day pause only sets the week to 100 %', async () => {
+    const page = await overview(rep(sdkWin(60)), gateState('2026-11-04T10:00:00.000Z', 'seven_day'));
+    const [five, seven] = page.query('.budget-win');
+    assert.equal(text(five!.querySelectorAll('.budget-win-pct')[0]!), '60 %');
+    assert.equal(text(seven!.querySelectorAll('.budget-win-pct')[0]!), '100 %');
+    assert.match(text(seven!.querySelectorAll('.budget-win-text')[0]!), /^Limit erreicht · pausiert bis /);
+    assert.equal(chipOf(page).text, '5h 60 %');
+  });
+
+  it('tasks page chip shows the pause from the polled state', async () => {
+    const state = gateState('2026-10-30T13:30:00.000Z');
+    const page = renderPage(TASKS_HTML, state, { fetch: (u) => (u === '/api/v1/budget' ? rep(sdkWin(60)) : u === '/api/v1/state' ? state : {}) });
+    await until(() => page.fetches.some((f) => f.url === '/api/v1/state') && chipOf(page).text === '5h 100 %', 3_000, 'chip pause');
+    assert.match(chipOf(page).tone, /tone-red/);
+  });
+
+  it('percent_source none: dash, no-event text, unknown limit; chip dash and title', async () => {
+    const none = { percent: null, percent_source: 'none', sdk: null, forecast: null };
+    const page = await overview(rep({ ...win(), ...none }));
+    const five = page.query('.budget-win')[0]!;
+    assert.equal(text(five.querySelectorAll('.budget-win-pct')[0]!), '—');
+    assert.match(text(five.querySelectorAll('.budget-win-text')[0]!), /^Noch kein Event seit dem Reset/);
+    assert.match(String(five.querySelectorAll('.ui-bar')[0]!.getAttribute('aria-valuetext')), /Grenze unbekannt/);
+    const c = chipOf(page);
+    assert.equal(c.text, '5h —');
+    assert.equal(c.title, '5-h-Fenster · Auslastung unbekannt');
+    const never = await overview(rep({ ...win(), ...none, resets_at: null }));
+    assert.match(text(never.query('.budget-win-text')[0]!), /^Noch kein Rate-Limit-Event/);
+  });
+
+  it('week names the weekday in every branch, the 5 h window does not', async () => {
+    const cases: Opts[] = [{ eta: ETA }, { eta: null }, { eta: null, burn: 0 }];
+    for (const o of cases) {
+      const page = await overview(rep(win(o), { ...win({ ...o, used: 18_000_000, limit: 20_000_000 }), window: 'seven_day', resets_at: WEEK_RESET }));
+      const [five, seven] = page.query('.budget-win');
+      assert.ok(text(seven!.querySelectorAll('.budget-win-text')[0]!).includes(`Reset ${weekday(WEEK_RESET)}`), JSON.stringify(o));
+      const f = text(five!.querySelectorAll('.budget-win-text')[0]!);
+      assert.ok(f.includes(`Reset ${hm(RESET)}`));
+      assert.doesNotMatch(f, /Reset [A-Z][a-z] /);
+    }
+  });
+
+  it('calibrated fallback: estimate text, token based value', async () => {
+    const page = await overview(rep({ ...win({ used: 1_500_000 }), percent: 75, percent_source: 'calibrated', sdk: null }));
+    const five = page.query('.budget-win')[0]!;
+    assert.equal(text(five.querySelectorAll('.budget-win-pct')[0]!), '75 %');
+    assert.match(text(five.querySelectorAll('.budget-win-text')[0]!), /^geschätzt aus Tokens · Burn/);
+    assert.equal(chipOf(page).title, `5-h-Fenster · 75 % geschätzt aus Tokens · Reset ${hm(RESET)}`);
   });
 });
