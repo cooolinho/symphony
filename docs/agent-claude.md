@@ -148,7 +148,7 @@ needs a skill directory in the toolbox and a role with `commands` (or none at al
 Plugins also ship subagents (`agents/<name>.md`), which Claude Code offers to the Agent tool as `<plugin>:<name>`;
 the `init` message of the transcript lists them under `agents`. Symphony's toolbox ships five for Laravel repositories
 (`laravel-architect`, `laravel-code-reviewer`, `laravel-database-engineer`, `laravel-filament-developer`,
-`laravel-test-engineer`) and the framework-neutral `test-designer`. Which of them a session may start depends on the role's `agents`, read-only roles and the
+`laravel-test-engineer`) and the framework-neutral `explorer`, `design-critic` and `test-designer`. Which of them a session may start depends on the role's `agents`, read-only roles and the
 workspace's project type ([Subagents per role](configuration.md#subagents-per-role)); the rest are denied by an
 `Agent(<plugin>:<name>)` rule in `disallowedTools` and by a `PreToolUse` hook, which emits `approval_denied` when it
 refuses a call. Every Agent tool call carries its subagent in the `tool_use` event (`detail.agent`), so the statistics

@@ -45,7 +45,7 @@ describe('docs/laravel-subagents.md', () => {
     assert.match(line, /`test-engineer` lists `test-designer`/);
     assert.doesNotMatch(configuration, /agents: \[laravel-(test-engineer|code-reviewer)\]/);
     const examples = [...configuration.matchAll(/^    agents: (\[[^\]]*\])/gm)].map((match) => match[1]);
-    assert.deepEqual(examples, ['[]', '[laravel-architect]', '[test-designer]', '[]']);
+    assert.deepEqual(examples, ['[]', '[explorer, design-critic]', '[test-designer]', '[]']);
   });
 
   it('describes the test designer and its soft boundary in docs/configuration.md#the-test-engineer', () => {
@@ -55,5 +55,24 @@ describe('docs/laravel-subagents.md', () => {
     assert.match(section, /`test-designer`/);
     assert.match(section, /no diff, no changed files/);
     assert.match(section, /boundary is soft/);
+  });
+});
+
+describe('the design critic in the docs (#504)', () => {
+  it('describes the critic, its model, turn limit and L/XL gate in docs/configuration.md#the-architect', () => {
+    const configuration = fs.readFileSync(path.join(docsDir, 'configuration.md'), 'utf8');
+    const start = configuration.indexOf('#### The architect');
+    assert.ok(start >= 0);
+    const section = configuration.slice(start, configuration.indexOf('\n#### ', start + 10));
+    for (const phrase of ['design-critic', '`model: opus`', '`maxTurns: 40`', 'L/XL', 'before `report_result`']) assert.ok(section.includes(phrase), phrase);
+    assert.doesNotMatch(section, /It may start the `laravel-architect`/);
+    assert.match(section, /no longer uses `laravel-architect`/);
+  });
+
+  it('lists the critic for the architect in docs/laravel-subagents.md and says the architect no longer uses laravel-architect', () => {
+    const row = doc.split('\n').find((line) => line.startsWith('| architect |')) ?? '';
+    assert.match(row, /`design-critic`/);
+    assert.match(row, /no longer `laravel-architect`/);
+    assert.match(doc, /[Aa]rchitect no longer uses `laravel-architect`/);
   });
 });
