@@ -12,7 +12,7 @@ import { maxColumnCheckMs, resolveConfig } from '../src/workflow/config.ts';
 import { commandSkills, pluginAgents } from '../src/workflow/command.ts';
 import { loadWorkflowFile } from '../src/workflow/loader.ts';
 import { profileFor } from '../src/workflow/profile.ts';
-import { roleFor, roleName } from '../src/workflow/roles.ts';
+import { roleFor, roleName, sessionAgents } from '../src/workflow/roles.ts';
 import { unknownBoardColumns } from '../src/workflow/validate.ts';
 import { compilePrompt, issueTemplateValue, renderPrompt } from '../src/workflow/template.ts';
 import { RESULT_FIELD_BUDGET, SUMMARY_MAX } from '../src/workflow/results.ts';
@@ -1014,20 +1014,40 @@ describe('shipped WORKFLOW.md issue commands', () => {
       architect: ['laravel-architect'],
       developer: ['laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer'],
       'test-engineer': ['laravel-test-engineer'],
-      docs: null,
+      docs: [],
       reviewer: ['laravel-code-reviewer'],
       'security-auditor': ['laravel-code-reviewer'],
       auditor: ['laravel-architect', 'laravel-code-reviewer'],
       autopilot: ['laravel-architect'],
       analyst: ['laravel-architect'],
       planner: ['laravel-architect'],
-      'brain-gardener': null,
+      'brain-gardener': [],
     });
     for (const role of config.roles ?? []) {
+      assert.ok(Array.isArray(role.agents), `${role.name} has no explicit agents list`);
       for (const name of role.agents ?? []) {
         assert.ok(agents.has(name), `${role.name}: ${name}`);
         if (role.readOnly) assert.ok(agents.get(name)?.readOnly, `${role.name} is read-only, ${name} is not`);
       }
+    }
+  });
+
+  it('denies all five laravel-* agents to docs and brain-gardener in a Laravel workspace', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const config = resolveConfig(definition.config, {
+      workflowPath: shipped,
+      env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' },
+      trackerDefaults,
+    });
+    const all = pluginAgents([toolbox]);
+    const laravel = all.filter((agent) => agent.name.startsWith('laravel-'));
+    assert.equal(laravel.length, 5);
+    for (const name of ['docs', 'brain-gardener']) {
+      const role = (config.roles ?? []).find((entry) => entry.name === name) ?? null;
+      const { allowed, denied } = sessionAgents(all, role, ['laravel-'], ['laravel-']);
+      assert.deepEqual(allowed, [], name);
+      for (const agent of laravel) assert.ok(denied.includes(agent), `${name}: ${agent.name}`);
+      assert.doesNotMatch(await render(name, null, undefined, null, allowed), /Subagents you may start/, name);
     }
   });
 
