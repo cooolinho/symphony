@@ -168,6 +168,11 @@ subagent has no Agent tool of its own. Claude Code allows three levels by defaul
 multiply, and no planned pattern nests; the SDK docs advise limits over instructions. `claude.env` can set another
 value (e.g. `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "2"`). `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` keeps its default.
 
+**Forks are denied.** A fork subagent inherits the whole context and the role's tools, so it bypasses the
+`Agent(symphony:*)` denies. From SDK 0.3.302 forks are on by default, while `package.json` allows `^0.3.288`. Every
+session therefore carries the rule `Agent(fork)` in `disallowedTools` (read-only or not, with or without denied agents)
+and starts with `CLAUDE_CODE_FORK_SUBAGENT=0`. `claude.env` can override the variable; the deny rule stays.
+
 ### Brain tools
 
 With `brain.enabled: true` and a role with `brain: read` or `brain: write` ([`roles.*.brain`](configuration.md#roles)) a second in-process MCP server `brain` offers access to the knowledge vault (the name `brain` is reserved for extensions, like `tracker`): `mcp__brain__brain_search`, `mcp__brain__brain_read`, `mcp__brain__brain_list`, `mcp__brain__brain_vitals`, `mcp__brain__brain_write` and `mcp__brain__brain_append`. `read` registers only `brain_search`, `brain_read`, `brain_list` and `brain_vitals`, `write` all six. Without `brain.enabled` or with `brain: off` (the default) the server is absent. The vault is never in `additionalDirectories` or the workspace. Each call reports a `brain_tool` event.
