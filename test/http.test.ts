@@ -2151,3 +2151,65 @@ describe('GET /api/v1/changes (E6-3a)', () => {
     });
   });
 });
+
+describe('E0-8 subagents per stage, also after the run', () => {
+  type Obj = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const sub = (over: Obj = {}) => ({
+    tool_use_id: 'tu1', subagent_type: 'reviewer', description: 'Review diff', status: 'done', started_at: '2026-10-30T11:02:00.000Z', ended_at: '2026-10-30T11:04:00.000Z',
+    context_tokens: 65819, tool_uses: 3, duration_ms: 110436, models: ['claude-opus-5-5'], reason: null,
+    tokens: { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 528688 }, ...over,
+  });
+  const block = (role: string, run: string, from: string, to: string | null, subagents: Obj[], round = 1) =>
+    ({ role, run, started_at: `2026-10-30T${from}:00.000Z`, ended_at: to === null ? null : `2026-10-30T${to}:00.000Z`, verdict: null, round, model: 'opus', tool_calls: 1, subagents });
+  const render = (team: Obj) => renderPage(AGENT_HTML, { detail: issueDetail(), team }, { url: AGENT_URL });
+  const ended = (blocks: Obj[]) => teamView({ active: null, subagents: { running: [], finished: [] }, blocks });
+
+  it('shows the review of an earlier developer run after that run ended', () => {
+    const page = render(ended([block('developer', 'run-1', '11:00', '11:10', [sub()]), block('tester', 'run-2', '11:10', '11:20', [])]));
+    assert.equal(page.$('stage-subs').hidden, false);
+    const row = page.query('#stage-subs-body .sub-stage[data-role="developer"] .stage-subagent')[0]!;
+    assert.equal(row.querySelector('.sub-name')!.textContent, 'reviewer');
+    assert.equal(row.querySelector('.sub-task')!.textContent, 'Review diff');
+    assert.equal(row.querySelector('.sub-right')!.textContent, 'fertig · 1m 50s · Kontext 66k · abgerechnet 529k');
+    assert.equal(row.querySelector('.sub-model')!.textContent, 'claude-opus-5-5');
+    assert.equal(row.querySelector('.ring'), null);
+  });
+
+  it('shows the reason of an error subagent as text', () => {
+    const reason = 'Agent terminated early due to an API error: weekly limit <b>x</b>';
+    const page = render(ended([block('developer', 'run-1', '11:00', '11:10', [sub({ status: 'error', reason })])]));
+    const row = page.query('#stage-subs-body .stage-subagent')[0]!;
+    assert.ok(row.className.includes('is-error'));
+    assert.ok(row.querySelector('.sub-right')!.textContent!.startsWith('Fehler: Agent terminated early'));
+    assert.ok(row.querySelector('.sub-right')!.textContent!.includes('<b>x</b>'));
+  });
+
+  it('keeps the live board first and the pulse across polls, finished runs follow', () => {
+    const team = () => teamView({ blocks: [block('developer', 'run-1', '11:00', '11:10', [sub()]), block('developer', 'run-3', '11:58', null, [], 2)] });
+    const page = render(team());
+    const rows = page.query('#stage-subs-body .sub-stage[data-role="developer"] .stage-subagent');
+    assert.equal(rows.length, 3);
+    assert.ok(rows[0]!.className.includes('is-running'));
+    assert.ok(rows[0]!.querySelector('.ring'));
+    assert.equal(rows[2]!.querySelector('.sub-name')!.textContent, 'reviewer');
+    const ring = page.query('#stage-subs-body .ring')[0];
+    const next = team();
+    next.subagents.running[0].tokens.total_tokens = 15000;
+    page.render({ detail: issueDetail(), team: next });
+    assert.equal(page.query('#stage-subs-body .ring')[0], ring);
+  });
+
+  it('says so for a live run and a finished run without subagents', () => {
+    const live = render(teamView({ subagents: { running: [], finished: [] }, blocks: [block('developer', 'run-1', '11:00', '11:10', []), block('developer', 'run-2', '11:58', null, [], 2)] }));
+    assert.equal(live.query('#stage-subs-body .sub-run.is-live')[0]!.textContent, 'läuft · R2Diese Session hat (noch) keinen Subagent gestartet');
+    assert.ok(live.query('#stage-subs-body .sub-run')[1]!.textContent!.includes('Keine Subagents in diesem Lauf'));
+  });
+
+  it('renders no block for a stage without runs, and hides the card without any run', () => {
+    const page = render(ended([block('developer', 'run-1', '11:00', '11:10', [])]));
+    assert.deepEqual(page.query('#stage-subs-body .sub-stage').map((x) => x.dataset.role), ['developer']);
+    const none = render(ended([]));
+    assert.equal(none.$('stage-subs').hidden, true);
+    assert.ok(!(none.$('stage-subs-body').textContent ?? '').includes('Keine Session aktiv'));
+  });
+});

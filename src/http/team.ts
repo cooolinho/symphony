@@ -1,7 +1,7 @@
 import type { TimelineEvent } from '../orchestrator/orchestrator.ts';
 import type { PipelineStage } from '../orchestrator/pipeline.ts';
 import type { ResultRow } from '../orchestrator/stage-history.ts';
-import type { subagentsJson } from '../orchestrator/subagents.ts';
+import type { subagentJson, subagentsJson } from '../orchestrator/subagents.ts';
 import { normalizeStateName } from '../workflow/config.ts';
 
 /** The running session as `#runningRow` reports it (only the fields the team view uses). */
@@ -18,12 +18,17 @@ export interface TeamRunning {
   subagents: ReturnType<typeof subagentsJson>;
 }
 
+/** One persisted or live subagent as the API reports it. */
+export type TeamSubagent = ReturnType<typeof subagentJson>;
+
 export interface TeamInput {
   pipeline: PipelineStage[];
   results: Array<Pick<ResultRow, 'role' | 'kind' | 'verdict' | 'target' | 'created_at'>>;
   /** Board column of the issue; null when unknown. */
   issueState: string | null;
   running: TeamRunning | null;
+  /** Persisted subagents per run id (E0-7); absent means none. */
+  runSubagents?: ReadonlyMap<string, readonly TeamSubagent[]>;
   timeline: Array<Pick<TimelineEvent, 'at' | 'kind' | 'event' | 'run' | 'message' | 'detail'>>;
   /** Current time in epoch ms; the module never reads the clock itself. */
   now: number;
@@ -78,6 +83,8 @@ export interface TeamBlock {
   round: number | null;
   model: string | null;
   tool_calls: number;
+  /** Persisted subagents of the run; empty while the run is open (see `TeamView.subagents`) and for archives from before E0-7. */
+  subagents: TeamSubagent[];
 }
 
 export interface TeamHandoff {
@@ -135,7 +142,7 @@ function youStatus(input: TeamInput): SeatStatus {
 }
 
 /**
- * Seats, active session, subagents, score blocks and handoffs of an issue (GET /api/v1/<identifier>/team).
+ * Seats, active session, subagents (live board; persisted ones per run in `blocks[].subagents`), score blocks and handoffs of an issue (GET /api/v1/<identifier>/team).
  * Pure: no I/O, the time comes in as `now`.
  *
  * - `returned`: the role's newest result (not reset/skipped) targets a stage left of its own.
@@ -217,6 +224,7 @@ export function buildTeamView(input: TeamInput): TeamView {
       round: session.round,
       model: session.model,
       tool_calls: toolCounts.get(session.run) ?? 0,
+      subagents: [...(input.runSubagents?.get(session.run) ?? [])],
     }));
 
   const handoffs: TeamHandoff[] = [];
