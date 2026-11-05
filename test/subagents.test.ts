@@ -76,6 +76,7 @@ describe('subagent board', () => {
           tool_uses: null,
           duration_ms: null,
           models: [],
+          reason: null,
           tokens: { input_tokens: 1, output_tokens: 2, cache_read_tokens: 3, cache_write_tokens: 4, total_tokens: 10 },
         },
       ],
@@ -91,9 +92,37 @@ describe('subagent board', () => {
           tool_uses: null,
           duration_ms: null,
           models: [],
+          reason: null,
           tokens: { input_tokens: 1, output_tokens: 2, cache_read_tokens: 3, cache_write_tokens: 4, total_tokens: 10 },
         },
       ],
     });
+  });
+});
+
+describe('subagent board: reason (#486)', () => {
+  it('serves the reason of a failed subagent and null without one', () => {
+    const board = emptySubagents();
+    applySubagent(board, { ...run('a', 'error'), reason: 'Agent terminated early due to an API error: weekly limit' });
+    applySubagent(board, run('b', 'ok'));
+    const [a, b] = subagentsJson(board).finished;
+    assert.equal(a?.reason, 'Agent terminated early due to an API error: weekly limit');
+    assert.equal(b?.reason, null);
+  });
+
+  it('replaces the entry of a subagent that ended ok by its later error correction', () => {
+    const board = emptySubagents();
+    applySubagent(board, run('a', 'ok'));
+    applySubagent(board, { ...run('a', 'error'), reason: 'late failure' });
+    assert.equal(board.finished.length, 1);
+    assert.deepEqual([board.finished[0]?.status, board.finished[0]?.reason], ['error', 'late failure']);
+  });
+
+  it('keeps the reason of a run that closeSubagents ends', () => {
+    const board = emptySubagents();
+    applySubagent(board, { ...run('a'), reason: 'task stopped' });
+    closeSubagents(board, new Date('2026-01-01T11:00:00Z'));
+    assert.equal(board.finished[0]?.status, 'error');
+    assert.equal(board.finished[0]?.reason, 'task stopped');
   });
 });

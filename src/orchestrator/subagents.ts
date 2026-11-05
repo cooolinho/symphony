@@ -46,6 +46,7 @@ function subagentJson(run: SubagentRun) {
     tool_uses: run.toolUses,
     duration_ms: run.durationMs,
     models: [...run.models],
+    reason: run.reason ?? null,
     tokens: {
       input_tokens: inputTokens,
       output_tokens: outputTokens,

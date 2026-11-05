@@ -748,6 +748,45 @@ describe('subagent measures: team API and tile (#485)', () => {
     assert.match(row.querySelector('.sub-right')!.textContent ?? '', /Kontext 30k · abgerechnet 20k/);
     assert.equal(row.querySelector('.sub-model')!.textContent, 'claude-opus-5-5, claude-sonnet-5-5');
   });
+
+  describe('error reason on the tile (#486)', () => {
+    const LIMIT = 'Agent terminated early due to an API error: You have hit your weekly limit';
+    it('shows the error and its reason for a failed subagent, not "fertig"', () => {
+      const page = tile({ subagents: { running: [], finished: [entry('error', { reason: LIMIT })] } });
+      const row = page.query('#stage-subs-body .stage-subagent')[0]!;
+      const right = row.querySelector('.sub-right')!.textContent ?? '';
+      assert.match(right, /Fehler/);
+      assert.match(right, /weekly limit/);
+      assert.doesNotMatch(right, /fertig/);
+      assert.ok(/is-error/.test(row.getAttribute('class') ?? ''), 'error class on the tile');
+    });
+
+    it('shows a failed subagent without a reason as error and a finished one as "fertig" without error class', () => {
+      const page = tile({ subagents: { running: [], finished: [entry('error', { reason: null }, 1000), entry('ok', {}, 2000)] } });
+      const rows = page.query('#stage-subs-body .stage-subagent'); // newest first, order is not under test
+      const bad = rows.find((r) => /abgerechnet 1\.0k|abgerechnet 1k/.test(r.textContent ?? ''));
+      const good = rows.find((r) => /abgerechnet 2\.0k|abgerechnet 2k/.test(r.textContent ?? ''));
+      assert.ok(bad && good, 'both rows rendered');
+      assert.match(bad!.querySelector('.sub-right')!.textContent ?? '', /Fehler/);
+      assert.doesNotMatch(good!.querySelector('.sub-right')!.textContent ?? '', /Fehler/);
+      assert.ok(!/is-error/.test(good!.getAttribute('class') ?? ''));
+    });
+
+    it('rebuilds the tile when a finished ok subagent turns into an error on the next poll', () => {
+      const page = tile({ subagents: { running: [], finished: [entry('ok', {}, 5000)] } });
+      assert.doesNotMatch(page.query('#stage-subs-body .stage-subagent')[0]!.textContent ?? '', /Fehler/);
+      page.render({ detail: issueDetail(), team: teamView({ subagents: { running: [], finished: [{ ...entry('error', { reason: 'late failure' }, 5000), tool_use_id: 'ok-5000' }] } }) });
+      const row = page.query('#stage-subs-body .stage-subagent')[0]!;
+      assert.match(row.textContent ?? '', /Fehler: late failure/);
+    });
+
+    it('escapes the reason as text', () => {
+      const page = tile({ subagents: { running: [], finished: [entry('error', { reason: '<img src=x onerror=alert(1)>' })] } });
+      const row = page.query('#stage-subs-body .stage-subagent')[0]!;
+      assert.equal(row.querySelector('img'), null);
+      assert.match(row.textContent ?? '', /<img/);
+    });
+  });
 });
 
 describe('agent trace API', () => {
