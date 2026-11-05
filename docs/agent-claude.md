@@ -148,6 +148,11 @@ addition says the same: use the results in the same turn and never end a turn to
 variable to `0`; if a session then ends without a result while tasks still run, the "Stage ended without a result"
 comment names them, and `turn_completed` carries them in `detail.background_tasks`.
 
+**Forks are denied.** A fork subagent inherits the whole context and the role's tools, so it bypasses the
+`Agent(symphony:*)` denies. From SDK 0.3.302 forks are on by default, while `package.json` allows `^0.3.288`. Every
+session therefore carries the rule `Agent(fork)` in `disallowedTools` (read-only or not, with or without denied agents)
+and starts with `CLAUDE_CODE_FORK_SUBAGENT=0`. `claude.env` can override the variable; the deny rule stays.
+
 ### Brain tools
 
 With `brain.enabled: true` and a role with `brain: read` or `brain: write` ([`roles.*.brain`](configuration.md#roles)) a second in-process MCP server `brain` offers access to the knowledge vault (the name `brain` is reserved for extensions, like `tracker`): `mcp__brain__brain_search`, `mcp__brain__brain_read`, `mcp__brain__brain_list`, `mcp__brain__brain_vitals`, `mcp__brain__brain_write` and `mcp__brain__brain_append`. `read` registers only `brain_search`, `brain_read`, `brain_list` and `brain_vitals`, `write` all six. Without `brain.enabled` or with `brain: off` (the default) the server is absent. The vault is never in `additionalDirectories` or the workspace. Each call reports a `brain_tool` event.

@@ -52,6 +52,12 @@ const CLIENT_APP = 'symphony/0.1.0';
  * session, so a background task never reports back. claude.env can set it to `0`.
  */
 const BACKGROUND_TASKS_OFF = { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1' };
+/**
+ * Fork subagents inherit the whole context and the role tools and bypass the Agent(<plugin>:<name>) denies; SDK 0.3.302
+ * and later turn them on by default. claude.env can set it to `1`.
+ */
+const FORK_SUBAGENTS_OFF = { CLAUDE_CODE_FORK_SUBAGENT: '0' };
+const FORK_AGENT_TOOL = 'Agent(fork)';
 const MCP_STATUS_POLL_MS = 500;
 /**
  * Deny rules for a read-only session. Tool names as in the Agent SDK's permission rule validator
@@ -346,7 +352,7 @@ class ClaudeSession implements AgentSession {
     const deniedAgents = this.#params.deniedAgents ?? [];
     const options: Options = {
       cwd,
-      env: { ...env, ...BACKGROUND_TASKS_OFF, ...extensions?.env, ...config.env, CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP },
+      env: { ...env, ...BACKGROUND_TASKS_OFF, ...FORK_SUBAGENTS_OFF, ...extensions?.env, ...config.env, CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP },
       abortController: this.#abort,
       sessionId: this.threadId,
       title: truncate(`${issue.identifier}: ${issue.title}`, 200),
@@ -354,7 +360,7 @@ class ClaudeSession implements AgentSession {
       canUseTool: this.#canUseTool,
       allowedTools: [...new Set([...config.allowedTools, ...toolNames, ...brainNames, ...extensionAllowed])],
       disallowedTools: [
-        ...new Set([...config.disallowedTools, ASK_USER_TOOL, ...extensionDenied, ...readOnlyDenied, ...deniedAgents.map((name) => `Agent(${name})`)]),
+        ...new Set([...config.disallowedTools, ASK_USER_TOOL, FORK_AGENT_TOOL, ...extensionDenied, ...readOnlyDenied, ...deniedAgents.map((name) => `Agent(${name})`)]),
       ],
       settingSources: config.settingSources,
       strictMcpConfig: config.strictMcpConfig,
