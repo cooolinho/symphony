@@ -63,9 +63,10 @@ const CLIENT_APP = 'symphony/0.1.0';
 /**
  * Session defaults, overridable through claude.env. Subagents and commands run in the foreground: when a turn ends,
  * Symphony decides what happens next and may end the session, so a background task never reports back. Subagent
- * nesting is capped at one level, so a subagent has no Agent tool.
+ * nesting is capped at one level, so a subagent has no Agent tool. The built-in agents (claude, Explore, general-purpose,
+ * Plan, statusline-setup) are off, so every Agent call names a `subagent_type`.
  */
-const SESSION_ENV_DEFAULTS = { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '1', CLAUDE_CODE_FORK_SUBAGENT: '0' };
+const SESSION_ENV_DEFAULTS = { CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: '1', CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '1', CLAUDE_CODE_FORK_SUBAGENT: '0' };
 /**
  * Fork subagents inherit the whole context and the role tools and bypass the Agent(<plugin>:<name>) denies; SDK 0.3.302
  * and later turn them on by default (CLAUDE_CODE_FORK_SUBAGENT in the defaults above). claude.env can set it to `1`.
@@ -82,7 +83,7 @@ const READ_ONLY_DENY = ['Edit', 'Write', 'NotebookEdit', 'Bash(git commit:*)', '
 /** The tool that starts a subagent; older Claude Code versions call it `Task`. */
 const AGENT_TOOLS = ['Agent', 'Task'];
 
-/** `subagent_type` of an Agent tool call; Claude Code's default when unset is `general-purpose`. */
+/** `subagent_type` of an Agent tool call; Claude Code's default when unset is `general-purpose`; kept as the fallback for old logs. */
 function subagentOf(input: unknown): string {
   const value = typeof input === 'object' && input !== null ? (input as Record<string, unknown>).subagent_type : undefined;
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : 'general-purpose';
