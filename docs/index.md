@@ -19,6 +19,7 @@ Central overview of all Symphony documents. For an overview of the project, see 
 - [results.md](results.md): result contracts of the pipeline stages: kinds, verdicts, consistency rules, comment marker, size cap and the `report_result` tool
 - [concepts/multi-agent.md](concepts/multi-agent.md): the multi-agent pipeline: architecture, decisions and the GitHub spike results
 - [concepts/multi-backend.md](concepts/multi-backend.md): concept for several agent backends with failover on session limits
+- [concepts/subagents.md](concepts/subagents.md): concept for subagents per role: current state, evidence, best practices per role and the staged plan
 - [conformance.md](conformance.md): differences from the specification and implementation-defined behavior
 - [laravel-repositories.md](laravel-repositories.md): conventions for Laravel repositories
 - [laravel-subagents.md](laravel-subagents.md): the Laravel subagents and the workflow roles: findings from the logs and the plan
