@@ -235,6 +235,39 @@ describe('claude agent runner', () => {
     assert.equal(allowed.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '0');
   });
 
+  it('caps subagent nesting at one level unless claude.env raises it', async () => {
+    const options = await sessionOptions({});
+    assert.equal(options.env?.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, '1');
+    const raised = await sessionOptions({ claude: { env: { CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '2' } } });
+    assert.equal(raised.env?.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, '2');
+  });
+
+  it('keeps both session defaults together and each overridable on its own', async () => {
+    const defaults = await sessionOptions({});
+    assert.equal(defaults.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '1');
+    assert.equal(defaults.env?.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, '1');
+    const depthOnly = await sessionOptions({ claude: { env: { CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '3' } } });
+    assert.equal(depthOnly.env?.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, '3');
+    assert.equal(depthOnly.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '1');
+    const backgroundOnly = await sessionOptions({ claude: { env: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '0' } } });
+    assert.equal(backgroundOnly.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '0');
+    assert.equal(backgroundOnly.env?.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, '1');
+    assert.equal(depthOnly.env?.PATH, '/usr/bin');
+  });
+
+  it('claude.env wins over an extension value for the subagent depth', async () => {
+    const extensions: SessionExtensions = { mcpServers: {}, additionalDirectories: [], contextSections: [], env: { CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '5' } };
+    const fromExtension = await sessionOptions({ extensions });
+    assert.equal(fromExtension.env?.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, '5');
+    const fromConfig = await sessionOptions({ extensions, claude: { env: { CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '2' } } });
+    assert.equal(fromConfig.env?.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, '2');
+  });
+
+  it('does not set a subagent concurrency limit by default', async () => {
+    const options = await sessionOptions({});
+    assert.equal(options.env?.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS, undefined);
+  });
+
   it('reports the background tasks still running when a turn ends', async () => {
     let turn = 0;
     const fake = fakeQuery((_prompt, _options, emit) => {

@@ -51,10 +51,11 @@ const STOP_GRACE_MS = 10_000;
 const STDERR_TAIL = 4_000;
 const CLIENT_APP = 'symphony/0.1.0';
 /**
- * Subagents and commands run in the foreground: when a turn ends, Symphony decides what happens next and may end the
- * session, so a background task never reports back. claude.env can set it to `0`.
+ * Session defaults, overridable through claude.env. Subagents and commands run in the foreground: when a turn ends,
+ * Symphony decides what happens next and may end the session, so a background task never reports back. Subagent
+ * nesting is capped at one level, so a subagent has no Agent tool.
  */
-const BACKGROUND_TASKS_OFF = { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1' };
+const SESSION_ENV_DEFAULTS = { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '1' };
 const MCP_STATUS_POLL_MS = 500;
 /**
  * Deny rules for a read-only session. Tool names as in the Agent SDK's permission rule validator
@@ -351,7 +352,7 @@ class ClaudeSession implements AgentSession {
     const deniedAgents = this.#params.deniedAgents ?? [];
     const options: Options = {
       cwd,
-      env: { ...env, ...BACKGROUND_TASKS_OFF, ...extensions?.env, ...config.env, CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP },
+      env: { ...env, ...SESSION_ENV_DEFAULTS, ...extensions?.env, ...config.env, CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP },
       abortController: this.#abort,
       sessionId: this.threadId,
       title: truncate(`${issue.identifier}: ${issue.title}`, 200),
