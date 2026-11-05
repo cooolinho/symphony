@@ -15,6 +15,8 @@ export interface ContextSnapshot {
   percent: number | null;
   /** Highest percent of the session so far; null while none could be computed. */
   peakPercent: number | null;
+  /** Highest token count of a single call of the session so far; the base of the peak against a reported window. */
+  peakTokens?: number;
   /** Automatic compactions (`compact_boundary`) so far. */
   compacts: number;
   /** Tokens before the latest compaction; null while there was none. */

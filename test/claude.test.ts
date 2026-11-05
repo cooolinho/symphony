@@ -318,12 +318,12 @@ describe('claude agent runner', () => {
       await session.stop();
       return events;
     };
-    const contexts = (events: AgentEvent[]) => events.filter((e) => e.context !== undefined).map((e) => e.context);
+    const contexts = (events: AgentEvent[]) => events.filter((e) => e.event === 'model_call' && e.context !== undefined).map((e) => e.context);
 
     it('relates input, cache read and cache creation of the latest call to a 200k window', async () => {
       const events = await run({ contextWindow: () => 200_000 }, (emit) => emit(ctxCall('m1', 10_000, 30_000, 10_000)));
       assert.deepEqual(contexts(events), [
-        { model: 'claude-opus-5-5', window: 200_000, tokens: 50_000, percent: 25, peakPercent: 25, compacts: 0, preTokens: null },
+        { model: 'claude-opus-5-5', window: 200_000, tokens: 50_000, percent: 25, peakPercent: 25, compacts: 0, preTokens: null, peakTokens: 50_000 },
       ]);
     });
 
@@ -335,7 +335,7 @@ describe('claude agent runner', () => {
 
     it('has no percent when no window can be determined', async () => {
       const events = await run({ contextWindow: () => null }, (emit) => emit(ctxCall('m1', 10, 20, 30)));
-      assert.deepEqual(contexts(events)[0], { model: 'claude-opus-5-5', window: null, tokens: 60, percent: null, peakPercent: null, compacts: 0, preTokens: null });
+      assert.deepEqual(contexts(events)[0], { model: 'claude-opus-5-5', window: null, tokens: 60, percent: null, peakPercent: null, compacts: 0, preTokens: null, peakTokens: 60 });
     });
 
     it('counts compactions, remembers pre_tokens and keeps the peak', async () => {

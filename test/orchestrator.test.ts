@@ -423,6 +423,51 @@ describe('roles', () => {
     assert.equal(elsewhere.reviewer?.turns[0], 'reviewer:');
   });
 
+  it('denies every plugin subagent to a role with "agents: []", also in a Laravel workspace', async () => {
+    const plugin = tempDir();
+    fs.mkdirSync(path.join(plugin, '.claude-plugin'));
+    fs.writeFileSync(path.join(plugin, '.claude-plugin', 'plugin.json'), '{"name":"kit"}');
+    fs.mkdirSync(path.join(plugin, 'agents'));
+    const names = ['laravel-architect', 'laravel-code-reviewer', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer'];
+    for (const name of names) fs.writeFileSync(path.join(plugin, 'agents', `${name}.md`), `---\nname: ${name}\ndescription: ${name} work\n---\nBody\n`);
+    const laravel: WorkspaceIntegration = {
+      id: 'fake-laravel',
+      configKey: 'fake_section',
+      agentPrefix: 'laravel-',
+      resolveConfig: () => ({ config: {}, errors: [], warnings: [] }),
+      prepare: async () => ({ mcpServers: {}, contextSections: [], additionalDirectories: [], env: {}, agentPrefixes: ['laravel-'] }),
+    };
+    const front = {
+      ...rolesFront,
+      claude: { ...rolesFront.claude, plugins: [plugin] },
+      roles: {
+        developer: { states: ['Todo'] },
+        reviewer: { states: ['Agent review'], agents: [] },
+      },
+      fake_section: {},
+    };
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    const s = setup({
+      runner,
+      front,
+      prompt: '{{ role }}:{% for a in agents %} {{ a.name }}{% endfor %}',
+      integrations: [laravel],
+      issues: [makeIssue({ id: 'd' }), makeIssue({ id: 'r', state: 'Agent review' })],
+    });
+    await s.orchestrator.tickNow();
+    await until(() => runner.sessions.length === 2 && runner.sessions.every((x) => x.turns.length === 1), 3_000, 'two sessions');
+    const byRole = (role: string) => runner.sessions.find((x) => x.turns[0]?.startsWith(`${role}:`));
+    // Unset still means all (default unchanged) ...
+    assert.equal(byRole('developer')?.turns[0], `developer: ${names.map((name) => `kit:${name}`).join(' ')}`);
+    assert.deepEqual(byRole('developer')?.params.deniedAgents, []);
+    // ... an explicit empty list denies every agent, qualified and bare, and the prompt has none.
+    assert.equal(byRole('reviewer')?.turns[0], 'reviewer:');
+    assert.deepEqual(
+      [...(byRole('reviewer')?.params.deniedAgents ?? [])].sort(),
+      names.flatMap((name) => [name, `kit:${name}`]).sort(),
+    );
+  });
+
   it('lets a "Model:" label override the role model', async () => {
     const runner = new FakeRunner(() => new Promise(() => undefined));
     const s = setup({

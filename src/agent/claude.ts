@@ -729,6 +729,7 @@ class ClaudeSession implements AgentSession {
         tokens,
         percent,
         peakPercent: percent === null ? (previous?.peakPercent ?? null) : Math.max(previous?.peakPercent ?? 0, percent),
+        peakTokens: Math.max(previous?.peakTokens ?? 0, tokens),
         compacts: previous?.compacts ?? 0,
         preTokens: previous?.preTokens ?? null,
       };
@@ -748,6 +749,7 @@ class ClaudeSession implements AgentSession {
       tokens: previous?.tokens ?? 0,
       percent: previous?.percent ?? null,
       peakPercent: previous?.peakPercent ?? null,
+      peakTokens: previous?.peakTokens ?? 0,
       compacts: (previous?.compacts ?? 0) + 1,
       preTokens,
     };
@@ -865,6 +867,23 @@ class ClaudeSession implements AgentSession {
     return totals;
   }
 
+  /** A window the result reports for the context model overrides the file: the peak is recomputed against it. */
+  #applyReportedWindow(message: SDKResultMessage): void {
+    const previous = this.#context;
+    if (previous === null) return;
+    const entries = Object.entries(message.modelUsage ?? {});
+    const wanted = previous.model.toLowerCase();
+    const entry = entries.find(([name]) => name.toLowerCase() === wanted) ?? entries.find(([name]) => wanted.includes(name.toLowerCase()) || name.toLowerCase().includes(wanted));
+    const reported = (entry?.[1] as { contextWindow?: unknown } | undefined)?.contextWindow;
+    if (typeof reported !== 'number' || !Number.isFinite(reported) || reported <= 0) return;
+    this.#context = {
+      ...previous,
+      window: reported,
+      percent: Math.round((previous.tokens / reported) * 1000) / 10,
+      peakPercent: Math.round(((previous.peakTokens ?? previous.tokens) / reported) * 1000) / 10,
+    };
+  }
+
   #onResult(message: SDKResultMessage): void {
     const reportedSuccess = message.subtype === 'success' && !message.is_error;
     // A result without model usage (some error results) keeps the totals counted from the model calls.
@@ -877,10 +896,12 @@ class ClaudeSession implements AgentSession {
     const succeeded = reportedSuccess && sessionLimit === null;
     const failure = reportedSuccess ? `turn ended with a usage limit: ${truncate(oneLine(sessionLimit?.text ?? ''), 500)}` : describeResult(message);
     const backgroundTasks = [...this.#backgroundTasks];
+    this.#applyReportedWindow(message);
     this.#emit(succeeded ? 'turn_completed' : 'turn_failed', {
       message: succeeded ? `turn completed (${message.num_turns} model calls)` : failure,
       usage,
       modelUsage: this.#resultUsage,
+      ...(this.#context ? { context: { ...this.#context } } : {}),
       costUsd: message.total_cost_usd,
       detail: {
         subtype: message.subtype,

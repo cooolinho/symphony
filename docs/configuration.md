@@ -459,7 +459,7 @@ roles:
 | `wait_for_sub_issues` | `false` | `true` dispatches the role's issues only while none of their sub-issues is open. See [Waves](#waves-wait_for_sub_issues). |
 | `brain_approved_writes` | `true` | Boolean, only with `brain: write`. `false` makes `brain_write` and `brain_append` reject an approved note and any `status: approved` (reason `approved_readonly` / `approved_status`); `true` adds no gate (approved notes stay read-only for agents by the general rule). The shipped `brain-gardener` sets `false`. See [brain.md](brain.md#gardener). |
 | `brain` | `off` | String, one of `off`, `read`, `write`. Brain tools of the role's sessions: `off` none, `read` only `brain_search`, `brain_read`, `brain_list`, `brain_vitals`, `write` also `brain_write` and `brain_append`. Only has an effect with [`brain.enabled`](#brain); without it no role gets brain tools. Roles are never given the vault as a directory. The shipped `WORKFLOW.md` sets `write` for `issue-analyst`, `architect`, `reviewer` and `brain-gardener`, `read` for `developer`, `test-engineer` and `security-auditor`; `docs` and the command roles stay `off`. An existing `WORKFLOW.md` without the field gives no role brain tools anymore. Roles with `read` or `write` get the prompt section `roles/brain.md`. See [brain.md](brain.md#role-switch). |
-| `agents` | all | Plugin subagents (`agents/<name>.md` in [`claude.plugins`](#claude), names without the plugin prefix, e.g. `[laravel-code-reviewer]`) the role may start; `[]` allows none. See [Subagents per role](#subagents-per-role). |
+| `agents` | all (the shipped roles list theirs explicitly) | Plugin subagents (`agents/<name>.md` in [`claude.plugins`](#claude), names without the plugin prefix, e.g. `[laravel-code-reviewer]`) the role may start; `[]` allows none. See [Subagents per role](#subagents-per-role). |
 | `claude` | `{}` | Overrides of `model`, `effort`, `allowed_tools`, `disallowed_tools`, `append_system_prompt`, `max_budget_usd` (same meaning as in [`claude`](#claude)). |
 
 #### Result-driven transitions
@@ -935,7 +935,7 @@ The plugins in `claude.plugins` ship subagents (`agents/<name>.md`; Symphony's t
 [laravel-subagents.md](laravel-subagents.md)). Claude Code offers them as `<plugin>:<name>`, e.g.
 `symphony:laravel-architect`. For each session Symphony decides which of them the agent may start:
 
-1. **The role's list.** `agents` unset allows every plugin subagent, a list only those, `[]` none.
+1. **The role's list.** `agents` unset allows every plugin subagent, a list only those, `[]` none. "Unset = all" stays the default for custom workflows and for workflows without `roles`; every role of the shipped `WORKFLOW.md` lists its agents explicitly (`docs` and `brain-gardener` with `[]`, so they never start a `laravel-*` persona).
 2. **Read-only roles** only get subagents that cannot edit files: their front matter denies `Edit` and `Write`
    (`disallowedTools: Edit, Write, NotebookEdit`) or lists `tools` without them. This applies with `agents` unset too.
 3. **Project type.** A subagent whose name starts with a workspace integration's prefix belongs to it: `laravel-*`
@@ -1401,13 +1401,15 @@ claude-opus-4-8: { input: 5.00, output: 25.00 }
 - A model id reported by Claude Code (e.g. `claude-opus-5-5`) uses the exact entry if there is one, else the longest
   key contained in the id (`opus`), else `default`. Without the file, every model is priced at 5 / 25.
 - `context_window` (optional, a positive whole number of tokens) is the model's context window. It is looked up like the
-  price (exact entry, else longest contained key, else `default`); the shipped file sets `default: 200000`. A model
+  price (exact entry, else longest contained key, else `default`); the shipped file sets `default: 200000` and 1,000,000 for `opus`, `sonnet` and `fable`. A model
   name with the suffix `[1m]` (e.g. `opus[1m]`) always gets 1,000,000 tokens, ahead of any entry. Symphony relates
   `input + cache_read + cache_creation` tokens of the latest call of the main conversation (subagents excluded) to this
   window: `running[].context` in `GET /api/v1/state` is `{ tokens, window, percent, compacts }`, with `window` and
   `percent` `null` when no window can be determined (no `context_window` on the entry or on `default`). Automatic
   compactions (`compact_boundary`) are counted in `compacts`. Add `context_window` to a custom `model-costs.yml`, e.g. a
-  Docker mount, to get percentages.
+  Docker mount, to get percentages. The live value during a turn always comes from the file. When the result of a turn
+  reports a window (`modelUsage[<model>].contextWindow`), that window overrides the file for the peak: `context_peak_percent`
+  in `run_finished` is the peak tokens against the reported window, else against the file.
 - Cost = input × input price + output × output price + cache reads × cache_read + cache writes × cache_write.
 
 ## Repository logs
