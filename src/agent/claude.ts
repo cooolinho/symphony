@@ -16,6 +16,9 @@ import {
   type SDKRateLimitInfo,
   type SDKResultMessage,
   type SDKSystemMessage,
+  type SDKTaskNotificationMessage,
+  type SDKTaskProgressMessage,
+  type SDKTaskStartedMessage,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import { addUsage, emptyUsage, type ModelTokenUsage } from '../costs/pricing.ts';
@@ -23,6 +26,16 @@ import type { AgentToolSpec, Issue, ToolResult } from '../tracker/types.ts';
 import { AsyncQueue, settledWithin, sleep, withTimeout } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
 import { oneLine, tail, truncate } from '../util/text.ts';
+
+/** Start of the plain-text `tool_result` of a foreground subagent that an API error or the usage limit killed. */
+const API_ERROR_PREFIX = 'Agent terminated early due to an API error';
+
+/** The text of a `tool_result` content: a string or an array of text blocks. */
+function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.map((part) => (part !== null && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string' ? (part as { text: string }).text : '')).join('\n').trim();
+}
 import { isWholeLimitMessage, limitScopeOf, parseLimitMessage } from './rate-limit.ts';
 import { forgetProcessGroup, killProcessGroup, processGroupSpawner } from './spawn.ts';
 import { contextWindowSuffix } from './model-name.ts';
@@ -48,15 +61,15 @@ const STOP_GRACE_MS = 10_000;
 const STDERR_TAIL = 4_000;
 const CLIENT_APP = 'symphony/0.1.0';
 /**
- * Subagents and commands run in the foreground: when a turn ends, Symphony decides what happens next and may end the
- * session, so a background task never reports back. claude.env can set it to `0`.
+ * Session defaults, overridable through claude.env. Subagents and commands run in the foreground: when a turn ends,
+ * Symphony decides what happens next and may end the session, so a background task never reports back. Subagent
+ * nesting is capped at one level, so a subagent has no Agent tool.
  */
-const BACKGROUND_TASKS_OFF = { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1' };
+const SESSION_ENV_DEFAULTS = { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '1', CLAUDE_CODE_FORK_SUBAGENT: '0' };
 /**
  * Fork subagents inherit the whole context and the role tools and bypass the Agent(<plugin>:<name>) denies; SDK 0.3.302
- * and later turn them on by default. claude.env can set it to `1`.
+ * and later turn them on by default (CLAUDE_CODE_FORK_SUBAGENT in the defaults above). claude.env can set it to `1`.
  */
-const FORK_SUBAGENTS_OFF = { CLAUDE_CODE_FORK_SUBAGENT: '0' };
 const FORK_AGENT_TOOL = 'Agent(fork)';
 const MCP_STATUS_POLL_MS = 500;
 /**
@@ -235,6 +248,8 @@ class ClaudeSession implements AgentSession {
   #sessionModel: string | null = null;
   /** The subagents still running, by the id of the tool call that started them, with their model calls by message id. */
   #subagents = new Map<string, { run: SubagentRun; calls: Map<string, ModelTokenUsage> }>();
+  /** The subagents that ended, by tool call id: a `task_notification` may arrive after the `tool_result`. */
+  #endedSubagents = new Map<string, SubagentRun>();
   /** Descriptions of the live background tasks, as the latest `background_tasks_changed` lists them. */
   #backgroundTasks: string[] = [];
 
@@ -352,7 +367,7 @@ class ClaudeSession implements AgentSession {
     const deniedAgents = this.#params.deniedAgents ?? [];
     const options: Options = {
       cwd,
-      env: { ...env, ...BACKGROUND_TASKS_OFF, ...FORK_SUBAGENTS_OFF, ...extensions?.env, ...config.env, CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP },
+      env: { ...env, ...SESSION_ENV_DEFAULTS, ...extensions?.env, ...config.env, CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP },
       abortController: this.#abort,
       sessionId: this.threadId,
       title: truncate(`${issue.identifier}: ${issue.title}`, 200),
@@ -388,7 +403,7 @@ class ClaudeSession implements AgentSession {
     if (config.executable !== null) options.pathToClaudeCodeExecutable = config.executable;
     if (config.plugins.length > 0) options.plugins = config.plugins.map((plugin) => ({ type: 'local' as const, path: plugin }));
     if (config.skills !== null) options.skills = config.skills;
-    // The deny rules hide the subagents; the hook refuses a call that names one anyway.
+    // The deny rules refuse the call, but the denied agents still appear in `init.agents`; the hook also refuses a call that names one.
     if (deniedAgents.length > 0) options.hooks = { PreToolUse: [{ matcher: AGENT_TOOLS.join('|'), hooks: [this.#refuseDeniedAgents] }] };
     if ((extensions?.additionalDirectories.length ?? 0) > 0) options.additionalDirectories = extensions?.additionalDirectories;
     const mcpServers: NonNullable<Options['mcpServers']> = {};
@@ -511,6 +526,11 @@ class ClaudeSession implements AgentSession {
           this.#emit('permission_denied', { message: `${message.tool_name} denied: ${truncate(oneLine(message.message), 200)}` });
         } else if (message.subtype === 'compact_boundary') {
           this.#onCompact(message);
+        } else if (
+          (message.subtype === 'task_started' || message.subtype === 'task_progress' || message.subtype === 'task_notification') &&
+          this.#onTask(message)
+        ) {
+          // Matched to a subagent by its tool call id: the figures are on the board, not in the timeline.
         } else {
           this.#emit('notification', { message: `system/${message.subtype}` });
         }
@@ -670,6 +690,7 @@ class ClaudeSession implements AgentSession {
     this.#addSubagentUsage(message);
     // One event per tool call (a message may call several tools in parallel); a text event only without tool calls.
     let calls = 0;
+    const subagent = message.parent_tool_use_id != null;
     for (const block of message.message.content) {
       if (block.type !== 'tool_use') continue;
       calls++;
@@ -677,7 +698,7 @@ class ClaudeSession implements AgentSession {
       const agent = AGENT_TOOLS.includes(block.name) ? subagentOf(block.input) : null;
       this.#emit('tool_use', {
         message: summarizeToolInput(block.name, block.input),
-        detail: { tool: block.name, ...(skill !== null ? { skill } : {}), ...(agent !== null ? { agent } : {}) },
+        detail: { tool: block.name, ...(skill !== null ? { skill } : {}), ...(agent !== null ? { agent } : {}), ...(subagent ? { subagent: true } : {}) },
       });
       if (agent !== null && typeof block.id === 'string') this.#startSubagent(block.id, agent, block.input);
     }
@@ -765,6 +786,11 @@ class ClaudeSession implements AgentSession {
       endedAt: null,
       status: 'running',
       tokens: emptyUsage(),
+      contextTokens: null,
+      toolUses: null,
+      durationMs: null,
+      models: [],
+      reason: null,
     };
     this.#subagents.set(toolUseId, { run, calls: new Map() });
     this.#emitSubagent(run, `subagent ${subagentType} started${run.description === '' ? '' : `: ${run.description}`}`, {
@@ -780,6 +806,8 @@ class ClaudeSession implements AgentSession {
     const entry = typeof parent === 'string' ? this.#subagents.get(parent) : undefined;
     const usage = message.message.usage;
     if (entry === undefined || usage === undefined || usage === null) return;
+    const model: unknown = message.message.model;
+    if (typeof model === 'string' && !entry.run.models.includes(model)) entry.run.models.push(model);
     entry.calls.set(message.message.id ?? `${parent}:${entry.calls.size}`, {
       inputTokens: usage.input_tokens ?? 0,
       outputTokens: usage.output_tokens ?? 0,
@@ -791,6 +819,38 @@ class ClaudeSession implements AgentSession {
     this.#emitSubagent(entry.run);
   }
 
+  /**
+   * Takes Claude Code's own figures of a subagent from its `task_*` message, found by the tool call id; false when no
+   * subagent matches. The notification may come after the `tool_result`, so ended runs are searched too.
+   */
+  #onTask(message: SDKTaskStartedMessage | SDKTaskProgressMessage | SDKTaskNotificationMessage): boolean {
+    const id = message.tool_use_id;
+    const run = typeof id === 'string' ? (this.#subagents.get(id)?.run ?? this.#endedSubagents.get(id)) : undefined;
+    if (run === undefined) return false;
+    if (message.subtype !== 'task_started') {
+      const usage = message.usage;
+      if (usage !== undefined && usage !== null) {
+        if (Number.isFinite(usage.total_tokens)) run.contextTokens = usage.total_tokens;
+        if (Number.isFinite(usage.tool_uses)) run.toolUses = usage.tool_uses;
+        if (Number.isFinite(usage.duration_ms)) run.durationMs = usage.duration_ms;
+      }
+    }
+    if (message.subtype === 'task_notification' && (message.status === 'failed' || message.status === 'stopped')) {
+      const summary = typeof message.summary === 'string' ? truncate(oneLine(message.summary), 200) : '';
+      const reason = summary === '' ? `task ${message.status}` : summary;
+      if (run.status === 'running') {
+        run.reason = reason; // the tool_result that follows ends it as error
+      } else {
+        run.status = 'error';
+        run.reason = reason;
+        this.#emitEnded(run);
+        return true;
+      }
+    }
+    this.#emitSubagent(run);
+    return true;
+  }
+
   /** Ends the subagents whose Agent tool call a `tool_result` block answers; results of their own tools are ignored. */
   #endSubagents(message: SDKUserMessage): void {
     const content: unknown = message.message.content;
@@ -798,31 +858,43 @@ class ClaudeSession implements AgentSession {
     for (const block of content as Array<Record<string, unknown>>) {
       if (block?.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue;
       const entry = this.#subagents.get(block.tool_use_id);
-      if (entry !== undefined) this.#endSubagent(entry.run, block.is_error === true ? 'error' : 'ok');
+      if (entry === undefined) continue;
+      const text = toolResultText(block.content);
+      const reason = block.is_error === true || text.startsWith(API_ERROR_PREFIX) ? truncate(oneLine(text), 200) || 'error' : (entry.run.reason ?? null);
+      this.#endSubagent(entry.run, reason === null ? 'ok' : 'error', reason);
     }
   }
 
   /** A session that ends leaves no subagent running. */
   #closeSubagents(): void {
-    for (const { run } of [...this.#subagents.values()]) this.#endSubagent(run, 'error');
+    for (const { run } of [...this.#subagents.values()]) this.#endSubagent(run, 'error', run.reason ?? 'session ended');
   }
 
-  #endSubagent(run: SubagentRun, status: 'ok' | 'error'): void {
+  #endSubagent(run: SubagentRun, status: 'ok' | 'error', reason: string | null = null): void {
     run.endedAt = new Date();
     run.status = status;
+    run.reason = reason;
     this.#subagents.delete(run.toolUseId);
-    this.#emitSubagent(run, `subagent ${run.subagentType} ${status}`, {
+    this.#endedSubagents.set(run.toolUseId, run);
+    this.#emitEnded(run);
+  }
+
+  /** The timeline and trace entry of a finished subagent; the reason of a failed one is part of it. */
+  #emitEnded(run: SubagentRun): void {
+    const suffix = (run.reason ?? null) === null ? '' : `: ${run.reason}`;
+    this.#emitSubagent(run, `subagent ${run.subagentType} ${run.status}${suffix}`, {
       tool_use_id: run.toolUseId,
       subagent_type: run.subagentType,
-      status,
-      duration_ms: run.endedAt.getTime() - run.startedAt.getTime(),
+      status: run.status,
+      ...((run.reason ?? null) === null ? {} : { reason: run.reason }),
+      duration_ms: (run.endedAt ?? new Date()).getTime() - run.startedAt.getTime(),
     });
   }
 
   /** Reports a copy of the run; without a message the update (tokens) stays out of the timeline and the trace. */
   #emitSubagent(run: SubagentRun, message?: string, detail?: Record<string, unknown>): void {
     this.#emit('subagent', {
-      subagent: { ...run, tokens: { ...run.tokens } },
+      subagent: { ...run, tokens: { ...run.tokens }, models: [...run.models] },
       ...(message !== undefined ? { message } : {}),
       ...(detail !== undefined ? { detail } : {}),
     });

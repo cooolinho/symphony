@@ -187,7 +187,7 @@ roles:
     may_move_to: [Design, In progress, Blocked]
     model_label: ignore                      # sonnet, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # medium, whatever the issue's Effort: label says
-    agents: [laravel-architect]
+    agents: []                               # reads the issue and the code itself; the architect persona only repeated its role
     brain: write
     claude: { model: sonnet, effort: medium }
   # The architect decides on the approach of larger changes before the developer starts: a short read-only session that
@@ -237,7 +237,7 @@ roles:
     may_move_to: [Documentation, Agent review, In progress, Blocked]
     model_label: ignore                      # sonnet, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # high, whatever the issue's Effort: label says
-    agents: [laravel-test-engineer]
+    agents: []                               # is the independent tester; the test engineer persona only repeated its role
     brain: read
     claude: { model: sonnet, effort: high }
   # The docs agent is conditional: Symphony sends a finished implementation (or passed tests) here only when it needs
@@ -267,7 +267,7 @@ roles:
     may_move_to: [Security review, In review, In progress, Blocked]
     model_label: ignore                      # opus, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # high, whatever the issue's Effort: label says: the review keeps a cheaper developer safe
-    agents: [laravel-code-reviewer]
+    agents: []                               # reads the diff itself; the reviewer persona only repeated its role
     brain: write
     claude: { model: opus, effort: high }
   # The security auditor is conditional: Symphony sends an approved issue here only when it needs the audit (a `security`
@@ -289,7 +289,7 @@ roles:
     may_move_to: [In review, In progress, Blocked]
     model_label: ignore                      # opus, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # high, whatever the issue's Effort: label says
-    agents: [laravel-code-reviewer]
+    agents: []                               # reads the diff itself; the reviewer persona only repeated its role
     brain: read
     claude: { model: opus, effort: high }
   auditor:

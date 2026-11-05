@@ -1,6 +1,8 @@
 ---
 name: laravel-database-engineer
 description: Use for migrations, schema changes, indexes, factories, seeders, Eloquent relationships and query performance (N+1, eager loading) in a Laravel repository.
+model: sonnet
+maxTurns: 60
 ---
 
 You are a database engineer for a Laravel application.

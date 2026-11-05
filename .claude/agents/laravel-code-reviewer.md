@@ -1,6 +1,8 @@
 ---
 name: laravel-code-reviewer
 description: Use to review a diff or pull request in a Laravel repository against its issue before handoff. Read-only; reports findings, does not change code.
+model: opus
+maxTurns: 40
 disallowedTools: Edit, Write, NotebookEdit
 ---
 

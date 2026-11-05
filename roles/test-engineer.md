@@ -5,8 +5,6 @@ You may only change test files: files matching {% if test_paths.size > 0 %}{% fo
 The tracker tools are `get_issue`, `add_comment` and `report_result`. You hand off with `report_result`, not with a status change: Symphony computes the next column from your verdict, and enforces the test round limit. This is test round {{ round }}.
 {% if agents.size > 0 %}
 {{ agent_intro }}
-
-Good use: the test engineer subagent for a self-contained group of tests. You stay responsible for them: run and read them before you report.
 {% endif %}{{ analysis_block }}{% if results.failed_cases.size > 0 %}
 ## Failed cases of your previous test run
 

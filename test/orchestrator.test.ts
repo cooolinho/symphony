@@ -248,6 +248,10 @@ describe('workspace integrations', () => {
         endedAt,
         status,
         tokens: { inputTokens: tokens, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 },
+        contextTokens: null,
+        toolUses: null,
+        durationMs: null,
+        models: [],
       });
       send('tool_use', { detail: { tool: 'Agent', agent: 'Explore' } });
       send('subagent', { subagent: run('a', 'running', 0, null) });
@@ -272,6 +276,11 @@ describe('workspace integrations', () => {
         status: 'ok',
         started_at: '2026-01-01T10:00:00.000Z',
         ended_at: '2026-01-01T10:01:00.000Z',
+        context_tokens: null,
+        tool_uses: null,
+        duration_ms: null,
+        models: [],
+        reason: null,
         tokens: { input_tokens: 5, output_tokens: 2, cache_read_tokens: 3, cache_write_tokens: 4, total_tokens: 14 },
       },
     ]);
@@ -308,6 +317,8 @@ describe('workspace integrations', () => {
       emit(params, 'tool_use', { tool: 'Skill', skill: 'symphony:handoff' });
       emit(params, 'tool_use', { tool: 'Agent', agent: 'symphony:laravel-code-reviewer' });
       emit(params, 'tool_use', { tool: 'Bash' });
+      emit(params, 'tool_use', { tool: 'Bash', subagent: true });
+      emit(params, 'tool_use', { tool: 'SubagentHandback', subagent: true });
       live = s?.orchestrator.snapshot().running[0]?.integrations;
       s?.tracker.set('a', { state: 'In review' });
       return { ok: true, turnId: String(turn), resultText: 'done' };
@@ -329,10 +340,11 @@ describe('workspace integrations', () => {
       usage: { calls: 3, tool_calls: { 'search-docs': 2 }, skill_calls: { 'pest-testing': 1 } },
     };
     assert.deepEqual(live, [expected]);
-    const detail = s.orchestrator.issueDetail('a') as { run_trace: { integrations: unknown; skill_calls: unknown; agent_calls: unknown } };
+    const detail = s.orchestrator.issueDetail('a') as { run_trace: { integrations: unknown; skill_calls: unknown; agent_calls: unknown; subagent_tool_calls: unknown } };
     assert.deepEqual(detail.run_trace.integrations, [expected]);
     assert.deepEqual(detail.run_trace.skill_calls, { 'pest-testing': 1, 'symphony:handoff': 1 });
     assert.deepEqual(detail.run_trace.agent_calls, { 'symphony:laravel-code-reviewer': 1 });
+    assert.deepEqual(detail.run_trace.subagent_tool_calls, { Bash: 1, SubagentHandback: 1 });
 
     const finished = readHistory(history.dir, 'acme/app').entries.find((entry) => entry.event === 'run_finished');
     assert.equal(finished?.fields.integrations, 'laravel-boost:ready');
@@ -340,7 +352,8 @@ describe('workspace integrations', () => {
     assert.equal(finished?.fields.integration_skills, 'laravel-boost/pest-testing:1');
     assert.equal(finished?.fields.skill_calls, 'pest-testing:1,symphony:handoff:1');
     assert.equal(finished?.fields.agent_calls, 'symphony:laravel-code-reviewer:1');
-    assert.equal(finished?.fields.tool_calls, 'mcp__laravel-boost__search-docs:2,mcp__tracker__set_status:1,Skill:2,Agent:1,Bash:1');
+    assert.equal(finished?.fields.tool_calls, 'mcp__laravel-boost__search-docs:2,mcp__tracker__set_status:1,Skill:2,Agent:1,Bash:2,SubagentHandback:1');
+    assert.equal(finished?.fields.subagent_tool_calls, 'Bash:1,SubagentHandback:1');
   });
 });
 
@@ -2664,6 +2677,7 @@ describe('run history', () => {
         branch: 'feature',
         mcp_tool_calls: { 'laravel-boost': 2 },
         tool_calls: { 'mcp__laravel-boost__database-schema': 2, Bash: 1, Edit: 1 },
+        subagent_tool_calls: {},
         skill_calls: {},
         agent_calls: {},
         integrations: [],

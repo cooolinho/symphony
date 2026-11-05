@@ -41,8 +41,18 @@ export interface SubagentRun {
   startedAt: Date;
   endedAt: Date | null;
   status: SubagentStatus;
-  /** Tokens of the subagent's own model calls so far. */
+  /** Billed tokens of the subagent's own model calls so far: input + output + cache read + cache write. */
   tokens: ModelTokenUsage;
+  /** Claude Code's `usage.total_tokens`: the context of the subagent's latest request; null until a `task_*` message reports it. */
+  contextTokens: number | null;
+  /** Tool calls of the subagent as Claude Code counts them; null until reported. */
+  toolUses: number | null;
+  /** Duration as Claude Code measures it, in milliseconds; null until reported. */
+  durationMs: number | null;
+  /** Models of the subagent's own calls, in first-seen order, without duplicates. */
+  models: string[];
+  /** Short reason of an `error` ending (API error text, task failure, error result); null otherwise. */
+  reason?: string | null;
 }
 
 /** Structured update sent from a live agent session to the orchestrator (spec 10.4). */
@@ -165,7 +175,7 @@ export interface IntegrationPart {
   /** Part status as the integration names it (e.g. ready, failed, skipped, absent, off). */
   status: string;
   /** Why the part is not ready; null otherwise. */
-  reason: string | null;
+  reason?: string | null;
   /** Versions of the relevant packages, e.g. `Laravel v13.1.0 · Boost v2.0.1`. */
   versions: string | null;
   /** Where the agent gets the guidelines from, e.g. `CLAUDE.md (loaded by Claude Code)`; null = none. */

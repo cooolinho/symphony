@@ -4,8 +4,6 @@
 The tracker tools are `get_issue`, `add_comment` and `report_result`. You do not change the status yourself: Symphony computes the next column from your verdict, and enforces the security round limit. This is security round {{ round }}.
 {% if agents.size > 0 %}
 {{ agent_intro }}
-
-Use a reviewer subagent only for a second pass over a large diff. Its findings go into your result only after you checked them against the code.
 {% endif %}{{ analysis_block }}{% if integration %}{{ packages_block }}{% endif %}{% if results.security_findings.size > 0 %}
 ## Findings of your previous security review
 

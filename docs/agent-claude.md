@@ -79,9 +79,24 @@ Symphony runs agents **unattended**. Nobody watches a session, so every decision
   `Bash(git commit:*)` and `Bash(git push:*)` added to `disallowedTools`. Deny rules beat allow rules, so this also
   overrides `claude.allowed_tools: ["Bash(git push:*)"]`. The orchestrator sets `readOnly` from the run's role
   (`roles.<role>.read_only`); without a policy, or for the `default` role, a session is not read-only. This is a
-  policy, not a sandbox: Bash can still write files, so callers that need a hard guarantee must enforce it elsewhere
-  (for example in the transition guard, or with `claude.sandbox`). Both inputs are agent-neutral; another runner
-  maps them to its own mechanism.
+  policy, not a sandbox. Both inputs are agent-neutral; another runner maps them to its own mechanism.
+  - *Covered, also inside subagents:* `Edit`, `Write`, `NotebookEdit`, `git commit` and `git push`. The deny rules
+    are session-wide: Claude Code applies deny rules and the `PreToolUse` hook to a subagent's tool calls, and
+    `canUseTool` answers a subagent's request (`agentID`) like a main-thread one. So a read-only role's subagent
+    cannot edit files, and a denied subagent cannot be spawned from inside another subagent either. Locked in by
+    the tests "refuses a denied subagent spawned from inside a subagent", "treats a subagent permission request like
+    a main-thread one" and "keeps the read-only deny rules whatever subagents are denied" in `test/claude.test.ts`.
+  - *Not covered:* shell writes through Bash (`sed -i`, `perl -pi`, redirection, `node -e` with file writes), in the
+    main thread and in subagents. Callers that need a hard guarantee must enforce it elsewhere (for example in the
+    transition guard, or with `claude.sandbox`). Blocking them is open question 5 in
+    [concepts/subagents.md](concepts/subagents.md#open-questions-and-spikes); the current assumption is (a),
+    document and keep.
+  - *Live check:* **not executed yet.** The workspace of E4-1 had no Claude login (`Not logged in · Please run
+    /login`, Claude Code 2.1.288). To run it: in a temp git repo with `target.txt`, start `claude -p "<ask a
+    general-purpose subagent to edit target.txt>" --output-format stream-json --verbose --model haiku
+    --permission-mode acceptEdits --disallowedTools Edit Write NotebookEdit "Bash(git commit:*)" "Bash(git push:*)"
+    AskUserQuestion`, then expect an error `tool_result` for the subagent's Edit/Write (`parent_tool_use_id` set)
+    and an unchanged file. Record the session id here.
 - **Sandboxing:** off by default. `claude.sandbox` passes Claude Code's sandbox settings through (filesystem and
   network restrictions for shell commands).
 
@@ -147,6 +162,11 @@ background code review would then lose the review and the stage would end withou
 addition says the same: use the results in the same turn and never end a turn to wait. `claude.env` can set the
 variable to `0`; if a session then ends without a result while tasks still run, the "Stage ended without a result"
 comment names them, and `turn_completed` carries them in `detail.background_tasks`.
+
+Subagent nesting is capped at one level: every session starts with `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`, so a
+subagent has no Agent tool of its own. Claude Code allows three levels by default, which would let a lens fan-out
+multiply, and no planned pattern nests; the SDK docs advise limits over instructions. `claude.env` can set another
+value (e.g. `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "2"`). `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` keeps its default.
 
 **Forks are denied.** A fork subagent inherits the whole context and the role's tools, so it bypasses the
 `Agent(symphony:*)` denies. From SDK 0.3.302 forks are on by default, while `package.json` allows `^0.3.288`. Every
@@ -229,11 +249,11 @@ log line (`npm run repo-init` → *Laravel Boost* creates an issue that adds it)
 **Visibility:** the Laravel integration reports per app what the session got (status and reason, versions, how the
 guidelines reach the agent, the skills, the MCP server and its pre-approved tools, warnings from the check above).
 The orchestrator counts every `tool_use` event per tool (one event per tool call, also for parallel calls in one
-message), every Skill tool call per skill and every Agent tool call per subagent, and attributes calls of the Boost MCP servers and Boost skills to Boost.
+message), every Skill tool call per skill, the tool calls made inside subagents (`tool_use` events with `detail.subagent`, from messages with `parent_tool_use_id`) once more in `subagent_tool_calls` (`tool_calls` stays the total) and every Agent tool call per subagent, and attributes calls of the Boost MCP servers and Boost skills to Boost.
 `session_configured` carries the skill names Claude Code loaded (`skill_names`), so the agent page can show how many
 of Boost's skills were really available. All of this is in `GET /api/v1/state` (`running[].integrations`,
-`tool_calls`, `skill_calls`, `agent_calls`), in `run_trace` of `GET /api/v1/<identifier>` and in the `run_finished`
-line of the repository log (`integrations`, `integration_tools`, `integration_skills`, `tool_calls`, `skill_calls`,
+`tool_calls`, `subagent_tool_calls`, `skill_calls`, `agent_calls`), in `run_trace` of `GET /api/v1/<identifier>` and in the `run_finished`
+line of the repository log (`integrations`, `integration_tools`, `integration_skills`, `tool_calls`, `subagent_tool_calls`, `skill_calls`,
 `agent_calls`). The dashboard shows it as the Boost chip on the agent card, the *Laravel Boost* section of the agent
 page and the *Tools* (with *Skills loaded* and *Subagents used*) and *Laravel Boost & integrations* sections of the
 statistics page.
@@ -283,10 +303,19 @@ version, MCP server status, plugins, number of skills), `startup_failed`, `turn_
 The `subagent` event reports the subagents the session starts with the Agent/Task tool. Its `subagent` field is an
 absolute snapshot: tool call id, type (`general-purpose` when unset), description (the `description` of the call, else
 the start of its `prompt`), start, end, status (`running`, `ok`, `error`) and the tokens of the subagent's own model
-calls (input, output, cache read and write; messages with its `parent_tool_use_id`, counted once per message id). The
-`tool_result` with the same `tool_use_id` ends it (`is_error` gives `error`). A session that ends or is stopped closes the
-open ones as `error`. Only start and end carry a message; token updates do not appear in the timeline. The orchestrator
-keeps the running subagents and the last ten finished ones per running issue. `agent_calls` still counts the calls.
+calls (input, output, cache read and write; messages with its `parent_tool_use_id`, counted once per message id). This
+`tokens` is the billed load, not the context size. Claude Code's own figures come from the `task_progress` and
+`task_notification` messages, matched by `tool_use_id`: `contextTokens` (`usage.total_tokens`, the context of the latest
+request), `toolUses` and `durationMs`. They are `null` until such a message arrives and stay `null` for runs without
+`task_*` messages (the page shows "—"). A `task_notification` after the `tool_result` still updates the ended run.
+`task_started`, `task_progress` and `task_notification` that match a subagent no longer appear as `notification`;
+unmatched ones still do. `models` lists the models of the subagent's own calls (first seen first, no duplicates). The
+`tool_result` with the same `tool_use_id` ends it (`is_error` gives `error`); a result text starting with "Agent terminated
+early due to an API error" also gives `error`; a `task_notification` with status `failed` or `stopped` gives `error` even
+after the `tool_result`. When status is `error`, a `reason` field contains a short explanation (API error, usage limit,
+task failure summary); the tile shows "Fehler: <reason>". A session that ends or is stopped closes the open ones as `error`
+(without `reason` if none was set). Only start and end carry a message; figure updates do not appear in the timeline. The
+orchestrator keeps the running subagents and the last ten finished ones per running issue. `agent_calls` still counts the calls.
 
 A turn that fails because of a Claude subscription usage limit settles with the failure code `session_limit` (instead
 of `turn_failed`), carrying the window, the reset time and where it came from. Detection order:
