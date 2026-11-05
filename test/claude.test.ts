@@ -250,6 +250,13 @@ describe('claude agent runner', () => {
     assert.ok(allowed.disallowedTools?.includes('Agent(fork)'));
   });
 
+  it('switches the built-in agents off unless claude.env turns them back on', async () => {
+    const options = await sessionOptions({});
+    assert.equal(options.env?.CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS, '1');
+    const allowed = await sessionOptions({ claude: { env: { CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: '0' } } });
+    assert.equal(allowed.env?.CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS, '0');
+  });
+
   it('caps subagent nesting at one level unless claude.env raises it', async () => {
     const options = await sessionOptions({});
     assert.equal(options.env?.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, '1');
@@ -1548,5 +1555,19 @@ describe('subagent status from the result text and the task status: acceptance (
     assert.equal(o?.status, 'ok');
     assert.ok((o?.reason ?? null) === null);
     assert.equal(last(events)?.status, 'error');
+  });
+});
+
+describe('role files and built-in agents', () => {
+  it('name the agent type in every delegation and never a built-in agent', async () => {
+    const fs = await import('node:fs');
+    const dir = new URL('../roles/', import.meta.url);
+    for (const file of fs.readdirSync(dir).filter((name) => name.endsWith('.md'))) {
+      const text = fs.readFileSync(new URL(file, dir), 'utf8');
+      for (const variable of text.matchAll(/\{\{\s*(\w*(?:_agent|designer))\s*\}\}/g)) {
+        assert.match(text, new RegExp('`\\{\\{\\s*' + variable[1] + '\\s*\\}\\}`'), `${file}: ${variable[1]} is named as a type`);
+      }
+      assert.doesNotMatch(text, /general-purpose|\bExplore\b|statusline-setup/, `${file} names a built-in agent`);
+    }
   });
 });

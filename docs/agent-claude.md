@@ -202,6 +202,8 @@ explicit delegation sentence; the sentence does not change the number of calls. 
 preset: its own delegation sentence is unnecessary, naming concretely the occasions where a subagent fits is enough.
 Not checked: delegation when the task does not name the subagent (the test task is trivial).
 
+The SDK's built-in agents (`claude`, `Explore`, `general-purpose`, `Plan`, `statusline-setup`) are **off**: every session starts with `CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS=1`, so `init.agents` lists none of them. `general-purpose` would give a read-only role an agent with every tool, and Explore and Plan run on the parent model, skip CLAUDE.md and compete with `symphony:explorer` for routing. An Agent call therefore needs a `subagent_type` (the SDK fails it with "subagent_type is required"); the role prompts always name the type. Plugin agents that a role denies still appear in `init.agents`. `claude.env` can set the variable to `0` to bring the built-ins back. History parsing is unchanged: an Agent call or old log line without a type still counts as `general-purpose`.
+
 Subagents and commands run in the **foreground**: every session starts with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`,
 so the Agent and Bash tools offer no `run_in_background` and nothing is moved to the background automatically. A
 background task only reports back in a later turn, but Symphony ends a result-driven session after the one reminder
