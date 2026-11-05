@@ -173,7 +173,7 @@ describe('shipped WORKFLOW.md', () => {
     assert.deepEqual(config.tracker.activeStates, ['Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review']);
     assert.deepEqual(
       [tester?.result, tester?.onResult, tester?.readOnly, tester?.modelLabel, tester?.claude.model, tester?.agents],
-      ['test', { passed: 'Agent review', failed: 'In progress', blocked: 'Blocked' }, false, 'ignore', 'sonnet', []],
+      ['test', { passed: 'Agent review', failed: 'In progress', blocked: 'Blocked' }, false, 'ignore', 'sonnet', ['test-designer']],
     );
     assert.deepEqual(tester?.mayMoveTo, ['Documentation', 'Agent review', 'In progress', 'Blocked']);
     assert.deepEqual([config.pipeline.maxTestRounds, config.pipeline.testPaths], [2, ['tests/**', 'test/**', '**/*.test.*', '**/*Test.php']]);
@@ -1005,7 +1005,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
     }
   });
 
-  it('resolves no subagent for the four roles that only repeated their persona, so a Laravel workspace renders no intro', async () => {
+  it('resolves no subagent for the three roles that only repeated their persona, so a Laravel workspace renders no intro', async () => {
     const { definition } = await loadWorkflowFile(shipped);
     const config = resolveConfig(definition.config, {
       workflowPath: shipped,
@@ -1014,7 +1014,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
     });
     const all = pluginAgents([toolbox]);
     assert.equal(all.filter((agent) => agent.name.startsWith('laravel-')).length, 5);
-    for (const name of ['issue-analyst', 'test-engineer', 'reviewer', 'security-auditor']) {
+    for (const name of ['issue-analyst', 'reviewer', 'security-auditor']) {
       const role = (config.roles ?? []).find((entry) => entry.name === name) ?? null;
       assert.deepEqual(role?.agents, [], name);
       const { allowed, denied } = sessionAgents(all, role, ['laravel-'], ['laravel-']);
@@ -1028,6 +1028,75 @@ describe('shipped WORKFLOW.md issue commands', () => {
     for (const name of ['architect', 'developer', 'auditor']) {
       assert.ok((config.roles ?? []).find((entry) => entry.name === name)?.agents?.length, name);
     }
+  });
+
+  it('lets the shipped test engineer start only the test-designer, in a Laravel workspace and without', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const config = resolveConfig(definition.config, {
+      workflowPath: shipped,
+      env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' },
+      trackerDefaults,
+    });
+    const all = pluginAgents([toolbox]);
+    const role = (config.roles ?? []).find((entry) => entry.name === 'test-engineer') ?? null;
+    for (const prefixes of [['laravel-'], []]) {
+      const { allowed, denied } = sessionAgents(all, role, prefixes, prefixes);
+      assert.deepEqual(allowed.map((agent) => agent.name), ['test-designer'], prefixes.join());
+      assert.equal(denied.filter((agent) => agent.name.startsWith('laravel-')).length, 5, prefixes.join());
+    }
+  });
+
+  describe('test designer at L/XL', () => {
+    const designer = [{ name: 'symphony:test-designer', description: 'Writes tests from the criteria.' }];
+    const renderWith = (labels: string[], agents = designer, history: Record<string, unknown> = {}) => {
+      return (async () => {
+        const { definition } = await loadWorkflowFile(shipped);
+        const template = compilePrompt(definition.promptTemplate, definition.partials);
+        const subject = { ...issue, labels, native_ref: { ...issue.native_ref, base_branch: 'develop' } };
+        return renderPrompt(template, { issue: issueTemplateValue(subject, commandSkills([toolbox])), attempt: null, role: 'test-engineer', agents, round: 1, test_paths: ['tests/**'], ...history });
+      })();
+    };
+    const withDesign = { results: { latest: [], open_findings: [], failed_cases: [], design: { verdict: 'ready', summary: 's', decision: '', compatibility: '', interfaces: ['exportInvoices(list): string'], components: [], migrations: [], options: [], plan: [], tests: [], work_packages: [], head_sha: null } } };
+
+    for (const label of ['complexity: l', 'complexity: xl']) {
+      it(`delegates to the designer at ${label} with the information boundary`, async () => {
+        const text = await renderWith(['feature', label], designer, withDesign);
+        assert.match(text, /`subagent_type`: `symphony:test-designer`/);
+        assert.match(text, /one call per group of acceptance criteria/);
+        assert.match(text, /one call at a time/);
+        assert.match(text, /no diff, no changed files/);
+        assert.match(text, /git merge-base HEAD origin\/develop/);
+        assert.match(text, /absolute workspace path \(run `pwd`\)/);
+        assert.match(text, /RED/);
+        assert.match(text, /GREEN/);
+        assert.match(text, /- exportInvoices\(list\): string/);
+        assert.match(text, /its writes fall under the test paths and `report_result` checks them as yours/);
+        assert.match(text, /`tests\/\*\*`/);
+      });
+    }
+
+    it('describes the public entry points itself when no design carries interfaces', async () => {
+      const text = await renderWith(['feature', 'complexity: l']);
+      assert.match(text, /There is no design with interfaces/);
+      assert.match(text, /no diff, no changed files/);
+    });
+
+    it('leaves the prompt unchanged at S, M and without a complexity label', async () => {
+      for (const labels of [['feature', 'complexity: m'], ['feature', 'complexity: s'], ['feature']]) {
+        const withDesigner = await renderWith(labels);
+        assert.equal(withDesigner, await renderWith(labels, []), labels.join());
+        assert.doesNotMatch(withDesigner, /no diff, no changed files|test-designer|Subagents you may start/, labels.join());
+      }
+    });
+
+    it('adds no designer block to refactorings, nor without the designer; other agents keep the intro', async () => {
+      assert.doesNotMatch(await renderWith(['type: refactor', 'complexity: l']), /no diff, no changed files/);
+      assert.doesNotMatch(await renderWith(['feature', 'complexity: l'], []), /no diff, no changed files/);
+      const other = [{ name: 'symphony:laravel-code-reviewer', description: 'Reviews a diff.' }];
+      const text = await renderWith(['feature', 'complexity: m'], other);
+      assert.match(text, /Subagents you may start with the Agent tool/);
+      assert.doesNotMatch(text, /no diff, no changed files/);
+    });
   });
 
   it('keeps the agent intro scaffold in the four role files but drops the lines that named a persona', async () => {
@@ -1078,7 +1147,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
       'issue-analyst': [],
       architect: ['explorer', 'laravel-architect'],
       developer: ['explorer', 'laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer'],
-      'test-engineer': [],
+      'test-engineer': ['test-designer'],
       docs: [],
       reviewer: [],
       'security-auditor': [],
@@ -1268,7 +1337,7 @@ describe('Symphony toolbox subagents', () => {
   const agentsDir = path.join(toolbox, 'agents');
   const files = fs.readdirSync(agentsDir).filter((file) => file.endsWith('.md'));
 
-  it('ships the Laravel subagents and the framework-neutral explorer', () => {
+  it('ships the Laravel subagents and the framework-neutral explorer and test-designer', () => {
     assert.deepEqual(files.map((file) => file.slice(0, -3)).sort(), [
       'explorer',
       'laravel-architect',
@@ -1276,6 +1345,7 @@ describe('Symphony toolbox subagents', () => {
       'laravel-database-engineer',
       'laravel-filament-developer',
       'laravel-test-engineer',
+      'test-designer',
     ]);
   });
 
@@ -1300,6 +1370,7 @@ describe('Symphony toolbox subagents', () => {
       'laravel-database-engineer': 'sonnet',
       'laravel-filament-developer': 'sonnet',
       'laravel-test-engineer': undefined,
+      'test-designer': 'sonnet',
     };
 
     for (const [name, model] of Object.entries(models)) {
@@ -1321,6 +1392,7 @@ describe('Symphony toolbox subagents', () => {
         'laravel-database-engineer': false,
         'laravel-filament-developer': false,
         'laravel-test-engineer': false,
+        'test-designer': false,
       });
     });
   });
@@ -1395,6 +1467,7 @@ describe('Symphony toolbox subagents', () => {
       'laravel-database-engineer': { model: 'sonnet', readOnly: false, minTurns: 1 },
       'laravel-filament-developer': { model: 'sonnet', readOnly: false, minTurns: 1 },
       'laravel-test-engineer': { model: undefined, readOnly: false, minTurns: 1 },
+      'test-designer': { model: 'sonnet', readOnly: false, minTurns: 30 },
     } as const;
     const allowedKeys = new Set(['name', 'description', 'model', 'effort', 'maxTurns', 'disallowedTools']);
     const lines = (name: string) => {
