@@ -615,6 +615,8 @@ interface StageResultEntry {
   /** Confirmed/refuted findings (filled from E3-4 on); null when the line does not carry them. */
   findingsConfirmed: number | null;
   findingsRefuted: number | null;
+  /** Mutation score (percent) of a test result; null when the line carries none. */
+  mutationScore: number | null;
   ms: number;
 }
 
@@ -634,6 +636,7 @@ function stageResultOf(entry: HistoryEntry): StageResultEntry {
     target: fieldOrNull(fields.target),
     findingsConfirmed: numberOrNull(fields.findings_confirmed),
     findingsRefuted: numberOrNull(fields.findings_refuted),
+    mutationScore: numberOrNull(fields.mutation_score),
     ms: Date.parse(entry.ts),
   };
 }
@@ -742,6 +745,20 @@ function issueComplexities(entries: HistoryEntry[]): Map<string, string> {
  *   reviewer and tester runs, so they are attributed by issue, not by the run named in the result), per issue.
  * - Findings (E3-4): sums of the optional `findings_confirmed`/`findings_refuted` of the row's issues; null when absent.
  */
+/** The newest mutation score per issue (test results of L/XL issues in Laravel apps), newest first. */
+function mutationScores(results: StageResultEntry[]) {
+  const latest = new Map<string, StageResultEntry>();
+  for (const result of results) {
+    if (result.mutationScore === null) continue;
+    const key = `${result.repo}\u0000${result.issue}`;
+    const known = latest.get(key);
+    if (known === undefined || result.ms >= known.ms) latest.set(key, result);
+  }
+  return [...latest.values()]
+    .sort((a, b) => b.ms - a.ms)
+    .map((result) => ({ issue: result.issue, repo: result.repo, complexity: result.complexity, mutation_score: result.mutationScore as number, at: new Date(result.ms).toISOString() }));
+}
+
 function subagentEvaluation(runs: Run[], pipelineRuns: Run[], results: StageResultEntry[]) {
   const finished = new Set<string>();
   const returns = new Map<string, { review: number; test: number }>();
@@ -851,6 +868,7 @@ function subagentEvaluation(runs: Run[], pipelineRuns: Run[], results: StageResu
     note: 'Delegierender Run: mindestens ein Agent-Aufruf. Bash im Hauptthread = Bash-Aufrufe minus die der Subagents. Token-Anteil = Tokens der Subagents / abgerechnete Tokens der Runs (die Subagents sind darin enthalten, der Anteil ist höchstens 100 %). Fertiges Issue = ein Stage-Ergebnis mit Ziel In review oder Done im Zeitraum; Kosten je fertigem Issue summieren alle Rollen (alle Stages), „eigene“ nur die Runs der Zeile. Rückläufer = Agent-review-Ergebnisse changes_needed und Testing-Ergebnisse failed auf den Issues der Zeile, je Issue. Findings (bestätigt/widerlegt) sind leer, bis die Stage-Ergebnisse sie liefern.',
     rules: { median_min_runs: MEDIAN_MIN_RUNS, percentile_min_runs: PERCENTILE_MIN_RUNS },
     rows,
+    mutation_scores: mutationScores(results),
   };
 }
 

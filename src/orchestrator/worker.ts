@@ -274,6 +274,7 @@ async function loadResultSupport(
   security: ((history: StageHistory) => NonNullable<ResultToolParams['security']>) | null,
   docs: ((history: StageHistory) => NonNullable<ResultToolParams['docs']>) | null,
   screenshots: ResultToolParams['screenshots'],
+  mutation: ResultToolParams['mutation'],
   report: (results: PersistedResult[]) => void,
   onRecorded: (entry: PersistedResult) => void,
   onMoved: () => void,
@@ -320,6 +321,7 @@ async function loadResultSupport(
     security: security?.(history) ?? null,
     docs: docs?.(history) ?? null,
     screenshots: screenshots ?? null,
+    mutation: mutation ?? null,
   });
   return {
     tool,
@@ -611,6 +613,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
             changedFiles: () => changedFiles(activeWorkspace.path, securityBaseRef(issue.native_ref?.base_branch)),
           }
         : null;
+    // A test engineer's `passed` at L/XL owes a mutation score where Pest mutation testing is available.
+    const mutation = role?.result === 'test' ? { workspace: activeWorkspace.path } : null;
     // A reviewer's approval needs the security review for a security label, a risk in the analysis or a changed security
     // path (for an integration review: a path the merged work packages changed).
     const security =
@@ -632,6 +636,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
             security,
             docs,
             screenshots,
+            mutation,
             callbacks.results,
             (entry) => {
               resultRecorded = true;

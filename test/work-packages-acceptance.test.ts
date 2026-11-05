@@ -1473,7 +1473,7 @@ describe('orchestrator: the security stage and the pull request of the parent af
       await report({ verdict: 'done', summary: 'Moved the PDF route into the auth group.', changed_files: ['config/auth.php'] });
     };
     const passed: Script = async ({ report }) => {
-      await report({ verdict: 'passed', summary: 'The PDF route requires a login.', cases: [{ criterion: 'The PDF export needs a login', test: 'tests/PdfAuthTest', status: 'passed' }] });
+      await report({ verdict: 'passed', summary: 'The PDF route requires a login.', cases: [{ criterion: 'The PDF export needs a login', test: 'tests/PdfAuthTest', status: 'passed', existing: true }] });
     };
     const noDocs: Script = async ({ report }) => {
       await report({ verdict: 'not_needed', summary: 'The route move needs no documentation.' });

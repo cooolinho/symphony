@@ -544,4 +544,20 @@ describe('statistics analytics', () => {
     assert.deepEqual(filterEntries(entries, { ...base, issue: '#3', limit: 10, order: 'asc' }).entries.map((e) => e.issue), ['other/repo#3']);
     assert.equal(filterEntries(entries, { ...base, event: 'model_usage', limit: 10 }).total, 4);
   });
+  describe('mutation score per issue (E3-7)', () => {
+    const line = (issue: string, at: string, over: Record<string, unknown> = {}) => ({
+      repo: 'acme/app', issue, run: null, role: 'tester', kind: 'test', verdict: 'passed', round: null, target: null, profile: 'feature', complexity: 'L', findings: 0, at: new Date(at), ...over,
+    });
+
+    it('writes mutation_score to the line and lists the newest score per issue', () => {
+      const h = history();
+      h.log.stageResult(line('acme/app#1', '2026-10-03T10:00:00Z', { mutationScore: 60 }));
+      h.log.stageResult(line('acme/app#1', '2026-10-03T11:00:00Z', { mutationScore: 75 }));
+      h.log.stageResult(line('acme/app#2', '2026-10-03T12:00:00Z'));
+      const entries = readHistory(h.log.dir, null).entries;
+      assert.equal(entries.filter((e) => e.event === 'stage_result' && e.fields.mutation_score !== undefined).length, 2);
+      const a = computeAnalytics(entries, h.pricing.current(), filter(), NOW);
+      assert.deepEqual(a.subagent_evaluation.mutation_scores, [{ issue: 'acme/app#1', repo: 'acme/app', complexity: 'L', mutation_score: 75, at: '2026-10-03T11:00:00.000Z' }]);
+    });
+  });
 });

@@ -243,6 +243,7 @@ export const LOGS_HTML = page({
       <a class="ui-btn" id="subagent-eval-export" download hidden>JSON exportieren</a>
     </div>
     <div class="ui-card-body" data-body="subagent-eval"></div>
+    <div class="ui-card-body" data-body="mutation-scores" hidden></div>
   </section>
 
   <section class="ui-card g" data-section aria-labelledby="h-repos">
@@ -876,10 +877,27 @@ ${CHART_JS}
     ], rows, 'Keine Runs in diesem Zeitraum.');
   }
 
+  /** Mutation score per issue (E3-7): the newest score of a test result; hidden when no result carried one. */
+  function renderMutationScores(section) {
+    const rows = section && Array.isArray(section.mutation_scores) ? section.mutation_scores : [];
+    const body = bodies['mutation-scores'];
+    body.hidden = rows.length === 0;
+    if (rows.length === 0) return;
+    const tbl = el('table'); tbl.id = 'mutation-scores-table';
+    const wrap = el('div', null, 'scroll'); wrap.append(tbl);
+    setBody('mutation-scores', el('h3', 'Mutation Score je Issue', 'lbl'), wrap);
+    table('mutation-scores-table', [
+      { label: 'Issue', className: 'nowrap', render: (r) => r.issue },
+      { label: 'Komplexität', className: 'nowrap', render: (r) => r.complexity || '—' },
+      { label: 'Mutation Score', className: 'num', render: (r) => r.mutation_score + ' %' },
+    ], rows, 'Keine Mutation Scores.');
+  }
+
   /** Subagent evaluation per role × model (E0-9), with a JSON export of the section and the active filters. */
   function renderSubagentEval(d) {
     const section = d.subagent_evaluation;
     const link = $('subagent-eval-export');
+    renderMutationScores(section);
     if (!section || !Array.isArray(section.rows) || section.rows.length === 0) {
       link.hidden = true;
       setBody('subagent-eval', noData('Keine Runs für die Subagent-Auswertung.'));

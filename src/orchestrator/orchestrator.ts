@@ -2321,6 +2321,7 @@ export class Orchestrator {
               profile: meta.profile,
               complexity: classify(entry.issue.labels).complexity,
               findings: result.kind === 'review' || result.kind === 'security' ? result.findings.length : 0,
+              mutationScore: result.kind === 'test' ? (result.mutation_score ?? null) : null,
               at: new Date(meta.created_at),
             });
           },

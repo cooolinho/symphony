@@ -526,3 +526,34 @@ describe('result contracts: tool input shape', () => {
     assert.match(toolInputShape('review').findings?.description ?? '', /"approved" allows only minor and nit findings/);
   });
 });
+
+describe('result contracts: test evidence (E3-7)', () => {
+  const base = { verdict: 'passed', summary: 'ok', cases: [{ criterion: 'c', test: 't', status: 'passed', red_at_base: { command: 'pest t', output: '1 failed' } }] };
+
+  it('accepts red_at_base, existing and a mutation score, round-trips them and renders them', () => {
+    const input = { ...base, cases: [...base.cases, { criterion: 'd', test: 'u', status: 'passed', existing: true }], mutation_score: 87.5, mutation_command: 'pest --mutate --covered-only' };
+    const parsed = parseResult('test', input);
+    assert.ok(parsed.ok, parsed.ok ? '' : parsed.message);
+    const body = renderResultMarkdown(parsed.result, meta);
+    assert.match(body, /RED at base: `pest t`/);
+    assert.match(body, /existing test/);
+    assert.match(body, /Mutation score:\*\* 87\.5 %/);
+    const back = decodeMarker(encodeMarker(parsed.result, meta));
+    assert.ok(back !== null && back.result.kind === 'test');
+    assert.deepEqual(back.result.cases, parsed.result.kind === 'test' ? parsed.result.cases : []);
+  });
+
+  it('refuses a score out of range, without its command, and a long output', () => {
+    assert.equal(parseResult('test', { ...base, mutation_score: 101, mutation_command: 'x' }).ok, false);
+    assert.equal(parseResult('test', { ...base, mutation_score: -1, mutation_command: 'x' }).ok, false);
+    assert.equal(parseResult('test', { ...base, mutation_score: 50 }).ok, false);
+    assert.equal(parseResult('test', { ...base, cases: [{ ...base.cases[0], red_at_base: { command: 'x', output: 'y'.repeat(1001) } }] }).ok, false);
+  });
+
+  it('the RED rule applies only with testEvidence', () => {
+    const bare = { ...base, cases: [{ criterion: 'c', test: 't', status: 'passed' }] };
+    assert.equal(parseResult('test', bare).ok, true);
+    assert.equal(parseResult('test', bare, { testEvidence: false }).ok, true);
+    assert.equal(parseResult('test', bare, { testEvidence: true }).ok, false);
+  });
+});

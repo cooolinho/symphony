@@ -59,6 +59,7 @@ interface SetupOptions {
   security?: ResultToolParams['security'];
   docs?: ResultToolParams['docs'];
   screenshots?: ResultToolParams['screenshots'];
+  mutation?: ResultToolParams['mutation'];
 }
 
 function setup(options: SetupOptions = {}) {
@@ -110,6 +111,7 @@ function setup(options: SetupOptions = {}) {
     ...(options.security !== undefined ? { security: options.security } : {}),
     ...(options.docs !== undefined ? { docs: options.docs } : {}),
     ...(options.screenshots !== undefined ? { screenshots: options.screenshots } : {}),
+    ...(options.mutation !== undefined ? { mutation: options.mutation } : {}),
   };
   const unguarded = createResultTool(params);
   const tools = guardTools(toolsForRole(tracker.agentToolSpecs(), role, current(), unguarded), guard);
@@ -1266,5 +1268,76 @@ describe('report_result description: size budget and JSON hint together', () => 
       assert.ok(hint > budget, `${role}: hint must follow the budget`);
       assert.ok(unguarded.description.endsWith(JSON_ARGUMENT_HINT), role);
     }
+  });
+});
+
+describe('report_result: test evidence at L/XL', () => {
+  const red = { command: 'vendor/bin/pest tests/A.php', output: '1 failed' };
+  const base = { verdict: 'passed', summary: 'Tested.' };
+  const caseOf = (name: string, over: Record<string, unknown> = {}) => ({ criterion: `criterion ${name}`, test: name, status: 'passed', ...over });
+  const tester = (labels: string[], mutation?: ResultToolParams['mutation']) => setup({ role: 'tester', state: 'Testing', labels, ...(mutation !== undefined ? { mutation } : {}) });
+
+  function laravelApp(pest = 'v3.5.0') {
+    const dir = tempDir('symphony-mutation-');
+    fs.writeFileSync(path.join(dir, 'artisan'), '');
+    fs.writeFileSync(path.join(dir, 'composer.json'), JSON.stringify({ require: { 'laravel/framework': '^11.0' } }));
+    fs.writeFileSync(path.join(dir, 'composer.lock'), JSON.stringify({ packages: [], 'packages-dev': [{ name: 'pestphp/pest', version: pest }] }));
+    return dir;
+  }
+  const facts = (driver: string, pest?: string) => ({ workspace: laravelApp(pest), php: async () => driver });
+
+  it('accepts an L/XL result whose new cases all carry red_at_base', async () => {
+    const { report, markers } = tester(['Complexity: L']);
+    assert.equal(data(await report({ ...base, cases: [caseOf('a', { red_at_base: red }), caseOf('b', { red_at_base: red })] })).target, 'Agent review');
+    assert.equal((markers()[0]?.result as { cases: { red_at_base?: unknown }[] }).cases[0]?.red_at_base !== undefined, true);
+  });
+
+  it('refuses a new case without red_at_base, naming it, and records nothing', async () => {
+    const { report, tracker } = tester(['Complexity: L']);
+    const refused = error(await report({ ...base, cases: [caseOf('a', { red_at_base: red }), caseOf('b')] }));
+    assert.equal(refused.category, 'invalid_result');
+    assert.match(refused.message, /cases\[1\] "criterion b"/);
+    assert.doesNotMatch(refused.message, /cases\[0\]/);
+    assert.deepEqual(tracker.statusCalls, []);
+    assert.equal(tracker.comments.get('1')?.length ?? 0, 0);
+  });
+
+  it('exempts existing and skipped cases, a blocked result and a refactor', async () => {
+    const exempt = [caseOf('a', { existing: true }), caseOf('b', { status: 'skipped' })];
+    assert.equal(data(await tester(['Complexity: XL']).report({ ...base, cases: exempt })).target, 'Agent review');
+    const blocked = { verdict: 'blocked', summary: 'x', blockers: [{ description: 'x', needs: 'human' }], cases: [caseOf('a')] };
+    assert.equal(data(await tester(['Complexity: XL']).report(blocked)).target, 'Blocked');
+    assert.equal(data(await tester(['Complexity: XL', 'Type: refactor']).report({ ...base, cases: [caseOf('a')] })).target, 'Agent review');
+  });
+
+  it('leaves S/M and unlabelled issues unchanged, even with mutation available', async () => {
+    for (const labels of [['Complexity: M'], ['Complexity: S'], []]) {
+      const { report } = tester(labels, facts('pcov'));
+      assert.equal(data(await report({ ...base, cases: [caseOf('a')] })).target, 'Agent review', labels.join());
+    }
+  });
+
+  it('refuses an L/XL passed result without mutation_score where mutation testing is available', async () => {
+    const refused = error(await tester(['Complexity: XL'], facts('pcov')).report({ ...base, cases: [caseOf('a', { existing: true })] }));
+    assert.equal(refused.category, 'invalid_result');
+    assert.match(refused.message, /mutation_score/);
+    assert.match(refused.message, /pest --mutate --covered-only/);
+    assert.match(refused.message, /Pest 3\.5\.0, pcov/);
+  });
+
+  it('accepts a score with its command, or a mutation_problem', async () => {
+    const cases = [caseOf('a', { existing: true })];
+    const scored = tester(['Complexity: XL'], facts('xdebug'));
+    assert.equal(data(await scored.report({ ...base, cases, mutation_score: 87.5, mutation_command: 'vendor/bin/pest --mutate --covered-only' })).target, 'Agent review');
+    assert.match(scored.tracker.comments.get('1')?.[0]?.body ?? '', /Mutation score:\*\* 87\.5 %/);
+    assert.equal(data(await tester(['Complexity: L'], facts('pcov')).report({ ...base, cases, mutation_problem: 'pest crashed' })).target, 'Agent review');
+    assert.equal(error(await tester(['Complexity: L'], facts('pcov')).report({ ...base, cases, mutation_score: 50 })).category, 'invalid_result');
+  });
+
+  it('requires no score without a driver, with Pest 2, or without a Laravel app', async () => {
+    const cases = [caseOf('a', { existing: true })];
+    assert.equal(data(await tester(['Complexity: L'], facts('')).report({ ...base, cases })).target, 'Agent review');
+    assert.equal(data(await tester(['Complexity: L'], facts('pcov', 'v2.34.0')).report({ ...base, cases })).target, 'Agent review');
+    assert.equal(data(await tester(['Complexity: L'], { workspace: tempDir('symphony-empty-') }).report({ ...base, cases })).target, 'Agent review');
   });
 });

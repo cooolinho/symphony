@@ -155,6 +155,8 @@ export interface StageResultLine {
   complexity: string | null;
   /** Findings of the result (review and security results); 0 for other kinds. */
   findings: number;
+  /** Mutation score (percent) of a test result that carries one; null or absent otherwise. */
+  mutationScore?: number | null;
   at: Date;
 }
 
@@ -362,6 +364,7 @@ export class HistoryLog {
       profile: line.profile ?? undefined,
       complexity: line.complexity ?? undefined,
       findings: line.findings || undefined,
+      mutation_score: line.mutationScore ?? undefined,
     });
   }
 
