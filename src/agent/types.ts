@@ -204,6 +204,12 @@ export interface IntegrationReport {
   skills: string[];
 }
 
+/** What a `symphony:*` subagent is told about the session it runs in. */
+export interface SubagentContext {
+  role: string;
+  acceptanceCriteria: string[];
+}
+
 export interface StartSessionParams {
   /** Absolute per-issue workspace path; the agent process runs here. */
   cwd: string;
@@ -227,6 +233,8 @@ export interface StartSessionParams {
   policy?: SessionPolicy;
   /** Subagents (`subagent_type`, e.g. `symphony:laravel-architect`) the session must not start. */
   deniedAgents?: string[];
+  /** Role name and refined acceptance criteria for the SubagentStart hook; absent = no role line, no criteria. */
+  subagentContext?: SubagentContext;
   /** Upper bound for one call of a Symphony tool (it may run an entry check); absent = the agent's default. */
   toolTimeoutMs?: number;
   /** Context window (tokens) of a model id from the pricing table; null when unknown. Read on every call. */

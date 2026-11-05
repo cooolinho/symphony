@@ -154,6 +154,15 @@ workspace's project type ([Subagents per role](configuration.md#subagents-per-ro
 refuses a call. Every Agent tool call carries its subagent in the `tool_use` event (`detail.agent`), so the statistics
 count subagents like skills. Background and usage figures: [laravel-subagents.md](laravel-subagents.md).
 
+Symphony's appended system prompt does not reach subagents, so a `SubagentStart` callback hook (registered in every
+session, next to the `PreToolUse` hook; spike E0-2 question 7b) injects an issue context as `additionalContext` into each
+`symphony:*` subagent. In this order: the issue identifier and title, the role of the session and whether it is read-only,
+the absolute workspace path, the repository rules that exist (`CLAUDE.md`, `AGENTS.md`, `.ai/rules/index.md`), the
+acceptance criteria from `results.analysis` when the issue analyst ran, and the instruction to answer with `file:line`.
+Without a role context (other callers) the role line and the criteria are left out. The text is limited to 4000
+characters (`SUBAGENT_CONTEXT_MAX`); criteria are cut first, each at 400 characters, and the ones that do not fit become
+`- … n more in the issue`. Built-in agents, bare-name repository agents, forks and other plugins get nothing.
+
 #### Delegation line of the `claude_code` preset (spike E0-1)
 
 Checked in Claude Code 2.1.288, bundled with SDK 0.3.288 as the native binary
