@@ -1226,6 +1226,109 @@ describe('Symphony toolbox subagents', () => {
     });
   }
 
+  describe('models and turn limits', () => {
+    const front = (name: string) => /^---\n([\s\S]*?)\n---\n/.exec(fs.readFileSync(path.join(agentsDir, `${name}.md`), 'utf8'))?.[1] ?? '';
+    const models: Record<string, string | undefined> = {
+      'laravel-architect': undefined,
+      'laravel-code-reviewer': 'opus',
+      'laravel-database-engineer': 'sonnet',
+      'laravel-filament-developer': 'sonnet',
+      'laravel-test-engineer': undefined,
+    };
+
+    for (const [name, model] of Object.entries(models)) {
+      it(`${name}: one-line maxTurns${model ? ` and model ${model}` : ''}, no effort, no YAML list`, () => {
+        const text = front(name);
+        assert.match(text, /^maxTurns: [1-9]\d*$/m);
+        assert.equal(/^model: (.+)$/m.exec(text)?.[1], model);
+        assert.doesNotMatch(text, /^effort:/m);
+        assert.doesNotMatch(text, /^\s*-\s/m);
+      });
+    }
+
+    it('pluginAgents() still marks the architect and the reviewer read-only and the other personas as writers', () => {
+      const readOnly = Object.fromEntries(pluginAgents([toolbox]).map((agent) => [agent.name, agent.readOnly]));
+      assert.deepEqual(readOnly, {
+        'laravel-architect': true,
+        'laravel-code-reviewer': true,
+        'laravel-database-engineer': false,
+        'laravel-filament-developer': false,
+        'laravel-test-engineer': false,
+      });
+    });
+  });
+
+  describe('models and turn limits (independent of the persona files)', () => {
+    const expected = {
+      'laravel-architect': { model: undefined, readOnly: true, minTurns: 55 },
+      'laravel-code-reviewer': { model: 'opus', readOnly: true, minTurns: 22 },
+      'laravel-database-engineer': { model: 'sonnet', readOnly: false, minTurns: 1 },
+      'laravel-filament-developer': { model: 'sonnet', readOnly: false, minTurns: 1 },
+      'laravel-test-engineer': { model: undefined, readOnly: false, minTurns: 1 },
+    } as const;
+    const allowedKeys = new Set(['name', 'description', 'model', 'maxTurns', 'disallowedTools']);
+    const lines = (name: string) => {
+      const text = fs.readFileSync(path.join(agentsDir, `${name}.md`), 'utf8');
+      assert.ok(text.startsWith('---\n'), `${name}: starts with front matter`);
+      const end = text.indexOf('\n---\n', 4);
+      assert.ok(end > 0, `${name}: front matter is closed`);
+      return text.slice(4, end).split('\n');
+    };
+
+    for (const [name, want] of Object.entries(expected)) {
+      it(`${name}: every front-matter line is a one-line key: value entry with a known key, each key once`, () => {
+        const keys: string[] = [];
+        for (const line of lines(name)) {
+          const match = /^([A-Za-z][\w-]*): \S.*$/.exec(line);
+          assert.ok(match, `not a one-line key: value entry: "${line}"`);
+          keys.push(match[1] as string);
+        }
+        for (const key of keys) assert.ok(allowedKeys.has(key), `unexpected key ${key}`);
+        assert.equal(new Set(keys).size, keys.length, 'no duplicate keys');
+        assert.ok(keys.includes('maxTurns'));
+        assert.equal(keys.includes('model'), want.model !== undefined);
+      });
+
+      it(`${name}: model ${want.model ?? '(inherited)'}, maxTurns an integer between its observed tool calls and a sane ceiling`, () => {
+        const entries = Object.fromEntries(lines(name).map((line) => [line.slice(0, line.indexOf(':')), line.slice(line.indexOf(':') + 1).trim()]));
+        assert.equal(entries.model, want.model);
+        assert.match(entries.maxTurns as string, /^\d+$/);
+        const turns = Number(entries.maxTurns);
+        // Observed tool calls: reviews 10–21, architect critiques 11–54. A limit below that cuts real runs short.
+        assert.ok(turns >= want.minTurns, `maxTurns ${turns} is below the observed ${want.minTurns - 1}`);
+        assert.ok(turns <= 200, `maxTurns ${turns} is no limit worth the name`);
+      });
+    }
+
+    it('the architect, which critiques the most, gets the largest turn budget; the reviewer stays the tightest', () => {
+      const turns = (name: string) => Number(/^maxTurns: (\d+)$/m.exec(lines(name).join('\n'))?.[1]);
+      for (const other of ['laravel-code-reviewer', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer']) {
+        assert.ok(turns('laravel-architect') >= turns(other), `architect >= ${other}`);
+      }
+      for (const other of ['laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer']) {
+        assert.ok(turns('laravel-code-reviewer') <= turns(other), `reviewer <= ${other}`);
+      }
+    });
+
+    it('pluginAgents() still reads every persona with name, description and its read-only mark', () => {
+      const agents = pluginAgents([toolbox]);
+      assert.deepEqual(agents.map((agent) => agent.name), Object.keys(expected));
+      for (const agent of agents) {
+        assert.equal(agent.readOnly, expected[agent.name as keyof typeof expected].readOnly, agent.name);
+        assert.equal(agent.qualified, `symphony:${agent.name}`);
+        assert.ok(agent.description.length > 20, `${agent.name}: description survives the new entries`);
+      }
+    });
+
+    it('the read-only personas still deny Edit and Write; the writers deny nothing', () => {
+      for (const [name, want] of Object.entries(expected)) {
+        const text = lines(name).join('\n');
+        if (want.readOnly) assert.match(text, /^disallowedTools: .*\bEdit\b.*\bWrite\b/m, name);
+        else assert.doesNotMatch(text, /^disallowedTools:/m, name);
+      }
+    });
+  });
+
   it('the toolbox only refers to subagents it ships', () => {
     const shipped = new Set(files.map((file) => `symphony:${file.slice(0, -3)}`));
     const texts = [path.join(toolbox, 'README.md'), ...fs.readdirSync(path.join(toolbox, 'skills'), { recursive: true, encoding: 'utf8' })
