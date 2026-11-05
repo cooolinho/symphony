@@ -1079,3 +1079,104 @@ describe('claude agent runner', () => {
     });
   });
 });
+
+describe('subagent measures: edge cases (#485)', () => {
+  const callOf = (id: string, type: string) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Agent', input: { subagent_type: type, description: `d ${id}` } }] }, parent_tool_use_id: null });
+  const innerOf = (parent: string, id: string, model: string, usage: Record<string, number> = { input_tokens: 1, output_tokens: 1 }) => ({ type: 'assistant', message: { id, model, content: [{ type: 'text', text: 'x' }], usage }, parent_tool_use_id: parent });
+  const doneOf = (id: string, isError = false) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'r', is_error: isError }] }, parent_tool_use_id: null });
+  const task = (subtype: string, id: unknown, usage?: unknown) => ({ type: 'system', subtype, task_id: 't', ...(id === undefined ? {} : { tool_use_id: id }), description: 'd', status: 'completed', output_file: '', summary: '', ...(usage === undefined ? {} : { usage }) });
+  async function play(messages: Array<Record<string, unknown>>): Promise<AgentEvent[]> {
+    const fake = fakeQuery((_p, _o, emit) => {
+      for (const m of messages) emit(m);
+      emit(result(0.1, 10, 1));
+    });
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ events }));
+    await session.runTurn('go');
+    return events;
+  }
+  const lastOf = (events: AgentEvent[], id: string) => events.flatMap((e) => (e.subagent?.toolUseId === id ? [e.subagent] : [])).at(-1);
+
+  it('assigns task_* figures to the right one of two parallel subagents', async () => {
+    const events = await play([
+      callOf('toolu_a', 'Explore'), callOf('toolu_b', 'Plan'),
+      innerOf('toolu_a', 'ma', 'claude-haiku-4-5'), innerOf('toolu_b', 'mb', 'claude-opus-5-5'),
+      task('task_progress', 'toolu_a', { total_tokens: 1000, tool_uses: 1, duration_ms: 100 }),
+      task('task_progress', 'toolu_b', { total_tokens: 2000, tool_uses: 2, duration_ms: 200 }),
+      doneOf('toolu_a'), doneOf('toolu_b'),
+    ]);
+    const a = lastOf(events, 'toolu_a');
+    const b = lastOf(events, 'toolu_b');
+    assert.deepEqual([a?.contextTokens, a?.toolUses, a?.durationMs, a?.models], [1000, 1, 100, ['claude-haiku-4-5']]);
+    assert.deepEqual([b?.contextTokens, b?.toolUses, b?.durationMs, b?.models], [2000, 2, 200, ['claude-opus-5-5']]);
+  });
+
+  it('lists a model once and several models in first-seen order', async () => {
+    const events = await play([
+      callOf('toolu_a', 'Explore'),
+      innerOf('toolu_a', 'm1', 'claude-opus-5-5'), innerOf('toolu_a', 'm2', 'claude-sonnet-5-5'), innerOf('toolu_a', 'm3', 'claude-opus-5-5'),
+      doneOf('toolu_a'),
+    ]);
+    assert.deepEqual(lastOf(events, 'toolu_a')?.models, ['claude-opus-5-5', 'claude-sonnet-5-5']);
+  });
+
+  it('does not take the model of the main agent or of another subagent', async () => {
+    const main = { type: 'assistant', message: { id: 'mm', model: 'claude-main-model', content: [{ type: 'text', text: 'x' }], usage: { input_tokens: 5, output_tokens: 5 } }, parent_tool_use_id: null };
+    const events = await play([callOf('toolu_a', 'Explore'), main, innerOf('toolu_a', 'm1', 'claude-opus-5-5'), doneOf('toolu_a')]);
+    assert.deepEqual(lastOf(events, 'toolu_a')?.models, ['claude-opus-5-5']);
+  });
+
+  it('keeps the billed sum apart from the context figure', async () => {
+    const events = await play([
+      callOf('toolu_a', 'Explore'),
+      innerOf('toolu_a', 'm1', 'claude-opus-5-5', { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 30, cache_creation_input_tokens: 40 }),
+      task('task_notification', 'toolu_a', { total_tokens: 7, tool_uses: 1, duration_ms: 5 }),
+      doneOf('toolu_a'),
+    ]);
+    const s = lastOf(events, 'toolu_a')!;
+    assert.equal(s.contextTokens, 7);
+    assert.deepEqual(s.tokens, { inputTokens: 10, outputTokens: 20, cacheReadTokens: 30, cacheWriteTokens: 40 });
+  });
+
+  it('ignores missing or non-numeric usage values and keeps earlier figures', async () => {
+    const events = await play([
+      callOf('toolu_a', 'Explore'),
+      task('task_progress', 'toolu_a', { total_tokens: 500, tool_uses: 3, duration_ms: 90 }),
+      task('task_progress', 'toolu_a', { total_tokens: 'many', tool_uses: null }),
+      task('task_notification', 'toolu_a'),
+      doneOf('toolu_a'),
+    ]);
+    const s = lastOf(events, 'toolu_a')!;
+    assert.equal(s.contextTokens, 500);
+    assert.equal(s.toolUses, 3);
+    assert.equal(s.durationMs, 90);
+  });
+
+  it('task_started alone changes no figure and emits no notification for a known subagent', async () => {
+    const events = await play([callOf('toolu_a', 'Explore'), task('task_started', 'toolu_a'), doneOf('toolu_a')]);
+    const s = lastOf(events, 'toolu_a')!;
+    assert.equal(s.contextTokens, null);
+    assert.equal(events.filter((e) => e.event === 'notification' && String(e.message).startsWith('system/task_')).length, 0);
+  });
+
+  it('keeps task_* without a tool_use_id as notification and does not touch a running subagent', async () => {
+    const events = await play([callOf('toolu_a', 'Explore'), task('task_started', undefined), task('task_progress', undefined, { total_tokens: 9, tool_uses: 9, duration_ms: 9 }), doneOf('toolu_a')]);
+    assert.deepEqual(events.filter((e) => e.event === 'notification').map((e) => e.message).filter((m) => String(m).startsWith('system/task_')), ['system/task_started', 'system/task_progress']);
+    assert.equal(lastOf(events, 'toolu_a')?.contextTokens, null);
+  });
+
+  it('does not leak the figures through a later snapshot copy (models are copied)', async () => {
+    const events = await play([callOf('toolu_a', 'Explore'), innerOf('toolu_a', 'm1', 'claude-opus-5-5'), innerOf('toolu_a', 'm2', 'claude-sonnet-5-5'), doneOf('toolu_a')]);
+    const snaps = events.flatMap((e) => (e.subagent?.toolUseId === 'toolu_a' ? [e.subagent] : []));
+    const models = snaps.map((s) => s.models);
+    assert.ok(new Set(models).size === models.length, 'every snapshot has its own models array');
+    assert.deepEqual(models[0], []);
+  });
+
+  it('an errored subagent still carries the figures of its task_notification', async () => {
+    const events = await play([callOf('toolu_a', 'Explore'), task('task_notification', 'toolu_a', { total_tokens: 42, tool_uses: 2, duration_ms: 8 }), doneOf('toolu_a', true)]);
+    const s = lastOf(events, 'toolu_a')!;
+    assert.equal(s.status, 'error');
+    assert.equal(s.contextTokens, 42);
+  });
+});
