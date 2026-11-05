@@ -1338,6 +1338,18 @@ describe('issue analyst stage', () => {
     assert.deepEqual(data(h.reports[0]).labels, { added: ['Type: bugfix', 'Complexity: M'], removed: [] });
   });
 
+  it('hands the role name and the analysed acceptance criteria to every session as subagentContext', async () => {
+    const { h } = analystPipeline([analysed(), done(), approved()]);
+    await run(h);
+
+    const contexts = h.runner.sessions.map((session) => session.params.subagentContext);
+    assert.deepEqual(contexts, [
+      { role: 'issue-analyst', acceptanceCriteria: [] },
+      { role: 'developer', acceptanceCriteria: ['The export lists every invoice', 'An empty list exports a header only'] },
+      { role: 'reviewer', acceptanceCriteria: ['The export lists every invoice', 'An empty list exports a header only'] },
+    ]);
+  });
+
   it('needs_info: the issue moves to Blocked and the open questions are in the comment', async () => {
     const { h } = analystPipeline([
       analysed({ verdict: 'needs_info', summary: 'The format is not specified.', open_questions: ['Which CSV dialect?', 'Do archived invoices count?'] }),
