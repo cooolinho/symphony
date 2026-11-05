@@ -11,7 +11,9 @@
 # Add exact ids when you use older models with other prices.
 #
 # `context_window` (optional, tokens) is the model's context window, used for the context fill level.
-# It is resolved like the price. A model name with the suffix `[1m]` always gets 1,000,000 tokens.
+# It is resolved like the price. A window Claude Code reports in the result (`modelUsage[<model>].contextWindow`) overrides it
+# for the peak of a run. opus and sonnet are reported by Claude Code; fable is inferred (1M).
+# A model name with the suffix `[1m]` always gets 1,000,000 tokens.
 
 default:
   input: 5.00
@@ -21,16 +23,19 @@ default:
 fable:
   input: 10.00
   output: 50.00
+  context_window: 1000000
   cache_read: 0.25
 
 opus:
   input: 4.00
   output: 20.00
+  context_window: 1000000
   cache_read: 0.20
 
 sonnet:
   input: 2.00
   output: 10.00
+  context_window: 1000000
   cache_read: 0.20
 
 haiku:

@@ -1401,13 +1401,15 @@ claude-opus-4-8: { input: 5.00, output: 25.00 }
 - A model id reported by Claude Code (e.g. `claude-opus-5-5`) uses the exact entry if there is one, else the longest
   key contained in the id (`opus`), else `default`. Without the file, every model is priced at 5 / 25.
 - `context_window` (optional, a positive whole number of tokens) is the model's context window. It is looked up like the
-  price (exact entry, else longest contained key, else `default`); the shipped file sets `default: 200000`. A model
+  price (exact entry, else longest contained key, else `default`); the shipped file sets `default: 200000` and 1,000,000 for `opus`, `sonnet` and `fable`. A model
   name with the suffix `[1m]` (e.g. `opus[1m]`) always gets 1,000,000 tokens, ahead of any entry. Symphony relates
   `input + cache_read + cache_creation` tokens of the latest call of the main conversation (subagents excluded) to this
   window: `running[].context` in `GET /api/v1/state` is `{ tokens, window, percent, compacts }`, with `window` and
   `percent` `null` when no window can be determined (no `context_window` on the entry or on `default`). Automatic
   compactions (`compact_boundary`) are counted in `compacts`. Add `context_window` to a custom `model-costs.yml`, e.g. a
-  Docker mount, to get percentages.
+  Docker mount, to get percentages. The live value during a turn always comes from the file. When the result of a turn
+  reports a window (`modelUsage[<model>].contextWindow`), that window overrides the file for the peak: `context_peak_percent`
+  in `run_finished` is the peak tokens against the reported window, else against the file.
 - Cost = input × input price + output × output price + cache reads × cache_read + cache writes × cache_write.
 
 ## Repository logs

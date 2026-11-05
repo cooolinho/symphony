@@ -146,11 +146,57 @@ describe('contextWindowSuffix', () => {
   });
 });
 
+describe('peak against the real window', () => {
+  const shipped = parsePricing(fs.readFileSync(path.join(import.meta.dirname, '..', 'model-costs.yml'), 'utf8'), null);
+  const resolver = (model: string) => contextWindowFor(shipped, model);
+  const resultWith = (modelUsage: Record<string, unknown>) => ({ ...turnResult, modelUsage });
+  const finalContext = (events: AgentEvent[]) => events.filter((e) => e.event === 'turn_completed').at(-1)?.context;
+
+  it('250,996 tokens on claude-opus-5-5 are 25.1 %', async () => {
+    const events = await run('opus', resolver, (_t, emit) => emit(call('m1', { input_tokens: 250_996 })));
+    assert.equal(contexts(events)[0]?.percent, 25.1);
+    assert.equal(finalContext(events)?.peakPercent, 25.1);
+  });
+
+  it('a 200k model is computed against 200k', async () => {
+    const events = await run('haiku', resolver, (_t, emit) => emit(call('m1', { input_tokens: 100_000 }, null, 'claude-haiku-4-5-20251001')));
+    assert.equal(finalContext(events)?.window, 200_000);
+    assert.equal(finalContext(events)?.peakPercent, 50);
+  });
+
+  it('a reported window overrides the file for the peak, the live value keeps the file', async () => {
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({
+      query: fakeQuery((_t, emit) => {
+        emit(call('m1', { input_tokens: 150_000 }));
+        emit(resultWith({ 'claude-opus-5-5': { contextWindow: 300_000 } }));
+      }),
+    }).startSession(sessionParams('opus', events, () => 200_000));
+    await session.runTurn('go');
+    await session.stop();
+    assert.equal(contexts(events)[0]?.percent, 75);
+    assert.equal(finalContext(events)?.window, 300_000);
+    assert.equal(finalContext(events)?.peakPercent, 50);
+  });
+
+  it('an unknown model without a window stays null', async () => {
+    const events = await run('mystery', () => null, (_t, emit) => emit(call('m1', { input_tokens: 10 }, null, 'mystery-1')));
+    assert.equal(finalContext(events)?.window, null);
+    assert.equal(finalContext(events)?.peakPercent, null);
+  });
+});
+
 describe('context_window in model-costs.yml', () => {
+  it('the shipped file sets 1M for opus, sonnet and fable, default 200000 and haiku falls back to it', () => {
+    const shipped = parsePricing(fs.readFileSync(path.join(import.meta.dirname, '..', 'model-costs.yml'), 'utf8'), 'model-costs.yml');
+    for (const model of ['claude-opus-5-5', 'claude-sonnet-5-5', 'fable']) assert.equal(contextWindowFor(shipped, model), 1_000_000, model);
+    assert.equal(contextWindowFor(shipped, 'claude-haiku-4-5-20251001'), 200_000);
+  });
+
   it('the shipped file sets default 200000, so every model without its own entry gets 200k', () => {
     const shipped = parsePricing(fs.readFileSync(path.join(import.meta.dirname, '..', 'model-costs.yml'), 'utf8'), 'model-costs.yml');
     assert.equal(shipped.defaultContextWindow, 200_000);
-    for (const model of ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-4-5-20251001', 'something-unknown']) {
+    for (const model of ['claude-haiku-4-5-20251001', 'something-unknown']) {
       assert.equal(contextWindowFor(shipped, model), 200_000, model);
     }
     assert.equal(contextWindowFor(shipped, 'opus[1m]'), 1_000_000);
