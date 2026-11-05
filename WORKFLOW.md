@@ -160,8 +160,8 @@ claude:
   # max_budget_usd: 5                        # optional cost cap per agent session
 
 roles:
-  # agents: plugin subagents (.claude/agents) the role may start; unset = all. Read-only roles only get read-only
-  # ones, and laravel-* subagents only exist in workspaces with a Laravel app.
+  # agents: plugin subagents (.claude/agents) the role may start; unset = all (the default for custom workflows; every role
+  # below lists its agents explicitly, [] = none). Read-only roles only get read-only ones, and laravel-* subagents only exist in workspaces with a Laravel app.
   # brain: which brain tools the role gets (off = none, read = search/read/list/vitals, write = also write/append); only with
   # brain.enabled; unset = off. brain_approved_writes: false (only with brain: write) makes brain_write/brain_append reject
   # every approved note and every status: approved; unset = true (no extra gate).
@@ -251,6 +251,7 @@ roles:
     result: docs
     on_result: { done: Agent review, not_needed: Agent review, blocked: Blocked }
     may_move_to: [Agent review, Blocked]
+    agents: []                               # edits docs only; none of the laravel-* personas
     model_label: ignore                      # haiku, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # medium, whatever the issue's Effort: label says
     claude: { model: haiku, effort: medium }
@@ -342,6 +343,7 @@ roles:
     may_move_to: [In progress, In review, Blocked]
     brain: write
     brain_approved_writes: false                            # never writes an approved note, never sets status approved
+    agents: []                                              # works on the vault, no laravel-* personas
     claude: { model: opus, max_budget_usd: 5, disallowed_tools: [mcp__tracker__open_pull_request] }
 
 pipeline:

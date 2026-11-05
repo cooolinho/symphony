@@ -70,19 +70,19 @@ available everywhere (:145-146), but none ships yet.
 | architect | opus / high, fable at L/XL | `[laravel-architect]` ([:214](../../WORKFLOW.md#L214)) | laravel-architect | none | structure, checked against the code | 170 (19) |
 | developer | `claude.model`, opus at L/XL | all five ([:224](../../WORKFLOW.md#L224)) | all five | none | plan, specialist, review before the result ([developer.md:8](../../roles/developer.md#L8)) | 371 (28) |
 | test-engineer | sonnet / high | `[laravel-test-engineer]` ([:240](../../WORKFLOW.md#L240)) | laravel-test-engineer | none | a self-contained group of tests | 349 (0) |
-| docs | haiku / medium, `acceptEdits` | **unset** ([:249-256](../../WORKFLOW.md#L249-L256)) | **all five, writers included** | none | **none** (no intro block) | 124 (0) |
+| docs | haiku / medium, `acceptEdits` | `[]` ([:249-256](../../WORKFLOW.md#L249-L256)) | none | none | none (no intro block) | 124 (0) |
 | reviewer | opus / high | `[laravel-code-reviewer]` ([:269](../../WORKFLOW.md#L269)) | laravel-code-reviewer | none | second pass over a large diff | 330 (0) |
 | security-auditor | opus / high | `[laravel-code-reviewer]` ([:291](../../WORKFLOW.md#L291)) | laravel-code-reviewer | none | as the reviewer | 128 (0) |
 | auditor `/refactoring` | fable, $15 | architect + code-reviewer ([:302](../../WORKFLOW.md#L302)) | both | none | one area per agent | – |
 | autopilot `/auto-code` | fable, $10 | `[laravel-architect]` ([:314](../../WORKFLOW.md#L314)) | laravel-architect | none | feasibility of a wave | 1 (0) |
 | analyst `/concept` | fable / high, $20 | `[laravel-architect]` ([:324](../../WORKFLOW.md#L324)) | laravel-architect | none | feasibility of the epics | 6 (1) |
 | planner `/plan` | fable / high, $20 | `[laravel-architect]` ([:334](../../WORKFLOW.md#L334)) | laravel-architect | none | plan of a risky list item | – |
-| brain-gardener | opus, $5 | **unset** ([:336-345](../../WORKFLOW.md#L336-L345)) | **architect + code-reviewer** (read-only filter) | none | **none** | – |
+| brain-gardener | opus, $5 | `[]` ([:336-345](../../WORKFLOW.md#L336-L345)) | none | none | none | – |
 | default (no `roles`) | `claude.model` | – | **all five** | none | **none** | – |
 
-- "Unset = all" is the documented default ([config.ts:730-742](../../src/workflow/config.ts#L730-L742)), pinned for docs
-  and brain-gardener in [workflow-prompt.test.ts:1012-1025](../../test/workflow-prompt.test.ts#L1012-L1025). The haiku
-  docs role with `acceptEdits` could hand Filament or database work to subagents that also run on haiku.
+- "Unset = all" is the documented default ([config.ts:730-742](../../src/workflow/config.ts#L730-L742)) for custom
+  workflows; the shipped roles list their agents explicitly. `docs` and `brain-gardener` now set `agents: []`
+  in [WORKFLOW.md:249-256, 336-345](../../WORKFLOW.md#L249-L256), denying all Laravel subagents in [workflow-prompt.test.ts:1012-1025](../../test/workflow-prompt.test.ts#L1012-L1025).
 - **Built-in agents are never filtered**: `claude`, `Explore`, `general-purpose`, `Plan` and `statusline-setup` are in
   every `init.agents`, `general-purpose` with all tools also in read-only roles. No prompt mentions them; they were last
   used on 2026-10-11.
@@ -218,7 +218,7 @@ Vendor figures are marked **[vendor]**: self-reported, not independently replica
 | security-auditor | Inventory, researcher per component, panel of three refutation lenses (reachability, impact, defenses), default "false positive" | inventory on sonnet with Read/Glob/Grep; verifiers on opus; Laravel lenses: mass assignment, policies, Filament `canAccess`, raw queries, `{!! !!}` | running code; same-model critique without a refutation brief |
 | planner, analyst, autopilot | One draft per independent section or item; duplicate search against open issues; the parent decides Blocked-by ([dedupe](https://github.com/anthropics/claude-code/blob/main/.claude/commands/dedupe.md)) | drafters on sonnet; feasibility checker (do the files exist?) | dependencies decided in subagents (cross-cutting decisions) |
 | auditor `/refactoring` | Inventory, read-only auditor per component, verifier that rejects pre-existing style | inventory and auditors on sonnet; verifier on opus or fable | writing refactorers in the audit role |
-| brain-gardener | Parallel checkers per vault folder (links, orphans, duplicate candidates); the parent proposes merges | haiku checkers | the Laravel personas it inherits today |
+| brain-gardener | Parallel checkers per vault folder (links, orphans, duplicate candidates); the parent proposes merges | haiku checkers | none (no Laravel subagents allowed) |
 
 **For every role:**
 
