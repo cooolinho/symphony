@@ -169,9 +169,30 @@ multiply, and no planned pattern nests; the SDK docs advise limits over instruct
 value (e.g. `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "2"`). `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` keeps its default.
 
 **Forks are denied.** A fork subagent inherits the whole context and the role's tools, so it bypasses the
-`Agent(symphony:*)` denies. From SDK 0.3.302 forks are on by default, while `package.json` allows `^0.3.288`. Every
+`Agent(symphony:*)` denies. From SDK 0.3.302 forks are on by default, and Symphony pins 0.3.318 (Claude Code 2.1.318, E4-5), where they are on. Every
 session therefore carries the rule `Agent(fork)` in `disallowedTools` (read-only or not, with or without denied agents)
 and starts with `CLAUDE_CODE_FORK_SUBAGENT=0`. `claude.env` can override the variable; the deny rule stays.
+
+**Claude Code 2.1.318 (E4-5).** Symphony pins `@anthropic-ai/claude-agent-sdk` **0.3.318** exactly (no `^`), which bundles
+Claude Code 2.1.318; `session_configured.claude_code_version` reports it (verified: `system/init` of the bundled binary
+says `2.1.318`). `npm run check` typechecks and the tests pass unchanged (no new message shapes, no new fixtures).
+The live checks below were **not run** by the developer session: the workspace has no login (`Not logged in · Please run
+/login`, the token variables are stripped from the session environment). They are pending for the merging maintainer.
+Run each in a temp git repo with the flags and environment Symphony uses (`CLAUDE_CODE_FORK_SUBAGENT=0` plus
+`--disallowedTools "Agent(fork)"` as above), with `--output-format stream-json --verbose`, once per role kind
+(writing: `--permission-mode acceptEdits`; read-only: `--disallowedTools Edit Write NotebookEdit`; command: an
+issue-command session, e.g. a skill). Record the session ids here.
+
+- Fork refused: prompt `Start a fork subagent that says hi`; expect a refusal or error `tool_result` and no fork run. _pending_
+- 2.1.302, a subagent's own Agent calls run in the foreground: needs `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=2` (depth 1 gives
+  subagents no Agent tool); ask a general-purpose subagent to start an Explore subagent; the nested call must finish before
+  the outer result and carry no `run_in_background`. _pending_
+- 2.1.314, the parent no longer keeps subagent tool results: the parent's next turn `usage` input tokens must not grow by
+  the subagent's inner `tool_result` sizes. _pending_
+- 2.1.317, a subagent on another model uses that model's effort: session on sonnet, subagent on `haiku`; the subagent's
+  assistant messages carry the haiku model and no effort error. _pending_
+- 2.1.311, `SubagentStop` no longer fires twice a minute: `--settings` with a `SubagentStop` hook appending to a file; it
+  must fire once per subagent, not every ~30 s. _pending_
 
 ### Brain tools
 
@@ -276,8 +297,8 @@ script: it receives the absolute `artisan` path and its arguments, plus `SYMPHON
 | Claude Code exits mid-turn | `port_exit` (stderr tail included in the message) |
 | Orchestrator stops the run (issue moved, shutdown) | `turn_cancelled`, no retry |
 
-Entry checks run inside the `set_status` tool call, so that call must outlive the check. Claude Code (2.1.288, bundled
-with Agent SDK 0.3.288) bounds a call to an MCP server by the server config's `timeout` (used when ≥ 1000 ms), else
+Entry checks run inside the `set_status` tool call, so that call must outlive the check. Claude Code (observed with 2.1.288, bundled
+with Agent SDK 0.3.288; not re-checked with 2.1.318) bounds a call to an MCP server by the server config's `timeout` (used when ≥ 1000 ms), else
 the `MCP_TOOL_TIMEOUT` environment variable, else 100 000 000 ms (about 28 hours); in-process `sdk` servers have no
 idle timeout. Sources: the `timeout` docs of `createSdkMcpServer` and `McpSdkServerConfig` in the SDK's `sdk.d.ts`
 ("Overrides the MCP_TOOL_TIMEOUT environment variable for this server"), `sdk.mjs` forwarding it to the CLI as
@@ -358,7 +379,7 @@ first event. Instances sharing a log directory share the file, which fits becaus
 
 Besides `status`, `rateLimitType` and `resetsAt`, three fields of `rate_limit_info` carry the utilization of the
 subscription windows. `utilization` and `surpassedThreshold` are typed in the SDK (`SDKRateLimitInfo`,
-`@anthropic-ai/claude-agent-sdk@0.3.288`); `unifiedWindows` is not. Findings from real payloads (spike E4-3, #332):
+`@anthropic-ai/claude-agent-sdk@0.3.288`, spike); `unifiedWindows` is not. Findings from real payloads (spike E4-3, #332):
 
 - `utilization`: share of the window named by `rateLimitType`, `0` to `1`. It is missing on `rejected` events.
 - `surpassedThreshold`: the warning level that was just exceeded, on the same scale as `utilization`. Observed `0.75`
