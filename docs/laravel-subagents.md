@@ -42,6 +42,8 @@ about them from the tool list Claude Code builds from their `description`.
 
 ### They are almost never used
 
+_Historical: figures of 2026-10-14. For the current state see [concepts/subagents.md](concepts/subagents.md)._
+
 Agent tool calls in all 535 sessions:
 
 | Role | Calls |
@@ -154,7 +156,7 @@ context and tokens.
 |---|---|---|
 | issue analyst | none (`[]`) | reads the issue and the code itself; the architect persona only repeated its role |
 | architect | `laravel-architect` | structure of a Laravel or Filament change; the role itself decides and reports the `design` result, and runs only for larger changes ([details](configuration.md#the-architect)) |
-| developer | all five | `laravel-architect` before a non-trivial feature, unless the architect stage already delivered a design (`results.design` in the prompt); `laravel-filament-developer`, `laravel-database-engineer`, `laravel-test-engineer` for self-contained parts; `laravel-code-reviewer` on the diff before `set_status("Agent review")` |
+| developer | all five | `laravel-architect` before a non-trivial feature, unless the architect stage already delivered a design (`results.design` in the prompt); `laravel-filament-developer`, `laravel-database-engineer`, `laravel-test-engineer` for self-contained parts; `laravel-code-reviewer` on the diff before `report_result` |
 | test engineer | none (`[]`) | the role itself is the independent tester of the acceptance criteria and may only change test files ([details](configuration.md#the-test-engineer)); its persona only repeated its role |
 | reviewer | none (`[]`) | reads the diff itself; its persona only repeated its role |
 | security auditor | none (`[]`) | reads the diff itself; the reviewer persona only repeated its role |
@@ -198,4 +200,5 @@ Read-only roles only get read-only subagents.
 - Phase 3: `detail.agent` (`test/claude.test.ts`), `agent_calls` in run trace and repository log
   (`test/orchestrator.test.ts`, `test/history.test.ts`), the ranking (`test/analytics.test.ts`).
 - Still open, after deploying: one Laravel issue through developer and reviewer, then check that the dashboard shows
-  "Subagents used" and that a non-Laravel repository's sessions refuse `laravel-*` subagents.
+  "Subagents used". Result for non-Laravel repositories: no session has ever tried a `laravel-*` subagent there; the
+  refusal is covered by the tests (`test/claude.test.ts`, `test/orchestrator.test.ts`).

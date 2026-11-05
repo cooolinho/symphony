@@ -546,6 +546,47 @@ describe('claude agent runner', () => {
     assert.equal(explicit.env?.MCP_TOOL_TIMEOUT, '900000');
   });
 
+  it('refuses a denied subagent spawned from inside a subagent', async () => {
+    const events: AgentEvent[] = [];
+    const options = await sessionOptions({ deniedAgents: ['symphony:laravel-filament-developer'], events });
+    const hook = options.hooks?.PreToolUse?.[0]?.hooks[0];
+    assert.ok(hook !== undefined);
+    const call = (tool: string, input: unknown, extra: object = {}) =>
+      hook({ hook_event_name: 'PreToolUse', tool_name: tool, tool_input: input, tool_use_id: 't1', session_id: 's', transcript_path: '', cwd: '/tmp', ...extra } as never, 't1', {
+        signal: new AbortController().signal,
+      });
+    const sub = { agent_id: 'sub1', agent_type: 'general-purpose' };
+    const denied = { subagent_type: 'symphony:laravel-filament-developer', prompt: 'x' };
+    const fromSub = (await call('Agent', denied, sub)) as { hookSpecificOutput?: { permissionDecision?: string } };
+    assert.equal(fromSub.hookSpecificOutput?.permissionDecision, 'deny');
+    assert.equal(((await call('Task', denied, sub)) as typeof fromSub).hookSpecificOutput?.permissionDecision, 'deny');
+    assert.deepEqual(fromSub, await call('Agent', denied));
+    assert.deepEqual(await call('Agent', { subagent_type: 'symphony:laravel-code-reviewer' }, sub), {});
+    assert.ok(events.some((event) => event.event === 'approval_denied' && event.detail?.agent === 'symphony:laravel-filament-developer'));
+  });
+
+  it('refuses an untyped Agent call from inside a subagent when general-purpose is denied, in a read-only session', async () => {
+    const options = await sessionOptions({ policy: { readOnly: true }, deniedAgents: ['general-purpose'] });
+    for (const rule of READ_ONLY_DENY) assert.ok(options.disallowedTools?.includes(rule), rule);
+    assert.ok(options.disallowedTools?.includes('Agent(general-purpose)'));
+    assert.equal(options.hooks?.PreToolUse?.[0]?.matcher, 'Agent|Task');
+    const hook = options.hooks?.PreToolUse?.[0]?.hooks[0];
+    assert.ok(hook !== undefined);
+    const result = (await hook(
+      { hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { prompt: 'edit target.txt' }, tool_use_id: 't1', session_id: 's', transcript_path: '', cwd: '/tmp', agent_id: 'sub1', agent_type: 'general-purpose' } as never,
+      't1',
+      { signal: new AbortController().signal },
+    )) as { hookSpecificOutput?: { permissionDecision?: string } };
+    assert.equal(result.hookSpecificOutput?.permissionDecision, 'deny');
+    // Other tools are never touched by the hook, from a subagent or not.
+    const other = await hook(
+      { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: 'x' }, tool_use_id: 't2', session_id: 's', transcript_path: '', cwd: '/tmp', agent_id: 'sub1' } as never,
+      't2',
+      { signal: new AbortController().signal },
+    );
+    assert.deepEqual(other, {});
+  });
+
   it('denies the subagents a role or workspace does not allow, by rule and by hook', async () => {
     const events: AgentEvent[] = [];
     const options = await sessionOptions({ deniedAgents: ['symphony:laravel-filament-developer', 'laravel-filament-developer'], events });
@@ -650,6 +691,66 @@ describe('claude agent runner', () => {
     assert.equal(events.filter((event) => event.event === 'tool_use').length, 2);
   });
 
+  describe('subagent measures from task_* messages (#485)', () => {
+    const ID = 'toolu_01F26xAyjMN8Q1WtbZpUMo8j';
+    const call = { type: 'assistant', message: { content: [{ type: 'tool_use', id: ID, name: 'Agent', input: { subagent_type: 'symphony:laravel-code-reviewer', description: 'Review issue 205 diff' } }] }, parent_tool_use_id: null };
+    const inner = (id: string, input: number, output: number, read: number, write: number) => ({
+      type: 'assistant',
+      message: { id, model: 'claude-opus-5-5', content: [{ type: 'text', text: 'x' }], usage: { input_tokens: input, output_tokens: output, cache_read_input_tokens: read, cache_creation_input_tokens: write } },
+      parent_tool_use_id: ID,
+    });
+    const toolResult = { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: ID, content: 'done' }] }, parent_tool_use_id: null };
+    const notification = { type: 'system', subtype: 'task_notification', task_id: 't1', tool_use_id: ID, status: 'completed', output_file: '', summary: '', usage: { total_tokens: 65819, tool_uses: 12, duration_ms: 110436 } };
+    async function run(messages: Array<Record<string, unknown>>): Promise<AgentEvent[]> {
+      const fake = fakeQuery((_prompt, _options, emit) => {
+        for (const message of messages) emit(message);
+        emit(result(0.1, 10, 1));
+      });
+      const events: AgentEvent[] = [];
+      const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ events }));
+      await session.runTurn('go');
+      return events;
+    }
+    const last = (events: AgentEvent[]) => events.flatMap((event) => (event.subagent?.toolUseId === ID ? [event.subagent] : [])).at(-1);
+    const started = { type: 'system', subtype: 'task_started', task_id: 't1', tool_use_id: ID, description: 'd', task_type: 'local_agent' };
+    const progress = { type: 'system', subtype: 'task_progress', task_id: 't1', tool_use_id: ID, description: 'd', usage: { total_tokens: 30000, tool_uses: 6, duration_ms: 50000 } };
+
+    it('reports context, billed tokens, tool uses, duration and model of the marktausschuss#205 reviewer', async () => {
+      const events = await run([call, started, inner('m1', 2, 990, 451649, 10228), progress, inner('m2', 2, 1588, 63392, 837), notification, toolResult]);
+      const snap = last(events);
+      assert.equal(snap?.status, 'ok');
+      assert.equal(snap?.contextTokens, 65819);
+      assert.equal(snap?.toolUses, 12);
+      assert.equal(snap?.durationMs, 110436);
+      assert.deepEqual(snap?.models, ['claude-opus-5-5']);
+      const t = snap!.tokens;
+      assert.equal(t.inputTokens + t.outputTokens + t.cacheReadTokens + t.cacheWriteTokens, 528688);
+      assert.equal(events.filter((e) => e.event === 'notification' && String(e.message).startsWith('system/task_')).length, 0);
+      assert.equal(events.filter((e) => e.event === 'subagent' && e.message !== undefined).length, 2);
+    });
+
+    it('still updates a run whose task_notification arrives after the tool_result', async () => {
+      const snap = last(await run([call, inner('m1', 2, 990, 0, 0), toolResult, notification]));
+      assert.equal(snap?.status, 'ok');
+      assert.equal(snap?.contextTokens, 65819);
+    });
+
+    it('keeps notifications of unknown tool calls as notification', async () => {
+      const events = await run([call, { ...progress, tool_use_id: 'toolu_other' }]);
+      assert.equal(events.filter((e) => e.event === 'notification' && e.message === 'system/task_progress').length, 1);
+    });
+
+    it('works without task_* messages: context stays null', async () => {
+      const snap = last(await run([call, inner('m1', 2, 990, 3, 4), toolResult]));
+      assert.equal(snap?.status, 'ok');
+      assert.equal(snap?.contextTokens, null);
+      assert.equal(snap?.toolUses, null);
+      assert.equal(snap?.durationMs, null);
+      assert.deepEqual(snap?.models, ['claude-opus-5-5']);
+      assert.equal(snap?.tokens.inputTokens, 2);
+    });
+  });
+
   it('marks a subagent whose tool result is an error', async () => {
     const fake = fakeQuery((_prompt, _options, emit) => {
       emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_a', name: 'Agent', input: {} }] }, parent_tool_use_id: null });
@@ -667,6 +768,17 @@ describe('claude agent runner', () => {
     const options = await sessionOptions({ policy: { readOnly: true } });
     for (const rule of READ_ONLY_DENY) assert.ok(options.disallowedTools?.includes(rule), rule);
     assert.ok(options.disallowedTools?.includes('AskUserQuestion'));
+  });
+
+  it('keeps the read-only deny rules whatever subagents are denied', async () => {
+    const agents = ['symphony:laravel-filament-developer', 'laravel-filament-developer'];
+    for (const deniedAgents of [undefined, [], agents]) {
+      const options = await sessionOptions({ policy: { readOnly: true }, deniedAgents });
+      for (const rule of READ_ONLY_DENY) assert.ok(options.disallowedTools?.includes(rule), rule);
+      for (const agent of deniedAgents ?? []) assert.ok(options.disallowedTools?.includes(`Agent(${agent})`), agent);
+    }
+    const writable = await sessionOptions({ policy: { readOnly: false }, deniedAgents: agents });
+    for (const rule of READ_ONLY_DENY) assert.ok(!writable.disallowedTools?.includes(rule), rule);
   });
 
   it('denies git push in a read-only session even when the workflow allows it', async () => {
@@ -1004,6 +1116,39 @@ describe('claude agent runner', () => {
     assert.ok(events.some((e) => e.event === 'approval_denied'));
   });
 
+  it('treats a subagent permission request like a main-thread one', async () => {
+    const decisions: string[] = [];
+    const events: AgentEvent[] = [];
+    const bashInput = { command: 'curl example.com' };
+    let subBash: { behavior?: string; updatedInput?: unknown } | undefined;
+    const fake = fakeQuery(async (_p, options, emit) => {
+      const signal = new AbortController().signal;
+      for (const opts of [{ signal }, { signal, agentID: 'sub1' }]) {
+        const ask = await options.canUseTool?.('AskUserQuestion', {}, opts as never);
+        decisions.push(String(ask?.behavior));
+      }
+      for (const opts of [{ signal }, { signal, agentID: 'sub1' }]) {
+        const bash = await options.canUseTool?.('Bash', bashInput, opts as never);
+        decisions.push(String(bash?.behavior));
+        subBash = bash as typeof subBash;
+      }
+      emit(result(0, 0, 0));
+    });
+    const deny = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ events }));
+    await deny.runTurn('go');
+    await deny.stop();
+    assert.deepEqual(decisions, ['deny', 'deny', 'deny', 'deny']);
+    assert.ok(events.some((e) => e.event === 'approval_denied' && e.detail?.tool === 'Bash'));
+    decisions.length = 0;
+    const approveEvents: AgentEvent[] = [];
+    const approve = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ claude: { on_permission_request: 'approve' }, events: approveEvents }));
+    await approve.runTurn('go');
+    await approve.stop();
+    assert.deepEqual(decisions, ['deny', 'deny', 'allow', 'allow']);
+    assert.deepEqual(subBash?.updatedInput, bashInput);
+    assert.ok(approveEvents.some((e) => e.event === 'approval_auto_approved' && e.detail?.tool === 'Bash'));
+  });
+
   it('fails startup when the handshake does not finish in time', async () => {
     const fake = fakeQuery(() => undefined, () => new Promise(() => undefined));
     await assert.rejects(
@@ -1017,5 +1162,106 @@ describe('claude agent runner', () => {
     await assert.rejects(new ClaudeAgentRunner({ query: fake.fn }).startSession({ ...params(), cwd: 'relative/dir' }), {
       code: 'invalid_workspace_cwd',
     });
+  });
+});
+
+describe('subagent measures: edge cases (#485)', () => {
+  const callOf = (id: string, type: string) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Agent', input: { subagent_type: type, description: `d ${id}` } }] }, parent_tool_use_id: null });
+  const innerOf = (parent: string, id: string, model: string, usage: Record<string, number> = { input_tokens: 1, output_tokens: 1 }) => ({ type: 'assistant', message: { id, model, content: [{ type: 'text', text: 'x' }], usage }, parent_tool_use_id: parent });
+  const doneOf = (id: string, isError = false) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'r', is_error: isError }] }, parent_tool_use_id: null });
+  const task = (subtype: string, id: unknown, usage?: unknown) => ({ type: 'system', subtype, task_id: 't', ...(id === undefined ? {} : { tool_use_id: id }), description: 'd', status: 'completed', output_file: '', summary: '', ...(usage === undefined ? {} : { usage }) });
+  async function play(messages: Array<Record<string, unknown>>): Promise<AgentEvent[]> {
+    const fake = fakeQuery((_p, _o, emit) => {
+      for (const m of messages) emit(m);
+      emit(result(0.1, 10, 1));
+    });
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ events }));
+    await session.runTurn('go');
+    return events;
+  }
+  const lastOf = (events: AgentEvent[], id: string) => events.flatMap((e) => (e.subagent?.toolUseId === id ? [e.subagent] : [])).at(-1);
+
+  it('assigns task_* figures to the right one of two parallel subagents', async () => {
+    const events = await play([
+      callOf('toolu_a', 'Explore'), callOf('toolu_b', 'Plan'),
+      innerOf('toolu_a', 'ma', 'claude-haiku-4-5'), innerOf('toolu_b', 'mb', 'claude-opus-5-5'),
+      task('task_progress', 'toolu_a', { total_tokens: 1000, tool_uses: 1, duration_ms: 100 }),
+      task('task_progress', 'toolu_b', { total_tokens: 2000, tool_uses: 2, duration_ms: 200 }),
+      doneOf('toolu_a'), doneOf('toolu_b'),
+    ]);
+    const a = lastOf(events, 'toolu_a');
+    const b = lastOf(events, 'toolu_b');
+    assert.deepEqual([a?.contextTokens, a?.toolUses, a?.durationMs, a?.models], [1000, 1, 100, ['claude-haiku-4-5']]);
+    assert.deepEqual([b?.contextTokens, b?.toolUses, b?.durationMs, b?.models], [2000, 2, 200, ['claude-opus-5-5']]);
+  });
+
+  it('lists a model once and several models in first-seen order', async () => {
+    const events = await play([
+      callOf('toolu_a', 'Explore'),
+      innerOf('toolu_a', 'm1', 'claude-opus-5-5'), innerOf('toolu_a', 'm2', 'claude-sonnet-5-5'), innerOf('toolu_a', 'm3', 'claude-opus-5-5'),
+      doneOf('toolu_a'),
+    ]);
+    assert.deepEqual(lastOf(events, 'toolu_a')?.models, ['claude-opus-5-5', 'claude-sonnet-5-5']);
+  });
+
+  it('does not take the model of the main agent or of another subagent', async () => {
+    const main = { type: 'assistant', message: { id: 'mm', model: 'claude-main-model', content: [{ type: 'text', text: 'x' }], usage: { input_tokens: 5, output_tokens: 5 } }, parent_tool_use_id: null };
+    const events = await play([callOf('toolu_a', 'Explore'), main, innerOf('toolu_a', 'm1', 'claude-opus-5-5'), doneOf('toolu_a')]);
+    assert.deepEqual(lastOf(events, 'toolu_a')?.models, ['claude-opus-5-5']);
+  });
+
+  it('keeps the billed sum apart from the context figure', async () => {
+    const events = await play([
+      callOf('toolu_a', 'Explore'),
+      innerOf('toolu_a', 'm1', 'claude-opus-5-5', { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 30, cache_creation_input_tokens: 40 }),
+      task('task_notification', 'toolu_a', { total_tokens: 7, tool_uses: 1, duration_ms: 5 }),
+      doneOf('toolu_a'),
+    ]);
+    const s = lastOf(events, 'toolu_a')!;
+    assert.equal(s.contextTokens, 7);
+    assert.deepEqual(s.tokens, { inputTokens: 10, outputTokens: 20, cacheReadTokens: 30, cacheWriteTokens: 40 });
+  });
+
+  it('ignores missing or non-numeric usage values and keeps earlier figures', async () => {
+    const events = await play([
+      callOf('toolu_a', 'Explore'),
+      task('task_progress', 'toolu_a', { total_tokens: 500, tool_uses: 3, duration_ms: 90 }),
+      task('task_progress', 'toolu_a', { total_tokens: 'many', tool_uses: null }),
+      task('task_notification', 'toolu_a'),
+      doneOf('toolu_a'),
+    ]);
+    const s = lastOf(events, 'toolu_a')!;
+    assert.equal(s.contextTokens, 500);
+    assert.equal(s.toolUses, 3);
+    assert.equal(s.durationMs, 90);
+  });
+
+  it('task_started alone changes no figure and emits no notification for a known subagent', async () => {
+    const events = await play([callOf('toolu_a', 'Explore'), task('task_started', 'toolu_a'), doneOf('toolu_a')]);
+    const s = lastOf(events, 'toolu_a')!;
+    assert.equal(s.contextTokens, null);
+    assert.equal(events.filter((e) => e.event === 'notification' && String(e.message).startsWith('system/task_')).length, 0);
+  });
+
+  it('keeps task_* without a tool_use_id as notification and does not touch a running subagent', async () => {
+    const events = await play([callOf('toolu_a', 'Explore'), task('task_started', undefined), task('task_progress', undefined, { total_tokens: 9, tool_uses: 9, duration_ms: 9 }), doneOf('toolu_a')]);
+    assert.deepEqual(events.filter((e) => e.event === 'notification').map((e) => e.message).filter((m) => String(m).startsWith('system/task_')), ['system/task_started', 'system/task_progress']);
+    assert.equal(lastOf(events, 'toolu_a')?.contextTokens, null);
+  });
+
+  it('does not leak the figures through a later snapshot copy (models are copied)', async () => {
+    const events = await play([callOf('toolu_a', 'Explore'), innerOf('toolu_a', 'm1', 'claude-opus-5-5'), innerOf('toolu_a', 'm2', 'claude-sonnet-5-5'), doneOf('toolu_a')]);
+    const snaps = events.flatMap((e) => (e.subagent?.toolUseId === 'toolu_a' ? [e.subagent] : []));
+    const models = snaps.map((s) => s.models);
+    assert.ok(new Set(models).size === models.length, 'every snapshot has its own models array');
+    assert.deepEqual(models[0], []);
+  });
+
+  it('an errored subagent still carries the figures of its task_notification', async () => {
+    const events = await play([callOf('toolu_a', 'Explore'), task('task_notification', 'toolu_a', { total_tokens: 42, tool_uses: 2, duration_ms: 8 }), doneOf('toolu_a', true)]);
+    const s = lastOf(events, 'toolu_a')!;
+    assert.equal(s.status, 'error');
+    assert.equal(s.contextTokens, 42);
   });
 });

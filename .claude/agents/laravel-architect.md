@@ -1,6 +1,7 @@
 ---
 name: laravel-architect
 description: Use before implementing a non-trivial feature or refactoring in a Laravel repository, to design the approach (structure, boundaries, data flow, trade-offs) and return a short plan. Not for writing code.
+maxTurns: 80
 disallowedTools: Edit, Write, NotebookEdit
 ---
 

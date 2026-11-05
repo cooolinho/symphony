@@ -79,9 +79,24 @@ Symphony runs agents **unattended**. Nobody watches a session, so every decision
   `Bash(git commit:*)` and `Bash(git push:*)` added to `disallowedTools`. Deny rules beat allow rules, so this also
   overrides `claude.allowed_tools: ["Bash(git push:*)"]`. The orchestrator sets `readOnly` from the run's role
   (`roles.<role>.read_only`); without a policy, or for the `default` role, a session is not read-only. This is a
-  policy, not a sandbox: Bash can still write files, so callers that need a hard guarantee must enforce it elsewhere
-  (for example in the transition guard, or with `claude.sandbox`). Both inputs are agent-neutral; another runner
-  maps them to its own mechanism.
+  policy, not a sandbox. Both inputs are agent-neutral; another runner maps them to its own mechanism.
+  - *Covered, also inside subagents:* `Edit`, `Write`, `NotebookEdit`, `git commit` and `git push`. The deny rules
+    are session-wide: Claude Code applies deny rules and the `PreToolUse` hook to a subagent's tool calls, and
+    `canUseTool` answers a subagent's request (`agentID`) like a main-thread one. So a read-only role's subagent
+    cannot edit files, and a denied subagent cannot be spawned from inside another subagent either. Locked in by
+    the tests "refuses a denied subagent spawned from inside a subagent", "treats a subagent permission request like
+    a main-thread one" and "keeps the read-only deny rules whatever subagents are denied" in `test/claude.test.ts`.
+  - *Not covered:* shell writes through Bash (`sed -i`, `perl -pi`, redirection, `node -e` with file writes), in the
+    main thread and in subagents. Callers that need a hard guarantee must enforce it elsewhere (for example in the
+    transition guard, or with `claude.sandbox`). Blocking them is open question 5 in
+    [concepts/subagents.md](concepts/subagents.md#open-questions-and-spikes); the current assumption is (a),
+    document and keep.
+  - *Live check:* **not executed yet.** The workspace of E4-1 had no Claude login (`Not logged in · Please run
+    /login`, Claude Code 2.1.288). To run it: in a temp git repo with `target.txt`, start `claude -p "<ask a
+    general-purpose subagent to edit target.txt>" --output-format stream-json --verbose --model haiku
+    --permission-mode acceptEdits --disallowedTools Edit Write NotebookEdit "Bash(git commit:*)" "Bash(git push:*)"
+    AskUserQuestion`, then expect an error `tool_result` for the subagent's Edit/Write (`parent_tool_use_id` set)
+    and an unchanged file. Record the session id here.
 - **Sandboxing:** off by default. `claude.sandbox` passes Claude Code's sandbox settings through (filesystem and
   network restrictions for shell commands).
 
@@ -278,9 +293,15 @@ version, MCP server status, plugins, number of skills), `startup_failed`, `turn_
 The `subagent` event reports the subagents the session starts with the Agent/Task tool. Its `subagent` field is an
 absolute snapshot: tool call id, type (`general-purpose` when unset), description (the `description` of the call, else
 the start of its `prompt`), start, end, status (`running`, `ok`, `error`) and the tokens of the subagent's own model
-calls (input, output, cache read and write; messages with its `parent_tool_use_id`, counted once per message id). The
+calls (input, output, cache read and write; messages with its `parent_tool_use_id`, counted once per message id). This
+`tokens` is the billed load, not the context size. Claude Code's own figures come from the `task_progress` and
+`task_notification` messages, matched by `tool_use_id`: `contextTokens` (`usage.total_tokens`, the context of the latest
+request), `toolUses` and `durationMs`. They are `null` until such a message arrives and stay `null` for runs without
+`task_*` messages (the page shows "—"). A `task_notification` after the `tool_result` still updates the ended run.
+`task_started`, `task_progress` and `task_notification` that match a subagent no longer appear as `notification`;
+unmatched ones still do. `models` lists the models of the subagent's own calls (first seen first, no duplicates). The
 `tool_result` with the same `tool_use_id` ends it (`is_error` gives `error`). A session that ends or is stopped closes the
-open ones as `error`. Only start and end carry a message; token updates do not appear in the timeline. The orchestrator
+open ones as `error`. Only start and end carry a message; figure updates do not appear in the timeline. The orchestrator
 keeps the running subagents and the last ten finished ones per running issue. `agent_calls` still counts the calls.
 
 A turn that fails because of a Claude subscription usage limit settles with the failure code `session_limit` (instead

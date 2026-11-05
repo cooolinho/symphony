@@ -248,6 +248,10 @@ describe('workspace integrations', () => {
         endedAt,
         status,
         tokens: { inputTokens: tokens, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 },
+        contextTokens: null,
+        toolUses: null,
+        durationMs: null,
+        models: [],
       });
       send('tool_use', { detail: { tool: 'Agent', agent: 'Explore' } });
       send('subagent', { subagent: run('a', 'running', 0, null) });
@@ -272,6 +276,10 @@ describe('workspace integrations', () => {
         status: 'ok',
         started_at: '2026-01-01T10:00:00.000Z',
         ended_at: '2026-01-01T10:01:00.000Z',
+        context_tokens: null,
+        tool_uses: null,
+        duration_ms: null,
+        models: [],
         tokens: { input_tokens: 5, output_tokens: 2, cache_read_tokens: 3, cache_write_tokens: 4, total_tokens: 14 },
       },
     ]);
