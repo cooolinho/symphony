@@ -568,6 +568,47 @@ describe('claude agent runner', () => {
     assert.equal(explicit.env?.MCP_TOOL_TIMEOUT, '900000');
   });
 
+  it('refuses a denied subagent spawned from inside a subagent', async () => {
+    const events: AgentEvent[] = [];
+    const options = await sessionOptions({ deniedAgents: ['symphony:laravel-filament-developer'], events });
+    const hook = options.hooks?.PreToolUse?.[0]?.hooks[0];
+    assert.ok(hook !== undefined);
+    const call = (tool: string, input: unknown, extra: object = {}) =>
+      hook({ hook_event_name: 'PreToolUse', tool_name: tool, tool_input: input, tool_use_id: 't1', session_id: 's', transcript_path: '', cwd: '/tmp', ...extra } as never, 't1', {
+        signal: new AbortController().signal,
+      });
+    const sub = { agent_id: 'sub1', agent_type: 'general-purpose' };
+    const denied = { subagent_type: 'symphony:laravel-filament-developer', prompt: 'x' };
+    const fromSub = (await call('Agent', denied, sub)) as { hookSpecificOutput?: { permissionDecision?: string } };
+    assert.equal(fromSub.hookSpecificOutput?.permissionDecision, 'deny');
+    assert.equal(((await call('Task', denied, sub)) as typeof fromSub).hookSpecificOutput?.permissionDecision, 'deny');
+    assert.deepEqual(fromSub, await call('Agent', denied));
+    assert.deepEqual(await call('Agent', { subagent_type: 'symphony:laravel-code-reviewer' }, sub), {});
+    assert.ok(events.some((event) => event.event === 'approval_denied' && event.detail?.agent === 'symphony:laravel-filament-developer'));
+  });
+
+  it('refuses an untyped Agent call from inside a subagent when general-purpose is denied, in a read-only session', async () => {
+    const options = await sessionOptions({ policy: { readOnly: true }, deniedAgents: ['general-purpose'] });
+    for (const rule of READ_ONLY_DENY) assert.ok(options.disallowedTools?.includes(rule), rule);
+    assert.ok(options.disallowedTools?.includes('Agent(general-purpose)'));
+    assert.equal(options.hooks?.PreToolUse?.[0]?.matcher, 'Agent|Task');
+    const hook = options.hooks?.PreToolUse?.[0]?.hooks[0];
+    assert.ok(hook !== undefined);
+    const result = (await hook(
+      { hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { prompt: 'edit target.txt' }, tool_use_id: 't1', session_id: 's', transcript_path: '', cwd: '/tmp', agent_id: 'sub1', agent_type: 'general-purpose' } as never,
+      't1',
+      { signal: new AbortController().signal },
+    )) as { hookSpecificOutput?: { permissionDecision?: string } };
+    assert.equal(result.hookSpecificOutput?.permissionDecision, 'deny');
+    // Other tools are never touched by the hook, from a subagent or not.
+    const other = await hook(
+      { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: 'x' }, tool_use_id: 't2', session_id: 's', transcript_path: '', cwd: '/tmp', agent_id: 'sub1' } as never,
+      't2',
+      { signal: new AbortController().signal },
+    );
+    assert.deepEqual(other, {});
+  });
+
   it('denies the subagents a role or workspace does not allow, by rule and by hook', async () => {
     const events: AgentEvent[] = [];
     const options = await sessionOptions({ deniedAgents: ['symphony:laravel-filament-developer', 'laravel-filament-developer'], events });
@@ -749,6 +790,17 @@ describe('claude agent runner', () => {
     const options = await sessionOptions({ policy: { readOnly: true } });
     for (const rule of READ_ONLY_DENY) assert.ok(options.disallowedTools?.includes(rule), rule);
     assert.ok(options.disallowedTools?.includes('AskUserQuestion'));
+  });
+
+  it('keeps the read-only deny rules whatever subagents are denied', async () => {
+    const agents = ['symphony:laravel-filament-developer', 'laravel-filament-developer'];
+    for (const deniedAgents of [undefined, [], agents]) {
+      const options = await sessionOptions({ policy: { readOnly: true }, deniedAgents });
+      for (const rule of READ_ONLY_DENY) assert.ok(options.disallowedTools?.includes(rule), rule);
+      for (const agent of deniedAgents ?? []) assert.ok(options.disallowedTools?.includes(`Agent(${agent})`), agent);
+    }
+    const writable = await sessionOptions({ policy: { readOnly: false }, deniedAgents: agents });
+    for (const rule of READ_ONLY_DENY) assert.ok(!writable.disallowedTools?.includes(rule), rule);
   });
 
   it('denies git push in a read-only session even when the workflow allows it', async () => {
@@ -1084,6 +1136,39 @@ describe('claude agent runner', () => {
     assert.deepEqual(decisions, ['deny', 'deny', 'deny', 'allow']);
     assert.ok(events.some((e) => e.event === 'turn_input_required'));
     assert.ok(events.some((e) => e.event === 'approval_denied'));
+  });
+
+  it('treats a subagent permission request like a main-thread one', async () => {
+    const decisions: string[] = [];
+    const events: AgentEvent[] = [];
+    const bashInput = { command: 'curl example.com' };
+    let subBash: { behavior?: string; updatedInput?: unknown } | undefined;
+    const fake = fakeQuery(async (_p, options, emit) => {
+      const signal = new AbortController().signal;
+      for (const opts of [{ signal }, { signal, agentID: 'sub1' }]) {
+        const ask = await options.canUseTool?.('AskUserQuestion', {}, opts as never);
+        decisions.push(String(ask?.behavior));
+      }
+      for (const opts of [{ signal }, { signal, agentID: 'sub1' }]) {
+        const bash = await options.canUseTool?.('Bash', bashInput, opts as never);
+        decisions.push(String(bash?.behavior));
+        subBash = bash as typeof subBash;
+      }
+      emit(result(0, 0, 0));
+    });
+    const deny = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ events }));
+    await deny.runTurn('go');
+    await deny.stop();
+    assert.deepEqual(decisions, ['deny', 'deny', 'deny', 'deny']);
+    assert.ok(events.some((e) => e.event === 'approval_denied' && e.detail?.tool === 'Bash'));
+    decisions.length = 0;
+    const approveEvents: AgentEvent[] = [];
+    const approve = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ claude: { on_permission_request: 'approve' }, events: approveEvents }));
+    await approve.runTurn('go');
+    await approve.stop();
+    assert.deepEqual(decisions, ['deny', 'deny', 'allow', 'allow']);
+    assert.deepEqual(subBash?.updatedInput, bashInput);
+    assert.ok(approveEvents.some((e) => e.event === 'approval_auto_approved' && e.detail?.tool === 'Bash'));
   });
 
   it('fails startup when the handshake does not finish in time', async () => {
