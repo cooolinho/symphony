@@ -565,6 +565,28 @@ describe('claude agent runner', () => {
     assert.ok(events.some((event) => event.event === 'approval_denied' && event.detail?.agent === 'symphony:laravel-filament-developer'));
   });
 
+  it('refuses an untyped Agent call from inside a subagent when general-purpose is denied, in a read-only session', async () => {
+    const options = await sessionOptions({ policy: { readOnly: true }, deniedAgents: ['general-purpose'] });
+    for (const rule of READ_ONLY_DENY) assert.ok(options.disallowedTools?.includes(rule), rule);
+    assert.ok(options.disallowedTools?.includes('Agent(general-purpose)'));
+    assert.equal(options.hooks?.PreToolUse?.[0]?.matcher, 'Agent|Task');
+    const hook = options.hooks?.PreToolUse?.[0]?.hooks[0];
+    assert.ok(hook !== undefined);
+    const result = (await hook(
+      { hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { prompt: 'edit target.txt' }, tool_use_id: 't1', session_id: 's', transcript_path: '', cwd: '/tmp', agent_id: 'sub1', agent_type: 'general-purpose' } as never,
+      't1',
+      { signal: new AbortController().signal },
+    )) as { hookSpecificOutput?: { permissionDecision?: string } };
+    assert.equal(result.hookSpecificOutput?.permissionDecision, 'deny');
+    // Other tools are never touched by the hook, from a subagent or not.
+    const other = await hook(
+      { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: 'x' }, tool_use_id: 't2', session_id: 's', transcript_path: '', cwd: '/tmp', agent_id: 'sub1' } as never,
+      't2',
+      { signal: new AbortController().signal },
+    );
+    assert.deepEqual(other, {});
+  });
+
   it('denies the subagents a role or workspace does not allow, by rule and by hook', async () => {
     const events: AgentEvent[] = [];
     const options = await sessionOptions({ deniedAgents: ['symphony:laravel-filament-developer', 'laravel-filament-developer'], events });
