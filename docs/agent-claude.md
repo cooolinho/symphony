@@ -285,9 +285,12 @@ request), `toolUses` and `durationMs`. They are `null` until such a message arri
 `task_*` messages (the page shows "—"). A `task_notification` after the `tool_result` still updates the ended run.
 `task_started`, `task_progress` and `task_notification` that match a subagent no longer appear as `notification`;
 unmatched ones still do. `models` lists the models of the subagent's own calls (first seen first, no duplicates). The
-`tool_result` with the same `tool_use_id` ends it (`is_error` gives `error`). A session that ends or is stopped closes the
-open ones as `error`. Only start and end carry a message; figure updates do not appear in the timeline. The orchestrator
-keeps the running subagents and the last ten finished ones per running issue. `agent_calls` still counts the calls.
+`tool_result` with the same `tool_use_id` ends it (`is_error` gives `error`); a result text starting with "Agent terminated
+early due to an API error" also gives `error`; a `task_notification` with status `failed` or `stopped` gives `error` even
+after the `tool_result`. When status is `error`, a `reason` field contains a short explanation (API error, usage limit,
+task failure summary); the tile shows "Fehler: <reason>". A session that ends or is stopped closes the open ones as `error`
+(without `reason` if none was set). Only start and end carry a message; figure updates do not appear in the timeline. The
+orchestrator keeps the running subagents and the last ten finished ones per running issue. `agent_calls` still counts the calls.
 
 A turn that fails because of a Claude subscription usage limit settles with the failure code `session_limit` (instead
 of `turn_failed`), carrying the window, the reset time and where it came from. Detection order:
