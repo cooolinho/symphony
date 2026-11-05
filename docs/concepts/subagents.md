@@ -105,11 +105,15 @@ available everywhere (:145-146), but none ships yet.
 
 ### Prompt
 
-- The roles render the agent list only when it is not empty. `agent_intro` reads: "Subagents you may start … They are
-  optional: each one works in its own context and costs tokens, so use them where they pay off. You stay responsible
-  for their results" ([WORKFLOW.md:460](../../WORKFLOW.md#L460)), followed by one line of occasions per role. docs,
-  brain-gardener and default have no intro block; the intro test covers six roles only
-  ([workflow-prompt.test.ts:990-1001](../../test/workflow-prompt.test.ts#L990-L1001)).
+- The roles render the agent list only when it is not empty. `agent_intro` reads: "Subagents you can start … Delegate
+  where a trigger applies, never for what a few tool calls finish" ([WORKFLOW.md:462](../../WORKFLOW.md#L462)) and
+  lists brief rules: issue and acceptance criteria, absolute workspace path, task boundaries, output format with `file:line`,
+  file lists instead of contents, about 1,000–2,000 tokens; findings are candidates (read the cited lines, discard claims
+  without `file:line`). Each role with agents renders a "When to delegate:" section with a trigger and exclusion that
+  name the agent (developer: ask `symphony:explorer` before reading more than about ten files; architect: 2–3 explorers
+  per code area, then read their files yourself). Roles with `agents: []` and docs, brain-gardener, default render no
+  intro or occasions; the intro tests cover developer, architect, analyst, planner, autopilot and auditor
+  ([agent-occasions.test.ts](../../test/agent-occasions.test.ts), [workflow-prompt.test.ts](../../test/workflow-prompt.test.ts)).
 - Subagents run in the foreground: the system prompt asks for it and `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` enforces it
   ([claude.ts:54](../../src/agent/claude.ts#L54), [:181-182](../../src/agent/claude.ts#L181-L182); rationale in
   [agent-claude.md](../agent-claude.md#subagents)). On bandenhub#11 (2026-10-21) the developer started its reviewer in
@@ -480,8 +484,8 @@ where a trigger applies, never for a few tool calls; every brief contains the is
 absolute workspace path, the task boundaries, the output format with `file:line`, file lists instead of contents and a
 return of about 1,000–2,000 tokens; findings are candidates (read the cited lines, discard claims without `file:line`).
 Each role gets a trigger and an exclusion that name the agent (developer: "Before you read more than about ten files,
-ask `symphony:explorer` …"; architect: 2–3 explorers per code area, then read their files). The prompt test
-([workflow-prompt.test.ts:990-1001](../../test/workflow-prompt.test.ts#L990-L1001)) covers every role with agents.
+ask `symphony:explorer` …"; architect: 2–3 explorers per code area, then read their files). The prompt tests
+([agent-occasions.test.ts](../../test/agent-occasions.test.ts), [workflow-prompt.test.ts](../../test/workflow-prompt.test.ts)) cover every role with agents.
 **Why:** naming the agent is the strongest soft lever; subagents do not see Symphony's context; the preset line (E0-1)
 may suppress unrequested delegation.
 - [ ] Delegation rate of sonnet developer runs above zero over the evaluation period (E0-9; today 0 of 252).
