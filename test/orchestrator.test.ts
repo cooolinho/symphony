@@ -933,6 +933,134 @@ describe('roles', () => {
     });
   });
 
+  describe('subagents of earlier runs', () => {
+    const subagentRun = (id: string, status: string, extra: Record<string, unknown> = {}) => ({
+      toolUseId: id,
+      subagentType: 'symphony:reviewer',
+      description: `Review ${id}: "diff", a/b`,
+      startedAt: new Date('2026-01-01T10:00:00Z'),
+      endedAt: status === 'running' ? null : new Date('2026-01-01T10:01:00Z'),
+      status,
+      tokens: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 },
+      contextTokens: 50,
+      toolUses: 1,
+      durationMs: 60000,
+      models: ['claude-opus-5-5'],
+      ...extra,
+    });
+    const sendTo = (params: { onEvent: unknown }) => (event: string, fields: Record<string, unknown>) =>
+      (params.onEvent as (event: unknown) => void)({ event, timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: 1, ...fields });
+    type Detail = {
+      run_trace: { subagents: { running: unknown[]; finished: unknown[] }; subagent_stats: unknown } | null;
+      sessions: Array<{ role: string; subagents?: Array<{ tool_use_id: string; status: string }> }>;
+    };
+
+    it('keeps the subagents of the first run visible after a later run without subagents', async () => {
+      const runner = new FakeRunner();
+      const s = withHistory(switchFront, runner, [makeIssue({ id: 'a', state: 'Ready' })]);
+      runner.script = (turn, params) => {
+        const send = sendTo(params);
+        if (runner.sessions.length === 1) {
+          send('subagent', { subagent: subagentRun('x', 'ok') });
+          send('turn_completed', { detail: { subagent_stats: { spawned: 1 } } });
+          s.tracker.set('a', { state: 'Agent review' });
+        }
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      };
+      await s.orchestrator.tickNow();
+      await until(() => s.orchestrator.snapshot().retrying.length === 1, 3_000, 'continuation retry');
+      s.timers.fire(1_000);
+      await until(() => runner.sessions.length === 2 && s.orchestrator.snapshot().retrying.length === 1, 3_000, 'reviewer session');
+
+      const [developerRun, reviewerRun] = s.finished();
+      const logged = parseSubagents(developerRun?.fields.subagents);
+      assert.equal(logged.length, 1);
+      assert.equal(logged[0]?.type, 'symphony:reviewer');
+      assert.equal(logged[0]?.description, 'Review x: "diff", a/b');
+      assert.equal(logged[0]?.status, 'ok');
+      assert.equal(developerRun?.fields.subagent_stats, 'spawned:1');
+      // The reviewer run had no subagents: neither key is written.
+      assert.equal('subagents' in (reviewerRun?.fields ?? {}), false);
+      assert.equal('subagent_stats' in (reviewerRun?.fields ?? {}), false);
+
+      const detail = s.orchestrator.issueDetail('a') as unknown as Detail;
+      assert.equal(detail.sessions.length, 2);
+      assert.deepEqual(detail.sessions[0]?.subagents?.map((run) => [run.tool_use_id, run.status]), [['x', 'ok']]);
+      assert.deepEqual(detail.sessions[1]?.subagents, []);
+      assert.deepEqual(detail.run_trace?.subagents, { running: [], finished: [] });
+      assert.equal(detail.run_trace?.subagent_stats, null);
+    });
+
+    it('lists no subagents of a run on its session while it still runs and fills them in when it ends', async () => {
+      const runner = new FakeRunner();
+      const s = withHistory(switchFront, runner, [makeIssue({ id: 'a', state: 'Ready' })]);
+      let during: Detail | null = null;
+      runner.script = (turn, params) => {
+        sendTo(params)('subagent', { subagent: subagentRun('x', 'ok') });
+        during = s.orchestrator.issueDetail('a') as unknown as Detail;
+        s.tracker.set('a', { state: 'Agent review' });
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      };
+      await s.orchestrator.tickNow();
+      await until(() => s.orchestrator.snapshot().retrying.length === 1, 3_000, 'continuation retry');
+      const live = during as Detail | null;
+      assert.deepEqual(live?.sessions[0]?.subagents, []);
+      assert.deepEqual(live?.run_trace?.subagents.finished.length, 1);
+      const after = s.orchestrator.issueDetail('a') as unknown as Detail;
+      assert.deepEqual(after.sessions[0]?.subagents?.map((run) => run.tool_use_id), ['x']);
+    });
+
+    it('logs a subagent that still ran when the turn failed as error', async () => {
+      const runner = new FakeRunner();
+      const s = withHistory(switchFront, runner, [makeIssue({ id: 'a', state: 'Ready' })]);
+      runner.script = (turn, params) => {
+        const send = sendTo(params);
+        send('subagent', { subagent: subagentRun('done', 'ok') });
+        send('subagent', { subagent: subagentRun('open', 'running') });
+        return { ok: false, turnId: String(turn), code: 'turn_failed', message: 'boom' };
+      };
+      await s.orchestrator.tickNow();
+      await until(() => s.finished().length >= 1, 3_000, 'run finished');
+      const logged = parseSubagents(s.finished()[0]?.fields.subagents);
+      assert.deepEqual(logged.map((run) => run.status), ['ok', 'error']);
+      assert.equal(logged[1]?.ended_at !== null, true);
+      const detail = s.orchestrator.issueDetail('a') as unknown as Detail;
+      assert.deepEqual(detail.run_trace?.subagents.running, []);
+      assert.deepEqual(detail.sessions[0]?.subagents?.map((run) => run.status), ['ok', 'error']);
+    });
+
+    it('logs at most the last ten finished subagents, oldest first', async () => {
+      const runner = new FakeRunner();
+      const s = withHistory(switchFront, runner, [makeIssue({ id: 'a', state: 'Ready' })]);
+      runner.script = (turn, params) => {
+        const send = sendTo(params);
+        for (let i = 1; i <= 12; i++) send('subagent', { subagent: subagentRun(`n${i}`, 'ok', { description: `job ${i}` }) });
+        s.tracker.set('a', { state: 'Agent review' });
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      };
+      await s.orchestrator.tickNow();
+      await until(() => s.finished().length >= 1, 3_000, 'run finished');
+      const logged = parseSubagents(s.finished()[0]?.fields.subagents);
+      assert.deepEqual(logged.map((run) => run.description), Array.from({ length: 10 }, (_, i) => `job ${i + 3}`));
+    });
+
+    it('writes no subagent keys for a run without subagents and without subagent_stats', async () => {
+      const runner = new FakeRunner();
+      const s = withHistory(switchFront, runner, [makeIssue({ id: 'a', state: 'Ready' })]);
+      runner.script = (turn) => {
+        s.tracker.set('a', { state: 'Agent review' });
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      };
+      await s.orchestrator.tickNow();
+      await until(() => s.finished().length >= 1, 3_000, 'run finished');
+      const fields = s.finished()[0]?.fields ?? {};
+      assert.equal('subagents' in fields, false);
+      assert.equal('subagent_stats' in fields, false);
+      const detail = s.orchestrator.issueDetail('a') as unknown as Detail;
+      assert.deepEqual(detail.sessions[0]?.subagents, []);
+    });
+  });
+
   describe('issue cost budget (agent.max_issue_cost_usd)', () => {
     const budgetFront = (limit: number) => ({
       ...switchFront,

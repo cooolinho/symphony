@@ -208,6 +208,61 @@ describe('repository history', () => {
     assert.deepEqual(parseSubagents(line?.fields.subagents), []);
   });
 
+  it('round-trips awkward descriptions and reasons of subagents through the log line', () => {
+    const { log } = history();
+    const run = (id: string, description: string, reason?: string) => ({
+      toolUseId: id,
+      subagentType: 'Explore',
+      description,
+      startedAt: new Date('2026-10-04T08:00:00Z'),
+      endedAt: new Date('2026-10-04T08:00:10Z'),
+      status: reason === undefined ? ('ok' as const) : ('error' as const),
+      ...(reason !== undefined ? { reason } : {}),
+      tokens: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      contextTokens: null,
+      toolUses: null,
+      durationMs: 10000,
+      models: [],
+    });
+    const awkward = ['two\nlines and a\ttab', 'back\\slash and key=value another=thing', 'ünïcödé ✓ — 日本語', 'event=run_finished fake="x"'];
+    log.runFinished(finish('acme/app#1', 'r1', '2026-10-04T08:01:00Z', { subagents: awkward.map((d, i) => run(`t${i}`, d, i === 1 ? 'a, b: "c"\nd' : undefined)) }));
+    log.runFinished(finish('acme/app#2', 'r2', '2026-10-04T09:01:00Z', { toolCalls: { Bash: 1 } }));
+    const text = fs.readFileSync(log.fileFor('acme/app'), 'utf8').trimEnd().split('\n');
+    assert.equal(text.length, 4, 'one line per event (run_finished and model_usage), whatever the descriptions contain');
+    assert.ok(text.every((l) => l.startsWith('ts=')));
+    const entries = readHistory(log.dir, 'acme/app').entries.filter((e) => e.event === 'run_finished');
+    assert.equal(entries.length, 2);
+    const parsed = parseSubagents(entries[0]?.fields.subagents);
+    assert.deepEqual(parsed.map((p) => p.description), awkward);
+    assert.equal(parsed[1]?.reason, 'a, b: "c"\nd');
+    assert.deepEqual(parsed.map((p) => p.status), ['ok', 'error', 'ok', 'ok']);
+    assert.equal(entries[0]?.fields.outcome, 'handed_off');
+    assert.equal(entries[1]?.fields.tool_calls, 'Bash:1');
+  });
+
+  it('parses a run_finished line from before the subagents field unchanged', () => {
+    const line =
+      'ts=2026-10-04T08:01:00.000Z level=info event=run_finished repo=acme/app issue=acme/app#1 run=r1 outcome=completed tool_calls=Bash:2,Edit:1 agent_calls=Explore:1';
+    const entry = parseHistoryLine(line);
+    assert.equal(entry?.event, 'run_finished');
+    assert.equal(entry?.fields.tool_calls, 'Bash:2,Edit:1');
+    assert.deepEqual(parseCounts(entry?.fields.agent_calls), { Explore: 1 });
+    assert.equal('subagents' in (entry?.fields ?? {}), false);
+    assert.deepEqual(parseSubagents(entry?.fields.subagents), []);
+    assert.deepEqual(parseCounts(entry?.fields.subagent_stats), {});
+  });
+
+  it('writes no subagent_stats key for empty stats', () => {
+    const { log } = history();
+    log.runFinished(finish('acme/app#1', 'r1', '2026-10-04T08:01:00Z', { subagentStats: {}, subagents: [] }));
+    log.runFinished(finish('acme/app#2', 'r2', '2026-10-04T09:01:00Z', { subagentStats: null }));
+    const entries = readHistory(log.dir, 'acme/app').entries.filter((e) => e.event === 'run_finished');
+    for (const entry of entries) {
+      assert.equal('subagent_stats' in entry.fields, false);
+      assert.equal('subagents' in entry.fields, false);
+    }
+  });
+
   it('records finished entry checks and denied transitions', () => {
     const { log } = history();
     const at = new Date('2026-10-04T08:00:00Z');
