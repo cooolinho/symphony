@@ -1225,3 +1225,157 @@ describe('subagent measures: edge cases (#485)', () => {
     assert.equal(s.contextTokens, 42);
   });
 });
+
+describe('subagent status from the result text and the task status: acceptance (#486)', () => {
+  const ID = 'toolu_01ARCHITECT205';
+  const LIMIT = 'Agent terminated early due to an API error: You have hit your weekly limit · resets Nov 9';
+  const call = { type: 'assistant', message: { content: [{ type: 'tool_use', id: ID, name: 'Agent', input: { subagent_type: 'symphony:architect', description: 'Design issue 205' } }] }, parent_tool_use_id: null };
+  const resultOf = (content: unknown, isError = false) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: ID, content, ...(isError ? { is_error: true } : {}) }] }, parent_tool_use_id: null });
+  const note = (status: string, summary?: string) => ({ type: 'system', subtype: 'task_notification', task_id: 't1', tool_use_id: ID, status, output_file: '', ...(summary === undefined ? {} : { summary }), usage: { total_tokens: 100, tool_uses: 3, duration_ms: 500 } });
+  async function play(messages: Array<Record<string, unknown>>): Promise<AgentEvent[]> {
+    const fake = fakeQuery((_p, _o, emit) => {
+      for (const m of messages) emit(m);
+      emit(result(0.1, 10, 1));
+    });
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ events }));
+    await session.runTurn('go');
+    return events;
+  }
+  const snaps = (events: AgentEvent[]) => events.flatMap((e) => (e.subagent?.toolUseId === ID ? [e.subagent] : []));
+  const last = (events: AgentEvent[]) => snaps(events).at(-1);
+  const timeline = (events: AgentEvent[]) => events.filter((e) => e.event === 'subagent' && e.message !== undefined);
+
+  it('records the #205 architect killed by the weekly limit as error with the limit text as reason', async () => {
+    const events = await play([call, resultOf(LIMIT)]);
+    const s = last(events);
+    assert.equal(s?.status, 'error');
+    assert.ok(s?.endedAt instanceof Date);
+    assert.ok((s?.reason ?? '').includes('You have hit your weekly limit'));
+    const end = timeline(events).at(-1);
+    assert.match(String(end?.message), /error/);
+    assert.ok(String(end?.message).includes('weekly limit'), 'the reason is part of the timeline message');
+  });
+
+  it('puts the reason into the detail of the ending subagent event', async () => {
+    const events = await play([call, resultOf(LIMIT)]);
+    const end = timeline(events).at(-1);
+    assert.equal((end?.detail as Record<string, unknown> | undefined)?.status, 'error');
+    assert.ok(JSON.stringify(end?.detail).includes('weekly limit'));
+  });
+
+  it('detects the prefix in a text-block result and in a multi-block result', async () => {
+    const s1 = last(await play([call, resultOf([{ type: 'text', text: LIMIT }])]));
+    assert.equal(s1?.status, 'error');
+    const s2 = last(await play([call, resultOf([{ type: 'text', text: `${LIMIT}` }, { type: 'text', text: 'more' }])]));
+    assert.equal(s2?.status, 'error');
+  });
+
+  it('keeps the reason short for a very long error text and on one line', async () => {
+    const s = last(await play([call, resultOf(`${LIMIT}\n${'x'.repeat(5000)}`)]));
+    assert.equal(s?.status, 'error');
+    assert.ok((s?.reason ?? '').length <= 500, `reason is ${s?.reason?.length} characters`);
+    assert.ok(!(s?.reason ?? '').includes('\n'));
+  });
+
+  it('does not take a review that merely mentions the API error text for a failure', async () => {
+    const s = last(await play([call, resultOf(`Review done. The log said: ${LIMIT}`)]));
+    assert.equal(s?.status, 'ok');
+    assert.ok((s?.reason ?? null) === null);
+  });
+
+  it('gives an is_error result error status and a reason (string and block content)', async () => {
+    const a = last(await play([call, resultOf('boom', true)]));
+    assert.deepEqual([a?.status, a?.reason], ['error', 'boom']);
+    const b = last(await play([call, resultOf([{ type: 'text', text: 'bang' }], true)]));
+    assert.deepEqual([b?.status, b?.reason], ['error', 'bang']);
+  });
+
+  it('gives an is_error result with empty content a non-empty reason', async () => {
+    const s = last(await play([call, resultOf('', true)]));
+    assert.equal(s?.status, 'error');
+    assert.ok(typeof s?.reason === 'string' && s.reason.length > 0);
+  });
+
+  for (const status of ['failed', 'stopped']) {
+    it(`records a ${status} task_notification before the tool_result as error with the reported reason`, async () => {
+      const events = await play([call, note(status, `reported ${status} reason`), resultOf('some plain result')]);
+      const s = last(events);
+      assert.equal(s?.status, 'error');
+      assert.equal(s?.reason, `reported ${status} reason`);
+      assert.ok(String(timeline(events).at(-1)?.message).includes(`reported ${status} reason`));
+    });
+
+    it(`corrects an ok run when a ${status} task_notification arrives after the tool_result and emits it again`, async () => {
+      const events = await play([call, resultOf('plain result'), note(status, `late ${status}`)]);
+      const all = snaps(events);
+      assert.ok(all.some((s) => s.status === 'ok'), 'it ended ok first');
+      const s = all.at(-1);
+      assert.equal(s?.status, 'error');
+      assert.equal(s?.reason, `late ${status}`);
+      assert.ok(String(timeline(events).at(-1)?.message).includes(`late ${status}`), 'the correction reaches the timeline');
+      assert.equal(timeline(events).filter((e) => String(e.message).includes('error')).length, 1);
+    });
+
+    it(`gives a ${status} task_notification without a summary some reason`, async () => {
+      const s = last(await play([call, note(status), resultOf('plain')]));
+      assert.equal(s?.status, 'error');
+      assert.ok(typeof s?.reason === 'string' && s.reason.length > 0);
+    });
+  }
+
+  it('records a failed task_notification without any tool_result as error when the session ends', async () => {
+    const fake = fakeQuery((_p, _o, emit) => {
+      emit(call);
+      emit(note('failed', 'gone'));
+      emit(result(0.1, 10, 1));
+    });
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ events }));
+    await session.runTurn('go');
+    await session.stop();
+    const s = last(events);
+    assert.equal(s?.status, 'error');
+    assert.equal(s?.reason, 'gone');
+  });
+
+  it('keeps a normal review ok with reason null (notification before and after the result)', async () => {
+    for (const messages of [[call, note('completed', 'Review finished'), resultOf('LGTM')], [call, resultOf('LGTM'), note('completed', 'Review finished')]]) {
+      const events = await play(messages);
+      const s = last(events);
+      assert.equal(s?.status, 'ok');
+      assert.ok((s?.reason ?? null) === null);
+      assert.ok(!/error/.test(String(timeline(events).at(-1)?.message)));
+      assert.equal(timeline(events).length, 2);
+    }
+  });
+
+  it('never resets an error to ok: a completed notification after an error result changes nothing', async () => {
+    const events = await play([call, resultOf(LIMIT), note('completed', 'fine')]);
+    const s = last(events);
+    assert.equal(s?.status, 'error');
+    assert.ok((s?.reason ?? '').includes('weekly limit'));
+    assert.equal(snaps(events).filter((x) => x.status === 'ok').length, 0);
+  });
+
+  it('an is_error result is not overridden by a later completed notification either', async () => {
+    const s = last(await play([call, resultOf('boom', true), note('completed')]));
+    assert.deepEqual([s?.status, s?.reason], ['error', 'boom']);
+  });
+
+  it('keeps the measures of the notification on the failed run', async () => {
+    const s = last(await play([call, resultOf('plain'), note('failed', 'x')]));
+    assert.equal(s?.contextTokens, 100);
+    assert.equal(s?.toolUses, 3);
+  });
+
+  it('does not touch a different subagent when one fails', async () => {
+    const other = { ...call, message: { content: [{ type: 'tool_use', id: 'toolu_other', name: 'Agent', input: { subagent_type: 'Explore', description: 'o' } }] } };
+    const otherDone = { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_other', content: 'fine' }] }, parent_tool_use_id: null };
+    const events = await play([call, other, resultOf(LIMIT), otherDone]);
+    const o = events.flatMap((e) => (e.subagent?.toolUseId === 'toolu_other' ? [e.subagent] : [])).at(-1);
+    assert.equal(o?.status, 'ok');
+    assert.ok((o?.reason ?? null) === null);
+    assert.equal(last(events)?.status, 'error');
+  });
+});

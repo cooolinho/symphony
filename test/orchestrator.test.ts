@@ -280,6 +280,7 @@ describe('workspace integrations', () => {
         tool_uses: null,
         duration_ms: null,
         models: [],
+        reason: null,
         tokens: { input_tokens: 5, output_tokens: 2, cache_read_tokens: 3, cache_write_tokens: 4, total_tokens: 14 },
       },
     ]);
