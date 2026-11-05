@@ -571,7 +571,7 @@ roles:
     on_result: { ready: next, needs_info: Blocked }
     may_move_to: [Design, In progress, Blocked]
     model_label: ignore               # sonnet, whatever the issue's Model: label picks for the developer
-    agents: [laravel-architect]
+    agents: []                        # reads the code itself; no laravel-* persona
     claude: { model: sonnet }
 ```
 
@@ -712,7 +712,7 @@ roles:
     on_result: { passed: Agent review, failed: In progress, blocked: Blocked }
     may_move_to: [Agent review, In progress, Blocked]
     model_label: ignore               # sonnet, whatever the issue's Model: label picks for the developer
-    agents: [laravel-test-engineer]
+    agents: []                        # is the independent tester itself; no laravel-* persona
     claude: { model: sonnet }
 pipeline:
   max_test_rounds: 2
@@ -808,7 +808,7 @@ roles:
     on_check_failed: In progress
     may_move_to: [In review, In progress, Blocked]
     model_label: ignore
-    agents: [laravel-code-reviewer]
+    agents: []                        # reads the diff itself; no laravel-* persona
     claude: { model: opus }
 pipeline:
   max_security_rounds: 2

@@ -173,7 +173,7 @@ describe('shipped WORKFLOW.md', () => {
     assert.deepEqual(config.tracker.activeStates, ['Ready', 'Design', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review']);
     assert.deepEqual(
       [tester?.result, tester?.onResult, tester?.readOnly, tester?.modelLabel, tester?.claude.model, tester?.agents],
-      ['test', { passed: 'Agent review', failed: 'In progress', blocked: 'Blocked' }, false, 'ignore', 'sonnet', ['laravel-test-engineer']],
+      ['test', { passed: 'Agent review', failed: 'In progress', blocked: 'Blocked' }, false, 'ignore', 'sonnet', []],
     );
     assert.deepEqual(tester?.mayMoveTo, ['Documentation', 'Agent review', 'In progress', 'Blocked']);
     assert.deepEqual([config.pipeline.maxTestRounds, config.pipeline.testPaths], [2, ['tests/**', 'test/**', '**/*.test.*', '**/*Test.php']]);
@@ -315,7 +315,7 @@ describe('shipped WORKFLOW.md', () => {
     assert.deepEqual(analyst?.states, ['ready']);
     assert.deepEqual(
       [analyst?.readOnly, analyst?.result, analyst?.onResult, analyst?.maxTurns, analyst?.modelLabel, analyst?.claude.model, analyst?.agents, analyst?.commands],
-      [true, 'analysis', { ready: 'next', needs_info: 'Blocked' }, 3, 'ignore', 'sonnet', ['laravel-architect'], null],
+      [true, 'analysis', { ready: 'next', needs_info: 'Blocked' }, 3, 'ignore', 'sonnet', [], null],
     );
     assert.deepEqual(analyst?.mayMoveTo, ['Design', 'In progress', 'Blocked']);
     // The developer serves only In progress, so a Ready issue never reaches it without the analysis.
@@ -997,7 +997,12 @@ describe('shipped WORKFLOW.md issue commands', () => {
       assert.match(prompt, /- `symphony:laravel-code-reviewer`: Reviews a diff\./, role);
     }
     assert.match(await render('developer', null, undefined, null, agents), /before you report the result/);
-    assert.match(await render('reviewer', null, undefined, null, agents), /second pass over a large diff/);
+  });
+
+  it('renders no agent intro for the roles without subagents in a Laravel workspace', async () => {
+    for (const role of ['issue-analyst', 'test-engineer', 'reviewer', 'security-auditor']) {
+      assert.doesNotMatch(await render(role), /Subagents you may start/, role);
+    }
   });
 
   it('gives the shipped roles only subagents the toolbox ships, read-only ones to read-only roles', async () => {
@@ -1010,13 +1015,13 @@ describe('shipped WORKFLOW.md issue commands', () => {
     const agents = new Map(pluginAgents([toolbox]).map((agent) => [agent.name, agent]));
     const byRole = Object.fromEntries((config.roles ?? []).map((role) => [role.name, role.agents]));
     assert.deepEqual(byRole, {
-      'issue-analyst': ['laravel-architect'],
+      'issue-analyst': [],
       architect: ['laravel-architect'],
       developer: ['laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer'],
-      'test-engineer': ['laravel-test-engineer'],
+      'test-engineer': [],
       docs: [],
-      reviewer: ['laravel-code-reviewer'],
-      'security-auditor': ['laravel-code-reviewer'],
+      reviewer: [],
+      'security-auditor': [],
       auditor: ['laravel-architect', 'laravel-code-reviewer'],
       autopilot: ['laravel-architect'],
       analyst: ['laravel-architect'],
@@ -1268,7 +1273,7 @@ describe('shipped WORKFLOW.md security auditor', () => {
     assert.equal(auditor?.name, 'security-auditor');
     assert.deepEqual(
       [auditor?.result, auditor?.readOnly, auditor?.onResult, auditor?.onCheckFailed, auditor?.modelLabel, auditor?.claude.model, auditor?.agents],
-      ['security', true, { passed: 'In review', issues_found: 'In progress', blocked: 'Blocked' }, 'In progress', 'ignore', 'opus', ['laravel-code-reviewer']],
+      ['security', true, { passed: 'In review', issues_found: 'In progress', blocked: 'Blocked' }, 'In progress', 'ignore', 'opus', []],
     );
     assert.ok(resolved.tracker.activeStates.includes('Security review'));
     assert.ok(roleFor({ state: 'Agent review', description: null }, resolved.roles)?.mayMoveTo?.includes('Security review'));
