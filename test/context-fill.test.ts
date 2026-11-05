@@ -557,3 +557,210 @@ describe('context fill level in the orchestrator', () => {
     assert.equal(resolve?.('claude-opus-5-5'), null);
   });
 });
+
+describe('peak against the real window, independent checks', () => {
+  const shippedFile = path.join(import.meta.dirname, '..', 'model-costs.yml');
+  const shipped = parsePricing(fs.readFileSync(shippedFile, 'utf8'), null);
+  const resolver = (model: string) => contextWindowFor(shipped, model);
+  const completed = (events: AgentEvent[]) => events.filter((e) => e.event === 'turn_completed' || e.event === 'turn_failed');
+  const usageOf = (contextWindow: unknown) => ({ 'claude-opus-5-5': { inputTokens: 1, outputTokens: 1, contextWindow } });
+
+  it('the shipped file gives 1M to opus, sonnet and fable (also with a dated or suffixed id) and keeps default at 200k', () => {
+    const text = fs.readFileSync(shippedFile, 'utf8');
+    assert.match(text, /fable/i);
+    for (const model of ['opus', 'claude-opus-5-5', 'sonnet', 'claude-sonnet-5-5', 'fable', 'claude-fable-5-1']) {
+      assert.equal(contextWindowFor(shipped, model), 1_000_000, model);
+    }
+    assert.equal(shipped.defaultContextWindow, 200_000);
+    assert.equal(contextWindowFor(shipped, 'claude-haiku-4-5-20251001'), 200_000);
+  });
+
+  it('no shipped model exceeds 100 % without a compaction: 250,996 tokens on opus, sonnet and fable', async () => {
+    for (const model of ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-fable-5-1']) {
+      const events = await run(model, resolver, (_t, emit) => emit(call('m1', { input_tokens: 200_000, cache_read_input_tokens: 50_996 }, null, model)));
+      const last = completed(events).at(-1)?.context;
+      assert.equal(last?.compacts, 0, model);
+      assert.equal(last?.window, 1_000_000, model);
+      assert.equal(last?.peakPercent, 25.1, model);
+      assert.ok((last?.peakPercent ?? 0) <= 100, model);
+      assert.equal(contexts(events)[0]?.percent, 25.1, model);
+    }
+  });
+
+  it('counts input, cache read and cache creation tokens of 250,996 on claude-opus-5-5 as 25.1 % in the final context', async () => {
+    const events = await run('opus', resolver, (_t, emit) =>
+      emit(call('m1', { input_tokens: 1_000, cache_read_input_tokens: 240_000, cache_creation_input_tokens: 9_996 })),
+    );
+    const last = completed(events).at(-1)?.context;
+    assert.equal(last?.tokens, 250_996);
+    assert.equal(last?.peakPercent, 25.1);
+  });
+
+  it('a 200k model (haiku) stays against 200k: 250,996 tokens exceed 100 % there, honestly', async () => {
+    const events = await run('haiku', resolver, (_t, emit) => emit(call('m1', { input_tokens: 150_000 }, null, 'claude-haiku-4-5-20251001')));
+    const last = completed(events).at(-1)?.context;
+    assert.equal(last?.window, 200_000);
+    assert.equal(last?.peakPercent, 75);
+  });
+
+  it('a reported window overrides a file window in both directions', async () => {
+    for (const [file, reported, expected] of [[1_000_000, 200_000, 50], [200_000, 1_000_000, 10]] as const) {
+      const events: AgentEvent[] = [];
+      const session = await new ClaudeAgentRunner({
+        query: fakeQuery((_t, emit) => {
+          emit(call('m1', { input_tokens: 100_000 }));
+          emit({ ...turnResult, modelUsage: usageOf(reported) });
+        }),
+      }).startSession(sessionParams('opus', events, () => file));
+      await session.runTurn('go');
+      await session.stop();
+      assert.equal(completed(events).at(-1)?.context?.window, reported);
+      assert.equal(completed(events).at(-1)?.context?.peakPercent, expected, `${file} -> ${reported}`);
+      assert.equal(contexts(events)[0]?.window, file, 'the live value keeps the file window');
+    }
+  });
+
+  it('a reported window also applies when the file knows no window (unknown model)', async () => {
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({
+      query: fakeQuery((_t, emit) => {
+        emit(call('m1', { input_tokens: 50_000 }, null, 'mystery-1'));
+        emit({ ...turnResult, modelUsage: { 'mystery-1': { inputTokens: 1, outputTokens: 1, contextWindow: 400_000 } } });
+      }),
+    }).startSession(sessionParams('mystery', events, () => null));
+    await session.runTurn('go');
+    await session.stop();
+    assert.equal(contexts(events)[0]?.percent, null, 'live value stays null without a file window');
+    assert.equal(completed(events).at(-1)?.context?.peakPercent, 12.5);
+  });
+
+  it('ignores a reported window that is missing, zero, negative or not a number', async () => {
+    for (const bad of [undefined, 0, -1, 'big', null, Number.NaN]) {
+      const events: AgentEvent[] = [];
+      const session = await new ClaudeAgentRunner({
+        query: fakeQuery((_t, emit) => {
+          emit(call('m1', { input_tokens: 100_000 }));
+          emit({ ...turnResult, modelUsage: usageOf(bad) });
+        }),
+      }).startSession(sessionParams('opus', events, () => 200_000));
+      await session.runTurn('go');
+      await session.stop();
+      const last = completed(events).at(-1)?.context;
+      assert.equal(last?.window, 200_000, String(bad));
+      assert.equal(last?.peakPercent, 50, String(bad));
+    }
+  });
+
+  it('uses the window of the context model, not that of another model in modelUsage', async () => {
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({
+      query: fakeQuery((_t, emit) => {
+        emit(call('m1', { input_tokens: 100_000 }));
+        emit({
+          ...turnResult,
+          modelUsage: {
+            'claude-haiku-4-5-20251001': { inputTokens: 1, outputTokens: 1, contextWindow: 50_000 },
+            'claude-opus-5-5': { inputTokens: 1, outputTokens: 1, contextWindow: 1_000_000 },
+          },
+        });
+      }),
+    }).startSession(sessionParams('opus', events, () => 200_000));
+    await session.runTurn('go');
+    await session.stop();
+    assert.equal(completed(events).at(-1)?.context?.window, 1_000_000);
+    assert.equal(completed(events).at(-1)?.context?.peakPercent, 10);
+  });
+
+  it('computes the peak from the highest single call, not the last one, against the reported window', async () => {
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({
+      query: fakeQuery((_t, emit) => {
+        emit(call('m1', { input_tokens: 100_000 }));
+        emit(call('m2', { input_tokens: 400_000 }));
+        emit(call('m3', { input_tokens: 40_000 }));
+        emit({ ...turnResult, modelUsage: usageOf(1_000_000) });
+      }),
+    }).startSession(sessionParams('opus', events, () => 200_000));
+    await session.runTurn('go');
+    await session.stop();
+    const last = completed(events).at(-1)?.context;
+    assert.equal(last?.tokens, 40_000);
+    assert.equal(last?.peakPercent, 40);
+  });
+
+  it('keeps the peak tokens over a compaction and a second turn', async () => {
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({
+      query: fakeQuery((turn, emit) => {
+        if (turn === 1) {
+          emit(call('m1', { input_tokens: 300_000 }));
+          emit(compact({ trigger: 'auto', pre_tokens: 300_000 }));
+          emit(call('m2', { input_tokens: 20_000 }));
+        } else {
+          emit(call('m3', { input_tokens: 30_000 }));
+        }
+        emit({ ...turnResult, modelUsage: usageOf(1_000_000) });
+      }),
+    }).startSession(sessionParams('opus', events, resolver));
+    await session.runTurn('go');
+    await session.runTurn('again');
+    await session.stop();
+    const last = completed(events).at(-1)?.context;
+    assert.equal(last?.compacts, 1);
+    assert.equal(last?.peakPercent, 30);
+  });
+
+  it('turn_failed carries the recomputed context too', async () => {
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({
+      query: fakeQuery((_t, emit) => {
+        emit(call('m1', { input_tokens: 100_000 }));
+        emit({ ...turnResult, subtype: 'error_during_execution', is_error: true, errors: ['boom'], modelUsage: usageOf(1_000_000) });
+      }),
+    }).startSession(sessionParams('opus', events, () => 200_000));
+    await session.runTurn('go').catch(() => undefined);
+    await session.stop();
+    const failed = events.filter((e) => e.event === 'turn_failed').at(-1);
+    assert.equal(failed?.context?.window, 1_000_000);
+    assert.equal(failed?.context?.peakPercent, 10);
+  });
+
+  it('a result without any model call does not invent a context', async () => {
+    const events = await run('opus', resolver, () => undefined);
+    const last = completed(events).at(-1);
+    assert.ok(last?.context === undefined || last.context.peakPercent === null || last.context.peakPercent === 0);
+  });
+
+  it('run_finished logs the peak against the reported window: 250,996 tokens on opus are 25.1 with 0 compacts (end to end)', async () => {
+    const dir = tempDir();
+    const costs = path.join(dir, 'model-costs.yml');
+    fs.copyFileSync(shippedFile, costs);
+    const pricing = new PricingStore(costs, Logger.silent());
+    const history = new HistoryLog(path.join(dir, 'repositories'), pricing, Logger.silent());
+    const tracker = new FakeTracker([makeIssue({ id: 'a' })]);
+    tracker.issueRepository = () => 'acme/app';
+    const runner = new ClaudeAgentRunner({
+      query: fakeQuery((_t, emit) => {
+        emit(call('m1', { input_tokens: 250_996 }));
+        tracker.set('a', { state: 'In review' });
+        emit({ ...turnResult, modelUsage: usageOf(1_000_000) });
+      }),
+    });
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir(), { claude: { model: 'opus' } }))),
+      runner,
+      logger: Logger.silent(),
+      env: {},
+      logDir: null,
+      timers: new ManualTimers(),
+      createAdapter: () => tracker,
+      pricing,
+      history,
+    });
+    await orchestrator.tickNow();
+    await until(() => readHistory(history.dir, 'acme/app').entries.some((e) => e.event === 'run_finished'), 5_000, 'run_finished');
+    const finished = readHistory(history.dir, 'acme/app').entries.find((e) => e.event === 'run_finished');
+    assert.equal(finished?.fields.context_peak_percent, '25.1');
+    assert.equal(finished?.fields.context_compacts, '0');
+  });
+});
