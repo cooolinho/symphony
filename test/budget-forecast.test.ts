@@ -239,3 +239,56 @@ describe('forecastBudget: SDK utilisation per window', () => {
     }
   });
 });
+
+describe('SDK utilisation rate and eta (E4-8)', () => {
+  const sdkEvent = (ms: number, utilization: number, reset = 2 * HOUR) =>
+    event(ms, { status: 'allowed', resetsAt: resets(reset), unifiedWindows: { five_hour: { utilization, resetsAt: resets(reset) } } });
+  const pair = (reset = 2 * HOUR) => [sdkEvent(20 * MIN, 0.7, reset), sdkEvent(0, 0.8, reset)];
+
+  it('slope 0.005/min gives an eta in 40 minutes and an alert, also without tokens', () => {
+    const result = run([], pair());
+    assert.equal(result.utilization_rate_per_min, 0.005);
+    assert.ok(Math.abs(Date.parse(result.forecast!.eta!) - (now.getTime() + 40 * MIN)) < 1000);
+    assert.equal(result.forecast!.limit_tokens, null);
+    assert.equal(result.forecast!.limit_source, 'sdk');
+    assert.equal(result.alert, true);
+  });
+
+  it('an eta after the reset is null and raises no alert', () => {
+    const result = run([], pair(30 * MIN));
+    assert.equal(result.forecast?.eta ?? null, null);
+    assert.equal(result.alert, false);
+  });
+
+  it('a single event, a falling utilisation or an old event give no slope', () => {
+    assert.equal(run([], [sdkEvent(0, 0.8)]).utilization_rate_per_min, null);
+    assert.equal(run([], [sdkEvent(0, 0.8)]).forecast?.eta ?? null, null);
+    const falling = run([], [sdkEvent(25 * MIN, 0.9), sdkEvent(10 * MIN, 0.1), sdkEvent(0, 0.2)]);
+    assert.equal(falling.utilization_rate_per_min, null);
+    assert.equal(falling.forecast?.eta ?? null, null);
+    assert.equal(run([], [sdkEvent(40 * MIN, 0.1), sdkEvent(0, 0.8)]).utilization_rate_per_min, null);
+  });
+
+  it('utilisation above 1 gives eta now; seven_day has no rate', () => {
+    const result = run([], [sdkEvent(0, 1.01, HOUR)]);
+    assert.equal(result.forecast!.eta, now.toISOString());
+    assert.equal(result.alert, true);
+    assert.equal(run([], pair(), 'seven_day').utilization_rate_per_min, null);
+  });
+
+  it('fallback without SDK utilisation keeps the token calculation', () => {
+    const events = [event(4 * HOUR, { status: 'rejected' }), event(MIN, { status: 'allowed', resetsAt: resets(2 * HOUR) })];
+    const result = run(hitUsage, events);
+    assert.equal(result.utilization_rate_per_min, null);
+    assert.equal(result.forecast?.limit_source, 'calibrated');
+  });
+
+  it('budgetAlerts carries percent and source', () => {
+    const alerts = budgetAlerts({ five_hour: run([], pair()), seven_day: run([], pair(), 'seven_day'), generated_at: now.toISOString() });
+    assert.equal(alerts.length, 1);
+    assert.equal(alerts[0]!.window, 'five_hour');
+    assert.equal(alerts[0]!.source, 'sdk');
+    assert.equal(alerts[0]!.percent, 80);
+    assert.equal(alerts[0]!.limit_tokens, null);
+  });
+});

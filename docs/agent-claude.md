@@ -370,7 +370,7 @@ Abridged real payloads:
 
 `GET /api/v1/budget` answers `{ five_hour, seven_day, generated_at }`. Each window holds `used_tokens` (tokens of
 `run_finished` lines in the rolling window of 5 hours or 7 days), `burn_rate_per_min` (tokens of the last 30 minutes
-/ 30), `resets_at`, `sdk`, `percent`, `percent_source`, `forecast`, `alert` and `by_role` (tokens per role in the window).
+/ 30), `utilization_rate_per_min`, `resets_at`, `sdk`, `percent`, `percent_source`, `forecast`, `alert` and `by_role` (tokens per role in the window).
 
 **SDK utilisation.** `sdk` is `{ utilization, resets_at, event_at, status }` of the **latest rate-limit event of any
 type** (by `at`, not after now) that gives a utilisation and a reset for the window: `unifiedWindows.<window>`, else the
@@ -380,12 +380,21 @@ event. Once that reset has passed, the value no longer holds: `sdk` and `resets_
 the event is dropped and the window is **unknown** until the next event (not 0 %). `percent` is `utilization × 100`
 (`percent_source: "sdk"`), else `used_tokens / limit_tokens × 100` (`"calibrated"`), else `null` (`"none"`); it may exceed 100.
 
-`forecast` is `null` while the limit is unknown. The limit is taken from the SDK utilisation (limit = tokens in the window
-at the event time / `utilization`, `limit_source: "sdk"`) and otherwise calibrated: the usage in the window at the time of
-the latest `rejected` event of the same `rateLimitType` (`limit_source: "calibrated"`). `eta` = now + (limit − used) / burn
-rate, set only when it lies before `resets_at` (`now` once the limit is already reached); otherwise `null`. `alert` is
-`true` exactly when `eta` is set. `Orchestrator#budgetAlerts()` returns the windows with an alert for the alerts panel. The
-tokens of a run only count once it has finished, so running sessions are missing. Other methods than `GET` answer 405.
+`utilization_rate_per_min` is the slope of the SDK utilisation (a share per minute, four decimals), `(last − first) / Δt` over the
+events of the last 30 minutes (by `at`) that give a utilisation for the window. It is `null` with fewer than two such
+events or when the utilisation drops between two events (a reset inside the 30 minutes).
+
+`forecast` is `null` while there is neither a known limit nor an ETA. With an SDK utilisation (`percent_source: "sdk"`) the
+`eta` comes from the slope, not from tokens: now + (1 − utilization) / slope, `now` once `utilization` ≥ 1, set only with a
+slope > 0 and before `resets_at`; otherwise `null`. This counts all use of the account, not just Symphony runs. The ETA does
+not depend on a token limit: if none can be derived, `forecast` is `{ limit_tokens: null, limit_source: "sdk", eta }`. The
+token limit is taken from the SDK utilisation (limit = tokens in the window at the event time / `utilization`,
+`limit_source: "sdk"`) and otherwise calibrated: the usage in the window at the time of the latest `rejected` event of the
+same `rateLimitType` (`limit_source: "calibrated"`). **Fallback:** without an SDK utilisation the ETA is the token
+calculation as before: now + (limit − used) / burn rate, only before `resets_at` (`now` once the limit is reached). `alert` is
+`true` exactly when `eta` is set. `Orchestrator#budgetAlerts()` returns the windows with an alert for the alerts panel,
+each with `percent` and `source` (`sdk` or `calibrated`); `limit_tokens` may be `null`. The tokens of a run only count once
+it has finished, so running sessions are missing. Other methods than `GET` answer 405.
 
 Every raw SDK message is also written as JSON lines to `<log-dir>/sessions/<workspace-key>/<timestamp>.jsonl`.
 
