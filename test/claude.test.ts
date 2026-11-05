@@ -334,6 +334,28 @@ describe('claude agent runner', () => {
     assert.ok(!events.some((e) => e.event === 'model_call' && (e.message !== undefined || e.detail !== undefined)), 'model calls carry only the totals');
   });
 
+  it('marks tool_use events from subagent messages with detail.subagent', async () => {
+    const block = (name: string, id: string) => ({ type: 'tool_use', id, name, input: {} });
+    const assistant = (parent: string | null, id: string, names: string[]) => ({
+      type: 'assistant',
+      parent_tool_use_id: parent,
+      message: { id, model: 'claude-opus-5-5', content: names.map((name, i) => block(name, `${id}-${i}`)), usage: { input_tokens: 1, output_tokens: 1 } },
+    });
+    const fake = fakeQuery((_prompt, _options, emit) => {
+      emit(assistant(null, 'm1', ['Bash', 'Read']) as never);
+      emit(assistant('toolu_rev', 'm2', ['Bash', 'SubagentHandback']) as never);
+      emit(result(0.1, 10, 1));
+    });
+    const events: AgentEvent[] = [];
+    const session = await new ClaudeAgentRunner({ query: fake.fn }).startSession(params({ events }));
+    await session.runTurn('go');
+    await session.stop();
+    const uses = events.filter((e) => e.event === 'tool_use');
+    assert.equal(uses.length, 4);
+    assert.deepEqual(uses.map((e) => e.detail?.subagent === true), [false, false, true, true]);
+    assert.ok(uses.slice(0, 2).every((e) => !('subagent' in (e.detail ?? {}))));
+  });
+
   describe('context fill level', () => {
     const ctxCall = (id: string, input: number, read: number, create: number, parent: string | null = null) => ({
       type: 'assistant',

@@ -904,17 +904,22 @@ ${CHART_JS}
   function renderTools(d) {
     const t = d.tools;
     if (!t.calls) { setBody('tools', stateBox('empty', 'KEINE TOOL-AUFRUFE', 'Kein Run in diesem Zeitraum hat Tool-Aufrufe geloggt.'), el('p', TOOL_NOTE, 'note')); return; }
+    const subCalls = t.subagent_calls || 0;
     const kv = statList([
       ['Tool-Aufrufe', fmtInt(t.calls)],
+      ['Hauptthread', fmtInt(t.calls - subCalls), subCalls ? 'davon in Subagents: ' + fmtInt(subCalls) : null],
       ['Runs mit Aufrufen', fmtInt(t.runs_with_calls), 'von ' + fmtInt(t.runs) + ' Runs'],
       ['Aufrufe/Run', orDash(t.avg_calls_per_run, (v) => String(v))],
       ['Verschiedene Tools', fmtInt(t.distinct_tools)],
     ]);
     const bars = el('div', null, 'hbars');
-    hbars(bars, t.tools.slice(0, 15).map((r) => ({
+    hbars(bars, t.tools.slice(0, 15).map((r) => {
+      const sub = r.subagent_calls || 0;
+      return {
       label: r.server ? r.server + ' · ' + r.name : r.name, value: r.calls, text: fmtInt(r.calls), sub: fmtPct(r.calls / t.calls),
-      color: r.server ? 'var(--cyan)' : 'var(--green)', tip: [['Aufrufe', fmtInt(r.calls)], ['Runs', fmtInt(r.runs)], ['Tool', r.tool]],
-    })));
+      color: r.server ? 'var(--cyan)' : 'var(--green)', tip: [['Aufrufe', fmtInt(r.calls)], ['Hauptthread', fmtInt(r.calls - sub)], ...(sub ? [['In Subagents', fmtInt(sub)]] : []), ['Runs', fmtInt(r.runs)], ['Tool', r.tool]],
+      };
+    }));
     const nodes = [kv, el('h3', 'Meistgenutzte Tools', 'sub-h'), bars];
     if (t.skills.length) {
       const skills = el('div', null, 'hbars');
@@ -926,7 +931,7 @@ ${CHART_JS}
       hbars(agents, t.agents.slice(0, 10).map((r) => ({ label: r.agent, value: r.calls, text: fmtInt(r.calls), sub: fmtInt(r.runs) + ' Run' + (r.runs === 1 ? '' : 's'), color: 'var(--violet)', tip: [['Gestartet', fmtInt(r.calls) + '×'], ['Runs', fmtInt(r.runs)]] })));
       nodes.push(el('h3', 'Genutzte Subagents', 'sub-h'), agents);
     }
-    nodes.push(el('p', 'Grün: eingebaute Tools, Cyan: MCP-Tools (Server · Tool). Subagents zählen die Aufrufe des Agent-Tools nach Subagent-Typ. ' + TOOL_NOTE, 'note'));
+    nodes.push(el('p', 'Grün: eingebaute Tools, Cyan: MCP-Tools (Server · Tool). Subagents zählen die Aufrufe des Agent-Tools nach Subagent-Typ. Tool-Aufrufe zählen auch die Aufrufe in Subagents; Hauptthread = Gesamt minus Subagent-Aufrufe (nur für Runs mit geloggtem subagent_tool_calls abweichend). ' + TOOL_NOTE, 'note'));
     setBody('tools', ...nodes);
   }
 
