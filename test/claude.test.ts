@@ -772,6 +772,108 @@ describe('claude agent runner', () => {
     it('maps only known session models', () => {
       for (const model of [null, undefined, '', 'gpt-x']) assert.equal(explorerModelFor(model), null);
     });
+
+    it('maps full model ids, suffixes and case to the explorer model', () => {
+      const table: Array<[string, string]> = [
+        ['claude-sonnet-5-5', 'haiku'],
+        ['claude-sonnet-4-5-20250929', 'haiku'],
+        ['SONNET', 'haiku'],
+        ['sonnet[1m]', 'haiku'],
+        ['claude-opus-5-5', 'sonnet'],
+        ['claude-opus-4-1', 'sonnet'],
+        ['opus[1m]', 'sonnet'],
+        ['  Opus ', 'sonnet'],
+        ['claude-fable-5-1', 'sonnet'],
+        ['fable[1m]', 'sonnet'],
+        ['claude-haiku-4-5-20251001', 'haiku'],
+        ['haiku', 'haiku'],
+      ];
+      for (const [model, expected] of table) assert.equal(explorerModelFor(model), expected, model);
+      for (const model of ['custom-model', 'gpt-4o', 'my-sonnet', 'default']) assert.equal(explorerModelFor(model), null, model);
+    });
+
+    it('pins the explorer under full model ids from the init message and keeps every other input field', async () => {
+      const full = { ...explorer, run_in_background: true, isolation: 'worktree', extra: { nested: [1, 2] } };
+      const ids: Array<[string, string]> = [['claude-sonnet-5-5', 'haiku'], ['claude-opus-5-5', 'sonnet'], ['claude-fable-5-1', 'sonnet'], ['claude-haiku-4-5-20251001', 'haiku']];
+      for (const [model, expected] of ids) {
+        const call = hookOf(await sessionOptions({ claude: { model } }));
+        const input = structuredClone(full);
+        const output = (await call('Agent', input)) as { hookSpecificOutput?: { updatedInput?: Record<string, unknown> } };
+        assert.deepEqual(output.hookSpecificOutput?.updatedInput, { ...full, model: expected }, model);
+        assert.deepEqual(input, full, 'the original tool input is not mutated');
+      }
+    });
+
+    it('pins the explorer when it is called from inside a subagent', async () => {
+      const options = await sessionOptions({ claude: { model: 'sonnet' } });
+      const hook = options.hooks?.PreToolUse?.[0]?.hooks[0];
+      assert.ok(hook !== undefined);
+      const output = await hook(
+        { hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: explorer, tool_use_id: 't1', session_id: 's', transcript_path: '', cwd: '/tmp', agent_id: 'sub1', agent_type: 'general-purpose' } as never,
+        't1',
+        { signal: new AbortController().signal },
+      );
+      assert.deepEqual(output, pinned('haiku'));
+    });
+
+    it('ignores hook events other than PreToolUse', async () => {
+      const options = await sessionOptions({ claude: { model: 'sonnet' } });
+      const hook = options.hooks?.PreToolUse?.[0]?.hooks[0];
+      assert.ok(hook !== undefined);
+      const output = await hook(
+        { hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: explorer, tool_response: '', tool_use_id: 't1', session_id: 's', transcript_path: '', cwd: '/tmp' } as never,
+        't1',
+        { signal: new AbortController().signal },
+      );
+      assert.deepEqual(output, {});
+    });
+
+    it('pins the explorer in a read-only and in a writable session alike', async () => {
+      for (const readOnly of [true, false]) {
+        const call = hookOf(await sessionOptions({ claude: { model: 'opus' }, policy: { readOnly } }));
+        assert.deepEqual(await call('Agent', explorer), pinned('sonnet'), `readOnly=${readOnly}`);
+      }
+    });
+
+    it('lets a denial win over the pin for every session model and tool, and still pins an allowed explorer next to other denials', async () => {
+      for (const model of ['sonnet', 'opus', 'fable', 'haiku']) {
+        const events: AgentEvent[] = [];
+        const call = hookOf(await sessionOptions({ claude: { model }, deniedAgents: ['symphony:explorer'], events }));
+        for (const tool of ['Agent', 'Task']) {
+          const output = (await call(tool, explorer)) as { hookSpecificOutput?: Record<string, unknown> };
+          assert.equal(output.hookSpecificOutput?.permissionDecision, 'deny', `${model} ${tool}`);
+          assert.equal('updatedInput' in (output.hookSpecificOutput ?? {}), false);
+        }
+        assert.equal(events.filter((event) => event.event === 'approval_denied' && event.detail?.agent === 'symphony:explorer').length, 2);
+      }
+      const other = hookOf(await sessionOptions({ claude: { model: 'sonnet' }, deniedAgents: ['symphony:laravel-filament-developer'] }));
+      assert.deepEqual(await other('Agent', explorer), pinned('haiku'));
+    });
+
+    it('does not emit an event for a pinned explorer call', async () => {
+      const events: AgentEvent[] = [];
+      const call = hookOf(await sessionOptions({ claude: { model: 'sonnet' }, events }));
+      await call('Agent', explorer);
+      assert.ok(!events.some((event) => event.event === 'approval_denied'));
+    });
+
+    it('leaves the laravel personas, general-purpose and a caller model untouched under every session model', async () => {
+      for (const model of ['sonnet', 'opus', 'fable', 'haiku']) {
+        const call = hookOf(await sessionOptions({ claude: { model } }));
+        for (const agent of ['symphony:laravel-code-reviewer', 'symphony:laravel-filament-developer', 'general-purpose', 'Explore', 'symphony:explorer-x', 'explorer']) {
+          assert.deepEqual(await call('Agent', { subagent_type: agent, prompt: 'p', model: 'opus' }), {}, `${model} ${agent}`);
+          assert.deepEqual(await call('Task', { subagent_type: agent, prompt: 'p' }), {}, `${model} ${agent}`);
+        }
+        for (const tool of ['Bash', 'Read', 'mcp__tracker__get_issue']) assert.deepEqual(await call(tool, explorer), {}, `${model} ${tool}`);
+      }
+    });
+
+    it('does not set an environment variable that forces a model on all subagents', async () => {
+      const options = await sessionOptions({ claude: { model: 'sonnet' } });
+      assert.equal(options.env?.CLAUDE_CODE_SUBAGENT_MODEL_FORCE, undefined);
+      assert.equal(options.env?.CLAUDE_CODE_SUBAGENT_MODEL, undefined);
+      assert.equal(options.agents, undefined);
+    });
   });
 
   it('reports the subagent of an Agent tool call', async () => {
