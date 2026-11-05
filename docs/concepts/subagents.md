@@ -177,8 +177,8 @@ nowhere today (E0-7, E0-8). Resuming through "In progress" would have skipped th
 
 ### SDK version and the fork trap
 
-- Symphony pins `@anthropic-ai/claude-agent-sdk` **0.3.288**, which bundles **Claude Code 2.1.288** (`package-lock.json`).
-  `package.json` allows `^0.3.288`, so a lock refresh would pull the newest 0.3.x (0.3.318 on 2026-11-05).
+- Symphony pins `@anthropic-ai/claude-agent-sdk` **0.3.318** exactly (Claude Code **2.1.318**, E4-5, `package-lock.json`); forks are
+  denied since E4-4. Before E4-5 it was `^0.3.288` (Claude Code 2.1.288).
 - From **0.3.302** forks are on by default in SDK sessions. A fork inherits the whole context and the role's tools and is
   not restricted by the `Agent(symphony:*)` denies, so an upgrade needs `Agent(fork)` in the denies or
   `CLAUDE_CODE_FORK_SUBAGENT=0`.
