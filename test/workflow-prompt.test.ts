@@ -1051,6 +1051,32 @@ describe('shipped WORKFLOW.md issue commands', () => {
     }
   });
 
+  it('declares an explicit agents key for every role in the shipped WORKFLOW.md front matter', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const roles = (definition.config as { roles?: Record<string, Record<string, unknown>> }).roles ?? {};
+    const names = Object.keys(roles);
+    for (const name of ['developer', 'docs', 'brain-gardener', 'reviewer']) assert.ok(names.includes(name), name);
+    for (const name of names) {
+      assert.ok(Array.isArray(roles[name]?.agents), `${name}: agents is not an explicit list in WORKFLOW.md`);
+    }
+    assert.deepEqual(roles.docs?.agents, []);
+    assert.deepEqual(roles['brain-gardener']?.agents, []);
+  });
+
+  it('leaves a role without an agents key at "all" and resolves "agents: []" to an empty list', async () => {
+    const base = {
+      tracker: { kind: 'github_project', provider: { owner: 'acme', project_number: 1, token: 't' }, active_states: ['Todo', 'Agent review'] },
+    };
+    const resolve = (roles: Record<string, unknown>) =>
+      resolveConfig({ ...base, roles } as never, { workflowPath: shipped, env: {}, trackerDefaults }).roles ?? [];
+    const [unset, none] = resolve({ a: { states: ['Todo'] }, b: { states: ['Agent review'], agents: [] } });
+    assert.equal(unset?.agents ?? null, null);
+    assert.deepEqual(none?.agents, []);
+    const all = pluginAgents([toolbox]);
+    assert.equal(sessionAgents(all, unset ?? null, [], []).denied.length, 0);
+    assert.equal(sessionAgents(all, none ?? null, [], []).allowed.length, 0);
+  });
+
   it('tells only the developer how to take, store and embed UI screenshots', async () => {
     const prompt = await render('developer');
     assert.match(prompt, /^7\. UI screenshots\. /m, 'its own numbered step');
