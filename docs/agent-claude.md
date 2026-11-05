@@ -311,6 +311,11 @@ after the `tool_result`. When status is `error`, a `reason` field contains a sho
 task failure summary); the tile shows "Fehler: <reason>". A session that ends or is stopped closes the open ones as `error`
 (without `reason` if none was set). Only start and end carry a message; figure updates do not appear in the timeline. The
 orchestrator keeps the running subagents and the last ten finished ones per running issue. `agent_calls` still counts the calls.
+The subagents survive the run: `run_finished` carries them in the JSON field `subagents` (format in
+[configuration.md](configuration.md#repository-logs)), `sessions[].subagents` in `GET /api/v1/<identifier>` lists them per
+run, and `run_trace.subagents` holds those of the current or last run. Claude Code (2.1.288) also puts an undocumented
+`subagent_stats` object (spawned, refused, ...) in the result; its numeric entries are kept as `subagent_stats` in
+`run_finished` and `run_trace` as an extra signal that may change. The subagent lists never depend on it.
 
 A turn that fails because of a Claude subscription usage limit settles with the failure code `session_limit` (instead
 of `turn_failed`), carrying the window, the reset time and where it came from. Detection order:

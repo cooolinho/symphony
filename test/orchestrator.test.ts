@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 import { parseNote } from '../src/brain/note.ts';
 import { ensureVault } from '../src/brain/vault.ts';
 import { PricingStore } from '../src/costs/pricing.ts';
-import { HistoryLog, readHistory } from '../src/history/history.ts';
+import { HistoryLog, parseSubagents, readHistory } from '../src/history/history.ts';
 import type { IntegrationReport } from '../src/agent/types.ts';
 import type { WorkspaceIntegration } from '../src/integrations/types.ts';
 import { Logger } from '../src/log.ts';
@@ -284,6 +284,61 @@ describe('workspace integrations', () => {
         tokens: { input_tokens: 5, output_tokens: 2, cache_read_tokens: 3, cache_write_tokens: 4, total_tokens: 14 },
       },
     ]);
+  });
+
+  it('persists the subagents of a run in run_finished, the sessions and the run trace', async () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
+    const history = new HistoryLog(path.join(dir, 'repositories'), new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent()), Logger.silent());
+    let s: Setup | null = null;
+    const runner = new FakeRunner((turn, params) => {
+      const send = (event: string, fields: Record<string, unknown>) =>
+        (params.onEvent as (event: unknown) => void)({ event, timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: 1, ...fields });
+      const run = (id: string, status: string, reason?: string) => ({
+        toolUseId: id,
+        subagentType: 'Explore',
+        description: 'Find files, now',
+        startedAt: new Date('2026-01-01T10:00:00Z'),
+        endedAt: status === 'running' ? null : new Date('2026-01-01T10:01:00Z'),
+        status,
+        ...(reason !== undefined ? { reason } : {}),
+        tokens: { inputTokens: 5, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 },
+        contextTokens: 100,
+        toolUses: 2,
+        durationMs: 60000,
+        models: ['claude-opus-5-5'],
+      });
+      if (turn === 1) {
+        send('subagent', { subagent: run('a', 'ok') });
+        send('subagent', { subagent: run('b', 'error', 'API error: 529') });
+        send('subagent', { subagent: run('c', 'running') });
+        send('turn_completed', { detail: { subagent_stats: { spawned: 3 } } });
+      } else {
+        s?.tracker.set('a', { state: 'In review' });
+      }
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    });
+    s = setup({ runner, issues: [makeIssue({ id: 'a' })], history });
+    s.tracker.issueRepository = () => 'acme/app';
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s!).running.length === 0 && runner.sessions.length >= 1, 3_000, 'run finished');
+
+    const logged = readHistory(history.dir, 'acme/app').entries.filter((e) => e.event === 'run_finished');
+    const subagents = parseSubagents(logged[0]?.fields.subagents);
+    assert.deepEqual(subagents.map((run) => [run.type, run.status, run.reason]), [['Explore', 'ok', null], ['Explore', 'error', 'API error: 529'], ['Explore', 'error', null]]);
+    assert.equal(subagents[0]?.tokens, 14);
+    assert.equal(logged[0]?.fields.subagent_stats, 'spawned:3');
+
+    const detail = s.orchestrator.issueDetail('a') as unknown as {
+      run_trace: { subagents: { running: unknown[]; finished: Array<{ tool_use_id: string }> }; subagent_stats: unknown };
+      sessions: Array<{ subagents: Array<{ tool_use_id: string; status: string; tokens: { total_tokens: number } }> }>;
+      pipeline: Array<{ sessions: Array<Record<string, unknown>> }>;
+    };
+    assert.deepEqual(detail.run_trace.subagents.running, []);
+    assert.deepEqual(detail.run_trace.subagents.finished.map((run) => run.tool_use_id), ['a', 'b', 'c']);
+    assert.deepEqual(detail.run_trace.subagent_stats, { spawned: 3 });
+    assert.deepEqual(detail.sessions[0]?.subagents.map((run) => [run.tool_use_id, run.status, run.tokens.total_tokens]), [['a', 'ok', 14], ['b', 'error', 14], ['c', 'error', 14]]);
+    for (const stage of detail.pipeline) for (const session of stage.sessions) assert.equal('subagents' in session, false);
   });
 
   it('attributes MCP tool and skill calls to the reports of the integrations', async () => {
@@ -2675,6 +2730,8 @@ describe('run history', () => {
         tool_calls: { 'mcp__laravel-boost__database-schema': 2, Bash: 1, Edit: 1 },
         skill_calls: {},
         agent_calls: {},
+        subagents: { running: [], finished: [] },
+        subagent_stats: null,
         integrations: [],
       });
     });

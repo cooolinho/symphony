@@ -12,6 +12,7 @@ import {
   type PricingTable,
 } from '../costs/pricing.ts';
 import { formatValue, type Logger } from '../log.ts';
+import type { SubagentRun } from '../agent/types.ts';
 import { errorMessage } from '../util/errors.ts';
 import { DEFAULT_ROLE } from '../workflow/roles.ts';
 
@@ -82,6 +83,10 @@ export interface RunFinish {
   skillCalls?: Record<string, number>;
   /** Agent tool calls by subagent (`subagent_type`). */
   agentCalls?: Record<string, number>;
+  /** The run's subagents (the last finished ones, oldest first); still running ones are already closed as `error`. */
+  subagents?: SubagentRun[];
+  /** Numeric entries of `subagent_stats` of the run's last result (undocumented in Claude Code); null/absent = none. */
+  subagentStats?: Record<string, number> | null;
   /** Workspace integrations of the run (e.g. Laravel Boost) with the calls attributed to them. */
   integrations?: RunIntegration[];
 }
@@ -294,6 +299,8 @@ export class HistoryLog {
       tool_calls: formatToolCalls(finish.toolCalls),
       skill_calls: formatToolCalls(finish.skillCalls),
       agent_calls: formatToolCalls(finish.agentCalls),
+      subagents: finish.subagents?.length ? finish.subagents.map(compactSubagent) : undefined,
+      subagent_stats: formatToolCalls(finish.subagentStats ?? undefined),
       integrations: finish.integrations?.length ? finish.integrations.map((entry) => `${entry.id}:${entry.status}`).join(',') : undefined,
       integration_tools: formatIntegrationCalls(finish.integrations, 'tools'),
       integration_skills: formatIntegrationCalls(finish.integrations, 'skills'),
@@ -414,6 +421,39 @@ export class HistoryLog {
   }
 }
 
+/** A subagent as the `subagents` field of `run_finished` carries it. */
+export interface LoggedSubagent {
+  type: string;
+  description: string;
+  status: string;
+  reason: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_ms: number | null;
+  context_tokens: number | null;
+  /** Billed tokens: input + output + cache read + cache write. */
+  tokens: number;
+  tool_uses: number | null;
+  models: string[];
+}
+
+function compactSubagent(run: SubagentRun) {
+  const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } = run.tokens;
+  return {
+    type: run.subagentType,
+    description: run.description,
+    status: run.status,
+    reason: run.reason ?? undefined,
+    started_at: run.startedAt.toISOString(),
+    ended_at: run.endedAt?.toISOString(),
+    duration_ms: run.durationMs ?? undefined,
+    context_tokens: run.contextTokens ?? undefined,
+    tokens: inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
+    tool_uses: run.toolUses ?? undefined,
+    models: [...run.models],
+  };
+}
+
 function formatToolCalls(calls: Record<string, number> | undefined): string | undefined {
   const parts = Object.entries(calls ?? {}).map(([server, count]) => `${server}:${count}`);
   return parts.length === 0 ? undefined : parts.join(',');
@@ -440,6 +480,40 @@ export function parseCounts(value: string | undefined): Record<string, number> {
     counts[name] = (counts[name] ?? 0) + count;
   }
   return counts;
+}
+
+/** Parses the `subagents` field of `run_finished`; absent, malformed or non-array values give `[]`, bad elements are skipped. */
+export function parseSubagents(value: string | undefined): LoggedSubagent[] {
+  if (value === undefined || value === '') return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const text = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+  const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const out: LoggedSubagent[] = [];
+  for (const raw of parsed) {
+    if (typeof raw !== 'object' || raw === null) continue;
+    const item = raw as Record<string, unknown>;
+    if (typeof item.type !== 'string' || typeof item.status !== 'string') continue;
+    out.push({
+      type: item.type,
+      description: text(item.description) ?? '',
+      status: item.status,
+      reason: text(item.reason),
+      started_at: text(item.started_at),
+      ended_at: text(item.ended_at),
+      duration_ms: num(item.duration_ms),
+      context_tokens: num(item.context_tokens),
+      tokens: num(item.tokens) ?? 0,
+      tool_uses: num(item.tool_uses),
+      models: Array.isArray(item.models) ? item.models.filter((m): m is string => typeof m === 'string') : [],
+    });
+  }
+  return out;
 }
 
 /** Parsed lines per log file, reused while size and mtime are unchanged (the logs are append-only). */
