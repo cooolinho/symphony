@@ -959,7 +959,19 @@ The plugins in `claude.plugins` ship subagents (`agents/<name>.md`; Symphony's t
 The others are denied in two ways: a `disallowed_tools` rule `Agent(<plugin>:<name>)` (also `Agent(<name>)`, for a
 repository that ships the same agent as a project agent) and a `PreToolUse` hook that refuses an Agent tool call
 naming one of them. The allowed ones reach the prompt as the variable [`agents`](#prompt-template); the shipped
-`WORKFLOW.md` lists them in each role section, phrased as optional.
+`WORKFLOW.md` lists them in each role section and tells the agent when to use them instead of discouraging it:
+
+- **Intro.** Delegate where a trigger applies, never for what a few tool calls finish. Always pass the name as `subagent_type`.
+- **Brief rules.** A subagent sees neither the prompt nor the issue, so every brief contains the issue and its acceptance
+  criteria, the absolute workspace path, the task and its boundaries, the output format with `file:line` for every claim,
+  file lists instead of file contents, and a return of about 1,000–2,000 tokens.
+- **Findings are candidates.** The agent reads the cited lines itself and discards any claim without `file:line`; it
+  stays responsible for the result.
+- **When to delegate.** Each role with agents adds bullets with a trigger and an exclusion that name the agent by its
+  qualified name, e.g. `developer`: before reading more than about ten files, ask `symphony:explorer`; `architect`:
+  2–3 explorers, one per code area, then read their files yourself. A bullet renders only when its agent is allowed in
+  the session, so a non-Laravel workspace never sees `laravel-*` agents named. Roles with `agents: []` render neither
+  the intro nor the bullets.
 
 The toolbox also ships one framework-neutral subagent without a prefix: `explorer` (`symphony:explorer`). It is
 read-only (`disallowedTools: Edit, Write, NotebookEdit`, `model: sonnet`, `effort: low`, `maxTurns: 25`) and returns key
