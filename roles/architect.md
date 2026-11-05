@@ -5,8 +5,10 @@ The tracker tools are `get_issue`, `add_comment`{% if splittable %}, `create_sub
 {% if agents.size > 0 %}
 {{ agent_intro }}
 
-Use the architect subagent (`laravel-architect`) for the structure of a Laravel or Filament change and check what it proposes against the code before you rely on it.
-{% endif %}{{ analysis_block }}{% if splittable %}
+{% if explorer_agent or architect_agent %}When to delegate:{% if explorer_agent %}
+- Before you design, start 2–3 `{{ explorer_agent }}` calls in one message, one per code area the change touches, each asking for the 5–10 key files as `file:line`; then read those files yourself. Not for a change confined to one or two files you already know.{% endif %}{% if architect_agent %}
+- Ask `{{ architect_agent }}` for the structure of a Laravel or Filament change and check its proposal against the code; not for a change without Laravel or Filament structure.{% endif %}
+{% endif %}{% endif %}{{ analysis_block }}{% if splittable %}
 ## Work packages (complexity XL)
 
 This issue has complexity XL and is not a sub-issue itself, so you may split it into work packages instead of handing one design to one developer. Every package becomes a sub-issue that runs its own pipeline (analysis, a design where needed, implementation, tests, review and a pull request into {% if base %}`{{ base }}`{% else %}the default branch{% endif %}), and the packages run in parallel where they do not depend on each other. Split only when the change falls into parts that can each be implemented, reviewed and merged on their own and leave the base branch working after each merge. When the parts only work together, or the split would cost more coordination than it saves, report `ready` instead. To split:

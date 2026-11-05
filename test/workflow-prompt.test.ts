@@ -991,17 +991,53 @@ describe('shipped WORKFLOW.md issue commands', () => {
     const agents = [{ name: 'symphony:laravel-code-reviewer', description: 'Reviews a diff.' }];
     for (const role of ['developer', 'reviewer', 'auditor', 'autopilot', 'analyst', 'planner']) {
       const without = await render(role);
-      assert.doesNotMatch(without, /Subagents you may start/, role);
+      assert.doesNotMatch(without, /Subagents you can start/, role);
       const prompt = await render(role, null, undefined, null, agents);
-      assert.match(prompt, /Subagents you may start with the Agent tool/, role);
+      assert.match(prompt, /Subagents you can start with the Agent tool/, role);
       assert.match(prompt, /- `symphony:laravel-code-reviewer`: Reviews a diff\./, role);
     }
     assert.match(await render('developer', null, undefined, null, agents), /before you report the result/);
   });
 
+  it('tells every role with agents when to delegate and what a brief contains', async () => {
+    const full = ['explorer', 'laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer'].map((name) => ({
+      name: `symphony:${name}`,
+      description: `The ${name}.`,
+    }));
+    const triggers: Record<string, RegExp[]> = {
+      developer: [
+        /Before you read more than about ten files[^\n]*`symphony:explorer`/,
+        /not for a change you can finish in a handful of tool calls/,
+        /`symphony:laravel-architect`[^\n]*not when a design is given below/,
+        /specialist \(`symphony:laravel-database-engineer`, `symphony:laravel-filament-developer`, `symphony:laravel-test-engineer`\); not for parts coupled/,
+        /`symphony:laravel-code-reviewer`[^\n]*before you report the result; not for a diff of a few lines/,
+      ],
+      architect: [/start 2–3 `symphony:explorer` calls in one message, one per code area/, /then read those files yourself\. Not for a change confined/, /`symphony:laravel-architect`[^\n]*not for a change without Laravel/],
+      analyst: [/`symphony:explorer`[^\n]*not for a part whose files a few searches find/, /`symphony:laravel-architect`[^\n]*not for small or documentation-only parts/],
+      planner: [/`symphony:explorer`[^\n]*not for a part whose files a few searches find/, /`symphony:laravel-architect`[^\n]*not for small or documentation-only parts/],
+      autopilot: [/`symphony:explorer`[^\n]*not for a part whose files a few searches find/, /`symphony:laravel-architect`[^\n]*not for small or documentation-only parts/],
+      auditor: [/`symphony:explorer`[^\n]*not for a repository a few searches survey/, /`symphony:laravel-code-reviewer`[^\n]*not for pre-existing style/, /`symphony:laravel-architect`[^\n]*not for a local finding/],
+    };
+    for (const [role, patterns] of Object.entries(triggers)) {
+      const prompt = await render(role, null, undefined, null, full);
+      assert.match(prompt, /Delegate where a trigger applies/, role);
+      assert.match(prompt, /never for what a few tool calls finish/, role);
+      for (const rule of ['acceptance criteria', 'absolute workspace path', 'boundaries', '`file:line`', 'file lists instead of file contents', '1,000–2,000 tokens', 'candidates', 'discard any claim without `file:line`']) {
+        assert.ok(prompt.includes(rule), `${role}: ${rule}`);
+      }
+      assert.match(prompt, /When to delegate:/, role);
+      for (const pattern of patterns) assert.match(prompt, pattern, role);
+      assert.doesNotMatch(prompt, /optional|costs tokens/i, role);
+    }
+    // A bullet renders only for an allowed agent.
+    const onlyReviewer = await render('developer', null, undefined, null, [full[5]!]);
+    assert.doesNotMatch(onlyReviewer, /symphony:explorer|symphony:laravel-architect/);
+    assert.match(onlyReviewer, /before you report the result/);
+  });
+
   it('renders no agent intro for the roles without subagents in a Laravel workspace', async () => {
     for (const role of ['issue-analyst', 'test-engineer', 'reviewer', 'security-auditor']) {
-      assert.doesNotMatch(await render(role), /Subagents you may start/, role);
+      assert.doesNotMatch(await render(role), /Subagents you can start/, role);
     }
   });
 
@@ -1022,7 +1058,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
       assert.equal(allowed.length, 0, name);
       assert.ok(denied.some((agent) => agent.name === 'laravel-code-reviewer'), name);
       const prompt = await render(name, null, undefined, null, listed);
-      assert.doesNotMatch(prompt, /Subagents you may start/, name);
+      assert.doesNotMatch(prompt, /Subagents you can start/, name);
     }
     // The roles that keep their subagents are untouched.
     for (const name of ['architect', 'developer', 'auditor']) {
@@ -1085,7 +1121,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
       for (const labels of [['feature', 'complexity: m'], ['feature', 'complexity: s'], ['feature']]) {
         const withDesigner = await renderWith(labels);
         assert.equal(withDesigner, await renderWith(labels, []), labels.join());
-        assert.doesNotMatch(withDesigner, /no diff, no changed files|test-designer|Subagents you may start/, labels.join());
+        assert.doesNotMatch(withDesigner, /no diff, no changed files|test-designer|Subagents you can start/, labels.join());
       }
     });
 
@@ -1094,7 +1130,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
       assert.doesNotMatch(await renderWith(['feature', 'complexity: l'], []), /no diff, no changed files/);
       const other = [{ name: 'symphony:laravel-code-reviewer', description: 'Reviews a diff.' }];
       const text = await renderWith(['feature', 'complexity: m'], other);
-      assert.match(text, /Subagents you may start with the Agent tool/);
+      assert.match(text, /Subagents you can start with the Agent tool/);
       assert.doesNotMatch(text, /no diff, no changed files/);
     });
   });
@@ -1111,9 +1147,10 @@ describe('shipped WORKFLOW.md issue commands', () => {
       assert.doesNotMatch(source, /Good use: the test engineer subagent/, role);
       assert.doesNotMatch(source, /Use a reviewer subagent only for a second pass/, role);
       assert.doesNotMatch(source, /laravel-(architect|test-engineer|code-reviewer)/, role);
+      assert.doesNotMatch(source, /When to delegate/, role);
       // A role that is given subagents anyway still gets the intro, without any persona guidance after it.
       const prompt = await render(role, null, undefined, null, agents);
-      assert.match(prompt, /Subagents you may start with the Agent tool/, role);
+      assert.match(prompt, /Subagents you can start with the Agent tool/, role);
       assert.match(prompt, /- `symphony:laravel-code-reviewer`: Reviews a diff\./, role);
       assert.doesNotMatch(prompt, /second pass over a large diff|Use the architect|Good use: the test engineer/, role);
     }
@@ -1130,7 +1167,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
       results: { ...EMPTY_RESULTS },
     });
     assert.match(integration, /integration review/);
-    assert.match(integration, /Subagents you may start with the Agent tool/);
+    assert.match(integration, /Subagents you can start with the Agent tool/);
     assert.doesNotMatch(integration, /second pass over a large diff/);
   });
 
@@ -1181,7 +1218,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
       const { allowed, denied } = sessionAgents(all, role, ['laravel-'], ['laravel-']);
       assert.deepEqual(allowed, [], name);
       for (const agent of laravel) assert.ok(denied.includes(agent), `${name}: ${agent.name}`);
-      assert.doesNotMatch(await render(name, null, undefined, null, allowed), /Subagents you may start/, name);
+      assert.doesNotMatch(await render(name, null, undefined, null, allowed), /Subagents you can start/, name);
     }
   });
 
@@ -1455,6 +1492,8 @@ describe('Symphony toolbox subagents', () => {
         const prompt = await render(name, null, undefined, null, listed);
         assert.match(prompt, /symphony:explorer/, name);
         assert.doesNotMatch(prompt, /symphony:laravel-/, name);
+        assert.doesNotMatch(prompt, /laravel-architect/, name);
+        assert.match(prompt, /When to delegate:/, name);
       }
     });
   });

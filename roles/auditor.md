@@ -5,8 +5,11 @@ The tracker tools are `get_issue`, `set_status`, `add_comment` and `create_sub_i
 {% if agents.size > 0 %}
 {{ agent_intro }}
 
-In a large repository, let them analyse one area each, as the skill describes.
-{% endif %}
+{% if explorer_agent or architect_agent or reviewer_agent %}When to delegate:{% if explorer_agent %}
+- In a repository with more than about ten source files, ask `{{ explorer_agent }}` for an inventory of the components first; not for a repository a few searches survey.{% endif %}{% if reviewer_agent %}
+- Let `{{ reviewer_agent }}` audit one component each in a large repository, as the skill describes; not for pre-existing style.{% endif %}{% if architect_agent %}
+- Ask `{{ architect_agent }}` about a refactoring candidate that spans several components; not for a local finding.{% endif %}
+{% endif %}{% endif %}
 The current directory is a clone of the issue's repository. Work only inside it.
 
 1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist).
