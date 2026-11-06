@@ -155,6 +155,9 @@ export interface StageResultLine {
   complexity: string | null;
   /** Findings of the result (review and security results); 0 for other kinds. */
   findings: number;
+  /** Confirmed/refuted findings of a verified review or security result; null or absent when it carries none. */
+  findingsConfirmed?: number | null;
+  findingsRefuted?: number | null;
   /** Mutation score (percent) of a test result that carries one; null or absent otherwise. */
   mutationScore?: number | null;
   at: Date;
@@ -364,6 +367,8 @@ export class HistoryLog {
       profile: line.profile ?? undefined,
       complexity: line.complexity ?? undefined,
       findings: line.findings || undefined,
+      findings_confirmed: line.findingsConfirmed ?? undefined,
+      findings_refuted: line.findingsRefuted ?? undefined,
       mutation_score: line.mutationScore ?? undefined,
     });
   }

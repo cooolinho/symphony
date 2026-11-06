@@ -16,6 +16,7 @@ dashboard work from structured data. The contracts live in `src/workflow/results
 | `blockers[]` | agent | `{description, needs: human\|info\|access\|infra}` |
 | `follow_ups[]` | agent | work worth a separate issue |
 | `omitted_findings` | Symphony | findings dropped to respect the size cap |
+| `omitted_refuted` | Symphony | `refuted[]` entries dropped to respect the size cap |
 
 Only `verdict` and `summary` are required; every other field is optional, lists default to `[]`. Unknown fields are
 reported to the agent instead of being dropped silently.
@@ -28,8 +29,8 @@ reported to the agent instead of being dropped silently.
 | `design` | `ready`, `split`, `blocked` | `options[]`, `decision`, `components[]`, `interfaces[]`, `migrations[]`, `compatibility`, `work_packages[]` (optional; with `split` at least two), `plan[]` (implementation steps in order, each with its files), `tests[]` (one test per acceptance criterion) |
 | `implementation` | `done`, `blocked` | `changed_files[]`, `tests_added[]`, `notes`, `plan_deviations[]`, `screenshots_problem` (a UI change without screenshots: the failed step and its error message) |
 | `test` | `passed`, `failed`, `blocked` | `cases[] {criterion, test, status: passed\|failed\|skipped, red_at_base?: {command, output?}, existing?}`, `commands[]`, `uncovered_criteria[]`, `mutation_score` (0–100), `mutation_command`, `mutation_problem` (see [Test evidence at L/XL](#test-evidence-at-lxl)) |
-| `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, file, line, problem, fix}`, `checked[]`, `confirmed_goals[]` (refactor issues: the analysis's refactoring goals the review confirms) |
-| `security` | `passed`, `issues_found`, `blocked` | `findings[]` (as in `review`) |
+| `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, file, line, problem, fix, verification?: {status: confirmed\|refuted, evidence}}`, `refuted[]` (candidates the verification refuted: a finding with a refuted `verification`; see [Verified findings at L/XL](#verified-findings-at-lxl)), `checked[]`, `confirmed_goals[]` (refactor issues: the analysis's refactoring goals the review confirms) |
+| `security` | `passed`, `issues_found`, `blocked` | `findings[]` and `refuted[]` (as in `review`) |
 | `docs` | `done`, `not_needed`, `blocked` | `files[]` |
 | `skipped`, `reset` | same as the kind | internal, recorded by Symphony without agent input (`skipped`: a stage passed [without a session](configuration.md#skipping-stages-without-a-session)) |
 
@@ -58,6 +59,8 @@ see them):
 - `mutation_score` (test) needs `mutation_command`, the `pest --mutate --covered-only` call.
 - A `passed` or `failed` test result of an **L/XL issue that is not a refactor** needs `red_at_base` for every new case
   (see [Test evidence at L/XL](#test-evidence-at-lxl)).
+- A `review` or `security` result of an **L/XL issue** needs a confirmed `verification` for every entry of `findings`
+  (see [Verified findings at L/XL](#verified-findings-at-lxl)).
 - `needs_info` (analysis) needs at least one open question.
 - `approved` (review) of a **refactor issue whose analysis has `refactoring_goals`** needs every goal in
   `confirmed_goals`, compared trimmed and case-insensitive (the reviewer copies each goal verbatim); the message lists
@@ -114,8 +117,8 @@ Symphony adds facts the agent never sets: `role`, `run`, `round`, `profile`, `wo
   cannot open an HTML comment (`<!--` is escaped), so it can neither hide the rest of the comment nor fake a marker.
 - `decodeMarker(text)` reads the last marker of a comment and returns `{result, meta}`, or `null` when there is none or
   it is damaged (bad base64, bad JSON, unknown schema version, invalid fields). It never throws.
-- Size cap: the comment stays below 60,000 characters (GitHub allows 65,536). Above it, the least severe findings are
-  dropped first and counted in `omitted_findings`; the Markdown notes the omission. A result that does not fit even
+- Size cap: the comment stays below 60,000 characters (GitHub allows 65,536). Above it, `refuted[]` is dropped first
+  (counted in `omitted_refuted`), then the least severe findings and counted in `omitted_findings`; the Markdown notes the omission. A result that does not fit even
   without findings is rejected (`result_too_large`).
 
 ## The `report_result` tool
@@ -212,6 +215,30 @@ step really fails, the developer reports again with `screenshots_problem`: the s
 result is then accepted and the reviewer sees the field. The verdict `blocked` is not checked. If git cannot list the
 changed files, the call fails with `tool_error` and nothing is recorded. Whether the screenshot fits the change is still
 the reviewer's call.
+
+## Verified findings at L/XL
+
+Decision D1 (option B, [subagents concept](concepts/subagents.md#d1-deterministic-orchestration-step-or-optional-subagent)):
+a finding of a `review` or `security` result carries `verification: {status: confirmed|refuted, evidence}` (`evidence`:
+1–1000 characters, the file:line the check looked at). The field is optional in the schema, so results stored before it
+existed still read.
+
+- **L/XL issues** (the `Complexity:` label, refactors included): `report_result` refuses with `invalid_result` a result
+  whose `findings[i]` has no `verification` or a refuted one. The message names the entry (index, file:line, shortened
+  problem) and says what is missing; a refuted candidate goes to `refuted[]`. A `blocked` result is never refused, and
+  nothing is recorded for a refused one.
+- **`refuted[]`**: candidates the verification refuted, shaped like findings with a required `verification` of status
+  `refuted`. They are not posted and do not count for the verdict rules; the marker keeps them as data.
+- **S/M issues**, issues without a `Complexity:` label and results read back from a marker are never refused;
+  `verification` stays optional. A finding reported there with status `refuted` is moved to `refuted[]`.
+- **Comment**: only `findings` are listed (with a `Verified:` line when they carry a verification), plus a note with the
+  number of refuted candidates.
+- **Metrics**: the `stage_result` history line carries `findings_confirmed` (findings with status confirmed) and
+  `findings_refuted` (`refuted[]` plus refuted findings) for L/XL results and for any result with verification data; the
+  analytics show them per role and model.
+
+To switch to option A (optional fields only), drop `verifiedFindings` from `resultContext()` in
+`src/orchestrator/result-tool.ts`; the fields stay.
 
 ## Test evidence at L/XL
 

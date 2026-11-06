@@ -1981,3 +1981,23 @@ describe('shipped prompts: result size budget', () => {
     });
   }
 });
+
+describe('verified findings in the prompts (E3-4)', () => {
+  const renderFor = async (role: string, label: string) => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const template = compilePrompt(definition.promptTemplate, definition.partials);
+    const subject = { ...issue, labels: ['feature', label], native_ref: { ...issue.native_ref, base_branch: 'develop' } };
+    return renderPrompt(template, { issue: issueTemplateValue(subject, commandSkills([toolbox])), attempt: null, role, agents: [], round: 1, results: { latest: [], open_findings: [], failed_cases: [] } });
+  };
+
+  for (const role of ['reviewer', 'security-auditor']) {
+    it(`tells the ${role} about verification and refuted at L/XL only`, async () => {
+      for (const label of ['complexity: l', 'complexity: xl']) {
+        const text = await renderFor(role, label);
+        assert.match(text, /needs `verification: \{status: "confirmed", evidence\}`/, label);
+        assert.match(text, /go into `refuted`/, label);
+      }
+      assert.doesNotMatch(await renderFor(role, 'complexity: m'), /`refuted`/);
+    });
+  }
+});

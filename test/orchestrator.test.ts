@@ -5151,7 +5151,7 @@ describe('issue summary acceptance (#360)', () => {
     const vault = await newVault();
     const { s, done } = retrySetup({ brain: { enabled: true, path: vault } });
     persistResult(s, 'r', { kind: 'implementation', verdict: 'done', summary: 'Built the retry thing', changed_files: ['src/retry.ts'], tests_added: [], plan_deviations: [] }, 'developer', 1, '2026-10-30T10:00:00Z');
-    persistResult(s, 'r', { kind: 'review', verdict: 'approved', summary: 'Reviewed fine', findings: [], checked: [], confirmed_goals: [] }, 'reviewer', 1, '2026-10-30T11:00:00Z');
+    persistResult(s, 'r', { kind: 'review', verdict: 'approved', summary: 'Reviewed fine', findings: [], refuted: [], checked: [], confirmed_goals: [] }, 'reviewer', 1, '2026-10-30T11:00:00Z');
     await s.orchestrator.tickNow();
     await until(() => done(), 15_000, 'retry finished');
     const file = path.join(vault, 'Issues', 'acme-app', 'r.md');

@@ -250,7 +250,8 @@ export function classificationLabels(result: StageResult, labels: readonly strin
 /**
  * What the consistency rules of a result know of the session's issue and role: a refactor review has to confirm the
  * goals of the analysis (other issues and issues without goals are exempt), and a `split` design needs an XL issue that
- * is not a sub-issue and a role that may open a sub-issue per package.
+ * is not a sub-issue and a role that may open a sub-issue per package. A review or security result on an L/XL issue
+ * (refactors included) needs a confirmed verification for every finding.
  */
 function resultContext(issue: Issue, role: RoleConfig, history: Partial<Pick<StageHistory, 'results'>>): ResultContext {
   const { type, complexity } = classify(issue.labels);
@@ -258,6 +259,7 @@ function resultContext(issue: Issue, role: RoleConfig, history: Partial<Pick<Sta
   return {
     refactoringGoals: kind === 'review' && type === 'refactor' ? refactoringGoals(history) : [],
     testEvidence: kind === 'test' && needsTestEvidence(issue),
+    verifiedFindings: (kind === 'review' || kind === 'security') && (complexity === 'L' || complexity === 'XL'),
     split: { complexity, subIssue: isSubIssue(issue), maxSubIssues: role.maxSubIssues },
   };
 }
