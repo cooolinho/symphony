@@ -1042,7 +1042,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
     }
   });
 
-  it('resolves no subagent for the three roles that only repeated their persona, so a Laravel workspace renders no intro', async () => {
+  it('resolves no subagent for the two roles that only repeated their persona, so a Laravel workspace renders no intro', async () => {
     const { definition } = await loadWorkflowFile(shipped);
     const config = resolveConfig(definition.config, {
       workflowPath: shipped,
@@ -1051,7 +1051,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
     });
     const all = pluginAgents([toolbox]);
     assert.equal(all.filter((agent) => agent.name.startsWith('laravel-')).length, 5);
-    for (const name of ['issue-analyst', 'reviewer', 'security-auditor']) {
+    for (const name of ['issue-analyst', 'security-auditor']) {
       const role = (config.roles ?? []).find((entry) => entry.name === name) ?? null;
       assert.deepEqual(role?.agents, [], name);
       const { allowed, denied } = sessionAgents(all, role, ['laravel-'], ['laravel-']);
@@ -1081,6 +1081,111 @@ describe('shipped WORKFLOW.md issue commands', () => {
       assert.deepEqual(allowed.map((agent) => agent.name), ['test-designer'], prefixes.join());
       assert.equal(denied.filter((agent) => agent.name.startsWith('laravel-')).length, 5, prefixes.join());
     }
+  });
+
+  it('lets the shipped reviewer start exactly the three lens personas, read-only, in a Laravel workspace and without', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const config = resolveConfig(definition.config, {
+      workflowPath: shipped,
+      env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' },
+      trackerDefaults,
+    });
+    const all = pluginAgents([toolbox]);
+    const role = (config.roles ?? []).find((entry) => entry.name === 'reviewer') ?? null;
+    assert.deepEqual(role?.agents, ['convention-lens', 'bug-lens', 'finding-verifier']);
+    for (const prefixes of [['laravel-'], []]) {
+      const { allowed, denied } = sessionAgents(all, role, prefixes, prefixes);
+      assert.deepEqual(allowed.map((agent) => agent.name).sort(), ['bug-lens', 'convention-lens', 'finding-verifier'], prefixes.join());
+      assert.ok(allowed.every((agent) => agent.readOnly), prefixes.join());
+      assert.equal(denied.filter((agent) => agent.name.startsWith('laravel-')).length, 5, prefixes.join());
+    }
+  });
+
+  describe('lens personas', () => {
+    const body = (name: string) => fs.readFileSync(path.join(toolbox, 'agents', `${name}.md`), 'utf8');
+    const description = (name: string) => /^description: (.+)$/m.exec(body(name))?.[1] ?? '';
+
+    it('gives each a trigger, an exclusion and no framework name in the description', () => {
+      for (const name of ['convention-lens', 'bug-lens', 'finding-verifier']) {
+        assert.match(description(name), /^Use /, name);
+        assert.match(description(name), /Not for /, name);
+        assert.doesNotMatch(description(name), /laravel/i, name);
+        assert.match(body(name), /^disallowedTools: Edit, Write, NotebookEdit$/m, name);
+      }
+    });
+
+    it('convention-lens reports only violations whose rule it can quote', () => {
+      const text = body('convention-lens');
+      for (const source of ['CLAUDE.md', 'AGENTS.md', '.ai/rules']) assert.ok(text.includes(source), source);
+      assert.match(text, /quote/);
+    });
+
+    it('bug-lens names its two modes', () => {
+      const text = body('bug-lens');
+      assert.match(text, /Diff alone/);
+      assert.match(text, /With context/);
+    });
+
+    it('finding-verifier takes one candidate, tries to refute it, rejects when in doubt and cites file:line', () => {
+      const text = body('finding-verifier');
+      assert.match(text, /exactly one candidate/);
+      assert.match(text, /refute/);
+      assert.match(text, /When in doubt, refute/);
+      assert.match(text, /file:line/);
+    });
+  });
+
+  describe('lens review at L/XL', () => {
+    const three = ['convention-lens', 'bug-lens', 'finding-verifier'].map((name) => ({ name: `symphony:${name}`, description: `The ${name}.` }));
+    const renderWith = async (labels: string[], agents = three, subIssues: unknown[] = [], extra: Record<string, unknown> = {}) => {
+      const { definition } = await loadWorkflowFile(shipped);
+      const template = compilePrompt(definition.promptTemplate, definition.partials);
+      const subject = { ...issue, labels, native_ref: { ...issue.native_ref, base_branch: 'develop', sub_issues: subIssues } };
+      return renderPrompt(template, { issue: issueTemplateValue(subject, commandSkills([toolbox])), attempt: null, role: 'reviewer', agents, round: 1, ...extra });
+    };
+
+    for (const label of ['complexity: l', 'complexity: xl']) {
+      it(`runs the lenses in one message and one verifier per candidate at ${label}`, async () => {
+        const text = await renderWith(['feature', label]);
+        assert.match(text, /Subagents you can start/);
+        assert.match(text, /\`symphony:convention-lens\`/);
+        assert.match(text, /\`symphony:bug-lens\`, twice/);
+        assert.match(text, /diff alone/);
+        assert.match(text, /surrounding code/);
+        assert.match(text, /in one message/);
+        assert.match(text, /one \`symphony:finding-verifier\` call per candidate/);
+        assert.match(text, /rejects when in doubt/);
+        assert.match(text, /Only confirmed, diff-introduced findings within the issue's scope enter \`findings\`/);
+        assert.match(text, /pre-existing/);
+        assert.match(text, /linter/);
+      });
+    }
+
+    it('renders nothing at S, M and without a complexity: identical to a reviewer without agents', async () => {
+      for (const labels of [['feature', 'complexity: s'], ['feature', 'complexity: m'], ['feature']]) {
+        const text = await renderWith(labels);
+        assert.equal(text, await renderWith(labels, []), labels.join());
+        assert.doesNotMatch(text, /convention-lens|bug-lens|finding-verifier|Subagents you can start/, labels.join());
+      }
+    });
+
+    it('adds no lens block and no intro to the integration review; other agents keep the intro', async () => {
+      const split = [{ identifier: 'acme/app#43', title: 'CSV writer', state: 'CLOSED', state_reason: 'COMPLETED' }];
+      const text = await renderWith(['feature', 'complexity: xl'], three, split);
+      assert.match(text, /integration review/);
+      assert.doesNotMatch(text, /convention-lens|bug-lens|finding-verifier|Subagents you can start/);
+      const other = [...three, { name: 'symphony:laravel-code-reviewer', description: 'Reviews a diff.' }];
+      assert.match(await renderWith(['feature', 'complexity: xl'], other, split), /Subagents you can start/);
+    });
+
+    it('names only the allowed personas and needs the verifier', async () => {
+      const partial = await renderWith(['feature', 'complexity: xl'], three.filter((agent) => agent.name !== 'symphony:convention-lens'));
+      assert.match(partial, /symphony:bug-lens/);
+      assert.match(partial, /symphony:finding-verifier/);
+      assert.doesNotMatch(partial, /convention-lens/);
+      const noVerifier = await renderWith(['feature', 'complexity: xl'], three.slice(0, 2));
+      assert.doesNotMatch(noVerifier, /convention-lens|bug-lens|Subagents you can start|Lens review/);
+    });
   });
 
   describe('test designer at L/XL', () => {
@@ -1187,7 +1292,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
       developer: ['explorer', 'laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer'],
       'test-engineer': ['test-designer'],
       docs: [],
-      reviewer: [],
+      reviewer: ['convention-lens', 'bug-lens', 'finding-verifier'],
       'security-auditor': [],
       auditor: ['explorer', 'laravel-architect', 'laravel-code-reviewer'],
       autopilot: ['explorer', 'laravel-architect'],
@@ -1477,10 +1582,13 @@ describe('Symphony toolbox subagents', () => {
   const agentsDir = path.join(toolbox, 'agents');
   const files = fs.readdirSync(agentsDir).filter((file) => file.endsWith('.md'));
 
-  it('ships the Laravel subagents and the framework-neutral explorer, design-critic and test-designer', () => {
+  it('ships the Laravel subagents and the framework-neutral explorer, design-critic, test-designer and lens personas', () => {
     assert.deepEqual(files.map((file) => file.slice(0, -3)).sort(), [
+      'bug-lens',
+      'convention-lens',
       'design-critic',
       'explorer',
+      'finding-verifier',
       'laravel-architect',
       'laravel-code-reviewer',
       'laravel-database-engineer',
@@ -1506,6 +1614,9 @@ describe('Symphony toolbox subagents', () => {
   describe('models and turn limits', () => {
     const front = (name: string) => /^---\n([\s\S]*?)\n---\n/.exec(fs.readFileSync(path.join(agentsDir, `${name}.md`), 'utf8'))?.[1] ?? '';
     const models: Record<string, string | undefined> = {
+      'convention-lens': 'sonnet',
+      'bug-lens': 'opus',
+      'finding-verifier': 'opus',
       'design-critic': 'opus',
       'laravel-architect': undefined,
       'laravel-code-reviewer': 'opus',
@@ -1528,8 +1639,11 @@ describe('Symphony toolbox subagents', () => {
     it('pluginAgents() still marks the architect and the reviewer read-only and the other personas as writers', () => {
       const readOnly = Object.fromEntries(pluginAgents([toolbox]).map((agent) => [agent.name, agent.readOnly]));
       assert.deepEqual(readOnly, {
+        'bug-lens': true,
+        'convention-lens': true,
         'design-critic': true,
         explorer: true,
+        'finding-verifier': true,
         'laravel-architect': true,
         'laravel-code-reviewer': true,
         'laravel-database-engineer': false,
@@ -1606,8 +1720,11 @@ describe('Symphony toolbox subagents', () => {
 
   describe('models and turn limits (independent of the persona files)', () => {
     const expected = {
+      'bug-lens': { model: 'opus', readOnly: true, minTurns: 10 },
+      'convention-lens': { model: 'sonnet', readOnly: true, minTurns: 10 },
       'design-critic': { model: 'opus', readOnly: true, minTurns: 1 },
       explorer: { model: 'sonnet', readOnly: true, minTurns: 1 },
+      'finding-verifier': { model: 'opus', readOnly: true, minTurns: 5 },
       'laravel-architect': { model: undefined, readOnly: true, minTurns: 55 },
       'laravel-code-reviewer': { model: 'opus', readOnly: true, minTurns: 22 },
       'laravel-database-engineer': { model: 'sonnet', readOnly: false, minTurns: 1 },

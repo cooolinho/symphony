@@ -84,7 +84,7 @@ describe('prompts on occasions instead of deterrence', () => {
         const listed = roles[role] ?? ALL;
         const prompt = await render(role, listed.map(agent), { delegate: true });
         const label = role;
-        if (role === 'test-engineer') continue; // renders the intro depending on the complexity, see below
+        if (role === 'test-engineer' || role === 'reviewer') continue; // render the intro depending on the complexity, see below
         assert.match(prompt, /Subagents you can start with the Agent tool/, label);
         assert.match(prompt, /subagent_type/, label);
         // delegate where a trigger applies, never for a few tool calls
@@ -217,7 +217,7 @@ describe('prompts on occasions instead of deterrence', () => {
       // depend on anything but that list: with the empty list the render is identical to a render without agents.
       const roles = await shippedRoles();
       const empty = Object.entries(roles).filter(([, agents]) => Array.isArray(agents) && agents.length === 0).map(([name]) => name);
-      assert.ok(empty.length >= 5, empty.join());
+      assert.ok(empty.length >= 4, empty.join());
       for (const role of empty) {
         const prompt = await render(role, []);
         assert.doesNotMatch(prompt, /Subagents you can start|When to delegate|a trigger applies/, role);
@@ -239,6 +239,15 @@ describe('prompts on occasions instead of deterrence', () => {
       assert.match(next, /Delegate where a trigger applies/);
       assert.doesNotMatch(next, /\boptional\b|costs tokens/i);
     });
+
+    it('reviewer: the lens personas alone at M render nothing; the intro appears next to another agent', async () => {
+      const lens = ['convention-lens', 'bug-lens', 'finding-verifier'].map(agent);
+      const alone = await render('reviewer', lens);
+      assert.doesNotMatch(alone, /Subagents you can start|When to delegate|convention-lens/);
+      const next = await render('reviewer', [...lens, agent('explorer')]);
+      assert.match(next, /Subagents you can start with the Agent tool/);
+      assert.match(next, /Delegate where a trigger applies/);
+    });
   });
 
   describe('docs/configuration.md#subagents-per-role', () => {
@@ -252,6 +261,14 @@ describe('prompts on occasions instead of deterrence', () => {
       for (const rule of [/acceptance criteria/, /absolute workspace path/, /boundaries/, /`file:line`/, /file lists instead of file contents/, /1,000–2,000 tokens/]) {
         assert.match(section, rule);
       }
+    });
+
+    it('describes the lens review of the reviewer at L/XL and no longer lists the reviewer with []', () => {
+      for (const name of ['convention-lens', 'bug-lens', 'finding-verifier']) assert.ok(section.includes(`\`${name}\``), name);
+      assert.match(section, /one \`finding-verifier\` per candidate/);
+      assert.match(section, /L\/XL/);
+      assert.match(section, /rejects when in doubt/);
+      assert.doesNotMatch(section, /reviewer\` and \`security-auditor\` with \`\[\]\`/);
     });
 
     it('describes the candidate rule, the trigger and the exclusion per role', () => {

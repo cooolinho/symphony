@@ -96,7 +96,7 @@ describe('explorer in the shipped WORKFLOW.md (#497)', () => {
 
   it('leaves the roles with an empty agent list empty', async () => {
     const config = await shippedConfig();
-    for (const name of ['issue-analyst', 'docs', 'reviewer', 'security-auditor', 'brain-gardener']) {
+    for (const name of ['issue-analyst', 'docs', 'security-auditor', 'brain-gardener']) {
       assert.deepEqual((config.roles ?? []).find((role) => role.name === name)?.agents, [], name);
     }
   });

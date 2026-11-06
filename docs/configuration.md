@@ -945,11 +945,11 @@ The shipped `WORKFLOW.md` defines the `auditor` role for `/refactoring`, the `au
 
 #### Subagents per role
 
-The plugins in `claude.plugins` ship subagents (`agents/<name>.md`; Symphony's toolbox ships the `laravel-*` ones and the framework-neutral `explorer`, `design-critic` and `test-designer`, see
+The plugins in `claude.plugins` ship subagents (`agents/<name>.md`; Symphony's toolbox ships the `laravel-*` ones and the framework-neutral `explorer`, `design-critic`, `test-designer`, `convention-lens`, `bug-lens` and `finding-verifier`, see
 [laravel-subagents.md](laravel-subagents.md)). Claude Code offers them as `<plugin>:<name>`, e.g.
 `symphony:laravel-architect`. For each session Symphony decides which of them the agent may start:
 
-1. **The role's list.** `agents` unset allows every plugin subagent, a list only those, `[]` none. "Unset = all" stays the default for custom workflows and for workflows without `roles`; every role of the shipped `WORKFLOW.md` lists its agents explicitly (`docs`, `brain-gardener`, `issue-analyst`, `reviewer` and `security-auditor` with `[]`, so they never start a `laravel-*` persona; `architect` lists `explorer` and `design-critic`; `test-engineer` lists `test-designer`, which carries no prefix).
+1. **The role's list.** `agents` unset allows every plugin subagent, a list only those, `[]` none. "Unset = all" stays the default for custom workflows and for workflows without `roles`; every role of the shipped `WORKFLOW.md` lists its agents explicitly (`docs`, `brain-gardener`, `issue-analyst` and `security-auditor` with `[]`, so they never start a `laravel-*` persona; `architect` lists `explorer` and `design-critic`; `test-engineer` lists `test-designer`, and the `reviewer` lists `convention-lens`, `bug-lens` and `finding-verifier` (lens review at L/XL only), which carry no prefix).
 2. **Read-only roles** only get subagents that cannot edit files: their front matter denies `Edit` and `Write`
    (`disallowedTools: Edit, Write, NotebookEdit`) or lists `tools` without them. This applies with `agents` unset too.
 3. **Project type.** A subagent whose name starts with a workspace integration's prefix belongs to it: `laravel-*`
@@ -972,12 +972,25 @@ naming one of them. The allowed ones reach the prompt as the variable [`agents`]
   2–3 explorers, one per code area, then read their files yourself. A bullet renders only when its agent is allowed in
   the session, so a non-Laravel workspace never sees `laravel-*` agents named. Roles with `agents: []` render neither
   the intro nor the bullets.
+- **Lens review (reviewer, L/XL).** At complexity L or XL the pull-request review adds a step to the checklist: the lenses
+  start in one message (`convention-lens` on sonnet once against the written rules, `bug-lens` on opus twice, once on the
+  diff alone and once with the surrounding code; two Agent calls in one message run in parallel in the foreground, see
+  [agent-claude.md](agent-claude.md#subagents), Mechanics row 2). Then **one `finding-verifier` per candidate**
+  (opus) tries to refute it and rejects when in doubt. Only confirmed, diff-introduced findings within the issue's scope
+  enter the result; style, linter findings and pre-existing problems are excluded. At S/M, without a complexity and in
+  the integration review the reviewer renders neither the block nor the intro. The block needs the verifier and at least
+  one lens in the session's list, so a partial list never names a missing persona.
 
 The toolbox also ships framework-neutral subagents without a prefix; the first is `explorer` (`symphony:explorer`). It is
 read-only (`disallowedTools: Edit, Write, NotebookEdit`, `model: sonnet`, `effort: low`, `maxTurns: 25`) and returns key
 files as `file:line` plus a short summary instead of file contents. Because it has no integration prefix it is available
 in every workspace, Laravel or not, and the shipped `WORKFLOW.md` lists it for `developer`, `architect`, `analyst`,
 `planner`, `autopilot` and `auditor`. The second is `design-critic` (`symphony:design-critic`): read-only, `model: opus`, `maxTurns: 40`, it only critiques a design draft (defects with `file:line`, severity and what breaks, no new design). Only `architect` lists it, and the prompt names it at complexity L/XL only.
+
+Three more framework-neutral subagents serve the lens review, all read-only (`disallowedTools: Edit, Write, NotebookEdit`):
+`convention-lens` (`model: sonnet`, `maxTurns: 25`; reports a violation of `CLAUDE.md`, `AGENTS.md` or `.ai/rules` only with
+the quoted rule), `bug-lens` (`model: opus`, `maxTurns: 30`) and `finding-verifier` (`model: opus`, `maxTurns: 15`; one
+candidate per call, cites `file:line`). The shipped `WORKFLOW.md` lists them for `reviewer`.
 
 #### Waves (`wait_for_sub_issues`)
 

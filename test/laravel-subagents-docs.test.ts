@@ -21,8 +21,8 @@ describe('docs/laravel-subagents.md', () => {
     }
   });
 
-  it('lists no subagents in the role table for the three roles that only repeated their persona', () => {
-    for (const role of ['issue analyst', 'reviewer', 'security auditor']) {
+  it('lists no subagents in the role table for the two roles that only repeated their persona', () => {
+    for (const role of ['issue analyst', 'security auditor']) {
       const row = doc.split('\n').find((line) => line.startsWith(`| ${role} |`));
       assert.ok(row, `${role} row`);
       assert.match(row, /^\|[^|]+\| none \(`\[\]`\) \|/, role);

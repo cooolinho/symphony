@@ -267,7 +267,7 @@ roles:
     may_move_to: [Security review, In review, In progress, Blocked]
     model_label: ignore                      # opus, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # high, whatever the issue's Effort: label says: the review keeps a cheaper developer safe
-    agents: []                               # reads the diff itself; the reviewer persona only repeated its role
+    agents: [convention-lens, bug-lens, finding-verifier]   # lens review at complexity L/XL only (roles/reviewer.md); none at S/M
     brain: write
     claude: { model: opus, effort: high }
   # The security auditor is conditional: Symphony sends an approved issue here only when it needs the audit (a `security`
