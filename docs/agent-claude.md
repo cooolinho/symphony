@@ -384,7 +384,7 @@ log line (`npm run repo-init` → *Laravel Boost* creates an issue that adds it)
 **Visibility:** the Laravel integration reports per app what the session got (status and reason, versions, how the
 guidelines reach the agent, the skills, the MCP server and its pre-approved tools, warnings from the check above).
 The orchestrator counts every `tool_use` event per tool (one event per tool call, also for parallel calls in one
-message), every Skill tool call per skill, the tool calls made inside subagents (`tool_use` events with `detail.subagent`, from messages with `parent_tool_use_id`) once more in `subagent_tool_calls` (`tool_calls` stays the total) and every Agent tool call per subagent, and attributes calls of the Boost MCP servers and Boost skills to Boost.
+message), every Skill tool call per skill, the tool calls made inside subagents (`tool_use` events with `detail.subagent`, from messages with `agent_id` or `parent_tool_use_id`) once more in `subagent_tool_calls` (`tool_calls` stays the total) and every Agent tool call per subagent, and attributes calls of the Boost MCP servers and Boost skills to Boost.
 `session_configured` carries the skill names Claude Code loaded (`skill_names`), so the agent page can show how many
 of Boost's skills were really available. All of this is in `GET /api/v1/state` (`running[].integrations`,
 `tool_calls`, `subagent_tool_calls`, `skill_calls`, `agent_calls`), in `run_trace` of `GET /api/v1/<identifier>` and in the `run_finished`
