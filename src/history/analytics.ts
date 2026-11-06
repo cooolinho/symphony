@@ -612,7 +612,7 @@ interface StageResultEntry {
   complexity: string | null;
   /** Board column the result hands the issue to (`target`); null when not logged. */
   target: string | null;
-  /** Confirmed/refuted findings (filled from E3-4 on); null when the line does not carry them. */
+  /** Confirmed/refuted findings (review/security results with verification, E3-4); null when the line does not carry them. */
   findingsConfirmed: number | null;
   findingsRefuted: number | null;
   /** Mutation score (percent) of a test result; null when the line carries none. */
@@ -865,7 +865,7 @@ function subagentEvaluation(runs: Run[], pipelineRuns: Run[], results: StageResu
   });
   rows.sort((a, b) => a.role.localeCompare(b.role) || b.runs - a.runs || a.model.localeCompare(b.model));
   return {
-    note: 'Delegierender Run: mindestens ein Agent-Aufruf. Bash im Hauptthread = Bash-Aufrufe minus die der Subagents. Token-Anteil = Tokens der Subagents / abgerechnete Tokens der Runs (die Subagents sind darin enthalten, der Anteil ist höchstens 100 %). Fertiges Issue = ein Stage-Ergebnis mit Ziel In review oder Done im Zeitraum; Kosten je fertigem Issue summieren alle Rollen (alle Stages), „eigene“ nur die Runs der Zeile. Rückläufer = Agent-review-Ergebnisse changes_needed und Testing-Ergebnisse failed auf den Issues der Zeile, je Issue. Findings (bestätigt/widerlegt) sind leer, bis die Stage-Ergebnisse sie liefern.',
+    note: 'Delegierender Run: mindestens ein Agent-Aufruf. Bash im Hauptthread = Bash-Aufrufe minus die der Subagents. Token-Anteil = Tokens der Subagents / abgerechnete Tokens der Runs (die Subagents sind darin enthalten, der Anteil ist höchstens 100 %). Fertiges Issue = ein Stage-Ergebnis mit Ziel In review oder Done im Zeitraum; Kosten je fertigem Issue summieren alle Rollen (alle Stages), „eigene“ nur die Runs der Zeile. Rückläufer = Agent-review-Ergebnisse changes_needed und Testing-Ergebnisse failed auf den Issues der Zeile, je Issue. Findings bestätigt/widerlegt = Summe von findings_confirmed/findings_refuted der Review- und Security-Ergebnisse auf den Issues der Zeile (L/XL oder mit Verifikation); leer ohne solche Ergebnisse.',
     rules: { median_min_runs: MEDIAN_MIN_RUNS, percentile_min_runs: PERCENTILE_MIN_RUNS },
     rows,
     mutation_scores: mutationScores(results),

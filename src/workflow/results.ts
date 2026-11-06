@@ -97,12 +97,27 @@ const blockerSchema = z.object({
   needs: z.enum(BLOCKER_NEEDS).describe('What it takes to unblock: human (a decision), info, access or infra'),
 });
 
+const VERIFICATION_STATUSES = ['confirmed', 'refuted'] as const;
+
+const verificationSchema = z
+  .object({
+    status: z.enum(VERIFICATION_STATUSES).describe('confirmed = the check proved the problem; refuted = it did not hold'),
+    evidence: text(1000).describe('The file:line the verification checked and what it showed'),
+  })
+  .strict();
+
 const findingSchema = z.object({
   severity: z.enum(SEVERITIES).describe('blocker and major must be fixed before approval; minor and nit are optional'),
   file: text(NAME_MAX).optional().describe('Repository-relative path'),
   line: z.number().int().positive().optional().describe('1-indexed line'),
   problem: text().describe('What is wrong'),
   fix: text().optional().describe('How to fix it'),
+  verification: verificationSchema.optional().describe('L/XL: required, status confirmed, evidence = the file:line the verification checked'),
+});
+
+/** A candidate the verification refuted: a finding whose `verification` is required and refuted. */
+const refutedFindingSchema = findingSchema.extend({
+  verification: verificationSchema.extend({ status: z.literal('refuted') }),
 });
 
 const caseSchema = z.object({
@@ -174,11 +189,13 @@ const kindShapes = {
   },
   review: {
     findings: list(findingSchema).describe('"approved" allows only minor and nit findings'),
+    refuted: list(refutedFindingSchema).describe('Candidates the verification refuted; not posted, counted for the evaluation'),
     checked: list(text()).describe('What the review covered'),
     confirmed_goals: list(text()).describe('Refactor issues: the analysis\'s refactoring goals this review confirmed, copied verbatim; "approved" needs every one'),
   },
   security: {
     findings: list(findingSchema).describe('"passed" allows only minor and nit findings'),
+    refuted: list(refutedFindingSchema).describe('Candidates the verification refuted; not posted, counted for the evaluation'),
   },
   docs: {
     files: list(text(NAME_MAX)).describe('Documentation files written or changed'),
@@ -204,6 +221,8 @@ function storedShape<K extends ResultKind>(kind: K) {
     ...agentShape(kind),
     /** Findings Symphony dropped to stay below {@link RESULT_SIZE_LIMIT}. */
     omitted_findings: z.number().int().positive().optional(),
+    /** Refuted candidates Symphony dropped to stay below {@link RESULT_SIZE_LIMIT}. */
+    omitted_refuted: z.number().int().positive().optional(),
   };
 }
 
@@ -227,6 +246,8 @@ const resultSchema = z.discriminatedUnion('kind', Object.values(storedSchemas) a
 export type StageResult = { [K in ResultKind]: z.output<(typeof storedSchemas)[K]> }[ResultKind];
 export type ResultOf<K extends ResultKind> = Extract<StageResult, { kind: K }>;
 export type Finding = z.output<typeof findingSchema>;
+export type Verification = z.output<typeof verificationSchema>;
+export type RefutedFinding = z.output<typeof refutedFindingSchema>;
 export type Blocker = z.output<typeof blockerSchema>;
 
 /** Summary of the entry check that ran before the result was recorded. */
@@ -337,6 +358,11 @@ export interface ResultContext {
    * (a unit test, a result read back from its marker) or false switches the rule off.
    */
   testEvidence?: boolean;
+  /**
+   * True for a review or security result of an L/XL issue (refactors included): every finding then needs a confirmed
+   * `verification`. Absent (a unit test, a result read back from its marker) or false switches the rule off.
+   */
+  verifiedFindings?: boolean;
 }
 
 /** The issue and the role a `split` design is reported for. */
@@ -428,6 +454,24 @@ export function consistencyProblems(result: StageResult, context: ResultContext 
           `verdict "${clean}" allows no blocker or major findings, but there are ${severe}: use "${dirty}" or lower their severity`,
         );
       }
+      if (context.verifiedFindings === true && result.verdict !== 'blocked') {
+        const unverified = result.findings
+          .map((finding, index) => ({ finding, index }))
+          .filter(({ finding }) => finding.verification?.status !== 'confirmed');
+        if (unverified.length > 0) {
+          const named = unverified
+            .map(({ finding, index }) => {
+              const where = finding.file === undefined ? '' : `${finding.line === undefined ? finding.file : `${finding.file}:${finding.line}`} `;
+              const problem = inline(finding.problem);
+              const shortened = problem.length > 80 ? `${problem.slice(0, 79)}…` : problem;
+              return `findings[${index}] (${where}"${shortened}") ${finding.verification === undefined ? 'has none' : 'is refuted: move it to \`refuted\`'}`;
+            })
+            .join('; ');
+          problems.push(
+            `an L/XL ${result.kind} result needs a confirmed \`verification\` ({status, evidence}) for every finding; ${named}`,
+          );
+        }
+      }
       if (result.verdict === dirty && result.findings.length === 0) {
         problems.push(`verdict "${dirty}" needs at least one entry in \`findings\``);
       }
@@ -444,6 +488,25 @@ export function consistencyProblems(result: StageResult, context: ResultContext 
     }
   }
   return problems;
+}
+
+/** Confirmed and refuted candidates of a review or security result; null when there is nothing to count. */
+export function verificationCounts(result: StageResult, required: boolean): { confirmed: number; refuted: number } | null {
+  if (result.kind !== 'review' && result.kind !== 'security') return null;
+  const verified = result.findings.some((finding) => finding.verification !== undefined);
+  if (!required && !verified && result.refuted.length === 0) return null;
+  return {
+    confirmed: result.findings.filter((finding) => finding.verification?.status === 'confirmed').length,
+    refuted: result.refuted.length + result.findings.filter((finding) => finding.verification?.status === 'refuted').length,
+  };
+}
+
+/** Below L/XL a finding the agent itself refuted is no problem to fix: it moves from `findings` to `refuted`. */
+function moveRefuted(result: StageResult): StageResult {
+  if (result.kind !== 'review' && result.kind !== 'security') return result;
+  const isRefuted = (finding: Finding): finding is RefutedFinding => finding.verification?.status === 'refuted';
+  if (!result.findings.some(isRefuted)) return result;
+  return { ...result, findings: result.findings.filter((finding) => !isRefuted(finding)), refuted: [...result.refuted, ...result.findings.filter(isRefuted)] };
 }
 
 export type ParseResultOutcome =
@@ -493,7 +556,8 @@ const PROBE_META: ResultMeta = {
 export function parseResult(kind: AgentResultKind, input: unknown, context: ResultContext = {}): ParseResultOutcome {
   const parsed = z.strictObject(agentShape(kind)).safeParse(input);
   if (!parsed.success) return invalid(kind, parsed.error.issues.map(issueText));
-  const result = { schema: RESULT_SCHEMA, kind, ...parsed.data } as StageResult;
+  const built = { schema: RESULT_SCHEMA, kind, ...parsed.data } as StageResult;
+  const result = context.verifiedFindings === true ? built : moveRefuted(built);
   const problems = consistencyProblems(result, context);
   if (problems.length > 0) return invalid(kind, problems);
   try {
@@ -540,6 +604,15 @@ function withFindings(result: StageResult, keep: number): StageResult {
  */
 function fitResult(result: StageResult, size: (candidate: StageResult) => number): StageResult {
   if (size(result) < RESULT_SIZE_LIMIT) return result;
+  if ((result.kind === 'review' || result.kind === 'security') && result.refuted.length > 0) {
+    const dropped = { ...result, refuted: [], omitted_refuted: result.refuted.length + (result.omitted_refuted ?? 0) };
+    if (size(dropped) < RESULT_SIZE_LIMIT) return dropped;
+    return fitFindings(dropped, size);
+  }
+  return fitFindings(result, size);
+}
+
+function fitFindings(result: StageResult, size: (candidate: StageResult) => number): StageResult {
   const total = result.kind === 'review' || result.kind === 'security' ? result.findings.length : 0;
   let low = 0;
   let high = total - 1;
@@ -637,15 +710,17 @@ function bullets(title: string, items: readonly string[], ordered = false): stri
   return `**${title}**\n${items.map((item, index) => `${ordered ? `${index + 1}.` : '-'} ${item}`).join('\n')}`;
 }
 
-function findingLines(findings: readonly Finding[], omitted: number | undefined): string | null {
+function findingLines(findings: readonly Finding[], omitted: number | undefined, refuted = 0): string | null {
   const items = findings.map((finding) => {
     const location = finding.file === undefined ? '' : ` ${code(finding.line === undefined ? finding.file : `${finding.file}:${finding.line}`)}`;
     const fix = finding.fix === undefined ? '' : `\n  Fix: ${inline(finding.fix)}`;
-    return `${SEVERITY_ICONS[finding.severity]} **${finding.severity}**${location} — ${inline(finding.problem)}${fix}`;
+    const verified = finding.verification === undefined ? '' : `\n  Verified: ${inline(finding.verification.evidence)}`;
+    return `${SEVERITY_ICONS[finding.severity]} **${finding.severity}**${location} — ${inline(finding.problem)}${fix}${verified}`;
   });
   const list = bullets(`Findings (${findings.length})`, items);
   const note = omitted === undefined ? null : `_${omitted} less severe finding(s) omitted to stay within the comment size limit._`;
-  return [list, note].filter((part) => part !== null).join('\n\n') || null;
+  const refutedNote = refuted === 0 ? null : `_${refuted} refuted candidate(s) not shown._`;
+  return [list, note, refutedNote].filter((part) => part !== null).join('\n\n') || null;
 }
 
 function kindSections(result: StageResult): (string | null)[] {
@@ -707,9 +782,9 @@ function kindSections(result: StageResult): (string | null)[] {
         result.mutation_problem === undefined ? null : `**Mutation testing problem**\n${block(result.mutation_problem)}`,
       ];
     case 'review':
-      return [findingLines(result.findings, result.omitted_findings), bullets('Checked', result.checked.map(inline)), bullets('Confirmed goals', result.confirmed_goals.map(inline))];
+      return [findingLines(result.findings, result.omitted_findings, result.refuted.length + (result.omitted_refuted ?? 0)), bullets('Checked', result.checked.map(inline)), bullets('Confirmed goals', result.confirmed_goals.map(inline))];
     case 'security':
-      return [findingLines(result.findings, result.omitted_findings)];
+      return [findingLines(result.findings, result.omitted_findings, result.refuted.length + (result.omitted_refuted ?? 0))];
     case 'docs':
       return [bullets('Files', result.files.map(code))];
     case 'skipped':

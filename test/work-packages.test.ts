@@ -279,7 +279,7 @@ describe('work packages as sub-issues (#211)', () => {
       await report({
         verdict: 'changes_needed',
         summary: 'The CSV writer and the command are merged; the PDF export is missing because acme/app#9 was closed as not planned.',
-        findings: [{ severity: 'major', file: 'src/export/PdfExporter.ts', problem: 'The PDF export of the acceptance criteria is missing (acme/app#9 closed as not planned)', fix: 'Add the PdfExporter behind the Exporter interface' }],
+        findings: [{ severity: 'major', file: 'src/export/PdfExporter.ts', problem: 'The PDF export of the acceptance criteria is missing (acme/app#9 closed as not planned)', fix: 'Add the PdfExporter behind the Exporter interface', verification: { status: 'confirmed', evidence: 'checked at the cited line' } }],
         checked: ['Completeness: finding 1', 'acme/app#8: completed', 'acme/app#9: not planned', 'acme/app#10: completed'],
       });
     };
@@ -583,7 +583,7 @@ describe('the security review of an issue split into work packages', () => {
       await report({
         verdict: 'issues_found',
         summary: 'The CSV and the PDF package each authorize their own route, but the policy they share lets any user view any invoice.',
-        findings: [{ severity: 'major', file: 'app/Policies/InvoicePolicy.php', line: 1, problem: 'view() allows every user to read every invoice', fix: 'Scope view() to the owner of the invoice' }],
+        findings: [{ severity: 'major', file: 'app/Policies/InvoicePolicy.php', line: 1, problem: 'view() allows every user to read every invoice', fix: 'Scope view() to the owner of the invoice', verification: { status: 'confirmed', evidence: 'checked at the cited line' } }],
       });
     };
     const fix: Script = async ({ report }) => {

@@ -311,6 +311,16 @@ describe('repository history', () => {
     assert.deepEqual(implementation?.fields, { repo: 'acme/app', issue: 'acme/app#1', role: 'developer', kind: 'implementation', verdict: 'done' });
   });
 
+  it('writes findings_confirmed and findings_refuted, also 0, and leaves them out when null', () => {
+    const { log } = history();
+    const line = { repo: 'acme/app', issue: 'acme/app#1', run: 'r1', role: 'reviewer', kind: 'review', verdict: 'approved', round: 1, target: null, profile: null, complexity: 'L', findings: 0 };
+    log.stageResult({ ...line, findingsConfirmed: 0, findingsRefuted: 2, at: new Date('2026-10-04T08:00:00Z') });
+    log.stageResult({ ...line, findingsConfirmed: null, findingsRefuted: null, at: new Date('2026-10-04T08:01:00Z') });
+    const [counted, plain] = readHistory(log.dir, 'acme/app').entries;
+    assert.deepEqual([counted?.fields.findings_confirmed, counted?.fields.findings_refuted], ['0', '2']);
+    assert.equal('findings_confirmed' in (plain?.fields ?? {}) || 'findings_refuted' in (plain?.fields ?? {}), false);
+  });
+
   it('records the role of a run in run_started', () => {
     const { log } = history();
     log.runStarted({ repo: 'acme/app', issue: 'acme/app#1', title: 'Review', state: 'Agent review', attempt: null, model: 'opus', role: 'reviewer', run: 'r1', at: new Date('2026-10-04T08:00:00Z') });

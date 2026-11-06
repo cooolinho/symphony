@@ -1341,3 +1341,67 @@ describe('report_result: test evidence at L/XL', () => {
     assert.equal(data(await tester(['Complexity: L'], { workspace: tempDir('symphony-empty-') }).report({ ...base, cases })).target, 'Agent review');
   });
 });
+
+describe('report_result: verified findings at L/XL', () => {
+  const ok = { status: 'confirmed', evidence: 'src/a.ts:3 shows the off by one' };
+  const finding = (over: Record<string, unknown> = {}) => ({ severity: 'major', file: 'src/a.ts', line: 3, problem: 'Off by one', ...over });
+  const review = (findings: unknown[], over: Record<string, unknown> = {}) => ({ verdict: 'changes_needed', summary: 'Problems.', findings, ...over });
+
+  it('accepts an L/XL review whose findings are all confirmed and stores the verification', async () => {
+    const { report, markers } = setup({ labels: ['Complexity: L'] });
+    assert.equal(data(await report(review([finding({ verification: ok })]))).target, 'In progress');
+    const [marker] = markers();
+    assert.ok(marker?.result.kind === 'review');
+    assert.deepEqual(marker.result.findings[0]?.verification, ok);
+  });
+
+  it('accepts an L/XL review without findings, and one with only refuted candidates', async () => {
+    const refuted = { ...finding(), verification: { status: 'refuted', evidence: 'src/a.ts:3 is guarded' } };
+    const { report, markers } = setup({ labels: ['Complexity: XL'] });
+    assert.equal(data(await report({ verdict: 'approved', summary: 'Fine.', refuted: [refuted] })).target, 'In review');
+    const stored = markers()[0]?.result;
+    assert.ok(stored?.kind === 'review' && stored.refuted.length === 1);
+  });
+
+  it('refuses an L/XL review whose finding has no verification, names it and records nothing', async () => {
+    const { report, tracker } = setup({ labels: ['Complexity: XL'] });
+    const refused = error(await report(review([finding({ verification: ok }), finding({ file: 'src/b.ts', line: 9, problem: 'Missing check' })])));
+    assert.equal(refused.category, 'invalid_result');
+    assert.match(refused.message, /findings\[1\] \(src\/b\.ts:9 "Missing check"\) has none/);
+    assert.match(refused.message, /confirmed `verification`/);
+    assert.doesNotMatch(refused.message, /findings\[0\]/);
+    assert.equal(tracker.comments.get('1'), undefined);
+  });
+
+  it('applies to security results and to refactors', async () => {
+    const security = setup({ role: 'auditor', state: 'Security review', labels: ['Complexity: L'] });
+    const refused = error(await security.report({ verdict: 'issues_found', summary: 'Hole.', findings: [finding()] }));
+    assert.match(refused.message, /L\/XL security result.*findings\[0\]/);
+    const refactor = setup({ labels: ['Complexity: L', 'Type: refactor'] });
+    assert.equal(error(await refactor.report(review([finding()]))).category, 'invalid_result');
+  });
+
+  it('refuses a refuted finding in findings[] and points to refuted', async () => {
+    const { report } = setup({ labels: ['Complexity: L'] });
+    const refused = error(await report(review([finding({ verification: { status: 'refuted', evidence: 'src/a.ts:3 is fine' } })])));
+    assert.match(refused.message, /findings\[0\].*is refuted: move it to `refuted`/);
+  });
+
+  it('refuses nothing on S/M or without a Complexity label, and moves a refuted finding to refuted', async () => {
+    for (const labels of [['Complexity: M'], ['Complexity: S'], []]) {
+      assert.equal(data(await setup({ labels }).report(review([finding()]))).target, 'In progress', labels.join());
+    }
+    const { report, markers } = setup({ labels: ['Complexity: M'] });
+    const refuted = finding({ problem: 'False alarm', verification: { status: 'refuted', evidence: 'src/a.ts:3 is fine' } });
+    data(await report(review([finding(), refuted])));
+    const result = markers()[0]?.result;
+    assert.ok(result?.kind === 'review');
+    assert.deepEqual([result.findings.length, result.refuted.length], [1, 1]);
+  });
+
+  it('does not refuse a blocked L/XL review', async () => {
+    const { report } = setup({ labels: ['Complexity: L'] });
+    const blocked = { verdict: 'blocked', summary: 'No access.', blockers: [{ description: 'No checkout', needs: 'access' }], findings: [finding()] };
+    assert.equal(data(await report(blocked)).target, 'Blocked');
+  });
+});

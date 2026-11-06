@@ -198,6 +198,10 @@ describe('statistics analytics', () => {
       const withFindings = [...entries, { ts: '2026-10-03T12:50:00Z', event: 'stage_result', fields: { repo: 'acme/app', issue: 'acme/app#1', role: 'reviewer', kind: 'review', verdict: 'approved', findings_confirmed: '2', findings_refuted: '1' } }];
       const row = rowOf(computeAnalytics(withFindings, pricing, filter(), NOW), 'developer', 'claude-opus-5-5');
       assert.deepEqual(row.findings, { confirmed: 2, refuted: 1 });
+      const security = { ts: '2026-10-03T12:55:00Z', event: 'stage_result', fields: { repo: 'acme/app', issue: 'acme/app#1', role: 'security-auditor', kind: 'security', verdict: 'passed', findings_confirmed: '0', findings_refuted: '3' } };
+      const summed = rowOf(computeAnalytics([...withFindings, security], pricing, filter(), NOW), 'developer', 'claude-opus-5-5');
+      assert.deepEqual(summed.findings, { confirmed: 2, refuted: 4 });
+      assert.doesNotMatch(computeAnalytics(withFindings, pricing, filter(), NOW).subagent_evaluation.note, /leer, bis/);
     });
 
     it('yields zeros and nulls, not errors, for old lines without subagent fields', () => {

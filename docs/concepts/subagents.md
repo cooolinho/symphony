@@ -260,8 +260,8 @@ an information boundary.
 C becomes a follow-up concept only if the evaluation shows that B's evidence is produced without real verification. The
 evidence settles the reliability argument (A fails for cheaper models). It does not settle cost against benefit at
 repository level, because no controlled study on real repositories exists; the A/B evaluation measures that.
-**Status: proposed.** E3-4 and E3-7 assume B. A human who prefers A says so on the concept issue before E3-4 starts;
-E3-4 and E3-7 then keep the optional fields and drop the `report_result` validation.
+**Status: decided, B** (nobody chose A on the concept issue). E3-4 (#507, verified findings) is implemented; E3-7 follows.
+Switching to A means dropping the `report_result` validation and keeping the optional fields.
 
 ## Target
 
@@ -393,8 +393,8 @@ per run; the *token share* is Σ persisted subagent tokens ÷ Σ billed tokens o
 billed total, so at most 100 %); a *finished issue* has a `stage_result` in the period with `target` In review or Done,
 and the cost per finished issue sums all roles (the `own_` variant only the row's runs); *returns* are the
 `review:changes_needed` and `test:failed` results on the row's issues, per issue; complexity comes from the issue's
-newest `stage_result`. The row's `findings` stay `null` until `stage_result` lines carry `findings_confirmed` and
-`findings_refuted` (E3-4).
+newest `stage_result`. The row's `findings` sum `findings_confirmed` and `findings_refuted` of the `stage_result` lines (E3-4); they stay `null`
+without such lines.
 - [ ] On the live logs since 2026-10-20 the section reproduces the research figures: developer 371 runs, 28 delegating,
   0 of 252 on sonnet; architect 170 with 19.
 

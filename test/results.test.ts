@@ -15,6 +15,7 @@ import {
   parseResult,
   renderResultComment,
   renderResultMarkdown,
+  verificationCounts,
   toolInputShape,
   type AgentResultKind,
   type ResultMeta,
@@ -555,5 +556,70 @@ describe('result contracts: test evidence (E3-7)', () => {
     assert.equal(parseResult('test', bare).ok, true);
     assert.equal(parseResult('test', bare, { testEvidence: false }).ok, true);
     assert.equal(parseResult('test', bare, { testEvidence: true }).ok, false);
+  });
+});
+
+describe('verified findings (E3-4)', () => {
+  const confirmed = { severity: 'major', file: 'src/a.ts', line: 3, problem: 'real bug', verification: { status: 'confirmed', evidence: 'src/a.ts:3 shows it' } };
+  const refuted = { severity: 'major', file: 'src/b.ts', line: 4, problem: 'false alarm', verification: { status: 'refuted', evidence: 'src/b.ts:4 is guarded' } };
+  const review = (over: Record<string, unknown> = {}) => {
+    const parsed = parseResult('review', { verdict: 'changes_needed', summary: 'x', findings: [confirmed], refuted: [refuted], ...over });
+    assert.ok(parsed.ok, JSON.stringify(parsed));
+    return parsed.result;
+  };
+
+  it('parses verification and refuted, and refuses a bad status or empty evidence', () => {
+    const result = review();
+    assert.ok(result.kind === 'review');
+    assert.equal(result.findings[0]?.verification?.status, 'confirmed');
+    assert.equal(result.refuted.length, 1);
+    for (const verification of [{ status: 'maybe', evidence: 'x' }, { status: 'confirmed', evidence: ' ' }]) {
+      const bad = parseResult('review', { verdict: 'changes_needed', summary: 'x', findings: [{ ...confirmed, verification }] });
+      assert.ok(!bad.ok && /findings\[0\]\.verification/.test(bad.message), JSON.stringify(bad));
+    }
+    const notRefuted = parseResult('review', { verdict: 'approved', summary: 'x', refuted: [confirmed] });
+    assert.ok(!notRefuted.ok);
+  });
+
+  it('decodes an old marker without the new fields', () => {
+    const meta = { role: 'reviewer', run: null, round: 1, profile: null, workflow_hash: null, head_sha: null, checks: null, target: null, created_at: '2026-10-01T00:00:00.000Z' };
+    const old = { schema: RESULT_SCHEMA, kind: 'review', verdict: 'approved', summary: 'x', meta };
+    const text = `<!-- symphony:result:v1 ${Buffer.from(JSON.stringify(old)).toString('base64url')} -->`;
+    const decoded = decodeMarker(text);
+    assert.ok(decoded?.result.kind === 'review' && decoded.result.refuted.length === 0);
+  });
+
+  it('counts confirmed and refuted candidates', () => {
+    assert.deepEqual(verificationCounts(review({ findings: [confirmed, confirmed] }), true), { confirmed: 2, refuted: 1 });
+    const plain = review({ findings: [{ severity: 'major', problem: 'p' }], refuted: [] });
+    assert.equal(verificationCounts(plain, false), null);
+    assert.deepEqual(verificationCounts(plain, true), { confirmed: 0, refuted: 0 });
+    const docs = parseResult('docs', { verdict: 'done', summary: 'x' });
+    assert.ok(docs.ok);
+    assert.equal(verificationCounts(docs.result, true), null);
+  });
+
+  it('posts confirmed findings only, with a count of the refuted candidates; the marker keeps them', () => {
+    const meta = { role: 'reviewer', run: null, round: 1, profile: null, workflow_hash: null, head_sha: null, checks: null, target: null, created_at: '2026-10-01T00:00:00.000Z' };
+    const markdown = renderResultMarkdown(review(), meta);
+    assert.match(markdown, /real bug/);
+    assert.match(markdown, /Verified: src\/a\.ts:3 shows it/);
+    assert.doesNotMatch(markdown, /false alarm/);
+    assert.match(markdown, /1 refuted candidate\(s\) not shown/);
+    const decoded = decodeMarker(renderResultComment(review(), meta));
+    assert.ok(decoded?.result.kind === 'review' && decoded.result.refuted[0]?.problem === 'false alarm');
+  });
+
+  it('drops refuted candidates first to respect the size cap', () => {
+    const meta = { role: 'reviewer', run: null, round: 1, profile: null, workflow_hash: null, head_sha: null, checks: null, target: null, created_at: '2026-10-01T00:00:00.000Z' };
+    const many = Array.from({ length: 150 }, (_, i) => ({ ...refuted, problem: `candidate ${i}`, verification: { status: 'refuted', evidence: 'e'.repeat(1000) } }));
+    const result = review({ refuted: many });
+    const comment = renderResultComment(result, meta);
+    assert.ok(comment.length < RESULT_SIZE_LIMIT);
+    const decoded = decodeMarker(comment);
+    assert.ok(decoded?.result.kind === 'review');
+    assert.equal(decoded.result.findings.length, 1);
+    assert.equal(decoded.result.omitted_refuted, 150);
+    assert.equal(decoded.result.omitted_findings, undefined);
   });
 });

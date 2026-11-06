@@ -1106,7 +1106,7 @@ describe('orchestrator: an XL feature split into three work packages', () => {
       await report({
         verdict: 'changes_needed',
         summary: 'The PDF export is missing: acme/app#9 was closed as not planned.',
-        findings: [{ severity: 'major', file: 'src/export/PdfExporter.ts', problem: 'No PDF export (acme/app#9 not planned)', fix: 'Add the PdfExporter' }],
+        findings: [{ severity: 'major', file: 'src/export/PdfExporter.ts', problem: 'No PDF export (acme/app#9 not planned)', fix: 'Add the PdfExporter', verification: { status: 'confirmed', evidence: 'checked at the cited line' } }],
         checked: ['Completeness: finding 1'],
       });
     };
@@ -1464,7 +1464,7 @@ describe('orchestrator: the security stage and the pull request of the parent af
       await report({
         verdict: 'issues_found',
         summary: 'The guard the CSV package added is not applied to the route of the PDF package.',
-        findings: [{ severity: 'major', file: 'config/auth.php', line: 1, problem: 'The PDF route is outside the auth middleware group', fix: 'Move the route into the group' }],
+        findings: [{ severity: 'major', file: 'config/auth.php', line: 1, problem: 'The PDF route is outside the auth middleware group', fix: 'Move the route into the group', verification: { status: 'confirmed', evidence: 'checked at the cited line' } }],
       });
     };
     const fix: Script = async ({ params, report }) => {
