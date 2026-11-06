@@ -242,7 +242,7 @@ existed still read.
 The security auditor's refutation panel (E3-5) puts the three votes of one candidate into
 `verification.votes[] {lens, verdict, evidence}` (`lens`: `reachability`, `impact` or `defenses`; `verdict`:
 `confirmed` or `refuted`; `evidence`: the file:line the judge cited). `votes` is optional in the schema (stored
-results still read) and holds at most one entry per lens.
+results still read) and holds at most three entries; at L/XL the check requires exactly one entry per lens.
 
 - **The rule** is one constant, `PANEL_MAX_REFUTING_VOTES` in `src/workflow/results.ts` (default `0`: a finding is kept
   only when no lens refutes it; open question 9 of the [subagents concept](concepts/subagents.md)). The arithmetic runs in

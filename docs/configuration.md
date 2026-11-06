@@ -822,7 +822,7 @@ roles:
     on_check_failed: In progress
     may_move_to: [In review, In progress, Blocked]
     model_label: ignore
-    agents: []                        # reads the diff itself; no laravel-* persona
+    agents: [security-inventory, refutation-judge]   # panel at L/XL only; none at S/M; no laravel-* persona
     claude: { model: opus }
 pipeline:
   max_security_rounds: 2
@@ -855,6 +855,9 @@ pipeline:
   in the prompt (`results.security_findings`, see [Prompt template](#prompt-template)), `blocked` to `Blocked`. The result
   has `findings` like a review: `passed` allows only `minor` and `nit` findings, `issues_found` needs at least one
   ([result contracts](results.md#kinds)). A session that ends without a result goes to `on_missing_result` (`Blocked`).
+- **The panel at L/XL.** On a large issue the audit researches the change with the [security panel](#subagents-per-role)
+  (inventory, one refutation judge per lens and candidate) and records the votes in `verification.votes`;
+  `report_result` applies the panel rule ([results.md](results.md#security-panel-at-lxl)). S/M audits do not change.
 - **After `issues_found`** the developer fixes the findings and hands over again; the reviewer reviews the fix, and when
   it approves, the security check is evaluated again on the new diff.
 - **Round limit.** `pipeline.max_security_rounds` (default 2, at least 1; no profile override) counts `issues_found`
@@ -982,7 +985,8 @@ naming one of them. The allowed ones reach the prompt as the variable [`agents`]
   one lens in the session's list, so a partial list never names a missing persona.
 - **Security panel (security-auditor, L/XL).** At complexity L or XL the audit adds a panel step to the checklist, without
   running any code: `security-inventory` (sonnet) splits the change into components once, the auditor researches each
-  component itself, and every candidate gets **three `refutation-judge` calls** (opus) in one message, one per lens
+  component itself (the auditor splits the change itself when `security-inventory` is not in the list), and every candidate
+  gets **three `refutation-judge` calls** (opus) in one message, one per lens
   (`reachability`, `impact`, `defenses`), each defaulting to "false positive" and citing `file:line`. The votes go
   into `verification.votes`; `report_result` applies the panel rule (a finding stays only when no lens refutes it; the
   constant `PANEL_MAX_REFUTING_VOTES`, see [results.md](results.md#security-panel-at-lxl)) and refuses a finding with
