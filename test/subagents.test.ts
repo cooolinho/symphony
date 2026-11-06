@@ -11,9 +11,25 @@ const run = (id: string, status: SubagentRun['status'] = 'running'): SubagentRun
   endedAt: status === 'running' ? null : new Date('2026-01-01T10:01:00Z'),
   status,
   tokens: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 },
+  contextTokens: null,
+  toolUses: null,
+  durationMs: null,
+  models: [],
 });
 
 describe('subagent board', () => {
+  it('passes the measures on as JSON and copies models', () => {
+    const board = emptySubagents();
+    const r = { ...run('a'), contextTokens: 65819, toolUses: 12, durationMs: 110436, models: ['claude-opus-5-5'] };
+    applySubagent(board, r);
+    r.models.push('other');
+    const [json] = subagentsJson(board).running;
+    assert.equal(json?.context_tokens, 65819);
+    assert.equal(json?.tool_uses, 12);
+    assert.equal(json?.duration_ms, 110436);
+    assert.deepEqual(json?.models, ['claude-opus-5-5']);
+  });
+
   it('keeps only the last ten finished subagents', () => {
     const board = emptySubagents();
     for (let i = 1; i <= 11; i++) {
@@ -56,6 +72,11 @@ describe('subagent board', () => {
           status: 'running',
           started_at: '2026-01-01T10:00:00.000Z',
           ended_at: null,
+          context_tokens: null,
+          tool_uses: null,
+          duration_ms: null,
+          models: [],
+          reason: null,
           tokens: { input_tokens: 1, output_tokens: 2, cache_read_tokens: 3, cache_write_tokens: 4, total_tokens: 10 },
         },
       ],
@@ -67,9 +88,41 @@ describe('subagent board', () => {
           status: 'ok',
           started_at: '2026-01-01T10:00:00.000Z',
           ended_at: '2026-01-01T10:01:00.000Z',
+          context_tokens: null,
+          tool_uses: null,
+          duration_ms: null,
+          models: [],
+          reason: null,
           tokens: { input_tokens: 1, output_tokens: 2, cache_read_tokens: 3, cache_write_tokens: 4, total_tokens: 10 },
         },
       ],
     });
+  });
+});
+
+describe('subagent board: reason (#486)', () => {
+  it('serves the reason of a failed subagent and null without one', () => {
+    const board = emptySubagents();
+    applySubagent(board, { ...run('a', 'error'), reason: 'Agent terminated early due to an API error: weekly limit' });
+    applySubagent(board, run('b', 'ok'));
+    const [a, b] = subagentsJson(board).finished;
+    assert.equal(a?.reason, 'Agent terminated early due to an API error: weekly limit');
+    assert.equal(b?.reason, null);
+  });
+
+  it('replaces the entry of a subagent that ended ok by its later error correction', () => {
+    const board = emptySubagents();
+    applySubagent(board, run('a', 'ok'));
+    applySubagent(board, { ...run('a', 'error'), reason: 'late failure' });
+    assert.equal(board.finished.length, 1);
+    assert.deepEqual([board.finished[0]?.status, board.finished[0]?.reason], ['error', 'late failure']);
+  });
+
+  it('keeps the reason of a run that closeSubagents ends', () => {
+    const board = emptySubagents();
+    applySubagent(board, { ...run('a'), reason: 'task stopped' });
+    closeSubagents(board, new Date('2026-01-01T11:00:00Z'));
+    assert.equal(board.finished[0]?.status, 'error');
+    assert.equal(board.finished[0]?.reason, 'task stopped');
   });
 });

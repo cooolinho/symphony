@@ -16,16 +16,29 @@ import {
   type SDKRateLimitInfo,
   type SDKResultMessage,
   type SDKSystemMessage,
+  type SDKTaskNotificationMessage,
+  type SDKTaskProgressMessage,
+  type SDKTaskStartedMessage,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import { addUsage, emptyUsage, type ModelTokenUsage } from '../costs/pricing.ts';
 import type { AgentToolSpec, Issue, ToolResult } from '../tracker/types.ts';
 import { AsyncQueue, settledWithin, sleep, withTimeout } from '../util/async.ts';
 import { SymphonyError, errorMessage } from '../util/errors.ts';
-import { oneLine, tail, truncate } from '../util/text.ts';
+import { numericEntries, oneLine, tail, truncate } from '../util/text.ts';
+
+/** Start of the plain-text `tool_result` of a foreground subagent that an API error or the usage limit killed. */
+const API_ERROR_PREFIX = 'Agent terminated early due to an API error';
+
+/** The text of a `tool_result` content: a string or an array of text blocks. */
+function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.map((part) => (part !== null && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string' ? (part as { text: string }).text : '')).join('\n').trim();
+}
 import { isWholeLimitMessage, limitScopeOf, parseLimitMessage } from './rate-limit.ts';
 import { forgetProcessGroup, killProcessGroup, processGroupSpawner } from './spawn.ts';
-import { contextWindowSuffix } from './model-name.ts';
+import { contextWindowSuffix, explorerModelFor } from './model-name.ts';
 import type {
   AgentEvent,
   AgentRunner,
@@ -48,10 +61,17 @@ const STOP_GRACE_MS = 10_000;
 const STDERR_TAIL = 4_000;
 const CLIENT_APP = 'symphony/0.1.0';
 /**
- * Subagents and commands run in the foreground: when a turn ends, Symphony decides what happens next and may end the
- * session, so a background task never reports back. claude.env can set it to `0`.
+ * Session defaults, overridable through claude.env. Subagents and commands run in the foreground: when a turn ends,
+ * Symphony decides what happens next and may end the session, so a background task never reports back. Subagent
+ * nesting is capped at one level, so a subagent has no Agent tool. The built-in agents (claude, Explore, general-purpose,
+ * Plan, statusline-setup) are off, so every Agent call names a `subagent_type`.
  */
-const BACKGROUND_TASKS_OFF = { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1' };
+const SESSION_ENV_DEFAULTS = { CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: '1', CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '1', CLAUDE_CODE_FORK_SUBAGENT: '0' };
+/**
+ * Fork subagents inherit the whole context and the role tools and bypass the Agent(<plugin>:<name>) denies; SDK 0.3.302
+ * and later turn them on by default (CLAUDE_CODE_FORK_SUBAGENT in the defaults above). claude.env can set it to `1`.
+ */
+const FORK_AGENT_TOOL = 'Agent(fork)';
 const MCP_STATUS_POLL_MS = 500;
 /**
  * Deny rules for a read-only session. Tool names as in the Agent SDK's permission rule validator
@@ -62,8 +82,64 @@ const READ_ONLY_DENY = ['Edit', 'Write', 'NotebookEdit', 'Bash(git commit:*)', '
 
 /** The tool that starts a subagent; older Claude Code versions call it `Task`. */
 const AGENT_TOOLS = ['Agent', 'Task'];
+/** The plugin explorer, whose model the Agent hook pins below the parent (the front matter is no hard pin). */
+const EXPLORER_AGENT = 'symphony:explorer';
 
-/** `subagent_type` of an Agent tool call; Claude Code's default when unset is `general-purpose`. */
+/** Plugin prefix of the toolbox agents; only these get the issue context. */
+const SYMPHONY_AGENT_PREFIX = 'symphony:';
+
+/** Upper bound (characters) of the context injected into one subagent. */
+export const SUBAGENT_CONTEXT_MAX = 4_000;
+
+const RULE_FILES = ['CLAUDE.md', 'AGENTS.md', '.ai/rules/index.md'];
+
+/** Absolute paths of the repository rule files that exist in the workspace. */
+function repositoryRules(cwd: string): string[] {
+  return RULE_FILES.map((file) => path.join(cwd, file)).filter((file) => fs.existsSync(file));
+}
+
+export interface SubagentContextInput {
+  identifier: string;
+  title: string;
+  cwd: string;
+  readOnly: boolean;
+  role: string | null;
+  acceptanceCriteria: string[];
+  rules: string[];
+}
+
+/** The text a `symphony:*` subagent gets at start, at most SUBAGENT_CONTEXT_MAX characters; acceptance criteria are cut first. */
+export function subagentContext(input: SubagentContextInput): string {
+  const head = [
+    '# Symphony issue context',
+    `You run as a subagent in a Symphony session on ${input.identifier}: ${truncate(oneLine(input.title), 200)}.`,
+    ...(input.role === null ? [] : [`Role of the session: ${input.role}.${input.readOnly ? ' Read-only: do not edit files, commit or push.' : ' The session may change the workspace.'}`]),
+    `Workspace (absolute path): ${input.cwd}. Work only inside it.`,
+    input.rules.length > 0 ? `Repository rules: ${input.rules.join(', ')}.` : 'No CLAUDE.md, AGENTS.md or .ai/rules/index.md at the workspace root.',
+  ];
+  const last = 'Answer with `file:line` for every claim about the code.';
+  const lines = [...head];
+  if (input.acceptanceCriteria.length > 0) {
+    lines.push('Acceptance criteria of the issue:');
+    const size = () => lines.join('\n').length + last.length + 1;
+    let used = 0;
+    for (const criterion of input.acceptanceCriteria) {
+      const line = `- ${truncate(oneLine(criterion), 400)}`;
+      // Keep room for the "more" line that may follow.
+      if (size() + line.length + 1 + 40 > SUBAGENT_CONTEXT_MAX) break;
+      lines.push(line);
+      used += 1;
+    }
+    if (used < input.acceptanceCriteria.length) lines.push(`- … ${input.acceptanceCriteria.length - used} more in the issue`);
+  }
+  lines.push(last);
+  const text = lines.join('\n');
+  if (text.length <= SUBAGENT_CONTEXT_MAX) return text;
+  // Safety net (a very long cwd): cut the middle, keep the closing instruction.
+  return `${truncate(text, SUBAGENT_CONTEXT_MAX - last.length - 1)}\n${last}`;
+}
+
+/** `subagent_type` of an Agent tool call; Claude Code's default when unset is `general-purpose`; kept as the fallback for old logs. */
 function subagentOf(input: unknown): string {
   const value = typeof input === 'object' && input !== null ? (input as Record<string, unknown>).subagent_type : undefined;
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : 'general-purpose';
@@ -229,6 +305,8 @@ class ClaudeSession implements AgentSession {
   #sessionModel: string | null = null;
   /** The subagents still running, by the id of the tool call that started them, with their model calls by message id. */
   #subagents = new Map<string, { run: SubagentRun; calls: Map<string, ModelTokenUsage> }>();
+  /** The subagents that ended, by tool call id: a `task_notification` may arrive after the `tool_result`. */
+  #endedSubagents = new Map<string, SubagentRun>();
   /** Descriptions of the live background tasks, as the latest `background_tasks_changed` lists them. */
   #backgroundTasks: string[] = [];
 
@@ -346,7 +424,7 @@ class ClaudeSession implements AgentSession {
     const deniedAgents = this.#params.deniedAgents ?? [];
     const options: Options = {
       cwd,
-      env: { ...env, ...BACKGROUND_TASKS_OFF, ...extensions?.env, ...config.env, CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP },
+      env: { ...env, ...SESSION_ENV_DEFAULTS, ...extensions?.env, ...config.env, CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP },
       abortController: this.#abort,
       sessionId: this.threadId,
       title: truncate(`${issue.identifier}: ${issue.title}`, 200),
@@ -354,7 +432,7 @@ class ClaudeSession implements AgentSession {
       canUseTool: this.#canUseTool,
       allowedTools: [...new Set([...config.allowedTools, ...toolNames, ...brainNames, ...extensionAllowed])],
       disallowedTools: [
-        ...new Set([...config.disallowedTools, ASK_USER_TOOL, ...extensionDenied, ...readOnlyDenied, ...deniedAgents.map((name) => `Agent(${name})`)]),
+        ...new Set([...config.disallowedTools, ASK_USER_TOOL, FORK_AGENT_TOOL, ...extensionDenied, ...readOnlyDenied, ...deniedAgents.map((name) => `Agent(${name})`)]),
       ],
       settingSources: config.settingSources,
       strictMcpConfig: config.strictMcpConfig,
@@ -382,8 +460,9 @@ class ClaudeSession implements AgentSession {
     if (config.executable !== null) options.pathToClaudeCodeExecutable = config.executable;
     if (config.plugins.length > 0) options.plugins = config.plugins.map((plugin) => ({ type: 'local' as const, path: plugin }));
     if (config.skills !== null) options.skills = config.skills;
-    // The deny rules hide the subagents; the hook refuses a call that names one anyway.
-    if (deniedAgents.length > 0) options.hooks = { PreToolUse: [{ matcher: AGENT_TOOLS.join('|'), hooks: [this.#refuseDeniedAgents] }] };
+    // The deny rules refuse the call, but the denied agents still appear in `init.agents`; the `PreToolUse` hook also refuses a call that names one
+    // and pins the explorer's model in every session (docs/agent-claude.md#subagents). `SubagentStart` injects the issue context.
+    options.hooks = { SubagentStart: [{ hooks: [this.#injectSubagentContext] }], PreToolUse: [{ matcher: AGENT_TOOLS.join('|'), hooks: [this.#agentPolicy] }] };
     if ((extensions?.additionalDirectories.length ?? 0) > 0) options.additionalDirectories = extensions?.additionalDirectories;
     const mcpServers: NonNullable<Options['mcpServers']> = {};
     for (const [name, server] of Object.entries(extensions?.mcpServers ?? {})) {
@@ -425,17 +504,44 @@ class ClaudeSession implements AgentSession {
     });
   }
 
-  /** Refuses an Agent tool call for a subagent the role or workspace does not allow (`deniedAgents`). */
-  #refuseDeniedAgents: HookCallback = async (input) => {
+  /** Symphony's appended system prompt does not reach subagents; this tells a `symphony:*` one which issue and workspace it works in. */
+  #injectSubagentContext: HookCallback = async (input) => {
+    if (input.hook_event_name !== 'SubagentStart' || typeof input.agent_type !== 'string' || !input.agent_type.startsWith(SYMPHONY_AGENT_PREFIX)) return {};
+    const { issue, cwd, policy, subagentContext: context } = this.#params;
+    const additionalContext = subagentContext({
+      identifier: issue.identifier,
+      title: issue.title,
+      cwd,
+      readOnly: policy?.readOnly === true,
+      role: context?.role ?? null,
+      acceptanceCriteria: context?.acceptanceCriteria ?? [],
+      rules: repositoryRules(cwd),
+    });
+    return { hookSpecificOutput: { hookEventName: 'SubagentStart', additionalContext } };
+  };
+
+  /** Refuses an Agent tool call for a subagent the role or workspace does not allow (`deniedAgents`); pins the explorer's model. */
+  #agentPolicy: HookCallback = async (input) => {
     if (input.hook_event_name !== 'PreToolUse' || !AGENT_TOOLS.includes(input.tool_name)) return {};
     const agent = subagentOf(input.tool_input);
-    if (!(this.#params.deniedAgents ?? []).includes(agent)) return {};
-    this.#emit('approval_denied', { message: `subagent ${agent} denied by policy`, detail: { tool: input.tool_name, agent } });
+    if ((this.#params.deniedAgents ?? []).includes(agent)) {
+      this.#emit('approval_denied', { message: `subagent ${agent} denied by policy`, detail: { tool: input.tool_name, agent } });
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: `The subagent ${agent} is not available to this role in this workspace. Do the work yourself or use another subagent.`,
+        },
+      };
+    }
+    if (agent !== EXPLORER_AGENT) return {};
+    const model = explorerModelFor(this.#sessionModel ?? this.#params.config.model);
+    if (model === null) return {};
     return {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason: `The subagent ${agent} is not available to this role in this workspace. Do the work yourself or use another subagent.`,
+        permissionDecision: 'allow',
+        updatedInput: { ...(input.tool_input as Record<string, unknown>), model },
       },
     };
   };
@@ -505,6 +611,11 @@ class ClaudeSession implements AgentSession {
           this.#emit('permission_denied', { message: `${message.tool_name} denied: ${truncate(oneLine(message.message), 200)}` });
         } else if (message.subtype === 'compact_boundary') {
           this.#onCompact(message);
+        } else if (
+          (message.subtype === 'task_started' || message.subtype === 'task_progress' || message.subtype === 'task_notification') &&
+          this.#onTask(message)
+        ) {
+          // Matched to a subagent by its tool call id: the figures are on the board, not in the timeline.
         } else {
           this.#emit('notification', { message: `system/${message.subtype}` });
         }
@@ -664,6 +775,7 @@ class ClaudeSession implements AgentSession {
     this.#addSubagentUsage(message);
     // One event per tool call (a message may call several tools in parallel); a text event only without tool calls.
     let calls = 0;
+    const subagent = message.parent_tool_use_id != null;
     for (const block of message.message.content) {
       if (block.type !== 'tool_use') continue;
       calls++;
@@ -671,7 +783,7 @@ class ClaudeSession implements AgentSession {
       const agent = AGENT_TOOLS.includes(block.name) ? subagentOf(block.input) : null;
       this.#emit('tool_use', {
         message: summarizeToolInput(block.name, block.input),
-        detail: { tool: block.name, ...(skill !== null ? { skill } : {}), ...(agent !== null ? { agent } : {}) },
+        detail: { tool: block.name, ...(skill !== null ? { skill } : {}), ...(agent !== null ? { agent } : {}), ...(subagent ? { subagent: true } : {}) },
       });
       if (agent !== null && typeof block.id === 'string') this.#startSubagent(block.id, agent, block.input);
     }
@@ -719,6 +831,7 @@ class ClaudeSession implements AgentSession {
         tokens,
         percent,
         peakPercent: percent === null ? (previous?.peakPercent ?? null) : Math.max(previous?.peakPercent ?? 0, percent),
+        peakTokens: Math.max(previous?.peakTokens ?? 0, tokens),
         compacts: previous?.compacts ?? 0,
         preTokens: previous?.preTokens ?? null,
       };
@@ -738,6 +851,7 @@ class ClaudeSession implements AgentSession {
       tokens: previous?.tokens ?? 0,
       percent: previous?.percent ?? null,
       peakPercent: previous?.peakPercent ?? null,
+      peakTokens: previous?.peakTokens ?? 0,
       compacts: (previous?.compacts ?? 0) + 1,
       preTokens,
     };
@@ -757,6 +871,11 @@ class ClaudeSession implements AgentSession {
       endedAt: null,
       status: 'running',
       tokens: emptyUsage(),
+      contextTokens: null,
+      toolUses: null,
+      durationMs: null,
+      models: [],
+      reason: null,
     };
     this.#subagents.set(toolUseId, { run, calls: new Map() });
     this.#emitSubagent(run, `subagent ${subagentType} started${run.description === '' ? '' : `: ${run.description}`}`, {
@@ -772,6 +891,8 @@ class ClaudeSession implements AgentSession {
     const entry = typeof parent === 'string' ? this.#subagents.get(parent) : undefined;
     const usage = message.message.usage;
     if (entry === undefined || usage === undefined || usage === null) return;
+    const model: unknown = message.message.model;
+    if (typeof model === 'string' && !entry.run.models.includes(model)) entry.run.models.push(model);
     entry.calls.set(message.message.id ?? `${parent}:${entry.calls.size}`, {
       inputTokens: usage.input_tokens ?? 0,
       outputTokens: usage.output_tokens ?? 0,
@@ -783,6 +904,38 @@ class ClaudeSession implements AgentSession {
     this.#emitSubagent(entry.run);
   }
 
+  /**
+   * Takes Claude Code's own figures of a subagent from its `task_*` message, found by the tool call id; false when no
+   * subagent matches. The notification may come after the `tool_result`, so ended runs are searched too.
+   */
+  #onTask(message: SDKTaskStartedMessage | SDKTaskProgressMessage | SDKTaskNotificationMessage): boolean {
+    const id = message.tool_use_id;
+    const run = typeof id === 'string' ? (this.#subagents.get(id)?.run ?? this.#endedSubagents.get(id)) : undefined;
+    if (run === undefined) return false;
+    if (message.subtype !== 'task_started') {
+      const usage = message.usage;
+      if (usage !== undefined && usage !== null) {
+        if (Number.isFinite(usage.total_tokens)) run.contextTokens = usage.total_tokens;
+        if (Number.isFinite(usage.tool_uses)) run.toolUses = usage.tool_uses;
+        if (Number.isFinite(usage.duration_ms)) run.durationMs = usage.duration_ms;
+      }
+    }
+    if (message.subtype === 'task_notification' && (message.status === 'failed' || message.status === 'stopped')) {
+      const summary = typeof message.summary === 'string' ? truncate(oneLine(message.summary), 200) : '';
+      const reason = summary === '' ? `task ${message.status}` : summary;
+      if (run.status === 'running') {
+        run.reason = reason; // the tool_result that follows ends it as error
+      } else {
+        run.status = 'error';
+        run.reason = reason;
+        this.#emitEnded(run);
+        return true;
+      }
+    }
+    this.#emitSubagent(run);
+    return true;
+  }
+
   /** Ends the subagents whose Agent tool call a `tool_result` block answers; results of their own tools are ignored. */
   #endSubagents(message: SDKUserMessage): void {
     const content: unknown = message.message.content;
@@ -790,31 +943,43 @@ class ClaudeSession implements AgentSession {
     for (const block of content as Array<Record<string, unknown>>) {
       if (block?.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue;
       const entry = this.#subagents.get(block.tool_use_id);
-      if (entry !== undefined) this.#endSubagent(entry.run, block.is_error === true ? 'error' : 'ok');
+      if (entry === undefined) continue;
+      const text = toolResultText(block.content);
+      const reason = block.is_error === true || text.startsWith(API_ERROR_PREFIX) ? truncate(oneLine(text), 200) || 'error' : (entry.run.reason ?? null);
+      this.#endSubagent(entry.run, reason === null ? 'ok' : 'error', reason);
     }
   }
 
   /** A session that ends leaves no subagent running. */
   #closeSubagents(): void {
-    for (const { run } of [...this.#subagents.values()]) this.#endSubagent(run, 'error');
+    for (const { run } of [...this.#subagents.values()]) this.#endSubagent(run, 'error', run.reason ?? 'session ended');
   }
 
-  #endSubagent(run: SubagentRun, status: 'ok' | 'error'): void {
+  #endSubagent(run: SubagentRun, status: 'ok' | 'error', reason: string | null = null): void {
     run.endedAt = new Date();
     run.status = status;
+    run.reason = reason;
     this.#subagents.delete(run.toolUseId);
-    this.#emitSubagent(run, `subagent ${run.subagentType} ${status}`, {
+    this.#endedSubagents.set(run.toolUseId, run);
+    this.#emitEnded(run);
+  }
+
+  /** The timeline and trace entry of a finished subagent; the reason of a failed one is part of it. */
+  #emitEnded(run: SubagentRun): void {
+    const suffix = (run.reason ?? null) === null ? '' : `: ${run.reason}`;
+    this.#emitSubagent(run, `subagent ${run.subagentType} ${run.status}${suffix}`, {
       tool_use_id: run.toolUseId,
       subagent_type: run.subagentType,
-      status,
-      duration_ms: run.endedAt.getTime() - run.startedAt.getTime(),
+      status: run.status,
+      ...((run.reason ?? null) === null ? {} : { reason: run.reason }),
+      duration_ms: (run.endedAt ?? new Date()).getTime() - run.startedAt.getTime(),
     });
   }
 
   /** Reports a copy of the run; without a message the update (tokens) stays out of the timeline and the trace. */
   #emitSubagent(run: SubagentRun, message?: string, detail?: Record<string, unknown>): void {
     this.#emit('subagent', {
-      subagent: { ...run, tokens: { ...run.tokens } },
+      subagent: { ...run, tokens: { ...run.tokens }, models: [...run.models] },
       ...(message !== undefined ? { message } : {}),
       ...(detail !== undefined ? { detail } : {}),
     });
@@ -826,6 +991,23 @@ class ClaudeSession implements AgentSession {
     for (const [model, usage] of Object.entries(this.#resultUsage)) totals[model] = { ...usage };
     for (const call of this.#turnCalls.values()) addUsage((totals[call.model] ??= emptyUsage()), call.usage);
     return totals;
+  }
+
+  /** A window the result reports for the context model overrides the file: the peak is recomputed against it. */
+  #applyReportedWindow(message: SDKResultMessage): void {
+    const previous = this.#context;
+    if (previous === null) return;
+    const entries = Object.entries(message.modelUsage ?? {});
+    const wanted = previous.model.toLowerCase();
+    const entry = entries.find(([name]) => name.toLowerCase() === wanted) ?? entries.find(([name]) => wanted.includes(name.toLowerCase()) || name.toLowerCase().includes(wanted));
+    const reported = (entry?.[1] as { contextWindow?: unknown } | undefined)?.contextWindow;
+    if (typeof reported !== 'number' || !Number.isFinite(reported) || reported <= 0) return;
+    this.#context = {
+      ...previous,
+      window: reported,
+      percent: Math.round((previous.tokens / reported) * 1000) / 10,
+      peakPercent: Math.round(((previous.peakTokens ?? previous.tokens) / reported) * 1000) / 10,
+    };
   }
 
   #onResult(message: SDKResultMessage): void {
@@ -840,16 +1022,21 @@ class ClaudeSession implements AgentSession {
     const succeeded = reportedSuccess && sessionLimit === null;
     const failure = reportedSuccess ? `turn ended with a usage limit: ${truncate(oneLine(sessionLimit?.text ?? ''), 500)}` : describeResult(message);
     const backgroundTasks = [...this.#backgroundTasks];
+    // `subagent_stats` (spawned, refused, ...) is undocumented, seen in Claude Code 2.1.288: an extra signal, read defensively.
+    const subagentStats = numericEntries((message as unknown as Record<string, unknown>).subagent_stats);
+    this.#applyReportedWindow(message);
     this.#emit(succeeded ? 'turn_completed' : 'turn_failed', {
       message: succeeded ? `turn completed (${message.num_turns} model calls)` : failure,
       usage,
       modelUsage: this.#resultUsage,
+      ...(this.#context ? { context: { ...this.#context } } : {}),
       costUsd: message.total_cost_usd,
       detail: {
         subtype: message.subtype,
         stop_reason: message.stop_reason,
         duration_ms: message.duration_ms,
         ...(backgroundTasks.length > 0 ? { background_tasks: backgroundTasks } : {}),
+        ...(subagentStats ? { subagent_stats: subagentStats } : {}),
         ...(sessionLimit
           ? {
               session_limit: {

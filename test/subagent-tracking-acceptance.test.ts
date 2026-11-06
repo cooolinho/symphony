@@ -251,6 +251,10 @@ describe('subagent board in the orchestrator (#329)', () => {
     endedAt: status === 'running' ? null : new Date('2026-01-01T00:01:00Z'),
     status,
     tokens: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 1, cacheWriteTokens: 1 },
+    contextTokens: null,
+    toolUses: null,
+    durationMs: null,
+    models: [],
   });
 
   it('keeps all running and only the last ten finished; the eleventh finished pushes the oldest out', () => {

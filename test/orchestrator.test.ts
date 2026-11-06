@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 import { parseNote } from '../src/brain/note.ts';
 import { ensureVault } from '../src/brain/vault.ts';
 import { PricingStore } from '../src/costs/pricing.ts';
-import { HistoryLog, readHistory } from '../src/history/history.ts';
+import { HistoryLog, parseSubagents, readHistory } from '../src/history/history.ts';
 import type { IntegrationReport } from '../src/agent/types.ts';
 import type { WorkspaceIntegration } from '../src/integrations/types.ts';
 import { Logger } from '../src/log.ts';
@@ -248,6 +248,10 @@ describe('workspace integrations', () => {
         endedAt,
         status,
         tokens: { inputTokens: tokens, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 },
+        contextTokens: null,
+        toolUses: null,
+        durationMs: null,
+        models: [],
       });
       send('tool_use', { detail: { tool: 'Agent', agent: 'Explore' } });
       send('subagent', { subagent: run('a', 'running', 0, null) });
@@ -272,9 +276,69 @@ describe('workspace integrations', () => {
         status: 'ok',
         started_at: '2026-01-01T10:00:00.000Z',
         ended_at: '2026-01-01T10:01:00.000Z',
+        context_tokens: null,
+        tool_uses: null,
+        duration_ms: null,
+        models: [],
+        reason: null,
         tokens: { input_tokens: 5, output_tokens: 2, cache_read_tokens: 3, cache_write_tokens: 4, total_tokens: 14 },
       },
     ]);
+  });
+
+  it('persists the subagents of a run in run_finished, the sessions and the run trace', async () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
+    const history = new HistoryLog(path.join(dir, 'repositories'), new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent()), Logger.silent());
+    let s: Setup | null = null;
+    const runner = new FakeRunner((turn, params) => {
+      const send = (event: string, fields: Record<string, unknown>) =>
+        (params.onEvent as (event: unknown) => void)({ event, timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: 1, ...fields });
+      const run = (id: string, status: string, reason?: string) => ({
+        toolUseId: id,
+        subagentType: 'Explore',
+        description: 'Find files, now',
+        startedAt: new Date('2026-01-01T10:00:00Z'),
+        endedAt: status === 'running' ? null : new Date('2026-01-01T10:01:00Z'),
+        status,
+        ...(reason !== undefined ? { reason } : {}),
+        tokens: { inputTokens: 5, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 },
+        contextTokens: 100,
+        toolUses: 2,
+        durationMs: 60000,
+        models: ['claude-opus-5-5'],
+      });
+      if (turn === 1) {
+        send('subagent', { subagent: run('a', 'ok') });
+        send('subagent', { subagent: run('b', 'error', 'API error: 529') });
+        send('subagent', { subagent: run('c', 'running') });
+        send('turn_completed', { detail: { subagent_stats: { spawned: 3 } } });
+      } else {
+        s?.tracker.set('a', { state: 'In review' });
+      }
+      return { ok: true, turnId: String(turn), resultText: 'done' };
+    });
+    s = setup({ runner, issues: [makeIssue({ id: 'a' })], history });
+    s.tracker.issueRepository = () => 'acme/app';
+    await s.orchestrator.tickNow();
+    await until(() => snapshot(s!).running.length === 0 && runner.sessions.length >= 1, 3_000, 'run finished');
+
+    const logged = readHistory(history.dir, 'acme/app').entries.filter((e) => e.event === 'run_finished');
+    const subagents = parseSubagents(logged[0]?.fields.subagents);
+    assert.deepEqual(subagents.map((run) => [run.type, run.status, run.reason]), [['Explore', 'ok', null], ['Explore', 'error', 'API error: 529'], ['Explore', 'error', null]]);
+    assert.equal(subagents[0]?.tokens, 14);
+    assert.equal(logged[0]?.fields.subagent_stats, 'spawned:3');
+
+    const detail = s.orchestrator.issueDetail('a') as unknown as {
+      run_trace: { subagents: { running: unknown[]; finished: Array<{ tool_use_id: string }> }; subagent_stats: unknown };
+      sessions: Array<{ subagents: Array<{ tool_use_id: string; status: string; tokens: { total_tokens: number } }> }>;
+      pipeline: Array<{ sessions: Array<Record<string, unknown>> }>;
+    };
+    assert.deepEqual(detail.run_trace.subagents.running, []);
+    assert.deepEqual(detail.run_trace.subagents.finished.map((run) => run.tool_use_id), ['a', 'b', 'c']);
+    assert.deepEqual(detail.run_trace.subagent_stats, { spawned: 3 });
+    assert.deepEqual(detail.sessions[0]?.subagents.map((run) => [run.tool_use_id, run.status, run.tokens.total_tokens]), [['a', 'ok', 14], ['b', 'error', 14], ['c', 'error', 14]]);
+    for (const stage of detail.pipeline) for (const session of stage.sessions) assert.equal('subagents' in session, false);
   });
 
   it('attributes MCP tool and skill calls to the reports of the integrations', async () => {
@@ -308,6 +372,8 @@ describe('workspace integrations', () => {
       emit(params, 'tool_use', { tool: 'Skill', skill: 'symphony:handoff' });
       emit(params, 'tool_use', { tool: 'Agent', agent: 'symphony:laravel-code-reviewer' });
       emit(params, 'tool_use', { tool: 'Bash' });
+      emit(params, 'tool_use', { tool: 'Bash', subagent: true });
+      emit(params, 'tool_use', { tool: 'SubagentHandback', subagent: true });
       live = s?.orchestrator.snapshot().running[0]?.integrations;
       s?.tracker.set('a', { state: 'In review' });
       return { ok: true, turnId: String(turn), resultText: 'done' };
@@ -329,10 +395,11 @@ describe('workspace integrations', () => {
       usage: { calls: 3, tool_calls: { 'search-docs': 2 }, skill_calls: { 'pest-testing': 1 } },
     };
     assert.deepEqual(live, [expected]);
-    const detail = s.orchestrator.issueDetail('a') as { run_trace: { integrations: unknown; skill_calls: unknown; agent_calls: unknown } };
+    const detail = s.orchestrator.issueDetail('a') as { run_trace: { integrations: unknown; skill_calls: unknown; agent_calls: unknown; subagent_tool_calls: unknown } };
     assert.deepEqual(detail.run_trace.integrations, [expected]);
     assert.deepEqual(detail.run_trace.skill_calls, { 'pest-testing': 1, 'symphony:handoff': 1 });
     assert.deepEqual(detail.run_trace.agent_calls, { 'symphony:laravel-code-reviewer': 1 });
+    assert.deepEqual(detail.run_trace.subagent_tool_calls, { Bash: 1, SubagentHandback: 1 });
 
     const finished = readHistory(history.dir, 'acme/app').entries.find((entry) => entry.event === 'run_finished');
     assert.equal(finished?.fields.integrations, 'laravel-boost:ready');
@@ -340,7 +407,8 @@ describe('workspace integrations', () => {
     assert.equal(finished?.fields.integration_skills, 'laravel-boost/pest-testing:1');
     assert.equal(finished?.fields.skill_calls, 'pest-testing:1,symphony:handoff:1');
     assert.equal(finished?.fields.agent_calls, 'symphony:laravel-code-reviewer:1');
-    assert.equal(finished?.fields.tool_calls, 'mcp__laravel-boost__search-docs:2,mcp__tracker__set_status:1,Skill:2,Agent:1,Bash:1');
+    assert.equal(finished?.fields.tool_calls, 'mcp__laravel-boost__search-docs:2,mcp__tracker__set_status:1,Skill:2,Agent:1,Bash:2,SubagentHandback:1');
+    assert.equal(finished?.fields.subagent_tool_calls, 'Bash:1,SubagentHandback:1');
   });
 });
 
@@ -421,6 +489,51 @@ describe('roles', () => {
     assert.equal(elsewhere.developer?.turns[0], 'developer:');
     assert.deepEqual(elsewhere.developer?.params.deniedAgents, ['kit:helper', 'helper', 'kit:laravel-architect', 'laravel-architect', 'kit:laravel-filament-developer', 'laravel-filament-developer']);
     assert.equal(elsewhere.reviewer?.turns[0], 'reviewer:');
+  });
+
+  it('denies every plugin subagent to a role with "agents: []", also in a Laravel workspace', async () => {
+    const plugin = tempDir();
+    fs.mkdirSync(path.join(plugin, '.claude-plugin'));
+    fs.writeFileSync(path.join(plugin, '.claude-plugin', 'plugin.json'), '{"name":"kit"}');
+    fs.mkdirSync(path.join(plugin, 'agents'));
+    const names = ['laravel-architect', 'laravel-code-reviewer', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer'];
+    for (const name of names) fs.writeFileSync(path.join(plugin, 'agents', `${name}.md`), `---\nname: ${name}\ndescription: ${name} work\n---\nBody\n`);
+    const laravel: WorkspaceIntegration = {
+      id: 'fake-laravel',
+      configKey: 'fake_section',
+      agentPrefix: 'laravel-',
+      resolveConfig: () => ({ config: {}, errors: [], warnings: [] }),
+      prepare: async () => ({ mcpServers: {}, contextSections: [], additionalDirectories: [], env: {}, agentPrefixes: ['laravel-'] }),
+    };
+    const front = {
+      ...rolesFront,
+      claude: { ...rolesFront.claude, plugins: [plugin] },
+      roles: {
+        developer: { states: ['Todo'] },
+        reviewer: { states: ['Agent review'], agents: [] },
+      },
+      fake_section: {},
+    };
+    const runner = new FakeRunner(() => new Promise(() => undefined));
+    const s = setup({
+      runner,
+      front,
+      prompt: '{{ role }}:{% for a in agents %} {{ a.name }}{% endfor %}',
+      integrations: [laravel],
+      issues: [makeIssue({ id: 'd' }), makeIssue({ id: 'r', state: 'Agent review' })],
+    });
+    await s.orchestrator.tickNow();
+    await until(() => runner.sessions.length === 2 && runner.sessions.every((x) => x.turns.length === 1), 3_000, 'two sessions');
+    const byRole = (role: string) => runner.sessions.find((x) => x.turns[0]?.startsWith(`${role}:`));
+    // Unset still means all (default unchanged) ...
+    assert.equal(byRole('developer')?.turns[0], `developer: ${names.map((name) => `kit:${name}`).join(' ')}`);
+    assert.deepEqual(byRole('developer')?.params.deniedAgents, []);
+    // ... an explicit empty list denies every agent, qualified and bare, and the prompt has none.
+    assert.equal(byRole('reviewer')?.turns[0], 'reviewer:');
+    assert.deepEqual(
+      [...(byRole('reviewer')?.params.deniedAgents ?? [])].sort(),
+      names.flatMap((name) => [name, `kit:${name}`]).sort(),
+    );
   });
 
   it('lets a "Model:" label override the role model', async () => {
@@ -817,6 +930,134 @@ describe('roles', () => {
           ['handed_off', 'developer', 'reviewer'],
         ],
       );
+    });
+  });
+
+  describe('subagents of earlier runs', () => {
+    const subagentRun = (id: string, status: string, extra: Record<string, unknown> = {}) => ({
+      toolUseId: id,
+      subagentType: 'symphony:reviewer',
+      description: `Review ${id}: "diff", a/b`,
+      startedAt: new Date('2026-01-01T10:00:00Z'),
+      endedAt: status === 'running' ? null : new Date('2026-01-01T10:01:00Z'),
+      status,
+      tokens: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 },
+      contextTokens: 50,
+      toolUses: 1,
+      durationMs: 60000,
+      models: ['claude-opus-5-5'],
+      ...extra,
+    });
+    const sendTo = (params: { onEvent: unknown }) => (event: string, fields: Record<string, unknown>) =>
+      (params.onEvent as (event: unknown) => void)({ event, timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: 1, ...fields });
+    type Detail = {
+      run_trace: { subagents: { running: unknown[]; finished: unknown[] }; subagent_stats: unknown } | null;
+      sessions: Array<{ role: string; subagents?: Array<{ tool_use_id: string; status: string }> }>;
+    };
+
+    it('keeps the subagents of the first run visible after a later run without subagents', async () => {
+      const runner = new FakeRunner();
+      const s = withHistory(switchFront, runner, [makeIssue({ id: 'a', state: 'Ready' })]);
+      runner.script = (turn, params) => {
+        const send = sendTo(params);
+        if (runner.sessions.length === 1) {
+          send('subagent', { subagent: subagentRun('x', 'ok') });
+          send('turn_completed', { detail: { subagent_stats: { spawned: 1 } } });
+          s.tracker.set('a', { state: 'Agent review' });
+        }
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      };
+      await s.orchestrator.tickNow();
+      await until(() => s.orchestrator.snapshot().retrying.length === 1, 3_000, 'continuation retry');
+      s.timers.fire(1_000);
+      await until(() => runner.sessions.length === 2 && s.orchestrator.snapshot().retrying.length === 1, 3_000, 'reviewer session');
+
+      const [developerRun, reviewerRun] = s.finished();
+      const logged = parseSubagents(developerRun?.fields.subagents);
+      assert.equal(logged.length, 1);
+      assert.equal(logged[0]?.type, 'symphony:reviewer');
+      assert.equal(logged[0]?.description, 'Review x: "diff", a/b');
+      assert.equal(logged[0]?.status, 'ok');
+      assert.equal(developerRun?.fields.subagent_stats, 'spawned:1');
+      // The reviewer run had no subagents: neither key is written.
+      assert.equal('subagents' in (reviewerRun?.fields ?? {}), false);
+      assert.equal('subagent_stats' in (reviewerRun?.fields ?? {}), false);
+
+      const detail = s.orchestrator.issueDetail('a') as unknown as Detail;
+      assert.equal(detail.sessions.length, 2);
+      assert.deepEqual(detail.sessions[0]?.subagents?.map((run) => [run.tool_use_id, run.status]), [['x', 'ok']]);
+      assert.deepEqual(detail.sessions[1]?.subagents, []);
+      assert.deepEqual(detail.run_trace?.subagents, { running: [], finished: [] });
+      assert.equal(detail.run_trace?.subagent_stats, null);
+    });
+
+    it('lists no subagents of a run on its session while it still runs and fills them in when it ends', async () => {
+      const runner = new FakeRunner();
+      const s = withHistory(switchFront, runner, [makeIssue({ id: 'a', state: 'Ready' })]);
+      let during: Detail | null = null;
+      runner.script = (turn, params) => {
+        sendTo(params)('subagent', { subagent: subagentRun('x', 'ok') });
+        during = s.orchestrator.issueDetail('a') as unknown as Detail;
+        s.tracker.set('a', { state: 'Agent review' });
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      };
+      await s.orchestrator.tickNow();
+      await until(() => s.orchestrator.snapshot().retrying.length === 1, 3_000, 'continuation retry');
+      const live = during as Detail | null;
+      assert.deepEqual(live?.sessions[0]?.subagents, []);
+      assert.deepEqual(live?.run_trace?.subagents.finished.length, 1);
+      const after = s.orchestrator.issueDetail('a') as unknown as Detail;
+      assert.deepEqual(after.sessions[0]?.subagents?.map((run) => run.tool_use_id), ['x']);
+    });
+
+    it('logs a subagent that still ran when the turn failed as error', async () => {
+      const runner = new FakeRunner();
+      const s = withHistory(switchFront, runner, [makeIssue({ id: 'a', state: 'Ready' })]);
+      runner.script = (turn, params) => {
+        const send = sendTo(params);
+        send('subagent', { subagent: subagentRun('done', 'ok') });
+        send('subagent', { subagent: subagentRun('open', 'running') });
+        return { ok: false, turnId: String(turn), code: 'turn_failed', message: 'boom' };
+      };
+      await s.orchestrator.tickNow();
+      await until(() => s.finished().length >= 1, 3_000, 'run finished');
+      const logged = parseSubagents(s.finished()[0]?.fields.subagents);
+      assert.deepEqual(logged.map((run) => run.status), ['ok', 'error']);
+      assert.equal(logged[1]?.ended_at !== null, true);
+      const detail = s.orchestrator.issueDetail('a') as unknown as Detail;
+      assert.deepEqual(detail.run_trace?.subagents.running, []);
+      assert.deepEqual(detail.sessions[0]?.subagents?.map((run) => run.status), ['ok', 'error']);
+    });
+
+    it('logs at most the last ten finished subagents, oldest first', async () => {
+      const runner = new FakeRunner();
+      const s = withHistory(switchFront, runner, [makeIssue({ id: 'a', state: 'Ready' })]);
+      runner.script = (turn, params) => {
+        const send = sendTo(params);
+        for (let i = 1; i <= 12; i++) send('subagent', { subagent: subagentRun(`n${i}`, 'ok', { description: `job ${i}` }) });
+        s.tracker.set('a', { state: 'Agent review' });
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      };
+      await s.orchestrator.tickNow();
+      await until(() => s.finished().length >= 1, 3_000, 'run finished');
+      const logged = parseSubagents(s.finished()[0]?.fields.subagents);
+      assert.deepEqual(logged.map((run) => run.description), Array.from({ length: 10 }, (_, i) => `job ${i + 3}`));
+    });
+
+    it('writes no subagent keys for a run without subagents and without subagent_stats', async () => {
+      const runner = new FakeRunner();
+      const s = withHistory(switchFront, runner, [makeIssue({ id: 'a', state: 'Ready' })]);
+      runner.script = (turn) => {
+        s.tracker.set('a', { state: 'Agent review' });
+        return { ok: true, turnId: String(turn), resultText: 'done' };
+      };
+      await s.orchestrator.tickNow();
+      await until(() => s.finished().length >= 1, 3_000, 'run finished');
+      const fields = s.finished()[0]?.fields ?? {};
+      assert.equal('subagents' in fields, false);
+      assert.equal('subagent_stats' in fields, false);
+      const detail = s.orchestrator.issueDetail('a') as unknown as Detail;
+      assert.deepEqual(detail.sessions[0]?.subagents, []);
     });
   });
 
@@ -2619,8 +2860,11 @@ describe('run history', () => {
         branch: 'feature',
         mcp_tool_calls: { 'laravel-boost': 2 },
         tool_calls: { 'mcp__laravel-boost__database-schema': 2, Bash: 1, Edit: 1 },
+        subagent_tool_calls: {},
         skill_calls: {},
         agent_calls: {},
+        subagents: { running: [], finished: [] },
+        subagent_stats: null,
         integrations: [],
       });
     });

@@ -34,7 +34,9 @@ const make = (logDir: string, issues: ReturnType<typeof makeIssue>[], runner = n
 
 const teamPath = (id: string) => `/api/v1/${encodeURIComponent(`acme/app#${id}`)}/team`;
 
-function writeArchive(logDir: string, id: string) {
+const ARCHIVED_SUBAGENT = { tool_use_id: 'tu1', subagent_type: 'reviewer', description: 'Review diff', status: 'done', started_at: '2026-10-03T10:02:00.000Z', ended_at: '2026-10-03T10:04:00.000Z', context_tokens: 65819, tool_uses: 3, duration_ms: 110436, models: ['claude-opus-5-5'], reason: null, tokens: { input_tokens: 1, output_tokens: 2, cache_read_tokens: 3, cache_write_tokens: 4, total_tokens: 10 } };
+
+function writeArchive(logDir: string, id: string, sessions: unknown[] = []) {
   const s = (run: string, role: string, start: string, end: string, verdict: string, round: number) => ({
     run, attempt: null, role, state: 'x', model: 'sonnet', effort: null, started_at: `2026-10-03T${start}:00.000Z`, finished_at: `2026-10-03T${end}:00.000Z`, outcome: 'handed_off', verdict, round,
   });
@@ -51,7 +53,7 @@ function writeArchive(logDir: string, id: string) {
     path.join(logDir, 'issues', `acme_app_${id}.json`),
     JSON.stringify({
       version: 2, pipeline, results: [], issue_id: id, issue_identifier: `acme/app#${id}`, issue_url: null, title: 'Old', repo: null, workspace_path: null, runs: 3, continuations: 0, last_error: null,
-      archived_at: '2026-10-03T11:00:00.000Z', released: true, completed_before: false, timeline: [ev(1, 'd1', '10:01'), ev(2, 'd1', '10:02'), ev(3, 'v1', '10:12'), ev(4, 'd2', '10:31')], next_seq: 5, sessions: [], run_trace: null, last_check: null,
+      archived_at: '2026-10-03T11:00:00.000Z', released: true, completed_before: false, timeline: [ev(1, 'd1', '10:01'), ev(2, 'd1', '10:02'), ev(3, 'v1', '10:12'), ev(4, 'd2', '10:31')], next_seq: 5, sessions, run_trace: null, last_check: null,
     }),
   );
 }
@@ -92,6 +94,21 @@ describe('GET /api/v1/<id>/team', () => {
       assert.equal((await request(server.port, 'DELETE', teamPath('live'))).status, 405);
     } finally {
       await orchestrator.shutdown(1_000);
+      await server.close();
+    }
+  });
+
+  it('delivers the persisted subagents on the block of their run (E0-8)', async () => {
+    const logDir = tempDir();
+    const session = (run: string, role: string, subagents?: unknown[]) => ({ run, attempt: null, role, state: 'x', model: 'sonnet', effort: null, started_at: '2026-10-03T10:00:00.000Z', finished_at: '2026-10-03T10:10:00.000Z', outcome: 'handed_off', transcript: null, ...(subagents ? { subagents } : {}) });
+    writeArchive(logDir, 'sub', [session('d1', 'developer', [ARCHIVED_SUBAGENT]), session('v1', 'reviewer')]);
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator: make(logDir, []), logger: Logger.silent() });
+    try {
+      const team = JSON.parse((await request(server.port, 'GET', teamPath('sub'))).body);
+      assert.deepEqual(team.blocks.map((b: { run: string; subagents: unknown[] }) => [b.run, b.subagents.length]), [['d1', 1], ['v1', 0], ['d2', 0]]);
+      assert.deepEqual(team.blocks[0].subagents, [ARCHIVED_SUBAGENT]);
+      assert.deepEqual(team.subagents, { running: [], finished: [] });
+    } finally {
       await server.close();
     }
   });

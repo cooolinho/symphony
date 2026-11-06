@@ -480,6 +480,14 @@ cpus: 2
 mem_limit: 4g
 ```
 
+### PHP and mutation testing
+
+The image installs PHP with `mbstring`, `xml`, `curl`, `zip`, `intl`, `bcmath`, `sqlite3` and `gd`, and provides **neither
+Xdebug nor PCOV** (`php -m` lists neither; checked with PHP 8.4). `pest --mutate` needs Pest 3+ and one of them, so Pest
+mutation testing is unavailable in Laravel workspaces of this image and the [mutation score](results.md#test-evidence-at-lxl)
+of an L/XL test result is not required. The rule switches on by itself once an image provides PCOV or Xdebug 3+. Adding one
+is a separate maintenance issue (`pecl install pcov` or the `php-pcov` package, then rebuild).
+
 ## Common errors
 
 | Symptom | Cause and fix |

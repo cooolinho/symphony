@@ -103,7 +103,7 @@ const LOGS_CSS = `
  * Statistics page: analytics of the per-repository logs for one global filter (period, repository, model).
  * The server aggregates (/api/v1/history/analytics); the log table is loaded separately
  * (/api/v1/history/entries) so a failure there leaves the charts intact. The filter lives in the URL
- * (?period=30d&repo=owner/name&model=…&effort=…, custom: ?period=custom&from=YYYY-MM-DD&to=YYYY-MM-DD), so every view
+ * (?period=30d&repo=owner/name&model=…&effort=…&role=…&complexity=…, custom: ?period=custom&from=YYYY-MM-DD&to=YYYY-MM-DD), so every view
  * can be linked.
  */
 export const LOGS_HTML = page({
@@ -136,6 +136,8 @@ export const LOGS_HTML = page({
       <label class="field"><span class="lbl">Repository</span><select id="repo"><option value="">Alle Repositories</option></select></label>
       <label class="field"><span class="lbl">Modell</span><select id="model"><option value="">Alle Modelle</option></select></label>
       <label class="field"><span class="lbl">Effort</span><select id="effort"><option value="">Alle Efforts</option></select></label>
+      <label class="field"><span class="lbl">Rolle</span><select id="role"><option value="">Alle Rollen</option></select></label>
+      <label class="field"><span class="lbl">Komplexität</span><select id="complexity"><option value="">Alle Komplexitäten</option></select></label>
     </form>
     <div class="filter-foot">
       <div class="period" id="period-label" aria-live="polite"></div>
@@ -236,6 +238,14 @@ export const LOGS_HTML = page({
     </section>
   </div>
 
+  <section class="ui-card g" data-section aria-labelledby="h-subagent-eval">
+    <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-subagent-eval">Subagent-Auswertung</h2>
+      <a class="ui-btn" id="subagent-eval-export" download hidden>JSON exportieren</a>
+    </div>
+    <div class="ui-card-body" data-body="subagent-eval"></div>
+    <div class="ui-card-body" data-body="mutation-scores" hidden></div>
+  </section>
+
   <section class="ui-card g" data-section aria-labelledby="h-repos">
     <div class="ui-card-head"><h2 class="ui-card-title lbl" id="h-repos">Repositories</h2>
       <label class="field"><span class="lbl">Vergleichen nach</span><select id="repo-sort">
@@ -312,7 +322,7 @@ ${CHART_JS}
     const p = new URLSearchParams(location.search);
     const raw = p.get('period');
     const period = raw === null ? '7d' : PERIODS[raw] ? raw : '30d';
-    return { period, from: p.get('from') || '', to: p.get('to') || '', repo: p.get('repo') || '', model: p.get('model') || '', effort: p.get('effort') || '' };
+    return { period, from: p.get('from') || '', to: p.get('to') || '', repo: p.get('repo') || '', model: p.get('model') || '', effort: p.get('effort') || '', role: p.get('role') || '', complexity: p.get('complexity') || '' };
   }
   const PERIOD_SHORT = { today: 'Heute', '7d': '7 Tage', '30d': '30 Tage' };
   let filter = readFilter();
@@ -322,7 +332,7 @@ ${CHART_JS}
     if (filter.period !== 'custom') { filter.from = ''; filter.to = ''; }
     const url = new URL(location.href);
     url.search = '';
-    for (const key of ['period', 'from', 'to', 'repo', 'model', 'effort']) if (filter[key]) url.searchParams.set(key, filter[key]);
+    for (const key of ['period', 'from', 'to', 'repo', 'model', 'effort', 'role', 'complexity']) if (filter[key]) url.searchParams.set(key, filter[key]);
     history.replaceState(null, '', url);
     loadAll();
   }
@@ -437,6 +447,8 @@ ${CHART_JS}
     if (filter.repo) params.set('repo', filter.repo);
     if (filter.model) params.set('model', filter.model);
     if (filter.effort) params.set('effort', filter.effort);
+    if (filter.role) params.set('role', filter.role);
+    if (filter.complexity) params.set('complexity', filter.complexity);
     try {
       if (r.from && to && r.from >= to) throw new Error('Der Zeitraum beginnt in der Zukunft.');
       const res = await fetch('/api/v1/history/analytics?' + params, { cache: 'no-store', signal: controller.signal });
@@ -470,7 +482,7 @@ ${CHART_JS}
       parts.push(el('span', { hour: 'stündliche', day: 'tägliche', week: 'wöchentliche', month: 'monatliche' }[data.period.granularity] + ' Balken', 'meta'));
       if (data.previous) parts.push(el('span', 'verglichen mit ' + fmtDay(new Date(data.previous.from)) + ' → ' + fmtDay(new Date(Date.parse(data.previous.to) - 1)), 'meta'));
     }
-    for (const [key, label] of [['repo', 'Repository'], ['model', 'Modell'], ['effort', 'Effort']]) {
+    for (const [key, label] of [['repo', 'Repository'], ['model', 'Modell'], ['effort', 'Effort'], ['role', 'Rolle'], ['complexity', 'Komplexität']]) {
       if (!filter[key]) continue;
       const fc = filterChip(label + ': ' + filter[key] + ' ✕', { pressed: true, onClick: () => setFilter({ [key]: '' }) });
       fc.title = 'Filter „' + label + '“ entfernen';
@@ -491,6 +503,8 @@ ${CHART_JS}
     options($('repo'), d.repositories_available, 'Alle Repositories', filter.repo);
     options($('model'), d.models_available, 'Alle Modelle', filter.model);
     options($('effort'), d.efforts_available, 'Alle Efforts', filter.effort);
+    options($('role'), d.roles_available || [], 'Alle Rollen', filter.role);
+    options($('complexity'), d.complexities_available || [], 'Alle Komplexitäten', filter.complexity);
     $('raw').hidden = !filter.repo;
     $('raw').href = '/api/v1/history/raw?repo=' + encodeURIComponent(filter.repo);
     const problems = [];
@@ -504,12 +518,12 @@ ${CHART_JS}
     renderSummary(d);
     renderBudgetBars(d);
     if (d.totals.runs === 0) {
-      for (const name of ['role-summary', 'activity', 'cost', 'tokens', 'budget', 'compacts', 'models', 'efforts', 'roles', 'tools', 'integrations', 'repos', 'outcomes', 'durations', 'heatmap', 'top', 'attention', 'issues']) setBody(name, noData());
+      for (const name of ['role-summary', 'activity', 'cost', 'tokens', 'budget', 'compacts', 'models', 'efforts', 'roles', 'tools', 'integrations', 'subagent-eval', 'repos', 'outcomes', 'durations', 'heatmap', 'top', 'attention', 'issues']) setBody(name, noData());
       $('issue-count').textContent = '';
       return;
     }
     renderRoleSummary(d);
-    renderActivity(d); renderCost(d); renderTokens(d); renderBudget(d); renderCompacts(d); renderModels(d); renderEfforts(d); renderRoles(d); renderTools(d); renderIntegrations(d); renderRepos(d);
+    renderActivity(d); renderCost(d); renderTokens(d); renderBudget(d); renderCompacts(d); renderModels(d); renderEfforts(d); renderRoles(d); renderTools(d); renderIntegrations(d); renderSubagentEval(d); renderRepos(d);
     renderOutcomes(d); renderDurations(d); renderHeatmap(d); renderTop(d); renderAttention(d); renderIssues(d);
   }
 
@@ -863,6 +877,54 @@ ${CHART_JS}
     ], rows, 'Keine Runs in diesem Zeitraum.');
   }
 
+  /** Mutation score per issue (E3-7): the newest score of a test result; hidden when no result carried one. */
+  function renderMutationScores(section) {
+    const rows = section && Array.isArray(section.mutation_scores) ? section.mutation_scores : [];
+    const body = bodies['mutation-scores'];
+    body.hidden = rows.length === 0;
+    if (rows.length === 0) return;
+    const tbl = el('table'); tbl.id = 'mutation-scores-table';
+    const wrap = el('div', null, 'scroll'); wrap.append(tbl);
+    setBody('mutation-scores', el('h3', 'Mutation Score je Issue', 'lbl'), wrap);
+    table('mutation-scores-table', [
+      { label: 'Issue', className: 'nowrap', render: (r) => r.issue },
+      { label: 'Komplexität', className: 'nowrap', render: (r) => r.complexity || '—' },
+      { label: 'Mutation Score', className: 'num', render: (r) => r.mutation_score + ' %' },
+    ], rows, 'Keine Mutation Scores.');
+  }
+
+  /** Subagent evaluation per role × model (E0-9), with a JSON export of the section and the active filters. */
+  function renderSubagentEval(d) {
+    const section = d.subagent_evaluation;
+    const link = $('subagent-eval-export');
+    renderMutationScores(section);
+    if (!section || !Array.isArray(section.rows) || section.rows.length === 0) {
+      link.hidden = true;
+      setBody('subagent-eval', noData('Keine Runs für die Subagent-Auswertung.'));
+      return;
+    }
+    const payload = { generated_at: d.generated_at, period: d.period, filter: d.filter, subagent_evaluation: section };
+    link.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(payload, null, 2));
+    link.download = 'subagent-evaluation-' + (d.period.from ? d.period.from.slice(0, 10) : 'all') + '-' + d.period.to.slice(0, 10) + '.json';
+    link.hidden = false;
+    const tbl = el('table'); tbl.id = 'subagent-eval-table';
+    const wrap = el('div', null, 'scroll'); wrap.append(tbl);
+    setBody('subagent-eval', wrap, el('p', section.note, 'note'));
+    const p = (r) => (r === null || r === undefined ? '—' : fmtPct(r));
+    table('subagent-eval-table', [
+      { label: 'Rolle', className: 'nowrap', render: (r) => r.role },
+      { label: 'Modell', className: 'nowrap', render: (r) => r.model },
+      { label: 'Runs', className: 'num', render: (r) => fmtInt(r.runs) },
+      { label: 'Mit Subagent', className: 'num', render: (r) => fmtInt(r.runs_with_subagent) + ' (' + p(r.delegation_rate) + ')' },
+      { label: 'Subagents', render: (r) => r.agents.map((a) => a.agent + ' ×' + fmtInt(a.calls)).join(', ') || '—' },
+      { label: 'Bash Hauptthread Ø / Median / p90', className: 'num', render: (r) => orDash(r.main_bash.avg, (v) => String(v)) + ' / ' + orDash(r.main_bash.p50, (v) => String(v)) + ' / ' + orDash(r.main_bash.p90, (v) => String(v)) },
+      { label: 'Token-Anteil Subagents', className: 'num', render: (r) => p(r.subagent_token_share) },
+      { label: 'Kosten/fertiges Issue', className: 'num', render: (r) => orDash(r.cost_per_finished_issue, fmtUsd) + (r.own_cost_per_finished_issue !== null ? ' (eigene ' + fmtUsd(r.own_cost_per_finished_issue) + ')' : '') + ' · ' + fmtInt(r.finished_issues) + ' fertig' },
+      { label: 'Rückläufer/Issue', className: 'num', render: (r) => r.returns.per_issue + ' (Review ' + fmtInt(r.returns.review_changes_needed) + ', Test ' + fmtInt(r.returns.test_failed) + ')' },
+      { label: 'Findings bestätigt / widerlegt', className: 'num', render: (r) => orDash(r.findings && r.findings.confirmed, fmtInt) + ' / ' + orDash(r.findings && r.findings.refuted, fmtInt) },
+    ], section.rows, 'Keine Runs.');
+  }
+
   /** Runs, tokens, cost, agent time and outcomes by the agent role that served the run. */
   function renderRoles(d) {
     const rows = d.by_role;
@@ -904,17 +966,22 @@ ${CHART_JS}
   function renderTools(d) {
     const t = d.tools;
     if (!t.calls) { setBody('tools', stateBox('empty', 'KEINE TOOL-AUFRUFE', 'Kein Run in diesem Zeitraum hat Tool-Aufrufe geloggt.'), el('p', TOOL_NOTE, 'note')); return; }
+    const subCalls = t.subagent_calls || 0;
     const kv = statList([
       ['Tool-Aufrufe', fmtInt(t.calls)],
+      ['Hauptthread', fmtInt(t.calls - subCalls), subCalls ? 'davon in Subagents: ' + fmtInt(subCalls) : null],
       ['Runs mit Aufrufen', fmtInt(t.runs_with_calls), 'von ' + fmtInt(t.runs) + ' Runs'],
       ['Aufrufe/Run', orDash(t.avg_calls_per_run, (v) => String(v))],
       ['Verschiedene Tools', fmtInt(t.distinct_tools)],
     ]);
     const bars = el('div', null, 'hbars');
-    hbars(bars, t.tools.slice(0, 15).map((r) => ({
+    hbars(bars, t.tools.slice(0, 15).map((r) => {
+      const sub = r.subagent_calls || 0;
+      return {
       label: r.server ? r.server + ' · ' + r.name : r.name, value: r.calls, text: fmtInt(r.calls), sub: fmtPct(r.calls / t.calls),
-      color: r.server ? 'var(--cyan)' : 'var(--green)', tip: [['Aufrufe', fmtInt(r.calls)], ['Runs', fmtInt(r.runs)], ['Tool', r.tool]],
-    })));
+      color: r.server ? 'var(--cyan)' : 'var(--green)', tip: [['Aufrufe', fmtInt(r.calls)], ['Hauptthread', fmtInt(r.calls - sub)], ...(sub ? [['In Subagents', fmtInt(sub)]] : []), ['Runs', fmtInt(r.runs)], ['Tool', r.tool]],
+      };
+    }));
     const nodes = [kv, el('h3', 'Meistgenutzte Tools', 'sub-h'), bars];
     if (t.skills.length) {
       const skills = el('div', null, 'hbars');
@@ -926,7 +993,7 @@ ${CHART_JS}
       hbars(agents, t.agents.slice(0, 10).map((r) => ({ label: r.agent, value: r.calls, text: fmtInt(r.calls), sub: fmtInt(r.runs) + ' Run' + (r.runs === 1 ? '' : 's'), color: 'var(--violet)', tip: [['Gestartet', fmtInt(r.calls) + '×'], ['Runs', fmtInt(r.runs)]] })));
       nodes.push(el('h3', 'Genutzte Subagents', 'sub-h'), agents);
     }
-    nodes.push(el('p', 'Grün: eingebaute Tools, Cyan: MCP-Tools (Server · Tool). Subagents zählen die Aufrufe des Agent-Tools nach Subagent-Typ. ' + TOOL_NOTE, 'note'));
+    nodes.push(el('p', 'Grün: eingebaute Tools, Cyan: MCP-Tools (Server · Tool). Subagents zählen die Aufrufe des Agent-Tools nach Subagent-Typ. Tool-Aufrufe zählen auch die Aufrufe in Subagents; Hauptthread = Gesamt minus Subagent-Aufrufe (nur für Runs mit geloggtem subagent_tool_calls abweichend). ' + TOOL_NOTE, 'note'));
     setBody('tools', ...nodes);
   }
 
@@ -1270,6 +1337,8 @@ ${CHART_JS}
   $('repo').addEventListener('change', () => setFilter({ repo: $('repo').value }));
   $('model').addEventListener('change', () => setFilter({ model: $('model').value }));
   $('effort').addEventListener('change', () => setFilter({ effort: $('effort').value }));
+  $('role').addEventListener('change', () => setFilter({ role: $('role').value }));
+  $('complexity').addEventListener('change', () => setFilter({ complexity: $('complexity').value }));
   $('log-filters').addEventListener('submit', (event) => { event.preventDefault(); loadLogs(); });
   for (const id of ['log-event', 'log-result', 'log-order']) $(id).addEventListener('change', loadLogs);
   $('reload').addEventListener('click', loadAll);

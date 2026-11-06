@@ -45,6 +45,8 @@ export interface ArchivedIssue {
     finished_at: string | null;
     outcome: string | null;
     transcript: string | null;
+    /** Subagents of the run in the API shape; absent in older archives. */
+    subagents?: Array<Record<string, unknown>>;
   }>;
   /** The issue's stage results (see {@link ResultRow}); empty in archives from before the multi-agent pipeline. */
   results: ResultRow[];

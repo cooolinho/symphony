@@ -253,7 +253,9 @@ describe('E3-3 stage: no session', () => {
   it('animates no seat and shows "Keine Session" in all three fields', () => {
     const p = page(team(IDLE));
     for (const sel of ['.ring', '.eq', '.is-playing', '.is-active', '.ui-ring', '.pulse']) assert.equal(p.query(`#stage ${sel}`).length, 0, sel);
-    for (const id of ['stage-now-body', 'stage-session-body', 'stage-subs-body']) assert.ok(txt(p, id).includes('Keine Session'), id);
+    for (const id of ['stage-now-body', 'stage-session-body']) assert.ok(txt(p, id).includes('Keine Session'), id);
+    assert.ok(!txt(p, 'stage-subs-body').includes('Keine Session'));
+    assert.equal(p.query('#stage-subs-body .stage-subagent .ring').length, 0);
   });
 
   it('shows no animation even if the API still says a seat is playing', () => {
@@ -375,7 +377,9 @@ describe('E3-3 stage: round 2 (review fixes)', () => {
   it('shows "Keine Session" in all three fields and animates nothing once the run has ended', () => {
     const p = renderPage(AGENT_HTML, { detail: issueDetail(), team: team(), ended: true }, { url: URL_ });
     for (const sel of ['.ring', '.eq', '.is-playing', '.is-active', '.ui-ring', '.pulse']) assert.equal(p.query(`#stage ${sel}`).length, 0, sel);
-    for (const id of ['stage-now-body', 'stage-session-body', 'stage-subs-body']) assert.ok(txt(p, id).includes('Keine Session'), id);
+    for (const id of ['stage-now-body', 'stage-session-body']) assert.ok(txt(p, id).includes('Keine Session'), id);
+    assert.ok(!txt(p, 'stage-subs-body').includes('Keine Session'));
+    assert.equal(p.query('#stage-subs-body .stage-subagent .ring').length, 0);
   });
 
   it('shows "Keine Session" and animates nothing for an untracked issue', () => {

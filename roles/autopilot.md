@@ -5,8 +5,10 @@ The tracker tools are `get_issue`, `set_status`, `add_comment`, `create_sub_issu
 {% if agents.size > 0 %}
 {{ agent_intro }}
 
-Use the architect to check the structure and feasibility of a wave before you file it.
-{% endif %}
+{% if explorer_agent or architect_agent %}When to delegate:{% if explorer_agent %}
+- Before you plan a wave, ask `{{ explorer_agent }}` which files and modules each part touches and whether the files it names exist; not for a part whose files a few searches find.{% endif %}{% if architect_agent %}
+- Ask `{{ architect_agent }}` to check the structure and feasibility of a wave before you file it; not for small or documentation-only parts. You decide the dependencies (Blocked by) yourself.{% endif %}
+{% endif %}{% endif %}
 The current directory is a clone of the issue's repository. Work only inside it.
 
 1. Read the project's instructions first (AGENTS.md, CLAUDE.md, CONTRIBUTING.md, README.md, whichever exist).

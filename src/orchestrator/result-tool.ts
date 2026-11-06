@@ -22,6 +22,7 @@ import { docsRoles, securityRoles } from '../workflow/validate.ts';
 import { fitCheckOutput } from './guard.ts';
 import { filesOutside } from './changed-files.ts';
 import { docsNeeded, type DocsFacts } from './docs.ts';
+import { pestMutationAvailability, type MutationFacts } from './mutation.ts';
 import { screenshotsMissing, type ScreenshotFacts } from './screenshots.ts';
 import { securityNeeded, type SecurityFacts } from './security.ts';
 import { refactoringGoals, type PersistedResult, type StageHistory } from './stage-history.ts';
@@ -112,6 +113,11 @@ export interface ResultToolParams {
    * result is accepted. Without it nothing is checked.
    */
   screenshots?: ScreenshotFacts | null;
+  /**
+   * For a test engineer's `passed` on an L/XL issue: where to look up whether Pest mutation testing is available (see
+   * `pestMutationAvailability`); then the result needs a `mutation_score` or a `mutation_problem`. Without it nothing is checked.
+   */
+  mutation?: MutationFacts | null;
   config: Pick<ServiceConfig, 'tracker' | 'roles' | 'pipeline'>;
   /** The board's columns in board order; null when the tracker does not list them. */
   boardColumns: readonly string[] | null;
@@ -251,8 +257,15 @@ function resultContext(issue: Issue, role: RoleConfig, history: Partial<Pick<Sta
   const kind = role.result;
   return {
     refactoringGoals: kind === 'review' && type === 'refactor' ? refactoringGoals(history) : [],
+    testEvidence: kind === 'test' && needsTestEvidence(issue),
     split: { complexity, subIssue: isSubIssue(issue), maxSubIssues: role.maxSubIssues },
   };
+}
+
+/** L/XL issues that are not refactors owe RED-at-base and mutation evidence (a refactor writes characterization tests, GREEN at base). */
+function needsTestEvidence(issue: Issue): boolean {
+  const { type, complexity } = classify(issue.labels);
+  return (complexity === 'L' || complexity === 'XL') && type !== 'refactor';
 }
 
 /** The conditions of one report: the configured flags plus what was looked up for this call. */
@@ -430,6 +443,25 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
         '(`symphony-screenshot --check` tests the browser), open the PNG with the Read tool to check it, commit it under the screenshot path, ' +
         'push, embed it in the pull request description by commit SHA, and report again. "No browser" and "no frontend build" are not ' +
         'reasons to skip them. If a step really fails, report again with `screenshots_problem`: the step that failed and its exact error message.',
+    );
+  };
+
+  /** The refusal for a passed L/XL test result without `mutation_score` and `mutation_problem` where Pest mutation testing is available. */
+  const mutationViolation = async (args: Record<string, unknown>): Promise<ToolResult | null> => {
+    const facts = params.mutation;
+    if (facts === undefined || facts === null || kind !== 'test' || args.verdict !== 'passed') return null;
+    if (!needsTestEvidence(params.issue())) return null;
+    if (args.mutation_score !== undefined && args.mutation_score !== null) return null;
+    if (typeof args.mutation_problem === 'string' && args.mutation_problem.trim() !== '') return null;
+    const availability = await pestMutationAvailability(facts);
+    if (!availability.available) return null;
+    return fail(
+      'invalid_result',
+      `The ${kind} result is invalid: Pest mutation testing is available in the Laravel app \`${availability.app}\` (Pest ${availability.pest}, ${availability.driver}), ` +
+        'so an L/XL test result needs `mutation_score` and `mutation_command`, or `mutation_problem`. Nothing was recorded. Run ' +
+        `\`vendor/bin/pest --mutate --covered-only\` over the changed classes (${availability.driver === 'xdebug' ? 'with `XDEBUG_MODE=coverage`, ' : ''}` +
+        'in the app directory), report the percentage as `mutation_score` and the call as `mutation_command`, and report again. If the run really ' +
+        'fails, report again with `mutation_problem`: the step that failed and its exact error message.',
     );
   };
 
@@ -620,7 +652,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       if (recorded !== null || !role.readOnly) return null;
       return plan(args, looked.get(args)).ok ? (checkFailedRoute({ role, history: params.history, config: params.config })?.column ?? null) : null;
     },
-    precheck: (args, context) => queue.run(async () => (await pathViolation(args)) ?? (await screenshotViolation(args)) ?? (await splitViolation(args, context))),
+    precheck: (args, context) => queue.run(async () => (await pathViolation(args)) ?? (await screenshotViolation(args)) ?? (await mutationViolation(args)) ?? (await splitViolation(args, context))),
     execute: (args, context) => queue.run(() => record(args, context)),
   };
 }

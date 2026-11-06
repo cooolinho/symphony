@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import { contextWindowSuffix } from '../src/agent/model-name.ts';
 import { contextWindowFor, costOf, estimateCost, parsePricing, priceFor, PricingStore } from '../src/costs/pricing.ts';
-import { computeHistoryStats, HistoryLog, parseCounts, parseHistoryLine, readHistory } from '../src/history/history.ts';
+import { computeHistoryStats, HistoryLog, parseCounts, parseHistoryLine, parseSubagents, readHistory } from '../src/history/history.ts';
 import { Logger } from '../src/log.ts';
 import { tempDir } from './helpers.ts';
 
@@ -124,22 +124,150 @@ describe('repository history', () => {
     const { log } = history();
     log.runFinished(finish('acme/app#1', 'r1', '2026-10-04T08:01:00Z', {
       toolCalls: { Bash: 3, 'mcp__laravel-boost__search-docs': 2 },
+      subagentToolCalls: { Bash: 11, SubagentHandback: 1 },
       skillCalls: { 'pest-testing': 1, 'symphony:handoff': 1 },
       agentCalls: { 'symphony:laravel-architect': 1 },
       integrations: [{ id: 'laravel-boost', status: 'ready', tools: { 'search-docs': 2 }, skills: { 'pest-testing': 1 } }],
     }));
-    log.runFinished(finish('acme/app#2', 'r2', '2026-10-04T09:01:00Z', { toolCalls: {}, skillCalls: {}, agentCalls: {}, integrations: [] }));
+    log.runFinished(finish('acme/app#2', 'r2', '2026-10-04T09:01:00Z', { toolCalls: {}, subagentToolCalls: {}, skillCalls: {}, agentCalls: {}, integrations: [] }));
     const [first, second] = readHistory(log.dir, 'acme/app').entries.filter((e) => e.event === 'run_finished');
     assert.equal(first?.fields.tool_calls, 'Bash:3,mcp__laravel-boost__search-docs:2');
+    assert.equal(first?.fields.subagent_tool_calls, 'Bash:11,SubagentHandback:1');
+    assert.deepEqual(parseCounts(first?.fields.subagent_tool_calls), { Bash: 11, SubagentHandback: 1 });
     assert.equal(first?.fields.skill_calls, 'pest-testing:1,symphony:handoff:1');
     assert.equal(first?.fields.integrations, 'laravel-boost:ready');
     assert.equal(first?.fields.integration_tools, 'laravel-boost/search-docs:2');
     assert.equal(first?.fields.integration_skills, 'laravel-boost/pest-testing:1');
     assert.deepEqual(parseCounts(first?.fields.skill_calls), { 'pest-testing': 1, 'symphony:handoff': 1 });
     assert.deepEqual(parseCounts(first?.fields.agent_calls), { 'symphony:laravel-architect': 1 });
-    for (const key of ['tool_calls', 'skill_calls', 'agent_calls', 'integrations', 'integration_tools', 'integration_skills']) assert.equal(key in (second?.fields ?? {}), false);
+    for (const key of ['tool_calls', 'subagent_tool_calls', 'skill_calls', 'agent_calls', 'integrations', 'integration_tools', 'integration_skills']) assert.equal(key in (second?.fields ?? {}), false);
     assert.deepEqual(parseCounts(undefined), {});
     assert.deepEqual(parseCounts('broken,:3,x:y,ok:2'), { ok: 2 });
+  });
+
+  it('still parses old log lines whose subagent type is general-purpose', () => {
+    const line = JSON.stringify([{ type: 'general-purpose', description: 'old', status: 'ok', started_at: '2026-01-01T00:00:00.000Z', ended_at: null, duration_ms: 5, context_tokens: null, tokens: 3, tool_uses: 1, models: [] }]);
+    const [parsed] = parseSubagents(line);
+    assert.equal(parsed?.type, 'general-purpose');
+    assert.equal(parsed?.description, 'old');
+  });
+
+  it('logs the subagents of a run as one JSON field and parses them back', () => {
+    const { log } = history();
+    const base = {
+      toolUseId: 't',
+      subagentType: 'symphony:reviewer',
+      description: 'Review: "the diff", then stop',
+      startedAt: new Date('2026-10-04T08:00:00Z'),
+      endedAt: new Date('2026-10-04T08:00:30Z') as Date | null,
+      status: 'ok' as const,
+      tokens: { inputTokens: 5, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 },
+      contextTokens: 900 as number | null,
+      toolUses: 7 as number | null,
+      durationMs: 30000 as number | null,
+      models: ['claude-opus-5-5'],
+    };
+    log.runFinished(finish('acme/app#1', 'r1', '2026-10-04T08:01:00Z', {
+      subagents: [base, { ...base, toolUseId: 'u', status: 'error', reason: 'API error: 529, overloaded', endedAt: null, contextTokens: null, toolUses: null, durationMs: null, models: [] }],
+      subagentStats: { spawned: 2, refused: 1 },
+    }));
+    log.runFinished(finish('acme/app#2', 'r2', '2026-10-04T09:01:00Z', { subagents: [] }));
+    const [first, second] = readHistory(log.dir, 'acme/app').entries.filter((e) => e.event === 'run_finished');
+    const parsed = parseSubagents(first?.fields.subagents);
+    assert.deepEqual(parsed[0], {
+      type: 'symphony:reviewer',
+      description: 'Review: "the diff", then stop',
+      status: 'ok',
+      reason: null,
+      started_at: '2026-10-04T08:00:00.000Z',
+      ended_at: '2026-10-04T08:00:30.000Z',
+      duration_ms: 30000,
+      context_tokens: 900,
+      tokens: 14,
+      tool_uses: 7,
+      models: ['claude-opus-5-5'],
+    });
+    assert.equal(parsed[1]?.status, 'error');
+    assert.equal(parsed[1]?.reason, 'API error: 529, overloaded');
+    assert.equal(parsed[1]?.duration_ms, null);
+    assert.equal(first?.fields.subagent_stats, 'spawned:2,refused:1');
+    assert.deepEqual(parseCounts(first?.fields.subagent_stats), { spawned: 2, refused: 1 });
+    // Older lines and runs without subagents have neither key.
+    for (const key of ['subagents', 'subagent_stats']) assert.equal(key in (second?.fields ?? {}), false);
+    assert.deepEqual(parseSubagents(second?.fields.subagents), []);
+  });
+
+  it('parses subagents tolerantly', () => {
+    assert.deepEqual(parseSubagents(undefined), []);
+    assert.deepEqual(parseSubagents(''), []);
+    assert.deepEqual(parseSubagents('not json'), []);
+    assert.deepEqual(parseSubagents('{"a":1}'), []);
+    const parsed = parseSubagents(JSON.stringify([1, null, { type: 'x' }, { type: 'Explore', status: 'ok', duration_ms: 'soon', models: ['m', 3] }]));
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0]?.duration_ms, null);
+    assert.deepEqual(parsed[0]?.models, ['m']);
+    // A damaged value does not break the rest of the line.
+    const { log } = history();
+    log.runFinished(finish('acme/app#1', 'r1', '2026-10-04T08:01:00Z', { toolCalls: { Bash: 1 } }));
+    const written = fs.readFileSync(log.fileFor('acme/app'), 'utf8').trim();
+    const line = parseHistoryLine(`${written} subagents="[broken"`);
+    assert.equal(line?.fields.tool_calls, 'Bash:1');
+    assert.deepEqual(parseSubagents(line?.fields.subagents), []);
+  });
+
+  it('round-trips awkward descriptions and reasons of subagents through the log line', () => {
+    const { log } = history();
+    const run = (id: string, description: string, reason?: string) => ({
+      toolUseId: id,
+      subagentType: 'Explore',
+      description,
+      startedAt: new Date('2026-10-04T08:00:00Z'),
+      endedAt: new Date('2026-10-04T08:00:10Z'),
+      status: reason === undefined ? ('ok' as const) : ('error' as const),
+      ...(reason !== undefined ? { reason } : {}),
+      tokens: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      contextTokens: null,
+      toolUses: null,
+      durationMs: 10000,
+      models: [],
+    });
+    const awkward = ['two\nlines and a\ttab', 'back\\slash and key=value another=thing', 'ünïcödé ✓ — 日本語', 'event=run_finished fake="x"'];
+    log.runFinished(finish('acme/app#1', 'r1', '2026-10-04T08:01:00Z', { subagents: awkward.map((d, i) => run(`t${i}`, d, i === 1 ? 'a, b: "c"\nd' : undefined)) }));
+    log.runFinished(finish('acme/app#2', 'r2', '2026-10-04T09:01:00Z', { toolCalls: { Bash: 1 } }));
+    const text = fs.readFileSync(log.fileFor('acme/app'), 'utf8').trimEnd().split('\n');
+    assert.equal(text.length, 4, 'one line per event (run_finished and model_usage), whatever the descriptions contain');
+    assert.ok(text.every((l) => l.startsWith('ts=')));
+    const entries = readHistory(log.dir, 'acme/app').entries.filter((e) => e.event === 'run_finished');
+    assert.equal(entries.length, 2);
+    const parsed = parseSubagents(entries[0]?.fields.subagents);
+    assert.deepEqual(parsed.map((p) => p.description), awkward);
+    assert.equal(parsed[1]?.reason, 'a, b: "c"\nd');
+    assert.deepEqual(parsed.map((p) => p.status), ['ok', 'error', 'ok', 'ok']);
+    assert.equal(entries[0]?.fields.outcome, 'handed_off');
+    assert.equal(entries[1]?.fields.tool_calls, 'Bash:1');
+  });
+
+  it('parses a run_finished line from before the subagents field unchanged', () => {
+    const line =
+      'ts=2026-10-04T08:01:00.000Z level=info event=run_finished repo=acme/app issue=acme/app#1 run=r1 outcome=completed tool_calls=Bash:2,Edit:1 agent_calls=Explore:1';
+    const entry = parseHistoryLine(line);
+    assert.equal(entry?.event, 'run_finished');
+    assert.equal(entry?.fields.tool_calls, 'Bash:2,Edit:1');
+    assert.deepEqual(parseCounts(entry?.fields.agent_calls), { Explore: 1 });
+    assert.equal('subagents' in (entry?.fields ?? {}), false);
+    assert.deepEqual(parseSubagents(entry?.fields.subagents), []);
+    assert.deepEqual(parseCounts(entry?.fields.subagent_stats), {});
+  });
+
+  it('writes no subagent_stats key for empty stats', () => {
+    const { log } = history();
+    log.runFinished(finish('acme/app#1', 'r1', '2026-10-04T08:01:00Z', { subagentStats: {}, subagents: [] }));
+    log.runFinished(finish('acme/app#2', 'r2', '2026-10-04T09:01:00Z', { subagentStats: null }));
+    const entries = readHistory(log.dir, 'acme/app').entries.filter((e) => e.event === 'run_finished');
+    for (const entry of entries) {
+      assert.equal('subagent_stats' in entry.fields, false);
+      assert.equal('subagents' in entry.fields, false);
+    }
   });
 
   it('records finished entry checks and denied transitions', () => {

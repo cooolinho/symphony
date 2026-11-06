@@ -109,6 +109,15 @@ const caseSchema = z.object({
   criterion: text().describe('Acceptance criterion the case covers'),
   test: text(NAME_MAX).describe('Test name or file'),
   status: z.enum(CASE_STATUSES),
+  red_at_base: z
+    .object({
+      command: text().describe('The command that showed the case failing at the base commit'),
+      output: text(1000).optional().describe('Excerpt of its output'),
+    })
+    .strict()
+    .optional()
+    .describe('L/XL: proof that a new case was RED at the base commit'),
+  existing: z.boolean().optional().describe('true = the test was already on the base commit; it needs no red_at_base'),
 });
 
 /** Fields every result shares besides `schema` and `kind`; the agent fills them. */
@@ -159,6 +168,9 @@ const kindShapes = {
     cases: list(caseSchema).describe('One entry per acceptance criterion checked; "failed" needs a failed case'),
     commands: list(text()).describe('Commands that ran'),
     uncovered_criteria: list(text()).describe('Acceptance criteria without a test'),
+    mutation_score: z.number().min(0).max(100).optional().describe('Percent from pest --mutate --covered-only over the changed classes; needs mutation_command'),
+    mutation_command: text().optional().describe('The pest --mutate --covered-only call that produced mutation_score'),
+    mutation_problem: text().optional().describe('Pest mutation testing is available, but the run failed: the step and the error'),
   },
   review: {
     findings: list(findingSchema).describe('"approved" allows only minor and nit findings'),
@@ -320,6 +332,11 @@ export interface ResultContext {
    * back from its marker) switches the rules about the issue and the role off; "at least two packages" still applies.
    */
   split?: SplitContext;
+  /**
+   * True for a test result of an L/XL issue that is not a refactor: every new case then needs `red_at_base`. Absent
+   * (a unit test, a result read back from its marker) or false switches the rule off.
+   */
+  testEvidence?: boolean;
 }
 
 /** The issue and the role a `split` design is reported for. */
@@ -384,6 +401,20 @@ export function consistencyProblems(result: StageResult, context: ResultContext 
       }
       if (result.verdict === 'passed' && failed > 0) {
         problems.push(`verdict "passed" contradicts ${failed} failed case(s): use "failed" or fix the tests first`);
+      }
+      if (result.mutation_score !== undefined && (result.mutation_command === undefined || result.mutation_command.trim() === '')) {
+        problems.push('`mutation_score` needs `mutation_command` (the pest --mutate --covered-only call)');
+      }
+      if (context.testEvidence === true && result.verdict !== 'blocked') {
+        const unproven = result.cases
+          .map((c, i) => ({ c, i }))
+          .filter(({ c }) => c.status !== 'skipped' && c.existing !== true && c.red_at_base === undefined);
+        if (unproven.length > 0) {
+          const named = unproven.map(({ c, i }) => `cases[${i}] "${inline(c.criterion)}" (${inline(c.test)})`).join('; ');
+          problems.push(
+            `an L/XL test result needs \`red_at_base\` (the command that failed at the base commit, with an output excerpt) for every new case; missing: ${named}. Mark a test that was already on the base commit with \`existing: true\``,
+          );
+        }
       }
       break;
     }
@@ -662,10 +693,18 @@ function kindSections(result: StageResult): (string | null)[] {
       return [
         bullets(
           'Cases',
-          result.cases.map((c) => `${CASE_ICONS[c.status]} ${inline(c.criterion)} — ${code(c.test)}`),
+          result.cases.map(
+            (c) =>
+              `${CASE_ICONS[c.status]} ${inline(c.criterion)} — ${code(c.test)}` +
+              (c.red_at_base !== undefined ? ` · RED at base: ${code(c.red_at_base.command)}` : c.existing === true ? ' · existing test' : ''),
+          ),
         ),
         bullets('Commands', result.commands.map(code)),
         bullets('Uncovered criteria', result.uncovered_criteria.map(inline)),
+        result.mutation_score === undefined
+          ? null
+          : `**Mutation score:** ${result.mutation_score} %${result.mutation_command === undefined ? '' : ` — ${code(result.mutation_command)}`}`,
+        result.mutation_problem === undefined ? null : `**Mutation testing problem**\n${block(result.mutation_problem)}`,
       ];
     case 'review':
       return [findingLines(result.findings, result.omitted_findings), bullets('Checked', result.checked.map(inline)), bullets('Confirmed goals', result.confirmed_goals.map(inline))];

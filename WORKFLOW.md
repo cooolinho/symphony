@@ -160,8 +160,8 @@ claude:
   # max_budget_usd: 5                        # optional cost cap per agent session
 
 roles:
-  # agents: plugin subagents (.claude/agents) the role may start; unset = all. Read-only roles only get read-only
-  # ones, and laravel-* subagents only exist in workspaces with a Laravel app.
+  # agents: plugin subagents (.claude/agents) the role may start; unset = all (the default for custom workflows; every role
+  # below lists its agents explicitly, [] = none). Read-only roles only get read-only ones, and the framework-neutral `explorer` and `design-critic` exist everywhere, laravel-* subagents only exist in workspaces with a Laravel app.
   # brain: which brain tools the role gets (off = none, read = search/read/list/vitals, write = also write/append); only with
   # brain.enabled; unset = off. brain_approved_writes: false (only with brain: write) makes brain_write/brain_append reject
   # every approved note and every status: approved; unset = true (no extra gate).
@@ -187,7 +187,7 @@ roles:
     may_move_to: [Design, In progress, Blocked]
     model_label: ignore                      # sonnet, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # medium, whatever the issue's Effort: label says
-    agents: [laravel-architect]
+    agents: []                               # reads the issue and the code itself; the architect persona only repeated its role
     brain: write
     claude: { model: sonnet, effort: medium }
   # The architect decides on the approach of larger changes before the developer starts: a short read-only session that
@@ -211,7 +211,7 @@ roles:
     on_result: { ready: In progress, split: Agent review, blocked: Blocked }
     may_move_to: [In progress, Agent review, Blocked]
     model_label: ignore                      # opus, fable at complexity L and XL, whatever the issue's Model: label picks
-    agents: [laravel-architect]
+    agents: [explorer, design-critic]       # explorers map the code; at L/XL the opus design-critic checks the fable draft once
     brain: write
     claude: { model: opus, effort: high, model_by_complexity: { L: fable, XL: fable } }   # a short session: thinking pays off here
   developer:
@@ -221,7 +221,7 @@ roles:
       done: ${SYMPHONY_AFTER_IMPLEMENTATION:-Agent review}   # Agent review, or Testing to run the test engineer first (bug, feature and refactor issues: pipeline.profiles)
       blocked: Blocked
     may_move_to: [In progress, Testing, Documentation, Agent review, Blocked]
-    agents: [laravel-architect, laravel-database-engineer, laravel-filament-developer, laravel-test-engineer, laravel-code-reviewer]
+    agents: [explorer, laravel-architect, laravel-database-engineer, laravel-filament-developer, laravel-test-engineer, laravel-code-reviewer]
     brain: read
     # claude.model (CLAUDE_MODEL), opus at complexity L and XL, which implement the architect's design; a Model: label
     # on the issue wins, and an Effort: label sets the effort.
@@ -237,7 +237,7 @@ roles:
     may_move_to: [Documentation, Agent review, In progress, Blocked]
     model_label: ignore                      # sonnet, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # high, whatever the issue's Effort: label says
-    agents: [laravel-test-engineer]
+    agents: [test-designer]                  # at complexity L/XL writes the tests from the criteria and the public interface only (soft boundary: the brief)
     brain: read
     claude: { model: sonnet, effort: high }
   # The docs agent is conditional: Symphony sends a finished implementation (or passed tests) here only when it needs
@@ -251,6 +251,7 @@ roles:
     result: docs
     on_result: { done: Agent review, not_needed: Agent review, blocked: Blocked }
     may_move_to: [Agent review, Blocked]
+    agents: []                               # edits docs only; none of the laravel-* personas
     model_label: ignore                      # haiku, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # medium, whatever the issue's Effort: label says
     claude: { model: haiku, effort: medium }
@@ -266,7 +267,7 @@ roles:
     may_move_to: [Security review, In review, In progress, Blocked]
     model_label: ignore                      # opus, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # high, whatever the issue's Effort: label says: the review keeps a cheaper developer safe
-    agents: [laravel-code-reviewer]
+    agents: [convention-lens, bug-lens, finding-verifier]   # lens review at complexity L/XL only (roles/reviewer.md); none at S/M
     brain: write
     claude: { model: opus, effort: high }
   # The security auditor is conditional: Symphony sends an approved issue here only when it needs the audit (a `security`
@@ -288,7 +289,7 @@ roles:
     may_move_to: [In review, In progress, Blocked]
     model_label: ignore                      # opus, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # high, whatever the issue's Effort: label says
-    agents: [laravel-code-reviewer]
+    agents: []                               # reads the diff itself; the reviewer persona only repeated its role
     brain: read
     claude: { model: opus, effort: high }
   auditor:
@@ -299,7 +300,7 @@ roles:
     max_sub_issues: ${SYMPHONY_AUDITOR_MAX_SUB_ISSUES:-20}  # open sub-issues at once; also what grants the create_sub_issue tool
     max_turns: 2
     may_move_to: [In progress, In review, Blocked]
-    agents: [laravel-architect, laravel-code-reviewer]
+    agents: [explorer, laravel-architect, laravel-code-reviewer]
     claude: { model: fable, max_budget_usd: 15 }
   autopilot:
     commands: [auto-code]                                   # served only for issues whose description starts with /auto-code
@@ -311,7 +312,7 @@ roles:
     wait_for_sub_issues: true                               # the epic runs again only once all sub-issues of its wave are closed
     max_turns: 2
     may_move_to: [In progress, In review, Blocked]
-    agents: [laravel-architect]
+    agents: [explorer, laravel-architect]
     claude: { model: fable, max_budget_usd: 10 }
   analyst:
     commands: [concept]                                     # served only for issues whose description starts with /concept
@@ -321,7 +322,7 @@ roles:
     max_sub_issues: ${SYMPHONY_ANALYST_MAX_SUB_ISSUES:-60}  # open epics and sub-issues under the concept issue at once (the whole tree)
     max_turns: 3
     may_move_to: [In progress, In review, Blocked]
-    agents: [laravel-architect]
+    agents: [explorer, laravel-architect]
     claude: { model: fable, effort: high, max_budget_usd: 20 }
   planner:
     commands: [plan]                                        # served only for issues whose description starts with /plan
@@ -331,7 +332,7 @@ roles:
     max_sub_issues: ${SYMPHONY_PLANNER_MAX_SUB_ISSUES:-30}  # open sub-issues under the plan issue at once
     max_turns: 3
     may_move_to: [In progress, In review, Blocked]
-    agents: [laravel-architect]
+    agents: [explorer, laravel-architect]
     claude: { model: fable, effort: high, max_budget_usd: 20 }
   brain-gardener:
     commands: [brain-garden]                                # served only for issues whose description starts with /brain-garden
@@ -342,6 +343,7 @@ roles:
     may_move_to: [In progress, In review, Blocked]
     brain: write
     brain_approved_writes: false                            # never writes an approved note, never sets status approved
+    agents: []                                              # works on the vault, no laravel-* personas
     claude: { model: opus, max_budget_usd: 5, disallowed_tools: [mcp__tracker__open_pull_request] }
 
 pipeline:
@@ -456,8 +458,8 @@ brain:                                       # knowledge vault: one vault for al
 # Only roles with brain: read or write get the brain tools (see roles:).
 # Existing files and folders are never overwritten; .obsidian/ is never touched. Changes apply after a restart.
 ---
-{% capture branch %}{% if issue.branch_name %}{{ issue.branch_name }}{% else %}symphony/issue-{{ issue.native_ref.number }}{% endif %}{% endcapture %}{% assign base = issue.native_ref.base_branch %}{% assign splittable = false %}{% if issue.complexity == "XL" and issue.native_ref.parent == nil %}{% assign splittable = true %}{% endif %}{% assign integration = false %}{% if issue.native_ref.sub_issues.size > 0 and results.implementation == nil %}{% assign integration = true %}{% endif %}{% capture agent_list %}{% for agent in agents %}
-- `{{ agent.name }}`: {{ agent.description }}{% endfor %}{% endcapture %}{% capture agent_intro %}Subagents you may start with the Agent tool (`subagent_type` is the name). They are optional: each one works in its own context and costs tokens, so use them where they pay off. You stay responsible for their results; check them before you rely on them.{{ agent_list }}{% endcapture %}{% capture analysis_block %}{% if results.analysis %}
+{% capture branch %}{% if issue.branch_name %}{{ issue.branch_name }}{% else %}symphony/issue-{{ issue.native_ref.number }}{% endif %}{% endcapture %}{% assign base = issue.native_ref.base_branch %}{% assign splittable = false %}{% if issue.complexity == "XL" and issue.native_ref.parent == nil %}{% assign splittable = true %}{% endif %}{% assign integration = false %}{% if issue.native_ref.sub_issues.size > 0 and results.implementation == nil %}{% assign integration = true %}{% endif %}{% assign large_issue = false %}{% if issue.complexity == "L" or issue.complexity == "XL" %}{% assign large_issue = true %}{% endif %}{% capture agent_list %}{% for agent in agents %}{% assign short = agent.name | split: ":" | last %}{% if short != "design-critic" or large_issue %}
+- `{{ agent.name }}`: {{ agent.description }}{% endif %}{% endfor %}{% endcapture %}{% assign explorer_agent = nil %}{% assign architect_agent = nil %}{% assign design_critic_agent = nil %}{% assign reviewer_agent = nil %}{% assign listed_agents = 0 %}{% assign specialists = "" %}{% for agent in agents %}{% assign short = agent.name | split: ":" | last %}{% if short != "design-critic" or large_issue %}{% assign listed_agents = listed_agents | plus: 1 %}{% endif %}{% if short == "explorer" %}{% assign explorer_agent = agent.name %}{% elsif short == "design-critic" %}{% if large_issue %}{% assign design_critic_agent = agent.name %}{% endif %}{% elsif short == "laravel-architect" %}{% assign architect_agent = agent.name %}{% elsif short == "laravel-code-reviewer" %}{% assign reviewer_agent = agent.name %}{% elsif short == "laravel-database-engineer" or short == "laravel-filament-developer" or short == "laravel-test-engineer" %}{% capture quoted %}`{{ agent.name }}`{% endcapture %}{% if specialists == "" %}{% assign specialists = quoted %}{% else %}{% assign specialists = specialists | append: ", " | append: quoted %}{% endif %}{% endif %}{% endfor %}{% capture agent_intro %}Subagents you can start with the Agent tool; always pass the name as `subagent_type`. Delegate where a trigger applies (the agent's description and the occasions of your role name them), never for what a few tool calls finish. A subagent sees neither this prompt nor the issue, only your brief, so every brief contains: the issue (identifier, title, the part of the description it needs) and its acceptance criteria, the absolute workspace path (run `pwd`), the task and its boundaries (what to look at, what to leave alone), the output format with `file:line` for every claim, file lists instead of file contents, and a return of about 1,000–2,000 tokens. Treat its findings as candidates: read the cited lines yourself before you rely on them and discard any claim without `file:line`. You stay responsible for the result.{{ agent_list }}{% endcapture %}{% capture analysis_block %}{% if results.analysis %}
 ## Analysis of the issue analyst
 
 A read-only analyst examined the issue before the implementation{% if results.analysis.type or results.analysis.complexity %} (type: {{ results.analysis.type | default: "n/a" }}, complexity: {{ results.analysis.complexity | default: "n/a" }}){% endif %}. Use it as input, but check it against the code: where it contradicts the issue description, the issue wins and you say so.

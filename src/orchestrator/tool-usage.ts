@@ -6,6 +6,8 @@ export interface ToolUsage {
   skills: Record<string, number>;
   /** By `subagent_type`, e.g. `symphony:laravel-architect` or `general-purpose`. */
   agents: Record<string, number>;
+  /** Calls made inside subagents (`parent_tool_use_id` set), by tool; a subset of `tools`, which keeps the total. */
+  subagentTools: Record<string, number>;
 }
 
 /** Calls of one run attributed to an integration. */
@@ -18,17 +20,18 @@ export interface IntegrationUsage {
 }
 
 export function emptyToolUsage(): ToolUsage {
-  return { tools: {}, skills: {}, agents: {} };
+  return { tools: {}, skills: {}, agents: {}, subagentTools: {} };
 }
 
-export function countToolUse(usage: ToolUsage, tool: string, skill: string | null, agent: string | null = null): void {
+export function countToolUse(usage: ToolUsage, tool: string, skill: string | null, agent: string | null = null, subagent = false): void {
   usage.tools[tool] = (usage.tools[tool] ?? 0) + 1;
   if (skill !== null) usage.skills[skill] = (usage.skills[skill] ?? 0) + 1;
   if (agent !== null) usage.agents[agent] = (usage.agents[agent] ?? 0) + 1;
+  if (subagent) usage.subagentTools[tool] = (usage.subagentTools[tool] ?? 0) + 1;
 }
 
 export function copyToolUsage(usage: ToolUsage): ToolUsage {
-  return { tools: { ...usage.tools }, skills: { ...usage.skills }, agents: { ...usage.agents } };
+  return { tools: { ...usage.tools }, skills: { ...usage.skills }, agents: { ...usage.agents }, subagentTools: { ...usage.subagentTools } };
 }
 
 /** `mcp__<server>__<tool>` → server and tool; null for built-in tools. */

@@ -15,6 +15,8 @@ export interface ContextSnapshot {
   percent: number | null;
   /** Highest percent of the session so far; null while none could be computed. */
   peakPercent: number | null;
+  /** Highest token count of a single call of the session so far; the base of the peak against a reported window. */
+  peakTokens?: number;
   /** Automatic compactions (`compact_boundary`) so far. */
   compacts: number;
   /** Tokens before the latest compaction; null while there was none. */
@@ -39,8 +41,18 @@ export interface SubagentRun {
   startedAt: Date;
   endedAt: Date | null;
   status: SubagentStatus;
-  /** Tokens of the subagent's own model calls so far. */
+  /** Billed tokens of the subagent's own model calls so far: input + output + cache read + cache write. */
   tokens: ModelTokenUsage;
+  /** Claude Code's `usage.total_tokens`: the context of the subagent's latest request; null until a `task_*` message reports it. */
+  contextTokens: number | null;
+  /** Tool calls of the subagent as Claude Code counts them; null until reported. */
+  toolUses: number | null;
+  /** Duration as Claude Code measures it, in milliseconds; null until reported. */
+  durationMs: number | null;
+  /** Models of the subagent's own calls, in first-seen order, without duplicates. */
+  models: string[];
+  /** Short reason of an `error` ending (API error text, task failure, error result); null otherwise. */
+  reason?: string | null;
 }
 
 /** Structured update sent from a live agent session to the orchestrator (spec 10.4). */
@@ -163,7 +175,7 @@ export interface IntegrationPart {
   /** Part status as the integration names it (e.g. ready, failed, skipped, absent, off). */
   status: string;
   /** Why the part is not ready; null otherwise. */
-  reason: string | null;
+  reason?: string | null;
   /** Versions of the relevant packages, e.g. `Laravel v13.1.0 · Boost v2.0.1`. */
   versions: string | null;
   /** Where the agent gets the guidelines from, e.g. `CLAUDE.md (loaded by Claude Code)`; null = none. */
@@ -192,6 +204,12 @@ export interface IntegrationReport {
   skills: string[];
 }
 
+/** What a `symphony:*` subagent is told about the session it runs in. */
+export interface SubagentContext {
+  role: string;
+  acceptanceCriteria: string[];
+}
+
 export interface StartSessionParams {
   /** Absolute per-issue workspace path; the agent process runs here. */
   cwd: string;
@@ -215,6 +233,8 @@ export interface StartSessionParams {
   policy?: SessionPolicy;
   /** Subagents (`subagent_type`, e.g. `symphony:laravel-architect`) the session must not start. */
   deniedAgents?: string[];
+  /** Role name and refined acceptance criteria for the SubagentStart hook; absent = no role line, no criteria. */
+  subagentContext?: SubagentContext;
   /** Upper bound for one call of a Symphony tool (it may run an entry check); absent = the agent's default. */
   toolTimeoutMs?: number;
   /** Context window (tokens) of a model id from the pricing table; null when unknown. Read on every call. */

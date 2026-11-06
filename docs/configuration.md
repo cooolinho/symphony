@@ -347,7 +347,7 @@ info log line. Each Symphony instance has its own override; there is no shared b
 | `append_system_prompt` | none | Extra text appended to Claude Code's system prompt. |
 | `max_budget_usd` | none | Cost cap per agent session; the turn fails when it is exceeded. |
 | `persist_session` | `true` | Keep transcripts in `~/.claude/projects` so a session can be inspected with `claude --resume <id>`. |
-| `env` | `{}` | Extra environment variables for the agent process. They win over Symphony's defaults, e.g. `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "0"` allows background tasks again ([why they are off](agent-claude.md#subagents)). |
+| `env` | `{}` | Extra environment variables for the agent process. They win over Symphony's defaults, e.g. `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "0"` allows background tasks again, `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "2"` allows nested subagents ([why they are off](agent-claude.md#subagents)). |
 | `executable` | bundled CLI | Path to another Claude Code executable. |
 | `plugins` | `[]` | Local Claude Code plugin directories loaded into every session (skills, subagents, commands, hooks), relative to `WORKFLOW.md`. The shipped `WORKFLOW.md` loads `./.claude`, Symphony's own toolbox; its skills are named `symphony:<skill>`. A missing directory blocks dispatch. |
 | `skills` | Claude Code default | `all` enables every discovered skill (the repository's, a plugin's, Laravel Boost's) and the Skill tool; a list enables only those names (`testing-best-practices`, `symphony:handoff`). |
@@ -459,7 +459,7 @@ roles:
 | `wait_for_sub_issues` | `false` | `true` dispatches the role's issues only while none of their sub-issues is open. See [Waves](#waves-wait_for_sub_issues). |
 | `brain_approved_writes` | `true` | Boolean, only with `brain: write`. `false` makes `brain_write` and `brain_append` reject an approved note and any `status: approved` (reason `approved_readonly` / `approved_status`); `true` adds no gate (approved notes stay read-only for agents by the general rule). The shipped `brain-gardener` sets `false`. See [brain.md](brain.md#gardener). |
 | `brain` | `off` | String, one of `off`, `read`, `write`. Brain tools of the role's sessions: `off` none, `read` only `brain_search`, `brain_read`, `brain_list`, `brain_vitals`, `write` also `brain_write` and `brain_append`. Only has an effect with [`brain.enabled`](#brain); without it no role gets brain tools. Roles are never given the vault as a directory. The shipped `WORKFLOW.md` sets `write` for `issue-analyst`, `architect`, `reviewer` and `brain-gardener`, `read` for `developer`, `test-engineer` and `security-auditor`; `docs` and the command roles stay `off`. An existing `WORKFLOW.md` without the field gives no role brain tools anymore. Roles with `read` or `write` get the prompt section `roles/brain.md`. See [brain.md](brain.md#role-switch). |
-| `agents` | all | Plugin subagents (`agents/<name>.md` in [`claude.plugins`](#claude), names without the plugin prefix, e.g. `[laravel-code-reviewer]`) the role may start; `[]` allows none. See [Subagents per role](#subagents-per-role). |
+| `agents` | all (the shipped roles list theirs explicitly) | Plugin subagents (`agents/<name>.md` in [`claude.plugins`](#claude), names without the plugin prefix, e.g. `[laravel-code-reviewer]`) the role may start; `[]` allows none. See [Subagents per role](#subagents-per-role). |
 | `claude` | `{}` | Overrides of `model`, `effort`, `allowed_tools`, `disallowed_tools`, `append_system_prompt`, `max_budget_usd` (same meaning as in [`claude`](#claude)). |
 
 #### Result-driven transitions
@@ -571,7 +571,7 @@ roles:
     on_result: { ready: next, needs_info: Blocked }
     may_move_to: [Design, In progress, Blocked]
     model_label: ignore               # sonnet, whatever the issue's Model: label picks for the developer
-    agents: [laravel-architect]
+    agents: []                        # reads the code itself; no laravel-* persona
     claude: { model: sonnet }
 ```
 
@@ -612,14 +612,14 @@ roles:
     on_result: { ready: In progress, split: Agent review, blocked: Blocked }
     may_move_to: [In progress, Agent review, Blocked]
     model_label: ignore               # opus, whatever the issue's Model: label picks for the developer
-    agents: [laravel-architect]
+    agents: [explorer, design-critic]
     claude: { model: opus }
 ```
 
 - The architect reads the code and reports a [`design` result](results.md#kinds): the `options` it compared, the
   `decision`, the `components` and `interfaces` of the change, `migrations` and `compatibility`. `ready` needs a decision
   and at least one component and one interface (`report_result` refuses a generic design with `invalid_result`);
-  `blocked` needs a blocker and moves the issue to `Blocked`. It may start the `laravel-architect` subagent.
+  `blocked` needs a blocker and moves the issue to `Blocked`. Explorers map the code. At complexity L/XL (the architect runs on fable) it starts the read-only `design-critic` (`model: opus`, `maxTurns: 40`) once on its finished draft, before `report_result`; at S/M (opus) the prompt neither lists nor names it (a soft gate: it stays allowed in the session). The architect no longer uses `laravel-architect`: a critique by the same model with a design persona.
 - **The developer implements the design.** `ready` moves the issue to `In progress`, and the developer's prompt contains
   the newest design (`results.design`, see [Prompt template](#prompt-template)). Where the design does not fit the code,
   the developer deviates and says so in `plan_deviations`.
@@ -712,7 +712,7 @@ roles:
     on_result: { passed: Agent review, failed: In progress, blocked: Blocked }
     may_move_to: [Agent review, In progress, Blocked]
     model_label: ignore               # sonnet, whatever the issue's Model: label picks for the developer
-    agents: [laravel-test-engineer]
+    agents: [test-designer]           # at complexity L/XL writes the tests from the criteria and the public interface only
     claude: { model: sonnet }
 pipeline:
   max_test_rounds: 2
@@ -722,6 +722,20 @@ checks:
     Testing: bash "$SYMPHONY_WORKFLOW_DIR/checks/laravel.sh"
 ```
 
+- **Test designer at L/XL.** On a feature or bug issue of complexity L or XL (not a refactoring, whose tests must be green
+  at the base commit) the test engineer delegates the writing of the tests to the framework-neutral `test-designer`
+  subagent (`symphony:test-designer`, sonnet, `maxTurns: 50`), one sequential call per group of acceptance criteria. The
+  brief holds the criteria, the public interface (`results.design.interfaces` when the architect ran, else described by
+  the test engineer), the absolute workspace path, the base commit (`git merge-base HEAD origin/<base>`), the test
+  paths, the test file names and the test command. It holds no diff, no changed files and no implementation paths
+  beyond the public interface, so the tests are independent of the implementation (the strongest evidence in
+  [concepts/subagents.md](concepts/subagents.md)). The designer shows its tests RED in a detached worktree of the base
+  commit and GREEN on the branch; the test engineer puts both commands with an output excerpt into `commands`. The
+  designer runs in the same session, so `pipeline.test_paths` and the `invalid_result` check cover its writes too.
+  **The boundary is soft:** it rests on the brief alone. Nothing stops the designer from reading the diff; an enforced
+  read boundary (a `PreToolUse` hook, open question 11) is not built, and neither is RED-at-base evidence in the result
+  contract. At complexity S and M, without a complexity label, or for a refactoring the prompt is unchanged and does
+  not mention the designer. A custom workflow without `test-designer` in the role's `agents` gets no delegation.
 - **On for bug, feature and refactor issues, off by default for the rest.** The shipped
   `pipeline.profiles.{bugfix,feature,refactor}.on_result` send the developer's `done` of a bug, feature or refactor issue
   to `Testing`. For every other issue the developer's `done` leads to `Agent review`
@@ -808,7 +822,7 @@ roles:
     on_check_failed: In progress
     may_move_to: [In review, In progress, Blocked]
     model_label: ignore
-    agents: [laravel-code-reviewer]
+    agents: []                        # reads the diff itself; no laravel-* persona
     claude: { model: opus }
 pipeline:
   max_security_rounds: 2
@@ -931,11 +945,11 @@ The shipped `WORKFLOW.md` defines the `auditor` role for `/refactoring`, the `au
 
 #### Subagents per role
 
-The plugins in `claude.plugins` ship subagents (`agents/<name>.md`; Symphony's toolbox ships the `laravel-*` ones, see
+The plugins in `claude.plugins` ship subagents (`agents/<name>.md`; Symphony's toolbox ships the `laravel-*` ones and the framework-neutral `explorer`, `design-critic`, `test-designer`, `convention-lens`, `bug-lens` and `finding-verifier`, see
 [laravel-subagents.md](laravel-subagents.md)). Claude Code offers them as `<plugin>:<name>`, e.g.
 `symphony:laravel-architect`. For each session Symphony decides which of them the agent may start:
 
-1. **The role's list.** `agents` unset allows every plugin subagent, a list only those, `[]` none.
+1. **The role's list.** `agents` unset allows every plugin subagent, a list only those, `[]` none. "Unset = all" stays the default for custom workflows and for workflows without `roles`; every role of the shipped `WORKFLOW.md` lists its agents explicitly (`docs`, `brain-gardener`, `issue-analyst` and `security-auditor` with `[]`, so they never start a `laravel-*` persona; `architect` lists `explorer` and `design-critic`; `test-engineer` lists `test-designer`, and the `reviewer` lists `convention-lens`, `bug-lens` and `finding-verifier` (lens review at L/XL only), which carry no prefix).
 2. **Read-only roles** only get subagents that cannot edit files: their front matter denies `Edit` and `Write`
    (`disallowedTools: Edit, Write, NotebookEdit`) or lists `tools` without them. This applies with `agents` unset too.
 3. **Project type.** A subagent whose name starts with a workspace integration's prefix belongs to it: `laravel-*`
@@ -945,7 +959,38 @@ The plugins in `claude.plugins` ship subagents (`agents/<name>.md`; Symphony's t
 The others are denied in two ways: a `disallowed_tools` rule `Agent(<plugin>:<name>)` (also `Agent(<name>)`, for a
 repository that ships the same agent as a project agent) and a `PreToolUse` hook that refuses an Agent tool call
 naming one of them. The allowed ones reach the prompt as the variable [`agents`](#prompt-template); the shipped
-`WORKFLOW.md` lists them in each role section, phrased as optional.
+`WORKFLOW.md` lists them in each role section and tells the agent when to use them instead of discouraging it:
+
+- **Intro.** Delegate where a trigger applies, never for what a few tool calls finish. Always pass the name as `subagent_type`.
+- **Brief rules.** A subagent sees neither the prompt nor the issue, so every brief contains the issue and its acceptance
+  criteria, the absolute workspace path, the task and its boundaries, the output format with `file:line` for every claim,
+  file lists instead of file contents, and a return of about 1,000–2,000 tokens.
+- **Findings are candidates.** The agent reads the cited lines itself and discards any claim without `file:line`; it
+  stays responsible for the result.
+- **When to delegate.** Each role with agents adds bullets with a trigger and an exclusion that name the agent by its
+  qualified name, e.g. `developer`: before reading more than about ten files, ask `symphony:explorer`; `architect`:
+  2–3 explorers, one per code area, then read their files yourself. A bullet renders only when its agent is allowed in
+  the session, so a non-Laravel workspace never sees `laravel-*` agents named. Roles with `agents: []` render neither
+  the intro nor the bullets.
+- **Lens review (reviewer, L/XL).** At complexity L or XL the pull-request review adds a step to the checklist: the lenses
+  start in one message (`convention-lens` on sonnet once against the written rules, `bug-lens` on opus twice, once on the
+  diff alone and once with the surrounding code; two Agent calls in one message run in parallel in the foreground, see
+  [agent-claude.md](agent-claude.md#subagents), Mechanics row 2). Then **one `finding-verifier` per candidate**
+  (opus) tries to refute it and rejects when in doubt. Only confirmed, diff-introduced findings within the issue's scope
+  enter the result; style, linter findings and pre-existing problems are excluded. At S/M, without a complexity and in
+  the integration review the reviewer renders neither the block nor the intro. The block needs the verifier and at least
+  one lens in the session's list, so a partial list never names a missing persona.
+
+The toolbox also ships framework-neutral subagents without a prefix; the first is `explorer` (`symphony:explorer`). It is
+read-only (`disallowedTools: Edit, Write, NotebookEdit`, `model: sonnet`, `effort: low`, `maxTurns: 25`) and returns key
+files as `file:line` plus a short summary instead of file contents. Because it has no integration prefix it is available
+in every workspace, Laravel or not, and the shipped `WORKFLOW.md` lists it for `developer`, `architect`, `analyst`,
+`planner`, `autopilot` and `auditor`. The second is `design-critic` (`symphony:design-critic`): read-only, `model: opus`, `maxTurns: 40`, it only critiques a design draft (defects with `file:line`, severity and what breaks, no new design). Only `architect` lists it, and the prompt names it at complexity L/XL only.
+
+Three more framework-neutral subagents serve the lens review, all read-only (`disallowedTools: Edit, Write, NotebookEdit`):
+`convention-lens` (`model: sonnet`, `maxTurns: 25`; reports a violation of `CLAUDE.md`, `AGENTS.md` or `.ai/rules` only with
+the quoted rule), `bug-lens` (`model: opus`, `maxTurns: 30`) and `finding-verifier` (`model: opus`, `maxTurns: 15`; one
+candidate per call, cites `file:line`). The shipped `WORKFLOW.md` lists them for `reviewer`.
 
 #### Waves (`wait_for_sub_issues`)
 
@@ -1401,13 +1446,15 @@ claude-opus-4-8: { input: 5.00, output: 25.00 }
 - A model id reported by Claude Code (e.g. `claude-opus-5-5`) uses the exact entry if there is one, else the longest
   key contained in the id (`opus`), else `default`. Without the file, every model is priced at 5 / 25.
 - `context_window` (optional, a positive whole number of tokens) is the model's context window. It is looked up like the
-  price (exact entry, else longest contained key, else `default`); the shipped file sets `default: 200000`. A model
+  price (exact entry, else longest contained key, else `default`); the shipped file sets `default: 200000` and 1,000,000 for `opus`, `sonnet` and `fable`. A model
   name with the suffix `[1m]` (e.g. `opus[1m]`) always gets 1,000,000 tokens, ahead of any entry. Symphony relates
   `input + cache_read + cache_creation` tokens of the latest call of the main conversation (subagents excluded) to this
   window: `running[].context` in `GET /api/v1/state` is `{ tokens, window, percent, compacts }`, with `window` and
   `percent` `null` when no window can be determined (no `context_window` on the entry or on `default`). Automatic
   compactions (`compact_boundary`) are counted in `compacts`. Add `context_window` to a custom `model-costs.yml`, e.g. a
-  Docker mount, to get percentages.
+  Docker mount, to get percentages. The live value during a turn always comes from the file. When the result of a turn
+  reports a window (`modelUsage[<model>].contextWindow`), that window overrides the file for the peak: `context_peak_percent`
+  in `run_finished` is the peak tokens against the reported window, else against the file.
 - Cost = input × input price + output × output price + cache reads × cache_read + cache writes × cache_write.
 
 ## Repository logs
@@ -1418,7 +1465,7 @@ workflow directory, else `$XDG_STATE_HOME/symphony` or `~/.local/state/symphony`
 | Event | Fields |
 |---|---|
 | `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested: from a `Model: …` label, else the role's model, else `claude.model`), `effort` (requested: from an `Effort: …` label, else the role's effort, else `claude.effort`; `default` when none), `role` (`default` without roles), `laravel` and `boost` (only for workspaces with [`laravel`](#laravel) apps: `<app dir>:<laravel/framework version from composer.lock, or unknown>` and the Boost status `ready`, `failed`, `skipped` or `absent`, e.g. `laravel=laravel/:v13.1.0 boost=ready`; several apps give comma-separated entries, each status prefixed by its directory) |
-| `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `session_limit` (the run ended with a session limit; see `agent-claude.md`), `stopped`, `stalled`, `shutdown`), `role` (the [role](#roles) that served the run; `default` without roles; logs from before it was written have none and count as `unknown` in the analytics) and `next_role` (only when the run handed off to another role), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `context_peak_percent` (highest context fill of the session in percent; `null` without a known window; older lines have none) and `context_compacts` (automatic compactions), `head_sha` and `branch` (final commit of a git workspace; omitted otherwise), `mcp_tool_calls` (`<server>:<n>,…` per MCP server; omitted when no MCP tool was used), `tool_calls` (`<tool>:<n>,…` per tool, built-in and `mcp__<server>__<tool>`; omitted without tool calls), `skill_calls` (`<skill>:<n>,…` per skill the Skill tool loaded; the count follows the last colon, so `symphony:handoff:1` is the skill `symphony:handoff`), `agent_calls` (`<subagent>:<n>,…` per subagent the Agent tool started, by `subagent_type`, `general-purpose` when unset; omitted without such calls), `integrations` (`<id>:<status>,…` of the workspace integrations, e.g. `laravel-boost:ready`; status `ready`, `unavailable`, `absent` or `off`), `integration_tools` and `integration_skills` (calls attributed to an integration: `<id>/<tool or skill>:<n>,…`, e.g. `laravel-boost/search-docs:3`), `started_at`, `mcp_unavailable` (comma-separated MCP servers Symphony added that did not connect; only when there are any), running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` |
+| `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `session_limit` (the run ended with a session limit; see `agent-claude.md`), `stopped`, `stalled`, `shutdown`), `role` (the [role](#roles) that served the run; `default` without roles; logs from before it was written have none and count as `unknown` in the analytics) and `next_role` (only when the run handed off to another role), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `context_peak_percent` (highest context fill of the session in percent; `null` without a known window; older lines have none) and `context_compacts` (automatic compactions), `head_sha` and `branch` (final commit of a git workspace; omitted otherwise), `mcp_tool_calls` (`<server>:<n>,…` per MCP server; omitted when no MCP tool was used), `tool_calls` (`<tool>:<n>,…` per tool, built-in and `mcp__<server>__<tool>`; omitted without tool calls), `subagent_tool_calls` (same format; the part of `tool_calls` made inside subagents, i.e. from messages with `parent_tool_use_id`, including `SubagentHandback`; `tool_calls` stays the total and the main-thread calls are the difference; omitted when none ran in a subagent; older lines have none), `skill_calls` (`<skill>:<n>,…` per skill the Skill tool loaded; the count follows the last colon, so `symphony:handoff:1` is the skill `symphony:handoff`), `agent_calls` (`<subagent>:<n>,…` per subagent the Agent tool started, by `subagent_type`, `general-purpose` when unset; omitted without such calls), `integrations` (`<id>:<status>,…` of the workspace integrations, e.g. `laravel-boost:ready`; status `ready`, `unavailable`, `absent` or `off`), `integration_tools` and `integration_skills` (calls attributed to an integration: `<id>/<tool or skill>:<n>,…`, e.g. `laravel-boost/search-docs:3`), `started_at`, `mcp_unavailable` (comma-separated MCP servers Symphony added that did not connect; only when there are any), running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` Optional `subagents`: the run's subagents as one JSON array (quoted), oldest first, at most the last 10; omitted when the run started none. Per element: `type` (`subagent_type`), `description`, `status` (`ok` or `error`; a subagent still running when the run ended is logged as `error`), `reason` (only when set), `started_at`, `ended_at`, `duration_ms`, `context_tokens` (context of its latest request), `tokens` (billed: input + output + cache read + cache write), `tool_uses` and `models` (array); unknown figures are omitted. Optional `subagent_stats=<name>:<n>,…`: the numeric entries of `subagent_stats` in the result of Claude Code, which is **undocumented** (seen in 2.1.288) and may change; an extra signal, never the only source. Older lines have neither field. |
 | `model_usage` | `repo`, `issue`, `run`, `model`, `price` (matched entry), token counts, `cost_usd` |
 | `stage_result` | `repo`, `issue`, `run`, `role`, `kind` (result kind, e.g. `review`), `verdict`, `round` (review and test loops; omitted otherwise), `target` (column the result handed the issue to), `profile` (workflow profile; omitted without one), `complexity` (`S` … `XL` from the issue's `Complexity:` label; omitted without one), `findings` (number of findings of a review or security result; omitted when 0). Written when `report_result` has posted the result comment; the analytics group these lines by profile and role |
 | `session_limit_wait` | `repo`, `issue`, `title`, `state`, `window`, `resets_at`, `retry_at` (reset + 60 s), `hits`, `max_retries`, `source` (`event` or `message`); written when the session-limit retries are used up and the worker waits for the reset |

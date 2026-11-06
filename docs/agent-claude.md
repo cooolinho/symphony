@@ -79,9 +79,24 @@ Symphony runs agents **unattended**. Nobody watches a session, so every decision
   `Bash(git commit:*)` and `Bash(git push:*)` added to `disallowedTools`. Deny rules beat allow rules, so this also
   overrides `claude.allowed_tools: ["Bash(git push:*)"]`. The orchestrator sets `readOnly` from the run's role
   (`roles.<role>.read_only`); without a policy, or for the `default` role, a session is not read-only. This is a
-  policy, not a sandbox: Bash can still write files, so callers that need a hard guarantee must enforce it elsewhere
-  (for example in the transition guard, or with `claude.sandbox`). Both inputs are agent-neutral; another runner
-  maps them to its own mechanism.
+  policy, not a sandbox. Both inputs are agent-neutral; another runner maps them to its own mechanism.
+  - *Covered, also inside subagents:* `Edit`, `Write`, `NotebookEdit`, `git commit` and `git push`. The deny rules
+    are session-wide: Claude Code applies deny rules and the `PreToolUse` hook to a subagent's tool calls, and
+    `canUseTool` answers a subagent's request (`agentID`) like a main-thread one. So a read-only role's subagent
+    cannot edit files, and a denied subagent cannot be spawned from inside another subagent either. Locked in by
+    the tests "refuses a denied subagent spawned from inside a subagent", "treats a subagent permission request like
+    a main-thread one" and "keeps the read-only deny rules whatever subagents are denied" in `test/claude.test.ts`.
+  - *Not covered:* shell writes through Bash (`sed -i`, `perl -pi`, redirection, `node -e` with file writes), in the
+    main thread and in subagents. Callers that need a hard guarantee must enforce it elsewhere (for example in the
+    transition guard, or with `claude.sandbox`). Blocking them is open question 5 in
+    [concepts/subagents.md](concepts/subagents.md#open-questions-and-spikes); the current assumption is (a),
+    document and keep.
+  - *Live check:* **not executed yet.** The workspace of E4-1 had no Claude login (`Not logged in · Please run
+    /login`, Claude Code 2.1.288). To run it: in a temp git repo with `target.txt`, start `claude -p "<ask a
+    general-purpose subagent to edit target.txt>" --output-format stream-json --verbose --model haiku
+    --permission-mode acceptEdits --disallowedTools Edit Write NotebookEdit "Bash(git commit:*)" "Bash(git push:*)"
+    AskUserQuestion`, then expect an error `tool_result` for the subagent's Edit/Write (`parent_tool_use_id` set)
+    and an unchanged file. Record the session id here.
 - **Sandboxing:** off by default. `claude.sandbox` passes Claude Code's sandbox settings through (filesystem and
   network restrictions for shell commands).
 
@@ -133,11 +148,90 @@ needs a skill directory in the toolbox and a role with `commands` (or none at al
 Plugins also ship subagents (`agents/<name>.md`), which Claude Code offers to the Agent tool as `<plugin>:<name>`;
 the `init` message of the transcript lists them under `agents`. Symphony's toolbox ships five for Laravel repositories
 (`laravel-architect`, `laravel-code-reviewer`, `laravel-database-engineer`, `laravel-filament-developer`,
-`laravel-test-engineer`). Which of them a session may start depends on the role's `agents`, read-only roles and the
+`laravel-test-engineer`) and the framework-neutral `explorer`, `design-critic`, `test-designer`, `convention-lens`, `bug-lens` and `finding-verifier` (the last three for the reviewer's lens review at L/XL). Which of them a session may start depends on the role's `agents`, read-only roles and the
 workspace's project type ([Subagents per role](configuration.md#subagents-per-role)); the rest are denied by an
-`Agent(<plugin>:<name>)` rule in `disallowedTools` and by a `PreToolUse` hook, which emits `approval_denied` when it
-refuses a call. Every Agent tool call carries its subagent in the `tool_use` event (`detail.agent`), so the statistics
+`Agent(<plugin>:<name>)` rule in `disallowedTools` and by a `PreToolUse` hook on `Agent|Task`, which emits `approval_denied` when it
+refuses a call. The hook is registered for every session, not only when agents are denied (it also pins the explorer's model, below). Every Agent tool call carries its subagent in the `tool_use` event (`detail.agent`), so the statistics
 count subagents like skills. Background and usage figures: [laravel-subagents.md](laravel-subagents.md).
+
+Symphony's appended system prompt does not reach subagents, so a `SubagentStart` callback hook (registered in every
+session, next to the `PreToolUse` hook; spike E0-2 question 7b) injects an issue context as `additionalContext` into each
+`symphony:*` subagent. In this order: the issue identifier and title, the role of the session and whether it is read-only,
+the absolute workspace path, the repository rules that exist (`CLAUDE.md`, `AGENTS.md`, `.ai/rules/index.md`), the
+acceptance criteria from `results.analysis` when the issue analyst ran, and the instruction to answer with `file:line`.
+Without a role context (other callers) the role line and the criteria are left out. The text is limited to 4000
+characters (`SUBAGENT_CONTEXT_MAX`); criteria are cut first, each at 400 characters, and the ones that do not fit become
+`- … n more in the issue`. Built-in agents, bare-name repository agents, forks and other plugins get nothing.
+
+#### Explorer model (E2-3)
+
+The `symphony:explorer` is always cheaper than its parent. The agent hook rewrites `tool_input.model` of an explorer call
+from the session model (the `init` model, else `claude.model`; aliases, `[1m]` suffixes and full ids all match):
+
+| Session model | Explorer model |
+| --- | --- |
+| sonnet | haiku |
+| opus, fable | sonnet |
+| haiku | haiku |
+| other or unknown | no rewrite (front matter: `sonnet`) |
+
+The front matter's `model` is no hard pin: a per-invocation `model` of the Agent call wins over it. So the hook returns
+`permissionDecision: 'allow'` with `updatedInput` (the original input plus `model`), the form the E0-2 spike verified
+(question 6). The deny check runs first, so a denied explorer is refused and never rewritten. Only the qualified
+`symphony:explorer` is pinned; other agents (the `laravel-*` personas, `general-purpose`, a project agent named `explorer`)
+are untouched. `options.agents` could override the plugin agent by its qualified name (question 5), but that would copy
+the persona into code per session model; the hook keeps `agents/explorer.md` the single definition. No
+`CLAUDE_CODE_SUBAGENT_MODEL_FORCE`: it would pin every subagent.
+
+#### Delegation line of the `claude_code` preset (spike E0-1)
+
+Checked in Claude Code 2.1.288, bundled with SDK 0.3.288 as the native binary
+`node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude` (there is no `cli.js`; the JavaScript is minified inside
+the binary, found with `rg -a`; line numbers are those of `rg -a -n`).
+
+- The line is the system prompt section `opus5_reduced_delegation` (line 1410307, `jf("opus5_reduced_delegation", …)`).
+  Its text, defined at line 1410261 (`QPt`): "Do not use the Agent tool, workflows, or deep-research unless the user, a
+  CLAUDE.md file, or a skill asks for it". It is skipped when the project's own prompt (`JPt()`) already contains that
+  text or the older "Do not call the AgentTool unless the user".
+- The gate is `Sbn(model)` (line 1404855): the resolved model needs the capability **`opus_5_prompt_bundle`** in the
+  model table (line 1401403) and the feature flag `tengu_fennel_godwit` must be off (it is off by default); the flag
+  `tengu_slate_bittern` (default on) must be on as well. The capability is not derived from the model name.
+
+| Model | Capabilities relevant here | Delegation line |
+|---|---|---|
+| `claude-opus-5-5` | `opus_5_5_prompt_bundle`, no `opus_5_prompt_bundle` | **no** |
+| `claude-sonnet-5-5` | neither prompt-bundle capability | **no** |
+| `claude-fable-5-1` | `fable_5_1_prompt_bundle`, no `opus_5_prompt_bundle` | **no** |
+| `claude-opus-5` (for comparison) | `opus_5_prompt_bundle` | yes |
+
+Limit: the capability table is the static one of this build; Claude Code can also take capabilities from the server
+(`servedCapabilityLookup`, client data), which a static reading cannot see. The result holds for 2.1.288 as bundled.
+
+**Probe runs (Agent calls without and with a delegation sentence).** Run on 2026-11-05, 21:50–21:57 UTC, in the
+`symphony` container with SDK 0.3.288 / Claude Code 2.1.288; each combination 3 times (18 runs). Set-up:
+`systemPrompt: { type: 'preset', preset: 'claude_code', append }`, default tool set, `permissionMode: 'dontAsk'` with
+only `Agent` allowed, `settingSources: []`, `maxTurns: 8`, `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, subagent
+`word-counter` (no tools) via `options.agents`. Task: "Count the words in the sentence "the quick brown fox jumps over
+the lazy dog" using the word-counter subagent, then tell me the number." `append` without: "Context: this is a test
+session."; with the delegation sentence: "When a task names a subagent, delegate it with the Agent tool." Counted: the
+`Agent` `tool_use` blocks of the main agent.
+
+| Model | Agent calls without (3 runs) | Agent calls with (3 runs) | Session ids without | Session ids with |
+|---|---|---|---|---|
+| `claude-opus-5-5` | 1, 1, 1 | 1, 1, 1 | `b5683081-d15c-422a-859d-9fe899acc4c4`<br>`fc9adb95-15bf-46a7-8850-58f80511a032`<br>`d702b01d-b0ab-4c89-b1b8-9b8db21baf90` | `436a7174-c2a2-4541-8317-cbc734b55eba`<br>`b6847b8a-0dde-4880-aeac-cc485d85b690`<br>`e50b5db9-9403-44d5-8140-c14ecfbee7d9` |
+| `claude-sonnet-5-5` | 1, 1, 1 | 1, 1, 1 | `e1891d34-370d-432a-8f63-063b2c18184b`<br>`49c6854b-117d-407f-8ff1-50e778856357`<br>`27e4b04b-059e-41b0-8e1e-19f10b84291e` | `88165b66-c91f-45f7-8b1a-cf77071a4127`<br>`796e2fd8-e1ea-46ae-b138-ef502f4f3799`<br>`4187eec4-ee69-4815-b38b-6ac8093f965a` |
+| `claude-fable-5-1` | 1, 1, 1 | 1, 1, 1 | `4e63278a-e3a4-4280-87e9-bdc3ea9bd907`<br>`8b42863e-8b02-4cd4-9d4d-f4a52f54d668`<br>`8fcdb8ad-a5ca-4744-9a03-4c549586b8fd` | `a6c0f736-4ce8-4e35-9627-fa3fa9494fbc`<br>`9a2fa59e-73a2-4ba7-8af7-d43e1142281b`<br>`56f58c54-e000-427c-b7b4-6f0a06762144` |
+
+Every call went to `subagent_type: word-counter`, every answer was "9", `realModel` always matched the requested model,
+no run failed.
+
+**Conclusion for E2-2 (open question 1):** the preset does not carry the "do not call the Agent tool unless asked" line
+for any of the three models, and when the task names a subagent all three delegate in every run, with or without an
+explicit delegation sentence; the sentence does not change the number of calls. E2-2 does not need to write against the
+preset: its own delegation sentence is unnecessary, naming concretely the occasions where a subagent fits is enough.
+Not checked: delegation when the task does not name the subagent (the test task is trivial).
+
+The SDK's built-in agents (`claude`, `Explore`, `general-purpose`, `Plan`, `statusline-setup`) are **off**: every session starts with `CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS=1`, so `init.agents` lists none of them. `general-purpose` would give a read-only role an agent with every tool, and Explore and Plan run on the parent model, skip CLAUDE.md and compete with `symphony:explorer` for routing. An Agent call therefore needs a `subagent_type` (the SDK fails it with "subagent_type is required"); the role prompts always name the type. Plugin agents that a role denies still appear in `init.agents`. `claude.env` can set the variable to `0` to bring the built-ins back. History parsing is unchanged: an Agent call or old log line without a type still counts as `general-purpose`.
 
 Subagents and commands run in the **foreground**: every session starts with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`,
 so the Agent and Bash tools offer no `run_in_background` and nothing is moved to the background automatically. A
@@ -147,6 +241,70 @@ background code review would then lose the review and the stage would end withou
 addition says the same: use the results in the same turn and never end a turn to wait. `claude.env` can set the
 variable to `0`; if a session then ends without a result while tasks still run, the "Stage ended without a result"
 comment names them, and `turn_completed` carries them in `detail.background_tasks`.
+
+Subagent nesting is capped at one level: every session starts with `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`, so a
+subagent has no Agent tool of its own. Claude Code allows three levels by default, which would let a lens fan-out
+multiply, and no planned pattern nests; the SDK docs advise limits over instructions. `claude.env` can set another
+value (e.g. `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "2"`). `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` keeps its default.
+
+**Forks are denied.** A fork subagent inherits the whole context and the role's tools, so it bypasses the
+`Agent(symphony:*)` denies. From SDK 0.3.302 forks are on by default, and Symphony pins 0.3.318 (Claude Code 2.1.318, E4-5), where they are on. Every
+session therefore carries the rule `Agent(fork)` in `disallowedTools` (read-only or not, with or without denied agents)
+and starts with `CLAUDE_CODE_FORK_SUBAGENT=0`. `claude.env` can override the variable; the deny rule stays.
+
+**Claude Code 2.1.318 (E4-5).** Symphony pins `@anthropic-ai/claude-agent-sdk` **0.3.318** exactly (no `^`), which bundles
+Claude Code 2.1.318; `session_configured.claude_code_version` reports it (verified: `system/init` of the bundled binary
+says `2.1.318`). `npm run check` typechecks and the tests pass unchanged (no new message shapes, no new fixtures).
+The live checks below were **not run** by the developer session: the workspace has no login (`Not logged in · Please run
+/login`, the token variables are stripped from the session environment). They are pending for the merging maintainer.
+Run each in a temp git repo with the flags and environment Symphony uses (`CLAUDE_CODE_FORK_SUBAGENT=0` plus
+`--disallowedTools "Agent(fork)"` as above), with `--output-format stream-json --verbose`, once per role kind
+(writing: `--permission-mode acceptEdits`; read-only: `--disallowedTools Edit Write NotebookEdit`; command: an
+issue-command session, e.g. a skill). Record the session ids here.
+
+- Fork refused: prompt `Start a fork subagent that says hi`; expect a refusal or error `tool_result` and no fork run. _pending_
+- 2.1.302, a subagent's own Agent calls run in the foreground: needs `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=2` (depth 1 gives
+  subagents no Agent tool); ask a general-purpose subagent to start an Explore subagent; the nested call must finish before
+  the outer result and carry no `run_in_background`. _pending_
+- 2.1.314, the parent no longer keeps subagent tool results: the parent's next turn `usage` input tokens must not grow by
+  the subagent's inner `tool_result` sizes. _pending_
+- 2.1.317, a subagent on another model uses that model's effort: session on sonnet, subagent on `haiku`; the subagent's
+  assistant messages carry the haiku model and no effort error. _pending_
+- 2.1.311, `SubagentStop` no longer fires twice a minute: `--settings` with a `SubagentStop` hook appending to a file; it
+  must fire once per subagent, not every ~30 s. _pending_
+
+#### Mechanics (spike E0-2, Claude Code 2.1.288)
+
+Seven questions, answered with controlled SDK sessions (SDK 0.3.288 / Claude Code 2.1.288, 2026-11-05 22:13–22:19 UTC)
+that ran outside the agent sandbox with a login. The options are those of `#options()` in `src/agent/claude.ts`:
+`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`, `CLAUDE_CODE_FORK_SUBAGENT=0`,
+the plugin, preset `claude_code`, `settingSources: []`, `model: sonnet`, `effort: low`, `permissionMode: default`, plus a
+logging `canUseTool` and `PreToolUse`/`SubagentStart`/`SubagentStop` hooks. Evidence paths are relative to
+`$CLAUDE_CONFIG_DIR/projects/-tmp-spike-e0-2-ws/`: `<session>.jsonl` is the main transcript,
+`<session>/subagents/agent-<id>.jsonl` (with `.meta.json`) a subagent, `spike-logs/<case>.jsonl` the SDK stream with the
+hook and callback log. The findings hold for this version only; the SDK upgrade (E4) re-runs the spike.
+
+| # | Question | Answer | Evidence (session, line) | Consequence |
+|---|----------|--------|--------------------------|-------------|
+| 1 | Does a subagent inherit the session's `effort`? | Yes | `stats1` `14de2a7a-2216-4f2e-be04-97261e9e7f56`: main L18 and `agent-a2180c850630b00b3.jsonl` L10 both carry `"effort":"low"`. Production agrees: about 30 parent/subagent pairs (e.g. `70354e52-5187-4069-adf2-389d86d23a14` fable xhigh, `a98e3eb3-b740-45fc-ad36-93cf2ffdc918` opus medium) always match. A `haiku` subagent carries no `effort`. | E4-6: personas get their effort from the session; one that needs another sets it in the front matter |
+| 2 | Do two Agent calls in one message run in parallel with background tasks disabled? | Yes | `stats2` `c94e3799-cab9-4301-b0d2-fa1fa415cd43`: main L18+L19 hold two Agent calls of one message (`msg_011CgkYuE5chQgusCEt9nHc2`); `spike-logs/stats2.jsonl` L5/L10 `task_started` 22:13:47.5 and 22:13:48.4, L23/L28 `task_notification`; the `sleep 20` Bash windows 1793916832.08–852.08 and 844.93–864.93 overlap; both `requestShape: foreground` | E3-3: lenses and explorers can run in one message, no sequential latency to plan for |
+| 3 | Do denied agents disappear from the agent list the model sees? | Yes, from the model's list only | The `agent_listing_delta` attachment lists only allowed plugin agents: reviewer `7c8fedec-cfdd-494d-b802-db992d2ab7a1` shows `symphony:laravel-code-reviewer` alone, developer `21982277-ab36-419f-94b4-241a17873ea9` all five. `init.agents` still lists the denied ones. Taken from production transcripts, not re-run. | Enforcement: the `disallowedTools` rule hides the agent, the hook is the second layer; the comment "The deny rules hide the subagents" in `claude.ts` is right for the model's list |
+| 4 | What do the fields of `subagent_stats` count? | See below | `stats0` `210845bb-2fd3-403d-bf7d-e9db6e69171b` `spike-logs/stats0.jsonl` L4 (0 calls), `stats1` L16 (1 call), `stats2` L31 (2 calls), `statsDenied` `58a6ab0e-5797-4c3b-ac47-f32d074a6457` L9 (1 call denied by the hook) | E0-7: usable as an extra signal; it does not see refused calls |
+| 5 | Does an `options.agents` entry override a plugin agent of the same name? | Yes, by the full name | `override-a` `261a8bde-fcdb-4b19-93bb-d3f06a691d09` vs `override-b` `32f15e95-318f-47b7-88bf-327faa1a0acf`, `spike-logs/override-{a,b}.jsonl` L1 (`init.agents`), subagent L10 `message.model`. Key `symphony:laravel-architect` replaces the plugin agent (one entry; haiku; reply starts `OPTIONS-AGENT`). Key `laravel-architect` is a separate agent, and `symphony:laravel-architect` still runs the plugin one (sonnet, no marker). | E2-3: `options.agents` can override a persona, but only under the qualified name `<plugin>:<name>` |
+| 6 | Can a `PreToolUse` hook rewrite `tool_input.model` with `updatedInput`? | Yes | `rewrite` `2bbceefe-a047-4fa4-a59e-2d3b29034623`: `spike-logs/rewrite.jsonl` L5 (hook output), `agent-a3169d7ec395a2ff6.jsonl` L10 and `.meta.json` `"model":"haiku"`. Under a sonnet session the subagent ran `claude-haiku-4-5-20251001` (control `stats1`: sonnet); the alias `haiku` resolves to Haiku 4.5. | E1-3: the existing `Agent|Task` hook can pin a model per invocation |
+| 7a | Is `canUseTool` called for tool calls inside a subagent? | Yes, with `agentID` | `canuse2` `394763a3-0222-4def-ae09-2d26f5ce1a03`: `spike-logs/canuse2.jsonl` L4 (Write, `agentID: null`) and L13 (Write, `agentID: aedfa01af1f238e4b`, i.e. `agent-aedfa01af1f238e4b.jsonl` L10). Case `canuse` (`e244e8e4-b170-4d01-aa6a-6b0a4c495092`) is no evidence: `echo` and the Agent call need no permission, so the callback never fired. | E2-4: a subagent's tool calls can be judged in `canUseTool` by `agentID` |
+| 7b | Does a `SubagentStart` callback hook with `additionalContext` work? | Yes | `substart` `2945d925-cfb1-42e6-afce-07500d90447d`: `spike-logs/substart.jsonl` L7 (hook output), `agent-a46d7db348df821a3.jsonl` L2 (`hook_additional_context`) and L11 (reply `PAPAYA-7`) | E2-4: context can be injected into a subagent from the SDK |
+
+`subagent_stats` fields as observed (0, 1 and 2 foreground calls; one denied call):
+
+- `spawned`: subagents actually started (0/1/2). `completed` follows (0/1/2); `by_type` counts them per `subagent_type`.
+- `requested.{background,foreground,unset}`: how the call asked to run. With background tasks disabled every call counts
+  as `unset` (0/1/2).
+- `max_depth`: deepest nesting reached (0/1/1); `started_in_background`, `failed`, `killed.*` and `spawned_by_subagents`
+  stayed 0.
+- `refused.{depth_limit,concurrency_limit,budget}`: limits of the runtime only. A call denied by a `PreToolUse` hook
+  counts **nowhere**: `spawned`, `requested` and `refused.*` were all 0. It shows only in `permission_denials` (tool name
+  `Task`) of the result and in the transcript (`statsDenied` main L18, L24).
 
 ### Brain tools
 
@@ -224,11 +382,11 @@ log line (`npm run repo-init` → *Laravel Boost* creates an issue that adds it)
 **Visibility:** the Laravel integration reports per app what the session got (status and reason, versions, how the
 guidelines reach the agent, the skills, the MCP server and its pre-approved tools, warnings from the check above).
 The orchestrator counts every `tool_use` event per tool (one event per tool call, also for parallel calls in one
-message), every Skill tool call per skill and every Agent tool call per subagent, and attributes calls of the Boost MCP servers and Boost skills to Boost.
+message), every Skill tool call per skill, the tool calls made inside subagents (`tool_use` events with `detail.subagent`, from messages with `parent_tool_use_id`) once more in `subagent_tool_calls` (`tool_calls` stays the total) and every Agent tool call per subagent, and attributes calls of the Boost MCP servers and Boost skills to Boost.
 `session_configured` carries the skill names Claude Code loaded (`skill_names`), so the agent page can show how many
 of Boost's skills were really available. All of this is in `GET /api/v1/state` (`running[].integrations`,
-`tool_calls`, `skill_calls`, `agent_calls`), in `run_trace` of `GET /api/v1/<identifier>` and in the `run_finished`
-line of the repository log (`integrations`, `integration_tools`, `integration_skills`, `tool_calls`, `skill_calls`,
+`tool_calls`, `subagent_tool_calls`, `skill_calls`, `agent_calls`), in `run_trace` of `GET /api/v1/<identifier>` and in the `run_finished`
+line of the repository log (`integrations`, `integration_tools`, `integration_skills`, `tool_calls`, `subagent_tool_calls`, `skill_calls`,
 `agent_calls`). The dashboard shows it as the Boost chip on the agent card, the *Laravel Boost* section of the agent
 page and the *Tools* (with *Skills loaded* and *Subagents used*) and *Laravel Boost & integrations* sections of the
 statistics page.
@@ -251,8 +409,8 @@ script: it receives the absolute `artisan` path and its arguments, plus `SYMPHON
 | Claude Code exits mid-turn | `port_exit` (stderr tail included in the message) |
 | Orchestrator stops the run (issue moved, shutdown) | `turn_cancelled`, no retry |
 
-Entry checks run inside the `set_status` tool call, so that call must outlive the check. Claude Code (2.1.288, bundled
-with Agent SDK 0.3.288) bounds a call to an MCP server by the server config's `timeout` (used when ≥ 1000 ms), else
+Entry checks run inside the `set_status` tool call, so that call must outlive the check. Claude Code (observed with 2.1.288, bundled
+with Agent SDK 0.3.288; not re-checked with 2.1.318) bounds a call to an MCP server by the server config's `timeout` (used when ≥ 1000 ms), else
 the `MCP_TOOL_TIMEOUT` environment variable, else 100 000 000 ms (about 28 hours); in-process `sdk` servers have no
 idle timeout. Sources: the `timeout` docs of `createSdkMcpServer` and `McpSdkServerConfig` in the SDK's `sdk.d.ts`
 ("Overrides the MCP_TOOL_TIMEOUT environment variable for this server"), `sdk.mjs` forwarding it to the CLI as
@@ -278,10 +436,24 @@ version, MCP server status, plugins, number of skills), `startup_failed`, `turn_
 The `subagent` event reports the subagents the session starts with the Agent/Task tool. Its `subagent` field is an
 absolute snapshot: tool call id, type (`general-purpose` when unset), description (the `description` of the call, else
 the start of its `prompt`), start, end, status (`running`, `ok`, `error`) and the tokens of the subagent's own model
-calls (input, output, cache read and write; messages with its `parent_tool_use_id`, counted once per message id). The
-`tool_result` with the same `tool_use_id` ends it (`is_error` gives `error`). A session that ends or is stopped closes the
-open ones as `error`. Only start and end carry a message; token updates do not appear in the timeline. The orchestrator
-keeps the running subagents and the last ten finished ones per running issue. `agent_calls` still counts the calls.
+calls (input, output, cache read and write; messages with its `parent_tool_use_id`, counted once per message id). This
+`tokens` is the billed load, not the context size. Claude Code's own figures come from the `task_progress` and
+`task_notification` messages, matched by `tool_use_id`: `contextTokens` (`usage.total_tokens`, the context of the latest
+request), `toolUses` and `durationMs`. They are `null` until such a message arrives and stay `null` for runs without
+`task_*` messages (the page shows "—"). A `task_notification` after the `tool_result` still updates the ended run.
+`task_started`, `task_progress` and `task_notification` that match a subagent no longer appear as `notification`;
+unmatched ones still do. `models` lists the models of the subagent's own calls (first seen first, no duplicates). The
+`tool_result` with the same `tool_use_id` ends it (`is_error` gives `error`); a result text starting with "Agent terminated
+early due to an API error" also gives `error`; a `task_notification` with status `failed` or `stopped` gives `error` even
+after the `tool_result`. When status is `error`, a `reason` field contains a short explanation (API error, usage limit,
+task failure summary); the tile shows "Fehler: <reason>". A session that ends or is stopped closes the open ones as `error`
+(without `reason` if none was set). Only start and end carry a message; figure updates do not appear in the timeline. The
+orchestrator keeps the running subagents and the last ten finished ones per running issue. `agent_calls` still counts the calls.
+The subagents survive the run: `run_finished` carries them in the JSON field `subagents` (format in
+[configuration.md](configuration.md#repository-logs)), `sessions[].subagents` in `GET /api/v1/<identifier>` lists them per
+run, and `run_trace.subagents` holds those of the current or last run. Claude Code (2.1.288) also puts an undocumented
+`subagent_stats` object (spawned, refused, ...) in the result; its numeric entries are kept as `subagent_stats` in
+`run_finished` and `run_trace` as an extra signal that may change. The subagent lists never depend on it.
 
 A turn that fails because of a Claude subscription usage limit settles with the failure code `session_limit` (instead
 of `turn_failed`), carrying the window, the reset time and where it came from. Detection order:
@@ -319,7 +491,7 @@ first event. Instances sharing a log directory share the file, which fits becaus
 
 Besides `status`, `rateLimitType` and `resetsAt`, three fields of `rate_limit_info` carry the utilization of the
 subscription windows. `utilization` and `surpassedThreshold` are typed in the SDK (`SDKRateLimitInfo`,
-`@anthropic-ai/claude-agent-sdk@0.3.288`); `unifiedWindows` is not. Findings from real payloads (spike E4-3, #332):
+`@anthropic-ai/claude-agent-sdk@0.3.288`, spike); `unifiedWindows` is not. Findings from real payloads (spike E4-3, #332):
 
 - `utilization`: share of the window named by `rateLimitType`, `0` to `1`. It is missing on `rejected` events.
 - `surpassedThreshold`: the warning level that was just exceeded, on the same scale as `utilization`. Observed `0.75`

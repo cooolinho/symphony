@@ -19,7 +19,7 @@ import { AURORA, LAYOUT_CSS, LAYOUT_JS, NAV_ITEMS, page as shellPage } from '../
 import { TOKENS_CSS } from '../src/http/ui/tokens.ts';
 import { BASE_JS } from '../src/http/styles.ts';
 import { SYMPHONY_VERSION } from '../src/version.ts';
-import { analyticsFixture, dashboardState, issueDetail, issueRow } from './helpers/page-fixtures.ts';
+import { analyticsFixture, dashboardState, issueDetail, issueRow, teamView } from './helpers/page-fixtures.ts';
 import { FakeElement } from './helpers/fake-dom.ts';
 import { startHttpServer, type HttpServerHandle } from '../src/http/server.ts';
 import { ensureVault } from '../src/brain/vault.ts';
@@ -323,6 +323,25 @@ describe('http extension', () => {
     assert.ok(logHrefs.every((href) => !/^\/(logs|agent)\b/.test(href)));
   });
 
+  it('shows the subagent evaluation on the statistics page with a JSON export', () => {
+    const page = renderPage(LOGS_HTML, analyticsFixture());
+    assert.ok(page.query('#role').length === 1 && page.query('#complexity').length === 1);
+    const rows = page.query('#subagent-eval-table tr');
+    assert.equal(rows.length, 2, 'header and one row');
+    assert.match(rows[1]!.textContent ?? '', /developer.*claude-opus-5-5/);
+    assert.match(rows[1]!.textContent ?? '', /75/);
+    const link = page.query('#subagent-eval-export')[0] as unknown as { hidden: boolean; href: string; hasAttribute(n: string): boolean };
+    assert.equal(link.hidden, false);
+    assert.ok(link.hasAttribute('download'));
+    assert.ok(link.href.startsWith('data:application/json'));
+    assert.match(decodeURIComponent(link.href), /"subagent_evaluation"/);
+    const old = analyticsFixture();
+    delete old.subagent_evaluation;
+    const bare = renderPage(LOGS_HTML, old);
+    assert.equal(bare.query('#subagent-eval-table').length, 0);
+    assert.equal((bare.query("#subagent-eval-export")[0] as { hidden: boolean }).hidden, true);
+  });
+
   it('serves history statistics for all repositories or one, and the raw log', async () => {
     const all = JSON.parse((await request(server.port, 'GET', '/api/v1/history')).body);
     assert.deepEqual(all.repositories_available.map((r: { repo: string }) => r.repo), ['acme/app', 'other/repo']);
@@ -371,6 +390,15 @@ describe('http extension', () => {
       ['reviewer', { 'review:approved': 1 }],
     ]);
     assert.equal(a.filter.effort, null);
+    assert.equal(a.filter.role, null);
+    assert.deepEqual(a.subagent_evaluation.rows.map((r: { role: string; runs: number }) => [r.role, r.runs]), [['default', 1]]);
+    const roleParams = JSON.parse((await request(server.port, 'GET', `${week}&role=default&complexity=S`)).body);
+    assert.equal(roleParams.filter.role, 'default');
+    assert.equal(roleParams.filter.complexity, 'S');
+    assert.ok(Array.isArray(roleParams.subagent_evaluation.rows));
+    const noRole = await request(server.port, 'GET', `${week}&role=nobody`);
+    assert.equal(noRole.status, 200);
+    assert.deepEqual(JSON.parse(noRole.body).subagent_evaluation.rows, []);
     assert.ok(Array.isArray(a.budget.days) && a.budget.days.length > 0);
     assert.equal(typeof a.budget.days[0].peak_5h_tokens, 'number');
     assert.equal(typeof a.budget.compacts_by_role, 'object');
@@ -652,6 +680,140 @@ describe('team API', () => {
       await orchestrator.shutdown(1_000);
       await server.close();
     }
+  });
+});
+
+describe('subagent measures: team API and tile (#485)', () => {
+  type Obj = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const snapshot = (over: Obj = {}) => ({
+    toolUseId: 'toolu_01F26xAyjMN8Q1WtbZpUMo8j',
+    subagentType: 'symphony:laravel-code-reviewer',
+    description: 'Review issue 205 diff',
+    startedAt: new Date('2026-10-30T11:58:00.000Z'),
+    endedAt: null,
+    status: 'running',
+    tokens: { inputTokens: 4, outputTokens: 2578, cacheReadTokens: 515041, cacheWriteTokens: 11065 },
+    contextTokens: 65819,
+    toolUses: 12,
+    durationMs: 110436,
+    models: ['claude-opus-5-5'],
+    ...over,
+  });
+  const entry = (status: string, extra: Obj = {}, total = 12000) => ({
+    tool_use_id: `${status}-${total}`, subagent_type: 'Reviewer', description: 'd', status, started_at: '2026-10-30T11:58:00.000Z',
+    ended_at: status === 'done' ? '2026-10-30T11:59:50.000Z' : null,
+    tokens: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: total },
+    ...extra,
+  });
+  const tile = (team: Obj) => renderPage(AGENT_HTML, { detail: issueDetail(), team: teamView(team) }, { url: AGENT_URL });
+
+  it('serves context, tool uses, duration, models and the billed sum of a running subagent', async () => {
+    const runner = new FakeRunner((turn, params) => {
+      params.onEvent({ event: 'subagent', timestamp: new Date(), pid: 1, threadId: 't', turnId: '1', sessionId: 't-1', turnCount: turn, subagent: snapshot() } as never);
+      return new Promise(() => undefined);
+    });
+    const orchestrator = new Orchestrator({
+      workflow: new StaticWorkflow(makeWorkflow(baseFront(tempDir()))),
+      runner,
+      logger: Logger.silent(),
+      env: {},
+      logDir: tempDir(),
+      timers: new ManualTimers(),
+      createAdapter: () => new FakeTracker([makeIssue({ id: 't' })]),
+    });
+    const server = await startHttpServer({ host: '127.0.0.1', port: 0, orchestrator, logger: Logger.silent() });
+    try {
+      await orchestrator.tickNow();
+      const url = `/api/v1/${encodeURIComponent('acme/app#t')}/team`;
+      let team: Obj = {};
+      for (let i = 0; i < 400 && !(team.subagents?.running?.length === 1); i++) {
+        const res = await request(server.port, 'GET', url);
+        team = res.status === 200 ? JSON.parse(res.body) : {};
+        if (!team.subagents?.running?.length) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(team.subagents?.running?.length, 1, 'subagent on the board');
+      const sub = team.subagents.running[0];
+      assert.equal(sub.context_tokens, 65819);
+      assert.equal(sub.tool_uses, 12);
+      assert.equal(sub.duration_ms, 110436);
+      assert.deepEqual(sub.models, ['claude-opus-5-5']);
+      assert.equal(sub.tokens.total_tokens, 528688);
+    } finally {
+      await orchestrator.shutdown(1_000);
+      await server.close();
+    }
+  });
+
+  it('shows "Kontext 66k · abgerechnet 529k" and the model of a finished subagent', () => {
+    const page = tile({ subagents: { running: [], finished: [entry('done', { context_tokens: 65819, tool_uses: 12, duration_ms: 110436, models: ['claude-opus-5-5'] }, 528688)] } });
+    const row = page.query('#stage-subs-body .stage-subagent')[0]!;
+    assert.match(row.textContent ?? '', /Kontext 66k · abgerechnet 529k/);
+    assert.match(row.textContent ?? '', /claude-opus-5-5/);
+  });
+
+  it('shows "Kontext —" with the billed figure for a run without task_* data and no model', () => {
+    const page = tile({ subagents: { running: [entry('running')], finished: [] } });
+    const row = page.query('#stage-subs-body .stage-subagent')[0]!;
+    assert.match(row.textContent ?? '', /Kontext — · abgerechnet 12k/);
+    assert.equal(row.querySelector('.sub-model')!.textContent, '');
+  });
+
+  it('tolerates a null context and JSON from an older server without the new keys', () => {
+    const old = entry('running');
+    const page = tile({ subagents: { running: [old, { ...entry('running', {}, 7000), context_tokens: null, models: [] }], finished: [] } });
+    const rows = page.query('#stage-subs-body .stage-subagent');
+    assert.equal(rows.length, 2);
+    assert.match(rows[1]!.textContent ?? '', /Kontext —/);
+    assert.match(rows[1]!.textContent ?? '', /Kontext — · abgerechnet 7\.0k|Kontext — · abgerechnet 7k/);
+  });
+
+  it('joins several models and refreshes the figures and the model on the next poll', () => {
+    const page = tile({ subagents: { running: [entry('running')], finished: [] } });
+    const next = teamView({ subagents: { running: [entry('running', { context_tokens: 30000, models: ['claude-opus-5-5', 'claude-sonnet-5-5'] }, 20000)], finished: [] } });
+    next.subagents.running[0].tool_use_id = 'running-12000';
+    page.render({ detail: issueDetail(), team: next });
+    const row = page.query('#stage-subs-body .stage-subagent')[0]!;
+    assert.match(row.querySelector('.sub-right')!.textContent ?? '', /Kontext 30k · abgerechnet 20k/);
+    assert.equal(row.querySelector('.sub-model')!.textContent, 'claude-opus-5-5, claude-sonnet-5-5');
+  });
+
+  describe('error reason on the tile (#486)', () => {
+    const LIMIT = 'Agent terminated early due to an API error: You have hit your weekly limit';
+    it('shows the error and its reason for a failed subagent, not "fertig"', () => {
+      const page = tile({ subagents: { running: [], finished: [entry('error', { reason: LIMIT })] } });
+      const row = page.query('#stage-subs-body .stage-subagent')[0]!;
+      const right = row.querySelector('.sub-right')!.textContent ?? '';
+      assert.match(right, /Fehler/);
+      assert.match(right, /weekly limit/);
+      assert.doesNotMatch(right, /fertig/);
+      assert.ok(/is-error/.test(row.getAttribute('class') ?? ''), 'error class on the tile');
+    });
+
+    it('shows a failed subagent without a reason as error and a finished one as "fertig" without error class', () => {
+      const page = tile({ subagents: { running: [], finished: [entry('error', { reason: null }, 1000), entry('ok', {}, 2000)] } });
+      const rows = page.query('#stage-subs-body .stage-subagent'); // newest first, order is not under test
+      const bad = rows.find((r) => /abgerechnet 1\.0k|abgerechnet 1k/.test(r.textContent ?? ''));
+      const good = rows.find((r) => /abgerechnet 2\.0k|abgerechnet 2k/.test(r.textContent ?? ''));
+      assert.ok(bad && good, 'both rows rendered');
+      assert.match(bad!.querySelector('.sub-right')!.textContent ?? '', /Fehler/);
+      assert.doesNotMatch(good!.querySelector('.sub-right')!.textContent ?? '', /Fehler/);
+      assert.ok(!/is-error/.test(good!.getAttribute('class') ?? ''));
+    });
+
+    it('rebuilds the tile when a finished ok subagent turns into an error on the next poll', () => {
+      const page = tile({ subagents: { running: [], finished: [entry('ok', {}, 5000)] } });
+      assert.doesNotMatch(page.query('#stage-subs-body .stage-subagent')[0]!.textContent ?? '', /Fehler/);
+      page.render({ detail: issueDetail(), team: teamView({ subagents: { running: [], finished: [{ ...entry('error', { reason: 'late failure' }, 5000), tool_use_id: 'ok-5000' }] } }) });
+      const row = page.query('#stage-subs-body .stage-subagent')[0]!;
+      assert.match(row.textContent ?? '', /Fehler: late failure/);
+    });
+
+    it('escapes the reason as text', () => {
+      const page = tile({ subagents: { running: [], finished: [entry('error', { reason: '<img src=x onerror=alert(1)>' })] } });
+      const row = page.query('#stage-subs-body .stage-subagent')[0]!;
+      assert.equal(row.querySelector('img'), null);
+      assert.match(row.textContent ?? '', /<img/);
+    });
   });
 });
 
@@ -2015,5 +2177,67 @@ describe('GET /api/v1/changes (E6-3a)', () => {
       assert.equal(host.status, 403);
       assert.match(host.body, /forbidden_host/);
     });
+  });
+});
+
+describe('E0-8 subagents per stage, also after the run', () => {
+  type Obj = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const sub = (over: Obj = {}) => ({
+    tool_use_id: 'tu1', subagent_type: 'reviewer', description: 'Review diff', status: 'done', started_at: '2026-10-30T11:02:00.000Z', ended_at: '2026-10-30T11:04:00.000Z',
+    context_tokens: 65819, tool_uses: 3, duration_ms: 110436, models: ['claude-opus-5-5'], reason: null,
+    tokens: { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 528688 }, ...over,
+  });
+  const block = (role: string, run: string, from: string, to: string | null, subagents: Obj[], round = 1) =>
+    ({ role, run, started_at: `2026-10-30T${from}:00.000Z`, ended_at: to === null ? null : `2026-10-30T${to}:00.000Z`, verdict: null, round, model: 'opus', tool_calls: 1, subagents });
+  const render = (team: Obj) => renderPage(AGENT_HTML, { detail: issueDetail(), team }, { url: AGENT_URL });
+  const ended = (blocks: Obj[]) => teamView({ active: null, subagents: { running: [], finished: [] }, blocks });
+
+  it('shows the review of an earlier developer run after that run ended', () => {
+    const page = render(ended([block('developer', 'run-1', '11:00', '11:10', [sub()]), block('tester', 'run-2', '11:10', '11:20', [])]));
+    assert.equal(page.$('stage-subs').hidden, false);
+    const row = page.query('#stage-subs-body .sub-stage[data-role="developer"] .stage-subagent')[0]!;
+    assert.equal(row.querySelector('.sub-name')!.textContent, 'reviewer');
+    assert.equal(row.querySelector('.sub-task')!.textContent, 'Review diff');
+    assert.equal(row.querySelector('.sub-right')!.textContent, 'fertig · 1m 50s · Kontext 66k · abgerechnet 529k');
+    assert.equal(row.querySelector('.sub-model')!.textContent, 'claude-opus-5-5');
+    assert.equal(row.querySelector('.ring'), null);
+  });
+
+  it('shows the reason of an error subagent as text', () => {
+    const reason = 'Agent terminated early due to an API error: weekly limit <b>x</b>';
+    const page = render(ended([block('developer', 'run-1', '11:00', '11:10', [sub({ status: 'error', reason })])]));
+    const row = page.query('#stage-subs-body .stage-subagent')[0]!;
+    assert.ok(row.className.includes('is-error'));
+    assert.ok(row.querySelector('.sub-right')!.textContent!.startsWith('Fehler: Agent terminated early'));
+    assert.ok(row.querySelector('.sub-right')!.textContent!.includes('<b>x</b>'));
+  });
+
+  it('keeps the live board first and the pulse across polls, finished runs follow', () => {
+    const team = () => teamView({ blocks: [block('developer', 'run-1', '11:00', '11:10', [sub()]), block('developer', 'run-3', '11:58', null, [], 2)] });
+    const page = render(team());
+    const rows = page.query('#stage-subs-body .sub-stage[data-role="developer"] .stage-subagent');
+    assert.equal(rows.length, 3);
+    assert.ok(rows[0]!.className.includes('is-running'));
+    assert.ok(rows[0]!.querySelector('.ring'));
+    assert.equal(rows[2]!.querySelector('.sub-name')!.textContent, 'reviewer');
+    const ring = page.query('#stage-subs-body .ring')[0];
+    const next = team();
+    next.subagents.running[0].tokens.total_tokens = 15000;
+    page.render({ detail: issueDetail(), team: next });
+    assert.equal(page.query('#stage-subs-body .ring')[0], ring);
+  });
+
+  it('says so for a live run and a finished run without subagents', () => {
+    const live = render(teamView({ subagents: { running: [], finished: [] }, blocks: [block('developer', 'run-1', '11:00', '11:10', []), block('developer', 'run-2', '11:58', null, [], 2)] }));
+    assert.equal(live.query('#stage-subs-body .sub-run.is-live')[0]!.textContent, 'läuft · R2Diese Session hat (noch) keinen Subagent gestartet');
+    assert.ok(live.query('#stage-subs-body .sub-run')[1]!.textContent!.includes('Keine Subagents in diesem Lauf'));
+  });
+
+  it('renders no block for a stage without runs, and hides the card without any run', () => {
+    const page = render(ended([block('developer', 'run-1', '11:00', '11:10', [])]));
+    assert.deepEqual(page.query('#stage-subs-body .sub-stage').map((x) => x.dataset.role), ['developer']);
+    const none = render(ended([]));
+    assert.equal(none.$('stage-subs').hidden, true);
+    assert.ok(!(none.$('stage-subs-body').textContent ?? '').includes('Keine Session aktiv'));
   });
 });

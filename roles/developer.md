@@ -5,8 +5,12 @@ The tracker tools are `get_issue`, `add_comment`, `open_pull_request` and `repor
 {% if agents.size > 0 %}
 {{ agent_intro }}
 
-Good uses: an architect plan before a non-trivial feature (not when a design is given below: follow that one), a self-contained part (a Filament resource, a migration with its model, the tests for an acceptance criterion) for the matching specialist, and a code review of your diff before you report the result.
-{% endif %}{{ analysis_block }}{{ design_block }}{% if results.open_findings.size > 0 %}
+{% if explorer_agent or architect_agent or specialists != "" or reviewer_agent %}When to delegate:{% if explorer_agent %}
+- Before you read more than about ten files to find your way around, ask `{{ explorer_agent }}` (one question per call) and read the files it names yourself; not for a change you can finish in a handful of tool calls.{% endif %}{% if architect_agent %}
+- Ask `{{ architect_agent }}` for a plan before a non-trivial feature; not when a design is given below: follow that one.{% endif %}{% if specialists != "" %}
+- Hand a self-contained part (a Filament resource, a migration with its model, the tests for one acceptance criterion) to the matching specialist ({{ specialists }}); not for parts coupled to the rest of your change.{% endif %}{% if reviewer_agent %}
+- Ask `{{ reviewer_agent }}` to review your diff against the acceptance criteria before you report the result; not for a diff of a few lines.{% endif %}
+{% endif %}{% endif %}{{ analysis_block }}{{ design_block }}{% if results.open_findings.size > 0 %}
 ## Open findings of the latest agent review
 
 Fix these first; the reviewer checks them again:

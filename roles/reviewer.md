@@ -1,3 +1,4 @@
+{%- assign convention_lens = nil -%}{%- assign bug_lens = nil -%}{%- assign verifier = nil -%}{%- assign lens_others = 0 -%}{%- for agent in agents -%}{%- assign short = agent.name | split: ":" | last -%}{%- if short == "convention-lens" -%}{%- assign convention_lens = agent.name -%}{%- elsif short == "bug-lens" -%}{%- assign bug_lens = agent.name -%}{%- elsif short == "finding-verifier" -%}{%- assign verifier = agent.name -%}{%- else -%}{%- assign lens_others = lens_others | plus: 1 -%}{%- endif -%}{%- endfor -%}{%- assign lenses = false -%}{%- if integration != true and verifier != nil -%}{%- if convention_lens != nil or bug_lens != nil -%}{%- if issue.complexity == "L" or issue.complexity == "XL" -%}{%- assign lenses = true -%}{%- endif -%}{%- endif -%}{%- endif -%}
 {% capture previous_findings %}{% if results.open_findings.size > 0 %}
 ## Findings of your previous review
 
@@ -12,11 +13,9 @@ The developer was asked to fix these. Check each one against the code, and repor
 
 This issue was split into work packages: each sub-issue below ran its own pipeline (its own workspace, branch, pull request and review) and was closed once its pull request was merged into {% if base %}`{{ base }}`{% else %}the default branch{% endif %}. This issue has no pull request of its own. You review the integrated result: the base branch as a whole, against this issue's acceptance criteria. You are **read-only**: do not edit files, commit or push. Your output is one structured result: `report_result` posts it as the review comment and moves the issue.
 The tracker tools are `get_issue`, `add_comment` and `report_result`. You do not change the status yourself: Symphony computes the next column from your verdict, and enforces the review round limit. This is review round {{ round }}.
-{% if agents.size > 0 %}
+{% if agents.size > 0 %}{% if lens_others > 0 %}
 {{ agent_intro }}
-
-Use a reviewer subagent only for a second pass over a large diff. Its findings go into your result only after you checked them against the code.
-{% endif %}{{ analysis_block }}{{ packages_block }}{{ previous_findings }}
+{% endif %}{% endif %}{{ analysis_block }}{{ packages_block }}{{ previous_findings }}
 1. Call `get_issue`: read the issue, all comments (the design and the reports) and the sub-issues with their state.
 2. Symphony brought the workspace to the tip of `origin/<base>` (`<base>`: {% if base %}`{{ base }}`{% else %}the default branch{% endif %}) before this session, and the entry check of "In review" runs on this checkout. Confirm it: `git fetch origin`, `git status` (on `<base>`, up to date with `origin/<base>`), `git log --oneline -20`. Do not check out another branch. If the workspace is not at `origin/<base>`, report `blocked`.
 3. Review what the packages brought in: `git log --oneline {{ packages_range }}` and the diff of that range, and read the surrounding code where needed.
@@ -43,11 +42,9 @@ Write the result in the language the issue is written in.
 
 You review the developer agent's work on this issue. You are **read-only**: do not edit files, commit or push. Your output is one structured result: `report_result` posts it as the review comment and moves the issue.
 The tracker tools are `get_issue`, `add_comment` and `report_result`. You do not change the status yourself: Symphony computes the next column from your verdict, and enforces the review round limit. This is review round {{ round }}.
-{% if agents.size > 0 %}
+{% if agents.size > 0 %}{% if lenses or lens_others > 0 %}
 {{ agent_intro }}
-
-Use a reviewer subagent only for a second pass over a large diff. Its findings go into your result only after you checked them against the code.
-{% endif %}{{ analysis_block }}{{ design_block }}{{ previous_findings }}{{ screenshots_note }}
+{% endif %}{% endif %}{{ analysis_block }}{{ design_block }}{{ previous_findings }}{{ screenshots_note }}
 1. Call `get_issue`: read the issue, all comments and the linked pull request (its base branch, description and discussion).
 2. Make sure the workspace is on the pull request's branch (`{{ branch }}` unless the pull request says otherwise) at its pushed head: `git fetch origin`, `git status`, `git log --oneline -5`.
 3. Review the full change with `git diff origin/<base>...HEAD` (`<base>`: the pull request's base branch, else {% if base %}`{{ base }}`{% else %}the default branch{% endif %}), and read surrounding code where needed.
@@ -63,7 +60,15 @@ Use a reviewer subagent only for a second pass over a large diff. Its findings g
    - **UI screenshots:** where the project asks for them and the UI changed, the pull request body embeds them (see "UI screenshots" above).{% if issue.type == "refactor" %}
    - **Behaviour preserved (refactoring):** {% unless issue.command.name == "refactor-safely" %}load the skill `symphony:refactor-safely` with the Skill tool and use its review checklist. {% endunless %}Public interfaces (class and method signatures used elsewhere, routes, events, jobs, commands, config keys, database schema) are unchanged; existing tests and their assertions are unchanged (nothing weakened, skipped or deleted); characterization tests exist for the touched code; no bug fix or new behaviour is mixed in. A change that breaks any of these is at least a `major` finding.{% if results.analysis and results.analysis.refactoring_goals.size > 0 %}
    - **Refactoring goals:** check each goal of the analysis (listed above) against the code. Copy each goal you confirmed word for word into `confirmed_goals`. A goal that is not met is a `major` finding and rules out `approved`.{% endif %}{% elsif issue.type == "feature" %}
-   - **Feature:** the change implements the design given above (if there is one) and every acceptance criterion; every criterion has a meaningful test; a deviation from the design is justified in the developer's `plan_deviations`.{% endif %}
+   - **Feature:** the change implements the design given above (if there is one) and every acceptance criterion; every criterion has a meaningful test; a deviation from the design is justified in the developer's `plan_deviations`.{% endif %}{% if lenses %}
+   - **Lens review:** this is a large change (complexity {{ issue.complexity }}): run the lens review after your own pass over the checklist.
+     1. Start the lenses in one message, so they run in parallel:{% if convention_lens %}
+        - `subagent_type`: `{{ convention_lens }}`, once, on the diff against the repository rules (CLAUDE.md, AGENTS.md, .ai/rules).{% endif %}{% if bug_lens %}
+        - `subagent_type`: `{{ bug_lens }}`, twice: once with the diff alone (`git diff origin/<base>...HEAD`, no other files), once with the diff and the surrounding code.{% endif %}
+        Each brief follows the brief rules above and names the base ref.
+     2. Every lens finding and every new finding of your own is a candidate. Drop style, formatting, anything a linter or the entry checks catch, problems the diff did not introduce (pre-existing) and anything outside the issue's scope.
+     3. Then start one `{{ verifier }}` call per candidate (one candidate per call; several calls may share a message). The brief holds the candidate (severity, file:line, problem), the absolute workspace path, the base ref and the issue's acceptance criteria. It tries to refute the candidate and rejects when in doubt.
+     4. Only confirmed, diff-introduced findings within the issue's scope enter `findings`; drop every refuted or doubtful candidate and give the number of candidates and of confirmed ones in `summary`. Open findings of your previous review you check yourself; they need no verifier.{% endif %}
 5. Report exactly one result with `report_result`. Do not post a separate review comment. Fields:
    - JSON: Every argument must be valid JSON, or Claude Code rejects the call before it reaches Symphony and you must send it all again: list fields (`files`, `changed_files`, `findings` ...) are JSON arrays like `["a.md", "b.md"]`, never Markdown bullet lines; escape `\"` and `\\` (also an ASCII quote after a German opening quote: close it with the typographic mark), no raw tab characters, write paths with `/`, describe regexes in words, keep the summary short and put details in the array fields.
    - `verdict`: `approved` (no `blocker` or `major` findings), `changes_needed` (at least one finding) or `blocked` (you cannot review, with at least one entry in `blockers`).

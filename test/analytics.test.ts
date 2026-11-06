@@ -92,6 +92,136 @@ describe('statistics analytics', () => {
     });
   });
 
+  describe('subagent evaluation', () => {
+    const PER_RUN = 113_000;
+    const result = (issue: string, role: string, kind: string, verdict: string, at: string, over: Record<string, unknown> = {}) => ({
+      repo: 'acme/app', issue, run: null, role, kind, verdict, round: null, target: null, profile: 'bugfix', complexity: 'S', findings: 0, at: new Date(at), ...over,
+    });
+    const sub = (tokens: number) => ({ toolUseId: 't', subagentType: 'Explore', description: 'd', startedAt: new Date('2026-10-03T10:00:00Z'), endedAt: null, status: 'ok' as const, tokens: { inputTokens: tokens, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, contextTokens: null, toolUses: null, durationMs: null, models: ['claude-haiku-4-5'] });
+
+    function seedEval() {
+      const h = history();
+      // #1: three delegating developer runs on opus (one without), one sonnet run; reviewer and tester runs.
+      h.log.runFinished(finish('acme/app#1', 'd1', '2026-10-03T10:00:00Z', { role: 'developer', agentCalls: { Explore: 2 }, subagents: [sub(30_000)], toolCalls: { Bash: 10 }, subagentToolCalls: { Bash: 4 } }));
+      h.log.runFinished(finish('acme/app#1', 'd2', '2026-10-03T11:00:00Z', { role: 'developer', agentCalls: { Explore: 1, Plan: 1 }, toolCalls: { Bash: 2 }, subagentToolCalls: { Bash: 5 } }));
+      h.log.runFinished(finish('acme/app#2', 'd3', '2026-10-04T10:00:00Z', { role: 'developer', agentCalls: { Explore: 1 }, toolCalls: { Bash: 8 } }));
+      h.log.runFinished(finish('acme/app#2', 'd4', '2026-10-04T11:00:00Z', { role: 'developer' }));
+      h.log.runFinished(finish('acme/app#2', 'd5', '2026-10-04T12:00:00Z', { role: 'developer', usage: { 'claude-sonnet-5-5': usage } }));
+      h.log.runFinished(finish('acme/app#1', 'v1', '2026-10-03T12:00:00Z', { role: 'reviewer' }));
+      h.log.runFinished({ ...finish('other/repo#9', 'o1', '2026-09-20T12:00:00Z', { role: 'developer', agentCalls: { Explore: 1 } }), repo: 'other/repo' });
+      h.log.stageResult(result('acme/app#1', 'reviewer', 'review', 'changes_needed', '2026-10-03T12:30:00Z', { complexity: 'S' }));
+      h.log.stageResult(result('acme/app#1', 'reviewer', 'review', 'changes_needed', '2026-10-03T12:40:00Z', { complexity: 'L' }));
+      h.log.stageResult(result('acme/app#1', 'tester', 'test', 'failed', '2026-10-03T13:00:00Z', { complexity: 'L' }));
+      h.log.stageResult(result('acme/app#1', 'reviewer', 'review', 'approved', '2026-10-03T14:00:00Z', { complexity: 'L', target: 'In review' }));
+      return readHistory(h.log.dir, null).entries;
+    }
+    const rowOf = (a: ReturnType<typeof computeAnalytics>, role: string, model: string) => a.subagent_evaluation.rows.find((r) => r.role === role && r.model === model)!;
+
+    it('computes delegation rate, calls per subagent type, main-thread Bash and token share per role × model', () => {
+      const a = computeAnalytics(seedEval(), history().pricing.current(), filter({ repo: 'acme/app' }), NOW);
+      assert.deepEqual(a.subagent_evaluation.rows.map((r) => [r.role, r.model, r.runs]), [['developer', 'claude-opus-5-5', 4], ['developer', 'claude-sonnet-5-5', 1], ['reviewer', 'claude-opus-5-5', 1]]);
+      const dev = rowOf(a, 'developer', 'claude-opus-5-5');
+      assert.equal(dev.runs_with_subagent, 3);
+      assert.equal(dev.delegation_rate, 0.75);
+      assert.deepEqual(dev.agents, [{ agent: 'Explore', calls: 4, runs: 3 }, { agent: 'Plan', calls: 1, runs: 1 }]);
+      assert.equal(dev.subagent_calls, 5);
+      // Bash per run: 6, 0 (clamped), 8, 0 → total 14, median 0; fewer than 20 runs → no p90.
+      assert.deepEqual(dev.main_bash, { total: 14, avg: 3.5, p50: 0, p90: null });
+      assert.equal(dev.billed_tokens, 4 * PER_RUN);
+      assert.equal(dev.subagent_tokens, 30_000);
+      assert.equal(dev.subagent_token_share, Math.round((30_000 / (4 * PER_RUN)) * 10_000) / 10_000);
+      const sonnet = rowOf(a, 'developer', 'claude-sonnet-5-5');
+      assert.equal(sonnet.runs_with_subagent, 0);
+      assert.equal(sonnet.delegation_rate, 0);
+      assert.equal(sonnet.subagent_token_share, 0);
+    });
+
+    it('computes p90 with enough runs and keeps the token share with a model filter', () => {
+      const h = history();
+      for (let i = 1; i <= 20; i += 1) {
+        h.log.runFinished(finish('acme/app#1', `p${i}`, '2026-10-03T10:00:00Z', { role: 'developer', toolCalls: { Bash: i }, usage: { 'claude-opus-5-5': usage, 'claude-haiku-4-5': usage }, subagents: i === 1 ? [sub(500)] : [] }));
+      }
+      const entries = readHistory(h.log.dir, null).entries;
+      const a = computeAnalytics(entries, h.pricing.current(), filter(), NOW);
+      assert.equal(rowOf(a, 'developer', 'claude-opus-5-5').main_bash.p90, 18);
+      assert.equal(rowOf(a, 'developer', 'claude-opus-5-5').main_bash.p50, 10);
+      const narrowed = computeAnalytics(entries, h.pricing.current(), filter({ model: 'claude-haiku-4-5' }), NOW);
+      const row = rowOf(narrowed, 'developer', 'claude-opus-5-5');
+      assert.equal(row.billed_tokens, 20 * 2 * PER_RUN);
+      assert.ok(row.subagent_token_share !== null && row.subagent_token_share <= 1);
+    });
+
+    it('attributes returns and finished issues per issue and costs all stages', () => {
+      const a = computeAnalytics(seedEval(), history().pricing.current(), filter({ repo: 'acme/app' }), NOW);
+      const dev = rowOf(a, 'developer', 'claude-opus-5-5');
+      // Issues #1 and #2; the results of #1 count for the developer row although reviewer/tester runs produced them.
+      assert.deepEqual(dev.returns, { review_changes_needed: 2, test_failed: 1, total: 3, per_issue: 1.5 });
+      assert.equal(dev.issues, 2);
+      assert.equal(dev.finished_issues, 1);
+      const costOne = (runs: number) => runs * (4 * 1000 + 20 * 2000 + 0.2 * 100_000 + 10_000 * 4) / 1_000_000;
+      assert.ok(dev.own_cost_per_finished_issue !== null && dev.cost_per_finished_issue !== null);
+      assert.ok(dev.cost_per_finished_issue > dev.own_cost_per_finished_issue, 'all stages include the reviewer run');
+      assert.ok(Math.abs(dev.cost_per_finished_issue / dev.own_cost_per_finished_issue - 3 / 2) < 0.01, String(costOne(1)));
+      assert.equal(rowOf(a, 'developer', 'claude-sonnet-5-5').finished_issues, 0);
+      assert.equal(rowOf(a, 'developer', 'claude-sonnet-5-5').cost_per_finished_issue, null);
+    });
+
+    it('filters by role, repository, period and complexity', () => {
+      const entries = seedEval();
+      const pricing = history().pricing.current();
+      const role = computeAnalytics(entries, pricing, filter({ role: 'reviewer' }), NOW);
+      assert.deepEqual(role.subagent_evaluation.rows.map((r) => r.role), ['reviewer']);
+      assert.deepEqual(role.by_role.map((r) => r.role), ['reviewer']);
+      assert.deepEqual(role.roles_available, ['developer', 'reviewer']);
+      assert.equal(computeAnalytics(entries, pricing, filter({ role: 'nobody' }), NOW).subagent_evaluation.rows.length, 0);
+
+      const all = computeAnalytics(entries, pricing, filter(), NOW);
+      assert.equal(all.subagent_evaluation.rows.reduce((n, r) => n + r.runs, 0), 7);
+      const repo = computeAnalytics(entries, pricing, filter({ repo: 'other/repo' }), NOW);
+      assert.deepEqual(repo.subagent_evaluation.rows.map((r) => [r.role, r.runs]), [['developer', 1]]);
+      const period = computeAnalytics(entries, pricing, filter({ from: new Date('2026-10-04T00:00:00Z') }), NOW);
+      assert.equal(period.subagent_evaluation.rows.reduce((n, r) => n + r.runs, 0), 3);
+
+      // #1's newest complexity is L (the older S is overwritten); #2 and other/repo#9 have none.
+      const large = computeAnalytics(entries, pricing, filter({ complexity: 'l' }), NOW);
+      assert.deepEqual(large.subagent_evaluation.rows.map((r) => [r.role, r.runs]), [['developer', 2], ['reviewer', 1]]);
+      const unknown = computeAnalytics(entries, pricing, filter({ complexity: 'unknown' }), NOW);
+      assert.equal(unknown.subagent_evaluation.rows.reduce((n, r) => n + r.runs, 0), 4);
+      assert.deepEqual(all.complexities_available, ['L', 'unknown']);
+      assert.equal(all.filter.role, null);
+    });
+
+    it('leaves room for findings: null without the fields, summed with them', () => {
+      const entries = seedEval();
+      const pricing = history().pricing.current();
+      assert.deepEqual(rowOf(computeAnalytics(entries, pricing, filter(), NOW), 'developer', 'claude-opus-5-5').findings, { confirmed: null, refuted: null });
+      const withFindings = [...entries, { ts: '2026-10-03T12:50:00Z', event: 'stage_result', fields: { repo: 'acme/app', issue: 'acme/app#1', role: 'reviewer', kind: 'review', verdict: 'approved', findings_confirmed: '2', findings_refuted: '1' } }];
+      const row = rowOf(computeAnalytics(withFindings, pricing, filter(), NOW), 'developer', 'claude-opus-5-5');
+      assert.deepEqual(row.findings, { confirmed: 2, refuted: 1 });
+    });
+
+    it('yields zeros and nulls, not errors, for old lines without subagent fields', () => {
+      const h = history();
+      h.log.runFinished(finish('acme/app#1', 'x1', '2026-10-03T10:00:00Z'));
+      h.log.runFinished(finish('acme/app#1', 'x2', '2026-10-03T11:00:00Z', { usage: {} }));
+      const a = computeAnalytics(readHistory(h.log.dir, null).entries, h.pricing.current(), filter(), NOW);
+      // The run without logged usage has no model and forms its own row.
+      assert.deepEqual(a.subagent_evaluation.rows.map((r) => [r.model, r.runs]), [['claude-opus-5-5', 1], ['unknown', 1]]);
+      const row = a.subagent_evaluation.rows[0]!;
+      assert.equal(row.role, 'default');
+      assert.equal(row.runs, 1);
+      assert.equal(row.runs_with_subagent, 0);
+      assert.equal(row.delegation_rate, 0);
+      assert.equal(row.subagent_tokens, 0);
+      assert.equal(row.finished_issues, 0);
+      assert.equal(row.cost_per_finished_issue, null);
+      assert.deepEqual(row.returns, { review_changes_needed: 0, test_failed: 0, total: 0, per_issue: 0 });
+      assert.doesNotMatch(JSON.stringify(a.subagent_evaluation), /NaN|Infinity/);
+      const empty = computeAnalytics([], h.pricing.current(), filter(), NOW);
+      assert.deepEqual(empty.subagent_evaluation.rows, []);
+    });
+  });
+
   describe('stage results', () => {
     const result = (issue: string, role: string, kind: string, verdict: string, at: string, over: Record<string, unknown> = {}) => ({
       repo: 'acme/app', issue, run: null, role, kind, verdict, round: null, target: null, profile: 'bugfix', complexity: 'S', findings: 0, at: new Date(at), ...over,
@@ -170,10 +300,10 @@ describe('statistics analytics', () => {
     assert.equal(a.tools.avg_calls_per_run, 3.7);
     assert.equal(a.tools.distinct_tools, 4);
     assert.deepEqual(a.tools.tools, [
-      { tool: 'Bash', calls: 5, runs: 2, server: null, name: 'Bash' },
-      { tool: 'mcp__laravel-boost__search-docs', calls: 3, runs: 2, server: 'laravel-boost', name: 'search-docs' },
-      { tool: 'Edit', calls: 2, runs: 1, server: null, name: 'Edit' },
-      { tool: 'Skill', calls: 1, runs: 1, server: null, name: 'Skill' },
+      { tool: 'Bash', calls: 5, runs: 2, subagent_calls: 0, main_calls: 5, server: null, name: 'Bash' },
+      { tool: 'mcp__laravel-boost__search-docs', calls: 3, runs: 2, subagent_calls: 0, main_calls: 3, server: 'laravel-boost', name: 'search-docs' },
+      { tool: 'Edit', calls: 2, runs: 1, subagent_calls: 0, main_calls: 2, server: null, name: 'Edit' },
+      { tool: 'Skill', calls: 1, runs: 1, subagent_calls: 0, main_calls: 1, server: null, name: 'Skill' },
     ]);
     assert.deepEqual(a.tools.skills, [{ skill: 'pest-testing', calls: 1, runs: 1 }]);
     assert.deepEqual(a.tools.agents, [
@@ -194,7 +324,24 @@ describe('statistics analytics', () => {
     }]);
 
     const none = computeAnalytics([], h.pricing.current(), filter(), NOW);
-    assert.deepEqual(none.tools, { runs: 0, runs_with_calls: 0, calls: 0, avg_calls_per_run: null, distinct_tools: 0, tools: [], skills: [], agents: [], integrations: [] });
+    assert.deepEqual(none.tools, { runs: 0, runs_with_calls: 0, calls: 0, subagent_calls: 0, main_calls: 0, avg_calls_per_run: null, distinct_tools: 0, tools: [], skills: [], agents: [], integrations: [] });
+  });
+
+  it('shows main-thread calls as the total minus the calls made inside subagents', () => {
+    const h = history();
+    h.log.runFinished(finish('acme/app#1', 'r1', '2026-10-04T10:00:00Z', {
+      toolCalls: { Bash: 95, Read: 16, SubagentHandback: 1 },
+      subagentToolCalls: { Bash: 11, SubagentHandback: 1 },
+    }));
+    // Logged before subagent_tool_calls existed.
+    h.log.runFinished(finish('acme/app#2', 'r2', '2026-10-05T10:00:00Z', { toolCalls: { Edit: 2 } }));
+    const a = computeAnalytics(readHistory(h.log.dir, null).entries, h.pricing.current(), filter(), NOW);
+    assert.equal(a.tools.calls, 114);
+    assert.equal(a.tools.subagent_calls, 12);
+    assert.equal(a.tools.main_calls, 102);
+    const row = (tool: string) => a.tools.tools.find((r) => r.tool === tool);
+    assert.deepEqual([row('Bash')?.calls, row('Bash')?.subagent_calls, row('Bash')?.main_calls], [95, 11, 84]);
+    assert.deepEqual([row('Edit')?.subagent_calls, row('Edit')?.main_calls], [0, 2]);
   });
 
   it('breaks runs down by effort, filters by it and lists runs without usage under their requested model', () => {
@@ -396,5 +543,21 @@ describe('statistics analytics', () => {
     assert.deepEqual(filterEntries(entries, { ...base, result: 'failed', limit: 10 }).entries.map((e) => e.run), ['r1']);
     assert.deepEqual(filterEntries(entries, { ...base, issue: '#3', limit: 10, order: 'asc' }).entries.map((e) => e.issue), ['other/repo#3']);
     assert.equal(filterEntries(entries, { ...base, event: 'model_usage', limit: 10 }).total, 4);
+  });
+  describe('mutation score per issue (E3-7)', () => {
+    const line = (issue: string, at: string, over: Record<string, unknown> = {}) => ({
+      repo: 'acme/app', issue, run: null, role: 'tester', kind: 'test', verdict: 'passed', round: null, target: null, profile: 'feature', complexity: 'L', findings: 0, at: new Date(at), ...over,
+    });
+
+    it('writes mutation_score to the line and lists the newest score per issue', () => {
+      const h = history();
+      h.log.stageResult(line('acme/app#1', '2026-10-03T10:00:00Z', { mutationScore: 60 }));
+      h.log.stageResult(line('acme/app#1', '2026-10-03T11:00:00Z', { mutationScore: 75 }));
+      h.log.stageResult(line('acme/app#2', '2026-10-03T12:00:00Z'));
+      const entries = readHistory(h.log.dir, null).entries;
+      assert.equal(entries.filter((e) => e.event === 'stage_result' && e.fields.mutation_score !== undefined).length, 2);
+      const a = computeAnalytics(entries, h.pricing.current(), filter(), NOW);
+      assert.deepEqual(a.subagent_evaluation.mutation_scores, [{ issue: 'acme/app#1', repo: 'acme/app', complexity: 'L', mutation_score: 75, at: '2026-10-03T11:00:00.000Z' }]);
+    });
   });
 });
