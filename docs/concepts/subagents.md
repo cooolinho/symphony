@@ -128,6 +128,7 @@ available everywhere (:145-146), but none ships yet.
 - Claude Code's order: the per-invocation `model` of the Agent call, then the front matter's `model`, then
   `CLAUDE_CODE_SUBAGENT_MODEL`, then the main model. Symphony sets none of these
   ([claude.ts:346-397](../../src/agent/claude.ts#L346-L397)), so a subagent always inherits the parent's model.
+  Exception: `symphony:explorer` is pinned by the Agent hook since E2-3 (see [agent-claude.md#explorer-model-e2-3](../agent-claude.md#explorer-model-e2-3)).
   Verified live: `laravel-code-reviewer` ran on `claude-opus-5-5` inside opus developers and on `claude-fable-5-1`
   inside the fable developer of bandenhub#11. Effort is inherited (answered in E0-2: [agent-claude.md](../agent-claude.md#mechanics-spike-e0-2-claude-code-21288)).
 - "Plan strong, implement cheaper" ([WORKFLOW.md:168-170](../../WORKFLOW.md#L168-L170)) cannot be expressed for
