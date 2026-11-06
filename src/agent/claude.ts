@@ -38,7 +38,7 @@ function toolResultText(content: unknown): string {
 }
 import { isWholeLimitMessage, limitScopeOf, parseLimitMessage } from './rate-limit.ts';
 import { forgetProcessGroup, killProcessGroup, processGroupSpawner } from './spawn.ts';
-import { contextWindowSuffix } from './model-name.ts';
+import { contextWindowSuffix, explorerModelFor } from './model-name.ts';
 import type {
   AgentEvent,
   AgentRunner,
@@ -63,9 +63,10 @@ const CLIENT_APP = 'symphony/0.1.0';
 /**
  * Session defaults, overridable through claude.env. Subagents and commands run in the foreground: when a turn ends,
  * Symphony decides what happens next and may end the session, so a background task never reports back. Subagent
- * nesting is capped at one level, so a subagent has no Agent tool.
+ * nesting is capped at one level, so a subagent has no Agent tool. The built-in agents (claude, Explore, general-purpose,
+ * Plan, statusline-setup) are off, so every Agent call names a `subagent_type`.
  */
-const SESSION_ENV_DEFAULTS = { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '1', CLAUDE_CODE_FORK_SUBAGENT: '0' };
+const SESSION_ENV_DEFAULTS = { CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: '1', CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '1', CLAUDE_CODE_FORK_SUBAGENT: '0' };
 /**
  * Fork subagents inherit the whole context and the role tools and bypass the Agent(<plugin>:<name>) denies; SDK 0.3.302
  * and later turn them on by default (CLAUDE_CODE_FORK_SUBAGENT in the defaults above). claude.env can set it to `1`.
@@ -81,6 +82,8 @@ const READ_ONLY_DENY = ['Edit', 'Write', 'NotebookEdit', 'Bash(git commit:*)', '
 
 /** The tool that starts a subagent; older Claude Code versions call it `Task`. */
 const AGENT_TOOLS = ['Agent', 'Task'];
+/** The plugin explorer, whose model the Agent hook pins below the parent (the front matter is no hard pin). */
+const EXPLORER_AGENT = 'symphony:explorer';
 
 /** Plugin prefix of the toolbox agents; only these get the issue context. */
 const SYMPHONY_AGENT_PREFIX = 'symphony:';
@@ -136,7 +139,7 @@ export function subagentContext(input: SubagentContextInput): string {
   return `${truncate(text, SUBAGENT_CONTEXT_MAX - last.length - 1)}\n${last}`;
 }
 
-/** `subagent_type` of an Agent tool call; Claude Code's default when unset is `general-purpose`. */
+/** `subagent_type` of an Agent tool call; Claude Code's default when unset is `general-purpose`; kept as the fallback for old logs. */
 function subagentOf(input: unknown): string {
   const value = typeof input === 'object' && input !== null ? (input as Record<string, unknown>).subagent_type : undefined;
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : 'general-purpose';
@@ -457,10 +460,9 @@ class ClaudeSession implements AgentSession {
     if (config.executable !== null) options.pathToClaudeCodeExecutable = config.executable;
     if (config.plugins.length > 0) options.plugins = config.plugins.map((plugin) => ({ type: 'local' as const, path: plugin }));
     if (config.skills !== null) options.skills = config.skills;
-    const hooks: NonNullable<Options['hooks']> = { SubagentStart: [{ hooks: [this.#injectSubagentContext] }] };
-    // The deny rules refuse the call, but the denied agents still appear in `init.agents`; the hook also refuses a call that names one.
-    if (deniedAgents.length > 0) hooks.PreToolUse = [{ matcher: AGENT_TOOLS.join('|'), hooks: [this.#refuseDeniedAgents] }];
-    options.hooks = hooks;
+    // The deny rules refuse the call, but the denied agents still appear in `init.agents`; the `PreToolUse` hook also refuses a call that names one
+    // and pins the explorer's model in every session (docs/agent-claude.md#subagents). `SubagentStart` injects the issue context.
+    options.hooks = { SubagentStart: [{ hooks: [this.#injectSubagentContext] }], PreToolUse: [{ matcher: AGENT_TOOLS.join('|'), hooks: [this.#agentPolicy] }] };
     if ((extensions?.additionalDirectories.length ?? 0) > 0) options.additionalDirectories = extensions?.additionalDirectories;
     const mcpServers: NonNullable<Options['mcpServers']> = {};
     for (const [name, server] of Object.entries(extensions?.mcpServers ?? {})) {
@@ -518,17 +520,28 @@ class ClaudeSession implements AgentSession {
     return { hookSpecificOutput: { hookEventName: 'SubagentStart', additionalContext } };
   };
 
-  /** Refuses an Agent tool call for a subagent the role or workspace does not allow (`deniedAgents`). */
-  #refuseDeniedAgents: HookCallback = async (input) => {
+  /** Refuses an Agent tool call for a subagent the role or workspace does not allow (`deniedAgents`); pins the explorer's model. */
+  #agentPolicy: HookCallback = async (input) => {
     if (input.hook_event_name !== 'PreToolUse' || !AGENT_TOOLS.includes(input.tool_name)) return {};
     const agent = subagentOf(input.tool_input);
-    if (!(this.#params.deniedAgents ?? []).includes(agent)) return {};
-    this.#emit('approval_denied', { message: `subagent ${agent} denied by policy`, detail: { tool: input.tool_name, agent } });
+    if ((this.#params.deniedAgents ?? []).includes(agent)) {
+      this.#emit('approval_denied', { message: `subagent ${agent} denied by policy`, detail: { tool: input.tool_name, agent } });
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: `The subagent ${agent} is not available to this role in this workspace. Do the work yourself or use another subagent.`,
+        },
+      };
+    }
+    if (agent !== EXPLORER_AGENT) return {};
+    const model = explorerModelFor(this.#sessionModel ?? this.#params.config.model);
+    if (model === null) return {};
     return {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason: `The subagent ${agent} is not available to this role in this workspace. Do the work yourself or use another subagent.`,
+        permissionDecision: 'allow',
+        updatedInput: { ...(input.tool_input as Record<string, unknown>), model },
       },
     };
   };

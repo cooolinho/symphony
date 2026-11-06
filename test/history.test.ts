@@ -145,6 +145,13 @@ describe('repository history', () => {
     assert.deepEqual(parseCounts('broken,:3,x:y,ok:2'), { ok: 2 });
   });
 
+  it('still parses old log lines whose subagent type is general-purpose', () => {
+    const line = JSON.stringify([{ type: 'general-purpose', description: 'old', status: 'ok', started_at: '2026-01-01T00:00:00.000Z', ended_at: null, duration_ms: 5, context_tokens: null, tokens: 3, tool_uses: 1, models: [] }]);
+    const [parsed] = parseSubagents(line);
+    assert.equal(parsed?.type, 'general-purpose');
+    assert.equal(parsed?.description, 'old');
+  });
+
   it('logs the subagents of a run as one JSON field and parses them back', () => {
     const { log } = history();
     const base = {

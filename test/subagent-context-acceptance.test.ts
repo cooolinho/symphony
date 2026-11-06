@@ -101,10 +101,10 @@ const BASE = { identifier: 'o/r#7', title: 'Title', cwd: '/w', readOnly: false, 
 const LAST = 'Answer with `file:line` for every claim about the code.';
 
 describe('E2-4: SubagentStart hook registration', () => {
-  it('is registered without denied agents and there is no PreToolUse hook then', async () => {
+  it('is registered without denied agents, next to the always-present PreToolUse hook', async () => {
     const options = await optionsFor({});
     assert.equal(options.hooks?.SubagentStart?.length, 1);
-    assert.equal(options.hooks?.PreToolUse, undefined);
+    assert.equal(options.hooks?.PreToolUse?.length, 1);
   });
 
   it('is registered next to the PreToolUse hook, and both work in one session', async () => {

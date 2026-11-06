@@ -148,10 +148,10 @@ needs a skill directory in the toolbox and a role with `commands` (or none at al
 Plugins also ship subagents (`agents/<name>.md`), which Claude Code offers to the Agent tool as `<plugin>:<name>`;
 the `init` message of the transcript lists them under `agents`. Symphony's toolbox ships five for Laravel repositories
 (`laravel-architect`, `laravel-code-reviewer`, `laravel-database-engineer`, `laravel-filament-developer`,
-`laravel-test-engineer`) and the framework-neutral `test-designer`. Which of them a session may start depends on the role's `agents`, read-only roles and the
+`laravel-test-engineer`) and the framework-neutral `explorer`, `design-critic` and `test-designer`. Which of them a session may start depends on the role's `agents`, read-only roles and the
 workspace's project type ([Subagents per role](configuration.md#subagents-per-role)); the rest are denied by an
-`Agent(<plugin>:<name>)` rule in `disallowedTools` and by a `PreToolUse` hook, which emits `approval_denied` when it
-refuses a call. Every Agent tool call carries its subagent in the `tool_use` event (`detail.agent`), so the statistics
+`Agent(<plugin>:<name>)` rule in `disallowedTools` and by a `PreToolUse` hook on `Agent|Task`, which emits `approval_denied` when it
+refuses a call. The hook is registered for every session, not only when agents are denied (it also pins the explorer's model, below). Every Agent tool call carries its subagent in the `tool_use` event (`detail.agent`), so the statistics
 count subagents like skills. Background and usage figures: [laravel-subagents.md](laravel-subagents.md).
 
 Symphony's appended system prompt does not reach subagents, so a `SubagentStart` callback hook (registered in every
@@ -162,6 +162,26 @@ acceptance criteria from `results.analysis` when the issue analyst ran, and the 
 Without a role context (other callers) the role line and the criteria are left out. The text is limited to 4000
 characters (`SUBAGENT_CONTEXT_MAX`); criteria are cut first, each at 400 characters, and the ones that do not fit become
 `- … n more in the issue`. Built-in agents, bare-name repository agents, forks and other plugins get nothing.
+
+#### Explorer model (E2-3)
+
+The `symphony:explorer` is always cheaper than its parent. The agent hook rewrites `tool_input.model` of an explorer call
+from the session model (the `init` model, else `claude.model`; aliases, `[1m]` suffixes and full ids all match):
+
+| Session model | Explorer model |
+| --- | --- |
+| sonnet | haiku |
+| opus, fable | sonnet |
+| haiku | haiku |
+| other or unknown | no rewrite (front matter: `sonnet`) |
+
+The front matter's `model` is no hard pin: a per-invocation `model` of the Agent call wins over it. So the hook returns
+`permissionDecision: 'allow'` with `updatedInput` (the original input plus `model`), the form the E0-2 spike verified
+(question 6). The deny check runs first, so a denied explorer is refused and never rewritten. Only the qualified
+`symphony:explorer` is pinned; other agents (the `laravel-*` personas, `general-purpose`, a project agent named `explorer`)
+are untouched. `options.agents` could override the plugin agent by its qualified name (question 5), but that would copy
+the persona into code per session model; the hook keeps `agents/explorer.md` the single definition. No
+`CLAUDE_CODE_SUBAGENT_MODEL_FORCE`: it would pin every subagent.
 
 #### Delegation line of the `claude_code` preset (spike E0-1)
 
@@ -210,6 +230,8 @@ for any of the three models, and when the task names a subagent all three delega
 explicit delegation sentence; the sentence does not change the number of calls. E2-2 does not need to write against the
 preset: its own delegation sentence is unnecessary, naming concretely the occasions where a subagent fits is enough.
 Not checked: delegation when the task does not name the subagent (the test task is trivial).
+
+The SDK's built-in agents (`claude`, `Explore`, `general-purpose`, `Plan`, `statusline-setup`) are **off**: every session starts with `CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS=1`, so `init.agents` lists none of them. `general-purpose` would give a read-only role an agent with every tool, and Explore and Plan run on the parent model, skip CLAUDE.md and compete with `symphony:explorer` for routing. An Agent call therefore needs a `subagent_type` (the SDK fails it with "subagent_type is required"); the role prompts always name the type. Plugin agents that a role denies still appear in `init.agents`. `claude.env` can set the variable to `0` to bring the built-ins back. History parsing is unchanged: an Agent call or old log line without a type still counts as `general-purpose`.
 
 Subagents and commands run in the **foreground**: every session starts with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`,
 so the Agent and Bash tools offer no `run_in_background` and nothing is moved to the background automatically. A

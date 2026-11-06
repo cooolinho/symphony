@@ -83,9 +83,7 @@ available everywhere (:145-146), but none ships yet.
 - "Unset = all" is the documented default ([config.ts:730-742](../../src/workflow/config.ts#L730-L742)) for custom
   workflows; the shipped roles list their agents explicitly. `docs` and `brain-gardener` now set `agents: []`
   in [WORKFLOW.md:249-256, 336-345](../../WORKFLOW.md#L249-L256), denying all Laravel subagents in [workflow-prompt.test.ts:1012-1025](../../test/workflow-prompt.test.ts#L1012-L1025).
-- **Built-in agents are never filtered**: `claude`, `Explore`, `general-purpose`, `Plan` and `statusline-setup` are in
-  every `init.agents`, `general-purpose` with all tools also in read-only roles. No prompt mentions them; they were last
-  used on 2026-10-11.
+- **Built-in agents are off** (E4-3): `claude`, `Explore`, `general-purpose`, `Plan` and `statusline-setup` no longer appear in `init.agents`. Every session starts with `CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS=1`, which is overridable via `claude.env`. Plugin agents denied by the role still appear in `init.agents` and are refused at call time (see [agent-claude.md](../agent-claude.md#subagents)).
 
 ### Enforcement
 
@@ -130,6 +128,7 @@ available everywhere (:145-146), but none ships yet.
 - Claude Code's order: the per-invocation `model` of the Agent call, then the front matter's `model`, then
   `CLAUDE_CODE_SUBAGENT_MODEL`, then the main model. Symphony sets none of these
   ([claude.ts:346-397](../../src/agent/claude.ts#L346-L397)), so a subagent always inherits the parent's model.
+  Exception: `symphony:explorer` is pinned by the Agent hook since E2-3 (see [agent-claude.md#explorer-model-e2-3](../agent-claude.md#explorer-model-e2-3)).
   Verified live: `laravel-code-reviewer` ran on `claude-opus-5-5` inside opus developers and on `claude-fable-5-1`
   inside the fable developer of bandenhub#11. Effort is inherited (answered in E0-2: [agent-claude.md](../agent-claude.md#mechanics-spike-e0-2-claude-code-21288)).
 - "Plan strong, implement cheaper" ([WORKFLOW.md:168-170](../../WORKFLOW.md#L168-L170)) cannot be expressed for

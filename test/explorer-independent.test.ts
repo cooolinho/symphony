@@ -90,7 +90,8 @@ describe('explorer in the shipped WORKFLOW.md (#497)', () => {
     const byName = Object.fromEntries((config.roles ?? []).map((role) => [role.name, role.agents ?? []])) as Record<string, string[]>;
     assert.ok(byName.developer?.includes('laravel-architect') && byName.developer?.includes('laravel-code-reviewer'));
     assert.ok(byName.auditor?.includes('laravel-code-reviewer'));
-    for (const name of ['architect', 'analyst', 'planner', 'autopilot']) assert.ok(byName[name]?.includes('laravel-architect'), name);
+    for (const name of ['analyst', 'planner', 'autopilot']) assert.ok(byName[name]?.includes('laravel-architect'), name);
+    assert.ok(!byName.architect?.includes('laravel-architect'), 'the architect no longer uses laravel-architect (#504)');
   });
 
   it('leaves the roles with an empty agent list empty', async () => {

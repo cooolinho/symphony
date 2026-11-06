@@ -116,6 +116,8 @@ move exploration out of their own thread. It is available in every workspace, al
 `laravel-*` subagents stay denied), and `WORKFLOW.md` lists it for developer, architect, analyst, planner, autopilot and
 auditor.
 
+The second framework-neutral subagent is `design-critic` (`symphony:design-critic`): read-only, `model: opus`, `maxTurns: 40`. It critiques a finished design draft against the code and returns defects with `file:line`, severity and what breaks, never a new design. Only `architect` lists it; at L/XL (fable) the architect starts it once before `report_result`, at S/M the prompt does not name it. The architect no longer uses `laravel-architect` (a same-model critique with a design persona); the persona stays for developer, auditor, analyst, planner and autopilot until they are revisited.
+
 ## Phase 2: roles choose their subagents (done)
 
 ### Configuration: `roles.<role>.agents`
@@ -131,7 +133,7 @@ roles:
 - Names are the plugin agents' names without the plugin prefix.
 - Omitted: every plugin agent (the current behaviour). `[]`: none.
 - `src/workflow/validate.ts` rejects names no plugin ships, like it rejects unknown `roles.<role>.commands`.
-- Built-in agents (`Explore`, `Plan`, `general-purpose`) are not affected.
+- Built-in agents (`claude`, `Explore`, `general-purpose`, `Plan`, `statusline-setup`) are not affected by role filtering because they are disabled by default (E4-3; every session starts with `CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS=1`, overridable via `claude.env`).
 
 ### Enforcement
 
@@ -161,7 +163,7 @@ context and tokens.
 | Role | `agents` | Guidance in the prompt |
 |---|---|---|
 | issue analyst | none (`[]`) | reads the issue and the code itself; the architect persona only repeated its role |
-| architect | `laravel-architect` | structure of a Laravel or Filament change; the role itself decides and reports the `design` result, and runs only for larger changes ([details](configuration.md#the-architect)) |
+| architect | `explorer`, `design-critic` | 2–3 explorers per code area; at L/XL the opus `design-critic` critiques the draft once before `report_result`; no longer `laravel-architect`. The role itself decides and reports the `design` result, and runs only for larger changes ([details](configuration.md#the-architect)) |
 | developer | all five | `laravel-architect` before a non-trivial feature, unless the architect stage already delivered a design (`results.design` in the prompt); `laravel-filament-developer`, `laravel-database-engineer`, `laravel-test-engineer` for self-contained parts; `laravel-code-reviewer` on the diff before `report_result` |
 | test engineer | `test-designer` | at complexity L/XL writes the tests from the criteria and the public interface alone (soft boundary: the brief), RED at the base and GREEN on the branch ([details](configuration.md#the-test-engineer)); no `laravel-*` persona |
 | reviewer | none (`[]`) | reads the diff itself; its persona only repeated its role |

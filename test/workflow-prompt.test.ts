@@ -13,7 +13,8 @@ import { commandSkills, pluginAgents } from '../src/workflow/command.ts';
 import { loadWorkflowFile } from '../src/workflow/loader.ts';
 import { profileFor } from '../src/workflow/profile.ts';
 import { roleFor, roleName, sessionAgents } from '../src/workflow/roles.ts';
-import { unknownBoardColumns } from '../src/workflow/validate.ts';
+import type { EffectiveWorkflow } from '../src/workflow/store.ts';
+import { unknownBoardColumns, validateDispatch } from '../src/workflow/validate.ts';
 import { compilePrompt, EMPTY_RESULTS, issueTemplateValue, renderPrompt } from '../src/workflow/template.ts';
 import { RESULT_FIELD_BUDGET, SUMMARY_MAX } from '../src/workflow/results.ts';
 import { makeIssue } from './helpers.ts';
@@ -500,7 +501,7 @@ describe('shipped WORKFLOW.md', () => {
   });
 
   it('renders the read-only architect prompt: what to decide, the design fields and how to handle each answer', async () => {
-    const agents = [{ name: 'symphony:laravel-architect', description: 'Plans features' }];
+    const agents = [{ name: 'symphony:explorer', description: 'Maps the code' }];
     const prompt = await render('architect', null, undefined, 'develop', agents, { result_required: true, round: 1 });
     assert.match(prompt, /Your role: architect/);
     assert.match(prompt, /You are \*\*read-only\*\*: do not edit files, commit, push or open a pull request/);
@@ -511,7 +512,7 @@ describe('shipped WORKFLOW.md', () => {
     assert.match(prompt, /`ready` needs a `decision`, at least one `components` entry and at least one `interfaces` entry/);
     assert.match(prompt, /`blocked` \(a human must decide something first, with at least one entry in `blockers`\)/);
     assert.match(prompt, /`invalid_result`.*call `report_result` again/);
-    assert.match(prompt, /`symphony:laravel-architect`: Plans features/);
+    assert.match(prompt, /`symphony:explorer`: Maps the code/);
     assert.doesNotMatch(prompt, /set_status/);
     assert.doesNotMatch(prompt, /open_pull_request/);
     assert.doesNotMatch(prompt, /Your role: developer/);
@@ -1012,7 +1013,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
         /specialist \(`symphony:laravel-database-engineer`, `symphony:laravel-filament-developer`, `symphony:laravel-test-engineer`\); not for parts coupled/,
         /`symphony:laravel-code-reviewer`[^\n]*before you report the result; not for a diff of a few lines/,
       ],
-      architect: [/start 2–3 `symphony:explorer` calls in one message, one per code area/, /then read those files yourself\. Not for a change confined/, /`symphony:laravel-architect`[^\n]*not for a change without Laravel/],
+      architect: [/start 2–3 `symphony:explorer` calls in one message, one per code area/, /then read those files yourself\. Not for a change confined/],
       analyst: [/`symphony:explorer`[^\n]*not for a part whose files a few searches find/, /`symphony:laravel-architect`[^\n]*not for small or documentation-only parts/],
       planner: [/`symphony:explorer`[^\n]*not for a part whose files a few searches find/, /`symphony:laravel-architect`[^\n]*not for small or documentation-only parts/],
       autopilot: [/`symphony:explorer`[^\n]*not for a part whose files a few searches find/, /`symphony:laravel-architect`[^\n]*not for small or documentation-only parts/],
@@ -1182,7 +1183,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
     const byRole = Object.fromEntries((config.roles ?? []).map((role) => [role.name, role.agents]));
     assert.deepEqual(byRole, {
       'issue-analyst': [],
-      architect: ['explorer', 'laravel-architect'],
+      architect: ['explorer', 'design-critic'],
       developer: ['explorer', 'laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer'],
       'test-engineer': ['test-designer'],
       docs: [],
@@ -1370,12 +1371,115 @@ describe('Symphony toolbox skills', () => {
   }
 });
 
+describe('design critic (#504)', () => {
+  const agents = [
+    { name: 'symphony:explorer', description: 'Maps the code.' },
+    { name: 'symphony:design-critic', description: 'Critiques a draft.' },
+  ];
+  const renderWith = async (labels: string[], list = agents) => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const template = compilePrompt(definition.promptTemplate, definition.partials);
+    const subject = { ...issue, labels, native_ref: { ...issue.native_ref, base_branch: 'develop' } };
+    return renderPrompt(template, { issue: issueTemplateValue(subject, commandSkills([toolbox])), attempt: null, role: 'architect', agents: list, round: 1 });
+  };
+  const config = async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    return resolveConfig(definition.config, {
+      workflowPath: shipped,
+      env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' },
+      trackerDefaults,
+    });
+  };
+
+  for (const label of ['complexity: l', 'complexity: xl']) {
+    it(`names the critic once, before report_result, at ${label}`, async () => {
+      const text = await renderWith(['feature', label]);
+      assert.match(text, /^- `symphony:design-critic`:/m);
+      const bullet = /^- This is a large change[^\n]*$/m.exec(text)?.[0] ?? '';
+      assert.match(bullet, /`symphony:design-critic`/);
+      assert.match(bullet, /once/);
+      assert.match(bullet, /before `report_result`/);
+      assert.match(bullet, /file:line/);
+      assert.match(bullet, /no second call/);
+      assert.match(bullet, /Not for/);
+      assert.match(text, /start 2–3 `symphony:explorer` calls/);
+      assert.doesNotMatch(text, /laravel-architect/);
+    });
+  }
+
+  it('never names the critic at M, S or without a complexity label, and keeps the explorer bullet', async () => {
+    for (const labels of [['feature', 'complexity: m'], ['feature', 'complexity: s'], ['feature']]) {
+      const text = await renderWith(labels);
+      assert.doesNotMatch(text, /design-critic/, labels.join());
+      assert.match(text, /start 2–3 `symphony:explorer` calls/, labels.join());
+      assert.doesNotMatch(text, /laravel-architect/, labels.join());
+    }
+  });
+
+  it('renders the critic alone at M like no agents at all', async () => {
+    const only = [agents[1] as { name: string; description: string }];
+    assert.equal(await renderWith(['feature', 'complexity: m'], only), await renderWith(['feature', 'complexity: m'], []));
+  });
+
+  it('gives the architect exactly explorer and design-critic; laravel-architect stays for the other roles', async () => {
+    const byRole = Object.fromEntries(((await config()).roles ?? []).map((role) => [role.name, role.agents ?? []]));
+    assert.deepEqual(byRole.architect, ['explorer', 'design-critic']);
+    for (const name of ['developer', 'auditor', 'analyst', 'planner', 'autopilot']) assert.ok(byRole[name]?.includes('laravel-architect'), name);
+    for (const [name, list] of Object.entries(byRole)) if (name !== 'architect') assert.ok(!list.includes('design-critic'), name);
+  });
+
+  it('passes validate for the read-only architect, and sessionAgents allows exactly the two agents', async () => {
+    const resolved = await config();
+    const role = (resolved.roles ?? []).find((entry) => entry.name === 'architect') ?? null;
+    assert.equal(role?.readOnly, true);
+    const errors = validateDispatch({ config: resolved } as unknown as EffectiveWorkflow, null, { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' });
+    assert.deepEqual(errors.filter((error) => error.includes('.agents')), []);
+    for (const prefixes of [['laravel-'], []]) {
+      const { allowed, denied } = sessionAgents(pluginAgents([toolbox]), role, prefixes, prefixes);
+      assert.deepEqual(allowed.map((agent) => agent.qualified).sort(), ['symphony:design-critic', 'symphony:explorer'], prefixes.join());
+      assert.ok(denied.some((agent) => agent.qualified === 'symphony:laravel-architect'), prefixes.join());
+    }
+  });
+
+  describe('design-critic.md', () => {
+    const text = fs.readFileSync(path.join(toolbox, 'agents', 'design-critic.md'), 'utf8');
+    const front = /^---\n([\s\S]*?)\n---\n/.exec(text)?.[1] ?? '';
+
+    it('has exactly the five front matter keys, opus, maxTurns 40, the read-only deny list, no tools or effort', () => {
+      assert.deepEqual(front.split('\n').map((line) => line.slice(0, line.indexOf(':'))), ['name', 'description', 'model', 'maxTurns', 'disallowedTools']);
+      assert.match(front, /^name: design-critic$/m);
+      assert.match(front, /^model: opus$/m);
+      assert.match(front, /^maxTurns: 40$/m);
+      assert.match(front, /^disallowedTools: Edit, Write, NotebookEdit$/m);
+      assert.doesNotMatch(front, /^(tools|effort):/m);
+    });
+
+    it('is read-only for pluginAgents(), without a framework prefix, with trigger and exclusion', () => {
+      const agent = pluginAgents([toolbox]).find((entry) => entry.name === 'design-critic');
+      assert.ok(agent);
+      assert.equal(agent.qualified, 'symphony:design-critic');
+      assert.equal(agent.readOnly, true);
+      assert.match(agent.description, /L or XL/);
+      assert.match(agent.description, /Not for/);
+    });
+
+    it('asks for a critique: file:line, severity, what breaks, and no design', () => {
+      assert.match(text, /file:line/);
+      assert.match(text, /`blocker`, `major` or `minor`/);
+      assert.match(text, /what breaks/);
+      assert.match(text, /you do not design/);
+      assert.match(text, /No new design/);
+    });
+  });
+});
+
 describe('Symphony toolbox subagents', () => {
   const agentsDir = path.join(toolbox, 'agents');
   const files = fs.readdirSync(agentsDir).filter((file) => file.endsWith('.md'));
 
-  it('ships the Laravel subagents and the framework-neutral explorer and test-designer', () => {
+  it('ships the Laravel subagents and the framework-neutral explorer, design-critic and test-designer', () => {
     assert.deepEqual(files.map((file) => file.slice(0, -3)).sort(), [
+      'design-critic',
       'explorer',
       'laravel-architect',
       'laravel-code-reviewer',
@@ -1402,6 +1506,7 @@ describe('Symphony toolbox subagents', () => {
   describe('models and turn limits', () => {
     const front = (name: string) => /^---\n([\s\S]*?)\n---\n/.exec(fs.readFileSync(path.join(agentsDir, `${name}.md`), 'utf8'))?.[1] ?? '';
     const models: Record<string, string | undefined> = {
+      'design-critic': 'opus',
       'laravel-architect': undefined,
       'laravel-code-reviewer': 'opus',
       'laravel-database-engineer': 'sonnet',
@@ -1423,6 +1528,7 @@ describe('Symphony toolbox subagents', () => {
     it('pluginAgents() still marks the architect and the reviewer read-only and the other personas as writers', () => {
       const readOnly = Object.fromEntries(pluginAgents([toolbox]).map((agent) => [agent.name, agent.readOnly]));
       assert.deepEqual(readOnly, {
+        'design-critic': true,
         explorer: true,
         'laravel-architect': true,
         'laravel-code-reviewer': true,
@@ -1486,7 +1592,7 @@ describe('Symphony toolbox subagents', () => {
       for (const name of ['analyst', 'architect', 'auditor', 'autopilot', 'developer', 'planner']) {
         const role = (config.roles ?? []).find((entry) => entry.name === name) ?? null;
         const { allowed, denied } = sessionAgents(all, role, ['laravel-'], []);
-        assert.deepEqual(allowed.map((agent) => agent.qualified), ['symphony:explorer'], name);
+        assert.deepEqual(allowed.map((agent) => agent.qualified), name === 'architect' ? ['symphony:design-critic', 'symphony:explorer'] : ['symphony:explorer'], name);
         assert.equal(denied.filter((agent) => agent.name.startsWith('laravel-')).length, 5, name);
         const listed = allowed.map((agent) => ({ name: agent.qualified, description: agent.description }));
         const prompt = await render(name, null, undefined, null, listed);
@@ -1500,6 +1606,7 @@ describe('Symphony toolbox subagents', () => {
 
   describe('models and turn limits (independent of the persona files)', () => {
     const expected = {
+      'design-critic': { model: 'opus', readOnly: true, minTurns: 1 },
       explorer: { model: 'sonnet', readOnly: true, minTurns: 1 },
       'laravel-architect': { model: undefined, readOnly: true, minTurns: 55 },
       'laravel-code-reviewer': { model: 'opus', readOnly: true, minTurns: 22 },

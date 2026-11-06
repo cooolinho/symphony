@@ -29,3 +29,15 @@ export function contextWindowSuffix(model: string): number | null {
   const millions = Number(match[1]);
   return millions > 0 ? millions * 1_000_000 : null;
 }
+
+/**
+ * The model the plugin explorer is pinned to below a session model (docs/agent-claude.md#subagents): sonnet → haiku,
+ * opus and fable → sonnet, haiku → haiku. Null for an unknown or missing model: the explorer's front matter applies.
+ */
+export function explorerModelFor(sessionModel: string | null | undefined): 'haiku' | 'sonnet' | null {
+  if (sessionModel === null || sessionModel === undefined) return null;
+  const name = bareModelName(sessionModel);
+  if (name.startsWith('sonnet') || name.startsWith('haiku')) return 'haiku';
+  if (name.startsWith('opus') || name.startsWith('fable')) return 'sonnet';
+  return null;
+}

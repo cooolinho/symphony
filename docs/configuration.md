@@ -612,14 +612,14 @@ roles:
     on_result: { ready: In progress, split: Agent review, blocked: Blocked }
     may_move_to: [In progress, Agent review, Blocked]
     model_label: ignore               # opus, whatever the issue's Model: label picks for the developer
-    agents: [laravel-architect]
+    agents: [explorer, design-critic]
     claude: { model: opus }
 ```
 
 - The architect reads the code and reports a [`design` result](results.md#kinds): the `options` it compared, the
   `decision`, the `components` and `interfaces` of the change, `migrations` and `compatibility`. `ready` needs a decision
   and at least one component and one interface (`report_result` refuses a generic design with `invalid_result`);
-  `blocked` needs a blocker and moves the issue to `Blocked`. It may start the `laravel-architect` subagent.
+  `blocked` needs a blocker and moves the issue to `Blocked`. Explorers map the code. At complexity L/XL (the architect runs on fable) it starts the read-only `design-critic` (`model: opus`, `maxTurns: 40`) once on its finished draft, before `report_result`; at S/M (opus) the prompt neither lists nor names it (a soft gate: it stays allowed in the session). The architect no longer uses `laravel-architect`: a critique by the same model with a design persona.
 - **The developer implements the design.** `ready` moves the issue to `In progress`, and the developer's prompt contains
   the newest design (`results.design`, see [Prompt template](#prompt-template)). Where the design does not fit the code,
   the developer deviates and says so in `plan_deviations`.
@@ -945,11 +945,11 @@ The shipped `WORKFLOW.md` defines the `auditor` role for `/refactoring`, the `au
 
 #### Subagents per role
 
-The plugins in `claude.plugins` ship subagents (`agents/<name>.md`; Symphony's toolbox ships the `laravel-*` ones and the framework-neutral `test-designer`, see
+The plugins in `claude.plugins` ship subagents (`agents/<name>.md`; Symphony's toolbox ships the `laravel-*` ones and the framework-neutral `explorer`, `design-critic` and `test-designer`, see
 [laravel-subagents.md](laravel-subagents.md)). Claude Code offers them as `<plugin>:<name>`, e.g.
 `symphony:laravel-architect`. For each session Symphony decides which of them the agent may start:
 
-1. **The role's list.** `agents` unset allows every plugin subagent, a list only those, `[]` none. "Unset = all" stays the default for custom workflows and for workflows without `roles`; every role of the shipped `WORKFLOW.md` lists its agents explicitly (`docs`, `brain-gardener`, `issue-analyst`, `reviewer` and `security-auditor` with `[]`, so they never start a `laravel-*` persona; `test-engineer` lists `test-designer`, which carries no prefix).
+1. **The role's list.** `agents` unset allows every plugin subagent, a list only those, `[]` none. "Unset = all" stays the default for custom workflows and for workflows without `roles`; every role of the shipped `WORKFLOW.md` lists its agents explicitly (`docs`, `brain-gardener`, `issue-analyst`, `reviewer` and `security-auditor` with `[]`, so they never start a `laravel-*` persona; `architect` lists `explorer` and `design-critic`; `test-engineer` lists `test-designer`, which carries no prefix).
 2. **Read-only roles** only get subagents that cannot edit files: their front matter denies `Edit` and `Write`
    (`disallowedTools: Edit, Write, NotebookEdit`) or lists `tools` without them. This applies with `agents` unset too.
 3. **Project type.** A subagent whose name starts with a workspace integration's prefix belongs to it: `laravel-*`
@@ -973,11 +973,11 @@ naming one of them. The allowed ones reach the prompt as the variable [`agents`]
   the session, so a non-Laravel workspace never sees `laravel-*` agents named. Roles with `agents: []` render neither
   the intro nor the bullets.
 
-The toolbox also ships one framework-neutral subagent without a prefix: `explorer` (`symphony:explorer`). It is
+The toolbox also ships framework-neutral subagents without a prefix; the first is `explorer` (`symphony:explorer`). It is
 read-only (`disallowedTools: Edit, Write, NotebookEdit`, `model: sonnet`, `effort: low`, `maxTurns: 25`) and returns key
 files as `file:line` plus a short summary instead of file contents. Because it has no integration prefix it is available
 in every workspace, Laravel or not, and the shipped `WORKFLOW.md` lists it for `developer`, `architect`, `analyst`,
-`planner`, `autopilot` and `auditor`.
+`planner`, `autopilot` and `auditor`. The second is `design-critic` (`symphony:design-critic`): read-only, `model: opus`, `maxTurns: 40`, it only critiques a design draft (defects with `file:line`, severity and what breaks, no new design). Only `architect` lists it, and the prompt names it at complexity L/XL only.
 
 #### Waves (`wait_for_sub_issues`)
 
