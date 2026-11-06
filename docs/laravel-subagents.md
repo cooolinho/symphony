@@ -164,7 +164,7 @@ context and tokens.
 | architect | `laravel-architect` | structure of a Laravel or Filament change; the role itself decides and reports the `design` result, and runs only for larger changes ([details](configuration.md#the-architect)) |
 | developer | all five | `laravel-architect` before a non-trivial feature, unless the architect stage already delivered a design (`results.design` in the prompt); `laravel-filament-developer`, `laravel-database-engineer`, `laravel-test-engineer` for self-contained parts; `laravel-code-reviewer` on the diff before `report_result` |
 | test engineer | `test-designer` | at complexity L/XL writes the tests from the criteria and the public interface alone (soft boundary: the brief), RED at the base and GREEN on the branch ([details](configuration.md#the-test-engineer)); no `laravel-*` persona |
-| reviewer | none (`[]`) | reads the diff itself; its persona only repeated its role |
+| reviewer | `convention-lens`, `bug-lens`, `finding-verifier` | lens review with one verifier per finding at complexity L/XL only; at S/M it reads the diff itself ([details](configuration.md#subagents-per-role)) |
 | security auditor | none (`[]`) | reads the diff itself; the reviewer persona only repeated its role |
 | auditor | `laravel-architect`, `laravel-code-reviewer` | one area each in large repositories (what the `refactoring` skill describes) |
 | autopilot | `laravel-architect` | structure and feasibility of a wave |
