@@ -7,7 +7,7 @@ Symphony works on.
 | Folder | Contents | Invoked in the agent as |
 |---|---|---|
 | `skills/<name>/SKILL.md` | Skills: front matter with `name` and `description`, followed by the instructions | `symphony:<name>` |
-| `agents/<name>.md` | Subagents (optional specialist personas: `laravel-architect`, `laravel-database-engineer`, `laravel-filament-developer`, `laravel-test-engineer`, `laravel-code-reviewer`; the framework-neutral `test-designer`) | `symphony:<name>` |
+| `agents/<name>.md` | Subagents (optional specialist personas: `laravel-architect`, `laravel-database-engineer`, `laravel-filament-developer`, `laravel-test-engineer`, `laravel-code-reviewer`; the framework-neutral `explorer`, `design-critic` and `test-designer`) | `symphony:<name>` |
 | `commands/<name>.md` | Slash commands (legacy form, prefer skills) | `/symphony:<name>` |
 | `hooks/hooks.json` | Hooks; scripts next to it, referenced in the JSON via `${CLAUDE_PLUGIN_ROOT}` | automatic |
 | `.claude-plugin/plugin.json` | Plugin manifest (name `symphony`) | – |
