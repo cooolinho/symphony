@@ -97,6 +97,11 @@ export interface ResultToolParams {
    */
   history: RoundHistory & Partial<Pick<StageHistory, 'results' | 'failedChecks'>>;
   profile: TransitionProfile | null;
+  /**
+   * The session may start `refutation-judge` (security role): a finding of an L/XL security result then needs three panel
+   * votes (see `PANEL_MAX_REFUTING_VOTES`). Absent or false: no vote rule.
+   */
+  panel?: boolean;
   flags?: StageConditions;
   /**
    * For a reviewer: what decides whether an approval needs the security review (see `securityNeeded`), looked up when the
@@ -251,15 +256,17 @@ export function classificationLabels(result: StageResult, labels: readonly strin
  * What the consistency rules of a result know of the session's issue and role: a refactor review has to confirm the
  * goals of the analysis (other issues and issues without goals are exempt), and a `split` design needs an XL issue that
  * is not a sub-issue and a role that may open a sub-issue per package. A review or security result on an L/XL issue
- * (refactors included) needs a confirmed verification for every finding.
+ * (refactors included) needs a confirmed verification for every finding; a security result also needs the panel's three
+ * votes when the session may start the judge.
  */
-function resultContext(issue: Issue, role: RoleConfig, history: Partial<Pick<StageHistory, 'results'>>): ResultContext {
+function resultContext(issue: Issue, role: RoleConfig, history: Partial<Pick<StageHistory, 'results'>>, panel = false): ResultContext {
   const { type, complexity } = classify(issue.labels);
   const kind = role.result;
   return {
     refactoringGoals: kind === 'review' && type === 'refactor' ? refactoringGoals(history) : [],
     testEvidence: kind === 'test' && needsTestEvidence(issue),
     verifiedFindings: (kind === 'review' || kind === 'security') && (complexity === 'L' || complexity === 'XL'),
+    panelVotes: kind === 'security' && (complexity === 'L' || complexity === 'XL') && panel,
     split: { complexity, subIssue: isSubIssue(issue), maxSubIssues: role.maxSubIssues },
   };
 }
@@ -329,7 +336,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
 
   const plan = (args: Record<string, unknown>, stage: Conditions = { flags: params.flags ?? {}, reasons: {} }): Plan => {
     const issue = params.issue();
-    const parsed = parseResult(kind, args, resultContext(issue, role, params.history));
+    const parsed = parseResult(kind, args, resultContext(issue, role, params.history, params.panel === true));
     if (!parsed.ok) return { ok: false, failure: fail('invalid_result', parsed.message) };
     // An analysis classifies the issue as it hands it on, so its `next` is routed by the labels it adds: the profile of
     // the new type and the `skip_when` conditions of the new complexity.

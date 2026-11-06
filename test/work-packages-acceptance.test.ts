@@ -55,6 +55,9 @@ function roleNamed(config: ServiceConfig, name: string): RoleConfig {
   return role;
 }
 
+/** The security panel's three confirming votes (an XL integration audit runs the panel). */
+const PANEL_VOTES = ['reachability', 'impact', 'defenses'].map((lens) => ({ lens, verdict: 'confirmed', evidence: `checked at the cited line (${lens})` }));
+
 describe('WORKFLOW.md with the work-package settings (preflight and routing)', () => {
   it('gives the architect room for three packages, files them in Ready and keeps the hand-off free of an entry check', async () => {
     const { config } = await shipped();
@@ -1464,7 +1467,7 @@ describe('orchestrator: the security stage and the pull request of the parent af
       await report({
         verdict: 'issues_found',
         summary: 'The guard the CSV package added is not applied to the route of the PDF package.',
-        findings: [{ severity: 'major', file: 'config/auth.php', line: 1, problem: 'The PDF route is outside the auth middleware group', fix: 'Move the route into the group', verification: { status: 'confirmed', evidence: 'checked at the cited line' } }],
+        findings: [{ severity: 'major', file: 'config/auth.php', line: 1, problem: 'The PDF route is outside the auth middleware group', fix: 'Move the route into the group', verification: { status: 'confirmed', evidence: 'checked at the cited line', votes: PANEL_VOTES } }],
       });
     };
     const fix: Script = async ({ params, report }) => {

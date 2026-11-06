@@ -9,7 +9,7 @@ import type { BrainIndex } from '../brain/index.ts';
 import { brainToolsFor, createVaultGit } from '../brain/tools.ts';
 import { repoFolderName } from '../brain/vault.ts';
 import { isRepositoryName } from '../tracker/github-project/settings.ts';
-import { prepareIntegrations } from '../integrations/registry.ts';
+import { prepareIntegrations, workspaceApps } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
 import type { AgentToolSpec, AutoMergeResult, Issue, IssueComment, ToolResult, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
@@ -275,6 +275,7 @@ async function loadResultSupport(
   docs: ((history: StageHistory) => NonNullable<ResultToolParams['docs']>) | null,
   screenshots: ResultToolParams['screenshots'],
   mutation: ResultToolParams['mutation'],
+  panel: boolean,
   report: (results: PersistedResult[]) => void,
   onRecorded: (entry: PersistedResult) => void,
   onMoved: () => void,
@@ -322,6 +323,7 @@ async function loadResultSupport(
     docs: docs?.(history) ?? null,
     screenshots: screenshots ?? null,
     mutation: mutation ?? null,
+    panel,
   });
   return {
     tool,
@@ -574,7 +576,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     let resultRecorded = false;
     let resultMoved = false;
     // Default path globs also apply below the root of a Laravel app in a subdirectory; explicit ones stay as written.
-    const appDirs = (await Promise.all(params.integrations.map((integration) => integration.appDirs?.(activeWorkspace.path) ?? []))).flat();
+    const { appDirs, projectTypes } = await workspaceApps(params.integrations, activeWorkspace.path);
     const paths = effectivePaths(params.workflow.config.pipeline, appDirs);
     // A test engineer's changes are measured from the developer's last hand-off, else from the workspace as this session found it.
     // Also where the session's commits start (change log).
@@ -637,6 +639,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
             docs,
             screenshots,
             mutation,
+            // The security panel's vote rule only applies when the session can actually start the judge.
+            role.result === 'security' && agents.allowed.some((agent) => agent.name === 'refutation-judge'),
             callbacks.results,
             (entry) => {
               resultRecorded = true;
@@ -661,6 +665,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       result_required: support !== null,
       test_paths: paths.testPaths,
       docs_paths: paths.docsPaths,
+      project_types: projectTypes,
       attachments,
     };
     const transcript = transcriptPath(params.transcriptDir, activeWorkspace);
