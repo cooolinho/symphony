@@ -1405,3 +1405,115 @@ describe('report_result: verified findings at L/XL', () => {
     assert.equal(data(await report(blocked)).target, 'Blocked');
   });
 });
+
+describe('report_result: verified findings at L/XL (acceptance, independent)', () => {
+  const confirmed = (evidence = 'src/a.ts:3 shows it') => ({ status: 'confirmed', evidence });
+  const refutedV = { status: 'refuted', evidence: 'src/z.ts:1 is guarded' };
+  const f = (over: Record<string, unknown> = {}) => ({ severity: 'major', file: 'src/a.ts', line: 3, problem: 'Off by one', ...over });
+  const review = (over: Record<string, unknown> = {}) => ({ verdict: 'changes_needed', summary: 'Problems.', findings: [f({ verification: confirmed() })], ...over });
+  const commentOf = (tracker: ReturnType<typeof setup>['tracker']) => (tracker.comments.get('1') ?? []).map((c) => c.body).join('\n');
+
+  for (const label of ['Complexity: L', 'Complexity: XL']) {
+    it(`${label}: accepts verified findings, refuses unverified and refuted ones`, async () => {
+      assert.equal(data(await setup({ labels: [label] }).report(review())).target, 'In progress');
+      const missing = error(await setup({ labels: [label] }).report(review({ findings: [f()] })));
+      assert.equal(missing.category, 'invalid_result');
+      assert.match(missing.message, /findings\[0\]/);
+      assert.match(missing.message, /src\/a\.ts:3/);
+      assert.match(missing.message, /verification/);
+      const refuted = error(await setup({ labels: [label] }).report(review({ findings: [f({ verification: refutedV })] })));
+      assert.equal(refuted.category, 'invalid_result');
+      assert.match(refuted.message, /findings\[0\]/);
+      assert.match(refuted.message, /refuted/);
+    });
+  }
+
+  it('names every failing finding, not only the first', async () => {
+    const { report } = setup({ labels: ['Complexity: L'] });
+    const refused = error(await report(review({ findings: [f(), f({ verification: confirmed() }), f({ file: 'src/c.ts', line: 7, problem: 'Third', verification: refutedV })] })));
+    assert.match(refused.message, /findings\[0\]/);
+    assert.match(refused.message, /findings\[2\]/);
+    assert.match(refused.message, /src\/c\.ts:7/);
+    assert.doesNotMatch(refused.message, /findings\[1\]/);
+  });
+
+  it('refuses an approved L review whose nit lacks verification (the gate is independent of the verdict)', async () => {
+    const { report } = setup({ labels: ['Complexity: L'] });
+    const refused = error(await report({ verdict: 'approved', summary: 'Ok.', findings: [{ severity: 'nit', problem: 'Typo' }] }));
+    assert.equal(refused.category, 'invalid_result');
+    assert.match(refused.message, /findings\[0\]/);
+  });
+
+  it('accepts an approved L review with a confirmed nit and a refuted[] entry', async () => {
+    const { report, markers } = setup({ labels: ['Complexity: L'] });
+    const result = await report({ verdict: 'approved', summary: 'Ok.', findings: [{ severity: 'nit', problem: 'Typo', verification: confirmed() }], refuted: [f({ verification: refutedV })] });
+    assert.equal(data(result).target, 'In review');
+    const stored = markers()[0]?.result;
+    assert.ok(stored?.kind === 'review');
+    assert.equal(stored.findings.length, 1);
+    assert.equal(stored.refuted.length, 1);
+    assert.equal(stored.refuted[0]?.verification.status, 'refuted');
+  });
+
+  it('refuses a malformed verification (unknown status, empty evidence) and a refuted[] entry that is confirmed', async () => {
+    for (const verification of [{ status: 'maybe', evidence: 'x' }, { status: 'confirmed', evidence: '' }, { status: 'confirmed' }]) {
+      assert.equal(error(await setup({ labels: ['Complexity: L'] }).report(review({ findings: [f({ verification })] }))).category, 'invalid_result');
+    }
+    assert.equal(error(await setup({ labels: ['Complexity: M'] }).report(review({ refuted: [f({ verification: confirmed() })] }))).category, 'invalid_result');
+    assert.equal(error(await setup({ labels: ['Complexity: M'] }).report(review({ refuted: [f()] }))).category, 'invalid_result');
+  });
+
+  it('security result on L/XL: verified accepted, unverified refused', async () => {
+    const ok = setup({ role: 'auditor', state: 'Security review', labels: ['Complexity: XL'] });
+    assert.equal(data(await ok.report({ verdict: 'issues_found', summary: 'Hole.', findings: [f({ verification: confirmed() })], refuted: [f({ verification: refutedV })] })).target, 'In progress');
+    const bad = setup({ role: 'auditor', state: 'Security review', labels: ['Complexity: XL'] });
+    assert.equal(error(await bad.report({ verdict: 'issues_found', summary: 'Hole.', findings: [f()] })).category, 'invalid_result');
+    const passed = setup({ role: 'auditor', state: 'Security review', labels: ['Complexity: XL'] });
+    assert.equal(data(await passed.report({ verdict: 'passed', summary: 'Clean.' })).target, 'In review');
+  });
+
+  it('S/M: unverified findings and a verified confirmed one are accepted; nothing is refused', async () => {
+    for (const labels of [['Complexity: S'], ['Complexity: M'], []]) {
+      const { report, markers } = setup({ labels });
+      assert.equal(data(await report(review({ findings: [f(), f({ verification: confirmed() })] }))).target, 'In progress', labels.join());
+      const stored = markers()[0]?.result;
+      assert.ok(stored?.kind === 'review');
+      assert.equal(stored.findings.length, 2);
+    }
+  });
+
+  it('S/M security: an unverified finding is accepted', async () => {
+    const { report } = setup({ role: 'auditor', state: 'Security review', labels: ['Complexity: M'] });
+    assert.equal(data(await report({ verdict: 'issues_found', summary: 'Hole.', findings: [f()] })).target, 'In progress');
+  });
+
+  it('the issue comment shows confirmed findings only and never a refuted candidate', async () => {
+    const { report, tracker } = setup({ labels: ['Complexity: L'] });
+    data(await report(review({ findings: [f({ problem: 'CONFIRMED-PROBLEM', verification: confirmed() })], refuted: [f({ problem: 'REFUTED-PROBLEM', fix: 'REFUTED-FIX', verification: refutedV })] })));
+    const body = commentOf(tracker).replace(/<!--[\s\S]*?-->/g, '');
+    assert.match(body, /CONFIRMED-PROBLEM/);
+    assert.doesNotMatch(body, /REFUTED-PROBLEM/);
+    assert.doesNotMatch(body, /REFUTED-FIX/);
+    assert.doesNotMatch(body, /src\/z\.ts:1 is guarded/);
+  });
+
+  it('on S/M a finding the agent marks refuted is not posted either', async () => {
+    const { report, tracker } = setup({ labels: ['Complexity: M'] });
+    data(await report(review({ verdict: 'approved', findings: [{ severity: 'nit', problem: 'KEPT-NIT' }, f({ problem: 'SELF-REFUTED', verification: refutedV })] })));
+    const body = commentOf(tracker).replace(/<!--[\s\S]*?-->/g, '');
+    assert.match(body, /KEPT-NIT/);
+    assert.doesNotMatch(body, /SELF-REFUTED/);
+  });
+
+  it('the evidence cannot break the comment markdown', async () => {
+    const { report, tracker } = setup({ labels: ['Complexity: L'] });
+    data(await report(review({ findings: [f({ verification: confirmed('line1\n\n# HEADING-INJECTED\n```\ncode') })] })));
+    const body = commentOf(tracker).replace(/<!--[\s\S]*?-->/g, '');
+    assert.doesNotMatch(body, /^# HEADING-INJECTED/m);
+  });
+
+  it('the tool input shape accepts verification and refuted', () => {
+    const shape = z.strictObject(toolInputShape('review'));
+    assert.ok(shape.safeParse(review({ refuted: [f({ verification: refutedV })] })).success);
+  });
+});

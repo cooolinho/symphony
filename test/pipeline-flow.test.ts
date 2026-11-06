@@ -251,6 +251,31 @@ async function run(h: Pipeline, stop?: () => boolean): Promise<void> {
 }
 
 describe('result-driven developer → reviewer loop', () => {
+  it('writes findings_confirmed and findings_refuted on the stage_result line of a verified L review (E3-4)', async () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
+    const history = new HistoryLog(path.join(dir, 'repositories'), new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent()), Logger.silent());
+    const verified = (evidence: string, status: string) => ({ severity: 'major', file: 'src/app.ts', problem: `P ${evidence}`, verification: { status, evidence } });
+    const review = {
+      verdict: 'changes_needed',
+      summary: 'One real problem, two false alarms.',
+      findings: [verified('src/app.ts:1 shows it', 'confirmed')],
+      refuted: [verified('src/app.ts:2 is guarded', 'refuted'), verified('src/app.ts:3 is dead code', 'refuted')],
+    };
+    const h = pipeline([done(), reporting(review)], { history });
+    issue(h).labels = ['Complexity: L'];
+    await run(h, () => readHistory(history.dir, null).entries.filter((entry) => entry.event === 'stage_result').length >= 2);
+
+    const lines = readHistory(history.dir, null).entries.filter((entry) => entry.event === 'stage_result');
+    const reviewLine = lines.find((line) => line.fields.kind === 'review');
+    assert.ok(reviewLine, 'a review stage_result line');
+    assert.equal(reviewLine.fields.findings, '1');
+    assert.equal(reviewLine.fields.findings_confirmed, '1');
+    assert.equal(reviewLine.fields.findings_refuted, '2');
+    const developerLine = lines.find((line) => line.fields.kind === 'implementation');
+    assert.ok(developerLine && !('findings_confirmed' in developerLine.fields) && !('findings_refuted' in developerLine.fields));
+  });
+
   it('writes one stage_result history line per recorded result', async () => {
     const dir = tempDir();
     fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
