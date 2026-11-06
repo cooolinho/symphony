@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import type { Options, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { ClaudeAgentRunner, type QueryFn } from '../src/agent/claude.ts';
+import { ClaudeAgentRunner, SUBAGENT_CONTEXT_MAX, subagentContext, type QueryFn } from '../src/agent/claude.ts';
 import { explorerModelFor } from '../src/agent/model-name.ts';
 import { readTranscript } from '../src/agent/transcript.ts';
 import { boostToolPolicy } from '../src/laravel/boost.ts';
-import type { AgentEvent, SessionExtensions, SessionPolicy, StartSessionParams } from '../src/agent/types.ts';
+import type { AgentEvent, SessionExtensions, SubagentContext, SessionPolicy, StartSessionParams } from '../src/agent/types.ts';
 import { brainToolsFor } from '../src/brain/tools.ts';
 import { Logger } from '../src/log.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
@@ -108,6 +109,8 @@ function params(
     toolTimeoutMs?: number;
     transcriptPath?: string;
     deniedAgents?: string[];
+    cwd?: string;
+    subagentContext?: SubagentContext;
     brainTools?: AgentToolSpec[];
     contextWindow?: (model: string) => number | null;
   } = {},
@@ -115,7 +118,7 @@ function params(
   const config = resolveConfig({ claude: { model: 'opus', ...overrides.claude } }, { workflowPath: '/w/WORKFLOW.md', env: {}, trackerDefaults }).claude;
   const issue = makeIssue({ id: 'a' });
   return {
-    cwd: '/tmp',
+    cwd: overrides.cwd ?? '/tmp',
     issue,
     config,
     tools: [tool],
@@ -130,6 +133,7 @@ function params(
     ...(overrides.toolTimeoutMs !== undefined ? { toolTimeoutMs: overrides.toolTimeoutMs } : {}),
     ...(overrides.brainTools ? { brainTools: overrides.brainTools } : {}),
     ...(overrides.deniedAgents ? { deniedAgents: overrides.deniedAgents } : {}),
+    ...(overrides.subagentContext ? { subagentContext: overrides.subagentContext } : {}),
     ...(overrides.contextWindow ? { contextWindow: overrides.contextWindow } : {}),
   };
 }
@@ -702,10 +706,67 @@ describe('claude agent runner', () => {
     assert.ok(events.some((event) => event.event === 'approval_denied' && event.detail?.agent === 'symphony:laravel-filament-developer'));
 
     const open = await sessionOptions({});
-    assert.equal(open.hooks?.PreToolUse?.[0]?.matcher, 'Agent|Task');
+    assert.equal(open.hooks?.PreToolUse?.length, 1);
+    assert.equal(open.hooks?.SubagentStart?.length, 1);
     assert.ok(!open.disallowedTools?.some((rule) => rule.startsWith('Agent(') && rule !== 'Agent(fork)'));
   });
 
+  describe('SubagentStart context', () => {
+    const start = async (options: Options, agentType: unknown, event = 'SubagentStart') => {
+      const hook = options.hooks?.SubagentStart?.[0]?.hooks[0];
+      assert.ok(hook !== undefined);
+      return (await hook({ hook_event_name: event, agent_id: 'a1', agent_type: agentType, session_id: 's', transcript_path: '', cwd: '/tmp' } as never, undefined, {
+        signal: new AbortController().signal,
+      })) as { hookSpecificOutput?: { hookEventName?: string; additionalContext?: string } };
+    };
+
+    it('gives a symphony:* subagent the issue, role, workspace, rules and criteria', async () => {
+      const cwd = tempDir();
+      fs.mkdirSync(path.join(cwd, '.ai', 'rules'), { recursive: true });
+      fs.writeFileSync(path.join(cwd, 'CLAUDE.md'), '#');
+      fs.writeFileSync(path.join(cwd, '.ai', 'rules', 'index.md'), '#');
+      const options = await sessionOptions({ cwd, policy: { readOnly: true }, subagentContext: { role: 'architect', acceptanceCriteria: ['A works', 'B works'] } });
+      const output = await start(options, 'symphony:explorer');
+      assert.equal(output.hookSpecificOutput?.hookEventName, 'SubagentStart');
+      const text = output.hookSpecificOutput?.additionalContext ?? '';
+      const issue = makeIssue({ id: 'a' });
+      for (const part of [issue.identifier, issue.title, 'architect', 'Read-only', cwd, path.join(cwd, 'CLAUDE.md'), path.join(cwd, '.ai', 'rules', 'index.md'), '- A works', '- B works', 'file:line']) {
+        assert.ok(text.includes(part), part);
+      }
+      assert.ok(!text.includes('AGENTS.md'));
+    });
+
+    it('gives nothing to other agents and other events', async () => {
+      const options = await sessionOptions({});
+      for (const type of ['general-purpose', 'Explore', 'explorer', undefined]) assert.deepEqual(await start(options, type), {}, String(type));
+      assert.deepEqual(await start(options, 'symphony:explorer', 'PreToolUse'), {});
+    });
+
+    it('works without role, criteria and rule files', async () => {
+      const text = (await start(await sessionOptions({ cwd: tempDir() }), 'symphony:explorer')).hookSpecificOutput?.additionalContext ?? '';
+      assert.ok(text.includes(makeIssue({ id: 'a' }).identifier));
+      assert.ok(text.includes('No CLAUDE.md'));
+      assert.ok(!text.includes('Role of the session'));
+      assert.ok(!text.includes('Acceptance criteria'));
+    });
+
+    it('bounds the text and cuts the criteria first', () => {
+      const base = { identifier: 'o/r#1', title: 'T', cwd: '/w', readOnly: false, role: 'developer', rules: [] };
+      const text = subagentContext({ ...base, acceptanceCriteria: Array.from({ length: 50 }, (_, i) => String(i % 10).repeat(400)) });
+      assert.ok(text.length <= SUBAGENT_CONTEXT_MAX);
+      assert.ok(text.includes('more in the issue'));
+      assert.ok(text.endsWith('Answer with `file:line` for every claim about the code.'));
+      const long = subagentContext({ ...base, cwd: '/w'.repeat(SUBAGENT_CONTEXT_MAX), acceptanceCriteria: [] });
+      assert.ok(long.length <= SUBAGENT_CONTEXT_MAX);
+      assert.ok(long.endsWith('file:line` for every claim about the code.'));
+    });
+
+    it('registers next to the PreToolUse hook', async () => {
+      const options = await sessionOptions({ deniedAgents: ['symphony:laravel-filament-developer'] });
+      assert.equal(options.hooks?.PreToolUse?.[0]?.matcher, 'Agent|Task');
+      assert.equal(options.hooks?.SubagentStart?.length, 1);
+    });
+  });
 
   describe('explorer model pin', () => {
     const explorer = { subagent_type: 'symphony:explorer', description: 'd', prompt: 'p' };

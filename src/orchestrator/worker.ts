@@ -684,6 +684,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       policy: { readOnly: role?.readOnly ?? false },
       // The bare name too: a repository's own .claude/agents may load the same agent without the plugin prefix.
       deniedAgents: agents.denied.flatMap((agent) => [agent.qualified, agent.name]),
+      subagentContext: { role: name, acceptanceCriteria: resultVariables.results.analysis?.acceptance_criteria ?? [] },
       // Entry checks run inside the status tool call; leave a minute for the tracker call around them.
       toolTimeoutMs: Math.max(params.workflow.config.checks.timeoutMs, maxColumnCheckMs(params.workflow.config.checks)) + TOOL_TIMEOUT_MARGIN_MS,
       tools: guardTools(observeMerges(toolsForRole(params.adapter.agentToolSpecs(), role, issue, support?.tool ?? null), callbacks.merged), guard),
