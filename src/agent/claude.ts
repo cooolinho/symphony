@@ -85,6 +85,60 @@ const AGENT_TOOLS = ['Agent', 'Task'];
 /** The plugin explorer, whose model the Agent hook pins below the parent (the front matter is no hard pin). */
 const EXPLORER_AGENT = 'symphony:explorer';
 
+/** Plugin prefix of the toolbox agents; only these get the issue context. */
+const SYMPHONY_AGENT_PREFIX = 'symphony:';
+
+/** Upper bound (characters) of the context injected into one subagent. */
+export const SUBAGENT_CONTEXT_MAX = 4_000;
+
+const RULE_FILES = ['CLAUDE.md', 'AGENTS.md', '.ai/rules/index.md'];
+
+/** Absolute paths of the repository rule files that exist in the workspace. */
+function repositoryRules(cwd: string): string[] {
+  return RULE_FILES.map((file) => path.join(cwd, file)).filter((file) => fs.existsSync(file));
+}
+
+export interface SubagentContextInput {
+  identifier: string;
+  title: string;
+  cwd: string;
+  readOnly: boolean;
+  role: string | null;
+  acceptanceCriteria: string[];
+  rules: string[];
+}
+
+/** The text a `symphony:*` subagent gets at start, at most SUBAGENT_CONTEXT_MAX characters; acceptance criteria are cut first. */
+export function subagentContext(input: SubagentContextInput): string {
+  const head = [
+    '# Symphony issue context',
+    `You run as a subagent in a Symphony session on ${input.identifier}: ${truncate(oneLine(input.title), 200)}.`,
+    ...(input.role === null ? [] : [`Role of the session: ${input.role}.${input.readOnly ? ' Read-only: do not edit files, commit or push.' : ' The session may change the workspace.'}`]),
+    `Workspace (absolute path): ${input.cwd}. Work only inside it.`,
+    input.rules.length > 0 ? `Repository rules: ${input.rules.join(', ')}.` : 'No CLAUDE.md, AGENTS.md or .ai/rules/index.md at the workspace root.',
+  ];
+  const last = 'Answer with `file:line` for every claim about the code.';
+  const lines = [...head];
+  if (input.acceptanceCriteria.length > 0) {
+    lines.push('Acceptance criteria of the issue:');
+    const size = () => lines.join('\n').length + last.length + 1;
+    let used = 0;
+    for (const criterion of input.acceptanceCriteria) {
+      const line = `- ${truncate(oneLine(criterion), 400)}`;
+      // Keep room for the "more" line that may follow.
+      if (size() + line.length + 1 + 40 > SUBAGENT_CONTEXT_MAX) break;
+      lines.push(line);
+      used += 1;
+    }
+    if (used < input.acceptanceCriteria.length) lines.push(`- … ${input.acceptanceCriteria.length - used} more in the issue`);
+  }
+  lines.push(last);
+  const text = lines.join('\n');
+  if (text.length <= SUBAGENT_CONTEXT_MAX) return text;
+  // Safety net (a very long cwd): cut the middle, keep the closing instruction.
+  return `${truncate(text, SUBAGENT_CONTEXT_MAX - last.length - 1)}\n${last}`;
+}
+
 /** `subagent_type` of an Agent tool call; Claude Code's default when unset is `general-purpose`; kept as the fallback for old logs. */
 function subagentOf(input: unknown): string {
   const value = typeof input === 'object' && input !== null ? (input as Record<string, unknown>).subagent_type : undefined;
@@ -406,9 +460,9 @@ class ClaudeSession implements AgentSession {
     if (config.executable !== null) options.pathToClaudeCodeExecutable = config.executable;
     if (config.plugins.length > 0) options.plugins = config.plugins.map((plugin) => ({ type: 'local' as const, path: plugin }));
     if (config.skills !== null) options.skills = config.skills;
-    // The deny rules refuse the call, but the denied agents still appear in `init.agents`; the hook also refuses a call that names one.
-    // It also pins the explorer's model in every session (docs/agent-claude.md#subagents).
-    options.hooks = { PreToolUse: [{ matcher: AGENT_TOOLS.join('|'), hooks: [this.#agentPolicy] }] };
+    // The deny rules refuse the call, but the denied agents still appear in `init.agents`; the `PreToolUse` hook also refuses a call that names one
+    // and pins the explorer's model in every session (docs/agent-claude.md#subagents). `SubagentStart` injects the issue context.
+    options.hooks = { SubagentStart: [{ hooks: [this.#injectSubagentContext] }], PreToolUse: [{ matcher: AGENT_TOOLS.join('|'), hooks: [this.#agentPolicy] }] };
     if ((extensions?.additionalDirectories.length ?? 0) > 0) options.additionalDirectories = extensions?.additionalDirectories;
     const mcpServers: NonNullable<Options['mcpServers']> = {};
     for (const [name, server] of Object.entries(extensions?.mcpServers ?? {})) {
@@ -449,6 +503,22 @@ class ClaudeSession implements AgentSession {
       ),
     });
   }
+
+  /** Symphony's appended system prompt does not reach subagents; this tells a `symphony:*` one which issue and workspace it works in. */
+  #injectSubagentContext: HookCallback = async (input) => {
+    if (input.hook_event_name !== 'SubagentStart' || typeof input.agent_type !== 'string' || !input.agent_type.startsWith(SYMPHONY_AGENT_PREFIX)) return {};
+    const { issue, cwd, policy, subagentContext: context } = this.#params;
+    const additionalContext = subagentContext({
+      identifier: issue.identifier,
+      title: issue.title,
+      cwd,
+      readOnly: policy?.readOnly === true,
+      role: context?.role ?? null,
+      acceptanceCriteria: context?.acceptanceCriteria ?? [],
+      rules: repositoryRules(cwd),
+    });
+    return { hookSpecificOutput: { hookEventName: 'SubagentStart', additionalContext } };
+  };
 
   /** Refuses an Agent tool call for a subagent the role or workspace does not allow (`deniedAgents`); pins the explorer's model. */
   #agentPolicy: HookCallback = async (input) => {

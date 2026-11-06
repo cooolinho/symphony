@@ -30,13 +30,13 @@ const issue = makeIssue({
 });
 
 const agent = (name: string): Agent => ({ name: `symphony:${name}`, description: `The ${name}.` });
-const ALL = ['explorer', 'laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer', 'test-designer'];
+const ALL = ['design-critic', 'explorer', 'laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer', 'test-designer'];
 
-async function render(role: string, agents: Agent[], extra: Record<string, unknown> = {}): Promise<string> {
+async function render(role: string, agents: Agent[], extra: Record<string, unknown> = {}, labels?: string[]): Promise<string> {
   const { definition } = await loadWorkflowFile(shipped);
   const template = compilePrompt(definition.promptTemplate, definition.partials);
   assert.equal(template.parseError, null);
-  return renderPrompt(template, { issue: issueTemplateValue(issue, commandSkills([toolbox])), attempt: null, role, agents, round: 1, test_paths: ['tests/**'], ...extra });
+  return renderPrompt(template, { issue: issueTemplateValue(labels ? { ...issue, labels } : issue, commandSkills([toolbox])), attempt: null, role, agents, round: 1, test_paths: ['tests/**'], ...extra });
 }
 
 /** The configured agent list of every role of the shipped workflow, short names. */
@@ -102,8 +102,8 @@ describe('prompts on occasions instead of deterrence', () => {
         assert.match(prompt, /read the cited lines yourself/, label);
         assert.match(prompt, /discard any claim without `file:line`/, label);
         assert.match(prompt, /You stay responsible/, label);
-        // the agent list stays
-        for (const name of listed) assert.ok(prompt.includes(`- \`symphony:${name}\`: The ${name}.`), `${label}: ${name}`);
+        // the agent list stays (the design-critic is listed only at L/XL, see the architect tests)
+        for (const name of listed) if (name !== 'design-critic') assert.ok(prompt.includes(`- \`symphony:${name}\`: The ${name}.`), `${label}: ${name}`);
         // no deterrence
         assert.doesNotMatch(prompt, /\boptional\b/i, label);
         assert.doesNotMatch(prompt, /costs tokens/i, label);
@@ -116,7 +116,7 @@ describe('prompts on occasions instead of deterrence', () => {
       for (const role of ['developer', 'architect', 'analyst', 'planner', 'autopilot', 'auditor']) {
         const listed = roles[role];
         assert.ok(listed && listed.length > 0, role);
-        const prompt = await render(role, listed.map(agent));
+        const prompt = await render(role, listed.map(agent), {}, role === 'architect' ? ['feature', 'complexity: l'] : undefined);
         const bullets = delegateBullets(prompt);
         assert.ok(bullets.length >= 2, `${role}: ${bullets.length} bullets`);
         for (const bullet of bullets) {

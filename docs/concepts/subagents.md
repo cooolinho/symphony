@@ -510,6 +510,7 @@ Depends on: E2-1, E0-2 · Size: M · Category: feature
 identifier and title, role and whether it is read-only, absolute workspace path, acceptance criteria from
 `results.analysis` when present, pointers to the repository rules (CLAUDE.md / AGENTS.md, `.ai/rules/index.md` when
 present) and "answer with `file:line`"; bounded in length, merged with the `PreToolUse` hook.
+**Status:** implemented in #498 (limit 4000 characters); live sample after deploy pending.
 **Why:** Symphony's appended system prompt does not reach subagents; briefs forget the issue and the rules.
 - [ ] Unit test of the hook output; sampled live subagent reports refer to the right issue and path; internal agents
   get nothing.

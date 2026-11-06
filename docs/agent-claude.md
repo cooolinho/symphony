@@ -148,11 +148,20 @@ needs a skill directory in the toolbox and a role with `commands` (or none at al
 Plugins also ship subagents (`agents/<name>.md`), which Claude Code offers to the Agent tool as `<plugin>:<name>`;
 the `init` message of the transcript lists them under `agents`. Symphony's toolbox ships five for Laravel repositories
 (`laravel-architect`, `laravel-code-reviewer`, `laravel-database-engineer`, `laravel-filament-developer`,
-`laravel-test-engineer`) and the framework-neutral `explorer`, `test-designer`, `convention-lens`, `bug-lens` and `finding-verifier` (the last three for the reviewer's lens review at L/XL). Which of them a session may start depends on the role's `agents`, read-only roles and the
+`laravel-test-engineer`) and the framework-neutral `explorer`, `design-critic`, `test-designer`, `convention-lens`, `bug-lens` and `finding-verifier` (the last three for the reviewer's lens review at L/XL). Which of them a session may start depends on the role's `agents`, read-only roles and the
 workspace's project type ([Subagents per role](configuration.md#subagents-per-role)); the rest are denied by an
 `Agent(<plugin>:<name>)` rule in `disallowedTools` and by a `PreToolUse` hook on `Agent|Task`, which emits `approval_denied` when it
 refuses a call. The hook is registered for every session, not only when agents are denied (it also pins the explorer's model, below). Every Agent tool call carries its subagent in the `tool_use` event (`detail.agent`), so the statistics
 count subagents like skills. Background and usage figures: [laravel-subagents.md](laravel-subagents.md).
+
+Symphony's appended system prompt does not reach subagents, so a `SubagentStart` callback hook (registered in every
+session, next to the `PreToolUse` hook; spike E0-2 question 7b) injects an issue context as `additionalContext` into each
+`symphony:*` subagent. In this order: the issue identifier and title, the role of the session and whether it is read-only,
+the absolute workspace path, the repository rules that exist (`CLAUDE.md`, `AGENTS.md`, `.ai/rules/index.md`), the
+acceptance criteria from `results.analysis` when the issue analyst ran, and the instruction to answer with `file:line`.
+Without a role context (other callers) the role line and the criteria are left out. The text is limited to 4000
+characters (`SUBAGENT_CONTEXT_MAX`); criteria are cut first, each at 400 characters, and the ones that do not fit become
+`- … n more in the issue`. Built-in agents, bare-name repository agents, forks and other plugins get nothing.
 
 #### Explorer model (E2-3)
 
