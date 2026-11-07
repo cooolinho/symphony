@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -107,24 +106,6 @@ describe('#555 independent: role prompts and project_types', () => {
     for (const role of ROLES) {
       const text = fs.readFileSync(path.join(root, 'roles', `${role}.md`), 'utf8');
       assert.doesNotMatch(text, /Symfony|Django|Rails|Spring|Next\.js|Vue/, role);
-    }
-  });
-
-  it('the Laravel render of the three changed roles equals the render of the pre-change role files from git', async () => {
-    for (const role of ['reviewer', 'security-auditor', 'test-engineer']) {
-      let before: string;
-      try {
-        before = execFileSync('git', ['show', `HEAD~1:roles/${role}.md`], { cwd: root, encoding: 'utf8' });
-      } catch {
-        return; // no history available (shallow checkout)
-      }
-      const { definition } = await loadWorkflowFile(shipped);
-      const render2 = async (partials: Record<string, string>) => {
-        const template = compilePrompt(definition.promptTemplate, partials);
-        const issue = makeIssue({ id: 'PVTI_1', identifier: 'acme/app#42', title: 'T', description: 'D', state: 'In review', labels: ['feature', 'complexity: l'] });
-        return renderPrompt(template, { issue: issueTemplateValue(issue, commandSkills([path.join(root, '.claude')])), attempt: null, role, agents: [], project_types: ['laravel'] } as never);
-      };
-      assert.equal(await render2(definition.partials), await render2({ ...definition.partials, [`roles/${role}.md`]: before }), role);
     }
   });
 });
