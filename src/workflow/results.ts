@@ -104,7 +104,7 @@ export const PANEL_LENSES = ['reachability', 'impact', 'defenses'] as const;
 
 /**
  * Panel rule (open question 9): how many lenses may refute a security finding that stays in `findings`; 0 = a finding
- * is kept only when no lens refutes it. Change it here (and the sentence in roles/security-auditor.md).
+ * is kept only when no lens refutes it. Change it here together with the sentence in roles/security-auditor.md; test/security-panel-independent.test.ts pins the pair.
  */
 export const PANEL_MAX_REFUTING_VOTES = 0;
 
