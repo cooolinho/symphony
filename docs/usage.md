@@ -297,7 +297,7 @@ To switch to roles:
 3. **`.env`:** set `SYMPHONY_MAX_CONTINUATIONS=6`. The old value `2` is not enough for developer, reviewer and one
    round of fixes.
 4. **Verify:** `npm run dry-run` must not report `unknown board column` and shows the prompt for the role of the
-   first candidate.
+   first candidate. The preview uses `project_types` `["laravel"]` (as for a workspace with a Laravel app), so it shows the Laravel parts of a prompt.
 
 Existing workspaces do not get the `after_create` hook retroactively. For Laravel apps in them, run
 `bash ~/projects/symphony/hooks/laravel-env.sh` once in the workspace, or delete the workspace.

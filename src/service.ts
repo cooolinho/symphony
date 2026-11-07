@@ -335,6 +335,8 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
         // The workspace is not prepared here: preview the subagents as for a workspace every integration applies to.
         const prefixes = integrations.flatMap((integration) => (integration.agentPrefix !== undefined ? [integration.agentPrefix] : []));
         const agents = sessionAgents(pluginAgents(config.claude.plugins), role, prefixes, prefixes).allowed;
+        // Same choice for project_types: no workspace to detect apps in, so the ids of all integrations that can detect apps.
+        const projectTypes = integrations.filter((integration) => integration.appDirs !== undefined).map((integration) => integration.id);
         const prompt = await renderPrompt(store.current.prompt, {
           issue: issueTemplateValue(first, skills, config.pipeline),
           attempt: null,
@@ -346,6 +348,7 @@ export async function dryRun(options: Pick<ServiceOptions, 'workflowPath' | 'env
           brain_index: null,
           test_paths: config.pipeline.testPaths,
           docs_paths: config.pipeline.docsPaths,
+          project_types: projectTypes,
         });
         const lines = prompt.split('\n');
         for (const line of lines.slice(0, 30)) out(`  | ${line}`);

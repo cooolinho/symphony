@@ -1517,7 +1517,7 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
   `name` (what the Agent tool takes as `subagent_type`, e.g. `symphony:laravel-architect`) and `description`. Always
   defined; empty when the session may start none: `{% if agents.size > 0 %}…{% endif %}`.
 - `test_paths`: the list `pipeline.test_paths`, so the prompt of a test engineer can name the files it may change. Always defined.
-- `project_types`: the ids of the integrations that found an app in the workspace (e.g. `["laravel"]`); empty when none did. Lets a role template add framework hints (the security panel names Laravel checks only for `laravel`). Always defined.
+- `project_types`: the ids of the integrations that found an app in the workspace (e.g. `["laravel"]`); empty when none did. Lets a role template add framework hints (the security panel names Laravel checks only for `laravel`). Always defined. The dry-run prompt preview has no prepared workspace and uses the ids of all integrations that can detect apps (currently `["laravel"]`), so it shows the Laravel parts.
 - `attachments`: the files uploaded to the issue's description and comments, downloaded into the workspace before the
   session (see [Images and files in the issue](usage.md#images-and-files-in-the-issue)), in order of appearance, each
   `{path, label, source, error}`: `path` is workspace-relative (`.issue-assets/attachment-1.png`), or `null` when the
@@ -1565,7 +1565,7 @@ Besides the standard Liquid filters there are `without_model_labels` and `withou
 [Effort per issue](#effort-per-issue)). The shipped `WORKFLOW.md` uses the latter.
 
 An empty body falls back to a minimal default prompt. `npm run dry-run` renders the prompt for the first eligible
-issue so you can check it without starting an agent.
+issue so you can check it without starting an agent. The preview prepares no workspace: it shows the subagents and `project_types` as for a workspace every integration applies to (`project_types` is `["laravel"]`).
 
 ### Role prompts in separate files
 
