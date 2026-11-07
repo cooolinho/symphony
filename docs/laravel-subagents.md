@@ -71,7 +71,7 @@ up as the tool `Agent`:
    and `skill_calls`; [`src/history/analytics.ts`](../src/history/analytics.ts) and the logs page aggregate those.
 
 So even a run that used `symphony:code-reviewer` counts as "Agent: 1". The tool calls of a subagent itself
-(`parent_tool_use_id` set) are counted into the run like the main agent's.
+(`agent_id` or `parent_tool_use_id` set) are counted into the run like the main agent's.
 
 The orchestrator's `/api/v1/state` response now tracks individual subagent runs (start, end, tokens) alongside
 `agent_calls`; this data is available for the team view (E3-3) and team API (E3-2).
