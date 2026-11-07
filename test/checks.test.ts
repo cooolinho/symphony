@@ -115,11 +115,20 @@ function fixture(options: { scripts?: Record<string, string>; phpstan?: boolean;
   return { repo, origin, log, bin };
 }
 
+/**
+ * The environment for the check scripts: the parent's without the variables they read (SYMPHONY_*, DB_*, DOCKER_*, MYSQL_*).
+ * Symphony's agent sessions set e.g. SYMPHONY_BASE_BRANCH=develop, SYMPHONY_TEST_PARALLEL and SYMPHONY_MYSQL_USER, which
+ * changed the scripts' behaviour; GitHub Actions sets none of them. Each test sets what it needs itself.
+ */
+function hermeticEnv(): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(SYMPHONY_|DB_|DOCKER_|MYSQL_)/.test(key)));
+}
+
 function run(f: Fixture, env: NodeJS.ProcessEnv = {}, cwd = f.repo, args: string[] = [], script = SCRIPT) {
   const result = spawnSync('bash', [script, ...args], {
     cwd,
     encoding: 'utf8',
-    env: { ...process.env, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, ...env },
+    env: { ...hermeticEnv(), PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, ...env },
   });
   return { status: result.status, out: result.stdout + result.stderr };
 }
@@ -174,7 +183,7 @@ describe('checks/laravel.sh', () => {
     const result = spawnSync('bash', ['-c', `set -m; bash "$0" --full & pid=$!; sleep 2; kill -TERM -- -$pid; wait $pid`, SCRIPT], {
       cwd: f.repo,
       encoding: 'utf8',
-      env: { ...process.env, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, SYMPHONY_CI_DB: 'mysql', SYMPHONY_MYSQL_USER: 'u' },
+      env: { ...hermeticEnv(), PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, SYMPHONY_CI_DB: 'mysql', SYMPHONY_MYSQL_USER: 'u' },
     });
     assert.equal(result.status, 143, result.stdout + result.stderr);
     const lines = result.stdout.trimEnd().split('\n');
@@ -551,7 +560,7 @@ describe('checks/repo.sh', () => {
   it('--lock runs one check of a name per repository at a time', async () => {
     const f = withCheck('prod-smoke', 'echo "start $$" >> "$LOCK_LOG"; sleep 0.4; echo "end $$" >> "$LOCK_LOG"');
     const lockLog = path.join(path.dirname(f.log), 'lock.log');
-    const env = { ...process.env, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, LOCK_LOG: lockLog, TMPDIR: tempDir('symphony-locks-'), SYMPHONY_ISSUE_REPOSITORY: 'acme/app' };
+    const env = { ...hermeticEnv(), PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, LOCK_LOG: lockLog, TMPDIR: tempDir('symphony-locks-'), SYMPHONY_ISSUE_REPOSITORY: 'acme/app' };
     const { spawn } = await import('node:child_process');
     const once = () => new Promise<number | null>((resolve) => spawn('bash', [REPO_SCRIPT, '--lock', 'prod-smoke'], { cwd: f.repo, env, stdio: 'ignore' }).on('exit', resolve));
     assert.deepEqual(await Promise.all([once(), once()]), [0, 0]);
@@ -868,7 +877,7 @@ describe('checks/laravel.sh step lines and host load', () => {
     const result = spawnSync('bash', ['-c', `set -m; bash "$0" & pid=$!; ${wait}; kill -TERM -- -$pid; wait $pid`, SCRIPT], {
       cwd: f.repo,
       encoding: 'utf8',
-      env: { ...process.env, ...CLEAN, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log },
+      env: { ...hermeticEnv(), ...CLEAN, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log },
     });
     assert.equal(result.status, 143, result.stdout + result.stderr);
     const out = result.stdout;
