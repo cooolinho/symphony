@@ -1378,6 +1378,11 @@ How the pieces work together:
 The full prompt (developer steps, reviewer checklist and the fallback for the `default` role) is the body of the
 shipped `WORKFLOW.md`; `test/workflow-prompt.test.ts` renders it for each role.
 
+The Laravel and Filament parts of the role checklists (reviewer, security-auditor, test-engineer: Pest, Filament and
+Livewire tests, Filament authorization, `$fillable`/`$guarded`, `modifyQueryUsing`, `down()`, Blade output, the Pest
+mutation hint) render only when `project_types` contains `laravel`. Other workspaces get the same checklist items in
+framework-neutral words, so the `checked` lists of the results stay comparable.
+
 ## Check scripts (`checks/laravel.sh`)
 
 A deterministic quality gate that runs in the workspace (bash). The shipped `WORKFLOW.md` runs it through
@@ -1517,7 +1522,7 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
   `name` (what the Agent tool takes as `subagent_type`, e.g. `symphony:laravel-architect`) and `description`. Always
   defined; empty when the session may start none: `{% if agents.size > 0 %}…{% endif %}`.
 - `test_paths`: the list `pipeline.test_paths`, so the prompt of a test engineer can name the files it may change. Always defined.
-- `project_types`: the ids of the integrations that found an app in the workspace (e.g. `["laravel"]`); empty when none did. Lets a role template add framework hints (the security panel names Laravel checks only for `laravel`). Always defined. The dry-run prompt preview has no prepared workspace and uses the ids of all integrations that can detect apps (currently `["laravel"]`), so it shows the Laravel parts.
+- `project_types`: the ids of the integrations that found an app in the workspace (e.g. `["laravel"]`); empty when none did. Lets a role template add framework hints (the Laravel and Filament parts of the role checklists and the security panel render only for `laravel`). Always defined. The dry-run prompt preview has no prepared workspace and uses the ids of all integrations that can detect apps (currently `["laravel"]`), so it shows the Laravel parts.
 - `attachments`: the files uploaded to the issue's description and comments, downloaded into the workspace before the
   session (see [Images and files in the issue](usage.md#images-and-files-in-the-issue)), in order of appearance, each
   `{path, label, source, error}`: `path` is workspace-relative (`.issue-assets/attachment-1.png`), or `null` when the
