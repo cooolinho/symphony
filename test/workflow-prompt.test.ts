@@ -644,7 +644,7 @@ describe('shipped WORKFLOW.md', () => {
   });
 
   it('renders the read-only reviewer prompt with the checklist and the result fields', async () => {
-    const prompt = await render('reviewer', 2);
+    const prompt = await render('reviewer', 2, undefined, null, [], { project_types: ['laravel'] });
     assert.match(prompt, /Your role: reviewer/);
     assert.match(prompt, /read-only/);
     assert.match(prompt, /git diff origin\/<base>\.\.\.HEAD/);
