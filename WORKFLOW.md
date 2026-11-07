@@ -289,7 +289,7 @@ roles:
     may_move_to: [In review, In progress, Blocked]
     model_label: ignore                      # opus, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # high, whatever the issue's Effort: label says
-    agents: []                               # reads the diff itself; the reviewer persona only repeated its role
+    agents: [security-inventory, refutation-judge]  # inventory + refutation panel at complexity L/XL only (roles/security-auditor.md); none at S/M
     brain: read
     claude: { model: opus, effort: high }
   auditor:

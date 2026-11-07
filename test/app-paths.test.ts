@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { laravelIntegration } from '../src/laravel/integration.ts';
+import { workspaceApps } from '../src/integrations/registry.ts';
 import { effectivePaths, expandForApps } from '../src/workflow/path-globs.ts';
 import { trackerDefaults } from '../src/tracker/registry.ts';
 import { resolveConfig } from '../src/workflow/config.ts';
@@ -79,5 +80,18 @@ describe('pipeline path globs for a Laravel app in a subdirectory', () => {
 
   it('expandForApps skips ** globs and duplicates', () => {
     assert.deepEqual(expandForApps(['tests/**', '**/*Test.php'], ['', 'laravel', 'laravel']), ['tests/**', '**/*Test.php', 'laravel/tests/**']);
+  });
+});
+
+describe('workspaceApps (project_types)', () => {
+  it('returns the app dirs and the ids of the integrations that found an app', async () => {
+    const root = checkout('laravel');
+    assert.deepEqual(await workspaceApps([laravelIntegration], root), { appDirs: await appDirs(root), projectTypes: ['laravel'] });
+    assert.deepEqual((await workspaceApps([laravelIntegration], checkout(''))).projectTypes, ['laravel']);
+  });
+
+  it('returns nothing for a checkout without an app', async () => {
+    assert.deepEqual(await workspaceApps([laravelIntegration], tempDir('app-paths-empty-')), { appDirs: [], projectTypes: [] });
+    assert.deepEqual(await workspaceApps([], tempDir('app-paths-empty-')), { appDirs: [], projectTypes: [] });
   });
 });

@@ -290,7 +290,7 @@ write a `transition_denied` line.
 | `max_retry_backoff_ms` | `300000` | Cap for failure retries (10 s, 20 s, 40 s, …). |
 | `max_concurrent_agents_by_state` | `{}` | Per-status limits, e.g. `{ "In Progress": 1 }`. Invalid entries are ignored with a warning. |
 | `reserved_slots_by_role` | `{}` | Slots kept free for a [role](#roles), e.g. `{ developer: 1, reviewer: 1 }`, so a developer and a reviewer can always run side by side. An issue of role R starts only while the free slots exceed the unused reservations of the other roles (Σ max(0, reserved − running)); a reserved slot stays empty while its role has nothing to do. Command roles (`planner`, `auditor`, …) count as their own roles and never use the developer's reservation. Column limits still apply. Names that are not roles, and values that are not integers of `0` or more, are ignored with a warning. If the reservations add up to more than `max_concurrent_agents`, they are ignored and the dashboard shows a problem. See [Reserved slots](#reserved-slots). |
-| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `agents`, `brain`, `brain_index`, `results`, `round`, `result_required`, `test_paths`, `attachments`, `human_feedback`, `turn_number`, `max_turns`). |
+| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `agents`, `brain`, `brain_index`, `results`, `round`, `result_required`, `test_paths`, `project_types`, `attachments`, `human_feedback`, `turn_number`, `max_turns`). |
 
 #### Reserved slots
 
@@ -822,7 +822,7 @@ roles:
     on_check_failed: In progress
     may_move_to: [In review, In progress, Blocked]
     model_label: ignore
-    agents: []                        # reads the diff itself; no laravel-* persona
+    agents: [security-inventory, refutation-judge]   # panel at L/XL only; none at S/M; no laravel-* persona
     claude: { model: opus }
 pipeline:
   max_security_rounds: 2
@@ -855,6 +855,9 @@ pipeline:
   in the prompt (`results.security_findings`, see [Prompt template](#prompt-template)), `blocked` to `Blocked`. The result
   has `findings` like a review: `passed` allows only `minor` and `nit` findings, `issues_found` needs at least one
   ([result contracts](results.md#kinds)). A session that ends without a result goes to `on_missing_result` (`Blocked`).
+- **The panel at L/XL.** On a large issue the audit researches the change with the [security panel](#subagents-per-role)
+  (inventory, one refutation judge per lens and candidate) and records the votes in `verification.votes`;
+  `report_result` applies the panel rule ([results.md](results.md#security-panel-at-lxl)). S/M audits do not change.
 - **After `issues_found`** the developer fixes the findings and hands over again; the reviewer reviews the fix, and when
   it approves, the security check is evaluated again on the new diff.
 - **Round limit.** `pipeline.max_security_rounds` (default 2, at least 1; no profile override) counts `issues_found`
@@ -945,11 +948,11 @@ The shipped `WORKFLOW.md` defines the `auditor` role for `/refactoring`, the `au
 
 #### Subagents per role
 
-The plugins in `claude.plugins` ship subagents (`agents/<name>.md`; Symphony's toolbox ships the `laravel-*` ones and the framework-neutral `explorer`, `design-critic`, `test-designer`, `convention-lens`, `bug-lens` and `finding-verifier`, see
+The plugins in `claude.plugins` ship subagents (`agents/<name>.md`; Symphony's toolbox ships the `laravel-*` ones and the framework-neutral `explorer`, `design-critic`, `test-designer`, `convention-lens`, `bug-lens`, `finding-verifier`, `security-inventory` and `refutation-judge`, see
 [laravel-subagents.md](laravel-subagents.md)). Claude Code offers them as `<plugin>:<name>`, e.g.
 `symphony:laravel-architect`. For each session Symphony decides which of them the agent may start:
 
-1. **The role's list.** `agents` unset allows every plugin subagent, a list only those, `[]` none. "Unset = all" stays the default for custom workflows and for workflows without `roles`; every role of the shipped `WORKFLOW.md` lists its agents explicitly (`docs`, `brain-gardener`, `issue-analyst` and `security-auditor` with `[]`, so they never start a `laravel-*` persona; `architect` lists `explorer` and `design-critic`; `test-engineer` lists `test-designer`, and the `reviewer` lists `convention-lens`, `bug-lens` and `finding-verifier` (lens review at L/XL only), which carry no prefix).
+1. **The role's list.** `agents` unset allows every plugin subagent, a list only those, `[]` none. "Unset = all" stays the default for custom workflows and for workflows without `roles`; every role of the shipped `WORKFLOW.md` lists its agents explicitly (`docs`, `brain-gardener` and `issue-analyst` with `[]`, so they never start a `laravel-*` persona; `architect` lists `explorer` and `design-critic`; `test-engineer` lists `test-designer`, and the `reviewer` lists `convention-lens`, `bug-lens` and `finding-verifier` (lens review at L/XL only), and the `security-auditor` lists `security-inventory` and `refutation-judge` (security panel at L/XL only); these carry no prefix).
 2. **Read-only roles** only get subagents that cannot edit files: their front matter denies `Edit` and `Write`
    (`disallowedTools: Edit, Write, NotebookEdit`) or lists `tools` without them. This applies with `agents` unset too.
 3. **Project type.** A subagent whose name starts with a workspace integration's prefix belongs to it: `laravel-*`
@@ -980,6 +983,16 @@ naming one of them. The allowed ones reach the prompt as the variable [`agents`]
   enter the result; style, linter findings and pre-existing problems are excluded. At S/M, without a complexity and in
   the integration review the reviewer renders neither the block nor the intro. The block needs the verifier and at least
   one lens in the session's list, so a partial list never names a missing persona.
+- **Security panel (security-auditor, L/XL).** At complexity L or XL the audit adds a panel step to the checklist, without
+  running any code: `security-inventory` (sonnet) splits the change into components once, the auditor researches each
+  component itself (the auditor splits the change itself when `security-inventory` is not in the list), and every candidate
+  gets **three `refutation-judge` calls** (opus) in one message, one per lens
+  (`reachability`, `impact`, `defenses`), each defaulting to "false positive" and citing `file:line`. The votes go
+  into `verification.votes`; `report_result` applies the panel rule (a finding stays only when no lens refutes it; the
+  constant `PANEL_MAX_REFUTING_VOTES`, see [results.md](results.md#security-panel-at-lxl)) and refuses a finding with
+  fewer than three votes or with a refuting one. In a workspace with a Laravel app (`project_types` contains `laravel`)
+  the briefs also name mass assignment, policies and gates, Filament `canAccess` / `authorize*`, raw queries and
+  `{!! !!}`. At S/M, without a complexity or without `refutation-judge` in the list the prompt is unchanged.
 
 The toolbox also ships framework-neutral subagents without a prefix; the first is `explorer` (`symphony:explorer`). It is
 read-only (`disallowedTools: Edit, Write, NotebookEdit`, `model: sonnet`, `effort: low`, `maxTurns: 25`) and returns key
@@ -991,6 +1004,10 @@ Three more framework-neutral subagents serve the lens review, all read-only (`di
 `convention-lens` (`model: sonnet`, `maxTurns: 25`; reports a violation of `CLAUDE.md`, `AGENTS.md` or `.ai/rules` only with
 the quoted rule), `bug-lens` (`model: opus`, `maxTurns: 30`) and `finding-verifier` (`model: opus`, `maxTurns: 15`; one
 candidate per call, cites `file:line`). The shipped `WORKFLOW.md` lists them for `reviewer`.
+
+Two more serve the security panel, both read-only through the allowlist `tools: Read, Glob, Grep` (no shell): `security-inventory`
+(`model: sonnet`, `maxTurns: 20`; components with entry point, trust boundary and sinks) and `refutation-judge`
+(`model: opus`, `maxTurns: 15`; one candidate and one lens per call). The shipped `WORKFLOW.md` lists them for `security-auditor`.
 
 #### Waves (`wait_for_sub_issues`)
 
@@ -1500,6 +1517,7 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
   `name` (what the Agent tool takes as `subagent_type`, e.g. `symphony:laravel-architect`) and `description`. Always
   defined; empty when the session may start none: `{% if agents.size > 0 %}…{% endif %}`.
 - `test_paths`: the list `pipeline.test_paths`, so the prompt of a test engineer can name the files it may change. Always defined.
+- `project_types`: the ids of the integrations that found an app in the workspace (e.g. `["laravel"]`); empty when none did. Lets a role template add framework hints (the security panel names Laravel checks only for `laravel`). Always defined.
 - `attachments`: the files uploaded to the issue's description and comments, downloaded into the workspace before the
   session (see [Images and files in the issue](usage.md#images-and-files-in-the-issue)), in order of appearance, each
   `{path, label, source, error}`: `path` is workspace-relative (`.issue-assets/attachment-1.png`), or `null` when the

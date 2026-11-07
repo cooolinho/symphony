@@ -12,12 +12,15 @@ import {
   decodeMarker,
   encodeMarker,
   internalResult,
+  PANEL_MAX_REFUTING_VOTES,
+  panelOutcome,
   parseResult,
   renderResultComment,
   renderResultMarkdown,
   verificationCounts,
   toolInputShape,
   type AgentResultKind,
+  type PanelVote,
   type ResultMeta,
   type SplitContext,
   type StageResult,
@@ -621,5 +624,37 @@ describe('verified findings (E3-4)', () => {
     assert.equal(decoded.result.findings.length, 1);
     assert.equal(decoded.result.omitted_refuted, 150);
     assert.equal(decoded.result.omitted_findings, undefined);
+  });
+});
+
+describe('security panel rule (E3-5)', () => {
+  const vote = (lens: string, verdict = 'confirmed') => ({ lens, verdict, evidence: `src/a.ts:3 ${lens}` });
+  const finding = (votes: unknown[]) => ({ severity: 'major', file: 'src/a.ts', line: 3, problem: 'SQLi', verification: { status: 'confirmed', evidence: 'src/a.ts:3', votes } });
+  const parse = (votes: unknown[]) =>
+    parseResult('security', { verdict: 'issues_found', summary: 'x', findings: [finding(votes)] }, { verifiedFindings: true, panelVotes: true });
+
+  it('panelOutcome: no refuting vote keeps the finding, one refuting vote refutes it (PANEL_MAX_REFUTING_VOTES = 0)', () => {
+    assert.equal(PANEL_MAX_REFUTING_VOTES, 0);
+    assert.equal(panelOutcome([vote('reachability'), vote('impact'), vote('defenses')] as PanelVote[]), 'confirmed');
+    assert.equal(panelOutcome([vote('reachability'), vote('impact', 'refuted'), vote('defenses')] as PanelVote[]), 'refuted');
+  });
+
+  it('parseResult accepts three confirming votes and refuses a refuting or incomplete panel', () => {
+    assert.equal(parse([vote('reachability'), vote('impact'), vote('defenses')]).ok, true);
+    const refuted = parse([vote('reachability'), vote('impact'), vote('defenses', 'refuted')]);
+    assert.equal(refuted.ok, false);
+    assert.match(JSON.stringify(refuted), /refuted by the panel \(defenses refuted\)/);
+    const few = parse([vote('reachability')]);
+    assert.match(JSON.stringify(few), /missing: impact, defenses/);
+  });
+
+  it('the schema rejects an unknown lens and a fourth vote', () => {
+    assert.equal(parse([vote('luck'), vote('impact'), vote('defenses')]).ok, false);
+    assert.equal(parse([vote('reachability'), vote('impact'), vote('defenses'), vote('impact')]).ok, false);
+  });
+
+  it('without panelVotes the votes are optional (E3-4 behaviour)', () => {
+    const outcome = parseResult('security', { verdict: 'issues_found', summary: 'x', findings: [finding([])] }, { verifiedFindings: true });
+    assert.equal(outcome.ok, true);
   });
 });

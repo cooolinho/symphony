@@ -260,6 +260,9 @@ async function continueWith(h: Harness, id = PARENT): Promise<void> {
   await until(() => sessionsOf(h, id).length > sessions || !claimed(), 3_000, `the next stage of ${id}`);
 }
 
+/** The security panel's three confirming votes (an XL integration audit runs the panel). */
+const PANEL_VOTES = ['reachability', 'impact', 'defenses'].map((lens) => ({ lens, verdict: 'confirmed', evidence: `checked at the cited line (${lens})` }));
+
 describe('work packages as sub-issues (#211)', () => {
   it('splits an XL feature into three sub-issues, waits for all of them, then reviews the integrated base branch', async () => {
     let filed: () => void = () => undefined;
@@ -583,7 +586,7 @@ describe('the security review of an issue split into work packages', () => {
       await report({
         verdict: 'issues_found',
         summary: 'The CSV and the PDF package each authorize their own route, but the policy they share lets any user view any invoice.',
-        findings: [{ severity: 'major', file: 'app/Policies/InvoicePolicy.php', line: 1, problem: 'view() allows every user to read every invoice', fix: 'Scope view() to the owner of the invoice', verification: { status: 'confirmed', evidence: 'checked at the cited line' } }],
+        findings: [{ severity: 'major', file: 'app/Policies/InvoicePolicy.php', line: 1, problem: 'view() allows every user to read every invoice', fix: 'Scope view() to the owner of the invoice', verification: { status: 'confirmed', evidence: 'checked at the cited line', votes: PANEL_VOTES } }],
       });
     };
     const fix: Script = async ({ report }) => {

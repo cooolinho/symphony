@@ -784,6 +784,8 @@ Each question has a default assumption that the requirements build on until it i
 9. **Panel rule for security findings** (E3-5): how many of the three lenses must fail to refute a finding?
    claude-security computes it outside the model; the threshold was not part of the research. Assumption: a finding is
    kept only when no lens refutes it.
+   **Answered (E3-5):** kept as assumed. `PANEL_MAX_REFUTING_VOTES = 0` in `src/workflow/results.ts`; `report_result` refuses a
+   finding with fewer than three votes or with a refuting one, and the auditor moves it to `refuted[]`.
 10. **Mutation testing environment**: do the workspace and check image have Xdebug 3+ or PCOV for `pest --mutate`, and
     what about TypeScript repositories (StrykerJS not verified)? Assumption: Pest only; no mutation score is required
     where it is unavailable.

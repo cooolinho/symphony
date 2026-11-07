@@ -60,6 +60,7 @@ interface SetupOptions {
   docs?: ResultToolParams['docs'];
   screenshots?: ResultToolParams['screenshots'];
   mutation?: ResultToolParams['mutation'];
+  panel?: boolean;
 }
 
 function setup(options: SetupOptions = {}) {
@@ -112,6 +113,7 @@ function setup(options: SetupOptions = {}) {
     ...(options.docs !== undefined ? { docs: options.docs } : {}),
     ...(options.screenshots !== undefined ? { screenshots: options.screenshots } : {}),
     ...(options.mutation !== undefined ? { mutation: options.mutation } : {}),
+    ...(options.panel !== undefined ? { panel: options.panel } : {}),
   };
   const unguarded = createResultTool(params);
   const tools = guardTools(toolsForRole(tracker.agentToolSpecs(), role, current(), unguarded), guard);
@@ -1515,5 +1517,72 @@ describe('report_result: verified findings at L/XL (acceptance, independent)', (
   it('the tool input shape accepts verification and refuted', () => {
     const shape = z.strictObject(toolInputShape('review'));
     assert.ok(shape.safeParse(review({ refuted: [f({ verification: refutedV })] })).success);
+  });
+});
+
+describe('report_result: security panel at L/XL (E3-5)', () => {
+  const vote = (lens: string, verdict = 'confirmed') => ({ lens, verdict, evidence: `src/a.ts:3 ${lens}` });
+  const three = (over: Record<string, string> = {}) => ['reachability', 'impact', 'defenses'].map((lens) => vote(lens, over[lens] ?? 'confirmed'));
+  const f = (votes: unknown[] | undefined, status = 'confirmed') => ({
+    severity: 'major',
+    file: 'src/a.ts',
+    line: 3,
+    problem: 'SQL injection',
+    verification: { status, evidence: 'src/a.ts:3 shows it', ...(votes !== undefined ? { votes } : {}) },
+  });
+  const audit = (findings: unknown[], over: Record<string, unknown> = {}) => ({ verdict: 'issues_found', summary: 'Audit.', findings, ...over });
+  const L = (panel: boolean | undefined = true, label = 'Complexity: L') =>
+    setup({ role: 'auditor', state: 'Security review', labels: [label], ...(panel !== undefined ? { panel } : {}) });
+
+  for (const label of ['Complexity: L', 'Complexity: XL']) {
+    it(`${label}: accepts a finding with three confirming votes and stores them`, async () => {
+      const { report, markers } = L(true, label);
+      assert.equal(data(await report(audit([f(three())]))).target, 'In progress');
+      const stored = markers()[0] as { result: { findings: Array<{ verification: { votes: unknown[] } }> } };
+      assert.equal(stored.result.findings[0]?.verification.votes.length, 3);
+    });
+  }
+
+  it('refuses a finding that one lens refutes, names the lens and says to move it to refuted', async () => {
+    const { report, tracker } = L();
+    const refused = error(await report(audit([f(three({ impact: 'refuted' }))])));
+    assert.equal(refused.category, 'invalid_result');
+    assert.match(refused.message, /findings\[0\].*refuted by the panel.*impact.*move it to `refuted`/s);
+    assert.equal((tracker.comments.get('1') ?? []).length, 0);
+  });
+
+  it('accepts the refuted candidate in refuted[] under verdict passed', async () => {
+    const { report } = L();
+    const refuted = { severity: 'major', file: 'src/a.ts', line: 3, problem: 'SQL injection', verification: { status: 'refuted', evidence: 'src/a.ts:3 guarded', votes: three({ defenses: 'refuted' }) } };
+    assert.equal(data(await report({ verdict: 'passed', summary: 'Clean.', findings: [], refuted: [refuted] })).target, 'In review');
+  });
+
+  it('refuses fewer than three votes, and a duplicated lens, naming what is missing', async () => {
+    const { report } = L();
+    const few = error(await report(audit([f([vote('reachability'), vote('impact')])])));
+    assert.equal(few.category, 'invalid_result');
+    assert.match(few.message, /findings\[0\].*three panel votes.*missing: defenses/s);
+    const none = error(await L().report(audit([f(undefined)])));
+    assert.match(none.message, /findings\[0\].*three panel votes/s);
+    const doubled = error(await L().report(audit([f([vote('reachability'), vote('reachability'), vote('impact')])])));
+    assert.match(doubled.message, /missing: defenses.*duplicated: reachability/s);
+  });
+
+  it('rejects an unknown lens and a fourth vote at the schema', async () => {
+    assert.equal(error(await L().report(audit([f([...three(), vote('impact')])]))).category, 'invalid_result');
+    assert.equal(error(await L().report(audit([f([vote('luck'), vote('impact'), vote('defenses')])]))).category, 'invalid_result');
+  });
+
+  it('leaves S/M, a session without the judge and review results unchanged', async () => {
+    assert.equal(data(await L(true, 'Complexity: M').report(audit([{ severity: 'major', file: 'src/a.ts', line: 3, problem: 'x' }]))).target, 'In progress');
+    assert.equal(data(await setup({ role: 'auditor', state: 'Security review', labels: ['Complexity: L'] }).report(audit([f(undefined)]))).target, 'In progress');
+    assert.equal(data(await L(false).report(audit([f(undefined)]))).target, 'In progress');
+    const review = setup({ role: 'reviewer', labels: ['Complexity: L'], panel: true });
+    assert.equal(data(await review.report({ verdict: 'changes_needed', summary: 'x', findings: [f(undefined)] })).target, 'In progress');
+  });
+
+  it('does not check the votes of a blocked audit', async () => {
+    const blocked = { verdict: 'blocked', summary: 'No access.', blockers: [{ description: 'No checkout', needs: 'access' }], findings: [f(undefined)] };
+    assert.equal(data(await L().report(blocked)).target, 'Blocked');
   });
 });

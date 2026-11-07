@@ -10,6 +10,18 @@ export function defaultIntegrations(): WorkspaceIntegration[] {
 }
 
 /**
+ * The apps of the integrations in a workspace: their directories (relative to the repository root, '' = root) and the
+ * ids of the integrations that found at least one app (the prompt's `project_types`, e.g. `["laravel"]`).
+ */
+export async function workspaceApps(
+  list: readonly WorkspaceIntegration[],
+  workspacePath: string,
+): Promise<{ appDirs: string[]; projectTypes: string[] }> {
+  const found = await Promise.all(list.map(async (integration) => ({ id: integration.id, dirs: (await integration.appDirs?.(workspacePath)) ?? [] })));
+  return { appDirs: found.flatMap(({ dirs }) => dirs), projectTypes: found.filter(({ dirs }) => dirs.length > 0).map(({ id }) => id) };
+}
+
+/**
  * Runs every integration that has a resolved config (keyed by integration id) and merges the results in list order.
  * Returns null when nothing contributed.
  */

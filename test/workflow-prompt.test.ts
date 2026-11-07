@@ -1042,7 +1042,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
     }
   });
 
-  it('resolves no subagent for the two roles that only repeated their persona, so a Laravel workspace renders no intro', async () => {
+  it('resolves no subagent for the issue analyst, so a Laravel workspace renders no intro', async () => {
     const { definition } = await loadWorkflowFile(shipped);
     const config = resolveConfig(definition.config, {
       workflowPath: shipped,
@@ -1051,7 +1051,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
     });
     const all = pluginAgents([toolbox]);
     assert.equal(all.filter((agent) => agent.name.startsWith('laravel-')).length, 5);
-    for (const name of ['issue-analyst', 'security-auditor']) {
+    for (const name of ['issue-analyst']) {
       const role = (config.roles ?? []).find((entry) => entry.name === name) ?? null;
       assert.deepEqual(role?.agents, [], name);
       const { allowed, denied } = sessionAgents(all, role, ['laravel-'], ['laravel-']);
@@ -1132,6 +1132,73 @@ describe('shipped WORKFLOW.md issue commands', () => {
       assert.match(text, /refute/);
       assert.match(text, /When in doubt, refute/);
       assert.match(text, /file:line/);
+    });
+  });
+
+  it('lets the shipped security auditor start exactly the inventory and the judge, read-only, and validates', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const config = resolveConfig(definition.config, {
+      workflowPath: shipped,
+      env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' },
+      trackerDefaults,
+    });
+    const all = pluginAgents([toolbox]);
+    const role = (config.roles ?? []).find((entry) => entry.name === 'security-auditor') ?? null;
+    assert.deepEqual(role?.agents, ['security-inventory', 'refutation-judge']);
+    for (const prefixes of [['laravel-'], []]) {
+      const { allowed, denied } = sessionAgents(all, role, prefixes, prefixes);
+      assert.deepEqual(allowed.map((agent) => agent.name).sort(), ['refutation-judge', 'security-inventory'], prefixes.join());
+      assert.ok(allowed.every((agent) => agent.readOnly), prefixes.join());
+      assert.equal(denied.filter((agent) => agent.name.startsWith('laravel-')).length, 5, prefixes.join());
+    }
+    const errors = validateDispatch({ config } as unknown as EffectiveWorkflow, null, { GITHUB_TOKEN: 't' } as NodeJS.ProcessEnv).filter((error) => error.includes('.agents'));
+    assert.deepEqual(errors, []);
+  });
+
+  describe('security panel at L/XL', () => {
+    const both = ['security-inventory', 'refutation-judge'].map((name) => ({ name: `symphony:${name}`, description: `The ${name}.` }));
+    const renderWith = async (labels: string[], agents = both, extra: Record<string, unknown> = {}) => {
+      const { definition } = await loadWorkflowFile(shipped);
+      const template = compilePrompt(definition.promptTemplate, definition.partials);
+      const subject = { ...issue, labels, native_ref: { ...issue.native_ref, base_branch: 'develop' } };
+      return renderPrompt(template, { issue: issueTemplateValue(subject, commandSkills([toolbox])), attempt: null, role: 'security-auditor', agents, round: 1, ...extra });
+    };
+
+    for (const label of ['complexity: l', 'complexity: xl']) {
+      it(`names the inventory, three judges per candidate and the votes at ${label}`, async () => {
+        const text = await renderWith(['feature', label]);
+        assert.match(text, /Subagents you can start/);
+        assert.match(text, /\`symphony:security-inventory\`/);
+        assert.match(text, /three \`symphony:refutation-judge\` calls in one message/);
+        for (const lens of ['reachability', 'impact', 'defenses']) assert.match(text, new RegExp(lens));
+        assert.match(text, /false positive/);
+        assert.match(text, /verification\.votes/);
+        assert.match(text, /Do not run code/);
+        assert.match(text, /go into \`refuted\`/);
+        assert.match(text, /a finding stays only when no lens refutes it/);
+        assert.doesNotMatch(text, /canAccess|\{!! !!\}\` output/);
+      });
+    }
+
+    it('adds the Laravel lenses only in a Laravel workspace', async () => {
+      const text = await renderWith(['feature', 'complexity: l'], both, { project_types: ['laravel'] });
+      for (const hint of [/mass assignment/, /policies and gates/, /canAccess/, /authorize\*/, /whereRaw/, /\{!! !!\}/]) assert.match(text, hint);
+      const plain = await renderWith(['feature', 'complexity: l'], both, { project_types: [] });
+      assert.doesNotMatch(plain, /In this Laravel workspace/);
+    });
+
+    it('renders nothing new at S, M and without a complexity: identical to an auditor without agents', async () => {
+      for (const labels of [['feature', 'complexity: s'], ['feature', 'complexity: m'], ['feature']]) {
+        const text = await renderWith(labels);
+        assert.equal(text, await renderWith(labels, []), labels.join());
+        assert.doesNotMatch(text, /security-inventory|refutation-judge|Subagents you can start|Panel review/, labels.join());
+      }
+    });
+
+    it('renders no panel without the judge and keeps the E3-4 sentence', async () => {
+      const text = await renderWith(['feature', 'complexity: xl'], both.slice(0, 1));
+      assert.doesNotMatch(text, /Panel review|security-inventory|Subagents you can start/);
+      assert.match(text, /needs \`verification: \{status: "confirmed", evidence\}\`/);
     });
   });
 
@@ -1293,7 +1360,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
       'test-engineer': ['test-designer'],
       docs: [],
       reviewer: ['convention-lens', 'bug-lens', 'finding-verifier'],
-      'security-auditor': [],
+      'security-auditor': ['security-inventory', 'refutation-judge'],
       auditor: ['explorer', 'laravel-architect', 'laravel-code-reviewer'],
       autopilot: ['explorer', 'laravel-architect'],
       analyst: ['explorer', 'laravel-architect'],
@@ -1594,6 +1661,8 @@ describe('Symphony toolbox subagents', () => {
       'laravel-database-engineer',
       'laravel-filament-developer',
       'laravel-test-engineer',
+      'refutation-judge',
+      'security-inventory',
       'test-designer',
     ]);
   });
@@ -1607,7 +1676,7 @@ describe('Symphony toolbox subagents', () => {
       assert.ok(description.trim() !== '', 'has a description');
       if (/laravel/i.test(description)) assert.match(name, /^laravel-/);
       // An allowlist (`tools:`) drops the Boost MCP tools the Laravel agents rely on; read-only agents deny instead.
-      assert.doesNotMatch(front, /^tools:/m);
+      if (name.startsWith('laravel-')) assert.doesNotMatch(front, /^tools:/m);
     });
   }
 
@@ -1624,6 +1693,8 @@ describe('Symphony toolbox subagents', () => {
       'laravel-filament-developer': 'sonnet',
       'laravel-test-engineer': undefined,
       'test-designer': 'sonnet',
+      'refutation-judge': 'opus',
+      'security-inventory': 'sonnet',
     };
 
     for (const [name, model] of Object.entries(models)) {
@@ -1649,8 +1720,37 @@ describe('Symphony toolbox subagents', () => {
         'laravel-database-engineer': false,
         'laravel-filament-developer': false,
         'laravel-test-engineer': false,
+        'refutation-judge': true,
+        'security-inventory': true,
         'test-designer': false,
       });
+    });
+  });
+
+  describe('security personas (E3-5)', () => {
+    const read = (name: string) => fs.readFileSync(path.join(agentsDir, `${name}.md`), 'utf8');
+    const frontOf = (name: string) => /^---\n([\s\S]*?)\n---\n/.exec(read(name))?.[1] ?? '';
+    for (const name of ['security-inventory', 'refutation-judge']) {
+      it(`${name}: read-only allowlist without a shell, trigger and exclusion, no framework name`, () => {
+        assert.match(frontOf(name), /^tools: Read, Glob, Grep$/m);
+        assert.doesNotMatch(frontOf(name), /Bash|Edit|Write/);
+        assert.match(frontOf(name), /^description: Use /m);
+        assert.match(frontOf(name), /Not for /);
+        assert.doesNotMatch(frontOf(name), /laravel/i);
+        assert.match(frontOf(name), /^maxTurns: \d+$/m);
+      });
+    }
+    it('the inventory is sonnet and splits the change into components; the judge is opus', () => {
+      assert.match(frontOf('security-inventory'), /^model: sonnet$/m);
+      assert.match(read('security-inventory'), /components/);
+      assert.match(frontOf('refutation-judge'), /^model: opus$/m);
+    });
+    it('the judge takes one candidate and one lens, names the three lenses, defaults to false positive and cites file:line', () => {
+      const text = read('refutation-judge');
+      for (const lens of ['reachability', 'impact', 'defenses']) assert.match(text, new RegExp(lens));
+      assert.match(text, /false positive/);
+      assert.match(text, /exactly one candidate finding and exactly one lens/);
+      assert.match(text, /file:line/);
     });
   });
 
@@ -1730,9 +1830,11 @@ describe('Symphony toolbox subagents', () => {
       'laravel-database-engineer': { model: 'sonnet', readOnly: false, minTurns: 1 },
       'laravel-filament-developer': { model: 'sonnet', readOnly: false, minTurns: 1 },
       'laravel-test-engineer': { model: undefined, readOnly: false, minTurns: 1 },
+      'refutation-judge': { model: 'opus', readOnly: true, minTurns: 5 },
+      'security-inventory': { model: 'sonnet', readOnly: true, minTurns: 5 },
       'test-designer': { model: 'sonnet', readOnly: false, minTurns: 30 },
     } as const;
-    const allowedKeys = new Set(['name', 'description', 'model', 'effort', 'maxTurns', 'disallowedTools']);
+    const allowedKeys = new Set(['name', 'description', 'model', 'effort', 'maxTurns', 'disallowedTools', 'tools']);
     const lines = (name: string) => {
       const text = fs.readFileSync(path.join(agentsDir, `${name}.md`), 'utf8');
       assert.ok(text.startsWith('---\n'), `${name}: starts with front matter`);
@@ -1789,7 +1891,11 @@ describe('Symphony toolbox subagents', () => {
     it('the read-only personas still deny Edit and Write; the writers deny nothing', () => {
       for (const [name, want] of Object.entries(expected)) {
         const text = lines(name).join('\n');
-        if (want.readOnly) assert.match(text, /^disallowedTools: .*\bEdit\b.*\bWrite\b/m, name);
+        if (want.readOnly) {
+          const tools = /^tools: (.+)$/m.exec(text)?.[1];
+          if (tools !== undefined) assert.doesNotMatch(tools, /\b(Edit|Write)\b/, name);
+          else assert.match(text, /^disallowedTools: .*\bEdit\b.*\bWrite\b/m, name);
+        }
         else assert.doesNotMatch(text, /^disallowedTools:/m, name);
       }
     });
@@ -1837,7 +1943,7 @@ describe('shipped WORKFLOW.md security auditor', () => {
     assert.equal(auditor?.name, 'security-auditor');
     assert.deepEqual(
       [auditor?.result, auditor?.readOnly, auditor?.onResult, auditor?.onCheckFailed, auditor?.modelLabel, auditor?.claude.model, auditor?.agents],
-      ['security', true, { passed: 'In review', issues_found: 'In progress', blocked: 'Blocked' }, 'In progress', 'ignore', 'opus', []],
+      ['security', true, { passed: 'In review', issues_found: 'In progress', blocked: 'Blocked' }, 'In progress', 'ignore', 'opus', ['security-inventory', 'refutation-judge']],
     );
     assert.ok(resolved.tracker.activeStates.includes('Security review'));
     assert.ok(roleFor({ state: 'Agent review', description: null }, resolved.roles)?.mayMoveTo?.includes('Security review'));

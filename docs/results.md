@@ -30,7 +30,7 @@ reported to the agent instead of being dropped silently.
 | `implementation` | `done`, `blocked` | `changed_files[]`, `tests_added[]`, `notes`, `plan_deviations[]`, `screenshots_problem` (a UI change without screenshots: the failed step and its error message) |
 | `test` | `passed`, `failed`, `blocked` | `cases[] {criterion, test, status: passed\|failed\|skipped, red_at_base?: {command, output?}, existing?}`, `commands[]`, `uncovered_criteria[]`, `mutation_score` (0–100), `mutation_command`, `mutation_problem` (see [Test evidence at L/XL](#test-evidence-at-lxl)) |
 | `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, file, line, problem, fix, verification?: {status: confirmed\|refuted, evidence}}`, `refuted[]` (candidates the verification refuted: a finding with a refuted `verification`; see [Verified findings at L/XL](#verified-findings-at-lxl)), `checked[]`, `confirmed_goals[]` (refactor issues: the analysis's refactoring goals the review confirms) |
-| `security` | `passed`, `issues_found`, `blocked` | `findings[]` and `refuted[]` (as in `review`) |
+| `security` | `passed`, `issues_found`, `blocked` | `findings[]` and `refuted[]` (as in `review`); at L/XL with the refutation panel `verification.votes[] {lens: reachability\|impact\|defenses, verdict: confirmed\|refuted, evidence}` (see [Security panel at L/XL](#security-panel-at-lxl)) |
 | `docs` | `done`, `not_needed`, `blocked` | `files[]` |
 | `skipped`, `reset` | same as the kind | internal, recorded by Symphony without agent input (`skipped`: a stage passed [without a session](configuration.md#skipping-stages-without-a-session)) |
 
@@ -236,6 +236,25 @@ existed still read.
 - **Metrics**: the `stage_result` history line carries `findings_confirmed` (findings with status confirmed) and
   `findings_refuted` (`refuted[]` plus refuted findings) for L/XL results and for any result with verification data; the
   analytics show them per role and model.
+
+### Security panel at L/XL
+
+The security auditor's refutation panel (E3-5) puts the three votes of one candidate into
+`verification.votes[] {lens, verdict, evidence}` (`lens`: `reachability`, `impact` or `defenses`; `verdict`:
+`confirmed` or `refuted`; `evidence`: the file:line the judge cited). `votes` is optional in the schema (stored
+results still read) and holds at most three entries; at L/XL the check requires exactly one entry per lens.
+
+- **The rule** is one constant, `PANEL_MAX_REFUTING_VOTES` in `src/workflow/results.ts` (default `0`: a finding is kept
+  only when no lens refutes it; open question 9 of the [subagents concept](concepts/subagents.md)). The arithmetic runs in
+  `panelOutcome()`, outside the model. To keep a finding that one lens refutes, raise the constant to `1` and change the
+  sentence in `roles/security-auditor.md`.
+- **Refused with `invalid_result`** (L/XL, security result, not `blocked`): a finding whose `verification.votes` do not
+  hold exactly one vote per lens (the message names the finding and the missing or duplicated lens), and a finding the
+  panel refuted (the message names the refuting lenses and says to move it to `refuted[]` with status `refuted`; the
+  auditor does it, Symphony does not move it). `refuted[]` entries need no votes.
+- **Only with the judge in the session.** The vote rule applies when the session may start `refutation-judge` (the
+  shipped `roles.security-auditor.agents`). A workflow with `agents: []` for the auditor keeps the plain L/XL rule above.
+- **S/M issues** and issues without a `Complexity:` label are not checked for votes.
 
 To switch to option A (optional fields only), drop `verifiedFindings` from `resultContext()` in
 `src/orchestrator/result-tool.ts`; the fields stay.

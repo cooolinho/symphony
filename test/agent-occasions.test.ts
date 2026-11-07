@@ -84,7 +84,7 @@ describe('prompts on occasions instead of deterrence', () => {
         const listed = roles[role] ?? ALL;
         const prompt = await render(role, listed.map(agent), { delegate: true });
         const label = role;
-        if (role === 'test-engineer' || role === 'reviewer') continue; // render the intro depending on the complexity, see below
+        if (role === 'test-engineer' || role === 'reviewer' || role === 'security-auditor') continue; // render the intro depending on the complexity, see below
         assert.match(prompt, /Subagents you can start with the Agent tool/, label);
         assert.match(prompt, /subagent_type/, label);
         // delegate where a trigger applies, never for a few tool calls
@@ -217,7 +217,7 @@ describe('prompts on occasions instead of deterrence', () => {
       // depend on anything but that list: with the empty list the render is identical to a render without agents.
       const roles = await shippedRoles();
       const empty = Object.entries(roles).filter(([, agents]) => Array.isArray(agents) && agents.length === 0).map(([name]) => name);
-      assert.ok(empty.length >= 4, empty.join());
+      assert.ok(empty.length >= 3, empty.join());
       for (const role of empty) {
         const prompt = await render(role, []);
         assert.doesNotMatch(prompt, /Subagents you can start|When to delegate|a trigger applies/, role);
@@ -280,5 +280,25 @@ describe('prompts on occasions instead of deterrence', () => {
       assert.match(section, /2–3/);
       assert.doesNotMatch(section, /phrased as optional|costs tokens/);
     });
+  });
+});
+
+describe('docs of the security panel (E3-5)', () => {
+  const docs = fs.readFileSync(path.join(root, 'docs', 'configuration.md'), 'utf8');
+  const start = docs.indexOf('#### Subagents per role');
+  const end = docs.indexOf('\n#### ', start + 10);
+  const section = docs.slice(start, end > 0 ? end : undefined).replace(/\s+/g, ' ');
+
+  it('configuration.md#subagents-per-role names the personas and the panel and no longer lists the auditor with []', () => {
+    for (const name of ['security-inventory', 'refutation-judge']) assert.ok(section.includes(`\`${name}\``), name);
+    assert.match(section, /Security panel/);
+    assert.match(section, /L\/XL/);
+    assert.doesNotMatch(section, /`security-auditor` with `\[\]`/);
+  });
+
+  it('results.md documents the votes and the rule constant', () => {
+    const results = fs.readFileSync(path.join(root, 'docs', 'results.md'), 'utf8');
+    assert.match(results, /verification\.votes/);
+    assert.match(results, /PANEL_MAX_REFUTING_VOTES/);
   });
 });

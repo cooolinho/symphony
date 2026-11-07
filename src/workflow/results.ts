@@ -99,10 +99,39 @@ const blockerSchema = z.object({
 
 const VERIFICATION_STATUSES = ['confirmed', 'refuted'] as const;
 
+/** The lenses of the security panel (L/XL): every candidate gets one refutation-judge call per lens. */
+export const PANEL_LENSES = ['reachability', 'impact', 'defenses'] as const;
+
+/**
+ * Panel rule (open question 9): how many lenses may refute a security finding that stays in `findings`; 0 = a finding
+ * is kept only when no lens refutes it. Change it here (and the sentence in roles/security-auditor.md).
+ */
+export const PANEL_MAX_REFUTING_VOTES = 0;
+
+const voteSchema = z
+  .object({
+    lens: z.enum(PANEL_LENSES).describe('The lens the judge applied'),
+    verdict: z.enum(VERIFICATION_STATUSES).describe('confirmed = the judge could not refute the candidate under this lens; refuted = it did not hold'),
+    evidence: text(1000).describe('The file:line the judge cited'),
+  })
+  .strict();
+
+export type PanelVote = z.output<typeof voteSchema>;
+
+/** The panel's outcome: refuted when more lenses refute the candidate than {@link PANEL_MAX_REFUTING_VOTES} allows. */
+export function panelOutcome(votes: readonly PanelVote[]): 'confirmed' | 'refuted' {
+  return votes.filter((vote) => vote.verdict === 'refuted').length > PANEL_MAX_REFUTING_VOTES ? 'refuted' : 'confirmed';
+}
+
 const verificationSchema = z
   .object({
     status: z.enum(VERIFICATION_STATUSES).describe('confirmed = the check proved the problem; refuted = it did not hold'),
     evidence: text(1000).describe('The file:line the verification checked and what it showed'),
+    votes: z
+      .array(voteSchema)
+      .max(PANEL_LENSES.length)
+      .optional()
+      .describe('Security, L/XL panel: one vote per lens (reachability, impact, defenses); evidence = the file:line the judge cited'),
   })
   .strict();
 
@@ -363,6 +392,19 @@ export interface ResultContext {
    * `verification`. Absent (a unit test, a result read back from its marker) or false switches the rule off.
    */
   verifiedFindings?: boolean;
+  /**
+   * True for a security result of an L/XL issue whose session may start `refutation-judge`: every finding then needs
+   * three panel votes (one per lens) and no refuting one. Absent or false switches the rule off.
+   */
+  panelVotes?: boolean;
+}
+
+/** "findings[i] (file:line "problem")" for messages about one finding. */
+function findingLabel(finding: Finding, index: number): string {
+  const where = finding.file === undefined ? '' : `${finding.line === undefined ? finding.file : `${finding.file}:${finding.line}`} `;
+  const problem = inline(finding.problem);
+  const shortened = problem.length > 80 ? `${problem.slice(0, 79)}…` : problem;
+  return `findings[${index}] (${where}"${shortened}")`;
 }
 
 /** The issue and the role a `split` design is reported for. */
@@ -460,16 +502,28 @@ export function consistencyProblems(result: StageResult, context: ResultContext 
           .filter(({ finding }) => finding.verification?.status !== 'confirmed');
         if (unverified.length > 0) {
           const named = unverified
-            .map(({ finding, index }) => {
-              const where = finding.file === undefined ? '' : `${finding.line === undefined ? finding.file : `${finding.file}:${finding.line}`} `;
-              const problem = inline(finding.problem);
-              const shortened = problem.length > 80 ? `${problem.slice(0, 79)}…` : problem;
-              return `findings[${index}] (${where}"${shortened}") ${finding.verification === undefined ? 'has none' : 'is refuted: move it to \`refuted\`'}`;
-            })
+            .map(({ finding, index }) => `${findingLabel(finding, index)} ${finding.verification === undefined ? 'has none' : 'is refuted: move it to \`refuted\`'}`)
             .join('; ');
           problems.push(
             `an L/XL ${result.kind} result needs a confirmed \`verification\` ({status, evidence}) for every finding; ${named}`,
           );
+        }
+      }
+      if (result.kind === 'security' && context.panelVotes === true && result.verdict !== 'blocked') {
+        for (const [index, finding] of result.findings.entries()) {
+          if (finding.verification === undefined) continue;
+          const votes = finding.verification.votes ?? [];
+          const counts = PANEL_LENSES.map((lens) => votes.filter((vote) => vote.lens === lens).length);
+          if (counts.some((count) => count !== 1)) {
+            const missing = PANEL_LENSES.filter((_, i) => counts[i] === 0);
+            const doubled = PANEL_LENSES.filter((_, i) => (counts[i] ?? 0) > 1);
+            problems.push(
+              `${findingLabel(finding, index)} needs three panel votes in \`verification.votes\`, one per lens (${PANEL_LENSES.join(', ')})${missing.length > 0 ? `; missing: ${missing.join(', ')}` : ''}${doubled.length > 0 ? `; duplicated: ${doubled.join(', ')}` : ''}`,
+            );
+          } else if (panelOutcome(votes) === 'refuted') {
+            const refuting = votes.filter((vote) => vote.verdict === 'refuted').map((vote) => vote.lens);
+            problems.push(`${findingLabel(finding, index)} is refuted by the panel (${refuting.join(', ')} refuted): move it to \`refuted\` with status "refuted"`);
+          }
         }
       }
       if (result.verdict === dirty && result.findings.length === 0) {
