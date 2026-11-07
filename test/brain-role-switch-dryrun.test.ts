@@ -14,7 +14,7 @@ afterEach(() => {
   githubProjectFactory.create = original;
 });
 
-async function preview(roleBrain: string | null, brainEnabled: boolean): Promise<string> {
+async function preview(roleBrain: string | null, brainEnabled: boolean, body?: string): Promise<string> {
   const dir = tempDir();
   const vault = tempDir();
   const roleLines = roleBrain === null ? '' : `    brain: ${roleBrain}\n`;
@@ -38,7 +38,7 @@ async function preview(roleBrain: string | null, brainEnabled: boolean): Promise
       '    states: [Todo, In Progress]',
       roleLines.trimEnd(),
       '---',
-      '{% if brain != "off" %}BRAIN-SECTION level={{ brain }}{% else %}NO-BRAIN-SECTION{% endif %}',
+      body ?? '{% if brain != "off" %}BRAIN-SECTION level={{ brain }}{% else %}NO-BRAIN-SECTION{% endif %}',
     ]
       .filter((line) => line !== '')
       .join('\n'),
@@ -80,5 +80,11 @@ describe('dry-run prompt preview with the role switch brain', () => {
 
   it('shows off when brain.enabled is false even for a write role', async () => {
     assert.match(await preview('write', false), /NO-BRAIN-SECTION/);
+  });
+});
+
+describe('dry-run prompt preview with project_types', () => {
+  it('passes the ids of all integrations that detect apps', async () => {
+    assert.match(await preview(null, false, 'TYPES={{ project_types | join: "," }}'), /TYPES=laravel/);
   });
 });
