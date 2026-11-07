@@ -115,11 +115,20 @@ function fixture(options: { scripts?: Record<string, string>; phpstan?: boolean;
   return { repo, origin, log, bin };
 }
 
+/**
+ * The environment for the check scripts: the parent's without the variables they read (SYMPHONY_*, DB_*, DOCKER_*, MYSQL_*).
+ * Symphony's agent sessions set e.g. SYMPHONY_BASE_BRANCH=develop, SYMPHONY_TEST_PARALLEL and SYMPHONY_MYSQL_USER, which
+ * changed the scripts' behaviour; GitHub Actions sets none of them. Each test sets what it needs itself.
+ */
+function hermeticEnv(): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(SYMPHONY_|DB_|DOCKER_|MYSQL_)/.test(key)));
+}
+
 function run(f: Fixture, env: NodeJS.ProcessEnv = {}, cwd = f.repo, args: string[] = [], script = SCRIPT) {
   const result = spawnSync('bash', [script, ...args], {
     cwd,
     encoding: 'utf8',
-    env: { ...process.env, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, ...env },
+    env: { ...hermeticEnv(), PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, ...env },
   });
   return { status: result.status, out: result.stdout + result.stderr };
 }
@@ -174,7 +183,7 @@ describe('checks/laravel.sh', () => {
     const result = spawnSync('bash', ['-c', `set -m; bash "$0" --full & pid=$!; sleep 2; kill -TERM -- -$pid; wait $pid`, SCRIPT], {
       cwd: f.repo,
       encoding: 'utf8',
-      env: { ...process.env, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, SYMPHONY_CI_DB: 'mysql', SYMPHONY_MYSQL_USER: 'u' },
+      env: { ...hermeticEnv(), PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, SYMPHONY_CI_DB: 'mysql', SYMPHONY_MYSQL_USER: 'u' },
     });
     assert.equal(result.status, 143, result.stdout + result.stderr);
     const lines = result.stdout.trimEnd().split('\n');
@@ -551,7 +560,7 @@ describe('checks/repo.sh', () => {
   it('--lock runs one check of a name per repository at a time', async () => {
     const f = withCheck('prod-smoke', 'echo "start $$" >> "$LOCK_LOG"; sleep 0.4; echo "end $$" >> "$LOCK_LOG"');
     const lockLog = path.join(path.dirname(f.log), 'lock.log');
-    const env = { ...process.env, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, LOCK_LOG: lockLog, TMPDIR: tempDir('symphony-locks-'), SYMPHONY_ISSUE_REPOSITORY: 'acme/app' };
+    const env = { ...hermeticEnv(), PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log, LOCK_LOG: lockLog, TMPDIR: tempDir('symphony-locks-'), SYMPHONY_ISSUE_REPOSITORY: 'acme/app' };
     const { spawn } = await import('node:child_process');
     const once = () => new Promise<number | null>((resolve) => spawn('bash', [REPO_SCRIPT, '--lock', 'prod-smoke'], { cwd: f.repo, env, stdio: 'ignore' }).on('exit', resolve));
     assert.deepEqual(await Promise.all([once(), once()]), [0, 0]);
@@ -868,7 +877,7 @@ describe('checks/laravel.sh step lines and host load', () => {
     const result = spawnSync('bash', ['-c', `set -m; bash "$0" & pid=$!; ${wait}; kill -TERM -- -$pid; wait $pid`, SCRIPT], {
       cwd: f.repo,
       encoding: 'utf8',
-      env: { ...process.env, ...CLEAN, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log },
+      env: { ...hermeticEnv(), ...CLEAN, PATH: `${f.bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: f.log },
     });
     assert.equal(result.status, 143, result.stdout + result.stderr);
     const out = result.stdout;
@@ -881,5 +890,64 @@ describe('checks/laravel.sh step lines and host load', () => {
     assert.match(lines[lines.lastIndexOf('steps:') - 1] as string, /^host load at end/);
     assert.equal(out.includes('all checks passed'), false);
     assert.match(steps(out)[2]?.[1] ?? '', /^[1-9]\d*s$/, 'the running step has its elapsed time');
+  });
+});
+
+describe('the check tests do not depend on the environment of the test process (#551)', () => {
+  /** Variables Symphony's agent sessions set and the scripts read; GitHub Actions sets none of them. */
+  const LEAKED: Record<string, string> = {
+    SYMPHONY_BASE_BRANCH: 'develop',
+    SYMPHONY_TEST_PARALLEL: '4',
+    SYMPHONY_CI_DOCKER_HOST: 'tcp://docker:2376',
+    SYMPHONY_CI_DOCKER_CERT_PATH: '/certs/leaked',
+    SYMPHONY_MYSQL_USER: 'leaked',
+    SYMPHONY_MYSQL_HOST: 'leaked-host',
+    SYMPHONY_MYSQL_PORT: '3399',
+    SYMPHONY_MYSQL_PASSWORD: 'leaked-secret',
+    DOCKER_HOST: 'tcp://leaked:2375',
+    DB_CONNECTION: 'leaked',
+  };
+
+  function withLeakedEnv<T>(body: () => T): T {
+    const saved = Object.fromEntries(Object.keys(LEAKED).map((key) => [key, process.env[key]]));
+    Object.assign(process.env, LEAKED);
+    try {
+      return body();
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }
+
+  it('repo.sh uses origin/main and no Docker daemon of the parent, whatever the parent sets', () => {
+    const f = fixture();
+    const seed = path.join(path.dirname(f.repo), 'seed');
+    write(seed, '.symphony/checks/prod-smoke.sh', 'echo "host=[$DOCKER_HOST] certs=[$DOCKER_CERT_PATH]"');
+    git(seed, 'add', '-A');
+    git(seed, 'commit', '-q', '-m', 'check');
+    git(seed, 'push', '-q', f.origin, 'main');
+    git(f.repo, 'fetch', '-q', 'origin');
+    git(f.repo, 'merge', '-q', '--no-edit', 'origin/main');
+    git(f.repo, 'push', '-q');
+    const result = withLeakedEnv(() => run(f, {}, f.repo, ['prod-smoke'], path.resolve('checks/repo.sh')));
+    assert.equal(result.status, 0, result.out);
+    assert.match(result.out, /from origin\/main/);
+    assert.match(result.out, /host=\[\] certs=\[\]/);
+  });
+
+  it('laravel.sh runs plain serially and without MySQL credentials of the parent', () => {
+    const f = fixture();
+    write(f.repo, 'vendor/bin/paratest', FAKE_TOOL('paratest'), 0o755);
+    const serial = withLeakedEnv(() => run(f));
+    assert.equal(serial.status, 0, serial.out);
+    const testCall = calls(f).find((call) => call[0] === 'php' && call[2] === 'test');
+    assert.deepEqual(testCall, ['php', 'artisan', 'test']);
+    assert.doesNotMatch(serial.out, /parallel|one process/);
+
+    const mysql = withLeakedEnv(() => run(fixture(), { SYMPHONY_CI_DB: 'mysql' }, undefined, ['--full']));
+    assert.equal(mysql.status, 2, mysql.out);
+    assert.equal(mysql.out.includes('leaked'), false, 'nothing of the parent environment shows up');
   });
 });
