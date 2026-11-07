@@ -764,11 +764,21 @@ function bullets(title: string, items: readonly string[], ordered = false): stri
   return `**${title}**\n${items.map((item, index) => `${ordered ? `${index + 1}.` : '-'} ${item}`).join('\n')}`;
 }
 
+const VOTE_ICONS: Record<PanelVote['verdict'], string> = { confirmed: '✅', refuted: '❌' };
+
+/** One `Panel:` line with a vote per lens (in PANEL_LENSES order); empty without votes, so E3-4 comments stay unchanged. */
+function panelLine(votes: readonly PanelVote[] | undefined): string {
+  if (votes === undefined || votes.length === 0) return '';
+  const order = (vote: PanelVote) => PANEL_LENSES.indexOf(vote.lens);
+  const parts = [...votes].sort((a, b) => order(a) - order(b)).map((vote) => `${inline(vote.lens)} ${VOTE_ICONS[vote.verdict]} ${inline(vote.evidence)}`);
+  return `\n  Panel: ${parts.join(' · ')}`;
+}
+
 function findingLines(findings: readonly Finding[], omitted: number | undefined, refuted = 0): string | null {
   const items = findings.map((finding) => {
     const location = finding.file === undefined ? '' : ` ${code(finding.line === undefined ? finding.file : `${finding.file}:${finding.line}`)}`;
     const fix = finding.fix === undefined ? '' : `\n  Fix: ${inline(finding.fix)}`;
-    const verified = finding.verification === undefined ? '' : `\n  Verified: ${inline(finding.verification.evidence)}`;
+    const verified = finding.verification === undefined ? '' : `\n  Verified: ${inline(finding.verification.evidence)}${panelLine(finding.verification.votes)}`;
     return `${SEVERITY_ICONS[finding.severity]} **${finding.severity}**${location} — ${inline(finding.problem)}${fix}${verified}`;
   });
   const list = bullets(`Findings (${findings.length})`, items);
