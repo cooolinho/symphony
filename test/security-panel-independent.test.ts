@@ -209,6 +209,14 @@ describe('E3-5 report_result: panel rule', () => {
     assert.match(docs, /PANEL_MAX_REFUTING_VOTES/);
   });
 
+  it('the rule sentence in roles/security-auditor.md matches PANEL_MAX_REFUTING_VOTES', () => {
+    const RULE_SENTENCE: Record<number, string> = { 0: 'a finding stays only when no lens refutes it' };
+    const sentence = RULE_SENTENCE[PANEL_MAX_REFUTING_VOTES];
+    assert.ok(sentence, `PANEL_MAX_REFUTING_VOTES (src/workflow/results.ts) is ${PANEL_MAX_REFUTING_VOTES}: write the rule sentence for it in roles/security-auditor.md and add it to RULE_SENTENCE here`);
+    const occurrences = read('roles', 'security-auditor.md').split(sentence).length - 1;
+    assert.equal(occurrences, 1, `roles/security-auditor.md must state "${sentence}" once for PANEL_MAX_REFUTING_VOTES = ${PANEL_MAX_REFUTING_VOTES} (src/workflow/results.ts)`);
+  });
+
   it('accepts a finding with three non-refuting votes', () => {
     const outcome = parseResult('security', result([finding(panel())]), ctx);
     assert.equal(outcome.ok, true, JSON.stringify(outcome));
