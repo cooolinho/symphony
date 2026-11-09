@@ -22,8 +22,8 @@ the dependencies, not from the numbering.
   migrations". Tests belong in the issue that changes the code, not in a test issue of their own.
 - Every issue has **verifiable acceptance criteria** (for permissions: who may, who may not), says which tests it
   needs, names the **concept section** and says what does **not** belong to it.
-- **Design issues** (the agent does not see the UI): concrete criteria with Filament component, columns, filters,
-  actions, texts, empty and error states and which role sees what. Never "make it nicer".
+- **Design issues** (the planner never sees the rendered page; the developer checks it with screenshots): concrete criteria with Filament component, columns, filters,
+  actions, texts, empty and error states and which role sees what. Never "make it nicer". A visual issue demands "Screenshots" (pages or panels, viewports, demo login, `docs/screenshots/`). Screenshots or a visual check are impossible only for a concrete reason from the repository, cited as file:line (no web interface, an external service or login without a local substitute, a stack that does not run with SQLite and `php -S`); "needs a running app", "no browser" and "no frontend build" are no reasons.
 - Anything unclear stays a **question in the report**, not an issue. That also applies to decisions a human has to
   make: legal matters, prices, texts with legal effect, external services that cost money.
 - Title: `(E<n>-<m>) <Feature|Design|Quality|Maintenance>: <what changes>`, short and unambiguous. The title is the

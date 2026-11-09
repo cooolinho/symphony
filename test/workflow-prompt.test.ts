@@ -1439,7 +1439,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
   });
 
   it('tells the architect and the reviewer that missing screenshots are not acceptable for want of a browser', async () => {
-    for (const role of ['architect', 'reviewer']) {
+    for (const role of ['architect', 'reviewer', 'analyst', 'planner', 'autopilot']) {
       const prompt = await render(role);
       assert.match(prompt, /UI screenshots: when the project's instructions or the issue ask for screenshots/, role);
       assert.match(prompt, /`symphony-screenshot --check` tests it/, role);
@@ -1449,6 +1449,100 @@ describe('shipped WORKFLOW.md issue commands', () => {
     assert.match(reviewer, /if they are missing, that is a `major` finding, unless the developer's result names the step that failed/);
     assert.match(reviewer, /\*\*UI screenshots:\*\* where the project asks for them/);
     for (const role of ['docs', 'issue-analyst', 'developer']) assert.doesNotMatch(await render(role), /UI screenshots: when the project's/, role);
+  });
+
+  it('gives only analyst, planner and autopilot the rule that screenshots are never impossible without a repository reason', async () => {
+    for (const role of ['analyst', 'planner', 'autopilot']) {
+      const prompt = await render(role);
+      assert.match(prompt, /never plan them away and never hand them to a human/, role);
+      assert.match(prompt, /only with a concrete reason from the repository, and cite it as file:line/, role);
+      assert.match(prompt, /Not reasons: "needs a running app", "cannot be run from the Symphony workspace", "no browser", "no frontend build"/, role);
+      assert.match(prompt, /`screenshots_problem`/, role);
+    }
+    for (const role of ['architect', 'reviewer', 'developer', 'docs', 'issue-analyst']) assert.doesNotMatch(await render(role), /never plan them away|Not reasons:/, role);
+  });
+
+  it('keeps the planning skills from claiming that the UI cannot be checked', async () => {
+    for (const skill of ['concept', 'plan', 'auto-code']) {
+      const dir = new URL(`../.claude/skills/${skill}/`, import.meta.url);
+      for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.md'))) {
+        const text = fs.readFileSync(new URL(file, dir), 'utf8');
+        assert.doesNotMatch(text, /does not see the UI|cannot see the interface/i, `${skill}/${file}`);
+      }
+    }
+  });
+
+  it('puts the screenshots note of the planning roles in front of the clone paragraph, with the addendum inside the note', async () => {
+    for (const role of ['analyst', 'planner', 'autopilot']) {
+      const source = fs.readFileSync(path.join(import.meta.dirname, '..', 'roles', `${role}.md`), 'utf8');
+      const placeholder = source.indexOf('{{ screenshots_note }}');
+      const clone = source.indexOf('The current directory is a clone');
+      assert.ok(placeholder > -1, `${role}.md includes the note`);
+      assert.ok(placeholder < clone, `${role}.md: note before the clone paragraph`);
+      const prompt = await render(role);
+      const note = prompt.indexOf("UI screenshots: when the project's instructions");
+      assert.ok(note > -1, role);
+      assert.ok(note < prompt.indexOf('The current directory is a clone'), `${role}: rendered note before the clone paragraph`);
+      assert.ok(prompt.indexOf('never plan them away') > note, `${role}: addendum behind the base note`);
+      assert.ok(prompt.indexOf('never plan them away') < prompt.indexOf('The current directory is a clone'), `${role}: addendum before the clone paragraph`);
+      assert.doesNotMatch(prompt, /\{\{|\{%/, `${role}: nothing unrendered`);
+    }
+  });
+
+  it('tells the planning roles what a visual issue has to name and which reasons count', async () => {
+    for (const role of ['analyst', 'planner', 'autopilot']) {
+      const prompt = await render(role);
+      assert.match(prompt, /do not take screenshots yourself/i, role);
+      assert.match(prompt, /contains the word "Screenshots"/, role);
+      assert.match(prompt, /`require_screenshots: auto`/, role);
+      assert.match(prompt, /the viewports/, role);
+      assert.match(prompt, /demo login/, role);
+      assert.match(prompt, /AGENTS\.md/, role);
+      assert.match(prompt, /`docs\/screenshots\/`/, role);
+      assert.match(prompt, /in the issue and in your report/, role);
+      assert.match(prompt, /no web interface/, role);
+      assert.match(prompt, /external service without a local substitute/, role);
+      assert.match(prompt, /SQLite and `php -S`/, role);
+      assert.match(prompt, /Even then the developer tries it/, role);
+    }
+  });
+
+  it('keeps the addendum out of every other shipped role', async () => {
+    for (const role of ['architect', 'reviewer', 'developer', 'docs', 'issue-analyst', 'auditor', 'security-auditor', 'test-engineer', 'brain-gardener', 'brain', 'default']) {
+      const prompt = await render(role);
+      assert.doesNotMatch(prompt, /never plan them away|Not reasons:|only with a concrete reason from the repository/, role);
+      assert.doesNotMatch(prompt, /you are read-only\), but the developer does/, role);
+    }
+  });
+
+  it('tells the planning skills that the developer checks the UI with screenshots and that impossibility needs a cited reason', () => {
+    const read = (rel: string): string => fs.readFileSync(path.join(import.meta.dirname, '..', '.claude', 'skills', rel), 'utf8');
+    for (const rel of ['concept/breakdown.md', 'plan/SKILL.md', 'auto-code/ideation.md']) {
+      const text = read(rel);
+      assert.match(text, /developer checks it with screenshots/, rel);
+      assert.match(text, /"Screenshots"/, rel);
+      assert.match(text, /docs\/screenshots\//, rel);
+      assert.match(text, /Filament component|component, columns/, `${rel}: criteria stay concrete`);
+    }
+    for (const rel of ['concept/breakdown.md', 'plan/SKILL.md']) {
+      const text = read(rel);
+      assert.match(text, /impossible only for a concrete reason from the repository, cited as file:line/, rel);
+      assert.match(text, /"needs a running app", "no browser" and "no frontend build" are no reasons/, rel);
+    }
+  });
+
+  it('corrects the documentation of the planning commands and of the Laravel UI screenshots section', () => {
+    const doc = (name: string): string => fs.readFileSync(path.join(import.meta.dirname, '..', 'docs', name), 'utf8');
+    const usage = doc('usage.md');
+    assert.doesNotMatch(usage, /does not see the UI\.\s*(It|Design)/, 'no bare claim without the developer check');
+    assert.equal(usage.match(/the developer checks it with screenshots/g)?.length, 3, 'all three places');
+    assert.equal(usage.match(/reason from the repository \(file:line\)/g)?.length, 3, 'all three places name the evidence rule');
+    const laravel = doc('laravel-repositories.md');
+    const section = laravel.slice(laravel.indexOf('## UI screenshots'));
+    assert.match(section, /the analyst/, 'analyst');
+    assert.match(section, /the planner/, 'planner');
+    assert.match(section, /the autopilot/, 'autopilot');
+    assert.match(section, /file:line/);
   });
 
   it('tells only the developer which package manager builds the assets', async () => {
