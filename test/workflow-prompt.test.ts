@@ -331,7 +331,7 @@ describe('shipped WORKFLOW.md', () => {
     const prompt = await render('issue-analyst', 2, undefined, 'develop', [{ name: 'laravel-architect', description: 'Plans features' }]);
     assert.match(prompt, /Your role: issue analyst/);
     assert.match(prompt, /\*\*read-only\*\*/);
-    assert.match(prompt, /`get_issue`, `add_comment` and `report_result`/);
+    assert.match(prompt, /`get_issue`, `get_issue_by_number`, `add_comment` and `report_result`/);
     assert.match(prompt, /Read the project's instructions first/);
     assert.match(prompt, /Inspect the code/);
     assert.match(prompt, /Refine the acceptance criteria/);

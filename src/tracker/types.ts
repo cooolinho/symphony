@@ -177,6 +177,23 @@ export interface BranchPullRequest {
   base: string | null;
   head_sha: string | null;
   checks: AutoMergeChecks;
+  /** The description (uncut); `get_issue` cuts it. */
+  body?: string;
+  /** Latest discussion, oldest first: conversation comments, review summaries and review-thread comments. */
+  comments?: PullRequestComment[];
+}
+
+/** One entry of a pull request's discussion. */
+export interface PullRequestComment {
+  kind: 'comment' | 'review' | 'review_comment';
+  author: string | null;
+  created_at: string | null;
+  url: string | null;
+  body: string;
+  /** File a review comment is on. */
+  path?: string;
+  /** Review verdict (APPROVED, CHANGES_REQUESTED, COMMENTED …). */
+  state?: string;
 }
 
 /** A named entry check's state, posted on the commit it ran on (GitHub: commit status `symphony/<name>`). */
