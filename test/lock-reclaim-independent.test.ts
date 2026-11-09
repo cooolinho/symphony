@@ -223,3 +223,86 @@ describe('workspace manager: run is retried after the lock is reclaimed (#563)',
     }
   });
 });
+
+describe('lock: only a file this call created is removed on failure (#563 review)', () => {
+  for (const code of ['EMFILE', 'ENFILE', 'EINTR', 'EACCES']) {
+    it(`${code} on open keeps a live foreign lock and rethrows`, async () => {
+      const lock = path.join(tempDir('lockind-'), 'a.lock');
+      const content = JSON.stringify({ pid: 1, hostname: 'elsewhere-host', instance: 'other', acquiredAt: 'x' });
+      await fs.writeFile(lock, content);
+      const stub = mock.method(fs, 'open', async () => {
+        throw Object.assign(new Error(`${code}: simulated`), { code });
+      });
+      try {
+        await assert.rejects(acquireLock(lock), (e: NodeJS.ErrnoException) => e.code === code);
+      } finally {
+        stub.mock.restore();
+      }
+      assert.equal(await fs.readFile(lock, 'utf8'), content);
+    });
+  }
+
+  it('EMFILE on open keeps a fresh empty lock of someone else (still inside the grace period)', async () => {
+    const lock = path.join(tempDir('lockind-'), 'a.lock');
+    await fs.writeFile(lock, '');
+    const stub = mock.method(fs, 'open', async () => {
+      throw Object.assign(new Error('EMFILE: simulated'), { code: 'EMFILE' });
+    });
+    try {
+      await assert.rejects(acquireLock(lock), { code: 'EMFILE' });
+    } finally {
+      stub.mock.restore();
+    }
+    assert.equal(await exists(lock), true);
+  });
+
+  it('a failing close after a successful write removes the file this call created and rethrows', async () => {
+    const lock = path.join(tempDir('lockind-'), 'a.lock');
+    const real = fs.open.bind(fs);
+    const stub = mock.method(fs, 'open', async (p: string, flags: string) => {
+      const h = await real(p, flags);
+      const close = h.close.bind(h);
+      let first = true;
+      h.close = async () => {
+        if (first) {
+          first = false;
+          await close();
+          throw Object.assign(new Error('EIO: simulated'), { code: 'EIO' });
+        }
+        return close();
+      };
+      return h;
+    });
+    try {
+      await assert.rejects(acquireLock(lock), { code: 'EIO' });
+    } finally {
+      stub.mock.restore();
+    }
+    assert.equal(await exists(lock), false);
+  });
+
+  it('a failed write closes the file handle and leaves no file', async () => {
+    const lock = path.join(tempDir('lockind-'), 'a.lock');
+    let closed = 0;
+    const real = fs.open.bind(fs);
+    const stub = mock.method(fs, 'open', async (p: string, flags: string) => {
+      const h = await real(p, flags);
+      const close = h.close.bind(h);
+      h.close = async () => {
+        closed++;
+        return close();
+      };
+      h.writeFile = async () => {
+        throw Object.assign(new Error('ENOSPC: simulated'), { code: 'ENOSPC' });
+      };
+      return h;
+    });
+    try {
+      await assert.rejects(acquireLock(lock), { code: 'ENOSPC' });
+    } finally {
+      stub.mock.restore();
+    }
+    assert.ok(closed >= 1);
+    assert.equal(await exists(lock), false);
+  });
+});
