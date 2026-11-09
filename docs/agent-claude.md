@@ -238,7 +238,7 @@ The SDK's built-in agents (`claude`, `Explore`, `general-purpose`, `Plan`, `stat
 Bash calls get a longer timeout: every session starts with `BASH_DEFAULT_TIMEOUT_MS=600000` (10 min) and `BASH_MAX_TIMEOUT_MS=1200000` (20 min)
 instead of Claude Code's 2 minutes, because a full test run (`php artisan test`, `composer analyse`, `npm test`) takes longer and agents
 then test only parts (error signature `7a3d71bf`). The limit stays finite, so a hanging command still ends. Stall detection
-counts agent events and a running Bash call emits none: keep the Bash timeouts below `claude.stall_timeout_ms`. `claude.env` overrides both values.
+counts agent events and a running Bash call emits none: keep the Bash timeouts below `claude.stall_timeout_ms`. The shipped `WORKFLOW.md` sets `stall_timeout_ms: 600000`, so a Bash call that runs longer than 10 minutes can be stalled and retried until `stall_timeout_ms` is raised. `claude.env` overrides both values.
 
 Subagents and commands run in the **foreground**: every session starts with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`,
 so the Agent and Bash tools offer no `run_in_background` and nothing is moved to the background automatically. A
