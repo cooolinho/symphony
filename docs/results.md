@@ -254,7 +254,7 @@ results still read) and holds at most three entries; at L/XL the check requires 
   auditor does it, Symphony does not move it). `refuted[]` entries need no votes.
 - **Only with the judge in the session.** The vote rule applies when the session may start `refutation-judge` (the
   shipped `roles.security-auditor.agents`). A workflow with `agents: []` for the auditor keeps the plain L/XL rule above.
-- **Metrics.** A security `stage_result` line with panel votes carries `panel_candidates` (candidates in `findings` and `refuted` with votes), `panel_confirmed` and `panel_refuted` (`lens:count,…` per lens) and `panel_single_refuted` (candidates refuted by exactly one lens). The statistics sum them over the period and repository as `subagent_evaluation.security_panel` (candidates, votes per lens, `refuted_by_one_lens` = what `PANEL_MAX_REFUTING_VOTES = 1` would have kept); old lines without the fields give empty values.
+- **Metrics.** A security `stage_result` line with panel votes carries `panel_candidates` (candidates in `findings` and `refuted` with votes), `panel_confirmed` and `panel_refuted` (votes per lens, `reachability:<n>,impact:<n>,defenses:<n>`) and `panel_single_refuted` (candidates refuted by exactly one lens). The statistics sum them over the period and repository as `subagent_evaluation.security_panel` and show them on the statistics page: candidates, votes per lens, and `refuted_by_one_lens`, the candidates that a rule with `PANEL_MAX_REFUTING_VOTES = 1` would keep and the current rule drops. Old lines without the fields give empty values.
 - **S/M issues** and issues without a `Complexity:` label are not checked for votes.
 
 To switch to option A (optional fields only), drop `verifiedFindings` from `resultContext()` in
