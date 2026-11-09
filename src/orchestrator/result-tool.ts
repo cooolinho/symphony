@@ -296,6 +296,15 @@ type Plan = { ok: true; result: StageResult; transition: Transition } | { ok: fa
  * A run reports once: after the comment is posted, every further call returns the stored outcome without touching
  * the tracker. Calls run one at a time.
  */
+/**
+ * A role that cannot repair a failed entry check itself: a read-only role, or the docs role, whose path rule
+ * (`docs_paths`) forbids touching code and tests. Only these roles use the `on_check_failed` fallback. The test role
+ * stays out on purpose: it may change tests and reports `failed` for code defects.
+ */
+function cannotFixChecks(role: { readOnly: boolean; result?: string | null }): boolean {
+  return role.readOnly || role.result === 'docs';
+}
+
 export function createResultTool(params: ResultToolParams): AgentToolSpec {
   const { role, adapter } = params;
   const kind = role.result;
@@ -515,7 +524,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     // after the computed move failed its entry check.
     const allowed = context.transition;
     const failed = allowed?.checkFailed;
-    const route = failed !== undefined && role.readOnly ? checkFailedRoute({ role, history: params.history, config: params.config }) : null;
+    const route = failed !== undefined && cannotFixChecks(role) ? checkFailedRoute({ role, history: params.history, config: params.config }) : null;
     const fallback = route?.column ?? null;
     const expected = fallback ?? planned.transition.target;
     if (
@@ -658,7 +667,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       return planned.ok ? planned.transition.target : null;
     },
     checkFailedTarget: (args) => {
-      if (recorded !== null || !role.readOnly) return null;
+      if (recorded !== null || !cannotFixChecks(role)) return null;
       return plan(args, looked.get(args)).ok ? (checkFailedRoute({ role, history: params.history, config: params.config })?.column ?? null) : null;
     },
     precheck: (args, context) => queue.run(async () => (await pathViolation(args)) ?? (await screenshotViolation(args)) ?? (await mutationViolation(args)) ?? (await splitViolation(args, context))),
