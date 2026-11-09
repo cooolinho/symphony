@@ -220,6 +220,7 @@ describe('get_issue_by_number', () => {
     const seen: Array<Record<string, unknown>> = [];
     const adapter = {
       settings: { baseBranch: null, statusField: 'Status' },
+      meta: async () => ({ projectId: 'P1' }),
       client: {
         request: async (_q: string, variables: Record<string, unknown>) => {
           seen.push(variables);
@@ -231,7 +232,7 @@ describe('get_issue_by_number', () => {
                   number: 7, title: 'Sibling', body: 'text', state: 'OPEN', url: 'u', labels: { nodes: [{ name: 'bug' }] },
                   comments: { totalCount: 1, nodes: [{ author: { login: 'h' }, createdAt: 't', url: 'c', body: 'z'.repeat(30) }] },
                   subIssues: { nodes: [{ number: 8, title: 'child', state: 'CLOSED' }] },
-                  projectItems: { nodes: [{ status: { name: 'Ready' } }] },
+                  projectItems: { nodes: [{ project: { id: 'P0' }, status: { name: 'Other' } }, { project: { id: 'P1' }, status: { name: 'Ready' } }] },
                 },
               },
             },

@@ -196,10 +196,16 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
           number: Number(args.number),
           statusField: adapter.settings.statusField,
         });
+        if (Array.isArray(response.errors) && JSON.stringify(response.errors).includes('Could not resolve to an Issue')) {
+          return fail('not_found', `issue #${String(args.number)} does not exist in ${ref.repository}`);
+        }
         assertNoGraphqlErrors(response.errors);
         const issue = obj(obj(obj(response.data)?.repository)?.issue);
         if (issue === null) return fail('not_found', `issue #${String(args.number)} does not exist in ${ref.repository}`);
-        const status = nodes(issue.projectItems).map((item) => obj(item.status)?.name).find((n) => typeof n === 'string') ?? null;
+        const meta = await adapter.meta();
+        const item = nodes(issue.projectItems).find((i) => obj(i.project)?.id === meta.projectId);
+        const statusName = obj(item?.status)?.name;
+        const status = typeof statusName === 'string' ? statusName : null;
         return ok({
           issue: {
             number: issue.number,

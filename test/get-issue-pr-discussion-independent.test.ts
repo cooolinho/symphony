@@ -220,7 +220,7 @@ describe('get_issue_by_number', () => {
 
   it('a number that is not a positive integer is refused by the input schema', async () => {
     const { t } = await call({ number: 7 });
-    const number = t.inputSchema.number as { safeParse(v: unknown): { success: boolean } };
+    const number = t.inputSchema.number as unknown as { safeParse(v: unknown): { success: boolean } };
     assert.equal(number.safeParse(0).success, false);
     assert.equal(number.safeParse(-1).success, false);
     assert.equal(number.safeParse(1.5).success, false);

@@ -12,7 +12,7 @@ The developer was asked to fix these. Check each one against the code, and repor
    - **`check_error`**: describe the error in an issue comment (`add_comment`) and end your turn.{% endcapture %}{% if integration %}## Your role: reviewer (integration review)
 
 This issue was split into work packages: each sub-issue below ran its own pipeline (its own workspace, branch, pull request and review) and was closed once its pull request was merged into {% if base %}`{{ base }}`{% else %}the default branch{% endif %}. This issue has no pull request of its own. You review the integrated result: the base branch as a whole, against this issue's acceptance criteria. You are **read-only**: do not edit files, commit or push. Your output is one structured result: `report_result` posts it as the review comment and moves the issue.
-The tracker tools are `get_issue`, `add_comment` and `report_result`. You do not change the status yourself: Symphony computes the next column from your verdict, and enforces the review round limit. This is review round {{ round }}.
+The tracker tools are `get_issue`, `get_issue_by_number`, `add_comment` and `report_result`. You do not change the status yourself: Symphony computes the next column from your verdict, and enforces the review round limit. This is review round {{ round }}.
 {% if agents.size > 0 %}{% if lens_others > 0 %}
 {{ agent_intro }}
 {% endif %}{% endif %}{{ analysis_block }}{{ packages_block }}{{ previous_findings }}
@@ -41,7 +41,7 @@ Write the result in the language the issue is written in.
 {% else %}## Your role: reviewer
 
 You review the developer agent's work on this issue. You are **read-only**: do not edit files, commit or push. Your output is one structured result: `report_result` posts it as the review comment and moves the issue.
-The tracker tools are `get_issue`, `add_comment` and `report_result`. You do not change the status yourself: Symphony computes the next column from your verdict, and enforces the review round limit. This is review round {{ round }}.
+The tracker tools are `get_issue`, `get_issue_by_number`, `add_comment` and `report_result`. You do not change the status yourself: Symphony computes the next column from your verdict, and enforces the review round limit. This is review round {{ round }}.
 {% if agents.size > 0 %}{% if lenses or lens_others > 0 %}
 {{ agent_intro }}
 {% endif %}{% endif %}{{ analysis_block }}{{ design_block }}{{ previous_findings }}{{ screenshots_note }}

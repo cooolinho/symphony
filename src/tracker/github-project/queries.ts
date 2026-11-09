@@ -371,7 +371,7 @@ export const ISSUE_BY_NUMBER_QUERY = /* GraphQL */ `
         number title body state url
         labels(first: 50) { nodes { name } }
         projectItems(first: 5) {
-          nodes { status: fieldValueByName(name: $statusField) { ... on ProjectV2ItemFieldSingleSelectValue { name } } }
+          nodes { project { id } status: fieldValueByName(name: $statusField) { ... on ProjectV2ItemFieldSingleSelectValue { name } } }
         }
         comments(last: 20) { totalCount nodes { author { login } createdAt url body } }
         subIssues(first: 50) { nodes { number title state } }
