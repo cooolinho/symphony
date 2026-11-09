@@ -1944,7 +1944,7 @@ export class Orchestrator {
       let workspace: Workspace | null = null;
       if (entryChecksFor(target, role, config).length > 0) {
         const acquired = await workspaces.lock(issue.identifier);
-        if (!acquired.ok) return { kind: 'failed', reason: `workspace locked by ${describeHolder(acquired.holder)}` };
+        if (!acquired.ok) return { kind: 'failed', reason: `workspace locked by ${describeHolder(acquired.holder, acquired.lockPath)}` };
         lock = acquired;
         workspace = await workspaces.ensure(hookIssue);
         if (workspace.createdNow) return { kind: 'declined', reason: `the entry check for "${target}" needs the stage's workspace, which no longer existed` };

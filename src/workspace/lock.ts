@@ -9,13 +9,19 @@ export interface LockInfo {
   acquiredAt: string;
 }
 
-export type LockResult = { ok: true; release: () => Promise<void> } | { ok: false; holder: LockInfo | null };
+export type LockResult = { ok: true; release: () => Promise<void> } | { ok: false; holder: LockInfo | null; lockPath: string };
 
 /** Identifies this process; a lock is ours only while the file still carries this id. */
 export const INSTANCE_ID = randomUUID();
 
-export function describeHolder(holder: LockInfo | null): string {
-  if (holder === null) return 'an unreadable lock file';
+/** An empty or unreadable lock file older than this is a leftover (crash, full disk) and is reclaimed. */
+export const UNREADABLE_LOCK_GRACE_MS = 60_000;
+
+export function describeHolder(holder: LockInfo | null, lockPath?: string): string {
+  if (holder === null) {
+    const file = lockPath ? `the unreadable lock file ${lockPath}` : 'an unreadable lock file';
+    return `${file} (reclaimed automatically once it is older than ${UNREADABLE_LOCK_GRACE_MS / 1000} s)`;
+  }
   return `pid ${holder.pid} on ${holder.hostname} (instance ${holder.instance}, since ${holder.acquiredAt})`;
 }
 
@@ -47,9 +53,17 @@ async function readLock(lockPath: string): Promise<LockInfo | null | 'missing'> 
   return null;
 }
 
-/** Same host and a dead pid. Another host, or an unreadable file, counts as held. */
-function isStale(holder: LockInfo | null): boolean {
-  return holder !== null && holder.hostname === os.hostname() && holder.instance !== INSTANCE_ID && !isAlive(holder.pid);
+/** Same host and a dead pid, or an unreadable file past the grace period. Another host counts as held. */
+async function isStale(holder: LockInfo | null, lockPath: string): Promise<boolean> {
+  if (holder === null) {
+    try {
+      const { mtimeMs } = await fs.stat(lockPath);
+      return Date.now() - mtimeMs > UNREADABLE_LOCK_GRACE_MS;
+    } catch {
+      return false;
+    }
+  }
+  return holder.hostname === os.hostname() && holder.instance !== INSTANCE_ID && !isAlive(holder.pid);
 }
 
 /** Removes the lock file only if this instance's id is still the one inside. */
@@ -68,7 +82,11 @@ export async function acquireLock(lockPath: string): Promise<LockResult> {
       await fs.writeFile(lockPath, JSON.stringify(info), { flag: 'wx' });
       return { ok: true, release: () => releaseLock(lockPath) };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        // e.g. ENOSPC after the file was created: do not leave an empty lock behind.
+        await fs.rm(lockPath, { force: true }).catch(() => {});
+        throw error;
+      }
     }
     const holder = await readLock(lockPath);
     if (holder === 'missing') continue;
@@ -77,8 +95,8 @@ export async function acquireLock(lockPath: string): Promise<LockResult> {
       await fs.writeFile(lockPath, JSON.stringify(info));
       return { ok: true, release: () => releaseLock(lockPath) };
     }
-    if (!isStale(holder)) return { ok: false, holder };
+    if (!(await isStale(holder, lockPath))) return { ok: false, holder, lockPath };
     await fs.rm(lockPath, { force: true });
   }
-  return { ok: false, holder: null };
+  return { ok: false, holder: null, lockPath };
 }
