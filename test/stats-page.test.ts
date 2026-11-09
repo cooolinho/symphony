@@ -13,6 +13,12 @@ const analyticsUrls = (page: ReturnType<typeof renderPage>) => page.fetches.map(
 const COLOR = /#[0-9a-f]{3,8}\b|rgba?\(/i;
 
 describe('statistics page: sections', () => {
+  it('has the security panel table (#554)', () => {
+    assert.match(LOGS_HTML, /data-body="security-panel"/);
+    assert.match(LOGS_HTML, /renderSecurityPanel/);
+    assert.match(LOGS_HTML, /security-panel-table/);
+  });
+
   it('uses glass panels, key figure tiles and chips, German headings and the title "Statistik"', async () => {
     const page = renderPage(LOGS_HTML, undefined, { url: 'http://127.0.0.1/stats', fetch: answer });
     await settled(page);

@@ -2,6 +2,7 @@ import { bareModelName } from '../agent/model-name.ts';
 import { costOf, priceFor, totalTokens, type ModelTokenUsage, type PricingTable } from '../costs/pricing.ts';
 import { BUDGET_WINDOW_MS, forecastBudget } from '../budget/forecast.ts';
 import { isRejected, windowUtilization, type RateLimitRecord } from '../budget/rate-limit-log.ts';
+import { PANEL_LENSES, type PanelVoteCounts } from '../workflow/results.ts';
 import { parseCounts, parseSubagents, type HistoryEntry, type LoggedSubagent } from './history.ts';
 
 /**
@@ -617,7 +618,19 @@ interface StageResultEntry {
   findingsRefuted: number | null;
   /** Mutation score (percent) of a test result; null when the line carries none. */
   mutationScore: number | null;
+  /** Panel votes of a security result (L/XL); null when the line carries none or a broken count. */
+  panel: PanelVoteCounts | null;
   ms: number;
+}
+
+function panelOf(fields: Record<string, string>): PanelVoteCounts | null {
+  const candidates = numberOrNull(fields.panel_candidates);
+  if (candidates === null || !Number.isInteger(candidates) || candidates < 0) return null;
+  const lenses = (value: string | undefined) => {
+    const counts = parseCounts(value);
+    return { reachability: counts.reachability ?? 0, impact: counts.impact ?? 0, defenses: counts.defenses ?? 0 };
+  };
+  return { candidates, confirmed: lenses(fields.panel_confirmed), refuted: lenses(fields.panel_refuted), singleRefuted: numberOrNull(fields.panel_single_refuted) ?? 0 };
 }
 
 function stageResultOf(entry: HistoryEntry): StageResultEntry {
@@ -637,6 +650,7 @@ function stageResultOf(entry: HistoryEntry): StageResultEntry {
     findingsConfirmed: numberOrNull(fields.findings_confirmed),
     findingsRefuted: numberOrNull(fields.findings_refuted),
     mutationScore: numberOrNull(fields.mutation_score),
+    panel: panelOf(fields),
     ms: Date.parse(entry.ts),
   };
 }
@@ -759,6 +773,25 @@ function mutationScores(results: StageResultEntry[]) {
     .map((result) => ({ issue: result.issue, repo: result.repo, complexity: result.complexity, mutation_score: result.mutationScore as number, at: new Date(result.ms).toISOString() }));
 }
 
+/** Security panel (E3-5 follow-up): panel candidates, votes per lens and candidates refuted by exactly one lens, summed over all security results in scope. */
+function securityPanel(results: StageResultEntry[]) {
+  const panels = results.flatMap((result) => (result.panel === null ? [] : [result.panel]));
+  const note =
+    'Panel-Kandidaten = Security-Kandidaten (findings und refuted) mit Panel-Stimmen (L/XL), summiert über alle Security-Ergebnisse im Zeitraum. Je Lens: Stimmen bestätigt/widerlegt. Von genau einer Lens widerlegt = Kandidaten mit genau einer widerlegenden Stimme; die hätte eine Regel mit PANEL_MAX_REFUTING_VOTES = 1 behalten. Leer ohne Ergebnisse mit Panel-Stimmen.';
+  if (panels.length === 0) return { note, results: 0, candidates: null as number | null, refuted_by_one_lens: null as number | null, lenses: [] as Array<{ lens: string; confirmed: number; refuted: number }> };
+  return {
+    note,
+    results: panels.length,
+    candidates: panels.reduce((sum, panel) => sum + panel.candidates, 0) as number | null,
+    refuted_by_one_lens: panels.reduce((sum, panel) => sum + panel.singleRefuted, 0) as number | null,
+    lenses: PANEL_LENSES.map((lens) => ({
+      lens: lens as string,
+      confirmed: panels.reduce((sum, panel) => sum + panel.confirmed[lens], 0),
+      refuted: panels.reduce((sum, panel) => sum + panel.refuted[lens], 0),
+    })),
+  };
+}
+
 function subagentEvaluation(runs: Run[], pipelineRuns: Run[], results: StageResultEntry[]) {
   const finished = new Set<string>();
   const returns = new Map<string, { review: number; test: number }>();
@@ -869,6 +902,7 @@ function subagentEvaluation(runs: Run[], pipelineRuns: Run[], results: StageResu
     rules: { median_min_runs: MEDIAN_MIN_RUNS, percentile_min_runs: PERCENTILE_MIN_RUNS },
     rows,
     mutation_scores: mutationScores(results),
+    security_panel: securityPanel(results),
   };
 }
 

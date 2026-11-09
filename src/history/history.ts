@@ -15,6 +15,7 @@ import { formatValue, type Logger } from '../log.ts';
 import type { SubagentRun } from '../agent/types.ts';
 import { errorMessage } from '../util/errors.ts';
 import { DEFAULT_ROLE } from '../workflow/roles.ts';
+import type { PanelVoteCounts } from '../workflow/results.ts';
 
 /**
  * How a run ended: handed off (left the active states, or moved to a column served by another role; then the
@@ -160,6 +161,8 @@ export interface StageResultLine {
   findingsRefuted?: number | null;
   /** Mutation score (percent) of a test result that carries one; null or absent otherwise. */
   mutationScore?: number | null;
+  /** Panel votes of a security result (L/XL); null or absent when it carries none. */
+  panelVotes?: PanelVoteCounts | null;
   at: Date;
 }
 
@@ -356,6 +359,7 @@ export class HistoryLog {
   }
 
   stageResult(line: StageResultLine): void {
+    const panel = line.panelVotes ?? null;
     this.#append(line.repo, line.at, 'stage_result', {
       issue: line.issue,
       run: line.run ?? undefined,
@@ -370,6 +374,10 @@ export class HistoryLog {
       findings_confirmed: line.findingsConfirmed ?? undefined,
       findings_refuted: line.findingsRefuted ?? undefined,
       mutation_score: line.mutationScore ?? undefined,
+      panel_candidates: panel?.candidates,
+      panel_confirmed: panel ? formatToolCalls(panel.confirmed) : undefined,
+      panel_refuted: panel ? formatToolCalls(panel.refuted) : undefined,
+      panel_single_refuted: panel?.singleRefuted,
     });
   }
 

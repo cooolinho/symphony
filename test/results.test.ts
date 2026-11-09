@@ -14,6 +14,7 @@ import {
   internalResult,
   PANEL_MAX_REFUTING_VOTES,
   panelOutcome,
+  panelVoteCounts,
   parseResult,
   renderResultComment,
   renderResultMarkdown,
@@ -600,6 +601,23 @@ describe('verified findings (E3-4)', () => {
     const docs = parseResult('docs', { verdict: 'done', summary: 'x' });
     assert.ok(docs.ok);
     assert.equal(verificationCounts(docs.result, true), null);
+  });
+
+  it('counts panel votes per lens and candidates refuted by exactly one lens (#554)', () => {
+    const vote = (lens: string, verdict: string) => ({ lens, verdict, evidence: 'src/a.ts:1' });
+    const cand = (status: string, votes: ReturnType<typeof vote>[]) => ({ severity: 'major', problem: 'p', verification: { status, evidence: 'e', votes } });
+    const all = [vote('reachability', 'confirmed'), vote('impact', 'confirmed'), vote('defenses', 'confirmed')];
+    const security = (over: Record<string, unknown>) => ({ kind: 'security', verdict: 'issues_found', summary: 'x', findings: [], refuted: [], ...over }) as unknown as Parameters<typeof panelVoteCounts>[0];
+    const counts = panelVoteCounts(
+      security({
+        findings: [cand('confirmed', all)],
+        refuted: [cand('refuted', [vote('reachability', 'confirmed'), vote('impact', 'refuted'), vote('defenses', 'confirmed')]), cand('refuted', [vote('reachability', 'confirmed'), vote('impact', 'refuted'), vote('defenses', 'refuted')])],
+      }),
+    );
+    assert.deepEqual(counts, { candidates: 3, confirmed: { reachability: 3, impact: 1, defenses: 2 }, refuted: { reachability: 0, impact: 2, defenses: 1 }, singleRefuted: 1 });
+    assert.equal(panelVoteCounts(security({ findings: [{ severity: 'major', problem: 'p' }] })), null);
+    assert.equal(panelVoteCounts(security({ refuted: [{ severity: 'major', problem: 'p', verification: { status: 'refuted', evidence: 'e' } }] })), null);
+    assert.equal(panelVoteCounts({ ...security({ findings: [cand('confirmed', all)] }), kind: 'review' } as unknown as Parameters<typeof panelVoteCounts>[0]), null);
   });
 
   it('posts confirmed findings only, with a count of the refuted candidates; the marker keeps them', () => {
