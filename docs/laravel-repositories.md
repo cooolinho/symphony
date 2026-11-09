@@ -172,9 +172,10 @@ them in the pull request body by commit SHA (`https://github.com/<owner>/<repo>/
 also works for private repositories). The browser lives under `/opt/ms-playwright`, not on the `PATH`;
 `symphony-screenshot --check` tests it. A fresh workspace has no `node_modules` or `public/build`, so the developer
 installs the dependencies and runs the `build` script first when the app uses Vite (for example a Filament
-`viteTheme`). The architect, the analyst (`/concept`), the planner (`/plan`), the autopilot (`/auto-code`) and the reviewer are told the
-same, so a design or a plan does not skip screenshots (visual issues name them, with pages, viewports, demo login and
-location; "impossible" needs a reason from the repository with file:line) and a review counts missing ones as `major`. Help the developer with a short section in `AGENTS.md`:
+`viteTheme`). The architect, the analyst (`/concept`), the planner (`/plan`), the autopilot (`/auto-code`) and the
+reviewer are told the same, so a design or a plan does not skip screenshots (visual issues name them, with pages,
+viewports, demo login and location; "impossible" needs a reason from the repository with file:line) and a review
+counts missing ones as `major`. Help the developer with a short section in `AGENTS.md`:
 
 - How to get a demo login: the seeder that creates it and the variables it reads (for example `DEMO_ADMIN_EMAIL`).
 - The login URL of each panel and the variables routing depends on (for example a panel domain), with values that work
