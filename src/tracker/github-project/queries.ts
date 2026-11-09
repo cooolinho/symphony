@@ -352,9 +352,29 @@ export const BRANCH_PULL_REQUEST_QUERY = /* GraphQL */ `
     repository(owner: $owner, name: $name) {
       pullRequests(headRefName: $head, states: [OPEN], first: 1) {
         nodes {
-          number url baseRefName headRefOid
+          number url baseRefName headRefOid body
+          comments(last: 10) { nodes { author { login } createdAt url body } }
+          reviews(last: 10) { nodes { author { login } submittedAt url body state } }
+          reviewThreads(last: 10) { nodes { comments(last: 5) { nodes { author { login } createdAt url body path } } } }
           ${CHECK_ROLLUP_FIELDS}
         }
+      }
+    }
+  }
+`;
+
+/** Any issue of the repository by number (read-only, `get_issue_by_number`): text, labels, status, latest comments, sub-issues. */
+export const ISSUE_BY_NUMBER_QUERY = /* GraphQL */ `
+  query SymphonyIssueByNumber($owner: String!, $name: String!, $number: Int!, $statusField: String!) {
+    repository(owner: $owner, name: $name) {
+      issue(number: $number) {
+        number title body state url
+        labels(first: 50) { nodes { name } }
+        projectItems(first: 5) {
+          nodes { project { id } status: fieldValueByName(name: $statusField) { ... on ProjectV2ItemFieldSingleSelectValue { name } } }
+        }
+        comments(last: 20) { totalCount nodes { author { login } createdAt url body } }
+        subIssues(first: 50) { nodes { number title state } }
       }
     }
   }

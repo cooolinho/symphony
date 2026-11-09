@@ -240,6 +240,15 @@ describe('claude agent runner', () => {
     assert.equal(allowed.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '0');
   });
 
+  it('gives Bash a finite default timeout that fits a full test run, overridable through claude.env', async () => {
+    const options = await sessionOptions({});
+    assert.equal(options.env?.BASH_DEFAULT_TIMEOUT_MS, '600000');
+    assert.equal(options.env?.BASH_MAX_TIMEOUT_MS, '1200000');
+    const custom = await sessionOptions({ claude: { env: { BASH_DEFAULT_TIMEOUT_MS: '300000', BASH_MAX_TIMEOUT_MS: '900000' } } });
+    assert.equal(custom.env?.BASH_DEFAULT_TIMEOUT_MS, '300000');
+    assert.equal(custom.env?.BASH_MAX_TIMEOUT_MS, '900000');
+  });
+
   it('denies fork subagents and switches them off in every session unless claude.env allows them', async () => {
     const sessions = [
       await sessionOptions({ policy: { readOnly: false }, deniedAgents: ['symphony:a'] }),

@@ -8,6 +8,7 @@ import {
   type AgentToolSpec,
   type AutoMergeResult,
   type BranchPullRequest,
+  type PullRequestComment,
   type CheckStatus,
   type Issue,
   type IssueAttachment,
@@ -116,6 +117,30 @@ export interface IssueAncestor {
   number: number;
   title: string;
   repository: string;
+}
+
+function connectionNodes(connection: unknown): Json[] {
+  const list = obj(connection)?.nodes;
+  return Array.isArray(list) ? list.flatMap((n) => { const o = obj(n); return o === null ? [] : [o]; }) : [];
+}
+
+/** Conversation comments, non-empty review summaries and review-thread comments of a pull request node, oldest first. */
+function pullRequestDiscussion(pr: Json): PullRequestComment[] {
+  const entry = (kind: PullRequestComment['kind'], node: Json, at: unknown): PullRequestComment => ({
+    kind,
+    author: typeof obj(node.author)?.login === 'string' ? (obj(node.author)!.login as string) : null,
+    created_at: typeof at === 'string' ? at : null,
+    url: typeof node.url === 'string' ? node.url : null,
+    body: typeof node.body === 'string' ? node.body : '',
+    ...(typeof node.path === 'string' ? { path: node.path } : {}),
+    ...(kind === 'review' && typeof node.state === 'string' ? { state: node.state } : {}),
+  });
+  const all = [
+    ...connectionNodes(pr.comments).map((n) => entry('comment', n, n.createdAt)),
+    ...connectionNodes(pr.reviews).map((n) => entry('review', n, n.submittedAt)),
+    ...connectionNodes(pr.reviewThreads).flatMap((thread) => connectionNodes(thread.comments).map((n) => entry('review_comment', n, n.createdAt))),
+  ].filter((c) => c.body.trim() !== '');
+  return all.sort((x, y) => (x.created_at ?? '').localeCompare(y.created_at ?? ''));
 }
 
 export class GithubProjectAdapter implements TrackerAdapter {
@@ -506,6 +531,8 @@ export class GithubProjectAdapter implements TrackerAdapter {
         base: typeof pr.baseRefName === 'string' ? pr.baseRefName : null,
         head_sha: typeof pr.headRefOid === 'string' ? pr.headRefOid : null,
         checks: { state: checks.state, failing: checks.failing, pending: checks.pending.map((check) => check.name) },
+        body: typeof pr.body === 'string' ? pr.body : '',
+        comments: pullRequestDiscussion(pr),
       };
     } catch {
       return null;

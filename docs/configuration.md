@@ -347,7 +347,7 @@ info log line. Each Symphony instance has its own override; there is no shared b
 | `append_system_prompt` | none | Extra text appended to Claude Code's system prompt. |
 | `max_budget_usd` | none | Cost cap per agent session; the turn fails when it is exceeded. |
 | `persist_session` | `true` | Keep transcripts in `~/.claude/projects` so a session can be inspected with `claude --resume <id>`. |
-| `env` | `{}` | Extra environment variables for the agent process. They win over Symphony's defaults, e.g. `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "0"` allows background tasks again, `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "2"` allows nested subagents ([why they are off](agent-claude.md#subagents)). |
+| `env` | `{}` | Extra environment variables for the agent process. They win over Symphony's defaults, e.g. `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "0"` allows background tasks again, `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "2"` allows nested subagents ([why they are off](agent-claude.md#subagents)). Bash calls get `BASH_DEFAULT_TIMEOUT_MS: "600000"` (10 min) and `BASH_MAX_TIMEOUT_MS: "1200000"` (20 min) so a full test run fits into one call; set both to change it, and keep them below `stall_timeout_ms` (a Bash call emits no agent event while it runs) and `turn_timeout_ms`. |
 | `executable` | bundled CLI | Path to another Claude Code executable. |
 | `plugins` | `[]` | Local Claude Code plugin directories loaded into every session (skills, subagents, commands, hooks), relative to `WORKFLOW.md`. The shipped `WORKFLOW.md` loads `./.claude`, Symphony's own toolbox; its skills are named `symphony:<skill>`. A missing directory blocks dispatch. |
 | `skills` | Claude Code default | `all` enables every discovered skill (the repository's, a plugin's, Laravel Boost's) and the Skill tool; a list enables only those names (`testing-best-practices`, `symphony:handoff`). |
@@ -446,7 +446,7 @@ roles:
 | `may_move_to` | unrestricted | Column names the agent may move the issue to, matched case-insensitively and enforced by the [transition guard](#transition-guard). Free-form; not checked against the board here. Terminal columns are never allowed. |
 | `result` | none | Kind of the stage result the role reports: `analysis`, `design`, `implementation`, `test`, `review`, `security` or `docs` (see [result contracts](#result-driven-transitions)). Setting only this key is enough for a minimal result role. The role hands off with the [`report_result`](results.md#the-report_result-tool) tool and does not get `set_status`. |
 | `on_result` | `{}` | Column per verdict of `result`, or `next` (the next active stage after the role's columns in board order). Needs `result`. See [Result-driven transitions](#result-driven-transitions). |
-| `on_check_failed` | none | Column for an issue whose entry check fails for a role that cannot fix it (a read-only role). When the check of the column a `report_result` leads to fails, the tool records the result anyway, adds a note with the check output to its summary and moves the issue here (through the transition guard, so this column's own entry check applies). Without it the agent gets `check_failed` and nothing is recorded. Ignored for roles that are not `read_only`. |
+| `on_check_failed` | none | Column for an issue whose entry check fails for a role that cannot fix it (a read-only role, or the docs role, whose path rule forbids code and tests). When the check of the column a `report_result` leads to fails, the tool records the result anyway, adds a note with the check output to its summary and moves the issue here (through the transition guard, so this column's own entry check applies). Without it the agent gets `check_failed` and nothing is recorded. Ignored for other roles, including the test role, which may change tests and reports `failed` for code defects. |
 | `on_missing_result` | `Blocked` with `result`, else none | Column for a session that ends without a result. Needs `result`. After the first turn without a result the session gets one reminder turn; if the turn limit comes first or the reminder fails too, Symphony re-fetches the issue and, only if it is still in the role's column, posts a plain comment ("Stage ended without a result") and moves it here. An issue someone moved meanwhile is left alone. See [Stages without a result](results.md#stages-without-a-result). |
 | `on_round_limit` | the blocked column | Column for a loop verdict (review `changes_needed`, test `failed`, security `issues_found`) that reaches `pipeline.max_review_rounds` / `max_test_rounds` / `max_security_rounds`. Also the target of the hand-off that reaches `pipeline.max_check_failures` instead of `on_check_failed`. Needs `result: review`, `result: test` or `result: security`. See [Result-driven transitions](#result-driven-transitions). |
 | `model_label` | `apply`; `ignore` for read-only roles with a `result` | `ignore` keeps a `Model:` issue label from changing the role's model (`model_by_complexity` still applies). |
@@ -892,7 +892,8 @@ roles:
     states: [Documentation]
     result: docs
     on_result: { done: Agent review, not_needed: Agent review, blocked: Blocked }
-    may_move_to: [Agent review, Blocked]
+    on_check_failed: In progress
+    may_move_to: [Agent review, In progress, Blocked]
     model_label: ignore
     claude: { model: haiku }
 pipeline:
@@ -914,6 +915,7 @@ pipeline:
   files that differ from the last hand-off of the developer or test engineer and refuses a `done` or `not_needed` result that comes with other
   files with `invalid_result`, naming them; nothing is recorded. `blocked` is always accepted and notes the files. The prompt lists the paths as `docs_paths`.
 - **Verdicts.** `done` (with the changed `files`) and `not_needed` lead to `Agent review`, `blocked` to `Blocked`.
+- **Red entry check.** The docs agent cannot fix code or tests. When the entry check of `Agent review` fails for its `done` or `not_needed`, `on_check_failed: In progress` records the result with the check output and sends the issue back to the developer (counted by `max_check_failures`). The path rule then measures from the developer's next hand-off. Without `on_check_failed` the agent gets `check_failed` as before.
 - **Haiku.** Haiku has no auto mode; `claude.by_model.haiku` in the shipped file holds the permission settings it needs.
 - **Board.** `Documentation` is one of `tracker.active_states`, so the board needs the column between `Testing` and
   `Agent review`, and the `may_move_to` of the developer and the test engineer must list it (the preflight says so

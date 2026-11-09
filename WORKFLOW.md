@@ -157,6 +157,9 @@ claude:
   plugins: [./.claude]                       # Symphony's toolbox: skills, subagents and hooks for every repository
   skills: all                                # repository skills, Laravel Boost skills and symphony:* skills
   stall_timeout_ms: 600000
+  # Bash calls of the agent: BASH_DEFAULT_TIMEOUT_MS 600000 (10 min) and BASH_MAX_TIMEOUT_MS 1200000 (20 min) are the defaults, so a
+  # full test run fits into one call; override them in claude.env. A call with no agent event for longer than stall_timeout_ms counts as a stall.
+  # env: {BASH_DEFAULT_TIMEOUT_MS: "900000"}
   # max_budget_usd: 5                        # optional cost cap per agent session
 
 roles:
@@ -250,7 +253,8 @@ roles:
     states: [Documentation]
     result: docs
     on_result: { done: Agent review, not_needed: Agent review, blocked: Blocked }
-    may_move_to: [Agent review, Blocked]
+    on_check_failed: In progress             # the entry check of Agent review failed (flaky test, develop merge, developer bug): back to the developer, with the output; docs cannot fix code
+    may_move_to: [Agent review, In progress, Blocked]
     agents: []                               # edits docs only; none of the laravel-* personas
     model_label: ignore                      # haiku, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # medium, whatever the issue's Effort: label says

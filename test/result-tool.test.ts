@@ -61,6 +61,8 @@ interface SetupOptions {
   screenshots?: ResultToolParams['screenshots'];
   mutation?: ResultToolParams['mutation'];
   panel?: boolean;
+  /** Overrides per role name, merged over ROLES. */
+  roles?: Record<string, Record<string, unknown>>;
 }
 
 function setup(options: SetupOptions = {}) {
@@ -71,7 +73,11 @@ function setup(options: SetupOptions = {}) {
       provider: { owner: 'acme', project_number: 1, token: 'test-token' },
       active_states: ['Todo', 'Ready', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review'],
     },
-    roles: { ...ROLES, reviewer: { ...ROLES.reviewer, ...options.reviewer } },
+    roles: {
+      ...ROLES,
+      reviewer: { ...ROLES.reviewer, ...options.reviewer },
+      ...Object.fromEntries(Object.entries(options.roles ?? {}).map(([name, over]) => [name, { ...(ROLES as Record<string, object>)[name], ...over }])),
+    },
     pipeline: { max_review_rounds: 3, max_test_rounds: 2 },
     checks: { timeout_ms: options.timeoutMs ?? 10_000, on_enter: options.checks ?? {} },
   });
@@ -849,6 +855,61 @@ describe('report_result', () => {
       const broken = setup({ checks: { 'In review': 'exit 7' }, reviewer: { on_check_failed: 'In progress' } });
       assert.equal(error(await broken.report(APPROVED)).category, 'check_error');
       assert.deepEqual(broken.tracker.statusCalls, []);
+    });
+
+    describe('docs role', () => {
+      const DOCS = { verdict: 'done', summary: 'Documented.', files: ['docs/a.md'] };
+      const docsRole = { docs: { on_check_failed: 'In progress', may_move_to: ['Agent review', 'In progress', 'Blocked'] } };
+      const AR = { 'Agent review': 'echo "flaky test"; exit 1' };
+
+      it('records done and not_needed and moves to on_check_failed when the Agent review check fails', async () => {
+        for (const args of [DOCS, { verdict: 'not_needed', summary: 'Nothing.' }]) {
+          const { report, tracker, markers } = setup({ role: 'docs', state: 'Documentation', checks: AR, roles: docsRole });
+          const result = data(await report(args));
+          assert.equal(result.target, 'In progress');
+          assert.equal(result.check_failed_for, 'Agent review');
+          assert.deepEqual(tracker.statusCalls, ['In progress']);
+          assert.match(markers()[0]?.result.summary ?? '', /Entry check failed[\s\S]*flaky test/);
+        }
+      });
+
+      it('counts toward max_check_failures: the third hand-off goes to the blocked column with needs-human', async () => {
+        const earlier = buildStageHistory(
+          [0, 1].map((i) => ({
+            result: { kind: 'docs', verdict: 'done', summary: 's' } as never,
+            meta: { role: 'docs', run: `run-${i}`, round: null, profile: null, workflow_hash: null, head_sha: null, checks: null, target: 'In progress', check_failed_for: 'Agent review', created_at: `2026-10-1${i}T12:00:00Z` },
+          })),
+        );
+        const { report, current, tracker } = setup({ role: 'docs', state: 'Documentation', checks: AR, roles: docsRole, history: earlier });
+        assert.equal(data(await report(DOCS)).target, 'Blocked');
+        assert.deepEqual(tracker.statusCalls, ['Blocked']);
+        assert.deepEqual(current().labels, ['needs-human']);
+      });
+
+      it('blocked still goes straight to Blocked', async () => {
+        const { report, tracker } = setup({ role: 'docs', state: 'Documentation', checks: AR, roles: docsRole });
+        const result = data(await report({ verdict: 'blocked', summary: 'No.', blockers: [{ description: 'x', needs: 'human' }] }));
+        assert.equal(result.target, 'Blocked');
+        assert.deepEqual(tracker.statusCalls, ['Blocked']);
+      });
+
+      it('without on_check_failed the agent gets check_failed and nothing is recorded', async () => {
+        const { report, tracker } = setup({ role: 'docs', state: 'Documentation', checks: AR });
+        assert.equal(error(await report(DOCS)).category, 'check_failed');
+        assert.deepEqual(tracker.statusCalls, []);
+      });
+
+      it('the test role gets no fallback even with on_check_failed', async () => {
+        const { report, tracker } = setup({
+          role: 'tester',
+          state: 'Testing',
+          checks: AR,
+          roles: { tester: { on_check_failed: 'In progress' } },
+        });
+        const passed = { verdict: 'passed', summary: 'ok', cases: [{ criterion: 'c', test: 't', status: 'passed' }] };
+        assert.equal(error(await report(passed)).category, 'check_failed');
+        assert.deepEqual(tracker.statusCalls, []);
+      });
     });
 
     it('refuses a fallback the tool did not expect', async () => {
