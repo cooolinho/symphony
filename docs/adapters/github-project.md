@@ -260,8 +260,9 @@ jobs:
 Without the variable (or with any other value) the jobs run again and the gate waits for them. Symphony's own checks
 `ci` and `prod-smoke` (the final gate of `In review`, see [named checks](../configuration.md#named-checks)) are
 reported as commit statuses `symphony/ci` and `symphony/prod-smoke` with `checks.report_status`, so the gate and branch
-rules see them like any other check. `get_issue` shows the developer the checks of the branch's pull request
-(`branch_pull_request`). Symphony reads the same pull request after each session with new commits for its change log
+rules see them like any other check. `get_issue` shows the developer and the reviewer the checks of the branch's pull
+request (`branch_pull_request`), with its description and latest discussion; agents have no `gh` and no GitHub token, so
+this is how they read the pull request. Symphony reads the same pull request after each session with new commits for its change log
 (`changes/<owner>_<repo>.jsonl`, see [usage](../usage.md#logs-transcripts-and-workspaces)).
 
 Validation: `auto_merge` needs `base_branch` and `on_enter`; `on_enter` must not be an active or terminal state (it
