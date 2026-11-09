@@ -286,6 +286,15 @@ interface Conditions {
 type Plan = { ok: true; result: StageResult; transition: Transition } | { ok: false; failure: ToolResult };
 
 /**
+ * A role that cannot repair a failed entry check itself: a read-only role, or the docs role, whose path rule
+ * (`docs_paths`) forbids touching code and tests. Only these roles use the `on_check_failed` fallback. The test role
+ * stays out on purpose: it may change tests and reports `failed` for code defects.
+ */
+function cannotFixChecks(role: { readOnly: boolean; result?: string | null }): boolean {
+  return role.readOnly || role.result === 'docs';
+}
+
+/**
  * The `report_result` tool of one session (docs/results.md#the-report_result-tool). The agent reports a result;
  * Symphony validates it and computes the target column (`resolveTransition`). `transitionTarget` hands that column to
  * the transition guard (`guardTools`), so the move passes `may_move_to` and the entry checks like `set_status`, and a
@@ -296,15 +305,6 @@ type Plan = { ok: true; result: StageResult; transition: Transition } | { ok: fa
  * A run reports once: after the comment is posted, every further call returns the stored outcome without touching
  * the tracker. Calls run one at a time.
  */
-/**
- * A role that cannot repair a failed entry check itself: a read-only role, or the docs role, whose path rule
- * (`docs_paths`) forbids touching code and tests. Only these roles use the `on_check_failed` fallback. The test role
- * stays out on purpose: it may change tests and reports `failed` for code defects.
- */
-function cannotFixChecks(role: { readOnly: boolean; result?: string | null }): boolean {
-  return role.readOnly || role.result === 'docs';
-}
-
 export function createResultTool(params: ResultToolParams): AgentToolSpec {
   const { role, adapter } = params;
   const kind = role.result;
