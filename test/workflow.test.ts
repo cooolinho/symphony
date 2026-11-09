@@ -911,7 +911,7 @@ describe('result-driven roles and the pipeline section', () => {
       transitions('reviewer'),
       ['review', { approved: 'In review', changes_needed: 'In progress', blocked: 'Blocked' }, 'In progress', 'Blocked', null],
     );
-    assert.deepEqual(transitions('docs'), ['docs', { done: 'Agent review', not_needed: 'Agent review', blocked: 'Blocked' }, null, 'Blocked', null]);
+    assert.deepEqual(transitions('docs'), ['docs', { done: 'Agent review', not_needed: 'Agent review', blocked: 'Blocked' }, 'In progress', 'Blocked', null]);
     assert.deepEqual(
       transitions('security-auditor'),
       ['security', { passed: 'In review', issues_found: 'In progress', blocked: 'Blocked' }, 'In progress', 'Blocked', null],

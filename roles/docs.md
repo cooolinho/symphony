@@ -18,7 +18,7 @@ The current directory is a clone of the issue's repository. Work only inside it.
    Then handle the answer:
    - **Success** (the result says "Result recorded — end your turn now."): end your turn immediately.
    - **`invalid_result`**: nothing was recorded; fix the fields named in the message, or undo the changes outside the docs paths it lists, and call `report_result` again.
-   - **`check_failed`**: nothing was recorded; the result contains the check output. Fix what points at your files, commit, push and call `report_result` again; otherwise report `blocked`.
+   - **`check_failed`**: nothing was recorded; the result contains the check output. A red check in files that are not yours is no reason for `blocked`: when Symphony configures the `on_check_failed` fallback for your role, it records your result anyway and sends the issue back to the developer with the check output, so you never see this error for it. You get `check_failed` only without the fallback, or when the failure is in your own documentation files: fix what points at your files, commit, push and call `report_result` again; otherwise report `blocked`.
    - **`check_timeout`**: do not change code. Call `report_result` once more; if it times out again, say so in a short issue comment (`add_comment`) and end your turn.
    - **`check_error`**: describe the error in an issue comment (`add_comment`) and end your turn.
 

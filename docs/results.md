@@ -163,7 +163,7 @@ A call runs these steps, one call at a time:
    message (naming `report_result`) and write nothing, so a failed check never counts as a round and the agent can
    fix the problem and report again in the same session. On `check_error` the agent is told to comment and end its
    turn instead of moving the issue to `Blocked`, which it cannot.
-   **`on_check_failed`:** a `check_failed` for a `read_only` role that sets [`on_check_failed`](configuration.md#roles)
+   **`on_check_failed`:** a `check_failed` for a `read_only` role or the docs role that sets [`on_check_failed`](configuration.md#roles)
    (it cannot fix the code, so repeating the report is pointless) does not stop the call: the guard checks the
    `on_check_failed` column instead (`may_move_to`, that column's entry check), and the result is recorded with the
    agent's verdict, a note with the failed check's output appended to the summary, `checks` of the failed check and

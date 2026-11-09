@@ -253,7 +253,8 @@ roles:
     states: [Documentation]
     result: docs
     on_result: { done: Agent review, not_needed: Agent review, blocked: Blocked }
-    may_move_to: [Agent review, Blocked]
+    on_check_failed: In progress             # the entry check of Agent review failed (flaky test, develop merge, developer bug): back to the developer, with the output; docs cannot fix code
+    may_move_to: [Agent review, In progress, Blocked]
     agents: []                               # edits docs only; none of the laravel-* personas
     model_label: ignore                      # haiku, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # medium, whatever the issue's Effort: label says
