@@ -39,7 +39,7 @@ import { WorkspaceManager, type HookIssue, type Workspace } from '../workspace/m
 import type { ServiceConfig } from '../workflow/config.ts';
 import { profileFor } from '../workflow/profile.ts';
 import { roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
-import { internalResult, renderResultComment, verificationCounts, type ResultMeta } from '../workflow/results.ts';
+import { internalResult, panelVoteCounts, renderResultComment, verificationCounts, type ResultMeta } from '../workflow/results.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../workflow/store.ts';
 import { skipCheckProblems, skipReason, stageSkip, type StageSkip } from './skip.ts';
 import { nextStageProblems, unknownBoardColumns, validateDispatch } from '../workflow/validate.ts';
@@ -2324,6 +2324,7 @@ export class Orchestrator {
               complexity,
               findingsConfirmed: counts?.confirmed ?? null,
               findingsRefuted: counts?.refuted ?? null,
+              panelVotes: panelVoteCounts(result),
               findings: result.kind === 'review' || result.kind === 'security' ? result.findings.length : 0,
               mutationScore: result.kind === 'test' ? (result.mutation_score ?? null) : null,
               at: new Date(meta.created_at),

@@ -555,6 +555,33 @@ export function verificationCounts(result: StageResult, required: boolean): { co
   };
 }
 
+export type PanelLens = (typeof PANEL_LENSES)[number];
+
+/** Panel votes of one security result: candidates with votes, votes per lens, candidates refuted by exactly one lens. */
+export interface PanelVoteCounts {
+  candidates: number;
+  confirmed: Record<PanelLens, number>;
+  refuted: Record<PanelLens, number>;
+  singleRefuted: number;
+}
+
+/** Panel votes over `findings` and `refuted` of a security result; null when no candidate carries a vote. */
+export function panelVoteCounts(result: StageResult): PanelVoteCounts | null {
+  if (result.kind !== 'security') return null;
+  const candidates = [...result.findings, ...result.refuted].filter((finding) => (finding.verification?.votes?.length ?? 0) > 0);
+  if (candidates.length === 0) return null;
+  const zeros = (): Record<PanelLens, number> => ({ reachability: 0, impact: 0, defenses: 0 });
+  const confirmed = zeros();
+  const refuted = zeros();
+  let singleRefuted = 0;
+  for (const candidate of candidates) {
+    const votes = candidate.verification?.votes ?? [];
+    for (const vote of votes) (vote.verdict === 'refuted' ? refuted : confirmed)[vote.lens] += 1;
+    if (votes.filter((vote) => vote.verdict === 'refuted').length === 1) singleRefuted += 1;
+  }
+  return { candidates: candidates.length, confirmed, refuted, singleRefuted };
+}
+
 /** Below L/XL a finding the agent itself refuted is no problem to fix: it moves from `findings` to `refuted`. */
 function moveRefuted(result: StageResult): StageResult {
   if (result.kind !== 'review' && result.kind !== 'security') return result;

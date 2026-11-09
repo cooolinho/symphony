@@ -394,7 +394,7 @@ billed total, so at most 100 %); a *finished issue* has a `stage_result` in the 
 and the cost per finished issue sums all roles (the `own_` variant only the row's runs); *returns* are the
 `review:changes_needed` and `test:failed` results on the row's issues, per issue; complexity comes from the issue's
 newest `stage_result`. The row's `findings` sum `findings_confirmed` and `findings_refuted` of the `stage_result` lines (E3-4); they stay `null`
-without such lines.
+without such lines. `subagent_evaluation.security_panel` sums the panel votes of the security `stage_result` lines per lens (`panel_*` fields, see [results](../results.md#security-panel-at-lxl)) with the candidates refuted by exactly one lens.
 - [ ] On the live logs since 2026-10-20 the section reproduces the research figures: developer 371 runs, 28 delegating,
   0 of 252 on sonnet; architect 170 with 19.
 

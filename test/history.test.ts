@@ -321,6 +321,21 @@ describe('repository history', () => {
     assert.equal('findings_confirmed' in (plain?.fields ?? {}) || 'findings_refuted' in (plain?.fields ?? {}), false);
   });
 
+  it('writes the panel votes of a security result and leaves them out without votes (#554)', () => {
+    const { log } = history();
+    const line = { repo: 'acme/app', issue: 'acme/app#1', run: 'r1', role: 'security-auditor', kind: 'security', verdict: 'issues_found', round: null, target: null, profile: null, complexity: 'L', findings: 1 };
+    const zero = { reachability: 0, impact: 0, defenses: 0 };
+    log.stageResult({ ...line, panelVotes: { candidates: 3, confirmed: { reachability: 3, impact: 1, defenses: 2 }, refuted: { reachability: 0, impact: 2, defenses: 1 }, singleRefuted: 1 }, at: new Date('2026-10-04T08:00:00Z') });
+    log.stageResult({ ...line, panelVotes: { candidates: 1, confirmed: { reachability: 1, impact: 1, defenses: 1 }, refuted: zero, singleRefuted: 0 }, at: new Date('2026-10-04T08:01:00Z') });
+    log.stageResult({ ...line, panelVotes: null, at: new Date('2026-10-04T08:02:00Z') });
+    log.stageResult({ ...line, at: new Date('2026-10-04T08:03:00Z') });
+    const [mixed, allConfirmed, none, absent] = readHistory(log.dir, 'acme/app').entries;
+    assert.deepEqual([mixed?.fields.panel_candidates, mixed?.fields.panel_confirmed, mixed?.fields.panel_refuted, mixed?.fields.panel_single_refuted], ['3', 'reachability:3,impact:1,defenses:2', 'reachability:0,impact:2,defenses:1', '1']);
+    assert.deepEqual([allConfirmed?.fields.panel_refuted, allConfirmed?.fields.panel_single_refuted], ['reachability:0,impact:0,defenses:0', '0']);
+    for (const entry of [none, absent]) assert.equal(Object.keys(entry?.fields ?? {}).some((key) => key.startsWith('panel_')), false);
+    assert.deepEqual(none?.fields, absent?.fields);
+  });
+
   it('records the role of a run in run_started', () => {
     const { log } = history();
     log.runStarted({ repo: 'acme/app', issue: 'acme/app#1', title: 'Review', state: 'Agent review', attempt: null, model: 'opus', role: 'reviewer', run: 'r1', at: new Date('2026-10-04T08:00:00Z') });
