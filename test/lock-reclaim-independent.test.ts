@@ -18,10 +18,13 @@ const setAge = (p: string, ms: number) => {
 const DEAD_PID = 2 ** 22 + 12345; // beyond the default pid_max, never alive
 
 function enospcAfterCreate() {
-  const real = fs.writeFile.bind(fs);
-  return mock.method(fs, 'writeFile', async (p: string) => {
-    await real(p, ''); // the file exists but stays empty
-    throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+  const real = fs.open.bind(fs);
+  return mock.method(fs, 'open', async (p: string, flags: string) => {
+    const h = await real(p, flags); // the file exists but stays empty
+    h.writeFile = async () => {
+      throw Object.assign(new Error("ENOSPC: no space left on device"), { code: 'ENOSPC' });
+    };
+    return h;
   });
 }
 

@@ -49,10 +49,11 @@ describe('workspace lock', () => {
 
   it('a failed write (ENOSPC) leaves no lock file and rethrows', async () => {
     const lock = path.join(tempDir('lock-'), 'x.lock');
-    const real = fs.writeFile.bind(fs);
-    const stub = mock.method(fs, 'writeFile', async (p: string, ...rest: unknown[]) => {
-      await real(p, '');
-      throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+    const real = fs.open.bind(fs);
+    const stub = mock.method(fs, 'open', async (p: string, flags: string) => {
+      const h = await real(p, flags);
+      h.writeFile = async () => { throw Object.assign(new Error("no space left on device"), { code: 'ENOSPC' }); };
+      return h;
     });
     try {
       await assert.rejects(acquireLock(lock), { code: 'ENOSPC' });
@@ -60,6 +61,20 @@ describe('workspace lock', () => {
       stub.mock.restore();
     }
     assert.equal(await exists(lock), false);
+  });
+
+  it('a non-EEXIST open error (EMFILE) does not delete an existing foreign lock', async () => {
+    const lock = path.join(tempDir('lock-'), 'x.lock');
+    await fs.writeFile(lock, JSON.stringify({ pid: 1, hostname: 'elsewhere-host', instance: 'other' }));
+    const stub = mock.method(fs, 'open', async () => {
+      throw Object.assign(new Error('too many open files'), { code: 'EMFILE' });
+    });
+    try {
+      await assert.rejects(acquireLock(lock), { code: 'EMFILE' });
+    } finally {
+      stub.mock.restore();
+    }
+    assert.equal(await exists(lock), true);
   });
 
   it('describeHolder names the file and the grace period for an unreadable lock', () => {

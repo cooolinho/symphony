@@ -77,13 +77,21 @@ export async function releaseLock(lockPath: string): Promise<void> {
 export async function acquireLock(lockPath: string): Promise<LockResult> {
   const info: LockInfo = { pid: process.pid, hostname: os.hostname(), instance: INSTANCE_ID, acquiredAt: new Date().toISOString() };
   for (let attempt = 0; attempt < 3; attempt++) {
+    let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
     try {
-      // writeFile with wx creates and writes in one handle, closed before we report success.
-      await fs.writeFile(lockPath, JSON.stringify(info), { flag: 'wx' });
-      return { ok: true, release: () => releaseLock(lockPath) };
+      handle = await fs.open(lockPath, 'wx');
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-        // e.g. ENOSPC after the file was created: do not leave an empty lock behind.
+      // Only EEXIST means a lock exists; any other open error created no file of ours, so touch nothing.
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    if (handle) {
+      try {
+        await handle.writeFile(JSON.stringify(info));
+        await handle.close();
+        return { ok: true, release: () => releaseLock(lockPath) };
+      } catch (error) {
+        // e.g. ENOSPC after the file was created: remove the empty file this call created.
+        await handle.close().catch(() => {});
         await fs.rm(lockPath, { force: true }).catch(() => {});
         throw error;
       }

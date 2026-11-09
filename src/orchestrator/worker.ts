@@ -486,7 +486,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     if (!acquired.ok) {
       // Another Symphony instance owns this workspace: no hooks, no session. The next poll tick retries.
       const message = `workspace locked by ${describeHolder(acquired.holder, acquired.lockPath)}`;
-      logger.warn('workspace is locked by another Symphony instance; skipping this attempt', { holder: describeHolder(acquired.holder, acquired.lockPath) });
+      logger.warn('workspace lock is held or unreadable; skipping this attempt', { holder: describeHolder(acquired.holder, acquired.lockPath) });
       return await finish({ kind: 'cancelled', message });
     }
     lock = acquired;
