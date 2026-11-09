@@ -64,9 +64,10 @@ const CLIENT_APP = 'symphony/0.1.0';
  * Session defaults, overridable through claude.env. Subagents and commands run in the foreground: when a turn ends,
  * Symphony decides what happens next and may end the session, so a background task never reports back. Subagent
  * nesting is capped at one level, so a subagent has no Agent tool. The built-in agents (claude, Explore, general-purpose,
- * Plan, statusline-setup) are off, so every Agent call names a `subagent_type`.
+ * Plan, statusline-setup) are off, so every Agent call names a `subagent_type`. A Bash call gets 10 minutes by default (20 at most,
+ * finite so a hanging command still ends) instead of Claude Code's 2: a full test run does not fit into 2 minutes.
  */
-const SESSION_ENV_DEFAULTS = { CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: '1', CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '1', CLAUDE_CODE_FORK_SUBAGENT: '0' };
+const SESSION_ENV_DEFAULTS = { CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: '1', CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '1', CLAUDE_CODE_FORK_SUBAGENT: '0', BASH_DEFAULT_TIMEOUT_MS: '600000', BASH_MAX_TIMEOUT_MS: '1200000' };
 /**
  * Fork subagents inherit the whole context and the role tools and bypass the Agent(<plugin>:<name>) denies; SDK 0.3.302
  * and later turn them on by default (CLAUDE_CODE_FORK_SUBAGENT in the defaults above). claude.env can set it to `1`.

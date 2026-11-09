@@ -235,6 +235,11 @@ Not checked: delegation when the task does not name the subagent (the test task 
 
 The SDK's built-in agents (`claude`, `Explore`, `general-purpose`, `Plan`, `statusline-setup`) are **off**: every session starts with `CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS=1`, so `init.agents` lists none of them. `general-purpose` would give a read-only role an agent with every tool, and Explore and Plan run on the parent model, skip CLAUDE.md and compete with `symphony:explorer` for routing. An Agent call therefore needs a `subagent_type` (the SDK fails it with "subagent_type is required"); the role prompts always name the type. Plugin agents that a role denies still appear in `init.agents`. `claude.env` can set the variable to `0` to bring the built-ins back. History parsing is unchanged: an Agent call or old log line without a type still counts as `general-purpose`.
 
+Bash calls get a longer timeout: every session starts with `BASH_DEFAULT_TIMEOUT_MS=600000` (10 min) and `BASH_MAX_TIMEOUT_MS=1200000` (20 min)
+instead of Claude Code's 2 minutes, because a full test run (`php artisan test`, `composer analyse`, `npm test`) takes longer and agents
+then test only parts (error signature `7a3d71bf`). The limit stays finite, so a hanging command still ends. Stall detection
+counts agent events and a running Bash call emits none: keep the Bash timeouts below `claude.stall_timeout_ms`. The shipped `WORKFLOW.md` sets `stall_timeout_ms: 600000`, so a Bash call that runs longer than 10 minutes can be stalled and retried until `stall_timeout_ms` is raised. `claude.env` overrides both values.
+
 Subagents and commands run in the **foreground**: every session starts with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`,
 so the Agent and Bash tools offer no `run_in_background` and nothing is moved to the background automatically. A
 background task only reports back in a later turn, but Symphony ends a result-driven session after the one reminder
