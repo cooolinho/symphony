@@ -10,6 +10,7 @@ import {
   ADD_PROJECT_ITEM_MUTATION,
   CREATE_PULL_REQUEST_MUTATION,
   CREATE_SUB_ISSUE_MUTATION,
+  ISSUE_BY_NUMBER_QUERY,
   ISSUE_CONTEXT_QUERY,
   REPOSITORY_QUERY,
   SET_STATUS_MUTATION,
@@ -121,10 +122,12 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
       'status_options: list of strings (names, not objects), comments: [{author, from_symphony, created_at, url, body}] oldest first (the newest is last; ' +
       'from_symphony is false for comments a human wrote), total_comments: number, ' +
       'linked_pull_requests: [{number, url, state, title, head}] (may be empty), ' +
-      'branch_pull_request: {number, url, base, head_sha, checks: {state: none|success|pending|failure, failing: [{name, state, url}], pending: [names]}} ' +
-      'for the open pull request from the issue branch, or null}. ' +
+      'branch_pull_request: {number, url, base, head_sha, body (the pull request description), comments: [{kind: comment|review|review_comment, author, created_at, url, body, path?, state?}] (latest discussion, oldest first), ' +
+      'checks: {state: none|success|pending|failure, failing: [{name, state, url}], pending: [names]}} ' +
+      'for the open pull request from the issue branch, or null; there is no CI log, open a failing check by its url or reproduce it locally}. ' +
+      'There is no gh and no GitHub token in the shell: this tool is the way to read the pull request. Other issues of the repository: get_issue_by_number. ' +
       'Stage-result markers in comment bodies are shown as <!-- symphony:result --> without their base64 payload. ' +
-      'If the output is large, pass max_comment_chars to cut every comment body (the cut is noted in the body).',
+      'If the output is large, pass max_comment_chars to cut every comment body, the pull request description and its comments (the cut is noted in the body).',
     inputSchema: {
       max_comment_chars: z.number().int().positive().optional().describe('Cut each comment body to this many characters'),
     },
@@ -159,7 +162,62 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
             title: pr.title,
             head: pr.headRefName,
           })),
-          branch_pull_request: branchPullRequest,
+          branch_pull_request:
+            branchPullRequest === null
+              ? null
+              : {
+                  ...branchPullRequest,
+                  body: commentBody(branchPullRequest.body ?? '', maxChars),
+                  comments: (branchPullRequest.comments ?? []).map((c) => ({ ...c, body: commentBody(c.body, maxChars) })),
+                },
+        });
+      }),
+  };
+
+  const getIssueByNumber: AgentToolSpec = {
+    name: 'get_issue_by_number',
+    description:
+      'Read another issue of the same repository by its number, for example a sibling or a related issue: title, body, state, ' +
+      'status column, labels, the latest 20 comments (oldest first) and sub-issues. Read-only; issues of other repositories ' +
+      'cannot be read. Returns JSON: {issue: {number, title, url, state, status, labels, description}, comments: [{author, created_at, url, body}], ' +
+      'total_comments, sub_issues: [{number, title, state}]}. Pass max_comment_chars to cut the bodies.',
+    inputSchema: {
+      number: z.number().int().positive().describe('Issue number in the repository of this session'),
+      max_comment_chars: z.number().int().positive().optional().describe('Cut the description and each comment body to this many characters'),
+    },
+    mutates: false,
+    execute: (args, context) =>
+      guarded(context, async (ref) => {
+        const maxChars = typeof args.max_comment_chars === 'number' ? args.max_comment_chars : undefined;
+        const [owner, name] = ref.repository.split('/');
+        const response = await client.request<Json>(ISSUE_BY_NUMBER_QUERY, {
+          owner,
+          name,
+          number: Number(args.number),
+          statusField: adapter.settings.statusField,
+        });
+        assertNoGraphqlErrors(response.errors);
+        const issue = obj(obj(obj(response.data)?.repository)?.issue);
+        if (issue === null) return fail('not_found', `issue #${String(args.number)} does not exist in ${ref.repository}`);
+        const status = nodes(issue.projectItems).map((item) => obj(item.status)?.name).find((n) => typeof n === 'string') ?? null;
+        return ok({
+          issue: {
+            number: issue.number,
+            title: issue.title,
+            url: issue.url,
+            state: issue.state,
+            status,
+            labels: nodes(issue.labels).map((l) => l.name),
+            description: commentBody(typeof issue.body === 'string' ? issue.body : '', maxChars),
+          },
+          comments: nodes(issue.comments).map((c) => ({
+            author: obj(c.author)?.login ?? null,
+            created_at: c.createdAt ?? null,
+            url: c.url ?? null,
+            body: commentBody(typeof c.body === 'string' ? c.body : '', maxChars),
+          })),
+          total_comments: obj(issue.comments)?.totalCount ?? null,
+          sub_issues: nodes(issue.subIssues).map((i) => ({ number: i.number, title: i.title, state: i.state })),
         });
       }),
   };
@@ -492,5 +550,5 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
       ),
   };
 
-  return [getIssue, setStatus, addComment, openPullRequest, createSubIssue];
+  return [getIssue, getIssueByNumber, setStatus, addComment, openPullRequest, createSubIssue];
 }

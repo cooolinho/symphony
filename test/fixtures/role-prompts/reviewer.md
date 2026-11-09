@@ -45,7 +45,7 @@ The tracker tools are `get_issue`, `add_comment` and `report_result`. You do not
 {% if agents.size > 0 %}{% if lenses or lens_others > 0 %}
 {{ agent_intro }}
 {% endif %}{% endif %}{{ analysis_block }}{{ design_block }}{{ previous_findings }}{{ screenshots_note }}
-1. Call `get_issue`: read the issue, all comments and the linked pull request (its base branch, description and discussion).
+1. Call `get_issue`: read the issue, all comments and the open pull request of the branch in `branch_pull_request`: its base branch, `body` (the description with the developer's notes and screenshots), `comments` (the latest conversation, review and review-thread comments) and `checks`. For a failing check you get its name and URL, not the log: reproduce it locally or name it in the review. `gh` is not installed and there is no GitHub token in the shell (do not look for one, do not call the GitHub API with `curl`): read GitHub through the tracker tools. Other issues of the repository: `get_issue_by_number`.
 2. Make sure the workspace is on the pull request's branch (`{{ branch }}` unless the pull request says otherwise) at its pushed head: `git fetch origin`, `git status`, `git log --oneline -5`.
 3. Review the full change with `git diff origin/<base>...HEAD` (`<base>`: the pull request's base branch, else {% if base %}`{{ base }}`{% else %}the default branch{% endif %}), and read surrounding code where needed.
 4. Check against this list:
