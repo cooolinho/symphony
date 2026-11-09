@@ -19,7 +19,7 @@ function adapterWith(pullRequests: Json[], issueReply?: (variables: Json) => unk
     adapter: {
       settings: { baseBranch: null, statusField: 'Status' },
       fetchIssuesByIds: async () => [issue],
-      meta: async () => ({ statusOptions: [] }),
+      meta: async () => ({ statusOptions: [], projectId: 'P1' }),
       viewerLogin: async () => 'bot',
       branchPullRequest: GithubProjectAdapter.prototype.branchPullRequest,
       client: {
@@ -160,7 +160,7 @@ describe('get_issue_by_number', () => {
     state: 'OPEN',
     url: 'https://github.com/o/r/issues/7',
     labels: { nodes: [{ name: 'bug' }, { name: 'ui' }] },
-    projectItems: { nodes: [{ status: { name: 'Ready' } }] },
+    projectItems: { nodes: [{ project: { id: 'P1' }, status: { name: 'Ready' } }] },
     comments: { totalCount: 25, nodes: [{ author: { login: 'h' }, createdAt: 't', url: 'cu', body: 'hello' }] },
     subIssues: { nodes: [{ number: 8, title: 'child', state: 'OPEN' }] },
   };
@@ -213,6 +213,39 @@ describe('get_issue_by_number', () => {
     assert.equal(result.ok, false);
   });
 
+
+  it('reads the status only from the project item of the configured project', async () => {
+    const other = { ...ISSUE, projectItems: { nodes: [{ project: { id: 'P0' }, status: { name: 'Done' } }, { project: { id: 'P1' }, status: { name: 'Testing' } }] } };
+    const { adapter, issue } = adapterWith([], () => ({ errors: [], data: { repository: { issue: other } } }));
+    const result = await tool('get_issue_by_number', adapter).execute({ number: 7 }, { issue } as never);
+    assert.ok(result.ok, JSON.stringify(result));
+    assert.equal((result.data as { issue: Json }).issue.status, 'Testing');
+  });
+
+  it('status is null when the issue is only on a foreign project board', async () => {
+    const other = { ...ISSUE, projectItems: { nodes: [{ project: { id: 'P0' }, status: { name: 'Done' } }] } };
+    const { adapter, issue } = adapterWith([], () => ({ errors: [], data: { repository: { issue: other } } }));
+    const result = await tool('get_issue_by_number', adapter).execute({ number: 7 }, { issue } as never);
+    assert.ok(result.ok, JSON.stringify(result));
+    assert.equal((result.data as { issue: Json }).issue.status, null);
+  });
+
+  it('a GraphQL "Could not resolve to an Issue" error (e.g. a pull request number) is not_found', async () => {
+    const { adapter, issue } = adapterWith([], () => ({
+      errors: [{ type: 'NOT_FOUND', message: 'Could not resolve to an Issue with the number 5.' }],
+      data: { repository: { issue: null } },
+    }));
+    const result = await tool('get_issue_by_number', adapter).execute({ number: 5 }, { issue } as never);
+    assert.equal(result.ok, false);
+    assert.match(JSON.stringify(result), /not_found/);
+  });
+
+  it('an unknown number fails with the error code not_found', async () => {
+    const { result } = await call({ number: 999 });
+    assert.equal(result.ok, false);
+    assert.match(JSON.stringify(result), /not_found/);
+  });
+
   it('has no repository parameter: another repository cannot be addressed', async () => {
     const { t } = await call({ number: 7 });
     assert.deepEqual(Object.keys(t.inputSchema).sort(), ['max_comment_chars', 'number']);
@@ -230,6 +263,12 @@ describe('get_issue_by_number', () => {
 });
 
 describe('role prompts and docs', () => {
+  it('reviewer and analyst prompts list get_issue_by_number among the tracker tools', () => {
+    for (const file of ['roles/reviewer.md', 'roles/issue-analyst.md', 'roles/analyst.md']) {
+      assert.ok((read(file).match(/get_issue_by_number/g) ?? []).length >= 1, file);
+    }
+  });
+
   const NO_GH = /`gh` is not installed and there is no GitHub token/;
 
   it('reviewer prompt names the fields get_issue returns and says gh and a token are unavailable', () => {
