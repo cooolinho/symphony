@@ -98,7 +98,7 @@ and only the round limit sets `needs-human`
 | Marker author = the token's account | Agents and other accounts cannot forge a stage result (see below) | An HMAC with a secret only Symphony knows |
 | Entry checks gate the move, not the report | A failing check keeps the agent in its session to fix the problem; nothing is recorded, no round is spent | Record first, check later |
 | Skip without a session | A stage that is not needed should cost nothing, not a session that says "nothing to do" | Run the role with a "skip" prompt |
-| Read-only roles fall back with `on_check_failed` | A reviewer cannot repair a red suite; the issue goes back to the developer with the output | Block the issue for a human |
+| Read-only roles and the docs role fall back with `on_check_failed` | A reviewer cannot repair a red suite, and the docs role cannot repair code or tests; the issue goes back to the developer with the output | Block the issue for a human |
 | Very large changes split into sub-issues | Each work package is a normal issue with its own pipeline; the existing reviewer and entry checks verify the integration | An integration-engineer role, worktrees, several agents on one branch |
 
 ### Forgery protection and the bot account
