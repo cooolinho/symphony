@@ -110,8 +110,8 @@ Rules:
   split before it goes to "Ready".
 - Decisions a human has to make (legal texts, prices, paid external services) are open points in the issue and
   questions in the report, never silent assumptions.
-- **Design items** (the agent does not see the UI): concrete criteria with component, columns, filters, actions, texts,
-  empty and error states and which role sees what. Never "make it nicer".
+- **Design items** (the planner never sees the rendered page; the developer checks it with screenshots): concrete criteria with component, columns, filters, actions, texts,
+  empty and error states and which role sees what. Never "make it nicer". A visual item demands "Screenshots" (pages or panels, viewports, demo login, `docs/screenshots/`). Screenshots or a visual check are impossible only for a concrete reason from the repository, cited as file:line (no web interface, an external service or login without a local substitute, a stack that does not run with SQLite and `php -S`); "needs a running app", "no browser" and "no frontend build" are no reasons.
 - A pure refactoring without behaviour change starts with `/refactor-safely` on the first line of its text.
 
 ## Phase 4: Order and labels

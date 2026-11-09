@@ -654,7 +654,7 @@ also merged into `develop`. Only what you take over in a release PR reaches `mai
 - Costs: per wave one autopilot run (`roles.autopilot.claude.max_budget_usd`, default $10) plus developer and reviewer
   runs per sub-issue. Ways to slow it down: smaller waves (`wave=2`), more frequent checkpoints, few parallel agents,
   a cheaper model for implementation (`CLAUDE_MODEL=sonnet`).
-- The autopilot does not see the UI. It therefore writes design issues with concrete, testable criteria.
+- The autopilot does not see the UI; the developer checks it with screenshots. It therefore writes design issues with concrete, testable criteria and demands screenshots for visual ones. It never plans screenshots away without a reason from the repository (file:line).
 
 ## Concept to Backlog (`/concept`)
 
@@ -739,7 +739,7 @@ by hand when all sub-issues are done.
   them. What no longer fits is listed in the report under "Not created". Once issues are done and closed, an addendum
   picks up the rest.
 - Dependencies never point at an epic but at concrete issues, also across epics, never in a cycle.
-- The agent changes nothing in the repository and does not see the UI; design issues therefore get concrete criteria.
+- The agent changes nothing in the repository and does not see the UI; the developer checks it with screenshots. Design issues therefore get concrete criteria and, when visual, demand screenshots. The agent calls screenshots impossible only with a reason from the repository (file:line).
 - Costs: one run per concept and addendum (`roles.analyst.claude.max_budget_usd`, default $20), plus later the runs of
   the issues you release.
 
@@ -820,7 +820,7 @@ The two comment headings are always English, whatever the language of the list, 
 - At most `roles.planner.max_sub_issues` (default 30, `SYMPHONY_PLANNER_MAX_SUB_ISSUES`) open issues at once; the rest
   is listed under "Not created" and picked up by an addendum once issues are closed. GitHub allows 100 sub-issues per
   issue.
-- The agent changes nothing in the repository and does not see the UI; design issues therefore get concrete criteria.
+- The agent changes nothing in the repository and does not see the UI; the developer checks it with screenshots. Design issues therefore get concrete criteria and, when visual, demand screenshots. The agent calls screenshots impossible only with a reason from the repository (file:line).
 - Costs: one run per list and addendum (`roles.planner.claude.max_budget_usd`, default $20), plus later the runs of the
   issues you release.
 

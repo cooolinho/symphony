@@ -1439,7 +1439,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
   });
 
   it('tells the architect and the reviewer that missing screenshots are not acceptable for want of a browser', async () => {
-    for (const role of ['architect', 'reviewer']) {
+    for (const role of ['architect', 'reviewer', 'analyst', 'planner', 'autopilot']) {
       const prompt = await render(role);
       assert.match(prompt, /UI screenshots: when the project's instructions or the issue ask for screenshots/, role);
       assert.match(prompt, /`symphony-screenshot --check` tests it/, role);
@@ -1449,6 +1449,27 @@ describe('shipped WORKFLOW.md issue commands', () => {
     assert.match(reviewer, /if they are missing, that is a `major` finding, unless the developer's result names the step that failed/);
     assert.match(reviewer, /\*\*UI screenshots:\*\* where the project asks for them/);
     for (const role of ['docs', 'issue-analyst', 'developer']) assert.doesNotMatch(await render(role), /UI screenshots: when the project's/, role);
+  });
+
+  it('gives only analyst, planner and autopilot the rule that screenshots are never impossible without a repository reason', async () => {
+    for (const role of ['analyst', 'planner', 'autopilot']) {
+      const prompt = await render(role);
+      assert.match(prompt, /never plan them away and never hand them to a human/, role);
+      assert.match(prompt, /only with a concrete reason from the repository, and cite it as file:line/, role);
+      assert.match(prompt, /Not reasons: "needs a running app", "cannot be run from the Symphony workspace", "no browser", "no frontend build"/, role);
+      assert.match(prompt, /`screenshots_problem`/, role);
+    }
+    for (const role of ['architect', 'reviewer', 'developer', 'docs', 'issue-analyst']) assert.doesNotMatch(await render(role), /never plan them away|Not reasons:/, role);
+  });
+
+  it('keeps the planning skills from claiming that the UI cannot be checked', async () => {
+    for (const skill of ['concept', 'plan', 'auto-code']) {
+      const dir = new URL(`../.claude/skills/${skill}/`, import.meta.url);
+      for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.md'))) {
+        const text = fs.readFileSync(new URL(file, dir), 'utf8');
+        assert.doesNotMatch(text, /does not see the UI|cannot see the interface/i, `${skill}/${file}`);
+      }
+    }
   });
 
   it('tells only the developer which package manager builds the assets', async () => {
