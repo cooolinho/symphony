@@ -11,7 +11,8 @@ description: >
   branding, or requests like "make this look less generic". Also use whenever the user shares
   screenshots, mockups, wireframes, Figma exports, or UI code and wants feedback, even if they
   only say "review my design" or "is this good UI", or asks to audit a codebase or pull request.
-  Works for SwiftUI, UIKit, AppKit, Flutter, React Native, Tauri, and Electron.
+  Works for SwiftUI, UIKit, AppKit, Flutter, React Native, Tauri, and Electron. Only load when the
+  prompt asks for it (/apple-design), never on your own.
 ---
 
 # Apple Design Skill

@@ -14,7 +14,8 @@ Symphony works on.
 
 Empty folders contain a `.gitkeep` so git keeps them. Shipped are the skills `refactoring` (audit), `refactor-safely`
 (implementation), `auto-code` (autopilot, continuously plans waves of sub-issues), `concept` (splits a concept into epics
-and sub-issues in Backlog) and `plan` (turns every item of a list into one planned sub-issue in Backlog).
+and sub-issues in Backlog) `plan` (turns every item of a list into one planned sub-issue in Backlog) and `apple-design` (third-party HIG design
+reviewer from dickwu/apple-design-skill; loads only on request).
 
 ## What belongs here, what belongs in the repository?
 

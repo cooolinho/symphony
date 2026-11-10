@@ -1472,6 +1472,7 @@ describe('Symphony toolbox skills', () => {
 
   it('ships the skills the shipped roles and templates refer to', async () => {
     assert.deepEqual([...commandSkills([toolbox])].sort(), [
+      ['apple-design', 'symphony:apple-design'],
       ['auto-code', 'symphony:auto-code'],
       ['brain-garden', 'symphony:brain-garden'],
       ['concept', 'symphony:concept'],
