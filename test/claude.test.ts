@@ -240,6 +240,14 @@ describe('claude agent runner', () => {
     assert.equal(allowed.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '0');
   });
 
+  it('hands claude.auto_compact_window to Claude Code, and claude.env wins', async () => {
+    assert.equal((await sessionOptions({})).env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW, undefined);
+    assert.equal((await sessionOptions({ claude: { auto_compact_window: 'auto' } })).env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW, undefined);
+    assert.equal((await sessionOptions({ claude: { auto_compact_window: 200000 } })).env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '200000');
+    const custom = await sessionOptions({ claude: { auto_compact_window: 200000, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '500000' } } });
+    assert.equal(custom.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '500000');
+  });
+
   it('gives Bash a finite default timeout that fits a full test run, overridable through claude.env', async () => {
     const options = await sessionOptions({});
     assert.equal(options.env?.BASH_DEFAULT_TIMEOUT_MS, '600000');

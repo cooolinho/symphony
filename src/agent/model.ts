@@ -203,11 +203,25 @@ export function sessionClaudeConfig(
   return { ...merged, model, fallbackModel: rest.length > 0 ? rest.join(',') : null };
 }
 
+/**
+ * The auto-compact window that takes effect for a role (tokens), or null for auto: an explicit
+ * `claude.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW` wins over the role value, which wins over the global one.
+ */
+export function effectiveCompactWindow(claude: ClaudeConfig, overrides: RoleClaudeOverrides = {}): number | null {
+  const fromEnv = claude.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  if (fromEnv !== undefined) {
+    const parsed = Number(fromEnv.trim());
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  }
+  return overrides.autoCompactWindow ?? claude.autoCompactWindow;
+}
+
 function withRoleOverrides(config: ClaudeConfig, overrides: RoleClaudeOverrides): ClaudeConfig {
   const prompts = [config.appendSystemPrompt, overrides.appendSystemPrompt ?? null].filter((text): text is string => text !== null && text !== '');
   return {
     ...config,
     maxBudgetUsd: overrides.maxBudgetUsd ?? config.maxBudgetUsd,
+    autoCompactWindow: overrides.autoCompactWindow ?? config.autoCompactWindow,
     allowedTools: [...config.allowedTools, ...(overrides.allowedTools ?? [])],
     disallowedTools: [...config.disallowedTools, ...(overrides.disallowedTools ?? [])],
     appendSystemPrompt: prompts.length > 0 ? prompts.join('\n\n') : null,

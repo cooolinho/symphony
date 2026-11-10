@@ -120,6 +120,17 @@ describe('repository history', () => {
     assert.equal('context_compacts' in (second?.fields ?? {}), false);
   });
 
+  it('logs auto_compact_window: the number, auto for null, nothing when absent', () => {
+    const { log } = history();
+    log.runFinished(finish('acme/app#1', 'r1', '2026-10-04T08:01:00Z', { autoCompactWindow: 200000 }));
+    log.runFinished(finish('acme/app#2', 'r2', '2026-10-04T09:01:00Z', { autoCompactWindow: null }));
+    log.runFinished(finish('acme/app#3', 'r3', '2026-10-04T10:01:00Z'));
+    const [a, b, c] = readHistory(log.dir, 'acme/app').entries.filter((e) => e.event === 'run_finished');
+    assert.equal(a?.fields.auto_compact_window, '200000');
+    assert.equal(b?.fields.auto_compact_window, 'auto');
+    assert.equal('auto_compact_window' in (c?.fields ?? {}), false);
+  });
+
   it('logs tool, skill, subagent and integration calls only when present and parses them back', () => {
     const { log } = history();
     log.runFinished(finish('acme/app#1', 'r1', '2026-10-04T08:01:00Z', {

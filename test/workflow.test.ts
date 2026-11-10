@@ -97,6 +97,21 @@ describe('config layer', () => {
     assert.ok(!resolve({ ...base, budget: {} }).warnings.some((w) => w.includes('budget')));
   });
 
+  it('reads claude.auto_compact_window: auto by default, 100000..1000000, per role override', () => {
+    const base = { tracker: { kind: 'github_project' } };
+    const windowOf = (claude: unknown) => resolve({ ...base, claude }).claude.autoCompactWindow;
+    assert.equal(windowOf({}), null);
+    assert.equal(windowOf({ auto_compact_window: 'auto' }), null);
+    assert.equal(windowOf({ auto_compact_window: 200000 }), 200000);
+    assert.equal(windowOf({ auto_compact_window: '300000' }), 300000);
+    for (const bad of [99999, 1000001, 150000.5, 'big']) {
+      assert.throws(() => windowOf({ auto_compact_window: bad }), (error: unknown) => error instanceof SymphonyError && /claude\.auto_compact_window must be auto or an integer from 100000 to 1000000/.test(error.message));
+    }
+    const role = (value: unknown) => resolve({ ...base, tracker: { kind: 'github', active_states: ['In progress'] }, roles: { architect: { states: ['In progress'], claude: { auto_compact_window: value } } } });
+    assert.equal(role(400000).roles?.find((r) => r.name === 'architect')?.claude.autoCompactWindow, 400000);
+    assert.throws(() => role(50), (error: unknown) => error instanceof SymphonyError && /roles\.architect\.claude\.auto_compact_window must be auto or an integer/.test(error.message));
+  });
+
   it('uses the adapter-documented state defaults', () => {
     const config = resolve({ tracker: { kind: 'github_project' } });
     assert.deepEqual(config.tracker.activeStates, ['Todo', 'In Progress']);

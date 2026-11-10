@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { chooseEffort, chooseModel, chooseRoleEffort, chooseRoleModel, effortForLabelValue, isEffortLabel, isModelLabel, modelForLabelValue, modelOverridesFor, sessionClaudeConfig } from '../src/agent/model.ts';
+import { effectiveCompactWindow, chooseEffort, chooseModel, chooseRoleEffort, chooseRoleModel, effortForLabelValue, isEffortLabel, isModelLabel, modelForLabelValue, modelOverridesFor, sessionClaudeConfig } from '../src/agent/model.ts';
 import { roleModelLine } from '../src/service.ts';
 import { STANDARD_LABELS, WORKFLOW_LABELS } from '../src/repo-init/labels.ts';
 import { isComplexityLabel, isTypeLabel } from '../src/workflow/classify.ts';
@@ -107,6 +107,17 @@ describe('model labels', () => {
     const kept = sessionClaudeConfig(claudeConfig({ model: 'opus', fallback_model: 'sonnet' }), 'haiku', null);
     assert.deepEqual([kept.model, kept.fallbackModel], ['haiku', 'sonnet']);
     assert.equal(sessionClaudeConfig(claudeConfig({ model: 'opus' }), null, null).model, null);
+  });
+
+  it('resolves the auto-compact window: claude.env, then role, then global', () => {
+    const base = claudeConfig({ auto_compact_window: 200000 });
+    assert.equal(sessionClaudeConfig(base, null, null, { autoCompactWindow: 400000 }).autoCompactWindow, 400000);
+    assert.equal(sessionClaudeConfig(base, null, null, {}).autoCompactWindow, 200000);
+    assert.equal(effectiveCompactWindow(base), 200000);
+    assert.equal(effectiveCompactWindow(base, { autoCompactWindow: 400000 }), 400000);
+    assert.equal(effectiveCompactWindow(claudeConfig({})), null);
+    assert.equal(effectiveCompactWindow(claudeConfig({ auto_compact_window: 200000, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '500000' } })), 500000);
+    assert.equal(effectiveCompactWindow(claudeConfig({ auto_compact_window: 200000, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: 'auto' } })), null);
   });
 
   it('merges role overrides: budget replaces, tools and system prompt append; model and effort are the chosen ones', () => {

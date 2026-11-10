@@ -782,6 +782,12 @@ ${CHART_JS}
       setBody('compacts', noData('Kein Run in diesem Zeitraum hat Context-Daten geloggt.'));
       return;
     }
+    if (rows.every(([, n]) => n === 0)) {
+      const windows = Object.entries(d.budget.compact_windows_by_role || {});
+      const text = windows.length ? windows.map(([role, w]) => role + ' ' + (w === 'auto' ? 'auto' : fmtCompact(w))).join(', ') : 'auto';
+      setBody('compacts', noData('Kein Run hat verdichtet – Auto-Compact-Fenster: ' + text));
+      return;
+    }
     const bars = el('div', null, 'hbars');
     hbars(bars, rows.map(([role, n]) => ({ label: role, value: n, text: fmtInt(n), color: roleColor(role), tip: [['Auto-Compacts', fmtInt(n)]] })), null);
     setBody('compacts', bars, el('p', 'Runs vor der Aufzeichnung des Contexts fehlen.', 'note'));

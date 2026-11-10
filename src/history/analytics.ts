@@ -122,6 +122,8 @@ interface Run {
   contextPeakPercent: number | null;
   /** Auto-compacts of the run (`context_compacts`); null when not logged. */
   contextCompacts: number | null;
+  /** Auto-compact window of the run (`auto_compact_window`): tokens or 'auto'; null when not logged. */
+  autoCompactWindow: number | 'auto' | null;
   /** Dispatched after a failed or stalled run of the same issue. */
   retry: boolean;
   parts: UsagePart[];
@@ -395,6 +397,7 @@ function collectRuns(entries: HistoryEntry[], pricing: PricingTable): Run[] {
       role: fieldOrNull(entry.fields.role) ?? start?.role ?? null,
       contextPeakPercent: numberOrNull(entry.fields.context_peak_percent),
       contextCompacts: numberOrNull(entry.fields.context_compacts),
+      autoCompactWindow: entry.fields.auto_compact_window === 'auto' ? 'auto' : numberOrNull(entry.fields.auto_compact_window),
       retry: FAILURE.has(lastOutcome.get(issue) ?? ''),
       parts,
       billedTokens: parts.reduce((sum, part) => sum + totalTokens(part.usage), 0),
@@ -941,8 +944,13 @@ function budgetHistory(scoped: Run[], runs: Run[], rateLimits: RateLimitRecord[]
 
   const compacts = new Map<string, number>();
   const context = new Map<string, { sum: number; n: number }>();
+  const windows = new Map<string, { at: number; value: number | 'auto' }>();
   for (const run of runs) {
     const role = run.role ?? UNKNOWN_ROLE;
+    if (run.autoCompactWindow !== null) {
+      const seen = windows.get(role);
+      if (seen === undefined || run.finishedMs >= seen.at) windows.set(role, { at: run.finishedMs, value: run.autoCompactWindow });
+    }
     if (run.contextCompacts !== null) compacts.set(role, (compacts.get(role) ?? 0) + run.contextCompacts);
     if (run.contextPeakPercent !== null) {
       const slot = context.get(role) ?? { sum: 0, n: 0 };
@@ -956,6 +964,7 @@ function budgetHistory(scoped: Run[], runs: Run[], rateLimits: RateLimitRecord[]
   return {
     days: [...days.values()],
     compacts_by_role: sortedRecord(compacts),
+    compact_windows_by_role: Object.fromEntries([...windows.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([role, w]) => [role, w.value])),
     avg_context_by_role: sortedRecord(new Map([...context.entries()].map(([role, v]) => [role, round(v.sum / v.n, 1)]))),
   };
 }

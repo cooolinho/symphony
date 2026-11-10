@@ -432,7 +432,10 @@ class ClaudeSession implements AgentSession {
     const deniedAgents = this.#params.deniedAgents ?? [];
     const options: Options = {
       cwd,
-      env: { ...env, ...SESSION_ENV_DEFAULTS, ...extensions?.env, ...config.env, CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP },
+      env: { ...env, ...SESSION_ENV_DEFAULTS, ...extensions?.env,
+        // claude.env wins; Claude Code applies min(window, model window).
+        ...(config.autoCompactWindow !== null ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(config.autoCompactWindow) } : {}),
+        ...config.env, CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP },
       abortController: this.#abort,
       sessionId: this.threadId,
       title: truncate(`${issue.identifier}: ${issue.title}`, 200),

@@ -63,6 +63,8 @@ export interface RunFinish {
   contextPeakPercent?: number | null;
   /** Automatic context compactions in the session. Absent = not logged. */
   contextCompacts?: number;
+  /** Auto-compact window in tokens in effect for the run; null = auto. Absent = not logged. */
+  autoCompactWindow?: number | null;
   /** Model requested for the run (label, role or claude.model); null = Claude Code default. Absent = not logged. */
   modelRequested?: string | null;
   /** Effort requested for the run (label, role or claude.effort); null = Claude Code default. Absent = not logged. */
@@ -303,6 +305,7 @@ export class HistoryLog {
       agent_seconds: round(finish.agentSeconds, 1),
       context_peak_percent: finish.contextPeakPercent,
       context_compacts: finish.contextCompacts,
+      auto_compact_window: finish.autoCompactWindow === undefined ? undefined : (finish.autoCompactWindow ?? 'auto'),
       head_sha: finish.headSha ?? undefined,
       branch: finish.branch ?? undefined,
       mcp_tool_calls: formatToolCalls(finish.mcpToolCalls),

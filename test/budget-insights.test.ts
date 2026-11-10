@@ -47,7 +47,7 @@ describe('budget insights', () => {
     assert.equal(a.budget_insights.limit_5h_tokens, null);
     assert.deepEqual(a.budget_insights.limit_hits, []);
     assert.equal(a.budget_insights.top_compact, null);
-    assert.deepEqual(Object.keys(a.budget).sort(), ['avg_context_by_role', 'compacts_by_role', 'days']);
+    assert.deepEqual(Object.keys(a.budget).sort(), ['avg_context_by_role', 'compact_windows_by_role', 'compacts_by_role', 'days']);
   });
 
   it('finds the role and round with the most auto-compacts', () => {
