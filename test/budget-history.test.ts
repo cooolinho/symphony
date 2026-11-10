@@ -105,6 +105,20 @@ describe('budget history: computation', () => {
     assert.deepEqual(one.budget.days, [{ date: '2026-10-03', peak_5h_tokens: PER_RUN, limit_hits: 1, peak_5h_percent: 100 }]);
   });
 
+  it('reports the newest logged auto-compact window per role and omits roles without one', () => {
+    const a = analyze(
+      [
+        ['acme/app#1', '2026-10-03T10:00:00Z', { role: 'developer', autoCompactWindow: 200000 }],
+        ['acme/app#1', '2026-10-03T20:00:00Z', { role: 'developer', autoCompactWindow: null }],
+        ['acme/app#2', '2026-10-03T12:00:00Z', { role: 'architect', autoCompactWindow: 400000 }],
+        ['acme/app#3', '2026-10-03T12:00:00Z', { role: 'tester' }],
+      ],
+      [],
+      period('2026-10-03T00:00:00Z', '2026-10-04T00:00:00Z'),
+    );
+    assert.deepEqual(a.budget.compact_windows_by_role, { architect: 400000, developer: 'auto' });
+  });
+
   it('sums compacts and averages context per role over runs in the period only', () => {
     const a = analyze(
       [
@@ -167,7 +181,7 @@ describe('budget history: API and cache', () => {
     const a = await analytics();
     assert.equal(hits(a), 1);
     const raw = JSON.parse((await get(`/api/v1/history/analytics?from=${encodeURIComponent(hour(-48))}&to=${encodeURIComponent(hour(24))}`)).body);
-    assert.deepEqual(Object.keys(raw.budget).sort(), ['avg_context_by_role', 'compacts_by_role', 'days']);
+    assert.deepEqual(Object.keys(raw.budget).sort(), ['avg_context_by_role', 'compact_windows_by_role', 'compacts_by_role', 'days']);
     assert.deepEqual(Object.keys(raw.budget.days[0]).sort(), ['date', 'limit_hits', 'peak_5h_percent', 'peak_5h_tokens']);
     assert.deepEqual(raw.budget.compacts_by_role, { developer: 2 });
     assert.deepEqual(raw.budget.avg_context_by_role, { developer: 42 });

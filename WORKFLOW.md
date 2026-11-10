@@ -161,6 +161,7 @@ claude:
   # full test run fits into one call; override them in claude.env. A call with no agent event for longer than stall_timeout_ms counts as a stall.
   # env: {BASH_DEFAULT_TIMEOUT_MS: "900000"}
   # max_budget_usd: 5                        # optional cost cap per agent session
+  auto_compact_window: 200000                # tokens at which Claude Code compacts; auto = the model window (1M on the 5-5 models, so it never compacts); 100000-1000000
 
 roles:
   # agents: plugin subagents (.claude/agents) the role may start; unset = all (the default for custom workflows; every role
@@ -216,7 +217,7 @@ roles:
     model_label: ignore                      # opus, fable at complexity L and XL, whatever the issue's Model: label picks
     agents: [explorer, design-critic]       # explorers map the code; at L/XL the opus design-critic checks the fable draft once
     brain: write
-    claude: { model: opus, effort: high, model_by_complexity: { L: fable, XL: fable } }   # a short session: thinking pays off here
+    claude: { model: opus, effort: high, auto_compact_window: 400000, model_by_complexity: { L: fable, XL: fable } }   # a short session: thinking pays off here
   developer:
     states: [In progress]
     result: implementation
@@ -452,7 +453,7 @@ server:
   public_url: ${SYMPHONY_PUBLIC_URL:-}       # the dashboard as people reach it (https://symphony.example.com); links in commit statuses
 
 # budget:
-#   compact_threshold: 80                    # context percent of Claude Code's auto-compact; the team view marks it
+#   compact_threshold: 80                    # fallback for the team view mark of a role without claude.auto_compact_window; display only
 
 brain:                                       # knowledge vault: one vault for all repositories, created at startup
   enabled: ${SYMPHONY_BRAIN_ENABLED:-false}  # true = create the vault; false = no path is touched

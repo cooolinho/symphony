@@ -13,7 +13,7 @@ import { ChangeStore } from '../changes/store.ts';
 import { buildChangesPage, type ClashStatus } from '../changes/feed.ts';
 import type { ChangeEntry, ChangeFile, ChangeFilter, ChangesPage, ChangesQuery } from '../changes/types.ts';
 import { childEnvironment } from '../agent/env.ts';
-import { chooseRoleEffort, chooseRoleModel } from '../agent/model.ts';
+import { chooseRoleEffort, chooseRoleModel, effectiveCompactWindow } from '../agent/model.ts';
 import { type ActivitySource, collectActivity } from './activity.ts';
 import { classify } from '../workflow/classify.ts';
 import { MODEL_FAMILIES, modelFamilyOf } from '../agent/rate-limit.ts';
@@ -205,6 +205,8 @@ interface RunningEntry {
   requestedModel: string | null;
   /** Effort requested at dispatch (label, role or claude.effort); null = Claude Code default. */
   effort: string | null;
+  /** Auto-compact window in tokens that applies to the run; null = auto. */
+  autoCompactWindow: number | null;
   sessionId: string | null;
   threadId: string | null;
   turnId: string | null;
@@ -2083,6 +2085,7 @@ export class Orchestrator {
       model: null,
       requestedModel: null,
       effort: null,
+      autoCompactWindow: null,
       sessionId: null,
       threadId: null,
       turnId: null,
@@ -2129,6 +2132,7 @@ export class Orchestrator {
     const effortChoice = chooseRoleEffort(issue.labels, role, config.claude.effort);
     entry.requestedModel = choice.model;
     entry.effort = effortChoice.effort;
+    entry.autoCompactWindow = effectiveCompactWindow(config.claude, role?.claude);
     record.sessions.push({
       run: runId,
       attempt,
@@ -2160,6 +2164,7 @@ export class Orchestrator {
         model_source: choice.source,
         complexity,
         effort: effortChoice.effort,
+        auto_compact_window: entry.autoCompactWindow ?? 'auto',
         effort_label: effortChoice.label,
         effort_label_ignored: effortChoice.labelIgnored,
         continuation,
@@ -2411,6 +2416,7 @@ export class Orchestrator {
           agent_seconds: Math.round(agentSeconds * 10) / 10,
           context_peak_percent: entry.context?.peakPercent ?? null,
           context_compacts: entry.context?.compacts ?? 0,
+          auto_compact_window: entry.autoCompactWindow ?? 'auto',
           tokens: tokensJson(entry.tokens),
           cost_usd: Math.round(entry.costUsd * 10_000) / 10_000,
           model: primaryModelOf(entry.modelUsage) ?? entry.model,
@@ -2697,6 +2703,7 @@ export class Orchestrator {
       agentSeconds,
       contextPeakPercent: entry.context?.peakPercent ?? null,
       contextCompacts: entry.context?.compacts ?? 0,
+      autoCompactWindow: entry.autoCompactWindow,
       modelRequested: entry.requestedModel,
       effort: entry.effort,
       usage: entry.modelUsage,
@@ -4276,6 +4283,8 @@ export class Orchestrator {
       roles: config.roles?.map((role) => ({ name: role.name, result: role.result, maxTurns: role.maxTurns })) ?? null,
       maxTurns: config.agent.maxTurns,
       compactThreshold: config.budget.compactThreshold,
+      compactWindow: effectiveCompactWindow(config.claude),
+      compactWindows: Object.fromEntries((config.roles ?? []).map((r) => [r.name, effectiveCompactWindow(config.claude, r.claude)])),
     });
   }
 

@@ -642,7 +642,7 @@ describe('team API', () => {
       const res = await request(server.port, 'GET', base);
       assert.equal(res.status, 200);
       const team = JSON.parse(res.body);
-      assert.deepEqual(Object.keys(team).sort(), ['active', 'blocks', 'compact_threshold', 'handoffs', 'seats', 'subagents', 'trace']);
+      assert.deepEqual(Object.keys(team).sort(), ['active', 'blocks', 'compact_threshold', 'compact_window', 'compact_windows', 'handoffs', 'seats', 'subagents', 'trace']);
       assert.equal(team.active.role, 'default');
       assert.equal(team.active.recent_tools.at(-1).tool, 'Bash');
       assert.equal(team.seats.at(-1).role, 'you');

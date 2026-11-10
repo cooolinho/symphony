@@ -88,7 +88,7 @@ describe('statistics analytics', () => {
       assert.ok(a.budget.days.every((d) => d.limit_hits === 0));
       assert.ok(a.budget.days.some((d) => d.peak_5h_tokens > 0));
       assert.deepEqual(a.budget.avg_context_by_role, {});
-      assert.deepEqual(computeAnalytics([], s.pricing.current(), filter(), NOW).budget, { days: [], compacts_by_role: {}, avg_context_by_role: {} });
+      assert.deepEqual(computeAnalytics([], s.pricing.current(), filter(), NOW).budget, { days: [], compacts_by_role: {}, compact_windows_by_role: {}, avg_context_by_role: {} });
     });
   });
 

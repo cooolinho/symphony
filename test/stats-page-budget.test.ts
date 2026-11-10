@@ -44,6 +44,16 @@ describe('statistics page: budget history', () => {
     assert.match(bar.querySelector('.fill')!.style.getPropertyValue('--sw'), /var\(--role-developer\)/);
   });
 
+  it('says that nothing compacted, with the configured window, instead of empty bars', async () => {
+    const page = await load({ days, compacts_by_role: { developer: 0, architect: 0 }, compact_windows_by_role: { developer: 200000, architect: 'auto' }, avg_context_by_role: {} });
+    const body = page.query('[data-body="compacts"]')[0]!;
+    assert.equal(page.query('[data-body="compacts"] .hbar').length, 0);
+    assert.ok(body.textContent.includes('Kein Run hat verdichtet'), body.textContent);
+    assert.ok(body.textContent.includes('developer 200') && body.textContent.includes('architect auto'), body.textContent);
+    const none = await load({ days, compacts_by_role: { developer: 0 }, avg_context_by_role: {} });
+    assert.ok(none.query('[data-body="compacts"]')[0]!.textContent.includes('Fenster: auto'));
+  });
+
   it('shows the average context in percent, or a dash without data', async () => {
     assert.equal(contextCell(await load({ days, compacts_by_role: {}, avg_context_by_role: {} })), '—');
     assert.equal(contextCell(await load({ days, compacts_by_role: {}, avg_context_by_role: { developer: 40 } })), '40%');

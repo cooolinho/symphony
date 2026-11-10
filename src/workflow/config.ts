@@ -106,6 +106,8 @@ export interface ClaudeConfig {
   executable: string | null;
   appendSystemPrompt: string | null;
   maxBudgetUsd: number | null;
+  /** Tokens at which Claude Code auto-compacts (CLAUDE_CODE_AUTO_COMPACT_WINDOW); null = auto (the model window). */
+  autoCompactWindow: number | null;
   persistSession: boolean;
   env: Record<string, string>;
   turnTimeoutMs: number;
@@ -337,7 +339,7 @@ const PIPELINE_KEYS = new Set([
   'require_screenshots',
 ]);
 const PROFILE_KEYS = new Set(['skip', 'skip_when', 'on_result', 'max_review_rounds', 'max_test_rounds']);
-const ROLE_CLAUDE_KEYS = new Set(['model', 'effort', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'max_budget_usd', 'model_by_complexity']);
+const ROLE_CLAUDE_KEYS = new Set(['model', 'effort', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'max_budget_usd', 'auto_compact_window', 'model_by_complexity']);
 const MODEL_CLAUDE_KEYS = new Set(['permission_mode', 'on_permission_request', 'allowed_tools', 'disallowed_tools']);
 
 export function normalizeStateName(state: string): string {
@@ -750,6 +752,21 @@ function readMaxSubIssues(reader: Reader, raw: Record<string, unknown>, field: s
   return value || null;
 }
 
+const AUTO_COMPACT_WINDOW_MIN = 100_000;
+const AUTO_COMPACT_WINDOW_MAX = 1_000_000;
+
+function readAutoCompactWindow(reader: Reader, raw: Record<string, unknown>, key: string, field: string): number | null {
+  const value = raw[key];
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'string' && value.trim().toLowerCase() === 'auto') return null;
+  const parsed = parseInteger(value);
+  if (parsed === null || parsed < AUTO_COMPACT_WINDOW_MIN || parsed > AUTO_COMPACT_WINDOW_MAX) {
+    reader.errors.push(`${field} must be auto or an integer from ${AUTO_COMPACT_WINDOW_MIN} to ${AUTO_COMPACT_WINDOW_MAX} (got ${JSON.stringify(value)})`);
+    return null;
+  }
+  return parsed;
+}
+
 function readRoleClaude(reader: Reader, raw: Record<string, unknown>, field: string): RoleClaudeOverrides {
   for (const key of Object.keys(raw)) {
     if (!ROLE_CLAUDE_KEYS.has(key)) reader.errors.push(`${field}.${key} is not a known key (allowed: ${[...ROLE_CLAUDE_KEYS].join(', ')})`);
@@ -767,6 +784,8 @@ function readRoleClaude(reader: Reader, raw: Record<string, unknown>, field: str
   if (appendSystemPrompt !== null) claude.appendSystemPrompt = appendSystemPrompt;
   const maxBudgetUsd = reader.number(raw, 'max_budget_usd', `${field}.max_budget_usd`);
   if (maxBudgetUsd !== null) claude.maxBudgetUsd = maxBudgetUsd;
+  const autoCompactWindow = readAutoCompactWindow(reader, raw, 'auto_compact_window', `${field}.auto_compact_window`);
+  if (autoCompactWindow !== null) claude.autoCompactWindow = autoCompactWindow;
   const modelByComplexityRaw = raw.model_by_complexity;
   if (modelByComplexityRaw !== undefined && modelByComplexityRaw !== null) {
     if (isPlainObject(modelByComplexityRaw)) {
@@ -1128,6 +1147,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     executable,
     appendSystemPrompt: reader.script(claudeRaw, 'append_system_prompt', 'claude.append_system_prompt'),
     maxBudgetUsd: reader.number(claudeRaw, 'max_budget_usd', 'claude.max_budget_usd'),
+    autoCompactWindow: readAutoCompactWindow(reader, claudeRaw, 'auto_compact_window', 'claude.auto_compact_window'),
     persistSession: reader.bool(claudeRaw, 'persist_session', 'claude.persist_session', true),
     env: claudeEnv,
     turnTimeoutMs: reader.int(claudeRaw, 'turn_timeout_ms', 'claude.turn_timeout_ms', DEFAULTS.turnTimeoutMs, 1),

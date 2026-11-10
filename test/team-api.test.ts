@@ -74,7 +74,7 @@ describe('GET /api/v1/<id>/team', () => {
       const res = await request(server.port, 'GET', teamPath('live'));
       assert.equal(res.status, 200);
       const team = JSON.parse(res.body);
-      assert.deepEqual(Object.keys(team).sort(), ['active', 'blocks', 'compact_threshold', 'handoffs', 'seats', 'subagents', 'trace']);
+      assert.deepEqual(Object.keys(team).sort(), ['active', 'blocks', 'compact_threshold', 'compact_window', 'compact_windows', 'handoffs', 'seats', 'subagents', 'trace']);
       assert.equal(team.compact_threshold, 80);
       assert.deepEqual(team.trace.map((x: { tool: string }) => x.tool), ['B', 'C', 'D', 'E']);
       assert.equal(team.active.role, 'default');
