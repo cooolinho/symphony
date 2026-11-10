@@ -148,7 +148,7 @@ needs a skill directory in the toolbox and a role with `commands` (or none at al
 Plugins also ship subagents (`agents/<name>.md`), which Claude Code offers to the Agent tool as `<plugin>:<name>`;
 the `init` message of the transcript lists them under `agents`. Symphony's toolbox ships five for Laravel repositories
 (`laravel-architect`, `laravel-code-reviewer`, `laravel-database-engineer`, `laravel-filament-developer`,
-`laravel-test-engineer`) and the framework-neutral `explorer`, `design-critic`, `test-designer`, `convention-lens`, `bug-lens` and `finding-verifier` (the last three for the reviewer's lens review at L/XL), `security-inventory` and `refutation-judge` (the security auditor's panel at L/XL). Which of them a session may start depends on the role's `agents`, read-only roles and the
+`laravel-test-engineer`) and the framework-neutral `explorer`, `design-critic`, `spec-reviewer`, `test-designer`, `convention-lens`, `bug-lens` and `finding-verifier` (the last three for the reviewer's lens review at L/XL), `security-inventory` and `refutation-judge` (the security auditor's panel at L/XL). Which of them a session may start depends on the role's `agents`, read-only roles and the
 workspace's project type ([Subagents per role](configuration.md#subagents-per-role)); the rest are denied by an
 `Agent(<plugin>:<name>)` rule in `disallowedTools` and by a `PreToolUse` hook on `Agent|Task`, which emits `approval_denied` when it
 refuses a call. The hook is registered for every session, not only when agents are denied (it also pins the explorer's model, below). Every Agent tool call carries its subagent in the `tool_use` event (`detail.agent`), so the statistics

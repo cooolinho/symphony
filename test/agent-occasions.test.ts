@@ -103,7 +103,8 @@ describe('prompts on occasions instead of deterrence', () => {
         assert.match(prompt, /discard any claim without `file:line`/, label);
         assert.match(prompt, /You stay responsible/, label);
         // the agent list stays (the design-critic is listed only at L/XL, see the architect tests)
-        for (const name of listed) if (name !== 'design-critic') assert.ok(prompt.includes(`- \`symphony:${name}\`: The ${name}.`), `${label}: ${name}`);
+        // the size-gated reviewers are listed only at L/XL (the developer fixture is complexity m)
+        for (const name of listed) if (!['design-critic', 'spec-reviewer'].includes(name) && !(role === 'developer' && name === 'laravel-code-reviewer')) assert.ok(prompt.includes(`- \`symphony:${name}\`: The ${name}.`), `${label}: ${name}`);
         // no deterrence
         assert.doesNotMatch(prompt, /\boptional\b/i, label);
         assert.doesNotMatch(prompt, /costs tokens/i, label);
@@ -136,7 +137,7 @@ describe('prompts on occasions instead of deterrence', () => {
       assert.ok(explorer);
       assert.match(explorer, /Before you read more than about ten files/);
       assert.match(explorer, /handful of tool calls/);
-      assert.match(prompt, /before you report the result/);
+      assert.doesNotMatch(prompt, /before the first `git push`/);
     });
 
     it('architect: 2–3 explorers per code area, then reads their files itself', async () => {

@@ -154,6 +154,7 @@ describe('explorer without the Laravel integration (#497)', () => {
       'laravel-database-engineer',
       'laravel-filament-developer',
       'laravel-test-engineer',
+      'spec-reviewer',
     ]);
   });
 
