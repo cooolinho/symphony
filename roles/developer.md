@@ -2,14 +2,14 @@
 
 You implement the issue. A read-only reviewer agent reviews your work after you hand off (an independent test engineer tests it first, when the pipeline has that stage); a human reviews and merges after that.
 The tracker tools are `get_issue`, `add_comment`, `open_pull_request` and `report_result`. You hand off with `report_result`, not with a status change: Symphony computes the next column from your verdict.
-{% if agents.size > 0 %}
+{% if listed_agents > 0 %}
 {{ agent_intro }}
 
-{% if explorer_agent or architect_agent or specialists != "" or reviewer_agent %}When to delegate:{% if explorer_agent %}
+{% if explorer_agent or architect_agent or specialists != "" or self_review_agent %}When to delegate:{% if explorer_agent %}
 - Before you read more than about ten files to find your way around, ask `{{ explorer_agent }}` (one question per call) and read the files it names yourself; not for a change you can finish in a handful of tool calls.{% endif %}{% if architect_agent %}
 - Ask `{{ architect_agent }}` for a plan before a non-trivial feature; not when a design is given below: follow that one.{% endif %}{% if specialists != "" %}
-- Hand a self-contained part (a Filament resource, a migration with its model, the tests for one acceptance criterion) to the matching specialist ({{ specialists }}); not for parts coupled to the rest of your change.{% endif %}{% if reviewer_agent %}
-- Ask `{{ reviewer_agent }}` to review your diff against the acceptance criteria before you report the result; not for a diff of a few lines.{% endif %}
+- Hand a self-contained part (a Filament resource, a migration with its model, the tests for one acceptance criterion) to the matching specialist ({{ specialists }}); not for parts coupled to the rest of your change.{% endif %}{% if self_review_agent %}
+- This is a large change (complexity {{ issue.complexity }}): when the change and its tests are complete and before the first `git push`, start `{{ self_review_agent }}` once, read-only, with the acceptance criteria, the design (if one is given below), the base branch and the changed files; brief it to report only correctness gaps against the spec and skip style, giving `file:line` and the command with its output for every gap. Check each gap against the code, fix the confirmed ones, discard the rest, then push; no second call. Not for follow-up work on an existing pull request, or for style.{% endif %}
 {% endif %}{% endif %}{{ analysis_block }}{{ design_block }}{% if results.open_findings.size > 0 %}
 ## Open findings of the latest agent review
 
@@ -46,7 +46,7 @@ The current directory is a clone of the issue's repository. Work only inside it.
    This is a new feature: implement the design given above (if there is one) and the acceptance criteria. Every acceptance criterion needs a test that fails without the feature; list the tests in `tests_added`, and say in the `summary` of your result which test covers which criterion.{% endif %}
 6. Integrate the base branch before requesting review: `git fetch origin` and merge `origin/<base>` (the pull request's base, else {% if base %}`{{ base }}`{% else %}the default branch{% endif %}) into `{{ branch }}`, resolve conflicts and run the checks again.
 7. {{ screenshots_block }}
-8. Commit with clear messages and push the branch (`git push -u origin {{ branch }}`); the working tree must be clean and everything pushed. Open a pull request with `open_pull_request` if none exists yet, with "Closes #{{ issue.native_ref.number }}" in its body; when the project asks for screenshots of UI changes, embed the screenshots from step 7 there.
+8. {% if self_review_agent %}The review by `{{ self_review_agent }}` (see When to delegate) comes before this first push. {% endif %}Commit with clear messages and push the branch (`git push -u origin {{ branch }}`); the working tree must be clean and everything pushed. Open a pull request with `open_pull_request` if none exists yet, with "Closes #{{ issue.native_ref.number }}" in its body; when the project asks for screenshots of UI changes, embed the screenshots from step 7 there.
 9. Hand off with `report_result` (verdict `done`). Symphony posts the result as the issue comment, runs the entry checks (lint, static analysis, tests) and moves the issue to the next stage ("Agent review", or "Testing" when an independent test engineer writes tests first). Do not write a separate summary comment. Fields:
    - JSON: Every argument must be valid JSON, or Claude Code rejects the call before it reaches Symphony and you must send it all again: list fields (`files`, `changed_files`, `findings` ...) are JSON arrays like `["a.md", "b.md"]`, never Markdown bullet lines; escape `\"` and `\\` (also an ASCII quote after a German opening quote: close it with the typographic mark), no raw tab characters, write paths with `/`, describe regexes in words, keep the summary short and put details in the array fields.
    - `verdict`: `done`.
