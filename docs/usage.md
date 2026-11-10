@@ -1377,6 +1377,11 @@ period. The page shows:
   ~3 months, weekly up to 2 years, monthly otherwise. Plus cost per bucket or cumulative, and tokens stacked by
   input, output and cache.
 - **Budget history**: one column per day with the peak of the 5-hour window. Days with a `peak_5h_percent` show the utilization reported by the SDK ("Spitze 101 %", the bar is capped at 100 %); days without one fall back to the token estimate, drawn dashed and marked as estimated in the tooltip. Days with a limit hit are red. A source line names the basis (SDK or tokens) and, with SDK data, the text names the highest peak of the period.
+- **Auto-Compacts je Rolle**: the automatic context compactions per role (`context_compacts` of the `run_finished` lines).
+  When no run of the period compacted, the card shows the hint "Kein Run hat verdichtet – Auto-Compact-Fenster: …" with
+  the newest logged `auto_compact_window` of each role (tokens, or `auto`) instead of empty bars. Old lines without the
+  field show as `auto`. With `auto` Claude Code compacts only near the model window; set a window with
+  [`claude.auto_compact_window`](configuration.md#claude) to compact earlier.
 - **Models**: comparison by cost, runs, tokens, cost/run, tokens/run or agent time, plus an efficiency table (cost
   per 1M tokens, output/input ratio). Every model id that appears in the logs is listed; a run that ended before any
   usage was logged counts under the model it was started with, with 0 tokens (an alias such as `opus` under the
