@@ -374,6 +374,7 @@ describe('http extension', () => {
     assert.equal(a.totals.runs, 1);
     assert.equal(a.totals.cost_usd, 0.0175);
     assert.equal(a.period.time_zone, 'Europe/Berlin');
+    assert.deepEqual(a.finding_categories, []);
     assert.equal(a.period.granularity, 'day');
     assert.deepEqual(a.repositories_available, ['acme/app', 'other/repo']);
     assert.deepEqual(a.models_available, ['claude-opus-5-5']);

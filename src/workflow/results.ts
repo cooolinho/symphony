@@ -135,8 +135,23 @@ const verificationSchema = z
   })
   .strict();
 
+/** Longest finding category (#575). */
+export const CATEGORY_MAX = 40;
+/** A finding category: lowercase letters and digits in groups joined by single hyphens (kebab-case). */
+export const CATEGORY_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+const categorySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(CATEGORY_MAX)
+  .regex(CATEGORY_PATTERN, 'must be a kebab-case slug (lowercase letters, digits, single hyphens)');
+
 const findingSchema = z.object({
   severity: z.enum(SEVERITIES).describe('blocker and major must be fixed before approval; minor and nit are optional'),
+  category: categorySchema
+    .optional()
+    .describe(`Kebab-case slug of the finding's pattern, at most ${CATEGORY_MAX} characters (e.g. screenshots-missing); required for blocker and major findings, reuse a known category of the repository when it fits`),
   file: text(NAME_MAX).optional().describe('Repository-relative path'),
   line: z.number().int().positive().optional().describe('1-indexed line'),
   problem: text().describe('What is wrong'),
@@ -221,10 +236,12 @@ const kindShapes = {
     refuted: list(refutedFindingSchema).describe('Candidates the verification refuted; not posted, counted for the evaluation'),
     checked: list(text()).describe('What the review covered'),
     confirmed_goals: list(text()).describe('Refactor issues: the analysis\'s refactoring goals this review confirmed, copied verbatim; "approved" needs every one'),
+    lessons: list(text(NAME_MAX)).describe('Vault paths of the lessons written, appended to or already covering the recurring finding categories of this review'),
   },
   security: {
     findings: list(findingSchema).describe('"passed" allows only minor and nit findings'),
     refuted: list(refutedFindingSchema).describe('Candidates the verification refuted; not posted, counted for the evaluation'),
+    lessons: list(text(NAME_MAX)).describe('Vault paths of the lessons written, appended to or already covering the recurring finding categories of this audit'),
   },
   docs: {
     files: list(text(NAME_MAX)).describe('Documentation files written or changed'),
@@ -278,6 +295,22 @@ export type Finding = z.output<typeof findingSchema>;
 export type Verification = z.output<typeof verificationSchema>;
 export type RefutedFinding = z.output<typeof refutedFindingSchema>;
 export type Blocker = z.output<typeof blockerSchema>;
+
+/** blocker and major: the findings that must be fixed, and the ones that count as recurring (#575). */
+export function isSevereFinding(finding: Pick<Finding, 'severity'>): boolean {
+  return finding.severity === 'blocker' || finding.severity === 'major';
+}
+
+/** Blocker and major findings per category of a review or security result; empty for other kinds and without categories. */
+export function severeCategoryCounts(result: StageResult): Record<string, number> {
+  const counts: Record<string, number> = {};
+  if (result.kind !== 'review' && result.kind !== 'security') return counts;
+  for (const finding of result.findings) {
+    if (finding.category === undefined || !isSevereFinding(finding)) continue;
+    counts[finding.category] = (counts[finding.category] ?? 0) + 1;
+  }
+  return counts;
+}
 
 /** Summary of the entry check that ran before the result was recorded. */
 export interface ResultChecks {
@@ -806,7 +839,8 @@ function findingLines(findings: readonly Finding[], omitted: number | undefined,
     const location = finding.file === undefined ? '' : ` ${code(finding.line === undefined ? finding.file : `${finding.file}:${finding.line}`)}`;
     const fix = finding.fix === undefined ? '' : `\n  Fix: ${inline(finding.fix)}`;
     const verified = finding.verification === undefined ? '' : `\n  Verified: ${inline(finding.verification.evidence)}${panelLine(finding.verification.votes)}`;
-    return `${SEVERITY_ICONS[finding.severity]} **${finding.severity}**${location} — ${inline(finding.problem)}${fix}${verified}`;
+    const category = finding.category === undefined ? '' : ` [${inline(finding.category)}]`;
+    return `${SEVERITY_ICONS[finding.severity]} **${finding.severity}**${category}${location} — ${inline(finding.problem)}${fix}${verified}`;
   });
   const list = bullets(`Findings (${findings.length})`, items);
   const note = omitted === undefined ? null : `_${omitted} less severe finding(s) omitted to stay within the comment size limit._`;
@@ -873,9 +907,9 @@ function kindSections(result: StageResult): (string | null)[] {
         result.mutation_problem === undefined ? null : `**Mutation testing problem**\n${block(result.mutation_problem)}`,
       ];
     case 'review':
-      return [findingLines(result.findings, result.omitted_findings, result.refuted.length + (result.omitted_refuted ?? 0)), bullets('Checked', result.checked.map(inline)), bullets('Confirmed goals', result.confirmed_goals.map(inline))];
+      return [findingLines(result.findings, result.omitted_findings, result.refuted.length + (result.omitted_refuted ?? 0)), bullets('Checked', result.checked.map(inline)), bullets('Confirmed goals', result.confirmed_goals.map(inline)), bullets('Lessons', (result.lessons ?? []).map(code))];
     case 'security':
-      return [findingLines(result.findings, result.omitted_findings, result.refuted.length + (result.omitted_refuted ?? 0))];
+      return [findingLines(result.findings, result.omitted_findings, result.refuted.length + (result.omitted_refuted ?? 0)), bullets('Lessons', (result.lessons ?? []).map(code))];
     case 'docs':
       return [bullets('Files', result.files.map(code))];
     case 'skipped':

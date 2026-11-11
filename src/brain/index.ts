@@ -22,6 +22,8 @@ export interface IndexedNote {
   preview?: string;
   /** Normalized link targets (`Folder/name.md`, as written), without duplicates. */
   links: string[];
+  /** Frontmatter `tags`, trimmed and lowercased; a single string is one tag. */
+  tags: string[];
 }
 
 export interface VaultIndex {
@@ -99,6 +101,18 @@ function lowerText(value: unknown): string | null {
   return textOf(value)?.toLowerCase() ?? null;
 }
 
+/** Tags of a frontmatter value: a list of strings or one string, trimmed, lowercased, without duplicates and leading `#`. */
+export function tagsOf(value: unknown): string[] {
+  const items = Array.isArray(value) ? value : typeof value === 'string' ? [value] : [];
+  const tags = new Set<string>();
+  for (const item of items) {
+    if (typeof item !== 'string') continue;
+    const tag = item.trim().replace(/^#/, '').toLowerCase();
+    if (tag !== '') tags.add(tag);
+  }
+  return [...tags];
+}
+
 /** Link targets of a note body, normalized; skips code fences, attachments and pure section links. */
 export function extractLinks(body: string): string[] {
   const found = new Set<string>();
@@ -138,7 +152,7 @@ const EMPTY_FIELDS = { type: null, status: null, repo: null, issue: null, role: 
 /** Reads one note; null when the file does not exist. An unreadable or too large file gives a note without fields and links. */
 function readNoteSync(vault: string, rel: string): IndexedNote | null {
   const file = path.join(vault, ...rel.split('/'));
-  const fallback = (): IndexedNote => ({ ...EMPTY_FIELDS, title: path.posix.basename(rel).replace(/\.md$/i, ''), links: [] });
+  const fallback = (): IndexedNote => ({ ...EMPTY_FIELDS, title: path.posix.basename(rel).replace(/\.md$/i, ''), links: [], tags: [] });
   try {
     const stat = fs.statSync(file);
     if (!stat.isFile()) return null;
@@ -156,6 +170,7 @@ function readNoteSync(vault: string, rel: string): IndexedNote | null {
       updated: textOf(frontmatter.updated),
       target: textOf(frontmatter.target),
       links: extractLinks(body),
+      tags: tagsOf(frontmatter.tags),
       ...(status === 'candidate' ? { preview: previewOf(body) } : {}),
     };
   } catch (error) {

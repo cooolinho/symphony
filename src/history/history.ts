@@ -165,6 +165,8 @@ export interface StageResultLine {
   mutationScore?: number | null;
   /** Panel votes of a security result (L/XL); null or absent when it carries none. */
   panelVotes?: PanelVoteCounts | null;
+  /** Blocker and major findings per category (#575); null, absent or empty when the result carries none. */
+  categories?: Record<string, number> | null;
   at: Date;
 }
 
@@ -381,6 +383,7 @@ export class HistoryLog {
       panel_confirmed: panel ? formatToolCalls(panel.confirmed) : undefined,
       panel_refuted: panel ? formatToolCalls(panel.refuted) : undefined,
       panel_single_refuted: panel?.singleRefuted,
+      categories: formatToolCalls(line.categories ?? undefined),
     });
   }
 

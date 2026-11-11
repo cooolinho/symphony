@@ -6,6 +6,8 @@ import { listClashes, type BrainClashView } from '../brain/clashes.ts';
 import { createVaultGit, lastVaultCommit, vaultCommitCount } from '../brain/git.ts';
 import { BrainIndex, candidatesOf, foldersOf, graphAround, vitalsCounts, vitalsDerived, type BrainCandidate, type BrainGraph, type BrainVitals } from '../brain/index.ts';
 import { writeIssueSummary } from '../brain/issue-summary.ts';
+import { CATEGORY_TAG_PREFIX } from '../brain/review-recurrence.ts';
+import type { ReviewLessonRef } from '../history/analytics.ts';
 import { approveCandidate, rejectCandidate, revertDecision, type PromoteOptions, type PromoteResult } from '../brain/promote.ts';
 import { RateLimitLog, rateLimitKey, type RateLimitRecord } from '../budget/rate-limit-log.ts';
 import { BRAIN_BACKFILL_COMMITS, brainCommitEntries, brainConflictEntry, recentVaultCommits } from '../changes/brain.ts';
@@ -39,7 +41,7 @@ import { WorkspaceManager, type HookIssue, type Workspace } from '../workspace/m
 import type { ServiceConfig } from '../workflow/config.ts';
 import { profileFor } from '../workflow/profile.ts';
 import { roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
-import { internalResult, panelVoteCounts, renderResultComment, verificationCounts, type ResultMeta } from '../workflow/results.ts';
+import { internalResult, panelVoteCounts, renderResultComment, severeCategoryCounts, verificationCounts, type ResultMeta } from '../workflow/results.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../workflow/store.ts';
 import { skipCheckProblems, skipReason, stageSkip, type StageSkip } from './skip.ts';
 import { nextStageProblems, unknownBoardColumns, validateDispatch } from '../workflow/validate.ts';
@@ -2227,6 +2229,7 @@ export class Orchestrator {
         brainAccess: this.#brainAccess,
         onBrainCommit: (vault, sha, paths) => this.#recordBrainCommit(vault, sha, paths),
         brainIndex: this.#brainIndex,
+        archive: this.#archive,
         continueWith: (fresh) => {
           const current = this.#deps.workflow.current.config;
           if (!isActiveState(fresh.state, current.tracker)) return `issue left the active states ("${fresh.state}")`;
@@ -2330,6 +2333,7 @@ export class Orchestrator {
               findingsConfirmed: counts?.confirmed ?? null,
               findingsRefuted: counts?.refuted ?? null,
               panelVotes: panelVoteCounts(result),
+              categories: severeCategoryCounts(result),
               findings: result.kind === 'review' || result.kind === 'security' ? result.findings.length : 0,
               mutationScore: result.kind === 'test' ? (result.mutation_score ?? null) : null,
               at: new Date(meta.created_at),
@@ -3926,6 +3930,33 @@ export class Orchestrator {
       clash_window_min: Math.round(brain.clashWindowMs / 60_000),
       last_commit: lastCommit,
     };
+  }
+
+  /**
+   * The review lessons of the vault for the category statistics of GET /api/v1/history/analytics: one entry per lesson
+   * and `review/<category>` tag, since its `created` date (else `updated`); empty without `brain.enabled` or when the
+   * vault cannot be read.
+   */
+  async reviewLessons(): Promise<ReviewLessonRef[]> {
+    const brain = this.#deps.workflow.current.config.brain;
+    if (!brain.enabled) return [];
+    try {
+      const index = await this.#brainIndex.current(brain.path);
+      const refs: ReviewLessonRef[] = [];
+      for (const [notePath, note] of index.notes) {
+        if (note.type !== 'lesson' || (note.status !== 'approved' && note.status !== 'candidate')) continue;
+        const since = note.created ?? note.updated;
+        if (since === null || Number.isNaN(Date.parse(since))) continue;
+        for (const tag of note.tags ?? []) {
+          if (!tag.startsWith(CATEGORY_TAG_PREFIX) || tag.length === CATEGORY_TAG_PREFIX.length) continue;
+          refs.push({ repo: note.repo, category: tag.slice(CATEGORY_TAG_PREFIX.length), path: notePath, since: new Date(Date.parse(since)).toISOString() });
+        }
+      }
+      return refs.sort((a, b) => a.path.localeCompare(b.path) || a.category.localeCompare(b.category));
+    } catch (error) {
+      this.#deps.logger.warn('review lessons for the analytics unavailable', { error: errorMessage(error) });
+      return [];
+    }
   }
 
   /** Candidate notes for GET /api/v1/brain/candidates; null without `brain.enabled`. */

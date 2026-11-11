@@ -232,7 +232,23 @@ export interface BrainConfig {
   clashWindowMs: number;
   /** Link target of "In Obsidian öffnen" on the Brain page: http(s):// or obsidian:// (default empty: the links are hidden). */
   obsidianUrl: string;
+  /** Recurring review findings become lessons and reach the developer (`brain.review_lessons`, #575). */
+  reviewLessons: ReviewLessonsConfig;
 }
+
+/** `brain.review_lessons`: detection of recurring review findings and injection of lessons into prompts. */
+export interface ReviewLessonsConfig {
+  /** Detect recurring findings and inject lessons (default true; effective only with brain.enabled). */
+  enabled: boolean;
+  /** Days back the cross-issue detection looks (default 14). */
+  windowDays: number;
+  /** Distinct issues of one repository a category needs within the window to recur (default 2). */
+  minIssues: number;
+  /** Characters of lessons injected into a prompt; the rest is listed by path only (default 6000; 0 = paths only). */
+  injectBudgetChars: number;
+}
+
+export const REVIEW_LESSONS_DEFAULTS: ReviewLessonsConfig = { enabled: true, windowDays: 14, minIssues: 2, injectBudgetChars: 6000 };
 
 /** Budget display settings (`budget` section). */
 export interface BudgetConfig {
@@ -294,7 +310,8 @@ const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', '
 export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
 const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server', 'system', 'brain', 'budget'];
-const BRAIN_KEYS = new Set(['enabled', 'path', 'clash_window_ms', 'obsidian_url']);
+const BRAIN_KEYS = new Set(['enabled', 'path', 'clash_window_ms', 'obsidian_url', 'review_lessons']);
+const REVIEW_LESSONS_KEYS = new Set(['enabled', 'window_days', 'min_issues', 'inject_budget_chars']);
 const BUDGET_KEYS = new Set(['compact_threshold']);
 const ROLE_KEYS = new Set([
   'brain',
@@ -1237,7 +1254,17 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
   if (obsidianUrl !== '' && !/^(https?|obsidian):\/\/\S/i.test(obsidianUrl)) {
     reader.errors.push('brain.obsidian_url must start with http://, https:// or obsidian://');
   }
-  const brain: BrainConfig = { enabled: brainEnabled, path: brainPath, clashWindowMs, obsidianUrl };
+  const lessonsRaw = reader.section(brainRaw, 'review_lessons');
+  for (const key of Object.keys(lessonsRaw)) {
+    if (!REVIEW_LESSONS_KEYS.has(key)) reader.errors.push(`brain.review_lessons.${key} is not a known key (allowed: ${[...REVIEW_LESSONS_KEYS].join(', ')})`);
+  }
+  const reviewLessons: ReviewLessonsConfig = {
+    enabled: reader.bool(lessonsRaw, 'enabled', 'brain.review_lessons.enabled', REVIEW_LESSONS_DEFAULTS.enabled),
+    windowDays: reader.int(lessonsRaw, 'window_days', 'brain.review_lessons.window_days', REVIEW_LESSONS_DEFAULTS.windowDays, 1),
+    minIssues: reader.int(lessonsRaw, 'min_issues', 'brain.review_lessons.min_issues', REVIEW_LESSONS_DEFAULTS.minIssues, 2),
+    injectBudgetChars: reader.int(lessonsRaw, 'inject_budget_chars', 'brain.review_lessons.inject_budget_chars', REVIEW_LESSONS_DEFAULTS.injectBudgetChars, 0),
+  };
+  const brain: BrainConfig = { enabled: brainEnabled, path: brainPath, clashWindowMs, obsidianUrl, reviewLessons };
   const budgetRaw = reader.section(raw, 'budget');
   for (const key of Object.keys(budgetRaw)) {
     if (!BUDGET_KEYS.has(key)) reader.warnings.push(`budget.${key} ignored: not a known key (allowed: ${[...BUDGET_KEYS].join(', ')})`);

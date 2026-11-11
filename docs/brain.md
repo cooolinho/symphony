@@ -62,6 +62,34 @@ The field `brain` of a role in `WORKFLOW.md` decides what the role's sessions ma
 
 An existing `WORKFLOW.md` without the field gives no role brain tools. See [configuration.md](configuration.md#roles).
 
+## Review lessons
+
+A review finding that comes back is a lesson nobody wrote down. Symphony recognizes recurring findings, has the reviewer turn them into lessons and hands every lesson of a repository to the next developer before it codes.
+
+**Category.** Every `blocker` and `major` finding of a review or security result carries a `category`: a kebab-case slug of at most 40 characters for the pattern of the problem, such as `screenshots-missing` or `base-branch-conflict` (see [results.md](results.md)). The reviewer and the security auditor get the categories already used in the repository (prompt variable `known_categories`), so the same pattern keeps its name. The category is stored in the result marker, in the issue archive and in the history line `stage_result` (`categories=<slug>:<n>,...`). Results without a category stay valid; they are not counted.
+
+**Triggers.** A category recurs when one of these holds (blocker and major findings only):
+
+1. `same_issue`: it occurs in at least two results of the same issue, for example in round 1 and again in round 2.
+2. `cross_issue`: it occurs in at least `min_issues` distinct issues of the same repository within the last `window_days` days.
+
+The detection is deterministic: its sources are the issue archives of the repository (`<log-dir>/issues/`) and the results of the running issue. Another repository never counts.
+
+**Lessons.** A review lesson is a note in `Lessons/` with `type: lesson`, `repo: owner/name` (or no `repo` for a lesson that applies everywhere) and the tags `review-lesson` and `review/<category>`. Its body starts right after the title with one paragraph: the rule or check step for the developer. That paragraph is what gets injected; a log of the findings is no lesson. The reviewer sees the recurring categories with their issues, examples and existing lesson (prompt variable `recurring_findings`, only when something recurs). For each recurring category among its own blocker and major findings it writes a new lesson with `brain_write`, appends to the existing candidate with `brain_append` (the issue as a new source, the sharpened rule), or names an existing lesson, and lists the paths in the result field `lessons`. When a recurring category has no lesson, the result names none and the session wrote nothing to the vault, `report_result` refuses the first call with a hint; the second call is accepted, its summary notes the missing lesson and the log has a `lesson_missing` warning. The refusal needs a session with `brain: write` (the reviewer in the shipped `WORKFLOW.md`); the security auditor (`brain: read`) names existing lessons and states a missing rule in its summary.
+
+**Injection.** Developer, test engineer and architect get the lessons of the repository in their prompt (prompt variable `brain_lessons`, section "Lessons of this repository"): approved lessons and candidates, the candidates marked "candidate: check it against the code". The order: first the lessons for the categories of the open findings (a rework round), then the review lessons by how often their categories occurred and how recent they are, then the other lessons. Each lesson shows its title, path and core rule within `inject_budget_chars` characters; the rest is listed by path only. Before its first change the developer runs `brain_search` for the topic of the issue; in a rework round it reads the lessons for the categories of the open findings and names the ones it followed in its result. Injection does not rely on the search: candidates rank behind approved notes there.
+
+**Configuration** (`brain.review_lessons`, see [configuration.md](configuration.md#brain)):
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | Detect recurring findings, refuse a result without a lesson and inject lessons. Needs `brain.enabled: true` and a role with `brain: read` or `write`; with `false` the prompt variables are empty and nothing is refused. |
+| `window_days` | `14` | Days the `cross_issue` trigger looks back. |
+| `min_issues` | `2` | Distinct issues a category needs within the window for `cross_issue` (at least 2). |
+| `inject_budget_chars` | `6000` | Characters of lessons injected into a prompt; the rest is listed by path (`0` = paths only). |
+
+**Measuring.** `GET /api/v1/history/analytics` has `finding_categories`: per category the findings and affected issues of the period, the lesson with the date it exists since (its `created` date) and the findings after that date. A lesson that works lowers the findings after it.
+
 ## Gardener
 
 The command `/brain-garden` (first line of an issue description) is served by the role `brain-gardener` with the skill `brain-garden`. The role has `brain: write`, `brain_approved_writes: false` and `read_only: true`; of the tracker tools it uses only `get_issue`, `add_comment` and `set_status` (`open_pull_request` is denied).

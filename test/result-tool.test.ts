@@ -60,6 +60,7 @@ interface SetupOptions {
   docs?: ResultToolParams['docs'];
   screenshots?: ResultToolParams['screenshots'];
   mutation?: ResultToolParams['mutation'];
+  lessons?: ResultToolParams['lessons'];
   panel?: boolean;
   /** Overrides per role name, merged over ROLES. */
   roles?: Record<string, Record<string, unknown>>;
@@ -120,6 +121,7 @@ function setup(options: SetupOptions = {}) {
     ...(options.screenshots !== undefined ? { screenshots: options.screenshots } : {}),
     ...(options.mutation !== undefined ? { mutation: options.mutation } : {}),
     ...(options.panel !== undefined ? { panel: options.panel } : {}),
+    ...(options.lessons !== undefined ? { lessons: options.lessons } : {}),
   };
   const unguarded = createResultTool(params);
   const tools = guardTools(toolsForRole(tracker.agentToolSpecs(), role, current(), unguarded), guard);
@@ -1645,5 +1647,93 @@ describe('report_result: security panel at L/XL (E3-5)', () => {
   it('does not check the votes of a blocked audit', async () => {
     const blocked = { verdict: 'blocked', summary: 'No access.', blockers: [{ description: 'No checkout', needs: 'access' }], findings: [f(undefined)] };
     assert.equal(data(await L().report(blocked)).target, 'Blocked');
+  });
+});
+
+describe('report_result: a lesson for recurring review findings (#575)', () => {
+  const recurringOf = (category: string) => ({
+    category,
+    triggers: ['same_issue' as const],
+    findings: 2,
+    issues: ['acme/app#1'],
+    examples: [{ issue: 'acme/app#1', problem: 'No after screenshot' }],
+    lesson: { path: 'Lessons/screens.md', title: 'Screens', status: 'candidate' },
+  });
+  const facts = (over: Partial<NonNullable<ResultToolParams['lessons']>> = {}) => {
+    const missing: string[][] = [];
+    const seen: string[][] = [];
+    let writes = 0;
+    const lessons: NonNullable<ResultToolParams['lessons']> = {
+      recurring: (reported) => {
+        seen.push([...reported]);
+        return reported.includes('screenshots-missing') ? [recurringOf('screenshots-missing')] : [];
+      },
+      brainWrites: () => writes,
+      enforce: true,
+      onMissing: (categories) => missing.push(categories),
+      ...over,
+    };
+    return { lessons, missing, seen, write: () => (writes += 1) };
+  };
+  const CHANGES = {
+    verdict: 'changes_needed',
+    summary: 'Screenshots are missing again.',
+    findings: [
+      { severity: 'major', category: 'screenshots-missing', file: 'README.md', problem: 'No after screenshot', fix: 'Add it' },
+      { severity: 'minor', category: 'naming', problem: 'Naming' },
+    ],
+  };
+
+  it('refuses the first report once with the recurring category and its lesson, nothing is recorded', async () => {
+    const { lessons, missing, seen } = facts();
+    const { report, tracker } = setup({ lessons });
+    const refused = error(await report(CHANGES));
+    assert.equal(refused.category, 'invalid_result');
+    assert.match(refused.message, /screenshots-missing/);
+    assert.match(refused.message, /Lessons\/screens\.md/);
+    assert.match(refused.message, /review\/<category>/);
+    assert.deepEqual(seen, [['screenshots-missing']], 'only blocker and major categories count');
+    assert.deepEqual(tracker.statusCalls, []);
+    assert.equal((tracker.comments.get('1') ?? []).length, 0);
+    assert.deepEqual(missing, []);
+  });
+
+  it('accepts the second report, notes the missing lesson and calls onMissing', async () => {
+    const { lessons, missing } = facts();
+    const { report, markers } = setup({ lessons });
+    error(await report(CHANGES));
+    const result = data(await report(CHANGES));
+    assert.equal(result.verdict, 'changes_needed');
+    assert.deepEqual(missing, [['screenshots-missing']]);
+    assert.match(markers()[0]?.result.summary ?? '', /Lesson missing\.\*\* Recurring categories without a lesson: screenshots-missing/);
+  });
+
+  it('accepts at once with lessons, or after a brain write of the session', async () => {
+    const named = facts();
+    const withLessons = setup({ lessons: named.lessons });
+    const result = data(await withLessons.report({ ...CHANGES, lessons: ['Lessons/screens.md'] }));
+    assert.equal(result.verdict, 'changes_needed');
+    const stored = withLessons.markers()[0]?.result;
+    assert.deepEqual(stored?.kind === 'review' ? stored.lessons : null, ['Lessons/screens.md']);
+    assert.deepEqual(named.missing, []);
+
+    const written = facts();
+    written.write();
+    data(await setup({ lessons: written.lessons }).report(CHANGES));
+    assert.deepEqual(written.missing, []);
+  });
+
+  it('does not check without enforce, for blocked, or without a recurring category', async () => {
+    const off = facts({ enforce: false });
+    data(await setup({ lessons: off.lessons }).report(CHANGES));
+    assert.deepEqual(off.seen, []);
+
+    const blocked = facts();
+    data(await setup({ lessons: blocked.lessons }).report({ verdict: 'blocked', summary: 'Cannot review.', blockers: [{ description: 'No access', needs: 'access' }], findings: CHANGES.findings }));
+    assert.deepEqual(blocked.seen, []);
+
+    const other = facts();
+    data(await setup({ lessons: other.lessons }).report({ ...CHANGES, findings: [{ severity: 'major', category: 'n-plus-one', problem: 'N+1 query' }] }));
+    assert.deepEqual(other.missing, []);
   });
 });

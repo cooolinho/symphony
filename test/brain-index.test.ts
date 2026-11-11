@@ -317,7 +317,7 @@ describe('graphAround (E7-7b)', () => {
 
   it('stops at the node limit and keeps only edges between kept nodes', () => {
     const notes = new Map<string, IndexedNote>();
-    const empty = { type: null, status: null, repo: null, issue: null, role: null, created: null, updated: null, target: null };
+    const empty = { type: null, status: null, repo: null, issue: null, role: null, created: null, updated: null, target: null, tags: [] as string[] };
     notes.set('Repos/x/index.md', { ...empty, title: 'x', links: Array.from({ length: 200 }, (_, i) => `Lessons/n${String(i).padStart(3, '0')}.md`) });
     for (let i = 0; i < 200; i++) notes.set(`Lessons/n${String(i).padStart(3, '0')}.md`, { ...empty, title: `n${i}`, links: [] });
     const graph = graphAround(deriveIndex(notes), 'Repos/x/index.md')!;
