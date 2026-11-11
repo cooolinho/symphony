@@ -10,5 +10,6 @@ Symphony keeps one knowledge vault for all repositories. You reach it only throu
 - Write a lesson (`Lessons/`, type `lesson`) only for a repeatable insight that saves the next agent time: a trap, a convention, a cause that is not obvious. A log of what you did in this session is no lesson (it belongs in your comment and result).
 - Before you change an existing note, read it with `brain_read` and send its `hash` as `base_hash` to `brain_write` or `brain_append`. On a mismatch, merge your change into the current version that comes back and write again.
 {%- else %}
+- Lessons of this repository may be listed further below ("Lessons of this repository"). When your prompt lists open findings of a review, read the lessons for their categories before you change anything, and name the lessons you followed in your result.
 - You cannot write to the vault. If you find a repeatable insight that deserves a lesson (a trap, a convention, a cause that is not obvious; no log of this session), name it briefly in the summary of your result.
 {%- endif %}

@@ -22,9 +22,9 @@ function body(heading: string): string {
 }
 
 describe('docs/brain.md', () => {
-  it('has exactly the ten required sections in order', () => {
+  it('has exactly the eleven required sections in order', () => {
     const headings = [...brain.matchAll(/^## (.+)$/gm)].map((m) => m[1]);
-    assert.deepEqual(headings, ['Purpose', 'Vault layout', 'Frontmatter', 'Tools', 'Role switch', 'Gardener', 'Clash rules', 'Obsidian container', 'Backup', 'Reset']);
+    assert.deepEqual(headings, ['Purpose', 'Vault layout', 'Frontmatter', 'Tools', 'Role switch', 'Review lessons', 'Gardener', 'Clash rules', 'Obsidian container', 'Backup', 'Reset']);
   });
 
   it('role table matches the brain modes of the shipped WORKFLOW.md', () => {
@@ -64,7 +64,7 @@ describe('docs/brain.md', () => {
       assert.ok(new RegExp(`'${key}'`).test(schema), `brain.${key}`);
     }
     for (const tool of new Set([...brain.matchAll(/`(brain_[a-z]+)`/g)].map((m) => m[1] ?? '')).values()) {
-      if (tool === 'brain_index') continue; // prompt variable, not a tool
+      if (tool === 'brain_index' || tool === 'brain_lessons') continue; // prompt variables, not tools
       assert.ok(['brain_search', 'brain_read', 'brain_list', 'brain_vitals', 'brain_write', 'brain_append'].includes(tool), tool);
       assert.ok(read('src/brain/tools.ts').includes(`'${tool}'`) || read('src/brain/write.ts').includes(`'${tool}'`), tool);
     }

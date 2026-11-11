@@ -29,8 +29,8 @@ reported to the agent instead of being dropped silently.
 | `design` | `ready`, `split`, `blocked` | `options[]`, `decision`, `components[]`, `interfaces[]`, `migrations[]`, `compatibility`, `work_packages[]` (optional; with `split` at least two), `plan[]` (implementation steps in order, each with its files), `tests[]` (one test per acceptance criterion) |
 | `implementation` | `done`, `blocked` | `changed_files[]`, `tests_added[]`, `notes`, `plan_deviations[]`, `screenshots_problem` (a UI change without screenshots: the failed step and its error message) |
 | `test` | `passed`, `failed`, `blocked` | `cases[] {criterion, test, status: passed\|failed\|skipped, red_at_base?: {command, output?}, existing?}`, `commands[]`, `uncovered_criteria[]`, `mutation_score` (0–100), `mutation_command`, `mutation_problem` (see [Test evidence at L/XL](#test-evidence-at-lxl)) |
-| `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, file, line, problem, fix, verification?: {status: confirmed\|refuted, evidence}}`, `refuted[]` (candidates the verification refuted: a finding with a refuted `verification`; see [Verified findings at L/XL](#verified-findings-at-lxl)), `checked[]`, `confirmed_goals[]` (refactor issues: the analysis's refactoring goals the review confirms) |
-| `security` | `passed`, `issues_found`, `blocked` | `findings[]` and `refuted[]` (as in `review`); at L/XL with the refutation panel `verification.votes[] {lens: reachability\|impact\|defenses, verdict: confirmed\|refuted, evidence}` (see [Security panel at L/XL](#security-panel-at-lxl)) |
+| `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, category?, file, line, problem, fix, verification?: {status: confirmed\|refuted, evidence}}` (`category`: kebab-case slug of at most 40 characters for the pattern of the problem, required by the role prompts for blocker and major findings; see [brain.md](brain.md#review-lessons)), `lessons[]` (vault paths of the lessons for the recurring categories), `refuted[]` (candidates the verification refuted: a finding with a refuted `verification`; see [Verified findings at L/XL](#verified-findings-at-lxl)), `checked[]`, `confirmed_goals[]` (refactor issues: the analysis's refactoring goals the review confirms) |
+| `security` | `passed`, `issues_found`, `blocked` | `findings[]`, `refuted[]` and `lessons[]` (as in `review`); at L/XL with the refutation panel `verification.votes[] {lens: reachability\|impact\|defenses, verdict: confirmed\|refuted, evidence}` (see [Security panel at L/XL](#security-panel-at-lxl)) |
 | `docs` | `done`, `not_needed`, `blocked` | `files[]` |
 | `skipped`, `reset` | same as the kind | internal, recorded by Symphony without agent input (`skipped`: a stage passed [without a session](configuration.md#skipping-stages-without-a-session)) |
 
@@ -199,6 +199,16 @@ outcome (`already_recorded: true` on success) without running the checks or touc
 after the turn that recorded the result; when the move led to another column of the same role, its stage starts in a
 new session. The tool writes only
 after the guard allowed exactly the computed target; called without the guard's approval it refuses (`tool_error`).
+
+## Lessons for recurring findings
+
+A `review` or `security` result whose `blocker` or `major` findings have a recurring `category` (again in this issue, or in
+`brain.review_lessons.min_issues` issues of the repository within `window_days`; see [brain.md](brain.md#review-lessons))
+needs a lesson: the result names its vault path in `lessons`, or the session wrote or appended to a note with
+`brain_write` or `brain_append`. Otherwise the first call is refused with `invalid_result`, listing the recurring
+categories with their issues and existing lessons; nothing is recorded. The second call is accepted: its summary gets the
+note "Lesson missing" and the log a `lesson_missing` warning. The verdict `blocked` is not checked, and the rule only
+applies to sessions with `brain: write` while `brain.review_lessons.enabled` is on.
 
 ## Screenshots for UI changes
 

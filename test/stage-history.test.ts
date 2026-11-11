@@ -308,8 +308,8 @@ describe('resultsTemplateValue: the security findings for the developer', () => 
   it('lists the findings of the newest security review while it found issues', () => {
     const value = resultsTemplateValue(buildStageHistory([audited(FOUND)]));
     assert.deepEqual(value.security_findings, [
-      { severity: 'blocker', file: 'app/Policies/PostPolicy.php', line: 12, problem: 'Any user may update', fix: 'Compare the owner' },
-      { severity: 'nit', file: null, line: null, problem: 'Naming', fix: null },
+      { severity: 'blocker', category: null, file: 'app/Policies/PostPolicy.php', line: 12, problem: 'Any user may update', fix: 'Compare the owner' },
+      { severity: 'nit', category: null, file: null, line: null, problem: 'Naming', fix: null },
     ]);
     assert.deepEqual(value.open_findings, [], 'the review findings are a separate list');
   });
@@ -415,8 +415,8 @@ describe('resultRows: the rows of the agent page', () => {
       { ...entry('implementation', 'done'), result: blocked.result },
     ]);
     assert.deepEqual(rows[0]?.findings, [
-      { severity: 'major', file: 'src/a.ts', line: 7, problem: 'Wrong', fix: 'Right' },
-      { severity: 'nit', file: null, line: null, problem: 'Typo', fix: null },
+      { severity: 'major', category: null, file: 'src/a.ts', line: 7, problem: 'Wrong', fix: 'Right' },
+      { severity: 'nit', category: null, file: null, line: null, problem: 'Typo', fix: null },
     ]);
     assert.equal(rows[0]?.url, 'https://github.com/acme/app/issues/1#issuecomment-1');
     assert.deepEqual([rows[1]?.url, rows[1]?.findings, rows[1]?.blockers], [null, [], [{ description: 'No token', needs: 'access' }]]);

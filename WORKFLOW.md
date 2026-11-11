@@ -460,6 +460,11 @@ brain:                                       # knowledge vault: one vault for al
   path: ~/brain                              # /home/symphony/brain is the brain volume in Docker
   # clash_window_ms: 600000                  # another run that wrote a note within this window blocks a write (0 = off)
   obsidian_url: ${SYMPHONY_BRAIN_OBSIDIAN_URL:-}  # "In Obsidian öffnen" on /brain (e.g. https://brain.docker.lan); empty hides it
+  review_lessons:                            # recurring review findings become lessons for the developer (docs/brain.md#review-lessons)
+    enabled: true                            # detect recurring finding categories, refuse a review without a lesson once, inject lessons
+    window_days: 14                          # a category recurs in >= min_issues issues of a repository within this many days
+    min_issues: 2                            # ... or again in a later result of the same issue
+    inject_budget_chars: 6000                # lessons in the developer, test engineer and architect prompts; the rest by path only
 # Only roles with brain: read or write get the brain tools (see roles:).
 # Existing files and folders are never overwritten; .obsidian/ is never touched. Changes apply after a restart.
 ---
@@ -540,7 +545,7 @@ Interfaces between them:{% for item in results.design.interfaces %}
    - Store it where the project's instructions say, else under `docs/screenshots/` with a descriptive name, then commit and push it on `{{ branch }}`.
    - Embed it in the pull request body by commit SHA: `![<what it shows>](https://github.com/<owner>/<repo>/blob/<commit sha>/<path>?raw=true)`; this works for private repositories too, `raw.githubusercontent.com` does not. `open_pull_request` on a branch with an open pull request replaces its title and body, so call it again with the complete body after adding screenshots.
    - If a screenshot still cannot be taken, set `screenshots_problem` in your result to exactly which step failed and with what error.
-{% endcapture %}{% capture screenshots_note %}
+{% endcapture %}{% capture lessons_block %}{% include "roles/brain-lessons.md" %}{% endcapture %}{% capture recurrence_block %}{% include "roles/recurring-findings.md" %}{% endcapture %}{% capture screenshots_note %}
 UI screenshots: when the project's instructions or the issue ask for screenshots of UI changes, the developer takes them in its workspace: it builds the frontend assets where needed, serves the app and uses the image's headless Chromium (`symphony-screenshot --check` tests it; it is not on the `PATH`, and a missing `node_modules` or `public/build` is normal in a fresh workspace). "No browser" or "no frontend build" is never a reason to leave them out{% if role == "reviewer" %}: if they are missing, that is a `major` finding, unless the developer's result names the step that failed and its error; then it is `minor` and quotes that error{% else %}, so do not plan to leave them out or to hand them to a human{% endif %}.{% if role == "analyst" or role == "planner" or role == "autopilot" %}
 You do not take screenshots yourself (you are read-only), but the developer does, so never plan them away and never hand them to a human. An issue that needs a visual check (design, comparison with a mockup, before/after) contains the word "Screenshots", so that the check in `report_result` (`require_screenshots: auto`) applies, and names the pages or panels, the viewports, the demo login (the seeder, or the variables from AGENTS.md) and where the files go (default `docs/screenshots/`). Write that screenshots or a visual check are impossible only with a concrete reason from the repository, and cite it as file:line in the issue and in your report. Reasons: the project has no web interface; the page needs an external service without a local substitute, or a login without a local alternative; the stack demonstrably does not run with SQLite and `php -S`. Not reasons: "needs a running app", "cannot be run from the Symphony workspace", "no browser", "no frontend build". Even then the developer tries it, and reports a step that fails in `screenshots_problem`.
 {% endif %}

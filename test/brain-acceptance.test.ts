@@ -263,7 +263,7 @@ describe('brain vault acceptance', () => {
     });
 
     it('is off without SYMPHONY_BRAIN_ENABLED, with the documented defaults', () => {
-      assert.deepEqual(shippedBrain({}), { enabled: false, path: '/home/u/brain', clashWindowMs: 600_000, obsidianUrl: '' });
+      assert.deepEqual(shippedBrain({}), { enabled: false, path: '/home/u/brain', clashWindowMs: 600_000, obsidianUrl: '', reviewLessons: { enabled: true, windowDays: 14, minIssues: 2, injectBudgetChars: 6000 } });
     });
 
     it('SYMPHONY_BRAIN_ENABLED and SYMPHONY_BRAIN_OBSIDIAN_URL switch it on and set the Obsidian link', () => {

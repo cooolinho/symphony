@@ -455,13 +455,27 @@ describe('brain config', () => {
   const env = { HOME: '/home/u' };
 
   it('defaults to disabled with ~/brain', () => {
-    assert.deepEqual(resolve(base, env).brain, { enabled: false, path: '/home/u/brain', clashWindowMs: 600000, obsidianUrl: '' });
+    assert.deepEqual(resolve(base, env).brain, { enabled: false, path: '/home/u/brain', clashWindowMs: 600000, obsidianUrl: '', reviewLessons: { enabled: true, windowDays: 14, minIssues: 2, injectBudgetChars: 6000 } });
   });
 
   it('reads enabled and path, expands ~ and resolves relative paths', () => {
-    assert.deepEqual(resolve({ ...base, brain: { enabled: true, path: '~/vault' } }, env).brain, { enabled: true, path: '/home/u/vault', clashWindowMs: 600000, obsidianUrl: '' });
+    assert.deepEqual(resolve({ ...base, brain: { enabled: true, path: '~/vault' } }, env).brain, { enabled: true, path: '/home/u/vault', clashWindowMs: 600000, obsidianUrl: '', reviewLessons: { enabled: true, windowDays: 14, minIssues: 2, injectBudgetChars: 6000 } });
     assert.equal(resolve({ ...base, brain: { path: 'vault' } }, env).brain.path, '/srv/flows/vault');
     assert.equal(resolve({ ...base, brain: { enabled: true } }, env).warnings.some((w) => /brain/.test(w)), false);
+  });
+
+  it('reads brain.review_lessons with defaults, minimums and an error for unknown keys (#575)', () => {
+    assert.deepEqual(resolve({ ...base, brain: { review_lessons: { enabled: false, window_days: 7, min_issues: 3, inject_budget_chars: 0 } } }, env).brain.reviewLessons, {
+      enabled: false,
+      windowDays: 7,
+      minIssues: 3,
+      injectBudgetChars: 0,
+    });
+    assert.deepEqual(resolve({ ...base, brain: { review_lessons: { window_days: 30 } } }, env).brain.reviewLessons, { enabled: true, windowDays: 30, minIssues: 2, injectBudgetChars: 6000 });
+    for (const [key, value] of [['window_days', 0], ['min_issues', 1], ['inject_budget_chars', -1], ['enabled', 'yes']] as const) {
+      assert.throws(() => resolve({ ...base, brain: { review_lessons: { [key]: value } } }, env), new RegExp(`brain\\.review_lessons\\.${key}`), key);
+    }
+    assert.throws(() => resolve({ ...base, brain: { review_lessons: { budget: 1 } } }, env), /brain\.review_lessons\.budget is not a known key/);
   });
 
   it('reads brain.obsidian_url, trimmed, and rejects other schemes', () => {

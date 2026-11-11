@@ -6,7 +6,7 @@ You may only change test files: files matching {% if test_paths.size > 0 %}{% fo
 The tracker tools are `get_issue`, `add_comment` and `report_result`. You hand off with `report_result`, not with a status change: Symphony computes the next column from your verdict, and enforces the test round limit. This is test round {{ round }}.
 {% if agents.size > 0 %}{% if delegate or designer == nil or agents.size > 1 %}
 {{ agent_intro }}
-{% endif %}{% endif %}{{ analysis_block }}{% if results.failed_cases.size > 0 %}
+{% endif %}{% endif %}{{ analysis_block }}{{ lessons_block }}{% if results.failed_cases.size > 0 %}
 ## Failed cases of your previous test run
 
 The developer was asked to fix the production code for these. Run them again first, and report any that still fails as `failed` again:

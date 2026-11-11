@@ -148,9 +148,9 @@ export interface ResultsTemplateValue {
     created_at: string;
   }>;
   /** Findings of the newest review when it asked for changes; empty after an approval or without a review. */
-  open_findings: Array<{ severity: string; file: string | null; line: number | null; problem: string; fix: string | null }>;
+  open_findings: Array<{ severity: string; category: string | null; file: string | null; line: number | null; problem: string; fix: string | null }>;
   /** Findings of the newest security review when it found issues; empty after a pass or without a security review. */
-  security_findings: Array<{ severity: string; file: string | null; line: number | null; problem: string; fix: string | null }>;
+  security_findings: Array<{ severity: string; category: string | null; file: string | null; line: number | null; problem: string; fix: string | null }>;
   /** Failed cases of the newest test when it failed; empty otherwise. */
   failed_cases: Array<{ criterion: string; test: string }>;
   /**
@@ -249,6 +249,7 @@ export function resultsTemplateValue(history: StageHistory): ResultsTemplateValu
       review?.kind === 'review' && review.verdict === 'changes_needed'
         ? review.findings.map((finding) => ({
             severity: finding.severity,
+            category: finding.category ?? null,
             file: finding.file ?? null,
             line: finding.line ?? null,
             problem: finding.problem,
@@ -259,6 +260,7 @@ export function resultsTemplateValue(history: StageHistory): ResultsTemplateValu
       security?.kind === 'security' && security.verdict === 'issues_found'
         ? security.findings.map((finding) => ({
             severity: finding.severity,
+            category: finding.category ?? null,
             file: finding.file ?? null,
             line: finding.line ?? null,
             problem: finding.problem,
@@ -372,6 +374,8 @@ export interface ResultRow {
 
 export interface ResultFinding {
   severity: string;
+  /** The finding's category (#575); null without one, absent in archives from before categories. */
+  category?: string | null;
   file: string | null;
   line: number | null;
   problem: string;
@@ -395,6 +399,7 @@ export function resultRows(results: readonly PersistedResult[]): ResultRow[] {
       result.kind === 'review' || result.kind === 'security'
         ? result.findings.map((finding) => ({
             severity: finding.severity,
+            category: finding.category ?? null,
             file: finding.file ?? null,
             line: finding.line ?? null,
             problem: truncate(finding.problem, PROMPT_SUMMARY_LIMIT),

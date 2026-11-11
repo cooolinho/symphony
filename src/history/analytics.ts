@@ -623,7 +623,61 @@ interface StageResultEntry {
   mutationScore: number | null;
   /** Panel votes of a security result (L/XL); null when the line carries none or a broken count. */
   panel: PanelVoteCounts | null;
+  /** Blocker and major findings per category (#575); empty when the line carries none. */
+  categories: Record<string, number>;
   ms: number;
+}
+
+/** A review lesson of the vault for the category statistics: since when a category has a lesson. */
+export interface ReviewLessonRef {
+  /** The lesson's repository; null = it applies to every repository. */
+  repo: string | null;
+  category: string;
+  path: string;
+  /** When the lesson exists (its `created` date, ISO 8601). */
+  since: string;
+}
+
+/**
+ * Blocker and major findings per category of the stage results in the period (`finding_categories`): how many, in how many
+ * issues, since when the category has a lesson and how many findings came after it, so one sees whether a lesson
+ * lowers the recurrence. A lesson counts for a result of its repository (or of any repository without one); with several,
+ * the oldest one wins. Most findings first.
+ */
+export function findingCategoryStats(results: readonly Pick<StageResultEntry, 'repo' | 'issue' | 'categories' | 'ms'>[], lessons: readonly ReviewLessonRef[]) {
+  const sinceOf = (category: string, repo: string): ReviewLessonRef | null => {
+    let best: ReviewLessonRef | null = null;
+    for (const lesson of lessons) {
+      if (lesson.category !== category || (lesson.repo !== null && lesson.repo.toLowerCase() !== repo.toLowerCase())) continue;
+      if (Number.isNaN(Date.parse(lesson.since))) continue;
+      if (best === null || Date.parse(lesson.since) < Date.parse(best.since)) best = lesson;
+    }
+    return best;
+  };
+  const stats = new Map<string, { findings: number; issues: Set<string>; lesson: ReviewLessonRef | null; after: number }>();
+  for (const result of results) {
+    for (const [category, findings] of Object.entries(result.categories)) {
+      if (!(findings > 0)) continue;
+      const entry = stats.get(category) ?? { findings: 0, issues: new Set<string>(), lesson: null, after: 0 };
+      stats.set(category, entry);
+      entry.findings += findings;
+      entry.issues.add(result.issue);
+      const lesson = sinceOf(category, result.repo);
+      if (lesson !== null) {
+        if (entry.lesson === null || Date.parse(lesson.since) < Date.parse(entry.lesson.since)) entry.lesson = lesson;
+        if (result.ms >= Date.parse(lesson.since)) entry.after += findings;
+      }
+    }
+  }
+  return [...stats]
+    .map(([category, entry]) => ({
+      category,
+      findings: entry.findings,
+      issues: entry.issues.size,
+      lesson: entry.lesson === null ? null : { path: entry.lesson.path, since: entry.lesson.since },
+      findings_after_lesson: entry.lesson === null ? null : entry.after,
+    }))
+    .sort((a, b) => b.findings - a.findings || a.category.localeCompare(b.category));
 }
 
 function panelOf(fields: Record<string, string>): PanelVoteCounts | null {
@@ -654,6 +708,7 @@ function stageResultOf(entry: HistoryEntry): StageResultEntry {
     findingsRefuted: numberOrNull(fields.findings_refuted),
     mutationScore: numberOrNull(fields.mutation_score),
     panel: panelOf(fields),
+    categories: parseCounts(fields.categories),
     ms: Date.parse(entry.ts),
   };
 }
@@ -1009,7 +1064,7 @@ function budgetInsights(allRuns: Run[], runs: Run[], entries: HistoryEntry[], ra
   return { limit_5h_tokens: limit, limit_hits, top_compact, peak_source };
 }
 
-export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable, filter: AnalyticsFilter, now = new Date(), rateLimits: RateLimitRecord[] = []) {
+export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable, filter: AnalyticsFilter, now = new Date(), rateLimits: RateLimitRecord[] = [], lessons: readonly ReviewLessonRef[] = []) {
   const allRuns = collectRuns(entries, pricing);
   const issueComplexity = issueComplexities(entries);
   const complexityOf = (issue: string) => issueComplexity.get(issue) ?? UNKNOWN_COMPLEXITY;
@@ -1348,6 +1403,7 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
     durations,
     tools: toolStats(runs),
     subagent_evaluation: subagentEvaluation(runs, pipelineRuns, stageResultsInScope),
+    finding_categories: findingCategoryStats(stageResultsInScope, lessons),
     heatmap: { start_times: heatmap, max: Math.max(0, ...heatmap.flat()) },
     top,
     attention: { rules: ATTENTION_RULES, items: attention.slice(0, ATTENTION_LIMIT), total: attention.length },

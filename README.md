@@ -157,6 +157,8 @@ Details: [dashboard and API](docs/usage.md#dashboard-and-api).
 - **Obsidian in the browser:** the compose profile `brain` runs Obsidian on the same vault behind Traefik.
 - **Grows with the work:** after every merge Symphony writes an issue summary; the gardener role proposes merges and
   fixes for duplicates, orphans and broken links.
+- **Learns from reviews:** a review finding that recurs in a repository becomes a lesson, and the next developer of that
+  repository gets the lessons in its prompt before it codes.
 
 Details: [docs/brain.md](docs/brain.md).
 
