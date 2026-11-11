@@ -159,6 +159,8 @@ Details: [Dashboard und API](docs/usage.md#dashboard-and-api).
 - **Mensch entscheidet:** Neue Notizen sind Kandidaten; nur ein Mensch befördert sie zu `approved`, im Dashboard oder in
   Obsidian. Freigegebene Notizen sind für Agenten nur lesbar, und Clash-Regeln verhindern, dass sich zwei Läufe
   gegenseitig überschreiben.
+- **Lernt aus Reviews:** Ein Review-Fund, der in einem Repository wiederkehrt, wird zur Lesson; der nächste Developer
+  dieses Repositories bekommt die Lessons in seinen Prompt, bevor er codet.
 - **Obsidian im Browser:** Das Compose-Profil `brain` startet Obsidian auf demselben Vault hinter Traefik.
 - **Wächst mit der Arbeit:** Nach jedem Merge schreibt Symphony eine Issue-Zusammenfassung; die Gärtner-Rolle schlägt
   Zusammenführungen und Korrekturen für Duplikate, Waisen und kaputte Links vor.

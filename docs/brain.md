@@ -88,7 +88,7 @@ The detection is deterministic: its sources are the issue archives of the reposi
 | `min_issues` | `2` | Distinct issues a category needs within the window for `cross_issue` (at least 2). |
 | `inject_budget_chars` | `6000` | Characters of lessons injected into a prompt; the rest is listed by path (`0` = paths only). |
 
-**Measuring.** `GET /api/v1/history/analytics` has `finding_categories`: per category the findings and affected issues of the period, the lesson with the date it exists since (its `created` date) and the findings after that date. A lesson that works lowers the findings after it.
+**Measuring.** `GET /api/v1/history/analytics` has `finding_categories`: per category the findings and affected issues of the period, the lesson with the date it exists since (its `created` date, else `updated`) and the findings after that date. A lesson that works lowers the findings after it.
 
 ## Gardener
 
