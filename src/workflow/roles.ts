@@ -9,7 +9,7 @@ export const DEFAULT_ROLE = 'default';
 
 /** Claude settings a role may override for its sessions. */
 export type RoleClaudeOverrides = Partial<
-  Pick<ClaudeConfig, 'model' | 'effort' | 'allowedTools' | 'disallowedTools' | 'appendSystemPrompt' | 'maxBudgetUsd'>
+  Pick<ClaudeConfig, 'model' | 'effort' | 'allowedTools' | 'disallowedTools' | 'appendSystemPrompt' | 'maxBudgetUsd' | 'autoCompactWindow'>
 > & {
   /** Model to use for each complexity level; entries can override the role's model for specific levels. */
   modelByComplexity?: Partial<Record<'S' | 'M' | 'L' | 'XL', string | null>>;

@@ -152,11 +152,11 @@ describe('upgrade documentation (E4-5)', () => {
 });
 
 describe('scope of the upgrade (E4-5)', () => {
-  it('does not use agent_id or the Agent effort in the code yet (E4-6)', () => {
-    const dir = new URL('src/agent/', root).pathname;
-    for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.ts'))) {
-      assert.ok(!fs.readFileSync(path.join(dir, file), 'utf8').includes('agent_id'), `${file} uses agent_id`);
-    }
+  it('uses agent_id and task_id for the subagent attribution since E4-6, with the tool call ids as fallback', () => {
+    const source = readText('src/agent/claude.ts');
+    assert.ok(source.includes('agent_id'));
+    assert.ok(source.includes('task_id'));
+    assert.ok(source.includes('parent_tool_use_id'));
   });
 
   it('still denies forks in every session', () => {

@@ -157,11 +157,15 @@ claude:
   plugins: [./.claude]                       # Symphony's toolbox: skills, subagents and hooks for every repository
   skills: all                                # repository skills, Laravel Boost skills and symphony:* skills
   stall_timeout_ms: 600000
+  # Bash calls of the agent: BASH_DEFAULT_TIMEOUT_MS 600000 (10 min) and BASH_MAX_TIMEOUT_MS 1200000 (20 min) are the defaults, so a
+  # full test run fits into one call; override them in claude.env. A call with no agent event for longer than stall_timeout_ms counts as a stall.
+  # env: {BASH_DEFAULT_TIMEOUT_MS: "900000"}
   # max_budget_usd: 5                        # optional cost cap per agent session
+  auto_compact_window: 200000                # tokens at which Claude Code compacts; auto = the model window (1M on the 5-5 models, so it never compacts); 100000-1000000
 
 roles:
   # agents: plugin subagents (.claude/agents) the role may start; unset = all (the default for custom workflows; every role
-  # below lists its agents explicitly, [] = none). Read-only roles only get read-only ones, and the framework-neutral `explorer` and `design-critic` exist everywhere, laravel-* subagents only exist in workspaces with a Laravel app.
+  # below lists its agents explicitly, [] = none). Read-only roles only get read-only ones, and the framework-neutral `explorer`, `design-critic` and `spec-reviewer` exist everywhere, laravel-* subagents only exist in workspaces with a Laravel app.
   # brain: which brain tools the role gets (off = none, read = search/read/list/vitals, write = also write/append); only with
   # brain.enabled; unset = off. brain_approved_writes: false (only with brain: write) makes brain_write/brain_append reject
   # every approved note and every status: approved; unset = true (no extra gate).
@@ -213,7 +217,7 @@ roles:
     model_label: ignore                      # opus, fable at complexity L and XL, whatever the issue's Model: label picks
     agents: [explorer, design-critic]       # explorers map the code; at L/XL the opus design-critic checks the fable draft once
     brain: write
-    claude: { model: opus, effort: high, model_by_complexity: { L: fable, XL: fable } }   # a short session: thinking pays off here
+    claude: { model: opus, effort: high, auto_compact_window: 400000, model_by_complexity: { L: fable, XL: fable } }   # a short session: thinking pays off here
   developer:
     states: [In progress]
     result: implementation
@@ -221,7 +225,7 @@ roles:
       done: ${SYMPHONY_AFTER_IMPLEMENTATION:-Agent review}   # Agent review, or Testing to run the test engineer first (bug, feature and refactor issues: pipeline.profiles)
       blocked: Blocked
     may_move_to: [In progress, Testing, Documentation, Agent review, Blocked]
-    agents: [explorer, laravel-architect, laravel-database-engineer, laravel-filament-developer, laravel-test-engineer, laravel-code-reviewer]
+    agents: [explorer, laravel-architect, laravel-database-engineer, laravel-filament-developer, laravel-test-engineer, laravel-code-reviewer, spec-reviewer]   # at L/XL one read-only review before the first push: laravel-code-reviewer in Laravel workspaces, spec-reviewer elsewhere; none at S/M
     brain: read
     # claude.model (CLAUDE_MODEL), opus at complexity L and XL, which implement the architect's design; a Model: label
     # on the issue wins, and an Effort: label sets the effort.
@@ -250,7 +254,8 @@ roles:
     states: [Documentation]
     result: docs
     on_result: { done: Agent review, not_needed: Agent review, blocked: Blocked }
-    may_move_to: [Agent review, Blocked]
+    on_check_failed: In progress             # the entry check of Agent review failed (flaky test, develop merge, developer bug): back to the developer, with the output; docs cannot fix code
+    may_move_to: [Agent review, In progress, Blocked]
     agents: []                               # edits docs only; none of the laravel-* personas
     model_label: ignore                      # haiku, whatever the issue's Model: label picks for the developer
     effort_label: ignore                     # medium, whatever the issue's Effort: label says
@@ -448,13 +453,18 @@ server:
   public_url: ${SYMPHONY_PUBLIC_URL:-}       # the dashboard as people reach it (https://symphony.example.com); links in commit statuses
 
 # budget:
-#   compact_threshold: 80                    # context percent of Claude Code's auto-compact; the team view marks it
+#   compact_threshold: 80                    # fallback for the team view mark of a role without claude.auto_compact_window; display only
 
 brain:                                       # knowledge vault: one vault for all repositories, created at startup
   enabled: ${SYMPHONY_BRAIN_ENABLED:-false}  # true = create the vault; false = no path is touched
   path: ~/brain                              # /home/symphony/brain is the brain volume in Docker
   # clash_window_ms: 600000                  # another run that wrote a note within this window blocks a write (0 = off)
   obsidian_url: ${SYMPHONY_BRAIN_OBSIDIAN_URL:-}  # "In Obsidian öffnen" on /brain (e.g. https://brain.docker.lan); empty hides it
+  review_lessons:                            # recurring review findings become lessons for the developer (docs/brain.md#review-lessons)
+    enabled: true                            # detect recurring finding categories, refuse a review without a lesson once, inject lessons
+    window_days: 14                          # a category recurs in >= min_issues issues of a repository within this many days
+    min_issues: 2                            # ... or again in a later result of the same issue
+    inject_budget_chars: 6000                # lessons in the developer, test engineer and architect prompts; the rest by path only
 # Only roles with brain: read or write get the brain tools (see roles:).
 # Existing files and folders are never overwritten; .obsidian/ is never touched. Changes apply after a restart.
 
@@ -474,8 +484,8 @@ watchdog:
     max_budget_usd: ${SYMPHONY_WATCHDOG_MAX_BUDGET_USD:-3}  # per diagnosis
     # max_turns: 2                           # the task plus one reminder to call report_diagnosis
 ---
-{% capture branch %}{% if issue.branch_name %}{{ issue.branch_name }}{% else %}symphony/issue-{{ issue.native_ref.number }}{% endif %}{% endcapture %}{% assign base = issue.native_ref.base_branch %}{% assign splittable = false %}{% if issue.complexity == "XL" and issue.native_ref.parent == nil %}{% assign splittable = true %}{% endif %}{% assign integration = false %}{% if issue.native_ref.sub_issues.size > 0 and results.implementation == nil %}{% assign integration = true %}{% endif %}{% assign large_issue = false %}{% if issue.complexity == "L" or issue.complexity == "XL" %}{% assign large_issue = true %}{% endif %}{% capture agent_list %}{% for agent in agents %}{% assign short = agent.name | split: ":" | last %}{% if short != "design-critic" or large_issue %}
-- `{{ agent.name }}`: {{ agent.description }}{% endif %}{% endfor %}{% endcapture %}{% assign explorer_agent = nil %}{% assign architect_agent = nil %}{% assign design_critic_agent = nil %}{% assign reviewer_agent = nil %}{% assign listed_agents = 0 %}{% assign specialists = "" %}{% for agent in agents %}{% assign short = agent.name | split: ":" | last %}{% if short != "design-critic" or large_issue %}{% assign listed_agents = listed_agents | plus: 1 %}{% endif %}{% if short == "explorer" %}{% assign explorer_agent = agent.name %}{% elsif short == "design-critic" %}{% if large_issue %}{% assign design_critic_agent = agent.name %}{% endif %}{% elsif short == "laravel-architect" %}{% assign architect_agent = agent.name %}{% elsif short == "laravel-code-reviewer" %}{% assign reviewer_agent = agent.name %}{% elsif short == "laravel-database-engineer" or short == "laravel-filament-developer" or short == "laravel-test-engineer" %}{% capture quoted %}`{{ agent.name }}`{% endcapture %}{% if specialists == "" %}{% assign specialists = quoted %}{% else %}{% assign specialists = specialists | append: ", " | append: quoted %}{% endif %}{% endif %}{% endfor %}{% capture agent_intro %}Subagents you can start with the Agent tool; always pass the name as `subagent_type`. Delegate where a trigger applies (the agent's description and the occasions of your role name them), never for what a few tool calls finish. A subagent sees neither this prompt nor the issue, only your brief, so every brief contains: the issue (identifier, title, the part of the description it needs) and its acceptance criteria, the absolute workspace path (run `pwd`), the task and its boundaries (what to look at, what to leave alone), the output format with `file:line` for every claim, file lists instead of file contents, and a return of about 1,000–2,000 tokens. Treat its findings as candidates: read the cited lines yourself before you rely on them and discard any claim without `file:line`. You stay responsible for the result.{{ agent_list }}{% endcapture %}{% capture analysis_block %}{% if results.analysis %}
+{% capture branch %}{% if issue.branch_name %}{{ issue.branch_name }}{% else %}symphony/issue-{{ issue.native_ref.number }}{% endif %}{% endcapture %}{% assign base = issue.native_ref.base_branch %}{% assign splittable = false %}{% if issue.complexity == "XL" and issue.native_ref.parent == nil %}{% assign splittable = true %}{% endif %}{% assign integration = false %}{% if issue.native_ref.sub_issues.size > 0 and results.implementation == nil %}{% assign integration = true %}{% endif %}{% assign large_issue = false %}{% if issue.complexity == "L" or issue.complexity == "XL" %}{% assign large_issue = true %}{% endif %}{% assign laravel_reviewer = nil %}{% for agent in agents %}{% assign short = agent.name | split: ":" | last %}{% if short == "laravel-code-reviewer" %}{% assign laravel_reviewer = agent.name %}{% endif %}{% endfor %}{% assign listed_agents = 0 %}{% capture agent_list %}{% for agent in agents %}{% assign short = agent.name | split: ":" | last %}{% assign hidden = false %}{% if short == "design-critic" %}{% unless large_issue %}{% assign hidden = true %}{% endunless %}{% elsif short == "spec-reviewer" %}{% unless large_issue %}{% assign hidden = true %}{% endunless %}{% if laravel_reviewer %}{% assign hidden = true %}{% endif %}{% elsif short == "laravel-code-reviewer" and role == "developer" %}{% unless large_issue %}{% assign hidden = true %}{% endunless %}{% endif %}{% unless hidden %}{% assign listed_agents = listed_agents | plus: 1 %}
+- `{{ agent.name }}`: {{ agent.description }}{% endunless %}{% endfor %}{% endcapture %}{% assign explorer_agent = nil %}{% assign architect_agent = nil %}{% assign design_critic_agent = nil %}{% assign reviewer_agent = nil %}{% assign spec_agent = nil %}{% assign self_review_agent = nil %}{% assign specialists = "" %}{% for agent in agents %}{% assign short = agent.name | split: ":" | last %}{% if short == "explorer" %}{% assign explorer_agent = agent.name %}{% elsif short == "design-critic" %}{% if large_issue %}{% assign design_critic_agent = agent.name %}{% endif %}{% elsif short == "laravel-architect" %}{% assign architect_agent = agent.name %}{% elsif short == "laravel-code-reviewer" %}{% assign reviewer_agent = agent.name %}{% elsif short == "spec-reviewer" %}{% assign spec_agent = agent.name %}{% elsif short == "laravel-database-engineer" or short == "laravel-filament-developer" or short == "laravel-test-engineer" %}{% capture quoted %}`{{ agent.name }}`{% endcapture %}{% if specialists == "" %}{% assign specialists = quoted %}{% else %}{% assign specialists = specialists | append: ", " | append: quoted %}{% endif %}{% endif %}{% endfor %}{% if large_issue %}{% if laravel_reviewer %}{% assign self_review_agent = laravel_reviewer %}{% else %}{% assign self_review_agent = spec_agent %}{% endif %}{% endif %}{% capture agent_intro %}Subagents you can start with the Agent tool; always pass the name as `subagent_type`. Delegate where a trigger applies (the agent's description and the occasions of your role name them), never for what a few tool calls finish. A subagent sees neither this prompt nor the issue, only your brief, so every brief contains: the issue (identifier, title, the part of the description it needs) and its acceptance criteria, the absolute workspace path (run `pwd`), the task and its boundaries (what to look at, what to leave alone), the output format with `file:line` for every claim, file lists instead of file contents, and a return of about 1,000–2,000 tokens. Treat its findings as candidates: read the cited lines yourself before you rely on them and discard any claim without `file:line`. You stay responsible for the result.{{ agent_list }}{% endcapture %}{% capture analysis_block %}{% if results.analysis %}
 ## Analysis of the issue analyst
 
 A read-only analyst examined the issue before the implementation{% if results.analysis.type or results.analysis.complexity %} (type: {{ results.analysis.type | default: "n/a" }}, complexity: {{ results.analysis.complexity | default: "n/a" }}){% endif %}. Use it as input, but check it against the code: where it contradicts the issue description, the issue wins and you say so.
@@ -551,8 +561,10 @@ Interfaces between them:{% for item in results.design.interfaces %}
    - Store it where the project's instructions say, else under `docs/screenshots/` with a descriptive name, then commit and push it on `{{ branch }}`.
    - Embed it in the pull request body by commit SHA: `![<what it shows>](https://github.com/<owner>/<repo>/blob/<commit sha>/<path>?raw=true)`; this works for private repositories too, `raw.githubusercontent.com` does not. `open_pull_request` on a branch with an open pull request replaces its title and body, so call it again with the complete body after adding screenshots.
    - If a screenshot still cannot be taken, set `screenshots_problem` in your result to exactly which step failed and with what error.
-{% endcapture %}{% capture screenshots_note %}
-UI screenshots: when the project's instructions or the issue ask for screenshots of UI changes, the developer takes them in its workspace: it builds the frontend assets where needed, serves the app and uses the image's headless Chromium (`symphony-screenshot --check` tests it; it is not on the `PATH`, and a missing `node_modules` or `public/build` is normal in a fresh workspace). "No browser" or "no frontend build" is never a reason to leave them out{% if role == "reviewer" %}: if they are missing, that is a `major` finding, unless the developer's result names the step that failed and its error; then it is `minor` and quotes that error{% else %}, so do not plan to leave them out or to hand them to a human{% endif %}.
+{% endcapture %}{% capture lessons_block %}{% include "roles/brain-lessons.md" %}{% endcapture %}{% capture recurrence_block %}{% include "roles/recurring-findings.md" %}{% endcapture %}{% capture screenshots_note %}
+UI screenshots: when the project's instructions or the issue ask for screenshots of UI changes, the developer takes them in its workspace: it builds the frontend assets where needed, serves the app and uses the image's headless Chromium (`symphony-screenshot --check` tests it; it is not on the `PATH`, and a missing `node_modules` or `public/build` is normal in a fresh workspace). "No browser" or "no frontend build" is never a reason to leave them out{% if role == "reviewer" %}: if they are missing, that is a `major` finding, unless the developer's result names the step that failed and its error; then it is `minor` and quotes that error{% else %}, so do not plan to leave them out or to hand them to a human{% endif %}.{% if role == "analyst" or role == "planner" or role == "autopilot" %}
+You do not take screenshots yourself (you are read-only), but the developer does, so never plan them away and never hand them to a human. An issue that needs a visual check (design, comparison with a mockup, before/after) contains the word "Screenshots", so that the check in `report_result` (`require_screenshots: auto`) applies, and names the pages or panels, the viewports, the demo login (the seeder, or the variables from AGENTS.md) and where the files go (default `docs/screenshots/`). Write that screenshots or a visual check are impossible only with a concrete reason from the repository, and cite it as file:line in the issue and in your report. Reasons: the project has no web interface; the page needs an external service without a local substitute, or a login without a local alternative; the stack demonstrably does not run with SQLite and `php -S`. Not reasons: "needs a running app", "cannot be run from the Symphony workspace", "no browser", "no frontend build". Even then the developer tries it, and reports a step that fails in `screenshots_problem`.
+{% endif %}
 {% endcapture %}
 You are working on GitHub issue **{{ issue.identifier }}**: {{ issue.title }}
 

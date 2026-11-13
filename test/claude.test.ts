@@ -240,6 +240,23 @@ describe('claude agent runner', () => {
     assert.equal(allowed.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '0');
   });
 
+  it('hands claude.auto_compact_window to Claude Code, and claude.env wins', async () => {
+    assert.equal((await sessionOptions({})).env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW, undefined);
+    assert.equal((await sessionOptions({ claude: { auto_compact_window: 'auto' } })).env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW, undefined);
+    assert.equal((await sessionOptions({ claude: { auto_compact_window: 200000 } })).env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '200000');
+    const custom = await sessionOptions({ claude: { auto_compact_window: 200000, env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '500000' } } });
+    assert.equal(custom.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '500000');
+  });
+
+  it('gives Bash a finite default timeout that fits a full test run, overridable through claude.env', async () => {
+    const options = await sessionOptions({});
+    assert.equal(options.env?.BASH_DEFAULT_TIMEOUT_MS, '600000');
+    assert.equal(options.env?.BASH_MAX_TIMEOUT_MS, '1200000');
+    const custom = await sessionOptions({ claude: { env: { BASH_DEFAULT_TIMEOUT_MS: '300000', BASH_MAX_TIMEOUT_MS: '900000' } } });
+    assert.equal(custom.env?.BASH_DEFAULT_TIMEOUT_MS, '300000');
+    assert.equal(custom.env?.BASH_MAX_TIMEOUT_MS, '900000');
+  });
+
   it('denies fork subagents and switches them off in every session unless claude.env allows them', async () => {
     const sessions = [
       await sessionOptions({ policy: { readOnly: false }, deniedAgents: ['symphony:a'] }),
@@ -1059,6 +1076,68 @@ describe('claude agent runner', () => {
       assert.equal(t.inputTokens + t.outputTokens + t.cacheReadTokens + t.cacheWriteTokens, 528688);
       assert.equal(events.filter((e) => e.event === 'notification' && String(e.message).startsWith('system/task_')).length, 0);
       assert.equal(events.filter((e) => e.event === 'subagent' && e.message !== undefined).length, 2);
+    });
+
+    describe('attribution by agent_id and task_id (#516)', () => {
+      const withAgent = (m: Record<string, unknown>, agentId: string) => ({ ...m, agent_id: agentId });
+      const figures = (snap: ReturnType<typeof last>) => {
+        const t = snap!.tokens;
+        return [snap?.contextTokens, t.inputTokens + t.outputTokens + t.cacheReadTokens + t.cacheWriteTokens, snap?.toolUses];
+      };
+      const flow = (agent: boolean) => [
+        call,
+        started,
+        agent ? withAgent(inner('m1', 2, 990, 451649, 10228), 't1') : inner('m1', 2, 990, 451649, 10228),
+        progress,
+        agent ? withAgent(inner('m2', 2, 1588, 63392, 837), 't1') : inner('m2', 2, 1588, 63392, 837),
+        notification,
+        toolResult,
+      ];
+
+      it('gives the same figures with and without agent_id', async () => {
+        const plain = figures(last(await run(flow(false))));
+        assert.deepEqual(plain, [65819, 528688, 12]);
+        assert.deepEqual(figures(last(await run(flow(true)))), plain);
+      });
+
+      it('attributes by agent_id even when parent_tool_use_id is missing', async () => {
+        const bare = (m: Record<string, unknown>) => withAgent({ ...m, parent_tool_use_id: null }, 't1');
+        const snap = last(await run([call, started, bare(inner('m1', 2, 990, 451649, 10228)), bare(inner('m2', 2, 1588, 63392, 837)), notification, toolResult]));
+        assert.deepEqual(figures(snap), [65819, 528688, 12]);
+      });
+
+      it('falls back to parent_tool_use_id for an unknown agent_id', async () => {
+        const snap = last(await run([call, withAgent(inner('m1', 2, 990, 451649, 10228), 'unknown'), toolResult]));
+        assert.equal(snap?.tokens.outputTokens, 990);
+      });
+
+      it('attributes a task event without tool_use_id by the task_id learned from task_started', async () => {
+        const { tool_use_id: _omit, ...bare } = notification;
+        const snap = last(await run([call, started, inner('m1', 2, 990, 0, 0), bare, toolResult]));
+        assert.equal(snap?.contextTokens, 65819);
+        assert.equal(snap?.toolUses, 12);
+      });
+
+      it('counts a message with agent_id as a subagent message', async () => {
+        const events = await run([call, started, withAgent({ ...inner('m1', 2, 990, 0, 0), parent_tool_use_id: null, message: { id: 'm1', model: 'claude-opus-5-5', content: [{ type: 'tool_use', id: 'u1', name: 'Bash', input: { command: 'ls' } }], usage: { input_tokens: 9, output_tokens: 1 } } }, 't1'), toolResult]);
+        assert.equal(events.find((e) => e.event === 'tool_use' && (e.detail as { tool?: string })?.tool === 'Bash')?.detail?.subagent, true);
+      });
+
+      it('attributes a nested run to its own subagent, not the parent', async () => {
+        const NESTED = 'toolu_nested';
+        const nestedCall = withAgent({ type: 'assistant', message: { id: 'c', content: [{ type: 'tool_use', id: NESTED, name: 'Agent', input: { subagent_type: 'Explore', description: 'inner' } }], usage: { input_tokens: 1, output_tokens: 1 } }, parent_tool_use_id: ID }, 't1');
+        const nestedStarted = { type: 'system', subtype: 'task_started', task_id: 't2', tool_use_id: NESTED, description: 'd', task_type: 'local_agent' };
+        // The nested run's messages still name the outer call as parent: only agent_id tells them apart.
+        const nestedMsg = withAgent(inner('n1', 5, 7, 0, 0), 't2');
+        const nestedDone = { type: 'system', subtype: 'task_notification', task_id: 't2', tool_use_id: NESTED, status: 'completed', output_file: '', summary: '', usage: { total_tokens: 11, tool_uses: 3, duration_ms: 5 } };
+        const events = await run([call, started, nestedCall, nestedStarted, nestedMsg, nestedDone]);
+        const outer = last(events);
+        const nested = events.flatMap((e) => (e.subagent?.toolUseId === NESTED ? [e.subagent] : [])).at(-1);
+        assert.equal(nested?.tokens.outputTokens, 7);
+        assert.equal(nested?.toolUses, 3);
+        assert.equal(outer?.tokens.outputTokens, 1); // only its own call that started the nested run
+        assert.equal(outer?.toolUses, null);
+      });
     });
 
     it('still updates a run whose task_notification arrives after the tool_result', async () => {

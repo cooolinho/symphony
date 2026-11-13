@@ -65,6 +65,14 @@ async function render(
   return renderPrompt(template, { issue: issueTemplateValue(subject, commandSkills([toolbox])), attempt, role, agents, ...history });
 }
 
+/** Renders a role's prompt for an issue with the given labels (e.g. a complexity). */
+async function renderWithLabels(role: string, labels: string[], agents: Array<{ name: string; description: string }> = []): Promise<string> {
+  const { definition } = await loadWorkflowFile(shipped);
+  const template = compilePrompt(definition.promptTemplate, definition.partials);
+  const subject = { ...issue, labels, native_ref: { ...issue.native_ref, base_branch: 'develop' } };
+  return renderPrompt(template, { issue: issueTemplateValue(subject, commandSkills([toolbox])), attempt: null, role, agents, round: 1 });
+}
+
 /** The stage history of a session that follows a review with changes needed. */
 const afterReview = {
   result_required: true,
@@ -331,7 +339,7 @@ describe('shipped WORKFLOW.md', () => {
     const prompt = await render('issue-analyst', 2, undefined, 'develop', [{ name: 'laravel-architect', description: 'Plans features' }]);
     assert.match(prompt, /Your role: issue analyst/);
     assert.match(prompt, /\*\*read-only\*\*/);
-    assert.match(prompt, /`get_issue`, `add_comment` and `report_result`/);
+    assert.match(prompt, /`get_issue`, `get_issue_by_number`, `add_comment` and `report_result`/);
     assert.match(prompt, /Read the project's instructions first/);
     assert.match(prompt, /Inspect the code/);
     assert.match(prompt, /Refine the acceptance criteria/);
@@ -644,7 +652,7 @@ describe('shipped WORKFLOW.md', () => {
   });
 
   it('renders the read-only reviewer prompt with the checklist and the result fields', async () => {
-    const prompt = await render('reviewer', 2);
+    const prompt = await render('reviewer', 2, undefined, null, [], { project_types: ['laravel'] });
     assert.match(prompt, /Your role: reviewer/);
     assert.match(prompt, /read-only/);
     assert.match(prompt, /git diff origin\/<base>\.\.\.HEAD/);
@@ -990,14 +998,15 @@ describe('shipped WORKFLOW.md issue commands', () => {
 
   it('lists the subagents of a role only when the session has some', async () => {
     const agents = [{ name: 'symphony:laravel-code-reviewer', description: 'Reviews a diff.' }];
-    for (const role of ['developer', 'reviewer', 'auditor', 'autopilot', 'analyst', 'planner']) {
+    // the developer sees the size-gated reviewer at L/XL only (see 'early self-review (#503)')
+    for (const role of ['reviewer', 'auditor', 'autopilot', 'analyst', 'planner']) {
       const without = await render(role);
       assert.doesNotMatch(without, /Subagents you can start/, role);
       const prompt = await render(role, null, undefined, null, agents);
       assert.match(prompt, /Subagents you can start with the Agent tool/, role);
       assert.match(prompt, /- `symphony:laravel-code-reviewer`: Reviews a diff\./, role);
     }
-    assert.match(await render('developer', null, undefined, null, agents), /before you report the result/);
+    assert.match(await renderWithLabels('developer', ['feature', 'complexity: l'], agents), /before the first `git push`/);
   });
 
   it('tells every role with agents when to delegate and what a brief contains', async () => {
@@ -1011,7 +1020,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
         /not for a change you can finish in a handful of tool calls/,
         /`symphony:laravel-architect`[^\n]*not when a design is given below/,
         /specialist \(`symphony:laravel-database-engineer`, `symphony:laravel-filament-developer`, `symphony:laravel-test-engineer`\); not for parts coupled/,
-        /`symphony:laravel-code-reviewer`[^\n]*before you report the result; not for a diff of a few lines/,
+        /before the first `git push`, start `symphony:laravel-code-reviewer` once[^\n]*Not for follow-up work/,
       ],
       architect: [/start 2–3 `symphony:explorer` calls in one message, one per code area/, /then read those files yourself\. Not for a change confined/],
       analyst: [/`symphony:explorer`[^\n]*not for a part whose files a few searches find/, /`symphony:laravel-architect`[^\n]*not for small or documentation-only parts/],
@@ -1020,7 +1029,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
       auditor: [/`symphony:explorer`[^\n]*not for a repository a few searches survey/, /`symphony:laravel-code-reviewer`[^\n]*not for pre-existing style/, /`symphony:laravel-architect`[^\n]*not for a local finding/],
     };
     for (const [role, patterns] of Object.entries(triggers)) {
-      const prompt = await render(role, null, undefined, null, full);
+      const prompt = role === 'developer' ? await renderWithLabels(role, ['feature', 'complexity: l'], full) : await render(role, null, undefined, null, full);
       assert.match(prompt, /Delegate where a trigger applies/, role);
       assert.match(prompt, /never for what a few tool calls finish/, role);
       for (const rule of ['acceptance criteria', 'absolute workspace path', 'boundaries', '`file:line`', 'file lists instead of file contents', '1,000–2,000 tokens', 'candidates', 'discard any claim without `file:line`']) {
@@ -1031,9 +1040,9 @@ describe('shipped WORKFLOW.md issue commands', () => {
       assert.doesNotMatch(prompt, /optional|costs tokens/i, role);
     }
     // A bullet renders only for an allowed agent.
-    const onlyReviewer = await render('developer', null, undefined, null, [full[5]!]);
+    const onlyReviewer = await renderWithLabels('developer', ['feature', 'complexity: l'], [full[5]!]);
     assert.doesNotMatch(onlyReviewer, /symphony:explorer|symphony:laravel-architect/);
-    assert.match(onlyReviewer, /before you report the result/);
+    assert.match(onlyReviewer, /before the first `git push`/);
   });
 
   it('renders no agent intro for the roles without subagents in a Laravel workspace', async () => {
@@ -1356,7 +1365,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
     assert.deepEqual(byRole, {
       'issue-analyst': [],
       architect: ['explorer', 'design-critic'],
-      developer: ['explorer', 'laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer'],
+      developer: ['explorer', 'laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer', 'spec-reviewer'],
       'test-engineer': ['test-designer'],
       docs: [],
       reviewer: ['convention-lens', 'bug-lens', 'finding-verifier'],
@@ -1439,7 +1448,7 @@ describe('shipped WORKFLOW.md issue commands', () => {
   });
 
   it('tells the architect and the reviewer that missing screenshots are not acceptable for want of a browser', async () => {
-    for (const role of ['architect', 'reviewer']) {
+    for (const role of ['architect', 'reviewer', 'analyst', 'planner', 'autopilot']) {
       const prompt = await render(role);
       assert.match(prompt, /UI screenshots: when the project's instructions or the issue ask for screenshots/, role);
       assert.match(prompt, /`symphony-screenshot --check` tests it/, role);
@@ -1449,6 +1458,100 @@ describe('shipped WORKFLOW.md issue commands', () => {
     assert.match(reviewer, /if they are missing, that is a `major` finding, unless the developer's result names the step that failed/);
     assert.match(reviewer, /\*\*UI screenshots:\*\* where the project asks for them/);
     for (const role of ['docs', 'issue-analyst', 'developer']) assert.doesNotMatch(await render(role), /UI screenshots: when the project's/, role);
+  });
+
+  it('gives only analyst, planner and autopilot the rule that screenshots are never impossible without a repository reason', async () => {
+    for (const role of ['analyst', 'planner', 'autopilot']) {
+      const prompt = await render(role);
+      assert.match(prompt, /never plan them away and never hand them to a human/, role);
+      assert.match(prompt, /only with a concrete reason from the repository, and cite it as file:line/, role);
+      assert.match(prompt, /Not reasons: "needs a running app", "cannot be run from the Symphony workspace", "no browser", "no frontend build"/, role);
+      assert.match(prompt, /`screenshots_problem`/, role);
+    }
+    for (const role of ['architect', 'reviewer', 'developer', 'docs', 'issue-analyst']) assert.doesNotMatch(await render(role), /never plan them away|Not reasons:/, role);
+  });
+
+  it('keeps the planning skills from claiming that the UI cannot be checked', async () => {
+    for (const skill of ['concept', 'plan', 'auto-code']) {
+      const dir = new URL(`../.claude/skills/${skill}/`, import.meta.url);
+      for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.md'))) {
+        const text = fs.readFileSync(new URL(file, dir), 'utf8');
+        assert.doesNotMatch(text, /does not see the UI|cannot see the interface/i, `${skill}/${file}`);
+      }
+    }
+  });
+
+  it('puts the screenshots note of the planning roles in front of the clone paragraph, with the addendum inside the note', async () => {
+    for (const role of ['analyst', 'planner', 'autopilot']) {
+      const source = fs.readFileSync(path.join(import.meta.dirname, '..', 'roles', `${role}.md`), 'utf8');
+      const placeholder = source.indexOf('{{ screenshots_note }}');
+      const clone = source.indexOf('The current directory is a clone');
+      assert.ok(placeholder > -1, `${role}.md includes the note`);
+      assert.ok(placeholder < clone, `${role}.md: note before the clone paragraph`);
+      const prompt = await render(role);
+      const note = prompt.indexOf("UI screenshots: when the project's instructions");
+      assert.ok(note > -1, role);
+      assert.ok(note < prompt.indexOf('The current directory is a clone'), `${role}: rendered note before the clone paragraph`);
+      assert.ok(prompt.indexOf('never plan them away') > note, `${role}: addendum behind the base note`);
+      assert.ok(prompt.indexOf('never plan them away') < prompt.indexOf('The current directory is a clone'), `${role}: addendum before the clone paragraph`);
+      assert.doesNotMatch(prompt, /\{\{|\{%/, `${role}: nothing unrendered`);
+    }
+  });
+
+  it('tells the planning roles what a visual issue has to name and which reasons count', async () => {
+    for (const role of ['analyst', 'planner', 'autopilot']) {
+      const prompt = await render(role);
+      assert.match(prompt, /do not take screenshots yourself/i, role);
+      assert.match(prompt, /contains the word "Screenshots"/, role);
+      assert.match(prompt, /`require_screenshots: auto`/, role);
+      assert.match(prompt, /the viewports/, role);
+      assert.match(prompt, /demo login/, role);
+      assert.match(prompt, /AGENTS\.md/, role);
+      assert.match(prompt, /`docs\/screenshots\/`/, role);
+      assert.match(prompt, /in the issue and in your report/, role);
+      assert.match(prompt, /no web interface/, role);
+      assert.match(prompt, /external service without a local substitute/, role);
+      assert.match(prompt, /SQLite and `php -S`/, role);
+      assert.match(prompt, /Even then the developer tries it/, role);
+    }
+  });
+
+  it('keeps the addendum out of every other shipped role', async () => {
+    for (const role of ['architect', 'reviewer', 'developer', 'docs', 'issue-analyst', 'auditor', 'security-auditor', 'test-engineer', 'brain-gardener', 'brain', 'default']) {
+      const prompt = await render(role);
+      assert.doesNotMatch(prompt, /never plan them away|Not reasons:|only with a concrete reason from the repository/, role);
+      assert.doesNotMatch(prompt, /you are read-only\), but the developer does/, role);
+    }
+  });
+
+  it('tells the planning skills that the developer checks the UI with screenshots and that impossibility needs a cited reason', () => {
+    const read = (rel: string): string => fs.readFileSync(path.join(import.meta.dirname, '..', '.claude', 'skills', rel), 'utf8');
+    for (const rel of ['concept/breakdown.md', 'plan/SKILL.md', 'auto-code/ideation.md']) {
+      const text = read(rel);
+      assert.match(text, /developer checks it with screenshots/, rel);
+      assert.match(text, /"Screenshots"/, rel);
+      assert.match(text, /docs\/screenshots\//, rel);
+      assert.match(text, /Filament component|component, columns/, `${rel}: criteria stay concrete`);
+    }
+    for (const rel of ['concept/breakdown.md', 'plan/SKILL.md']) {
+      const text = read(rel);
+      assert.match(text, /impossible only for a concrete reason from the repository, cited as file:line/, rel);
+      assert.match(text, /"needs a running app", "no browser" and "no frontend build" are no reasons/, rel);
+    }
+  });
+
+  it('corrects the documentation of the planning commands and of the Laravel UI screenshots section', () => {
+    const doc = (name: string): string => fs.readFileSync(path.join(import.meta.dirname, '..', 'docs', name), 'utf8');
+    const usage = doc('usage.md');
+    assert.doesNotMatch(usage, /does not see the UI\.\s*(It|Design)/, 'no bare claim without the developer check');
+    assert.equal(usage.match(/the developer checks it with screenshots/g)?.length, 3, 'all three places');
+    assert.equal(usage.match(/reason from the repository \(file:line\)/g)?.length, 3, 'all three places name the evidence rule');
+    const laravel = doc('laravel-repositories.md');
+    const section = laravel.slice(laravel.indexOf('## UI screenshots'));
+    assert.match(section, /the analyst/, 'analyst');
+    assert.match(section, /the planner/, 'planner');
+    assert.match(section, /the autopilot/, 'autopilot');
+    assert.match(section, /file:line/);
   });
 
   it('tells only the developer which package manager builds the assets', async () => {
@@ -1663,6 +1766,7 @@ describe('Symphony toolbox subagents', () => {
       'laravel-test-engineer',
       'refutation-judge',
       'security-inventory',
+      'spec-reviewer',
       'test-designer',
     ]);
   });
@@ -1692,6 +1796,7 @@ describe('Symphony toolbox subagents', () => {
       'laravel-database-engineer': 'sonnet',
       'laravel-filament-developer': 'sonnet',
       'laravel-test-engineer': undefined,
+      'spec-reviewer': 'opus',
       'test-designer': 'sonnet',
       'refutation-judge': 'opus',
       'security-inventory': 'sonnet',
@@ -1722,6 +1827,7 @@ describe('Symphony toolbox subagents', () => {
         'laravel-test-engineer': false,
         'refutation-judge': true,
         'security-inventory': true,
+        'spec-reviewer': true,
         'test-designer': false,
       });
     });
@@ -1806,7 +1912,7 @@ describe('Symphony toolbox subagents', () => {
       for (const name of ['analyst', 'architect', 'auditor', 'autopilot', 'developer', 'planner']) {
         const role = (config.roles ?? []).find((entry) => entry.name === name) ?? null;
         const { allowed, denied } = sessionAgents(all, role, ['laravel-'], []);
-        assert.deepEqual(allowed.map((agent) => agent.qualified), name === 'architect' ? ['symphony:design-critic', 'symphony:explorer'] : ['symphony:explorer'], name);
+        assert.deepEqual(allowed.map((agent) => agent.qualified), name === 'architect' ? ['symphony:design-critic', 'symphony:explorer'] : name === 'developer' ? ['symphony:explorer', 'symphony:spec-reviewer'] : ['symphony:explorer'], name);
         assert.equal(denied.filter((agent) => agent.name.startsWith('laravel-')).length, 5, name);
         const listed = allowed.map((agent) => ({ name: agent.qualified, description: agent.description }));
         const prompt = await render(name, null, undefined, null, listed);
@@ -1832,6 +1938,7 @@ describe('Symphony toolbox subagents', () => {
       'laravel-test-engineer': { model: undefined, readOnly: false, minTurns: 1 },
       'refutation-judge': { model: 'opus', readOnly: true, minTurns: 5 },
       'security-inventory': { model: 'sonnet', readOnly: true, minTurns: 5 },
+      'spec-reviewer': { model: 'opus', readOnly: true, minTurns: 1 },
       'test-designer': { model: 'sonnet', readOnly: false, minTurns: 30 },
     } as const;
     const allowedKeys = new Set(['name', 'description', 'model', 'effort', 'maxTurns', 'disallowedTools', 'tools']);
@@ -2106,4 +2213,81 @@ describe('verified findings in the prompts (E3-4)', () => {
       assert.doesNotMatch(await renderFor(role, 'complexity: m'), /`refuted`/);
     });
   }
+});
+
+describe('early self-review (#503)', () => {
+  const explorer = { name: 'symphony:explorer', description: 'Maps the code.' };
+  const laravel = { name: 'symphony:laravel-code-reviewer', description: 'Reviews a diff.' };
+  const spec = { name: 'symphony:spec-reviewer', description: 'Reviews against the spec.' };
+
+  for (const label of ['complexity: l', 'complexity: xl']) {
+    it(`names the reviewer once, before the first git push, at ${label}`, async () => {
+      const text = await renderWithLabels('developer', ['feature', label], [explorer, spec]);
+      const bullets = text.split('\n').filter((line) => line.startsWith('- This is a large change'));
+      assert.equal(bullets.length, 1);
+      const bullet = bullets[0] ?? '';
+      assert.equal(bullet.split('symphony:spec-reviewer').length - 1, 1);
+      for (const part of ['before the first `git push`', 'once', 'correctness gaps', 'skip style', 'file:line', 'command with its output', 'Not for']) {
+        assert.ok(bullet.includes(part), part);
+      }
+      assert.match(text, /The review by `symphony:spec-reviewer` \(see When to delegate\) comes before this first push\./);
+    });
+  }
+
+  it('names no reviewer at S, M or without a complexity label', async () => {
+    for (const labels of [['feature', 'complexity: s'], ['feature', 'complexity: m'], ['feature']]) {
+      const text = await renderWithLabels('developer', labels, [explorer, laravel, spec]);
+      assert.doesNotMatch(text, /spec-reviewer|laravel-code-reviewer/, labels.join());
+      assert.doesNotMatch(text, /before the first `git push`|correctness gaps|comes before this first push/, labels.join());
+      assert.match(text, /start 2–3|ten files/, labels.join());
+    }
+  });
+
+  it('names laravel-code-reviewer in Laravel workspaces and hides spec-reviewer from the list', async () => {
+    const text = await renderWithLabels('developer', ['feature', 'complexity: l'], [explorer, laravel, spec]);
+    assert.match(text, /start `symphony:laravel-code-reviewer` once/);
+    assert.doesNotMatch(text, /symphony:spec-reviewer/);
+    assert.match(text, /^- `symphony:laravel-code-reviewer`:/m);
+  });
+
+  it('names spec-reviewer elsewhere and lists it', async () => {
+    const text = await renderWithLabels('developer', ['feature', 'complexity: l'], [explorer, spec]);
+    assert.match(text, /^- `symphony:spec-reviewer`:/m);
+    assert.match(text, /start `symphony:spec-reviewer` once/);
+  });
+
+  it('keeps the auditor reviewer bullet without a complexity label', async () => {
+    const text = await render('auditor', null, undefined, null, [explorer, laravel]);
+    assert.match(text, /`symphony:laravel-code-reviewer`[^\n]*not for pre-existing style/);
+  });
+
+  describe('spec-reviewer.md', () => {
+    const text = fs.readFileSync(path.join(toolbox, 'agents', 'spec-reviewer.md'), 'utf8');
+    const front = /^---\n([\s\S]*?)\n---\n/.exec(text)?.[1] ?? '';
+
+    it('is read-only, opus, with maxTurns and a description with trigger and exclusion', () => {
+      assert.match(front, /^name: spec-reviewer$/m);
+      assert.match(front, /^model: opus$/m);
+      assert.match(front, /^maxTurns: 30$/m);
+      assert.match(front, /^disallowedTools: Edit, Write, NotebookEdit$/m);
+      assert.doesNotMatch(front, /^tools:|^effort:/m);
+      assert.match(front, /^description: Use at complexity L or XL[^\n]*Not for/m);
+    });
+
+    it('is parsed by pluginAgents() as a read-only symphony:spec-reviewer', () => {
+      const agent = pluginAgents([toolbox]).find((entry) => entry.name === 'spec-reviewer');
+      assert.ok(agent);
+      assert.equal(agent.readOnly, true);
+      assert.equal(agent.qualified, 'symphony:spec-reviewer');
+    });
+  });
+
+  it('lists spec-reviewer for the developer only and allows it in a Laravel-free workspace', async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    const config = resolveConfig(definition.config, { workflowPath: shipped, env: { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' }, trackerDefaults });
+    for (const role of config.roles ?? []) assert.equal(role.agents?.includes('spec-reviewer') ?? false, role.name === 'developer', role.name);
+    const developer = (config.roles ?? []).find((entry) => entry.name === 'developer') ?? null;
+    const { allowed } = sessionAgents(pluginAgents([toolbox]), developer, ['laravel-'], []);
+    assert.deepEqual(allowed.map((agent) => agent.qualified).sort(), ['symphony:explorer', 'symphony:spec-reviewer']);
+  });
 });

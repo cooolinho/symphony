@@ -106,6 +106,8 @@ export interface ClaudeConfig {
   executable: string | null;
   appendSystemPrompt: string | null;
   maxBudgetUsd: number | null;
+  /** Tokens at which Claude Code auto-compacts (CLAUDE_CODE_AUTO_COMPACT_WINDOW); null = auto (the model window). */
+  autoCompactWindow: number | null;
   persistSession: boolean;
   env: Record<string, string>;
   turnTimeoutMs: number;
@@ -231,6 +233,8 @@ export interface BrainConfig {
   clashWindowMs: number;
   /** Link target of "In Obsidian öffnen" on the Brain page: http(s):// or obsidian:// (default empty: the links are hidden). */
   obsidianUrl: string;
+  /** Recurring review findings become lessons and reach the developer (`brain.review_lessons`, #575). */
+  reviewLessons: ReviewLessonsConfig;
 }
 
 /** What the watchdog may do on GitHub (`watchdog.mode`). */
@@ -263,6 +267,20 @@ export interface WatchdogConfig {
   /** Prompts per diagnosis: the task, then reminders until `report_diagnosis` is called. */
   maxTurns: number;
 }
+
+/** `brain.review_lessons`: detection of recurring review findings and injection of lessons into prompts. */
+export interface ReviewLessonsConfig {
+  /** Detect recurring findings and inject lessons (default true; effective only with brain.enabled). */
+  enabled: boolean;
+  /** Days back the cross-issue detection looks (default 14). */
+  windowDays: number;
+  /** Distinct issues of one repository a category needs within the window to recur (default 2). */
+  minIssues: number;
+  /** Characters of lessons injected into a prompt; the rest is listed by path only (default 6000; 0 = paths only). */
+  injectBudgetChars: number;
+}
+
+export const REVIEW_LESSONS_DEFAULTS: ReviewLessonsConfig = { enabled: true, windowDays: 14, minIssues: 2, injectBudgetChars: 6000 };
 
 /** Budget display settings (`budget` section). */
 export interface BudgetConfig {
@@ -333,7 +351,8 @@ const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
 const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server', 'system', 'brain', 'budget', 'watchdog'];
 const WATCHDOG_KEYS = new Set(['mode', 'interval_ms', 'settle_ms', 'cooldown_ms', 'max_resumes', 'prompt', 'api_url', 'log_file', 'claude']);
 const WATCHDOG_CLAUDE_KEYS = new Set(['model', 'effort', 'max_budget_usd', 'max_turns']);
-const BRAIN_KEYS = new Set(['enabled', 'path', 'clash_window_ms', 'obsidian_url']);
+const BRAIN_KEYS = new Set(['enabled', 'path', 'clash_window_ms', 'obsidian_url', 'review_lessons']);
+const REVIEW_LESSONS_KEYS = new Set(['enabled', 'window_days', 'min_issues', 'inject_budget_chars']);
 const BUDGET_KEYS = new Set(['compact_threshold']);
 const ROLE_KEYS = new Set([
   'brain',
@@ -378,7 +397,7 @@ const PIPELINE_KEYS = new Set([
   'require_screenshots',
 ]);
 const PROFILE_KEYS = new Set(['skip', 'skip_when', 'on_result', 'max_review_rounds', 'max_test_rounds']);
-const ROLE_CLAUDE_KEYS = new Set(['model', 'effort', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'max_budget_usd', 'model_by_complexity']);
+const ROLE_CLAUDE_KEYS = new Set(['model', 'effort', 'allowed_tools', 'disallowed_tools', 'append_system_prompt', 'max_budget_usd', 'auto_compact_window', 'model_by_complexity']);
 const MODEL_CLAUDE_KEYS = new Set(['permission_mode', 'on_permission_request', 'allowed_tools', 'disallowed_tools']);
 
 export function normalizeStateName(state: string): string {
@@ -791,6 +810,21 @@ function readMaxSubIssues(reader: Reader, raw: Record<string, unknown>, field: s
   return value || null;
 }
 
+const AUTO_COMPACT_WINDOW_MIN = 100_000;
+const AUTO_COMPACT_WINDOW_MAX = 1_000_000;
+
+function readAutoCompactWindow(reader: Reader, raw: Record<string, unknown>, key: string, field: string): number | null {
+  const value = raw[key];
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'string' && value.trim().toLowerCase() === 'auto') return null;
+  const parsed = parseInteger(value);
+  if (parsed === null || parsed < AUTO_COMPACT_WINDOW_MIN || parsed > AUTO_COMPACT_WINDOW_MAX) {
+    reader.errors.push(`${field} must be auto or an integer from ${AUTO_COMPACT_WINDOW_MIN} to ${AUTO_COMPACT_WINDOW_MAX} (got ${JSON.stringify(value)})`);
+    return null;
+  }
+  return parsed;
+}
+
 function readRoleClaude(reader: Reader, raw: Record<string, unknown>, field: string): RoleClaudeOverrides {
   for (const key of Object.keys(raw)) {
     if (!ROLE_CLAUDE_KEYS.has(key)) reader.errors.push(`${field}.${key} is not a known key (allowed: ${[...ROLE_CLAUDE_KEYS].join(', ')})`);
@@ -808,6 +842,8 @@ function readRoleClaude(reader: Reader, raw: Record<string, unknown>, field: str
   if (appendSystemPrompt !== null) claude.appendSystemPrompt = appendSystemPrompt;
   const maxBudgetUsd = reader.number(raw, 'max_budget_usd', `${field}.max_budget_usd`);
   if (maxBudgetUsd !== null) claude.maxBudgetUsd = maxBudgetUsd;
+  const autoCompactWindow = readAutoCompactWindow(reader, raw, 'auto_compact_window', `${field}.auto_compact_window`);
+  if (autoCompactWindow !== null) claude.autoCompactWindow = autoCompactWindow;
   const modelByComplexityRaw = raw.model_by_complexity;
   if (modelByComplexityRaw !== undefined && modelByComplexityRaw !== null) {
     if (isPlainObject(modelByComplexityRaw)) {
@@ -1169,6 +1205,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     executable,
     appendSystemPrompt: reader.script(claudeRaw, 'append_system_prompt', 'claude.append_system_prompt'),
     maxBudgetUsd: reader.number(claudeRaw, 'max_budget_usd', 'claude.max_budget_usd'),
+    autoCompactWindow: readAutoCompactWindow(reader, claudeRaw, 'auto_compact_window', 'claude.auto_compact_window'),
     persistSession: reader.bool(claudeRaw, 'persist_session', 'claude.persist_session', true),
     env: claudeEnv,
     turnTimeoutMs: reader.int(claudeRaw, 'turn_timeout_ms', 'claude.turn_timeout_ms', DEFAULTS.turnTimeoutMs, 1),
@@ -1258,7 +1295,17 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
   if (obsidianUrl !== '' && !/^(https?|obsidian):\/\/\S/i.test(obsidianUrl)) {
     reader.errors.push('brain.obsidian_url must start with http://, https:// or obsidian://');
   }
-  const brain: BrainConfig = { enabled: brainEnabled, path: brainPath, clashWindowMs, obsidianUrl };
+  const lessonsRaw = reader.section(brainRaw, 'review_lessons');
+  for (const key of Object.keys(lessonsRaw)) {
+    if (!REVIEW_LESSONS_KEYS.has(key)) reader.errors.push(`brain.review_lessons.${key} is not a known key (allowed: ${[...REVIEW_LESSONS_KEYS].join(', ')})`);
+  }
+  const reviewLessons: ReviewLessonsConfig = {
+    enabled: reader.bool(lessonsRaw, 'enabled', 'brain.review_lessons.enabled', REVIEW_LESSONS_DEFAULTS.enabled),
+    windowDays: reader.int(lessonsRaw, 'window_days', 'brain.review_lessons.window_days', REVIEW_LESSONS_DEFAULTS.windowDays, 1),
+    minIssues: reader.int(lessonsRaw, 'min_issues', 'brain.review_lessons.min_issues', REVIEW_LESSONS_DEFAULTS.minIssues, 2),
+    injectBudgetChars: reader.int(lessonsRaw, 'inject_budget_chars', 'brain.review_lessons.inject_budget_chars', REVIEW_LESSONS_DEFAULTS.injectBudgetChars, 0),
+  };
+  const brain: BrainConfig = { enabled: brainEnabled, path: brainPath, clashWindowMs, obsidianUrl, reviewLessons };
   const budgetRaw = reader.section(raw, 'budget');
   for (const key of Object.keys(budgetRaw)) {
     if (!BUDGET_KEYS.has(key)) reader.warnings.push(`budget.${key} ignored: not a known key (allowed: ${[...BUDGET_KEYS].join(', ')})`);

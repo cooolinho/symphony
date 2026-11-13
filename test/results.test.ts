@@ -14,6 +14,7 @@ import {
   internalResult,
   PANEL_MAX_REFUTING_VOTES,
   panelOutcome,
+  panelVoteCounts,
   parseResult,
   renderResultComment,
   renderResultMarkdown,
@@ -602,6 +603,23 @@ describe('verified findings (E3-4)', () => {
     assert.equal(verificationCounts(docs.result, true), null);
   });
 
+  it('counts panel votes per lens and candidates refuted by exactly one lens (#554)', () => {
+    const vote = (lens: string, verdict: string) => ({ lens, verdict, evidence: 'src/a.ts:1' });
+    const cand = (status: string, votes: ReturnType<typeof vote>[]) => ({ severity: 'major', problem: 'p', verification: { status, evidence: 'e', votes } });
+    const all = [vote('reachability', 'confirmed'), vote('impact', 'confirmed'), vote('defenses', 'confirmed')];
+    const security = (over: Record<string, unknown>) => ({ kind: 'security', verdict: 'issues_found', summary: 'x', findings: [], refuted: [], ...over }) as unknown as Parameters<typeof panelVoteCounts>[0];
+    const counts = panelVoteCounts(
+      security({
+        findings: [cand('confirmed', all)],
+        refuted: [cand('refuted', [vote('reachability', 'confirmed'), vote('impact', 'refuted'), vote('defenses', 'confirmed')]), cand('refuted', [vote('reachability', 'confirmed'), vote('impact', 'refuted'), vote('defenses', 'refuted')])],
+      }),
+    );
+    assert.deepEqual(counts, { candidates: 3, confirmed: { reachability: 3, impact: 1, defenses: 2 }, refuted: { reachability: 0, impact: 2, defenses: 1 }, singleRefuted: 1 });
+    assert.equal(panelVoteCounts(security({ findings: [{ severity: 'major', problem: 'p' }] })), null);
+    assert.equal(panelVoteCounts(security({ refuted: [{ severity: 'major', problem: 'p', verification: { status: 'refuted', evidence: 'e' } }] })), null);
+    assert.equal(panelVoteCounts({ ...security({ findings: [cand('confirmed', all)] }), kind: 'review' } as unknown as Parameters<typeof panelVoteCounts>[0]), null);
+  });
+
   it('posts confirmed findings only, with a count of the refuted candidates; the marker keeps them', () => {
     const meta = { role: 'reviewer', run: null, round: 1, profile: null, workflow_hash: null, head_sha: null, checks: null, target: null, created_at: '2026-10-01T00:00:00.000Z' };
     const markdown = renderResultMarkdown(review(), meta);
@@ -656,5 +674,52 @@ describe('security panel rule (E3-5)', () => {
   it('without panelVotes the votes are optional (E3-4 behaviour)', () => {
     const outcome = parseResult('security', { verdict: 'issues_found', summary: 'x', findings: [finding([])] }, { verifiedFindings: true });
     assert.equal(outcome.ok, true);
+  });
+});
+
+describe('panel votes in the comment (#553)', () => {
+  const meta = { role: 'security', run: null, round: 1, profile: null, workflow_hash: null, head_sha: null, checks: null, target: null, created_at: '2026-10-01T00:00:00.000Z' };
+  const vote = (lens: string, evidence = `app/Http/X.php:12 ${lens}`, verdict = 'confirmed') => ({ lens, verdict, evidence });
+  const finding = (i: number, votes?: unknown[], severity = 'major') => ({
+    severity,
+    file: 'src/a.ts',
+    line: 3,
+    problem: `SQLi ${i}`,
+    verification: { status: 'confirmed', evidence: 'src/a.ts:3', ...(votes === undefined ? {} : { votes }) },
+  });
+  const render = (findings: unknown[]) => {
+    const parsed = parseResult('security', { verdict: 'issues_found', summary: 'x', findings }, { verifiedFindings: true });
+    assert.ok(parsed.ok, JSON.stringify(parsed));
+    return renderResultComment(parsed.result, meta);
+  };
+
+  it('shows one Panel line in lens order with verdict icons', () => {
+    const comment = render([finding(1, [vote('defenses'), vote('reachability'), vote('impact')])]);
+    assert.match(comment, /Verified: src\/a\.ts:3\n  Panel: reachability ✅ app\/Http\/X\.php:12 reachability · impact ✅ app\/Http\/X\.php:12 impact · defenses ✅ app\/Http\/X\.php:12 defenses/);
+  });
+
+  it('renders findings without votes (or an empty list) exactly as before', () => {
+    for (const votes of [undefined, []]) {
+      const comment = render([finding(1, votes)]);
+      assert.doesNotMatch(comment, /Panel:/);
+      assert.match(comment, /Verified: src\/a\.ts:3(\n|$)/);
+    }
+  });
+
+  it('escapes agent text in votes', () => {
+    const comment = render([finding(1, [vote('reachability', 'x\n<!-- evil -->'), vote('impact'), vote('defenses')])]);
+    const panel = comment.split('\n').find((line) => line.includes('Panel:')) ?? '';
+    assert.match(panel, /x &lt;!-- evil -->/);
+    assert.doesNotMatch(panel, /<!--/);
+  });
+
+  it('vote lines count towards the size limit: less severe findings are omitted', () => {
+    const long = 'a'.repeat(900);
+    const votes = [vote('reachability', long), vote('impact', long), vote('defenses', long)];
+    const many = Array.from({ length: 60 }, (_, i) => finding(i, votes, i === 0 ? 'blocker' : 'minor'));
+    const comment = render(many);
+    assert.ok(comment.length < RESULT_SIZE_LIMIT);
+    assert.match(comment, /less severe finding\(s\) omitted/);
+    assert.match(comment, /SQLi 0/);
   });
 });

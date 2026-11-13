@@ -244,6 +244,7 @@ export const LOGS_HTML = page({
     </div>
     <div class="ui-card-body" data-body="subagent-eval"></div>
     <div class="ui-card-body" data-body="mutation-scores" hidden></div>
+    <div class="ui-card-body" data-body="security-panel" hidden></div>
   </section>
 
   <section class="ui-card g" data-section aria-labelledby="h-repos">
@@ -781,6 +782,12 @@ ${CHART_JS}
       setBody('compacts', noData('Kein Run in diesem Zeitraum hat Context-Daten geloggt.'));
       return;
     }
+    if (rows.every(([, n]) => n === 0)) {
+      const windows = Object.entries(d.budget.compact_windows_by_role || {});
+      const text = windows.length ? windows.map(([role, w]) => role + ' ' + (w === 'auto' ? 'auto' : fmtCompact(w))).join(', ') : 'auto';
+      setBody('compacts', noData('Kein Run hat verdichtet – Auto-Compact-Fenster: ' + text));
+      return;
+    }
     const bars = el('div', null, 'hbars');
     hbars(bars, rows.map(([role, n]) => ({ label: role, value: n, text: fmtInt(n), color: roleColor(role), tip: [['Auto-Compacts', fmtInt(n)]] })), null);
     setBody('compacts', bars, el('p', 'Runs vor der Aufzeichnung des Contexts fehlen.', 'note'));
@@ -893,11 +900,28 @@ ${CHART_JS}
     ], rows, 'Keine Mutation Scores.');
   }
 
+  /** Security panel votes per lens (#554); hidden when no security result carried votes. */
+  function renderSecurityPanel(section) {
+    const panel = section && section.security_panel;
+    const body = bodies['security-panel'];
+    body.hidden = !panel || !panel.results;
+    if (body.hidden) return;
+    const tbl = el('table'); tbl.id = 'security-panel-table';
+    const wrap = el('div', null, 'scroll'); wrap.append(tbl);
+    setBody('security-panel', el('h3', 'Security-Panel: Stimmen je Lens', 'lbl'), el('p', 'Kandidaten: ' + fmtInt(panel.candidates) + ' · von genau einer Lens widerlegt: ' + fmtInt(panel.refuted_by_one_lens), 'note'), wrap, el('p', panel.note, 'note'));
+    table('security-panel-table', [
+      { label: 'Lens', className: 'nowrap', render: (r) => r.lens },
+      { label: 'Bestätigt', className: 'num', render: (r) => fmtInt(r.confirmed) },
+      { label: 'Widerlegt', className: 'num', render: (r) => fmtInt(r.refuted) },
+    ], panel.lenses, 'Keine Stimmen.');
+  }
+
   /** Subagent evaluation per role × model (E0-9), with a JSON export of the section and the active filters. */
   function renderSubagentEval(d) {
     const section = d.subagent_evaluation;
     const link = $('subagent-eval-export');
     renderMutationScores(section);
+    renderSecurityPanel(section);
     if (!section || !Array.isArray(section.rows) || section.rows.length === 0) {
       link.hidden = true;
       setBody('subagent-eval', noData('Keine Runs für die Subagent-Auswertung.'));

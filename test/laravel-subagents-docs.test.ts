@@ -21,6 +21,16 @@ describe('docs/laravel-subagents.md', () => {
     }
   });
 
+  it('describes the early self-review gate and spec-reviewer (#503)', () => {
+    assert.ok(doc.includes('spec-reviewer'));
+    const row = doc.split('\n').find((line) => line.startsWith('| developer |')) ?? '';
+    assert.match(row, /spec-reviewer/);
+    assert.match(row, /before the first/);
+    const configuration = fs.readFileSync(path.join(docsDir, 'configuration.md'), 'utf8');
+    const section = configuration.slice(configuration.indexOf('Subagents per role'));
+    for (const part of ['spec-reviewer', 'Early self-review', 'L/XL']) assert.ok(section.includes(part), part);
+  });
+
   it('lists no subagents in the role table for the issue analyst', () => {
     for (const role of ['issue analyst']) {
       const row = doc.split('\n').find((line) => line.startsWith(`| ${role} |`));

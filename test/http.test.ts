@@ -374,6 +374,7 @@ describe('http extension', () => {
     assert.equal(a.totals.runs, 1);
     assert.equal(a.totals.cost_usd, 0.0175);
     assert.equal(a.period.time_zone, 'Europe/Berlin');
+    assert.deepEqual(a.finding_categories, []);
     assert.equal(a.period.granularity, 'day');
     assert.deepEqual(a.repositories_available, ['acme/app', 'other/repo']);
     assert.deepEqual(a.models_available, ['claude-opus-5-5']);
@@ -642,7 +643,7 @@ describe('team API', () => {
       const res = await request(server.port, 'GET', base);
       assert.equal(res.status, 200);
       const team = JSON.parse(res.body);
-      assert.deepEqual(Object.keys(team).sort(), ['active', 'blocks', 'compact_threshold', 'handoffs', 'seats', 'subagents', 'trace']);
+      assert.deepEqual(Object.keys(team).sort(), ['active', 'blocks', 'compact_threshold', 'compact_window', 'compact_windows', 'handoffs', 'seats', 'subagents', 'trace']);
       assert.equal(team.active.role, 'default');
       assert.equal(team.active.recent_tools.at(-1).tool, 'Bash');
       assert.equal(team.seats.at(-1).role, 'you');

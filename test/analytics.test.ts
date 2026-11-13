@@ -88,7 +88,7 @@ describe('statistics analytics', () => {
       assert.ok(a.budget.days.every((d) => d.limit_hits === 0));
       assert.ok(a.budget.days.some((d) => d.peak_5h_tokens > 0));
       assert.deepEqual(a.budget.avg_context_by_role, {});
-      assert.deepEqual(computeAnalytics([], s.pricing.current(), filter(), NOW).budget, { days: [], compacts_by_role: {}, avg_context_by_role: {} });
+      assert.deepEqual(computeAnalytics([], s.pricing.current(), filter(), NOW).budget, { days: [], compacts_by_role: {}, compact_windows_by_role: {}, avg_context_by_role: {} });
     });
   });
 
@@ -548,6 +548,51 @@ describe('statistics analytics', () => {
     assert.deepEqual(filterEntries(entries, { ...base, issue: '#3', limit: 10, order: 'asc' }).entries.map((e) => e.issue), ['other/repo#3']);
     assert.equal(filterEntries(entries, { ...base, event: 'model_usage', limit: 10 }).total, 4);
   });
+  describe('security panel votes per lens (#554)', () => {
+    const z = { reachability: 0, impact: 0, defenses: 0 };
+    const line = (repo: string, at: string, panelVotes?: { candidates: number; confirmed: typeof z; refuted: typeof z; singleRefuted: number }) => ({
+      repo, issue: repo + '#1', run: null, role: 'security-auditor', kind: 'security', verdict: 'issues_found', round: null, target: null, profile: 'feature', complexity: 'L', findings: 1, at: new Date(at), panelVotes,
+    });
+    function seedPanel() {
+      const h = history();
+      h.log.stageResult(line('acme/app', '2026-10-03T10:00:00Z', { candidates: 1, confirmed: { reachability: 1, impact: 1, defenses: 1 }, refuted: z, singleRefuted: 0 }));
+      h.log.stageResult(line('acme/app', '2026-10-03T11:00:00Z', { candidates: 1, confirmed: { reachability: 1, impact: 0, defenses: 1 }, refuted: { ...z, impact: 1 }, singleRefuted: 1 }));
+      h.log.stageResult(line('acme/app', '2026-10-03T12:00:00Z', { candidates: 1, confirmed: { reachability: 1, impact: 0, defenses: 0 }, refuted: { ...z, impact: 1, defenses: 1 }, singleRefuted: 0 }));
+      h.log.stageResult(line('acme/app', '2026-10-03T13:00:00Z'));
+      h.log.stageResult(line('other/repo', '2026-10-03T14:00:00Z', { candidates: 2, confirmed: z, refuted: { ...z, reachability: 2 }, singleRefuted: 2 }));
+      return h;
+    }
+
+    it('sums candidates, votes per lens and single-lens refutes of the repository', () => {
+      const h = seedPanel();
+      const entries = readHistory(h.log.dir, null).entries;
+      const p = computeAnalytics(entries, h.pricing.current(), filter({ repo: 'acme/app' }), NOW).subagent_evaluation.security_panel;
+      assert.equal(p.results, 3);
+      assert.equal(p.candidates, 3);
+      assert.equal(p.refuted_by_one_lens, 1);
+      assert.deepEqual(p.lenses, [
+        { lens: 'reachability', confirmed: 3, refuted: 0 },
+        { lens: 'impact', confirmed: 1, refuted: 2 },
+        { lens: 'defenses', confirmed: 2, refuted: 1 },
+      ]);
+      assert.match(p.note, /PANEL_MAX_REFUTING_VOTES = 1/);
+      const other = computeAnalytics(entries, h.pricing.current(), filter({ repo: 'other/repo' }), NOW).subagent_evaluation.security_panel;
+      assert.deepEqual([other.results, other.candidates, other.refuted_by_one_lens], [1, 2, 2]);
+    });
+
+    it('is empty for an empty period and for lines without or with broken fields', () => {
+      const h = seedPanel();
+      const entries = readHistory(h.log.dir, null).entries;
+      const empty = computeAnalytics(entries, h.pricing.current(), filter({ from: new Date('2026-01-01T00:00:00Z'), to: new Date('2026-01-02T00:00:00Z') }), NOW).subagent_evaluation.security_panel;
+      assert.deepEqual([empty.results, empty.candidates, empty.refuted_by_one_lens, empty.lenses], [0, null, null, []]);
+      const raw = (fields: Record<string, string>) => ({ ts: '2026-10-03T10:00:00.000Z', event: 'stage_result', repo: 'acme/app', fields: { repo: 'acme/app', issue: 'acme/app#9', kind: 'security', ...fields } }) as unknown as (typeof entries)[number];
+      const broken = computeAnalytics([raw({}), raw({ panel_candidates: 'x' }), raw({ panel_candidates: '2', panel_refuted: 'impact:x,defenses:1', panel_single_refuted: 'x' })], h.pricing.current(), filter(), NOW).subagent_evaluation.security_panel;
+      assert.equal(broken.results, 1);
+      assert.deepEqual(broken.lenses, [{ lens: 'reachability', confirmed: 0, refuted: 0 }, { lens: 'impact', confirmed: 0, refuted: 0 }, { lens: 'defenses', confirmed: 0, refuted: 1 }]);
+      assert.equal(broken.refuted_by_one_lens, 0);
+    });
+  });
+
   describe('mutation score per issue (E3-7)', () => {
     const line = (issue: string, at: string, over: Record<string, unknown> = {}) => ({
       repo: 'acme/app', issue, run: null, role: 'tester', kind: 'test', verdict: 'passed', round: null, target: null, profile: 'feature', complexity: 'L', findings: 0, at: new Date(at), ...over,

@@ -75,7 +75,7 @@ function input(over: Partial<TeamInput> = {}): TeamInput {
 
 describe('team view (independent fixture)', () => {
   it('returns exactly seats, active, subagents, blocks, handoffs, trace, compact_threshold', () => {
-    assert.deepEqual(Object.keys(buildTeamView(input())).sort(), ['active', 'blocks', 'compact_threshold', 'handoffs', 'seats', 'subagents', 'trace']);
+    assert.deepEqual(Object.keys(buildTeamView(input())).sort(), ['active', 'blocks', 'compact_threshold', 'compact_window', 'compact_windows', 'handoffs', 'seats', 'subagents', 'trace']);
   });
 
   it('has one seat per agent role in pipeline order plus a trailing "you" seat; human/terminal stages are no role seats', () => {
@@ -258,6 +258,14 @@ describe('team view: fields of the E3-6 stage', () => {
     assert.equal(buildTeamView(input({ roles })).active?.max_turns, 80);
     assert.equal(buildTeamView(input()).active?.max_turns, 50);
     assert.equal(buildTeamView(input()).active?.effort, 'high');
+  });
+
+  it('passes the auto-compact windows through', () => {
+    const view = buildTeamView(input({ compactWindow: 200000, compactWindows: { architect: 400000, developer: null } }));
+    assert.equal(view.compact_window, 200000);
+    assert.deepEqual(view.compact_windows, { architect: 400000, developer: null });
+    const bare = buildTeamView(input());
+    assert.deepEqual([bare.compact_window, bare.compact_windows], [null, {}]);
   });
 
   it('carries compact_threshold from the input', () => {

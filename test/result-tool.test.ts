@@ -60,7 +60,10 @@ interface SetupOptions {
   docs?: ResultToolParams['docs'];
   screenshots?: ResultToolParams['screenshots'];
   mutation?: ResultToolParams['mutation'];
+  lessons?: ResultToolParams['lessons'];
   panel?: boolean;
+  /** Overrides per role name, merged over ROLES. */
+  roles?: Record<string, Record<string, unknown>>;
 }
 
 function setup(options: SetupOptions = {}) {
@@ -71,7 +74,11 @@ function setup(options: SetupOptions = {}) {
       provider: { owner: 'acme', project_number: 1, token: 'test-token' },
       active_states: ['Todo', 'Ready', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review'],
     },
-    roles: { ...ROLES, reviewer: { ...ROLES.reviewer, ...options.reviewer } },
+    roles: {
+      ...ROLES,
+      reviewer: { ...ROLES.reviewer, ...options.reviewer },
+      ...Object.fromEntries(Object.entries(options.roles ?? {}).map(([name, over]) => [name, { ...(ROLES as Record<string, object>)[name], ...over }])),
+    },
     pipeline: { max_review_rounds: 3, max_test_rounds: 2 },
     checks: { timeout_ms: options.timeoutMs ?? 10_000, on_enter: options.checks ?? {} },
   });
@@ -114,6 +121,7 @@ function setup(options: SetupOptions = {}) {
     ...(options.screenshots !== undefined ? { screenshots: options.screenshots } : {}),
     ...(options.mutation !== undefined ? { mutation: options.mutation } : {}),
     ...(options.panel !== undefined ? { panel: options.panel } : {}),
+    ...(options.lessons !== undefined ? { lessons: options.lessons } : {}),
   };
   const unguarded = createResultTool(params);
   const tools = guardTools(toolsForRole(tracker.agentToolSpecs(), role, current(), unguarded), guard);
@@ -851,6 +859,61 @@ describe('report_result', () => {
       assert.deepEqual(broken.tracker.statusCalls, []);
     });
 
+    describe('docs role', () => {
+      const DOCS = { verdict: 'done', summary: 'Documented.', files: ['docs/a.md'] };
+      const docsRole = { docs: { on_check_failed: 'In progress', may_move_to: ['Agent review', 'In progress', 'Blocked'] } };
+      const AR = { 'Agent review': 'echo "flaky test"; exit 1' };
+
+      it('records done and not_needed and moves to on_check_failed when the Agent review check fails', async () => {
+        for (const args of [DOCS, { verdict: 'not_needed', summary: 'Nothing.' }]) {
+          const { report, tracker, markers } = setup({ role: 'docs', state: 'Documentation', checks: AR, roles: docsRole });
+          const result = data(await report(args));
+          assert.equal(result.target, 'In progress');
+          assert.equal(result.check_failed_for, 'Agent review');
+          assert.deepEqual(tracker.statusCalls, ['In progress']);
+          assert.match(markers()[0]?.result.summary ?? '', /Entry check failed[\s\S]*flaky test/);
+        }
+      });
+
+      it('counts toward max_check_failures: the third hand-off goes to the blocked column with needs-human', async () => {
+        const earlier = buildStageHistory(
+          [0, 1].map((i) => ({
+            result: { kind: 'docs', verdict: 'done', summary: 's' } as never,
+            meta: { role: 'docs', run: `run-${i}`, round: null, profile: null, workflow_hash: null, head_sha: null, checks: null, target: 'In progress', check_failed_for: 'Agent review', created_at: `2026-10-1${i}T12:00:00Z` },
+          })),
+        );
+        const { report, current, tracker } = setup({ role: 'docs', state: 'Documentation', checks: AR, roles: docsRole, history: earlier });
+        assert.equal(data(await report(DOCS)).target, 'Blocked');
+        assert.deepEqual(tracker.statusCalls, ['Blocked']);
+        assert.deepEqual(current().labels, ['needs-human']);
+      });
+
+      it('blocked still goes straight to Blocked', async () => {
+        const { report, tracker } = setup({ role: 'docs', state: 'Documentation', checks: AR, roles: docsRole });
+        const result = data(await report({ verdict: 'blocked', summary: 'No.', blockers: [{ description: 'x', needs: 'human' }] }));
+        assert.equal(result.target, 'Blocked');
+        assert.deepEqual(tracker.statusCalls, ['Blocked']);
+      });
+
+      it('without on_check_failed the agent gets check_failed and nothing is recorded', async () => {
+        const { report, tracker } = setup({ role: 'docs', state: 'Documentation', checks: AR });
+        assert.equal(error(await report(DOCS)).category, 'check_failed');
+        assert.deepEqual(tracker.statusCalls, []);
+      });
+
+      it('the test role gets no fallback even with on_check_failed', async () => {
+        const { report, tracker } = setup({
+          role: 'tester',
+          state: 'Testing',
+          checks: AR,
+          roles: { tester: { on_check_failed: 'In progress' } },
+        });
+        const passed = { verdict: 'passed', summary: 'ok', cases: [{ criterion: 'c', test: 't', status: 'passed' }] };
+        assert.equal(error(await report(passed)).category, 'check_failed');
+        assert.deepEqual(tracker.statusCalls, []);
+      });
+    });
+
     it('refuses a fallback the tool did not expect', async () => {
       const { unguarded, current, tracker } = setup({ reviewer: { on_check_failed: 'In progress' } });
       const check = { result: 'check_failed', ok: false, exit_code: 1, timed_out: false, duration_ms: 1, sha: null, finished_at: '' };
@@ -1584,5 +1647,93 @@ describe('report_result: security panel at L/XL (E3-5)', () => {
   it('does not check the votes of a blocked audit', async () => {
     const blocked = { verdict: 'blocked', summary: 'No access.', blockers: [{ description: 'No checkout', needs: 'access' }], findings: [f(undefined)] };
     assert.equal(data(await L().report(blocked)).target, 'Blocked');
+  });
+});
+
+describe('report_result: a lesson for recurring review findings (#575)', () => {
+  const recurringOf = (category: string) => ({
+    category,
+    triggers: ['same_issue' as const],
+    findings: 2,
+    issues: ['acme/app#1'],
+    examples: [{ issue: 'acme/app#1', problem: 'No after screenshot' }],
+    lesson: { path: 'Lessons/screens.md', title: 'Screens', status: 'candidate' },
+  });
+  const facts = (over: Partial<NonNullable<ResultToolParams['lessons']>> = {}) => {
+    const missing: string[][] = [];
+    const seen: string[][] = [];
+    let writes = 0;
+    const lessons: NonNullable<ResultToolParams['lessons']> = {
+      recurring: (reported) => {
+        seen.push([...reported]);
+        return reported.includes('screenshots-missing') ? [recurringOf('screenshots-missing')] : [];
+      },
+      brainWrites: () => writes,
+      enforce: true,
+      onMissing: (categories) => missing.push(categories),
+      ...over,
+    };
+    return { lessons, missing, seen, write: () => (writes += 1) };
+  };
+  const CHANGES = {
+    verdict: 'changes_needed',
+    summary: 'Screenshots are missing again.',
+    findings: [
+      { severity: 'major', category: 'screenshots-missing', file: 'README.md', problem: 'No after screenshot', fix: 'Add it' },
+      { severity: 'minor', category: 'naming', problem: 'Naming' },
+    ],
+  };
+
+  it('refuses the first report once with the recurring category and its lesson, nothing is recorded', async () => {
+    const { lessons, missing, seen } = facts();
+    const { report, tracker } = setup({ lessons });
+    const refused = error(await report(CHANGES));
+    assert.equal(refused.category, 'invalid_result');
+    assert.match(refused.message, /screenshots-missing/);
+    assert.match(refused.message, /Lessons\/screens\.md/);
+    assert.match(refused.message, /review\/<category>/);
+    assert.deepEqual(seen, [['screenshots-missing']], 'only blocker and major categories count');
+    assert.deepEqual(tracker.statusCalls, []);
+    assert.equal((tracker.comments.get('1') ?? []).length, 0);
+    assert.deepEqual(missing, []);
+  });
+
+  it('accepts the second report, notes the missing lesson and calls onMissing', async () => {
+    const { lessons, missing } = facts();
+    const { report, markers } = setup({ lessons });
+    error(await report(CHANGES));
+    const result = data(await report(CHANGES));
+    assert.equal(result.verdict, 'changes_needed');
+    assert.deepEqual(missing, [['screenshots-missing']]);
+    assert.match(markers()[0]?.result.summary ?? '', /Lesson missing\.\*\* Recurring categories without a lesson: screenshots-missing/);
+  });
+
+  it('accepts at once with lessons, or after a brain write of the session', async () => {
+    const named = facts();
+    const withLessons = setup({ lessons: named.lessons });
+    const result = data(await withLessons.report({ ...CHANGES, lessons: ['Lessons/screens.md'] }));
+    assert.equal(result.verdict, 'changes_needed');
+    const stored = withLessons.markers()[0]?.result;
+    assert.deepEqual(stored?.kind === 'review' ? stored.lessons : null, ['Lessons/screens.md']);
+    assert.deepEqual(named.missing, []);
+
+    const written = facts();
+    written.write();
+    data(await setup({ lessons: written.lessons }).report(CHANGES));
+    assert.deepEqual(written.missing, []);
+  });
+
+  it('does not check without enforce, for blocked, or without a recurring category', async () => {
+    const off = facts({ enforce: false });
+    data(await setup({ lessons: off.lessons }).report(CHANGES));
+    assert.deepEqual(off.seen, []);
+
+    const blocked = facts();
+    data(await setup({ lessons: blocked.lessons }).report({ verdict: 'blocked', summary: 'Cannot review.', blockers: [{ description: 'No access', needs: 'access' }], findings: CHANGES.findings }));
+    assert.deepEqual(blocked.seen, []);
+
+    const other = facts();
+    data(await setup({ lessons: other.lessons }).report({ ...CHANGES, findings: [{ severity: 'major', category: 'n-plus-one', problem: 'N+1 query' }] }));
+    assert.deepEqual(other.missing, []);
   });
 });

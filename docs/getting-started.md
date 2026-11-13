@@ -189,6 +189,10 @@ Prompt preview for owner/repository#12:
   | You are working on GitHub issue **owner/repository#12**: …
 ```
 
+The prompt preview prepares no workspace. It passes `project_types` as for a workspace every integration applies to, i.e.
+the ids of all integrations that can detect apps (currently `["laravel"]`), so the Laravel parts of a prompt show in the
+preview even when the issue's workspace has no Laravel app. See [`project_types`](configuration.md#prompt-template) in the configuration reference.
+
 On an error the dry run exits with code 1 and a specific message, e.g. a missing token scope.
 
 ## 7. Start

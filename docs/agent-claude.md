@@ -148,11 +148,13 @@ needs a skill directory in the toolbox and a role with `commands` (or none at al
 Plugins also ship subagents (`agents/<name>.md`), which Claude Code offers to the Agent tool as `<plugin>:<name>`;
 the `init` message of the transcript lists them under `agents`. Symphony's toolbox ships five for Laravel repositories
 (`laravel-architect`, `laravel-code-reviewer`, `laravel-database-engineer`, `laravel-filament-developer`,
-`laravel-test-engineer`) and the framework-neutral `explorer`, `design-critic`, `test-designer`, `convention-lens`, `bug-lens` and `finding-verifier` (the last three for the reviewer's lens review at L/XL), `security-inventory` and `refutation-judge` (the security auditor's panel at L/XL). Which of them a session may start depends on the role's `agents`, read-only roles and the
+`laravel-test-engineer`) and the framework-neutral `explorer`, `design-critic`, `spec-reviewer`, `test-designer`, `convention-lens`, `bug-lens` and `finding-verifier` (the last three for the reviewer's lens review at L/XL), `security-inventory` and `refutation-judge` (the security auditor's panel at L/XL). Which of them a session may start depends on the role's `agents`, read-only roles and the
 workspace's project type ([Subagents per role](configuration.md#subagents-per-role)); the rest are denied by an
 `Agent(<plugin>:<name>)` rule in `disallowedTools` and by a `PreToolUse` hook on `Agent|Task`, which emits `approval_denied` when it
 refuses a call. The hook is registered for every session, not only when agents are denied (it also pins the explorer's model, below). Every Agent tool call carries its subagent in the `tool_use` event (`detail.agent`), so the statistics
 count subagents like skills. Background and usage figures: [laravel-subagents.md](laravel-subagents.md).
+
+**Effort (E4-6).** A subagent inherits the session's effort (spike E0-2 question 1; one on `haiku` carries none). Decision: the personas keep the session's effort, because the effort of a session is chosen per issue (`Effort:` label) and a persona's work scales with it; only the `explorer` sets `effort: low` in its front matter (a search needs no deep reasoning). Symphony does not set `CLAUDE_CODE_SUBAGENT_EFFORT` (Claude Code 2.1.316+): it would override the front matter and the session effort of every subagent at once. A persona that needs another effort gets `effort:` in its front matter.
 
 Symphony's appended system prompt does not reach subagents, so a `SubagentStart` callback hook (registered in every
 session, next to the `PreToolUse` hook; spike E0-2 question 7b) injects an issue context as `additionalContext` into each
@@ -232,6 +234,11 @@ preset: its own delegation sentence is unnecessary, naming concretely the occasi
 Not checked: delegation when the task does not name the subagent (the test task is trivial).
 
 The SDK's built-in agents (`claude`, `Explore`, `general-purpose`, `Plan`, `statusline-setup`) are **off**: every session starts with `CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS=1`, so `init.agents` lists none of them. `general-purpose` would give a read-only role an agent with every tool, and Explore and Plan run on the parent model, skip CLAUDE.md and compete with `symphony:explorer` for routing. An Agent call therefore needs a `subagent_type` (the SDK fails it with "subagent_type is required"); the role prompts always name the type. Plugin agents that a role denies still appear in `init.agents`. `claude.env` can set the variable to `0` to bring the built-ins back. History parsing is unchanged: an Agent call or old log line without a type still counts as `general-purpose`.
+
+Bash calls get a longer timeout: every session starts with `BASH_DEFAULT_TIMEOUT_MS=600000` (10 min) and `BASH_MAX_TIMEOUT_MS=1200000` (20 min)
+instead of Claude Code's 2 minutes, because a full test run (`php artisan test`, `composer analyse`, `npm test`) takes longer and agents
+then test only parts (error signature `7a3d71bf`). The limit stays finite, so a hanging command still ends. Stall detection
+counts agent events and a running Bash call emits none: keep the Bash timeouts below `claude.stall_timeout_ms`. The shipped `WORKFLOW.md` sets `stall_timeout_ms: 600000`, so a Bash call that runs longer than 10 minutes can be stalled and retried until `stall_timeout_ms` is raised. `claude.env` overrides both values.
 
 Subagents and commands run in the **foreground**: every session starts with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`,
 so the Agent and Bash tools offer no `run_in_background` and nothing is moved to the background automatically. A
@@ -382,7 +389,7 @@ log line (`npm run repo-init` → *Laravel Boost* creates an issue that adds it)
 **Visibility:** the Laravel integration reports per app what the session got (status and reason, versions, how the
 guidelines reach the agent, the skills, the MCP server and its pre-approved tools, warnings from the check above).
 The orchestrator counts every `tool_use` event per tool (one event per tool call, also for parallel calls in one
-message), every Skill tool call per skill, the tool calls made inside subagents (`tool_use` events with `detail.subagent`, from messages with `parent_tool_use_id`) once more in `subagent_tool_calls` (`tool_calls` stays the total) and every Agent tool call per subagent, and attributes calls of the Boost MCP servers and Boost skills to Boost.
+message), every Skill tool call per skill, the tool calls made inside subagents (`tool_use` events with `detail.subagent`, from messages with `agent_id` or `parent_tool_use_id`) once more in `subagent_tool_calls` (`tool_calls` stays the total) and every Agent tool call per subagent, and attributes calls of the Boost MCP servers and Boost skills to Boost.
 `session_configured` carries the skill names Claude Code loaded (`skill_names`), so the agent page can show how many
 of Boost's skills were really available. All of this is in `GET /api/v1/state` (`running[].integrations`,
 `tool_calls`, `subagent_tool_calls`, `skill_calls`, `agent_calls`), in `run_trace` of `GET /api/v1/<identifier>` and in the `run_finished`
@@ -436,9 +443,9 @@ version, MCP server status, plugins, number of skills), `startup_failed`, `turn_
 The `subagent` event reports the subagents the session starts with the Agent/Task tool. Its `subagent` field is an
 absolute snapshot: tool call id, type (`general-purpose` when unset), description (the `description` of the call, else
 the start of its `prompt`), start, end, status (`running`, `ok`, `error`) and the tokens of the subagent's own model
-calls (input, output, cache read and write; messages with its `parent_tool_use_id`, counted once per message id). This
+calls (input, output, cache read and write; counted once per message id). Messages are attributed by their `agent_id` (the SDK sets it on every subagent message from 0.3.292; it equals the `task_id` of the run's task events) once Symphony knows it, so nested and concurrent runs get their own figures. Symphony learns the id from `task_started` (`task_id` with `tool_use_id`) or from the first message that carries both `agent_id` and `parent_tool_use_id`. `parent_tool_use_id` stays the fallback for messages without or with an unknown `agent_id`; a message with either counts as a subagent message (not part of the context fill, `detail.subagent`). This
 `tokens` is the billed load, not the context size. Claude Code's own figures come from the `task_progress` and
-`task_notification` messages, matched by `tool_use_id`: `contextTokens` (`usage.total_tokens`, the context of the latest
+`task_notification` messages, matched by `tool_use_id` (a task event without a known `tool_use_id` is matched by the `task_id` learned before): `contextTokens` (`usage.total_tokens`, the context of the latest
 request), `toolUses` and `durationMs`. They are `null` until such a message arrives and stay `null` for runs without
 `task_*` messages (the page shows "—"). A `task_notification` after the `tool_result` still updates the ended run.
 `task_started`, `task_progress` and `task_notification` that match a subagent no longer appear as `notification`;

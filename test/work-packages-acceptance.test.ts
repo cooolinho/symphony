@@ -625,7 +625,7 @@ describe('the reviewer prompt: integration mode', () => {
   it('keeps a normal pull-request review unchanged: the diff against the base, the pull request, the checklist', async () => {
     const text = await prompt({ role: 'reviewer', labels: ['Type: feature', 'Complexity: M'], base: 'develop', results: { analysis: ANALYSIS, implementation: { verdict: 'done', summary: 's', head_sha: 'abc' } } });
     assert.match(text, /## Your role: reviewer\n/);
-    assert.match(text, /Call `get_issue`: read the issue, all comments and the linked pull request/);
+    assert.match(text, /Call `get_issue`: read the issue, all comments and the open pull request of the branch in `branch_pull_request`/);
     assert.match(text, /git diff origin\/<base>\.\.\.HEAD/);
     assert.match(text, /`changes_needed` sends it back to the developer/);
     assert.doesNotMatch(text, /Work packages/);

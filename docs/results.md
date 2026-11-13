@@ -29,8 +29,8 @@ reported to the agent instead of being dropped silently.
 | `design` | `ready`, `split`, `blocked` | `options[]`, `decision`, `components[]`, `interfaces[]`, `migrations[]`, `compatibility`, `work_packages[]` (optional; with `split` at least two), `plan[]` (implementation steps in order, each with its files), `tests[]` (one test per acceptance criterion) |
 | `implementation` | `done`, `blocked` | `changed_files[]`, `tests_added[]`, `notes`, `plan_deviations[]`, `screenshots_problem` (a UI change without screenshots: the failed step and its error message) |
 | `test` | `passed`, `failed`, `blocked` | `cases[] {criterion, test, status: passed\|failed\|skipped, red_at_base?: {command, output?}, existing?}`, `commands[]`, `uncovered_criteria[]`, `mutation_score` (0–100), `mutation_command`, `mutation_problem` (see [Test evidence at L/XL](#test-evidence-at-lxl)) |
-| `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, file, line, problem, fix, verification?: {status: confirmed\|refuted, evidence}}`, `refuted[]` (candidates the verification refuted: a finding with a refuted `verification`; see [Verified findings at L/XL](#verified-findings-at-lxl)), `checked[]`, `confirmed_goals[]` (refactor issues: the analysis's refactoring goals the review confirms) |
-| `security` | `passed`, `issues_found`, `blocked` | `findings[]` and `refuted[]` (as in `review`); at L/XL with the refutation panel `verification.votes[] {lens: reachability\|impact\|defenses, verdict: confirmed\|refuted, evidence}` (see [Security panel at L/XL](#security-panel-at-lxl)) |
+| `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, category?, file, line, problem, fix, verification?: {status: confirmed\|refuted, evidence}}` (`category`: kebab-case slug of at most 40 characters for the pattern of the problem, required by the role prompts for blocker and major findings; see [brain.md](brain.md#review-lessons)), `lessons[]` (vault paths of the lessons for the recurring categories), `refuted[]` (candidates the verification refuted: a finding with a refuted `verification`; see [Verified findings at L/XL](#verified-findings-at-lxl)), `checked[]`, `confirmed_goals[]` (refactor issues: the analysis's refactoring goals the review confirms) |
+| `security` | `passed`, `issues_found`, `blocked` | `findings[]`, `refuted[]` and `lessons[]` (as in `review`); at L/XL with the refutation panel `verification.votes[] {lens: reachability\|impact\|defenses, verdict: confirmed\|refuted, evidence}` (see [Security panel at L/XL](#security-panel-at-lxl)) |
 | `docs` | `done`, `not_needed`, `blocked` | `files[]` |
 | `skipped`, `reset` | same as the kind | internal, recorded by Symphony without agent input (`skipped`: a stage passed [without a session](configuration.md#skipping-stages-without-a-session)) |
 
@@ -163,7 +163,7 @@ A call runs these steps, one call at a time:
    message (naming `report_result`) and write nothing, so a failed check never counts as a round and the agent can
    fix the problem and report again in the same session. On `check_error` the agent is told to comment and end its
    turn instead of moving the issue to `Blocked`, which it cannot.
-   **`on_check_failed`:** a `check_failed` for a `read_only` role that sets [`on_check_failed`](configuration.md#roles)
+   **`on_check_failed`:** a `check_failed` for a `read_only` role or the docs role that sets [`on_check_failed`](configuration.md#roles)
    (it cannot fix the code, so repeating the report is pointless) does not stop the call: the guard checks the
    `on_check_failed` column instead (`may_move_to`, that column's entry check), and the result is recorded with the
    agent's verdict, a note with the failed check's output appended to the summary, `checks` of the failed check and
@@ -199,6 +199,16 @@ outcome (`already_recorded: true` on success) without running the checks or touc
 after the turn that recorded the result; when the move led to another column of the same role, its stage starts in a
 new session. The tool writes only
 after the guard allowed exactly the computed target; called without the guard's approval it refuses (`tool_error`).
+
+## Lessons for recurring findings
+
+A `review` or `security` result whose `blocker` or `major` findings have a recurring `category` (again in this issue, or in
+`brain.review_lessons.min_issues` issues of the repository within `window_days`; see [brain.md](brain.md#review-lessons))
+needs a lesson: the result names its vault path in `lessons`, or the session wrote or appended to a note with
+`brain_write` or `brain_append`. Otherwise the first call is refused with `invalid_result`, listing the recurring
+categories with their issues and existing lessons; nothing is recorded. The second call is accepted: its summary gets the
+note "Lesson missing" and the log a `lesson_missing` warning. The verdict `blocked` is not checked, and the rule only
+applies to sessions with `brain: write` while `brain.review_lessons.enabled` is on.
 
 ## Screenshots for UI changes
 
@@ -254,6 +264,7 @@ results still read) and holds at most three entries; at L/XL the check requires 
   auditor does it, Symphony does not move it). `refuted[]` entries need no votes.
 - **Only with the judge in the session.** The vote rule applies when the session may start `refutation-judge` (the
   shipped `roles.security-auditor.agents`). A workflow with `agents: []` for the auditor keeps the plain L/XL rule above.
+- **Metrics.** A security `stage_result` line with panel votes carries `panel_candidates` (candidates in `findings` and `refuted` with votes), `panel_confirmed` and `panel_refuted` (votes per lens, `reachability:<n>,impact:<n>,defenses:<n>`) and `panel_single_refuted` (candidates refuted by exactly one lens). The statistics sum them over the period and repository as `subagent_evaluation.security_panel` and show them on the statistics page: candidates, votes per lens, and `refuted_by_one_lens`, the candidates that a rule with `PANEL_MAX_REFUTING_VOTES = 1` would keep and the current rule drops. Old lines without the fields give empty values.
 - **S/M issues** and issues without a `Complexity:` label are not checked for votes.
 
 To switch to option A (optional fields only), drop `verifiedFindings` from `resultContext()` in
