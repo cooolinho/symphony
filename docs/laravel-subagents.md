@@ -113,8 +113,8 @@ Rule for new agents: a subagent that only makes sense for one framework carries 
 The first framework-neutral subagent is `explorer` (`symphony:explorer`): read-only, `model: sonnet`, `effort: low`,
 `maxTurns: 25`. It returns 5–10 key files as `file:line` and a summary of at most about 300 words, so expensive roles can
 move exploration out of their own thread. It is available in every workspace, also without a Laravel app (where the
-`laravel-*` subagents stay denied), and `WORKFLOW.md` lists it for developer, architect, analyst, planner, autopilot and
-auditor.
+`laravel-*` subagents stay denied), and `WORKFLOW.md` lists it for analyst, planner, autopilot and auditor (not for developer and architect since the
+[E2-5 evaluation](agent-claude.md#evaluation-of-stage-2-e2-5)).
 
 The third framework-neutral subagent is `spec-reviewer` (`symphony:spec-reviewer`): read-only, `model: opus`, `maxTurns: 30`, after the official minimal reviewer ("You're reviewing code you didn't write"). It checks a finished change against the acceptance criteria and the design and returns only correctness gaps with `file:line` and the command with its output, no style. Only `developer` lists it, and only at complexity L/XL the prompt names one reviewer (the size gate): `laravel-code-reviewer` in Laravel workspaces (then `spec-reviewer` is hidden from the list), `spec-reviewer` elsewhere, once, before the first `git push`. At S/M and without a complexity label the developer's prompt names no reviewer.
 
