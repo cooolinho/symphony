@@ -170,13 +170,18 @@ export interface AutoMergeChecks {
   pending: string[];
 }
 
+/** The checks of a branch's pull request; with `logTails`, failing GitHub Actions jobs carry the end of their log. */
+export interface BranchChecks extends AutoMergeChecks {
+  failing: Array<{ name: string; state: string; url: string | null; log_tail?: string | null; log_error?: string }>;
+}
+
 /** The open pull request from the issue's branch and the state of its head commit's checks. */
 export interface BranchPullRequest {
   number: number;
   url: string | null;
   base: string | null;
   head_sha: string | null;
-  checks: AutoMergeChecks;
+  checks: BranchChecks;
   /** The description (uncut); `get_issue` cuts it. */
   body?: string;
   /** Latest discussion, oldest first: conversation comments, review summaries and review-thread comments. */
@@ -319,8 +324,11 @@ export interface TrackerAdapter {
   reportCheckStatus?(issue: Issue, status: CheckStatus): Promise<void>;
   /** Issues waiting for pending pull request checks before `auto_merge`; null or absent when nothing waits. */
   mergeWatch?(): MergeWatch | null;
-  /** The open pull request from the issue's branch with its checks; null without one, or when the tracker cannot say. Never throws. */
-  branchPullRequest?(issue: Issue): Promise<BranchPullRequest | null>;
+  /**
+   * The open pull request from the issue's branch with its checks; null without one, or when the tracker cannot say.
+   * `logTails` also loads the end of the logs of failing CI jobs (only `get_issue` asks for it). Never throws.
+   */
+  branchPullRequest?(issue: Issue, options?: { logTails?: boolean }): Promise<BranchPullRequest | null>;
   /**
    * Adds labels to the issue. Labels that do not exist are reported in `unknown`; with `create` the missing ones of the
    * families `Type: …`, `Complexity: …` and `needs-human` are created first (other names are never created).

@@ -280,8 +280,14 @@ describe('role prompts and docs', () => {
     assert.doesNotMatch(text, /linked pull request \(its base branch, description and discussion\)/);
   });
 
-  it('reviewer prompt says a failing check gives name and URL, not the log', () => {
-    assert.match(read('roles/reviewer.md'), /not the log/);
+  it('developer, reviewer and test-engineer prompts read log_tail first and block instead of guessing', () => {
+    for (const file of ['roles/developer.md', 'roles/reviewer.md', 'roles/test-engineer.md']) {
+      const text = read(file);
+      assert.match(text, /`log_tail`/, file);
+      assert.match(text, /CI-Log nicht lesbar/, file);
+      assert.match(text, /do not guess the cause/, file);
+      assert.doesNotMatch(text, /not the log/, file);
+    }
   });
 
   it('analyst prompts point to get_issue_by_number and say gh and a token are unavailable', () => {

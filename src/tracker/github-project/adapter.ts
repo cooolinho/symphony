@@ -60,6 +60,7 @@ import {
   repositoryLabelsQuery,
 } from './queries.ts';
 import { KIND, type GithubProjectSettings } from './settings.ts';
+import { actionsJobOf, withJobLogs } from './job-logs.ts';
 import { postCommitStatus } from './statuses.ts';
 import { createGithubTools } from './tools.ts';
 
@@ -512,8 +513,12 @@ export class GithubProjectAdapter implements TrackerAdapter {
     await postCommitStatus({ fetch: this.#fetch, endpoint: this.settings.endpoint, token: this.settings.token, timeoutMs: this.settings.requestTimeoutMs }, ref.repository, status);
   }
 
-  /** The open pull request from the issue's branch (`branch_name`, else `symphony/issue-<n>`) and the state of its checks; null without one, or when GitHub cannot say. */
-  async branchPullRequest(issue: Issue): Promise<BranchPullRequest | null> {
+  /**
+   * The open pull request from the issue's branch (`branch_name`, else `symphony/issue-<n>`) and the state of its checks;
+   * null without one, or when GitHub cannot say. `logTails` (only `get_issue`) adds the end of the job log to up to 3
+   * failing GitHub Actions jobs; a failed log request gives `log_tail: null` with `log_error`, never an error.
+   */
+  async branchPullRequest(issue: Issue, options: { logTails?: boolean } = {}): Promise<BranchPullRequest | null> {
     const ref = issueRefOf(issue);
     if (ref === null) return null;
     try {
@@ -525,18 +530,24 @@ export class GithubProjectAdapter implements TrackerAdapter {
       const pr = Array.isArray(list) ? obj(list[0]) : null;
       if (pr === null || typeof pr.number !== 'number') return null;
       const checks = evaluateRollup(pr.commits, ref.repository, []);
+      const failing = options.logTails === true && checks.failing.some((check) => actionsJobOf(check.url) !== null) ? await this.#withJobLogs(checks.failing) : checks.failing;
       return {
         number: pr.number,
         url: typeof pr.url === 'string' ? pr.url : null,
         base: typeof pr.baseRefName === 'string' ? pr.baseRefName : null,
         head_sha: typeof pr.headRefOid === 'string' ? pr.headRefOid : null,
-        checks: { state: checks.state, failing: checks.failing, pending: checks.pending.map((check) => check.name) },
+        checks: { state: checks.state, failing, pending: checks.pending.map((check) => check.name) },
         body: typeof pr.body === 'string' ? pr.body : '',
         comments: pullRequestDiscussion(pr),
       };
     } catch {
       return null;
     }
+  }
+
+  /** `withJobLogs` with the adapter's token; reads `#fetch` only when a failing check is a GitHub Actions job. */
+  #withJobLogs<T extends { url: string | null }>(failing: T[]): Promise<Array<T & { log_tail?: string | null; log_error?: string }>> {
+    return withJobLogs({ fetch: (...args) => this.#fetch(...args), endpoint: this.settings.endpoint, token: this.settings.token, timeoutMs: this.settings.requestTimeoutMs }, failing);
   }
 
   /**
