@@ -113,8 +113,8 @@ Rule for new agents: a subagent that only makes sense for one framework carries 
 The first framework-neutral subagent is `explorer` (`symphony:explorer`): read-only, `model: sonnet`, `effort: low`,
 `maxTurns: 25`. It returns 5–10 key files as `file:line` and a summary of at most about 300 words, so expensive roles can
 move exploration out of their own thread. It is available in every workspace, also without a Laravel app (where the
-`laravel-*` subagents stay denied), and `WORKFLOW.md` lists it for developer, architect, analyst, planner, autopilot and
-auditor.
+`laravel-*` subagents stay denied), and `WORKFLOW.md` lists it for analyst, planner, autopilot and auditor (not for developer and architect since the
+[E2-5 evaluation](agent-claude.md#evaluation-of-stage-2-e2-5)).
 
 The third framework-neutral subagent is `spec-reviewer` (`symphony:spec-reviewer`): read-only, `model: opus`, `maxTurns: 30`, after the official minimal reviewer ("You're reviewing code you didn't write"). It checks a finished change against the acceptance criteria and the design and returns only correctness gaps with `file:line` and the command with its output, no style. Only `developer` lists it, and only at complexity L/XL the prompt names one reviewer (the size gate): `laravel-code-reviewer` in Laravel workspaces (then `spec-reviewer` is hidden from the list), `spec-reviewer` elsewhere, once, before the first `git push`. At S/M and without a complexity label the developer's prompt names no reviewer.
 
@@ -165,8 +165,8 @@ context and tokens.
 | Role | `agents` | Guidance in the prompt |
 |---|---|---|
 | issue analyst | none (`[]`) | reads the issue and the code itself; the architect persona only repeated its role |
-| architect | `explorer`, `design-critic` | 2–3 explorers per code area; at L/XL the opus `design-critic` critiques the draft once before `report_result`; no longer `laravel-architect`. The role itself decides and reports the `design` result, and runs only for larger changes ([details](configuration.md#the-architect)) |
-| developer | `explorer`, the five `laravel-*`, `spec-reviewer` | `laravel-architect` before a non-trivial feature, unless the architect stage already delivered a design (`results.design` in the prompt); `laravel-filament-developer`, `laravel-database-engineer`, `laravel-test-engineer` for self-contained parts; at L/XL once on the diff before the first `git push` (`laravel-code-reviewer` in Laravel workspaces, `spec-reviewer` elsewhere), none at S/M |
+| architect | `design-critic` | At L/XL the opus `design-critic` critiques the draft once before `report_result`; no longer `laravel-architect`. The role itself decides and reports the `design` result, and runs only for larger changes ([details](configuration.md#the-architect)) |
+| developer | the five `laravel-*`, `spec-reviewer` | `laravel-architect` before a non-trivial feature, unless the architect stage already delivered a design (`results.design` in the prompt); `laravel-filament-developer`, `laravel-database-engineer`, `laravel-test-engineer` for self-contained parts; at L/XL once on the diff before the first `git push` (`laravel-code-reviewer` in Laravel workspaces, `spec-reviewer` elsewhere), none at S/M |
 | test engineer | `test-designer` | at complexity L/XL writes the tests from the criteria and the public interface alone (soft boundary: the brief), RED at the base and GREEN on the branch ([details](configuration.md#the-test-engineer)); no `laravel-*` persona |
 | reviewer | `convention-lens`, `bug-lens`, `finding-verifier` | lens review with one verifier per finding at complexity L/XL only; at S/M it reads the diff itself ([details](configuration.md#subagents-per-role)) |
 | security auditor | `security-inventory`, `refutation-judge` | inventory and a three-lens refutation panel per candidate at complexity L/XL only; read-only, no shell ([details](configuration.md#subagents-per-role)) |

@@ -185,6 +185,70 @@ are untouched. `options.agents` could override the plugin agent by its qualified
 the persona into code per session model; the hook keeps `agents/explorer.md` the single definition. No
 `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`: it would pin every subagent.
 
+#### Evaluation of stage 2 (E2-5)
+
+Does the explorer make sessions cheaper? Measured with the E0-9 export (`subagent_evaluation` of
+`GET /api/v1/history/analytics`, per complexity; the share of handed-off runs from `outcome=handed_off` of the
+`run_finished` log lines), attached to [#501](https://github.com/cooolinho/symphony/issues/501) by a human.
+
+- **Period.** T0 = 2026-11-06T03:04:42Z (release v1.4.0, explorer in the allowlists). After: T0 to 2026-11-13T00:06:39Z
+  (6.9 days). Before: the same span, 2026-10-30T06:02:48Z to T0. All repositories of the instance. Compared only within
+  role × model × complexity, never pooled. The planned 14 days were not waited for: the main cells already reach the minimum.
+- **Thresholds.** A cell is judged from 20 runs and 10 finished issues in each arm, otherwise "n too small". "Cost
+  lowered": cost per finished issue (all stages) at least 5 % lower after. "Equal success rate": share of handed-off runs
+  drops by at most 5 points and returns per issue (Agent review and Testing) rise by at most 0.1. Decision per role by its
+  cell with the most runs; cells without enough runs keep the explorer and are re-evaluated.
+
+Runs before / after per role (before: arm without explorer; control roles never had it):
+
+| Role | S | M | L | total |
+| --- | ---: | ---: | ---: | ---: |
+| architect | 0 / 0 | 89 / 81 | 23 / 14 | 112 / 95 |
+| developer | 27 / 77 | 152 / 168 | 46 / 22 | 225 / 267 |
+| issue-analyst | 20 / 49 | 106 / 86 | 22 / 11 | 148 / 146 |
+| test-engineer | 27 / 78 | 157 / 171 | 37 / 22 | 221 / 271 |
+| reviewer | 24 / 74 | 148 / 154 | 33 / 23 | 205 / 251 |
+
+Result (v = before, n = after). Delegation rate is 0 % in all cells below except the architect on fable at L (13 explorer calls after, mixed with the design-critic).
+
+| Cx | Role × model | Runs v / n | Finished issues v / n | Cost per finished issue, all stages (USD) v → n | Handed-off share v → n | Returns per issue v → n | Main Bash p50/p90 v → n | Verdict |
+| --- | --- | ---: | ---: | --- | --- | --- | --- | --- |
+| S | developer × sonnet-5-5 | 26 / 77 | 19 / 47 | 1.47 → 1.71 | 100 % → 100 % | 0.11 → 0.34 | 11/19 → 8/16 | not worth it (never called) |
+| M | developer × sonnet-5-5 | 152 / 168 | 85 / 82 | 3.96 → 4.11 | 99 % → 98 % | 0.33 → 0.54 | 15/36 → 12/26 | not worth it (never called) |
+| L | developer × opus-5-5 | 44 / 20 | 20 / 10 | 13.56 → 20.07 | 88 % → 100 % | 0.50 → 0.60 | 29/92 → 33/86 | not worth it (never called) |
+| M | architect × opus-5-5 | 89 / 81 | 84 / 76 | 3.98 → 4.25 | 98 % → 99 % | 0.33 → 0.54 | 16/28 → 16/26 | not worth it (never called) |
+| L | architect × fable-5-1 | 23 / 9 | 20 / 8 | 13.56 → 19.25 | 91 % → 89 % | 0.50 → 0.63 | 28/50 → 22/– | n too small |
+| S | issue-analyst × sonnet-5-5 | 20 / 49 | 19 / 47 | 1.47 → 1.71 | 100 % → 98 % | 0.11 → 0.34 | 2/6 → 2/4 | control (no explorer) |
+| S | test-engineer × sonnet-5-5 | 27 / 78 | 20 / 47 | 1.53 → 1.71 | 96 % → 100 % | 0.10 → 0.34 | 9/19 → 7/15 | control (no explorer) |
+| S | reviewer × opus-5-5 | 24 / 74 | 20 / 47 | 1.53 → 1.71 | 100 % → 100 % | 0.10 → 0.34 | 6/9 → 5/8 | control (no explorer) |
+| M | issue-analyst × sonnet-5-5 | 106 / 86 | 85 / 82 | 3.96 → 4.11 | 100 % → 99 % | 0.33 → 0.54 | 4/6 → 3/5 | control (no explorer) |
+| M | test-engineer × sonnet-5-5 | 157 / 171 | 85 / 82 | 3.96 → 4.11 | 99 % → 100 % | 0.33 → 0.54 | 9/19 → 7/15 | control (no explorer) |
+| M | reviewer × opus-5-5 | 148 / 154 | 85 / 82 | 3.96 → 4.11 | 97 % → 100 % | 0.33 → 0.54 | 7/12 → 6/12 | control (no explorer) |
+
+Findings:
+
+1. The explorer is hardly used: 24 calls after T0, all in the architect (fable-5-1 13, opus-5-5 7, sonnet-5-5 4), mostly in
+   the Laravel repository `trainingsstunden-portal`. The developer never called it in 267 runs although its prompt offered it
+   (delegation rate 0 % at S and M), so the E2-2 goal (delegation rate above zero for sonnet roles) is missed.
+2. Cost per finished issue and returns per issue sum all stages of an issue, so they are nearly identical for every role in a
+   cell; they cannot separate the explorer from other changes. They rose for all roles alike, and with 0 developer calls the
+   rise is not the explorer's.
+3. Main-thread Bash is no explorer effect: the median fell for the developer and equally for the test-engineer without explorer.
+4. Not evaluable: auditor, autopilot, analyst and planner had no runs in either arm.
+
+Confounders: v1.4.0 also brought Claude Code 2.1.318 instead of 2.1.288 and the personas cleanup; the container was
+recreated on 2026-11-11 20:14 UTC from the same image and `WORKFLOW.md` (the `.env` was adjusted, content not checked).
+The before arm lacks `subagent_tool_calls` (E0-6) and persisted subagent tokens (E0-7): its main-thread Bash is total Bash and
+its token share 0; there was no explorer before, so the distortion is small. Runs without a known complexity are in neither arm.
+
+| Role | Explorer | Reason |
+| --- | --- | --- |
+| developer | removed | 267 runs after, 0 calls; cost per finished issue S 1.47 → 1.71, M 3.96 → 4.11; returns per issue rise by more than 0.1. No benefit shown. |
+| architect | removed | Main cell opus M: 81 runs, 0 calls, cost 3.98 → 4.25, returns 0.33 → 0.54. The design-critic stays. It was used on fable at L, but that cell is too small: re-evaluate after enough L runs in a separate issue. |
+| auditor, autopilot, analyst, planner | stays | no runs in either arm: n too small, re-evaluate |
+
+`roles/*.md` and `.claude/agents/explorer.md` stay; the delegation line renders only when the explorer is allowed.
+
 #### Delegation line of the `claude_code` preset (spike E0-1)
 
 Checked in Claude Code 2.1.288, bundled with SDK 0.3.288 as the native binary

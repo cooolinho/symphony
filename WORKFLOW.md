@@ -215,7 +215,7 @@ roles:
     on_result: { ready: In progress, split: Agent review, blocked: Blocked }
     may_move_to: [In progress, Agent review, Blocked]
     model_label: ignore                      # opus, fable at complexity L and XL, whatever the issue's Model: label picks
-    agents: [explorer, design-critic]       # explorers map the code; at L/XL the opus design-critic checks the fable draft once
+    agents: [design-critic]       # at L/XL the opus design-critic checks the fable draft once; no explorer (E2-5: 0 calls at M, cell too small at L)
     brain: write
     claude: { model: opus, effort: high, auto_compact_window: 400000, model_by_complexity: { L: fable, XL: fable } }   # a short session: thinking pays off here
   developer:
@@ -225,7 +225,7 @@ roles:
       done: ${SYMPHONY_AFTER_IMPLEMENTATION:-Agent review}   # Agent review, or Testing to run the test engineer first (bug, feature and refactor issues: pipeline.profiles)
       blocked: Blocked
     may_move_to: [In progress, Testing, Documentation, Agent review, Blocked]
-    agents: [explorer, laravel-architect, laravel-database-engineer, laravel-filament-developer, laravel-test-engineer, laravel-code-reviewer, spec-reviewer]   # at L/XL one read-only review before the first push: laravel-code-reviewer in Laravel workspaces, spec-reviewer elsewhere; none at S/M
+    agents: [laravel-architect, laravel-database-engineer, laravel-filament-developer, laravel-test-engineer, laravel-code-reviewer, spec-reviewer]   # no explorer (E2-5: 0 calls in 267 runs); at L/XL one read-only review before the first push: laravel-code-reviewer in Laravel workspaces, spec-reviewer elsewhere; none at S/M
     brain: read
     # claude.model (CLAUDE_MODEL), opus at complexity L and XL, which implement the architect's design; a Model: label
     # on the issue wins, and an Effort: label sets the effort.

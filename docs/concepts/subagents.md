@@ -524,7 +524,7 @@ finished issue, returns from Agent review and Testing, share of handed-off runs)
 [agent-claude.md](../agent-claude.md#subagents); remove the explorer from `roles.<role>.agents` where it did not lower
 the cost per finished issue at an equal success rate. The figures come from the E0-9 JSON export, attached by a human.
 **Why:** whether an explorer makes these sessions cheaper is not measured; the evidence is from research tasks.
-- [ ] Table in the docs; allowlists match the decision.
+- [x] Table in the docs; allowlists match the decision (done: [agent-claude.md#evaluation-of-stage-2-e2-5](../agent-claude.md#evaluation-of-stage-2-e2-5)).
 
 Depends on: E0-9, E2-2, E2-3 · Size: S · Category: quality
 

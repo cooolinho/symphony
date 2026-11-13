@@ -55,7 +55,7 @@ describe('docs/laravel-subagents.md', () => {
     assert.match(line, /`test-engineer` lists `test-designer`/);
     assert.doesNotMatch(configuration, /agents: \[laravel-(test-engineer|code-reviewer)\]/);
     const examples = [...configuration.matchAll(/^    agents: (\[[^\]]*\])/gm)].map((match) => match[1]);
-    assert.deepEqual(examples, ['[]', '[explorer, design-critic]', '[test-designer]', '[security-inventory, refutation-judge]']);
+    assert.deepEqual(examples, ['[]', '[design-critic]', '[test-designer]', '[security-inventory, refutation-judge]']);
   });
 
   it('describes the test designer and its soft boundary in docs/configuration.md#the-test-engineer', () => {
