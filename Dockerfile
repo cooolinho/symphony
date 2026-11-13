@@ -127,6 +127,7 @@ RUN userdel --remove node \
         /home/symphony/.local \
         /home/symphony/.local/state \
         /home/symphony/.local/state/symphony \
+        /home/symphony/.local/state/symphony-watchdog \
         /home/symphony/.claude \
         /home/symphony/brain \
         /home/symphony/.cache \

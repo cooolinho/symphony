@@ -477,6 +477,8 @@ reaches the orchestrator over the `ci` network. Enable it with `watchdog` in `CO
 `docker compose --profile watchdog up -d watchdog`; start with `SYMPHONY_WATCHDOG_MODE=observe`. Its evidence quotes the
 orchestrator log from `SYMPHONY_LOG_FILE`, which the compose files set on the `symphony` service; that needs a recreate
 of the `symphony` container (`docker compose up -d symphony`), which stops running agents, so pick a quiet moment.
+The same recreate mounts `watchdog-state` read-only into `symphony`, so the dashboard shows "Watchdog läuft" from the
+watchdog's heartbeat (see [the watchdog docs](watchdog.md#status-on-the-dashboard)).
 
 ### Resource limits
 

@@ -1273,6 +1273,7 @@ Settings of the [Blocked watchdog](watchdog.md), a separate process (`src/watchd
 | `prompt` | path | `roles/watchdog.md` | Liquid prompt of the diagnosis session, relative to `WORKFLOW.md`; read anew for every diagnosis |
 | `api_url` | http(s) URL | none | The orchestrator, for `/api/v1/state` (health, model holds) |
 | `log_file` | path | none | The orchestrator's log file (`--log-file`, `SYMPHONY_LOG_FILE`), quoted in the evidence |
+| `state_dir` | path | none | The watchdog's own directory (`events.jsonl`, transcripts, `heartbeat.json`); the orchestrator reads the heartbeat there for `health.watchdog` and the dashboard chip "Watchdog läuft". Unset: the watchdog uses `SYMPHONY_WATCHDOG_STATE_DIR` or `~/.local/state/symphony-watchdog`, and the dashboard shows no watchdog status |
 | `claude.model` | string | `fable` | Model of the diagnosis session |
 | `claude.effort` | `low` … `max` | `high` | Effort of the diagnosis session |
 | `claude.max_budget_usd` | number | none | Cost limit per diagnosis |

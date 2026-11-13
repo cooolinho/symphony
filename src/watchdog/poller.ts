@@ -29,6 +29,7 @@ import {
   stateExcerpt,
   transcriptExcerpts,
 } from './evidence.ts';
+import { HEARTBEAT_INTERVAL_MS, writeHeartbeat } from './heartbeat.ts';
 import { watchdogEntries } from './marker.ts';
 
 /** Columns used when the workflow names no shared escape column (no roles section). */
@@ -81,9 +82,14 @@ export class WatchdogPoller {
   #stopping = false;
   #abort = new AbortController();
   #tick: Promise<void> | null = null;
+  #heartbeatTimer: NodeJS.Timeout | null = null;
+  #heartbeatFailed = false;
+  #startedAt: Date;
+  #lastTickAt: Date | null = null;
 
   constructor(deps: PollerDeps) {
     this.#deps = deps;
+    this.#startedAt = this.#now();
   }
 
   #now(): Date {
@@ -91,9 +97,16 @@ export class WatchdogPoller {
   }
 
   start(): void {
+    this.#beat();
+    this.#heartbeatTimer = setInterval(() => this.#beat(), HEARTBEAT_INTERVAL_MS);
+    this.#heartbeatTimer.unref();
     const loop = () => {
       if (this.#stopping) return;
       this.#tick = this.tick()
+        .then(() => {
+          this.#lastTickAt = this.#now();
+          this.#beat();
+        })
         .catch((error: unknown) => this.#deps.logger.error('watchdog tick failed', { error: errorMessage(error) }))
         .finally(() => {
           this.#tick = null;
@@ -106,8 +119,26 @@ export class WatchdogPoller {
   async stop(): Promise<void> {
     this.#stopping = true;
     if (this.#timer !== null) clearTimeout(this.#timer);
+    if (this.#heartbeatTimer !== null) clearInterval(this.#heartbeatTimer);
     this.#abort.abort('watchdog shutting down');
     await this.#tick;
+    this.#beat(this.#now());
+  }
+
+  /** Writes the sign of life the orchestrator shows on the dashboard (`health.watchdog`). */
+  #beat(stoppedAt: Date | null = null): void {
+    const { watchdog } = this.#deps.config();
+    const ok = writeHeartbeat(this.#deps.stateDir, {
+      pid: process.pid,
+      mode: watchdog.mode,
+      model: watchdog.model,
+      started_at: this.#startedAt.toISOString(),
+      updated_at: this.#now().toISOString(),
+      last_tick_at: this.#lastTickAt?.toISOString() ?? null,
+      stopped_at: stoppedAt?.toISOString() ?? null,
+    });
+    if (!ok && !this.#heartbeatFailed) this.#deps.logger.warn('could not write the watchdog heartbeat', { state_dir: this.#deps.stateDir });
+    this.#heartbeatFailed = !ok;
   }
 
   blockedColumns(config: ServiceConfig): string[] {
