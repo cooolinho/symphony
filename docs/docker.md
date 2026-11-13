@@ -469,6 +469,15 @@ The `obsidian` service (`lscr.io/linuxserver/obsidian`) lets a human open the br
 - **Local setup:** `docker-compose.local.yml` publishes it on `127.0.0.1:<BRAIN_PORT>` (default `3000`), without a login.
   `http://127.0.0.1` counts as a secure context, so no certificate is needed there.
 
+### Blocked watchdog (profile `watchdog`)
+
+The `watchdog` service runs the [Blocked watchdog](watchdog.md) from the same image (`command: ["watchdog"]`). It
+mounts `state`, `workspaces` and `brain` read-only, has its own volumes `watchdog-claude` and `watchdog-state`, and
+reaches the orchestrator over the `ci` network. Enable it with `watchdog` in `COMPOSE_PROFILES` or
+`docker compose --profile watchdog up -d watchdog`; start with `SYMPHONY_WATCHDOG_MODE=observe`. Its evidence quotes the
+orchestrator log from `SYMPHONY_LOG_FILE`, which the compose files set on the `symphony` service; that needs a recreate
+of the `symphony` container (`docker compose up -d symphony`), which stops running agents, so pick a quiet moment.
+
 ### Resource limits
 
 As a rule of thumb, each parallel agent (Claude Code, Composer, tests) needs about 1 CPU and 2 GB RAM. Use

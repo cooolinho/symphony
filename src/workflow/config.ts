@@ -212,6 +212,7 @@ export interface ServiceConfig {
   system: SystemConfig;
   brain: BrainConfig;
   budget: BudgetConfig;
+  watchdog: WatchdogConfig;
   /** Non-fatal findings (ignored keys, ignored per-state limits) for operator logs. */
   warnings: string[];
 }
@@ -234,6 +235,37 @@ export interface BrainConfig {
   obsidianUrl: string;
   /** Recurring review findings become lessons and reach the developer (`brain.review_lessons`, #575). */
   reviewLessons: ReviewLessonsConfig;
+}
+
+/** What the watchdog may do on GitHub (`watchdog.mode`). */
+export type WatchdogMode = 'observe' | 'comment' | 'act';
+export const WATCHDOG_MODES: readonly WatchdogMode[] = ['observe', 'comment', 'act'];
+
+/**
+ * The Blocked watchdog (`watchdog` section), a separate process (`symphony-watchdog`) that diagnoses issues in the blocked
+ * column with a Claude session and moves them back. The orchestrator itself ignores this section.
+ */
+export interface WatchdogConfig {
+  /** `observe`: log only; `comment`: post the diagnosis; `act`: post it and move the issue. */
+  mode: WatchdogMode;
+  intervalMs: number;
+  /** Time after the issue entered the blocked column before the watchdog looks at it. */
+  settleMs: number;
+  /** Least time between two resumes of one issue. */
+  cooldownMs: number;
+  /** Automatic resumes per issue since the last human comment; then the limit label. */
+  maxResumes: number;
+  /** Absolute path of the prompt template (Liquid), read anew for every diagnosis. */
+  prompt: string;
+  /** Orchestrator API base URL for `/api/v1/state` and `/api/v1/budget`; null = not read. */
+  apiUrl: string | null;
+  /** Orchestrator log file the evidence quotes from; null = none. */
+  logFile: string | null;
+  model: string;
+  effort: EffortLevel | null;
+  maxBudgetUsd: number | null;
+  /** Prompts per diagnosis: the task, then reminders until `report_diagnosis` is called. */
+  maxTurns: number;
 }
 
 /** `brain.review_lessons`: detection of recurring review findings and injection of lessons into prompts. */
@@ -304,12 +336,21 @@ export const DEFAULTS = {
   onMissingResult: 'Blocked',
   serverHost: '127.0.0.1',
   workspaceRootName: 'symphony_workspaces',
+  watchdogIntervalMs: 60_000,
+  watchdogSettleMs: 120_000,
+  watchdogCooldownMs: 600_000,
+  watchdogMaxResumes: 2,
+  watchdogPrompt: 'roles/watchdog.md',
+  watchdogModel: 'fable',
+  watchdogMaxTurns: 2,
 } as const;
 
 const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'];
 export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
-const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server', 'system', 'brain', 'budget'];
+const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server', 'system', 'brain', 'budget', 'watchdog'];
+const WATCHDOG_KEYS = new Set(['mode', 'interval_ms', 'settle_ms', 'cooldown_ms', 'max_resumes', 'prompt', 'api_url', 'log_file', 'claude']);
+const WATCHDOG_CLAUDE_KEYS = new Set(['model', 'effort', 'max_budget_usd', 'max_turns']);
 const BRAIN_KEYS = new Set(['enabled', 'path', 'clash_window_ms', 'obsidian_url', 'review_lessons']);
 const REVIEW_LESSONS_KEYS = new Set(['enabled', 'window_days', 'min_issues', 'inject_budget_chars']);
 const BUDGET_KEYS = new Set(['compact_threshold']);
@@ -1272,6 +1313,7 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
   const budget: BudgetConfig = { compactThreshold: reader.int(budgetRaw, 'compact_threshold', 'budget.compact_threshold', DEFAULTS.compactThreshold, 1) };
   if (budget.compactThreshold > 100) reader.errors.push('budget.compact_threshold must be <= 100');
   if (server.port !== null && server.port > 65_535) reader.errors.push('server.port must be <= 65535');
+  const watchdog = readWatchdog(reader, raw, workflowDir, options.env);
 
   if (reader.errors.length > 0) {
     throw new SymphonyError('invalid_config', reader.errors.join('; '));
@@ -1294,6 +1336,44 @@ export function resolveConfig(front: Record<string, unknown>, options: ResolveOp
     system,
     brain,
     budget,
+    watchdog,
     warnings: reader.warnings,
+  };
+}
+
+function readWatchdog(reader: Reader, raw: Record<string, unknown>, workflowDir: string, env: NodeJS.ProcessEnv): WatchdogConfig {
+  const section = reader.section(raw, 'watchdog');
+  for (const key of Object.keys(section)) {
+    if (!WATCHDOG_KEYS.has(key)) reader.errors.push(`watchdog.${key} is not a known key (allowed: ${[...WATCHDOG_KEYS].join(', ')})`);
+  }
+  const claudeRaw = reader.section(section, 'claude');
+  for (const key of Object.keys(claudeRaw)) {
+    if (!WATCHDOG_CLAUDE_KEYS.has(key)) reader.errors.push(`watchdog.claude.${key} is not a known key (allowed: ${[...WATCHDOG_CLAUDE_KEYS].join(', ')})`);
+  }
+  const optionalPath = (key: string, fallback: string | null): string | null => {
+    const value = reader.string(section, key, `watchdog.${key}`)?.trim() || fallback;
+    if (value === null) return null;
+    try {
+      return resolveConfigPath(value, workflowDir, env, `watchdog.${key}`);
+    } catch (error) {
+      reader.errors.push(errorMessage(error));
+      return null;
+    }
+  };
+  const apiUrl = reader.string(section, 'api_url', 'watchdog.api_url')?.trim() ?? '';
+  if (apiUrl !== '' && !/^https?:\/\/[^\s/]+/.test(apiUrl)) reader.errors.push('watchdog.api_url must be an http(s) URL');
+  return {
+    mode: reader.oneOf(section, 'mode', 'watchdog.mode', WATCHDOG_MODES, 'observe'),
+    intervalMs: reader.int(section, 'interval_ms', 'watchdog.interval_ms', DEFAULTS.watchdogIntervalMs, 1_000),
+    settleMs: reader.int(section, 'settle_ms', 'watchdog.settle_ms', DEFAULTS.watchdogSettleMs, 0),
+    cooldownMs: reader.int(section, 'cooldown_ms', 'watchdog.cooldown_ms', DEFAULTS.watchdogCooldownMs, 0),
+    maxResumes: reader.int(section, 'max_resumes', 'watchdog.max_resumes', DEFAULTS.watchdogMaxResumes, 0),
+    prompt: optionalPath('prompt', DEFAULTS.watchdogPrompt) ?? path.join(workflowDir, DEFAULTS.watchdogPrompt),
+    apiUrl: apiUrl === '' ? null : apiUrl.replace(/\/+$/, ''),
+    logFile: optionalPath('log_file', null),
+    model: reader.string(claudeRaw, 'model', 'watchdog.claude.model')?.trim() || DEFAULTS.watchdogModel,
+    effort: reader.oneOf(claudeRaw, 'effort', 'watchdog.claude.effort', EFFORT_LEVELS, 'high'),
+    maxBudgetUsd: reader.number(claudeRaw, 'max_budget_usd', 'watchdog.claude.max_budget_usd'),
+    maxTurns: reader.int(claudeRaw, 'max_turns', 'watchdog.claude.max_turns', DEFAULTS.watchdogMaxTurns, 1),
   };
 }

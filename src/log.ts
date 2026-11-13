@@ -24,20 +24,53 @@ export class StderrSink implements LogSink {
   }
 }
 
-/** Appends to a file. Write errors surface asynchronously through `onError`. */
+/** Size from which a log file is rotated to `<file>.1` (one old file is kept). */
+export const LOG_FILE_MAX_BYTES = 50 * 1024 * 1024;
+
+/** Appends to a file, rotating it to `<file>.1` past `maxBytes`. Write errors surface asynchronously through `onError`. */
 export class FileSink implements LogSink {
   readonly name: string;
+  #path: string;
+  #maxBytes: number;
+  #size: number;
+  #onError: (error: Error) => void;
   #stream: fs.WriteStream;
 
-  constructor(filePath: string, onError: (sink: FileSink, error: Error) => void) {
+  constructor(filePath: string, onError: (sink: FileSink, error: Error) => void, maxBytes: number = LOG_FILE_MAX_BYTES) {
     this.name = `file:${filePath}`;
+    this.#path = filePath;
+    this.#maxBytes = maxBytes;
+    this.#onError = (error) => onError(this, error);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    this.#stream = fs.createWriteStream(filePath, { flags: 'a' });
-    this.#stream.on('error', (error) => onError(this, error));
+    this.#size = fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
+    this.#stream = this.#open();
+  }
+
+  /** Opens the file synchronously, so it exists before the first rotation can rename it. */
+  #open(): fs.WriteStream {
+    const stream = fs.createWriteStream(this.#path, { fd: fs.openSync(this.#path, 'a') });
+    stream.on('error', this.#onError);
+    return stream;
   }
 
   write(line: string): void {
-    this.#stream.write(`${line}\n`);
+    const text = `${line}\n`;
+    if (this.#size > 0 && this.#size + Buffer.byteLength(text) > this.#maxBytes) this.#rotate();
+    this.#stream.write(text);
+    this.#size += Buffer.byteLength(text);
+  }
+
+  #rotate(): void {
+    try {
+      fs.renameSync(this.#path, `${this.#path}.1`);
+    } catch {
+      // Keep writing to the current file; the next write tries again.
+      return;
+    }
+    // Lines still queued in the old stream land in the renamed file: it keeps the same inode.
+    this.#stream.end();
+    this.#size = 0;
+    this.#stream = this.#open();
   }
 
   /** Resolves once everything written so far has reached the file. */

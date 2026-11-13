@@ -33,6 +33,8 @@ services:
             SYMPHONY_PHP: php
             SYMPHONY_COMPOSER: composer
             TZ: ${TZ:-Europe/Berlin}
+            # Also write the orchestrator log into the state volume, so the watchdog can quote it (rotates at 50 MB).
+            SYMPHONY_LOG_FILE: ${SYMPHONY_LOG_FILE-/home/symphony/.local/state/symphony/symphony.log}
         # No ports: the dashboard is reachable only through Traefik.
         networks:
             - traefik
@@ -87,6 +89,39 @@ services:
         # Optional limits; rough guide per parallel agent (Claude Code, Composer, tests): 1 CPU and 2 GB.
         # cpus: 2
         # mem_limit: 4g
+
+    # Compose profile "watchdog" (COMPOSE_PROFILES=watchdog, or docker compose up -d watchdog): diagnoses issues in the
+    # Blocked column with a read-only Claude session and moves them back (docs/watchdog.md). Same image, own process.
+    # Reads Symphony's state and workspaces read-only; writes only to GitHub (comment, label, column) in mode act.
+    watchdog:
+        container_name: "${COMPOSE_PROJECT_NAME:-symphony}-watchdog"
+        image: symphony:local
+        profiles: [watchdog]
+        restart: unless-stopped
+        command: ["watchdog"]
+        stop_grace_period: 30s
+        env_file: .env
+        environment:
+            SYMPHONY_LOG_DIR: /home/symphony/.local/state/symphony
+            SYMPHONY_WATCHDOG_STATE_DIR: /home/symphony/.local/state/symphony-watchdog
+            SYMPHONY_WATCHDOG_API_URL: ${SYMPHONY_WATCHDOG_API_URL:-http://symphony:${SYMPHONY_PORT:-4000}}
+            SYMPHONY_WATCHDOG_LOG_FILE: ${SYMPHONY_WATCHDOG_LOG_FILE-/home/symphony/.local/state/symphony/symphony.log}
+            TZ: ${TZ:-Europe/Berlin}
+        # The image's healthcheck asks the dashboard, which the watchdog does not serve.
+        healthcheck:
+            disable: true
+        # ci: reaches the symphony service by name; no Traefik, no ports.
+        networks:
+            - ci
+        volumes:
+            - state:/home/symphony/.local/state/symphony:ro
+            - workspaces:/home/symphony/symphony-workspaces:ro
+            - brain:/home/symphony/brain:ro
+            # Its own Claude Code home (CLAUDE_CONFIG_DIR) and its own state (events.jsonl, transcripts).
+            - watchdog-claude:/home/symphony/.claude
+            - watchdog-state:/home/symphony/.local/state/symphony-watchdog
+            # The prompt (roles/watchdog.md) is read anew for every diagnosis; with this mount an edit needs no rebuild.
+            - ./roles:/app/roles:ro
 
     # Compose profile "ci" (COMPOSE_PROFILES=ci in .env): a Docker daemon and a MySQL server for checks that run a
     # project's CI themselves (docs/docker.md, "CI sidecars"). Without the profile neither service starts.
@@ -215,6 +250,9 @@ volumes:
     brain:
     # Profile "brain": Obsidian's settings (/config).
     obsidian-config:
+    # Profile "watchdog": its Claude Code home and its own state.
+    watchdog-claude:
+    watchdog-state:
     # "ci" profile: dind's certificates and image store.
     dind-certs-ca:
     dind-certs-client:
