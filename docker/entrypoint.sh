@@ -4,6 +4,10 @@
 set -euo pipefail
 
 run_symphony() {
+  # SYMPHONY_LOG_FILE: also write the orchestrator log into a file (e.g. in the state volume, for the watchdog).
+  if [[ -n "${SYMPHONY_LOG_FILE:-}" ]]; then
+    exec node /app/src/cli.ts /app/WORKFLOW.md --log-file "$SYMPHONY_LOG_FILE" "$@"
+  fi
   exec node /app/src/cli.ts /app/WORKFLOW.md "$@"
 }
 
@@ -11,6 +15,19 @@ fail() {
   printf 'symphony-entrypoint: %s\n' "$@" >&2
   exit 2
 }
+
+# The Blocked watchdog (docs/watchdog.md): same image, its own process. Needs no SSH key and no git identity: it never
+# pushes, and its Claude session is read-only.
+if [[ "${1:-}" == "watchdog" ]]; then
+  shift
+  for name in GITHUB_TOKEN GITHUB_PROJECT_NUMBER GITHUB_REPOSITORY; do
+    [[ -n "${!name:-}" ]] || fail "missing required environment variable for the watchdog: $name"
+  done
+  if [[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" && -z "${ANTHROPIC_API_KEY:-}" ]]; then
+    fail "missing required environment variable for the watchdog: CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY"
+  fi
+  exec node /app/src/watchdog/cli.ts /app/WORKFLOW.md "$@"
+fi
 
 # --help and --version need no secrets.
 for arg in "$@"; do

@@ -72,7 +72,8 @@ may move to `Agent review` or `In review`. In repositories without a Laravel app
 
 If you want follow-up work, comment in the issue and move it back to `Ready` or `In progress`. The developer
 continues in the same workspace and reads your comments. Move an issue out of `Blocked` the same way once the
-problem is resolved.
+problem is resolved. The optional [Blocked watchdog](watchdog.md) does this for you where it can: it diagnoses every
+blocked issue from the logs, comments, and moves it back or adds `needs-human`.
 
 ### Bug issues: the bugfix profile
 

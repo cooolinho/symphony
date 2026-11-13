@@ -1258,6 +1258,26 @@ Display settings of the budget and context views. An unknown key is ignored with
 | --- | --- | --- | --- |
 | `compact_threshold` | integer 1–100 | `80` | Context fill in percent from which Claude Code compacts automatically. The **Session** field of the team view (`/issue?id=`) draws its red Auto-Compact mark there; `GET /api/v1/<identifier>/team` returns it as `compact_threshold`. Fallback for the mark when a role has no [`claude.auto_compact_window`](#claude) (then the mark sits at window / model window). Only a display value: it does not change when Claude Code compacts. |
 
+### `watchdog`
+
+Settings of the [Blocked watchdog](watchdog.md), a separate process (`src/watchdog/cli.ts`, compose profile
+`watchdog`). The orchestrator ignores the section. An unknown key is an error.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `mode` | `observe`, `comment`, `act` | `observe` | `observe` logs only; `comment` posts the diagnosis; `act` also moves the issue back or adds `pipeline.limit_label` |
+| `interval_ms` | integer ≥ 1000 | `60000` | How often the blocked column is read |
+| `settle_ms` | integer ≥ 0 | `120000` | Wait after the issue entered the blocked column |
+| `cooldown_ms` | integer ≥ 0 | `600000` | Least time between two resumes of one issue, and before a `wait` or a failed session is retried |
+| `max_resumes` | integer ≥ 0 | `2` | Automatic resumes since the newest human comment; then the issue stays blocked with `needs-human` |
+| `prompt` | path | `roles/watchdog.md` | Liquid prompt of the diagnosis session, relative to `WORKFLOW.md`; read anew for every diagnosis |
+| `api_url` | http(s) URL | none | The orchestrator, for `/api/v1/state` (health, model holds) |
+| `log_file` | path | none | The orchestrator's log file (`--log-file`, `SYMPHONY_LOG_FILE`), quoted in the evidence |
+| `claude.model` | string | `fable` | Model of the diagnosis session |
+| `claude.effort` | `low` … `max` | `high` | Effort of the diagnosis session |
+| `claude.max_budget_usd` | number | none | Cost limit per diagnosis |
+| `claude.max_turns` | integer ≥ 1 | `2` | Prompts per diagnosis: the task, then reminders to call `report_diagnosis` |
+
 ## Complete example: roles, checks and Laravel
 
 The shipped `WORKFLOW.md`, shortened to the parts that make up the developer → checks → reviewer → human flow
