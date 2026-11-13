@@ -88,6 +88,7 @@ import { checkStatusReporter, runAgentAttempt, type RunPhase, type WorkerOutcome
 import { interruptedLabels, interruptedTransition, statusUpdatedAt, type InterruptedTransition } from './recovery.ts';
 import { applyTransitionLabels, RESULT_TOOL } from './result-tool.ts';
 import { securityBaseRef } from './security.ts';
+import { readWatchdogStatus } from '../watchdog/heartbeat.ts';
 
 export interface Clock {
   now(): Date;
@@ -4114,6 +4115,8 @@ export class Orchestrator {
             ? null
             : { reason: 'session_limit' as const, window: gate.window, until: gate.until.toISOString(), issue_identifier: gate.issueIdentifier },
         last_tick_at: this.#lastTickAt?.toISOString() ?? null,
+        /** The Blocked watchdog's heartbeat (docs/watchdog.md); null when it is not set up (`watchdog.state_dir`) or never ran. */
+        watchdog: readWatchdogStatus(config.watchdog.stateDir, this.#clock.now()),
         last_tracker_error: this.#lastTrackerError
           ? { at: this.#lastTrackerError.at.toISOString(), message: this.#lastTrackerError.message }
           : null,

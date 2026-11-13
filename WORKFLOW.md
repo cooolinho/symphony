@@ -478,6 +478,7 @@ watchdog:
   prompt: roles/watchdog.md                  # the session's task; read anew for every diagnosis, edit it freely
   api_url: ${SYMPHONY_WATCHDOG_API_URL:-}    # orchestrator API for /api/v1/state (compose: http://symphony:4000)
   log_file: ${SYMPHONY_WATCHDOG_LOG_FILE:-}  # orchestrator log the evidence quotes (compose: the state volume's symphony.log)
+  state_dir: ${SYMPHONY_WATCHDOG_STATE_DIR:-}  # its events, transcripts and heartbeat; the dashboard shows the heartbeat (compose sets it)
   claude:
     model: ${SYMPHONY_WATCHDOG_MODEL:-fable}
     effort: high

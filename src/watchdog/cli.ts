@@ -23,8 +23,9 @@ Options:
   --env-file <path>   Load variables from this dotenv file (default: .env next to the workflow file).
   --log-dir <dir>     Symphony's state directory to read (default: $SYMPHONY_LOG_DIR, else
                       $XDG_STATE_HOME/symphony or ~/.local/state/symphony).
-  --state-dir <dir>   The watchdog's own directory (events.jsonl, transcripts; default:
-                      $SYMPHONY_WATCHDOG_STATE_DIR, else ~/.local/state/symphony-watchdog).
+  --state-dir <dir>   The watchdog's own directory (events.jsonl, transcripts, heartbeat.json;
+                      default: watchdog.state_dir, else $SYMPHONY_WATCHDOG_STATE_DIR, else
+                      ~/.local/state/symphony-watchdog).
   --log-file <path>   Also write the watchdog's log to this file.
   --log-level <lvl>   debug | info | warn | error (default: info).
   --once              Run one pass over the blocked column and exit.
@@ -80,7 +81,7 @@ async function main(): Promise<number> {
   }
   const stateHome = env.XDG_STATE_HOME?.trim() || path.join(os.homedir(), '.local', 'state');
   const logDir = dirFrom(values['log-dir'] ?? env.SYMPHONY_LOG_DIR, path.join(stateHome, 'symphony'), workflowDir);
-  const stateDir = dirFrom(values['state-dir'] ?? env.SYMPHONY_WATCHDOG_STATE_DIR, path.join(stateHome, 'symphony-watchdog'), workflowDir);
+  const fallbackStateDir = path.join(stateHome, 'symphony-watchdog');
 
   const logger = Logger.create({ level: logLevel, file: values['log-file'] ?? null }).child({ component: 'watchdog' });
   let store: WorkflowStore;
@@ -92,6 +93,8 @@ async function main(): Promise<number> {
     return 1;
   }
   const config = store.current.config;
+  // --state-dir, else watchdog.state_dir (the orchestrator reads the heartbeat there), else SYMPHONY_WATCHDOG_STATE_DIR.
+  const stateDir = dirFrom(values['state-dir'] ?? config.watchdog.stateDir ?? env.SYMPHONY_WATCHDOG_STATE_DIR, fallbackStateDir, workflowDir);
   const factory = getTrackerFactory(config.tracker.kind);
   if (factory === undefined) {
     logger.error('startup failed: unsupported tracker', { tracker: config.tracker.kind ?? 'none' });

@@ -169,6 +169,24 @@ Unknown keys are errors. The watchdog reloads `WORKFLOW.md` like the orchestrato
 |---|---|
 | `~/.local/state/symphony-watchdog/events.jsonl` | one line per diagnosis: issue, block, cause, confidence, recommendation, decision, reason, action, cost, prompt hash, errors |
 | `~/.local/state/symphony-watchdog/sessions/<workspace key>/<time>.jsonl` | transcripts of the diagnosis sessions |
+| `~/.local/state/symphony-watchdog/heartbeat.json` | sign of life, written every 30 s and after each pass: `pid`, `mode`, `model`, `started_at`, `updated_at`, `last_tick_at`, `stopped_at` |
+
+## Status on the dashboard
+
+The orchestrator mounts `watchdog-state` read-only and reads `heartbeat.json` from `watchdog.state_dir`
+(`SYMPHONY_WATCHDOG_STATE_DIR`, set by both compose files). `GET /api/v1/state` reports it as `health.watchdog`
+(`running`, `mode`, `started_at`, `updated_at`, `last_tick_at`, `stopped_at`), and the overview shows a chip next to
+"Tracker ok" and "Workflow gültig":
+
+| Chip | When |
+|---|---|
+| **Watchdog läuft** (green) | the heartbeat is at most 2 minutes old; the tooltip names the mode and the last pass |
+| **Watchdog gestoppt** (red) | the watchdog stopped (`stopped_at`), or its heartbeat is older than 2 minutes |
+| none | no `watchdog.state_dir`, or the watchdog never ran (`health.watchdog` is null) |
+
+`--once` writes no heartbeat. The orchestrator container needs a recreate to get the mount
+(`docker compose up -d symphony`); the image must contain the directory `~/.local/state/symphony-watchdog`, which it
+does from this version on, so the volume belongs to the `symphony` user on first mount.
 
 ```bash
 docker exec symphony-watchdog tail -n 20 /home/symphony/.local/state/symphony-watchdog/events.jsonl

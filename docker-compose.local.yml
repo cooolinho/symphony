@@ -31,6 +31,8 @@ services:
             TZ: ${TZ:-Europe/Berlin}
             # Also write the orchestrator log into the state volume, so the watchdog can quote it (rotates at 50 MB).
             SYMPHONY_LOG_FILE: ${SYMPHONY_LOG_FILE-/home/symphony/.local/state/symphony/symphony.log}
+            # Where the watchdog writes its heartbeat; the dashboard shows "Watchdog läuft" from it (docs/watchdog.md).
+            SYMPHONY_WATCHDOG_STATE_DIR: /home/symphony/.local/state/symphony-watchdog
         # Local only: no Traefik, dashboard reachable from this machine.
         ports:
             - "127.0.0.1:${SYMPHONY_PORT:-4000}:${SYMPHONY_PORT:-4000}"
@@ -52,6 +54,8 @@ services:
             - composer-cache:/home/symphony/.cache/composer
             # Brain vault (brain.enabled in WORKFLOW.md); the obsidian service (profile brain) opens it
             - brain:/home/symphony/brain
+            # The watchdog's state, read-only: only its heartbeat.json is read (empty without the watchdog profile).
+            - watchdog-state:/home/symphony/.local/state/symphony-watchdog:ro
             # "ci" profile: client certs for the dind daemon. No DOCKER_HOST here: agents share this environment,
             # the check scripts map SYMPHONY_CI_DOCKER_HOST / SYMPHONY_CI_DOCKER_CERT_PATH to DOCKER_* themselves.
             # Without the profile the volume stays empty.

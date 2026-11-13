@@ -261,6 +261,11 @@ export interface WatchdogConfig {
   apiUrl: string | null;
   /** Orchestrator log file the evidence quotes from; null = none. */
   logFile: string | null;
+  /**
+   * The watchdog's own directory (events, transcripts, `heartbeat.json`); the orchestrator reads the heartbeat from it for
+   * `health.watchdog`. null = the watchdog's default, and the orchestrator shows no watchdog status.
+   */
+  stateDir: string | null;
   model: string;
   effort: EffortLevel | null;
   maxBudgetUsd: number | null;
@@ -349,7 +354,7 @@ const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', '
 export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const SETTING_SOURCES: readonly SettingSource[] = ['user', 'project', 'local'];
 const CORE_TOP_LEVEL: readonly string[] = ['tracker', 'polling', 'workspace', 'hooks', 'checks', 'agent', 'claude', 'roles', 'pipeline', 'server', 'system', 'brain', 'budget', 'watchdog'];
-const WATCHDOG_KEYS = new Set(['mode', 'interval_ms', 'settle_ms', 'cooldown_ms', 'max_resumes', 'prompt', 'api_url', 'log_file', 'claude']);
+const WATCHDOG_KEYS = new Set(['mode', 'interval_ms', 'settle_ms', 'cooldown_ms', 'max_resumes', 'prompt', 'api_url', 'log_file', 'state_dir', 'claude']);
 const WATCHDOG_CLAUDE_KEYS = new Set(['model', 'effort', 'max_budget_usd', 'max_turns']);
 const BRAIN_KEYS = new Set(['enabled', 'path', 'clash_window_ms', 'obsidian_url', 'review_lessons']);
 const REVIEW_LESSONS_KEYS = new Set(['enabled', 'window_days', 'min_issues', 'inject_budget_chars']);
@@ -1371,6 +1376,7 @@ function readWatchdog(reader: Reader, raw: Record<string, unknown>, workflowDir:
     prompt: optionalPath('prompt', DEFAULTS.watchdogPrompt) ?? path.join(workflowDir, DEFAULTS.watchdogPrompt),
     apiUrl: apiUrl === '' ? null : apiUrl.replace(/\/+$/, ''),
     logFile: optionalPath('log_file', null),
+    stateDir: optionalPath('state_dir', null),
     model: reader.string(claudeRaw, 'model', 'watchdog.claude.model')?.trim() || DEFAULTS.watchdogModel,
     effort: reader.oneOf(claudeRaw, 'effort', 'watchdog.claude.effort', EFFORT_LEVELS, 'high'),
     maxBudgetUsd: reader.number(claudeRaw, 'max_budget_usd', 'watchdog.claude.max_budget_usd'),
