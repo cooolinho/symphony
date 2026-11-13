@@ -122,7 +122,10 @@ The target is the session's `target_column`, else the column the issue came from
 
 Loop protection, read from the watchdog's own comments on the issue: at most `max_resumes` (default 2) resumes since the
 newest human comment, at least `cooldown_ms` between two, and `settle_ms` after the issue entered the blocked column. A
-block is handled once: the comment's marker records `blocked_at`.
+block is handled once: the comment's marker records `blocked_at`. In mode `observe`, which writes no comment, the
+watchdog reads its decisions back from `events.jsonl` at start, so a restart does not diagnose the same blocks again. The
+mode is part of that memory: after a switch to `comment` or `act`, blocks that were only observed are diagnosed once
+more and acted on. A `wait` or a failed session is never remembered.
 
 ## The comment
 
@@ -167,7 +170,7 @@ Unknown keys are errors. The watchdog reloads `WORKFLOW.md` like the orchestrato
 
 | Path (container) | Content |
 |---|---|
-| `~/.local/state/symphony-watchdog/events.jsonl` | one line per diagnosis: issue, block, cause, confidence, recommendation, decision, reason, action, cost, prompt hash, errors |
+| `~/.local/state/symphony-watchdog/events.jsonl` | one line per diagnosis: issue, `blocked_at`, mode, block, cause, confidence, recommendation, decision, reason, action, cost, prompt hash, errors |
 | `~/.local/state/symphony-watchdog/sessions/<workspace key>/<time>.jsonl` | transcripts of the diagnosis sessions |
 | `~/.local/state/symphony-watchdog/heartbeat.json` | sign of life, written every 30 s and after each pass: `pid`, `mode`, `model`, `started_at`, `updated_at`, `last_tick_at`, `stopped_at` |
 
