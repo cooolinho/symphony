@@ -1,4 +1,5 @@
-# Symphony as a non-root service with PHP, Composer, pnpm, git, SSH and gitleaks for Node and Laravel repositories.
+# Symphony as a non-root service with PHP, Composer, pnpm, git, SSH and gitleaks for Node and Laravel repositories,
+# plus shellcheck and bats so agents can pre-check shell repositories.
 # Start: docker run <image> [Symphony options]; the entrypoint checks the required variables first.
 FROM node:26-trixie-slim
 
@@ -14,7 +15,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # one it generated itself. Verification is off (TLS stays on) so the client reaches such test servers at all.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        bash ca-certificates curl git jq openssh-client openssl ripgrep tini unzip \
+        bash bats ca-certificates curl git jq openssh-client openssl ripgrep shellcheck tini unzip \
     && curl -fsSLo /tmp/debsuryorg-archive-keyring.deb https://packages.sury.org/debsuryorg-archive-keyring.deb \
     && dpkg -i /tmp/debsuryorg-archive-keyring.deb \
     && rm /tmp/debsuryorg-archive-keyring.deb \

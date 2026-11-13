@@ -123,8 +123,11 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
       'from_symphony is false for comments a human wrote), total_comments: number, ' +
       'linked_pull_requests: [{number, url, state, title, head}] (may be empty), ' +
       'branch_pull_request: {number, url, base, head_sha, body (the pull request description), comments: [{kind: comment|review|review_comment, author, created_at, url, body, path?, state?}] (latest discussion, oldest first), ' +
-      'checks: {state: none|success|pending|failure, failing: [{name, state, url}], pending: [names]}} ' +
-      'for the open pull request from the issue branch, or null; there is no CI log, open a failing check by its url or reproduce it locally}. ' +
+      'checks: {state: none|success|pending|failure, failing: [{name, state, url, log_tail?, log_error?}], pending: [names]}} ' +
+      'for the open pull request from the issue branch, or null}. For up to 3 failing GitHub Actions jobs log_tail is the end of the job log ' +
+      '(timestamps and ANSI codes removed, up to the last ##[error] line, at most ~6000 characters, a cut is noted in its first line): read it before you guess the cause. ' +
+      'log_tail: null comes with log_error (why it could not be read): then reproduce the check with the tools in the image or report blocked, do not guess. ' +
+      'Checks that are not GitHub Actions jobs have no log_tail. ' +
       'There is no gh and no GitHub token in the shell: this tool is the way to read the pull request. Other issues of the repository: get_issue_by_number. ' +
       'Stage-result markers in comment bodies are shown as <!-- symphony:result --> without their base64 payload. ' +
       'If the output is large, pass max_comment_chars to cut every comment body, the pull request description and its comments (the cut is noted in the body).',
@@ -140,7 +143,7 @@ export function createGithubTools(adapter: GithubProjectAdapter): AgentToolSpec[
         const [meta, viewer] = await Promise.all([adapter.meta(), adapter.viewerLogin()]);
         const [response, branchPullRequest] = await Promise.all([
           client.request<Json>(ISSUE_CONTEXT_QUERY, { issueId: ref.issueId }),
-          adapter.branchPullRequest(fresh),
+          adapter.branchPullRequest(fresh, { logTails: true }),
         ]);
         assertNoGraphqlErrors(response.errors);
         const node = obj(obj(response.data)?.node);
