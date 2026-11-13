@@ -17,8 +17,8 @@ const VIEWER = 'symphony-bot';
 const NOW = new Date('2026-11-12T12:00:00Z');
 const MISSING = '**Stage ended without a result.** The developer session for "In progress" ended without calling `report_result` (after 20 turns)';
 
-function setup(mode: WatchdogMode, diagnosis: Partial<Diagnosis> = {}, promptText = 'Diagnose {{ issue.identifier }}: {{ block.kind }} from {{ block.from }}') {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-watchdog-'));
+function setup(mode: WatchdogMode, diagnosis: Partial<Diagnosis> = {}, promptText = 'Diagnose {{ issue.identifier }}: {{ block.kind }} from {{ block.from }}', reuseDir?: string) {
+  const dir = reuseDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'symphony-watchdog-'));
   const prompt = path.join(dir, 'watchdog.md');
   fs.writeFileSync(prompt, promptText);
   const config = resolveConfig(
@@ -171,6 +171,25 @@ describe('WatchdogPoller', () => {
     assert.equal(event?.decision, 'resume');
     assert.equal(observe.comments.length, 1);
     assert.deepEqual(observe.moves, []);
+  });
+
+  it('remembers observed blocks across a restart, but acts on them after a switch to act', async () => {
+    const first = setup('observe');
+    assert.equal((await first.poller.handle(first.issue, first.config))?.decision, 'resume');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(first.dir, 'watchdog', 'events.jsonl'), 'utf8').trim()).mode, 'observe');
+    const restarted = setup('observe', {}, undefined, first.dir);
+    assert.equal(await restarted.poller.handle(restarted.issue, restarted.config), null);
+    assert.equal(restarted.sessions.length, 0);
+    const acting = setup('act', {}, undefined, first.dir);
+    assert.equal((await acting.poller.handle(acting.issue, acting.config))?.decision, 'resume');
+    assert.deepEqual(acting.moves, ['In progress']);
+  });
+
+  it('does not remember a failed session or a wait across a restart', async () => {
+    const first = setup('observe', { cause: 'infra_transient', cause_gone: false });
+    assert.equal((await first.poller.handle(first.issue, first.config))?.decision, 'wait');
+    const restarted = setup('observe', {}, undefined, first.dir);
+    assert.equal((await restarted.poller.handle(restarted.issue, restarted.config))?.decision, 'resume');
   });
 
   it('a prompt that does not render fails the diagnosis before a session starts', async () => {

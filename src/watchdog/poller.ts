@@ -55,6 +55,8 @@ export interface WatchdogEvent {
   at: string;
   issue: string;
   blocked_at: string | null;
+  /** The watchdog mode the decision was made in. */
+  mode: string;
   block: string;
   from: string | null;
   cause: string | null;
@@ -69,13 +71,51 @@ export interface WatchdogEvent {
   errors: string[];
 }
 
+const EVENTS_FILE = 'events.jsonl';
+
+/** Key of one block in one mode. A block without `blocked_at` is remembered only within the run (see `loadDecided`). */
+function blockKey(issue: string, blockedAt: string | null, mode: string): string {
+  return `${issue}@${blockedAt ?? 'unknown'}#${mode}`;
+}
+
+/** Whether an event settles its block: a decision (not a wait or a failed session) that was carried out. */
+function decided(event: Pick<WatchdogEvent, 'decision' | 'action' | 'mode'>): boolean {
+  return (event.decision === 'resume' || event.decision === 'escalate' || event.decision === 'skip') && (event.action !== null || event.mode === 'observe');
+}
+
+/** The blocks decided on in earlier runs, from `events.jsonl`; empty when it cannot be read. */
+export function loadDecided(file: string): Set<string> {
+  const keys = new Set<string>();
+  let text: string;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return keys;
+  }
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') continue;
+    try {
+      const event = JSON.parse(line) as Partial<WatchdogEvent>;
+      if (typeof event.issue !== 'string' || typeof event.blocked_at !== 'string' || typeof event.mode !== 'string') continue;
+      if (decided(event as WatchdogEvent)) keys.add(blockKey(event.issue, event.blocked_at, event.mode));
+    } catch {
+      // A torn last line after a crash.
+    }
+  }
+  return keys;
+}
+
 const columnsOf = (roles: readonly RoleConfig[] | null, active: readonly string[], kind: string) =>
   active.filter((state) => roles?.some((role) => role.result === kind && role.states.includes(normalizeStateName(state))) === true);
 
 export class WatchdogPoller {
   #deps: PollerDeps;
-  /** Blocks handled in this process (`<issue id>@<blocked at>`), also in mode observe, where no marker is written. */
-  #handled = new Set<string>();
+  /**
+   * Blocks decided on (`<issue>@<blocked at>#<mode>`), also in mode observe, where no marker is written. Read back from
+   * `events.jsonl` at start, so a restart does not diagnose the same blocks again; the mode is part of the key, so
+   * switching from observe to act acts on blocks that were only observed.
+   */
+  #handled: Set<string>;
   /** Blocks to look at again later (a wait decision or a failed session), by the same key. */
   #nextCheck = new Map<string, number>();
   #timer: NodeJS.Timeout | null = null;
@@ -90,6 +130,7 @@ export class WatchdogPoller {
   constructor(deps: PollerDeps) {
     this.#deps = deps;
     this.#startedAt = this.#now();
+    this.#handled = loadDecided(path.join(deps.stateDir, EVENTS_FILE));
   }
 
   #now(): Date {
@@ -165,7 +206,7 @@ export class WatchdogPoller {
     const { watchdog } = config;
     const now = this.#now();
     const blockedAt = statusUpdatedAt(issue);
-    const key = `${issue.id}@${blockedAt?.toISOString() ?? 'unknown'}`;
+    const key = blockKey(issue.identifier, blockedAt?.toISOString() ?? null, watchdog.mode);
     if (this.#handled.has(key)) return null;
     if ((this.#nextCheck.get(key) ?? 0) > now.getTime()) return null;
     if (blockedAt !== null && now.getTime() - blockedAt.getTime() < watchdog.settleMs) return null;
@@ -264,7 +305,7 @@ export class WatchdogPoller {
       signal: this.#abort.signal,
     });
 
-    const base = { at: now.toISOString(), issue: issue.identifier, blocked_at: blockedAt?.toISOString() ?? null, block: block.kind, from: block.from, cost_usd: outcome.costUsd, prompt_hash: prompt.hash };
+    const base = { at: now.toISOString(), issue: issue.identifier, blocked_at: blockedAt?.toISOString() ?? null, mode: watchdog.mode, block: block.kind, from: block.from, cost_usd: outcome.costUsd, prompt_hash: prompt.hash };
     if (outcome.diagnosis === null) {
       // A failed session (usage limit, outage) is no verdict on the issue: try again after the cooldown.
       this.#later(key, now, watchdog.cooldownMs);
@@ -300,7 +341,7 @@ export class WatchdogPoller {
       promptHash: prompt.hash,
       now,
     });
-    if (decision.action !== 'wait' && (done.action !== null || watchdog.mode === 'observe')) this.#handled.add(key);
+    if (decided({ decision: decision.action, action: done.action, mode: watchdog.mode })) this.#handled.add(key);
     if (done.action === null && decision.action !== 'wait' && watchdog.mode !== 'observe') this.#later(key, now, watchdog.cooldownMs);
     return this.#record({
       ...base,
@@ -334,7 +375,7 @@ export class WatchdogPoller {
     this.#deps.logger.log(level, 'watchdog decision', { ...event, errors: event.errors.join('; ') || undefined });
     try {
       fs.mkdirSync(this.#deps.stateDir, { recursive: true });
-      fs.appendFileSync(path.join(this.#deps.stateDir, 'events.jsonl'), `${JSON.stringify(event)}\n`);
+      fs.appendFileSync(path.join(this.#deps.stateDir, EVENTS_FILE), `${JSON.stringify(event)}\n`);
     } catch (error) {
       this.#deps.logger.warn('could not write the watchdog event log', { error: errorMessage(error) });
     }
