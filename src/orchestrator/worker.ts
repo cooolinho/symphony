@@ -357,7 +357,7 @@ async function resetAfterHumanResume(
   if (target === null) return null;
   const isActive = (state: string) => activeStates.some((active) => normalizeStateName(active) === normalizeStateName(state));
   if (isActive(target) || !isActive(issue.state)) return null;
-  const result = internalResult('reset', `${issue.identifier} was moved from "${target}" back to "${issue.state}" by a human; the round counters start again.`);
+  const result = internalResult('reset', `${issue.identifier} was moved from "${target}" back to "${issue.state}" (by a human or the watchdog); the round counters start again.`);
   const meta: ResultMeta = {
     role: 'symphony',
     run: params.runId,
