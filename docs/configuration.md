@@ -620,7 +620,7 @@ roles:
 - The architect reads the code and reports a [`design` result](results.md#kinds): the `options` it compared, the
   `decision`, the `components` and `interfaces` of the change, `migrations` and `compatibility`. `ready` needs a decision
   and at least one component and one interface (`report_result` refuses a generic design with `invalid_result`);
-  `blocked` needs a blocker and moves the issue to `Blocked`. Explorers map the code. At complexity L/XL (the architect runs on fable) it starts the read-only `design-critic` (`model: opus`, `maxTurns: 40`) once on its finished draft, before `report_result`; at S/M (opus) the prompt neither lists nor names it (a soft gate: it stays allowed in the session). The architect no longer uses `laravel-architect`: a critique by the same model with a design persona.
+  `blocked` needs a blocker and moves the issue to `Blocked`. It reads the code itself (no explorer since [E2-5](agent-claude.md#evaluation-of-stage-2-e2-5)). At complexity L/XL (the architect runs on fable) it starts the read-only `design-critic` (`model: opus`, `maxTurns: 40`) once on its finished draft, before `report_result`; at S/M (opus) the prompt neither lists nor names it (a soft gate: it stays allowed in the session). The architect no longer uses `laravel-architect`: a critique by the same model with a design persona.
 - **The developer implements the design.** `ready` moves the issue to `In progress`, and the developer's prompt contains
   the newest design (`results.design`, see [Prompt template](#prompt-template)). Where the design does not fit the code,
   the developer deviates and says so in `plan_deviations`.
@@ -955,7 +955,7 @@ The plugins in `claude.plugins` ship subagents (`agents/<name>.md`; Symphony's t
 [laravel-subagents.md](laravel-subagents.md)). Claude Code offers them as `<plugin>:<name>`, e.g.
 `symphony:laravel-architect`. For each session Symphony decides which of them the agent may start:
 
-1. **The role's list.** `agents` unset allows every plugin subagent, a list only those, `[]` none. "Unset = all" stays the default for custom workflows and for workflows without `roles`; every role of the shipped `WORKFLOW.md` lists its agents explicitly (`docs`, `brain-gardener` and `issue-analyst` with `[]`, so they never start a `laravel-*` persona; `architect` lists `explorer` and `design-critic`; `developer` lists `explorer`, the `laravel-*` personas and `spec-reviewer`; `test-engineer` lists `test-designer`, and the `reviewer` lists `convention-lens`, `bug-lens` and `finding-verifier` (lens review at L/XL only), and the `security-auditor` lists `security-inventory` and `refutation-judge` (security panel at L/XL only); these carry no prefix).
+1. **The role's list.** `agents` unset allows every plugin subagent, a list only those, `[]` none. "Unset = all" stays the default for custom workflows and for workflows without `roles`; every role of the shipped `WORKFLOW.md` lists its agents explicitly (`docs`, `brain-gardener` and `issue-analyst` with `[]`, so they never start a `laravel-*` persona; `architect` lists `design-critic`; `developer` lists the `laravel-*` personas and `spec-reviewer`; `test-engineer` lists `test-designer`, and the `reviewer` lists `convention-lens`, `bug-lens` and `finding-verifier` (lens review at L/XL only), and the `security-auditor` lists `security-inventory` and `refutation-judge` (security panel at L/XL only); these carry no prefix).
 2. **Read-only roles** only get subagents that cannot edit files: their front matter denies `Edit` and `Write`
    (`disallowedTools: Edit, Write, NotebookEdit`) or lists `tools` without them. This applies with `agents` unset too.
 3. **Project type.** A subagent whose name starts with a workspace integration's prefix belongs to it: `laravel-*`
@@ -974,8 +974,7 @@ naming one of them. The allowed ones reach the prompt as the variable [`agents`]
 - **Findings are candidates.** The agent reads the cited lines itself and discards any claim without `file:line`; it
   stays responsible for the result.
 - **When to delegate.** Each role with agents adds bullets with a trigger and an exclusion that name the agent by its
-  qualified name, e.g. `analyst`: before reading more than about ten files, ask `symphony:explorer`; `architect`:
-  2–3 explorers, one per code area, then read their files yourself. A bullet renders only when its agent is allowed in
+  qualified name, e.g. `analyst`: before reading more than about ten files, ask `symphony:explorer`, then read its files yourself. A bullet renders only when its agent is allowed in
   the session, so a non-Laravel workspace never sees `laravel-*` agents named. Roles with `agents: []` render neither
   the intro nor the bullets.
 - **Early self-review (developer, L/XL).** At complexity L or XL the developer starts one read-only review once, when the change and its tests are complete and before the first `git push`, briefed to report only correctness gaps against the acceptance criteria and the design (no style) with `file:line` and the command with its output; it checks the gaps, fixes the confirmed ones and pushes, with no second call. The prompt names `laravel-code-reviewer` in Laravel workspaces (then `spec-reviewer` is hidden from the list) and `spec-reviewer` elsewhere. At S/M and without a complexity label the developer's prompt names no reviewer and hides both from the list.
