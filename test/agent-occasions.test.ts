@@ -82,7 +82,7 @@ describe('prompts on occasions instead of deterrence', () => {
       assert.ok(withAgents.length >= 7, `expected the shipped roles with agents, got ${withAgents.map(([n]) => n).join()}`);
       for (const [role] of withAgents) {
         const listed = roles[role] ?? ALL;
-        const prompt = await render(role, listed.map(agent), { delegate: true });
+        const prompt = await render(role, listed.map(agent), { delegate: true }, role === 'architect' ? ['feature', 'complexity: l'] : undefined); // the architect lists only the design-critic (E2-5), named at L/XL
         const label = role;
         if (role === 'test-engineer' || role === 'reviewer' || role === 'security-auditor') continue; // render the intro depending on the complexity, see below
         assert.match(prompt, /Subagents you can start with the Agent tool/, label);
@@ -119,13 +119,14 @@ describe('prompts on occasions instead of deterrence', () => {
         assert.ok(listed && listed.length > 0, role);
         const prompt = await render(role, listed.map(agent), {}, role === 'architect' ? ['feature', 'complexity: l'] : undefined);
         const bullets = delegateBullets(prompt);
-        assert.ok(bullets.length >= 2, `${role}: ${bullets.length} bullets`);
+        assert.ok(bullets.length >= (listed.includes('explorer') || role === 'developer' ? 2 : 1), `${role}: ${bullets.length} bullets`);
         for (const bullet of bullets) {
           assert.match(bullet, NOT_FOR, `${role}: no exclusion in "${bullet}"`);
           assert.match(bullet, /`symphony:[a-z-]+`/, `${role}: no qualified agent name in "${bullet}"`);
         }
-        // the first bullet is the explorer in every role that lists it
-        assert.match(bullets[0]!, /`symphony:explorer`/, role);
+        // the first bullet is the explorer in every role that lists it; developer and architect do not (E2-5)
+        if (listed.includes('explorer')) assert.match(bullets[0]!, /`symphony:explorer`/, role);
+        else assert.ok(!bullets.some((bullet) => bullet.includes('`symphony:explorer`')), role);
         // no Liquid left over
         assert.doesNotMatch(prompt, /\{%|\{\{|%\}|\}\}/, role);
       }

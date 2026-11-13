@@ -2291,3 +2291,90 @@ describe('early self-review (#503)', () => {
     assert.deepEqual(allowed.map((agent) => agent.qualified).sort(), ['symphony:spec-reviewer']);
   });
 });
+
+describe('stage 2 evaluation applied (#501)', () => {
+  const env = { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' };
+  const loadConfig = async () => {
+    const { definition } = await loadWorkflowFile(shipped);
+    return resolveConfig(definition.config, { workflowPath: shipped, env, trackerDefaults });
+  };
+  const roleOf = (config: Awaited<ReturnType<typeof loadConfig>>, name: string) => (config.roles ?? []).find((entry) => entry.name === name) ?? null;
+
+  it('keeps the explorer only in auditor, autopilot, analyst and planner', async () => {
+    const config = await loadConfig();
+    const withExplorer = (config.roles ?? []).filter((role) => role.agents?.includes('explorer')).map((role) => role.name).sort();
+    assert.deepEqual(withExplorer, ['analyst', 'auditor', 'autopilot', 'planner']);
+    assert.deepEqual(roleOf(config, 'architect')?.agents, ['design-critic']);
+    assert.ok(!roleOf(config, 'developer')?.agents?.includes('explorer'));
+    // The rest of the developer list is untouched.
+    assert.deepEqual(roleOf(config, 'developer')?.agents, ['laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer', 'spec-reviewer']);
+  });
+
+  it('never allows symphony:explorer to developer and architect sessions, with or without Laravel', async () => {
+    const config = await loadConfig();
+    const all = pluginAgents([toolbox]);
+    for (const name of ['developer', 'architect']) {
+      for (const prefixes of [['laravel-'], []]) {
+        const { allowed, denied } = sessionAgents(all, roleOf(config, name), ['laravel-'], prefixes);
+        assert.ok(!allowed.some((agent) => agent.qualified === 'symphony:explorer'), `${name} ${prefixes.join()}`);
+        assert.ok(denied.some((agent) => agent.qualified === 'symphony:explorer'), `${name} ${prefixes.join()}`);
+      }
+    }
+  });
+
+  it('renders no explorer line for developer and architect from the real allowlists, but still for the four others', async () => {
+    const config = await loadConfig();
+    const all = pluginAgents([toolbox]);
+    for (const [name, labels] of [['developer', ['feature', 'complexity: l']], ['developer', ['feature', 'complexity: m']], ['architect', ['feature', 'complexity: l']], ['architect', ['feature', 'complexity: m']]] as const) {
+      const { allowed } = sessionAgents(all, roleOf(config, name), ['laravel-'], ['laravel-']);
+      const listed = allowed.map((agent) => ({ name: agent.qualified, description: agent.description }));
+      const text = await renderWithLabels(name, [...labels], listed);
+      assert.doesNotMatch(text, /symphony:explorer/, `${name} ${labels.join()}`);
+      assert.doesNotMatch(text, /ten files|start 2–3/, `${name} ${labels.join()}`);
+    }
+    for (const name of ['analyst', 'auditor', 'autopilot', 'planner']) {
+      const { allowed } = sessionAgents(all, roleOf(config, name), ['laravel-'], []);
+      const listed = allowed.map((agent) => ({ name: agent.qualified, description: agent.description }));
+      assert.match(await render(name, null, undefined, null, listed), /symphony:explorer/, name);
+    }
+  });
+
+  it('passes validate for the changed allowlists', async () => {
+    const resolved = await loadConfig();
+    const errors = validateDispatch({ config: resolved } as unknown as EffectiveWorkflow, null, env);
+    assert.deepEqual(errors.filter((error) => error.includes('.agents')), []);
+  });
+
+  describe('docs/agent-claude.md#subagents', () => {
+    const doc = fs.readFileSync(path.join(import.meta.dirname, '..', 'docs', 'agent-claude.md'), 'utf8');
+    const start = doc.indexOf('Evaluation of stage 2 (E2-5)');
+    const section = start < 0 ? '' : doc.slice(start, doc.indexOf('\n#### ', start + 10));
+
+    it('has the evaluation section inside the subagents chapter, with period and thresholds', () => {
+      assert.ok(start > doc.indexOf('Subagents'), 'section after the Subagents heading');
+      for (const part of ['2026-11-06T03:04:42Z', '2026-11-13T00:06:39Z', '2026-10-30T06:02:48Z', '20 runs and 10 finished issues', '5 %', 'never pooled', '#501']) {
+        assert.ok(section.includes(part), part);
+      }
+    });
+
+    it('tabulates per role × model and complexity with the required metrics', () => {
+      for (const column of ['Runs v / n', 'Finished issues', 'Cost per finished issue', 'Handed-off share', 'Returns per issue', 'Main Bash p50/p90', 'Verdict']) {
+        assert.ok(section.includes(column), column);
+      }
+      for (const cell of ['developer × sonnet-5-5', 'architect × opus-5-5', 'architect × fable-5-1']) assert.ok(section.includes(cell), cell);
+      assert.match(section, /\| S \| developer × sonnet-5-5 \| 26 \/ 77 \|/);
+      assert.match(section, /\| M \| architect × opus-5-5 \| 89 \/ 81 \|/);
+      assert.match(section, /267 runs/);
+      assert.match(section, /fable-5-1 13, opus-5-5 7, sonnet-5-5 4/);
+    });
+
+    it('records the decision per role and matches the allowlists', () => {
+      assert.match(section, /\| developer \| removed \|/);
+      assert.match(section, /\| architect \| removed \|/);
+      assert.match(section, /\| auditor, autopilot, analyst, planner \| stays \|/);
+      assert.match(section, /design-critic/);
+      assert.match(section, /2\.1\.318/);
+      assert.match(section, /2026-11-11/);
+    });
+  });
+});

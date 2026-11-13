@@ -15,7 +15,8 @@ import { validateDispatch } from '../src/workflow/validate.ts';
 const root = path.join(import.meta.dirname, '..');
 const shipped = path.join(root, 'WORKFLOW.md');
 const agentsDir = path.join(root, '.claude', 'agents');
-const EXPLORER_ROLES = ['analyst', 'architect', 'auditor', 'autopilot', 'developer', 'planner'];
+// E2-5: the explorer was removed from developer and architect (0 calls); the four roles without runs keep it.
+const EXPLORER_ROLES = ['analyst', 'auditor', 'autopilot', 'planner'];
 const READ_ONLY_ROLES = ['analyst', 'planner', 'auditor', 'architect'];
 
 const env = { GITHUB_PROJECT_NUMBER: '1', GITHUB_REPOSITORY: 'acme/app', GITHUB_TOKEN: 't' };
@@ -79,7 +80,7 @@ describe('explorer subagent file (#497)', () => {
 });
 
 describe('explorer in the shipped WORKFLOW.md (#497)', () => {
-  it('is listed for exactly developer, architect, analyst, planner, autopilot and auditor', async () => {
+  it('is listed for exactly analyst, planner, autopilot and auditor (E2-5)', async () => {
     const config = await shippedConfig();
     const listed = (config.roles ?? []).filter((role) => role.agents?.includes('explorer')).map((role) => role.name).sort();
     assert.deepEqual(listed, EXPLORER_ROLES);
@@ -121,7 +122,7 @@ describe('explorer in the shipped WORKFLOW.md (#497)', () => {
 });
 
 describe('explorer without the Laravel integration (#497)', () => {
-  it('is allowed for every listed role, all five laravel-* agents are denied, and the deny rules never name the explorer', async () => {
+  it('is allowed for every listed role (E2-5: not developer or architect), all five laravel-* agents are denied, and the deny rules never name the explorer', async () => {
     const config = await shippedConfig();
     const all = pluginAgents([path.join(root, '.claude')]);
     assert.equal(all.filter((agent) => agent.name.startsWith('laravel-')).length, 5);
@@ -148,7 +149,6 @@ describe('explorer without the Laravel integration (#497)', () => {
     const role = (config.roles ?? []).find((entry) => entry.name === 'developer') ?? null;
     const { allowed } = sessionAgents(all, role, ['laravel-'], ['laravel-']);
     assert.deepEqual(allowed.map((agent) => agent.name).sort(), [
-      'explorer',
       'laravel-architect',
       'laravel-code-reviewer',
       'laravel-database-engineer',
@@ -161,7 +161,7 @@ describe('explorer without the Laravel integration (#497)', () => {
   it('gives a read-only role the explorer but no writing subagent', async () => {
     const config = await shippedConfig();
     const all = pluginAgents([path.join(root, '.claude')]);
-    for (const name of READ_ONLY_ROLES) {
+    for (const name of READ_ONLY_ROLES.filter((entry) => EXPLORER_ROLES.includes(entry))) {
       const role = (config.roles ?? []).find((entry) => entry.name === name) ?? null;
       const { allowed } = sessionAgents(all, role, ['laravel-'], ['laravel-']);
       assert.ok(allowed.some((agent) => agent.name === 'explorer'), name);

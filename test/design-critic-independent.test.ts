@@ -109,9 +109,9 @@ describe('design-critic.md (#504)', () => {
 });
 
 describe('architect allowlist (#504)', () => {
-  it('lists exactly explorer and design-critic for the architect, in that order', async () => {
+  it('lists exactly design-critic for the architect (E2-5: no explorer)', async () => {
     const config = await shippedConfig();
-    assert.deepEqual((config.roles ?? []).find((role) => role.name === 'architect')?.agents, ['explorer', 'design-critic']);
+    assert.deepEqual((config.roles ?? []).find((role) => role.name === 'architect')?.agents, ['design-critic']);
   });
 
   it('keeps laravel-architect for developer, auditor, analyst, planner and autopilot', async () => {
@@ -135,10 +135,10 @@ describe('architect allowlist (#504)', () => {
     assert.deepEqual(errors.filter((error) => error.includes('.agents')), []);
   });
 
-  it('lets the architect session start exactly the critic and the explorer, with and without the Laravel integration', async () => {
+  it('lets the architect session start exactly the critic (E2-5), with and without the Laravel integration', async () => {
     const config = await shippedConfig();
     for (const prefixes of [['laravel-'], []]) {
-      assert.deepEqual(allowedForArchitect(config, prefixes).map((agent) => agent.name).sort(), ['symphony:design-critic', 'symphony:explorer'], prefixes.join());
+      assert.deepEqual(allowedForArchitect(config, prefixes).map((agent) => agent.name).sort(), ['symphony:design-critic'], prefixes.join());
     }
   });
 });
@@ -216,9 +216,9 @@ describe('design-critic docs (#504)', () => {
     return next < 0 ? text.slice(start) : text.slice(start, start + heading.length + next);
   };
 
-  it('docs/configuration.md#the-architect lists explorer and design-critic and drops laravel-architect', () => {
+  it('docs/configuration.md#the-architect lists design-critic and drops laravel-architect and the explorer', () => {
     const architect = section(read('configuration.md'), '### The architect');
-    assert.match(architect, /agents: \[explorer, design-critic\]/);
+    assert.match(architect, /agents: \[design-critic\]/);
     assert.match(architect, /design-critic/);
     assert.match(architect, /L\/XL|L or XL/);
     assert.match(architect, /opus/);
