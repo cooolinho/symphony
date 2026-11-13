@@ -232,8 +232,15 @@ describe('design-critic docs (#504)', () => {
     const text = read('laravel-subagents.md');
     const row = text.split('\n').find((line) => /^\| architect \|/.test(line)) ?? '';
     assert.match(row, /design-critic/);
-    assert.match(row, /explorer/);
+    assert.doesNotMatch(row, /explorer/); // E2-5: the architect lost the explorer
     assert.doesNotMatch(row, /`laravel-architect`\s*\|/);
+    const developer = text.split('\n').find((line) => /^\| developer \|/.test(line)) ?? '';
+    assert.doesNotMatch(developer, /explorer/);
+    // The explorer paragraph names the four roles that still list it, not developer and architect (E2-5).
+    const paragraph = text.slice(text.indexOf('The first framework-neutral subagent is `explorer`'), text.indexOf('The second framework-neutral subagent'));
+    assert.ok(paragraph.length > 0);
+    assert.doesNotMatch(paragraph.replace(/\s+/g, ' '), /lists it for developer, architect/);
+    assert.match(paragraph.replace(/\s+/g, ' '), /analyst, planner, autopilot and\s*auditor/);
     assert.match(text, /architect no longer uses `laravel-architect`/);
     assert.match(text, /opus/);
   });

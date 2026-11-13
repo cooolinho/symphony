@@ -279,7 +279,8 @@ describe('prompts on occasions instead of deterrence', () => {
       assert.match(section, /`symphony:explorer`/);
       assert.match(section, /trigger/);
       assert.match(section, /exclusion/);
-      assert.match(section, /2–3/);
+      assert.doesNotMatch(section, /2–3 explorers/); // the architect lost the explorer (E2-5)
+      assert.doesNotMatch(section, /`developer`: before reading more than about ten files/);
       assert.doesNotMatch(section, /phrased as optional|costs tokens/);
     });
   });
