@@ -260,8 +260,8 @@ an information boundary.
 C becomes a follow-up concept only if the evaluation shows that B's evidence is produced without real verification. The
 evidence settles the reliability argument (A fails for cheaper models). It does not settle cost against benefit at
 repository level, because no controlled study on real repositories exists; the A/B evaluation measures that.
-**Status: proposed.** E3-4 and E3-7 assume B. A human who prefers A says so on the concept issue before E3-4 starts;
-E3-4 and E3-7 then keep the optional fields and drop the `report_result` validation.
+**Status: decided, B** (nobody chose A on the concept issue). E3-4 (#507, verified findings) is implemented; E3-7 follows.
+Switching to A means dropping the `report_result` validation and keeping the optional fields.
 
 ## Target
 
@@ -393,8 +393,8 @@ per run; the *token share* is Σ persisted subagent tokens ÷ Σ billed tokens o
 billed total, so at most 100 %); a *finished issue* has a `stage_result` in the period with `target` In review or Done,
 and the cost per finished issue sums all roles (the `own_` variant only the row's runs); *returns* are the
 `review:changes_needed` and `test:failed` results on the row's issues, per issue; complexity comes from the issue's
-newest `stage_result`. The row's `findings` stay `null` until `stage_result` lines carry `findings_confirmed` and
-`findings_refuted` (E3-4).
+newest `stage_result`. The row's `findings` sum `findings_confirmed` and `findings_refuted` of the `stage_result` lines (E3-4); they stay `null`
+without such lines. `subagent_evaluation.security_panel` sums the panel votes of the security `stage_result` lines per lens (`panel_*` fields, see [results](../results.md#security-panel-at-lxl)) with the candidates refuted by exactly one lens.
 - [ ] On the live logs since 2026-10-20 the section reproduces the research figures: developer 371 runs, 28 delegating,
   0 of 252 on sonnet; architect 170 with 19.
 
@@ -524,7 +524,7 @@ finished issue, returns from Agent review and Testing, share of handed-off runs)
 [agent-claude.md](../agent-claude.md#subagents); remove the explorer from `roles.<role>.agents` where it did not lower
 the cost per finished issue at an equal success rate. The figures come from the E0-9 JSON export, attached by a human.
 **Why:** whether an explorer makes these sessions cheaper is not measured; the evidence is from research tasks.
-- [ ] Table in the docs; allowlists match the decision.
+- [x] Table in the docs; allowlists match the decision (done: [agent-claude.md#evaluation-of-stage-2-e2-5](../agent-claude.md#evaluation-of-stage-2-e2-5)).
 
 Depends on: E0-9, E2-2, E2-3 · Size: S · Category: quality
 
@@ -784,6 +784,8 @@ Each question has a default assumption that the requirements build on until it i
 9. **Panel rule for security findings** (E3-5): how many of the three lenses must fail to refute a finding?
    claude-security computes it outside the model; the threshold was not part of the research. Assumption: a finding is
    kept only when no lens refutes it.
+   **Answered (E3-5):** kept as assumed. `PANEL_MAX_REFUTING_VOTES = 0` in `src/workflow/results.ts`; `report_result` refuses a
+   finding with fewer than three votes or with a refuting one, and the auditor moves it to `refuted[]`.
 10. **Mutation testing environment**: do the workspace and check image have Xdebug 3+ or PCOV for `pest --mutate`, and
     what about TypeScript repositories (StrykerJS not verified)? Assumption: Pest only; no mutation score is required
     where it is unavailable.

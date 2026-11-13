@@ -148,11 +148,13 @@ needs a skill directory in the toolbox and a role with `commands` (or none at al
 Plugins also ship subagents (`agents/<name>.md`), which Claude Code offers to the Agent tool as `<plugin>:<name>`;
 the `init` message of the transcript lists them under `agents`. Symphony's toolbox ships five for Laravel repositories
 (`laravel-architect`, `laravel-code-reviewer`, `laravel-database-engineer`, `laravel-filament-developer`,
-`laravel-test-engineer`) and the framework-neutral `explorer`, `design-critic`, `test-designer`, `convention-lens`, `bug-lens` and `finding-verifier` (the last three for the reviewer's lens review at L/XL). Which of them a session may start depends on the role's `agents`, read-only roles and the
+`laravel-test-engineer`) and the framework-neutral `explorer`, `design-critic`, `spec-reviewer`, `test-designer`, `convention-lens`, `bug-lens` and `finding-verifier` (the last three for the reviewer's lens review at L/XL), `security-inventory` and `refutation-judge` (the security auditor's panel at L/XL). Which of them a session may start depends on the role's `agents`, read-only roles and the
 workspace's project type ([Subagents per role](configuration.md#subagents-per-role)); the rest are denied by an
 `Agent(<plugin>:<name>)` rule in `disallowedTools` and by a `PreToolUse` hook on `Agent|Task`, which emits `approval_denied` when it
 refuses a call. The hook is registered for every session, not only when agents are denied (it also pins the explorer's model, below). Every Agent tool call carries its subagent in the `tool_use` event (`detail.agent`), so the statistics
 count subagents like skills. Background and usage figures: [laravel-subagents.md](laravel-subagents.md).
+
+**Effort (E4-6).** A subagent inherits the session's effort (spike E0-2 question 1; one on `haiku` carries none). Decision: the personas keep the session's effort, because the effort of a session is chosen per issue (`Effort:` label) and a persona's work scales with it; only the `explorer` sets `effort: low` in its front matter (a search needs no deep reasoning). Symphony does not set `CLAUDE_CODE_SUBAGENT_EFFORT` (Claude Code 2.1.316+): it would override the front matter and the session effort of every subagent at once. A persona that needs another effort gets `effort:` in its front matter.
 
 Symphony's appended system prompt does not reach subagents, so a `SubagentStart` callback hook (registered in every
 session, next to the `PreToolUse` hook; spike E0-2 question 7b) injects an issue context as `additionalContext` into each
@@ -182,6 +184,70 @@ The front matter's `model` is no hard pin: a per-invocation `model` of the Agent
 are untouched. `options.agents` could override the plugin agent by its qualified name (question 5), but that would copy
 the persona into code per session model; the hook keeps `agents/explorer.md` the single definition. No
 `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`: it would pin every subagent.
+
+#### Evaluation of stage 2 (E2-5)
+
+Does the explorer make sessions cheaper? Measured with the E0-9 export (`subagent_evaluation` of
+`GET /api/v1/history/analytics`, per complexity; the share of handed-off runs from `outcome=handed_off` of the
+`run_finished` log lines), attached to [#501](https://github.com/cooolinho/symphony/issues/501) by a human.
+
+- **Period.** T0 = 2026-11-06T03:04:42Z (release v1.4.0, explorer in the allowlists). After: T0 to 2026-11-13T00:06:39Z
+  (6.9 days). Before: the same span, 2026-10-30T06:02:48Z to T0. All repositories of the instance. Compared only within
+  role × model × complexity, never pooled. The planned 14 days were not waited for: the main cells already reach the minimum.
+- **Thresholds.** A cell is judged from 20 runs and 10 finished issues in each arm, otherwise "n too small". "Cost
+  lowered": cost per finished issue (all stages) at least 5 % lower after. "Equal success rate": share of handed-off runs
+  drops by at most 5 points and returns per issue (Agent review and Testing) rise by at most 0.1. Decision per role by its
+  cell with the most runs; cells without enough runs keep the explorer and are re-evaluated.
+
+Runs before / after per role (before: arm without explorer; control roles never had it):
+
+| Role | S | M | L | total |
+| --- | ---: | ---: | ---: | ---: |
+| architect | 0 / 0 | 89 / 81 | 23 / 14 | 112 / 95 |
+| developer | 27 / 77 | 152 / 168 | 46 / 22 | 225 / 267 |
+| issue-analyst | 20 / 49 | 106 / 86 | 22 / 11 | 148 / 146 |
+| test-engineer | 27 / 78 | 157 / 171 | 37 / 22 | 221 / 271 |
+| reviewer | 24 / 74 | 148 / 154 | 33 / 23 | 205 / 251 |
+
+Result (v = before, n = after). Delegation rate is 0 % in all cells below except the architect on fable at L (13 explorer calls after, mixed with the design-critic).
+
+| Cx | Role × model | Runs v / n | Finished issues v / n | Cost per finished issue, all stages (USD) v → n | Handed-off share v → n | Returns per issue v → n | Main Bash p50/p90 v → n | Verdict |
+| --- | --- | ---: | ---: | --- | --- | --- | --- | --- |
+| S | developer × sonnet-5-5 | 26 / 77 | 19 / 47 | 1.47 → 1.71 | 100 % → 100 % | 0.11 → 0.34 | 11/19 → 8/16 | not worth it (never called) |
+| M | developer × sonnet-5-5 | 152 / 168 | 85 / 82 | 3.96 → 4.11 | 99 % → 98 % | 0.33 → 0.54 | 15/36 → 12/26 | not worth it (never called) |
+| L | developer × opus-5-5 | 44 / 20 | 20 / 10 | 13.56 → 20.07 | 88 % → 100 % | 0.50 → 0.60 | 29/92 → 33/86 | not worth it (never called) |
+| M | architect × opus-5-5 | 89 / 81 | 84 / 76 | 3.98 → 4.25 | 98 % → 99 % | 0.33 → 0.54 | 16/28 → 16/26 | not worth it (never called) |
+| L | architect × fable-5-1 | 23 / 9 | 20 / 8 | 13.56 → 19.25 | 91 % → 89 % | 0.50 → 0.63 | 28/50 → 22/– | n too small |
+| S | issue-analyst × sonnet-5-5 | 20 / 49 | 19 / 47 | 1.47 → 1.71 | 100 % → 98 % | 0.11 → 0.34 | 2/6 → 2/4 | control (no explorer) |
+| S | test-engineer × sonnet-5-5 | 27 / 78 | 20 / 47 | 1.53 → 1.71 | 96 % → 100 % | 0.10 → 0.34 | 9/19 → 7/15 | control (no explorer) |
+| S | reviewer × opus-5-5 | 24 / 74 | 20 / 47 | 1.53 → 1.71 | 100 % → 100 % | 0.10 → 0.34 | 6/9 → 5/8 | control (no explorer) |
+| M | issue-analyst × sonnet-5-5 | 106 / 86 | 85 / 82 | 3.96 → 4.11 | 100 % → 99 % | 0.33 → 0.54 | 4/6 → 3/5 | control (no explorer) |
+| M | test-engineer × sonnet-5-5 | 157 / 171 | 85 / 82 | 3.96 → 4.11 | 99 % → 100 % | 0.33 → 0.54 | 9/19 → 7/15 | control (no explorer) |
+| M | reviewer × opus-5-5 | 148 / 154 | 85 / 82 | 3.96 → 4.11 | 97 % → 100 % | 0.33 → 0.54 | 7/12 → 6/12 | control (no explorer) |
+
+Findings:
+
+1. The explorer is hardly used: 24 calls after T0, all in the architect (fable-5-1 13, opus-5-5 7, sonnet-5-5 4), mostly in
+   the Laravel repository `trainingsstunden-portal`. The developer never called it in 267 runs although its prompt offered it
+   (delegation rate 0 % at S and M), so the E2-2 goal (delegation rate above zero for sonnet roles) is missed.
+2. Cost per finished issue and returns per issue sum all stages of an issue, so they are nearly identical for every role in a
+   cell; they cannot separate the explorer from other changes. They rose for all roles alike, and with 0 developer calls the
+   rise is not the explorer's.
+3. Main-thread Bash is no explorer effect: the median fell for the developer and equally for the test-engineer without explorer.
+4. Not evaluable: auditor, autopilot, analyst and planner had no runs in either arm.
+
+Confounders: v1.4.0 also brought Claude Code 2.1.318 instead of 2.1.288 and the personas cleanup; the container was
+recreated on 2026-11-11 20:14 UTC from the same image and `WORKFLOW.md` (the `.env` was adjusted, content not checked).
+The before arm lacks `subagent_tool_calls` (E0-6) and persisted subagent tokens (E0-7): its main-thread Bash is total Bash and
+its token share 0; there was no explorer before, so the distortion is small. Runs without a known complexity are in neither arm.
+
+| Role | Explorer | Reason |
+| --- | --- | --- |
+| developer | removed | 267 runs after, 0 calls; cost per finished issue S 1.47 → 1.71, M 3.96 → 4.11; returns per issue rise by more than 0.1. No benefit shown. |
+| architect | removed | Main cell opus M: 81 runs, 0 calls, cost 3.98 → 4.25, returns 0.33 → 0.54. The design-critic stays. It was used on fable at L, but that cell is too small: re-evaluate after enough L runs in a separate issue. |
+| auditor, autopilot, analyst, planner | stays | no runs in either arm: n too small, re-evaluate |
+
+`roles/*.md` and `.claude/agents/explorer.md` stay; the delegation line renders only when the explorer is allowed.
 
 #### Delegation line of the `claude_code` preset (spike E0-1)
 
@@ -232,6 +298,11 @@ preset: its own delegation sentence is unnecessary, naming concretely the occasi
 Not checked: delegation when the task does not name the subagent (the test task is trivial).
 
 The SDK's built-in agents (`claude`, `Explore`, `general-purpose`, `Plan`, `statusline-setup`) are **off**: every session starts with `CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS=1`, so `init.agents` lists none of them. `general-purpose` would give a read-only role an agent with every tool, and Explore and Plan run on the parent model, skip CLAUDE.md and compete with `symphony:explorer` for routing. An Agent call therefore needs a `subagent_type` (the SDK fails it with "subagent_type is required"); the role prompts always name the type. Plugin agents that a role denies still appear in `init.agents`. `claude.env` can set the variable to `0` to bring the built-ins back. History parsing is unchanged: an Agent call or old log line without a type still counts as `general-purpose`.
+
+Bash calls get a longer timeout: every session starts with `BASH_DEFAULT_TIMEOUT_MS=600000` (10 min) and `BASH_MAX_TIMEOUT_MS=1200000` (20 min)
+instead of Claude Code's 2 minutes, because a full test run (`php artisan test`, `composer analyse`, `npm test`) takes longer and agents
+then test only parts (error signature `7a3d71bf`). The limit stays finite, so a hanging command still ends. Stall detection
+counts agent events and a running Bash call emits none: keep the Bash timeouts below `claude.stall_timeout_ms`. The shipped `WORKFLOW.md` sets `stall_timeout_ms: 600000`, so a Bash call that runs longer than 10 minutes can be stalled and retried until `stall_timeout_ms` is raised. `claude.env` overrides both values.
 
 Subagents and commands run in the **foreground**: every session starts with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`,
 so the Agent and Bash tools offer no `run_in_background` and nothing is moved to the background automatically. A
@@ -382,7 +453,7 @@ log line (`npm run repo-init` → *Laravel Boost* creates an issue that adds it)
 **Visibility:** the Laravel integration reports per app what the session got (status and reason, versions, how the
 guidelines reach the agent, the skills, the MCP server and its pre-approved tools, warnings from the check above).
 The orchestrator counts every `tool_use` event per tool (one event per tool call, also for parallel calls in one
-message), every Skill tool call per skill, the tool calls made inside subagents (`tool_use` events with `detail.subagent`, from messages with `parent_tool_use_id`) once more in `subagent_tool_calls` (`tool_calls` stays the total) and every Agent tool call per subagent, and attributes calls of the Boost MCP servers and Boost skills to Boost.
+message), every Skill tool call per skill, the tool calls made inside subagents (`tool_use` events with `detail.subagent`, from messages with `agent_id` or `parent_tool_use_id`) once more in `subagent_tool_calls` (`tool_calls` stays the total) and every Agent tool call per subagent, and attributes calls of the Boost MCP servers and Boost skills to Boost.
 `session_configured` carries the skill names Claude Code loaded (`skill_names`), so the agent page can show how many
 of Boost's skills were really available. All of this is in `GET /api/v1/state` (`running[].integrations`,
 `tool_calls`, `subagent_tool_calls`, `skill_calls`, `agent_calls`), in `run_trace` of `GET /api/v1/<identifier>` and in the `run_finished`
@@ -436,9 +507,9 @@ version, MCP server status, plugins, number of skills), `startup_failed`, `turn_
 The `subagent` event reports the subagents the session starts with the Agent/Task tool. Its `subagent` field is an
 absolute snapshot: tool call id, type (`general-purpose` when unset), description (the `description` of the call, else
 the start of its `prompt`), start, end, status (`running`, `ok`, `error`) and the tokens of the subagent's own model
-calls (input, output, cache read and write; messages with its `parent_tool_use_id`, counted once per message id). This
+calls (input, output, cache read and write; counted once per message id). Messages are attributed by their `agent_id` (the SDK sets it on every subagent message from 0.3.292; it equals the `task_id` of the run's task events) once Symphony knows it, so nested and concurrent runs get their own figures. Symphony learns the id from `task_started` (`task_id` with `tool_use_id`) or from the first message that carries both `agent_id` and `parent_tool_use_id`. `parent_tool_use_id` stays the fallback for messages without or with an unknown `agent_id`; a message with either counts as a subagent message (not part of the context fill, `detail.subagent`). This
 `tokens` is the billed load, not the context size. Claude Code's own figures come from the `task_progress` and
-`task_notification` messages, matched by `tool_use_id`: `contextTokens` (`usage.total_tokens`, the context of the latest
+`task_notification` messages, matched by `tool_use_id` (a task event without a known `tool_use_id` is matched by the `task_id` learned before): `contextTokens` (`usage.total_tokens`, the context of the latest
 request), `toolUses` and `durationMs`. They are `null` until such a message arrives and stay `null` for runs without
 `task_*` messages (the page shows "—"). A `task_notification` after the `tool_result` still updates the ended run.
 `task_started`, `task_progress` and `task_notification` that match a subagent no longer appear as `notification`;

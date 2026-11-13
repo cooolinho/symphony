@@ -6,6 +6,8 @@ import { listClashes, type BrainClashView } from '../brain/clashes.ts';
 import { createVaultGit, lastVaultCommit, vaultCommitCount } from '../brain/git.ts';
 import { BrainIndex, candidatesOf, foldersOf, graphAround, vitalsCounts, vitalsDerived, type BrainCandidate, type BrainGraph, type BrainVitals } from '../brain/index.ts';
 import { writeIssueSummary } from '../brain/issue-summary.ts';
+import { CATEGORY_TAG_PREFIX } from '../brain/review-recurrence.ts';
+import type { ReviewLessonRef } from '../history/analytics.ts';
 import { approveCandidate, rejectCandidate, revertDecision, type PromoteOptions, type PromoteResult } from '../brain/promote.ts';
 import { RateLimitLog, rateLimitKey, type RateLimitRecord } from '../budget/rate-limit-log.ts';
 import { BRAIN_BACKFILL_COMMITS, brainCommitEntries, brainConflictEntry, recentVaultCommits } from '../changes/brain.ts';
@@ -13,7 +15,7 @@ import { ChangeStore } from '../changes/store.ts';
 import { buildChangesPage, type ClashStatus } from '../changes/feed.ts';
 import type { ChangeEntry, ChangeFile, ChangeFilter, ChangesPage, ChangesQuery } from '../changes/types.ts';
 import { childEnvironment } from '../agent/env.ts';
-import { chooseRoleEffort, chooseRoleModel } from '../agent/model.ts';
+import { chooseRoleEffort, chooseRoleModel, effectiveCompactWindow } from '../agent/model.ts';
 import { type ActivitySource, collectActivity } from './activity.ts';
 import { classify } from '../workflow/classify.ts';
 import { MODEL_FAMILIES, modelFamilyOf } from '../agent/rate-limit.ts';
@@ -39,7 +41,7 @@ import { WorkspaceManager, type HookIssue, type Workspace } from '../workspace/m
 import type { ServiceConfig } from '../workflow/config.ts';
 import { profileFor } from '../workflow/profile.ts';
 import { roleFor, roleName, type RoleConfig } from '../workflow/roles.ts';
-import { internalResult, renderResultComment, type ResultMeta } from '../workflow/results.ts';
+import { internalResult, panelVoteCounts, renderResultComment, severeCategoryCounts, verificationCounts, type ResultMeta } from '../workflow/results.ts';
 import type { EffectiveWorkflow, WorkflowLoadError } from '../workflow/store.ts';
 import { skipCheckProblems, skipReason, stageSkip, type StageSkip } from './skip.ts';
 import { nextStageProblems, unknownBoardColumns, validateDispatch } from '../workflow/validate.ts';
@@ -86,6 +88,7 @@ import { checkStatusReporter, runAgentAttempt, type RunPhase, type WorkerOutcome
 import { interruptedLabels, interruptedTransition, statusUpdatedAt, type InterruptedTransition } from './recovery.ts';
 import { applyTransitionLabels, RESULT_TOOL } from './result-tool.ts';
 import { securityBaseRef } from './security.ts';
+import { readWatchdogStatus } from '../watchdog/heartbeat.ts';
 
 export interface Clock {
   now(): Date;
@@ -205,6 +208,8 @@ interface RunningEntry {
   requestedModel: string | null;
   /** Effort requested at dispatch (label, role or claude.effort); null = Claude Code default. */
   effort: string | null;
+  /** Auto-compact window in tokens that applies to the run; null = auto. */
+  autoCompactWindow: number | null;
   sessionId: string | null;
   threadId: string | null;
   turnId: string | null;
@@ -1944,7 +1949,7 @@ export class Orchestrator {
       let workspace: Workspace | null = null;
       if (entryChecksFor(target, role, config).length > 0) {
         const acquired = await workspaces.lock(issue.identifier);
-        if (!acquired.ok) return { kind: 'failed', reason: `workspace locked by ${describeHolder(acquired.holder)}` };
+        if (!acquired.ok) return { kind: 'failed', reason: `workspace locked by ${describeHolder(acquired.holder, acquired.lockPath)}` };
         lock = acquired;
         workspace = await workspaces.ensure(hookIssue);
         if (workspace.createdNow) return { kind: 'declined', reason: `the entry check for "${target}" needs the stage's workspace, which no longer existed` };
@@ -2083,6 +2088,7 @@ export class Orchestrator {
       model: null,
       requestedModel: null,
       effort: null,
+      autoCompactWindow: null,
       sessionId: null,
       threadId: null,
       turnId: null,
@@ -2129,6 +2135,7 @@ export class Orchestrator {
     const effortChoice = chooseRoleEffort(issue.labels, role, config.claude.effort);
     entry.requestedModel = choice.model;
     entry.effort = effortChoice.effort;
+    entry.autoCompactWindow = effectiveCompactWindow(config.claude, role?.claude);
     record.sessions.push({
       run: runId,
       attempt,
@@ -2160,6 +2167,7 @@ export class Orchestrator {
         model_source: choice.source,
         complexity,
         effort: effortChoice.effort,
+        auto_compact_window: entry.autoCompactWindow ?? 'auto',
         effort_label: effortChoice.label,
         effort_label_ignored: effortChoice.labelIgnored,
         continuation,
@@ -2222,6 +2230,7 @@ export class Orchestrator {
         brainAccess: this.#brainAccess,
         onBrainCommit: (vault, sha, paths) => this.#recordBrainCommit(vault, sha, paths),
         brainIndex: this.#brainIndex,
+        archive: this.#archive,
         continueWith: (fresh) => {
           const current = this.#deps.workflow.current.config;
           if (!isActiveState(fresh.state, current.tracker)) return `issue left the active states ("${fresh.state}")`;
@@ -2309,6 +2318,8 @@ export class Orchestrator {
             record.results = results;
           },
           stageResult: ({ result, meta }) => {
+            const { complexity } = classify(entry.issue.labels);
+            const counts = verificationCounts(result, complexity === 'L' || complexity === 'XL');
             this.#deps.history?.stageResult({
               repo: entry.repo,
               issue: entry.identifier,
@@ -2319,7 +2330,11 @@ export class Orchestrator {
               round: meta.round,
               target: meta.target,
               profile: meta.profile,
-              complexity: classify(entry.issue.labels).complexity,
+              complexity,
+              findingsConfirmed: counts?.confirmed ?? null,
+              findingsRefuted: counts?.refuted ?? null,
+              panelVotes: panelVoteCounts(result),
+              categories: severeCategoryCounts(result),
               findings: result.kind === 'review' || result.kind === 'security' ? result.findings.length : 0,
               mutationScore: result.kind === 'test' ? (result.mutation_score ?? null) : null,
               at: new Date(meta.created_at),
@@ -2406,6 +2421,7 @@ export class Orchestrator {
           agent_seconds: Math.round(agentSeconds * 10) / 10,
           context_peak_percent: entry.context?.peakPercent ?? null,
           context_compacts: entry.context?.compacts ?? 0,
+          auto_compact_window: entry.autoCompactWindow ?? 'auto',
           tokens: tokensJson(entry.tokens),
           cost_usd: Math.round(entry.costUsd * 10_000) / 10_000,
           model: primaryModelOf(entry.modelUsage) ?? entry.model,
@@ -2692,6 +2708,7 @@ export class Orchestrator {
       agentSeconds,
       contextPeakPercent: entry.context?.peakPercent ?? null,
       contextCompacts: entry.context?.compacts ?? 0,
+      autoCompactWindow: entry.autoCompactWindow,
       modelRequested: entry.requestedModel,
       effort: entry.effort,
       usage: entry.modelUsage,
@@ -3916,6 +3933,33 @@ export class Orchestrator {
     };
   }
 
+  /**
+   * The review lessons of the vault for the category statistics of GET /api/v1/history/analytics: one entry per lesson
+   * and `review/<category>` tag, since its `created` date (else `updated`); empty without `brain.enabled` or when the
+   * vault cannot be read.
+   */
+  async reviewLessons(): Promise<ReviewLessonRef[]> {
+    const brain = this.#deps.workflow.current.config.brain;
+    if (!brain.enabled) return [];
+    try {
+      const index = await this.#brainIndex.current(brain.path);
+      const refs: ReviewLessonRef[] = [];
+      for (const [notePath, note] of index.notes) {
+        if (note.type !== 'lesson' || (note.status !== 'approved' && note.status !== 'candidate')) continue;
+        const since = note.created ?? note.updated;
+        if (since === null || Number.isNaN(Date.parse(since))) continue;
+        for (const tag of note.tags ?? []) {
+          if (!tag.startsWith(CATEGORY_TAG_PREFIX) || tag.length === CATEGORY_TAG_PREFIX.length) continue;
+          refs.push({ repo: note.repo, category: tag.slice(CATEGORY_TAG_PREFIX.length), path: notePath, since: new Date(Date.parse(since)).toISOString() });
+        }
+      }
+      return refs.sort((a, b) => a.path.localeCompare(b.path) || a.category.localeCompare(b.category));
+    } catch (error) {
+      this.#deps.logger.warn('review lessons for the analytics unavailable', { error: errorMessage(error) });
+      return [];
+    }
+  }
+
   /** Candidate notes for GET /api/v1/brain/candidates; null without `brain.enabled`. */
   async brainCandidates(): Promise<BrainCandidate[] | null> {
     const brain = this.#deps.workflow.current.config.brain;
@@ -4071,6 +4115,8 @@ export class Orchestrator {
             ? null
             : { reason: 'session_limit' as const, window: gate.window, until: gate.until.toISOString(), issue_identifier: gate.issueIdentifier },
         last_tick_at: this.#lastTickAt?.toISOString() ?? null,
+        /** The Blocked watchdog's heartbeat (docs/watchdog.md); null when it is not set up (`watchdog.state_dir`) or never ran. */
+        watchdog: readWatchdogStatus(config.watchdog.stateDir, this.#clock.now()),
         last_tracker_error: this.#lastTrackerError
           ? { at: this.#lastTrackerError.at.toISOString(), message: this.#lastTrackerError.message }
           : null,
@@ -4271,6 +4317,8 @@ export class Orchestrator {
       roles: config.roles?.map((role) => ({ name: role.name, result: role.result, maxTurns: role.maxTurns })) ?? null,
       maxTurns: config.agent.maxTurns,
       compactThreshold: config.budget.compactThreshold,
+      compactWindow: effectiveCompactWindow(config.claude),
+      compactWindows: Object.fromEntries((config.roles ?? []).map((r) => [r.name, effectiveCompactWindow(config.claude, r.claude)])),
     });
   }
 

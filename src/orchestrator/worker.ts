@@ -5,11 +5,26 @@ import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { sessionClaudeConfig } from '../agent/model.ts';
 import type { AgentEvent, AgentRunner, AgentSession, IntegrationReport, SessionLimitInfo } from '../agent/types.ts';
 import type { BrainAccessLog } from '../brain/access-log.ts';
-import type { BrainIndex } from '../brain/index.ts';
+import { buildIndex, type BrainIndex } from '../brain/index.ts';
+import {
+  attachLessons,
+  buildBrainLessons,
+  categoryCounts,
+  detectRecurrence,
+  knownCategories,
+  lessonNotesOf,
+  reviewLessonsActive,
+  severeFindingsOf,
+  type BrainLessonsValue,
+  type LessonNote,
+  type RecurringCategory,
+  type SevereFindingRecord,
+} from '../brain/review-recurrence.ts';
+import type { IssueArchive } from './issue-archive.ts';
 import { brainToolsFor, createVaultGit } from '../brain/tools.ts';
 import { repoFolderName } from '../brain/vault.ts';
 import { isRepositoryName } from '../tracker/github-project/settings.ts';
-import { prepareIntegrations } from '../integrations/registry.ts';
+import { prepareIntegrations, workspaceApps } from '../integrations/registry.ts';
 import type { WorkspaceIntegration } from '../integrations/types.ts';
 import type { Logger } from '../log.ts';
 import type { AgentToolSpec, AutoMergeResult, Issue, IssueComment, ToolResult, TrackedResult, TrackerAdapter } from '../tracker/types.ts';
@@ -28,10 +43,10 @@ import { writeAttachments, type AttachmentFile } from '../workspace/attachments.
 import { changedFiles, commitStats, type CommitStat } from '../workspace/changes.ts';
 import { baselineCommit, changedFilesSince, isAncestor } from './changed-files.ts';
 import { createGuard, guardTools, toolsForRole, type CheckCache, type CheckRecord, type GateRun, type GuardParams } from './guard.ts';
-import { createResultTool, resultReminder, type PathRule, type ResultToolAdapter, type ResultToolParams } from './result-tool.ts';
+import { createResultTool, resultReminder, type LessonFacts, type PathRule, type ResultToolAdapter, type ResultToolParams } from './result-tool.ts';
 import { reviewedFiles, securityBaseRef } from './security.ts';
 import { interruptedTransition } from './recovery.ts';
-import { analysisFlagsSecurity, analysisNeedsDocs, docsBaseHead, buildStageHistory, humanFeedback, implementationHead, resultsTemplateValue, type HumanFeedbackComment, type PersistedResult, type ResultsTemplateValue, type StageHistory } from './stage-history.ts';
+import { analysisFlagsSecurity, analysisNeedsDocs, docsBaseHead, buildStageHistory, humanFeedback, implementationHead, resultRows, resultsTemplateValue, type HumanFeedbackComment, type PersistedResult, type ResultsTemplateValue, type StageHistory } from './stage-history.ts';
 import { effectivePaths } from '../workflow/path-globs.ts';
 import { subIssueLimit } from './work-packages.ts';
 
@@ -199,6 +214,8 @@ export interface WorkerParams {
   brainAccess?: BrainAccessLog | null;
   /** Index of the vault, updated after every vault commit. */
   brainIndex?: BrainIndex | null;
+  /** Archives of finished issues: the source of recurring review findings (`brain.review_lessons`); null or absent = none. */
+  archive?: Pick<IssueArchive, 'forRepo'> | null;
   /** Called after every commit to the vault (`createVaultGit` `onCommit`) with the vault path; errors are logged, never thrown. */
   onBrainCommit?: (vault: string, sha: string, paths: string[]) => void | Promise<void>;
   /**
@@ -223,6 +240,8 @@ interface ResultSupport {
   /** The prompt variable `human_feedback`: what a human wrote since the pipeline last handed the issue off. */
   humanFeedback: HumanFeedbackComment[];
   round: number;
+  /** The stage history the session started with. */
+  history: StageHistory;
 }
 
 /**
@@ -275,6 +294,8 @@ async function loadResultSupport(
   docs: ((history: StageHistory) => NonNullable<ResultToolParams['docs']>) | null,
   screenshots: ResultToolParams['screenshots'],
   mutation: ResultToolParams['mutation'],
+  lessons: ((history: StageHistory) => LessonFacts) | null,
+  panel: boolean,
   report: (results: PersistedResult[]) => void,
   onRecorded: (entry: PersistedResult) => void,
   onMoved: () => void,
@@ -322,12 +343,15 @@ async function loadResultSupport(
     docs: docs?.(history) ?? null,
     screenshots: screenshots ?? null,
     mutation: mutation ?? null,
+    lessons: lessons?.(history) ?? null,
+    panel,
   });
   return {
     tool,
     results: resultsTemplateValue(history),
     humanFeedback: comments === null ? [] : humanFeedback(comments.comments, comments.viewer, history.results),
     round: (role.result === 'test' ? history.testRounds : role.result === 'security' ? history.securityRounds : history.reviewRounds) + 1,
+    history,
   };
 }
 
@@ -355,7 +379,7 @@ async function resetAfterHumanResume(
   if (target === null) return null;
   const isActive = (state: string) => activeStates.some((active) => normalizeStateName(active) === normalizeStateName(state));
   if (isActive(target) || !isActive(issue.state)) return null;
-  const result = internalResult('reset', `${issue.identifier} was moved from "${target}" back to "${issue.state}" by a human; the round counters start again.`);
+  const result = internalResult('reset', `${issue.identifier} was moved from "${target}" back to "${issue.state}" (by a human or the watchdog); the round counters start again.`);
   const meta: ResultMeta = {
     role: 'symphony',
     run: params.runId,
@@ -402,6 +426,88 @@ async function prepareAttachments(adapter: TrackerAdapter, issue: Issue, workspa
     await writeAttachments(workspacePath, []).catch(() => undefined);
     return [{ path: null, label: '', source: 'description and comments', error: errorMessage(error) }];
   }
+}
+
+/** Result kinds whose sessions see review lessons: the review roles (recurring findings) and the roles that write code or designs (injected lessons). */
+const LESSON_KINDS: ReadonlySet<string> = new Set(['review', 'security', 'implementation', 'test', 'design']);
+
+/** What review lessons of a session draw on: the lessons of the repository and the recorded findings. */
+export interface ReviewLessonSources {
+  lessons: LessonNote[];
+  /** Findings of other issues of the repository within the window. */
+  others: SevereFindingRecord[];
+  /** Detection input for the running issue's history. */
+  recurrence(history: StageHistory): Omit<Parameters<typeof detectRecurrence>[0], 'reported' | 'now'>;
+  vault: string;
+  budget: number;
+}
+
+/**
+ * Lessons and findings for the review lessons of a session (#575); null when they do not apply (brain off for the role,
+ * `brain.review_lessons.enabled: false`, unknown repository) or cannot be read. Never throws: a failure is logged and the
+ * session runs without them.
+ */
+export async function reviewLessonSources(params: Pick<WorkerParams, 'brainIndex' | 'archive' | 'logger'> & { workflow: { config: Pick<ServiceConfig, 'brain'> }; issue: Pick<Issue, 'identifier'> }, role: RoleConfig | null, mode: ReturnType<typeof sessionBrainMode>, repository: string | null): Promise<ReviewLessonSources | null> {
+  const brain = params.workflow.config.brain;
+  if (role?.result == null || !LESSON_KINDS.has(role.result) || !reviewLessonsActive(brain, mode, repository)) return null;
+  const settings = brain.reviewLessons;
+  try {
+    const index = params.brainIndex ? await params.brainIndex.current(brain.path) : await buildIndex(brain.path);
+    const lessons = lessonNotesOf(index, repository);
+    const since = new Date(Date.now() - settings.windowDays * 86_400_000);
+    const identifier = params.issue.identifier;
+    const others = (params.archive?.forRepo(repository, since) ?? [])
+      .filter((archived) => archived.issue_identifier !== identifier)
+      .flatMap((archived) => severeFindingsOf(archived.issue_identifier, archived.results))
+      .filter((record) => Date.parse(record.resultAt) >= since.getTime());
+    return {
+      lessons,
+      others,
+      vault: brain.path,
+      budget: settings.injectBudgetChars,
+      recurrence: (history) => ({
+        issue: identifier,
+        current: severeFindingsOf(identifier, resultRows(history.results)),
+        others,
+        config: { windowDays: settings.windowDays, minIssues: settings.minIssues },
+      }),
+    };
+  } catch (error) {
+    params.logger.warn('review lessons unavailable', { error: errorMessage(error) });
+    return null;
+  }
+}
+
+/** The prompt variables of review lessons: `recurring_findings` and `known_categories` for review roles, `brain_lessons` for developer, test engineer and architect. */
+export function reviewLessonVariables(
+  role: RoleConfig | null,
+  sources: ReviewLessonSources | null,
+  support: ResultSupport | null,
+): { recurring_findings: RecurringCategory[]; known_categories: Array<{ category: string; issues: string[]; findings: number }>; brain_lessons: BrainLessonsValue | null } {
+  const empty = { recurring_findings: [], known_categories: [], brain_lessons: null };
+  if (sources === null || support === null) return empty;
+  const recurrence = sources.recurrence(support.history);
+  if (role?.result === 'review' || role?.result === 'security') {
+    return {
+      recurring_findings: attachLessons(detectRecurrence({ ...recurrence, now: new Date() }), sources.lessons),
+      known_categories: knownCategories([...recurrence.current, ...sources.others]),
+      brain_lessons: null,
+    };
+  }
+  if (role?.result === 'implementation' || role?.result === 'test' || role?.result === 'design') {
+    const open = [...support.results.open_findings, ...support.results.security_findings].flatMap((finding) => (finding.category === null ? [] : [finding.category]));
+    return {
+      ...empty,
+      brain_lessons: buildBrainLessons({
+        vault: sources.vault,
+        lessons: sources.lessons,
+        openCategories: open,
+        recurrenceCounts: categoryCounts([...recurrence.current, ...sources.others]),
+        budget: sources.budget,
+      }),
+    };
+  }
+  return empty;
 }
 
 /** `onCommit` of the vault git of a session: updates the brain index and records the brain changes. */
@@ -483,8 +589,8 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     const acquired = await params.workspaces.lock(issue.identifier);
     if (!acquired.ok) {
       // Another Symphony instance owns this workspace: no hooks, no session. The next poll tick retries.
-      const message = `workspace locked by ${describeHolder(acquired.holder)}`;
-      logger.warn('workspace is locked by another Symphony instance; skipping this attempt', { holder: describeHolder(acquired.holder) });
+      const message = `workspace locked by ${describeHolder(acquired.holder, acquired.lockPath)}`;
+      logger.warn('workspace lock is held or unreadable; skipping this attempt', { holder: describeHolder(acquired.holder, acquired.lockPath) });
       return await finish({ kind: 'cancelled', message });
     }
     lock = acquired;
@@ -574,7 +680,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
     let resultRecorded = false;
     let resultMoved = false;
     // Default path globs also apply below the root of a Laravel app in a subdirectory; explicit ones stay as written.
-    const appDirs = (await Promise.all(params.integrations.map((integration) => integration.appDirs?.(activeWorkspace.path) ?? []))).flat();
+    const { appDirs, projectTypes } = await workspaceApps(params.integrations, activeWorkspace.path);
     const paths = effectivePaths(params.workflow.config.pipeline, appDirs);
     // A test engineer's changes are measured from the developer's last hand-off, else from the workspace as this session found it.
     // Also where the session's commits start (change log).
@@ -625,6 +731,25 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
             changedFiles: () => reviewedFiles(activeWorkspace.path, issue, history),
           })
         : null;
+    const brainMode = sessionBrainMode(params.workflow.config.brain.enabled, role);
+    const repository = params.adapter.issueRepository?.(issue) ?? null;
+    const brainPath = params.workflow.config.brain.path;
+    // Successful brain_write / brain_append calls of this session (a lesson for a recurring finding).
+    let brainWrites = 0;
+    const lessonSources = await reviewLessonSources(params, role, brainMode, repository);
+    const lessonFacts =
+      lessonSources !== null && (role?.result === 'review' || role?.result === 'security')
+        ? (history: StageHistory): LessonFacts => ({
+            recurring: (reported) => {
+              const recurring = detectRecurrence({ ...lessonSources.recurrence(history), reported, now: new Date() });
+              const wanted = new Set(reported);
+              return attachLessons(recurring.filter((entry) => wanted.has(entry.category)), lessonSources.lessons);
+            },
+            brainWrites: () => brainWrites,
+            enforce: brainMode === 'write',
+            onMissing: (categories) => logger.warn('lesson_missing', { issue: issue.identifier, role: name, categories: categories.join(', ') }),
+          })
+        : null;
     const support =
       role?.result != null
         ? await loadResultSupport(
@@ -637,6 +762,9 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
             docs,
             screenshots,
             mutation,
+            lessonFacts,
+            // The security panel's vote rule only applies when the session can actually start the judge.
+            role.result === 'security' && agents.allowed.some((agent) => agent.name === 'refutation-judge'),
             callbacks.results,
             (entry) => {
               resultRecorded = true;
@@ -650,8 +778,7 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
           )
         : null;
     if (signal.aborted) return await finish(cancelled());
-    const brainMode = sessionBrainMode(params.workflow.config.brain.enabled, role);
-    const repository = params.adapter.issueRepository?.(issue) ?? null;
+    const lessonVariables = reviewLessonVariables(role, lessonSources, support);
     const resultVariables = {
       brain: brainMode,
       brain_index: repository !== null && isRepositoryName(repository) ? `Repos/${repoFolderName(repository)}/index.md` : null,
@@ -661,19 +788,23 @@ export async function runAgentAttempt(params: WorkerParams): Promise<WorkerOutco
       result_required: support !== null,
       test_paths: paths.testPaths,
       docs_paths: paths.docsPaths,
+      project_types: projectTypes,
       attachments,
+      ...lessonVariables,
     };
     const transcript = transcriptPath(params.transcriptDir, activeWorkspace);
     if (transcript !== null) callbacks.transcript(transcript);
     // An architect files sub-issues only to split an issue it may split (XL, not a work package itself).
     const subIssues = subIssueLimit(role, issue);
     sessionStart = { sha: startSha };
-    const brainPath = params.workflow.config.brain.path;
     const vaultGitOptions = vaultGitHooks(brainPath, params);
     const brainTools = brainToolsFor(params.workflow.config.brain, brainMode, logger, {
       access: params.brainAccess ?? null,
       approvedWrites: role?.brainApprovedWrites ?? true,
       index: params.brainIndex ?? null,
+      onWrite: () => {
+        brainWrites += 1;
+      },
       ...(brainMode !== 'off' ? { versioning: createVaultGit(brainPath, logger, vaultGitOptions) } : {}),
     });
     session = await params.runner.startSession({

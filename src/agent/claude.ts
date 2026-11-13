@@ -64,9 +64,10 @@ const CLIENT_APP = 'symphony/0.1.0';
  * Session defaults, overridable through claude.env. Subagents and commands run in the foreground: when a turn ends,
  * Symphony decides what happens next and may end the session, so a background task never reports back. Subagent
  * nesting is capped at one level, so a subagent has no Agent tool. The built-in agents (claude, Explore, general-purpose,
- * Plan, statusline-setup) are off, so every Agent call names a `subagent_type`.
+ * Plan, statusline-setup) are off, so every Agent call names a `subagent_type`. A Bash call gets 10 minutes by default (20 at most,
+ * finite so a hanging command still ends) instead of Claude Code's 2: a full test run does not fit into 2 minutes.
  */
-const SESSION_ENV_DEFAULTS = { CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: '1', CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '1', CLAUDE_CODE_FORK_SUBAGENT: '0' };
+const SESSION_ENV_DEFAULTS = { CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: '1', CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '1', CLAUDE_CODE_FORK_SUBAGENT: '0', BASH_DEFAULT_TIMEOUT_MS: '600000', BASH_MAX_TIMEOUT_MS: '1200000' };
 /**
  * Fork subagents inherit the whole context and the role tools and bypass the Agent(<plugin>:<name>) denies; SDK 0.3.302
  * and later turn them on by default (CLAUDE_CODE_FORK_SUBAGENT in the defaults above). claude.env can set it to `1`.
@@ -140,6 +141,11 @@ export function subagentContext(input: SubagentContextInput): string {
 }
 
 /** `subagent_type` of an Agent tool call; Claude Code's default when unset is `general-purpose`; kept as the fallback for old logs. */
+/** A message from inside a subagent: it names its subagent (`agent_id`) or the Agent tool call that started it. */
+function isSubagentMessage(message: SDKAssistantMessage): boolean {
+  return message.parent_tool_use_id != null || (typeof message.agent_id === 'string' && message.agent_id !== '');
+}
+
 function subagentOf(input: unknown): string {
   const value = typeof input === 'object' && input !== null ? (input as Record<string, unknown>).subagent_type : undefined;
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : 'general-purpose';
@@ -307,6 +313,8 @@ class ClaudeSession implements AgentSession {
   #subagents = new Map<string, { run: SubagentRun; calls: Map<string, ModelTokenUsage> }>();
   /** The subagents that ended, by tool call id: a `task_notification` may arrive after the `tool_result`. */
   #endedSubagents = new Map<string, SubagentRun>();
+  /** `agent_id` of a subagent's messages (= `task_id` of its task events) to the tool call id that started it. */
+  #subagentIds = new Map<string, string>();
   /** Descriptions of the live background tasks, as the latest `background_tasks_changed` lists them. */
   #backgroundTasks: string[] = [];
 
@@ -424,7 +432,10 @@ class ClaudeSession implements AgentSession {
     const deniedAgents = this.#params.deniedAgents ?? [];
     const options: Options = {
       cwd,
-      env: { ...env, ...SESSION_ENV_DEFAULTS, ...extensions?.env, ...config.env, CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP },
+      env: { ...env, ...SESSION_ENV_DEFAULTS, ...extensions?.env,
+        // claude.env wins; Claude Code applies min(window, model window).
+        ...(config.autoCompactWindow !== null ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(config.autoCompactWindow) } : {}),
+        ...config.env, CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP },
       abortController: this.#abort,
       sessionId: this.threadId,
       title: truncate(`${issue.identifier}: ${issue.title}`, 200),
@@ -775,7 +786,7 @@ class ClaudeSession implements AgentSession {
     this.#addSubagentUsage(message);
     // One event per tool call (a message may call several tools in parallel); a text event only without tool calls.
     let calls = 0;
-    const subagent = message.parent_tool_use_id != null;
+    const subagent = isSubagentMessage(message);
     for (const block of message.message.content) {
       if (block.type !== 'tool_use') continue;
       calls++;
@@ -816,7 +827,7 @@ class ClaudeSession implements AgentSession {
       },
     });
     // Subagent calls run in their own context; only the main conversation fills the session's window.
-    if (message.parent_tool_use_id == null) {
+    if (!isSubagentMessage(message)) {
       const tokens = (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
       const window =
         contextWindowSuffix(this.#sessionModel ?? '') ??
@@ -887,13 +898,21 @@ class ClaudeSession implements AgentSession {
 
   /** Adds the model call of a message from inside a subagent to that subagent; the last state per message id counts. */
   #addSubagentUsage(message: SDKAssistantMessage): void {
+    const agentId = typeof message.agent_id === 'string' && message.agent_id !== '' ? message.agent_id : undefined;
     const parent = message.parent_tool_use_id;
-    const entry = typeof parent === 'string' ? this.#subagents.get(parent) : undefined;
+    // The agent id names the run directly (nested or concurrent runs included); the parent tool call id is the fallback
+    // for shapes without it and teaches the id for the next message.
+    let key = agentId === undefined ? undefined : this.#subagentIds.get(agentId);
+    if (key === undefined && typeof parent === 'string' && this.#subagents.has(parent)) {
+      key = parent;
+      if (agentId !== undefined) this.#subagentIds.set(agentId, parent);
+    }
+    const entry = key === undefined ? undefined : this.#subagents.get(key);
     const usage = message.message.usage;
     if (entry === undefined || usage === undefined || usage === null) return;
     const model: unknown = message.message.model;
     if (typeof model === 'string' && !entry.run.models.includes(model)) entry.run.models.push(model);
-    entry.calls.set(message.message.id ?? `${parent}:${entry.calls.size}`, {
+    entry.calls.set(message.message.id ?? `${key}:${entry.calls.size}`, {
       inputTokens: usage.input_tokens ?? 0,
       outputTokens: usage.output_tokens ?? 0,
       cacheReadTokens: usage.cache_read_input_tokens ?? 0,
@@ -909,9 +928,14 @@ class ClaudeSession implements AgentSession {
    * subagent matches. The notification may come after the `tool_result`, so ended runs are searched too.
    */
   #onTask(message: SDKTaskStartedMessage | SDKTaskProgressMessage | SDKTaskNotificationMessage): boolean {
-    const id = message.tool_use_id;
-    const run = typeof id === 'string' ? (this.#subagents.get(id)?.run ?? this.#endedSubagents.get(id)) : undefined;
+    const toolUseId = message.tool_use_id;
+    const taskId = typeof message.task_id === 'string' && message.task_id !== '' ? message.task_id : undefined;
+    // A task event names its run by tool call id; that pair also teaches the task id. Without a known tool call id
+    // (nested or resumed runs, newer shapes) the task id found earlier names the run.
+    const known = (key: string | undefined) => (key === undefined ? undefined : (this.#subagents.get(key)?.run ?? this.#endedSubagents.get(key)));
+    const run = known(typeof toolUseId === 'string' ? toolUseId : undefined) ?? known(taskId === undefined ? undefined : this.#subagentIds.get(taskId));
     if (run === undefined) return false;
+    if (taskId !== undefined) this.#subagentIds.set(taskId, run.toolUseId);
     if (message.subtype !== 'task_started') {
       const usage = message.usage;
       if (usage !== undefined && usage !== null) {

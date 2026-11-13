@@ -2,6 +2,7 @@ import { bareModelName } from '../agent/model-name.ts';
 import { costOf, priceFor, totalTokens, type ModelTokenUsage, type PricingTable } from '../costs/pricing.ts';
 import { BUDGET_WINDOW_MS, forecastBudget } from '../budget/forecast.ts';
 import { isRejected, windowUtilization, type RateLimitRecord } from '../budget/rate-limit-log.ts';
+import { PANEL_LENSES, type PanelVoteCounts } from '../workflow/results.ts';
 import { parseCounts, parseSubagents, type HistoryEntry, type LoggedSubagent } from './history.ts';
 
 /**
@@ -121,6 +122,8 @@ interface Run {
   contextPeakPercent: number | null;
   /** Auto-compacts of the run (`context_compacts`); null when not logged. */
   contextCompacts: number | null;
+  /** Auto-compact window of the run (`auto_compact_window`): tokens or 'auto'; null when not logged. */
+  autoCompactWindow: number | 'auto' | null;
   /** Dispatched after a failed or stalled run of the same issue. */
   retry: boolean;
   parts: UsagePart[];
@@ -394,6 +397,7 @@ function collectRuns(entries: HistoryEntry[], pricing: PricingTable): Run[] {
       role: fieldOrNull(entry.fields.role) ?? start?.role ?? null,
       contextPeakPercent: numberOrNull(entry.fields.context_peak_percent),
       contextCompacts: numberOrNull(entry.fields.context_compacts),
+      autoCompactWindow: entry.fields.auto_compact_window === 'auto' ? 'auto' : numberOrNull(entry.fields.auto_compact_window),
       retry: FAILURE.has(lastOutcome.get(issue) ?? ''),
       parts,
       billedTokens: parts.reduce((sum, part) => sum + totalTokens(part.usage), 0),
@@ -612,12 +616,78 @@ interface StageResultEntry {
   complexity: string | null;
   /** Board column the result hands the issue to (`target`); null when not logged. */
   target: string | null;
-  /** Confirmed/refuted findings (filled from E3-4 on); null when the line does not carry them. */
+  /** Confirmed/refuted findings (review/security results with verification, E3-4); null when the line does not carry them. */
   findingsConfirmed: number | null;
   findingsRefuted: number | null;
   /** Mutation score (percent) of a test result; null when the line carries none. */
   mutationScore: number | null;
+  /** Panel votes of a security result (L/XL); null when the line carries none or a broken count. */
+  panel: PanelVoteCounts | null;
+  /** Blocker and major findings per category (#575); empty when the line carries none. */
+  categories: Record<string, number>;
   ms: number;
+}
+
+/** A review lesson of the vault for the category statistics: since when a category has a lesson. */
+export interface ReviewLessonRef {
+  /** The lesson's repository; null = it applies to every repository. */
+  repo: string | null;
+  category: string;
+  path: string;
+  /** When the lesson exists (its `created` date, ISO 8601). */
+  since: string;
+}
+
+/**
+ * Blocker and major findings per category of the stage results in the period (`finding_categories`): how many, in how many
+ * issues, since when the category has a lesson and how many findings came after it, so one sees whether a lesson
+ * lowers the recurrence. A lesson counts for a result of its repository (or of any repository without one); with several,
+ * the oldest one wins. Most findings first.
+ */
+export function findingCategoryStats(results: readonly Pick<StageResultEntry, 'repo' | 'issue' | 'categories' | 'ms'>[], lessons: readonly ReviewLessonRef[]) {
+  const sinceOf = (category: string, repo: string): ReviewLessonRef | null => {
+    let best: ReviewLessonRef | null = null;
+    for (const lesson of lessons) {
+      if (lesson.category !== category || (lesson.repo !== null && lesson.repo.toLowerCase() !== repo.toLowerCase())) continue;
+      if (Number.isNaN(Date.parse(lesson.since))) continue;
+      if (best === null || Date.parse(lesson.since) < Date.parse(best.since)) best = lesson;
+    }
+    return best;
+  };
+  const stats = new Map<string, { findings: number; issues: Set<string>; lesson: ReviewLessonRef | null; after: number }>();
+  for (const result of results) {
+    for (const [category, findings] of Object.entries(result.categories)) {
+      if (!(findings > 0)) continue;
+      const entry = stats.get(category) ?? { findings: 0, issues: new Set<string>(), lesson: null, after: 0 };
+      stats.set(category, entry);
+      entry.findings += findings;
+      entry.issues.add(result.issue);
+      const lesson = sinceOf(category, result.repo);
+      if (lesson !== null) {
+        if (entry.lesson === null || Date.parse(lesson.since) < Date.parse(entry.lesson.since)) entry.lesson = lesson;
+        if (result.ms >= Date.parse(lesson.since)) entry.after += findings;
+      }
+    }
+  }
+  return [...stats]
+    .map(([category, entry]) => ({
+      category,
+      findings: entry.findings,
+      issues: entry.issues.size,
+      lesson: entry.lesson === null ? null : { path: entry.lesson.path, since: entry.lesson.since },
+      findings_after_lesson: entry.lesson === null ? null : entry.after,
+    }))
+    .sort((a, b) => b.findings - a.findings || a.category.localeCompare(b.category));
+}
+
+function panelOf(fields: Record<string, string>): PanelVoteCounts | null {
+  const candidates = numberOrNull(fields.panel_candidates);
+  if (candidates === null || !Number.isInteger(candidates) || candidates < 0) return null;
+  const lenses = (value: string | undefined) => {
+    const counts = parseCounts(value);
+    return { reachability: counts.reachability ?? 0, impact: counts.impact ?? 0, defenses: counts.defenses ?? 0 };
+  };
+  return { candidates, confirmed: lenses(fields.panel_confirmed), refuted: lenses(fields.panel_refuted), singleRefuted: numberOrNull(fields.panel_single_refuted) ?? 0 };
 }
 
 function stageResultOf(entry: HistoryEntry): StageResultEntry {
@@ -637,6 +707,8 @@ function stageResultOf(entry: HistoryEntry): StageResultEntry {
     findingsConfirmed: numberOrNull(fields.findings_confirmed),
     findingsRefuted: numberOrNull(fields.findings_refuted),
     mutationScore: numberOrNull(fields.mutation_score),
+    panel: panelOf(fields),
+    categories: parseCounts(fields.categories),
     ms: Date.parse(entry.ts),
   };
 }
@@ -759,6 +831,25 @@ function mutationScores(results: StageResultEntry[]) {
     .map((result) => ({ issue: result.issue, repo: result.repo, complexity: result.complexity, mutation_score: result.mutationScore as number, at: new Date(result.ms).toISOString() }));
 }
 
+/** Security panel (E3-5 follow-up): panel candidates, votes per lens and candidates refuted by exactly one lens, summed over all security results in scope. */
+function securityPanel(results: StageResultEntry[]) {
+  const panels = results.flatMap((result) => (result.panel === null ? [] : [result.panel]));
+  const note =
+    'Panel-Kandidaten = Security-Kandidaten (findings und refuted) mit Panel-Stimmen (L/XL), summiert über alle Security-Ergebnisse im Zeitraum. Je Lens: Stimmen bestätigt/widerlegt. Von genau einer Lens widerlegt = Kandidaten mit genau einer widerlegenden Stimme; die hätte eine Regel mit PANEL_MAX_REFUTING_VOTES = 1 behalten. Leer ohne Ergebnisse mit Panel-Stimmen.';
+  if (panels.length === 0) return { note, results: 0, candidates: null as number | null, refuted_by_one_lens: null as number | null, lenses: [] as Array<{ lens: string; confirmed: number; refuted: number }> };
+  return {
+    note,
+    results: panels.length,
+    candidates: panels.reduce((sum, panel) => sum + panel.candidates, 0) as number | null,
+    refuted_by_one_lens: panels.reduce((sum, panel) => sum + panel.singleRefuted, 0) as number | null,
+    lenses: PANEL_LENSES.map((lens) => ({
+      lens: lens as string,
+      confirmed: panels.reduce((sum, panel) => sum + panel.confirmed[lens], 0),
+      refuted: panels.reduce((sum, panel) => sum + panel.refuted[lens], 0),
+    })),
+  };
+}
+
 function subagentEvaluation(runs: Run[], pipelineRuns: Run[], results: StageResultEntry[]) {
   const finished = new Set<string>();
   const returns = new Map<string, { review: number; test: number }>();
@@ -865,10 +956,11 @@ function subagentEvaluation(runs: Run[], pipelineRuns: Run[], results: StageResu
   });
   rows.sort((a, b) => a.role.localeCompare(b.role) || b.runs - a.runs || a.model.localeCompare(b.model));
   return {
-    note: 'Delegierender Run: mindestens ein Agent-Aufruf. Bash im Hauptthread = Bash-Aufrufe minus die der Subagents. Token-Anteil = Tokens der Subagents / abgerechnete Tokens der Runs (die Subagents sind darin enthalten, der Anteil ist höchstens 100 %). Fertiges Issue = ein Stage-Ergebnis mit Ziel In review oder Done im Zeitraum; Kosten je fertigem Issue summieren alle Rollen (alle Stages), „eigene“ nur die Runs der Zeile. Rückläufer = Agent-review-Ergebnisse changes_needed und Testing-Ergebnisse failed auf den Issues der Zeile, je Issue. Findings (bestätigt/widerlegt) sind leer, bis die Stage-Ergebnisse sie liefern.',
+    note: 'Delegierender Run: mindestens ein Agent-Aufruf. Bash im Hauptthread = Bash-Aufrufe minus die der Subagents. Token-Anteil = Tokens der Subagents / abgerechnete Tokens der Runs (die Subagents sind darin enthalten, der Anteil ist höchstens 100 %). Fertiges Issue = ein Stage-Ergebnis mit Ziel In review oder Done im Zeitraum; Kosten je fertigem Issue summieren alle Rollen (alle Stages), „eigene“ nur die Runs der Zeile. Rückläufer = Agent-review-Ergebnisse changes_needed und Testing-Ergebnisse failed auf den Issues der Zeile, je Issue. Findings bestätigt/widerlegt = Summe von findings_confirmed/findings_refuted der Review- und Security-Ergebnisse auf den Issues der Zeile (L/XL oder mit Verifikation); leer ohne solche Ergebnisse.',
     rules: { median_min_runs: MEDIAN_MIN_RUNS, percentile_min_runs: PERCENTILE_MIN_RUNS },
     rows,
     mutation_scores: mutationScores(results),
+    security_panel: securityPanel(results),
   };
 }
 
@@ -907,8 +999,13 @@ function budgetHistory(scoped: Run[], runs: Run[], rateLimits: RateLimitRecord[]
 
   const compacts = new Map<string, number>();
   const context = new Map<string, { sum: number; n: number }>();
+  const windows = new Map<string, { at: number; value: number | 'auto' }>();
   for (const run of runs) {
     const role = run.role ?? UNKNOWN_ROLE;
+    if (run.autoCompactWindow !== null) {
+      const seen = windows.get(role);
+      if (seen === undefined || run.finishedMs >= seen.at) windows.set(role, { at: run.finishedMs, value: run.autoCompactWindow });
+    }
     if (run.contextCompacts !== null) compacts.set(role, (compacts.get(role) ?? 0) + run.contextCompacts);
     if (run.contextPeakPercent !== null) {
       const slot = context.get(role) ?? { sum: 0, n: 0 };
@@ -922,6 +1019,7 @@ function budgetHistory(scoped: Run[], runs: Run[], rateLimits: RateLimitRecord[]
   return {
     days: [...days.values()],
     compacts_by_role: sortedRecord(compacts),
+    compact_windows_by_role: Object.fromEntries([...windows.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([role, w]) => [role, w.value])),
     avg_context_by_role: sortedRecord(new Map([...context.entries()].map(([role, v]) => [role, round(v.sum / v.n, 1)]))),
   };
 }
@@ -966,7 +1064,7 @@ function budgetInsights(allRuns: Run[], runs: Run[], entries: HistoryEntry[], ra
   return { limit_5h_tokens: limit, limit_hits, top_compact, peak_source };
 }
 
-export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable, filter: AnalyticsFilter, now = new Date(), rateLimits: RateLimitRecord[] = []) {
+export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable, filter: AnalyticsFilter, now = new Date(), rateLimits: RateLimitRecord[] = [], lessons: readonly ReviewLessonRef[] = []) {
   const allRuns = collectRuns(entries, pricing);
   const issueComplexity = issueComplexities(entries);
   const complexityOf = (issue: string) => issueComplexity.get(issue) ?? UNKNOWN_COMPLEXITY;
@@ -1305,6 +1403,7 @@ export function computeAnalytics(entries: HistoryEntry[], pricing: PricingTable,
     durations,
     tools: toolStats(runs),
     subagent_evaluation: subagentEvaluation(runs, pipelineRuns, stageResultsInScope),
+    finding_categories: findingCategoryStats(stageResultsInScope, lessons),
     heatmap: { start_times: heatmap, max: Math.max(0, ...heatmap.flat()) },
     top,
     attention: { rules: ATTENTION_RULES, items: attention.slice(0, ATTENTION_LIMIT), total: attention.length },

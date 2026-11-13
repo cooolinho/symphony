@@ -60,6 +60,10 @@ interface SetupOptions {
   docs?: ResultToolParams['docs'];
   screenshots?: ResultToolParams['screenshots'];
   mutation?: ResultToolParams['mutation'];
+  lessons?: ResultToolParams['lessons'];
+  panel?: boolean;
+  /** Overrides per role name, merged over ROLES. */
+  roles?: Record<string, Record<string, unknown>>;
 }
 
 function setup(options: SetupOptions = {}) {
@@ -70,7 +74,11 @@ function setup(options: SetupOptions = {}) {
       provider: { owner: 'acme', project_number: 1, token: 'test-token' },
       active_states: ['Todo', 'Ready', 'In progress', 'Testing', 'Documentation', 'Agent review', 'Security review'],
     },
-    roles: { ...ROLES, reviewer: { ...ROLES.reviewer, ...options.reviewer } },
+    roles: {
+      ...ROLES,
+      reviewer: { ...ROLES.reviewer, ...options.reviewer },
+      ...Object.fromEntries(Object.entries(options.roles ?? {}).map(([name, over]) => [name, { ...(ROLES as Record<string, object>)[name], ...over }])),
+    },
     pipeline: { max_review_rounds: 3, max_test_rounds: 2 },
     checks: { timeout_ms: options.timeoutMs ?? 10_000, on_enter: options.checks ?? {} },
   });
@@ -112,6 +120,8 @@ function setup(options: SetupOptions = {}) {
     ...(options.docs !== undefined ? { docs: options.docs } : {}),
     ...(options.screenshots !== undefined ? { screenshots: options.screenshots } : {}),
     ...(options.mutation !== undefined ? { mutation: options.mutation } : {}),
+    ...(options.panel !== undefined ? { panel: options.panel } : {}),
+    ...(options.lessons !== undefined ? { lessons: options.lessons } : {}),
   };
   const unguarded = createResultTool(params);
   const tools = guardTools(toolsForRole(tracker.agentToolSpecs(), role, current(), unguarded), guard);
@@ -849,6 +859,61 @@ describe('report_result', () => {
       assert.deepEqual(broken.tracker.statusCalls, []);
     });
 
+    describe('docs role', () => {
+      const DOCS = { verdict: 'done', summary: 'Documented.', files: ['docs/a.md'] };
+      const docsRole = { docs: { on_check_failed: 'In progress', may_move_to: ['Agent review', 'In progress', 'Blocked'] } };
+      const AR = { 'Agent review': 'echo "flaky test"; exit 1' };
+
+      it('records done and not_needed and moves to on_check_failed when the Agent review check fails', async () => {
+        for (const args of [DOCS, { verdict: 'not_needed', summary: 'Nothing.' }]) {
+          const { report, tracker, markers } = setup({ role: 'docs', state: 'Documentation', checks: AR, roles: docsRole });
+          const result = data(await report(args));
+          assert.equal(result.target, 'In progress');
+          assert.equal(result.check_failed_for, 'Agent review');
+          assert.deepEqual(tracker.statusCalls, ['In progress']);
+          assert.match(markers()[0]?.result.summary ?? '', /Entry check failed[\s\S]*flaky test/);
+        }
+      });
+
+      it('counts toward max_check_failures: the third hand-off goes to the blocked column with needs-human', async () => {
+        const earlier = buildStageHistory(
+          [0, 1].map((i) => ({
+            result: { kind: 'docs', verdict: 'done', summary: 's' } as never,
+            meta: { role: 'docs', run: `run-${i}`, round: null, profile: null, workflow_hash: null, head_sha: null, checks: null, target: 'In progress', check_failed_for: 'Agent review', created_at: `2026-10-1${i}T12:00:00Z` },
+          })),
+        );
+        const { report, current, tracker } = setup({ role: 'docs', state: 'Documentation', checks: AR, roles: docsRole, history: earlier });
+        assert.equal(data(await report(DOCS)).target, 'Blocked');
+        assert.deepEqual(tracker.statusCalls, ['Blocked']);
+        assert.deepEqual(current().labels, ['needs-human']);
+      });
+
+      it('blocked still goes straight to Blocked', async () => {
+        const { report, tracker } = setup({ role: 'docs', state: 'Documentation', checks: AR, roles: docsRole });
+        const result = data(await report({ verdict: 'blocked', summary: 'No.', blockers: [{ description: 'x', needs: 'human' }] }));
+        assert.equal(result.target, 'Blocked');
+        assert.deepEqual(tracker.statusCalls, ['Blocked']);
+      });
+
+      it('without on_check_failed the agent gets check_failed and nothing is recorded', async () => {
+        const { report, tracker } = setup({ role: 'docs', state: 'Documentation', checks: AR });
+        assert.equal(error(await report(DOCS)).category, 'check_failed');
+        assert.deepEqual(tracker.statusCalls, []);
+      });
+
+      it('the test role gets no fallback even with on_check_failed', async () => {
+        const { report, tracker } = setup({
+          role: 'tester',
+          state: 'Testing',
+          checks: AR,
+          roles: { tester: { on_check_failed: 'In progress' } },
+        });
+        const passed = { verdict: 'passed', summary: 'ok', cases: [{ criterion: 'c', test: 't', status: 'passed' }] };
+        assert.equal(error(await report(passed)).category, 'check_failed');
+        assert.deepEqual(tracker.statusCalls, []);
+      });
+    });
+
     it('refuses a fallback the tool did not expect', async () => {
       const { unguarded, current, tracker } = setup({ reviewer: { on_check_failed: 'In progress' } });
       const check = { result: 'check_failed', ok: false, exit_code: 1, timed_out: false, duration_ms: 1, sha: null, finished_at: '' };
@@ -1339,5 +1404,336 @@ describe('report_result: test evidence at L/XL', () => {
     assert.equal(data(await tester(['Complexity: L'], facts('')).report({ ...base, cases })).target, 'Agent review');
     assert.equal(data(await tester(['Complexity: L'], facts('pcov', 'v2.34.0')).report({ ...base, cases })).target, 'Agent review');
     assert.equal(data(await tester(['Complexity: L'], { workspace: tempDir('symphony-empty-') }).report({ ...base, cases })).target, 'Agent review');
+  });
+});
+
+describe('report_result: verified findings at L/XL', () => {
+  const ok = { status: 'confirmed', evidence: 'src/a.ts:3 shows the off by one' };
+  const finding = (over: Record<string, unknown> = {}) => ({ severity: 'major', file: 'src/a.ts', line: 3, problem: 'Off by one', ...over });
+  const review = (findings: unknown[], over: Record<string, unknown> = {}) => ({ verdict: 'changes_needed', summary: 'Problems.', findings, ...over });
+
+  it('accepts an L/XL review whose findings are all confirmed and stores the verification', async () => {
+    const { report, markers } = setup({ labels: ['Complexity: L'] });
+    assert.equal(data(await report(review([finding({ verification: ok })]))).target, 'In progress');
+    const [marker] = markers();
+    assert.ok(marker?.result.kind === 'review');
+    assert.deepEqual(marker.result.findings[0]?.verification, ok);
+  });
+
+  it('accepts an L/XL review without findings, and one with only refuted candidates', async () => {
+    const refuted = { ...finding(), verification: { status: 'refuted', evidence: 'src/a.ts:3 is guarded' } };
+    const { report, markers } = setup({ labels: ['Complexity: XL'] });
+    assert.equal(data(await report({ verdict: 'approved', summary: 'Fine.', refuted: [refuted] })).target, 'In review');
+    const stored = markers()[0]?.result;
+    assert.ok(stored?.kind === 'review' && stored.refuted.length === 1);
+  });
+
+  it('refuses an L/XL review whose finding has no verification, names it and records nothing', async () => {
+    const { report, tracker } = setup({ labels: ['Complexity: XL'] });
+    const refused = error(await report(review([finding({ verification: ok }), finding({ file: 'src/b.ts', line: 9, problem: 'Missing check' })])));
+    assert.equal(refused.category, 'invalid_result');
+    assert.match(refused.message, /findings\[1\] \(src\/b\.ts:9 "Missing check"\) has none/);
+    assert.match(refused.message, /confirmed `verification`/);
+    assert.doesNotMatch(refused.message, /findings\[0\]/);
+    assert.equal(tracker.comments.get('1'), undefined);
+  });
+
+  it('applies to security results and to refactors', async () => {
+    const security = setup({ role: 'auditor', state: 'Security review', labels: ['Complexity: L'] });
+    const refused = error(await security.report({ verdict: 'issues_found', summary: 'Hole.', findings: [finding()] }));
+    assert.match(refused.message, /L\/XL security result.*findings\[0\]/);
+    const refactor = setup({ labels: ['Complexity: L', 'Type: refactor'] });
+    assert.equal(error(await refactor.report(review([finding()]))).category, 'invalid_result');
+  });
+
+  it('refuses a refuted finding in findings[] and points to refuted', async () => {
+    const { report } = setup({ labels: ['Complexity: L'] });
+    const refused = error(await report(review([finding({ verification: { status: 'refuted', evidence: 'src/a.ts:3 is fine' } })])));
+    assert.match(refused.message, /findings\[0\].*is refuted: move it to `refuted`/);
+  });
+
+  it('refuses nothing on S/M or without a Complexity label, and moves a refuted finding to refuted', async () => {
+    for (const labels of [['Complexity: M'], ['Complexity: S'], []]) {
+      assert.equal(data(await setup({ labels }).report(review([finding()]))).target, 'In progress', labels.join());
+    }
+    const { report, markers } = setup({ labels: ['Complexity: M'] });
+    const refuted = finding({ problem: 'False alarm', verification: { status: 'refuted', evidence: 'src/a.ts:3 is fine' } });
+    data(await report(review([finding(), refuted])));
+    const result = markers()[0]?.result;
+    assert.ok(result?.kind === 'review');
+    assert.deepEqual([result.findings.length, result.refuted.length], [1, 1]);
+  });
+
+  it('does not refuse a blocked L/XL review', async () => {
+    const { report } = setup({ labels: ['Complexity: L'] });
+    const blocked = { verdict: 'blocked', summary: 'No access.', blockers: [{ description: 'No checkout', needs: 'access' }], findings: [finding()] };
+    assert.equal(data(await report(blocked)).target, 'Blocked');
+  });
+});
+
+describe('report_result: verified findings at L/XL (acceptance, independent)', () => {
+  const confirmed = (evidence = 'src/a.ts:3 shows it') => ({ status: 'confirmed', evidence });
+  const refutedV = { status: 'refuted', evidence: 'src/z.ts:1 is guarded' };
+  const f = (over: Record<string, unknown> = {}) => ({ severity: 'major', file: 'src/a.ts', line: 3, problem: 'Off by one', ...over });
+  const review = (over: Record<string, unknown> = {}) => ({ verdict: 'changes_needed', summary: 'Problems.', findings: [f({ verification: confirmed() })], ...over });
+  const commentOf = (tracker: ReturnType<typeof setup>['tracker']) => (tracker.comments.get('1') ?? []).map((c) => c.body).join('\n');
+
+  for (const label of ['Complexity: L', 'Complexity: XL']) {
+    it(`${label}: accepts verified findings, refuses unverified and refuted ones`, async () => {
+      assert.equal(data(await setup({ labels: [label] }).report(review())).target, 'In progress');
+      const missing = error(await setup({ labels: [label] }).report(review({ findings: [f()] })));
+      assert.equal(missing.category, 'invalid_result');
+      assert.match(missing.message, /findings\[0\]/);
+      assert.match(missing.message, /src\/a\.ts:3/);
+      assert.match(missing.message, /verification/);
+      const refuted = error(await setup({ labels: [label] }).report(review({ findings: [f({ verification: refutedV })] })));
+      assert.equal(refuted.category, 'invalid_result');
+      assert.match(refuted.message, /findings\[0\]/);
+      assert.match(refuted.message, /refuted/);
+    });
+  }
+
+  it('names every failing finding, not only the first', async () => {
+    const { report } = setup({ labels: ['Complexity: L'] });
+    const refused = error(await report(review({ findings: [f(), f({ verification: confirmed() }), f({ file: 'src/c.ts', line: 7, problem: 'Third', verification: refutedV })] })));
+    assert.match(refused.message, /findings\[0\]/);
+    assert.match(refused.message, /findings\[2\]/);
+    assert.match(refused.message, /src\/c\.ts:7/);
+    assert.doesNotMatch(refused.message, /findings\[1\]/);
+  });
+
+  it('refuses an approved L review whose nit lacks verification (the gate is independent of the verdict)', async () => {
+    const { report } = setup({ labels: ['Complexity: L'] });
+    const refused = error(await report({ verdict: 'approved', summary: 'Ok.', findings: [{ severity: 'nit', problem: 'Typo' }] }));
+    assert.equal(refused.category, 'invalid_result');
+    assert.match(refused.message, /findings\[0\]/);
+  });
+
+  it('accepts an approved L review with a confirmed nit and a refuted[] entry', async () => {
+    const { report, markers } = setup({ labels: ['Complexity: L'] });
+    const result = await report({ verdict: 'approved', summary: 'Ok.', findings: [{ severity: 'nit', problem: 'Typo', verification: confirmed() }], refuted: [f({ verification: refutedV })] });
+    assert.equal(data(result).target, 'In review');
+    const stored = markers()[0]?.result;
+    assert.ok(stored?.kind === 'review');
+    assert.equal(stored.findings.length, 1);
+    assert.equal(stored.refuted.length, 1);
+    assert.equal(stored.refuted[0]?.verification.status, 'refuted');
+  });
+
+  it('refuses a malformed verification (unknown status, empty evidence) and a refuted[] entry that is confirmed', async () => {
+    for (const verification of [{ status: 'maybe', evidence: 'x' }, { status: 'confirmed', evidence: '' }, { status: 'confirmed' }]) {
+      assert.equal(error(await setup({ labels: ['Complexity: L'] }).report(review({ findings: [f({ verification })] }))).category, 'invalid_result');
+    }
+    assert.equal(error(await setup({ labels: ['Complexity: M'] }).report(review({ refuted: [f({ verification: confirmed() })] }))).category, 'invalid_result');
+    assert.equal(error(await setup({ labels: ['Complexity: M'] }).report(review({ refuted: [f()] }))).category, 'invalid_result');
+  });
+
+  it('security result on L/XL: verified accepted, unverified refused', async () => {
+    const ok = setup({ role: 'auditor', state: 'Security review', labels: ['Complexity: XL'] });
+    assert.equal(data(await ok.report({ verdict: 'issues_found', summary: 'Hole.', findings: [f({ verification: confirmed() })], refuted: [f({ verification: refutedV })] })).target, 'In progress');
+    const bad = setup({ role: 'auditor', state: 'Security review', labels: ['Complexity: XL'] });
+    assert.equal(error(await bad.report({ verdict: 'issues_found', summary: 'Hole.', findings: [f()] })).category, 'invalid_result');
+    const passed = setup({ role: 'auditor', state: 'Security review', labels: ['Complexity: XL'] });
+    assert.equal(data(await passed.report({ verdict: 'passed', summary: 'Clean.' })).target, 'In review');
+  });
+
+  it('S/M: unverified findings and a verified confirmed one are accepted; nothing is refused', async () => {
+    for (const labels of [['Complexity: S'], ['Complexity: M'], []]) {
+      const { report, markers } = setup({ labels });
+      assert.equal(data(await report(review({ findings: [f(), f({ verification: confirmed() })] }))).target, 'In progress', labels.join());
+      const stored = markers()[0]?.result;
+      assert.ok(stored?.kind === 'review');
+      assert.equal(stored.findings.length, 2);
+    }
+  });
+
+  it('S/M security: an unverified finding is accepted', async () => {
+    const { report } = setup({ role: 'auditor', state: 'Security review', labels: ['Complexity: M'] });
+    assert.equal(data(await report({ verdict: 'issues_found', summary: 'Hole.', findings: [f()] })).target, 'In progress');
+  });
+
+  it('the issue comment shows confirmed findings only and never a refuted candidate', async () => {
+    const { report, tracker } = setup({ labels: ['Complexity: L'] });
+    data(await report(review({ findings: [f({ problem: 'CONFIRMED-PROBLEM', verification: confirmed() })], refuted: [f({ problem: 'REFUTED-PROBLEM', fix: 'REFUTED-FIX', verification: refutedV })] })));
+    const body = commentOf(tracker).replace(/<!--[\s\S]*?-->/g, '');
+    assert.match(body, /CONFIRMED-PROBLEM/);
+    assert.doesNotMatch(body, /REFUTED-PROBLEM/);
+    assert.doesNotMatch(body, /REFUTED-FIX/);
+    assert.doesNotMatch(body, /src\/z\.ts:1 is guarded/);
+  });
+
+  it('on S/M a finding the agent marks refuted is not posted either', async () => {
+    const { report, tracker } = setup({ labels: ['Complexity: M'] });
+    data(await report(review({ verdict: 'approved', findings: [{ severity: 'nit', problem: 'KEPT-NIT' }, f({ problem: 'SELF-REFUTED', verification: refutedV })] })));
+    const body = commentOf(tracker).replace(/<!--[\s\S]*?-->/g, '');
+    assert.match(body, /KEPT-NIT/);
+    assert.doesNotMatch(body, /SELF-REFUTED/);
+  });
+
+  it('the evidence cannot break the comment markdown', async () => {
+    const { report, tracker } = setup({ labels: ['Complexity: L'] });
+    data(await report(review({ findings: [f({ verification: confirmed('line1\n\n# HEADING-INJECTED\n```\ncode') })] })));
+    const body = commentOf(tracker).replace(/<!--[\s\S]*?-->/g, '');
+    assert.doesNotMatch(body, /^# HEADING-INJECTED/m);
+  });
+
+  it('the tool input shape accepts verification and refuted', () => {
+    const shape = z.strictObject(toolInputShape('review'));
+    assert.ok(shape.safeParse(review({ refuted: [f({ verification: refutedV })] })).success);
+  });
+});
+
+describe('report_result: security panel at L/XL (E3-5)', () => {
+  const vote = (lens: string, verdict = 'confirmed') => ({ lens, verdict, evidence: `src/a.ts:3 ${lens}` });
+  const three = (over: Record<string, string> = {}) => ['reachability', 'impact', 'defenses'].map((lens) => vote(lens, over[lens] ?? 'confirmed'));
+  const f = (votes: unknown[] | undefined, status = 'confirmed') => ({
+    severity: 'major',
+    file: 'src/a.ts',
+    line: 3,
+    problem: 'SQL injection',
+    verification: { status, evidence: 'src/a.ts:3 shows it', ...(votes !== undefined ? { votes } : {}) },
+  });
+  const audit = (findings: unknown[], over: Record<string, unknown> = {}) => ({ verdict: 'issues_found', summary: 'Audit.', findings, ...over });
+  const L = (panel: boolean | undefined = true, label = 'Complexity: L') =>
+    setup({ role: 'auditor', state: 'Security review', labels: [label], ...(panel !== undefined ? { panel } : {}) });
+
+  for (const label of ['Complexity: L', 'Complexity: XL']) {
+    it(`${label}: accepts a finding with three confirming votes and stores them`, async () => {
+      const { report, markers } = L(true, label);
+      assert.equal(data(await report(audit([f(three())]))).target, 'In progress');
+      const stored = markers()[0] as { result: { findings: Array<{ verification: { votes: unknown[] } }> } };
+      assert.equal(stored.result.findings[0]?.verification.votes.length, 3);
+    });
+  }
+
+  it('refuses a finding that one lens refutes, names the lens and says to move it to refuted', async () => {
+    const { report, tracker } = L();
+    const refused = error(await report(audit([f(three({ impact: 'refuted' }))])));
+    assert.equal(refused.category, 'invalid_result');
+    assert.match(refused.message, /findings\[0\].*refuted by the panel.*impact.*move it to `refuted`/s);
+    assert.equal((tracker.comments.get('1') ?? []).length, 0);
+  });
+
+  it('accepts the refuted candidate in refuted[] under verdict passed', async () => {
+    const { report } = L();
+    const refuted = { severity: 'major', file: 'src/a.ts', line: 3, problem: 'SQL injection', verification: { status: 'refuted', evidence: 'src/a.ts:3 guarded', votes: three({ defenses: 'refuted' }) } };
+    assert.equal(data(await report({ verdict: 'passed', summary: 'Clean.', findings: [], refuted: [refuted] })).target, 'In review');
+  });
+
+  it('refuses fewer than three votes, and a duplicated lens, naming what is missing', async () => {
+    const { report } = L();
+    const few = error(await report(audit([f([vote('reachability'), vote('impact')])])));
+    assert.equal(few.category, 'invalid_result');
+    assert.match(few.message, /findings\[0\].*three panel votes.*missing: defenses/s);
+    const none = error(await L().report(audit([f(undefined)])));
+    assert.match(none.message, /findings\[0\].*three panel votes/s);
+    const doubled = error(await L().report(audit([f([vote('reachability'), vote('reachability'), vote('impact')])])));
+    assert.match(doubled.message, /missing: defenses.*duplicated: reachability/s);
+  });
+
+  it('rejects an unknown lens and a fourth vote at the schema', async () => {
+    assert.equal(error(await L().report(audit([f([...three(), vote('impact')])]))).category, 'invalid_result');
+    assert.equal(error(await L().report(audit([f([vote('luck'), vote('impact'), vote('defenses')])]))).category, 'invalid_result');
+  });
+
+  it('leaves S/M, a session without the judge and review results unchanged', async () => {
+    assert.equal(data(await L(true, 'Complexity: M').report(audit([{ severity: 'major', file: 'src/a.ts', line: 3, problem: 'x' }]))).target, 'In progress');
+    assert.equal(data(await setup({ role: 'auditor', state: 'Security review', labels: ['Complexity: L'] }).report(audit([f(undefined)]))).target, 'In progress');
+    assert.equal(data(await L(false).report(audit([f(undefined)]))).target, 'In progress');
+    const review = setup({ role: 'reviewer', labels: ['Complexity: L'], panel: true });
+    assert.equal(data(await review.report({ verdict: 'changes_needed', summary: 'x', findings: [f(undefined)] })).target, 'In progress');
+  });
+
+  it('does not check the votes of a blocked audit', async () => {
+    const blocked = { verdict: 'blocked', summary: 'No access.', blockers: [{ description: 'No checkout', needs: 'access' }], findings: [f(undefined)] };
+    assert.equal(data(await L().report(blocked)).target, 'Blocked');
+  });
+});
+
+describe('report_result: a lesson for recurring review findings (#575)', () => {
+  const recurringOf = (category: string) => ({
+    category,
+    triggers: ['same_issue' as const],
+    findings: 2,
+    issues: ['acme/app#1'],
+    examples: [{ issue: 'acme/app#1', problem: 'No after screenshot' }],
+    lesson: { path: 'Lessons/screens.md', title: 'Screens', status: 'candidate' },
+  });
+  const facts = (over: Partial<NonNullable<ResultToolParams['lessons']>> = {}) => {
+    const missing: string[][] = [];
+    const seen: string[][] = [];
+    let writes = 0;
+    const lessons: NonNullable<ResultToolParams['lessons']> = {
+      recurring: (reported) => {
+        seen.push([...reported]);
+        return reported.includes('screenshots-missing') ? [recurringOf('screenshots-missing')] : [];
+      },
+      brainWrites: () => writes,
+      enforce: true,
+      onMissing: (categories) => missing.push(categories),
+      ...over,
+    };
+    return { lessons, missing, seen, write: () => (writes += 1) };
+  };
+  const CHANGES = {
+    verdict: 'changes_needed',
+    summary: 'Screenshots are missing again.',
+    findings: [
+      { severity: 'major', category: 'screenshots-missing', file: 'README.md', problem: 'No after screenshot', fix: 'Add it' },
+      { severity: 'minor', category: 'naming', problem: 'Naming' },
+    ],
+  };
+
+  it('refuses the first report once with the recurring category and its lesson, nothing is recorded', async () => {
+    const { lessons, missing, seen } = facts();
+    const { report, tracker } = setup({ lessons });
+    const refused = error(await report(CHANGES));
+    assert.equal(refused.category, 'invalid_result');
+    assert.match(refused.message, /screenshots-missing/);
+    assert.match(refused.message, /Lessons\/screens\.md/);
+    assert.match(refused.message, /review\/<category>/);
+    assert.deepEqual(seen, [['screenshots-missing']], 'only blocker and major categories count');
+    assert.deepEqual(tracker.statusCalls, []);
+    assert.equal((tracker.comments.get('1') ?? []).length, 0);
+    assert.deepEqual(missing, []);
+  });
+
+  it('accepts the second report, notes the missing lesson and calls onMissing', async () => {
+    const { lessons, missing } = facts();
+    const { report, markers } = setup({ lessons });
+    error(await report(CHANGES));
+    const result = data(await report(CHANGES));
+    assert.equal(result.verdict, 'changes_needed');
+    assert.deepEqual(missing, [['screenshots-missing']]);
+    assert.match(markers()[0]?.result.summary ?? '', /Lesson missing\.\*\* Recurring categories without a lesson: screenshots-missing/);
+  });
+
+  it('accepts at once with lessons, or after a brain write of the session', async () => {
+    const named = facts();
+    const withLessons = setup({ lessons: named.lessons });
+    const result = data(await withLessons.report({ ...CHANGES, lessons: ['Lessons/screens.md'] }));
+    assert.equal(result.verdict, 'changes_needed');
+    const stored = withLessons.markers()[0]?.result;
+    assert.deepEqual(stored?.kind === 'review' ? stored.lessons : null, ['Lessons/screens.md']);
+    assert.deepEqual(named.missing, []);
+
+    const written = facts();
+    written.write();
+    data(await setup({ lessons: written.lessons }).report(CHANGES));
+    assert.deepEqual(written.missing, []);
+  });
+
+  it('does not check without enforce, for blocked, or without a recurring category', async () => {
+    const off = facts({ enforce: false });
+    data(await setup({ lessons: off.lessons }).report(CHANGES));
+    assert.deepEqual(off.seen, []);
+
+    const blocked = facts();
+    data(await setup({ lessons: blocked.lessons }).report({ verdict: 'blocked', summary: 'Cannot review.', blockers: [{ description: 'No access', needs: 'access' }], findings: CHANGES.findings }));
+    assert.deepEqual(blocked.seen, []);
+
+    const other = facts();
+    data(await setup({ lessons: other.lessons }).report({ ...CHANGES, findings: [{ severity: 'major', category: 'n-plus-one', problem: 'N+1 query' }] }));
+    assert.deepEqual(other.missing, []);
   });
 });

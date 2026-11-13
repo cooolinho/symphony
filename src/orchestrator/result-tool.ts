@@ -5,8 +5,10 @@ import { truncate } from '../util/text.ts';
 import { classify, isComplexityLabel, isTypeLabel, type IssueComplexity, type IssueType } from '../workflow/classify.ts';
 import { normalizeStateName, type ServiceConfig } from '../workflow/config.ts';
 import { profileFor } from '../workflow/profile.ts';
+import type { RecurringCategory } from '../brain/review-recurrence.ts';
 import {
   RESULT_VERDICTS,
+  isSevereFinding,
   resultBudgetNote,
   SPLIT_VERDICT,
   SUMMARY_MAX,
@@ -85,6 +87,23 @@ export interface PathRule {
   guidance?: string;
 }
 
+/**
+ * For a reviewer or security auditor (#575): which reported categories recur, and whether the session wrote to the
+ * brain. A recurring category of the reported blocker and major findings needs a lesson: the result names one in
+ * `lessons`, or the session wrote or appended to a note. The first report without one is refused with a hint, the second
+ * is accepted and `onMissing` is called.
+ */
+export interface LessonFacts {
+  /** The recurring categories among `reported` (categories of the reported blocker and major findings, one entry per finding). */
+  recurring(reported: readonly string[]): RecurringCategory[];
+  /** Successful brain_write / brain_append calls of this session so far. */
+  brainWrites(): number;
+  /** Refuse at all: the session can write to the brain (`brain: write`). */
+  enforce: boolean;
+  /** Called once, when a result is recorded without a lesson for these recurring categories. */
+  onMissing(categories: string[]): void;
+}
+
 /** Offending files named in a refusal; more are counted. */
 const OFFENDING_FILES_SHOWN = 25;
 
@@ -97,6 +116,11 @@ export interface ResultToolParams {
    */
   history: RoundHistory & Partial<Pick<StageHistory, 'results' | 'failedChecks'>>;
   profile: TransitionProfile | null;
+  /**
+   * The session may start `refutation-judge` (security role): a finding of an L/XL security result then needs three panel
+   * votes (see `PANEL_MAX_REFUTING_VOTES`). Absent or false: no vote rule.
+   */
+  panel?: boolean;
   flags?: StageConditions;
   /**
    * For a reviewer: what decides whether an approval needs the security review (see `securityNeeded`), looked up when the
@@ -129,6 +153,8 @@ export interface ResultToolParams {
   meta: ResultMetaSource;
   /** For a role that may only change some paths: checked before a result is accepted; null = no restriction. */
   pathRule?: PathRule | null;
+  /** For a reviewer or security auditor: recurring finding categories need a lesson (see {@link LessonFacts}); null = no rule. */
+  lessons?: LessonFacts | null;
   /** Called once, when the result comment is posted (the result is recorded from then on), with the result as persisted. */
   onRecorded?: (entry: PersistedResult) => void;
   /** Called once, after the recorded result moved the issue (not when the move failed). */
@@ -250,14 +276,18 @@ export function classificationLabels(result: StageResult, labels: readonly strin
 /**
  * What the consistency rules of a result know of the session's issue and role: a refactor review has to confirm the
  * goals of the analysis (other issues and issues without goals are exempt), and a `split` design needs an XL issue that
- * is not a sub-issue and a role that may open a sub-issue per package.
+ * is not a sub-issue and a role that may open a sub-issue per package. A review or security result on an L/XL issue
+ * (refactors included) needs a confirmed verification for every finding; a security result also needs the panel's three
+ * votes when the session may start the judge.
  */
-function resultContext(issue: Issue, role: RoleConfig, history: Partial<Pick<StageHistory, 'results'>>): ResultContext {
+function resultContext(issue: Issue, role: RoleConfig, history: Partial<Pick<StageHistory, 'results'>>, panel = false): ResultContext {
   const { type, complexity } = classify(issue.labels);
   const kind = role.result;
   return {
     refactoringGoals: kind === 'review' && type === 'refactor' ? refactoringGoals(history) : [],
     testEvidence: kind === 'test' && needsTestEvidence(issue),
+    verifiedFindings: (kind === 'review' || kind === 'security') && (complexity === 'L' || complexity === 'XL'),
+    panelVotes: kind === 'security' && (complexity === 'L' || complexity === 'XL') && panel,
     split: { complexity, subIssue: isSubIssue(issue), maxSubIssues: role.maxSubIssues },
   };
 }
@@ -275,6 +305,15 @@ interface Conditions {
 }
 
 type Plan = { ok: true; result: StageResult; transition: Transition } | { ok: false; failure: ToolResult };
+
+/**
+ * A role that cannot repair a failed entry check itself: a read-only role, or the docs role, whose path rule
+ * (`docs_paths`) forbids touching code and tests. Only these roles use the `on_check_failed` fallback. The test role
+ * stays out on purpose: it may change tests and reports `failed` for code defects.
+ */
+function cannotFixChecks(role: { readOnly: boolean; result?: string | null }): boolean {
+  return role.readOnly || role.result === 'docs';
+}
 
 /**
  * The `report_result` tool of one session (docs/results.md#the-report_result-tool). The agent reports a result;
@@ -327,7 +366,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
 
   const plan = (args: Record<string, unknown>, stage: Conditions = { flags: params.flags ?? {}, reasons: {} }): Plan => {
     const issue = params.issue();
-    const parsed = parseResult(kind, args, resultContext(issue, role, params.history));
+    const parsed = parseResult(kind, args, resultContext(issue, role, params.history, params.panel === true));
     if (!parsed.ok) return { ok: false, failure: fail('invalid_result', parsed.message) };
     // An analysis classifies the issue as it hands it on, so its `next` is routed by the labels it adds: the profile of
     // the new type and the `skip_when` conditions of the new complexity.
@@ -496,6 +535,48 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     );
   };
 
+  /** The first report without a lesson for a recurring category was refused; the next one is accepted with a note. */
+  let lessonWarned = false;
+  /** The recurring categories without a lesson of the call being checked; null when there are none. Set by the precheck. */
+  let lessonMissing: string[] | null = null;
+
+  /**
+   * The refusal for a review or security result whose blocker or major findings have a recurring category while the
+   * result names no lesson and the session wrote nothing to the brain; once per session, the second call goes through
+   * (`lessonMissing`). A `blocked` result is never refused.
+   */
+  const lessonViolation = (args: Record<string, unknown>): ToolResult | null => {
+    lessonMissing = null;
+    const facts = params.lessons;
+    if (facts === undefined || facts === null || !facts.enforce || (kind !== 'review' && kind !== 'security') || args.verdict === 'blocked') return null;
+    const planned = plan(args);
+    if (!planned.ok || (planned.result.kind !== 'review' && planned.result.kind !== 'security')) return null;
+    if (planned.result.lessons.length > 0 || facts.brainWrites() > 0) return null;
+    const reported = planned.result.findings.filter((finding) => finding.category !== undefined && isSevereFinding(finding)).map((finding) => finding.category as string);
+    if (reported.length === 0) return null;
+    const recurring = facts.recurring(reported);
+    if (recurring.length === 0) return null;
+    if (lessonWarned) {
+      lessonMissing = recurring.map((entry) => entry.category);
+      return null;
+    }
+    lessonWarned = true;
+    const lines = recurring.map((entry) => {
+      const where = `${entry.findings} finding(s) in ${entry.issues.join(', ')}`;
+      const lesson = entry.lesson === null ? 'no lesson yet: brain_write a new one' : `lesson \`${entry.lesson.path}\` (${entry.lesson.status}): brain_append to it, or name it in \`lessons\``;
+      return `- \`${entry.category}\` (${entry.triggers.join(', ')}; ${where}): ${lesson}`;
+    });
+    return fail(
+      'invalid_result',
+      `The ${kind} result names no lesson, but these categories of your blocker and major findings recur:\n${lines.join('\n')}\n` +
+        'Nothing was recorded. For each one, write a lesson for the developer with brain_write (folder `Lessons/`, type lesson, tags ' +
+        '`review-lesson` and `review/<category>`, `repo` of the issue; the body starts after the title with one paragraph: the rule or check ' +
+        'step, not a log of the findings), or brain_append to the existing lesson (this issue as a new source, the sharpened rule). ' +
+        'Then report again with the lesson paths in `lessons`. An existing lesson that already says it all goes into `lessons` as it is. ' +
+        'If you cannot write one, report again unchanged: it is accepted and the missing lesson is logged.',
+    );
+  };
+
   const record = async (args: Record<string, unknown>, context: AgentToolContext): Promise<ToolResult> => {
     if (recorded !== null) return recorded.ok ? ok({ ...(recorded.data as object), already_recorded: true }) : recorded;
     const stage = looked.get(args) ?? (await conditions(args));
@@ -506,7 +587,7 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
     // after the computed move failed its entry check.
     const allowed = context.transition;
     const failed = allowed?.checkFailed;
-    const route = failed !== undefined && role.readOnly ? checkFailedRoute({ role, history: params.history, config: params.config }) : null;
+    const route = failed !== undefined && cannotFixChecks(role) ? checkFailedRoute({ role, history: params.history, config: params.config }) : null;
     const fallback = route?.column ?? null;
     const expected = fallback ?? planned.transition.target;
     if (
@@ -532,7 +613,9 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
           };
     const repeated = [...(params.history.failedChecks ?? []), ...(failed !== undefined ? [failed.target] : [])];
     const note = planned.result.verdict === 'blocked' ? await pathNote() : null;
-    const noted = note === null ? planned.result : withNote(planned.result, note);
+    const missing = lessonMissing;
+    const lessonNoted = missing === null ? planned.result : withNote(planned.result, `**Lesson missing.** Recurring categories without a lesson: ${missing.join(', ')}`);
+    const noted = note === null ? lessonNoted : withNote(lessonNoted, note);
     const result =
       failed === undefined
         ? noted
@@ -592,6 +675,13 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
 
     // The result is recorded from here on; the move and the labels follow it, and a repeated call changes nothing.
     params.onRecorded?.({ result, meta, url });
+    if (missing !== null) {
+      try {
+        params.lessons?.onMissing(missing);
+      } catch {
+        // Logging a missing lesson never fails the report.
+      }
+    }
     // An analysis classifies the issue before the stage hands it on, so the next stage (its profile, its model) sees the labels.
     const warnings: string[] = [];
     const classified = await applyTransitionLabels(adapter, issue, { add: classificationLabels(result, issue.labels), remove: [] }, warnings);
@@ -649,10 +739,10 @@ export function createResultTool(params: ResultToolParams): AgentToolSpec {
       return planned.ok ? planned.transition.target : null;
     },
     checkFailedTarget: (args) => {
-      if (recorded !== null || !role.readOnly) return null;
+      if (recorded !== null || !cannotFixChecks(role)) return null;
       return plan(args, looked.get(args)).ok ? (checkFailedRoute({ role, history: params.history, config: params.config })?.column ?? null) : null;
     },
-    precheck: (args, context) => queue.run(async () => (await pathViolation(args)) ?? (await screenshotViolation(args)) ?? (await mutationViolation(args)) ?? (await splitViolation(args, context))),
+    precheck: (args, context) => queue.run(async () => (await pathViolation(args)) ?? (await screenshotViolation(args)) ?? (await mutationViolation(args)) ?? (await splitViolation(args, context)) ?? lessonViolation(args)),
     execute: (args, context) => queue.run(() => record(args, context)),
   };
 }

@@ -51,12 +51,13 @@ into the idea backlog.
 
 ## Design issues
 
-The agent cannot see the interface. Therefore for `design`:
+The planner never sees the rendered page; the developer checks it with screenshots. Therefore for `design`:
 
 - Concrete, verifiable criteria: which Filament component, which columns, filters, actions, texts, empty and error
   states, which role sees what.
 - Use the project's existing building blocks (Filament components, theme, existing patterns), no custom CSS solutions
   where Filament can do it.
+- Visual issues demand "Screenshots" (pages or panels, viewports, demo login, `docs/screenshots/`).
 - A feature or Livewire test that proves the result (page renders, action visible for role X, not for Y).
 - Follow the design principles from the guardrails. If there are none, consistency with the existing interface and
   accessibility (labels, contrast, keyboard operation) apply.

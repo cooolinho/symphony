@@ -2,6 +2,7 @@ import { truncate } from '../util/text.ts';
 import { normalizeStateName } from '../workflow/config.ts';
 import type { IssueComment } from '../tracker/types.ts';
 import type { ResultMeta, StageResult } from '../workflow/results.ts';
+import { isWatchdogResume } from '../watchdog/marker.ts';
 
 /** A persisted stage result with its meta, as read back from an issue comment marker. */
 export interface PersistedResult {
@@ -148,9 +149,9 @@ export interface ResultsTemplateValue {
     created_at: string;
   }>;
   /** Findings of the newest review when it asked for changes; empty after an approval or without a review. */
-  open_findings: Array<{ severity: string; file: string | null; line: number | null; problem: string; fix: string | null }>;
+  open_findings: Array<{ severity: string; category: string | null; file: string | null; line: number | null; problem: string; fix: string | null }>;
   /** Findings of the newest security review when it found issues; empty after a pass or without a security review. */
-  security_findings: Array<{ severity: string; file: string | null; line: number | null; problem: string; fix: string | null }>;
+  security_findings: Array<{ severity: string; category: string | null; file: string | null; line: number | null; problem: string; fix: string | null }>;
   /** Failed cases of the newest test when it failed; empty otherwise. */
   failed_cases: Array<{ criterion: string; test: string }>;
   /**
@@ -249,6 +250,7 @@ export function resultsTemplateValue(history: StageHistory): ResultsTemplateValu
       review?.kind === 'review' && review.verdict === 'changes_needed'
         ? review.findings.map((finding) => ({
             severity: finding.severity,
+            category: finding.category ?? null,
             file: finding.file ?? null,
             line: finding.line ?? null,
             problem: finding.problem,
@@ -259,6 +261,7 @@ export function resultsTemplateValue(history: StageHistory): ResultsTemplateValu
       security?.kind === 'security' && security.verdict === 'issues_found'
         ? security.findings.map((finding) => ({
             severity: finding.severity,
+            category: finding.category ?? null,
             file: finding.file ?? null,
             line: finding.line ?? null,
             problem: finding.problem,
@@ -328,7 +331,7 @@ export interface HumanFeedbackComment {
 
 /**
  * The comments a human wrote since the pipeline last handed the issue off, oldest first: comments not written by
- * Symphony's account (`viewer`) that are newer than the newest result before the newest `reset` (without a reset: the
+ * Symphony's account (`viewer`), plus the watchdog's resume comments (`symphony:watchdog:v1` marker), that are newer than the newest result before the newest `reset` (without a reset: the
  * newest result). They stay the same for every stage until the next reset. Empty before the first result: the
  * description is the task then. A human who sends an issue back writes the new task there; the prompt shows it so the
  * agent does not have to find it among long result comments in `get_issue`.
@@ -340,7 +343,8 @@ export function humanFeedback(comments: readonly IssueComment[], viewer: string,
   if (handOff === undefined) return [];
   const since = time(handOff);
   return comments
-    .filter((comment) => comment.author !== viewer && comment.createdAt.getTime() > since)
+    // The watchdog posts as Symphony's account; its resume comment is the task for the next stage, like a human's.
+    .filter((comment) => (comment.author !== viewer || isWatchdogResume(comment.body)) && comment.createdAt.getTime() > since)
     .map((comment) => ({
       author: comment.author ?? 'ghost',
       created_at: comment.createdAt.toISOString(),
@@ -372,6 +376,8 @@ export interface ResultRow {
 
 export interface ResultFinding {
   severity: string;
+  /** The finding's category (#575); null without one, absent in archives from before categories. */
+  category?: string | null;
   file: string | null;
   line: number | null;
   problem: string;
@@ -395,6 +401,7 @@ export function resultRows(results: readonly PersistedResult[]): ResultRow[] {
       result.kind === 'review' || result.kind === 'security'
         ? result.findings.map((finding) => ({
             severity: finding.severity,
+            category: finding.category ?? null,
             file: finding.file ?? null,
             line: finding.line ?? null,
             problem: truncate(finding.problem, PROMPT_SUMMARY_LIMIT),

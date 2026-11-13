@@ -120,6 +120,17 @@ describe('repository history', () => {
     assert.equal('context_compacts' in (second?.fields ?? {}), false);
   });
 
+  it('logs auto_compact_window: the number, auto for null, nothing when absent', () => {
+    const { log } = history();
+    log.runFinished(finish('acme/app#1', 'r1', '2026-10-04T08:01:00Z', { autoCompactWindow: 200000 }));
+    log.runFinished(finish('acme/app#2', 'r2', '2026-10-04T09:01:00Z', { autoCompactWindow: null }));
+    log.runFinished(finish('acme/app#3', 'r3', '2026-10-04T10:01:00Z'));
+    const [a, b, c] = readHistory(log.dir, 'acme/app').entries.filter((e) => e.event === 'run_finished');
+    assert.equal(a?.fields.auto_compact_window, '200000');
+    assert.equal(b?.fields.auto_compact_window, 'auto');
+    assert.equal('auto_compact_window' in (c?.fields ?? {}), false);
+  });
+
   it('logs tool, skill, subagent and integration calls only when present and parses them back', () => {
     const { log } = history();
     log.runFinished(finish('acme/app#1', 'r1', '2026-10-04T08:01:00Z', {
@@ -309,6 +320,31 @@ describe('repository history', () => {
       repo: 'acme/app', issue: 'acme/app#1', run: 'r1', role: 'reviewer', kind: 'review', verdict: 'changes_needed', round: '2', target: 'In progress', profile: 'bugfix', complexity: 'M', findings: '3',
     });
     assert.deepEqual(implementation?.fields, { repo: 'acme/app', issue: 'acme/app#1', role: 'developer', kind: 'implementation', verdict: 'done' });
+  });
+
+  it('writes findings_confirmed and findings_refuted, also 0, and leaves them out when null', () => {
+    const { log } = history();
+    const line = { repo: 'acme/app', issue: 'acme/app#1', run: 'r1', role: 'reviewer', kind: 'review', verdict: 'approved', round: 1, target: null, profile: null, complexity: 'L', findings: 0 };
+    log.stageResult({ ...line, findingsConfirmed: 0, findingsRefuted: 2, at: new Date('2026-10-04T08:00:00Z') });
+    log.stageResult({ ...line, findingsConfirmed: null, findingsRefuted: null, at: new Date('2026-10-04T08:01:00Z') });
+    const [counted, plain] = readHistory(log.dir, 'acme/app').entries;
+    assert.deepEqual([counted?.fields.findings_confirmed, counted?.fields.findings_refuted], ['0', '2']);
+    assert.equal('findings_confirmed' in (plain?.fields ?? {}) || 'findings_refuted' in (plain?.fields ?? {}), false);
+  });
+
+  it('writes the panel votes of a security result and leaves them out without votes (#554)', () => {
+    const { log } = history();
+    const line = { repo: 'acme/app', issue: 'acme/app#1', run: 'r1', role: 'security-auditor', kind: 'security', verdict: 'issues_found', round: null, target: null, profile: null, complexity: 'L', findings: 1 };
+    const zero = { reachability: 0, impact: 0, defenses: 0 };
+    log.stageResult({ ...line, panelVotes: { candidates: 3, confirmed: { reachability: 3, impact: 1, defenses: 2 }, refuted: { reachability: 0, impact: 2, defenses: 1 }, singleRefuted: 1 }, at: new Date('2026-10-04T08:00:00Z') });
+    log.stageResult({ ...line, panelVotes: { candidates: 1, confirmed: { reachability: 1, impact: 1, defenses: 1 }, refuted: zero, singleRefuted: 0 }, at: new Date('2026-10-04T08:01:00Z') });
+    log.stageResult({ ...line, panelVotes: null, at: new Date('2026-10-04T08:02:00Z') });
+    log.stageResult({ ...line, at: new Date('2026-10-04T08:03:00Z') });
+    const [mixed, allConfirmed, none, absent] = readHistory(log.dir, 'acme/app').entries;
+    assert.deepEqual([mixed?.fields.panel_candidates, mixed?.fields.panel_confirmed, mixed?.fields.panel_refuted, mixed?.fields.panel_single_refuted], ['3', 'reachability:3,impact:1,defenses:2', 'reachability:0,impact:2,defenses:1', '1']);
+    assert.deepEqual([allConfirmed?.fields.panel_refuted, allConfirmed?.fields.panel_single_refuted], ['reachability:0,impact:0,defenses:0', '0']);
+    for (const entry of [none, absent]) assert.equal(Object.keys(entry?.fields ?? {}).some((key) => key.startsWith('panel_')), false);
+    assert.deepEqual(none?.fields, absent?.fields);
   });
 
   it('records the role of a run in run_started', () => {

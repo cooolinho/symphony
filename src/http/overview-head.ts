@@ -1,6 +1,6 @@
 /**
  * Title block of the overview: subtitle with teams, free-slot queue and last poll, and the status chips (tracker,
- * workflow, write clashes). Like overview-teams.ts it is inlined into the page (HEAD_CSS/HEAD_JS after BASE_JS and
+ * workflow, watchdog, write clashes). Like overview-teams.ts it is inlined into the page (HEAD_CSS/HEAD_JS after BASE_JS and
  * ALERTS_JS) and unit-testable in a vm; all top-level names start with `head`/`HEAD_`.
  */
 export const HEAD_CSS = `
@@ -41,6 +41,15 @@ export const HEAD_JS = `
     const workflow = h.workflow_error ? chip('Workflow ungültig', { tone: 'red', dot: true }) : chip('Workflow gültig', { tone: 'green', dot: true });
     workflow.title = h.workflow_error ? String(h.workflow_error.message || '') : h.workflow_version === undefined ? '' : 'v' + h.workflow_version;
     out.push(tracker, workflow);
+    // The Blocked watchdog (docs/watchdog.md): only when it is set up and ever wrote a heartbeat.
+    const wd = h.watchdog;
+    if (wd) {
+      const watchdog = wd.running ? chip('Watchdog läuft', { tone: 'green', dot: true }) : chip('Watchdog gestoppt', { tone: 'red', dot: true });
+      watchdog.title = wd.running
+        ? 'Modus ' + (wd.mode || '?') + (wd.last_tick_at ? ' · letzter Durchlauf ' + wd.last_tick_at : '')
+        : wd.stopped_at ? 'beendet ' + wd.stopped_at : 'letztes Lebenszeichen ' + (wd.updated_at || 'unbekannt');
+      out.push(watchdog);
+    }
     const clashes = alertClashes(state).length;
     if (clashes > 0) out.push(chip(clashes + (clashes === 1 ? ' Write-Clash' : ' Write-Clashes'), { tone: 'amber', dot: true }));
     return out;

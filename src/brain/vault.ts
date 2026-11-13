@@ -176,7 +176,7 @@ export async function ensureVault(root: string, repositories: readonly string[] 
 }
 
 /** Startup hook: does nothing unless `brain.enabled`; a failure is logged and never stops the service. */
-export async function prepareBrain(config: BrainConfig, repositories: readonly string[], logger: Logger): Promise<void> {
+export async function prepareBrain(config: Pick<BrainConfig, 'enabled' | 'path'> & Partial<BrainConfig>, repositories: readonly string[], logger: Logger): Promise<void> {
   if (!config.enabled) return;
   try {
     const created = await ensureVault(config.path, repositories);

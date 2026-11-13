@@ -119,6 +119,24 @@ describe('panel Context-Verlauf (#387)', () => {
     assert.match(AGENT_HTML, /\.ctx-round-label \{ font: 10px var\(--mono\); fill: var\(--fg-2\); \}/);
   });
 
+  it('moves the threshold mark to the role window against the model window, else keeps budget.compact_threshold', () => {
+    const withWindows = (over: Record<string, unknown>) => {
+      const detail = issueDetail({ sessions });
+      detail.running.context = { tokens: 40000, window: 100000, percent: 40, compacts: 0 };
+      return renderPage(AGENT_HTML, { detail, team: scoreTeam({ live: true }, over), tx: tx(), dirty: true, ctxEntries }, opts);
+    };
+    const page = withWindows({ compact_windows: { developer: 20000 }, compact_window: 90000 });
+    const svg = svgOf(page);
+    assert.equal(svg.querySelector('text.ctx-thr-label')!.textContent, 'Auto-Compact 20 %');
+    assert.equal(svg.querySelector('line.ctx-thr')!.getAttribute('y1'), '116', '20 %');
+    assert.match(page.$('stage-session-body').textContent, /Auto-Compact ab ca\. 10 %/, 'the live session window is 200k in the fixture');
+    const global = svgOf(withWindows({ compact_window: 50000 }));
+    assert.equal(global.querySelector('text.ctx-thr-label')!.textContent, 'Auto-Compact 50 %');
+    const capped = svgOf(withWindows({ compact_windows: { developer: 400000 } }));
+    assert.equal(capped.querySelector('text.ctx-thr-label')!.textContent, 'Auto-Compact 100 %', 'min(window, model window)');
+    assert.equal(svgOf(withWindows({ compact_windows: { developer: null } })).querySelector('text.ctx-thr-label')!.textContent, 'Auto-Compact 80 %');
+  });
+
   it('writes the caption with compacts, the current value and the trend', () => {
     const page = live();
     assert.equal(page.$('ctx-caption').textContent, 'R1: 1 Auto-Compact bei 95 % · R2 jetzt 40 %, Trend +2.0 %/min');

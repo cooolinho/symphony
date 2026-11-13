@@ -2096,7 +2096,7 @@ ${PIPELINE_JS}
     patchChildren($('stage-now-body'), nodes);
   }
 
-  function renderStageSession(active, threshold) {
+  function renderStageSession(active) {
     const box = $('stage-session-body');
     if (!active) return patchChildren(box, [stageEmpty('Keine Session aktiv')]);
     const c = active.context || {};
@@ -2105,7 +2105,7 @@ ${PIPELINE_JS}
     const head = el('div', null, 'stage-ctx');
     const value = known ? fmtK(c.tokens) + ' / ' + fmtK(c.window) + ' · ' + (pct === null ? '—' : Math.round(pct) + ' %') : '—';
     head.append(el('span', 'Context'), el('span', value, 'mono' + (pct !== null && pct >= 70 ? ' hot' : '')));
-    const limit = typeof threshold === 'number' && Number.isFinite(threshold) ? threshold : 80;
+    const limit = ctxThreshold(active.role, c.window);
     const start = liveStart();
     const tk = active.tokens || {};
     const kv = el('dl', null, 'stage-kv');
@@ -2234,7 +2234,7 @@ ${PIPELINE_JS}
     renderStageSeats(team.seats, statuses, active);
     renderStageFloor(team.seats, statuses);
     renderStageNow(active, k >= 0 ? team.seats[k] : null, team.trace);
-    renderStageSession(active, team.compact_threshold);
+    renderStageSession(active);
     renderStageSubs(active, team.subagents, Array.isArray(team.blocks) ? team.blocks : [], team.seats);
   }
 
@@ -2516,6 +2516,18 @@ ${PIPELINE_JS}
   }
   const ctxSvgText = (text, attrs, cls) => { const n = ctxSvgEl('text', attrs, cls); n.textContent = String(text); return n; };
 
+  /** Auto-compact mark in percent: the role's window against the model window, else budget.compact_threshold (80 without a team). */
+  function ctxThreshold(role, modelWindow) {
+    const t = S.team || {};
+    const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const fallback = num(t.compact_threshold) ?? 80;
+    const per = t.compact_windows && role && Object.prototype.hasOwnProperty.call(t.compact_windows, role) ? t.compact_windows[role] : t.compact_window;
+    const w = num(per);
+    const m = num(modelWindow);
+    if (!w || w <= 0 || !m || m <= 0) return fallback;
+    return Math.round((Math.min(w, m) / m) * 100);
+  }
+
   /** The role of the chart: the one with the most sessions (on a tie the one that started first), else the most frequent in the history. */
   function ctxRole() {
     const count = new Map();
@@ -2591,7 +2603,7 @@ ${PIPELINE_JS}
       }
       const count = Math.max(logged ?? 0, compacts.length, r.live && live ? live.compacts || 0 : 0);
       const max = Math.max(peak ?? 0, ...points.map((p) => p.pct));
-      return { ...r, points, compacts, count, max };
+      return { ...r, points, compacts, count, max, win };
     }).filter((r) => r.points.length);
   }
 
@@ -2660,7 +2672,7 @@ ${PIPELINE_JS}
     const name = role ? seatName(role) : 'Developer';
     setText($('ctx-history-title'), 'Context-Verlauf · ' + name);
     const series = role ? ctxSeries(ctxRuns(role)) : [];
-    const threshold = S.team && typeof S.team.compact_threshold === 'number' && Number.isFinite(S.team.compact_threshold) ? S.team.compact_threshold : 80;
+    const threshold = ctxThreshold(role, (series.slice().reverse().find((r) => r.win) || {}).win);
     const key = uiRoleKey(role, null);
     const sig = JSON.stringify([name, key, threshold, series.map((r) => [r.round, r.live, r.count, r.points.length, r.points[r.points.length - 1], r.compacts.length]),
       series.some((r) => r.live) ? Math.floor(Date.now() / 10000) : 0]);

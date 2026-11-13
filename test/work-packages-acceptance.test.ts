@@ -55,6 +55,9 @@ function roleNamed(config: ServiceConfig, name: string): RoleConfig {
   return role;
 }
 
+/** The security panel's three confirming votes (an XL integration audit runs the panel). */
+const PANEL_VOTES = ['reachability', 'impact', 'defenses'].map((lens) => ({ lens, verdict: 'confirmed', evidence: `checked at the cited line (${lens})` }));
+
 describe('WORKFLOW.md with the work-package settings (preflight and routing)', () => {
   it('gives the architect room for three packages, files them in Ready and keeps the hand-off free of an entry check', async () => {
     const { config } = await shipped();
@@ -622,7 +625,7 @@ describe('the reviewer prompt: integration mode', () => {
   it('keeps a normal pull-request review unchanged: the diff against the base, the pull request, the checklist', async () => {
     const text = await prompt({ role: 'reviewer', labels: ['Type: feature', 'Complexity: M'], base: 'develop', results: { analysis: ANALYSIS, implementation: { verdict: 'done', summary: 's', head_sha: 'abc' } } });
     assert.match(text, /## Your role: reviewer\n/);
-    assert.match(text, /Call `get_issue`: read the issue, all comments and the linked pull request/);
+    assert.match(text, /Call `get_issue`: read the issue, all comments and the open pull request of the branch in `branch_pull_request`/);
     assert.match(text, /git diff origin\/<base>\.\.\.HEAD/);
     assert.match(text, /`changes_needed` sends it back to the developer/);
     assert.doesNotMatch(text, /Work packages/);
@@ -1106,7 +1109,7 @@ describe('orchestrator: an XL feature split into three work packages', () => {
       await report({
         verdict: 'changes_needed',
         summary: 'The PDF export is missing: acme/app#9 was closed as not planned.',
-        findings: [{ severity: 'major', file: 'src/export/PdfExporter.ts', problem: 'No PDF export (acme/app#9 not planned)', fix: 'Add the PdfExporter' }],
+        findings: [{ severity: 'major', file: 'src/export/PdfExporter.ts', problem: 'No PDF export (acme/app#9 not planned)', fix: 'Add the PdfExporter', verification: { status: 'confirmed', evidence: 'checked at the cited line' } }],
         checked: ['Completeness: finding 1'],
       });
     };
@@ -1464,7 +1467,7 @@ describe('orchestrator: the security stage and the pull request of the parent af
       await report({
         verdict: 'issues_found',
         summary: 'The guard the CSV package added is not applied to the route of the PDF package.',
-        findings: [{ severity: 'major', file: 'config/auth.php', line: 1, problem: 'The PDF route is outside the auth middleware group', fix: 'Move the route into the group' }],
+        findings: [{ severity: 'major', file: 'config/auth.php', line: 1, problem: 'The PDF route is outside the auth middleware group', fix: 'Move the route into the group', verification: { status: 'confirmed', evidence: 'checked at the cited line', votes: PANEL_VOTES } }],
       });
     };
     const fix: Script = async ({ params, report }) => {

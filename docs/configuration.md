@@ -290,7 +290,7 @@ write a `transition_denied` line.
 | `max_retry_backoff_ms` | `300000` | Cap for failure retries (10 s, 20 s, 40 s, …). |
 | `max_concurrent_agents_by_state` | `{}` | Per-status limits, e.g. `{ "In Progress": 1 }`. Invalid entries are ignored with a warning. |
 | `reserved_slots_by_role` | `{}` | Slots kept free for a [role](#roles), e.g. `{ developer: 1, reviewer: 1 }`, so a developer and a reviewer can always run side by side. An issue of role R starts only while the free slots exceed the unused reservations of the other roles (Σ max(0, reserved − running)); a reserved slot stays empty while its role has nothing to do. Command roles (`planner`, `auditor`, …) count as their own roles and never use the developer's reservation. Column limits still apply. Names that are not roles, and values that are not integers of `0` or more, are ignored with a warning. If the reservations add up to more than `max_concurrent_agents`, they are ignored and the dashboard shows a problem. See [Reserved slots](#reserved-slots). |
-| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `agents`, `brain`, `brain_index`, `results`, `round`, `result_required`, `test_paths`, `attachments`, `human_feedback`, `turn_number`, `max_turns`). |
+| `continuation_prompt` | built-in | Liquid template sent on turn 2+ of a session (variables: `issue`, `attempt`, `role`, `agents`, `brain`, `brain_index`, `results`, `round`, `result_required`, `test_paths`, `project_types`, `attachments`, `human_feedback`, `turn_number`, `max_turns`). |
 
 #### Reserved slots
 
@@ -346,8 +346,9 @@ info log line. Each Symphony instance has its own override; there is no shared b
 | `sandbox` | none | Passed to Claude Code's sandbox settings (`enabled`, `network`, `filesystem`, …). |
 | `append_system_prompt` | none | Extra text appended to Claude Code's system prompt. |
 | `max_budget_usd` | none | Cost cap per agent session; the turn fails when it is exceeded. |
+| `auto_compact_window` | `auto` | Tokens at which Claude Code compacts the context automatically: `auto` (the model window, 1M on the 5-5 models, where it practically never compacts) or an integer 100000–1000000. Symphony sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW` in the session; Claude Code applies the smaller of this value and the model window. An explicit `claude.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW` wins. The team view draws its Auto-Compact mark at this window against the model window (else at [`budget.compact_threshold`](#budget)), and `run_finished` logs it as `auto_compact_window`. |
 | `persist_session` | `true` | Keep transcripts in `~/.claude/projects` so a session can be inspected with `claude --resume <id>`. |
-| `env` | `{}` | Extra environment variables for the agent process. They win over Symphony's defaults, e.g. `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "0"` allows background tasks again, `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "2"` allows nested subagents ([why they are off](agent-claude.md#subagents)). |
+| `env` | `{}` | Extra environment variables for the agent process. They win over Symphony's defaults, e.g. `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "0"` allows background tasks again, `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "2"` allows nested subagents ([why they are off](agent-claude.md#subagents)). Bash calls get `BASH_DEFAULT_TIMEOUT_MS: "600000"` (10 min) and `BASH_MAX_TIMEOUT_MS: "1200000"` (20 min) so a full test run fits into one call; set both to change it, and keep them below `stall_timeout_ms` (a Bash call emits no agent event while it runs) and `turn_timeout_ms`. |
 | `executable` | bundled CLI | Path to another Claude Code executable. |
 | `plugins` | `[]` | Local Claude Code plugin directories loaded into every session (skills, subagents, commands, hooks), relative to `WORKFLOW.md`. The shipped `WORKFLOW.md` loads `./.claude`, Symphony's own toolbox; its skills are named `symphony:<skill>`. A missing directory blocks dispatch. |
 | `skills` | Claude Code default | `all` enables every discovered skill (the repository's, a plugin's, Laravel Boost's) and the Skill tool; a list enables only those names (`testing-best-practices`, `symphony:handoff`). |
@@ -397,8 +398,8 @@ resolved once and kept for the whole run (an issue no role serves runs as `defau
   the issue's `Complexity:` label, else the role's `claude.model`, else `claude.model` (see [Model per issue](#model-per-issue)).
 - **Effort:** an `Effort: …` issue label (unless `effort_label: ignore`), else the role's `claude.effort`, else
   `claude.effort` (see [Effort per issue](#effort-per-issue)).
-- **Claude settings:** the role's `claude` block is merged over [`claude`](#claude): `max_budget_usd`
-  replaces the global value; `allowed_tools`, `disallowed_tools` and `append_system_prompt` are appended to it.
+- **Claude settings:** the role's `claude` block is merged over [`claude`](#claude): `max_budget_usd` and `auto_compact_window`
+  replace the global value (a role value of `auto` or none falls back to the global one); `allowed_tools`, `disallowed_tools` and `append_system_prompt` are appended to it.
 - **Permissions:** `read_only: true` starts the session read-only ([agent-claude.md](agent-claude.md#permission-and-safety-posture)).
 - **Turns:** `max_turns` replaces `agent.max_turns` for the role's sessions.
 - **Checks:** `run_checks: false` skips the [`checks.on_enter`](#transition-guard) scripts for the role's status changes.
@@ -446,7 +447,7 @@ roles:
 | `may_move_to` | unrestricted | Column names the agent may move the issue to, matched case-insensitively and enforced by the [transition guard](#transition-guard). Free-form; not checked against the board here. Terminal columns are never allowed. |
 | `result` | none | Kind of the stage result the role reports: `analysis`, `design`, `implementation`, `test`, `review`, `security` or `docs` (see [result contracts](#result-driven-transitions)). Setting only this key is enough for a minimal result role. The role hands off with the [`report_result`](results.md#the-report_result-tool) tool and does not get `set_status`. |
 | `on_result` | `{}` | Column per verdict of `result`, or `next` (the next active stage after the role's columns in board order). Needs `result`. See [Result-driven transitions](#result-driven-transitions). |
-| `on_check_failed` | none | Column for an issue whose entry check fails for a role that cannot fix it (a read-only role). When the check of the column a `report_result` leads to fails, the tool records the result anyway, adds a note with the check output to its summary and moves the issue here (through the transition guard, so this column's own entry check applies). Without it the agent gets `check_failed` and nothing is recorded. Ignored for roles that are not `read_only`. |
+| `on_check_failed` | none | Column for an issue whose entry check fails for a role that cannot fix it (a read-only role, or the docs role, whose path rule forbids code and tests). When the check of the column a `report_result` leads to fails, the tool records the result anyway, adds a note with the check output to its summary and moves the issue here (through the transition guard, so this column's own entry check applies). Without it the agent gets `check_failed` and nothing is recorded. Ignored for other roles, including the test role, which may change tests and reports `failed` for code defects. |
 | `on_missing_result` | `Blocked` with `result`, else none | Column for a session that ends without a result. Needs `result`. After the first turn without a result the session gets one reminder turn; if the turn limit comes first or the reminder fails too, Symphony re-fetches the issue and, only if it is still in the role's column, posts a plain comment ("Stage ended without a result") and moves it here. An issue someone moved meanwhile is left alone. See [Stages without a result](results.md#stages-without-a-result). |
 | `on_round_limit` | the blocked column | Column for a loop verdict (review `changes_needed`, test `failed`, security `issues_found`) that reaches `pipeline.max_review_rounds` / `max_test_rounds` / `max_security_rounds`. Also the target of the hand-off that reaches `pipeline.max_check_failures` instead of `on_check_failed`. Needs `result: review`, `result: test` or `result: security`. See [Result-driven transitions](#result-driven-transitions). |
 | `model_label` | `apply`; `ignore` for read-only roles with a `result` | `ignore` keeps a `Model:` issue label from changing the role's model (`model_by_complexity` still applies). |
@@ -460,7 +461,7 @@ roles:
 | `brain_approved_writes` | `true` | Boolean, only with `brain: write`. `false` makes `brain_write` and `brain_append` reject an approved note and any `status: approved` (reason `approved_readonly` / `approved_status`); `true` adds no gate (approved notes stay read-only for agents by the general rule). The shipped `brain-gardener` sets `false`. See [brain.md](brain.md#gardener). |
 | `brain` | `off` | String, one of `off`, `read`, `write`. Brain tools of the role's sessions: `off` none, `read` only `brain_search`, `brain_read`, `brain_list`, `brain_vitals`, `write` also `brain_write` and `brain_append`. Only has an effect with [`brain.enabled`](#brain); without it no role gets brain tools. Roles are never given the vault as a directory. The shipped `WORKFLOW.md` sets `write` for `issue-analyst`, `architect`, `reviewer` and `brain-gardener`, `read` for `developer`, `test-engineer` and `security-auditor`; `docs` and the command roles stay `off`. An existing `WORKFLOW.md` without the field gives no role brain tools anymore. Roles with `read` or `write` get the prompt section `roles/brain.md`. See [brain.md](brain.md#role-switch). |
 | `agents` | all (the shipped roles list theirs explicitly) | Plugin subagents (`agents/<name>.md` in [`claude.plugins`](#claude), names without the plugin prefix, e.g. `[laravel-code-reviewer]`) the role may start; `[]` allows none. See [Subagents per role](#subagents-per-role). |
-| `claude` | `{}` | Overrides of `model`, `effort`, `allowed_tools`, `disallowed_tools`, `append_system_prompt`, `max_budget_usd` (same meaning as in [`claude`](#claude)). |
+| `claude` | `{}` | Overrides of `model`, `effort`, `allowed_tools`, `disallowed_tools`, `append_system_prompt`, `max_budget_usd`, `auto_compact_window` (same meaning as in [`claude`](#claude)). |
 
 #### Result-driven transitions
 
@@ -612,14 +613,14 @@ roles:
     on_result: { ready: In progress, split: Agent review, blocked: Blocked }
     may_move_to: [In progress, Agent review, Blocked]
     model_label: ignore               # opus, whatever the issue's Model: label picks for the developer
-    agents: [explorer, design-critic]
+    agents: [design-critic]
     claude: { model: opus }
 ```
 
 - The architect reads the code and reports a [`design` result](results.md#kinds): the `options` it compared, the
   `decision`, the `components` and `interfaces` of the change, `migrations` and `compatibility`. `ready` needs a decision
   and at least one component and one interface (`report_result` refuses a generic design with `invalid_result`);
-  `blocked` needs a blocker and moves the issue to `Blocked`. Explorers map the code. At complexity L/XL (the architect runs on fable) it starts the read-only `design-critic` (`model: opus`, `maxTurns: 40`) once on its finished draft, before `report_result`; at S/M (opus) the prompt neither lists nor names it (a soft gate: it stays allowed in the session). The architect no longer uses `laravel-architect`: a critique by the same model with a design persona.
+  `blocked` needs a blocker and moves the issue to `Blocked`. It reads the code itself (no explorer since [E2-5](agent-claude.md#evaluation-of-stage-2-e2-5)). At complexity L/XL (the architect runs on fable) it starts the read-only `design-critic` (`model: opus`, `maxTurns: 40`) once on its finished draft, before `report_result`; at S/M (opus) the prompt neither lists nor names it (a soft gate: it stays allowed in the session). The architect no longer uses `laravel-architect`: a critique by the same model with a design persona.
 - **The developer implements the design.** `ready` moves the issue to `In progress`, and the developer's prompt contains
   the newest design (`results.design`, see [Prompt template](#prompt-template)). Where the design does not fit the code,
   the developer deviates and says so in `plan_deviations`.
@@ -822,7 +823,7 @@ roles:
     on_check_failed: In progress
     may_move_to: [In review, In progress, Blocked]
     model_label: ignore
-    agents: []                        # reads the diff itself; no laravel-* persona
+    agents: [security-inventory, refutation-judge]   # panel at L/XL only; none at S/M; no laravel-* persona
     claude: { model: opus }
 pipeline:
   max_security_rounds: 2
@@ -855,6 +856,9 @@ pipeline:
   in the prompt (`results.security_findings`, see [Prompt template](#prompt-template)), `blocked` to `Blocked`. The result
   has `findings` like a review: `passed` allows only `minor` and `nit` findings, `issues_found` needs at least one
   ([result contracts](results.md#kinds)). A session that ends without a result goes to `on_missing_result` (`Blocked`).
+- **The panel at L/XL.** On a large issue the audit researches the change with the [security panel](#subagents-per-role)
+  (inventory, one refutation judge per lens and candidate) and records the votes in `verification.votes`;
+  `report_result` applies the panel rule ([results.md](results.md#security-panel-at-lxl)). S/M audits do not change.
 - **After `issues_found`** the developer fixes the findings and hands over again; the reviewer reviews the fix, and when
   it approves, the security check is evaluated again on the new diff.
 - **Round limit.** `pipeline.max_security_rounds` (default 2, at least 1; no profile override) counts `issues_found`
@@ -889,7 +893,8 @@ roles:
     states: [Documentation]
     result: docs
     on_result: { done: Agent review, not_needed: Agent review, blocked: Blocked }
-    may_move_to: [Agent review, Blocked]
+    on_check_failed: In progress
+    may_move_to: [Agent review, In progress, Blocked]
     model_label: ignore
     claude: { model: haiku }
 pipeline:
@@ -911,6 +916,7 @@ pipeline:
   files that differ from the last hand-off of the developer or test engineer and refuses a `done` or `not_needed` result that comes with other
   files with `invalid_result`, naming them; nothing is recorded. `blocked` is always accepted and notes the files. The prompt lists the paths as `docs_paths`.
 - **Verdicts.** `done` (with the changed `files`) and `not_needed` lead to `Agent review`, `blocked` to `Blocked`.
+- **Red entry check.** The docs agent cannot fix code or tests. When the entry check of `Agent review` fails for its `done` or `not_needed`, `on_check_failed: In progress` records the result with the check output and sends the issue back to the developer (counted by `max_check_failures`). The path rule then measures from the developer's next hand-off. Without `on_check_failed` the agent gets `check_failed` as before.
 - **Haiku.** Haiku has no auto mode; `claude.by_model.haiku` in the shipped file holds the permission settings it needs.
 - **Board.** `Documentation` is one of `tracker.active_states`, so the board needs the column between `Testing` and
   `Agent review`, and the `may_move_to` of the developer and the test engineer must list it (the preflight says so
@@ -945,11 +951,11 @@ The shipped `WORKFLOW.md` defines the `auditor` role for `/refactoring`, the `au
 
 #### Subagents per role
 
-The plugins in `claude.plugins` ship subagents (`agents/<name>.md`; Symphony's toolbox ships the `laravel-*` ones and the framework-neutral `explorer`, `design-critic`, `test-designer`, `convention-lens`, `bug-lens` and `finding-verifier`, see
+The plugins in `claude.plugins` ship subagents (`agents/<name>.md`; Symphony's toolbox ships the `laravel-*` ones and the framework-neutral `explorer`, `design-critic`, `spec-reviewer`, `test-designer`, `convention-lens`, `bug-lens`, `finding-verifier`, `security-inventory` and `refutation-judge`, see
 [laravel-subagents.md](laravel-subagents.md)). Claude Code offers them as `<plugin>:<name>`, e.g.
 `symphony:laravel-architect`. For each session Symphony decides which of them the agent may start:
 
-1. **The role's list.** `agents` unset allows every plugin subagent, a list only those, `[]` none. "Unset = all" stays the default for custom workflows and for workflows without `roles`; every role of the shipped `WORKFLOW.md` lists its agents explicitly (`docs`, `brain-gardener`, `issue-analyst` and `security-auditor` with `[]`, so they never start a `laravel-*` persona; `architect` lists `explorer` and `design-critic`; `test-engineer` lists `test-designer`, and the `reviewer` lists `convention-lens`, `bug-lens` and `finding-verifier` (lens review at L/XL only), which carry no prefix).
+1. **The role's list.** `agents` unset allows every plugin subagent, a list only those, `[]` none. "Unset = all" stays the default for custom workflows and for workflows without `roles`; every role of the shipped `WORKFLOW.md` lists its agents explicitly (`docs`, `brain-gardener` and `issue-analyst` with `[]`, so they never start a `laravel-*` persona; `architect` lists `design-critic`; `developer` lists the `laravel-*` personas and `spec-reviewer`; `test-engineer` lists `test-designer`, and the `reviewer` lists `convention-lens`, `bug-lens` and `finding-verifier` (lens review at L/XL only), and the `security-auditor` lists `security-inventory` and `refutation-judge` (security panel at L/XL only); these carry no prefix).
 2. **Read-only roles** only get subagents that cannot edit files: their front matter denies `Edit` and `Write`
    (`disallowedTools: Edit, Write, NotebookEdit`) or lists `tools` without them. This applies with `agents` unset too.
 3. **Project type.** A subagent whose name starts with a workspace integration's prefix belongs to it: `laravel-*`
@@ -968,10 +974,10 @@ naming one of them. The allowed ones reach the prompt as the variable [`agents`]
 - **Findings are candidates.** The agent reads the cited lines itself and discards any claim without `file:line`; it
   stays responsible for the result.
 - **When to delegate.** Each role with agents adds bullets with a trigger and an exclusion that name the agent by its
-  qualified name, e.g. `developer`: before reading more than about ten files, ask `symphony:explorer`; `architect`:
-  2–3 explorers, one per code area, then read their files yourself. A bullet renders only when its agent is allowed in
+  qualified name, e.g. `analyst`: before reading more than about ten files, ask `symphony:explorer`, then read its files yourself. A bullet renders only when its agent is allowed in
   the session, so a non-Laravel workspace never sees `laravel-*` agents named. Roles with `agents: []` render neither
   the intro nor the bullets.
+- **Early self-review (developer, L/XL).** At complexity L or XL the developer starts one read-only review once, when the change and its tests are complete and before the first `git push`, briefed to report only correctness gaps against the acceptance criteria and the design (no style) with `file:line` and the command with its output; it checks the gaps, fixes the confirmed ones and pushes, with no second call. The prompt names `laravel-code-reviewer` in Laravel workspaces (then `spec-reviewer` is hidden from the list) and `spec-reviewer` elsewhere. At S/M and without a complexity label the developer's prompt names no reviewer and hides both from the list.
 - **Lens review (reviewer, L/XL).** At complexity L or XL the pull-request review adds a step to the checklist: the lenses
   start in one message (`convention-lens` on sonnet once against the written rules, `bug-lens` on opus twice, once on the
   diff alone and once with the surrounding code; two Agent calls in one message run in parallel in the foreground, see
@@ -980,17 +986,31 @@ naming one of them. The allowed ones reach the prompt as the variable [`agents`]
   enter the result; style, linter findings and pre-existing problems are excluded. At S/M, without a complexity and in
   the integration review the reviewer renders neither the block nor the intro. The block needs the verifier and at least
   one lens in the session's list, so a partial list never names a missing persona.
+- **Security panel (security-auditor, L/XL).** At complexity L or XL the audit adds a panel step to the checklist, without
+  running any code: `security-inventory` (sonnet) splits the change into components once, the auditor researches each
+  component itself (the auditor splits the change itself when `security-inventory` is not in the list), and every candidate
+  gets **three `refutation-judge` calls** (opus) in one message, one per lens
+  (`reachability`, `impact`, `defenses`), each defaulting to "false positive" and citing `file:line`. The votes go
+  into `verification.votes`; `report_result` applies the panel rule (a finding stays only when no lens refutes it; the
+  constant `PANEL_MAX_REFUTING_VOTES`, see [results.md](results.md#security-panel-at-lxl)) and refuses a finding with
+  fewer than three votes or with a refuting one. In a workspace with a Laravel app (`project_types` contains `laravel`)
+  the briefs also name mass assignment, policies and gates, Filament `canAccess` / `authorize*`, raw queries and
+  `{!! !!}`. At S/M, without a complexity or without `refutation-judge` in the list the prompt is unchanged.
 
 The toolbox also ships framework-neutral subagents without a prefix; the first is `explorer` (`symphony:explorer`). It is
 read-only (`disallowedTools: Edit, Write, NotebookEdit`, `model: sonnet`, `effort: low`, `maxTurns: 25`) and returns key
 files as `file:line` plus a short summary instead of file contents. Because it has no integration prefix it is available
-in every workspace, Laravel or not, and the shipped `WORKFLOW.md` lists it for `developer`, `architect`, `analyst`,
-`planner`, `autopilot` and `auditor`. The second is `design-critic` (`symphony:design-critic`): read-only, `model: opus`, `maxTurns: 40`, it only critiques a design draft (defects with `file:line`, severity and what breaks, no new design). Only `architect` lists it, and the prompt names it at complexity L/XL only.
+in every workspace, Laravel or not, and the shipped `WORKFLOW.md` lists it for `analyst`,
+`planner`, `autopilot` and `auditor` (removed from `developer` and `architect` by the [E2-5 evaluation](agent-claude.md#evaluation-of-stage-2-e2-5)). The second is `design-critic` (`symphony:design-critic`): read-only, `model: opus`, `maxTurns: 40`, it only critiques a design draft (defects with `file:line`, severity and what breaks, no new design). Only `architect` lists it, and the prompt names it at complexity L/XL only. The third is `spec-reviewer` (`symphony:spec-reviewer`): read-only, `model: opus`, `maxTurns: 30`, it reviews a finished change against the spec (see Early self-review above). Only `developer` lists it, and the prompt names it at complexity L/XL only.
 
 Three more framework-neutral subagents serve the lens review, all read-only (`disallowedTools: Edit, Write, NotebookEdit`):
 `convention-lens` (`model: sonnet`, `maxTurns: 25`; reports a violation of `CLAUDE.md`, `AGENTS.md` or `.ai/rules` only with
 the quoted rule), `bug-lens` (`model: opus`, `maxTurns: 30`) and `finding-verifier` (`model: opus`, `maxTurns: 15`; one
 candidate per call, cites `file:line`). The shipped `WORKFLOW.md` lists them for `reviewer`.
+
+Two more serve the security panel, both read-only through the allowlist `tools: Read, Glob, Grep` (no shell): `security-inventory`
+(`model: sonnet`, `maxTurns: 20`; components with entry point, trust boundary and sinks) and `refutation-judge`
+(`model: opus`, `maxTurns: 15`; one candidate and one lens per call). The shipped `WORKFLOW.md` lists them for `security-auditor`.
 
 #### Waves (`wait_for_sub_issues`)
 
@@ -1227,6 +1247,7 @@ The knowledge vault: one vault for all repositories. With `enabled: true` Sympho
 | `path` | string | `~/brain` | Vault directory; `~` and `$VAR` are expanded, relative paths resolve against `WORKFLOW.md`. In Docker this is the `brain` volume. |
 | `clash_window_ms` | integer >= 0 | `600000` | A `brain_write` or `brain_append` is rejected with reason `window` when another run wrote the same note successfully within this many milliseconds; the result holds the current content and hash. The same run may write again at once. `0` turns the check off. Every call is logged to `<log-dir>/brain/access.jsonl` (lines older than 30 days are removed at startup, see [agent-claude.md](agent-claude.md#brain-tools)). |
 | `obsidian_url` | string | `""` (empty) | Target URL for the "Open in Obsidian" and "Edit in Obsidian" links on the Brain page (`/brain`). Must start with `http://`, `https://` or `obsidian://`, otherwise the workflow is invalid. Empty hides both links. The shipped `WORKFLOW.md` reads it from `SYMPHONY_BRAIN_OBSIDIAN_URL`. An `http(s)` URL (for example `https://brain.docker.lan`, the web container of the `brain` profile, see [brain.md](brain.md#obsidian-container)) is used as-is for both links. An `obsidian://` URL such as `obsidian://open?vault=brain` gets `&file=<note path without .md>` (URL-encoded) appended for the edit link of a candidate. |
+| `review_lessons` | map | see below | Recurring review findings become lessons and reach the developer (see [brain.md](brain.md#review-lessons)). Keys: `enabled` (boolean, default `true`; only with `enabled: true` above and for roles with `brain: read` or `write`), `window_days` (integer >= 1, default `14`: days the cross-issue trigger looks back), `min_issues` (integer >= 2, default `2`: distinct issues of a repository a category needs within the window), `inject_budget_chars` (integer >= 0, default `6000`: characters of lessons injected into the developer, test engineer and architect prompts; the rest is listed by path). An unknown key is an error. |
 
 ### `budget`
 
@@ -1234,7 +1255,28 @@ Display settings of the budget and context views. An unknown key is ignored with
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `compact_threshold` | integer 1–100 | `80` | Context fill in percent from which Claude Code compacts automatically. The **Session** field of the team view (`/issue?id=`) draws its red Auto-Compact mark there; `GET /api/v1/<identifier>/team` returns it as `compact_threshold`. Only a display value: it does not change when Claude Code compacts. |
+| `compact_threshold` | integer 1–100 | `80` | Context fill in percent from which Claude Code compacts automatically. The **Session** field of the team view (`/issue?id=`) draws its red Auto-Compact mark there; `GET /api/v1/<identifier>/team` returns it as `compact_threshold`. Fallback for the mark when a role has no [`claude.auto_compact_window`](#claude) (then the mark sits at window / model window). Only a display value: it does not change when Claude Code compacts. |
+
+### `watchdog`
+
+Settings of the [Blocked watchdog](watchdog.md), a separate process (`src/watchdog/cli.ts`, compose profile
+`watchdog`). The orchestrator ignores the section. An unknown key is an error.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `mode` | `observe`, `comment`, `act` | `observe` | `observe` logs only; `comment` posts the diagnosis; `act` also moves the issue back or adds `pipeline.limit_label` |
+| `interval_ms` | integer ≥ 1000 | `60000` | How often the blocked column is read |
+| `settle_ms` | integer ≥ 0 | `120000` | Wait after the issue entered the blocked column |
+| `cooldown_ms` | integer ≥ 0 | `600000` | Least time between two resumes of one issue, and before a `wait` or a failed session is retried |
+| `max_resumes` | integer ≥ 0 | `2` | Automatic resumes since the newest human comment; then the issue stays blocked with `needs-human` |
+| `prompt` | path | `roles/watchdog.md` | Liquid prompt of the diagnosis session, relative to `WORKFLOW.md`; read anew for every diagnosis |
+| `api_url` | http(s) URL | none | The orchestrator, for `/api/v1/state` (health, model holds) |
+| `log_file` | path | none | The orchestrator's log file (`--log-file`, `SYMPHONY_LOG_FILE`), quoted in the evidence |
+| `state_dir` | path | none | The watchdog's own directory (`events.jsonl`, transcripts, `heartbeat.json`); the orchestrator reads the heartbeat there for `health.watchdog` and the dashboard chip "Watchdog läuft". Unset: the watchdog uses `SYMPHONY_WATCHDOG_STATE_DIR` or `~/.local/state/symphony-watchdog`, and the dashboard shows no watchdog status |
+| `claude.model` | string | `fable` | Model of the diagnosis session |
+| `claude.effort` | `low` … `max` | `high` | Effort of the diagnosis session |
+| `claude.max_budget_usd` | number | none | Cost limit per diagnosis |
+| `claude.max_turns` | integer ≥ 1 | `2` | Prompts per diagnosis: the task, then reminders to call `report_diagnosis` |
 
 ## Complete example: roles, checks and Laravel
 
@@ -1361,6 +1403,11 @@ How the pieces work together:
 The full prompt (developer steps, reviewer checklist and the fallback for the `default` role) is the body of the
 shipped `WORKFLOW.md`; `test/workflow-prompt.test.ts` renders it for each role.
 
+The Laravel and Filament parts of the role checklists (reviewer, security-auditor, test-engineer: Pest, Filament and
+Livewire tests, Filament authorization, `$fillable`/`$guarded`, `modifyQueryUsing`, `down()`, Blade output, the Pest
+mutation hint) render only when `project_types` contains `laravel`. Other workspaces get the same checklist items in
+framework-neutral words, so the `checked` lists of the results stay comparable.
+
 ## Check scripts (`checks/laravel.sh`)
 
 A deterministic quality gate that runs in the workspace (bash). The shipped `WORKFLOW.md` runs it through
@@ -1465,9 +1512,9 @@ workflow directory, else `$XDG_STATE_HOME/symphony` or `~/.local/state/symphony`
 | Event | Fields |
 |---|---|
 | `run_started` | `repo`, `issue`, `run`, `title`, `state`, `attempt`, `model` (requested: from a `Model: …` label, else the role's model, else `claude.model`), `effort` (requested: from an `Effort: …` label, else the role's effort, else `claude.effort`; `default` when none), `role` (`default` without roles), `laravel` and `boost` (only for workspaces with [`laravel`](#laravel) apps: `<app dir>:<laravel/framework version from composer.lock, or unknown>` and the Boost status `ready`, `failed`, `skipped` or `absent`, e.g. `laravel=laravel/:v13.1.0 boost=ready`; several apps give comma-separated entries, each status prefixed by its directory) |
-| `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `session_limit` (the run ended with a session limit; see `agent-claude.md`), `stopped`, `stalled`, `shutdown`), `role` (the [role](#roles) that served the run; `default` without roles; logs from before it was written have none and count as `unknown` in the analytics) and `next_role` (only when the run handed off to another role), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `context_peak_percent` (highest context fill of the session in percent; `null` without a known window; older lines have none) and `context_compacts` (automatic compactions), `head_sha` and `branch` (final commit of a git workspace; omitted otherwise), `mcp_tool_calls` (`<server>:<n>,…` per MCP server; omitted when no MCP tool was used), `tool_calls` (`<tool>:<n>,…` per tool, built-in and `mcp__<server>__<tool>`; omitted without tool calls), `subagent_tool_calls` (same format; the part of `tool_calls` made inside subagents, i.e. from messages with `parent_tool_use_id`, including `SubagentHandback`; `tool_calls` stays the total and the main-thread calls are the difference; omitted when none ran in a subagent; older lines have none), `skill_calls` (`<skill>:<n>,…` per skill the Skill tool loaded; the count follows the last colon, so `symphony:handoff:1` is the skill `symphony:handoff`), `agent_calls` (`<subagent>:<n>,…` per subagent the Agent tool started, by `subagent_type`, `general-purpose` when unset; omitted without such calls), `integrations` (`<id>:<status>,…` of the workspace integrations, e.g. `laravel-boost:ready`; status `ready`, `unavailable`, `absent` or `off`), `integration_tools` and `integration_skills` (calls attributed to an integration: `<id>/<tool or skill>:<n>,…`, e.g. `laravel-boost/search-docs:3`), `started_at`, `mcp_unavailable` (comma-separated MCP servers Symphony added that did not connect; only when there are any), running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` Optional `subagents`: the run's subagents as one JSON array (quoted), oldest first, at most the last 10; omitted when the run started none. Per element: `type` (`subagent_type`), `description`, `status` (`ok` or `error`; a subagent still running when the run ended is logged as `error`), `reason` (only when set), `started_at`, `ended_at`, `duration_ms`, `context_tokens` (context of its latest request), `tokens` (billed: input + output + cache read + cache write), `tool_uses` and `models` (array); unknown figures are omitted. Optional `subagent_stats=<name>:<n>,…`: the numeric entries of `subagent_stats` in the result of Claude Code, which is **undocumented** (seen in 2.1.288) and may change; an extra signal, never the only source. Older lines have neither field. |
+| `run_finished` | `repo`, `issue`, `run`, `session` (Claude session id), `title`, `outcome` (`handed_off`, `continuing`, `failed`, `session_limit` (the run ended with a session limit; see `agent-claude.md`), `stopped`, `stalled`, `shutdown`), `role` (the [role](#roles) that served the run; `default` without roles; logs from before it was written have none and count as `unknown` in the analytics) and `next_role` (only when the run handed off to another role), `state`, `reason`, `attempt`, `turns`, `model` (most tokens), `models`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `total_tokens`, `cost_usd`, `claude_estimate_usd`, `agent_seconds`, `context_peak_percent` (highest context fill of the session in percent; `null` without a known window; older lines have none) and `context_compacts` (automatic compactions), `auto_compact_window` (the auto-compact window in effect for the run: tokens or `auto`; older lines have none), `head_sha` and `branch` (final commit of a git workspace; omitted otherwise), `mcp_tool_calls` (`<server>:<n>,…` per MCP server; omitted when no MCP tool was used), `tool_calls` (`<tool>:<n>,…` per tool, built-in and `mcp__<server>__<tool>`; omitted without tool calls), `subagent_tool_calls` (same format; the part of `tool_calls` made inside subagents, i.e. from messages with `agent_id` or `parent_tool_use_id`, including `SubagentHandback`; `tool_calls` stays the total and the main-thread calls are the difference; omitted when none ran in a subagent; older lines have none), `skill_calls` (`<skill>:<n>,…` per skill the Skill tool loaded; the count follows the last colon, so `symphony:handoff:1` is the skill `symphony:handoff`), `agent_calls` (`<subagent>:<n>,…` per subagent the Agent tool started, by `subagent_type`, `general-purpose` when unset; omitted without such calls), `integrations` (`<id>:<status>,…` of the workspace integrations, e.g. `laravel-boost:ready`; status `ready`, `unavailable`, `absent` or `off`), `integration_tools` and `integration_skills` (calls attributed to an integration: `<id>/<tool or skill>:<n>,…`, e.g. `laravel-boost/search-docs:3`), `started_at`, `mcp_unavailable` (comma-separated MCP servers Symphony added that did not connect; only when there are any), running totals `repo_runs`, `repo_tokens`, `repo_cost_usd`, `repo_agent_seconds` Optional `subagents`: the run's subagents as one JSON array (quoted), oldest first, at most the last 10; omitted when the run started none. Per element: `type` (`subagent_type`), `description`, `status` (`ok` or `error`; a subagent still running when the run ended is logged as `error`), `reason` (only when set), `started_at`, `ended_at`, `duration_ms`, `context_tokens` (context of its latest request), `tokens` (billed: input + output + cache read + cache write), `tool_uses` and `models` (array); unknown figures are omitted. Optional `subagent_stats=<name>:<n>,…`: the numeric entries of `subagent_stats` in the result of Claude Code, which is **undocumented** (seen in 2.1.288) and may change; an extra signal, never the only source. Older lines have neither field. |
 | `model_usage` | `repo`, `issue`, `run`, `model`, `price` (matched entry), token counts, `cost_usd` |
-| `stage_result` | `repo`, `issue`, `run`, `role`, `kind` (result kind, e.g. `review`), `verdict`, `round` (review and test loops; omitted otherwise), `target` (column the result handed the issue to), `profile` (workflow profile; omitted without one), `complexity` (`S` … `XL` from the issue's `Complexity:` label; omitted without one), `findings` (number of findings of a review or security result; omitted when 0). Written when `report_result` has posted the result comment; the analytics group these lines by profile and role |
+| `stage_result` | `repo`, `issue`, `run`, `role`, `kind` (result kind, e.g. `review`), `verdict`, `round` (review and test loops; omitted otherwise), `target` (column the result handed the issue to), `profile` (workflow profile; omitted without one), `complexity` (`S` … `XL` from the issue's `Complexity:` label; omitted without one), `findings` (number of findings of a review or security result; omitted when 0), `findings_confirmed` and `findings_refuted` (verified findings and refuted candidates, see [Verified findings at L/XL](results.md#verified-findings-at-lxl); omitted without verification data), `panel_candidates` (candidates with panel votes of a security result), `panel_confirmed` and `panel_refuted` (votes per lens, `reachability:<n>,impact:<n>,defenses:<n>`) and `panel_single_refuted` (candidates refuted by exactly one lens); the four are written together for security results with panel votes, see [Security panel at L/XL](results.md#security-panel-at-lxl), and omitted without votes. `categories` (blocker and major findings per finding category, `<category>:<n>,...`; omitted without categories, see [brain.md](brain.md#review-lessons)). Written when `report_result` has posted the result comment; the analytics group these lines by profile and role |
 | `session_limit_wait` | `repo`, `issue`, `title`, `state`, `window`, `resets_at`, `retry_at` (reset + 60 s), `hits`, `max_retries`, `source` (`event` or `message`); written when the session-limit retries are used up and the worker waits for the reset |
 | `issue_paused` | `repo`, `issue`, `title`, `state`, `source` (`continuations` with `continuations` and `max_continuations`, `operator` with `previous`, or `budget` with `cost_usd` and `max_issue_cost_usd`) |
 | `issue_resumed` | `repo`, `issue`, `title`, `source` (the source of the lifted pause); written when an operator resumes a paused issue (`POST /api/v1/<identifier>/resume`) |
@@ -1500,6 +1547,7 @@ The Markdown body is rendered with strict Liquid: unknown variables and unknown 
   `name` (what the Agent tool takes as `subagent_type`, e.g. `symphony:laravel-architect`) and `description`. Always
   defined; empty when the session may start none: `{% if agents.size > 0 %}…{% endif %}`.
 - `test_paths`: the list `pipeline.test_paths`, so the prompt of a test engineer can name the files it may change. Always defined.
+- `project_types`: the ids of the integrations that found an app in the workspace (e.g. `["laravel"]`); empty when none did. Lets a role template add framework hints (the Laravel and Filament parts of the role checklists and the security panel render only for `laravel`). Always defined. The dry-run prompt preview has no prepared workspace and uses the ids of all integrations that can detect apps (currently `["laravel"]`), so it shows the Laravel parts.
 - `attachments`: the files uploaded to the issue's description and comments, downloaded into the workspace before the
   session (see [Images and files in the issue](usage.md#images-and-files-in-the-issue)), in order of appearance, each
   `{path, label, source, error}`: `path` is workspace-relative (`.issue-assets/attachment-1.png`), or `null` when the
@@ -1547,7 +1595,7 @@ Besides the standard Liquid filters there are `without_model_labels` and `withou
 [Effort per issue](#effort-per-issue)). The shipped `WORKFLOW.md` uses the latter.
 
 An empty body falls back to a minimal default prompt. `npm run dry-run` renders the prompt for the first eligible
-issue so you can check it without starting an agent.
+issue so you can check it without starting an agent. The preview prepares no workspace: it shows the subagents and `project_types` as for a workspace every integration applies to (`project_types` is `["laravel"]`).
 
 ### Role prompts in separate files
 

@@ -12,11 +12,16 @@ import {
   decodeMarker,
   encodeMarker,
   internalResult,
+  PANEL_MAX_REFUTING_VOTES,
+  panelOutcome,
+  panelVoteCounts,
   parseResult,
   renderResultComment,
   renderResultMarkdown,
+  verificationCounts,
   toolInputShape,
   type AgentResultKind,
+  type PanelVote,
   type ResultMeta,
   type SplitContext,
   type StageResult,
@@ -555,5 +560,166 @@ describe('result contracts: test evidence (E3-7)', () => {
     assert.equal(parseResult('test', bare).ok, true);
     assert.equal(parseResult('test', bare, { testEvidence: false }).ok, true);
     assert.equal(parseResult('test', bare, { testEvidence: true }).ok, false);
+  });
+});
+
+describe('verified findings (E3-4)', () => {
+  const confirmed = { severity: 'major', file: 'src/a.ts', line: 3, problem: 'real bug', verification: { status: 'confirmed', evidence: 'src/a.ts:3 shows it' } };
+  const refuted = { severity: 'major', file: 'src/b.ts', line: 4, problem: 'false alarm', verification: { status: 'refuted', evidence: 'src/b.ts:4 is guarded' } };
+  const review = (over: Record<string, unknown> = {}) => {
+    const parsed = parseResult('review', { verdict: 'changes_needed', summary: 'x', findings: [confirmed], refuted: [refuted], ...over });
+    assert.ok(parsed.ok, JSON.stringify(parsed));
+    return parsed.result;
+  };
+
+  it('parses verification and refuted, and refuses a bad status or empty evidence', () => {
+    const result = review();
+    assert.ok(result.kind === 'review');
+    assert.equal(result.findings[0]?.verification?.status, 'confirmed');
+    assert.equal(result.refuted.length, 1);
+    for (const verification of [{ status: 'maybe', evidence: 'x' }, { status: 'confirmed', evidence: ' ' }]) {
+      const bad = parseResult('review', { verdict: 'changes_needed', summary: 'x', findings: [{ ...confirmed, verification }] });
+      assert.ok(!bad.ok && /findings\[0\]\.verification/.test(bad.message), JSON.stringify(bad));
+    }
+    const notRefuted = parseResult('review', { verdict: 'approved', summary: 'x', refuted: [confirmed] });
+    assert.ok(!notRefuted.ok);
+  });
+
+  it('decodes an old marker without the new fields', () => {
+    const meta = { role: 'reviewer', run: null, round: 1, profile: null, workflow_hash: null, head_sha: null, checks: null, target: null, created_at: '2026-10-01T00:00:00.000Z' };
+    const old = { schema: RESULT_SCHEMA, kind: 'review', verdict: 'approved', summary: 'x', meta };
+    const text = `<!-- symphony:result:v1 ${Buffer.from(JSON.stringify(old)).toString('base64url')} -->`;
+    const decoded = decodeMarker(text);
+    assert.ok(decoded?.result.kind === 'review' && decoded.result.refuted.length === 0);
+  });
+
+  it('counts confirmed and refuted candidates', () => {
+    assert.deepEqual(verificationCounts(review({ findings: [confirmed, confirmed] }), true), { confirmed: 2, refuted: 1 });
+    const plain = review({ findings: [{ severity: 'major', problem: 'p' }], refuted: [] });
+    assert.equal(verificationCounts(plain, false), null);
+    assert.deepEqual(verificationCounts(plain, true), { confirmed: 0, refuted: 0 });
+    const docs = parseResult('docs', { verdict: 'done', summary: 'x' });
+    assert.ok(docs.ok);
+    assert.equal(verificationCounts(docs.result, true), null);
+  });
+
+  it('counts panel votes per lens and candidates refuted by exactly one lens (#554)', () => {
+    const vote = (lens: string, verdict: string) => ({ lens, verdict, evidence: 'src/a.ts:1' });
+    const cand = (status: string, votes: ReturnType<typeof vote>[]) => ({ severity: 'major', problem: 'p', verification: { status, evidence: 'e', votes } });
+    const all = [vote('reachability', 'confirmed'), vote('impact', 'confirmed'), vote('defenses', 'confirmed')];
+    const security = (over: Record<string, unknown>) => ({ kind: 'security', verdict: 'issues_found', summary: 'x', findings: [], refuted: [], ...over }) as unknown as Parameters<typeof panelVoteCounts>[0];
+    const counts = panelVoteCounts(
+      security({
+        findings: [cand('confirmed', all)],
+        refuted: [cand('refuted', [vote('reachability', 'confirmed'), vote('impact', 'refuted'), vote('defenses', 'confirmed')]), cand('refuted', [vote('reachability', 'confirmed'), vote('impact', 'refuted'), vote('defenses', 'refuted')])],
+      }),
+    );
+    assert.deepEqual(counts, { candidates: 3, confirmed: { reachability: 3, impact: 1, defenses: 2 }, refuted: { reachability: 0, impact: 2, defenses: 1 }, singleRefuted: 1 });
+    assert.equal(panelVoteCounts(security({ findings: [{ severity: 'major', problem: 'p' }] })), null);
+    assert.equal(panelVoteCounts(security({ refuted: [{ severity: 'major', problem: 'p', verification: { status: 'refuted', evidence: 'e' } }] })), null);
+    assert.equal(panelVoteCounts({ ...security({ findings: [cand('confirmed', all)] }), kind: 'review' } as unknown as Parameters<typeof panelVoteCounts>[0]), null);
+  });
+
+  it('posts confirmed findings only, with a count of the refuted candidates; the marker keeps them', () => {
+    const meta = { role: 'reviewer', run: null, round: 1, profile: null, workflow_hash: null, head_sha: null, checks: null, target: null, created_at: '2026-10-01T00:00:00.000Z' };
+    const markdown = renderResultMarkdown(review(), meta);
+    assert.match(markdown, /real bug/);
+    assert.match(markdown, /Verified: src\/a\.ts:3 shows it/);
+    assert.doesNotMatch(markdown, /false alarm/);
+    assert.match(markdown, /1 refuted candidate\(s\) not shown/);
+    const decoded = decodeMarker(renderResultComment(review(), meta));
+    assert.ok(decoded?.result.kind === 'review' && decoded.result.refuted[0]?.problem === 'false alarm');
+  });
+
+  it('drops refuted candidates first to respect the size cap', () => {
+    const meta = { role: 'reviewer', run: null, round: 1, profile: null, workflow_hash: null, head_sha: null, checks: null, target: null, created_at: '2026-10-01T00:00:00.000Z' };
+    const many = Array.from({ length: 150 }, (_, i) => ({ ...refuted, problem: `candidate ${i}`, verification: { status: 'refuted', evidence: 'e'.repeat(1000) } }));
+    const result = review({ refuted: many });
+    const comment = renderResultComment(result, meta);
+    assert.ok(comment.length < RESULT_SIZE_LIMIT);
+    const decoded = decodeMarker(comment);
+    assert.ok(decoded?.result.kind === 'review');
+    assert.equal(decoded.result.findings.length, 1);
+    assert.equal(decoded.result.omitted_refuted, 150);
+    assert.equal(decoded.result.omitted_findings, undefined);
+  });
+});
+
+describe('security panel rule (E3-5)', () => {
+  const vote = (lens: string, verdict = 'confirmed') => ({ lens, verdict, evidence: `src/a.ts:3 ${lens}` });
+  const finding = (votes: unknown[]) => ({ severity: 'major', file: 'src/a.ts', line: 3, problem: 'SQLi', verification: { status: 'confirmed', evidence: 'src/a.ts:3', votes } });
+  const parse = (votes: unknown[]) =>
+    parseResult('security', { verdict: 'issues_found', summary: 'x', findings: [finding(votes)] }, { verifiedFindings: true, panelVotes: true });
+
+  it('panelOutcome: no refuting vote keeps the finding, one refuting vote refutes it (PANEL_MAX_REFUTING_VOTES = 0)', () => {
+    assert.equal(PANEL_MAX_REFUTING_VOTES, 0);
+    assert.equal(panelOutcome([vote('reachability'), vote('impact'), vote('defenses')] as PanelVote[]), 'confirmed');
+    assert.equal(panelOutcome([vote('reachability'), vote('impact', 'refuted'), vote('defenses')] as PanelVote[]), 'refuted');
+  });
+
+  it('parseResult accepts three confirming votes and refuses a refuting or incomplete panel', () => {
+    assert.equal(parse([vote('reachability'), vote('impact'), vote('defenses')]).ok, true);
+    const refuted = parse([vote('reachability'), vote('impact'), vote('defenses', 'refuted')]);
+    assert.equal(refuted.ok, false);
+    assert.match(JSON.stringify(refuted), /refuted by the panel \(defenses refuted\)/);
+    const few = parse([vote('reachability')]);
+    assert.match(JSON.stringify(few), /missing: impact, defenses/);
+  });
+
+  it('the schema rejects an unknown lens and a fourth vote', () => {
+    assert.equal(parse([vote('luck'), vote('impact'), vote('defenses')]).ok, false);
+    assert.equal(parse([vote('reachability'), vote('impact'), vote('defenses'), vote('impact')]).ok, false);
+  });
+
+  it('without panelVotes the votes are optional (E3-4 behaviour)', () => {
+    const outcome = parseResult('security', { verdict: 'issues_found', summary: 'x', findings: [finding([])] }, { verifiedFindings: true });
+    assert.equal(outcome.ok, true);
+  });
+});
+
+describe('panel votes in the comment (#553)', () => {
+  const meta = { role: 'security', run: null, round: 1, profile: null, workflow_hash: null, head_sha: null, checks: null, target: null, created_at: '2026-10-01T00:00:00.000Z' };
+  const vote = (lens: string, evidence = `app/Http/X.php:12 ${lens}`, verdict = 'confirmed') => ({ lens, verdict, evidence });
+  const finding = (i: number, votes?: unknown[], severity = 'major') => ({
+    severity,
+    file: 'src/a.ts',
+    line: 3,
+    problem: `SQLi ${i}`,
+    verification: { status: 'confirmed', evidence: 'src/a.ts:3', ...(votes === undefined ? {} : { votes }) },
+  });
+  const render = (findings: unknown[]) => {
+    const parsed = parseResult('security', { verdict: 'issues_found', summary: 'x', findings }, { verifiedFindings: true });
+    assert.ok(parsed.ok, JSON.stringify(parsed));
+    return renderResultComment(parsed.result, meta);
+  };
+
+  it('shows one Panel line in lens order with verdict icons', () => {
+    const comment = render([finding(1, [vote('defenses'), vote('reachability'), vote('impact')])]);
+    assert.match(comment, /Verified: src\/a\.ts:3\n  Panel: reachability ✅ app\/Http\/X\.php:12 reachability · impact ✅ app\/Http\/X\.php:12 impact · defenses ✅ app\/Http\/X\.php:12 defenses/);
+  });
+
+  it('renders findings without votes (or an empty list) exactly as before', () => {
+    for (const votes of [undefined, []]) {
+      const comment = render([finding(1, votes)]);
+      assert.doesNotMatch(comment, /Panel:/);
+      assert.match(comment, /Verified: src\/a\.ts:3(\n|$)/);
+    }
+  });
+
+  it('escapes agent text in votes', () => {
+    const comment = render([finding(1, [vote('reachability', 'x\n<!-- evil -->'), vote('impact'), vote('defenses')])]);
+    const panel = comment.split('\n').find((line) => line.includes('Panel:')) ?? '';
+    assert.match(panel, /x &lt;!-- evil -->/);
+    assert.doesNotMatch(panel, /<!--/);
+  });
+
+  it('vote lines count towards the size limit: less severe findings are omitted', () => {
+    const long = 'a'.repeat(900);
+    const votes = [vote('reachability', long), vote('impact', long), vote('defenses', long)];
+    const many = Array.from({ length: 60 }, (_, i) => finding(i, votes, i === 0 ? 'blocker' : 'minor'));
+    const comment = render(many);
+    assert.ok(comment.length < RESULT_SIZE_LIMIT);
+    assert.match(comment, /less severe finding\(s\) omitted/);
+    assert.match(comment, /SQLi 0/);
   });
 });

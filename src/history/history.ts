@@ -15,6 +15,7 @@ import { formatValue, type Logger } from '../log.ts';
 import type { SubagentRun } from '../agent/types.ts';
 import { errorMessage } from '../util/errors.ts';
 import { DEFAULT_ROLE } from '../workflow/roles.ts';
+import type { PanelVoteCounts } from '../workflow/results.ts';
 
 /**
  * How a run ended: handed off (left the active states, or moved to a column served by another role; then the
@@ -62,6 +63,8 @@ export interface RunFinish {
   contextPeakPercent?: number | null;
   /** Automatic context compactions in the session. Absent = not logged. */
   contextCompacts?: number;
+  /** Auto-compact window in tokens in effect for the run; null = auto. Absent = not logged. */
+  autoCompactWindow?: number | null;
   /** Model requested for the run (label, role or claude.model); null = Claude Code default. Absent = not logged. */
   modelRequested?: string | null;
   /** Effort requested for the run (label, role or claude.effort); null = Claude Code default. Absent = not logged. */
@@ -155,8 +158,15 @@ export interface StageResultLine {
   complexity: string | null;
   /** Findings of the result (review and security results); 0 for other kinds. */
   findings: number;
+  /** Confirmed/refuted findings of a verified review or security result; null or absent when it carries none. */
+  findingsConfirmed?: number | null;
+  findingsRefuted?: number | null;
   /** Mutation score (percent) of a test result that carries one; null or absent otherwise. */
   mutationScore?: number | null;
+  /** Panel votes of a security result (L/XL); null or absent when it carries none. */
+  panelVotes?: PanelVoteCounts | null;
+  /** Blocker and major findings per category (#575); null, absent or empty when the result carries none. */
+  categories?: Record<string, number> | null;
   at: Date;
 }
 
@@ -297,6 +307,7 @@ export class HistoryLog {
       agent_seconds: round(finish.agentSeconds, 1),
       context_peak_percent: finish.contextPeakPercent,
       context_compacts: finish.contextCompacts,
+      auto_compact_window: finish.autoCompactWindow === undefined ? undefined : (finish.autoCompactWindow ?? 'auto'),
       head_sha: finish.headSha ?? undefined,
       branch: finish.branch ?? undefined,
       mcp_tool_calls: formatToolCalls(finish.mcpToolCalls),
@@ -353,6 +364,7 @@ export class HistoryLog {
   }
 
   stageResult(line: StageResultLine): void {
+    const panel = line.panelVotes ?? null;
     this.#append(line.repo, line.at, 'stage_result', {
       issue: line.issue,
       run: line.run ?? undefined,
@@ -364,7 +376,14 @@ export class HistoryLog {
       profile: line.profile ?? undefined,
       complexity: line.complexity ?? undefined,
       findings: line.findings || undefined,
+      findings_confirmed: line.findingsConfirmed ?? undefined,
+      findings_refuted: line.findingsRefuted ?? undefined,
       mutation_score: line.mutationScore ?? undefined,
+      panel_candidates: panel?.candidates,
+      panel_confirmed: panel ? formatToolCalls(panel.confirmed) : undefined,
+      panel_refuted: panel ? formatToolCalls(panel.refuted) : undefined,
+      panel_single_refuted: panel?.singleRefuted,
+      categories: formatToolCalls(line.categories ?? undefined),
     });
   }
 

@@ -251,6 +251,31 @@ async function run(h: Pipeline, stop?: () => boolean): Promise<void> {
 }
 
 describe('result-driven developer → reviewer loop', () => {
+  it('writes findings_confirmed and findings_refuted on the stage_result line of a verified L review (E3-4)', async () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
+    const history = new HistoryLog(path.join(dir, 'repositories'), new PricingStore(path.join(dir, 'model-costs.yml'), Logger.silent()), Logger.silent());
+    const verified = (evidence: string, status: string) => ({ severity: 'major', file: 'src/app.ts', problem: `P ${evidence}`, verification: { status, evidence } });
+    const review = {
+      verdict: 'changes_needed',
+      summary: 'One real problem, two false alarms.',
+      findings: [verified('src/app.ts:1 shows it', 'confirmed')],
+      refuted: [verified('src/app.ts:2 is guarded', 'refuted'), verified('src/app.ts:3 is dead code', 'refuted')],
+    };
+    const h = pipeline([done(), reporting(review)], { history });
+    issue(h).labels = ['Complexity: L'];
+    await run(h, () => readHistory(history.dir, null).entries.filter((entry) => entry.event === 'stage_result').length >= 2);
+
+    const lines = readHistory(history.dir, null).entries.filter((entry) => entry.event === 'stage_result');
+    const reviewLine = lines.find((line) => line.fields.kind === 'review');
+    assert.ok(reviewLine, 'a review stage_result line');
+    assert.equal(reviewLine.fields.findings, '1');
+    assert.equal(reviewLine.fields.findings_confirmed, '1');
+    assert.equal(reviewLine.fields.findings_refuted, '2');
+    const developerLine = lines.find((line) => line.fields.kind === 'implementation');
+    assert.ok(developerLine && !('findings_confirmed' in developerLine.fields) && !('findings_refuted' in developerLine.fields));
+  });
+
   it('writes one stage_result history line per recorded result', async () => {
     const dir = tempDir();
     fs.writeFileSync(path.join(dir, 'model-costs.yml'), 'default: { input: 5, output: 25 }\n');
@@ -1459,6 +1484,81 @@ describe('documentation stage', () => {
     await run(h);
     assert.deepEqual(prompts(h), ['developer round 1', 'reviewer round 1']);
     assert.match(String(data(h.reports[0]).reason), /documentation already changed/);
+  });
+
+  describe('a red entry check of Agent review after the docs role (#569)', () => {
+    const docsFront = (docs: Record<string, unknown> = {}) => ({
+      ...DOCS_FRONT,
+      roles: { ...DOCS_FRONT.roles, docs: { ...DOCS_FRONT.roles.docs, may_move_to: ['Agent review', 'In progress', 'Blocked'], on_check_failed: 'In progress', ...docs } },
+      // The flaky failure lives in .git so no commit of the roles touches it.
+      checks: { on_enter: { 'Agent review': entryCheck('Agent review', '.git/flaky', 'flaky test failed') } },
+      hooks: securityHooks(true),
+    });
+    const flakyPipeline = (stages: Stage[], front: Record<string, unknown> = docsFront()) => {
+      const tracker = new FakeTracker([makeIssue({ id: ISSUE, state: 'In progress', native_ref: { base_branch: 'develop' } })]);
+      tracker.statusOptions = async () => BOARD_DOCS;
+      return pipeline(stages, { tracker, prompt: PROMPT, front });
+    };
+    const DOCUMENTED = { verdict: 'done', summary: 'Documented.', files: ['docs/configuration.md'] };
+    const devHandOff = (workspace: string) => {
+      changed('.env.example')(workspace);
+      touch('.git/flaky')(workspace);
+    };
+
+    it('docs done, check red: the result is recorded with the check output and the issue goes to In progress, then the developer repairs it and the pipeline reaches Agent review', async () => {
+      const h = flakyPipeline([
+        done(devHandOff),
+        reporting(DOCUMENTED, changed('docs/configuration.md')),
+        done((workspace) => {
+          remove('.git/flaky')(workspace);
+          changed('src/fix.ts')(workspace);
+        }),
+        approved(),
+      ]);
+      await run(h);
+
+      assert.deepEqual(prompts(h), ['developer round 1', 'docs round 1', 'developer round 1', 'reviewer round 1']);
+      assert.deepEqual(h.tracker.statusCalls, ['Documentation', 'In progress', 'Agent review', 'In review']);
+      const redirected = data(h.reports[1]);
+      assert.deepEqual([redirected.verdict, redirected.target, redirected.check_failed_for], ['done', 'In progress', 'Agent review']);
+      const stored = await results(h);
+      assert.deepEqual(stored.map((entry) => [entry.role, entry.verdict, entry.target]), [
+        ['developer', 'done', 'Documentation'],
+        ['docs', 'done', 'In progress'],
+        ['developer', 'done', 'Agent review'],
+        ['reviewer', 'approved', 'In review'],
+      ]);
+      const note = (await h.tracker.readResults(issue(h)))[1];
+      assert.match(note?.result.summary ?? '', /^Documented\.[\s\S]*Entry check failed[\s\S]*"Agent review"[\s\S]*"In progress"[\s\S]*flaky test failed/);
+      assert.match(String(data(h.reports[2]).reason), /documentation already changed/, 'the docs are in the branch: the stage is skipped on the way back');
+      assert.deepEqual(issue(h).labels, []);
+    });
+
+    it('not_needed with a red check goes to In progress as well', async () => {
+      const h = flakyPipeline([done(devHandOff), reporting({ verdict: 'not_needed', summary: 'Nothing to document.' }), silent]);
+      await h.orchestrator.tickNow();
+      await settle(h, () => h.reports.length >= 2);
+      assert.equal(data(h.reports[1]).target, 'In progress');
+      assert.equal(issue(h).state, 'In progress');
+    });
+
+    it('blocked of the docs role goes straight to Blocked, whatever the check', async () => {
+      const h = flakyPipeline([done(devHandOff), reporting({ verdict: 'blocked', summary: 'Cannot document.', blockers: [{ description: 'needs a decision', needs: 'human' }] })]);
+      await run(h);
+      assert.equal(data(h.reports[1]).target, 'Blocked');
+      assert.deepEqual(h.tracker.statusCalls, ['Documentation', 'Blocked']);
+      assert.equal(issue(h).state, 'Blocked');
+    });
+
+    it('without docs.on_check_failed the docs role gets check_failed, nothing is recorded and the issue stays in Documentation', async () => {
+      const h = flakyPipeline([done(devHandOff), reporting(DOCUMENTED, changed('docs/configuration.md'))], docsFront({ on_check_failed: undefined, may_move_to: ['Agent review', 'Blocked'] }));
+      await h.orchestrator.tickNow();
+      await settle(h, () => h.reports.length >= 2);
+      const refused = denial(h.reports[1]);
+      assert.equal(refused?.category, 'check_failed');
+      assert.deepEqual(h.tracker.statusCalls, ['Documentation']);
+      assert.deepEqual((await results(h)).map((entry) => entry.role), ['developer']);
+    });
   });
 });
 

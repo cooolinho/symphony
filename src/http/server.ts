@@ -465,29 +465,33 @@ export function startHttpServer(options: {
         };
         const pricing = history.pricing.current();
         const rateLimits = orchestrator.rateLimitEvents(from ?? undefined);
-        let value: Analytics;
-        // An open end moves with the clock, so only bounded periods are cached.
-        const key = to === null ? null : JSON.stringify([filter, files.map((f) => [f.file, f.bytes]), rateLimits.length, rateLimits.at(-1)?.at ?? null]);
-        const cached = key === null ? undefined : analyticsCache.get(key);
-        if (cached !== undefined && cached.pricing === pricing) {
-          value = cached.value;
-        } else {
-          value = computeAnalytics(entries, pricing, filter, new Date(), rateLimits);
-          if (key !== null) {
-            analyticsCache.delete(key);
-            analyticsCache.set(key, { pricing, value });
-            if (analyticsCache.size > ANALYTICS_CACHE_SIZE) analyticsCache.delete(analyticsCache.keys().next().value as string);
-          }
-        }
-        const all = repo === null ? files : readHistory(history.dir, null).files;
-        sendJson(res, 200, {
-          generated_at: new Date().toISOString(),
-          history_dir: history.dir,
-          pricing_file: history.pricing.path,
-          pricing_error: history.pricing.lastError,
-          repositories_available: all.map((f) => f.repo),
-          ...value,
-        });
+        respond(
+          orchestrator.reviewLessons().then((lessons) => {
+            let value: Analytics;
+            // An open end moves with the clock, so only bounded periods are cached.
+            const key = to === null ? null : JSON.stringify([filter, files.map((f) => [f.file, f.bytes]), rateLimits.length, rateLimits.at(-1)?.at ?? null, lessons]);
+            const cached = key === null ? undefined : analyticsCache.get(key);
+            if (cached !== undefined && cached.pricing === pricing) {
+              value = cached.value;
+            } else {
+              value = computeAnalytics(entries, pricing, filter, new Date(), rateLimits, lessons);
+              if (key !== null) {
+                analyticsCache.delete(key);
+                analyticsCache.set(key, { pricing, value });
+                if (analyticsCache.size > ANALYTICS_CACHE_SIZE) analyticsCache.delete(analyticsCache.keys().next().value as string);
+              }
+            }
+            const all = repo === null ? files : readHistory(history.dir, null).files;
+            sendJson(res, 200, {
+              generated_at: new Date().toISOString(),
+              history_dir: history.dir,
+              pricing_file: history.pricing.path,
+              pricing_error: history.pricing.lastError,
+              repositories_available: all.map((f) => f.repo),
+              ...value,
+            });
+          }),
+        );
       });
       return;
     }

@@ -109,7 +109,8 @@ describe('shipped role prompts', () => {
     const files = fs
       .readdirSync(path.join(path.dirname(shipped), 'roles'))
       .map((file) => file.replace(/\.md$/, ''))
-      .filter((name) => name !== 'default' && name !== 'brain')
+      // watchdog.md is the prompt of the Blocked watchdog (docs/watchdog.md), not a pipeline role.
+      .filter((name) => name !== 'default' && name !== 'brain' && name !== 'brain-lessons' && name !== 'recurring-findings' && name !== 'watchdog')
       .sort();
     const branches = [...definition.promptTemplate.matchAll(/\{%-? when "([a-z-]+)" %\}\{% include "roles\/([a-z-]+)\.md" %\}/g)];
     assert.deepEqual(files, roles, 'one roles/<role>.md per role');

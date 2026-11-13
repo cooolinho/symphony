@@ -16,6 +16,7 @@ dashboard work from structured data. The contracts live in `src/workflow/results
 | `blockers[]` | agent | `{description, needs: human\|info\|access\|infra}` |
 | `follow_ups[]` | agent | work worth a separate issue |
 | `omitted_findings` | Symphony | findings dropped to respect the size cap |
+| `omitted_refuted` | Symphony | `refuted[]` entries dropped to respect the size cap |
 
 Only `verdict` and `summary` are required; every other field is optional, lists default to `[]`. Unknown fields are
 reported to the agent instead of being dropped silently.
@@ -28,8 +29,8 @@ reported to the agent instead of being dropped silently.
 | `design` | `ready`, `split`, `blocked` | `options[]`, `decision`, `components[]`, `interfaces[]`, `migrations[]`, `compatibility`, `work_packages[]` (optional; with `split` at least two), `plan[]` (implementation steps in order, each with its files), `tests[]` (one test per acceptance criterion) |
 | `implementation` | `done`, `blocked` | `changed_files[]`, `tests_added[]`, `notes`, `plan_deviations[]`, `screenshots_problem` (a UI change without screenshots: the failed step and its error message) |
 | `test` | `passed`, `failed`, `blocked` | `cases[] {criterion, test, status: passed\|failed\|skipped, red_at_base?: {command, output?}, existing?}`, `commands[]`, `uncovered_criteria[]`, `mutation_score` (0–100), `mutation_command`, `mutation_problem` (see [Test evidence at L/XL](#test-evidence-at-lxl)) |
-| `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, file, line, problem, fix}`, `checked[]`, `confirmed_goals[]` (refactor issues: the analysis's refactoring goals the review confirms) |
-| `security` | `passed`, `issues_found`, `blocked` | `findings[]` (as in `review`) |
+| `review` | `approved`, `changes_needed`, `blocked` | `findings[] {severity: blocker\|major\|minor\|nit, category?, file, line, problem, fix, verification?: {status: confirmed\|refuted, evidence}}` (`category`: kebab-case slug of at most 40 characters for the pattern of the problem, required by the role prompts for blocker and major findings; see [brain.md](brain.md#review-lessons)), `lessons[]` (vault paths of the lessons for the recurring categories), `refuted[]` (candidates the verification refuted: a finding with a refuted `verification`; see [Verified findings at L/XL](#verified-findings-at-lxl)), `checked[]`, `confirmed_goals[]` (refactor issues: the analysis's refactoring goals the review confirms) |
+| `security` | `passed`, `issues_found`, `blocked` | `findings[]`, `refuted[]` and `lessons[]` (as in `review`); at L/XL with the refutation panel `verification.votes[] {lens: reachability\|impact\|defenses, verdict: confirmed\|refuted, evidence}` (see [Security panel at L/XL](#security-panel-at-lxl)) |
 | `docs` | `done`, `not_needed`, `blocked` | `files[]` |
 | `skipped`, `reset` | same as the kind | internal, recorded by Symphony without agent input (`skipped`: a stage passed [without a session](configuration.md#skipping-stages-without-a-session)) |
 
@@ -58,6 +59,8 @@ see them):
 - `mutation_score` (test) needs `mutation_command`, the `pest --mutate --covered-only` call.
 - A `passed` or `failed` test result of an **L/XL issue that is not a refactor** needs `red_at_base` for every new case
   (see [Test evidence at L/XL](#test-evidence-at-lxl)).
+- A `review` or `security` result of an **L/XL issue** needs a confirmed `verification` for every entry of `findings`
+  (see [Verified findings at L/XL](#verified-findings-at-lxl)).
 - `needs_info` (analysis) needs at least one open question.
 - `approved` (review) of a **refactor issue whose analysis has `refactoring_goals`** needs every goal in
   `confirmed_goals`, compared trimmed and case-insensitive (the reviewer copies each goal verbatim); the message lists
@@ -114,8 +117,8 @@ Symphony adds facts the agent never sets: `role`, `run`, `round`, `profile`, `wo
   cannot open an HTML comment (`<!--` is escaped), so it can neither hide the rest of the comment nor fake a marker.
 - `decodeMarker(text)` reads the last marker of a comment and returns `{result, meta}`, or `null` when there is none or
   it is damaged (bad base64, bad JSON, unknown schema version, invalid fields). It never throws.
-- Size cap: the comment stays below 60,000 characters (GitHub allows 65,536). Above it, the least severe findings are
-  dropped first and counted in `omitted_findings`; the Markdown notes the omission. A result that does not fit even
+- Size cap: the comment stays below 60,000 characters (GitHub allows 65,536). Above it, `refuted[]` is dropped first
+  (counted in `omitted_refuted`), then the least severe findings and counted in `omitted_findings`; the Markdown notes the omission. A result that does not fit even
   without findings is rejected (`result_too_large`).
 
 ## The `report_result` tool
@@ -160,7 +163,7 @@ A call runs these steps, one call at a time:
    message (naming `report_result`) and write nothing, so a failed check never counts as a round and the agent can
    fix the problem and report again in the same session. On `check_error` the agent is told to comment and end its
    turn instead of moving the issue to `Blocked`, which it cannot.
-   **`on_check_failed`:** a `check_failed` for a `read_only` role that sets [`on_check_failed`](configuration.md#roles)
+   **`on_check_failed`:** a `check_failed` for a `read_only` role or the docs role that sets [`on_check_failed`](configuration.md#roles)
    (it cannot fix the code, so repeating the report is pointless) does not stop the call: the guard checks the
    `on_check_failed` column instead (`may_move_to`, that column's entry check), and the result is recorded with the
    agent's verdict, a note with the failed check's output appended to the summary, `checks` of the failed check and
@@ -197,6 +200,16 @@ after the turn that recorded the result; when the move led to another column of 
 new session. The tool writes only
 after the guard allowed exactly the computed target; called without the guard's approval it refuses (`tool_error`).
 
+## Lessons for recurring findings
+
+A `review` or `security` result whose `blocker` or `major` findings have a recurring `category` (again in this issue, or in
+`brain.review_lessons.min_issues` issues of the repository within `window_days`; see [brain.md](brain.md#review-lessons))
+needs a lesson: the result names its vault path in `lessons`, or the session wrote or appended to a note with
+`brain_write` or `brain_append`. Otherwise the first call is refused with `invalid_result`, listing the recurring
+categories with their issues and existing lessons; nothing is recorded. The second call is accepted: its summary gets the
+note "Lesson missing" and the log a `lesson_missing` warning. The verdict `blocked` is not checked, and the rule only
+applies to sessions with `brain: write` while `brain.review_lessons.enabled` is on.
+
 ## Screenshots for UI changes
 
 A developer's `implementation` result with the verdict `done` is refused with `invalid_result` when all three hold:
@@ -212,6 +225,50 @@ step really fails, the developer reports again with `screenshots_problem`: the s
 result is then accepted and the reviewer sees the field. The verdict `blocked` is not checked. If git cannot list the
 changed files, the call fails with `tool_error` and nothing is recorded. Whether the screenshot fits the change is still
 the reviewer's call.
+
+## Verified findings at L/XL
+
+Decision D1 (option B, [subagents concept](concepts/subagents.md#d1-deterministic-orchestration-step-or-optional-subagent)):
+a finding of a `review` or `security` result carries `verification: {status: confirmed|refuted, evidence}` (`evidence`:
+1–1000 characters, the file:line the check looked at). The field is optional in the schema, so results stored before it
+existed still read.
+
+- **L/XL issues** (the `Complexity:` label, refactors included): `report_result` refuses with `invalid_result` a result
+  whose `findings[i]` has no `verification` or a refuted one. The message names the entry (index, file:line, shortened
+  problem) and says what is missing; a refuted candidate goes to `refuted[]`. A `blocked` result is never refused, and
+  nothing is recorded for a refused one.
+- **`refuted[]`**: candidates the verification refuted, shaped like findings with a required `verification` of status
+  `refuted`. They are not posted and do not count for the verdict rules; the marker keeps them as data.
+- **S/M issues**, issues without a `Complexity:` label and results read back from a marker are never refused;
+  `verification` stays optional. A finding reported there with status `refuted` is moved to `refuted[]`.
+- **Comment**: only `findings` are listed (with a `Verified:` line when they carry a verification), plus a note with the
+  number of refuted candidates.
+- **Metrics**: the `stage_result` history line carries `findings_confirmed` (findings with status confirmed) and
+  `findings_refuted` (`refuted[]` plus refuted findings) for L/XL results and for any result with verification data; the
+  analytics show them per role and model.
+
+### Security panel at L/XL
+
+The security auditor's refutation panel (E3-5) puts the three votes of one candidate into
+`verification.votes[] {lens, verdict, evidence}` (`lens`: `reachability`, `impact` or `defenses`; `verdict`:
+`confirmed` or `refuted`; `evidence`: the file:line the judge cited). `votes` is optional in the schema (stored
+results still read) and holds at most three entries; at L/XL the check requires exactly one entry per lens.
+
+- **The rule** is one constant, `PANEL_MAX_REFUTING_VOTES` in `src/workflow/results.ts` (default `0`: a finding is kept
+  only when no lens refutes it; open question 9 of the [subagents concept](concepts/subagents.md)). The arithmetic runs in
+  `panelOutcome()`, outside the model. To keep a finding that one lens refutes, raise the constant to `1` and change the
+  sentence in `roles/security-auditor.md`.
+- **Refused with `invalid_result`** (L/XL, security result, not `blocked`): a finding whose `verification.votes` do not
+  hold exactly one vote per lens (the message names the finding and the missing or duplicated lens), and a finding the
+  panel refuted (the message names the refuting lenses and says to move it to `refuted[]` with status `refuted`; the
+  auditor does it, Symphony does not move it). `refuted[]` entries need no votes.
+- **Only with the judge in the session.** The vote rule applies when the session may start `refutation-judge` (the
+  shipped `roles.security-auditor.agents`). A workflow with `agents: []` for the auditor keeps the plain L/XL rule above.
+- **Metrics.** A security `stage_result` line with panel votes carries `panel_candidates` (candidates in `findings` and `refuted` with votes), `panel_confirmed` and `panel_refuted` (votes per lens, `reachability:<n>,impact:<n>,defenses:<n>`) and `panel_single_refuted` (candidates refuted by exactly one lens). The statistics sum them over the period and repository as `subagent_evaluation.security_panel` and show them on the statistics page: candidates, votes per lens, and `refuted_by_one_lens`, the candidates that a rule with `PANEL_MAX_REFUTING_VOTES = 1` would keep and the current rule drops. Old lines without the fields give empty values.
+- **S/M issues** and issues without a `Complexity:` label are not checked for votes.
+
+To switch to option A (optional fields only), drop `verifiedFindings` from `resultContext()` in
+`src/orchestrator/result-tool.ts`; the fields stay.
 
 ## Test evidence at L/XL
 

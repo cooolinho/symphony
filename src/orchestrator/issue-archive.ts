@@ -156,6 +156,57 @@ export class IssueArchive {
     }
   }
 
+  /**
+   * The archived issues of a repository saved since `since`: the ones in memory plus the files in the directory whose
+   * modification time is not older (an archive is written after every run and on release, so its mtime is at least its
+   * `archived_at`). Memory wins over disk for the same identifier; unreadable files are skipped with a warning. Files
+   * read here are not kept in memory, so a scan does not push recent issues out.
+   */
+  forRepo(repo: string, since: Date): ArchivedIssue[] {
+    const byIdentifier = new Map<string, ArchivedIssue>();
+    for (const issue of this.#byIdentifier.values()) if (issue.repo === repo) byIdentifier.set(issue.issue_identifier, issue);
+    if (this.dir === null) return [...byIdentifier.values()];
+    let names: string[];
+    try {
+      names = fs.readdirSync(this.dir);
+    } catch {
+      return [...byIdentifier.values()];
+    }
+    const limit = since.getTime();
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      const file = path.join(this.dir, name);
+      try {
+        if (fs.statSync(file).mtimeMs < limit) continue;
+      } catch {
+        continue;
+      }
+      let issue: ArchivedIssue | null;
+      try {
+        issue = upgrade(JSON.parse(fs.readFileSync(file, 'utf8')) as Parameters<typeof upgrade>[0]);
+      } catch (error) {
+        this.#warnUnreadable(file, errorMessage(error));
+        continue;
+      }
+      if (issue === null) {
+        this.#warnUnreadable(file);
+        continue;
+      }
+      if (issue.repo !== repo || byIdentifier.has(issue.issue_identifier)) continue;
+      byIdentifier.set(issue.issue_identifier, issue);
+    }
+    return [...byIdentifier.values()];
+  }
+
+  #unreadable = new Set<string>();
+
+  /** Warns once per file and process about an archive that cannot be read. */
+  #warnUnreadable(file: string, error?: string): void {
+    if (this.#unreadable.has(file)) return;
+    this.#unreadable.add(file);
+    this.#logger.warn('ignoring an unreadable issue archive', error === undefined ? { file } : { file, error });
+  }
+
   #remember(issue: ArchivedIssue): void {
     this.#byIdentifier.delete(issue.issue_identifier);
     this.#byIdentifier.set(issue.issue_identifier, issue);

@@ -38,6 +38,10 @@ export interface TeamInput {
   maxTurns: number | null;
   /** `budget.compact_threshold`: context percent of Claude Code's auto-compact. */
   compactThreshold: number;
+  /** Effective global auto-compact window in tokens; null = auto. */
+  compactWindow?: number | null;
+  /** Effective auto-compact window per configured role; null = auto. */
+  compactWindows?: Record<string, number | null>;
 }
 
 export type SeatStatus = 'done' | 'playing' | 'waiting' | 'returned' | 'skipped';
@@ -104,6 +108,10 @@ export interface TeamView {
   trace: TeamTool[];
   /** `budget.compact_threshold` in percent. */
   compact_threshold: number;
+  /** Global auto-compact window in tokens; null = auto. */
+  compact_window: number | null;
+  /** Auto-compact window per configured role in tokens; null = auto. */
+  compact_windows: Record<string, number | null>;
 }
 
 const RECENT_TOOLS = 4;
@@ -246,5 +254,7 @@ export function buildTeamView(input: TeamInput): TeamView {
     handoffs,
     trace,
     compact_threshold: input.compactThreshold,
+    compact_window: input.compactWindow ?? null,
+    compact_windows: input.compactWindows ?? {},
   };
 }

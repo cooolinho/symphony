@@ -97,6 +97,21 @@ describe('config layer', () => {
     assert.ok(!resolve({ ...base, budget: {} }).warnings.some((w) => w.includes('budget')));
   });
 
+  it('reads claude.auto_compact_window: auto by default, 100000..1000000, per role override', () => {
+    const base = { tracker: { kind: 'github_project' } };
+    const windowOf = (claude: unknown) => resolve({ ...base, claude }).claude.autoCompactWindow;
+    assert.equal(windowOf({}), null);
+    assert.equal(windowOf({ auto_compact_window: 'auto' }), null);
+    assert.equal(windowOf({ auto_compact_window: 200000 }), 200000);
+    assert.equal(windowOf({ auto_compact_window: '300000' }), 300000);
+    for (const bad of [99999, 1000001, 150000.5, 'big']) {
+      assert.throws(() => windowOf({ auto_compact_window: bad }), (error: unknown) => error instanceof SymphonyError && /claude\.auto_compact_window must be auto or an integer from 100000 to 1000000/.test(error.message));
+    }
+    const role = (value: unknown) => resolve({ ...base, tracker: { kind: 'github', active_states: ['In progress'] }, roles: { architect: { states: ['In progress'], claude: { auto_compact_window: value } } } });
+    assert.equal(role(400000).roles?.find((r) => r.name === 'architect')?.claude.autoCompactWindow, 400000);
+    assert.throws(() => role(50), (error: unknown) => error instanceof SymphonyError && /roles\.architect\.claude\.auto_compact_window must be auto or an integer/.test(error.message));
+  });
+
   it('uses the adapter-documented state defaults', () => {
     const config = resolve({ tracker: { kind: 'github_project' } });
     assert.deepEqual(config.tracker.activeStates, ['Todo', 'In Progress']);
@@ -440,13 +455,27 @@ describe('brain config', () => {
   const env = { HOME: '/home/u' };
 
   it('defaults to disabled with ~/brain', () => {
-    assert.deepEqual(resolve(base, env).brain, { enabled: false, path: '/home/u/brain', clashWindowMs: 600000, obsidianUrl: '' });
+    assert.deepEqual(resolve(base, env).brain, { enabled: false, path: '/home/u/brain', clashWindowMs: 600000, obsidianUrl: '', reviewLessons: { enabled: true, windowDays: 14, minIssues: 2, injectBudgetChars: 6000 } });
   });
 
   it('reads enabled and path, expands ~ and resolves relative paths', () => {
-    assert.deepEqual(resolve({ ...base, brain: { enabled: true, path: '~/vault' } }, env).brain, { enabled: true, path: '/home/u/vault', clashWindowMs: 600000, obsidianUrl: '' });
+    assert.deepEqual(resolve({ ...base, brain: { enabled: true, path: '~/vault' } }, env).brain, { enabled: true, path: '/home/u/vault', clashWindowMs: 600000, obsidianUrl: '', reviewLessons: { enabled: true, windowDays: 14, minIssues: 2, injectBudgetChars: 6000 } });
     assert.equal(resolve({ ...base, brain: { path: 'vault' } }, env).brain.path, '/srv/flows/vault');
     assert.equal(resolve({ ...base, brain: { enabled: true } }, env).warnings.some((w) => /brain/.test(w)), false);
+  });
+
+  it('reads brain.review_lessons with defaults, minimums and an error for unknown keys (#575)', () => {
+    assert.deepEqual(resolve({ ...base, brain: { review_lessons: { enabled: false, window_days: 7, min_issues: 3, inject_budget_chars: 0 } } }, env).brain.reviewLessons, {
+      enabled: false,
+      windowDays: 7,
+      minIssues: 3,
+      injectBudgetChars: 0,
+    });
+    assert.deepEqual(resolve({ ...base, brain: { review_lessons: { window_days: 30 } } }, env).brain.reviewLessons, { enabled: true, windowDays: 30, minIssues: 2, injectBudgetChars: 6000 });
+    for (const [key, value] of [['window_days', 0], ['min_issues', 1], ['inject_budget_chars', -1], ['enabled', 'yes']] as const) {
+      assert.throws(() => resolve({ ...base, brain: { review_lessons: { [key]: value } } }, env), new RegExp(`brain\\.review_lessons\\.${key}`), key);
+    }
+    assert.throws(() => resolve({ ...base, brain: { review_lessons: { budget: 1 } } }, env), /brain\.review_lessons\.budget is not a known key/);
   });
 
   it('reads brain.obsidian_url, trimmed, and rejects other schemes', () => {
@@ -911,7 +940,7 @@ describe('result-driven roles and the pipeline section', () => {
       transitions('reviewer'),
       ['review', { approved: 'In review', changes_needed: 'In progress', blocked: 'Blocked' }, 'In progress', 'Blocked', null],
     );
-    assert.deepEqual(transitions('docs'), ['docs', { done: 'Agent review', not_needed: 'Agent review', blocked: 'Blocked' }, null, 'Blocked', null]);
+    assert.deepEqual(transitions('docs'), ['docs', { done: 'Agent review', not_needed: 'Agent review', blocked: 'Blocked' }, 'In progress', 'Blocked', null]);
     assert.deepEqual(
       transitions('security-auditor'),
       ['security', { passed: 'In review', issues_found: 'In progress', blocked: 'Blocked' }, 'In progress', 'Blocked', null],

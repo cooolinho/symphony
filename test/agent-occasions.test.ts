@@ -82,9 +82,9 @@ describe('prompts on occasions instead of deterrence', () => {
       assert.ok(withAgents.length >= 7, `expected the shipped roles with agents, got ${withAgents.map(([n]) => n).join()}`);
       for (const [role] of withAgents) {
         const listed = roles[role] ?? ALL;
-        const prompt = await render(role, listed.map(agent), { delegate: true });
+        const prompt = await render(role, listed.map(agent), { delegate: true }, role === 'architect' ? ['feature', 'complexity: l'] : undefined); // the architect lists only the design-critic (E2-5), named at L/XL
         const label = role;
-        if (role === 'test-engineer' || role === 'reviewer') continue; // render the intro depending on the complexity, see below
+        if (role === 'test-engineer' || role === 'reviewer' || role === 'security-auditor') continue; // render the intro depending on the complexity, see below
         assert.match(prompt, /Subagents you can start with the Agent tool/, label);
         assert.match(prompt, /subagent_type/, label);
         // delegate where a trigger applies, never for a few tool calls
@@ -103,7 +103,8 @@ describe('prompts on occasions instead of deterrence', () => {
         assert.match(prompt, /discard any claim without `file:line`/, label);
         assert.match(prompt, /You stay responsible/, label);
         // the agent list stays (the design-critic is listed only at L/XL, see the architect tests)
-        for (const name of listed) if (name !== 'design-critic') assert.ok(prompt.includes(`- \`symphony:${name}\`: The ${name}.`), `${label}: ${name}`);
+        // the size-gated reviewers are listed only at L/XL (the developer fixture is complexity m)
+        for (const name of listed) if (!['design-critic', 'spec-reviewer'].includes(name) && !(role === 'developer' && name === 'laravel-code-reviewer')) assert.ok(prompt.includes(`- \`symphony:${name}\`: The ${name}.`), `${label}: ${name}`);
         // no deterrence
         assert.doesNotMatch(prompt, /\boptional\b/i, label);
         assert.doesNotMatch(prompt, /costs tokens/i, label);
@@ -118,13 +119,14 @@ describe('prompts on occasions instead of deterrence', () => {
         assert.ok(listed && listed.length > 0, role);
         const prompt = await render(role, listed.map(agent), {}, role === 'architect' ? ['feature', 'complexity: l'] : undefined);
         const bullets = delegateBullets(prompt);
-        assert.ok(bullets.length >= 2, `${role}: ${bullets.length} bullets`);
+        assert.ok(bullets.length >= (listed.includes('explorer') || role === 'developer' ? 2 : 1), `${role}: ${bullets.length} bullets`);
         for (const bullet of bullets) {
           assert.match(bullet, NOT_FOR, `${role}: no exclusion in "${bullet}"`);
           assert.match(bullet, /`symphony:[a-z-]+`/, `${role}: no qualified agent name in "${bullet}"`);
         }
-        // the first bullet is the explorer in every role that lists it
-        assert.match(bullets[0]!, /`symphony:explorer`/, role);
+        // the first bullet is the explorer in every role that lists it; developer and architect do not (E2-5)
+        if (listed.includes('explorer')) assert.match(bullets[0]!, /`symphony:explorer`/, role);
+        else assert.ok(!bullets.some((bullet) => bullet.includes('`symphony:explorer`')), role);
         // no Liquid left over
         assert.doesNotMatch(prompt, /\{%|\{\{|%\}|\}\}/, role);
       }
@@ -136,7 +138,7 @@ describe('prompts on occasions instead of deterrence', () => {
       assert.ok(explorer);
       assert.match(explorer, /Before you read more than about ten files/);
       assert.match(explorer, /handful of tool calls/);
-      assert.match(prompt, /before you report the result/);
+      assert.doesNotMatch(prompt, /before the first `git push`/);
     });
 
     it('architect: 2–3 explorers per code area, then reads their files itself', async () => {
@@ -217,7 +219,7 @@ describe('prompts on occasions instead of deterrence', () => {
       // depend on anything but that list: with the empty list the render is identical to a render without agents.
       const roles = await shippedRoles();
       const empty = Object.entries(roles).filter(([, agents]) => Array.isArray(agents) && agents.length === 0).map(([name]) => name);
-      assert.ok(empty.length >= 4, empty.join());
+      assert.ok(empty.length >= 3, empty.join());
       for (const role of empty) {
         const prompt = await render(role, []);
         assert.doesNotMatch(prompt, /Subagents you can start|When to delegate|a trigger applies/, role);
@@ -277,8 +279,29 @@ describe('prompts on occasions instead of deterrence', () => {
       assert.match(section, /`symphony:explorer`/);
       assert.match(section, /trigger/);
       assert.match(section, /exclusion/);
-      assert.match(section, /2–3/);
+      assert.doesNotMatch(section, /2–3 explorers/); // the architect lost the explorer (E2-5)
+      assert.doesNotMatch(section, /`developer`: before reading more than about ten files/);
       assert.doesNotMatch(section, /phrased as optional|costs tokens/);
     });
+  });
+});
+
+describe('docs of the security panel (E3-5)', () => {
+  const docs = fs.readFileSync(path.join(root, 'docs', 'configuration.md'), 'utf8');
+  const start = docs.indexOf('#### Subagents per role');
+  const end = docs.indexOf('\n#### ', start + 10);
+  const section = docs.slice(start, end > 0 ? end : undefined).replace(/\s+/g, ' ');
+
+  it('configuration.md#subagents-per-role names the personas and the panel and no longer lists the auditor with []', () => {
+    for (const name of ['security-inventory', 'refutation-judge']) assert.ok(section.includes(`\`${name}\``), name);
+    assert.match(section, /Security panel/);
+    assert.match(section, /L\/XL/);
+    assert.doesNotMatch(section, /`security-auditor` with `\[\]`/);
+  });
+
+  it('results.md documents the votes and the rule constant', () => {
+    const results = fs.readFileSync(path.join(root, 'docs', 'results.md'), 'utf8');
+    assert.match(results, /verification\.votes/);
+    assert.match(results, /PANEL_MAX_REFUTING_VOTES/);
   });
 });
