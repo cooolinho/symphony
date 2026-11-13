@@ -254,3 +254,200 @@ describe('get_issue_by_number', () => {
     assert.equal(data.issue.status, 'Ready');
   });
 });
+
+describe('get_issue log_tail of failing CI jobs', () => {
+  const jobUrl = (job: number) => `https://github.com/o/r/actions/runs/43120591492/job/${job}`;
+  const checkRun = (name: string, job: number | null) => ({
+    __typename: 'CheckRun',
+    name,
+    status: 'COMPLETED',
+    conclusion: 'FAILURE',
+    detailsUrl: job === null ? null : jobUrl(job),
+    annotations: { nodes: [] },
+  });
+
+  function setup(contexts: unknown[], respond: (url: string) => Response | Promise<Response>) {
+    const issue = makeIssue({ id: 'I_1', branch_name: null, native_ref: { provider: 'github_project', item_id: 'PVTI_1', issue_id: 'I_1', repository: 'o/r', number: 1 } } as never);
+    const client = {
+      request: async (query: string) => {
+        if (!query.includes('SymphonyBranchPullRequest')) return { errors: [], data: { node: { comments: { totalCount: 0, nodes: [] }, closedByPullRequestsReferences: { nodes: [] } } } };
+        return {
+          errors: [],
+          data: {
+            repository: {
+              pullRequests: {
+                nodes: [
+                  {
+                    number: 41,
+                    url: 'https://github.com/o/r/pull/41',
+                    baseRefName: 'develop',
+                    headRefOid: 'abc',
+                    commits: { nodes: [{ commit: { oid: 'abc', statusCheckRollup: { state: 'FAILURE', contexts: { totalCount: contexts.length, nodes: contexts } } } }] },
+                  },
+                ],
+              },
+            },
+          },
+        };
+      },
+    };
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const fetchMock = (async (input: string | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
+      return respond(String(input));
+    }) as typeof fetch;
+    const settings = { endpoint: 'https://api.github.com/graphql', token: 'tok', requestTimeoutMs: 5000, baseBranch: null, autoMerge: null };
+    const adapter = new GithubProjectAdapter(settings as never, client as never, { child: () => ({}) } as never, fetchMock);
+    Object.assign(adapter, {
+      fetchIssuesByIds: async () => [issue],
+      meta: async () => ({ statusOptions: [] }),
+      viewerLogin: async () => 'bot',
+    });
+    const tool = createGithubTools(adapter).find((t) => t.name === 'get_issue');
+    assert.ok(tool);
+    return { tool, calls };
+  }
+
+  function first<T>(list: readonly T[]): T {
+    const [head] = list;
+    assert.ok(head !== undefined, 'empty list');
+    return head;
+  }
+
+  type Failing = Array<{ name: string; state: string; url: string | null; log_tail?: string | null; log_error?: string }>;
+  async function failing(tool: AgentToolSpec): Promise<Failing> {
+    const data = (await run(tool)) as unknown as { branch_pull_request: { checks: { failing: Failing } } };
+    return data.branch_pull_request.checks.failing;
+  }
+
+  const SHELLCHECK_LOG = [
+    '﻿2026-11-11T23:28:01.1234567Z ##[group]Run shellcheck setup/*.sh',
+    ...Array.from({ length: 120 }, (_, i) => `2026-11-11T23:28:02.0000000Z \u001b[36;1mchecking file ${i}\u001b[0m`),
+    '2026-11-11T23:28:03.0000000Z In setup/setup.sh line 128:',
+    '2026-11-11T23:28:03.0000000Z \u001b[31mif [ -f "$f" ]; then echo ok; fi done\u001b[0m',
+    '2026-11-11T23:28:03.0000000Z                                       ^-- SC1010 (warning): Use semicolon or linefeed before \'done\'.',
+    '2026-11-11T23:28:03.5000000Z ##[error]Process completed with exit code 1.',
+    '2026-11-11T23:28:04.0000000Z Post job cleanup.',
+    '2026-11-11T23:28:04.1000000Z [command]/usr/bin/git version',
+    '2026-11-11T23:28:04.2000000Z Cleaning up orphan processes',
+    '',
+  ].join('\r\n');
+
+  it('adds the cleaned, cut end of the job log to a failing GitHub Actions job', async () => {
+    const { tool, calls } = setup([checkRun('shellcheck', 130859746028)], () => new Response(SHELLCHECK_LOG, { status: 200 }));
+    const check = first(await failing(tool));
+    assert.equal(calls.length, 1);
+    assert.equal(first(calls).url, 'https://api.github.com/repos/o/r/actions/jobs/130859746028/logs');
+    assert.equal(new Headers(first(calls).init?.headers).get('authorization'), 'Bearer tok');
+    assert.equal(first(calls).init?.redirect, 'follow');
+    assert.ok(first(calls).init?.signal instanceof AbortSignal);
+    assert.equal(check.name, 'shellcheck');
+    assert.equal(check.url, jobUrl(130859746028));
+    assert.equal(check.log_error, undefined);
+    const tail = check.log_tail;
+    assert.ok(typeof tail === 'string');
+    const lines = tail.split('\n');
+    assert.match(first(lines), /^\[log cut: last 80 of 125 lines\]$/);
+    assert.equal(lines.length, 81);
+    assert.match(tail, /SC1010/);
+    assert.match(tail, /setup\/setup\.sh line 128/);
+    assert.equal(lines.at(-1), '##[error]Process completed with exit code 1.');
+    assert.doesNotMatch(tail, /\u001b/);
+    assert.doesNotMatch(tail, /2026-11-11T/);
+    assert.doesNotMatch(tail, /\r/);
+    assert.doesNotMatch(tail, /Post job cleanup|orphan processes|git version/);
+    assert.doesNotMatch(tail, /##\[group\]Run shellcheck/);
+  });
+
+  it('caps the log tail at about 6000 characters and notes the cut', async () => {
+    const long = Array.from({ length: 70 }, (_, i) => `line ${i} ${'x'.repeat(200)}`).concat('##[error]boom').join('\n');
+    const { tool } = setup([checkRun('bats', 7)], () => new Response(long, { status: 200 }));
+    const check = first(await failing(tool));
+    const tail = check.log_tail ?? '';
+    const [note, ...rest] = tail.split('\n');
+    assert.match(note ?? '', /^\[log cut: last \d+ of 71 lines\]$/);
+    assert.ok(rest.join('\n').length <= 6000, String(rest.join('\n').length));
+    assert.ok(rest.length < 71);
+    assert.equal(rest.at(-1), '##[error]boom');
+  });
+
+  it('keeps a short log uncut and without a note', async () => {
+    const { tool } = setup([checkRun('lint', 8)], () => new Response('2026-11-11T23:28:01.1Z SC2174 in backup/backup.sh:223\n2026-11-11T23:28:01.2Z ##[error]Process completed with exit code 1.\n', { status: 200 }));
+    const check = first(await failing(tool));
+    assert.equal(check.log_tail, 'SC2174 in backup/backup.sh:223\n##[error]Process completed with exit code 1.');
+  });
+
+  for (const status of [403, 404]) {
+    it(`gives log_tail null with log_error on HTTP ${status}, and get_issue still succeeds`, async () => {
+      const { tool, calls } = setup([checkRun('shellcheck', 9)], () => new Response('{"message":"nope"}', { status }));
+      const check = first(await failing(tool));
+      assert.equal(calls.length, 1);
+      assert.equal(check.log_tail, null);
+      assert.match(check.log_error ?? '', new RegExp(`^HTTP ${status}`));
+    });
+  }
+
+  it('gives log_tail null with log_error when the request throws or times out', async () => {
+    const { tool } = setup([checkRun('shellcheck', 10)], () => {
+      throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+    });
+    const check = first(await failing(tool));
+    assert.equal(check.log_tail, null);
+    assert.equal(check.log_error, 'timeout after 5000 ms');
+  });
+
+  it('loads no log for a status context or a check run without a job id', async () => {
+    const { tool, calls } = setup(
+      [
+        { __typename: 'StatusContext', context: 'symphony/ci', state: 'FAILURE', targetUrl: 'https://s/agent' },
+        { __typename: 'StatusContext', context: 'ext', state: 'ERROR', targetUrl: null },
+        checkRun('external', null),
+      ],
+      () => {
+        throw new Error('must not fetch');
+      },
+    );
+    const checks = await failing(tool);
+    assert.equal(calls.length, 0);
+    assert.equal(checks.length, 3);
+    for (const check of checks) {
+      assert.equal('log_tail' in check, false, check.name);
+      assert.equal('log_error' in check, false, check.name);
+    }
+  });
+
+  it('loads at most 3 logs and says the others were not loaded', async () => {
+    const { tool, calls } = setup([1, 2, 3, 4, 5].map((n) => checkRun(`job${n}`, n)), (url) => new Response(`${url}\n##[error]fail`, { status: 200 }));
+    const checks = await failing(tool);
+    assert.equal(calls.length, 3);
+    assert.deepEqual(calls.map((c) => c.url.replace(/.*\/jobs\/(\d+)\/logs$/, '$1')), ['1', '2', '3']);
+    assert.deepEqual(checks.slice(0, 3).map((c) => typeof c.log_tail), ['string', 'string', 'string']);
+    for (const check of checks.slice(3)) {
+      assert.equal(check.log_tail, null);
+      assert.match(check.log_error ?? '', /not loaded/);
+    }
+  });
+
+  it('loads no log outside get_issue (branchPullRequest without logTails)', async () => {
+    const { calls } = setup([checkRun('shellcheck', 11)], () => new Response('x', { status: 200 }));
+    // The orchestrator's change log calls branchPullRequest without the option: no request, no log fields.
+    const adapter = new GithubProjectAdapter(
+      { endpoint: 'https://api.github.com/graphql', token: 't', requestTimeoutMs: 1, baseBranch: null, autoMerge: null } as never,
+      {
+        request: async () => ({
+          errors: [],
+          data: { repository: { pullRequests: { nodes: [{ number: 1, commits: { nodes: [{ commit: { oid: 'a', statusCheckRollup: { contexts: { totalCount: 1, nodes: [checkRun('shellcheck', 11)] } } } }] } }] } } },
+        }),
+      } as never,
+      { child: () => ({}) } as never,
+      (async () => {
+        calls.push({ url: 'unexpected', init: undefined });
+        return new Response('x');
+      }) as typeof fetch,
+    );
+    const issue = makeIssue({ id: 'I_1', native_ref: { provider: 'github_project', item_id: 'PVTI_1', issue_id: 'I_1', repository: 'o/r', number: 1 } } as never);
+    const pull = await adapter.branchPullRequest(issue);
+    assert.equal(calls.length, 0);
+    assert.deepEqual(pull?.checks.failing, [{ name: 'shellcheck', state: 'FAILURE', url: jobUrl(11) }]);
+  });
+});

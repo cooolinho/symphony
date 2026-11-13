@@ -182,6 +182,13 @@ can take the UI screenshots a project asks for (the browser lives under `/opt/ms
 `docker exec symphony symphony-screenshot --check` tests it); `WITH_BROWSER=false` builds the image without them (about 600 MB
 smaller). Both build args take effect on the next `docker compose up -d --build`.
 
+For shell repositories the image also ships `shellcheck` and `bats` (Debian packages), so an agent can reproduce a red
+`shellcheck` or `bats` CI job before it guesses. They are only the quick pre-check: the Debian versions can differ from
+the ones in the project's CI. What counts is the project's own test image (for example the Ubuntu 24.04 test image of
+tsv-server) and its CI job; when the two disagree, the CI result wins. Agents still get no Docker daemon and no GitHub
+token: the end of a red job's log reaches them as `log_tail` from `get_issue` (see
+[GitHub Projects](adapters/github-project.md)).
+
 ### 10. Dry run
 
 ```bash
