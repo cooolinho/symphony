@@ -1364,8 +1364,8 @@ describe('shipped WORKFLOW.md issue commands', () => {
     const byRole = Object.fromEntries((config.roles ?? []).map((role) => [role.name, role.agents]));
     assert.deepEqual(byRole, {
       'issue-analyst': [],
-      architect: ['explorer', 'design-critic'],
-      developer: ['explorer', 'laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer', 'spec-reviewer'],
+      architect: ['design-critic'],
+      developer: ['laravel-architect', 'laravel-database-engineer', 'laravel-filament-developer', 'laravel-test-engineer', 'laravel-code-reviewer', 'spec-reviewer'],
       'test-engineer': ['test-designer'],
       docs: [],
       reviewer: ['convention-lens', 'bug-lens', 'finding-verifier'],
@@ -1696,9 +1696,9 @@ describe('design critic (#504)', () => {
     assert.equal(await renderWith(['feature', 'complexity: m'], only), await renderWith(['feature', 'complexity: m'], []));
   });
 
-  it('gives the architect exactly explorer and design-critic; laravel-architect stays for the other roles', async () => {
+  it('gives the architect exactly design-critic (no explorer, E2-5); laravel-architect stays for the other roles', async () => {
     const byRole = Object.fromEntries(((await config()).roles ?? []).map((role) => [role.name, role.agents ?? []]));
-    assert.deepEqual(byRole.architect, ['explorer', 'design-critic']);
+    assert.deepEqual(byRole.architect, ['design-critic']);
     for (const name of ['developer', 'auditor', 'analyst', 'planner', 'autopilot']) assert.ok(byRole[name]?.includes('laravel-architect'), name);
     for (const [name, list] of Object.entries(byRole)) if (name !== 'architect') assert.ok(!list.includes('design-critic'), name);
   });
@@ -1711,7 +1711,7 @@ describe('design critic (#504)', () => {
     assert.deepEqual(errors.filter((error) => error.includes('.agents')), []);
     for (const prefixes of [['laravel-'], []]) {
       const { allowed, denied } = sessionAgents(pluginAgents([toolbox]), role, prefixes, prefixes);
-      assert.deepEqual(allowed.map((agent) => agent.qualified).sort(), ['symphony:design-critic', 'symphony:explorer'], prefixes.join());
+      assert.deepEqual(allowed.map((agent) => agent.qualified).sort(), ['symphony:design-critic'], prefixes.join());
       assert.ok(denied.some((agent) => agent.qualified === 'symphony:laravel-architect'), prefixes.join());
     }
   });
@@ -1898,7 +1898,7 @@ describe('Symphony toolbox subagents', () => {
         trackerDefaults,
       });
       const withExplorer = (config.roles ?? []).filter((role) => role.agents?.includes('explorer')).map((role) => role.name).sort();
-      assert.deepEqual(withExplorer, ['analyst', 'architect', 'auditor', 'autopilot', 'developer', 'planner']);
+      assert.deepEqual(withExplorer, ['analyst', 'auditor', 'autopilot', 'planner']);
     });
 
     it('is allowed in a workspace without the Laravel integration, for every listed role, while laravel-* stays denied', async () => {
@@ -1909,10 +1909,10 @@ describe('Symphony toolbox subagents', () => {
         trackerDefaults,
       });
       const all = pluginAgents([toolbox]);
-      for (const name of ['analyst', 'architect', 'auditor', 'autopilot', 'developer', 'planner']) {
+      for (const name of ['analyst', 'auditor', 'autopilot', 'planner']) {
         const role = (config.roles ?? []).find((entry) => entry.name === name) ?? null;
         const { allowed, denied } = sessionAgents(all, role, ['laravel-'], []);
-        assert.deepEqual(allowed.map((agent) => agent.qualified), name === 'architect' ? ['symphony:design-critic', 'symphony:explorer'] : name === 'developer' ? ['symphony:explorer', 'symphony:spec-reviewer'] : ['symphony:explorer'], name);
+        assert.deepEqual(allowed.map((agent) => agent.qualified), ['symphony:explorer'], name);
         assert.equal(denied.filter((agent) => agent.name.startsWith('laravel-')).length, 5, name);
         const listed = allowed.map((agent) => ({ name: agent.qualified, description: agent.description }));
         const prompt = await render(name, null, undefined, null, listed);
@@ -2288,6 +2288,6 @@ describe('early self-review (#503)', () => {
     for (const role of config.roles ?? []) assert.equal(role.agents?.includes('spec-reviewer') ?? false, role.name === 'developer', role.name);
     const developer = (config.roles ?? []).find((entry) => entry.name === 'developer') ?? null;
     const { allowed } = sessionAgents(pluginAgents([toolbox]), developer, ['laravel-'], []);
-    assert.deepEqual(allowed.map((agent) => agent.qualified).sort(), ['symphony:explorer', 'symphony:spec-reviewer']);
+    assert.deepEqual(allowed.map((agent) => agent.qualified).sort(), ['symphony:spec-reviewer']);
   });
 });

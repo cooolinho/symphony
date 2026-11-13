@@ -613,7 +613,7 @@ roles:
     on_result: { ready: In progress, split: Agent review, blocked: Blocked }
     may_move_to: [In progress, Agent review, Blocked]
     model_label: ignore               # opus, whatever the issue's Model: label picks for the developer
-    agents: [explorer, design-critic]
+    agents: [design-critic]
     claude: { model: opus }
 ```
 
@@ -974,7 +974,7 @@ naming one of them. The allowed ones reach the prompt as the variable [`agents`]
 - **Findings are candidates.** The agent reads the cited lines itself and discards any claim without `file:line`; it
   stays responsible for the result.
 - **When to delegate.** Each role with agents adds bullets with a trigger and an exclusion that name the agent by its
-  qualified name, e.g. `developer`: before reading more than about ten files, ask `symphony:explorer`; `architect`:
+  qualified name, e.g. `analyst`: before reading more than about ten files, ask `symphony:explorer`; `architect`:
   2–3 explorers, one per code area, then read their files yourself. A bullet renders only when its agent is allowed in
   the session, so a non-Laravel workspace never sees `laravel-*` agents named. Roles with `agents: []` render neither
   the intro nor the bullets.
@@ -1001,8 +1001,8 @@ naming one of them. The allowed ones reach the prompt as the variable [`agents`]
 The toolbox also ships framework-neutral subagents without a prefix; the first is `explorer` (`symphony:explorer`). It is
 read-only (`disallowedTools: Edit, Write, NotebookEdit`, `model: sonnet`, `effort: low`, `maxTurns: 25`) and returns key
 files as `file:line` plus a short summary instead of file contents. Because it has no integration prefix it is available
-in every workspace, Laravel or not, and the shipped `WORKFLOW.md` lists it for `developer`, `architect`, `analyst`,
-`planner`, `autopilot` and `auditor`. The second is `design-critic` (`symphony:design-critic`): read-only, `model: opus`, `maxTurns: 40`, it only critiques a design draft (defects with `file:line`, severity and what breaks, no new design). Only `architect` lists it, and the prompt names it at complexity L/XL only. The third is `spec-reviewer` (`symphony:spec-reviewer`): read-only, `model: opus`, `maxTurns: 30`, it reviews a finished change against the spec (see Early self-review above). Only `developer` lists it, and the prompt names it at complexity L/XL only.
+in every workspace, Laravel or not, and the shipped `WORKFLOW.md` lists it for `analyst`,
+`planner`, `autopilot` and `auditor` (removed from `developer` and `architect` by the [E2-5 evaluation](agent-claude.md#evaluation-of-stage-2-e2-5)). The second is `design-critic` (`symphony:design-critic`): read-only, `model: opus`, `maxTurns: 40`, it only critiques a design draft (defects with `file:line`, severity and what breaks, no new design). Only `architect` lists it, and the prompt names it at complexity L/XL only. The third is `spec-reviewer` (`symphony:spec-reviewer`): read-only, `model: opus`, `maxTurns: 30`, it reviews a finished change against the spec (see Early self-review above). Only `developer` lists it, and the prompt names it at complexity L/XL only.
 
 Three more framework-neutral subagents serve the lens review, all read-only (`disallowedTools: Edit, Write, NotebookEdit`):
 `convention-lens` (`model: sonnet`, `maxTurns: 25`; reports a violation of `CLAUDE.md`, `AGENTS.md` or `.ai/rules` only with
