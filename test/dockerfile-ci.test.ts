@@ -140,12 +140,14 @@ describe('CI sidecar setup files', () => {
     assert.ok((fs.statSync(path.join(root, 'docker/ci/mysql-init.sh')).mode & 0o111) !== 0, 'executable (otherwise sourced)');
   });
 
-  it('.env.example names every variable of the profile', () => {
-    const env = read('.env.example');
+  it('docs/docker.md shows every variable of the profile and docs/environment.md documents them', () => {
+    const docker = read('docs/docker.md');
+    const env = read('docs/environment.md');
     for (const v of ['COMPOSE_PROFILES=ci', 'SYMPHONY_CI_DOCKER_HOST=tcp://docker:2376', 'SYMPHONY_CI_DOCKER_CERT_PATH=/certs/client',
       'SYMPHONY_MYSQL_HOST=symphony-ci-mysql', 'SYMPHONY_MYSQL_PORT=', 'SYMPHONY_MYSQL_USER=', 'SYMPHONY_MYSQL_PASSWORD=',
       'SYMPHONY_CI_MYSQL_ROOT_PASSWORD=', 'SYMPHONY_CI_SUBNET=']) {
-      assert.ok(env.includes(`# ${v}`), v);
+      assert.ok(docker.includes(v), v);
+      assert.ok(env.includes(`\`${v.split('=')[0]}\``), v);
     }
   });
 

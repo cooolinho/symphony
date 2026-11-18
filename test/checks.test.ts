@@ -666,8 +666,8 @@ describe('checks/laravel.sh SYMPHONY_TEST_PARALLEL, edge cases', () => {
 });
 
 describe('SYMPHONY_TEST_PARALLEL documentation', () => {
-  it('is described in the script header, docs/configuration.md and .env.example', () => {
-    for (const file of ['checks/laravel.sh', 'docs/configuration.md', '.env.example']) {
+  it('is described in the script header, docs/configuration.md and docs/environment.md', () => {
+    for (const file of ['checks/laravel.sh', 'docs/configuration.md', 'docs/environment.md']) {
       assert.match(fs.readFileSync(file, 'utf8'), /SYMPHONY_TEST_PARALLEL/, file);
     }
     const docs = fs.readFileSync('docs/configuration.md', 'utf8');

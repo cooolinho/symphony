@@ -1,5 +1,8 @@
 # Getting Started
 
+> **Faster:** on Ubuntu (also WSL2) [`./install.sh`](install.md) runs these steps interactively: it checks and installs
+> the requirements, asks for the token and writes `.env`. This page is the reference for doing it by hand.
+>
 > Running Symphony on a server in Docker behind Traefik? Then follow [docker.md](docker.md). This guide covers running
 > without Docker; you set up the board and token as described here in both cases.
 
@@ -62,7 +65,7 @@ npm install
    board as well (`unknown board column "Security review"` otherwise); it stays empty for issues that need no audit.
    To run bug issues without the test stage, see [Bug issues](usage.md#bug-issues-the-bugfix-profile). With the default
    of 3 agent slots the test engineer and the issue analyst share one slot; allow 4 (`SYMPHONY_MAX_CONCURRENT_AGENTS`)
-   to run them side by side.
+   to run them side by side. `npm run repo-init -- --task board` adds missing columns to the board for you.
 3. Note the **board number** from the URL, e.g. `10` from `https://github.com/users/yourname/projects/10`.
 4. Add issues: on the board via **+ Add item** and then `#` for an issue of your repository, or in an issue's sidebar
    under **Projects**. Symphony only works on real issues, not on drafts or pull requests.
@@ -106,34 +109,25 @@ GITHUB_REPOSITORY=owner/repository
 CLAUDE_MODEL=opus
 GITHUB_TOKEN=ghp_…
 
-# Orchestrator limits (optional, otherwise the defaults from WORKFLOW.md apply)
-SYMPHONY_MAX_CONCURRENT_AGENTS=1
-SYMPHONY_MAX_TURNS=5
-SYMPHONY_MAX_CONTINUATIONS=6
-SYMPHONY_MAX_SESSION_LIMIT_RETRIES=3
-SYMPHONY_POLL_INTERVAL_MS=30000
-SYMPHONY_CLEANUP_TERMINAL=true
+# optional: dashboard; everything else keeps the defaults from WORKFLOW.md
+SYMPHONY_PORT=4000
 ```
+
+The variables in short (all of them, with defaults: [environment.md](environment.md)):
 
 | Variable | Meaning |
 |---|---|
 | `GITHUB_PROJECT_NUMBER` | Number of the board. The full board URL works too. |
 | `GITHUB_REPOSITORY` | `owner/name` of the repository. Separate multiple repositories with commas. Issues from other repositories on the board are ignored. |
 | `CLAUDE_MODEL` | Default model for Claude Code: an alias such as `fable`, `opus` or `sonnet`, or a full model ID. Empty means the Claude Code default. A `Model: …` label on the issue takes precedence, see [Choosing the model per issue](usage.md#choosing-the-model-per-issue). |
-| `CLAUDE_EFFORT` | *optional:* Default effort for Claude Code: `low`, `medium`, `high`, `xhigh` or `max`. Empty means the Claude Code default. An `Effort: …` label on the issue takes precedence, see [Choosing the effort per issue](usage.md#choosing-the-effort-per-issue). |
 | `GITHUB_TOKEN` | Token from step 3. It is removed from the environment of agents and hooks. |
-| `GITHUB_PROJECT_OWNER` | *optional:* Owner of the board if it is not the repository owner (e.g. an organization) |
 | `SYMPHONY_PORT` | *optional:* Port for the dashboard and API, e.g. `4000` for `http://127.0.0.1:4000/` |
-| `SYMPHONY_HOST` | *optional:* Bind address of the dashboard. Default `127.0.0.1`; use `0.0.0.0` (e.g. in a container) only behind a reverse proxy with login, see [Security](usage.md#security). |
-| `SYMPHONY_ALLOW_REMOTE_CONTROL` | *optional:* `true` allows **Retry now** / **Resume now** on a non-loopback address too, then only with a matching `Origin` header. Default `false`. |
-| `ANTHROPIC_API_KEY` | *optional:* Otherwise Claude Code uses its existing login. |
-| `SYMPHONY_MAX_CONCURRENT_AGENTS` | *optional:* How many agents run at the same time. Default 2; `0` pauses all new starts. |
-| `SYMPHONY_MAX_TURNS` | *optional:* Turns per session before Symphony re-evaluates the state. Default 10. |
-| `SYMPHONY_MAX_CONTINUATIONS` | *optional:* How many more sessions an issue gets while its card stays active. Every switch between Developer and Reviewer counts. After that Symphony **pauses** the issue, see [Continuations and pausing](usage.md#continuations-and-pausing). Default 6; empty means unlimited. |
-| `SYMPHONY_MAX_SESSION_LIMIT_RETRIES` | *optional:* How often Symphony retries an issue after the first session limit error before the worker waits for the reset. After that it waits until the reset (reset + 1 minute), see [Session limit](usage.md#session-limit). Default 3; `0` means wait right away. |
-| `SYMPHONY_POLL_INTERVAL_MS` | *optional:* How often the board is polled, in milliseconds. Default 30000. |
-| `SYMPHONY_CLEANUP_TERMINAL` | *optional:* `true` (default) deletes the workspace as soon as an issue lands in `Done`. The `before_remove` hook runs first, e.g. for a test database. `false` keeps the workspaces. |
-| `SYMPHONY_LOG_DIR` | *optional:* Directory for repository logs and session transcripts. Default: `~/.local/state/symphony`. A relative path is resolved from the Symphony directory, e.g. `logs`. |
+| `SYMPHONY_MAX_CONCURRENT_AGENTS` | *optional:* How many agents run at the same time. Default 3; `0` pauses all new starts. |
+
+Optional switches such as `GITHUB_PROJECT_OWNER`, `CLAUDE_EFFORT`, `SYMPHONY_HOST`, `ANTHROPIC_API_KEY`, the other
+orchestrator limits (`SYMPHONY_MAX_TURNS`, `SYMPHONY_MAX_CONTINUATIONS`, `SYMPHONY_MAX_SESSION_LIMIT_RETRIES`,
+`SYMPHONY_POLL_INTERVAL_MS`, `SYMPHONY_CLEANUP_TERMINAL`) and `SYMPHONY_LOG_DIR` are described in
+[environment.md](environment.md).
 
 `WORKFLOW.md` reads these values through references such as `$GITHUB_TOKEN` or `${SYMPHONY_MAX_TURNS:-10}`. The second
 form has a default in case the variable is missing or empty. Variables already set in your shell take precedence over

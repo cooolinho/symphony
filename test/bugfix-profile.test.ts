@@ -216,7 +216,7 @@ describe('#201 comments and documentation', () => {
     assert.match(text, /pipeline\.profiles\.bugfix/);
   });
 
-  it('.env.example says bug issues always go to Testing', () => {
-    assert.match(read('.env.example').replace(/\s*\n#\s*/g, ' '), /Bug issues always go to Testing/);
+  it('docs/environment.md says bug issues always go to Testing', () => {
+    assert.match(read('docs/environment.md'), /Bug issues always go to Testing/);
   });
 });
