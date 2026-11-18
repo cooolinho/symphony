@@ -322,7 +322,7 @@ describe('repo-init', () => {
     const result = await run(['7', '1', 'maybe', 'n'], { github });
     assert.equal(result.code, 0);
     assert.doesNotMatch(result.text, /Which repositories\?/);
-    assert.match(result.text, /Please enter a number from 0 to 2\./);
+    assert.match(result.text, /Please enter a number from 0 to 3\./);
     assert.match(result.text, /Please answer y or n\./);
     assert.match(result.text, /Cancelled; nothing changed\./);
     assert.equal(github.mutations().length, 0);

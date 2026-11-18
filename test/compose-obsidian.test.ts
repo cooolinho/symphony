@@ -108,11 +108,11 @@ describe('compose: obsidian service', () => {
     assert.equal(svc.networks, undefined);
   });
 
-  it('.env.example documents BRAIN_DOMAIN and BRAIN_PORT', () => {
-    const env = read('.env.example');
-    assert.match(env, /^# BRAIN_DOMAIN=\S* +#/m);
-    assert.match(env, /^# BRAIN_PORT=\S* +#/m);
-    assert.match(env, /profile "brain"/);
+  it('docs/environment.md documents BRAIN_DOMAIN and BRAIN_PORT', () => {
+    const env = read('docs/environment.md');
+    assert.match(env, /^\| `BRAIN_DOMAIN` \| .+ \| .*\S.* \|$/m);
+    assert.match(env, /^\| `BRAIN_PORT` \| `3000` \| .*\S.* \|$/m);
+    assert.match(env, /profile `brain`/);
   });
 
   it('docs/docker.md describes the service', () => {

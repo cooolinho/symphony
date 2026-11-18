@@ -91,14 +91,12 @@ describe('E8-1 acceptance: raw compose files', () => {
     assert.ok(!(o.labels ?? []).some((l) => l.startsWith('traefik.')));
   });
 
-  it('.env.example documents BRAIN_DOMAIN with an explanation', () => {
-    const env = read('.env.example');
-    const idx = env.search(/^#?\s*BRAIN_DOMAIN=/m);
-    assert.ok(idx >= 0, 'BRAIN_DOMAIN missing');
-    const line = env.slice(idx).split('\n')[0] ?? '';
-    const before = env.slice(0, idx).split('\n').slice(-3).join('\n');
-    assert.ok(/#.*\S/.test(line.replace(/^#/, '')) || /#/.test(before), 'no explanation near BRAIN_DOMAIN');
-    assert.match(env, /brain/i);
+  it('docs/environment.md documents BRAIN_DOMAIN with an explanation', () => {
+    const env = read('docs/environment.md');
+    const row = env.split('\n').find((line) => line.startsWith('| `BRAIN_DOMAIN` |'));
+    assert.ok(row, 'BRAIN_DOMAIN missing');
+    assert.match(row, /Obsidian/, 'no explanation for BRAIN_DOMAIN');
+    assert.match(env, /profile `brain`/);
   });
 
   it('docs/docker.md has an English Obsidian section naming the volume, domain and ports', () => {

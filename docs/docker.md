@@ -1,5 +1,9 @@
 # Running Symphony with Docker
 
+> **Faster:** [`./install.sh`](install.md) with the mode *Docker lokal* or *Docker-Server* walks through steps 2 to 11
+> interactively (Docker installation, token, `secrets/ssh_key`, Traefik values, BasicAuth) and writes `.env`. Every
+> variable: [environment.md](environment.md).
+
 This guide sets up Symphony with `docker compose` on a server behind an existing
 [Traefik](https://doc.traefik.io/traefik/), describes day-to-day operation and helps with errors. The setup without
 Docker is described in [Getting Started](getting-started.md).
