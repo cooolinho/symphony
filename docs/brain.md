@@ -119,7 +119,9 @@ The dashboard page `/brain` has a title block with the vault path, the number of
 
 ## Backup
 
-The vault is the `brain` volume; back it up like the other volumes ([docker.md](docker.md#volumes-and-backup)).
+The vault is the `brain` volume; back it up like the other volumes ([docker.md](docker.md#volumes-and-backup)). To run
+Symphony on another machine for a while with the same vault, `scripts/handover.sh` moves the vault and the Obsidian
+settings there and back ([docker.md](docker.md#handing-over-to-another-machine-handoversh)).
 
 The vault is also a Git repository: every agent write is one commit (author `symphony-<role>`), changes made in Obsidian are committed as `human`. Inside the container:
 

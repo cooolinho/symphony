@@ -128,6 +128,111 @@ describe('merge-history', () => {
     assert.match(text, /1 taken over/);
   });
 
+  it('merges journals (change feed, budget, brain access, watchdog events) by `at`, each line once, idempotent', () => {
+    const options = setup();
+    const line = (at: string, id: string) => JSON.stringify({ at, id });
+    write(path.join(options.into, 'changes/o_r.jsonl'), `${line('2026-10-01T10:00:00.000Z', 's1')}\n${line('2026-10-01T12:00:00.000Z', 's2')}\n`);
+    write(path.join(options.from, 'changes/o_r.jsonl'), `${line('2026-10-01T11:00:00.000Z', 'l1')}\n${line('2026-10-01T12:00:00.000Z', 's2')}\n`);
+    write(path.join(options.from, 'brain/access.jsonl'), `${line('2026-10-02T00:00:00.000Z', 'a')}\n`);
+    write(path.join(options.from, 'budget/rate-limits.jsonl'), `${line('2026-10-02T00:00:00.000Z', 'b')}\n`);
+    write(path.join(options.into, 'events.jsonl'), `${line('2026-10-03T00:00:00.000Z', 'w2')}\n`);
+    write(path.join(options.from, 'events.jsonl'), `${line('2026-10-02T00:00:00.000Z', 'w1')}\n`);
+
+    const summary = mergeHistory(options);
+
+    assert.deepEqual(summary.journals, [
+      { file: 'brain/access.jsonl', added: 1 },
+      { file: 'budget/rate-limits.jsonl', added: 1 },
+      { file: 'changes/o_r.jsonl', added: 1 },
+      { file: 'events.jsonl', added: 1 },
+    ]);
+    assert.deepEqual(read(path.join(options.into, 'changes/o_r.jsonl')).trim().split('\n').map((l) => JSON.parse(l).id), ['s1', 'l1', 's2']);
+    assert.deepEqual(read(path.join(options.into, 'events.jsonl')).trim().split('\n').map((l) => JSON.parse(l).id), ['w1', 'w2']);
+    assert.equal(read(path.join(options.into, 'brain/access.jsonl')), `${line('2026-10-02T00:00:00.000Z', 'a')}\n`);
+    assert.deepEqual(verifyMerge(options), []);
+
+    const before = read(path.join(options.into, 'changes/o_r.jsonl'));
+    assert.deepEqual(mergeHistory(options).journals.map((journal) => journal.added), [0, 0, 0, 0]);
+    assert.equal(read(path.join(options.into, 'changes/o_r.jsonl')), before);
+  });
+
+  it('merges symphony.log and its rotated .1 of both sides into symphony.log', () => {
+    const options = setup();
+    const entry = (ts: string, msg: string) => `ts=${ts} level=info msg=${msg}`;
+    write(path.join(options.into, 'symphony.log.1'), `${entry('2026-10-01T00:00:00.000Z', 's-old')}\n`);
+    write(path.join(options.into, 'symphony.log'), `${entry('2026-10-03T00:00:00.000Z', 's-new')}\n`);
+    write(path.join(options.from, 'symphony.log.1'), `${entry('2026-10-02T00:00:00.000Z', 'l-old')}\n`);
+    write(path.join(options.from, 'symphony.log'), `${entry('2026-10-04T00:00:00.000Z', 'l-new')}\n${entry('2026-10-03T00:00:00.000Z', 's-new')}\n`);
+
+    assert.deepEqual(mergeHistory(options).journals, [{ file: 'symphony.log', added: 2 }]);
+
+    assert.deepEqual(read(path.join(options.into, 'symphony.log')).trim().split('\n'), [
+      entry('2026-10-01T00:00:00.000Z', 's-old'),
+      entry('2026-10-02T00:00:00.000Z', 'l-old'),
+      entry('2026-10-03T00:00:00.000Z', 's-new'),
+      entry('2026-10-04T00:00:00.000Z', 'l-new'),
+    ]);
+    assert.equal(fs.existsSync(path.join(options.into, 'symphony.log.1')), false);
+    assert.deepEqual(verifyMerge(options), []);
+    assert.deepEqual(mergeHistory(options).journals, [{ file: 'symphony.log', added: 0 }]);
+  });
+
+  it('takes over runtime state and the heartbeat, copies unknown files only when missing, never deletes', () => {
+    const options = setup();
+    write(path.join(options.from, 'state/o_r.json'), '{"holds":["new"]}');
+    write(path.join(options.into, 'state/o_r.json'), '{"holds":["old"]}');
+    write(path.join(options.from, 'heartbeat.json'), '{"at":"new"}');
+    write(path.join(options.from, 'brain/clashes/c1.json'), '{"id":"c1"}');
+    write(path.join(options.from, 'brain/clashes/c2.json'), '{"id":"c2","from":"local"}');
+    write(path.join(options.into, 'brain/clashes/c2.json'), '{"id":"c2","from":"server"}');
+    write(path.join(options.into, 'brain/clashes/c3.json'), '{"id":"c3"}');
+
+    const summary = mergeHistory(options);
+
+    assert.deepEqual(summary.replaced, ['heartbeat.json', 'state/o_r.json']);
+    assert.deepEqual(summary.copied, ['brain/clashes/c1.json']);
+    assert.equal(read(path.join(options.into, 'state/o_r.json')), '{"holds":["new"]}');
+    assert.equal(read(path.join(options.into, 'brain/clashes/c2.json')), '{"id":"c2","from":"server"}');
+    assert.equal(read(path.join(options.into, 'brain/clashes/c3.json')), '{"id":"c3"}');
+    assert.deepEqual(verifyMerge(options), []);
+
+    const again = mergeHistory(options);
+    assert.deepEqual([again.replaced, again.copied], [[], []]);
+    assert.match(formatSummary(summary, false), /Runtime state: {3}taken over heartbeat\.json, state\/o_r\.json/);
+    assert.match(formatSummary(summary, false), /Other files: {5}\+1 copied \(brain\/clashes\/c1\.json\)/);
+  });
+
+  it('writes no journal, state or other file on a dry run', () => {
+    const options = setup();
+    write(path.join(options.from, 'changes/o_r.jsonl'), `${JSON.stringify({ at: '2026-10-01T00:00:00.000Z' })}\n`);
+    write(path.join(options.from, 'symphony.log'), 'ts=2026-10-01T00:00:00.000Z level=info msg=x\n');
+    write(path.join(options.from, 'state/o_r.json'), '{}');
+    write(path.join(options.from, 'brain/clashes/c1.json'), '{}');
+
+    const summary = mergeHistory({ ...options, dryRun: true });
+
+    assert.equal(fs.existsSync(options.into), false);
+    assert.deepEqual(summary.journals, [{ file: 'symphony.log', added: 1 }, { file: 'changes/o_r.jsonl', added: 1 }]);
+    assert.deepEqual([summary.replaced, summary.copied], [['state/o_r.json'], ['brain/clashes/c1.json']]);
+  });
+
+  it('reports missing journal lines, instance log lines, state and files', () => {
+    const options = setup();
+    write(path.join(options.from, 'changes/o_r.jsonl'), '{"at":"a"}\n{"at":"b"}\n');
+    write(path.join(options.into, 'changes/o_r.jsonl'), '{"at":"a"}\n');
+    write(path.join(options.from, 'symphony.log'), 'ts=1 msg=x\n');
+    write(path.join(options.from, 'state/o_r.json'), '{"v":2}');
+    write(path.join(options.into, 'state/o_r.json'), '{"v":1}');
+    write(path.join(options.from, 'brain/clashes/c1.json'), '{}');
+
+    assert.deepEqual(verifyMerge(options), [
+      'symphony.log: 1 lines missing',
+      'brain/clashes/c1.json: missing',
+      'changes/o_r.jsonl: 1 lines missing',
+      'state/o_r.json: not taken over',
+    ]);
+  });
+
   it('reports what is missing on the target', () => {
     const options = setup();
     write(path.join(options.from, 'repositories/o_r.log'), `${started('2026-10-01T09:00:00.000Z', 'l1')}\n`);
